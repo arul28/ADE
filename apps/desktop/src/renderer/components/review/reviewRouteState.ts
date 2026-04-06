@@ -6,8 +6,8 @@ export function readReviewRunId(search: string): string | null {
 
 export function buildReviewSearch(runId: string | null): string {
   const params = new URLSearchParams();
-  if (runId) params.set("runId", runId);
+  const trimmedRunId = runId?.trim();
+  if (trimmedRunId) params.set("runId", trimmedRunId);
   const next = params.toString();
   return next.length ? `?${next}` : "";
 }
-

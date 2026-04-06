@@ -2138,6 +2138,7 @@ if (typeof window !== "undefined" && !(window as any).ade) {
             createdAt: now,
           },
         ],
+        publications: [],
         chatSession: {
           sessionId: "chat-review-1",
           laneId: MOCK_LANES[1]?.id ?? "lane-auth",
@@ -3196,7 +3197,13 @@ if (typeof window !== "undefined" && !(window as any).ade) {
       updateBody: resolvedArg(undefined),
       setLabels: resolvedArg(undefined),
       requestReviewers: resolvedArg(undefined),
-      submitReview: resolvedArg(undefined),
+      submitReview: resolvedArg({
+        id: "pr-review-1",
+        nodeId: "PRR_mock_1",
+        htmlUrl: "https://github.com/mock/repo/pull/1#pullrequestreview-1",
+        state: "COMMENTED",
+        submittedAt: now,
+      }),
       close: resolvedArg(undefined),
       reopen: resolvedArg(undefined),
       rerunChecks: resolvedArg(undefined),

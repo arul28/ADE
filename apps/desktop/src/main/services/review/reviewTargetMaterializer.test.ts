@@ -147,48 +147,112 @@ describe("reviewTargetMaterializer", () => {
 
   it("materializes staged, unstaged, and untracked working tree changes", async () => {
     const worktreePath = fs.mkdtempSync(path.join(os.tmpdir(), "ade-review-working-tree-"));
-    fs.mkdirSync(path.join(worktreePath, "src"), { recursive: true });
-    fs.writeFileSync(path.join(worktreePath, "src", "new-file.ts"), "export const untracked = true;\n", "utf8");
+    try {
+      fs.mkdirSync(path.join(worktreePath, "src"), { recursive: true });
+      fs.writeFileSync(path.join(worktreePath, "src", "new-file.ts"), "export const untracked = true;\n", "utf8");
 
+      const laneService = {
+        getLaneBaseAndBranch: vi.fn().mockReturnValue({
+          baseRef: "main",
+          branchRef: "feature/review-tab",
+          worktreePath,
+          laneType: "worktree",
+        }),
+        list: vi.fn(),
+      } as any;
+      mockGit.runGitOrThrow
+        .mockResolvedValueOnce("diff --git a/src/staged.ts b/src/staged.ts\n@@ -1,1 +1,2 @@\n+staged change\n")
+        .mockResolvedValueOnce("diff --git a/src/unstaged.ts b/src/unstaged.ts\n@@ -1,1 +1,2 @@\n+unstaged change\n")
+        .mockResolvedValueOnce("M  src/staged.ts\n M src/unstaged.ts\n?? src/new-file.ts\n");
+
+      const materializer = createReviewTargetMaterializer({ laneService });
+      const result = await materializer.materialize({
+        target: { mode: "working_tree", laneId: "lane-review" },
+        config: makeConfig({
+          selectionMode: "dirty_only",
+          dirtyOnly: true,
+        }),
+      });
+
+      expect(result.fullPatchText).toContain("## Staged changes");
+      expect(result.fullPatchText).toContain("## Unstaged changes");
+      expect(result.fullPatchText).toContain("## Untracked files");
+      expect(result.artifacts.some((artifact) => artifact.artifactType === "untracked_snapshot")).toBe(true);
+      expect(result.changedFiles).toContainEqual(expect.objectContaining({
+        filePath: "src/new-file.ts",
+        lineNumbers: [1],
+      }));
+      expect(result.changedFiles.find((file) => file.filePath === "src/new-file.ts")?.excerpt).toContain("new file mode 100644");
+    } finally {
+      fs.rmSync(worktreePath, { recursive: true, force: true });
+    }
+  });
+
+  it("materializes a PR target and prepares GitHub publication metadata", async () => {
     const laneService = {
       getLaneBaseAndBranch: vi.fn().mockReturnValue({
         baseRef: "main",
-        branchRef: "feature/review-tab",
-        worktreePath,
+        branchRef: "feature/pr-80",
+        worktreePath: "/tmp/lane-review",
         laneType: "worktree",
       }),
       list: vi.fn(),
     } as any;
-    mockGit.runGit
-      .mockResolvedValueOnce({
-        exitCode: 0,
-        stdout: "diff --git a/src/staged.ts b/src/staged.ts\n@@ -1,1 +1,2 @@\n+staged change\n",
-        stderr: "",
-      })
-      .mockResolvedValueOnce({
-        exitCode: 0,
-        stdout: "diff --git a/src/unstaged.ts b/src/unstaged.ts\n@@ -1,1 +1,2 @@\n+unstaged change\n",
-        stderr: "",
-      })
-      .mockResolvedValueOnce({
-        exitCode: 0,
-        stdout: "M  src/staged.ts\n M src/unstaged.ts\n?? src/new-file.ts\n",
-        stderr: "",
-      });
+    const prService = {
+      getReviewSnapshot: vi.fn(async () => ({
+        id: "pr-80",
+        laneId: "lane-review",
+        projectId: "project-1",
+        repoOwner: "ade-dev",
+        repoName: "ade",
+        githubPrNumber: 80,
+        githubUrl: "https://github.com/ade-dev/ade/pull/80",
+        githubNodeId: "PR_kwDOExample",
+        title: "Review publication",
+        state: "open",
+        baseBranch: "main",
+        headBranch: "feature/pr-80",
+        checksStatus: "passing",
+        reviewStatus: "commented",
+        additions: 2,
+        deletions: 0,
+        lastSyncedAt: "2026-04-06T10:00:00.000Z",
+        createdAt: "2026-04-06T09:55:00.000Z",
+        updatedAt: "2026-04-06T10:00:00.000Z",
+        baseSha: "abc123456789",
+        headSha: "def456789012",
+        files: [
+          {
+            filename: "src/review.ts",
+            status: "modified",
+            additions: 2,
+            deletions: 0,
+            patch: "@@ -10,1 +10,3 @@\n context\n+anchored\n+summary only\n",
+            previousFilename: null,
+          },
+        ],
+      })),
+    } as any;
+    mockGit.runGitOrThrow.mockResolvedValueOnce(
+      "diff --git a/src/review.ts b/src/review.ts\n@@ -10,1 +10,3 @@\n context\n+anchored\n+summary only\n",
+    );
 
-    const materializer = createReviewTargetMaterializer({ laneService });
+    const materializer = createReviewTargetMaterializer({ laneService, prService });
     const result = await materializer.materialize({
-      target: { mode: "working_tree", laneId: "lane-review" },
-      config: makeConfig({
-        selectionMode: "dirty_only",
-        dirtyOnly: true,
-      }),
+      target: { mode: "pr", laneId: "lane-review", prId: "pr-80" },
+      config: makeConfig({ publishBehavior: "auto_publish" }),
     });
 
-    expect(result.fullPatchText).toContain("## Staged changes");
-    expect(result.fullPatchText).toContain("## Unstaged changes");
-    expect(result.fullPatchText).toContain("## Untracked files");
-    expect(result.artifacts.some((artifact) => artifact.artifactType === "untracked_snapshot")).toBe(true);
-    expect(result.changedFiles.some((file) => file.filePath === "src/new-file.ts")).toBe(true);
+    expect(prService.getReviewSnapshot).toHaveBeenCalledWith("pr-80");
+    expect(result.targetLabel).toBe("PR #80 feature/pr-80 -> main");
+    expect(result.publicationTarget).toEqual({
+      kind: "github_pr_review",
+      prId: "pr-80",
+      repoOwner: "ade-dev",
+      repoName: "ade",
+      prNumber: 80,
+      githubUrl: "https://github.com/ade-dev/ade/pull/80",
+    });
+    expect(result.changedFiles[0]?.diffPositionsByLine).toEqual({ 10: 1, 11: 2, 12: 3 });
   });
 });

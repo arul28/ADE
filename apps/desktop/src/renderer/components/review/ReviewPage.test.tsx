@@ -166,6 +166,7 @@ describe("ReviewPage", () => {
         ...run1,
         findings: [],
         artifacts: [],
+        publications: [],
         chatSession: {
           sessionId: "session-1",
           laneId: "lane-review",
@@ -201,6 +202,7 @@ describe("ReviewPage", () => {
         artifacts: [
           { id: "artifact-1", runId: "run-2", artifactType: "diff_bundle", title: "Captured diff", mimeType: "text/plain", contentText: "diff --git a/src/review/run.ts b/src/review/run.ts", metadata: null, createdAt: "2026-04-03T12:03:00.000Z" },
         ],
+        publications: [],
         chatSession: {
           sessionId: "session-2",
           laneId: "lane-bugfix",
@@ -219,6 +221,7 @@ describe("ReviewPage", () => {
         ...run3,
         findings: [],
         artifacts: [],
+        publications: [],
         chatSession: null,
       }],
     ]);
@@ -333,5 +336,104 @@ describe("ReviewPage", () => {
       dirtyOnly: false,
       publishBehavior: "local_only",
     });
+  });
+
+  it("leaves commit range inputs empty when the lane only has one recent commit", async () => {
+    (window.ade.review as any).listLaunchContext.mockResolvedValueOnce({
+      lanes: [
+        { id: "lane-review", name: "feature/review-tab", branchRef: "refs/heads/feature/review-tab", baseRef: "main", laneType: "worktree", color: null },
+      ],
+      defaultLaneId: "lane-review",
+      defaultBranchName: "main",
+      recentCommitsByLane: {
+        "lane-review": [
+          { sha: "abc123def4567890", shortSha: "abc123d", subject: "Only commit", authoredAt: "2026-04-01T12:00:00.000Z", pushed: true },
+        ],
+      },
+      recommendedModelId: "openai/gpt-5.4-codex",
+    });
+
+    render(
+      <MemoryRouter initialEntries={["/review"]}>
+        <Routes>
+          <Route path="/review" element={<ReviewPage />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    await waitFor(() => expect(screen.getAllByText("Launch review").length).toBeGreaterThan(0));
+    fireEvent.click(screen.getByText("Commit range"));
+
+    expect((screen.getByRole("textbox", { name: /base commit/i }) as HTMLInputElement).value).toBe("");
+    expect((screen.getByRole("textbox", { name: /head commit/i }) as HTMLInputElement).value).toBe("");
+    expect(screen.getByText(/at least two recent commits are needed to auto-fill this range/i)).toBeTruthy();
+  });
+
+  it("shows a placeholder instead of fabricating missing timestamps", async () => {
+    const missingTimeRun = {
+      id: "run-missing-time",
+      projectId: "project-1",
+      laneId: "lane-review",
+      status: "completed",
+      targetLabel: "feature/review-tab vs main",
+      compareTarget: { kind: "default_branch", label: "main", ref: "main", laneId: null, branchRef: "main" },
+      target: { mode: "lane_diff", laneId: "lane-review" },
+      config: {
+        compareAgainst: { kind: "default_branch" },
+        selectionMode: "full_diff",
+        dirtyOnly: false,
+        modelId: "openai/gpt-5.4-codex",
+        reasoningEffort: "medium",
+        budgets: { maxFiles: 25, maxDiffChars: 120000, maxPromptChars: 60000, maxFindings: 8 },
+        publishBehavior: "local_only",
+      },
+      summary: "Missing timestamps should stay visible as missing.",
+      errorMessage: null,
+      findingCount: 0,
+      severitySummary: { critical: 0, high: 0, medium: 0, low: 0, info: 0 },
+      chatSessionId: null,
+      createdAt: null,
+      startedAt: null,
+      endedAt: null,
+      updatedAt: null,
+    } as any;
+    (window.ade.review as any).listRuns.mockResolvedValue([missingTimeRun]);
+    (window.ade.review as any).getRunDetail.mockResolvedValue({
+      ...missingTimeRun,
+      findings: [],
+      artifacts: [],
+      chatSession: null,
+    });
+
+    render(
+      <MemoryRouter initialEntries={["/review?runId=run-missing-time"]}>
+        <Routes>
+          <Route path="/review" element={<ReviewPage />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByText("Missing timestamps should stay visible as missing.")).toBeTruthy();
+    expect(screen.getAllByText("—").length).toBeGreaterThan(0);
+  });
+
+  it("shows an inline error banner when refreshing runs fails after runs are already loaded", async () => {
+    const reviewBridge = window.ade.review as any;
+
+    render(
+      <MemoryRouter initialEntries={["/review"]}>
+        <Routes>
+          <Route path="/review" element={<ReviewPage />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByText("Reviewed against default branch")).toBeTruthy();
+    reviewBridge.listRuns.mockRejectedValueOnce(new Error("Refresh failed"));
+
+    fireEvent.click(screen.getByRole("button", { name: /refresh runs/i }));
+
+    expect((await screen.findByRole("alert")).textContent).toContain("Refresh failed");
+    expect(screen.getAllByText("feature/review-tab vs main").length).toBeGreaterThan(0);
   });
 });

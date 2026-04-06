@@ -941,6 +941,12 @@ export type PrFile = {
   previousFilename: string | null;
 };
 
+export type PrReviewSnapshot = PrSummary & {
+  baseSha: string | null;
+  headSha: string | null;
+  files: PrFile[];
+};
+
 /** GitHub Actions workflow run. */
 export type PrActionRun = {
   id: number;
@@ -1016,6 +1022,19 @@ export type SubmitPrReviewArgs = {
   prId: string;
   event: "APPROVE" | "REQUEST_CHANGES" | "COMMENT";
   body?: string;
+  comments?: Array<{
+    path: string;
+    body: string;
+    position: number;
+  }>;
+};
+
+export type SubmitPrReviewResult = {
+  id: string | null;
+  nodeId: string | null;
+  htmlUrl: string | null;
+  state: string | null;
+  submittedAt: string | null;
 };
 
 export type ClosePrArgs = {

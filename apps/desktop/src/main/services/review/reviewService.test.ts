@@ -97,6 +97,24 @@ function createInMemoryAdeDb(): { db: AdeDb; raw: Database } {
       created_at text not null
     )
   `);
+  raw.run(`
+    create table review_run_publications(
+      id text primary key,
+      run_id text not null,
+      destination_json text not null,
+      review_event text not null,
+      status text not null,
+      review_url text,
+      remote_review_id text,
+      summary_body text not null,
+      inline_comments_json text not null default '[]',
+      summary_finding_ids_json text not null default '[]',
+      error_message text,
+      created_at text not null,
+      updated_at text not null,
+      completed_at text
+    )
+  `);
 
   const run = (sql: string, params: SqlValue[] = []) => raw.run(sql, params);
   const all = <T extends Record<string, unknown> = Record<string, unknown>>(sql: string, params: SqlValue[] = []): T[] =>
@@ -133,12 +151,14 @@ describe("reviewService", () => {
         laneId: null,
         branchRef: "main",
       },
+      publicationTarget: null,
       fullPatchText: "diff --git a/src/review.ts b/src/review.ts\n@@ -1,1 +1,2 @@\n+return null;\n",
       changedFiles: [
         {
           filePath: "src/review.ts",
           excerpt: "@@ -1,1 +1,2 @@\n+return null;",
           lineNumbers: [2],
+          diffPositionsByLine: { 2: 1 },
         },
       ],
       artifacts: [
@@ -272,6 +292,7 @@ describe("reviewService", () => {
     expect(detail?.findings[0]?.anchorState).toBe("anchored");
     expect(detail?.artifacts.some((artifact) => artifact.artifactType === "prompt")).toBe(true);
     expect(detail?.artifacts.some((artifact) => artifact.artifactType === "review_output")).toBe(true);
+    expect(detail?.publications).toEqual([]);
     expect(detail?.chatSession?.sessionId).toBe("session-review-1");
     expect(events.some((event) => event.type === "run-completed" && event.runId === run.id && event.status === "completed")).toBe(true);
 
@@ -291,6 +312,7 @@ describe("reviewService", () => {
         laneId: null,
         branchRef: "main",
       },
+      publicationTarget: null,
       fullPatchText: "",
       changedFiles: [],
       artifacts: [
@@ -382,5 +404,176 @@ describe("reviewService", () => {
     });
     expect(rerunRecord?.config.selectionMode).toBe("selected_commits");
     expect(rerunRecord?.config.reasoningEffort).toBe("high");
+  });
+
+  it("publishes PR-backed review runs, preserves summary findings, and reruns with the same publication flow", async () => {
+    const { db } = createInMemoryAdeDb();
+    mockMaterializer.materialize.mockResolvedValue({
+      targetLabel: "PR #80 feature/pr-80 -> main",
+      compareTarget: {
+        kind: "default_branch",
+        label: "main",
+        ref: "main",
+        laneId: null,
+        branchRef: "main",
+      },
+      publicationTarget: {
+        kind: "github_pr_review",
+        prId: "pr-80",
+        repoOwner: "ade-dev",
+        repoName: "ade",
+        prNumber: 80,
+        githubUrl: "https://github.com/ade-dev/ade/pull/80",
+      },
+      fullPatchText: "diff --git a/src/review.ts b/src/review.ts\n@@ -10,2 +10,4 @@\n context\n+anchored\n+summary only\n",
+      changedFiles: [
+        {
+          filePath: "src/review.ts",
+          excerpt: "@@ -10,2 +10,4 @@\n context\n+anchored\n+summary only",
+          lineNumbers: [10, 11, 12],
+          diffPositionsByLine: { 10: 1, 11: 2, 12: 3 },
+        },
+      ],
+      artifacts: [
+        {
+          artifactType: "diff_bundle",
+          title: "Diff bundle",
+          mimeType: "text/plain",
+          contentText: "diff --git a/src/review.ts b/src/review.ts\n@@ -10,2 +10,4 @@\n context\n+anchored\n+summary only\n",
+          metadata: null,
+        },
+      ],
+    });
+
+    const publishReviewPublication = vi.fn(async (args: any) => ({
+      id: `publication-${args.runId}`,
+      runId: args.runId,
+      destination: args.destination,
+      reviewEvent: "COMMENT",
+      status: "published",
+      reviewUrl: "https://github.com/ade-dev/ade/pull/80#pullrequestreview-1",
+      remoteReviewId: "1",
+      summaryBody: "Summary body",
+      inlineComments: [
+        {
+          findingId: args.findings[0].id,
+          path: "src/review.ts",
+          line: 11,
+          position: 2,
+          body: "Inline comment",
+        },
+      ],
+      summaryFindingIds: [args.findings[1].id],
+      errorMessage: null,
+      createdAt: "2026-04-06T10:00:00.000Z",
+      updatedAt: "2026-04-06T10:00:02.000Z",
+      completedAt: "2026-04-06T10:00:02.000Z",
+    }));
+
+    const service = createReviewService({
+      db: db as any,
+      logger: {
+        debug: vi.fn(),
+        info: vi.fn(),
+        warn: vi.fn(),
+        error: vi.fn(),
+      } as any,
+      projectId: "project-1",
+      projectRoot: "/tmp/ade",
+      projectDefaultBranch: "main",
+      laneService: {
+        getLaneBaseAndBranch: vi.fn().mockReturnValue({
+          baseRef: "main",
+          branchRef: "feature/pr-80",
+          worktreePath: "/tmp/ade/lane",
+          laneType: "worktree",
+        }),
+        list: vi.fn(async () => []),
+      } as any,
+      gitService: {
+        listRecentCommits: vi.fn(async () => []),
+      } as any,
+      agentChatService: {
+        createSession: vi.fn(async () => ({
+          id: "session-pr-review",
+          laneId: "lane-review",
+          provider: "codex",
+          model: "gpt-5.4-codex",
+          modelId: "openai/gpt-5.4-codex",
+        })),
+        getSessionSummary: vi.fn(async () => null),
+        runSessionTurn: vi.fn(async () => ({
+          sessionId: "session-pr-review",
+          provider: "codex",
+          model: "gpt-5.4-codex",
+          modelId: "openai/gpt-5.4-codex",
+          outputText: JSON.stringify({
+            summary: "Two findings on the PR.",
+            findings: [
+              {
+                title: "Anchored finding",
+                severity: "high",
+                body: "This should post inline.",
+                confidence: 0.92,
+                filePath: "src/review.ts",
+                line: 11,
+              },
+              {
+                title: "Summary finding",
+                severity: "medium",
+                body: "This should stay in the summary body.",
+                confidence: 0.64,
+                filePath: "src/review.ts",
+                line: 200,
+              },
+            ],
+          }),
+        })),
+      } as any,
+      sessionService: {
+        updateMeta: vi.fn(),
+      } as any,
+      prService: {
+        getReviewSnapshot: vi.fn(),
+        publishReviewPublication,
+      } as any,
+    });
+
+    const first = await service.startRun({
+      target: { mode: "pr", laneId: "lane-review", prId: "pr-80" },
+      config: { publishBehavior: "auto_publish" },
+    });
+
+    await waitFor(
+      () => service.listRuns(),
+      (runs) => runs.some((run) => run.id === first.id && run.status === "completed"),
+    );
+
+    const detail = await service.getRunDetail({ runId: first.id });
+    expect(publishReviewPublication).toHaveBeenCalledWith(expect.objectContaining({
+      runId: first.id,
+      targetLabel: "PR #80 feature/pr-80 -> main",
+    }));
+    expect(detail?.publications).toHaveLength(1);
+    expect(detail?.publications[0]?.status).toBe("published");
+    expect(detail?.publications[0]?.summaryFindingIds).toHaveLength(1);
+    expect(detail?.artifacts.some((artifact) => artifact.artifactType === "publication_request")).toBe(true);
+    expect(detail?.artifacts.some((artifact) => artifact.artifactType === "publication_result")).toBe(true);
+    expect(detail?.findings.every((finding) => finding.publicationState === "published")).toBe(true);
+
+    const savedRuns = await service.listRuns();
+    const savedPrRun = savedRuns.find((run) => run.id === first.id);
+    expect(savedPrRun?.target).toEqual({ mode: "pr", laneId: "lane-review", prId: "pr-80" });
+    expect(savedPrRun?.config.publishBehavior).toBe("auto_publish");
+
+    const rerun = await service.rerun(first.id);
+    await waitFor(
+      () => service.listRuns(),
+      (runs) => runs.some((run) => run.id === rerun.id && run.status === "completed"),
+    );
+
+    expect(publishReviewPublication).toHaveBeenCalledTimes(2);
+    const rerunDetail = await service.getRunDetail({ runId: rerun.id });
+    expect(rerunDetail?.publications).toHaveLength(1);
   });
 });

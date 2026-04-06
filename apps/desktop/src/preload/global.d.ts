@@ -1426,7 +1426,7 @@ declare global {
         updateBody: (args: UpdatePrBodyArgs) => Promise<void>;
         setLabels: (args: SetPrLabelsArgs) => Promise<void>;
         requestReviewers: (args: RequestPrReviewersArgs) => Promise<void>;
-        submitReview: (args: SubmitPrReviewArgs) => Promise<void>;
+        submitReview: (args: SubmitPrReviewArgs) => Promise<SubmitPrReviewResult>;
         close: (args: ClosePrArgs) => Promise<void>;
         reopen: (args: ReopenPrArgs) => Promise<void>;
         rerunChecks: (args: RerunPrChecksArgs) => Promise<void>;

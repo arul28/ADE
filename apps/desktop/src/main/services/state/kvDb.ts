@@ -3008,6 +3008,27 @@ function migrate(db: { run: (sql: string, params?: SqlValue[]) => void }) {
   db.run("create index if not exists idx_review_findings_run_file on review_findings(run_id, file_path, line)");
 
   db.run(`
+    create table if not exists review_run_publications (
+      id text primary key,
+      run_id text not null,
+      destination_json text not null,
+      review_event text not null,
+      status text not null,
+      review_url text,
+      remote_review_id text,
+      summary_body text not null,
+      inline_comments_json text not null default '[]',
+      summary_finding_ids_json text not null default '[]',
+      error_message text,
+      created_at text not null,
+      updated_at text not null,
+      completed_at text,
+      foreign key(run_id) references review_runs(id) on delete cascade
+    )
+  `);
+  db.run("create index if not exists idx_review_run_publications_run on review_run_publications(run_id, created_at)");
+
+  db.run(`
     create table if not exists review_run_artifacts (
       id text primary key,
       run_id text not null,

@@ -4,14 +4,57 @@ import type { AgentChatSessionSummary } from "./chat";
 // Review types
 // ---------------------------------------------------------------------------
 
-export type ReviewTargetMode = "lane_diff" | "commit_range" | "working_tree";
+export type ReviewTargetMode = "lane_diff" | "commit_range" | "working_tree" | "pr";
 export type ReviewRunStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
 export type ReviewSeverity = "critical" | "high" | "medium" | "low" | "info";
 export type ReviewAnchorState = "anchored" | "file_only" | "missing";
 export type ReviewPublicationState = "local_only" | "published";
 export type ReviewSourcePass = "single_pass" | "adjudicated";
 export type ReviewSelectionMode = "full_diff" | "selected_commits" | "dirty_only";
-export type ReviewArtifactType = "prompt" | "diff_bundle" | "review_output" | "untracked_snapshot";
+export type ReviewPublishBehavior = "local_only" | "auto_publish";
+export type ReviewPublicationStatus = "published" | "failed";
+export type ReviewArtifactType =
+  | "prompt"
+  | "diff_bundle"
+  | "review_output"
+  | "untracked_snapshot"
+  | "publication_request"
+  | "publication_result";
+
+export type ReviewPublicationDestination =
+  | {
+      kind: "github_pr_review";
+      prId: string;
+      repoOwner: string;
+      repoName: string;
+      prNumber: number;
+      githubUrl: string | null;
+    };
+
+export type ReviewPublicationInlineComment = {
+  findingId: string;
+  path: string;
+  line: number;
+  position: number;
+  body: string;
+};
+
+export type ReviewPublication = {
+  id: string;
+  runId: string;
+  destination: ReviewPublicationDestination;
+  reviewEvent: "COMMENT";
+  status: ReviewPublicationStatus;
+  reviewUrl: string | null;
+  remoteReviewId: string | null;
+  summaryBody: string;
+  inlineComments: ReviewPublicationInlineComment[];
+  summaryFindingIds: string[];
+  errorMessage: string | null;
+  createdAt: string;
+  updatedAt: string;
+  completedAt: string | null;
+};
 
 export type ReviewCompareAgainstTarget =
   | {
@@ -44,7 +87,7 @@ export type ReviewRunConfig = {
   modelId: string;
   reasoningEffort: string | null;
   budgets: ReviewRunBudgetConfig;
-  publishBehavior: "local_only";
+  publishBehavior: ReviewPublishBehavior;
 };
 
 export type ReviewTarget =
@@ -61,6 +104,11 @@ export type ReviewTarget =
   | {
       mode: "working_tree";
       laneId: string;
+    }
+  | {
+      mode: "pr";
+      laneId: string;
+      prId: string;
     };
 
 export type ReviewEvidence = {
@@ -154,6 +202,7 @@ export type ReviewLaunchContext = {
 export type ReviewRunDetail = ReviewRun & {
   findings: ReviewFinding[];
   artifacts: ReviewRunArtifact[];
+  publications: ReviewPublication[];
   chatSession: AgentChatSessionSummary | null;
 };
 

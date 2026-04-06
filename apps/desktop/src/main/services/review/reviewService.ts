@@ -4,6 +4,9 @@ import type {
   ReviewEventPayload,
   ReviewEvidence,
   ReviewFinding,
+  ReviewPublication,
+  ReviewPublicationDestination,
+  ReviewPublicationInlineComment,
   ReviewPublicationState,
   ReviewResolvedCompareTarget,
   ReviewRun,
@@ -29,6 +32,7 @@ import type { createLaneService } from "../lanes/laneService";
 import type { createGitOperationsService } from "../git/gitOperationsService";
 import type { createAgentChatService } from "../chat/agentChatService";
 import type { createSessionService } from "../sessions/sessionService";
+import type { createPrService } from "../prs/prService";
 import { createReviewTargetMaterializer } from "./reviewTargetMaterializer";
 
 type ReviewRunRow = {
@@ -77,10 +81,43 @@ type ReviewRunArtifactRow = {
   created_at: string;
 };
 
-const DEFAULT_REVIEW_MODEL_ID =
-  getDefaultModelDescriptor("codex")?.id
-  ?? getDefaultModelDescriptor("unified")?.id
-  ?? "openai/gpt-5.4-codex";
+type ReviewRunPublicationRow = {
+  id: string;
+  run_id: string;
+  destination_json: string;
+  review_event: string;
+  status: string;
+  review_url: string | null;
+  remote_review_id: string | null;
+  summary_body: string;
+  inline_comments_json: string;
+  summary_finding_ids_json: string;
+  error_message: string | null;
+  created_at: string;
+  updated_at: string;
+  completed_at: string | null;
+};
+
+const REVIEW_MODEL_FALLBACK_ID = "openai/gpt-5.4-codex";
+
+function resolveBuiltinReviewModelId(): string {
+  const candidates = [
+    getDefaultModelDescriptor("codex")?.id ?? null,
+    getDefaultModelDescriptor("unified")?.id ?? null,
+    REVIEW_MODEL_FALLBACK_ID,
+    getDefaultModelDescriptor("claude")?.id ?? null,
+    getDefaultModelDescriptor("cursor")?.id ?? null,
+  ].filter((modelId): modelId is string => Boolean(modelId?.trim()));
+
+  for (const modelId of candidates) {
+    const descriptor = getModelById(modelId);
+    if (descriptor) return descriptor.id;
+  }
+
+  return REVIEW_MODEL_FALLBACK_ID;
+}
+
+const DEFAULT_REVIEW_MODEL_ID = resolveBuiltinReviewModelId();
 
 const DEFAULT_BUDGETS: ReviewRunConfig["budgets"] = {
   maxFiles: 60,
@@ -406,6 +443,32 @@ function mapArtifactRow(row: ReviewRunArtifactRow): ReviewRunArtifact {
   };
 }
 
+function mapPublicationRow(row: ReviewRunPublicationRow): ReviewPublication {
+  return {
+    id: row.id,
+    runId: row.run_id,
+    destination: safeJsonParse<ReviewPublicationDestination>(row.destination_json, {
+      kind: "github_pr_review",
+      prId: "",
+      repoOwner: "",
+      repoName: "",
+      prNumber: 0,
+      githubUrl: null,
+    }),
+    reviewEvent: row.review_event === "COMMENT" ? "COMMENT" : "COMMENT",
+    status: row.status === "published" ? "published" : "failed",
+    reviewUrl: row.review_url,
+    remoteReviewId: row.remote_review_id,
+    summaryBody: row.summary_body,
+    inlineComments: safeJsonParse<ReviewPublicationInlineComment[]>(row.inline_comments_json, []),
+    summaryFindingIds: safeJsonParse<string[]>(row.summary_finding_ids_json, []),
+    errorMessage: row.error_message,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    completedAt: row.completed_at,
+  };
+}
+
 export function createReviewService({
   db,
   logger,
@@ -416,6 +479,7 @@ export function createReviewService({
   gitService,
   agentChatService,
   sessionService,
+  prService,
   onEvent,
 }: {
   db: AdeDb;
@@ -427,12 +491,33 @@ export function createReviewService({
   gitService: Pick<ReturnType<typeof createGitOperationsService>, "listRecentCommits">;
   agentChatService: Pick<ReturnType<typeof createAgentChatService>, "createSession" | "getSessionSummary" | "runSessionTurn">;
   sessionService: Pick<ReturnType<typeof createSessionService>, "updateMeta">;
+  prService?: Pick<ReturnType<typeof createPrService>, "getReviewSnapshot" | "publishReviewPublication">;
   onEvent?: (event: ReviewEventPayload) => void;
 }) {
-  const materializer = createReviewTargetMaterializer({ laneService });
+  const materializer = createReviewTargetMaterializer({ laneService, prService });
   const activeRuns = new Set<string>();
+  let disposed = false;
+  const configuredDefaultModelId =
+    getDefaultModelDescriptor("codex")?.id
+    ?? getDefaultModelDescriptor("unified")?.id
+    ?? REVIEW_MODEL_FALLBACK_ID;
+  const defaultReviewModelId = getModelById(configuredDefaultModelId)?.id ?? DEFAULT_REVIEW_MODEL_ID;
+
+  if (defaultReviewModelId !== configuredDefaultModelId) {
+    logger.warn("review.default_model_fallback_selected", {
+      requestedModelId: configuredDefaultModelId,
+      resolvedModelId: defaultReviewModelId,
+    });
+  }
+
+  function assertNotDisposed(): void {
+    if (disposed) {
+      throw new Error("Review service is disposed.");
+    }
+  }
 
   function emit(event: ReviewEventPayload): void {
+    if (disposed) return;
     onEvent?.(event);
   }
 
@@ -534,6 +619,43 @@ export function createReviewService({
     );
   }
 
+  function insertPublication(publication: ReviewPublication): void {
+    db.run(
+      `insert into review_run_publications (
+        id,
+        run_id,
+        destination_json,
+        review_event,
+        status,
+        review_url,
+        remote_review_id,
+        summary_body,
+        inline_comments_json,
+        summary_finding_ids_json,
+        error_message,
+        created_at,
+        updated_at,
+        completed_at
+      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        publication.id,
+        publication.runId,
+        JSON.stringify(publication.destination),
+        publication.reviewEvent,
+        publication.status,
+        publication.reviewUrl,
+        publication.remoteReviewId,
+        publication.summaryBody,
+        JSON.stringify(publication.inlineComments),
+        JSON.stringify(publication.summaryFindingIds),
+        publication.errorMessage,
+        publication.createdAt,
+        publication.updatedAt,
+        publication.completedAt,
+      ],
+    );
+  }
+
   function insertFinding(finding: ReviewFinding): void {
     db.run(
       `insert into review_findings (
@@ -567,7 +689,15 @@ export function createReviewService({
     );
   }
 
+  function updateFindingPublicationState(runId: string, findingId: string, publicationState: ReviewPublicationState): void {
+    db.run(
+      "update review_findings set publication_state = ? where id = ? and run_id = ?",
+      [publicationState, findingId, runId],
+    );
+  }
+
   async function listLaunchContext(): Promise<ReviewLaunchContext> {
+    assertNotDisposed();
     const lanes = await laneService.list();
     const laneSummaries = lanes.map(mapLaunchLane);
     const recentCommitsByLane = Object.fromEntries(await Promise.all(
@@ -581,7 +711,7 @@ export function createReviewService({
       defaultBranchName: projectDefaultBranch ?? laneSummaries.find((lane) => lane.laneType === "primary")?.branchRef ?? null,
       lanes: laneSummaries,
       recentCommitsByLane,
-      recommendedModelId: DEFAULT_REVIEW_MODEL_ID,
+      recommendedModelId: defaultReviewModelId,
     };
   }
 
@@ -595,7 +725,7 @@ export function createReviewService({
             ? "dirty_only"
             : "full_diff"),
       dirtyOnly: partial?.dirtyOnly ?? target.mode === "working_tree",
-      modelId: partial?.modelId?.trim() || DEFAULT_REVIEW_MODEL_ID,
+      modelId: partial?.modelId?.trim() || defaultReviewModelId,
       reasoningEffort: partial?.reasoningEffort?.trim() || null,
       budgets: {
         maxFiles: clampNumber(Number(partial?.budgets?.maxFiles ?? DEFAULT_BUDGETS.maxFiles), 1, 500),
@@ -603,17 +733,84 @@ export function createReviewService({
         maxPromptChars: clampNumber(Number(partial?.budgets?.maxPromptChars ?? DEFAULT_BUDGETS.maxPromptChars), 4_000, 1_000_000),
         maxFindings: clampNumber(Number(partial?.budgets?.maxFindings ?? DEFAULT_BUDGETS.maxFindings), 1, 50),
       },
-      publishBehavior: "local_only",
+      publishBehavior: target.mode === "pr" && partial?.publishBehavior === "auto_publish"
+        ? "auto_publish"
+        : "local_only",
     };
   }
 
+  async function publishRun(args: {
+    runId: string;
+    targetLabel: string;
+    summary: string | null;
+    config: ReviewRunConfig;
+    findings: ReviewFinding[];
+    publicationTarget: ReviewPublicationDestination | null;
+    changedFiles: Array<{ filePath: string; diffPositionsByLine: Record<number, number> }>;
+  }): Promise<ReviewPublication | null> {
+    if (args.config.publishBehavior !== "auto_publish" || !args.publicationTarget || !prService) {
+      return null;
+    }
+
+    insertArtifact(args.runId, {
+      artifactType: "publication_request",
+      title: "Review publication request",
+      mimeType: "application/json",
+      contentText: JSON.stringify({
+        destination: args.publicationTarget,
+        targetLabel: args.targetLabel,
+        summary: args.summary,
+        findingIds: args.findings.map((finding) => finding.id),
+        changedFiles: args.changedFiles,
+      }, null, 2),
+      metadata: {
+        publishBehavior: args.config.publishBehavior,
+      },
+    });
+
+    const publication = await prService.publishReviewPublication({
+      runId: args.runId,
+      destination: args.publicationTarget,
+      targetLabel: args.targetLabel,
+      summary: args.summary,
+      findings: args.findings,
+      changedFiles: args.changedFiles,
+    });
+    insertPublication(publication);
+    insertArtifact(args.runId, {
+      artifactType: "publication_result",
+      title: "Review publication result",
+      mimeType: "application/json",
+      contentText: JSON.stringify(publication, null, 2),
+      metadata: {
+        status: publication.status,
+        destinationKind: publication.destination.kind,
+      },
+    });
+
+    if (publication.status === "published") {
+      const publishedFindingIds = new Set([
+        ...publication.inlineComments.map((comment) => comment.findingId),
+        ...publication.summaryFindingIds,
+      ]);
+      for (const finding of args.findings) {
+        if (!publishedFindingIds.has(finding.id)) continue;
+        updateFindingPublicationState(args.runId, finding.id, "published");
+      }
+    }
+
+    return publication;
+  }
+
   async function executeRun(runId: string): Promise<void> {
-    if (activeRuns.has(runId)) return;
+    if (disposed || activeRuns.has(runId)) return;
     activeRuns.add(runId);
     try {
+      if (disposed) return;
       const row = getRunRow(runId);
       if (!row) return;
       const run = mapRunRow(row);
+      if (disposed) return;
       updateRun(runId, {
         status: "running",
         updated_at: nowIso(),
@@ -624,6 +821,7 @@ export function createReviewService({
         target: run.target,
         config: run.config,
       });
+      if (disposed) return;
 
       updateRun(runId, {
         target_label: materialized.targetLabel,
@@ -632,9 +830,11 @@ export function createReviewService({
       });
 
       for (const artifact of materialized.artifacts) {
+        if (disposed) return;
         insertArtifact(runId, artifact);
       }
 
+      if (disposed) return;
       if (!materialized.fullPatchText.trim()) {
         const endedAt = nowIso();
         updateRun(runId, {
@@ -666,6 +866,7 @@ export function createReviewService({
         sessionProfile: "workflow",
         surface: "automation",
       });
+      if (disposed) return;
       const sessionTitle = `Review: ${materialized.targetLabel}`;
       sessionService.updateMeta({
         sessionId: session.id,
@@ -703,6 +904,7 @@ export function createReviewService({
         reasoningEffort: run.config.reasoningEffort,
         timeoutMs: 15 * 60 * 1000,
       });
+      if (disposed) return;
       insertArtifact(runId, {
         artifactType: "review_output",
         title: "Reviewer output",
@@ -717,7 +919,11 @@ export function createReviewService({
 
       const changedFilesByPath = new Map(materialized.changedFiles.map((entry) => [
         entry.filePath,
-        { excerpt: entry.excerpt, lineNumbers: new Set(entry.lineNumbers) },
+        {
+          excerpt: entry.excerpt,
+          lineNumbers: new Set(entry.lineNumbers),
+          diffPositionsByLine: entry.diffPositionsByLine,
+        },
       ]));
       const parsed = extractJsonObject(result.outputText);
       const normalized = normalizeParsedFindings({
@@ -727,8 +933,23 @@ export function createReviewService({
       });
       const findings = normalized.findings.slice(0, run.config.budgets.maxFindings);
       for (const finding of findings) {
+        if (disposed) return;
         insertFinding(finding);
       }
+      if (disposed) return;
+      await publishRun({
+        runId,
+        targetLabel: materialized.targetLabel,
+        summary: normalized.summary,
+        config: run.config,
+        findings,
+        publicationTarget: materialized.publicationTarget,
+        changedFiles: materialized.changedFiles.map((entry) => ({
+          filePath: entry.filePath,
+          diffPositionsByLine: entry.diffPositionsByLine,
+        })),
+      });
+      if (disposed) return;
       const severitySummary = tallySeveritySummary(findings);
       const endedAt = nowIso();
       updateRun(runId, {
@@ -743,6 +964,7 @@ export function createReviewService({
       emit({ type: "run-completed", runId, laneId: run.laneId, status: "completed" });
       emit({ type: "runs-updated", runId, laneId: run.laneId, status: "completed" });
     } catch (error) {
+      if (disposed) return;
       const endedAt = nowIso();
       updateRun(runId, {
         status: "failed",
@@ -762,15 +984,19 @@ export function createReviewService({
         laneId: row?.lane_id ?? "",
         status: "failed",
       });
-      emit({ type: "runs-updated", runId, laneId: row?.lane_id, status: "failed" });
+      emit({ type: "runs-updated", runId, laneId: row?.lane_id ?? "", status: "failed" });
     } finally {
       activeRuns.delete(runId);
     }
   }
 
   async function startRun(args: ReviewStartRunArgs): Promise<ReviewRun> {
+    assertNotDisposed();
     const laneId = resolveTargetLaneId(args.target);
     laneService.getLaneBaseAndBranch(laneId);
+    if (args.target.mode === "pr" && !prService) {
+      throw new Error("PR-backed review runs are not available in this workspace.");
+    }
     const config = resolveConfig(args.target, args.config);
     const startedAt = nowIso();
     const run: ReviewRun = {
@@ -781,6 +1007,8 @@ export function createReviewService({
       config,
       targetLabel: args.target.mode === "commit_range"
         ? `${laneId} ${args.target.baseCommit.slice(0, 7)}..${args.target.headCommit.slice(0, 7)}`
+        : args.target.mode === "pr"
+          ? `PR ${args.target.prId}`
         : args.target.mode === "working_tree"
           ? `${laneId} working tree`
           : `${laneId} review`,
@@ -804,6 +1032,7 @@ export function createReviewService({
   }
 
   async function rerun(runId: string): Promise<ReviewRun> {
+    assertNotDisposed();
     const row = getRunRow(runId);
     if (!row) throw new Error(`Review run '${runId}' was not found.`);
     const existing = mapRunRow(row);
@@ -814,6 +1043,7 @@ export function createReviewService({
   }
 
   async function listRuns(args: ReviewListRunsArgs = {}): Promise<ReviewRun[]> {
+    assertNotDisposed();
     const limit = Math.max(1, Math.min(200, Math.floor(args.limit ?? 50)));
     const sql = [
       "select * from review_runs where project_id = ?",
@@ -829,6 +1059,7 @@ export function createReviewService({
   }
 
   async function getRunDetail(args: { runId: string }): Promise<ReviewRunDetail | null> {
+    assertNotDisposed();
     const row = getRunRow(args.runId);
     if (!row) return null;
     const run = mapRunRow(row);
@@ -852,6 +1083,10 @@ export function createReviewService({
       "select * from review_run_artifacts where run_id = ? order by created_at asc",
       [args.runId],
     ).map(mapArtifactRow);
+    const publications = db.all<ReviewRunPublicationRow>(
+      "select * from review_run_publications where run_id = ? order by created_at asc",
+      [args.runId],
+    ).map(mapPublicationRow);
     const chatSession = run.chatSessionId
       ? await agentChatService.getSessionSummary(run.chatSessionId).catch(() => null)
       : null;
@@ -859,6 +1094,7 @@ export function createReviewService({
       ...run,
       findings,
       artifacts,
+      publications,
       chatSession,
     };
   }
@@ -869,5 +1105,9 @@ export function createReviewService({
     rerun,
     listRuns,
     getRunDetail,
+    dispose() {
+      disposed = true;
+      activeRuns.clear();
+    },
   };
 }

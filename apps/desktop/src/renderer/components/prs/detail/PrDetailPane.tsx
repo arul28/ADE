@@ -518,6 +518,7 @@ export function PrDetailPane({
   }, [prsTimelineRailsEnabled, activeTab]);
   const [aiSummary, setAiSummary] = React.useState<AiReviewSummary | null>(null);
   const [aiSummaryBusy, setAiSummaryBusy] = React.useState(false);
+  const [adeReviewBusy, setAdeReviewBusy] = React.useState(false);
   const [showIssueResolverModal, setShowIssueResolverModal] = React.useState(false);
   const [issueResolverBusy, setIssueResolverBusy] = React.useState(false);
   const [issueResolverCopyBusy, setIssueResolverCopyBusy] = React.useState(false);
@@ -853,6 +854,37 @@ export function PrDetailPane({
     } catch (err: unknown) {
       setActionError(err instanceof Error ? err.message : String(err));
     } finally { setAiSummaryBusy(false); }
+  };
+
+  const handleRunAdeReview = async () => {
+    setAdeReviewBusy(true);
+    try {
+      await runAction(async () => {
+        const reviewBridge = window.ade.review;
+        if (!reviewBridge) {
+          throw new Error("Review bridge is unavailable.");
+        }
+        const result = await reviewBridge.startRun({
+          target: { mode: "pr", laneId: pr.laneId, prId: pr.id },
+          config: { publishBehavior: "auto_publish" },
+        });
+        const nextRunId = typeof result === "string"
+          ? result
+          : result && typeof result === "object"
+            ? ("runId" in result && typeof result.runId === "string"
+              ? result.runId
+              : "id" in result && typeof result.id === "string"
+                ? result.id
+                : null)
+            : null;
+        if (!nextRunId) {
+          throw new Error("Review launch did not return a run id.");
+        }
+        onNavigate(`/review?runId=${encodeURIComponent(nextRunId)}`);
+      });
+    } finally {
+      setAdeReviewBusy(false);
+    }
   };
 
   const laneForPr = React.useMemo(
@@ -1999,7 +2031,7 @@ export function PrDetailPane({
         {activeTab === "overview" && !prsTimelineRailsEnabled && (
           <OverviewTab
             pr={pr} detail={detail} status={status} checks={checks} actionRuns={actionRuns} reviews={reviews} comments={comments}
-            detailBusy={detailBusy} aiSummary={aiSummary} aiSummaryBusy={aiSummaryBusy}
+            detailBusy={detailBusy} aiSummary={aiSummary} aiSummaryBusy={aiSummaryBusy} adeReviewBusy={adeReviewBusy}
             actionBusy={actionBusy} mergeMethod={mergeMethod}
             commentDraft={commentDraft} setCommentDraft={setCommentDraft}
             editingBody={editingBody} setEditingBody={setEditingBody}
@@ -2017,6 +2049,7 @@ export function PrDetailPane({
             onSubmitReview={handleSubmitReview}
             onClose={handleClosePr} onReopen={handleReopenPr}
             onAiSummary={handleAiSummary}
+            onRunAdeReview={handleRunAdeReview}
             onNavigate={onNavigate}
             onOpenRebaseTab={onOpenRebaseTab}
             matchingRebaseItemId={matchingRebaseItemId}
@@ -2343,6 +2376,7 @@ type OverviewTabProps = {
   detailBusy: boolean;
   aiSummary: AiReviewSummary | null;
   aiSummaryBusy: boolean;
+  adeReviewBusy: boolean;
   actionBusy: boolean;
   mergeMethod: MergeMethod;
   commentDraft: string;
@@ -2374,6 +2408,7 @@ type OverviewTabProps = {
   onClose: () => void;
   onReopen: () => void;
   onAiSummary: () => void;
+  onRunAdeReview: () => void;
   onNavigate: (path: string) => void;
   onOpenRebaseTab?: (laneId?: string) => void;
   matchingRebaseItemId: string | null;
@@ -2383,7 +2418,7 @@ type OverviewTabProps = {
 };
 
 function OverviewTab(props: OverviewTabProps) {
-  const { pr, detail, status, checks, actionRuns, reviews, comments, aiSummary, aiSummaryBusy, actionBusy, mergeMethod, activity, lanes } = props;
+  const { pr, detail, status, checks, actionRuns, reviews, comments, aiSummary, aiSummaryBusy, adeReviewBusy, actionBusy, mergeMethod, activity, lanes } = props;
   const [checksExpanded, setChecksExpanded] = React.useState(false);
   const [localMergeMethod, setLocalMergeMethod] = React.useState<MergeMethod>(mergeMethod);
   const [allowBlockedMerge, setAllowBlockedMerge] = React.useState(false);
@@ -2972,6 +3007,10 @@ function OverviewTab(props: OverviewTabProps) {
       <div style={{ width: 250, borderLeft: `1px solid ${COLORS.border}`, overflow: "auto", padding: 18, flexShrink: 0, display: "flex", flexDirection: "column", gap: 0, background: `linear-gradient(180deg, rgba(167,139,250,0.02) 0%, transparent 40%)` }}>
         {/* Quick actions */}
         <div style={{ display: "flex", flexDirection: "column", gap: 6, paddingBottom: 14, marginBottom: 2, borderBottom: `1px solid ${COLORS.border}` }}>
+          <button type="button" onClick={props.onRunAdeReview} disabled={actionBusy} style={outlineButton({ height: 30, padding: "0 10px", color: COLORS.success, borderColor: `${COLORS.success}40`, width: "100%", justifyContent: "center" })}>
+            <Play size={13} weight="fill" />
+            {adeReviewBusy ? "Launching..." : "Run ADE review"}
+          </button>
           <button type="button" onClick={props.onAiSummary} disabled={aiSummaryBusy} style={outlineButton({ height: 30, padding: "0 10px", color: COLORS.accent, borderColor: `${COLORS.accent}40`, width: "100%", justifyContent: "center" })}>
             <Sparkle size={13} weight="fill" />
             {aiSummaryBusy ? "Analyzing..." : "AI Review"}

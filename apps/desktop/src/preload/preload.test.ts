@@ -99,6 +99,7 @@ describe("preload OAuth bridge", () => {
     await import("./preload");
 
     const bridge = (globalThis as any).__adeBridge;
+    expect(bridge.review).toBeTruthy();
     await bridge.review.listLaunchContext();
     await bridge.review.listRuns({ laneId: "lane-1", limit: 5 });
     await bridge.review.getRunDetail("run-1");

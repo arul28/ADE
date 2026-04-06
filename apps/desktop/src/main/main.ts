@@ -2006,11 +2006,12 @@ app.whenReady().then(async () => {
       logger,
       projectId,
       projectRoot,
-      projectDefaultBranch: null,
+      projectDefaultBranch: baseRef,
       laneService,
       gitService,
       agentChatService,
       sessionService,
+      prService,
       onEvent: (event) => emitProjectEvent(projectRoot, IPC.reviewEvent, event),
     });
     const automationIngressService = createAutomationIngressService({
@@ -3175,6 +3176,11 @@ app.whenReady().then(async () => {
     }
     try {
       ctx.automationService.dispose();
+    } catch {
+      // ignore
+    }
+    try {
+      ctx.reviewService?.dispose?.();
     } catch {
       // ignore
     }

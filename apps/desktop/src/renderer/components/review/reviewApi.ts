@@ -24,19 +24,19 @@ function getReviewBridge(): ReviewBridge | null {
 export async function listReviewRuns(args?: ReviewListRunsArgs): Promise<ReviewRun[]> {
   const bridge = getReviewBridge();
   if (!bridge) return [];
-  return bridge.listRuns(args).catch(() => []);
+  return bridge.listRuns(args);
 }
 
 export async function getReviewRunDetail(runId: string): Promise<ReviewRunDetail | null> {
   const bridge = getReviewBridge();
   if (!bridge) return null;
-  return bridge.getRunDetail(runId).catch(() => null);
+  return bridge.getRunDetail(runId);
 }
 
 export async function startReviewRun(args: ReviewStartRunArgs): Promise<{ runId: string | null }> {
   const bridge = getReviewBridge();
   if (!bridge) return { runId: null };
-  const result = await bridge.startRun(args).catch(() => null);
+  const result = await bridge.startRun(args);
   if (typeof result === "string") return { runId: result };
   if (result && typeof result === "object") {
     const maybe = result as { runId?: string; id?: string };
@@ -48,7 +48,7 @@ export async function startReviewRun(args: ReviewStartRunArgs): Promise<{ runId:
 export async function rerunReview(runId: string): Promise<{ runId: string | null }> {
   const bridge = getReviewBridge();
   if (!bridge) return { runId: null };
-  const result = await bridge.rerun(runId).catch(() => null);
+  const result = await bridge.rerun(runId);
   if (typeof result === "string") return { runId: result };
   if (result && typeof result === "object") {
     const maybe = result as { runId?: string; id?: string };
@@ -60,7 +60,7 @@ export async function rerunReview(runId: string): Promise<{ runId: string | null
 export async function listReviewLaunchContext(): Promise<ReviewLaunchContext | null> {
   const bridge = getReviewBridge();
   if (!bridge) return null;
-  return bridge.listLaunchContext().catch(() => null);
+  return bridge.listLaunchContext();
 }
 
 export function onReviewEvent(listener: (event: ReviewEventPayload) => void): () => void {

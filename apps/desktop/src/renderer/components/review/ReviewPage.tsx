@@ -67,8 +67,17 @@ type LaunchDraft = {
   maxFindings: number;
 };
 
-type NormalizedRun = ReviewRun;
-type NormalizedDetail = ReviewRunDetail;
+type NormalizedRun = Omit<ReviewRun, "createdAt" | "startedAt" | "updatedAt"> & {
+  createdAt: string | null;
+  startedAt: string | null;
+  updatedAt: string | null;
+};
+
+type NormalizedDetail = Omit<ReviewRunDetail, "createdAt" | "startedAt" | "updatedAt"> & {
+  createdAt: string | null;
+  startedAt: string | null;
+  updatedAt: string | null;
+};
 
 function toReviewStatusTone(status: ReviewRunStatus): string {
   switch (status) {
@@ -115,6 +124,15 @@ function normalizeEvidence(evidence: ReviewFinding["evidence"] | null | undefine
   return evidence.map((entry) => entry as ReviewEvidenceEntry);
 }
 
+function normalizeTimestamp(...values: unknown[]): string | null {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim().length > 0) {
+      return value;
+    }
+  }
+  return null;
+}
+
 function normalizeRun(run: ReviewRun | Record<string, unknown>): NormalizedRun {
   const value = run as Record<string, unknown>;
   const nested = value.run && typeof value.run === "object" ? (value.run as Record<string, unknown>) : null;
@@ -135,10 +153,10 @@ function normalizeRun(run: ReviewRun | Record<string, unknown>): NormalizedRun {
     findingCount: Number(value.findingCount ?? value.findingsCount ?? nested?.findingCount ?? nested?.findingsCount ?? 0),
     severitySummary: (severitySummary ?? { critical: 0, high: 0, medium: 0, low: 0, info: 0 }) as NormalizedRun["severitySummary"],
     chatSessionId: (value.chatSessionId ?? nested?.chatSessionId ?? null) as string | null,
-    createdAt: String(value.createdAt ?? nested?.createdAt ?? value.startedAt ?? nested?.startedAt ?? new Date().toISOString()),
-    startedAt: String(value.startedAt ?? nested?.startedAt ?? value.createdAt ?? nested?.createdAt ?? new Date().toISOString()),
+    createdAt: normalizeTimestamp(value.createdAt, nested?.createdAt, value.startedAt, nested?.startedAt),
+    startedAt: normalizeTimestamp(value.startedAt, nested?.startedAt, value.createdAt, nested?.createdAt),
     endedAt: (value.endedAt ?? nested?.endedAt ?? value.completedAt ?? nested?.completedAt ?? null) as string | null,
-    updatedAt: String(value.updatedAt ?? nested?.updatedAt ?? value.endedAt ?? nested?.endedAt ?? value.createdAt ?? new Date().toISOString()),
+    updatedAt: normalizeTimestamp(value.updatedAt, nested?.updatedAt, value.endedAt, nested?.endedAt, value.createdAt, nested?.createdAt),
   };
 }
 
@@ -148,11 +166,13 @@ function normalizeDetail(detail: ReviewRunDetail | Record<string, unknown>): Nor
   const nested = value.run && typeof value.run === "object" ? (value.run as Record<string, unknown>) : null;
   const findings = (value.findings ?? nested?.findings ?? []) as ReviewFinding[];
   const artifacts = (value.artifacts ?? nested?.artifacts ?? []) as ReviewArtifact[];
+  const publications = (value.publications ?? nested?.publications ?? []) as NormalizedDetail["publications"];
   const chatSession = (value.chatSession ?? nested?.chatSession ?? null) as ReviewRunDetail["chatSession"];
   return {
     ...run,
     findings,
     artifacts,
+    publications,
     chatSession,
   };
 }
@@ -206,6 +226,9 @@ function formatTargetSummary(target: ReviewTarget, compareLabel?: string | null)
   }
   if (target.mode === "commit_range") {
     return `Commit range ${target.baseCommit.slice(0, 7)}..${target.headCommit.slice(0, 7)}`;
+  }
+  if (target.mode === "pr") {
+    return "Pull request review";
   }
   return "Dirty working tree";
 }
@@ -383,6 +406,7 @@ export function ReviewPage() {
       const next = await listReviewRuns({ laneId: laneId ?? null, limit: 120 });
       const normalized = next.map((run) => normalizeRun(run));
       setRuns(normalized);
+      setError(null);
       if (selectedRunId && normalized.some((run) => run.id === selectedRunId)) {
         return normalized;
       }
@@ -407,6 +431,7 @@ export function ReviewPage() {
     try {
       const next = await getReviewRunDetail(runId);
       setDetail(next ? normalizeDetail(next) : null);
+      setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -449,19 +474,20 @@ export function ReviewPage() {
 
   React.useEffect(() => {
     const laneCommits = launchContext?.recentCommitsByLane?.[launchDraft.laneId] ?? [];
-    if (!laneCommits.length) return;
+    if (laneCommits.length < 2) return;
     setLaunchDraft((prev) => {
       if (prev.targetMode !== "commit_range") return prev;
       if (prev.baseCommit || prev.headCommit) return prev;
       const [head, base] = laneCommits;
       return {
         ...prev,
-        baseCommit: base?.sha ?? head?.sha ?? "",
+        baseCommit: base?.sha ?? "",
         headCommit: head?.sha ?? "",
       };
     });
   }, [launchContext?.recentCommitsByLane, launchDraft.laneId, launchDraft.targetMode]);
 
+  const selectedLaneCommits = launchContext?.recentCommitsByLane?.[launchDraft.laneId] ?? [];
   const activeRuns = runs.filter((run) => run.status === "running" || run.status === "queued").length;
   const totalFindings = runs.reduce((sum, run) => sum + (run.findingCount ?? 0), 0);
   const launchReady = isLaunchDraftComplete(launchDraft);
@@ -694,6 +720,11 @@ export function ReviewPage() {
                   />
                 </label>
               </div>
+              {launchDraft.laneId && selectedLaneCommits.length < 2 ? (
+                <div className="text-[11px] text-[#94A3B8]">
+                  At least two recent commits are needed to auto-fill this range. Enter the base and head SHAs manually or choose a lane with more history.
+                </div>
+              ) : null}
             </div>
           ) : null}
 
@@ -767,7 +798,7 @@ export function ReviewPage() {
           </div>
 
           <div className="rounded-xl border border-white/[0.06] bg-white/[0.03] p-3 text-[11px] text-[#94A3B8]">
-            Ticket 1 uses local-only publishing. The review run is persisted first, and the transcript is attached as supporting context.
+            Reviews are saved locally. The transcript is attached as supporting context.
           </div>
         </div>
       </SectionCard>
@@ -879,6 +910,40 @@ export function ReviewPage() {
               <MetaCard label="Compare against" value={"kind" in selectedRun.config.compareAgainst ? selectedRun.config.compareAgainst.kind : "default_branch"} />
             </div>
           </SectionCard>
+
+          {selectedDetail?.publications?.length ? (
+            <SectionCard title="Publication" icon={ArrowSquareOut}>
+              <div className="space-y-2">
+                {selectedDetail.publications.map((publication) => (
+                  <article key={publication.id} className="rounded-xl border border-white/[0.06] bg-white/[0.03] p-3">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Chip className="text-[9px]">{publication.destination.kind}</Chip>
+                      <Chip className={cn("text-[9px]", publication.status === "published" ? "border-emerald-400/20 bg-emerald-400/[0.08] text-emerald-300" : "border-red-400/20 bg-red-400/[0.08] text-red-300")}>
+                        {publication.status}
+                      </Chip>
+                      <div className="text-sm font-semibold text-[#F5FAFF]">
+                        {publication.destination.repoOwner}/{publication.destination.repoName} #{publication.destination.prNumber}
+                      </div>
+                    </div>
+                    <div className="mt-2 grid gap-3 md:grid-cols-2">
+                      <MetaCard label="Created" value={formatTime(publication.createdAt)} />
+                      <MetaCard label="Completed" value={formatTime(publication.completedAt)} />
+                      <MetaCard label="Inline comments" value={publication.inlineComments.length} />
+                      <MetaCard label="Summary findings" value={publication.summaryFindingIds.length} />
+                      <MetaCard label="Review URL" value={publication.reviewUrl ?? "not returned"} />
+                      <MetaCard label="Remote review id" value={publication.remoteReviewId ?? "not returned"} />
+                    </div>
+                    {publication.errorMessage ? (
+                      <div className="mt-3 text-sm text-red-200">{publication.errorMessage}</div>
+                    ) : null}
+                    <pre className="mt-3 whitespace-pre-wrap rounded-lg border border-white/[0.06] bg-black/20 p-3 font-mono text-[11px] leading-relaxed text-[#D8E3F2]">
+                      {publication.summaryBody}
+                    </pre>
+                  </article>
+                ))}
+              </div>
+            </SectionCard>
+          ) : null}
 
           <SectionCard title={`Findings (${selectedRun.findingCount})`} icon={MagnifyingGlass}>
             <div className="space-y-2">
@@ -1018,18 +1083,6 @@ export function ReviewPage() {
     },
   };
 
-  if (error && runs.length === 0 && !loadingRuns) {
-    return (
-      <div className="flex h-full w-full flex-col bg-bg text-fg">
-        <EmptyState
-          icon={MagnifyingGlass}
-          title="Review failed to load"
-          description={error}
-        />
-      </div>
-    );
-  }
-
   return (
     <div className="flex h-full min-w-0 flex-col bg-bg text-fg">
       <div
@@ -1054,7 +1107,7 @@ export function ReviewPage() {
           </div>
           <div>
             <div className="text-[15px] font-bold tracking-tight text-[#FAFAFA]">Review</div>
-            <div className="text-[11px] text-[#94A3B8]">Local review runs, findings, evidence, and transcript history.</div>
+            <div className="text-[11px] text-[#94A3B8]">Saved review runs, findings, publication records, and transcript history.</div>
           </div>
         </div>
 
@@ -1078,6 +1131,12 @@ export function ReviewPage() {
           </Button>
         </div>
       </div>
+
+      {error && !loadingRuns ? (
+        <div role="alert" className="border-b border-red-400/15 bg-red-500/[0.06] px-6 py-2.5 text-sm text-red-100">
+          {error}
+        </div>
+      ) : null}
 
       <div className="flex-1 min-h-0 overflow-hidden">
         <PaneTilingLayout
