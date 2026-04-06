@@ -35,93 +35,185 @@ export type AcpCliPooled = {
 };
 
 const pools = new Map<string, { ref: number; pooled: AcpCliPooled }>();
+/** In-flight initialization per pool key — concurrent acquires share one spawn + handshake. */
+const pendingInit = new Map<string, Promise<void>>();
+
+const STDERR_LOG_MAX = 8_192;
+
+function killProcQuiet(proc: ChildProcessWithoutNullStreams | null): void {
+  if (!proc) return;
+  try {
+    proc.kill("SIGKILL");
+  } catch {
+    // ignore
+  }
+  try {
+    proc.stdin?.destroy();
+    proc.stdout?.destroy();
+    proc.stderr?.destroy();
+  } catch {
+    // ignore
+  }
+}
+
+function evictPoolEntry(poolKey: string, reason: string, err?: unknown): void {
+  const entry = pools.get(poolKey);
+  if (!entry) return;
+  console.error(
+    `${reason} for poolKey=${poolKey}:`,
+    err instanceof Error ? err.message : err ?? "",
+  );
+  try {
+    entry.pooled.dispose();
+  } catch {
+    // ignore
+  }
+  pools.delete(poolKey);
+}
 
 export async function acquireAcpCliConnection(options: AcpCliPoolOptions): Promise<AcpCliPooled> {
-  const existing = pools.get(options.poolKey);
+  const key = options.poolKey;
+  const existing = pools.get(key);
   if (existing) {
     existing.ref += 1;
     return existing.pooled;
   }
 
-  const proc = spawn(options.spawn.command, options.spawn.args, {
-    stdio: ["pipe", "pipe", "pipe"],
-    env: options.spawn.env ?? { ...process.env },
-    cwd: options.spawn.cwd,
-    detached: process.platform !== "win32",
-  });
+  let initOwner = false;
+  let init = pendingInit.get(key);
+  if (!init) {
+    initOwner = true;
+    init = (async () => {
+      let proc: ChildProcessWithoutNullStreams | null = null;
+      const stderrChunks: Buffer[] = [];
+      const appendStderr = (d: Buffer | string): void => {
+        const buf = Buffer.isBuffer(d) ? d : Buffer.from(String(d), "utf8");
+        stderrChunks.push(buf);
+        let total = 0;
+        for (const c of stderrChunks) total += c.length;
+        while (total > STDERR_LOG_MAX && stderrChunks.length > 1) {
+          total -= stderrChunks.shift()!.length;
+        }
+      };
 
-  proc.on("error", (err) => {
-    console.error(`${options.logPrefix} process error for poolKey=${options.poolKey}:`, err);
-    const entry = pools.get(options.poolKey);
-    if (entry) {
-      entry.pooled.dispose();
-      pools.delete(options.poolKey);
-    }
-  });
+      try {
+        proc = spawn(options.spawn.command, options.spawn.args, {
+          stdio: ["pipe", "pipe", "pipe"],
+          env: options.spawn.env ?? { ...process.env },
+          cwd: options.spawn.cwd,
+          detached: process.platform !== "win32",
+        });
 
-  const terminals = new Map<string, AcpHostTermState>();
-  const bridge: AcpHostBridge = {
-    onPermission: null,
-    onSessionUpdate: null,
-    getRootPath: () => "",
-    getDirtyFileText: null,
-    onTerminalOutputDelta: null,
-    flushTerminalOutput: null,
-    onTerminalDisposed: null,
-  };
+        let failureHandled = false;
+        const onProcFailure = (label: string, err?: unknown) => {
+          if (failureHandled) return;
+          failureHandled = true;
+          const tail = Buffer.concat(stderrChunks).toString("utf8").trim();
+          if (tail) {
+            console.error(`${options.logPrefix} ${label} stderr (tail) poolKey=${key}:`, tail);
+          }
+          killProcQuiet(proc);
+          evictPoolEntry(key, `${options.logPrefix} ${label}`, err);
+        };
 
-  const client = createAcpHostClient(bridge, terminals, { logPrefix: options.logPrefix });
-  const toAgentStdin = Writable.toWeb(proc.stdin as Writable);
-  const fromAgentStdout = Readable.toWeb(proc.stdout as Readable);
-  const stream = ndJsonStream(
-    toAgentStdin as unknown as WritableStream<Uint8Array>,
-    fromAgentStdout as unknown as ReadableStream<Uint8Array>,
-  );
-  const connection = new ClientSideConnection(() => client, stream);
+        proc.once("error", (err) => {
+          onProcFailure("process error", err);
+        });
+        proc.once("close", (code, signal) => {
+          if (!pools.has(key)) return;
+          onProcFailure(`process closed code=${code} signal=${signal}`);
+        });
 
-  const initResult = await connection.initialize({
-    protocolVersion: PROTOCOL_VERSION,
-    clientInfo: { name: "ade", title: "ADE", version: options.appVersion },
-    clientCapabilities: {
-      fs: { readTextFile: true, writeTextFile: true },
-      terminal: true,
-    },
-  });
+        proc.stderr?.on("data", appendStderr);
 
-  if (options.afterInitialize) {
-    await options.afterInitialize({ connection, initResult });
+        const terminals = new Map<string, AcpHostTermState>();
+        const bridge: AcpHostBridge = {
+          onPermission: null,
+          onSessionUpdate: null,
+          getRootPath: () => "",
+          getDirtyFileText: null,
+          onTerminalOutputDelta: null,
+          flushTerminalOutput: null,
+          onTerminalDisposed: null,
+        };
+
+        const client = createAcpHostClient(bridge, terminals, { logPrefix: options.logPrefix });
+        const toAgentStdin = Writable.toWeb(proc.stdin as Writable);
+        const fromAgentStdout = Readable.toWeb(proc.stdout as Readable);
+        const stream = ndJsonStream(
+          toAgentStdin as unknown as WritableStream<Uint8Array>,
+          fromAgentStdout as unknown as ReadableStream<Uint8Array>,
+        );
+        const connection = new ClientSideConnection(() => client, stream);
+
+        const initResult = await connection.initialize({
+          protocolVersion: PROTOCOL_VERSION,
+          clientInfo: { name: "ade", title: "ADE", version: options.appVersion },
+          clientCapabilities: {
+            fs: { readTextFile: true, writeTextFile: true },
+            terminal: true,
+          },
+        });
+
+        if (options.afterInitialize) {
+          await options.afterInitialize({ connection, initResult });
+        }
+
+        const pooled: AcpCliPooled = {
+          connection,
+          bridge,
+          terminals,
+          dispose: () => {
+            for (const termId of terminals.keys()) {
+              bridge.onTerminalDisposed?.(termId);
+            }
+            for (const t of terminals.values()) {
+              try {
+                if (!t.exited) t.proc.kill("SIGKILL");
+              } catch {
+                // ignore
+              }
+            }
+            terminals.clear();
+            try {
+              proc?.kill("SIGTERM");
+            } catch {
+              // ignore
+            }
+          },
+        };
+
+        pools.set(key, { ref: 1, pooled });
+      } catch (err) {
+        const tail = Buffer.concat(stderrChunks).toString("utf8").trim();
+        if (tail) {
+          console.error(`${options.logPrefix} init failed stderr (tail) poolKey=${key}:`, tail);
+        }
+        killProcQuiet(proc);
+        evictPoolEntry(key, `${options.logPrefix} initialization failed`, err);
+        throw err;
+      }
+    })().finally(() => {
+      pendingInit.delete(key);
+    });
+    pendingInit.set(key, init);
   }
 
-  const pooled: AcpCliPooled = {
-    connection,
-    bridge,
-    terminals,
-    dispose: () => {
-      for (const termId of terminals.keys()) {
-        bridge.onTerminalDisposed?.(termId);
-      }
-      for (const t of terminals.values()) {
-        try {
-          if (!t.exited) t.proc.kill("SIGKILL");
-        } catch {
-          // ignore
-        }
-      }
-      terminals.clear();
-      try {
-        proc.kill("SIGTERM");
-      } catch {
-        // ignore
-      }
-    },
-  };
+  try {
+    await init;
+  } catch (err) {
+    if (initOwner) throw err;
+    return acquireAcpCliConnection(options);
+  }
 
-  proc.stderr?.on("data", () => {
-    // stderr — optional log
-  });
-
-  pools.set(options.poolKey, { ref: 1, pooled });
-  return pooled;
+  const entry = pools.get(key);
+  if (!entry) {
+    return acquireAcpCliConnection(options);
+  }
+  if (!initOwner) {
+    entry.ref += 1;
+  }
+  return entry.pooled;
 }
 
 export function releaseAcpCliConnection(poolKey: string): void {
@@ -132,4 +224,9 @@ export function releaseAcpCliConnection(poolKey: string): void {
     entry.pooled.dispose();
     pools.delete(poolKey);
   }
+}
+
+/** True when the inner ACP pool still holds a live connection for this key (not evicted after process exit). */
+export function hasActiveAcpCliPoolEntry(poolKey: string): boolean {
+  return pools.has(poolKey);
 }
