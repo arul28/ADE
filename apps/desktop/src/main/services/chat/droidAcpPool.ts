@@ -25,7 +25,8 @@ export type DroidAcpPooled = {
   dispose: () => void;
 };
 
-const droidPools = new Map<string, { ref: number; pooled: DroidAcpPooled }>();
+let droidGenCounter = 0;
+const droidPools = new Map<string, { ref: number; generation: number; pooled: DroidAcpPooled }>();
 const pendingDroidInit = new Map<string, Promise<DroidAcpPooled>>();
 
 function internalPoolKey(poolKey: string): string {
@@ -46,7 +47,7 @@ export async function acquireDroidAcpConnection(args: {
   modelId: string;
   launchSettings: DroidAcpLaunchSettings;
   appVersion: string;
-}): Promise<DroidAcpPooled> {
+}): Promise<{ pooled: DroidAcpPooled; generation: number }> {
   const spawnArgs = [
     "exec",
     "--output-format",
@@ -82,10 +83,15 @@ export async function acquireDroidAcpConnection(args: {
   }
 
   const existing = droidPools.get(args.poolKey);
-  if (existing) {
+  if (existing && hasActiveAcpCliPoolEntry(innerKey)) {
     await acquireAcpCliConnection(acpOptions);
     existing.ref += 1;
-    return existing.pooled;
+    return { pooled: existing.pooled, generation: existing.generation };
+  }
+
+  // Existing entry is stale — clean it up before creating a new one
+  if (existing) {
+    droidPools.delete(args.poolKey);
   }
 
   let initOwner = false;
@@ -107,7 +113,8 @@ export async function acquireDroidAcpConnection(args: {
         dispose: base.dispose,
       };
 
-      droidPools.set(args.poolKey, { ref: 1, pooled });
+      const generation = ++droidGenCounter;
+      droidPools.set(args.poolKey, { ref: 1, generation, pooled });
       return pooled;
     })().finally(() => {
       pendingDroidInit.delete(args.poolKey);
@@ -121,12 +128,14 @@ export async function acquireDroidAcpConnection(args: {
     const entry = droidPools.get(args.poolKey);
     if (entry) entry.ref += 1;
   }
-  return pooled;
+  const entry = droidPools.get(args.poolKey);
+  return { pooled, generation: entry?.generation ?? 0 };
 }
 
-export function releaseDroidAcpConnection(poolKey: string): void {
+export function releaseDroidAcpConnection(poolKey: string, generation?: number): void {
   const entry = droidPools.get(poolKey);
   if (!entry) return;
+  if (generation !== undefined && entry.generation !== generation) return;
   entry.ref -= 1;
   if (entry.ref < 0) entry.ref = 0;
   releaseAcpCliConnection(internalPoolKey(poolKey));

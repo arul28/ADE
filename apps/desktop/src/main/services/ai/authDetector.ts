@@ -418,7 +418,6 @@ async function inspectDroidCliPresence(command: string): Promise<{
     try {
       const result = await spawnAsync(command, args, { timeout: 12_000 });
       const combined = `${result.stdout ?? ""}\n${result.stderr ?? ""}`.trim();
-      if (result.status !== 0) continue;
       if (hasPattern(combined, STRONG_UNAUTH_INDICATORS)) {
         return { installed: true, authenticated: false, verified: true };
       }

@@ -242,40 +242,43 @@ vi.mock("./cursorAcpPool", () => ({
   acquireCursorAcpConnection: vi.fn(async (args: Record<string, unknown>) => {
     mockState.cursorAcquireCalls.push(args);
     return {
-      connection: {
-        newSession: vi.fn(async (params: Record<string, unknown>) => {
-          mockState.cursorNewSessionCalls.push(params);
-          mockState.cursorSessionCounter += 1;
-          return {
-            sessionId: `cursor-acp-session-${mockState.cursorSessionCounter}`,
-            modes: { currentModeId: "edit" },
-            models: { currentModelId: "auto" },
-            configOptions: [],
-          };
-        }),
-        prompt: vi.fn(async (params: Record<string, unknown>) => {
-          mockState.cursorPromptCalls.push(params);
-          return {
-            stopReason: "end_turn",
-            usage: { inputTokens: 3, outputTokens: 5 },
-          };
-        }),
-        cancel: vi.fn(),
-        unstable_closeSession: vi.fn(),
+      generation: 1,
+      pooled: {
+        connection: {
+          newSession: vi.fn(async (params: Record<string, unknown>) => {
+            mockState.cursorNewSessionCalls.push(params);
+            mockState.cursorSessionCounter += 1;
+            return {
+              sessionId: `cursor-acp-session-${mockState.cursorSessionCounter}`,
+              modes: { currentModeId: "edit" },
+              models: { currentModelId: "auto" },
+              configOptions: [],
+            };
+          }),
+          prompt: vi.fn(async (params: Record<string, unknown>) => {
+            mockState.cursorPromptCalls.push(params);
+            return {
+              stopReason: "end_turn",
+              usage: { inputTokens: 3, outputTokens: 5 },
+            };
+          }),
+          cancel: vi.fn(),
+          unstable_closeSession: vi.fn(),
+        },
+        bridge: {
+          onPermission: null,
+          onSessionUpdate: null,
+          getRootPath: () => "",
+          getDirtyFileText: null,
+          onTerminalOutputDelta: null,
+          flushTerminalOutput: null,
+          onTerminalDisposed: null,
+        },
+        terminals: new Map(),
+        terminalWorkLogBindings: new Map(),
+        terminalOutputTimers: new Map(),
+        dispose: vi.fn(),
       },
-      bridge: {
-        onPermission: null,
-        onSessionUpdate: null,
-        getRootPath: () => "",
-        getDirtyFileText: null,
-        onTerminalOutputDelta: null,
-        flushTerminalOutput: null,
-        onTerminalDisposed: null,
-      },
-      terminals: new Map(),
-      terminalWorkLogBindings: new Map(),
-      terminalOutputTimers: new Map(),
-      dispose: vi.fn(),
     };
   }),
   releaseCursorAcpConnection: vi.fn(),
@@ -5301,38 +5304,41 @@ describe("createAgentChatService", () => {
     vi.mocked(acquireCursorAcpConnection).mockImplementationOnce(async (args: Record<string, unknown>) => {
       mockState.cursorAcquireCalls.push(args);
       return {
-        connection: {
-          newSession: vi.fn(() => new Promise<CursorNewSessionResult>((resolve) => {
-            resolveNewSession = resolve;
-          })),
-          loadSession: vi.fn(async () => ({
-            modes: { currentModeId: "edit" },
-            models: {
-              currentModelId: "auto",
-              availableModels: [{ modelId: "auto", name: "Auto" }],
-            },
-            configOptions: [],
-          })),
-          prompt: vi.fn(async () => ({
-            stopReason: "end_turn",
-            usage: { inputTokens: 3, outputTokens: 5 },
-          })),
-          cancel: vi.fn(),
-          unstable_closeSession: vi.fn(),
+        generation: 1,
+        pooled: {
+          connection: {
+            newSession: vi.fn(() => new Promise<CursorNewSessionResult>((resolve) => {
+              resolveNewSession = resolve;
+            })),
+            loadSession: vi.fn(async () => ({
+              modes: { currentModeId: "edit" },
+              models: {
+                currentModelId: "auto",
+                availableModels: [{ modelId: "auto", name: "Auto" }],
+              },
+              configOptions: [],
+            })),
+            prompt: vi.fn(async () => ({
+              stopReason: "end_turn",
+              usage: { inputTokens: 3, outputTokens: 5 },
+            })),
+            cancel: vi.fn(),
+            unstable_closeSession: vi.fn(),
+          },
+          bridge: {
+            onPermission: null,
+            onSessionUpdate: null,
+            getRootPath: () => "",
+            getDirtyFileText: null,
+            onTerminalOutputDelta: null,
+            flushTerminalOutput: null,
+            onTerminalDisposed: null,
+          },
+          terminals: new Map(),
+          terminalWorkLogBindings: new Map(),
+          terminalOutputTimers: new Map(),
+          dispose: vi.fn(),
         },
-        bridge: {
-          onPermission: null,
-          onSessionUpdate: null,
-          getRootPath: () => "",
-          getDirtyFileText: null,
-          onTerminalOutputDelta: null,
-          flushTerminalOutput: null,
-          onTerminalDisposed: null,
-        },
-        terminals: new Map(),
-        terminalWorkLogBindings: new Map(),
-        terminalOutputTimers: new Map(),
-        dispose: vi.fn(),
       } as any;
     });
 
@@ -5412,57 +5418,60 @@ describe("createAgentChatService", () => {
     vi.mocked(acquireCursorAcpConnection).mockImplementationOnce(async (args: Record<string, unknown>) => {
       mockState.cursorAcquireCalls.push(args);
       return {
-        connection: {
-          newSession: vi.fn(async (params: Record<string, unknown>) => {
-            mockState.cursorNewSessionCalls.push(params);
-            mockState.cursorSessionCounter += 1;
-            return {
-              sessionId: `cursor-acp-session-${mockState.cursorSessionCounter}`,
+        generation: 1,
+        pooled: {
+          connection: {
+            newSession: vi.fn(async (params: Record<string, unknown>) => {
+              mockState.cursorNewSessionCalls.push(params);
+              mockState.cursorSessionCounter += 1;
+              return {
+                sessionId: `cursor-acp-session-${mockState.cursorSessionCounter}`,
+                modes: { currentModeId: "edit" },
+                models: {
+                  currentModelId: "claude-4-sonnet",
+                  availableModels: [
+                    { modelId: "auto", name: "Auto" },
+                    { modelId: "claude-4-sonnet", name: "Claude 4 Sonnet" },
+                  ],
+                },
+                configOptions: [],
+              };
+            }),
+            prompt: vi.fn(async (params: Record<string, unknown>) => {
+              mockState.cursorPromptCalls.push(params);
+              return {
+                stopReason: "end_turn",
+                usage: { inputTokens: 2, outputTokens: 4 },
+              };
+            }),
+            loadSession: vi.fn(async () => ({
               modes: { currentModeId: "edit" },
               models: {
-                currentModelId: "claude-4-sonnet",
+                currentModelId: "auto",
                 availableModels: [
                   { modelId: "auto", name: "Auto" },
                   { modelId: "claude-4-sonnet", name: "Claude 4 Sonnet" },
                 ],
               },
               configOptions: [],
-            };
-          }),
-          prompt: vi.fn(async (params: Record<string, unknown>) => {
-            mockState.cursorPromptCalls.push(params);
-            return {
-              stopReason: "end_turn",
-              usage: { inputTokens: 2, outputTokens: 4 },
-            };
-          }),
-          loadSession: vi.fn(async () => ({
-            modes: { currentModeId: "edit" },
-            models: {
-              currentModelId: "auto",
-              availableModels: [
-                { modelId: "auto", name: "Auto" },
-                { modelId: "claude-4-sonnet", name: "Claude 4 Sonnet" },
-              ],
-            },
-            configOptions: [],
-          })),
-          cancel: vi.fn(),
-          unstable_closeSession: vi.fn(),
+            })),
+            cancel: vi.fn(),
+            unstable_closeSession: vi.fn(),
+          },
+          bridge: {
+            onPermission: null,
+            onSessionUpdate: null,
+            getRootPath: () => "",
+            getDirtyFileText: null,
+            onTerminalOutputDelta: null,
+            flushTerminalOutput: null,
+            onTerminalDisposed: null,
+          },
+          terminals: new Map(),
+          terminalWorkLogBindings: new Map(),
+          terminalOutputTimers: new Map(),
+          dispose: vi.fn(),
         },
-        bridge: {
-          onPermission: null,
-          onSessionUpdate: null,
-          getRootPath: () => "",
-          getDirtyFileText: null,
-          onTerminalOutputDelta: null,
-          flushTerminalOutput: null,
-          onTerminalDisposed: null,
-        },
-        terminals: new Map(),
-        terminalWorkLogBindings: new Map(),
-        terminalOutputTimers: new Map(),
-        dispose: vi.fn(),
       } as any;
     });
 
@@ -5500,47 +5509,50 @@ describe("createAgentChatService", () => {
     vi.mocked(acquireCursorAcpConnection).mockImplementationOnce(async (args: Record<string, unknown>) => {
       mockState.cursorAcquireCalls.push(args);
       return {
-        connection: {
-          newSession: vi.fn(async (params: Record<string, unknown>) => {
-            mockState.cursorNewSessionCalls.push(params);
-          mockState.cursorSessionCounter += 1;
-          return {
-            sessionId: `cursor-acp-session-${mockState.cursorSessionCounter}`,
-            modes: { currentModeId: "edit" },
-            models: {
-              currentModelId: "default[]",
-              availableModels: [
-                { modelId: "default[]", name: "Default" },
-                { modelId: "auto", name: "Auto" },
-                { modelId: "claude-4-sonnet", name: "Claude 4 Sonnet" },
-              ],
-            },
-              configOptions: [],
-            };
-          }),
-          prompt: vi.fn(async (params: Record<string, unknown>) => {
-            mockState.cursorPromptCalls.push(params);
+        generation: 1,
+        pooled: {
+          connection: {
+            newSession: vi.fn(async (params: Record<string, unknown>) => {
+              mockState.cursorNewSessionCalls.push(params);
+            mockState.cursorSessionCounter += 1;
             return {
-              stopReason: "end_turn",
-              usage: { inputTokens: 2, outputTokens: 4 },
-            };
-          }),
-          cancel: vi.fn(),
-          unstable_closeSession: vi.fn(),
+              sessionId: `cursor-acp-session-${mockState.cursorSessionCounter}`,
+              modes: { currentModeId: "edit" },
+              models: {
+                currentModelId: "default[]",
+                availableModels: [
+                  { modelId: "default[]", name: "Default" },
+                  { modelId: "auto", name: "Auto" },
+                  { modelId: "claude-4-sonnet", name: "Claude 4 Sonnet" },
+                ],
+              },
+                configOptions: [],
+              };
+            }),
+            prompt: vi.fn(async (params: Record<string, unknown>) => {
+              mockState.cursorPromptCalls.push(params);
+              return {
+                stopReason: "end_turn",
+                usage: { inputTokens: 2, outputTokens: 4 },
+              };
+            }),
+            cancel: vi.fn(),
+            unstable_closeSession: vi.fn(),
+          },
+          bridge: {
+            onPermission: null,
+            onSessionUpdate: null,
+            getRootPath: () => "",
+            getDirtyFileText: null,
+            onTerminalOutputDelta: null,
+            flushTerminalOutput: null,
+            onTerminalDisposed: null,
+          },
+          terminals: new Map(),
+          terminalWorkLogBindings: new Map(),
+          terminalOutputTimers: new Map(),
+          dispose: vi.fn(),
         },
-        bridge: {
-          onPermission: null,
-          onSessionUpdate: null,
-          getRootPath: () => "",
-          getDirtyFileText: null,
-          onTerminalOutputDelta: null,
-          flushTerminalOutput: null,
-          onTerminalDisposed: null,
-        },
-        terminals: new Map(),
-        terminalWorkLogBindings: new Map(),
-        terminalOutputTimers: new Map(),
-        dispose: vi.fn(),
       } as any;
     });
 

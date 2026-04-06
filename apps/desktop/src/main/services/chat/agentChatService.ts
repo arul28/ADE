@@ -378,6 +378,7 @@ type CursorPermissionWaiter = {
 type CursorRuntime = {
   kind: "cursor";
   poolKey: string;
+  poolGeneration: number;
   pooled: CursorAcpPooled | null;
   acpSessionId: string | null;
   activeTurnId: string | null;
@@ -399,6 +400,7 @@ type CursorRuntime = {
 type DroidRuntime = {
   kind: "droid";
   poolKey: string;
+  poolGeneration: number;
   pooled: DroidAcpPooled | null;
   acpSessionId: string | null;
   activeTurnId: string | null;
@@ -5418,7 +5420,7 @@ export function createAgentChatService(args: {
         w.resolve({ outcome: { outcome: "cancelled" } });
       }
       rt.permissionWaiters.clear();
-      if (rt.pooled) releaseCursorAcpConnection(rt.poolKey);
+      if (rt.pooled) releaseCursorAcpConnection(rt.poolKey, rt.poolGeneration);
       managed.runtime = null;
     }
     if (managed.runtime?.kind === "droid") {
@@ -5431,7 +5433,7 @@ export function createAgentChatService(args: {
         w.resolve({ outcome: { outcome: "cancelled" } });
       }
       rt.permissionWaiters.clear();
-      if (rt.pooled) releaseDroidAcpConnection(rt.poolKey);
+      if (rt.pooled) releaseDroidAcpConnection(rt.poolKey, rt.poolGeneration);
       managed.runtime = null;
     }
     managed.runtimeInvalidated = true;
@@ -11370,7 +11372,7 @@ export function createAgentChatService(args: {
           w.resolve({ outcome: { outcome: "cancelled" } });
         }
         existing.permissionWaiters.clear();
-        if (existing.pooled) releaseCursorAcpConnection(existing.poolKey);
+        if (existing.pooled) releaseCursorAcpConnection(existing.poolKey, existing.poolGeneration);
         managed.runtime = null;
       } else {
         if (!existing.pooled) throw new Error("Cursor ACP connection not available");
@@ -11383,7 +11385,7 @@ export function createAgentChatService(args: {
       teardownRuntime(managed);
     }
 
-    const pooled = await acquireCursorAcpConnection({
+    const acquired = await acquireCursorAcpConnection({
       poolKey,
       agentPath: resolveCursorAgentExecutable().path,
       workspacePath: managed.laneWorktreePath,
@@ -11391,6 +11393,8 @@ export function createAgentChatService(args: {
       launchSettings: resolveCursorAcpLaunchSettings(managed.session),
       appVersion,
     });
+    const pooled = acquired.pooled;
+    const poolGeneration = acquired.generation;
     wireAcpHostBridgeHandlers(pooled);
     pooled.bridge.getRootPath = () => managed.laneWorktreePath;
     pooled.bridge.getDirtyFileText = getDirtyFileTextForPath;
@@ -11398,6 +11402,7 @@ export function createAgentChatService(args: {
     const rt: CursorRuntime = {
       kind: "cursor",
       poolKey,
+      poolGeneration,
       pooled,
       acpSessionId: null,
       activeTurnId: null,
@@ -11689,19 +11694,19 @@ export function createAgentChatService(args: {
     }
   };
 
-  const droidPoolKeyFor = (managed: ManagedChatSession): string => {
+  const droidPoolKeyFor = (managed: ManagedChatSession, resolvedModelId: string): string => {
     const launch = resolveDroidAcpLaunchSettings(managed.session);
     return [
       managed.session.laneId,
       managed.laneWorktreePath,
-      managed.session.model,
+      resolvedModelId,
       launch.autonomy,
     ].join(":");
   };
 
   const ensureDroidRuntime = async (managed: ManagedChatSession): Promise<DroidRuntime> => {
-    const poolKey = droidPoolKeyFor(managed);
     const launchModelId = resolveDroidRuntimeModelId(managed.session);
+    const poolKey = droidPoolKeyFor(managed, launchModelId);
     const shouldSyncSessionModel = managed.session.model !== launchModelId || !managed.session.modelId;
     if (shouldSyncSessionModel) {
       syncDroidSessionDescriptor(managed, launchModelId);
@@ -11722,7 +11727,7 @@ export function createAgentChatService(args: {
           w.resolve({ outcome: { outcome: "cancelled" } });
         }
         existing.permissionWaiters.clear();
-        if (existing.pooled) releaseDroidAcpConnection(existing.poolKey);
+        if (existing.pooled) releaseDroidAcpConnection(existing.poolKey, existing.poolGeneration);
         managed.runtime = null;
       } else {
         if (!existing.pooled) throw new Error("Droid ACP connection not available");
@@ -11744,10 +11749,11 @@ export function createAgentChatService(args: {
 
     throwIfDroidSetupInterrupted();
     let pooled: DroidAcpPooled | null = null;
+    let poolGeneration = 0;
     try {
       const auth = await detectAuth();
       throwIfDroidSetupInterrupted();
-      pooled = await acquireDroidAcpConnection({
+      const acquired = await acquireDroidAcpConnection({
         poolKey,
         droidPath: resolveDroidExecutable({ auth }).path,
         workspacePath: managed.laneWorktreePath,
@@ -11755,6 +11761,8 @@ export function createAgentChatService(args: {
         launchSettings: resolveDroidAcpLaunchSettings(managed.session),
         appVersion,
       });
+      pooled = acquired.pooled;
+      poolGeneration = acquired.generation;
       throwIfDroidSetupInterrupted();
       wireAcpHostBridgeHandlers(pooled);
       pooled.bridge.getRootPath = () => managed.laneWorktreePath;
@@ -11763,6 +11771,7 @@ export function createAgentChatService(args: {
       const rt: DroidRuntime = {
         kind: "droid",
         poolKey,
+        poolGeneration,
         pooled,
         acpSessionId: null,
         activeTurnId: null,
@@ -11790,8 +11799,10 @@ export function createAgentChatService(args: {
       }
 
       throwIfDroidSetupInterrupted();
+      let released = false;
       if (managed.closed) {
-        releaseDroidAcpConnection(poolKey);
+        releaseDroidAcpConnection(poolKey, poolGeneration);
+        released = true;
         droidRuntimeSetupInterruptRequested.delete(managed);
         throw new Error("Droid session closed during setup.");
       }
@@ -11799,8 +11810,8 @@ export function createAgentChatService(args: {
       droidRuntimeSetupInterruptRequested.delete(managed);
       return rt;
     } catch (err) {
-      if (pooled && managed.runtime?.kind !== "droid") {
-        releaseDroidAcpConnection(poolKey);
+      if (!released && pooled && managed.runtime?.kind !== "droid") {
+        releaseDroidAcpConnection(poolKey, poolGeneration);
       }
       droidRuntimeSetupInterruptRequested.delete(managed);
       throw err;

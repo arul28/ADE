@@ -138,7 +138,7 @@ export async function acquireAcpCliConnection(options: AcpCliPoolOptions): Promi
           const bridge: AcpHostBridge = {
             onPermission: null,
             onSessionUpdate: null,
-            getRootPath: () => "",
+            getRootPath: () => options.spawn.cwd || "",
             getDirtyFileText: null,
             onTerminalOutputDelta: null,
             flushTerminalOutput: null,
