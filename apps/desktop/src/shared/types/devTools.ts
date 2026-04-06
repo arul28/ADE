@@ -1,5 +1,5 @@
 export type DevToolStatus = {
-  id: "git" | "gh";
+  id: "git";
   label: string;
   command: string;
   installed: boolean;

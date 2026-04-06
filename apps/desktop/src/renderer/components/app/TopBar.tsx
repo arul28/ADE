@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
-import { ArrowsClockwise, Folder, FolderOpen, Plus, Minus, Trash, X } from "@phosphor-icons/react";
+import { Folder, FolderOpen, Plus, Minus, Trash, X } from "@phosphor-icons/react";
 import { useNavigate } from "react-router-dom";
 
 import { useAppStore } from "../../state/appStore";
@@ -13,6 +13,7 @@ import {
 } from "../../lib/zoom";
 import { cn } from "../ui/cn";
 import type { ProcessRuntime, RecentProjectSummary, SyncRoleSnapshot } from "../../../shared/types";
+import { AutoUpdateControl } from "./AutoUpdateControl";
 
 const RUNNING_LANE_PROCESS_STATES: ProcessRuntime["status"][] = ["starting", "running", "degraded"];
 
@@ -51,8 +52,6 @@ export function TopBar() {
   const [recentProjects, setRecentProjects] = useState<RecentProjectSummary[]>([]);
   const [relocatingPath, setRelocatingPath] = useState<string | null>(null);
   const [zoom, setZoom] = useState(getStoredZoomLevel);
-  const [updateState, setUpdateState] = useState<"idle" | "downloading" | "ready">("idle");
-  const [updateVersion, setUpdateVersion] = useState<string>();
   const [syncSnapshot, setSyncSnapshot] = useState<SyncRoleSnapshot | null>(null);
   const [dragIdx, setDragIdx] = useState<number | null>(null);
   const [dropIdx, setDropIdx] = useState<number | null>(null);
@@ -91,21 +90,6 @@ export function TopBar() {
     const unsub = window.ade.project.onMissing(() => fetchRecent());
     return unsub;
   }, [fetchRecent]);
-
-  // Listen for auto-update events.
-  useEffect(() => {
-    const unsub = window.ade.onUpdateEvent((data) => {
-      if (data.type === "available") {
-        setUpdateState("downloading");
-        setUpdateVersion(data.version);
-      }
-      if (data.type === "downloaded") {
-        setUpdateState("ready");
-        setUpdateVersion(data.version);
-      }
-    });
-    return unsub;
-  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -457,46 +441,7 @@ export function TopBar() {
         </button>
       ) : null}
 
-      {/* Update indicator */}
-      {updateState !== "idle" && (
-        <button
-          type="button"
-          className={cn(
-            "ade-shell-control shrink-0 inline-flex items-center gap-1.5 rounded-md px-2.5 py-1",
-            "bg-purple-600/90 text-white text-[11px] font-medium",
-            "transition-colors duration-150",
-            updateState === "ready"
-              ? "hover:bg-purple-500 animate-pulse"
-              : "cursor-default opacity-85"
-          )}
-          style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
-          disabled={updateState !== "ready"}
-          onClick={() => {
-            if (updateState === "ready") {
-              const vLabel = updateVersion ? `v${updateVersion}` : "the latest version";
-              const confirmed = window.confirm(
-                `ADE will quit and restart automatically to install ${vLabel}.\n\nAny unsaved work may be lost. Continue?`
-              );
-              if (confirmed) {
-                window.ade.updateQuitAndInstall();
-              }
-            }
-          }}
-          title={
-            updateState === "ready"
-              ? `Restart ADE to install ${updateVersion ? `v${updateVersion}` : "latest version"} — the app will quit and relaunch automatically`
-              : `Downloading ${updateVersion ? `v${updateVersion}` : "the latest update"}`
-          }
-        >
-          <ArrowsClockwise
-            size={12}
-            weight="bold"
-            className={cn(updateState === "downloading" && "animate-spin")}
-          />
-          {updateState === "ready" ? "Restart & Update" : "Downloading"}
-          {updateVersion ? ` v${updateVersion}` : ""}
-        </button>
-      )}
+      <AutoUpdateControl />
 
       {/* Zoom controls */}
       <div

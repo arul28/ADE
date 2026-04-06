@@ -245,10 +245,20 @@ struct LaneNavigationRequest: Equatable, Identifiable {
 struct PrNavigationRequest: Equatable, Identifiable {
   let id: String
   let prId: String
+  let laneId: String?
 
-  init(prId: String) {
+  init(prId: String, laneId: String? = nil) {
     self.id = UUID().uuidString
     self.prId = prId
+    self.laneId = laneId
+  }
+}
+
+struct QueuedRemoteCommandError: LocalizedError {
+  let action: String
+
+  var errorDescription: String? {
+    "That action is queued on the host and will run when the desktop reconnects."
   }
 }
 
@@ -694,6 +704,10 @@ final class SyncService: ObservableObject {
     database.fetchPullRequestListItems()
   }
 
+  func fetchPullRequestListItems(laneId: String) async throws -> [PullRequestListItem] {
+    database.fetchPullRequestListItems(forLane: laneId)
+  }
+
   func fetchPullRequestGroupMembers(groupId: String) async throws -> [PrGroupMemberSummary] {
     database.fetchPullRequestGroupMembers(groupId: groupId)
   }
@@ -879,6 +893,40 @@ final class SyncService: ObservableObject {
     return try await sendDecodableCommand(action: "lanes.create", args: args, as: LaneSummary.self)
   }
 
+  func createFromUnstaged(sourceLaneId: String, name: String, description: String = "") async throws -> LaneSummary {
+    var args: [String: Any] = [
+      "sourceLaneId": sourceLaneId,
+      "name": name,
+    ]
+    if !description.isEmpty {
+      args["description"] = description
+    }
+    return try await sendDecodableCommand(action: "lanes.createFromUnstaged", args: args, as: LaneSummary.self)
+  }
+
+  func importBranch(
+    branchRef: String,
+    name: String? = nil,
+    description: String? = nil,
+    parentLaneId: String? = nil,
+    baseBranch: String? = nil
+  ) async throws -> LaneSummary {
+    var args: [String: Any] = ["branchRef": branchRef]
+    if let name, !name.isEmpty {
+      args["name"] = name
+    }
+    if let description, !description.isEmpty {
+      args["description"] = description
+    }
+    if let parentLaneId, !parentLaneId.isEmpty {
+      args["parentLaneId"] = parentLaneId
+    }
+    if let baseBranch, !baseBranch.isEmpty {
+      args["baseBranch"] = baseBranch
+    }
+    return try await sendDecodableCommand(action: "lanes.importBranch", args: args, as: LaneSummary.self)
+  }
+
   func createChildLane(name: String, parentLaneId: String, description: String = "", folder: String? = nil) async throws -> LaneSummary {
     var args: [String: Any] = [
       "name": name,
@@ -907,8 +955,12 @@ final class SyncService: ObservableObject {
     _ = try await sendCommand(action: "lanes.rename", args: ["laneId": laneId, "name": name])
   }
 
-  func reparentLane(_ laneId: String, newParentLaneId: String) async throws {
-    _ = try await sendCommand(action: "lanes.reparent", args: ["laneId": laneId, "newParentLaneId": newParentLaneId])
+  func reparentLane(_ laneId: String, newParentLaneId: String?) async throws {
+    var args: [String: Any] = ["laneId": laneId]
+    // Always include the key so the server receives a defined value.
+    // "ROOT" signals detachment from any parent lane.
+    args["newParentLaneId"] = (newParentLaneId?.isEmpty == false) ? newParentLaneId! : "ROOT"
+    _ = try await sendCommand(action: "lanes.reparent", args: args)
   }
 
   func updateLaneAppearance(_ laneId: String, color: String? = nil, icon: String? = nil, tags: [String]? = nil) async throws {
@@ -1485,7 +1537,10 @@ final class SyncService: ObservableObject {
     }
 
     reconnectState.reset()
-    latestRemoteDbVersion = remoteDbVersion
+    // Do NOT set latestRemoteDbVersion to the server's version here.
+    // The mobile should only claim a dbVersion it actually received via
+    // changeset_batch. Setting it prematurely causes the desktop to skip
+    // the full initial sync on reconnect (it thinks we already have the data).
     outboundLocalDbVersion = database.currentDbVersion()
     hostName = remoteHostName ?? activeHostProfile?.hostName
     connectionState = .connected
@@ -1836,7 +1891,11 @@ final class SyncService: ObservableObject {
   }
 
   private func sendDecodableCommand<T: Decodable>(action: String, args: [String: Any] = [:], as type: T.Type) async throws -> T {
-    try decode(try await sendCommand(action: action, args: args), as: type)
+    let response = try await sendCommand(action: action, args: args)
+    if let payload = response as? [String: Any], payload["queued"] as? Bool == true {
+      throw QueuedRemoteCommandError(action: action)
+    }
+    return try decode(response, as: type)
   }
 
   private func jsonObject<T: Encodable>(from value: T) throws -> Any {

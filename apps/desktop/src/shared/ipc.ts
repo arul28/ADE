@@ -27,6 +27,7 @@ export const IPC = {
   onboardingSetDismissed: "ade.onboarding.setDismissed",
   onboardingComplete: "ade.onboarding.complete",
   lanesList: "ade.lanes.list",
+  lanesListSnapshots: "ade.lanes.listSnapshots",
   lanesCreate: "ade.lanes.create",
   lanesCreateChild: "ade.lanes.createChild",
   lanesCreateFromUnstaged: "ade.lanes.createFromUnstaged",
@@ -542,7 +543,9 @@ export const IPC = {
   ctoGetLinearOAuthSession: "ade.cto.getLinearOAuthSession",
   ctoRunProjectScan: "ade.cto.runProjectScan",
   updateCheckForUpdates: "ade.update.checkForUpdates",
+  updateGetState: "ade.update.getState",
   updateQuitAndInstall: "ade.update.quitAndInstall",
+  updateDismissInstalledNotice: "ade.update.dismissInstalledNotice",
   updateEvent: "ade.update.event",
 } as const;
 

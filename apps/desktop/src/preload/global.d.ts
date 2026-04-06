@@ -7,6 +7,7 @@ import type {
   AttachLaneArgs,
   AdoptAttachedLaneArgs,
   AppInfo,
+  AutoUpdateSnapshot,
   ClearLocalAdeDataArgs,
   ClearLocalAdeDataResult,
   ArchiveLaneArgs,
@@ -509,6 +510,7 @@ import type {
   LaneEnvInitEvent,
   LaneOverlayOverrides,
   LaneTemplate,
+  LaneListSnapshot,
   GetLaneTemplateArgs,
   SetDefaultLaneTemplateArgs,
   ApplyLaneTemplateArgs,
@@ -754,6 +756,7 @@ declare global {
       };
       lanes: {
         list: (args?: ListLanesArgs) => Promise<LaneSummary[]>;
+        listSnapshots: (args?: ListLanesArgs) => Promise<LaneListSnapshot[]>;
         create: (args: CreateLaneArgs) => Promise<LaneSummary>;
         createChild: (args: CreateChildLaneArgs) => Promise<LaneSummary>;
         createFromUnstaged: (args: CreateLaneFromUnstagedArgs) => Promise<LaneSummary>;
@@ -1213,8 +1216,10 @@ declare global {
         runProjectScan: () => Promise<CtoRunProjectScanResult>;
       };
       updateCheckForUpdates: () => Promise<void>;
+      updateGetState: () => Promise<AutoUpdateSnapshot>;
       updateQuitAndInstall: () => Promise<void>;
-      onUpdateEvent: (cb: (data: { type: string; version?: string }) => void) => () => void;
+      updateDismissInstalledNotice: () => Promise<void>;
+      onUpdateEvent: (cb: (snapshot: AutoUpdateSnapshot) => void) => () => void;
     };
   }
 }

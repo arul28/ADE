@@ -562,11 +562,37 @@ export function createEmbeddingService(opts: CreateEmbeddingServiceOpts) {
     }
   }
 
+  async function clearCache(): Promise<void> {
+    // Capture the pending load promise before dispose() nulls it out.
+    const pendingLoad = extractorPromise;
+    await dispose();
+    // Let the in-flight load settle in the background — dispose() already
+    // incremented loadAttemptId so the load will see it is stale and reject.
+    // We must not await it synchronously because the pipeline may be blocked
+    // on an external resource, which would deadlock clearCache.
+    if (pendingLoad) {
+      void pendingLoad.catch(() => {});
+    }
+    cache.clear();
+    try {
+      await fs.promises.rm(installPath, { recursive: true, force: true });
+    } catch (clearError) {
+      logger.warn("memory.embedding.cache_clear_failed", {
+        modelId,
+        installPath,
+        error: getErrorMessage(clearError),
+      });
+    }
+    refreshCachedInstall();
+    emitStatus();
+  }
+
   return {
     embed: trackedEmbed,
     dispose,
     preload,
     probeCache,
+    clearCache,
     getModelId: () => modelId,
     getStatus,
     hashContent: hashEmbeddingContent,

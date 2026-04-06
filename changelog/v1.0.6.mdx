@@ -1,0 +1,32 @@
+---
+title: "v1.0.6"
+description: "Release notes for ADE v1.0.6 — March 24, 2026"
+---
+
+This release incorporates all changes from v1.0.5 (which was not published as a GitHub release) plus a macOS build fix.
+
+## Added
+
+- **MCP proxy server for packaged runtime** — New stdio-to-proxy bridge enabling the bundled ADE MCP server binary to launch correctly from within the signed macOS `.app` bundle
+- **MCP binary launch service** — Resolves the correct MCP server binary path inside the packaged app, sets executable permissions, and launches with proper environment variables
+- **Packaged runtime smoke test** — Post-build diagnostic verifying that bundled Claude CLI and MCP server binaries are present, executable, and respond to health probes
+- **Runtime binary permission fixer** — Build-time script ensuring all binaries in `Resources/runtime/` have correct POSIX executable permissions after electron-builder packs the app
+- **Lane dialog shell** — Shared dialog wrapper extracted from Create/Attach lane dialogs for consistent styling and accessibility
+
+## Changed
+
+- **Lane rebase safety** — `conflictService` and `laneService` now detect uncommitted changes and skip automatic rebase operations instead of risking data loss
+- **PR merge status detection** — Improved tracking with better handling of GitHub API race conditions when a PR is merged externally
+- **Refactored lane dialogs** — `CreateLaneDialog` and `AttachLaneDialog` use the new shared `LaneDialogShell`, reducing duplication
+- **Agent chat service** — Now uses `resolveUnifiedRuntimeRoot` and `resolveClaudeCodeExecutable` for reliable binary resolution in both dev and packaged modes
+- **Mac release pipeline** — Expanded universal build scripts with runtime binary staging, tightened signing credential validation, and MCP server launch verification
+
+## Fixed
+
+- **Missing Claude CLI during macOS artifact validation** — `validate-mac-artifacts.mjs` now gracefully handles the absence of the Claude CLI binary instead of crashing the validation pipeline
+- **Background refresh timer leak** — Pending timer cleared when `laneId` changes, preventing stale data fetches
+- **Duplicate `vi.mock` in tests** — Removed duplicate mock declaration causing stale assertion failures
+
+## Removed
+
+- **Redundant runtime resolution logic** — Removed duplicated path resolution from `unifiedOrchestratorAdapter`, replaced by calls to the shared process service

@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import type { RecentlyInstalledUpdate } from "../../../shared/types";
 
 export type RecentProject = {
   rootPath: string;
@@ -7,9 +8,18 @@ export type RecentProject = {
   lastOpenedAt: string;
 };
 
+export type PendingInstallUpdate = {
+  fromVersion: string;
+  targetVersion: string;
+  releaseNotesUrl: string | null;
+  requestedAt: string;
+};
+
 export type GlobalState = {
   lastProjectRoot?: string;
   recentProjects?: RecentProject[];
+  pendingInstallUpdate?: PendingInstallUpdate;
+  recentlyInstalledUpdate?: RecentlyInstalledUpdate;
 };
 
 export function readGlobalState(filePath: string): GlobalState {

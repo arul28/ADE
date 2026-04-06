@@ -4,7 +4,7 @@ import { firstLine, spawnAsync, whichCommand } from "../shared/utils";
 import { resolveExecutableFromKnownLocations } from "../ai/cliExecutableResolver";
 
 type ToolSpec = {
-  id: "git" | "gh";
+  id: "git";
   label: string;
   command: string;
   versionArgs: string[];
@@ -13,7 +13,6 @@ type ToolSpec = {
 
 const TOOL_SPECS: ToolSpec[] = [
   { id: "git", label: "Git", command: "git", versionArgs: ["--version"], required: true },
-  { id: "gh", label: "GitHub CLI", command: "gh", versionArgs: ["--version"], required: false },
 ];
 
 async function readVersion(commandPath: string, versionArgs: string[]): Promise<string | null> {

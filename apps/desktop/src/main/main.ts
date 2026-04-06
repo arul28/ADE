@@ -750,7 +750,8 @@ app.whenReady().then(async () => {
             });
           });
         }
-      }
+      },
+      logger,
     });
     await laneService.ensurePrimaryLane();
 
@@ -2294,7 +2295,16 @@ app.whenReady().then(async () => {
       dispose: () => {} // desktop manages service lifecycle
     };
 
-    const mcpSocketPath = adePaths.socketPath;
+    // When ADE_MCP_SOCKET_PATH is set, derive a per-project socket path from
+    // the override so each project context gets its own socket and avoids
+    // EADDRINUSE. The first context uses the env path as-is for compatibility;
+    // subsequent contexts append a project-root hash suffix.
+    const envSocketOverride = process.env.ADE_MCP_SOCKET_PATH?.trim();
+    const mcpSocketPath = envSocketOverride
+      ? (projectContexts.size === 0
+        ? envSocketOverride
+        : `${envSocketOverride}.${Buffer.from(normalizeProjectRoot(projectRoot)).toString("base64url").slice(0, 8)}`)
+      : adePaths.socketPath;
     const activeMcpConnections = new Set<net.Socket>();
 
     const destroyActiveMcpConnections = (): void => {
@@ -2796,15 +2806,14 @@ app.whenReady().then(async () => {
 
   // --- Auto-update service (global, not per-project) ---
   const updateLogger = createFileLogger(path.join(app.getPath("userData"), "ade-update.jsonl"));
-  const autoUpdateService = createAutoUpdateService(updateLogger);
-  autoUpdateService.onUpdateAvailable((info) => {
-    BrowserWindow.getAllWindows().forEach((win) => {
-      win.webContents.send(IPC.updateEvent, { type: "available", version: info.version });
-    });
+  const autoUpdateService = createAutoUpdateService({
+    logger: updateLogger,
+    currentVersion: app.getVersion(),
+    globalStatePath,
   });
-  autoUpdateService.onUpdateDownloaded((info) => {
+  autoUpdateService.onStateChange((snapshot) => {
     BrowserWindow.getAllWindows().forEach((win) => {
-      win.webContents.send(IPC.updateEvent, { type: "downloaded", version: info.version });
+      win.webContents.send(IPC.updateEvent, snapshot);
     });
   });
 
