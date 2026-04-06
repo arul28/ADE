@@ -618,6 +618,10 @@ Conflict resolution generation now defaults to **external local CLIs** (Codex or
 4. ADE captures stdout/stderr, summary, and patch artifact path under `.ade/artifacts/packs/external-resolver-runs/<runId>/`.
 5. ADE exposes run history via IPC and the Conflicts UI.
 
+### Operator instructions
+
+The `PrepareResolverSessionArgs` accepts an optional `additionalInstructions` string. When provided, the conflict service appends the instructions to the generated resolver prompt as an `## Operator instructions` section. This allows callers (such as the integration tab's AI resolver panel) to pass free-text guidance that steers the resolver agent's conflict resolution strategy without modifying the core prompt template.
+
 ### CWD policy
 
 - Single-lane merge: run in the **source lane** worktree.

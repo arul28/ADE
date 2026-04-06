@@ -163,7 +163,10 @@ The left pane is a scrollable list of all active lanes for the current project.
 
 ### Center Pane — Lane Detail Area
 
-The center pane is the main working area. The LanesPage uses `PaneTilingLayout` for a resizable pane structure with persisted sizes.
+The center pane is the main working area. The LanesPage uses `PaneTilingLayout` for a resizable pane structure with persisted sizes. Two tiling tree presets are available:
+
+- **`LANES_TILING_TREE`** (default): Balanced layout with stack, diff, work, and git actions panes.
+- **`LANES_TILING_WORK_FOCUS_TREE`**: Work-pane-dominant layout used after parallel multi-model chat launches. Stack and diff are compressed to 12% of the width, the Work pane gets 58%, and git actions gets 30%. This layout is activated when the URL contains `workFocus=1` and `laneIds=<comma-separated-ids>` with at least two visible lanes. The layout version suffix `:wf` ensures work-focus and standard layouts have independent persisted sizes.
 
 **Tab bar**: Multiple lanes can be open simultaneously as tabs. Each tab shows the lane name and a close button. Tabs are reorderable by drag-and-drop. Primary lanes display a home icon.
 
@@ -284,6 +287,10 @@ The inspector is a collapsible sidebar on the right edge of the Lanes tab. It pr
 4. **Archive**: The lane is hidden from the active list but its worktree and branch are preserved. Useful for lanes that are paused but not finished. Archived lanes can be unarchived at any time.
 
 5. **Delete**: The worktree directory is removed from disk. The user is prompted whether to also delete the git branch. Session records and history are retained for audit purposes.
+
+### Multi-Lane URL Navigation
+
+The Lanes page supports URL-driven multi-lane selection via the `laneIds` query parameter. When the URL contains `laneIds=<id1>,<id2>,...` with at least two valid lane IDs, the page selects the first lane, opens all listed lanes as active tabs, and clears pinned lanes. Combined with `workFocus=1`, this activates the work-focus tiling layout. This navigation pattern is used by the parallel multi-model chat launcher to open all child lanes side-by-side after creating sessions.
 
 ---
 

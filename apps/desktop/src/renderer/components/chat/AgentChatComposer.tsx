@@ -1080,6 +1080,23 @@ export function AgentChatComposer({
   const pendingQuestionCount = getPendingInputQuestionCount(pendingInput);
   const showPendingInputOptionsHint = hasPendingInputOptions(pendingInput);
 
+  const parallelReady =
+    parallelChatMode
+    && parallelModelSlots.length >= 2
+    && (draft.trim().length > 0 || attachments.length > 0);
+  const singleReady = !parallelChatMode && Boolean(modelId) && draft.trim().length > 0;
+  const sendEnabled = !busy && !parallelLaunchBusy && (parallelReady || singleReady);
+
+  function sendButtonTitle(): string {
+    if (parallelChatMode) {
+      if (parallelModelSlots.length < 2) return "Add at least two models";
+      if (draft.trim().length === 0 && attachments.length === 0) return "Add a message or at least one attachment";
+      return "Send to all lanes";
+    }
+    if (!modelId) return "Select a model first";
+    return "Send";
+  }
+
   return (
     <>
       <ChatComposerShell
@@ -1388,11 +1405,9 @@ export function AgentChatComposer({
           <div className="flex flex-wrap items-center gap-2">
           {/* Left: permission + model controls */}
           <div className="flex min-w-0 flex-wrap items-center gap-1.5">
-            {parallelChatMode && parallelConfiguringIndex != null && parallelModelSlots[parallelConfiguringIndex]
+            {(!parallelChatMode || (parallelConfiguringIndex != null && parallelModelSlots[parallelConfiguringIndex]))
               ? nativeControlPanel
-              : !parallelChatMode
-                ? nativeControlPanel
-                : null}
+              : null}
             {parallelChatMode && parallelConfiguringIndex != null && parallelSlotExecutionModeOptions.length > 0 ? (
               <div className="flex flex-wrap items-center gap-px rounded-md border border-white/[0.06] bg-[#1a1a22] p-0.5">
                 {parallelSlotExecutionModeOptions.map((option) => {
@@ -1561,37 +1576,13 @@ export function AgentChatComposer({
                 type="button"
                 className={cn(
                   "inline-flex h-6 items-center justify-center rounded-md border px-2.5 transition-all",
-                  (() => {
-                    const parallelReady =
-                      parallelChatMode
-                      && parallelModelSlots.length >= 2
-                      && (draft.trim().length > 0 || attachments.length > 0);
-                    const singleReady = !parallelChatMode && Boolean(modelId) && draft.trim().length > 0;
-                    const enabled = !busy && !parallelLaunchBusy && (parallelReady || singleReady);
-                    return enabled
-                      ? "border-[color:color-mix(in_srgb,var(--chat-accent)_28%,transparent)] bg-[color:color-mix(in_srgb,var(--chat-accent)_12%,transparent)] text-[var(--chat-accent)] hover:bg-[color:color-mix(in_srgb,var(--chat-accent)_20%,transparent)]"
-                      : "border-white/[0.04] text-muted-fg/12";
-                  })(),
+                  sendEnabled
+                    ? "border-[color:color-mix(in_srgb,var(--chat-accent)_28%,transparent)] bg-[color:color-mix(in_srgb,var(--chat-accent)_12%,transparent)] text-[var(--chat-accent)] hover:bg-[color:color-mix(in_srgb,var(--chat-accent)_20%,transparent)]"
+                    : "border-white/[0.04] text-muted-fg/12",
                 )}
-                disabled={
-                  busy
-                  || parallelLaunchBusy
-                  || (parallelChatMode
-                    ? parallelModelSlots.length < 2 || (draft.trim().length === 0 && attachments.length === 0)
-                    : !modelId || !draft.trim().length)
-                }
+                disabled={!sendEnabled}
                 onClick={submitComposerDraft}
-                title={
-                  parallelChatMode
-                    ? parallelModelSlots.length < 2
-                      ? "Add at least two models"
-                      : draft.trim().length === 0 && attachments.length === 0
-                        ? "Add a message or at least one attachment"
-                        : "Send to all lanes"
-                    : !modelId
-                      ? "Select a model first"
-                      : "Send"
-                }
+                title={sendButtonTitle()}
               >
                 <PaperPlaneTilt size={10} weight="fill" />
                 <span className="ml-1 font-sans text-[10px]">

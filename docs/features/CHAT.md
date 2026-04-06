@@ -451,6 +451,57 @@ include MCP launch details for troubleshooting. These diagnostics make
 it possible to isolate packaging or PATH-related failures without
 attaching a debugger.
 
+## Parallel Multi-Model Chat (Prompt Lanes)
+
+The chat composer supports a **parallel chat mode** that sends the same
+prompt to multiple AI models simultaneously, each running in its own
+child lane. This enables side-by-side comparison of model outputs on
+identical tasks.
+
+### How it works
+
+1. The user toggles parallel mode in the composer (available when the
+   chat pane is embedded in a lane's Work view and no session is active).
+2. The composer presents a list of model slots. Each slot has its own
+   model picker, reasoning effort selector, execution mode, and
+   provider-native permission controls. At least two slots with distinct
+   models are required.
+3. On submit, the service generates a descriptive lane name prefix via
+   `suggestLaneNameFromPrompt` (a lightweight AI naming call using the
+   `LANE_NAME_FROM_PROMPT_SYSTEM_PROMPT`). Each child lane is named
+   `<base-name>-<model-suffix>` (e.g., `fix-auth-timeout-claude`,
+   `fix-auth-timeout-codex`).
+4. ADE creates one child lane per model slot under the current lane,
+   creates a chat session in each child lane with the slot's provider
+   and permission settings, and sends the user's prompt (with any
+   attachments) to every session.
+5. After all sessions launch, the Lanes tab navigates to a multi-lane
+   view showing the created child lanes side-by-side in a work-focused
+   tiling layout.
+
+### Constraints
+
+- Attachments are capped at `PARALLEL_CHAT_MAX_ATTACHMENTS` (12) per
+  parallel launch. The same attachment refs are sent to every child
+  session.
+- Each slot must have a unique model. Duplicate model IDs are rejected.
+- If any child lane or session creation fails, all previously created
+  child lanes are cleaned up (best-effort deletion).
+
+### IPC
+
+| Channel | Signature | Description |
+|---------|-----------|-------------|
+| `ade.agentChat.suggestLaneName` | `(args: AgentChatSuggestLaneNameArgs) => string` | Generate a slug-friendly lane name prefix from the user's prompt text. Uses a fast model (haiku/mini preferred) with a deterministic fallback. |
+
+### Types
+
+| Type | Location | Purpose |
+|------|----------|---------|
+| `AgentChatSuggestLaneNameArgs` | `shared/types/chat.ts` | Input for `suggestLaneName`: `laneId`, `prompt`, `modelId` |
+| `PARALLEL_CHAT_MAX_ATTACHMENTS` | `shared/types/chat.ts` | Maximum attachments per parallel launch (12) |
+| `ParallelComposerControlSlot` | `AgentChatComposer.tsx` | Per-slot permission/runtime control bindings for the composer |
+
 ## Identity Session Filtering
 
 CTO and worker identity sessions (those with an `identityKey`) are

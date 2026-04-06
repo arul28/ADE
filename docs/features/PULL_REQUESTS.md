@@ -90,6 +90,22 @@ Simulation continues to use local git operations such as:
 
 That keeps PR readiness and conflict prediction aligned with the actual local repo state.
 
+### Merge into existing lane
+
+Integration proposals support merging source lanes into an existing lane instead of always creating a new child integration lane. This is useful when the user already has a lane that should serve as the integration target (for example, a parent prompt lane from a parallel multi-model chat session).
+
+The `SimulateIntegrationArgs` accepts an optional `mergeIntoLaneId`. When set, the sequential merge preview starts at that lane's current HEAD rather than the base branch SHA. Additional merge-tree checks run between the merge-into lane's HEAD and each source lane to detect conflicts that would arise from merging into the existing lane state. Child-vs-child pairwise simulation still uses the `baseBranch` as the merge base.
+
+The proposal persists `preferredIntegrationLaneId` and `mergeIntoHeadSha` (the HEAD of the merge-into lane at simulation time). When the proposal is later committed, ADE adopts the preferred lane instead of creating a new child lane. A drift warning is logged if the lane's HEAD has changed since simulation.
+
+The Integration tab in the PR UI exposes a "Merge Into Lane" section where the user can select an existing non-source, non-primary lane as the integration target. Applying the selection triggers a re-simulation with the new merge-into lane and persists the updated proposal. The `UpdateIntegrationProposalArgs` accepts `preferredIntegrationLaneId`, `mergeIntoHeadSha`, and `clearIntegrationBinding` (which resets `integration_lane_id` and `resolution_state_json` without deleting git lanes).
+
+The `CreateIntegrationPrArgs` also accepts an optional `existingIntegrationLaneId` to adopt an existing lane during direct PR creation. When a PR creation or commit operation fails after using an existing lane, ADE only archives the integration lane if it was newly created for that operation.
+
+### Resolver instructions
+
+The AI resolver panel (`PrAiResolverPanel`) supports an optional free-text "Resolver instructions" field when `showResolverInstructions` is enabled. Instructions are appended to the generated resolver prompt as an `## Operator instructions` section. This is enabled on both the integration proposal resolver and the live simulation resolver in the Integration tab. Users can provide guidance like "prefer UI from lane A" or "keep server logic from lane B" to steer conflict resolution.
+
 ---
 
 ## Queue and workflow state

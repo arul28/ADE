@@ -204,6 +204,7 @@ async function prepareResolverSessionDirect(args: {
   reasoningEffort?: string | null;
   permissionMode?: AiPermissionMode;
   originSurface?: "mission" | "integration" | "rebase" | "queue" | "graph" | "manual";
+  additionalInstructions?: string | null;
 }): Promise<{ result: PrepareResolverSessionResult | null; error: string | null }> {
   try {
     const result = await window.ade.conflicts.prepareResolverSession({
@@ -220,6 +221,7 @@ async function prepareResolverSessionDirect(args: {
           ? "full_edit"
           : "guarded_edit",
       originSurface: args.originSurface ?? "manual",
+      additionalInstructions: args.additionalInstructions ?? null,
     });
     if (result.status === "blocked") {
       const reason = result.contextGaps.length
@@ -260,6 +262,7 @@ export function ResolverTerminalModal({
   availableModelIds: availableModelIdsProp,
   onModelChange,
   sourceTab,
+  additionalInstructions,
   onStarted,
   onBackgroundSession,
   onCompleted,
@@ -277,6 +280,7 @@ export function ResolverTerminalModal({
   availableModelIds?: string[];
   onModelChange?: (model: string, reasoningEffort: string | null) => void;
   sourceTab?: "rebase" | "normal" | "integration" | "queue" | "graph" | "mission";
+  additionalInstructions?: string | null;
   onStarted?: (result: {
     ptyId: string;
     sessionId: string;
@@ -611,6 +615,7 @@ export function ResolverTerminalModal({
         sourceTab === "graph" ? "graph" :
         sourceTab === "mission" ? "mission" :
         "manual",
+      additionalInstructions,
     });
 
     if (!result) {

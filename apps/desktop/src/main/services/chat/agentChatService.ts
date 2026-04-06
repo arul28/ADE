@@ -4416,14 +4416,14 @@ export function createAgentChatService(args: {
     const requestedModelId = String(args.modelId ?? "").trim();
     const sourceLaneId = String(args.laneId ?? "").trim();
     const fallback = (): string => {
-      const collapsed = prompt.replace(/\s+/g, " ").trim();
+      const collapsed = prompt.replace(/\s+/g, " ");
       if (!collapsed.length) return "parallel-task";
       const words = collapsed.split(/\s+/).filter(Boolean).slice(0, 4);
       const slug = words.join("-").toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "");
       return slug.length ? slug.slice(0, 48) : "parallel-task";
     };
 
-    if (!prompt.length || !requestedModelId.length || !sourceLaneId.length) {
+    if (!prompt.length) {
       return fallback();
     }
 
@@ -4475,7 +4475,16 @@ export function createAgentChatService(args: {
       });
       const sanitized = sanitizeAutoTitle(result.text.trim(), 56);
       if (!sanitized) return fallback();
-      return sanitized;
+
+      const normalized = sanitized
+        .toLowerCase()
+        .replace(/[^a-z0-9\s-]/g, '')
+        .trim()
+        .replace(/\s+/g, '-')
+        .replace(/-+/g, '-')
+        .slice(0, 60);
+
+      return normalized.length > 0 ? normalized : fallback();
     } catch (error) {
       logger.warn("agent_chat.suggest_lane_name_failed", {
         modelId: requestedModelId,
