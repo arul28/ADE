@@ -6,7 +6,7 @@ import type {
   ApplyConflictProposalArgs,
   AttachLaneArgs,
   AdoptAttachedLaneArgs,
-  UnregisteredWorktree,
+  UnregisteredLaneCandidate,
   AppInfo,
   AutoUpdateSnapshot,
   ClearLocalAdeDataArgs,
@@ -763,7 +763,7 @@ declare global {
         createFromUnstaged: (args: CreateLaneFromUnstagedArgs) => Promise<LaneSummary>;
         importBranch: (args: ImportBranchLaneArgs) => Promise<LaneSummary>;
         attach: (args: AttachLaneArgs) => Promise<LaneSummary>;
-        listUnregisteredWorktrees: () => Promise<UnregisteredWorktree[]>;
+        listUnregisteredWorktrees: () => Promise<UnregisteredLaneCandidate[]>;
         adoptAttached: (args: AdoptAttachedLaneArgs) => Promise<LaneSummary>;
         rename: (args: RenameLaneArgs) => Promise<void>;
         reparent: (args: ReparentLaneArgs) => Promise<ReparentLaneResult>;

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { Link, WarningCircle, CircleNotch, TextAlignLeft } from "@phosphor-icons/react";
-import type { UnregisteredWorktree } from "../../../shared/types/lanes";
+import { Link, WarningCircle, CircleNotch, TextAlignLeft, Warning } from "@phosphor-icons/react";
+import type { UnregisteredLaneCandidate } from "../../../shared/types/lanes";
 import { Button } from "../ui/Button";
 import { LaneDialogShell } from "./LaneDialogShell";
 import { SECTION_CLASS_NAME } from "./laneDialogTokens";
@@ -17,30 +17,40 @@ export function MultiAttachWorktreeDialog({
   onComplete: () => void;
 }) {
   const [loading, setLoading] = useState(false);
-  const [worktrees, setWorktrees] = useState<UnregisteredWorktree[]>([]);
+  const [worktrees, setWorktrees] = useState<UnregisteredLaneCandidate[]>([]);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [fetchError, setFetchError] = useState<string | null>(null);
   const [attaching, setAttaching] = useState(false);
   const [progress, setProgress] = useState({ current: 0, total: 0 });
   const [errors, setErrors] = useState<string[]>([]);
+  const [moveToAde, setMoveToAde] = useState(false);
+  const [moveConfirmOpen, setMoveConfirmOpen] = useState(false);
 
   useEffect(() => {
     if (!open) return;
+    let cancelled = false;
     setLoading(true);
     setFetchError(null);
     setSelected(new Set());
     setErrors([]);
     setProgress({ current: 0, total: 0 });
+    setMoveToAde(false);
+    setMoveConfirmOpen(false);
     window.ade.lanes
       .listUnregisteredWorktrees()
       .then((result) => {
+        if (cancelled) return;
         setWorktrees(result);
         setLoading(false);
       })
       .catch((err) => {
+        if (cancelled) return;
         setFetchError(err instanceof Error ? err.message : String(err));
         setLoading(false);
       });
+    return () => {
+      cancelled = true;
+    };
   }, [open]);
 
   const allSelected = selected.size === worktrees.length && worktrees.length > 0;
@@ -74,14 +84,17 @@ export function MultiAttachWorktreeDialog({
     setErrors([]);
     const collectedErrors: string[] = [];
     for (let i = 0; i < toAttach.length; i++) {
+      const wt = toAttach[i]!;
       setProgress({ current: i + 1, total: toAttach.length });
       try {
-        const wt = toAttach[i];
         const name = wt.branch || wt.path.split("/").pop() || "worktree";
-        await window.ade.lanes.attach({ name, attachedPath: wt.path });
+        const lane = await window.ade.lanes.attach({ name, attachedPath: wt.path });
+        if (moveToAde) {
+          await window.ade.lanes.adoptAttached({ laneId: lane.id });
+        }
       } catch (err) {
         collectedErrors.push(
-          `${toAttach[i].branch || toAttach[i].path}: ${err instanceof Error ? err.message : String(err)}`
+          `${wt.branch || wt.path}: ${err instanceof Error ? err.message : String(err)}`
         );
       }
     }
@@ -202,10 +215,40 @@ export function MultiAttachWorktreeDialog({
               </div>
             </section>
 
+            {/* Move to .ade/worktrees option */}
+            <section className="rounded-xl border border-red-500/25 bg-red-500/[0.06] px-4 py-3">
+              <label className="flex items-start gap-3 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  className="mt-0.5 accent-red-500"
+                  checked={moveToAde}
+                  onChange={() => {
+                    if (!moveToAde) {
+                      setMoveConfirmOpen(true);
+                    } else {
+                      setMoveToAde(false);
+                    }
+                  }}
+                  disabled={attaching}
+                />
+                <div className="min-w-0">
+                  <div className="flex items-center gap-1.5 text-sm font-semibold text-red-300">
+                    <Warning size={14} weight="fill" />
+                    Move into .ade/worktrees after import
+                  </div>
+                  <div className="mt-1 text-xs text-red-300/70 leading-relaxed">
+                    Relocates each worktree from its current location into <code className="font-mono text-red-300/90">.ade/worktrees/</code> for
+                    full ADE lifecycle management. This physically moves files on disk using <code className="font-mono text-red-300/90">git worktree move</code>.
+                    Absolute paths, IDE project references, and terminal sessions pointing to the old location will break.
+                  </div>
+                </div>
+              </label>
+            </section>
+
             {attaching ? (
               <div className="flex items-center gap-2 text-xs text-muted-fg">
                 <CircleNotch size={14} className="animate-spin" />
-                <span>Attaching {progress.current} of {progress.total}...</span>
+                <span>Attaching {progress.current} of {progress.total}{moveToAde ? " (+ moving)" : ""}...</span>
               </div>
             ) : null}
           </>
@@ -257,6 +300,51 @@ export function MultiAttachWorktreeDialog({
           </div>
         </div>
       </div>
+      {/* Confirmation modal for move-to-.ade */}
+      {moveConfirmOpen ? (
+        <div className="fixed inset-0 z-[200] flex items-center justify-center p-4 bg-black/60">
+          <div className="w-[min(480px,100%)] rounded-2xl border border-red-500/30 bg-[#1a1a1a] p-5 shadow-2xl">
+            <div className="flex items-center gap-2 text-sm font-bold text-red-400">
+              <Warning size={18} weight="fill" />
+              Confirm: Move worktrees into .ade
+            </div>
+            <div className="mt-3 space-y-2 text-xs text-neutral-300 leading-relaxed">
+              <p>
+                This will <strong className="text-red-300">physically relocate</strong> each selected worktree
+                from its current directory into <code className="font-mono text-red-300/90">.ade/worktrees/</code>.
+              </p>
+              <p>The following may break after the move:</p>
+              <ul className="list-disc pl-4 space-y-1 text-neutral-400">
+                <li>Absolute paths in build configs, scripts, or CI pipelines</li>
+                <li>IDE project files and workspace references</li>
+                <li>Running terminal sessions or file watchers in the old path</li>
+                <li>Symlinks or external tooling that reference the worktree location</li>
+              </ul>
+              <p>
+                Git branch history and commits are <strong>not affected</strong> — only the on-disk location changes.
+              </p>
+            </div>
+            <div className="flex justify-end gap-2 mt-4">
+              <Button
+                variant="outline"
+                onClick={() => setMoveConfirmOpen(false)}
+              >
+                Cancel
+              </Button>
+              <Button
+                variant="primary"
+                className="!bg-red-600 hover:!bg-red-700 !border-red-600"
+                onClick={() => {
+                  setMoveToAde(true);
+                  setMoveConfirmOpen(false);
+                }}
+              >
+                I understand, enable move
+              </Button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </LaneDialogShell>
   );
 }

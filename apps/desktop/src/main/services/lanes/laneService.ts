@@ -36,7 +36,7 @@ import type {
   RebasePushArgs,
   PushMode,
   StackChainItem,
-  UnregisteredWorktree,
+  UnregisteredLaneCandidate,
   UpdateLaneAppearanceArgs
 } from "../../../shared/types";
 import { resolveAdeLayout } from "../../../shared/adeLayout";
@@ -1129,14 +1129,14 @@ export function createLaneService({
       return await listLanes(args);
     },
 
-    async listUnregisteredWorktrees(): Promise<UnregisteredWorktree[]> {
+    async listUnregisteredWorktrees(): Promise<UnregisteredLaneCandidate[]> {
       const stdout = await runGitOrThrow(
         ["worktree", "list", "--porcelain"],
         { cwd: projectRoot, timeoutMs: 15_000 }
       );
 
       const blocks = stdout.split(/\n\n+/).filter(Boolean);
-      const worktrees: UnregisteredWorktree[] = [];
+      const worktrees: UnregisteredLaneCandidate[] = [];
 
       for (const block of blocks) {
         const lines = block.split(/\r?\n/);

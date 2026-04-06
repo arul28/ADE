@@ -141,7 +141,7 @@ export type AttachLaneArgs = {
   description?: string;
 };
 
-export type UnregisteredWorktree = {
+export type UnregisteredLaneCandidate = {
   path: string;
   branch: string;
 };
