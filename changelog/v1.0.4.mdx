@@ -1,0 +1,39 @@
+---
+title: "v1.0.4"
+description: "Release notes for ADE v1.0.4 — March 24, 2026"
+---
+
+## Added
+
+- **PR issue resolver** — AI agent can now diagnose and resolve failing CI checks and unresolved review threads directly from the PR detail view via `PrIssueResolverModal` and backend `prIssueResolver` service
+- **PR rebase resolver** — Automated PR rebase handling with queue-aware rebase operations and rollback on failure
+- **Queue workflow model** — Drag-and-drop reordering of merge queue items during PR creation with a dedicated workflow model
+- **PR lane cleanup banner** — Post-merge prompt to clean up stale lanes after a PR is merged
+- **Chat text batching** — Streaming text chunks are now batched before rendering, reducing UI jank during fast token output
+- **Computer use proof observer** — New service for observing and validating computer-use proof artifacts with local session management
+- **Memory repair service** — Automated detection and repair of corrupted or orphaned memory entries
+- **Lane work sessions** — New `useLaneWorkSessions` hook for tracking and displaying work session history within lanes
+- **Context doc generation tracking** — Generation metadata, pending/queued status, and readiness checks for context documents
+- **Run page commands** — New `AddCommandDialog` for adding custom commands to the Run page
+- **iOS lane tab views** — Substantially reworked `LanesTabView` for improved lane display on iOS
+
+## Changed
+
+- **Chat UI** — Reworked message list with improved merge boundary detection, streaming indicators during activity-only sessions, and redesigned composer with better keyboard accessibility
+- **PR detail pane** — CI check reruns collapse into single entries, deduplication keys fixed, non-success status summaries corrected
+- **PR hot refresh** — PRs now update in real-time without full page reload via the overhauled polling service
+- **Agent chat service** — Auto-memory writes moved inside try blocks, improved steer queue messaging, Windows drive-letter path normalization
+- **Lane management** — Redesigned `ManageLaneDialog` with improved stale lane deletion modal and new lane management UX
+
+## Fixed
+
+- **Codex chat** — Fixed text batching across service and renderer, resolved anonymous text chunks collapsing into unrelated assistant messages
+- **PR rebase logic** — Fixed queue-aware rebase suggestions with proper base branch context, CRLF-safe conflict marker parsing
+- **Stale lane refresh** — `appStore` now discards lane refresh responses that arrive after a project switch
+- **iOS database schema** — Removed duplicate `chat_session_id` column definition that caused schema errors
+- **Claude runtime probe** — Moved probe setup inside try block to prevent unhandled throws
+
+## Removed
+
+- **Queue rehearsal service** — Replaced by direct queue automation (removed 1,000+ lines)
+- **Dead UI elements** — Removed unused "Backend settings" button and stale orchestrator type definitions

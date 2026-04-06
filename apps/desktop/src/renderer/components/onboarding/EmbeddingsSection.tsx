@@ -100,7 +100,7 @@ export function EmbeddingsSection() {
       pollRef.current = setTimeout(() => { void loadStats(); }, interval);
     }
     return () => { if (pollRef.current) { clearTimeout(pollRef.current); pollRef.current = null; } };
-  }, [stats?.embeddings.model.state, loadStats]);
+  }, [stats, loadStats]);
 
   const handleDownload = useCallback(async () => {
     setActionError(null);

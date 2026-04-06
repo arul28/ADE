@@ -1,0 +1,32 @@
+---
+title: "v1.0.7"
+description: "Release notes for ADE v1.0.7 — March 25, 2026"
+---
+
+## Added
+
+- **iOS Files tab** — Full desktop parity: breadcrumb navigation, file/folder CRUD operations, file search, syntax-aware code editor with language-specific highlighting, and diff viewer for comparing changes
+- **iOS Work tab** — View, start, and continue agent chat sessions from mobile with chat message rendering, session list with status indicators, and last-message previews synced via cr-sqlite replication
+- **iOS PRs tab** — PR workflow surfaces with status badges, check results, review comment threads, and a guided "Create PR" flow with branch selection, title/body entry, and label assignment
+- **iOS design system** — New `ADEDesignSystem.swift` component library with semantic color tokens, glass-morphism card styles, and shared typography scale applied consistently across all five tabs
+- **iOS cross-tab polish** — Shared transition animations, pull-to-refresh on all data-driven tabs, and reduced-motion accessibility support that respects the system "Reduce Motion" preference
+- **Chat work log blocks** — New `ChatWorkLogBlock` component for rendering structured agent work logs inline in chat messages
+- **Chat pending input state** — New `pendingInput` state manager for draft/pending message handling with 917 lines of test coverage
+- **Lane service expansion** — New lane management logic with IPC handlers and preload bridge bindings for lane operations
+
+## Changed
+
+- **iOS sync reconnect** — Hardened WebSocket reconnect with exponential backoff, jitter, connection-health monitoring, and user-visible connection status banners with manual retry button
+- **iOS stale sync guard** — Connection-generation tracking prevents old sync handlers from overwriting data written by newer connections
+- **iOS replication gate** — All tabs now block hydration until project data has been fully replicated, preventing partial/empty UI on first load
+- **Chat UI refactoring** — `AgentChatMessageList` reduced by ~800 lines with logic extracted into dedicated modules (`chatTranscriptRows`, `pendingInput`, `ChatWorkLogBlock`)
+- **Model registry** — Refactored for cleaner profile-based architecture
+- **Context document builder** — Overhauled with 354 lines of new test coverage
+- **Documentation** — Streamlined `PRD.md` (-1,025 lines), `CONTEXT_CONTRACT.md` (-671 lines), and `SYSTEM_OVERVIEW.md` (-311 lines)
+
+## Fixed
+
+- **iOS sync race condition** — Replicated project data is now fully awaited before UI hydration, preventing blank screens on cold launch
+- **iOS stale sync clobbering** — Old WebSocket sync handlers can no longer overwrite data written by newer connections
+- **iOS navigation bar inconsistency** — All tabs now use inline title display mode for uniform compact headers
+- **Release smoke test** — Fixed failing release smoke test in CI

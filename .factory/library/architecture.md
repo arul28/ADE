@@ -1,67 +1,49 @@
 # Architecture
 
-Architectural decisions, patterns discovered, and design principles.
+Architectural decisions, patterns discovered, and conventions.
 
-**What belongs here:** Architectural patterns, data flow, component organization, design decisions.
+**What belongs here:** Design patterns, module boundaries, data flow, naming conventions.
 
 ---
 
-## iOS App Architecture
+## iOS App Structure
+- Entry: `ADEApp.swift` → creates SyncService → passes to ContentView
+- ContentView: TabView with 5 tabs (Lanes, Files, Work, PRs, Settings)
+- SyncService: `@MainActor` `ObservableObject`, Bonjour discovery + pairing + `ws://` socket transport to the desktop host, CRDT sync via cr-sqlite
+- Database: SQLite with cr-sqlite for local caching
+- Models: RemoteModels.swift (Codable structs for all API types)
+- Host discovery: Bonjour browser maintains discovered LAN hosts, while Settings also supports manual host/port entry and QR pairing payloads with candidate addresses
+- Authentication: pairing exchanges a short-lived host code for a shared secret, stores that secret in Keychain, and persists host identity/device metadata in `HostConnectionProfile`
+- Transport security: the current implementation uses plain `ws://` on the trusted local network or saved address set; host trust is enforced by the pairing secret plus host-identity checks, not TLS or certificate pinning
 
-### Pattern: MVVM-like with Shared Service
-- `SyncService` is the shared `@MainActor ObservableObject` injected via `.environmentObject()`
-- Views own local `@State` for UI concerns
-- Views call into `SyncService` for remote operations and data fetching
-- Data flow: `SyncService` → `DatabaseService` (SQLite) → `localStateRevision` increment → SwiftUI reactivity via `.task(id: syncService.localStateRevision)`
+## Data Flow
+1. `SyncService` discovers or reuses the host address, opens a `ws://` socket, and sends `hello` with either bootstrap auth or paired-device auth
+2. Commands sent (for example `lanes.refreshSnapshots`) are decoded into local models, while `changeset_batch` payloads are applied into the SQLite cache
+3. Data is cached in SQLite tables including `lane_list_snapshots` and `lane_detail_snapshots`, and cached rows remain readable when the host is offline
+4. Views observe `syncService.localStateRevision` via `.task(id:)`; when live refresh fails they keep the last cached state visible and surface a user-facing error banner or reconnect CTA instead of blanking the screen
+5. Pull-to-refresh triggers `reload(refreshRemote: true)`: the remote refresh runs first, then the view reloads from SQLite; on failure the view keeps cached rows, records the localized `SyncUserFacingError`, and offers retry/reconnect UI
+6. Disconnects and send/receive failures tear down the active socket, fail pending requests, and schedule automatic reconnect with exponential backoff (1s, 2s, 4s, 8s, 16s; immediate retry for heartbeat close code `4001`)
+7. Session lifecycle is stateful: a successful `hello` refreshes the saved host profile and starts relay/hydration tasks, `auth_failed` invalidates the saved pairing, and manual disconnect stops reconnect attempts until the user reconnects or pairs again
 
-### File Structure
-```
-ADE/
-├── App/
-│   ├── ADEApp.swift              # App entry point, UIKit theme config
-│   └── ContentView.swift         # Root TabView, Settings tab, design system components
-├── Views/
-│   ├── LanesTabView.swift        # ~3,706 lines - complete
-│   ├── FilesTabView.swift        # ~500 lines - baseline
-│   ├── WorkTabView.swift         # ~300 lines - baseline
-│   └── PRsTabView.swift          # ~500 lines - baseline
-├── Models/
-│   └── RemoteModels.swift        # ~700 lines - all domain models
-├── Services/
-│   ├── Database.swift            # ~1,949 lines - SQLite + cr-sqlite sync
-│   ├── KeychainService.swift     # ~50 lines - token persistence
-│   └── SyncService.swift         # ~1,781 lines - WebSocket + Bonjour + RPC
-└── Resources/
-    └── DatabaseBootstrap.sql     # ~2,260 lines - full schema
-```
+## Design System (ADEDesignSystem.swift)
+- Colors: ADEColor (pageBackground, surfaceBackground, accent, success, warning, danger, etc.)
+- Motion: ADEMotion (standard, quick, emphasis, pulse - all respect reduceMotion)
+- Components: ADENoticeCard, ADEStatusPill, ADEEmptyStateView, ADESkeletonView, ADECardSkeleton
+- Modifiers: .adeGlassCard(), .adeScreenBackground(), .adeNavigationGlass(), .adeInsetField(), .adeListCard()
+- Image caching: ADEImageCache with memory + disk cache
 
-### Database
-- Direct SQLite3 C API (no ORM)
-- cr-sqlite change tracking with custom triggers (insert/update/delete)
-- Bidirectional changeset sync via WebSocket
-- Site ID management (persistent 128-bit random)
-- Full bootstrap SQL schema (~2,260 lines) mirroring desktop
+## Coding Conventions
+- Private views as nested structs within the parent file
+- @EnvironmentObject for SyncService access
+- @State for local view state
+- Computed properties for filtered/derived data
+- .task(id:) for reactive data loading
+- .sensoryFeedback for haptics
+- accessibilityLabel on all interactive elements
+- ADEMotion helpers for all animations (respects reduceMotion)
 
-### Networking
-- Raw `URLSessionWebSocketTask` — no third-party dependencies
-- JSON envelopes with optional gzip compression (>4KB)
-- Heartbeat ping/pong protocol
-- Auto-reconnect with exponential backoff
-- Bonjour (`NetServiceBrowser`) for LAN discovery
-- Connection-scoped async work in `SyncService` must be tied to the active socket/session: store long-lived tasks so `disconnect()` and host switching can cancel them, and ignore stale send/receive callbacks unless they still belong to the current `socket`
-
-### Command Routing
-- State-only operations: write locally → cr-sqlite syncs to host
-- Execution operations: send command via WebSocket → host executes → state syncs back
-- Offline command queue: persisted to UserDefaults, flushed on reconnect
-
-### Key Model Types (RemoteModels.swift)
-- `RemoteLane`, `RemoteLaneDetail`, `LaneStateSnapshot`
-- `RemoteTerminalSession`, `SessionHistoryEntry`
-- `PullRequestRow`, `PullRequestSnapshot`, `PRDetailPayload`
-- `RemoteFileNode`, `RemoteSearchResult`
-- `ChatMessage`, `ToolCallResult`
-
-### Adding New Swift Files
-New .swift files MUST be added to the Xcode project by editing `ADE.xcodeproj/project.pbxproj`.
-Both `PBXFileReference` and `PBXSourcesBuildPhase` sections need entries.
+## Lane Types
+- `LaneListSnapshot`: List item (lane + runtime + rebaseSuggestion + autoRebase + conflict + stateSnapshot + adoptable)
+- `LaneDetailPayload`: Full detail (lane + runtime + stack + children + state + suggestions + conflicts + commits + changes + stashes + sessions)
+- Lane types: "primary", "worktree", "attached"
+- Runtime buckets: "running", "awaiting-input", "ended", "none"

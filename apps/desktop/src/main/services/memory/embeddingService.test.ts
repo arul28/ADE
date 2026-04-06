@@ -529,6 +529,99 @@ describe("embeddingService", () => {
     }));
   });
 
+  it("clears the installed cache after disposing an active extractor", async () => {
+    const logger = createLogger();
+    const cacheDir = createTempCacheDir();
+    const installPath = writeInstalledModel(cacheDir);
+    const extractor = Object.assign(
+      vi.fn(async (text: string) => ({ data: buildVector(text), dims: [1, EXPECTED_EMBEDDING_DIMENSIONS] })),
+      { dispose: vi.fn(async () => {}) },
+    );
+    const service = createEmbeddingService({
+      logger,
+      cacheDir,
+      loadRuntime: async () => ({
+        env: {
+          cacheDir: "",
+          allowRemoteModels: true,
+          allowLocalModels: true,
+          useFSCache: true,
+        },
+        pipeline: vi.fn(async () => extractor),
+      }),
+    });
+
+    await service.preload({ forceRetry: true, localFilesOnly: true });
+    expect(service.getStatus()).toEqual(expect.objectContaining({
+      state: "ready",
+      installState: "installed",
+      installPath,
+    }));
+
+    await service.clearCache();
+
+    expect(extractor.dispose).toHaveBeenCalledTimes(1);
+    expect(fs.existsSync(installPath)).toBe(false);
+    expect(service.getStatus()).toEqual(expect.objectContaining({
+      state: "idle",
+      activity: "idle",
+      installState: "missing",
+      error: null,
+    }));
+  });
+
+  it("invalidates an in-flight load before removing cached model files", async () => {
+    const logger = createLogger();
+    const cacheDir = createTempCacheDir();
+    const installPath = writeInstalledModel(cacheDir);
+    let releasePipeline: (() => void) | null = null;
+    let resolvePipelineStarted: (() => void) | null = null;
+    const pipelineStarted = new Promise<void>((resolve) => {
+      resolvePipelineStarted = resolve;
+    });
+    const extractor = Object.assign(
+      vi.fn(async (text: string) => ({ data: buildVector(text), dims: [1, EXPECTED_EMBEDDING_DIMENSIONS] })),
+      { dispose: vi.fn(async () => {}) },
+    );
+    const service = createEmbeddingService({
+      logger,
+      cacheDir,
+      loadRuntime: async () => ({
+        env: {
+          cacheDir: "",
+          allowRemoteModels: true,
+          allowLocalModels: true,
+          useFSCache: true,
+        },
+        pipeline: vi.fn(async () => {
+          resolvePipelineStarted?.();
+          await new Promise<void>((resolve) => {
+            releasePipeline = resolve;
+          });
+          return extractor;
+        }),
+      }),
+    });
+
+    const preloadPromise = service.preload({ forceRetry: true, localFilesOnly: true });
+    await pipelineStarted;
+
+    await service.clearCache();
+
+    expect(fs.existsSync(installPath)).toBe(false);
+    expect(service.getStatus()).toEqual(expect.objectContaining({
+      state: "idle",
+      activity: "idle",
+      installState: "missing",
+      error: null,
+    }));
+
+    expect(releasePipeline).toBeTypeOf("function");
+    releasePipeline!();
+    await expect(preloadPromise).rejects.toThrow("Embedding extractor load became stale.");
+    expect(extractor.dispose).toHaveBeenCalledTimes(1);
+  });
+
   it("re-checks the install state after a failed download before normalizing the error", async () => {
     const logger = createLogger();
     const cacheDir = createTempCacheDir();

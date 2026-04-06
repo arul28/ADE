@@ -220,6 +220,13 @@
             "icon": "tag",
             "expanded": true,
             "pages": [
+              "changelog/v1.0.12",
+              "changelog/v1.0.11",
+              "changelog/v1.0.10",
+              "changelog/v1.0.8",
+              "changelog/v1.0.7",
+              "changelog/v1.0.6",
+              "changelog/v1.0.4",
               "changelog/v1.0.3",
               "changelog/v1.0.2",
               "changelog/v1.0.1",
@@ -270,7 +277,7 @@
         "items": [
           { "label": "Features", "href": "/lanes/overview" },
           { "label": "Download", "href": "https://github.com/arul28/ADE/releases" },
-          { "label": "Changelog", "href": "/changelog/v1.0.3" }
+          { "label": "Changelog", "href": "/changelog/v1.0.12" }
         ]
       },
       {

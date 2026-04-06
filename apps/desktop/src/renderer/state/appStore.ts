@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import type { KeybindingsSnapshot, LaneSummary, ProjectInfo, ProviderMode } from "../../shared/types";
+import type { KeybindingsSnapshot, LaneListSnapshot, LaneSummary, ProjectInfo, ProviderMode } from "../../shared/types";
 import { MODEL_REGISTRY, type ModelDescriptor } from "../../shared/modelRegistry";
 
 export type ThemeId = "dark" | "light";
@@ -103,6 +103,7 @@ type AppState = {
   projectHydrated: boolean;
   /** True when the user removed all projects — forces welcome screen even though backend still has a project loaded. */
   showWelcome: boolean;
+  laneSnapshots: LaneListSnapshot[];
   lanes: LaneSummary[];
   selectedLaneId: string | null;
   runLaneId: string | null;
@@ -156,6 +157,9 @@ export type LaneInspectorTab = "terminals" | "context" | "stack" | "merge";
 
 let warmLaneStatusTimer: number | null = null;
 let warmProviderModeTimer: number | null = null;
+/** Monotonic counter incremented before each lane refresh request.
+ *  Slower responses whose token doesn't match the latest value are discarded. */
+let laneRefreshVersion = 0;
 
 function scheduleProjectHydration(get: () => AppState) {
   if (warmLaneStatusTimer != null) {
@@ -180,6 +184,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   project: null,
   projectHydrated: false,
   showWelcome: true,
+  laneSnapshots: [],
   lanes: [],
   selectedLaneId: null,
   runLaneId: null,
@@ -275,10 +280,16 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   refreshLanes: async (options) => {
     const requestedProjectKey = normalizeProjectKey(get().project?.rootPath);
-    const lanes = await window.ade.lanes.list({
+    const token = ++laneRefreshVersion;
+    const laneSnapshots = await window.ade.lanes.listSnapshots({
       includeArchived: false,
       includeStatus: options?.includeStatus ?? true,
     });
+    // Discard stale response: a newer refresh was issued while this one was in-flight
+    if (token !== laneRefreshVersion) {
+      return;
+    }
+    const lanes = laneSnapshots.map((snapshot) => snapshot.lane);
     const projectKey = normalizeProjectKey(get().project?.rootPath);
     if (projectKey !== requestedProjectKey) {
       return;
@@ -305,6 +316,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         }
       }
       return {
+        laneSnapshots,
         lanes,
         selectedLaneId: nextSelected,
         runLaneId: nextRunLane,
@@ -339,12 +351,16 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   openRepo: async () => {
+    // Invalidate in-flight lane refreshes before the async open so stale
+    // responses from the previous project are discarded immediately.
+    ++laneRefreshVersion;
     const project = await window.ade.project.openRepo();
     if (!project) return null;
     set({
       project,
       projectHydrated: true,
       showWelcome: false,
+      laneSnapshots: [],
       lanes: [],
       selectedLaneId: null,
       runLaneId: null,
@@ -362,11 +378,15 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   switchProjectToPath: async (rootPath: string) => {
+    // Invalidate in-flight lane refreshes before the async switch so stale
+    // responses from the previous project are discarded immediately.
+    ++laneRefreshVersion;
     const project = await window.ade.project.switchToPath(rootPath);
     set({
       project,
       projectHydrated: true,
       showWelcome: false,
+      laneSnapshots: [],
       lanes: [],
       selectedLaneId: null,
       runLaneId: null,
@@ -388,6 +408,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       project: null,
       projectHydrated: true,
       showWelcome: true,
+      laneSnapshots: [],
       lanes: [],
       selectedLaneId: null,
       runLaneId: null,

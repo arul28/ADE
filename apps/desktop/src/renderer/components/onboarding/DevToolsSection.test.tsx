@@ -23,15 +23,6 @@ describe("DevToolsSection", () => {
           detectedVersion: "git version 2.50.1",
           required: true,
         },
-        {
-          id: "gh",
-          label: "GitHub CLI",
-          command: "gh",
-          installed: false,
-          detectedPath: null,
-          detectedVersion: null,
-          required: false,
-        },
       ],
     });
 
@@ -57,7 +48,6 @@ describe("DevToolsSection", () => {
     expect(screen.queryByText("REQUIRED")).toBeNull();
     expect(screen.queryByText("RECOMMENDED")).toBeNull();
     expect(screen.getByText("Required to continue setup.")).toBeTruthy();
-    expect(screen.getByText("Optional, but recommended for PR workflows.")).toBeTruthy();
     expect(onStatusChange).toHaveBeenCalledWith(true);
   });
 

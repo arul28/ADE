@@ -344,6 +344,7 @@ struct PRsTabView: View {
   @State private var stackPresentation: PrStackPresentation?
   @State private var refreshFeedbackToken = 0
   @State private var selectedPrTransitionId: String?
+  @State private var laneContextLaneId: String?
   @SceneStorage("ade.prs.stateFilter") private var stateFilterRawValue = PrListStateFilter.all.rawValue
   @State private var searchText = ""
 
@@ -410,6 +411,10 @@ struct PRsTabView: View {
   var body: some View {
     NavigationStack(path: $path) {
       List {
+        if let notice = laneContextNotice {
+          notice.prListRow()
+        }
+
         if let notice = statusNotice {
           notice.prListRow()
         }
@@ -602,6 +607,7 @@ struct PRsTabView: View {
         guard requestId != nil, let prId = syncService.requestedPrNavigation?.prId else { return }
         stateFilterRawValue = PrListStateFilter.all.rawValue
         selectedPrTransitionId = prId
+        laneContextLaneId = syncService.requestedPrNavigation?.laneId
         path = NavigationPath()
         path.append(prId)
         syncService.requestedPrNavigation = nil
@@ -637,6 +643,19 @@ struct PRsTabView: View {
           .environmentObject(syncService)
       }
     }
+  }
+
+  private var laneContextNotice: ADENoticeCard? {
+    guard let laneContextLaneId else { return nil }
+    let laneName = laneSnapshots.first(where: { $0.lane.id == laneContextLaneId })?.lane.name ?? "lane context"
+    return ADENoticeCard(
+      title: "Opened from \(laneName)",
+      message: "Review the linked pull request or keep scanning PRs from the native tab.",
+      icon: "arrow.triangle.pull",
+      tint: ADEColor.accent,
+      actionTitle: "Clear",
+      action: { self.laneContextLaneId = nil }
+    )
   }
 
   @MainActor

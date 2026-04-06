@@ -8,6 +8,7 @@ import { fetchRemoteTrackingBranch, resolveQueueRebaseOverride, type QueueRebase
 import { detectConflictKind } from "../git/gitConflictState";
 import { shouldLaneTrackParent } from "../../../shared/laneBaseResolution";
 import type { createOperationService } from "../history/operationService";
+import type { Logger } from "../logging/logger";
 import type {
   AdoptAttachedLaneArgs,
   AttachLaneArgs,
@@ -509,7 +510,8 @@ export function createLaneService({
   worktreesDir,
   operationService,
   onHeadChanged,
-  onRebaseEvent
+  onRebaseEvent,
+  logger: injectedLogger
 }: {
   db: AdeDb;
   projectRoot: string;
@@ -519,7 +521,14 @@ export function createLaneService({
   operationService?: ReturnType<typeof createOperationService>;
   onHeadChanged?: (args: { laneId: string; reason: string; preHeadSha: string | null; postHeadSha: string | null }) => void;
   onRebaseEvent?: (event: RebaseRunEventPayload) => void;
+  logger?: Logger;
 }) {
+  const logger: Logger = injectedLogger ?? {
+    debug: () => {},
+    info: () => {},
+    warn: (event, meta) => console.warn(event, meta ?? ""),
+    error: (event, meta) => console.error(event, meta ?? ""),
+  };
   const upsertLaneStateSnapshot = (args: {
     laneId: string;
     status: LaneStatus;
@@ -849,22 +858,22 @@ export function createLaneService({
     try {
       await ensurePrimaryLane();
     } catch (err) {
-      console.warn("[laneService] ensurePrimaryLane failed, continuing with existing lanes:", err instanceof Error ? err.message : String(err));
+      logger.warn("laneService.ensurePrimaryLane_failed", { error: err instanceof Error ? err.message : String(err) });
     }
     try {
       await syncPrimaryLaneBranchRef();
     } catch (err) {
-      console.warn("[laneService] syncPrimaryLaneBranchRef failed, continuing:", err instanceof Error ? err.message : String(err));
+      logger.warn("laneService.syncPrimaryLaneBranchRef_failed", { error: err instanceof Error ? err.message : String(err) });
     }
     try {
       repairPrimaryParentedRootLanes();
     } catch (err) {
-      console.warn("[laneService] repairPrimaryParentedRootLanes failed, continuing:", err instanceof Error ? err.message : String(err));
+      logger.warn("laneService.repairPrimaryParentedRootLanes_failed", { error: err instanceof Error ? err.message : String(err) });
     }
     try {
       repairLegacyPrimaryBaseRootLanes();
     } catch (err) {
-      console.warn("[laneService] repairLegacyPrimaryBaseRootLanes failed, continuing:", err instanceof Error ? err.message : String(err));
+      logger.warn("laneService.repairLegacyPrimaryBaseRootLanes_failed", { error: err instanceof Error ? err.message : String(err) });
     }
 
     const cacheKey = `arch:${includeArchived ? 1 : 0}|status:${includeStatus ? 1 : 0}`;
@@ -907,7 +916,7 @@ export function createLaneService({
             });
             queueOverrideCache.set(laneId, override);
           } catch (err) {
-            console.warn("[laneService] lane_list.queue_override_failed", { laneId, err: String(err) });
+            logger.warn("laneService.lane_list.queue_override_failed", { laneId, error: String(err) });
             queueOverrideCache.set(laneId, null);
           }
         }),
@@ -960,14 +969,14 @@ export function createLaneService({
           try {
             status = await resolveStatus(row.id);
           } catch {
-            console.warn(`[laneService] resolveStatus failed for lane ${row.id}, using default`);
+            logger.warn("laneService.resolveStatus_failed", { laneId: row.id });
             status = cloneLaneStatus(DEFAULT_LANE_STATUS);
           }
           if (row.parent_lane_id) {
             try {
               parentStatus = await resolveStatus(row.parent_lane_id);
             } catch {
-              console.warn(`[laneService] resolveStatus failed for parent lane ${row.parent_lane_id}, using default`);
+              logger.warn("laneService.resolveStatus_failed", { laneId: row.parent_lane_id, context: "parent" });
               parentStatus = cloneLaneStatus(DEFAULT_LANE_STATUS);
             }
           }
@@ -977,7 +986,7 @@ export function createLaneService({
         try {
           stackDepth = computeStackDepth({ laneId: row.id, rowsById, memo: depthMemo });
         } catch {
-          console.warn(`[laneService] computeStackDepth failed for lane ${row.id}, defaulting to 0`);
+          logger.warn("laneService.computeStackDepth_failed", { laneId: row.id });
         }
         out.push(
           toLaneSummary({
@@ -998,7 +1007,7 @@ export function createLaneService({
       } catch (err) {
         // If building the summary for a single lane fails entirely, skip it
         // rather than crashing the whole list operation.
-        console.warn(`[laneService] Failed to build summary for lane ${row.id}, skipping:`, err instanceof Error ? err.message : String(err));
+        logger.warn("laneService.build_summary_failed", { laneId: row.id, error: err instanceof Error ? err.message : String(err) });
       }
     }
     laneListCache.set(cacheKey, {
@@ -1092,7 +1101,7 @@ export function createLaneService({
   try {
     repairLegacyPrimaryBaseRootLanes();
   } catch (err) {
-    console.warn("[laneService] initial repairLegacyPrimaryBaseRootLanes failed, continuing:", err instanceof Error ? err.message : String(err));
+    logger.warn("laneService.initial_repairLegacyPrimaryBaseRootLanes_failed", { error: err instanceof Error ? err.message : String(err) });
   }
 
   const isDescendant = (rowsById: Map<string, LaneRow>, laneId: string, possibleDescendantId: string): boolean => {
@@ -1413,10 +1422,7 @@ export function createLaneService({
           });
           stashRef = null;
         } catch (error) {
-          console.warn(
-            "[laneService] Failed to drop temporary rescue stash:",
-            error instanceof Error ? error.message : String(error),
-          );
+          logger.warn("laneService.drop_rescue_stash_failed", { error: error instanceof Error ? error.message : String(error) });
         }
 
         const refreshedLane = (await listLanes({ includeArchived: false, includeStatus: true })).find(
@@ -1552,18 +1558,59 @@ export function createLaneService({
               }
             }
 
+            // Also score against defaultBaseRef (main) directly — if main is
+            // equally good or better, there is no real parent lane.
             if (bestLaneId) {
-              if (explicitParentLaneId && explicitParentLaneId !== bestLaneId) {
-                console.warn(
-                  `[laneService] importBranch: explicit parentLaneId '${explicitParentLaneId}' differs from ` +
-                  `git-detected parent '${bestLaneId}' — using detected parent`,
+              let mainScore = Infinity;
+              try {
+                // Prefer the remote-tracking ref so the comparison uses the
+                // latest fetched state rather than a potentially stale local tip.
+                let mainShaRes = await runGit(
+                  ["rev-parse", `origin/${defaultBaseRef}`],
+                  { cwd: projectRoot, timeoutMs: 10_000 },
                 );
+                if (mainShaRes.exitCode !== 0) {
+                  mainShaRes = await runGit(
+                    ["rev-parse", defaultBaseRef],
+                    { cwd: projectRoot, timeoutMs: 10_000 },
+                  );
+                }
+                const mainSha = mainShaRes.exitCode === 0 ? mainShaRes.stdout.trim() : null;
+                if (mainSha) {
+                  const mbRes = await runGit(
+                    ["merge-base", mainSha, importedHeadSha],
+                    { cwd: projectRoot, timeoutMs: 10_000 },
+                  );
+                  if (mbRes.exitCode === 0 && mbRes.stdout.trim()) {
+                    const mb = mbRes.stdout.trim();
+                    const d1 = await runGit(["rev-list", "--count", `${mb}..${importedHeadSha}`], { cwd: projectRoot, timeoutMs: 10_000 });
+                    const d2 = await runGit(["rev-list", "--count", `${mb}..${mainSha}`], { cwd: projectRoot, timeoutMs: 10_000 });
+                    if (d1.exitCode === 0 && d2.exitCode === 0) {
+                      mainScore = parseInt(d1.stdout.trim(), 10) + parseInt(d2.stdout.trim(), 10);
+                    }
+                  }
+                }
+              } catch {
+                // If main scoring fails, fall through to lane-based parent.
               }
-              parentLaneId = bestLaneId;
+
+              if (mainScore <= bestScore) {
+                // The branch is based on main (or closer to it), no parent lane
+                // — unless the caller explicitly provided one.
+                parentLaneId = explicitParentLaneId ?? null;
+              } else {
+                if (explicitParentLaneId && explicitParentLaneId !== bestLaneId) {
+                  logger.warn("laneService.importBranch.parent_mismatch", {
+                    explicitParentLaneId,
+                    detectedParentLaneId: bestLaneId,
+                  });
+                }
+                parentLaneId = bestLaneId;
+              }
             }
           }
         } catch (err) {
-          console.warn("[laneService] importBranch: merge-base parent detection failed, falling back", err);
+          logger.warn("laneService.importBranch.parent_detection_failed", { error: err instanceof Error ? err.message : String(err) });
         }
 
         // Fallback: use only the explicit parent when detection yielded nothing.

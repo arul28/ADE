@@ -1,51 +1,24 @@
 ---
 title: "v1.0.3"
-description: "Release notes for ADE v1.0.3 — April 2, 2026"
+description: "Release notes for ADE v1.0.3 — March 22, 2026"
 ---
 
 ## Added
 
-- **PR Convergence — Path to Merge tab** — Dedicated convergence workspace inside every PR detail view with issue inventory, manual and auto-converge modes, and pipeline settings
-- **Auto-Converge mode** — Fully autonomous convergence loop: launches resolution rounds, polls for CI completion and comment stabilization, and optionally auto-merges when all issues are resolved
-- **Issue Inventory** — Structured tracking of all PR blockers (review comments, CI failures, bot feedback) with state management (new, sent to agent, fixed, dismissed, escalated) and source attribution (human, CodeRabbit, Copilot, Codex)
-- **CTO PR convergence operator tools** — Five new MCP tools (`getPullRequestConvergence`, `updatePullRequestConvergencePipeline`, `updatePullRequestConvergenceRuntime`, `startPullRequestConvergenceRound`, `stopPullRequestConvergence`) enabling the CTO to drive PR convergence programmatically
-- **Pipeline settings** — Per-PR configuration for auto-merge, merge method, max rounds, and rebase policy with project-wide defaults in `.ade/ade.yaml`
-- **Unified model picker in convergence** — Select any configured AI model, reasoning effort, and permission mode for each convergence round
-- **ADE MCP tool namespacing** — PR issue resolution tools exposed with `ade:` prefix in agent sessions
-- **Codex MCP override mapping** — ADE server settings correctly forwarded to Codex MCP launches
-- **Reusable JSON-RPC server** — Refactored MCP socket handling into a shared server module
-- **Packed session grid** — Resizable tile layout for the Work view with drag-handle resizing and bin-packing arrangement
-- **Multi-select agent questions** — Agent question modal supports toggling multiple options with Markdown/HTML preview
-- **New Chat quick-create** — Faster optimistic session opening with immediate tab activation
-- **Turn recap UI** — Summary row at the end of each turn showing tool invocation counts and task progress
-- **Claude tool-use tracking** — Per-invocation lifecycle tracking with start/complete events for work log status indicators
-- **MCP initialize probe** — Pre-checks MCP server availability before starting Claude sessions
-- **Inline AskUserQuestion UI** — Agent questions now render inline in the chat transcript with a unified `ask_user` tool, replacing the modal-only flow. Supports both single-select and multi-select answers with Markdown preview.
-- **AskUserQuestion tool_result emission** — Agent receives the user's answer as a proper `tool_result` message, enabling the agent to continue its workflow without re-prompting
+- **Signed and notarized universal macOS build** — First release with Apple code signing and notarization for both Apple Silicon and Intel architectures, enabling installation without Gatekeeper warnings
+- **Universal merge pipeline** — Build scripts for merging separate arm64 and x64 Electron builds into a single universal binary (`prepare-universal-mac-inputs.mjs`, `release-mac-local.mjs`)
+- **Artifact validation** — Post-build validation step verifying code signature, notarization status, binary architecture, and runtime integrity before publishing
+- **iOS companion groundwork** — Initial Xcode project scaffolding, SwiftUI shell, and cr-sqlite database bootstrap for the iOS companion app
 
 ## Changed
 
-- **PR detail tabs** — "Path to Merge" is now a permanent tab (with sparkle icon and issue count badge) alongside Overview, Files, CI/Checks, and Activity
-- **Chat sessions** — MCP tools are now wired into unified chat sessions with full model picker support across all configured providers
-- **Chat provider resolution** — Model descriptor-based provider and model selection replaces hardcoded provider switching
-- **Headless MCP** — Electron safeStorage guarded to support MCP server operation without a display
-- **MCP config hardening** — ADE query controls enforced across all MCP tool invocations
-- **Chat abort handling** — Aborts treated as interruptions that preserve chat state instead of clearing it
-- **Rebase route selection** — Active rebase needs now correctly resolved when selecting navigation routes
-- **Terminal renderer** — Simplified from WebGL/canvas/DOM to WebGL-first with DOM fallback; added fit recovery with retry on invalid dimensions
-- **Work log headings** — Human-readable labels replace generic tool identifiers; default visible entries increased to 4
-- **Model catalog filtering** — Model selector supports `available-only` mode to restrict picker to configured providers
-- **Git stash actions** — Pop, drop, and clear now refresh workspace metadata after completion
-- **Composer sizing** — New compact and grid-tile sizing modes
-- **Stale session detection** — Session expiry checks now also match "session expired" error strings, preventing zombie sessions from blocking new agent launches
+- **macOS release pipeline** — Overhauled GitHub Actions release workflow with signing credential injection, notarization polling, and validation-only preparation mode
+- **CI refactoring** — Separated build, sign, and validate stages for faster iteration and easier debugging of release failures
+- **CTO UX improvements** — Refined CTO settings panel layout, identity editor interactions, and Linear sync status indicators
+- **Sync hardening** — Improved WebSocket reconnection reliability and cr-sqlite replication consistency for multi-device sync
+- **Context pack deprecation progress** — Continued removal of legacy context pack infrastructure in favor of the unified memory system
 
 ## Fixed
 
-- **Convergence state guard** — `storeConvergenceState` correctly checks for existing state before overwriting
-- **MCP launch environment** — Removed `process.env` leak from MCP launch configuration
-- **MCP SDK test isolation** — Added proper mocks for MCP SDK dependencies in test suites
-- **Thinking indicator positioning** — Fixed CSS positioning of the thinking/reasoning indicator in chat messages
-- **Artifact URL handling** — Textual artifact URLs are now ignored (only real PR branch pushes trigger updates)
-- **projectRoot forwarding** — Codex MCP launches now correctly receive the project root path
-- **Tree refresh stale closure** — Fixed stale closure in the FilesPage tree refresh drain loop that caused flaky re-renders and test failures
-- **Database backup tracking** — Removed tracked `.bak` database files from the repository and added `*.bak` to `.gitignore`
+- **Release tag validation** — Tags must now point to commits on `main`, preventing accidental releases from feature branches
+- **Notarization timeout** — Increased polling interval and retry count for Apple notarization service responses

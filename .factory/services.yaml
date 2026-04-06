@@ -1,5 +1,9 @@
 commands:
-  build: cd apps/ios && xcodebuild -project ADE.xcodeproj -scheme ADE -destination 'platform=iOS Simulator,id=2107A402-C2A7-4323-AF26-74A0AC406C44' -derivedDataPath /tmp/ade-build build
-  test: cd apps/ios && xcodebuild -project ADE.xcodeproj -scheme ADE -destination 'platform=iOS Simulator,id=2107A402-C2A7-4323-AF26-74A0AC406C44' -derivedDataPath /tmp/ade-build test
-  typecheck: cd apps/ios && xcodebuild -project ADE.xcodeproj -scheme ADE -destination 'platform=iOS Simulator,id=2107A402-C2A7-4323-AF26-74A0AC406C44' -derivedDataPath /tmp/ade-build build
-  lint: cd apps/ios && xcodebuild -project ADE.xcodeproj -scheme ADE -destination 'platform=iOS Simulator,id=2107A402-C2A7-4323-AF26-74A0AC406C44' -derivedDataPath /tmp/ade-build analyze
+  build: xcodebuild build -project apps/ios/ADE.xcodeproj -scheme ADE -destination 'platform=iOS Simulator,name=iPhone 17 Pro,OS=26.3.1' -quiet
+  test: xcodebuild test -project apps/ios/ADE.xcodeproj -scheme ADE -destination 'platform=iOS Simulator,name=iPhone 17 Pro,OS=26.3.1' -quiet
+  build-for-testing: xcodebuild build-for-testing -project apps/ios/ADE.xcodeproj -scheme ADE -destination 'platform=iOS Simulator,name=iPhone 17 Pro,OS=26.3.1' -quiet
+  typecheck: cd apps/ios && xcodebuild -project ADE.xcodeproj -scheme ADE -destination 'platform=iOS Simulator,name=iPhone 17 Pro,OS=26.3.1' -derivedDataPath /tmp/ade-build build
+  lint: cd apps/ios && xcodebuild -project ADE.xcodeproj -scheme ADE -destination 'platform=iOS Simulator,name=iPhone 17 Pro,OS=26.3.1' -derivedDataPath /tmp/ade-build analyze
+  line-count: find apps/ios/ADE -name '*.swift' -exec wc -l {} + | sort -rn | head -20
+
+services: {}

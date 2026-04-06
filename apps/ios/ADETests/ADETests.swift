@@ -220,6 +220,65 @@ final class ADETests: XCTestCase {
     database.close()
   }
 
+  func testDatabaseFetchPullRequestListItemsCanFilterByLane() throws {
+    let baseURL = makeTemporaryDirectory()
+    let database = makeControllerHydrationDatabase(baseURL: baseURL)
+    XCTAssertNil(database.initializationError)
+
+    try database.executeSqlForTesting("""
+      insert into projects (
+        id, root_path, display_name, default_base_ref, created_at, last_opened_at
+      ) values (
+        'project-1', '/tmp/project', 'ADE', 'main', '2026-03-17T00:00:00.000Z', '2026-03-17T00:00:00.000Z'
+      );
+      insert into lanes (
+        id, project_id, name, description, lane_type, base_ref, branch_ref, worktree_path,
+        attached_root_path, is_edit_protected, parent_lane_id, color, icon, tags_json, folder,
+        status, created_at, archived_at
+      ) values (
+        'lane-a', 'project-1', 'Lane A', null, 'worktree', 'main', 'feature/a', '/tmp/project/a',
+        null, 0, null, null, null, null, null,
+        'active', '2026-03-17T00:00:00.000Z', null
+      );
+      insert into lanes (
+        id, project_id, name, description, lane_type, base_ref, branch_ref, worktree_path,
+        attached_root_path, is_edit_protected, parent_lane_id, color, icon, tags_json, folder,
+        status, created_at, archived_at
+      ) values (
+        'lane-b', 'project-1', 'Lane B', null, 'worktree', 'main', 'feature/b', '/tmp/project/b',
+        null, 0, null, null, null, null, null,
+        'active', '2026-03-17T00:00:00.000Z', null
+      );
+      insert into pull_requests (
+        id, project_id, lane_id, repo_owner, repo_name, github_pr_number, github_url, github_node_id,
+        title, state, base_branch, head_branch, checks_status, review_status, additions, deletions,
+        last_synced_at, created_at, updated_at
+      ) values (
+        'pr-a', 'project-1', 'lane-a', 'ade', 'repo', 101, 'https://github.com/ade/repo/pull/101',
+        null, 'Lane A PR', 'open', 'main', 'feature/a', 'success', 'approved', 10, 2,
+        '2026-03-17T00:10:00.000Z', '2026-03-17T00:00:00.000Z', '2026-03-17T00:10:00.000Z'
+      );
+      insert into pull_requests (
+        id, project_id, lane_id, repo_owner, repo_name, github_pr_number, github_url, github_node_id,
+        title, state, base_branch, head_branch, checks_status, review_status, additions, deletions,
+        last_synced_at, created_at, updated_at
+      ) values (
+        'pr-b', 'project-1', 'lane-b', 'ade', 'repo', 102, 'https://github.com/ade/repo/pull/102',
+        null, 'Lane B PR', 'open', 'main', 'feature/b', 'success', 'approved', 4, 1,
+        '2026-03-17T00:11:00.000Z', '2026-03-17T00:00:00.000Z', '2026-03-17T00:11:00.000Z'
+      );
+    """)
+
+    let allPullRequests = database.fetchPullRequestListItems()
+    let laneAPullRequests = database.fetchPullRequestListItems(forLane: "lane-a")
+
+    XCTAssertEqual(allPullRequests.map(\.id).sorted(), ["pr-a", "pr-b"])
+    XCTAssertEqual(laneAPullRequests.map(\.id), ["pr-a"])
+    XCTAssertEqual(laneAPullRequests.first?.laneName, "Lane A")
+
+    database.close()
+  }
+
   func testConnectionDraftRoundTrip() throws {
     let draft = ConnectionDraft(
       host: "127.0.0.1",
@@ -1114,6 +1173,105 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(filterPullRequestListItems(items, query: "", state: .open).map(\.id), ["pr-1"])
   }
 
+  func testLaneListFilteringMatchesSearchPrefixesAndSortOrder() {
+    let snapshots = [
+      makeLaneListSnapshot(
+        id: "lane-primary",
+        name: "main",
+        laneType: "primary",
+        baseRef: "main",
+        branchRef: "main",
+        worktreePath: "/project",
+        description: "Primary lane",
+        status: LaneStatus(dirty: false, ahead: 0, behind: 0, remoteBehind: 0, rebaseInProgress: false),
+        runtime: LaneRuntimeSummary(bucket: "running", runningCount: 2, awaitingInputCount: 0, endedCount: 0, sessionCount: 2),
+        createdAt: "2026-03-01T00:00:00.000Z",
+        archivedAt: nil
+      ),
+      makeLaneListSnapshot(
+        id: "lane-attached-active",
+        name: "docs",
+        laneType: "attached",
+        baseRef: "main",
+        branchRef: "docs/cleanup",
+        worktreePath: "/project/docs",
+        description: "Docs cleanup lane",
+        status: LaneStatus(dirty: true, ahead: 3, behind: 1, remoteBehind: 0, rebaseInProgress: false),
+        runtime: LaneRuntimeSummary(bucket: "ended", runningCount: 0, awaitingInputCount: 0, endedCount: 1, sessionCount: 1),
+        stateSnapshot: LaneStateSnapshotSummary(
+          laneId: "lane-attached-active",
+          agentSummary: ["summary": .string("Agent waiting on approval")],
+          missionSummary: ["summary": .string("Ship the cleanup")],
+          updatedAt: nil
+        ),
+        createdAt: "2026-03-20T00:00:00.000Z",
+        archivedAt: nil,
+        adoptableAttached: true
+      ),
+      makeLaneListSnapshot(
+        id: "lane-worktree",
+        name: "auth-flow",
+        laneType: "worktree",
+        baseRef: "main",
+        branchRef: "feature/auth",
+        worktreePath: "/project/.ade/worktrees/auth",
+        description: "OAuth flow",
+        status: LaneStatus(dirty: false, ahead: 1, behind: 0, remoteBehind: 0, rebaseInProgress: false),
+        runtime: LaneRuntimeSummary(bucket: "awaiting-input", runningCount: 0, awaitingInputCount: 1, endedCount: 0, sessionCount: 1),
+        stateSnapshot: LaneStateSnapshotSummary(
+          laneId: "lane-worktree",
+          agentSummary: ["title": .string("Codex")],
+          missionSummary: ["objective": .string("Handle OAuth redirects")],
+          updatedAt: nil
+        ),
+        createdAt: "2026-03-10T00:00:00.000Z",
+        archivedAt: nil,
+        adoptableAttached: false
+      ),
+      makeLaneListSnapshot(
+        id: "lane-archived",
+        name: "legacy",
+        laneType: "attached",
+        baseRef: "main",
+        branchRef: "legacy/refactor",
+        worktreePath: "/legacy",
+        description: "Legacy lane",
+        status: LaneStatus(dirty: false, ahead: 0, behind: 2, remoteBehind: 0, rebaseInProgress: false),
+        runtime: LaneRuntimeSummary(bucket: "running", runningCount: 1, awaitingInputCount: 0, endedCount: 0, sessionCount: 4),
+        createdAt: "2026-02-01T00:00:00.000Z",
+        archivedAt: "2026-03-25T00:00:00.000Z"
+      ),
+    ]
+
+    XCTAssertEqual(laneScopeCount(snapshots, scope: .active), 3)
+    XCTAssertEqual(laneScopeCount(snapshots, scope: .archived), 1)
+    XCTAssertEqual(laneRuntimeCount(snapshots, filter: .running), 2)
+    XCTAssertEqual(laneRuntimeCount(snapshots, filter: .awaitingInput), 1)
+
+    let activeFiltered = laneListFilteredSnapshots(
+      snapshots,
+      scope: .active,
+      runtimeFilter: .all,
+      searchText: "",
+      pinnedLaneIds: ["lane-worktree"]
+    )
+    XCTAssertEqual(activeFiltered.map(\.lane.id), ["lane-primary", "lane-attached-active", "lane-worktree"])
+
+    XCTAssertTrue(laneMatchesSearch(snapshot: snapshots[1], isPinned: false, query: "docs main"))
+    XCTAssertTrue(laneMatchesSearch(snapshot: snapshots[1], isPinned: false, query: "is:dirty type:attached"))
+    XCTAssertTrue(laneMatchesSearch(snapshot: snapshots[2], isPinned: true, query: "is:pinned awaiting"))
+    XCTAssertTrue(laneMatchesSearch(snapshot: snapshots[0], isPinned: false, query: "is:clean is:primary"))
+    XCTAssertTrue(laneMatchesSearch(snapshot: snapshots[2], isPinned: true, query: "is:worktree"))
+    XCTAssertFalse(laneMatchesSearch(snapshot: snapshots[0], isPinned: false, query: "is:unknown"))
+    XCTAssertFalse(laneMatchesSearch(snapshot: snapshots[0], isPinned: false, query: "type:attached"))
+
+    XCTAssertEqual(laneListEmptyStateTitle(scope: .active), "No active lanes")
+    XCTAssertEqual(
+      laneListEmptyStateMessage(scope: .all, searchText: "auth", hasFilters: true),
+      "Try a different search or clear the filter."
+    )
+  }
+
   func testBuildPullRequestTimelineOrdersStateReviewsAndComments() {
     let pr = PullRequestListItem(
       id: "pr-9",
@@ -1830,6 +1988,53 @@ final class ADETests: XCTestCase {
     var bytes = Data([0x01, 0x0b, UInt8(value.utf8.count)])
     bytes.append(contentsOf: value.utf8)
     return bytes
+  }
+
+  private func makeLaneListSnapshot(
+    id: String,
+    name: String,
+    laneType: String,
+    baseRef: String,
+    branchRef: String,
+    worktreePath: String,
+    description: String?,
+    status: LaneStatus,
+    runtime: LaneRuntimeSummary,
+    stateSnapshot: LaneStateSnapshotSummary? = nil,
+    createdAt: String,
+    archivedAt: String?,
+    adoptableAttached: Bool = false
+  ) -> LaneListSnapshot {
+    LaneListSnapshot(
+      lane: LaneSummary(
+        id: id,
+        name: name,
+        description: description,
+        laneType: laneType,
+        baseRef: baseRef,
+        branchRef: branchRef,
+        worktreePath: worktreePath,
+        attachedRootPath: laneType == "attached" ? worktreePath : nil,
+        parentLaneId: nil,
+        childCount: 0,
+        stackDepth: 0,
+        parentStatus: nil,
+        isEditProtected: false,
+        status: status,
+        color: nil,
+        icon: nil,
+        tags: [],
+        folder: nil,
+        createdAt: createdAt,
+        archivedAt: archivedAt
+      ),
+      runtime: runtime,
+      rebaseSuggestion: nil,
+      autoRebaseStatus: nil,
+      conflictStatus: nil,
+      stateSnapshot: stateSnapshot,
+      adoptableAttached: adoptableAttached
+    )
   }
 
   private func countRows(in baseURL: URL, table: String) throws -> Int {

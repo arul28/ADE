@@ -8,8 +8,6 @@ import { buildIntegrationSourcesByLaneId } from "../../lib/integrationLanes";
 import { EmptyState } from "../ui/EmptyState";
 import { Button } from "../ui/Button";
 import { PaneTilingLayout } from "../ui/PaneTilingLayout";
-import { listSessionsCached } from "../../lib/sessionListCache";
-import { shouldRefreshSessionListForChatEvent } from "../../lib/chatSessionEvents";
 import { COLORS, LABEL_STYLE, MONO_FONT, SANS_FONT, inlineBadge, outlineButton, primaryButton, conflictDotColor } from "./laneDesignTokens";
 import { ResizeGutter } from "../ui/ResizeGutter";
 import { LaneStackPane } from "./LaneStackPane";
@@ -36,36 +34,21 @@ import {
   type LanePaneDetailSelection,
   type LaneBranchOption
 } from "./laneUtils";
-import { sessionStatusBucket } from "../../lib/terminalAttention";
-import { isRunOwnedSession } from "../../lib/sessions";
 import { buildPrsRouteSearch } from "../prs/prsRouteState";
 import type {
   ConflictChip,
-  ConflictStatus,
   DeleteLaneArgs,
   GitCommitSummary,
   LaneEnvInitEvent,
   LaneEnvInitProgress,
+  LaneListSnapshot,
   LaneSummary,
   RebaseRun,
   RebaseScope,
-  RebaseSuggestion,
-  AutoRebaseLaneStatus,
   IntegrationProposal,
-  TerminalSessionSummary,
   LaneTemplate
 } from "../../../shared/types";
 import { eventMatchesBinding, getEffectiveBinding } from "../../lib/keybindings";
-
-type LaneRuntimeBucket = "running" | "awaiting-input" | "ended" | "none";
-
-type LaneRuntimeSummary = {
-  bucket: LaneRuntimeBucket;
-  runningCount: number;
-  awaitingInputCount: number;
-  endedCount: number;
-  sessionCount: number;
-};
 
 type RebaseScopePromptState = {
   laneId: string;
@@ -182,12 +165,9 @@ export function LanesPage() {
   const [laneActionBusy, setLaneActionBusy] = useState(false);
   const [laneActionError, setLaneActionError] = useState<string | null>(null);
   const [managedLaneIds, setManagedLaneIds] = useState<string[]>([]);
-  const [conflictStatusByLane, setConflictStatusByLane] = useState<Record<string, ConflictStatus>>({});
   const [conflictChipsByLane, setConflictChipsByLane] = useState<Record<string, ConflictChip[]>>({});
   const chipTimersRef = useRef<Map<string, number>>(new Map());
-  const hasActiveLaneSessionsRef = useRef(false);
-  const [rebaseSuggestions, setRebaseSuggestions] = useState<RebaseSuggestion[]>([]);
-  const [autoRebaseStatuses, setAutoRebaseStatuses] = useState<AutoRebaseLaneStatus[]>([]);
+  const hasActiveLaneRuntimeRef = useRef(false);
   const [autoRebaseEnabled, setAutoRebaseEnabled] = useState(false);
   const [rebaseBusyLaneId, setRebaseBusyLaneId] = useState<string | null>(null);
   const [rebaseSuggestionError, setRebaseSuggestionError] = useState<string | null>(null);
@@ -198,6 +178,8 @@ export function LanesPage() {
   const [branchDropdownOpen, setBranchDropdownOpen] = useState(false);
   const [branchCheckoutBusy, setBranchCheckoutBusy] = useState(false);
   const [branchCheckoutError, setBranchCheckoutError] = useState<string | null>(null);
+  const [branchSearchQuery, setBranchSearchQuery] = useState("");
+  const branchSearchInputRef = useRef<HTMLInputElement>(null);
   const branchDropdownRef = useRef<HTMLDivElement>(null);
 
   const [addLaneDropdownOpen, setAddLaneDropdownOpen] = useState(false);
@@ -207,57 +189,38 @@ export function LanesPage() {
   const [laneContextMenu, setLaneContextMenu] = useState<{ laneId: string; x: number; y: number } | null>(null);
   const [expandedLaneId, setExpandedLaneId] = useState<string | null>(null);
   const [expandedGitActionsLaneId, setExpandedGitActionsLaneId] = useState<string | null>(null);
-  const [allSessions, setAllSessions] = useState<TerminalSessionSummary[]>([]);
   const [integrationProposals, setIntegrationProposals] = useState<IntegrationProposal[]>([]);
+  const laneSnapshots = useAppStore((s) => s.laneSnapshots);
 
+  const laneSnapshotByLaneId = useMemo(
+    () => new Map(laneSnapshots.map((snapshot) => [snapshot.lane.id, snapshot] as const)),
+    [laneSnapshots],
+  );
   const sortedLanes = useMemo(() => sortLanesForTabs(lanes), [lanes]);
   const lanesById = useMemo(() => new Map(sortedLanes.map((lane) => [lane.id, lane])), [sortedLanes]);
   const integrationSourcesByLaneId = useMemo(
     () => buildIntegrationSourcesByLaneId(integrationProposals, lanesById),
     [integrationProposals, lanesById],
   );
-  const rebaseByLaneId = useMemo(
-    () => new Map(rebaseSuggestions.map((s) => [s.laneId, s] as const)),
-    [rebaseSuggestions]
-  );
-  const autoRebaseByLaneId = useMemo(
-    () => new Map(autoRebaseStatuses.map((s) => [s.laneId, s] as const)),
-    [autoRebaseStatuses]
-  );
 
   const laneRuntimeById = useMemo(() => {
-    const summaryByLane = new Map<string, LaneRuntimeSummary>();
+    const summaryByLane = new Map<string, LaneListSnapshot["runtime"]>();
+    for (const snapshot of laneSnapshots) {
+      summaryByLane.set(snapshot.lane.id, snapshot.runtime);
+    }
     for (const lane of sortedLanes) {
-      summaryByLane.set(lane.id, {
-        bucket: "none",
-        runningCount: 0,
-        awaitingInputCount: 0,
-        endedCount: 0,
-        sessionCount: 0,
-      });
-    }
-    for (const session of allSessions) {
-      const laneSummary = summaryByLane.get(session.laneId);
-      if (!laneSummary) continue;
-      laneSummary.sessionCount += 1;
-      const bucket = sessionStatusBucket({
-        status: session.status,
-        lastOutputPreview: session.lastOutputPreview,
-        runtimeState: session.runtimeState,
-        toolType: session.toolType,
-      });
-      if (bucket === "running") laneSummary.runningCount += 1;
-      else if (bucket === "awaiting-input") laneSummary.awaitingInputCount += 1;
-      else laneSummary.endedCount += 1;
-    }
-    for (const laneSummary of summaryByLane.values()) {
-      if (laneSummary.runningCount > 0) laneSummary.bucket = "running";
-      else if (laneSummary.awaitingInputCount > 0) laneSummary.bucket = "awaiting-input";
-      else if (laneSummary.endedCount > 0) laneSummary.bucket = "ended";
-      else laneSummary.bucket = "none";
+      if (!summaryByLane.has(lane.id)) {
+        summaryByLane.set(lane.id, {
+          bucket: "none",
+          runningCount: 0,
+          awaitingInputCount: 0,
+          endedCount: 0,
+          sessionCount: 0,
+        });
+      }
     }
     return summaryByLane;
-  }, [sortedLanes, allSessions]);
+  }, [sortedLanes, laneSnapshots]);
 
   const laneFilterMatchedLanes = useMemo(
     () => sortedLanes.filter((lane) => laneMatchesFilter(lane, pinnedLaneIds.has(lane.id), laneFilter)),
@@ -296,9 +259,9 @@ export function LanesPage() {
   }, []);
 
   const filteredLanes = useMemo(() => {
-    const bucketRank: Record<LaneRuntimeBucket, number> = {
-      running: 0,
-      "awaiting-input": 1,
+    const bucketRank: Record<LaneListSnapshot["runtime"]["bucket"], number> = {
+      "awaiting-input": 0,
+      running: 1,
       ended: 2,
       none: 3,
     };
@@ -323,12 +286,26 @@ export function LanesPage() {
   const filteredSet = useMemo(() => new Set(filteredLaneIds), [filteredLaneIds]);
   const visibleRebaseSuggestions = useMemo(() => {
     const laneIdSet = new Set(filteredLaneIds);
-    return rebaseSuggestions.filter((s) => laneIdSet.has(s.laneId));
-  }, [rebaseSuggestions, filteredLaneIds]);
+    return laneSnapshots
+      .map((snapshot) => snapshot.rebaseSuggestion)
+      .filter(
+        (suggestion): suggestion is NonNullable<LaneListSnapshot["rebaseSuggestion"]> => {
+          if (suggestion == null) return false;
+          return laneIdSet.has(suggestion.laneId);
+        },
+      );
+  }, [laneSnapshots, filteredLaneIds]);
   const visibleAutoRebaseNeedsAttention = useMemo(() => {
     const laneIdSet = new Set(filteredLaneIds);
-    return autoRebaseStatuses.filter((s) => laneIdSet.has(s.laneId) && s.state !== "autoRebased");
-  }, [autoRebaseStatuses, filteredLaneIds]);
+    return laneSnapshots
+      .map((snapshot) => snapshot.autoRebaseStatus)
+      .filter(
+        (status): status is NonNullable<LaneListSnapshot["autoRebaseStatus"]> => {
+          if (status == null) return false;
+          return laneIdSet.has(status.laneId) && status.state !== "autoRebased";
+        },
+      );
+  }, [laneSnapshots, filteredLaneIds]);
   const showAutoRebaseSettingsHint = !autoRebaseEnabled && (visibleRebaseSuggestions.length > 0 || visibleAutoRebaseNeedsAttention.length > 0);
 
   const activeWithPins = useMemo(
@@ -373,33 +350,14 @@ export function LanesPage() {
     refreshLanes().catch(() => {});
   }, [primaryBranches, primaryLane?.id, primaryLane?.branchRef, refreshLanes]);
 
+  useEffect(() => {
+    if (branchDropdownOpen) {
+      setBranchSearchQuery("");
+      setTimeout(() => branchSearchInputRef.current?.focus(), 0);
+    }
+  }, [branchDropdownOpen]);
   useClickOutside(branchDropdownRef, () => setBranchDropdownOpen(false), branchDropdownOpen);
   useClickOutside(addLaneDropdownRef, () => setAddLaneDropdownOpen(false), addLaneDropdownOpen);
-
-  /* ---- Conflict loading ---- */
-
-  const loadConflictStatuses = useCallback(async () => {
-    try {
-      const assessment = await window.ade.conflicts.getBatchAssessment();
-      const next: Record<string, ConflictStatus> = {};
-      for (const status of assessment.lanes) next[status.laneId] = status;
-      setConflictStatusByLane(next);
-    } catch { /* best effort */ }
-  }, []);
-
-  const refreshRebaseSuggestions = useCallback(async () => {
-    try {
-      const next = await window.ade.lanes.listRebaseSuggestions();
-      setRebaseSuggestions(next);
-    } catch { /* best effort */ }
-  }, []);
-
-  const refreshAutoRebaseStatuses = useCallback(async () => {
-    try {
-      const next = await window.ade.lanes.listAutoRebaseStatuses();
-      setAutoRebaseStatuses(next);
-    } catch { /* best effort */ }
-  }, []);
 
   const refreshAutoRebaseEnabled = useCallback(async () => {
     try {
@@ -411,15 +369,6 @@ export function LanesPage() {
       setAutoRebaseEnabled(enabled);
     } catch {
       setAutoRebaseEnabled(false);
-    }
-  }, []);
-
-  const refreshAllSessions = useCallback(async () => {
-    try {
-      const rows = await listSessionsCached({ limit: 500 });
-      setAllSessions(rows.filter((session) => !isRunOwnedSession(session)));
-    } catch {
-      setAllSessions([]);
     }
   }, []);
 
@@ -465,34 +414,44 @@ export function LanesPage() {
 
   /* ---- Effects ---- */
 
-  useEffect(() => { void loadConflictStatuses(); }, [loadConflictStatuses, lanes.length]);
-
   useEffect(() => {
     const unsubscribe = window.ade.conflicts.onEvent((event) => {
       if (event.type !== "prediction-complete") return;
-      void loadConflictStatuses();
+      // Only refresh conflict statuses — avoid a full refreshLanes() which fires
+      // five parallel queries via buildLaneListSnapshots.
+      void window.ade.conflicts.getBatchAssessment().then((assessment) => {
+        const conflictByLaneId = new Map(
+          assessment.lanes.map((entry) => [entry.laneId, entry] as const),
+        );
+        const prev = useAppStore.getState().laneSnapshots;
+        const next = prev.map((snapshot) => {
+          const updated = conflictByLaneId.get(snapshot.lane.id) ?? null;
+          return updated !== snapshot.conflictStatus
+            ? { ...snapshot, conflictStatus: updated }
+            : snapshot;
+        });
+        useAppStore.setState({ laneSnapshots: next });
+      }).catch(() => {});
       pushConflictChips(event.chips);
     });
     return unsubscribe;
-  }, [loadConflictStatuses, pushConflictChips]);
+  }, [pushConflictChips]);
 
   useEffect(() => {
-    void refreshRebaseSuggestions();
     const unsubscribe = window.ade.lanes.onRebaseSuggestionsEvent((event) => {
       if (event.type !== "rebase-suggestions-updated") return;
-      setRebaseSuggestions(event.suggestions);
+      void refreshLanes();
     });
     return unsubscribe;
-  }, [refreshRebaseSuggestions]);
+  }, [refreshLanes]);
 
   useEffect(() => {
-    void refreshAutoRebaseStatuses();
     const unsubscribe = window.ade.lanes.onAutoRebaseEvent((event) => {
       if (event.type !== "auto-rebase-updated") return;
-      setAutoRebaseStatuses(event.statuses);
+      void refreshLanes();
     });
     return unsubscribe;
-  }, [refreshAutoRebaseStatuses]);
+  }, [refreshLanes]);
 
   useEffect(() => {
     const unsubscribe = window.ade.lanes.rebaseSubscribe((event) => {
@@ -507,22 +466,6 @@ export function LanesPage() {
   useEffect(() => { void refreshAutoRebaseEnabled(); }, [refreshAutoRebaseEnabled]);
 
   useEffect(() => {
-    void refreshAllSessions();
-  }, [refreshAllSessions, project?.rootPath]);
-
-  useEffect(() => {
-    hasActiveLaneSessionsRef.current = allSessions.some((session) => {
-      const bucket = sessionStatusBucket({
-        status: session.status,
-        lastOutputPreview: session.lastOutputPreview,
-        runtimeState: session.runtimeState,
-        toolType: session.toolType,
-      });
-      return bucket === "running" || bucket === "awaiting-input";
-    });
-  }, [allSessions]);
-
-  useEffect(() => {
     void refreshIntegrationProposals();
   }, [refreshIntegrationProposals, lanes.length, project?.rootPath]);
 
@@ -533,19 +476,16 @@ export function LanesPage() {
       if (timer) return; // already scheduled
       timer = setTimeout(() => {
         timer = null;
-        void refreshAllSessions();
+        void refreshLanes();
       }, 300);
     };
     const unsubPtyData = window.ade.pty.onData(scheduleRefresh);
     const unsubPtyExit = window.ade.pty.onExit(scheduleRefresh);
-    const unsubChat = window.ade.agentChat.onEvent((payload) => {
-      if (!shouldRefreshSessionListForChatEvent(payload)) return;
-      scheduleRefresh();
-    });
+    const unsubChat = window.ade.agentChat.onEvent(scheduleRefresh);
     const intervalId = window.setInterval(() => {
       if (document.visibilityState !== "visible") return;
-      if (!hasActiveLaneSessionsRef.current) return;
-      void refreshAllSessions();
+      if (!hasActiveLaneRuntimeRef.current) return;
+      void refreshLanes();
     }, 15_000);
     return () => {
       if (timer) clearTimeout(timer);
@@ -566,7 +506,13 @@ export function LanesPage() {
       }
       window.clearInterval(intervalId);
     };
-  }, [refreshAllSessions]);
+  }, [refreshLanes]);
+
+  useEffect(() => {
+    hasActiveLaneRuntimeRef.current = laneSnapshots.some((snapshot) =>
+      snapshot.runtime.bucket === "running" || snapshot.runtime.bucket === "awaiting-input",
+    );
+  }, [laneSnapshots]);
 
   useEffect(() => {
     const onFocus = () => { void refreshAutoRebaseEnabled(); };
@@ -725,14 +671,14 @@ export function LanesPage() {
     () => primaryBranches.find((branch) => branch.isCurrent)?.name ?? primaryLane?.branchRef ?? "",
     [primaryBranches, primaryLane?.branchRef]
   );
-  const localPrimaryBranches = useMemo(
-    () => primaryBranches.filter((branch) => !branch.isRemote),
-    [primaryBranches]
-  );
-  const remotePrimaryBranches = useMemo(
-    () => primaryBranches.filter((branch) => branch.isRemote),
-    [primaryBranches]
-  );
+  const localPrimaryBranches = useMemo(() => {
+    const q = branchSearchQuery.toLowerCase();
+    return primaryBranches.filter((branch) => !branch.isRemote && (!q || branch.name.toLowerCase().includes(q)));
+  }, [primaryBranches, branchSearchQuery]);
+  const remotePrimaryBranches = useMemo(() => {
+    const q = branchSearchQuery.toLowerCase();
+    return primaryBranches.filter((branch) => branch.isRemote && (!q || branch.name.toLowerCase().includes(q)));
+  }, [primaryBranches, branchSearchQuery]);
 
   const runLaneAction = async (fn: () => Promise<void>) => {
     setLaneActionBusy(true);
@@ -978,7 +924,7 @@ export function LanesPage() {
         }
       }
 
-      const results = await Promise.allSettled([refreshLanes(), refreshRebaseSuggestions(), refreshAutoRebaseStatuses()]);
+      const results = await Promise.allSettled([refreshLanes()]);
       for (const r of results) {
         if (r.status === "rejected") {
           console.error("Lane refresh partially failed:", r.reason);
@@ -991,14 +937,14 @@ export function LanesPage() {
     } finally {
       setRebaseBusyLaneId(null);
     }
-  }, [lanesById, navigate, refreshAutoRebaseStatuses, refreshLanes, refreshRebaseSuggestions, requestPushSelection, requestRebaseScope]);
+  }, [lanesById, navigate, refreshLanes, requestPushSelection, requestRebaseScope]);
 
   const dismissRebaseSuggestion = async (laneId: string) => {
     setRebaseSuggestionError(null);
     setRebaseBusyLaneId(laneId);
     try {
       await window.ade.lanes.dismissRebaseSuggestion({ laneId });
-      await refreshRebaseSuggestions();
+      await refreshLanes();
     } catch (err) {
       setRebaseSuggestionError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -1011,7 +957,7 @@ export function LanesPage() {
     setRebaseBusyLaneId(laneId);
     try {
       await window.ade.lanes.deferRebaseSuggestion({ laneId, minutes });
-      await refreshRebaseSuggestions();
+      await refreshLanes();
     } catch (err) {
       setRebaseSuggestionError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -1360,7 +1306,7 @@ export function LanesPage() {
   return (
     <div className="flex h-full min-w-0 flex-col" style={{ background: COLORS.pageBg }}>
       {/* Header bar */}
-      <div style={{ padding: "0 24px", height: 64, display: "flex", alignItems: "center", gap: 24, background: COLORS.cardBg, backdropFilter: "blur(20px)", WebkitBackdropFilter: "blur(20px)", borderBottom: `1px solid ${COLORS.border}`, position: "relative", zIndex: 10, overflow: "visible" }}>
+      <div style={{ padding: "0 24px", height: 64, display: "flex", alignItems: "center", gap: 24, background: COLORS.cardBg, backdropFilter: "blur(20px)", WebkitBackdropFilter: "blur(20px)", borderBottom: `1px solid ${COLORS.border}`, position: "relative", zIndex: 50, overflow: "visible" }}>
         {/* Numbered title group */}
         <div className="flex items-center gap-2 shrink-0">
           <span style={{ fontFamily: MONO_FONT, fontSize: 10, fontWeight: 700, letterSpacing: "1px", color: COLORS.accent }}>05</span>
@@ -1388,7 +1334,25 @@ export function LanesPage() {
               <CaretDown size={12} style={{ opacity: 0.6 }} />
             </button>
             {branchDropdownOpen ? (
-              <div className="absolute left-0 top-full z-[200] mt-1 max-h-80 overflow-auto" style={{ width: 288, background: COLORS.cardBgSolid, backdropFilter: "blur(20px)", WebkitBackdropFilter: "blur(20px)", border: `1px solid ${COLORS.outlineBorder}`, borderRadius: 12, padding: "4px 0" }}>
+              <div className="absolute left-0 top-full z-[200] mt-1 max-h-80 overflow-hidden flex flex-col" style={{ width: 288, background: COLORS.cardBgSolid, backdropFilter: "blur(20px)", WebkitBackdropFilter: "blur(20px)", border: `1px solid ${COLORS.outlineBorder}`, borderRadius: 12, padding: "4px 0" }}>
+                <div className="relative shrink-0" style={{ padding: "4px 8px" }}>
+                  <MagnifyingGlass size={13} className="pointer-events-none absolute" style={{ left: 16, top: "50%", transform: "translateY(-50%)", color: COLORS.textDim }} />
+                  <input
+                    ref={branchSearchInputRef}
+                    type="text"
+                    placeholder="Search branches…"
+                    value={branchSearchQuery}
+                    onChange={(e) => setBranchSearchQuery(e.target.value)}
+                    style={{
+                      width: "100%", padding: "5px 8px 5px 28px", fontSize: 12, fontFamily: MONO_FONT,
+                      color: COLORS.textPrimary, background: "rgba(255,255,255,0.04)",
+                      border: `1px solid ${COLORS.outlineBorder}`, borderRadius: 6, outline: "none",
+                    }}
+                    onFocus={(e) => { e.currentTarget.style.borderColor = COLORS.accent; }}
+                    onBlur={(e) => { e.currentTarget.style.borderColor = COLORS.outlineBorder; }}
+                  />
+                </div>
+                <div className="overflow-auto flex-1" style={{ padding: "2px 0" }}>
                 <div style={{ padding: "6px 12px", ...LABEL_STYLE }}>LOCAL BRANCHES</div>
                 {localPrimaryBranches.map((branch) => (
                   <button
@@ -1440,11 +1404,12 @@ export function LanesPage() {
                   </>
                 ) : null}
                 {localPrimaryBranches.length === 0 && remotePrimaryBranches.length === 0 ? (
-                  <div style={{ padding: "6px 12px", fontSize: 12, color: COLORS.textMuted }}>No branches found.</div>
+                  <div style={{ padding: "6px 12px", fontSize: 12, color: COLORS.textMuted }}>{branchSearchQuery ? "No matching branches." : "No branches found."}</div>
                 ) : null}
                 {branchCheckoutError ? (
                   <div style={{ padding: "6px 12px", fontSize: 11, color: COLORS.danger }}>{branchCheckoutError}</div>
                 ) : null}
+                </div>
               </div>
             ) : null}
           </div>
@@ -1645,7 +1610,8 @@ export function LanesPage() {
           const isPrimary = lane.laneType === "primary";
           const isPinned = pinnedLaneIds.has(lane.id);
           const closable = isVisible && visibleLaneIds.length > 1 && !isPinned;
-          const conflictStatus = conflictStatusByLane[lane.id];
+          const laneSnapshot = laneSnapshotByLaneId.get(lane.id) ?? null;
+          const conflictStatus = laneSnapshot?.conflictStatus ?? null;
           const chips = conflictChipsByLane[lane.id] ?? [];
           const laneRuntime = laneRuntimeById.get(lane.id) ?? {
             bucket: "none",
@@ -1654,8 +1620,8 @@ export function LanesPage() {
             endedCount: 0,
             sessionCount: 0,
           };
-          const rebaseSuggestion = rebaseByLaneId.get(lane.id) ?? null;
-          const autoRebaseStatus = autoRebaseByLaneId.get(lane.id) ?? null;
+          const rebaseSuggestion = laneSnapshot?.rebaseSuggestion ?? null;
+          const autoRebaseStatus = laneSnapshot?.autoRebaseStatus ?? null;
           const tabNumber = String(index + 1).padStart(2, "0");
 
           return (

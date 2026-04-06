@@ -1,0 +1,44 @@
+---
+title: "v1.0.10"
+description: "Release notes for ADE v1.0.10 — March 30, 2026"
+---
+
+Version 1.0.9 was skipped.
+
+## Added
+
+- **CTO pipeline builder** — Visual drag-and-drop pipeline builder for Linear workflow configuration with stage cards, connectors, canvas layout, and dedicated config panels for trigger, plan, execution, closeout, and advanced settings
+- **Sync remote commands** — New `syncRemoteCommandService` providing remote chat commands (interrupt, steer, resume) for multi-device agent control
+- **Headless Linear services** — New 759-line service enabling headless Linear workflow dispatch, status queries, and run management from the MCP server without the desktop UI
+- **Automation dry-run** — `simulateDryRun` path so manual/dry-run invocations complete without side effects, with provider permission and model validation
+- **Secure file operations** — New utilities: `openFileSecure`, `writeByDescriptor`, `secureMkdir`, `secureRename`, `secureWriteFile`, `secureCopyFile`, `atomicWriteFile`, and path containment checks to prevent symlink/traversal escapes
+- **Secret redaction** — `redactSecrets` utility masking GitHub PATs, JSON-style API keys, and other sensitive patterns; used in worker heartbeat outputs
+- **`awaiting_lane_choice` workflow status** — New status in Linear workflow dispatcher with full handling for queue, select, describe, and reset operations
+- **Explicit regex mode** — Coordinator content searches now sanitize user-provided patterns to prevent regex injection
+
+## Changed
+
+- **Linear dispatcher overhaul** — Respects manual completion payloads, properly resets linked IDs on retry, handles step completion via `advanceRun`, enforces dedupe/max-run/per-issue limits, and cancels active runs during sync
+- **Linear sync service** — Reordered and hardened sync logic with snapshot change detection and `safeJsonParse` for previous snapshots
+- **Linear closeout** — Artifact collection moved earlier in the pipeline; PR links included in closeout template
+- **Chat message list** — `ResizeObserver`-based row measurement replaces previous approach; stale measured heights cleared on session switch
+- **Queue landing service** — Landing state transitions with `isQueueCancelledOrDone` helper, early-cancellation checks after async steps, paused-to-pending resume support
+- **Terminal view** — Capture-phase paste handling, batched `onData` writes for performance, focus-and-fit on activation
+- **GitHub rate limiting** — PR context switched to `Promise.allSettled` with rate-limit detection: polling pauses for 5 minutes on 429 responses
+- **LinearSyncPanel refactoring** — Pipeline UI extracted into dedicated components, significantly reducing panel size
+- **Dependency updates** — `ai` 6.0.116 → 6.0.141, `vite` 4.5.14 → 8.0.3, `shiki` 3.23.0 → 4.0.2, `eslint-plugin-react-hooks` 4.6.2 → 7.0.1
+
+## Fixed
+
+- **Symlink traversal vulnerabilities** — All file-access paths now use containment checks via `resolvePathWithinRoot`
+- **Worker heartbeat secrets leak** — Outputs now redacted before persistence
+- **GitHub API rate-limit crashes** — Graceful backoff with 5-minute polling pause
+- **Empty draft sends** — Composer prevents sending empty messages
+- **PR detail fetch failures** — `Promise.allSettled` prevents a single failure from dropping all PR data
+- **Circular reference crashes** — `sanitizeStructuredData` handles circular refs
+- **Gitleaks false positives** — Test/spec files excluded from leak scanning
+
+## Removed
+
+- **Stale OpenClaw JSON artifacts** — Removed `openclaw-history.json`, `openclaw-idempotency.json`, `openclaw-outbox.json`, `openclaw-routes.json` from `.ade/cto/`
+- **Chat hooks consolidated** — `useAgentChatComposerState`, `useAgentChatSessions`, `useChatDraft`, `useChatDraftStore` removed (logic absorbed into parent components)
