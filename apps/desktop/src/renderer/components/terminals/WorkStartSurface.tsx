@@ -3,7 +3,12 @@ import {
   Terminal,
   ArrowRight,
 } from "@phosphor-icons/react";
-import type { AgentChatPermissionMode, AgentChatSession, LaneSummary } from "../../../shared/types";
+import type {
+  AdeExecutionTargetProfile,
+  AgentChatPermissionMode,
+  AgentChatSession,
+  LaneSummary,
+} from "../../../shared/types";
 import type { WorkDraftKind } from "../../state/appStore";
 import { useAppStore } from "../../state/appStore";
 import { AgentChatPane } from "../chat/AgentChatPane";
@@ -17,6 +22,9 @@ import { SmartTooltip } from "../ui/SmartTooltip";
 type WorkStartSurfaceProps = {
   draftKind: WorkDraftKind;
   lanes: LaneSummary[];
+  workExecutionTargetProfile?: AdeExecutionTargetProfile;
+  executionTargetProfiles?: AdeExecutionTargetProfile[];
+  projectActiveExecutionTargetId?: string | null;
   onOpenChatSession: (session: AgentChatSession) => void | Promise<void>;
   onLaunchPtySession: (args: {
     laneId: string;
@@ -30,6 +38,9 @@ type WorkStartSurfaceProps = {
 export function WorkStartSurface({
   draftKind,
   lanes,
+  workExecutionTargetProfile,
+  executionTargetProfiles,
+  projectActiveExecutionTargetId,
   onOpenChatSession,
   onLaunchPtySession,
 }: WorkStartSurfaceProps) {
@@ -160,6 +171,9 @@ export function WorkStartSurface({
               onSessionCreated={onOpenChatSession}
               availableLanes={lanes}
               onLaneChange={setLaneAndSync}
+              workExecutionTargetProfile={workExecutionTargetProfile}
+              executionTargetProfiles={executionTargetProfiles}
+              projectActiveExecutionTargetId={projectActiveExecutionTargetId}
             />
           ) : (
             <div className="flex h-full items-center justify-center px-6">

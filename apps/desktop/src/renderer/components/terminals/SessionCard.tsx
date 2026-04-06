@@ -1,6 +1,7 @@
 import React from "react";
 import { GitBranch, Info, Play } from "@phosphor-icons/react";
 import type { LaneSummary, TerminalSessionSummary } from "../../../shared/types";
+import { ADE_LOCAL_EXECUTION_TARGET_ID } from "../../../shared/types";
 import { sessionStatusDot, sanitizeTerminalInlineText } from "../../lib/terminalAttention";
 import { primarySessionLabel, preferredSessionLabel, shortToolTypeLabel } from "../../lib/sessions";
 import { relativeTimeCompact } from "../../lib/format";
@@ -41,9 +42,11 @@ export const SessionCard = React.memo(function SessionCard({
   onInfoClick,
   onContextMenu,
   resumingSessionId,
+  projectActiveTargetId,
 }: {
   session: TerminalSessionSummary;
   lane: LaneSummary | null;
+  projectActiveTargetId?: string | null;
   isSelected: boolean;
   onSelect: (id: string) => void;
   onResume: () => void;
@@ -63,6 +66,11 @@ export const SessionCard = React.memo(function SessionCard({
     idleSinceAt: session.chatIdleSinceAt,
     awaitingInput: session.runtimeState === "waiting-input",
   });
+  const chatTargetId = session.executionTargetId?.trim() || ADE_LOCAL_EXECUTION_TARGET_ID;
+  const projectTarget = (projectActiveTargetId ?? ADE_LOCAL_EXECUTION_TARGET_ID).trim() || ADE_LOCAL_EXECUTION_TARGET_ID;
+  const showOtherTargetBadge =
+    Boolean(session.executionTargetId || session.executionTargetLabel)
+    && chatTargetId !== projectTarget;
 
   return (
     <div className="group relative" onContextMenu={onContextMenu}>
@@ -101,6 +109,14 @@ export const SessionCard = React.memo(function SessionCard({
               >
                 {primaryText}
               </span>
+              {showOtherTargetBadge ? (
+                <span
+                  className="shrink-0 rounded border border-sky-500/25 bg-sky-500/10 px-1 py-0.5 font-mono text-[8px] font-semibold uppercase tracking-wide text-sky-200/85"
+                  title={session.executionTargetLabel ?? session.executionTargetId ?? "Other target"}
+                >
+                  {session.executionTargetLabel ? session.executionTargetLabel.slice(0, 12) : "Remote"}
+                </span>
+              ) : null}
               <span className="shrink-0 text-[10px] text-muted-fg/45 tabular-nums">
                 {relativeTimeCompact(session.endedAt ?? session.startedAt)}
               </span>

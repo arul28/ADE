@@ -1,6 +1,6 @@
 import { useMemo, useCallback, useEffect, useRef, useState } from "react";
 import { CaretDown, CaretRight, Clipboard, GitBranch, GridFour, List, Play, Plus, X } from "@phosphor-icons/react";
-import type { AgentChatSession, LaneSummary, TerminalSessionSummary } from "../../../shared/types";
+import type { AdeExecutionTargetProfile, AgentChatSession, LaneSummary, TerminalSessionSummary } from "../../../shared/types";
 import type { WorkDraftKind, WorkViewMode } from "../../state/appStore";
 import { TerminalView } from "./TerminalView";
 import { ToolLogo } from "./ToolLogos";
@@ -39,6 +39,9 @@ function SessionSurface({
   terminalVisible = isActive,
   onOpenChatSession,
   onResume,
+  workExecutionTargetProfile,
+  executionTargetProfiles,
+  projectActiveExecutionTargetId,
 }: {
   session: TerminalSessionSummary;
   isActive: boolean;
@@ -47,6 +50,9 @@ function SessionSurface({
   terminalVisible?: boolean;
   onOpenChatSession: (session: AgentChatSession) => void | Promise<void>;
   onResume?: (session: TerminalSessionSummary) => void;
+  workExecutionTargetProfile?: AdeExecutionTargetProfile;
+  executionTargetProfiles?: AdeExecutionTargetProfile[];
+  projectActiveExecutionTargetId?: string | null;
 }) {
   if (suspended) {
     const secondary = secondarySessionLabel(session);
@@ -89,6 +95,9 @@ function SessionSurface({
         hideSessionTabs
         onSessionCreated={onOpenChatSession}
         layoutVariant={layoutVariant}
+        workExecutionTargetProfile={workExecutionTargetProfile}
+        executionTargetProfiles={executionTargetProfiles}
+        projectActiveExecutionTargetId={projectActiveExecutionTargetId}
       />
     );
   }
@@ -267,6 +276,9 @@ function ModeSwitcherPills({
 export function WorkViewArea({
   gridLayoutId,
   lanes,
+  workExecutionTargetProfile,
+  executionTargetProfiles,
+  projectActiveExecutionTargetId,
   sessions,
   visibleSessions,
   tabGroups,
@@ -287,6 +299,9 @@ export function WorkViewArea({
 }: {
   gridLayoutId: string;
   lanes: LaneSummary[];
+  workExecutionTargetProfile?: AdeExecutionTargetProfile;
+  executionTargetProfiles?: AdeExecutionTargetProfile[];
+  projectActiveExecutionTargetId?: string | null;
   sessions: TerminalSessionSummary[];
   visibleSessions: TerminalSessionSummary[];
   tabGroups?: WorkTabGroup[];
@@ -414,11 +429,14 @@ export function WorkViewArea({
             layoutVariant="grid-tile"
             onOpenChatSession={onOpenChatSession}
             onResume={onResumeSession}
+            workExecutionTargetProfile={workExecutionTargetProfile}
+            executionTargetProfiles={executionTargetProfiles}
+            projectActiveExecutionTargetId={projectActiveExecutionTargetId}
           />
         </div>
       ),
     };
-  }), [activeSession?.id, closingPtyIds, handleContextMenu, onCloseItem, onOpenChatSession, onSelectItem, visibleSessions]);
+  }), [activeSession?.id, closingPtyIds, executionTargetProfiles, handleContextMenu, onCloseItem, onOpenChatSession, onSelectItem, projectActiveExecutionTargetId, visibleSessions, workExecutionTargetProfile]);
   const resolvedTabGroups = tabGroups ?? [];
   const hasGroupedTabs = resolvedTabGroups.length > 0;
   const toggleTabGroupCollapsed = onToggleTabGroupCollapsed ?? (() => {});
@@ -455,6 +473,9 @@ export function WorkViewArea({
                 lanes={lanes}
                 onOpenChatSession={onOpenChatSession}
                 onLaunchPtySession={onLaunchPtySession}
+                workExecutionTargetProfile={workExecutionTargetProfile}
+                executionTargetProfiles={executionTargetProfiles}
+                projectActiveExecutionTargetId={projectActiveExecutionTargetId}
               />
             </div>
           </div>
@@ -771,7 +792,16 @@ export function WorkViewArea({
         {activeSession ? (
           activeRunningTerminalSession ? null : (
             <div className="absolute inset-0">
-              <SessionSurface session={activeSession} isActive terminalVisible onOpenChatSession={onOpenChatSession} onResume={onResumeSession} />
+              <SessionSurface
+                session={activeSession}
+                isActive
+                terminalVisible
+                onOpenChatSession={onOpenChatSession}
+                onResume={onResumeSession}
+                workExecutionTargetProfile={workExecutionTargetProfile}
+                executionTargetProfiles={executionTargetProfiles}
+                projectActiveExecutionTargetId={projectActiveExecutionTargetId}
+              />
             </div>
           )
         ) : (
@@ -786,6 +816,9 @@ export function WorkViewArea({
                 lanes={lanes}
                 onOpenChatSession={onOpenChatSession}
                 onLaunchPtySession={onLaunchPtySession}
+                workExecutionTargetProfile={workExecutionTargetProfile}
+                executionTargetProfiles={executionTargetProfiles}
+                projectActiveExecutionTargetId={projectActiveExecutionTargetId}
               />
             </div>
           </div>

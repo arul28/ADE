@@ -13,6 +13,7 @@ import {
   getStoredZoomLevel,
 } from "../../lib/zoom";
 import { cn } from "../ui/cn";
+import { TopBarExecutionTargetSelect } from "../executionTargets/TopBarExecutionTargetSelect";
 import type { ProcessRuntime, RecentProjectSummary, SyncRoleSnapshot } from "../../../shared/types";
 import { AutoUpdateControl } from "./AutoUpdateControl";
 import { FeedbackReporterModal } from "./FeedbackReporterModal";
@@ -498,6 +499,8 @@ export function TopBar() {
         >
           <Plus size={12} weight="regular" />
         </button>
+
+        <TopBarExecutionTargetSelect projectRoot={project?.rootPath ?? null} />
       </div>
 
       {projectTransitionLabel ? (

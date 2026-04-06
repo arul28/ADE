@@ -27,6 +27,12 @@ import {
   type ComputerUsePolicy,
   type AiSettingsStatus,
   type TerminalToolType,
+  type AdeExecutionTargetProfile,
+} from "../../../shared/types";
+import {
+  ADE_LOCAL_EXECUTION_TARGET_ID,
+  defaultExecutionTargetsState,
+  executionTargetSummaryLabel,
 } from "../../../shared/types";
 import { parseAgentChatTranscript } from "../../../shared/chatTranscript";
 import {
@@ -679,6 +685,9 @@ export function AgentChatPane({
   onSessionCreated,
   availableLanes,
   onLaneChange,
+  workExecutionTargetProfile,
+  projectActiveExecutionTargetId,
+  executionTargetProfiles,
 }: {
   laneId: string | null;
   laneLabel?: string | null;
@@ -700,6 +709,10 @@ export function AgentChatPane({
   availableLanes?: Array<{ id: string; name: string; color?: string | null }>;
   /** Callback when lane selection changes in empty state */
   onLaneChange?: (laneId: string) => void;
+  /** Project workspace target (Work / lane work); drives default "run on" for new chats. */
+  workExecutionTargetProfile?: AdeExecutionTargetProfile;
+  projectActiveExecutionTargetId?: string | null;
+  executionTargetProfiles?: AdeExecutionTargetProfile[];
 }) {
   const projectRoot = useAppStore((s) => s.project?.rootPath ?? null);
   const navigate = useNavigate();
@@ -707,7 +720,16 @@ export function AgentChatPane({
     navigate("/settings?tab=ai#ai-providers");
   }, [navigate]);
   const selectLane = useAppStore((s) => s.selectLane);
-  const lockedSingleSessionMode = Boolean(lockSessionId && hideSessionTabs);
+  const targetProfilesForPicker = useMemo((): AdeExecutionTargetProfile[] => {
+    if (executionTargetProfiles?.length) return executionTargetProfiles;
+    const localDefault = defaultExecutionTargetsState().profiles[0]!;
+    if (workExecutionTargetProfile) {
+      if (workExecutionTargetProfile.id === localDefault.id) return [workExecutionTargetProfile];
+      return [localDefault, workExecutionTargetProfile];
+    }
+    return [localDefault];
+  }, [executionTargetProfiles, workExecutionTargetProfile]);
+  const lockedSingleSessionMode = Boolean(lockSessionId && hideSessionTabs && initialSessionSummary);
   const forceDraft = forceDraftMode || forceNewSession;
   const preferDraftStart = !lockSessionId && !initialSessionId && !forceNewSession;
   const surfaceProfile: ChatSurfaceProfile = presentation?.profile ?? "standard";
@@ -746,6 +768,8 @@ export function AgentChatPane({
   const [sdkSlashCommands, setSdkSlashCommands] = useState<import("../../../shared/types").AgentChatSlashCommand[]>([]);
   const [sendOnEnter, setSendOnEnter] = useState(true);
   const [draft, setDraft] = useState("");
+  const [composerExecutionTargetId, setComposerExecutionTargetId] = useState<string>(ADE_LOCAL_EXECUTION_TARGET_ID);
+  const [composerExecutionTargetLabel, setComposerExecutionTargetLabel] = useState<string>("This computer");
   const draftsPerSessionRef = useRef<Map<string | null, string>>(new Map());
   const [busy, setBusy] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -1001,6 +1025,12 @@ export function AgentChatPane({
       setOpenCodePermissionMode(initialNativeControls.opencodePermissionMode);
       setCursorModeId(initialNativeControls.cursorModeId);
       setCursorConfigValues(initialNativeControls.cursorConfigValues);
+      const wid = workExecutionTargetProfile?.id ?? ADE_LOCAL_EXECUTION_TARGET_ID;
+      const wlab = workExecutionTargetProfile
+        ? executionTargetSummaryLabel(workExecutionTargetProfile)
+        : "This computer";
+      setComposerExecutionTargetId(wid);
+      setComposerExecutionTargetLabel(wlab);
       return;
     }
     const nextModelId = session.modelId ?? resolveRegistryModelId(session.model);
@@ -1024,7 +1054,24 @@ export function AgentChatPane({
       ),
     );
     setComputerUsePolicy(session.computerUse ?? createDefaultComputerUsePolicy());
-  }, [initialNativeControls]);
+    const tid = session.executionTargetId?.trim() || ADE_LOCAL_EXECUTION_TARGET_ID;
+    const tlab =
+      session.executionTargetLabel?.trim()
+      || (tid === ADE_LOCAL_EXECUTION_TARGET_ID ? "This computer" : tid);
+    setComposerExecutionTargetId(tid);
+    setComposerExecutionTargetLabel(tlab);
+  }, [initialNativeControls, workExecutionTargetProfile]);
+
+  useEffect(() => {
+    if (selectedSessionId) return;
+    const wid = workExecutionTargetProfile?.id ?? ADE_LOCAL_EXECUTION_TARGET_ID;
+    const wlab = workExecutionTargetProfile
+      ? executionTargetSummaryLabel(workExecutionTargetProfile)
+      : "This computer";
+    setComposerExecutionTargetId(wid);
+    setComposerExecutionTargetLabel(wlab);
+  }, [selectedSessionId, workExecutionTargetProfile]);
+
   const executionModeOptions = useMemo(
     () => getExecutionModeOptions(selectedModelDesc),
     [selectedModelDesc],
@@ -2065,6 +2112,8 @@ export function AgentChatPane({
         reasoningEffort,
         ...nativeControlPayload,
         computerUse: computerUsePolicy,
+        executionTargetId: composerExecutionTargetId,
+        executionTargetLabel: composerExecutionTargetLabel,
       });
       loadedHistoryRef.current.delete(created.id);
       optimisticSessionIdsRef.current.add(created.id);
@@ -2091,7 +2140,7 @@ export function AgentChatPane({
         createSessionPromiseRef.current = null;
       }
     }
-  }, [buildNativeControlPayload, computerUsePolicy, currentNativeControls, laneId, modelId, notifySessionCreated, reasoningEffort, refreshSessions, touchSession]);
+  }, [buildNativeControlPayload, computerUsePolicy, composerExecutionTargetId, composerExecutionTargetLabel, currentNativeControls, laneId, modelId, notifySessionCreated, reasoningEffort, refreshSessions, touchSession]);
 
   const handoffSession = useCallback(async () => {
     if (!canShowHandoff || !selectedSessionId || !handoffModelId || handoffBlocked) return;
@@ -2404,6 +2453,30 @@ export function AgentChatPane({
     sessionMutationKind,
     sessionProvider,
   ]);
+
+  const handleComposerExecutionTargetChange = useCallback(
+    async (targetId: string) => {
+      const id = targetId.trim() || ADE_LOCAL_EXECUTION_TARGET_ID;
+      const profile = targetProfilesForPicker.find((p) => p.id === id);
+      const label = profile ? executionTargetSummaryLabel(profile) : id === ADE_LOCAL_EXECUTION_TARGET_ID ? "This computer" : id;
+      setComposerExecutionTargetId(id);
+      setComposerExecutionTargetLabel(label);
+      if (!selectedSessionId) return;
+      try {
+        await window.ade.agentChat.updateSession({
+          sessionId: selectedSessionId,
+          executionTargetId: id,
+          executionTargetLabel: label,
+        });
+        patchSessionSummary(selectedSessionId, { executionTargetId: id, executionTargetLabel: label });
+        void refreshSessions().catch(() => {});
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err));
+      }
+    },
+    [patchSessionSummary, refreshSessions, selectedSessionId, targetProfilesForPicker],
+  );
+
   const handleClaudeModeChange = useCallback((mode: AgentChatClaudePermissionMode) => {
     void updateNativeControls({
       interactionMode: mode === "plan" ? "plan" : "default",
@@ -2488,6 +2561,16 @@ export function AgentChatPane({
       </div>
     </>
   );
+  const projectWorkspaceTargetId =
+    projectActiveExecutionTargetId?.trim() || ADE_LOCAL_EXECUTION_TARGET_ID;
+  const composerChatTargetId = selectedSessionId
+    ? (selectedSession?.executionTargetId?.trim() || ADE_LOCAL_EXECUTION_TARGET_ID)
+    : composerExecutionTargetId;
+  const showOffProjectTargetBadge =
+    workExecutionTargetProfile != null
+    && projectActiveExecutionTargetId != null
+    && composerChatTargetId !== projectWorkspaceTargetId;
+
   const shellHeader = (
     <div className="space-y-2 px-4 py-3">
       {/* Single-row header: title + git toolbar + actions */}
@@ -2502,6 +2585,30 @@ export function AgentChatPane({
         </div>
 
         {laneId ? <ChatGitToolbar laneId={laneId} /> : null}
+
+        {showOffProjectTargetBadge ? (
+          <span
+            className="shrink-0 rounded-full border border-sky-500/30 bg-sky-500/10 px-2 py-0.5 font-sans text-[9px] font-semibold uppercase tracking-wide text-sky-200/90"
+            title="This chat is tagged for a different execution target than the project workspace focus. Tools still run locally until remote execution is connected."
+          >
+            Off workspace target
+          </span>
+        ) : null}
+
+        {laneId && laneDisplayLabel && laneDisplayLabel !== laneId ? (
+          <button
+            type="button"
+            className="inline-flex shrink-0 items-center gap-1.5 rounded-full border border-white/[0.06] px-2.5 py-0.5 font-sans text-[10px] font-medium text-muted-fg/60 transition-colors hover:border-white/[0.1] hover:text-fg/70"
+            title={`Go to lane: ${laneDisplayLabel}`}
+            onClick={() => {
+              selectLane(laneId);
+              navigate(`/lanes?laneId=${encodeURIComponent(laneId)}`);
+            }}
+          >
+            <GitBranch size={10} weight="regular" />
+            <span className="max-w-[120px] truncate">{laneDisplayLabel}</span>
+          </button>
+        ) : null}
 
         <div className="ml-auto flex shrink-0 items-center gap-1.5">
           {laneId ? <ChatTerminalToggle open={terminalDrawerOpen} onToggle={() => setTerminalDrawerOpen((v) => !v)} /> : null}
@@ -2676,6 +2783,12 @@ export function AgentChatPane({
             surfaceMode={surfaceMode}
             layoutVariant={layoutVariant}
             composerMaxHeightPx={composerMaxHeightPx}
+            executionTargetProfiles={workExecutionTargetProfile != null ? targetProfilesForPicker : undefined}
+            executionTargetId={composerExecutionTargetId}
+            executionTargetLabel={composerExecutionTargetLabel}
+            onExecutionTargetChange={
+              workExecutionTargetProfile != null ? handleComposerExecutionTargetChange : undefined
+            }
             sdkSlashCommands={sdkSlashCommands}
             modelId={modelId}
             availableModelIds={effectiveAvailableModelIds}

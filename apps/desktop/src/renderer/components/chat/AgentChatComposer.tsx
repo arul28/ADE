@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { At, CaretDown, Check, Image, Paperclip, PencilSimple, Square, X, PaperPlaneTilt, Cube, BookOpen } from "@phosphor-icons/react";
+import { At, CaretDown, Check, Image, Paperclip, PencilSimple, Square, X, PaperPlaneTilt, Cube, BookOpen, DesktopTower } from "@phosphor-icons/react";
 import {
   inferAttachmentType,
   type AgentChatApprovalDecision,
@@ -18,7 +18,9 @@ import {
   type ChatSurfaceMode,
   type ComputerUsePolicy,
   type PendingInputRequest,
+  type AdeExecutionTargetProfile,
 } from "../../../shared/types";
+import { executionTargetSummaryLabel } from "../../../shared/types";
 import { getModelById } from "../../../shared/modelRegistry";
 import { cn } from "../ui/cn";
 import { ProviderModelSelector } from "../shared/ProviderModelSelector";
@@ -327,6 +329,10 @@ export function AgentChatComposer({
   onEditSteer,
   onOpenAiSettings,
   sessionId,
+  executionTargetProfiles,
+  executionTargetId,
+  executionTargetLabel,
+  onExecutionTargetChange,
 }: {
   surfaceMode?: ChatSurfaceMode;
   layoutVariant?: "standard" | "grid-tile";
@@ -396,6 +402,10 @@ export function AgentChatComposer({
   onEditSteer?: (steerId: string, text: string) => void;
   onOpenAiSettings?: () => void;
   sessionId?: string | null;
+  executionTargetProfiles?: AdeExecutionTargetProfile[];
+  executionTargetId?: string;
+  executionTargetLabel?: string;
+  onExecutionTargetChange?: (targetId: string) => void;
 }) {
   const [attachmentPickerOpen, setAttachmentPickerOpen] = useState(false);
   const [attachmentQuery, setAttachmentQuery] = useState("");
@@ -414,12 +424,23 @@ export function AgentChatComposer({
   const [commandMenuTrigger, setCommandMenuTrigger] = useState<{ type: "at" | "slash"; query: string; cursorIndex: number } | null>(null);
   const [commandMenuAnchor, setCommandMenuAnchor] = useState<{ top: number; left: number } | null>(null);
   const commandMenuRef = useRef<ChatCommandMenuHandle | null>(null);
+  const [targetMenuOpen, setTargetMenuOpen] = useState(false);
+  const targetMenuRef = useRef<HTMLDivElement | null>(null);
 
   const attachmentInputRef = useRef<HTMLInputElement | null>(null);
   const uploadInputRef = useRef<HTMLInputElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const fileAddInProgressRef = useRef(false);
   const canAttach = !turnActive || sessionProvider === "claude" || sessionProvider === "codex";
+
+  useEffect(() => {
+    if (!targetMenuOpen) return;
+    const onDoc = (e: MouseEvent) => {
+      if (!targetMenuRef.current?.contains(e.target as Node)) setTargetMenuOpen(false);
+    };
+    document.addEventListener("mousedown", onDoc);
+    return () => document.removeEventListener("mousedown", onDoc);
+  }, [targetMenuOpen]);
 
   const attachedPaths = useMemo(() => new Set(attachments.map((a) => a.path)), [attachments]);
   const selectedModel = useMemo(() => getModelById(modelId), [modelId]);
@@ -1207,6 +1228,42 @@ export function AgentChatComposer({
             >
               /
             </button>
+
+            {executionTargetProfiles?.length && onExecutionTargetChange && executionTargetId ? (
+              <div ref={targetMenuRef} className="relative">
+                <button
+                  type="button"
+                  className="inline-flex h-6 max-w-[140px] items-center gap-1 rounded-md border border-white/[0.06] bg-white/[0.02] px-1.5 font-sans text-[10px] font-medium text-muted-fg/55 transition-colors hover:border-white/[0.10] hover:text-fg/70"
+                  onClick={() => setTargetMenuOpen((o) => !o)}
+                  title="Tagged execution target for this chat. Remote runs are not wired yet — tools still execute on this computer."
+                >
+                  <DesktopTower size={11} className="shrink-0 text-sky-400/70" />
+                  <span className="min-w-0 truncate">{executionTargetLabel ?? executionTargetId}</span>
+                  <CaretDown size={9} className="shrink-0 opacity-50" />
+                </button>
+                {targetMenuOpen ? (
+                  <div className="absolute bottom-full left-0 z-40 mb-1 min-w-[200px] overflow-hidden rounded-lg border border-white/[0.08] bg-card py-1 shadow-lg">
+                    {executionTargetProfiles.map((p) => (
+                      <button
+                        key={p.id}
+                        type="button"
+                        className={cn(
+                          "flex w-full items-center gap-2 px-2 py-1.5 text-left text-[11px] transition-colors hover:bg-white/[0.04]",
+                          p.id === executionTargetId && "bg-white/[0.06]",
+                        )}
+                        onClick={() => {
+                          onExecutionTargetChange(p.id);
+                          setTargetMenuOpen(false);
+                        }}
+                      >
+                        <DesktopTower size={12} className="shrink-0 text-muted-fg/45" />
+                        <span className="min-w-0 truncate">{executionTargetSummaryLabel(p)}</span>
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
 
             {/* Proof drawer toggle */}
             {onToggleProof ? (

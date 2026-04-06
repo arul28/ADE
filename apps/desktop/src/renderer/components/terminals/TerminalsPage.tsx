@@ -10,6 +10,9 @@ import type { AgentChatSession, TerminalSessionSummary } from "../../../shared/t
 import { isChatToolType } from "../../lib/sessions";
 import { sortLanesForTabs } from "../lanes/laneUtils";
 import { invalidateSessionListCache } from "../../lib/sessionListCache";
+import { useAppStore } from "../../state/appStore";
+import { useExecutionTargets } from "../../hooks/useExecutionTargets";
+import { ExecutionTargetContextBanner } from "../executionTargets/ExecutionTargetContextBanner";
 
 const TERMINALS_TILING_TREE: PaneSplit = {
   type: "split",
@@ -22,6 +25,8 @@ const TERMINALS_TILING_TREE: PaneSplit = {
 
 export function TerminalsPage() {
   const work = useWorkSessions();
+  const projectRoot = useAppStore((s) => s.project?.rootPath ?? null);
+  const { state: execTargetsState, activeProfile, activeTargetId } = useExecutionTargets(projectRoot);
   const sortedLanes = useMemo(() => sortLanesForTabs(work.lanes), [work.lanes]);
 
   const [contextMenu, setContextMenu] = useState<SessionContextMenuState>(null);
@@ -84,6 +89,9 @@ export function TerminalsPage() {
       <WorkViewArea
         gridLayoutId={work.gridLayoutId}
         lanes={sortedLanes}
+        workExecutionTargetProfile={activeProfile}
+        executionTargetProfiles={execTargetsState.profiles}
+        projectActiveExecutionTargetId={activeTargetId}
         sessions={work.sessions}
         visibleSessions={work.visibleSessions}
         tabGroups={work.tabGroups}
@@ -106,6 +114,9 @@ export function TerminalsPage() {
     [
       sortedLanes,
       work.gridLayoutId,
+      activeProfile,
+      execTargetsState.profiles,
+      activeTargetId,
       work.sessions,
       work.visibleSessions,
       work.tabGroups,
@@ -190,6 +201,7 @@ export function TerminalsPage() {
             workCollapsedSectionIds={work.workCollapsedSectionIds}
             toggleWorkSectionCollapsed={work.toggleWorkSectionCollapsed}
             sessionsGroupedByLane={work.sessionsGroupedByLane}
+            projectActiveTargetId={activeTargetId}
           />
         ),
       },
@@ -213,6 +225,7 @@ export function TerminalsPage() {
 
   return (
     <div className="flex h-full min-w-0 flex-col" style={{ background: "var(--color-bg)" }}>
+      <ExecutionTargetContextBanner profile={activeProfile} />
       {renameError ? (
         <div
           className="shrink-0 border-b border-red-500/25 px-4 py-2 text-[12px] text-red-300/95"
