@@ -60,7 +60,7 @@ const CLI_TOOLS: Array<{
     cli: "droid",
     label: "Factory Droid",
     description: "Factory Droid CLI, ACP work chat",
-    loginCmd: "See Factory CLI docs — auth via FACTORY_API_KEY or Factory login",
+    loginCmd: "export FACTORY_API_KEY=… (or sign in via `droid` interactive login)",
     installHint: "Install from https://docs.factory.ai/cli/getting-started/quickstart — ensure `droid` is on PATH",
   },
 ];

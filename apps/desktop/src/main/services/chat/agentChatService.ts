@@ -2166,6 +2166,9 @@ function resolveDroidAcpLaunchSettings(
   if (mode === "full-auto") {
     return { autonomy: "high" };
   }
+  if (mode === "edit") {
+    return { autonomy: "medium" };
+  }
   return { autonomy: "low" };
 }
 
@@ -2450,6 +2453,8 @@ export function createAgentChatService(args: {
   /** ACP session id → owner for Cursor and Droid CLI hosts */
   const acpHostSessionOwners = new Map<string, ManagedChatSession>();
   const acpHostBridgeWired = new WeakSet<CursorAcpPooled | DroidAcpPooled>();
+  /** Interrupt arrived while `ensureDroidRuntime` was still acquiring the pooled CLI. */
+  const droidRuntimeSetupInterruptRequested = new WeakMap<ManagedChatSession, boolean>();
   const sessionTurnCollectors = new Map<string, SessionTurnCollector>();
   const subagentStates = new Map<string, Map<string, AgentChatSubagentSnapshot>>();
   const AUTO_MEMORY_CATEGORY_ALLOWLIST = new Set([
@@ -11330,7 +11335,13 @@ export function createAgentChatService(args: {
           kind: "tool_call",
           description: req.toolCall.title ?? "Permission required",
           turnId: acpRt.activeTurnId ?? undefined,
-          detail: { cursorAcp: true, request, toolCall: req.toolCall, options: req.options },
+          detail: {
+            cursorAcp: source === "cursor",
+            acpHost: source,
+            request,
+            toolCall: req.toolCall,
+            options: req.options,
+          },
         });
       });
     };
@@ -11715,6 +11726,7 @@ export function createAgentChatService(args: {
         managed.runtime = null;
       } else {
         if (!existing.pooled) throw new Error("Droid ACP connection not available");
+        droidRuntimeSetupInterruptRequested.delete(managed);
         wireAcpHostBridgeHandlers(existing.pooled);
         existing.pooled.bridge.getRootPath = () => managed.laneWorktreePath;
         existing.pooled.bridge.getDirtyFileText = getDirtyFileTextForPath;
@@ -11724,50 +11736,70 @@ export function createAgentChatService(args: {
       teardownRuntime(managed);
     }
 
-    const auth = await detectAuth();
-    const pooled = await acquireDroidAcpConnection({
-      poolKey,
-      droidPath: resolveDroidExecutable({ auth }).path,
-      workspacePath: managed.laneWorktreePath,
-      modelId: launchModelId,
-      launchSettings: resolveDroidAcpLaunchSettings(managed.session),
-      appVersion,
-    });
-    wireAcpHostBridgeHandlers(pooled);
-    pooled.bridge.getRootPath = () => managed.laneWorktreePath;
-    pooled.bridge.getDirtyFileText = getDirtyFileTextForPath;
-
-    const rt: DroidRuntime = {
-      kind: "droid",
-      poolKey,
-      pooled,
-      acpSessionId: null,
-      activeTurnId: null,
-      busy: false,
-      interrupted: false,
-      modelId: launchModelId,
-      pendingSteers: [],
-      permissionWaiters: new Map(),
+    const throwIfDroidSetupInterrupted = (): void => {
+      if (!droidRuntimeSetupInterruptRequested.get(managed)) return;
+      droidRuntimeSetupInterruptRequested.delete(managed);
+      throw new Error("Droid session interrupted.");
     };
-    managed.runtime = rt;
 
-    const persistedAcp = readPersistedState(managed.session.id)?.acpSessionId?.trim();
-    if (persistedAcp && typeof pooled.connection.unstable_resumeSession === "function") {
-      try {
-        const resumed = await pooled.connection.unstable_resumeSession({
-          sessionId: persistedAcp,
-          cwd: managed.laneWorktreePath,
-          mcpServers: buildCursorAcpMcpServers(managed),
-        });
-        rt.acpSessionId = persistedAcp;
-        acpHostSessionOwners.set(persistedAcp, managed);
-        void resumed;
-      } catch {
-        // stale session id — create a new ACP session on first prompt
+    throwIfDroidSetupInterrupted();
+    let pooled: DroidAcpPooled | null = null;
+    try {
+      const auth = await detectAuth();
+      throwIfDroidSetupInterrupted();
+      pooled = await acquireDroidAcpConnection({
+        poolKey,
+        droidPath: resolveDroidExecutable({ auth }).path,
+        workspacePath: managed.laneWorktreePath,
+        modelId: launchModelId,
+        launchSettings: resolveDroidAcpLaunchSettings(managed.session),
+        appVersion,
+      });
+      throwIfDroidSetupInterrupted();
+      wireAcpHostBridgeHandlers(pooled);
+      pooled.bridge.getRootPath = () => managed.laneWorktreePath;
+      pooled.bridge.getDirtyFileText = getDirtyFileTextForPath;
+
+      const rt: DroidRuntime = {
+        kind: "droid",
+        poolKey,
+        pooled,
+        acpSessionId: null,
+        activeTurnId: null,
+        busy: false,
+        interrupted: false,
+        modelId: launchModelId,
+        pendingSteers: [],
+        permissionWaiters: new Map(),
+      };
+
+      const persistedAcp = readPersistedState(managed.session.id)?.acpSessionId?.trim();
+      if (persistedAcp && typeof pooled.connection.unstable_resumeSession === "function") {
+        try {
+          const resumed = await pooled.connection.unstable_resumeSession({
+            sessionId: persistedAcp,
+            cwd: managed.laneWorktreePath,
+            mcpServers: buildCursorAcpMcpServers(managed),
+          });
+          rt.acpSessionId = persistedAcp;
+          acpHostSessionOwners.set(persistedAcp, managed);
+          void resumed;
+        } catch {
+          // stale session id — create a new ACP session on first prompt
+        }
       }
-    }
 
-    return rt;
+      throwIfDroidSetupInterrupted();
+      managed.runtime = rt;
+      droidRuntimeSetupInterruptRequested.delete(managed);
+      return rt;
+    } catch (err) {
+      if (pooled && managed.runtime?.kind !== "droid") {
+        releaseDroidAcpConnection(poolKey);
+      }
+      droidRuntimeSetupInterruptRequested.delete(managed);
+      throw err;
+    }
   };
 
   const runDroidTurn = async (
@@ -11783,7 +11815,18 @@ export function createAgentChatService(args: {
       onDispatched?: () => void;
     },
   ): Promise<void> => {
-    const runtime = await ensureDroidRuntime(managed);
+    let runtime: DroidRuntime;
+    try {
+      runtime = await ensureDroidRuntime(managed);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      if (msg === "Droid session interrupted.") {
+        managed.session.status = "idle";
+        persistChatState(managed);
+        return;
+      }
+      throw e;
+    }
     const validation = validateSessionReadyForTurn(managed);
     if (!validation.ready) {
       throw new Error(validation.reason);
@@ -11841,6 +11884,12 @@ export function createAgentChatService(args: {
         composed = `${autoMemoryPlan.contextText}\n\n${composed}`;
       }
 
+      if (runtime.interrupted) {
+        managed.session.status = "idle";
+        persistChatState(managed);
+        return;
+      }
+
       const promptBlocks = buildCursorAcpPromptBlocks(composed, args.resolvedAttachments);
 
       if (!runtime.acpSessionId) {
@@ -11853,6 +11902,12 @@ export function createAgentChatService(args: {
         runtime.acpSessionId = sid;
         acpHostSessionOwners.set(sid, managed);
         persistChatState(managed);
+      }
+
+      if (runtime.interrupted) {
+        managed.session.status = "idle";
+        persistChatState(managed);
+        return;
       }
 
       persistChatState(managed);
@@ -12517,6 +12572,13 @@ export function createAgentChatService(args: {
       }
       rt.permissionWaiters.clear();
       cancelQueuedSteers(managed, rt, "interrupted");
+      return;
+    }
+
+    if (managed.session.provider === "droid") {
+      droidRuntimeSetupInterruptRequested.set(managed, true);
+      cancelQueuedSteers(managed, { pendingSteers: [], activeTurnId: null }, "interrupted");
+      persistChatState(managed);
       return;
     }
 
