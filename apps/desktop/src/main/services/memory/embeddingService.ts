@@ -9,6 +9,7 @@ export const DEFAULT_EMBEDDING_TASK = "feature-extraction" as const;
 export const DEFAULT_EMBEDDING_MODEL_ID = "Xenova/all-MiniLM-L6-v2";
 export const EXPECTED_EMBEDDING_DIMENSIONS = 384;
 const EMBEDDING_SMOKE_TEST_INPUT = "ADE embedding verification probe";
+const MAX_EMBEDDING_CACHE_SIZE = 5000;
 const REQUIRED_MODEL_FILES = [
   "config.json",
   "tokenizer.json",
@@ -457,6 +458,8 @@ export function createEmbeddingService(opts: CreateEmbeddingServiceOpts) {
     const cached = cache.get(contentHash);
     if (cached) {
       cacheHits += 1;
+      cache.delete(contentHash);
+      cache.set(contentHash, cached);
       emitStatus();
       return cloneVector(cached);
     }
@@ -473,6 +476,10 @@ export function createEmbeddingService(opts: CreateEmbeddingServiceOpts) {
     );
 
     cache.set(contentHash, cloneVector(vector));
+    if (cache.size > MAX_EMBEDDING_CACHE_SIZE) {
+      const firstKey = cache.keys().next().value;
+      if (firstKey !== undefined) cache.delete(firstKey);
+    }
     emitStatus();
     return vector;
   }

@@ -163,6 +163,9 @@ const defaultEnabledBackgroundTaskFlags = new Set<string>([
   "ADE_ENABLE_TEAM_RUNTIME_RECOVERY",
   "ADE_ENABLE_HEAD_WATCHER",
   "ADE_ENABLE_PORT_ALLOCATION_RECOVERY",
+  "ADE_ENABLE_MEMORY_STARTUP_SWEEP",
+  "ADE_ENABLE_MEMORY_CONSOLIDATION",
+  "ADE_ENABLE_EMBEDDING_WORKER",
 ]);
 
 function isBackgroundTaskEnabled(enableFlag?: string): boolean {
@@ -1358,10 +1361,7 @@ app.whenReady().then(async () => {
         debouncedSyncMemoryDocs();
       },
       onMemoryUpserted: (event) => {
-        if (
-          (event.created || event.contentChanged) &&
-          embeddingService.isAvailable()
-        ) {
+        if (event.created || event.contentChanged) {
           embeddingWorkerServiceRef?.queueMemory(event.memory.id);
         }
       },
@@ -1385,6 +1385,9 @@ app.whenReady().then(async () => {
       projectRoot,
       onStatus: (event) =>
         emitProjectEvent(projectRoot, IPC.memoryConsolidationStatus, event),
+      onMemoryInserted: (memoryId) => {
+        embeddingWorkerServiceRef?.queueMemory(memoryId);
+      },
     });
     batchConsolidationServiceRef = batchConsolidationService;
     const memoryLifecycleService = createMemoryLifecycleService({

@@ -437,7 +437,7 @@ export function createHybridSearchService(opts: CreateHybridSearchServiceOpts) {
     const normalizedQuery = normalizeText(searchOpts.query);
     if (!normalizedQuery.length) return [];
 
-    let queryVector: Float32Array;
+    let queryVector: Float32Array | null = null;
     try {
       queryVector = await embeddingService.embed(searchOpts.query);
     } catch (error) {
@@ -446,30 +446,34 @@ export function createHybridSearchService(opts: CreateHybridSearchServiceOpts) {
         reason: message,
         query: searchOpts.query.slice(0, 100),
       });
-      throw new HybridSearchUnavailableError(message);
+      // Fall through — we'll degrade to lexical-only search below.
     }
 
     const lexicalCandidates = readLexicalCandidates(searchOpts.query, searchOpts);
     const lexicalById = new Map(lexicalCandidates.map((candidate) => [candidate.memory.id, candidate]));
 
-    for (const candidate of lexicalCandidates) {
-      if (candidate.vector) {
-        candidate.cosineSimilarity = clamp01(cosineSimilarity(queryVector, candidate.vector));
+    if (queryVector) {
+      for (const candidate of lexicalCandidates) {
+        if (candidate.vector) {
+          candidate.cosineSimilarity = clamp01(cosineSimilarity(queryVector, candidate.vector));
+        }
       }
     }
 
     const combined = new Map<string, HybridSearchCandidate>(lexicalById);
-    for (const candidate of readVectorCandidates(searchOpts, queryVector)) {
-      const existing = combined.get(candidate.memory.id);
-      if (!existing) {
-        combined.set(candidate.memory.id, candidate);
-        continue;
+    if (queryVector) {
+      for (const candidate of readVectorCandidates(searchOpts, queryVector)) {
+        const existing = combined.get(candidate.memory.id);
+        if (!existing) {
+          combined.set(candidate.memory.id, candidate);
+          continue;
+        }
+        if (!existing.vector && candidate.vector) {
+          existing.vector = candidate.vector;
+          existing.hasEmbedding = true;
+        }
+        existing.cosineSimilarity = Math.max(existing.cosineSimilarity, candidate.cosineSimilarity);
       }
-      if (!existing.vector && candidate.vector) {
-        existing.vector = candidate.vector;
-        existing.hasEmbedding = true;
-      }
-      existing.cosineSimilarity = Math.max(existing.cosineSimilarity, candidate.cosineSimilarity);
     }
 
     const scored = normalizeBm25Scores([...combined.values()]).map((candidate) => {

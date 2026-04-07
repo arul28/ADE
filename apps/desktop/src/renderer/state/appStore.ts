@@ -103,6 +103,7 @@ type AppState = {
   projectHydrated: boolean;
   /** True when the user removed all projects — forces welcome screen even though backend still has a project loaded. */
   showWelcome: boolean;
+  isNewTabOpen: boolean;
   laneSnapshots: LaneListSnapshot[];
   lanes: LaneSummary[];
   selectedLaneId: string | null;
@@ -146,6 +147,8 @@ type AppState = {
   refreshProviderMode: () => Promise<void>;
   refreshKeybindings: () => Promise<void>;
 
+  openNewTab: () => void;
+  cancelNewTab: () => void;
   refreshProject: () => Promise<void>;
   refreshLanes: (options?: { includeStatus?: boolean }) => Promise<void>;
   openRepo: () => Promise<ProjectInfo | null>;
@@ -203,6 +206,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   project: null,
   projectHydrated: false,
   showWelcome: true,
+  isNewTabOpen: false,
   laneSnapshots: [],
   lanes: [],
   selectedLaneId: null,
@@ -241,6 +245,11 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({ theme });
   },
   setTerminalAttention: (terminalAttention) => set({ terminalAttention }),
+  openNewTab: () => set({ isNewTabOpen: true, showWelcome: true }),
+  cancelNewTab: () => {
+    const hasProject = get().project != null;
+    set({ isNewTabOpen: false, showWelcome: !hasProject });
+  },
   getWorkViewState: (projectRoot) => {
     const key = normalizeProjectKey(projectRoot);
     if (!key) return createDefaultWorkProjectViewState();
@@ -420,6 +429,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       project,
       projectHydrated: true,
       showWelcome: false,
+      isNewTabOpen: false,
       laneSnapshots: [],
       lanes: [],
       selectedLaneId: null,
@@ -446,6 +456,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       project,
       projectHydrated: true,
       showWelcome: false,
+      isNewTabOpen: false,
       laneSnapshots: [],
       lanes: [],
       selectedLaneId: null,
@@ -460,6 +471,24 @@ export const useAppStore = create<AppState>((set, get) => ({
       get().refreshKeybindings()
     ]);
     scheduleProjectHydration(get);
+
+    // Prune stale view state for projects no longer in recent list
+    const recentRoots = new Set(
+      (await window.ade.project.listRecent().catch(() => [])).map((r: { rootPath: string }) => r.rootPath)
+    );
+    const activeRoot = get().project?.rootPath ?? null;
+    set((prev) => {
+      const nextWorkViews: Record<string, WorkProjectViewState> = {};
+      const nextLaneWorkViews: Record<string, WorkProjectViewState> = {};
+      for (const [key, value] of Object.entries(prev.workViewByProject)) {
+        if (key === activeRoot || recentRoots.has(key)) nextWorkViews[key] = value;
+      }
+      for (const [scopeKey, value] of Object.entries(prev.laneWorkViewByScope)) {
+        const projectKey = scopeKey.split("::")[0];
+        if (projectKey === activeRoot || recentRoots.has(projectKey)) nextLaneWorkViews[scopeKey] = value;
+      }
+      return { workViewByProject: nextWorkViews, laneWorkViewByScope: nextLaneWorkViews };
+    });
   },
 
   closeProject: async () => {
@@ -468,6 +497,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       project: null,
       projectHydrated: true,
       showWelcome: true,
+      isNewTabOpen: false,
       laneSnapshots: [],
       lanes: [],
       selectedLaneId: null,

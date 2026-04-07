@@ -49,6 +49,9 @@ export function TopBar() {
   const closeProject = useAppStore((s) => s.closeProject);
   const terminalAttention = useAppStore((s) => s.terminalAttention);
   const openRepo = useAppStore((s) => s.openRepo);
+  const isNewTabOpen = useAppStore((s) => s.isNewTabOpen);
+  const openNewTab = useAppStore((s) => s.openNewTab);
+  const cancelNewTab = useAppStore((s) => s.cancelNewTab);
   const switchProjectToPath = useAppStore((s) => s.switchProjectToPath);
   const [recentProjects, setRecentProjects] = useState<RecentProjectSummary[]>([]);
   const [relocatingPath, setRelocatingPath] = useState<string | null>(null);
@@ -163,8 +166,8 @@ export function TopBar() {
   }, [project?.rootPath]);
 
   const handleOpenNew = useCallback(() => {
-    openRepo().catch(() => { });
-  }, [openRepo]);
+    openNewTab();
+  }, [openNewTab]);
 
   const handleSwitchProject = useCallback((rootPath: string) => {
     if (project?.rootPath === rootPath) return;
@@ -283,7 +286,7 @@ export function TopBar() {
               const isRelocating = relocatingPath === rp.rootPath;
               const isDragging = dragIdx === idx;
               const isDropTarget = dropIdx === idx && dragIdx !== idx;
-              const projectTabState = isRelocating ? "open" : isMissing ? "missing" : isCurrent ? "active" : undefined;
+              const projectTabState = isRelocating ? "open" : isMissing ? "missing" : (isCurrent && !isNewTabOpen) ? "active" : undefined;
               const indicator = terminalAttention?.indicator;
               return (
                 <div
@@ -402,6 +405,35 @@ export function TopBar() {
                 </div>
               );
             })}
+            {isNewTabOpen && (
+              <div
+                className={cn(
+                  "ade-shell-project-tab group inline-flex items-center gap-1.5 px-2.5 py-1",
+                  "transition-[background-color,color,border-color,box-shadow] duration-150",
+                  "font-semibold"
+                )}
+                data-state="active"
+                style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
+              >
+                <img src="./logo.png" alt="" style={{ height: 12, width: 12 }} draggable={false} />
+                <span className="truncate text-[11px]">New Tab</span>
+                <button
+                  type="button"
+                  className={cn(
+                    "ade-shell-control inline-flex h-3.5 w-3.5 items-center justify-center rounded-sm",
+                    "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity duration-150"
+                  )}
+                  data-variant="ghost"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    cancelNewTab();
+                  }}
+                  title="Close new tab"
+                >
+                  <X size={10} weight="regular" />
+                </button>
+              </div>
+            )}
           </>
         )}
 

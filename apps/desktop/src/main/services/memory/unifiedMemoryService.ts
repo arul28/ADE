@@ -945,6 +945,10 @@ export function createUnifiedMemoryService(db: AdeDb, serviceOpts: CreateUnified
       [now, now, id]
     );
     notifyMutation();
+    const memory = readById(id);
+    if (memory) {
+      notifyMemoryUpserted({ memory, created: false, deduped: false, contentChanged: true });
+    }
   }
 
   function archiveMemory(id: string): void {

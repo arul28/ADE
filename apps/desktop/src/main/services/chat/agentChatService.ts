@@ -518,17 +518,20 @@ function normalizeCodexAssistantDelta(
   const knownText = runtime.agentMessageTextByTurn.get(turnId) ?? "";
   if (!knownText.length) {
     runtime.agentMessageTextByTurn.set(turnId, args.delta);
+    evictOldestEntries(runtime.agentMessageTextByTurn, MAX_SESSION_MAP_ENTRIES);
     return args.delta;
   }
 
   if (args.delta.startsWith(knownText)) {
     const suffix = args.delta.slice(knownText.length);
     runtime.agentMessageTextByTurn.set(turnId, args.delta);
+    evictOldestEntries(runtime.agentMessageTextByTurn, MAX_SESSION_MAP_ENTRIES);
     return suffix.length ? suffix : null;
   }
 
   const nextText = `${knownText}${args.delta}`;
   runtime.agentMessageTextByTurn.set(turnId, nextText);
+  evictOldestEntries(runtime.agentMessageTextByTurn, MAX_SESSION_MAP_ENTRIES);
   return args.delta;
 }
 
@@ -726,6 +729,7 @@ type ManagedChatSession = {
     }) => void;
   }>;
   eventSequence: number;
+  lastActivityTimestamp: number;
 };
 
 type AgentChatTranscriptEntry = {
@@ -829,6 +833,22 @@ const WORKING_ACTIVITY_DETAIL = "Preparing response";
 const DEFAULT_RUN_SESSION_TURN_TIMEOUT_MS = 300_000;
 const DEFAULT_COLLABORATION_MODES_LIST_TIMEOUT_MS = 1_500;
 const CLAUDE_STREAM_IDLE_TIMEOUT_MS = 75_000;
+const SESSION_INACTIVITY_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
+const SESSION_CLEANUP_INTERVAL_MS = 60 * 1000; // check every 60 seconds
+const MAX_CONCURRENT_ACTIVE_RUNTIMES = 5;
+const MAX_SESSION_MAP_ENTRIES = 200;
+
+function evictOldestEntries<K, V>(map: Map<K, V>, maxSize: number): void {
+  if (map.size <= maxSize) return;
+  const toDelete = map.size - maxSize;
+  const iter = map.keys();
+  for (let i = 0; i < toDelete; i++) {
+    const next = iter.next();
+    if (next.done) break;
+    map.delete(next.value);
+  }
+}
+
 const AUTO_TITLE_SYSTEM_PROMPT = `You title software development chat sessions.
 Return only the title text.
 - Use 2 to 6 words.
@@ -4319,6 +4339,12 @@ export function createAgentChatService(args: {
       mcpTransport,
     };
 
+    // Evict least-recent runtime if at capacity
+    {
+      let activeCount = 0;
+      for (const [, s] of managedSessions) { if (s.runtime) activeCount++; }
+      if (activeCount >= MAX_CONCURRENT_ACTIVE_RUNTIMES) evictLeastRecentRuntime(managed.session.id);
+    }
     managed.runtime = runtime;
     managed.runtimeInvalidated = false;
     managed.session.provider = "unified";
@@ -4999,6 +5025,7 @@ export function createAgentChatService(args: {
   };
 
   const emitChatEvent = (managed: ManagedChatSession, event: AgentChatEvent): void => {
+    managed.lastActivityTimestamp = Date.now();
     const normalizedEvent = (() => {
       switch (event.type) {
         case "text":
@@ -5667,6 +5694,7 @@ export function createAgentChatService(args: {
       })) ?? [],
       localPendingInputs: new Map(),
       eventSequence: 0,
+      lastActivityTimestamp: Date.now(),
     };
     normalizeSessionNativePermissionControls(managed.session, resolveChatConfig());
     managed.transcriptLimitReached = managed.transcriptBytesWritten >= MAX_CHAT_TRANSCRIPT_BYTES;
@@ -8234,6 +8262,7 @@ export function createAgentChatService(args: {
         const startedTurnId = explicitTurnId ?? runtime.activeTurnId ?? undefined;
         if (startedTurnId) {
           runtime.itemTurnIdByItemId.set(itemId, startedTurnId);
+          evictOldestEntries(runtime.itemTurnIdByItemId, MAX_SESSION_MAP_ENTRIES);
         }
         return startedTurnId;
       }
@@ -8254,6 +8283,7 @@ export function createAgentChatService(args: {
       );
       const output = String(item.aggregatedOutput ?? runtime.commandOutputByItemId.get(itemId) ?? "");
       runtime.commandOutputByItemId.set(itemId, output);
+      evictOldestEntries(runtime.commandOutputByItemId, MAX_SESSION_MAP_ENTRIES);
       emitChatEvent(managed, {
         type: "command",
         command: String(item.command ?? "command"),
@@ -8286,6 +8316,7 @@ export function createAgentChatService(args: {
         : [];
 
       runtime.fileChangesByItemId.set(itemId, changes.map((change) => ({ path: change.path, kind: change.kind })));
+      evictOldestEntries(runtime.fileChangesByItemId, MAX_SESSION_MAP_ENTRIES);
       emitChatEvent(managed, {
         type: "activity",
         activity: "editing_file",
@@ -8690,6 +8721,7 @@ export function createAgentChatService(args: {
       const turnId = turnIdFromParams ?? runtime.itemTurnIdByItemId.get(itemId) ?? runtime.activeTurnId ?? undefined;
       const next = `${runtime.commandOutputByItemId.get(itemId) ?? ""}${delta}`;
       runtime.commandOutputByItemId.set(itemId, next);
+      evictOldestEntries(runtime.commandOutputByItemId, MAX_SESSION_MAP_ENTRIES);
       emitChatEvent(managed, {
         type: "activity",
         activity: "running_command",
@@ -8714,6 +8746,7 @@ export function createAgentChatService(args: {
       const turnId = turnIdFromParams ?? runtime.itemTurnIdByItemId.get(itemId) ?? runtime.activeTurnId ?? undefined;
       const next = `${runtime.fileDeltaByItemId.get(itemId) ?? ""}${delta}`;
       runtime.fileDeltaByItemId.set(itemId, next);
+      evictOldestEntries(runtime.fileDeltaByItemId, MAX_SESSION_MAP_ENTRIES);
       emitChatEvent(managed, {
         type: "activity",
         activity: "editing_file",
@@ -9178,6 +9211,12 @@ export function createAgentChatService(args: {
 
   const ensureCodexSessionRuntime = async (managed: ManagedChatSession): Promise<CodexRuntime> => {
     if (managed.runtime?.kind === "codex") return managed.runtime;
+    // Evict least-recent runtime if at capacity
+    {
+      let activeCount = 0;
+      for (const [, s] of managedSessions) { if (s.runtime) activeCount++; }
+      if (activeCount >= MAX_CONCURRENT_ACTIVE_RUNTIMES) evictLeastRecentRuntime(managed.session.id);
+    }
     const runtime = await startCodexRuntime(managed);
     managed.runtime = runtime;
     managed.runtimeInvalidated = false;
@@ -9920,6 +9959,12 @@ export function createAgentChatService(args: {
 
   const ensureClaudeSessionRuntime = (managed: ManagedChatSession): ClaudeRuntime => {
     if (managed.runtime?.kind === "claude") return managed.runtime;
+    // Evict least-recent runtime if at capacity
+    {
+      let activeCount = 0;
+      for (const [, s] of managedSessions) { if (s.runtime) activeCount++; }
+      if (activeCount >= MAX_CONCURRENT_ACTIVE_RUNTIMES) evictLeastRecentRuntime(managed.session.id);
+    }
     const persisted = readPersistedState(managed.session.id);
     const currentLaneDirectiveKey = buildLaneDirectiveKey({
       laneId: resolveManagedExecutionLaneId(managed),
@@ -9998,6 +10043,7 @@ export function createAgentChatService(args: {
       recentConversationEntries: [],
       localPendingInputs: new Map(),
       eventSequence: 0,
+      lastActivityTimestamp: Date.now(),
     };
 
     let runtime: CodexRuntime | null = null;
@@ -10341,6 +10387,7 @@ export function createAgentChatService(args: {
       recentConversationEntries: [],
       localPendingInputs: new Map(),
       eventSequence: 0,
+      lastActivityTimestamp: Date.now(),
     };
     normalizeSessionNativePermissionControls(managed.session, resolveChatConfig());
     managed.transcriptLimitReached = managed.transcriptBytesWritten >= MAX_CHAT_TRANSCRIPT_BYTES;
@@ -11220,6 +11267,13 @@ export function createAgentChatService(args: {
       teardownRuntime(managed);
     }
 
+    // Evict least-recent runtime if at capacity
+    {
+      let activeCount = 0;
+      for (const [, s] of managedSessions) { if (s.runtime) activeCount++; }
+      if (activeCount >= MAX_CONCURRENT_ACTIVE_RUNTIMES) evictLeastRecentRuntime(managed.session.id);
+    }
+
     const pooled = await acquireCursorAcpConnection({
       poolKey,
       agentPath: resolveCursorAgentExecutable().path,
@@ -11710,6 +11764,7 @@ export function createAgentChatService(args: {
     const dispatchStartedAt = Date.now();
     const prepared = prepareSendMessage(args);
     if (!prepared) return;
+    prepared.managed.lastActivityTimestamp = Date.now();
     let rejectDispatch: ((error: Error) => void) | null = null;
     const dispatchPromise = options?.awaitDispatch
       ? new Promise<void>((resolve, reject) => {
@@ -12747,12 +12802,46 @@ export function createAgentChatService(args: {
   };
 
   const disposeAll = async (): Promise<void> => {
+    clearInterval(sessionCleanupTimer);
     for (const sessionId of [...managedSessions.keys()]) {
       try {
         await dispose({ sessionId });
       } catch {
         // ignore shutdown errors
       }
+    }
+  };
+
+  // --- Session inactivity cleanup ---
+  const sessionCleanupTimer = setInterval(() => {
+    const now = Date.now();
+    for (const [, managed] of managedSessions) {
+      if (
+        managed.runtime
+        && !managed.closed
+        && now - managed.lastActivityTimestamp > SESSION_INACTIVITY_TIMEOUT_MS
+      ) {
+        teardownRuntime(managed);
+      }
+    }
+  }, SESSION_CLEANUP_INTERVAL_MS);
+  // Allow the process to exit even if the timer is still scheduled
+  if (sessionCleanupTimer.unref) sessionCleanupTimer.unref();
+
+  // --- Max concurrent active runtimes eviction ---
+  const evictLeastRecentRuntime = (excludeSessionId: string): void => {
+    let oldest: ManagedChatSession | null = null;
+    let oldestTimestamp = Infinity;
+    for (const [id, managed] of managedSessions) {
+      if (id === excludeSessionId) continue;
+      if (!managed.runtime) continue;
+      if (managed.lastActivityTimestamp < oldestTimestamp) {
+        oldestTimestamp = managed.lastActivityTimestamp;
+        oldest = managed;
+      }
+    }
+    if (oldest) {
+      teardownRuntime(oldest);
     }
   };
 

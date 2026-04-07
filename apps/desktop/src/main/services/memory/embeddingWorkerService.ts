@@ -282,11 +282,19 @@ export function createEmbeddingWorkerService(opts: CreateEmbeddingWorkerServiceO
   async function start() {
     if (started) return getStatus();
     started = true;
-    if (!embeddingService.isAvailable()) return getStatus();
+    // Always run backfill — items queue regardless of model availability.
+    // The processing loop handles unavailability via embed()'s ensureExtractor().
     for (const id of listBackfillIds()) {
       queueMemory(id);
     }
     return getStatus();
+  }
+
+  /** Re-scan for un-embedded memories and queue them. Safe to call multiple times. */
+  function runBackfill() {
+    for (const id of listBackfillIds()) {
+      queueMemory(id);
+    }
   }
 
   async function waitForIdle() {
@@ -300,6 +308,7 @@ export function createEmbeddingWorkerService(opts: CreateEmbeddingWorkerServiceO
     getStatus,
     processQueue,
     queueMemory,
+    runBackfill,
     start,
     waitForIdle,
   };

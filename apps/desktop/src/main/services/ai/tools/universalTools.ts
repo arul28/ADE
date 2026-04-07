@@ -1065,6 +1065,10 @@ export function createUniversalToolSet(
       onMemoryWriteEvent,
     });
     Object.assign(tools, memTools);
+  } else {
+    console.warn(
+      `[ADE] Memory tools not registered for this session (memoryService=${!!memoryService}, projectId=${!!projectId}). Agents will not have memory capabilities.`,
+    );
   }
 
   if (onMemoryUpdateCore) {

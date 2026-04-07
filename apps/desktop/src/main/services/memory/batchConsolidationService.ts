@@ -30,6 +30,8 @@ type CreateBatchConsolidationServiceOpts = {
   autoCheckDebounceMs?: number;
   now?: () => Date;
   onStatus?: (event: MemoryConsolidationStatusEventPayload) => void;
+  /** Called after a merged memory is inserted so it can be queued for embedding. */
+  onMemoryInserted?: (memoryId: string) => void;
 };
 
 type MemoryCandidateRow = {
@@ -499,8 +501,9 @@ export function createBatchConsolidationService(opts: CreateBatchConsolidationSe
             const merged = await mergeCluster(cluster, consolidationId);
             tokensUsed += merged.tokensUsed;
             const completedAt = now().toISOString();
-            insertMergedEntry(cluster, merged.content, consolidationId, completedAt);
+            const mergedId = insertMergedEntry(cluster, merged.content, consolidationId, completedAt);
             archiveOriginals(cluster.entries.map((entry) => entry.id), completedAt);
+            try { opts.onMemoryInserted?.(mergedId); } catch { /* best-effort */ }
             entriesMerged += cluster.entries.length;
             entriesCreated += 1;
           } catch (error) {
