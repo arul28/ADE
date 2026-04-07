@@ -26,6 +26,8 @@ export type WorkProjectViewState = {
   sessionListOrganization: WorkSessionListOrganization;
   /** Lane ids collapsed in "by-lane" folder view (others expanded). */
   workCollapsedLaneIds: string[];
+  /** Tab group ids collapsed in the Work tab strip. */
+  workCollapsedTabGroupIds: string[];
   /** When true, sessions sidebar is hidden for a full-width content area (persisted per project). */
   workFocusSessionsHidden: boolean;
 };
@@ -60,8 +62,9 @@ function createDefaultWorkProjectViewState(): WorkProjectViewState {
     laneFilter: "all",
     statusFilter: "all",
     search: "",
-    sessionListOrganization: "all-lanes-by-status",
+    sessionListOrganization: "by-lane",
     workCollapsedLaneIds: [],
+    workCollapsedTabGroupIds: [],
     workFocusSessionsHidden: false,
   };
 }

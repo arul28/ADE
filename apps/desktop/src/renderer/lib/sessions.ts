@@ -145,6 +145,12 @@ export function isGenericSessionTitle(session: TerminalSessionSummary, value: st
     normalized === "claude chat" ||
     normalized === "codex chat" ||
     normalized === "cursor chat" ||
+    normalized === "claude code" ||
+    normalized === "claude cli" ||
+    normalized === "claude session" ||
+    normalized === "codex" ||
+    normalized === "codex cli" ||
+    normalized === "codex session" ||
     normalized === "ai worker" ||
     normalized === "claude worker" ||
     normalized === "codex worker"

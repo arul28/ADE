@@ -18,6 +18,7 @@ import type {
   PtyExitEvent,
   PtyCreateArgs,
   PtyCreateResult,
+  TerminalResumeMetadata,
   TerminalRuntimeState,
   TerminalSessionStatus,
   TerminalSessionSummary,
@@ -29,26 +30,40 @@ import { derivePreviewFromChunk } from "../../utils/terminalPreview";
 import {
   defaultResumeCommandForTool,
   extractResumeCommandFromOutput,
+  parseTrackedCliLaunchConfig,
   runtimeStateFromOsc133Chunk
 } from "../../utils/terminalSessionSignals";
 
 /** Delay before auto-generating a title from CLI output; keep in sync with tests. */
 export const PTY_AI_TITLE_DEBOUNCE_MS = 6000;
 
-function readPersistedChatManuallyNamed(chatSessionsDir: string, sessionId: string): boolean {
-  try {
-    const metadataPath = path.join(chatSessionsDir, `${sessionId}.json`);
-    if (!fs.existsSync(metadataPath)) return false;
-    const raw = fs.readFileSync(metadataPath, "utf8");
-    const parsed = JSON.parse(raw) as { manuallyNamed?: boolean };
-    return parsed.manuallyNamed === true;
-  } catch (err: unknown) {
-    if (err && typeof err === "object" && "code" in err && (err as { code: string }).code === "ENOENT") {
-      return false;
-    }
-    // Non-ENOENT errors (e.g. corrupt JSON, permission issues) — block auto-titling to be safe
-    return true;
-  }
+/** Claude/Codex TUIs often hide useful text in an alt-screen, so snippet-based titles fail; titles come from the first PTY write that ends with \\r (submitted prompt) instead. */
+const CLI_USER_TITLE_TOOL_TYPES = new Set<TerminalToolType>(["claude", "codex"]);
+
+function shouldScheduleOutputSnippetTitle(tool: TerminalToolType | null): boolean {
+  if (!tool || tool === "shell") return false;
+  return !CLI_USER_TITLE_TOOL_TYPES.has(tool);
+}
+
+const CLI_USER_TITLE_SEED_MIN_LEN = 3;
+const CLI_USER_TITLE_SEED_MAX_LEN = 180;
+
+function sanitizeCliUserTitleSeed(raw: string): string {
+  const stripped = stripAnsi(raw)
+    .replace(/\r\n/g, "\n")
+    .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, "")
+    .replace(/\n/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!stripped.length) return "";
+  return stripped.slice(0, CLI_USER_TITLE_SEED_MAX_LEN);
+}
+
+function isSessionManuallyNamed(
+  sessionService: ReturnType<typeof createSessionService>,
+  sessionId: string,
+): boolean {
+  return sessionService.get(sessionId)?.manuallyNamed === true;
 }
 
 type PtyEntry = {
@@ -76,6 +91,10 @@ type PtyEntry = {
   disposed: boolean;
   createdAt: number;
   cleanupPaths: string[];
+  /** Output-snippet title timer (skipped for interactive Claude/Codex; see CLI user-title path). */
+  aiTitleTimer: ReturnType<typeof setTimeout> | null;
+  cliUserTitleLineBuffer: string;
+  cliUserTitleCommitted: boolean;
 };
 
 type RuntimeStateEntry = {
@@ -140,6 +159,33 @@ function normalizeToolType(raw: unknown): TerminalToolType | null {
     "other"
   ];
   return (allowed as string[]).includes(value) ? (value as TerminalToolType) : "other";
+}
+
+function buildInitialResumeMetadata(args: {
+  toolType: TerminalToolType | null;
+  startupCommand: string;
+}): TerminalResumeMetadata | null {
+  const parsedLaunch = parseTrackedCliLaunchConfig(args.startupCommand, args.toolType);
+  if (parsedLaunch) {
+    return {
+      provider: args.toolType === "codex" || args.toolType === "codex-orchestrated"
+        ? "codex"
+        : "claude",
+      targetKind: args.toolType === "codex" || args.toolType === "codex-orchestrated"
+        ? "thread"
+        : "session",
+      targetId: null,
+      launch: parsedLaunch,
+    };
+  }
+
+  if (args.toolType === "claude" || args.toolType === "claude-orchestrated") {
+    return { provider: "claude", targetKind: "session", targetId: null, launch: {} };
+  }
+  if (args.toolType === "codex" || args.toolType === "codex-orchestrated") {
+    return { provider: "codex", targetKind: "thread", targetId: null, launch: {} };
+  }
+  return null;
 }
 
 const MAX_TRANSCRIPT_BYTES = 8 * 1024 * 1024;
@@ -270,6 +316,81 @@ export function createPtyService({
     const si = getSessionIntelligence();
     const raw = si?.titles?.modelId;
     return typeof raw === "string" && raw.trim().length ? raw.trim() : undefined;
+  };
+
+  const tryCliUserTitleFromWrite = (entry: PtyEntry, data: string): void => {
+    if (!CLI_USER_TITLE_TOOL_TYPES.has(entry.toolTypeHint ?? "shell")) return;
+    if (entry.cliUserTitleCommitted || entry.disposed) return;
+
+    entry.cliUserTitleLineBuffer += data;
+    while (true) {
+      const idx = entry.cliUserTitleLineBuffer.indexOf("\r");
+      if (idx === -1) break;
+      const segment = entry.cliUserTitleLineBuffer.slice(0, idx);
+      entry.cliUserTitleLineBuffer = entry.cliUserTitleLineBuffer.slice(idx + 1);
+      const seed = sanitizeCliUserTitleSeed(segment);
+      if (seed.length < CLI_USER_TITLE_SEED_MIN_LEN) continue;
+
+      entry.cliUserTitleCommitted = true;
+      if (entry.aiTitleTimer) {
+        clearTimeout(entry.aiTitleTimer);
+        entry.aiTitleTimer = null;
+      }
+
+      const session = sessionService.get(entry.sessionId);
+      if (!session) return;
+      if (!session.goal?.trim().length) {
+        sessionService.updateMeta({ sessionId: entry.sessionId, goal: seed });
+      }
+      if (!aiIntegrationService || aiIntegrationService.getMode() === "guest") return;
+      if (!isTitleGenerationEnabled()) return;
+      if (isSessionManuallyNamed(sessionService, entry.sessionId)) {
+        logger.info("pty.cli_user_title_skipped_user_renamed", { sessionId: entry.sessionId });
+        return;
+      }
+
+      const laneName = session.laneName?.trim() || "Current lane";
+      const titleModelId = resolveTitleModelId();
+      const prompt = [
+        "Write a concise title for this CLI coding session.",
+        "Return only plain text, max 80 characters, no punctuation at the end.",
+        "",
+        `Lane: ${laneName}`,
+        `Session type: ${session.toolType ?? "terminal"}`,
+        "Primary request (first submitted user input):",
+        seed,
+      ].join("\n");
+
+      const capturedAi = aiIntegrationService;
+      capturedAi
+        .summarizeTerminal({
+          cwd: entry.boundCwd || entry.laneWorktreePath,
+          prompt,
+          timeoutMs: 8_000,
+          ...(titleModelId ? { model: titleModelId } : {}),
+        })
+        .then((result) => {
+          if (entry.disposed) return;
+          const title = result.text.trim().replace(/\s+/g, " ").slice(0, 80);
+          if (!title) return;
+          if (isSessionManuallyNamed(sessionService, entry.sessionId)) {
+            logger.info("pty.cli_user_title_skipped_user_renamed", { sessionId: entry.sessionId });
+            return;
+          }
+          sessionService.updateMeta({ sessionId: entry.sessionId, title, manuallyNamed: false });
+        })
+        .catch((err) => {
+          logger.warn("pty.cli_user_title_generation_failed", {
+            sessionId: entry.sessionId,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        });
+      return;
+    }
+
+    if (entry.cliUserTitleLineBuffer.length > 8000) {
+      entry.cliUserTitleLineBuffer = entry.cliUserTitleLineBuffer.slice(-4000);
+    }
   };
 
   /** Only orchestrated worker sessions auto-close after the wrapped CLI exits back to shell. */
@@ -415,7 +536,7 @@ export function createPtyService({
             ?? true;
           if (refreshOnComplete && isTitleGenerationEnabled()) {
             try {
-              if (readPersistedChatManuallyNamed(chatSessionsDir, sessionId)) {
+              if (isSessionManuallyNamed(sessionService, sessionId)) {
                 logger.info("pty.session_title_refresh_skipped_user_renamed", { sessionId });
               } else {
               const titlePrompt = [
@@ -441,10 +562,10 @@ export function createPtyService({
               const finalTitle = titleResult.text.trim().replace(/\s+/g, " ").slice(0, 80);
               if (finalTitle) {
                 // Re-check in case user renamed during AI call
-                if (readPersistedChatManuallyNamed(chatSessionsDir, sessionId)) {
+                if (isSessionManuallyNamed(sessionService, sessionId)) {
                   logger.info("pty.session_title_refresh_skipped_user_renamed", { sessionId });
                 } else {
-                  sessionService.updateMeta({ sessionId, title: finalTitle });
+                  sessionService.updateMeta({ sessionId, title: finalTitle, manuallyNamed: false });
                 }
               }
               }
@@ -467,6 +588,10 @@ export function createPtyService({
     if (!entry) return;
     if (entry.disposed) return;
     entry.disposed = true;
+    if (entry.aiTitleTimer) {
+      clearTimeout(entry.aiTitleTimer);
+      entry.aiTitleTimer = null;
+    }
     clearToolAutoCloseTimer(ptyId);
 
     try {
@@ -623,6 +748,10 @@ export function createPtyService({
       const toolTypeHint = normalizeToolType(args.toolType);
       const requestedStartupCommand = typeof args.startupCommand === "string" ? args.startupCommand.trim() : "";
       const initialResumeCommand = defaultResumeCommandForTool(toolTypeHint);
+      const initialResumeMetadata = buildInitialResumeMetadata({
+        toolType: toolTypeHint,
+        startupCommand: requestedStartupCommand,
+      });
       const transcriptPath = safeTranscriptPathFor(sessionId);
       const enrichedLaunch = enrichStartupCommandForAdeMcp({
         projectRoot,
@@ -654,7 +783,8 @@ export function createPtyService({
         startedAt,
         transcriptPath: tracked ? transcriptPath : "",
         toolType: toolTypeHint,
-        resumeCommand: initialResumeCommand
+        resumeCommand: initialResumeCommand,
+        resumeMetadata: initialResumeMetadata,
       });
       setRuntimeState(sessionId, "running");
 
@@ -768,6 +898,9 @@ export function createPtyService({
         disposed: false,
         createdAt: Date.now(),
         cleanupPaths: enrichedLaunch.cleanupPaths,
+        aiTitleTimer: null,
+        cliUserTitleLineBuffer: "",
+        cliUserTitleCommitted: false,
       };
       ptys.set(ptyId, entry);
 
@@ -861,15 +994,20 @@ export function createPtyService({
         }
       }
 
-      // Fire-and-forget: after 6s, attempt AI title generation for non-shell sessions
-      if (aiIntegrationService && aiIntegrationService.getMode() !== "guest") {
+      // Fire-and-forget: after 6s, attempt AI title from initial PTY output (not used for interactive Claude/Codex — those title from the first submitted user input via pty.write).
+      if (
+        aiIntegrationService
+        && aiIntegrationService.getMode() !== "guest"
+        && shouldScheduleOutputSnippetTitle(toolTypeHint)
+      ) {
         const capturedAi = aiIntegrationService;
-        setTimeout(() => {
+        entry.aiTitleTimer = setTimeout(() => {
+          entry.aiTitleTimer = null;
           if (entry.disposed) return;
 
           if (!isTitleGenerationEnabled()) return;
 
-          if (readPersistedChatManuallyNamed(chatSessionsDir, sessionId)) {
+          if (isSessionManuallyNamed(sessionService, sessionId)) {
             logger.info("pty.session_title_skipped_user_renamed", { sessionId });
             return;
           }
@@ -903,10 +1041,10 @@ export function createPtyService({
               const title = result.text.trim().replace(/\s+/g, " ").slice(0, 80);
               if (title) {
                 // Re-check in case user renamed during AI call
-                if (readPersistedChatManuallyNamed(chatSessionsDir, sessionId)) {
+                if (isSessionManuallyNamed(sessionService, sessionId)) {
                   logger.info("pty.session_title_skipped_user_renamed", { sessionId });
                 } else {
-                  sessionService.updateMeta({ sessionId, title });
+                  sessionService.updateMeta({ sessionId, title, manuallyNamed: false });
                 }
               }
             })
@@ -929,6 +1067,7 @@ export function createPtyService({
       if (!entry) return;
       try {
         entry.pty.write(data);
+        tryCliUserTitleFromWrite(entry, data);
         setRuntimeState(entry.sessionId, "running");
         scheduleIdleTransition(entry.sessionId);
       } catch (err) {
@@ -998,6 +1137,10 @@ export function createPtyService({
       }
       if (entry.disposed) return;
       entry.disposed = true;
+      if (entry.aiTitleTimer) {
+        clearTimeout(entry.aiTitleTimer);
+        entry.aiTitleTimer = null;
+      }
       clearToolAutoCloseTimer(ptyId);
       try {
         entry.transcriptStream?.end();

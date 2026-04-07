@@ -4,7 +4,7 @@ type HarnessPermissionMode = "plan" | "edit" | "full-auto";
 function describePermissionMode(mode: HarnessPermissionMode): string {
   switch (mode) {
     case "plan":
-      return "Read-heavy mode. Inspect, explain, and prepare changes, but avoid mutating the repo unless it is explicitly necessary and allowed by the runtime.";
+      return "Plan mode. Stay read-only: inspect, analyze, ask clarifying questions, and prepare an implementation plan without editing files or mutating the system.";
     case "full-auto":
       return "Autonomous mode. You may edit and validate proactively, but still prefer the smallest safe change and verify it.";
     default:
@@ -46,7 +46,9 @@ export function buildCodingAgentSystemPrompt(args: {
   const hasCreatePr = toolNames.includes("createPrFromLane");
   const hasCaptureScreenshot = toolNames.includes("captureScreenshot");
   const hasReportCompletion = toolNames.includes("reportCompletion");
+  const hasTodoTools = toolNames.includes("TodoWrite") || toolNames.includes("TodoRead");
   const hasWorkflowTools = hasCreateLane || hasCreatePr || hasCaptureScreenshot || hasReportCompletion;
+  const guardedLocalReadOnly = permissionMode === "plan";
   const normalizeToolName = (name: string): string => {
     const match = name.match(/^mcp__(.+)__(.+)$/);
     return match?.[2] ?? name;
@@ -94,10 +96,24 @@ export function buildCodingAgentSystemPrompt(args: {
     toolNames.length
       ? `Available tools: ${toolNames.join(", ")}.`
       : "Use the available tools deliberately and only when they move the task forward.",
-    "Prefer search/list/read passes before editing so you operate on the right files the first time.",
-    "Batch related discovery work when the runtime supports it, especially for read-only inspection.",
+    ...(guardedLocalReadOnly
+      ? [
+          "Plan mode is read-only. Do not attempt editFile, writeFile, bash, or other mutating actions.",
+          "Inspect only the concrete files needed to form a plan. Do not keep broad-searching once you have enough context.",
+          "When the plan is clear, write or update a short TodoWrite plan, ask one clarifying question if needed, then use exitPlanMode to request implementation approval.",
+        ]
+      : [
+          "Prefer the smallest search/list/read pass before editing so you operate on the right files the first time.",
+          "Batch related discovery work only when the runtime can use it without repeating the same scope.",
+        ]),
     "Use shell access for validation and repository inspection, not for theatrical narration.",
     "Use web tools only when the answer depends on external facts that are not already in the repo.",
+    ...(hasTodoTools
+      ? [
+          "For multi-step work, keep a short task list with TodoWrite. Prefer 3-5 concrete steps and keep at most one item in progress.",
+          "When the plan changes materially, update the task list instead of silently drifting.",
+        ]
+      : []),
     interactive
       ? "If requirements are genuinely unclear and progress would otherwise stall, ask one concise question with concrete options."
       : "If requirements are unclear, make the safest reasonable assumption and continue. State the assumption in the final answer.",

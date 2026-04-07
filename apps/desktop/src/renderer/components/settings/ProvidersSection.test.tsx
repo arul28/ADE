@@ -1,12 +1,34 @@
 /* @vitest-environment jsdom */
 
 import React from "react";
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ProvidersSection } from "./ProvidersSection";
 import type { AgentChatEventEnvelope, AiSettingsStatus } from "../../../shared/types";
 
-function buildStatus(claudeRuntimeAvailable: boolean, localModels: string[] = []): AiSettingsStatus {
+function buildStatus(
+  claudeRuntimeAvailable: boolean,
+  localModels: string[] = [],
+  options?: {
+    localRuntimeDetected?: boolean;
+    localRuntimeAvailable?: boolean;
+    localRuntimeHealth?: "ready" | "reachable" | "reachable_no_models" | "not_configured" | "unreachable";
+    localRuntimeBlocker?: string | null;
+  },
+): AiSettingsStatus {
+  const localRuntimeDetected = options?.localRuntimeDetected ?? localModels.length > 0;
+  const localRuntimeAvailable = options?.localRuntimeAvailable ?? localModels.length > 0;
+  const localRuntimeHealth =
+    options?.localRuntimeHealth
+    ?? (localRuntimeAvailable ? "ready" : localRuntimeDetected ? "reachable_no_models" : "unreachable");
+  const localRuntimeBlocker =
+    options?.localRuntimeBlocker
+    ?? (localRuntimeAvailable
+      ? null
+      : localRuntimeDetected
+        ? "LM Studio is reachable, but no models are currently loaded."
+        : "No lmstudio runtime with loaded models was detected.");
+
   return {
     mode: "subscription",
     availableProviders: {
@@ -21,6 +43,7 @@ function buildStatus(claudeRuntimeAvailable: boolean, localModels: string[] = []
     },
     features: [],
     detectedAuth: localModels.length > 0
+      || localRuntimeDetected
       ? [
           {
             type: "local",
@@ -38,10 +61,10 @@ function buildStatus(claudeRuntimeAvailable: boolean, localModels: string[] = []
         endpoint: "http://localhost:1234",
         configured: true,
         authAvailable: false,
-        runtimeDetected: localModels.length > 0,
-        runtimeAvailable: localModels.length > 0,
-        health: localModels.length > 0 ? "ready" : "unreachable",
-        blocker: localModels.length > 0 ? null : "No lmstudio runtime with loaded models was detected.",
+        runtimeDetected: localRuntimeDetected,
+        runtimeAvailable: localRuntimeAvailable,
+        health: localRuntimeHealth,
+        blocker: localRuntimeBlocker,
         loadedModelIds: localModels,
         lastCheckedAt: "2026-03-17T19:00:00.000Z",
       },
@@ -191,5 +214,30 @@ describe("ProvidersSection", () => {
     expect(screen.getAllByText("LM Studio is reachable at http://localhost:1234. ADE can use 2 loaded models from this runtime (ready).").length).toBeGreaterThan(0);
     expect(screen.getAllByText("meta-llama-3.1-70b-instruct (LM Studio)").length).toBeGreaterThan(0);
     expect(screen.getAllByText("qwen2.5-coder:32b (LM Studio)").length).toBeGreaterThan(0);
+  });
+
+  it("shows a warning state when a local runtime is detected without loaded models", async () => {
+    const getStatusMock = window.ade.ai.getStatus as ReturnType<typeof vi.fn>;
+    getStatusMock.mockReset();
+    getStatusMock.mockResolvedValue(
+      buildStatus(true, [], {
+        localRuntimeDetected: true,
+        localRuntimeAvailable: false,
+        localRuntimeHealth: "reachable_no_models",
+        localRuntimeBlocker: "LM Studio is reachable, but no models are currently loaded.",
+      }),
+    );
+
+    const view = render(<ProvidersSection />);
+    const current = within(view.container);
+
+    await waitFor(() => {
+      expect(window.ade.ai.getStatus).toHaveBeenCalledTimes(1);
+      expect(window.ade.ai.listApiKeys).toHaveBeenCalledTimes(1);
+    });
+
+    expect(await current.findByText("Load a model")).toBeTruthy();
+    expect(current.getByText("LM Studio is reachable, but no models are currently loaded.")).toBeTruthy();
+    expect(current.queryByText("Ready")).toBeNull();
   });
 });

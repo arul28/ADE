@@ -16,8 +16,9 @@ const EMPTY_WORK_STATE: WorkProjectViewState = {
   laneFilter: "all",
   statusFilter: "all",
   search: "",
-  sessionListOrganization: "all-lanes-by-status",
+  sessionListOrganization: "by-lane",
   workCollapsedLaneIds: [],
+  workCollapsedTabGroupIds: [],
   workFocusSessionsHidden: false,
 };
 

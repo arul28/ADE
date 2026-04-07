@@ -10,6 +10,7 @@ import { getModelById } from "../../../shared/modelRegistry";
 import { buildPrAiResolutionContextKey } from "../../../shared/types";
 import { launchPrIssueResolutionChat, previewPrIssueResolutionPrompt } from "../prs/prIssueResolver";
 import { launchRebaseResolutionChat } from "../prs/prRebaseResolver";
+import { runGit } from "../git/git";
 import type { AdeCleanupResult, AdeProjectSnapshot } from "../../../shared/types";
 import { toRecentProjectSummary } from "../projects/recentProjectSummary";
 import type {
@@ -185,6 +186,7 @@ import type {
   AgentChatSessionCapabilities,
   AgentChatSessionCapabilitiesArgs,
   AgentChatSteerArgs,
+  AgentChatSteerResult,
   AgentChatCancelSteerArgs,
   AgentChatEditSteerArgs,
   AgentChatUnifiedPermissionMode,
@@ -193,6 +195,7 @@ import type {
   AgentChatSlashCommandsArgs,
   AgentChatFileSearchArgs,
   AgentChatFileSearchResult,
+  AgentChatGetTurnFileDiffArgs,
   AgentTool,
   KeybindingOverride,
   KeybindingsSnapshot,
@@ -3959,9 +3962,9 @@ export function registerIpc({
     await ctx.agentChatService.sendMessage(arg, { awaitDispatch: true });
   });
 
-  ipcMain.handle(IPC.agentChatSteer, async (_event, arg: AgentChatSteerArgs): Promise<void> => {
+  ipcMain.handle(IPC.agentChatSteer, async (_event, arg: AgentChatSteerArgs): Promise<AgentChatSteerResult> => {
     const ctx = getCtx();
-    await ctx.agentChatService.steer(arg);
+    return await ctx.agentChatService.steer(arg);
   });
 
   ipcMain.handle(IPC.agentChatCancelSteer, async (_event, arg: unknown): Promise<void> => {
@@ -4065,6 +4068,21 @@ export function registerIpc({
     const destPath = path.join(baseDir, `${randomUUID()}${ext}`);
     fs.writeFileSync(destPath, content);
     return { path: destPath };
+  });
+
+  ipcMain.handle(IPC.agentChatGetTurnFileDiff, async (_event, arg: AgentChatGetTurnFileDiffArgs) => {
+    const ctx = getCtx();
+    const cwd = ctx.project?.rootPath;
+    if (!cwd) throw new Error("No project root");
+    const lang = arg.filePath.split(".").pop() ?? undefined;
+    const origResult = await runGit(["show", `${arg.beforeSha}:${arg.filePath}`], { cwd, timeoutMs: 10_000 }).catch(() => ({ stdout: "", exitCode: 1 }));
+    const modResult = await runGit(["show", `${arg.afterSha}:${arg.filePath}`], { cwd, timeoutMs: 10_000 }).catch(() => ({ stdout: "", exitCode: 1 }));
+    return {
+      path: arg.filePath,
+      language: lang,
+      original: { text: origResult.exitCode === 0 ? origResult.stdout : null },
+      modified: { text: modResult.exitCode === 0 ? modResult.stdout : null },
+    };
   });
 
   ipcMain.handle(IPC.computerUseGetSettings, async (): Promise<ComputerUseSettingsSnapshot> => {

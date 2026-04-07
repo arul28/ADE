@@ -14,7 +14,7 @@ function getGutterStyle(
   thin?: boolean
 ): React.CSSProperties | undefined {
   const isVertical = orientation === "vertical";
-  if (laneDivider) return isVertical ? { width: 14 } : { height: 14 };
+  if (laneDivider) return isVertical ? { width: 7 } : { height: 7 };
   if (thin) return isVertical ? { width: 8 } : { height: 8 };
   return undefined;
 }

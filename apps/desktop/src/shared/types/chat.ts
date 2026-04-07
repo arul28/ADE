@@ -355,6 +355,15 @@ export type AgentChatEvent =
       text: string;
       turnId?: string;
       itemId?: string;
+    }
+  | {
+      type: "turn_diff_summary";
+      turnId: string;
+      beforeSha: string;
+      afterSha: string;
+      files: TurnDiffFile[];
+      totalAdditions: number;
+      totalDeletions: number;
     };
 
 export type AgentChatEventEnvelope = {
@@ -712,4 +721,27 @@ export type AgentChatFileSearchArgs = {
 export type AgentChatFileSearchResult = {
   path: string;
   score?: number;
+};
+
+export type TurnDiffFile = {
+  path: string;
+  additions: number;
+  deletions: number;
+  status: "A" | "M" | "D" | "R" | "C" | string;
+};
+
+export type TurnDiffSummary = {
+  turnId: string;
+  beforeSha: string;
+  afterSha: string;
+  files: TurnDiffFile[];
+  totalAdditions: number;
+  totalDeletions: number;
+};
+
+export type AgentChatGetTurnFileDiffArgs = {
+  sessionId: string;
+  beforeSha: string;
+  afterSha: string;
+  filePath: string;
 };

@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildTrackedCliResumeCommand,
   defaultResumeCommandForTool,
   extractResumeCommandFromOutput,
+  parseTrackedCliLaunchConfig,
+  parseTrackedCliResumeCommand,
   normalizeResumeCommand,
   runtimeStateFromOsc133Chunk
 } from "./terminalSessionSignals";
@@ -44,5 +47,56 @@ describe("terminalSessionSignals", () => {
     expect(defaultResumeCommandForTool("claude")).toBe("claude --resume");
     expect(defaultResumeCommandForTool("codex")).toBe("codex resume");
     expect(defaultResumeCommandForTool("shell")).toBeNull();
+  });
+
+  it("parses tracked Claude and Codex launch configs from startup commands", () => {
+    expect(parseTrackedCliLaunchConfig("claude --permission-mode default", "claude")).toEqual({
+      permissionMode: "default",
+      claudePermissionMode: "default",
+    });
+    expect(parseTrackedCliLaunchConfig("codex --no-alt-screen -c approval_policy=on-failure -c sandbox_mode=workspace-write", "codex")).toEqual({
+      permissionMode: "edit",
+      codexApprovalPolicy: "on-failure",
+      codexSandbox: "workspace-write",
+      codexConfigSource: "flags",
+    });
+  });
+
+  it("builds permission-aware resume commands with or without a concrete target", () => {
+    expect(buildTrackedCliResumeCommand({
+      provider: "claude",
+      targetKind: "session",
+      targetId: "claude-session-1",
+      launch: { permissionMode: "default" },
+    })).toBe("claude --permission-mode default --resume claude-session-1");
+
+    expect(buildTrackedCliResumeCommand({
+      provider: "codex",
+      targetKind: "thread",
+      targetId: "thread-99",
+      launch: { permissionMode: "edit" },
+    })).toBe("codex --no-alt-screen -c approval_policy=on-failure -c sandbox_mode=workspace-write resume thread-99");
+
+    expect(buildTrackedCliResumeCommand({
+      provider: "codex",
+      targetKind: "thread",
+      targetId: null,
+      launch: { permissionMode: "full-auto" },
+    })).toBe("codex --no-alt-screen --full-auto");
+  });
+
+  it("extracts resume targets from Claude and Codex picker commands", () => {
+    expect(parseTrackedCliResumeCommand("claude --resume 01HF4F5J1A3R8NBV3K", "claude")).toEqual({
+      provider: "claude",
+      targetId: "01HF4F5J1A3R8NBV3K",
+    });
+    expect(parseTrackedCliResumeCommand("claude --permission-mode default --resume 01HF4F5J1A3R8NBV3K", "claude")).toEqual({
+      provider: "claude",
+      targetId: "01HF4F5J1A3R8NBV3K",
+    });
+    expect(parseTrackedCliResumeCommand("codex resume thread_abc123", "codex")).toEqual({
+      provider: "codex",
+      targetId: "thread_abc123",
+    });
   });
 });

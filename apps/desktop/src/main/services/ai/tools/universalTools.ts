@@ -5,16 +5,16 @@ import os from "node:os";
 import path from "node:path";
 import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
-import { readFileRangeTool } from "./readFileRange";
-import { grepSearchTool } from "./grepSearch";
-import { globSearchTool } from "./globSearch";
+import { createReadFileRangeTool } from "./readFileRange";
+import { createGrepSearchTool } from "./grepSearch";
+import { createGlobSearchTool } from "./globSearch";
 import { webFetchTool } from "./webFetch";
 import { webSearchTool } from "./webSearch";
 import { createMemoryTools, type MemoryWriteEvent, type TurnMemoryPolicyState } from "./memoryTools";
 import type { createUnifiedMemoryService } from "../../memory/unifiedMemoryService";
-import type { AgentChatApprovalDecision, WorkerSandboxConfig, CtoCoreMemory } from "../../../../shared/types";
+import type { AgentChatApprovalDecision, AgentChatEvent, WorkerSandboxConfig, CtoCoreMemory } from "../../../../shared/types";
 import { DEFAULT_WORKER_SANDBOX_CONFIG } from "../../orchestrator/orchestratorConstants";
-import { getErrorMessage, isEnoentError, isWithinDir } from "../../shared/utils";
+import { getErrorMessage, isEnoentError, isWithinDir, resolvePathWithinRoot } from "../../shared/utils";
 
 const execFileAsync = promisify(execFile);
 
@@ -56,6 +56,8 @@ export type AskUserToolResult = {
   error?: string;
 };
 
+export type TodoToolItem = Extract<AgentChatEvent, { type: "todo_update" }>["items"][number];
+
 export interface UniversalToolSetOptions {
   permissionMode: PermissionMode;
   memoryService?: ReturnType<typeof createUnifiedMemoryService>;
@@ -72,6 +74,9 @@ export interface UniversalToolSetOptions {
   };
   /** Callback invoked when askUser tool is called; must return the user's response */
   onAskUser?: (input: AskUserToolInput) => Promise<string | AskUserToolResult>;
+  /** Optional callback for TodoWrite/TodoRead session state in interactive chat sessions. */
+  onTodoUpdate?: (items: TodoToolItem[]) => void;
+  getTodoItems?: () => TodoToolItem[];
   /** Optional callback for ADE-managed tool approvals in interactive chat sessions. */
   onApprovalRequest?: (request: ToolApprovalRequest) => Promise<ToolApprovalResult>;
   /** Sandbox config for API-model workers. CLI models skip this check. */
@@ -97,7 +102,7 @@ type ToolApprovalResult = {
 function requiresApproval(mode: PermissionMode, category: ToolCategory): boolean {
   switch (mode) {
     case "plan":
-      return category !== "read";
+      return false;
     case "edit":
       return category === "bash";
     case "full-auto":
@@ -789,13 +794,13 @@ function createEditFileTool(
   });
 }
 
-function createListDirTool() {
+function createListDirTool(cwd: string) {
   return tool({
     description:
       "List directory contents with file types and sizes. " +
       "Returns entries sorted alphabetically, directories first.",
     inputSchema: z.object({
-      path: z.string().describe("Absolute path to the directory"),
+      path: z.string().optional().default(".").describe("Repo-relative or absolute path to the directory"),
       recursive: z
         .boolean()
         .optional()
@@ -804,15 +809,20 @@ function createListDirTool() {
     }),
     execute: async ({ path: dirPath, recursive }) => {
       try {
-        if (!fs.existsSync(dirPath)) {
-          return { entries: [], error: `Directory not found: ${dirPath}` };
-        }
-        const stat = fs.statSync(dirPath);
+        const repoRoot = fs.realpathSync(cwd);
+        const targetDir = resolvePathWithinRoot(repoRoot, dirPath ?? ".", { allowMissing: false });
+        const stat = fs.statSync(targetDir);
         if (!stat.isDirectory()) {
-          return { entries: [], error: `Not a directory: ${dirPath}` };
+          return { entries: [], error: `Not a directory: ${targetDir}` };
         }
 
-        const entries: Array<{ name: string; type: "file" | "directory"; size?: number }> = [];
+        const entries: Array<{
+          name: string;
+          type: "file" | "directory";
+          size?: number;
+          path: string;
+          displayPath: string;
+        }> = [];
         const maxEntries = 1000;
 
         function walk(dir: string, prefix: string) {
@@ -832,25 +842,33 @@ function createListDirTool() {
           for (const item of items) {
             if (entries.length >= maxEntries) return;
             const relName = prefix ? `${prefix}/${item.name}` : item.name;
+            const entryPath = path.join(dir, item.name);
+            const displayPath = toPortablePath(path.relative(repoRoot, entryPath));
             if (item.isDirectory()) {
-              entries.push({ name: relName, type: "directory" });
+              entries.push({ name: relName, type: "directory", path: entryPath, displayPath });
               if (recursive && !item.name.startsWith(".") && item.name !== "node_modules") {
-                walk(path.join(dir, item.name), relName);
+                walk(entryPath, relName);
               }
             } else {
               let size: number | undefined;
               try {
-                size = fs.statSync(path.join(dir, item.name)).size;
+                size = fs.statSync(entryPath).size;
               } catch {
                 // skip
               }
-              entries.push({ name: relName, type: "file", size });
+              entries.push({ name: relName, type: "file", size, path: entryPath, displayPath });
             }
           }
         }
 
-        walk(dirPath, "");
-        return { entries, count: entries.length, truncated: entries.length >= maxEntries };
+        walk(targetDir, "");
+        return {
+          root: targetDir,
+          displayRoot: toPortablePath(path.relative(repoRoot, targetDir)) || ".",
+          entries,
+          count: entries.length,
+          truncated: entries.length >= maxEntries,
+        };
       } catch (err) {
         return {
           entries: [],
@@ -921,6 +939,7 @@ const MAX_FRONTEND_SCAN_FILES = 4_000;
 const FRONTEND_TEXT_SNIPPET_BYTES = 12_000;
 
 type FrontendRepoFile = {
+  absolutePath: string;
   relativePath: string;
   extension: string;
   stem: string;
@@ -929,6 +948,7 @@ type FrontendRepoFile = {
 
 type FrontendRepoMatch = {
   path: string;
+  displayPath: string;
   kind: string;
   score: number;
   evidence: string[];
@@ -1064,6 +1084,7 @@ function scanFrontendFiles(root: string): {
       const relativePath = toPortablePath(path.relative(root, absolutePath));
       const extension = path.extname(entry.name).toLowerCase();
       files.push({
+        absolutePath,
         relativePath,
         extension,
         stem: path.basename(entry.name, extension),
@@ -1144,7 +1165,8 @@ function createFrontendMatch(
   frameworkHints: string[],
 ): FrontendRepoMatch {
   return {
-    path: file.relativePath,
+    path: file.absolutePath,
+    displayPath: file.relativePath,
     kind,
     score,
     evidence: [...new Set(evidence)],
@@ -1369,7 +1391,7 @@ function dedupeAndSortMatches(matches: FrontendRepoMatch[]): FrontendRepoMatch[]
       deduped.set(match.path, match);
     }
   }
-  return [...deduped.values()].sort((a, b) => b.score - a.score || a.path.localeCompare(b.path));
+  return [...deduped.values()].sort((a, b) => b.score - a.score || a.displayPath.localeCompare(b.displayPath));
 }
 
 function detectLikelySourceRoot(relativePath: string): string | null {
@@ -1449,13 +1471,13 @@ function buildFrontendStructureSummary(
     parts.push(`Primary source roots: ${analysis.likelySourceRoots.slice(0, 4).join(", ")}`);
   }
   if (analysis.appEntryPoints.length > 0) {
-    parts.push(`Likely entry points: ${analysis.appEntryPoints.slice(0, sampleSize).map((match) => match.path).join(", ")}`);
+    parts.push(`Likely entry points: ${analysis.appEntryPoints.slice(0, sampleSize).map((match) => match.displayPath).join(", ")}`);
   }
   if (analysis.routingFiles.length > 0) {
-    parts.push(`Routing surfaces: ${analysis.routingFiles.slice(0, sampleSize).map((match) => match.path).join(", ")}`);
+    parts.push(`Routing surfaces: ${analysis.routingFiles.slice(0, sampleSize).map((match) => match.displayPath).join(", ")}`);
   }
   if (analysis.pageComponents.length > 0) {
-    parts.push(`Page-like components: ${analysis.pageComponents.slice(0, sampleSize).map((match) => match.path).join(", ")}`);
+    parts.push(`Page-like components: ${analysis.pageComponents.slice(0, sampleSize).map((match) => match.displayPath).join(", ")}`);
   }
   if (analysis.truncated) {
     parts.push(`Scan truncated after ${analysis.scannedFiles} relevant files`);
@@ -1680,6 +1702,97 @@ const askUserToolQuestionSchema = z.object({
   impact: z.string().nullable().optional().describe("Why this question matters"),
 });
 
+const todoToolItemSchema = z.object({
+  id: z.string().optional().describe("Stable todo id. Reuse ids when updating an existing task."),
+  content: z.string().optional().describe("Primary task description."),
+  description: z.string().optional().describe("Alternate task description field."),
+  activeForm: z.string().optional().describe("Optional active-progress wording for the task."),
+  text: z.string().optional().describe("Alternate text field for compatibility."),
+  status: z.enum(["pending", "in_progress", "inProgress", "completed"]).describe("Task status."),
+});
+
+function normalizeTodoToolItems(todos: unknown): TodoToolItem[] | null {
+  if (!Array.isArray(todos)) return null;
+  return todos.flatMap((todo, index) => {
+    if (!todo || typeof todo !== "object") return [];
+    const record = todo as Record<string, unknown>;
+    const description = [
+      record.content,
+      record.activeForm,
+      record.description,
+      record.text,
+    ].find((candidate): candidate is string => typeof candidate === "string" && candidate.trim().length > 0)?.trim();
+    if (!description) return [];
+
+    const rawStatus = typeof record.status === "string" ? record.status : "";
+    const status: TodoToolItem["status"] =
+      rawStatus === "completed"
+        ? "completed"
+        : rawStatus === "in_progress" || rawStatus === "inProgress"
+          ? "in_progress"
+          : "pending";
+    const explicitId = typeof record.id === "string" && record.id.trim().length > 0 ? record.id.trim() : null;
+    return [{
+      id: explicitId ?? `todo-${index}`,
+      description,
+      status,
+    }];
+  });
+}
+
+function createTodoWriteTool(args: {
+  getItems?: () => TodoToolItem[];
+  onUpdate?: (items: TodoToolItem[]) => void;
+}) {
+  let todoItems = args.getItems?.() ?? [];
+  return tool({
+    description:
+      "Create or update the current task list for this chat. " +
+      "Use this to track a short, concrete plan and keep exactly one item in progress when possible.",
+    inputSchema: z.object({
+      todos: z.array(todoToolItemSchema).describe("The full current task list."),
+    }),
+    execute: async ({ todos }) => {
+      const normalized = normalizeTodoToolItems(todos);
+      if (normalized == null) {
+        return { updated: false, error: "Provide a todos array." };
+      }
+      todoItems = normalized;
+      args.onUpdate?.(normalized);
+      return {
+        updated: true,
+        count: normalized.length,
+        todos: normalized.map((item) => ({
+          id: item.id,
+          content: item.description,
+          status: item.status,
+        })),
+      };
+    },
+  });
+}
+
+function createTodoReadTool(args: {
+  getItems?: () => TodoToolItem[];
+}) {
+  let todoItems = args.getItems?.() ?? [];
+  return tool({
+    description: "Read the current task list for this chat session.",
+    inputSchema: z.object({}),
+    execute: async () => {
+      todoItems = args.getItems?.() ?? todoItems;
+      return {
+        count: todoItems.length,
+        todos: todoItems.map((item) => ({
+          id: item.id,
+          content: item.description,
+          status: item.status,
+        })),
+      };
+    },
+  });
+}
+
 function createAskUserTool(
   onAskUser?: (input: AskUserToolInput) => Promise<string | AskUserToolResult>,
 ) {
@@ -1816,6 +1929,8 @@ export function createUniversalToolSet(
     onAskUser,
     onApprovalRequest,
     onMemoryUpdateCore,
+    onTodoUpdate,
+    getTodoItems,
     sandboxConfig,
   } = opts;
   const effectiveSandboxConfig = sandboxConfig ?? DEFAULT_WORKER_SANDBOX_CONFIG;
@@ -1823,10 +1938,10 @@ export function createUniversalToolSet(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const tools: Record<string, Tool<any, any>> = {
     // Read-only tools (auto-allowed in all modes)
-    readFile: readFileRangeTool,
-    grep: grepSearchTool,
-    glob: globSearchTool,
-    listDir: createListDirTool(),
+    readFile: createReadFileRangeTool(cwd),
+    grep: createGrepSearchTool(cwd),
+    glob: createGlobSearchTool(cwd),
+    listDir: createListDirTool(cwd),
     findRoutingFiles: createFindRoutingFilesTool(cwd),
     findPageComponents: createFindPageComponentsTool(cwd),
     findAppEntryPoints: createFindAppEntryPointsTool(cwd),
@@ -1837,13 +1952,9 @@ export function createUniversalToolSet(
     webFetch: webFetchTool,
     webSearch: webSearchTool,
 
-    // Write tools (auto in edit+full-auto, gated in plan)
-    editFile: createEditFileTool(cwd, permissionMode, effectiveSandboxConfig, onApprovalRequest, turnMemoryPolicyState),
-    writeFile: createWriteFileTool(cwd, permissionMode, effectiveSandboxConfig, onApprovalRequest, turnMemoryPolicyState),
-
-    // Bash (auto only in full-auto, gated in plan+edit)
-    // Default sandbox applies unless the caller provides an explicit override.
-    bash: createBashTool(cwd, permissionMode, effectiveSandboxConfig, onApprovalRequest, turnMemoryPolicyState),
+    // Planning/task state
+    TodoWrite: createTodoWriteTool({ getItems: getTodoItems, onUpdate: onTodoUpdate }),
+    TodoRead: createTodoReadTool({ getItems: getTodoItems }),
 
     // Interactive
     askUser: createAskUserTool(onAskUser),
@@ -1851,6 +1962,28 @@ export function createUniversalToolSet(
 
   if (permissionMode === "plan") {
     tools.exitPlanMode = createExitPlanModeTool(onApprovalRequest);
+  } else {
+    tools.editFile = createEditFileTool(
+      cwd,
+      permissionMode,
+      effectiveSandboxConfig,
+      onApprovalRequest,
+      turnMemoryPolicyState,
+    );
+    tools.writeFile = createWriteFileTool(
+      cwd,
+      permissionMode,
+      effectiveSandboxConfig,
+      onApprovalRequest,
+      turnMemoryPolicyState,
+    );
+    tools.bash = createBashTool(
+      cwd,
+      permissionMode,
+      effectiveSandboxConfig,
+      onApprovalRequest,
+      turnMemoryPolicyState,
+    );
   }
 
   // Conditionally add memory tools
@@ -1862,14 +1995,14 @@ export function createUniversalToolSet(
       turnMemoryPolicyState,
       onMemoryWriteEvent,
     });
-    Object.assign(tools, memTools);
-  } else {
-    console.warn(
-      `[ADE] Memory tools not registered for this session (memoryService=${!!memoryService}, projectId=${!!projectId}). Agents will not have memory capabilities.`,
-    );
+    if (permissionMode === "plan") {
+      tools.memorySearch = memTools.memorySearch;
+    } else {
+      Object.assign(tools, memTools);
+    }
   }
 
-  if (onMemoryUpdateCore) {
+  if (onMemoryUpdateCore && permissionMode !== "plan") {
     tools.memoryUpdateCore = createMemoryUpdateCoreTool(onMemoryUpdateCore);
   }
 

@@ -208,6 +208,48 @@ describe("chatTranscriptRows", () => {
     expect(rows[0]!.event.messageId).toBe("assistant-message-1");
   });
 
+  it("hides subagent lifecycle rows and keeps adjacent assistant text merged", () => {
+    const rows = collapseChatTranscriptEvents([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: {
+          type: "text",
+          text: "Hello",
+          messageId: "assistant-message-2",
+          turnId: "turn-1",
+        },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:01.000Z",
+        event: {
+          type: "subagent_started",
+          taskId: "agent-1",
+          description: "Inspect the current route tree",
+          turnId: "turn-1",
+        },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:02.000Z",
+        event: {
+          type: "text",
+          text: " world",
+          messageId: "assistant-message-2",
+          turnId: "turn-1",
+        },
+      },
+    ]);
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.event.type).toBe("text");
+    if (rows[0]!.event.type !== "text") {
+      throw new Error("Expected a text event");
+    }
+    expect(rows[0]!.event.text).toBe("Hello world");
+  });
+
   it("updates streaming command and file-change entries in place instead of stacking", () => {
     const rows = collapseChatTranscriptEvents([
       {
@@ -900,7 +942,7 @@ describe("chatTranscriptRows edge cases", () => {
     expect(rows[0]!.event.text).toBe("Part 1. Part 2.");
   });
 
-  it("collapses subagent_progress events for the same taskId", () => {
+  it("hides raw subagent_progress rows from the transcript", () => {
     const rows = collapseChatTranscriptEvents([
       {
         sessionId: "session-1",
@@ -923,9 +965,7 @@ describe("chatTranscriptRows edge cases", () => {
         },
       },
     ]);
-    expect(rows).toHaveLength(1);
-    if (rows[0]!.event.type !== "subagent_progress") throw new Error("Expected subagent_progress");
-    expect((rows[0]!.event as any).summary).toBe("Almost done.");
+    expect(rows).toHaveLength(0);
   });
 
   it("collapses todo_update events within the same turn", () => {

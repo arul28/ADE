@@ -30,7 +30,7 @@ function toAuthorizationHeaderValue(token: string, authMode: "manual" | "oauth" 
   if (authMode === "manual") {
     return trimmed.replace(/^bearer\s+/i, "");
   }
-  return /^bearer\s+/i.test(trimmed) ? trimmed : trimmed;
+  return trimmed;
 }
 
 function toNormalizedIssue(node: Record<string, unknown>): NormalizedLinearIssue | null {

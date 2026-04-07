@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import type { AgentChatSession, TerminalSessionSummary, TerminalToolType } from "../../../shared/types";
+import type { AgentChatSession, LaneSummary, TerminalSessionSummary, TerminalToolType } from "../../../shared/types";
 import {
   useAppStore,
   type WorkDraftKind,
@@ -13,7 +13,12 @@ import { listSessionsCached, invalidateSessionListCache } from "../../lib/sessio
 import { sessionStatusBucket } from "../../lib/terminalAttention";
 import { buildOptimisticChatSessionSummary, isChatToolType, isRunOwnedSession } from "../../lib/sessions";
 import { shouldRefreshSessionListForChatEvent } from "../../lib/chatSessionEvents";
-import { defaultTrackedCliStartupCommand, withCodexNoAltScreen } from "./cliLaunch";
+import {
+  defaultTrackedCliStartupCommand,
+  resolveTrackedCliResumeCommand,
+  withCodexNoAltScreen,
+} from "./cliLaunch";
+import { sortLanesForTabs } from "../lanes/laneUtils";
 
 const DEFAULT_PROJECT_WORK_STATE: WorkProjectViewState = {
   openItemIds: [],
@@ -24,10 +29,197 @@ const DEFAULT_PROJECT_WORK_STATE: WorkProjectViewState = {
   laneFilter: "all",
   statusFilter: "all",
   search: "",
-  sessionListOrganization: "by-time",
+  sessionListOrganization: "by-lane",
   workCollapsedLaneIds: [],
+  workCollapsedTabGroupIds: [],
   workFocusSessionsHidden: false,
 };
+
+type WorkTabGroupKind = "lane" | "status" | "time";
+type WorkTabGroupLane = Pick<LaneSummary, "id" | "name" | "laneType" | "createdAt">;
+
+export type WorkTabGroup = {
+  id: string;
+  label: string;
+  kind: WorkTabGroupKind;
+  collapsed: boolean;
+  sessionIds: string[];
+  sessions: TerminalSessionSummary[];
+};
+
+export type WorkTabGroupModel = {
+  groups: WorkTabGroup[];
+  sessionIds: string[];
+  visibleSessions: TerminalSessionSummary[];
+};
+
+function bucketByTime(session: TerminalSessionSummary): "today" | "yesterday" | "older" {
+  const now = new Date();
+  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  const yesterdayStart = todayStart - 86400000;
+  const startedAt = new Date(session.startedAt).getTime();
+  if (startedAt >= todayStart) return "today";
+  if (startedAt >= yesterdayStart) return "yesterday";
+  return "older";
+}
+
+function getStatusBucketLabel(bucket: ReturnType<typeof sessionStatusBucket>): string {
+  if (bucket === "running") return "Running";
+  if (bucket === "awaiting-input") return "Awaiting";
+  return "Ended";
+}
+
+function getTabGroupId(
+  organization: WorkSessionListOrganization,
+  session: TerminalSessionSummary,
+  lanes: WorkTabGroupLane[],
+): { id: string; label: string; kind: WorkTabGroupKind } {
+  if (organization === "by-lane") {
+    const lane = lanes.find((entry) => entry.id === session.laneId);
+    return {
+      id: `lane:${session.laneId}`,
+      label: lane?.name ?? session.laneName,
+      kind: "lane",
+    };
+  }
+  if (organization === "by-time") {
+    const bucket = bucketByTime(session);
+    return {
+      id: `time:${bucket}`,
+      label: bucket === "today" ? "Today" : bucket === "yesterday" ? "Yesterday" : "Older",
+      kind: "time",
+    };
+  }
+
+  const bucket = sessionStatusBucket({
+    status: session.status,
+    lastOutputPreview: session.lastOutputPreview,
+    runtimeState: session.runtimeState,
+    toolType: session.toolType,
+  });
+  return {
+    id: `status:${bucket}`,
+    label: getStatusBucketLabel(bucket),
+    kind: "status",
+  };
+}
+
+export function buildWorkTabGroupModel(args: {
+  sessions: TerminalSessionSummary[];
+  lanes: WorkTabGroupLane[];
+  organization: WorkSessionListOrganization;
+  collapsedGroupIds: string[];
+}): WorkTabGroupModel {
+  const orderedSessions = [...args.sessions].sort((left, right) => (
+    new Date(right.startedAt).getTime() - new Date(left.startedAt).getTime()
+  ));
+  const collapseSet = new Set(args.collapsedGroupIds);
+
+  if (args.organization === "by-lane") {
+    const laneOrder = new Map(sortLanesForTabs(args.lanes).map((lane, index) => [lane.id, index] as const));
+    const laneGroups = new Map<string, { id: string; label: string; kind: WorkTabGroupKind; sessions: TerminalSessionSummary[] }>();
+
+    for (const session of orderedSessions) {
+      const lane = args.lanes.find((entry) => entry.id === session.laneId);
+      const groupId = `lane:${session.laneId}`;
+      const group = laneGroups.get(groupId) ?? {
+        id: groupId,
+        label: lane?.name ?? session.laneName,
+        kind: "lane" as const,
+        sessions: [],
+      };
+      group.sessions.push(session);
+      laneGroups.set(groupId, group);
+    }
+
+    const groups = [...laneGroups.values()].sort((left, right) => {
+      const leftIdx = laneOrder.get(left.id.slice("lane:".length)) ?? Number.MAX_SAFE_INTEGER;
+      const rightIdx = laneOrder.get(right.id.slice("lane:".length)) ?? Number.MAX_SAFE_INTEGER;
+      if (leftIdx !== rightIdx) return leftIdx - rightIdx;
+      return left.label.localeCompare(right.label);
+    });
+
+    const visibleSessions: TerminalSessionSummary[] = [];
+    const finalGroups = groups.map((group) => {
+      const collapsed = collapseSet.has(group.id);
+      if (!collapsed) visibleSessions.push(...group.sessions);
+      return {
+        id: group.id,
+        label: group.label,
+        kind: group.kind,
+        collapsed,
+        sessionIds: group.sessions.map((session) => session.id),
+        sessions: group.sessions,
+      } satisfies WorkTabGroup;
+    });
+    return { groups: finalGroups, sessionIds: visibleSessions.map((session) => session.id), visibleSessions };
+  }
+
+  if (args.organization === "by-time") {
+    const timeOrder: Array<"today" | "yesterday" | "older"> = ["today", "yesterday", "older"];
+    const buckets = new Map<"today" | "yesterday" | "older", TerminalSessionSummary[]>();
+    for (const session of orderedSessions) {
+      const bucket = bucketByTime(session);
+      const list = buckets.get(bucket) ?? [];
+      list.push(session);
+      buckets.set(bucket, list);
+    }
+
+    const visibleSessions: TerminalSessionSummary[] = [];
+    const groups = timeOrder
+      .filter((bucket) => (buckets.get(bucket)?.length ?? 0) > 0)
+      .map((bucket) => {
+        const sessions = buckets.get(bucket) ?? [];
+        const groupId = `time:${bucket}`;
+        const collapsed = collapseSet.has(groupId);
+        if (!collapsed) visibleSessions.push(...sessions);
+        return {
+          id: groupId,
+          label: bucket === "today" ? "Today" : bucket === "yesterday" ? "Yesterday" : "Older",
+          kind: "time" as const,
+          collapsed,
+          sessionIds: sessions.map((session) => session.id),
+          sessions,
+        } satisfies WorkTabGroup;
+      });
+
+    return { groups, sessionIds: visibleSessions.map((session) => session.id), visibleSessions };
+  }
+
+  const statusBuckets = new Map<"running" | "awaiting-input" | "ended", TerminalSessionSummary[]>();
+  for (const session of orderedSessions) {
+    const bucket = sessionStatusBucket({
+      status: session.status,
+      lastOutputPreview: session.lastOutputPreview,
+      runtimeState: session.runtimeState,
+      toolType: session.toolType,
+    });
+    const list = statusBuckets.get(bucket) ?? [];
+    list.push(session);
+    statusBuckets.set(bucket, list);
+  }
+
+  const statusOrder: Array<"running" | "awaiting-input" | "ended"> = ["running", "awaiting-input", "ended"];
+  const visibleSessions: TerminalSessionSummary[] = [];
+  const groups = statusOrder
+    .filter((bucket) => (statusBuckets.get(bucket)?.length ?? 0) > 0)
+    .map((bucket) => {
+      const sessions = statusBuckets.get(bucket) ?? [];
+      const groupId = `status:${bucket}`;
+      const collapsed = collapseSet.has(groupId);
+      if (!collapsed) visibleSessions.push(...sessions);
+      return {
+        id: groupId,
+        label: getStatusBucketLabel(bucket),
+        kind: "status" as const,
+        collapsed,
+        sessionIds: sessions.map((session) => session.id),
+        sessions,
+      } satisfies WorkTabGroup;
+    });
+
+  return { groups, sessionIds: visibleSessions.map((session) => session.id), visibleSessions };
+}
 
 function inferToolFromResumeCommand(command: string): string | null {
   const n = command.trim().toLowerCase();
@@ -113,9 +305,37 @@ export function useWorkSessions() {
   const filterStatus = projectViewState.statusFilter;
   const q = projectViewState.search;
   const sessionListOrganization: WorkSessionListOrganization =
-    projectViewState.sessionListOrganization ?? "by-time";
+    projectViewState.sessionListOrganization ?? "by-lane";
   const workCollapsedLaneIds = projectViewState.workCollapsedLaneIds ?? [];
+  const workCollapsedTabGroupIds = projectViewState.workCollapsedTabGroupIds ?? [];
   const workFocusSessionsHidden = projectViewState.workFocusSessionsHidden ?? false;
+  const sessionsById = useMemo(() => {
+    const map = new Map<string, TerminalSessionSummary>();
+    for (const session of sessions) map.set(session.id, session);
+    return map;
+  }, [sessions]);
+
+  const openSessions = useMemo(() => {
+    return openItemIds
+      .map((id) => sessionsById.get(id))
+      .filter((session): session is TerminalSessionSummary => session != null);
+  }, [openItemIds, sessionsById]);
+
+  const tabGroupModel = useMemo(
+    () => buildWorkTabGroupModel({
+      sessions: openSessions,
+      lanes,
+      organization: sessionListOrganization,
+      collapsedGroupIds: workCollapsedTabGroupIds,
+    }),
+    [lanes, openSessions, sessionListOrganization, workCollapsedTabGroupIds],
+  );
+
+  const visibleSessions = useMemo(() => {
+    return openSessions;
+  }, [openSessions]);
+
+  const tabVisibleSessionIds = tabGroupModel.sessionIds;
 
   const setViewMode = useCallback(
     (nextMode: WorkViewMode) => {
@@ -166,6 +386,20 @@ export function useWorkSessions() {
         return {
           ...prev,
           workCollapsedLaneIds: has ? cur.filter((id) => id !== laneId) : [...cur, laneId],
+        };
+      });
+    },
+    [setProjectViewState],
+  );
+
+  const toggleWorkTabGroupCollapsed = useCallback(
+    (groupId: string) => {
+      setProjectViewState((prev) => {
+        const cur = prev.workCollapsedTabGroupIds ?? [];
+        const has = cur.includes(groupId);
+        return {
+          ...prev,
+          workCollapsedTabGroupIds: has ? cur.filter((id) => id !== groupId) : [...cur, groupId],
         };
       });
     },
@@ -248,13 +482,13 @@ export function useWorkSessions() {
   const closeTab = useCallback(
     (sessionId: string) => {
       setProjectViewState((prev) => {
-        const idx = prev.openItemIds.indexOf(sessionId);
+        const idx = tabVisibleSessionIds.indexOf(sessionId);
         if (idx < 0) return prev;
         const nextOpen = prev.openItemIds.filter((id) => id !== sessionId);
-        const fallbackActive =
-          nextOpen.length > 0
-            ? nextOpen[Math.min(idx, nextOpen.length - 1)] ?? nextOpen[0] ?? null
-            : null;
+        const nextRendered = tabVisibleSessionIds.filter((id) => id !== sessionId);
+        const fallbackActive = nextRendered.length > 0
+          ? nextRendered[Math.min(idx, nextRendered.length - 1)] ?? nextRendered[0] ?? null
+          : null;
         const nextActive = prev.activeItemId === sessionId ? fallbackActive : prev.activeItemId;
         const nextSelected = prev.selectedItemId === sessionId ? nextActive : prev.selectedItemId;
         return {
@@ -266,7 +500,7 @@ export function useWorkSessions() {
         };
       });
     },
-    [setProjectViewState],
+    [setProjectViewState, tabVisibleSessionIds],
   );
 
   const refresh = useCallback(async (options: { showLoading?: boolean; force?: boolean } = {}) => {
@@ -363,7 +597,7 @@ export function useWorkSessions() {
       sessionListOrganization !== "by-lane" &&
       sessionListOrganization !== "by-time"
     ) {
-      setProjectViewState({ sessionListOrganization: "by-time" });
+      setProjectViewState({ sessionListOrganization: "by-lane" });
     }
   }, [sessionListOrganization, setProjectViewState]);
 
@@ -511,18 +745,6 @@ export function useWorkSessions() {
     [sessions],
   );
 
-  const sessionsById = useMemo(() => {
-    const map = new Map<string, TerminalSessionSummary>();
-    for (const session of sessions) map.set(session.id, session);
-    return map;
-  }, [sessions]);
-
-  const visibleSessions = useMemo(() => {
-    return openItemIds
-      .map((id) => sessionsById.get(id))
-      .filter((session): session is TerminalSessionSummary => session != null);
-  }, [openItemIds, sessionsById]);
-
   const gridLayoutId = useMemo(
     () => `work:grid:v2:${projectRoot ?? "global"}`,
     [projectRoot],
@@ -629,7 +851,7 @@ export function useWorkSessions() {
         }
         return;
       }
-      const command = (session.resumeCommand ?? "").trim();
+      const command = resolveTrackedCliResumeCommand(session);
       if (!command || resumingSessionId) return;
       setResumingSessionId(session.id);
       try {
@@ -751,7 +973,11 @@ export function useWorkSessions() {
     setSessionListOrganization,
     workCollapsedLaneIds,
     toggleWorkLaneCollapsed,
+    workCollapsedTabGroupIds,
+    toggleWorkTabGroupCollapsed,
     sessionsGroupedByLane,
+    tabGroups: tabGroupModel.groups,
+    tabVisibleSessionIds,
 
     workFocusSessionsHidden,
     setWorkFocusSessionsHidden,

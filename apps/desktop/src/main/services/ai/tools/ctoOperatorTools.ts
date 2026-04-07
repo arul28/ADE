@@ -118,7 +118,7 @@ export interface CtoOperatorToolDeps {
     getStatus: () => any;
     generateDocs: (args: any) => Promise<any>;
   } | null;
-  steerChat?: (args: { sessionId: string; instruction: string }) => Promise<void>;
+  steerChat?: (args: { sessionId: string; instruction: string }) => Promise<{ steerId: string; queued: boolean }>;
   cancelSteer?: (args: { sessionId: string }) => Promise<void>;
   handoffChat?: (args: { sessionId: string; targetIdentityKey?: string; reason?: string }) => Promise<any>;
   listSubagents?: (args: { sessionId: string }) => Promise<any[]>;

@@ -1,3 +1,5 @@
+import fs from "node:fs";
+import path from "node:path";
 import { spawn } from "node:child_process";
 import type { ConflictFileType } from "../../../shared/types";
 
@@ -34,7 +36,45 @@ export type GitMergeTreeResult = GitRunResult & {
 };
 
 const DEFAULT_MAX_OUTPUT_BYTES = 4 * 1024 * 1024;
+const STALE_GIT_INDEX_LOCK_MIN_AGE_MS = 15_000;
 let mergeTreeMergeBaseSupportPromise: Promise<boolean> | null = null;
+const activeGitPids = new Set<number>();
+
+function extractIndexLockPath(message: string): string | null {
+  const singleQuoteMatch = message.match(/Unable to create '([^']*index\.lock)'/);
+  if (singleQuoteMatch?.[1]) return singleQuoteMatch[1];
+  const doubleQuoteMatch = message.match(/Unable to create "([^"]*index\.lock)"/);
+  return doubleQuoteMatch?.[1] ?? null;
+}
+
+function recoverStaleIndexLock(lockPath: string): boolean {
+  try {
+    const normalizedPath = path.normalize(lockPath);
+    if (path.basename(normalizedPath) !== "index.lock") return false;
+    if (!normalizedPath.includes(`${path.sep}.git${path.sep}`)) return false;
+    if (activeGitPids.size > 0) return false;
+    if (!fs.existsSync(lockPath)) return false;
+    const stat = fs.statSync(lockPath);
+    if (!stat.isFile()) return false;
+    if (Date.now() - stat.mtimeMs < STALE_GIT_INDEX_LOCK_MIN_AGE_MS) return false;
+    fs.renameSync(lockPath, `${lockPath}.stale-${Date.now()}`);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException)?.code === "ENOENT") {
+      return true;
+    }
+    return false;
+  }
+}
+
+function shouldRetryAfterIndexLock(result: GitRunResult): boolean {
+  if (result.exitCode === 0) return false;
+  const message = `${result.stderr}\n${result.stdout}`;
+  const lockPath = extractIndexLockPath(message);
+  if (!lockPath) return false;
+  if (!message.includes("Another git process seems to be running")) return false;
+  return recoverStaleIndexLock(lockPath);
+}
 
 function appendChunkWithCap(args: {
   current: string;
@@ -61,7 +101,7 @@ function appendChunkWithCap(args: {
   };
 }
 
-export async function runGit(args: string[], opts: GitRunOptions): Promise<GitRunResult> {
+async function runGitOnce(args: string[], opts: GitRunOptions): Promise<GitRunResult> {
   const timeoutMs = opts.timeoutMs ?? 30_000;
   const maxOutputBytes = Number.isFinite(opts.maxOutputBytes)
     ? Math.max(0, Math.floor(opts.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES))
@@ -73,6 +113,9 @@ export async function runGit(args: string[], opts: GitRunOptions): Promise<GitRu
       env: { ...process.env, ...(opts.env ?? {}) },
       stdio: ["ignore", "pipe", "pipe"]
     });
+    if (typeof child.pid === "number" && child.pid > 0) {
+      activeGitPids.add(child.pid);
+    }
 
     let settled = false;
     let stdout = "";
@@ -86,6 +129,9 @@ export async function runGit(args: string[], opts: GitRunOptions): Promise<GitRu
       if (settled) return;
       settled = true;
       clearTimeout(onTimeout);
+      if (typeof child.pid === "number" && child.pid > 0) {
+        activeGitPids.delete(child.pid);
+      }
       resolve(result);
     };
 
@@ -152,6 +198,14 @@ export async function runGit(args: string[], opts: GitRunOptions): Promise<GitRu
       });
     });
   });
+}
+
+export async function runGit(args: string[], opts: GitRunOptions): Promise<GitRunResult> {
+  const first = await runGitOnce(args, opts);
+  if (!shouldRetryAfterIndexLock(first)) {
+    return first;
+  }
+  return await runGitOnce(args, opts);
 }
 
 export async function runGitOrThrow(args: string[], opts: GitRunOptions): Promise<string> {

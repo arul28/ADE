@@ -521,6 +521,10 @@ export function appendCollapsedChatTranscriptEvent(
     }
   }
 
+  if (event.type === "subagent_started" || event.type === "subagent_progress" || event.type === "subagent_result") {
+    return;
+  }
+
   if (event.type === "text") {
     if (!event.text.trim().length) return;
     const previous = rows[rows.length - 1];
@@ -628,25 +632,6 @@ export function appendCollapsedChatTranscriptEvent(
         };
         return;
       }
-    }
-  }
-
-  if (event.type === "subagent_progress") {
-    const matchIndex = [...rows]
-      .reverse()
-      .findIndex((candidate) =>
-        candidate.event.type === "subagent_progress"
-        && candidate.event.taskId === event.taskId
-        && (candidate.event.turnId ?? null) === (event.turnId ?? null),
-      );
-    if (matchIndex >= 0) {
-      const actualIndex = rows.length - 1 - matchIndex;
-      rows[actualIndex] = {
-        ...rows[actualIndex]!,
-        timestamp: envelope.timestamp,
-        event,
-      };
-      return;
     }
   }
 

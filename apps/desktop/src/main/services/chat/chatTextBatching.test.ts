@@ -340,6 +340,21 @@ describe("chatTextBatching", () => {
       })).toBe(false);
     });
 
+    it("does not flush for subagent lifecycle events", () => {
+      expect(shouldFlushBufferedAssistantTextForEvent({
+        type: "subagent_started",
+        taskId: "task-1",
+        turnId: "turn-1",
+      } as any)).toBe(false);
+
+      expect(shouldFlushBufferedAssistantTextForEvent({
+        type: "subagent_progress",
+        taskId: "task-1",
+        summary: "Subagent is still working",
+        turnId: "turn-1",
+      })).toBe(false);
+    });
+
     it("flushes for tool_call events", () => {
       expect(shouldFlushBufferedAssistantTextForEvent({
         type: "tool_call",
@@ -413,12 +428,6 @@ describe("chatTextBatching", () => {
       expect(shouldFlushBufferedAssistantTextForEvent({
         type: "todo_update",
         todos: [],
-        turnId: "turn-1",
-      } as any)).toBe(true);
-
-      expect(shouldFlushBufferedAssistantTextForEvent({
-        type: "subagent_started",
-        taskId: "task-1",
         turnId: "turn-1",
       } as any)).toBe(true);
 

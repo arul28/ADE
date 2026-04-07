@@ -58,6 +58,9 @@ import {
 import { ChatSurfaceShell } from "./ChatSurfaceShell";
 import { chatChipToneClass } from "./chatSurfaceTheme";
 import { ChatComputerUsePanel } from "./ChatComputerUsePanel";
+import { ChatSubagentStrip } from "./ChatSubagentStrip";
+import { ChatGitToolbar } from "./ChatGitToolbar";
+import { ChatTerminalDrawer, ChatTerminalToggle } from "./ChatTerminalDrawer";
 import { deriveChatSubagentSnapshots } from "./chatExecutionSummary";
 import { derivePendingInputRequests, type DerivedPendingInput } from "./pendingInput";
 import { UnifiedModelSelector } from "../shared/UnifiedModelSelector";
@@ -696,6 +699,7 @@ export function AgentChatPane({
   const [error, setError] = useState<string | null>(null);
   const [computerUseSnapshot, setComputerUseSnapshot] = useState<ComputerUseOwnerSnapshot | null>(null);
   const [proofDrawerOpen, setProofDrawerOpen] = useState(false);
+  const [terminalDrawerOpen, setTerminalDrawerOpen] = useState(false);
   const [sessionDelta, setSessionDelta] = useState<{ insertions: number; deletions: number } | null>(null);
   const [sessionMutationKind, setSessionMutationKind] = useState<"model" | "permission" | "computer-use" | null>(null);
   const [promptSuggestion, setPromptSuggestion] = useState<string | null>(null);
@@ -2278,28 +2282,16 @@ export function AgentChatPane({
   );
   const shellHeader = (
     <div className="space-y-2 px-4 py-2">
-      {/* Clean single-row header */}
-      <div className="flex items-center gap-3">
-        <span className="min-w-0 truncate font-sans text-[13px] font-medium text-fg/80">
+      {/* Single-row header: title + git toolbar + actions */}
+      <div className="flex items-center gap-2">
+        <span className="min-w-0 shrink truncate font-sans text-[13px] font-medium text-fg/80">
           {resolvedTitle}
         </span>
 
-        {laneId && laneDisplayLabel && laneDisplayLabel !== laneId ? (
-          <button
-            type="button"
-            className="inline-flex shrink-0 items-center gap-1.5 rounded-full border border-white/[0.06] px-2.5 py-0.5 font-sans text-[10px] font-medium text-muted-fg/60 transition-colors hover:border-white/[0.1] hover:text-fg/70"
-            title={`Go to lane: ${laneDisplayLabel}`}
-            onClick={() => {
-              selectLane(laneId);
-              navigate(`/lanes?laneId=${encodeURIComponent(laneId)}`);
-            }}
-          >
-            <GitBranch size={10} weight="regular" />
-            <span className="max-w-[120px] truncate">{laneDisplayLabel}</span>
-          </button>
-        ) : null}
+        {laneId ? <ChatGitToolbar laneId={laneId} /> : null}
 
         <div className="ml-auto flex shrink-0 items-center gap-1.5">
+          {laneId ? <ChatTerminalToggle open={terminalDrawerOpen} onToggle={() => setTerminalDrawerOpen((v) => !v)} /> : null}
           {resolvedChips.map((chip) => (
             <span
               key={`${chip.label}:${chip.tone ?? "accent"}`}
@@ -2628,7 +2620,6 @@ export function AgentChatPane({
               }
             }}
             promptSuggestion={promptSuggestion}
-            subagentSnapshots={selectedSubagentSnapshots}
             chatHasMessages={selectedEventsForDisplay.some((env) => env.event.type === "user_message" || env.event.type === "text")}
             restrictModelCatalogToAvailable={selectedEvents.length > 0}
             pendingSteers={pendingSteers}
@@ -2642,6 +2633,7 @@ export function AgentChatPane({
                 void window.ade.agentChat.editSteer({ sessionId: selectedSessionId, steerId, text });
               }
             }}
+            sessionId={selectedSessionId}
           />
   );
 
@@ -2740,6 +2732,7 @@ export function AgentChatPane({
                       assistantLabel={assistantLabel}
                       respondingApprovalIds={respondingApprovalIds}
                       pendingApprovalIds={pendingApprovalIds}
+                      sessionId={selectedSessionId}
                       onApproval={(itemId, decision, responseText, answers) => {
                         void handleApproval(itemId, decision, responseText, answers);
                       }}
@@ -2750,6 +2743,22 @@ export function AgentChatPane({
                         <span className="text-red-400/70">-{sessionDelta.deletions}</span>
                       </div>
                     ) : null}
+                    {selectedSubagentSnapshots.length ? (
+                      <div className="border-t border-white/[0.05] bg-[#0d0d10]">
+                        <ChatSubagentStrip
+                          snapshots={selectedSubagentSnapshots}
+                          placement="read-only"
+                          className="pb-2"
+                          onInterruptTurn={turnActive ? () => { void interrupt(); } : undefined}
+                        />
+                      </div>
+                    ) : null}
+                    <ChatTerminalDrawer
+                      open={terminalDrawerOpen}
+                      onToggle={() => setTerminalDrawerOpen((v) => !v)}
+                      laneId={laneId}
+                      sessionId={selectedSessionId ?? undefined}
+                    />
                   </div>
 
                   {/* Proof panel (push) */}

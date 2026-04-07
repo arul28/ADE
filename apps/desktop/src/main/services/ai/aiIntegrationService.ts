@@ -540,6 +540,12 @@ async function buildLocalRuntimeConnection(args: {
       }
     }
 
+    const fallbackEndpoint = configuredEndpoint ?? autoEndpoint;
+    const fallbackSource = configuredEndpoint ? "config" : "auto";
+    const blocker = configuredEndpoint
+      ? `${label} is configured for ${configuredEndpoint}, but the runtime did not respond.`
+      : `${label} did not respond at ${autoEndpoint}.`;
+
     return {
       provider: args.provider,
       label,
@@ -549,9 +555,9 @@ async function buildLocalRuntimeConnection(args: {
       runtimeDetected: false,
       runtimeAvailable: false,
       health: "unreachable",
-      source: "config",
-      endpoint: configuredEndpoint,
-      blocker: `${label} is configured for ${configuredEndpoint}, but the runtime did not respond.`,
+      source: fallbackSource,
+      endpoint: fallbackEndpoint,
+      blocker,
       lastCheckedAt: args.checkedAt,
     };
   }

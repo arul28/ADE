@@ -8,6 +8,7 @@ import {
   type LanguageModelMiddleware,
 } from "ai";
 import type { LanguageModel } from "ai";
+import { randomUUID } from "node:crypto";
 import type { ModelDescriptor } from "../../../shared/modelRegistry";
 import { MODEL_PRICING } from "../../../shared/modelProfiles";
 
@@ -27,6 +28,190 @@ function getOutputTokens(usage: any): number {
   if (!usage) return 0;
   if (typeof usage.outputTokens === "number") return usage.outputTokens;
   return usage.outputTokens?.total ?? 0;
+}
+
+type RequiredReasoningToolCall = {
+  toolName: string;
+  input: Record<string, unknown>;
+};
+
+function extractAllowedToolNames(params: unknown): string[] {
+  if (!params || typeof params !== "object") return [];
+  const tools = (params as { tools?: unknown }).tools;
+  if (Array.isArray(tools)) {
+    return tools
+      .map((tool) => {
+        if (!tool || typeof tool !== "object") return "";
+        const record = tool as Record<string, unknown>;
+        if (typeof record.name === "string") return record.name.trim();
+        if (typeof record.toolName === "string") return record.toolName.trim();
+        const fn = record.function;
+        if (fn && typeof fn === "object" && typeof (fn as { name?: unknown }).name === "string") {
+          return ((fn as { name: string }).name).trim();
+        }
+        return "";
+      })
+      .filter((name) => name.length > 0);
+  }
+  if (!tools || typeof tools !== "object") return [];
+  return Object.keys(tools as Record<string, unknown>).filter((name) => name.trim().length > 0);
+}
+
+function isRequiredToolChoice(params: unknown): boolean {
+  if (!params || typeof params !== "object") return false;
+  const toolChoice = (params as { toolChoice?: unknown }).toolChoice;
+  if (toolChoice === "required") return true;
+  if (toolChoice && typeof toolChoice === "object") {
+    const record = toolChoice as Record<string, unknown>;
+    return record.type === "required";
+  }
+  return false;
+}
+
+function coerceReasoningToolParameter(rawValue: string): unknown {
+  const trimmed = rawValue.trim();
+  if (!trimmed.length) return "";
+  if (/^(?:true|false)$/i.test(trimmed)) return trimmed.toLowerCase() === "true";
+  if (/^-?\d+(?:\.\d+)?$/.test(trimmed)) return Number(trimmed);
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    return trimmed;
+  }
+}
+
+export function parseRequiredToolCallFromReasoning(
+  reasoningText: string,
+  allowedToolNames: readonly string[],
+): RequiredReasoningToolCall | null {
+  const trimmed = reasoningText.trim();
+  if (!trimmed.length) return null;
+
+  const blockMatch = trimmed.match(/<tool_call>([\s\S]*?)<\/tool_call>/i);
+  const block = (blockMatch?.[1] ?? trimmed).trim();
+  if (!block.length) return null;
+
+  const functionMatch = block.match(/<function=([A-Za-z0-9._-]+)>/i);
+  const toolName = functionMatch?.[1]?.trim();
+  if (!toolName || (allowedToolNames.length > 0 && !allowedToolNames.includes(toolName))) {
+    return null;
+  }
+
+  const input: Record<string, unknown> = {};
+  const parameterPattern = /<parameter=([A-Za-z0-9._-]+)>\s*([\s\S]*?)\s*<\/parameter>/gi;
+  let parameterMatch: RegExpExecArray | null = null;
+  while ((parameterMatch = parameterPattern.exec(block)) != null) {
+    const [, key, value] = parameterMatch;
+    if (!key) continue;
+    input[key] = coerceReasoningToolParameter(value ?? "");
+  }
+
+  return { toolName, input };
+}
+
+export function createLocalReasoningToolCallRepairMiddleware(
+  descriptor: ModelDescriptor,
+): LanguageModelMiddleware {
+  return {
+    specificationVersion: "v3",
+    wrapGenerate: async ({ doGenerate, params }) => {
+      const result = await doGenerate();
+      if (!descriptor.authTypes.includes("local") || descriptor.sdkProvider !== "@ai-sdk/openai-compatible") {
+        return result;
+      }
+      if (!isRequiredToolChoice(params)) return result;
+
+      const allowedToolNames = extractAllowedToolNames(params);
+      if (allowedToolNames.length === 0) return result;
+      if (result.content.some((part) => part.type === "tool-call")) return result;
+
+      const reasoningText = result.content
+        .filter((part): part is { type: "reasoning"; text: string } => part.type === "reasoning")
+        .map((part) => part.text)
+        .join("");
+      const repaired = parseRequiredToolCallFromReasoning(reasoningText, allowedToolNames);
+      if (!repaired) return result;
+
+      return {
+        ...result,
+        content: [
+          ...result.content,
+          {
+            type: "tool-call" as const,
+            toolCallId: randomUUID(),
+            toolName: repaired.toolName,
+            input: JSON.stringify(repaired.input),
+          },
+        ],
+      };
+    },
+    wrapStream: async ({ doStream, params }) => {
+      const streamResult = await doStream();
+      if (!descriptor.authTypes.includes("local") || descriptor.sdkProvider !== "@ai-sdk/openai-compatible") {
+        return streamResult;
+      }
+      if (!isRequiredToolChoice(params)) return streamResult;
+
+      const allowedToolNames = extractAllowedToolNames(params);
+      if (allowedToolNames.length === 0) return streamResult;
+
+      let sawToolCall = false;
+      let syntheticToolCallEmitted = false;
+      let reasoningBuffer = "";
+
+      const maybeEmitSyntheticToolCall = (controller: TransformStreamDefaultController<unknown>) => {
+        if (sawToolCall || syntheticToolCallEmitted) return;
+        const repaired = parseRequiredToolCallFromReasoning(reasoningBuffer, allowedToolNames);
+        if (!repaired) return;
+        syntheticToolCallEmitted = true;
+        controller.enqueue({
+          type: "tool-call",
+          toolCallId: randomUUID(),
+          toolName: repaired.toolName,
+          input: JSON.stringify(repaired.input),
+        });
+      };
+
+      const transform = new TransformStream({
+        transform(chunk, controller) {
+          if (!chunk || typeof chunk !== "object") {
+            controller.enqueue(chunk);
+            return;
+          }
+
+          const part = chunk as { type?: string; delta?: unknown; text?: unknown; textDelta?: unknown };
+          if (part.type === "tool-call") {
+            sawToolCall = true;
+          } else if (part.type === "reasoning-start") {
+            reasoningBuffer = "";
+          } else if (part.type === "reasoning-delta") {
+            const delta = typeof part.delta === "string"
+              ? part.delta
+              : typeof part.text === "string"
+                ? part.text
+                : typeof part.textDelta === "string"
+                  ? part.textDelta
+                  : "";
+            reasoningBuffer += delta;
+          } else if (part.type === "reasoning-end") {
+            maybeEmitSyntheticToolCall(controller);
+          } else if (part.type === "finish-step" || part.type === "finish") {
+            maybeEmitSyntheticToolCall(controller);
+          }
+
+          controller.enqueue(chunk);
+        },
+        flush(controller) {
+          maybeEmitSyntheticToolCall(controller);
+        },
+      });
+
+      return {
+        ...streamResult,
+        stream: streamResult.stream.pipeThrough(transform),
+      };
+    },
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -255,6 +440,13 @@ export function wrapWithMiddleware(
     middlewareStack.push(
       extractReasoningMiddleware({ tagName: "think" }),
     );
+  }
+
+  // 5. Repair local OpenAI-compatible runtimes that emit required tool calls
+  // as XML inside reasoning_content instead of OpenAI tool_calls. LM Studio +
+  // some Qwen variants do this today.
+  if (descriptor.authTypes.includes("local") && descriptor.sdkProvider === "@ai-sdk/openai-compatible") {
+    middlewareStack.push(createLocalReasoningToolCallRepairMiddleware(descriptor));
   }
 
   if (middlewareStack.length === 0) return model;

@@ -4,9 +4,17 @@ const mockState = vi.hoisted(() => ({
   detectAllAuth: vi.fn(),
   detectCliAuthStatuses: vi.fn(),
   getCachedCliAuthStatuses: vi.fn(),
+  resetLocalProviderDetectionCache: vi.fn(),
   verifyProviderApiKey: vi.fn(),
   executeUnified: vi.fn(),
   resumeUnified: vi.fn(),
+  buildProviderConnections: vi.fn(),
+  discoverLocalModels: vi.fn(),
+  inspectLocalProvider: vi.fn(),
+  clearCursorCliModelsCache: vi.fn(),
+  discoverCursorCliModelDescriptors: vi.fn(),
+  getApiKeyStoreStatus: vi.fn(),
+  initModelsDevService: vi.fn(),
   probeClaudeRuntimeHealth: vi.fn(),
   resetClaudeRuntimeProbeCache: vi.fn(),
 }));
@@ -15,6 +23,7 @@ vi.mock("./authDetector", () => ({
   detectAllAuth: (...args: unknown[]) => mockState.detectAllAuth(...args),
   detectCliAuthStatuses: (...args: unknown[]) => mockState.detectCliAuthStatuses(...args),
   getCachedCliAuthStatuses: (...args: unknown[]) => mockState.getCachedCliAuthStatuses(...args),
+  resetLocalProviderDetectionCache: (...args: unknown[]) => mockState.resetLocalProviderDetectionCache(...args),
   verifyProviderApiKey: (...args: unknown[]) => mockState.verifyProviderApiKey(...args),
 }));
 
@@ -23,17 +32,40 @@ vi.mock("./unifiedExecutor", () => ({
   resumeUnified: (...args: unknown[]) => mockState.resumeUnified(...args),
 }));
 
+vi.mock("./providerConnectionStatus", () => ({
+  buildProviderConnections: (...args: unknown[]) => mockState.buildProviderConnections(...args),
+}));
+
+vi.mock("./localModelDiscovery", () => ({
+  discoverLocalModels: (...args: unknown[]) => mockState.discoverLocalModels(...args),
+  inspectLocalProvider: (...args: unknown[]) => mockState.inspectLocalProvider(...args),
+}));
+
+vi.mock("../chat/cursorModelsDiscovery", () => ({
+  clearCursorCliModelsCache: (...args: unknown[]) => mockState.clearCursorCliModelsCache(...args),
+  discoverCursorCliModelDescriptors: (...args: unknown[]) => mockState.discoverCursorCliModelDescriptors(...args),
+}));
+
+vi.mock("./apiKeyStore", () => ({
+  getApiKeyStoreStatus: (...args: unknown[]) => mockState.getApiKeyStoreStatus(...args),
+}));
+
+vi.mock("./modelsDevService", () => ({
+  initialize: (...args: unknown[]) => mockState.initModelsDevService(...args),
+}));
+
 vi.mock("./claudeRuntimeProbe", () => ({
   probeClaudeRuntimeHealth: (...args: unknown[]) => mockState.probeClaudeRuntimeHealth(...args),
   resetClaudeRuntimeProbeCache: (...args: unknown[]) => mockState.resetClaudeRuntimeProbeCache(...args),
 }));
 
+import { getLocalProviderDefaultEndpoint } from "../../../shared/modelRegistry";
 import { createAiIntegrationService } from "./aiIntegrationService";
 
 type ServiceFactoryOptions = {
   aiConfig?: Record<string, unknown>;
   dailyUsageCount?: number;
-  availability?: { claude: boolean; codex: boolean };
+  availability?: { claude: boolean; codex: boolean; cursor?: boolean };
   providerMode?: "guest" | "subscription";
 };
 
@@ -46,6 +78,42 @@ function streamEvents(events: Array<Record<string, unknown>>): AsyncIterable<Rec
         yield event;
       }
     }
+  };
+}
+
+function makeProviderConnections(availability: { claude: boolean; codex: boolean; cursor: boolean }) {
+  const checkedAt = "2025-01-01T00:00:00.000Z";
+  return {
+    claude: {
+      provider: "claude",
+      authAvailable: availability.claude,
+      runtimeDetected: availability.claude,
+      runtimeAvailable: availability.claude,
+      sources: [],
+      path: availability.claude ? "/usr/local/bin/claude" : null,
+      blocker: availability.claude ? null : "Claude unavailable",
+      lastCheckedAt: checkedAt,
+    },
+    codex: {
+      provider: "codex",
+      authAvailable: availability.codex,
+      runtimeDetected: availability.codex,
+      runtimeAvailable: availability.codex,
+      sources: [],
+      path: availability.codex ? "/usr/local/bin/codex" : null,
+      blocker: availability.codex ? null : "Codex unavailable",
+      lastCheckedAt: checkedAt,
+    },
+    cursor: {
+      provider: "cursor",
+      authAvailable: availability.cursor,
+      runtimeDetected: availability.cursor,
+      runtimeAvailable: availability.cursor,
+      sources: [],
+      path: availability.cursor ? "/usr/local/bin/agent" : null,
+      blocker: availability.cursor ? null : "Cursor unavailable",
+      lastCheckedAt: checkedAt,
+    },
   };
 }
 
@@ -83,7 +151,12 @@ function makeService(options: ServiceFactoryOptions = {}) {
     get: vi.fn(() => snapshot)
   } as any;
 
-  const availability = options.availability ?? { claude: true, codex: true };
+  const availability = {
+    claude: true,
+    codex: true,
+    cursor: false,
+    ...(options.availability ?? {}),
+  };
   const statuses = [
     {
       cli: "claude",
@@ -97,6 +170,13 @@ function makeService(options: ServiceFactoryOptions = {}) {
       installed: availability.codex,
       path: availability.codex ? "/usr/local/bin/codex" : null,
       authenticated: availability.codex,
+      verified: true,
+    },
+    {
+      cli: "cursor",
+      installed: availability.cursor,
+      path: availability.cursor ? "/usr/local/bin/agent" : null,
+      authenticated: availability.cursor,
       verified: true,
     },
   ];
@@ -125,7 +205,19 @@ function makeService(options: ServiceFactoryOptions = {}) {
           },
         ]
       : []),
+    ...(availability.cursor
+      ? [
+          {
+            type: "cli-subscription",
+            cli: "cursor",
+            path: "/usr/local/bin/agent",
+            authenticated: true,
+            verified: true,
+          },
+        ]
+      : []),
   ]);
+  mockState.buildProviderConnections.mockResolvedValue(makeProviderConnections(availability));
 
   const service = createAiIntegrationService({
     db,
@@ -155,6 +247,24 @@ beforeEach(() => {
     ])
   );
   mockState.resumeUnified.mockImplementation(() => streamEvents([]));
+  mockState.discoverLocalModels.mockResolvedValue([]);
+  mockState.inspectLocalProvider.mockImplementation(async (provider: string, endpoint: string) => ({
+    provider,
+    endpoint,
+    reachable: false,
+    health: "unreachable",
+    loadedModels: [],
+  }));
+  mockState.clearCursorCliModelsCache.mockImplementation(() => undefined);
+  mockState.discoverCursorCliModelDescriptors.mockResolvedValue([]);
+  mockState.getApiKeyStoreStatus.mockReturnValue({
+    secureStorageAvailable: true,
+    legacyPlaintextDetected: false,
+    decryptionFailed: false,
+    encryptedStorePath: null,
+    legacyPlaintextPath: null,
+  });
+  mockState.initModelsDevService.mockResolvedValue(new Map());
   mockState.probeClaudeRuntimeHealth.mockResolvedValue(undefined);
 });
 
@@ -254,6 +364,57 @@ describe("aiIntegrationService", () => {
         force: true,
       }),
     );
+  });
+
+  it("reports unreachable auto-detected local runtimes without undefined endpoint text", async () => {
+    const { service } = makeService({
+      providerMode: "guest",
+      availability: { claude: false, codex: false, cursor: false },
+      aiConfig: {
+        localProviders: {
+          ollama: {
+            autoDetect: true,
+          },
+        },
+      },
+    });
+
+    const status = await service.getStatus();
+    const ollama = status.runtimeConnections?.ollama;
+
+    expect(ollama).toMatchObject({
+      source: "auto",
+      endpoint: getLocalProviderDefaultEndpoint("ollama"),
+      health: "unreachable",
+    });
+    expect(ollama?.blocker).toBe(`Ollama did not respond at ${getLocalProviderDefaultEndpoint("ollama")}.`);
+    expect(ollama?.blocker).not.toContain("undefined");
+  });
+
+  it("preserves configured endpoint details when a local runtime stays unreachable", async () => {
+    const configuredEndpoint = "http://127.0.0.1:11434/custom";
+    const { service } = makeService({
+      providerMode: "guest",
+      availability: { claude: false, codex: false, cursor: false },
+      aiConfig: {
+        localProviders: {
+          ollama: {
+            endpoint: configuredEndpoint,
+            autoDetect: true,
+          },
+        },
+      },
+    });
+
+    const status = await service.getStatus();
+    const ollama = status.runtimeConnections?.ollama;
+
+    expect(ollama).toMatchObject({
+      source: "config",
+      endpoint: configuredEndpoint,
+      health: "unreachable",
+    });
+    expect(ollama?.blocker).toBe(`Ollama is configured for ${configuredEndpoint}, but the runtime did not respond.`);
   });
 
   it("uses planning tools for mission planning tasks", async () => {

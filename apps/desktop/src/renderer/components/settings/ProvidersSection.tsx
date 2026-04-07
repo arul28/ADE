@@ -808,11 +808,18 @@ export function ProvidersSection({ forceRefreshOnMount = false }: { forceRefresh
             const isEditing = editingLocalProvider === entry.provider;
             const isSaving = savingLocalProvider === entry.provider;
             const draft = localProviderDrafts[entry.provider];
-            const tone = entry.blocker
-              ? { color: COLORS.warning, label: "Blocked" }
-              : entry.runtimeAvailable || (entry.detected && entry.hasModels)
-                ? { color: COLORS.success, label: entry.hasModels ? "Ready" : "Connected" }
-              : { color: COLORS.warning, label: "Not detected" };
+            const hasReadyRuntime = entry.runtimeAvailable || (entry.detected && entry.hasModels);
+            const needsModelLoad =
+              !hasReadyRuntime
+              && !entry.hasModels
+              && (entry.health === "reachable" || entry.health === "reachable_no_models");
+            const tone = hasReadyRuntime
+              ? { color: COLORS.success, label: entry.hasModels ? "Ready" : "Connected" }
+              : needsModelLoad
+                ? { color: COLORS.warning, label: "Load a model" }
+                : entry.blocker
+                  ? { color: COLORS.warning, label: "Blocked" }
+                  : { color: COLORS.warning, label: "Not detected" };
             const loadedModels = entry.modelIds.slice(0, 4);
             const extraModelCount = Math.max(0, entry.modelIds.length - loadedModels.length);
             const message = entry.blocker
@@ -850,7 +857,13 @@ export function ProvidersSection({ forceRefreshOnMount = false }: { forceRefresh
                     </div>
                   </div>
                   <div style={{ display: "flex", alignItems: "center", gap: 4, color: tone.color }}>
-                    {entry.detected ? <CheckCircle size={14} weight="fill" /> : <WarningCircle size={14} weight="fill" />}
+                    {hasReadyRuntime ? (
+                      <CheckCircle size={14} weight="fill" />
+                    ) : needsModelLoad || entry.blocker ? (
+                      <WarningCircle size={14} weight="fill" />
+                    ) : (
+                      <XCircle size={14} weight="fill" />
+                    )}
                     <span style={{ fontSize: 9, fontFamily: MONO_FONT, textTransform: "uppercase", letterSpacing: "1px" }}>
                       {tone.label}
                     </span>

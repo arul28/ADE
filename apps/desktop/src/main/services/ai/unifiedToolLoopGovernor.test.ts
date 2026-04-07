@@ -1,126 +1,130 @@
-import { describe, expect, it, vi } from "vitest";
-import { createUnifiedToolLoopGovernor, wrapToolsWithUnifiedLoopGovernor } from "./unifiedToolLoopGovernor";
+import { describe, expect, it } from "vitest";
+import { createUnifiedToolLoopGovernor } from "./unifiedToolLoopGovernor";
 
-describe("unifiedToolLoopGovernor", () => {
-  const makeGovernor = () => createUnifiedToolLoopGovernor({
+function makeGovernor(args?: {
+  permissionMode?: "plan" | "edit" | "full-auto";
+  harnessProfile?: "guarded" | "read_only" | "verified";
+  initialTodoItems?: Array<{ id?: string; description?: string; status?: "pending" | "in_progress" | "completed" }>;
+}) {
+  return createUnifiedToolLoopGovernor({
     cwd: "/repo",
     modelDescriptor: {
       authTypes: ["local"],
-      harnessProfile: "guarded",
+      harnessProfile: args?.harnessProfile ?? "guarded",
     },
-    permissionMode: "edit",
+    permissionMode: args?.permissionMode ?? "edit",
+    initialTodoItems: args?.initialTodoItems,
+  });
+}
+
+const ALL_TOOL_NAMES = [
+  "readFile",
+  "grep",
+  "glob",
+  "listDir",
+  "findRoutingFiles",
+  "findPageComponents",
+  "findAppEntryPoints",
+  "summarizeFrontendStructure",
+  "TodoWrite",
+  "TodoRead",
+  "askUser",
+  "exitPlanMode",
+  "editFile",
+  "writeFile",
+];
+
+describe("unifiedToolLoopGovernor", () => {
+  it("blocks the third identical readFile call in plan mode without suggesting a random candidate file", () => {
+    const governor = makeGovernor({ permissionMode: "plan" });
+    const input = {
+      file_path: "/repo/apps/web/src/app/pages/HomePage.tsx",
+      offset: 136,
+      limit: 50,
+    };
+
+    expect(governor.evaluateToolCall("readFile", input).decision).toBe("allow");
+    expect(governor.evaluateToolCall("readFile", input).decision).toBe("allow");
+
+    const decision = governor.evaluateToolCall("readFile", input);
+    expect(decision.decision).toBe("stop_tools");
+    expect(decision.reason).toContain("repeated identical readFile call 3 times");
+    expect(governor.buildBlockedToolSummary()).toContain("TodoWrite plan");
+    expect(governor.buildBlockedToolSummary()).not.toContain("DownloadPage.tsx");
   });
 
-  it("suppresses exact duplicate low-value discovery tool calls", async () => {
-    const governor = makeGovernor();
-    const execute = vi.fn(async () => ({ entries: [{ name: "app", type: "directory" }], count: 1, truncated: false }));
-    const tools = wrapToolsWithUnifiedLoopGovernor({
-      listDir: {
-        description: "stub",
-        inputSchema: {},
-        execute,
-      } as any,
-    }, governor);
+  it("points explicit plan mode toward planning tools after the first concrete inspection", () => {
+    const governor = makeGovernor({ permissionMode: "plan" });
 
-    const listDir = tools.listDir as any;
-    await listDir.execute({ path: "/repo/src", recursive: false });
-    await listDir.execute({ path: "/repo/src", recursive: false });
-    const suppressed = await listDir.execute({ path: "/repo/src", recursive: false });
-
-    expect(execute).toHaveBeenCalledTimes(2);
-    expect(suppressed.suppressed).toBe(true);
-    expect(suppressed.message).toContain("Suppressed duplicate listDir call");
-  });
-
-  it("suppresses near-duplicate glob families for equivalent source extensions", () => {
-    const governor = makeGovernor();
-
-    expect(governor.noteToolCall("glob", { path: "/repo", pattern: "**/*.ts" }).suppressed).toBe(false);
-    expect(governor.noteToolCall("glob", { path: "/repo", pattern: "**/*.tsx" }).suppressed).toBe(false);
-    expect(governor.noteToolCall("glob", { path: "/repo", pattern: "**/*.js" }).suppressed).toBe(false);
-
-    const suppressed = governor.noteToolCall("glob", { path: "/repo", pattern: "**/*.jsx" });
-    expect(suppressed.suppressed).toBe(true);
-    expect(suppressed.reason).toBe("same_family");
-  });
-
-  it("scores concrete candidate discovery and file inspection as progress", () => {
-    const governor = makeGovernor();
-
-    const discovery = governor.recordStep({
-      toolCalls: [{ toolName: "findRoutingFiles", input: {} }],
+    governor.recordStep({
+      toolCalls: [{
+        toolName: "readFile",
+        input: { file_path: "/repo/apps/web/src/app/SiteRoutes.tsx" },
+      }],
       toolResults: [{
-        toolName: "findRoutingFiles",
-        output: { routingFiles: ["/repo/src/app/page.tsx", "/repo/src/app/about/page.tsx"] },
+        toolName: "readFile",
+        output: {
+          path: "/repo/apps/web/src/app/SiteRoutes.tsx",
+          content: "export function SiteRoutes() {}",
+        },
       }],
     });
 
-    expect(discovery.progress).toBe("progress");
-    expect(discovery.score).toBeGreaterThanOrEqual(2);
-    expect(discovery.candidateFiles).toContain("src/app/page.tsx");
-
-    const inspection = governor.recordStep({
-      toolCalls: [{ toolName: "readFile", input: { file_path: "/repo/src/app/about/page.tsx" } }],
-      toolResults: [],
-    });
-
-    expect(inspection.progress).toBe("progress");
-    expect(inspection.reasons.join(" ")).toContain("opened src/app/about/page.tsx");
-  });
-
-  it("scores repeated broad discovery as non-progress", () => {
-    const governor = makeGovernor();
-
-    const summary = governor.recordStep({
-      toolCalls: [{ toolName: "listDir", input: { path: "/repo", recursive: true } }],
-      toolResults: [{ toolName: "listDir", output: { entries: [], count: 0, truncated: false } }],
-    });
-
-    expect(summary.progress).toBe("non_progress");
-    expect(summary.score).toBeLessThan(0);
-    expect(summary.reasons.join(" ")).toContain("broad recursive directory enumeration");
-  });
-
-  it("clamps to narrower tools and forces readFile after repeated low-value steps", () => {
-    const governor = makeGovernor();
-    const allToolNames = [
+    const policy = governor.buildStepPolicy(ALL_TOOL_NAMES);
+    expect(policy.activeTools).toEqual(expect.arrayContaining([
       "readFile",
-      "grep",
-      "glob",
-      "listDir",
-      "findRoutingFiles",
-      "findPageComponents",
-      "findAppEntryPoints",
-      "summarizeFrontendStructure",
+      "TodoWrite",
+      "TodoRead",
+      "askUser",
+      "exitPlanMode",
+    ]));
+    expect(policy.activeTools).not.toContain("summarizeFrontendStructure");
+    expect(policy.activeTools).not.toContain("findRoutingFiles");
+    expect(policy.activeTools).not.toContain("findPageComponents");
+    expect(policy.activeTools).not.toContain("findAppEntryPoints");
+  });
+
+  it("keeps edit tools available after a concrete inspection in edit mode while dropping broad frontend discovery tools", () => {
+    const governor = makeGovernor({ permissionMode: "edit" });
+
+    governor.recordStep({
+      toolCalls: [{
+        toolName: "readFile",
+        input: { file_path: "/repo/apps/web/src/app/SiteRoutes.tsx" },
+      }],
+      toolResults: [{
+        toolName: "readFile",
+        output: {
+          path: "/repo/apps/web/src/app/SiteRoutes.tsx",
+          content: "export function SiteRoutes() {}",
+        },
+      }],
+    });
+
+    const policy = governor.buildStepPolicy(ALL_TOOL_NAMES);
+    expect(policy.activeTools).toEqual(expect.arrayContaining([
+      "readFile",
       "editFile",
       "writeFile",
-      "askUser",
-      "bash",
-    ];
+      "TodoWrite",
+    ]));
+    expect(policy.activeTools).not.toContain("summarizeFrontendStructure");
+    expect(policy.activeTools).not.toContain("findRoutingFiles");
+  });
 
-    governor.recordStep({
-      toolCalls: [{ toolName: "findRoutingFiles", input: {} }],
-      toolResults: [{
-        toolName: "findRoutingFiles",
-        output: { routingFiles: ["/repo/src/app/about/page.tsx"] },
-      }],
+  it("uses exitPlanMode guidance once a meaningful plan already exists in plan mode", () => {
+    const governor = makeGovernor({
+      permissionMode: "plan",
+      initialTodoItems: [
+        { id: "1", description: "Inspect routing", status: "completed" },
+        { id: "2", description: "Add the blank test page", status: "in_progress" },
+      ],
     });
 
-    governor.recordStep({
-      toolCalls: [{ toolName: "glob", input: { path: "/repo", pattern: "**/*.ts" } }],
-      toolResults: [{ toolName: "glob", output: { files: [], count: 0 } }],
-    });
-    governor.recordStep({
-      toolCalls: [{ toolName: "glob", input: { path: "/repo", pattern: "**/*.tsx" } }],
-      toolResults: [{ toolName: "glob", output: { files: [], count: 0 } }],
-    });
+    expect(governor.evaluateToolCall("grep", { path: "/repo", pattern: "Route" }).decision).toBe("allow");
+    expect(governor.evaluateToolCall("grep", { path: "/repo", pattern: "Route" }).decision).toBe("allow");
+    expect(governor.evaluateToolCall("grep", { path: "/repo", pattern: "Route" }).decision).toBe("stop_tools");
 
-    const policy = governor.buildStepPolicy(allToolNames);
-    expect(policy.activeTools).toContain("readFile");
-    expect(policy.activeTools).not.toContain("glob");
-    expect(policy.activeTools).not.toContain("listDir");
-    expect(policy.activeTools).not.toContain("grep");
-    expect(policy.toolChoice).toEqual({ type: "tool", toolName: "readFile" });
-    expect(policy.hiddenSteer).toContain("already searched broadly");
+    expect(governor.buildBlockedToolSummary()).toContain("exitPlanMode");
   });
 });

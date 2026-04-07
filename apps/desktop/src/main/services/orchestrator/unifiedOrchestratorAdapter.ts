@@ -319,7 +319,7 @@ function resolveManagedPermissionMode(args: {
   const normalizedCandidate = typeof candidate === "string" && VALID_PERMISSION_MODES.has(candidate)
     ? candidate as AgentChatPermissionMode
     : undefined;
-  if (args.descriptor?.authTypes.includes("local")) {
+  if (args.descriptor?.authTypes?.includes("local")) {
     if (args.descriptor.harnessProfile === "read_only") return "plan";
     if (args.descriptor.harnessProfile === "guarded") return "plan";
   }

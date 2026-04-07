@@ -502,7 +502,6 @@ const TOOL_SPECS: ToolSpec[] = [
     description: "Return lane status, diff stats, and conflict/rebase state.",
     inputSchema: {
       type: "object",
-      required: ["laneId"],
       additionalProperties: false,
       properties: {
         laneId: { type: "string", minLength: 1 }
@@ -525,13 +524,87 @@ const TOOL_SPECS: ToolSpec[] = [
     description: "Stage and commit lane changes with a provided message.",
     inputSchema: {
       type: "object",
-      required: ["laneId", "message"],
+      required: ["message"],
       additionalProperties: false,
       properties: {
         laneId: { type: "string", minLength: 1 },
         message: { type: "string", minLength: 1 },
         amend: { type: "boolean", default: false },
         stageAll: { type: "boolean", default: true }
+      }
+    }
+  },
+  {
+    name: "stash_push",
+    description: "Stash lane changes so rebase or inspection can proceed cleanly. Defaults to the current chat lane when laneId is omitted.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        laneId: { type: "string", minLength: 1 },
+        message: { type: "string", minLength: 1 },
+        includeUntracked: { type: "boolean", default: true }
+      }
+    }
+  },
+  {
+    name: "list_stashes",
+    description: "List git stashes for a lane. Defaults to the current chat lane when laneId is omitted.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        laneId: { type: "string", minLength: 1 }
+      }
+    }
+  },
+  {
+    name: "stash_apply",
+    description: "Apply a stash to a lane without dropping it. Defaults to the current chat lane when laneId is omitted.",
+    inputSchema: {
+      type: "object",
+      required: ["stashRef"],
+      additionalProperties: false,
+      properties: {
+        laneId: { type: "string", minLength: 1 },
+        stashRef: { type: "string", minLength: 1 }
+      }
+    }
+  },
+  {
+    name: "stash_pop",
+    description: "Pop a stash onto a lane and remove it from the stash list. Defaults to the current chat lane when laneId is omitted.",
+    inputSchema: {
+      type: "object",
+      required: ["stashRef"],
+      additionalProperties: false,
+      properties: {
+        laneId: { type: "string", minLength: 1 },
+        stashRef: { type: "string", minLength: 1 }
+      }
+    }
+  },
+  {
+    name: "stash_drop",
+    description: "Drop a stash from a lane. Defaults to the current chat lane when laneId is omitted.",
+    inputSchema: {
+      type: "object",
+      required: ["stashRef"],
+      additionalProperties: false,
+      properties: {
+        laneId: { type: "string", minLength: 1 },
+        stashRef: { type: "string", minLength: 1 }
+      }
+    }
+  },
+  {
+    name: "stash_clear",
+    description: "Clear all stashes for a lane. Defaults to the current chat lane when laneId is omitted.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        laneId: { type: "string", minLength: 1 }
       }
     }
   },
@@ -588,13 +661,45 @@ const TOOL_SPECS: ToolSpec[] = [
     description: "Rebase a lane onto its base branch, optionally using AI to resolve conflicts",
     inputSchema: {
       type: "object",
-      required: ["laneId"],
       additionalProperties: false,
       properties: {
         laneId: { type: "string", minLength: 1 },
         aiAssisted: { type: "boolean" },
         provider: { type: "string" },
         autoApplyThreshold: { type: "number", minimum: 0, maximum: 1 }
+      }
+    }
+  },
+  {
+    name: "get_lane_conflict_state",
+    description: "Inspect the current merge or rebase conflict state for a lane. Defaults to the current chat lane when laneId is omitted.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        laneId: { type: "string", minLength: 1 }
+      }
+    }
+  },
+  {
+    name: "rebase_continue",
+    description: "Continue an in-progress rebase for a lane. Defaults to the current chat lane when laneId is omitted.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        laneId: { type: "string", minLength: 1 }
+      }
+    }
+  },
+  {
+    name: "rebase_abort",
+    description: "Abort an in-progress rebase for a lane. Defaults to the current chat lane when laneId is omitted.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        laneId: { type: "string", minLength: 1 }
       }
     }
   },
@@ -1446,7 +1551,9 @@ const COORDINATOR_TOOL_NAMES = new Set(COORDINATOR_TOOL_SPECS.map((tool) => tool
 const READ_ONLY_TOOLS = new Set([
   "check_conflicts",
   "get_lane_status",
+  "get_lane_conflict_state",
   "list_lanes",
+  "list_stashes",
   "simulate_integration",
   "get_pr_health",
   "pr_get_checks",
@@ -1475,10 +1582,17 @@ const MUTATION_TOOLS = new Set([
   "create_lane",
   "merge_lane",
   "commit_changes",
+  "stash_push",
+  "stash_apply",
+  "stash_pop",
+  "stash_drop",
+  "stash_clear",
   "run_tests",
   "create_queue",
   "create_integration",
   "rebase_lane",
+  "rebase_continue",
+  "rebase_abort",
   "land_queue_next",
   "pr_rerun_failed_checks",
   "pr_reply_to_review_thread",
@@ -1935,6 +2049,38 @@ async function resolveDefaultLaneId(runtime: AdeMcpRuntime): Promise<string> {
   return laneId;
 }
 
+function resolveChatSessionLaneId(runtime: AdeMcpRuntime, session: SessionState): string | null {
+  const chatSessionId = asOptionalTrimmedString(session.identity.chatSessionId);
+  if (!chatSessionId) return null;
+  const chatSession = runtime.sessionService.get(chatSessionId);
+  const laneId = typeof chatSession?.laneId === "string" ? chatSession.laneId.trim() : "";
+  return laneId.length ? laneId : null;
+}
+
+function resolveRequestedOrSessionLaneId(
+  runtime: AdeMcpRuntime,
+  session: SessionState,
+  toolArgs: Record<string, unknown>,
+): string | null {
+  return extractLaneId(toolArgs) ?? resolveChatSessionLaneId(runtime, session);
+}
+
+function requireLaneIdForTool(
+  runtime: AdeMcpRuntime,
+  session: SessionState,
+  toolArgs: Record<string, unknown>,
+  toolName: string,
+): string {
+  const laneId = resolveRequestedOrSessionLaneId(runtime, session, toolArgs)?.trim() ?? "";
+  if (!laneId) {
+    throw new JsonRpcError(
+      JsonRpcErrorCode.invalidParams,
+      `${toolName} requires laneId unless the caller is already bound to a chat session lane.`,
+    );
+  }
+  return laneId;
+}
+
 async function runCtoOperatorBridgeTool(
   runtime: AdeMcpRuntime,
   session: SessionState,
@@ -1942,7 +2088,7 @@ async function runCtoOperatorBridgeTool(
   toolArgs: Record<string, unknown>,
 ): Promise<unknown> {
   const agentChatService = requireAgentChatService(runtime);
-  const defaultLaneId = (extractLaneId(toolArgs) ?? await resolveDefaultLaneId(runtime)).trim();
+  const defaultLaneId = (resolveRequestedOrSessionLaneId(runtime, session, toolArgs) ?? await resolveDefaultLaneId(runtime)).trim();
   const ctoIdentity = runtime.ctoStateService.getIdentity();
   const preferredProvider = ctoIdentity.modelPreferences.provider.trim().toLowerCase();
   const fallbackModelId = preferredProvider.includes("claude")
@@ -3467,7 +3613,7 @@ async function runTool(args: {
   }
 
   if (name === "get_lane_status") {
-    const laneId = assertNonEmptyString(toolArgs.laneId, "laneId");
+    const laneId = requireLaneIdForTool(runtime, session, toolArgs, "get_lane_status");
     return await buildLaneStatus(runtime, laneId);
   }
 
@@ -4421,7 +4567,7 @@ async function runTool(args: {
   }
 
   if (name === "commit_changes") {
-    const laneId = assertNonEmptyString(toolArgs.laneId, "laneId");
+    const laneId = requireLaneIdForTool(runtime, session, toolArgs, "commit_changes");
 
 
     const message = assertNonEmptyString(toolArgs.message, "message");
@@ -4439,6 +4585,60 @@ async function runTool(args: {
       action,
       commit: latest[0] ?? null
     };
+  }
+
+  if (name === "stash_push") {
+    const laneId = requireLaneIdForTool(runtime, session, toolArgs, "stash_push");
+    const message = asOptionalTrimmedString(toolArgs.message);
+    const includeUntracked = typeof toolArgs.includeUntracked === "boolean" ? toolArgs.includeUntracked : true;
+    const action = await runtime.gitService.stashPush({
+      laneId,
+      includeUntracked,
+      ...(message ? { message } : {})
+    });
+    const stashes = await runtime.gitService.listStashes({ laneId });
+    return {
+      action,
+      latest: stashes[0] ?? null,
+      count: stashes.length,
+    };
+  }
+
+  if (name === "list_stashes") {
+    const laneId = requireLaneIdForTool(runtime, session, toolArgs, "list_stashes");
+    const stashes = await runtime.gitService.listStashes({ laneId });
+    return {
+      laneId,
+      count: stashes.length,
+      stashes,
+    };
+  }
+
+  if (name === "stash_apply") {
+    const laneId = requireLaneIdForTool(runtime, session, toolArgs, "stash_apply");
+    const stashRef = assertNonEmptyString(toolArgs.stashRef, "stashRef");
+    const action = await runtime.gitService.stashApply({ laneId, stashRef });
+    return { action };
+  }
+
+  if (name === "stash_pop") {
+    const laneId = requireLaneIdForTool(runtime, session, toolArgs, "stash_pop");
+    const stashRef = assertNonEmptyString(toolArgs.stashRef, "stashRef");
+    const action = await runtime.gitService.stashPop({ laneId, stashRef });
+    return { action };
+  }
+
+  if (name === "stash_drop") {
+    const laneId = requireLaneIdForTool(runtime, session, toolArgs, "stash_drop");
+    const stashRef = assertNonEmptyString(toolArgs.stashRef, "stashRef");
+    const action = await runtime.gitService.stashDrop({ laneId, stashRef });
+    return { action };
+  }
+
+  if (name === "stash_clear") {
+    const laneId = requireLaneIdForTool(runtime, session, toolArgs, "stash_clear");
+    const action = await runtime.gitService.stashClear({ laneId });
+    return { action };
   }
 
   if (name === "simulate_integration") {
@@ -4507,7 +4707,7 @@ async function runTool(args: {
   }
 
   if (name === "rebase_lane") {
-    const laneId = assertNonEmptyString(toolArgs.laneId, "laneId");
+    const laneId = requireLaneIdForTool(runtime, session, toolArgs, "rebase_lane");
 
     const aiAssisted = typeof toolArgs.aiAssisted === "boolean" ? toolArgs.aiAssisted : undefined;
     const provider = asOptionalTrimmedString(toolArgs.provider);
@@ -4518,6 +4718,17 @@ async function runTool(args: {
       ...(provider ? { provider: provider as "codex" | "claude" | undefined } : {}),
       ...(autoApplyThreshold !== undefined ? { autoApplyThreshold } : {})
     });
+    if (
+      !result.success
+      && typeof result.error === "string"
+      && /commit or stash before rebasing/i.test(result.error)
+    ) {
+      return {
+        ...result,
+        suggestedNextAction: "stash_or_commit_dirty_worktree",
+        suggestedTools: ["stash_push", "commit_changes"],
+      };
+    }
     return result;
   }
 
@@ -4619,6 +4830,23 @@ async function runTool(args: {
       ...(confidenceThreshold !== undefined ? { confidenceThreshold } : {})
     });
     return result;
+  }
+
+  if (name === "get_lane_conflict_state") {
+    const laneId = requireLaneIdForTool(runtime, session, toolArgs, "get_lane_conflict_state");
+    return await runtime.gitService.getConflictState({ laneId });
+  }
+
+  if (name === "rebase_continue") {
+    const laneId = requireLaneIdForTool(runtime, session, toolArgs, "rebase_continue");
+    const action = await runtime.gitService.rebaseContinue({ laneId });
+    return { action };
+  }
+
+  if (name === "rebase_abort") {
+    const laneId = requireLaneIdForTool(runtime, session, toolArgs, "rebase_abort");
+    const action = await runtime.gitService.rebaseAbort({ laneId });
+    return { action };
   }
 
   if (name === "spawn_agent") {
@@ -5344,7 +5572,7 @@ export function createMcpRequestHandler(args: {
     runner: () => Promise<unknown>
   ): Promise<unknown> => {
     const startedAt = Date.now();
-    const laneId = extractLaneId(toolArgs);
+    const laneId = resolveRequestedOrSessionLaneId(runtime, session, toolArgs);
     const operation = runtime.operationService.start({
       laneId,
       kind: "mcp_tool_call",

@@ -7,6 +7,7 @@ import { WorkViewArea } from "./WorkViewArea";
 import { SessionContextMenu, type SessionContextMenuState } from "./SessionContextMenu";
 import { SessionInfoPopover, type InfoPopoverState } from "./SessionInfoPopover";
 import type { AgentChatSession, TerminalSessionSummary } from "../../../shared/types";
+import { isChatToolType } from "../../lib/sessions";
 import { sortLanesForTabs } from "../lanes/laneUtils";
 import { invalidateSessionListCache } from "../../lib/sessionListCache";
 
@@ -85,6 +86,8 @@ export function TerminalsPage() {
         lanes={sortedLanes}
         sessions={work.sessions}
         visibleSessions={work.visibleSessions}
+        tabGroups={work.tabGroups}
+        tabVisibleSessionIds={work.tabVisibleSessionIds}
         activeItemId={work.activeItemId}
         viewMode={work.viewMode}
         draftKind={work.draftKind}
@@ -94,6 +97,7 @@ export function TerminalsPage() {
         onOpenChatSession={handleOpenChatSession}
         onLaunchPtySession={work.launchPtySession}
         onShowDraftKind={work.showDraftKind}
+        onToggleTabGroupCollapsed={work.toggleWorkTabGroupCollapsed}
         closingPtyIds={work.closingPtyIds}
         onContextMenu={handleContextMenu}
       />
@@ -103,6 +107,8 @@ export function TerminalsPage() {
       work.gridLayoutId,
       work.sessions,
       work.visibleSessions,
+      work.tabGroups,
+      work.tabVisibleSessionIds,
       work.activeItemId,
       work.viewMode,
       work.draftKind,
@@ -111,6 +117,7 @@ export function TerminalsPage() {
       work.setActiveItemId,
       work.closeTab,
       work.launchPtySession,
+      work.toggleWorkTabGroupCollapsed,
       work.closingPtyIds,
       handleOpenChatSession,
       handleContextMenu,
@@ -262,17 +269,21 @@ export function TerminalsPage() {
         onCopyResumeCommand={(cmd) => navigator.clipboard.writeText(cmd).catch(() => {})}
         onGoToLane={handleGoToLane}
         onCopySessionId={(id) => navigator.clipboard.writeText(id).catch(() => {})}
-        onRename={(sessionId, newTitle) => {
+        onRename={(session, newTitle) => {
           setRenameError(null);
-          window.ade.agentChat.updateSession({ sessionId, title: newTitle, manuallyNamed: true })
+          const renamePromise = isChatToolType(session.toolType)
+            ? window.ade.agentChat.updateSession({ sessionId: session.id, title: newTitle, manuallyNamed: true })
+            : window.ade.sessions.updateMeta({ sessionId: session.id, title: newTitle, manuallyNamed: true });
+          renamePromise
             .then(() => {
-              work.refresh({ showLoading: false }).catch((refreshErr: unknown) => {
-                console.error("[TerminalsPage] refresh after rename failed", { sessionId, refreshErr });
+              invalidateSessionListCache();
+              work.refresh({ showLoading: false, force: true }).catch((refreshErr: unknown) => {
+                console.error("[TerminalsPage] refresh after rename failed", { sessionId: session.id, refreshErr });
               });
             })
             .catch((err: unknown) => {
               const message = err instanceof Error ? err.message : String(err);
-              console.error("[TerminalsPage] rename session failed", { sessionId, err });
+              console.error("[TerminalsPage] rename session failed", { sessionId: session.id, err });
               setRenameError(`Rename failed: ${message}`);
               window.setTimeout(() => setRenameError(null), 6000);
             });

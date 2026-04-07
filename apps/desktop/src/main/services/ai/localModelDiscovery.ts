@@ -59,7 +59,14 @@ function normalizeBoolean(value: unknown): boolean | undefined {
 }
 
 function normalizeNumber(value: unknown): number | undefined {
-  return Number.isFinite(Number(value)) ? Number(value) : undefined;
+  if (typeof value === "number") {
+    return Number.isFinite(value) ? value : undefined;
+  }
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  if (!trimmed.length) return undefined;
+  const num = Number(trimmed);
+  return Number.isFinite(num) ? num : undefined;
 }
 
 function normalizeReasoningTier(value: unknown): string | null {

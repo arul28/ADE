@@ -27,7 +27,20 @@ describe("buildCodingAgentSystemPrompt", () => {
 
   it("includes plan permission description", () => {
     const result = buildCodingAgentSystemPrompt({ cwd: "/x", permissionMode: "plan" });
-    expect(result).toContain("Read-heavy mode");
+    expect(result).toContain("Plan mode");
+    expect(result).toContain("without editing files or mutating the system");
+  });
+
+  it("uses guarded-local discovery guidance in plan mode", () => {
+    const result = buildCodingAgentSystemPrompt({
+      cwd: "/x",
+      permissionMode: "plan",
+      toolNames: ["readFile", "findRoutingFiles", "TodoWrite", "exitPlanMode"],
+    });
+
+    expect(result).toContain("Plan mode is read-only. Do not attempt editFile, writeFile, bash, or other mutating actions.");
+    expect(result).toContain("Inspect only the concrete files needed to form a plan.");
+    expect(result).toContain("use exitPlanMode to request implementation approval");
   });
 
   it("includes full-auto permission description", () => {

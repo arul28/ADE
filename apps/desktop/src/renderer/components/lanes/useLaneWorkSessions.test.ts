@@ -19,6 +19,7 @@ const listSessionsCachedMock = vi.fn().mockResolvedValue([]);
 
 vi.mock("../../lib/sessionListCache", () => ({
   listSessionsCached: (...args: unknown[]) => listSessionsCachedMock(...args),
+  invalidateSessionListCache: vi.fn(),
 }));
 
 vi.mock("../../lib/chatSessionEvents", () => ({
@@ -274,8 +275,9 @@ describe("useLaneWorkSessions — refresh-before-focus ordering", () => {
       laneFilter: "all",
       statusFilter: "all",
       search: "",
-      sessionListOrganization: "all-lanes-by-status",
+      sessionListOrganization: "by-lane",
       workCollapsedLaneIds: [],
+      workCollapsedTabGroupIds: [],
       workFocusSessionsHidden: false,
     };
     let nextState: typeof previousState | null = null;

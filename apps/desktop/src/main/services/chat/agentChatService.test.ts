@@ -292,7 +292,6 @@ import {
   buildUnifiedStreamMessages,
   buildComputerUseDirective,
   createAgentChatService,
-  shouldAutoContinueUnifiedLocalTurn,
 } from "./agentChatService";
 import { spawn } from "node:child_process";
 import { detectAllAuth } from "../ai/authDetector";
@@ -305,7 +304,7 @@ import { runGit } from "../git/git";
 import { resolveAdeMcpServerLaunch } from "../orchestrator/unifiedOrchestratorAdapter";
 import { parseAgentChatTranscript } from "../../../shared/chatTranscript";
 import { createDefaultComputerUsePolicy } from "../../../shared/types";
-import { mapPermissionToClaude } from "../orchestrator/permissionMapping";
+import { mapPermissionToClaude, mapPermissionToCodex } from "../orchestrator/permissionMapping";
 import { acquireCursorAcpConnection } from "./cursorAcpPool";
 import type { AgentChatEvent, AgentChatEventEnvelope, ComputerUseBackendStatus } from "../../../shared/types";
 
@@ -390,6 +389,7 @@ function createMockSessionService() {
         lastOutputPreview: null,
         summary: null,
         goal: null,
+        manuallyNamed: false,
         headShaStart: null,
         headShaEnd: null,
       });
@@ -418,6 +418,7 @@ function createMockSessionService() {
       if (row) {
         if (args.title !== undefined) row.title = args.title;
         if (args.goal !== undefined) row.goal = args.goal;
+        if (args.manuallyNamed !== undefined) row.manuallyNamed = args.manuallyNamed;
         if (args.toolType !== undefined) row.toolType = args.toolType;
         if (args.resumeCommand !== undefined) row.resumeCommand = args.resumeCommand;
       }
@@ -767,6 +768,26 @@ describe("createAgentChatService", () => {
     expect(service.getSessionCapabilities).toBeTypeOf("function");
     expect(service.cleanupStaleAttachments).toBeTypeOf("function");
     expect(service.setComputerUseArtifactBrokerService).toBeTypeOf("function");
+  });
+
+  it("previews native git MCP tools for regular workflow chats", () => {
+    const { service } = createService();
+    const toolNames = service.previewSessionToolNames({
+      laneId: "lane-1",
+      sessionProfile: "workflow",
+      identityKey: undefined,
+      computerUse: undefined,
+    });
+
+    expect(toolNames).toEqual(expect.arrayContaining([
+      "commit_changes",
+      "rebase_lane",
+      "stash_push",
+      "list_stashes",
+      "stash_pop",
+      "stash_clear",
+      "ask_user",
+    ]));
   });
 
   // --------------------------------------------------------------------------
@@ -2952,6 +2973,141 @@ describe("createAgentChatService", () => {
       ]));
     });
 
+    it("returns an explicit steer result and emits a delivered steer bubble for Codex", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Start working",
+      }, { awaitDispatch: true });
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope & {
+          event: Extract<AgentChatEventEnvelope["event"], { type: "status" }>;
+        } =>
+          event.event.type === "status"
+          && event.event.turnStatus === "started"
+          && event.event.turnId === "turn-1",
+      );
+
+      const result = await service.steer({
+        sessionId: session.id,
+        text: "Focus on the shared chat UI.",
+      });
+
+      expect(result.queued).toBe(false);
+      expect(result.steerId).toMatch(/^test-uuid-/);
+      expect(
+        mockState.codexRequestPayloads.some((payload) => payload.method === "turn/steer"),
+      ).toBe(true);
+
+      expect(events).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          event: expect.objectContaining({
+            type: "user_message",
+            text: "Focus on the shared chat UI.",
+            deliveryState: "delivered",
+            steerId: result.steerId,
+            turnId: "turn-1",
+          }),
+        }),
+      ]));
+    });
+
+    it("marks active Codex subagents stopped on interrupt and ignores late child updates", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Run a parallel code search.",
+      }, { awaitDispatch: true });
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope & {
+          event: Extract<AgentChatEventEnvelope["event"], { type: "status" }>;
+        } =>
+          event.event.type === "status"
+          && event.event.turnStatus === "started"
+          && event.event.turnId === "turn-1",
+      );
+
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "item/started",
+        params: {
+          turnId: "turn-1",
+          item: {
+            id: "collab-1",
+            type: "collabToolCall",
+            tool: "spawn_agent",
+            newThreadId: "agent-thread-1",
+            prompt: "Inspect the shared chat renderer",
+          },
+        },
+      });
+
+      await service.interrupt({ sessionId: session.id });
+
+      expect(
+        mockState.codexRequestPayloads.some((payload) => payload.method === "turn/interrupt"),
+      ).toBe(true);
+
+      const stoppedResults = events.filter((event) =>
+        event.event.type === "subagent_result"
+        && event.event.taskId === "agent-thread-1"
+        && event.event.status === "stopped",
+      );
+      expect(stoppedResults).toHaveLength(1);
+      expect(
+        service.listSubagents({ sessionId: session.id }).find((snapshot) => snapshot.taskId === "agent-thread-1")?.status,
+      ).toBe("stopped");
+
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "item/completed",
+        params: {
+          turnId: "turn-1",
+          item: {
+            id: "collab-1",
+            type: "collabToolCall",
+            tool: "wait",
+            agentsStates: [
+              {
+                threadId: "agent-thread-1",
+                status: "completed",
+                summary: "Finished after the interrupt.",
+              },
+            ],
+          },
+        },
+      });
+
+      const completedResults = events.filter((event) =>
+        event.event.type === "subagent_result"
+        && event.event.taskId === "agent-thread-1"
+        && event.event.status === "completed",
+      );
+      expect(completedResults).toHaveLength(0);
+    });
+
     it("switches the Claude SDK session into plan mode before a plan turn", async () => {
       const setPermissionMode = vi.fn().mockResolvedValue(undefined);
       const send = vi.fn().mockResolvedValue(undefined);
@@ -3250,6 +3406,21 @@ describe("createAgentChatService", () => {
     });
   });
 
+  describe("previewSessionToolNames", () => {
+    it("includes core lane git tools for regular workflow sessions", () => {
+      const { service } = createService();
+      expect(service.previewSessionToolNames({
+        laneId: "lane-1",
+        sessionProfile: "workflow",
+      } as any)).toEqual(expect.arrayContaining([
+        "commit_changes",
+        "rebase_lane",
+        "stash_push",
+        "list_stashes",
+      ]));
+    });
+  });
+
   // --------------------------------------------------------------------------
   // getChatTranscript
   // --------------------------------------------------------------------------
@@ -3338,6 +3509,29 @@ describe("createAgentChatService", () => {
 
       // executionMode defaults to null or undefined for new sessions
       expect(session.executionMode == null).toBe(true);
+    });
+
+    it("does not auto-upgrade guarded local unified sessions into plan mode", async () => {
+      vi.mocked(discoverLocalModels).mockResolvedValue([
+        {
+          provider: "lmstudio",
+          modelId: "qwen3.5-9b",
+          displayName: "qwen3.5-9b",
+          capabilities: { tools: true, vision: false, reasoning: false, streaming: true },
+          harnessProfile: "guarded",
+        },
+      ] as any);
+
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "unified",
+        model: "LM Studio (Auto)",
+        modelId: "lmstudio/auto",
+      });
+
+      expect(session.permissionMode).toBe("edit");
+      expect(session.unifiedPermissionMode).toBe("edit");
     });
   });
 
@@ -3471,6 +3665,154 @@ describe("createAgentChatService", () => {
       expect(collaborationMode?.mode).toBe("default");
     });
 
+    it("starts Codex full-auto sessions with danger-full-access and never approval", async () => {
+      vi.mocked(mapPermissionToCodex).mockImplementation((mode) => {
+        if (mode === "full-auto") {
+          return { approvalPolicy: "never", sandbox: "danger-full-access" };
+        }
+        if (mode === "edit") {
+          return { approvalPolicy: "on-failure", sandbox: "workspace-write" };
+        }
+        if (mode === "config-toml") {
+          return null;
+        }
+        return { approvalPolicy: "untrusted", sandbox: "read-only" };
+      });
+
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+        permissionMode: "full-auto",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Inspect the repo and then edit files if needed.",
+      });
+
+      await vi.waitFor(() => {
+        expect(mockState.codexRequestPayloads.some((payload) => payload.method === "thread/start")).toBe(true);
+      });
+
+      const threadStartRequest = mockState.codexRequestPayloads.find((payload) => payload.method === "thread/start");
+      const params = threadStartRequest?.params as { approvalPolicy?: unknown; sandbox?: unknown } | undefined;
+      expect(params?.approvalPolicy).toBe("never");
+      expect(params?.sandbox).toBe("danger-full-access");
+    });
+
+    it("re-resumes Codex threads when permission mode changes mid-session", async () => {
+      vi.mocked(mapPermissionToCodex).mockImplementation((mode) => {
+        if (mode === "full-auto") {
+          return { approvalPolicy: "never", sandbox: "danger-full-access" };
+        }
+        if (mode === "edit") {
+          return { approvalPolicy: "on-failure", sandbox: "workspace-write" };
+        }
+        if (mode === "config-toml") {
+          return null;
+        }
+        return { approvalPolicy: "untrusted", sandbox: "read-only" };
+      });
+
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+        permissionMode: "plan",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Read the repo.",
+      });
+
+      await vi.waitFor(() => {
+        expect(mockState.codexRequestPayloads.some((payload) => payload.method === "thread/start")).toBe(true);
+      });
+
+      mockState.codexRequestPayloads = [];
+
+      await service.updateSession({
+        sessionId: session.id,
+        permissionMode: "full-auto",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Now make the needed changes.",
+      });
+
+      await vi.waitFor(() => {
+        expect(mockState.codexRequestPayloads.some((payload) => payload.method === "thread/resume")).toBe(true);
+      });
+
+      const threadResumeRequest = mockState.codexRequestPayloads.find((payload) => payload.method === "thread/resume");
+      const params = threadResumeRequest?.params as { approvalPolicy?: unknown; sandbox?: unknown } | undefined;
+      expect(params?.approvalPolicy).toBe("never");
+      expect(params?.sandbox).toBe("danger-full-access");
+    });
+
+    it("re-resumes Codex threads when switching from config-toml to full-auto flags", async () => {
+      vi.mocked(mapPermissionToCodex).mockImplementation((mode) => {
+        if (mode === "full-auto") {
+          return { approvalPolicy: "never", sandbox: "danger-full-access" };
+        }
+        if (mode === "edit") {
+          return { approvalPolicy: "on-failure", sandbox: "workspace-write" };
+        }
+        if (mode === "config-toml") {
+          return null;
+        }
+        return { approvalPolicy: "untrusted", sandbox: "read-only" };
+      });
+
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+        codexConfigSource: "config-toml",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Inspect the repo.",
+      });
+
+      await vi.waitFor(() => {
+        expect(mockState.codexRequestPayloads.some((payload) => payload.method === "thread/start")).toBe(true);
+      });
+
+      const startRequest = mockState.codexRequestPayloads.find((payload) => payload.method === "thread/start");
+      const startParams = startRequest?.params as Record<string, unknown> | undefined;
+      expect(startParams?.approvalPolicy).toBeUndefined();
+      expect(startParams?.sandbox).toBeUndefined();
+
+      mockState.codexRequestPayloads = [];
+
+      await service.updateSession({
+        sessionId: session.id,
+        permissionMode: "full-auto",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Now make the needed changes.",
+      });
+
+      await vi.waitFor(() => {
+        expect(mockState.codexRequestPayloads.some((payload) => payload.method === "thread/resume")).toBe(true);
+      });
+
+      const resumeRequest = mockState.codexRequestPayloads.find((payload) => payload.method === "thread/resume");
+      const resumeParams = resumeRequest?.params as { approvalPolicy?: unknown; sandbox?: unknown } | undefined;
+      expect(resumeParams?.approvalPolicy).toBe("never");
+      expect(resumeParams?.sandbox).toBe("danger-full-access");
+    });
+
     it("does not auto-upgrade default Codex chats into plan mode", async () => {
       mockState.codexCollaborationModes = [{ mode: "plan" }];
       const { service } = createService();
@@ -3552,7 +3894,7 @@ describe("createAgentChatService", () => {
       ).rejects.toThrow(/not found/i);
     });
 
-    it("preserves Claude V2 session continuity after an idle timeout", async () => {
+    it("preserves Claude V2 session continuity after a runSessionTurn timeout", async () => {
       vi.useFakeTimers();
       try {
         const events: AgentChatEventEnvelope[] = [];
@@ -3647,27 +3989,19 @@ describe("createAgentChatService", () => {
           text: "Add the new chat button",
           timeoutMs: 120_000,
         });
-        await vi.advanceTimersByTimeAsync(76_000);
-        await firstTurn;
+        const firstTurnError = firstTurn
+          .then(() => null as Error | null)
+          .catch((error) => error instanceof Error ? error : new Error(String(error)));
+        await vi.advanceTimersByTimeAsync(120_000);
+        const timeoutError = await firstTurnError;
+        expect(timeoutError?.message ?? "").toMatch(/Timed out waiting for session .* The turn was interrupted, but the chat stayed open\./i);
 
         const persistedAfterTimeout = readPersistedChatState(session.id);
         expect(persistedAfterTimeout.sdkSessionId).toBe("sdk-session-1");
-        expect(events).toEqual(
-          expect.arrayContaining([
-            expect.objectContaining({
-              event: expect.objectContaining({
-                type: "error",
-                message: expect.stringContaining("chat stayed open so you can retry"),
-              }),
-            }),
-            expect.objectContaining({
-              event: expect.objectContaining({
-                type: "status",
-                turnStatus: "failed",
-              }),
-            }),
-          ]),
-        );
+        await vi.advanceTimersByTimeAsync(1_000);
+        expect(events.find((event) =>
+          event.event.type === "status" && event.event.turnStatus === "failed",
+        )).toBeUndefined();
 
         events.length = 0;
         const followUp = await service.runSessionTurn({
@@ -4514,88 +4848,7 @@ describe("createAgentChatService", () => {
       expect(updated?.unifiedPermissionMode).toBe("edit");
     });
 
-    it("detects narrated next-step early stops for local unified turns", () => {
-      expect(shouldAutoContinueUnifiedLocalTurn({
-        modelDescriptor: { authTypes: ["local"] },
-        permissionMode: "edit",
-        assistantText: "I will explore the src directory to identify where pages and routing are defined in the application.",
-        toolCallCount: 1,
-        toolResultCount: 1,
-        continuationCount: 0,
-      })).toBe(true);
-
-      expect(shouldAutoContinueUnifiedLocalTurn({
-        modelDescriptor: { authTypes: ["local"] },
-        permissionMode: "plan",
-        assistantText: "I will explore the src directory to identify where pages and routing are defined in the application.",
-        toolCallCount: 1,
-        toolResultCount: 1,
-        continuationCount: 0,
-      })).toBe(false);
-
-      expect(shouldAutoContinueUnifiedLocalTurn({
-        modelDescriptor: { authTypes: ["local"] },
-        permissionMode: "edit",
-        assistantText: "I found the routing file and can add the blank about page next.",
-        toolCallCount: 1,
-        toolResultCount: 1,
-        continuationCount: 0,
-      })).toBe(false);
-    });
-
-    it("clamps weak local unified turns to narrower active tools after repeated low-value discovery", async () => {
-      const streamCalls: Array<Record<string, unknown>> = [];
-      vi.mocked(streamText).mockImplementation((args: Record<string, unknown>) => {
-        streamCalls.push(args);
-        return {
-          fullStream: (async function* () {
-            yield { type: "finish", usage: {} };
-          })(),
-        } as any;
-      });
-
-      const { service } = createService();
-      const session = await service.createSession({
-        laneId: "lane-1",
-        provider: "unified",
-        model: "",
-        modelId: "lmstudio/auto",
-        permissionMode: "edit",
-      });
-
-      await service.sendMessage({
-        sessionId: session.id,
-        text: "Add a blank about me page to the web app.",
-      });
-
-      const streamArgs = streamCalls[0] as {
-        prepareStep?: () => Promise<Record<string, unknown>>;
-        onStepFinish?: (step: unknown) => Promise<void>;
-      } | undefined;
-      expect(streamArgs?.prepareStep).toBeTypeOf("function");
-      expect(streamArgs?.onStepFinish).toBeTypeOf("function");
-
-      const initialPolicy = await streamArgs!.prepareStep!();
-      expect(initialPolicy.activeTools).toEqual(expect.arrayContaining(["readFile", "grep"]));
-      expect(initialPolicy.activeTools).not.toContain("bash");
-
-      await streamArgs!.onStepFinish!({
-        toolCalls: [{ toolName: "grep", input: { pattern: "route" } }],
-        toolResults: [{ toolName: "grep", output: { matches: [], matchCount: 0 } }],
-      });
-      await streamArgs!.onStepFinish!({
-        toolCalls: [{ toolName: "grep", input: { pattern: "page" } }],
-        toolResults: [{ toolName: "grep", output: { matches: [], matchCount: 0 } }],
-      });
-
-      const clampedPolicy = await streamArgs!.prepareStep!();
-      expect(clampedPolicy.activeTools).toContain("readFile");
-      expect(clampedPolicy.activeTools).not.toContain("grep");
-      expect(clampedPolicy.activeTools).not.toContain("bash");
-      expect(String(clampedPolicy.system ?? "")).toContain("already searched broadly");
-    });
-
-    it("preserves original attachments across local auto-continuation retries", () => {
+  it("preserves original attachments across local auto-continuation retries", () => {
       const resolvedPath = path.join(tmpRoot, "note.txt");
       fs.writeFileSync(resolvedPath, "remember this", "utf8");
 
@@ -4647,6 +4900,356 @@ describe("createAgentChatService", () => {
         role: "user",
         content: "Continue from your last step.",
       });
+    });
+
+    it("stops a local unified turn immediately after the first stop_tools decision inside a step", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const grepExecute = vi.fn(async () => ({ matches: [], matchCount: 0 }));
+
+      vi.mocked(discoverLocalModels).mockResolvedValue([
+        {
+          provider: "lmstudio",
+          modelId: "google/gemma-4-26b-a4b",
+          displayName: "google/gemma-4-26b-a4b",
+          capabilities: { tools: true, vision: false, reasoning: false, streaming: true },
+          harnessProfile: "verified",
+        },
+      ] as any);
+      vi.mocked(providerResolver.resolveModel).mockResolvedValue({} as any);
+      vi.mocked(createUniversalToolSet).mockImplementation(() => ({
+        grep: { description: "stub", parameters: { type: "object", properties: {} }, execute: grepExecute },
+      }) as any);
+      vi.mocked(streamText).mockImplementation((args: Record<string, unknown>) => ({
+        fullStream: (async function* () {
+          const tools = (args.tools ?? {}) as Record<string, { execute?: (input: unknown) => Promise<unknown> }>;
+          yield { type: "start-step", stepNumber: 0 };
+          for (let index = 1; index <= 8; index += 1) {
+            const input = { pattern: "Tab", glob: "**/*.tsx", context: 0 };
+            yield { type: "tool-call", toolName: "grep", toolCallId: `tool-${index}`, input };
+            const output = await tools.grep!.execute!(input);
+            yield { type: "tool-result", toolName: "grep", toolCallId: `tool-${index}`, output };
+          }
+          yield { type: "finish", usage: {} };
+        })(),
+      }) as any);
+
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "unified",
+        model: "LM Studio (Auto)",
+        modelId: "lmstudio/auto",
+        permissionMode: "plan",
+      });
+
+      await service.runSessionTurn({
+        sessionId: session.id,
+        text: "Add a new blank test tab to the website.",
+      });
+
+      expect(grepExecute).toHaveBeenCalledTimes(2);
+
+      const grepToolCalls = events.filter((event) =>
+        event.event.type === "tool_call" && event.event.tool === "grep"
+      );
+      expect(grepToolCalls).toHaveLength(3);
+
+      const stopNotices = events.filter((event) =>
+        event.event.type === "system_notice"
+        && event.event.message === "ADE tool policy stop tools for grep."
+      );
+      expect(stopNotices).toHaveLength(1);
+
+      const combinedText = events
+        .filter((event): event is AgentChatEventEnvelope & { event: Extract<AgentChatEvent, { type: "text" }> } => event.event.type === "text")
+        .map((event) => event.event.text)
+        .join("");
+      expect(combinedText).toContain("I am stopping tool use for this turn because the tool pattern became repetitive.");
+    });
+
+    it("stops a local unified turn when the model rereads the same file range over and over", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const readFileExecute = vi.fn(async () => ({
+        path: path.join(tmpRoot, "apps/web/src/app/pages/HomePage.tsx"),
+        displayPath: "apps/web/src/app/pages/HomePage.tsx",
+        content: "     1\timport { HomePage } from './HomePage';",
+        totalLines: 200,
+        startLine: 1,
+        endLine: 10,
+      }));
+
+      vi.mocked(discoverLocalModels).mockResolvedValue([
+        {
+          provider: "lmstudio",
+          modelId: "qwen3.5-9b",
+          displayName: "qwen3.5-9b",
+          capabilities: { tools: true, vision: false, reasoning: false, streaming: true },
+          harnessProfile: "verified",
+        },
+      ] as any);
+      vi.mocked(providerResolver.resolveModel).mockResolvedValue({} as any);
+      vi.mocked(createUniversalToolSet).mockImplementation(() => ({
+        readFile: { description: "stub", parameters: { type: "object", properties: {} }, execute: readFileExecute },
+      }) as any);
+      vi.mocked(streamText).mockImplementation((args: Record<string, unknown>) => ({
+        fullStream: (async function* () {
+          const tools = (args.tools ?? {}) as Record<string, { execute?: (input: unknown) => Promise<unknown> }>;
+          yield { type: "start-step", stepNumber: 0 };
+          for (let index = 1; index <= 8; index += 1) {
+            const input = {
+              file_path: path.join(tmpRoot, "apps/web/src/app/pages/HomePage.tsx"),
+              offset: 1,
+              limit: 10,
+            };
+            yield { type: "tool-call", toolName: "readFile", toolCallId: `tool-${index}`, input };
+            const output = await tools.readFile!.execute!(input);
+            yield { type: "tool-result", toolName: "readFile", toolCallId: `tool-${index}`, output };
+          }
+          yield { type: "finish", usage: {} };
+        })(),
+      }) as any);
+
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "unified",
+        model: "LM Studio (Auto)",
+        modelId: "lmstudio/auto",
+        permissionMode: "plan",
+      });
+
+      await service.runSessionTurn({
+        sessionId: session.id,
+        text: "Add a new blank test tab to the website.",
+      });
+
+      expect(readFileExecute).toHaveBeenCalledTimes(2);
+
+      const stopNotices = events.filter((event) =>
+        event.event.type === "system_notice"
+        && event.event.message === "ADE tool policy stop tools for readFile."
+      );
+      expect(stopNotices).toHaveLength(1);
+
+      const combinedText = events
+        .filter((event): event is AgentChatEventEnvelope & { event: Extract<AgentChatEvent, { type: "text" }> } => event.event.type === "text")
+        .map((event) => event.event.text)
+        .join("");
+      expect(combinedText).toContain("I am stopping tool use for this turn because the tool pattern became repetitive.");
+      expect(combinedText).not.toContain("DownloadPage.tsx");
+      expect(combinedText).toContain("TodoWrite plan");
+    });
+
+    it("keeps plan mode focused on planning tools after a concrete inspection instead of forcing more broad discovery", async () => {
+      const observedPolicies: Array<Record<string, unknown>> = [];
+
+      vi.mocked(discoverLocalModels).mockResolvedValue([
+        {
+          provider: "lmstudio",
+          modelId: "qwen3.5-9b",
+          displayName: "qwen3.5-9b",
+          capabilities: { tools: true, vision: false, reasoning: false, streaming: true },
+          harnessProfile: "verified",
+        },
+      ] as any);
+      vi.mocked(providerResolver.resolveModel).mockResolvedValue({} as any);
+      vi.mocked(createUniversalToolSet).mockImplementation(() => ({
+        readFile: { description: "stub", parameters: { type: "object", properties: {} }, execute: vi.fn() },
+        summarizeFrontendStructure: { description: "stub", parameters: { type: "object", properties: {} }, execute: vi.fn() },
+        TodoWrite: { description: "stub", parameters: { type: "object", properties: {} }, execute: vi.fn() },
+        TodoRead: { description: "stub", parameters: { type: "object", properties: {} }, execute: vi.fn() },
+        askUser: { description: "stub", parameters: { type: "object", properties: {} }, execute: vi.fn() },
+        exitPlanMode: { description: "stub", parameters: { type: "object", properties: {} }, execute: vi.fn() },
+        grep: { description: "stub", parameters: { type: "object", properties: {} }, execute: vi.fn() },
+      }) as any);
+      vi.mocked(streamText).mockImplementation((args: Record<string, unknown>) => ({
+        fullStream: (async function* () {
+          if (typeof args.prepareStep === "function") {
+            observedPolicies.push(await args.prepareStep());
+          }
+          if (typeof args.onStepFinish === "function") {
+            await args.onStepFinish({
+              toolCalls: [{ toolName: "summarizeFrontendStructure", input: { path: tmpRoot, sampleSize: 5 } }],
+              toolResults: [{
+                toolName: "summarizeFrontendStructure",
+                output: {
+                  routingFiles: [{ path: path.join(tmpRoot, "apps/web/src/app/SiteRoutes.tsx") }],
+                  pageComponents: [
+                    { path: path.join(tmpRoot, "apps/web/src/app/pages/HomePage.tsx") },
+                    { path: path.join(tmpRoot, "apps/web/src/app/pages/DownloadPage.tsx") },
+                  ],
+                  entryPoints: [],
+                },
+              }],
+            });
+          }
+          if (typeof args.prepareStep === "function") {
+            observedPolicies.push(await args.prepareStep());
+          }
+          if (typeof args.onStepFinish === "function") {
+            await args.onStepFinish({
+              toolCalls: [{
+                toolName: "readFile",
+                input: { file_path: path.join(tmpRoot, "apps/web/src/app/SiteRoutes.tsx") },
+              }],
+              toolResults: [{
+                toolName: "readFile",
+                output: {
+                  path: path.join(tmpRoot, "apps/web/src/app/SiteRoutes.tsx"),
+                  content: "export function SiteRoutes() {}",
+                },
+              }],
+            });
+          }
+          if (typeof args.prepareStep === "function") {
+            observedPolicies.push(await args.prepareStep());
+          }
+          yield { type: "finish", usage: {} };
+        })(),
+      }) as any);
+
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "unified",
+        model: "LM Studio (Auto)",
+        modelId: "lmstudio/auto",
+        permissionMode: "plan",
+      });
+
+      await service.runSessionTurn({
+        sessionId: session.id,
+        text: "Add a blank test tab to the website.",
+      });
+
+      expect(observedPolicies).toHaveLength(3);
+      expect(observedPolicies[1]?.activeTools).toEqual(expect.arrayContaining([
+        "readFile",
+        "summarizeFrontendStructure",
+        "TodoWrite",
+        "exitPlanMode",
+      ]));
+      expect(observedPolicies[2]?.activeTools).toEqual(expect.arrayContaining([
+        "readFile",
+        "TodoWrite",
+        "TodoRead",
+        "askUser",
+        "exitPlanMode",
+      ]));
+      expect(observedPolicies[2]?.activeTools).not.toContain("summarizeFrontendStructure");
+      expect(observedPolicies[2]?.activeTools).not.toContain("findRoutingFiles");
+      expect(observedPolicies[2]?.activeTools).not.toContain("findPageComponents");
+      expect(observedPolicies[2]?.activeTools).not.toContain("findAppEntryPoints");
+    });
+
+    it("does not expose frontend repo tools for non-frontend prompts", async () => {
+      const observedToolSets: string[][] = [];
+
+      vi.mocked(discoverLocalModels).mockResolvedValue([
+        {
+          provider: "lmstudio",
+          modelId: "qwen3.5-9b",
+          displayName: "qwen3.5-9b",
+          capabilities: { tools: true, vision: false, reasoning: false, streaming: true },
+          harnessProfile: "verified",
+        },
+      ] as any);
+      vi.mocked(providerResolver.resolveModel).mockResolvedValue({} as any);
+      vi.mocked(createUniversalToolSet).mockImplementation(() => ({
+        readFile: { description: "stub", parameters: { type: "object", properties: {} }, execute: vi.fn() },
+        grep: { description: "stub", parameters: { type: "object", properties: {} }, execute: vi.fn() },
+        summarizeFrontendStructure: { description: "stub", parameters: { type: "object", properties: {} }, execute: vi.fn() },
+        findRoutingFiles: { description: "stub", parameters: { type: "object", properties: {} }, execute: vi.fn() },
+        findPageComponents: { description: "stub", parameters: { type: "object", properties: {} }, execute: vi.fn() },
+        findAppEntryPoints: { description: "stub", parameters: { type: "object", properties: {} }, execute: vi.fn() },
+      }) as any);
+      vi.mocked(streamText).mockImplementation((args: Record<string, unknown>) => {
+        observedToolSets.push(Object.keys((args.tools ?? {}) as Record<string, unknown>));
+        return {
+          fullStream: (async function* () {
+            yield { type: "finish", usage: {} };
+          })(),
+        } as any;
+      });
+
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "unified",
+        model: "LM Studio (Auto)",
+        modelId: "lmstudio/auto",
+        permissionMode: "plan",
+      });
+
+      await service.runSessionTurn({
+        sessionId: session.id,
+        text: "fix the sqlite transaction retry bug in the background sync worker",
+      });
+
+      expect(observedToolSets).toHaveLength(1);
+      expect(observedToolSets[0]).toContain("readFile");
+      expect(observedToolSets[0]).toContain("grep");
+      expect(observedToolSets[0]).not.toContain("summarizeFrontendStructure");
+      expect(observedToolSets[0]).not.toContain("findRoutingFiles");
+      expect(observedToolSets[0]).not.toContain("findPageComponents");
+      expect(observedToolSets[0]).not.toContain("findAppEntryPoints");
+    });
+
+    it("keeps frontend repo tools exposed for clear website prompts", async () => {
+      const observedToolSets: string[][] = [];
+
+      vi.mocked(discoverLocalModels).mockResolvedValue([
+        {
+          provider: "lmstudio",
+          modelId: "qwen3.5-9b",
+          displayName: "qwen3.5-9b",
+          capabilities: { tools: true, vision: false, reasoning: false, streaming: true },
+          harnessProfile: "verified",
+        },
+      ] as any);
+      vi.mocked(providerResolver.resolveModel).mockResolvedValue({} as any);
+      vi.mocked(createUniversalToolSet).mockImplementation(() => ({
+        readFile: { description: "stub", parameters: { type: "object", properties: {} }, execute: vi.fn() },
+        grep: { description: "stub", parameters: { type: "object", properties: {} }, execute: vi.fn() },
+        summarizeFrontendStructure: { description: "stub", parameters: { type: "object", properties: {} }, execute: vi.fn() },
+        findRoutingFiles: { description: "stub", parameters: { type: "object", properties: {} }, execute: vi.fn() },
+        findPageComponents: { description: "stub", parameters: { type: "object", properties: {} }, execute: vi.fn() },
+        findAppEntryPoints: { description: "stub", parameters: { type: "object", properties: {} }, execute: vi.fn() },
+      }) as any);
+      vi.mocked(streamText).mockImplementation((args: Record<string, unknown>) => {
+        observedToolSets.push(Object.keys((args.tools ?? {}) as Record<string, unknown>));
+        return {
+          fullStream: (async function* () {
+            yield { type: "finish", usage: {} };
+          })(),
+        } as any;
+      });
+
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "unified",
+        model: "LM Studio (Auto)",
+        modelId: "lmstudio/auto",
+        permissionMode: "plan",
+      });
+
+      await service.runSessionTurn({
+        sessionId: session.id,
+        text: "can you add a new tab to the website called test, leave it blank just a stub",
+      });
+
+      expect(observedToolSets).toHaveLength(1);
+      expect(observedToolSets[0]).toContain("summarizeFrontendStructure");
+      expect(observedToolSets[0]).toContain("findRoutingFiles");
+      expect(observedToolSets[0]).toContain("findPageComponents");
+      expect(observedToolSets[0]).toContain("findAppEntryPoints");
     });
   });
 
@@ -5548,6 +6151,141 @@ describe("createAgentChatService", () => {
     expect(
       events.filter((event) => event.event.type === "user_message"),
     ).toHaveLength(1);
+  });
+
+  it("delivers a queued Cursor message after the active turn completes", async () => {
+    const events: AgentChatEventEnvelope[] = [];
+    let promptCall = 0;
+    let resolveFirstPrompt: ((value: { stopReason: string; usage: { inputTokens: number; outputTokens: number } }) => void) | null = null;
+
+    vi.mocked(acquireCursorAcpConnection).mockImplementationOnce(async (args: Record<string, unknown>) => {
+      mockState.cursorAcquireCalls.push(args);
+      return {
+        connection: {
+          newSession: vi.fn(async (params: Record<string, unknown>) => {
+            mockState.cursorNewSessionCalls.push(params);
+            mockState.cursorSessionCounter += 1;
+            return {
+              sessionId: `cursor-acp-session-${mockState.cursorSessionCounter}`,
+              modes: { currentModeId: "edit" },
+              models: {
+                currentModelId: "auto",
+                availableModels: [{ modelId: "auto", name: "Auto" }],
+              },
+              configOptions: [],
+            };
+          }),
+          loadSession: vi.fn(async () => ({
+            modes: { currentModeId: "edit" },
+            models: {
+              currentModelId: "auto",
+              availableModels: [{ modelId: "auto", name: "Auto" }],
+            },
+            configOptions: [],
+          })),
+          prompt: vi.fn((params: Record<string, unknown>) => {
+            mockState.cursorPromptCalls.push(params);
+            promptCall += 1;
+            if (promptCall === 1) {
+              return new Promise((resolve) => {
+                resolveFirstPrompt = resolve as typeof resolveFirstPrompt;
+              });
+            }
+            return Promise.resolve({
+              stopReason: "end_turn",
+              usage: { inputTokens: 2, outputTokens: 3 },
+            });
+          }),
+          cancel: vi.fn(),
+          unstable_closeSession: vi.fn(),
+        },
+        bridge: {
+          onPermission: null,
+          onSessionUpdate: null,
+          getRootPath: () => "",
+          getDirtyFileText: null,
+          onTerminalOutputDelta: null,
+          flushTerminalOutput: null,
+          onTerminalDisposed: null,
+        },
+        terminals: new Map(),
+        terminalWorkLogBindings: new Map(),
+        terminalOutputTimers: new Map(),
+        dispose: vi.fn(),
+      } as any;
+    });
+
+    const { service } = createService({
+      onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+    });
+
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "cursor",
+      model: "auto",
+      modelId: "cursor/auto",
+    });
+
+    const sendPromise = service.sendMessage({
+      sessionId: session.id,
+      text: "Handle the first request.",
+    });
+
+    for (let attempt = 0; attempt < 50 && mockState.cursorPromptCalls.length < 1; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    expect(mockState.cursorPromptCalls).toHaveLength(1);
+
+    const steerResult = await service.steer({
+      sessionId: session.id,
+      text: "Then send the queued follow-up.",
+    });
+    expect(steerResult.queued).toBe(true);
+
+    await waitForEvent(
+      events,
+      (event): event is AgentChatEventEnvelope =>
+        event.event.type === "user_message"
+        && (event.event as any).deliveryState === "queued"
+        && event.event.text === "Then send the queued follow-up.",
+    );
+
+    expect(resolveFirstPrompt).toBeTruthy();
+    resolveFirstPrompt!({
+      stopReason: "end_turn",
+      usage: { inputTokens: 3, outputTokens: 5 },
+    });
+
+    await sendPromise;
+
+    for (let attempt = 0; attempt < 100 && mockState.cursorPromptCalls.length < 2; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    expect(mockState.cursorPromptCalls).toHaveLength(2);
+    expect(JSON.stringify(mockState.cursorPromptCalls[1])).toContain("Then send the queued follow-up.");
+
+    await waitForEvent(
+      events,
+      (event): event is AgentChatEventEnvelope =>
+        event.event.type === "system_notice"
+        && (event.event as any).message === "Delivering your queued message...",
+    );
+
+    await waitForEvent(
+      events,
+      (event): event is AgentChatEventEnvelope =>
+        event.event.type === "user_message"
+        && event.event.text === "Then send the queued follow-up."
+        && (event.event as any).deliveryState !== "queued",
+    );
+
+    expect(
+      events.some(
+        (event) =>
+          event.event.type === "error"
+          && event.event.message.includes("Turn already active"),
+      ),
+    ).toBe(false);
   });
 
   it("refreshes the Cursor session model from ACP after a turn completes", async () => {

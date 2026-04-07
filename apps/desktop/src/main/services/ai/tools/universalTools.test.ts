@@ -73,6 +73,10 @@ function createFrontendFixtureRepo(): string {
   return cwd;
 }
 
+function displayPaths(matches: Array<{ displayPath: string }>): string[] {
+  return matches.map((match) => match.displayPath);
+}
+
 afterEach(() => {
   for (const dir of tmpDirs) {
     try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ }
@@ -257,6 +261,8 @@ describe("createUniversalToolSet", () => {
     expect(tools.findPageComponents).toBeDefined();
     expect(tools.findAppEntryPoints).toBeDefined();
     expect(tools.summarizeFrontendStructure).toBeDefined();
+    expect(tools.TodoWrite).toBeDefined();
+    expect(tools.TodoRead).toBeDefined();
     expect(tools.gitStatus).toBeDefined();
     expect(tools.gitDiff).toBeDefined();
     expect(tools.gitLog).toBeDefined();
@@ -281,7 +287,7 @@ describe("createUniversalToolSet", () => {
     const tools = createUniversalToolSet(cwd, { permissionMode: "full-auto" });
 
     const result = await (tools.findRoutingFiles as any).execute({ limit: 10 });
-    const paths = result.matches.map((match: { path: string }) => match.path);
+    const paths = displayPaths(result.matches);
 
     expect(paths).toEqual(expect.arrayContaining([
       "src/router.tsx",
@@ -291,6 +297,7 @@ describe("createUniversalToolSet", () => {
     ]));
     expect(paths).not.toContain("node_modules/fake-router/router.tsx");
     expect(paths).not.toContain("dist/router.tsx");
+    expect(result.matches.every((match: { path: string }) => path.isAbsolute(match.path))).toBe(true);
     expect(result.frameworkSignals).toEqual(expect.arrayContaining(["Next.js", "React Router"]));
   });
 
@@ -299,7 +306,7 @@ describe("createUniversalToolSet", () => {
     const tools = createUniversalToolSet(cwd, { permissionMode: "full-auto" });
 
     const result = await (tools.findPageComponents as any).execute({ limit: 10 });
-    const paths = result.matches.map((match: { path: string }) => match.path);
+    const paths = displayPaths(result.matches);
 
     expect(paths).toEqual(expect.arrayContaining([
       "src/pages/HomePage.tsx",
@@ -314,15 +321,15 @@ describe("createUniversalToolSet", () => {
     const tools = createUniversalToolSet(cwd, { permissionMode: "full-auto" });
 
     const result = await (tools.findAppEntryPoints as any).execute({ limit: 10 });
-    const paths = result.matches.map((match: { path: string }) => match.path);
+    const paths = displayPaths(result.matches);
 
     expect(paths).toEqual(expect.arrayContaining([
       "src/main.tsx",
       "app/layout.tsx",
       "pages/_app.tsx",
     ]));
-    expect(result.matches.some((match: { kind: string; path: string }) =>
-      match.path === "src/main.tsx" && match.kind === "bootstrap-entry"
+    expect(result.matches.some((match: { kind: string; displayPath: string }) =>
+      match.displayPath === "src/main.tsx" && match.kind === "bootstrap-entry"
     )).toBe(true);
   });
 
@@ -337,6 +344,99 @@ describe("createUniversalToolSet", () => {
     expect(result.topLevelDirectories).toEqual(expect.arrayContaining(["app", "pages", "src"]));
     expect(result.summary).toContain("Likely entry points");
     expect(result.summary).toContain("Routing surfaces");
+    expect(result.entryPoints.every((match: { path: string; displayPath: string }) =>
+      path.isAbsolute(match.path) && typeof match.displayPath === "string" && match.displayPath.length > 0
+    )).toBe(true);
+  });
+
+  it("reads files from lane-relative paths and returns absolute plus display paths", async () => {
+    const cwd = createFrontendFixtureRepo();
+    const realCwd = fs.realpathSync(cwd);
+    const tools = createUniversalToolSet(cwd, { permissionMode: "full-auto" });
+
+    const result = await (tools.readFile as any).execute({ file_path: "src/router.tsx", offset: 1, limit: 5 });
+
+    expect(result.path).toBe(path.join(realCwd, "src/router.tsx"));
+    expect(result.displayPath).toBe("src/router.tsx");
+    expect(result.content).toContain("createBrowserRouter");
+  });
+
+  it("rejects readFile paths outside the lane root", async () => {
+    const cwd = createFrontendFixtureRepo();
+    const outsideDir = makeTmpDir("ade-tools-read-outside-");
+    const outsideFile = path.join(outsideDir, "outside.ts");
+    fs.writeFileSync(outsideFile, "export const outside = true;\n", "utf-8");
+    const tools = createUniversalToolSet(cwd, { permissionMode: "full-auto" });
+
+    const result = await (tools.readFile as any).execute({ file_path: outsideFile });
+
+    expect(result.error).toContain("outside the repo root");
+  });
+
+  it("defaults grep, glob, and listDir to the lane root and returns normalized paths", async () => {
+    const cwd = createFrontendFixtureRepo();
+    const realCwd = fs.realpathSync(cwd);
+    const tools = createUniversalToolSet(cwd, { permissionMode: "full-auto" });
+
+    const grepResult = await (tools.grep as any).execute({ pattern: "createBrowserRouter" });
+    const globResult = await (tools.glob as any).execute({ pattern: "src/**/*.tsx" });
+    const listDirResult = await (tools.listDir as any).execute({});
+
+    expect(grepResult.matches.some((match: { displayPath: string; path: string }) =>
+      match.displayPath === "src/router.tsx" && match.path === path.join(realCwd, "src/router.tsx")
+    )).toBe(true);
+    expect(globResult.matches.some((match: { displayPath: string; path: string }) =>
+      match.displayPath === "src/router.tsx" && match.path === path.join(realCwd, "src/router.tsx")
+    )).toBe(true);
+    expect(listDirResult.root).toBe(realCwd);
+    expect(listDirResult.displayRoot).toBe(".");
+    expect(listDirResult.entries.some((entry: { displayPath: string; path: string }) =>
+      entry.displayPath === "src" && entry.path === path.join(realCwd, "src")
+    )).toBe(true);
+  });
+
+  it("rejects grep, glob, and listDir paths outside the lane root", async () => {
+    const cwd = createFrontendFixtureRepo();
+    const outsideDir = makeTmpDir("ade-tools-search-outside-");
+    const tools = createUniversalToolSet(cwd, { permissionMode: "full-auto" });
+
+    const grepResult = await (tools.grep as any).execute({ path: outsideDir, pattern: "createBrowserRouter" });
+    const globResult = await (tools.glob as any).execute({ path: outsideDir, pattern: "**/*.tsx" });
+    const listDirResult = await (tools.listDir as any).execute({ path: outsideDir });
+
+    expect(grepResult.error).toContain("outside the repo root");
+    expect(globResult.error).toContain("outside the repo root");
+    expect(listDirResult.error).toContain("Path escapes root");
+  });
+
+  it("updates and reads unified chat todo state through TodoWrite and TodoRead", async () => {
+    const cwd = makeTmpDir("ade-tools-todo-");
+    let todoItems: Array<{ id: string; description: string; status: "pending" | "in_progress" | "completed" }> = [];
+    const tools = createUniversalToolSet(cwd, {
+      permissionMode: "full-auto",
+      getTodoItems: () => todoItems,
+      onTodoUpdate: (items) => {
+        todoItems = items;
+      },
+    });
+
+    const writeResult = await (tools.TodoWrite as any).execute({
+      todos: [
+        { id: "todo-1", content: "Inspect the nav bar", status: "completed" },
+        { id: "todo-2", content: "Add the blank test page", status: "in_progress" },
+      ],
+    });
+    const readResult = await (tools.TodoRead as any).execute({});
+
+    expect(writeResult.updated).toBe(true);
+    expect(todoItems).toEqual([
+      { id: "todo-1", description: "Inspect the nav bar", status: "completed" },
+      { id: "todo-2", description: "Add the blank test page", status: "in_progress" },
+    ]);
+    expect(readResult.todos).toEqual([
+      { id: "todo-1", content: "Inspect the nav bar", status: "completed" },
+      { id: "todo-2", content: "Add the blank test page", status: "in_progress" },
+    ]);
   });
 
   it("includes memoryUpdateCore tool when onMemoryUpdateCore is provided", () => {
@@ -745,30 +845,14 @@ describe("createUniversalToolSet", () => {
 
   // ── Permission modes ────────────────────────────────────────────
 
-  it("allows bash execution in plan mode when no approval handler is configured", async () => {
+  it("does not expose write or bash tools in plan mode", async () => {
     const cwd = makeTmpDir("ade-tools-plan-deny-");
     const tools = createUniversalToolSet(cwd, { permissionMode: "plan" });
 
-    const result = await (tools.bash as any).execute({
-      command: "echo hello",
-      timeout: 5_000,
-    });
-
-    expect(result.exitCode).toBe(0);
-    expect(result.stdout).toContain("hello");
-  });
-
-  it("allows write in plan mode when no approval handler is configured", async () => {
-    const cwd = makeTmpDir("ade-tools-plan-write-deny-");
-    const targetPath = path.join(cwd, "allowed.txt");
-    const tools = createUniversalToolSet(cwd, { permissionMode: "plan" });
-
-    const result = await (tools.writeFile as any).execute({
-      file_path: targetPath,
-      content: "allowed",
-    });
-
-    expect(result.success).toBe(true);
+    expect(tools.bash).toBeUndefined();
+    expect(tools.writeFile).toBeUndefined();
+    expect(tools.editFile).toBeUndefined();
+    expect(tools.exitPlanMode).toBeDefined();
   });
 
   it("allows bash execution in edit mode when no approval handler is configured", async () => {
@@ -797,43 +881,46 @@ describe("createUniversalToolSet", () => {
     expect(result.success).toBe(true);
   });
 
-  it("invokes approval handler and allows if approved", async () => {
-    const cwd = makeTmpDir("ade-tools-approval-allow-");
+  it("invokes the plan approval handler through exitPlanMode and allows if approved", async () => {
+    const cwd = makeTmpDir("ade-tools-plan-approval-allow-");
     const onApprovalRequest = vi.fn().mockResolvedValue({ approved: true });
     const tools = createUniversalToolSet(cwd, {
       permissionMode: "plan",
       onApprovalRequest,
     });
 
-    const result = await (tools.bash as any).execute({
-      command: "echo approved",
-      timeout: 5_000,
+    const result = await (tools.exitPlanMode as any).execute({
+      planDescription: "1. Add the route\n2. Add the blank page",
     });
 
     expect(onApprovalRequest).toHaveBeenCalledWith(
       expect.objectContaining({
-        category: "bash",
-        description: expect.stringContaining("echo approved"),
+        category: "exitPlanMode",
+        description: "1. Add the route\n2. Add the blank page",
       }),
     );
-    expect(result.exitCode).not.toBe(126);
+    expect(result).toEqual({
+      approved: true,
+      message: "User approved the plan. Proceed with implementation.",
+    });
   });
 
-  it("invokes approval handler and blocks if rejected", async () => {
-    const cwd = makeTmpDir("ade-tools-approval-deny-");
+  it("invokes the plan approval handler through exitPlanMode and blocks if rejected", async () => {
+    const cwd = makeTmpDir("ade-tools-plan-approval-deny-");
     const onApprovalRequest = vi.fn().mockResolvedValue({ approved: false, reason: "user rejected" });
     const tools = createUniversalToolSet(cwd, {
       permissionMode: "plan",
       onApprovalRequest,
     });
 
-    const result = await (tools.bash as any).execute({
-      command: "echo rejected",
-      timeout: 5_000,
+    const result = await (tools.exitPlanMode as any).execute({
+      planDescription: "review the route change",
     });
 
-    expect(result.exitCode).toBe(126);
-    expect(result.stderr).toContain("user rejected");
+    expect(result).toEqual({
+      approved: false,
+      message: "User rejected the plan. user rejected",
+    });
   });
 
   // ── askUser tool ────────────────────────────────────────────────
@@ -967,22 +1054,19 @@ describe("createUniversalToolSet", () => {
     expect(result.message).toContain("Please add more tests first");
   });
 
-  it("fails closed when an approval callback throws for writeFile", async () => {
-    const cwd = makeTmpDir("ade-tools-write-approval-error-");
-    const targetPath = path.join(cwd, "blocked.txt");
+  it("keeps memory search but hides memory mutations in plan mode", () => {
+    const cwd = makeTmpDir("ade-tools-plan-memory-");
     const tools = createUniversalToolSet(cwd, {
       permissionMode: "plan",
-      onApprovalRequest: vi.fn().mockRejectedValue(new Error("approval bridge unavailable")),
+      memoryService: {} as any,
+      projectId: "project-1",
+      onMemoryUpdateCore: () => ({ version: 1, updatedAt: new Date().toISOString() }),
     });
 
-    const result = await (tools.writeFile as any).execute({
-      file_path: targetPath,
-      content: "blocked",
-    });
-
-    expect(result.success).toBe(false);
-    expect(result.message).toContain("approval bridge unavailable");
-    expect(fs.existsSync(targetPath)).toBe(false);
+    expect(tools.memorySearch).toBeDefined();
+    expect(tools.memoryAdd).toBeUndefined();
+    expect(tools.memoryPin).toBeUndefined();
+    expect(tools.memoryUpdateCore).toBeUndefined();
   });
 
   it("fails closed when the plan approval bridge throws", async () => {

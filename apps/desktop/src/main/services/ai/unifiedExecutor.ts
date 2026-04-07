@@ -11,7 +11,8 @@ import { resolveModel } from "./providerResolver";
 import { createCodingToolSet, createUniversalToolSet } from "./tools";
 import { createMemoryTools } from "./tools/memoryTools";
 import { buildCodingAgentSystemPrompt, composeSystemPrompt } from "./tools/systemPrompt";
-import { createUnifiedToolLoopGovernor, wrapToolsWithUnifiedLoopGovernor } from "./unifiedToolLoopGovernor";
+import { decideFrontendRepoToolExposure, filterFrontendRepoDiscoveryTools } from "./toolExposurePolicy";
+import { UnifiedSessionProcessor } from "./unifiedSessionProcessor";
 import type { AgentEvent } from "./agentExecutor";
 import {
   createCompactionMonitor,
@@ -85,63 +86,63 @@ export async function* executeUnified(
     return;
   }
 
-  // For CLI-wrapped models, tools are managed by the CLI itself.
-  // For API-key models, we provide tools when requested.
-  // If tools is already a Record<string, CoreTool>, use it directly.
-  const PLANNING_TOOL_ALLOWLIST = new Set([
-    "readFile", "grep", "glob", "listDir", "gitStatus", "gitDiff", "gitLog",
-  ]);
-
   let tools: Record<string, Tool> | undefined;
+  const frontendRepoToolExposure = decideFrontendRepoToolExposure(opts.prompt);
   if (typeof opts.tools === "object") {
     tools = opts.tools;
   } else if (!model.isCliWrapped && opts.tools === "planning" && opts.cwd) {
-    // Read-only subset for the planner — no write, no bash, no web
-    const full = createUniversalToolSet(opts.cwd, { permissionMode: "plan" });
-    tools = Object.fromEntries(
-      Object.entries(full).filter(([name]) => PLANNING_TOOL_ALLOWLIST.has(name))
+    tools = filterFrontendRepoDiscoveryTools(
+      createUniversalToolSet(opts.cwd, { permissionMode: "plan" }),
+      frontendRepoToolExposure.enabled,
     );
   } else if (!model.isCliWrapped && opts.tools === "coding" && opts.cwd) {
-    tools = createCodingToolSet(opts.cwd, {
+    tools = filterFrontendRepoDiscoveryTools(createCodingToolSet(opts.cwd, {
       memoryService: opts.memoryService as any,
       projectId: opts.projectId,
       runId: opts.runId,
       stepId: opts.stepId,
       agentScopeOwnerId: opts.attemptId,
-    });
+    }), frontendRepoToolExposure.enabled);
   }
 
   // Planning mode caps tool-use rounds so the planner doesn't explore forever
-  const governorPermissionMode = opts.tools === "planning" ? "plan" : "edit";
-  const loopGovernor = tools
-    ? createUnifiedToolLoopGovernor({
-        cwd: opts.cwd ?? process.cwd(),
-        modelDescriptor: model,
-        permissionMode: governorPermissionMode,
-      })
-    : null;
-  const governedTools = tools && loopGovernor?.shouldApply()
-    ? wrapToolsWithUnifiedLoopGovernor(tools, loopGovernor)
-    : tools;
+  const sessionPermissionMode = opts.tools === "planning" ? "plan" : "edit";
+  const sessionProcessor = new UnifiedSessionProcessor();
+  if (tools) {
+    sessionProcessor.startTurn({
+      cwd: opts.cwd ?? process.cwd(),
+      modelDescriptor: model,
+      permissionMode: sessionPermissionMode,
+    });
+  }
+  const governedTools = tools ? sessionProcessor.wrapTools(tools) : tools;
   const governedToolNames = Object.keys(governedTools ?? {});
+  const supportsNamedToolChoice = !model.authTypes.includes("local");
+  const canForwardToolChoice = (toolChoice: { type: "tool"; toolName: string } | "none" | "required" | undefined) => {
+    if (!toolChoice) return false;
+    return typeof toolChoice === "string" || supportsNamedToolChoice;
+  };
 
   const stopCondition = opts.tools === "planning" ? stepCountIs(10) : undefined;
   const harnessMode = opts.tools === "planning" ? "planning" : "coding";
-  const buildLoopSystemPrompt = (toolNames: string[], hiddenSteer?: string): string => {
-    const prompt = composeSystemPrompt(
+  const buildLoopSystemPrompt = (toolNames: string[]): string =>
+    composeSystemPrompt(
       opts.system,
       buildCodingAgentSystemPrompt({
         cwd: opts.cwd ?? process.cwd(),
         mode: harnessMode,
-        permissionMode: governorPermissionMode,
+        permissionMode: sessionPermissionMode,
         toolNames,
         interactive: false,
       }),
     );
-    if (!hiddenSteer?.trim().length) return prompt;
-    return `${prompt}\n\n## ADE step steer\n${hiddenSteer.trim()}`;
-  };
   const system = buildLoopSystemPrompt(governedToolNames);
+  const stepHooks = sessionProcessor.buildStepHooks({
+    allToolNames: governedToolNames,
+    canForwardToolChoice,
+    buildSystemPrompt: buildLoopSystemPrompt,
+    onStepFinish: opts.onStepFinish,
+  });
 
   const abortController = new AbortController();
   if (opts.abortSignal) {
@@ -159,6 +160,7 @@ export async function* executeUnified(
     ? createCompactionMonitor(model)
     : null;
   let compactionBoundaryIndex = 0;
+  let latestAssistantText = "";
 
   try {
     const result = streamText({
@@ -168,33 +170,9 @@ export async function* executeUnified(
       tools: governedTools as any,
       ...(stopCondition ? { stopWhen: stopCondition } : {}),
       abortSignal: abortController.signal,
-      ...(loopGovernor?.shouldApply()
-        ? {
-            prepareStep: async () => {
-              const policy = loopGovernor.buildStepPolicy(governedToolNames);
-              return {
-                ...(policy.activeTools?.length ? { activeTools: policy.activeTools } : {}),
-                ...(policy.toolChoice ? { toolChoice: policy.toolChoice as any } : {}),
-                system: buildLoopSystemPrompt(policy.activeTools ?? governedToolNames, policy.hiddenSteer),
-              };
-            },
-            onStepFinish: async (step: unknown) => {
-              const record = step as { toolCalls?: unknown[]; toolResults?: unknown[] } | null;
-              loopGovernor.recordStep({
-                toolCalls: Array.isArray(record?.toolCalls) ? record.toolCalls as any[] : [],
-                toolResults: Array.isArray(record?.toolResults) ? record.toolResults as any[] : [],
-              });
-              opts.onStepFinish?.(step);
-            },
-          }
-        : opts.onStepFinish
-          ? { onStepFinish: opts.onStepFinish }
-          : {}),
+      ...stepHooks,
       ...(opts.onFinish ? { onFinish: opts.onFinish } : {}),
     });
-
-    let finalText = "";
-    let streamedStepCount = 0;
 
     // Record the user prompt in the transcript
     if (compactionEnabled && opts.db) {
@@ -211,39 +189,51 @@ export async function* executeUnified(
       });
     }
 
-    for await (const part of result.fullStream) {
-      if (part.type === "start-step") {
-        streamedStepCount += 1;
+    for await (const event of sessionProcessor.processStream({ fullStream: result.fullStream })) {
+      if (event.type === "break") {
+        continue;
+      }
+
+      if (event.type === "start-step") {
+        const stepNumber = event.providerStepNumber !== undefined
+          ? event.providerStepNumber + 1
+          : event.stepCount;
         yield {
           type: "step_boundary",
-          stepNumber: streamedStepCount,
+          stepNumber,
         };
-      } else if (part.type === "source") {
-        const sourceDetail =
-          typeof part.title === "string" && part.title.trim().length
-            ? part.title
-            : part.sourceType === "url" && typeof part.url === "string" && part.url.trim().length
-              ? part.url
-              : "Gathering sources";
+        continue;
+      }
+
+      if (event.type === "source") {
         yield {
           type: "activity",
           activity: "searching",
-          detail: sourceDetail,
+          detail: event.detail,
         };
-      } else if (part.type === "reasoning-start" || part.type === "reasoning-delta") {
+        continue;
+      }
+
+      if (event.type === "reasoning-start" || event.type === "reasoning-delta") {
         yield {
           type: "activity",
           activity: "thinking",
           detail: "Reasoning through the next step",
         };
-      } else if (part.type === "text-delta") {
-        finalText += part.text;
-        yield { type: "text", content: part.text };
-      } else if (part.type === "tool-call") {
+        continue;
+      }
+
+      if (event.type === "text-delta") {
+        latestAssistantText = event.assistantText;
+        yield { type: "text", content: event.text };
+        continue;
+      }
+
+      if (event.type === "tool-call") {
         yield {
           type: "activity",
           activity: "tool_calling",
-          detail: part.toolName,
+          detail: event.toolName,
         };
         if (compactionEnabled && opts.db) {
           appendTranscriptEntry(opts.db, {
@@ -253,19 +243,22 @@ export async function* executeUnified(
             stepId: opts.stepId!,
             entry: {
               role: "tool",
-              content: `Tool call: ${part.toolName}`,
+              content: `Tool call: ${event.toolName}`,
               timestamp: new Date().toISOString(),
-              toolName: part.toolName,
-              toolArgs: part.input,
+              toolName: event.toolName,
+              toolArgs: event.input,
             },
           });
         }
         yield {
           type: "tool_call",
-          name: part.toolName,
-          args: part.input,
+          name: event.toolName,
+          args: event.input,
         };
-      } else if (part.type === "tool-result") {
+        continue;
+      }
+
+      if (event.type === "tool-result") {
         if (compactionEnabled && opts.db) {
           appendTranscriptEntry(opts.db, {
             projectId: opts.projectId!,
@@ -274,214 +267,265 @@ export async function* executeUnified(
             stepId: opts.stepId!,
             entry: {
               role: "tool",
-              content: `Tool result: ${part.toolName}`,
+              content: `Tool result: ${event.toolName}`,
               timestamp: new Date().toISOString(),
-              toolName: part.toolName,
-              toolResult: part.output,
+              toolName: event.toolName,
+              toolResult: event.output,
             },
           });
         }
         yield {
           type: "tool_result",
-          name: part.toolName,
-          result: part.output,
+          name: event.toolName,
+          result: event.output,
         };
-      } else if (part.type === "error") {
-        yield { type: "error", message: String(part.error) };
-      } else if (part.type === "finish") {
-        const inputTokens = part.totalUsage?.inputTokens ?? null;
-        const outputTokens = part.totalUsage?.outputTokens ?? null;
+        continue;
+      }
 
-        // Record assistant response in transcript
-        if (compactionEnabled && opts.db && finalText.trim()) {
-          appendTranscriptEntry(opts.db, {
-            projectId: opts.projectId!,
-            attemptId: opts.attemptId!,
-            runId: opts.runId!,
-            stepId: opts.stepId!,
-            entry: {
-              role: "assistant",
-              content: finalText,
-              timestamp: new Date().toISOString(),
-              tokenEstimate: (inputTokens ?? 0) + (outputTokens ?? 0),
+      if (event.type === "error") {
+        yield { type: "error", message: String(event.error) };
+        continue;
+      }
+
+      if (event.type === "blocked-summary") {
+        latestAssistantText = event.assistantText;
+        yield { type: "text", content: event.text };
+        continue;
+      }
+
+      if (event.type === "stream-end") {
+        latestAssistantText = event.assistantText;
+        if (event.blockedByStopTools) {
+          if (compactionEnabled && opts.db && latestAssistantText.trim()) {
+            appendTranscriptEntry(opts.db, {
+              projectId: opts.projectId!,
+              attemptId: opts.attemptId!,
+              runId: opts.runId!,
+              stepId: opts.stepId!,
+              entry: {
+                role: "assistant",
+                content: latestAssistantText,
+                timestamp: new Date().toISOString(),
+                tokenEstimate: Math.ceil(latestAssistantText.length / 4),
+              },
+            });
+          }
+          yield {
+            type: "done",
+            sessionId: opts.modelId + "-" + Date.now(),
+            provider: model.family as any,
+            model: model.sdkModelId,
+            modelId: model.id,
+            usage: {
+              inputTokens: null,
+              outputTokens: null,
             },
-          });
+          };
         }
+        continue;
+      }
 
-        // Update compaction monitor and trigger compaction if needed
-        if (monitor) {
-          monitor.recordTokens(inputTokens ?? 0, outputTokens ?? 0);
+      if (event.type !== "finish") {
+        continue;
+      }
 
-          if (monitor.shouldCompact() && opts.db && opts.attemptId) {
-            yield { type: "text", content: "\n[Compacting context...]\n" };
+      const usageRecord = event.usage && typeof event.usage === "object"
+        ? event.usage as Record<string, unknown>
+        : null;
+      const finalText = event.assistantText;
+      const inputTokens = typeof usageRecord?.inputTokens === "number" ? usageRecord.inputTokens : null;
+      const outputTokens = typeof usageRecord?.outputTokens === "number" ? usageRecord.outputTokens : null;
 
-            try {
-              const transcriptRecord = getTranscriptRecord(opts.db, opts.attemptId);
-              if (transcriptRecord) {
-                let messages: TranscriptEntry[] = JSON.parse(transcriptRecord.messagesJson);
+      // Record assistant response in transcript
+      if (compactionEnabled && opts.db && finalText.trim()) {
+        appendTranscriptEntry(opts.db, {
+          projectId: opts.projectId!,
+          attemptId: opts.attemptId!,
+          runId: opts.runId!,
+          stepId: opts.stepId!,
+          entry: {
+            role: "assistant",
+            content: finalText,
+            timestamp: new Date().toISOString(),
+            tokenEstimate: (inputTokens ?? 0) + (outputTokens ?? 0),
+          },
+        });
+      }
 
-                if (opts.compactionFlushService && opts.projectId && opts.memoryService) {
-                  await opts.compactionFlushService.beforeCompaction({
-                    sessionId: opts.attemptId,
-                    boundaryId: `${opts.attemptId}:${compactionBoundaryIndex}`,
-                    conversationTokenCount: transcriptRecord.tokenCount,
-                    maxTokens: model.contextWindow,
-                    appendHiddenMessage: async (message) => {
-                      appendTranscriptEntry(opts.db!, {
-                        projectId: opts.projectId!,
-                        attemptId: opts.attemptId!,
-                        runId: opts.runId!,
-                        stepId: opts.stepId!,
-                        entry: {
-                          role: message.role,
-                          content: message.content,
-                          timestamp: new Date().toISOString(),
-                          tokenEstimate: Math.ceil(message.content.length / 4),
-                        },
-                      });
-                    },
-                    flushTurn: async ({ prompt }) => {
-                      const memoryTools = createMemoryTools(opts.memoryService as any, opts.projectId!, {
-                        runId: opts.runId,
-                        stepId: opts.stepId,
-                        agentScopeOwnerId: opts.attemptId,
-                      });
-                      const flushSystem = composeSystemPrompt(
-                        prompt,
-                        buildCodingAgentSystemPrompt({
-                          cwd: opts.cwd ?? process.cwd(),
-                          mode: "coding",
-                          permissionMode: "edit",
-                          toolNames: Object.keys(memoryTools),
-                          interactive: false,
-                        }),
-                      );
+      // Update compaction monitor and trigger compaction if needed
+      if (monitor) {
+        monitor.recordTokens(inputTokens ?? 0, outputTokens ?? 0);
 
-                      const flushStream = streamText({
-                        model: sdkModel,
-                        system: flushSystem,
-                        prompt: `Review this conversation and persist any durable discoveries with memoryAdd before compaction.\n\n${buildConversationText(messages)}`,
-                        tools: memoryTools as any,
-                        stopWhen: stepCountIs(6),
-                        abortSignal: abortController.signal,
-                      });
+        if (monitor.shouldCompact() && opts.db && opts.attemptId) {
+          yield { type: "text", content: "\n[Compacting context...]\n" };
 
-                      let flushText = "";
-                      for await (const flushPart of flushStream.fullStream) {
-                        if (!flushPart || typeof flushPart !== "object") continue;
-                        if (flushPart.type === "text-delta") {
-                          flushText += String(flushPart.text ?? "");
-                          continue;
-                        }
-                        if (flushPart.type === "error") {
-                          throw new Error(String(flushPart.error));
-                        }
+          try {
+            const transcriptRecord = getTranscriptRecord(opts.db, opts.attemptId);
+            if (transcriptRecord) {
+              let messages: TranscriptEntry[] = JSON.parse(transcriptRecord.messagesJson);
+
+              if (opts.compactionFlushService && opts.projectId && opts.memoryService) {
+                await opts.compactionFlushService.beforeCompaction({
+                  sessionId: opts.attemptId,
+                  boundaryId: `${opts.attemptId}:${compactionBoundaryIndex}`,
+                  conversationTokenCount: transcriptRecord.tokenCount,
+                  maxTokens: model.contextWindow,
+                  appendHiddenMessage: async (message) => {
+                    appendTranscriptEntry(opts.db!, {
+                      projectId: opts.projectId!,
+                      attemptId: opts.attemptId!,
+                      runId: opts.runId!,
+                      stepId: opts.stepId!,
+                      entry: {
+                        role: message.role,
+                        content: message.content,
+                        timestamp: new Date().toISOString(),
+                        tokenEstimate: Math.ceil(message.content.length / 4),
+                      },
+                    });
+                  },
+                  flushTurn: async ({ prompt }) => {
+                    const memoryTools = createMemoryTools(opts.memoryService as any, opts.projectId!, {
+                      runId: opts.runId,
+                      stepId: opts.stepId,
+                      agentScopeOwnerId: opts.attemptId,
+                    });
+                    const flushSystem = composeSystemPrompt(
+                      prompt,
+                      buildCodingAgentSystemPrompt({
+                        cwd: opts.cwd ?? process.cwd(),
+                        mode: "coding",
+                        permissionMode: "edit",
+                        toolNames: Object.keys(memoryTools),
+                        interactive: false,
+                      }),
+                    );
+
+                    const flushStream = streamText({
+                      model: sdkModel,
+                      system: flushSystem,
+                      prompt: `Review this conversation and persist any durable discoveries with memoryAdd before compaction.\n\n${buildConversationText(messages)}`,
+                      tools: memoryTools as any,
+                      stopWhen: stepCountIs(6),
+                      abortSignal: abortController.signal,
+                    });
+
+                    let flushText = "";
+                    for await (const flushPart of flushStream.fullStream) {
+                      if (!flushPart || typeof flushPart !== "object") continue;
+                      if (flushPart.type === "text-delta") {
+                        flushText += String(flushPart.text ?? "");
+                        continue;
                       }
+                      if (flushPart.type === "error") {
+                        throw new Error(String(flushPart.error));
+                      }
+                    }
 
-                      const flushTokens = Math.ceil(flushText.length / 4);
-                      return {
-                        status: flushTokens > model.contextWindow ? "budget_exceeded" as const : "flushed" as const,
-                      };
-                    },
-                  });
-
-                  const refreshedTranscript = getTranscript(opts.db, opts.attemptId);
-                  if (refreshedTranscript) {
-                    messages = JSON.parse(refreshedTranscript.messagesJson);
-                  }
-                }
-
-                const compactionResult = await compactConversation({
-                  messages,
-                  modelId: opts.modelId,
+                    const flushTokens = Math.ceil(flushText.length / 4);
+                    return {
+                      status: flushTokens > model.contextWindow ? "budget_exceeded" as const : "flushed" as const,
+                    };
+                  },
                 });
 
-                // Pre-compaction writeback: save extracted facts into mission memory.
-                const missionId = opts.db && opts.runId
-                  ? (opts.db.get<{ mission_id: string | null }>(
-                      "select mission_id from orchestrator_runs where id = ? limit 1",
-                      [opts.runId]
-                    )?.mission_id ?? null)
-                  : null;
-                const memoryWriter = opts.memoryService as {
-                  writeMemory?: (opts: {
-                    projectId: string;
-                    scope: "mission";
-                    scopeOwnerId: string;
-                    category: "fact" | "gotcha" | "preference";
-                    content: string;
-                    importance: "medium" | "high";
-                    confidence: number;
-                    status: "promoted";
-                    sourceRunId: string;
-                    sourceType: "system";
-                    sourceId: string;
-                    writeGateMode: "strict";
-                  }) => unknown;
-                } | null;
-                if (
-                  compactionResult.factsExtracted.length > 0
-                  && opts.projectId
-                  && opts.runId
-                  && opts.stepId
-                  && typeof memoryWriter?.writeMemory === "function"
-                ) {
-                  await preCompactionWriteback({
-                    projectId: opts.projectId,
-                    missionId,
-                    runId: opts.runId,
-                    stepId: opts.stepId,
-                    facts: compactionResult.factsExtracted,
-                    writeMemory: memoryWriter.writeMemory.bind(opts.memoryService),
-                  });
+                const refreshedTranscript = getTranscript(opts.db, opts.attemptId);
+                if (refreshedTranscript) {
+                  messages = JSON.parse(refreshedTranscript.messagesJson);
                 }
-
-                // Replace messages with compacted summary
-                const compactedMessages: TranscriptEntry[] = [{
-                  role: "system",
-                  content: `[Compacted context — previous ${compactionResult.previousTokenCount} tokens]\n\n${compactionResult.summary}`,
-                  timestamp: new Date().toISOString(),
-                  tokenEstimate: compactionResult.newTokenCount,
-                }];
-
-                markTranscriptCompacted(
-                  opts.db,
-                  opts.attemptId,
-                  compactionResult.summary,
-                  JSON.stringify(compactedMessages),
-                  compactionResult.newTokenCount,
-                );
-
-                yield { type: "text", content: `[Context compacted: ${compactionResult.previousTokenCount} -> ${compactionResult.newTokenCount} tokens, ${compactionResult.factsExtracted.length} facts preserved]\n` };
               }
-            } catch (compactionErr) {
-              // Non-fatal — compaction failure should not abort execution
-              yield { type: "text", content: `[Compaction skipped: ${compactionErr instanceof Error ? compactionErr.message : String(compactionErr)}]\n` };
-            } finally {
-              compactionBoundaryIndex += 1;
+
+              const compactionResult = await compactConversation({
+                messages,
+                modelId: opts.modelId,
+              });
+
+              // Pre-compaction writeback: save extracted facts into mission memory.
+              const missionId = opts.db && opts.runId
+                ? (opts.db.get<{ mission_id: string | null }>(
+                    "select mission_id from orchestrator_runs where id = ? limit 1",
+                    [opts.runId]
+                  )?.mission_id ?? null)
+                : null;
+              const memoryWriter = opts.memoryService as {
+                writeMemory?: (opts: {
+                  projectId: string;
+                  scope: "mission";
+                  scopeOwnerId: string;
+                  category: "fact" | "gotcha" | "preference";
+                  content: string;
+                  importance: "medium" | "high";
+                  confidence: number;
+                  status: "promoted";
+                  sourceRunId: string;
+                  sourceType: "system";
+                  sourceId: string;
+                  writeGateMode: "strict";
+                }) => unknown;
+              } | null;
+              if (
+                compactionResult.factsExtracted.length > 0
+                && opts.projectId
+                && opts.runId
+                && opts.stepId
+                && typeof memoryWriter?.writeMemory === "function"
+              ) {
+                await preCompactionWriteback({
+                  projectId: opts.projectId,
+                  missionId,
+                  runId: opts.runId,
+                  stepId: opts.stepId,
+                  facts: compactionResult.factsExtracted,
+                  writeMemory: memoryWriter.writeMemory.bind(opts.memoryService),
+                });
+              }
+
+              // Replace messages with compacted summary
+              const compactedMessages: TranscriptEntry[] = [{
+                role: "system",
+                content: `[Compacted context — previous ${compactionResult.previousTokenCount} tokens]\n\n${compactionResult.summary}`,
+                timestamp: new Date().toISOString(),
+                tokenEstimate: compactionResult.newTokenCount,
+              }];
+
+              markTranscriptCompacted(
+                opts.db,
+                opts.attemptId,
+                compactionResult.summary,
+                JSON.stringify(compactedMessages),
+                compactionResult.newTokenCount,
+              );
+
+              yield { type: "text", content: `[Context compacted: ${compactionResult.previousTokenCount} -> ${compactionResult.newTokenCount} tokens, ${compactionResult.factsExtracted.length} facts preserved]\n` };
             }
+          } catch (compactionErr) {
+            // Non-fatal — compaction failure should not abort execution
+            yield { type: "text", content: `[Compaction skipped: ${compactionErr instanceof Error ? compactionErr.message : String(compactionErr)}]\n` };
+          } finally {
+            compactionBoundaryIndex += 1;
           }
         }
-
-        // Handle structured output if jsonSchema was provided
-        if (opts.jsonSchema && finalText.trim()) {
-          const parsed = parseStructuredOutput(finalText);
-          if (parsed != null) yield { type: "structured_output", data: parsed };
-        }
-
-        yield {
-          type: "done",
-          sessionId: opts.modelId + "-" + Date.now(),
-          provider: model.family as any,
-          model: model.sdkModelId,
-          modelId: model.id,
-          usage: {
-            inputTokens,
-            outputTokens,
-          },
-        };
       }
+
+      // Handle structured output if jsonSchema was provided
+      if (opts.jsonSchema && finalText.trim()) {
+        const parsed = parseStructuredOutput(finalText);
+        if (parsed != null) yield { type: "structured_output", data: parsed };
+      }
+
+      yield {
+        type: "done",
+        sessionId: opts.modelId + "-" + Date.now(),
+        provider: model.family as any,
+        model: model.sdkModelId,
+        modelId: model.id,
+        usage: {
+          inputTokens,
+          outputTokens,
+        },
+      };
     }
+
   } catch (err) {
     if (abortController.signal.aborted && opts.timeout) {
       yield {

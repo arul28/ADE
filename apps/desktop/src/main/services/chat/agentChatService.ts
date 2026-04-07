@@ -100,6 +100,7 @@ import type {
   AgentChatSubagentSnapshot,
   AgentChatSurface,
   AgentChatSteerArgs,
+  AgentChatSteerResult,
   AgentChatSendArgs,
   AgentChatCursorConfigOption,
   AgentChatCursorConfigValue,
@@ -141,7 +142,8 @@ import { createWorkflowTools } from "../ai/tools/workflowTools";
 import { createLinearTools } from "../ai/tools/linearTools";
 import { createCtoOperatorTools, type CtoOperatorToolDeps } from "../ai/tools/ctoOperatorTools";
 import { buildCodingAgentSystemPrompt } from "../ai/tools/systemPrompt";
-import { createUnifiedToolLoopGovernor, wrapToolsWithUnifiedLoopGovernor } from "../ai/unifiedToolLoopGovernor";
+import { decideFrontendRepoToolExposure, filterFrontendRepoDiscoveryTools } from "../ai/toolExposurePolicy";
+import { UnifiedSessionProcessor } from "../ai/unifiedSessionProcessor";
 import { resolveClaudeCliModel } from "../ai/claudeModelUtils";
 import {
   getProviderRuntimeHealth,
@@ -295,6 +297,8 @@ type CodexRuntime = {
   commandOutputByItemId: Map<string, string>;
   fileDeltaByItemId: Map<string, string>;
   fileChangesByItemId: Map<string, Array<{ path: string; kind: "create" | "modify" | "delete" }>>;
+  activeSubagents: Map<string, { taskId: string; description: string; background: boolean }>;
+  interruptedTurnIds: Set<string>;
   agentMessageScopeByTurn: Map<string, "item" | "turn">;
   agentMessageTextByTurn: Map<string, string>;
   recentNotificationKeys: Set<string>;
@@ -507,6 +511,21 @@ function isCurrentCodexLifecycleTurn(
   const activeTurnId = runtime.activeTurnId ?? runtime.startedTurnId;
   if (!activeTurnId || !turnId) return true;
   return activeTurnId === turnId;
+}
+
+function rememberInterruptedCodexTurn(runtime: CodexRuntime, turnId: string | null | undefined): void {
+  const normalizedTurnId = turnId?.trim() || null;
+  if (!normalizedTurnId) return;
+  runtime.interruptedTurnIds.add(normalizedTurnId);
+  if (runtime.interruptedTurnIds.size > 64) {
+    const [first] = runtime.interruptedTurnIds;
+    if (first) runtime.interruptedTurnIds.delete(first);
+  }
+}
+
+function isInterruptedCodexTurn(runtime: CodexRuntime, turnId: string | null | undefined): boolean {
+  const normalizedTurnId = turnId?.trim() || null;
+  return normalizedTurnId ? runtime.interruptedTurnIds.has(normalizedTurnId) : false;
 }
 
 function normalizeCodexAssistantDelta(
@@ -727,6 +746,8 @@ type ManagedChatSession = {
   selectedExecutionLaneId: string | null;
   lastLaneDirectiveKey: string | null;
   runtimeInvalidated: boolean;
+  todoItems: Extract<AgentChatEvent, { type: "todo_update" }>["items"];
+  unifiedSessionProcessor: UnifiedSessionProcessor;
   localPendingInputs: Map<string, {
     request: PendingInputRequest;
     resolve: (response: {
@@ -737,6 +758,7 @@ type ManagedChatSession = {
   }>;
   eventSequence: number;
   lastActivityTimestamp: number;
+  turnBeforeSha: string | null;
 };
 
 type AgentChatTranscriptEntry = {
@@ -780,6 +802,18 @@ type SessionTurnCollector = {
   lastError: string | null;
   timeout: NodeJS.Timeout | null;
 };
+
+const CORE_NATIVE_SESSION_TOOL_NAMES = [
+  "commit_changes",
+  "rebase_lane",
+  "stash_push",
+  "list_stashes",
+  "stash_apply",
+  "stash_pop",
+  "stash_drop",
+  "stash_clear",
+  "ask_user",
+] as const;
 
 type PreparedSendMessage = {
   sessionId: string;
@@ -1003,44 +1037,6 @@ function mergeUsagePayloads(
   const outputTokens = (left.outputTokens ?? 0) + (right.outputTokens ?? 0);
   if (!inputTokens && !outputTokens) return undefined;
   return { inputTokens, outputTokens };
-}
-
-const MAX_UNIFIED_LOCAL_AUTO_CONTINUATIONS = 1;
-const UNIFIED_LOCAL_AUTO_CONTINUE_PROMPT =
-  "Continue from your last step. Do not restate that you will inspect, explore, or review the codebase. " +
-  "Take the next concrete action now, using tools if needed. Only stop when you have completed the request or are truly blocked.";
-
-export function shouldAutoContinueUnifiedLocalTurn(args: {
-  modelDescriptor: Pick<ModelDescriptor, "authTypes">;
-  permissionMode: PermissionMode;
-  assistantText: string;
-  toolCallCount: number;
-  toolResultCount: number;
-  continuationCount: number;
-  pendingApprovalCount?: number;
-}): boolean {
-  if (!args.modelDescriptor.authTypes.includes("local")) return false;
-  if (args.permissionMode === "plan") return false;
-  if (args.continuationCount >= MAX_UNIFIED_LOCAL_AUTO_CONTINUATIONS) return false;
-  if ((args.pendingApprovalCount ?? 0) > 0) return false;
-  if (args.toolCallCount < 1 || args.toolResultCount < 1) return false;
-
-  const normalized = args.assistantText.trim().replace(/\s+/g, " ");
-  if (!normalized.length || normalized.length > 280) return false;
-
-  const lower = normalized.toLowerCase();
-  if (lower.includes("?")) return false;
-  if (
-    /\b(done|completed|complete|implemented|created|updated|finished|fixed|here('| i)?s|i found|i added|i changed|i created|i updated|i implemented|blocked)\b/i.test(lower)
-  ) {
-    return false;
-  }
-
-  const narratedIntentPattern =
-    /^(?:ok[, ]+|alright[, ]+|next[, ]+|now[, ]+)?(?:i(?:'ll| will| am going to|'m going to)|let me)\b/i;
-  const nextActionPattern =
-    /\b(explore|inspect|check|look at|search|review|read|analy[sz]e|identify|open|scan|trace|browse)\b/i;
-  return narratedIntentPattern.test(normalized) && nextActionPattern.test(normalized);
 }
 
 const KNOWN_CODEX_EFFORTS = new Set(CODEX_REASONING_EFFORTS.map((e) => e.effort));
@@ -2109,17 +2105,6 @@ function applyLocalHarnessPermissionMode(args: {
   }
 
   if (args.descriptor.harnessProfile === "read_only") {
-    return {
-      requestedPermissionMode: "plan",
-      requestedUnifiedPermissionMode: "plan",
-    };
-  }
-
-  if (
-    args.descriptor.harnessProfile === "guarded"
-    && args.requestedPermissionMode == null
-    && args.requestedUnifiedPermissionMode == null
-  ) {
     return {
       requestedPermissionMode: "plan",
       requestedUnifiedPermissionMode: "plan",
@@ -3324,6 +3309,10 @@ export function createAgentChatService(args: {
       toolNames.add(toolName);
     }
 
+    for (const toolName of CORE_NATIVE_SESSION_TOOL_NAMES) {
+      toolNames.add(toolName);
+    }
+
     if (identityKey === "cto") {
       const ctoTools = createCtoOperatorTools({
         currentSessionId: sessionId,
@@ -3739,6 +3728,24 @@ export function createAgentChatService(args: {
         }
       }
       return entries;
+    } catch {
+      return [];
+    }
+  };
+
+  const readLatestTranscriptTodoItems = (
+    managed: ManagedChatSession,
+  ): Extract<AgentChatEvent, { type: "todo_update" }>["items"] => {
+    try {
+      const raw = fs.readFileSync(managed.transcriptPath, "utf8");
+      let latest: Extract<AgentChatEvent, { type: "todo_update" }>["items"] = [];
+      for (const entry of parseAgentChatTranscript(raw)) {
+        if (entry.sessionId !== managed.session.id) continue;
+        if (entry.event.type === "todo_update") {
+          latest = entry.event.items;
+        }
+      }
+      return latest;
     } catch {
       return [];
     }
@@ -4307,7 +4314,7 @@ export function createAgentChatService(args: {
     const currentTitle = sessionService.get(managed.session.id)?.title ?? null;
     if (currentTitle?.trim() === title) return title;
 
-    sessionService.updateMeta({ sessionId: managed.session.id, title });
+    sessionService.updateMeta({ sessionId: managed.session.id, title, manuallyNamed: false });
 
     // Sync title to Codex thread if applicable
     if (managed.session.provider === "codex" && managed.session.threadId && managed.runtime?.kind === "codex") {
@@ -4687,6 +4694,85 @@ export function createAgentChatService(args: {
     const headStart = await computeHeadShaBestEffort(resolveManagedExecutionLaneId(managed)).catch(() => null);
     if (headStart) {
       sessionService.setHeadShaStart(managed.session.id, headStart);
+    }
+  };
+
+  const captureTurnBeforeSha = (managed: ManagedChatSession): void => {
+    const laneId = resolveManagedExecutionLaneId(managed);
+    void computeHeadShaBestEffort(laneId).then((sha) => {
+      if (sha) managed.turnBeforeSha = sha;
+    }).catch(() => {});
+  };
+
+  const emitTurnDiffSummaryIfChanged = async (managed: ManagedChatSession, turnId: string): Promise<void> => {
+    const beforeSha = managed.turnBeforeSha;
+    managed.turnBeforeSha = null;
+    if (!beforeSha) return;
+
+    const laneId = resolveManagedExecutionLaneId(managed);
+    const afterSha = await computeHeadShaBestEffort(laneId).catch(() => null);
+    if (!afterSha || beforeSha === afterSha) return;
+
+    try {
+      let cwd: string;
+      try {
+        ({ laneWorktreePath: cwd } = resolveLaneLaunchContext({
+          laneService,
+          laneId,
+          purpose: "turn diff summary",
+        }));
+      } catch {
+        return;
+      }
+      const result = await runGit(["diff", "--numstat", `${beforeSha}..${afterSha}`], { cwd, timeoutMs: 10_000 });
+      if (result.exitCode !== 0) return;
+
+      const files: Array<{ path: string; additions: number; deletions: number; status: string }> = [];
+      let totalAdditions = 0;
+      let totalDeletions = 0;
+
+      for (const line of result.stdout.split("\n")) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+        const parts = trimmed.split("\t");
+        if (parts.length < 3) continue;
+        const additions = parts[0] === "-" ? 0 : parseInt(parts[0], 10) || 0;
+        const deletions = parts[1] === "-" ? 0 : parseInt(parts[1], 10) || 0;
+        const filePath = parts.slice(2).join("\t");
+        files.push({ path: filePath, additions, deletions, status: "M" });
+        totalAdditions += additions;
+        totalDeletions += deletions;
+      }
+
+      if (files.length === 0) return;
+
+      // Determine file status (A/M/D) from diff-filter
+      const statusResult = await runGit(["diff", "--name-status", `${beforeSha}..${afterSha}`], { cwd, timeoutMs: 10_000 });
+      if (statusResult.exitCode === 0) {
+        const statusMap = new Map<string, string>();
+        for (const line of statusResult.stdout.split("\n")) {
+          const trimmed = line.trim();
+          if (!trimmed) continue;
+          const tabIdx = trimmed.indexOf("\t");
+          if (tabIdx < 0) continue;
+          statusMap.set(trimmed.slice(tabIdx + 1).trim(), trimmed.slice(0, tabIdx).trim().charAt(0));
+        }
+        for (const file of files) {
+          file.status = statusMap.get(file.path) ?? "M";
+        }
+      }
+
+      emitChatEvent(managed, {
+        type: "turn_diff_summary",
+        turnId,
+        beforeSha,
+        afterSha,
+        files,
+        totalAdditions,
+        totalDeletions,
+      });
+    } catch {
+      // Silently ignore diff computation failures
     }
   };
 
@@ -5310,6 +5396,10 @@ export function createAgentChatService(args: {
       managed.lastActivitySignature = null;
     }
 
+    if (normalizedEvent.type === "todo_update") {
+      managed.todoItems = normalizedEvent.items;
+    }
+
     commitChatEvent(managed, normalizedEvent);
   };
 
@@ -5621,6 +5711,7 @@ export function createAgentChatService(args: {
         turnStatus: args.turnStatus,
         turnId: resolvedTurnId,
       });
+      void emitTurnDiffSummaryIfChanged(managed, resolvedTurnId);
       emitChatEvent(managed, {
         type: "done",
         turnId: resolvedTurnId,
@@ -5910,6 +6001,8 @@ export function createAgentChatService(args: {
       selectedExecutionLaneId: persisted?.selectedExecutionLaneId ?? null,
       lastLaneDirectiveKey: persisted?.lastLaneDirectiveKey ?? null,
       runtimeInvalidated: false,
+      todoItems: [],
+      unifiedSessionProcessor: new UnifiedSessionProcessor(),
       activeAssistantMessageId: null,
       lastActivitySignature: null,
       bufferedReasoning: null,
@@ -5923,7 +6016,9 @@ export function createAgentChatService(args: {
       localPendingInputs: new Map(),
       eventSequence: 0,
       lastActivityTimestamp: Date.now(),
+      turnBeforeSha: null,
     };
+    managed.todoItems = readLatestTranscriptTodoItems(managed);
     normalizeSessionNativePermissionControls(managed.session, resolveChatConfig());
     managed.transcriptLimitReached = managed.transcriptBytesWritten >= MAX_CHAT_TRANSCRIPT_BYTES;
     refreshReconstructionContext(managed, { includeConversationTail: usesIdentityContinuity(managed) });
@@ -6001,6 +6096,7 @@ export function createAgentChatService(args: {
       onDispatched: args.onDispatched,
     });
     emitChatEvent(managed, { type: "status", turnStatus: "started" });
+    captureTurnBeforeSha(managed);
     emitChatEvent(managed, {
       type: "activity",
       ...initialTurnActivity(managed.session),
@@ -6103,6 +6199,7 @@ export function createAgentChatService(args: {
           turnStatus: "started",
           turnId,
         });
+        captureTurnBeforeSha(managed);
         emitChatEvent(managed, {
           type: "activity",
           ...initialTurnActivity(managed.session),
@@ -6240,6 +6337,7 @@ export function createAgentChatService(args: {
       onDispatched: args.onDispatched,
     });
     emitChatEvent(managed, { type: "status", turnStatus: "started", turnId });
+    captureTurnBeforeSha(managed);
     emitChatEvent(managed, {
       type: "activity",
       ...initialTurnActivity(managed.session),
@@ -6253,6 +6351,7 @@ export function createAgentChatService(args: {
     let reportedInitModel: string | null = null;
     const reportedUsageModels = new Set<string>();
     const turnStartedAt = Date.now();
+    let shouldDeliverQueuedSteer = false;
     let firstStreamEventLogged = false;
     const emittedClaudeToolIds = new Set<string>();
     const emittedSyntheticItemIds = new Set<string>();
@@ -7049,6 +7148,7 @@ export function createAgentChatService(args: {
       const doneModel = buildDoneModelPayload();
       const finalStatus = runtime.interrupted ? "interrupted" : "completed";
       emitChatEvent(managed, { type: "status", turnStatus: finalStatus, turnId });
+      void emitTurnDiffSummaryIfChanged(managed, turnId);
       emitChatEvent(managed, {
         type: "done",
         turnId,
@@ -7097,6 +7197,7 @@ export function createAgentChatService(args: {
       runtime.v2StreamGen = null;
       runtime.v2WarmupDone = null;
       const doneModel = buildDoneModelPayload();
+      void emitTurnDiffSummaryIfChanged(managed, turnId);
 
       if (runtime.interrupted) {
         managed.session.status = "idle";
@@ -7241,6 +7342,7 @@ export function createAgentChatService(args: {
       onDispatched: args.onDispatched,
     });
     emitChatEvent(managed, { type: "status", turnStatus: "started", turnId });
+    captureTurnBeforeSha(managed);
     emitChatEvent(managed, {
       type: "activity",
       ...initialTurnActivity(managed.session),
@@ -7250,8 +7352,6 @@ export function createAgentChatService(args: {
     let assistantText = "";
     let usage: { inputTokens?: number | null; outputTokens?: number | null } | undefined;
     let finalAssistantText = "";
-    let autoContinuationCount = 0;
-    let streamedStepCount = 0;
     const turnStartedAt = Date.now();
     let firstStreamEventLogged = false;
     const markFirstStreamEvent = (kind: string): void => {
@@ -7308,9 +7408,10 @@ export function createAgentChatService(args: {
 
       const lightweight = isLightweightSession(managed.session);
       const executionLaneId = resolveManagedExecutionLaneId(managed);
+      const frontendRepoToolExposure = decideFrontendRepoToolExposure(args.promptText);
       const tools = lightweight
         ? {}
-        : createUniversalToolSet(managed.laneWorktreePath, {
+        : filterFrontendRepoDiscoveryTools(createUniversalToolSet(managed.laneWorktreePath, {
             permissionMode: runtime.permissionMode,
             ...(memoryService && projectId ? { memoryService, projectId } : {}),
             agentScopeOwnerId: managed.session.identityKey ?? managed.session.id,
@@ -7455,7 +7556,19 @@ export function createAgentChatService(args: {
                 decision: response.decision,
               };
             },
-          });
+            onTodoUpdate: (items) => {
+              emitChatEvent(managed, { type: "todo_update", items, turnId });
+            },
+            getTodoItems: () => managed.todoItems,
+          }), frontendRepoToolExposure.enabled);
+      logger.info("agent_chat.unified_tool_exposure", {
+        sessionId: managed.session.id,
+        laneId: managed.session.laneId,
+        turnId,
+        includeFrontendRepoTools: frontendRepoToolExposure.enabled,
+        frontendRepoToolExposureScore: frontendRepoToolExposure.score,
+        frontendRepoToolExposureSignals: frontendRepoToolExposure.signals,
+      });
 
       // Merge workflow tools (lane, PR, screenshot, completion) into the tool set
       if (!lightweight) {
@@ -7616,24 +7729,55 @@ export function createAgentChatService(args: {
         }
       }
 
-      const loopGovernor = createUnifiedToolLoopGovernor({
+      const sessionProcessor = managed.unifiedSessionProcessor;
+      sessionProcessor.startTurn({
         cwd: managed.laneWorktreePath,
         modelDescriptor: runtime.modelDescriptor,
         permissionMode: runtime.permissionMode,
+        initialTodoItems: managed.todoItems,
       });
-      const governedTools = loopGovernor.shouldApply()
-        ? wrapToolsWithUnifiedLoopGovernor(tools, loopGovernor, ({ toolName, reason }) => {
-            logger.info("agent_chat.unified_loop_guard_tool_suppressed", {
+      logger.info("agent_chat.unified_tool_policy_status", {
+        sessionId: managed.session.id,
+        laneId: managed.session.laneId,
+        turnId,
+        enabled: sessionProcessor.shouldApply(),
+        authTypes: runtime.modelDescriptor.authTypes,
+        harnessProfile: runtime.modelDescriptor.harnessProfile ?? null,
+        permissionMode: runtime.permissionMode,
+        modelId: runtime.modelDescriptor.id,
+      });
+      let loopPolicyStopNoticeEmitted = false;
+      const governedTools = sessionProcessor.wrapTools(tools, (decision) => {
+            logger.info("agent_chat.unified_tool_policy_decision", {
               sessionId: managed.session.id,
+              laneId: managed.session.laneId,
               turnId,
-              toolName,
-              reason,
+              phase: decision.phase,
+              toolName: decision.toolName,
+              family: decision.family,
+              normalizedKey: decision.normalizedKey,
+              decision: decision.decision,
+              reason: decision.reason,
+              candidateCount: decision.candidateCount,
+              inspectedCount: decision.inspectedCount,
+              cwd: decision.cwd,
             });
-          })
-        : tools;
+            if (decision.decision === "allow") return;
+            if (decision.decision === "stop_tools" && loopPolicyStopNoticeEmitted) return;
+            emitChatEvent(managed, {
+              type: "system_notice",
+              noticeKind: "info",
+              message: `ADE tool policy ${decision.decision.replace(/_/g, " ")} for ${decision.toolName}.`,
+              detail: decision.reason,
+              turnId,
+            });
+            if (decision.decision === "stop_tools") {
+              loopPolicyStopNoticeEmitted = true;
+            }
+          });
       const allToolNames = Object.keys(governedTools);
 
-      const buildUnifiedHarnessPrompt = (toolNames: string[], hiddenSteer?: string): string | undefined => {
+      const buildUnifiedHarnessPrompt = (toolNames: string[]): string | undefined => {
         if (lightweight) return undefined;
 
         const sections: string[] = [];
@@ -7646,271 +7790,250 @@ export function createAgentChatService(args: {
         if (managed.session.identityKey === "cto" && ctoStateService) {
           sections.push(`## CTO Identity\n${ctoStateService.previewSystemPrompt().prompt}`);
         }
-        if (typeof hiddenSteer === "string" && hiddenSteer.trim().length) {
-          sections.push(`## ADE step steer\n${hiddenSteer.trim()}`);
-        }
         return sections.join("\n\n");
       };
 
       const thinkingLevel = mapReasoningEffortToThinking(managed.session.reasoningEffort);
       const providerOptions = providerResolver.buildProviderOptions(runtime.modelDescriptor, thinkingLevel);
       const harnessPrompt = buildUnifiedHarnessPrompt(allToolNames);
-
-      let shouldAutoContinue = false;
-      const baseTurnMessages = runtime.messages.slice();
-      do {
-        assistantText = "";
-        let iterationUsage: { inputTokens?: number | null; outputTokens?: number | null } | undefined;
-        let iterationToolCallCount = 0;
-        let iterationToolResultCount = 0;
-        shouldAutoContinue = false;
-
-        const currentIterationMessages = baseTurnMessages;
-        const streamMessages = buildUnifiedStreamMessages({
-          messages: currentIterationMessages,
-          persistedTurnUserMessageIndex,
-          resolvedAttachments,
-          modelDescriptor: runtime.modelDescriptor,
-          logger,
-        });
-
-        const stream = streamText({
-          model: runtime.resolvedModel,
-          ...(harnessPrompt ? { system: harnessPrompt } : {}),
-          messages: streamMessages,
-          ...(allToolNames.length ? { tools: governedTools } : {}),
-          providerOptions: providerOptions as any,
-          ...(!lightweight ? { stopWhen: stepCountIs(20) } : {}),
-          abortSignal: abortController.signal,
-          ...(loopGovernor.shouldApply()
-            ? {
-                prepareStep: async () => {
-                  const policy = loopGovernor.buildStepPolicy(allToolNames);
-                  const stepPrompt = buildUnifiedHarnessPrompt(policy.activeTools ?? allToolNames, policy.hiddenSteer);
-                  return {
-                    ...(policy.activeTools?.length ? { activeTools: policy.activeTools } : {}),
-                    ...(policy.toolChoice ? { toolChoice: policy.toolChoice as any } : {}),
-                    ...(stepPrompt ? { system: stepPrompt } : {}),
-                  };
-                },
-                onStepFinish: async (step: any) => {
-                  const summary = loopGovernor.recordStep({
-                    toolCalls: Array.isArray(step?.toolCalls) ? step.toolCalls : [],
-                    toolResults: Array.isArray(step?.toolResults) ? step.toolResults : [],
-                  });
-                  logger.info("agent_chat.unified_loop_guard_step", {
-                    sessionId: managed.session.id,
-                    turnId,
-                    progress: summary.progress,
-                    score: summary.score,
-                    candidateFiles: summary.candidateFiles,
-                    narrowedDirectories: summary.narrowedDirectories,
-                    reasons: summary.reasons,
-                  });
-                },
-              }
-            : {}),
-          onError({ error }) {
-            logger.warn("agent_chat.unified_stream_error", {
-              sessionId: managed.session.id,
-              error: error instanceof Error ? error.message : String(error),
-            });
-          },
-        });
-
-        // ── Stream processing loop ──
-        const streamSupportsReasoning = runtime.modelDescriptor.capabilities.reasoning;
-        for await (const part of stream.fullStream as AsyncIterable<any>) {
-          if (runtime.interrupted) break;
-          if (!part || typeof part !== "object") continue;
-          markFirstStreamEvent(String(part.type ?? "unknown"));
-
-          if (part.type === "start-step") {
-            streamedStepCount += 1;
-            emitChatEvent(managed, {
-              type: "step_boundary",
-              stepNumber: typeof part.stepNumber === "number" ? part.stepNumber + 1 : streamedStepCount,
-              turnId,
-            });
-            if (!streamSupportsReasoning && streamedStepCount === 1) {
-              emitChatEvent(managed, {
-                type: "activity",
-                activity: "working",
-                detail: WORKING_ACTIVITY_DETAIL,
-                turnId,
-              });
-            }
-            continue;
-          }
-
-          if (part.type === "source") {
-            emitChatEvent(managed, {
-              type: "activity",
-              activity: "searching",
-              detail:
-                typeof part.title === "string" && part.title.trim().length
-                  ? part.title
-                  : typeof part.url === "string" && part.url.trim().length
-                    ? part.url
-                    : "Gathering sources",
-              turnId,
-            });
-            continue;
-          }
-
-          if (part.type === "text-delta") {
-            const delta = String(part.text ?? part.textDelta ?? "");
-            if (!delta.length) continue;
-            assistantText += delta;
-            emitChatEvent(managed, {
-              type: "text",
-              text: delta,
-              turnId,
-              itemId: typeof part.id === "string" ? part.id : undefined
-            });
-            continue;
-          }
-
-          if (part.type === "reasoning-start") {
-            emitChatEvent(managed, {
-              type: "activity",
-              activity: streamSupportsReasoning ? "thinking" : "working",
-              detail: streamSupportsReasoning ? REASONING_ACTIVITY_DETAIL : WORKING_ACTIVITY_DETAIL,
-              turnId,
-            });
-            continue;
-          }
-
-          if (part.type === "reasoning" || part.type === "reasoning-delta") {
-            const delta = String(part.text ?? part.textDelta ?? part.delta ?? "");
-            if (!delta.length) continue;
-            if (!streamSupportsReasoning) {
-              emitChatEvent(managed, {
-                type: "activity",
-                activity: "working",
-                detail: WORKING_ACTIVITY_DETAIL,
-                turnId,
-              });
-              continue;
-            }
-            emitChatEvent(managed, {
-              type: "activity",
-              activity: "thinking",
-              detail: REASONING_ACTIVITY_DETAIL,
-              turnId,
-            });
-            emitChatEvent(managed, {
-              type: "reasoning",
-              text: delta,
-              turnId,
-              itemId: typeof part.id === "string" ? part.id : undefined
-            });
-            continue;
-          }
-
-          if (part.type === "reasoning-end") {
-            flushBufferedReasoning(managed);
-            continue;
-          }
-
-          if (part.type === "tool-call") {
-            iterationToolCallCount += 1;
-            const nextActivity = activityForToolName(String(part.toolName ?? "tool"));
-            const parentItemId = readProviderParentItemId((part as { providerMetadata?: unknown }).providerMetadata);
-            emitChatEvent(managed, {
-              type: "activity",
-              activity: nextActivity.activity,
-              detail: nextActivity.detail,
-              turnId,
-            });
-            emitChatEvent(managed, {
-              type: "tool_call",
-              tool: String(part.toolName ?? "tool"),
-              args: part.input ?? part.args ?? part.arguments,
-              itemId: String(part.toolCallId ?? randomUUID()),
-              ...(parentItemId ? { parentItemId } : {}),
-              turnId
-            });
-            continue;
-          }
-
-          if (part.type === "tool-result") {
-            iterationToolResultCount += 1;
-            const parentItemId = readProviderParentItemId((part as { providerMetadata?: unknown }).providerMetadata);
-            emitChatEvent(managed, {
-              type: "tool_result",
-              tool: String(part.toolName ?? "tool"),
-              result: part.output ?? part.result,
-              itemId: String(part.toolCallId ?? randomUUID()),
-              ...(parentItemId ? { parentItemId } : {}),
-              turnId,
-              status: part.preliminary ? "running" : "completed"
-            });
-            continue;
-          }
-
-          if (part.type === "tool-error") {
-            emitChatEvent(managed, {
-              type: "error",
-              message: `Tool '${String(part.toolName ?? "tool")}' failed: ${String(part.error ?? "unknown error")}`,
-              turnId,
-              itemId: String(part.toolCallId ?? randomUUID())
-            });
-            continue;
-          }
-
-          if (part.type === "tool-approval-request") {
-            const toolName = String(part.toolCall?.toolName ?? "tool");
-            emitChatEvent(managed, {
-              type: "error",
-              message: isPlanningApprovalGuarded(managed)
-                ? buildPlanningApprovalViolation(toolName)
-                : `Unexpected SDK approval request for '${toolName}'. This tool should use ADE-managed approvals instead.`,
-              turnId
-            });
-            continue;
-          }
-
-          if (part.type === "finish") {
-            iterationUsage = normalizeUsagePayload(part.totalUsage ?? part.usage);
-            continue;
-          }
-
-          if (part.type === "error") {
-            emitChatEvent(managed, {
-              type: "error",
-              message: String(part.error ?? "Stream error."),
-              turnId
-            });
-          }
-        }
-
-        usage = mergeUsagePayloads(usage, iterationUsage);
-        finalAssistantText += assistantText;
-        shouldAutoContinue = shouldAutoContinueUnifiedLocalTurn({
-          modelDescriptor: runtime.modelDescriptor,
-          permissionMode: runtime.permissionMode,
-          assistantText,
-          toolCallCount: iterationToolCallCount,
-          toolResultCount: iterationToolResultCount,
-          continuationCount: autoContinuationCount,
-          pendingApprovalCount: runtime.pendingApprovals.size,
-        });
-        if (shouldAutoContinue && !runtime.interrupted) {
-          logger.info("agent_chat.unified_local_auto_continue", {
+      const supportsNamedToolChoice = !runtime.modelDescriptor.authTypes.includes("local");
+      const canForwardToolChoice = (toolChoice: { type: "tool"; toolName: string } | "none" | "required" | undefined) => {
+        if (!toolChoice) return false;
+        return typeof toolChoice === "string" || supportsNamedToolChoice;
+      };
+      const stepHooks = sessionProcessor.buildStepHooks({
+        allToolNames,
+        canForwardToolChoice,
+        buildSystemPrompt: buildUnifiedHarnessPrompt,
+        onStepSummary: (summary) => {
+          logger.info("agent_chat.unified_loop_guard_step", {
             sessionId: managed.session.id,
             turnId,
-            modelId: runtime.modelDescriptor.id,
-            continuationCount: autoContinuationCount + 1,
+            progress: summary.progress,
+            score: summary.score,
+            candidateFiles: summary.candidateFiles,
+            narrowedDirectories: summary.narrowedDirectories,
+            reasons: summary.reasons,
           });
-          baseTurnMessages.push({ role: "assistant", content: assistantText });
-          baseTurnMessages.push({ role: "user", content: UNIFIED_LOCAL_AUTO_CONTINUE_PROMPT });
-          autoContinuationCount += 1;
+        },
+      });
+
+      assistantText = "";
+      let iterationUsage: { inputTokens?: number | null; outputTokens?: number | null } | undefined;
+      const streamMessages = buildUnifiedStreamMessages({
+        messages: runtime.messages.slice(),
+        persistedTurnUserMessageIndex,
+        resolvedAttachments,
+        modelDescriptor: runtime.modelDescriptor,
+        logger,
+      });
+
+      const stream = streamText({
+        model: runtime.resolvedModel,
+        ...(harnessPrompt ? { system: harnessPrompt } : {}),
+        messages: streamMessages,
+        ...(allToolNames.length ? { tools: governedTools } : {}),
+        providerOptions: providerOptions as any,
+        ...(!lightweight ? { stopWhen: stepCountIs(20) } : {}),
+        abortSignal: abortController.signal,
+        ...stepHooks,
+        onError({ error }) {
+          logger.warn("agent_chat.unified_stream_error", {
+            sessionId: managed.session.id,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        },
+      });
+
+      // ── Stream processing loop ──
+      const streamSupportsReasoning = runtime.modelDescriptor.capabilities.reasoning;
+      for await (const event of sessionProcessor.processStream({
+        fullStream: stream.fullStream as AsyncIterable<any>,
+        shouldStop: () => runtime.interrupted,
+        onPartSeen: markFirstStreamEvent,
+      })) {
+        if (event.type === "break") {
+          logger.info("agent_chat.unified_tool_policy_break_stream", {
+            sessionId: managed.session.id,
+            laneId: managed.session.laneId,
+            turnId,
+            partType: String(event.part.type ?? "unknown"),
+          });
+          continue;
         }
-      } while (shouldAutoContinue && !runtime.interrupted);
+
+        if (event.type === "start-step") {
+          const stepNumber = event.providerStepNumber !== undefined
+            ? event.providerStepNumber + 1
+            : event.stepCount;
+          emitChatEvent(managed, {
+            type: "step_boundary",
+            stepNumber,
+            turnId,
+          });
+          if (!streamSupportsReasoning && stepNumber === 1) {
+            emitChatEvent(managed, {
+              type: "activity",
+              activity: "working",
+              detail: WORKING_ACTIVITY_DETAIL,
+              turnId,
+            });
+          }
+          continue;
+        }
+
+        if (event.type === "source") {
+          emitChatEvent(managed, {
+            type: "activity",
+            activity: "searching",
+            detail: event.detail,
+            turnId,
+          });
+          continue;
+        }
+
+        if (event.type === "text-delta") {
+          assistantText = event.assistantText;
+          emitChatEvent(managed, {
+            type: "text",
+            text: event.text,
+            turnId,
+            ...(typeof event.part.id === "string" ? { itemId: event.part.id } : {}),
+          });
+          continue;
+        }
+
+        if (event.type === "reasoning-start") {
+          emitChatEvent(managed, {
+            type: "activity",
+            activity: streamSupportsReasoning ? "thinking" : "working",
+            detail: streamSupportsReasoning ? REASONING_ACTIVITY_DETAIL : WORKING_ACTIVITY_DETAIL,
+            turnId,
+          });
+          continue;
+        }
+
+        if (event.type === "reasoning-delta") {
+          if (!streamSupportsReasoning) {
+            emitChatEvent(managed, {
+              type: "activity",
+              activity: "working",
+              detail: WORKING_ACTIVITY_DETAIL,
+              turnId,
+            });
+            continue;
+          }
+          emitChatEvent(managed, {
+            type: "activity",
+            activity: "thinking",
+            detail: REASONING_ACTIVITY_DETAIL,
+            turnId,
+          });
+          emitChatEvent(managed, {
+            type: "reasoning",
+            text: event.delta,
+            turnId,
+            ...(typeof event.part.id === "string" ? { itemId: event.part.id } : {}),
+          });
+          continue;
+        }
+
+        if (event.type === "reasoning-end") {
+          flushBufferedReasoning(managed);
+          continue;
+        }
+
+        if (event.type === "tool-call") {
+          const nextActivity = activityForToolName(event.toolName);
+          const parentItemId = readProviderParentItemId(event.part.providerMetadata);
+          emitChatEvent(managed, {
+            type: "activity",
+            activity: nextActivity.activity,
+            detail: nextActivity.detail,
+            turnId,
+          });
+          emitChatEvent(managed, {
+            type: "tool_call",
+            tool: event.toolName,
+            args: event.input,
+            itemId: event.toolCallId ?? randomUUID(),
+            ...(parentItemId ? { parentItemId } : {}),
+            turnId,
+          });
+          continue;
+        }
+
+        if (event.type === "tool-result") {
+          const parentItemId = readProviderParentItemId(event.part.providerMetadata);
+          emitChatEvent(managed, {
+            type: "tool_result",
+            tool: event.toolName,
+            result: event.output,
+            itemId: event.toolCallId ?? randomUUID(),
+            ...(parentItemId ? { parentItemId } : {}),
+            turnId,
+            status: event.preliminary ? "running" : "completed",
+          });
+          continue;
+        }
+
+        if (event.type === "tool-error") {
+          emitChatEvent(managed, {
+            type: "error",
+            message: `Tool '${event.toolName}' failed: ${String(event.error ?? "unknown error")}`,
+            turnId,
+            itemId: event.toolCallId ?? randomUUID(),
+          });
+          continue;
+        }
+
+        if (event.type === "tool-approval-request") {
+          emitChatEvent(managed, {
+            type: "error",
+            message: isPlanningApprovalGuarded(managed)
+              ? buildPlanningApprovalViolation(event.toolName)
+              : `Unexpected SDK approval request for '${event.toolName}'. This tool should use ADE-managed approvals instead.`,
+            turnId,
+          });
+          continue;
+        }
+
+        if (event.type === "finish") {
+          iterationUsage = normalizeUsagePayload(event.usage);
+          continue;
+        }
+
+        if (event.type === "blocked-summary") {
+          assistantText = event.assistantText;
+          emitChatEvent(managed, {
+            type: "text",
+            text: event.text,
+            turnId,
+          });
+          continue;
+        }
+
+        if (event.type === "stream-end") {
+          assistantText = event.assistantText;
+          continue;
+        }
+
+        if (event.type === "error") {
+          emitChatEvent(managed, {
+            type: "error",
+            message: String(event.error ?? "Stream error."),
+            turnId,
+          });
+          continue;
+        }
+      }
+
+      usage = mergeUsagePayloads(usage, iterationUsage);
+      finalAssistantText += assistantText;
 
       // ── Shared turn completion ──
       persistDeliveredLaneDirectiveKey(managed, args.laneDirectiveKey);
+      void emitTurnDiffSummaryIfChanged(managed, turnId);
       if (runtime.interrupted) {
         runtime.busy = false;
         runtime.activeTurnId = null;
@@ -7968,6 +8091,7 @@ export function createAgentChatService(args: {
       runtime.busy = false;
       runtime.activeTurnId = null;
       runtime.abortController = null;
+      void emitTurnDiffSummaryIfChanged(managed, turnId);
 
       if (runtime.interrupted) {
         managed.session.status = "idle";
@@ -8499,6 +8623,25 @@ export function createAgentChatService(args: {
     return true;
   };
 
+  const stopActiveCodexSubagents = (
+    managed: ManagedChatSession,
+    runtime: CodexRuntime,
+    turnId: string | undefined,
+    summary: string,
+  ): void => {
+    if (runtime.activeSubagents.size === 0) return;
+    for (const { taskId } of runtime.activeSubagents.values()) {
+      emitChatEvent(managed, {
+        type: "subagent_result",
+        taskId,
+        status: "stopped",
+        summary,
+        turnId,
+      });
+    }
+    runtime.activeSubagents.clear();
+  };
+
   const handleCodexItemEvent = (
     managed: ManagedChatSession,
     runtime: CodexRuntime,
@@ -8508,8 +8651,12 @@ export function createAgentChatService(args: {
   ): void => {
     const itemId = String(item.id ?? randomUUID());
     const itemType = String(item.type ?? "");
+    const explicitTurnId = turnIdHint ?? extractCodexTurnId(item);
+    const trackedTurnId = runtime.itemTurnIdByItemId.get(itemId) ?? null;
+    if (isInterruptedCodexTurn(runtime, explicitTurnId ?? trackedTurnId)) {
+      return;
+    }
     const turnId = (() => {
-      const explicitTurnId = turnIdHint ?? extractCodexTurnId(item);
       if (eventKind === "started") {
         const startedTurnId = explicitTurnId ?? runtime.activeTurnId ?? undefined;
         if (startedTurnId) {
@@ -8627,6 +8774,11 @@ export function createAgentChatService(args: {
     // Delegation items → subagent events
     if (itemType === "delegation") {
       if (eventKind === "started") {
+        runtime.activeSubagents.set(itemId, {
+          taskId: itemId,
+          description: String(item.description ?? item.title ?? "Delegated task"),
+          background: isBackgroundTask(item as Record<string, unknown>),
+        });
         emitChatEvent(managed, {
           type: "subagent_started",
           taskId: itemId,
@@ -8636,6 +8788,7 @@ export function createAgentChatService(args: {
         });
       }
       if (eventKind === "completed") {
+        runtime.activeSubagents.delete(itemId);
         emitChatEvent(managed, {
           type: "subagent_result",
           taskId: itemId,
@@ -8655,6 +8808,12 @@ export function createAgentChatService(args: {
       const newThreadId = typeof item.newThreadId === "string" ? item.newThreadId : null;
 
       if (tool === "spawn_agent" && eventKind === "started") {
+        const taskId = newThreadId ?? itemId;
+        runtime.activeSubagents.set(taskId, {
+          taskId,
+          description: prompt.slice(0, 120) || "Parallel agent",
+          background: isBackgroundTask(item as Record<string, unknown>),
+        });
         emitChatEvent(managed, {
           type: "activity",
           activity: "spawning_agent",
@@ -8663,7 +8822,7 @@ export function createAgentChatService(args: {
         });
         emitChatEvent(managed, {
           type: "subagent_started",
-          taskId: newThreadId ?? itemId,
+          taskId,
           description: prompt.slice(0, 120) || "Parallel agent",
           background: isBackgroundTask(item as Record<string, unknown>),
           turnId,
@@ -8694,6 +8853,7 @@ export function createAgentChatService(args: {
             rawStatus === "failed" ? "failed"
             : rawStatus === "stopped" ? "stopped"
             : "completed";
+          runtime.activeSubagents.delete(agentThreadId);
           emitChatEvent(managed, {
             type: "subagent_result",
             taskId: agentThreadId,
@@ -8707,6 +8867,7 @@ export function createAgentChatService(args: {
       if (tool === "close_agent" && eventKind === "completed") {
         const receiverIds = Array.isArray(item.receiverThreadIds) ? item.receiverThreadIds : [];
         const targetId = typeof receiverIds[0] === "string" ? receiverIds[0] : itemId;
+        runtime.activeSubagents.delete(targetId);
         emitChatEvent(managed, {
           type: "subagent_result",
           taskId: targetId,
@@ -8833,6 +8994,7 @@ export function createAgentChatService(args: {
           turnStatus: "started",
           ...(turnId ? { turnId } : {})
         });
+        captureTurnBeforeSha(managed);
         emitChatEvent(managed, {
           type: "activity",
           ...initialTurnActivity(managed.session),
@@ -8889,6 +9051,7 @@ export function createAgentChatService(args: {
           : {})
       });
 
+      void emitTurnDiffSummaryIfChanged(managed, turnId);
       emitChatEvent(managed, {
         type: "done",
         turnId,
@@ -9081,19 +9244,26 @@ export function createAgentChatService(args: {
         return;
       }
       const turnId = resolvedAbortTurnId ?? randomUUID();
+      rememberInterruptedCodexTurn(runtime, turnId);
       runtime.activeTurnId = null;
       runtime.startedTurnId = null;
       resetAssistantMessageStream(managed);
+      runtime.itemTurnIdByItemId.clear();
+      runtime.commandOutputByItemId.clear();
+      runtime.fileDeltaByItemId.clear();
+      runtime.fileChangesByItemId.clear();
       runtime.agentMessageScopeByTurn.clear();
       runtime.agentMessageTextByTurn.clear();
       runtime.recentNotificationKeys.clear();
       runtime.approvals.clear();
       managed.session.status = "idle";
+      stopActiveCodexSubagents(managed, runtime, turnId, "Interrupted by user");
       emitChatEvent(managed, {
         type: "status",
         turnStatus: "interrupted",
         turnId,
       });
+      void emitTurnDiffSummaryIfChanged(managed, turnId);
       emitChatEvent(managed, {
         type: "done",
         turnId,
@@ -9287,15 +9457,17 @@ export function createAgentChatService(args: {
       commandOutputByItemId: new Map<string, string>(),
       fileDeltaByItemId: new Map<string, string>(),
       fileChangesByItemId: new Map<string, Array<{ path: string; kind: "create" | "modify" | "delete" }>>(),
+      activeSubagents: new Map<string, { taskId: string; description: string; background: boolean }>(),
+      interruptedTurnIds: new Set<string>(),
       agentMessageScopeByTurn: new Map<string, "item" | "turn">(),
       agentMessageTextByTurn: new Map<string, string>(),
-    recentNotificationKeys: new Set<string>(),
-    slashCommands: [],
-    rateLimits: null,
-    collaborationModes: null,
-    collaborationModesReady: null,
-    planModeFallbackNotified: false,
-    request: async <T = unknown>(method: string, params?: unknown): Promise<T> => {
+      recentNotificationKeys: new Set<string>(),
+      slashCommands: [],
+      rateLimits: null,
+      collaborationModes: null,
+      collaborationModesReady: null,
+      planModeFallbackNotified: false,
+      request: async <T = unknown>(method: string, params?: unknown): Promise<T> => {
       const id = runtime.nextRequestId;
       runtime.nextRequestId += 1;
 
@@ -9960,7 +10132,7 @@ export function createAgentChatService(args: {
 
   const deliverNextQueuedSteer = async (
     managed: ManagedChatSession,
-    runtime: ClaudeRuntime | UnifiedRuntime,
+    runtime: ClaudeRuntime | UnifiedRuntime | CursorRuntime,
   ): Promise<boolean> => {
     if (managed.closed) return false;
 
@@ -10006,6 +10178,14 @@ export function createAgentChatService(args: {
         promptText,
         displayText: trimmed,
         attachments: [],
+        laneDirectiveKey: shouldInjectLaneDirective ? laneDirectiveKey : null,
+      });
+    } else if (runtime.kind === "cursor") {
+      await runCursorTurn(managed, {
+        promptText,
+        displayText: trimmed,
+        attachments: [],
+        resolvedAttachments: [],
         laneDirectiveKey: shouldInjectLaneDirective ? laneDirectiveKey : null,
       });
     } else {
@@ -10289,6 +10469,8 @@ export function createAgentChatService(args: {
       selectedExecutionLaneId: null,
       lastLaneDirectiveKey: null,
       runtimeInvalidated: false,
+      todoItems: [],
+      unifiedSessionProcessor: new UnifiedSessionProcessor(),
       activeAssistantMessageId: null,
       previewTextBuffer: null,
       bufferedText: null,
@@ -10296,6 +10478,7 @@ export function createAgentChatService(args: {
       localPendingInputs: new Map(),
       eventSequence: 0,
       lastActivityTimestamp: Date.now(),
+      turnBeforeSha: null,
     };
 
     let runtime: CodexRuntime | null = null;
@@ -10639,6 +10822,8 @@ export function createAgentChatService(args: {
       selectedExecutionLaneId: null,
       lastLaneDirectiveKey: null,
       runtimeInvalidated: false,
+      todoItems: [],
+      unifiedSessionProcessor: new UnifiedSessionProcessor(),
       activeAssistantMessageId: null,
       lastActivitySignature: null,
       bufferedReasoning: null,
@@ -10648,6 +10833,7 @@ export function createAgentChatService(args: {
       localPendingInputs: new Map(),
       eventSequence: 0,
       lastActivityTimestamp: Date.now(),
+      turnBeforeSha: null,
     };
     normalizeSessionNativePermissionControls(managed.session, resolveChatConfig());
     managed.transcriptLimitReached = managed.transcriptBytesWritten >= MAX_CHAT_TRANSCRIPT_BYTES;
@@ -10952,6 +11138,7 @@ export function createAgentChatService(args: {
       message,
       turnId,
     });
+    void emitTurnDiffSummaryIfChanged(managed, turnId);
     emitChatEvent(managed, {
       type: "done",
       turnId,
@@ -11638,6 +11825,7 @@ export function createAgentChatService(args: {
         onDispatched: args.onDispatched,
       });
       emitChatEvent(managed, { type: "status", turnStatus: "started", turnId });
+      captureTurnBeforeSha(managed);
     }
     emitChatEvent(managed, {
       type: "activity",
@@ -11646,6 +11834,7 @@ export function createAgentChatService(args: {
     });
 
     const turnStartedAt = Date.now();
+    let shouldDeliverQueuedSteer = false;
     try {
       const autoMemoryPlan = await buildAutoMemoryTurnPlan(managed, displayText, args.attachments);
       const autoMemoryNotice = buildAutoMemorySystemNotice(autoMemoryPlan);
@@ -11743,8 +11932,10 @@ export function createAgentChatService(args: {
           }
         : undefined;
 
+      void emitTurnDiffSummaryIfChanged(managed, turnId);
       if (runtime.interrupted || promptRes.stopReason === "cancelled") {
         managed.session.status = "idle";
+        cancelQueuedSteers(managed, runtime, "interrupted");
         emitChatEvent(managed, { type: "status", turnStatus: "interrupted", turnId });
         for (const ev of mapStopReasonToTerminalEvents({
           stopReason: "cancelled",
@@ -11771,6 +11962,7 @@ export function createAgentChatService(args: {
         })) {
           emitChatEvent(managed, ev);
         }
+        shouldDeliverQueuedSteer = runtime.pendingSteers.length > 0;
       }
 
       appendWorkerActivityToCto(managed, {
@@ -11778,20 +11970,6 @@ export function createAgentChatService(args: {
         summary: "Cursor agent turn completed.",
       });
       persistChatState(managed);
-
-      if (!managed.closed && runtime.pendingSteers.length) {
-        const nextSteer = runtime.pendingSteers.shift();
-        const steerText = nextSteer?.text ?? "";
-        if (steerText.trim().length) {
-          const preparedSteer = prepareSendMessage({
-            sessionId: managed.session.id,
-            text: steerText,
-            displayText: steerText,
-            attachments: [],
-          });
-          if (preparedSteer) await executePreparedSendMessage(preparedSteer);
-        }
-      }
     } catch (error) {
       managed.session.status = "idle";
       const msg = error instanceof Error ? error.message : String(error);
@@ -11804,6 +11982,7 @@ export function createAgentChatService(args: {
 
       // Drop queued steers so they don't replay on the next turn.
       cancelQueuedSteers(managed, runtime, runtime.interrupted ? "interrupted" : "failed");
+      void emitTurnDiffSummaryIfChanged(managed, turnId);
 
       if (runtime.interrupted) {
         emitChatEvent(managed, { type: "status", turnStatus: "interrupted", turnId });
@@ -11836,6 +12015,16 @@ export function createAgentChatService(args: {
       runtime.activeTurnId = null;
       if (managed.session.status === "active") {
         managed.session.status = "idle";
+      }
+    }
+    if (!managed.closed && shouldDeliverQueuedSteer) {
+      try {
+        await deliverNextQueuedSteer(managed, runtime);
+      } catch (error) {
+        logger.warn("agent_chat.cursor_deliver_queued_steer_failed", {
+          sessionId: managed.session.id,
+          error: error instanceof Error ? error.message : String(error),
+        });
       }
     }
   };
@@ -11924,12 +12113,15 @@ export function createAgentChatService(args: {
       if (runtime.threadResumed) {
         const prevApproval = managed.session.codexApprovalPolicy;
         const prevSandbox = managed.session.codexSandbox;
+        const prevConfigSource = managed.session.codexConfigSource;
         resolveCodexThreadParams(managed);
         if (
-          managed.session.codexApprovalPolicy !== prevApproval
+          managed.session.codexConfigSource !== prevConfigSource
+          || managed.session.codexApprovalPolicy !== prevApproval
           || managed.session.codexSandbox !== prevSandbox
         ) {
-          // Policy drifted — force a re-resume so the codex server picks up the new settings.
+          // Policy or config source drifted — force a re-resume so the codex
+          // server picks up the new ADE-controlled settings on this turn.
           runtime.threadResumed = false;
         }
       }
@@ -12053,6 +12245,7 @@ export function createAgentChatService(args: {
         turnId,
       });
       emitChatEvent(prepared.managed, { type: "status", turnStatus: "started", turnId });
+      captureTurnBeforeSha(prepared.managed);
       prepared.managed.session.status = "active";
       persistChatState(prepared.managed);
       // NOTE: onDispatched is NOT called here. It will be called inside
@@ -12083,9 +12276,12 @@ export function createAgentChatService(args: {
     }
   };
 
-  const steer = async ({ sessionId, text }: AgentChatSteerArgs): Promise<void> => {
+  const steer = async ({ sessionId, text }: AgentChatSteerArgs): Promise<AgentChatSteerResult> => {
     const trimmed = text.trim();
-    if (!trimmed.length) return;
+    const steerId = randomUUID();
+    if (!trimmed.length) {
+      return { steerId, queued: false };
+    }
 
     const managed = ensureManagedSession(sessionId);
 
@@ -12093,8 +12289,8 @@ export function createAgentChatService(args: {
     if (managed.runtime?.kind === "unified") {
       const runtime = managed.runtime;
       if (runtime.busy) {
-        enqueueSteerOrDrop(managed, runtime, sessionId, randomUUID(), trimmed);
-        return;
+        enqueueSteerOrDrop(managed, runtime, sessionId, steerId, trimmed);
+        return { steerId, queued: true };
       }
       const preparedSteer = prepareSendMessage({
         sessionId,
@@ -12102,9 +12298,11 @@ export function createAgentChatService(args: {
         displayText: trimmed,
         attachments: [],
       });
-      if (!preparedSteer) return;
+      if (!preparedSteer) {
+        return { steerId, queued: false };
+      }
       await executePreparedSendMessage(preparedSteer);
-      return;
+      return { steerId, queued: false };
     }
 
     if (managed.session.provider === "cursor") {
@@ -12118,9 +12316,8 @@ export function createAgentChatService(args: {
             message: "Steer dropped — the queue is full. Wait for the current turn to finish.",
             turnId: rt.activeTurnId ?? undefined,
           });
-          return;
+          return { steerId, queued: false };
         }
-        const steerId = randomUUID();
         rt.pendingSteers.push({ steerId, text: trimmed });
         emitChatEvent(managed, {
           type: "user_message",
@@ -12137,7 +12334,7 @@ export function createAgentChatService(args: {
           turnId: rt.activeTurnId ?? undefined,
         });
         persistChatState(managed);
-        return;
+        return { steerId, queued: true };
       }
       const preparedSteer = prepareSendMessage({
         sessionId,
@@ -12145,9 +12342,11 @@ export function createAgentChatService(args: {
         displayText: trimmed,
         attachments: [],
       });
-      if (!preparedSteer) return;
+      if (!preparedSteer) {
+        return { steerId, queued: false };
+      }
       await executePreparedSendMessage(preparedSteer);
-      return;
+      return { steerId, queued: false };
     }
 
     if (managed.session.provider === "codex") {
@@ -12156,12 +12355,6 @@ export function createAgentChatService(args: {
       if (!managed.session.threadId || !runtime.activeTurnId) {
         throw new Error("No active turn to steer.");
       }
-
-      emitChatEvent(managed, {
-        type: "user_message",
-        text: trimmed,
-        turnId: runtime.activeTurnId
-      });
 
       await runtime.request("turn/steer", {
         threadId: managed.session.threadId,
@@ -12174,13 +12367,20 @@ export function createAgentChatService(args: {
           }
         ]
       });
-      return;
+      emitChatEvent(managed, {
+        type: "user_message",
+        text: trimmed,
+        steerId,
+        deliveryState: "delivered",
+        turnId: runtime.activeTurnId,
+      });
+      return { steerId, queued: false };
     }
 
     const runtime = ensureClaudeSessionRuntime(managed);
     if (runtime.busy) {
-      enqueueSteerOrDrop(managed, runtime, sessionId, randomUUID(), trimmed);
-      return;
+      enqueueSteerOrDrop(managed, runtime, sessionId, steerId, trimmed);
+      return { steerId, queued: true };
     }
 
     const preparedSteer = prepareSendMessage({
@@ -12189,8 +12389,11 @@ export function createAgentChatService(args: {
       displayText: trimmed,
       attachments: [],
     });
-    if (!preparedSteer) return;
+    if (!preparedSteer) {
+      return { steerId, queued: false };
+    }
     await executePreparedSendMessage(preparedSteer);
+    return { steerId, queued: false };
   };
 
   const cancelSteer = async ({ sessionId, steerId }: AgentChatCancelSteerArgs): Promise<void> => {
@@ -12285,10 +12488,12 @@ export function createAgentChatService(args: {
       const runtime = await ensureCodexSessionRuntime(managed);
       await runtime.collaborationModesReady?.catch(() => {});
       if (!managed.session.threadId || !runtime.activeTurnId) return;
+      rememberInterruptedCodexTurn(runtime, runtime.activeTurnId);
       await runtime.request("turn/interrupt", {
         threadId: managed.session.threadId,
         turnId: runtime.activeTurnId
       });
+      stopActiveCodexSubagents(managed, runtime, runtime.activeTurnId ?? undefined, "Interrupted by user");
       return;
     }
 
@@ -12879,13 +13084,6 @@ export function createAgentChatService(args: {
       const approved = resolvedDecision === "accept" || resolvedDecision === "accept_for_session";
       if (resolvedDecision === "accept_for_session" && pending.category !== "askUser") {
         managed.runtime.approvalOverrides.add(pending.category);
-        if (pending.category === "bash") {
-          managed.runtime.permissionMode = "full-auto";
-          managed.session.unifiedPermissionMode = "full-auto";
-        } else if (managed.runtime.permissionMode === "plan") {
-          managed.runtime.permissionMode = "edit";
-          managed.session.unifiedPermissionMode = "edit";
-        }
       }
       if (approved && pending.category === "exitPlanMode") {
         managed.runtime.permissionMode = "edit";
@@ -13025,10 +13223,17 @@ export function createAgentChatService(args: {
     if (managed.runtime?.kind === "codex") {
       try {
         if (managed.session.threadId && managed.runtime.activeTurnId) {
+          rememberInterruptedCodexTurn(managed.runtime, managed.runtime.activeTurnId);
           await managed.runtime.request("turn/interrupt", {
             threadId: managed.session.threadId,
             turnId: managed.runtime.activeTurnId
           });
+          stopActiveCodexSubagents(
+            managed,
+            managed.runtime,
+            managed.runtime.activeTurnId ?? undefined,
+            "Interrupted while closing the session",
+          );
         }
       } catch {
         // ignore interrupt failures while disposing
@@ -13134,6 +13339,9 @@ export function createAgentChatService(args: {
     const chatConfig = resolveChatConfig();
     const isIdentitySession = Boolean(managed.session.identityKey);
     const hasConversation = managed.recentConversationEntries.length > 0 || readTranscriptConversationEntries(managed).length > 0;
+    const prevCodexApprovalPolicy = managed.session.codexApprovalPolicy;
+    const prevCodexSandbox = managed.session.codexSandbox;
+    const prevCodexConfigSource = managed.session.codexConfigSource;
     let resetRuntimeForComputerUse = false;
 
     if (modelId !== undefined) {
@@ -13317,6 +13525,16 @@ export function createAgentChatService(args: {
           chatConfig.unifiedPermissionMode,
         );
       }
+      if (
+        managed.runtime?.kind === "codex"
+        && (
+          managed.session.codexApprovalPolicy !== prevCodexApprovalPolicy
+          || managed.session.codexSandbox !== prevCodexSandbox
+          || managed.session.codexConfigSource !== prevCodexConfigSource
+        )
+      ) {
+        managed.runtime.threadResumed = false;
+      }
       if (managed.runtime?.kind === "claude" && managed.runtime.v2Session && !managed.runtime.busy) {
         const turnPermissionMode = resolveClaudeTurnPermissionMode(managed);
         const control = getClaudeV2SessionControl(managed.runtime.v2Session);
@@ -13369,6 +13587,7 @@ export function createAgentChatService(args: {
       const hasExplicitTitle = normalizedTitle.length > 0;
       sessionService.updateMeta({
         sessionId,
+        manuallyNamed: manuallyNamed ?? false,
         title: hasExplicitTitle ? normalizedTitle : defaultChatSessionTitle(managed.session.provider),
       });
       if (manuallyNamed !== undefined) {

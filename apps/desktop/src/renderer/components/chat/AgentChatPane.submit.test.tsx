@@ -743,7 +743,7 @@ describe("AgentChatPane submit recovery", () => {
     expect(await screen.findByText("Fix login bug")).toBeTruthy();
   });
 
-  it("renders the lane navigation button when laneLabel is provided", async () => {
+  it("renders the git toolbar when laneId is provided", async () => {
     const session = buildSession("session-1");
     installAdeMocks({ sessions: [session] });
 
@@ -759,12 +759,12 @@ describe("AgentChatPane submit recovery", () => {
       </MemoryRouter>,
     );
 
-    const laneButton = await screen.findByTitle("Go to lane: feature/auth");
-    expect(laneButton).toBeTruthy();
-    expect(laneButton.textContent).toContain("feature/auth");
+    // The git toolbar renders commit/push buttons when laneId is present
+    expect(await screen.findByText("Commit")).toBeTruthy();
+    expect(screen.getByText("Push")).toBeTruthy();
   });
 
-  it("does not render the lane navigation button when laneId is null", async () => {
+  it("does not render the git toolbar when laneId is null", async () => {
     const session = buildSession("session-1");
     installAdeMocks({ sessions: [session] });
 
@@ -780,9 +780,9 @@ describe("AgentChatPane submit recovery", () => {
       </MemoryRouter>,
     );
 
-    // Wait for the pane to fully render (renders "Select a lane" placeholder when laneId is null)
+    // Wait for the pane to fully render — no git toolbar when laneId is null
     await waitFor(() => {
-      expect(screen.queryByTitle(/Go to lane:/)).toBeNull();
+      expect(screen.queryByText("Commit")).toBeNull();
     });
   });
 });

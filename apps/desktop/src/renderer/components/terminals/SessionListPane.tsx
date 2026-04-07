@@ -1,12 +1,13 @@
 import React, { useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { CaretDown, CaretRight, Terminal, MagnifyingGlass, Funnel, Plus } from "@phosphor-icons/react";
+import { CaretDown, CaretRight, Funnel, GitBranch, MagnifyingGlass, Plus, Terminal } from "@phosphor-icons/react";
 import type { LaneSummary, TerminalSessionSummary } from "../../../shared/types";
 import { SessionCard } from "./SessionCard";
 import { LaneCombobox } from "./LaneCombobox";
 import { sortLanesForTabs } from "../lanes/laneUtils";
 import type { WorkDraftKind, WorkSessionListOrganization, WorkStatusFilter } from "../../state/appStore";
 import { sessionStatusBucket } from "../../lib/terminalAttention";
+import { iconGlyph } from "../graph/graphHelpers";
 
 function bucketSessions(sessions: TerminalSessionSummary[]) {
   const running: TerminalSessionSummary[] = [];
@@ -137,12 +138,18 @@ export const SessionListPane = React.memo(function SessionListPane({
     [runningFiltered, awaitingInputFiltered, endedFiltered],
   );
   const timeBuckets = useMemo(() => bucketByTime(allSessions), [allSessions]);
+  const laneById = useMemo(() => {
+    const map = new Map<string, LaneSummary>();
+    for (const lane of lanes) map.set(lane.id, lane);
+    return map;
+  }, [lanes]);
 
   const renderCards = (list: TerminalSessionSummary[]) =>
     list.map((session) => (
       <SessionCard
         key={session.id}
         session={session}
+        lane={laneById.get(session.laneId) ?? null}
         isSelected={selectedSessionId === session.id}
         onSelect={onSelectSession}
         onResume={() => onResume(session)}
@@ -188,10 +195,9 @@ export const SessionListPane = React.memo(function SessionListPane({
               ) : (
                 <CaretDown size={10} className="shrink-0 text-muted-fg/30" />
               )}
-              <span
-                className="h-[5px] w-[5px] shrink-0 rounded-full"
-                style={{ background: lane.color ?? "var(--color-muted-fg)" }}
-              />
+              <span className="inline-flex shrink-0 items-center justify-center text-muted-fg/55">
+                {lane.icon ? iconGlyph(lane.icon) : <GitBranch size={11} weight="regular" />}
+              </span>
               <span className="min-w-0 flex-1 truncate text-[11px] font-medium text-fg/90">{lane.name}</span>
               <span className="shrink-0 text-[10px] text-muted-fg/30">{total}</span>
             </button>
@@ -306,9 +312,9 @@ export const SessionListPane = React.memo(function SessionListPane({
               <span className="text-[9px] font-medium text-muted-fg/50 uppercase tracking-wider shrink-0 w-10">Group</span>
               <div className="flex items-center gap-0.5 flex-1">
                 {([
-                  { key: "by-time" as const, label: "Time" },
-                  { key: "all-lanes-by-status" as const, label: "Status" },
                   { key: "by-lane" as const, label: "Lane" },
+                  { key: "all-lanes-by-status" as const, label: "Status" },
+                  { key: "by-time" as const, label: "Time" },
                 ] as const).map((opt) => (
                   <button
                     key={opt.key}

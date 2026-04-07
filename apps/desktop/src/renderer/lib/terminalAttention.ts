@@ -39,6 +39,21 @@ const NEEDS_INPUT_PATTERNS: RegExp[] = [
   /\ballow\b.{0,40}\?\s/i,
 ];
 
+const IDLE_ATTENTION_TOOL_TYPES = new Set<TerminalToolType>([
+  "claude",
+  "codex",
+  "claude-orchestrated",
+  "codex-orchestrated",
+  "ai-orchestrated",
+  "aider",
+  "continue",
+]);
+
+function idleRuntimeNeedsAttention(toolType?: TerminalToolType | null): boolean {
+  if (isChatToolType(toolType)) return true;
+  return Boolean(toolType && IDLE_ATTENTION_TOOL_TYPES.has(toolType));
+}
+
 function normalizeInlineWhitespace(raw: string): string {
   if (!raw) return "";
   return raw.replace(/\t/g, " ").replace(/\s+/g, " ").trim();
@@ -77,7 +92,7 @@ export function sessionIndicatorState(args: {
 }): SessionUiState {
   if (args.status === "running") {
     if (args.runtimeState === "waiting-input") return "running-needs-attention";
-    if (args.runtimeState === "idle" && isChatToolType(args.toolType)) return "running-needs-attention";
+    if (args.runtimeState === "idle" && idleRuntimeNeedsAttention(args.toolType)) return "running-needs-attention";
     return runningSessionNeedsAttention(args.lastOutputPreview) ? "running-needs-attention" : "running-active";
   }
   return "ended";
@@ -129,7 +144,12 @@ export function sessionStatusDot(session: {
     return {
       cls: "bg-amber-300",
       spinning: false,
-      label: session.runtimeState === "idle" && isChatToolType(session.toolType) ? "Ready" : "Awaiting input",
+      label:
+        session.runtimeState === "idle"
+          ? isChatToolType(session.toolType)
+            ? "Ready"
+            : "Idle"
+          : "Awaiting input",
     };
   }
   return { cls: "bg-red-400", spinning: false, label: "Ended" };
