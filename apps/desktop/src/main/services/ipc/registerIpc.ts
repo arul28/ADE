@@ -475,6 +475,8 @@ import type {
   GenerateRedirectUrisArgs,
   EncodeOAuthStateArgs,
   DecodeOAuthStateArgs,
+  FeedbackSubmitArgs,
+  FeedbackSubmission,
 } from "../../../shared/types";
 import type { Logger } from "../logging/logger";
 import type { AdeDb } from "../state/kvDb";
@@ -559,6 +561,7 @@ import type { createUsageTrackingService } from "../usage/usageTrackingService";
 import type { createBudgetCapService } from "../usage/budgetCapService";
 import type { createSyncHostService } from "../sync/syncHostService";
 import type { createSyncService } from "../sync/syncService";
+import type { createFeedbackReporterService } from "../feedback/feedbackReporterService";
 import type { AdeProjectService } from "../projects/adeProjectService";
 import type { ConfigReloadService } from "../projects/configReloadService";
 import { getErrorMessage, isRecord, nowIso, resolvePathWithinRoot, toMemoryEntryDto } from "../shared/utils";
@@ -649,6 +652,7 @@ export type AppContext = {
   mcpSocketServer?: NetServer;
   mcpSocketPath?: string;
   autoUpdateService?: ReturnType<typeof createAutoUpdateService> | null;
+  feedbackReporterService?: ReturnType<typeof createFeedbackReporterService> | null;
 };
 
 function notifyLaneCreated(ctx: AppContext, lane: LaneSummary): void {
@@ -795,7 +799,7 @@ async function buildLaneListSnapshots(
     Promise.resolve(args.rebaseSuggestionService?.listSuggestions() ?? []).catch(() => []),
     Promise.resolve(args.autoRebaseService?.listStatuses() ?? []).catch(() => []),
     Promise.resolve(args.laneService.listStateSnapshots()).catch(() => []),
-    args.conflictService?.getBatchAssessment().catch(() => null) ?? Promise.resolve(null),
+    args.conflictService?.getBatchAssessment({ lanes }).catch(() => null) ?? Promise.resolve(null),
   ]);
 
   const rebaseByLaneId = new Map(rebaseSuggestions.map((entry) => [entry.laneId, entry] as const));
@@ -4592,6 +4596,19 @@ export function registerIpc({
     const ctx = getCtx();
     ctx.githubService.clearToken();
     return await ctx.githubService.getStatus();
+  });
+
+  // ── Feedback Reporter ──────────────────────────────────────────────
+  ipcMain.handle(IPC.feedbackSubmit, async (_event, arg: FeedbackSubmitArgs): Promise<FeedbackSubmission> => {
+    const ctx = getCtx();
+    if (!ctx.feedbackReporterService) throw new Error("Feedback reporter not available");
+    return await ctx.feedbackReporterService.submit(arg);
+  });
+
+  ipcMain.handle(IPC.feedbackList, async (): Promise<FeedbackSubmission[]> => {
+    const ctx = getCtx();
+    if (!ctx.feedbackReporterService) return [];
+    return ctx.feedbackReporterService.list();
   });
 
   ipcMain.handle(IPC.prsCreateFromLane, async (_event, arg: CreatePrFromLaneArgs): Promise<PrSummary> => {

@@ -6,9 +6,10 @@
 #   ./scripts/dogfood.sh <lane-name>      # run code from a lane's worktree
 #
 # Both instances share the same DB (lanes, missions, configs stay in sync).
-# Only the MCP socket is separated to avoid bind conflicts.
-# When run from a lane worktree, the new code is used but the DB comes
-# from the main repo — so all your existing lanes/state are visible.
+# The dogfood instance uses an isolated MCP socket and disables the desktop
+# sync host so it can run alongside your primary ADE window without bind
+# conflicts. When run from a lane worktree, the new code is used but the DB
+# from the main repo is still shared — so all your existing lanes/state are visible.
 
 set -euo pipefail
 
@@ -46,4 +47,4 @@ echo "Socket: $SOCKET_PATH (isolated)"
 echo ""
 
 cd "$DEV_DIR"
-ADE_PROJECT_ROOT="$MAIN_ROOT" ADE_MCP_SOCKET_PATH="$SOCKET_PATH" npm run dev
+ADE_PROJECT_ROOT="$MAIN_ROOT" ADE_MCP_SOCKET_PATH="$SOCKET_PATH" ADE_DISABLE_SYNC_HOST=1 npm run dev

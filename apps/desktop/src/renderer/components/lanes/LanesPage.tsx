@@ -442,7 +442,7 @@ export function LanesPage() {
   useEffect(() => {
     const unsubscribe = window.ade.lanes.onRebaseSuggestionsEvent((event) => {
       if (event.type !== "rebase-suggestions-updated") return;
-      void refreshLanes();
+      void refreshLanes().catch(() => {});
     });
     return unsubscribe;
   }, [refreshLanes]);
@@ -450,7 +450,7 @@ export function LanesPage() {
   useEffect(() => {
     const unsubscribe = window.ade.lanes.onAutoRebaseEvent((event) => {
       if (event.type !== "auto-rebase-updated") return;
-      void refreshLanes();
+      void refreshLanes().catch(() => {});
     });
     return unsubscribe;
   }, [refreshLanes]);
@@ -478,7 +478,7 @@ export function LanesPage() {
       if (timer) return; // already scheduled
       timer = setTimeout(() => {
         timer = null;
-        void refreshLanes();
+        void refreshLanes().catch(() => {});
       }, 300);
     };
     const unsubPtyData = window.ade.pty.onData(scheduleRefresh);
@@ -487,7 +487,7 @@ export function LanesPage() {
     const intervalId = window.setInterval(() => {
       if (document.visibilityState !== "visible") return;
       if (!hasActiveLaneRuntimeRef.current) return;
-      void refreshLanes();
+      void refreshLanes().catch(() => {});
     }, 15_000);
     return () => {
       if (timer) clearTimeout(timer);
@@ -2045,7 +2045,7 @@ export function LanesPage() {
           setAttachOpen(true);
         }}
         onComplete={() => {
-          refreshLanes();
+          void refreshLanes().catch(() => {});
         }}
       />
 

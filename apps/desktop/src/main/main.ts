@@ -5,7 +5,11 @@ import { registerIpc } from "./services/ipc/registerIpc";
 import { createFileLogger } from "./services/logging/logger";
 import { openKvDb } from "./services/state/kvDb";
 import { ensureAdeDirs } from "./services/state/projectState";
-import { readGlobalState, upsertRecentProject, writeGlobalState } from "./services/state/globalState";
+import {
+  readGlobalState,
+  upsertRecentProject,
+  writeGlobalState,
+} from "./services/state/globalState";
 import { createLaneService } from "./services/lanes/laneService";
 import { createLaneEnvironmentService } from "./services/lanes/laneEnvironmentService";
 import { createLaneTemplateService } from "./services/lanes/laneTemplateService";
@@ -31,11 +35,17 @@ import { createAiIntegrationService } from "./services/ai/aiIntegrationService";
 import { augmentProcessPathWithShellAndKnownCliDirs } from "./services/ai/cliExecutableResolver";
 import { createAgentChatService } from "./services/chat/agentChatService";
 import { createGithubService } from "./services/github/githubService";
+import { createFeedbackReporterService } from "./services/feedback/feedbackReporterService";
 import { createPrService } from "./services/prs/prService";
 import { createPrPollingService } from "./services/prs/prPollingService";
 import { createQueueLandingService } from "./services/prs/queueLandingService";
 import { createIssueInventoryService } from "./services/prs/issueInventoryService";
-import { detectDefaultBaseRef, resolveRepoRoot, toProjectInfo, upsertProjectRow } from "./services/projects/projectService";
+import {
+  detectDefaultBaseRef,
+  resolveRepoRoot,
+  toProjectInfo,
+  upsertProjectRow,
+} from "./services/projects/projectService";
 import { createAdeProjectService } from "./services/projects/adeProjectService";
 import { createConfigReloadService } from "./services/projects/configReloadService";
 import { IPC } from "../shared/ipc";
@@ -45,7 +55,11 @@ import type { AppContext } from "./services/ipc/registerIpc";
 import fs from "node:fs";
 import net from "node:net";
 import { createMcpRequestHandler } from "../../../mcp-server/src/mcpServer";
-import { createEventBuffer, type AdeMcpRuntime, type AdeMcpPaths } from "../../../mcp-server/src/bootstrap";
+import {
+  createEventBuffer,
+  type AdeMcpRuntime,
+  type AdeMcpPaths,
+} from "../../../mcp-server/src/bootstrap";
 import { startJsonRpcServer } from "../../../mcp-server/src/jsonrpc";
 import type { JsonRpcTransport } from "../../../mcp-server/src/transport";
 import { createKeybindingsService } from "./services/keybindings/keybindingsService";
@@ -137,8 +151,7 @@ if (disableHardwareAcceleration) {
 }
 
 const devStabilityMode =
-  process.env.ADE_STABILITY_MODE === "1"
-  || !!process.env.VITE_DEV_SERVER_URL;
+  process.env.ADE_STABILITY_MODE === "1" || !!process.env.VITE_DEV_SERVER_URL;
 const enableAllBackgroundTasks =
   process.env.ADE_ENABLE_ALL_BACKGROUND_TASKS === "1";
 // In dev stability mode, only enable essential background tasks by default.
@@ -159,10 +172,15 @@ function isBackgroundTaskEnabled(enableFlag?: string): boolean {
   if (!enableFlag) {
     return false;
   }
-  return process.env[enableFlag] === "1" || defaultEnabledBackgroundTaskFlags.has(enableFlag);
+  return (
+    process.env[enableFlag] === "1" ||
+    defaultEnabledBackgroundTaskFlags.has(enableFlag)
+  );
 }
 
-const episodicSummaryEnabled = isBackgroundTaskEnabled("ADE_ENABLE_EPISODIC_SUMMARY");
+const episodicSummaryEnabled = isBackgroundTaskEnabled(
+  "ADE_ENABLE_EPISODIC_SUMMARY",
+);
 
 // The Claude CLI refuses to start if it detects it is inside another Claude Code
 // session (nested session guard). ADE is a host app, not a nested session, so
@@ -203,8 +221,8 @@ async function createWindow(logger?: Logger): Promise<BrowserWindow> {
     webPreferences: {
       preload: path.join(__dirname, "../preload/preload.cjs"),
       contextIsolation: true,
-      nodeIntegration: false
-    }
+      nodeIntegration: false,
+    },
   });
 
   // Set macOS Dock icon
@@ -251,14 +269,14 @@ async function createWindow(logger?: Logger): Promise<BrowserWindow> {
   win.on("unresponsive", () => {
     logger?.warn("window.unresponsive", {
       windowId: win.id,
-      url: win.webContents.getURL()
+      url: win.webContents.getURL(),
     });
   });
 
   win.on("responsive", () => {
     logger?.info("window.responsive", {
       windowId: win.id,
-      url: win.webContents.getURL()
+      url: win.webContents.getURL(),
     });
   });
 
@@ -267,7 +285,7 @@ async function createWindow(logger?: Logger): Promise<BrowserWindow> {
       windowId: win.id,
       reason: details.reason,
       exitCode: details.exitCode,
-      url: win.webContents.getURL()
+      url: win.webContents.getURL(),
     });
   });
 
@@ -275,62 +293,68 @@ async function createWindow(logger?: Logger): Promise<BrowserWindow> {
     logger?.error("window.preload_error", {
       windowId: win.id,
       preloadPath,
-      err: toErrorMessage(error)
+      err: toErrorMessage(error),
     });
   });
 
-  win.webContents.on("did-fail-load", (_event, errorCode, errorDescription, validatedURL, isMainFrame) => {
-    logger?.error("window.did_fail_load", {
-      windowId: win.id,
-      errorCode,
-      errorDescription,
-      validatedURL,
-      isMainFrame
-    });
-  });
+  win.webContents.on(
+    "did-fail-load",
+    (_event, errorCode, errorDescription, validatedURL, isMainFrame) => {
+      logger?.error("window.did_fail_load", {
+        windowId: win.id,
+        errorCode,
+        errorDescription,
+        validatedURL,
+        isMainFrame,
+      });
+    },
+  );
 
   win.webContents.on("did-finish-load", () => {
     logger?.info("window.did_finish_load", {
       windowId: win.id,
-      url: win.webContents.getURL()
+      url: win.webContents.getURL(),
     });
   });
 
   win.webContents.on("dom-ready", () => {
     logger?.info("window.dom_ready", {
       windowId: win.id,
-      url: win.webContents.getURL()
+      url: win.webContents.getURL(),
     });
   });
 
-  win.webContents.on("console-message", (_event, level, message, line, sourceId) => {
-    const payload = {
-      windowId: win.id,
-      level,
-      message,
-      line,
-      sourceId
-    };
-    if (level >= 2) {
-      logger?.error("window.console", payload);
-      return;
-    }
-    if (level === 1) {
-      logger?.warn("window.console", payload);
-      return;
-    }
-    logger?.info("window.console", payload);
-  });
+  win.webContents.on(
+    "console-message",
+    (_event, level, message, line, sourceId) => {
+      const payload = {
+        windowId: win.id,
+        level,
+        message,
+        line,
+        sourceId,
+      };
+      if (level >= 2) {
+        logger?.error("window.console", payload);
+        return;
+      }
+      if (level === 1) {
+        logger?.warn("window.console", payload);
+        return;
+      }
+      logger?.info("window.console", payload);
+    },
+  );
 
   if (process.env.VITE_DEV_SERVER_URL) {
     try {
       await win.webContents.session.clearCache();
       await win.webContents.session.clearStorageData({
-        storages: ["serviceworkers", "cachestorage"]
+        storages: ["serviceworkers", "cachestorage"],
       });
     } catch (error) {
       logger?.warn("renderer.dev_cache_clear_failed", {
-        err: error instanceof Error ? error.message : String(error)
+        err: error instanceof Error ? error.message : String(error),
       });
     }
   }
@@ -351,27 +375,30 @@ async function createWindow(logger?: Logger): Promise<BrowserWindow> {
   let recoveredOutdatedOptimizeDep = false;
   const devBase = process.env.VITE_DEV_SERVER_URL;
   if (devBase) {
-    win.webContents.session.webRequest.onCompleted({ urls: [`${devBase}/*`] }, (details) => {
-      if (recoveredOutdatedOptimizeDep) return;
-      const isOutdatedOptimizeDep =
-        details.statusCode === 504 &&
-        details.url.includes("/node_modules/.vite/deps/") &&
-        details.url.includes("v=");
-      if (!isOutdatedOptimizeDep) return;
+    win.webContents.session.webRequest.onCompleted(
+      { urls: [`${devBase}/*`] },
+      (details) => {
+        if (recoveredOutdatedOptimizeDep) return;
+        const isOutdatedOptimizeDep =
+          details.statusCode === 504 &&
+          details.url.includes("/node_modules/.vite/deps/") &&
+          details.url.includes("v=");
+        if (!isOutdatedOptimizeDep) return;
 
-      recoveredOutdatedOptimizeDep = true;
-      logger?.warn("renderer.optimize_dep_outdated", {
-        statusCode: details.statusCode,
-        url: details.url
-      });
-      void win.webContents.reloadIgnoringCache();
-    });
+        recoveredOutdatedOptimizeDep = true;
+        logger?.warn("renderer.optimize_dep_outdated", {
+          statusCode: details.statusCode,
+          url: details.url,
+        });
+        void win.webContents.reloadIgnoringCache();
+      },
+    );
   }
 
   const rendererUrl = getRendererUrl();
   logger?.info("window.loading_url", {
     windowId: win.id,
-    url: rendererUrl
+    url: rendererUrl,
   });
 
   try {
@@ -380,14 +407,14 @@ async function createWindow(logger?: Logger): Promise<BrowserWindow> {
     logger?.error("window.load_url_failed", {
       windowId: win.id,
       url: rendererUrl,
-      err: toErrorMessage(error)
+      err: toErrorMessage(error),
     });
     const fallbackHtml = encodeURIComponent(
       `<html><body style="margin:0;background:#0f0d14;color:#f8f8f2;font-family:Geist,-apple-system,BlinkMacSystemFont,sans-serif;padding:24px;">` +
-      `<h2 style="margin:0 0 12px;">ADE failed to load renderer</h2>` +
-      `<p style="margin:0 0 8px;">URL: ${rendererUrl.replace(/</g, "&lt;")}</p>` +
-      `<p style="margin:0;">Error: ${toErrorMessage(error).replace(/</g, "&lt;")}</p>` +
-      `</body></html>`
+        `<h2 style="margin:0 0 12px;">ADE failed to load renderer</h2>` +
+        `<p style="margin:0 0 8px;">URL: ${rendererUrl.replace(/</g, "&lt;")}</p>` +
+        `<p style="margin:0;">Error: ${toErrorMessage(error).replace(/</g, "&lt;")}</p>` +
+        `</body></html>`,
     );
     await win.loadURL(`data:text/html;charset=UTF-8,${fallbackHtml}`);
   }
@@ -402,14 +429,20 @@ async function createWindow(logger?: Logger): Promise<BrowserWindow> {
 // Register custom protocol for serving local artifact files (images, videos) to the renderer.
 // Must be called before app.whenReady().
 protocol.registerSchemesAsPrivileged([
-  { scheme: "ade-artifact", privileges: { standard: false, supportFetchAPI: true, stream: true } },
+  {
+    scheme: "ade-artifact",
+    privileges: { standard: false, supportFetchAPI: true, stream: true },
+  },
 ]);
 
 app.whenReady().then(async () => {
   /** Canonical artifacts dir for the active project; ade-artifact:// only serves under this path. */
   let adeArtifactAllowedDir: string | null = null;
 
-  const isPathInsideArtifactAllowRoot = (resolvedFile: string, allowedDir: string): boolean => {
+  const isPathInsideArtifactAllowRoot = (
+    resolvedFile: string,
+    allowedDir: string,
+  ): boolean => {
     let allowed: string;
     try {
       allowed = fs.realpathSync(allowedDir);
@@ -419,10 +452,16 @@ app.whenReady().then(async () => {
     const normFile = path.normalize(resolvedFile);
     const normAllowed = path.normalize(allowed);
     if (process.platform === "win32") {
-      return normFile.toLowerCase().startsWith(normAllowed.toLowerCase() + path.sep)
-        || normFile.toLowerCase() === normAllowed.toLowerCase();
+      return (
+        normFile
+          .toLowerCase()
+          .startsWith(normAllowed.toLowerCase() + path.sep) ||
+        normFile.toLowerCase() === normAllowed.toLowerCase()
+      );
     }
-    return normFile === normAllowed || normFile.startsWith(normAllowed + path.sep);
+    return (
+      normFile === normAllowed || normFile.startsWith(normAllowed + path.sep)
+    );
   };
 
   // Handle ade-artifact:// requests — serves local files for proof drawer previews.
@@ -443,8 +482,14 @@ app.whenReady().then(async () => {
       return new Response("Not found", { status: 404 });
     }
     const allowedDir = adeArtifactAllowedDir;
-    if (!allowedDir || !isPathInsideArtifactAllowRoot(resolvedFile, allowedDir)) {
-      console.warn("[ade-artifact] rejected path outside artifacts dir", { resolvedFile, allowedDir });
+    if (
+      !allowedDir ||
+      !isPathInsideArtifactAllowRoot(resolvedFile, allowedDir)
+    ) {
+      console.warn("[ade-artifact] rejected path outside artifacts dir", {
+        resolvedFile,
+        allowedDir,
+      });
       return new Response("Not found", { status: 404 });
     }
     try {
@@ -453,9 +498,18 @@ app.whenReady().then(async () => {
       const fileSize = stat.size;
       const ext = path.extname(resolvedFile).replace(/^\./, "").toLowerCase();
       const mimeMap: Record<string, string> = {
-        png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", webp: "image/webp",
-        gif: "image/gif", bmp: "image/bmp", svg: "image/svg+xml",
-        mp4: "video/mp4", webm: "video/webm", mov: "video/quicktime", avi: "video/x-msvideo", mkv: "video/x-matroska",
+        png: "image/png",
+        jpg: "image/jpeg",
+        jpeg: "image/jpeg",
+        webp: "image/webp",
+        gif: "image/gif",
+        bmp: "image/bmp",
+        svg: "image/svg+xml",
+        mp4: "video/mp4",
+        webm: "video/webm",
+        mov: "video/quicktime",
+        avi: "video/x-msvideo",
+        mkv: "video/x-matroska",
       };
       const mime = mimeMap[ext] ?? "application/octet-stream";
 
@@ -464,7 +518,10 @@ app.whenReady().then(async () => {
       if (rangeHeader) {
         const match = /bytes=(\d+)-(\d*)/.exec(rangeHeader);
         let start = match ? parseInt(match[1], 10) : 0;
-        let end = match && match[2] !== undefined && match[2] !== "" ? parseInt(match[2], 10) : fileSize - 1;
+        let end =
+          match && match[2] !== undefined && match[2] !== ""
+            ? parseInt(match[2], 10)
+            : fileSize - 1;
         if (!Number.isFinite(start) || start < 0) start = 0;
         if (!Number.isFinite(end)) end = fileSize - 1;
         if (end > fileSize - 1) end = fileSize - 1;
@@ -480,11 +537,17 @@ app.whenReady().then(async () => {
         const fileStream = fs.createReadStream(resolvedFile, { start, end });
         const webStream = new ReadableStream({
           start(controller) {
-            fileStream.on("data", (chunk) => controller.enqueue(typeof chunk === "string" ? Buffer.from(chunk) : chunk));
+            fileStream.on("data", (chunk) =>
+              controller.enqueue(
+                typeof chunk === "string" ? Buffer.from(chunk) : chunk,
+              ),
+            );
             fileStream.on("end", () => controller.close());
             fileStream.on("error", (err) => controller.error(err));
           },
-          cancel() { fileStream.destroy(); },
+          cancel() {
+            fileStream.destroy();
+          },
         });
         return new Response(webStream, {
           status: 206,
@@ -501,11 +564,17 @@ app.whenReady().then(async () => {
       const fileStream = fs.createReadStream(resolvedFile);
       const webStream = new ReadableStream({
         start(controller) {
-          fileStream.on("data", (chunk) => controller.enqueue(typeof chunk === "string" ? Buffer.from(chunk) : chunk));
+          fileStream.on("data", (chunk) =>
+            controller.enqueue(
+              typeof chunk === "string" ? Buffer.from(chunk) : chunk,
+            ),
+          );
           fileStream.on("end", () => controller.close());
           fileStream.on("error", (err) => controller.error(err));
         },
-        cancel() { fileStream.destroy(); },
+        cancel() {
+          fileStream.destroy();
+        },
       });
       return new Response(webStream, {
         headers: {
@@ -521,12 +590,17 @@ app.whenReady().then(async () => {
   console.log("[info] app.hardware_acceleration", {
     enabled: !disableHardwareAcceleration,
     reason: disableHardwareAcceleration
-      ? (process.env.ADE_DISABLE_HARDWARE_ACCEL === "1" ? "env_override" : "dev_mode")
+      ? process.env.ADE_DISABLE_HARDWARE_ACCEL === "1"
+        ? "env_override"
+        : "dev_mode"
       : "default",
   });
   const globalStatePath = path.join(app.getPath("userData"), "ade-state.json");
   const saved = readGlobalState(globalStatePath);
-  const fallbackProjectRoot = path.resolve(app.getPath("userData"), "ade-project");
+  const fallbackProjectRoot = path.resolve(
+    app.getPath("userData"),
+    "ade-project",
+  );
   const normalizeProjectPath = (value: string) => path.resolve(value);
   const isLikelyRepoRoot = (value: string) => {
     const resolved = normalizeProjectPath(value);
@@ -540,19 +614,30 @@ app.whenReady().then(async () => {
 
   const cleanedRecentProjects = (saved.recentProjects ?? []).reduce(
     (acc, entry) => {
-      const rootPath = typeof entry?.rootPath === "string" ? normalizeProjectPath(entry.rootPath) : "";
+      const rootPath =
+        typeof entry?.rootPath === "string"
+          ? normalizeProjectPath(entry.rootPath)
+          : "";
       if (!isLikelyRepoRoot(rootPath)) return acc;
       if (acc.some((item) => item.rootPath === rootPath)) return acc;
-      const displayName = typeof entry?.displayName === "string" && entry.displayName.trim().length > 0
-        ? entry.displayName
-        : path.basename(rootPath);
-      const lastOpenedAt = typeof entry?.lastOpenedAt === "string" && entry.lastOpenedAt.trim().length > 0
-        ? entry.lastOpenedAt
-        : new Date().toISOString();
+      const displayName =
+        typeof entry?.displayName === "string" &&
+        entry.displayName.trim().length > 0
+          ? entry.displayName
+          : path.basename(rootPath);
+      const lastOpenedAt =
+        typeof entry?.lastOpenedAt === "string" &&
+        entry.lastOpenedAt.trim().length > 0
+          ? entry.lastOpenedAt
+          : new Date().toISOString();
       acc.push({ rootPath, displayName, lastOpenedAt });
       return acc;
     },
-    [] as Array<{ rootPath: string; displayName: string; lastOpenedAt: string }>
+    [] as Array<{
+      rootPath: string;
+      displayName: string;
+      lastOpenedAt: string;
+    }>,
   );
   const hadRecentProjectsChanges =
     cleanedRecentProjects.length !== (saved.recentProjects ?? []).length;
@@ -560,14 +645,18 @@ app.whenReady().then(async () => {
     ? normalizeProjectPath(saved.lastProjectRoot)
     : "";
   const validLastProjectRoot =
-    isLikelyRepoRoot(cleanedLastProjectRoot) && cleanedRecentProjects.some((project) => project.rootPath === cleanedLastProjectRoot)
+    isLikelyRepoRoot(cleanedLastProjectRoot) &&
+    cleanedRecentProjects.some(
+      (project) => project.rootPath === cleanedLastProjectRoot,
+    )
       ? cleanedLastProjectRoot
       : "";
-  const hadLastProjectRootChanges = saved.lastProjectRoot !== validLastProjectRoot;
+  const hadLastProjectRootChanges =
+    saved.lastProjectRoot !== validLastProjectRoot;
   const normalizedState = {
     ...saved,
     lastProjectRoot: validLastProjectRoot || undefined,
-    recentProjects: cleanedRecentProjects
+    recentProjects: cleanedRecentProjects,
   };
 
   if (hadRecentProjectsChanges || hadLastProjectRootChanges) {
@@ -580,9 +669,10 @@ app.whenReady().then(async () => {
     : fallbackProjectRoot;
 
   const startupUserSelected = Boolean(envRoot && envRoot.trim().length);
-  const initialCandidate = envRoot && envRoot.trim().length
-    ? normalizeProjectPath(envRoot)
-    : devFallbackProject;
+  const initialCandidate =
+    envRoot && envRoot.trim().length
+      ? normalizeProjectPath(envRoot)
+      : devFallbackProject;
 
   const broadcast = (channel: string, payload: unknown) => {
     for (const win of BrowserWindow.getAllWindows()) {
@@ -600,18 +690,25 @@ app.whenReady().then(async () => {
     return require("node-pty") as NodePtyType;
   };
 
-  const normalizeProjectRoot = (projectRoot: string) => path.resolve(projectRoot);
+  const normalizeProjectRoot = (projectRoot: string) =>
+    path.resolve(projectRoot);
   const projectContexts = new Map<string, AppContext>();
+  const projectInitPromises = new Map<string, Promise<AppContext>>();
   const closeContextPromises = new Map<string, Promise<void>>();
   const mcpSocketCleanupByRoot = new Map<string, () => void>();
   let activeProjectRoot: string | null = null;
   let dormantContext!: AppContext;
 
+  const emitProjectChanged = (project: ProjectInfo | null): void => {
+    broadcast(IPC.appProjectChanged, project);
+  };
+
   const setActiveProject = (projectRoot: string | null): void => {
     activeProjectRoot = projectRoot ? normalizeProjectRoot(projectRoot) : null;
     if (activeProjectRoot) {
       try {
-        adeArtifactAllowedDir = resolveAdeLayout(activeProjectRoot).artifactsDir;
+        adeArtifactAllowedDir =
+          resolveAdeLayout(activeProjectRoot).artifactsDir;
       } catch {
         adeArtifactAllowedDir = null;
       }
@@ -629,7 +726,11 @@ app.whenReady().then(async () => {
     return dormantContext;
   };
 
-  const emitProjectEvent = (projectRoot: string, channel: string, payload: unknown): void => {
+  const emitProjectEvent = (
+    projectRoot: string,
+    channel: string,
+    payload: unknown,
+  ): void => {
     if (!activeProjectRoot) return;
     if (normalizeProjectRoot(projectRoot) !== activeProjectRoot) return;
     broadcast(channel, payload);
@@ -641,7 +742,7 @@ app.whenReady().then(async () => {
     ensureExclude,
     recordLastProject = true,
     recordRecent = true,
-    userSelectedProject = false
+    userSelectedProject = false,
   }: {
     projectRoot: string;
     baseRef: string;
@@ -667,21 +768,37 @@ app.whenReady().then(async () => {
     const devToolsService = createDevToolsService({ logger });
 
     const project = toProjectInfo(projectRoot, baseRef);
-    const { projectId } = upsertProjectRow({ db, repoRoot: projectRoot, displayName: project.displayName, baseRef });
+    const { projectId } = upsertProjectRow({
+      db,
+      repoRoot: projectRoot,
+      displayName: project.displayName,
+      baseRef,
+    });
 
     const operationService = createOperationService({ db, projectId });
 
     let jobEngine: ReturnType<typeof createJobEngine> | null = null;
-    let automationService: ReturnType<typeof createAutomationService> | null = null;
-    let rebaseSuggestionService: ReturnType<typeof createRebaseSuggestionService> | null = null;
-    let autoRebaseService: ReturnType<typeof createAutoRebaseService> | null = null;
-    let humanWorkDigestService: ReturnType<typeof createHumanWorkDigestService> | null = null;
-    let conflictServiceRef: ReturnType<typeof createConflictService> | null = null;
+    let automationService: ReturnType<typeof createAutomationService> | null =
+      null;
+    let rebaseSuggestionService: ReturnType<
+      typeof createRebaseSuggestionService
+    > | null = null;
+    let autoRebaseService: ReturnType<typeof createAutoRebaseService> | null =
+      null;
+    let humanWorkDigestService: ReturnType<
+      typeof createHumanWorkDigestService
+    > | null = null;
+    let conflictServiceRef: ReturnType<typeof createConflictService> | null =
+      null;
     let prServiceRef: ReturnType<typeof createPrService> | null = null;
-    let prPollingServiceRef: ReturnType<typeof createPrPollingService> | null = null;
+    let prPollingServiceRef: ReturnType<typeof createPrPollingService> | null =
+      null;
     let testServiceRef: ReturnType<typeof createTestService> | null = null;
-    let gitServiceRef: ReturnType<typeof createGitOperationsService> | null = null;
-    let missionBudgetServiceRef: ReturnType<typeof createMissionBudgetService> | null = null;
+    let gitServiceRef: ReturnType<typeof createGitOperationsService> | null =
+      null;
+    let missionBudgetServiceRef: ReturnType<
+      typeof createMissionBudgetService
+    > | null = null;
 
     const lastHeadByLaneId = new Map<string, string>();
 
@@ -695,7 +812,7 @@ app.whenReady().then(async () => {
       const postHeadSha = (args.postHeadSha ?? "").trim();
       if (!laneId || !postHeadSha) return;
 
-      const prev = lastHeadByLaneId.get(laneId) ?? (args.preHeadSha ?? null);
+      const prev = lastHeadByLaneId.get(laneId) ?? args.preHeadSha ?? null;
       if (prev === postHeadSha) {
         lastHeadByLaneId.set(laneId, postHeadSha);
         return;
@@ -708,11 +825,11 @@ app.whenReady().then(async () => {
         laneId,
         reason: args.reason,
         preHeadSha: prev,
-        postHeadSha
+        postHeadSha,
       });
       const laneTypeRow = db.get<{ lane_type: string | null }>(
         `select lane_type from lanes where id = ? and project_id = ? limit 1`,
-        [laneId, projectId]
+        [laneId, projectId],
       );
       if (String(laneTypeRow?.lane_type ?? "").trim() === "primary") {
         void humanWorkDigestService
@@ -720,10 +837,20 @@ app.whenReady().then(async () => {
           .catch(() => {});
       }
       void rebaseSuggestionService
-        ?.onParentHeadChanged({ laneId, reason: args.reason, preHeadSha: prev, postHeadSha })
+        ?.onParentHeadChanged({
+          laneId,
+          reason: args.reason,
+          preHeadSha: prev,
+          postHeadSha,
+        })
         .catch(() => {});
       void autoRebaseService
-        ?.onHeadChanged({ laneId, reason: args.reason, preHeadSha: prev, postHeadSha })
+        ?.onHeadChanged({
+          laneId,
+          reason: args.reason,
+          preHeadSha: prev,
+          postHeadSha,
+        })
         .catch(() => {});
 
       const pr = prServiceRef?.getForLane(laneId);
@@ -742,7 +869,10 @@ app.whenReady().then(async () => {
       onHeadChanged: handleHeadChanged,
       onRebaseEvent: (event) => {
         emitProjectEvent(projectRoot, IPC.lanesRebaseEvent, event);
-        if (event.type === "rebase-run-updated" && event.run.state !== "running") {
+        if (
+          event.type === "rebase-run-updated" &&
+          event.run.state !== "running"
+        ) {
           void conflictServiceRef?.scanRebaseNeeds().catch((error) => {
             logger.warn("rebase.needs_refresh_failed", {
               runId: event.run.runId,
@@ -759,7 +889,8 @@ app.whenReady().then(async () => {
       projectRoot,
       adeDir: adePaths.adeDir,
       logger,
-      broadcastEvent: (ev) => emitProjectEvent(projectRoot, IPC.lanesEnvEvent, ev)
+      broadcastEvent: (ev) =>
+        emitProjectEvent(projectRoot, IPC.lanesEnvEvent, ev),
     });
 
     const sessionService = createSessionService({ db });
@@ -768,7 +899,9 @@ app.whenReady().then(async () => {
       excludeToolTypes: ["claude-chat", "codex-chat", "ai-chat", "cursor"],
     });
     if (reconciledSessions > 0) {
-      logger.warn("sessions.reconciled_stale_running", { count: reconciledSessions });
+      logger.warn("sessions.reconciled_stale_running", {
+        count: reconciledSessions,
+      });
     }
     const diffService = createDiffService({ laneService });
     const projectConfigService = createProjectConfigService({
@@ -776,17 +909,18 @@ app.whenReady().then(async () => {
       adeDir: adePaths.adeDir,
       projectId,
       db,
-      logger
+      logger,
     });
 
     const laneTemplateService = createLaneTemplateService({
       projectConfigService,
-      logger
+      logger,
     });
 
     const portAllocationService = createPortAllocationService({
       logger,
-      broadcastEvent: (ev) => emitProjectEvent(projectRoot, IPC.lanesPortEvent, ev),
+      broadcastEvent: (ev) =>
+        emitProjectEvent(projectRoot, IPC.lanesPortEvent, ev),
       persistLeases: (leases) => db.setJson("port_leases", leases),
       loadLeases: () => db.getJson<PortLease[]>("port_leases") ?? [],
     });
@@ -794,7 +928,10 @@ app.whenReady().then(async () => {
 
     const recoverPortAllocations = async () => {
       try {
-        const lanes = await laneService.list({ includeArchived: false, includeStatus: false });
+        const lanes = await laneService.list({
+          includeArchived: false,
+          includeStatus: false,
+        });
         const validIds = new Set(lanes.map((l) => l.id));
         portAllocationService.recoverOrphans(validIds);
         for (const lane of lanes) {
@@ -811,22 +948,27 @@ app.whenReady().then(async () => {
         }
         portAllocationService.detectConflicts();
       } catch (err: any) {
-        logger.warn("port_allocation.startup_recovery_failed", { error: err?.message });
+        logger.warn("port_allocation.startup_recovery_failed", {
+          error: err?.message,
+        });
       }
     };
 
     const laneProxyService = createLaneProxyService({
       logger,
-      broadcastEvent: (ev) => emitProjectEvent(projectRoot, IPC.lanesProxyEvent, ev),
+      broadcastEvent: (ev) =>
+        emitProjectEvent(projectRoot, IPC.lanesProxyEvent, ev),
     });
 
     const oauthRedirectService = createOAuthRedirectService({
       logger,
-      broadcastEvent: (ev) => emitProjectEvent(projectRoot, IPC.lanesOAuthEvent, ev),
+      broadcastEvent: (ev) =>
+        emitProjectEvent(projectRoot, IPC.lanesOAuthEvent, ev),
       getRoutes: () => laneProxyService.listRoutes(),
       getProxyPort: () => laneProxyService.getConfig().proxyPort,
       getHostnameSuffix: () => laneProxyService.getConfig().hostnameSuffix,
-      forwardToPort: (req, res, port) => laneProxyService.forwardToPort(req, res, port),
+      forwardToPort: (req, res, port) =>
+        laneProxyService.forwardToPort(req, res, port),
     });
 
     // Register OAuth callback interceptor on the proxy
@@ -836,7 +978,8 @@ app.whenReady().then(async () => {
 
     const runtimeDiagnosticsService = createRuntimeDiagnosticsService({
       logger,
-      broadcastEvent: (ev) => emitProjectEvent(projectRoot, IPC.lanesDiagnosticsEvent, ev),
+      broadcastEvent: (ev) =>
+        emitProjectEvent(projectRoot, IPC.lanesDiagnosticsEvent, ev),
       getPortLease: (laneId) => portAllocationService.getLease(laneId),
       getPortConflicts: () => portAllocationService.listConflicts(),
       detectPortConflicts: () => portAllocationService.detectConflicts(),
@@ -859,12 +1002,18 @@ app.whenReady().then(async () => {
       baseRef,
       freshProject: !hadAdeDir,
       laneService,
-      projectConfigService
+      projectConfigService,
     });
 
     if (!hadAdeDir) {
       const hasEnvCredentials =
-        Boolean((process.env.GITHUB_TOKEN ?? process.env.ADE_GITHUB_TOKEN ?? "").trim()) ||
+        Boolean(
+          (
+            process.env.GITHUB_TOKEN ??
+            process.env.ADE_GITHUB_TOKEN ??
+            ""
+          ).trim(),
+        ) ||
         Boolean(
           [
             "ANTHROPIC_API_KEY",
@@ -876,12 +1025,20 @@ app.whenReady().then(async () => {
             "GROQ_API_KEY",
             "TOGETHER_API_KEY",
             "OPENROUTER_API_KEY",
-          ].some((v) => (process.env[v] ?? "").trim().length > 0)
+          ].some((v) => (process.env[v] ?? "").trim().length > 0),
         ) ||
-        Boolean((process.env.LINEAR_API_KEY ?? process.env.ADE_LINEAR_TOKEN ?? "").trim());
+        Boolean(
+          (
+            process.env.LINEAR_API_KEY ??
+            process.env.ADE_LINEAR_TOKEN ??
+            ""
+          ).trim(),
+        );
       if (hasEnvCredentials) {
         onboardingService.complete();
-        logger.info("onboarding.auto_completed", { reason: "env_credentials_detected" });
+        logger.info("onboarding.auto_completed", {
+          reason: "env_credentials_detected",
+        });
       }
     }
 
@@ -891,7 +1048,8 @@ app.whenReady().then(async () => {
       projectId,
       projectRoot,
       laneService,
-      onEvent: (event) => emitProjectEvent(projectRoot, IPC.lanesRebaseSuggestionsEvent, event)
+      onEvent: (event) =>
+        emitProjectEvent(projectRoot, IPC.lanesRebaseSuggestionsEvent, event),
     });
     // Prime suggestions once on init so the UI can show them without waiting for a head change.
     void rebaseSuggestionService
@@ -900,15 +1058,23 @@ app.whenReady().then(async () => {
         emitProjectEvent(projectRoot, IPC.lanesRebaseSuggestionsEvent, {
           type: "rebase-suggestions-updated",
           computedAt: new Date().toISOString(),
-          suggestions
-        })
+          suggestions,
+        }),
       )
-      .catch(() => { });
+      .catch(() => {});
 
     const githubService = createGithubService({
       logger,
       projectRoot,
       appDataDir: app.getPath("userData"),
+    });
+
+    const feedbackReporterService = createFeedbackReporterService({
+      db,
+      logger,
+      projectRoot,
+      aiIntegrationService,
+      githubService,
     });
 
     const conflictService = createConflictService({
@@ -925,10 +1091,14 @@ app.whenReady().then(async () => {
       onEvent: (event) => {
         emitProjectEvent(projectRoot, IPC.conflictsEvent, event);
         // Forward rebase events to the dedicated rebaseEvent channel
-        if (event.type === "rebase-started" || event.type === "rebase-completed" || event.type === "rebase-needs-updated") {
+        if (
+          event.type === "rebase-started" ||
+          event.type === "rebase-completed" ||
+          event.type === "rebase-needs-updated"
+        ) {
           emitProjectEvent(projectRoot, IPC.rebaseEvent, event);
         }
-      }
+      },
     });
     conflictServiceRef = conflictService;
 
@@ -938,7 +1108,8 @@ app.whenReady().then(async () => {
       laneService,
       conflictService,
       projectConfigService,
-      onEvent: (event) => emitProjectEvent(projectRoot, IPC.lanesAutoRebaseEvent, event)
+      onEvent: (event) =>
+        emitProjectEvent(projectRoot, IPC.lanesAutoRebaseEvent, event),
     });
     // Prime status stream so renderer can render immediately on load.
     void autoRebaseService.emit().catch(() => {});
@@ -966,11 +1137,13 @@ app.whenReady().then(async () => {
       },
       openExternal: async (url) => {
         await shell.openExternal(url);
-      }
+      },
     });
     prServiceRef = prService;
 
-    let knowledgeCaptureServiceRef: ReturnType<typeof createKnowledgeCaptureService> | null = null;
+    let knowledgeCaptureServiceRef: ReturnType<
+      typeof createKnowledgeCaptureService
+    > | null = null;
     const prPollingService = createPrPollingService({
       logger,
       prService,
@@ -981,33 +1154,54 @@ app.whenReady().then(async () => {
           prService.markHotRefresh(changedPrs.map((pr) => pr.id));
         }
         await Promise.all([
-          ...changedPrs.map((pr) =>
-            knowledgeCaptureServiceRef?.capturePrFeedback({
-              prId: pr.id,
-              prNumber: pr.githubPrNumber ?? null,
-            }) ?? Promise.resolve()
+          ...changedPrs.map(
+            (pr) =>
+              knowledgeCaptureServiceRef?.capturePrFeedback({
+                prId: pr.id,
+                prNumber: pr.githubPrNumber ?? null,
+              }) ?? Promise.resolve(),
           ),
-          ...changes.map(({ pr, previousState, previousChecksStatus, previousReviewStatus }) => {
-            automationService?.onPullRequestChanged?.({
+          ...changes.map(
+            ({
               pr,
               previousState,
               previousChecksStatus,
               previousReviewStatus,
-            });
-            return Promise.resolve();
-          }),
+            }) => {
+              automationService?.onPullRequestChanged?.({
+                pr,
+                previousState,
+                previousChecksStatus,
+                previousReviewStatus,
+              });
+              return Promise.resolve();
+            },
+          ),
         ]);
       },
     });
     prPollingServiceRef = prPollingService;
 
-    let orchestratorServiceRef: ReturnType<typeof createOrchestratorService> | null = null;
-    let aiOrchestratorServiceRef: ReturnType<typeof createAiOrchestratorService> | null = null;
-    let linearDispatcherServiceRef: ReturnType<typeof createLinearDispatcherService> | null = null;
-    let openclawBridgeServiceRef: ReturnType<typeof createOpenclawBridgeService> | null = null;
-    let linearSyncServiceRef: ReturnType<typeof createLinearSyncService> | null = null;
-    let agentChatServiceRef: ReturnType<typeof createAgentChatService> | null = null;
-    let externalMcpServiceRef: ReturnType<typeof createExternalMcpService> | null = null;
+    let orchestratorServiceRef: ReturnType<
+      typeof createOrchestratorService
+    > | null = null;
+    let aiOrchestratorServiceRef: ReturnType<
+      typeof createAiOrchestratorService
+    > | null = null;
+    let linearDispatcherServiceRef: ReturnType<
+      typeof createLinearDispatcherService
+    > | null = null;
+    let openclawBridgeServiceRef: ReturnType<
+      typeof createOpenclawBridgeService
+    > | null = null;
+    let linearSyncServiceRef: ReturnType<
+      typeof createLinearSyncService
+    > | null = null;
+    let agentChatServiceRef: ReturnType<typeof createAgentChatService> | null =
+      null;
+    let externalMcpServiceRef: ReturnType<
+      typeof createExternalMcpService
+    > | null = null;
     const queueLandingService = createQueueLandingService({
       db,
       logger,
@@ -1026,7 +1220,7 @@ app.whenReady().then(async () => {
         if (hotPrIds.size > 0) {
           prServiceRef?.markHotRefresh(Array.from(hotPrIds));
         }
-      }
+      },
     });
     queueLandingService.init();
 
@@ -1036,7 +1230,7 @@ app.whenReady().then(async () => {
       laneService,
       onLaneWorktreeMutation: ({ laneId, reason }) => {
         jobEngine.onLaneDirtyChanged({ laneId, reason });
-      }
+      },
     });
 
     const processService = createProcessService({
@@ -1046,14 +1240,25 @@ app.whenReady().then(async () => {
       logger,
       laneService,
       projectConfigService,
-      broadcastEvent: (ev) => emitProjectEvent(projectRoot, IPC.processesEvent, ev)
+      broadcastEvent: (ev) =>
+        emitProjectEvent(projectRoot, IPC.processesEvent, ev),
     });
 
-    const onTrackedSessionEnded = ({ laneId, sessionId, exitCode }: { laneId: string; sessionId: string; exitCode: number | null }) => {
+    const onTrackedSessionEnded = ({
+      laneId,
+      sessionId,
+      exitCode,
+    }: {
+      laneId: string;
+      sessionId: string;
+      exitCode: number | null;
+    }) => {
       jobEngine?.onSessionEnded({ laneId, sessionId });
       automationService?.onSessionEnded({ laneId, sessionId });
       try {
-        issueInventoryService.reconcileConvergenceSessionExit(sessionId, { exitCode });
+        issueInventoryService.reconcileConvergenceSessionExit(sessionId, {
+          exitCode,
+        });
       } catch (error) {
         logger.warn("main.convergence_session_reconcile_failed", {
           laneId,
@@ -1068,7 +1273,7 @@ app.whenReady().then(async () => {
           .onTrackedSessionEnded({
             laneId,
             sessionId,
-            exitCode
+            exitCode,
           })
           .catch(() => {});
       }
@@ -1096,31 +1301,40 @@ app.whenReady().then(async () => {
       onSessionRuntimeSignal: (signal) => {
         aiOrchestratorServiceRef?.onSessionRuntimeSignal(signal);
       },
-      loadPty
+      loadPty,
     });
 
     const sessionDeltaService = createSessionDeltaService({
       db,
       projectId,
       laneService,
-      sessionService
+      sessionService,
     });
 
-    let batchConsolidationServiceRef: ReturnType<typeof createBatchConsolidationService> | null = null;
-    let embeddingWorkerServiceRef: ReturnType<typeof createEmbeddingWorkerService> | null = null;
+    let batchConsolidationServiceRef: ReturnType<
+      typeof createBatchConsolidationService
+    > | null = null;
+    let embeddingWorkerServiceRef: ReturnType<
+      typeof createEmbeddingWorkerService
+    > | null = null;
     const embeddingService = createEmbeddingService({
       logger,
       cacheDir: path.join(app.getPath("userData"), "transformers-cache"),
     });
     // Auto-detect previously downloaded embedding model at startup
-    void embeddingService.probeCache().catch(() => { /* best-effort */ });
+    void embeddingService.probeCache().catch(() => {
+      /* best-effort */
+    });
     const hybridSearchService = createHybridSearchService({
       db,
       embeddingService,
       logger,
     });
-    let ctoStateServiceRef: ReturnType<typeof createCtoStateService> | null = null;
-    let memoryFilesServiceRef: ReturnType<typeof createProjectMemoryFilesService> | null = null;
+    let ctoStateServiceRef: ReturnType<typeof createCtoStateService> | null =
+      null;
+    let memoryFilesServiceRef: ReturnType<
+      typeof createProjectMemoryFilesService
+    > | null = null;
     let syncMemoryDocsTimer: ReturnType<typeof setTimeout> | null = null;
     const debouncedSyncMemoryDocs = () => {
       if (syncMemoryDocsTimer) clearTimeout(syncMemoryDocsTimer);
@@ -1144,7 +1358,10 @@ app.whenReady().then(async () => {
         debouncedSyncMemoryDocs();
       },
       onMemoryUpserted: (event) => {
-        if ((event.created || event.contentChanged) && embeddingService.isAvailable()) {
+        if (
+          (event.created || event.contentChanged) &&
+          embeddingService.isAvailable()
+        ) {
           embeddingWorkerServiceRef?.queueMemory(event.memory.id);
         }
       },
@@ -1155,7 +1372,9 @@ app.whenReady().then(async () => {
       memoryService,
     });
     memoryFilesServiceRef = memoryFilesService;
-    const compactionFlushService = createCompactionFlushService(undefined, { logger });
+    const compactionFlushService = createCompactionFlushService(undefined, {
+      logger,
+    });
     aiIntegrationService.setCompactionFlushService(compactionFlushService);
     const batchConsolidationService = createBatchConsolidationService({
       db,
@@ -1164,14 +1383,16 @@ app.whenReady().then(async () => {
       projectConfigService,
       projectId,
       projectRoot,
-      onStatus: (event) => emitProjectEvent(projectRoot, IPC.memoryConsolidationStatus, event)
+      onStatus: (event) =>
+        emitProjectEvent(projectRoot, IPC.memoryConsolidationStatus, event),
     });
     batchConsolidationServiceRef = batchConsolidationService;
     const memoryLifecycleService = createMemoryLifecycleService({
       db,
       logger,
       projectId,
-      onStatus: (event) => emitProjectEvent(projectRoot, IPC.memorySweepStatus, event)
+      onStatus: (event) =>
+        emitProjectEvent(projectRoot, IPC.memorySweepStatus, event),
     });
     const memoryRepairService = createMemoryRepairService({
       db,
@@ -1200,14 +1421,18 @@ app.whenReady().then(async () => {
       logger,
       memoryService,
     });
-    let skillRegistryServiceRef: ReturnType<typeof createSkillRegistryService> | null = null;
+    let skillRegistryServiceRef: ReturnType<
+      typeof createSkillRegistryService
+    > | null = null;
     const proceduralLearningService = createProceduralLearningService({
       db,
       logger,
       projectId,
       memoryService,
       onProcedurePromoted: (memoryId) => {
-        void skillRegistryServiceRef?.exportProcedureSkill({ id: memoryId }).catch(() => {});
+        void skillRegistryServiceRef
+          ?.exportProcedureSkill({ id: memoryId })
+          .catch(() => {});
       },
     });
     const episodicSummaryService = createEpisodicSummaryService({
@@ -1217,7 +1442,8 @@ app.whenReady().then(async () => {
       enabled: episodicSummaryEnabled,
       aiIntegrationService,
       memoryService,
-      onEpisodeSaved: (memoryId) => proceduralLearningService.onEpisodeSaved(memoryId),
+      onEpisodeSaved: (memoryId) =>
+        proceduralLearningService.onEpisodeSaved(memoryId),
     });
     const knowledgeCaptureService = createKnowledgeCaptureService({
       db,
@@ -1251,7 +1477,8 @@ app.whenReady().then(async () => {
       laneService,
       projectConfigService,
       aiIntegrationService,
-      onStatusChanged: (status) => emitProjectEvent(projectRoot, IPC.contextStatusChanged, status),
+      onStatusChanged: (status) =>
+        emitProjectEvent(projectRoot, IPC.contextStatusChanged, status),
     });
 
     const ctoStateService = createCtoStateService({
@@ -1432,34 +1659,41 @@ app.whenReady().then(async () => {
         if (event.event.type === "context_compact") {
           const sid = event.sessionId;
           const compactEvt = event.event as { preTokens?: number };
-          void compactionFlushService.beforeCompaction({
-            sessionId: sid,
-            boundaryId: `chat:${sid}:${Date.now()}`,
-            conversationTokenCount: compactEvt.preTokens ?? 200_000,
-            maxTokens: 200_000,
-            flushTurn: async ({ prompt }) => {
-              try {
-                await agentChatService.steer({ sessionId: sid, text: prompt });
-                return { status: "flushed" };
-              } catch {
-                return { status: "budget_exceeded" };
-              }
-            },
-          }).catch(() => {});
+          void compactionFlushService
+            .beforeCompaction({
+              sessionId: sid,
+              boundaryId: `chat:${sid}:${Date.now()}`,
+              conversationTokenCount: compactEvt.preTokens ?? 200_000,
+              maxTokens: 200_000,
+              flushTurn: async ({ prompt }) => {
+                try {
+                  await agentChatService.steer({
+                    sessionId: sid,
+                    text: prompt,
+                  });
+                  return { status: "flushed" };
+                } catch {
+                  return { status: "budget_exceeded" };
+                }
+              },
+            })
+            .catch(() => {});
         }
 
         // Capture agent session errors as failure gotchas for the memory system
         if (event.event.type === "error" && event.provenance?.runId) {
           const prov = event.provenance;
-          void knowledgeCaptureServiceRef?.captureFailureGotcha({
-            missionId: prov.runId!,
-            runId: prov.runId!,
-            stepId: null,
-            attemptId: prov.attemptId ?? null,
-            stepKey: prov.stepKey ?? null,
-            summary: `Agent session error in ${prov.role ?? "agent"} session`,
-            errorMessage: event.event.message,
-          }).catch(() => {});
+          void knowledgeCaptureServiceRef
+            ?.captureFailureGotcha({
+              missionId: prov.runId!,
+              runId: prov.runId!,
+              stepId: null,
+              attemptId: prov.attemptId ?? null,
+              stepKey: prov.stepKey ?? null,
+              summary: `Agent session error in ${prov.role ?? "agent"} session`,
+              errorMessage: event.event.message,
+            })
+            .catch(() => {});
         }
       },
       onSessionEnded: onTrackedSessionEnded,
@@ -1467,11 +1701,16 @@ app.whenReady().then(async () => {
       getDirtyFileTextForPath: async (absPath: string) => {
         const trimmed = absPath.trim();
         if (!trimmed) return undefined;
-        const win = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0];
-        if (!win?.webContents || win.webContents.isDestroyed()) return undefined;
+        const win =
+          BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0];
+        if (!win?.webContents || win.webContents.isDestroyed())
+          return undefined;
         try {
           const js = `typeof window.__ADE_GET_DIRTY_FILE_TEXT__ === "function" ? window.__ADE_GET_DIRTY_FILE_TEXT__(${JSON.stringify(trimmed)}) : undefined`;
-          const result: unknown = await win.webContents.executeJavaScript(js, true);
+          const result: unknown = await win.webContents.executeJavaScript(
+            js,
+            true,
+          );
           return typeof result === "string" ? result : undefined;
         } catch {
           return undefined;
@@ -1492,7 +1731,7 @@ app.whenReady().then(async () => {
       onWorktreeChanged: ({ laneId, reason }) => {
         jobEngine.onLaneDirtyChanged({ laneId, reason });
       },
-      onHeadChanged: handleHeadChanged
+      onHeadChanged: handleHeadChanged,
     });
 
     const testService = createTestService({
@@ -1505,7 +1744,7 @@ app.whenReady().then(async () => {
       broadcastEvent: (ev) => {
         openclawBridgeServiceRef?.onTestEvent(ev);
         emitProjectEvent(projectRoot, IPC.testsEvent, ev);
-      }
+      },
     });
     testServiceRef = testService;
     gitServiceRef = gitService;
@@ -1520,7 +1759,8 @@ app.whenReady().then(async () => {
       conflictService,
       testService,
       agentChatService,
-      onEvent: (event) => emitProjectEvent(projectRoot, IPC.automationsEvent, event)
+      onEvent: (event) =>
+        emitProjectEvent(projectRoot, IPC.automationsEvent, event),
     });
     const automationIngressService = createAutomationIngressService({
       logger,
@@ -1529,7 +1769,8 @@ app.whenReady().then(async () => {
       listRules: () => projectConfigService.get().effective.automations ?? [],
     });
 
-    let missionServiceRef: ReturnType<typeof createMissionService> | null = null;
+    let missionServiceRef: ReturnType<typeof createMissionService> | null =
+      null;
     const missionService = createMissionService({
       db,
       projectId,
@@ -1547,15 +1788,18 @@ app.whenReady().then(async () => {
           missionId,
           "intervention_required",
           {
-            lastError: intervention.body?.trim() || intervention.title?.trim() || null,
+            lastError:
+              intervention.body?.trim() || intervention.title?.trim() || null,
           },
         );
       },
       onInterventionResolved: ({ missionId, intervention }) => {
-        void knowledgeCaptureService.captureResolvedIntervention({
-          missionId,
-          intervention,
-        }).catch(() => {});
+        void knowledgeCaptureService
+          .captureResolvedIntervention({
+            missionId,
+            intervention,
+          })
+          .catch(() => {});
       },
       onEvent: (event) => {
         openclawBridgeServiceRef?.onMissionEvent(event);
@@ -1564,17 +1808,19 @@ app.whenReady().then(async () => {
           automationService?.onMissionUpdated({ missionId: event.missionId });
         }
         if (event.reason === "ready_to_start" && event.missionId) {
-          void aiOrchestratorServiceRef?.startMissionRun({
-            missionId: event.missionId,
-            queueClaimToken: event.claimToken ?? null,
-          }).catch((error) => {
-            logger.warn("missions.queue_autostart_failed", {
+          void aiOrchestratorServiceRef
+            ?.startMissionRun({
               missionId: event.missionId,
-              error: error instanceof Error ? error.message : String(error),
+              queueClaimToken: event.claimToken ?? null,
+            })
+            .catch((error) => {
+              logger.warn("missions.queue_autostart_failed", {
+                missionId: event.missionId,
+                error: error instanceof Error ? error.message : String(error),
+              });
             });
-          });
         }
-      }
+      },
     });
     missionServiceRef = missionService;
     // Run phase built-in migration/cleanup once at startup so launcher state is canonical.
@@ -1596,7 +1842,9 @@ app.whenReady().then(async () => {
       projectConfigService,
     });
     missionBudgetServiceRef = missionBudgetService;
-    let missionPreflightService: ReturnType<typeof createMissionPreflightService>;
+    let missionPreflightService: ReturnType<
+      typeof createMissionPreflightService
+    >;
     const deferredProjectStartCancels = new Set<() => void>();
     const scheduleDeferredProjectStart = (
       task: () => Promise<unknown> | unknown,
@@ -1607,18 +1855,14 @@ app.whenReady().then(async () => {
         const cancelTimeout = () => clearTimeout(handle);
         const handle = setTimeout(() => {
           deferredProjectStartCancels.delete(cancelTimeout);
-          Promise.resolve()
-            .then(task)
-            .catch(onError);
+          Promise.resolve().then(task).catch(onError);
         }, delayMs);
         deferredProjectStartCancels.add(cancelTimeout);
         return;
       }
       const handle = setImmediate(() => {
         deferredProjectStartCancels.delete(cancelImmediate);
-        Promise.resolve()
-          .then(task)
-          .catch(onError);
+        Promise.resolve().then(task).catch(onError);
       });
       const cancelImmediate = () => clearImmediate(handle);
       deferredProjectStartCancels.add(cancelImmediate);
@@ -1643,7 +1887,9 @@ app.whenReady().then(async () => {
         logger.info("project.startup_task_enabled", {
           projectRoot,
           task: label,
-          reason: enableAllBackgroundTasks ? "global_override" : "per_task_override",
+          reason: enableAllBackgroundTasks
+            ? "global_override"
+            : "per_task_override",
           enableFlag: enableFlag ?? null,
           delayMs,
         });
@@ -1686,7 +1932,8 @@ app.whenReady().then(async () => {
       workerBudgetService,
       missionBudgetService,
       authService: externalConnectionAuthService,
-      onEvent: (event) => emitProjectEvent(projectRoot, IPC.externalMcpEvent, event),
+      onEvent: (event) =>
+        emitProjectEvent(projectRoot, IPC.externalMcpEvent, event),
     });
     externalMcpServiceRef = externalMcpService;
     scheduleBackgroundProjectTask(
@@ -1723,7 +1970,8 @@ app.whenReady().then(async () => {
       missionService,
       logger,
       appVersion: app.getVersion(),
-      onStatusChange: (status) => emitProjectEvent(projectRoot, IPC.openclawConnectionStatus, status),
+      onStatusChange: (status) =>
+        emitProjectEvent(projectRoot, IPC.openclawConnectionStatus, status),
     });
     openclawBridgeServiceRef = openclawBridgeService;
     scheduleBackgroundProjectTask(
@@ -1759,20 +2007,24 @@ app.whenReady().then(async () => {
         aiOrchestratorServiceRef?.onOrchestratorRuntimeEvent(event);
         openclawBridgeServiceRef?.onOrchestratorEvent(event);
         emitProjectEvent(projectRoot, IPC.orchestratorEvent, event);
-      }
+      },
     });
     orchestratorServiceRef = orchestratorService;
-    const computerUseArtifactBrokerService = createComputerUseArtifactBrokerService({
-      db,
-      projectId,
-      projectRoot,
-      missionService,
-      orchestratorService,
-      externalMcpService,
-      logger,
-      onEvent: (payload) => emitProjectEvent(projectRoot, IPC.computerUseEvent, payload),
-    });
-    agentChatService.setComputerUseArtifactBrokerService(computerUseArtifactBrokerService);
+    const computerUseArtifactBrokerService =
+      createComputerUseArtifactBrokerService({
+        db,
+        projectId,
+        projectRoot,
+        missionService,
+        orchestratorService,
+        externalMcpService,
+        logger,
+        onEvent: (payload) =>
+          emitProjectEvent(projectRoot, IPC.computerUseEvent, payload),
+      });
+    agentChatService.setComputerUseArtifactBrokerService(
+      computerUseArtifactBrokerService,
+    );
     missionPreflightService = createMissionPreflightService({
       logger,
       projectRoot,
@@ -1801,8 +2053,10 @@ app.whenReady().then(async () => {
       humanWorkDigestService,
       missionMemoryLifecycleService,
       computerUseArtifactBrokerService,
-      onThreadEvent: (event) => emitProjectEvent(projectRoot, IPC.orchestratorThreadEvent, event),
-      onDagMutation: (event) => emitProjectEvent(projectRoot, IPC.orchestratorDagMutation, event)
+      onThreadEvent: (event) =>
+        emitProjectEvent(projectRoot, IPC.orchestratorThreadEvent, event),
+      onDagMutation: (event) =>
+        emitProjectEvent(projectRoot, IPC.orchestratorDagMutation, event),
     });
     aiOrchestratorServiceRef = aiOrchestratorService;
     const syncService = createSyncService({
@@ -1827,7 +2081,12 @@ app.whenReady().then(async () => {
       missionService,
       agentChatService,
       processService,
-      onStatusChanged: (snapshot) => emitProjectEvent(projectRoot, IPC.syncEvent, { type: "sync-status", snapshot }),
+      hostStartupEnabled: process.env.ADE_DISABLE_SYNC_HOST !== "1",
+      onStatusChanged: (snapshot) =>
+        emitProjectEvent(projectRoot, IPC.syncEvent, {
+          type: "sync-status",
+          snapshot,
+        }),
     });
     syncServiceRef = syncService;
     await syncService.initialize();
@@ -1845,7 +2104,10 @@ app.whenReady().then(async () => {
       "ADE_ENABLE_MISSION_QUEUE",
     );
 
-    logger.info("project.init_stage", { projectRoot, stage: "linear_closeout_init" });
+    logger.info("project.init_stage", {
+      projectRoot,
+      stage: "linear_closeout_init",
+    });
     const linearCloseoutService = createLinearCloseoutService({
       issueTracker: linearIssueTracker,
       outboundService: linearOutboundService,
@@ -1854,7 +2116,10 @@ app.whenReady().then(async () => {
       prService,
       computerUseArtifactBrokerService,
     });
-    logger.info("project.init_stage", { projectRoot, stage: "linear_dispatcher_init" });
+    logger.info("project.init_stage", {
+      projectRoot,
+      stage: "linear_dispatcher_init",
+    });
     const linearDispatcherService = createLinearDispatcherService({
       db,
       projectId,
@@ -1874,19 +2139,27 @@ app.whenReady().then(async () => {
         emitProjectEvent(projectRoot, IPC.ctoLinearWorkflowEvent, event);
 
         // Capture linear workflow failures as gotchas for the memory system
-        if (event.type === "linear-workflow-run" && event.milestone === "failed") {
-          void knowledgeCaptureServiceRef?.captureFailureGotcha({
-            missionId: event.runId,
-            runId: event.runId,
-            summary: `Linear workflow failed for ${event.issueIdentifier}: ${event.message}`,
-            errorMessage: event.message,
-          }).catch(() => {});
+        if (
+          event.type === "linear-workflow-run" &&
+          event.milestone === "failed"
+        ) {
+          void knowledgeCaptureServiceRef
+            ?.captureFailureGotcha({
+              missionId: event.runId,
+              runId: event.runId,
+              summary: `Linear workflow failed for ${event.issueIdentifier}: ${event.message}`,
+              errorMessage: event.message,
+            })
+            .catch(() => {});
         }
       },
     });
     linearDispatcherServiceRef = linearDispatcherService;
 
-    logger.info("project.init_stage", { projectRoot, stage: "linear_sync_init" });
+    logger.info("project.init_stage", {
+      projectRoot,
+      stage: "linear_sync_init",
+    });
     const linearSyncService = createLinearSyncService({
       db,
       logger,
@@ -1901,8 +2174,14 @@ app.whenReady().then(async () => {
       onIssueUpdated: ({ issue, previousIssue }) => {
         automationService?.onLinearIssueChanged?.({
           issue,
-          previousAssigneeId: typeof previousIssue?.assigneeId === "string" ? previousIssue.assigneeId : null,
-          previousAssigneeName: typeof previousIssue?.assigneeName === "string" ? previousIssue.assigneeName : null,
+          previousAssigneeId:
+            typeof previousIssue?.assigneeId === "string"
+              ? previousIssue.assigneeId
+              : null,
+          previousAssigneeName:
+            typeof previousIssue?.assigneeName === "string"
+              ? previousIssue.assigneeName
+              : null,
         });
       },
     });
@@ -1919,7 +2198,10 @@ app.whenReady().then(async () => {
       "ADE_ENABLE_LINEAR_SYNC",
     );
 
-    logger.info("project.init_stage", { projectRoot, stage: "linear_ingress_init" });
+    logger.info("project.init_stage", {
+      projectRoot,
+      stage: "linear_ingress_init",
+    });
     const linearIngressService = createLinearIngressService({
       db,
       logger,
@@ -1982,7 +2264,7 @@ app.whenReady().then(async () => {
       projectRoot,
       projectConfigService,
       laneService,
-      automationService
+      automationService,
     });
 
     const usageTrackingService = createUsageTrackingService({
@@ -1990,7 +2272,7 @@ app.whenReady().then(async () => {
       pollIntervalMs: 120_000,
       onUpdate: (snapshot) => {
         emitProjectEvent(projectRoot, IPC.usageEvent, snapshot);
-      }
+      },
     });
     scheduleBackgroundProjectTask(
       "usage.start",
@@ -2008,7 +2290,7 @@ app.whenReady().then(async () => {
       db,
       logger,
       projectConfigService,
-      usageTrackingService
+      usageTrackingService,
     });
     automationService?.bindMissionRuntime({
       missionService,
@@ -2042,7 +2324,8 @@ app.whenReady().then(async () => {
       secretService: automationSecretService,
       externalMcpService,
       logger,
-      onEvent: (event) => emitProjectEvent(projectRoot, IPC.projectStateEvent, event),
+      onEvent: (event) =>
+        emitProjectEvent(projectRoot, IPC.projectStateEvent, event),
     });
     scheduleBackgroundProjectTask(
       "project.config_reload.start",
@@ -2062,7 +2345,7 @@ app.whenReady().then(async () => {
       (error) => {
         logger.warn("memory.lifecycle.startup_sweep_failed", {
           projectId,
-          error: error instanceof Error ? error.message : String(error)
+          error: error instanceof Error ? error.message : String(error),
         });
       },
       0,
@@ -2074,7 +2357,7 @@ app.whenReady().then(async () => {
       (error) => {
         logger.warn("memory.consolidation.startup_check_failed", {
           projectId,
-          error: error instanceof Error ? error.message : String(error)
+          error: error instanceof Error ? error.message : String(error),
         });
       },
       0,
@@ -2095,7 +2378,7 @@ app.whenReady().then(async () => {
       (error) => {
         logger.warn("memory.embedding_worker.start_failed", {
           projectId,
-          error: error instanceof Error ? error.message : String(error)
+          error: error instanceof Error ? error.message : String(error),
         });
       },
       120_000,
@@ -2142,10 +2425,13 @@ app.whenReady().then(async () => {
       if (headWatcherTimer) {
         clearTimeout(headWatcherTimer);
       }
-      headWatcherTimer = setTimeout(() => {
-        headWatcherTimer = null;
-        void pollHeads();
-      }, Math.max(HEAD_WATCHER_MIN_INTERVAL_MS, delayMs));
+      headWatcherTimer = setTimeout(
+        () => {
+          headWatcherTimer = null;
+          void pollHeads();
+        },
+        Math.max(HEAD_WATCHER_MIN_INTERVAL_MS, delayMs),
+      );
     };
 
     const pollHeads = async () => {
@@ -2158,7 +2444,9 @@ app.whenReady().then(async () => {
         if (!fs.existsSync(projectRoot)) {
           if (!missingBroadcasted) {
             missingBroadcasted = true;
-            emitProjectEvent(projectRoot, IPC.projectMissing, { rootPath: projectRoot });
+            emitProjectEvent(projectRoot, IPC.projectMissing, {
+              rootPath: projectRoot,
+            });
           }
         } else {
           missingBroadcasted = false;
@@ -2170,7 +2458,7 @@ app.whenReady().then(async () => {
             where project_id = ?
               and status != 'archived'
           `,
-          [projectId]
+          [projectId],
         );
 
         const active = new Set<string>();
@@ -2181,7 +2469,10 @@ app.whenReady().then(async () => {
           lanesChecked += 1;
           active.add(laneId);
 
-          const head = await runGit(["rev-parse", "HEAD"], { cwd: worktreePath, timeoutMs: 8_000 });
+          const head = await runGit(["rev-parse", "HEAD"], {
+            cwd: worktreePath,
+            timeoutMs: 8_000,
+          });
           if (head.exitCode !== 0) continue;
           const sha = head.stdout.trim();
           if (!sha) continue;
@@ -2193,7 +2484,12 @@ app.whenReady().then(async () => {
           }
           if (prev !== sha) {
             changesDetected = true;
-            handleHeadChanged({ laneId, reason: "head_watcher", preHeadSha: prev, postHeadSha: sha });
+            handleHeadChanged({
+              laneId,
+              reason: "head_watcher",
+              preHeadSha: prev,
+              postHeadSha: sha,
+            });
           }
         }
 
@@ -2201,7 +2497,9 @@ app.whenReady().then(async () => {
           if (!active.has(laneId)) lastHeadByLaneId.delete(laneId);
         }
       } catch (err) {
-        logger.warn("git.head_watcher_failed", { err: err instanceof Error ? err.message : String(err) });
+        logger.warn("git.head_watcher_failed", {
+          err: err instanceof Error ? err.message : String(err),
+        });
       } finally {
         headWatcherRunning = false;
         if (headWatcherActive) {
@@ -2210,7 +2508,10 @@ app.whenReady().then(async () => {
           } else if (lanesChecked === 0) {
             headWatcherDelayMs = HEAD_WATCHER_MAX_INTERVAL_MS;
           } else {
-            headWatcherDelayMs = Math.min(HEAD_WATCHER_MAX_INTERVAL_MS, headWatcherDelayMs + 5_000);
+            headWatcherDelayMs = Math.min(
+              HEAD_WATCHER_MAX_INTERVAL_MS,
+              headWatcherDelayMs + 5_000,
+            );
           }
           scheduleHeadPoll(headWatcherDelayMs);
         }
@@ -2224,7 +2525,7 @@ app.whenReady().then(async () => {
       scheduleHeadPoll(headWatcherDelayMs);
     };
 
-      const disposeHeadWatcher = () => {
+    const disposeHeadWatcher = () => {
       headWatcherActive = false;
       for (const cancel of deferredProjectStartCancels) {
         cancel();
@@ -2247,10 +2548,14 @@ app.whenReady().then(async () => {
       "ADE_ENABLE_HEAD_WATCHER",
     );
 
-    const state = upsertRecentProject(readGlobalState(globalStatePath), project, {
-      recordLastProject,
-      recordRecent
-    });
+    const state = upsertRecentProject(
+      readGlobalState(globalStatePath),
+      project,
+      {
+        recordLastProject,
+        recordRecent,
+      },
+    );
     writeGlobalState(globalStatePath, state);
 
     // ── MCP Socket Server (embedded mode) ─────────────────────────
@@ -2292,7 +2597,7 @@ app.whenReady().then(async () => {
       aiOrchestratorService,
       issueInventoryService,
       eventBuffer: mcpEventBuffer,
-      dispose: () => {} // desktop manages service lifecycle
+      dispose: () => {}, // desktop manages service lifecycle
     };
 
     // When ADE_MCP_SOCKET_PATH is set, derive a per-project socket path from
@@ -2301,9 +2606,9 @@ app.whenReady().then(async () => {
     // subsequent contexts append a project-root hash suffix.
     const envSocketOverride = process.env.ADE_MCP_SOCKET_PATH?.trim();
     const mcpSocketPath = envSocketOverride
-      ? (projectContexts.size === 0
+      ? projectContexts.size === 0
         ? envSocketOverride
-        : `${envSocketOverride}.${Buffer.from(normalizeProjectRoot(projectRoot)).toString("base64url").slice(0, 8)}`)
+        : `${envSocketOverride}.${Buffer.from(normalizeProjectRoot(projectRoot)).toString("base64url").slice(0, 8)}`
       : adePaths.socketPath;
     const activeMcpConnections = new Set<net.Socket>();
 
@@ -2317,10 +2622,15 @@ app.whenReady().then(async () => {
         }
       }
     };
-    mcpSocketCleanupByRoot.set(normalizeProjectRoot(projectRoot), destroyActiveMcpConnections);
+    mcpSocketCleanupByRoot.set(
+      normalizeProjectRoot(projectRoot),
+      destroyActiveMcpConnections,
+    );
 
     // Clean stale socket from prior crash
-    try { fs.unlinkSync(mcpSocketPath); } catch {}
+    try {
+      fs.unlinkSync(mcpSocketPath);
+    } catch {}
 
     const mcpSocketServer = net.createServer((conn) => {
       activeMcpConnections.add(conn);
@@ -2393,6 +2703,7 @@ app.whenReady().then(async () => {
       conflictService,
       aiIntegrationService,
       githubService,
+      feedbackReporterService,
       prService,
       prPollingService,
       computerUseArtifactBrokerService,
@@ -2446,20 +2757,23 @@ app.whenReady().then(async () => {
       externalMcpService,
       configReloadService,
       mcpSocketServer,
-      mcpSocketPath
+      mcpSocketPath,
     };
   };
 
   const createDormantProjectContext = (projectRoot = ""): AppContext => {
-    const rootIsDefined = typeof projectRoot === "string" && projectRoot.trim().length > 0;
+    const rootIsDefined =
+      typeof projectRoot === "string" && projectRoot.trim().length > 0;
     const normalizedRoot = rootIsDefined ? path.resolve(projectRoot) : "";
     const project = {
       rootPath: normalizedRoot,
       displayName: normalizedRoot ? path.basename(normalizedRoot) : "",
-      baseRef: "main"
+      baseRef: "main",
     };
-    const logger = createFileLogger(path.join(app.getPath("userData"), "ade-idle.jsonl"));
-    return ({
+    const logger = createFileLogger(
+      path.join(app.getPath("userData"), "ade-idle.jsonl"),
+    );
+    return {
       db: null,
       logger,
       project,
@@ -2487,6 +2801,7 @@ app.whenReady().then(async () => {
       agentChatService: null,
       computerUseArtifactBrokerService: null,
       githubService: null,
+      feedbackReporterService: null,
       prService: null,
       prPollingService: null,
       queueLandingService: null,
@@ -2536,14 +2851,16 @@ app.whenReady().then(async () => {
       linearSyncService: null,
       externalConnectionAuthService: null,
       externalMcpService: null,
-      configReloadService: null
-    } as unknown as AppContext);
+      configReloadService: null,
+    } as unknown as AppContext;
   };
 
   const disposeContextResources = async (ctx: AppContext): Promise<void> => {
-    const normalizedRoot = typeof ctx.project?.rootPath === "string" && ctx.project.rootPath.trim().length > 0
-      ? normalizeProjectRoot(ctx.project.rootPath)
-      : null;
+    const normalizedRoot =
+      typeof ctx.project?.rootPath === "string" &&
+      ctx.project.rootPath.trim().length > 0
+        ? normalizeProjectRoot(ctx.project.rootPath)
+        : null;
     // Tear down MCP socket BEFORE any service disposal so in-flight MCP requests
     // do not race with services that are being shut down.
     try {
@@ -2723,33 +3040,60 @@ app.whenReady().then(async () => {
 
   const persistRecentProject = (
     project: ProjectInfo,
-    options: { recordLastProject?: boolean; recordRecent?: boolean } = {}
+    options: { recordLastProject?: boolean; recordRecent?: boolean } = {},
   ): void => {
-    const state = upsertRecentProject(readGlobalState(globalStatePath), project, options);
+    const state = upsertRecentProject(
+      readGlobalState(globalStatePath),
+      project,
+      options,
+    );
     writeGlobalState(globalStatePath, state);
   };
 
-  const switchProjectFromDialog = async (selectedPath: string): Promise<ProjectInfo> => {
+  const switchProjectFromDialog = async (
+    selectedPath: string,
+  ): Promise<ProjectInfo> => {
     const repoRoot = normalizeProjectRoot(await resolveRepoRoot(selectedPath)); // require a real git repo for onboarding.
     const existing = projectContexts.get(repoRoot);
     if (existing) {
       existing.hasUserSelectedProject = true;
       setActiveProject(repoRoot);
-      persistRecentProject(existing.project, { recordLastProject: true, recordRecent: false });
+      persistRecentProject(existing.project, {
+        recordLastProject: true,
+        recordRecent: false,
+      });
+      emitProjectChanged(existing.project);
       return existing.project;
     }
 
-    const baseRef = await detectDefaultBaseRef(repoRoot);
-    const ctx = await initContextForProjectRoot({
-      projectRoot: repoRoot,
-      baseRef,
-      ensureExclude: true,
-      recordLastProject: true,
-      recordRecent: true,
-      userSelectedProject: true
-    });
-    projectContexts.set(repoRoot, ctx);
+    let initPromise = projectInitPromises.get(repoRoot);
+    if (!initPromise) {
+      initPromise = (async () => {
+        const baseRef = await detectDefaultBaseRef(repoRoot);
+        const ctx = await initContextForProjectRoot({
+          projectRoot: repoRoot,
+          baseRef,
+          ensureExclude: true,
+          recordLastProject: true,
+          recordRecent: true,
+          userSelectedProject: true,
+        });
+        projectContexts.set(repoRoot, ctx);
+        return ctx;
+      })().finally(() => {
+        projectInitPromises.delete(repoRoot);
+      }) as Promise<AppContext>;
+      projectInitPromises.set(repoRoot, initPromise);
+    }
+
+    const ctx = await initPromise;
+    ctx.hasUserSelectedProject = true;
     setActiveProject(repoRoot);
+    persistRecentProject(ctx.project, {
+      recordLastProject: true,
+      recordRecent: false,
+    });
+    emitProjectChanged(ctx.project);
     return ctx.project;
   };
 
@@ -2759,6 +3103,7 @@ app.whenReady().then(async () => {
     await closeProjectContext(normalizedRoot);
     if (wasActive) {
       dormantContext = createDormantProjectContext(normalizedRoot);
+      emitProjectChanged(null);
     }
   };
 
@@ -2770,6 +3115,7 @@ app.whenReady().then(async () => {
     }
     setActiveProject(null);
     dormantContext = createDormantProjectContext(previousRoot);
+    emitProjectChanged(null);
   };
 
   dormantContext = createDormantProjectContext();
@@ -2780,7 +3126,7 @@ app.whenReady().then(async () => {
     if (FILE_LIMIT_CODES.has((err as NodeJS.ErrnoException).code ?? "")) return;
     getActiveContext().logger.error("process.uncaught_exception", {
       err: String(err),
-      stack: err instanceof Error ? err.stack : undefined
+      stack: err instanceof Error ? err.stack : undefined,
     });
   });
   process.on("unhandledRejection", (reason) => {
@@ -2788,11 +3134,15 @@ app.whenReady().then(async () => {
     if (msg.includes("EMFILE") || msg.includes("ENFILE")) {
       if (!emfileWarned) {
         emfileWarned = true;
-        getActiveContext().logger.warn("process.emfile_detected", { reason: msg });
+        getActiveContext().logger.warn("process.emfile_detected", {
+          reason: msg,
+        });
       }
       return;
     }
-    getActiveContext().logger.error("process.unhandled_rejection", { reason: msg });
+    getActiveContext().logger.error("process.unhandled_rejection", {
+      reason: msg,
+    });
   });
   app.on("child-process-gone", (_event, details) => {
     getActiveContext().logger.warn("app.child_process_gone", {
@@ -2800,12 +3150,14 @@ app.whenReady().then(async () => {
       reason: details.reason,
       exitCode: details.exitCode,
       serviceName: details.serviceName ?? null,
-      name: details.name ?? null
+      name: details.name ?? null,
     });
   });
 
   // --- Auto-update service (global, not per-project) ---
-  const updateLogger = createFileLogger(path.join(app.getPath("userData"), "ade-update.jsonl"));
+  const updateLogger = createFileLogger(
+    path.join(app.getPath("userData"), "ade-update.jsonl"),
+  );
   const autoUpdateService = createAutoUpdateService({
     logger: updateLogger,
     currentVersion: app.getVersion(),
@@ -2828,7 +3180,7 @@ app.whenReady().then(async () => {
     switchProjectFromDialog,
     closeCurrentProject,
     closeProjectByPath,
-    globalStatePath
+    globalStatePath,
   });
 
   await createWindow(getActiveContext().logger);
@@ -2836,12 +3188,16 @@ app.whenReady().then(async () => {
   // Initial project context: load AFTER the window is visible so the main
   // thread isn't blocked (DB load + service init) before anything renders.
   if (startupUserSelected) {
+    const startupRoot = normalizeProjectRoot(initialCandidate);
     void (async () => {
       try {
         await switchProjectFromDialog(initialCandidate);
       } catch {
-        setActiveProject(null);
-        dormantContext = createDormantProjectContext();
+        if (!activeProjectRoot || activeProjectRoot === startupRoot) {
+          setActiveProject(null);
+          dormantContext = createDormantProjectContext();
+          emitProjectChanged(null);
+        }
       }
     })();
   }

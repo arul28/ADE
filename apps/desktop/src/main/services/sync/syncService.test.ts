@@ -1,29 +1,43 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { isCrsqliteAvailable } from "../state/crsqliteExtension";
 import { openKvDb } from "../state/kvDb";
 import { createSyncService } from "./syncService";
 
-// Prevent real WebSocket servers from binding to port 8787 during tests.
-// Tests only exercise role/transfer/pairing logic, not the sync transport.
-vi.mock("./syncHostService", () => ({
-  createSyncHostService: () => ({
-    async waitUntilListening() { return 8787; },
-    getPort() { return 8787; },
-    getBootstrapToken() { return "test-bootstrap-token"; },
+const { createSyncHostServiceMock } = vi.hoisted(() => ({
+  createSyncHostServiceMock: vi.fn(() => ({
+    async waitUntilListening() {
+      return 8787;
+    },
+    getPort() {
+      return 8787;
+    },
+    getBootstrapToken() {
+      return "test-bootstrap-token";
+    },
     getPairingSession() {
       const expires = new Date(Date.now() + 600_000).toISOString();
       return { code: "TEST1234", expiresAt: expires, pairedDevices: [] };
     },
     revokePairedDevice() {},
-    getPeerStates() { return []; },
-    getBrainStatusSnapshot() { return {}; },
+    getPeerStates() {
+      return [];
+    },
+    getBrainStatusSnapshot() {
+      return {};
+    },
     handlePtyData() {},
     handlePtyExit() {},
     async dispose() {},
-  }),
+  })),
+}));
+
+// Prevent real WebSocket servers from binding to port 8787 during tests.
+// Tests only exercise role/transfer/pairing logic, not the sync transport.
+vi.mock("./syncHostService", () => ({
+  createSyncHostService: createSyncHostServiceMock,
 }));
 
 function createLogger() {
@@ -41,7 +55,10 @@ function makeProjectRoot(prefix: string): string {
   return root;
 }
 
-function insertProjectAndLane(db: Awaited<ReturnType<typeof openKvDb>>, laneId = "lane-1"): void {
+function insertProjectAndLane(
+  db: Awaited<ReturnType<typeof openKvDb>>,
+  laneId = "lane-1",
+): void {
   const now = "2026-03-15T00:00:00.000Z";
   db.run(
     `insert into projects(id, root_path, display_name, default_base_ref, created_at, last_opened_at)
@@ -78,6 +95,10 @@ function insertProjectAndLane(db: Awaited<ReturnType<typeof openKvDb>>, laneId =
 
 const activeDisposers: Array<() => Promise<void>> = [];
 
+beforeEach(() => {
+  createSyncHostServiceMock.mockClear();
+});
+
 afterEach(async () => {
   while (activeDisposers.length > 0) {
     const dispose = activeDisposers.pop();
@@ -88,7 +109,10 @@ afterEach(async () => {
 describe.skipIf(!isCrsqliteAvailable())("syncService", () => {
   it("reports W3 transfer blockers while keeping paused and idle state survivable", async () => {
     const projectRoot = makeProjectRoot("ade-sync-service-blockers-");
-    const db = await openKvDb(path.join(projectRoot, ".ade", "ade.db"), createLogger() as any);
+    const db = await openKvDb(
+      path.join(projectRoot, ".ade", "ade.db"),
+      createLogger() as any,
+    );
     insertProjectAndLane(db);
 
     const service = createSyncService({
@@ -96,7 +120,11 @@ describe.skipIf(!isCrsqliteAvailable())("syncService", () => {
       logger: createLogger() as any,
       projectRoot,
       fileService: { dispose: () => {} } as any,
-      laneService: { list: async () => [], create: async () => ({}), archive: async () => {} } as any,
+      laneService: {
+        list: async () => [],
+        create: async () => ({}),
+        archive: async () => {},
+      } as any,
       prService: {
         listAll: async () => [],
         getDetail: async () => null,
@@ -136,9 +164,10 @@ describe.skipIf(!isCrsqliteAvailable())("syncService", () => {
       ptyService: {} as any,
       computerUseArtifactBrokerService: {} as any,
       missionService: {
-        list: ({ status }: { status?: string } = {}) => status === "active"
-          ? [{ id: "mission-1", title: "Ship W3", status: "active" }]
-          : [],
+        list: ({ status }: { status?: string } = {}) =>
+          status === "active"
+            ? [{ id: "mission-1", title: "Ship W3", status: "active" }]
+            : [],
       } as any,
       agentChatService: {
         listSessions: async () => [
@@ -163,9 +192,10 @@ describe.skipIf(!isCrsqliteAvailable())("syncService", () => {
         ],
       } as any,
       processService: {
-        listRuntime: (laneId: string) => laneId === "lane-1"
-          ? [{ processId: "dev-server", status: "running" }]
-          : [],
+        listRuntime: (laneId: string) =>
+          laneId === "lane-1"
+            ? [{ processId: "dev-server", status: "running" }]
+            : [],
       } as any,
     });
 
@@ -180,9 +210,16 @@ describe.skipIf(!isCrsqliteAvailable())("syncService", () => {
     expect(readiness.blockers).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ kind: "mission_run", id: "mission-1" }),
-        expect.objectContaining({ kind: "chat_runtime", id: "chat-1", label: "CTO delegation thread" }),
+        expect.objectContaining({
+          kind: "chat_runtime",
+          id: "chat-1",
+          label: "CTO delegation thread",
+        }),
         expect.objectContaining({ kind: "terminal_session", id: "term-1" }),
-        expect.objectContaining({ kind: "managed_process", id: "lane-1:dev-server" }),
+        expect.objectContaining({
+          kind: "managed_process",
+          id: "lane-1:dev-server",
+        }),
       ]),
     );
     expect(readiness.survivableState).toEqual(
@@ -196,14 +233,21 @@ describe.skipIf(!isCrsqliteAvailable())("syncService", () => {
 
   it("transfers the host role to the local device when only durable state remains", async () => {
     const projectRoot = makeProjectRoot("ade-sync-service-transfer-");
-    const db = await openKvDb(path.join(projectRoot, ".ade", "ade.db"), createLogger() as any);
+    const db = await openKvDb(
+      path.join(projectRoot, ".ade", "ade.db"),
+      createLogger() as any,
+    );
 
     const service = createSyncService({
       db,
       logger: createLogger() as any,
       projectRoot,
       fileService: { dispose: () => {} } as any,
-      laneService: { list: async () => [], create: async () => ({}), archive: async () => {} } as any,
+      laneService: {
+        list: async () => [],
+        create: async () => ({}),
+        archive: async () => {},
+      } as any,
       prService: {
         listAll: async () => [],
         getDetail: async () => null,
@@ -275,14 +319,21 @@ describe.skipIf(!isCrsqliteAvailable())("syncService", () => {
 
   it("builds pairing QR payloads with LAN-first address candidates and tailscale fallback", async () => {
     const projectRoot = makeProjectRoot("ade-sync-service-pairing-");
-    const db = await openKvDb(path.join(projectRoot, ".ade", "ade.db"), createLogger() as any);
+    const db = await openKvDb(
+      path.join(projectRoot, ".ade", "ade.db"),
+      createLogger() as any,
+    );
 
     const service = createSyncService({
       db,
       logger: createLogger() as any,
       projectRoot,
       fileService: { dispose: () => {} } as any,
-      laneService: { list: async () => [], create: async () => ({}), archive: async () => {} } as any,
+      laneService: {
+        list: async () => [],
+        create: async () => ({}),
+        archive: async () => {},
+      } as any,
       prService: {
         listAll: async () => [],
         getDetail: async () => null,
@@ -337,14 +388,24 @@ describe.skipIf(!isCrsqliteAvailable())("syncService", () => {
     expect(status.mode === "brain" || status.mode === "standalone").toBe(true);
     expect(status.pairingSession).toBeTruthy();
     expect(status.pairingConnectInfo).toBeTruthy();
-    const addressCandidates = status.pairingConnectInfo?.addressCandidates ?? [];
-    const savedCandidateIndex = addressCandidates.findIndex((entry) => entry.kind === "saved" && entry.host === "192.168.0.20");
-    const tailscaleCandidateIndex = addressCandidates.findIndex((entry) => entry.kind === "tailscale" && entry.host === "100.100.12.4");
+    const addressCandidates =
+      status.pairingConnectInfo?.addressCandidates ?? [];
+    const savedCandidateIndex = addressCandidates.findIndex(
+      (entry) => entry.kind === "saved" && entry.host === "192.168.0.20",
+    );
+    const tailscaleCandidateIndex = addressCandidates.findIndex(
+      (entry) => entry.kind === "tailscale" && entry.host === "100.100.12.4",
+    );
     expect(savedCandidateIndex).toBeGreaterThanOrEqual(0);
     expect(tailscaleCandidateIndex).toBeGreaterThan(savedCandidateIndex);
-    expect(addressCandidates.slice(0, Math.max(savedCandidateIndex, 0)).every((entry) => entry.kind === "lan")).toBe(true);
+    expect(
+      addressCandidates
+        .slice(0, Math.max(savedCandidateIndex, 0))
+        .every((entry) => entry.kind === "lan"),
+    ).toBe(true);
 
-    const encodedPayload = status.pairingConnectInfo?.qrPayloadText.split("payload=")[1] ?? "";
+    const encodedPayload =
+      status.pairingConnectInfo?.qrPayloadText.split("payload=")[1] ?? "";
     const parsedPayload = JSON.parse(decodeURIComponent(encodedPayload)) as {
       hostIdentity: { deviceId: string };
       pairingCode: string;
@@ -353,5 +414,61 @@ describe.skipIf(!isCrsqliteAvailable())("syncService", () => {
     expect(parsedPayload.hostIdentity.deviceId).toBe(localDeviceId);
     expect(parsedPayload.pairingCode).toBe(status.pairingSession?.code);
     expect(parsedPayload.expiresAt).toBe(status.pairingSession?.expiresAt);
+  }, 30_000);
+
+  it("does not start the sync host or expose pairing details when host startup is disabled", async () => {
+    const projectRoot = makeProjectRoot("ade-sync-service-host-disabled-");
+    const db = await openKvDb(
+      path.join(projectRoot, ".ade", "ade.db"),
+      createLogger() as any,
+    );
+
+    const service = createSyncService({
+      db,
+      logger: createLogger() as any,
+      projectRoot,
+      fileService: { dispose: () => {} } as any,
+      laneService: {
+        list: async () => [],
+        create: async () => ({}),
+        archive: async () => {},
+      } as any,
+      prService: {
+        listAll: async () => [],
+        getDetail: async () => null,
+        getStatus: async () => null,
+        getChecks: async () => [],
+        getReviews: async () => [],
+        getComments: async () => [],
+        getFiles: async () => [],
+        createFromLane: async () => ({}),
+        land: async () => ({}),
+        closePr: async () => {},
+        requestReviewers: async () => {},
+      } as any,
+      sessionService: { list: () => [] } as any,
+      ptyService: {} as any,
+      computerUseArtifactBrokerService: {} as any,
+      missionService: { list: () => [] } as any,
+      agentChatService: { listSessions: async () => [] } as any,
+      processService: { listRuntime: () => [] } as any,
+      hostStartupEnabled: false,
+    } as any);
+
+    activeDisposers.push(async () => {
+      await service.dispose();
+      db.close();
+    });
+
+    await service.initialize();
+    const status = await service.getStatus();
+
+    expect(createSyncHostServiceMock).not.toHaveBeenCalled();
+    expect(service.getHostService()).toBeNull();
+    expect(status.role).toBe("brain");
+    expect(status.mode).toBe("standalone");
+    expect(status.bootstrapToken).toBeNull();
+    expect(status.pairingSession).toBeNull();
+    expect(status.pairingConnectInfo).toBeNull();
   }, 30_000);
 });

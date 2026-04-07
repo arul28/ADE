@@ -151,12 +151,63 @@ describe("appStore", () => {
     });
 
     it("refreshLanes can request the cheaper snapshot bootstrap path", async () => {
+      const lanes = [{ id: "lane-lite", name: "Lane lite" }] as any[];
+      (window.ade.lanes.list as any).mockResolvedValueOnce(lanes);
+
       await useAppStore.getState().refreshLanes({ includeStatus: false });
 
-      expect(window.ade.lanes.listSnapshots).toHaveBeenCalledWith({
+      expect(window.ade.lanes.list).toHaveBeenCalledWith({
         includeArchived: false,
         includeStatus: false,
       });
+      expect(window.ade.lanes.listSnapshots).not.toHaveBeenCalled();
+      expect(useAppStore.getState().lanes).toEqual(lanes);
+    });
+
+    it("refreshLanes preserves compatible lane snapshots during lightweight refresh", async () => {
+      useAppStore.setState({
+        laneSnapshots: [
+          {
+            lane: { id: "lane-1", name: "Lane 1" },
+            runtime: {
+              bucket: "running",
+              runningCount: 1,
+              awaitingInputCount: 0,
+              endedCount: 0,
+              sessionCount: 1,
+            },
+            rebaseSuggestion: null,
+            autoRebaseStatus: null,
+            conflictStatus: null,
+            stateSnapshot: null,
+            adoptableAttached: false,
+          },
+          {
+            lane: { id: "lane-2", name: "Lane 2" },
+            runtime: {
+              bucket: "none",
+              runningCount: 0,
+              awaitingInputCount: 0,
+              endedCount: 0,
+              sessionCount: 0,
+            },
+            rebaseSuggestion: null,
+            autoRebaseStatus: null,
+            conflictStatus: null,
+            stateSnapshot: null,
+            adoptableAttached: false,
+          },
+        ] as any[],
+      });
+      (window.ade.lanes.list as any).mockResolvedValueOnce([{ id: "lane-1", name: "Lane 1" }] as any[]);
+
+      await useAppStore.getState().refreshLanes({ includeStatus: false });
+
+      expect(useAppStore.getState().laneSnapshots).toEqual([
+        expect.objectContaining({
+          lane: expect.objectContaining({ id: "lane-1" }),
+        }),
+      ]);
     });
 
     it("selectLane updates selectedLaneId", () => {

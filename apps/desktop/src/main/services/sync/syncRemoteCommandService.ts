@@ -779,7 +779,7 @@ async function buildLaneListSnapshots(
     Promise.resolve(args.rebaseSuggestionService?.listSuggestions() ?? []),
     Promise.resolve(args.autoRebaseService?.listStatuses() ?? []),
     Promise.resolve(args.laneService.listStateSnapshots()),
-    args.conflictService?.getBatchAssessment().catch(() => null) ?? Promise.resolve(null),
+    args.conflictService?.getBatchAssessment({ lanes }).catch(() => null) ?? Promise.resolve(null),
   ]);
 
   const rebaseByLaneId = new Map(rebaseSuggestions.map((entry) => [entry.laneId, entry] as const));

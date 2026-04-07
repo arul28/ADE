@@ -53,12 +53,17 @@ type SyncServiceArgs = {
   portAllocationService?: ReturnType<typeof createPortAllocationService>;
   laneEnvironmentService?: ReturnType<typeof createLaneEnvironmentService>;
   laneTemplateService?: ReturnType<typeof createLaneTemplateService>;
-  rebaseSuggestionService?: ReturnType<typeof createRebaseSuggestionService> | null;
+  rebaseSuggestionService?: ReturnType<
+    typeof createRebaseSuggestionService
+  > | null;
   autoRebaseService?: ReturnType<typeof createAutoRebaseService> | null;
-  computerUseArtifactBrokerService: ReturnType<typeof createComputerUseArtifactBrokerService>;
+  computerUseArtifactBrokerService: ReturnType<
+    typeof createComputerUseArtifactBrokerService
+  >;
   missionService: ReturnType<typeof createMissionService>;
   agentChatService: ReturnType<typeof createAgentChatService>;
   processService: ReturnType<typeof createProcessService>;
+  hostStartupEnabled?: boolean;
   onStatusChanged?: (snapshot: SyncRoleSnapshot) => void;
 };
 
@@ -67,7 +72,10 @@ const TOKEN_FILE = "sync-bootstrap-token";
 const RUNNING_PROCESS_STATES = new Set(["starting", "running", "degraded"]);
 const CHAT_TOOL_TYPES = new Set(["codex-chat", "claude-chat", "ai-chat"]);
 
-function sanitizeDraft(raw: unknown, token: string | null): SyncDesktopConnectionDraft | null {
+function sanitizeDraft(
+  raw: unknown,
+  token: string | null,
+): SyncDesktopConnectionDraft | null {
   if (!raw || typeof raw !== "object" || !token) return null;
   const row = raw as Record<string, unknown>;
   const host = typeof row.host === "string" ? row.host.trim() : "";
@@ -78,9 +86,13 @@ function sanitizeDraft(raw: unknown, token: string | null): SyncDesktopConnectio
     port: Math.floor(port),
     token,
     authKind: row.authKind === "paired" ? "paired" : "bootstrap",
-    pairedDeviceId: typeof row.pairedDeviceId === "string" ? row.pairedDeviceId : null,
-    lastRemoteDbVersion: Number.isFinite(row.lastRemoteDbVersion) ? Number(row.lastRemoteDbVersion) : 0,
-    lastBrainDeviceId: typeof row.lastBrainDeviceId === "string" ? row.lastBrainDeviceId : null,
+    pairedDeviceId:
+      typeof row.pairedDeviceId === "string" ? row.pairedDeviceId : null,
+    lastRemoteDbVersion: Number.isFinite(row.lastRemoteDbVersion)
+      ? Number(row.lastRemoteDbVersion)
+      : 0,
+    lastBrainDeviceId:
+      typeof row.lastBrainDeviceId === "string" ? row.lastBrainDeviceId : null,
   };
 }
 
@@ -90,10 +102,15 @@ function normalizeHost(host: string | null | undefined): string | null {
   return normalized.length > 0 ? normalized : null;
 }
 
-function buildAddressCandidates(localDevice: SyncRoleSnapshot["localDevice"]): SyncAddressCandidate[] {
+function buildAddressCandidates(
+  localDevice: SyncRoleSnapshot["localDevice"],
+): SyncAddressCandidate[] {
   const candidates: SyncAddressCandidate[] = [];
   const seen = new Set<string>();
-  const append = (host: string | null | undefined, kind: SyncAddressCandidate["kind"]) => {
+  const append = (
+    host: string | null | undefined,
+    kind: SyncAddressCandidate["kind"],
+  ) => {
     const normalized = normalizeHost(host);
     if (!normalized || seen.has(normalized)) return;
     seen.add(normalized);
@@ -158,6 +175,7 @@ export function createSyncService(args: SyncServiceArgs) {
   let refreshRunning = false;
   let refreshQueued = false;
   let disposed = false;
+  const hostStartupEnabled = args.hostStartupEnabled !== false;
 
   const readToken = (): string | null => {
     if (!fs.existsSync(tokenPath)) return null;
@@ -172,7 +190,10 @@ export function createSyncService(args: SyncServiceArgs) {
   const readSavedDraft = (): SyncDesktopConnectionDraft | null => {
     if (!fs.existsSync(draftPath)) return null;
     const token = readToken();
-    return sanitizeDraft(safeJsonParse(fs.readFileSync(draftPath, "utf8"), null), token);
+    return sanitizeDraft(
+      safeJsonParse(fs.readFileSync(draftPath, "utf8"), null),
+      token,
+    );
   };
 
   const writeSavedDraft = (draft: SyncDesktopConnectionDraft | null): void => {
@@ -187,14 +208,18 @@ export function createSyncService(args: SyncServiceArgs) {
     writeToken(draft.token);
     writeTextAtomic(
       draftPath,
-      `${JSON.stringify({
-        host: draft.host,
-        port: draft.port,
-        authKind: draft.authKind ?? "bootstrap",
-        pairedDeviceId: draft.pairedDeviceId ?? null,
-        lastRemoteDbVersion: draft.lastRemoteDbVersion ?? 0,
-        lastBrainDeviceId: draft.lastBrainDeviceId ?? null,
-      }, null, 2)}\n`,
+      `${JSON.stringify(
+        {
+          host: draft.host,
+          port: draft.port,
+          authKind: draft.authKind ?? "bootstrap",
+          pairedDeviceId: draft.pairedDeviceId ?? null,
+          lastRemoteDbVersion: draft.lastRemoteDbVersion ?? 0,
+          lastBrainDeviceId: draft.lastBrainDeviceId ?? null,
+        },
+        null,
+        2,
+      )}\n`,
     );
   };
 
@@ -234,6 +259,15 @@ export function createSyncService(args: SyncServiceArgs) {
   };
 
   const startHostIfNeeded = async (): Promise<void> => {
+    if (!hostStartupEnabled) {
+      if (hostService) {
+        await stopHostIfRunning();
+      }
+      deviceRegistryService.touchLocalDevice({
+        lastSeenAt: nowIso(),
+      });
+      return;
+    }
     if (hostService) {
       deviceRegistryService.touchLocalDevice({
         lastSeenAt: nowIso(),
@@ -284,20 +318,22 @@ export function createSyncService(args: SyncServiceArgs) {
     await current.dispose();
   };
 
-  const resolveViewerDraftFromRegistry = (): SyncDesktopConnectionDraft | null => {
-    const cluster = deviceRegistryService.getClusterState();
-    const token = readToken();
-    if (!cluster || !token) return null;
-    const brain = deviceRegistryService.getDevice(cluster.brainDeviceId);
-    if (!brain?.lastHost || !brain.lastPort) return null;
-    return {
-      host: brain.lastHost,
-      port: brain.lastPort,
-      token,
-      lastRemoteDbVersion: syncPeerService.getStatus().lastRemoteDbVersion ?? 0,
-      lastBrainDeviceId: brain.deviceId,
+  const resolveViewerDraftFromRegistry =
+    (): SyncDesktopConnectionDraft | null => {
+      const cluster = deviceRegistryService.getClusterState();
+      const token = readToken();
+      if (!cluster || !token) return null;
+      const brain = deviceRegistryService.getDevice(cluster.brainDeviceId);
+      if (!brain?.lastHost || !brain.lastPort) return null;
+      return {
+        host: brain.lastHost,
+        port: brain.lastPort,
+        token,
+        lastRemoteDbVersion:
+          syncPeerService.getStatus().lastRemoteDbVersion ?? 0,
+        lastBrainDeviceId: brain.deviceId,
+      };
     };
-  };
 
   const refreshRoleState = async (): Promise<void> => {
     if (disposed) return;
@@ -316,7 +352,9 @@ export function createSyncService(args: SyncServiceArgs) {
         if (!cluster && !savedDraft) {
           cluster = deviceRegistryService.bootstrapLocalBrainIfNeeded();
         }
-        const isLocalBrain = cluster ? cluster.brainDeviceId === localDevice.deviceId : !savedDraft;
+        const isLocalBrain = cluster
+          ? cluster.brainDeviceId === localDevice.deviceId
+          : !savedDraft;
         if (isLocalBrain) {
           if (syncPeerService.isConnected()) {
             syncPeerService.disconnect({ preserveDraft: true });
@@ -354,13 +392,14 @@ export function createSyncService(args: SyncServiceArgs) {
       : (syncPeerService.getLatestBrainStatus()?.connectedPeers ?? []);
     const localDeviceId = deviceRegistryService.getLocalDeviceId();
     return devices.map((device) => {
-      const peer = peerStates.find((entry) => entry.deviceId === device.deviceId) ?? null;
+      const peer =
+        peerStates.find((entry) => entry.deviceId === device.deviceId) ?? null;
       const isLocal = device.deviceId === localDeviceId;
       return {
         ...device,
         isLocal,
         isBrain: device.deviceId === currentBrainId,
-        connectionState: isLocal ? "self" : (peer ? "connected" : "disconnected"),
+        connectionState: isLocal ? "self" : peer ? "connected" : "disconnected",
         connectedAt: peer?.connectedAt ?? null,
         lastAppliedAt: peer?.lastAppliedAt ?? null,
         remoteAddress: peer?.remoteAddress ?? null,
@@ -374,7 +413,10 @@ export function createSyncService(args: SyncServiceArgs) {
   const getTransferReadiness = async (): Promise<SyncTransferReadiness> => {
     const blockers: SyncTransferBlocker[] = [];
 
-    for (const mission of args.missionService.list({ status: "active", limit: 200 })) {
+    for (const mission of args.missionService.list({
+      status: "active",
+      limit: 200,
+    })) {
       blockers.push({
         kind: "mission_run",
         id: mission.id,
@@ -383,10 +425,18 @@ export function createSyncService(args: SyncServiceArgs) {
       });
     }
 
-    const chats = await args.agentChatService.listSessions(undefined, { includeIdentity: true, includeAutomation: true });
-    const chatSummaries = new Map(chats.map((chat) => [chat.sessionId, chat] as const));
+    const chats = await args.agentChatService.listSessions(undefined, {
+      includeIdentity: true,
+      includeAutomation: true,
+    });
+    const chatSummaries = new Map(
+      chats.map((chat) => [chat.sessionId, chat] as const),
+    );
 
-    for (const session of args.sessionService.list({ status: "running", limit: 500 })) {
+    for (const session of args.sessionService.list({
+      status: "running",
+      limit: 500,
+    })) {
       if (CHAT_TOOL_TYPES.has(session.toolType ?? "")) {
         const chat = chatSummaries.get(session.id);
         const isCto = chat?.identityKey === "cto";
@@ -404,11 +454,14 @@ export function createSyncService(args: SyncServiceArgs) {
         kind: "terminal_session",
         id: session.id,
         label: session.title,
-        detail: "Running terminal sessions must stop before the host role can move.",
+        detail:
+          "Running terminal sessions must stop before the host role can move.",
       });
     }
 
-    const lanes = args.db.all<{ id: string }>("select id from lanes where status != 'archived'");
+    const lanes = args.db.all<{ id: string }>(
+      "select id from lanes where status != 'archived'",
+    );
     for (const lane of lanes) {
       for (const runtime of args.processService.listRuntime(lane.id)) {
         if (!RUNNING_PROCESS_STATES.has(runtime.status)) continue;
@@ -416,7 +469,8 @@ export function createSyncService(args: SyncServiceArgs) {
           kind: "managed_process",
           id: `${lane.id}:${runtime.processId}`,
           label: runtime.processId,
-          detail: "Managed run processes must stop before the host role can move.",
+          detail:
+            "Managed run processes must stop before the host role can move.",
         });
       }
     }
@@ -442,31 +496,46 @@ export function createSyncService(args: SyncServiceArgs) {
       const localDevice = deviceRegistryService.ensureLocalDevice();
       const cluster = deviceRegistryService.getClusterState();
       const savedDraft = readSavedDraft();
-      const currentBrain = cluster ? deviceRegistryService.getDevice(cluster.brainDeviceId) : localDevice;
+      const currentBrain = cluster
+        ? deviceRegistryService.getDevice(cluster.brainDeviceId)
+        : localDevice;
       const isLocalBrain = cluster
         ? cluster.brainDeviceId === localDevice.deviceId
         : !savedDraft && !syncPeerService.isConnected();
       const role = isLocalBrain ? "brain" : "viewer";
       const client = syncPeerService.getStatus();
-      const pairingSession = role === "brain" && hostService ? hostService.getPairingSession() : null;
-      const mode = role === "viewer" ? "viewer"
-        : (client.state === "connected" ? "brain" : "standalone");
+      const pairingSession =
+        role === "brain" && hostStartupEnabled && hostService
+          ? hostService.getPairingSession()
+          : null;
+      const mode =
+        role === "viewer"
+          ? "viewer"
+          : client.state === "connected"
+            ? "brain"
+            : "standalone";
       return {
         mode,
         role,
         localDevice,
         currentBrain,
         clusterState: cluster,
-        bootstrapToken: role === "brain" ? readToken() : null,
+        bootstrapToken:
+          role === "brain" && hostStartupEnabled ? readToken() : null,
         pairingSession,
-        pairingConnectInfo: role === "brain" ? buildPairingConnectInfo({ localDevice, pairingSession }) : null,
+        pairingConnectInfo:
+          role === "brain" && hostStartupEnabled
+            ? buildPairingConnectInfo({ localDevice, pairingSession })
+            : null,
         connectedPeers: hostService
           ? hostService.getPeerStates()
           : (syncPeerService.getLatestBrainStatus()?.connectedPeers ?? []),
         client,
         transferReadiness: await getTransferReadiness(),
-        survivableStateText: "Paused and idle state will remain available on the new host.",
-        blockingStateText: "Live missions, chats, terminals, or run processes must stop first.",
+        survivableStateText:
+          "Paused and idle state will remain available on the new host.",
+        blockingStateText:
+          "Live missions, chats, terminals, or run processes must stop first.",
       };
     },
 
@@ -474,13 +543,18 @@ export function createSyncService(args: SyncServiceArgs) {
       return await listRuntimeDevices();
     },
 
-    async updateLocalDevice(argsIn: { name?: string; deviceType?: "desktop" | "phone" | "vps" | "unknown" }) {
+    async updateLocalDevice(argsIn: {
+      name?: string;
+      deviceType?: "desktop" | "phone" | "vps" | "unknown";
+    }) {
       const updated = deviceRegistryService.updateLocalDevice(argsIn);
       await emitStatus();
       return updated;
     },
 
-    async connectToBrain(draft: SyncDesktopConnectionDraft): Promise<SyncRoleSnapshot> {
+    async connectToBrain(
+      draft: SyncDesktopConnectionDraft,
+    ): Promise<SyncRoleSnapshot> {
       await stopHostIfRunning();
       deviceRegistryService.clearClusterRegistryForViewerJoin();
       writeSavedDraft(draft);
@@ -523,7 +597,9 @@ export function createSyncService(args: SyncServiceArgs) {
       const current = await this.getStatus();
       if (current.role === "brain") return current;
       if (!current.transferReadiness.ready) {
-        throw new Error("Stop live missions, chats, terminals, and run processes before transferring the host role.");
+        throw new Error(
+          "Stop live missions, chats, terminals, and run processes before transferring the host role.",
+        );
       }
       const localDevice = deviceRegistryService.ensureLocalDevice();
       const currentCluster = deviceRegistryService.getClusterState();
@@ -543,11 +619,15 @@ export function createSyncService(args: SyncServiceArgs) {
       return await this.getStatus();
     },
 
-    handlePtyData(event: Parameters<SyncHostService["handlePtyData"]>[0]): void {
+    handlePtyData(
+      event: Parameters<SyncHostService["handlePtyData"]>[0],
+    ): void {
       hostService?.handlePtyData(event);
     },
 
-    handlePtyExit(event: Parameters<SyncHostService["handlePtyExit"]>[0]): void {
+    handlePtyExit(
+      event: Parameters<SyncHostService["handlePtyExit"]>[0],
+    ): void {
       hostService?.handlePtyExit(event);
     },
 

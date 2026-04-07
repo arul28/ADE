@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
-import { Folder, FolderOpen, Plus, Minus, Trash, X } from "@phosphor-icons/react";
+import { ChatCircleDots, Folder, FolderOpen, Plus, Minus, Trash, X } from "@phosphor-icons/react";
 import { useNavigate } from "react-router-dom";
 
 import { useAppStore } from "../../state/appStore";
@@ -14,6 +14,7 @@ import {
 import { cn } from "../ui/cn";
 import type { ProcessRuntime, RecentProjectSummary, SyncRoleSnapshot } from "../../../shared/types";
 import { AutoUpdateControl } from "./AutoUpdateControl";
+import { FeedbackReporterModal } from "./FeedbackReporterModal";
 
 const RUNNING_LANE_PROCESS_STATES: ProcessRuntime["status"][] = ["starting", "running", "degraded"];
 
@@ -53,6 +54,7 @@ export function TopBar() {
   const [relocatingPath, setRelocatingPath] = useState<string | null>(null);
   const [zoom, setZoom] = useState(getStoredZoomLevel);
   const [syncSnapshot, setSyncSnapshot] = useState<SyncRoleSnapshot | null>(null);
+  const [feedbackOpen, setFeedbackOpen] = useState(false);
   const [dragIdx, setDragIdx] = useState<number | null>(null);
   const [dropIdx, setDropIdx] = useState<number | null>(null);
   const dragCounterRef = useRef(0);
@@ -442,6 +444,21 @@ export function TopBar() {
       ) : null}
 
       <AutoUpdateControl />
+
+      <button
+        type="button"
+        className={cn(
+          "ade-shell-control inline-flex h-[20px] w-[20px] items-center justify-center",
+          "transition-[background-color,color,border-color,box-shadow] duration-150"
+        )}
+        onClick={() => setFeedbackOpen(true)}
+        title="Report bug or suggest feature"
+        style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
+      >
+        <ChatCircleDots size={12} weight="regular" />
+      </button>
+
+      <FeedbackReporterModal open={feedbackOpen} onOpenChange={setFeedbackOpen} />
 
       {/* Zoom controls */}
       <div

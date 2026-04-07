@@ -17,10 +17,20 @@
 import { getDefaultModelDescriptor } from "../shared/modelRegistry";
 
 const noop = () => () => {};
-const resolved = <T>(v: T) => async () => v;
-const resolvedArg = <T>(v: T) => async (_a: any) => v;
-const resolvedArg2 = <T>(v: T) => async (_a: any, _b: any) => v;
-const DEFAULT_BROWSER_MOCK_CODEX_MODEL = getDefaultModelDescriptor("codex")?.id ?? "openai/gpt-5.4-codex";
+const resolved =
+  <T>(v: T) =>
+  async () =>
+    v;
+const resolvedArg =
+  <T>(v: T) =>
+  async (_a: any) =>
+    v;
+const resolvedArg2 =
+  <T>(v: T) =>
+  async (_a: any, _b: any) =>
+    v;
+const DEFAULT_BROWSER_MOCK_CODEX_MODEL =
+  getDefaultModelDescriptor("codex")?.id ?? "openai/gpt-5.4-codex";
 
 const MOCK_PROJECT = {
   id: "browser-mock",
@@ -42,9 +52,24 @@ const fourHoursFromNow = new Date(Date.now() + 4 * 3600000).toISOString();
 function createMockMemoryHealthStats(overrides: Partial<any> = {}): any {
   return {
     scopes: [
-      { scope: "project", current: 0, max: 2000, counts: { tier1: 0, tier2: 0, tier3: 0, archived: 0 } },
-      { scope: "agent", current: 0, max: 500, counts: { tier1: 0, tier2: 0, tier3: 0, archived: 0 } },
-      { scope: "mission", current: 0, max: 200, counts: { tier1: 0, tier2: 0, tier3: 0, archived: 0 } },
+      {
+        scope: "project",
+        current: 0,
+        max: 2000,
+        counts: { tier1: 0, tier2: 0, tier3: 0, archived: 0 },
+      },
+      {
+        scope: "agent",
+        current: 0,
+        max: 500,
+        counts: { tier1: 0, tier2: 0, tier3: 0, archived: 0 },
+      },
+      {
+        scope: "mission",
+        current: 0,
+        max: 200,
+        counts: { tier1: 0, tier2: 0, tier3: 0, archived: 0 },
+      },
     ],
     lastSweep: null,
     lastConsolidation: null,
@@ -111,7 +136,12 @@ function createMockConsolidationResult(overrides: Partial<any> = {}): any {
 }
 
 // ── Lane defaults (fields required by LaneSummary) ────────────
-function makeLane(id: string, name: string, branchRef: string, opts?: Partial<any>): any {
+function makeLane(
+  id: string,
+  name: string,
+  branchRef: string,
+  opts?: Partial<any>,
+): any {
   return {
     id,
     name,
@@ -126,7 +156,13 @@ function makeLane(id: string, name: string, branchRef: string, opts?: Partial<an
     stackDepth: 0,
     parentStatus: null,
     isEditProtected: false,
-    status: { dirty: false, ahead: 0, behind: 0, remoteBehind: 0, rebaseInProgress: false },
+    status: {
+      dirty: false,
+      ahead: 0,
+      behind: 0,
+      remoteBehind: 0,
+      rebaseInProgress: false,
+    },
     color: null,
     icon: null,
     tags: [],
@@ -142,31 +178,68 @@ const MOCK_LANES: any[] = [
   makeLane("lane-main", "main", "refs/heads/main"),
   // Normal PR lanes
   makeLane("lane-auth", "feature/auth-flow", "refs/heads/feature/auth-flow"),
-  makeLane("lane-dashboard", "feature/dashboard-v2", "refs/heads/feature/dashboard-v2"),
-  makeLane("lane-api", "feature/api-refactor", "refs/heads/feature/api-refactor"),
-  makeLane("lane-perf", "fix/perf-regression", "refs/heads/fix/perf-regression"),
-  makeLane("lane-onboard", "feature/onboarding-wizard", "refs/heads/feature/onboarding-wizard"),
+  makeLane(
+    "lane-dashboard",
+    "feature/dashboard-v2",
+    "refs/heads/feature/dashboard-v2",
+  ),
+  makeLane(
+    "lane-api",
+    "feature/api-refactor",
+    "refs/heads/feature/api-refactor",
+  ),
+  makeLane(
+    "lane-perf",
+    "fix/perf-regression",
+    "refs/heads/fix/perf-regression",
+  ),
+  makeLane(
+    "lane-onboard",
+    "feature/onboarding-wizard",
+    "refs/heads/feature/onboarding-wizard",
+  ),
   // Queue PR lanes
   makeLane("lane-payments", "feature/payments", "refs/heads/feature/payments"),
-  makeLane("lane-checkout", "feature/checkout-flow", "refs/heads/feature/checkout-flow"),
-  makeLane("lane-notifications", "feature/notifications", "refs/heads/feature/notifications"),
-  makeLane("lane-billing", "feature/billing-v2", "refs/heads/feature/billing-v2"),
+  makeLane(
+    "lane-checkout",
+    "feature/checkout-flow",
+    "refs/heads/feature/checkout-flow",
+  ),
+  makeLane(
+    "lane-notifications",
+    "feature/notifications",
+    "refs/heads/feature/notifications",
+  ),
+  makeLane(
+    "lane-billing",
+    "feature/billing-v2",
+    "refs/heads/feature/billing-v2",
+  ),
   // Integration PR lanes
   makeLane("lane-search", "feature/search-v2", "refs/heads/feature/search-v2"),
-  makeLane("lane-analytics", "feature/analytics", "refs/heads/feature/analytics"),
+  makeLane(
+    "lane-analytics",
+    "feature/analytics",
+    "refs/heads/feature/analytics",
+  ),
   makeLane("lane-i18n", "feature/i18n", "refs/heads/feature/i18n"),
-  makeLane("lane-a11y", "feature/accessibility", "refs/heads/feature/accessibility"),
+  makeLane(
+    "lane-a11y",
+    "feature/accessibility",
+    "refs/heads/feature/accessibility",
+  ),
 ];
 
 /** Returns a fresh snapshot object on every call to avoid shared-state leakage. */
 function makeLaneSnapshot(lane: any): any {
-  const runtimeBucket = lane.id === "lane-auth" || lane.id === "lane-checkout"
-    ? "running"
-    : lane.id === "lane-dashboard" || lane.id === "lane-api"
-      ? "awaiting-input"
-      : lane.id === "lane-perf"
-        ? "ended"
-        : "none";
+  const runtimeBucket =
+    lane.id === "lane-auth" || lane.id === "lane-checkout"
+      ? "running"
+      : lane.id === "lane-dashboard" || lane.id === "lane-api"
+        ? "awaiting-input"
+        : lane.id === "lane-perf"
+          ? "ended"
+          : "none";
   return {
     lane: { ...lane },
     runtime: {
@@ -176,22 +249,55 @@ function makeLaneSnapshot(lane: any): any {
       endedCount: runtimeBucket === "ended" ? 1 : 0,
       sessionCount: runtimeBucket === "none" ? 0 : 1,
     },
-    rebaseSuggestion: lane.id === "lane-dashboard" || lane.id === "lane-onboard"
-      ? { laneId: lane.id, parentLaneId: "lane-main", parentHeadSha: "mock", behindCount: 2, lastSuggestedAt: now, deferredUntil: null, dismissedAt: null, hasPr: true }
-      : null,
-    autoRebaseStatus: lane.id === "lane-perf"
-      ? { laneId: lane.id, parentLaneId: "lane-main", parentHeadSha: "mock", state: "autoRebased", updatedAt: now, conflictCount: 0, message: "Mock auto-rebase" }
-      : null,
-    conflictStatus: lane.id === "lane-dashboard" || lane.id === "lane-search"
-      ? { laneId: lane.id, status: "conflict-active", conflictCount: 2, warningCount: 0, updatedAt: now, summary: "Mock conflict" }
-      : null,
+    rebaseSuggestion:
+      lane.id === "lane-dashboard" || lane.id === "lane-onboard"
+        ? {
+            laneId: lane.id,
+            parentLaneId: "lane-main",
+            parentHeadSha: "mock",
+            behindCount: 2,
+            lastSuggestedAt: now,
+            deferredUntil: null,
+            dismissedAt: null,
+            hasPr: true,
+          }
+        : null,
+    autoRebaseStatus:
+      lane.id === "lane-perf"
+        ? {
+            laneId: lane.id,
+            parentLaneId: "lane-main",
+            parentHeadSha: "mock",
+            state: "autoRebased",
+            updatedAt: now,
+            conflictCount: 0,
+            message: "Mock auto-rebase",
+          }
+        : null,
+    conflictStatus:
+      lane.id === "lane-dashboard" || lane.id === "lane-search"
+        ? {
+            laneId: lane.id,
+            status: "conflict-active",
+            conflictCount: 2,
+            warningCount: 0,
+            updatedAt: now,
+            summary: "Mock conflict",
+          }
+        : null,
     stateSnapshot: null,
     adoptableAttached: lane.laneType === "attached" && lane.archivedAt == null,
   };
 }
 
 // ── Helper for PrWithConflicts ────────────────────────────────
-function makePr(id: string, laneId: string, num: number, title: string, opts: Partial<any> = {}): any {
+function makePr(
+  id: string,
+  laneId: string,
+  num: number,
+  title: string,
+  opts: Partial<any> = {},
+): any {
   return {
     id,
     laneId,
@@ -204,7 +310,11 @@ function makePr(id: string, laneId: string, num: number, title: string, opts: Pa
     title,
     state: "open",
     baseBranch: "main",
-    headBranch: MOCK_LANES.find((l: any) => l.id === laneId)?.branchRef?.replace("refs/heads/", "") ?? laneId,
+    headBranch:
+      MOCK_LANES.find((l: any) => l.id === laneId)?.branchRef?.replace(
+        "refs/heads/",
+        "",
+      ) ?? laneId,
     checksStatus: "passing",
     reviewStatus: "none",
     additions: 100,
@@ -226,30 +336,61 @@ const NORMAL_PRS: any[] = [
     additions: 847,
     deletions: 123,
     createdAt: yesterday,
-    conflictAnalysis: { prId: "pr-1", laneId: "lane-auth", riskLevel: "low", overlapCount: 0, conflictPredicted: false, peerConflicts: [], analyzedAt: now },
-  }),
-  makePr("pr-2", "lane-dashboard", 145, "Dashboard v2 — metric cards & chart widgets", {
-    state: "open",
-    checksStatus: "failing",
-    reviewStatus: "changes_requested",
-    additions: 1562,
-    deletions: 340,
-    createdAt: twoDaysAgo,
     conflictAnalysis: {
-      prId: "pr-2", laneId: "lane-dashboard", riskLevel: "medium", overlapCount: 3, conflictPredicted: true,
-      peerConflicts: [{ peerId: "pr-3", peerName: "Refactor REST endpoints", riskLevel: "medium", overlapFiles: ["src/lib/metrics.ts"] }],
+      prId: "pr-1",
+      laneId: "lane-auth",
+      riskLevel: "low",
+      overlapCount: 0,
+      conflictPredicted: false,
+      peerConflicts: [],
       analyzedAt: now,
     },
   }),
-  makePr("pr-3", "lane-api", 148, "Refactor REST endpoints to use Zod schemas", {
-    state: "draft",
-    checksStatus: "pending",
-    reviewStatus: "requested",
-    additions: 2100,
-    deletions: 980,
-    createdAt: yesterday,
-    conflictAnalysis: null,
-  }),
+  makePr(
+    "pr-2",
+    "lane-dashboard",
+    145,
+    "Dashboard v2 — metric cards & chart widgets",
+    {
+      state: "open",
+      checksStatus: "failing",
+      reviewStatus: "changes_requested",
+      additions: 1562,
+      deletions: 340,
+      createdAt: twoDaysAgo,
+      conflictAnalysis: {
+        prId: "pr-2",
+        laneId: "lane-dashboard",
+        riskLevel: "medium",
+        overlapCount: 3,
+        conflictPredicted: true,
+        peerConflicts: [
+          {
+            peerId: "pr-3",
+            peerName: "Refactor REST endpoints",
+            riskLevel: "medium",
+            overlapFiles: ["src/lib/metrics.ts"],
+          },
+        ],
+        analyzedAt: now,
+      },
+    },
+  ),
+  makePr(
+    "pr-3",
+    "lane-api",
+    148,
+    "Refactor REST endpoints to use Zod schemas",
+    {
+      state: "draft",
+      checksStatus: "pending",
+      reviewStatus: "requested",
+      additions: 2100,
+      deletions: 980,
+      createdAt: yesterday,
+      conflictAnalysis: null,
+    },
+  ),
   makePr("pr-4", "lane-perf", 151, "Fix N+1 query in session list endpoint", {
     state: "open",
     checksStatus: "passing",
@@ -257,17 +398,39 @@ const NORMAL_PRS: any[] = [
     additions: 45,
     deletions: 12,
     createdAt: oneHourAgo,
-    conflictAnalysis: { prId: "pr-4", laneId: "lane-perf", riskLevel: "low", overlapCount: 0, conflictPredicted: false, peerConflicts: [], analyzedAt: now },
+    conflictAnalysis: {
+      prId: "pr-4",
+      laneId: "lane-perf",
+      riskLevel: "low",
+      overlapCount: 0,
+      conflictPredicted: false,
+      peerConflicts: [],
+      analyzedAt: now,
+    },
   }),
-  makePr("pr-5", "lane-onboard", 153, "Onboarding wizard with step-by-step project setup", {
-    state: "open",
-    checksStatus: "passing",
-    reviewStatus: "none",
-    additions: 620,
-    deletions: 80,
-    createdAt: now,
-    conflictAnalysis: { prId: "pr-5", laneId: "lane-onboard", riskLevel: "high", overlapCount: 5, conflictPredicted: true, peerConflicts: [], analyzedAt: now },
-  }),
+  makePr(
+    "pr-5",
+    "lane-onboard",
+    153,
+    "Onboarding wizard with step-by-step project setup",
+    {
+      state: "open",
+      checksStatus: "passing",
+      reviewStatus: "none",
+      additions: 620,
+      deletions: 80,
+      createdAt: now,
+      conflictAnalysis: {
+        prId: "pr-5",
+        laneId: "lane-onboard",
+        riskLevel: "high",
+        overlapCount: 5,
+        conflictPredicted: true,
+        peerConflicts: [],
+        analyzedAt: now,
+      },
+    },
+  ),
 ];
 
 // ── Queue PRs (2 groups) ──────────────────────────────────────
@@ -275,15 +438,21 @@ const NORMAL_PRS: any[] = [
 // Group 1: "Release v3.0 — Commerce" (3 PRs: one landed, one active, one pending)
 // Group 2: "Billing Upgrade" (1 PR in queue)
 const QUEUE_PRS: any[] = [
-  makePr("pr-q1", "lane-payments", 160, "Payment gateway integration (Stripe + PayPal)", {
-    state: "merged",
-    checksStatus: "passing",
-    reviewStatus: "approved",
-    additions: 1200,
-    deletions: 150,
-    createdAt: threeDaysAgo,
-    updatedAt: yesterday,
-  }),
+  makePr(
+    "pr-q1",
+    "lane-payments",
+    160,
+    "Payment gateway integration (Stripe + PayPal)",
+    {
+      state: "merged",
+      checksStatus: "passing",
+      reviewStatus: "approved",
+      additions: 1200,
+      deletions: 150,
+      createdAt: threeDaysAgo,
+      updatedAt: yesterday,
+    },
+  ),
   makePr("pr-q2", "lane-checkout", 161, "Checkout flow with cart validation", {
     state: "open",
     checksStatus: "passing",
@@ -292,14 +461,20 @@ const QUEUE_PRS: any[] = [
     deletions: 210,
     createdAt: twoDaysAgo,
   }),
-  makePr("pr-q3", "lane-notifications", 162, "Order confirmation & shipping notifications", {
-    state: "open",
-    checksStatus: "pending",
-    reviewStatus: "requested",
-    additions: 430,
-    deletions: 60,
-    createdAt: yesterday,
-  }),
+  makePr(
+    "pr-q3",
+    "lane-notifications",
+    162,
+    "Order confirmation & shipping notifications",
+    {
+      state: "open",
+      checksStatus: "pending",
+      reviewStatus: "requested",
+      additions: 430,
+      deletions: 60,
+      createdAt: yesterday,
+    },
+  ),
   makePr("pr-q4", "lane-billing", 170, "Billing v2 — usage-based metering", {
     state: "draft",
     checksStatus: "none",
@@ -324,27 +499,56 @@ const INTEGRATION_PRS: any[] = [
     deletions: 300,
     createdAt: twoDaysAgo,
     conflictAnalysis: {
-      prId: "pr-i1", laneId: "lane-search", riskLevel: "medium", overlapCount: 2, conflictPredicted: false,
-      peerConflicts: [{ peerId: "pr-i2", peerName: "i18n + a11y integration", riskLevel: "low", overlapFiles: ["src/App.tsx"] }],
-      analyzedAt: now,
-    },
-  }),
-  makePr("pr-i2", "lane-i18n", 185, "Internationalization & accessibility bundle", {
-    state: "open",
-    checksStatus: "failing",
-    reviewStatus: "changes_requested",
-    headBranch: "integration/i18n-a11y",
-    additions: 1800,
-    deletions: 420,
-    createdAt: yesterday,
-    conflictAnalysis: {
-      prId: "pr-i2", laneId: "lane-i18n", riskLevel: "high", overlapCount: 7, conflictPredicted: true,
+      prId: "pr-i1",
+      laneId: "lane-search",
+      riskLevel: "medium",
+      overlapCount: 2,
+      conflictPredicted: false,
       peerConflicts: [
-        { peerId: "pr-2", peerName: "Dashboard v2", riskLevel: "medium", overlapFiles: ["src/components/Dashboard.tsx", "src/styles/global.css"] },
+        {
+          peerId: "pr-i2",
+          peerName: "i18n + a11y integration",
+          riskLevel: "low",
+          overlapFiles: ["src/App.tsx"],
+        },
       ],
       analyzedAt: now,
     },
   }),
+  makePr(
+    "pr-i2",
+    "lane-i18n",
+    185,
+    "Internationalization & accessibility bundle",
+    {
+      state: "open",
+      checksStatus: "failing",
+      reviewStatus: "changes_requested",
+      headBranch: "integration/i18n-a11y",
+      additions: 1800,
+      deletions: 420,
+      createdAt: yesterday,
+      conflictAnalysis: {
+        prId: "pr-i2",
+        laneId: "lane-i18n",
+        riskLevel: "high",
+        overlapCount: 7,
+        conflictPredicted: true,
+        peerConflicts: [
+          {
+            peerId: "pr-2",
+            peerName: "Dashboard v2",
+            riskLevel: "medium",
+            overlapFiles: [
+              "src/components/Dashboard.tsx",
+              "src/styles/global.css",
+            ],
+          },
+        ],
+        analyzedAt: now,
+      },
+    },
+  ),
 ];
 
 // ── All PRs combined ──────────────────────────────────────────
@@ -353,66 +557,242 @@ const ALL_PRS = [...NORMAL_PRS, ...QUEUE_PRS, ...INTEGRATION_PRS];
 // ── Merge Contexts ────────────────────────────────────────────
 const MOCK_MERGE_CONTEXTS: Record<string, any> = {
   // Normal PRs — no group
-  "pr-1": { prId: "pr-1", groupId: null, groupType: null, sourceLaneIds: ["lane-auth"], targetLaneId: "lane-main", integrationLaneId: null, members: [] },
-  "pr-2": { prId: "pr-2", groupId: null, groupType: null, sourceLaneIds: ["lane-dashboard"], targetLaneId: "lane-main", integrationLaneId: null, members: [] },
-  "pr-3": { prId: "pr-3", groupId: null, groupType: null, sourceLaneIds: ["lane-api"], targetLaneId: "lane-main", integrationLaneId: null, members: [] },
-  "pr-4": { prId: "pr-4", groupId: null, groupType: null, sourceLaneIds: ["lane-perf"], targetLaneId: "lane-main", integrationLaneId: null, members: [] },
-  "pr-5": { prId: "pr-5", groupId: null, groupType: null, sourceLaneIds: ["lane-onboard"], targetLaneId: "lane-main", integrationLaneId: null, members: [] },
+  "pr-1": {
+    prId: "pr-1",
+    groupId: null,
+    groupType: null,
+    sourceLaneIds: ["lane-auth"],
+    targetLaneId: "lane-main",
+    integrationLaneId: null,
+    members: [],
+  },
+  "pr-2": {
+    prId: "pr-2",
+    groupId: null,
+    groupType: null,
+    sourceLaneIds: ["lane-dashboard"],
+    targetLaneId: "lane-main",
+    integrationLaneId: null,
+    members: [],
+  },
+  "pr-3": {
+    prId: "pr-3",
+    groupId: null,
+    groupType: null,
+    sourceLaneIds: ["lane-api"],
+    targetLaneId: "lane-main",
+    integrationLaneId: null,
+    members: [],
+  },
+  "pr-4": {
+    prId: "pr-4",
+    groupId: null,
+    groupType: null,
+    sourceLaneIds: ["lane-perf"],
+    targetLaneId: "lane-main",
+    integrationLaneId: null,
+    members: [],
+  },
+  "pr-5": {
+    prId: "pr-5",
+    groupId: null,
+    groupType: null,
+    sourceLaneIds: ["lane-onboard"],
+    targetLaneId: "lane-main",
+    integrationLaneId: null,
+    members: [],
+  },
 
   // Queue group 1: "Release v3.0 — Commerce"
   "pr-q1": {
-    prId: "pr-q1", groupId: "queue-commerce-v3", groupType: "queue",
-    sourceLaneIds: ["lane-payments"], targetLaneId: "lane-main", integrationLaneId: null,
+    prId: "pr-q1",
+    groupId: "queue-commerce-v3",
+    groupType: "queue",
+    sourceLaneIds: ["lane-payments"],
+    targetLaneId: "lane-main",
+    integrationLaneId: null,
     members: [
-      { prId: "pr-q1", laneId: "lane-payments", laneName: "feature/payments", prNumber: 160, position: 0, role: "source" },
-      { prId: "pr-q2", laneId: "lane-checkout", laneName: "feature/checkout-flow", prNumber: 161, position: 1, role: "source" },
-      { prId: "pr-q3", laneId: "lane-notifications", laneName: "feature/notifications", prNumber: 162, position: 2, role: "source" },
+      {
+        prId: "pr-q1",
+        laneId: "lane-payments",
+        laneName: "feature/payments",
+        prNumber: 160,
+        position: 0,
+        role: "source",
+      },
+      {
+        prId: "pr-q2",
+        laneId: "lane-checkout",
+        laneName: "feature/checkout-flow",
+        prNumber: 161,
+        position: 1,
+        role: "source",
+      },
+      {
+        prId: "pr-q3",
+        laneId: "lane-notifications",
+        laneName: "feature/notifications",
+        prNumber: 162,
+        position: 2,
+        role: "source",
+      },
     ],
   },
   "pr-q2": {
-    prId: "pr-q2", groupId: "queue-commerce-v3", groupType: "queue",
-    sourceLaneIds: ["lane-checkout"], targetLaneId: "lane-main", integrationLaneId: null,
+    prId: "pr-q2",
+    groupId: "queue-commerce-v3",
+    groupType: "queue",
+    sourceLaneIds: ["lane-checkout"],
+    targetLaneId: "lane-main",
+    integrationLaneId: null,
     members: [
-      { prId: "pr-q1", laneId: "lane-payments", laneName: "feature/payments", prNumber: 160, position: 0, role: "source" },
-      { prId: "pr-q2", laneId: "lane-checkout", laneName: "feature/checkout-flow", prNumber: 161, position: 1, role: "source" },
-      { prId: "pr-q3", laneId: "lane-notifications", laneName: "feature/notifications", prNumber: 162, position: 2, role: "source" },
+      {
+        prId: "pr-q1",
+        laneId: "lane-payments",
+        laneName: "feature/payments",
+        prNumber: 160,
+        position: 0,
+        role: "source",
+      },
+      {
+        prId: "pr-q2",
+        laneId: "lane-checkout",
+        laneName: "feature/checkout-flow",
+        prNumber: 161,
+        position: 1,
+        role: "source",
+      },
+      {
+        prId: "pr-q3",
+        laneId: "lane-notifications",
+        laneName: "feature/notifications",
+        prNumber: 162,
+        position: 2,
+        role: "source",
+      },
     ],
   },
   "pr-q3": {
-    prId: "pr-q3", groupId: "queue-commerce-v3", groupType: "queue",
-    sourceLaneIds: ["lane-notifications"], targetLaneId: "lane-main", integrationLaneId: null,
+    prId: "pr-q3",
+    groupId: "queue-commerce-v3",
+    groupType: "queue",
+    sourceLaneIds: ["lane-notifications"],
+    targetLaneId: "lane-main",
+    integrationLaneId: null,
     members: [
-      { prId: "pr-q1", laneId: "lane-payments", laneName: "feature/payments", prNumber: 160, position: 0, role: "source" },
-      { prId: "pr-q2", laneId: "lane-checkout", laneName: "feature/checkout-flow", prNumber: 161, position: 1, role: "source" },
-      { prId: "pr-q3", laneId: "lane-notifications", laneName: "feature/notifications", prNumber: 162, position: 2, role: "source" },
+      {
+        prId: "pr-q1",
+        laneId: "lane-payments",
+        laneName: "feature/payments",
+        prNumber: 160,
+        position: 0,
+        role: "source",
+      },
+      {
+        prId: "pr-q2",
+        laneId: "lane-checkout",
+        laneName: "feature/checkout-flow",
+        prNumber: 161,
+        position: 1,
+        role: "source",
+      },
+      {
+        prId: "pr-q3",
+        laneId: "lane-notifications",
+        laneName: "feature/notifications",
+        prNumber: 162,
+        position: 2,
+        role: "source",
+      },
     ],
   },
   // Queue group 2: "Billing Upgrade"
   "pr-q4": {
-    prId: "pr-q4", groupId: "queue-billing-upgrade", groupType: "queue",
-    sourceLaneIds: ["lane-billing"], targetLaneId: "lane-main", integrationLaneId: null,
+    prId: "pr-q4",
+    groupId: "queue-billing-upgrade",
+    groupType: "queue",
+    sourceLaneIds: ["lane-billing"],
+    targetLaneId: "lane-main",
+    integrationLaneId: null,
     members: [
-      { prId: "pr-q4", laneId: "lane-billing", laneName: "feature/billing-v2", prNumber: 170, position: 0, role: "source" },
+      {
+        prId: "pr-q4",
+        laneId: "lane-billing",
+        laneName: "feature/billing-v2",
+        prNumber: 170,
+        position: 0,
+        role: "source",
+      },
     ],
   },
 
   // Integration PRs — multi-source
   "pr-i1": {
-    prId: "pr-i1", groupId: "integration-search-analytics", groupType: "integration",
-    sourceLaneIds: ["lane-search", "lane-analytics"], targetLaneId: "lane-main", integrationLaneId: "lane-search",
+    prId: "pr-i1",
+    groupId: "integration-search-analytics",
+    groupType: "integration",
+    sourceLaneIds: ["lane-search", "lane-analytics"],
+    targetLaneId: "lane-main",
+    integrationLaneId: "lane-search",
     members: [
-      { prId: "pr-i1", laneId: "lane-search", laneName: "integration/search-analytics", prNumber: 180, position: 0, role: "integration" },
-      { prId: "pr-i1", laneId: "lane-search", laneName: "feature/search-v2", prNumber: 180, position: 0, role: "source" },
-      { prId: "pr-i1", laneId: "lane-analytics", laneName: "feature/analytics", prNumber: null, position: 1, role: "source" },
+      {
+        prId: "pr-i1",
+        laneId: "lane-search",
+        laneName: "integration/search-analytics",
+        prNumber: 180,
+        position: 0,
+        role: "integration",
+      },
+      {
+        prId: "pr-i1",
+        laneId: "lane-search",
+        laneName: "feature/search-v2",
+        prNumber: 180,
+        position: 0,
+        role: "source",
+      },
+      {
+        prId: "pr-i1",
+        laneId: "lane-analytics",
+        laneName: "feature/analytics",
+        prNumber: null,
+        position: 1,
+        role: "source",
+      },
     ],
   },
   "pr-i2": {
-    prId: "pr-i2", groupId: "integration-i18n-a11y", groupType: "integration",
-    sourceLaneIds: ["lane-i18n", "lane-a11y"], targetLaneId: "lane-main", integrationLaneId: "lane-i18n",
+    prId: "pr-i2",
+    groupId: "integration-i18n-a11y",
+    groupType: "integration",
+    sourceLaneIds: ["lane-i18n", "lane-a11y"],
+    targetLaneId: "lane-main",
+    integrationLaneId: "lane-i18n",
     members: [
-      { prId: "pr-i2", laneId: "lane-i18n", laneName: "integration/i18n-a11y", prNumber: 185, position: 0, role: "integration" },
-      { prId: "pr-i2", laneId: "lane-i18n", laneName: "feature/i18n", prNumber: 185, position: 0, role: "source" },
-      { prId: "pr-i2", laneId: "lane-a11y", laneName: "feature/accessibility", prNumber: null, position: 1, role: "source" },
+      {
+        prId: "pr-i2",
+        laneId: "lane-i18n",
+        laneName: "integration/i18n-a11y",
+        prNumber: 185,
+        position: 0,
+        role: "integration",
+      },
+      {
+        prId: "pr-i2",
+        laneId: "lane-i18n",
+        laneName: "feature/i18n",
+        prNumber: 185,
+        position: 0,
+        role: "source",
+      },
+      {
+        prId: "pr-i2",
+        laneId: "lane-a11y",
+        laneName: "feature/accessibility",
+        prNumber: null,
+        position: 1,
+        role: "source",
+      },
     ],
   },
 };
@@ -420,77 +800,331 @@ const MOCK_MERGE_CONTEXTS: Record<string, any> = {
 // ── Per-PR detail data (keyed by prId) ────────────────────────
 const MOCK_CHECKS_BY_PR: Record<string, any[]> = {
   "pr-1": [
-    { name: "CI / Build", status: "completed", conclusion: "success", detailsUrl: "#", startedAt: yesterday, completedAt: now },
-    { name: "CI / Lint", status: "completed", conclusion: "success", detailsUrl: "#", startedAt: yesterday, completedAt: now },
-    { name: "CI / Unit Tests", status: "completed", conclusion: "success", detailsUrl: "#", startedAt: yesterday, completedAt: now },
-    { name: "CI / E2E Tests", status: "completed", conclusion: "success", detailsUrl: "#", startedAt: yesterday, completedAt: now },
-    { name: "Deploy Preview", status: "completed", conclusion: "success", detailsUrl: "#", startedAt: yesterday, completedAt: now },
+    {
+      name: "CI / Build",
+      status: "completed",
+      conclusion: "success",
+      detailsUrl: "#",
+      startedAt: yesterday,
+      completedAt: now,
+    },
+    {
+      name: "CI / Lint",
+      status: "completed",
+      conclusion: "success",
+      detailsUrl: "#",
+      startedAt: yesterday,
+      completedAt: now,
+    },
+    {
+      name: "CI / Unit Tests",
+      status: "completed",
+      conclusion: "success",
+      detailsUrl: "#",
+      startedAt: yesterday,
+      completedAt: now,
+    },
+    {
+      name: "CI / E2E Tests",
+      status: "completed",
+      conclusion: "success",
+      detailsUrl: "#",
+      startedAt: yesterday,
+      completedAt: now,
+    },
+    {
+      name: "Deploy Preview",
+      status: "completed",
+      conclusion: "success",
+      detailsUrl: "#",
+      startedAt: yesterday,
+      completedAt: now,
+    },
   ],
   "pr-2": [
-    { name: "CI / Build", status: "completed", conclusion: "success", detailsUrl: "#", startedAt: yesterday, completedAt: now },
-    { name: "CI / Lint", status: "completed", conclusion: "failure", detailsUrl: "#", startedAt: yesterday, completedAt: now },
-    { name: "CI / Unit Tests", status: "completed", conclusion: "failure", detailsUrl: "#", startedAt: yesterday, completedAt: now },
-    { name: "CI / E2E Tests", status: "completed", conclusion: "skipped", detailsUrl: "#", startedAt: yesterday, completedAt: now },
+    {
+      name: "CI / Build",
+      status: "completed",
+      conclusion: "success",
+      detailsUrl: "#",
+      startedAt: yesterday,
+      completedAt: now,
+    },
+    {
+      name: "CI / Lint",
+      status: "completed",
+      conclusion: "failure",
+      detailsUrl: "#",
+      startedAt: yesterday,
+      completedAt: now,
+    },
+    {
+      name: "CI / Unit Tests",
+      status: "completed",
+      conclusion: "failure",
+      detailsUrl: "#",
+      startedAt: yesterday,
+      completedAt: now,
+    },
+    {
+      name: "CI / E2E Tests",
+      status: "completed",
+      conclusion: "skipped",
+      detailsUrl: "#",
+      startedAt: yesterday,
+      completedAt: now,
+    },
   ],
   "pr-3": [
-    { name: "CI / Build", status: "in_progress", conclusion: null, detailsUrl: "#", startedAt: now, completedAt: null },
-    { name: "CI / Lint", status: "queued", conclusion: null, detailsUrl: "#", startedAt: null, completedAt: null },
-    { name: "CI / Unit Tests", status: "queued", conclusion: null, detailsUrl: "#", startedAt: null, completedAt: null },
+    {
+      name: "CI / Build",
+      status: "in_progress",
+      conclusion: null,
+      detailsUrl: "#",
+      startedAt: now,
+      completedAt: null,
+    },
+    {
+      name: "CI / Lint",
+      status: "queued",
+      conclusion: null,
+      detailsUrl: "#",
+      startedAt: null,
+      completedAt: null,
+    },
+    {
+      name: "CI / Unit Tests",
+      status: "queued",
+      conclusion: null,
+      detailsUrl: "#",
+      startedAt: null,
+      completedAt: null,
+    },
   ],
   "pr-4": [
-    { name: "CI / Build", status: "completed", conclusion: "success", detailsUrl: "#", startedAt: oneHourAgo, completedAt: now },
-    { name: "CI / Unit Tests", status: "completed", conclusion: "success", detailsUrl: "#", startedAt: oneHourAgo, completedAt: now },
+    {
+      name: "CI / Build",
+      status: "completed",
+      conclusion: "success",
+      detailsUrl: "#",
+      startedAt: oneHourAgo,
+      completedAt: now,
+    },
+    {
+      name: "CI / Unit Tests",
+      status: "completed",
+      conclusion: "success",
+      detailsUrl: "#",
+      startedAt: oneHourAgo,
+      completedAt: now,
+    },
   ],
   "pr-5": [
-    { name: "CI / Build", status: "completed", conclusion: "success", detailsUrl: "#", startedAt: now, completedAt: now },
-    { name: "CI / Lint", status: "completed", conclusion: "success", detailsUrl: "#", startedAt: now, completedAt: now },
-    { name: "CI / Unit Tests", status: "completed", conclusion: "success", detailsUrl: "#", startedAt: now, completedAt: now },
+    {
+      name: "CI / Build",
+      status: "completed",
+      conclusion: "success",
+      detailsUrl: "#",
+      startedAt: now,
+      completedAt: now,
+    },
+    {
+      name: "CI / Lint",
+      status: "completed",
+      conclusion: "success",
+      detailsUrl: "#",
+      startedAt: now,
+      completedAt: now,
+    },
+    {
+      name: "CI / Unit Tests",
+      status: "completed",
+      conclusion: "success",
+      detailsUrl: "#",
+      startedAt: now,
+      completedAt: now,
+    },
   ],
 };
 
 const MOCK_REVIEWS_BY_PR: Record<string, any[]> = {
   "pr-1": [
-    { reviewer: "alice", state: "approved", body: "LGTM! Clean implementation.", submittedAt: now },
-    { reviewer: "carol", state: "commented", body: "Nice work overall. Left a few minor suggestions.", submittedAt: yesterday },
+    {
+      reviewer: "alice",
+      state: "approved",
+      body: "LGTM! Clean implementation.",
+      submittedAt: now,
+    },
+    {
+      reviewer: "carol",
+      state: "commented",
+      body: "Nice work overall. Left a few minor suggestions.",
+      submittedAt: yesterday,
+    },
   ],
   "pr-2": [
-    { reviewer: "bob", state: "changes_requested", body: "Please add error handling for the token refresh edge case.", submittedAt: now },
-    { reviewer: "dave", state: "changes_requested", body: "Dashboard layout breaks on mobile viewports.", submittedAt: yesterday },
+    {
+      reviewer: "bob",
+      state: "changes_requested",
+      body: "Please add error handling for the token refresh edge case.",
+      submittedAt: now,
+    },
+    {
+      reviewer: "dave",
+      state: "changes_requested",
+      body: "Dashboard layout breaks on mobile viewports.",
+      submittedAt: yesterday,
+    },
   ],
   "pr-3": [
     { reviewer: "alice", state: "pending", body: null, submittedAt: null },
   ],
   "pr-4": [
-    { reviewer: "eve", state: "approved", body: "Quick fix, looks good.", submittedAt: now },
+    {
+      reviewer: "eve",
+      state: "approved",
+      body: "Quick fix, looks good.",
+      submittedAt: now,
+    },
   ],
   "pr-5": [],
 };
 
 const MOCK_COMMENTS_BY_PR: Record<string, any[]> = {
   "pr-1": [
-    { id: "c1", author: "alice", body: "Have you considered using the `useAuth` hook from our shared lib?", source: "review", url: null, path: "src/hooks/useLogin.ts", line: 42, createdAt: yesterday, updatedAt: null },
-    { id: "c2", author: "ci-bot", body: "Coverage report: 94.2% (+1.3%)", source: "issue", url: null, path: null, line: null, createdAt: now, updatedAt: null },
+    {
+      id: "c1",
+      author: "alice",
+      body: "Have you considered using the `useAuth` hook from our shared lib?",
+      source: "review",
+      url: null,
+      path: "src/hooks/useLogin.ts",
+      line: 42,
+      createdAt: yesterday,
+      updatedAt: null,
+    },
+    {
+      id: "c2",
+      author: "ci-bot",
+      body: "Coverage report: 94.2% (+1.3%)",
+      source: "issue",
+      url: null,
+      path: null,
+      line: null,
+      createdAt: now,
+      updatedAt: null,
+    },
   ],
   "pr-2": [
-    { id: "c3", author: "bob", body: "The `metricReducer` doesn't handle negative values.", source: "review", url: null, path: "src/lib/metrics.ts", line: 87, createdAt: twoDaysAgo, updatedAt: null },
-    { id: "c4", author: "dave", body: "CSS grid is breaking at <768px — need a media query.", source: "review", url: null, path: "src/styles/dashboard.css", line: 15, createdAt: yesterday, updatedAt: null },
-    { id: "c5", author: "ci-bot", body: "Coverage report: 78.1% (-3.4%)", source: "issue", url: null, path: null, line: null, createdAt: now, updatedAt: null },
+    {
+      id: "c3",
+      author: "bob",
+      body: "The `metricReducer` doesn't handle negative values.",
+      source: "review",
+      url: null,
+      path: "src/lib/metrics.ts",
+      line: 87,
+      createdAt: twoDaysAgo,
+      updatedAt: null,
+    },
+    {
+      id: "c4",
+      author: "dave",
+      body: "CSS grid is breaking at <768px — need a media query.",
+      source: "review",
+      url: null,
+      path: "src/styles/dashboard.css",
+      line: 15,
+      createdAt: yesterday,
+      updatedAt: null,
+    },
+    {
+      id: "c5",
+      author: "ci-bot",
+      body: "Coverage report: 78.1% (-3.4%)",
+      source: "issue",
+      url: null,
+      path: null,
+      line: null,
+      createdAt: now,
+      updatedAt: null,
+    },
   ],
   "pr-3": [
-    { id: "c6", author: "alice", body: "Should we keep backwards-compat for the old `/api/v1` routes?", source: "issue", url: null, path: null, line: null, createdAt: yesterday, updatedAt: null },
+    {
+      id: "c6",
+      author: "alice",
+      body: "Should we keep backwards-compat for the old `/api/v1` routes?",
+      source: "issue",
+      url: null,
+      path: null,
+      line: null,
+      createdAt: yesterday,
+      updatedAt: null,
+    },
   ],
   "pr-4": [
-    { id: "c7", author: "ci-bot", body: "Performance benchmark: p95 latency down from 420ms to 12ms", source: "issue", url: null, path: null, line: null, createdAt: now, updatedAt: null },
+    {
+      id: "c7",
+      author: "ci-bot",
+      body: "Performance benchmark: p95 latency down from 420ms to 12ms",
+      source: "issue",
+      url: null,
+      path: null,
+      line: null,
+      createdAt: now,
+      updatedAt: null,
+    },
   ],
   "pr-5": [],
 };
 
 const MOCK_STATUS_BY_PR: Record<string, any> = {
-  "pr-1": { prId: "pr-1", state: "open", checksStatus: "passing", reviewStatus: "approved", isMergeable: true, mergeConflicts: false, behindBaseBy: 0 },
-  "pr-2": { prId: "pr-2", state: "open", checksStatus: "failing", reviewStatus: "changes_requested", isMergeable: false, mergeConflicts: true, behindBaseBy: 12 },
-  "pr-3": { prId: "pr-3", state: "draft", checksStatus: "pending", reviewStatus: "requested", isMergeable: false, mergeConflicts: false, behindBaseBy: 7 },
-  "pr-4": { prId: "pr-4", state: "open", checksStatus: "passing", reviewStatus: "approved", isMergeable: true, mergeConflicts: false, behindBaseBy: 0 },
-  "pr-5": { prId: "pr-5", state: "open", checksStatus: "passing", reviewStatus: "none", isMergeable: true, mergeConflicts: false, behindBaseBy: 3 },
+  "pr-1": {
+    prId: "pr-1",
+    state: "open",
+    checksStatus: "passing",
+    reviewStatus: "approved",
+    isMergeable: true,
+    mergeConflicts: false,
+    behindBaseBy: 0,
+  },
+  "pr-2": {
+    prId: "pr-2",
+    state: "open",
+    checksStatus: "failing",
+    reviewStatus: "changes_requested",
+    isMergeable: false,
+    mergeConflicts: true,
+    behindBaseBy: 12,
+  },
+  "pr-3": {
+    prId: "pr-3",
+    state: "draft",
+    checksStatus: "pending",
+    reviewStatus: "requested",
+    isMergeable: false,
+    mergeConflicts: false,
+    behindBaseBy: 7,
+  },
+  "pr-4": {
+    prId: "pr-4",
+    state: "open",
+    checksStatus: "passing",
+    reviewStatus: "approved",
+    isMergeable: true,
+    mergeConflicts: false,
+    behindBaseBy: 0,
+  },
+  "pr-5": {
+    prId: "pr-5",
+    state: "open",
+    checksStatus: "passing",
+    reviewStatus: "none",
+    isMergeable: true,
+    mergeConflicts: false,
+    behindBaseBy: 3,
+  },
 };
 
 const MOCK_CONVERGENCE_RUNTIME: Record<string, any> = {};
@@ -520,17 +1154,105 @@ function createDefaultConvergenceRuntime(prId: string) {
 // ── Rebase Needs (all urgency categories) ─────────────────────
 const MOCK_REBASE_NEEDS: any[] = [
   // Attention: behind + conflicts predicted
-  { laneId: "lane-dashboard", laneName: "feature/dashboard-v2", kind: "lane_base", baseBranch: "main", behindBy: 12, conflictPredicted: true, conflictingFiles: ["src/components/Dashboard.tsx", "src/lib/metrics.ts", "src/styles/dashboard.css"], prId: "pr-2", groupContext: null, dismissedAt: null, deferredUntil: null },
-  { laneId: "lane-i18n", laneName: "feature/i18n", kind: "lane_base", baseBranch: "main", behindBy: 8, conflictPredicted: true, conflictingFiles: ["src/i18n/translations.json", "src/App.tsx"], prId: "pr-i2", groupContext: "integration-i18n-a11y", dismissedAt: null, deferredUntil: null },
+  {
+    laneId: "lane-dashboard",
+    laneName: "feature/dashboard-v2",
+    kind: "lane_base",
+    baseBranch: "main",
+    behindBy: 12,
+    conflictPredicted: true,
+    conflictingFiles: [
+      "src/components/Dashboard.tsx",
+      "src/lib/metrics.ts",
+      "src/styles/dashboard.css",
+    ],
+    prId: "pr-2",
+    groupContext: null,
+    dismissedAt: null,
+    deferredUntil: null,
+  },
+  {
+    laneId: "lane-i18n",
+    laneName: "feature/i18n",
+    kind: "lane_base",
+    baseBranch: "main",
+    behindBy: 8,
+    conflictPredicted: true,
+    conflictingFiles: ["src/i18n/translations.json", "src/App.tsx"],
+    prId: "pr-i2",
+    groupContext: "integration-i18n-a11y",
+    dismissedAt: null,
+    deferredUntil: null,
+  },
   // Clean rebase: behind but no conflicts
-  { laneId: "lane-api", laneName: "feature/api-refactor", kind: "lane_base", baseBranch: "main", behindBy: 7, conflictPredicted: false, conflictingFiles: [], prId: "pr-3", groupContext: null, dismissedAt: null, deferredUntil: null },
-  { laneId: "lane-onboard", laneName: "feature/onboarding-wizard", kind: "lane_base", baseBranch: "main", behindBy: 3, conflictPredicted: false, conflictingFiles: [], prId: "pr-5", groupContext: null, dismissedAt: null, deferredUntil: null },
+  {
+    laneId: "lane-api",
+    laneName: "feature/api-refactor",
+    kind: "lane_base",
+    baseBranch: "main",
+    behindBy: 7,
+    conflictPredicted: false,
+    conflictingFiles: [],
+    prId: "pr-3",
+    groupContext: null,
+    dismissedAt: null,
+    deferredUntil: null,
+  },
+  {
+    laneId: "lane-onboard",
+    laneName: "feature/onboarding-wizard",
+    kind: "lane_base",
+    baseBranch: "main",
+    behindBy: 3,
+    conflictPredicted: false,
+    conflictingFiles: [],
+    prId: "pr-5",
+    groupContext: null,
+    dismissedAt: null,
+    deferredUntil: null,
+  },
   // Up to date (behind 0)
-  { laneId: "lane-auth", laneName: "feature/auth-flow", kind: "lane_base", baseBranch: "main", behindBy: 0, conflictPredicted: false, conflictingFiles: [], prId: "pr-1", groupContext: null, dismissedAt: null, deferredUntil: null },
+  {
+    laneId: "lane-auth",
+    laneName: "feature/auth-flow",
+    kind: "lane_base",
+    baseBranch: "main",
+    behindBy: 0,
+    conflictPredicted: false,
+    conflictingFiles: [],
+    prId: "pr-1",
+    groupContext: null,
+    dismissedAt: null,
+    deferredUntil: null,
+  },
   // Deferred (still behind but snoozed — categorized as upToDate)
-  { laneId: "lane-search", laneName: "feature/search-v2", kind: "lane_base", baseBranch: "main", behindBy: 5, conflictPredicted: false, conflictingFiles: [], prId: "pr-i1", groupContext: "integration-search-analytics", dismissedAt: null, deferredUntil: fourHoursFromNow },
+  {
+    laneId: "lane-search",
+    laneName: "feature/search-v2",
+    kind: "lane_base",
+    baseBranch: "main",
+    behindBy: 5,
+    conflictPredicted: false,
+    conflictingFiles: [],
+    prId: "pr-i1",
+    groupContext: "integration-search-analytics",
+    dismissedAt: null,
+    deferredUntil: fourHoursFromNow,
+  },
   // Dismissed
-  { laneId: "lane-checkout", laneName: "feature/checkout-flow", kind: "lane_base", baseBranch: "main", behindBy: 2, conflictPredicted: false, conflictingFiles: [], prId: "pr-q2", groupContext: "queue-commerce-v3", dismissedAt: yesterday, deferredUntil: null },
+  {
+    laneId: "lane-checkout",
+    laneName: "feature/checkout-flow",
+    kind: "lane_base",
+    baseBranch: "main",
+    behindBy: 2,
+    conflictPredicted: false,
+    conflictingFiles: [],
+    prId: "pr-q2",
+    groupContext: "queue-commerce-v3",
+    dismissedAt: yesterday,
+    deferredUntil: null,
+  },
 ];
 
 // ── Queue Landing State ───────────────────────────────────────
@@ -542,9 +1264,36 @@ const MOCK_QUEUE_STATE: Record<string, any> = {
     targetBranch: "main",
     state: "landing",
     entries: [
-      { prId: "pr-q1", laneId: "lane-payments", laneName: "feature/payments", position: 0, prNumber: 160, githubUrl: "https://github.com/mock/repo/pull/160", state: "landed", updatedAt: yesterday },
-      { prId: "pr-q2", laneId: "lane-checkout", laneName: "feature/checkout-flow", position: 1, prNumber: 161, githubUrl: "https://github.com/mock/repo/pull/161", state: "landing", updatedAt: now },
-      { prId: "pr-q3", laneId: "lane-notifications", laneName: "feature/notifications", position: 2, prNumber: 162, githubUrl: "https://github.com/mock/repo/pull/162", state: "pending", updatedAt: null },
+      {
+        prId: "pr-q1",
+        laneId: "lane-payments",
+        laneName: "feature/payments",
+        position: 0,
+        prNumber: 160,
+        githubUrl: "https://github.com/mock/repo/pull/160",
+        state: "landed",
+        updatedAt: yesterday,
+      },
+      {
+        prId: "pr-q2",
+        laneId: "lane-checkout",
+        laneName: "feature/checkout-flow",
+        position: 1,
+        prNumber: 161,
+        githubUrl: "https://github.com/mock/repo/pull/161",
+        state: "landing",
+        updatedAt: now,
+      },
+      {
+        prId: "pr-q3",
+        laneId: "lane-notifications",
+        laneName: "feature/notifications",
+        position: 2,
+        prNumber: 162,
+        githubUrl: "https://github.com/mock/repo/pull/162",
+        state: "pending",
+        updatedAt: null,
+      },
     ],
     currentPosition: 1,
     activePrId: "pr-q2",
@@ -577,7 +1326,16 @@ const MOCK_QUEUE_STATE: Record<string, any> = {
     targetBranch: "main",
     state: "idle",
     entries: [
-      { prId: "pr-q4", laneId: "lane-billing", laneName: "feature/billing-v2", position: 0, prNumber: 170, githubUrl: "https://github.com/mock/repo/pull/170", state: "pending", updatedAt: null },
+      {
+        prId: "pr-q4",
+        laneId: "lane-billing",
+        laneName: "feature/billing-v2",
+        position: 0,
+        prNumber: 170,
+        githubUrl: "https://github.com/mock/repo/pull/170",
+        state: "pending",
+        updatedAt: null,
+      },
     ],
     currentPosition: 0,
     activePrId: null,
@@ -613,14 +1371,22 @@ const MOCK_INTEGRATION_SIMULATION: any = {
   overallOutcome: "conflict",
   steps: [
     {
-      laneId: "lane-search", laneName: "feature/search-v2", position: 0,
-      outcome: "clean", conflictingFiles: [],
+      laneId: "lane-search",
+      laneName: "feature/search-v2",
+      position: 0,
+      outcome: "clean",
+      conflictingFiles: [],
       diffStat: { insertions: 1420, deletions: 180, filesChanged: 22 },
     },
     {
-      laneId: "lane-analytics", laneName: "feature/analytics", position: 1,
+      laneId: "lane-analytics",
+      laneName: "feature/analytics",
+      position: 1,
       outcome: "conflict",
-      conflictingFiles: [{ path: "src/lib/analytics.ts", conflictMarkers: "<<<<<<< HEAD..." }, { path: "src/App.tsx", conflictMarkers: "<<<<<<< HEAD..." }],
+      conflictingFiles: [
+        { path: "src/lib/analytics.ts", conflictMarkers: "<<<<<<< HEAD..." },
+        { path: "src/App.tsx", conflictMarkers: "<<<<<<< HEAD..." },
+      ],
       diffStat: { insertions: 980, deletions: 120, filesChanged: 14 },
     },
   ],
@@ -634,8 +1400,24 @@ const MOCK_INTEGRATION_WORKFLOWS: any[] = [
     baseBranch: "main",
     pairwiseResults: [],
     laneSummaries: [
-      { laneId: "lane-search", laneName: "feature/search-v2", outcome: "clean", commitHash: "abc1234", commitCount: 4, conflictsWith: [], diffStat: { insertions: 1420, deletions: 180, filesChanged: 22 } },
-      { laneId: "lane-analytics", laneName: "feature/analytics", outcome: "clean", commitHash: "def5678", commitCount: 3, conflictsWith: [], diffStat: { insertions: 980, deletions: 120, filesChanged: 14 } },
+      {
+        laneId: "lane-search",
+        laneName: "feature/search-v2",
+        outcome: "clean",
+        commitHash: "abc1234",
+        commitCount: 4,
+        conflictsWith: [],
+        diffStat: { insertions: 1420, deletions: 180, filesChanged: 22 },
+      },
+      {
+        laneId: "lane-analytics",
+        laneName: "feature/analytics",
+        outcome: "clean",
+        commitHash: "def5678",
+        commitCount: 3,
+        conflictsWith: [],
+        diffStat: { insertions: 980, deletions: 120, filesChanged: 14 },
+      },
     ],
     steps: MOCK_INTEGRATION_SIMULATION.steps,
     overallOutcome: "clean",
@@ -663,8 +1445,24 @@ const MOCK_INTEGRATION_WORKFLOWS: any[] = [
     baseBranch: "main",
     pairwiseResults: [],
     laneSummaries: [
-      { laneId: "lane-i18n", laneName: "feature/i18n", outcome: "conflict", commitHash: "ghi9012", commitCount: 6, conflictsWith: ["lane-a11y"], diffStat: { insertions: 1100, deletions: 220, filesChanged: 19 } },
-      { laneId: "lane-a11y", laneName: "feature/accessibility", outcome: "conflict", commitHash: "jkl3456", commitCount: 2, conflictsWith: ["lane-i18n"], diffStat: { insertions: 700, deletions: 90, filesChanged: 9 } },
+      {
+        laneId: "lane-i18n",
+        laneName: "feature/i18n",
+        outcome: "conflict",
+        commitHash: "ghi9012",
+        commitCount: 6,
+        conflictsWith: ["lane-a11y"],
+        diffStat: { insertions: 1100, deletions: 220, filesChanged: 19 },
+      },
+      {
+        laneId: "lane-a11y",
+        laneName: "feature/accessibility",
+        outcome: "conflict",
+        commitHash: "jkl3456",
+        commitCount: 2,
+        conflictsWith: ["lane-i18n"],
+        diffStat: { insertions: 700, deletions: 90, filesChanged: 9 },
+      },
     ],
     steps: [
       {
@@ -672,7 +1470,15 @@ const MOCK_INTEGRATION_WORKFLOWS: any[] = [
         laneName: "feature/i18n",
         position: 0,
         outcome: "conflict",
-        conflictingFiles: [{ path: "src/App.tsx", conflictMarkers: "<<<<<<< HEAD...", oursExcerpt: null, theirsExcerpt: null, diffHunk: null }],
+        conflictingFiles: [
+          {
+            path: "src/App.tsx",
+            conflictMarkers: "<<<<<<< HEAD...",
+            oursExcerpt: null,
+            theirsExcerpt: null,
+            diffHunk: null,
+          },
+        ],
         diffStat: { insertions: 1100, deletions: 220, filesChanged: 19 },
       },
       {
@@ -680,7 +1486,15 @@ const MOCK_INTEGRATION_WORKFLOWS: any[] = [
         laneName: "feature/accessibility",
         position: 1,
         outcome: "conflict",
-        conflictingFiles: [{ path: "src/App.tsx", conflictMarkers: "<<<<<<< HEAD...", oursExcerpt: null, theirsExcerpt: null, diffHunk: null }],
+        conflictingFiles: [
+          {
+            path: "src/App.tsx",
+            conflictMarkers: "<<<<<<< HEAD...",
+            oursExcerpt: null,
+            theirsExcerpt: null,
+            diffHunk: null,
+          },
+        ],
         diffStat: { insertions: 700, deletions: 90, filesChanged: 9 },
       },
     ],
@@ -712,7 +1526,9 @@ const MOCK_GITHUB_SNAPSHOT: any = {
   repoPullRequests: [
     ...ALL_PRS.map((pr: any) => {
       const ctx = MOCK_MERGE_CONTEXTS[pr.id] ?? null;
-      const workflow = MOCK_INTEGRATION_WORKFLOWS.find((item) => item.linkedPrId === pr.id) ?? null;
+      const workflow =
+        MOCK_INTEGRATION_WORKFLOWS.find((item) => item.linkedPrId === pr.id) ??
+        null;
       return {
         id: pr.id,
         scope: "repo",
@@ -731,7 +1547,9 @@ const MOCK_GITHUB_SNAPSHOT: any = {
         linkedPrId: pr.id,
         linkedGroupId: workflow?.linkedGroupId ?? ctx?.groupId ?? null,
         linkedLaneId: pr.laneId,
-        linkedLaneName: MOCK_LANES.find((lane: any) => lane.id === pr.laneId)?.name ?? pr.laneId,
+        linkedLaneName:
+          MOCK_LANES.find((lane: any) => lane.id === pr.laneId)?.name ??
+          pr.laneId,
         adeKind: workflow ? "integration" : (ctx?.groupType ?? "single"),
         workflowDisplayState: workflow?.workflowDisplayState ?? null,
         cleanupState: workflow?.cleanupState ?? null,
@@ -793,7 +1611,9 @@ const MOCK_GITHUB_SNAPSHOT: any = {
 // ═══════════════════════════════════════════════════════════════
 
 if (typeof window !== "undefined" && !(window as any).ade) {
-  console.warn("[ADE] Running outside Electron — injecting browser mock for window.ade");
+  console.warn(
+    "[ADE] Running outside Electron — injecting browser mock for window.ade",
+  );
 
   // Flag for App.tsx to switch to BrowserRouter
   (window as any).__adeBrowserMock = true;
@@ -819,8 +1639,13 @@ if (typeof window !== "undefined" && !(window as any).ade) {
   (window as any).ade = {
     app: {
       ping: resolved("pong" as const),
-      getInfo: resolved({ version: "0.0.0-browser", platform: "browser", arch: "web" }),
+      getInfo: resolved({
+        version: "0.0.0-browser",
+        platform: "browser",
+        arch: "web",
+      }),
       getProject: resolved(MOCK_PROJECT),
+      onProjectChanged: () => () => {},
       openExternal: resolvedArg(undefined),
       revealPath: resolvedArg(undefined),
       writeClipboardText: resolvedArg(undefined),
@@ -830,7 +1655,10 @@ if (typeof window !== "undefined" && !(window as any).ade) {
       openRepo: resolved(MOCK_PROJECT),
       chooseDirectory: resolvedArg(null),
       openAdeFolder: resolved(undefined),
-      clearLocalData: resolved({ deletedPaths: [], clearedAt: new Date().toISOString() }),
+      clearLocalData: resolved({
+        deletedPaths: [],
+        clearedAt: new Date().toISOString(),
+      }),
       listRecent: resolved([]),
       closeCurrent: resolved(undefined),
       switchToPath: resolvedArg(MOCK_PROJECT),
@@ -871,30 +1699,59 @@ if (typeof window !== "undefined" && !(window as any).ade) {
       detect: resolved([]),
     },
     onboarding: {
-      getStatus: resolved({ completedAt: new Date().toISOString(), dismissedAt: null }),
+      getStatus: resolved({
+        completedAt: new Date().toISOString(),
+        dismissedAt: null,
+      }),
       detectDefaults: resolved({}),
       detectExistingLanes: resolved([]),
-      setDismissed: resolvedArg({ completedAt: null, dismissedAt: new Date().toISOString() }),
-      complete: resolved({ completedAt: new Date().toISOString(), dismissedAt: null }),
+      setDismissed: resolvedArg({
+        completedAt: null,
+        dismissedAt: new Date().toISOString(),
+      }),
+      complete: resolved({
+        completedAt: new Date().toISOString(),
+        dismissedAt: null,
+      }),
     },
     automations: {
       list: resolved([
         {
           id: "auto-session-review",
           name: "PR follow-up thread",
-          description: "When a pull request changes, send a focused follow-up prompt to an automation-owned chat thread.",
+          description:
+            "When a pull request changes, send a focused follow-up prompt to an automation-owned chat thread.",
           enabled: true,
           mode: "review",
           triggers: [{ type: "git.pr_updated", branch: "main" }],
           trigger: { type: "git.pr_updated", branch: "main" },
-          execution: { kind: "agent-session", session: { title: "PR follow-up thread" } },
+          execution: {
+            kind: "agent-session",
+            session: { title: "PR follow-up thread" },
+          },
           executor: { mode: "automation-bot" },
-          modelConfig: { orchestratorModel: { modelId: "anthropic/claude-sonnet-4-6", thinkingLevel: "medium" } },
-          permissionConfig: { providers: { unified: "edit", claude: "plan", codexSandbox: "workspace-write", allowedTools: ["git", "github"] } },
-          prompt: "Review the latest PR update and leave a concise follow-up summary with any high-signal next steps.",
+          modelConfig: {
+            orchestratorModel: {
+              modelId: "anthropic/claude-sonnet-4-6",
+              thinkingLevel: "medium",
+            },
+          },
+          permissionConfig: {
+            providers: {
+              unified: "edit",
+              claude: "plan",
+              codexSandbox: "workspace-write",
+              allowedTools: ["git", "github"],
+            },
+          },
+          prompt:
+            "Review the latest PR update and leave a concise follow-up summary with any high-signal next steps.",
           reviewProfile: "incremental",
           toolPalette: ["repo", "git", "github", "memory", "mission"],
-          contextSources: [{ type: "project-memory" }, { type: "automation-memory" }],
+          contextSources: [
+            { type: "project-memory" },
+            { type: "automation-memory" },
+          ],
           memory: { mode: "automation-plus-project" },
           guardrails: {},
           outputs: { disposition: "comment-only", createArtifact: true },
@@ -904,16 +1761,89 @@ if (typeof window !== "undefined" && !(window as any).ade) {
           running: false,
           lastRunAt: now,
           lastRunStatus: "succeeded",
-          confidence: { value: 0.84, label: "high", reason: "Recent runs consistently produced concise PR follow-up notes." },
+          confidence: {
+            value: 0.84,
+            label: "high",
+            reason:
+              "Recent runs consistently produced concise PR follow-up notes.",
+          },
         },
       ]),
       toggle: resolvedArg([]),
-      triggerManually: resolvedArg({ id: "run-1", automationId: "auto-session-review", chatSessionId: "chat-auto-1", missionId: null, triggerType: "manual", startedAt: now, endedAt: now, status: "succeeded", executionKind: "agent-session", actionsCompleted: 1, actionsTotal: 1, errorMessage: null, spendUsd: 0.42, confidence: null, triggerMetadata: null, summary: "Manual run completed.", billingCode: "auto:session-review" }),
+      triggerManually: resolvedArg({
+        id: "run-1",
+        automationId: "auto-session-review",
+        chatSessionId: "chat-auto-1",
+        missionId: null,
+        triggerType: "manual",
+        startedAt: now,
+        endedAt: now,
+        status: "succeeded",
+        executionKind: "agent-session",
+        actionsCompleted: 1,
+        actionsTotal: 1,
+        errorMessage: null,
+        spendUsd: 0.42,
+        confidence: null,
+        triggerMetadata: null,
+        summary: "Manual run completed.",
+        billingCode: "auto:session-review",
+      }),
       getHistory: resolvedArg([
-        { id: "run-1", automationId: "auto-session-review", chatSessionId: "chat-auto-1", missionId: null, triggerType: "git.pr_updated", startedAt: now, endedAt: now, status: "succeeded", executionKind: "agent-session", actionsCompleted: 1, actionsTotal: 1, errorMessage: null, spendUsd: 1.32, confidence: { value: 0.81, label: "high", reason: "Automation summarized the latest PR update clearly." }, triggerMetadata: { repository: "ADE", branch: "main" }, summary: "Summarized the latest PR update and suggested next review points.", billingCode: "auto:session-review" },
+        {
+          id: "run-1",
+          automationId: "auto-session-review",
+          chatSessionId: "chat-auto-1",
+          missionId: null,
+          triggerType: "git.pr_updated",
+          startedAt: now,
+          endedAt: now,
+          status: "succeeded",
+          executionKind: "agent-session",
+          actionsCompleted: 1,
+          actionsTotal: 1,
+          errorMessage: null,
+          spendUsd: 1.32,
+          confidence: {
+            value: 0.81,
+            label: "high",
+            reason: "Automation summarized the latest PR update clearly.",
+          },
+          triggerMetadata: { repository: "ADE", branch: "main" },
+          summary:
+            "Summarized the latest PR update and suggested next review points.",
+          billingCode: "auto:session-review",
+        },
       ]),
       getRunDetail: resolvedArg({
-        run: { id: "run-1", automationId: "auto-session-review", chatSessionId: "chat-auto-1", missionId: null, triggerType: "git.pr_updated", startedAt: now, endedAt: now, status: "succeeded", executionKind: "agent-session", actionsCompleted: 1, actionsTotal: 1, errorMessage: null, spendUsd: 1.32, confidence: { value: 0.81, label: "high", reason: "Automation summarized the latest PR update clearly." }, triggerMetadata: { repository: "ADE", branch: "main", author: "alice" }, summary: "Summarized the latest PR update and suggested next review points.", billingCode: "auto:session-review" },
+        run: {
+          id: "run-1",
+          automationId: "auto-session-review",
+          chatSessionId: "chat-auto-1",
+          missionId: null,
+          triggerType: "git.pr_updated",
+          startedAt: now,
+          endedAt: now,
+          status: "succeeded",
+          executionKind: "agent-session",
+          actionsCompleted: 1,
+          actionsTotal: 1,
+          errorMessage: null,
+          spendUsd: 1.32,
+          confidence: {
+            value: 0.81,
+            label: "high",
+            reason: "Automation summarized the latest PR update clearly.",
+          },
+          triggerMetadata: {
+            repository: "ADE",
+            branch: "main",
+            author: "alice",
+          },
+          summary:
+            "Summarized the latest PR update and suggested next review points.",
+          billingCode: "auto:session-review",
+        },
         rule: null,
         chatSession: {
           sessionId: "chat-auto-1",
@@ -929,21 +1859,95 @@ if (typeof window !== "undefined" && !(window as any).ade) {
           startedAt: now,
           endedAt: now,
           lastActivityAt: now,
-          lastOutputPreview: "Summarized the latest PR update and suggested next review points.",
+          lastOutputPreview:
+            "Summarized the latest PR update and suggested next review points.",
           summary: "Automation-owned chat thread for PR follow-up work.",
         },
         actions: [],
-        procedureFeedback: [{ procedureId: "pr-review", outcome: "observation", reason: "Captured a concise PR follow-up summary." }],
-        ingressEvent: { id: "ingress-1", source: "github-relay", eventKey: "delivery-1", automationIds: ["auto-session-review"], triggerType: "git.pr_updated", eventName: "pull_request", status: "dispatched", summary: "PR synchronize event dispatched to matching rules.", errorMessage: null, cursor: "cursor-1", receivedAt: now },
+        procedureFeedback: [
+          {
+            procedureId: "pr-review",
+            outcome: "observation",
+            reason: "Captured a concise PR follow-up summary.",
+          },
+        ],
+        ingressEvent: {
+          id: "ingress-1",
+          source: "github-relay",
+          eventKey: "delivery-1",
+          automationIds: ["auto-session-review"],
+          triggerType: "git.pr_updated",
+          eventName: "pull_request",
+          status: "dispatched",
+          summary: "PR synchronize event dispatched to matching rules.",
+          errorMessage: null,
+          cursor: "cursor-1",
+          receivedAt: now,
+        },
       }),
       listRuns: resolvedArg([
-        { id: "run-1", automationId: "auto-session-review", chatSessionId: "chat-auto-1", missionId: null, triggerType: "git.pr_updated", startedAt: now, endedAt: now, status: "succeeded", executionKind: "agent-session", actionsCompleted: 1, actionsTotal: 1, errorMessage: null, spendUsd: 1.32, confidence: { value: 0.81, label: "high", reason: "Automation summarized the latest PR update clearly." }, triggerMetadata: { repository: "ADE", branch: "main" }, summary: "Summarized the latest PR update and suggested next review points.", billingCode: "auto:session-review" },
+        {
+          id: "run-1",
+          automationId: "auto-session-review",
+          chatSessionId: "chat-auto-1",
+          missionId: null,
+          triggerType: "git.pr_updated",
+          startedAt: now,
+          endedAt: now,
+          status: "succeeded",
+          executionKind: "agent-session",
+          actionsCompleted: 1,
+          actionsTotal: 1,
+          errorMessage: null,
+          spendUsd: 1.32,
+          confidence: {
+            value: 0.81,
+            label: "high",
+            reason: "Automation summarized the latest PR update clearly.",
+          },
+          triggerMetadata: { repository: "ADE", branch: "main" },
+          summary:
+            "Summarized the latest PR update and suggested next review points.",
+          billingCode: "auto:session-review",
+        },
       ]),
       getIngressStatus: resolved({
-        githubRelay: { configured: true, healthy: true, status: "ready", apiBaseUrl: "https://relay.mock", remoteProjectId: "proj-123", lastCursor: "cursor-1", lastPolledAt: now, lastDeliveryAt: now, lastError: null },
-        localWebhook: { configured: true, listening: true, status: "listening", url: "http://127.0.0.1:4319/automations/webhook", port: 4319, lastDeliveryAt: now, lastError: null },
+        githubRelay: {
+          configured: true,
+          healthy: true,
+          status: "ready",
+          apiBaseUrl: "https://relay.mock",
+          remoteProjectId: "proj-123",
+          lastCursor: "cursor-1",
+          lastPolledAt: now,
+          lastDeliveryAt: now,
+          lastError: null,
+        },
+        localWebhook: {
+          configured: true,
+          listening: true,
+          status: "listening",
+          url: "http://127.0.0.1:4319/automations/webhook",
+          port: 4319,
+          lastDeliveryAt: now,
+          lastError: null,
+        },
       }),
-      listIngressEvents: resolvedArg([{ id: "ingress-1", source: "github-relay", eventKey: "delivery-1", automationIds: ["auto-session-review"], triggerType: "git.pr_updated", eventName: "pull_request", status: "dispatched", summary: "PR synchronize event dispatched to matching rules.", errorMessage: null, cursor: "cursor-1", receivedAt: now }]),
+      listIngressEvents: resolvedArg([
+        {
+          id: "ingress-1",
+          source: "github-relay",
+          eventKey: "delivery-1",
+          automationIds: ["auto-session-review"],
+          triggerType: "git.pr_updated",
+          eventName: "pull_request",
+          status: "dispatched",
+          summary: "PR synchronize event dispatched to matching rules.",
+          errorMessage: null,
+          cursor: "cursor-1",
+          receivedAt: now,
+        },
+      ]),
       parseNaturalLanguage: resolvedArg({
         draft: {
           name: "Mock automation",
@@ -973,9 +1977,19 @@ if (typeof window !== "undefined" && !(window as any).ade) {
         issues: [],
         plannerCommandPreview: "codex automation planner preview",
       }),
-      validateDraft: resolvedArg({ ok: true, normalized: null, issues: [], requiredConfirmations: [] }),
+      validateDraft: resolvedArg({
+        ok: true,
+        normalized: null,
+        issues: [],
+        requiredConfirmations: [],
+      }),
       saveDraft: resolvedArg({ rule: { id: "mock-rule" }, rules: [] }),
-      simulate: resolvedArg({ normalized: null, actions: [], notes: ["Mock simulation"], issues: [] }),
+      simulate: resolvedArg({
+        normalized: null,
+        actions: [],
+        notes: ["Mock simulation"],
+        issues: [],
+      }),
       onEvent: noop,
     },
     missions: {
@@ -1006,7 +2020,7 @@ if (typeof window !== "undefined" && !(window as any).ade) {
         laneIds: [],
         lanesArchived: [],
         lanesSkipped: [],
-        laneErrors: []
+        laneErrors: [],
       }),
       heartbeatClaims: resolvedArg(0),
       listTimeline: resolvedArg([]),
@@ -1015,7 +2029,10 @@ if (typeof window !== "undefined" && !(window as any).ade) {
       startMissionRun: resolvedArg({}),
       steerMission: resolvedArg({}),
       getTeamMembers: async (args: { runId?: string } = {}) => {
-        const runId = typeof args.runId === "string" && args.runId.trim().length > 0 ? args.runId.trim() : "mock-run";
+        const runId =
+          typeof args.runId === "string" && args.runId.trim().length > 0
+            ? args.runId.trim()
+            : "mock-run";
         const missionId = "mock-mission";
         const nowIso = new Date().toISOString();
         return [
@@ -1063,7 +2080,12 @@ if (typeof window !== "undefined" && !(window as any).ade) {
             sessionId: "session-api-tests",
             status: "idle",
             claimedTaskIds: [],
-            metadata: { teamRole: "validator", source: "ade-subagent", parentWorkerId: "implement-api", isSubAgent: true },
+            metadata: {
+              teamRole: "validator",
+              source: "ade-subagent",
+              parentWorkerId: "implement-api",
+              isSubAgent: true,
+            },
             createdAt: nowIso,
             updatedAt: nowIso,
           },
@@ -1079,7 +2101,11 @@ if (typeof window !== "undefined" && !(window as any).ade) {
             sessionId: "session-native-reviewer",
             status: "active",
             claimedTaskIds: [],
-            metadata: { source: "claude-native", parentWorkerId: "implement-api", teamRole: "specialist" },
+            metadata: {
+              source: "claude-native",
+              parentWorkerId: "implement-api",
+              teamRole: "specialist",
+            },
             createdAt: nowIso,
             updatedAt: nowIso,
           },
@@ -1119,15 +2145,24 @@ if (typeof window !== "undefined" && !(window as any).ade) {
       sendAgentMessage: resolvedArg({}),
       getGlobalChat: resolvedArg([]),
       getActiveAgents: resolvedArg([]),
-      getMissionBudgetTelemetry: resolvedArg({ computedAt: new Date().toISOString(), perProvider: [], dataSources: [] }),
-      getAggregatedUsage: resolvedArg({ totalTokens: 0, totalCost: 0, byModel: [] }),
+      getMissionBudgetTelemetry: resolvedArg({
+        computedAt: new Date().toISOString(),
+        perProvider: [],
+        dataSources: [],
+      }),
+      getAggregatedUsage: resolvedArg({
+        totalTokens: 0,
+        totalCost: 0,
+        byModel: [],
+      }),
       onEvent: noop,
       onThreadEvent: noop,
       onDagMutation: noop,
     },
     lanes: {
       list: resolved(MOCK_LANES),
-      listSnapshots: async () => MOCK_LANES.map((lane) => makeLaneSnapshot(lane)),
+      listSnapshots: async () =>
+        MOCK_LANES.map((lane) => makeLaneSnapshot(lane)),
       create: resolvedArg({ id: "mock", name: "mock" }),
       createChild: resolvedArg({ id: "mock", name: "mock" }),
       importBranch: resolvedArg({ id: "mock", name: "mock" }),
@@ -1140,10 +2175,77 @@ if (typeof window !== "undefined" && !(window as any).ade) {
       delete: resolvedArg(undefined),
       getStackChain: resolvedArg([]),
       getChildren: resolvedArg([]),
-      rebaseStart: resolvedArg({ runId: "mock-run", run: { runId: "mock-run", rootLaneId: "mock", scope: "lane_only", pushMode: "none", state: "completed", startedAt: new Date().toISOString(), finishedAt: new Date().toISOString(), actor: "user", baseBranch: "main", lanes: [], currentLaneId: null, failedLaneId: null, error: null, pushedLaneIds: [], canRollback: false } }),
-      rebasePush: resolvedArg({ runId: "mock-run", rootLaneId: "mock", scope: "lane_only", pushMode: "none", state: "completed", startedAt: new Date().toISOString(), finishedAt: new Date().toISOString(), actor: "user", baseBranch: "main", lanes: [], currentLaneId: null, failedLaneId: null, error: null, pushedLaneIds: [], canRollback: false }),
-      rebaseRollback: resolvedArg({ runId: "mock-run", rootLaneId: "mock", scope: "lane_only", pushMode: "none", state: "aborted", startedAt: new Date().toISOString(), finishedAt: new Date().toISOString(), actor: "user", baseBranch: "main", lanes: [], currentLaneId: null, failedLaneId: null, error: null, pushedLaneIds: [], canRollback: false }),
-      rebaseAbort: resolvedArg({ runId: "mock-run", rootLaneId: "mock", scope: "lane_only", pushMode: "none", state: "aborted", startedAt: new Date().toISOString(), finishedAt: new Date().toISOString(), actor: "user", baseBranch: "main", lanes: [], currentLaneId: null, failedLaneId: null, error: null, pushedLaneIds: [], canRollback: false }),
+      rebaseStart: resolvedArg({
+        runId: "mock-run",
+        run: {
+          runId: "mock-run",
+          rootLaneId: "mock",
+          scope: "lane_only",
+          pushMode: "none",
+          state: "completed",
+          startedAt: new Date().toISOString(),
+          finishedAt: new Date().toISOString(),
+          actor: "user",
+          baseBranch: "main",
+          lanes: [],
+          currentLaneId: null,
+          failedLaneId: null,
+          error: null,
+          pushedLaneIds: [],
+          canRollback: false,
+        },
+      }),
+      rebasePush: resolvedArg({
+        runId: "mock-run",
+        rootLaneId: "mock",
+        scope: "lane_only",
+        pushMode: "none",
+        state: "completed",
+        startedAt: new Date().toISOString(),
+        finishedAt: new Date().toISOString(),
+        actor: "user",
+        baseBranch: "main",
+        lanes: [],
+        currentLaneId: null,
+        failedLaneId: null,
+        error: null,
+        pushedLaneIds: [],
+        canRollback: false,
+      }),
+      rebaseRollback: resolvedArg({
+        runId: "mock-run",
+        rootLaneId: "mock",
+        scope: "lane_only",
+        pushMode: "none",
+        state: "aborted",
+        startedAt: new Date().toISOString(),
+        finishedAt: new Date().toISOString(),
+        actor: "user",
+        baseBranch: "main",
+        lanes: [],
+        currentLaneId: null,
+        failedLaneId: null,
+        error: null,
+        pushedLaneIds: [],
+        canRollback: false,
+      }),
+      rebaseAbort: resolvedArg({
+        runId: "mock-run",
+        rootLaneId: "mock",
+        scope: "lane_only",
+        pushMode: "none",
+        state: "aborted",
+        startedAt: new Date().toISOString(),
+        finishedAt: new Date().toISOString(),
+        actor: "user",
+        baseBranch: "main",
+        lanes: [],
+        currentLaneId: null,
+        failedLaneId: null,
+        error: null,
+        pushedLaneIds: [],
+        canRollback: false,
+      }),
       rebaseSubscribe: noop,
       listRebaseSuggestions: resolved([]),
       dismissRebaseSuggestion: resolvedArg(undefined),
@@ -1251,9 +2353,9 @@ if (typeof window !== "undefined" && !(window as any).ade) {
             autoCompact: true,
             compactionThreshold: 0.7,
             preCompactionFlush: true,
-            temporalDecayHalfLifeDays: 30
+            temporalDecayHalfLifeDays: 30,
           },
-          updatedAt: now
+          updatedAt: now,
         },
         coreMemory: {
           version: 1,
@@ -1262,9 +2364,9 @@ if (typeof window !== "undefined" && !(window as any).ade) {
           criticalConventions: [],
           userPreferences: [],
           activeFocus: [],
-          notes: []
+          notes: [],
         },
-        recentSessions: []
+        recentSessions: [],
       }),
       ensureSession: resolvedArg({
         id: "mock-cto-session",
@@ -1275,7 +2377,7 @@ if (typeof window !== "undefined" && !(window as any).ade) {
         capabilityMode: "full_mcp",
         status: "idle",
         createdAt: now,
-        lastActivityAt: now
+        lastActivityAt: now,
       }),
       updateCoreMemory: resolvedArg({
         identity: {
@@ -1287,9 +2389,9 @@ if (typeof window !== "undefined" && !(window as any).ade) {
             autoCompact: true,
             compactionThreshold: 0.7,
             preCompactionFlush: true,
-            temporalDecayHalfLifeDays: 30
+            temporalDecayHalfLifeDays: 30,
           },
-          updatedAt: now
+          updatedAt: now,
         },
         coreMemory: {
           version: 2,
@@ -1298,38 +2400,144 @@ if (typeof window !== "undefined" && !(window as any).ade) {
           criticalConventions: [],
           userPreferences: [],
           activeFocus: [],
-          notes: []
+          notes: [],
         },
-        recentSessions: []
+        recentSessions: [],
       }),
       listSessionLogs: resolvedArg([]),
       updateIdentity: resolvedArg({
-        identity: { name: "CTO", version: 1, persona: "Mock CTO persona", modelPreferences: { provider: "claude", model: "sonnet" }, memoryPolicy: { autoCompact: true, compactionThreshold: 0.7, preCompactionFlush: true, temporalDecayHalfLifeDays: 30 }, updatedAt: now },
-        coreMemory: { version: 1, updatedAt: now, projectSummary: "Mock project summary", criticalConventions: [], userPreferences: [], activeFocus: [], notes: [] },
-        recentSessions: []
+        identity: {
+          name: "CTO",
+          version: 1,
+          persona: "Mock CTO persona",
+          modelPreferences: { provider: "claude", model: "sonnet" },
+          memoryPolicy: {
+            autoCompact: true,
+            compactionThreshold: 0.7,
+            preCompactionFlush: true,
+            temporalDecayHalfLifeDays: 30,
+          },
+          updatedAt: now,
+        },
+        coreMemory: {
+          version: 1,
+          updatedAt: now,
+          projectSummary: "Mock project summary",
+          criticalConventions: [],
+          userPreferences: [],
+          activeFocus: [],
+          notes: [],
+        },
+        recentSessions: [],
       }),
       previewSystemPrompt: resolvedArg({
         prompt: "You are the CTO for this project inside ADE.",
         tokenEstimate: 10,
         sections: [
-          { id: "doctrine", title: "Immutable ADE doctrine", content: "You are the CTO for this project inside ADE." },
-          { id: "personality", title: "Selected personality overlay", content: "Operate as a strategic CTO." },
-          { id: "memory", title: "Memory and continuity model", content: "Project continuity comes from memory layers." },
+          {
+            id: "doctrine",
+            title: "Immutable ADE doctrine",
+            content: "You are the CTO for this project inside ADE.",
+          },
+          {
+            id: "personality",
+            title: "Selected personality overlay",
+            content: "Operate as a strategic CTO.",
+          },
+          {
+            id: "memory",
+            title: "Memory and continuity model",
+            content: "Project continuity comes from memory layers.",
+          },
         ],
       }),
       listAgents: resolved([]),
-      saveAgent: resolvedArg({ id: "mock-agent", name: "Mock Agent", slug: "mock-agent", role: "engineer", reportsTo: null, capabilities: [], status: "idle", adapterType: "claude-local", adapterConfig: {}, runtimeConfig: {}, budgetMonthlyCents: 0, spentMonthlyCents: 0, createdAt: now, updatedAt: now, deletedAt: null }),
+      saveAgent: resolvedArg({
+        id: "mock-agent",
+        name: "Mock Agent",
+        slug: "mock-agent",
+        role: "engineer",
+        reportsTo: null,
+        capabilities: [],
+        status: "idle",
+        adapterType: "claude-local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        budgetMonthlyCents: 0,
+        spentMonthlyCents: 0,
+        createdAt: now,
+        updatedAt: now,
+        deletedAt: null,
+      }),
       removeAgent: resolvedArg(undefined),
       listAgentRevisions: resolvedArg([]),
-      rollbackAgentRevision: resolvedArg({ id: "mock-agent", name: "Mock Agent", slug: "mock-agent", role: "engineer", reportsTo: null, capabilities: [], status: "idle", adapterType: "claude-local", adapterConfig: {}, runtimeConfig: {}, budgetMonthlyCents: 0, spentMonthlyCents: 0, createdAt: now, updatedAt: now, deletedAt: null }),
-      ensureAgentSession: resolvedArg({ id: "mock-agent-session", laneId: "lane-main", provider: "claude", model: "sonnet", identityKey: "cto", capabilityMode: "full_mcp", status: "idle", createdAt: now, lastActivityAt: now }),
-      getBudgetSnapshot: resolvedArg({ computedAt: now, monthKey: "2026-03", companyBudgetMonthlyCents: 0, companySpentMonthlyCents: 0, companyExactSpentCents: 0, companyEstimatedSpentCents: 0, companyRemainingCents: null, workers: [] }),
-      triggerAgentWakeup: resolvedArg({ runId: "mock-run", status: "completed" }),
+      rollbackAgentRevision: resolvedArg({
+        id: "mock-agent",
+        name: "Mock Agent",
+        slug: "mock-agent",
+        role: "engineer",
+        reportsTo: null,
+        capabilities: [],
+        status: "idle",
+        adapterType: "claude-local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        budgetMonthlyCents: 0,
+        spentMonthlyCents: 0,
+        createdAt: now,
+        updatedAt: now,
+        deletedAt: null,
+      }),
+      ensureAgentSession: resolvedArg({
+        id: "mock-agent-session",
+        laneId: "lane-main",
+        provider: "claude",
+        model: "sonnet",
+        identityKey: "cto",
+        capabilityMode: "full_mcp",
+        status: "idle",
+        createdAt: now,
+        lastActivityAt: now,
+      }),
+      getBudgetSnapshot: resolvedArg({
+        computedAt: now,
+        monthKey: "2026-03",
+        companyBudgetMonthlyCents: 0,
+        companySpentMonthlyCents: 0,
+        companyExactSpentCents: 0,
+        companyEstimatedSpentCents: 0,
+        companyRemainingCents: null,
+        workers: [],
+      }),
+      triggerAgentWakeup: resolvedArg({
+        runId: "mock-run",
+        status: "completed",
+      }),
       listAgentRuns: resolved([]),
-      getAgentCoreMemory: resolvedArg({ version: 1, updatedAt: now, projectSummary: "Mock worker memory", criticalConventions: [], userPreferences: [], activeFocus: [], notes: [] }),
-      updateAgentCoreMemory: resolvedArg({ version: 2, updatedAt: now, projectSummary: "Mock worker memory", criticalConventions: [], userPreferences: [], activeFocus: [], notes: [] }),
+      getAgentCoreMemory: resolvedArg({
+        version: 1,
+        updatedAt: now,
+        projectSummary: "Mock worker memory",
+        criticalConventions: [],
+        userPreferences: [],
+        activeFocus: [],
+        notes: [],
+      }),
+      updateAgentCoreMemory: resolvedArg({
+        version: 2,
+        updatedAt: now,
+        projectSummary: "Mock worker memory",
+        criticalConventions: [],
+        userPreferences: [],
+        activeFocus: [],
+        notes: [],
+      }),
       listAgentSessionLogs: resolvedArg([]),
-      getLinearWorkflowCatalog: resolvedArg({ users: [], labels: [], states: [] }),
+      getLinearWorkflowCatalog: resolvedArg({
+        users: [],
+        labels: [],
+        states: [],
+      }),
       getLinearIngressStatus: resolvedArg({
         localWebhook: { configured: false, healthy: false, status: "disabled" },
         relay: { configured: false, healthy: false, status: "disabled" },
@@ -1338,7 +2546,13 @@ if (typeof window !== "undefined" && !(window as any).ade) {
       listLinearIngressEvents: resolvedArg([]),
       ensureLinearWebhook: resolvedArg({
         localWebhook: { configured: false, healthy: false, status: "disabled" },
-        relay: { configured: true, healthy: true, status: "ready", webhookUrl: "https://example.com/linear/webhooks/mock", endpointId: "mock-endpoint" },
+        relay: {
+          configured: true,
+          healthy: true,
+          status: "ready",
+          webhookUrl: "https://example.com/linear/webhooks/mock",
+          endpointId: "mock-endpoint",
+        },
         reconciliation: { enabled: true, intervalSec: 30, lastRunAt: null },
       }),
       onLinearWorkflowEvent: noop,
@@ -1482,6 +2696,25 @@ if (typeof window !== "undefined" && !(window as any).ade) {
       generateDocs: resolvedArg({}),
       openDoc: resolvedArg(undefined),
     },
+    feedback: {
+      submit: resolvedArg({
+        id: "mock-feedback-1",
+        category: "bug",
+        userDescription: "Mock feedback",
+        modelId: "claude-sonnet-4-6",
+        status: "pending",
+        generatedTitle: null,
+        generatedBody: null,
+        issueUrl: null,
+        issueNumber: null,
+        issueState: null,
+        error: null,
+        createdAt: new Date().toISOString(),
+        completedAt: null,
+      }),
+      list: resolved([]),
+      onUpdate: () => () => {},
+    },
     github: {
       getStatus: resolved({ authenticated: true, user: "arul" }),
       setToken: resolvedArg({ authenticated: true, user: "arul" }),
@@ -1494,14 +2727,25 @@ if (typeof window !== "undefined" && !(window as any).ade) {
       listAll: resolved(ALL_PRS),
       refresh: resolved(ALL_PRS),
       getStatus: async (prId: string) =>
-        MOCK_STATUS_BY_PR[prId] ?? { prId, state: "open", checksStatus: "passing", reviewStatus: "none", isMergeable: true, mergeConflicts: false, behindBaseBy: 0 },
+        MOCK_STATUS_BY_PR[prId] ?? {
+          prId,
+          state: "open",
+          checksStatus: "passing",
+          reviewStatus: "none",
+          isMergeable: true,
+          mergeConflicts: false,
+          behindBaseBy: 0,
+        },
       getChecks: async (prId: string) => MOCK_CHECKS_BY_PR[prId] ?? [],
       getComments: async (prId: string) => MOCK_COMMENTS_BY_PR[prId] ?? [],
       getReviews: async (prId: string) => MOCK_REVIEWS_BY_PR[prId] ?? [],
       getReviewThreads: resolvedArg([]),
       updateDescription: resolvedArg(undefined),
       delete: resolvedArg({ deleted: true }),
-      draftDescription: resolvedArg({ title: "AI-drafted title", body: "AI-drafted body" }),
+      draftDescription: resolvedArg({
+        title: "AI-drafted title",
+        body: "AI-drafted body",
+      }),
       land: resolvedArg({ success: true, prNumber: 142, sha: "abc123" }),
       landStack: resolvedArg([]),
       openInGitHub: resolvedArg(undefined),
@@ -1515,8 +2759,20 @@ if (typeof window !== "undefined" && !(window as any).ade) {
         mergeResults: [],
       }),
       landStackEnhanced: resolvedArg([]),
-      landQueueNext: resolvedArg({ success: true, prNumber: 161, sha: "def456" }),
-      startQueueAutomation: async (args: { groupId: string; autoResolve?: boolean; archiveLane?: boolean; ciGating?: boolean; method?: string; resolverModel?: string; reasoningEffort?: string }) => {
+      landQueueNext: resolvedArg({
+        success: true,
+        prNumber: 161,
+        sha: "def456",
+      }),
+      startQueueAutomation: async (args: {
+        groupId: string;
+        autoResolve?: boolean;
+        archiveLane?: boolean;
+        ciGating?: boolean;
+        method?: string;
+        resolverModel?: string;
+        reasoningEffort?: string;
+      }) => {
         const state = MOCK_QUEUE_STATE[args.groupId];
         if (!state) throw new Error(`Unknown queue group: ${args.groupId}`);
         state.state = "landing";
@@ -1532,26 +2788,44 @@ if (typeof window !== "undefined" && !(window as any).ade) {
         return state;
       },
       pauseQueueAutomation: async (queueId: string) => {
-        const state = Object.values(MOCK_QUEUE_STATE).find((candidate) => candidate.queueId === queueId) ?? null;
+        const state =
+          Object.values(MOCK_QUEUE_STATE).find(
+            (candidate) => candidate.queueId === queueId,
+          ) ?? null;
         if (state) state.state = "paused";
         return state;
       },
       resumeQueueAutomation: async (args: { queueId: string }) => {
-        const state = Object.values(MOCK_QUEUE_STATE).find((candidate) => candidate.queueId === args.queueId) ?? null;
+        const state =
+          Object.values(MOCK_QUEUE_STATE).find(
+            (candidate) => candidate.queueId === args.queueId,
+          ) ?? null;
         if (state) state.state = "landing";
         return state;
       },
       cancelQueueAutomation: async (queueId: string) => {
-        const state = Object.values(MOCK_QUEUE_STATE).find((candidate) => candidate.queueId === queueId) ?? null;
+        const state =
+          Object.values(MOCK_QUEUE_STATE).find(
+            (candidate) => candidate.queueId === queueId,
+          ) ?? null;
         if (state) state.state = "cancelled";
         return state;
       },
       getHealth: resolvedArg({}),
-      getQueueState: async (groupId: string) => MOCK_QUEUE_STATE[groupId] ?? null,
+      getQueueState: async (groupId: string) =>
+        MOCK_QUEUE_STATE[groupId] ?? null,
       listQueueStates: async () => Object.values(MOCK_QUEUE_STATE),
       getConflictAnalysis: resolvedArg({}),
       getMergeContext: async (prId: string) =>
-        MOCK_MERGE_CONTEXTS[prId] ?? { prId, groupId: null, groupType: null, sourceLaneIds: [], targetLaneId: null, integrationLaneId: null, members: [] },
+        MOCK_MERGE_CONTEXTS[prId] ?? {
+          prId,
+          groupId: null,
+          groupType: null,
+          sourceLaneIds: [],
+          targetLaneId: null,
+          integrationLaneId: null,
+          members: [],
+        },
       listWithConflicts: resolved(ALL_PRS),
       getGitHubSnapshot: resolvedArg(MOCK_GITHUB_SNAPSHOT),
       listIntegrationWorkflows: resolved(MOCK_INTEGRATION_WORKFLOWS),
@@ -1561,7 +2835,7 @@ if (typeof window !== "undefined" && !(window as any).ade) {
         ptyId: null,
         status: "started" as const,
         error: null,
-        context: { sourceTab: "normal" as const, laneId: "lane-1" }
+        context: { sourceTab: "normal" as const, laneId: "lane-1" },
       }),
       issueResolutionStart: async () => ({
         sessionId: "mock-pr-issue-session",
@@ -1569,17 +2843,34 @@ if (typeof window !== "undefined" && !(window as any).ade) {
         href: "/work?laneId=lane-dashboard&sessionId=mock-pr-issue-session",
       }),
       convergenceStateGet: async (prId: string) => {
-        const stored = MOCK_CONVERGENCE_RUNTIME[prId] ?? createDefaultConvergenceRuntime(prId);
+        const stored =
+          MOCK_CONVERGENCE_RUNTIME[prId] ??
+          createDefaultConvergenceRuntime(prId);
         return { ...stored };
       },
-      convergenceStateSave: async (prId: string, state: Record<string, any>) => {
+      convergenceStateSave: async (
+        prId: string,
+        state: Record<string, any>,
+      ) => {
         const nowIso = new Date().toISOString();
-        const existing = MOCK_CONVERGENCE_RUNTIME[prId] ?? createDefaultConvergenceRuntime(prId);
+        const existing =
+          MOCK_CONVERGENCE_RUNTIME[prId] ??
+          createDefaultConvergenceRuntime(prId);
         // Only allow known ConvergenceRuntimeState keys (mirror real backend validation)
         const allowedKeys = new Set([
-          "autoConvergeEnabled", "status", "pollerStatus", "currentRound",
-          "activeSessionId", "activeLaneId", "activeHref", "pauseReason",
-          "errorMessage", "lastStartedAt", "lastPolledAt", "lastPausedAt", "lastStoppedAt",
+          "autoConvergeEnabled",
+          "status",
+          "pollerStatus",
+          "currentRound",
+          "activeSessionId",
+          "activeLaneId",
+          "activeHref",
+          "pauseReason",
+          "errorMessage",
+          "lastStartedAt",
+          "lastPolledAt",
+          "lastPausedAt",
+          "lastStoppedAt",
         ]);
         const filtered: Record<string, any> = {};
         for (const key of Object.keys(state)) {
@@ -1611,12 +2902,40 @@ if (typeof window !== "undefined" && !(window as any).ade) {
       aiResolutionStop: resolvedArg(undefined),
       onAiResolutionEvent: noop,
       onEvent: noop,
-      getDetail: resolvedArg({ prId: "", body: null, labels: [], assignees: [], requestedReviewers: [], author: { login: "", avatarUrl: null }, isDraft: false, milestone: null, linkedIssues: [] }),
+      getDetail: resolvedArg({
+        prId: "",
+        body: null,
+        labels: [],
+        assignees: [],
+        requestedReviewers: [],
+        author: { login: "", avatarUrl: null },
+        isDraft: false,
+        milestone: null,
+        linkedIssues: [],
+      }),
       getFiles: resolvedArg([]),
       getActionRuns: resolvedArg([]),
       getActivity: resolvedArg([]),
-      addComment: resolvedArg({ id: "mock", author: "you", body: "", source: "issue", url: null, path: null, line: null, createdAt: null, updatedAt: null }),
-      replyToReviewThread: resolvedArg({ id: "thread-reply", author: "you", authorAvatarUrl: null, body: "", url: null, createdAt: null, updatedAt: null }),
+      addComment: resolvedArg({
+        id: "mock",
+        author: "you",
+        body: "",
+        source: "issue",
+        url: null,
+        path: null,
+        line: null,
+        createdAt: null,
+        updatedAt: null,
+      }),
+      replyToReviewThread: resolvedArg({
+        id: "thread-reply",
+        author: "you",
+        authorAvatarUrl: null,
+        body: "",
+        url: null,
+        createdAt: null,
+        updatedAt: null,
+      }),
       resolveReviewThread: resolvedArg(undefined),
       updateTitle: resolvedArg(undefined),
       updateBody: resolvedArg(undefined),
@@ -1626,7 +2945,12 @@ if (typeof window !== "undefined" && !(window as any).ade) {
       close: resolvedArg(undefined),
       reopen: resolvedArg(undefined),
       rerunChecks: resolvedArg(undefined),
-      aiReviewSummary: resolvedArg({ summary: "AI review summary placeholder", potentialIssues: [], recommendations: [], mergeReadiness: "ready" }),
+      aiReviewSummary: resolvedArg({
+        summary: "AI review summary placeholder",
+        potentialIssues: [],
+        recommendations: [],
+        mergeReadiness: "ready",
+      }),
       listProposals: resolved([]),
       dismissIntegrationCleanup: resolvedArg(MOCK_INTEGRATION_WORKFLOWS[1]),
       cleanupIntegrationWorkflow: resolvedArg({
@@ -1697,7 +3021,10 @@ if (typeof window !== "undefined" && !(window as any).ade) {
     projectConfig: {
       get: resolved({ effective: { providerMode: "guest" }, overrides: {} }),
       validate: resolvedArg({ valid: true }),
-      save: resolvedArg({ effective: { providerMode: "guest" }, overrides: {} }),
+      save: resolvedArg({
+        effective: { providerMode: "guest" },
+        overrides: {},
+      }),
       diffAgainstDisk: resolved({ changed: false }),
       confirmTrust: resolved({ trusted: true }),
     },
@@ -1763,9 +3090,26 @@ if (typeof window !== "undefined" && !(window as any).ade) {
     memory: {
       pin: resolvedArg(undefined),
       updateCore: resolvedArg({
-        identity: { name: "CTO", version: 1, persona: "Mock CTO persona", modelPreferences: { provider: "claude", model: "sonnet" }, memoryPolicy: { autoCompact: true, compactionThreshold: 0.7, preCompactionFlush: true, temporalDecayHalfLifeDays: 30 }, updatedAt: now },
+        identity: {
+          name: "CTO",
+          version: 1,
+          persona: "Mock CTO persona",
+          modelPreferences: { provider: "claude", model: "sonnet" },
+          memoryPolicy: {
+            autoCompact: true,
+            compactionThreshold: 0.7,
+            preCompactionFlush: true,
+            temporalDecayHalfLifeDays: 30,
+          },
+          updatedAt: now,
+        },
         recent: [],
-        coreMemory: { responsibilities: [], activePriorities: [], constraints: [], preferences: [] },
+        coreMemory: {
+          responsibilities: [],
+          activePriorities: [],
+          constraints: [],
+          preferences: [],
+        },
       }),
       getBudget: resolved([]),
       getCandidates: resolved([]),

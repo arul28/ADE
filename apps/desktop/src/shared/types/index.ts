@@ -30,3 +30,4 @@ export * from "./sync";
 export * from "./devTools";
 
 export * from "./linearSync";
+export * from "./feedback";

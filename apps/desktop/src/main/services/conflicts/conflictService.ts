@@ -1530,6 +1530,7 @@ export function createConflictService({
   };
 
   const buildBatchAssessment = async (options: {
+    lanes?: LaneSummary[];
     progress?: { completedPairs: number; totalPairs: number };
     truncated?: boolean;
     comparedLaneIds?: string[];
@@ -1539,7 +1540,7 @@ export function createConflictService({
     pairwisePairsComputed?: number;
     pairwisePairsTotal?: number;
   } = {}): Promise<BatchAssessmentResult> => {
-    const lanes = await listActiveLanes();
+    const lanes = options.lanes ?? await listActiveLanes();
     const statuses = await Promise.all(lanes.map((lane) => getLaneStatusInternal(lane)));
     const { matrix, overlaps } = await getRiskMatrixAndOverlaps(lanes);
     return {
@@ -2040,7 +2041,7 @@ export function createConflictService({
       return after;
     };
 
-  const getBatchAssessment = async (): Promise<BatchAssessmentResult> => {
+  const getBatchAssessment = async (options: { lanes?: LaneSummary[] } = {}): Promise<BatchAssessmentResult> => {
       const hasAny = db.get<{ id: string }>(
         "select id from conflict_predictions where project_id = ? limit 1",
         [projectId]
@@ -2048,7 +2049,7 @@ export function createConflictService({
       if (!hasAny) {
         return await runPrediction({});
       }
-      const lanes = await listActiveLanes();
+      const lanes = options.lanes ?? await listActiveLanes();
       const comparedLaneIds = lanes.map((lane) => lane.id);
 
       const readAssessmentMeta = (): {
@@ -2105,6 +2106,7 @@ export function createConflictService({
             : false;
 
       return await buildBatchAssessment({
+        lanes,
         truncated,
         comparedLaneIds,
         totalLanes: lanes.length,

@@ -2,7 +2,13 @@
 
 import React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+} from "@testing-library/react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 import { AppShell } from "./AppShell";
 import { useAppStore } from "../../state/appStore";
@@ -130,24 +136,34 @@ describe("AppShell", () => {
     resetStore();
     globalThis.window.ade = {
       app: {
-        getProject: vi.fn(async () => ({ rootPath: "/Users/arul/ADE", name: "ADE" })),
+        getProject: vi.fn(async () => ({
+          rootPath: "/Users/arul/ADE",
+          name: "ADE",
+        })),
+        onProjectChanged: vi.fn(() => () => {}),
       },
       pty: {
         onData: vi.fn(() => () => {}),
         onExit: vi.fn(() => () => {}),
       },
       onboarding: {
-        getStatus: vi.fn(async () => ({ completedAt: null, dismissedAt: null, freshProject: false })),
+        getStatus: vi.fn(async () => ({
+          completedAt: null,
+          dismissedAt: null,
+          freshProject: false,
+        })),
       },
       project: {
         onMissing: vi.fn(() => () => {}),
       },
       context: {
         getStatus: vi.fn(async () => staleContextStatus),
-        onStatusChanged: vi.fn((callback: (status: typeof staleContextStatus) => void) => {
-          callback(staleContextStatus);
-          return () => {};
-        }),
+        onStatusChanged: vi.fn(
+          (callback: (status: typeof staleContextStatus) => void) => {
+            callback(staleContextStatus);
+            return () => {};
+          },
+        ),
       },
       ai: {
         getStatus: vi.fn(async () => ({
@@ -193,11 +209,15 @@ describe("AppShell", () => {
       </MemoryRouter>,
     );
 
-    expect(await screen.findByText(/ADE context docs need regeneration/i)).toBeTruthy();
+    expect(
+      await screen.findByText(/ADE context docs need regeneration/i),
+    ).toBeTruthy();
 
     fireEvent.click(screen.getByTitle("Dismiss for this session"));
 
-    expect(screen.queryByText(/ADE context docs need regeneration/i)).toBeNull();
+    expect(
+      screen.queryByText(/ADE context docs need regeneration/i),
+    ).toBeNull();
   });
 
   it("moves project selection flows from run to work", async () => {
@@ -218,11 +238,61 @@ describe("AppShell", () => {
     expect(screen.getByTestId("location-probe").textContent).toBe("/project");
 
     await act(async () => {
-      useAppStore.getState().setProject({ rootPath: "/Users/arul/ADE-next", name: "ADE next" } as any);
+      useAppStore.getState().setProject({
+        rootPath: "/Users/arul/ADE-next",
+        name: "ADE next",
+      } as any);
       useAppStore.getState().setShowWelcome(false);
     });
 
     expect(await screen.findByText("/work")).toBeTruthy();
+  });
+
+  it("ignores same-project change events without triggering extra lane refreshes", async () => {
+    const getProjectMock = vi.fn(async () => ({
+      rootPath: "/Users/arul/ADE",
+      name: "ADE",
+    }));
+    let projectChangedHandler:
+      | ((project: { rootPath: string; name: string } | null) => void)
+      | null = null;
+    const refreshLanesMock = vi.fn(async () => []);
+    const refreshKeybindingsMock = vi.fn(async () => undefined);
+
+    useAppStore.setState({
+      refreshLanes: refreshLanesMock,
+      refreshKeybindings: refreshKeybindingsMock,
+    } as any);
+
+    globalThis.window.ade.app.getProject = getProjectMock as any;
+    globalThis.window.ade.app.onProjectChanged = vi.fn((cb) => {
+      projectChangedHandler = cb;
+      return () => {
+        projectChangedHandler = null;
+      };
+    }) as any;
+
+    render(
+      <MemoryRouter initialEntries={["/lanes"]}>
+        <AppShell>
+          <div>child</div>
+        </AppShell>
+      </MemoryRouter>,
+    );
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(refreshLanesMock).toHaveBeenCalledTimes(0);
+    expect(projectChangedHandler).toBeTruthy();
+
+    await act(async () => {
+      projectChangedHandler?.({ rootPath: "/Users/arul/ADE", name: "ADE" });
+      await Promise.resolve();
+    });
+
+    expect(refreshLanesMock).toHaveBeenCalledTimes(0);
   });
 
   it("waits for AI status before showing the missing provider banner", async () => {
@@ -250,14 +320,18 @@ describe("AppShell", () => {
         </MemoryRouter>,
       );
 
-      expect(screen.queryByText(/No AI provider is configured yet/i)).toBeNull();
+      expect(
+        screen.queryByText(/No AI provider is configured yet/i),
+      ).toBeNull();
 
       await act(async () => {
         vi.advanceTimersByTime(1_000);
         await Promise.resolve();
       });
 
-      expect(screen.getByText(/No AI provider is configured yet/i)).toBeTruthy();
+      expect(
+        screen.getByText(/No AI provider is configured yet/i),
+      ).toBeTruthy();
     } finally {
       vi.useRealTimers();
     }

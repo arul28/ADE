@@ -155,11 +155,28 @@ type AppState = {
 
 export type LaneInspectorTab = "terminals" | "context" | "stack" | "merge";
 
+type LaneRefreshRequest = {
+  includeStatus: boolean;
+};
+
 let warmLaneStatusTimer: number | null = null;
 let warmProviderModeTimer: number | null = null;
 /** Monotonic counter incremented before each lane refresh request.
  *  Slower responses whose token doesn't match the latest value are discarded. */
 let laneRefreshVersion = 0;
+let laneRefreshInFlight: Promise<void> | null = null;
+let activeLaneRefreshRequest: LaneRefreshRequest | null = null;
+let pendingLaneRefreshRequest: LaneRefreshRequest | null = null;
+
+function normalizeLaneRefreshRequest(options?: { includeStatus?: boolean }): LaneRefreshRequest {
+  return { includeStatus: options?.includeStatus ?? true };
+}
+
+function mergeLaneRefreshRequests(current: LaneRefreshRequest, next: LaneRefreshRequest): LaneRefreshRequest {
+  return {
+    includeStatus: current.includeStatus || next.includeStatus,
+  };
+}
 
 function scheduleProjectHydration(get: () => AppState) {
   if (warmLaneStatusTimer != null) {
@@ -171,7 +188,9 @@ function scheduleProjectHydration(get: () => AppState) {
 
   warmLaneStatusTimer = window.setTimeout(() => {
     warmLaneStatusTimer = null;
-    void get().refreshLanes({ includeStatus: true });
+    void get().refreshLanes({ includeStatus: true }).catch((err) => {
+      console.debug("Scheduled lane refresh failed:", err);
+    });
   }, 1_200);
 
   warmProviderModeTimer = window.setTimeout(() => {
@@ -279,51 +298,92 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   refreshLanes: async (options) => {
-    const requestedProjectKey = normalizeProjectKey(get().project?.rootPath);
-    const token = ++laneRefreshVersion;
-    const laneSnapshots = await window.ade.lanes.listSnapshots({
-      includeArchived: false,
-      includeStatus: options?.includeStatus ?? true,
-    });
-    // Discard stale response: a newer refresh was issued while this one was in-flight
-    if (token !== laneRefreshVersion) {
+    const request = normalizeLaneRefreshRequest(options);
+    const runRefresh = async (currentRequest: LaneRefreshRequest) => {
+      const requestedProjectKey = normalizeProjectKey(get().project?.rootPath);
+      const token = ++laneRefreshVersion;
+      const laneSnapshots = currentRequest.includeStatus
+        ? await window.ade.lanes.listSnapshots({
+            includeArchived: false,
+            includeStatus: true,
+          })
+        : null;
+      const lanes = laneSnapshots != null
+        ? laneSnapshots.map((snapshot) => snapshot.lane)
+        : await window.ade.lanes.list({
+            includeArchived: false,
+            includeStatus: false,
+          });
+      // Discard stale response: a newer refresh was issued while this one was in-flight
+      if (token !== laneRefreshVersion) {
+        return;
+      }
+      const projectKey = normalizeProjectKey(get().project?.rootPath);
+      if (projectKey !== requestedProjectKey) {
+        return;
+      }
+      const selected = get().selectedLaneId;
+      const runLane = get().runLaneId;
+      const nextSelected = selected && lanes.some((l) => l.id === selected) ? selected : lanes[0]?.id ?? null;
+      const nextRunLane = runLane && lanes.some((l) => l.id === runLane) ? runLane : nextSelected;
+      set((prev) => {
+        const allowed = new Set(lanes.map((lane) => lane.id));
+        const nextTabs: Record<string, LaneInspectorTab> = {};
+        const nextLaneWorkViews: Record<string, WorkProjectViewState> = {};
+        for (const [laneId, tab] of Object.entries(prev.laneInspectorTabs)) {
+          if (allowed.has(laneId)) nextTabs[laneId] = tab as LaneInspectorTab;
+        }
+        for (const [scopeKey, viewState] of Object.entries(prev.laneWorkViewByScope)) {
+          if (!projectKey || !scopeKey.startsWith(`${projectKey}::`)) {
+            nextLaneWorkViews[scopeKey] = viewState;
+            continue;
+          }
+          const laneId = scopeKey.slice(projectKey.length + 2);
+          if (allowed.has(laneId)) {
+            nextLaneWorkViews[scopeKey] = viewState;
+          }
+        }
+        const nextSnapshots: LaneListSnapshot[] =
+          laneSnapshots ??
+          prev.laneSnapshots.filter((snapshot) => allowed.has(snapshot.lane.id));
+        return {
+          laneSnapshots: nextSnapshots,
+          lanes,
+          selectedLaneId: nextSelected,
+          runLaneId: nextRunLane,
+          laneInspectorTabs: nextTabs,
+          laneWorkViewByScope: nextLaneWorkViews,
+        };
+      });
+    };
+
+    if (laneRefreshInFlight) {
+      const activeRequest = activeLaneRefreshRequest;
+      const activeSatisfies = activeRequest != null && (activeRequest.includeStatus || !request.includeStatus);
+      if (!activeSatisfies) {
+        pendingLaneRefreshRequest = pendingLaneRefreshRequest
+          ? mergeLaneRefreshRequests(pendingLaneRefreshRequest, request)
+          : request;
+      }
+      await laneRefreshInFlight;
       return;
     }
-    const lanes = laneSnapshots.map((snapshot) => snapshot.lane);
-    const projectKey = normalizeProjectKey(get().project?.rootPath);
-    if (projectKey !== requestedProjectKey) {
-      return;
-    }
-    const selected = get().selectedLaneId;
-    const runLane = get().runLaneId;
-    const nextSelected = selected && lanes.some((l) => l.id === selected) ? selected : lanes[0]?.id ?? null;
-    const nextRunLane = runLane && lanes.some((l) => l.id === runLane) ? runLane : nextSelected;
-    set((prev) => {
-      const allowed = new Set(lanes.map((lane) => lane.id));
-      const nextTabs: Record<string, LaneInspectorTab> = {};
-      const nextLaneWorkViews: Record<string, WorkProjectViewState> = {};
-      for (const [laneId, tab] of Object.entries(prev.laneInspectorTabs)) {
-        if (allowed.has(laneId)) nextTabs[laneId] = tab as LaneInspectorTab;
+
+    laneRefreshInFlight = (async () => {
+      let nextRequest: LaneRefreshRequest | null = request;
+      while (nextRequest) {
+        activeLaneRefreshRequest = nextRequest;
+        pendingLaneRefreshRequest = null;
+        await runRefresh(nextRequest);
+        nextRequest = pendingLaneRefreshRequest;
       }
-      for (const [scopeKey, viewState] of Object.entries(prev.laneWorkViewByScope)) {
-        if (!projectKey || !scopeKey.startsWith(`${projectKey}::`)) {
-          nextLaneWorkViews[scopeKey] = viewState;
-          continue;
-        }
-        const laneId = scopeKey.slice(projectKey.length + 2);
-        if (allowed.has(laneId)) {
-          nextLaneWorkViews[scopeKey] = viewState;
-        }
-      }
-      return {
-        laneSnapshots,
-        lanes,
-        selectedLaneId: nextSelected,
-        runLaneId: nextRunLane,
-        laneInspectorTabs: nextTabs,
-        laneWorkViewByScope: nextLaneWorkViews,
-      };
+    })().finally(() => {
+      laneRefreshInFlight = null;
+      activeLaneRefreshRequest = null;
+      pendingLaneRefreshRequest = null;
     });
+
+    await laneRefreshInFlight;
   },
 
   refreshProviderMode: async () => {
