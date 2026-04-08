@@ -47,7 +47,7 @@ type SharedServer = {
 };
 
 let sharedServer: SharedServer | null = null;
-let probeInFlight: Promise<{ modelIds: string[]; providers: OpenCodeProviderInfo[]; error: string | null; descriptors: ModelDescriptor[] }> | null = null;
+const probeInFlightMap = new Map<string, Promise<{ modelIds: string[]; providers: OpenCodeProviderInfo[]; error: string | null; descriptors: ModelDescriptor[] }>>();
 
 function forceKillServer(server: { close(): void }): void {
   try {
@@ -161,10 +161,12 @@ export async function probeOpenCodeProviderInventory(args: {
     };
   }
 
-  // Deduplicate concurrent probe calls
-  if (probeInFlight) return probeInFlight;
+  // Deduplicate concurrent probe calls keyed by config + project
+  const probeKey = `${args.projectRoot}::${fp}`;
+  const existing = probeInFlightMap.get(probeKey);
+  if (existing) return existing;
 
-  probeInFlight = (async () => {
+  const probePromise = (async () => {
     try {
       const config = buildOpenCodeMergedConfig({
         projectConfig: args.projectConfig,
@@ -215,7 +217,7 @@ export async function probeOpenCodeProviderInventory(args: {
           const mid = typeof model.id === "string" ? model.id.trim() : "";
           if (!mid.length) continue;
           // For local providers, only include models that are actively loaded.
-          if (isLocal && allowedModels && !allowedModels.has(mid)) continue;
+          if (isLocal && (!allowedModels || !allowedModels.has(mid))) continue;
           const raw = model as Record<string, unknown>;
           const variantKeys = extractVariantKeys(raw);
           const displayName = typeof model.name === "string" && model.name.trim().length ? model.name.trim() : undefined;
@@ -274,11 +276,12 @@ export async function probeOpenCodeProviderInventory(args: {
       };
       return { modelIds: [], providers: [], error: message, descriptors: [] };
     } finally {
-      probeInFlight = null;
+      probeInFlightMap.delete(probeKey);
     }
   })();
 
-  return probeInFlight;
+  probeInFlightMap.set(probeKey, probePromise);
+  return probePromise;
 }
 
 /** Read cached inventory without starting a server (may be stale or for a different project/config). */

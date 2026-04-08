@@ -10732,9 +10732,9 @@ export function createOrchestratorService({
           message: diagnostic.message,
           detail: diagnostic.details ?? null,
         }));
-      const completionBlockers = [...validation.blockers, ...evaluationBlockers];
+      const completionBlockers = [...(args.force ? [] : validation.blockers), ...evaluationBlockers];
       const completionReady =
-        validation.canComplete
+        (validation.canComplete || args.force)
         && evaluationBlockers.length === 0
         && (!hasConfiguredPhaseEvaluation || evaluation.completionReady);
 

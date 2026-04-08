@@ -1456,7 +1456,7 @@ describe("orchestrator smoke", () => {
         const allStepsDone = userManagedSteps.length > 0 && userManagedSteps.every(
           (s) => s.status === "succeeded" || s.status === "skipped" || s.status === "failed" || s.status === "canceled"
         );
-        if (allStepsDone && (status === "active" || status === "completing" || status === "bootstrapping")) {
+        if (allStepsDone && (status === "active" || status === "completing" || status === "bootstrapping" || status === "paused")) {
           aiOrchestratorService.finalizeRun({ runId, force: true });
           const afterFinalize = orchestratorService.getRunGraph({ runId, timelineLimit: 0 }).run.status;
           if (afterFinalize === "succeeded" || afterFinalize === "failed" || afterFinalize === "canceled") {

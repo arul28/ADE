@@ -245,10 +245,10 @@ describe("authDetector", () => {
         if (url === "http://lmstudio.example:1234/v1/models") {
           return new Response(JSON.stringify({ data: [] }), { status: 200 });
         }
-        if (url === "http://localhost:1234/api/v1/models") {
+        if (url === "http://127.0.0.1:1234/api/v1/models") {
           return new Response("{}", { status: 404 });
         }
-        if (url === "http://localhost:1234/v1/models") {
+        if (url === "http://127.0.0.1:1234/v1/models") {
           return new Response(JSON.stringify({
             data: [{ id: "gemma-4" }],
           }), { status: 200 });
@@ -270,7 +270,7 @@ describe("authDetector", () => {
     expect(auth).toContainEqual(expect.objectContaining({
       type: "local",
       provider: "lmstudio",
-      endpoint: "http://localhost:1234",
+      endpoint: "http://127.0.0.1:1234",
       endpointSource: "auto",
       preferredModelId: "lmstudio/gemma-4",
     }));

@@ -265,7 +265,7 @@ describe("useWorkSessions — grouping defaults and derived tab order", () => {
         toolType: "claude-chat" as const,
         title: "Alpha",
         status: "running" as const,
-        startedAt: isoDaysAgo(0, 2),
+        startedAt: isoDaysAgo(0),
         endedAt: null,
         exitCode: null,
         transcriptPath: "",

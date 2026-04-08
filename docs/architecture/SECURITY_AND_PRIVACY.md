@@ -2,7 +2,7 @@
 
 > Roadmap reference: `docs/final-plan/README.md` is the canonical future plan and sequencing source.
 
-> Last updated: 2026-03-15
+> Last updated: 2026-04-07
 
 This document describes how ADE protects user data, source code, and development workflows. ADE is a fully local-first desktop application — all code, configuration, and AI processing remain on the user's machine.
 
@@ -28,7 +28,7 @@ This document describes how ADE protects user data, source code, and development
 
 ## Overview
 
-ADE's security architecture is built on the principle of local-first data sovereignty. All source code, configuration, and development state remain on the user's machine. No data leaves the local environment unless the user explicitly invokes an AI-powered feature, in which case the Vercel AI SDK spawns local CLI tools (Claude Code, Codex) that communicate with their respective services using the user's own existing subscriptions.
+ADE's security architecture is built on the principle of local-first data sovereignty. All source code, configuration, and development state remain on the user's machine. No data leaves the local environment unless the user explicitly invokes an AI-powered feature, in which case ADE spawns local CLI tools (Claude Code, Codex) or routes through the local OpenCode server to communicate with their respective services using the user's own existing subscriptions or API keys.
 
 The architecture addresses threats across multiple layers: process isolation within the Electron application, secret protection in AI context exports, command trust for shared configuration, and proposal safety for AI-generated changes.
 
@@ -38,7 +38,7 @@ The architecture addresses threats across multiple layers: process isolation wit
 
 ### Why Local-First?
 
-Developers' source code is their most sensitive asset. Cloud-first architectures require users to trust a third party with their entire codebase, which is unacceptable for many organizations and individuals. ADE keeps everything local — AI features are powered by spawning CLI tools that the developer already has installed and subscribed to, using the Vercel AI SDK. No ADE-operated cloud service ever sees the user's code.
+Developers' source code is their most sensitive asset. Cloud-first architectures require users to trust a third party with their entire codebase, which is unacceptable for many organizations and individuals. ADE keeps everything local -- AI features are powered by spawning CLI tools that the developer already has installed and subscribed to, or by routing through the local OpenCode server for API-key and local model providers. No ADE-operated cloud service ever sees the user's code.
 
 ### Why Strict Process Isolation?
 
@@ -62,7 +62,7 @@ The following five principles guide all security-related design decisions in ADE
 
 | Principle | Description |
 |-----------|-------------|
-| **Local-first** | All code stays on the user's machine. AI runs locally via CLI tools (Claude Code, Codex) using existing subscriptions through the Vercel AI SDK. No ADE-operated cloud service is involved. |
+| **Local-first** | All code stays on the user's machine. AI runs locally via CLI tools (Claude Code, Codex) using existing subscriptions, or through the local OpenCode server for API-key and local model providers. No ADE-operated cloud service is involved. |
 | **Least privilege** | The renderer process has zero direct system access. The main process services expose only typed, validated operations through a strict IPC allowlist. |
 | **AI via local CLI** | AI features are powered by spawning `claude` and `codex` CLI processes locally. ADE never holds or transmits API keys — CLI tools use their own authenticated sessions. |
 | **Audit trail** | Every operation is recorded with timestamps, SHA transitions, and metadata for full traceability and undo capability. |
@@ -176,7 +176,7 @@ ADE keeps CLI-backed authentication with the tools themselves (Claude Code, Code
 
 #### AI Context Exports (Bounded Payloads)
 
-When AI features are invoked via the Vercel AI SDK, ADE's inputs are **token-budgeted context exports**, not raw pack dumps or transcript slabs.
+When AI features are invoked, ADE's inputs are **token-budgeted context exports**, not raw pack dumps or transcript slabs.
 
 - Lane narrative generation uses `LaneExportStandard` (bounded).
 - Conflict proposals use `LaneExportLite` (lane + optional peer) and `ConflictExportStandard` (bounded).
@@ -201,7 +201,7 @@ See [CONFIGURATION.md](./CONFIGURATION.md) for the full trust model specificatio
 
 ### Proposal Safety
 
-When the AI orchestrator generates proposals (conflict resolutions, PR descriptions) via the Vercel AI SDK, the following safety measures ensure the user maintains full control.
+When the AI orchestrator generates proposals (conflict resolutions, PR descriptions), the following safety measures ensure the user maintains full control.
 
 **Preview before apply**: All proposals are displayed as diffs in the desktop UI before any changes are made to the repository. The user explicitly chooses to apply or discard each proposal.
 
@@ -321,7 +321,7 @@ Memories follow a lifecycle: `candidate` --> `promoted` --> `archived`. This pre
 
 ### AI Orchestrator
 
-- **Vercel AI SDK**: Spawns `claude` and `codex` CLI processes for AI tasks
+- **Provider task runner**: Spawns `claude` and `codex` CLI processes, or routes through the local OpenCode server for API-key/local models
 - **MCP Server**: Exposes ADE tools to the AI orchestrator
 - **Redaction**: Secret patterns stripped from context exports before AI invocation
 - **Bounded exports**: Token-budgeted context payloads prevent excessive data exposure

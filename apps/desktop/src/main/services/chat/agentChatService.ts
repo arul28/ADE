@@ -10213,7 +10213,7 @@ export function createAgentChatService(args: {
       ? modelId
       : resolveModelIdFromStoredValue(normalizedInputModel, provider);
 
-    if (provider === "opencode" && !resolvedModelId) {
+    if (provider === "opencode" && !resolvedModelId && !modelId?.endsWith("/auto")) {
       throw new Error("OpenCode chat requires a known model ID. Select a model from the registry.");
     }
 

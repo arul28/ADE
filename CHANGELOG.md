@@ -7,22 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.13] - 2026-04-07
+
 ### Added
 
-- **Packed session grid** — resizable tile layout for the Work view with per-session column/row spans, drag-handle resizing on all edges and corners, and a bin-packing algorithm for compact arrangement (`PackedSessionGrid`, `packedSessionGridMath`)
-- **Multi-select agent questions** — `AgentQuestionModal` now supports toggling multiple predefined options per question, with a Markdown/HTML preview pane for selected option descriptions (via `ReactMarkdown` + `rehype-sanitize`)
-- **New Chat quick-create** — faster optimistic session opening from the Work view with immediate tab activation before the backend session is ready
-- **Turn recap** — `chatTranscriptRows` emits a `turn_recap` summary row at the end of each turn, aggregating tool invocation counts and status
-- **Claude tool-use tracking** — per-invocation lifecycle tracking via `toolUseID`; `tool_use_start` and `tool_use_complete` events enable per-tool status indicators in the work log
-- **MCP initialize probe** — Claude runtime pre-checks MCP server availability before starting a session
+- **OpenCode runtime integration** — replaced the Vercel AI SDK unified executor with direct OpenCode server integration; all non-CLI providers (API-key, OpenRouter, local) now route through the OpenCode server via `@opencode-ai/sdk`
+- **OpenCode binary manager** — resolves OpenCode binary from user-installed PATH or bundled fallback, with process-lifetime caching (`openCodeBinaryManager.ts`)
+- **OpenCode model catalog** — dynamic model discovery from OpenCode CLI with verbose JSON parsing and plain-text fallback (`openCodeModelCatalog.ts`)
+- **OpenCode provider inventory** — probes connected providers and available models with shared server pooling, idle TTL, and deduped in-flight requests (`openCodeInventory.ts`)
+- **Provider task runner** — unified 306-line task runner dispatching to Claude, Codex, Cursor, and OpenCode paths with timeout enforcement and permission mode mapping (`providerTaskRunner.ts`)
+- **Tool exposure policy** — score-based heuristics for frontend repo discovery tool exposure based on prompt content analysis (`toolExposurePolicy.ts`)
+- **Runtime message types** — provider-agnostic message representation decoupling ADE internals from SDK types (`runtimeMessageTypes.ts`)
+- **CLI MCP config normalization** — normalizes MCP server config between Claude (`type`) and Codex (`transport`) field formats (`cliMcpConfig.ts`)
+- **Local provider discovery pipeline** — endpoint probing, model inspection, capability inference, harness profile assignment, and TTL-based caching for Ollama and LM Studio
+- **900+ lines of new tool tests** — `globSearch.test.ts` (219 lines), `grepSearch.test.ts` (276 lines), `readFileRange.test.ts` (197 lines), expanded `universalTools.test.ts` (+364 lines)
+- **Compaction engine tests** — 526-line test suite covering transcript persistence, compaction triggering, and token accounting
+- **Local model discovery tests** — 486-line test suite covering endpoint probing, capability inference, and cache invalidation
 
 ### Changed
 
-- **Terminal renderer fallback** — simplified from three tiers (WebGL/canvas/DOM) to two (WebGL-first with DOM fallback); added fit recovery with retry on invalid dimensions and `fitRecoveries` health counter
-- **Work log headings** — human-readable labels (e.g. "Read utils.ts", "Run shell", "Write index.ts") replace generic tool identifiers; default visible entries increased from 1 to 4
-- **Model catalog filtering** — `UnifiedModelSelector` accepts `catalogMode: "available-only"` to restrict the picker to models available via configured providers
-- **Git stash actions** — stash pop, drop, and clear now refresh workspace metadata after completion
-- **Composer sizing** — new compact and grid-tile sizing modes in `ChatComposerShell`
+- **Model registry** — `ProviderFamily` expanded with `"opencode"`; `ModelProviderGroup` changed from `"claude" | "codex" | "unified" | "cursor"` to `"claude" | "codex" | "opencode" | "cursor"`; new `openCodeProviderId` and `openCodeModelId` fields on `ModelDescriptor`
+- **AI integration service** — uses OpenCode inventory for runtime discovery; dynamic model descriptors replaced via `replaceDynamicOpenCodeModelDescriptors`
+- **Compaction engine** — uses `runOpenCodeTextPrompt` instead of the removed Vercel AI SDK path
+- **Agent chat service** — restructured runtime management per provider group (+2,284/-2,284 lines)
+- **Local model chat** — shared `LOCAL_PROVIDER_LABELS` helpers, merged CLI/local runtime banners, permission mode reset on harness profile change
+
+### Fixed
+
+- **Claude stream idle timeout** — removed entirely (was 75s, then 300s); long tool calls no longer risk timeout
+- **Session list cache cross-tab** — creating a session invalidates the cache in all windows
+- **Local model banner stacking** — CLI and local banners merged instead of stacking
+
+### Removed
+
+- Vercel AI SDK packages (`@ai-sdk/anthropic`, `@ai-sdk/google`, `@ai-sdk/openai`, `ai`)
+- `providerResolver.ts`, `unifiedExecutor.ts`, `unifiedSessionProcessor.ts`, `middleware.ts`, `adeProviderRegistry.ts`, `tools/index.ts`, `verify-ai-sdks.cjs` and their test suites
 
 ## [1.0.2] - 2026-03-15
 
@@ -89,6 +108,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Initial public release.
 
+[1.0.13]: https://github.com/arul28/ADE/compare/v1.0.12...v1.0.13
 [1.0.2]: https://github.com/arul28/ADE/compare/v1.0.1...v1.0.2
 [1.0.1]: https://github.com/arul28/ADE/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/arul28/ADE/releases/tag/v1.0.0

@@ -275,21 +275,29 @@ async function runCursorTask(args: ProviderTaskRunnerArgs): Promise<ProviderTask
 }
 
 async function runOpenCodeTask(args: ProviderTaskRunnerArgs): Promise<ProviderTaskRunnerResult> {
-  const result = await runOpenCodeTextPrompt({
-    directory: args.cwd,
-    title: `ADE ${args.feature}`,
-    projectConfig: args.projectConfig,
-    modelDescriptor: args.descriptor,
-    prompt: appendStructuredOutputInstruction(args.prompt, args.jsonSchema),
-    system: args.system,
-  });
-  return {
-    text: result.text,
-    structuredOutput: args.jsonSchema ? parseStructuredOutput(result.text) : null,
-    sessionId: null,
-    inputTokens: result.inputTokens,
-    outputTokens: result.outputTokens,
-  };
+  const timeoutMs = args.timeoutMs ?? 120_000;
+  const controller = new AbortController();
+  const timeoutHandle = setTimeout(() => controller.abort(new Error(`OpenCode task timed out after ${timeoutMs}ms.`)), timeoutMs);
+  try {
+    const result = await runOpenCodeTextPrompt({
+      directory: args.cwd,
+      title: `ADE ${args.feature}`,
+      projectConfig: args.projectConfig,
+      modelDescriptor: args.descriptor,
+      prompt: appendStructuredOutputInstruction(args.prompt, args.jsonSchema),
+      system: args.system,
+      signal: controller.signal,
+    });
+    return {
+      text: result.text,
+      structuredOutput: args.jsonSchema ? parseStructuredOutput(result.text) : null,
+      sessionId: null,
+      inputTokens: result.inputTokens,
+      outputTokens: result.outputTokens,
+    };
+  } finally {
+    clearTimeout(timeoutHandle);
+  }
 }
 
 export async function runProviderTask(args: ProviderTaskRunnerArgs): Promise<ProviderTaskRunnerResult> {
