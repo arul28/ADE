@@ -168,7 +168,7 @@
       "entitlementsInherit": "build/entitlements.mac.inherit.plist",
       "notarize": true,
       "mergeASARs": true,
-      "x64ArchFiles": "{Contents/Resources/app.asar.unpacked/node_modules/**/*darwin*/**/*,Contents/Resources/app.asar.unpacked/vendor/**/*darwin*/**/*,Contents/Resources/app.asar.unpacked/node_modules/@anthropic-ai/claude-agent-sdk/vendor/**/*,Contents/Resources/app.asar.unpacked/node_modules/@img/sharp-darwin-*/**/*,Contents/Resources/app.asar.unpacked/node_modules/@img/sharp-libvips-darwin-*/**/*,Contents/Resources/app.asar.unpacked/node_modules/@openai/codex-darwin-*/**/*,Contents/Resources/app.asar.unpacked/node_modules/node-pty/**/*}"
+      "x64ArchFiles": "{Contents/Resources/app.asar.unpacked/node_modules/**/*darwin*/**/*,Contents/Resources/app.asar.unpacked/vendor/**/*darwin*/**/*,Contents/Resources/app.asar.unpacked/node_modules/@anthropic-ai/claude-agent-sdk/vendor/**/*,Contents/Resources/app.asar.unpacked/node_modules/@img/sharp-darwin-*/**/*,Contents/Resources/app.asar.unpacked/node_modules/@img/sharp-libvips-darwin-*/**/*,Contents/Resources/app.asar.unpacked/node_modules/node-pty/**/*}"
     }
   }
 }
