@@ -217,8 +217,8 @@ async function validatePackagedRuntime(appPath, description) {
       `[release:mac] Packaged smoke could not start Claude from the packaged app: ${String(payload.claudeStartup.message || "unknown error")}`
     );
   }
-  if (payload?.codexFactory !== "function") {
-    throw new Error(`[release:mac] Packaged smoke expected Codex provider factory to be available, got ${String(payload?.codexFactory)}`);
+  if (payload?.codexExecutable !== "function") {
+    throw new Error(`[release:mac] Packaged smoke expected Codex executable resolver to be available, got ${String(payload?.codexExecutable)}`);
   }
   if (payload?.launchMode !== "bundled_proxy") {
     throw new Error(`[release:mac] Packaged smoke expected bundled_proxy launch mode, got ${String(payload?.launchMode)}`);
