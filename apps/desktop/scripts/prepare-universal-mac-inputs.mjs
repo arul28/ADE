@@ -222,12 +222,6 @@ async function seedFromAppBundle(x64AppPath) {
   );
   await copyFromAppBundle(
     x64AppPath,
-    "Contents/Resources/app.asar.unpacked/node_modules/@openai/codex-darwin-x64",
-    "node_modules/@openai/codex-darwin-x64",
-    "Codex CLI x64 package",
-  );
-  await copyFromAppBundle(
-    x64AppPath,
     "Contents/Resources/app.asar.unpacked/vendor/crsqlite/darwin-x64",
     "vendor/crsqlite/darwin-x64",
     "crsqlite x64 payload",
@@ -248,12 +242,6 @@ async function seedFromLockfileAndPinnedArtifacts() {
     "node_modules/@img/sharp-libvips-darwin-x64",
     "sharp libvips x64 package",
   );
-  await seedPackageFromResolvedUrl(
-    packageLock,
-    "node_modules/@openai/codex-darwin-x64",
-    "node_modules/@openai/codex-darwin-x64",
-    "Codex CLI x64 package",
-  );
   await seedCrsqliteDarwinX64();
 }
 
@@ -265,10 +253,6 @@ async function assertUniversalInputsReady() {
   await assertPathExists(
     path.join(appDir, "node_modules", "@img", "sharp-libvips-darwin-x64", "lib", "libvips-cpp.8.17.3.dylib"),
     "x64 sharp libvips runtime",
-  );
-  await assertPathExists(
-    path.join(appDir, "node_modules", "@openai", "codex-darwin-x64", "vendor", "x86_64-apple-darwin", "codex", "codex"),
-    "x64 Codex CLI binary",
   );
   await assertPathExists(
     path.join(
