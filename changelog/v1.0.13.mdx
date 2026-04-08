@@ -1,0 +1,186 @@
+---
+title: "v1.0.13"
+description: "Release notes for ADE v1.0.13 — April 7, 2026"
+---
+
+The largest architecture change since launch. v1.0.13 replaces the Vercel AI SDK unified executor with direct OpenCode server integration, consolidates all non-CLI providers under a single runtime, adds a full local model discovery pipeline, and introduces 900+ lines of new tool tests.
+
+---
+
+## OpenCode Runtime Integration
+
+<Note>
+  This is PR [#142](https://github.com/arul28/ADE/pull/142) -- the headline change of this release. It touches 250 files across +19,400 / -10,500 lines.
+</Note>
+
+### Unified provider system
+
+The previous architecture maintained separate execution paths: CLI-wrapped providers (Claude CLI, Codex CLI) spawned as subprocesses, while API-key and local models ran through an in-process Vercel AI SDK executor with per-provider adapters (`@ai-sdk/anthropic`, `@ai-sdk/openai`, etc.). This split required ADE to manage SDK versions, adapter quirks, and streaming behavior for each provider independently.
+
+v1.0.13 replaces the in-process SDK path with the **OpenCode server** -- a local model routing server that handles all non-CLI providers through a single runtime. The `ModelProviderGroup` type is now `"claude" | "codex" | "opencode" | "cursor"`, replacing the previous `"unified"` group.
+
+**Removed modules:**
+- `providerResolver.ts` and its test suite -- 650+ lines of per-provider adapter wiring
+- `unifiedExecutor.ts` -- 600-line Vercel AI SDK executor
+- `unifiedSessionProcessor.ts` -- 388-line session processor
+- `unifiedToolLoopGovernor.ts` -- tool loop governor (rewritten into providerTaskRunner)
+- `middleware.ts` -- 458-line Vercel AI SDK middleware layer
+- `adeProviderRegistry.ts` -- per-provider registry
+- `tools/index.ts` -- static tool index (tools are now composed dynamically)
+- `verify-ai-sdks.cjs` -- SDK verification script
+
+**New modules:**
+- `providerTaskRunner.ts` -- 306-line provider-routed task runner with Claude, Codex, Cursor, and OpenCode paths, each with proper timeout enforcement and permission mode mapping
+- `opencode/openCodeRuntime.ts` -- OpenCode SDK client for streaming sessions, text prompts, and server lifecycle management
+- `opencode/openCodeInventory.ts` -- Provider inventory probing with shared server pooling, idle TTL, and deduped in-flight requests
+- `opencode/openCodeModelCatalog.ts` -- Dynamic model catalog parsing from OpenCode CLI output with verbose JSON and plain-text fallback
+- `opencode/openCodeBinaryManager.ts` -- Binary resolution with user-installed and bundled fallback paths, cached across process lifetime
+
+### Model catalog and dynamic discovery
+
+ADE now discovers available models at runtime by querying the OpenCode server's provider and model inventory. The `enrichModelRegistry` function merges discovered models into the static registry, and `replaceDynamicOpenCodeModelDescriptors` swaps placeholder entries for real model descriptors with accurate context windows, output limits, and reasoning tier metadata.
+
+The model registry (`modelRegistry.ts`) gained new fields:
+- `openCodeProviderId` -- upstream provider identifier for OpenCode server routing
+- `openCodeModelId` -- model identifier as reported by OpenCode (may contain `/`)
+- `encodeOpenCodeRegistryId` / `decodeOpenCodeRegistryId` -- stable encoding for registry IDs that contain provider/model path separators
+
+### Tool exposure policy
+
+New `toolExposurePolicy.ts` module implements score-based heuristics for deciding which tools to expose to the model based on prompt content. Frontend repository discovery tools (`findRoutingFiles`, `findPageComponents`, `findAppEntryPoints`, `summarizeFrontendStructure`) are only exposed when the prompt scores >= 2 on a weighted signal system:
+
+- **High-confidence signals** (score +2 each): "website", "web app", "frontend", "react", "tsx/jsx", "ui", "navbar", "sidebar", "layout", "css/html"
+- **Supporting signals** (score +1 each): "page", "screen", "component", "route", "navigation", "menu", "header/footer", "button/form/modal"
+
+### Permission mode mapping
+
+The `providerTaskRunner` maps ADE's `AgentPermissionMode` to each provider's native permission scheme:
+
+| ADE Mode | Claude CLI | Codex CLI | Cursor CLI | OpenCode |
+|----------|-----------|-----------|------------|----------|
+| `full-auto` | `bypassPermissions` | `danger-full-access` | _(default)_ | `ade-full-auto` profile |
+| `edit` | `acceptEdits` | `workspace-write` | _(default)_ | `ade-edit` profile |
+| `read-only` / `plan` | `plan` | `read-only` | `ask` mode | `ade-plan` profile |
+
+### Runtime message types
+
+New `runtimeMessageTypes.ts` decouples ADE's internal message representation from provider-specific SDK types:
+
+```typescript
+type RuntimeUserContent =
+  | string
+  | Array<RuntimeTextPart | RuntimeImagePart | RuntimeFilePart>;
+
+type RuntimeModelMessage = {
+  role: "user" | "assistant";
+  content: RuntimeUserContent;
+};
+```
+
+This allows the agent chat service to operate on a stable internal contract regardless of which provider runtime is active.
+
+### CLI MCP config normalization
+
+New `cliMcpConfig.ts` normalizes MCP server configuration between Claude (`type` field) and Codex (`transport` field) formats, ensuring consistent MCP server wiring regardless of which CLI provider is executing.
+
+---
+
+## New Tool System
+
+### globSearch, grepSearch, readFileRange overhaul
+
+All three core file-access tools were rewritten with hardened input validation, path containment checks, and proper error handling. Each tool now uses the `executableTool` pattern (typed with Zod schemas) and integrates with the project root containment system.
+
+### 900+ lines of new tool tests
+
+- `globSearch.test.ts` -- 219 lines covering pattern matching, symlink traversal prevention, and empty results
+- `grepSearch.test.ts` -- 276 lines covering regex search, binary file filtering, and match context extraction
+- `readFileRange.test.ts` -- 197 lines covering range reads, boundary conditions, and encoding edge cases
+- `universalTools.test.ts` -- expanded by 364 lines with new coverage for tool composition, permission gating, and sandbox configuration
+
+### Compaction engine tests
+
+New 526-line `compactionEngine.test.ts` covering transcript persistence, compaction triggering, summary generation, and token accounting.
+
+### Local model discovery tests
+
+New 486-line `localModelDiscovery.test.ts` covering endpoint probing for Ollama and LM Studio, model capability inference, harness profile assignment, and cache invalidation.
+
+---
+
+## Local AI Runtime
+
+### Local provider discovery pipeline
+
+New end-to-end local provider detection system (`localModelDiscovery.ts`, expanded from 80 to 381 lines):
+
+- **Endpoint probing** -- HTTP health checks against Ollama (`localhost:11434`) and LM Studio (`localhost:1234`) with configurable endpoints per project config
+- **Model inspection** -- Queries `/v1/models` or `/api/tags` to enumerate loaded models with metadata (context window, capabilities, loaded/installed state)
+- **Capability inference** -- Infers `ModelCapabilities` (tools, vision, reasoning, streaming) from model name heuristics and provider metadata
+- **Harness profile assignment** -- Assigns `verified`, `guarded`, or `read_only` profiles based on model trust level
+- **TTL-based caching** -- 30-second cache with generation-based invalidation and explicit reset
+
+### Runtime connections
+
+`AiIntegrationStatus` now includes `runtimeConnections` describing all available connection types:
+
+- `cli` -- Claude/Codex/Cursor CLI with subscription auth
+- `api-key` -- Direct API key providers (Anthropic, OpenAI, Google, etc.)
+- `local` -- Ollama/LM Studio endpoints with model inventory
+- `openrouter` -- OpenRouter aggregated access
+
+### Structured prompts for local models
+
+Local model sessions now receive structured system prompts tuned for models with smaller context windows and varying tool capabilities. The harness profile (`verified`/`guarded`/`read_only`) determines which tools are exposed and what permission boundaries are enforced.
+
+---
+
+## Agent Chat Service
+
+### Chat runtime management
+
+The agent chat service (`agentChatService.ts`, net +2,284/-2,284 lines restructured) now manages chat runtimes per provider group. Runtime selection is determined at session creation based on the selected model's provider group, and the session tracks its runtime throughout its lifecycle.
+
+### Terminal session signals
+
+`terminalSessionSignals.ts` expanded with new signal types for terminal session lifecycle management, enabling tighter integration between chat sessions and their associated terminal processes.
+
+### Session list cache invalidation
+
+Cross-tab session list cache is now invalidated when creating new sessions, preventing stale session lists in multi-window scenarios.
+
+---
+
+## Fixes
+
+- **Claude stream idle timeout removed** -- Previously, Claude streaming sessions had a 75-second idle timeout that was increased to 300 seconds, then removed entirely. Long-running tool calls (builds, test suites) no longer risk timeout mid-execution
+- **Session list cache cross-tab sync** -- Creating a session in one window now invalidates the session list cache in all other windows, preventing stale or missing entries
+- **Local model banner merge** -- CLI and local runtime banners in the chat pane are now merged instead of stacking, reducing visual noise when multiple provider types are detected
+- **Permission mode reset** -- Unified permission mode is now reset when the harness profile recommendation changes due to model switching, preventing stale permission grants
+- **Auth detector hardening** -- `authDetector.ts` gained 41 lines of new tests and improved error handling for edge cases in CLI auth detection
+
+---
+
+## Changed
+
+- **Model registry** -- `ProviderFamily` type expanded with `"opencode"` family. `ModelProviderGroup` changed from `"claude" | "codex" | "unified" | "cursor"` to `"claude" | "codex" | "opencode" | "cursor"`. All `isCliWrapped: false` models now route through the OpenCode server instead of in-process SDK adapters
+- **AI integration service** -- Imports `clearOpenCodeInventoryCache`, `probeOpenCodeProviderInventory`, `resolveOpenCodeBinary` for runtime discovery. `detectAllAuth` and model resolution updated to use OpenCode inventory results. Dynamic model descriptors replaced via `replaceDynamicOpenCodeModelDescriptors`
+- **Agent executor** -- Simplified to delegate to `providerTaskRunner` instead of maintaining per-provider executor classes
+- **Compaction engine** -- Now uses `runOpenCodeTextPrompt` for compaction summaries instead of the removed Vercel AI SDK path
+- **CTO identity** -- Updated version and identity file structure
+- **Test setup** -- Global test setup files updated with new mocks for OpenCode modules and removed Vercel AI SDK mocks
+- **Package dependencies** -- Removed `@ai-sdk/anthropic`, `@ai-sdk/google`, `@ai-sdk/openai`, `ai` (Vercel AI SDK). Added `@opencode-ai/sdk`
+
+---
+
+## Removed
+
+- **Vercel AI SDK dependency** -- `@ai-sdk/anthropic`, `@ai-sdk/google`, `@ai-sdk/openai`, and the core `ai` package removed from `package.json` (-320 lines from lockfile)
+- **`verify-ai-sdks.cjs`** -- Build-time SDK verification script (89 lines)
+- **`adeProviderRegistry.ts`** -- Per-provider adapter registry (31 lines)
+- **`providerResolver.ts`** and tests -- Provider resolution layer (446 + 237 lines)
+- **`unifiedExecutor.ts`** and tests -- Vercel AI SDK executor (600 + 75 lines)
+- **`unifiedSessionProcessor.ts`** and tests -- Session processing layer (388 + 67 lines)
+- **`unifiedToolLoopGovernor.ts`** tests -- Governor tests (130 lines, governor rewritten)
+- **`middleware.ts`** and tests -- Vercel AI SDK middleware (458 + 115 lines)
+- **`tools/index.ts`** -- Static tool index (35 lines)

@@ -41,7 +41,7 @@ function makeAttempt(overrides: Partial<OrchestratorAttempt> & { id: string; ste
   return {
     runId: "run-1",
     status: "queued",
-    executorKind: "unified",
+    executorKind: "opencode",
     executorSessionId: null,
     metadata: {},
     resultEnvelope: null,

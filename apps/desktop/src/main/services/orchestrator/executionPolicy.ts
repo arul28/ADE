@@ -31,7 +31,7 @@ import {
   DEFAULT_INTEGRATION_PR_POLICY
 } from "./orchestratorConstants";
 
-import { getDefaultModelDescriptor, getModelById } from "../../../shared/modelRegistry";
+import { getDefaultModelDescriptor, getModelById, resolveProviderGroupForModel } from "../../../shared/modelRegistry";
 import { TERMINAL_STEP_STATUSES, filterExecutionSteps } from "./orchestratorContext";
 
 // ─────────────────────────────────────────────────────
@@ -456,10 +456,10 @@ function hasMultipleLanes(steps: OrchestratorStep[]): boolean {
 // Model/executor helpers
 // ─────────────────────────────────────────────────────
 
-export function phaseModelToExecutorKind(model?: string | null, fallback: OrchestratorExecutorKind = "unified"): OrchestratorExecutorKind {
+export function phaseModelToExecutorKind(model?: string | null, fallback: OrchestratorExecutorKind = "opencode"): OrchestratorExecutorKind {
   if (!model) return fallback;
   const descriptor = getModelById(model);
-  if (descriptor) return "unified";
+  if (descriptor) return resolveProviderGroupForModel(descriptor);
   return fallback;
 }
 
@@ -744,7 +744,7 @@ export function buildExecutionPlanPreview(args: {
     const recoveryEnabled = recoveryPolicy.enabled && recoveryPhases.has(phaseName);
 
     const model = phaseSteps[0]?.model ?? "default";
-    const executorKind = phaseSteps[0]?.executorKind ?? "unified";
+    const executorKind = phaseSteps[0]?.executorKind ?? "opencode";
 
     const stepPreviews: ExecutionPlanStepPreview[] = phaseSteps.map((step) => ({
       stepKey: step.stepKey,
@@ -1106,7 +1106,7 @@ export function buildExecutionPlanPreviewFromPhases(args: {
     const recoveryEnabled = recoveryPolicy.enabled && recoveryPhases.has(phaseName);
 
     const model = phaseSteps[0]?.model ?? "default";
-    const executorKind = phaseSteps[0]?.executorKind ?? "unified";
+    const executorKind = phaseSteps[0]?.executorKind ?? "opencode";
 
     const stepPreviews: ExecutionPlanStepPreview[] = phaseSteps.map((step) => ({
       stepKey: step.stepKey,

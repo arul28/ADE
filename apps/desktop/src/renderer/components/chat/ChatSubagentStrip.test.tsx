@@ -45,11 +45,11 @@ describe("ChatSubagentStrip", () => {
       },
     ]);
 
-    expect(screen.getByText("Background agents")).not.toBeNull();
+    expect(screen.getByText("Agents")).not.toBeNull();
     expect(screen.getByText("1 bg")).not.toBeNull();
     expect(screen.queryByText("Inspect desktop IPC path")).toBeNull();
 
-    fireEvent.click(screen.getByRole("button", { name: /Background agents/i }));
+    fireEvent.click(screen.getByRole("button", { name: /Agents/i }));
 
     fireEvent.click(screen.getByRole("button", { name: /Inspect desktop IPC path/ }));
 
@@ -70,7 +70,7 @@ describe("ChatSubagentStrip", () => {
       },
     ]);
 
-    fireEvent.click(screen.getByRole("button", { name: /Background agents/i }));
+    fireEvent.click(screen.getByRole("button", { name: /Agents/i }));
     fireEvent.click(screen.getByRole("button", { name: /Check Claude warmup lifecycle/ }));
 
     expect(screen.getByText("Running. Last tool: functions.exec_command.")).not.toBeNull();

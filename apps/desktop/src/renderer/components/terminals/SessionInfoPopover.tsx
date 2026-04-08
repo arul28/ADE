@@ -13,6 +13,7 @@ import { sanitizeTerminalInlineText } from "../../lib/terminalAttention";
 import { formatToolTypeLabel, isChatToolType } from "../../lib/sessions";
 import { getTerminalRuntimeSnapshot } from "./TerminalView";
 import { SessionDeltaCard } from "./SessionDeltaCard";
+import { resolveTrackedCliResumeCommand } from "./cliLaunch";
 import { Button } from "../ui/Button";
 
 function runtimeStateLabel(state: TerminalSessionSummary["runtimeState"]): string {
@@ -71,6 +72,7 @@ export function SessionInfoPopover({
   const isChat = isChatToolType(session.toolType);
   const runtime = getTerminalRuntimeSnapshot(session.id);
   const health = runtime?.health ?? null;
+  const resumeCommand = resolveTrackedCliResumeCommand(session);
 
   // Position: try to place to the right, but clamp to viewport
   const left = Math.min(x + 8, window.innerWidth - 420);
@@ -148,14 +150,14 @@ export function SessionInfoPopover({
         ) : null}
 
         {/* Resume command */}
-        {session.status !== "running" && session.resumeCommand ? (
+        {session.status !== "running" && resumeCommand ? (
           <div className="rounded-lg border border-border/10 bg-card/60 backdrop-blur-sm p-2.5">
             <div className="mb-2 flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wider text-muted-fg/60">
               <Play size={12} weight="regular" />
               Resume command
             </div>
             <code className="block rounded border border-border/5 bg-[--color-surface-recessed] px-2.5 py-1.5 font-mono text-[11px] text-fg/80">
-              {session.resumeCommand}
+              {resumeCommand}
             </code>
             <div className="mt-2 flex items-center gap-1.5">
               <Button
@@ -170,7 +172,7 @@ export function SessionInfoPopover({
               <Button
                 variant="outline"
                 size="sm"
-                onClick={() => { navigator.clipboard.writeText(session.resumeCommand ?? "").catch(() => {}); }}
+                onClick={() => { navigator.clipboard.writeText(resumeCommand).catch(() => {}); }}
               >
                 <Clipboard size={14} weight="regular" />
                 Copy

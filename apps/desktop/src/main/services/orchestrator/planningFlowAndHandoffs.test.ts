@@ -148,7 +148,7 @@ describe("VAL-PLAN-001: Planning workers return plan payloads", () => {
         fullDocs: [],
         createTrackedSession: async () => ({ ptyId: "pty-1", sessionId: "session-1" }),
       },
-      "unified",
+      "opencode",
       {}
     );
 
@@ -186,7 +186,7 @@ describe("VAL-PLAN-001: Planning workers return plan payloads", () => {
         fullDocs: [],
         createTrackedSession: async () => ({ ptyId: "pty-1", sessionId: "session-1" }),
       },
-      "unified",
+      "opencode",
       {}
     );
 
@@ -270,7 +270,7 @@ describe("VAL-PLAN-003: Planner has ask_user available", () => {
         fullDocs: [],
         createTrackedSession: async () => ({ ptyId: "pty-1", sessionId: "session-1" }),
       },
-      "unified",
+      "opencode",
       {}
     );
 
@@ -298,7 +298,7 @@ describe("VAL-HAND-001: Succeeded attempts have worker digest", () => {
             stepIndex: 0,
             title: "Implement Alpha",
             laneId,
-            executorKind: "unified",
+            executorKind: "opencode",
             metadata: {
               modelId: "anthropic/claude-sonnet-4-6",
               lastResultReport: {
@@ -319,7 +319,7 @@ describe("VAL-HAND-001: Succeeded attempts have worker digest", () => {
         runId: started.run.id,
         stepId: alphaStep.id,
         ownerId: "worker-1",
-        executorKind: "unified",
+        executorKind: "opencode",
       });
 
       // Complete the attempt with success
@@ -391,7 +391,7 @@ describe("VAL-HAND-002: Handoff summaries injected into downstream prompts", () 
         fullDocs: [],
         createTrackedSession: async () => ({ ptyId: "pty-1", sessionId: "session-1" }),
       },
-      "unified",
+      "opencode",
       {}
     );
 
@@ -426,7 +426,7 @@ describe("VAL-HAND-002: Handoff summaries injected into downstream prompts", () 
         fullDocs: [],
         createTrackedSession: async () => ({ ptyId: "pty-1", sessionId: "session-1" }),
       },
-      "unified",
+      "opencode",
       {}
     );
 
@@ -453,7 +453,7 @@ describe("VAL-ART-001: Planning artifacts registered as mission artifacts", () =
             stepIndex: 0,
             title: "Planning",
             laneId,
-            executorKind: "unified",
+            executorKind: "opencode",
             metadata: {
               modelId: "anthropic/claude-sonnet-4-6",
               stepType: "planning",
@@ -467,7 +467,7 @@ describe("VAL-ART-001: Planning artifacts registered as mission artifacts", () =
         runId: started.run.id,
         stepId: step.id,
         ownerId: "planner-1",
-        executorKind: "unified",
+        executorKind: "opencode",
       });
 
       // Register a plan artifact via the orchestrator service registerArtifact
@@ -517,7 +517,7 @@ describe("VAL-ART-002: getWorkerCheckpoint resolves using lane worktree path", (
             stepIndex: 0,
             title: "Test Step",
             laneId,
-            executorKind: "unified",
+            executorKind: "opencode",
             metadata: { modelId: "anthropic/claude-sonnet-4-6" },
           },
         ],
@@ -527,7 +527,7 @@ describe("VAL-ART-002: getWorkerCheckpoint resolves using lane worktree path", (
         runId: started.run.id,
         stepId: step.id,
         ownerId: "worker-1",
-        executorKind: "unified",
+        executorKind: "opencode",
       });
 
       // Upsert a checkpoint

@@ -248,6 +248,7 @@ import type {
   AgentChatSlashCommandsArgs,
   AgentChatFileSearchArgs,
   AgentChatFileSearchResult,
+  AgentChatGetTurnFileDiffArgs,
   AgentChatSession,
   AgentChatSessionCapabilities,
   AgentChatSessionCapabilitiesArgs,
@@ -255,6 +256,7 @@ import type {
   AgentChatSteerArgs,
   AgentChatCancelSteerArgs,
   AgentChatEditSteerArgs,
+  AgentChatTurnFileDiff,
   AgentChatSubagentSnapshot,
   AgentChatSubagentListArgs,
   AgentChatUpdateSessionArgs,
@@ -469,6 +471,7 @@ import type {
   StartOrchestratorRunFromMissionArgs,
   TickOrchestratorRunArgs,
   UpdateMissionArgs,
+  UpdateSessionMetaArgs,
   UpdateMissionStepArgs,
   TestEvent,
   TestRunSummary,
@@ -650,7 +653,7 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.keybindingsSet, { overrides }),
   },
   ai: {
-    getStatus: async (args?: { force?: boolean }): Promise<AiSettingsStatus> =>
+    getStatus: async (args?: { force?: boolean; refreshOpenCodeInventory?: boolean }): Promise<AiSettingsStatus> =>
       ipcRenderer.invoke(IPC.aiGetStatus, args),
     storeApiKey: async (provider: string, key: string): Promise<void> =>
       ipcRenderer.invoke(IPC.aiStoreApiKey, { provider, key }),
@@ -1469,14 +1472,7 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.sessionsList, args),
     get: async (sessionId: string): Promise<TerminalSessionDetail | null> =>
       ipcRenderer.invoke(IPC.sessionsGet, { sessionId }),
-    updateMeta: async (args: {
-      sessionId: string;
-      pinned?: boolean;
-      title?: string;
-      goal?: string | null;
-      toolType?: string | null;
-      resumeCommand?: string | null;
-    }): Promise<TerminalSessionSummary | null> =>
+    updateMeta: async (args: UpdateSessionMetaArgs): Promise<TerminalSessionSummary | null> =>
       ipcRenderer.invoke(IPC.sessionsUpdateMeta, args),
     readTranscriptTail: async (args: ReadTranscriptTailArgs): Promise<string> =>
       ipcRenderer.invoke(IPC.sessionsReadTranscriptTail, args),
@@ -1542,6 +1538,10 @@ contextBridge.exposeInMainWorld("ade", {
       args: AgentChatFileSearchArgs,
     ): Promise<AgentChatFileSearchResult[]> =>
       ipcRenderer.invoke(IPC.agentChatFileSearch, args),
+    getTurnFileDiff: async (
+      args: AgentChatGetTurnFileDiffArgs,
+    ): Promise<AgentChatTurnFileDiff | null> =>
+      ipcRenderer.invoke(IPC.agentChatGetTurnFileDiff, args),
     listSubagents: async (
       args: AgentChatSubagentListArgs,
     ): Promise<AgentChatSubagentSnapshot[]> =>

@@ -19,6 +19,8 @@ ADE still tracks:
 - start/end timestamps
 - head SHA anchors
 - delta and summary information
+- `manuallyNamed` flag (suppresses auto-title generation when set by user rename)
+- resume metadata for CLI-backed chat sessions (provider, target kind/ID, launch config)
 
 Tracked sessions still feed history, lane refresh, conflict follow-up, and mission/worker visibility.
 
@@ -124,6 +126,10 @@ The lifecycle model remains the same:
 5. notify downstream systems such as history, lane refresh, and memory hooks
 
 UI observers subscribe selectively and reuse cached list results where possible.
+
+### Session resume metadata
+
+PTY sessions track structured resume metadata via `TerminalResumeMetadata`, which includes the provider (`claude` or `codex`), target kind (`session` or `thread`), target ID, and launch configuration (permission modes for each provider). This metadata enables the "resume" action in the session context menu and the `resumeCommand` field to reconstruct the appropriate CLI invocation for continuing a chat session.
 
 ### Stale session reconciliation
 

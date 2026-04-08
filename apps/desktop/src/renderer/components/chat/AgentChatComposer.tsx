@@ -13,7 +13,7 @@ import {
   type AgentChatFileRef,
   type AgentChatInteractionMode,
   type AgentChatSlashCommand,
-  type AgentChatUnifiedPermissionMode,
+  type AgentChatOpenCodePermissionMode,
   type ComputerUseOwnerSnapshot,
   type ChatSurfaceMode,
   type ComputerUsePolicy,
@@ -21,15 +21,15 @@ import {
 } from "../../../shared/types";
 import { getModelById } from "../../../shared/modelRegistry";
 import { cn } from "../ui/cn";
-import { UnifiedModelSelector } from "../shared/UnifiedModelSelector";
+import { ProviderModelSelector } from "../shared/ProviderModelSelector";
 import { getPermissionOptions, safetyColors } from "../shared/permissionOptions";
 import { ChatAttachmentTray } from "./ChatAttachmentTray";
 import { ChatComposerShell } from "./ChatComposerShell";
 import { getPendingInputQuestionCount, hasPendingInputOptions } from "./pendingInput";
 import { CURSOR_MODE_LABELS } from "../../../shared/cursorModes";
 import { ChatStatusGlyph } from "./chatStatusVisuals";
-import { ChatSubagentStrip } from "./ChatSubagentStrip";
-import type { ChatSubagentSnapshot } from "./chatExecutionSummary";
+import { ChatProposedPlanCard } from "./ChatProposedPlanCard";
+import { ChatCommandMenu, type ChatCommandMenuItem, type ChatCommandMenuHandle } from "./ChatCommandMenu";
 
 const MAX_TEMP_ATTACHMENT_BYTES = 10 * 1024 * 1024;
 
@@ -128,7 +128,7 @@ function resolveCodexPermissionPreset(args: {
   return "custom";
 }
 
-const UNIFIED_PERMISSION_OPTIONS: Array<{ value: AgentChatUnifiedPermissionMode; label: string }> = [
+const OPENCODE_PERMISSION_OPTIONS: Array<{ value: AgentChatOpenCodePermissionMode; label: string }> = [
   { value: "plan", label: "Plan" },
   { value: "edit", label: "Edit" },
   { value: "full-auto", label: "Full auto" },
@@ -283,7 +283,7 @@ export function AgentChatComposer({
   codexApprovalPolicy,
   codexSandbox,
   codexConfigSource,
-  unifiedPermissionMode,
+  opencodePermissionMode,
   cursorModeSnapshot,
   executionMode,
   computerUsePolicy,
@@ -312,7 +312,7 @@ export function AgentChatComposer({
   onCodexApprovalPolicyChange,
   onCodexSandboxChange,
   onCodexConfigSourceChange,
-  onUnifiedPermissionModeChange,
+  onOpenCodePermissionModeChange,
   onCursorModeChange,
   onCursorConfigChange,
   includeProjectDocs,
@@ -321,13 +321,12 @@ export function AgentChatComposer({
   onToggleProof,
   onClearEvents,
   promptSuggestion,
-  subagentSnapshots = [],
   chatHasMessages = false,
-  restrictModelCatalogToAvailable = false,
   pendingSteers = [],
   onCancelSteer,
   onEditSteer,
   onOpenAiSettings,
+  sessionId,
 }: {
   surfaceMode?: ChatSurfaceMode;
   layoutVariant?: "standard" | "grid-tile";
@@ -349,7 +348,7 @@ export function AgentChatComposer({
   codexApprovalPolicy?: AgentChatCodexApprovalPolicy;
   codexSandbox?: AgentChatCodexSandbox;
   codexConfigSource?: AgentChatCodexConfigSource;
-  unifiedPermissionMode?: AgentChatUnifiedPermissionMode;
+  opencodePermissionMode?: AgentChatOpenCodePermissionMode;
   cursorModeSnapshot?: AgentChatCursorModeSnapshot | null;
   executionMode?: AgentChatExecutionMode | null;
   computerUsePolicy: ComputerUsePolicy;
@@ -382,7 +381,7 @@ export function AgentChatComposer({
   onCodexApprovalPolicyChange?: (policy: AgentChatCodexApprovalPolicy) => void;
   onCodexSandboxChange?: (sandbox: AgentChatCodexSandbox) => void;
   onCodexConfigSourceChange?: (source: AgentChatCodexConfigSource) => void;
-  onUnifiedPermissionModeChange?: (mode: AgentChatUnifiedPermissionMode) => void;
+  onOpenCodePermissionModeChange?: (mode: AgentChatOpenCodePermissionMode) => void;
   onCursorModeChange?: (modeId: string) => void;
   onCursorConfigChange?: (configId: string, value: string | boolean) => void;
   includeProjectDocs?: boolean;
@@ -391,13 +390,12 @@ export function AgentChatComposer({
   onToggleProof?: () => void;
   onClearEvents?: () => void;
   promptSuggestion?: string | null;
-  subagentSnapshots?: ChatSubagentSnapshot[];
   chatHasMessages?: boolean;
-  restrictModelCatalogToAvailable?: boolean;
   pendingSteers?: Array<{ steerId: string; text: string }>;
   onCancelSteer?: (steerId: string) => void;
   onEditSteer?: (steerId: string, text: string) => void;
   onOpenAiSettings?: () => void;
+  sessionId?: string | null;
 }) {
   const [attachmentPickerOpen, setAttachmentPickerOpen] = useState(false);
   const [attachmentQuery, setAttachmentQuery] = useState("");
@@ -413,6 +411,9 @@ export function AgentChatComposer({
   const [hoveredCodexPreset, setHoveredCodexPreset] = useState<"plan" | "edit" | "full-auto" | null>(null);
 
   const [dragActive, setDragActive] = useState(false);
+  const [commandMenuTrigger, setCommandMenuTrigger] = useState<{ type: "at" | "slash"; query: string; cursorIndex: number } | null>(null);
+  const [commandMenuAnchor, setCommandMenuAnchor] = useState<{ top: number; left: number } | null>(null);
+  const commandMenuRef = useRef<ChatCommandMenuHandle | null>(null);
 
   const attachmentInputRef = useRef<HTMLInputElement | null>(null);
   const uploadInputRef = useRef<HTMLInputElement | null>(null);
@@ -818,12 +819,12 @@ export function AgentChatComposer({
       <label className="flex items-center gap-2 rounded-md border border-white/[0.06] bg-[#1a1a22] px-2.5 py-1.5">
         <span className="font-mono text-[9px] uppercase tracking-[0.16em] text-muted-fg/45">{runtimeLabel}</span>
         <select
-          value={unifiedPermissionMode}
-          disabled={nativeControlsDisabled || !onUnifiedPermissionModeChange}
-          onChange={(event) => onUnifiedPermissionModeChange?.(event.target.value as AgentChatUnifiedPermissionMode)}
+          value={opencodePermissionMode}
+          disabled={nativeControlsDisabled || !onOpenCodePermissionModeChange}
+          onChange={(event) => onOpenCodePermissionModeChange?.(event.target.value as AgentChatOpenCodePermissionMode)}
           className="min-w-0 bg-transparent font-sans text-[11px] text-fg/82 outline-none disabled:cursor-not-allowed disabled:text-muted-fg/35"
         >
-          {UNIFIED_PERMISSION_OPTIONS.map((option) => (
+          {OPENCODE_PERMISSION_OPTIONS.map((option) => (
             <option key={option.value} value={option.value}>
               {option.label}
             </option>
@@ -847,10 +848,10 @@ export function AgentChatComposer({
     onInteractionModeChange,
     onCursorConfigChange,
     onCursorModeChange,
-    onUnifiedPermissionModeChange,
+    onOpenCodePermissionModeChange,
     cursorModeSnapshot,
     sessionProvider,
-    unifiedPermissionMode,
+    opencodePermissionMode,
   ]);
   /* ── Keyboard handler for textarea ── */
   const handleKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -875,10 +876,17 @@ export function AgentChatComposer({
       // Don't preventDefault — the "/" will appear in the textarea and onChange will
       // see val.startsWith("/"), keeping the picker open and enabling type-to-filter.
     }
+    /* Command menu keyboard navigation */
+    if (commandMenuTrigger) {
+      if (event.key === "Escape") { event.preventDefault(); setCommandMenuTrigger(null); return; }
+      if (event.key === "ArrowDown") { event.preventDefault(); commandMenuRef.current?.moveDown(); return; }
+      if (event.key === "ArrowUp") { event.preventDefault(); commandMenuRef.current?.moveUp(); return; }
+      if (event.key === "Enter" || event.key === "Tab") { event.preventDefault(); commandMenuRef.current?.selectCurrent(); return; }
+    }
+
     if (event.key === "@" && !commandModified && !event.altKey) {
       if (!canAttach) return;
-      event.preventDefault();
-      setAttachmentPickerOpen(true);
+      // Let @ be typed into textarea; onChange will detect the trigger
       return;
     }
 
@@ -936,6 +944,19 @@ export function AgentChatComposer({
     void addFileAttachments(event.dataTransfer.files);
   };
 
+  const handleCommandMenuSelect = useCallback((item: ChatCommandMenuItem) => {
+    if (item.type === "file" && commandMenuTrigger) {
+      // Replace the @query with @filepath
+      const before = draft.slice(0, commandMenuTrigger.cursorIndex);
+      const after = draft.slice(commandMenuTrigger.cursorIndex + commandMenuTrigger.query.length + 1); // +1 for @
+      onDraftChange(`${before}@${item.path} ${after}`);
+      onAddAttachment({ path: item.path, type: inferAttachmentType(item.path) });
+    } else if (item.type === "command") {
+      onDraftChange(`/${item.name} `);
+    }
+    setCommandMenuTrigger(null);
+  }, [commandMenuTrigger, draft, onDraftChange, onAddAttachment]);
+
   const submitComposerDraft = useCallback(() => {
     const isQuestionPending = pendingInput && (pendingInput.kind === "question" || pendingInput.kind === "structured_question");
     if (isQuestionPending) {
@@ -962,23 +983,14 @@ export function AgentChatComposer({
       )}
       pendingBanner={pendingInput ? (
         pendingInput.kind === "plan_approval" ? (
-          <div className="px-4 py-3">
-            <div className="mb-2 flex items-center gap-2">
-              <span className="inline-flex h-6 w-6 items-center justify-center rounded-[var(--chat-radius-pill)] border border-violet-400/20 bg-violet-500/10">
-                <ChatStatusGlyph status="waiting" size={11} />
-              </span>
-              <span className="font-mono text-[9px] font-bold uppercase tracking-widest text-violet-200">
-                Plan Approval · {pendingInput.source}
-              </span>
-            </div>
-            <div className="mb-2 max-h-48 overflow-y-auto font-mono text-[11px] leading-relaxed text-fg/68 whitespace-pre-wrap">
-              {pendingInput.description ?? pendingInput.questions[0]?.question ?? "The agent has prepared a plan."}
-            </div>
-            <div className="flex items-center gap-1.5">
-              <button type="button" disabled={approvalResponding} className="rounded-[var(--chat-radius-pill)] border border-emerald-400/30 bg-emerald-500/12 px-3 py-1 font-mono text-[9px] font-bold uppercase tracking-wider text-emerald-200/80 transition-colors hover:bg-emerald-500/20 disabled:opacity-40 disabled:pointer-events-none" onClick={() => onApproval("accept")}>{approvalResponding ? "Processing..." : "Approve & Implement"}</button>
-              <button type="button" disabled={approvalResponding} className="rounded-[var(--chat-radius-pill)] border border-border/20 px-3 py-1 font-mono text-[9px] font-bold uppercase tracking-wider text-fg/40 transition-colors hover:bg-border/10 disabled:opacity-40 disabled:pointer-events-none" onClick={() => onApproval("decline")}>Reject &amp; Revise</button>
-            </div>
-          </div>
+          <ChatProposedPlanCard
+            source={pendingInput.source}
+            description={pendingInput.description ?? null}
+            question={pendingInput.questions[0]?.question ?? null}
+            disabled={approvalResponding ?? false}
+            onApprove={() => onApproval("accept")}
+            onReject={() => onApproval("decline")}
+          />
         ) : (
           <div className="px-4 py-3">
             <div className="mb-2 flex items-center gap-2">
@@ -1021,7 +1033,7 @@ export function AgentChatComposer({
         )
       ) : undefined}
       trays={
-        attachments.length || subagentSnapshots.length || attachError ? (
+        attachments.length || attachError ? (
           <div className="space-y-2 px-1 py-2">
             {attachError ? (
               <div className="flex items-center gap-1.5 px-3">
@@ -1035,13 +1047,6 @@ export function AgentChatComposer({
                   <X size={10} weight="bold" />
                 </button>
               </div>
-            ) : null}
-            {subagentSnapshots.length ? (
-              <ChatSubagentStrip
-                snapshots={subagentSnapshots}
-                placement="composer"
-                onInterruptTurn={turnActive ? onInterrupt : undefined}
-              />
             ) : null}
             <ChatAttachmentTray
               attachments={attachments}
@@ -1147,11 +1152,10 @@ export function AgentChatComposer({
           {/* Left: permission + model controls */}
           <div className="flex min-w-0 flex-wrap items-center gap-1.5">
             {nativeControlPanel}
-            <UnifiedModelSelector
+            <ProviderModelSelector
               value={modelId}
               onChange={onModelChange}
               availableModelIds={availableModelIds}
-              catalogMode={restrictModelCatalogToAvailable ? "available-only" : "all"}
               disabled={modelSelectionLocked}
               showReasoning
               reasoningEffort={reasoningEffort}
@@ -1336,6 +1340,15 @@ export function AgentChatComposer({
               </span>
             </div>
           ) : null}
+          <ChatCommandMenu
+            ref={commandMenuRef}
+            trigger={commandMenuTrigger}
+            slashCommands={effectiveSlashCommands.map((c) => ({ name: c.command.replace(/^\//, ""), description: c.description }))}
+            sessionId={sessionId ?? null}
+            anchor={commandMenuAnchor}
+            onSelect={handleCommandMenuSelect}
+            onClose={() => setCommandMenuTrigger(null)}
+          />
           <textarea
             ref={textareaRef}
             value={draft}
@@ -1344,6 +1357,18 @@ export function AgentChatComposer({
               onDraftChange(val);
               if (slashPickerOpen && !val.startsWith("/")) { setSlashPickerOpen(false); setSlashQuery(""); }
               if (val.startsWith("/")) { setSlashQuery(val.slice(1)); setSlashCursor(0); }
+
+              // Detect @mention trigger
+              const cursorPos = event.target.selectionStart ?? val.length;
+              const textBeforeCursor = val.slice(0, cursorPos);
+              const atMatch = textBeforeCursor.match(/@([^\s@]*)$/);
+              if (atMatch) {
+                const rect = event.target.getBoundingClientRect();
+                setCommandMenuTrigger({ type: "at", query: atMatch[1], cursorIndex: cursorPos - atMatch[0].length });
+                setCommandMenuAnchor({ top: rect.top - 8, left: rect.left + 16 });
+              } else {
+                setCommandMenuTrigger(null);
+              }
             }}
             className={cn(
               "min-h-[44px] w-full bg-transparent px-4 py-2.5 text-[13px] leading-[1.6] text-fg/88 outline-none transition-colors placeholder:text-muted-fg/25",

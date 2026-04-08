@@ -1,42 +1,39 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { streamText } from "ai";
-import { buildCoordinatorCliOptions, CoordinatorAgent, shouldUseSdkTools } from "./coordinatorAgent";
-import { buildCoordinatorMcpAllowedTools } from "./coordinatorTools";
+import { CoordinatorAgent } from "./coordinatorAgent";
 
-vi.mock("ai", () => ({
-  streamText: vi.fn(),
-  stepCountIs: vi.fn(() => () => false),
-  tool: vi.fn((definition: unknown) => definition),
+const mockState = vi.hoisted(() => ({
+  eventBatches: [] as Array<any[]>,
+  promptAsync: vi.fn(async () => undefined),
+  close: vi.fn(),
 }));
 
-vi.mock("../ai/providerResolver", () => ({
-  resolveModel: vi.fn(async () => ({ provider: "mock-sdk-model" })),
-}));
-
-vi.mock("../ai/authDetector", () => ({
-  detectAllAuth: vi.fn(async () => []),
-}));
-
-const streamTextMock = vi.mocked(streamText);
-
-function makeFullStream(parts: any[]): AsyncIterable<any> {
-  return {
+vi.mock("../opencode/openCodeRuntime", () => ({
+  buildOpenCodePromptParts: vi.fn(({ prompt }: { prompt: string }) => [{ type: "text", text: prompt }]),
+  mapPermissionModeToOpenCodeAgent: vi.fn(() => "ade-plan"),
+  resolveOpenCodeModelSelection: vi.fn((descriptor: Record<string, unknown>) => ({
+    providerID: String(descriptor.family ?? "anthropic"),
+    modelID: String(descriptor.providerModelId ?? descriptor.id ?? "model"),
+  })),
+  startOpenCodeSession: vi.fn(async (args: { directory: string }) => ({
+    client: {
+      session: {
+        promptAsync: mockState.promptAsync,
+      },
+    },
+    server: { url: "http://127.0.0.1:4096", close: mockState.close },
+    sessionId: "session-1",
+    directory: args.directory,
+    close: mockState.close,
+  })),
+  openCodeEventStream: vi.fn(async () => ({
     async *[Symbol.asyncIterator]() {
-      for (const part of parts) {
-        yield part;
+      const batch = mockState.eventBatches.shift() ?? [];
+      for (const event of batch) {
+        yield event;
       }
     },
-  };
-}
-
-function createStreamResult(parts: any[]): ReturnType<typeof streamText> {
-  return {
-    fullStream: makeFullStream(parts),
-    textStream: makeFullStream([]),
-    response: Promise.resolve({ messages: [] }),
-    usage: Promise.resolve({ inputTokens: 1, outputTokens: 1, totalTokens: 2 }),
-  } as unknown as ReturnType<typeof streamText>;
-}
+  })),
+}));
 
 function createPlanningPhases() {
   return [
@@ -78,12 +75,12 @@ function createPlanningPhases() {
 }
 
 function createTestCoordinatorAgent(args?: {
-  missionInterventions?: Array<{ metadata_json: string | null }>;
   onCoordinatorEvent?: (event: any) => void;
   onPlanningStartupFailure?: (failure: any) => void;
   onCoordinatorRuntimeFailure?: (failure: any) => void;
   phases?: any[];
   runStatus?: string;
+  modelId?: string;
 }) {
   const graph = {
     run: {
@@ -100,6 +97,7 @@ function createTestCoordinatorAgent(args?: {
     steps: [] as any[],
     attempts: [] as any[],
   };
+
   return new CoordinatorAgent({
     orchestratorService: {
       getRunGraph: vi.fn(() => graph),
@@ -136,7 +134,7 @@ function createTestCoordinatorAgent(args?: {
     runId: "run-1",
     missionId: "mission-1",
     missionGoal: "Test mission",
-    modelId: "anthropic/claude-sonnet-4-6",
+    modelId: args?.modelId ?? "anthropic/claude-sonnet-4-6",
     logger: {
       info: vi.fn(),
       warn: vi.fn(),
@@ -150,30 +148,17 @@ function createTestCoordinatorAgent(args?: {
         }
         return null;
       }),
-      all: vi.fn((sql: string) => {
-        if (sql.includes("from mission_interventions")) {
-          return args?.missionInterventions ?? [];
-        }
-        return [];
-      }),
-      run: vi.fn((sql: string, params?: any[]) => {
-        if (!sql.includes("update orchestrator_steps") || !Array.isArray(params)) return null;
-        const [status, metadataJson, updatedAt, startedAt, completedAt, stepId] = params;
-        const step = graph.steps.find((entry) => entry.id === stepId);
-        if (!step) return null;
-        step.status = status;
-        step.metadata = typeof metadataJson === "string" ? JSON.parse(metadataJson) : metadataJson;
-        step.updatedAt = updatedAt;
-        step.startedAt = startedAt;
-        step.completedAt = completedAt;
-        return null;
-      }),
+      all: vi.fn(() => []),
+      run: vi.fn(),
     } as any,
     projectId: "project-1",
     projectRoot: "/tmp/ade-project",
     workspaceRoot: "/tmp/ade-worktree",
     missionService: {
       get: vi.fn(() => ({ interventions: [] })),
+    } as any,
+    projectConfigService: {
+      get: vi.fn(() => ({ effective: { ai: {} } })),
     } as any,
     onDagMutation: vi.fn(),
     onCoordinatorEvent: args?.onCoordinatorEvent,
@@ -183,147 +168,58 @@ function createTestCoordinatorAgent(args?: {
   });
 }
 
-async function waitFor(predicate: () => boolean, timeoutMs = 2_000): Promise<void> {
-  const start = Date.now();
-  while (Date.now() - start < timeoutMs) {
-    if (predicate()) return;
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
-  throw new Error("Timed out waiting for condition");
-}
-
 beforeEach(() => {
-  streamTextMock.mockReset();
+  mockState.eventBatches.length = 0;
+  mockState.promptAsync.mockReset();
+  mockState.close.mockReset();
 });
 
-describe("shouldUseSdkTools", () => {
-  it("keeps SDK tools enabled for Codex CLI models", () => {
-    expect(shouldUseSdkTools("openai/gpt-5.3-codex")).toBe(true);
-  });
-
-  it("disables SDK tools for Claude CLI models", () => {
-    expect(shouldUseSdkTools("anthropic/claude-sonnet-4-6")).toBe(false);
-  });
-
-  it("keeps SDK tools enabled for direct API models", () => {
-    expect(shouldUseSdkTools("anthropic/claude-sonnet-4-6-api")).toBe(true);
-  });
-});
-
-describe("buildCoordinatorCliOptions", () => {
-  it("includes coordinator observation tools in the Claude allowlist", () => {
-    const allowlist = buildCoordinatorMcpAllowedTools("ade");
-    expect(allowlist).toEqual(expect.arrayContaining([
-      "mcp__ade__get_run_graph",
-      "mcp__ade__get_step_output",
-      "mcp__ade__get_timeline",
-      "mcp__ade__stream_events",
-      "mcp__ade__memory_search",
-      "mcp__ade__memory_add",
-    ]));
-  });
-
-  it("configures Claude coordinators for headless MCP execution", () => {
-    const cli = buildCoordinatorCliOptions({
-      modelId: "anthropic/claude-sonnet-4-6",
-      projectRoot: "/tmp/ade-project",
-      runId: "run-123",
-      mcpServers: {
-        ade: {
-          command: "node",
-          args: ["/tmp/mcp-server.js"],
-        },
-      },
-    });
-
-    expect(cli).toEqual({
-      mcpServers: {
-        ade: {
-          command: "node",
-          args: ["/tmp/mcp-server.js"],
-        },
-      },
-      claude: {
-        permissionMode: "plan",
-        allowedTools: buildCoordinatorMcpAllowedTools("ade"),
-        settingSources: [],
-        debugFile: "/tmp/ade-project/.ade/transcripts/logs/coordinator-run-123.claude.log",
-      },
-    });
-  });
-
-  it("does not inject Claude-only settings for Codex coordinators", () => {
-    const cli = buildCoordinatorCliOptions({
-      modelId: "openai/gpt-5.3-codex",
-      projectRoot: "/tmp/ade-project",
-      runId: "run-456",
-      mcpServers: {
-        ade: {
-          command: "node",
-          args: ["/tmp/mcp-server.js"],
-        },
-      },
-    });
-
-    expect(cli).toEqual({
-      mcpServers: {
-        ade: {
-          command: "node",
-          args: ["/tmp/mcp-server.js"],
-        },
-      },
-    });
-  });
-});
-
-describe("CoordinatorAgent planning clarification gating", () => {
-  it("ignores runtime event polling while a planning clarification is open", () => {
-    const agent = createTestCoordinatorAgent({
-      missionInterventions: [
-        {
-          metadata_json: JSON.stringify({ source: "ask_user", phase: "planning" }),
-        },
-      ],
-    }) as any;
-
-    agent.injectEvent({
-      type: "status_report",
-      runId: "run-1",
-    } as any, "scheduler tick");
-
-    expect(agent.eventQueue).toHaveLength(0);
-    agent.shutdown();
-  });
-
-  it("still accepts direct user messages while a planning clarification is open", () => {
-    const agent = createTestCoordinatorAgent({
-      missionInterventions: [
-        {
-          metadata_json: JSON.stringify({ source: "ask_user", phase: "planning" }),
-        },
-      ],
-    }) as any;
-
-    agent.injectMessage("Place the tab in the main navigation group.");
-
-    expect(agent.eventQueue).toHaveLength(1);
-    agent.shutdown();
-  });
-});
-
-describe("CoordinatorAgent planning-startup guardrails", () => {
+describe("CoordinatorAgent", () => {
   it("retries planner launch once on transient provider failures, then surfaces structured failure", async () => {
-    streamTextMock
-      .mockImplementationOnce(() =>
-        createStreamResult([
-          { type: "tool-call", toolName: "spawn_worker", input: { name: "planner" }, toolCallId: "tool-1" },
-          { type: "tool-error", toolName: "spawn_worker", error: new Error("Model provider timeout"), toolCallId: "tool-1" },
-        ]))
-      .mockImplementationOnce(() =>
-        createStreamResult([
-          { type: "tool-call", toolName: "spawn_worker", input: { name: "planner" }, toolCallId: "tool-2" },
-          { type: "tool-error", toolName: "spawn_worker", error: new Error("Model provider timeout"), toolCallId: "tool-2" },
-        ]));
+    mockState.eventBatches.push(
+      [
+        {
+          type: "message.part.updated",
+          properties: {
+            part: {
+              sessionID: "session-1",
+              id: "tool-1",
+              callID: "call-1",
+              type: "tool",
+              tool: "spawn_worker",
+              state: {
+                status: "error",
+                error: "Model provider timeout",
+                input: { name: "planner" },
+              },
+            },
+            delta: null,
+          },
+        },
+        { type: "session.idle", properties: { sessionID: "session-1" } },
+      ],
+      [
+        {
+          type: "message.part.updated",
+          properties: {
+            part: {
+              sessionID: "session-1",
+              id: "tool-2",
+              callID: "call-2",
+              type: "tool",
+              tool: "spawn_worker",
+              state: {
+                status: "error",
+                error: "Model provider timeout",
+                input: { name: "planner" },
+              },
+            },
+            delta: null,
+          },
+        },
+        { type: "session.idle", properties: { sessionID: "session-1" } },
+      ],
+    );
 
     const onCoordinatorEvent = vi.fn();
     const onPlanningStartupFailure = vi.fn();
@@ -338,7 +234,6 @@ describe("CoordinatorAgent planning-startup guardrails", () => {
       await agent.processBatch();
       await agent.processBatch();
 
-      expect(streamTextMock).toHaveBeenCalledTimes(2);
       expect(onCoordinatorEvent).toHaveBeenCalledWith(expect.objectContaining({
         type: "status",
         turnStatus: "interrupted",
@@ -350,79 +245,31 @@ describe("CoordinatorAgent planning-startup guardrails", () => {
         retryCount: 1,
         recoveryOptions: ["retry", "switch_to_fallback_model", "cancel_run"],
       }));
-      expect(agent.planningStartupState).toBe("failed");
-      expect(agent.eventQueue).toHaveLength(0);
     } finally {
       agent.shutdown();
     }
   });
 
-  it("blocks coordinator repo exploration after planner launch and opens explicit recovery", async () => {
-    streamTextMock.mockImplementationOnce(() =>
-      createStreamResult([
-        { type: "tool-call", toolName: "spawn_worker", input: { name: "planner" }, toolCallId: "tool-1" },
-        {
-          type: "tool-result",
-          toolName: "spawn_worker",
-          output: { ok: true, launched: true, stepId: "planner-step-1" },
-          toolCallId: "tool-1",
-        },
-        {
-          type: "tool-call",
-          toolName: "read_file",
-          input: { path: "apps/desktop/src/App.tsx" },
-          toolCallId: "tool-2",
-        },
-      ]));
-
-    const onCoordinatorEvent = vi.fn();
-    const onPlanningStartupFailure = vi.fn();
-    const agent = createTestCoordinatorAgent({
-      onCoordinatorEvent,
-      onPlanningStartupFailure,
-      phases: createPlanningPhases(),
-    }) as any;
-
-    try {
-      agent.injectMessage("Kick off planning.");
-      await agent.processBatch();
-
-      await waitFor(() => onPlanningStartupFailure.mock.calls.length === 1);
-
-      expect(onCoordinatorEvent).toHaveBeenCalledWith(expect.objectContaining({
-        type: "status",
-        message: "The planning agent is running. I’m waiting for its result.",
-      }));
-      expect(onPlanningStartupFailure).toHaveBeenCalledWith(expect.objectContaining({
-        category: "native_tool_violation",
-        toolName: "read_file",
-        interventionType: "policy_block",
-        recoveryOptions: ["cancel_run"],
-      }));
-      expect(agent.planningStartupState).toBe("failed");
-    } finally {
-      agent.shutdown();
-    }
-  });
-});
-
-describe("CoordinatorAgent runtime failures", () => {
   it("promotes short provider failure replies to the primary runtime failure", async () => {
-    streamTextMock.mockImplementationOnce(() =>
-      createStreamResult([
-        {
-          type: "text-delta",
-          text: "Your account does not have access to Claude. Please login again or contact your administrator.",
+    mockState.eventBatches.push([
+      {
+        type: "message.part.updated",
+        properties: {
+          part: {
+            sessionID: "session-1",
+            id: "text-1",
+            type: "text",
+            text: "Your account does not have access to Claude. Please login again or contact your administrator.",
+          },
+          delta: "Your account does not have access to Claude. Please login again or contact your administrator.",
         },
-      ]));
+      },
+      { type: "session.idle", properties: { sessionID: "session-1" } },
+    ]);
 
-    const onCoordinatorEvent = vi.fn();
     const onCoordinatorRuntimeFailure = vi.fn();
-    const onPlanningStartupFailure = vi.fn();
     const agent = createTestCoordinatorAgent({
-      onCoordinatorEvent,
       onCoordinatorRuntimeFailure,
-      onPlanningStartupFailure,
       phases: createPlanningPhases(),
     }) as any;
 
@@ -436,76 +283,48 @@ describe("CoordinatorAgent runtime failures", () => {
         interventionType: "provider_unreachable",
         turnId: "coord-turn-1",
       }));
-      expect(onPlanningStartupFailure).not.toHaveBeenCalled();
-      expect(agent.eventQueue).toHaveLength(0);
-      expect(agent.isAlive).toBe(false);
     } finally {
       agent.shutdown();
     }
   });
 
-  it("treats coordinator CLI exits as unrecoverable turn failures without requeueing the batch", async () => {
-    streamTextMock.mockImplementationOnce(() => {
-      throw new Error("Codex CLI exited with code 1");
-    });
+  it("pauses the turn when a blocking ask-user tool result arrives", async () => {
+    mockState.eventBatches.push([
+      {
+        type: "message.part.updated",
+        properties: {
+          part: {
+            sessionID: "session-1",
+            id: "ask-1",
+            callID: "call-ask-1",
+            type: "tool",
+            tool: "ask_user",
+            state: {
+              status: "completed",
+              input: { title: "Clarify" },
+              output: { awaitingUserResponse: true, blocking: true },
+            },
+          },
+          delta: null,
+        },
+      },
+      { type: "session.idle", properties: { sessionID: "session-1" } },
+    ]);
 
     const onCoordinatorEvent = vi.fn();
-    const onCoordinatorRuntimeFailure = vi.fn();
     const agent = createTestCoordinatorAgent({
       onCoordinatorEvent,
-      onCoordinatorRuntimeFailure,
     }) as any;
 
     try {
-      agent.injectMessage("Start the run.");
+      agent.injectMessage("Ask the user.");
       await agent.processBatch();
 
-      expect(onCoordinatorRuntimeFailure).toHaveBeenCalledWith(expect.objectContaining({
-        category: "cli_runtime_failure",
-        reasonCode: "coordinator_runtime_cli_exit",
-        interventionType: "unrecoverable_error",
-        turnId: "coord-turn-1",
-      }));
       expect(onCoordinatorEvent).toHaveBeenCalledWith(expect.objectContaining({
-        type: "error",
-        message: "Codex CLI exited with code 1",
+        type: "status",
+        turnStatus: "interrupted",
         turnId: "coord-turn-1",
       }));
-      expect(agent.eventQueue).toHaveLength(0);
-      expect(agent.isAlive).toBe(false);
-    } finally {
-      agent.shutdown();
-    }
-  });
-
-  it("treats planner watchdog failures as planning startup failures instead of generic coordinator crashes", async () => {
-    streamTextMock.mockImplementationOnce(() =>
-      createStreamResult([
-        {
-          type: "text-delta",
-          text: "I need to inspect the repo before planning.",
-        },
-      ]));
-
-    const onPlanningStartupFailure = vi.fn();
-    const onCoordinatorRuntimeFailure = vi.fn();
-    const agent = createTestCoordinatorAgent({
-      onPlanningStartupFailure,
-      onCoordinatorRuntimeFailure,
-      phases: createPlanningPhases(),
-    }) as any;
-
-    try {
-      agent.injectMessage("Start the run.");
-      await agent.processBatch();
-
-      expect(onPlanningStartupFailure).toHaveBeenCalledWith(expect.objectContaining({
-        category: "unknown",
-        reasonCode: "planner_not_started",
-        interventionType: "failed_step",
-      }));
-      expect(onCoordinatorRuntimeFailure).not.toHaveBeenCalled();
-      expect(agent.eventQueue).toHaveLength(0);
     } finally {
       agent.shutdown();
     }

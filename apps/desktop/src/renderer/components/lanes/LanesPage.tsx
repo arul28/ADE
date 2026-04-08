@@ -2,12 +2,13 @@ import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "rea
 import { useClickOutside } from "../../hooks/useClickOutside";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { Group, Panel } from "react-resizable-panels";
-import { Check, CaretDown, FileCode, GitBranch, House, Stack, Link, ArrowsOutSimple, ArrowsInSimple, PushPin, Plus, MagnifyingGlass, Terminal, X, ArrowSquareOut, Info } from "@phosphor-icons/react";
+import { Check, CaretDown, FileCode, GitBranch, House, Stack, Link, ArrowsOutSimple, ArrowsInSimple, PushPin, Plus, MagnifyingGlass, Terminal, X, ArrowSquareOut, Info, ArrowCounterClockwise } from "@phosphor-icons/react";
 import { useAppStore, type LaneInspectorTab } from "../../state/appStore";
 import { buildIntegrationSourcesByLaneId } from "../../lib/integrationLanes";
 import { EmptyState } from "../ui/EmptyState";
 import { Button } from "../ui/Button";
 import { PaneTilingLayout } from "../ui/PaneTilingLayout";
+import { useDockLayout } from "../ui/DockLayoutState";
 import { COLORS, LABEL_STYLE, MONO_FONT, SANS_FONT, inlineBadge, outlineButton, primaryButton, conflictDotColor } from "./laneDesignTokens";
 import { ResizeGutter } from "../ui/ResizeGutter";
 import { LaneStackPane } from "./LaneStackPane";
@@ -64,6 +65,11 @@ type RebasePushReviewState = {
 };
 
 const ADOPT_HINT_DISMISSED_KEY = "ade.lanes.adoptHintDismissed.v1";
+
+const LANE_ACCENT_COLORS = [
+  "#a78bfa", "#60a5fa", "#34d399", "#fbbf24",
+  "#f472b6", "#fb923c", "#2dd4bf", "#c084fc",
+] as const;
 
 type CreateLaneRequest =
   | { kind: "child"; args: { name: string; parentLaneId: string } }
@@ -123,6 +129,7 @@ export function LanesPage() {
 
   const [activeLaneIds, setActiveLaneIds] = useState<string[]>([]);
   const [pinnedLaneIds, setPinnedLaneIds] = useState<Set<string>>(new Set());
+  const [gridResetKey, setGridResetKey] = useState(0);
   const [laneFilter, setLaneFilter] = useState("");
   const [laneStatusFilter, setLaneStatusFilter] = useState<"all" | "running" | "awaiting-input" | "ended">("all");
   const [manageOpen, setManageOpen] = useState(false);
@@ -186,6 +193,8 @@ export function LanesPage() {
 
   const [addLaneDropdownOpen, setAddLaneDropdownOpen] = useState(false);
   const addLaneDropdownRef = useRef<HTMLDivElement>(null);
+
+  const { layout: laneColumnLayout, saveLayout: saveLaneColumnLayout } = useDockLayout("lanes:columns:v1", {});
 
   const [lanePaneDetails, setLanePaneDetails] = useState<Record<string, LanePaneDetailSelection>>({});
   const [laneContextMenu, setLaneContextMenu] = useState<{ laneId: string; x: number; y: number } | null>(null);
@@ -874,6 +883,22 @@ export function LanesPage() {
       setActiveLaneIds((prev) => mergeUnique(prev, [laneId]));
     }
   }, [lanesById, pinnedLaneIds]);
+
+  const resetGridLayout = useCallback(async () => {
+    const promises: Promise<void>[] = [];
+    for (const laneId of visibleLaneIds) {
+      const layoutKey = `lanes:tiling:${LANES_TILING_LAYOUT_VERSION}:${laneId}`;
+      promises.push(
+        window.ade.layout.set(layoutKey, {}).catch(() => {}),
+        window.ade.tilingTree.set(layoutKey, {}).catch(() => {})
+      );
+    }
+    /* Also reset lane column widths */
+    promises.push(window.ade.layout.set("lanes:columns:v1", {}).catch(() => {}));
+    await Promise.all(promises);
+    /* Force full remount so default sizes/trees take effect */
+    setGridResetKey((k) => k + 1);
+  }, [visibleLaneIds]);
 
   const requestRebaseScope = useCallback((laneId: string) => {
     const laneName = lanesById.get(laneId)?.name ?? laneId;
@@ -1592,7 +1617,25 @@ export function LanesPage() {
         {/* Spacer */}
         <div style={{ flex: 1, height: 1 }} />
 
-        {/* Stats */}
+        {/* Reset grid + Stats */}
+        {visibleLaneIds.length > 0 ? (
+          <button
+            type="button"
+            title="Reset grid to default layout"
+            onClick={resetGridLayout}
+            className="inline-flex items-center gap-1 shrink-0"
+            style={{
+              fontFamily: MONO_FONT, fontSize: 9, fontWeight: 700, letterSpacing: "0.8px",
+              textTransform: "uppercase", color: COLORS.textMuted, background: "transparent",
+              border: `1px solid ${COLORS.outlineBorder}`, borderRadius: 6,
+              padding: "0 8px", height: 24, cursor: "pointer",
+            }}
+            onMouseEnter={(e) => { e.currentTarget.style.borderColor = COLORS.accent; e.currentTarget.style.color = COLORS.accent; }}
+            onMouseLeave={(e) => { e.currentTarget.style.borderColor = COLORS.outlineBorder; e.currentTarget.style.color = COLORS.textMuted; }}
+          >
+            <ArrowCounterClockwise size={10} /> RESET GRID
+          </button>
+        ) : null}
         <span style={{ fontFamily: MONO_FONT, fontSize: 10, fontWeight: 700, letterSpacing: "1px", color: COLORS.textMuted, textTransform: "uppercase", whiteSpace: "nowrap" }}>
           {filteredLanes.length}/{sortedLanes.length} LANES
         </span>
@@ -1857,6 +1900,7 @@ export function LanesPage() {
         </div>
       ) : visibleLaneIds.length === 1 ? (
         <PaneTilingLayout
+          key={`lanes:single:${gridResetKey}`}
           layoutId={`lanes:tiling:${LANES_TILING_LAYOUT_VERSION}:${visibleLaneIds[0]}`}
           tree={LANES_TILING_TREE}
           panes={getPaneConfigs(visibleLaneIds[0] ?? null)}
@@ -1864,23 +1908,45 @@ export function LanesPage() {
         />
       ) : (
         <Group
-          key={`lanes-split-columns:${visibleLaneIds.join(",")}`}
+          key={`lanes-split-columns:${visibleLaneIds.join(",")}:${gridResetKey}`}
           id="lanes-split-columns"
           orientation="horizontal"
           resizeTargetMinimumSize={RESIZE_TARGET_MINIMUM_SIZE}
           className="flex-1 min-h-0 min-w-0"
+          onLayoutChanged={(nextLayout) => {
+            const updates: Record<string, number> = {};
+            for (const laneId of visibleLaneIds) {
+              const panelId = `lane-column:${laneId}`;
+              const size = nextLayout[panelId];
+              if (typeof size === "number" && Number.isFinite(size)) {
+                updates[panelId] = size;
+              }
+            }
+            if (Object.keys(updates).length > 0) {
+              saveLaneColumnLayout((prev) => ({ ...prev, ...updates }));
+            }
+          }}
         >
           {visibleLaneIds.map((laneId, index) => {
-            const defaultSize = Math.max(20, 100 / Math.max(1, visibleLaneIds.length));
+            const evenSize = Math.max(20, 100 / Math.max(1, visibleLaneIds.length));
+            const savedColSize = laneColumnLayout[`lane-column:${laneId}`];
+            const defaultSize = typeof savedColSize === "number" && Number.isFinite(savedColSize) ? savedColSize : evenSize;
+            const lane = lanesById.get(laneId);
+            const laneName = lane?.name ?? laneId.slice(0, 8);
             return (
               <Fragment key={laneId}>
-                <Panel id={`lane-column:${laneId}`} minSize="18%" defaultSize={`${defaultSize}%`} className="min-h-0 min-w-0">
-                  <PaneTilingLayout
-                    layoutId={`lanes:tiling:${LANES_TILING_LAYOUT_VERSION}:${laneId}`}
-                    tree={LANES_TILING_TREE}
-                    panes={getPaneConfigs(laneId)}
-                    className="h-full min-h-0"
-                  />
+                <Panel id={`lane-column:${laneId}`} minSize="12%" defaultSize={`${defaultSize}%`} className="min-h-0 min-w-0">
+                  <div className="ade-lane-column" style={{ "--lane-accent": LANE_ACCENT_COLORS[index % LANE_ACCENT_COLORS.length] } as React.CSSProperties}>
+                    <div className="flex items-center gap-1.5 px-2 shrink-0" style={{ height: 22, background: `color-mix(in srgb, var(--lane-accent) 6%, transparent)` }}>
+                      <span style={{ fontFamily: "var(--font-mono)", fontSize: 9, fontWeight: 700, letterSpacing: "0.8px", textTransform: "uppercase", color: "var(--lane-accent)", opacity: 0.85 }}>{laneName}</span>
+                    </div>
+                    <PaneTilingLayout
+                      layoutId={`lanes:tiling:${LANES_TILING_LAYOUT_VERSION}:${laneId}`}
+                      tree={LANES_TILING_TREE}
+                      panes={getPaneConfigs(laneId)}
+                      className="flex-1 min-h-0"
+                    />
+                  </div>
                 </Panel>
                 {index < visibleLaneIds.length - 1 ? <ResizeGutter orientation="vertical" laneDivider /> : null}
               </Fragment>

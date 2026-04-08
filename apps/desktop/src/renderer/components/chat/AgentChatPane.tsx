@@ -15,8 +15,9 @@ import {
   type AgentChatFileRef,
   type AgentChatInteractionMode,
   type AiProviderConnectionStatus,
+  type AiRuntimeConnectionStatus,
   type AgentChatSession,
-  type AgentChatUnifiedPermissionMode,
+  type AgentChatOpenCodePermissionMode,
   type AgentChatSessionProfile,
   type ChatSurfaceChip,
   type ChatSurfaceProfile,
@@ -24,13 +25,21 @@ import {
   type AgentChatSessionSummary,
   type ComputerUseOwnerSnapshot,
   type ComputerUsePolicy,
+  type AiSettingsStatus,
   type TerminalToolType,
 } from "../../../shared/types";
 import { parseAgentChatTranscript } from "../../../shared/chatTranscript";
 import {
+  LOCAL_PROVIDER_LABELS,
   MODEL_REGISTRY,
+  decodeOpenCodeRegistryId,
+  getLocalModelIdTail,
+  getLocalProviderDefaultEndpoint,
   getModelById,
+  getModelDescriptorForPermissionMode,
+  parseLocalProviderFromModelId,
   resolveModelDescriptorForProvider,
+  type LocalProviderFamily,
   type ModelDescriptor,
 } from "../../../shared/modelRegistry";
 import { filterChatModelIdsForSession } from "../../../shared/chatModelSwitching";
@@ -50,9 +59,12 @@ import {
 import { ChatSurfaceShell } from "./ChatSurfaceShell";
 import { chatChipToneClass } from "./chatSurfaceTheme";
 import { ChatComputerUsePanel } from "./ChatComputerUsePanel";
+import { ChatSubagentStrip } from "./ChatSubagentStrip";
+import { ChatGitToolbar } from "./ChatGitToolbar";
+import { ChatTerminalDrawer, ChatTerminalToggle } from "./ChatTerminalDrawer";
 import { deriveChatSubagentSnapshots } from "./chatExecutionSummary";
 import { derivePendingInputRequests, type DerivedPendingInput } from "./pendingInput";
-import { UnifiedModelSelector } from "../shared/UnifiedModelSelector";
+import { ProviderModelSelector } from "../shared/ProviderModelSelector";
 import { useClickOutside } from "../../hooks/useClickOutside";
 import { useAppStore } from "../../state/appStore";
 
@@ -63,6 +75,82 @@ const LEGACY_PROVIDER_KEY = "ade.chat.lastProvider";
 const LEGACY_MODEL_KEY_PREFIX = "ade.chat.lastModel";
 
 const COMPUTER_USE_SNAPSHOT_COOLDOWN_MS = 750;
+
+type AiStatusSnapshot = AiSettingsStatus & {
+  runtimeConnections?: Record<string, AiRuntimeConnectionStatus>;
+};
+
+function formatLocalModelLabel(modelId: string): string {
+  const provider = parseLocalProviderFromModelId(modelId);
+  if (!provider) {
+    return getModelById(modelId)?.displayName ?? modelId;
+  }
+  const tail = getLocalModelIdTail(modelId, provider);
+  return tail.length ? tail : modelId;
+}
+
+function recommendedOpenCodePermissionModeForModel(
+  descriptor: ModelDescriptor | null | undefined,
+): AgentChatOpenCodePermissionMode | null {
+  if (!descriptor?.authTypes.includes("local")) return null;
+  return descriptor.harnessProfile === "guarded" || descriptor.harnessProfile === "read_only"
+    ? "plan"
+    : null;
+}
+
+function shouldResetOpenCodePermissionForModelSwitch(
+  previous: ModelDescriptor | null | undefined,
+  next: ModelDescriptor | null | undefined,
+): boolean {
+  const prevRec = recommendedOpenCodePermissionModeForModel(previous);
+  const nextRec = recommendedOpenCodePermissionModeForModel(next);
+  if (prevRec == null && nextRec == null) return false;
+  return prevRec !== nextRec;
+}
+
+type LocalRuntimeNoticeShape = {
+  tone: "success" | "warning";
+  title: string;
+  message: string;
+};
+
+function LocalRuntimeNoticeBlock(props: {
+  notice: LocalRuntimeNoticeShape;
+  endpoint?: string | null;
+  /** `inline` = text only (inside a parent runtime card). */
+  variant?: "card" | "inline";
+}) {
+  const { notice, endpoint, variant = "card" } = props;
+  const isCard = variant === "card";
+  return (
+    <div
+      className={cn(
+        isCard && "border-b px-4 py-2.5",
+        isCard && (notice.tone === "success"
+          ? "border-emerald-500/10 bg-emerald-500/[0.04]"
+          : "border-amber-500/10 bg-amber-500/[0.04]"),
+      )}
+    >
+      <div className={cn(
+        "font-mono text-[10px] uppercase tracking-[0.16em]",
+        notice.tone === "success" ? "text-emerald-200/70" : "text-amber-200/70",
+      )}>
+        {notice.title}
+      </div>
+      <div className={cn(
+        "mt-1 text-[12px] leading-5",
+        notice.tone === "success" ? "text-emerald-100/80" : "text-amber-100/80",
+      )}>
+        {notice.message}
+      </div>
+      {endpoint ? (
+        <code className="mt-2 block rounded-md border border-white/[0.06] bg-black/10 px-2 py-1 font-mono text-[10px] text-fg/60">
+          {endpoint}
+        </code>
+      ) : null}
+    </div>
+  );
+}
 
 export function resolveChatSessionProfile(_computerUsePolicy: ComputerUsePolicy): AgentChatSessionProfile {
   return "workflow";
@@ -154,7 +242,7 @@ type NativeControlState = {
   codexApprovalPolicy: AgentChatCodexApprovalPolicy;
   codexSandbox: AgentChatCodexSandbox;
   codexConfigSource: AgentChatCodexConfigSource;
-  unifiedPermissionMode: AgentChatUnifiedPermissionMode;
+  opencodePermissionMode: AgentChatOpenCodePermissionMode;
   cursorModeId: string | null;
   cursorConfigValues: Record<string, string | boolean>;
 };
@@ -167,7 +255,7 @@ function defaultNativeControls(profile: ChatSurfaceProfile): NativeControlState 
       codexApprovalPolicy: "never",
       codexSandbox: "danger-full-access",
       codexConfigSource: "flags",
-      unifiedPermissionMode: "full-auto",
+      opencodePermissionMode: "full-auto",
       cursorModeId: "agent",
       cursorConfigValues: {},
     };
@@ -178,16 +266,16 @@ function defaultNativeControls(profile: ChatSurfaceProfile): NativeControlState 
     codexApprovalPolicy: "on-request",
     codexSandbox: "workspace-write",
     codexConfigSource: "flags",
-    unifiedPermissionMode: "edit",
+    opencodePermissionMode: "edit",
     cursorModeId: "agent",
     cursorConfigValues: {},
   };
 }
 
-type ChatRuntimeProviderKey = "claude" | "codex" | "cursor" | "unified";
+type ChatRuntimeProviderKey = "claude" | "codex" | "cursor" | "opencode";
 
 function resolveChatRuntimeProvider(desc: ModelDescriptor | null | undefined): ChatRuntimeProviderKey {
-  if (!desc?.isCliWrapped) return "unified";
+  if (!desc?.isCliWrapped) return "opencode";
   if (desc.family === "openai") return "codex";
   if (desc.family === "cursor") return "cursor";
   return "claude";
@@ -195,16 +283,16 @@ function resolveChatRuntimeProvider(desc: ModelDescriptor | null | undefined): C
 
 function runtimeFacingModelId(desc: ModelDescriptor | null | undefined, registryModelId: string): string {
   if (!desc?.isCliWrapped) return registryModelId;
-  if (desc.family === "cursor" || desc.family === "openai") return desc.sdkModelId || registryModelId;
+  if (desc.family === "cursor" || desc.family === "openai") return desc.providerModelId || registryModelId;
   return desc.shortId ?? registryModelId;
 }
 
 function summarizeNativeControls(
-  provider: AgentChatSessionSummary["provider"] | "claude" | "codex" | "unified" | "cursor",
+  provider: AgentChatSessionSummary["provider"] | "claude" | "codex" | "opencode" | "cursor",
   controls: NativeControlState,
 ): Pick<
   AgentChatSessionSummary,
-  "interactionMode" | "claudePermissionMode" | "codexApprovalPolicy" | "codexSandbox" | "codexConfigSource" | "unifiedPermissionMode" | "permissionMode" | "cursorModeId"
+  "interactionMode" | "claudePermissionMode" | "codexApprovalPolicy" | "codexSandbox" | "codexConfigSource" | "opencodePermissionMode" | "permissionMode" | "cursorModeId"
 > {
   if (provider === "claude") {
     let permissionMode: AgentChatSessionSummary["permissionMode"];
@@ -247,8 +335,8 @@ function summarizeNativeControls(
     };
   }
   return {
-    unifiedPermissionMode: controls.unifiedPermissionMode,
-    permissionMode: controls.unifiedPermissionMode,
+    opencodePermissionMode: controls.opencodePermissionMode,
+    permissionMode: controls.opencodePermissionMode,
   };
 }
 
@@ -269,7 +357,7 @@ function migrateOldPrefs(): string | null {
     const oldProvider = window.localStorage.getItem(LEGACY_PROVIDER_KEY);
     const oldModel = oldProvider ? window.localStorage.getItem(`${LEGACY_MODEL_KEY_PREFIX}:${oldProvider}`) : null;
     if (oldProvider && oldModel) {
-      const match = MODEL_REGISTRY.find((m) => m.shortId === oldModel || m.sdkModelId === oldModel);
+      const match = MODEL_REGISTRY.find((m) => m.shortId === oldModel || m.providerModelId === oldModel);
       if (match) {
         window.localStorage.setItem(LAST_MODEL_ID_KEY, match.id);
         window.localStorage.removeItem(LEGACY_PROVIDER_KEY);
@@ -414,7 +502,7 @@ function resolveRegistryModelId(value: string | null | undefined): string | null
     (model) =>
       model.id.toLowerCase() === normalized
       || model.shortId.toLowerCase() === normalized
-      || model.sdkModelId.toLowerCase() === normalized
+      || model.providerModelId.toLowerCase() === normalized
   );
   return match?.id ?? null;
 }
@@ -436,7 +524,7 @@ function resolveCliRegistryModelId(provider: "codex" | "claude" | "cursor", valu
       && (
         model.id.toLowerCase() === normalized
         || model.shortId.toLowerCase() === normalized
-        || model.sdkModelId.toLowerCase() === normalized
+        || model.providerModelId.toLowerCase() === normalized
       )
   );
   return match?.id ?? null;
@@ -447,7 +535,7 @@ function chatToolTypeForProvider(provider: string | null | undefined): TerminalT
     case "codex": return "codex-chat";
     case "claude": return "claude-chat";
     case "cursor": return "cursor";
-    default: return "ai-chat";
+    default: return "opencode-chat";
   }
 }
 
@@ -589,10 +677,12 @@ export function AgentChatPane({
   const [codexApprovalPolicy, setCodexApprovalPolicy] = useState<AgentChatCodexApprovalPolicy>(initialNativeControls.codexApprovalPolicy);
   const [codexSandbox, setCodexSandbox] = useState<AgentChatCodexSandbox>(initialNativeControls.codexSandbox);
   const [codexConfigSource, setCodexConfigSource] = useState<AgentChatCodexConfigSource>(initialNativeControls.codexConfigSource);
-  const [unifiedPermissionMode, setUnifiedPermissionMode] = useState<AgentChatUnifiedPermissionMode>(initialNativeControls.unifiedPermissionMode);
+  const [opencodePermissionMode, setOpenCodePermissionMode] = useState<AgentChatOpenCodePermissionMode>(initialNativeControls.opencodePermissionMode);
+  const prevModelDescRef = useRef<ModelDescriptor | null | undefined>(undefined);
   const [cursorModeId, setCursorModeId] = useState<string | null>(initialNativeControls.cursorModeId);
   const [cursorConfigValues, setCursorConfigValues] = useState<Record<string, string | boolean>>(initialNativeControls.cursorConfigValues);
   const [computerUsePolicy, setComputerUsePolicy] = useState<ComputerUsePolicy>(createDefaultComputerUsePolicy());
+  const [aiStatus, setAiStatus] = useState<AiStatusSnapshot | null>(null);
   const [providerConnections, setProviderConnections] = useState<{
     claude: AiProviderConnectionStatus | null;
     codex: AiProviderConnectionStatus | null;
@@ -610,6 +700,7 @@ export function AgentChatPane({
   const [error, setError] = useState<string | null>(null);
   const [computerUseSnapshot, setComputerUseSnapshot] = useState<ComputerUseOwnerSnapshot | null>(null);
   const [proofDrawerOpen, setProofDrawerOpen] = useState(false);
+  const [terminalDrawerOpen, setTerminalDrawerOpen] = useState(false);
   const [sessionDelta, setSessionDelta] = useState<{ insertions: number; deletions: number } | null>(null);
   const [sessionMutationKind, setSessionMutationKind] = useState<"model" | "permission" | "computer-use" | null>(null);
   const [promptSuggestion, setPromptSuggestion] = useState<string | null>(null);
@@ -685,6 +776,130 @@ export function AgentChatPane({
   const pendingSteers = selectedSessionId ? (pendingSteersBySession[selectedSessionId] ?? []) : [];
   const selectedModelDesc = getModelById(modelId);
   const reasoningTiers = selectedModelDesc?.reasoningTiers ?? [];
+  const localRuntimeState = useMemo(() => {
+    const provider = selectedModelDesc?.authTypes.includes("local")
+      ? (selectedModelDesc.family as LocalProviderFamily)
+      : parseLocalProviderFromModelId(modelId);
+    if (!provider) return null;
+    const runtimeConnection = aiStatus?.runtimeConnections?.[provider] ?? null;
+    const detectedEntry = aiStatus?.detectedAuth?.find(
+      (entry): entry is { type: "local"; provider: LocalProviderFamily; endpoint: string } =>
+        entry.type === "local" && entry.provider === provider,
+    ) ?? null;
+    const modelIds = runtimeConnection?.loadedModelIds !== undefined && runtimeConnection.loadedModelIds !== null
+      ? runtimeConnection.loadedModelIds.filter((id): id is string => String(id ?? "").startsWith(`${provider}/`))
+      : availableModelIds.filter((id) => id.startsWith(`${provider}/`));
+    return {
+      provider,
+      label: LOCAL_PROVIDER_LABELS[provider],
+      endpoint: runtimeConnection?.endpoint ?? detectedEntry?.endpoint ?? getLocalProviderDefaultEndpoint(provider),
+      detected: Boolean(runtimeConnection?.runtimeDetected ?? detectedEntry),
+      runtimeAvailable: runtimeConnection?.runtimeAvailable ?? false,
+      health: runtimeConnection?.health ?? null,
+      blocker: runtimeConnection?.blocker ?? null,
+      modelIds,
+      statusKnown: Boolean(aiStatus),
+    };
+  }, [aiStatus, availableModelIds, modelId, selectedModelDesc]);
+  const localRuntimeNotice = useMemo(() => {
+    if (!localRuntimeState) return null;
+    if (!localRuntimeState.statusKnown) {
+      return {
+        tone: "warning" as const,
+        title: `${localRuntimeState.label} runtime`,
+        message: `ADE could not read ${localRuntimeState.label} status right now. It will still try the OpenCode runtime path, but refresh settings if the runtime changed.`,
+      };
+    }
+    if (localRuntimeState.blocker) {
+      return {
+        tone: "warning" as const,
+        title: `${localRuntimeState.label} runtime`,
+        message: localRuntimeState.blocker,
+      };
+    }
+    if (!localRuntimeState.detected) {
+      return {
+        tone: "warning" as const,
+        title: `${localRuntimeState.label} runtime`,
+        message: `${localRuntimeState.label} is not detected at ${localRuntimeState.endpoint}. Start it, load a model, then refresh so ADE can use the local runtime.`,
+      };
+    }
+    if (!localRuntimeState.modelIds.length) {
+      return {
+        tone: "warning" as const,
+        title: `${localRuntimeState.label} runtime`,
+        message: `${localRuntimeState.label} responded, but no loaded models were reported yet. Load a model in ${localRuntimeState.label} and refresh.`,
+      };
+    }
+    // Check if the selected model matches any loaded model, accounting for
+    // OpenCode registry IDs (opencode/lmstudio/X) vs local IDs (lmstudio/X).
+    const decoded = decodeOpenCodeRegistryId(modelId);
+    const localModelId = decoded ? `${decoded.openCodeProviderId}/${decoded.openCodeModelId}` : modelId;
+    if (!localRuntimeState.modelIds.includes(modelId) && !localRuntimeState.modelIds.includes(localModelId)) {
+      return {
+        tone: "warning" as const,
+        title: `${localRuntimeState.label} runtime`,
+        message: `${localRuntimeState.label} is running, but ${selectedModelDesc?.displayName ?? formatLocalModelLabel(modelId)} is not in the loaded model list. Choose one of the loaded models or load this model in ${localRuntimeState.label}.`,
+      };
+    }
+    return {
+      tone: "success" as const,
+      title: `${localRuntimeState.label} runtime`,
+      message: `${localRuntimeState.label} is connected with ${localRuntimeState.modelIds.length} loaded model${localRuntimeState.modelIds.length === 1 ? "" : "s"}${localRuntimeState.health ? ` (${localRuntimeState.health})` : ""}.`,
+    };
+  }, [localRuntimeState, modelId, selectedModelDesc?.displayName]);
+
+  const cliRuntimeBlocked = Boolean(
+    selectedSessionId
+    && activeProviderConnection
+    && !activeProviderConnection.runtimeAvailable
+    && (activeProviderConnection.blocker || activeProviderConnection.provider === "cursor"),
+  );
+  const cliRuntimeTitle = activeProviderConnection?.provider === "claude"
+    ? "Claude runtime"
+    : activeProviderConnection?.provider === "cursor"
+      ? "Cursor runtime"
+      : "Codex runtime";
+  const cliRuntimeBody = activeProviderConnection?.blocker
+    ?? (activeProviderConnection?.provider === "cursor"
+      ? "Cursor agent is not available. Ensure Cursor is installed and the agent is enabled."
+      : null);
+
+  const mergedRuntimeBanner = useMemo(() => {
+    if (!cliRuntimeBlocked && !localRuntimeNotice) return null;
+    if (cliRuntimeBlocked && localRuntimeNotice) {
+      return {
+        kind: "merged" as const,
+        cliTitle: cliRuntimeTitle,
+        cliBody: cliRuntimeBody ?? "",
+        localNotice: localRuntimeNotice,
+        localEndpoint: localRuntimeState?.endpoint,
+      };
+    }
+    if (cliRuntimeBlocked) {
+      return {
+        kind: "cli-only" as const,
+        cliTitle: cliRuntimeTitle,
+        cliBody: cliRuntimeBody ?? "",
+      };
+    }
+    return {
+      kind: "local-only" as const,
+      localNotice: localRuntimeNotice!,
+      localEndpoint: localRuntimeState?.endpoint,
+    };
+  }, [
+    cliRuntimeBlocked,
+    cliRuntimeBody,
+    cliRuntimeTitle,
+    localRuntimeNotice,
+    localRuntimeState?.endpoint,
+  ]);
+
+  useEffect(() => {
+    prevModelDescRef.current = getModelDescriptorForPermissionMode(modelId);
+  }, [modelId]);
+
   const surfaceMode = presentation?.mode ?? "standard";
   const identitySessionSettingsBusy = isPersistentIdentitySurface && sessionMutationKind !== null;
 
@@ -727,7 +942,7 @@ export function AgentChatPane({
       setCodexApprovalPolicy(initialNativeControls.codexApprovalPolicy);
       setCodexSandbox(initialNativeControls.codexSandbox);
       setCodexConfigSource(initialNativeControls.codexConfigSource);
-      setUnifiedPermissionMode(initialNativeControls.unifiedPermissionMode);
+      setOpenCodePermissionMode(initialNativeControls.opencodePermissionMode);
       setCursorModeId(initialNativeControls.cursorModeId);
       setCursorConfigValues(initialNativeControls.cursorConfigValues);
       return;
@@ -743,7 +958,7 @@ export function AgentChatPane({
     setCodexApprovalPolicy(session.codexApprovalPolicy ?? initialNativeControls.codexApprovalPolicy);
     setCodexSandbox(session.codexSandbox ?? initialNativeControls.codexSandbox);
     setCodexConfigSource(session.codexConfigSource ?? initialNativeControls.codexConfigSource);
-    setUnifiedPermissionMode(session.unifiedPermissionMode ?? initialNativeControls.unifiedPermissionMode);
+    setOpenCodePermissionMode(session.opencodePermissionMode ?? initialNativeControls.opencodePermissionMode);
     setCursorModeId(session.cursorModeId ?? session.cursorModeSnapshot?.currentModeId ?? initialNativeControls.cursorModeId);
     setCursorConfigValues(
       Object.fromEntries(
@@ -776,25 +991,31 @@ export function AgentChatPane({
   const resolvedChips = useMemo(() => JSON.parse(chipsJson) as ChatSurfaceChip[], [chipsJson]);
 
   // Keep all configured models selectable, and always include the active session model.
-  // Most launched chats stay in the same family; special surfaces such as CTO
-  // can opt into cross-family switching after the conversation has started.
+  // All models are available regardless of surface — the runtime handles provider transitions.
   const effectiveAvailableModelIds = useMemo(() => {
     return filterChatModelIdsForSession({
-      availableModelIds: availableModelIdsOverride?.length ? availableModelIdsOverride : availableModelIds,
+      availableModelIds,
       activeSessionModelId: selectedSessionModelId,
       hasConversation: selectedEvents.length > 0,
       policy: modelSwitchPolicy,
     });
-  }, [availableModelIds, availableModelIdsOverride, modelSwitchPolicy, selectedSessionModelId, selectedEvents.length]);
+  }, [availableModelIds, modelSwitchPolicy, selectedSessionModelId, selectedEvents.length]);
   const handoffAvailableModelIds = useMemo(() => {
-    const merged = new Set<string>(availableModelIdsOverride?.length ? availableModelIdsOverride : availableModelIds);
+    const merged = new Set<string>(availableModelIds);
     if (selectedSessionModelId) {
       merged.add(selectedSessionModelId);
     }
-    return MODEL_REGISTRY
+    const ordered = MODEL_REGISTRY
       .filter((model) => !model.deprecated && merged.has(model.id))
       .map((model) => model.id);
-  }, [availableModelIds, availableModelIdsOverride, selectedSessionModelId]);
+    const extras = [...merged].filter((modelId) => !ordered.includes(modelId));
+    extras.sort((left, right) => {
+      const leftLabel = getModelById(left)?.displayName ?? left;
+      const rightLabel = getModelById(right)?.displayName ?? right;
+      return leftLabel.localeCompare(rightLabel, undefined, { sensitivity: "base" });
+    });
+    return [...ordered, ...extras];
+  }, [availableModelIds, selectedSessionModelId]);
   const canShowHandoff = Boolean(
     lockSessionId
       && selectedSessionId
@@ -812,19 +1033,27 @@ export function AgentChatPane({
   const refreshAvailableModels = useCallback(async () => {
     try {
       const status = await window.ade.ai.getStatus();
-      const available = deriveConfiguredModelIds(status, { includeCursor: true });
+      setAiStatus(status);
+      setProviderConnections({
+        claude: status.providerConnections?.claude ?? null,
+        codex: status.providerConnections?.codex ?? null,
+        cursor: status.providerConnections?.cursor ?? null,
+      });
+      const available = deriveConfiguredModelIds(status);
       setAvailableModelIds(available);
       return available;
     } catch {
+      setAiStatus(null);
+      setProviderConnections(null);
       // Fall back to direct model discovery probes below.
     }
 
     try {
-      const [codexModels, claudeModels, cursorModels, unifiedModels] = await Promise.all([
+      const [codexModels, claudeModels, cursorModels, openCodeModels] = await Promise.all([
         window.ade.agentChat.models({ provider: "codex" }).catch(() => []),
         window.ade.agentChat.models({ provider: "claude" }).catch(() => []),
         window.ade.agentChat.models({ provider: "cursor" }).catch(() => []),
-        window.ade.agentChat.models({ provider: "unified" }).catch(() => []),
+        window.ade.agentChat.models({ provider: "opencode" }).catch(() => []),
       ]);
       const available = new Set<string>();
 
@@ -840,9 +1069,13 @@ export function AgentChatPane({
         const resolved = resolveCliRegistryModelId("cursor", model.id);
         if (resolved) available.add(resolved);
       }
-      for (const model of unifiedModels) {
+      for (const model of openCodeModels) {
         const resolved = resolveRegistryModelId(model.id);
-        if (resolved) available.add(resolved);
+        if (resolved) {
+          available.add(resolved);
+        } else {
+          available.add(model.id);
+        }
       }
 
       const ordered = MODEL_REGISTRY
@@ -860,19 +1093,6 @@ export function AgentChatPane({
     } catch {
       setAvailableModelIds([]);
       return [];
-    }
-  }, []);
-
-  const refreshProviderConnections = useCallback(async () => {
-    try {
-      const status = await window.ade.ai.getStatus();
-      setProviderConnections({
-        claude: status.providerConnections?.claude ?? null,
-        codex: status.providerConnections?.codex ?? null,
-        cursor: status.providerConnections?.cursor ?? null,
-      });
-    } catch {
-      setProviderConnections(null);
     }
   }, []);
 
@@ -963,16 +1183,16 @@ export function AgentChatPane({
   }, [selectedSessionId]);
 
   useEffect(() => {
-    void refreshProviderConnections();
-  }, [refreshProviderConnections, selectedSession?.provider]);
+    void refreshAvailableModels();
+  }, [refreshAvailableModels, selectedSession?.provider]);
 
   useEffect(() => {
     if (!turnActive || !selectedSession?.provider) return;
     const timer = window.setInterval(() => {
-      void refreshProviderConnections();
+      void refreshAvailableModels();
     }, 5000);
     return () => window.clearInterval(timer);
-  }, [refreshProviderConnections, selectedSession?.provider, turnActive]);
+  }, [refreshAvailableModels, selectedSession?.provider, turnActive]);
 
   const refreshComputerUseSnapshot = useCallback(async (
     sessionId: string | null,
@@ -1570,7 +1790,7 @@ export function AgentChatPane({
     codexApprovalPolicy,
     codexSandbox,
     codexConfigSource,
-    unifiedPermissionMode,
+    opencodePermissionMode,
     cursorModeId,
     cursorConfigValues,
   }), [
@@ -1579,7 +1799,7 @@ export function AgentChatPane({
     codexApprovalPolicy,
     codexSandbox,
     codexConfigSource,
-    unifiedPermissionMode,
+    opencodePermissionMode,
     cursorModeId,
     cursorConfigValues,
   ]);
@@ -1595,27 +1815,41 @@ export function AgentChatPane({
     };
   }, [currentNativeControls]);
   const buildModelSelectionSnapshot = useCallback((nextModelId: string) => {
+    const previousDesc = prevModelDescRef.current;
     const nextDesc = getModelById(nextModelId);
+    const nextPermissionDesc = getModelDescriptorForPermissionMode(nextModelId);
     const nextProvider = resolveChatRuntimeProvider(nextDesc);
-    const nextModel = nextProvider === "unified" ? nextModelId : runtimeFacingModelId(nextDesc, nextModelId);
+    const nextModel = nextProvider === "opencode" ? nextModelId : runtimeFacingModelId(nextDesc, nextModelId);
     const tiers = nextDesc?.reasoningTiers ?? [];
     const preferred = readLastUsedReasoningEffort({ laneId, modelId: nextModelId });
     const nextReasoningEffort = selectReasoningEffort({ tiers, preferred });
+    const nextRec = recommendedOpenCodePermissionModeForModel(nextPermissionDesc);
     return {
       nextDesc,
       nextModelId,
       nextModel,
       nextProvider,
       nextReasoningEffort,
+      nextOpenCodePermissionMode: nextRec,
+      resetOpenCodePermissionToDefault: shouldResetOpenCodePermissionForModelSwitch(previousDesc, nextPermissionDesc),
     };
   }, [laneId]);
   const applyModelSelectionSnapshot = useCallback((snapshot: {
     nextModelId: string;
     nextReasoningEffort: string | null;
+    nextOpenCodePermissionMode?: AgentChatOpenCodePermissionMode | null;
+    resetOpenCodePermissionToDefault?: boolean;
   }) => {
     setModelId(snapshot.nextModelId);
     setReasoningEffort(snapshot.nextReasoningEffort);
-  }, []);
+    const nextOpenCodeMode = snapshot.nextOpenCodePermissionMode ?? null;
+    const targetOpenCodeMode = snapshot.resetOpenCodePermissionToDefault
+      ? (nextOpenCodeMode ?? initialNativeControls.opencodePermissionMode)
+      : nextOpenCodeMode;
+    if (targetOpenCodeMode != null) {
+      setOpenCodePermissionMode(targetOpenCodeMode);
+    }
+  }, [initialNativeControls.opencodePermissionMode]);
   const notifySessionCreated = useCallback((session: AgentChatSession) => {
     if (!onSessionCreated) return;
     void Promise.resolve(onSessionCreated(session)).catch((err) => { console.error("notifySessionCreated failed:", err); });
@@ -1628,9 +1862,22 @@ export function AgentChatPane({
     if (!laneId) return null;
     const createPromise = (async () => {
       const desc = getModelById(modelId);
+      const permissionDesc = getModelDescriptorForPermissionMode(modelId);
       const provider = resolveChatRuntimeProvider(desc);
-      const model = provider === "unified" ? modelId : runtimeFacingModelId(desc, modelId);
+      const model = provider === "opencode" ? modelId : runtimeFacingModelId(desc, modelId);
       const sessionProfile = resolveChatSessionProfile(computerUsePolicy);
+      const harnessPermissionMode = provider === "opencode"
+        ? recommendedOpenCodePermissionModeForModel(permissionDesc)
+        : null;
+      const nativeControlPayload = harnessPermissionMode
+        ? {
+            ...summarizeNativeControls(provider, {
+              ...currentNativeControls,
+              opencodePermissionMode: harnessPermissionMode,
+            }),
+            ...(provider === "cursor" ? { cursorConfigValues: currentNativeControls.cursorConfigValues } : {}),
+          }
+        : buildNativeControlPayload(provider);
       const created = await window.ade.agentChat.create({
         laneId,
         provider,
@@ -1638,7 +1885,7 @@ export function AgentChatPane({
         modelId,
         sessionProfile,
         reasoningEffort,
-        ...buildNativeControlPayload(provider),
+        ...nativeControlPayload,
         computerUse: computerUsePolicy,
       });
       loadedHistoryRef.current.delete(created.id);
@@ -1665,7 +1912,7 @@ export function AgentChatPane({
         createSessionPromiseRef.current = null;
       }
     }
-  }, [buildNativeControlPayload, computerUsePolicy, laneId, modelId, notifySessionCreated, reasoningEffort, refreshSessions, touchSession]);
+  }, [buildNativeControlPayload, computerUsePolicy, currentNativeControls, laneId, modelId, notifySessionCreated, reasoningEffort, refreshSessions, touchSession]);
 
   const handoffSession = useCallback(async () => {
     if (!canShowHandoff || !selectedSessionId || !handoffModelId || handoffBlocked) return;
@@ -1921,7 +2168,7 @@ export function AgentChatPane({
     setCodexApprovalPolicy(nextControls.codexApprovalPolicy);
     setCodexSandbox(nextControls.codexSandbox);
     setCodexConfigSource(nextControls.codexConfigSource);
-    setUnifiedPermissionMode(nextControls.unifiedPermissionMode);
+    setOpenCodePermissionMode(nextControls.opencodePermissionMode);
     setCursorModeId(nextControls.cursorModeId);
     setCursorConfigValues(nextControls.cursorConfigValues);
 
@@ -2046,28 +2293,16 @@ export function AgentChatPane({
   );
   const shellHeader = (
     <div className="space-y-2 px-4 py-2">
-      {/* Clean single-row header */}
-      <div className="flex items-center gap-3">
-        <span className="min-w-0 truncate font-sans text-[13px] font-medium text-fg/80">
+      {/* Single-row header: title + git toolbar + actions */}
+      <div className="flex items-center gap-2">
+        <span className="min-w-0 shrink truncate font-sans text-[13px] font-medium text-fg/80">
           {resolvedTitle}
         </span>
 
-        {laneId && laneDisplayLabel && laneDisplayLabel !== laneId ? (
-          <button
-            type="button"
-            className="inline-flex shrink-0 items-center gap-1.5 rounded-full border border-white/[0.06] px-2.5 py-0.5 font-sans text-[10px] font-medium text-muted-fg/60 transition-colors hover:border-white/[0.1] hover:text-fg/70"
-            title={`Go to lane: ${laneDisplayLabel}`}
-            onClick={() => {
-              selectLane(laneId);
-              navigate(`/lanes?laneId=${encodeURIComponent(laneId)}`);
-            }}
-          >
-            <GitBranch size={10} weight="regular" />
-            <span className="max-w-[120px] truncate">{laneDisplayLabel}</span>
-          </button>
-        ) : null}
+        {laneId ? <ChatGitToolbar laneId={laneId} /> : null}
 
         <div className="ml-auto flex shrink-0 items-center gap-1.5">
+          {laneId ? <ChatTerminalToggle open={terminalDrawerOpen} onToggle={() => setTerminalDrawerOpen((v) => !v)} /> : null}
           {resolvedChips.map((chip) => (
             <span
               key={`${chip.label}:${chip.tone ?? "accent"}`}
@@ -2102,12 +2337,11 @@ export function AgentChatPane({
                     </div>
                   </div>
                   <div className="mt-3">
-                    <UnifiedModelSelector
+                    <ProviderModelSelector
                       value={handoffModelId}
                       onChange={setHandoffModelId}
                       availableModelIds={handoffAvailableModelIds}
-                      catalogMode="available-only"
-                      showReasoning={false}
+                      showReasoning
                       onOpenAiSettings={openAiProvidersSettings}
                     />
                   </div>
@@ -2257,7 +2491,7 @@ export function AgentChatPane({
             codexApprovalPolicy={codexApprovalPolicy}
             codexSandbox={codexSandbox}
             codexConfigSource={codexConfigSource}
-            unifiedPermissionMode={unifiedPermissionMode}
+            opencodePermissionMode={opencodePermissionMode}
             cursorModeSnapshot={effectiveCursorModeSnapshot}
             executionMode={selectedExecutionMode?.value ?? "focused"}
             computerUsePolicy={computerUsePolicy}
@@ -2276,7 +2510,7 @@ export function AgentChatPane({
             onCodexApprovalPolicyChange={(value) => { void updateNativeControls({ codexApprovalPolicy: value }); }}
             onCodexSandboxChange={(value) => { void updateNativeControls({ codexSandbox: value }); }}
             onCodexConfigSourceChange={(value) => { void updateNativeControls({ codexConfigSource: value }); }}
-            onUnifiedPermissionModeChange={(value) => { void updateNativeControls({ unifiedPermissionMode: value }); }}
+            onOpenCodePermissionModeChange={(value) => { void updateNativeControls({ opencodePermissionMode: value }); }}
             onCursorModeChange={(value) => { void updateNativeControls({ cursorModeId: value }); }}
             onCursorConfigChange={(configId, value) => {
               void updateNativeControls({
@@ -2313,11 +2547,22 @@ export function AgentChatPane({
               }
 
               setSessionMutationKind("model");
+              const nextOpenCodeModeForPayload = snapshot.resetOpenCodePermissionToDefault
+                ? (snapshot.nextOpenCodePermissionMode ?? initialNativeControls.opencodePermissionMode)
+                : snapshot.nextOpenCodePermissionMode;
+              const nextNativeControlPayload = snapshot.nextProvider === "opencode" && nextOpenCodeModeForPayload != null
+                ? {
+                    ...summarizeNativeControls("opencode", {
+                      ...currentNativeControls,
+                      opencodePermissionMode: nextOpenCodeModeForPayload,
+                    }),
+                  }
+                : buildNativeControlPayload(snapshot.nextProvider);
               void window.ade.agentChat.updateSession({
                 sessionId: selectedSessionId,
                 modelId: nextModelId,
                 reasoningEffort: snapshot.nextReasoningEffort,
-                ...buildNativeControlPayload(snapshot.nextProvider),
+                ...nextNativeControlPayload,
                 computerUse: computerUsePolicy,
               }).then((updatedSession) => {
                 applyModelSelectionSnapshot(snapshot);
@@ -2332,7 +2577,7 @@ export function AgentChatPane({
                   codexApprovalPolicy: updatedSession.codexApprovalPolicy,
                   codexSandbox: updatedSession.codexSandbox,
                   codexConfigSource: updatedSession.codexConfigSource,
-                  unifiedPermissionMode: updatedSession.unifiedPermissionMode,
+                  opencodePermissionMode: updatedSession.opencodePermissionMode,
                   cursorModeId: updatedSession.cursorModeId,
                   cursorModeSnapshot: updatedSession.cursorModeSnapshot,
                   computerUse: updatedSession.computerUse,
@@ -2385,9 +2630,7 @@ export function AgentChatPane({
               }
             }}
             promptSuggestion={promptSuggestion}
-            subagentSnapshots={selectedSubagentSnapshots}
             chatHasMessages={selectedEventsForDisplay.some((env) => env.event.type === "user_message" || env.event.type === "text")}
-            restrictModelCatalogToAvailable={selectedEvents.length > 0}
             pendingSteers={pendingSteers}
             onCancelSteer={(steerId) => {
               if (selectedSessionId) {
@@ -2399,6 +2642,7 @@ export function AgentChatPane({
                 void window.ade.agentChat.editSteer({ sessionId: selectedSessionId, steerId, text });
               }
             }}
+            sessionId={selectedSessionId}
           />
   );
 
@@ -2419,17 +2663,43 @@ export function AgentChatPane({
             {error}
           </div>
         ) : null}
-        {selectedSessionId && !activeProviderConnection?.runtimeAvailable && (activeProviderConnection?.blocker || activeProviderConnection?.provider === "cursor") ? (
+        {mergedRuntimeBanner?.kind === "cli-only" ? (
           <div className="border-b border-amber-500/10 bg-amber-500/[0.04] px-4 py-2.5">
             <div className="font-mono text-[10px] uppercase tracking-[0.16em] text-amber-200/70">
-              {activeProviderConnection.provider === "claude"
-                ? "Claude runtime"
-                : activeProviderConnection.provider === "cursor"
-                  ? "Cursor runtime"
-                  : "Codex runtime"}
+              {mergedRuntimeBanner.cliTitle}
             </div>
             <div className="mt-1 text-[12px] leading-5 text-amber-100/80">
-              {activeProviderConnection.blocker || "Cursor agent is not available. Ensure Cursor is installed and the agent is enabled."}
+              {mergedRuntimeBanner.cliBody}
+            </div>
+          </div>
+        ) : null}
+        {mergedRuntimeBanner?.kind === "local-only" ? (
+          <LocalRuntimeNoticeBlock
+            notice={mergedRuntimeBanner.localNotice}
+            endpoint={mergedRuntimeBanner.localEndpoint}
+          />
+        ) : null}
+        {mergedRuntimeBanner?.kind === "merged" ? (
+          <div className="border-b border-amber-500/10 bg-amber-500/[0.04] px-4 py-2.5">
+            <div className="font-mono text-[10px] uppercase tracking-[0.16em] text-amber-200/70">
+              Runtime status
+            </div>
+            <div className="mt-3 space-y-3">
+              <div>
+                <div className="font-mono text-[9px] uppercase tracking-[0.14em] text-amber-200/55">
+                  {mergedRuntimeBanner.cliTitle}
+                </div>
+                <div className="mt-1 text-[12px] leading-5 text-amber-100/80">
+                  {mergedRuntimeBanner.cliBody}
+                </div>
+              </div>
+              <div className="border-t border-white/[0.06] pt-3">
+                <LocalRuntimeNoticeBlock
+                  variant="inline"
+                  notice={mergedRuntimeBanner.localNotice}
+                  endpoint={mergedRuntimeBanner.localEndpoint}
+                />
+              </div>
             </div>
           </div>
         ) : null}
@@ -2471,6 +2741,7 @@ export function AgentChatPane({
                       assistantLabel={assistantLabel}
                       respondingApprovalIds={respondingApprovalIds}
                       pendingApprovalIds={pendingApprovalIds}
+                      sessionId={selectedSessionId}
                       onApproval={(itemId, decision, responseText, answers) => {
                         void handleApproval(itemId, decision, responseText, answers);
                       }}
@@ -2481,6 +2752,22 @@ export function AgentChatPane({
                         <span className="text-red-400/70">-{sessionDelta.deletions}</span>
                       </div>
                     ) : null}
+                    {selectedSubagentSnapshots.length ? (
+                      <div className="border-t border-white/[0.05] bg-[#0d0d10]">
+                        <ChatSubagentStrip
+                          snapshots={selectedSubagentSnapshots}
+                          placement="read-only"
+                          className="pb-2"
+                          onInterruptTurn={turnActive ? () => { void interrupt(); } : undefined}
+                        />
+                      </div>
+                    ) : null}
+                    <ChatTerminalDrawer
+                      open={terminalDrawerOpen}
+                      onToggle={() => setTerminalDrawerOpen((v) => !v)}
+                      laneId={laneId}
+                      sessionId={selectedSessionId ?? undefined}
+                    />
                   </div>
 
                   {/* Proof panel (push) */}

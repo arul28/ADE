@@ -16,7 +16,7 @@ import os from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { openKvDb } from "../../services/state/kvDb";
-import { createUnifiedMemoryService } from "../../services/memory/unifiedMemoryService";
+import { createMemoryService } from "../../services/memory/memoryService";
 import { createMemoryBriefingService } from "../../services/memory/memoryBriefingService";
 import { createCtoStateService } from "../../services/cto/ctoStateService";
 import type {
@@ -43,7 +43,7 @@ async function createMemoryFixture() {
   fs.mkdirSync(adeDir, { recursive: true });
   const dbPath = path.join(adeDir, "ade.db");
   const db = await openKvDb(dbPath, createLogger());
-  const memoryService = createUnifiedMemoryService(db);
+  const memoryService = createMemoryService(db);
   // Seed a project row to satisfy FK constraints on unified_memories
   const seedProject = (projectId: string) => {
     try {
@@ -84,7 +84,7 @@ function seedOrchestratorAttempt(db: any, runId: string, stepId: string, attempt
   const now = new Date().toISOString();
   db.run(
     `INSERT OR IGNORE INTO orchestrator_attempts(id, run_id, step_id, project_id, attempt_number, status, executor_kind, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-    [attemptId, runId, stepId, projectId, 1, "running", "unified", now]
+    [attemptId, runId, stepId, projectId, 1, "running", "opencode", now]
   );
 }
 

@@ -79,6 +79,7 @@ import type {
   AgentChatSlashCommandsArgs,
   AgentChatFileSearchArgs,
   AgentChatFileSearchResult,
+  AgentChatGetTurnFileDiffArgs,
   AgentChatSession,
   AgentChatSessionCapabilities,
   AgentChatSessionCapabilitiesArgs,
@@ -86,6 +87,7 @@ import type {
   AgentChatSteerArgs,
   AgentChatCancelSteerArgs,
   AgentChatEditSteerArgs,
+  AgentChatTurnFileDiff,
   AgentChatSubagentSnapshot,
   AgentChatSubagentListArgs,
   AgentChatUpdateSessionArgs,
@@ -448,6 +450,7 @@ import type {
   StartOrchestratorRunFromMissionArgs,
   TickOrchestratorRunArgs,
   UpdateMissionArgs,
+  UpdateSessionMetaArgs,
   UpdateMissionStepArgs,
   TestEvent,
   TestRunSummary,
@@ -611,7 +614,7 @@ declare global {
         set: (overrides: KeybindingOverride[]) => Promise<KeybindingsSnapshot>;
       };
       ai: {
-        getStatus: (args?: { force?: boolean }) => Promise<AiSettingsStatus>;
+        getStatus: (args?: { force?: boolean; refreshOpenCodeInventory?: boolean }) => Promise<AiSettingsStatus>;
         storeApiKey: (provider: string, key: string) => Promise<void>;
         deleteApiKey: (provider: string) => Promise<void>;
         listApiKeys: () => Promise<string[]>;
@@ -1047,14 +1050,7 @@ declare global {
       sessions: {
         list: (args?: ListSessionsArgs) => Promise<TerminalSessionSummary[]>;
         get: (sessionId: string) => Promise<TerminalSessionDetail | null>;
-        updateMeta: (args: {
-          sessionId: string;
-          pinned?: boolean;
-          title?: string;
-          goal?: string | null;
-          toolType?: string | null;
-          resumeCommand?: string | null;
-        }) => Promise<TerminalSessionSummary | null>;
+        updateMeta: (args: UpdateSessionMetaArgs) => Promise<TerminalSessionSummary | null>;
         readTranscriptTail: (args: ReadTranscriptTailArgs) => Promise<string>;
         getDelta: (sessionId: string) => Promise<SessionDeltaSummary | null>;
       };
@@ -1091,6 +1087,9 @@ declare global {
         fileSearch: (
           args: AgentChatFileSearchArgs,
         ) => Promise<AgentChatFileSearchResult[]>;
+        getTurnFileDiff: (
+          args: AgentChatGetTurnFileDiffArgs,
+        ) => Promise<AgentChatTurnFileDiff | null>;
         listSubagents: (
           args: AgentChatSubagentListArgs,
         ) => Promise<AgentChatSubagentSnapshot[]>;

@@ -1351,69 +1351,59 @@ h6 {
 .ade-lane-divider {
   position: relative;
   z-index: 12;
-  background: color-mix(in srgb, var(--color-separator-active) 15%, var(--color-surface-recessed));
+  background: transparent;
   transition: background-color 0.15s ease, box-shadow 0.15s ease;
 }
 
 .ade-lane-divider.vertical {
-  width: 14px;
+  width: 7px;
   cursor: col-resize;
-  border-left: 1px solid color-mix(in srgb, var(--color-separator-active) 30%, var(--border-separator));
-  border-right: 1px solid color-mix(in srgb, var(--color-separator-active) 30%, var(--border-separator));
 }
 
 .ade-lane-divider.horizontal {
-  height: 14px;
+  height: 7px;
   cursor: row-resize;
-  border-top: 1px solid color-mix(in srgb, var(--color-separator-active) 30%, var(--border-separator));
-  border-bottom: 1px solid color-mix(in srgb, var(--color-separator-active) 30%, var(--border-separator));
 }
 
-.ade-lane-divider::after {
-  content: "";
-  position: absolute;
-  inset: -4px;
-}
-
-/* Lane divider indicator dots */
+/* Visible center line */
 .ade-lane-divider::before {
   content: "";
   position: absolute;
-  left: 50%;
-  top: 50%;
-  transform: translate(-50%, -50%);
-  border-radius: 999px;
   pointer-events: none;
-  background: var(--color-separator-active);
-  opacity: 0.5;
-  transition: opacity 0.15s ease, box-shadow 0.15s ease;
+  background: color-mix(in srgb, var(--color-separator-active) 40%, var(--border-separator));
+  transition: background-color 0.15s ease, box-shadow 0.15s ease;
 }
 
 .ade-lane-divider.vertical::before {
-  width: 3px;
-  height: 32px;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 1.5px;
+  transform: translateX(-50%);
 }
 
 .ade-lane-divider.horizontal::before {
-  width: 32px;
-  height: 3px;
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: 1.5px;
+  transform: translateY(-50%);
 }
 
-.ade-lane-divider:hover {
-  background: color-mix(in srgb, var(--color-separator-active) 25%, var(--color-surface-recessed));
+/* Generous hit target */
+.ade-lane-divider::after {
+  content: "";
+  position: absolute;
+  inset: -6px;
 }
 
 .ade-lane-divider:hover::before {
-  opacity: 1;
+  background: var(--color-separator-active);
   box-shadow: 0 0 10px 2px var(--color-glow);
 }
 
-.ade-lane-divider[data-resize-handle-active] {
-  background: color-mix(in srgb, var(--color-separator-active) 30%, var(--color-surface-recessed));
-}
-
 .ade-lane-divider[data-resize-handle-active]::before {
-  opacity: 1;
+  background: var(--color-separator-active);
   box-shadow: 0 0 14px 3px var(--color-glow);
 }
 
@@ -1430,6 +1420,41 @@ h6 {
   background: linear-gradient(180deg, var(--color-surface-raised) 0%, var(--color-surface) 100%);
   border-bottom: 1px solid rgba(var(--tab-tint-rgb, 113, 113, 122), 0.08);
 }
+
+/* ═══════════════════════════════════════════════════════════
+   Multi-Lane Grid — Dense Mode
+   ═══════════════════════════════════════════════════════════ */
+
+/* Lane column container — colored top accent bar */
+.ade-lane-column {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+  height: 100%;
+  border-top: 2.5px solid var(--lane-accent, var(--color-accent));
+}
+
+/* Tighter padding inside multi-lane columns */
+.ade-lane-column .ade-tiling-surface {
+  padding: 2px;
+}
+
+/* Smaller radii + thinner borders for density */
+.ade-lane-column .ade-floating-pane {
+  border-radius: 8px;
+}
+
+/* Narrower pane gutters in dense mode */
+.ade-lane-column .ade-pane-gutter.vertical {
+  width: 5px;
+}
+.ade-lane-column .ade-pane-gutter.horizontal {
+  height: 5px;
+}
+
+/* --lane-accent is set inline per lane column from JSX */
 
 /* ═══════════════════════════════════════════════════════════
    Scrollbars

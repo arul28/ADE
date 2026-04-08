@@ -22,9 +22,15 @@ function mapPriorityLabel(priority: number): LinearPriorityLabel {
   return "none";
 }
 
-function toBearerToken(token: string): string {
+function toAuthorizationHeaderValue(token: string, authMode: "manual" | "oauth" | null | undefined): string {
   const trimmed = token.trim();
-  return /^bearer\s+/i.test(trimmed) ? trimmed : `Bearer ${trimmed}`;
+  if (authMode === "oauth") {
+    return /^bearer\s+/i.test(trimmed) ? trimmed : `Bearer ${trimmed}`;
+  }
+  if (authMode === "manual") {
+    return trimmed.replace(/^bearer\s+/i, "");
+  }
+  return trimmed;
 }
 
 function toNormalizedIssue(node: Record<string, unknown>): NormalizedLinearIssue | null {
@@ -124,7 +130,10 @@ export function createLinearClient(args: LinearClientArgs) {
     variables?: Record<string, unknown>;
     maxRetries?: number;
   }): Promise<TData> => {
-    const token = toBearerToken(args.credentials.getTokenOrThrow());
+    const token = toAuthorizationHeaderValue(
+      args.credentials.getTokenOrThrow(),
+      args.credentials.getStatus().authMode
+    );
     const maxRetries = Math.max(0, Math.floor(params.maxRetries ?? 3));
     let attempt = 0;
     let backoffMs = 500;

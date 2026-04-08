@@ -1,4 +1,4 @@
-export type AgentProvider = "claude" | "codex" | "cursor";
+export type AgentProvider = "claude" | "codex" | "cursor" | "opencode";
 
 export type AgentPermissionMode = "read-only" | "edit" | "full-auto";
 
@@ -71,13 +71,3 @@ export type AgentModelDescriptor = {
   label: string;
   description?: string;
 };
-
-export interface AgentExecutor {
-  readonly provider: AgentProvider;
-  execute(prompt: string, opts: ExecutorOpts): AsyncIterable<AgentEvent>;
-  resume(sessionId: string, prompt: string, opts: ExecutorOpts): AsyncIterable<AgentEvent>;
-  listModels?(): Promise<AgentModelDescriptor[]>;
-}
-
-// Re-export unified executor types for callers migrating to the new path.
-export type { UnifiedExecutorOpts } from "./unifiedExecutor";

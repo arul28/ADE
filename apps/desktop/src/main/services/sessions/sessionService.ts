@@ -2,6 +2,8 @@ import fs from "node:fs";
 import type { AdeDb } from "../state/kvDb";
 import type {
   TerminalSessionDetail,
+  TerminalResumeMetadata,
+  TerminalResumeProvider,
   TerminalRuntimeState,
   TerminalSessionStatus,
   TerminalSessionSummary,
@@ -9,7 +11,12 @@ import type {
   UpdateSessionMetaArgs
 } from "../../../shared/types";
 import { stripAnsi } from "../../utils/ansiStrip";
-import { defaultResumeCommandForTool, normalizeResumeCommand } from "../../utils/terminalSessionSignals";
+import {
+  buildTrackedCliResumeCommand,
+  defaultResumeCommandForTool,
+  normalizeResumeCommand,
+  parseTrackedCliResumeCommand,
+} from "../../utils/terminalSessionSignals";
 
 type SessionRow = {
   id: string;
@@ -18,6 +25,7 @@ type SessionRow = {
   ptyId: string | null;
   tracked: number;
   pinned: number;
+  manuallyNamed: number;
   goal: string | null;
   toolType: string | null;
   title: string;
@@ -31,6 +39,7 @@ type SessionRow = {
   lastOutputPreview: string | null;
   summary: string | null;
   resumeCommand: string | null;
+  resumeMetadataJson: string | null;
 };
 
 const SESSION_COLUMNS = `
@@ -40,6 +49,7 @@ const SESSION_COLUMNS = `
   s.pty_id as ptyId,
   s.tracked as tracked,
   s.pinned as pinned,
+  s.manually_named as manuallyNamed,
   s.goal as goal,
   s.tool_type as toolType,
   s.title as title,
@@ -52,8 +62,93 @@ const SESSION_COLUMNS = `
   s.head_sha_end as headShaEnd,
   s.last_output_preview as lastOutputPreview,
   s.summary as summary,
-  s.resume_command as resumeCommand
+  s.resume_command as resumeCommand,
+  s.resume_metadata_json as resumeMetadataJson
 `;
+
+function isResumeProvider(value: unknown): value is TerminalResumeProvider {
+  return value === "claude" || value === "codex";
+}
+
+function normalizeResumeMetadata(raw: unknown): TerminalResumeMetadata | null {
+  if (raw == null || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const record = raw as Record<string, unknown>;
+  const provider = isResumeProvider(record.provider) ? record.provider : null;
+  const targetKind = record.targetKind === "session" || record.targetKind === "thread" ? record.targetKind : null;
+  const legacyTarget = typeof record.target === "string" ? record.target.trim() : "";
+  const targetId = typeof record.targetId === "string" ? record.targetId.trim() : legacyTarget;
+  const launchRecord = record.launch != null && typeof record.launch === "object" && !Array.isArray(record.launch)
+    ? (record.launch as Record<string, unknown>)
+    : {};
+  type LaunchPermissionMode = TerminalResumeMetadata["launch"]["permissionMode"];
+  let permissionMode: LaunchPermissionMode | null = null;
+  if (typeof launchRecord.permissionMode === "string") {
+    permissionMode = launchRecord.permissionMode as LaunchPermissionMode;
+  } else if (typeof record.permissionMode === "string") {
+    permissionMode = record.permissionMode as LaunchPermissionMode;
+  }
+  const claudePermissionMode = typeof launchRecord.claudePermissionMode === "string" ? launchRecord.claudePermissionMode : null;
+  const codexApprovalPolicy = typeof launchRecord.codexApprovalPolicy === "string" ? launchRecord.codexApprovalPolicy : null;
+  const codexSandbox = typeof launchRecord.codexSandbox === "string" ? launchRecord.codexSandbox : null;
+  const codexConfigSource = typeof launchRecord.codexConfigSource === "string" ? launchRecord.codexConfigSource : null;
+  if (!provider || !targetKind) return null;
+  return {
+    provider,
+    targetKind,
+    targetId: targetId.length ? targetId : null,
+    launch: {
+      ...(permissionMode ? { permissionMode } : {}),
+      ...(claudePermissionMode ? { claudePermissionMode: claudePermissionMode as TerminalResumeMetadata["launch"]["claudePermissionMode"] } : {}),
+      ...(codexApprovalPolicy ? { codexApprovalPolicy: codexApprovalPolicy as TerminalResumeMetadata["launch"]["codexApprovalPolicy"] } : {}),
+      ...(codexSandbox ? { codexSandbox: codexSandbox as TerminalResumeMetadata["launch"]["codexSandbox"] } : {}),
+      ...(codexConfigSource ? { codexConfigSource: codexConfigSource as TerminalResumeMetadata["launch"]["codexConfigSource"] } : {}),
+    },
+    ...(legacyTarget ? { target: legacyTarget } : {}),
+    ...(permissionMode ? { permissionMode } : {}),
+  };
+}
+
+function serializeResumeMetadata(metadata: TerminalResumeMetadata | null | undefined): string | null {
+  if (!metadata) return null;
+  return JSON.stringify(metadata);
+}
+
+function deriveResumeMetadataCommand(
+  metadata: TerminalResumeMetadata | null | undefined,
+  legacyResumeCommand: string | null,
+  toolType: TerminalToolType | null,
+): string | null {
+  if (metadata) {
+    return buildTrackedCliResumeCommand(metadata);
+  }
+  return normalizeResumeCommand(legacyResumeCommand, toolType);
+}
+
+function parseLaunchMetadataFromCurrentSession(
+  currentSession: TerminalSessionSummary | null,
+): TerminalResumeMetadata | null {
+  if (!currentSession) return null;
+  const currentMetadata = currentSession.resumeMetadata ?? null;
+  if (currentMetadata) return currentMetadata;
+
+  const fallbackTool = currentSession.toolType;
+  let provider: "claude" | "codex" | null;
+  if (fallbackTool === "claude" || fallbackTool === "claude-orchestrated") {
+    provider = "claude";
+  } else if (fallbackTool === "codex" || fallbackTool === "codex-orchestrated") {
+    provider = "codex";
+  } else {
+    provider = null;
+  }
+  if (!provider) return null;
+
+  return {
+    provider,
+    targetKind: provider === "claude" ? "session" : "thread",
+    targetId: null,
+    launch: {},
+  };
+}
 
 export function createSessionService({ db }: { db: AdeDb }) {
   const runtimeStateFromStatus = (status: TerminalSessionStatus): TerminalRuntimeState => {
@@ -72,10 +167,10 @@ export function createSessionService({ db }: { db: AdeDb }) {
       "codex",
       "claude-orchestrated",
       "codex-orchestrated",
-      "ai-orchestrated",
+      "opencode-orchestrated",
       "codex-chat",
       "claude-chat",
-      "ai-chat",
+      "opencode-chat",
       "cursor",
       "aider",
       "continue",
@@ -86,15 +181,25 @@ export function createSessionService({ db }: { db: AdeDb }) {
 
   const mapRow = (row: SessionRow) => {
     const toolType = normalizeToolType(row.toolType);
+    let resumeMetadata: TerminalResumeMetadata | null = null;
+    if (row.resumeMetadataJson) {
+      try {
+        resumeMetadata = normalizeResumeMetadata(JSON.parse(row.resumeMetadataJson) as unknown);
+      } catch {
+        resumeMetadata = null;
+      }
+    }
     return {
       ...row,
       tracked: row.tracked === 1,
       pinned: row.pinned === 1,
+      manuallyNamed: row.manuallyNamed === 1,
       goal: row.goal ?? null,
       toolType,
       summary: row.summary ?? null,
       runtimeState: runtimeStateFromStatus(row.status),
-      resumeCommand: normalizeResumeCommand(row.resumeCommand, toolType),
+      resumeMetadata,
+      resumeCommand: deriveResumeMetadataCommand(resumeMetadata, row.resumeCommand, toolType),
     };
   };
 
@@ -191,6 +296,11 @@ export function createSessionService({ db }: { db: AdeDb }) {
       const sessionId = typeof args?.sessionId === "string" ? args.sessionId.trim() : "";
       if (!sessionId) return null;
       const currentSession = this.get(sessionId);
+      const currentMetadata = currentSession?.resumeMetadata ?? null;
+      const nextMetadata = args.resumeMetadata !== undefined
+        ? normalizeResumeMetadata(args.resumeMetadata)
+        : currentMetadata;
+      let nextResumeCommand: string | null | undefined;
 
       const sets: string[] = [];
       const params: (string | number | null)[] = [];
@@ -198,6 +308,11 @@ export function createSessionService({ db }: { db: AdeDb }) {
       if (typeof args.pinned === "boolean") {
         sets.push("pinned = ?");
         params.push(args.pinned ? 1 : 0);
+      }
+
+      if (typeof args.manuallyNamed === "boolean") {
+        sets.push("manually_named = ?");
+        params.push(args.manuallyNamed ? 1 : 0);
       }
 
       if (args.title !== undefined) {
@@ -223,12 +338,26 @@ export function createSessionService({ db }: { db: AdeDb }) {
         const preferredToolType = args.toolType !== undefined
           ? normalizeToolType(args.toolType)
           : currentSession?.toolType ?? null;
-        const next = normalizeResumeCommand(
-          args.resumeCommand,
-          preferredToolType,
-        );
+        const nextParsed = parseTrackedCliResumeCommand(args.resumeCommand, preferredToolType);
+        nextResumeCommand = nextMetadata && nextMetadata.provider === nextParsed?.provider
+          ? buildTrackedCliResumeCommand({
+              ...nextMetadata,
+              targetId: nextParsed?.targetId ?? nextMetadata.targetId,
+            })
+          : normalizeResumeCommand(args.resumeCommand, preferredToolType);
+      }
+
+      if (args.resumeMetadata !== undefined) {
+        sets.push("resume_metadata_json = ?");
+        params.push(serializeResumeMetadata(nextMetadata));
+        if (nextResumeCommand === undefined) {
+          nextResumeCommand = deriveResumeMetadataCommand(nextMetadata, currentSession?.resumeCommand ?? null, currentSession?.toolType ?? null);
+        }
+      }
+
+      if (nextResumeCommand !== undefined) {
         sets.push("resume_command = ?");
-        params.push(next);
+        params.push(nextResumeCommand);
       }
 
       if (sets.length) {
@@ -260,7 +389,8 @@ export function createSessionService({ db }: { db: AdeDb }) {
       transcriptPath,
       tracked,
       toolType,
-      resumeCommand
+      resumeCommand,
+      resumeMetadata,
     }: {
       sessionId: string;
       laneId: string;
@@ -271,18 +401,19 @@ export function createSessionService({ db }: { db: AdeDb }) {
       transcriptPath: string;
       toolType?: TerminalToolType | null;
       resumeCommand?: string | null;
+      resumeMetadata?: TerminalResumeMetadata | null;
     }): void {
       const normalizedToolType = normalizeToolType(toolType);
-      const normalizedResumeCommand = normalizeResumeCommand(
-        resumeCommand,
-        normalizedToolType,
-      ) ?? defaultResumeCommandForTool(normalizedToolType);
+      const normalizedMetadata = normalizeResumeMetadata(resumeMetadata);
+      const normalizedResumeCommand = normalizedMetadata
+        ? buildTrackedCliResumeCommand(normalizedMetadata)
+        : normalizeResumeCommand(resumeCommand, normalizedToolType) ?? defaultResumeCommandForTool(normalizedToolType);
       db.run(
         `
           insert into terminal_sessions(
             id, lane_id, pty_id, tracked, title, started_at, ended_at, exit_code, transcript_path,
-            head_sha_start, head_sha_end, status, last_output_preview, last_output_at, summary, tool_type, resume_command
-          ) values (?, ?, ?, ?, ?, ?, null, null, ?, null, null, 'running', null, null, null, ?, ?)
+            head_sha_start, head_sha_end, status, last_output_preview, last_output_at, summary, tool_type, resume_command, resume_metadata_json
+          ) values (?, ?, ?, ?, ?, ?, null, null, ?, null, null, 'running', null, null, null, ?, ?, ?)
         `,
         [
           sessionId,
@@ -293,7 +424,8 @@ export function createSessionService({ db }: { db: AdeDb }) {
           startedAt,
           transcriptPath,
           normalizedToolType,
-          normalizedResumeCommand ?? null
+          normalizedResumeCommand ?? null,
+          serializeResumeMetadata(normalizedMetadata),
         ]
       );
     },
@@ -332,8 +464,24 @@ export function createSessionService({ db }: { db: AdeDb }) {
 
     setResumeCommand(sessionId: string, resumeCommand: string | null): void {
       const currentSession = this.get(sessionId);
-      const next = normalizeResumeCommand(resumeCommand, currentSession?.toolType ?? null);
-      db.run("update terminal_sessions set resume_command = ? where id = ?", [next, sessionId]);
+      const preferredToolType = currentSession?.toolType ?? null;
+      const parsed = parseTrackedCliResumeCommand(resumeCommand, preferredToolType);
+      const currentMetadata = currentSession?.resumeMetadata ?? null;
+      const nextMetadata = parsed
+        ? {
+            provider: parsed.provider,
+            targetKind: parsed.provider === "claude" ? "session" : "thread",
+            targetId: parsed.targetId ?? currentMetadata?.targetId ?? null,
+            launch: currentMetadata?.launch ?? parseLaunchMetadataFromCurrentSession(currentSession)?.launch ?? {},
+          } satisfies TerminalResumeMetadata
+        : currentMetadata;
+      const next = nextMetadata
+        ? buildTrackedCliResumeCommand(nextMetadata)
+        : normalizeResumeCommand(resumeCommand, preferredToolType);
+      db.run(
+        "update terminal_sessions set resume_command = ?, resume_metadata_json = ? where id = ?",
+        [next, serializeResumeMetadata(nextMetadata), sessionId],
+      );
     },
 
     end({

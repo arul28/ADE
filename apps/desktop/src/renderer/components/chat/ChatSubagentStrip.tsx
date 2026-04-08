@@ -211,19 +211,21 @@ export function ChatSubagentStrip({
     () => (expanded ? snapshots : snapshots.slice(0, 6)),
     [snapshots, expanded],
   );
-  const { activeCount, completedCount, failedCount, backgroundRunningCount } = useMemo(() => {
+  const { activeCount, completedCount, failedCount, stoppedCount, backgroundRunningCount } = useMemo(() => {
     let active = 0;
     let completed = 0;
     let failed = 0;
+    let stopped = 0;
     let bgRunning = 0;
     for (const s of snapshots) {
       if (s.status === "running") {
         active++;
         if (s.background) bgRunning++;
       } else if (s.status === "completed") completed++;
+      else if (s.status === "stopped") stopped++;
       else if (s.status === "failed") failed++;
     }
-    return { activeCount: active, completedCount: completed, failedCount: failed, backgroundRunningCount: bgRunning };
+    return { activeCount: active, completedCount: completed, failedCount: failed, stoppedCount: stopped, backgroundRunningCount: bgRunning };
   }, [snapshots]);
   const pinned = useMemo(
     () => snapshots.find((s) => s.taskId === pinnedTaskId) ?? null,
@@ -238,9 +240,10 @@ export function ChatSubagentStrip({
     const parts: string[] = [plural(activeCount, "active agent")];
     if (backgroundRunningCount > 0) parts.push(`${backgroundRunningCount} background`);
     if (completedCount > 0) parts.push(`${completedCount} done`);
+    if (stoppedCount > 0) parts.push(`${stoppedCount} stopped`);
     if (failedCount > 0) parts.push(`${failedCount} failed`);
     return parts.join(" \u00b7 ");
-  }, [activeCount, backgroundRunningCount, completedCount, failedCount]);
+  }, [activeCount, backgroundRunningCount, completedCount, failedCount, stoppedCount]);
 
   if (!snapshots.length) return null;
 
@@ -260,7 +263,7 @@ export function ChatSubagentStrip({
         <div className="flex items-center gap-2">
           <TreeStructure size={12} weight="bold" className="text-violet-400/45" />
           <span className="font-mono text-[9px] font-bold uppercase tracking-[0.16em] text-fg/30">
-            Background agents
+            Agents
           </span>
         </div>
         <div className="min-w-0 flex-1 truncate text-[11px] text-fg/58">

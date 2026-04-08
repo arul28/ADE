@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { AgentChatSession, TerminalSessionSummary } from "../../../shared/types";
 import { useAppStore, type WorkDraftKind, type WorkProjectViewState, type WorkViewMode } from "../../state/appStore";
-import { listSessionsCached } from "../../lib/sessionListCache";
+import { listSessionsCached, invalidateSessionListCache } from "../../lib/sessionListCache";
 import { sessionStatusBucket } from "../../lib/terminalAttention";
 import { shouldRefreshSessionListForChatEvent } from "../../lib/chatSessionEvents";
 import { buildOptimisticChatSessionSummary, isRunOwnedSession } from "../../lib/sessions";
@@ -16,8 +16,9 @@ const EMPTY_WORK_STATE: WorkProjectViewState = {
   laneFilter: "all",
   statusFilter: "all",
   search: "",
-  sessionListOrganization: "all-lanes-by-status",
+  sessionListOrganization: "by-lane",
   workCollapsedLaneIds: [],
+  workCollapsedTabGroupIds: [],
   workFocusSessionsHidden: false,
 };
 
@@ -446,6 +447,9 @@ export function useLaneWorkSessions(laneId: string | null) {
         startupCommand: args.startupCommand ?? commandMap[args.profile] ?? undefined,
       });
       selectLane(args.laneId);
+      // Invalidate all cache entries so other views (e.g. Work tab) pick up
+      // the new session on their next refresh.
+      invalidateSessionListCache();
       // Refresh the session list *before* activating the tab so the new
       // session exists in sessionsById when the UI resolves activeSession.
       // Without this, activeItemId points to an unknown ID and the view
@@ -459,6 +463,9 @@ export function useLaneWorkSessions(laneId: string | null) {
   );
 
   const handleOpenChatSession = useCallback((session: AgentChatSession) => {
+    // Invalidate the entire session list cache so other views (e.g. Work tab)
+    // fetch fresh data on their next refresh instead of returning stale results.
+    invalidateSessionListCache();
     selectLane(session.laneId);
     if (!laneId || session.laneId !== laneId) {
       focusSession(session.id);

@@ -4,7 +4,7 @@
 // being configured. Available to all agent types (CTO, workers, chat).
 // ---------------------------------------------------------------------------
 
-import { tool, type Tool } from "ai";
+import { executableTool as tool, type ExecutableTool as Tool } from "./executableTool";
 import { z } from "zod";
 import type { LinearClient } from "../../cto/linearClient";
 import type { LinearCredentialService } from "../../cto/linearCredentialService";

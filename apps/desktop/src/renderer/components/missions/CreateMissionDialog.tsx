@@ -1,4 +1,5 @@
 import React, { useState, useCallback, useEffect, useMemo, useRef } from "react";
+import { useNavigate } from "react-router-dom";
 import {
   Rocket,
   X,
@@ -183,7 +184,7 @@ function createDefaultPermissionConfig(defaults: CreateMissionDefaults | null | 
     providers: {
       claude: "full-auto",
       codex: "full-auto",
-      unified: "full-auto",
+      opencode: "full-auto",
       codexSandbox: "workspace-write",
     },
   };
@@ -320,6 +321,10 @@ function CreateMissionDialogInner({
   missionDefaults?: CreateMissionDefaults | null;
   resetVersion?: number;
 }) {
+  const navigate = useNavigate();
+  const openAiProvidersSettings = useCallback(() => {
+    navigate("/settings?tab=ai#ai-providers");
+  }, [navigate]);
   const sortedLanes = useMemo(
     () => [...lanes].sort((a, b) => a.name.localeCompare(b.name)),
     [lanes]
@@ -907,6 +912,7 @@ function CreateMissionDialogInner({
                   }}
                   showRecommendedBadge
                   availableModelIds={availableModelIds}
+                  onOpenAiSettings={openAiProvidersSettings}
                 />
               </div>
               {aiDetectedAuth && (

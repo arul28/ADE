@@ -64,7 +64,7 @@ function createSpawnStub(output = "ok"): {
   return { spawn, capture };
 }
 
-function createSession(id: string, provider: "claude" | "codex" | "unified", model: string, modelId: string) {
+function createSession(id: string, provider: "claude" | "codex" | "opencode", model: string, modelId: string) {
   return {
     id,
     laneId: "lane-1",
@@ -187,16 +187,16 @@ describe("workerAdapterRuntimeService", () => {
     });
   });
 
-  it("reuses unified chat sessions for API-key or local-model workers", async () => {
+  it("reuses opencode chat sessions for API-key or local-model workers", async () => {
     const ensureIdentitySession = vi.fn(async () =>
-      createSession("session-unified-1", "unified", "gpt-5.4-mini", "openai/gpt-5.4-mini")
+      createSession("session-opencode-1", "opencode", "gpt-5.4-mini", "openai/gpt-5.4-mini")
     );
     const runSessionTurn = vi.fn(async () => ({
-      sessionId: "session-unified-1",
-      provider: "unified",
+      sessionId: "session-opencode-1",
+      provider: "opencode",
       model: "gpt-5.4-mini",
       modelId: "openai/gpt-5.4-mini",
-      outputText: "unified chat output",
+      outputText: "opencode chat output",
     }));
     const service = createWorkerAdapterRuntimeService({
       getAgentChatService: () => ({ ensureIdentitySession, runSessionTurn }),
@@ -209,21 +209,21 @@ describe("workerAdapterRuntimeService", () => {
       }),
       continuation: {
         surface: "unified_chat",
-        sessionId: "session-unified-1",
+        sessionId: "session-opencode-1",
       },
       prompt: "continue the same worker context",
     });
 
     expect(ensureIdentitySession).not.toHaveBeenCalled();
     expect(runSessionTurn).toHaveBeenCalledWith({
-      sessionId: "session-unified-1",
+      sessionId: "session-opencode-1",
       text: "continue the same worker context",
       timeoutMs: 300000,
     });
     expect(result.effectiveSurface).toBe("unified_chat");
     expect(result.continuation).toMatchObject({
       surface: "unified_chat",
-      sessionId: "session-unified-1",
+      sessionId: "session-opencode-1",
       modelId: "openai/gpt-5.4-mini",
     });
   });

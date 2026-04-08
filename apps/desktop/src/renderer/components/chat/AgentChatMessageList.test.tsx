@@ -270,6 +270,7 @@ describe("AgentChatMessageList transcript rendering", () => {
     ]);
 
     expect(screen.getByText("Ran shell")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Show 1 earlier" }));
 
     fireEvent.click(findButtonByTextContent(/npm test/i));
     fireEvent.click(findButtonByTextContent(/npm run lint/i));
@@ -309,6 +310,7 @@ describe("AgentChatMessageList transcript rendering", () => {
     ]);
 
     expect(screen.getByText("Edited files")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Show 1 earlier" }));
 
     fireEvent.click(findButtonByTextContent(/foo\.ts/i));
     fireEvent.click(findButtonByTextContent(/bar\.ts/i));
@@ -318,7 +320,7 @@ describe("AgentChatMessageList transcript rendering", () => {
     expect(body).toContain("bar.ts");
   });
 
-  it("shows the four most recent work-log entries by default and expands overflow on demand", () => {
+  it("shows only the latest work-log entry by default and expands overflow on demand", () => {
     renderMessageList(
       Array.from({ length: 7 }, (_, index) => ({
         sessionId: "session-1",
@@ -337,12 +339,11 @@ describe("AgentChatMessageList transcript rendering", () => {
     );
 
     expect(screen.getByText("Ran shell")).toBeTruthy();
-    expect(screen.getByText("Show 3 earlier")).toBeTruthy();
-    expect(screen.queryByText(/echo 3/i)).toBeNull();
-    expect(findButtonByTextContent(/echo 4/i)).toBeTruthy();
+    expect(screen.getByText("Show 6 earlier")).toBeTruthy();
+    expect(screen.queryByText(/echo 6/i)).toBeNull();
     expect(findButtonByTextContent(/echo 7/i)).toBeTruthy();
 
-    fireEvent.click(screen.getByRole("button", { name: "Show 3 earlier" }));
+    fireEvent.click(screen.getByRole("button", { name: "Show 6 earlier" }));
 
     expect(findButtonByTextContent(/echo 1/i)).toBeTruthy();
   });
@@ -1115,6 +1116,27 @@ describe("AgentChatMessageList transcript rendering", () => {
     expect(screen.getAllByText("First thought.")).toHaveLength(2);
     expect(screen.getAllByText("Second thought.")).toHaveLength(2);
     expect(screen.queryByText("First thought.Second thought.")).toBeNull();
+  });
+
+  it("keeps live thinking collapsed by default while the turn is active", () => {
+    renderMessageList(
+      [
+        {
+          sessionId: "session-1",
+          timestamp: "2026-03-17T10:00:00.000Z",
+          event: {
+            type: "reasoning",
+            text: "Live reasoning body",
+            itemId: "claude-thinking:turn-live:0",
+            turnId: "turn-live",
+          },
+        },
+      ],
+      { showStreamingIndicator: true },
+    );
+
+    expect(screen.getByRole("button", { name: /Thinking/i })).toBeTruthy();
+    expect(screen.queryByText("Live reasoning body")).toBeNull();
   });
 });
 

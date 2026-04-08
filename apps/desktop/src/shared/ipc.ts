@@ -122,6 +122,7 @@ export const IPC = {
   agentChatSaveTempAttachment: "ade.agentChat.saveTempAttachment",
   agentChatListSubagents: "ade.agentChat.listSubagents",
   agentChatGetSessionCapabilities: "ade.agentChat.getSessionCapabilities",
+  agentChatGetTurnFileDiff: "ade.agentChat.getTurnFileDiff",
   computerUseGetSettings: "ade.computerUse.getSettings",
   computerUseListArtifacts: "ade.computerUse.listArtifacts",
   computerUseGetOwnerSnapshot: "ade.computerUse.getOwnerSnapshot",

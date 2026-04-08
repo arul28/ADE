@@ -70,7 +70,7 @@ type SyncServiceArgs = {
 const DRAFT_FILE = "sync-peer-draft.json";
 const TOKEN_FILE = "sync-bootstrap-token";
 const RUNNING_PROCESS_STATES = new Set(["starting", "running", "degraded"]);
-const CHAT_TOOL_TYPES = new Set(["codex-chat", "claude-chat", "ai-chat"]);
+const CHAT_TOOL_TYPES = new Set(["codex-chat", "claude-chat", "opencode-chat"]);
 
 function sanitizeDraft(
   raw: unknown,

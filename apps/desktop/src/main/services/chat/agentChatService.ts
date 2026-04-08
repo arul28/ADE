@@ -3,19 +3,6 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import readline from "node:readline";
-import {
-  generateText,
-  streamText,
-  stepCountIs,
-  tool as aiTool,
-  jsonSchema as aiJsonSchema,
-  type FilePart,
-  type ImagePart,
-  type LanguageModel,
-  type ModelMessage,
-  type Tool as AiTool,
-  type UserContent,
-} from "ai";
 import { unstable_v2_createSession, unstable_v2_resumeSession } from "@anthropic-ai/claude-agent-sdk";
 import type { Query as ClaudeSDKQuery, SDKMessage, SDKUserMessage, Options as ClaudeSDKOptions, PermissionResult as ClaudePermissionResult } from "@anthropic-ai/claude-agent-sdk";
 
@@ -37,6 +24,12 @@ type ClaudeV2Session = {
   supportedCommands?: () => Promise<Array<{ name?: string; description?: string }>>;
 };
 import { buildClaudeV2Message, inferAttachmentMediaType } from "./buildClaudeV2Message";
+import type {
+  RuntimeFilePart as FilePart,
+  RuntimeImagePart as ImagePart,
+  RuntimeModelMessage as ModelMessage,
+  RuntimeUserContent as UserContent,
+} from "./runtimeMessageTypes";
 import {
   appendBufferedAssistantText,
   canAppendBufferedAssistantText,
@@ -100,13 +93,15 @@ import type {
   AgentChatSubagentSnapshot,
   AgentChatSurface,
   AgentChatSteerArgs,
+  AgentChatSteerResult,
   AgentChatSendArgs,
   AgentChatCursorConfigOption,
   AgentChatCursorConfigValue,
   AgentChatCursorModeSnapshot,
-  AgentChatUnifiedPermissionMode,
+  AgentChatOpenCodePermissionMode,
   PendingInputQuestion,
   PendingInputRequest,
+  PendingInputSource,
   AgentChatUpdateSessionArgs,
   ComputerUseBackendStatus,
   ComputerUsePolicy,
@@ -117,25 +112,29 @@ import type {
 } from "../../../shared/types";
 import {
   getDefaultModelDescriptor,
+  getDynamicOpenCodeModelDescriptors,
   getModelById,
   getAvailableModels as getRegistryModels,
+  getLocalProviderDefaultEndpoint,
   listModelDescriptorsForProvider,
+  LOCAL_PROVIDER_LABELS,
   MODEL_REGISTRY,
   pickDefaultCursorDescriptorFromCliList,
   resolveModelAlias,
   resolveModelDescriptorForProvider,
   resolveProviderGroupForModel,
+  type LocalProviderFamily,
   type ModelDescriptor,
 } from "../../../shared/modelRegistry";
 import { canSwitchChatSessionModel } from "../../../shared/chatModelSwitching";
 import { detectAllAuth } from "../ai/authDetector";
-import * as providerResolver from "../ai/providerResolver";
 import { buildCodexAppServerMcpConfigOverrides } from "../ai/codexAppServerConfig";
-import { createUniversalToolSet, type PermissionMode } from "../ai/tools/universalTools";
+import { createUniversalToolSet, type AskUserToolInput, type PermissionMode } from "../ai/tools/universalTools";
 import { createWorkflowTools } from "../ai/tools/workflowTools";
 import { createLinearTools } from "../ai/tools/linearTools";
 import { createCtoOperatorTools, type CtoOperatorToolDeps } from "../ai/tools/ctoOperatorTools";
 import { buildCodingAgentSystemPrompt } from "../ai/tools/systemPrompt";
+import { decideFrontendRepoToolExposure, filterFrontendRepoDiscoveryTools } from "../ai/toolExposurePolicy";
 import { resolveClaudeCliModel } from "../ai/claudeModelUtils";
 import {
   getProviderRuntimeHealth,
@@ -159,9 +158,19 @@ import type { createIssueInventoryService } from "../prs/issueInventoryService";
 import type { ComputerUseArtifactBrokerService } from "../computerUse/computerUseArtifactBrokerService";
 import { createProofObserver } from "../computerUse/proofObserver";
 import { maybeSyntheticToolResult } from "../computerUse/syntheticToolResult";
-import { resolveAdeMcpServerLaunch, resolveUnifiedRuntimeRoot } from "../orchestrator/unifiedOrchestratorAdapter";
-import { Client as McpSdkClient } from "@modelcontextprotocol/sdk/client/index.js";
-import { StdioClientTransport as McpStdioTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import {
+  buildOpenCodePromptParts,
+  mapPermissionModeToOpenCodeAgent,
+  openCodeEventStream,
+  resolveOpenCodeModelSelection,
+  runOpenCodeTextPrompt,
+  startOpenCodeSession,
+  type DiscoveredLocalModelEntry,
+  type OpenCodeSessionHandle,
+} from "../opencode/openCodeRuntime";
+import { probeOpenCodeProviderInventory } from "../opencode/openCodeInventory";
+import { inspectLocalProvider, type DiscoveredLocalModel } from "../ai/localModelDiscovery";
+import { resolveAdeMcpServerLaunch, resolveOpenCodeRuntimeRoot } from "../orchestrator/providerOrchestratorAdapter";
 import type { McpServer, PermissionOption, RequestPermissionRequest, RequestPermissionResponse } from "@agentclientprotocol/sdk";
 import type { ExternalMcpServerConfig } from "../../../shared/types/externalMcp";
 import { resolveCursorAgentExecutable } from "../ai/cursorAgentExecutable";
@@ -196,11 +205,6 @@ type JsonRpcEnvelope = {
   };
 };
 
-type PersistedClaudeMessage = {
-  role: "user" | "assistant";
-  content: string;
-};
-
 type PersistedRecentConversationEntry = {
   role: "user" | "assistant";
   text: string;
@@ -222,7 +226,7 @@ type PersistedChatState = {
   codexApprovalPolicy?: AgentChatCodexApprovalPolicy;
   codexSandbox?: AgentChatCodexSandbox;
   codexConfigSource?: AgentChatCodexConfigSource;
-  unifiedPermissionMode?: AgentChatUnifiedPermissionMode;
+  opencodePermissionMode?: AgentChatOpenCodePermissionMode;
   cursorModeSnapshot?: AgentChatCursorModeSnapshot;
   cursorModeId?: string | null;
   cursorConfigValues?: Record<string, AgentChatCursorConfigValue>;
@@ -238,7 +242,7 @@ type PersistedChatState = {
   /** Cursor ACP session id for resume across app restarts (best-effort). */
   acpSessionId?: string;
   sdkSessionId?: string;
-  messages?: PersistedClaudeMessage[];
+  providerSessionId?: string;
   recentConversationEntries?: PersistedRecentConversationEntry[];
   continuitySummary?: string | null;
   continuitySummaryUpdatedAt?: string | null;
@@ -288,6 +292,8 @@ type CodexRuntime = {
   commandOutputByItemId: Map<string, string>;
   fileDeltaByItemId: Map<string, string>;
   fileChangesByItemId: Map<string, Array<{ path: string; kind: "create" | "modify" | "delete" }>>;
+  activeSubagents: Map<string, { taskId: string; description: string; background: boolean }>;
+  interruptedTurnIds: Set<string>;
   agentMessageScopeByTurn: Map<string, "item" | "turn">;
   agentMessageTextByTurn: Map<string, string>;
   recentNotificationKeys: Set<string>;
@@ -337,28 +343,26 @@ type ClaudeRuntime = {
   resumeIdleWatchdog?: (() => void) | null;
 };
 
-type PendingUnifiedApproval = {
-  category: "bash" | "write" | "askUser" | "exitPlanMode";
+type PendingOpenCodeApproval = {
+  category: "bash" | "write";
+  permissionId: string;
   request?: PendingInputRequest;
-  resolve: (response: { decision?: AgentChatApprovalDecision; answers?: Record<string, string | string[]>; responseText?: string | null }) => void;
 };
 
-type UnifiedRuntime = {
-  kind: "unified";
-  messages: Array<{ role: string; content: string }>;
+type OpenCodeRuntime = {
+  kind: "opencode";
+  handle: OpenCodeSessionHandle;
   busy: boolean;
-  abortController: AbortController | null;
+  eventAbortController: AbortController | null;
   activeTurnId: string | null;
   permissionMode: PermissionMode;
-  pendingApprovals: Map<string, PendingUnifiedApproval>;
-  approvalOverrides: Set<"bash" | "write" | "exitPlanMode">;
+  pendingApprovals: Map<string, PendingOpenCodeApproval>;
   pendingSteers: Array<{ steerId: string; text: string }>;
   interrupted: boolean;
-  resolvedModel: LanguageModel;
   modelDescriptor: ModelDescriptor;
-  /** MCP client connected to the ADE MCP server via stdio. */
-  mcpClient: McpSdkClient | null;
-  mcpTransport: McpStdioTransport | null;
+  textByPartId: Map<string, string>;
+  reasoningByPartId: Map<string, string>;
+  toolStateByPartId: Map<string, string>;
 };
 
 type CursorPermissionWaiter = {
@@ -387,7 +391,7 @@ type CursorRuntime = {
   configOptions: AgentChatCursorConfigOption[];
 };
 
-type ChatRuntime = CodexRuntime | ClaudeRuntime | UnifiedRuntime | CursorRuntime;
+type ChatRuntime = CodexRuntime | ClaudeRuntime | OpenCodeRuntime | CursorRuntime;
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value)
@@ -502,6 +506,21 @@ function isCurrentCodexLifecycleTurn(
   return activeTurnId === turnId;
 }
 
+function rememberInterruptedCodexTurn(runtime: CodexRuntime, turnId: string | null | undefined): void {
+  const normalizedTurnId = turnId?.trim() || null;
+  if (!normalizedTurnId) return;
+  runtime.interruptedTurnIds.add(normalizedTurnId);
+  if (runtime.interruptedTurnIds.size > 64) {
+    const [first] = runtime.interruptedTurnIds;
+    if (first) runtime.interruptedTurnIds.delete(first);
+  }
+}
+
+function isInterruptedCodexTurn(runtime: CodexRuntime, turnId: string | null | undefined): boolean {
+  const normalizedTurnId = turnId?.trim() || null;
+  return normalizedTurnId ? runtime.interruptedTurnIds.has(normalizedTurnId) : false;
+}
+
 function normalizeCodexAssistantDelta(
   runtime: CodexRuntime,
   args: {
@@ -539,10 +558,10 @@ function validateSessionReadyForTurn(managed: ManagedChatSession): { ready: true
   if (managed.closed) return { ready: false, reason: "Session is disposed" };
   if (!managed.runtime) return { ready: false, reason: "No runtime initialized" };
   const rt = managed.runtime;
-  if ((rt.kind === "unified" || rt.kind === "claude" || rt.kind === "cursor") && rt.busy) {
+  if ((rt.kind === "opencode" || rt.kind === "claude" || rt.kind === "cursor") && rt.busy) {
     return { ready: false, reason: "Turn already active" };
   }
-  if (rt.kind === "unified" && rt.pendingApprovals.size > 0) return { ready: false, reason: "Pending approvals not resolved" };
+  if (rt.kind === "opencode" && rt.pendingApprovals.size > 0) return { ready: false, reason: "Pending approvals not resolved" };
   if (rt.kind === "cursor" && rt.permissionWaiters.size > 0) {
     return { ready: false, reason: "Pending permissions not resolved" };
   }
@@ -556,7 +575,7 @@ function hasLivePendingInput(managed: ManagedChatSession | null | undefined): bo
   if (!runtime) return false;
   if (runtime.kind === "codex") return runtime.approvals.size > 0;
   if (runtime.kind === "claude") return runtime.approvals.size > 0;
-  if (runtime.kind === "unified") return runtime.pendingApprovals.size > 0;
+  if (runtime.kind === "opencode") return runtime.pendingApprovals.size > 0;
   if (runtime.kind === "cursor") return runtime.permissionWaiters.size > 0;
   return false;
 }
@@ -720,6 +739,7 @@ type ManagedChatSession = {
   selectedExecutionLaneId: string | null;
   lastLaneDirectiveKey: string | null;
   runtimeInvalidated: boolean;
+  todoItems: Extract<AgentChatEvent, { type: "todo_update" }>["items"];
   localPendingInputs: Map<string, {
     request: PendingInputRequest;
     resolve: (response: {
@@ -730,6 +750,7 @@ type ManagedChatSession = {
   }>;
   eventSequence: number;
   lastActivityTimestamp: number;
+  turnBeforeSha: string | null;
 };
 
 type AgentChatTranscriptEntry = {
@@ -774,6 +795,18 @@ type SessionTurnCollector = {
   timeout: NodeJS.Timeout | null;
 };
 
+const CORE_NATIVE_SESSION_TOOL_NAMES = [
+  "commit_changes",
+  "rebase_lane",
+  "stash_push",
+  "list_stashes",
+  "stash_apply",
+  "stash_pop",
+  "stash_drop",
+  "stash_clear",
+  "ask_user",
+] as const;
+
 type PreparedSendMessage = {
   sessionId: string;
   managed: ManagedChatSession;
@@ -798,7 +831,7 @@ type ResolvedChatConfig = {
   codexApprovalPolicy: AgentChatCodexApprovalPolicy;
   codexSandboxMode: AgentChatCodexSandbox;
   claudePermissionMode: AgentChatClaudePermissionMode;
-  unifiedPermissionMode: AgentChatUnifiedPermissionMode;
+  opencodePermissionMode: AgentChatOpenCodePermissionMode;
   sessionBudgetUsd: number | null;
   autoTitleEnabled: boolean;
   autoTitleModelId: string | null;
@@ -812,14 +845,14 @@ const CLAUDE_WARMUP_WAIT_TIMEOUT_MS = 20_000;
 
 const DEFAULT_CODEX_DESCRIPTOR = getDefaultModelDescriptor("codex");
 const DEFAULT_CLAUDE_DESCRIPTOR = getDefaultModelDescriptor("claude");
-const DEFAULT_UNIFIED_DESCRIPTOR = getDefaultModelDescriptor("unified");
+const DEFAULT_OPENCODE_DESCRIPTOR = getDefaultModelDescriptor("opencode");
 const DEFAULT_CURSOR_DESCRIPTOR = getDefaultModelDescriptor("cursor");
-const DEFAULT_CODEX_MODEL = DEFAULT_CODEX_DESCRIPTOR?.sdkModelId ?? "gpt-5.4";
-const DEFAULT_CLAUDE_MODEL = DEFAULT_CLAUDE_DESCRIPTOR?.sdkModelId ?? DEFAULT_CLAUDE_DESCRIPTOR?.shortId ?? "sonnet";
-const DEFAULT_UNIFIED_MODEL_ID = DEFAULT_UNIFIED_DESCRIPTOR?.id ?? "anthropic/claude-sonnet-4-6-api";
-const DEFAULT_CURSOR_MODEL = DEFAULT_CURSOR_DESCRIPTOR?.sdkModelId ?? "auto";
+const DEFAULT_CODEX_MODEL = DEFAULT_CODEX_DESCRIPTOR?.providerModelId ?? "gpt-5.4";
+const DEFAULT_CLAUDE_MODEL = DEFAULT_CLAUDE_DESCRIPTOR?.providerModelId ?? DEFAULT_CLAUDE_DESCRIPTOR?.shortId ?? "sonnet";
+const DEFAULT_OPENCODE_MODEL_ID = DEFAULT_OPENCODE_DESCRIPTOR?.id ?? "anthropic/claude-sonnet-4-6";
+const DEFAULT_CURSOR_MODEL = DEFAULT_CURSOR_DESCRIPTOR?.providerModelId ?? "auto";
 const DEFAULT_REASONING_EFFORT = "medium";
-const DEFAULT_AUTO_TITLE_MODEL_ID = "anthropic/claude-haiku-4-5-api";
+const DEFAULT_AUTO_TITLE_MODEL_ID = "anthropic/claude-haiku-4-5";
 const MAX_CHAT_TRANSCRIPT_BYTES = 8 * 1024 * 1024;
 const BUFFERED_TEXT_FLUSH_MS = 100;
 const CHAT_TRANSCRIPT_LIMIT_NOTICE = "\n[ADE] chat transcript limit reached (8MB). Further events omitted.\n";
@@ -832,7 +865,10 @@ const REASONING_ACTIVITY_DETAIL = "Thinking through the answer";
 const WORKING_ACTIVITY_DETAIL = "Preparing response";
 const DEFAULT_RUN_SESSION_TURN_TIMEOUT_MS = 300_000;
 const DEFAULT_COLLABORATION_MODES_LIST_TIMEOUT_MS = 1_500;
-const CLAUDE_STREAM_IDLE_TIMEOUT_MS = 75_000;
+// Idle stream watchdog removed — time-based idle detection produced false
+// positives during long-running tool calls (Agent, Bash, etc.) where no
+// stream events are emitted while the SDK waits for tool results. The user
+// can always interrupt manually if something is genuinely stuck.
 const SESSION_INACTIVITY_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
 const SESSION_CLEANUP_INTERVAL_MS = 60 * 1000; // check every 60 seconds
 const MAX_CONCURRENT_ACTIVE_RUNTIMES = 5;
@@ -848,7 +884,6 @@ function evictOldestEntries<K, V>(map: Map<K, V>, maxSize: number): void {
     map.delete(next.value);
   }
 }
-
 const AUTO_TITLE_SYSTEM_PROMPT = `You title software development chat sessions.
 Return only the title text.
 - Use 2 to 6 words.
@@ -880,7 +915,7 @@ const CLAUDE_EFFORT_TO_TOKENS: Record<string, number> = {
 const KNOWN_CLAUDE_EFFORTS = new Set(CLAUDE_REASONING_EFFORTS.map((e) => e.effort));
 
 const CODEX_FALLBACK_MODELS: AgentChatModelInfo[] = listModelDescriptorsForProvider("codex").map((descriptor) => ({
-  id: descriptor.sdkModelId,
+  id: descriptor.providerModelId,
   displayName: descriptor.displayName,
   description: describeCodexModel(descriptor.displayName),
   isDefault: descriptor.id === DEFAULT_CODEX_DESCRIPTOR?.id,
@@ -890,7 +925,7 @@ const CODEX_FALLBACK_MODELS: AgentChatModelInfo[] = listModelDescriptorsForProvi
 }));
 
 const CLAUDE_FALLBACK_MODELS: AgentChatModelInfo[] = listModelDescriptorsForProvider("claude").map((descriptor) => ({
-  id: descriptor.sdkModelId,
+  id: descriptor.providerModelId,
   displayName: descriptor.displayName,
   description: describeClaudeModel(descriptor.displayName),
   isDefault: descriptor.id === DEFAULT_CLAUDE_DESCRIPTOR?.id,
@@ -914,7 +949,7 @@ function resolveSessionModelDescriptor(session: AgentChatSession): ModelDescript
   if (session.provider === "claude") {
     const resolvedClaudeModel = resolveClaudeCliModel(session.model);
     return listModelDescriptorsForProvider("claude").find((descriptor) =>
-      descriptor.sdkModelId === resolvedClaudeModel
+      descriptor.providerModelId === resolvedClaudeModel
       || descriptor.shortId === session.model
       || descriptor.id === session.model,
     ) ?? null;
@@ -922,7 +957,7 @@ function resolveSessionModelDescriptor(session: AgentChatSession): ModelDescript
 
   if (session.provider === "codex") {
     return listModelDescriptorsForProvider("codex").find((descriptor) =>
-      descriptor.sdkModelId === session.model
+      descriptor.providerModelId === session.model
       || descriptor.shortId === session.model
       || descriptor.id === session.model,
     ) ?? null;
@@ -984,6 +1019,18 @@ function normalizeUsagePayload(
   return { inputTokens, outputTokens };
 }
 
+function mergeUsagePayloads(
+  left: { inputTokens?: number | null; outputTokens?: number | null } | undefined,
+  right: { inputTokens?: number | null; outputTokens?: number | null } | undefined,
+): { inputTokens?: number | null; outputTokens?: number | null } | undefined {
+  if (!left) return right;
+  if (!right) return left;
+  const inputTokens = (left.inputTokens ?? 0) + (right.inputTokens ?? 0);
+  const outputTokens = (left.outputTokens ?? 0) + (right.outputTokens ?? 0);
+  if (!inputTokens && !outputTokens) return undefined;
+  return { inputTokens, outputTokens };
+}
+
 const KNOWN_CODEX_EFFORTS = new Set(CODEX_REASONING_EFFORTS.map((e) => e.effort));
 
 const EFFORT_ALIASES: Record<string, Record<string, string>> = {
@@ -1018,24 +1065,24 @@ function describeCodexModel(value: string): string | null {
 
 function isChatToolType(
   toolType: TerminalToolType | null | undefined,
-): toolType is "codex-chat" | "claude-chat" | "ai-chat" | "cursor" {
+): toolType is "codex-chat" | "claude-chat" | "opencode-chat" | "cursor" {
   return (
     toolType === "codex-chat"
     || toolType === "claude-chat"
-    || toolType === "ai-chat"
+    || toolType === "opencode-chat"
     || toolType === "cursor"
   );
 }
 
 function providerFromToolType(toolType: TerminalToolType | null | undefined): AgentChatProvider {
-  if (toolType === "ai-chat") return "unified";
+  if (toolType === "opencode-chat") return "opencode";
   if (toolType === "claude-chat") return "claude";
   if (toolType === "cursor") return "cursor";
   return "codex";
 }
 
 function toolTypeFromProvider(provider: AgentChatProvider): TerminalToolType {
-  if (provider === "unified") return "ai-chat";
+  if (provider === "opencode") return "opencode-chat";
   if (provider === "claude") return "claude-chat";
   if (provider === "cursor") return "cursor";
   return "codex-chat";
@@ -1161,7 +1208,7 @@ function hasCustomChatSessionTitle(title: string | null | undefined, provider: A
 
 function resumeCommandForProvider(provider: AgentChatProvider, sessionId: string): string {
   if (provider === "codex") return "chat:codex";
-  if (provider === "unified") return `chat:unified:${sessionId}`;
+  if (provider === "opencode") return `chat:opencode:${sessionId}`;
   if (provider === "cursor") return `chat:cursor:${sessionId}`;
   return `chat:claude:${sessionId}`;
 }
@@ -1193,7 +1240,7 @@ function resolveClaudeCliModelIdFromRuntimeValue(model: string): string | undefi
     const candidates = new Set([
       descriptor.id.toLowerCase(),
       descriptorShortId,
-      descriptor.sdkModelId.toLowerCase(),
+      descriptor.providerModelId.toLowerCase(),
       descriptor.id.toLowerCase().replace(/^anthropic\//, ""),
     ]);
 
@@ -1221,7 +1268,7 @@ function resolveModelIdFromStoredValue(
   if (aliasMatch) {
     if (providerHint === "codex" && !(aliasMatch.family === "openai" && aliasMatch.isCliWrapped)) return undefined;
     if (providerHint === "claude" && !(aliasMatch.family === "anthropic" && aliasMatch.isCliWrapped)) return undefined;
-    if (providerHint === "unified" && aliasMatch.isCliWrapped) return undefined;
+    if (providerHint === "opencode" && aliasMatch.isCliWrapped) return undefined;
     if (providerHint === "cursor" && aliasMatch.family !== "cursor") return undefined;
     return aliasMatch.id;
   }
@@ -1230,7 +1277,7 @@ function resolveModelIdFromStoredValue(
     (entry) =>
       entry.id.toLowerCase() === normalized
       || entry.shortId.toLowerCase() === normalized
-      || entry.sdkModelId.toLowerCase() === normalized
+      || entry.providerModelId.toLowerCase() === normalized
   );
   if (!matches.length) return undefined;
 
@@ -1239,7 +1286,7 @@ function resolveModelIdFromStoredValue(
     preferred = matches.find((entry) => entry.isCliWrapped && entry.family === "openai");
   } else if (providerHint === "claude") {
     preferred = matches.find((entry) => entry.isCliWrapped && entry.family === "anthropic");
-  } else if (providerHint === "unified") {
+  } else if (providerHint === "opencode") {
     preferred = matches.find((entry) => !entry.isCliWrapped);
   } else if (providerHint === "cursor") {
     preferred = matches.find((entry) => entry.isCliWrapped && entry.family === "cursor");
@@ -1294,7 +1341,7 @@ function fallbackModelForProvider(provider: AgentChatProvider): string {
   if (provider === "codex") return DEFAULT_CODEX_MODEL;
   if (provider === "claude") return DEFAULT_CLAUDE_MODEL;
   if (provider === "cursor") return DEFAULT_CURSOR_MODEL;
-  return DEFAULT_UNIFIED_MODEL_ID;
+  return DEFAULT_OPENCODE_MODEL_ID;
 }
 
 function readProviderParentItemId(value: unknown): string | undefined {
@@ -1353,7 +1400,7 @@ function buildStreamingUserContent(
   args: {
     baseText: string;
     attachments: ResolvedAgentChatFileRef[];
-    runtimeKind: "claude" | "unified";
+    runtimeKind: "claude" | "opencode";
     modelDescriptor?: ModelDescriptor;
     logger?: Logger;
   },
@@ -1387,7 +1434,7 @@ function buildStreamingUserContent(
         continue;
       }
 
-      if (args.runtimeKind === "unified") {
+      if (args.runtimeKind === "opencode") {
         parts.push({
           type: "file",
           data,
@@ -1420,6 +1467,35 @@ function buildStreamingUserContent(
   }
 
   return parts;
+}
+
+export function buildOpenCodeStreamMessages(args: {
+  messages: Array<{ role: string; content: string }>;
+  persistedTurnUserMessageIndex: number;
+  resolvedAttachments: ResolvedAgentChatFileRef[];
+  modelDescriptor: ModelDescriptor;
+  logger?: Logger;
+}): ModelMessage[] {
+  return args.messages.map((message, index): ModelMessage => {
+    const isPersistedTurnUserMessage = index === args.persistedTurnUserMessageIndex && message.role === "user";
+    if (!isPersistedTurnUserMessage) {
+      return {
+        role: message.role === "user" ? "user" : "assistant",
+        content: message.content,
+      };
+    }
+
+    return {
+      role: "user",
+      content: buildStreamingUserContent({
+        baseText: message.content,
+        attachments: args.resolvedAttachments,
+        runtimeKind: "opencode",
+        modelDescriptor: args.modelDescriptor,
+        logger: args.logger,
+      }),
+    };
+  });
 }
 
 function buildExecutionModeDirective(
@@ -1622,7 +1698,7 @@ function codexPolicyArgs(policy: ReturnType<typeof mapPermissionToCodex>): Recor
   return policy ? { approvalPolicy: policy.approvalPolicy, sandbox: policy.sandbox } : {};
 }
 
-function mapToUnifiedPermissionMode(mode: string | undefined): PermissionMode | undefined {
+function normalizeOpenCodePermissionMode(mode: string | undefined): PermissionMode | undefined {
   if (mode === "default" || mode === "config-toml") return "edit";
   if (mode === "plan" || mode === "edit" || mode === "full-auto") return mode;
   return undefined;
@@ -1641,7 +1717,7 @@ const VALID_CLAUDE_PERMISSION_MODES = new Set(["default", "plan", "acceptEdits",
 const VALID_CODEX_APPROVAL_POLICIES = new Set(["untrusted", "on-request", "on-failure", "never"]);
 const VALID_CODEX_SANDBOXES = new Set(["read-only", "workspace-write", "danger-full-access"]);
 const VALID_CODEX_CONFIG_SOURCES = new Set(["flags", "config-toml"]);
-const VALID_UNIFIED_PERMISSION_MODES = new Set(["plan", "edit", "full-auto"]);
+const VALID_OPENCODE_PERMISSION_MODES = new Set(["plan", "edit", "full-auto"]);
 
 function normalizePersistedEnum<T extends string>(value: unknown, validSet: Set<string>): T | undefined {
   if (typeof value !== "string") return undefined;
@@ -1669,8 +1745,8 @@ function normalizePersistedCodexConfigSource(value: unknown): AgentChatCodexConf
   return normalizePersistedEnum(value, VALID_CODEX_CONFIG_SOURCES);
 }
 
-function normalizePersistedUnifiedPermissionMode(value: unknown): AgentChatUnifiedPermissionMode | undefined {
-  return normalizePersistedEnum(value, VALID_UNIFIED_PERMISSION_MODES);
+function normalizePersistedOpenCodePermissionMode(value: unknown): AgentChatOpenCodePermissionMode | undefined {
+  return normalizePersistedEnum(value, VALID_OPENCODE_PERMISSION_MODES);
 }
 
 function legacyPermissionModeToClaudePermissionMode(
@@ -1731,16 +1807,16 @@ function legacyPermissionModeToCodexConfigSource(
   return mode === "config-toml" ? "config-toml" : "flags";
 }
 
-function legacyPermissionModeToUnifiedPermissionMode(
+function legacyPermissionModeToOpenCodePermissionMode(
   mode: AgentChatSession["permissionMode"] | undefined,
-): AgentChatUnifiedPermissionMode | undefined {
+): AgentChatOpenCodePermissionMode | undefined {
   if (!mode) return undefined;
-  return mode === "default" || mode === "config-toml" ? "edit" : mapToUnifiedPermissionMode(mode);
+  return mode === "default" || mode === "config-toml" ? "edit" : normalizeOpenCodePermissionMode(mode);
 }
 
 function syncLegacyPermissionMode(session: Pick<
   AgentChatSession,
-  "provider" | "interactionMode" | "claudePermissionMode" | "codexApprovalPolicy" | "codexSandbox" | "codexConfigSource" | "unifiedPermissionMode"
+  "provider" | "interactionMode" | "claudePermissionMode" | "codexApprovalPolicy" | "codexSandbox" | "codexConfigSource" | "opencodePermissionMode"
 >): AgentChatSession["permissionMode"] | undefined {
   if (session.provider === "claude") {
     if (session.interactionMode === "plan") {
@@ -1766,11 +1842,11 @@ function syncLegacyPermissionMode(session: Pick<
     return undefined;
   }
 
-  switch (session.unifiedPermissionMode) {
+  switch (session.opencodePermissionMode) {
     case "plan":
     case "edit":
     case "full-auto":
-      return session.unifiedPermissionMode;
+      return session.opencodePermissionMode;
     default:
       return undefined;
   }
@@ -1779,7 +1855,7 @@ function syncLegacyPermissionMode(session: Pick<
 function applyLegacyPermissionModeToNativeControls(
   session: Pick<
     AgentChatSession,
-    "provider" | "permissionMode" | "interactionMode" | "claudePermissionMode" | "codexApprovalPolicy" | "codexSandbox" | "codexConfigSource" | "unifiedPermissionMode"
+    "provider" | "permissionMode" | "interactionMode" | "claudePermissionMode" | "codexApprovalPolicy" | "codexSandbox" | "codexConfigSource" | "opencodePermissionMode"
   >,
   mode: AgentChatSession["permissionMode"] | undefined,
 ): void {
@@ -1799,13 +1875,13 @@ function applyLegacyPermissionModeToNativeControls(
     return;
   }
 
-  session.unifiedPermissionMode = legacyPermissionModeToUnifiedPermissionMode(mode);
+  session.opencodePermissionMode = legacyPermissionModeToOpenCodePermissionMode(mode);
 }
 
 function hydrateNativePermissionControls(
   session: Pick<
     AgentChatSession,
-    "provider" | "permissionMode" | "interactionMode" | "claudePermissionMode" | "codexApprovalPolicy" | "codexSandbox" | "codexConfigSource" | "unifiedPermissionMode"
+    "provider" | "permissionMode" | "interactionMode" | "claudePermissionMode" | "codexApprovalPolicy" | "codexSandbox" | "codexConfigSource" | "opencodePermissionMode"
   >,
 ): void {
   if (session.provider === "claude") {
@@ -1816,7 +1892,7 @@ function hydrateNativePermissionControls(
     session.codexSandbox = session.codexSandbox ?? legacyPermissionModeToCodexSandbox(session.permissionMode);
     session.codexConfigSource = session.codexConfigSource ?? legacyPermissionModeToCodexConfigSource(session.permissionMode);
   } else {
-    session.unifiedPermissionMode = session.unifiedPermissionMode ?? legacyPermissionModeToUnifiedPermissionMode(session.permissionMode);
+    session.opencodePermissionMode = session.opencodePermissionMode ?? legacyPermissionModeToOpenCodePermissionMode(session.permissionMode);
   }
 
   session.permissionMode = syncLegacyPermissionMode(session);
@@ -1996,33 +2072,74 @@ function parseCodexCollaborationModes(value: unknown): Set<string> | null {
   return normalized.size > 0 ? normalized : null;
 }
 
-function resolveSessionUnifiedPermissionMode(
-  session: Pick<AgentChatSession, "unifiedPermissionMode" | "permissionMode">,
-  fallback: AgentChatUnifiedPermissionMode,
-): AgentChatUnifiedPermissionMode {
-  return session.unifiedPermissionMode
-    ?? legacyPermissionModeToUnifiedPermissionMode(session.permissionMode)
+function resolveSessionOpenCodePermissionMode(
+  session: Pick<AgentChatSession, "opencodePermissionMode" | "permissionMode">,
+  fallback: AgentChatOpenCodePermissionMode,
+): AgentChatOpenCodePermissionMode {
+  return session.opencodePermissionMode
+    ?? legacyPermissionModeToOpenCodePermissionMode(session.permissionMode)
     ?? fallback;
 }
 
+function applyLocalHarnessPermissionMode(args: {
+  descriptor?: ModelDescriptor;
+  requestedPermissionMode?: AgentChatSession["permissionMode"];
+  requestedOpenCodePermissionMode?: AgentChatOpenCodePermissionMode;
+}): {
+  requestedPermissionMode?: AgentChatSession["permissionMode"];
+  requestedOpenCodePermissionMode?: AgentChatOpenCodePermissionMode;
+} {
+  if (!args.descriptor?.authTypes.includes("local")) {
+    return {
+      requestedPermissionMode: args.requestedPermissionMode,
+      requestedOpenCodePermissionMode: args.requestedOpenCodePermissionMode,
+    };
+  }
+
+  if (args.descriptor.harnessProfile === "read_only") {
+    return {
+      requestedPermissionMode: "plan",
+      requestedOpenCodePermissionMode: "plan",
+    };
+  }
+
+  return {
+    requestedPermissionMode: args.requestedPermissionMode,
+    requestedOpenCodePermissionMode: args.requestedOpenCodePermissionMode,
+  };
+}
+
+function enforceManagedLocalHarnessPermissionMode(
+  managed: ManagedChatSession,
+  descriptor?: ModelDescriptor | null,
+): void {
+  const harnessPermissions = applyLocalHarnessPermissionMode({
+    descriptor: descriptor ?? resolveSessionModelDescriptor(managed.session) ?? undefined,
+    requestedPermissionMode: managed.session.permissionMode,
+    requestedOpenCodePermissionMode: managed.session.opencodePermissionMode,
+  });
+  managed.session.permissionMode = harnessPermissions.requestedPermissionMode ?? managed.session.permissionMode;
+  managed.session.opencodePermissionMode = harnessPermissions.requestedOpenCodePermissionMode ?? managed.session.opencodePermissionMode;
+}
+
 function resolveCursorSessionModeId(
-  session: Pick<AgentChatSession, "cursorModeId" | "unifiedPermissionMode" | "permissionMode">,
+  session: Pick<AgentChatSession, "cursorModeId" | "opencodePermissionMode" | "permissionMode">,
 ): string | null {
   const explicit = typeof session.cursorModeId === "string" ? session.cursorModeId.trim() : "";
   if (explicit.length) {
     return explicit === "agent" || explicit === "default" ? null : explicit;
   }
-  return resolveSessionUnifiedPermissionMode(session, "edit") === "plan" ? "plan" : null;
+  return resolveSessionOpenCodePermissionMode(session, "edit") === "plan" ? "plan" : null;
 }
 
 function resolveCursorAcpLaunchSettings(
-  session: Pick<AgentChatSession, "cursorModeId" | "unifiedPermissionMode" | "permissionMode">,
+  session: Pick<AgentChatSession, "cursorModeId" | "opencodePermissionMode" | "permissionMode">,
 ): CursorAcpLaunchSettings {
   const explicitCursorModeId = typeof session.cursorModeId === "string"
     ? session.cursorModeId.trim().toLowerCase()
     : "";
   if (!explicitCursorModeId.length) {
-    const legacyMode = resolveSessionUnifiedPermissionMode(session, "edit");
+    const legacyMode = resolveSessionOpenCodePermissionMode(session, "edit");
     if (legacyMode === "full-auto") {
       return {
         mode: null,
@@ -2098,14 +2215,14 @@ function resolveCursorRuntimeModelSdkId(
 ): string {
   const byModelId = session.modelId ? getModelById(session.modelId) ?? resolveModelAlias(session.modelId) : null;
   if (byModelId?.family === "cursor") {
-    return byModelId.sdkModelId;
+    return byModelId.providerModelId;
   }
 
   const rawModel = String(session.model ?? "").trim();
   if (rawModel.length) {
     const resolved = getModelById(`cursor/${rawModel}`) ?? resolveModelDescriptorForProvider(rawModel, "cursor");
     if (resolved?.family === "cursor") {
-      return resolved.sdkModelId;
+      return resolved.providerModelId;
     }
   }
 
@@ -2121,13 +2238,13 @@ function normalizeCursorReportedModelId(
   const looksLikeSdkModelId = /^[\w.-]+$/i.test(trimmed);
   if (availableModelIds.includes(trimmed) && looksLikeSdkModelId) return trimmed;
   const descriptor = getModelById(`cursor/${trimmed}`) ?? resolveModelDescriptorForProvider(trimmed, "cursor");
-  return descriptor?.family === "cursor" ? descriptor.sdkModelId : null;
+  return descriptor?.family === "cursor" ? descriptor.providerModelId : null;
 }
 
 function normalizeSessionNativePermissionControls(
   session: Pick<
     AgentChatSession,
-    "provider" | "permissionMode" | "interactionMode" | "claudePermissionMode" | "codexApprovalPolicy" | "codexSandbox" | "codexConfigSource" | "unifiedPermissionMode"
+    "provider" | "permissionMode" | "interactionMode" | "claudePermissionMode" | "codexApprovalPolicy" | "codexSandbox" | "codexConfigSource" | "opencodePermissionMode"
   >,
   config: ResolvedChatConfig,
 ): void {
@@ -2137,7 +2254,7 @@ function normalizeSessionNativePermissionControls(
     delete session.codexApprovalPolicy;
     delete session.codexSandbox;
     delete session.codexConfigSource;
-    delete session.unifiedPermissionMode;
+    delete session.opencodePermissionMode;
   } else if (session.provider === "codex") {
     delete session.interactionMode;
     session.codexConfigSource = resolveSessionCodexConfigSource(session);
@@ -2149,10 +2266,10 @@ function normalizeSessionNativePermissionControls(
       session.codexSandbox = resolveSessionCodexSandbox(session, config.codexSandboxMode);
     }
     delete session.claudePermissionMode;
-    delete session.unifiedPermissionMode;
+    delete session.opencodePermissionMode;
   } else {
     delete session.interactionMode;
-    session.unifiedPermissionMode = resolveSessionUnifiedPermissionMode(session, config.unifiedPermissionMode);
+    session.opencodePermissionMode = resolveSessionOpenCodePermissionMode(session, config.opencodePermissionMode);
     delete session.claudePermissionMode;
     delete session.codexApprovalPolicy;
     delete session.codexSandbox;
@@ -2243,7 +2360,7 @@ function normalizeSessionProfile(value: unknown): "light" | "workflow" | undefin
 }
 
 function inferCapabilityMode(provider: AgentChatProvider): CtoCapabilityMode {
-  return provider === "codex" || provider === "claude" || provider === "cursor" || provider === "unified" ? "full_mcp" : "fallback";
+  return provider === "codex" || provider === "claude" || provider === "cursor" || provider === "opencode" ? "full_mcp" : "fallback";
 }
 
 function guardedIdentityPermissionModeForProvider(_provider: AgentChatProvider): AgentChatSession["permissionMode"] {
@@ -2264,7 +2381,7 @@ function isLightweightSession(session: Pick<AgentChatSession, "sessionProfile">)
 function resolveMcpRuntimeRoot(): string {
   // Only use the trusted ADE install path — never walk up user repo trees
   // which could match apps/mcp-server/package.json by coincidence.
-  return resolveUnifiedRuntimeRoot();
+  return resolveOpenCodeRuntimeRoot();
 }
 
 
@@ -3012,7 +3129,7 @@ export function createAgentChatService(args: {
 
     // ── Tool permission prompts ──
     // Surface approval prompts for non-bypass permission modes so the user can
-    // allow or deny individual tool calls (matching the unified runtime pattern).
+    // allow or deny individual tool calls (matching the opencode runtime pattern).
     const effectivePermMode = managed.session.claudePermissionMode ?? "default";
     if (claudeToolNeedsApproval(toolName, input, effectivePermMode)) {
       // Check session-wide overrides — user already said "Allow for Session" for this tool
@@ -3184,6 +3301,10 @@ export function createAgentChatService(args: {
       toolNames.add(toolName);
     }
 
+    for (const toolName of CORE_NATIVE_SESSION_TOOL_NAMES) {
+      toolNames.add(toolName);
+    }
+
     if (identityKey === "cto") {
       const ctoTools = createCtoOperatorTools({
         currentSessionId: sessionId,
@@ -3274,7 +3395,7 @@ export function createAgentChatService(args: {
       chatSessionId: chatSessionId ?? undefined,
       computerUsePolicy: normalizeComputerUsePolicy(computerUsePolicy, createDefaultComputerUsePolicy()),
     });
-    return providerResolver.normalizeCliMcpServers(provider, {
+    return normalizeCliMcpServers(provider, {
       ade: {
         command: launch.command,
         args: launch.cmdArgs,
@@ -3288,6 +3409,38 @@ export function createAgentChatService(args: {
           : {}),
       }
     }) ?? {};
+  };
+
+  const normalizeCliMcpServers = (
+    provider: "claude" | "codex",
+    mcpServers?: Record<string, Record<string, unknown>>,
+  ): Record<string, Record<string, unknown>> | undefined => {
+    if (!mcpServers) return undefined;
+
+    const firstNonEmptyString = (...candidates: unknown[]): string | undefined => {
+      for (const value of candidates) {
+        if (typeof value === "string" && value.trim().length > 0) return value;
+      }
+      return undefined;
+    };
+
+    return Object.fromEntries(
+      Object.entries(mcpServers).map(([name, server]) => {
+        if (!server || typeof server !== "object") {
+          return [name, server];
+        }
+
+        const record = server as Record<string, unknown>;
+        const { type, transport, ...rest } = record;
+        if (provider === "codex") {
+          return [name, { ...rest, transport: firstNonEmptyString(transport, type) ?? "stdio" }];
+        }
+
+        const resolvedType = firstNonEmptyString(type, transport)
+          ?? (typeof rest.command === "string" && rest.command.trim().length > 0 ? "stdio" : undefined);
+        return [name, resolvedType ? { ...rest, type: resolvedType } : { ...rest }];
+      }),
+    );
   };
 
   const buildCursorAcpMcpServers = (managed: ManagedChatSession): McpServer[] => {
@@ -3385,141 +3538,6 @@ export function createAgentChatService(args: {
     .filter((serverName) => serverName.length > 0)
     .map((serverName) => `mcp__${serverName}__*`);
 
-  /**
-   * Spawn the ADE MCP server as a stdio child process and connect an MCP SDK
-   * client.  Returns the client + transport so the caller can list/call tools
-   * and close the connection when the session is disposed.
-   */
-  const spawnUnifiedMcpClient = async (
-    workspaceRoot: string,
-    defaultRole: "agent" | "cto",
-    ownerId?: string | null,
-    chatSessionId?: string | null,
-    computerUsePolicy?: ComputerUsePolicy | null,
-  ): Promise<{ client: McpSdkClient; transport: McpStdioTransport }> => {
-    const launch = resolveAdeMcpServerLaunch({
-      projectRoot,
-      workspaceRoot,
-      runtimeRoot: resolveMcpRuntimeRoot(),
-      defaultRole,
-      ownerId: ownerId ?? undefined,
-      chatSessionId: chatSessionId ?? undefined,
-      computerUsePolicy: normalizeComputerUsePolicy(computerUsePolicy, createDefaultComputerUsePolicy()),
-    });
-
-    const mergedEnv: Record<string, string> = {};
-    for (const [k, v] of Object.entries({ ...process.env, ...launch.env })) {
-      if (v !== undefined) mergedEnv[k] = v;
-    }
-
-    const transport = new McpStdioTransport({
-      command: launch.command,
-      args: launch.cmdArgs,
-      env: mergedEnv,
-    });
-
-    const client = new McpSdkClient(
-      { name: "ade-unified-chat", version: "1.0.0" },
-      { capabilities: {} },
-    );
-
-    await client.connect(transport);
-    return { client, transport };
-  };
-
-  /** MCP tool names that are purely read-only and never need approval or memory-orientation gating. */
-  const MCP_READ_ONLY_PREFIX_RE = /^(?:get_|read_|search_|list_|memory_search)/;
-
-  /**
-   * Discover tools from an MCP client and convert each into an AI SDK `tool()`
-   * so they can be merged with the universal tool set and passed to `streamText()`.
-   *
-   * When `guards` are provided the execute path enforces the same
-   * memory-orientation and plan/edit approval checks that in-process
-   * universal tools use, preventing MCP tools from bypassing those gates.
-   */
-  const buildMcpToolWrappers = async (
-    mcpClient: McpSdkClient,
-    guards?: {
-      permissionMode: PermissionMode;
-      turnMemoryPolicyState?: TurnMemoryPolicyState;
-      onApprovalRequest?: (request: {
-        category: "write" | "bash";
-        description: string;
-        detail?: unknown;
-      }) => Promise<{ approved: boolean; decision?: AgentChatApprovalDecision; reason?: string | null }>;
-    },
-  ): Promise<Record<string, AiTool>> => {
-    const { tools: mcpTools } = await mcpClient.listTools();
-    const wrapped: Record<string, AiTool> = {};
-    const resolveMcpToolTimeoutMs = (): number => {
-      const rawTimeout = process.env.ADE_MCP_TOOL_CALL_TIMEOUT_MS ?? process.env.ADE_MCP_STEP_TIMEOUT_MS;
-      const parsedTimeout = rawTimeout ? Number(rawTimeout) : NaN;
-      return Number.isFinite(parsedTimeout) && parsedTimeout > 0 ? Math.floor(parsedTimeout) : 30_000;
-    };
-
-    for (const spec of mcpTools) {
-      const toolName = `mcp__ade__${spec.name}`;
-      const isReadOnly = MCP_READ_ONLY_PREFIX_RE.test(spec.name);
-      wrapped[toolName] = aiTool({
-        description: spec.description ?? spec.name,
-        inputSchema: aiJsonSchema(spec.inputSchema as any),
-        execute: async (args) => {
-          // ── Guard: memory orientation ──
-          if (guards?.turnMemoryPolicyState && !isReadOnly) {
-            const mps = guards.turnMemoryPolicyState;
-            if (mps.classification === "required" && !mps.orientationSatisfied && !mps.explicitSearchPerformed) {
-              return "EXECUTION DENIED: Search memory before mutating files or running mutating commands for this turn.";
-            }
-          }
-
-          // ── Guard: plan/edit approval ──
-          if (guards && !isReadOnly) {
-            const mode = guards.permissionMode;
-            const needsApproval = mode === "plan" || mode === "edit";
-            if (needsApproval && guards.onApprovalRequest) {
-              try {
-                const result = await guards.onApprovalRequest({
-                  category: "write",
-                  description: `MCP tool: ${spec.name}`,
-                  detail: { tool: spec.name, arguments: args },
-                });
-                if (!result.approved) {
-                  return `EXECUTION DENIED: ${result.reason ?? "MCP tool call was not approved."}`;
-                }
-              } catch (err) {
-                return `EXECUTION DENIED: Approval request failed — ${err instanceof Error ? err.message : String(err)}`;
-              }
-            }
-          }
-
-          const timeoutMs = resolveMcpToolTimeoutMs();
-          let timeoutId: ReturnType<typeof setTimeout> | null = null;
-          const callToolPromise = mcpClient.callTool({ name: spec.name, arguments: args as Record<string, unknown> });
-          const timeoutPromise = new Promise<never>((_, reject) => {
-            timeoutId = setTimeout(() => {
-              reject(new Error(`MCP tool '${spec.name}' timed out after ${timeoutMs}ms.`));
-            }, timeoutMs);
-          });
-          try {
-            const result = await Promise.race([callToolPromise, timeoutPromise]);
-            // MCP tools return { content: [{ type, text }] } — flatten to text.
-            const content = result.content;
-            if (Array.isArray(content)) {
-              return content
-                .map((c: any) => (typeof c === "string" ? c : c?.text ?? JSON.stringify(c)))
-                .join("\n");
-            }
-            return typeof content === "string" ? content : JSON.stringify(content);
-          } finally {
-            if (timeoutId) clearTimeout(timeoutId);
-          }
-        },
-      });
-    }
-    return wrapped;
-  };
-
   const summarizeAdeMcpLaunch = (args: {
     workspaceRoot: string;
     defaultRole: "agent" | "cto" | "external";
@@ -3599,6 +3617,24 @@ export function createAgentChatService(args: {
         }
       }
       return entries;
+    } catch {
+      return [];
+    }
+  };
+
+  const readLatestTranscriptTodoItems = (
+    managed: ManagedChatSession,
+  ): Extract<AgentChatEvent, { type: "todo_update" }>["items"] => {
+    try {
+      const raw = fs.readFileSync(managed.transcriptPath, "utf8");
+      let latest: Extract<AgentChatEvent, { type: "todo_update" }>["items"] = [];
+      for (const entry of parseAgentChatTranscript(raw)) {
+        if (entry.sessionId !== managed.session.id) continue;
+        if (entry.event.type === "todo_update") {
+          latest = entry.event.items;
+        }
+      }
+      return latest;
     } catch {
       return [];
     }
@@ -3805,7 +3841,7 @@ export function createAgentChatService(args: {
     persistChatState(managed);
 
     const auth = await detectAuth().catch(() => []);
-    const availableModels = getRegistryModels(auth).filter((descriptor) => !descriptor.deprecated);
+    const availableModels = await getAvailableRegistryModels(auth);
     if (!availableModels.length) return;
 
     const preferredModelId =
@@ -3838,13 +3874,12 @@ export function createAgentChatService(args: {
 
     managed.continuitySummaryInFlight = true;
     try {
-      const resolvedModel = await providerResolver.resolveModel(descriptor.id, auth, {
-        cwd: managed.laneWorktreePath,
-        middleware: false,
-      });
-      const result = await generateText({
-        model: resolvedModel,
+      const result = await runOpenCodeTextPrompt({
+        directory: managed.laneWorktreePath,
+        title: "ADE continuity summary",
+        modelDescriptor: descriptor,
         prompt,
+        projectConfig: projectConfigService.get().effective,
       });
       const text = result.text.trim();
       if (text.length) {
@@ -3920,23 +3955,6 @@ export function createAgentChatService(args: {
     managed.pendingReconstructionContext = nextContext.length ? nextContext : null;
   };
 
-  const applyReconstructionContextToStreamingRuntime = (
-    managed: ManagedChatSession,
-    runtime: UnifiedRuntime
-  ): void => {
-    const context = managed.pendingReconstructionContext?.trim() ?? "";
-    if (!context.length) return;
-    runtime.messages.push({
-      role: "user",
-      content: [
-        "System context (identity reconstruction, do not echo verbatim):",
-        context
-      ].join("\n")
-    });
-    managed.pendingReconstructionContext = null;
-    persistChatState(managed);
-  };
-
   const detectAuth = async () => {
     const snapshot = projectConfigService.get();
     const configured = snapshot.effective.ai?.apiKeys;
@@ -3948,7 +3966,10 @@ export function createAgentChatService(args: {
         configApiKeys[String(provider).trim().toLowerCase()] = key;
       }
     }
-    return detectAllAuth(configApiKeys);
+    const localProviders = snapshot.effective.ai?.localProviders;
+    return detectAllAuth(configApiKeys, {
+      localProviders,
+    });
   };
 
   const resolveHandoffBlockedReason = (managed: ManagedChatSession): string | null => {
@@ -3971,8 +3992,8 @@ export function createAgentChatService(args: {
         return "Resolve the current approval or question before handing off this chat.";
       }
     }
-    if (runtime.kind === "unified") {
-      if (runtime.busy || runtime.activeTurnId || runtime.abortController) {
+    if (runtime.kind === "opencode") {
+      if (runtime.busy || runtime.activeTurnId || runtime.eventAbortController) {
         return "Wait for the current response to finish before handing off this chat.";
       }
       if (runtime.pendingApprovals.size > 0) {
@@ -4071,7 +4092,7 @@ export function createAgentChatService(args: {
   }): Promise<{ brief: string; usedFallbackSummary: boolean }> => {
     const deterministicBrief = buildDeterministicHandoffBrief(args);
     const auth = await detectAuth();
-    const availableModels = getRegistryModels(auth).filter((descriptor) => !descriptor.deprecated);
+    const availableModels = await getAvailableRegistryModels(auth);
     const preferredModelId = [
       resolveChatConfig().summaryModelId,
       "openai/gpt-5.4-mini",
@@ -4123,13 +4144,12 @@ export function createAgentChatService(args: {
     ].filter(Boolean).join("\n");
 
     try {
-      const resolvedModel = await providerResolver.resolveModel(descriptor.id, auth, {
-        cwd: args.managed.laneWorktreePath,
-        middleware: false,
-      });
-      const result = await generateText({
-        model: resolvedModel,
+      const result = await runOpenCodeTextPrompt({
+        directory: args.managed.laneWorktreePath,
+        title: "ADE handoff brief",
+        modelDescriptor: descriptor,
         prompt,
+        projectConfig: projectConfigService.get().effective,
       });
       const brief = result.text.trim();
       if (!brief.length) {
@@ -4164,7 +4184,7 @@ export function createAgentChatService(args: {
     const currentTitle = sessionService.get(managed.session.id)?.title ?? null;
     if (currentTitle?.trim() === title) return title;
 
-    sessionService.updateMeta({ sessionId: managed.session.id, title });
+    sessionService.updateMeta({ sessionId: managed.session.id, title, manuallyNamed: false });
 
     // Sync title to Codex thread if applicable
     if (managed.session.provider === "codex" && managed.session.threadId && managed.runtime?.kind === "codex") {
@@ -4195,7 +4215,7 @@ export function createAgentChatService(args: {
     if (!seed) return;
 
     const auth = await detectAuth();
-    const availableModels = getRegistryModels(auth).filter((descriptor) => !descriptor.deprecated);
+    const availableModels = await getAvailableRegistryModels(auth);
     if (!availableModels.length) return;
 
     const preferredModelId =
@@ -4235,12 +4255,10 @@ export function createAgentChatService(args: {
 
     managed.autoTitleInFlight = true;
     try {
-      const resolvedModel = await providerResolver.resolveModel(descriptor.id, auth, {
-        cwd: managed.laneWorktreePath,
-        middleware: false,
-      });
-      const result = await generateText({
-        model: resolvedModel,
+      const result = await runOpenCodeTextPrompt({
+        directory: managed.laneWorktreePath,
+        title: args.stage === "final" ? "ADE final chat title" : "ADE initial chat title",
+        modelDescriptor: descriptor,
         system: AUTO_TITLE_SYSTEM_PROMPT,
         prompt: [
           args.stage === "final"
@@ -4248,6 +4266,7 @@ export function createAgentChatService(args: {
             : "Write a concise title for this new coding chat.",
           titleContext.join("\n"),
         ].join("\n\n"),
+        projectConfig: projectConfigService.get().effective,
       });
       // Re-check after async — user may have manually renamed while the request was in flight.
       if (managed.manuallyNamed) return;
@@ -4266,77 +4285,143 @@ export function createAgentChatService(args: {
     }
   };
 
-  // Unified session support — for API-key / local models using streamText + universal tools.
+  // OpenCode handles API-key and local-model chats.
   // CLI-wrapped models fall through to the existing Claude/Codex runtimes.
-  const startUnifiedSession = async (managed: ManagedChatSession): Promise<"handled" | "fallthrough"> => {
+  // Local model discovery is consolidated through OpenCode's provider inventory.
+
+  const getAvailableRegistryModels = async (
+    auth: Awaited<ReturnType<typeof detectAuth>>,
+  ): Promise<ModelDescriptor[]> => {
+    // Local model discovery is handled by OpenCode via probeOpenCodeProviderInventory
+    // which populates dynamic OpenCode descriptors (including local providers).
+    return getRegistryModels(auth).filter((descriptor) => !descriptor.deprecated);
+  };
+
+  const resolveOpenCodeLocalDescriptor = async (
+    managed: ManagedChatSession,
+    descriptor: ModelDescriptor,
+    auth: Awaited<ReturnType<typeof detectAuth>>,
+  ): Promise<ModelDescriptor> => {
+    if (!(descriptor.family === "ollama" || descriptor.family === "lmstudio")) {
+      return descriptor;
+    }
+    if (descriptor.providerModelId !== "auto") {
+      return descriptor;
+    }
+
+    const localProvider = descriptor.family as LocalProviderFamily;
+
+    // Use OpenCode dynamic descriptors to find loaded models for this local provider.
+    const openCodeLocals = getDynamicOpenCodeModelDescriptors().filter(
+      (d) => d.family === localProvider,
+    );
+
+    const preferred = auth.find(
+      (entry): entry is Extract<Awaited<ReturnType<typeof detectAuth>>[number], { type: "local" }> =>
+        entry.type === "local" && entry.provider === localProvider,
+    )?.preferredModelId;
+    const preferredDescriptor = preferred ? getModelById(preferred) : undefined;
+    if (preferredDescriptor && preferredDescriptor.family === localProvider) {
+      managed.session.modelId = preferredDescriptor.id;
+      managed.session.model = preferredDescriptor.id;
+      return preferredDescriptor;
+    }
+
+    if (openCodeLocals.length === 1) {
+      return openCodeLocals[0]!;
+    }
+
+    if (openCodeLocals.length > 1) {
+      throw new Error(
+        `${descriptor.displayName} has multiple loaded models. Choose a specific ${LOCAL_PROVIDER_LABELS[localProvider]} model or save a preferred local model first.`,
+      );
+    }
+
+    throw new Error(`${descriptor.displayName} is reachable, but no models are currently loaded.`);
+  };
+
+  const startOpenCodeSessionRuntime = async (managed: ManagedChatSession): Promise<"handled" | "fallthrough"> => {
     const modelId = managed.session.modelId;
     if (!modelId) return "fallthrough";
 
-    const descriptor = getModelById(modelId);
+    let descriptor = getModelById(modelId);
     if (!descriptor) return "fallthrough";
 
     // CLI-wrapped models -> defer to CLI session runtimes.
     if (descriptor.isCliWrapped) return "fallthrough";
 
-    logger.info("agent_chat.unified_session_starting", {
+    logger.info("agent_chat.opencode_session_starting", {
       sessionId: managed.session.id,
       modelId,
       family: descriptor.family,
     });
 
     const auth = await detectAuth();
-    const resolvedModel = await providerResolver.resolveModel(modelId, auth, {
-      cwd: managed.laneWorktreePath,
-    });
+    descriptor = await resolveOpenCodeLocalDescriptor(managed, descriptor, auth);
+    enforceManagedLocalHarnessPermissionMode(managed, descriptor);
 
     const chatConfig = resolveChatConfig();
-    const permMode: PermissionMode = resolveSessionUnifiedPermissionMode(
+    const permMode: PermissionMode = resolveSessionOpenCodePermissionMode(
       managed.session,
-      chatConfig.unifiedPermissionMode,
+      chatConfig.opencodePermissionMode,
     );
-
-    // Spawn the ADE MCP server so unified sessions get the same tools as
-    // Claude / Codex sessions.  If the MCP server fails to start we fall
-    // back gracefully — the session still works with in-process tools.
-    let mcpClient: McpSdkClient | null = null;
-    let mcpTransport: McpStdioTransport | null = null;
-    if (!isLightweightSession(managed.session)) {
+    const configSnapshot = projectConfigService.get();
+    const runtimeRoot = resolveOpenCodeRuntimeRoot();
+    const persisted = readPersistedState(managed.session.id);
+    const mcpLaunch = resolveAdeMcpServerLaunch({
+      projectRoot,
+      workspaceRoot: managed.laneWorktreePath,
+      runtimeRoot,
+      chatSessionId: managed.session.id,
+      defaultRole: managed.session.identityKey === "cto" ? "cto" : "agent",
+      ownerId: resolveWorkerIdentityAgentId(managed.session.identityKey) ?? undefined,
+      computerUsePolicy: managed.session.computerUse,
+    });
+    // Discover loaded local models so OpenCode's provider config includes them.
+    // inspectLocalProvider results are cached (30s TTL) so this is near-instant
+    // when aiIntegrationService has already probed recently.
+    const discoveredLocalModels: DiscoveredLocalModelEntry[] = [];
+    const localProviderConfigs = configSnapshot.effective.ai?.localProviders ?? {};
+    for (const family of ["ollama", "lmstudio"] as const) {
+      const providerSettings = localProviderConfigs[family];
+      if (providerSettings?.enabled === false) continue;
+      const localAuth = auth.find(
+        (a): a is Extract<typeof a, { type: "local" }> =>
+          a.type === "local" && a.provider === family,
+      );
+      const endpoint = localAuth?.endpoint ?? providerSettings?.endpoint ?? getLocalProviderDefaultEndpoint(family);
       try {
-        const mcp = await spawnUnifiedMcpClient(
-          managed.laneWorktreePath,
-          managed.session.identityKey === "cto" ? "cto" : "agent",
-          resolveWorkerIdentityAgentId(managed.session.identityKey),
-          managed.session.id,
-          managed.session.computerUse,
-        );
-        mcpClient = mcp.client;
-        mcpTransport = mcp.transport;
-        logger.info("agent_chat.unified_mcp_connected", {
-          sessionId: managed.session.id,
-        });
-      } catch (error) {
-        logger.warn("agent_chat.unified_mcp_spawn_failed", {
-          sessionId: managed.session.id,
-          error: error instanceof Error ? error.message : String(error),
-        });
+        const inspection = await inspectLocalProvider(family, endpoint);
+        for (const m of inspection.loadedModels) {
+          discoveredLocalModels.push({ provider: m.provider, modelId: m.modelId });
+        }
+      } catch {
+        // Non-fatal — provider may be offline
       }
     }
+    const handle = await startOpenCodeSession({
+      directory: managed.laneWorktreePath,
+      title: sessionService.get(managed.session.id)?.title ?? defaultChatSessionTitle("opencode"),
+      sessionId: persisted?.providerSessionId,
+      projectConfig: configSnapshot.effective,
+      mcpLaunch: isLightweightSession(managed.session) ? undefined : mcpLaunch,
+      discoveredLocalModels,
+    });
 
-    const runtime: UnifiedRuntime = {
-      kind: "unified",
-      messages: [],
+    const runtime: OpenCodeRuntime = {
+      kind: "opencode",
+      handle,
       busy: false,
-      abortController: null,
+      eventAbortController: null,
       activeTurnId: null,
       permissionMode: permMode,
       pendingApprovals: new Map(),
-      approvalOverrides: new Set(),
       pendingSteers: [],
       interrupted: false,
-      resolvedModel,
       modelDescriptor: descriptor,
-      mcpClient,
-      mcpTransport,
+      textByPartId: new Map(),
+      reasoningByPartId: new Map(),
+      toolStateByPartId: new Map(),
     };
 
     // Evict least-recent runtime if at capacity
@@ -4347,12 +4432,17 @@ export function createAgentChatService(args: {
     }
     managed.runtime = runtime;
     managed.runtimeInvalidated = false;
-    managed.session.provider = "unified";
-    managed.session.unifiedPermissionMode = permMode;
+    managed.session.provider = "opencode";
+    managed.session.opencodePermissionMode = permMode;
     managed.session.permissionMode = syncLegacyPermissionMode(managed.session) ?? managed.session.permissionMode;
-    managed.session.capabilityMode = mcpClient ? "full_mcp" : "fallback";
+    enforceManagedLocalHarnessPermissionMode(managed, descriptor);
+    managed.session.capabilityMode = isLightweightSession(managed.session) ? "fallback" : "full_mcp";
+    persistChatState(managed);
     return "handled";
   };
+
+  const isCliWrappedModelId = (modelId: string): boolean =>
+    (getModelById(modelId) ?? resolveModelAlias(modelId))?.isCliWrapped ?? false;
 
   const resolveChatConfig = (): ResolvedChatConfig => {
     const snapshot = projectConfigService.get();
@@ -4385,9 +4475,9 @@ export function createAgentChatService(args: {
       return "default" as const;
     })();
 
-    const unifiedPermissionMode = (() => {
-      if (chat.unifiedPermissionMode === "plan" || chat.unifiedPermissionMode === "edit" || chat.unifiedPermissionMode === "full-auto") {
-        return chat.unifiedPermissionMode;
+    const opencodePermissionMode = (() => {
+      if (chat.opencodePermissionMode === "plan" || chat.opencodePermissionMode === "edit" || chat.opencodePermissionMode === "full-auto") {
+        return chat.opencodePermissionMode;
       }
       if (inProcessMode === "plan" || inProcessMode === "edit" || inProcessMode === "full-auto") {
         return inProcessMode;
@@ -4400,7 +4490,7 @@ export function createAgentChatService(args: {
     const budget = Number(chat.sessionBudgetUsd ?? permissions.cli?.maxBudgetUsd ?? NaN);
     const sessionBudgetUsd = Number.isFinite(budget) && budget > 0 ? budget : null;
 
-    // Unified sessionIntelligence.titles.* with legacy chat.autoTitle* fallback
+    // Session-intelligence titles with chat.autoTitle* fallback
     const autoTitleEnabled = si?.titles?.enabled ?? chat.autoTitleEnabled ?? true;
     const autoTitleModelIdRaw = si?.titles?.modelId ?? chat.autoTitleModelId;
     const autoTitleModelId = typeof autoTitleModelIdRaw === "string" && autoTitleModelIdRaw.trim().length
@@ -4408,7 +4498,7 @@ export function createAgentChatService(args: {
       : null;
     const autoTitleRefreshOnComplete = si?.titles?.refreshOnComplete ?? chat.autoTitleRefreshOnComplete ?? true;
 
-    // Unified sessionIntelligence.summaries.*
+    // Session-intelligence summaries
     const summaryEnabled = si?.summaries?.enabled ?? true;
     const summaryModelIdRaw = si?.summaries?.modelId;
     const summaryModelId = typeof summaryModelIdRaw === "string" && summaryModelIdRaw.trim().length
@@ -4419,7 +4509,7 @@ export function createAgentChatService(args: {
       codexApprovalPolicy: approvalPolicy,
       codexSandboxMode: sandboxMode,
       claudePermissionMode,
-      unifiedPermissionMode,
+      opencodePermissionMode,
       sessionBudgetUsd,
       autoTitleEnabled,
       autoTitleModelId,
@@ -4462,6 +4552,85 @@ export function createAgentChatService(args: {
     }
   };
 
+  const captureTurnBeforeSha = (managed: ManagedChatSession): void => {
+    const laneId = resolveManagedExecutionLaneId(managed);
+    void computeHeadShaBestEffort(laneId).then((sha) => {
+      if (sha) managed.turnBeforeSha = sha;
+    }).catch(() => {});
+  };
+
+  const emitTurnDiffSummaryIfChanged = async (managed: ManagedChatSession, turnId: string): Promise<void> => {
+    const beforeSha = managed.turnBeforeSha;
+    managed.turnBeforeSha = null;
+    if (!beforeSha) return;
+
+    const laneId = resolveManagedExecutionLaneId(managed);
+    const afterSha = await computeHeadShaBestEffort(laneId).catch(() => null);
+    if (!afterSha || beforeSha === afterSha) return;
+
+    try {
+      let cwd: string;
+      try {
+        ({ laneWorktreePath: cwd } = resolveLaneLaunchContext({
+          laneService,
+          laneId,
+          purpose: "turn diff summary",
+        }));
+      } catch {
+        return;
+      }
+      const result = await runGit(["diff", "--numstat", `${beforeSha}..${afterSha}`], { cwd, timeoutMs: 10_000 });
+      if (result.exitCode !== 0) return;
+
+      const files: Array<{ path: string; additions: number; deletions: number; status: string }> = [];
+      let totalAdditions = 0;
+      let totalDeletions = 0;
+
+      for (const line of result.stdout.split("\n")) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+        const parts = trimmed.split("\t");
+        if (parts.length < 3) continue;
+        const additions = parts[0] === "-" ? 0 : parseInt(parts[0], 10) || 0;
+        const deletions = parts[1] === "-" ? 0 : parseInt(parts[1], 10) || 0;
+        const filePath = parts.slice(2).join("\t");
+        files.push({ path: filePath, additions, deletions, status: "M" });
+        totalAdditions += additions;
+        totalDeletions += deletions;
+      }
+
+      if (files.length === 0) return;
+
+      // Determine file status (A/M/D) from diff-filter
+      const statusResult = await runGit(["diff", "--name-status", `${beforeSha}..${afterSha}`], { cwd, timeoutMs: 10_000 });
+      if (statusResult.exitCode === 0) {
+        const statusMap = new Map<string, string>();
+        for (const line of statusResult.stdout.split("\n")) {
+          const trimmed = line.trim();
+          if (!trimmed) continue;
+          const tabIdx = trimmed.indexOf("\t");
+          if (tabIdx < 0) continue;
+          statusMap.set(trimmed.slice(tabIdx + 1).trim(), trimmed.slice(0, tabIdx).trim().charAt(0));
+        }
+        for (const file of files) {
+          file.status = statusMap.get(file.path) ?? "M";
+        }
+      }
+
+      emitChatEvent(managed, {
+        type: "turn_diff_summary",
+        turnId,
+        beforeSha,
+        afterSha,
+        files,
+        totalAdditions,
+        totalDeletions,
+      });
+    } catch {
+      // Silently ignore diff computation failures
+    }
+  };
+
   const resolveManagedExecutionContext = (
     managed: ManagedChatSession,
     args: { purpose: string; requestedCwd?: string | null },
@@ -4497,7 +4666,7 @@ export function createAgentChatService(args: {
       laneWorktreeChanged
       && (managed.runtime?.kind === "claude"
         || managed.runtime?.kind === "codex"
-        || managed.runtime?.kind === "unified"
+        || managed.runtime?.kind === "opencode"
         || managed.runtime?.kind === "cursor")
     ) {
       teardownRuntime(managed);
@@ -4520,7 +4689,7 @@ export function createAgentChatService(args: {
 
   const persistChatState = (managed: ManagedChatSession): void => {
     // When runtime has been torn down (null) but NOT intentionally invalidated,
-    // fall back to the last persisted state so that sdkSessionId, messages, and
+    // fall back to the last persisted state so that provider session ids and
     // lastLaneDirectiveKey survive a transient teardown (e.g. app backgrounding).
     // When runtimeInvalidated is set, teardownRuntime() intentionally cleared
     // runtime state, so we must NOT restore stale values from disk.
@@ -4543,7 +4712,7 @@ export function createAgentChatService(args: {
       ...(managed.session.codexApprovalPolicy ? { codexApprovalPolicy: managed.session.codexApprovalPolicy } : {}),
       ...(managed.session.codexSandbox ? { codexSandbox: managed.session.codexSandbox } : {}),
       ...(managed.session.codexConfigSource ? { codexConfigSource: managed.session.codexConfigSource } : {}),
-      ...(managed.session.unifiedPermissionMode ? { unifiedPermissionMode: managed.session.unifiedPermissionMode } : {}),
+      ...(managed.session.opencodePermissionMode ? { opencodePermissionMode: managed.session.opencodePermissionMode } : {}),
       ...(managed.session.cursorModeSnapshot ? { cursorModeSnapshot: managed.session.cursorModeSnapshot } : {}),
       ...(managed.session.cursorModeId !== undefined ? { cursorModeId: managed.session.cursorModeId } : {}),
       ...(managed.session.cursorConfigValues ? { cursorConfigValues: managed.session.cursorConfigValues } : {}),
@@ -4565,9 +4734,9 @@ export function createAgentChatService(args: {
       ...(managed.runtime?.kind === "claude" && managed.runtime.approvalOverrides.size > 0
         ? { approvalOverrides: [...managed.runtime.approvalOverrides] }
         : prevPersisted?.approvalOverrides?.length ? { approvalOverrides: prevPersisted.approvalOverrides } : {}),
-      ...(managed.runtime?.kind === "unified"
-        ? { messages: managed.runtime.messages.map((m) => ({ role: m.role as "user" | "assistant", content: m.content })) }
-        : prevPersisted?.messages?.length ? { messages: prevPersisted.messages } : {}),
+      ...(managed.runtime?.kind === "opencode"
+        ? { providerSessionId: managed.runtime.handle.sessionId }
+        : prevPersisted?.providerSessionId ? { providerSessionId: prevPersisted.providerSessionId } : {}),
       ...(managed.recentConversationEntries.length
         ? {
             recentConversationEntries: managed.recentConversationEntries.map((entry) => ({
@@ -4614,8 +4783,9 @@ export function createAgentChatService(args: {
       if (!parsed || typeof parsed !== "object") return null;
       const record = parsed as Partial<PersistedChatState>;
       if (record.version !== 1 && record.version !== 2) return null;
-      const provider = record.provider;
-      if (provider !== "codex" && provider !== "claude" && provider !== "unified" && provider !== "cursor") {
+      let provider = record.provider;
+      if (provider === "unified") provider = "opencode";
+      if (provider !== "codex" && provider !== "claude" && provider !== "opencode" && provider !== "cursor") {
         return null;
       }
       const laneId = String(record.laneId ?? "").trim();
@@ -4633,7 +4803,7 @@ export function createAgentChatService(args: {
       const codexApprovalPolicy = normalizePersistedCodexApprovalPolicy(record.codexApprovalPolicy);
       const codexSandbox = normalizePersistedCodexSandbox(record.codexSandbox);
       const codexConfigSource = normalizePersistedCodexConfigSource(record.codexConfigSource);
-      const unifiedPermissionMode = normalizePersistedUnifiedPermissionMode(record.unifiedPermissionMode);
+      const opencodePermissionMode = normalizePersistedOpenCodePermissionMode(record.opencodePermissionMode ?? (record as any).unifiedPermissionMode);
       const cursorModeSnapshot = record.cursorModeSnapshot && typeof record.cursorModeSnapshot === "object"
         ? record.cursorModeSnapshot as AgentChatCursorModeSnapshot
         : undefined;
@@ -4649,15 +4819,6 @@ export function createAgentChatService(args: {
       const computerUse = normalizePersistedComputerUse(record.computerUse);
       const completion = normalizePersistedCompletion(record.completion);
       if (!laneId || !model) return null;
-      const messages = Array.isArray(record.messages)
-        ? record.messages
-            .filter((entry): entry is PersistedClaudeMessage => {
-              if (!entry || typeof entry !== "object") return false;
-              const role = (entry as { role?: unknown }).role;
-              const content = (entry as { content?: unknown }).content;
-              return (role === "user" || role === "assistant") && typeof content === "string";
-            })
-        : undefined;
       const recentConversationEntries = Array.isArray(record.recentConversationEntries)
         ? record.recentConversationEntries
             .filter((entry): entry is PersistedRecentConversationEntry => {
@@ -4669,6 +4830,9 @@ export function createAgentChatService(args: {
             .slice(-12)
         : undefined;
       const sdkSessionId = typeof record.sdkSessionId === "string" && record.sdkSessionId.trim().length ? record.sdkSessionId.trim() : undefined;
+      const providerSessionId = typeof record.providerSessionId === "string" && record.providerSessionId.trim().length
+        ? record.providerSessionId.trim()
+        : undefined;
       const approvalOverrides = Array.isArray(record.approvalOverrides)
         ? record.approvalOverrides.filter((v): v is string => typeof v === "string" && v.trim().length > 0)
         : undefined;
@@ -4687,7 +4851,7 @@ export function createAgentChatService(args: {
         ...(codexApprovalPolicy ? { codexApprovalPolicy } : {}),
         ...(codexSandbox ? { codexSandbox } : {}),
         ...(codexConfigSource ? { codexConfigSource } : {}),
-        ...(unifiedPermissionMode ? { unifiedPermissionMode } : {}),
+        ...(opencodePermissionMode ? { opencodePermissionMode } : {}),
         ...(cursorModeSnapshot ? { cursorModeSnapshot } : {}),
         ...(cursorModeId !== undefined ? { cursorModeId } : {}),
         ...(cursorConfigValues ? { cursorConfigValues } : {}),
@@ -4710,8 +4874,8 @@ export function createAgentChatService(args: {
           ? { acpSessionId: record.acpSessionId.trim() }
           : {}),
         ...(sdkSessionId ? { sdkSessionId } : {}),
+        ...(providerSessionId ? { providerSessionId } : {}),
         ...(approvalOverrides?.length ? { approvalOverrides } : {}),
-        ...(messages?.length ? { messages } : {}),
         ...(recentConversationEntries?.length ? { recentConversationEntries } : {}),
         ...(typeof record.continuitySummary === "string" && record.continuitySummary.trim().length
           ? { continuitySummary: record.continuitySummary.trim() }
@@ -5082,6 +5246,10 @@ export function createAgentChatService(args: {
       managed.lastActivitySignature = null;
     }
 
+    if (normalizedEvent.type === "todo_update") {
+      managed.todoItems = normalizedEvent.items;
+    }
+
     commitChatEvent(managed, normalizedEvent);
   };
 
@@ -5332,17 +5500,19 @@ export function createAgentChatService(args: {
       managed.runtime.approvals.clear();
       managed.runtime = null;
     }
-    if (managed.runtime?.kind === "unified") {
+    if (managed.runtime?.kind === "opencode") {
       // Mark interrupted so the streaming catch block takes the graceful path
       managed.runtime.interrupted = true;
-      managed.runtime.abortController?.abort();
+      managed.runtime.eventAbortController?.abort();
       for (const pending of managed.runtime.pendingApprovals.values()) {
-        pending.resolve({ decision: "cancel" });
+        managed.runtime.handle.client.postSessionIdPermissionsPermissionId({
+          path: { id: managed.runtime.handle.sessionId, permissionID: pending.permissionId },
+          query: { directory: managed.runtime.handle.directory },
+          body: { response: "reject" },
+        }).catch(() => {});
       }
       managed.runtime.pendingApprovals.clear();
-      // Tear down MCP client + transport
-      try { managed.runtime.mcpClient?.close(); } catch { /* ignore */ }
-      try { managed.runtime.mcpTransport?.close(); } catch { /* ignore */ }
+      try { managed.runtime.handle.close(); } catch { /* ignore */ }
       managed.runtime = null;
     }
     if (managed.runtime?.kind === "cursor") {
@@ -5393,6 +5563,7 @@ export function createAgentChatService(args: {
         turnStatus: args.turnStatus,
         turnId: resolvedTurnId,
       });
+      void emitTurnDiffSummaryIfChanged(managed, resolvedTurnId);
       emitChatEvent(managed, {
         type: "done",
         turnId: resolvedTurnId,
@@ -5429,7 +5600,7 @@ export function createAgentChatService(args: {
 
     // Fire-and-forget AI summary enhancement
     const auth = await detectAuth();
-    const availableModels = getRegistryModels(auth).filter((d) => !d.deprecated);
+    const availableModels = await getAvailableRegistryModels(auth);
     if (!availableModels.length) return;
 
     const preferredModelId =
@@ -5465,13 +5636,12 @@ export function createAgentChatService(args: {
 
     managed.summaryInFlight = true;
     try {
-      const resolvedModel = await providerResolver.resolveModel(descriptor.id, auth, {
-        cwd: managed.laneWorktreePath,
-        middleware: false,
-      });
-      const result = await generateText({
-        model: resolvedModel,
+      const result = await runOpenCodeTextPrompt({
+        directory: managed.laneWorktreePath,
+        title: "ADE session summary",
+        modelDescriptor: descriptor,
         prompt,
+        projectConfig: projectConfigService.get().effective,
       });
       const text = result.text.trim();
       if (text.length) {
@@ -5615,12 +5785,12 @@ export function createAgentChatService(args: {
     const fallbackModel = persisted?.model ?? fallbackModelForProvider(provider);
     const hydratedModelId = persisted?.modelId
       ?? resolveModelIdFromStoredValue(fallbackModel, provider)
-      ?? (provider === "unified"
-        ? DEFAULT_UNIFIED_MODEL_ID
+      ?? (provider === "opencode"
+        ? DEFAULT_OPENCODE_MODEL_ID
         : provider === "cursor"
           ? DEFAULT_CURSOR_DESCRIPTOR?.id
           : undefined);
-    const model = provider === "unified" ? (hydratedModelId ?? fallbackModel) : fallbackModel;
+    const model = provider === "opencode" ? (hydratedModelId ?? fallbackModel) : fallbackModel;
     const lane = laneService.getLaneBaseAndBranch(row.laneId);
 
     const managed: ManagedChatSession = {
@@ -5638,7 +5808,7 @@ export function createAgentChatService(args: {
         ...(persisted?.codexApprovalPolicy ? { codexApprovalPolicy: persisted.codexApprovalPolicy } : {}),
         ...(persisted?.codexSandbox ? { codexSandbox: persisted.codexSandbox } : {}),
         ...(persisted?.codexConfigSource ? { codexConfigSource: persisted.codexConfigSource } : {}),
-        ...(persisted?.unifiedPermissionMode ? { unifiedPermissionMode: persisted.unifiedPermissionMode } : {}),
+        ...(persisted?.opencodePermissionMode ? { opencodePermissionMode: persisted.opencodePermissionMode } : {}),
         ...(persisted?.cursorModeSnapshot ? { cursorModeSnapshot: persisted.cursorModeSnapshot } : {}),
         ...(persisted?.cursorModeId !== undefined ? { cursorModeId: persisted.cursorModeId } : {}),
         ...(persisted?.cursorConfigValues ? { cursorConfigValues: persisted.cursorConfigValues } : {}),
@@ -5682,6 +5852,7 @@ export function createAgentChatService(args: {
       selectedExecutionLaneId: persisted?.selectedExecutionLaneId ?? null,
       lastLaneDirectiveKey: persisted?.lastLaneDirectiveKey ?? null,
       runtimeInvalidated: false,
+      todoItems: [],
       activeAssistantMessageId: null,
       lastActivitySignature: null,
       bufferedReasoning: null,
@@ -5695,7 +5866,9 @@ export function createAgentChatService(args: {
       localPendingInputs: new Map(),
       eventSequence: 0,
       lastActivityTimestamp: Date.now(),
+      turnBeforeSha: null,
     };
+    managed.todoItems = readLatestTranscriptTodoItems(managed);
     normalizeSessionNativePermissionControls(managed.session, resolveChatConfig());
     managed.transcriptLimitReached = managed.transcriptBytesWritten >= MAX_CHAT_TRANSCRIPT_BYTES;
     refreshReconstructionContext(managed, { includeConversationTail: usesIdentityContinuity(managed) });
@@ -5773,6 +5946,7 @@ export function createAgentChatService(args: {
       onDispatched: args.onDispatched,
     });
     emitChatEvent(managed, { type: "status", turnStatus: "started" });
+    captureTurnBeforeSha(managed);
     emitChatEvent(managed, {
       type: "activity",
       ...initialTurnActivity(managed.session),
@@ -5875,6 +6049,7 @@ export function createAgentChatService(args: {
           turnStatus: "started",
           turnId,
         });
+        captureTurnBeforeSha(managed);
         emitChatEvent(managed, {
           type: "activity",
           ...initialTurnActivity(managed.session),
@@ -5885,7 +6060,7 @@ export function createAgentChatService(args: {
     persistChatState(managed);
   };
 
-  // ── Helpers for unified turn logic ──
+  // ── Helpers for OpenCode turn logic ──
 
   const mapReasoningEffortToThinking = (effort: string | null | undefined): ThinkingLevel | null => {
     if (!effort) return null;
@@ -5902,7 +6077,7 @@ export function createAgentChatService(args: {
     return map[effort] ?? null;
   };
 
-  const classifyUnifiedError = (
+  const classifyOpenCodeError = (
     error: unknown,
     providerFamily: string,
     modelDisplayName: string,
@@ -6012,6 +6187,7 @@ export function createAgentChatService(args: {
       onDispatched: args.onDispatched,
     });
     emitChatEvent(managed, { type: "status", turnStatus: "started", turnId });
+    captureTurnBeforeSha(managed);
     emitChatEvent(managed, {
       type: "activity",
       ...initialTurnActivity(managed.session),
@@ -6025,6 +6201,7 @@ export function createAgentChatService(args: {
     let reportedInitModel: string | null = null;
     const reportedUsageModels = new Set<string>();
     const turnStartedAt = Date.now();
+    let shouldDeliverQueuedSteer = false;
     let firstStreamEventLogged = false;
     const emittedClaudeToolIds = new Set<string>();
     const emittedSyntheticItemIds = new Set<string>();
@@ -6091,9 +6268,7 @@ export function createAgentChatService(args: {
       emittedClaudeTodoIds.add(itemId);
       emitChatEvent(managed, { type: "todo_update", items: todoItems, turnId });
     };
-    let idleTimeout: ReturnType<typeof setTimeout> | undefined;
     let timeoutError: Error | null = null;
-    let idleWatchdogPauseCount = 0;
     const buildDoneModelPayload = (): { model: string; modelId?: string } =>
       resolveClaudeTurnModelPayload(managed.session, [
         reportedAssistantModel,
@@ -6121,52 +6296,12 @@ export function createAgentChatService(args: {
       if (typeof contentIndex !== "number" || !Number.isFinite(contentIndex)) return undefined;
       return `claude-${kind}:${turnId}:${contentIndex}`;
     };
-    const clearClaudeTurnTimers = (): void => {
-      if (idleTimeout) {
-        clearTimeout(idleTimeout);
-        idleTimeout = undefined;
-      }
-    };
-    const pauseClaudeIdleWatchdog = (): void => {
-      idleWatchdogPauseCount += 1;
-      clearClaudeTurnTimers();
-    };
-    const resumeClaudeIdleWatchdog = (): void => {
-      idleWatchdogPauseCount = Math.max(0, idleWatchdogPauseCount - 1);
-      if (idleWatchdogPauseCount === 0 && !timeoutError && !runtime.interrupted && runtime.busy) {
-        bumpClaudeIdleDeadline();
-      }
-    };
-    const failClaudeTurn = (message: string, reason: "timeout" | "idle"): void => {
-      if (timeoutError || runtime.interrupted) return;
-      timeoutError = new Error(message);
-      logger.warn("agent_chat.claude_turn_watchdog_fired", {
-        sessionId: managed.session.id,
-        turnId,
-        reason,
-      });
-      cancelClaudeWarmup(managed, runtime, "timeout");
-      try { runtime.v2Session?.close(); } catch { /* ignore */ }
-      // Keep the persisted Claude V2 session id so the next turn can resume
-      // the same conversation after this local process is torn down.
-    };
-    const bumpClaudeIdleDeadline = (): void => {
-      if (idleWatchdogPauseCount > 0) {
-        clearClaudeTurnTimers();
-        return;
-      }
-      if (idleTimeout) {
-        clearTimeout(idleTimeout);
-      }
-      idleTimeout = setTimeout(() => {
-        failClaudeTurn(
-          `Claude stopped streaming for ${Math.round(CLAUDE_STREAM_IDLE_TIMEOUT_MS / 1000)}s. This turn was interrupted, but the chat stayed open so you can retry.`,
-          "idle",
-        );
-      }, CLAUDE_STREAM_IDLE_TIMEOUT_MS);
-    };
-    runtime.pauseIdleWatchdog = pauseClaudeIdleWatchdog;
-    runtime.resumeIdleWatchdog = resumeClaudeIdleWatchdog;
+    // Idle watchdog stubs — kept as no-ops so callers (approval flows,
+    // elicitations, etc.) don't need to be touched.
+    const clearClaudeTurnTimers = (): void => { /* no-op */ };
+    const bumpClaudeIdleDeadline = (): void => { /* no-op */ };
+    runtime.pauseIdleWatchdog = () => {};
+    runtime.resumeIdleWatchdog = () => {};
 
     try {
       const autoMemoryPrompt = args.displayText?.trim().length ? args.displayText.trim() : args.promptText;
@@ -6863,6 +6998,7 @@ export function createAgentChatService(args: {
       const doneModel = buildDoneModelPayload();
       const finalStatus = runtime.interrupted ? "interrupted" : "completed";
       emitChatEvent(managed, { type: "status", turnStatus: finalStatus, turnId });
+      void emitTurnDiffSummaryIfChanged(managed, turnId);
       emitChatEvent(managed, {
         type: "done",
         turnId,
@@ -6911,6 +7047,7 @@ export function createAgentChatService(args: {
       runtime.v2StreamGen = null;
       runtime.v2WarmupDone = null;
       const doneModel = buildDoneModelPayload();
+      void emitTurnDiffSummaryIfChanged(managed, turnId);
 
       if (runtime.interrupted) {
         managed.session.status = "idle";
@@ -7008,7 +7145,7 @@ export function createAgentChatService(args: {
     }
   };
 
-  // ── Streaming turn for Unified runtime ──
+  // ── Streaming turn for OpenCode runtime ──
 
   const runTurn = async (
     managed: ManagedChatSession,
@@ -7025,11 +7162,11 @@ export function createAgentChatService(args: {
     if (runtimeKind === "claude") {
       return runClaudeTurn(managed, args);
     }
-    if (runtimeKind !== "unified") {
+    if (runtimeKind !== "opencode") {
       throw new Error(`Streaming runtime is not available for session '${managed.session.id}'.`);
     }
 
-    const runtime = managed.runtime as UnifiedRuntime;
+    const runtime = managed.runtime as OpenCodeRuntime;
     const validation = validateSessionReadyForTurn(managed);
     if (!validation.ready) {
       logger.warn("agent_chat.turn_not_ready", { sessionId: managed.session.id, reason: validation.reason });
@@ -7055,6 +7192,7 @@ export function createAgentChatService(args: {
       onDispatched: args.onDispatched,
     });
     emitChatEvent(managed, { type: "status", turnStatus: "started", turnId });
+    captureTurnBeforeSha(managed);
     emitChatEvent(managed, {
       type: "activity",
       ...initialTurnActivity(managed.session),
@@ -7062,8 +7200,13 @@ export function createAgentChatService(args: {
     });
 
     let assistantText = "";
-    let usage: { inputTokens?: number | null; outputTokens?: number | null } | undefined;
-    let streamedStepCount = 0;
+    let usage: {
+      inputTokens?: number | null;
+      outputTokens?: number | null;
+      cacheReadTokens?: number | null;
+      cacheCreationTokens?: number | null;
+    } | undefined;
+    let finalAssistantText = "";
     const turnStartedAt = Date.now();
     let firstStreamEventLogged = false;
     const markFirstStreamEvent = (kind: string): void => {
@@ -7103,566 +7246,363 @@ export function createAgentChatService(args: {
         ? `\n\nAttached context:\n${attachments.map((file) => `- ${file.type}: ${file.path}`).join("\n")}`
         : "";
       const userContent = [
+        managed.pendingReconstructionContext?.trim().length
+          ? "System context (ADE continuity, do not echo verbatim):\n" + managed.pendingReconstructionContext.trim()
+          : null,
         autoMemoryPlan.contextText.length ? autoMemoryPlan.contextText : null,
         `${args.promptText}${attachmentHint}`,
       ].filter((section): section is string => Boolean(section)).join("\n\n");
-      const streamingBaseText = autoMemoryPlan.contextText.length
-        ? `${autoMemoryPlan.contextText}\n\n${args.promptText}`
-        : args.promptText;
 
-      applyReconstructionContextToStreamingRuntime(managed, runtime);
-
-      runtime.messages.push({ role: "user", content: userContent });
+      managed.pendingReconstructionContext = null;
 
       const abortController = new AbortController();
-      runtime.abortController = abortController;
+      runtime.eventAbortController = abortController;
+      runtime.textByPartId.clear();
+      runtime.reasoningByPartId.clear();
+      runtime.toolStateByPartId.clear();
 
-      const streamMessages = runtime.messages.map((message, index): ModelMessage => {
-        const isCurrentUserMessage = index === runtime.messages.length - 1 && message.role === "user";
-        if (!isCurrentUserMessage) {
-          return {
-            role: message.role as "user" | "assistant",
-            content: message.content,
-          };
-        }
+      const toPromptFiles = resolvedAttachments
+        .map((attachment) => ({
+          path: attachment._resolvedPath,
+          mime: inferAttachmentMediaType(attachment),
+          filename: path.basename(attachment._resolvedPath),
+        }))
+        .filter((entry) => fs.existsSync(entry.path));
 
-        return {
-          role: "user",
-          content: buildStreamingUserContent({
-            baseText: streamingBaseText,
-            attachments: resolvedAttachments,
-            runtimeKind: "unified",
-            modelDescriptor: runtime.modelDescriptor,
-            logger,
+      const promptAccepted = runtime.handle.client.session.promptAsync({
+        path: { id: runtime.handle.sessionId },
+        query: { directory: runtime.handle.directory },
+        body: {
+          agent: mapPermissionModeToOpenCodeAgent(runtime.permissionMode),
+          model: resolveOpenCodeModelSelection(runtime.modelDescriptor),
+          parts: buildOpenCodePromptParts({
+            prompt: userContent,
+            files: toPromptFiles,
           }),
-        };
-      });
-      const lightweight = isLightweightSession(managed.session);
-      const executionLaneId = resolveManagedExecutionLaneId(managed);
-      const tools = lightweight
-        ? {}
-        : createUniversalToolSet(managed.laneWorktreePath, {
-            permissionMode: runtime.permissionMode,
-            ...(memoryService && projectId ? { memoryService, projectId } : {}),
-            agentScopeOwnerId: managed.session.identityKey ?? managed.session.id,
-            ...(turnMemoryPolicyState ? { turnMemoryPolicyState } : {}),
-            onMemoryWriteEvent: (event) => {
-              const notice = buildMemoryWriteNotice(event);
-              emitChatEvent(managed, {
-                type: "system_notice",
-                noticeKind: "memory",
-                message: notice.message,
-                ...(notice.detail ? { detail: notice.detail } : {}),
-                turnId,
-              });
-            },
-            ...(() => {
-              if (managed.session.identityKey === "cto" && ctoStateService) {
-                return {
-                  onMemoryUpdateCore: (patch: any) => {
-                    const snapshot = ctoStateService.updateCoreMemory(patch);
-                    return {
-                      version: snapshot.coreMemory.version,
-                      updatedAt: snapshot.coreMemory.updatedAt
-                    };
-                  }
-                };
-              }
-              const workerAgentId = resolveWorkerIdentityAgentId(managed.session.identityKey);
-              if (workerAgentId && workerAgentService) {
-                return {
-                  onMemoryUpdateCore: (patch: any) => {
-                    const snapshot = workerAgentService.updateCoreMemory(workerAgentId, patch);
-                    return {
-                      version: snapshot.version,
-                      updatedAt: snapshot.updatedAt
-                    };
-                  }
-                };
-              }
-              return {};
-            })(),
-            onApprovalRequest: async ({ category, description, detail }) => {
-              if (runtime.approvalOverrides.has(category)) {
-                return {
-                  approved: true,
-                  decision: "accept_for_session",
-                  reason: "Already approved for this session.",
-                };
-              }
-
-              const isPlanApproval = category === "exitPlanMode";
-              const planContent = isPlanApproval && detail && typeof detail === "object" && !Array.isArray(detail)
-                ? (detail as Record<string, unknown>).planContent as string | undefined
-                : undefined;
-
-              const approvalItemId = randomUUID();
-              const request: PendingInputRequest = {
-                requestId: approvalItemId,
-                itemId: approvalItemId,
-                source: "unified",
-                kind: isPlanApproval ? "plan_approval" : "approval",
-                ...(isPlanApproval ? { title: "Plan Ready for Review" } : {}),
-                description,
-                questions: isPlanApproval ? [{
-                  id: "plan_decision",
-                  header: "Implementation Plan",
-                  question: planContent ?? description,
-                  options: [
-                    { label: "Approve & Implement", value: "approve", recommended: true },
-                    { label: "Reject & Revise", value: "reject" },
-                  ],
-                  allowsFreeform: true,
-                }] : [],
-                allowsFreeform: isPlanApproval,
-                blocking: true,
-                canProceedWithoutAnswer: false,
-                providerMetadata: {
-                  category,
-                  detail,
-                },
-                turnId,
-              };
-              emitPendingInputRequest(managed, request, {
-                kind: isPlanApproval ? "tool_call" : category === "bash" ? "command" : "file_change",
-                description: isPlanApproval ? "Plan ready for approval" : description,
-                detail: detail && typeof detail === "object" && !Array.isArray(detail)
-                  ? { ...(detail as Record<string, unknown>) }
-                  : {},
-              });
-
-              const response = await new Promise<{ decision?: AgentChatApprovalDecision; responseText?: string | null; answers?: Record<string, string | string[]> }>((resolve) => {
-                runtime.pendingApprovals.set(approvalItemId, { category, request, resolve });
-              });
-              runtime.pendingApprovals.delete(approvalItemId);
-
-              if (response.decision === "accept_for_session") {
-                runtime.approvalOverrides.add(category);
-              }
-
-              const approved = response.decision === "accept" || response.decision === "accept_for_session";
-              const trimmedReason = typeof response.responseText === "string" ? response.responseText.trim() : "";
-              return {
-                approved,
-                decision: response.decision,
-                reason: trimmedReason.length
-                  ? trimmedReason
-                  : approved
-                    ? "User approved the action."
-                    : "User denied the action.",
-              };
-            },
-            onAskUser: async (question) => {
-              const askItemId = randomUUID();
-              const request: PendingInputRequest = {
-                requestId: askItemId,
-                itemId: askItemId,
-                source: "unified",
-                kind: "question",
-                description: question,
-                questions: [
-                  {
-                    id: "response",
-                    header: "Question",
-                    question,
-                    allowsFreeform: true,
-                  },
-                ],
-                allowsFreeform: true,
-                blocking: true,
-                canProceedWithoutAnswer: false,
-                providerMetadata: {
-                  tool: "askUser",
-                  inputType: "text",
-                },
-                turnId,
-              };
-              emitPendingInputRequest(managed, request, {
-                kind: "tool_call",
-                description: question,
-                detail: { tool: "askUser", question, inputType: "text" },
-              });
-
-              const response = await new Promise<{ decision?: AgentChatApprovalDecision; responseText?: string | null; answers?: Record<string, string | string[]> }>((resolve) => {
-                runtime.pendingApprovals.set(askItemId, { category: "askUser", request, resolve });
-              });
-              runtime.pendingApprovals.delete(askItemId);
-              const normalizedAnswers = normalizePendingInputAnswers(request, response.answers, response.responseText);
-              const answer = normalizedAnswers.response?.[0] ?? "";
-              if (answer.length) return answer;
-              if (response.decision === "accept") return "yes";
-              if (response.decision === "decline") return "no";
-              return String(response.decision);
-            },
-          });
-
-      // Merge workflow tools (lane, PR, screenshot, completion) into the tool set
-      if (!lightweight) {
-        const workflowTools = createWorkflowTools({
-          laneService,
-          prService: prService ?? undefined,
-          computerUseArtifactBrokerService: computerUseArtifactBrokerRef ?? undefined,
-          computerUsePolicy: managed.session.computerUse,
-          onReportCompletion: async (report) => {
-            applyCompletionReport(managed, report);
-            emitChatEvent(managed, {
-              type: "completion_report",
-              report,
-            });
-          },
-          sessionId: managed.session.id,
-          laneId: executionLaneId,
-        });
-        Object.assign(tools, workflowTools);
-
-        // Merge Linear tools (issue read/write, comments, state transitions)
-        const linearTools = createLinearTools({
-          linearClient: linearClientRef ?? null,
-          credentials: linearCredentialsRef ?? null,
-        });
-        Object.assign(tools, linearTools);
-
-        if (managed.session.identityKey === "cto") {
-          Object.assign(tools, createCtoOperatorTools({
-            currentSessionId: managed.session.id,
-            defaultLaneId: executionLaneId,
-            defaultModelId: managed.session.modelId ?? null,
-            defaultReasoningEffort: managed.session.reasoningEffort ?? null,
-            resolveExecutionLane: async ({ requestedLaneId, purpose, freshLaneName, freshLaneDescription }) =>
-              requestExecutionLaneForIdentitySession(managed, {
-                requestedLaneId,
-                purpose,
-                freshLaneName,
-                freshLaneDescription,
-              }),
-            laneService,
-            missionService: getMissionService?.() ?? null,
-            aiOrchestratorService: getAiOrchestratorService?.() ?? null,
-            workerAgentService: workerAgentService ?? null,
-            workerHeartbeatService: workerHeartbeatService ?? null,
-            linearDispatcherService: getLinearDispatcherService?.() ?? null,
-            flowPolicyService: flowPolicyService ?? null,
-            prService: prService ?? null,
-            issueInventoryService,
-            fileService: fileService ?? null,
-            processService: processService ?? null,
-            testService: getTestService?.() ?? null,
-            ptyService: ptyService ?? null,
-            automationService: getAutomationService?.() ?? null,
-            gitService: getGitService?.() ?? null,
-            conflictService: conflictService ?? null,
-            contextDocService: contextDocService ?? null,
-            computerUseArtifactBrokerService: computerUseArtifactBrokerRef ?? null,
-            workerBudgetService: getWorkerBudgetService?.() ?? null,
-            missionBudgetService: getMissionBudgetService?.() ?? null,
-            steerChat: (steerArgs: { sessionId: string; instruction: string }) =>
-              steer({ sessionId: steerArgs.sessionId, text: steerArgs.instruction }),
-            cancelSteer: (cancelArgs: { sessionId: string }) =>
-              cancelSteer({ sessionId: cancelArgs.sessionId, steerId: "" }),
-            handoffChat: (handoffArgs: { sessionId: string; targetIdentityKey?: string; reason?: string }) =>
-              handoffSession(handoffArgs as any),
-            listSubagents: (subArgs: { sessionId: string }) =>
-              Promise.resolve(listSubagents(subArgs as any)),
-            approveToolUse: (approveArgs: { sessionId: string; toolUseId: string; decision: "accept" | "accept_for_session" | "decline" | "cancel" }) =>
-              approveToolUse({ sessionId: approveArgs.sessionId, itemId: approveArgs.toolUseId, decision: approveArgs.decision }),
-            issueTracker: linearIssueTracker ?? null,
-            ctoStateService: ctoStateService ?? null,
-            listChats: listSessions,
-            getChatStatus: getSessionSummary,
-            getChatTranscript,
-            createChat: createSession,
-            updateChatSession: updateSession,
-            sendChatMessage: sendMessage,
-            interruptChat: interrupt,
-            resumeChat: resumeSession,
-            disposeChat: dispose,
-            sessionService,
-            ensureCtoSession: async ({ laneId, modelId, reasoningEffort, reuseExisting }) =>
-              ensureIdentitySession({
-                identityKey: "cto",
-                laneId,
-                modelId,
-                reasoningEffort,
-                reuseExisting,
-                permissionMode: "full-auto",
-              }),
-            previewSessionToolNames,
-          } as Parameters<typeof createCtoOperatorTools>[0] & {
-            previewSessionToolNames: typeof previewSessionToolNames;
-          }));
-        }
-      }
-
-      // Merge MCP tools from the ADE MCP server so unified sessions have the
-      // same tooling surface as Claude / Codex sessions.
-      if (!lightweight && runtime.mcpClient) {
-        try {
-          const mcpTools = await buildMcpToolWrappers(runtime.mcpClient, {
-            permissionMode: runtime.permissionMode,
-            turnMemoryPolicyState,
-            onApprovalRequest: async ({ category, description, detail }) => {
-              if (runtime.approvalOverrides.has(category as any)) {
-                return { approved: true, decision: "accept_for_session" as const, reason: "Already approved for this session." };
-              }
-
-              const approvalItemId = randomUUID();
-              const request: PendingInputRequest = {
-                requestId: approvalItemId,
-                itemId: approvalItemId,
-                source: "unified",
-                kind: "approval",
-                description,
-                questions: [],
-                allowsFreeform: false,
-                blocking: true,
-                canProceedWithoutAnswer: false,
-                providerMetadata: { category, detail },
-                turnId,
-              };
-              emitPendingInputRequest(managed, request, {
-                kind: "file_change",
-                description,
-                detail: detail && typeof detail === "object" && !Array.isArray(detail)
-                  ? { ...(detail as Record<string, unknown>) }
-                  : {},
-              });
-
-              const response = await new Promise<{ decision?: AgentChatApprovalDecision; responseText?: string | null }>((resolve) => {
-                runtime.pendingApprovals.set(approvalItemId, { category: category as any, request, resolve });
-              });
-              runtime.pendingApprovals.delete(approvalItemId);
-
-              if (response.decision === "accept_for_session") {
-                runtime.approvalOverrides.add(category as any);
-              }
-
-              const approved = response.decision === "accept" || response.decision === "accept_for_session";
-              const trimmedReason = typeof response.responseText === "string" ? response.responseText.trim() : "";
-              return {
-                approved,
-                decision: response.decision,
-                reason: trimmedReason.length ? trimmedReason : approved ? "User approved the action." : "User denied the action.",
-              };
-            },
-          });
-          Object.assign(tools, mcpTools);
-        } catch (error) {
-          logger.warn("agent_chat.unified_mcp_tools_failed", {
-            sessionId: managed.session.id,
-            turnId,
-            error: error instanceof Error ? error.message : String(error),
-          });
-        }
-      }
-
-      const thinkingLevel = mapReasoningEffortToThinking(managed.session.reasoningEffort);
-      const providerOptions = providerResolver.buildProviderOptions(runtime.modelDescriptor, thinkingLevel);
-      const baseHarnessPrompt = lightweight
-        ? undefined
-        : buildCodingAgentSystemPrompt({
-            cwd: managed.laneWorktreePath,
-            mode: "chat",
-            permissionMode: runtime.permissionMode,
-            toolNames: Object.keys(tools),
-          });
-      // For CTO sessions, compose the CTO's identity prompt into the system
-      // prompt so it survives compaction (system prompt is never compacted).
-      const harnessPrompt = (() => {
-        if (!baseHarnessPrompt) return undefined;
-        if (managed.session.identityKey === "cto" && ctoStateService) {
-          const ctoPrompt = ctoStateService.previewSystemPrompt().prompt;
-          return `${baseHarnessPrompt}\n\n## CTO Identity\n${ctoPrompt}`;
-        }
-        return baseHarnessPrompt;
-      })();
-
-      const stream = streamText({
-        model: runtime.resolvedModel,
-        ...(harnessPrompt ? { system: harnessPrompt } : {}),
-        messages: streamMessages,
-        ...(Object.keys(tools).length ? { tools } : {}),
-        providerOptions: providerOptions as any,
-        ...(!lightweight ? { stopWhen: stepCountIs(20) } : {}),
-        abortSignal: abortController.signal,
-        onError({ error }) {
-          logger.warn("agent_chat.unified_stream_error", {
-            sessionId: managed.session.id,
-            error: error instanceof Error ? error.message : String(error),
-          });
         },
       });
 
-      // ── Stream processing loop ──
-      const streamSupportsReasoning = runtime.modelDescriptor.capabilities.reasoning;
-      for await (const part of stream.fullStream as AsyncIterable<any>) {
-        if (runtime.interrupted) break;
-        if (!part || typeof part !== "object") continue;
-        markFirstStreamEvent(String(part.type ?? "unknown"));
+      const eventStream = await openCodeEventStream({
+        client: runtime.handle.client,
+        directory: runtime.handle.directory,
+        signal: abortController.signal,
+      });
 
-        if (part.type === "start-step") {
-          streamedStepCount += 1;
-          emitChatEvent(managed, {
-            type: "step_boundary",
-            stepNumber: typeof part.stepNumber === "number" ? part.stepNumber + 1 : streamedStepCount,
-            turnId,
-          });
-          if (!streamSupportsReasoning && streamedStepCount === 1) {
+      await promptAccepted;
+      if (args.onDispatched) {
+        args.onDispatched();
+      }
+
+      let stepNumber = 0;
+      for await (const event of eventStream) {
+        const resolveSessionId = (): string | null => {
+          switch (event.type) {
+            case "message.updated":
+            case "session.created":
+            case "session.updated":
+            case "session.deleted":
+              return event.properties.info.id;
+            case "message.part.updated":
+              return event.properties.part.sessionID;
+            case "message.part.removed":
+              return event.properties.sessionID;
+            case "permission.updated":
+              return event.properties.sessionID;
+            case "permission.replied":
+              return event.properties.sessionID;
+            case "session.status":
+            case "session.idle":
+            case "todo.updated":
+            case "session.diff":
+              return event.properties.sessionID;
+            case "session.error":
+              return event.properties.sessionID ?? null;
+            case "command.executed":
+              return event.properties.sessionID;
+            default:
+              return null;
+          }
+        };
+
+        if (resolveSessionId() !== runtime.handle.sessionId) {
+          continue;
+        }
+
+        if (event.type === "message.part.updated") {
+          const { part, delta } = event.properties;
+          markFirstStreamEvent(part.type);
+
+          if (part.type === "step-start") {
+            stepNumber += 1;
             emitChatEvent(managed, {
-              type: "activity",
-              activity: "working",
-              detail: WORKING_ACTIVITY_DETAIL,
+              type: "step_boundary",
+              stepNumber,
               turnId,
             });
-          }
-          continue;
-        }
-
-        if (part.type === "source") {
-          emitChatEvent(managed, {
-            type: "activity",
-            activity: "searching",
-            detail:
-              typeof part.title === "string" && part.title.trim().length
-                ? part.title
-                : typeof part.url === "string" && part.url.trim().length
-                  ? part.url
-                  : "Gathering sources",
-            turnId,
-          });
-          continue;
-        }
-
-        if (part.type === "text-delta") {
-          const delta = String(part.text ?? part.textDelta ?? "");
-          if (!delta.length) continue;
-          assistantText += delta;
-          emitChatEvent(managed, {
-            type: "text",
-            text: delta,
-            turnId,
-            itemId: typeof part.id === "string" ? part.id : undefined
-          });
-          continue;
-        }
-
-        if (part.type === "reasoning-start") {
-          emitChatEvent(managed, {
-            type: "activity",
-            activity: streamSupportsReasoning ? "thinking" : "working",
-            detail: streamSupportsReasoning ? REASONING_ACTIVITY_DETAIL : WORKING_ACTIVITY_DETAIL,
-            turnId,
-          });
-          continue;
-        }
-
-        if (part.type === "reasoning" || part.type === "reasoning-delta") {
-          const delta = String(part.text ?? part.textDelta ?? part.delta ?? "");
-          if (!delta.length) continue;
-          if (!streamSupportsReasoning) {
             emitChatEvent(managed, {
               type: "activity",
-              activity: "working",
-              detail: WORKING_ACTIVITY_DETAIL,
+              activity: runtime.modelDescriptor.capabilities.reasoning ? "thinking" : "working",
+              detail: runtime.modelDescriptor.capabilities.reasoning ? REASONING_ACTIVITY_DETAIL : WORKING_ACTIVITY_DETAIL,
               turnId,
             });
             continue;
           }
+
+          if (part.type === "step-finish") {
+            usage = {
+              inputTokens: part.tokens.input,
+              outputTokens: part.tokens.output,
+              cacheReadTokens: part.tokens.cache.read,
+              cacheCreationTokens: part.tokens.cache.write,
+            };
+            continue;
+          }
+
+          if (part.type === "text") {
+            // Skip synthetic/ignored prompt parts (e.g. ADE launch directives
+            // injected as system context) — they should not be rendered in chat.
+            if ((part as { synthetic?: boolean }).synthetic || (part as { ignored?: boolean }).ignored) {
+              continue;
+            }
+            const previous = runtime.textByPartId.get(part.id) ?? "";
+            const nextText = part.text;
+            const nextDelta = typeof delta === "string"
+              ? delta
+              : nextText.startsWith(previous)
+                ? nextText.slice(previous.length)
+                : nextText;
+            runtime.textByPartId.set(part.id, nextText);
+            if (nextDelta.length) {
+              finalAssistantText += nextDelta;
+              emitChatEvent(managed, {
+                type: "text",
+                text: nextDelta,
+                turnId,
+                itemId: part.id,
+              });
+            }
+            continue;
+          }
+
+          if (part.type === "reasoning") {
+            const previous = runtime.reasoningByPartId.get(part.id) ?? "";
+            const nextText = part.text;
+            const nextDelta = typeof delta === "string"
+              ? delta
+              : nextText.startsWith(previous)
+                ? nextText.slice(previous.length)
+                : nextText;
+            runtime.reasoningByPartId.set(part.id, nextText);
+            if (nextDelta.length) {
+              emitChatEvent(managed, {
+                type: "activity",
+                activity: "thinking",
+                detail: REASONING_ACTIVITY_DETAIL,
+                turnId,
+              });
+              emitChatEvent(managed, {
+                type: "reasoning",
+                text: nextDelta,
+                turnId,
+                itemId: part.id,
+              });
+            }
+            continue;
+          }
+
+          if (part.type === "tool") {
+            const previousStatus = runtime.toolStateByPartId.get(part.id) ?? null;
+            const nextStatus = part.state.status;
+            runtime.toolStateByPartId.set(part.id, nextStatus);
+            const itemId = part.callID || part.id;
+            const toolMetadata = {
+              partId: part.id,
+            };
+
+            if (!previousStatus) {
+              const nextActivity = activityForToolName(part.tool);
+              emitChatEvent(managed, {
+                type: "activity",
+                activity: nextActivity.activity,
+                detail: nextActivity.detail,
+                turnId,
+              });
+              emitChatEvent(managed, {
+                type: "tool_call",
+                tool: part.tool,
+                args: part.state.input,
+                itemId,
+                logicalItemId: part.id,
+                turnId,
+              });
+            }
+
+            if (nextStatus === "completed" && previousStatus !== "completed") {
+              emitChatEvent(managed, {
+                type: "tool_result",
+                tool: part.tool,
+                result: {
+                  ...toolMetadata,
+                  output: part.state.output,
+                  metadata: part.state.metadata ?? part.metadata ?? {},
+                  attachments: part.state.attachments,
+                },
+                itemId,
+                logicalItemId: part.id,
+                turnId,
+                status: "completed",
+              });
+            } else if (nextStatus === "error" && previousStatus !== "error") {
+              emitChatEvent(managed, {
+                type: "tool_result",
+                tool: part.tool,
+                result: {
+                  ...toolMetadata,
+                  error: part.state.error,
+                  metadata: part.state.metadata ?? part.metadata ?? {},
+                },
+                itemId,
+                logicalItemId: part.id,
+                turnId,
+                status: "failed",
+              });
+              emitChatEvent(managed, {
+                type: "error",
+                message: `Tool '${part.tool}' failed: ${part.state.error}`,
+                itemId,
+                turnId,
+              });
+            }
+            continue;
+          }
+
+          if (part.type === "patch") {
+            for (const file of part.files) {
+              emitChatEvent(managed, {
+                type: "file_change",
+                path: file,
+                diff: `OpenCode updated ${file}`,
+                kind: "modify",
+                itemId: `${part.id}:${file}`,
+                logicalItemId: part.id,
+                turnId,
+                status: "completed",
+              });
+            }
+            continue;
+          }
+
+          if (part.type === "subtask") {
+            emitChatEvent(managed, {
+              type: "subagent_started",
+              taskId: part.id,
+              description: part.description,
+              turnId,
+            });
+            continue;
+          }
+
+          continue;
+        }
+
+        if (event.type === "permission.updated") {
+          const permission = event.properties;
+          const normalizedType = permission.type.trim().toLowerCase();
+          const description = permission.title.trim() || normalizedType || "Approval required";
+          const category: PendingOpenCodeApproval["category"] = normalizedType.includes("bash")
+            || normalizedType.includes("command")
+            || description.toLowerCase().includes("command")
+            || description.toLowerCase().includes("bash")
+            ? "bash"
+            : "write";
+          const request: PendingInputRequest = {
+            requestId: permission.id,
+            itemId: permission.id,
+            source: "opencode",
+            kind: "approval",
+            description,
+            questions: [],
+            allowsFreeform: false,
+            blocking: true,
+            canProceedWithoutAnswer: false,
+            providerMetadata: {
+              type: permission.type,
+              metadata: permission.metadata,
+              callId: permission.callID ?? null,
+            },
+            turnId,
+          };
+          runtime.pendingApprovals.set(permission.id, {
+            category,
+            permissionId: permission.id,
+            request,
+          });
+          emitPendingInputRequest(managed, request, {
+            kind: category === "bash" ? "command" : "file_change",
+            description,
+            detail: permission.metadata,
+          });
+          continue;
+        }
+
+        if (event.type === "permission.replied") {
+          const pending = runtime.pendingApprovals.get(event.properties.permissionID);
+          if (!pending) continue;
+          runtime.pendingApprovals.delete(event.properties.permissionID);
+          emitPendingInputResolved(managed, {
+            itemId: event.properties.permissionID,
+            decision: event.properties.response === "reject"
+              ? "decline"
+              : "accept",
+            turnId: pending.request?.turnId ?? null,
+          });
+          continue;
+        }
+
+        if (event.type === "todo.updated") {
+          emitChatEvent(managed, {
+            type: "todo_update",
+            items: event.properties.todos
+              .map((todo) => ({
+                id: todo.id,
+                description: todo.content,
+                status: todo.status === "completed"
+                  ? "completed"
+                  : todo.status === "in_progress"
+                    ? "in_progress"
+                    : "pending",
+              })),
+            turnId,
+          });
+          continue;
+        }
+
+        if (event.type === "command.executed") {
           emitChatEvent(managed, {
             type: "activity",
-            activity: "thinking",
-            detail: REASONING_ACTIVITY_DETAIL,
+            activity: "running_command",
+            detail: `${event.properties.name} ${event.properties.arguments}`.trim(),
             turnId,
           });
-          emitChatEvent(managed, {
-            type: "reasoning",
-            text: delta,
-            turnId,
-            itemId: typeof part.id === "string" ? part.id : undefined
-          });
           continue;
         }
 
-        if (part.type === "reasoning-end") {
-          flushBufferedReasoning(managed);
-          continue;
+        if (event.type === "session.error") {
+          throw new Error(String(event.properties.error?.data?.message ?? "OpenCode session failed."));
         }
 
-        if (part.type === "tool-call") {
-          const nextActivity = activityForToolName(String(part.toolName ?? "tool"));
-          const parentItemId = readProviderParentItemId((part as { providerMetadata?: unknown }).providerMetadata);
-          emitChatEvent(managed, {
-            type: "activity",
-            activity: nextActivity.activity,
-            detail: nextActivity.detail,
-            turnId,
-          });
-          emitChatEvent(managed, {
-            type: "tool_call",
-            tool: String(part.toolName ?? "tool"),
-            args: part.input ?? part.args ?? part.arguments,
-            itemId: String(part.toolCallId ?? randomUUID()),
-            ...(parentItemId ? { parentItemId } : {}),
-            turnId
-          });
-          continue;
-        }
-
-        if (part.type === "tool-result") {
-          const parentItemId = readProviderParentItemId((part as { providerMetadata?: unknown }).providerMetadata);
-          emitChatEvent(managed, {
-            type: "tool_result",
-            tool: String(part.toolName ?? "tool"),
-            result: part.output ?? part.result,
-            itemId: String(part.toolCallId ?? randomUUID()),
-            ...(parentItemId ? { parentItemId } : {}),
-            turnId,
-            status: part.preliminary ? "running" : "completed"
-          });
-          continue;
-        }
-
-        if (part.type === "tool-error") {
-          emitChatEvent(managed, {
-            type: "error",
-            message: `Tool '${String(part.toolName ?? "tool")}' failed: ${String(part.error ?? "unknown error")}`,
-            turnId,
-            itemId: String(part.toolCallId ?? randomUUID())
-          });
-          continue;
-        }
-
-        if (part.type === "tool-approval-request") {
-          const toolName = String(part.toolCall?.toolName ?? "tool");
-          emitChatEvent(managed, {
-            type: "error",
-            message: isPlanningApprovalGuarded(managed)
-              ? buildPlanningApprovalViolation(toolName)
-              : `Unexpected SDK approval request for '${toolName}'. This tool should use ADE-managed approvals instead.`,
-            turnId
-          });
-          continue;
-        }
-
-        if (part.type === "finish") {
-          usage = normalizeUsagePayload(part.totalUsage ?? part.usage);
-          continue;
-        }
-
-        if (part.type === "error") {
-          emitChatEvent(managed, {
-            type: "error",
-            message: String(part.error ?? "Stream error."),
-            turnId
-          });
+        if (event.type === "session.idle") {
+          break;
         }
       }
 
       // ── Shared turn completion ──
       persistDeliveredLaneDirectiveKey(managed, args.laneDirectiveKey);
+      void emitTurnDiffSummaryIfChanged(managed, turnId);
       if (runtime.interrupted) {
         runtime.busy = false;
         runtime.activeTurnId = null;
-        runtime.abortController = null;
+        runtime.eventAbortController = null;
         managed.session.status = "idle";
         emitChatEvent(managed, { type: "status", turnStatus: "interrupted", turnId });
         emitChatEvent(managed, {
@@ -7674,13 +7614,9 @@ export function createAgentChatService(args: {
         });
         persistChatState(managed);
       } else {
-        if (assistantText.trim().length) {
-          runtime.messages.push({ role: "assistant", content: assistantText });
-        }
-
         runtime.busy = false;
         runtime.activeTurnId = null;
-        runtime.abortController = null;
+        runtime.eventAbortController = null;
         managed.session.status = "idle";
 
         emitChatEvent(managed, { type: "status", turnStatus: "completed", turnId });
@@ -7693,10 +7629,10 @@ export function createAgentChatService(args: {
           ...(usage ? { usage } : {})
         });
 
-        if (assistantText.trim().length > 0) {
+        if (finalAssistantText.trim().length > 0) {
           appendWorkerActivityToCto(managed, {
             activityType: "chat_turn",
-            summary: assistantText,
+            summary: finalAssistantText,
           });
         }
 
@@ -7715,7 +7651,8 @@ export function createAgentChatService(args: {
     } catch (error) {
       runtime.busy = false;
       runtime.activeTurnId = null;
-      runtime.abortController = null;
+      runtime.eventAbortController = null;
+      void emitTurnDiffSummaryIfChanged(managed, turnId);
 
       if (runtime.interrupted) {
         managed.session.status = "idle";
@@ -7741,7 +7678,7 @@ export function createAgentChatService(args: {
       } else {
         managed.session.status = "idle";
 
-        const { message: errorMessage, errorInfo } = classifyUnifiedError(
+        const { message: errorMessage, errorInfo } = classifyOpenCodeError(
           error,
           runtime.modelDescriptor.family,
           runtime.modelDescriptor.displayName,
@@ -8247,6 +8184,25 @@ export function createAgentChatService(args: {
     return true;
   };
 
+  const stopActiveCodexSubagents = (
+    managed: ManagedChatSession,
+    runtime: CodexRuntime,
+    turnId: string | undefined,
+    summary: string,
+  ): void => {
+    if (runtime.activeSubagents.size === 0) return;
+    for (const { taskId } of runtime.activeSubagents.values()) {
+      emitChatEvent(managed, {
+        type: "subagent_result",
+        taskId,
+        status: "stopped",
+        summary,
+        turnId,
+      });
+    }
+    runtime.activeSubagents.clear();
+  };
+
   const handleCodexItemEvent = (
     managed: ManagedChatSession,
     runtime: CodexRuntime,
@@ -8256,8 +8212,12 @@ export function createAgentChatService(args: {
   ): void => {
     const itemId = String(item.id ?? randomUUID());
     const itemType = String(item.type ?? "");
+    const explicitTurnId = turnIdHint ?? extractCodexTurnId(item);
+    const trackedTurnId = runtime.itemTurnIdByItemId.get(itemId) ?? null;
+    if (isInterruptedCodexTurn(runtime, explicitTurnId ?? trackedTurnId)) {
+      return;
+    }
     const turnId = (() => {
-      const explicitTurnId = turnIdHint ?? extractCodexTurnId(item);
       if (eventKind === "started") {
         const startedTurnId = explicitTurnId ?? runtime.activeTurnId ?? undefined;
         if (startedTurnId) {
@@ -8375,6 +8335,11 @@ export function createAgentChatService(args: {
     // Delegation items → subagent events
     if (itemType === "delegation") {
       if (eventKind === "started") {
+        runtime.activeSubagents.set(itemId, {
+          taskId: itemId,
+          description: String(item.description ?? item.title ?? "Delegated task"),
+          background: isBackgroundTask(item as Record<string, unknown>),
+        });
         emitChatEvent(managed, {
           type: "subagent_started",
           taskId: itemId,
@@ -8384,6 +8349,7 @@ export function createAgentChatService(args: {
         });
       }
       if (eventKind === "completed") {
+        runtime.activeSubagents.delete(itemId);
         emitChatEvent(managed, {
           type: "subagent_result",
           taskId: itemId,
@@ -8403,6 +8369,12 @@ export function createAgentChatService(args: {
       const newThreadId = typeof item.newThreadId === "string" ? item.newThreadId : null;
 
       if (tool === "spawn_agent" && eventKind === "started") {
+        const taskId = newThreadId ?? itemId;
+        runtime.activeSubagents.set(taskId, {
+          taskId,
+          description: prompt.slice(0, 120) || "Parallel agent",
+          background: isBackgroundTask(item as Record<string, unknown>),
+        });
         emitChatEvent(managed, {
           type: "activity",
           activity: "spawning_agent",
@@ -8411,7 +8383,7 @@ export function createAgentChatService(args: {
         });
         emitChatEvent(managed, {
           type: "subagent_started",
-          taskId: newThreadId ?? itemId,
+          taskId,
           description: prompt.slice(0, 120) || "Parallel agent",
           background: isBackgroundTask(item as Record<string, unknown>),
           turnId,
@@ -8442,6 +8414,7 @@ export function createAgentChatService(args: {
             rawStatus === "failed" ? "failed"
             : rawStatus === "stopped" ? "stopped"
             : "completed";
+          runtime.activeSubagents.delete(agentThreadId);
           emitChatEvent(managed, {
             type: "subagent_result",
             taskId: agentThreadId,
@@ -8455,6 +8428,7 @@ export function createAgentChatService(args: {
       if (tool === "close_agent" && eventKind === "completed") {
         const receiverIds = Array.isArray(item.receiverThreadIds) ? item.receiverThreadIds : [];
         const targetId = typeof receiverIds[0] === "string" ? receiverIds[0] : itemId;
+        runtime.activeSubagents.delete(targetId);
         emitChatEvent(managed, {
           type: "subagent_result",
           taskId: targetId,
@@ -8581,6 +8555,7 @@ export function createAgentChatService(args: {
           turnStatus: "started",
           ...(turnId ? { turnId } : {})
         });
+        captureTurnBeforeSha(managed);
         emitChatEvent(managed, {
           type: "activity",
           ...initialTurnActivity(managed.session),
@@ -8637,6 +8612,7 @@ export function createAgentChatService(args: {
           : {})
       });
 
+      void emitTurnDiffSummaryIfChanged(managed, turnId);
       emitChatEvent(managed, {
         type: "done",
         turnId,
@@ -8829,19 +8805,26 @@ export function createAgentChatService(args: {
         return;
       }
       const turnId = resolvedAbortTurnId ?? randomUUID();
+      rememberInterruptedCodexTurn(runtime, turnId);
       runtime.activeTurnId = null;
       runtime.startedTurnId = null;
       resetAssistantMessageStream(managed);
+      runtime.itemTurnIdByItemId.clear();
+      runtime.commandOutputByItemId.clear();
+      runtime.fileDeltaByItemId.clear();
+      runtime.fileChangesByItemId.clear();
       runtime.agentMessageScopeByTurn.clear();
       runtime.agentMessageTextByTurn.clear();
       runtime.recentNotificationKeys.clear();
       runtime.approvals.clear();
       managed.session.status = "idle";
+      stopActiveCodexSubagents(managed, runtime, turnId, "Interrupted by user");
       emitChatEvent(managed, {
         type: "status",
         turnStatus: "interrupted",
         turnId,
       });
+      void emitTurnDiffSummaryIfChanged(managed, turnId);
       emitChatEvent(managed, {
         type: "done",
         turnId,
@@ -9035,15 +9018,17 @@ export function createAgentChatService(args: {
       commandOutputByItemId: new Map<string, string>(),
       fileDeltaByItemId: new Map<string, string>(),
       fileChangesByItemId: new Map<string, Array<{ path: string; kind: "create" | "modify" | "delete" }>>(),
+      activeSubagents: new Map<string, { taskId: string; description: string; background: boolean }>(),
+      interruptedTurnIds: new Set<string>(),
       agentMessageScopeByTurn: new Map<string, "item" | "turn">(),
       agentMessageTextByTurn: new Map<string, string>(),
-    recentNotificationKeys: new Set<string>(),
-    slashCommands: [],
-    rateLimits: null,
-    collaborationModes: null,
-    collaborationModesReady: null,
-    planModeFallbackNotified: false,
-    request: async <T = unknown>(method: string, params?: unknown): Promise<T> => {
+      recentNotificationKeys: new Set<string>(),
+      slashCommands: [],
+      rateLimits: null,
+      collaborationModes: null,
+      collaborationModesReady: null,
+      planModeFallbackNotified: false,
+      request: async <T = unknown>(method: string, params?: unknown): Promise<T> => {
       const id = runtime.nextRequestId;
       runtime.nextRequestId += 1;
 
@@ -9605,7 +9590,7 @@ export function createAgentChatService(args: {
 
   const cancelQueuedSteers = (
     managed: ManagedChatSession,
-    runtime: Pick<ClaudeRuntime | UnifiedRuntime, "pendingSteers" | "activeTurnId">,
+    runtime: Pick<ClaudeRuntime | OpenCodeRuntime, "pendingSteers" | "activeTurnId">,
     reason: "interrupted" | "failed" | "disposed",
   ): void => {
     const cancelled = runtime.pendingSteers.splice(0);
@@ -9708,7 +9693,7 @@ export function createAgentChatService(args: {
 
   const deliverNextQueuedSteer = async (
     managed: ManagedChatSession,
-    runtime: ClaudeRuntime | UnifiedRuntime,
+    runtime: ClaudeRuntime | OpenCodeRuntime | CursorRuntime,
   ): Promise<boolean> => {
     if (managed.closed) return false;
 
@@ -9756,6 +9741,14 @@ export function createAgentChatService(args: {
         attachments: [],
         laneDirectiveKey: shouldInjectLaneDirective ? laneDirectiveKey : null,
       });
+    } else if (runtime.kind === "cursor") {
+      await runCursorTurn(managed, {
+        promptText,
+        displayText: trimmed,
+        attachments: [],
+        resolvedAttachments: [],
+        laneDirectiveKey: shouldInjectLaneDirective ? laneDirectiveKey : null,
+      });
     } else {
       await runTurn(managed, {
         promptText,
@@ -9771,7 +9764,7 @@ export function createAgentChatService(args: {
   /** Enqueue a steer or drop it if the queue is full. Returns true if queued. */
   const enqueueSteerOrDrop = (
     managed: ManagedChatSession,
-    runtime: Pick<ClaudeRuntime | UnifiedRuntime, "pendingSteers" | "activeTurnId">,
+    runtime: Pick<ClaudeRuntime | OpenCodeRuntime, "pendingSteers" | "activeTurnId">,
     sessionId: string,
     steerId: string,
     text: string,
@@ -10037,6 +10030,7 @@ export function createAgentChatService(args: {
       selectedExecutionLaneId: null,
       lastLaneDirectiveKey: null,
       runtimeInvalidated: false,
+      todoItems: [],
       activeAssistantMessageId: null,
       previewTextBuffer: null,
       bufferedText: null,
@@ -10044,6 +10038,7 @@ export function createAgentChatService(args: {
       localPendingInputs: new Map(),
       eventSequence: 0,
       lastActivityTimestamp: Date.now(),
+      turnBeforeSha: null,
     };
 
     let runtime: CodexRuntime | null = null;
@@ -10142,7 +10137,7 @@ export function createAgentChatService(args: {
     }
     const mapped = listModelDescriptorsForProvider("claude")
       .map((descriptor): AgentChatModelInfo => {
-        const id = descriptor.sdkModelId;
+        const id = descriptor.providerModelId;
         const displayName = descriptor.displayName;
         const description = describeClaudeModel(`${descriptor.shortId} ${displayName}`);
         return {
@@ -10181,7 +10176,7 @@ export function createAgentChatService(args: {
     codexApprovalPolicy: requestedCodexApprovalPolicy,
     codexSandbox: requestedCodexSandbox,
     codexConfigSource: requestedCodexConfigSource,
-    unifiedPermissionMode: requestedUnifiedPermissionMode,
+    opencodePermissionMode: requestedOpenCodePermissionModeArg,
     cursorModeId: requestedCursorModeId,
     cursorConfigValues: requestedCursorConfigValues,
     permissionMode: requestedPermMode,
@@ -10218,8 +10213,8 @@ export function createAgentChatService(args: {
       ? modelId
       : resolveModelIdFromStoredValue(normalizedInputModel, provider);
 
-    if (provider === "unified" && !resolvedModelId) {
-      throw new Error("Unified chat requires a known model ID. Select a model from the registry.");
+    if (provider === "opencode" && !resolvedModelId && !modelId?.endsWith("/auto")) {
+      throw new Error("OpenCode chat requires a known model ID. Select a model from the registry.");
     }
 
     if (provider === "cursor" && !resolvedModelId) {
@@ -10236,19 +10231,19 @@ export function createAgentChatService(args: {
 
     if (resolvedDescriptor) {
       const resolved = resolveProviderGroupForModel(resolvedDescriptor);
-      if (resolvedDescriptor.isCliWrapped && resolved === "unified") {
+      if (resolvedDescriptor.isCliWrapped && resolved === "opencode") {
         throw new Error(
           `Model '${resolvedDescriptor.id}' is CLI-only but does not map to a supported chat runtime.`,
         );
       }
       effectiveProvider = resolved;
-      normalizedModel = resolvedDescriptor.isCliWrapped ? resolvedDescriptor.sdkModelId : resolvedDescriptor.id;
+      normalizedModel = resolvedDescriptor.isCliWrapped ? resolvedDescriptor.providerModelId : resolvedDescriptor.id;
     }
 
     const rawEffort = effectiveProvider === "codex"
       ? normalizeReasoningEffort(reasoningEffort) ?? DEFAULT_REASONING_EFFORT
       : normalizeReasoningEffort(reasoningEffort);
-    const normalizedReasoningEffort = effectiveProvider === "unified"
+    const normalizedReasoningEffort = effectiveProvider === "opencode"
       ? rawEffort
       : effectiveProvider === "cursor"
         ? null
@@ -10261,10 +10256,18 @@ export function createAgentChatService(args: {
     const normalizedCursorConfigValues = normalizeCursorConfigValueRecord(requestedCursorConfigValues);
     const capabilityMode = inferCapabilityMode(effectiveProvider);
     const computerUsePolicy = normalizeComputerUsePolicy(computerUse, createDefaultComputerUsePolicy());
-    const effectivePermissionMode = identityKey
+    let effectivePermissionMode = identityKey
       ? normalizeIdentityPermissionMode(requestedPermMode, effectiveProvider)
       : requestedPermMode;
     const chatConfig = resolveChatConfig();
+    let requestedOpenCodePermissionMode = requestedOpenCodePermissionModeArg;
+    const localHarnessPermissions = applyLocalHarnessPermissionMode({
+      descriptor: resolvedDescriptor,
+      requestedPermissionMode: effectivePermissionMode,
+      requestedOpenCodePermissionMode,
+    });
+    effectivePermissionMode = localHarnessPermissions.requestedPermissionMode;
+    requestedOpenCodePermissionMode = localHarnessPermissions.requestedOpenCodePermissionMode;
 
     const nativePermissionFields = (() => {
       if (effectiveProvider === "claude") {
@@ -10303,9 +10306,9 @@ export function createAgentChatService(args: {
       }
       if (effectiveProvider === "cursor") {
         return {
-          unifiedPermissionMode: requestedUnifiedPermissionMode
-            ?? legacyPermissionModeToUnifiedPermissionMode(effectivePermissionMode)
-            ?? chatConfig.unifiedPermissionMode,
+          opencodePermissionMode: requestedOpenCodePermissionMode
+            ?? legacyPermissionModeToOpenCodePermissionMode(effectivePermissionMode)
+            ?? chatConfig.opencodePermissionMode,
           ...(normalizedCursorModeId !== undefined ? { cursorModeId: normalizedCursorModeId } : {}),
           ...(normalizedCursorConfigValues
             ? { cursorConfigValues: normalizedCursorConfigValues }
@@ -10313,9 +10316,9 @@ export function createAgentChatService(args: {
         };
       }
       return {
-        unifiedPermissionMode: requestedUnifiedPermissionMode
-          ?? legacyPermissionModeToUnifiedPermissionMode(effectivePermissionMode)
-          ?? chatConfig.unifiedPermissionMode,
+        opencodePermissionMode: requestedOpenCodePermissionMode
+          ?? legacyPermissionModeToOpenCodePermissionMode(effectivePermissionMode)
+          ?? chatConfig.opencodePermissionMode,
       };
     })();
 
@@ -10379,6 +10382,7 @@ export function createAgentChatService(args: {
       selectedExecutionLaneId: null,
       lastLaneDirectiveKey: null,
       runtimeInvalidated: false,
+      todoItems: [],
       activeAssistantMessageId: null,
       lastActivitySignature: null,
       bufferedReasoning: null,
@@ -10388,6 +10392,7 @@ export function createAgentChatService(args: {
       localPendingInputs: new Map(),
       eventSequence: 0,
       lastActivityTimestamp: Date.now(),
+      turnBeforeSha: null,
     };
     normalizeSessionNativePermissionControls(managed.session, resolveChatConfig());
     managed.transcriptLimitReached = managed.transcriptBytesWritten >= MAX_CHAT_TRANSCRIPT_BYTES;
@@ -10457,7 +10462,7 @@ export function createAgentChatService(args: {
     }
 
     const targetProvider = resolveProviderGroupForModel(targetDescriptor);
-    const targetModel = targetDescriptor.isCliWrapped ? targetDescriptor.sdkModelId : targetDescriptor.id;
+    const targetModel = targetDescriptor.isCliWrapped ? targetDescriptor.providerModelId : targetDescriptor.id;
     const targetReasoningEffort = pickHandoffReasoningEffort(
       targetDescriptor,
       managed.session.reasoningEffort ?? sourceSession.reasoningEffort,
@@ -10488,7 +10493,7 @@ export function createAgentChatService(args: {
       codexApprovalPolicy: managed.session.codexApprovalPolicy,
       codexSandbox: managed.session.codexSandbox,
       codexConfigSource: managed.session.codexConfigSource,
-      unifiedPermissionMode: managed.session.unifiedPermissionMode,
+      opencodePermissionMode: managed.session.opencodePermissionMode,
       permissionMode: managed.session.permissionMode,
       surface: managed.session.surface,
       computerUse: managed.session.computerUse,
@@ -10666,10 +10671,10 @@ export function createAgentChatService(args: {
       managed.runtime.startedTurnId = null;
       managed.runtime.itemTurnIdByItemId.clear();
     }
-    if (managed.runtime?.kind === "unified" && !isBusyError) {
+    if (managed.runtime?.kind === "opencode" && !isBusyError) {
       managed.runtime.busy = false;
       managed.runtime.activeTurnId = null;
-      managed.runtime.abortController = null;
+      managed.runtime.eventAbortController = null;
     }
     if (managed.runtime?.kind === "claude" && !isBusyError) {
       managed.runtime.busy = false;
@@ -10692,6 +10697,7 @@ export function createAgentChatService(args: {
       message,
       turnId,
     });
+    void emitTurnDiffSummaryIfChanged(managed, turnId);
     emitChatEvent(managed, {
       type: "done",
       turnId,
@@ -10791,16 +10797,16 @@ export function createAgentChatService(args: {
 
   const syncCursorSessionDescriptor = (
     managed: ManagedChatSession,
-    sdkModelId: string,
+    providerModelId: string,
   ): void => {
-    const trimmed = sdkModelId.trim();
+    const trimmed = providerModelId.trim();
     if (!trimmed.length) return;
     managed.session.model = trimmed;
     const descriptor = getModelById(`cursor/${trimmed}`) ?? resolveModelDescriptorForProvider(trimmed, "cursor");
     if (descriptor) {
       managed.session.modelId = descriptor.id;
       if (managed.runtime?.kind === "cursor") {
-        managed.runtime.modelSdkId = descriptor.sdkModelId;
+        managed.runtime.modelSdkId = descriptor.providerModelId;
       }
       return;
     }
@@ -11145,9 +11151,9 @@ export function createAgentChatService(args: {
         // revert Cursor back to the old mode on the next turn.
         owner.session.cursorModeId = note.update.currentModeId;
         if (note.update.currentModeId === "plan") {
-          owner.session.unifiedPermissionMode = "plan";
-        } else if (!owner.session.unifiedPermissionMode || owner.session.unifiedPermissionMode === "plan") {
-          owner.session.unifiedPermissionMode = "edit";
+          owner.session.opencodePermissionMode = "plan";
+        } else if (!owner.session.opencodePermissionMode || owner.session.opencodePermissionMode === "plan") {
+          owner.session.opencodePermissionMode = "edit";
         }
         syncCursorModeSnapshot(owner, owner.runtime);
         persistChatState(owner);
@@ -11378,6 +11384,7 @@ export function createAgentChatService(args: {
         onDispatched: args.onDispatched,
       });
       emitChatEvent(managed, { type: "status", turnStatus: "started", turnId });
+      captureTurnBeforeSha(managed);
     }
     emitChatEvent(managed, {
       type: "activity",
@@ -11386,6 +11393,7 @@ export function createAgentChatService(args: {
     });
 
     const turnStartedAt = Date.now();
+    let shouldDeliverQueuedSteer = false;
     try {
       const autoMemoryPlan = await buildAutoMemoryTurnPlan(managed, displayText, args.attachments);
       const autoMemoryNotice = buildAutoMemorySystemNotice(autoMemoryPlan);
@@ -11483,8 +11491,10 @@ export function createAgentChatService(args: {
           }
         : undefined;
 
+      void emitTurnDiffSummaryIfChanged(managed, turnId);
       if (runtime.interrupted || promptRes.stopReason === "cancelled") {
         managed.session.status = "idle";
+        cancelQueuedSteers(managed, runtime, "interrupted");
         emitChatEvent(managed, { type: "status", turnStatus: "interrupted", turnId });
         for (const ev of mapStopReasonToTerminalEvents({
           stopReason: "cancelled",
@@ -11511,6 +11521,7 @@ export function createAgentChatService(args: {
         })) {
           emitChatEvent(managed, ev);
         }
+        shouldDeliverQueuedSteer = runtime.pendingSteers.length > 0;
       }
 
       appendWorkerActivityToCto(managed, {
@@ -11518,20 +11529,6 @@ export function createAgentChatService(args: {
         summary: "Cursor agent turn completed.",
       });
       persistChatState(managed);
-
-      if (!managed.closed && runtime.pendingSteers.length) {
-        const nextSteer = runtime.pendingSteers.shift();
-        const steerText = nextSteer?.text ?? "";
-        if (steerText.trim().length) {
-          const preparedSteer = prepareSendMessage({
-            sessionId: managed.session.id,
-            text: steerText,
-            displayText: steerText,
-            attachments: [],
-          });
-          if (preparedSteer) await executePreparedSendMessage(preparedSteer);
-        }
-      }
     } catch (error) {
       managed.session.status = "idle";
       const msg = error instanceof Error ? error.message : String(error);
@@ -11544,6 +11541,7 @@ export function createAgentChatService(args: {
 
       // Drop queued steers so they don't replay on the next turn.
       cancelQueuedSteers(managed, runtime, runtime.interrupted ? "interrupted" : "failed");
+      void emitTurnDiffSummaryIfChanged(managed, turnId);
 
       if (runtime.interrupted) {
         emitChatEvent(managed, { type: "status", turnStatus: "interrupted", turnId });
@@ -11578,6 +11576,16 @@ export function createAgentChatService(args: {
         managed.session.status = "idle";
       }
     }
+    if (!managed.closed && shouldDeliverQueuedSteer) {
+      try {
+        await deliverNextQueuedSteer(managed, runtime);
+      } catch (error) {
+        logger.warn("agent_chat.cursor_deliver_queued_steer_failed", {
+          sessionId: managed.session.id,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
   };
 
   const executePreparedSendMessage = async (prepared: PreparedSendMessage): Promise<void> => {
@@ -11595,29 +11603,27 @@ export function createAgentChatService(args: {
       optimisticCursorTurnStart,
     } = prepared;
 
-    // Unified runtime dispatch
-    if (managed.session.provider === "unified") {
-      if (!managed.runtime || managed.runtime.kind !== "unified") {
-        const restarted = await startUnifiedSession(managed);
+    // OpenCode runtime dispatch
+    if (managed.session.provider === "opencode") {
+      if (!managed.runtime || managed.runtime.kind !== "opencode") {
+        const restarted = await startOpenCodeSessionRuntime(managed);
         if (restarted !== "handled" || !managed.runtime) {
-          throw new Error(`Unified runtime is not available for session '${managed.session.id}'.`);
+          throw new Error(`OpenCode runtime is not available for session '${managed.session.id}'.`);
         }
       }
       if (reasoningEffort) {
         managed.session.reasoningEffort = normalizeReasoningEffort(reasoningEffort);
       }
       // Re-sync permission mode so mid-session changes take effect on this turn.
-      if (managed.runtime?.kind === "unified") {
+      if (managed.runtime?.kind === "opencode") {
         const chatConfig = resolveChatConfig();
         const previousPermissionMode = managed.runtime.permissionMode;
-        managed.runtime.permissionMode = resolveSessionUnifiedPermissionMode(
+        managed.runtime.permissionMode = resolveSessionOpenCodePermissionMode(
           managed.session,
-          chatConfig.unifiedPermissionMode,
+          chatConfig.opencodePermissionMode,
         );
-        // When permission mode becomes stricter, clear accept_for_session approvals
-        // so old overrides cannot auto-approve actions under the new policy.
         if (managed.runtime.permissionMode !== previousPermissionMode) {
-          managed.runtime.approvalOverrides = new Set();
+          persistChatState(managed);
         }
       }
       await runTurn(managed, {
@@ -11633,9 +11639,9 @@ export function createAgentChatService(args: {
 
     if (managed.session.provider === "cursor") {
       const chatConfig = resolveChatConfig();
-      managed.session.unifiedPermissionMode = resolveSessionUnifiedPermissionMode(
+      managed.session.opencodePermissionMode = resolveSessionOpenCodePermissionMode(
         managed.session,
-        chatConfig.unifiedPermissionMode,
+        chatConfig.opencodePermissionMode,
       );
       managed.session.permissionMode = syncLegacyPermissionMode(managed.session) ?? managed.session.permissionMode;
       await runCursorTurn(managed, {
@@ -11664,12 +11670,15 @@ export function createAgentChatService(args: {
       if (runtime.threadResumed) {
         const prevApproval = managed.session.codexApprovalPolicy;
         const prevSandbox = managed.session.codexSandbox;
+        const prevConfigSource = managed.session.codexConfigSource;
         resolveCodexThreadParams(managed);
         if (
-          managed.session.codexApprovalPolicy !== prevApproval
+          managed.session.codexConfigSource !== prevConfigSource
+          || managed.session.codexApprovalPolicy !== prevApproval
           || managed.session.codexSandbox !== prevSandbox
         ) {
-          // Policy drifted — force a re-resume so the codex server picks up the new settings.
+          // Policy or config source drifted — force a re-resume so the codex
+          // server picks up the new ADE-controlled settings on this turn.
           runtime.threadResumed = false;
         }
       }
@@ -11793,6 +11802,7 @@ export function createAgentChatService(args: {
         turnId,
       });
       emitChatEvent(prepared.managed, { type: "status", turnStatus: "started", turnId });
+      captureTurnBeforeSha(prepared.managed);
       prepared.managed.session.status = "active";
       persistChatState(prepared.managed);
       // NOTE: onDispatched is NOT called here. It will be called inside
@@ -11823,18 +11833,21 @@ export function createAgentChatService(args: {
     }
   };
 
-  const steer = async ({ sessionId, text }: AgentChatSteerArgs): Promise<void> => {
+  const steer = async ({ sessionId, text }: AgentChatSteerArgs): Promise<AgentChatSteerResult> => {
     const trimmed = text.trim();
-    if (!trimmed.length) return;
+    const steerId = randomUUID();
+    if (!trimmed.length) {
+      return { steerId, queued: false };
+    }
 
     const managed = ensureManagedSession(sessionId);
 
-    // Unified runtime steer
-    if (managed.runtime?.kind === "unified") {
+    // OpenCode runtime steer
+    if (managed.runtime?.kind === "opencode") {
       const runtime = managed.runtime;
       if (runtime.busy) {
-        enqueueSteerOrDrop(managed, runtime, sessionId, randomUUID(), trimmed);
-        return;
+        enqueueSteerOrDrop(managed, runtime, sessionId, steerId, trimmed);
+        return { steerId, queued: true };
       }
       const preparedSteer = prepareSendMessage({
         sessionId,
@@ -11842,9 +11855,11 @@ export function createAgentChatService(args: {
         displayText: trimmed,
         attachments: [],
       });
-      if (!preparedSteer) return;
+      if (!preparedSteer) {
+        return { steerId, queued: false };
+      }
       await executePreparedSendMessage(preparedSteer);
-      return;
+      return { steerId, queued: false };
     }
 
     if (managed.session.provider === "cursor") {
@@ -11858,9 +11873,8 @@ export function createAgentChatService(args: {
             message: "Steer dropped — the queue is full. Wait for the current turn to finish.",
             turnId: rt.activeTurnId ?? undefined,
           });
-          return;
+          return { steerId, queued: false };
         }
-        const steerId = randomUUID();
         rt.pendingSteers.push({ steerId, text: trimmed });
         emitChatEvent(managed, {
           type: "user_message",
@@ -11877,7 +11891,7 @@ export function createAgentChatService(args: {
           turnId: rt.activeTurnId ?? undefined,
         });
         persistChatState(managed);
-        return;
+        return { steerId, queued: true };
       }
       const preparedSteer = prepareSendMessage({
         sessionId,
@@ -11885,9 +11899,11 @@ export function createAgentChatService(args: {
         displayText: trimmed,
         attachments: [],
       });
-      if (!preparedSteer) return;
+      if (!preparedSteer) {
+        return { steerId, queued: false };
+      }
       await executePreparedSendMessage(preparedSteer);
-      return;
+      return { steerId, queued: false };
     }
 
     if (managed.session.provider === "codex") {
@@ -11896,12 +11912,6 @@ export function createAgentChatService(args: {
       if (!managed.session.threadId || !runtime.activeTurnId) {
         throw new Error("No active turn to steer.");
       }
-
-      emitChatEvent(managed, {
-        type: "user_message",
-        text: trimmed,
-        turnId: runtime.activeTurnId
-      });
 
       await runtime.request("turn/steer", {
         threadId: managed.session.threadId,
@@ -11914,13 +11924,20 @@ export function createAgentChatService(args: {
           }
         ]
       });
-      return;
+      emitChatEvent(managed, {
+        type: "user_message",
+        text: trimmed,
+        steerId,
+        deliveryState: "delivered",
+        turnId: runtime.activeTurnId,
+      });
+      return { steerId, queued: false };
     }
 
     const runtime = ensureClaudeSessionRuntime(managed);
     if (runtime.busy) {
-      enqueueSteerOrDrop(managed, runtime, sessionId, randomUUID(), trimmed);
-      return;
+      enqueueSteerOrDrop(managed, runtime, sessionId, steerId, trimmed);
+      return { steerId, queued: true };
     }
 
     const preparedSteer = prepareSendMessage({
@@ -11929,8 +11946,11 @@ export function createAgentChatService(args: {
       displayText: trimmed,
       attachments: [],
     });
-    if (!preparedSteer) return;
+    if (!preparedSteer) {
+      return { steerId, queued: false };
+    }
     await executePreparedSendMessage(preparedSteer);
+    return { steerId, queued: false };
   };
 
   const cancelSteer = async ({ sessionId, steerId }: AgentChatCancelSteerArgs): Promise<void> => {
@@ -11989,17 +12009,29 @@ export function createAgentChatService(args: {
   const interrupt = async ({ sessionId }: AgentChatInterruptArgs): Promise<void> => {
     const managed = ensureManagedSession(sessionId);
 
-    // Unified runtime interrupt — auto-decline pending approvals to prevent orphans
-    if (managed.runtime?.kind === "unified") {
+    // OpenCode runtime interrupt
+    if (managed.runtime?.kind === "opencode") {
       if (managed.runtime.interrupted) return;
       managed.runtime.interrupted = true;
-      managed.runtime.abortController?.abort();
+      managed.runtime.eventAbortController?.abort();
+      try {
+        await managed.runtime.handle.client.session.abort({
+          path: { id: managed.runtime.handle.sessionId },
+          query: { directory: managed.runtime.handle.directory },
+        });
+      } catch {
+        // Ignore provider abort failures; SSE cancellation still tears the turn down.
+      }
       cancelQueuedSteers(managed, managed.runtime, "interrupted");
       persistChatState(managed);
-      for (const [itemId, approval] of managed.runtime.pendingApprovals) {
-        approval.resolve({ decision: "decline" });
-        managed.runtime.pendingApprovals.delete(itemId);
+      for (const pending of managed.runtime.pendingApprovals.values()) {
+        managed.runtime.handle.client.postSessionIdPermissionsPermissionId({
+          path: { id: managed.runtime.handle.sessionId, permissionID: pending.permissionId },
+          query: { directory: managed.runtime.handle.directory },
+          body: { response: "reject" },
+        }).catch(() => {});
       }
+      managed.runtime.pendingApprovals.clear();
       return;
     }
 
@@ -12025,10 +12057,12 @@ export function createAgentChatService(args: {
       const runtime = await ensureCodexSessionRuntime(managed);
       await runtime.collaborationModesReady?.catch(() => {});
       if (!managed.session.threadId || !runtime.activeTurnId) return;
+      rememberInterruptedCodexTurn(runtime, runtime.activeTurnId);
       await runtime.request("turn/interrupt", {
         threadId: managed.session.threadId,
         turnId: runtime.activeTurnId
       });
+      stopActiveCodexSubagents(managed, runtime, runtime.activeTurnId ?? undefined, "Interrupted by user");
       return;
     }
 
@@ -12150,28 +12184,24 @@ export function createAgentChatService(args: {
       managed.session.permissionMode = syncLegacyPermissionMode(managed.session) ?? managed.session.permissionMode;
     } else if (managed.session.provider === "cursor") {
       await ensureCursorRuntime(managed);
-      managed.session.unifiedPermissionMode = persisted?.unifiedPermissionMode ?? managed.session.unifiedPermissionMode;
+      managed.session.opencodePermissionMode = persisted?.opencodePermissionMode ?? managed.session.opencodePermissionMode;
       managed.session.permissionMode = syncLegacyPermissionMode(managed.session) ?? managed.session.permissionMode;
+      enforceManagedLocalHarnessPermissionMode(managed);
       sessionService.setResumeCommand(sessionId, `chat:cursor:${sessionId}`);
-    } else if (managed.runtime?.kind === "unified" || (managed.session.modelId && !providerResolver.isModelCliWrapped(managed.session.modelId))) {
-      // Unified runtime resume — re-resolve the model
-      const result = await startUnifiedSession(managed);
-      if (result === "handled" && managed.runtime?.kind === "unified") {
-        // Restore message history from persisted state
-        const persistedMessages = persisted?.messages;
-        if (persistedMessages?.length) {
-          managed.runtime.messages = persistedMessages.map((m) => ({ role: m.role, content: m.content }));
-        }
-        managed.session.unifiedPermissionMode = persisted?.unifiedPermissionMode ?? managed.session.unifiedPermissionMode;
+    } else if (managed.session.provider === "opencode" || (managed.session.modelId && !isCliWrappedModelId(managed.session.modelId))) {
+      const result = await startOpenCodeSessionRuntime(managed);
+      if (result === "handled" && managed.runtime?.kind === "opencode") {
+        managed.session.opencodePermissionMode = persisted?.opencodePermissionMode ?? managed.session.opencodePermissionMode;
         managed.session.permissionMode = syncLegacyPermissionMode(managed.session) ?? managed.session.permissionMode;
-        managed.runtime.permissionMode = resolveSessionUnifiedPermissionMode(
+        enforceManagedLocalHarnessPermissionMode(managed, managed.runtime.modelDescriptor);
+        managed.runtime.permissionMode = resolveSessionOpenCodePermissionMode(
           managed.session,
-          resolveChatConfig().unifiedPermissionMode,
+          resolveChatConfig().opencodePermissionMode,
         );
-        sessionService.setResumeCommand(sessionId, `chat:unified:${sessionId}`);
+        sessionService.setResumeCommand(sessionId, `chat:opencode:${sessionId}`);
       } else {
-        if (managed.session.provider === "unified") {
-          throw new Error(`Unable to resume unified runtime for model '${managed.session.model}'.`);
+        if (managed.session.provider === "opencode") {
+          throw new Error(`Unable to resume OpenCode runtime for model '${managed.session.model}'.`);
         }
         // Fallthrough to Claude — SDK manages history via sdkSessionId
         ensureClaudeSessionRuntime(managed);
@@ -12234,12 +12264,12 @@ export function createAgentChatService(args: {
     const hydratedModelId = liveSession?.modelId
       ?? persisted?.modelId
       ?? resolveModelIdFromStoredValue(fallbackModel, provider)
-      ?? (provider === "unified"
-        ? DEFAULT_UNIFIED_MODEL_ID
+      ?? (provider === "opencode"
+        ? DEFAULT_OPENCODE_MODEL_ID
         : provider === "cursor"
           ? DEFAULT_CURSOR_DESCRIPTOR?.id
           : undefined);
-    const model = provider === "unified" ? (hydratedModelId ?? fallbackModel) : fallbackModel;
+    const model = provider === "opencode" ? (hydratedModelId ?? fallbackModel) : fallbackModel;
     return {
       sessionId: row.id,
       laneId: row.laneId,
@@ -12264,8 +12294,8 @@ export function createAgentChatService(args: {
       ...(liveSession?.codexConfigSource || persisted?.codexConfigSource
         ? { codexConfigSource: liveSession?.codexConfigSource ?? persisted?.codexConfigSource }
         : {}),
-      ...(liveSession?.unifiedPermissionMode || persisted?.unifiedPermissionMode
-        ? { unifiedPermissionMode: liveSession?.unifiedPermissionMode ?? persisted?.unifiedPermissionMode }
+      ...(liveSession?.opencodePermissionMode || persisted?.opencodePermissionMode
+        ? { opencodePermissionMode: liveSession?.opencodePermissionMode ?? persisted?.opencodePermissionMode }
         : {}),
       ...(liveSession?.cursorModeSnapshot || persisted?.cursorModeSnapshot
         ? { cursorModeSnapshot: liveSession?.cursorModeSnapshot ?? persisted?.cursorModeSnapshot }
@@ -12358,6 +12388,7 @@ export function createAgentChatService(args: {
         managed.session.provider,
       );
       applyLegacyPermissionModeToNativeControls(managed.session, managed.session.permissionMode);
+      enforceManagedLocalHarnessPermissionMode(managed);
       normalizeSessionNativePermissionControls(managed.session, resolveChatConfig());
       managed.selectedExecutionLaneId = selectedExecutionLaneId ?? managed.selectedExecutionLaneId;
       refreshReconstructionContext(managed, { includeConversationTail: usesIdentityContinuity(managed) });
@@ -12383,10 +12414,10 @@ export function createAgentChatService(args: {
     const providerFromPreference: AgentChatProvider = (() => {
       if (workerIdentity?.adapterType === "claude-local") return "claude";
       if (workerIdentity?.adapterType === "codex-local") return "codex";
-      if (workerIdentity?.adapterType === "openclaw-webhook" || workerIdentity?.adapterType === "process") return "unified";
+      if (workerIdentity?.adapterType === "openclaw-webhook" || workerIdentity?.adapterType === "process") return "opencode";
       if (preferredProviderRaw.includes("codex") || preferredProviderRaw.includes("openai")) return "codex";
       if (preferredProviderRaw.includes("claude") || preferredProviderRaw.includes("anthropic")) return "claude";
-      return "unified";
+      return "opencode";
     })();
 
     const explicitModelId = typeof args.modelId === "string" && args.modelId.trim().length
@@ -12402,7 +12433,7 @@ export function createAgentChatService(args: {
 
     const provider: AgentChatProvider = (() => {
       if (!resolvedDescriptor) return providerFromPreference;
-      if (!resolvedDescriptor.isCliWrapped) return "unified";
+      if (!resolvedDescriptor.isCliWrapped) return "opencode";
       if (resolvedDescriptor.family === "openai") return "codex";
       if (resolvedDescriptor.family === "anthropic") return "claude";
       return providerFromPreference;
@@ -12608,29 +12639,28 @@ export function createAgentChatService(args: {
       return;
     }
 
-    if (managed.runtime?.kind === "unified") {
+    if (managed.runtime?.kind === "opencode") {
       const pending = managed.runtime.pendingApprovals.get(itemId);
       if (!pending) {
         throw new Error(`No pending approval found for item '${itemId}'.`);
       }
-      const approved = resolvedDecision === "accept" || resolvedDecision === "accept_for_session";
-      if (resolvedDecision === "accept_for_session" && pending.category !== "askUser") {
-        managed.runtime.approvalOverrides.add(pending.category);
-        if (pending.category === "bash") {
-          managed.runtime.permissionMode = "full-auto";
-          managed.session.unifiedPermissionMode = "full-auto";
-        } else if (managed.runtime.permissionMode === "plan") {
-          managed.runtime.permissionMode = "edit";
-          managed.session.unifiedPermissionMode = "edit";
-        }
-      }
-      if (approved && pending.category === "exitPlanMode") {
-        managed.runtime.permissionMode = "edit";
-        managed.session.unifiedPermissionMode = "edit";
-      }
-      managed.session.permissionMode = syncLegacyPermissionMode(managed.session) ?? managed.session.permissionMode;
       managed.runtime.pendingApprovals.delete(itemId);
-      pending.resolve({ decision: resolvedDecision, answers, responseText });
+      await managed.runtime.handle.client.postSessionIdPermissionsPermissionId({
+        path: {
+          id: managed.runtime.handle.sessionId,
+          permissionID: pending.permissionId,
+        },
+        query: {
+          directory: managed.runtime.handle.directory,
+        },
+        body: {
+          response: resolvedDecision === "accept_for_session"
+            ? "always"
+            : resolvedDecision === "accept"
+              ? "once"
+              : "reject",
+        },
+      });
       emitPendingInputResolved(managed, {
         itemId,
         decision: resolvedDecision,
@@ -12725,13 +12755,58 @@ export function createAgentChatService(args: {
       }
     }
 
-    // For unified/non-CLI providers: return all models with valid auth.
+    if (provider === "opencode") {
+      try {
+        const { modelIds, error } = await probeOpenCodeProviderInventory({
+          projectRoot,
+          projectConfig: projectConfigService.get().effective,
+          logger,
+          force: false,
+        });
+        if (error) {
+          logger.warn("agent_chat.opencode_inventory_empty", { error });
+        }
+        if (modelIds.length === 0) {
+          return [];
+        }
+        const rows: Array<{
+          id: string;
+          displayName: string;
+          description: string;
+          isDefault: boolean;
+          reasoningEfforts: Array<{ effort: string; description: string }>;
+        }> = [];
+        let firstRow = true;
+        for (const id of modelIds) {
+          const descriptor = getModelById(id);
+          if (!descriptor) continue;
+          const tiers = descriptor.reasoningTiers ?? [];
+          rows.push({
+            id: descriptor.id,
+            displayName: descriptor.displayName,
+            description: `${descriptor.displayName} (OpenCode)`,
+            isDefault: firstRow,
+            reasoningEfforts: tiers.map((tier) => ({
+              effort: tier,
+              description: `${tier} reasoning`,
+            })),
+          });
+          firstRow = false;
+        }
+        return rows;
+      } catch (error) {
+        logger.warn("agent_chat.opencode_model_catalog_failed", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+        return [];
+      }
+    }
+
+    // Fallback for non-OpenCode providers: return models ADE can currently resolve.
     try {
       const auth = await detectAuth();
-      const available = getRegistryModels(auth);
-      const targetModels = provider === "unified"
-        ? available
-        : available.filter(m => m.family === provider);
+      const available = await getAvailableRegistryModels(auth);
+      const targetModels = available.filter((m) => m.family === provider);
       if (targetModels.length > 0) {
         return targetModels.map((m, i) => ({
           id: m.id,
@@ -12757,10 +12832,17 @@ export function createAgentChatService(args: {
     if (managed.runtime?.kind === "codex") {
       try {
         if (managed.session.threadId && managed.runtime.activeTurnId) {
+          rememberInterruptedCodexTurn(managed.runtime, managed.runtime.activeTurnId);
           await managed.runtime.request("turn/interrupt", {
             threadId: managed.session.threadId,
             turnId: managed.runtime.activeTurnId
           });
+          stopActiveCodexSubagents(
+            managed,
+            managed.runtime,
+            managed.runtime.activeTurnId ?? undefined,
+            "Interrupted while closing the session",
+          );
         }
       } catch {
         // ignore interrupt failures while disposing
@@ -12791,7 +12873,7 @@ export function createAgentChatService(args: {
     }
 
     // Mark streaming runtimes as interrupted so the catch block handles gracefully
-    if (managed.runtime?.kind === "claude" || managed.runtime?.kind === "unified") {
+    if (managed.runtime?.kind === "claude" || managed.runtime?.kind === "opencode") {
       managed.runtime.interrupted = true;
       cancelQueuedSteers(managed, managed.runtime, "disposed");
     }
@@ -12856,7 +12938,7 @@ export function createAgentChatService(args: {
     codexApprovalPolicy,
     codexSandbox,
     codexConfigSource,
-    unifiedPermissionMode,
+    opencodePermissionMode,
     cursorModeId,
     cursorConfigValues,
     permissionMode,
@@ -12866,6 +12948,9 @@ export function createAgentChatService(args: {
     const chatConfig = resolveChatConfig();
     const isIdentitySession = Boolean(managed.session.identityKey);
     const hasConversation = managed.recentConversationEntries.length > 0 || readTranscriptConversationEntries(managed).length > 0;
+    const prevCodexApprovalPolicy = managed.session.codexApprovalPolicy;
+    const prevCodexSandbox = managed.session.codexSandbox;
+    const prevCodexConfigSource = managed.session.codexConfigSource;
     let resetRuntimeForComputerUse = false;
 
     if (modelId !== undefined) {
@@ -12880,7 +12965,7 @@ export function createAgentChatService(args: {
       }
 
       const nextProvider: AgentChatProvider = resolveProviderGroupForModel(descriptor);
-      const nextModel = descriptor.isCliWrapped ? descriptor.sdkModelId : descriptor.id;
+      const nextModel = descriptor.isCliWrapped ? descriptor.providerModelId : descriptor.id;
       const previousModelId = managed.session.modelId
         ?? resolveModelIdFromStoredValue(managed.session.model, managed.session.provider)
         ?? managed.session.model;
@@ -12934,6 +13019,7 @@ export function createAgentChatService(args: {
         );
         applyLegacyPermissionModeToNativeControls(managed.session, managed.session.permissionMode);
       }
+      enforceManagedLocalHarnessPermissionMode(managed, descriptor);
       normalizeSessionNativePermissionControls(managed.session, chatConfig);
 
       // Apply reasoningEffort BEFORE pre-warming so the V2 session is created
@@ -13012,8 +13098,8 @@ export function createAgentChatService(args: {
       managed.session.codexConfigSource = codexConfigSource;
     }
 
-    if (unifiedPermissionMode !== undefined) {
-      managed.session.unifiedPermissionMode = unifiedPermissionMode;
+    if (opencodePermissionMode !== undefined) {
+      managed.session.opencodePermissionMode = opencodePermissionMode;
     }
 
     if (cursorModeId !== undefined) {
@@ -13036,16 +13122,27 @@ export function createAgentChatService(args: {
       || codexApprovalPolicy !== undefined
       || codexSandbox !== undefined
       || codexConfigSource !== undefined
-      || unifiedPermissionMode !== undefined
+      || opencodePermissionMode !== undefined
       || cursorModeId !== undefined
       || cursorConfigValues !== undefined
     ) {
+      enforceManagedLocalHarnessPermissionMode(managed);
       normalizeSessionNativePermissionControls(managed.session, chatConfig);
-      if (managed.runtime?.kind === "unified") {
-        managed.runtime.permissionMode = resolveSessionUnifiedPermissionMode(
+      if (managed.runtime?.kind === "opencode") {
+        managed.runtime.permissionMode = resolveSessionOpenCodePermissionMode(
           managed.session,
-          chatConfig.unifiedPermissionMode,
+          chatConfig.opencodePermissionMode,
         );
+      }
+      if (
+        managed.runtime?.kind === "codex"
+        && (
+          managed.session.codexApprovalPolicy !== prevCodexApprovalPolicy
+          || managed.session.codexSandbox !== prevCodexSandbox
+          || managed.session.codexConfigSource !== prevCodexConfigSource
+        )
+      ) {
+        managed.runtime.threadResumed = false;
       }
       if (managed.runtime?.kind === "claude" && managed.runtime.v2Session && !managed.runtime.busy) {
         const turnPermissionMode = resolveClaudeTurnPermissionMode(managed);
@@ -13099,6 +13196,7 @@ export function createAgentChatService(args: {
       const hasExplicitTitle = normalizedTitle.length > 0;
       sessionService.updateMeta({
         sessionId,
+        manuallyNamed: manuallyNamed ?? false,
         title: hasExplicitTitle ? normalizedTitle : defaultChatSessionTitle(managed.session.provider),
       });
       if (manuallyNamed !== undefined) {
@@ -13256,7 +13354,7 @@ export function createAgentChatService(args: {
       return [...sdkCmds, ...localCommands.filter((c) => !sdkNames.has(c.name))];
     }
 
-    // Unified — only local commands
+    // OpenCode / Cursor — only local commands
     return localCommands;
   };
 
@@ -13392,6 +13490,10 @@ export function createAgentChatService(args: {
     chatSessionId: string;
     title: string;
     body: string;
+    source?: PendingInputSource;
+    providerMetadata?: Record<string, unknown>;
+    eventDescription?: string;
+    eventDetail?: Record<string, unknown>;
     questions?: Array<{
       id?: string;
       header?: string;
@@ -13514,7 +13616,7 @@ export function createAgentChatService(args: {
     const request: PendingInputRequest = {
       requestId: itemId,
       itemId,
-      source: "ade",
+      source: args.source ?? "ade",
       kind: questions.some((q) => q.options?.length) ? "structured_question" : "question",
       title: args.title,
       description: questions[0]?.question ?? args.body,
@@ -13522,6 +13624,7 @@ export function createAgentChatService(args: {
       allowsFreeform: true,
       blocking: true,
       canProceedWithoutAnswer: false,
+      ...(args.providerMetadata ? { providerMetadata: args.providerMetadata } : {}),
       turnId: managed.runtime?.activeTurnId ?? null,
     };
 
@@ -13533,7 +13636,8 @@ export function createAgentChatService(args: {
       managed.localPendingInputs.set(itemId, { request, resolve });
       emitPendingInputRequest(managed, request, {
         kind: "tool_call",
-        description: request.description ?? args.body,
+        description: args.eventDescription ?? request.description ?? args.body,
+        ...(args.eventDetail !== undefined ? { detail: args.eventDetail } : {}),
       });
     });
 
@@ -13577,18 +13681,24 @@ export function createAgentChatService(args: {
       try {
         const projectRoot = args.projectRoot;
         if (!projectRoot) return;
-        const attachDir = path.join(projectRoot, ".ade", "attachments");
-        if (!fs.existsSync(attachDir)) return;
-        const cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000; // 7 days
-        for (const entry of fs.readdirSync(attachDir)) {
-          try {
-            const filePath = path.join(attachDir, entry);
-            const stat = fs.statSync(filePath);
-            if (stat.isFile() && stat.mtimeMs < cutoff) {
-              fs.unlinkSync(filePath);
+        const cleanupDir = (dirPath: string) => {
+          if (!fs.existsSync(dirPath)) return;
+          const cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000;
+          for (const entry of fs.readdirSync(dirPath)) {
+            try {
+              const filePath = path.join(dirPath, entry);
+              const stat = fs.statSync(filePath);
+              if (stat.mtimeMs < cutoff) {
+                fs.rmSync(filePath, { recursive: true, force: true });
+              }
+            } catch {
+              // Best-effort cleanup only.
             }
-          } catch { /* skip */ }
-        }
+          }
+        };
+
+        cleanupDir(path.join(projectRoot, ".ade", "attachments"));
+        cleanupDir(path.join(resolveAdeLayout(projectRoot).tmpDir, "agent-chat-attachments"));
       } catch { /* ignore */ }
     },
     setComputerUseArtifactBrokerService(svc: ComputerUseArtifactBrokerService) {

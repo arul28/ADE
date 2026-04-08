@@ -1,4 +1,5 @@
-import { useMemo } from "react";
+import { useCallback, useMemo } from "react";
+import { useNavigate } from "react-router-dom";
 import {
   FloppyDisk,
   Flask,
@@ -27,7 +28,7 @@ import { cn } from "../../ui/cn";
 import { CARD_STYLE, INPUT_CLS, INPUT_STYLE } from "../shared";
 
 const DEFAULT_MODEL_ID =
-  getDefaultModelDescriptor("unified")?.id
+  getDefaultModelDescriptor("opencode")?.id
   ?? getDefaultModelDescriptor("claude")?.id
   ?? "anthropic/claude-sonnet-4-6";
 
@@ -35,7 +36,7 @@ const DEFAULT_PERMISSION_CONFIG: MissionPermissionConfig = {
   providers: {
     claude: "full-auto",
     codex: "full-auto",
-    unified: "full-auto",
+    opencode: "full-auto",
     codexSandbox: "workspace-write",
   },
 };
@@ -328,6 +329,10 @@ export function RuleEditorPanel({
   saving: boolean;
   simulating?: boolean;
 }) {
+  const navigate = useNavigate();
+  const openAiProvidersSettings = useCallback(() => {
+    navigate("/settings?tab=ai#ai-providers");
+  }, [navigate]);
   const primaryTrigger = ensurePrimaryTrigger(draft);
   const triggerFamily = triggerFamilyForType(primaryTrigger.type);
   const executionKind = draft.execution?.kind ?? "agent-session";
@@ -859,6 +864,7 @@ export function RuleEditorPanel({
                       },
                     })}
                     compact
+                    onOpenAiSettings={openAiProvidersSettings}
                   />
                 </div>
               </div>

@@ -1,28 +1,66 @@
-import { tool, type Tool } from "ai";
+import { executableTool as tool, type ExecutableTool as Tool } from "./executableTool";
 import { z } from "zod";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
-import { readFileRangeTool } from "./readFileRange";
-import { grepSearchTool } from "./grepSearch";
-import { globSearchTool } from "./globSearch";
+import { createReadFileRangeTool } from "./readFileRange";
+import { createGrepSearchTool } from "./grepSearch";
+import { createGlobSearchTool } from "./globSearch";
 import { webFetchTool } from "./webFetch";
 import { webSearchTool } from "./webSearch";
 import { createMemoryTools, type MemoryWriteEvent, type TurnMemoryPolicyState } from "./memoryTools";
-import type { createUnifiedMemoryService } from "../../memory/unifiedMemoryService";
-import type { AgentChatApprovalDecision, WorkerSandboxConfig, CtoCoreMemory } from "../../../../shared/types";
+import type { createMemoryService } from "../../memory/memoryService";
+import type { AgentChatApprovalDecision, AgentChatEvent, WorkerSandboxConfig, CtoCoreMemory } from "../../../../shared/types";
 import { DEFAULT_WORKER_SANDBOX_CONFIG } from "../../orchestrator/orchestratorConstants";
-import { getErrorMessage, isEnoentError, isWithinDir } from "../../shared/utils";
+import { getErrorMessage, isEnoentError, isWithinDir, resolvePathWithinRoot } from "../../shared/utils";
 
 const execFileAsync = promisify(execFile);
 
 export type PermissionMode = "plan" | "edit" | "full-auto";
 
+export type AskUserToolOption = {
+  label: string;
+  value?: string;
+  description?: string;
+  recommended?: boolean;
+  preview?: string;
+  previewFormat?: "markdown" | "html";
+};
+
+export type AskUserToolQuestion = {
+  id?: string;
+  header?: string;
+  question: string;
+  options?: AskUserToolOption[];
+  multiSelect?: boolean;
+  allowsFreeform?: boolean;
+  isSecret?: boolean;
+  defaultAssumption?: string | null;
+  impact?: string | null;
+};
+
+export type AskUserToolInput = {
+  question?: string;
+  title?: string;
+  body?: string;
+  questions?: AskUserToolQuestion[];
+};
+
+export type AskUserToolResult = {
+  answer: string;
+  answers?: Record<string, string[]>;
+  responseText?: string | null;
+  decision?: string;
+  error?: string;
+};
+
+export type TodoToolItem = Extract<AgentChatEvent, { type: "todo_update" }>["items"][number];
+
 export interface UniversalToolSetOptions {
   permissionMode: PermissionMode;
-  memoryService?: ReturnType<typeof createUnifiedMemoryService>;
+  memoryService?: ReturnType<typeof createMemoryService>;
   projectId?: string;
   runId?: string;
   stepId?: string;
@@ -35,7 +73,10 @@ export interface UniversalToolSetOptions {
     updatedAt: string;
   };
   /** Callback invoked when askUser tool is called; must return the user's response */
-  onAskUser?: (question: string) => Promise<string>;
+  onAskUser?: (input: AskUserToolInput) => Promise<string | AskUserToolResult>;
+  /** Optional callback for TodoWrite/TodoRead session state in interactive chat sessions. */
+  onTodoUpdate?: (items: TodoToolItem[]) => void;
+  getTodoItems?: () => TodoToolItem[];
   /** Optional callback for ADE-managed tool approvals in interactive chat sessions. */
   onApprovalRequest?: (request: ToolApprovalRequest) => Promise<ToolApprovalResult>;
   /** Sandbox config for API-model workers. CLI models skip this check. */
@@ -61,7 +102,7 @@ type ToolApprovalResult = {
 function requiresApproval(mode: PermissionMode, category: ToolCategory): boolean {
   switch (mode) {
     case "plan":
-      return category !== "read";
+      return false;
     case "edit":
       return category === "bash";
     case "full-auto":
@@ -753,13 +794,13 @@ function createEditFileTool(
   });
 }
 
-function createListDirTool() {
+function createListDirTool(cwd: string) {
   return tool({
     description:
       "List directory contents with file types and sizes. " +
       "Returns entries sorted alphabetically, directories first.",
     inputSchema: z.object({
-      path: z.string().describe("Absolute path to the directory"),
+      path: z.string().optional().default(".").describe("Repo-relative or absolute path to the directory"),
       recursive: z
         .boolean()
         .optional()
@@ -768,15 +809,20 @@ function createListDirTool() {
     }),
     execute: async ({ path: dirPath, recursive }) => {
       try {
-        if (!fs.existsSync(dirPath)) {
-          return { entries: [], error: `Directory not found: ${dirPath}` };
-        }
-        const stat = fs.statSync(dirPath);
+        const repoRoot = fs.realpathSync(cwd);
+        const targetDir = resolvePathWithinRoot(repoRoot, dirPath ?? ".", { allowMissing: false });
+        const stat = fs.statSync(targetDir);
         if (!stat.isDirectory()) {
-          return { entries: [], error: `Not a directory: ${dirPath}` };
+          return { entries: [], error: `Not a directory: ${targetDir}` };
         }
 
-        const entries: Array<{ name: string; type: "file" | "directory"; size?: number }> = [];
+        const entries: Array<{
+          name: string;
+          type: "file" | "directory";
+          size?: number;
+          path: string;
+          displayPath: string;
+        }> = [];
         const maxEntries = 1000;
 
         function walk(dir: string, prefix: string) {
@@ -796,31 +842,759 @@ function createListDirTool() {
           for (const item of items) {
             if (entries.length >= maxEntries) return;
             const relName = prefix ? `${prefix}/${item.name}` : item.name;
+            const entryPath = path.join(dir, item.name);
+            const displayPath = toPortablePath(path.relative(repoRoot, entryPath));
             if (item.isDirectory()) {
-              entries.push({ name: relName, type: "directory" });
+              entries.push({ name: relName, type: "directory", path: entryPath, displayPath });
               if (recursive && !item.name.startsWith(".") && item.name !== "node_modules") {
-                walk(path.join(dir, item.name), relName);
+                walk(entryPath, relName);
               }
             } else {
               let size: number | undefined;
               try {
-                size = fs.statSync(path.join(dir, item.name)).size;
+                size = fs.statSync(entryPath).size;
               } catch {
                 // skip
               }
-              entries.push({ name: relName, type: "file", size });
+              entries.push({ name: relName, type: "file", size, path: entryPath, displayPath });
             }
           }
         }
 
-        walk(dirPath, "");
-        return { entries, count: entries.length, truncated: entries.length >= maxEntries };
+        walk(targetDir, "");
+        return {
+          root: targetDir,
+          displayRoot: toPortablePath(path.relative(repoRoot, targetDir)) || ".",
+          entries,
+          count: entries.length,
+          truncated: entries.length >= maxEntries,
+        };
       } catch (err) {
         return {
           entries: [],
           error: `Error listing directory: ${getErrorMessage(err)}`,
         };
       }
+    },
+  });
+}
+
+const FRONTEND_SCAN_EXTENSIONS = new Set([
+  ".ts",
+  ".tsx",
+  ".js",
+  ".jsx",
+  ".mts",
+  ".cts",
+  ".mjs",
+  ".cjs",
+  ".vue",
+  ".svelte",
+  ".astro",
+  ".html",
+]);
+
+const FRONTEND_COMPONENT_EXTENSIONS = new Set([
+  ".tsx",
+  ".jsx",
+  ".vue",
+  ".svelte",
+  ".astro",
+]);
+
+const FRONTEND_IGNORED_DIRECTORIES = new Set([
+  ".ade",
+  ".cache",
+  ".git",
+  ".hg",
+  ".next",
+  ".nuxt",
+  ".parcel-cache",
+  ".svelte-kit",
+  ".svn",
+  ".turbo",
+  "build",
+  "coverage",
+  "dist",
+  "node_modules",
+  "out",
+  "target",
+  "tmp",
+  "vendor",
+]);
+
+const FRONTEND_SOURCE_ROOT_SEGMENTS = new Set([
+  "src",
+  "app",
+  "pages",
+  "client",
+  "frontend",
+  "web",
+  "routes",
+  "screens",
+  "views",
+]);
+
+const MAX_FRONTEND_SCAN_FILES = 4_000;
+const FRONTEND_TEXT_SNIPPET_BYTES = 12_000;
+
+type FrontendRepoFile = {
+  absolutePath: string;
+  relativePath: string;
+  extension: string;
+  stem: string;
+  snippet: string;
+};
+
+type FrontendRepoMatch = {
+  path: string;
+  displayPath: string;
+  kind: string;
+  score: number;
+  evidence: string[];
+  frameworkHints: string[];
+};
+
+type FrontendRepoAnalysis = {
+  root: string;
+  scannedFiles: number;
+  truncated: boolean;
+  topLevelDirectories: string[];
+  topLevelFiles: string[];
+  likelySourceRoots: string[];
+  frameworkSignals: string[];
+  routingFiles: FrontendRepoMatch[];
+  pageComponents: FrontendRepoMatch[];
+  appEntryPoints: FrontendRepoMatch[];
+};
+
+function clampPositiveInt(value: number | undefined, fallback: number, max: number): number {
+  if (!Number.isFinite(value)) return fallback;
+  return Math.min(Math.max(Math.floor(value as number), 1), max);
+}
+
+function shouldSkipFrontendDir(name: string): boolean {
+  return name.startsWith(".") || FRONTEND_IGNORED_DIRECTORIES.has(name);
+}
+
+function isRelevantFrontendFile(name: string): boolean {
+  return FRONTEND_SCAN_EXTENSIONS.has(path.extname(name).toLowerCase());
+}
+
+function readTextSnippet(filePath: string): string {
+  let fd: number | undefined;
+  try {
+    const stat = fs.statSync(filePath);
+    if (stat.size <= 0) return "";
+    const bytesToRead = Math.min(stat.size, FRONTEND_TEXT_SNIPPET_BYTES);
+    const buffer = Buffer.alloc(bytesToRead);
+    fd = fs.openSync(filePath, "r");
+    const bytesRead = fs.readSync(fd, buffer, 0, bytesToRead, 0);
+    return buffer.toString("utf-8", 0, bytesRead);
+  } catch {
+    return "";
+  } finally {
+    if (fd !== undefined) {
+      try {
+        fs.closeSync(fd);
+      } catch {
+        // ignore close errors for best-effort snippets
+      }
+    }
+  }
+}
+
+function resolveRepoAwareRoot(
+  cwd: string,
+  inputPath?: string,
+): { root: string | null; error?: string } {
+  try {
+    const projectRoot = fs.realpathSync(cwd);
+    const candidate = path.resolve(projectRoot, inputPath ?? ".");
+    if (!fs.existsSync(candidate)) {
+      return { root: null, error: `Directory not found: ${candidate}` };
+    }
+    const realCandidate = fs.realpathSync(candidate);
+    if (realCandidate !== projectRoot && !isWithinDir(projectRoot, realCandidate)) {
+      return { root: null, error: `Search path must stay within the repo root: ${candidate}` };
+    }
+    const stat = fs.statSync(realCandidate);
+    if (!stat.isDirectory()) {
+      return { root: null, error: `Not a directory: ${realCandidate}` };
+    }
+    return { root: realCandidate };
+  } catch (err) {
+    return {
+      root: null,
+      error: `Unable to resolve search root: ${getErrorMessage(err)}`,
+    };
+  }
+}
+
+function scanFrontendFiles(root: string): {
+  files: FrontendRepoFile[];
+  truncated: boolean;
+  topLevelDirectories: string[];
+  topLevelFiles: string[];
+} {
+  const files: FrontendRepoFile[] = [];
+  const topLevelDirectories: string[] = [];
+  const topLevelFiles: string[] = [];
+  const stack = [root];
+  let truncated = false;
+
+  while (stack.length > 0 && !truncated) {
+    const dir = stack.pop()!;
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+
+    entries.sort((a, b) => a.name.localeCompare(b.name));
+    const isTopLevel = dir === root;
+
+    for (const entry of entries) {
+      const absolutePath = path.join(dir, entry.name);
+
+      if (entry.isDirectory()) {
+        if (isTopLevel && !shouldSkipFrontendDir(entry.name)) {
+          topLevelDirectories.push(entry.name);
+        }
+        if (shouldSkipFrontendDir(entry.name)) {
+          continue;
+        }
+        stack.push(absolutePath);
+        continue;
+      }
+
+      if (entry.isSymbolicLink()) {
+        continue;
+      }
+
+      if (isTopLevel) {
+        topLevelFiles.push(entry.name);
+      }
+
+      if (!entry.isFile() || !isRelevantFrontendFile(entry.name)) {
+        continue;
+      }
+
+      const relativePath = toPortablePath(path.relative(root, absolutePath));
+      const extension = path.extname(entry.name).toLowerCase();
+      files.push({
+        absolutePath,
+        relativePath,
+        extension,
+        stem: path.basename(entry.name, extension),
+        snippet: readTextSnippet(absolutePath),
+      });
+
+      if (files.length >= MAX_FRONTEND_SCAN_FILES) {
+        truncated = true;
+        break;
+      }
+    }
+  }
+
+  return {
+    files,
+    truncated,
+    topLevelDirectories: topLevelDirectories.slice(0, 20),
+    topLevelFiles: topLevelFiles.slice(0, 20),
+  };
+}
+
+function isIgnoredSourceVariant(relativePath: string): boolean {
+  return /\.(?:d\.ts|test|spec|stories|story)\.[^.]+$/i.test(relativePath);
+}
+
+function detectFrameworkHints(file: FrontendRepoFile): string[] {
+  const hints = new Set<string>();
+  const normalizedPath = file.relativePath.toLowerCase();
+  const snippet = file.snippet;
+
+  if (file.extension === ".tsx" || file.extension === ".jsx") {
+    hints.add("React");
+  }
+  if (file.extension === ".vue" || /\bcreateApp\s*\(|\bdefineComponent\s*\(/.test(snippet)) {
+    hints.add("Vue");
+  }
+  if (file.extension === ".svelte") {
+    hints.add("Svelte");
+  }
+  if (file.extension === ".astro") {
+    hints.add("Astro");
+  }
+  if (
+    normalizedPath.startsWith("app/") ||
+    normalizedPath.includes("/app/") ||
+    normalizedPath.startsWith("pages/") ||
+    normalizedPath.includes("/pages/")
+  ) {
+    if (
+      /(^|\/)app\/.+\/(page|layout|route|loading|error|not-found)\.[^.]+$/i.test(file.relativePath) ||
+      /(^|\/)app\/(page|layout|route|loading|error|not-found)\.[^.]+$/i.test(file.relativePath) ||
+      /(^|\/)pages\/(_app|_document|_error)\.[^.]+$/i.test(file.relativePath)
+    ) {
+      hints.add("Next.js");
+    }
+  }
+  if (/\+(page|layout)\.[^.]+$/i.test(file.relativePath)) {
+    hints.add("SvelteKit");
+  }
+  if (/\bcreateBrowserRouter\b|\bcreateHashRouter\b|\bRouterProvider\b|<Routes\b|\buseRoutes\s*\(/.test(snippet)) {
+    hints.add("React Router");
+  }
+  if (/\bcreateFileRoute\b|\bcreateRootRoute\b|\brouteTree\b/.test(snippet)) {
+    hints.add("TanStack Router");
+  }
+  if (/\bcreateRouter\s*\(|\bcreateWebHistory\s*\(|\bcreateWebHashHistory\s*\(/.test(snippet)) {
+    hints.add("Vue Router");
+  }
+
+  return [...hints].sort();
+}
+
+function createFrontendMatch(
+  file: FrontendRepoFile,
+  kind: string,
+  score: number,
+  evidence: string[],
+  frameworkHints: string[],
+): FrontendRepoMatch {
+  return {
+    path: file.absolutePath,
+    displayPath: file.relativePath,
+    kind,
+    score,
+    evidence: [...new Set(evidence)],
+    frameworkHints: [...new Set(frameworkHints)].sort(),
+  };
+}
+
+function classifyRoutingFile(file: FrontendRepoFile): FrontendRepoMatch | null {
+  const stem = file.stem.toLowerCase();
+  const normalizedPath = file.relativePath;
+  const evidence: string[] = [];
+  const frameworkHints = detectFrameworkHints(file);
+  let score = 0;
+
+  if (
+    /(^|\/)app\/.+\/(page|layout|route|loading|error|not-found)\.[^.]+$/i.test(normalizedPath) ||
+    /(^|\/)app\/(page|layout|route|loading|error|not-found)\.[^.]+$/i.test(normalizedPath)
+  ) {
+    score += 6;
+    evidence.push("Next app-router convention");
+  }
+  if (/(^|\/)pages\/(_app|_document|_error)\.[^.]+$/i.test(normalizedPath)) {
+    score += 6;
+    evidence.push("Next pages-router root");
+  }
+  if (/\+(page|layout)\.[^.]+$/i.test(normalizedPath)) {
+    score += 6;
+    evidence.push("SvelteKit route convention");
+  }
+  if (/(^|\/)(router|routes|routeTree|routing)\.[^.]+$/i.test(normalizedPath)) {
+    score += 6;
+    evidence.push("Router-style filename");
+  }
+  if (/(^|\/)routes\//i.test(normalizedPath)) {
+    score += 3;
+    evidence.push("routes directory");
+    if (FRONTEND_COMPONENT_EXTENSIONS.has(file.extension)) {
+      score += 2;
+      evidence.push("Component file inside routes");
+    }
+  }
+  if (/\bcreateBrowserRouter\b|\bcreateHashRouter\b|\bRouterProvider\b|<Routes\b|\buseRoutes\s*\(/.test(file.snippet)) {
+    score += 5;
+    evidence.push("React Router API");
+  }
+  if (/\bcreateFileRoute\b|\bcreateRootRoute\b|\brouteTree\b/.test(file.snippet)) {
+    score += 5;
+    evidence.push("TanStack Router API");
+  }
+  if (/\bcreateRouter\s*\(|\bcreateWebHistory\s*\(|\bcreateWebHashHistory\s*\(/.test(file.snippet)) {
+    score += 5;
+    evidence.push("Vue Router API");
+  }
+  if (/\bfrom\s+['"]@remix-run\/react['"]|\bloader\b|\baction\b/.test(file.snippet) && /(^|\/)routes?\//i.test(normalizedPath)) {
+    score += 4;
+    evidence.push("Route-module exports");
+  }
+
+  if (score < 5) {
+    return null;
+  }
+
+  let kind = "routing-file";
+  if (/(^|\/)(app\/layout|pages\/_app|pages\/_document)\.[^.]+$/i.test(normalizedPath)) {
+    kind = "framework-routing-root";
+  } else if (
+    /(^|\/)app\/.+\/(page|layout|route)\.[^.]+$/i.test(normalizedPath) ||
+    /\+(page|layout)\.[^.]+$/i.test(normalizedPath)
+  ) {
+    kind = "filesystem-route";
+  } else if (
+    stem === "router" ||
+    stem === "routes" ||
+    stem === "routetree" ||
+    evidence.some((value) => value.includes("Router"))
+  ) {
+    kind = "router-config";
+  } else if (/(^|\/)routes\//i.test(normalizedPath)) {
+    kind = "route-module";
+  }
+
+  return createFrontendMatch(file, kind, score, evidence, frameworkHints);
+}
+
+function classifyPageComponent(file: FrontendRepoFile): FrontendRepoMatch | null {
+  if (!FRONTEND_COMPONENT_EXTENSIONS.has(file.extension) || isIgnoredSourceVariant(file.relativePath)) {
+    return null;
+  }
+
+  const stem = file.stem.toLowerCase();
+  if (["layout", "_app", "_document", "_error", "router", "routes", "routing", "loading", "error", "not-found"].includes(stem)) {
+    return null;
+  }
+
+  const normalizedPath = file.relativePath;
+  const evidence: string[] = [];
+  const frameworkHints = detectFrameworkHints(file);
+  let score = 0;
+
+  if (/(^|\/)pages\//i.test(normalizedPath)) {
+    score += 4;
+    evidence.push("pages directory");
+  }
+  if (/(^|\/)screens\//i.test(normalizedPath)) {
+    score += 4;
+    evidence.push("screens directory");
+  }
+  if (/(^|\/)views\//i.test(normalizedPath)) {
+    score += 4;
+    evidence.push("views directory");
+  }
+  if (/(^|\/)routes\//i.test(normalizedPath)) {
+    score += 2;
+    evidence.push("routes directory");
+  }
+  if (/(^|\/)app\/.+\/page\.[^.]+$/i.test(normalizedPath) || /(^|\/)app\/page\.[^.]+$/i.test(normalizedPath)) {
+    score += 5;
+    evidence.push("App-router page file");
+  }
+  if (/\+page\.[^.]+$/i.test(normalizedPath)) {
+    score += 5;
+    evidence.push("SvelteKit page file");
+  }
+  if (stem === "page" || stem.endsWith("page")) {
+    score += 5;
+    evidence.push("Page-style filename");
+  }
+  if (stem.endsWith("screen")) {
+    score += 5;
+    evidence.push("Screen-style filename");
+  }
+  if (stem.endsWith("view")) {
+    score += 4;
+    evidence.push("View-style filename");
+  }
+  if (stem === "index" && /(pages|routes|screens|views)\//i.test(normalizedPath)) {
+    score += 3;
+    evidence.push("Index file under route-like directory");
+  }
+  if (/<[A-Za-z][^>]*>|<template\b|<script\b/.test(file.snippet)) {
+    score += 1;
+    evidence.push("Component markup");
+  }
+  if (/\bexport\s+default\b|\bexport\s+function\b|\bconst\s+[A-Z][A-Za-z0-9_]*\s*=/.test(file.snippet)) {
+    score += 1;
+    evidence.push("Component export");
+  }
+
+  if (score < 5) {
+    return null;
+  }
+
+  let kind = "page-component";
+  if (stem.endsWith("screen")) {
+    kind = "screen-component";
+  } else if (stem.endsWith("view")) {
+    kind = "view-component";
+  } else if (/(^|\/)routes\//i.test(normalizedPath)) {
+    kind = "route-component";
+  }
+
+  return createFrontendMatch(file, kind, score, evidence, frameworkHints);
+}
+
+function classifyAppEntryPoint(file: FrontendRepoFile): FrontendRepoMatch | null {
+  if (isIgnoredSourceVariant(file.relativePath)) {
+    return null;
+  }
+
+  const stem = file.stem.toLowerCase();
+  const normalizedPath = file.relativePath;
+  const evidence: string[] = [];
+  const frameworkHints = detectFrameworkHints(file);
+  let score = 0;
+
+  if (["main", "index", "entry-client", "entry-server", "client", "server", "browser"].includes(stem)) {
+    score += 5;
+    evidence.push("Entry-style filename");
+  }
+  if (stem === "app") {
+    score += 3;
+    evidence.push("App-shell filename");
+  }
+  if (/^index\.html$/i.test(normalizedPath) || /(^|\/)index\.html$/i.test(normalizedPath)) {
+    score += 4;
+    evidence.push("HTML entry document");
+  }
+  if (/(^|\/)app\/layout\.[^.]+$/i.test(normalizedPath) || /(^|\/)pages\/_app\.[^.]+$/i.test(normalizedPath)) {
+    score += 6;
+    evidence.push("Framework root file");
+  }
+  if (/\bcreateRoot\s*\(|\bhydrateRoot\s*\(|\bReactDOM\.render\s*\(|\bcreateApp\s*\(|\bnew\s+Vue\s*\(|\.mount\s*\(|\bbootstrapApplication\s*\(/.test(file.snippet)) {
+    score += 5;
+    evidence.push("Client bootstrap code");
+  }
+  if (/\brenderToPipeableStream\b|\brenderToReadableStream\b|\brenderToString\b|\bcreateServer\b/.test(file.snippet)) {
+    score += 4;
+    evidence.push("Server render/bootstrap code");
+  }
+
+  if (score < 5) {
+    return null;
+  }
+
+  let kind = "entry-point";
+  if (/\brenderToPipeableStream\b|\brenderToReadableStream\b|\brenderToString\b|\bcreateServer\b/.test(file.snippet) || stem.includes("server")) {
+    kind = "server-entry";
+  } else if (/\bcreateRoot\s*\(|\bhydrateRoot\s*\(|\bReactDOM\.render\s*\(|\bcreateApp\s*\(|\bnew\s+Vue\s*\(|\.mount\s*\(|\bbootstrapApplication\s*\(/.test(file.snippet)) {
+    kind = "bootstrap-entry";
+  } else if (stem === "app" || /(^|\/)app\/layout\.[^.]+$/i.test(normalizedPath) || /(^|\/)pages\/_app\.[^.]+$/i.test(normalizedPath)) {
+    kind = "app-shell";
+  }
+
+  return createFrontendMatch(file, kind, score, evidence, frameworkHints);
+}
+
+function dedupeAndSortMatches(matches: FrontendRepoMatch[]): FrontendRepoMatch[] {
+  const deduped = new Map<string, FrontendRepoMatch>();
+  for (const match of matches) {
+    const existing = deduped.get(match.path);
+    if (!existing || match.score > existing.score) {
+      deduped.set(match.path, match);
+    }
+  }
+  return [...deduped.values()].sort((a, b) => b.score - a.score || a.displayPath.localeCompare(b.displayPath));
+}
+
+function detectLikelySourceRoot(relativePath: string): string | null {
+  const segments = toPortablePath(relativePath).split("/").filter(Boolean);
+  for (let index = 0; index < segments.length - 1; index += 1) {
+    if (FRONTEND_SOURCE_ROOT_SEGMENTS.has(segments[index])) {
+      return segments.slice(0, index + 1).join("/");
+    }
+  }
+  return null;
+}
+
+function analyzeFrontendRepo(root: string): FrontendRepoAnalysis {
+  const { files, truncated, topLevelDirectories, topLevelFiles } = scanFrontendFiles(root);
+  const frameworkSignals = new Set<string>();
+  const sourceRootCounts = new Map<string, number>();
+  const routingFiles: FrontendRepoMatch[] = [];
+  const pageComponents: FrontendRepoMatch[] = [];
+  const appEntryPoints: FrontendRepoMatch[] = [];
+
+  for (const file of files) {
+    const sourceRoot = detectLikelySourceRoot(file.relativePath);
+    if (sourceRoot) {
+      sourceRootCounts.set(sourceRoot, (sourceRootCounts.get(sourceRoot) ?? 0) + 1);
+    }
+
+    for (const hint of detectFrameworkHints(file)) {
+      frameworkSignals.add(hint);
+    }
+
+    const routingFile = classifyRoutingFile(file);
+    if (routingFile) {
+      routingFiles.push(routingFile);
+    }
+
+    const pageComponent = classifyPageComponent(file);
+    if (pageComponent) {
+      pageComponents.push(pageComponent);
+    }
+
+    const appEntryPoint = classifyAppEntryPoint(file);
+    if (appEntryPoint) {
+      appEntryPoints.push(appEntryPoint);
+    }
+  }
+
+  const likelySourceRoots = [...sourceRootCounts.entries()]
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .map(([sourceRoot]) => sourceRoot)
+    .slice(0, 8);
+
+  return {
+    root,
+    scannedFiles: files.length,
+    truncated,
+    topLevelDirectories,
+    topLevelFiles,
+    likelySourceRoots,
+    frameworkSignals: [...frameworkSignals].sort(),
+    routingFiles: dedupeAndSortMatches(routingFiles),
+    pageComponents: dedupeAndSortMatches(pageComponents),
+    appEntryPoints: dedupeAndSortMatches(appEntryPoints),
+  };
+}
+
+function buildFrontendStructureSummary(
+  analysis: FrontendRepoAnalysis,
+  sampleSize: number,
+): string {
+  const parts: string[] = [];
+  if (analysis.frameworkSignals.length > 0) {
+    parts.push(`Detected ${analysis.frameworkSignals.slice(0, 4).join(", ")}`);
+  } else {
+    parts.push("Detected frontend-oriented source files");
+  }
+  if (analysis.likelySourceRoots.length > 0) {
+    parts.push(`Primary source roots: ${analysis.likelySourceRoots.slice(0, 4).join(", ")}`);
+  }
+  if (analysis.appEntryPoints.length > 0) {
+    parts.push(`Likely entry points: ${analysis.appEntryPoints.slice(0, sampleSize).map((match) => match.displayPath).join(", ")}`);
+  }
+  if (analysis.routingFiles.length > 0) {
+    parts.push(`Routing surfaces: ${analysis.routingFiles.slice(0, sampleSize).map((match) => match.displayPath).join(", ")}`);
+  }
+  if (analysis.pageComponents.length > 0) {
+    parts.push(`Page-like components: ${analysis.pageComponents.slice(0, sampleSize).map((match) => match.displayPath).join(", ")}`);
+  }
+  if (analysis.truncated) {
+    parts.push(`Scan truncated after ${analysis.scannedFiles} relevant files`);
+  }
+  return `${parts.join(". ")}.`;
+}
+
+function createFindRoutingFilesTool(cwd: string) {
+  return tool({
+    description:
+      "Find likely frontend routing files, router configs, and framework route roots " +
+      "without relying on shell search loops.",
+    inputSchema: z.object({
+      path: z.string().optional().describe("Optional repo-relative or absolute directory to scan"),
+      limit: z.number().optional().default(20).describe("Maximum matches to return (1-50)"),
+    }),
+    execute: async ({ path: inputPath, limit }) => {
+      const resolved = resolveRepoAwareRoot(cwd, inputPath);
+      if (!resolved.root) {
+        return { matches: [], error: resolved.error ?? "Unable to resolve search root." };
+      }
+      const maxMatches = clampPositiveInt(limit, 20, 50);
+      const analysis = analyzeFrontendRepo(resolved.root);
+      return {
+        root: resolved.root,
+        matches: analysis.routingFiles.slice(0, maxMatches),
+        count: analysis.routingFiles.length,
+        scannedFiles: analysis.scannedFiles,
+        truncated: analysis.truncated,
+        frameworkSignals: analysis.frameworkSignals,
+      };
+    },
+  });
+}
+
+function createFindPageComponentsTool(cwd: string) {
+  return tool({
+    description:
+      "Find likely frontend page, screen, and view components using file layout and content heuristics.",
+    inputSchema: z.object({
+      path: z.string().optional().describe("Optional repo-relative or absolute directory to scan"),
+      limit: z.number().optional().default(20).describe("Maximum matches to return (1-50)"),
+    }),
+    execute: async ({ path: inputPath, limit }) => {
+      const resolved = resolveRepoAwareRoot(cwd, inputPath);
+      if (!resolved.root) {
+        return { matches: [], error: resolved.error ?? "Unable to resolve search root." };
+      }
+      const maxMatches = clampPositiveInt(limit, 20, 50);
+      const analysis = analyzeFrontendRepo(resolved.root);
+      return {
+        root: resolved.root,
+        matches: analysis.pageComponents.slice(0, maxMatches),
+        count: analysis.pageComponents.length,
+        scannedFiles: analysis.scannedFiles,
+        truncated: analysis.truncated,
+      };
+    },
+  });
+}
+
+function createFindAppEntryPointsTool(cwd: string) {
+  return tool({
+    description:
+      "Find likely frontend app entry points such as bootstrap files, framework roots, and app shells.",
+    inputSchema: z.object({
+      path: z.string().optional().describe("Optional repo-relative or absolute directory to scan"),
+      limit: z.number().optional().default(20).describe("Maximum matches to return (1-50)"),
+    }),
+    execute: async ({ path: inputPath, limit }) => {
+      const resolved = resolveRepoAwareRoot(cwd, inputPath);
+      if (!resolved.root) {
+        return { matches: [], error: resolved.error ?? "Unable to resolve search root." };
+      }
+      const maxMatches = clampPositiveInt(limit, 20, 50);
+      const analysis = analyzeFrontendRepo(resolved.root);
+      return {
+        root: resolved.root,
+        matches: analysis.appEntryPoints.slice(0, maxMatches),
+        count: analysis.appEntryPoints.length,
+        scannedFiles: analysis.scannedFiles,
+        truncated: analysis.truncated,
+        frameworkSignals: analysis.frameworkSignals,
+      };
+    },
+  });
+}
+
+function createSummarizeFrontendStructureTool(cwd: string) {
+  return tool({
+    description:
+      "Summarize the frontend structure of a repo or subdirectory, including source roots, framework hints, " +
+      "entry points, routing files, and page-like components.",
+    inputSchema: z.object({
+      path: z.string().optional().describe("Optional repo-relative or absolute directory to scan"),
+      sampleSize: z.number().optional().default(5).describe("Examples to include per category (1-10)"),
+    }),
+    execute: async ({ path: inputPath, sampleSize }) => {
+      const resolved = resolveRepoAwareRoot(cwd, inputPath);
+      if (!resolved.root) {
+        return { summary: "", error: resolved.error ?? "Unable to resolve search root." };
+      }
+      const maxExamples = clampPositiveInt(sampleSize, 5, 10);
+      const analysis = analyzeFrontendRepo(resolved.root);
+      return {
+        root: resolved.root,
+        summary: buildFrontendStructureSummary(analysis, maxExamples),
+        scannedFiles: analysis.scannedFiles,
+        truncated: analysis.truncated,
+        frameworkSignals: analysis.frameworkSignals,
+        likelySourceRoots: analysis.likelySourceRoots,
+        topLevelDirectories: analysis.topLevelDirectories,
+        topLevelFiles: analysis.topLevelFiles,
+        entryPoints: analysis.appEntryPoints.slice(0, maxExamples),
+        routingFiles: analysis.routingFiles.slice(0, maxExamples),
+        pageComponents: analysis.pageComponents.slice(0, maxExamples),
+      };
     },
   });
 }
@@ -907,21 +1681,154 @@ function createGitLogTool(cwd: string) {
   });
 }
 
-function createAskUserTool(onAskUser?: (question: string) => Promise<string>) {
+const askUserToolOptionSchema = z.object({
+  label: z.string().describe("User-facing option label"),
+  value: z.string().optional().describe("Optional stable value to return for this option"),
+  description: z.string().optional().describe("Optional short sentence explaining the option"),
+  recommended: z.boolean().optional().describe("Whether this option should be highlighted as recommended"),
+  preview: z.string().optional().describe("Optional preview content shown alongside the option"),
+  previewFormat: z.enum(["markdown", "html"]).optional().describe("Preview rendering format"),
+});
+
+const askUserToolQuestionSchema = z.object({
+  id: z.string().optional().describe("Optional stable identifier for this question"),
+  header: z.string().optional().describe("Short question header shown in the UI"),
+  question: z.string().describe("The question to ask the user"),
+  options: z.array(askUserToolOptionSchema).optional().describe("Optional multiple-choice options"),
+  multiSelect: z.boolean().optional().describe("Allow selecting more than one option"),
+  allowsFreeform: z.boolean().optional().describe("Allow typing a custom answer"),
+  isSecret: z.boolean().optional().describe("Hide typed input while the user answers"),
+  defaultAssumption: z.string().nullable().optional().describe("Default assumption if the user skips this question"),
+  impact: z.string().nullable().optional().describe("Why this question matters"),
+});
+
+const todoToolItemSchema = z.object({
+  id: z.string().optional().describe("Stable todo id. Reuse ids when updating an existing task."),
+  content: z.string().optional().describe("Primary task description."),
+  description: z.string().optional().describe("Alternate task description field."),
+  activeForm: z.string().optional().describe("Optional active-progress wording for the task."),
+  text: z.string().optional().describe("Alternate text field for compatibility."),
+  status: z.enum(["pending", "in_progress", "inProgress", "completed"]).describe("Task status."),
+});
+
+function normalizeTodoToolItems(todos: unknown): TodoToolItem[] | null {
+  if (!Array.isArray(todos)) return null;
+  return todos.flatMap((todo, index) => {
+    if (!todo || typeof todo !== "object") return [];
+    const record = todo as Record<string, unknown>;
+    const description = [
+      record.content,
+      record.activeForm,
+      record.description,
+      record.text,
+    ].find((candidate): candidate is string => typeof candidate === "string" && candidate.trim().length > 0)?.trim();
+    if (!description) return [];
+
+    const rawStatus = typeof record.status === "string" ? record.status : "";
+    const status: TodoToolItem["status"] =
+      rawStatus === "completed"
+        ? "completed"
+        : rawStatus === "in_progress" || rawStatus === "inProgress"
+          ? "in_progress"
+          : "pending";
+    const explicitId = typeof record.id === "string" && record.id.trim().length > 0 ? record.id.trim() : null;
+    return [{
+      id: explicitId ?? `todo-${index}`,
+      description,
+      status,
+    }];
+  });
+}
+
+function createTodoWriteTool(args: {
+  getItems?: () => TodoToolItem[];
+  onUpdate?: (items: TodoToolItem[]) => void;
+}) {
+  let todoItems = args.getItems?.() ?? [];
+  return tool({
+    description:
+      "Create or update the current task list for this chat. " +
+      "Use this to track a short, concrete plan and keep exactly one item in progress when possible.",
+    inputSchema: z.object({
+      todos: z.array(todoToolItemSchema).describe("The full current task list."),
+    }),
+    execute: async ({ todos }) => {
+      const normalized = normalizeTodoToolItems(todos);
+      if (normalized == null) {
+        return { updated: false, error: "Provide a todos array." };
+      }
+      todoItems = normalized;
+      args.onUpdate?.(normalized);
+      return {
+        updated: true,
+        count: normalized.length,
+        todos: normalized.map((item) => ({
+          id: item.id,
+          content: item.description,
+          status: item.status,
+        })),
+      };
+    },
+  });
+}
+
+function createTodoReadTool(args: {
+  getItems?: () => TodoToolItem[];
+}) {
+  let todoItems = args.getItems?.() ?? [];
+  return tool({
+    description: "Read the current task list for this chat session.",
+    inputSchema: z.object({}),
+    execute: async () => {
+      todoItems = args.getItems?.() ?? todoItems;
+      return {
+        count: todoItems.length,
+        todos: todoItems.map((item) => ({
+          id: item.id,
+          content: item.description,
+          status: item.status,
+        })),
+      };
+    },
+  });
+}
+
+function createAskUserTool(
+  onAskUser?: (input: AskUserToolInput) => Promise<string | AskUserToolResult>,
+) {
   return tool({
     description:
       "Ask the user a clarifying question when you need more information to proceed. " +
       "Use sparingly — only when truly blocked.",
     inputSchema: z.object({
-      question: z.string().describe("The question to ask the user"),
-    }),
-    execute: async ({ question }) => {
+      question: z.string().optional().describe("Simple text question to ask the user"),
+      title: z.string().optional().describe("Optional modal title for a richer prompt"),
+      body: z.string().optional().describe("Optional supporting context shown above the question list"),
+      questions: z.array(askUserToolQuestionSchema).optional().describe("Optional structured questions with choices"),
+    }).refine(
+      (value) => {
+        const question = typeof value.question === "string" ? value.question.trim() : "";
+        const body = typeof value.body === "string" ? value.body.trim() : "";
+        return question.length > 0 || body.length > 0 || Boolean(value.questions?.length);
+      },
+      { message: "Provide question, body, or questions." },
+    ),
+    execute: async (input) => {
       if (!onAskUser) {
         return { answer: "", error: "askUser callback not configured" };
       }
       try {
-        const answer = await onAskUser(question);
-        return { answer };
+        const response = await onAskUser(input);
+        if (typeof response === "string") {
+          return { answer: response };
+        }
+        return {
+          answer: response.answer ?? "",
+          ...(response.answers ? { answers: response.answers } : {}),
+          ...(response.responseText !== undefined ? { responseText: response.responseText } : {}),
+          ...(response.decision !== undefined ? { decision: response.decision } : {}),
+          ...(response.error !== undefined ? { error: response.error } : {}),
+        };
       } catch (err) {
         return {
           answer: "",
@@ -1022,6 +1929,8 @@ export function createUniversalToolSet(
     onAskUser,
     onApprovalRequest,
     onMemoryUpdateCore,
+    onTodoUpdate,
+    getTodoItems,
     sandboxConfig,
   } = opts;
   const effectiveSandboxConfig = sandboxConfig ?? DEFAULT_WORKER_SANDBOX_CONFIG;
@@ -1029,23 +1938,23 @@ export function createUniversalToolSet(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const tools: Record<string, Tool<any, any>> = {
     // Read-only tools (auto-allowed in all modes)
-    readFile: readFileRangeTool,
-    grep: grepSearchTool,
-    glob: globSearchTool,
-    listDir: createListDirTool(),
+    readFile: createReadFileRangeTool(cwd),
+    grep: createGrepSearchTool(cwd),
+    glob: createGlobSearchTool(cwd),
+    listDir: createListDirTool(cwd),
+    findRoutingFiles: createFindRoutingFilesTool(cwd),
+    findPageComponents: createFindPageComponentsTool(cwd),
+    findAppEntryPoints: createFindAppEntryPointsTool(cwd),
+    summarizeFrontendStructure: createSummarizeFrontendStructureTool(cwd),
     gitStatus: createGitStatusTool(cwd),
     gitDiff: createGitDiffTool(cwd),
     gitLog: createGitLogTool(cwd),
     webFetch: webFetchTool,
     webSearch: webSearchTool,
 
-    // Write tools (auto in edit+full-auto, gated in plan)
-    editFile: createEditFileTool(cwd, permissionMode, effectiveSandboxConfig, onApprovalRequest, turnMemoryPolicyState),
-    writeFile: createWriteFileTool(cwd, permissionMode, effectiveSandboxConfig, onApprovalRequest, turnMemoryPolicyState),
-
-    // Bash (auto only in full-auto, gated in plan+edit)
-    // Default sandbox applies unless the caller provides an explicit override.
-    bash: createBashTool(cwd, permissionMode, effectiveSandboxConfig, onApprovalRequest, turnMemoryPolicyState),
+    // Planning/task state
+    TodoWrite: createTodoWriteTool({ getItems: getTodoItems, onUpdate: onTodoUpdate }),
+    TodoRead: createTodoReadTool({ getItems: getTodoItems }),
 
     // Interactive
     askUser: createAskUserTool(onAskUser),
@@ -1053,6 +1962,28 @@ export function createUniversalToolSet(
 
   if (permissionMode === "plan") {
     tools.exitPlanMode = createExitPlanModeTool(onApprovalRequest);
+  } else {
+    tools.editFile = createEditFileTool(
+      cwd,
+      permissionMode,
+      effectiveSandboxConfig,
+      onApprovalRequest,
+      turnMemoryPolicyState,
+    );
+    tools.writeFile = createWriteFileTool(
+      cwd,
+      permissionMode,
+      effectiveSandboxConfig,
+      onApprovalRequest,
+      turnMemoryPolicyState,
+    );
+    tools.bash = createBashTool(
+      cwd,
+      permissionMode,
+      effectiveSandboxConfig,
+      onApprovalRequest,
+      turnMemoryPolicyState,
+    );
   }
 
   // Conditionally add memory tools
@@ -1064,14 +1995,14 @@ export function createUniversalToolSet(
       turnMemoryPolicyState,
       onMemoryWriteEvent,
     });
-    Object.assign(tools, memTools);
-  } else {
-    console.warn(
-      `[ADE] Memory tools not registered for this session (memoryService=${!!memoryService}, projectId=${!!projectId}). Agents will not have memory capabilities.`,
-    );
+    if (permissionMode === "plan") {
+      tools.memorySearch = memTools.memorySearch;
+    } else {
+      Object.assign(tools, memTools);
+    }
   }
 
-  if (onMemoryUpdateCore) {
+  if (onMemoryUpdateCore && permissionMode !== "plan") {
     tools.memoryUpdateCore = createMemoryUpdateCoreTool(onMemoryUpdateCore);
   }
 

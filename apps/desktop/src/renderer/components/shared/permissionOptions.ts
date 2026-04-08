@@ -257,26 +257,26 @@ export function safetyColors(safety: SafetyLevel) {
 
 /**
  * Map a ProviderFamily string to the permission-family key used by
- * MissionProviderPermissions ("claude" | "codex" | "unified").
+ * MissionProviderPermissions ("claude" | "codex" | "opencode").
  *
  * Only CLI-wrapped anthropic → "claude" and CLI-wrapped openai → "codex".
- * All API / local models (even anthropic-api or openai-api) use "unified".
+ * All API / local models (even anthropic-api or openai-api) use "opencode".
  */
-export function familyToPermissionKey(family: string, isCliWrapped: boolean): "claude" | "codex" | "unified" | "cursor" {
+export function familyToPermissionKey(family: string, isCliWrapped: boolean): "claude" | "codex" | "opencode" | "cursor" {
   if (isCliWrapped) {
     if (family === "anthropic") return "claude";
     if (family === "openai") return "codex";
     if (family === "cursor") return "cursor";
   }
-  return "unified";
+  return "opencode";
 }
 
 /** Human-readable label for a permission family key */
-export function permissionFamilyLabel(key: "claude" | "codex" | "cursor" | "unified"): string {
+export function permissionFamilyLabel(key: "claude" | "codex" | "cursor" | "opencode"): string {
   switch (key) {
     case "claude": return "Claude Code workers";
     case "codex": return "Codex workers";
     case "cursor": return "Cursor workers";
-    case "unified": return "API / Local model workers";
+    case "opencode": return "OpenCode workers";
   }
 }

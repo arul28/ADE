@@ -7,7 +7,7 @@ import type {
   AgentChatExecutionMode,
   AgentChatFileRef,
   AgentChatInteractionMode,
-  AgentChatUnifiedPermissionMode,
+  AgentChatOpenCodePermissionMode,
   ComputerUsePolicy,
 } from "../../shared/types";
 
@@ -24,7 +24,7 @@ export interface ComposerDraftSnapshot {
   codexApprovalPolicy: AgentChatCodexApprovalPolicy;
   codexSandbox: AgentChatCodexSandbox;
   codexConfigSource: AgentChatCodexConfigSource;
-  unifiedPermissionMode: AgentChatUnifiedPermissionMode;
+  opencodePermissionMode: AgentChatOpenCodePermissionMode;
   computerUsePolicy: ComputerUsePolicy;
   attachments: AgentChatFileRef[];
   includeProjectDocs: boolean;

@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from "react";
 import type { TerminalSessionSummary } from "../../../shared/types";
 import { isChatToolType } from "../../lib/sessions";
+import { resolveTrackedCliResumeCommand } from "./cliLaunch";
 
 export type SessionContextMenuState = {
   session: TerminalSessionSummary;
@@ -17,7 +18,7 @@ type SessionContextMenuProps = {
   onCopyResumeCommand: (command: string) => void;
   onGoToLane: (session: TerminalSessionSummary) => void;
   onCopySessionId: (id: string) => void;
-  onRename: (sessionId: string, newTitle: string) => void;
+  onRename: (session: TerminalSessionSummary, newTitle: string) => void;
 };
 
 export function SessionContextMenu({
@@ -56,14 +57,15 @@ export function SessionContextMenu({
   const { session, x, y } = menu;
   const isRunning = session.status === "running";
   const isChat = isChatToolType(session.toolType);
-  const canResume = !isRunning && Boolean(session.resumeCommand);
+  const resumeCommand = resolveTrackedCliResumeCommand(session);
+  const canResume = !isRunning && Boolean(resumeCommand);
 
   const commitRename = () => {
     if (finalizedRef.current) return;
     finalizedRef.current = true;
     const trimmed = draft.trim();
     if (trimmed.length > 0) {
-      onRename(session.id, trimmed);
+      onRename(session, trimmed);
     }
     onClose();
   };
@@ -79,8 +81,7 @@ export function SessionContextMenu({
         style={{ left: x, top: y }}
         onPointerDown={(e) => e.stopPropagation()}
       >
-        {/* Rename (chat sessions only) */}
-        {isChat && renaming && (
+        {renaming && (
           <div className="px-3 py-1.5">
             <input
               ref={inputRef}
@@ -99,7 +100,7 @@ export function SessionContextMenu({
             />
           </div>
         )}
-        {isChat && !renaming && (
+        {!renaming && (
           <button
             className="flex w-full items-center gap-2 rounded px-3 py-1.5 text-left text-xs hover:bg-muted/40 transition-colors"
             onClick={() => { setDraft(session.title); setRenaming(true); }}
@@ -135,10 +136,10 @@ export function SessionContextMenu({
           </button>
         ) : null}
 
-        {session.resumeCommand ? (
+        {resumeCommand ? (
           <button
             className="flex w-full items-center gap-2 rounded px-3 py-1.5 text-left text-xs hover:bg-muted/40 transition-colors"
-            onClick={() => { onCopyResumeCommand(session.resumeCommand!); onClose(); }}
+            onClick={() => { onCopyResumeCommand(resumeCommand); onClose(); }}
           >
             Copy resume command
           </button>

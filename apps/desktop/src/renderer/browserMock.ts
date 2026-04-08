@@ -1738,7 +1738,7 @@ if (typeof window !== "undefined" && !(window as any).ade) {
           },
           permissionConfig: {
             providers: {
-              unified: "edit",
+              opencode: "edit",
               claude: "plan",
               codexSandbox: "workspace-write",
               allowedTools: ["git", "github"],

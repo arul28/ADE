@@ -1,9 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
   createDynamicLocalModelDescriptor,
+  createDynamicOpenCodeModelDescriptor,
+  decodeOpenCodeRegistryId,
+  encodeOpenCodeRegistryId,
+  ensureOpenCodeBaseURL,
   getAvailableModels,
   getDefaultModelDescriptor,
   getModelById,
+  getModelDescriptorForPermissionMode,
   getRuntimeModelRefForDescriptor,
   listModelDescriptorsForProvider,
   MODEL_REGISTRY,
@@ -15,11 +20,28 @@ import type { ProviderFamily } from "./modelRegistry";
 import { describeModelSource } from "../renderer/lib/modelOptions";
 
 describe("modelRegistry", () => {
+  it("round-trips OpenCode registry ids with slashes inside model ids", () => {
+    const id = encodeOpenCodeRegistryId("lmstudio", "openai/gpt-oss-20b");
+    expect(id).toMatch(/^opencode\/lmstudio\//);
+    expect(decodeOpenCodeRegistryId(id)).toEqual({
+      openCodeProviderId: "lmstudio",
+      openCodeModelId: "openai/gpt-oss-20b",
+    });
+    const d = createDynamicOpenCodeModelDescriptor("", {
+      openCodeProviderId: "lmstudio",
+      openCodeModelId: "openai/gpt-oss-20b",
+      displayName: "GPT OSS 20B",
+    });
+    expect(d.id).toBe(id);
+    expect(d.openCodeProviderId).toBe("lmstudio");
+    expect(d.openCodeModelId).toBe("openai/gpt-oss-20b");
+  });
+
   it("resolves runtime-discovered local model ids", () => {
     const descriptor = resolveModelDescriptor("ollama/qwen2.5-coder:32b");
     expect(descriptor).toBeTruthy();
     expect(descriptor?.family).toBe("ollama");
-    expect(descriptor?.sdkModelId).toBe("qwen2.5-coder:32b");
+    expect(descriptor?.providerModelId).toBe("qwen2.5-coder:32b");
     expect(descriptor?.displayName).toBe("qwen2.5-coder:32b (Ollama)");
   });
 
@@ -27,14 +49,14 @@ describe("modelRegistry", () => {
     const descriptor = getModelById("lmstudio/meta-llama-3.1-70b-instruct");
     expect(descriptor).toBeTruthy();
     expect(descriptor?.family).toBe("lmstudio");
-    expect(descriptor?.sdkProvider).toBe("@ai-sdk/openai-compatible");
+    expect(descriptor?.providerRoute).toBe("openai-compatible");
     expect(descriptor?.authTypes).toEqual(["local"]);
   });
 
   it("creates stable descriptor ids for local models", () => {
-    const descriptor = createDynamicLocalModelDescriptor("vllm", "Qwen/Qwen2.5-Coder");
-    expect(descriptor.id).toBe("vllm/Qwen/Qwen2.5-Coder");
-    expect(descriptor.sdkModelId).toBe("Qwen/Qwen2.5-Coder");
+    const descriptor = createDynamicLocalModelDescriptor("lmstudio", "Qwen/Qwen2.5-Coder");
+    expect(descriptor.id).toBe("lmstudio/Qwen/Qwen2.5-Coder");
+    expect(descriptor.providerModelId).toBe("Qwen/Qwen2.5-Coder");
   });
 
   it("keeps only the allowed OpenAI chat models in the registry defaults", () => {
@@ -48,26 +70,20 @@ describe("modelRegistry", () => {
       "openai/gpt-5.1-codex-mini",
     ]);
 
-    expect(getAvailableModels([{ type: "api-key", provider: "openai" }]).map((model) => model.id)).toEqual([
-      "openai/gpt-5.4-pro",
-      "openai/gpt-5.4",
-      "openai/gpt-5.4-mini",
-      "openai/gpt-5.2",
-      "openai/o4-mini",
-    ]);
+    // API-key OpenAI models are now discovered dynamically through OpenCode,
+    // so the static registry yields no hits for api-key auth alone.
+    expect(getAvailableModels([{ type: "api-key", provider: "openai" }]).map((model) => model.id)).toEqual([]);
     expect(getDefaultModelDescriptor("codex")?.id).toBe("openai/gpt-5.4-codex");
-    expect(getDefaultModelDescriptor("unified")?.id).toBe("openai/gpt-5.4-pro");
   });
 
-  it("exposes GPT-5.4-Mini with the expected reasoning tiers", () => {
-    expect(getModelById("openai/gpt-5.4-mini")).toMatchObject({
+  it("exposes GPT-5.4-Mini-Codex with the expected reasoning tiers", () => {
+    expect(getModelById("openai/gpt-5.4-mini-codex")).toMatchObject({
       displayName: "GPT-5.4-Mini",
       reasoningTiers: ["low", "medium", "high", "xhigh"],
     });
   });
 
-  it("marks API-key models as API only in the shared model source helper", () => {
-    expect(describeModelSource(getModelById("openai/gpt-5.4-mini")!)).toBe("API only");
+  it("marks CLI-wrapped models as CLI subscription in the shared model source helper", () => {
     expect(describeModelSource(getModelById("openai/gpt-5.4-codex")!)).toBe("CLI subscription");
   });
 
@@ -76,10 +92,22 @@ describe("modelRegistry", () => {
     expect(resolveModelDescriptor("nonexistent/model-id")).toBeUndefined();
   });
 
-  it("resolves gpt-5.4 shortId to the API-key variant, not the codex variant", () => {
+  it("getModelDescriptorForPermissionMode matches getModelById for known locals", () => {
+    const id = "ollama/qwen2.5-coder:32b";
+    expect(getModelDescriptorForPermissionMode(id)).toEqual(getModelById(id));
+  });
+
+  it("getModelDescriptorForPermissionMode yields guarded local for ollama/auto when getModelById is undefined", () => {
+    expect(getModelById("ollama/auto")).toBeUndefined();
+    const perm = getModelDescriptorForPermissionMode("ollama/auto");
+    expect(perm?.family).toBe("ollama");
+    expect(perm?.harnessProfile).toBe("guarded");
+    expect(perm?.authTypes).toContain("local");
+  });
+
+  it("returns undefined for bare gpt-5.4 alias since API-key variants are now OpenCode-dynamic", () => {
     const resolved = resolveModelAlias("gpt-5.4");
-    expect(resolved).toBeTruthy();
-    expect(resolved?.id).toBe("openai/gpt-5.4");
+    expect(resolved).toBeUndefined();
   });
 
   it("resolves gpt-5.4 to the Codex wrapper when the provider is codex", () => {
@@ -126,5 +154,20 @@ describe("modelRegistry", () => {
     expect(resolveModelAlias("   ")).toBeUndefined();
     expect(resolveModelDescriptor("")).toBeUndefined();
     expect(resolveModelDescriptor("   ")).toBeUndefined();
+  });
+
+  describe("ensureOpenCodeBaseURL", () => {
+    it("appends /v1 when missing", () => {
+      expect(ensureOpenCodeBaseURL("http://localhost:1234")).toBe("http://localhost:1234/v1");
+    });
+    it("strips trailing slash before appending /v1", () => {
+      expect(ensureOpenCodeBaseURL("http://localhost:1234/")).toBe("http://localhost:1234/v1");
+    });
+    it("preserves existing /v1 suffix", () => {
+      expect(ensureOpenCodeBaseURL("http://localhost:1234/v1")).toBe("http://localhost:1234/v1");
+    });
+    it("strips trailing slash from /v1/", () => {
+      expect(ensureOpenCodeBaseURL("http://localhost:1234/v1/")).toBe("http://localhost:1234/v1");
+    });
   });
 });

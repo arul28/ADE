@@ -1,37 +1,72 @@
-import { tool } from "ai";
+import { executableTool as tool } from "./executableTool";
 import { z } from "zod";
 import fs from "node:fs";
 import path from "node:path";
+import { getErrorMessage, resolvePathWithinRoot } from "../../shared/utils";
 
 const SKIP_DIRS = new Set(["node_modules", ".git", "dist", "build", ".next", "coverage"]);
 
-export const globSearchTool = tool({
-  description: "Find files matching a glob pattern. Returns sorted file paths.",
-  inputSchema: z.object({
-    pattern: z
-      .string()
-      .describe("Glob pattern (e.g., '**/*.ts', 'src/**/*.test.tsx')"),
-    path: z
-      .string()
-      .optional()
-      .describe("Base directory to search from. Defaults to the working directory."),
-  }),
-  execute: async ({ pattern, path: basePath }) => {
-    const root = basePath || process.cwd();
+type GlobMatch = {
+  path: string;
+  displayPath: string;
+};
 
-    try {
-      const files = walkAndMatch(root, pattern);
-      files.sort();
-      return { files, count: files.length };
-    } catch (err) {
-      return {
-        files: [],
-        count: 0,
-        error: `Glob search failed: ${err instanceof Error ? err.message : String(err)}`,
-      };
-    }
-  },
-});
+function toDisplayPath(root: string, filePath: string): string {
+  return path.relative(root, filePath).replace(/\\/g, "/");
+}
+
+export function createGlobSearchTool(cwd: string) {
+  return tool({
+    description: "Find files matching a glob pattern within the active repo root. Returns absolute paths plus displayPath values.",
+    inputSchema: z.object({
+      pattern: z
+        .string()
+        .describe("Glob pattern (e.g., '**/*.ts', 'src/**/*.test.tsx')"),
+      path: z
+        .string()
+        .optional()
+        .describe("Base directory to search from. Defaults to the active repo root."),
+    }),
+    execute: async ({ pattern, path: basePath }) => {
+      const root = fs.realpathSync(cwd);
+      let searchRoot: string;
+      try {
+        searchRoot = resolvePathWithinRoot(root, basePath ?? ".", { allowMissing: false });
+      } catch (error) {
+        const message = getErrorMessage(error);
+        return {
+          files: [],
+          count: 0,
+          error: message === "Path escapes root"
+            ? `Glob search path is outside the repo root: ${basePath ?? "."}`
+            : `Glob search failed: ${message}`,
+        };
+      }
+
+      try {
+        const files = walkAndMatch(searchRoot, pattern);
+        files.sort();
+        const matches: GlobMatch[] = files.map((filePath) => ({
+          path: filePath,
+          displayPath: toDisplayPath(root, filePath),
+        }));
+        return {
+          root: searchRoot,
+          files,
+          displayFiles: matches.map((match) => match.displayPath),
+          matches,
+          count: files.length,
+        };
+      } catch (err) {
+        return {
+          files: [],
+          count: 0,
+          error: `Glob search failed: ${getErrorMessage(err)}`,
+        };
+      }
+    },
+  });
+}
 
 function walkAndMatch(root: string, globPattern: string, maxFiles = 5000): string[] {
   const results: string[] = [];
@@ -93,3 +128,5 @@ function globPatternToRegex(glob: string): RegExp {
   const joined = regexParts.join("/").replace(/\/\(\?:\.\+\/\)\?\//g, "/(?:.+/)?");
   return new RegExp(`^${joined}$`);
 }
+
+export const globSearchTool = createGlobSearchTool(process.cwd());

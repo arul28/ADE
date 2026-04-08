@@ -9,6 +9,7 @@ import {
   resolveModelAlias,
   resolveModelDescriptor,
   resolveProviderGroupForModel,
+  type ModelDescriptor,
 } from "../../../shared/modelRegistry";
 import type {
   AgentChatExecutionMode,
@@ -73,7 +74,7 @@ export function resolveAdeMcpServerLaunch(args: {
   return resolveDesktopAdeMcpLaunch(args);
 }
 
-export function getUnifiedUnsupportedModelReason(modelRef: string): string | null {
+export function getProviderAdapterUnsupportedModelReason(modelRef: string): string | null {
   const descriptor = resolveModelDescriptor(modelRef);
   if (!descriptor) {
     return `Model '${modelRef}' is not registered.`;
@@ -81,7 +82,7 @@ export function getUnifiedUnsupportedModelReason(modelRef: string): string | nul
   const cliProvider = resolveCliProviderForModel(descriptor);
   if (cliProvider) return null;
   const executionPath = classifyWorkerExecutionPath(descriptor);
-  return `Model '${descriptor.id}' requires ${executionPath} execution (${descriptor.family}), but the unified worker adapter currently supports only Claude/Codex CLI models.`;
+  return `Model '${descriptor.id}' requires ${executionPath} provider-owned execution (${descriptor.family}), but the shell-startup fallback only supports Claude/Codex CLI models. Use the managed OpenCode path for API and local models.`;
 }
 
 /**
@@ -197,7 +198,7 @@ function writeWorkerPromptFile(args: {
 }
 
 /** Resolve the monorepo runtime root (delegates to the shared adeMcpLaunch resolver). */
-export function resolveUnifiedRuntimeRoot(): string {
+export function resolveOpenCodeRuntimeRoot(): string {
   return resolveRepoRuntimeRoot();
 }
 
@@ -304,7 +305,8 @@ function cleanupStaleMcpConfigFiles(projectRoot: string): void {
 const VALID_PERMISSION_MODES = new Set<string>(["default", "plan", "edit", "full-auto", "config-toml"]);
 
 function resolveManagedPermissionMode(args: {
-  provider: "claude" | "codex" | "unified" | "cursor";
+  provider: "claude" | "codex" | "opencode" | "cursor";
+  descriptor?: ModelDescriptor;
   permissionConfig: LegacyPermissionConfig | undefined;
   readOnlyExecution: boolean;
 }): AgentChatPermissionMode | undefined {
@@ -312,17 +314,22 @@ function resolveManagedPermissionMode(args: {
   const providers = args.permissionConfig?._providers;
   const candidate =
     args.provider === "cursor"
-      ? ((providers?.cursor ?? providers?.unified) as string | undefined)
+      ? ((providers?.cursor ?? providers?.opencode) as string | undefined)
       : (providers?.[args.provider] as string | undefined);
-  return typeof candidate === "string" && VALID_PERMISSION_MODES.has(candidate)
+  const normalizedCandidate = typeof candidate === "string" && VALID_PERMISSION_MODES.has(candidate)
     ? candidate as AgentChatPermissionMode
     : undefined;
+  if (args.descriptor?.authTypes?.includes("local")) {
+    if (args.descriptor.harnessProfile === "read_only") return "plan";
+    if (args.descriptor.harnessProfile === "guarded") return "plan";
+  }
+  return normalizedCandidate;
 }
 
 function mapPermissionModeToNativeFields(
-  provider: "claude" | "codex" | "unified" | "cursor",
+  provider: "claude" | "codex" | "opencode" | "cursor",
   mode: AgentChatPermissionMode | undefined,
-): Partial<Pick<import("../../../shared/types").AgentChatCreateArgs, "claudePermissionMode" | "codexApprovalPolicy" | "codexSandbox" | "unifiedPermissionMode">> {
+): Partial<Pick<import("../../../shared/types").AgentChatCreateArgs, "claudePermissionMode" | "codexApprovalPolicy" | "codexSandbox" | "opencodePermissionMode">> {
   if (!mode) return {};
   // "config-toml" means the worker should inherit permissions from the
   // provider/repo config (e.g. a .toml settings file). Don't rewrite it
@@ -343,16 +350,16 @@ function mapPermissionModeToNativeFields(
     if (mode === "edit") return { codexApprovalPolicy: "on-failure", codexSandbox: "workspace-write" };
     return { codexApprovalPolicy: "untrusted", codexSandbox: "read-only" };
   }
-  const umap: Record<string, import("../../../shared/types").AgentChatUnifiedPermissionMode> = {
+  const umap: Record<string, import("../../../shared/types").AgentChatOpenCodePermissionMode> = {
     "full-auto": "full-auto",
     "edit": "edit",
     "plan": "plan",
   };
-  return { unifiedPermissionMode: umap[mode] ?? "edit" };
+  return { opencodePermissionMode: umap[mode] ?? "edit" };
 }
 
 function resolveManagedExecutionMode(args: {
-  provider: "claude" | "codex" | "unified" | "cursor";
+  provider: "claude" | "codex" | "opencode" | "cursor";
   teamRuntime?: TeamRuntimeConfig;
 }): AgentChatExecutionMode {
   if (args.provider === "cursor") {
@@ -397,18 +404,18 @@ export function forceReadOnlyPermissionConfig(
     ...providers,
     claude: "default",
     codex: "plan",
-    unified: "plan",
+    opencode: "plan",
     codexSandbox: "read-only",
     writablePaths: [],
   });
 }
 
 /**
- * Unified orchestrator adapter that handles ALL model providers.
+ * Provider orchestrator adapter that handles all ADE-owned worker providers.
  * For CLI-wrapped models (Claude CLI, Codex CLI), it delegates to the appropriate CLI.
  * For API-key models, it constructs a direct SDK invocation command.
  */
-export function createUnifiedOrchestratorAdapter(options?: {
+export function createProviderOrchestratorAdapter(options?: {
   projectRoot?: string;
   workspaceRoot?: string;
   runtimeRoot?: string;
@@ -419,7 +426,7 @@ export function createUnifiedOrchestratorAdapter(options?: {
 }): OrchestratorExecutorAdapter {
   const runtimeRoot = typeof options?.runtimeRoot === "string" && options.runtimeRoot.trim().length
     ? options.runtimeRoot.trim()
-    : resolveUnifiedRuntimeRoot();
+    : resolveOpenCodeRuntimeRoot();
   const projectRoot = typeof options?.projectRoot === "string" && options.projectRoot.trim().length
     ? options.projectRoot.trim()
     : undefined;
@@ -433,8 +440,8 @@ export function createUnifiedOrchestratorAdapter(options?: {
   cleanupStaleMcpConfigFiles(canonicalProjectRoot);
 
   const shellAdapter = createBaseOrchestratorAdapter({
-    executorKind: "unified",
-    sessionType: "ai-orchestrated",
+    executorKind: "opencode",
+    sessionType: "opencode-orchestrated",
 
     buildOverrideCommand: ({ prompt }) => {
       // For override commands, try to detect the best CLI
@@ -473,7 +480,7 @@ export function createUnifiedOrchestratorAdapter(options?: {
       // Determine which CLI to use based on the model
       if (descriptor?.isCliWrapped && descriptor.family === "anthropic") {
         // Claude CLI path — use per-provider permission when available
-        const cliModel = resolveClaudeCliModel(descriptor?.sdkModelId ?? model);
+        const cliModel = resolveClaudeCliModel(descriptor?.providerModelId ?? model);
         const claudeProviderMode = effectivePermissionConfig?._providers?.claude;
         const mappedClaude = mapPermissionToClaude(claudeProviderMode);
         const dangerouslySkip = !readOnlyExecution && mappedClaude === "bypassPermissions";
@@ -543,7 +550,7 @@ export function createUnifiedOrchestratorAdapter(options?: {
         const writablePaths = effectivePermissionConfig?._providers?.writablePaths ?? effectivePermissionConfig?.cli?.writablePaths ?? [];
 
         const parts: string[] = [
-          "codex", "--model", shellEscapeArg(resolveCodexCliModel(descriptor.sdkModelId)),
+          "codex", "--model", shellEscapeArg(resolveCodexCliModel(descriptor.providerModelId)),
           "-a", shellEscapeArg(approvalPolicy),
           "-s", shellEscapeArg(sandboxMode)
         ];
@@ -570,16 +577,17 @@ export function createUnifiedOrchestratorAdapter(options?: {
         return startup;
       }
 
-      // Non-CLI or unknown models cannot run via this shell-based adapter.
-      const unsupportedReason = getUnifiedUnsupportedModelReason(model) ?? `Model '${model}' is not supported by unified adapter.`;
-      const failureMessage = `[ADE] Unified orchestrator adapter currently supports CLI-wrapped Anthropic/OpenAI models only. ${unsupportedReason} Select a CLI model for this worker.`;
+      // Non-CLI or unknown models can still run via the managed chat path.
+      // This shell fallback only exists for CLI-wrapped workers.
+      const unsupportedReason = getProviderAdapterUnsupportedModelReason(model) ?? `Model '${model}' is not supported by the provider adapter.`;
+      const failureMessage = `[ADE] Shell-startup fallback for the provider adapter only supports CLI-wrapped Anthropic/OpenAI models. ${unsupportedReason}`;
       return `printf '%s\\n' ${shellEscapeArg(failureMessage)} >&2; exit 64`;
     },
 
     buildAcceptedMetadata: ({ model, filePatterns, steeringDirectiveCount, promptLength, reasoningEffort, startupCommandPreview }) => {
       const descriptor = getModelById(model);
       return {
-        adapterKind: "unified",
+        adapterKind: "opencode",
         model,
         modelFamily: descriptor?.family ?? "unknown",
         isCliWrapped: descriptor?.isCliWrapped ?? true,
@@ -602,7 +610,7 @@ export function createUnifiedOrchestratorAdapter(options?: {
   }
 
   return {
-    kind: "unified",
+    kind: "opencode",
     requiresLaneId: true,
     async start(args) {
       const rawStartup = typeof args.step.metadata?.startupCommand === "string" ? args.step.metadata.startupCommand.trim() : "";
@@ -614,7 +622,7 @@ export function createUnifiedOrchestratorAdapter(options?: {
         return {
           status: "failed",
           errorClass: "policy",
-          errorMessage: "Unified executor requires step.laneId to create worker sessions."
+          errorMessage: "Provider executor requires step.laneId to create worker sessions."
         };
       }
 
@@ -623,7 +631,7 @@ export function createUnifiedOrchestratorAdapter(options?: {
         return {
           status: "failed",
           errorClass: "policy",
-          errorMessage: `Step '${args.step.stepKey}' is missing required metadata.modelId for unified execution.`
+          errorMessage: `Step '${args.step.stepKey}' is missing required metadata.modelId for provider execution.`
         };
       }
 
@@ -643,20 +651,21 @@ export function createUnifiedOrchestratorAdapter(options?: {
         args.step.metadata?.requiresPlanApproval === true || args.step.metadata?.coordinationPattern === "plan_then_implement";
       const readOnlyExecution = args.step.metadata?.readOnlyExecution === true || requiresPlanApproval;
       const effectivePermissionConfig = forceReadOnlyPermissionConfig(args.permissionConfig, readOnlyExecution);
-      const { prompt, filePatterns, steeringDirectiveCount } = buildFullPrompt(args, "unified", {
+      const { prompt, filePatterns, steeringDirectiveCount } = buildFullPrompt(args, "opencode", {
         memoryService: args.memoryService as any,
         projectId: args.memoryProjectId,
         workerRuntime: "in_process",
         memoryBriefing: args.memoryBriefing,
       });
       const provider = resolveProviderGroupForModel(descriptor);
-      const model = descriptor.isCliWrapped ? descriptor.sdkModelId : descriptor.id;
+      const model = descriptor.isCliWrapped ? descriptor.providerModelId : descriptor.id;
       const reasoningEffort =
         typeof args.step.metadata?.reasoningEffort === "string" && args.step.metadata.reasoningEffort.trim().length > 0
           ? args.step.metadata.reasoningEffort.trim()
           : undefined;
       const permissionMode = resolveManagedPermissionMode({
         provider,
+        descriptor,
         permissionConfig: effectivePermissionConfig,
         readOnlyExecution,
       });
@@ -687,7 +696,7 @@ export function createUnifiedOrchestratorAdapter(options?: {
             permissionMode: permissionMode ?? null,
           },
           metadata: {
-            adapterKind: "unified",
+            adapterKind: "opencode",
             workerSessionKind: "managed_chat",
             workerStreamSource: "agent_chat",
             model: descriptor.id,
@@ -708,7 +717,7 @@ export function createUnifiedOrchestratorAdapter(options?: {
           errorClass: "startup_failure",
           errorMessage: error instanceof Error ? error.message : String(error),
           metadata: {
-            adapterKind: "unified",
+            adapterKind: "opencode",
             workerSessionKind: "managed_chat",
             workerStreamSource: "agent_chat",
             adapterState: "managed_chat_session_create_failed",

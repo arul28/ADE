@@ -52,13 +52,14 @@ const mocks = vi.hoisted(() => {
       cmdArgs: ["tsx", "index.ts"],
       env: {},
     })),
-    resolveUnifiedRuntimeRoot: vi.fn(() => "/tmp/ade-runtime"),
+    resolveOpenCodeRuntimeRoot: vi.fn(() => "/tmp/ade-runtime"),
     shellEscapeArg: vi.fn((v: string) => `'${v}'`),
     stripAnsi: vi.fn((t: string) => t),
     summarizeTerminalSession: vi.fn(() => "test summary"),
     derivePreviewFromChunk: vi.fn(() => ({ nextLine: "", preview: "preview" })),
     defaultResumeCommandForTool: vi.fn(() => null),
     extractResumeCommandFromOutput: vi.fn(() => null),
+    parseTrackedCliLaunchConfig: vi.fn(() => null),
     runtimeStateFromOsc133Chunk: vi.fn(() => "running"),
   };
 });
@@ -96,10 +97,10 @@ vi.mock("../../../shared/adeLayout", () => ({
   resolveAdeLayout: mocks.resolveAdeLayout,
 }));
 
-vi.mock("../orchestrator/unifiedOrchestratorAdapter", () => ({
+vi.mock("../orchestrator/providerOrchestratorAdapter", () => ({
   buildCodexMcpConfigFlags: mocks.buildCodexMcpConfigFlags,
   resolveAdeMcpServerLaunch: mocks.resolveAdeMcpServerLaunch,
-  resolveUnifiedRuntimeRoot: mocks.resolveUnifiedRuntimeRoot,
+  resolveOpenCodeRuntimeRoot: mocks.resolveOpenCodeRuntimeRoot,
 }));
 
 vi.mock("../orchestrator/baseOrchestratorAdapter", () => ({
@@ -118,11 +119,17 @@ vi.mock("../../utils/terminalPreview", () => ({
   derivePreviewFromChunk: mocks.derivePreviewFromChunk,
 }));
 
-vi.mock("../../utils/terminalSessionSignals", () => ({
-  defaultResumeCommandForTool: mocks.defaultResumeCommandForTool,
-  extractResumeCommandFromOutput: mocks.extractResumeCommandFromOutput,
-  runtimeStateFromOsc133Chunk: mocks.runtimeStateFromOsc133Chunk,
-}));
+vi.mock("../../utils/terminalSessionSignals", async () => {
+  const actual = await vi.importActual<typeof import("../../utils/terminalSessionSignals")>(
+    "../../utils/terminalSessionSignals",
+  );
+  return {
+    ...actual,
+    defaultResumeCommandForTool: mocks.defaultResumeCommandForTool,
+    extractResumeCommandFromOutput: mocks.extractResumeCommandFromOutput,
+    runtimeStateFromOsc133Chunk: mocks.runtimeStateFromOsc133Chunk,
+  };
+});
 
 import { createPtyService, PTY_AI_TITLE_DEBOUNCE_MS } from "./ptyService";
 
@@ -170,7 +177,15 @@ function createHarness(overrides: {
 
   const sessionStore = new Map<string, any>();
   const sessionService = {
-    create: vi.fn((args: any) => { sessionStore.set(args.sessionId, { ...args, status: "running" }); }),
+    create: vi.fn((args: any) => {
+      sessionStore.set(args.sessionId, {
+        ...args,
+        status: "running",
+        laneName: "Test lane",
+        laneId: args.laneId,
+        manuallyNamed: false,
+      });
+    }),
     end: vi.fn((args: any) => {
       const s = sessionStore.get(args.sessionId);
       if (s) { s.status = args.status; s.exitCode = args.exitCode; }
@@ -181,7 +196,16 @@ function createHarness(overrides: {
     setResumeCommand: vi.fn(),
     setHeadShaStart: vi.fn(),
     setHeadShaEnd: vi.fn(),
-    updateMeta: vi.fn(),
+    updateMeta: vi.fn((args: any) => {
+      const session = sessionStore.get(args.sessionId);
+      if (!session) return null;
+      Object.assign(session, {
+        ...(args.title !== undefined ? { title: args.title } : {}),
+        ...(args.goal !== undefined ? { goal: args.goal } : {}),
+        ...(args.manuallyNamed !== undefined ? { manuallyNamed: args.manuallyNamed } : {}),
+      });
+      return session;
+    }),
     readTranscriptTail: vi.fn(async () => "transcript content"),
   };
 
@@ -399,6 +423,59 @@ describe("ptyService", () => {
       expect(mockPty.write).toHaveBeenCalledWith("echo hello\r");
     });
 
+    it("stores structured resume metadata for Claude launches", async () => {
+      const { service, sessionService } = createHarness();
+      await service.create({
+        laneId: "lane-1",
+        title: "Claude CLI",
+        cols: 80,
+        rows: 24,
+        toolType: "claude",
+        startupCommand: "claude --permission-mode default",
+      });
+      expect(sessionService.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          toolType: "claude",
+          resumeMetadata: expect.objectContaining({
+            provider: "claude",
+            targetKind: "session",
+            targetId: null,
+            launch: expect.objectContaining({
+              permissionMode: "default",
+            }),
+          }),
+        }),
+      );
+    });
+
+    it("stores structured resume metadata for Codex launches", async () => {
+      const { service, sessionService } = createHarness();
+      await service.create({
+        laneId: "lane-1",
+        title: "Codex CLI",
+        cols: 80,
+        rows: 24,
+        toolType: "codex",
+        startupCommand: "codex --no-alt-screen -c approval_policy=on-failure -c sandbox_mode=workspace-write",
+      });
+      expect(sessionService.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          toolType: "codex",
+          resumeMetadata: expect.objectContaining({
+            provider: "codex",
+            targetKind: "thread",
+            targetId: null,
+            launch: expect.objectContaining({
+              permissionMode: "edit",
+              codexApprovalPolicy: "on-failure",
+              codexSandbox: "workspace-write",
+              codexConfigSource: "flags",
+            }),
+          }),
+        }),
+      );
+    });
+
     it("normalizes toolType to a known value", async () => {
       const { service, sessionService } = createHarness();
       await service.create({
@@ -441,7 +518,7 @@ describe("ptyService", () => {
       );
     });
 
-    it("uses the bound cwd for AI title generation even if the lane mapping changes later", async () => {
+    it("generates Claude CLI titles from the first submitted PTY write (user prompt) using the bound cwd", async () => {
       vi.useFakeTimers();
       try {
         mocks.existsSyncResults.set("/tmp/test-worktree/subdir", true);
@@ -450,7 +527,7 @@ describe("ptyService", () => {
           summarizeTerminal: vi.fn(async () => ({ text: "Bound title" })),
         };
         const { service, mockPty, laneService, sessionService } = createHarness({ aiIntegrationService });
-        await service.create({
+        const { ptyId } = await service.create({
           laneId: "lane-1",
           cwd: "/tmp/test-worktree/subdir",
           title: "Claude session",
@@ -472,10 +549,73 @@ describe("ptyService", () => {
 
         mockPty._emitter.emit("data", "generated enough output for a better title");
         await vi.advanceTimersByTimeAsync(PTY_AI_TITLE_DEBOUNCE_MS);
+        expect(aiIntegrationService.summarizeTerminal).not.toHaveBeenCalled();
+
+        service.write({ ptyId, data: "Fix the flaky login tests\r" });
+        await vi.advanceTimersByTimeAsync(0);
+        await Promise.resolve();
 
         expect(aiIntegrationService.summarizeTerminal).toHaveBeenCalledWith(
-          expect.objectContaining({ cwd: "/tmp/test-worktree/subdir" }),
+          expect.objectContaining({
+            cwd: "/tmp/test-worktree/subdir",
+            prompt: expect.stringContaining("Fix the flaky login tests"),
+          }),
         );
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("stores the first CLI prompt as the session goal immediately", async () => {
+      const { service, sessionService } = createHarness();
+      const { ptyId } = await service.create({
+        laneId: "lane-1",
+        title: "Codex",
+        cols: 80,
+        rows: 24,
+        toolType: "codex",
+      });
+
+      const createdSessionId = (sessionService.create as ReturnType<typeof vi.fn>).mock.calls[0]?.[0]?.sessionId;
+      expect(createdSessionId).toBeTruthy();
+
+      service.write({ ptyId, data: "Fix the flaky login tests\r" });
+
+      expect(sessionService.updateMeta).toHaveBeenCalledWith(
+        expect.objectContaining({
+          sessionId: createdSessionId,
+          goal: "Fix the flaky login tests",
+        }),
+      );
+      expect(sessionService.get(createdSessionId)?.goal).toBe("Fix the flaky login tests");
+    });
+
+    it("does not overwrite a manually renamed CLI session title", async () => {
+      vi.useFakeTimers();
+      try {
+        const aiIntegrationService = {
+          getMode: vi.fn(() => "subscription"),
+          summarizeTerminal: vi.fn(async () => ({ text: "AI title" })),
+        };
+        const { service, sessionService } = createHarness({ aiIntegrationService });
+        const { ptyId } = await service.create({
+          laneId: "lane-1",
+          title: "Codex",
+          cols: 80,
+          rows: 24,
+          toolType: "codex",
+        });
+
+        const createdSessionId = (sessionService.create as ReturnType<typeof vi.fn>).mock.calls[0]?.[0]?.sessionId;
+        expect(createdSessionId).toBeTruthy();
+        sessionService.updateMeta({ sessionId: createdSessionId, title: "My renamed session", manuallyNamed: true });
+
+        service.write({ ptyId, data: "Fix the flaky login tests\r" });
+        await vi.advanceTimersByTimeAsync(0);
+        await Promise.resolve();
+
+        expect(aiIntegrationService.summarizeTerminal).not.toHaveBeenCalled();
+        expect(sessionService.get(createdSessionId)?.title).toBe("My renamed session");
       } finally {
         vi.useRealTimers();
       }

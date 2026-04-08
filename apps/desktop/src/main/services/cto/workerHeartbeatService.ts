@@ -17,7 +17,7 @@ import type { WorkerAdapterRuntimeService } from "./workerAdapterRuntimeService"
 import type { WorkerAgentService } from "./workerAgentService";
 import type { WorkerBudgetService } from "./workerBudgetService";
 import type { WorkerTaskSessionService } from "./workerTaskSessionService";
-import type { createUnifiedMemoryService } from "../memory/unifiedMemoryService";
+import type { createMemoryService } from "../memory/memoryService";
 import type { createCtoStateService } from "./ctoStateService";
 import type { MemoryBriefingService } from "../memory/memoryBriefingService";
 
@@ -48,7 +48,7 @@ type WorkerHeartbeatServiceArgs = {
   workerAdapterRuntimeService: WorkerAdapterRuntimeService;
   workerTaskSessionService: WorkerTaskSessionService;
   workerBudgetService?: WorkerBudgetService | null;
-  memoryService?: ReturnType<typeof createUnifiedMemoryService> | null;
+  memoryService?: ReturnType<typeof createMemoryService> | null;
   memoryBriefingService?: MemoryBriefingService | null;
   ctoStateService?: ReturnType<typeof createCtoStateService> | null;
   logger?: Logger | null;

@@ -2,7 +2,7 @@
 
 > Roadmap reference: `docs/final-plan/README.md` is the canonical future plan and sequencing source.
 
-> Last updated: 2026-03-31
+> Last updated: 2026-04-07
 
 The AI integration layer replaces the previous hosted agent with a local-first, provider-flexible approach. Instead of a cloud backend with remote job queues, ADE routes work to configured runtimes (CLI subscriptions, API-key/OpenRouter providers, and local endpoints such as LM Studio/Ollama/vLLM), coordinates tooling through MCP, and manages multi-step workflows via an AI orchestrator.
 
@@ -102,16 +102,16 @@ This also aligns AI cost with tools developers already budget for. There is no s
 
 ### SDK Strategy
 
-ADE uses a unified executor runtime that routes work based on model class rather than provider-specific executor implementations. The unification point is the `unified` executor kind — a single execution path that classifies models as CLI-wrapped (subprocess) or API/local (in-process) and routes accordingly.
+ADE routes work based on model class through provider-specific runtime paths rather than a single unified executor. CLI-wrapped models (Claude CLI, Codex CLI) spawn as subprocesses with provider-native tools and permissions. Non-CLI models (API-key, OpenRouter, local) are routed through the OpenCode server, which manages provider connections, model inventory, and streaming execution.
 
-**Key SDKs**:
-- `ai-sdk-provider-claude-code` — Community Vercel AI SDK provider (Ben Vargas) wrapping Claude CLI. Authentication flows through `claude login`.
+**Key SDKs and runtimes**:
+- `@anthropic-ai/claude-agent-sdk` — Claude Agent SDK V2 for persistent Claude CLI sessions. Authentication flows through `claude login`.
 - `@openai/codex-sdk` — Official OpenAI SDK for Codex CLI. Supports subscription auth natively.
-- `@ai-sdk/anthropic`, `@ai-sdk/openai`, `@ai-sdk/google`, etc. — Vercel AI SDK providers for API-key models.
+- **OpenCode server** — ADE's local model routing server that handles API-key providers (Anthropic, OpenAI, Google, Mistral, DeepSeek, xAI, Groq, Together AI), OpenRouter, and local model endpoints (Ollama, LM Studio, vLLM). The OpenCode binary is either user-installed or bundled with ADE.
 
-**Model resolution**: `modelId` → registry lookup → `isCliWrapped` classification → subprocess or in-process path. See `docs/ORCHESTRATOR_OVERHAUL.md` for the full runtime contract.
+**Model resolution**: `modelId` → registry lookup → `isCliWrapped` classification → CLI subprocess or OpenCode server path. The `ModelProviderGroup` type is `"claude" | "codex" | "opencode" | "cursor"`, replacing the previous `"unified"` group. See `docs/ORCHESTRATOR_OVERHAUL.md` for the full runtime contract.
 
-> **Historical note**: The original architecture used separate `ClaudeExecutor` and `CodexExecutor` classes with per-provider `AgentExecutor` interface implementations. These were deleted during the Phase 2-3 orchestrator overhaul (2026-03-04) in favor of the unified runtime.
+> **Historical note**: The original architecture used separate `ClaudeExecutor` and `CodexExecutor` classes, then a unified Vercel AI SDK executor with `@ai-sdk/anthropic`, `@ai-sdk/openai`, etc. for direct API-key models. Both were replaced — the per-provider executors during the Phase 2-3 overhaul, and the Vercel AI SDK in-process path by the OpenCode server integration.
 
 ### Why MCP for Tool Access?
 
@@ -172,18 +172,16 @@ This is distinct from the orchestrator service (`orchestratorService.ts`), which
 
 ## Technical Details
 
-### Unified Executor Interface
+### Provider-Routed Execution
 
-All AI task dispatching flows through the unified executor (`unifiedExecutor.ts`). The executor resolves models via the registry, classifies by model class (CLI-wrapped vs API/local), and routes accordingly. Permission schema is class-based: `permissionConfig.cli` for CLI-wrapped models, `permissionConfig.inProcess` for API/local models.
+AI task dispatching routes through provider-specific paths based on model classification. The runtime resolves models via the registry, classifies by model class (CLI-wrapped vs API/local), and routes to the appropriate provider runtime. Permission schema is class-based: `permissionConfig.cli` for CLI-wrapped models, `permissionConfig.inProcess` for API/local models.
 
-### Agent Execution (Unified Runtime)
+### Agent Execution
 
-> **Note**: The legacy `ClaudeExecutor` and `CodexExecutor` classes have been deleted. All AI worker execution now routes through a single `unified` executor kind. See `docs/ORCHESTRATOR_OVERHAUL.md` for the current runtime contract.
-
-The unified runtime supports three model classes:
+The runtime supports three model classes:
 - **CLI-wrapped** (Claude CLI, Codex CLI): Spawned as subprocesses. Authentication inherits from user's existing CLI login (`claude login`, Codex subscription). MCP server injected via `--mcp-config` flag, with worker-local MCP config mirrored into each worker CWD to support native teammate inheritance paths. In packaged builds, the MCP connection uses a bundled proxy binary (`adeMcpProxy.cjs`) that relays stdio over the desktop's Unix socket, avoiding the need for a separate headless MCP server process.
-- **API/key models** (Anthropic API, OpenAI, Google, Mistral, DeepSeek, xAI, OpenRouter): In-process execution via Vercel AI SDK `streamText()`. Authentication via configured API keys.
-- **Local models** (Ollama, LM Studio, vLLM): In-process execution via OpenAI-compatible endpoints.
+- **API/key models** (Anthropic API, OpenAI, Google, Mistral, DeepSeek, xAI, Groq, Together AI, OpenRouter): Execution via the OpenCode server runtime. The OpenCode binary manages provider connections and model inventory; ADE resolves the binary from user installation or a bundled copy. Authentication via configured API keys.
+- **Local models** (Ollama, LM Studio, vLLM): Execution via the OpenCode server runtime using OpenAI-compatible local endpoints.
 
 Model resolution is `modelId`-first: the registry (`modelRegistry.ts`) resolves model descriptors with `isCliWrapped` classification, and the runtime routes accordingly. Permission schema is class-based (`cli` + `inProcess`) rather than provider-bucketed.
 
@@ -191,10 +189,10 @@ Coordinator runtime routing is strict phase-authoritative for worker spawning/de
 - Resolution order: `explicit model override -> current phase model`.
 - Role-level default model fallback is removed from active orchestrator routing behavior.
 
-**Key SDK dependencies**:
-- `ai-sdk-provider-claude-code` — Vercel AI SDK provider wrapping Claude CLI (community, Ben Vargas)
+**Key runtime dependencies**:
+- `@anthropic-ai/claude-agent-sdk` — Claude Agent SDK V2 for persistent Claude sessions
 - `@openai/codex-sdk` — Official OpenAI SDK for Codex CLI
-- `@ai-sdk/anthropic`, `@ai-sdk/openai`, `@ai-sdk/google`, etc. — Vercel AI SDK providers for API models
+- **OpenCode server** — Local model routing server for API-key, OpenRouter, and local providers
 #### Streaming Support
 
 All AI responses stream back to the renderer process via IPC push events (`webContents.send`). Executors produce `AsyncIterable<AgentEvent>` streams, which the AI integration service consumes uniformly. The UI renders streaming tokens in real time.
@@ -255,12 +253,17 @@ Generates pull request content from lane history:
 
 On startup and project switch, the AI integration service probes for available providers through a multi-module detection pipeline:
 
-- **`authDetector.ts`**: Detects CLI subscriptions (`claude`, `codex`), configured API keys, OpenRouter keys, and local model endpoints. Returns a `DetectedAuth[]` array used for mode derivation and model availability filtering.
+- **`authDetector.ts`**: Detects CLI subscriptions (`claude`, `codex`), configured API keys, OpenRouter keys, and local model endpoints. Returns a `DetectedAuth[]` array used for mode derivation and model availability filtering. Each detection entry includes an `endpointSource` (`"auto"` or `"config"`) and optional `preferredModelId` for local providers.
 - **`providerCredentialSources.ts`**: Reads local credential files (Claude OAuth credentials, Codex auth tokens, macOS Keychain) and checks token freshness.
 - **`providerConnectionStatus.ts`**: Builds a structured `AiProviderConnections` object with per-provider `authAvailable`, `runtimeDetected`, `runtimeAvailable`, `usageAvailable`, `blocker`, and `sources` fields. Both `auth-failed` and `runtime-failed` health states now mark a provider as not runtime-available, with distinct blocker messages for each failure mode.
 - **`providerRuntimeHealth.ts`**: Tracks runtime health state (`ready`, `auth-failed`, `runtime-failed`) per provider. Health version increments on state changes, invalidating the status cache.
 - **`claudeRuntimeProbe.ts`**: On forced refresh, performs a lightweight Claude Agent SDK query to confirm the Claude runtime can authenticate and start from the current app session. The probe resolves the Claude Code executable path via `claudeCodeExecutable.ts` and uses the centralized `resolveDesktopAdeMcpLaunch()` from `adeMcpLaunch.ts` to inject a minimal ADE MCP server configuration so the probe runs under conditions closer to real session startup.
-- **`claudeCodeExecutable.ts`**: Resolves the Claude Code CLI binary path, consulting detected auth sources for known installation locations. Used by both the runtime probe and the provider resolver to ensure consistent executable discovery.
+- **`claudeCodeExecutable.ts`**: Resolves the Claude Code CLI binary path, consulting detected auth sources for known installation locations. Used by both the runtime probe and the chat service to ensure consistent executable discovery.
+- **`openCodeBinaryManager.ts`**: Resolves the OpenCode binary from user installation or bundled copy. Reports `OpenCodeBinarySource` (`"user-installed"`, `"bundled"`, or `"missing"`).
+- **`openCodeInventory.ts`**: Probes the OpenCode server's `provider.list()` to discover available providers and their model inventories. Results feed `replaceDynamicOpenCodeModelDescriptors()` to populate the model registry with API-key and local models.
+- **`localModelDiscovery.ts`**: Inspects local model providers (Ollama, LM Studio, vLLM) by probing configured or auto-detected endpoints. Returns health status (`ready`, `reachable`, `reachable_no_models`, `unreachable`) and loaded model lists.
+
+The service builds a unified `AiRuntimeConnections` map alongside the existing `AiProviderConnections`, providing per-runtime connection status with health levels (`ready`, `reachable`, `reachable_no_models`, `not_configured`, `unreachable`), endpoint information, and loaded model IDs. Local provider configuration is read from `ai.localProviders` in the project config, supporting per-provider `enabled`, `endpoint`, `autoDetect`, and `preferredModelId` fields.
 
 If no usable provider is detected, ADE operates in guest mode: all deterministic features (packs, diffs, conflict detection) work normally, but AI-generated content (narratives, proposals, PR descriptions) is unavailable. The UI clearly indicates which features require a CLI subscription.
 
@@ -274,7 +277,7 @@ At startup, the AI integration service also initializes the models.dev integrati
 4. **Enrich**: Calls `updateModelPricing()` to merge live pricing into the `MODEL_PRICING` Proxy object, and `enrichModelRegistry()` to update context windows and capabilities in the registry.
 5. **Refresh**: Repeats every 6 hours (non-blocking).
 
-The model registry (`modelRegistry.ts`) contains 50+ models across 10 provider families (Anthropic, OpenAI, Google, DeepSeek, Mistral, xAI, OpenRouter, and local providers: Ollama, LM Studio, vLLM), classified by auth type (`cli-subscription`, `api-key`, `openrouter`, `local`). Each `ModelDescriptor` includes pricing fields directly, with a `getModelPricing()` accessor for cost lookups. Provider-to-CLI resolution uses a flat `FAMILY_TO_CLI` lookup map instead of nested ternaries. `resolveProviderGroupForModel()` maps any descriptor to its provider group (`"claude"` | `"codex"` | `"unified"`), and `isModelProviderGroup()` provides a type guard for the group union. `resolveModelDescriptorForProvider()` resolves a model reference (ID, shortId, alias, or sdkModelId) with an optional provider-group hint, preferring non-deprecated descriptors that match the hint. `getRuntimeModelRefForDescriptor()` returns the correct model reference string for a given provider group (shortId for Claude, sdkModelId for Codex, full ID for unified). Model profiles (`modelProfiles.ts`) are derived from `MODEL_REGISTRY` rather than maintained as parallel lists, ensuring profiles stay in sync with the registry automatically. The `UnifiedModelSelector` groups models by auth type and shows unavailable models as disabled with an explanatory label (e.g., "API only - not configured").
+The model registry (`modelRegistry.ts`) contains CLI-wrapped models (Anthropic CLI, OpenAI Codex CLI) as static entries and dynamically registers API-key and local models discovered through the OpenCode server's provider inventory. Provider families include Anthropic, OpenAI, OpenCode, Google, DeepSeek, Mistral, xAI, Groq, Together AI, OpenRouter, and local providers (Ollama, LM Studio, vLLM), classified by auth type (`cli-subscription`, `api-key`, `openrouter`, `local`). Each `ModelDescriptor` includes pricing fields directly, with a `getModelPricing()` accessor for cost lookups. The descriptor uses `providerRoute` and `providerModelId` fields (replacing the previous `sdkProvider` and `sdkModelId`) to identify the runtime routing path and model identifier. Optional `openCodeProviderId` and `openCodeModelId` fields carry OpenCode-specific routing metadata. A `harnessProfile` field (`"verified"`, `"guarded"`, or `"read_only"`) and `discoverySource` field provide safety classification and provenance for dynamically discovered local models. Provider-to-CLI resolution uses a flat `FAMILY_TO_CLI` lookup map. `resolveProviderGroupForModel()` maps any descriptor to its provider group (`"claude"` | `"codex"` | `"opencode"` | `"cursor"`), and `isModelProviderGroup()` provides a type guard for the group union. `resolveModelDescriptorForProvider()` resolves a model reference (ID, shortId, alias, or providerModelId) with an optional provider-group hint, preferring non-deprecated descriptors that match the hint. `getRuntimeModelRefForDescriptor()` returns the correct model reference string for a given provider group (shortId for Claude, providerModelId for Codex, full ID for OpenCode). `replaceDynamicOpenCodeModelDescriptors()` replaces the dynamic portion of the registry with models discovered from OpenCode's provider inventory. Model profiles (`modelProfiles.ts`) are derived from `MODEL_REGISTRY` rather than maintained as parallel lists, ensuring profiles stay in sync with the registry automatically. The `UnifiedModelSelector` groups models by auth type and shows unavailable models as disabled with an explanatory label (e.g., "API only - not configured").
 
 #### Provider Options (Reasoning Tier Passthrough)
 
@@ -297,13 +300,13 @@ Provider preferences are configured in `.ade/local.yaml`:
 ai:
   # Provider mode and defaults
   mode: "subscription"               # "guest" | "subscription"
-  defaultProvider: "auto"            # "auto" | "claude" | "codex"
+  defaultProvider: "auto"            # "auto" | "claude" | "codex" | "cursor" | "opencode"
 
   # Per-task-type overrides
   taskRouting:
     planning:
       provider: "claude"
-      model: "anthropic/claude-sonnet-4-6-api"
+      model: "anthropic/claude-sonnet-4-6"
       timeoutMs: 45000
     implementation:
       provider: "codex"
@@ -311,27 +314,27 @@ ai:
       timeoutMs: 120000
     review:
       provider: "claude"
-      model: "anthropic/claude-sonnet-4-6-api"
+      model: "anthropic/claude-sonnet-4-6"
       timeoutMs: 30000
     conflict_resolution:
       provider: "claude"
-      model: "anthropic/claude-sonnet-4-6-api"
+      model: "anthropic/claude-sonnet-4-6"
       timeoutMs: 60000
     narrative:
       provider: "claude"
-      model: "anthropic/claude-haiku-4-5-api"
+      model: "anthropic/claude-haiku-4-5"
       timeoutMs: 15000
       maxOutputTokens: 900
       temperature: 0.2
     pr_description:
       provider: "claude"
-      model: "anthropic/claude-haiku-4-5-api"
+      model: "anthropic/claude-haiku-4-5"
       timeoutMs: 15000
       maxOutputTokens: 1200
       temperature: 0.2
     terminal_summary:
       provider: "claude"
-      model: "anthropic/claude-haiku-4-5-api"
+      model: "anthropic/claude-haiku-4-5"
       timeoutMs: 10000
       maxOutputTokens: 500
       temperature: 0.1
@@ -394,7 +397,7 @@ Worker and chat processes connect to ADE's MCP server through one of three launc
 | `headless_built` | `apps/mcp-server/dist/index.cjs` via `node` | Development or CI environments where the MCP server has been pre-built but no bundled proxy is available. |
 | `headless_source` | `apps/mcp-server/src/index.ts` via `npx tsx` | Development environments where only TypeScript source is available. |
 
-The launch resolver checks candidates in order: bundled proxy path (from `process.resourcesPath`, `__dirname`, or CWD), then the built MCP entry, then the source entry. Both `unifiedOrchestratorAdapter.ts` (worker spawning) and `claudeRuntimeProbe.ts` (provider health probing) delegate to this centralized resolver to ensure consistent MCP launch behavior across all call sites. The probe also supports a `--probe` flag that returns a JSON diagnostic without establishing a full connection.
+The launch resolver checks candidates in order: bundled proxy path (from `process.resourcesPath`, `__dirname`, or CWD), then the built MCP entry, then the source entry. Both `providerOrchestratorAdapter.ts` (worker spawning) and `claudeRuntimeProbe.ts` (provider health probing) delegate to this centralized resolver to ensure consistent MCP launch behavior across all call sites. The probe also supports a `--probe` flag that returns a JSON diagnostic without establishing a full connection.
 
 #### Available Tools
 
@@ -412,6 +415,15 @@ The launch resolver checks candidates in order: bundled proxy path (from `proces
 | `commit_changes` | Stage and commit changes in a lane | Yes |
 | `pr_get_checks` | Get current CI checks for a pull request | No |
 | `pr_get_review_comments` | Fetch actionable review comments, reviews, and check status | No |
+| `stash_push` | Stash lane changes so rebase or inspection can proceed cleanly | Yes |
+| `list_stashes` | List git stashes for a lane | No |
+| `stash_apply` | Apply a stash to a lane without dropping it | Yes |
+| `stash_pop` | Pop a stash onto a lane and remove it from the stash list | Yes |
+| `stash_drop` | Drop a stash from a lane | Yes |
+| `stash_clear` | Clear all stashes for a lane | Yes |
+| `get_lane_conflict_state` | Inspect the current merge or rebase conflict state for a lane | No |
+| `rebase_continue` | Continue an in-progress rebase for a lane | Yes |
+| `rebase_abort` | Abort an in-progress rebase for a lane | Yes |
 | `pr_refresh_issue_inventory` | Refresh the PR issue inventory (checks, threads, comments) | No |
 | `pr_rerun_failed_checks` | Rerun failed CI checks for a pull request | Yes |
 | `pr_reply_to_review_thread` | Reply to a GitHub PR review thread | Yes |
@@ -902,7 +914,7 @@ This layered approach allows missions to gracefully degrade under budget pressur
 
 ### Context Compaction Engine
 
-The compaction engine (`compactionEngine.ts`, integrated via `unifiedExecutor.ts`) prevents SDK agent sessions from exceeding context window limits during long-running orchestrated work.
+The compaction engine (`compactionEngine.ts`) prevents agent sessions from exceeding context window limits during long-running orchestrated work. Compaction prompts are executed via the OpenCode server runtime (`runOpenCodeTextPrompt()`).
 
 **Token Monitoring**: The engine tracks token consumption for each active agent session. When utilization reaches 70% of the model's context window, compaction is triggered.
 
@@ -921,7 +933,7 @@ Agent sessions are now durable across interruptions and application restarts.
 
 **Transcript Persistence**: The `attempt_transcripts` DB table stores the full conversation history (as JSON message arrays) for each orchestrator attempt. Transcripts are written on every significant event (tool call, agent response, compaction) via JSONL-style append.
 
-**`resumeUnified()`**: When an orchestrator run is resumed after interruption, `resumeUnified()` in the unified executor:
+**Session Resume**: When an orchestrator run is resumed after interruption, the resume flow:
 
 1. Loads the last `attempt_transcripts` row for the attempt.
 2. Reconstructs the conversation state from the stored messages.
@@ -963,7 +975,7 @@ Threaded chat persistence is DB-first (`orchestrator_chat_threads` and `orchestr
 
 ### Memory Tool Wiring
 
-Memory tools are wired into the agent tool surfaces via `createCodingToolSet()` / `createUniversalToolSet()`, giving agents the ability to:
+Memory tools are wired into the agent tool surfaces via `createUniversalToolSet()`, giving agents the ability to:
 
 - **Search scoped memories**: Query `project`, `mission`, and `agent` scopes through `memorySearch`.
 - **Persist durable discoveries**: Record facts/patterns/decisions/gotchas with `memoryAdd`.
@@ -1234,7 +1246,7 @@ Phases 1, 1.5, 2, 3, 4, and 5 are complete. The v1 closeout (2026-03-13) address
 - Meta-reasoner with AI-driven fan-out dispatch (external_parallel, internal_parallel, hybrid)
 - Context compaction engine (70% threshold, self-summarization, pre-compaction writeback)
 - Session persistence via attempt_transcripts table and JSONL files
-- Session resume via resumeUnified()
+- Session resume via provider-specific resume paths
 - Shared facts injection and run narrative generation
 - Orchestrator Overhaul Phases 1-9 complete (reflection protocol, cross-mission trends, pattern-candidate promotion, adaptive runtime, UI overhaul)
 - Coordinator finalization awareness: `check_finalization_status` tool, result-lane closeout contract, terminal status regression guard
@@ -1245,18 +1257,22 @@ Phases 1, 1.5, 2, 3, 4, and 5 are complete. The v1 closeout (2026-03-13) address
 - Phase 4 delegation contract: `delegate_parallel`, push sub-agent rollups, native teammate auto-registration + allocation caps
 
 **Model and provider infrastructure**:
-- Model registry unified: pricing fields in `ModelDescriptor`, `getModelPricing()`, `FAMILY_TO_CLI` map, `modelProfiles.ts` derived from registry
-- Model registry expansion (50+ models across 10 provider families, auth-type classification, runtime enrichment via `enrichModelRegistry()`)
+- Model registry with `providerRoute`/`providerModelId` fields (replacing `sdkProvider`/`sdkModelId`), pricing fields in `ModelDescriptor`, `getModelPricing()`, `FAMILY_TO_CLI` map, `modelProfiles.ts` derived from registry
+- Model registry with dynamic population via OpenCode provider inventory (`replaceDynamicOpenCodeModelDescriptors()`), static CLI-wrapped entries (Anthropic, OpenAI Codex), and runtime enrichment via `enrichModelRegistry()`
+- Provider families expanded to include Groq and Together AI alongside existing families
+- `ModelProviderGroup` changed from `"unified"` to `"opencode"` to reflect the OpenCode server routing
 - Dynamic pricing via models.dev integration (`modelsDevService.ts`: fetch, 6h cache, fallback to hardcoded)
-- Provider detection pipeline: `authDetector.ts` + `providerCredentialSources.ts` + `providerConnectionStatus.ts` + `providerRuntimeHealth.ts` + `claudeRuntimeProbe.ts` (structured per-provider connection status with auth, runtime, and usage availability)
+- Provider detection pipeline: `authDetector.ts` + `providerCredentialSources.ts` + `providerConnectionStatus.ts` + `providerRuntimeHealth.ts` + `claudeRuntimeProbe.ts` + `openCodeBinaryManager.ts` + `openCodeInventory.ts` + `localModelDiscovery.ts` (structured per-provider connection status with auth, runtime, and usage availability, plus `AiRuntimeConnections` map with health levels)
+- OpenCode server integration: binary resolution (user-installed or bundled), provider inventory probing, model catalog, session management, text prompt execution, and event streaming via `openCodeRuntime.ts`
 - Provider options simplification (`providerOptions.ts`: pure tier-string passthrough, no invented token budgets)
-- Reasoning tier standardization: Claude CLI low/medium/high, Claude API low/medium/high/max, Codex minimal/low/medium/high/xhigh
+- Reasoning tier standardization: Claude CLI low/medium/high, Codex minimal/low/medium/high/xhigh
 - UnifiedModelSelector redesign (auth-type grouping, hide unavailable models, "Configure more..." settings link)
-- Universal tools for API-key and local models (`universalTools.ts`: permission modes plan/edit/full-auto)
+- Universal tools for API-key and local models (`universalTools.ts`: permission modes plan/edit/full-auto, frontend repo discovery tools with prompt-based exposure policy)
 - Workflow tools for chat agents (`workflowTools.ts`: lane creation, PR creation, screenshot capture, completion reporting, PR issue resolution tools)
 - Three-tier tool architecture: universalTools (all agents) -> workflowTools (chat agents) -> coordinatorTools (orchestrator only)
+- Tool exposure policy (`toolExposurePolicy.ts`): prompt-based frontend repo discovery tool gating
 - System prompt agent capability boundaries (tool tier guidance in agent prompts)
-- Middleware layer (`middleware.ts`: logging, retry, cost guard, reasoning extraction)
+- Orchestrator adapter renamed from `unifiedOrchestratorAdapter.ts` to `providerOrchestratorAdapter.ts`
 
 **Memory and knowledge**:
 - Unified memory system (W6): 3 scopes (project/agent/mission), 3 tiers (Tier 1 pinned / Tier 2 active / Tier 3 aging), candidate/promoted/archived lifecycle, auto-promotion, Settings > Memory tab
@@ -1485,7 +1501,7 @@ CLI terminals are powerful but opaque. The chat interface provides:
 
 ```typescript
 interface AgentChatService {
-  createSession(laneId: string, provider: "codex" | "claude" | "unified", model: string, modelId: string, opts?: CreateSessionOpts): Promise<ChatSession>;
+  createSession(laneId: string, provider: "codex" | "claude" | "cursor" | "opencode", model: string, modelId: string, opts?: CreateSessionOpts): Promise<ChatSession>;
   sendMessage(sessionId: string, text: string, attachments?: FileRef[]): AsyncIterable<ChatEvent>;
   steer(sessionId: string, text: string): Promise<void>;
   cancelSteer(sessionId: string, steerId: string): Promise<void>;
@@ -1494,22 +1510,22 @@ interface AgentChatService {
   resumeSession(sessionId: string): Promise<ChatSession>;
   listSessions(laneId?: string): Promise<ChatSessionSummary[]>;
   approveToolUse(sessionId: string, itemId: string, decision: ApprovalDecision): Promise<void>;
-  getAvailableModels(provider: "codex" | "claude" | "unified"): Promise<ModelInfo[]>;
+  getAvailableModels(provider: "codex" | "claude" | "cursor" | "opencode"): Promise<ModelInfo[]>;
   dispose(sessionId: string): Promise<void>;
 }
 
 interface ChatSession {
   id: string;
   laneId: string;
-  provider: "codex" | "claude" | "unified";
+  provider: "codex" | "claude" | "cursor" | "opencode";
   model: string;              // Human-readable display name
   modelId: string;            // Registry model ID (required)
-  // Provider-native permission controls (no unified permissionMode)
+  // Provider-native permission controls
   claudePermissionMode?: "default" | "plan" | "acceptEdits" | "bypassPermissions";
   codexApprovalPolicy?: "untrusted" | "on-request" | "on-failure" | "never";
   codexSandbox?: "read-only" | "workspace-write" | "danger-full-access";
   codexConfigSource?: "flags" | "config-toml";
-  unifiedPermissionMode?: "plan" | "edit" | "full-auto";
+  opencodePermissionMode?: "plan" | "edit" | "full-auto";
   status: "active" | "idle" | "ended";
   threadId?: string;           // Codex: app-server thread ID
   createdAt: string;
@@ -1631,61 +1647,22 @@ send({ method: "initialized", params: {} });
 
 #### ClaudeChatBackend
 
-The Claude backend uses `ai-sdk-provider-claude-code` (the same community Vercel provider from Phase 1) in **multi-turn mode**. Instead of one-shot `execute()` calls, the Claude backend maintains a `messages[]` array and calls `streamText()` for each turn.
-
-**Multi-turn conversation flow**:
-
-```typescript
-import { streamText } from "ai";
-import { claudeCode } from "ai-sdk-provider-claude-code";
-
-// Session state (maintained per chat session)
-const messages: CoreMessage[] = [];
-
-// Each turn appends a user message and streams the response
-async function* sendMessage(text: string): AsyncIterable<ChatEvent> {
-  messages.push({ role: "user", content: text });
-
-  const stream = streamText({
-    model: claudeCode("sonnet", {
-      claudePermissionMode: "acceptEdits",
-      maxBudgetUsd: 5.0,
-      systemPrompt: "You are working in an ADE lane...",
-      canUseTool: async (invocation) => {
-        // Emit approval_request ChatEvent
-        // Wait for user decision
-        // Return allow/deny
-      },
-    }),
-    messages,
-  });
-
-  for await (const chunk of stream) {
-    if (chunk.type === "text-delta") {
-      yield { type: "text", content: chunk.textDelta };
-    }
-    // Map other chunk types to ChatEvent...
-  }
-
-  // Append assistant response to messages for context continuity
-  messages.push({ role: "assistant", content: stream.text });
-}
-```
+The Claude backend uses the Claude Agent SDK V2 (`@anthropic-ai/claude-agent-sdk`) with persistent sessions via `unstable_v2_createSession` / `unstable_v2_resumeSession`. The SDK manages a persistent subprocess with MCP servers that stay alive between turns. Each turn sends a query through the session and receives streaming events.
 
 **Key differences from CodexChatBackend**:
 
-| Capability | Codex (App Server) | Claude (Community Provider) |
+| Capability | Codex (App Server) | Claude (Agent SDK V2) |
 |---|---|---|
-| Protocol | JSON-RPC 2.0 over stdio | Vercel AI SDK `streamText()` |
-| Multi-turn | Native thread management | ADE manages `messages[]` |
+| Protocol | JSON-RPC 2.0 over stdio | Claude Agent SDK session API |
+| Multi-turn | Native thread management | Persistent SDK session (subprocess stays alive between turns) |
 | Steering | `turn/steer` (native) | Queue text with steerId, deliver on next idle; cancel/edit queued steers |
-| Approval flow | `requestApproval` notifications | `canUseTool` callback |
+| Approval flow | `requestApproval` notifications | SDK permission callbacks |
 | File changes | `fileChange` items with diffs | Tool call events (Write, Edit) |
 | Command execution | `commandExecution` items with live output | Tool call events (Bash) |
-| Plans | `turn/plan/updated` | Not natively supported |
-| Reasoning | `reasoning` items | Not exposed by community provider |
-| Session persistence | App server manages on disk | ADE persists `messages[]` to JSON |
-| Resume | `thread/resume` (native) | Reload `messages[]` and continue |
+| Plans | `turn/plan/updated` | ExitPlanMode tool |
+| Reasoning | `reasoning` items | Extended thinking |
+| Session persistence | App server manages on disk | ADE persists recent entries + continuity summary to JSON |
+| Resume | `thread/resume` (native) | `unstable_v2_resumeSession` |
 
 **Session persistence**: Chat session metadata is stored at `.ade/cache/chat-sessions/<sessionId>.json`, and structured chat events are logged to `.ade/transcripts/<session-id>.chat.jsonl` with a mirrored JSONL copy under `.ade/transcripts/chat/<session-id>.jsonl`. This enables resume after app restart while keeping chat-specific runtime files in the canonical W10 layout.
 
@@ -1708,10 +1685,10 @@ Agent chat sessions integrate into ADE's existing session tracking infrastructur
 ```
 1. User opens Chat view in Work Pane
    → agentChatService.createSession(laneId, provider, model)
-   → Creates terminal_sessions row (tool_type: "codex-chat", "claude-chat", or "ai-chat")
+   → Creates terminal_sessions row (tool_type: "codex-chat", "claude-chat", or "opencode-chat")
    → Codex: spawns app-server + thread/start
-   → Claude: initializes messages[] + session state
-   → Unified: resolves configured API/local model via provider resolver + initializes universal tool runtime
+   → Claude: creates persistent V2 session via Claude Agent SDK
+   → OpenCode: resolves model via OpenCode server + initializes universal tool runtime
    → Captures head_sha_start
 
 2. User sends messages, agent works
@@ -1822,16 +1799,16 @@ W7 builds an extraction and materialization layer on top of the Unified Memory S
 | Executor adapter interface | Complete | `OrchestratorExecutorAdapter` type for pluggable step execution |
 | Context snapshot system | Complete | Profile-based export assembly (deterministic, narrative-opt-in) |
 | Bounded memory budgets | Complete | Lite/Standard/Deep retrieval tiers via memory APIs |
-| AgentExecutor interface | Complete | `apps/desktop/src/main/services/ai/agentExecutor.ts` |
-| Agent SDK integration (dual-SDK) | Complete | Unified executor runtime (formerly `ClaudeExecutor` + `CodexExecutor`) |
+| Agent executor types | Complete | `apps/desktop/src/main/services/ai/agentExecutor.ts` -- type definitions for agent providers and events (executor interface removed) |
+| Agent SDK integration | Complete | Provider-routed execution: Claude Agent SDK V2, Codex App Server, OpenCode server runtime (replaces previous unified Vercel AI SDK executor) |
 | AI integration service | Complete | `apps/desktop/src/main/services/ai/aiIntegrationService.ts` |
 | Per-task-type configuration | Complete | Configurable in `.ade/local.yaml` |
 | Streaming AI responses to UI | Complete | IPC push events via `webContents.send` |
 | AgentChatService interface | Complete | `apps/desktop/src/main/services/chat/agentChatService.ts` |
 | CodexChatBackend (App Server) | Complete | JSON-RPC 2.0 client in `agentChatService.ts` |
-| ClaudeChatBackend (community provider) | Complete | Multi-turn `streamText()` in `agentChatService.ts` |
+| ClaudeChatBackend (Agent SDK V2) | Complete | Persistent sessions via `unstable_v2_createSession` in `agentChatService.ts` |
 | Chat UI components | Complete | AgentChatPane, AgentChatMessageList, AgentChatComposer |
-| Chat session integration | Complete | `codex-chat`, `claude-chat`, and `ai-chat` tool types in `terminal_sessions` |
+| Chat session integration | Complete | `codex-chat`, `claude-chat`, and `opencode-chat` tool types in `terminal_sessions` |
 | MCP server (`apps/mcp-server`) | Complete | JSON-RPC 2.0 server with 35 tools, dual-mode architecture (headless + embedded) |
 | MCP dual-mode architecture | Complete | Transport abstraction (stdio/socket), headless AI via aiIntegrationService, desktop socket embedding (.ade/mcp.sock), smart entry point auto-detection. Centralized launch resolution (`adeMcpLaunch.ts`) with bundled proxy mode for packaged builds. |
 | AI orchestrator (Claude + MCP) | Complete | Tasks 1-7 shipped; Orchestrator Overhaul Phases 1-9 complete (reflection protocol, adaptive runtime, UI overhaul). V1 closeout: coordinator finalization awareness. M4/M5 additions: approval gates, mandatory planning enforcement, multi-round deliberation, adaptive runtime, model downgrade, budget-gated spawns, benign error classification. Result-lane closeout replacing per-strategy PR finalization. |
@@ -1845,10 +1822,10 @@ W7 builds an extraction and materialization layer on top of the Unified Memory S
 | Mission UI overhaul (Task 4) | Complete | Plan/Work tabs, mission home dashboard, phase-aware details, launch/settings profile workflows |
 | Pre-flight + intervention/HITL (Task 5) | Complete | Launch-gate checklist, granular worker-level interventions, coordinator `ask_user`/`request_user_input` escalation wiring |
 | Budget + usage tracking (Task 6) | Complete | Mission budget service, subscription/API-key accounting, coordinator `get_budget_status`, details-tab budget telemetry |
-| Model registry (50+ models, runtime enrichment) | Complete | `modelRegistry.ts` -- 10 provider families, auth-type classification, pricing in `ModelDescriptor`, `getModelPricing()`, `FAMILY_TO_CLI` map, `enrichModelRegistry()` for models.dev data, `resolveModelDescriptorForProvider()`, `getRuntimeModelRefForDescriptor()`. `modelProfiles.ts` derived from registry. |
+| Model registry (dynamic + static) | Complete | `modelRegistry.ts` -- static CLI-wrapped entries + dynamic OpenCode inventory, `providerRoute`/`providerModelId` fields, auth-type classification, pricing in `ModelDescriptor`, `getModelPricing()`, `FAMILY_TO_CLI` map, `enrichModelRegistry()`, `replaceDynamicOpenCodeModelDescriptors()`, `resolveModelDescriptorForProvider()`, `getRuntimeModelRefForDescriptor()`. `modelProfiles.ts` derived from registry. |
 | Dynamic pricing (models.dev) | Complete | `modelsDevService.ts` -- fetch/cache/fallback, 6h refresh, Proxy-based `MODEL_PRICING` |
 | Provider options (tier passthrough) | Complete | `providerOptions.ts` -- pure tier-string passthrough per provider family, no arbitrary token budgets |
-| Middleware layer | Complete | `middleware.ts` -- logging, retry, cost guard, reasoning extraction |
+| Provider task runner | Complete | `providerTaskRunner.ts` -- task dispatch via OpenCode runtime (replaces previous Vercel AI SDK middleware layer) |
 | Universal tools (API-key/local) | Complete | `universalTools.ts` -- permission modes (plan/edit/full-auto), approval hooks |
 | Type system modularization | Complete | `src/shared/types/` -- 23 domain modules replacing monolithic `types.ts` |
 | Pack service decomposition | Complete | `packService.ts` + `projectPackBuilder.ts`, `missionPackBuilder.ts`, `conflictPackBuilder.ts`, `packUtils.ts` |

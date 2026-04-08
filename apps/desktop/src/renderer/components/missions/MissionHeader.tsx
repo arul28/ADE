@@ -144,7 +144,7 @@ export function MissionHeader() {
       const fallbackExecutor: OrchestratorExecutorKind =
         executorKind && executorKind.length > 0
           ? (executorKind as OrchestratorExecutorKind)
-          : "unified";
+          : "opencode";
       const plannerProvider: "claude" | "codex" | null =
         executorKind === "claude" || executorKind === "codex"
           ? (executorKind as "claude" | "codex")

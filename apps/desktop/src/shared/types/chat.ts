@@ -5,9 +5,10 @@
 import type { ModelId } from "./core";
 import type { CtoCapabilityMode } from "./cto";
 import type { ComputerUsePolicy } from "./computerUseArtifacts";
+import type { FileDiff } from "./git";
 import type { DelegationContract } from "./orchestrator";
 
-export type AgentChatProvider = "codex" | "claude" | "unified" | (string & {});
+export type AgentChatProvider = "codex" | "claude" | "cursor" | "opencode" | (string & {});
 
 export type AgentChatSessionStatus = "active" | "idle" | "ended";
 export type AgentChatSessionProfile = "light" | "workflow";
@@ -52,7 +53,7 @@ export type AgentChatClaudePermissionMode = "default" | "plan" | "acceptEdits" |
 export type AgentChatCodexApprovalPolicy = "untrusted" | "on-request" | "on-failure" | "never";
 export type AgentChatCodexSandbox = "read-only" | "workspace-write" | "danger-full-access";
 export type AgentChatCodexConfigSource = "flags" | "config-toml";
-export type AgentChatUnifiedPermissionMode = "plan" | "edit" | "full-auto";
+export type AgentChatOpenCodePermissionMode = "plan" | "edit" | "full-auto";
 
 export type AgentChatNoticeDetailMetric = {
   label: string;
@@ -355,6 +356,15 @@ export type AgentChatEvent =
       text: string;
       turnId?: string;
       itemId?: string;
+    }
+  | {
+      type: "turn_diff_summary";
+      turnId: string;
+      beforeSha: string;
+      afterSha: string;
+      files: TurnDiffFile[];
+      totalAdditions: number;
+      totalDeletions: number;
     };
 
 export type AgentChatEventEnvelope = {
@@ -406,7 +416,7 @@ export type AgentChatCursorModeSnapshot = {
   availableModelIds?: string[];
   configOptions?: AgentChatCursorConfigOption[];
 };
-export type PendingInputSource = "claude" | "codex" | "cursor" | "unified" | "mission" | "ade";
+export type PendingInputSource = "claude" | "codex" | "cursor" | "opencode" | "mission" | "ade";
 export type PendingInputKind = "approval" | "question" | "structured_question" | "permissions" | "plan_approval";
 
 export type PendingInputOption = {
@@ -462,7 +472,7 @@ export type AgentChatSession = {
   codexApprovalPolicy?: AgentChatCodexApprovalPolicy;
   codexSandbox?: AgentChatCodexSandbox;
   codexConfigSource?: AgentChatCodexConfigSource;
-  unifiedPermissionMode?: AgentChatUnifiedPermissionMode;
+  opencodePermissionMode?: AgentChatOpenCodePermissionMode;
   cursorModeSnapshot?: AgentChatCursorModeSnapshot;
   cursorModeId?: string | null;
   cursorConfigValues?: Record<string, AgentChatCursorConfigValue>;
@@ -498,7 +508,7 @@ export type AgentChatSessionSummary = {
   codexApprovalPolicy?: AgentChatCodexApprovalPolicy;
   codexSandbox?: AgentChatCodexSandbox;
   codexConfigSource?: AgentChatCodexConfigSource;
-  unifiedPermissionMode?: AgentChatUnifiedPermissionMode;
+  opencodePermissionMode?: AgentChatOpenCodePermissionMode;
   cursorModeSnapshot?: AgentChatCursorModeSnapshot;
   cursorModeId?: string | null;
   identityKey?: AgentChatIdentityKey;
@@ -562,7 +572,7 @@ export type AgentChatModelInfo = {
   isDefault: boolean;
   reasoningEfforts?: Array<{ effort: string; description: string }>;
   maxThinkingTokens?: number | null;
-  // New unified fields
+  // OpenCode-backed model metadata
   modelId?: ModelId;
   family?: string;
   supportsReasoning?: boolean;
@@ -583,7 +593,7 @@ export type AgentChatCreateArgs = {
   codexApprovalPolicy?: AgentChatCodexApprovalPolicy;
   codexSandbox?: AgentChatCodexSandbox;
   codexConfigSource?: AgentChatCodexConfigSource;
-  unifiedPermissionMode?: AgentChatUnifiedPermissionMode;
+  opencodePermissionMode?: AgentChatOpenCodePermissionMode;
   cursorModeId?: string | null;
   cursorConfigValues?: Record<string, AgentChatCursorConfigValue> | null;
   identityKey?: AgentChatIdentityKey;
@@ -687,7 +697,7 @@ export type AgentChatUpdateSessionArgs = {
   codexApprovalPolicy?: AgentChatCodexApprovalPolicy;
   codexSandbox?: AgentChatCodexSandbox;
   codexConfigSource?: AgentChatCodexConfigSource;
-  unifiedPermissionMode?: AgentChatUnifiedPermissionMode;
+  opencodePermissionMode?: AgentChatOpenCodePermissionMode;
   cursorModeId?: string | null;
   cursorConfigValues?: Record<string, AgentChatCursorConfigValue> | null;
   computerUse?: ComputerUsePolicy | null;
@@ -713,3 +723,28 @@ export type AgentChatFileSearchResult = {
   path: string;
   score?: number;
 };
+
+export type TurnDiffFile = {
+  path: string;
+  additions: number;
+  deletions: number;
+  status: "A" | "M" | "D" | "R" | "C" | string;
+};
+
+export type TurnDiffSummary = {
+  turnId: string;
+  beforeSha: string;
+  afterSha: string;
+  files: TurnDiffFile[];
+  totalAdditions: number;
+  totalDeletions: number;
+};
+
+export type AgentChatGetTurnFileDiffArgs = {
+  sessionId: string;
+  beforeSha: string;
+  afterSha: string;
+  filePath: string;
+};
+
+export type AgentChatTurnFileDiff = FileDiff;

@@ -7,17 +7,19 @@ export type AuthType = "cli-subscription" | "api-key" | "oauth" | "openrouter" |
 export type ProviderFamily =
   | "anthropic"
   | "openai"
+  | "opencode"
   | "google"
   | "mistral"
   | "deepseek"
   | "xai"
+  | "groq"
+  | "together"
   | "openrouter"
   | "ollama"
   | "lmstudio"
-  | "vllm"
   | "cursor";
 
-export type LocalProviderFamily = Extract<ProviderFamily, "ollama" | "lmstudio" | "vllm">;
+export type LocalProviderFamily = Extract<ProviderFamily, "ollama" | "lmstudio">;
 
 export type ModelCapabilities = {
   tools: boolean;
@@ -25,6 +27,8 @@ export type ModelCapabilities = {
   reasoning: boolean;
   streaming: boolean;
 };
+
+export type LocalModelHarnessProfile = "verified" | "guarded" | "read_only";
 
 export type ModelDescriptor = {
   id: string;
@@ -38,8 +42,8 @@ export type ModelDescriptor = {
   capabilities: ModelCapabilities;
   reasoningTiers?: string[];
   color: string;
-  sdkProvider: string;
-  sdkModelId: string;
+  providerRoute: string;
+  providerModelId: string;
   cliCommand?: string;
   isCliWrapped: boolean;
   deprecated?: boolean;
@@ -49,13 +53,32 @@ export type ModelDescriptor = {
   outputPricePer1M?: number;
   /** Curated cost tier for UI display (missions model selector) */
   costTier?: "low" | "medium" | "high" | "very_high";
+  /** ADE-owned safety/tooling profile for local and experimental models. */
+  harnessProfile?: LocalModelHarnessProfile;
+  /** Source of runtime-discovered descriptors for debugging and UI hints. */
+  discoverySource?: "lmstudio-rest" | "lmstudio-openai" | "ollama";
+  /** OpenCode server routing: upstream provider id (e.g. anthropic, lmstudio, opencode). */
+  openCodeProviderId?: string;
+  /** OpenCode server routing: model id as reported by OpenCode (may contain `/`). */
+  openCodeModelId?: string;
+};
+
+export type DynamicLocalModelDescriptorOptions = {
+  displayName?: string;
+  contextWindow?: number;
+  maxOutputTokens?: number;
+  capabilities?: Partial<ModelCapabilities>;
+  reasoningTiers?: string[];
+  aliases?: string[];
+  harnessProfile?: LocalModelHarnessProfile;
+  discoverySource?: ModelDescriptor["discoverySource"];
 };
 
 export type WorkerExecutionPath = "cli" | "api" | "local";
-export type ModelProviderGroup = "claude" | "codex" | "unified" | "cursor";
+export type ModelProviderGroup = "claude" | "codex" | "opencode" | "cursor";
 
 export function isModelProviderGroup(value: string | null | undefined): value is ModelProviderGroup {
-  return value === "claude" || value === "codex" || value === "unified" || value === "cursor";
+  return value === "claude" || value === "codex" || value === "opencode" || value === "cursor";
 }
 
 // ---------------------------------------------------------------------------
@@ -65,20 +88,18 @@ export function isModelProviderGroup(value: string | null | undefined): value is
 const ALL_CAPS: ModelCapabilities = { tools: true, vision: true, reasoning: true, streaming: true };
 const NO_REASONING: ModelCapabilities = { tools: true, vision: true, reasoning: false, streaming: true };
 const BASIC_CAPS: ModelCapabilities = { tools: true, vision: false, reasoning: false, streaming: true };
-const LOCAL_PROVIDER_LABELS: Record<LocalProviderFamily, string> = {
+/** Human-readable names for Ollama / LM Studio (shared across main, renderer, and MCP). */
+export const LOCAL_PROVIDER_LABELS: Record<LocalProviderFamily, string> = {
   ollama: "Ollama",
   lmstudio: "LM Studio",
-  vllm: "vLLM",
 };
 const LOCAL_PROVIDER_COLORS: Record<LocalProviderFamily, string> = {
   ollama: "#71717A",
   lmstudio: "#64748B",
-  vllm: "#475569",
 };
 const LOCAL_PROVIDER_ENDPOINTS: Record<LocalProviderFamily, string> = {
   ollama: "http://localhost:11434",
-  lmstudio: "http://localhost:1234",
-  vllm: "http://localhost:8000",
+  lmstudio: "http://127.0.0.1:1234",
 };
 
 export const MODEL_REGISTRY: ModelDescriptor[] = [
@@ -95,8 +116,8 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     capabilities: ALL_CAPS,
     reasoningTiers: ["low", "medium", "high", "max"],
     color: "#D97706",
-    sdkProvider: "ai-sdk-provider-claude-code",
-    sdkModelId: "opus",
+    providerRoute: "claude-cli",
+    providerModelId: "opus",
     cliCommand: "claude",
     isCliWrapped: true,
     inputPricePer1M: 5,
@@ -114,8 +135,8 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     capabilities: ALL_CAPS,
     reasoningTiers: ["low", "medium", "high"],
     color: "#8B5CF6",
-    sdkProvider: "ai-sdk-provider-claude-code",
-    sdkModelId: "sonnet",
+    providerRoute: "claude-cli",
+    providerModelId: "sonnet",
     cliCommand: "claude",
     isCliWrapped: true,
     inputPricePer1M: 3,
@@ -132,65 +153,10 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     maxOutputTokens: 32_000,
     capabilities: NO_REASONING,
     color: "#06B6D4",
-    sdkProvider: "ai-sdk-provider-claude-code",
-    sdkModelId: "haiku",
+    providerRoute: "claude-cli",
+    providerModelId: "haiku",
     cliCommand: "claude",
     isCliWrapped: true,
-    inputPricePer1M: 0.8,
-    outputPricePer1M: 4,
-    costTier: "low",
-  },
-
-  // ---- Anthropic (API key direct) ----
-  {
-    id: "anthropic/claude-opus-4-6-api",
-    shortId: "opus-api",
-    displayName: "Claude Opus 4.6 (API)",
-    family: "anthropic",
-    authTypes: ["api-key"],
-    contextWindow: 200_000,
-    maxOutputTokens: 32_000,
-    capabilities: ALL_CAPS,
-    reasoningTiers: ["low", "medium", "high", "max"],
-    color: "#D97706",
-    sdkProvider: "@ai-sdk/anthropic",
-    sdkModelId: "claude-opus-4-6",
-    isCliWrapped: false,
-    inputPricePer1M: 5,
-    outputPricePer1M: 25,
-    costTier: "very_high",
-  },
-  {
-    id: "anthropic/claude-sonnet-4-6-api",
-    shortId: "sonnet-api",
-    displayName: "Claude Sonnet 4.6 (API)",
-    family: "anthropic",
-    authTypes: ["api-key"],
-    contextWindow: 200_000,
-    maxOutputTokens: 8_192,
-    capabilities: ALL_CAPS,
-    reasoningTiers: ["low", "medium", "high"],
-    color: "#8B5CF6",
-    sdkProvider: "@ai-sdk/anthropic",
-    sdkModelId: "claude-sonnet-4-6",
-    isCliWrapped: false,
-    inputPricePer1M: 3,
-    outputPricePer1M: 15,
-    costTier: "medium",
-  },
-  {
-    id: "anthropic/claude-haiku-4-5-api",
-    shortId: "haiku-api",
-    displayName: "Claude Haiku 4.5 (API)",
-    family: "anthropic",
-    authTypes: ["api-key"],
-    contextWindow: 200_000,
-    maxOutputTokens: 8_192,
-    capabilities: NO_REASONING,
-    color: "#06B6D4",
-    sdkProvider: "@ai-sdk/anthropic",
-    sdkModelId: "claude-haiku-4-5",
-    isCliWrapped: false,
     inputPricePer1M: 0.8,
     outputPricePer1M: 4,
     costTier: "low",
@@ -211,8 +177,8 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     capabilities: ALL_CAPS,
     reasoningTiers: ["low", "medium", "high", "xhigh"],
     color: "#10A37F",
-    sdkProvider: "ai-sdk-provider-codex-cli",
-    sdkModelId: "gpt-5.4",
+    providerRoute: "codex-cli",
+    providerModelId: "gpt-5.4",
     cliCommand: "codex",
     isCliWrapped: true,
     costTier: "high",
@@ -229,8 +195,8 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     capabilities: ALL_CAPS,
     reasoningTiers: ["low", "medium", "high", "xhigh"],
     color: "#34D399",
-    sdkProvider: "ai-sdk-provider-codex-cli",
-    sdkModelId: "gpt-5.4-mini",
+    providerRoute: "codex-cli",
+    providerModelId: "gpt-5.4-mini",
     cliCommand: "codex",
     isCliWrapped: true,
     inputPricePer1M: 0.25,
@@ -248,8 +214,8 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     capabilities: ALL_CAPS,
     reasoningTiers: ["low", "medium", "high", "xhigh"],
     color: "#10B981",
-    sdkProvider: "ai-sdk-provider-codex-cli",
-    sdkModelId: "gpt-5.3-codex",
+    providerRoute: "codex-cli",
+    providerModelId: "gpt-5.3-codex",
     cliCommand: "codex",
     isCliWrapped: true,
     inputPricePer1M: 1.5,
@@ -267,8 +233,8 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     capabilities: { tools: true, vision: false, reasoning: true, streaming: true },
     reasoningTiers: ["low", "medium", "high", "xhigh"],
     color: "#34D399",
-    sdkProvider: "ai-sdk-provider-codex-cli",
-    sdkModelId: "gpt-5.3-codex-spark",
+    providerRoute: "codex-cli",
+    providerModelId: "gpt-5.3-codex-spark",
     cliCommand: "codex",
     isCliWrapped: true,
     inputPricePer1M: 1,
@@ -286,8 +252,8 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     capabilities: ALL_CAPS,
     reasoningTiers: ["low", "medium", "high", "xhigh"],
     color: "#10B981",
-    sdkProvider: "ai-sdk-provider-codex-cli",
-    sdkModelId: "gpt-5.2-codex",
+    providerRoute: "codex-cli",
+    providerModelId: "gpt-5.2-codex",
     cliCommand: "codex",
     isCliWrapped: true,
     inputPricePer1M: 1.5,
@@ -305,8 +271,8 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     capabilities: ALL_CAPS,
     reasoningTiers: ["low", "medium", "high", "xhigh"],
     color: "#10B981",
-    sdkProvider: "ai-sdk-provider-codex-cli",
-    sdkModelId: "gpt-5.1-codex-max",
+    providerRoute: "codex-cli",
+    providerModelId: "gpt-5.1-codex-max",
     cliCommand: "codex",
     isCliWrapped: true,
     inputPricePer1M: 3,
@@ -324,8 +290,8 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     capabilities: ALL_CAPS,
     reasoningTiers: ["medium", "high"],
     color: "#2DD4BF",
-    sdkProvider: "ai-sdk-provider-codex-cli",
-    sdkModelId: "gpt-5.1-codex-mini",
+    providerRoute: "codex-cli",
+    providerModelId: "gpt-5.1-codex-mini",
     cliCommand: "codex",
     isCliWrapped: true,
     inputPricePer1M: 0.25,
@@ -334,296 +300,6 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
   },
 
   // ---- Cursor CLI models: discovered at runtime via `agent models` (see cursorModelsDiscovery + getResolvedAvailableModels) ----
-
-  // ---- OpenAI (API key direct) ----
-  {
-    id: "openai/gpt-5.4-pro",
-    shortId: "gpt-5.4-pro",
-    displayName: "GPT-5.4 Pro",
-    family: "openai",
-    authTypes: ["api-key"],
-    contextWindow: 1_050_000,
-    maxOutputTokens: 128_000,
-    capabilities: ALL_CAPS,
-    reasoningTiers: ["none", "low", "medium", "high", "xhigh"],
-    color: "#059669",
-    sdkProvider: "@ai-sdk/openai",
-    sdkModelId: "gpt-5.4-pro",
-    isCliWrapped: false,
-    inputPricePer1M: 5,
-    outputPricePer1M: 30,
-    costTier: "very_high",
-  },
-  {
-    id: "openai/gpt-5.4",
-    shortId: "gpt-5.4",
-    aliases: ["gpt-5.4-2026-03-05"],
-    displayName: "GPT-5.4",
-    family: "openai",
-    authTypes: ["api-key"],
-    contextWindow: 1_050_000,
-    maxOutputTokens: 128_000,
-    capabilities: ALL_CAPS,
-    reasoningTiers: ["none", "low", "medium", "high", "xhigh"],
-    color: "#10A37F",
-    sdkProvider: "@ai-sdk/openai",
-    sdkModelId: "gpt-5.4",
-    isCliWrapped: false,
-    inputPricePer1M: 2.5,
-    outputPricePer1M: 15,
-    costTier: "high",
-  },
-  {
-    id: "openai/gpt-5.4-mini",
-    shortId: "gpt-5.4-mini",
-    aliases: ["gpt-5.4-mini-2026-03-05"],
-    displayName: "GPT-5.4-Mini",
-    family: "openai",
-    authTypes: ["api-key"],
-    contextWindow: 1_050_000,
-    maxOutputTokens: 128_000,
-    capabilities: ALL_CAPS,
-    reasoningTiers: ["low", "medium", "high", "xhigh"],
-    color: "#34D399",
-    sdkProvider: "@ai-sdk/openai",
-    sdkModelId: "gpt-5.4-mini",
-    isCliWrapped: false,
-    inputPricePer1M: 0.25,
-    outputPricePer1M: 2,
-    costTier: "low",
-  },
-  {
-    id: "openai/gpt-5.2",
-    shortId: "gpt-5.2",
-    aliases: ["gpt-5.2-2025-12-11"],
-    displayName: "GPT-5.2",
-    family: "openai",
-    authTypes: ["api-key"],
-    contextWindow: 400_000,
-    maxOutputTokens: 128_000,
-    capabilities: ALL_CAPS,
-    reasoningTiers: ["none", "low", "medium", "high", "xhigh"],
-    color: "#0EA5A4",
-    sdkProvider: "@ai-sdk/openai",
-    sdkModelId: "gpt-5.2",
-    isCliWrapped: false,
-    inputPricePer1M: 1.75,
-    outputPricePer1M: 14,
-    costTier: "high",
-  },
-
-  {
-    id: "openai/o4-mini",
-    shortId: "o4-mini",
-    displayName: "o4-mini",
-    family: "openai",
-    authTypes: ["api-key"],
-    contextWindow: 200_000,
-    maxOutputTokens: 100_000,
-    capabilities: ALL_CAPS,
-    reasoningTiers: ["low", "medium", "high"],
-    color: "#6EE7B7",
-    sdkProvider: "@ai-sdk/openai",
-    sdkModelId: "o4-mini",
-    isCliWrapped: false,
-    inputPricePer1M: 1.1,
-    outputPricePer1M: 4.4,
-    costTier: "medium",
-  },
-
-  // ---- Google (Gemini 3.x — current) ----
-  {
-    id: "google/gemini-3.1-pro",
-    shortId: "gemini-pro",
-    displayName: "Gemini 3.1 Pro",
-    family: "google",
-    authTypes: ["api-key"],
-    contextWindow: 1_000_000,
-    maxOutputTokens: 65_536,
-    capabilities: ALL_CAPS,
-    reasoningTiers: ["low", "medium", "high"],
-    color: "#F59E0B",
-    sdkProvider: "@ai-sdk/google",
-    sdkModelId: "gemini-3.1-pro-preview",
-    isCliWrapped: false,
-    inputPricePer1M: 1.25,
-    outputPricePer1M: 5,
-  },
-  {
-    id: "google/gemini-3-flash",
-    shortId: "gemini-flash",
-    displayName: "Gemini 3 Flash",
-    family: "google",
-    authTypes: ["api-key"],
-    contextWindow: 1_000_000,
-    maxOutputTokens: 65_536,
-    capabilities: ALL_CAPS,
-    reasoningTiers: ["low", "high"],
-    color: "#FBBF24",
-    sdkProvider: "@ai-sdk/google",
-    sdkModelId: "gemini-3-flash-preview",
-    isCliWrapped: false,
-    inputPricePer1M: 0.15,
-    outputPricePer1M: 0.6,
-  },
-
-  {
-    id: "google/gemini-2.5-pro",
-    shortId: "gemini-2.5-pro",
-    displayName: "Gemini 2.5 Pro",
-    family: "google",
-    authTypes: ["api-key"],
-    contextWindow: 1_000_000,
-    maxOutputTokens: 65_536,
-    capabilities: ALL_CAPS,
-    reasoningTiers: ["low", "medium", "high"],
-    color: "#D97706",
-    sdkProvider: "@ai-sdk/google",
-    sdkModelId: "gemini-2.5-pro",
-    isCliWrapped: false,
-    inputPricePer1M: 1.25,
-    outputPricePer1M: 10,
-    costTier: "medium",
-  },
-  {
-    id: "google/gemini-2.5-flash",
-    shortId: "gemini-2.5-flash",
-    displayName: "Gemini 2.5 Flash",
-    family: "google",
-    authTypes: ["api-key"],
-    contextWindow: 1_000_000,
-    maxOutputTokens: 65_536,
-    capabilities: ALL_CAPS,
-    reasoningTiers: ["low", "high"],
-    color: "#FCD34D",
-    sdkProvider: "@ai-sdk/google",
-    sdkModelId: "gemini-2.5-flash",
-    isCliWrapped: false,
-    inputPricePer1M: 0.15,
-    outputPricePer1M: 0.6,
-    costTier: "low",
-  },
-
-  // ---- DeepSeek ----
-  {
-    id: "deepseek/deepseek-r1",
-    shortId: "deepseek-r1",
-    displayName: "DeepSeek R1",
-    family: "deepseek",
-    authTypes: ["api-key"],
-    contextWindow: 128_000,
-    maxOutputTokens: 8_192,
-    capabilities: { tools: true, vision: false, reasoning: true, streaming: true },
-    color: "#3B82F6",
-    sdkProvider: "@ai-sdk/deepseek",
-    sdkModelId: "deepseek-reasoner",
-    isCliWrapped: false,
-    inputPricePer1M: 0.55,
-    outputPricePer1M: 2.19,
-  },
-  {
-    id: "deepseek/deepseek-chat",
-    shortId: "deepseek-chat",
-    displayName: "DeepSeek Chat",
-    family: "deepseek",
-    authTypes: ["api-key"],
-    contextWindow: 128_000,
-    maxOutputTokens: 8_192,
-    capabilities: BASIC_CAPS,
-    color: "#60A5FA",
-    sdkProvider: "@ai-sdk/deepseek",
-    sdkModelId: "deepseek-chat",
-    isCliWrapped: false,
-    inputPricePer1M: 0.27,
-    outputPricePer1M: 1.10,
-  },
-
-  // ---- Mistral ----
-  {
-    id: "mistral/mistral-large",
-    shortId: "mistral-large",
-    displayName: "Mistral Large",
-    family: "mistral",
-    authTypes: ["api-key"],
-    contextWindow: 128_000,
-    maxOutputTokens: 8_192,
-    capabilities: ALL_CAPS,
-    color: "#F97316",
-    sdkProvider: "@ai-sdk/mistral",
-    sdkModelId: "mistral-large-latest",
-    isCliWrapped: false,
-    inputPricePer1M: 2,
-    outputPricePer1M: 6,
-    costTier: "medium",
-  },
-  {
-    id: "mistral/codestral-latest",
-    shortId: "codestral",
-    displayName: "Codestral",
-    family: "mistral",
-    authTypes: ["api-key"],
-    contextWindow: 256_000,
-    maxOutputTokens: 8_192,
-    capabilities: BASIC_CAPS,
-    color: "#FB923C",
-    sdkProvider: "@ai-sdk/mistral",
-    sdkModelId: "codestral-latest",
-    isCliWrapped: false,
-    inputPricePer1M: 0.3,
-    outputPricePer1M: 0.9,
-  },
-
-  // ---- xAI ----
-  {
-    id: "xai/grok-4-1",
-    shortId: "grok-4-1",
-    displayName: "Grok 4.1",
-    family: "xai",
-    authTypes: ["api-key"],
-    contextWindow: 131_072,
-    maxOutputTokens: 16_384,
-    capabilities: ALL_CAPS,
-    reasoningTiers: ["low", "medium", "high"],
-    color: "#DC2626",
-    sdkProvider: "@ai-sdk/xai",
-    sdkModelId: "grok-4-1",
-    isCliWrapped: false,
-    inputPricePer1M: 3,
-    outputPricePer1M: 15,
-    costTier: "high",
-  },
-  {
-    id: "xai/grok-3",
-    shortId: "grok-3",
-    displayName: "Grok 3",
-    family: "xai",
-    authTypes: ["api-key"],
-    contextWindow: 131_072,
-    maxOutputTokens: 8_192,
-    capabilities: ALL_CAPS,
-    color: "#EF4444",
-    sdkProvider: "@ai-sdk/xai",
-    sdkModelId: "grok-3",
-    isCliWrapped: false,
-    inputPricePer1M: 3,
-    outputPricePer1M: 15,
-  },
-
-  // ---- OpenRouter ----
-  {
-    id: "openrouter/auto",
-    shortId: "openrouter-auto",
-    displayName: "OpenRouter Auto",
-    family: "openrouter",
-    authTypes: ["openrouter"],
-    contextWindow: 200_000,
-    maxOutputTokens: 16_384,
-    capabilities: ALL_CAPS,
-    color: "#A855F7",
-    sdkProvider: "@openrouter/ai-sdk-provider",
-    sdkModelId: "openrouter/auto",
-    isCliWrapped: false,
-  },
 
   // ---- Local (Ollama) ----
   {
@@ -636,36 +312,9 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     maxOutputTokens: 4_096,
     capabilities: BASIC_CAPS,
     color: "#71717A",
-    sdkProvider: "@ai-sdk/openai-compatible",
-    sdkModelId: "auto",
-    isCliWrapped: false,
-  },
-  {
-    id: "lmstudio/auto",
-    shortId: "lmstudio-auto",
-    displayName: "LM Studio (Auto)",
-    family: "lmstudio",
-    authTypes: ["local"],
-    contextWindow: 128_000,
-    maxOutputTokens: 8_192,
-    capabilities: BASIC_CAPS,
-    color: "#64748B",
-    sdkProvider: "@ai-sdk/openai-compatible",
-    sdkModelId: "auto",
-    isCliWrapped: false,
-  },
-  {
-    id: "vllm/auto",
-    shortId: "vllm-auto",
-    displayName: "vLLM (Auto)",
-    family: "vllm",
-    authTypes: ["local"],
-    contextWindow: 128_000,
-    maxOutputTokens: 8_192,
-    capabilities: BASIC_CAPS,
-    color: "#475569",
-    sdkProvider: "@ai-sdk/openai-compatible",
-    sdkModelId: "auto",
+    providerRoute: "openai-compatible",
+    providerModelId: "auto",
+    harnessProfile: "guarded",
     isCliWrapped: false,
   },
 ];
@@ -678,6 +327,8 @@ let byId = new Map<string, ModelDescriptor>();
 let byShortId = new Map<string, ModelDescriptor | null>();
 let byAlias = new Map<string, ModelDescriptor>();
 let bySdkModelId = new Map<string, ModelDescriptor>();
+let dynamicOpenCodeById = new Map<string, ModelDescriptor>();
+let dynamicOpenCodeByAlias = new Map<string, ModelDescriptor>();
 
 function rebuildIndexes() {
   byId = new Map<string, ModelDescriptor>();
@@ -692,7 +343,7 @@ function rebuildIndexes() {
     } else if (!byShortId.has(m.shortId)) {
       byShortId.set(m.shortId, m);
     }
-    bySdkModelId.set(m.sdkModelId, m);
+    bySdkModelId.set(m.providerModelId, m);
     for (const alias of m.aliases ?? []) {
       const normalized = alias.trim().toLowerCase();
       if (normalized.length) byAlias.set(normalized, m);
@@ -731,8 +382,36 @@ export function validateModelRegistry(models: ModelDescriptor[] = MODEL_REGISTRY
 validateModelRegistry();
 rebuildIndexes();
 
-function isLocalProviderFamily(value: string): value is LocalProviderFamily {
-  return value === "ollama" || value === "lmstudio" || value === "vllm";
+export function isLocalProviderFamily(value: string): value is LocalProviderFamily {
+  return value === "ollama" || value === "lmstudio";
+}
+
+/** First path segment of `provider/modelId` when it is a known local provider. */
+export function parseLocalProviderFromModelId(modelId: string): LocalProviderFamily | null {
+  const provider = String(modelId ?? "").trim().split("/", 1)[0]?.toLowerCase() ?? "";
+  return isLocalProviderFamily(provider) ? provider : null;
+}
+
+/** Model name segment after `provider/` for local refs; empty string if missing. */
+export function getLocalModelIdTail(modelId: string, provider: LocalProviderFamily): string {
+  return String(modelId ?? "").trim().slice(provider.length + 1).trim();
+}
+
+/**
+ * Descriptor for OpenCode permission/runtime decisions when the registry has no row yet.
+ * `getModelById` returns undefined for refs such as `ollama/auto`; this still returns a
+ * guarded local descriptor so the UI matches main-process harness behavior.
+ */
+export function getModelDescriptorForPermissionMode(modelId: string): ModelDescriptor | undefined {
+  const resolved = getModelById(modelId);
+  if (resolved) return resolved;
+  const provider = parseLocalProviderFromModelId(modelId);
+  if (!provider) return undefined;
+  const tail = getLocalModelIdTail(modelId, provider);
+  if (!tail.length || tail === "auto") {
+    return createDynamicLocalModelDescriptor(provider, "auto", { harnessProfile: "guarded" });
+  }
+  return createDynamicLocalModelDescriptor(provider, tail);
 }
 
 function parseDynamicLocalModelRef(modelRef: string): { provider: LocalProviderFamily; modelId: string } | null {
@@ -754,31 +433,211 @@ function toDynamicLocalDisplayName(provider: LocalProviderFamily, modelId: strin
 export function createDynamicLocalModelDescriptor(
   provider: LocalProviderFamily,
   modelId: string,
+  options?: DynamicLocalModelDescriptorOptions,
 ): ModelDescriptor {
   const normalizedModelId = modelId.trim();
+  const displayName = options?.displayName?.trim() || toDynamicLocalDisplayName(provider, normalizedModelId);
+  const capabilities: ModelCapabilities = {
+    ...BASIC_CAPS,
+    ...(options?.capabilities ?? {}),
+  };
+  const aliases = [
+    `${provider}:${normalizedModelId}`,
+    ...(options?.aliases ?? []),
+  ].filter((value, index, list) => {
+    const normalized = value.trim();
+    return normalized.length > 0 && list.findIndex((entry) => entry.trim().toLowerCase() === normalized.toLowerCase()) === index;
+  });
   return {
     id: `${provider}/${normalizedModelId}`,
     shortId: normalizedModelId,
-    displayName: toDynamicLocalDisplayName(provider, normalizedModelId),
+    displayName,
     family: provider,
     authTypes: ["local"],
-    contextWindow: 128_000,
-    maxOutputTokens: 8_192,
-    capabilities: { ...BASIC_CAPS },
+    contextWindow: options?.contextWindow ?? 128_000,
+    maxOutputTokens: options?.maxOutputTokens ?? 8_192,
+    capabilities,
     color: LOCAL_PROVIDER_COLORS[provider],
-    sdkProvider: "@ai-sdk/openai-compatible",
-    sdkModelId: normalizedModelId,
-    aliases: [`${provider}:${normalizedModelId}`],
+    providerRoute: "openai-compatible",
+    providerModelId: normalizedModelId,
+    ...(options?.reasoningTiers?.length ? { reasoningTiers: [...options.reasoningTiers] } : {}),
+    aliases,
+    isCliWrapped: false,
+    harnessProfile: options?.harnessProfile ?? "guarded",
+    ...(options?.discoverySource ? { discoverySource: options.discoverySource } : {}),
+  };
+}
+
+export type DynamicOpenCodeModelDescriptorOptions = {
+  displayName?: string;
+  contextWindow?: number;
+  maxOutputTokens?: number;
+  capabilities?: Partial<ModelCapabilities>;
+  reasoningTiers?: string[];
+  aliases?: string[];
+  color?: string;
+  /** When set with openCodeModelId, registry id is derived so model ids may contain `/`. */
+  openCodeProviderId?: string;
+  openCodeModelId?: string;
+};
+
+/** Stable ADE id for an OpenCode-backed model: `opencode/<providerId>/<encodeURIComponent(modelId)>`. */
+export function encodeOpenCodeRegistryId(openCodeProviderId: string, openCodeModelId: string): string {
+  const p = openCodeProviderId.trim();
+  const m = openCodeModelId.trim();
+  return `opencode/${p}/${encodeURIComponent(m)}`;
+}
+
+export function decodeOpenCodeRegistryId(id: string): { openCodeProviderId: string; openCodeModelId: string } | null {
+  const trimmed = id.trim();
+  const prefix = "opencode/";
+  if (!trimmed.toLowerCase().startsWith(prefix)) return null;
+  const rest = trimmed.slice(prefix.length);
+  const slash = rest.indexOf("/");
+  if (slash <= 0 || slash >= rest.length - 1) return null;
+  const providerId = rest.slice(0, slash);
+  const encodedModel = rest.slice(slash + 1);
+  try {
+    const modelId = decodeURIComponent(encodedModel);
+    if (!providerId.trim().length || !modelId.trim().length) return null;
+    return { openCodeProviderId: providerId, openCodeModelId: modelId };
+  } catch {
+    return null;
+  }
+}
+
+function formatOpenCodeDisplayName(modelId: string): string {
+  return modelId
+    .split(/[-_/]+/g)
+    .filter(Boolean)
+    .map((segment) => segment.charAt(0).toUpperCase() + segment.slice(1))
+    .join(" ");
+}
+
+export function parseDynamicOpenCodeModelRef(modelId: string): { modelId: string } | null {
+  if (decodeOpenCodeRegistryId(modelId)) return null;
+  const trimmed = modelId.trim();
+  const lower = trimmed.toLowerCase();
+  if (!lower.startsWith("opencode/")) return null;
+  const raw = trimmed.slice("opencode/".length).trim();
+  if (!raw.length) return null;
+  return { modelId: raw };
+}
+
+/** Map an OpenCode upstream provider ID to the ADE ProviderFamily for correct grouping and display. */
+const OPENCODE_PROVIDER_FAMILY_MAP: Record<string, ProviderFamily> = {
+  anthropic: "anthropic",
+  openai: "openai",
+  google: "google",
+  mistral: "mistral",
+  deepseek: "deepseek",
+  xai: "xai",
+  openrouter: "openrouter",
+  ollama: "ollama",
+  lmstudio: "lmstudio",
+  groq: "groq",
+  together: "together",
+};
+
+const OPENCODE_PROVIDER_COLORS: Record<string, string> = {
+  anthropic: "#D97706",
+  openai: "#10A37F",
+  google: "#F59E0B",
+  mistral: "#F97316",
+  deepseek: "#3B82F6",
+  xai: "#DC2626",
+  openrouter: "#6B7280",
+  ollama: "#71717A",
+  lmstudio: "#64748B",
+  groq: "#06B6D4",
+  together: "#22C55E",
+};
+
+const LOCAL_OPENCODE_PROVIDERS = new Set(["ollama", "lmstudio"]);
+
+export function createDynamicOpenCodeModelDescriptor(
+  modelId: string,
+  options?: DynamicOpenCodeModelDescriptorOptions,
+): ModelDescriptor {
+  const opPid = options?.openCodeProviderId?.trim();
+  const opMid = options?.openCodeModelId?.trim();
+  const normalizedModelId = modelId.trim();
+  const usesPairedIds = Boolean(opPid && opMid);
+  const id = usesPairedIds ? encodeOpenCodeRegistryId(opPid!, opMid!) : `opencode/${normalizedModelId}`;
+  const shortId = usesPairedIds ? opMid! : normalizedModelId;
+  const providerModelId = usesPairedIds ? `${opPid}/${opMid}` : normalizedModelId;
+  const displayName =
+    options?.displayName?.trim()
+    || (usesPairedIds ? formatOpenCodeDisplayName(opMid!) : formatOpenCodeDisplayName(normalizedModelId));
+  const capabilities: ModelCapabilities = {
+    tools: options?.capabilities?.tools ?? true,
+    vision: options?.capabilities?.vision ?? false,
+    reasoning: options?.capabilities?.reasoning ?? true,
+    streaming: options?.capabilities?.streaming ?? true,
+  };
+  const aliases = options?.aliases?.map((alias) => alias.trim()).filter(Boolean) ?? [];
+  const family: ProviderFamily = (opPid && OPENCODE_PROVIDER_FAMILY_MAP[opPid]) || "opencode";
+  const isLocal = opPid ? LOCAL_OPENCODE_PROVIDERS.has(opPid) : false;
+  const authTypes: AuthType[] = isLocal ? ["local"] : ["api-key"];
+  const color = options?.color ?? (opPid && OPENCODE_PROVIDER_COLORS[opPid]) ?? "#2563EB";
+  return {
+    id,
+    shortId,
+    displayName,
+    family,
+    authTypes,
+    contextWindow: options?.contextWindow ?? 200_000,
+    maxOutputTokens: options?.maxOutputTokens ?? 32_000,
+    capabilities,
+    color,
+    providerRoute: "opencode",
+    providerModelId,
+    ...(usesPairedIds ? { openCodeProviderId: opPid, openCodeModelId: opMid } : {}),
+    ...(options?.reasoningTiers?.length ? { reasoningTiers: [...options.reasoningTiers] } : {}),
+    ...(aliases.length ? { aliases } : {}),
     isCliWrapped: false,
   };
+}
+
+function isDynamicOpenCodeDescriptor(descriptor: ModelDescriptor): boolean {
+  return (descriptor.openCodeProviderId != null || descriptor.providerRoute === "opencode") && !byId.has(descriptor.id);
+}
+
+export function replaceDynamicOpenCodeModelDescriptors(descriptors: ModelDescriptor[]): void {
+  dynamicOpenCodeById = new Map<string, ModelDescriptor>();
+  dynamicOpenCodeByAlias = new Map<string, ModelDescriptor>();
+
+  for (const descriptor of descriptors) {
+    if (!isDynamicOpenCodeDescriptor(descriptor)) continue;
+    dynamicOpenCodeById.set(descriptor.id, descriptor);
+    for (const alias of descriptor.aliases ?? []) {
+      const normalized = alias.trim().toLowerCase();
+      if (normalized.length) dynamicOpenCodeByAlias.set(normalized, descriptor);
+    }
+  }
+}
+
+export function getDynamicOpenCodeModelDescriptors(): ModelDescriptor[] {
+  return [...dynamicOpenCodeById.values()];
 }
 
 export function getLocalProviderDefaultEndpoint(provider: LocalProviderFamily): string {
   return LOCAL_PROVIDER_ENDPOINTS[provider];
 }
 
+/**
+ * Ensures a local provider endpoint includes the `/v1` suffix required by
+ * `@ai-sdk/openai-compatible` (which appends `/chat/completions` directly).
+ * Safe to call on endpoints that already end with `/v1`.
+ */
+export function ensureOpenCodeBaseURL(url: string): string {
+  const trimmed = url.replace(/\/+$/, "");
+  if (trimmed.endsWith("/v1")) return trimmed;
+  return `${trimmed}/v1`;
+}
+
 // ---------------------------------------------------------------------------
-// Cursor CLI — dynamic descriptors (`cursor/<sdkModelId>` from `agent models`)
+// Cursor CLI — dynamic descriptors (`cursor/<providerModelId>` from `agent models`)
 // ---------------------------------------------------------------------------
 
 export type CursorCliLineGroup = "auto" | "anthropic" | "composer" | "openai" | "google" | "grok" | "other";
@@ -794,8 +653,8 @@ export const CURSOR_CLI_LINE_ORDER: CursorCliLineGroup[] = [
   "other",
 ];
 
-export function cursorCliLineGroupFromSdkId(sdkModelId: string): CursorCliLineGroup {
-  const s = sdkModelId.trim().toLowerCase();
+export function cursorCliLineGroupFromSdkId(providerModelId: string): CursorCliLineGroup {
+  const s = providerModelId.trim().toLowerCase();
   if (s === "auto") return "auto";
   if (s.includes("composer")) return "composer";
   if (/claude|sonnet|opus|haiku/.test(s)) return "anthropic";
@@ -818,16 +677,16 @@ export function cursorCliLineGroupLabel(group: CursorCliLineGroup): string {
   return labels[group] ?? "Cursor";
 }
 
-function formatCursorSdkFallbackDisplayName(sdkModelId: string): string {
-  return sdkModelId
+function formatCursorSdkFallbackDisplayName(providerModelId: string): string {
+  return providerModelId
     .split(/[-_/]+/g)
     .filter(Boolean)
     .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
     .join(" ");
 }
 
-function colorForCursorSdkId(sdkModelId: string): string {
-  const s = sdkModelId.toLowerCase();
+function colorForCursorSdkId(providerModelId: string): string {
+  const s = providerModelId.toLowerCase();
   if (s === "auto") return "#A78BFA";
   if (/claude|sonnet|opus|haiku/.test(s)) return "#D97706";
   if (/composer/.test(s)) return "#8B5CF6";
@@ -837,37 +696,37 @@ function colorForCursorSdkId(sdkModelId: string): string {
   return "#71717A";
 }
 
-export function parseDynamicCursorModelRef(modelId: string): { sdkModelId: string } | null {
+export function parseDynamicCursorModelRef(modelId: string): { providerModelId: string } | null {
   const trimmed = modelId.trim();
   const lower = trimmed.toLowerCase();
   if (!lower.startsWith("cursor/")) return null;
   const sdk = trimmed.slice("cursor/".length).trim();
   if (!sdk.length) return null;
   if (!/^[\w.-]+$/i.test(sdk)) return null;
-  return { sdkModelId: sdk };
+  return { providerModelId: sdk };
 }
 
 export function createDynamicCursorCliModelDescriptor(
-  sdkModelId: string,
+  providerModelId: string,
   cliDisplayName?: string | null,
 ): ModelDescriptor {
-  const id = `cursor/${sdkModelId}`;
+  const id = `cursor/${providerModelId}`;
   const display =
     typeof cliDisplayName === "string" && cliDisplayName.trim().length
       ? cliDisplayName.trim()
-      : formatCursorSdkFallbackDisplayName(sdkModelId);
+      : formatCursorSdkFallbackDisplayName(providerModelId);
   return {
     id,
-    shortId: sdkModelId,
+    shortId: providerModelId,
     displayName: display,
     family: "cursor",
     authTypes: ["cli-subscription"],
     contextWindow: 200_000,
     maxOutputTokens: 32_000,
     capabilities: ALL_CAPS,
-    color: colorForCursorSdkId(sdkModelId),
-    sdkProvider: "@agentclientprotocol/sdk",
-    sdkModelId,
+    color: colorForCursorSdkId(providerModelId),
+    providerRoute: "cursor-cli",
+    providerModelId,
     cliCommand: "cursor",
     isCliWrapped: true,
   };
@@ -880,8 +739,8 @@ export function sortCursorCliDescriptorsForPicker(descriptors: ModelDescriptor[]
     return i === -1 ? CURSOR_CLI_LINE_ORDER.length : i;
   };
   return [...descriptors].sort((a, b) => {
-    const ga = cursorCliLineGroupFromSdkId(a.sdkModelId);
-    const gb = cursorCliLineGroupFromSdkId(b.sdkModelId);
+    const ga = cursorCliLineGroupFromSdkId(a.providerModelId);
+    const gb = cursorCliLineGroupFromSdkId(b.providerModelId);
     const ra = rank(ga);
     const rb = rank(gb);
     if (ra !== rb) return ra - rb;
@@ -896,10 +755,21 @@ export function sortCursorCliDescriptorsForPicker(descriptors: ModelDescriptor[]
 export function getModelById(id: string): ModelDescriptor | undefined {
   const cached = byId.get(id);
   if (cached) return cached;
+  const dynamicOpenCode = dynamicOpenCodeById.get(id);
+  if (dynamicOpenCode) return dynamicOpenCode;
+  const openCodeDecoded = decodeOpenCodeRegistryId(id);
+  if (openCodeDecoded) {
+    return createDynamicOpenCodeModelDescriptor("", {
+      openCodeProviderId: openCodeDecoded.openCodeProviderId,
+      openCodeModelId: openCodeDecoded.openCodeModelId,
+    });
+  }
   const local = parseDynamicLocalModelRef(id);
   if (local) return createDynamicLocalModelDescriptor(local.provider, local.modelId);
+  const openCode = parseDynamicOpenCodeModelRef(id);
+  if (openCode) return createDynamicOpenCodeModelDescriptor(openCode.modelId);
   const cursor = parseDynamicCursorModelRef(id);
-  return cursor ? createDynamicCursorCliModelDescriptor(cursor.sdkModelId) : undefined;
+  return cursor ? createDynamicCursorCliModelDescriptor(cursor.providerModelId) : undefined;
 }
 
 export function getAvailableModels(
@@ -924,7 +794,7 @@ export function getAvailableModels(
   };
 
   const hasMappedLocal = (family: ProviderFamily): boolean => {
-    const requiredProvider = family === "ollama" || family === "lmstudio" || family === "vllm"
+    const requiredProvider = family === "ollama" || family === "lmstudio"
       ? family
       : null;
     if (!requiredProvider) return hasAuth((auth) => auth.type === "local");
@@ -947,12 +817,26 @@ export function getAvailableModels(
       return false;
     });
 
-  return MODEL_REGISTRY.filter((model) => !model.deprecated && hasAuthForModel(model));
+  const staticModels = MODEL_REGISTRY.filter((model) => !model.deprecated && hasAuthForModel(model));
+  const dynamicOpenCodeLocals = getDynamicOpenCodeModelDescriptors().filter(
+    (model) => model.authTypes.includes("local") && hasAuthForModel(model),
+  );
+  if (!dynamicOpenCodeLocals.length) return staticModels;
+
+  const providersWithDynamicLocals = new Set(dynamicOpenCodeLocals.map((model) => model.family));
+  const filteredStatic = staticModels.filter(
+    (model) => !(model.authTypes.includes("local") && providersWithDynamicLocals.has(model.family)),
+  );
+  return [...filteredStatic, ...dynamicOpenCodeLocals];
 }
 
 export function resolveModelAlias(alias: string): ModelDescriptor | undefined {
   const normalized = alias.trim().toLowerCase();
-  return byId.get(normalized) ?? byShortId.get(normalized) ?? byAlias.get(normalized) ?? undefined;
+  return byId.get(normalized)
+    ?? byShortId.get(normalized)
+    ?? byAlias.get(normalized)
+    ?? dynamicOpenCodeByAlias.get(normalized)
+    ?? undefined;
 }
 
 export function resolveModelDescriptor(modelRef: string): ModelDescriptor | undefined {
@@ -986,7 +870,7 @@ export function resolveModelDescriptorForProvider(
     if (!matchesProviderGroup(descriptor, providerHint)) return false;
     return descriptor.id.toLowerCase() === normalized
       || descriptor.shortId.toLowerCase() === normalized
-      || descriptor.sdkModelId.toLowerCase() === normalized
+      || descriptor.providerModelId.toLowerCase() === normalized
       || (descriptor.aliases ?? []).some((alias) => alias.trim().toLowerCase() === normalized);
   });
   if (!candidates.length) {
@@ -1002,7 +886,7 @@ export function resolveModelDescriptorForProvider(
   if (exactShortId) return exactShortId;
 
   const exactSdkMatch = candidates
-    .filter((descriptor) => descriptor.sdkModelId.toLowerCase() === normalized)
+    .filter((descriptor) => descriptor.providerModelId.toLowerCase() === normalized)
     .sort((left, right) => Number(left.isCliWrapped) - Number(right.isCliWrapped))[0];
   if (exactSdkMatch) return exactSdkMatch;
 
@@ -1027,19 +911,19 @@ export function resolveCliProviderForModel(
 }
 
 /**
- * Resolve a model descriptor to its provider group ("claude" | "codex" | "cursor" | "unified").
- * CLI-wrapped models map to their CLI runtime; all others map to "unified".
+ * Resolve a model descriptor to its provider group ("claude" | "codex" | "cursor" | "opencode").
+ * CLI-wrapped models map to their CLI runtime; all others map to "opencode".
  */
 export function resolveProviderGroupForModel(
   descriptor: ModelDescriptor,
 ): ModelProviderGroup {
-  return resolveCliProviderForModel(descriptor) ?? "unified";
+  return resolveCliProviderForModel(descriptor) ?? "opencode";
 }
 
 /**
  * Resolve the chat session provider and model ref for a model descriptor.
  * CLI-wrapped models route to their native runtime (claude/codex/cursor);
- * everything else goes through the unified (in-process) path.
+ * everything else goes through the OpenCode runtime.
  */
 export function resolveChatProviderForDescriptor(
   descriptor: ModelDescriptor,
@@ -1057,7 +941,7 @@ export function getRuntimeModelRefForDescriptor(
     return descriptor.shortId;
   }
   if (provider === "codex" || provider === "cursor") {
-    return descriptor.sdkModelId;
+    return descriptor.providerModelId;
   }
   return descriptor.id;
 }
@@ -1112,15 +996,15 @@ function pickPreferredModel(
 
 function pickDefaultClaudeModel(models: ModelDescriptor[]): ModelDescriptor | undefined {
   return pickPreferredModel(models, [
-    (model) => /\bsonnet\b/i.test(model.displayName) || /\bsonnet\b/i.test(model.sdkModelId),
-    (model) => /\bopus\b/i.test(model.displayName) || /\bopus\b/i.test(model.sdkModelId),
-    (model) => /\bhaiku\b/i.test(model.displayName) || /\bhaiku\b/i.test(model.sdkModelId),
+    (model) => /\bsonnet\b/i.test(model.displayName) || /\bsonnet\b/i.test(model.providerModelId),
+    (model) => /\bopus\b/i.test(model.displayName) || /\bopus\b/i.test(model.providerModelId),
+    (model) => /\bhaiku\b/i.test(model.displayName) || /\bhaiku\b/i.test(model.providerModelId),
   ]);
 }
 
 function pickDefaultCodexModel(models: ModelDescriptor[]): ModelDescriptor | undefined {
   const standard = models
-    .filter((model) => /gpt-\d+(?:\.\d+)*(?:-codex)?$/i.test(model.id) || /gpt-\d+(?:\.\d+)*$/i.test(model.sdkModelId))
+    .filter((model) => /gpt-\d+(?:\.\d+)*(?:-codex)?$/i.test(model.id) || /gpt-\d+(?:\.\d+)*$/i.test(model.providerModelId))
     .sort((left, right) => {
       const versionCompare = compareVersionSegmentsDesc(
         parseVersionSegments(left.id),
@@ -1131,15 +1015,15 @@ function pickDefaultCodexModel(models: ModelDescriptor[]): ModelDescriptor | und
     });
   if (standard[0]) return standard[0];
   return pickPreferredModel(models, [
-    (model) => /codex-mini/i.test(model.sdkModelId),
-    (model) => /spark/i.test(model.sdkModelId),
+    (model) => /codex-mini/i.test(model.providerModelId),
+    (model) => /spark/i.test(model.providerModelId),
   ]);
 }
 
-function pickDefaultUnifiedModel(models: ModelDescriptor[]): ModelDescriptor | undefined {
+function pickDefaultOpenCodeModel(models: ModelDescriptor[]): ModelDescriptor | undefined {
   return pickPreferredModel(models, [
-    (model) => model.family === "openai" && /\bgpt-5\.4\b/i.test(`${model.displayName} ${model.sdkModelId}`),
-    (model) => model.id === "anthropic/claude-sonnet-4-6-api",
+    (model) => model.family === "openai" && /\bgpt-5\.4\b/i.test(`${model.displayName} ${model.providerModelId}`),
+    (model) => model.id === "opencode/anthropic/claude-sonnet-4-6" || (model.family === "anthropic" && model.providerRoute === "opencode"),
     (model) => model.family === "anthropic" && /\bsonnet\b/i.test(model.displayName),
     (model) => model.family === "anthropic",
     (model) => model.family === "openai",
@@ -1149,10 +1033,10 @@ function pickDefaultUnifiedModel(models: ModelDescriptor[]): ModelDescriptor | u
 /** Default when choosing among Cursor CLI models from `agent models` (prefers Auto, then Sonnet, Composer, GPT‑5.4). */
 export function pickDefaultCursorDescriptorFromCliList(models: ModelDescriptor[]): ModelDescriptor | undefined {
   return pickPreferredModel(models, [
-    (m) => m.sdkModelId === "auto",
-    (m) => /sonnet/i.test(m.sdkModelId) || /sonnet/i.test(m.displayName),
-    (m) => /composer/i.test(m.sdkModelId),
-    (m) => /gpt-5\.4/i.test(m.sdkModelId),
+    (m) => m.providerModelId === "auto",
+    (m) => /sonnet/i.test(m.providerModelId) || /sonnet/i.test(m.displayName),
+    (m) => /composer/i.test(m.providerModelId),
+    (m) => /gpt-5\.4/i.test(m.providerModelId),
   ]);
 }
 
@@ -1163,7 +1047,7 @@ function pickDefaultModelForProvider(
   if (provider === "claude") return pickDefaultClaudeModel(models);
   if (provider === "codex") return pickDefaultCodexModel(models);
   if (provider === "cursor") return pickDefaultCursorDescriptorFromCliList(models);
-  return pickDefaultUnifiedModel(models);
+  return pickDefaultOpenCodeModel(models);
 }
 
 export function getDefaultModelDescriptor(
@@ -1202,7 +1086,7 @@ export type ModelEnrichment = {
 export function enrichModelRegistry(enrichments: Map<string, ModelEnrichment>): number {
   let updated = 0;
   for (const descriptor of MODEL_REGISTRY) {
-    const enrichment = enrichments.get(descriptor.sdkModelId);
+    const enrichment = enrichments.get(descriptor.providerModelId);
     if (!enrichment) continue;
 
     if (enrichment.contextWindow && enrichment.contextWindow > 0) {
@@ -1224,14 +1108,14 @@ export function enrichModelRegistry(enrichments: Map<string, ModelEnrichment>): 
 // ---------------------------------------------------------------------------
 
 /**
- * Get pricing for a model by its sdkModelId (e.g. "claude-sonnet-4-6").
+ * Get pricing for a model by its providerModelId (e.g. "claude-sonnet-4-6").
  * Returns per-million-token pricing. Checks dynamic overrides first,
  * then falls back to the static pricing in MODEL_REGISTRY.
  */
-export function getModelPricing(sdkModelId: string): { input: number; output: number } | undefined {
-  const override = _dynamicPricingOverrides[sdkModelId];
+export function getModelPricing(providerModelId: string): { input: number; output: number } | undefined {
+  const override = _dynamicPricingOverrides[providerModelId];
   if (override) return override;
-  const model = bySdkModelId.get(sdkModelId);
+  const model = bySdkModelId.get(providerModelId);
   if (model?.inputPricePer1M != null && model?.outputPricePer1M != null) {
     return { input: model.inputPricePer1M, output: model.outputPricePer1M };
   }

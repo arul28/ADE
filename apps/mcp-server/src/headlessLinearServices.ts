@@ -61,6 +61,7 @@ type HeadlessLinearCredentialService = {
     userLogin: string | null;
     scopes: string[];
     checkedAt: string | null;
+    authMode?: "manual" | "oauth" | null;
   };
   getTokenOrThrow: () => string;
   setToken: (token: string) => void;
@@ -290,7 +291,7 @@ function createHeadlessGitHubService(projectRoot: string, logger: Logger): Headl
 }
 
 function createHeadlessLinearCredentialService(): HeadlessLinearCredentialService {
-  let token = envToken("ADE_LINEAR_TOKEN", "LINEAR_API_KEY", "LINEAR_TOKEN") ?? "";
+  let token = envToken("ADE_LINEAR_API", "LINEAR_API_KEY", "ADE_LINEAR_TOKEN", "LINEAR_TOKEN") ?? "";
   return {
     getStatus() {
       return {
@@ -301,11 +302,12 @@ function createHeadlessLinearCredentialService(): HeadlessLinearCredentialServic
         userLogin: null,
         scopes: [],
         checkedAt: token.trim().length > 0 ? new Date().toISOString() : null,
+        authMode: token.trim().length > 0 ? "manual" : null,
       };
     },
     getTokenOrThrow() {
       if (!token.trim()) {
-        throw new Error("Linear token missing. Set ADE_LINEAR_TOKEN, LINEAR_API_KEY, or LINEAR_TOKEN for headless mode.");
+        throw new Error("Linear token missing. Set ADE_LINEAR_API, LINEAR_API_KEY, ADE_LINEAR_TOKEN, or LINEAR_TOKEN for headless mode.");
       }
       return token.trim();
     },

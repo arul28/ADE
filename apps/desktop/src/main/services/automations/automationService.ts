@@ -41,7 +41,7 @@ import type { createMemoryBriefingService } from "../memory/memoryBriefingServic
 import type { createProceduralLearningService } from "../memory/proceduralLearningService";
 import type { createBudgetCapService } from "../usage/budgetCapService";
 import type { BudgetCapProvider } from "../../../shared/types/usage";
-import { buildClaudeReadOnlyWorkerAllowedTools } from "../orchestrator/unifiedOrchestratorAdapter";
+import { buildClaudeReadOnlyWorkerAllowedTools } from "../orchestrator/providerOrchestratorAdapter";
 import type { createWorkerHeartbeatService } from "../cto/workerHeartbeatService";
 import { escapeRegExp, globToRegExp, isRecord, matchesGlob, normalizeSet, nowIso, resolvePathWithinRoot, safeJsonParse } from "../shared/utils";
 import { getDefaultModelDescriptor, getModelById, resolveChatProviderForDescriptor, resolveProviderGroupForModel } from "../../../shared/modelRegistry";
@@ -88,9 +88,9 @@ type WatchedFileRoot = {
 };
 
 const DEFAULT_AUTOMATION_CHAT_MODEL_ID =
-  getDefaultModelDescriptor("unified")?.id
+  getDefaultModelDescriptor("opencode")?.id
   ?? getDefaultModelDescriptor("claude")?.id
-  ?? "anthropic/claude-sonnet-4-6-api";
+  ?? "anthropic/claude-sonnet-4-6";
 
 type AutomationRunRow = {
   id: string;
@@ -936,7 +936,7 @@ export function createAutomationService({
       providers: {
         claude: rule.verification.mode === "dry-run" ? "plan" : (providers?.claude ?? "edit"),
         codex: rule.verification.mode === "dry-run" ? "plan" : (providers?.codex ?? "edit"),
-        unified: rule.verification.mode === "dry-run" ? "plan" : (providers?.unified ?? "edit"),
+        opencode: rule.verification.mode === "dry-run" ? "plan" : (providers?.opencode ?? "edit"),
         codexSandbox: providers?.codexSandbox ?? "workspace-write",
         ...(providers?.writablePaths?.length ? { writablePaths: providers.writablePaths } : {}),
         allowedTools,
@@ -1599,7 +1599,7 @@ export function createAutomationService({
       throw new Error(`Unknown model '${requestedModelId}'.`);
     }
     const modelId = requestedModelId ?? DEFAULT_AUTOMATION_CHAT_MODEL_ID;
-    const modelDescriptor = getModelById(modelId) ?? getDefaultModelDescriptor("unified");
+    const modelDescriptor = getModelById(modelId) ?? getDefaultModelDescriptor("opencode");
     if (!modelDescriptor) {
       throw new Error(`Unknown model '${modelId}'.`);
     }
@@ -1664,7 +1664,7 @@ export function createAutomationService({
         ? permissionConfig.providers?.claude ?? "edit"
         : providerGroup === "codex"
           ? permissionConfig.providers?.codex ?? "edit"
-          : permissionConfig.providers?.unified ?? "edit";
+          : permissionConfig.providers?.opencode ?? "edit";
     const reasoningEffort = args.rule.execution?.session?.reasoningEffort ?? args.rule.modelConfig?.orchestratorModel?.thinkingLevel ?? null;
     const timeoutMs = Math.max(
       15_000,
@@ -1816,7 +1816,7 @@ export function createAutomationService({
       laneId: args.trigger.laneId ?? null,
       autostart: false,
       launchMode: "autopilot",
-      autopilotExecutor: "unified",
+      autopilotExecutor: "opencode",
       priority: args.rule.mode === "fix" ? "high" : "normal",
       employeeAgentId: null,
       ...(args.rule.modelConfig ? { modelConfig: args.rule.modelConfig } : {}),
@@ -1926,7 +1926,7 @@ export function createAutomationService({
     await aiOrchestratorServiceRef.startMissionRun({
       missionId: mission.id,
       runMode: "autopilot",
-      defaultExecutorKind: "unified",
+      defaultExecutorKind: "opencode",
       autopilotOwnerId: "automation-bot",
     });
 

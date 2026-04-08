@@ -106,14 +106,18 @@ describe("executionPolicy", () => {
   });
 
   describe("phaseModelToExecutorKind", () => {
-    it("maps known model ids to unified executor", () => {
-      expect(phaseModelToExecutorKind("anthropic/claude-sonnet-4-6")).toBe("unified");
+    it("maps known model ids to opencode executor", () => {
+      expect(phaseModelToExecutorKind("opencode/anthropic/claude-sonnet-4-6")).toBe("opencode");
     });
 
-    it("falls back to unified when model id is absent/unknown", () => {
-      expect(phaseModelToExecutorKind("legacy-provider-string")).toBe("unified");
-      expect(phaseModelToExecutorKind(undefined)).toBe("unified");
-      expect(phaseModelToExecutorKind(null)).toBe("unified");
+    it("maps CLI-wrapped models to their CLI executor", () => {
+      expect(phaseModelToExecutorKind("anthropic/claude-sonnet-4-6")).toBe("claude");
+    });
+
+    it("falls back to opencode when model id is absent/unknown", () => {
+      expect(phaseModelToExecutorKind("legacy-provider-string")).toBe("opencode");
+      expect(phaseModelToExecutorKind(undefined)).toBe("opencode");
+      expect(phaseModelToExecutorKind(null)).toBe("opencode");
     });
   });
 
@@ -437,7 +441,7 @@ function makeAttempt(overrides?: Partial<OrchestratorAttempt>): OrchestratorAtte
     stepId: "step-1",
     attemptNumber: 1,
     status: "succeeded",
-    executorKind: "unified",
+    executorKind: "opencode",
     executorSessionId: null,
     trackedSessionEnforced: false,
     contextProfile: "orchestrator_deterministic_v1",

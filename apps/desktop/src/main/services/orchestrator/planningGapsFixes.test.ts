@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { buildClaudeReadOnlyWorkerAllowedTools } from "./unifiedOrchestratorAdapter";
+import { buildClaudeReadOnlyWorkerAllowedTools } from "./providerOrchestratorAdapter";
 import { classifyBlockingWarnings } from "./orchestratorQueries";
 import { extractAndRegisterArtifacts } from "./workerTracking";
 import { createOrchestratorService } from "./orchestratorService";
@@ -186,7 +186,7 @@ describe("VAL-ART-001: Planning step registers plan artifact", () => {
       stepId: "step-1",
       status: "succeeded" as const,
       executorSessionId: "session-1",
-      executorKind: "unified" as const,
+      executorKind: "opencode" as const,
       createdAt: "2026-03-10T00:00:00.000Z",
       completedAt: "2026-03-10T00:05:00.000Z",
       resultEnvelope: {
@@ -559,7 +559,7 @@ describe("VAL-PLAN-004: planner contract enforcement", () => {
       stepId: "step-1",
       status: "succeeded" as const,
       executorSessionId: "session-1",
-      executorKind: "unified" as const,
+      executorKind: "opencode" as const,
       createdAt: "2026-03-10T00:00:00.000Z",
       completedAt: "2026-03-10T00:05:00.000Z",
       resultEnvelope: {

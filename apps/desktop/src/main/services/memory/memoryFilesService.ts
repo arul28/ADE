@@ -3,11 +3,11 @@ import path from "node:path";
 import { resolveAdeLayout } from "../../../shared/adeLayout";
 import { writeTextAtomic } from "../shared/utils";
 import type {
-  createUnifiedMemoryService,
+  createMemoryService,
   Memory,
   MemoryCategory,
   MemoryImportance,
-} from "./unifiedMemoryService";
+} from "./memoryService";
 
 type TopicKey =
   | "decisions"
@@ -172,7 +172,7 @@ function labelForMemory(memory: Memory): string {
 export function createProjectMemoryFilesService(args: {
   projectRoot: string;
   projectId: string;
-  memoryService: Pick<ReturnType<typeof createUnifiedMemoryService>, "listMemories">;
+  memoryService: Pick<ReturnType<typeof createMemoryService>, "listMemories">;
 }): ProjectMemoryFilesService {
   const layout = resolveAdeLayout(args.projectRoot);
   const memoryDir = layout.memoryDir;

@@ -23,7 +23,8 @@ import { getToolMeta } from "./chatToolAppearance";
 import { ChatStatusGlyph, chatStatusTextClass, type ChatStatusVisualState } from "./chatStatusVisuals";
 import { replaceInternalToolNames } from "./toolPresentation";
 
-const MAX_VISIBLE_WORK_LOG_ENTRIES = 4;
+const MAX_VISIBLE_WORK_LOG_ENTRIES = 1;
+const MAX_SUMMARY_WORK_LOG_ENTRIES = 4;
 const RECESSED_BLOCK_CLASS =
   "overflow-auto whitespace-pre-wrap break-words rounded-[10px] border border-white/[0.05] bg-[#09090b] px-4 py-3 font-mono text-[11px] leading-[1.6] text-fg/76";
 
@@ -288,7 +289,7 @@ function buildWorkGroupSummary({
   const cleanedSummary = replaceInternalToolNames(summary?.trim() ?? "");
   if (cleanedSummary.length > 0) return cleanedSummary;
 
-  const latestEntries = entries.slice(Math.max(0, entries.length - MAX_VISIBLE_WORK_LOG_ENTRIES));
+  const latestEntries = entries.slice(Math.max(0, entries.length - MAX_SUMMARY_WORK_LOG_ENTRIES));
   const labels: string[] = [];
   const seen = new Set<string>();
   for (const entry of latestEntries) {
@@ -297,7 +298,7 @@ function buildWorkGroupSummary({
     seen.add(label);
     labels.push(label);
   }
-  if (labels.length === 0) return "Recent agent activity";
+  if (labels.length === 0) return "Recent tool calls";
   const summaryText = labels.slice(0, 3).join(", ");
   return `${summaryText.charAt(0).toUpperCase()}${summaryText.slice(1)}`;
 }
@@ -472,7 +473,7 @@ export function ChatWorkLogBlock({
       <div className="mb-2.5 flex items-start justify-between gap-3">
         <div className="min-w-0">
           <p className="font-mono text-[9px] uppercase tracking-[0.16em] text-muted-fg/50">
-            Activity
+            Tool calls
           </p>
           <p className="mt-1 text-[13px] leading-5 text-fg/82">
             {groupSummary}
@@ -480,7 +481,7 @@ export function ChatWorkLogBlock({
         </div>
         <div className="flex shrink-0 items-center gap-2">
           <span className="rounded-full border border-white/[0.08] bg-white/[0.03] px-2 py-1 font-mono text-[9px] uppercase tracking-[0.12em] text-fg/46">
-            {entries.length} step{entries.length === 1 ? "" : "s"}
+            {entries.length} call{entries.length === 1 ? "" : "s"}
           </span>
           {hasOverflow ? (
             <button

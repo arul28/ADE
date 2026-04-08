@@ -134,7 +134,7 @@ function installAdeMocks(options?: {
       models: vi.fn().mockImplementation(async ({ provider }: { provider: string }) => {
         if (provider === "codex") return [{ id: "gpt-5.4" }];
         if (provider === "claude") return options?.includeClaudeModel ? [{ id: "anthropic/claude-sonnet-4-6" }] : [];
-        if (provider === "unified") return [{ id: "openai/gpt-5.4-mini" }];
+        if (provider === "opencode") return [{ id: "openai/gpt-5.4-mini" }];
         return [];
       }),
       slashCommands: vi.fn().mockResolvedValue([]),
@@ -510,7 +510,7 @@ describe("AgentChatPane submit recovery", () => {
     expect(trigger.textContent ?? "").toContain(currentLabel);
 
     fireEvent.click(trigger);
-    fireEvent.click(await screen.findByRole("button", { name: /Anthropic/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /^Claude$/i }));
     await clickEnabledModelOption(nextLabelPattern);
 
     await waitFor(() => {
@@ -567,7 +567,7 @@ describe("AgentChatPane submit recovery", () => {
     expect(trigger.textContent ?? "").toContain(currentLabel);
 
     fireEvent.click(trigger);
-    fireEvent.click(await screen.findByRole("button", { name: /Anthropic/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /^Claude$/i }));
     await clickEnabledModelOption(nextLabelPattern);
 
     await waitFor(() => {
@@ -700,7 +700,7 @@ describe("AgentChatPane submit recovery", () => {
     const codexLabel = getModelById("openai/gpt-5.4-codex")?.displayName ?? "GPT-5.4 Codex";
 
     fireEvent.click(trigger);
-    fireEvent.click(await screen.findByRole("button", { name: /OpenAI/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /^Codex$/i }));
     await clickEnabledModelOption(new RegExp(escapeRegExp(codexLabel), "i"));
 
     const textbox = await screen.findByRole("textbox");
@@ -743,7 +743,7 @@ describe("AgentChatPane submit recovery", () => {
     expect(await screen.findByText("Fix login bug")).toBeTruthy();
   });
 
-  it("renders the lane navigation button when laneLabel is provided", async () => {
+  it("renders the git toolbar when laneId is provided", async () => {
     const session = buildSession("session-1");
     installAdeMocks({ sessions: [session] });
 
@@ -759,12 +759,12 @@ describe("AgentChatPane submit recovery", () => {
       </MemoryRouter>,
     );
 
-    const laneButton = await screen.findByTitle("Go to lane: feature/auth");
-    expect(laneButton).toBeTruthy();
-    expect(laneButton.textContent).toContain("feature/auth");
+    // The git toolbar renders commit/push buttons when laneId is present
+    expect(await screen.findByText("Commit")).toBeTruthy();
+    expect(screen.getByText("Push")).toBeTruthy();
   });
 
-  it("does not render the lane navigation button when laneId is null", async () => {
+  it("does not render the git toolbar when laneId is null", async () => {
     const session = buildSession("session-1");
     installAdeMocks({ sessions: [session] });
 
@@ -780,9 +780,9 @@ describe("AgentChatPane submit recovery", () => {
       </MemoryRouter>,
     );
 
-    // Wait for the pane to fully render (renders "Select a lane" placeholder when laneId is null)
+    // Wait for the pane to fully render — no git toolbar when laneId is null
     await waitFor(() => {
-      expect(screen.queryByTitle(/Go to lane:/)).toBeNull();
+      expect(screen.queryByText("Commit")).toBeNull();
     });
   });
 });

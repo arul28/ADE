@@ -72,9 +72,10 @@ export const STEP_STATUS_HEX: Record<string, string> = {
 };
 
 export const EXECUTOR_BADGE_HEX: Record<string, string> = {
-  unified: "#6366F1",
+  opencode: "#6366F1",
   claude: "#A78BFA",
   codex: "#22C55E",
+  cursor: "#0EA5E9",
   shell: "#F59E0B",
   manual: "#3B82F6",
 };
@@ -181,7 +182,7 @@ export const DEFAULT_PERMISSION_CONFIG: MissionPermissionConfig = {
   providers: {
     claude: "full-auto",
     codex: "full-auto",
-    unified: "full-auto",
+    opencode: "full-auto",
     codexSandbox: "workspace-write",
   },
   externalMcp: {

@@ -1,4 +1,5 @@
 import React, { useState, useCallback, useEffect, useMemo } from "react";
+import { useNavigate } from "react-router-dom";
 import {
   GearSix,
   X,
@@ -315,6 +316,10 @@ export function MissionSettingsDialog({
   error: string | null;
   notice: string | null;
 }) {
+  const navigate = useNavigate();
+  const openAiProvidersSettings = useCallback(() => {
+    navigate("/settings?tab=ai#ai-providers");
+  }, [navigate]);
   const builtInPhaseCards = useMemo(() => createBuiltInMissionPhaseCards(), []);
   const builtInPhaseProfiles = useMemo(
     () => createBuiltInMissionPhaseProfiles(builtInPhaseCards),
@@ -433,6 +438,7 @@ export function MissionSettingsDialog({
                     value={draft.defaultOrchestratorModel}
                     onChange={(config) => onDraftChange({ defaultOrchestratorModel: config })}
                     compact
+                    onOpenAiSettings={openAiProvidersSettings}
                   />
                 </div>
               </div>

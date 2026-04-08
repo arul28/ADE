@@ -12,7 +12,7 @@ import {
 // Helpers
 // ---------------------------------------------------------------------------
 
-function makeStatus(overrides: Partial<AiSettingsStatus> = {}): AiSettingsStatus {
+function makeStatus(overrides: Partial<AiSettingsStatus> & Record<string, unknown> = {}): AiSettingsStatus {
   return {
     mode: "guest",
     availableProviders: { claude: false, codex: false, cursor: false },
@@ -42,9 +42,11 @@ describe("describeModelSource", () => {
   });
 
   it("returns 'API only' for api-key models", () => {
-    const descriptor = getModelById("anthropic/claude-opus-4-6-api");
-    expect(descriptor).toBeTruthy();
-    expect(describeModelSource(descriptor!)).toBe("API only");
+    const synthetic = {
+      authTypes: ["api-key"] as string[],
+      isCliWrapped: false,
+    } as any;
+    expect(describeModelSource(synthetic)).toBe("API only");
   });
 
   it("returns 'OpenRouter' for openrouter models", () => {
@@ -141,12 +143,12 @@ describe("deriveConfiguredModelIds", () => {
     }
   });
 
-  it("includes Cursor CLI models from availableModelIds when includeCursor is true", () => {
+  it("includes Cursor CLI models from availableModelIds by default", () => {
     const status = makeStatus({
       detectedAuth: [{ type: "cli-subscription", cli: "cursor", authenticated: true }],
       availableModelIds: ["cursor/auto", "cursor/composer-2", "openai/gpt-5.4-pro"],
     });
-    const ids = deriveConfiguredModelIds(status, { includeCursor: true });
+    const ids = deriveConfiguredModelIds(status);
     expect(ids).toContain("cursor/auto");
     expect(ids).toContain("cursor/composer-2");
     for (const id of ids) {
@@ -158,17 +160,15 @@ describe("deriveConfiguredModelIds", () => {
     }
   });
 
-  it("excludes Cursor CLI models by default (includeCursor defaults to false)", () => {
+  it("always includes Cursor CLI models (includeCursor option is ignored)", () => {
     const status = makeStatus({
       detectedAuth: [{ type: "cli-subscription", cli: "cursor", authenticated: true }],
       availableModelIds: ["cursor/auto", "cursor/composer-2"],
     });
-    const ids = deriveConfiguredModelIds(status);
-    expect(ids).not.toContain("cursor/auto");
-    expect(ids).not.toContain("cursor/composer-2");
-    for (const id of ids) {
-      expect(String(id).startsWith("cursor/")).toBe(false);
-    }
+    // The includeCursor option is no longer functional — all models are included.
+    const ids = deriveConfiguredModelIds(status, {});
+    expect(ids).toContain("cursor/auto");
+    expect(ids).toContain("cursor/composer-2");
   });
 
   it("skips unauthenticated CLI subscriptions", () => {
@@ -178,63 +178,96 @@ describe("deriveConfiguredModelIds", () => {
     expect(deriveConfiguredModelIds(status)).toEqual([]);
   });
 
-  it("includes API-key models for the given provider", () => {
+  it("returns empty for api-key auth when no static api-key models exist in registry", () => {
+    // Static API-key models have been removed; only CLI-wrapped and local models remain.
     const status = makeStatus({
       detectedAuth: [{ type: "api-key", provider: "anthropic" }],
     });
     const ids = deriveConfiguredModelIds(status);
-    expect(ids.length).toBeGreaterThan(0);
-    for (const id of ids) {
-      const descriptor = getModelById(id);
-      expect(descriptor).toBeTruthy();
-      expect(descriptor!.family).toBe("anthropic");
-      expect(descriptor!.isCliWrapped).toBe(false);
-    }
+    expect(ids.length).toBe(0);
   });
 
-  it("includes openrouter models for openrouter auth", () => {
+  it("returns empty for openrouter auth when no static openrouter models exist", () => {
+    // Static openrouter models have been removed from the registry.
     const status = makeStatus({
       detectedAuth: [{ type: "openrouter" }],
     });
     const ids = deriveConfiguredModelIds(status);
-    // Only check if there are openrouter models in the registry
     const openrouterModels = MODEL_REGISTRY.filter(
       (m) => m.family === "openrouter" && !m.deprecated,
     );
     expect(ids.length).toBe(openrouterModels.length);
+    expect(ids.length).toBe(0);
   });
 
   it("includes local models for local auth", () => {
     const status = makeStatus({
-      detectedAuth: [{ type: "local", provider: "ollama" }],
+      detectedAuth: [{ type: "local", provider: "lmstudio" }],
+      availableModelIds: ["lmstudio/meta-llama-3.1-70b-instruct", "lmstudio/qwen2.5-coder:32b", "ollama/llama3.2"],
     });
     const ids = deriveConfiguredModelIds(status);
-    const ollamaModels = MODEL_REGISTRY.filter(
-      (m) => m.family === "ollama" && !m.deprecated && !m.isCliWrapped,
-    );
-    expect(ids.length).toBe(ollamaModels.length);
+    expect(ids).toContain("lmstudio/meta-llama-3.1-70b-instruct");
+    expect(ids).toContain("lmstudio/qwen2.5-coder:32b");
+    expect(ids).not.toContain("ollama/llama3.2");
+  });
+
+  it("includes local models from runtimeConnections when availableModelIds is empty", () => {
+    const status = makeStatus({
+      runtimeConnections: {
+        lmstudio: {
+          provider: "lmstudio",
+          label: "LM Studio",
+          kind: "local",
+          configured: true,
+          authAvailable: true,
+          runtimeDetected: true,
+          runtimeAvailable: true,
+          health: "ready",
+          endpoint: "http://localhost:1234",
+          blocker: null,
+          loadedModelIds: ["lmstudio/meta-llama-3.1-70b-instruct"],
+          lastCheckedAt: "2026-03-17T19:00:00.000Z",
+        },
+      },
+    });
+    const ids = deriveConfiguredModelIds(status);
+    expect(ids).toContain("lmstudio/meta-llama-3.1-70b-instruct");
+  });
+
+  it("prefers discovered local model ids over static local placeholders", () => {
+    const status = makeStatus({
+      detectedAuth: [{ type: "local", provider: "lmstudio" }],
+      availableModelIds: ["lmstudio/meta-llama-3.1-70b-instruct"],
+    });
+
+    const ids = deriveConfiguredModelIds(status);
+
+    expect(ids).toContain("lmstudio/meta-llama-3.1-70b-instruct");
+    expect(ids).not.toContain("lmstudio/auto");
   });
 
   it("merges models from multiple auth sources without duplicates", () => {
     const status = makeStatus({
       detectedAuth: [
         { type: "cli-subscription", cli: "claude", authenticated: true },
-        { type: "api-key", provider: "anthropic" },
+        { type: "cli-subscription", cli: "codex", authenticated: true },
       ],
     });
     const ids = deriveConfiguredModelIds(status);
-    // Should have both CLI-wrapped and API-key anthropic models, no dupes
+    // Should have CLI-wrapped anthropic and openai models, no dupes
     const unique = new Set(ids);
     expect(unique.size).toBe(ids.length);
     expect(ids.length).toBeGreaterThan(0);
   });
 
   it("normalizes provider name to lowercase and trimmed", () => {
+    // With static API-key models removed, api-key auth for "anthropic" yields no results.
+    // Validate normalization still happens by checking it does not throw.
     const status = makeStatus({
       detectedAuth: [{ type: "api-key", provider: "  Anthropic  " }],
     });
     const ids = deriveConfiguredModelIds(status);
-    expect(ids.length).toBeGreaterThan(0);
+    expect(ids.length).toBe(0);
   });
 
   it("skips api-key auth with empty provider", () => {
@@ -255,7 +288,7 @@ describe("deriveConfiguredModelIds", () => {
     const status = makeStatus({
       detectedAuth: [
         { type: "cli-subscription", cli: "claude", authenticated: true },
-        { type: "api-key", provider: "openai" },
+        { type: "cli-subscription", cli: "codex", authenticated: true },
       ],
     });
     const ids = deriveConfiguredModelIds(status);
@@ -269,7 +302,7 @@ describe("deriveConfiguredModelIds", () => {
     const status = makeStatus({
       detectedAuth: [
         { type: "cli-subscription", cli: "claude", authenticated: true },
-        { type: "api-key", provider: "anthropic" },
+        { type: "cli-subscription", cli: "codex", authenticated: true },
       ],
     });
     const ids = deriveConfiguredModelIds(status);
@@ -334,6 +367,18 @@ describe("deriveConfiguredModelOptions", () => {
     const sonnet = options.find((o) => o.id === "anthropic/claude-sonnet-4-6");
     expect(sonnet).toBeTruthy();
     expect(sonnet!.label).toBe("Claude Sonnet 4.6");
+  });
+
+  it("preserves dynamic local model ids as options", () => {
+    const status = makeStatus({
+      detectedAuth: [{ type: "local", provider: "lmstudio" }],
+      availableModelIds: ["lmstudio/local-test-model-123"],
+    });
+    const options = deriveConfiguredModelOptions(status);
+    const local = options.find((o) => o.id === "lmstudio/local-test-model-123");
+    expect(local).toBeTruthy();
+    expect(local!.label).toBe("local-test-model-123 (LM Studio)");
+    expect(local!.description).toBe("lmstudio (local)");
   });
 });
 

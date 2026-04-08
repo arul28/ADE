@@ -351,14 +351,14 @@ describe("thinkingLevelToReasoningEffort", () => {
 // ---------------------------------------------------------------------------
 
 describe("MODEL_PRICING", () => {
-  it("returns pricing for a known sdkModelId via proxy get", () => {
+  it("returns pricing for a known providerModelId via proxy get", () => {
     const pricing = MODEL_PRICING["sonnet"];
     expect(pricing).toBeDefined();
     expect(typeof pricing.input).toBe("number");
     expect(typeof pricing.output).toBe("number");
   });
 
-  it("returns undefined for an unknown sdkModelId", () => {
+  it("returns undefined for an unknown providerModelId", () => {
     expect(MODEL_PRICING["nonexistent-model-xyz"]).toBeUndefined();
   });
 

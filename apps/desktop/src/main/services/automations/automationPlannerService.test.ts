@@ -210,13 +210,13 @@ describe("automationPlannerService.validateDraft", () => {
       trigger: { type: "git.pr_opened", branch: "feat/*" },
       modelConfig: {
         orchestratorModel: {
-          modelId: "openai/gpt-5.4",
+          modelId: "opencode/openai/gpt-5.4",
           thinkingLevel: "high",
         },
       } as any,
       permissionConfig: {
         providers: {
-          unified: "full-auto",
+          opencode: "full-auto",
           allowedTools: ["git", "linear"],
         },
       } as any,
@@ -225,7 +225,7 @@ describe("automationPlannerService.validateDraft", () => {
     });
 
     const saved = planner.saveDraft({ draft, confirmations: [] });
-    expect(saved.rule.modelConfig?.orchestratorModel.modelId).toBe("openai/gpt-5.4");
+    expect(saved.rule.modelConfig?.orchestratorModel.modelId).toBe("opencode/openai/gpt-5.4");
     expect(saved.rule.permissionConfig?.providers?.allowedTools).toEqual(["git", "linear"]);
     expect(saved.rule.actions[0]?.type).toBe("run-tests");
     expect(getSnapshot().local.automations[0]?.actions?.[0]?.type).toBe("run-tests");

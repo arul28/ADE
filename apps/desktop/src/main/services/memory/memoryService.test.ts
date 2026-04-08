@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { openKvDb } from "../state/kvDb";
-import { createUnifiedMemoryService } from "./unifiedMemoryService";
+import { createMemoryService } from "./memoryService";
 
 function createLogger() {
   return {
@@ -26,11 +26,11 @@ async function createFixture() {
 
   return {
     db,
-    memoryService: createUnifiedMemoryService(db),
+    memoryService: createMemoryService(db),
   };
 }
 
-describe("unifiedMemoryService", () => {
+describe("memoryService", () => {
   it("scopes mission memories by scope owner id", async () => {
     const { memoryService } = await createFixture();
 

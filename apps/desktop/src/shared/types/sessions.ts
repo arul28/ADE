@@ -2,6 +2,14 @@
 // Terminal session types
 // ---------------------------------------------------------------------------
 
+import type {
+  AgentChatPermissionMode,
+  AgentChatClaudePermissionMode,
+  AgentChatCodexApprovalPolicy,
+  AgentChatCodexConfigSource,
+  AgentChatCodexSandbox,
+} from "./chat";
+
 export type TerminalSessionStatus = "running" | "completed" | "failed" | "disposed";
 
 export type TerminalToolType =
@@ -11,16 +19,41 @@ export type TerminalToolType =
   | "codex"
   | "claude-orchestrated"
   | "codex-orchestrated"
-  | "ai-orchestrated"
+  | "opencode-orchestrated"
   | "codex-chat"
   | "claude-chat"
-  | "ai-chat"
+  | "opencode-chat"
   | "cursor"
   | "aider"
   | "continue"
   | "other";
 
 export type TerminalRuntimeState = "running" | "waiting-input" | "idle" | "exited" | "killed";
+
+export type TerminalResumeProvider = "claude" | "codex";
+
+export type TerminalResumeTargetKind = "session" | "thread";
+
+export type TerminalResumeLaunchConfig = {
+  permissionMode?: AgentChatPermissionMode | null;
+  claudePermissionMode?: AgentChatClaudePermissionMode | null;
+  codexApprovalPolicy?: AgentChatCodexApprovalPolicy | null;
+  codexSandbox?: AgentChatCodexSandbox | null;
+  codexConfigSource?: AgentChatCodexConfigSource | null;
+};
+
+export type TerminalResumeMetadata = {
+  provider: TerminalResumeProvider;
+  targetKind: TerminalResumeTargetKind;
+  targetId: string | null;
+  launch: TerminalResumeLaunchConfig;
+  // Legacy aliases kept for compatibility with existing helpers and stored rows.
+  target?: string | null;
+  permissionMode?: AgentChatPermissionMode | null;
+};
+
+export type TrackedCliResumeProvider = TerminalResumeProvider;
+export type TrackedCliResumeMetadata = TerminalResumeMetadata;
 
 export type TerminalSessionSummary = {
   id: string;
@@ -29,6 +62,7 @@ export type TerminalSessionSummary = {
   ptyId: string | null;
   tracked: boolean;
   pinned: boolean;
+  manuallyNamed?: boolean;
   goal: string | null;
   toolType: TerminalToolType | null;
   title: string;
@@ -43,6 +77,7 @@ export type TerminalSessionSummary = {
   summary: string | null;
   runtimeState: TerminalRuntimeState;
   resumeCommand: string | null;
+  resumeMetadata?: TerminalResumeMetadata | null;
 };
 
 export type TerminalSessionDetail = TerminalSessionSummary & {
@@ -86,10 +121,12 @@ export type ListSessionsArgs = {
 export type UpdateSessionMetaArgs = {
   sessionId: string;
   pinned?: boolean;
+  manuallyNamed?: boolean;
   title?: string;
   goal?: string | null;
   toolType?: TerminalToolType | null;
   resumeCommand?: string | null;
+  resumeMetadata?: TerminalResumeMetadata | null;
 };
 
 export type ReadTranscriptTailArgs = {

@@ -9,6 +9,7 @@ import type { MissionExecutionPolicy, MissionPermissionConfig, MissionProviderPe
 import type { ExternalMcpMissionSelection } from "./externalMcp";
 import type { MissionModelConfig, ModelConfig } from "./models";
 import type { LinearSyncConfig } from "./linearSync";
+import type { LocalProviderFamily } from "../modelRegistry";
 
 // Backward compatible with earlier configs that used `on_crash`.
 export type ProcessRestartPolicy = "never" | "on-failure" | "always" | "on_crash";
@@ -827,8 +828,10 @@ export type AiDetectedAuth = {
   cli?: "claude" | "codex" | "cursor";
   provider?: string;
   source?: "config" | "env" | "store";
+  endpointSource?: "auto" | "config";
   path?: string;
   endpoint?: string;
+  preferredModelId?: ModelId | null;
   authenticated?: boolean;
   verified?: boolean;
 };
@@ -873,6 +876,43 @@ export type AiApiKeyVerificationResult = {
   verifiedAt: string;
 };
 
+export type AiLocalProviderConfig = {
+  enabled?: boolean;
+  endpoint?: string;
+  autoDetect?: boolean;
+  preferredModelId?: ModelId | null;
+};
+
+export type AiLocalProviderConfigs = Partial<Record<LocalProviderFamily, AiLocalProviderConfig>>;
+
+export type AiRuntimeConnectionHealth =
+  | "ready"
+  | "reachable"
+  | "reachable_no_models"
+  | "not_configured"
+  | "unreachable";
+
+export type AiRuntimeConnectionKind = "cli" | "api-key" | "openrouter" | "local";
+
+export type AiRuntimeConnectionStatus = {
+  provider: string;
+  label: string;
+  kind: AiRuntimeConnectionKind;
+  configured: boolean;
+  authAvailable: boolean;
+  runtimeDetected: boolean;
+  runtimeAvailable: boolean;
+  health: AiRuntimeConnectionHealth;
+  source?: "config" | "env" | "store" | "auto";
+  path?: string | null;
+  endpoint?: string | null;
+  blocker: string | null;
+  loadedModelIds?: ModelId[];
+  lastCheckedAt: string;
+};
+
+export type AiRuntimeConnections = Record<string, AiRuntimeConnectionStatus>;
+
 export type AiSettingsStatus = {
   mode: "guest" | "subscription";
   availableProviders: {
@@ -888,7 +928,12 @@ export type AiSettingsStatus = {
   features: AiFeatureUsageRow[];
   detectedAuth?: AiDetectedAuth[];
   providerConnections?: AiProviderConnections;
+  runtimeConnections?: AiRuntimeConnections;
   availableModelIds?: ModelId[];
+  opencodeBinaryInstalled?: boolean;
+  opencodeBinarySource?: "user-installed" | "bundled" | "missing";
+  opencodeInventoryError?: string | null;
+  opencodeProviders?: Array<{ id: string; name: string; connected: boolean; modelCount: number }>;
   apiKeyStore?: {
     secureStorageAvailable: boolean;
     legacyPlaintextDetected: boolean;
@@ -1004,7 +1049,7 @@ export type SessionIntelligenceConfig = {
 };
 
 export type AiChatConfig = {
-  defaultProvider?: "codex" | "claude" | "last_used";
+  defaultProvider?: "codex" | "claude" | "cursor" | "opencode" | "last_used";
   defaultApprovalPolicy?: "auto" | "approve_mutations" | "approve_all";
   sendOnEnter?: boolean;
   /** @deprecated Use ai.sessionIntelligence.titles instead */
@@ -1018,8 +1063,8 @@ export type AiChatConfig = {
   codexSandbox?: "read-only" | "workspace-write" | "danger-full-access";
   claudePermissionMode?: "default" | "plan" | "acceptEdits" | "bypassPermissions";
   sessionBudgetUsd?: number;
-  /** Default permission mode for new unified/API-model chat sessions */
-  unifiedPermissionMode?: AiInProcessPermissionMode;
+  /** Default permission mode for new OpenCode/API-model chat sessions */
+  opencodePermissionMode?: AiInProcessPermissionMode;
 };
 export type AiConfig = {
   mode?: ProviderMode;
@@ -1031,9 +1076,10 @@ export type AiConfig = {
   conflictResolution?: AiConflictResolutionConfig;
   orchestrator?: AiOrchestratorConfig;
   chat?: AiChatConfig;
-  // New unified fields
+  // OpenCode/runtime-backed fields
   defaultModel?: ModelId;
   apiKeys?: Record<string, string>;
+  localProviders?: AiLocalProviderConfigs;
   workerSafety?: WorkerSafetyPolicy;
   mcpServers?: Record<string, unknown>;
   /** Per-feature model overrides, e.g. { mission_planning: "claude-sonnet-4-6" } */
@@ -1056,9 +1102,10 @@ export type AiIntegrationStatus = {
     codex: AgentChatModelInfo[];
     cursor: AgentChatModelInfo[];
   };
-  // New unified fields
+  // OpenCode/runtime-backed fields
   detectedAuth?: AiDetectedAuth[];
   providerConnections?: AiProviderConnections;
+  runtimeConnections?: AiRuntimeConnections;
   availableModelIds?: ModelId[];
 };
 

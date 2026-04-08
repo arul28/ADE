@@ -168,7 +168,13 @@ function createRuntime() {
       getConflictState: vi.fn(async () => ({ laneId: "lane-1", kind: null, inProgress: false, conflictedFiles: [], canContinue: false, canAbort: false })),
       stageAll: vi.fn(async () => ({ success: true })),
       commit: vi.fn(async () => ({ success: true })),
-      listRecentCommits: vi.fn(async () => [{ sha: "abc123", subject: "test" }])
+      listRecentCommits: vi.fn(async () => [{ sha: "abc123", subject: "test" }]),
+      stashPush: vi.fn(async () => ({ success: true })),
+      listStashes: vi.fn(async () => [{ ref: "stash@{0}", createdAt: "2026-04-06T00:00:00.000Z", subject: "test stash" }]),
+      stashApply: vi.fn(async () => ({ success: true })),
+      stashPop: vi.fn(async () => ({ success: true })),
+      stashDrop: vi.fn(async () => ({ success: true })),
+      stashClear: vi.fn(async () => ({ success: true })),
     },
     diffService: {
       getChanges: vi.fn(async () => ({ unstaged: [], staged: [] }))
@@ -1002,6 +1008,14 @@ describe("mcpServer", () => {
 
     expect(names).toEqual(
       expect.arrayContaining([
+        "commit_changes",
+        "rebase_lane",
+        "stash_push",
+        "list_stashes",
+        "stash_apply",
+        "stash_pop",
+        "stash_drop",
+        "stash_clear",
         "report_status",
         "report_result",
         "report_validation",
@@ -2821,6 +2835,43 @@ describe("mcpServer", () => {
     expect(response.structuredContent.commit.sha).toBe("abc123");
   });
 
+  it("lets agent callers stash lane changes", async () => {
+    const fixture = createRuntime();
+    const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+    await initialize(handler, { callerId: "agent-1", role: "agent" });
+
+    const response = await callTool(handler, "stash_push", {
+      laneId: "lane-1",
+      message: "pre-rebase",
+      includeUntracked: true,
+    });
+
+    expect(response?.isError).toBeUndefined();
+    expect(fixture.runtime.gitService.stashPush).toHaveBeenCalledWith({
+      laneId: "lane-1",
+      message: "pre-rebase",
+      includeUntracked: true,
+    });
+    expect(fixture.runtime.gitService.listStashes).toHaveBeenCalledWith({ laneId: "lane-1" });
+    expect(response.structuredContent.latest.ref).toBe("stash@{0}");
+  });
+
+  it("lists lane stashes for agent callers", async () => {
+    const fixture = createRuntime();
+    const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+    await initialize(handler, { callerId: "agent-1", role: "agent" });
+
+    const response = await callTool(handler, "list_stashes", {
+      laneId: "lane-1",
+    });
+
+    expect(response?.isError).toBeUndefined();
+    expect(fixture.runtime.gitService.listStashes).toHaveBeenCalledWith({ laneId: "lane-1" });
+    expect(response.structuredContent.count).toBe(1);
+  });
+
   it("returns resources for lane status/conflicts", async () => {
     const fixture = createRuntime();
     const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
@@ -3034,6 +3085,30 @@ describe("mcpServer", () => {
     expect(fixture.runtime.conflictService.rebaseLane).toHaveBeenCalledWith(
       expect.objectContaining({ laneId: "lane-1", aiAssisted: true })
     );
+  });
+
+  it("suggests stash or commit tools when rebase_lane is blocked by a dirty worktree", async () => {
+    const fixture = createRuntime();
+    fixture.runtime.conflictService.rebaseLane = vi.fn(async () => ({
+      laneId: "lane-1",
+      success: false,
+      conflictingFiles: [],
+      error: "Worktree has uncommitted changes. Commit or stash before rebasing.",
+    }));
+    const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+    await initialize(handler, { callerId: "orchestrator", role: "orchestrator" });
+    const response = await callTool(handler, "rebase_lane", {
+      laneId: "lane-1",
+      aiAssisted: true,
+    });
+
+    expect(response?.isError).toBeUndefined();
+    expect(response.structuredContent).toMatchObject({
+      success: false,
+      suggestedNextAction: "stash_or_commit_dirty_worktree",
+      suggestedTools: ["stash_push", "commit_changes"],
+    });
   });
 
   it("routes get_pr_health as a read-only tool", async () => {

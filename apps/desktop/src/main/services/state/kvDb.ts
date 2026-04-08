@@ -694,6 +694,7 @@ function migrate(db: { run: (sql: string, params?: SqlValue[]) => void }) {
       goal text,
       tool_type text,
       pinned integer not null default 0,
+      manually_named integer not null default 0,
       title text not null,
       started_at text not null,
       ended_at text,
@@ -706,6 +707,7 @@ function migrate(db: { run: (sql: string, params?: SqlValue[]) => void }) {
       last_output_at text,
       summary text,
       resume_command text,
+      resume_metadata_json text,
       foreign key(lane_id) references lanes(id)
     )
   `);
@@ -716,6 +718,8 @@ function migrate(db: { run: (sql: string, params?: SqlValue[]) => void }) {
 
   // Migration: add resume_command to existing databases that pre-date this column.
   try { db.run("alter table terminal_sessions add column resume_command text"); } catch {}
+  try { db.run("alter table terminal_sessions add column resume_metadata_json text"); } catch {}
+  try { db.run("alter table terminal_sessions add column manually_named integer not null default 0"); } catch {}
 
   // Phase 2 process/test config and history tables.
   db.run(`

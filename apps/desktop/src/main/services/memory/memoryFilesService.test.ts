@@ -4,7 +4,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { resolveAdeLayout } from "../../../shared/adeLayout";
 import { createProjectMemoryFilesService } from "./memoryFilesService";
-import type { Memory } from "./unifiedMemoryService";
+import type { Memory } from "./memoryService";
 
 function makeMemory(overrides: Partial<Memory>): Memory {
   const now = "2026-03-25T10:00:00.000Z";

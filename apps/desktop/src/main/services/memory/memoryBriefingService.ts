@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import type { Memory, UnifiedMemoryService } from "./unifiedMemoryService";
+import type { Memory, MemoryService } from "./memoryService";
 import type { HumanWorkDigestService } from "./humanWorkDigestService";
 import type { ProjectMemoryFilesService } from "./memoryFilesService";
 
@@ -161,7 +161,7 @@ function readInstructionFiles(projectRoot: string): Memory[] {
 }
 
 export function createMemoryBriefingService(args: {
-  memoryService: Pick<UnifiedMemoryService, "getMemoryBudget" | "search" | "searchAcrossScopeOwners" | "listMemories">;
+  memoryService: Pick<MemoryService, "getMemoryBudget" | "search" | "searchAcrossScopeOwners" | "listMemories">;
   memoryFilesService?: Pick<ProjectMemoryFilesService, "readBootstrapIndex"> | null;
   projectRoot?: string | null;
   humanWorkDigestService?: Pick<HumanWorkDigestService, "getRecentCommitSummaries"> | null;

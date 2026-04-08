@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { buildTrackedCliStartupCommand, defaultTrackedCliStartupCommand, withCodexNoAltScreen } from "./cliLaunch";
-import type { AgentChatPermissionMode } from "../../../shared/types";
+import {
+  buildTrackedCliResumeCommand,
+  buildTrackedCliStartupCommand,
+  defaultTrackedCliStartupCommand,
+  resolveTrackedCliResumeCommand,
+  withCodexNoAltScreen,
+} from "./cliLaunch";
+import type { AgentChatPermissionMode, TerminalSessionSummary } from "../../../shared/types";
 
 describe("withCodexNoAltScreen", () => {
   it("returns non-codex commands unchanged", () => {
@@ -114,5 +120,37 @@ describe("buildTrackedCliStartupCommand", () => {
       expect(claude.length).toBeGreaterThan(0);
       expect(codex.length).toBeGreaterThan(0);
     }
+  });
+});
+
+describe("tracked CLI resume helpers", () => {
+  it("rebuilds permission-aware resume commands from metadata", () => {
+    expect(buildTrackedCliResumeCommand({
+      provider: "claude",
+      targetKind: "session",
+      targetId: "claude-session-1",
+      launch: { permissionMode: "default" },
+    })).toBe("claude --permission-mode default --resume claude-session-1");
+
+    expect(buildTrackedCliResumeCommand({
+      provider: "codex",
+      targetKind: "thread",
+      targetId: "thread-99",
+      launch: { permissionMode: "edit" },
+    })).toBe("codex --no-alt-screen -c approval_policy=on-failure -c sandbox_mode=workspace-write resume thread-99");
+  });
+
+  it("prefers structured metadata over the legacy resume command string", () => {
+    const session = {
+      resumeCommand: "codex resume picker",
+      resumeMetadata: {
+        provider: "codex",
+        targetKind: "thread",
+        targetId: "thread-99",
+        launch: { permissionMode: "full-auto" },
+      },
+    } satisfies Pick<TerminalSessionSummary, "resumeCommand" | "resumeMetadata">;
+
+    expect(resolveTrackedCliResumeCommand(session)).toBe("codex --no-alt-screen --full-auto resume thread-99");
   });
 });

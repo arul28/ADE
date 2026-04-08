@@ -1,7 +1,7 @@
 import React from "react";
 import { useNavigate } from "react-router-dom";
 import type { ContextDocStatus, ContextStatus, ContextRefreshEvents, SkillIndexEntry } from "../../../shared/types";
-import { UnifiedModelSelector } from "../shared/UnifiedModelSelector";
+import { ProviderModelSelector } from "../shared/ProviderModelSelector";
 import { deriveConfiguredModelIds } from "../../lib/modelOptions";
 import { EmptyState } from "../ui/EmptyState";
 import { describeContextDocHealth, relativeTime } from "../context/contextShared";
@@ -172,7 +172,7 @@ export function ContextSection() {
     if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
     saveTimeoutRef.current = setTimeout(() => {
       void window.ade.context.savePrefs({
-        provider: "unified",
+        provider: "opencode",
         modelId,
         reasoningEffort,
         events,
@@ -194,7 +194,7 @@ export function ContextSection() {
     setGenWarnings([]);
     try {
       const result = await window.ade.context.generateDocs({
-        provider: "unified",
+        provider: "opencode",
         modelId,
         reasoningEffort,
         events,
@@ -306,13 +306,14 @@ export function ContextSection() {
           {/* Model selector */}
           <div>
             <div style={{ fontFamily: SANS_FONT, fontSize: 11, fontWeight: 500, color: COLORS.textSecondary, marginBottom: 6 }}>Model</div>
-            <UnifiedModelSelector
+            <ProviderModelSelector
               value={modelId}
               onChange={setModelId}
               availableModelIds={availableModelIds}
               showReasoning
               reasoningEffort={reasoningEffort}
               onReasoningEffortChange={setReasoningEffort}
+              onOpenAiSettings={() => navigate("/settings?tab=ai#ai-providers")}
               className="w-full"
             />
             {loadingModels ? (

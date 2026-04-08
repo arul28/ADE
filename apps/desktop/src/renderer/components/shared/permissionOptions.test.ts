@@ -155,11 +155,11 @@ describe("familyToPermissionKey", () => {
     expect(familyToPermissionKey("openai", true)).toBe("codex");
   });
 
-  it("maps everything else to 'unified'", () => {
-    expect(familyToPermissionKey("anthropic", false)).toBe("unified");
-    expect(familyToPermissionKey("openai", false)).toBe("unified");
-    expect(familyToPermissionKey("local", true)).toBe("unified");
-    expect(familyToPermissionKey("unknown", false)).toBe("unified");
+  it("maps everything else to 'opencode'", () => {
+    expect(familyToPermissionKey("anthropic", false)).toBe("opencode");
+    expect(familyToPermissionKey("openai", false)).toBe("opencode");
+    expect(familyToPermissionKey("local", true)).toBe("opencode");
+    expect(familyToPermissionKey("unknown", false)).toBe("opencode");
   });
 });
 
@@ -167,6 +167,6 @@ describe("permissionFamilyLabel", () => {
   it("returns human-readable labels for all keys", () => {
     expect(permissionFamilyLabel("claude")).toBe("Claude Code workers");
     expect(permissionFamilyLabel("codex")).toBe("Codex workers");
-    expect(permissionFamilyLabel("unified")).toBe("API / Local model workers");
+    expect(permissionFamilyLabel("opencode")).toBe("OpenCode workers");
   });
 });

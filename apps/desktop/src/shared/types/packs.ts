@@ -440,7 +440,7 @@ export type ContextStatus = {
   generation: ContextDocGenerationStatus;
 };
 
-export type ContextDocProvider = "codex" | "claude" | "unified";
+export type ContextDocProvider = "codex" | "claude" | "opencode";
 
 /** @deprecated Use ContextRefreshEvents instead */
 export type ContextRefreshTrigger = "manual" | "per_mission" | "per_pr" | "per_lane_refresh";

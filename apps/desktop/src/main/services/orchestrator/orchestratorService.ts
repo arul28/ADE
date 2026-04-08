@@ -69,9 +69,9 @@ import {
 } from "./orchestratorConstants";
 import { evaluateRunCompletion, evaluateRunCompletionFromPhases, validateRunCompletion, DEFAULT_EXECUTION_POLICY } from "./executionPolicy";
 import {
-  createUnifiedOrchestratorAdapter,
+  createProviderOrchestratorAdapter,
   cleanupMcpConfigFile,
-} from "./unifiedOrchestratorAdapter";
+} from "./providerOrchestratorAdapter";
 import { resolveClaudeCliModel, resolveCodexCliModel } from "../ai/claudeModelUtils";
 import { runGit } from "../git/git";
 import type { AdeDb, SqlValue } from "../state/kvDb";
@@ -215,7 +215,7 @@ export type OrchestratorExecutorStartArgs = {
     inProcess?: {
       mode?: "plan" | "edit" | "full-auto";
     };
-    /** Per-provider permission modes (new unified shape). When present, adapters
+    /** Per-provider permission modes. When present, adapters
      *  should prefer this over the legacy cli/inProcess fields. */
     _providers?: MissionProviderPermissions;
   };
@@ -832,13 +832,15 @@ export function createOrchestratorService({
   onEvent?: (event: OrchestratorEvent) => void;
 }) {
   const adapters = new Map<OrchestratorExecutorKind, OrchestratorExecutorAdapter>();
-  // Register the unified adapter that handles all model providers
-  adapters.set("unified", createUnifiedOrchestratorAdapter({
+  const sharedAdapter = createProviderOrchestratorAdapter({
     projectRoot,
     workspaceRoot: projectRoot,
     agentChatService,
     externalMcpService,
-  }));
+  });
+  for (const kind of ["claude", "codex", "cursor", "opencode"] as const) {
+    adapters.set(kind, sharedAdapter);
+  }
   const autopilotRunLocks = new Set<string>();
   const recoveryLoopStates = new Map<string, RecoveryLoopState>();
   const toOptionalNonEmptyString = (value: unknown): string | null => {
@@ -3758,7 +3760,7 @@ export function createOrchestratorService({
   };
 
   const defaultAdapterFor = (kind: OrchestratorExecutorKind): OrchestratorExecutorAdapter | null => {
-    if (kind !== "unified") return null;
+    if (!["claude", "codex", "cursor", "opencode"].includes(kind)) return null;
     return {
       kind,
       requiresLaneId: true,
@@ -4850,8 +4852,8 @@ export function createOrchestratorService({
         [missionId, projectId]
       );
       const requestedRunMode = args.runMode === "manual" ? "manual" : "autopilot";
-      const requestedExecutor = normalizeExecutorKind(String(args.defaultExecutorKind ?? "unified"));
-      const fallbackExecutor = requestedRunMode === "manual" ? "manual" : requestedExecutor === "manual" ? "unified" : requestedExecutor;
+      const requestedExecutor = normalizeExecutorKind(String(args.defaultExecutorKind ?? "opencode"));
+      const fallbackExecutor = requestedRunMode === "manual" ? "manual" : requestedExecutor === "manual" ? "opencode" : requestedExecutor;
       const autopilotEnabled = requestedRunMode === "autopilot" && fallbackExecutor !== "manual";
       const autopilotOwnerId = String(args.autopilotOwnerId ?? "").trim() || "orchestrator-autopilot";
       const missionMetadata = parseJsonRecord(mission.metadata_json) ?? {};
@@ -4996,7 +4998,8 @@ export function createOrchestratorService({
           typeof metadata.requiresPlanApproval === "boolean" ? metadata.requiresPlanApproval : null;
         const inferredRequiresPlanApproval =
           inferredPattern === "plan_then_implement" || stepType === "analysis";
-        const isAiTeammate = normalizeExecutorKind(String(explicitExecutor ?? "manual")) === "unified";
+        const normalizedExecutor = normalizeExecutorKind(String(explicitExecutor ?? "manual"));
+        const isAiTeammate = ["claude", "codex", "cursor", "opencode"].includes(normalizedExecutor);
         const requiresPlanApproval = explicitRequiresPlanApproval != null
           ? explicitRequiresPlanApproval
           : runtimeConfig.teammatePlanMode === "required" && isAiTeammate
@@ -6656,8 +6659,8 @@ export function createOrchestratorService({
         });
       }
 
-      let unifiedStepModelId: string | null = null;
-      if (executorKind === "unified") {
+      let providerStepModelId: string | null = null;
+      if (["claude", "codex", "cursor", "opencode"].includes(executorKind)) {
         const stepModelRaw = typeof step.metadata?.modelId === "string" ? step.metadata.modelId.trim() : "";
         const phaseModel = asRecord(step.metadata?.phaseModel);
         const phaseModelIdRaw = typeof phaseModel?.modelId === "string" ? phaseModel.modelId.trim() : "";
@@ -6665,14 +6668,14 @@ export function createOrchestratorService({
         const phaseRuntime = asRecord(runMeta?.phaseRuntime);
         const runtimePhaseModel = asRecord(phaseRuntime?.currentPhaseModel);
         const runtimePhaseModelIdRaw = typeof runtimePhaseModel?.modelId === "string" ? runtimePhaseModel.modelId.trim() : "";
-        const unifiedModelRef = stepModelRaw || phaseModelIdRaw || runtimePhaseModelIdRaw;
-        if (!unifiedModelRef.length) {
+        const providerModelRef = stepModelRaw || phaseModelIdRaw || runtimePhaseModelIdRaw;
+        if (!providerModelRef.length) {
           appendTimelineEvent({
             runId: run.id,
             stepId: step.id,
             attemptId: attempt.id,
             eventType: "execution_path_unsupported",
-            reason: "unified_model_missing",
+            reason: "provider_model_missing",
             detail: {
               executorKind,
               message: `Step '${step.stepKey}' is missing required metadata.modelId (and no phase model is available).`
@@ -6689,8 +6692,8 @@ export function createOrchestratorService({
             }
           });
         }
-        const descriptor = resolveModelDescriptor(unifiedModelRef);
-        unifiedStepModelId = descriptor?.id ?? null;
+        const descriptor = resolveModelDescriptor(providerModelRef);
+        providerStepModelId = descriptor?.id ?? null;
         const executionPath = descriptor ? classifyWorkerExecutionPath(descriptor) : "api";
         if (!descriptor) {
           appendTimelineEvent({
@@ -6698,22 +6701,22 @@ export function createOrchestratorService({
             stepId: step.id,
             attemptId: attempt.id,
             eventType: "execution_path_unsupported",
-            reason: "unified_model_unregistered",
+            reason: "provider_model_unregistered",
             detail: {
               executorKind,
-              modelId: unifiedModelRef,
-              message: `Model '${unifiedModelRef}' is not registered.`
+              modelId: providerModelRef,
+              message: `Model '${providerModelRef}' is not registered.`
             }
           });
           return completeAndAdvance({
             attemptId: attempt.id,
             status: "failed",
             errorClass: "policy",
-            errorMessage: `Model '${unifiedModelRef}' is not registered.`,
+            errorMessage: `Model '${providerModelRef}' is not registered.`,
             metadata: {
               executorKind,
               adapterState: "model_not_registered",
-              modelId: unifiedModelRef
+              modelId: providerModelRef
             }
           });
         }
@@ -6837,7 +6840,7 @@ export function createOrchestratorService({
               },
               ...(memoryBriefing ? { memoryBriefing } : {}),
             },
-            "unified",
+            "opencode",
             memoryService
               ? { memoryService, projectId, workerRuntime: "in_process", memoryBriefing }
               : { projectId, workerRuntime: "in_process" },
@@ -6871,7 +6874,7 @@ export function createOrchestratorService({
           // Resolve in-process permission from project + mission config
           const inProcessPermissionMode: "read-only" | "edit" | "full-auto" = (() => {
             if (readOnlyExecution) return "read-only" as const;
-            // Build unified provider permissions for this mission
+            // Build provider-specific permissions for this mission
             const projPerms: MissionPermissionConfig = {};
             const aiCfg = asRecord(projectConfigService?.get()?.effective?.ai);
             const perms = asRecord(aiCfg?.permissions);
@@ -6899,11 +6902,11 @@ export function createOrchestratorService({
                 }
               } catch { /* non-critical */ }
             }
-            return mapPermissionToInProcess(providers.unified);
+            return mapPermissionToInProcess(providers.opencode);
           })();
 
           try {
-            const aiResult = await aiIntegrationService.executeViaUnified({
+            const aiResult = await aiIntegrationService.executeTask({
               feature: "orchestrator",
               taskType,
               prompt: promptPack.prompt,
@@ -6995,7 +6998,7 @@ export function createOrchestratorService({
 
       const adapter = registeredAdapter ?? defaultAdapter;
       if (adapter) {
-        // Build unified permission config: project-level → mission-level override.
+        // Build provider permission config: project-level → mission-level override.
         // Both old (cli/inProcess) and new (providers) shapes are normalized through
         // the same `normalizeMissionPermissions` pipeline.
         const permissionConfig = (() => {
@@ -7023,7 +7026,7 @@ export function createOrchestratorService({
             }
           }
 
-          // Normalize project-level to unified provider shape
+          // Normalize project-level to provider shape
           let providers = normalizeMissionPermissions(projectPerms);
 
           // 2. Layer mission-level overrides if present
@@ -7162,12 +7165,12 @@ export function createOrchestratorService({
 
         const stepForExecutor = (() => {
           let s = step;
-          if (unifiedStepModelId && !(typeof step.metadata?.modelId === "string" && step.metadata.modelId.trim().length > 0)) {
+          if (providerStepModelId && !(typeof step.metadata?.modelId === "string" && step.metadata.modelId.trim().length > 0)) {
             s = {
               ...s,
               metadata: {
                 ...(s.metadata ?? {}),
-                modelId: unifiedStepModelId,
+                modelId: providerStepModelId,
               }
             } satisfies OrchestratorStep;
           }
@@ -8105,7 +8108,7 @@ export function createOrchestratorService({
                           stepIndex: maxStepIndex + 1,
                           laneId: latestStep.laneId,
                           dependencyStepKeys: [latestStep.stepKey],
-                          executorKind: "unified",
+                          executorKind: "opencode",
                           metadata: {
                             stepType: "validation",
                             taskType: "validation",
@@ -10729,9 +10732,9 @@ export function createOrchestratorService({
           message: diagnostic.message,
           detail: diagnostic.details ?? null,
         }));
-      const completionBlockers = [...validation.blockers, ...evaluationBlockers];
+      const completionBlockers = [...(args.force ? [] : validation.blockers), ...evaluationBlockers];
       const completionReady =
-        validation.canComplete
+        (validation.canComplete || args.force)
         && evaluationBlockers.length === 0
         && (!hasConfiguredPhaseEvaluation || evaluation.completionReady);
 

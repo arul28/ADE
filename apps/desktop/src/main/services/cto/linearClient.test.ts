@@ -57,7 +57,10 @@ describe("linearClient", () => {
     });
 
     const client = createLinearClient({
-      credentials: { getTokenOrThrow: () => "Bearer test-token" } as any,
+      credentials: {
+        getTokenOrThrow: () => "Bearer test-token",
+        getStatus: () => ({ authMode: "oauth" }),
+      } as any,
       fetchImpl: fetchImpl as any,
       logger: null,
     });
@@ -96,7 +99,10 @@ describe("linearClient", () => {
       );
 
     const client = createLinearClient({
-      credentials: { getTokenOrThrow: () => "Bearer test-token" } as any,
+      credentials: {
+        getTokenOrThrow: () => "Bearer test-token",
+        getStatus: () => ({ authMode: "oauth" }),
+      } as any,
       fetchImpl: fetchImpl as any,
       logger: null,
     });
@@ -110,7 +116,7 @@ describe("linearClient", () => {
   it("lists projects with their owning team names", async () => {
     const fetchImpl = vi.fn(async (_url: string, init?: RequestInit) => {
       const body = JSON.parse(String(init?.body ?? "{}")) as { query?: string };
-      expect(init?.headers).toMatchObject({ authorization: "Bearer lin_api_test" });
+      expect(init?.headers).toMatchObject({ authorization: "lin_api_test" });
       if (!body.query?.includes("query Projects")) {
         return new Response(JSON.stringify({ data: {} }), { status: 200, headers: { "content-type": "application/json" } });
       }
@@ -136,7 +142,10 @@ describe("linearClient", () => {
     });
 
     const client = createLinearClient({
-      credentials: { getTokenOrThrow: () => "lin_api_test" } as any,
+      credentials: {
+        getTokenOrThrow: () => "lin_api_test",
+        getStatus: () => ({ authMode: "manual" }),
+      } as any,
       fetchImpl: fetchImpl as any,
       logger: null,
     });
@@ -144,5 +153,30 @@ describe("linearClient", () => {
     await expect(client.listProjects()).resolves.toEqual([
       { id: "project-1", name: "App Platform", slug: "app-platform", teamName: "Platform" },
     ]);
+  });
+
+  it("strips a pasted bearer prefix from manual API keys", async () => {
+    const fetchImpl = vi.fn(async (_url: string, init?: RequestInit) => {
+      expect(init?.headers).toMatchObject({ authorization: "lin_api_test" });
+      return new Response(
+        JSON.stringify({
+          data: {
+            viewer: { id: "viewer-1", name: "Alex" },
+          },
+        }),
+        { status: 200, headers: { "content-type": "application/json" } }
+      );
+    });
+
+    const client = createLinearClient({
+      credentials: {
+        getTokenOrThrow: () => "Bearer lin_api_test",
+        getStatus: () => ({ authMode: "manual" }),
+      } as any,
+      fetchImpl: fetchImpl as any,
+      logger: null,
+    });
+
+    await expect(client.getViewer()).resolves.toEqual({ id: "viewer-1", name: "Alex" });
   });
 });

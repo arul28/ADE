@@ -1,4 +1,8 @@
-import type { AgentChatPermissionMode } from "../../../shared/types";
+import type {
+  AgentChatPermissionMode,
+  TerminalResumeMetadata,
+  TerminalSessionSummary,
+} from "../../../shared/types";
 
 export type CliProvider = "claude" | "codex";
 
@@ -42,4 +46,41 @@ export function buildTrackedCliStartupCommand(args: {
     parts.push("-c", `approval_policy=${approvalPolicy}`, "-c", `sandbox_mode=${sandboxMode}`);
   }
   return parts.join(" ");
+}
+
+function permissionModeToClaudeFlag(permissionMode: AgentChatPermissionMode | null | undefined): string[] {
+  if (permissionMode === "full-auto") return ["--dangerously-skip-permissions"];
+  if (permissionMode === "edit") return ["--permission-mode", "acceptEdits"];
+  if (permissionMode === "default") return ["--permission-mode", "default"];
+  return ["--permission-mode", "plan"];
+}
+
+function permissionModeToCodexFlags(permissionMode: AgentChatPermissionMode | null | undefined): string[] {
+  if (permissionMode === "full-auto") return ["--full-auto"];
+  if (permissionMode === "edit") return ["-c", "approval_policy=on-failure", "-c", "sandbox_mode=workspace-write"];
+  if (permissionMode === "default" || permissionMode === "plan") {
+    return ["-c", "approval_policy=untrusted", "-c", "sandbox_mode=read-only"];
+  }
+  return [];
+}
+
+export function buildTrackedCliResumeCommand(metadata: TerminalResumeMetadata): string {
+  const targetId = metadata.targetId?.trim() ?? "";
+  if (metadata.provider === "claude") {
+    const parts = ["claude", ...permissionModeToClaudeFlag(metadata.launch.permissionMode)];
+    if (targetId) parts.push("--resume", targetId);
+    return parts.join(" ");
+  }
+
+  const parts = ["codex", "--no-alt-screen", ...permissionModeToCodexFlags(metadata.launch.permissionMode)];
+  if (targetId) parts.push("resume", targetId);
+  return parts.join(" ");
+}
+
+export function resolveTrackedCliResumeCommand(session: Pick<TerminalSessionSummary, "resumeCommand" | "resumeMetadata">): string | null {
+  if (session.resumeMetadata) {
+    return buildTrackedCliResumeCommand(session.resumeMetadata);
+  }
+  const command = session.resumeCommand?.trim() ?? "";
+  return command.length > 0 ? command : null;
 }

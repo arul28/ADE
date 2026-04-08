@@ -202,7 +202,7 @@ export function deriveActivePhaseViewModel(args: {
   };
 }
 
-export type UnifiedMissionArtifact = {
+export type MissionArtifactRecord = {
   id: string;
   source: "mission" | "orchestrator" | "checkpoint";
   title: string;
@@ -220,16 +220,16 @@ export type UnifiedMissionArtifact = {
 };
 
 export type GroupedMissionArtifacts = {
-  all: UnifiedMissionArtifact[];
-  byPhase: Array<{ key: string; label: string; items: UnifiedMissionArtifact[] }>;
-  byStep: Array<{ key: string; label: string; items: UnifiedMissionArtifact[] }>;
-  byType: Array<{ key: string; label: string; items: UnifiedMissionArtifact[] }>;
+  all: MissionArtifactRecord[];
+  byPhase: Array<{ key: string; label: string; items: MissionArtifactRecord[] }>;
+  byStep: Array<{ key: string; label: string; items: MissionArtifactRecord[] }>;
+  byType: Array<{ key: string; label: string; items: MissionArtifactRecord[] }>;
   expectedEvidence: ValidationEvidenceRequirement[];
 };
 
-function normalizeMissionArtifacts(mission: MissionDetail | null): UnifiedMissionArtifact[] {
+function normalizeMissionArtifacts(mission: MissionDetail | null): MissionArtifactRecord[] {
   const artifacts = mission?.artifacts ?? [];
-  return artifacts.map((artifact): UnifiedMissionArtifact => ({
+  return artifacts.map((artifact): MissionArtifactRecord => ({
     id: artifact.id,
     source: "mission",
     title: artifact.title,
@@ -256,7 +256,7 @@ function buildStepMap(runGraph: OrchestratorRunGraph | null): StepMap {
   return new Map((runGraph?.steps ?? []).map((step) => [step.id, step] as const));
 }
 
-function normalizeOrchestratorArtifacts(stepById: StepMap, artifacts: OrchestratorArtifact[]): UnifiedMissionArtifact[] {
+function normalizeOrchestratorArtifacts(stepById: StepMap, artifacts: OrchestratorArtifact[]): MissionArtifactRecord[] {
   return artifacts.map((artifact) => {
     const step = artifact.stepId ? stepById.get(artifact.stepId) ?? null : null;
     const metadata = isRecord(step?.metadata) ? step.metadata : null;
@@ -288,7 +288,7 @@ function normalizeOrchestratorArtifacts(stepById: StepMap, artifacts: Orchestrat
   });
 }
 
-function normalizeCheckpoints(stepById: StepMap, checkpoints: OrchestratorWorkerCheckpoint[]): UnifiedMissionArtifact[] {
+function normalizeCheckpoints(stepById: StepMap, checkpoints: OrchestratorWorkerCheckpoint[]): MissionArtifactRecord[] {
   return checkpoints.map((checkpoint) => {
     const step = stepById.get(checkpoint.stepId) ?? null;
     const metadata = isRecord(step?.metadata) ? step.metadata : null;
@@ -311,8 +311,8 @@ function normalizeCheckpoints(stepById: StepMap, checkpoints: OrchestratorWorker
   });
 }
 
-function buildGroups(items: UnifiedMissionArtifact[], keyFn: (item: UnifiedMissionArtifact) => string, labelFn: (item: UnifiedMissionArtifact) => string) {
-  const map = new Map<string, { key: string; label: string; items: UnifiedMissionArtifact[] }>();
+function buildGroups(items: MissionArtifactRecord[], keyFn: (item: MissionArtifactRecord) => string, labelFn: (item: MissionArtifactRecord) => string) {
+  const map = new Map<string, { key: string; label: string; items: MissionArtifactRecord[] }>();
   for (const item of items) {
     const key = keyFn(item);
     const label = labelFn(item);

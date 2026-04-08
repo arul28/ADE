@@ -14,7 +14,8 @@ Chat sessions are provider-agnostic. The `AgentChatProvider` type accepts:
 |---|---|---|
 | `claude` | Claude Agent SDK V2 (`@anthropic-ai/claude-agent-sdk`) | Persistent session via `unstable_v2_createSession` — subprocess + MCP servers stay alive between turns. Supports inline image content blocks (base64) for image attachments. The Claude Code executable path is resolved via `claudeCodeExecutable.ts` and passed to the SDK at session creation. |
 | `codex` | OpenAI Codex CLI | Persistent subprocess (`codex app-server`), communicates over JSON-RPC. Spawn failures are caught and surfaced as error events to the user, with the session ended gracefully rather than left in a broken state. |
-| `unified` | Vercel AI SDK (`ai` package) | Covers OpenRouter, local models, any provider with an `ai`-compatible adapter |
+| `opencode` | OpenCode server | Covers API-key providers (Anthropic, OpenAI, Google, Mistral, DeepSeek, xAI, Groq, Together AI), OpenRouter, and local models (Ollama, LM Studio, vLLM). Sessions are managed via the OpenCode runtime (`openCodeRuntime.ts`). |
+| `cursor` | Cursor CLI | Cursor agent runtime via ACP (Agent Client Protocol). |
 
 Model selection is driven by `modelRegistry.ts`. The user picks a model
 from the model picker; the service resolves a `ModelDescriptor` and
@@ -29,7 +30,7 @@ Every chat creates an `AgentChatSession`:
   working directory) is injected into the agent's system prompt.
 - **provider / model / modelId** -- What is powering the session. `model` stores the runtime-facing model token (for example `sonnet`, `gpt-5.4-codex`, or a direct API model id); `modelId` is the registry ID when ADE can resolve one.
 - **status** -- `active | idle | ended`.
-- **Permission controls** -- Provider-native fields control what the agent may do autonomously: `claudePermissionMode` (Claude), `codexApprovalPolicy`/`codexSandbox`/`codexConfigSource` (Codex), `unifiedPermissionMode` (unified/API). A session-level `permissionMode` field stores the abstract mode independently from the provider-native mapping.
+- **Permission controls** -- Provider-native fields control what the agent may do autonomously: `claudePermissionMode` (Claude), `codexApprovalPolicy`/`codexSandbox`/`codexConfigSource` (Codex), `opencodePermissionMode` (OpenCode/API). A session-level `permissionMode` field stores the abstract mode independently from the provider-native mapping.
 - **identityKey** -- Optional. `"cto"` for the CTO agent, `"agent:<id>"`
   for named employees.
 - **executionMode** -- `focused | parallel | subagents | teams`.
@@ -40,10 +41,9 @@ Sessions persist their transcript and metadata to disk so they survive
 app restarts. The `AgentChatSessionSummary` exposes title, goal,
 cost/token usage, and a preview of the last output for the session list.
 
-Individual agent turns are subject to multiple timeout layers:
+Individual agent turns are subject to timeout layers:
 
 - **Turn-level timeout** (5 minutes): enforced via the abort infrastructure. When a turn exceeds this limit, an error event is emitted and the turn is terminated.
-- **Stream idle timeout** (75 seconds, Claude only): if the Claude runtime stops producing streaming events for 75 seconds, the turn is reset so the user can retry.
 - **Warmup timeout** (20 seconds, Claude only): if the Claude V2 session pre-warm does not complete within 20 seconds, the warmup is cancelled, the stale session is discarded, and a fresh session is created for the turn.
 
 These watchdogs prevent a single stalled provider call from blocking the session indefinitely.
@@ -94,7 +94,7 @@ is provider-specific:
 - **Codex**: The interrupt is forwarded to the app-server via the
   `turn/interrupt` JSON-RPC method. The turn completes with
   `status: "interrupted"`.
-- **Unified**: The abort controller is signalled and all pending
+- **OpenCode**: The abort controller is signalled and all pending
   approval promises are auto-declined to prevent orphaned
   human-in-the-loop requests.
 
@@ -104,7 +104,7 @@ prevents duplicate side-effects from rapid cancel clicks.
 
 ### Text Batching
 
-Streaming assistant text events from Codex and unified providers are
+Streaming assistant text events from Codex and OpenCode providers are
 batched before emission to the renderer. The `chatTextBatching` module
 accumulates text fragments for up to 100ms before flushing them as a
 single assistant-text event. This reduces renderer re-render frequency
@@ -131,7 +131,7 @@ The CTO chat is different in several ways:
    in addition to the standard memory tools, allowing the CTO to update
    its own persistent identity notes.
 4. **Guarded permission mode** -- For the Claude provider the CTO
-   defaults to `"default"` (ask before dangerous ops); for unified
+   defaults to `"default"` (ask before dangerous ops); for OpenCode
    providers it defaults to `"edit"`. `full-auto` is only applied when
    explicitly requested.
 
@@ -214,9 +214,9 @@ Codex sessions have two independent controls:
 - `AgentChatCodexSandbox`: `read-only | workspace-write | danger-full-access`
 - `AgentChatCodexConfigSource`: `flags | config-toml` -- when `config-toml`, the approval policy and sandbox are deferred to the project's `.codex/config.toml`.
 
-### Unified (API models)
+### OpenCode (API and local models)
 
-`AgentChatUnifiedPermissionMode` maps to the in-process tool permission system:
+`AgentChatOpenCodePermissionMode` maps to the in-process tool permission system:
 
 | Mode | Behavior |
 |---|---|
@@ -226,7 +226,7 @@ Codex sessions have two independent controls:
 
 ### Orchestrator Permission Mapping
 
-The unified orchestrator adapter translates abstract permission modes (`plan`, `edit`, `full-auto`) into the correct provider-native fields via `mapPermissionModeToNativeFields()`. For Claude this maps to `claudePermissionMode`, for Codex to `codexApprovalPolicy`/`codexSandbox`, and for unified to `unifiedPermissionMode`. Chat sessions still persist an abstract `permissionMode` field alongside the provider-native controls so the UI can summarize session state and legacy flows can be normalized consistently.
+The provider orchestrator adapter translates abstract permission modes (`plan`, `edit`, `full-auto`) into the correct provider-native fields via `mapPermissionModeToNativeFields()`. For Claude this maps to `claudePermissionMode`, for Codex to `codexApprovalPolicy`/`codexSandbox`, and for OpenCode to `opencodePermissionMode`. Chat sessions still persist an abstract `permissionMode` field alongside the provider-native controls so the UI can summarize session state and legacy flows can be normalized consistently.
 
 All controls can be changed mid-session via `updateSession`. The
 `updateSession` API also accepts a `manuallyNamed` flag to mark a
@@ -257,7 +257,7 @@ The composer (`AgentChatComposer`) renders a pending steers section above the in
 When an agent needs human input -- either permission to proceed or answers to questions -- the service emits events that the renderer derives into `PendingInputRequest` objects. These are a unified abstraction across all providers:
 
 - `requestId` -- unique identifier for the request.
-- `source` -- `"claude" | "codex" | "unified" | "mission" | "ade"`.
+- `source` -- `"claude" | "codex" | "cursor" | "opencode" | "mission" | "ade"`.
 - `kind` -- `"approval" | "question" | "structured_question" | "permissions" | "plan_approval"`.
 - `questions` -- array of `PendingInputQuestion` with optional predefined options, freeform input, multi-select support, and impact descriptions.
 - `blocking` / `canProceedWithoutAnswer` -- whether the agent is blocked or can continue with a default assumption.
@@ -291,6 +291,10 @@ Each work log entry carries a `collapseKey` derived from the turn, logical item 
 Adjacent assistant text events are merged using `shouldMergeTextRows()`, which compares `messageId`, `turnId`, and `itemId` fields to decide whether two text fragments belong to the same logical message. Events with matching `messageId` values always merge; events without `messageId` fall back to turn/item identity. This prevents duplicate text rows when the streaming backend emits fragmented text events.
 
 Adjacent `plan_text` events are also merged using `shouldMergePlanTextRows()` with the same turn/item matching logic. When a final `plan` event arrives for a turn, any preceding `plan_text` rows for that turn are removed and replaced by the single `plan` event, preventing duplicate plan content.
+
+### Turn Diff Summaries
+
+When a turn completes, the chat service can emit a `turn_diff_summary` event containing the git diff between the before and after SHAs. This includes per-file addition/deletion counts and file status (added, modified, deleted, renamed, copied). The `ChatTurnDiffPanel` component renders these summaries inline in the transcript, and users can expand individual file diffs via the `agentChatGetTurnFileDiff` IPC channel.
 
 ### Turn Recap
 
@@ -367,7 +371,7 @@ discarding. Permission controls are rendered inline with an interaction
 mode selector (`default` / `plan`) and provider-native controls: Claude
 permission mode, Codex preset modes (Plan / Guarded Edit / Full Auto,
 with custom/config-toml state surfaced as a summary row rather than raw
-inline dropdowns), and unified permission mode. Before a Claude SDK
+inline dropdowns), and OpenCode permission mode. Before a Claude SDK
 session is initialized, ADE exposes local slash commands such as
 `/clear` and `/login`; once the SDK is ready, its slash commands are
 merged into the picker. When steers are queued during an active turn,
@@ -396,8 +400,8 @@ provider-specific handling:
   directly to the Anthropic API via `buildClaudeV2Message()`. Supported
   MIME types: `image/jpeg`, `image/png`, `image/gif`, `image/webp`.
 - **Codex**: Images are sent via `localImage` path references.
-- **Unified**: Images are sent as Vercel AI SDK `ImagePart` content
-  blocks.
+- **OpenCode**: Images are sent as content blocks through the OpenCode
+  runtime.
 
 The composer saves pasted or dropped images to a temporary location via
 the `saveTempAttachment` IPC handler. Temporary attachments are capped

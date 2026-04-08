@@ -7,7 +7,7 @@ import {
   reportProviderRuntimeReady,
 } from "./providerRuntimeHealth";
 import { resolveClaudeCodeExecutable } from "./claudeCodeExecutable";
-import { normalizeCliMcpServers } from "./providerResolver";
+import { normalizeCliMcpServers } from "./cliMcpConfig";
 import { resolveDesktopAdeMcpLaunch, resolveRepoRuntimeRoot } from "../runtime/adeMcpLaunch";
 
 const PROBE_TIMEOUT_MS = 20_000;

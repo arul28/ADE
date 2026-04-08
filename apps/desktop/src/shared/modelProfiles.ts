@@ -307,7 +307,7 @@ export const MODEL_PRICING: Record<string, { input: number; output: number }> = 
       return getModelPricing(prop) !== undefined;
     },
     ownKeys() {
-      return MODEL_REGISTRY.map((m) => m.sdkModelId);
+      return MODEL_REGISTRY.map((m) => m.providerModelId);
     },
     getOwnPropertyDescriptor(_target, prop: string) {
       const value = getModelPricing(prop);

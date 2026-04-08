@@ -4,17 +4,23 @@
 // monitor progress, steer execution, and complete missions autonomously.
 // ---------------------------------------------------------------------------
 
-import fs from "node:fs";
-import path from "node:path";
 import { randomUUID } from "node:crypto";
-import { streamText, stepCountIs, type ModelMessage } from "ai";
+import type { RuntimeModelMessage as ModelMessage } from "../chat/runtimeMessageTypes";
 import {
-  buildCoordinatorMcpAllowedTools,
   classifyPlannerLaunchFailure,
   createCoordinatorToolSet,
+  type CoordinatorExecutableTool,
   type CoordinatorSendWorkerMessageFn,
 } from "./coordinatorTools";
-import { resolveAdeMcpServerLaunch, resolveUnifiedRuntimeRoot } from "./unifiedOrchestratorAdapter";
+import { resolveAdeMcpServerLaunch, resolveOpenCodeRuntimeRoot } from "./providerOrchestratorAdapter";
+import {
+  buildOpenCodePromptParts,
+  mapPermissionModeToOpenCodeAgent,
+  openCodeEventStream,
+  resolveOpenCodeModelSelection,
+  startOpenCodeSession,
+  type OpenCodeSessionHandle,
+} from "../opencode/openCodeRuntime";
 import {
   formatRuntimeEvent,
 } from "./coordinatorEventFormatter";
@@ -26,10 +32,9 @@ import {
 } from "../ai/compactionEngine";
 import { asRecord, filterExecutionSteps } from "./orchestratorContext";
 import { readMissionStateDocument, writeCoordinatorCheckpoint } from "./missionStateDoc";
-import { resolveModel } from "../ai/providerResolver";
-import { detectAllAuth } from "../ai/authDetector";
-import { resolveAdeLayout } from "../../../shared/adeLayout";
-import { resolveModelDescriptor } from "../../../shared/modelRegistry";
+import { getLocalProviderDefaultEndpoint, resolveModelDescriptor, type LocalProviderFamily } from "../../../shared/modelRegistry";
+import { inspectLocalProvider } from "../ai/localModelDiscovery";
+import type { DiscoveredLocalModelEntry } from "../opencode/openCodeRuntime";
 import type { createOrchestratorService } from "./orchestratorService";
 import type {
   AgentChatEvent,
@@ -45,10 +50,9 @@ import type {
 } from "../../../shared/types";
 import type { Logger } from "../logging/logger";
 import type { AdeDb } from "../state/kvDb";
-import type { Tool } from "ai";
 import type { createMissionService } from "../missions/missionService";
 import type { createMemoryService } from "../memory/memoryService";
-import type { ResolveModelOpts } from "../ai/providerResolver";
+import type { createProjectConfigService } from "../config/projectConfigService";
 import {
   checkCoordinatorToolPermission,
   createDelegationContract,
@@ -109,6 +113,7 @@ export type CoordinatorAgentDeps = {
   projectRoot: string;
   workspaceRoot: string;
   missionService: ReturnType<typeof createMissionService>;
+  projectConfigService?: ReturnType<typeof createProjectConfigService> | null;
   memoryService?: ReturnType<typeof createMemoryService> | null;
   getMissionBudgetStatus?: () => Promise<MissionBudgetSnapshot | null>;
   onDagMutation: (event: DagMutationEvent) => void;
@@ -210,48 +215,6 @@ const TERMINAL_PLANNING_TRACKER_STATUSES = new Set<OrchestratorStepStatus>([
   "superseded",
   "canceled",
 ]);
-export function shouldUseSdkTools(modelId: string): boolean {
-  const descriptor = resolveModelDescriptor(modelId);
-  if (!descriptor?.isCliWrapped) return true;
-  // Claude Code uses built-in CLI/MCP tools rather than AI SDK tool definitions.
-  if (descriptor.family === "anthropic") return false;
-  // Codex CLI supports provider-executed tool streaming and MCP-backed tool calls.
-  return true;
-}
-
-export function buildCoordinatorCliOptions(args: {
-  modelId: string;
-  projectRoot: string;
-  runId: string;
-  mcpServers?: Record<string, Record<string, unknown>>;
-}): ResolveModelOpts["cli"] | undefined {
-  const descriptor = resolveModelDescriptor(args.modelId);
-  if (!descriptor?.isCliWrapped) {
-    return undefined;
-  }
-
-  const cli: NonNullable<ResolveModelOpts["cli"]> = {};
-  if (args.mcpServers) {
-    cli.mcpServers = args.mcpServers;
-  }
-
-  if (descriptor.family === "anthropic") {
-    const logDir = resolveAdeLayout(args.projectRoot).logsDir;
-    fs.mkdirSync(logDir, { recursive: true });
-    const mcpServerNames = Object.keys(args.mcpServers ?? {});
-    const coordinatorMcpServerName = mcpServerNames.includes("ade")
-      ? "ade"
-      : (mcpServerNames[0] ?? "ade");
-    cli.claude = {
-      permissionMode: "plan",
-      allowedTools: buildCoordinatorMcpAllowedTools(coordinatorMcpServerName),
-      settingSources: [],
-      debugFile: path.join(logDir, `coordinator-${args.runId}.claude.log`),
-    };
-  }
-
-  return Object.keys(cli).length > 0 ? cli : undefined;
-}
 
 // ---------------------------------------------------------------------------
 // Worker Identity Prompt Builder
@@ -476,15 +439,14 @@ export class CoordinatorAgent {
   private batchTimer: ReturnType<typeof setTimeout> | null = null;
   private dead = false;
   private turnCount = 0;
-  private tools: Record<string, Tool>;
+  private tools: Record<string, CoordinatorExecutableTool>;
   private conversationHistory: ModelMessage[] = [];
   private systemPrompt: string;
   private compactionMonitor: CompactionMonitor | null = null;
-  private cachedSdkModel: Awaited<ReturnType<typeof resolveModel>> | null = null;
-  private cachedModelAt = 0;
   private compactionCount = 0;
   private lastEventTimestampMs: number | null = null;
   private activeAbortController: AbortController | null = null;
+  private openCodeHandle: OpenCodeSessionHandle | null = null;
   private planningStartupState: PlanningStartupState = "inactive";
   private planningStartupRetryCount = 0;
   private plannerLaunchTrackerStepId: string | null = null;
@@ -632,6 +594,8 @@ export class CoordinatorAgent {
     this.eventQueue = [];
     this.activeAbortController?.abort();
     this.activeAbortController = null;
+    this.openCodeHandle?.close();
+    this.openCodeHandle = null;
     if (this.batchTimer) {
       clearTimeout(this.batchTimer);
       this.batchTimer = null;
@@ -757,6 +721,313 @@ export class CoordinatorAgent {
         return originalExecute(...args);
       };
     }
+  }
+
+  private usesOpenCodeCoordinatorRuntime(): boolean {
+    const descriptor = resolveModelDescriptor(this.deps.modelId);
+    return Boolean(descriptor && descriptor.family !== "cursor");
+  }
+
+  private async ensureOpenCodeCoordinatorSession(): Promise<OpenCodeSessionHandle> {
+    if (this.openCodeHandle) return this.openCodeHandle;
+    const descriptor = resolveModelDescriptor(this.deps.modelId);
+    if (!descriptor) {
+      throw new Error(`Coordinator model '${this.deps.modelId}' is not registered.`);
+    }
+    if (descriptor.family === "cursor") {
+      throw new Error("Cursor models are not supported for coordinator execution. Choose Claude, Codex, or OpenCode.");
+    }
+    const projectConfig = this.deps.projectConfigService?.get().effective ?? { ai: {} };
+    const mcpLaunch = resolveAdeMcpServerLaunch({
+      projectRoot: this.deps.projectRoot,
+      workspaceRoot: this.deps.workspaceRoot,
+      runtimeRoot: resolveOpenCodeRuntimeRoot(),
+      missionId: this.deps.missionId,
+      runId: this.deps.runId,
+      defaultRole: "orchestrator",
+    });
+    // Discover loaded local models so OpenCode knows about them.
+    const discoveredLocalModels: DiscoveredLocalModelEntry[] = [];
+    const aiConfig = projectConfig.ai as { localProviders?: Record<string, { enabled?: boolean; endpoint?: string }> } | undefined;
+    const localProviders = aiConfig?.localProviders ?? {};
+    for (const family of ["ollama", "lmstudio"] as const) {
+      if ((localProviders as Record<string, { enabled?: boolean }>)[family]?.enabled === false) continue;
+      const endpoint = (localProviders as Record<string, { endpoint?: string }>)[family]?.endpoint
+        ?? getLocalProviderDefaultEndpoint(family);
+      try {
+        const inspection = await inspectLocalProvider(family, endpoint);
+        for (const m of inspection.loadedModels) {
+          discoveredLocalModels.push({ provider: m.provider, modelId: m.modelId });
+        }
+      } catch { /* offline — non-fatal */ }
+    }
+    this.openCodeHandle = await startOpenCodeSession({
+      directory: this.deps.workspaceRoot,
+      title: `ADE coordinator: ${this.deps.missionGoal}`,
+      projectConfig,
+      mcpLaunch,
+      discoveredLocalModels,
+    });
+    return this.openCodeHandle;
+  }
+
+  private async runOpenCodeTurn(
+    turnId: string,
+    abortController: AbortController,
+  ): Promise<{
+    assistantText: string;
+    sawStreamPart: boolean;
+    streamedStepCount: number;
+    awaitingBlockingUserInput: boolean;
+    planningStartupAbortMode: "none" | "retry" | "failed";
+    planningStartupFailure: CoordinatorPlanningStartupFailure | null;
+  }> {
+    const descriptor = resolveModelDescriptor(this.deps.modelId);
+    if (!descriptor) {
+      throw new Error(`Coordinator model '${this.deps.modelId}' is not registered.`);
+    }
+    const handle = await this.ensureOpenCodeCoordinatorSession();
+    const eventStream = await openCodeEventStream({
+      client: handle.client,
+      directory: handle.directory,
+      signal: abortController.signal,
+    });
+
+    const latestUserMessage = [...this.conversationHistory]
+      .reverse()
+      .find((entry) => entry.role === "user");
+    const promptText = typeof latestUserMessage?.content === "string"
+      ? latestUserMessage.content
+      : "Continue coordinating the mission.";
+
+    await handle.client.session.promptAsync({
+      path: { id: handle.sessionId },
+      query: { directory: handle.directory },
+      body: {
+        agent: mapPermissionModeToOpenCodeAgent("plan"),
+        model: resolveOpenCodeModelSelection(descriptor),
+        parts: buildOpenCodePromptParts({
+          prompt: promptText,
+          system: this.systemPrompt,
+        }),
+      },
+    });
+
+    let assistantText = "";
+    let sawStreamPart = false;
+    let streamedStepCount = 0;
+    let awaitingBlockingUserInput = false;
+    let planningStartupAbortMode: "none" | "retry" | "failed" = "none";
+    let planningStartupFailure: CoordinatorPlanningStartupFailure | null = null;
+
+    for await (const event of eventStream) {
+      const sessionId = (() => {
+        switch (event.type) {
+          case "message.updated":
+          case "session.created":
+          case "session.updated":
+          case "session.deleted":
+            return event.properties.info.id;
+          case "message.part.updated":
+            return event.properties.part.sessionID;
+          case "message.part.removed":
+          case "permission.updated":
+          case "permission.replied":
+          case "session.status":
+          case "session.idle":
+          case "todo.updated":
+          case "session.diff":
+          case "command.executed":
+            return event.properties.sessionID;
+          case "session.error":
+            return event.properties.sessionID ?? null;
+          default:
+            return null;
+        }
+      })();
+      if (sessionId !== handle.sessionId) continue;
+
+      if (event.type === "message.part.updated") {
+        sawStreamPart = true;
+        const { part, delta } = event.properties;
+        if (part.type === "step-start") {
+          streamedStepCount += 1;
+          this.deps.onCoordinatorEvent?.({ type: "step_boundary", stepNumber: streamedStepCount, turnId });
+          continue;
+        }
+        if (part.type === "text") {
+          const nextDelta = typeof delta === "string" ? delta : part.text;
+          if (nextDelta.length > 0) {
+            assistantText += nextDelta;
+            this.deps.onCoordinatorEvent?.({ type: "text", text: nextDelta, turnId, itemId: part.id });
+          }
+          continue;
+        }
+        if (part.type === "reasoning") {
+          const nextDelta = typeof delta === "string" ? delta : part.text;
+          if (nextDelta.length > 0) {
+            this.deps.onCoordinatorEvent?.({
+              type: "activity",
+              activity: "thinking",
+              detail: "Thinking through the next move",
+              turnId,
+            });
+            this.deps.onCoordinatorEvent?.({ type: "reasoning", text: nextDelta, turnId, itemId: part.id });
+          }
+          continue;
+        }
+        if (part.type === "tool") {
+          const itemId = part.callID || part.id;
+          const normalizedToolName = normalizeCoordinatorToolName(part.tool);
+          this.handlePlanningStartupToolCall(part.tool);
+          this.deps.onCoordinatorEvent?.({
+            type: "tool_call",
+            tool: part.tool,
+            args: part.state.input,
+            itemId,
+            turnId,
+          });
+          if (part.state.status === "completed") {
+            const toolOutput = asRecord(part.state.output);
+            this.deps.onCoordinatorEvent?.({
+              type: "tool_result",
+              tool: part.tool,
+              result: part.state.output,
+              itemId,
+              turnId,
+              status: "completed",
+            });
+            if (toolOutput?.awaitingUserResponse === true && toolOutput?.blocking !== false) {
+              awaitingBlockingUserInput = true;
+              abortController.abort();
+            }
+            if (normalizedToolName === "spawn_worker" && this.planningStartupState !== "inactive") {
+              if (toolOutput?.ok === true) {
+                const delegatedContract = extractDelegationContract(toolOutput?.delegationContract ?? null);
+                if (delegatedContract && delegatedContract.workerIntent === "planner") {
+                  this.pendingPlannerDelegationContract = delegatedContract;
+                } else if (this.pendingPlannerDelegationContract) {
+                  this.pendingPlannerDelegationContract = updateDelegationContract(this.pendingPlannerDelegationContract, {
+                    status: "active",
+                    launchState: "waiting_on_worker",
+                    activeWorkerIds:
+                      typeof toolOutput?.workerId === "string" && toolOutput.workerId.trim().length > 0
+                        ? [toolOutput.workerId.trim()]
+                        : this.pendingPlannerDelegationContract.activeWorkerIds,
+                  });
+                }
+                this.planningStartupState = "waiting_on_planner";
+                if (this.pendingPlannerDelegationContract) {
+                  this.emitDelegationState(
+                    this.pendingPlannerDelegationContract,
+                    toolOutput?.launched === false
+                      ? "The planning agent is queued. I’m waiting for it to start."
+                      : "The planning agent is running. I’m waiting for its result.",
+                  );
+                }
+                this.updatePlannerLaunchTrackerStep({
+                  status: "running",
+                  reason: toolOutput?.launched === false ? "planner_queued" : "planner_launched",
+                  detail: {
+                    launched: toolOutput?.launched ?? null,
+                    launchNote: typeof toolOutput?.launchNote === "string" ? toolOutput.launchNote : null,
+                    stepId: typeof toolOutput?.stepId === "string" ? toolOutput.stepId : null,
+                  },
+                });
+                this.deps.onCoordinatorEvent?.({
+                  type: "status",
+                  turnStatus: "started",
+                  turnId,
+                  message: toolOutput?.launched === false
+                    ? "The planning agent is queued. I’m waiting for it to start."
+                    : "The planning agent is running. I’m waiting for its result.",
+                });
+              } else {
+                const failure = this.buildPlannerLaunchFailure(
+                  typeof toolOutput?.error === "string" ? toolOutput.error : `Tool '${part.tool}' failed to launch the planner.`,
+                  part.tool,
+                );
+                planningStartupFailure = failure;
+                if (failure.retryable && this.planningStartupRetryCount < PLANNING_STARTUP_RETRY_LIMIT) {
+                  this.schedulePlanningStartupRetry(failure);
+                  planningStartupAbortMode = "retry";
+                } else {
+                  this.handlePlanningStartupFailure(failure);
+                  planningStartupAbortMode = "failed";
+                }
+                abortController.abort();
+              }
+            }
+          } else if (part.state.status === "error") {
+            if (normalizedToolName === "spawn_worker" && this.planningStartupState !== "inactive") {
+              const failure = this.buildPlannerLaunchFailure(String(part.state.error ?? "tool failed"), part.tool);
+              planningStartupFailure = failure;
+              if (failure.retryable && this.planningStartupRetryCount < PLANNING_STARTUP_RETRY_LIMIT) {
+                this.schedulePlanningStartupRetry(failure);
+                planningStartupAbortMode = "retry";
+              } else {
+                this.handlePlanningStartupFailure(failure);
+                planningStartupAbortMode = "failed";
+              }
+              abortController.abort();
+            }
+            this.deps.onCoordinatorEvent?.({
+              type: "tool_result",
+              tool: part.tool,
+              result: { error: part.state.error },
+              itemId,
+              turnId,
+              status: "failed",
+            });
+            this.deps.onCoordinatorEvent?.({
+              type: "error",
+              message: `Tool '${part.tool}' failed: ${part.state.error}`,
+              itemId,
+              turnId,
+            });
+          }
+          continue;
+        }
+      }
+
+      if (event.type === "todo.updated") {
+        this.deps.onCoordinatorEvent?.({
+          type: "todo_update",
+          items: event.properties.todos.map((todo) => ({
+            id: todo.id,
+            description: todo.content,
+            status: todo.status === "completed"
+              ? "completed"
+              : todo.status === "in_progress"
+                ? "in_progress"
+                : "pending",
+          })),
+          turnId,
+        });
+        continue;
+      }
+
+      if (event.type === "permission.updated") {
+        throw new Error(`Coordinator OpenCode session requested permission '${event.properties.type}'.`);
+      }
+
+      if (event.type === "session.error") {
+        throw new Error(String(event.properties.error?.data?.message ?? "OpenCode coordinator turn failed."));
+      }
+
+      if (event.type === "session.idle") {
+        break;
+      }
+    }
+
+    return {
+      assistantText: assistantText.trim(),
+      sawStreamPart,
+      streamedStepCount,
+      awaitingBlockingUserInput,
+      planningStartupAbortMode,
+      planningStartupFailure,
+    };
   }
 
   private summarizeForCheckpoint(): string {
@@ -1356,8 +1627,11 @@ export class CoordinatorAgent {
   }
 
   private async runTurn(): Promise<void> {
-    const sdkModel = await this.resolveModel();
-    const useSdkTools = shouldUseSdkTools(this.deps.modelId);
+    if (!this.usesOpenCodeCoordinatorRuntime()) {
+      throw new CoordinatorFatalError(
+        `Coordinator model '${this.deps.modelId}' is not supported by the provider-owned runtime.`,
+      );
+    }
     const abortController = new AbortController();
     this.activeAbortController = abortController;
     const timeoutHandle = setTimeout(() => abortController.abort(), COORDINATOR_TURN_TIMEOUT_MS);
@@ -1368,7 +1642,7 @@ export class CoordinatorAgent {
     this.deps.logger.info("coordinator_agent.turn_started", {
       runId: this.deps.runId,
       modelId: this.deps.modelId,
-      useSdkTools,
+      runtime: "opencode",
       historyLength: this.conversationHistory.length,
       timeoutMs: COORDINATOR_TURN_TIMEOUT_MS,
     });
@@ -1380,207 +1654,13 @@ export class CoordinatorAgent {
     });
 
     try {
-      const result = streamText({
-        model: sdkModel,
-        system: this.systemPrompt,
-        messages: this.conversationHistory,
-        ...(useSdkTools ? { tools: this.tools as any } : {}),
-        stopWhen: stepCountIs(MAX_TOOL_STEPS_PER_TURN),
-        abortSignal: abortController.signal,
-      });
-
-      let assistantText = "";
-      let sawStreamPart = false;
-      let streamedStepCount = 0;
-      for await (const part of result.fullStream) {
-        sawStreamPart = true;
-        if (part.type === "start-step") {
-          streamedStepCount += 1;
-          this.deps.onCoordinatorEvent?.({
-            type: "step_boundary",
-            stepNumber: streamedStepCount,
-            turnId,
-          });
-          continue;
-        }
-        if (part.type === "source") {
-          const sourceDetail =
-            typeof part.title === "string" && part.title.trim().length
-              ? part.title
-              : part.sourceType === "url" && typeof part.url === "string" && part.url.trim().length
-                ? part.url
-                : "Gathering sources";
-          this.deps.onCoordinatorEvent?.({
-            type: "activity",
-            activity: "searching",
-            detail: sourceDetail,
-            turnId,
-          });
-          continue;
-        }
-        if (part.type === "text-delta") {
-          const delta = String(part.text ?? "");
-          assistantText += delta;
-          if (delta.length > 0) {
-            this.deps.onCoordinatorEvent?.({
-              type: "text",
-              text: delta,
-              turnId,
-              itemId: typeof part.id === "string" ? part.id : undefined,
-            });
-          }
-          continue;
-        }
-        if (part.type === "reasoning-delta") {
-          const delta = String(part.text ?? "");
-          if (delta.length > 0) {
-            this.deps.onCoordinatorEvent?.({
-              type: "activity",
-              activity: "thinking",
-              detail: "Thinking through the next move",
-              turnId,
-            });
-            this.deps.onCoordinatorEvent?.({
-              type: "reasoning",
-              text: delta,
-              turnId,
-              itemId: typeof part.id === "string" ? part.id : undefined,
-            });
-          }
-          continue;
-        }
-        if (part.type === "tool-call") {
-          const toolName = String(part.toolName ?? "tool");
-          this.handlePlanningStartupToolCall(toolName);
-          const lowerToolName = toolName.toLowerCase();
-          let activity: "searching" | "reading" | "editing_file" | "running_command" | "tool_calling";
-          if (lowerToolName.includes("search")) {
-            activity = "searching";
-          } else if (lowerToolName.includes("read")) {
-            activity = "reading";
-          } else if (lowerToolName.includes("write") || lowerToolName.includes("edit")) {
-            activity = "editing_file";
-          } else if (lowerToolName.includes("bash") || lowerToolName.includes("exec")) {
-            activity = "running_command";
-          } else {
-            activity = "tool_calling";
-          }
-          this.deps.onCoordinatorEvent?.({
-            type: "activity",
-            activity,
-            detail: toolName,
-            turnId,
-          });
-          this.deps.onCoordinatorEvent?.({
-            type: "tool_call",
-            tool: toolName,
-            args: part.input,
-            itemId: String(part.toolCallId ?? `${turnId}-tool`),
-            turnId,
-          });
-          continue;
-        }
-        if (part.type === "tool-result") {
-          const toolName = String(part.toolName ?? "tool");
-          const normalizedToolName = normalizeCoordinatorToolName(toolName);
-          const toolOutput = asRecord(part.output);
-          this.deps.onCoordinatorEvent?.({
-            type: "tool_result",
-            tool: toolName,
-            result: part.output,
-            itemId: String(part.toolCallId ?? `${turnId}-tool`),
-            turnId,
-            status: part.preliminary ? "running" : "completed",
-          });
-          if (
-            toolOutput?.awaitingUserResponse === true
-            && toolOutput?.blocking !== false
-          ) {
-            awaitingBlockingUserInput = true;
-            abortController.abort();
-          }
-          if (normalizedToolName === "spawn_worker" && this.planningStartupState !== "inactive") {
-            if (toolOutput?.ok === true) {
-              const delegatedContract = extractDelegationContract(toolOutput?.delegationContract ?? null);
-              if (delegatedContract && delegatedContract.workerIntent === "planner") {
-                this.pendingPlannerDelegationContract = delegatedContract;
-              } else if (this.pendingPlannerDelegationContract) {
-                this.pendingPlannerDelegationContract = updateDelegationContract(this.pendingPlannerDelegationContract, {
-                  status: "active",
-                  launchState: "waiting_on_worker",
-                  activeWorkerIds:
-                    typeof toolOutput?.workerId === "string" && toolOutput.workerId.trim().length > 0
-                      ? [toolOutput.workerId.trim()]
-                      : this.pendingPlannerDelegationContract.activeWorkerIds,
-                });
-              }
-              this.planningStartupState = "waiting_on_planner";
-              if (this.pendingPlannerDelegationContract) {
-                this.emitDelegationState(
-                  this.pendingPlannerDelegationContract,
-                  toolOutput?.launched === false
-                    ? "The planning agent is queued. I’m waiting for it to start."
-                    : "The planning agent is running. I’m waiting for its result.",
-                );
-              }
-              this.updatePlannerLaunchTrackerStep({
-                status: "running",
-                reason: toolOutput?.launched === false ? "planner_queued" : "planner_launched",
-                detail: {
-                  launched: toolOutput?.launched ?? null,
-                  launchNote: typeof toolOutput?.launchNote === "string" ? toolOutput.launchNote : null,
-                  stepId: typeof toolOutput?.stepId === "string" ? toolOutput.stepId : null,
-                },
-              });
-              this.deps.onCoordinatorEvent?.({
-                type: "status",
-                turnStatus: "started",
-                turnId,
-                message: toolOutput?.launched === false
-                  ? "The planning agent is queued. I’m waiting for it to start."
-                  : "The planning agent is running. I’m waiting for its result.",
-              });
-            } else {
-              const failure = this.buildPlannerLaunchFailure(
-                typeof toolOutput?.error === "string" ? toolOutput.error : `Tool '${toolName}' failed to launch the planner.`,
-                toolName,
-              );
-              planningStartupFailure = failure;
-              if (failure.retryable && this.planningStartupRetryCount < PLANNING_STARTUP_RETRY_LIMIT) {
-                this.schedulePlanningStartupRetry(failure);
-                planningStartupAbortMode = "retry";
-              } else {
-                this.handlePlanningStartupFailure(failure);
-                planningStartupAbortMode = "failed";
-              }
-              abortController.abort();
-            }
-          }
-          continue;
-        }
-        if (part.type === "tool-error") {
-          const toolName = String(part.toolName ?? "tool");
-          const normalizedToolName = normalizeCoordinatorToolName(toolName);
-          if (normalizedToolName === "spawn_worker" && this.planningStartupState !== "inactive") {
-            const failure = this.buildPlannerLaunchFailure(formatStreamError(part.error), toolName);
-            planningStartupFailure = failure;
-            if (failure.retryable && this.planningStartupRetryCount < PLANNING_STARTUP_RETRY_LIMIT) {
-              this.schedulePlanningStartupRetry(failure);
-              planningStartupAbortMode = "retry";
-            } else {
-              this.handlePlanningStartupFailure(failure);
-              planningStartupAbortMode = "failed";
-            }
-            abortController.abort();
-          }
-          this.deps.onCoordinatorEvent?.({
-            type: "error",
-            message: `Tool '${toolName}' failed: ${formatStreamError(part.error)}`,
-            itemId: String(part.toolCallId ?? `${turnId}-tool`),
-            turnId,
-          });
-        }
-      }
+      const openCodeResult = await this.runOpenCodeTurn(turnId, abortController);
+      const assistantText = openCodeResult.assistantText;
+      const sawStreamPart = openCodeResult.sawStreamPart;
+      const streamedStepCount = openCodeResult.streamedStepCount;
+      awaitingBlockingUserInput = openCodeResult.awaitingBlockingUserInput;
+      planningStartupAbortMode = openCodeResult.planningStartupAbortMode;
+      planningStartupFailure = openCodeResult.planningStartupFailure;
 
       if (planningStartupAbortMode === "retry") {
         this.deps.logger.info("coordinator_agent.planner_launch_retry_scheduled", {
@@ -1592,6 +1672,19 @@ export class CoordinatorAgent {
       }
       if (planningStartupAbortMode === "failed") {
         throw new CoordinatorFatalError(planningStartupFailure?.message ?? "Planner launch failed during planning startup.");
+      }
+      if (awaitingBlockingUserInput) {
+        this.deps.onCoordinatorEvent?.({
+          type: "status",
+          turnStatus: "interrupted",
+          turnId,
+        });
+        this.deps.logger.info("coordinator_agent.turn_waiting_on_user", {
+          runId: this.deps.runId,
+          modelId: this.deps.modelId,
+          turnId,
+        });
+        return;
       }
 
       const assistantReplyFailure = this.buildAssistantReplyRuntimeFailure(
@@ -1605,36 +1698,8 @@ export class CoordinatorAgent {
 
       await this.enforcePlanningFirstTurnDelegation(turnId);
 
-      // Record token usage for compaction monitoring
-      if (this.compactionMonitor) {
-        try {
-          const usage = await result.usage;
-          if (usage) {
-            this.compactionMonitor.recordTokens(
-              usage.inputTokens ?? 0,
-              usage.outputTokens ?? 0,
-            );
-          }
-        } catch {
-          // Usage retrieval can fail; non-critical
-        }
-      }
-
-      // Persist the full response messages (tool calls + results + text) so the
-      // coordinator retains memory of what actions it took across turns.
-      try {
-        const responseMessages = await result.response;
-        if (responseMessages.messages && responseMessages.messages.length > 0) {
-          this.conversationHistory.push(...(responseMessages.messages as ModelMessage[]));
-        } else if (assistantText.trim()) {
-          // Fallback: at minimum record the text response
-          this.conversationHistory.push({ role: "assistant", content: assistantText });
-        }
-      } catch {
-        // If response retrieval fails, fall back to text-only
-        if (assistantText.trim()) {
-          this.conversationHistory.push({ role: "assistant", content: assistantText });
-        }
+      if (assistantText.trim()) {
+        this.conversationHistory.push({ role: "assistant", content: assistantText });
       }
 
       // Notify the facade about coordinator messages (for chat display)
@@ -1651,7 +1716,7 @@ export class CoordinatorAgent {
       this.deps.logger.info("coordinator_agent.turn_completed", {
         runId: this.deps.runId,
         modelId: this.deps.modelId,
-        useSdkTools,
+        runtime: "opencode",
         sawStreamPart,
         assistantTextLength: assistantText.trim().length,
       });
@@ -1694,7 +1759,7 @@ export class CoordinatorAgent {
       this.deps.logger.warn("coordinator_agent.turn_failed", {
         runId: this.deps.runId,
         modelId: this.deps.modelId,
-        useSdkTools,
+        runtime: "opencode",
         timeoutMs: COORDINATOR_TURN_TIMEOUT_MS,
         aborted,
         error: error instanceof Error ? error.message : String(error),
@@ -1735,9 +1800,11 @@ export class CoordinatorAgent {
         }),
       );
 
+      const projectConfig = this.deps.projectConfigService?.get().effective ?? { ai: {} };
       const result = await compactConversation({
         messages: entries,
         modelId: this.deps.modelId,
+        projectConfig,
       });
 
       const stateDoc = await readMissionStateDocument({
@@ -1896,7 +1963,7 @@ If the Planning phase is NOT in your phase list, skip straight to building tasks
     // Build available workers section
     let workersSection = `\n## Available Workers
 You can spawn these types of workers:
-- Unified worker (tool: spawn_worker) — choose model per worker with \`modelId\`; CLI models run as tracked subprocess sessions and API/local models run as bounded in-process workers.
+- Provider worker (tool: spawn_worker) — choose model per worker with \`modelId\`; CLI models run as tracked subprocess sessions and API/local models run as bounded in-process workers.
 - Prefer CLI workers when you expect follow-up steering, mid-flight messaging, or iterative back-and-forth.
 - Prefer API/local workers for bounded one-shot tasks that can succeed from a single prompt without live coordination.`;
     if (providers?.length) {
@@ -2226,47 +2293,4 @@ Keep mission-state summaries concise: short outcomes, short decisions, actionabl
 - If finalization is active, call check_finalization_status before complete_mission to ensure queue landing or PR merging is done.`;
   }
 
-  // ─── Model Resolution ────────────────────────────────────────────
-
-  private async resolveModel() {
-    const MODEL_CACHE_TTL_MS = 5 * 60_000; // 5 minutes
-    const now = Date.now();
-    if (this.cachedSdkModel && now - this.cachedModelAt < MODEL_CACHE_TTL_MS) {
-      return this.cachedSdkModel;
-    }
-    const auth = await detectAllAuth();
-    const descriptor = resolveModelDescriptor(this.deps.modelId);
-    const mcpServers = (() => {
-      if (!(descriptor?.isCliWrapped && (descriptor.family === "anthropic" || descriptor.family === "openai"))) {
-        return undefined;
-      }
-      const launch = resolveAdeMcpServerLaunch({
-        projectRoot: this.deps.projectRoot,
-        workspaceRoot: this.deps.workspaceRoot,
-        runtimeRoot: resolveUnifiedRuntimeRoot(),
-        missionId: this.deps.missionId,
-        runId: this.deps.runId,
-        defaultRole: "orchestrator"
-      });
-      return {
-        ade: {
-          command: launch.command,
-          args: launch.cmdArgs,
-          env: launch.env
-        }
-      } as Record<string, Record<string, unknown>>;
-    })();
-    const model = await resolveModel(this.deps.modelId, auth, {
-      cwd: this.deps.workspaceRoot,
-      cli: buildCoordinatorCliOptions({
-        modelId: this.deps.modelId,
-        projectRoot: this.deps.projectRoot,
-        runId: this.deps.runId,
-        mcpServers,
-      }),
-    });
-    this.cachedSdkModel = model;
-    this.cachedModelAt = now;
-    return model;
-  }
 }

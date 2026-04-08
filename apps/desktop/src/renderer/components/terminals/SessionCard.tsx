@@ -1,26 +1,14 @@
 import React from "react";
-import { Info, Play } from "@phosphor-icons/react";
-import type { TerminalSessionSummary } from "../../../shared/types";
+import { GitBranch, Info, Play } from "@phosphor-icons/react";
+import type { LaneSummary, TerminalSessionSummary } from "../../../shared/types";
 import { sessionStatusDot } from "../../lib/terminalAttention";
-import { primarySessionLabel, secondarySessionLabel } from "../../lib/sessions";
+import { primarySessionLabel } from "../../lib/sessions";
 import { useSessionDelta } from "./useSessionDelta";
 import { cn } from "../ui/cn";
 import { MONO_FONT } from "../lanes/laneDesignTokens";
 import { ToolLogo } from "./ToolLogos";
-
-const LANE_COLORS = ["#A78BFA", "#F97316", "#22C55E", "#3B82F6", "#EC4899", "#14B8A6", "#EAB308", "#6366F1"];
-function laneColor(laneId: string): string {
-  let h = 0;
-  for (let i = 0; i < laneId.length; i++) h = ((h << 5) - h + laneId.charCodeAt(i)) | 0;
-  return LANE_COLORS[Math.abs(h) % LANE_COLORS.length]!;
-}
-
-function truncateSummary(text: string | null, maxWords = 8): string {
-  if (!text) return "";
-  const words = text.trim().split(/\s+/);
-  if (words.length <= maxWords) return text.trim();
-  return words.slice(0, maxWords).join(" ") + "...";
-}
+import { iconGlyph } from "../graph/graphHelpers";
+import { resolveTrackedCliResumeCommand } from "./cliLaunch";
 
 const DELTA_CHIP_STYLE: React.CSSProperties = {
   fontSize: 10,
@@ -32,6 +20,7 @@ const DELTA_CHIP_STYLE: React.CSSProperties = {
 
 export const SessionCard = React.memo(function SessionCard({
   session,
+  lane,
   isSelected,
   onSelect,
   onResume,
@@ -40,6 +29,7 @@ export const SessionCard = React.memo(function SessionCard({
   resumingSessionId,
 }: {
   session: TerminalSessionSummary;
+  lane: LaneSummary | null;
   isSelected: boolean;
   onSelect: (id: string) => void;
   onResume: () => void;
@@ -48,11 +38,10 @@ export const SessionCard = React.memo(function SessionCard({
   resumingSessionId: string | null;
 }) {
   const dot = sessionStatusDot(session);
-  const canResume = session.status !== "running" && Boolean(session.resumeCommand);
-  const isEnded = session.status !== "running";
+  const canResume = session.status !== "running" && Boolean(resolveTrackedCliResumeCommand(session));
   const delta = useSessionDelta(session.id, true);
   const primaryText = primarySessionLabel(session);
-  const secondaryText = truncateSummary(secondarySessionLabel(session), 20);
+  const laneMarker = lane?.icon ? iconGlyph(lane.icon) : <GitBranch size={11} weight="regular" />;
 
   return (
     <div className="group relative" onContextMenu={onContextMenu}>
@@ -93,9 +82,11 @@ export const SessionCard = React.memo(function SessionCard({
 
             {/* Meta row */}
             <div className="mt-0.5 flex items-center gap-1.5 min-w-0">
-              <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: laneColor(session.laneId) }} />
+              <span className="inline-flex shrink-0 items-center justify-center text-muted-fg/55">
+                {laneMarker}
+              </span>
               <span className="min-w-0 flex-1 truncate text-[10px] text-muted-fg/60">
-                {session.laneName}
+                {lane?.name ?? session.laneName}
               </span>
 
               {delta ? (

@@ -4,7 +4,7 @@ import type { Logger } from "../logging/logger";
 import type { AdeDb } from "../state/kvDb";
 import { isRecord, nowIso, safeJsonParse } from "../shared/utils";
 import type { ProceduralLearningService } from "./proceduralLearningService";
-import type { Memory, UnifiedMemoryService } from "./unifiedMemoryService";
+import type { Memory, MemoryService } from "./memoryService";
 
 type CaptureLedgerRow = {
   id: string;
@@ -279,7 +279,7 @@ export function createKnowledgeCaptureService(args: {
   db: AdeDb;
   projectId: string;
   logger?: Pick<Logger, "warn"> | null;
-  memoryService: Pick<UnifiedMemoryService, "addMemory" | "writeMemory" | "listMemories" | "search">;
+  memoryService: Pick<MemoryService, "addMemory" | "writeMemory" | "listMemories" | "search">;
   proceduralLearningService?: Pick<ProceduralLearningService, "onEpisodeSaved"> | null;
   prService?: {
     getComments(prId: string): Promise<PrComment[]>;

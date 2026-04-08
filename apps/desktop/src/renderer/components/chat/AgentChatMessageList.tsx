@@ -36,6 +36,7 @@ import type {
   ChatSurfaceProfile,
   ChatSurfaceMode,
   OperatorNavigationSuggestion,
+  TurnDiffSummary,
 } from "../../../shared/types";
 import { getModelById, resolveModelDescriptor } from "../../../shared/modelRegistry";
 import { cn } from "../ui/cn";
@@ -48,6 +49,7 @@ import { ClaudeLogo, CodexLogo, CursorAgentLogo } from "../terminals/ToolLogos";
 import type { ChatSubagentSnapshot } from "./chatExecutionSummary";
 import { ChatWorkLogBlock } from "./ChatWorkLogBlock";
 import { ChatStatusGlyph } from "./chatStatusVisuals";
+import { ChatTurnDiffPanel } from "./ChatTurnDiffPanel";
 import {
   collapseChatTranscriptEventsIncremental,
   formatStructuredValue,
@@ -854,7 +856,7 @@ function resolveModelLabel(modelId?: string, model?: string): string | null {
       const isNonCanonicalModel = normalizedModel.length > 0
         && normalizedModel !== desc.id.toLowerCase()
         && normalizedModel !== desc.shortId.toLowerCase()
-        && normalizedModel !== desc.sdkModelId.toLowerCase();
+        && normalizedModel !== desc.providerModelId.toLowerCase();
       if (isNonCanonicalModel) {
         return `${desc.displayName} (${model?.trim()})`;
       }
@@ -1105,6 +1107,7 @@ function renderEvent(
     respondingApprovalIds?: Set<string>;
     pendingApprovalIds?: Set<string>;
     resolvedInputStates?: Map<string, PendingInputResolution>;
+    sessionId?: string | null;
   }
 ) {
   const event = envelope.event;
@@ -1476,6 +1479,7 @@ function renderEvent(
   /* ── Subagent Result ── */
   if (event.type === "subagent_result") {
     const isSuccess = event.status === "completed";
+    const isStopped = event.status === "stopped";
     const defaultOpen = !isSuccess;
     const summaryTruncated = summarizeInlineText(event.summary, 120);
     return (
@@ -1483,14 +1487,24 @@ function renderEvent(
         defaultOpen={defaultOpen}
         summary={
           <div className="flex flex-wrap items-center gap-x-2 gap-y-1 font-mono text-[11px] text-fg/52">
-            <div className={cn("flex h-5 w-5 shrink-0 items-center justify-center rounded-md", isSuccess ? "bg-emerald-500/10" : "bg-red-500/10")}>
+            <div className={cn(
+              "flex h-5 w-5 shrink-0 items-center justify-center rounded-md",
+              isSuccess ? "bg-emerald-500/10" : isStopped ? "bg-amber-500/10" : "bg-red-500/10",
+            )}>
               {isSuccess ? (
                 <CheckCircle size={12} weight="bold" className="text-emerald-400/80" />
+              ) : isStopped ? (
+                <Circle size={12} weight="fill" className="text-amber-300/80" />
               ) : (
                 <XCircle size={12} weight="bold" className="text-red-400/80" />
               )}
             </div>
-            <span className={cn("font-medium", isSuccess ? "text-emerald-200/70" : "text-red-200/70")}>{isSuccess ? "Agent finished" : "Agent failed"}</span>
+            <span className={cn(
+              "font-medium",
+              isSuccess ? "text-emerald-200/70" : isStopped ? "text-amber-200/70" : "text-red-200/70",
+            )}>
+              {isSuccess ? "Agent finished" : isStopped ? "Agent stopped" : "Agent failed"}
+            </span>
             {summaryTruncated ? <span className="flex-1 truncate text-[10px] text-fg/45">{summaryTruncated}</span> : null}
           </div>
         }
@@ -1650,7 +1664,6 @@ function renderEvent(
     return (
       <CollapsibleCard
         defaultOpen={false}
-        forceOpen={isLive ? true : undefined}
         summary={
           <span className="flex flex-wrap items-center gap-x-2 gap-y-1 font-sans text-[11px] text-fg/52">
             <Brain size={13} weight="duotone" className="text-fg/40" />
@@ -2228,6 +2241,19 @@ function renderEvent(
     );
   }
 
+  /* ── Turn diff summary ── */
+  if (event.type === "turn_diff_summary" && options?.sessionId) {
+    const summary: TurnDiffSummary = {
+      turnId: event.turnId,
+      beforeSha: event.beforeSha,
+      afterSha: event.afterSha,
+      files: event.files,
+      totalAdditions: event.totalAdditions,
+      totalDeletions: event.totalDeletions,
+    };
+    return <ChatTurnDiffPanel summary={summary} sessionId={options.sessionId} />;
+  }
+
   /* ── Completion report ── */
   if (event.type === "completion_report") {
     const statusTone = event.report.status === "completed"
@@ -2510,7 +2536,7 @@ function TurnSummaryCard({
       ) : null}
       {summary.backgroundAgentCount > 0 ? (
         <div className="rounded-md border border-white/[0.05] bg-black/10 px-2.5 py-2">
-          <div className="mb-1 font-mono text-[9px] uppercase tracking-[0.14em] text-muted-fg/42">Background agents</div>
+          <div className="mb-1 font-mono text-[9px] uppercase tracking-[0.14em] text-muted-fg/42">Agents</div>
           <div className="flex flex-wrap items-center gap-2 text-[12px] text-fg/72">
             <Robot size={12} weight="regular" className="text-fg/38" />
             <span>
@@ -2598,6 +2624,7 @@ type EventRowProps = {
   respondingApprovalIds?: Set<string>;
   pendingApprovalIds?: Set<string>;
   resolvedInputStates?: Map<string, PendingInputResolution>;
+  sessionId?: string | null;
 };
 
 const EventRow = React.memo(function EventRow({
@@ -2615,6 +2642,7 @@ const EventRow = React.memo(function EventRow({
   respondingApprovalIds,
   pendingApprovalIds,
   resolvedInputStates,
+  sessionId,
 }: EventRowProps) {
   return (
     <div className="space-y-3">
@@ -2653,6 +2681,7 @@ const EventRow = React.memo(function EventRow({
             respondingApprovalIds,
             pendingApprovalIds,
             resolvedInputStates,
+            sessionId,
           })}
     </div>
   );
@@ -2804,6 +2833,7 @@ export function AgentChatMessageList({
   onOpenWorkspacePath,
   respondingApprovalIds,
   pendingApprovalIds,
+  sessionId,
   }: {
   events: AgentChatEventEnvelope[];
   showStreamingIndicator?: boolean;
@@ -2815,6 +2845,7 @@ export function AgentChatMessageList({
   onOpenWorkspacePath?: (path: string, laneId?: string | null) => void;
   respondingApprovalIds?: Set<string>;
   pendingApprovalIds?: Set<string>;
+  sessionId?: string | null;
 }) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const location = useLocation();
@@ -3103,6 +3134,7 @@ export function AgentChatMessageList({
           respondingApprovalIds={respondingApprovalIds}
           pendingApprovalIds={pendingApprovalIds}
           resolvedInputStates={resolvedInputStates}
+          sessionId={sessionId}
         />
       );
     }
@@ -3124,9 +3156,10 @@ export function AgentChatMessageList({
         respondingApprovalIds={respondingApprovalIds}
         pendingApprovalIds={pendingApprovalIds}
         resolvedInputStates={resolvedInputStates}
+        sessionId={sessionId}
       />
     );
-  }, [activeTurnId, assistantLabel, surfaceMode, surfaceProfile, groupedRows, turnModelState, handleApproval, handleMeasure, openWorkspacePath, handleNavigateSuggestion, respondingApprovalIds, pendingApprovalIds, resolvedInputStates]);
+  }, [activeTurnId, assistantLabel, surfaceMode, surfaceProfile, groupedRows, turnModelState, handleApproval, handleMeasure, openWorkspacePath, handleNavigateSuggestion, respondingApprovalIds, pendingApprovalIds, resolvedInputStates, sessionId]);
 
   // Compute the bottom spacer height for virtualized mode.
   const bottomSpacerHeight = useMemo(() => {

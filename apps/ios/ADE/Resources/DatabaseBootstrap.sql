@@ -77,6 +77,7 @@ create table if not exists terminal_sessions (
       goal text,
       tool_type text,
       pinned integer not null default 0,
+      manually_named integer not null default 0,
       title text not null,
       started_at text not null,
       ended_at text,
@@ -89,6 +90,7 @@ create table if not exists terminal_sessions (
       last_output_at text,
       summary text,
       resume_command text,
+      resume_metadata_json text,
       foreign key(lane_id) references lanes(id)
     );
 
@@ -101,6 +103,10 @@ create index if not exists idx_terminal_sessions_started_at on terminal_sessions
 create index if not exists idx_terminal_sessions_lane_started_at on terminal_sessions(lane_id, started_at desc);
 
 alter table terminal_sessions add column resume_command text;
+
+alter table terminal_sessions add column resume_metadata_json text;
+
+alter table terminal_sessions add column manually_named integer not null default 0;
 
 create table if not exists process_definitions (
       id text primary key,

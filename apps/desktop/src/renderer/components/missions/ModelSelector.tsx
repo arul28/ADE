@@ -1,7 +1,7 @@
 import React, { useCallback, useMemo } from "react";
 import type { ModelConfig, ModelProvider, ThinkingLevel } from "../../../shared/types";
 import { getModelById, resolveModelDescriptor } from "../../../shared/modelRegistry";
-import { UnifiedModelSelector } from "../shared/UnifiedModelSelector";
+import { ProviderModelSelector } from "../shared/ProviderModelSelector";
 
 type ModelSelectorProps = {
   value: ModelConfig;
@@ -10,6 +10,7 @@ type ModelSelectorProps = {
   showRecommendedBadge?: boolean;
   /** When provided, only models whose registry id is in this set are shown. */
   availableModelIds?: string[];
+  onOpenAiSettings?: () => void;
 };
 
 function providerFromFamily(modelId: string): ModelProvider | undefined {
@@ -36,6 +37,7 @@ export function ModelSelector({
   compact,
   showRecommendedBadge: _showRecommendedBadge,
   availableModelIds,
+  onOpenAiSettings,
 }: ModelSelectorProps) {
   const resolvedModelId = useMemo(() => normalizeModelId(value.modelId), [value.modelId]);
   const selectedDescriptor = useMemo(() => getModelById(resolvedModelId), [resolvedModelId]);
@@ -60,7 +62,7 @@ export function ModelSelector({
   }, [onChange, resolvedModelId]);
 
   return (
-    <UnifiedModelSelector
+    <ProviderModelSelector
       value={selectedDescriptor?.id ?? resolvedModelId}
       onChange={handleModelChange}
       availableModelIds={availableModelIds}
@@ -68,6 +70,7 @@ export function ModelSelector({
       showReasoning
       reasoningEffort={value.thinkingLevel ?? null}
       onReasoningEffortChange={handleReasoningChange}
+      onOpenAiSettings={onOpenAiSettings}
     />
   );
 }

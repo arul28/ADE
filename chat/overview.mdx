@@ -15,10 +15,10 @@ Agent Chat works across multiple provider backends:
 
 | Provider | Backend | Auth |
 |----------|---------|------|
-| **Claude** | Anthropic SDK v2 sessions | API key |
-| **Codex** | OpenAI app-server JSON-RPC | API key |
+| **Claude** | Anthropic SDK v2 sessions | CLI subscription or API key |
+| **Codex** | OpenAI app-server JSON-RPC | CLI subscription or API key |
 | **Cursor** | ACP (Agent Control Protocol) | Cursor CLI auth |
-| **Unified** | Vercel AI SDK (in-process) | API key |
+| **OpenCode** | OpenCode server (local process) | API key, OpenRouter, or local endpoint |
 
 ADE detects which providers are available and lets you switch between them per-session using the model selector in the chat header. Each provider has its own session lifecycle, timeout behavior, and interrupt semantics.
 

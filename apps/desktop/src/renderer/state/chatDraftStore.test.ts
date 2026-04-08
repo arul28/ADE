@@ -20,7 +20,7 @@ function makeSnapshot(overrides: Partial<ComposerDraftSnapshot> = {}): ComposerD
     codexApprovalPolicy: "untrusted",
     codexSandbox: "read-only",
     codexConfigSource: "flags",
-    unifiedPermissionMode: "plan",
+    opencodePermissionMode: "plan",
     computerUsePolicy: { mode: "auto", allowLocalFallback: false, retainArtifacts: false, preferredBackend: null },
     attachments: [],
     includeProjectDocs: false,

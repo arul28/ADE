@@ -88,6 +88,7 @@ function getKnownBinDirs(
     `${homeDir}/Library/pnpm`,
     `${homeDir}/.pnpm-global/bin`,
     `${homeDir}/.bun/bin`,
+    `${homeDir}/.opencode/bin`,
     `${homeDir}/.volta/bin`,
     `${homeDir}/.asdf/shims`,
     `${homeDir}/.asdf/bin`,
@@ -156,6 +157,7 @@ export function augmentPathWithKnownCliDirs(
     getKnownBinDirs("claude", env).join(path.delimiter),
     getKnownBinDirs("codex", env).join(path.delimiter),
     getKnownBinDirs("agent", env).join(path.delimiter),
+    getKnownBinDirs("opencode", env).join(path.delimiter),
   );
 }
 

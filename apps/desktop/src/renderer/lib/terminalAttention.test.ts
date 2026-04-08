@@ -33,6 +33,28 @@ describe("terminalAttention", () => {
     ).toBe("running-needs-attention");
   });
 
+  it("treats idle AI CLI sessions as needing attention", () => {
+    expect(
+      sessionIndicatorState({
+        status: "running",
+        lastOutputPreview: "Analyzed project state",
+        runtimeState: "idle",
+        toolType: "codex",
+      }),
+    ).toBe("running-needs-attention");
+  });
+
+  it("keeps plain shell sessions active when they simply go idle", () => {
+    expect(
+      sessionIndicatorState({
+        status: "running",
+        lastOutputPreview: "admin@Mac test-4-6a625aeb %",
+        runtimeState: "idle",
+        toolType: "shell",
+      }),
+    ).toBe("running-active");
+  });
+
   describe("sessionStatusDot", () => {
     it("returns a spinning emerald dot for a running active session", () => {
       const dot = sessionStatusDot({
@@ -64,6 +86,18 @@ describe("terminalAttention", () => {
       expect(dot.spinning).toBe(false);
       expect(dot.cls).toContain("amber");
       expect(dot.label).toBe("Ready");
+    });
+
+    it("returns a solid amber dot with an idle label for idle AI CLI sessions", () => {
+      const dot = sessionStatusDot({
+        status: "running",
+        lastOutputPreview: "Analyzed project state",
+        runtimeState: "idle",
+        toolType: "claude",
+      });
+      expect(dot.spinning).toBe(false);
+      expect(dot.cls).toContain("amber");
+      expect(dot.label).toBe("Idle");
     });
 
     it("returns a solid red dot for an ended session", () => {

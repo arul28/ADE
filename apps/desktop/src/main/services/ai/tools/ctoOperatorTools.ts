@@ -1,4 +1,4 @@
-import { tool, type Tool } from "ai";
+import { executableTool as tool, type ExecutableTool as Tool } from "./executableTool";
 import { z } from "zod";
 import { getModelById, resolveChatProviderForDescriptor } from "../../../../shared/modelRegistry";
 import type {
@@ -118,7 +118,7 @@ export interface CtoOperatorToolDeps {
     getStatus: () => any;
     generateDocs: (args: any) => Promise<any>;
   } | null;
-  steerChat?: (args: { sessionId: string; instruction: string }) => Promise<void>;
+  steerChat?: (args: { sessionId: string; instruction: string }) => Promise<{ steerId: string; queued: boolean }>;
   cancelSteer?: (args: { sessionId: string }) => Promise<void>;
   handoffChat?: (args: { sessionId: string; targetIdentityKey?: string; reason?: string }) => Promise<any>;
   listSubagents?: (args: { sessionId: string }) => Promise<any[]>;
@@ -187,7 +187,7 @@ const ACTIVE_LINEAR_RUN_STATUSES = new Set([
 function deriveChatProvider(args: { modelId?: string | null }): { provider: AgentChatCreateArgs["provider"]; model: string } {
   const descriptor = args.modelId ? getModelById(args.modelId) : null;
   if (!descriptor) {
-    return { provider: "unified", model: args.modelId?.trim() || "" };
+    return { provider: "opencode", model: args.modelId?.trim() || "" };
   }
   return resolveChatProviderForDescriptor(descriptor);
 }

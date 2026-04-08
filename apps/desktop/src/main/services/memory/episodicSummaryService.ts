@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { EpisodicMemory } from "../../../shared/types";
 import type { createAiIntegrationService } from "../ai/aiIntegrationService";
 import type { Logger } from "../logging/logger";
-import type { UnifiedMemoryService } from "./unifiedMemoryService";
+import type { MemoryService } from "./memoryService";
 
 type SummaryOutcome = "success" | "partial" | "failure";
 
@@ -79,7 +79,7 @@ export function createEpisodicSummaryService(args: {
   logger?: Pick<Logger, "warn"> | null;
   enabled?: boolean;
   aiIntegrationService?: Pick<ReturnType<typeof createAiIntegrationService>, "executeTask"> | null;
-  memoryService: Pick<UnifiedMemoryService, "addMemory">;
+  memoryService: Pick<MemoryService, "addMemory">;
   onEpisodeSaved?: (memoryId: string) => void | Promise<void>;
 }) {
   const enabled = args.enabled !== false;

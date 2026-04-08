@@ -123,7 +123,7 @@ describe("ContextSection", () => {
           };
         },
         getPrefs: async () => ({
-          provider: "unified",
+          provider: "opencode",
           modelId: null,
           reasoningEffort: null,
           events: {},

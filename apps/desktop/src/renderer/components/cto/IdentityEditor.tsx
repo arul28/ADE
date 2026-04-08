@@ -1,11 +1,12 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { getModelById, resolveModelDescriptor } from "../../../shared/modelRegistry";
 import type { CtoIdentity, CtoPersonalityPreset } from "../../../shared/types";
 import { deriveConfiguredModelIds } from "../../lib/modelOptions";
 import { Button } from "../ui/Button";
 import { cn } from "../ui/cn";
 import { cardCls, labelCls, recessedPanelCls, textareaCls } from "./shared/designTokens";
-import { UnifiedModelSelector } from "../shared/UnifiedModelSelector";
+import { ProviderModelSelector } from "../shared/ProviderModelSelector";
 import { CTO_PERSONALITY_PRESETS, getCtoPersonalityPreset } from "./identityPresets";
 import { CtoPromptPreview } from "./CtoPromptPreview";
 
@@ -75,6 +76,10 @@ export function IdentityEditor({
   onSave: (patch: Record<string, unknown>) => Promise<void>;
   onCancel: () => void;
 }) {
+  const navigate = useNavigate();
+  const openAiProvidersSettings = useCallback(() => {
+    navigate("/settings?tab=ai#ai-providers");
+  }, [navigate]);
   const [draft, setDraft] = useState<IdentityDraft>(draftFromIdentity(identity));
   const [availableModelIds, setAvailableModelIds] = useState<string[]>([]);
   const [loadingModels, setLoadingModels] = useState(true);
@@ -162,7 +167,7 @@ export function IdentityEditor({
 
         <div className="space-y-2">
           <div className={labelCls}>Model</div>
-          <UnifiedModelSelector
+          <ProviderModelSelector
             value={draft.modelId ?? ""}
             availableModelIds={availableModelIds}
             showReasoning
@@ -175,12 +180,13 @@ export function IdentityEditor({
               setDraft((current) => applyModelSelection(current, modelId));
               setError(null);
             }}
+            onOpenAiSettings={openAiProvidersSettings}
           />
           {loadingModels ? (
             <div className="text-[11px] text-muted-fg/40">Checking configured models...</div>
           ) : availableModelIds.length === 0 ? (
             <div className="rounded-lg border border-amber-500/18 bg-amber-500/[0.06] px-3 py-2 text-[11px] text-amber-200">
-              No configured models detected yet. Add one in ADE settings before saving.
+              No configured models detected yet. Open Settings → AI → Providers to add API keys or CLIs before saving.
             </div>
           ) : (
             <div className="text-[11px] text-muted-fg/40">You can change the model and thinking level any time from the CTO chat.</div>

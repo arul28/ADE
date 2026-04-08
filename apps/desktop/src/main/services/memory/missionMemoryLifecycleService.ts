@@ -1,5 +1,5 @@
 import type { Logger } from "../logging/logger";
-import type { Memory, MemoryStatus, UnifiedMemoryService } from "./unifiedMemoryService";
+import type { Memory, MemoryStatus, MemoryService } from "./memoryService";
 
 function cleanIds(values: Array<string | null | undefined>): string[] {
   return [...new Set(values.map((value) => String(value ?? "").trim()).filter((value) => value.length > 0))];
@@ -15,7 +15,7 @@ function normalizeStatuses(status?: MemoryStatus | ReadonlyArray<MemoryStatus> |
 export function createMissionMemoryLifecycleService(args: {
   logger?: Pick<Logger, "warn"> | null;
   memoryService: Pick<
-    UnifiedMemoryService,
+    MemoryService,
     "writeMemory" | "addMemory" | "listMemories" | "getMemory" | "archiveMemory"
   >;
 }) {

@@ -3,7 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { Warning, Trash, Archive } from "@phosphor-icons/react";
 import type { AiConfig, CreatePrFromLaneArgs, LandResult, LaneSummary, MergeMethod, PrCheck, PrReview, PrStatus, PrSummary } from "../../../shared/types";
 import { getModelById } from "../../../shared/modelRegistry";
-import { UnifiedModelSelector } from "../shared/UnifiedModelSelector";
+import { ProviderModelSelector } from "../shared/ProviderModelSelector";
 import { useAppStore } from "../../state/appStore";
 import { Button } from "../ui/Button";
 import { Chip } from "../ui/Chip";
@@ -445,7 +445,7 @@ export function LanePrPanel({ laneId }: { laneId: string | null }) {
                     <Button size="sm" variant="outline" className="h-7" onClick={() => void draftFromPack()}>
                       Draft Description
                     </Button>
-                    <UnifiedModelSelector
+                    <ProviderModelSelector
                       value={prDescModel}
                       onChange={(modelId) => {
                         setPrDescModel(modelId);
@@ -526,7 +526,7 @@ export function LanePrPanel({ laneId }: { laneId: string | null }) {
             <Button size="sm" variant="outline" className="h-7" onClick={() => void updateDescription()} disabled={loading || descPreviewBusy}>
               {descPreviewBusy ? "Drafting..." : "Redraft Description"}
             </Button>
-            <UnifiedModelSelector
+            <ProviderModelSelector
               value={prDescModel}
               onChange={(modelId) => {
                 setPrDescModel(modelId);

@@ -2884,7 +2884,7 @@ export function createMissionService({
       const plannerPlan = args.plannerPlan ?? null;
       const launchMode = args.launchMode === "manual" ? "manual" : "autopilot";
       const autostart = args.autostart !== false;
-      const autopilotExecutor = args.autopilotExecutor ?? "unified";
+      const autopilotExecutor = args.autopilotExecutor ?? "opencode";
       const computerUse = normalizeMissionComputerUse(args.computerUse);
       const launchAgentRuntime = normalizeAgentRuntimeFlags(
         isRecord(args.agentRuntime) ? (args.agentRuntime as Record<string, unknown>) : {}

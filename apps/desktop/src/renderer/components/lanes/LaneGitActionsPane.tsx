@@ -135,6 +135,13 @@ function useLaneGitActionRuntimeState(laneId: string | null): LaneGitActionRunti
   );
 }
 
+export {
+  beginLaneGitActionRuntime,
+  patchLaneGitActionRuntimeStateIfCurrent,
+  scheduleLaneGitActionRuntimeClear,
+  useLaneGitActionRuntimeState,
+};
+
 export function __resetLaneGitActionRuntimeForTests(): void {
   laneGitActionRuntimeByLaneId.clear();
   emitLaneGitActionRuntimeChange();

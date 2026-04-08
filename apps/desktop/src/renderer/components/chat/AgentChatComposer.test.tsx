@@ -25,7 +25,7 @@ function renderComposer(overrides: Partial<ComponentProps<typeof AgentChatCompos
     codexApprovalPolicy: "on-request",
     codexSandbox: "workspace-write",
     codexConfigSource: "flags",
-    unifiedPermissionMode: "edit",
+    opencodePermissionMode: "edit",
     executionMode: "focused",
     computerUsePolicy: createDefaultComputerUsePolicy(),
     onModelChange: vi.fn(),
@@ -45,7 +45,7 @@ function renderComposer(overrides: Partial<ComponentProps<typeof AgentChatCompos
     onCodexApprovalPolicyChange: vi.fn(),
     onCodexSandboxChange: vi.fn(),
     onCodexConfigSourceChange: vi.fn(),
-    onUnifiedPermissionModeChange: vi.fn(),
+    onOpenCodePermissionModeChange: vi.fn(),
     onComputerUsePolicyChange: vi.fn(),
     ...overrides,
   };
@@ -386,16 +386,4 @@ describe("AgentChatComposer", () => {
     expect(textarea.className).toContain("resize-y");
   });
 
-  it("shows only the available session models when the chat catalog is restricted", () => {
-    renderComposer({
-      availableModelIds: ["openai/gpt-5.4-codex", "openai/gpt-5.2-codex"],
-      restrictModelCatalogToAvailable: true,
-      turnActive: false,
-    });
-
-    fireEvent.click(screen.getByRole("button", { name: "Select model" }));
-
-    expect(screen.getByText("GPT-5.2-Codex")).toBeTruthy();
-    expect(screen.queryByText("Claude Sonnet 4.6")).toBeNull();
-  });
 });

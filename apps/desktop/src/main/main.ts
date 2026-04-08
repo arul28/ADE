@@ -81,7 +81,7 @@ import { createBatchConsolidationService } from "./services/memory/batchConsolid
 import { createEmbeddingService } from "./services/memory/embeddingService";
 import { createEmbeddingWorkerService } from "./services/memory/embeddingWorkerService";
 import { createHybridSearchService } from "./services/memory/hybridSearchService";
-import { createUnifiedMemoryService } from "./services/memory/unifiedMemoryService";
+import { createMemoryService } from "./services/memory/memoryService";
 import { createProjectMemoryFilesService } from "./services/memory/memoryFilesService";
 import { createMemoryLifecycleService } from "./services/memory/memoryLifecycleService";
 import { createMemoryBriefingService } from "./services/memory/memoryBriefingService";
@@ -122,6 +122,7 @@ import { createExternalConnectionAuthService } from "./services/externalMcp/exte
 import { createComputerUseArtifactBrokerService } from "./services/computerUse/computerUseArtifactBrokerService";
 import { createSyncService } from "./services/sync/syncService";
 import { createAutoUpdateService } from "./services/updates/autoUpdateService";
+import { cleanupStaleTempArtifacts } from "./services/runtime/tempCleanupService";
 import type { Logger } from "./services/logging/logger";
 
 /**
@@ -206,11 +207,14 @@ async function createWindow(logger?: Logger): Promise<BrowserWindow> {
   const iconDir = path.join(__dirname, "../../build");
   const pngPath = path.join(iconDir, "icon.png");
   const icnsPath = path.join(iconDir, "icon.icns");
-  const icon = fs.existsSync(pngPath)
-    ? nativeImage.createFromPath(pngPath)
-    : fs.existsSync(icnsPath)
-      ? nativeImage.createFromPath(icnsPath)
-      : nativeImage.createEmpty();
+  let icon: Electron.NativeImage;
+  if (fs.existsSync(pngPath)) {
+    icon = nativeImage.createFromPath(pngPath);
+  } else if (fs.existsSync(icnsPath)) {
+    icon = nativeImage.createFromPath(icnsPath);
+  } else {
+    icon = nativeImage.createEmpty();
+  }
 
   const win = new BrowserWindow({
     width: 1280,
@@ -899,7 +903,7 @@ app.whenReady().then(async () => {
     const sessionService = createSessionService({ db });
     const reconciledSessions = sessionService.reconcileStaleRunningSessions({
       status: "disposed",
-      excludeToolTypes: ["claude-chat", "codex-chat", "ai-chat", "cursor"],
+      excludeToolTypes: ["claude-chat", "codex-chat", "opencode-chat", "cursor"],
     });
     if (reconciledSessions > 0) {
       logger.warn("sessions.reconciled_stale_running", {
@@ -1031,11 +1035,12 @@ app.whenReady().then(async () => {
           ].some((v) => (process.env[v] ?? "").trim().length > 0),
         ) ||
         Boolean(
-          (
-            process.env.LINEAR_API_KEY ??
-            process.env.ADE_LINEAR_TOKEN ??
-            ""
-          ).trim(),
+          [
+            "ADE_LINEAR_API",
+            "LINEAR_API_KEY",
+            "ADE_LINEAR_TOKEN",
+            "LINEAR_TOKEN",
+          ].some((v) => (process.env[v] ?? "").trim().length > 0)
         );
       if (hasEnvCredentials) {
         onboardingService.complete();
@@ -1354,7 +1359,7 @@ app.whenReady().then(async () => {
         }
       }, 2_000);
     };
-    const memoryService = createUnifiedMemoryService(db, {
+    const memoryService = createMemoryService(db, {
       hybridSearchService,
       onMemoryMutated: () => {
         batchConsolidationServiceRef?.scheduleAutoConsolidationCheck();
@@ -1721,6 +1726,15 @@ app.whenReady().then(async () => {
       },
     });
     agentChatServiceRef = agentChatService;
+    setImmediate(() => {
+      void Promise.resolve()
+        .then(() => agentChatService.cleanupStaleAttachments())
+        .catch((err) => {
+          logger.warn("agent_chat.cleanup_stale_attachments_failed", {
+            error: err instanceof Error ? err.message : String(err),
+          });
+        });
+    });
 
     // Wire agentChatService into prService for integration resolution
     prService.setAgentChatService(agentChatService);
@@ -3161,6 +3175,10 @@ app.whenReady().then(async () => {
   const updateLogger = createFileLogger(
     path.join(app.getPath("userData"), "ade-update.jsonl"),
   );
+  cleanupStaleTempArtifacts({
+    tempRoot: app.getPath("temp"),
+    logger: updateLogger,
+  });
   const autoUpdateService = createAutoUpdateService({
     logger: updateLogger,
     currentVersion: app.getVersion(),
@@ -3219,6 +3237,11 @@ app.whenReady().then(async () => {
     const current = getActiveContext();
     const previousRoot = current.project?.rootPath;
     current.logger.info("app.before_quit");
+    // Kill the shared OpenCode inventory server before quitting
+    try {
+      const { shutdownInventoryServer } = require("./services/opencode/openCodeInventory");
+      shutdownInventoryServer();
+    } catch { /* ignore if module not loaded */ }
     setActiveProject(null);
     dormantContext = createDormantProjectContext(previousRoot);
     void closeAllProjectContexts()
