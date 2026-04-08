@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { buildAdeGitignore } from "../../../shared/adeLayout";
-import { createUnifiedMemoryService } from "../memory/unifiedMemoryService";
+import { createMemoryService } from "../memory/memoryService";
 import { openKvDb } from "../state/kvDb";
 import { createCtoStateService } from "./ctoStateService";
 
@@ -32,7 +32,7 @@ async function createFixtureWithMemory() {
     `INSERT OR IGNORE INTO projects(id, root_path, display_name, default_base_ref, created_at, last_opened_at) VALUES (?, ?, ?, ?, ?, ?)`,
     [fixture.projectId, fixture.root, "test-project", "main", new Date().toISOString(), new Date().toISOString()]
   );
-  const memoryService = createUnifiedMemoryService(fixture.db);
+  const memoryService = createMemoryService(fixture.db);
   return { ...fixture, memoryService };
 }
 

@@ -1,10 +1,10 @@
-import { tool } from "ai";
+import { executableTool as tool } from "./executableTool";
 import { z } from "zod";
-import { resolveAgentMemoryWritePolicy } from "../../memory/unifiedMemoryService";
+import { resolveAgentMemoryWritePolicy } from "../../memory/memoryService";
 import type {
-  createUnifiedMemoryService,
+  createMemoryService,
   MemoryStatus,
-} from "../../memory/unifiedMemoryService";
+} from "../../memory/memoryService";
 
 export type TurnMemoryPolicyState = {
   classification: "none" | "soft" | "required";
@@ -25,7 +25,7 @@ export type MemoryWriteEvent = {
 };
 
 export function createMemoryTools(
-  memoryService: ReturnType<typeof createUnifiedMemoryService>,
+  memoryService: ReturnType<typeof createMemoryService>,
   projectId: string,
   opts?: {
     runId?: string;

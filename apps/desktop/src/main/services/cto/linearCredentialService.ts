@@ -113,17 +113,11 @@ export function createLinearCredentialService(args: LinearCredentialServiceArgs)
 
   const normalizeOAuthClientCredentials = (value: unknown): LinearOAuthClientCredentials | null => {
     if (!isRecord(value)) return null;
-    const clientId = typeof value.clientId === "string"
-      ? value.clientId.trim()
-      : typeof value.client_id === "string"
-        ? value.client_id.trim()
-        : "";
+    const rawClientId = typeof value.clientId === "string" ? value.clientId : typeof value.client_id === "string" ? value.client_id : "";
+    const clientId = rawClientId.trim();
     if (!clientId.length) return null;
-    const clientSecret = typeof value.clientSecret === "string"
-      ? value.clientSecret.trim()
-      : typeof value.client_secret === "string"
-        ? value.client_secret.trim()
-        : "";
+    const rawSecret = typeof value.clientSecret === "string" ? value.clientSecret : typeof value.client_secret === "string" ? value.client_secret : "";
+    const clientSecret = rawSecret.trim();
     return {
       clientId,
       clientSecret: clientSecret.length ? clientSecret : null,

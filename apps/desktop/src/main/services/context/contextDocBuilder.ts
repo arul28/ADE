@@ -951,7 +951,7 @@ export async function runContextDocGeneration(
   args: ContextGenerateDocsArgs
 ): Promise<ContextGenerateDocsResult> {
   const FALLBACK_GENERATED_ROOT = path.join(path.dirname(deps.packsDir), "context", "generated");
-  const provider = args.provider ?? "unified";
+  const provider = args.provider ?? "opencode";
   const trigger = args.trigger ?? "manual";
   const modelId = typeof args.modelId === "string" && args.modelId.trim().length > 0 ? args.modelId.trim() : null;
   const reasoningEffort =

@@ -2,21 +2,21 @@ import { describe, expect, it } from "vitest";
 import { canSwitchChatSessionModel, filterChatModelIdsForSession } from "./chatModelSwitching";
 
 describe("chatModelSwitching", () => {
-  it("keeps launched chats within the active family by default", () => {
+  it("returns all models regardless of family after launch", () => {
     expect(
       filterChatModelIdsForSession({
         availableModelIds: [
           "anthropic/claude-sonnet-4-6",
-          "anthropic/claude-sonnet-4-6-api",
           "openai/gpt-5.4-codex",
-          "openai/gpt-5.2",
+          "openai/gpt-5.2-codex",
         ],
         activeSessionModelId: "anthropic/claude-sonnet-4-6",
         hasConversation: true,
       }),
     ).toEqual([
       "anthropic/claude-sonnet-4-6",
-      "anthropic/claude-sonnet-4-6-api",
+      "openai/gpt-5.4-codex",
+      "openai/gpt-5.2-codex",
     ]);
   });
 
@@ -49,14 +49,14 @@ describe("chatModelSwitching", () => {
     ).toBe(true);
   });
 
-  it("blocks cross-family switches after launch unless explicitly allowed", () => {
+  it("allows cross-family switches after launch", () => {
     expect(
       canSwitchChatSessionModel({
         currentModelId: "anthropic/claude-sonnet-4-6",
         nextModelId: "openai/gpt-5.4-codex",
         hasConversation: true,
       }),
-    ).toBe(false);
+    ).toBe(true);
 
     expect(
       canSwitchChatSessionModel({

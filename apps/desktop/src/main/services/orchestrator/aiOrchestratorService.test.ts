@@ -1225,10 +1225,10 @@ async function createFixture(args: {
     projectRoot,
     projectConfigService
   });
-  const defaultUnifiedModelId = "anthropic/claude-sonnet-4-6";
+  const defaultOpenCodeModelId = "anthropic/claude-sonnet-4-6";
   const normalizeStepModelId = (step: any) => {
     const executorKind = typeof step?.executorKind === "string" ? step.executorKind : null;
-    if (executorKind !== "unified") return step;
+    if (executorKind !== "opencode") return step;
     const metadata =
       step?.metadata && typeof step.metadata === "object" && !Array.isArray(step.metadata)
         ? step.metadata
@@ -1239,7 +1239,7 @@ async function createFixture(args: {
       ...step,
       metadata: {
         ...metadata,
-        modelId: defaultUnifiedModelId,
+        modelId: defaultOpenCodeModelId,
       },
     };
   };
@@ -1297,7 +1297,7 @@ describe("aiOrchestratorService", () => {
       started = await fixture.aiOrchestratorService.startMissionRun({
         missionId: mission.id,
         runMode: "autopilot",
-        defaultExecutorKind: "unified"
+        defaultExecutorKind: "opencode"
       });
       // The mission now starts directly in orchestrator runtime.
       expect(started.started).toBeTruthy();
@@ -1322,7 +1322,7 @@ describe("aiOrchestratorService", () => {
       const launched = await fixture.aiOrchestratorService.startMissionRun({
         missionId: mission.id,
         runMode: "autopilot",
-        defaultExecutorKind: "unified"
+        defaultExecutorKind: "opencode"
       });
       expect(launched.started).toBeTruthy();
       expect(launched.started?.run.id).toBeTruthy();
@@ -1346,7 +1346,7 @@ describe("aiOrchestratorService", () => {
       const launched = await fixture.aiOrchestratorService.startMissionRun({
         missionId: mission.id,
         runMode: "autopilot",
-        defaultExecutorKind: "unified",
+        defaultExecutorKind: "opencode",
       });
       const runId = launched.started?.run.id;
       if (!runId) throw new Error("Expected mission run to start");
@@ -1405,7 +1405,7 @@ describe("aiOrchestratorService", () => {
       const launched = await fixture.aiOrchestratorService.startMissionRun({
         missionId: mission.id,
         runMode: "autopilot",
-        defaultExecutorKind: "unified",
+        defaultExecutorKind: "opencode",
       });
       const runId = launched.started?.run.id;
       if (!runId) throw new Error("Expected mission run to start");
@@ -1467,7 +1467,7 @@ describe("aiOrchestratorService", () => {
       const launched = await fixture.aiOrchestratorService.startMissionRun({
         missionId: mission.id,
         runMode: "autopilot",
-        defaultExecutorKind: "unified",
+        defaultExecutorKind: "opencode",
       });
 
       expect(launched.started).toBeTruthy();
@@ -1494,7 +1494,7 @@ describe("aiOrchestratorService", () => {
       const launched = await fixture.aiOrchestratorService.startMissionRun({
         missionId: mission.id,
         runMode: "autopilot",
-        defaultExecutorKind: "unified",
+        defaultExecutorKind: "opencode",
       });
 
       expect(launched.started).toBeTruthy();
@@ -1527,7 +1527,7 @@ describe("aiOrchestratorService", () => {
         fixture.aiOrchestratorService.startMissionRun({
           missionId: mission.id,
           runMode: "autopilot",
-          defaultExecutorKind: "unified",
+          defaultExecutorKind: "opencode",
         })
       ).rejects.toThrow("Mission memory boot failed.");
 
@@ -1595,7 +1595,7 @@ describe("aiOrchestratorService", () => {
       const launched = await fixture.aiOrchestratorService.startMissionRun({
         missionId: mission.id,
         runMode: "autopilot",
-        defaultExecutorKind: "unified",
+        defaultExecutorKind: "opencode",
       });
       const runId = launched.started?.run.id;
       if (!runId) throw new Error("Expected mission run to start");
@@ -1679,7 +1679,7 @@ describe("aiOrchestratorService", () => {
       const launched = await fixture.aiOrchestratorService.startMissionRun({
         missionId: mission.id,
         runMode: "autopilot",
-        defaultExecutorKind: "unified",
+        defaultExecutorKind: "opencode",
       });
       const runId = launched.started?.run.id;
       if (!runId) throw new Error("Expected mission run to start");
@@ -1740,7 +1740,7 @@ describe("aiOrchestratorService", () => {
       const launched = await fixture.aiOrchestratorService.startMissionRun({
         missionId: mission.id,
         runMode: "autopilot",
-        defaultExecutorKind: "unified",
+        defaultExecutorKind: "opencode",
       });
 
       expect(launched.started).toBeTruthy();
@@ -1751,7 +1751,7 @@ describe("aiOrchestratorService", () => {
 
       expect(metadata.maxParallelWorkers).toBe(6);
       expect(autopilot.enabled).toBe(true);
-      expect(autopilot.executorKind).toBe("unified");
+      expect(autopilot.executorKind).toBe("opencode");
       expect(autopilot.parallelismCap).toBe(6);
     } finally {
       fixture.dispose();
@@ -1810,7 +1810,7 @@ describe("aiOrchestratorService", () => {
       const launched = await noRootService.startMissionRun({
         missionId: mission.id,
         runMode: "autopilot",
-        defaultExecutorKind: "unified"
+        defaultExecutorKind: "opencode"
       });
       expect(launched.started).toBeTruthy();
 
@@ -1846,12 +1846,12 @@ describe("aiOrchestratorService", () => {
         metadata: {
           autopilot: {
             enabled: true,
-            executorKind: "unified",
+            executorKind: "opencode",
             ownerId: "autopilot-owner",
             parallelismCap: 1
           }
         },
-        steps: [{ stepKey: "guarded-step", title: "Guarded step", stepIndex: 0, executorKind: "unified" }]
+        steps: [{ stepKey: "guarded-step", title: "Guarded step", stepIndex: 0, executorKind: "opencode" }]
       });
       fixture.db.run(`update orchestrator_runs set status = 'active', updated_at = ? where id = ?`, [new Date().toISOString(), started.run.id]);
       const step = fixture.orchestratorService.listSteps(started.run.id)[0];
@@ -1886,7 +1886,7 @@ describe("aiOrchestratorService", () => {
         metadata: {
           autopilot: {
             enabled: true,
-            executorKind: "unified",
+            executorKind: "opencode",
             ownerId: "autopilot-owner",
             parallelismCap: 1,
           },
@@ -2391,7 +2391,7 @@ describe("aiOrchestratorService", () => {
       fixture.db.run(
         `
           update orchestrator_attempts
-          set executor_kind = 'unified',
+          set executor_kind = 'opencode',
               executor_session_id = ?
           where id = ?
         `,
@@ -2456,7 +2456,7 @@ describe("aiOrchestratorService", () => {
       fixture.db.run(
         `
           update orchestrator_attempts
-          set executor_kind = 'unified',
+          set executor_kind = 'opencode',
               executor_session_id = ?
           where id = ?
         `,
@@ -2497,7 +2497,7 @@ describe("aiOrchestratorService", () => {
       const launched = await fixture.aiOrchestratorService.startMissionRun({
         missionId: mission.id,
         runMode: "autopilot",
-        defaultExecutorKind: "unified",
+        defaultExecutorKind: "opencode",
       });
       const runId = launched.started?.run.id;
       if (!runId) throw new Error("Expected mission run to start");
@@ -2576,7 +2576,7 @@ describe("aiOrchestratorService", () => {
       const launched = await fixture.aiOrchestratorService.startMissionRun({
         missionId: mission.id,
         runMode: "autopilot",
-        defaultExecutorKind: "unified",
+        defaultExecutorKind: "opencode",
       });
       const runId = launched.started?.run.id;
       if (!runId) throw new Error("Expected mission run to start");
@@ -2599,7 +2599,7 @@ describe("aiOrchestratorService", () => {
       fixture.db.run(
         `
           update orchestrator_attempts
-          set executor_kind = 'unified',
+          set executor_kind = 'opencode',
               executor_session_id = ?
           where id = ?
         `,
@@ -2899,7 +2899,7 @@ describe("aiOrchestratorService", () => {
       });
       const sessionId = "session-idle-hook-1";
       fixture.db.run(
-        `update orchestrator_attempts set executor_kind = 'unified', executor_session_id = ? where id = ?`,
+        `update orchestrator_attempts set executor_kind = 'opencode', executor_session_id = ? where id = ?`,
         [sessionId, attempt.id]
       );
       fixture.aiOrchestratorService.onOrchestratorRuntimeEvent({
@@ -3048,7 +3048,7 @@ describe("aiOrchestratorService", () => {
       fixture.db.run(
         `
           update orchestrator_attempts
-          set executor_kind = 'unified',
+          set executor_kind = 'opencode',
               started_at = ?,
               created_at = ?
           where id = ?
@@ -3146,7 +3146,7 @@ describe("aiOrchestratorService", () => {
       fixture.db.run(
         `
           update orchestrator_attempts
-          set executor_kind = 'unified',
+          set executor_kind = 'opencode',
               executor_session_id = ?,
               started_at = ?,
               created_at = ?
@@ -3242,7 +3242,7 @@ describe("aiOrchestratorService", () => {
       fixture.db.run(
         `
           update orchestrator_attempts
-          set executor_kind = 'unified',
+          set executor_kind = 'opencode',
               executor_session_id = ?,
               started_at = ?,
               created_at = ?
@@ -3735,7 +3735,7 @@ describe("aiOrchestratorService", () => {
       fixture.db.run(
         `
           update orchestrator_attempts
-          set executor_kind = 'unified',
+          set executor_kind = 'opencode',
               executor_session_id = ?
           where id = ?
         `,
@@ -3826,7 +3826,7 @@ describe("aiOrchestratorService", () => {
       fixture.db.run(
         `
           update orchestrator_attempts
-          set executor_kind = 'unified',
+          set executor_kind = 'opencode',
               executor_session_id = ?
           where id = ?
         `,
@@ -3926,7 +3926,7 @@ describe("aiOrchestratorService", () => {
       fixture.db.run(
         `
           update orchestrator_attempts
-          set executor_kind = 'unified',
+          set executor_kind = 'opencode',
               executor_session_id = ?
           where id = ?
         `,
@@ -4012,7 +4012,7 @@ describe("aiOrchestratorService", () => {
       fixture.db.run(
         `
           update orchestrator_attempts
-          set executor_kind = 'unified',
+          set executor_kind = 'opencode',
               executor_session_id = ?
           where id = ?
         `,
@@ -4111,7 +4111,7 @@ describe("aiOrchestratorService", () => {
       fixture.db.run(
         `
           update orchestrator_attempts
-          set executor_kind = 'unified',
+          set executor_kind = 'opencode',
               executor_session_id = ?
           where id = ?
         `,
@@ -4271,7 +4271,7 @@ describe("aiOrchestratorService", () => {
       fixture.db.run(
         `
           update orchestrator_attempts
-          set executor_kind = 'unified',
+          set executor_kind = 'opencode',
               executor_session_id = ?
           where id = ?
         `,
@@ -4374,7 +4374,7 @@ describe("aiOrchestratorService", () => {
       fixture.db.run(
         `
           update orchestrator_attempts
-          set executor_kind = 'unified',
+          set executor_kind = 'opencode',
               executor_session_id = ?
           where id = ?
         `,
@@ -4554,7 +4554,7 @@ describe("aiOrchestratorService", () => {
       fixture.db.run(
         `
           update orchestrator_attempts
-          set executor_kind = 'unified',
+          set executor_kind = 'opencode',
               executor_session_id = ?
           where id = ?
         `,
@@ -5567,7 +5567,7 @@ describe("aiOrchestratorService", () => {
         metadata: {
           autopilot: {
             enabled: true,
-            executorKind: "unified",
+            executorKind: "opencode",
             ownerId: "test-owner",
             parallelismCap: 2
           }
@@ -5590,7 +5590,7 @@ describe("aiOrchestratorService", () => {
       fixture.db.run(
         `
           update orchestrator_attempts
-          set executor_kind = 'unified',
+          set executor_kind = 'opencode',
               executor_session_id = ?
           where id = ?
         `,
@@ -6475,7 +6475,7 @@ describe("aiOrchestratorService", () => {
       fixture.db.run(
         `
           update orchestrator_attempts
-          set executor_kind = 'unified',
+          set executor_kind = 'opencode',
               executor_session_id = ?
           where id = ?
         `,
@@ -7304,11 +7304,11 @@ describe("aiOrchestratorService", () => {
       );
 
       fixture.orchestratorService.registerExecutorAdapter({
-        kind: "unified",
+        kind: "opencode",
         start: async () => ({
           status: "accepted" as const,
           sessionId,
-          metadata: { adapterKind: "unified" }
+          metadata: { adapterKind: "opencode" }
         })
       });
 
@@ -7320,7 +7320,7 @@ describe("aiOrchestratorService", () => {
       const launch = await fixture.aiOrchestratorService.startMissionRun({
         missionId: mission.id,
         runMode: "manual",
-        defaultExecutorKind: "unified"
+        defaultExecutorKind: "opencode"
       });
       if (!launch.started) throw new Error("Expected mission run to start");
       const runId = launch.started.run.id;
@@ -7352,7 +7352,7 @@ describe("aiOrchestratorService", () => {
         runId,
         stepId: readyStep.id,
         ownerId: "test-owner",
-        executorKind: "unified"
+        executorKind: "opencode"
       });
 
       // Verify the attempt is running before we backdate
@@ -7427,11 +7427,11 @@ describe("aiOrchestratorService", () => {
       );
 
       fixture.orchestratorService.registerExecutorAdapter({
-        kind: "unified",
+        kind: "opencode",
         start: async () => ({
           status: "accepted" as const,
           sessionId,
-          metadata: { adapterKind: "unified" }
+          metadata: { adapterKind: "opencode" }
         })
       });
 
@@ -7443,7 +7443,7 @@ describe("aiOrchestratorService", () => {
       const launch = await fixture.aiOrchestratorService.startMissionRun({
         missionId: mission.id,
         runMode: "manual",
-        defaultExecutorKind: "unified"
+        defaultExecutorKind: "opencode"
       });
       if (!launch.started) throw new Error("Expected mission run to start");
       const runId = launch.started.run.id;
@@ -7477,7 +7477,7 @@ describe("aiOrchestratorService", () => {
         runId,
         stepId: readyStep.id,
         ownerId: "test-owner",
-        executorKind: "unified"
+        executorKind: "opencode"
       });
 
       expect(attempt.status).toBe("running");

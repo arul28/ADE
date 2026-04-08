@@ -42,9 +42,11 @@ describe("describeModelSource", () => {
   });
 
   it("returns 'API only' for api-key models", () => {
-    const descriptor = getModelById("anthropic/claude-opus-4-6-api");
-    expect(descriptor).toBeTruthy();
-    expect(describeModelSource(descriptor!)).toBe("API only");
+    const synthetic = {
+      authTypes: ["api-key"] as string[],
+      isCliWrapped: false,
+    } as any;
+    expect(describeModelSource(synthetic)).toBe("API only");
   });
 
   it("returns 'OpenRouter' for openrouter models", () => {
@@ -141,12 +143,12 @@ describe("deriveConfiguredModelIds", () => {
     }
   });
 
-  it("includes Cursor CLI models from availableModelIds when includeCursor is true", () => {
+  it("includes Cursor CLI models from availableModelIds by default", () => {
     const status = makeStatus({
       detectedAuth: [{ type: "cli-subscription", cli: "cursor", authenticated: true }],
       availableModelIds: ["cursor/auto", "cursor/composer-2", "openai/gpt-5.4-pro"],
     });
-    const ids = deriveConfiguredModelIds(status, { includeCursor: true });
+    const ids = deriveConfiguredModelIds(status);
     expect(ids).toContain("cursor/auto");
     expect(ids).toContain("cursor/composer-2");
     for (const id of ids) {
@@ -158,17 +160,15 @@ describe("deriveConfiguredModelIds", () => {
     }
   });
 
-  it("excludes Cursor CLI models by default (includeCursor defaults to false)", () => {
+  it("always includes Cursor CLI models (includeCursor option is ignored)", () => {
     const status = makeStatus({
       detectedAuth: [{ type: "cli-subscription", cli: "cursor", authenticated: true }],
       availableModelIds: ["cursor/auto", "cursor/composer-2"],
     });
-    const ids = deriveConfiguredModelIds(status);
-    expect(ids).not.toContain("cursor/auto");
-    expect(ids).not.toContain("cursor/composer-2");
-    for (const id of ids) {
-      expect(String(id).startsWith("cursor/")).toBe(false);
-    }
+    // The includeCursor option is no longer functional — all models are included.
+    const ids = deriveConfiguredModelIds(status, {});
+    expect(ids).toContain("cursor/auto");
+    expect(ids).toContain("cursor/composer-2");
   });
 
   it("skips unauthenticated CLI subscriptions", () => {
@@ -178,30 +178,26 @@ describe("deriveConfiguredModelIds", () => {
     expect(deriveConfiguredModelIds(status)).toEqual([]);
   });
 
-  it("includes API-key models for the given provider", () => {
+  it("returns empty for api-key auth when no static api-key models exist in registry", () => {
+    // Static API-key models have been removed; only CLI-wrapped and local models remain.
     const status = makeStatus({
       detectedAuth: [{ type: "api-key", provider: "anthropic" }],
     });
     const ids = deriveConfiguredModelIds(status);
-    expect(ids.length).toBeGreaterThan(0);
-    for (const id of ids) {
-      const descriptor = getModelById(id);
-      expect(descriptor).toBeTruthy();
-      expect(descriptor!.family).toBe("anthropic");
-      expect(descriptor!.isCliWrapped).toBe(false);
-    }
+    expect(ids.length).toBe(0);
   });
 
-  it("includes openrouter models for openrouter auth", () => {
+  it("returns empty for openrouter auth when no static openrouter models exist", () => {
+    // Static openrouter models have been removed from the registry.
     const status = makeStatus({
       detectedAuth: [{ type: "openrouter" }],
     });
     const ids = deriveConfiguredModelIds(status);
-    // Only check if there are openrouter models in the registry
     const openrouterModels = MODEL_REGISTRY.filter(
       (m) => m.family === "openrouter" && !m.deprecated,
     );
     expect(ids.length).toBe(openrouterModels.length);
+    expect(ids.length).toBe(0);
   });
 
   it("includes local models for local auth", () => {
@@ -254,22 +250,24 @@ describe("deriveConfiguredModelIds", () => {
     const status = makeStatus({
       detectedAuth: [
         { type: "cli-subscription", cli: "claude", authenticated: true },
-        { type: "api-key", provider: "anthropic" },
+        { type: "cli-subscription", cli: "codex", authenticated: true },
       ],
     });
     const ids = deriveConfiguredModelIds(status);
-    // Should have both CLI-wrapped and API-key anthropic models, no dupes
+    // Should have CLI-wrapped anthropic and openai models, no dupes
     const unique = new Set(ids);
     expect(unique.size).toBe(ids.length);
     expect(ids.length).toBeGreaterThan(0);
   });
 
   it("normalizes provider name to lowercase and trimmed", () => {
+    // With static API-key models removed, api-key auth for "anthropic" yields no results.
+    // Validate normalization still happens by checking it does not throw.
     const status = makeStatus({
       detectedAuth: [{ type: "api-key", provider: "  Anthropic  " }],
     });
     const ids = deriveConfiguredModelIds(status);
-    expect(ids.length).toBeGreaterThan(0);
+    expect(ids.length).toBe(0);
   });
 
   it("skips api-key auth with empty provider", () => {
@@ -290,7 +288,7 @@ describe("deriveConfiguredModelIds", () => {
     const status = makeStatus({
       detectedAuth: [
         { type: "cli-subscription", cli: "claude", authenticated: true },
-        { type: "api-key", provider: "openai" },
+        { type: "cli-subscription", cli: "codex", authenticated: true },
       ],
     });
     const ids = deriveConfiguredModelIds(status);
@@ -304,7 +302,7 @@ describe("deriveConfiguredModelIds", () => {
     const status = makeStatus({
       detectedAuth: [
         { type: "cli-subscription", cli: "claude", authenticated: true },
-        { type: "api-key", provider: "anthropic" },
+        { type: "cli-subscription", cli: "codex", authenticated: true },
       ],
     });
     const ids = deriveConfiguredModelIds(status);

@@ -210,7 +210,7 @@ export async function createAdeMcpRuntime(args: { projectRoot: string; workspace
   const sessionService = createSessionService({ db });
   sessionService.reconcileStaleRunningSessions({
     status: "disposed",
-    excludeToolTypes: ["claude-chat", "codex-chat", "ai-chat", "cursor"],
+    excludeToolTypes: ["claude-chat", "codex-chat", "opencode-chat", "cursor"],
   });
 
   const projectConfigService = createProjectConfigService({

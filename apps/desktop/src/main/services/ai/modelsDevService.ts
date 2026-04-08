@@ -89,13 +89,9 @@ function parseApiResponse(data: ModelsDevApiResponse): Map<string, ModelsDevMode
   const result = new Map<string, ModelsDevModelData>();
 
   const parseEntry = (entry: ModelsDevApiEntry, fallbackId?: string): void => {
-    const modelId = typeof entry.id === "string" && entry.id.trim().length
-      ? entry.id.trim()
-      : typeof entry.name === "string" && entry.name.trim().length
-        ? entry.name.trim()
-        : typeof fallbackId === "string" && fallbackId.trim().length
-          ? fallbackId.trim()
-          : "";
+    const modelId = [entry.id, entry.name, fallbackId]
+      .find((candidate): candidate is string => typeof candidate === "string" && candidate.trim().length > 0)
+      ?.trim() ?? "";
     if (!modelId.length) return;
 
     const parsed: ModelsDevModelData = {};
@@ -142,13 +138,12 @@ function parseApiResponse(data: ModelsDevApiResponse): Map<string, ModelsDevMode
       parsed.toolCall = supportsTools;
     }
 
-    const supportsVision = typeof entry.vision === "boolean"
-      ? entry.vision
-      : typeof entry.supports_vision === "boolean"
-        ? entry.supports_vision
-        : (entry.modalities?.image?.input === true || entry.modalities?.image?.output === true);
-    if (typeof supportsVision === "boolean") {
-      parsed.vision = supportsVision;
+    if (typeof entry.vision === "boolean") {
+      parsed.vision = entry.vision;
+    } else if (typeof entry.supports_vision === "boolean") {
+      parsed.vision = entry.supports_vision;
+    } else if (entry.modalities?.image?.input === true || entry.modalities?.image?.output === true) {
+      parsed.vision = true;
     }
 
     result.set(modelId, parsed);
@@ -259,14 +254,14 @@ export async function initialize(): Promise<Map<string, ModelsDevModelData>> {
   return modelDataMap;
 }
 
-/** Get model data by sdkModelId. Returns undefined if not found. */
-export function getModelData(sdkModelId: string): ModelsDevModelData | undefined {
-  return modelDataMap.get(sdkModelId);
+/** Get model data by providerModelId. Returns undefined if not found. */
+export function getModelData(providerModelId: string): ModelsDevModelData | undefined {
+  return modelDataMap.get(providerModelId);
 }
 
-/** Get pricing for a model by sdkModelId. Returns undefined if not available. */
-export function getPricing(sdkModelId: string): { input: number; output: number } | undefined {
-  return modelDataMap.get(sdkModelId)?.cost;
+/** Get pricing for a model by providerModelId. Returns undefined if not available. */
+export function getPricing(providerModelId: string): { input: number; output: number } | undefined {
+  return modelDataMap.get(providerModelId)?.cost;
 }
 
 /** Whether the service has been initialized. */

@@ -81,7 +81,7 @@ import { createBatchConsolidationService } from "./services/memory/batchConsolid
 import { createEmbeddingService } from "./services/memory/embeddingService";
 import { createEmbeddingWorkerService } from "./services/memory/embeddingWorkerService";
 import { createHybridSearchService } from "./services/memory/hybridSearchService";
-import { createUnifiedMemoryService } from "./services/memory/unifiedMemoryService";
+import { createMemoryService } from "./services/memory/memoryService";
 import { createProjectMemoryFilesService } from "./services/memory/memoryFilesService";
 import { createMemoryLifecycleService } from "./services/memory/memoryLifecycleService";
 import { createMemoryBriefingService } from "./services/memory/memoryBriefingService";
@@ -207,11 +207,14 @@ async function createWindow(logger?: Logger): Promise<BrowserWindow> {
   const iconDir = path.join(__dirname, "../../build");
   const pngPath = path.join(iconDir, "icon.png");
   const icnsPath = path.join(iconDir, "icon.icns");
-  const icon = fs.existsSync(pngPath)
-    ? nativeImage.createFromPath(pngPath)
-    : fs.existsSync(icnsPath)
-      ? nativeImage.createFromPath(icnsPath)
-      : nativeImage.createEmpty();
+  let icon: Electron.NativeImage;
+  if (fs.existsSync(pngPath)) {
+    icon = nativeImage.createFromPath(pngPath);
+  } else if (fs.existsSync(icnsPath)) {
+    icon = nativeImage.createFromPath(icnsPath);
+  } else {
+    icon = nativeImage.createEmpty();
+  }
 
   const win = new BrowserWindow({
     width: 1280,
@@ -900,7 +903,7 @@ app.whenReady().then(async () => {
     const sessionService = createSessionService({ db });
     const reconciledSessions = sessionService.reconcileStaleRunningSessions({
       status: "disposed",
-      excludeToolTypes: ["claude-chat", "codex-chat", "ai-chat", "cursor"],
+      excludeToolTypes: ["claude-chat", "codex-chat", "opencode-chat", "cursor"],
     });
     if (reconciledSessions > 0) {
       logger.warn("sessions.reconciled_stale_running", {
@@ -1356,7 +1359,7 @@ app.whenReady().then(async () => {
         }
       }, 2_000);
     };
-    const memoryService = createUnifiedMemoryService(db, {
+    const memoryService = createMemoryService(db, {
       hybridSearchService,
       onMemoryMutated: () => {
         batchConsolidationServiceRef?.scheduleAutoConsolidationCheck();
@@ -3234,6 +3237,11 @@ app.whenReady().then(async () => {
     const current = getActiveContext();
     const previousRoot = current.project?.rootPath;
     current.logger.info("app.before_quit");
+    // Kill the shared OpenCode inventory server before quitting
+    try {
+      const { shutdownInventoryServer } = require("./services/opencode/openCodeInventory");
+      shutdownInventoryServer();
+    } catch { /* ignore if module not loaded */ }
     setActiveProject(null);
     dormantContext = createDormantProjectContext(previousRoot);
     void closeAllProjectContexts()

@@ -11,16 +11,18 @@ import type {
   AiRuntimeConnectionStatus,
 } from "../../../shared/types";
 import {
-  createDynamicLocalModelDescriptor,
+  decodeOpenCodeRegistryId,
   getDefaultModelDescriptor,
   getModelById,
   getAvailableModels,
   getLocalProviderDefaultEndpoint,
+  isLocalProviderFamily,
   listModelDescriptorsForProvider,
   LOCAL_PROVIDER_LABELS,
-  replaceDynamicLocalModelDescriptors,
+  replaceDynamicOpenCodeModelDescriptors,
   resolveModelAlias,
   enrichModelRegistry,
+  resolveProviderGroupForModel,
   type LocalProviderFamily,
 } from "../../../shared/modelRegistry";
 import {
@@ -31,19 +33,27 @@ import {
   type DetectedAuth,
   type CliAuthStatus,
 } from "./authDetector";
-import { executeUnified, resumeUnified } from "./unifiedExecutor";
+import {
+  clearOpenCodeInventoryCache,
+  peekOpenCodeInventoryCache,
+  probeOpenCodeProviderInventory,
+} from "../opencode/openCodeInventory";
+import { resolveOpenCodeExecutablePath, type DiscoveredLocalModelEntry } from "../opencode/openCodeRuntime";
+import { resolveOpenCodeBinary, type OpenCodeBinarySource } from "../opencode/openCodeBinaryManager";
 import { initialize as initModelsDevService } from "./modelsDevService";
 import { updateModelPricing } from "../../../shared/modelProfiles";
 import { isRecord } from "../shared/utils";
+import { parseStructuredOutput } from "./utils";
 import { getApiKeyStoreStatus } from "./apiKeyStore";
 import type { createMemoryService } from "../memory/memoryService";
 import type { CompactionFlushService } from "../memory/compactionFlushService";
-import { discoverLocalModels, inspectLocalProvider } from "./localModelDiscovery";
+import { inspectLocalProvider } from "./localModelDiscovery";
 import { discoverCursorCliModelDescriptors, clearCursorCliModelsCache } from "../chat/cursorModelsDiscovery";
 import { resolveCursorAgentExecutable } from "./cursorAgentExecutable";
 import { buildProviderConnections } from "./providerConnectionStatus";
 import { getProviderRuntimeHealthVersion, resetProviderRuntimeHealth } from "./providerRuntimeHealth";
 import { probeClaudeRuntimeHealth, resetClaudeRuntimeProbeCache } from "./claudeRuntimeProbe";
+import { runProviderTask } from "./providerTaskRunner";
 
 export type AiTaskType =
   | "planning"
@@ -98,6 +108,14 @@ export type AiIntegrationStatus = {
   providerConnections?: AiProviderConnections;
   runtimeConnections?: AiRuntimeConnections;
   availableModelIds?: string[];
+  /** True when the `opencode` CLI is on PATH (ADE still spawns the OpenCode server via the SDK). */
+  opencodeBinaryInstalled?: boolean;
+  /** Where the resolved `opencode` binary came from ("user-installed", "bundled", or "missing"). */
+  opencodeBinarySource?: OpenCodeBinarySource;
+  /** Last inventory probe error, if any (empty models when set after a failed probe). */
+  opencodeInventoryError?: string | null;
+  /** All providers reported by OpenCode's provider.list() — used to dynamically populate the settings UI and model picker. */
+  opencodeProviders?: Array<{ id: string; name: string; connected: boolean; modelCount: number }>;
   apiKeyStore?: {
     secureStorageAvailable: boolean;
     legacyPlaintextDetected: boolean;
@@ -235,26 +253,6 @@ function toJsonPreview(value: unknown, maxChars = 800): string | null {
   }
 }
 
-function resolveUnifiedToolMode(args: {
-  feature: AiFeatureKey;
-  taskType: AiTaskType;
-  permissionMode?: ExecutorOpts["permissions"]["mode"];
-}): "planning" | "coding" | "none" {
-  if (args.taskType === "mission_planning") {
-    return "planning";
-  }
-  if (args.taskType === "initial_context") {
-    return "none";
-  }
-  if (args.feature === "orchestrator" && args.permissionMode === "read-only") {
-    return "planning";
-  }
-  if (args.permissionMode === "read-only") {
-    return "none";
-  }
-  return "coding";
-}
-
 function startOfDayIso(now = new Date()): string {
   const utc = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 0, 0, 0, 0);
   return new Date(utc).toISOString();
@@ -285,7 +283,7 @@ function extractConfiguredLocalProviders(
   const localProvidersRaw = isRecord(aiConfig.localProviders) ? aiConfig.localProviders : {};
   const out: AiLocalProviderConfigs = {};
 
-  for (const provider of ["ollama", "lmstudio", "vllm"] as const) {
+  for (const provider of ["ollama", "lmstudio"] as const) {
     const raw = isRecord(localProvidersRaw[provider]) ? localProvidersRaw[provider] : null;
     if (!raw) continue;
     const entry: NonNullable<AiLocalProviderConfigs[typeof provider]> = {};
@@ -394,7 +392,6 @@ function apiProviderLabel(provider: string): string {
     openrouter: "OpenRouter",
     ollama: "Ollama",
     lmstudio: "LM Studio",
-    vllm: "vLLM",
   };
   return labels[provider] ?? provider;
 }
@@ -445,7 +442,9 @@ function createLocalRuntimeConnectionFromInspection(args: {
   checkedAt: string;
 }): AiRuntimeConnectionStatus {
   const label = LOCAL_PROVIDER_LABELS[args.provider];
-  const loadedModelIds = args.inspection.loadedModels.map((model) => `${args.provider}/${model.modelId}`);
+  const loadedModelIds = args.inspection.loadedModels
+    .filter((model) => model.loaded !== false)
+    .map((model) => `${args.provider}/${model.modelId}`);
   let blocker: string | null = null;
   if (args.inspection.health === "reachable_no_models") {
     blocker = `${label} is reachable, but no models are currently loaded.`;
@@ -622,7 +621,7 @@ async function buildRuntimeConnections(args: {
     }
   }
 
-  for (const provider of ["ollama", "lmstudio", "vllm"] as const) {
+  for (const provider of ["ollama", "lmstudio"] as const) {
     runtimeConnections[provider] = await buildLocalRuntimeConnection({
       provider,
       configuredLocalProviders: args.configuredLocalProviders,
@@ -632,6 +631,21 @@ async function buildRuntimeConnections(args: {
   }
 
   return runtimeConnections;
+}
+
+const LOCAL_FAMILIES = new Set<string>(["ollama", "lmstudio"]);
+
+function extractDiscoveredLocalModels(connections: AiRuntimeConnections): DiscoveredLocalModelEntry[] {
+  const entries: DiscoveredLocalModelEntry[] = [];
+  for (const [provider, conn] of Object.entries(connections)) {
+    if (!LOCAL_FAMILIES.has(provider) || !conn.loadedModelIds?.length) continue;
+    for (const fullId of conn.loadedModelIds) {
+      const slash = fullId.indexOf("/");
+      const modelId = slash > 0 ? fullId.slice(slash + 1) : fullId;
+      entries.push({ provider: provider as LocalProviderFamily, modelId });
+    }
+  }
+  return entries;
 }
 
 export function createAiIntegrationService(args: {
@@ -730,20 +744,8 @@ export function createAiIntegrationService(args: {
   };
 
   const getResolvedAvailableModels = async (auth: DetectedAuth[]) => {
-    const discoveredLocalModels = await discoverLocalModels(auth);
-    replaceDynamicLocalModelDescriptors(
-      discoveredLocalModels.map((model) =>
-        createDynamicLocalModelDescriptor(model.provider, model.modelId, {
-          ...(model.displayName ? { displayName: model.displayName } : {}),
-          ...(model.contextWindow ? { contextWindow: model.contextWindow } : {}),
-          ...(model.maxOutputTokens ? { maxOutputTokens: model.maxOutputTokens } : {}),
-          ...(model.capabilities ? { capabilities: model.capabilities } : {}),
-          ...(model.reasoningTiers?.length ? { reasoningTiers: model.reasoningTiers } : {}),
-          ...(model.harnessProfile ? { harnessProfile: model.harnessProfile } : {}),
-          ...(model.discoverySource ? { discoverySource: model.discoverySource } : {}),
-        }),
-      ),
-    );
+    // Local model discovery is handled by OpenCode via probeOpenCodeProviderInventory
+    // which populates dynamic OpenCode descriptors (including local providers).
 
     let available = getAvailableModels(auth);
 
@@ -953,92 +955,56 @@ export function createAiIntegrationService(args: {
     return available[0].id;
   };
 
-  const consumeEventStream = async (
-    stream: AsyncIterable<{ type: string; [key: string]: unknown }>,
-    feature: AiFeatureKey,
-    modelId: string,
-  ): Promise<ExecuteAiTaskResult> => {
-    const start = Date.now();
-    let text = "";
-    let structuredOutput: unknown = null;
-    let sessionId: string | null = null;
-    let inputTokens: number | null = null;
-    let outputTokens: number | null = null;
-    let model: string | null = null;
-
-    for await (const event of stream) {
-      if (event.type === "text") text += event.content;
-      if (event.type === "structured_output") structuredOutput = event.data;
-      if (event.type === "done") {
-        sessionId = event.sessionId as string | null;
-        inputTokens = (event.usage as { inputTokens?: number })?.inputTokens ?? null;
-        outputTokens = (event.usage as { outputTokens?: number })?.outputTokens ?? null;
-        model = (event.model as string) ?? null;
-      }
-      if (event.type === "error") throw new Error(event.message as string);
-    }
-
-    const durationMs = Date.now() - start;
-    const descriptor = getModelById(modelId);
-
-    logUsage({
-      feature,
-      provider: (descriptor?.family ?? "unknown") as AgentProvider,
-      model,
-      inputTokens,
-      outputTokens,
-      durationMs,
-      success: true,
-      sessionId
-    });
-
-    return {
-      text,
-      structuredOutput,
-      provider: (descriptor?.family ?? "unknown") as AgentProvider,
-      model,
-      sessionId,
-      inputTokens,
-      outputTokens,
-      durationMs
-    };
-  };
-
-  const executeViaUnifiedPath = async (
+  const executeProviderTaskPath = async (
     args: ExecuteAiTaskArgs,
     auth?: DetectedAuth[],
   ): Promise<ExecuteAiTaskResult> => {
     const modelId = args.model;
-    if (!modelId) throw new Error("model is required for unified execution path");
+    if (!modelId) throw new Error("model is required for provider task execution");
+    const descriptor = getModelById(modelId) ?? resolveModelAlias(modelId);
+    if (!descriptor) {
+      throw new Error(`Unknown model '${modelId}'.`);
+    }
 
-    const hasFullRunContext = args.projectId && args.runId && args.stepId && args.attemptId;
-
-    return consumeEventStream(
-      executeUnified({
-        modelId,
-        prompt: args.prompt,
-        system: args.systemPrompt,
-        cwd: args.cwd,
-        auth,
-        tools: resolveUnifiedToolMode({
-          feature: args.feature,
-          taskType: args.taskType,
-          permissionMode: args.permissionMode,
-        }),
-        timeout: args.timeoutMs,
-        jsonSchema: args.jsonSchema,
-        reasoningEffort: args.reasoningEffort,
-        projectId: args.projectId,
-        runId: args.runId,
-        stepId: args.stepId,
-        attemptId: args.attemptId,
-        ...(hasFullRunContext ? { db, enableCompaction: true } : {}),
-        ...(compactionFlushService ? { compactionFlushService } : {}),
-        ...(args.memoryService ? { memoryService: args.memoryService } : {}),
-      }),
-      args.feature,
-      modelId,
-    );
+    const start = Date.now();
+    const result = await runProviderTask({
+      cwd: args.cwd,
+      descriptor,
+      auth,
+      prompt: args.prompt,
+      system: args.systemPrompt,
+      timeoutMs: args.timeoutMs,
+      jsonSchema: args.jsonSchema,
+      permissionMode: args.permissionMode,
+      feature: args.feature,
+      sessionId: args.sessionId,
+      projectConfig: projectConfigService.get().effective,
+    });
+    const durationMs = Date.now() - start;
+    const provider = resolveProviderGroupForModel(descriptor) as AgentProvider;
+    const structuredOutput = result.structuredOutput ?? (args.jsonSchema ? parseStructuredOutput(result.text) : null);
+    const inputTokens = result.inputTokens ?? null;
+    const outputTokens = result.outputTokens ?? null;
+    logUsage({
+      feature: args.feature,
+      provider,
+      model: descriptor.id,
+      inputTokens,
+      outputTokens,
+      durationMs,
+      success: true,
+      sessionId: result.sessionId,
+    });
+    return {
+      text: result.text,
+      structuredOutput,
+      provider,
+      model: descriptor.id,
+      sessionId: result.sessionId,
+      inputTokens,
+      outputTokens,
+      durationMs,
+    };
   };
 
   const executeTask = async (args: ExecuteAiTaskArgs): Promise<ExecuteAiTaskResult> => {
@@ -1087,7 +1053,7 @@ export function createAiIntegrationService(args: {
     });
 
     try {
-      const result = await executeViaUnifiedPath({
+      const result = await executeProviderTaskPath({
         ...args,
         model: resolvedModelId,
       }, auth);
@@ -1191,11 +1157,12 @@ export function createAiIntegrationService(args: {
   return {
     getMode,
 
-    getStatus: async (options?: { force?: boolean }): Promise<AiIntegrationStatus> => {
+    getStatus: async (options?: { force?: boolean; refreshOpenCodeInventory?: boolean }): Promise<AiIntegrationStatus> => {
       const now = Date.now();
       let runtimeHealthVersion = getProviderRuntimeHealthVersion();
       if (
         !options?.force
+        && options?.refreshOpenCodeInventory !== true
         && statusCache
         && statusCache.runtimeHealthVersion === runtimeHealthVersion
         && now - statusCache.cachedAt < STATUS_CACHE_TTL_MS
@@ -1243,6 +1210,71 @@ export function createAiIntegrationService(args: {
         if (descriptor.family === "cursor") return providerConnections.cursor.runtimeAvailable;
         return true;
       });
+
+      const opencodeBinaryInfo = resolveOpenCodeBinary();
+      const opencodeBinaryInstalled = Boolean(opencodeBinaryInfo.path);
+      const opencodeBinarySource = opencodeBinaryInfo.source;
+      let opencodeInventoryError: string | null = null;
+      let opencodeModelIds: string[] = [];
+      let opencodeProviders: AiIntegrationStatus["opencodeProviders"] = [];
+      const effectiveConfig = projectConfigService.get().effective;
+      // Extract discovered local models from runtime connections so we can
+      // inject them into the OpenCode provider config.  This bridges ADE's
+      // local model discovery (LM Studio /v1/models, Ollama /api/tags, etc.)
+      // with OpenCode's static provider model list.
+      const discoveredLocalModels = extractDiscoveredLocalModels(runtimeConnections);
+      if (!opencodeBinaryInstalled) {
+        clearOpenCodeInventoryCache();
+        replaceDynamicOpenCodeModelDescriptors([]);
+      } else if (options?.refreshOpenCodeInventory === true) {
+        const probed = await probeOpenCodeProviderInventory({
+          projectRoot,
+          projectConfig: effectiveConfig,
+          logger,
+          force: true,
+          discoveredLocalModels,
+        });
+        opencodeInventoryError = probed.error;
+        opencodeModelIds = probed.modelIds;
+        opencodeProviders = probed.providers;
+      } else {
+        const peeked = peekOpenCodeInventoryCache({
+          projectRoot,
+          projectConfig: effectiveConfig,
+        });
+        if (peeked) {
+          opencodeInventoryError = peeked.error;
+          opencodeModelIds = peeked.modelIds;
+          opencodeProviders = peeked.providers;
+        } else {
+          // No cache yet — auto-probe on first getStatus so free/connected models appear immediately.
+          const probed = await probeOpenCodeProviderInventory({
+            projectRoot,
+            projectConfig: effectiveConfig,
+            logger,
+            discoveredLocalModels,
+          });
+          opencodeInventoryError = probed.error;
+          opencodeModelIds = probed.modelIds;
+          opencodeProviders = probed.providers;
+        }
+      }
+
+      // When OpenCode inventory has models for a local provider, remove the
+      // duplicate ADE-discovered entries (e.g. "lmstudio/qwen3.5-9b") to avoid
+      // showing the same model twice with different display names.
+      const opencodeLocalModelIds = new Set<string>();
+      for (const ocId of opencodeModelIds) {
+        const decoded = decodeOpenCodeRegistryId(ocId);
+        if (decoded && isLocalProviderFamily(decoded.openCodeProviderId)) {
+          opencodeLocalModelIds.add(`${decoded.openCodeProviderId}/${decoded.openCodeModelId}`);
+        }
+      }
+      const baseAvailableIds = runtimeFilteredAvailable
+        .map((descriptor) => descriptor.id)
+        .filter((id) => !opencodeLocalModelIds.has(id));
+      const mergedAvailableIds = [...new Set([...baseAvailableIds, ...opencodeModelIds])];
+
       const result: AiIntegrationStatus = {
         mode: deriveMode({ snapshot: projectConfigService.get(), auth, providerConnections }),
         availableProviders: availability,
@@ -1254,7 +1286,11 @@ export function createAiIntegrationService(args: {
         detectedAuth: redactDetectedAuth(auth, cliStatuses),
         providerConnections,
         runtimeConnections,
-        availableModelIds: runtimeFilteredAvailable.map((descriptor) => descriptor.id),
+        availableModelIds: mergedAvailableIds,
+        opencodeBinaryInstalled,
+        opencodeBinarySource,
+        opencodeInventoryError,
+        opencodeProviders,
         apiKeyStore: getApiKeyStoreStatus(),
       };
       statusCache = { result, cachedAt: Date.now(), runtimeHealthVersion };
@@ -1280,10 +1316,8 @@ export function createAiIntegrationService(args: {
     getAvailability: getAvailabilitySync,
     verifyApiKeyConnection,
 
-    // New unified methods
     getAvailabilityAsync,
     resolveModelForTask,
-    executeViaUnified: executeViaUnifiedPath,
     setCompactionFlushService(service: CompactionFlushService | null) {
       compactionFlushService = service;
     },
@@ -1404,44 +1438,6 @@ export function createAiIntegrationService(args: {
         permissionMode: "read-only",
         oneShot: true
       });
-    },
-
-    async resumeTask(args: {
-      previousAttemptId: string;
-      feature: AiFeatureKey;
-      taskType: AiTaskType;
-      prompt: string;
-      cwd: string;
-      model?: string;
-      timeoutMs?: number;
-      projectId?: string;
-      attemptId?: string;
-      runId?: string;
-      stepId?: string;
-    }): Promise<ExecuteAiTaskResult> {
-      const auth = await detectAuth();
-      const modelId = await resolveModelForTask(args.taskType, args.model, auth);
-
-      return consumeEventStream(
-        resumeUnified({
-          modelId,
-          prompt: args.prompt,
-          cwd: args.cwd,
-          auth,
-          timeout: args.timeoutMs,
-          tools: "coding",
-          previousAttemptId: args.previousAttemptId,
-          db,
-          projectId: args.projectId,
-          attemptId: args.attemptId,
-          runId: args.runId,
-          stepId: args.stepId,
-          enableCompaction: true,
-          ...(compactionFlushService ? { compactionFlushService } : {}),
-        }),
-        args.feature,
-        modelId,
-      );
     }
   };
 }

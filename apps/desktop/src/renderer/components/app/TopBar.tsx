@@ -286,7 +286,10 @@ export function TopBar() {
               const isRelocating = relocatingPath === rp.rootPath;
               const isDragging = dragIdx === idx;
               const isDropTarget = dropIdx === idx && dragIdx !== idx;
-              const projectTabState = isRelocating ? "open" : isMissing ? "missing" : (isCurrent && !isNewTabOpen) ? "active" : undefined;
+              let projectTabState: string | undefined;
+              if (isRelocating) projectTabState = "open";
+              else if (isMissing) projectTabState = "missing";
+              else if (isCurrent) projectTabState = "active";
               const indicator = terminalAttention?.indicator;
               return (
                 <div

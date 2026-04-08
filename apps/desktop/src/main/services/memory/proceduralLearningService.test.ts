@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { openKvDb } from "../state/kvDb";
-import { createUnifiedMemoryService } from "./unifiedMemoryService";
+import { createMemoryService } from "./memoryService";
 import { createProceduralLearningService } from "./proceduralLearningService";
 
 function createLogger() {
@@ -26,7 +26,7 @@ async function createFixture() {
     [projectId, root, "ADE", "main", now, now],
   );
 
-  const memoryService = createUnifiedMemoryService(db);
+  const memoryService = createMemoryService(db);
 
   return { db, projectId, root, memoryService };
 }
@@ -68,7 +68,7 @@ function makeHumanReadableEpisodeContent(overrides: Record<string, unknown> = {}
 }
 
 function addEpisodeMemory(
-  memoryService: ReturnType<typeof createUnifiedMemoryService>,
+  memoryService: ReturnType<typeof createMemoryService>,
   projectId: string,
   overrides: Record<string, unknown> = {},
   opts: { sourceId?: string } = {},

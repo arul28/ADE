@@ -328,7 +328,7 @@ describe("missionPreflightService", () => {
           }
         },
         permissionConfig: {
-          providers: { claude: "full-auto", codex: "full-auto", unified: "full-auto" },
+          providers: { claude: "full-auto", codex: "full-auto", opencode: "full-auto" },
         },
       }
     });

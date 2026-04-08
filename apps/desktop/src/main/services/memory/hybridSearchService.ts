@@ -5,8 +5,8 @@ import type {
   MemoryImportance,
   MemoryStatus,
   MemoryTier,
-  UnifiedMemoryScope,
-} from "./unifiedMemoryService";
+  MemoryScope,
+} from "./memoryService";
 
 const BM25_K1 = 1.2;
 const BM25_B = 0.75;
@@ -22,7 +22,7 @@ type HybridSearchRow = Record<string, unknown> & {
 type SearchHybridOpts = {
   projectId: string;
   query: string;
-  scope?: UnifiedMemoryScope;
+  scope?: MemoryScope;
   scopeOwnerId?: string | null;
   limit?: number;
   status?: MemoryStatus | ReadonlyArray<MemoryStatus>;
@@ -105,7 +105,7 @@ function mapMemoryRow(row: Record<string, unknown>): Memory {
   return {
     id: String(row.id ?? ""),
     projectId: String(row.project_id ?? ""),
-    scope: String(row.scope ?? "project") as UnifiedMemoryScope,
+    scope: String(row.scope ?? "project") as MemoryScope,
     scopeOwnerId: row.scope_owner_id ? String(row.scope_owner_id) : null,
     tier,
     category: String(row.category ?? "fact") as Memory["category"],

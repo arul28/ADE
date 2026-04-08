@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from "react";
-import type { GroupedMissionArtifacts, UnifiedMissionArtifact } from "./missionControlViewModel";
+import type { GroupedMissionArtifacts, MissionArtifactRecord } from "./missionControlViewModel";
 import type { ComputerUseOwnerSnapshot, MissionCloseoutRequirement } from "../../../shared/types";
 import { COLORS, MONO_FONT, outlineButton } from "../lanes/laneDesignTokens";
 import { MissionComputerUsePanel } from "./MissionComputerUsePanel";
@@ -47,7 +47,7 @@ function friendlyRequirementStatus(requirement: MissionCloseoutRequirement): {
   return { label: "Missing", color: COLORS.warning };
 }
 
-function ArtifactPreview({ artifact }: { artifact: UnifiedMissionArtifact | null }) {
+function ArtifactPreview({ artifact }: { artifact: MissionArtifactRecord | null }) {
   if (!artifact) {
     return (
       <div className="p-4 text-[11px]" style={{ background: COLORS.cardBg, border: `1px solid ${COLORS.border}`, color: COLORS.textMuted }}>

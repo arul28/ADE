@@ -766,7 +766,7 @@ describe("orchestrator smoke", () => {
           name: "Build health API route",
           description: "Implement GET /api/health with version and timestamp payload.",
           taskType: "code",
-          executorHint: "unified",
+          executorHint: "opencode",
           preferredScope: "lane",
           requiresContextProfiles: ["deterministic"],
           dependencies: [],
@@ -781,7 +781,7 @@ describe("orchestrator smoke", () => {
           name: "Harden watchdog recovery",
           description: "Improve stall detection and recovery path instrumentation for mission workers.",
           taskType: "code",
-          executorHint: "unified",
+          executorHint: "opencode",
           preferredScope: "lane",
           requiresContextProfiles: ["deterministic"],
           dependencies: [],
@@ -796,7 +796,7 @@ describe("orchestrator smoke", () => {
           name: "Add mission telemetry panel UI",
           description: "Expose run/step/worker telemetry in mission detail panel.",
           taskType: "code",
-          executorHint: "unified",
+          executorHint: "opencode",
           preferredScope: "lane",
           requiresContextProfiles: ["deterministic"],
           dependencies: [],
@@ -811,7 +811,7 @@ describe("orchestrator smoke", () => {
           name: "Integrate contracts and orchestration data model",
           description: "Validate interface compatibility across API, runtime, and UI changes.",
           taskType: "integration",
-          executorHint: "unified",
+          executorHint: "opencode",
           preferredScope: "lane",
           requiresContextProfiles: ["deterministic"],
           dependencies: ["api-health-route", "runtime-watchdog-hardening", "ui-telemetry-panel"],
@@ -826,7 +826,7 @@ describe("orchestrator smoke", () => {
           name: "Update docs and README",
           description: "Document new endpoint and orchestration behavior updates.",
           taskType: "docs",
-          executorHint: "unified",
+          executorHint: "opencode",
           preferredScope: "lane",
           requiresContextProfiles: ["deterministic"],
           dependencies: ["integration-contract-check"],
@@ -841,7 +841,7 @@ describe("orchestrator smoke", () => {
           name: "Execute endpoint and orchestration test matrix",
           description: "Run targeted tests across API, orchestrator, and mission UI modules.",
           taskType: "test",
-          executorHint: "unified",
+          executorHint: "opencode",
           preferredScope: "lane",
           requiresContextProfiles: ["deterministic"],
           dependencies: ["integration-contract-check"],
@@ -856,7 +856,7 @@ describe("orchestrator smoke", () => {
           name: "Perform rollback and risk sanity check",
           description: "Verify rollback path and capture edge-case risk notes.",
           taskType: "analysis",
-          executorHint: "unified",
+          executorHint: "opencode",
           preferredScope: "lane",
           requiresContextProfiles: ["deterministic"],
           dependencies: ["integration-contract-check"],
@@ -871,7 +871,7 @@ describe("orchestrator smoke", () => {
           name: "Finalize review gate",
           description: "Validate regressions, edge cases, and code quality before mission closeout.",
           taskType: "review",
-          executorHint: "unified",
+          executorHint: "opencode",
           preferredScope: "lane",
           requiresContextProfiles: ["deterministic"],
           dependencies: ["docs-and-readme", "test-matrix", "rollback-and-risk-check"],
@@ -1200,7 +1200,7 @@ describe("orchestrator smoke", () => {
         })
       });
       orchestratorService.registerExecutorAdapter({
-        kind: "unified",
+        kind: "opencode",
         start: async ({ step }) => ({
           status: "completed",
           result: {
@@ -1218,7 +1218,7 @@ describe("orchestrator smoke", () => {
       const launch = await aiOrchestratorService.startMissionRun({
         missionId: mission.id,
         runMode: "autopilot",
-        defaultExecutorKind: "unified",
+        defaultExecutorKind: "opencode",
         plannerProvider: "claude"
       });
       if (!launch.started) throw new Error("Expected complex mission run to start");
@@ -1267,7 +1267,7 @@ describe("orchestrator smoke", () => {
             title: "Build health API route",
             stepIndex: 0,
             dependencyStepKeys: [],
-            executorKind: "unified",
+            executorKind: "opencode",
             laneId,
             metadata: {
               instructions: "Implement GET /api/health",
@@ -1282,7 +1282,7 @@ describe("orchestrator smoke", () => {
             title: "Harden watchdog recovery",
             stepIndex: 1,
             dependencyStepKeys: [],
-            executorKind: "unified",
+            executorKind: "opencode",
             laneId: childLane1.id,
             metadata: {
               instructions: "Improve stall detection",
@@ -1297,7 +1297,7 @@ describe("orchestrator smoke", () => {
             title: "Add mission telemetry panel UI",
             stepIndex: 2,
             dependencyStepKeys: [],
-            executorKind: "unified",
+            executorKind: "opencode",
             laneId: childLane2.id,
             metadata: {
               instructions: "Expose telemetry in UI",
@@ -1312,7 +1312,7 @@ describe("orchestrator smoke", () => {
             title: "Integrate contracts and orchestration data model",
             stepIndex: 3,
             dependencyStepKeys: ["api-health-route", "runtime-watchdog-hardening", "ui-telemetry-panel"],
-            executorKind: "unified",
+            executorKind: "opencode",
             laneId,
             metadata: {
               instructions: "Validate interface compatibility",
@@ -1327,7 +1327,7 @@ describe("orchestrator smoke", () => {
             title: "Update docs and README",
             stepIndex: 4,
             dependencyStepKeys: ["integration-contract-check"],
-            executorKind: "unified",
+            executorKind: "opencode",
             laneId,
             metadata: {
               instructions: "Document changes",
@@ -1342,7 +1342,7 @@ describe("orchestrator smoke", () => {
             title: "Execute endpoint and orchestration test matrix",
             stepIndex: 5,
             dependencyStepKeys: ["integration-contract-check"],
-            executorKind: "unified",
+            executorKind: "opencode",
             laneId,
             metadata: {
               instructions: "Run tests",
@@ -1357,7 +1357,7 @@ describe("orchestrator smoke", () => {
             title: "Perform rollback and risk sanity check",
             stepIndex: 6,
             dependencyStepKeys: ["integration-contract-check"],
-            executorKind: "unified",
+            executorKind: "opencode",
             laneId,
             metadata: {
               instructions: "Verify rollback path",
@@ -1372,7 +1372,7 @@ describe("orchestrator smoke", () => {
             title: "Finalize review gate",
             stepIndex: 7,
             dependencyStepKeys: ["docs-and-readme", "test-matrix", "rollback-and-risk-check"],
-            executorKind: "unified",
+            executorKind: "opencode",
             laneId,
             metadata: {
               instructions: "Final review",
@@ -1401,7 +1401,7 @@ describe("orchestrator smoke", () => {
       runMeta.autopilot = {
         ...autopilot,
         enabled: true,
-        executorKind: "unified",
+        executorKind: "opencode",
         ownerId: typeof autopilot.ownerId === "string" ? autopilot.ownerId : "orchestrator-autopilot",
         parallelismCap: 4
       };

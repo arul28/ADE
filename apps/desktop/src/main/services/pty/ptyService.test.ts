@@ -52,7 +52,7 @@ const mocks = vi.hoisted(() => {
       cmdArgs: ["tsx", "index.ts"],
       env: {},
     })),
-    resolveUnifiedRuntimeRoot: vi.fn(() => "/tmp/ade-runtime"),
+    resolveOpenCodeRuntimeRoot: vi.fn(() => "/tmp/ade-runtime"),
     shellEscapeArg: vi.fn((v: string) => `'${v}'`),
     stripAnsi: vi.fn((t: string) => t),
     summarizeTerminalSession: vi.fn(() => "test summary"),
@@ -97,10 +97,10 @@ vi.mock("../../../shared/adeLayout", () => ({
   resolveAdeLayout: mocks.resolveAdeLayout,
 }));
 
-vi.mock("../orchestrator/unifiedOrchestratorAdapter", () => ({
+vi.mock("../orchestrator/providerOrchestratorAdapter", () => ({
   buildCodexMcpConfigFlags: mocks.buildCodexMcpConfigFlags,
   resolveAdeMcpServerLaunch: mocks.resolveAdeMcpServerLaunch,
-  resolveUnifiedRuntimeRoot: mocks.resolveUnifiedRuntimeRoot,
+  resolveOpenCodeRuntimeRoot: mocks.resolveOpenCodeRuntimeRoot,
 }));
 
 vi.mock("../orchestrator/baseOrchestratorAdapter", () => ({

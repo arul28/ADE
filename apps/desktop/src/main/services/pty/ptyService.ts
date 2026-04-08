@@ -11,7 +11,7 @@ import type { createAiIntegrationService } from "../ai/aiIntegrationService";
 import type { createProjectConfigService } from "../config/projectConfigService";
 import { runGit } from "../git/git";
 import { resolveAdeLayout } from "../../../shared/adeLayout";
-import { buildCodexMcpConfigFlags, resolveAdeMcpServerLaunch, resolveUnifiedRuntimeRoot } from "../orchestrator/unifiedOrchestratorAdapter";
+import { buildCodexMcpConfigFlags, resolveAdeMcpServerLaunch, resolveOpenCodeRuntimeRoot } from "../orchestrator/providerOrchestratorAdapter";
 import { shellEscapeArg } from "../orchestrator/baseOrchestratorAdapter";
 import type {
   PtyDataEvent,
@@ -149,10 +149,10 @@ function normalizeToolType(raw: unknown): TerminalToolType | null {
     "codex",
     "claude-orchestrated",
     "codex-orchestrated",
-    "ai-orchestrated",
+    "opencode-orchestrated",
     "codex-chat",
     "claude-chat",
-    "ai-chat",
+    "opencode-chat",
     "cursor",
     "aider",
     "continue",
@@ -196,7 +196,7 @@ function writeExternalClaudeMcpConfig(args: {
   workspaceRoot: string;
   sessionId: string;
 }): string {
-  const runtimeRoot = resolveUnifiedRuntimeRoot();
+  const runtimeRoot = resolveOpenCodeRuntimeRoot();
   const launch = resolveAdeMcpServerLaunch({
     projectRoot: args.projectRoot,
     workspaceRoot: args.workspaceRoot,
@@ -248,7 +248,7 @@ function enrichStartupCommandForAdeMcp(args: {
     const flags = buildCodexMcpConfigFlags({
       projectRoot: args.projectRoot,
       workspaceRoot: args.workspaceRoot,
-      runtimeRoot: resolveUnifiedRuntimeRoot(),
+      runtimeRoot: resolveOpenCodeRuntimeRoot(),
       runId: args.sessionId,
       attemptId: args.sessionId,
       defaultRole: "external",
@@ -397,7 +397,7 @@ export function createPtyService({
   const TOOL_TYPES_WITH_AUTO_CLOSE = new Set<TerminalToolType>([
     "claude-orchestrated",
     "codex-orchestrated",
-    "ai-orchestrated"
+    "opencode-orchestrated"
   ]);
 
   const clearToolAutoCloseTimer = (ptyId: string) => {

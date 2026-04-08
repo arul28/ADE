@@ -2,16 +2,18 @@ import { createHash, randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
-import type { Tool } from "ai";
 import { createCtoOperatorTools } from "../../desktop/src/main/services/ai/tools/ctoOperatorTools";
-import { createCoordinatorToolSet } from "../../desktop/src/main/services/orchestrator/coordinatorTools";
+import {
+  createCoordinatorToolSet,
+  type CoordinatorExecutableTool,
+} from "../../desktop/src/main/services/orchestrator/coordinatorTools";
 import {
   createComputerUseArtifactPath,
   getLocalComputerUseCapabilities,
   toProjectArtifactUri,
 } from "../../desktop/src/main/services/computerUse/localComputerUse";
 import { loadAgentBrowserArtifactPayloadFromFile, parseAgentBrowserArtifactPayload } from "../../desktop/src/main/services/computerUse/agentBrowserArtifactAdapter";
-import { resolveAgentMemoryWritePolicy } from "../../desktop/src/main/services/memory/unifiedMemoryService";
+import { resolveAgentMemoryWritePolicy } from "../../desktop/src/main/services/memory/memoryService";
 import { ReflectionValidationError } from "../../desktop/src/main/services/orchestrator/orchestratorService";
 import { getTeamMembersForRun, registerTeamMember, updateTeamMemberStatus } from "../../desktop/src/main/services/orchestrator/teamRuntimeState";
 import { runGit } from "../../desktop/src/main/services/git/git";
@@ -36,6 +38,13 @@ type ToolSpec = {
   name: string;
   description: string;
   inputSchema: Record<string, unknown>;
+};
+
+type ExecutableTool = {
+  description?: string;
+  inputSchema?: unknown;
+  parameters?: unknown;
+  execute?: (args: Record<string, unknown>) => Promise<unknown>;
 };
 
 type SessionIdentity = {
@@ -705,7 +714,7 @@ const TOOL_SPECS: ToolSpec[] = [
   },
   {
     name: "get_pr_health",
-    description: "Get unified health status for a PR including checks, reviews, conflicts, and rebase status",
+    description: "Get combined health status for a PR including checks, reviews, conflicts, and rebase status",
     inputSchema: {
       type: "object",
       required: ["prId"],
@@ -1768,7 +1777,7 @@ type MemoryToolCategory = "fact" | "preference" | "pattern" | "decision" | "gotc
 type MemoryToolImportance = "low" | "medium" | "high";
 type MemoryToolScope = "project" | "mission" | "agent";
 type MemoryToolSearchStatus = "promoted" | "candidate" | "archived" | "all";
-type MemoryServiceScope = "project" | "mission" | "user";
+type MemoryServiceScope = "project" | "agent" | "mission";
 type SharedFactType = "api_pattern" | "schema_change" | "config" | "architectural" | "gotcha";
 
 function parseMemoryToolCategory(value: unknown): MemoryToolCategory {
@@ -1806,7 +1815,7 @@ function parseMemoryToolScope(value: unknown, fallback: MemoryToolScope): Memory
 }
 
 function mapMemoryToolScopeToServiceScope(scope: MemoryToolScope): MemoryServiceScope {
-  if (scope === "agent") return "user";
+  if (scope === "agent") return "agent";
   return scope;
 }
 
@@ -2135,7 +2144,7 @@ async function runCtoOperatorBridgeTool(
         reuseExisting,
       }),
   });
-  const toolEntry = (tools as Record<string, Tool>)[name];
+  const toolEntry = (tools as Record<string, ExecutableTool>)[name];
   const executable = toolEntry as unknown as { execute?: (args: Record<string, unknown>) => Promise<unknown> };
   if (!toolEntry || typeof executable.execute !== "function") {
     throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, `Unsupported CTO operator tool: ${name}`);
@@ -2635,7 +2644,7 @@ function ensureMemorySearchAllowed(session: SessionState): void {
 
 type CoordinatorToolCacheEntry = {
   missionId: string;
-  tools: Record<string, Tool>;
+  tools: Record<string, ExecutableTool>;
 };
 
 const coordinatorToolCacheByRuntime = new WeakMap<AdeMcpRuntime, Map<string, CoordinatorToolCacheEntry>>();
@@ -2690,7 +2699,7 @@ function getCoordinatorToolSet(args: {
   runtime: AdeMcpRuntime;
   runId: string;
   missionId: string;
-}): Record<string, Tool> {
+}): Record<string, ExecutableTool> {
   let runtimeCache = coordinatorToolCacheByRuntime.get(args.runtime);
   if (!runtimeCache) {
     runtimeCache = new Map<string, CoordinatorToolCacheEntry>();
@@ -2724,7 +2733,7 @@ function getCoordinatorToolSet(args: {
       });
     }
   });
-  const normalizedToolSet = toolSet as unknown as Record<string, Tool>;
+  const normalizedToolSet = toolSet as unknown as Record<string, CoordinatorExecutableTool>;
   runtimeCache.set(args.runId, {
     missionId: args.missionId,
     tools: normalizedToolSet

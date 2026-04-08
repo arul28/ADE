@@ -1531,7 +1531,7 @@ export function updateWorkerStateFromEventCtx(
                       properties: {
                         title: { type: "string" },
                         instructions: { type: "string" },
-                        executorKind: { type: "string", enum: ["unified", "manual"] }
+                        executorKind: { type: "string", enum: ["claude", "codex", "cursor", "opencode", "manual"] }
                       }
                     },
                     downstreamGuidance: { type: "string" }
@@ -1604,7 +1604,12 @@ export function updateWorkerStateFromEventCtx(
                         title: typeof ws.title === "string" ? ws.title : `Workaround for ${stepTitleForMessage(step)}`,
                         stepIndex: step.stepIndex + 1,
                         dependencyStepKeys: [],
-                        executorKind: (typeof ws.executorKind === "string" && ["unified", "manual"].includes(ws.executorKind) ? ws.executorKind : "unified") as OrchestratorExecutorKind,
+                        executorKind: (
+                          typeof ws.executorKind === "string"
+                          && ["claude", "codex", "cursor", "opencode", "manual"].includes(ws.executorKind)
+                            ? ws.executorKind
+                            : "opencode"
+                        ) as OrchestratorExecutorKind,
                         retryLimit: 2,
                         metadata: {
                           instructions: typeof ws.instructions === "string" ? ws.instructions : "",

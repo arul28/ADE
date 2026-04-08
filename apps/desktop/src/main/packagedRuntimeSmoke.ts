@@ -7,6 +7,7 @@ import { createRequire } from "node:module";
 import { promisify } from "node:util";
 import { resolveDesktopAdeMcpLaunch } from "./services/runtime/adeMcpLaunch";
 import { resolveClaudeCodeExecutable, type ClaudeCodeExecutableResolution } from "./services/ai/claudeCodeExecutable";
+import { resolveCodexExecutable } from "./services/ai/codexExecutable";
 import {
   classifyClaudeStartupFailure,
   type ClaudeStartupProbeResult,
@@ -214,12 +215,6 @@ async function main(): Promise<void> {
   const pty = await import("node-pty");
   const claude = await import("@anthropic-ai/claude-agent-sdk");
   const claudeExecutable = resolveClaudeCodeExecutable();
-  const packagedPackageJson = typeof process.resourcesPath === "string" && process.resourcesPath.length > 0
-    ? path.join(process.resourcesPath, "app.asar", "package.json")
-    : "";
-  const runtimeRequire = createRequire(fs.existsSync(packagedPackageJson) ? packagedPackageJson : __filename);
-  const codexProvider = runtimeRequire("ai-sdk-provider-codex-cli") as Record<string, unknown>;
-  const codexFactory = (codexProvider.createCodexCli ?? codexProvider.createCodexCLI) as unknown;
   const cwd = process.cwd();
   const launch = resolveDesktopAdeMcpLaunch({
     projectRoot: cwd,
@@ -261,7 +256,7 @@ async function main(): Promise<void> {
     claudeExecutablePath: claudeExecutable.path,
     claudeExecutableSource: claudeExecutable.source,
     claudeStartup,
-    codexFactory: typeof codexFactory,
+    codexExecutable: typeof resolveCodexExecutable,
     ptyProbe,
     launchMode: launch.mode,
     launchCommand: launch.command,

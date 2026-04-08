@@ -7,7 +7,7 @@ export function isChatToolType(toolType: string | null | undefined): boolean {
   return (
     toolType === "codex-chat"
     || toolType === "claude-chat"
-    || toolType === "ai-chat"
+    || toolType === "opencode-chat"
     || toolType === "cursor"
   );
 }
@@ -17,7 +17,7 @@ export function chatToolTypeForProvider(provider: AgentChatProvider | string | n
     case "claude": return "claude-chat";
     case "codex": return "codex-chat";
     case "cursor": return "cursor";
-    default: return "ai-chat";
+    default: return "opencode-chat";
   }
 }
 
@@ -34,10 +34,10 @@ export function defaultSessionLabel(toolType: string | null | undefined): string
   if (toolType === "run-shell") return "Run inspector";
   if (toolType === "claude-orchestrated") return "Claude worker";
   if (toolType === "codex-orchestrated") return "Codex worker";
-  if (toolType === "ai-orchestrated") return "AI worker";
+  if (toolType === "opencode-orchestrated") return "OpenCode worker";
   if (toolType === "claude-chat") return "Claude chat";
   if (toolType === "codex-chat") return "Codex chat";
-  if (toolType === "ai-chat") return "AI chat";
+  if (toolType === "opencode-chat") return "OpenCode chat";
   if (toolType === "cursor") return "Cursor chat";
   if (toolType === "claude") return "Claude session";
   if (toolType === "codex") return "Codex session";
@@ -78,10 +78,10 @@ export function buildOptimisticChatSessionSummary(args: {
 export function formatToolTypeLabel(toolType: string | null | undefined): string {
   if (toolType === "claude-orchestrated") return "Claude worker runtime";
   if (toolType === "codex-orchestrated") return "Codex worker runtime";
-  if (toolType === "ai-orchestrated") return "AI worker runtime";
+  if (toolType === "opencode-orchestrated") return "OpenCode worker runtime";
   if (toolType === "claude-chat") return "Claude chat";
   if (toolType === "codex-chat") return "Codex chat";
-  if (toolType === "ai-chat") return "AI chat";
+  if (toolType === "opencode-chat") return "OpenCode chat";
   if (toolType === "cursor") return "Cursor chat";
   if (toolType === "claude") return "Claude session";
   if (toolType === "codex") return "Codex session";
@@ -141,7 +141,7 @@ export function isGenericSessionTitle(session: TerminalSessionSummary, value: st
   const normalized = value.trim().toLowerCase();
   if (!normalized.length) return true;
   if (
-    normalized === "ai chat" ||
+    normalized === "opencode chat" ||
     normalized === "claude chat" ||
     normalized === "codex chat" ||
     normalized === "cursor chat" ||
@@ -151,7 +151,7 @@ export function isGenericSessionTitle(session: TerminalSessionSummary, value: st
     normalized === "codex" ||
     normalized === "codex cli" ||
     normalized === "codex session" ||
-    normalized === "ai worker" ||
+    normalized === "opencode worker" ||
     normalized === "claude worker" ||
     normalized === "codex worker"
   ) {

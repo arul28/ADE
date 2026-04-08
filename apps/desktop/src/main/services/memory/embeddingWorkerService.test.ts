@@ -4,7 +4,7 @@ import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { openKvDb } from "../state/kvDb";
 import { createSessionService } from "../sessions/sessionService";
-import { createUnifiedMemoryService } from "./unifiedMemoryService";
+import { createMemoryService } from "./memoryService";
 import {
   createEmbeddingWorkerService,
   DEFAULT_ACTIVE_BATCH_SIZE,
@@ -81,7 +81,7 @@ async function createFixture(opts: {
   };
 
   let worker: ReturnType<typeof createEmbeddingWorkerService>;
-  const memoryService = createUnifiedMemoryService(db, {
+  const memoryService = createMemoryService(db, {
     onMemoryUpserted: (event) => {
       if (opts.attachQueueHook === false) return;
       if (event.created || event.contentChanged) {

@@ -1,4 +1,4 @@
-import { tool } from "ai";
+import { executableTool as tool } from "./executableTool";
 import { z } from "zod";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -74,7 +74,7 @@ export function createGrepSearchTool(cwd: string) {
       }
 
       try {
-        const matches = await jsFallbackGrep(root, pattern, target, fileGlob);
+        const matches = jsFallbackGrep(root, pattern, target, fileGlob);
         return { matches, matchCount: matches.length, root: target };
       } catch (err) {
         return {
@@ -120,15 +120,15 @@ function parseRgOutput(root: string, stdout: string): GrepMatch[] {
   return results.slice(0, 500);
 }
 
-async function jsFallbackGrep(
+function jsFallbackGrep(
   root: string,
   pattern: string,
   target: string,
   fileGlob: string | undefined
-): Promise<GrepMatch[]> {
+): GrepMatch[] {
   const regex = new RegExp(pattern);
   const results: GrepMatch[] = [];
-  const files = await collectFiles(target, fileGlob);
+  const files = collectFiles(target, fileGlob);
 
   for (const filePath of files) {
     if (results.length >= 500) break;
@@ -151,18 +151,18 @@ async function jsFallbackGrep(
 
 const SKIP_DIRS = new Set(["node_modules", ".git", "dist", "build", ".next", "coverage"]);
 
-async function collectFiles(
+function collectFiles(
   dir: string,
   fileGlob: string | undefined,
   maxFiles = 5000
-): Promise<string[]> {
+): string[] {
   const stat = fs.statSync(dir);
   if (stat.isFile()) return [dir];
 
   const files: string[] = [];
   const globRegex = fileGlob ? globToRegex(fileGlob) : null;
 
-  async function walk(current: string): Promise<void> {
+  function walk(current: string): void {
     if (files.length >= maxFiles) return;
     let entries: fs.Dirent[];
     try {
@@ -174,7 +174,7 @@ async function collectFiles(
       if (files.length >= maxFiles) return;
       if (entry.isDirectory()) {
         if (!SKIP_DIRS.has(entry.name) && !entry.name.startsWith(".")) {
-          await walk(path.join(current, entry.name));
+          walk(path.join(current, entry.name));
         }
       } else if (entry.isFile()) {
         const fullPath = path.join(current, entry.name);
@@ -185,7 +185,7 @@ async function collectFiles(
     }
   }
 
-  await walk(dir);
+  walk(dir);
   return files;
 }
 

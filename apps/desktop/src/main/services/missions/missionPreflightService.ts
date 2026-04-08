@@ -484,7 +484,7 @@ export function createMissionPreflightService(args: {
       }
     }
     if (familiesInUse.has("api")) {
-      const mode = providers.unified ?? "full-auto";
+      const mode = providers.opencode ?? "full-auto";
       permissionDetails.push(`API workers: ${mode}`);
       if (mode !== "full-auto") {
         permissionWarnings.push(`API workers: ${mode} mode — modifications require approval.`);

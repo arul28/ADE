@@ -106,6 +106,10 @@ export const ChatTurnDiffPanel = React.memo(function ChatTurnDiffPanel({
           filePath,
         };
         const diff = await window.ade.agentChat.getTurnFileDiff(args);
+        if (!diff) {
+          setActiveDiff(null);
+          return;
+        }
         diffCache.current[filePath] = diff;
         setActiveDiff(diff);
       } catch (err) {

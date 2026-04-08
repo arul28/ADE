@@ -3,7 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { getModelById } from "../../../../shared/modelRegistry";
 import type { AiPermissionMode, AgentChatPermissionMode } from "../../../../shared/types";
 import { deriveConfiguredModelIds } from "../../../lib/modelOptions";
-import { UnifiedModelSelector } from "../../shared/UnifiedModelSelector";
+import { ProviderModelSelector } from "../../shared/ProviderModelSelector";
 import { cn } from "../../ui/cn";
 import { getPermissionOptions, safetyColors } from "../../shared/permissionOptions";
 
@@ -64,7 +64,7 @@ export function PrResolverLaunchControls({
 
   return (
     <div className={cn("flex flex-wrap items-center gap-3", className)}>
-      <UnifiedModelSelector
+      <ProviderModelSelector
         value={modelId}
         onChange={onModelChange}
         availableModelIds={availableModelIds}

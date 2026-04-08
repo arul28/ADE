@@ -14,7 +14,7 @@ import type {
   CtoSystemPromptPreview,
 } from "../../../shared/types";
 import { getCtoPersonalityPreset } from "../../../shared/ctoPersonalityPresets";
-import type { createUnifiedMemoryService, Memory, MemoryCategory } from "../memory/unifiedMemoryService";
+import type { createMemoryService, Memory, MemoryCategory } from "../memory/memoryService";
 import type { AdeDb } from "../state/kvDb";
 import { nowIso, parseIsoToEpoch, safeJsonParse, uniqueStrings, writeTextAtomic } from "../shared/utils";
 import { createLogIntegrityService } from "../projects/logIntegrityService";
@@ -23,7 +23,7 @@ type CtoStateServiceArgs = {
   db: AdeDb;
   projectId: string;
   adeDir: string;
-  memoryService?: Pick<ReturnType<typeof createUnifiedMemoryService>, "listMemories">;
+  memoryService?: Pick<ReturnType<typeof createMemoryService>, "listMemories">;
 };
 
 type CoreMemoryPatch = Partial<Omit<CtoCoreMemory, "version" | "updatedAt">>;

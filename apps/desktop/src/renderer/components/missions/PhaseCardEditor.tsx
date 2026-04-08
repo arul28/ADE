@@ -1,4 +1,5 @@
 import React from "react";
+import { useNavigate } from "react-router-dom";
 import { X } from "@phosphor-icons/react";
 import type { PhaseCard, OrchestratorPromptInspector } from "../../../shared/types";
 import { COLORS, MONO_FONT, outlineButton } from "../lanes/laneDesignTokens";
@@ -70,6 +71,10 @@ export function PhaseCardEditor({
   inputStyle: inpStyle,
   planningPromptPreview,
 }: PhaseCardEditorProps) {
+  const navigate = useNavigate();
+  const openAiProvidersSettings = React.useCallback(() => {
+    navigate("/settings?tab=ai#ai-providers");
+  }, [navigate]);
   const labelStyle = lblStyle ?? DEFAULT_LABEL_STYLE;
   const inputStyle = inpStyle ?? DEFAULT_INPUT_STYLE;
   const isPlanningPhase = phase.phaseKey.trim().toLowerCase() === "planning";
@@ -279,6 +284,7 @@ export function PhaseCardEditor({
                   onChange={(config) => updateField("model", config)}
                   compact
                   availableModelIds={availableModelIds}
+                  onOpenAiSettings={openAiProvidersSettings}
                 />
               )}
             </div>

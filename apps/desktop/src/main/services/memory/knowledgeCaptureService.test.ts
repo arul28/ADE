@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { openKvDb } from "../state/kvDb";
-import { createUnifiedMemoryService } from "./unifiedMemoryService";
+import { createMemoryService } from "./memoryService";
 import { createProceduralLearningService } from "./proceduralLearningService";
 import { createKnowledgeCaptureService } from "./knowledgeCaptureService";
 
@@ -27,7 +27,7 @@ async function createFixture() {
     [projectId, root, "ADE", "main", now, now],
   );
 
-  const memoryService = createUnifiedMemoryService(db);
+  const memoryService = createMemoryService(db);
   const proceduralLearningService = createProceduralLearningService({
     db,
     projectId,

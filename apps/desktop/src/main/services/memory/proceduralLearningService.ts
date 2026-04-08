@@ -7,7 +7,7 @@ import type {
 import type { Logger } from "../logging/logger";
 import type { AdeDb } from "../state/kvDb";
 import { nowIso, toMemoryEntryDto } from "../shared/utils";
-import type { Memory, UnifiedMemoryService } from "./unifiedMemoryService";
+import type { Memory, MemoryService } from "./memoryService";
 import { parseEpisode as parseEpisodeContent } from "./episodeFormat";
 
 type ProcedureDetailRow = {
@@ -158,7 +158,7 @@ export function createProceduralLearningService(args: {
   projectId: string;
   logger?: Pick<Logger, "warn"> | null;
   memoryService: Pick<
-    UnifiedMemoryService,
+    MemoryService,
     "getMemory" | "listMemories" | "addCandidateMemory" | "promoteMemory" | "archiveMemory" | "pinMemory" | "writeMemory"
   >;
   onProcedurePromoted?: (memoryId: string) => void;

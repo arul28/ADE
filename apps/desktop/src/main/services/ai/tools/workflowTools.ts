@@ -3,7 +3,7 @@
 // structured completion reporting for chat agents.
 // ---------------------------------------------------------------------------
 
-import { tool, type Tool } from "ai";
+import { executableTool as tool, type ExecutableTool as Tool } from "./executableTool";
 import { z } from "zod";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -346,7 +346,14 @@ export function createWorkflowTools(
           const failing = checks.filter((c) => c.conclusion === "failure");
           const pending = checks.filter((c) => c.status !== "completed");
 
-          const overall = failing.length > 0 ? "failing" : pending.length > 0 ? "pending" : "passing";
+          let overall: "failing" | "pending" | "passing";
+          if (failing.length > 0) {
+            overall = "failing";
+          } else if (pending.length > 0) {
+            overall = "pending";
+          } else {
+            overall = "passing";
+          }
           return {
             success: true,
             overall,

@@ -856,7 +856,7 @@ function resolveModelLabel(modelId?: string, model?: string): string | null {
       const isNonCanonicalModel = normalizedModel.length > 0
         && normalizedModel !== desc.id.toLowerCase()
         && normalizedModel !== desc.shortId.toLowerCase()
-        && normalizedModel !== desc.sdkModelId.toLowerCase();
+        && normalizedModel !== desc.providerModelId.toLowerCase();
       if (isNonCanonicalModel) {
         return `${desc.displayName} (${model?.trim()})`;
       }

@@ -178,7 +178,7 @@ function coerceAiChatConfig(value: unknown): AiConfig["chat"] {
   if (!isRecord(value)) return undefined;
   const chat: NonNullable<AiConfig["chat"]> = {};
   const chatProvider = asString(value.defaultProvider)?.trim();
-  if (chatProvider === "codex" || chatProvider === "claude" || chatProvider === "last_used") {
+  if (chatProvider === "codex" || chatProvider === "claude" || chatProvider === "cursor" || chatProvider === "opencode" || chatProvider === "last_used") {
     chat.defaultProvider = chatProvider;
   }
   const approvalPolicy = asString(value.defaultApprovalPolicy)?.trim();
@@ -203,9 +203,9 @@ function coerceAiChatConfig(value: unknown): AiConfig["chat"] {
   }
   const sessionBudgetUsd = asNumber(value.sessionBudgetUsd);
   if (sessionBudgetUsd != null && sessionBudgetUsd > 0) chat.sessionBudgetUsd = sessionBudgetUsd;
-  const unifiedPermissionMode = asString(value.unifiedPermissionMode)?.trim();
-  if (unifiedPermissionMode === "plan" || unifiedPermissionMode === "edit" || unifiedPermissionMode === "full-auto") {
-    chat.unifiedPermissionMode = unifiedPermissionMode;
+  const opencodePermissionMode = asString(value.opencodePermissionMode)?.trim();
+  if (opencodePermissionMode === "plan" || opencodePermissionMode === "edit" || opencodePermissionMode === "full-auto") {
+    chat.opencodePermissionMode = opencodePermissionMode;
   }
   return Object.keys(chat).length ? chat : undefined;
 }
@@ -469,8 +469,8 @@ function coerceMissionPermissionConfig(value: unknown): MissionPermissionConfig 
         ...(asString(value.providers.codex)?.trim()
           ? { codex: asString(value.providers.codex)!.trim() as NonNullable<MissionPermissionConfig["providers"]>["codex"] }
           : {}),
-        ...(asString(value.providers.unified)?.trim()
-          ? { unified: asString(value.providers.unified)!.trim() as NonNullable<MissionPermissionConfig["providers"]>["unified"] }
+        ...(asString(value.providers.opencode)?.trim()
+          ? { opencode: asString(value.providers.opencode)!.trim() as NonNullable<MissionPermissionConfig["providers"]>["opencode"] }
           : {}),
         ...(asString(value.providers.codexSandbox)?.trim()
           ? {
@@ -1027,7 +1027,7 @@ function coerceAiLocalProviders(value: unknown): AiConfig["localProviders"] {
   if (!isRecord(value)) return undefined;
 
   const providers: NonNullable<AiConfig["localProviders"]> = {};
-  for (const provider of ["ollama", "lmstudio", "vllm"] as const) {
+  for (const provider of ["ollama", "lmstudio"] as const) {
     const raw = isRecord(value[provider]) ? value[provider] : null;
     if (!raw) continue;
 
@@ -1585,7 +1585,7 @@ export function mergeAiConfig(sharedAi?: AiConfig, localAi?: Partial<AiConfig>):
     ...(sharedAi?.apiKeys ?? {}),
     ...(localAi?.apiKeys ?? {})
   };
-  const localProvidersEntries = (["ollama", "lmstudio", "vllm"] as const)
+  const localProvidersEntries = (["ollama", "lmstudio"] as const)
     .map((provider) => {
       const mergedProvider = {
         ...(sharedAi?.localProviders?.[provider] ?? {}),
@@ -1593,7 +1593,7 @@ export function mergeAiConfig(sharedAi?: AiConfig, localAi?: Partial<AiConfig>):
       };
       return Object.keys(mergedProvider).length ? [provider, mergedProvider] as const : null;
     })
-    .filter((entry): entry is readonly ["ollama" | "lmstudio" | "vllm", Record<string, unknown>] => entry != null);
+    .filter((entry): entry is readonly ["ollama" | "lmstudio", Record<string, unknown>] => entry != null);
   const localProviders = Object.fromEntries(localProvidersEntries) as AiConfig["localProviders"];
   const workerSafety = mergeWorkerSafetyPolicy(sharedAi?.workerSafety, localAi?.workerSafety);
   const mcpServers = {

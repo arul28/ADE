@@ -930,6 +930,10 @@ export type AiSettingsStatus = {
   providerConnections?: AiProviderConnections;
   runtimeConnections?: AiRuntimeConnections;
   availableModelIds?: ModelId[];
+  opencodeBinaryInstalled?: boolean;
+  opencodeBinarySource?: "user-installed" | "bundled" | "missing";
+  opencodeInventoryError?: string | null;
+  opencodeProviders?: Array<{ id: string; name: string; connected: boolean; modelCount: number }>;
   apiKeyStore?: {
     secureStorageAvailable: boolean;
     legacyPlaintextDetected: boolean;
@@ -1045,7 +1049,7 @@ export type SessionIntelligenceConfig = {
 };
 
 export type AiChatConfig = {
-  defaultProvider?: "codex" | "claude" | "last_used";
+  defaultProvider?: "codex" | "claude" | "cursor" | "opencode" | "last_used";
   defaultApprovalPolicy?: "auto" | "approve_mutations" | "approve_all";
   sendOnEnter?: boolean;
   /** @deprecated Use ai.sessionIntelligence.titles instead */
@@ -1059,8 +1063,8 @@ export type AiChatConfig = {
   codexSandbox?: "read-only" | "workspace-write" | "danger-full-access";
   claudePermissionMode?: "default" | "plan" | "acceptEdits" | "bypassPermissions";
   sessionBudgetUsd?: number;
-  /** Default permission mode for new unified/API-model chat sessions */
-  unifiedPermissionMode?: AiInProcessPermissionMode;
+  /** Default permission mode for new OpenCode/API-model chat sessions */
+  opencodePermissionMode?: AiInProcessPermissionMode;
 };
 export type AiConfig = {
   mode?: ProviderMode;
@@ -1072,7 +1076,7 @@ export type AiConfig = {
   conflictResolution?: AiConflictResolutionConfig;
   orchestrator?: AiOrchestratorConfig;
   chat?: AiChatConfig;
-  // New unified fields
+  // OpenCode/runtime-backed fields
   defaultModel?: ModelId;
   apiKeys?: Record<string, string>;
   localProviders?: AiLocalProviderConfigs;
@@ -1098,7 +1102,7 @@ export type AiIntegrationStatus = {
     codex: AgentChatModelInfo[];
     cursor: AgentChatModelInfo[];
   };
-  // New unified fields
+  // OpenCode/runtime-backed fields
   detectedAuth?: AiDetectedAuth[];
   providerConnections?: AiProviderConnections;
   runtimeConnections?: AiRuntimeConnections;

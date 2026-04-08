@@ -101,15 +101,15 @@ During the split, 16 dead or unused types were identified and deleted rather tha
 
 The model system is built on two coordinated files:
 
-- **`src/shared/modelRegistry.ts`** — The single source of truth for all AI models. Defines the `MODEL_REGISTRY` constant (an array of `ModelDescriptor` objects) covering every supported model across Anthropic, OpenAI, Google, Mistral, DeepSeek, xAI, Meta, and local providers (Ollama, LM Studio, vLLM, Groq, Together). Each descriptor includes:
-  - Identity: `id`, `shortId`, `displayName`, `family`, `sdkProvider`, `sdkModelId`
+- **`src/shared/modelRegistry.ts`** — The single source of truth for all AI models. Defines the `MODEL_REGISTRY` array (static CLI-wrapped entries plus dynamically populated API-key and local models from OpenCode inventory) of `ModelDescriptor` objects covering Anthropic, OpenAI, OpenCode, Google, Mistral, DeepSeek, xAI, Groq, Together AI, and local providers (Ollama, LM Studio, vLLM). Each descriptor includes:
+  - Identity: `id`, `shortId`, `displayName`, `family`, `providerRoute`, `providerModelId`
   - Capabilities: `tools`, `vision`, `reasoning`, `streaming`, plus optional `reasoningTiers`
   - Sizing: `contextWindow`, `maxOutputTokens`
   - Pricing: `inputPricePer1M`, `outputPricePer1M`, `costTier` (low/medium/high/very_high)
   - Auth: `authTypes` (cli-subscription, api-key, oauth, openrouter, local)
-  - Runtime: `isCliWrapped`, `cliCommand`, `color`
+  - Runtime: `isCliWrapped`, `cliCommand`, `color`, optional `harnessProfile`, `discoverySource`, `openCodeProviderId`, `openCodeModelId`
 
-  The module also exports helper functions: `getModelById()`, `getModelPricing()`, `updateModelPricingInRegistry()`.
+  The module also exports helper functions: `getModelById()`, `getModelPricing()`, `updateModelPricingInRegistry()`, `replaceDynamicOpenCodeModelDescriptors()`.
 
 - **`src/shared/modelProfiles.ts`** — Derives the missions UI model catalog and intelligence profiles from `MODEL_REGISTRY` rather than maintaining parallel lists. Maps registry descriptors to `ModelEntry` objects (used by the mission model selector) and defines per-call-type intelligence defaults (`OrchestratorIntelligenceConfig`) and mission model profiles (`MissionModelProfile`).
 
@@ -235,7 +235,7 @@ CREATE INDEX IF NOT EXISTS idx_terminal_sessions_status  ON terminal_sessions(st
 Records every terminal session within a lane. `head_sha_start` and `head_sha_end` capture the git HEAD at session creation and termination, enabling diff computation for what changed during the session. `transcript_path` points to the raw terminal output log file. Additional metadata:
 - `tracked`: Whether the session is included in compatibility pack generation and live export synthesis (default: yes).
 - `goal`: User-provided or inferred session intent description.
-- `tool_type`: Session tool identifier (e.g., `shell`, `codex`, `claude`, `codex-chat`, `claude-chat`, `ai-chat`, `cursor`) used for filtering, badges, and lifecycle semantics.
+- `tool_type`: Session tool identifier (e.g., `shell`, `codex`, `claude`, `codex-chat`, `claude-chat`, `opencode-chat`, `cursor`) used for filtering, badges, and lifecycle semantics.
 - `pinned`: Whether the session is pinned for retention.
 - `summary`: Post-session AI-generated or user-provided summary.
 

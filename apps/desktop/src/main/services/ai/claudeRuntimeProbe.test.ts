@@ -42,7 +42,7 @@ vi.mock("./claudeCodeExecutable", () => ({
   resolveClaudeCodeExecutable: mockState.resolveClaudeCodeExecutable,
 }));
 
-vi.mock("./providerResolver", () => ({
+vi.mock("./cliMcpConfig", () => ({
   normalizeCliMcpServers: mockState.normalizeCliMcpServers,
 }));
 

@@ -35,5 +35,6 @@ export const Grok = brand("Grok");
 export const Groq = brand("Groq");
 export const Kimi = brand("Kimi");
 export const OpenAI = brand("OpenAI");
+export const OpenCode = brand("OpenCode");
 export const OpenRouter = brand("OpenRouter");
 export const XAI = brand("xAI");

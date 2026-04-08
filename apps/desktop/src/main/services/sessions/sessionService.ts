@@ -80,11 +80,13 @@ function normalizeResumeMetadata(raw: unknown): TerminalResumeMetadata | null {
   const launchRecord = record.launch != null && typeof record.launch === "object" && !Array.isArray(record.launch)
     ? (record.launch as Record<string, unknown>)
     : {};
-  const permissionMode = typeof launchRecord.permissionMode === "string"
-    ? (launchRecord.permissionMode as TerminalResumeMetadata["launch"]["permissionMode"])
-    : typeof record.permissionMode === "string"
-      ? (record.permissionMode as TerminalResumeMetadata["launch"]["permissionMode"])
-      : null;
+  type LaunchPermissionMode = TerminalResumeMetadata["launch"]["permissionMode"];
+  let permissionMode: LaunchPermissionMode | null = null;
+  if (typeof launchRecord.permissionMode === "string") {
+    permissionMode = launchRecord.permissionMode as LaunchPermissionMode;
+  } else if (typeof record.permissionMode === "string") {
+    permissionMode = record.permissionMode as LaunchPermissionMode;
+  }
   const claudePermissionMode = typeof launchRecord.claudePermissionMode === "string" ? launchRecord.claudePermissionMode : null;
   const codexApprovalPolicy = typeof launchRecord.codexApprovalPolicy === "string" ? launchRecord.codexApprovalPolicy : null;
   const codexSandbox = typeof launchRecord.codexSandbox === "string" ? launchRecord.codexSandbox : null;
@@ -130,11 +132,14 @@ function parseLaunchMetadataFromCurrentSession(
   if (currentMetadata) return currentMetadata;
 
   const fallbackTool = currentSession.toolType;
-  const provider = fallbackTool === "claude" || fallbackTool === "claude-orchestrated"
-    ? "claude"
-    : fallbackTool === "codex" || fallbackTool === "codex-orchestrated"
-      ? "codex"
-      : null;
+  let provider: "claude" | "codex" | null;
+  if (fallbackTool === "claude" || fallbackTool === "claude-orchestrated") {
+    provider = "claude";
+  } else if (fallbackTool === "codex" || fallbackTool === "codex-orchestrated") {
+    provider = "codex";
+  } else {
+    provider = null;
+  }
   if (!provider) return null;
 
   return {
@@ -162,10 +167,10 @@ export function createSessionService({ db }: { db: AdeDb }) {
       "codex",
       "claude-orchestrated",
       "codex-orchestrated",
-      "ai-orchestrated",
+      "opencode-orchestrated",
       "codex-chat",
       "claude-chat",
-      "ai-chat",
+      "opencode-chat",
       "cursor",
       "aider",
       "continue",

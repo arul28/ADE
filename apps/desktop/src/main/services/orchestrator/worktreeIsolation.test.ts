@@ -127,8 +127,8 @@ async function createFixture(args: {
     memoryService: null as any,
   });
 
-  // Normalize modelId for unified executor steps
-  const defaultUnifiedModelId = "anthropic/claude-sonnet-4-6";
+  // Normalize modelId for opencode executor steps
+  const defaultOpenCodeModelId = "anthropic/claude-sonnet-4-6";
   const originalStartRun = service.startRun.bind(service);
   (service as any).startRun = ((input: any) =>
     originalStartRun({
@@ -136,11 +136,11 @@ async function createFixture(args: {
       steps: Array.isArray(input?.steps)
         ? input.steps.map((step: any) => {
             const executorKind = typeof step?.executorKind === "string" ? step.executorKind : null;
-            if (executorKind !== "unified") return step;
+            if (executorKind !== "opencode") return step;
             const metadata = step?.metadata && typeof step.metadata === "object" ? step.metadata : {};
             const modelId = typeof metadata.modelId === "string" ? metadata.modelId.trim() : "";
             if (modelId.length > 0) return step;
-            return { ...step, metadata: { ...metadata, modelId: defaultUnifiedModelId } };
+            return { ...step, metadata: { ...metadata, modelId: defaultOpenCodeModelId } };
           })
         : input?.steps,
     })) as typeof service.startRun;
@@ -164,13 +164,13 @@ async function createFixture(args: {
 describe("VAL-ISO-001: Worktree isolation in startAttempt", () => {
   // Use an API model (isCliWrapped=false) to exercise the in-process worker path
   // where cwd is resolved from laneWorktreePath in orchestratorService.ts.
-  const apiModelId = "anthropic/claude-sonnet-4-6-api";
+  const apiModelId = "opencode/anthropic/claude-sonnet-4-6";
 
   it("resolves cwd to lane worktree_path for in-process workers", async () => {
     const worktreeDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-wt-"));
     let capturedCwd: string | undefined;
     const aiIntegrationService = {
-      executeViaUnified: async (execArgs: Record<string, unknown>) => {
+      executeTask: async (execArgs: Record<string, unknown>) => {
         capturedCwd = execArgs.cwd as string;
         return {
           textResponse: "Done.",
@@ -191,7 +191,7 @@ describe("VAL-ISO-001: Worktree isolation in startAttempt", () => {
             stepKey: "test-step",
             stepIndex: 0,
             title: "Test Step",
-            executorKind: "unified",
+            executorKind: "opencode",
             laneId: fixture.laneId,
             metadata: { modelId: apiModelId },
           },
@@ -207,7 +207,7 @@ describe("VAL-ISO-001: Worktree isolation in startAttempt", () => {
         runId: run.id,
         stepId: readySteps[0].id,
         ownerId: "test-owner",
-        executorKind: "unified",
+        executorKind: "opencode",
       });
 
       // The in-process worker should have received the lane worktree path as cwd
@@ -223,7 +223,7 @@ describe("VAL-ISO-001: Worktree isolation in startAttempt", () => {
     const fixture = await createFixture({
       laneWorktreePath: "",
       aiIntegrationService: {
-        executeViaUnified: async () => {
+        executeTask: async () => {
           throw new Error("Should not be called");
         },
       },
@@ -236,7 +236,7 @@ describe("VAL-ISO-001: Worktree isolation in startAttempt", () => {
             stepKey: "test-step",
             stepIndex: 0,
             title: "Test Step",
-            executorKind: "unified",
+            executorKind: "opencode",
             laneId: fixture.laneId,
             metadata: { modelId: apiModelId },
           },
@@ -252,7 +252,7 @@ describe("VAL-ISO-001: Worktree isolation in startAttempt", () => {
         runId: run.id,
         stepId: readySteps[0].id,
         ownerId: "test-owner",
-        executorKind: "unified",
+        executorKind: "opencode",
       });
 
       // Should fail with configuration_error, not silently fall back to projectRoot
@@ -268,7 +268,7 @@ describe("VAL-ISO-001: Worktree isolation in startAttempt", () => {
     const fixture = await createFixture({
       laneWorktreePath: "  ",
       aiIntegrationService: {
-        executeViaUnified: async () => {
+        executeTask: async () => {
           throw new Error("Should not be called");
         },
       },
@@ -281,7 +281,7 @@ describe("VAL-ISO-001: Worktree isolation in startAttempt", () => {
             stepKey: "test-step",
             stepIndex: 0,
             title: "Test Step",
-            executorKind: "unified",
+            executorKind: "opencode",
             laneId: fixture.laneId,
             metadata: { modelId: apiModelId },
           },
@@ -297,7 +297,7 @@ describe("VAL-ISO-001: Worktree isolation in startAttempt", () => {
         runId: run.id,
         stepId: readySteps[0].id,
         ownerId: "test-owner",
-        executorKind: "unified",
+        executorKind: "opencode",
       });
 
       expect(attempt.status).toBe("failed");
@@ -309,7 +309,7 @@ describe("VAL-ISO-001: Worktree isolation in startAttempt", () => {
 
   it("uses projectRoot as cwd when step has no laneId (non-lane fallback)", async () => {
     // Non-lane steps (without laneId) should use projectRoot.
-    // We test at the code level since unified executor requires laneId.
+    // We test at the code level since opencode executor requires laneId.
     // Verify the laneWorktreePath resolution logic directly:
     // when step.laneId is falsy, the code should return projectRoot.
     // This is tested via buildFullPrompt's lack of worktree constraint for no-lane steps.
@@ -338,7 +338,7 @@ describe("VAL-ISO-001: Worktree isolation in startAttempt", () => {
         fullDocs: [],
         createTrackedSession: async () => ({ ptyId: "pty-1", sessionId: "session-1" }),
       },
-      "unified",
+      "opencode",
       {}
     );
 
@@ -382,7 +382,7 @@ describe("VAL-ISO-002: Worktree constraint in buildFullPrompt", () => {
         fullDocs: [],
         createTrackedSession: async () => ({ ptyId: "pty-1", sessionId: "session-1" }),
       },
-      "unified",
+      "opencode",
       {}
     );
 
@@ -417,7 +417,7 @@ describe("VAL-ISO-002: Worktree constraint in buildFullPrompt", () => {
         fullDocs: [],
         createTrackedSession: async () => ({ ptyId: "pty-1", sessionId: "session-1" }),
       },
-      "unified",
+      "opencode",
       {}
     );
 
@@ -451,7 +451,7 @@ describe("VAL-ISO-002: Worktree constraint in buildFullPrompt", () => {
         fullDocs: [],
         createTrackedSession: async () => ({ ptyId: "pty-1", sessionId: "session-1" }),
       },
-      "unified",
+      "opencode",
       {}
     );
 

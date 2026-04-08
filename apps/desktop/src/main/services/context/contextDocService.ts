@@ -30,7 +30,7 @@ export type ContextRefreshEventName = ContextDocGenerationEvent;
 type ContextDocRefreshPrefs = {
   cadence: ContextRefreshTrigger;
   events: ContextRefreshEvents;
-  provider: "codex" | "claude" | "unified";
+  provider: "codex" | "claude" | "opencode";
   modelId: string | null;
   reasoningEffort: string | null;
   updatedAt: string;
@@ -126,10 +126,10 @@ function normalizeRefreshTrigger(value: unknown): ContextRefreshTrigger {
   return "manual";
 }
 
-function normalizeContextProvider(value: unknown): "codex" | "claude" | "unified" {
+function normalizeContextProvider(value: unknown): "codex" | "claude" | "opencode" {
   const normalized = String(value ?? "").trim();
   if (normalized === "codex" || normalized === "claude") return normalized;
-  return "unified";
+  return "opencode";
 }
 
 function normalizeEvents(value: unknown): ContextRefreshEvents {
@@ -288,7 +288,7 @@ export function createContextDocService(args: {
       source: sourceValue,
       event: eventValue,
       reason: toOptionalString(raw?.reason) ?? null,
-      provider: providerValue === "codex" || providerValue === "claude" || providerValue === "unified" ? providerValue : null,
+      provider: providerValue === "codex" || providerValue === "claude" || providerValue === "opencode" ? providerValue : null,
       modelId: toOptionalString(raw?.modelId) ?? null,
       reasoningEffort: toOptionalString(raw?.reasoningEffort) ?? null,
     };
@@ -625,7 +625,7 @@ export function createContextDocService(args: {
     getPrefs(): ContextDocPrefs {
       const stored = readContextDocRefreshPrefs();
       return {
-        provider: stored?.provider ?? "unified",
+        provider: stored?.provider ?? "opencode",
         modelId: stored?.modelId ?? null,
         reasoningEffort: stored?.reasoningEffort ?? null,
         events: stored?.events ?? DEFAULT_EVENTS,
@@ -633,7 +633,7 @@ export function createContextDocService(args: {
     },
     savePrefs(prefs: ContextDocPrefs): ContextDocPrefs {
       const args: ContextGenerateDocsArgs = {
-        provider: prefs.provider ?? "unified",
+        provider: prefs.provider ?? "opencode",
         modelId: prefs.modelId ?? undefined,
         reasoningEffort: prefs.reasoningEffort,
         events: prefs.events,

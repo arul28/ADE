@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import type {
   AiFeatureKey,
   AiConfig,
@@ -13,7 +14,7 @@ import {
 } from "../lanes/laneDesignTokens";
 import { deriveConfiguredModelIds } from "../../lib/modelOptions";
 import { getModelById, resolveModelAlias } from "../../../shared/modelRegistry";
-import { UnifiedModelSelector } from "../shared/UnifiedModelSelector";
+import { ProviderModelSelector } from "../shared/ProviderModelSelector";
 import { ChatCircleDots, GitPullRequest, GitCommit, ChatText, type Icon } from "@phosphor-icons/react";
 
 type FeatureInfo = {
@@ -118,6 +119,10 @@ function Toggle({ checked, onChange }: { checked: boolean; onChange: (v: boolean
 }
 
 export function AiFeaturesSection() {
+  const navigate = useNavigate();
+  const openAiProvidersSettings = useCallback(() => {
+    navigate("/settings?tab=ai#ai-providers");
+  }, [navigate]);
   const [status, setStatus] = useState<AiSettingsStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -388,7 +393,7 @@ export function AiFeaturesSection() {
                 </div>
 
                 <div style={{ opacity: enabled ? 1 : 0.4, pointerEvents: enabled ? "auto" : "none" }}>
-                  <UnifiedModelSelector
+                  <ProviderModelSelector
                     value={selectedModel}
                     onChange={(modelId) => void handleModelChange(feature.key, modelId)}
                     availableModelIds={availableModelIds}
@@ -396,6 +401,7 @@ export function AiFeaturesSection() {
                     showReasoning
                     reasoningEffort={featureReasoning[feature.key] ?? null}
                     onReasoningEffortChange={(effort) => void handleReasoningChange(feature.key, effort)}
+                    onOpenAiSettings={openAiProvidersSettings}
                   />
                 </div>
 
@@ -484,7 +490,7 @@ export function AiFeaturesSection() {
             </div>
 
             <div style={{ opacity: chatAutoTitleEnabled ? 1 : 0.4, pointerEvents: chatAutoTitleEnabled ? "auto" : "none" }}>
-              <UnifiedModelSelector
+              <ProviderModelSelector
                 value={utilityModel}
                 onChange={(modelId) => {
                   setUtilityModel(modelId);
@@ -498,6 +504,7 @@ export function AiFeaturesSection() {
                   setChatAutoTitleReasoning(effort);
                   void saveChatTitleSettings({ autoTitleReasoningEffort: effort });
                 }}
+                onOpenAiSettings={openAiProvidersSettings}
               />
             </div>
 

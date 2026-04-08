@@ -45,8 +45,8 @@ export function mapPermissionToCodex(mode: AgentChatPermissionMode | undefined):
 }
 
 /**
- * Map an AgentChatPermissionMode to the in-process (unified API) permission
- * mode string used by `aiIntegrationService.executeViaUnified()`.
+ * Map an AgentChatPermissionMode to the OpenCode-backed in-process permission
+ * mode string used by the native runtime path.
  *
  * The in-process executor uses `AgentPermissionMode` = "read-only" | "edit" | "full-auto".
  * "plan" and "default" both map to "read-only" (no modifications allowed).
@@ -100,7 +100,7 @@ export function normalizeMissionPermissions(config: MissionPermissionConfig | un
   const result: MissionProviderPermissions = {
     claude: "full-auto",
     codex: "full-auto",
-    unified: "full-auto",
+    opencode: "full-auto",
     codexSandbox: "workspace-write",
   };
 
@@ -122,7 +122,7 @@ export function normalizeMissionPermissions(config: MissionPermissionConfig | un
   }
   if (config?.inProcess) {
     const inProcMode = VALID_IN_PROCESS_MODES.has(config.inProcess.mode ?? "") ? config.inProcess.mode : undefined;
-    result.unified = oldInProcessModeToProvider(inProcMode);
+    result.opencode = oldInProcessModeToProvider(inProcMode);
   }
 
   // Layer 2: new provider shape (overrides old shape where present)
@@ -131,7 +131,7 @@ export function normalizeMissionPermissions(config: MissionPermissionConfig | un
     if (p.claude && VALID_PROVIDER_MODES.has(p.claude)) result.claude = p.claude;
     if (p.codex && VALID_PROVIDER_MODES.has(p.codex)) result.codex = p.codex;
     if (p.cursor && VALID_PROVIDER_MODES.has(p.cursor)) result.cursor = p.cursor;
-    if (p.unified && VALID_PROVIDER_MODES.has(p.unified)) result.unified = p.unified;
+    if (p.opencode && VALID_PROVIDER_MODES.has(p.opencode)) result.opencode = p.opencode;
     if (p.codexSandbox === "read-only" || p.codexSandbox === "workspace-write" || p.codexSandbox === "danger-full-access") {
       result.codexSandbox = p.codexSandbox;
     }
@@ -176,7 +176,7 @@ function providerModeToInProcessMode(mode: AgentChatPermissionMode | undefined):
 /**
  * Convert normalized MissionProviderPermissions into the old-style
  * `permissionConfig` shape that OrchestratorExecutorStartArgs uses.
- * This bridges the new unified types to the existing adapter interface.
+ * This bridges the provider-level mission settings to the existing adapter interface.
  */
 export function providerPermissionsToLegacyConfig(providers: MissionProviderPermissions): {
   cli: {
@@ -202,7 +202,7 @@ export function providerPermissionsToLegacyConfig(providers: MissionProviderPerm
       ...(providers.allowedTools?.length ? { allowedTools: providers.allowedTools } : {}),
     },
     inProcess: {
-      mode: providerModeToInProcessMode(providers.unified),
+      mode: providerModeToInProcessMode(providers.opencode),
     },
     _providers: providers,
   };

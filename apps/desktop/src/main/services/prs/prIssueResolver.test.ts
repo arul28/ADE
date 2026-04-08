@@ -413,7 +413,7 @@ describe("launchPrIssueResolutionChat", () => {
     await expect(launchPrIssueResolutionChat(deps as any, {
       prId: pr.id,
       scope: "checks",
-      modelId: "openai/gpt-5.4",
+      modelId: "opencode/openai/gpt-5.4",
       reasoning: "high",
       permissionMode: "guarded_edit",
       additionalInstructions: null,

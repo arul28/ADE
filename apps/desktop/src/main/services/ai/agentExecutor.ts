@@ -1,4 +1,4 @@
-export type AgentProvider = "claude" | "codex" | "cursor";
+export type AgentProvider = "claude" | "codex" | "cursor" | "opencode";
 
 export type AgentPermissionMode = "read-only" | "edit" | "full-auto";
 

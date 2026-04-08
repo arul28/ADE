@@ -30,7 +30,7 @@ vi.mock("./contextDocBuilder", () => ({
   })),
   resolveContextDocPath: vi.fn((projectRoot: string, docId: string) => path.join(projectRoot, `${docId}.md`)),
   runContextDocGeneration: vi.fn(async (_deps: unknown, args: Record<string, unknown>) => ({
-    provider: args.provider ?? "unified",
+    provider: args.provider ?? "opencode",
     generatedAt: "2026-03-05T12:00:00.000Z",
     prdPath: "/tmp/PRD.ade.md",
     architecturePath: "/tmp/ARCHITECTURE.ade.md",
@@ -176,7 +176,7 @@ describe("contextDocService", () => {
     const { service } = await createFixture();
 
     await service.generateDocs({
-      provider: "unified",
+      provider: "opencode",
       modelId: "openai/gpt-5.4-codex",
       events: { onPrCreate: true },
     });
@@ -219,7 +219,7 @@ describe("contextDocService", () => {
     });
 
     await service.generateDocs({
-      provider: "unified",
+      provider: "opencode",
       modelId: "openai/gpt-5.4-codex",
       events: { onPrCreate: true },
     });
@@ -234,7 +234,7 @@ describe("contextDocService", () => {
       reason: "config_override",
     });
 
-    expect(refreshed?.provider).toBe("unified");
+    expect(refreshed?.provider).toBe("opencode");
   });
 
   it("resolves canonical doc paths through the extracted service", async () => {
@@ -250,7 +250,7 @@ describe("contextDocService", () => {
     vi.mocked(runContextDocGeneration).mockReturnValueOnce(deferred.promise as ReturnType<typeof runContextDocGeneration>);
 
     await service.savePrefs({
-      provider: "unified",
+      provider: "opencode",
       modelId: "gpt-5",
       reasoningEffort: "medium",
       events: { onPrLand: true },
@@ -266,12 +266,12 @@ describe("contextDocService", () => {
     expect(duringRun.source).toBe("auto");
     expect(duringRun.event).toBe("pr_land");
     expect(duringRun.reason).toBe("prs_land:123");
-    expect(duringRun.provider).toBe("unified");
+    expect(duringRun.provider).toBe("opencode");
     expect(duringRun.modelId).toBe("gpt-5");
     expect(duringRun.reasoningEffort).toBe("medium");
 
     deferred.resolve({
-      provider: "unified",
+      provider: "opencode",
       generatedAt: "2026-03-05T12:01:00.000Z",
       prdPath: "/tmp/PRD.ade.md",
       architecturePath: "/tmp/ARCHITECTURE.ade.md",
@@ -286,7 +286,7 @@ describe("contextDocService", () => {
     });
 
     await expect(refreshPromise).resolves.toMatchObject({
-      provider: "unified",
+      provider: "opencode",
       generatedAt: "2026-03-05T12:01:00.000Z",
     });
 
@@ -295,7 +295,7 @@ describe("contextDocService", () => {
       source: "auto",
       event: "pr_land",
       reason: "prs_land:123",
-      provider: "unified",
+      provider: "opencode",
       modelId: "gpt-5",
       reasoningEffort: "medium",
       finishedAt: "2026-03-05T12:01:00.000Z",
@@ -328,7 +328,7 @@ describe("contextDocService", () => {
     const { service } = await createFixture();
 
     await expect(service.generateDocs({
-      provider: "unified",
+      provider: "opencode",
       events: { onPrCreate: true },
     })).rejects.toThrow("Select a model before generating context docs.");
 
@@ -339,7 +339,7 @@ describe("contextDocService", () => {
     const { service } = await createFixture();
 
     await service.savePrefs({
-      provider: "unified",
+      provider: "opencode",
       modelId: null,
       reasoningEffort: null,
       events: { onPrCreate: true },
@@ -360,7 +360,7 @@ describe("contextDocService", () => {
     const deferred = createDeferred<Awaited<ReturnType<typeof runContextDocGeneration>>>();
 
     await service.generateDocs({
-      provider: "unified",
+      provider: "opencode",
       modelId: "openai/gpt-5.4-codex",
       events: { onPrLand: true },
     });
@@ -380,7 +380,7 @@ describe("contextDocService", () => {
     expect(duringRun.finishedAt).toBeNull();
 
     deferred.resolve({
-      provider: "unified",
+      provider: "opencode",
       generatedAt: "2026-03-05T12:01:00.000Z",
       prdPath: "/tmp/PRD.ade.md",
       architecturePath: "/tmp/ARCHITECTURE.ade.md",
@@ -403,7 +403,7 @@ describe("contextDocService", () => {
     vi.mocked(runContextDocGeneration).mockReturnValueOnce(deferred.promise as ReturnType<typeof runContextDocGeneration>);
 
     const generatePromise = service.generateDocs({
-      provider: "unified",
+      provider: "opencode",
       modelId: "openai/gpt-5.4-codex",
     });
 
@@ -411,12 +411,12 @@ describe("contextDocService", () => {
 
     expect(service.getStatus().generation).toMatchObject({
       state: "running",
-      provider: "unified",
+      provider: "opencode",
       modelId: "openai/gpt-5.4-codex",
     });
 
     deferred.resolve({
-      provider: "unified",
+      provider: "opencode",
       generatedAt: "2026-03-05T12:06:00.000Z",
       prdPath: "/tmp/PRD.ade.md",
       architecturePath: "/tmp/ARCHITECTURE.ade.md",
@@ -446,7 +446,7 @@ describe("contextDocService", () => {
     vi.mocked(runContextDocGeneration).mockReturnValueOnce(deferred.promise as ReturnType<typeof runContextDocGeneration>);
 
     const generatePromise = service.generateDocs({
-      provider: "unified",
+      provider: "opencode",
       modelId: "gpt-5",
     });
 
@@ -454,7 +454,7 @@ describe("contextDocService", () => {
     expect(onStatusChanged.mock.calls.at(-1)?.[0]?.generation?.state).toBe("running");
 
     deferred.resolve({
-      provider: "unified",
+      provider: "opencode",
       generatedAt: "2026-03-05T12:02:00.000Z",
       prdPath: "/tmp/PRD.ade.md",
       architecturePath: "/tmp/ARCHITECTURE.ade.md",
@@ -505,7 +505,7 @@ describe("contextDocService", () => {
       source: "auto",
       event: "pr_create",
       reason: "stale_run",
-      provider: "unified",
+      provider: "opencode",
       modelId: null,
       reasoningEffort: null,
     });
@@ -515,7 +515,7 @@ describe("contextDocService", () => {
       source: "auto",
       event: "pr_create",
       reason: "stale_run",
-      provider: "unified",
+      provider: "opencode",
     });
     expect(service.getStatus().generation.error).toContain("did not finish");
   });

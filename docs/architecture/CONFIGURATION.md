@@ -216,26 +216,26 @@ testSuites:
 # AI configuration (local.yaml only)
 ai:
   mode: "subscription"             # "guest" | "subscription"
-  defaultProvider: "auto"         # "auto" | "claude" | "codex"
+  defaultProvider: "auto"         # "auto" | "claude" | "codex" | "cursor" | "opencode"
   taskRouting:
     planning:
-      provider: "claude"           # "claude" | "codex"
-      model: "anthropic/claude-sonnet-4-6-api"   # Registry model ID
+      provider: "claude"           # "claude" | "codex" | "opencode"
+      model: "anthropic/claude-sonnet-4-6"   # Registry model ID
     implementation:
       provider: "codex"
       model: "openai/gpt-5.4-codex"
     review:
       provider: "claude"
-      model: "anthropic/claude-sonnet-4-6-api"
+      model: "anthropic/claude-sonnet-4-6"
     conflict_resolution:
       provider: "claude"
-      model: "anthropic/claude-sonnet-4-6-api"
+      model: "anthropic/claude-sonnet-4-6"
     narrative:
       provider: "claude"
-      model: "anthropic/claude-haiku-4-5-api"
+      model: "anthropic/claude-haiku-4-5"
     pr_description:
       provider: "claude"
-      model: "anthropic/claude-haiku-4-5-api"
+      model: "anthropic/claude-haiku-4-5"
 ```
 
 The `ai` section belongs in `local.yaml` only, since it reflects the individual developer's installed CLI tools and preferences. ADE auto-detects available CLI tools (Claude Code, Codex) and populates provider information automatically. The `taskRouting` section allows per-task-type configuration of which provider and model to use. Model identifiers reference entries in the unified model registry (`src/shared/modelRegistry.ts`), which serves as the single source of truth for all supported models, their capabilities, and pricing (see DATA_MODEL.md for details). Provider mode is derived from `ai.mode`; legacy `providers.mode` values are ignored and stripped on save rather than migrated.

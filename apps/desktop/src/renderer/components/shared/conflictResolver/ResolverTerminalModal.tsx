@@ -1,9 +1,10 @@
 import React from "react";
+import { useNavigate } from "react-router-dom";
 import * as Dialog from "@radix-ui/react-dialog";
 import { Button } from "../../ui/Button";
 import { TerminalView } from "../../terminals/TerminalView";
 import { PostResolutionActions } from "./PostResolutionActions";
-import { UnifiedModelSelector } from "../UnifiedModelSelector";
+import { ProviderModelSelector } from "../ProviderModelSelector";
 import { getDefaultModelDescriptor, MODEL_REGISTRY, getModelById, type ModelDescriptor } from "../../../../shared/modelRegistry";
 import type {
   AiDetectedAuth,
@@ -76,7 +77,7 @@ function resolveRegistryModelId(value: string | null | undefined): string | null
     (model) =>
       model.id.toLowerCase() === normalized
       || model.shortId.toLowerCase() === normalized
-      || model.sdkModelId.toLowerCase() === normalized
+      || model.providerModelId.toLowerCase() === normalized
   );
   return match?.id ?? null;
 }
@@ -102,7 +103,7 @@ function resolveCliRegistryModelId(provider: "codex" | "claude" | "cursor", valu
       && (
         model.id.toLowerCase() === normalized
         || model.shortId.toLowerCase() === normalized
-        || model.sdkModelId.toLowerCase() === normalized
+        || model.providerModelId.toLowerCase() === normalized
       )
   );
   return match?.id ?? null;
@@ -117,7 +118,7 @@ function hasConfiguredNonCliAuth(model: ModelDescriptor, detectedAuth: AiDetecte
       return detectedAuth.some((auth) => auth.type === "openrouter");
     }
     if (authType === "local") {
-      if (model.family === "ollama" || model.family === "lmstudio" || model.family === "vllm") {
+      if (model.family === "ollama" || model.family === "lmstudio") {
         return detectedAuth.some((auth) => auth.type === "local" && auth.provider === model.family);
       }
       return detectedAuth.some((auth) => auth.type === "local");
@@ -297,6 +298,10 @@ export function ResolverTerminalModal({
     error: string | null;
   }) => void;
 }) {
+  const navigate = useNavigate();
+  const openAiProvidersSettings = React.useCallback(() => {
+    navigate("/settings?tab=ai#ai-providers");
+  }, [navigate]);
   // Local state
   const [phase, setPhase] = React.useState<ResolverModalPhase>("configure");
   const [resolverModel, setResolverModel] = React.useState(initialModel ?? "");
@@ -751,7 +756,7 @@ export function ResolverTerminalModal({
             <div className="mt-4 space-y-4">
               <div>
                 <label className="mb-1 block text-xs font-medium text-fg">Model</label>
-                <UnifiedModelSelector
+                <ProviderModelSelector
                   value={resolverModel}
                   availableModelIds={effectiveAvailableModelIds}
                   showReasoning
@@ -767,6 +772,7 @@ export function ResolverTerminalModal({
                       featureModelOverrides: { conflict_proposals: modelId } as AiConfig["featureModelOverrides"],
                     });
                   }}
+                  onOpenAiSettings={openAiProvidersSettings}
                 />
               </div>
               <div>

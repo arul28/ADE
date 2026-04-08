@@ -82,7 +82,7 @@ describe("buildFullPrompt", () => {
           usedMissionMemoryIds: ["mem-mission-1"],
         } as any,
       },
-      "unified",
+      "opencode",
       {
         memoryService,
         projectId: "project-1",
@@ -128,7 +128,7 @@ describe("buildFullPrompt", () => {
         fullDocs: [],
         createTrackedSession: async () => ({ ptyId: "pty-1", sessionId: "session-1" }),
       },
-      "unified",
+      "opencode",
       {}
     );
 
@@ -184,7 +184,7 @@ describe("buildFullPrompt", () => {
           },
         } as any,
       },
-      "unified",
+      "opencode",
       {}
     );
 
@@ -222,7 +222,7 @@ describe("buildFullPrompt", () => {
         fullDocs: [],
         createTrackedSession: async () => ({ ptyId: "pty-1", sessionId: "session-1" }),
       },
-      "unified",
+      "opencode",
       {}
     );
 
@@ -261,7 +261,7 @@ describe("buildFullPrompt", () => {
         fullDocs: [],
         createTrackedSession: async () => ({ ptyId: "pty-1", sessionId: "session-1" }),
       },
-      "unified",
+      "opencode",
       { workerRuntime: "in_process" }
     );
 

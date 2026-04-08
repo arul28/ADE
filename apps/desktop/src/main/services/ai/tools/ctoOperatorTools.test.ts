@@ -1180,7 +1180,7 @@ describe("createCtoOperatorTools", () => {
       const started = await (tools.startPullRequestConvergenceRound as any).execute({
         prId: "pr-1",
         scope: "comments",
-        modelId: "openai/gpt-5.4",
+        modelId: "opencode/openai/gpt-5.4",
         additionalInstructions: "Be concise.",
       });
       const stopped = await (tools.stopPullRequestConvergence as any).execute({

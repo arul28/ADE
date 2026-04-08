@@ -1,4 +1,4 @@
-import { tool, type Tool } from "ai";
+import { executableTool as tool, type ExecutableTool as Tool } from "./executableTool";
 import { z } from "zod";
 import fs from "node:fs";
 import os from "node:os";
@@ -11,7 +11,7 @@ import { createGlobSearchTool } from "./globSearch";
 import { webFetchTool } from "./webFetch";
 import { webSearchTool } from "./webSearch";
 import { createMemoryTools, type MemoryWriteEvent, type TurnMemoryPolicyState } from "./memoryTools";
-import type { createUnifiedMemoryService } from "../../memory/unifiedMemoryService";
+import type { createMemoryService } from "../../memory/memoryService";
 import type { AgentChatApprovalDecision, AgentChatEvent, WorkerSandboxConfig, CtoCoreMemory } from "../../../../shared/types";
 import { DEFAULT_WORKER_SANDBOX_CONFIG } from "../../orchestrator/orchestratorConstants";
 import { getErrorMessage, isEnoentError, isWithinDir, resolvePathWithinRoot } from "../../shared/utils";
@@ -60,7 +60,7 @@ export type TodoToolItem = Extract<AgentChatEvent, { type: "todo_update" }>["ite
 
 export interface UniversalToolSetOptions {
   permissionMode: PermissionMode;
-  memoryService?: ReturnType<typeof createUnifiedMemoryService>;
+  memoryService?: ReturnType<typeof createMemoryService>;
   projectId?: string;
   runId?: string;
   stepId?: string;

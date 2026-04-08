@@ -1,4 +1,4 @@
-import { tool, type Tool } from "ai";
+import { executableTool as tool, type ExecutableTool as Tool } from "./executableTool";
 import { z } from "zod";
 import { getModelById, resolveChatProviderForDescriptor } from "../../../../shared/modelRegistry";
 import type {
@@ -187,7 +187,7 @@ const ACTIVE_LINEAR_RUN_STATUSES = new Set([
 function deriveChatProvider(args: { modelId?: string | null }): { provider: AgentChatCreateArgs["provider"]; model: string } {
   const descriptor = args.modelId ? getModelById(args.modelId) : null;
   if (!descriptor) {
-    return { provider: "unified", model: args.modelId?.trim() || "" };
+    return { provider: "opencode", model: args.modelId?.trim() || "" };
   }
   return resolveChatProviderForDescriptor(descriptor);
 }

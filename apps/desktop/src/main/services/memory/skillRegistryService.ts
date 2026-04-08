@@ -6,7 +6,7 @@ import type { SkillIndexEntry, SkillIndexKind, SkillIndexSource } from "../../..
 import type { Logger } from "../logging/logger";
 import type { AdeDb } from "../state/kvDb";
 import { nowIso } from "../shared/utils";
-import type { UnifiedMemoryService } from "./unifiedMemoryService";
+import type { MemoryService } from "./memoryService";
 import type { ProceduralLearningService } from "./proceduralLearningService";
 
 type SkillIndexRow = {
@@ -163,7 +163,7 @@ export function createSkillRegistryService(args: {
   projectRoot: string;
   logger?: Pick<Logger, "warn"> | null;
   memoryService: Pick<
-    UnifiedMemoryService,
+    MemoryService,
     "getMemory" | "listMemories" | "addMemory" | "writeMemory" | "archiveMemory"
   >;
   proceduralLearningService?: Pick<

@@ -134,7 +134,7 @@ function installAdeMocks(options?: {
       models: vi.fn().mockImplementation(async ({ provider }: { provider: string }) => {
         if (provider === "codex") return [{ id: "gpt-5.4" }];
         if (provider === "claude") return options?.includeClaudeModel ? [{ id: "anthropic/claude-sonnet-4-6" }] : [];
-        if (provider === "unified") return [{ id: "openai/gpt-5.4-mini" }];
+        if (provider === "opencode") return [{ id: "openai/gpt-5.4-mini" }];
         return [];
       }),
       slashCommands: vi.fn().mockResolvedValue([]),
@@ -510,7 +510,7 @@ describe("AgentChatPane submit recovery", () => {
     expect(trigger.textContent ?? "").toContain(currentLabel);
 
     fireEvent.click(trigger);
-    fireEvent.click(await screen.findByRole("button", { name: /Anthropic/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /^Claude$/i }));
     await clickEnabledModelOption(nextLabelPattern);
 
     await waitFor(() => {
@@ -567,7 +567,7 @@ describe("AgentChatPane submit recovery", () => {
     expect(trigger.textContent ?? "").toContain(currentLabel);
 
     fireEvent.click(trigger);
-    fireEvent.click(await screen.findByRole("button", { name: /Anthropic/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /^Claude$/i }));
     await clickEnabledModelOption(nextLabelPattern);
 
     await waitFor(() => {
@@ -700,7 +700,7 @@ describe("AgentChatPane submit recovery", () => {
     const codexLabel = getModelById("openai/gpt-5.4-codex")?.displayName ?? "GPT-5.4 Codex";
 
     fireEvent.click(trigger);
-    fireEvent.click(await screen.findByRole("button", { name: /OpenAI/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /^Codex$/i }));
     await clickEnabledModelOption(new RegExp(escapeRegExp(codexLabel), "i"));
 
     const textbox = await screen.findByRole("textbox");

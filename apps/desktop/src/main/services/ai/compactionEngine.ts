@@ -3,13 +3,13 @@
 // ---------------------------------------------------------------------------
 
 import { randomUUID } from "node:crypto";
-import { streamText } from "ai";
 import {
+  getModelById,
   type ModelDescriptor,
 } from "../../../shared/modelRegistry";
+import type { EffectiveProjectConfig, ProjectConfigFile } from "../../../shared/types";
 import type { AdeDb } from "../state/kvDb";
-import { resolveModel } from "./providerResolver";
-import { detectAllAuth } from "./authDetector";
+import { runOpenCodeTextPrompt } from "../opencode/openCodeRuntime";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -221,11 +221,13 @@ Example: ["The auth middleware requires X-Request-ID header", "PostgreSQL JSONB 
 export async function compactConversation(opts: {
   messages: TranscriptEntry[];
   modelId: string;
+  projectConfig: ProjectConfigFile | EffectiveProjectConfig;
 }): Promise<CompactionResult> {
-  const { messages, modelId } = opts;
-
-  const auth = await detectAllAuth();
-  const sdkModel = await resolveModel(modelId, auth);
+  const { messages, modelId, projectConfig } = opts;
+  const descriptor = getModelById(modelId);
+  if (!descriptor) {
+    throw new Error(`Unknown compaction model '${modelId}'.`);
+  }
 
   // Estimate tokens for current messages
   const previousTokenCount = estimateTokens(messages);
@@ -239,28 +241,26 @@ export async function compactConversation(opts: {
     .join("\n\n");
 
   // Summarize
-  const summaryResult = streamText({
-    model: sdkModel,
+  const summaryResult = await runOpenCodeTextPrompt({
+    directory: process.cwd(),
+    title: "ADE compaction summary",
+    modelDescriptor: descriptor,
     system: COMPACTION_SYSTEM_PROMPT,
     prompt: `Summarize this conversation:\n\n${conversationText}`,
+    projectConfig,
   });
-
-  let summary = "";
-  for await (const part of summaryResult.fullStream) {
-    if (part.type === "text-delta") summary += part.text;
-  }
+  const summary = summaryResult.text;
 
   // Extract facts
-  const factsResult = streamText({
-    model: sdkModel,
+  const factsResult = await runOpenCodeTextPrompt({
+    directory: process.cwd(),
+    title: "ADE compaction facts",
+    modelDescriptor: descriptor,
     system: FACT_EXTRACTION_PROMPT,
     prompt: `Extract facts from this conversation:\n\n${conversationText}`,
+    projectConfig,
   });
-
-  let factsText = "";
-  for await (const part of factsResult.fullStream) {
-    if (part.type === "text-delta") factsText += part.text;
-  }
+  const factsText = factsResult.text;
 
   let factsExtracted: string[] = [];
   try {

@@ -1,4 +1,4 @@
-import { tool } from "ai";
+import { executableTool as tool } from "./executableTool";
 import { z } from "zod";
 import fs from "node:fs";
 import path from "node:path";

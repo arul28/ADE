@@ -44,7 +44,7 @@ const IDLE_ATTENTION_TOOL_TYPES = new Set<TerminalToolType>([
   "codex",
   "claude-orchestrated",
   "codex-orchestrated",
-  "ai-orchestrated",
+  "opencode-orchestrated",
   "aider",
   "continue",
 ]);
@@ -141,16 +141,15 @@ export function sessionStatusDot(session: {
     return { cls: "border-2 border-emerald-400 border-t-transparent bg-transparent", spinning: true, label: "Running" };
   }
   if (indicator === "running-needs-attention") {
-    return {
-      cls: "bg-amber-300",
-      spinning: false,
-      label:
-        session.runtimeState === "idle"
-          ? isChatToolType(session.toolType)
-            ? "Ready"
-            : "Idle"
-          : "Awaiting input",
-    };
+    let label: string;
+    if (session.runtimeState !== "idle") {
+      label = "Awaiting input";
+    } else if (isChatToolType(session.toolType)) {
+      label = "Ready";
+    } else {
+      label = "Idle";
+    }
+    return { cls: "bg-amber-300", spinning: false, label };
   }
   return { cls: "bg-red-400", spinning: false, label: "Ended" };
 }

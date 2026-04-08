@@ -45,7 +45,7 @@ import {
   cosineSimilarity,
   createHybridSearchService,
 } from "./hybridSearchService";
-import { createUnifiedMemoryService, type Memory } from "./unifiedMemoryService";
+import { createMemoryService, type Memory } from "./memoryService";
 
 function createLogger() {
   return {
@@ -174,7 +174,7 @@ async function createFixture(opts: {
   });
 
   let worker: ReturnType<typeof createEmbeddingWorkerService>;
-  const memoryService = createUnifiedMemoryService(db, {
+  const memoryService = createMemoryService(db, {
     hybridSearchService: opts.enableHybridSearch === false ? undefined : hybridSearchService,
     onMemoryUpserted: (event) => {
       if (opts.attachQueueHook === false) return;

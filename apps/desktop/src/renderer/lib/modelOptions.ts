@@ -2,12 +2,14 @@ import type { AiModelDescriptor, AiRuntimeConnectionStatus, AiSettingsStatus, Mo
 import {
   LOCAL_PROVIDER_LABELS,
   MODEL_REGISTRY,
+  decodeOpenCodeRegistryId,
   getLocalModelIdTail,
   getModelById,
   isLocalProviderFamily,
   parseLocalProviderFromModelId,
   type ModelDescriptor,
 } from "../../shared/modelRegistry";
+import { providerLabel } from "../components/shared/providerModelSelectorGrouping";
 
 function normalizeAuthProvider(provider: string | undefined): string {
   return String(provider ?? "").trim().toLowerCase();
@@ -107,8 +109,8 @@ function hasDynamicLocalModelIdsForProvider(
 }
 
 export interface DeriveModelOptions {
-  /** Include cursor/* models in the result. Defaults to `false`. */
-  includeCursor?: boolean;
+  // All configured models are now included unconditionally.
+  // This interface is kept for backward-compatible call-sites.
 }
 
 export function deriveConfiguredModelIds(
@@ -117,13 +119,24 @@ export function deriveConfiguredModelIds(
 ): ModelId[] {
   if (!status) return [];
 
-  const { includeCursor = false } = options ?? {};
   const runtimeConnections = (status as { runtimeConnections?: Record<string, AiRuntimeConnectionStatus> } | null | undefined)?.runtimeConnections;
 
   // Derive available models from detectedAuth. For Cursor CLI, merge in
   // `status.availableModelIds` entries under `cursor/*` (main lists them after
   // `agent models`); local runtimes also merge in discovered loaded models.
   const ids = new Set<ModelId>();
+
+  // Build a set of local model IDs that are already represented by an OpenCode
+  // inventory descriptor (e.g. "lmstudio/qwen3.5-9b" when "opencode/lmstudio/qwen3.5-9b"
+  // exists in availableModelIds). We skip these when adding from loadedModelIds
+  // to avoid duplicate entries in the model picker.
+  const opencodeLocalModelIds = new Set<string>();
+  for (const rawId of status.availableModelIds ?? []) {
+    const decoded = decodeOpenCodeRegistryId(String(rawId ?? "").trim());
+    if (decoded && isLocalProviderFamily(decoded.openCodeProviderId)) {
+      opencodeLocalModelIds.add(`${decoded.openCodeProviderId}/${decoded.openCodeModelId}`);
+    }
+  }
 
   for (const auth of status.detectedAuth ?? []) {
     if (auth.type === "cli-subscription") {
@@ -152,7 +165,8 @@ export function deriveConfiguredModelIds(
           addKnownModelIds(ids, provider, false);
         }
         addAvailableModelIdsByPrefix(ids, status.availableModelIds, `${provider}/`);
-        addAvailableModelIdsByPrefix(ids, runtimeConnections?.[provider]?.loadedModelIds, `${provider}/`);
+        const dedupedLoaded = runtimeConnections?.[provider]?.loadedModelIds?.filter((id) => !opencodeLocalModelIds.has(String(id ?? "").trim()));
+        addAvailableModelIdsByPrefix(ids, dedupedLoaded, `${provider}/`);
       }
     }
   }
@@ -168,11 +182,12 @@ export function deriveConfiguredModelIds(
     if (!hasDynamicLocalModelIdsForProvider(normalizedProvider, status.availableModelIds, runtimeConnections)) {
       addKnownModelIds(ids, normalizedProvider, false);
     }
-    addAvailableModelIdsByPrefix(ids, connection.loadedModelIds, `${normalizedProvider}/`);
+    const dedupedLoaded2 = connection.loadedModelIds?.filter((id) => !opencodeLocalModelIds.has(String(id ?? "").trim()));
+    addAvailableModelIdsByPrefix(ids, dedupedLoaded2, `${normalizedProvider}/`);
     addAvailableModelIdsByPrefix(ids, status.availableModelIds, `${normalizedProvider}/`);
   }
 
-  if (includeCursor) {
+  {
     const cursorCliAuthed = status.detectedAuth?.some(
       (a) => a.type === "cli-subscription" && a.cli === "cursor" && a.authenticated !== false,
     );
@@ -183,6 +198,8 @@ export function deriveConfiguredModelIds(
       }
     }
   }
+
+  addAvailableModelIdsByPrefix(ids, status.availableModelIds, "opencode/");
 
   const registryOrdered = MODEL_REGISTRY
     .filter((model) => !model.deprecated && ids.has(model.id))
@@ -202,11 +219,19 @@ export function deriveConfiguredModelOptions(
 ): AiModelDescriptor[] {
   return deriveConfiguredModelIds(status, options).flatMap((modelId) => {
     const descriptor = getModelById(modelId);
-    return descriptor
-      ? [descriptorToModelOption(descriptor)]
-      : parseLocalProviderFromModelId(modelId)
-        ? [buildFallbackModelOption(modelId)]
-        : [];
+    if (descriptor) return [descriptorToModelOption(descriptor)];
+    if (parseLocalProviderFromModelId(modelId)) return [buildFallbackModelOption(modelId)];
+    const oc = decodeOpenCodeRegistryId(modelId);
+    if (oc) {
+      return [
+        {
+          id: modelId,
+          label: oc.openCodeModelId,
+          description: `${providerLabel(oc.openCodeProviderId)} · OpenCode`,
+        },
+      ];
+    }
+    return [];
   });
 }
 
@@ -219,5 +244,16 @@ export function includeSelectedModelOption(
   const descriptor = getModelById(modelId);
   if (descriptor) return [descriptorToModelOption(descriptor), ...options];
   if (parseLocalProviderFromModelId(modelId)) return [buildFallbackModelOption(modelId), ...options];
+  const oc = decodeOpenCodeRegistryId(modelId);
+  if (oc) {
+    return [
+      {
+        id: modelId,
+        label: oc.openCodeModelId,
+        description: `${providerLabel(oc.openCodeProviderId)} · OpenCode`,
+      },
+      ...options,
+    ];
+  }
   return options;
 }

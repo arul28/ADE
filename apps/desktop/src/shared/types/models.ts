@@ -2,7 +2,7 @@
 // Model configuration types
 // ---------------------------------------------------------------------------
 
-export type ModelProvider = "claude" | "codex" | (string & {});
+export type ModelProvider = "claude" | "codex" | "cursor" | "opencode" | (string & {});
 
 export type ThinkingLevel = "none" | "minimal" | "low" | "medium" | "high" | "max" | "xhigh";
 

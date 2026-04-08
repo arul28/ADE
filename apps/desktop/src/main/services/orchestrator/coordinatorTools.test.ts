@@ -2062,14 +2062,14 @@ describe("coordinatorTools planning manual-input blocking", () => {
 });
 
 describe("coordinatorTools budget hard-cap guards", () => {
-  it("spawn_worker allows API/local phase models and creates unified worker steps", async () => {
+  it("spawn_worker allows API/local phase models and creates opencode worker steps", async () => {
     const { tools, orchestratorService } = createCoordinatorHarness({
       graph: {
         run: {
           metadata: {
             phaseRuntime: {
               currentPhaseModel: {
-                modelId: "openai/gpt-5.4",
+                modelId: "opencode/openai/gpt-5.4",
                 provider: "openai"
               }
             }
@@ -2088,13 +2088,13 @@ describe("coordinatorTools budget hard-cap guards", () => {
 
     expect(result).toMatchObject({
       ok: true,
-      modelId: "openai/gpt-5.4",
+      modelId: "opencode/openai/gpt-5.4",
     });
     expect(orchestratorService.addSteps).toHaveBeenCalledWith(
       expect.objectContaining({
         steps: [
           expect.objectContaining({
-            executorKind: "unified",
+            executorKind: "opencode",
           }),
         ],
       })
@@ -2439,7 +2439,7 @@ describe("coordinatorTools delegate_parallel", () => {
           },
           phaseRuntime: {
             currentPhaseModel: {
-              modelId: "openai/gpt-5.4",
+              modelId: "opencode/openai/gpt-5.4",
               provider: "openai",
             },
           },
@@ -2488,8 +2488,8 @@ describe("coordinatorTools delegate_parallel", () => {
       ok: true,
       children: [
         expect.objectContaining({ name: "explicit-model", modelId: "openai/gpt-5.3-codex" }),
-        expect.objectContaining({ name: "role-default", modelId: "openai/gpt-5.4" }),
-        expect.objectContaining({ name: "parent-fallback", modelId: "openai/gpt-5.4" }),
+        expect.objectContaining({ name: "role-default", modelId: "opencode/openai/gpt-5.4" }),
+        expect.objectContaining({ name: "parent-fallback", modelId: "opencode/openai/gpt-5.4" }),
       ],
     });
 
@@ -2501,7 +2501,7 @@ describe("coordinatorTools delegate_parallel", () => {
     expect(secondBatch).toMatchObject({
       ok: true,
       children: [
-        expect.objectContaining({ name: "phase-fallback", modelId: "openai/gpt-5.4" }),
+        expect.objectContaining({ name: "phase-fallback", modelId: "opencode/openai/gpt-5.4" }),
       ],
     });
   });

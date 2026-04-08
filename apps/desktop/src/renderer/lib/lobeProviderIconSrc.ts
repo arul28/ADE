@@ -14,7 +14,6 @@ import ollama from "@lobehub/icons-static-svg/icons/ollama.svg";
 import openai from "@lobehub/icons-static-svg/icons/openai.svg";
 import openrouter from "@lobehub/icons-static-svg/icons/openrouter.svg";
 import togetherColor from "@lobehub/icons-static-svg/icons/together-color.svg";
-import vllmColor from "@lobehub/icons-static-svg/icons/vllm-color.svg";
 import xai from "@lobehub/icons-static-svg/icons/xai.svg";
 
 /** ADE `ProviderFamily` (lowercase) → bundled SVG URL */
@@ -28,7 +27,6 @@ export const LOBE_PROVIDER_ICON_SRC: Record<string, string> = {
   openrouter,
   ollama,
   lmstudio,
-  vllm: vllmColor,
   groq,
   together: togetherColor,
   meta: metaColor,

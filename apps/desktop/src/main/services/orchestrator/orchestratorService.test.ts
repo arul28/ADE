@@ -158,12 +158,12 @@ async function createFixture(args: {
     memoryBriefingService: (args.memoryBriefingService ?? null) as any,
   });
 
-  // Test harness convenience: unified workers require metadata.modelId in Phase 3.
+  // Test harness convenience: opencode workers require metadata.modelId in Phase 3.
   // Inject a default modelId for tests that are validating unrelated behavior.
-  const defaultUnifiedModelId = "anthropic/claude-sonnet-4-6";
+  const defaultOpenCodeModelId = "anthropic/claude-sonnet-4-6";
   const normalizeStepModelId = (step: any) => {
     const executorKind = typeof step?.executorKind === "string" ? step.executorKind : null;
-    if (executorKind !== "unified") return step;
+    if (executorKind !== "opencode") return step;
     const metadata =
       step?.metadata && typeof step.metadata === "object" && !Array.isArray(step.metadata)
         ? step.metadata
@@ -174,7 +174,7 @@ async function createFixture(args: {
       ...step,
       metadata: {
         ...metadata,
-        modelId: defaultUnifiedModelId,
+        modelId: defaultOpenCodeModelId,
       },
     };
   };
@@ -742,7 +742,7 @@ describe("orchestratorService", () => {
         metadata: {
           autopilot: {
             enabled: true,
-            executorKind: "unified",
+            executorKind: "opencode",
             ownerId: "autopilot-owner",
             parallelismCap: 1
           }
@@ -752,7 +752,7 @@ describe("orchestratorService", () => {
             stepKey: "status-guarded",
             title: "Status Guarded",
             stepIndex: 0,
-            executorKind: "unified"
+            executorKind: "opencode"
           }
         ]
       });
@@ -806,7 +806,7 @@ describe("orchestratorService", () => {
             title: "Missing lane",
             stepIndex: 0,
             laneId: fixture.laneId,
-            executorKind: "unified",
+            executorKind: "opencode",
           }
         ]
       });
@@ -825,7 +825,7 @@ describe("orchestratorService", () => {
           runId: started.run.id,
           stepId: refreshedStep?.id ?? createdStep.id,
           ownerId: "owner",
-          executorKind: "unified",
+          executorKind: "opencode",
         }),
       ).rejects.toThrow(/laneId is missing/i);
       expect(fixture.service.listAttempts({ runId: started.run.id })).toHaveLength(0);
@@ -873,7 +873,7 @@ describe("orchestratorService", () => {
         metadata: {
           autopilot: {
             enabled: true,
-            executorKind: "unified",
+            executorKind: "opencode",
             ownerId: "autopilot-owner",
             parallelismCap: 1
           }
@@ -893,7 +893,7 @@ describe("orchestratorService", () => {
             title: "Research sidebar",
             stepIndex: 1,
             laneId: fixture.laneId,
-            executorKind: "unified",
+            executorKind: "opencode",
             metadata: {
               stepType: "planning"
             }
@@ -969,7 +969,7 @@ describe("orchestratorService", () => {
           },
           autopilot: {
             enabled: true,
-            executorKind: "unified",
+            executorKind: "opencode",
             ownerId: "autopilot-owner",
             parallelismCap: 2
           }
@@ -980,7 +980,7 @@ describe("orchestratorService", () => {
             title: "Plan work",
             stepIndex: 0,
             laneId: fixture.laneId,
-            executorKind: "unified",
+            executorKind: "opencode",
             metadata: {
               stepType: "planning",
               phaseKey: "planning",
@@ -993,7 +993,7 @@ describe("orchestratorService", () => {
             title: "Implement work",
             stepIndex: 1,
             laneId: fixture.laneId,
-            executorKind: "unified",
+            executorKind: "opencode",
             metadata: {
               stepType: "implementation",
               phaseKey: "development",
@@ -1185,7 +1185,7 @@ describe("orchestratorService", () => {
           },
           autopilot: {
             enabled: true,
-            executorKind: "unified",
+            executorKind: "opencode",
             ownerId: "autopilot-owner",
             parallelismCap: 1
           }
@@ -1196,7 +1196,7 @@ describe("orchestratorService", () => {
             title: "Implement auth flow",
             stepIndex: 0,
             laneId: fixture.laneId,
-            executorKind: "unified",
+            executorKind: "opencode",
             metadata: {
               stepType: "implementation",
               phaseKey: "implementation",
@@ -1217,7 +1217,7 @@ describe("orchestratorService", () => {
             stepIndex: 1,
             laneId: fixture.laneId,
             dependencyStepKeys: ["impl-auth"],
-            executorKind: "unified",
+            executorKind: "opencode",
             metadata: {
               stepType: "implementation",
               phaseKey: "implementation",
@@ -1544,15 +1544,15 @@ describe("orchestratorService", () => {
         metadata: {
           autopilot: {
             enabled: true,
-            executorKind: "unified",
+            executorKind: "opencode",
             ownerId: "autopilot-owner",
             parallelismCap: 4
           }
         },
         steps: [
-          { stepKey: "s1", title: "S1", stepIndex: 0, laneId: fixture.laneId, executorKind: "unified" },
-          { stepKey: "s2", title: "S2", stepIndex: 1, laneId: fixture.laneId, executorKind: "unified" },
-          { stepKey: "s3", title: "S3", stepIndex: 2, laneId: fixture.laneId, executorKind: "unified" }
+          { stepKey: "s1", title: "S1", stepIndex: 0, laneId: fixture.laneId, executorKind: "opencode" },
+          { stepKey: "s2", title: "S2", stepIndex: 1, laneId: fixture.laneId, executorKind: "opencode" },
+          { stepKey: "s3", title: "S3", stepIndex: 2, laneId: fixture.laneId, executorKind: "opencode" }
         ]
       });
 
@@ -1631,7 +1631,7 @@ describe("orchestratorService", () => {
         metadata: {
           autopilot: {
             enabled: true,
-            executorKind: "unified",
+            executorKind: "opencode",
             ownerId: "autopilot-owner",
             parallelismCap: 4
           },
@@ -1643,9 +1643,9 @@ describe("orchestratorService", () => {
           }
         },
         steps: [
-          { stepKey: "s1", title: "S1", stepIndex: 0, laneId: fixture.laneId, executorKind: "unified" },
-          { stepKey: "s2", title: "S2", stepIndex: 1, laneId: fixture.laneId, executorKind: "unified" },
-          { stepKey: "s3", title: "S3", stepIndex: 2, laneId: fixture.laneId, executorKind: "unified" }
+          { stepKey: "s1", title: "S1", stepIndex: 0, laneId: fixture.laneId, executorKind: "opencode" },
+          { stepKey: "s2", title: "S2", stepIndex: 1, laneId: fixture.laneId, executorKind: "opencode" },
+          { stepKey: "s3", title: "S3", stepIndex: 2, laneId: fixture.laneId, executorKind: "opencode" }
         ]
       });
 
@@ -1721,7 +1721,7 @@ describe("orchestratorService", () => {
         metadata: {
           autopilot: {
             enabled: true,
-            executorKind: "unified",
+            executorKind: "opencode",
             ownerId: "autopilot-owner",
             parallelismCap: 1
           }
@@ -1732,7 +1732,7 @@ describe("orchestratorService", () => {
             title: "Low Priority",
             stepIndex: 0,
             laneId: fixture.laneId,
-            executorKind: "unified",
+            executorKind: "opencode",
             metadata: { aiPriority: 1 }
           },
           {
@@ -1740,7 +1740,7 @@ describe("orchestratorService", () => {
             title: "High Priority",
             stepIndex: 1,
             laneId: fixture.laneId,
-            executorKind: "unified",
+            executorKind: "opencode",
             metadata: { aiPriority: 50 }
           },
           {
@@ -1748,7 +1748,7 @@ describe("orchestratorService", () => {
             title: "No AI Priority",
             stepIndex: 2,
             laneId: fixture.laneId,
-            executorKind: "unified"
+            executorKind: "opencode"
           }
         ]
       });
@@ -1881,7 +1881,7 @@ describe("orchestratorService", () => {
       const started = fixture.service.startRunFromMission({
         missionId: fixture.missionId,
         runMode: "autopilot",
-        defaultExecutorKind: "unified",
+        defaultExecutorKind: "opencode",
         metadata: {
           plannerParallelismCap: 6
         }
@@ -1891,7 +1891,7 @@ describe("orchestratorService", () => {
       expect(run?.metadata?.runMode).toBe("autopilot");
       const autopilot = run?.metadata?.autopilot as Record<string, unknown> | undefined;
       expect(autopilot?.enabled).toBe(true);
-      expect(autopilot?.executorKind).toBe("unified");
+      expect(autopilot?.executorKind).toBe("opencode");
       expect(autopilot?.parallelismCap).toBe(2);
       const planner = run?.metadata?.planner as Record<string, unknown> | undefined;
       expect(planner?.parallelismCap).toBe(2);
@@ -1961,7 +1961,7 @@ describe("orchestratorService", () => {
       const requiredStarted = requiredFixture.service.startRunFromMission({
         missionId: requiredFixture.missionId,
         runMode: "autopilot",
-        defaultExecutorKind: "unified"
+        defaultExecutorKind: "opencode"
       });
       const requiredSteps = requiredFixture.service.listSteps(requiredStarted.run.id);
       const inferredStep = requiredSteps.find((step) => step.missionStepId === "mstep-plan-1");
@@ -2027,7 +2027,7 @@ describe("orchestratorService", () => {
       const offStarted = offFixture.service.startRunFromMission({
         missionId: offFixture.missionId,
         runMode: "autopilot",
-        defaultExecutorKind: "unified"
+        defaultExecutorKind: "opencode"
       });
       const offSteps = offFixture.service.listSteps(offStarted.run.id);
       const inferredAnalysis = offSteps.find((step) => step.missionStepId === "mstep-plan-3");
@@ -2902,7 +2902,7 @@ describe("orchestratorService", () => {
         metadata: {
           autopilot: {
             enabled: true,
-            executorKind: "unified",
+            executorKind: "opencode",
             ownerId: "orchestrator-autopilot"
           }
         },
@@ -2912,7 +2912,7 @@ describe("orchestratorService", () => {
             title: "First",
             stepIndex: 0,
             laneId: fixture.laneId,
-            executorKind: "unified"
+            executorKind: "opencode"
           },
           {
             stepKey: "second",
@@ -2920,7 +2920,7 @@ describe("orchestratorService", () => {
             stepIndex: 1,
             dependencyStepKeys: ["first"],
             laneId: fixture.laneId,
-            executorKind: "unified"
+            executorKind: "opencode"
           }
         ]
       });
@@ -2987,7 +2987,7 @@ describe("orchestratorService", () => {
             title: "Planning Worker",
             stepIndex: 0,
             laneId: fixture.laneId,
-            executorKind: "unified"
+            executorKind: "opencode"
           }
         ]
       });
@@ -3048,7 +3048,7 @@ describe("orchestratorService", () => {
             title: "Planning Worker",
             stepIndex: 0,
             laneId: fixture.laneId,
-            executorKind: "unified",
+            executorKind: "opencode",
             metadata: {
               stepType: "planning",
               readOnlyExecution: true,
@@ -3120,7 +3120,7 @@ describe("orchestratorService", () => {
             title: "Planning Worker",
             stepIndex: 0,
             laneId: fixture.laneId,
-            executorKind: "unified",
+            executorKind: "opencode",
             metadata: {
               stepType: "planning",
               readOnlyExecution: true,
@@ -3195,7 +3195,7 @@ describe("orchestratorService", () => {
             title: "First",
             stepIndex: 0,
             laneId: fixture.laneId,
-            executorKind: "unified"
+            executorKind: "opencode"
           }
         ]
       });
@@ -3371,7 +3371,7 @@ describe("orchestratorService", () => {
     });
     try {
       fixture.service.registerExecutorAdapter({
-        kind: "unified",
+        kind: "opencode",
         start: async () => ({
           status: "completed",
           result: {
@@ -3389,7 +3389,7 @@ describe("orchestratorService", () => {
             stepKey: "adapter",
             title: "Adapter Step",
             stepIndex: 0,
-            executorKind: "unified"
+            executorKind: "opencode"
           }
         ]
       });
@@ -3456,7 +3456,7 @@ describe("orchestratorService", () => {
 
       let capturedPermissionConfig: Record<string, unknown> | undefined;
       fixture.service.registerExecutorAdapter({
-        kind: "unified",
+        kind: "opencode",
         start: async (args) => {
           capturedPermissionConfig = args.permissionConfig as Record<string, unknown> | undefined;
           return {
@@ -3481,7 +3481,7 @@ describe("orchestratorService", () => {
             stepKey: "permissions-override",
             title: "Permissions override",
             stepIndex: 0,
-            executorKind: "unified",
+            executorKind: "opencode",
             metadata: {
               modelId: "anthropic/claude-sonnet-4-6"
             }
@@ -3512,7 +3512,7 @@ describe("orchestratorService", () => {
     try {
       let capturedPermissionConfig: Record<string, unknown> | undefined;
       fixture.service.registerExecutorAdapter({
-        kind: "unified",
+        kind: "opencode",
         start: async (args) => {
           capturedPermissionConfig = args.permissionConfig as Record<string, unknown> | undefined;
           return {
@@ -3537,7 +3537,7 @@ describe("orchestratorService", () => {
             stepKey: "permissions-defaults",
             title: "Permissions defaults",
             stepIndex: 0,
-            executorKind: "unified",
+            executorKind: "opencode",
             metadata: {
               modelId: "openai/gpt-5.3-codex"
             }
@@ -3563,8 +3563,8 @@ describe("orchestratorService", () => {
     }
   });
 
-  it("runs non-CLI unified attempts in-process without spawning terminal sessions", async () => {
-    const executeViaUnified = vi.fn(async () => ({
+  it("runs non-CLI opencode attempts in-process without spawning terminal sessions", async () => {
+    const executeTask = vi.fn(async () => ({
       text: "api/local execution completed",
       structuredOutput: { ok: true },
       sessionId: null
@@ -3575,7 +3575,7 @@ describe("orchestratorService", () => {
     };
     const fixture = await createFixture({
       aiIntegrationService: {
-        executeViaUnified
+        executeTask
       },
       memoryService,
     });
@@ -3588,9 +3588,9 @@ describe("orchestratorService", () => {
             title: "API worker",
             stepIndex: 0,
             laneId: fixture.laneId,
-            executorKind: "unified",
+            executorKind: "opencode",
             metadata: {
-              modelId: "openai/gpt-5.4"
+              modelId: "opencode/openai/gpt-5.4"
             }
           }
         ]
@@ -3607,7 +3607,7 @@ describe("orchestratorService", () => {
       expect(attempt.status).toBe("succeeded");
       expect(attempt.resultEnvelope?.trackedSession).toBe(false);
       expect(fixture.ptyCreateCalls).toHaveLength(0);
-      expect(executeViaUnified).toHaveBeenCalledWith(
+      expect(executeTask).toHaveBeenCalledWith(
         expect.objectContaining({
           projectId: fixture.projectId,
           runId: started.run.id,
@@ -3622,7 +3622,7 @@ describe("orchestratorService", () => {
   });
 
   it("passes explicit employee agent memory context into in-process worker briefings", async () => {
-    const executeViaUnified = vi.fn(async () => ({
+    const executeTask = vi.fn(async () => ({
       text: "api/local execution completed",
       structuredOutput: { ok: true },
       sessionId: null
@@ -3636,7 +3636,7 @@ describe("orchestratorService", () => {
     }));
     const fixture = await createFixture({
       aiIntegrationService: {
-        executeViaUnified,
+        executeTask,
       },
       memoryService: {
         writeMemory: vi.fn(),
@@ -3658,9 +3658,9 @@ describe("orchestratorService", () => {
             title: "API worker memory",
             stepIndex: 0,
             laneId: fixture.laneId,
-            executorKind: "unified",
+            executorKind: "opencode",
             metadata: {
-              modelId: "openai/gpt-5.4",
+              modelId: "opencode/openai/gpt-5.4",
             },
           },
         ],
@@ -3710,7 +3710,7 @@ describe("orchestratorService", () => {
     });
     try {
       fixture.service.registerExecutorAdapter({
-        kind: "unified",
+        kind: "opencode",
         start: async () => ({
           status: "completed",
           result: {
@@ -3736,7 +3736,7 @@ describe("orchestratorService", () => {
             title: "CLI worker memory",
             stepIndex: 0,
             laneId: fixture.laneId,
-            executorKind: "unified",
+            executorKind: "opencode",
             metadata: {
               modelId: "anthropic/claude-sonnet-4-6",
             },
@@ -3788,7 +3788,7 @@ describe("orchestratorService", () => {
     });
     try {
       fixture.service.registerExecutorAdapter({
-        kind: "unified",
+        kind: "opencode",
         start: async () => ({
           status: "completed",
           result: {
@@ -3811,7 +3811,7 @@ describe("orchestratorService", () => {
             title: "CLI worker no employee",
             stepIndex: 0,
             laneId: fixture.laneId,
-            executorKind: "unified",
+            executorKind: "opencode",
             metadata: {
               modelId: "anthropic/claude-sonnet-4-6",
             },
@@ -4220,7 +4220,7 @@ describe("orchestratorService", () => {
 
       let adapterCallCount = 0;
       fixture.service.registerExecutorAdapter({
-        kind: "unified",
+        kind: "opencode",
         start: async () => {
           adapterCallCount += 1;
           const sessionId = `adapter-session-${adapterCallCount}`;
@@ -4239,7 +4239,7 @@ describe("orchestratorService", () => {
           return {
             status: "accepted" as const,
             sessionId,
-            metadata: { adapterKind: "unified" }
+            metadata: { adapterKind: "opencode" }
           };
         }
       });
@@ -4264,7 +4264,7 @@ describe("orchestratorService", () => {
       const started = fixture.service.startRunFromMission({
         missionId: fixture.missionId,
         runMode: "autopilot",
-        defaultExecutorKind: "unified",
+        defaultExecutorKind: "opencode",
         metadata: { plannerParallelismCap: 4 }
       });
 
@@ -4300,11 +4300,11 @@ describe("orchestratorService", () => {
       // Register adapter that returns accepted with a sessionId, but do NOT insert
       // a terminal_sessions row — the session doesn't exist in the database.
       fixture.service.registerExecutorAdapter({
-        kind: "unified",
+        kind: "opencode",
         start: async () => ({
           status: "accepted" as const,
           sessionId: "ghost-session-999",
-          metadata: { adapterKind: "unified" }
+          metadata: { adapterKind: "opencode" }
         })
       });
 
@@ -4315,7 +4315,7 @@ describe("orchestratorService", () => {
             stepKey: "orphan-session-step",
             title: "Step with missing session",
             stepIndex: 0,
-            executorKind: "unified"
+            executorKind: "opencode"
           }
         ]
       });

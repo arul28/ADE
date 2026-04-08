@@ -279,7 +279,19 @@ export function normalizeAttemptStatus(value: string): OrchestratorAttemptStatus
 }
 
 export function normalizeExecutorKind(value: string): OrchestratorExecutorKind {
-  if (value === "unified" || value === "shell" || value === "manual") return value;
+  if (value === "unified") {
+    return "opencode";
+  }
+  if (
+    value === "claude"
+    || value === "codex"
+    || value === "cursor"
+    || value === "opencode"
+    || value === "shell"
+    || value === "manual"
+  ) {
+    return value;
+  }
   return "manual";
 }
 
@@ -455,6 +467,15 @@ export function toStep(row: StepRow): OrchestratorStep {
   };
 }
 
+function parseResultEnvelope(json: string | null): OrchestratorAttemptResultEnvelope | null {
+  if (!json) return null;
+  try {
+    return JSON.parse(json) as OrchestratorAttemptResultEnvelope;
+  } catch {
+    return null;
+  }
+}
+
 export function toAttempt(row: AttemptRow): OrchestratorAttempt {
   return {
     id: row.id,
@@ -473,15 +494,7 @@ export function toAttempt(row: AttemptRow): OrchestratorAttempt {
     createdAt: row.created_at,
     startedAt: row.started_at,
     completedAt: row.completed_at,
-    resultEnvelope: row.result_envelope_json
-      ? ((() => {
-          try {
-            return JSON.parse(row.result_envelope_json) as OrchestratorAttemptResultEnvelope;
-          } catch {
-            return null;
-          }
-        })())
-      : null,
+    resultEnvelope: parseResultEnvelope(row.result_envelope_json),
     metadata: parseJsonRecord(row.metadata_json)
   };
 }
@@ -505,34 +518,40 @@ export function toClaim(row: ClaimRow): OrchestratorClaim {
   };
 }
 
+function normalizeSnapshotType(value: string): "run" | "step" | "attempt" {
+  if (value === "step") return "step";
+  if (value === "attempt") return "attempt";
+  return "run";
+}
+
+const DEFAULT_CURSOR: OrchestratorContextSnapshotCursor = {
+  lanePackKey: null,
+  lanePackVersionId: null,
+  lanePackVersionNumber: null,
+  projectPackKey: "project",
+  projectPackVersionId: null,
+  projectPackVersionNumber: null,
+  packDeltaSince: null,
+  docs: []
+};
+
+function parseCursorJson(json: string): OrchestratorContextSnapshotCursor {
+  try {
+    return JSON.parse(json) as OrchestratorContextSnapshotCursor;
+  } catch {
+    return { ...DEFAULT_CURSOR };
+  }
+}
+
 export function toContextSnapshot(row: ContextSnapshotRow): OrchestratorContextSnapshot {
-  const cursor = (() => {
-    try {
-      return JSON.parse(row.cursor_json) as OrchestratorContextSnapshotCursor;
-    } catch {
-      return {
-        lanePackKey: null,
-        lanePackVersionId: null,
-        lanePackVersionNumber: null,
-        projectPackKey: "project",
-        projectPackVersionId: null,
-        projectPackVersionNumber: null,
-        packDeltaSince: null,
-        docs: []
-      } satisfies OrchestratorContextSnapshotCursor;
-    }
-  })();
   return {
     id: row.id,
     runId: row.run_id,
     stepId: row.step_id,
     attemptId: row.attempt_id,
-    snapshotType:
-      row.snapshot_type === "step" ? "step"
-      : row.snapshot_type === "attempt" ? "attempt"
-      : "run",
+    snapshotType: normalizeSnapshotType(row.snapshot_type),
     contextProfile: normalizeProfileId(row.context_profile),
-    cursor,
+    cursor: parseCursorJson(row.cursor_json),
     createdAt: row.created_at
   };
 }

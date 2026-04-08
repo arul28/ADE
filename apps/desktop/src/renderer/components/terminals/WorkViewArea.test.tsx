@@ -68,7 +68,24 @@ describe("WorkViewArea", () => {
     render(
       <WorkViewArea
         gridLayoutId="work:grid:test"
-        lanes={[{ id: "lane-1", name: "Lane 1", laneType: "worktree", createdAt: "2026-04-06T12:00:00.000Z" }]}
+        lanes={[{
+          id: "lane-1",
+          name: "Lane 1",
+          laneType: "worktree",
+          baseRef: "main",
+          branchRef: "lane-1",
+          worktreePath: "/tmp/lane-1",
+          parentLaneId: null,
+          childCount: 0,
+          stackDepth: 0,
+          parentStatus: null,
+          isEditProtected: false,
+          status: { dirty: false, ahead: 0, behind: 0, remoteBehind: 0, rebaseInProgress: false },
+          color: null,
+          icon: null,
+          tags: [],
+          createdAt: "2026-04-06T12:00:00.000Z",
+        }]}
         sessions={[session]}
         visibleSessions={[session]}
         tabGroups={[]}

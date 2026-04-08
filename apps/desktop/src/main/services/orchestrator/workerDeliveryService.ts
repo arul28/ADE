@@ -443,7 +443,12 @@ export function resolveWorkerDeliveryContextCtx(
   const sessionToolType = toOptionalString(attemptContext?.session_tool_type) ?? null;
   const executorKindRaw = toOptionalString(attemptContext?.executor_kind);
   const executorKind: OrchestratorExecutorKind | null =
-    executorKindRaw === "unified" || executorKindRaw === "shell" || executorKindRaw === "manual"
+    executorKindRaw === "claude"
+      || executorKindRaw === "codex"
+      || executorKindRaw === "cursor"
+      || executorKindRaw === "opencode"
+      || executorKindRaw === "shell"
+      || executorKindRaw === "manual"
       ? executorKindRaw
       : null;
   const resolvedTarget: Extract<OrchestratorChatTarget, { kind: "worker" }> = {
@@ -985,7 +990,7 @@ async function isSteerLikelyQueuedForSession(
     const provider = typeof session.provider === "string" ? session.provider.trim().toLowerCase() : "";
     // Only known queued providers should stay queued. Unknown providers that accept steer
     // should count as delivered so we do not immediately retry with another direct send.
-    if (provider === "claude" || provider === "unified") {
+    if (provider === "claude" || provider === "opencode") {
       return true;
     }
     return false;

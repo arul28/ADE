@@ -203,7 +203,7 @@ export const EVENT_KIND_META: Record<string, EventKindMeta> = {
   "worker":            { label: "Worker",            category: "mission", iconName: "Robot",           description: "Worker orchestration step",    importance: "noise" },
   "implementation":    { label: "Implementation",    category: "mission", iconName: "Code",            description: "Implementation step",          importance: "noise" },
   "coordinator":       { label: "Coordinator",       category: "mission", iconName: "TreeStructure",   description: "Coordinator operation",        importance: "noise" },
-  "unified":           { label: "Unified",           category: "mission", iconName: "Stack",           description: "Unified orchestrator step",    importance: "noise" },
+  "opencode":          { label: "OpenCode",          category: "mission", iconName: "Stack",           description: "OpenCode orchestrator step",   importance: "noise" },
   "manual":            { label: "Manual Op",         category: "system",  iconName: "Hand",            description: "Manual operation",             importance: "noise" },
   "heading":           { label: "Heading",           category: "system",  iconName: "TextH",           description: "Section heading marker",       importance: "noise" },
   "markers":           { label: "Markers",           category: "system",  iconName: "MapPin",          description: "Context markers update",       importance: "noise" },

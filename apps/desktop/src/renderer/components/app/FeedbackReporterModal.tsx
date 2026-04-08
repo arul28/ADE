@@ -1,4 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
+import { useNavigate } from "react-router-dom";
 import { AnimatePresence, motion } from "motion/react";
 import {
   ArrowSquareOut,
@@ -9,7 +11,7 @@ import {
   Sparkle,
   X,
 } from "@phosphor-icons/react";
-import { UnifiedModelSelector } from "../shared/UnifiedModelSelector";
+import { ProviderModelSelector } from "../shared/ProviderModelSelector";
 import { useAppStore } from "../../state/appStore";
 import { COLORS, MONO_FONT, SANS_FONT } from "../lanes/laneDesignTokens";
 import type {
@@ -96,6 +98,10 @@ function NewReportTab({
   hasGithubToken: boolean;
   onSubmitted: () => void;
 }) {
+  const navigate = useNavigate();
+  const openAiProvidersSettings = useCallback(() => {
+    navigate("/settings?tab=ai#ai-providers");
+  }, [navigate]);
   const availableModels = useAppStore((s) => s.availableModels);
   const availableModelIds = availableModels.map((m) => m.id);
   const [category, setCategory] = useState<FeedbackCategory>("bug");
@@ -136,6 +142,8 @@ function NewReportTab({
       if (flashTimer.current) window.clearTimeout(flashTimer.current);
     };
   }, []);
+
+  const submitDisabled = !description.trim() || !modelId || submitting;
 
   if (!hasGithubToken) {
     return (
@@ -197,11 +205,11 @@ function NewReportTab({
       {/* Model */}
       <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
         <span style={LABEL_STYLE}>Model</span>
-        <UnifiedModelSelector
+        <ProviderModelSelector
           value={modelId}
           onChange={setModelId}
           availableModelIds={availableModelIds}
-          catalogMode="available-only"
+          onOpenAiSettings={openAiProvidersSettings}
         />
       </div>
 
@@ -225,7 +233,7 @@ function NewReportTab({
       <div style={{ display: "flex", justifyContent: "flex-end" }}>
         <button
           type="button"
-          disabled={!description.trim() || !modelId || submitting}
+          disabled={submitDisabled}
           onClick={handleSubmit}
           style={{
             height: 32,
@@ -235,11 +243,11 @@ function NewReportTab({
             fontFamily: MONO_FONT,
             textTransform: "uppercase",
             letterSpacing: "0.5px",
-            background: !description.trim() || !modelId || submitting ? COLORS.textDim : COLORS.accent,
+            background: submitDisabled ? COLORS.textDim : COLORS.accent,
             color: "#fff",
             border: "none",
-            cursor: !description.trim() || !modelId || submitting ? "not-allowed" : "pointer",
-            opacity: !description.trim() || !modelId || submitting ? 0.5 : 1,
+            cursor: submitDisabled ? "not-allowed" : "pointer",
+            opacity: submitDisabled ? 0.5 : 1,
             transition: "opacity 0.15s, background 0.15s",
           }}
         >
@@ -452,7 +460,7 @@ export function FeedbackReporterModal({
       .catch(() => setHasGithubToken(false));
   }, [open]);
 
-  return (
+  return createPortal(
     <AnimatePresence>
       {open ? (
         <div
@@ -569,6 +577,7 @@ export function FeedbackReporterModal({
           </motion.div>
         </div>
       ) : null}
-    </AnimatePresence>
+    </AnimatePresence>,
+    document.body
   );
 }

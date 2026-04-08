@@ -1,4 +1,3 @@
-import type { DetectedAuth } from "./authDetector";
 import type { LocalModelHarnessProfile, LocalProviderFamily, ModelCapabilities, ModelDescriptor } from "../../../shared/modelRegistry";
 
 export type DiscoveredLocalModel = {
@@ -11,6 +10,8 @@ export type DiscoveredLocalModel = {
   reasoningTiers?: string[];
   harnessProfile?: LocalModelHarnessProfile;
   discoverySource?: ModelDescriptor["discoverySource"];
+  /** Whether the model is actively loaded/running (vs. just installed). */
+  loaded?: boolean;
 };
 
 export type LocalProviderConnectionHealth =
@@ -29,22 +30,7 @@ export type LocalProviderInspection = {
 const CACHE_TTL_MS = 30_000;
 let inspectionCacheGeneration = 0;
 
-let discoverCache: {
-  key: string;
-  generation: number;
-  cachedAt: number;
-  models: DiscoveredLocalModel[];
-} | null = null;
-
 let inspectionCache = new Map<string, { generation: number; cachedAt: number; inspection: LocalProviderInspection }>();
-
-function buildCacheKey(auth: DetectedAuth[]): string {
-  return auth
-    .filter((entry): entry is Extract<DetectedAuth, { type: "local" }> => entry.type === "local")
-    .map((entry) => `${entry.provider}:${entry.endpoint}`)
-    .sort()
-    .join("|");
-}
 
 function buildInspectionKey(provider: LocalProviderFamily, endpoint: string): string {
   return `${provider}:${endpoint.replace(/\/+$/, "")}`;
@@ -232,6 +218,7 @@ async function inspectLmStudioProvider(endpoint: string, timeoutMs: number): Pro
           ...(reasoning.tiers?.length ? { reasoningTiers: reasoning.tiers } : {}),
           harnessProfile,
           discoverySource: "lmstudio-rest",
+          loaded: true,
         });
       }
     }
@@ -262,6 +249,7 @@ async function inspectLmStudioProvider(endpoint: string, timeoutMs: number): Pro
         capabilities: fallback.capabilities,
         harnessProfile: fallback.harnessProfile,
         discoverySource: "lmstudio-openai" as const,
+        loaded: false,
       } satisfies DiscoveredLocalModel;
     });
 
@@ -292,41 +280,29 @@ async function inspectOpenAiCompatibleProvider(
     };
   }
 
-  const discovered = provider === "ollama"
+  const rawEntries: Array<Record<string, unknown>> = provider === "ollama"
     ? (Array.isArray((payload as { models?: unknown[] }).models)
       ? (payload as { models: Array<Record<string, unknown>> }).models
       : [])
-      .map((entry) => normalizeString(entry.name))
-      .filter((modelId): modelId is string => Boolean(modelId))
-      .map((modelId) => {
-        const fallback = inferFallbackCapabilities(modelId);
-        return {
-          provider,
-          modelId,
-          displayName: modelId,
-          maxOutputTokens: 8_192,
-          capabilities: fallback.capabilities,
-          harnessProfile: fallback.harnessProfile,
-          discoverySource: provider,
-        } satisfies DiscoveredLocalModel;
-      })
     : (Array.isArray((payload as { data?: unknown[] }).data)
       ? (payload as { data: Array<Record<string, unknown>> }).data
-      : [])
-      .map((entry) => normalizeString(entry.id))
-      .filter((modelId): modelId is string => Boolean(modelId))
-      .map((modelId) => {
-        const fallback = inferFallbackCapabilities(modelId);
-        return {
-          provider,
-          modelId,
-          displayName: modelId,
-          maxOutputTokens: 8_192,
-          capabilities: fallback.capabilities,
-          harnessProfile: fallback.harnessProfile,
-          discoverySource: provider,
-        } satisfies DiscoveredLocalModel;
-      });
+      : []);
+  const idField = provider === "ollama" ? "name" : "id";
+  const discovered = rawEntries
+    .map((entry) => normalizeString(entry[idField]))
+    .filter((modelId): modelId is string => Boolean(modelId))
+    .map((modelId) => {
+      const fallback = inferFallbackCapabilities(modelId);
+      return {
+        provider,
+        modelId,
+        displayName: modelId,
+        maxOutputTokens: 8_192,
+        capabilities: fallback.capabilities,
+        harnessProfile: fallback.harnessProfile,
+        discoverySource: provider,
+      } satisfies DiscoveredLocalModel;
+    });
 
   return {
     provider,
@@ -363,44 +339,5 @@ export async function inspectLocalProvider(
 export function clearLocalProviderInspectionCache(): void {
   inspectionCacheGeneration += 1;
   inspectionCache = new Map<string, { generation: number; cachedAt: number; inspection: LocalProviderInspection }>();
-  discoverCache = null;
 }
 
-export async function discoverLocalModels(auth: DetectedAuth[]): Promise<DiscoveredLocalModel[]> {
-  const key = buildCacheKey(auth);
-  const generation = inspectionCacheGeneration;
-  const now = Date.now();
-  if (
-    discoverCache
-    && discoverCache.generation === generation
-    && discoverCache.key === key
-    && now - discoverCache.cachedAt < CACHE_TTL_MS
-  ) {
-    return discoverCache.models;
-  }
-
-  const providers = auth.filter((entry): entry is Extract<DetectedAuth, { type: "local" }> => entry.type === "local");
-  const discovered = await Promise.all(
-    providers.map(async (entry) => {
-      const inspection = await inspectLocalProvider(entry.provider, entry.endpoint);
-      return inspection.loadedModels;
-    }),
-  );
-
-  const deduped = new Map<string, DiscoveredLocalModel>();
-  for (const providerModels of discovered) {
-    for (const model of providerModels) {
-      deduped.set(`${model.provider}/${model.modelId}`, model);
-    }
-  }
-
-  const models = [...deduped.values()].sort((left, right) => {
-    if (left.provider !== right.provider) return left.provider.localeCompare(right.provider);
-    return left.modelId.localeCompare(right.modelId);
-  });
-
-  if (generation === inspectionCacheGeneration) {
-    discoverCache = { key, generation, cachedAt: now, models };
-  }
-  return models;
-}

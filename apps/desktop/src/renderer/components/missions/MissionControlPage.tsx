@@ -78,7 +78,7 @@ export function MissionControlPage({
     return () => window.clearInterval(interval);
   }, [graph.run.createdAt]);
 
-  // Fetch all messages across all threads for unified feed
+  // Fetch all messages across all threads for a single combined feed
   const refreshAllMessages = useCallback(async () => {
     try {
       const results = await Promise.all(

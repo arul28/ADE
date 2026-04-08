@@ -48,7 +48,7 @@ export type DetectedAuth =
   | { type: "openrouter"; key: string; source: ApiKeySource }
   | {
       type: "local";
-      provider: "ollama" | "lmstudio" | "vllm";
+      provider: "ollama" | "lmstudio";
       endpoint: string;
       endpointSource?: "auto" | "config";
       preferredModelId?: string | null;
@@ -452,20 +452,12 @@ function normalizeLocalProviderConfig(
       autoDetect: config?.lmstudio?.autoDetect ?? true,
       preferredModelId: config?.lmstudio?.preferredModelId ?? null,
     },
-    vllm: {
-      enabled: config?.vllm?.enabled ?? true,
-      ...(typeof config?.vllm?.endpoint === "string" && config.vllm.endpoint.trim().length
-        ? { endpoint: config.vllm.endpoint.trim() }
-        : {}),
-      autoDetect: config?.vllm?.autoDetect ?? true,
-      preferredModelId: config?.vllm?.preferredModelId ?? null,
-    },
   };
 }
 
 function localProvidersCacheKey(config?: AiLocalProviderConfigs): string {
   const normalized = normalizeLocalProviderConfig(config);
-  return (["ollama", "lmstudio", "vllm"] as const)
+  return (["ollama", "lmstudio"] as const)
     .map((provider) => {
       const entry = normalized[provider];
       return [
@@ -505,7 +497,7 @@ async function detectLocalProviders(
     preferredModelId?: string | null;
   }> = [];
 
-  for (const provider of ["ollama", "lmstudio", "vllm"] as const) {
+  for (const provider of ["ollama", "lmstudio"] as const) {
     const providerConfig = normalized[provider];
     if (!providerConfig.enabled) continue;
 

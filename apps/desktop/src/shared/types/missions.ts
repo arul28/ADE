@@ -38,8 +38,8 @@ export type MissionProviderPermissions = {
   codex?: AgentChatPermissionMode;
   /** Permission mode for Cursor CLI workers */
   cursor?: AgentChatPermissionMode;
-  /** Permission mode for API/unified model workers */
-  unified?: AgentChatPermissionMode;
+  /** Permission mode for OpenCode-backed API/local model workers */
+  opencode?: AgentChatPermissionMode;
   /** Codex sandbox level (only relevant for codex) */
   codexSandbox?: "read-only" | "workspace-write" | "danger-full-access";
   /** Additional writable paths for CLI workers */
@@ -152,7 +152,7 @@ export type PlannerMissionStrategy = "sequential" | "parallel-lite" | "parallel-
 
 export type PlannerTaskType = "analysis" | "code" | "integration" | "test" | "review" | "merge" | "deploy" | "docs" | "milestone";
 
-export type PlannerExecutorHint = "unified" | "manual" | "either";
+export type PlannerExecutorHint = "opencode" | "manual" | "either";
 
 export type PlannerPreferredScope = "lane" | "file" | "session" | "global";
 

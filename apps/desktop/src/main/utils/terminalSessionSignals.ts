@@ -1,4 +1,5 @@
 import type {
+  AgentChatClaudePermissionMode,
   AgentChatPermissionMode,
   TerminalResumeLaunchConfig,
   TerminalResumeMetadata,
@@ -78,13 +79,17 @@ export function parseTrackedCliLaunchConfig(
 
   if (provider === "claude") {
     const effectivePermissionMode = permissionMode ?? "default";
+    let claudePermissionMode: AgentChatClaudePermissionMode;
+    if (effectivePermissionMode === "full-auto") {
+      claudePermissionMode = "bypassPermissions";
+    } else if (effectivePermissionMode === "edit") {
+      claudePermissionMode = "acceptEdits";
+    } else {
+      claudePermissionMode = "default";
+    }
     return {
       permissionMode: effectivePermissionMode,
-      claudePermissionMode: effectivePermissionMode === "full-auto"
-        ? "bypassPermissions"
-        : effectivePermissionMode === "edit"
-          ? "acceptEdits"
-          : "default",
+      claudePermissionMode,
     };
   }
 
@@ -207,16 +212,12 @@ export function extractResumeCommandFromOutput(
   const fromBackticks = Array.from(text.matchAll(RESUME_BACKTICK_REGEX))
     .map((m) => normalizeResumeCommand(m[1] ?? "", preferredTool))
     .filter(Boolean);
-  for (const candidate of fromBackticks) {
-    return candidate;
-  }
+  if (fromBackticks[0]) return fromBackticks[0];
 
   const fromPlain = Array.from(text.matchAll(RESUME_PLAIN_REGEX))
     .map((m) => normalizeResumeCommand(m[1] ?? "", preferredTool))
     .filter(Boolean);
-  for (const candidate of fromPlain) {
-    return candidate;
-  }
+  if (fromPlain[0]) return fromPlain[0];
 
   return null;
 }

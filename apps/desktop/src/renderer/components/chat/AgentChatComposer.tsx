@@ -13,7 +13,7 @@ import {
   type AgentChatFileRef,
   type AgentChatInteractionMode,
   type AgentChatSlashCommand,
-  type AgentChatUnifiedPermissionMode,
+  type AgentChatOpenCodePermissionMode,
   type ComputerUseOwnerSnapshot,
   type ChatSurfaceMode,
   type ComputerUsePolicy,
@@ -21,7 +21,7 @@ import {
 } from "../../../shared/types";
 import { getModelById } from "../../../shared/modelRegistry";
 import { cn } from "../ui/cn";
-import { UnifiedModelSelector } from "../shared/UnifiedModelSelector";
+import { ProviderModelSelector } from "../shared/ProviderModelSelector";
 import { getPermissionOptions, safetyColors } from "../shared/permissionOptions";
 import { ChatAttachmentTray } from "./ChatAttachmentTray";
 import { ChatComposerShell } from "./ChatComposerShell";
@@ -128,7 +128,7 @@ function resolveCodexPermissionPreset(args: {
   return "custom";
 }
 
-const UNIFIED_PERMISSION_OPTIONS: Array<{ value: AgentChatUnifiedPermissionMode; label: string }> = [
+const OPENCODE_PERMISSION_OPTIONS: Array<{ value: AgentChatOpenCodePermissionMode; label: string }> = [
   { value: "plan", label: "Plan" },
   { value: "edit", label: "Edit" },
   { value: "full-auto", label: "Full auto" },
@@ -283,7 +283,7 @@ export function AgentChatComposer({
   codexApprovalPolicy,
   codexSandbox,
   codexConfigSource,
-  unifiedPermissionMode,
+  opencodePermissionMode,
   cursorModeSnapshot,
   executionMode,
   computerUsePolicy,
@@ -312,7 +312,7 @@ export function AgentChatComposer({
   onCodexApprovalPolicyChange,
   onCodexSandboxChange,
   onCodexConfigSourceChange,
-  onUnifiedPermissionModeChange,
+  onOpenCodePermissionModeChange,
   onCursorModeChange,
   onCursorConfigChange,
   includeProjectDocs,
@@ -322,7 +322,6 @@ export function AgentChatComposer({
   onClearEvents,
   promptSuggestion,
   chatHasMessages = false,
-  restrictModelCatalogToAvailable = false,
   pendingSteers = [],
   onCancelSteer,
   onEditSteer,
@@ -349,7 +348,7 @@ export function AgentChatComposer({
   codexApprovalPolicy?: AgentChatCodexApprovalPolicy;
   codexSandbox?: AgentChatCodexSandbox;
   codexConfigSource?: AgentChatCodexConfigSource;
-  unifiedPermissionMode?: AgentChatUnifiedPermissionMode;
+  opencodePermissionMode?: AgentChatOpenCodePermissionMode;
   cursorModeSnapshot?: AgentChatCursorModeSnapshot | null;
   executionMode?: AgentChatExecutionMode | null;
   computerUsePolicy: ComputerUsePolicy;
@@ -382,7 +381,7 @@ export function AgentChatComposer({
   onCodexApprovalPolicyChange?: (policy: AgentChatCodexApprovalPolicy) => void;
   onCodexSandboxChange?: (sandbox: AgentChatCodexSandbox) => void;
   onCodexConfigSourceChange?: (source: AgentChatCodexConfigSource) => void;
-  onUnifiedPermissionModeChange?: (mode: AgentChatUnifiedPermissionMode) => void;
+  onOpenCodePermissionModeChange?: (mode: AgentChatOpenCodePermissionMode) => void;
   onCursorModeChange?: (modeId: string) => void;
   onCursorConfigChange?: (configId: string, value: string | boolean) => void;
   includeProjectDocs?: boolean;
@@ -392,7 +391,6 @@ export function AgentChatComposer({
   onClearEvents?: () => void;
   promptSuggestion?: string | null;
   chatHasMessages?: boolean;
-  restrictModelCatalogToAvailable?: boolean;
   pendingSteers?: Array<{ steerId: string; text: string }>;
   onCancelSteer?: (steerId: string) => void;
   onEditSteer?: (steerId: string, text: string) => void;
@@ -821,12 +819,12 @@ export function AgentChatComposer({
       <label className="flex items-center gap-2 rounded-md border border-white/[0.06] bg-[#1a1a22] px-2.5 py-1.5">
         <span className="font-mono text-[9px] uppercase tracking-[0.16em] text-muted-fg/45">{runtimeLabel}</span>
         <select
-          value={unifiedPermissionMode}
-          disabled={nativeControlsDisabled || !onUnifiedPermissionModeChange}
-          onChange={(event) => onUnifiedPermissionModeChange?.(event.target.value as AgentChatUnifiedPermissionMode)}
+          value={opencodePermissionMode}
+          disabled={nativeControlsDisabled || !onOpenCodePermissionModeChange}
+          onChange={(event) => onOpenCodePermissionModeChange?.(event.target.value as AgentChatOpenCodePermissionMode)}
           className="min-w-0 bg-transparent font-sans text-[11px] text-fg/82 outline-none disabled:cursor-not-allowed disabled:text-muted-fg/35"
         >
-          {UNIFIED_PERMISSION_OPTIONS.map((option) => (
+          {OPENCODE_PERMISSION_OPTIONS.map((option) => (
             <option key={option.value} value={option.value}>
               {option.label}
             </option>
@@ -850,10 +848,10 @@ export function AgentChatComposer({
     onInteractionModeChange,
     onCursorConfigChange,
     onCursorModeChange,
-    onUnifiedPermissionModeChange,
+    onOpenCodePermissionModeChange,
     cursorModeSnapshot,
     sessionProvider,
-    unifiedPermissionMode,
+    opencodePermissionMode,
   ]);
   /* ── Keyboard handler for textarea ── */
   const handleKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -1154,11 +1152,10 @@ export function AgentChatComposer({
           {/* Left: permission + model controls */}
           <div className="flex min-w-0 flex-wrap items-center gap-1.5">
             {nativeControlPanel}
-            <UnifiedModelSelector
+            <ProviderModelSelector
               value={modelId}
               onChange={onModelChange}
               availableModelIds={availableModelIds}
-              catalogMode={restrictModelCatalogToAvailable ? "available-only" : "all"}
               disabled={modelSelectionLocked}
               showReasoning
               reasoningEffort={reasoningEffort}

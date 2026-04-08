@@ -25,7 +25,7 @@ import { CARD_STYLE, extractError, INPUT_CLS, INPUT_STYLE } from "./shared";
 import { RuleEditorPanel } from "./components/RuleEditorPanel";
 
 const DEFAULT_MODEL_ID =
-  getDefaultModelDescriptor("unified")?.id
+  getDefaultModelDescriptor("opencode")?.id
   ?? getDefaultModelDescriptor("claude")?.id
   ?? "anthropic/claude-sonnet-4-6";
 
@@ -46,7 +46,7 @@ function createBlankDraft(): AutomationRuleDraft {
       providers: {
         claude: "full-auto",
         codex: "full-auto",
-        unified: "full-auto",
+        opencode: "full-auto",
         codexSandbox: "workspace-write",
       },
     },

@@ -226,7 +226,7 @@ describe("contextDocBuilder", () => {
       projectConfigService: {} as any,
       aiIntegrationService: ai as any,
     }, {
-      provider: "unified",
+      provider: "opencode",
     });
 
     expect(result.degraded).toBe(false);
@@ -272,7 +272,7 @@ describe("contextDocBuilder", () => {
       projectConfigService: {} as any,
       aiIntegrationService: ai as any,
     }, {
-      provider: "unified",
+      provider: "opencode",
     });
 
     expect(result.degraded).toBe(false);
@@ -306,7 +306,7 @@ describe("contextDocBuilder", () => {
         architecture: buildValidArchitectureDoc("ADE routes all repo mutation through trusted main-process services."),
       })) as any,
     }, {
-      provider: "unified",
+      provider: "opencode",
     });
 
     expect(firstResult.degraded).toBe(false);
@@ -323,7 +323,7 @@ describe("contextDocBuilder", () => {
       projectConfigService: {} as any,
       aiIntegrationService: createAiIntegrationService("not valid json") as any,
     }, {
-      provider: "unified",
+      provider: "opencode",
     });
 
     expect(degradedResult.degraded).toBe(true);
@@ -363,7 +363,7 @@ describe("contextDocBuilder", () => {
         architecture: oversizedArchitecture,
       })) as any,
     }, {
-      provider: "unified",
+      provider: "opencode",
     });
 
     expect(result.degraded).toBe(false);
@@ -415,7 +415,7 @@ describe("contextDocBuilder", () => {
         architecture: invalidArchitecture,
       })) as any,
     }, {
-      provider: "unified",
+      provider: "opencode",
     });
 
     expect(result.degraded).toBe(true);
@@ -448,7 +448,7 @@ describe("contextDocBuilder", () => {
       projectConfigService: {} as any,
       aiIntegrationService: createAiIntegrationService("Reading the key source docs and recent code changes to produce accurate bootstrap cards.") as any,
     }, {
-      provider: "unified",
+      provider: "opencode",
     });
 
     expect(result.degraded).toBe(true);
@@ -505,7 +505,7 @@ describe("contextDocBuilder", () => {
         architecture: duplicatedArchitecture,
       })) as any,
     }, {
-      provider: "unified",
+      provider: "opencode",
     });
 
     expect(result.degraded).toBe(true);
@@ -541,7 +541,7 @@ describe("contextDocBuilder", () => {
         architecture: buildValidArchitectureDoc(),
       })) as any,
     }, {
-      provider: "unified",
+      provider: "opencode",
     });
 
     const future = new Date(Date.now() + 60_000);

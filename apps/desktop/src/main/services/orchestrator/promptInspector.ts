@@ -113,7 +113,7 @@ function buildExactWorkerPrompt(args: {
     runId: args.runId,
     stepId: syntheticStep.id,
     status: "queued",
-    executorKind: "unified",
+    executorKind: "opencode",
     executorSessionId: null,
     metadata: {},
   } as unknown as OrchestratorAttempt;
@@ -509,9 +509,9 @@ function buildCoordinatorProvidersSection(providers: CoordinatorAvailableProvide
   const available = Array.isArray(providers)
     ? providers.filter((provider) => provider.available).map((provider) => provider.name)
     : [];
-  if (available.length === 0) return "Unified worker (spawn_worker) is available; provider availability was not persisted on this run.";
+  if (available.length === 0) return "Provider worker (spawn_worker) is available; provider availability was not persisted on this run.";
   return [
-    "Unified worker (spawn_worker) — choose model per worker with `modelId`; CLI models run as subprocess sessions and API/local models run in-process.",
+    "Provider worker (spawn_worker) — choose model per worker with `modelId`; CLI models run as subprocess sessions and API/local models run in-process.",
     `Currently available providers: ${available.join(", ")}`,
   ].join("\n");
 }

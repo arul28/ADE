@@ -4,7 +4,6 @@
 // The AI decides everything; tools just execute its decisions.
 // ---------------------------------------------------------------------------
 
-import { tool, type Tool } from "ai";
 import { z } from "zod";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
@@ -51,6 +50,7 @@ import type { createMemoryService } from "../memory/memoryService";
 import {
   classifyWorkerExecutionPath,
   resolveModelDescriptor,
+  resolveProviderGroupForModel,
 } from "../../../shared/modelRegistry";
 import {
   checkCoordinatorToolPermission,
@@ -324,6 +324,24 @@ export type CoordinatorSendWorkerMessageFn = (args: {
   text: string;
   priority?: "normal" | "urgent";
 }) => Promise<CoordinatorWorkerDeliveryStatus>;
+
+export type CoordinatorExecutableTool = {
+  description: string;
+  inputSchema: z.ZodTypeAny;
+  execute: (args: Record<string, unknown>) => Promise<unknown>;
+};
+
+function defineCoordinatorTool<TSchema extends z.ZodTypeAny>(definition: {
+  description: string;
+  inputSchema: TSchema;
+  execute: (args: z.infer<TSchema>) => Promise<unknown>;
+}): CoordinatorExecutableTool {
+  return {
+    description: definition.description,
+    inputSchema: definition.inputSchema,
+    execute: async (args: Record<string, unknown>) => await definition.execute(args as z.infer<TSchema>),
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -653,7 +671,7 @@ export function createCoordinatorToolSet(deps: {
   missionLaneId?: string;
   /** Callback to create a new lane branching from the mission's base lane. */
   provisionLane?: (name: string, description?: string) => Promise<{ laneId: string; name: string }>;
-}): Record<string, Tool> {
+}): Record<string, CoordinatorExecutableTool> {
   const {
     orchestratorService,
     missionService,
@@ -1047,12 +1065,7 @@ export function createCoordinatorToolSet(deps: {
       }
     }
 
-    const resolvedProvider =
-      resolvedDescriptor.family === "anthropic"
-        ? "claude"
-        : resolvedDescriptor.family === "openai"
-          ? "codex"
-          : resolvedDescriptor.family;
+    const resolvedProvider = resolveProviderGroupForModel(resolvedDescriptor);
 
     return {
       ok: true,
@@ -1118,11 +1131,9 @@ export function createCoordinatorToolSet(deps: {
       throw new Error("spawnWorkerStep requires a non-empty modelId.");
     }
     const resolvedDescriptor = resolveModelDescriptor(resolvedModelId);
-    const resolvedProvider = resolvedDescriptor?.family === "anthropic"
-      ? "claude"
-      : resolvedDescriptor?.family === "openai"
-        ? "codex"
-        : resolvedDescriptor?.family ?? "unknown";
+    const resolvedProvider = resolvedDescriptor
+      ? resolveProviderGroupForModel(resolvedDescriptor)
+      : "unknown";
     const replacementForWorkerId = args.replacementForWorkerId?.trim() || null;
     const replacementSourceStep = replacementForWorkerId ? resolveStep(g, replacementForWorkerId) : null;
     if (replacementForWorkerId && !replacementSourceStep) {
@@ -1187,7 +1198,7 @@ export function createCoordinatorToolSet(deps: {
         stepId: reusableTaskShell.id,
         metadata: {
           ...phaseMetadata,
-          executorKind: "unified",
+          executorKind: resolvedProvider,
           instructions: args.prompt,
           workerName: args.name,
           requestedDependencyStepKeys,
@@ -1239,7 +1250,7 @@ export function createCoordinatorToolSet(deps: {
           stepIndex: maxIndex + 1,
           laneId: effectiveLaneId,
           dependencyStepKeys: executableDependencyStepKeys,
-          executorKind: "unified",
+          executorKind: resolvedProvider,
           metadata: {
             ...phaseMetadata,
             instructions: args.prompt,
@@ -2081,7 +2092,7 @@ export function createCoordinatorToolSet(deps: {
     return { valid: true };
   }
 
-  const spawn_worker = tool({
+  const spawn_worker = defineCoordinatorTool({
     description:
       "Spawn a new agent worker session. The worker will execute the given prompt autonomously. Returns a worker ID (step key) you can use to track, message, or stop the worker.",
     inputSchema: z.object({
@@ -2520,7 +2531,7 @@ export function createCoordinatorToolSet(deps: {
     },
   });
 
-  const insert_milestone = tool({
+  const insert_milestone = defineCoordinatorTool({
     description:
       "Insert a milestone gate into the mission DAG. Milestones require dedicated validator pass before they can be completed.",
     inputSchema: z.object({
@@ -2669,7 +2680,7 @@ export function createCoordinatorToolSet(deps: {
     },
   });
 
-  const request_specialist = tool({
+  const request_specialist = defineCoordinatorTool({
     description:
       "Request a specialist worker for a specific role. Use when the current worker should not continue alone.",
     inputSchema: z.object({
@@ -2908,7 +2919,7 @@ export function createCoordinatorToolSet(deps: {
     }
   });
 
-  const stop_worker = tool({
+  const stop_worker = defineCoordinatorTool({
     description:
       "Stop a running worker by canceling its current attempt.",
     inputSchema: z.object({
@@ -2974,7 +2985,7 @@ export function createCoordinatorToolSet(deps: {
     },
   });
 
-  const send_message = tool({
+  const send_message = defineCoordinatorTool({
     description:
       "Send a message to a specific running worker. The worker will see it as steering input.",
     inputSchema: z.object({
@@ -3050,7 +3061,7 @@ export function createCoordinatorToolSet(deps: {
     },
   });
 
-  const message_worker = tool({
+  const message_worker = defineCoordinatorTool({
     description:
       "Route a message from one worker to another through the coordinator for full visibility.",
     inputSchema: z.object({
@@ -3153,7 +3164,7 @@ export function createCoordinatorToolSet(deps: {
     }
   });
 
-  const broadcast = tool({
+  const broadcast = defineCoordinatorTool({
     description:
       "Broadcast a message to ALL currently running workers.",
     inputSchema: z.object({
@@ -3223,7 +3234,7 @@ export function createCoordinatorToolSet(deps: {
     },
   });
 
-  const get_worker_output = tool({
+  const get_worker_output = defineCoordinatorTool({
     description:
       "Read what a completed (or running) worker has produced. Returns summary, status, files changed, and any errors.",
     inputSchema: z.object({
@@ -3379,7 +3390,7 @@ export function createCoordinatorToolSet(deps: {
     },
   });
 
-  const list_workers = tool({
+  const list_workers = defineCoordinatorTool({
     description:
       "Get status of all workers (active, completed, failed, etc.).",
     inputSchema: z.object({}),
@@ -3411,7 +3422,7 @@ export function createCoordinatorToolSet(deps: {
     },
   });
 
-  const report_status = tool({
+  const report_status = defineCoordinatorTool({
     description:
       "Structured worker-to-coordinator status report with progress, blockers, confidence, and next action.",
     inputSchema: z.object({
@@ -3487,7 +3498,7 @@ export function createCoordinatorToolSet(deps: {
     }
   });
 
-  const reflection_add = tool({
+  const reflection_add = defineCoordinatorTool({
     description:
       "Record a structured reflection entry for mission introspection and retrospective synthesis.",
     inputSchema: z.object({
@@ -3541,7 +3552,7 @@ export function createCoordinatorToolSet(deps: {
     }
   });
 
-  const report_result = tool({
+  const report_result = defineCoordinatorTool({
     description:
       "Structured worker completion report with outcome, artifacts, file changes, and test results.",
     inputSchema: z.object({
@@ -3680,7 +3691,7 @@ export function createCoordinatorToolSet(deps: {
     }
   });
 
-  const report_validation = tool({
+  const report_validation = defineCoordinatorTool({
     description:
       "Structured validator report for step/milestone/mission gates. Persists pass/fail findings and remediation guidance.",
     inputSchema: z.object({
@@ -3926,7 +3937,7 @@ export function createCoordinatorToolSet(deps: {
     }
   });
 
-  const read_mission_status = tool({
+  const read_mission_status = defineCoordinatorTool({
     description:
       "Read current mission state including active/completed steps, worker status reports, and staleness signals.",
     inputSchema: z.object({}),
@@ -4047,7 +4058,7 @@ export function createCoordinatorToolSet(deps: {
     }
   });
 
-  const read_mission_state = tool({
+  const read_mission_state = defineCoordinatorTool({
     description:
       "Read the durable mission state document from disk. Use this to refresh your understanding before major decisions.",
     inputSchema: z.object({}),
@@ -4070,7 +4081,7 @@ export function createCoordinatorToolSet(deps: {
     },
   });
 
-  const update_mission_state = tool({
+  const update_mission_state = defineCoordinatorTool({
     description:
       "Write a partial update into the durable mission state document (merge semantics). Use after significant decisions and updates.",
     inputSchema: z
@@ -4139,7 +4150,7 @@ export function createCoordinatorToolSet(deps: {
     },
   });
 
-  const memory_search = tool({
+  const memory_search = defineCoordinatorTool({
     description:
       "Search project memory BEFORE starting work that might repeat past mistakes. Use at mission start for orientation, before architectural decisions, before writing worker briefs on unfamiliar subsystems, and when you hit unexpected behavior that might be a known gotcha. Do NOT search for things discoverable via get_project_context, read_file, search_files, or git history.",
     inputSchema: z.object({
@@ -4194,7 +4205,7 @@ export function createCoordinatorToolSet(deps: {
     },
   });
 
-  const memory_add = tool({
+  const memory_add = defineCoordinatorTool({
     description: `Persist a durable insight to project memory. Quality bar: "Would a developer joining this project find this useful on their first day?" If not, do not save it.
 
 GOOD memories (save these):
@@ -4269,7 +4280,7 @@ Format: Lead with the concrete rule or fact, then brief context for WHY. One act
     },
   });
 
-  const revise_plan = tool({
+  const revise_plan = defineCoordinatorTool({
     description:
       "Revise mission plan by partially or fully replacing steps. Replaced steps are marked superseded (not deleted).",
     inputSchema: z.object({
@@ -4655,7 +4666,7 @@ Format: Lead with the concrete rule or fact, then brief context for WHY. One act
     }
   });
 
-  const update_tool_profiles = tool({
+  const update_tool_profiles = defineCoordinatorTool({
     description:
       "Update role-bound tool profiles during a run. Useful when conditions change mid-mission.",
     inputSchema: z.object({
@@ -4726,7 +4737,7 @@ Format: Lead with the concrete rule or fact, then brief context for WHY. One act
     }
   });
 
-  const transfer_lane = tool({
+  const transfer_lane = defineCoordinatorTool({
     description:
       "Transfer a step to a different lane. Lane transfers are explicit coordinator actions and fully logged.",
     inputSchema: z.object({
@@ -4771,7 +4782,7 @@ Format: Lead with the concrete rule or fact, then brief context for WHY. One act
     }
   });
 
-  const provision_lane = tool({
+  const provision_lane = defineCoordinatorTool({
     description:
       "Create a new lane (git worktree) branching from the base lane. Use this when you need to isolate parallel workstreams or when tasks might touch overlapping files.",
     inputSchema: z.object({
@@ -4795,7 +4806,7 @@ Format: Lead with the concrete rule or fact, then brief context for WHY. One act
 
   // ─── Task Management ──────────────────────────────────────────
 
-  const set_current_phase = tool({
+  const set_current_phase = defineCoordinatorTool({
     description:
       "Set the active mission phase. Use after planning is complete to transition into implementation/testing/validation phases.",
     inputSchema: z.object({
@@ -5017,7 +5028,7 @@ Format: Lead with the concrete rule or fact, then brief context for WHY. One act
     },
   });
 
-  const create_task = tool({
+  const create_task = defineCoordinatorTool({
     description:
       "Create a task in the mission DAG. Tasks show up in the UI as a visual work breakdown. Use this to plan the work before spawning workers.",
     inputSchema: z.object({
@@ -5119,7 +5130,7 @@ Format: Lead with the concrete rule or fact, then brief context for WHY. One act
     },
   });
 
-  const update_task = tool({
+  const update_task = defineCoordinatorTool({
     description:
       "Update a task's status or description. Use this to mark tasks as done, failed, or to update their instructions.",
     inputSchema: z.object({
@@ -5162,7 +5173,7 @@ Format: Lead with the concrete rule or fact, then brief context for WHY. One act
     },
   });
 
-  const assign_task = tool({
+  const assign_task = defineCoordinatorTool({
     description:
       "Assign a task to a worker. Links the task to the worker in the UI.",
     inputSchema: z.object({
@@ -5192,7 +5203,7 @@ Format: Lead with the concrete rule or fact, then brief context for WHY. One act
     },
   });
 
-  const list_tasks = tool({
+  const list_tasks = defineCoordinatorTool({
     description:
       "Get all tasks and their current statuses.",
     inputSchema: z.object({}),
@@ -5243,7 +5254,7 @@ Format: Lead with the concrete rule or fact, then brief context for WHY. One act
 
   // ─── Step Control ───────────────────────────────────────────
 
-  const skip_step = tool({
+  const skip_step = defineCoordinatorTool({
     description:
       "Skip a step/task that you've decided is non-critical or unnecessary. Unblocks downstream steps that depend on it.",
     inputSchema: z.object({
@@ -5289,7 +5300,7 @@ Format: Lead with the concrete rule or fact, then brief context for WHY. One act
     },
   });
 
-  const mark_step_complete = tool({
+  const mark_step_complete = defineCoordinatorTool({
     description:
       "Mark a step as succeeded. Use when YOU (the coordinator) have verified a worker's output is satisfactory, or when completing a task/milestone yourself.",
     inputSchema: z.object({
@@ -5371,7 +5382,7 @@ Format: Lead with the concrete rule or fact, then brief context for WHY. One act
     },
   });
 
-  const mark_step_failed = tool({
+  const mark_step_failed = defineCoordinatorTool({
     description:
       "Mark a step as failed. Use when YOU (the coordinator) have determined a worker's output is unsatisfactory or the task cannot be completed as planned. After marking failed, you can retry_step with adjusted instructions or skip_step.",
     inputSchema: z.object({
@@ -5417,7 +5428,7 @@ Format: Lead with the concrete rule or fact, then brief context for WHY. One act
     },
   });
 
-  const retry_step = tool({
+  const retry_step = defineCoordinatorTool({
     description:
       "Retry a failed step with adjusted instructions. Creates a new attempt with the revised prompt. Use when a worker failed but you believe it can succeed with different guidance.",
     inputSchema: z.object({
@@ -5490,7 +5501,7 @@ Format: Lead with the concrete rule or fact, then brief context for WHY. One act
 
   // ─── Mission Lifecycle ────────────────────────────────────────
 
-  const complete_mission = tool({
+  const complete_mission = defineCoordinatorTool({
     description:
       "Request mission success finalization. The runtime still enforces completion gates before success is granted.",
     inputSchema: z.object({
@@ -5573,7 +5584,7 @@ Format: Lead with the concrete rule or fact, then brief context for WHY. One act
     },
   });
 
-  const fail_mission = tool({
+  const fail_mission = defineCoordinatorTool({
     description:
       "Declare the mission failed. Use when you determine the mission cannot succeed.",
     inputSchema: z.object({
@@ -5741,7 +5752,7 @@ Format: Lead with the concrete rule or fact, then brief context for WHY. One act
     };
   };
 
-  const get_budget_status = tool({
+  const get_budget_status = defineCoordinatorTool({
     description:
       "Get the current mission budget pressure and usage snapshot. Use this before deciding parallelism, validation depth, or model strategy.",
     inputSchema: z.object({
@@ -5912,7 +5923,7 @@ Format: Lead with the concrete rule or fact, then brief context for WHY. One act
     }
   });
 
-  const ask_user = tool({
+  const ask_user = defineCoordinatorTool({
     description:
       "Open one or more structured blocking questions for the current phase. Prefer letting the active phase worker ask these directly instead of the coordinator. Bundle all related questions in one call.",
     inputSchema: z.object({
@@ -6066,7 +6077,7 @@ Format: Lead with the concrete rule or fact, then brief context for WHY. One act
     },
   });
 
-  const request_user_input = tool({
+  const request_user_input = defineCoordinatorTool({
     description:
       "Request user guidance from the coordinator flow. Prefer this over direct worker-to-human escalation.",
     inputSchema: z.object({
@@ -6097,7 +6108,7 @@ Format: Lead with the concrete rule or fact, then brief context for WHY. One act
 
   // ─── Context Tools ────────────────────────────────────────────
 
-  const read_file = tool({
+  const read_file = defineCoordinatorTool({
     description:
       "Read a file from the project. Use to inspect code, configs, or docs when you need to understand the codebase.",
     inputSchema: z.object({
@@ -6144,7 +6155,7 @@ Format: Lead with the concrete rule or fact, then brief context for WHY. One act
     },
   });
 
-  const read_step_output = tool({
+  const read_step_output = defineCoordinatorTool({
     description:
       "Read a worker's structured step output file (.ade/step-output-{stepKey}.md). Workers write these files as durable output records when they complete their tasks. Use this to understand what a worker accomplished, especially after context compaction.",
     inputSchema: z.object({
@@ -6170,7 +6181,7 @@ Format: Lead with the concrete rule or fact, then brief context for WHY. One act
     },
   });
 
-  const search_files = tool({
+  const search_files = defineCoordinatorTool({
     description:
       "Search project files by name pattern or content. Use to find relevant code or files.",
     inputSchema: z.object({
@@ -6273,7 +6284,7 @@ Format: Lead with the concrete rule or fact, then brief context for WHY. One act
     },
   });
 
-  const get_project_context = tool({
+  const get_project_context = defineCoordinatorTool({
     description:
       "Get a summary of the project: key docs, file structure, and config. Use at mission start to understand the codebase.",
     inputSchema: z.object({}),
@@ -6319,7 +6330,7 @@ Format: Lead with the concrete rule or fact, then brief context for WHY. One act
 
   // ─── Sub-Agent Delegation ──────────────────────────────────────
 
-  const delegate_to_subagent = tool({
+  const delegate_to_subagent = defineCoordinatorTool({
     description:
       "Delegate a subtask to a child agent under an existing worker. Creates a child step linked to the parent worker. Use this for nested decomposition when a worker's task naturally splits into sub-problems.",
     inputSchema: z.object({
@@ -6572,7 +6583,7 @@ Format: Lead with the concrete rule or fact, then brief context for WHY. One act
     },
   });
 
-  const delegate_parallel = tool({
+  const delegate_parallel = defineCoordinatorTool({
     description:
       "Delegate multiple subtasks to child agents in a single atomic batch under one parent worker.",
     inputSchema: z.object({
@@ -6879,7 +6890,7 @@ Format: Lead with the concrete rule or fact, then brief context for WHY. One act
     }
   });
 
-  const check_finalization_status = tool({
+  const check_finalization_status = defineCoordinatorTool({
     description:
       "Check the current finalization/queue-landing status for this mission. Returns contractSatisfied, executionComplete, queue landing state, closeout requirements, and any blockers. Use this before deciding to complete_mission when finalization is in progress, or after receiving a queue landing event.",
     inputSchema: z.object({}),

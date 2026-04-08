@@ -189,7 +189,7 @@ import type {
   AgentChatSteerResult,
   AgentChatCancelSteerArgs,
   AgentChatEditSteerArgs,
-  AgentChatUnifiedPermissionMode,
+  AgentChatOpenCodePermissionMode,
   AgentChatUpdateSessionArgs,
   AgentChatSlashCommand,
   AgentChatSlashCommandsArgs,
@@ -894,18 +894,22 @@ function getUnavailableAiStatus(): AiSettingsStatus {
     })),
     runtimeConnections: {},
     availableModelIds: [],
+    opencodeBinaryInstalled: false,
+    opencodeBinarySource: "missing" as const,
+    opencodeInventoryError: null,
+    opencodeProviders: [],
   };
 }
 
 
 function normalizeAutopilotExecutor(value: unknown): OrchestratorExecutorKind {
   const raw = typeof value === "string" ? value.trim() : "";
-  if (raw === "shell" || raw === "manual" || raw === "unified") return raw;
-  return "unified";
+  if (raw === "shell" || raw === "manual" || raw === "opencode") return raw;
+  return "opencode";
 }
 
-type MemoryScope = "user" | "project" | "lane" | "mission";
-type UnifiedMemoryScope = "project" | "agent" | "mission";
+type MemoryWriteScope = "user" | "project" | "lane" | "mission";
+type MemoryScope = "project" | "agent" | "mission";
 
 type MemoryHealthCountRow = {
   scope: string | null;
@@ -948,14 +952,14 @@ const MEMORY_HEALTH_LIMITS: Record<MemoryHealthScope, number> = {
   mission: 200,
 };
 
-function normalizeMemoryScope(rawScope: string): MemoryScope | undefined {
+function normalizeMemoryWriteScope(rawScope: string): MemoryWriteScope | undefined {
   const trimmed = rawScope.trim();
   if (trimmed === "agent") return "user";
   if (trimmed === "user" || trimmed === "project" || trimmed === "lane" || trimmed === "mission") return trimmed;
   return undefined;
 }
 
-function normalizeUnifiedMemoryScope(rawScope: unknown): UnifiedMemoryScope | undefined {
+function normalizeMemoryScope(rawScope: unknown): MemoryScope | undefined {
   const trimmed = typeof rawScope === "string" ? rawScope.trim() : "";
   if (trimmed === "project") return "project";
   if (trimmed === "agent" || trimmed === "user") return "agent";
@@ -1334,7 +1338,7 @@ function summarizeProjectScan(result: OnboardingDetectionResult | null): Partial
 
 
 function isChatToolType(toolType: string | null | undefined): boolean {
-  return toolType === "codex-chat" || toolType === "claude-chat" || toolType === "ai-chat" || toolType === "cursor";
+  return toolType === "codex-chat" || toolType === "claude-chat" || toolType === "opencode-chat" || toolType === "cursor";
 }
 
 function inferPrAiProvider(modelId: string): "codex" | "claude" {
@@ -1370,7 +1374,7 @@ function mapPrAiPermissionMode(mode: AiPermissionMode): AgentChatPermissionMode 
 function mapPrAiPermissionModeToNativeFields(
   mode: AiPermissionMode,
   provider: string,
-): Partial<Pick<AgentChatCreateArgs, "claudePermissionMode" | "codexApprovalPolicy" | "codexSandbox" | "unifiedPermissionMode">> {
+): Partial<Pick<AgentChatCreateArgs, "claudePermissionMode" | "codexApprovalPolicy" | "codexSandbox" | "opencodePermissionMode">> {
   const legacy = mapPrAiPermissionMode(mode);
   if (provider === "claude") {
     const map: Record<string, AgentChatClaudePermissionMode> = {
@@ -1386,16 +1390,16 @@ function mapPrAiPermissionModeToNativeFields(
     if (legacy === "edit") return { codexApprovalPolicy: "on-failure", codexSandbox: "workspace-write" };
     return { codexApprovalPolicy: "untrusted", codexSandbox: "read-only" };
   }
-  const umap: Record<string, AgentChatUnifiedPermissionMode> = {
+  const umap: Record<string, AgentChatOpenCodePermissionMode> = {
     "full-auto": "full-auto",
     "edit": "edit",
     "plan": "plan",
   };
-  return { unifiedPermissionMode: umap[legacy] ?? "edit" };
+  return { opencodePermissionMode: umap[legacy] ?? "edit" };
 }
 
 function deriveAiPermissionModeFromSummary(
-  summary: Pick<AgentChatSessionSummary, "provider" | "claudePermissionMode" | "codexApprovalPolicy" | "codexSandbox" | "unifiedPermissionMode"> | null | undefined,
+  summary: Pick<AgentChatSessionSummary, "provider" | "claudePermissionMode" | "codexApprovalPolicy" | "codexSandbox" | "opencodePermissionMode"> | null | undefined,
 ): AiPermissionMode | null {
   if (!summary) return null;
   if (summary.provider === "claude") {
@@ -1411,9 +1415,9 @@ function deriveAiPermissionModeFromSummary(
     if (summary.codexApprovalPolicy === "untrusted") return "read_only";
     return null;
   }
-  if (summary.unifiedPermissionMode === "full-auto") return "full_edit";
-  if (summary.unifiedPermissionMode === "edit") return "guarded_edit";
-  if (summary.unifiedPermissionMode === "plan") return "read_only";
+  if (summary.opencodePermissionMode === "full-auto") return "full_edit";
+  if (summary.opencodePermissionMode === "edit") return "guarded_edit";
+  if (summary.opencodePermissionMode === "plan") return "read_only";
   return null;
 }
 
@@ -2094,13 +2098,16 @@ export function registerIpc({
     return ctx.keybindingsService.set({ overrides: arg?.overrides ?? [] });
   });
 
-  ipcMain.handle(IPC.aiGetStatus, async (_event, arg?: { force?: boolean }): Promise<AiSettingsStatus> => {
+  ipcMain.handle(IPC.aiGetStatus, async (_event, arg?: { force?: boolean; refreshOpenCodeInventory?: boolean }): Promise<AiSettingsStatus> => {
     const ctx = getCtx();
     if (!ctx.aiIntegrationService) {
       return getUnavailableAiStatus();
     }
     try {
-      const status = await ctx.aiIntegrationService.getStatus({ force: arg?.force === true });
+      const status = await ctx.aiIntegrationService.getStatus({
+        force: arg?.force === true,
+        refreshOpenCodeInventory: arg?.refreshOpenCodeInventory === true,
+      });
       // Single query for all feature daily usage instead of N individual queries
       const usageBatch = ctx.aiIntegrationService.getDailyUsageBatch(AI_USAGE_FEATURE_KEYS);
       return {
@@ -2111,6 +2118,10 @@ export function registerIpc({
         providerConnections: status.providerConnections,
         runtimeConnections: status.runtimeConnections,
         availableModelIds: status.availableModelIds,
+        opencodeBinaryInstalled: status.opencodeBinaryInstalled,
+        opencodeBinarySource: status.opencodeBinarySource,
+        opencodeInventoryError: status.opencodeInventoryError,
+        opencodeProviders: status.opencodeProviders,
         apiKeyStore: status.apiKeyStore,
         features: AI_USAGE_FEATURE_KEYS.map((feature) => ({
           feature,
@@ -2596,7 +2607,7 @@ export function registerIpc({
     const runMode = arg?.launchMode === "manual" ? "manual" : "autopilot";
     const defaultExecutorKind: OrchestratorExecutorKind = runMode === "manual"
       ? "manual"
-      : normalizeAutopilotExecutor(arg?.autopilotExecutor ?? "unified");
+      : normalizeAutopilotExecutor(arg?.autopilotExecutor ?? "opencode");
 
     // Fast-path for autostart missions: create immediately and launch in the background
     // so renderer IPC does not block on planning/launch work.
@@ -4079,6 +4090,7 @@ export function registerIpc({
     const modResult = await runGit(["show", `${arg.afterSha}:${arg.filePath}`], { cwd, timeoutMs: 10_000 }).catch(() => ({ stdout: "", exitCode: 1 }));
     return {
       path: arg.filePath,
+      mode: "commit",
       language: lang,
       original: { text: origResult.exitCode === 0 ? origResult.stdout : null },
       modified: { text: modResult.exitCode === 0 ? modResult.stdout : null },
@@ -5630,7 +5642,7 @@ export function registerIpc({
       const ctx = getCtx();
       if (!ctx.memoryService) return null;
       const pid = arg?.projectId ?? ctx.projectId;
-      const scope = normalizeMemoryScope(typeof arg?.scope === "string" ? arg.scope : "") ?? "project";
+      const scope = normalizeMemoryWriteScope(typeof arg?.scope === "string" ? arg.scope : "") ?? "project";
       const content = typeof arg?.content === "string" ? arg.content.trim() : "";
       if (!content) {
         throw new Error("memory.add requires non-empty content.");
@@ -5731,7 +5743,7 @@ export function registerIpc({
     ) => {
       const ctx = getCtx();
       if (!ctx.memoryService) return [];
-      const scope = normalizeUnifiedMemoryScope(arg.scope);
+      const scope = normalizeMemoryScope(arg.scope);
       const status = arg.status === "all"
         ? (["promoted", "candidate", "archived"] as const)
         : arg.status === "candidate" || arg.status === "promoted" || arg.status === "archived"

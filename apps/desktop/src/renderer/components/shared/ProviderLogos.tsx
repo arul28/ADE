@@ -10,6 +10,7 @@ import {
   Groq,
   Kimi,
   OpenAI,
+  OpenCode,
   OpenRouter,
   XAI,
 } from "@lobehub/icons";
@@ -60,8 +61,8 @@ function LobeStaticMark({ src, size, className }: { src: string; size: number; c
   );
 }
 
-function CursorSubscriptionModelMark({ sdkModelId, size, className }: { sdkModelId: string; size: number; className?: string }) {
-  const s = sdkModelId.trim().toLowerCase();
+function CursorSubscriptionModelMark({ providerModelId, size, className }: { providerModelId: string; size: number; className?: string }) {
+  const s = providerModelId.trim().toLowerCase();
   const c = lobeMarkClass(className);
   if (s === "auto" || s.includes("composer")) {
     return <Cursor.Avatar size={size} className={c} />;
@@ -84,11 +85,11 @@ function CursorSubscriptionModelMark({ sdkModelId, size, className }: { sdkModel
   return <Cursor.Avatar size={size} className={c} />;
 }
 
-function resolveCursorSdkId(modelId: string | undefined, sdkModelId: string | undefined): string {
-  const fromField = (sdkModelId ?? "").trim();
+function resolveCursorProviderModelId(modelId: string | undefined, providerModelId: string | undefined): string {
+  const fromField = (providerModelId ?? "").trim();
   if (fromField.length) return fromField;
   const parsed = modelId ? parseDynamicCursorModelRef(modelId) : null;
-  return parsed?.sdkModelId?.trim() ?? "";
+  return parsed?.providerModelId?.trim() ?? "";
 }
 
 /**
@@ -113,6 +114,8 @@ export function ProviderLogo({
       return <OpenAI size={size} className={c} />;
     case "cursor":
       return <Cursor.Avatar size={size} className={c} />;
+    case "opencode":
+      return <OpenCode.Avatar size={size} className={c} />;
     case "xai":
       return <XAI.Avatar size={size} className={c} />;
     case "groq":
@@ -136,14 +139,14 @@ export function ModelRowLogo({
   modelFamily,
   cliCommand,
   modelId,
-  sdkModelId,
+  providerModelId,
   size = 13,
   className,
 }: {
   modelFamily: string;
   cliCommand?: string;
   modelId?: string;
-  sdkModelId?: string;
+  providerModelId?: string;
   size?: number;
   className?: string;
 }) {
@@ -152,11 +155,11 @@ export function ModelRowLogo({
   const c = lobeMarkClass(className);
 
   if (fam === "cursor" || cli === "cursor") {
-    const sdk = resolveCursorSdkId(modelId, sdkModelId);
-    if (!sdk.length) {
+    const providerModel = resolveCursorProviderModelId(modelId, providerModelId);
+    if (!providerModel.length) {
       return <Cursor.Avatar size={size} className={c} />;
     }
-    return <CursorSubscriptionModelMark sdkModelId={sdk} size={size} className={className} />;
+    return <CursorSubscriptionModelMark providerModelId={providerModel} size={size} className={className} />;
   }
 
   if (fam === "anthropic" || cli === "claude") {
@@ -171,12 +174,16 @@ export function ModelRowLogo({
     return <OpenAI size={size} className={lobeMarkClass(cn("opacity-95", className))} />;
   }
 
+  if (fam === "opencode") {
+    return <OpenCode.Avatar size={size} className={c} />;
+  }
+
   if (fam === "google") {
     return <Gemini.Color size={size} className={c} />;
   }
 
   if (fam === "xai") {
-    const hint = `${sdkModelId ?? ""} ${modelId ?? ""}`.toLowerCase();
+    const hint = `${providerModelId ?? ""} ${modelId ?? ""}`.toLowerCase();
     if (/grok/.test(hint)) {
       return <Grok.Avatar size={size} className={c} />;
     }

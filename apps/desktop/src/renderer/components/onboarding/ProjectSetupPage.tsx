@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import { CheckCircle, Circle } from "@phosphor-icons/react";
 import { useNavigate } from "react-router-dom";
 import type { ContextRefreshEvents, ContextStatus } from "../../../shared/types";
@@ -9,7 +9,7 @@ import { LinearSection } from "../settings/LinearSection";
 import { ProvidersSection } from "../settings/ProvidersSection";
 import { DevToolsSection } from "./DevToolsSection";
 import { EmbeddingsSection } from "./EmbeddingsSection";
-import { UnifiedModelSelector } from "../shared/UnifiedModelSelector";
+import { ProviderModelSelector } from "../shared/ProviderModelSelector";
 import { deriveConfiguredModelIds } from "../../lib/modelOptions";
 import { useAppStore } from "../../state/appStore";
 import { COLORS, SANS_FONT } from "../lanes/laneDesignTokens";
@@ -27,7 +27,7 @@ const STEP_META: Record<SetupStep, { title: string; subtitle: string }> = {
   },
   ai: {
     title: "AI connections",
-    subtitle: "Connect your AI providers and local runtimes",
+    subtitle: "Connect Claude, Codex, Cursor, and OpenCode",
   },
   helpers: {
     title: "Background helpers",
@@ -55,8 +55,8 @@ const STEP_META: Record<SetupStep, { title: string; subtitle: string }> = {
 const STEP_HEADERS: Record<SetupStep, { heading: string; sub: string }> = {
   tools: { heading: "Developer Tools", sub: "ADE needs git for version control. GitHub CLI unlocks PR creation, review requests, and CI checks." },
   ai: {
-    heading: "Connect AI providers",
-    sub: "Link API keys, CLIs, and local runtimes (LM Studio, Ollama, vLLM) so ADE can power chat, codegen, and background helpers. After the CLI is installed and signed in, Cursor models appear in work chat automatically.",
+    heading: "Runtime providers",
+    sub: "Set up the four ADE runtime providers: Claude, Codex, and Cursor use their native CLIs. OpenCode powers API-backed and local model chats (LM Studio, Ollama). After a CLI is installed and signed in, its models appear automatically.",
   },
   helpers: { heading: "Background helpers", sub: "These lightweight helpers run in the background while you work. They are optional and can be changed anytime in Settings." },
   github: { heading: "GitHub Integration", sub: "A personal access token lets ADE create PRs, request reviews, and monitor CI on your behalf." },
@@ -116,6 +116,9 @@ function describeContextStatusLine(args: {
 
 export function ProjectSetupPage() {
   const navigate = useNavigate();
+  const openAiProvidersSettings = useCallback(() => {
+    navigate("/settings?tab=ai#ai-providers");
+  }, [navigate]);
   const project = useAppStore((s) => s.project);
   const [step, setStep] = useState<SetupStep>("tools");
   const [status, setStatus] = useState<{ completedAt: string | null; dismissedAt: string | null; freshProject?: boolean } | null>(null);
@@ -240,7 +243,7 @@ export function ProjectSetupPage() {
     try {
       // Save prefs first (same flow as settings)
       await window.ade.context.savePrefs({
-        provider: "unified",
+        provider: "opencode",
         modelId: contextModelId,
         reasoningEffort: contextReasoningEffort,
         events: contextEvents,
@@ -248,7 +251,7 @@ export function ProjectSetupPage() {
 
       // Fire and forget generation
       void window.ade.context.generateDocs({
-        provider: "unified",
+        provider: "opencode",
         modelId: contextModelId,
         reasoningEffort: contextReasoningEffort,
         events: contextEvents,
@@ -270,7 +273,7 @@ export function ProjectSetupPage() {
     if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
     saveTimeoutRef.current = setTimeout(() => {
       void window.ade.context?.savePrefs?.({
-        provider: "unified",
+        provider: "opencode",
         modelId: contextModelId,
         reasoningEffort: contextReasoningEffort,
         events: contextEvents,
@@ -302,13 +305,14 @@ export function ProjectSetupPage() {
           <div style={{ fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textMuted, marginBottom: 12, lineHeight: "18px" }}>
             Select the model that will generate your PRD and Architecture docs.
           </div>
-          <UnifiedModelSelector
+          <ProviderModelSelector
             value={contextModelId}
             onChange={setContextModelId}
             availableModelIds={availableModelIds}
             showReasoning
             reasoningEffort={contextReasoningEffort}
             onReasoningEffortChange={setContextReasoningEffort}
+            onOpenAiSettings={openAiProvidersSettings}
             className="w-full"
           />
           {/* Status */}
