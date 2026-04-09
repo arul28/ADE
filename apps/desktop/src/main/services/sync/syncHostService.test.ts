@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -199,6 +200,56 @@ afterEach(async () => {
 });
 
 describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
+  it("rejects host startup quickly when the requested port is already taken", async () => {
+    const projectRoot = makeProjectRoot("ade-sync-host-port-conflict-");
+    const workspaceRoot = path.join(projectRoot, "workspace");
+    fs.mkdirSync(workspaceRoot, { recursive: true });
+    const db = await openKvDb(makeDbPath("ade-sync-host-port-conflict-db-"), createLogger() as any);
+    const blocker = net.createServer();
+    await new Promise<void>((resolve, reject) => {
+      blocker.once("error", reject);
+      blocker.listen(0, () => resolve());
+    });
+    const blockedPort = (blocker.address() as net.AddressInfo).port;
+
+    const host = createSyncHostService({
+      db,
+      logger: createLogger() as any,
+      projectRoot,
+      port: blockedPort,
+      fileService: createStubFileService(workspaceRoot) as any,
+      laneService: {
+        list: vi.fn().mockResolvedValue([]),
+        create: vi.fn(),
+        archive: vi.fn(),
+      } as any,
+      prService: {
+        listAll: async () => [],
+        getDetail: async () => null,
+        getStatus: async () => null,
+        getChecks: async () => [],
+        getReviews: async () => [],
+        getComments: async () => [],
+        getFiles: async () => [],
+        createFromLane: async () => ({}),
+        land: async () => ({}),
+        closePr: async () => {},
+        requestReviewers: async () => {},
+      } as any,
+      sessionService: { list: () => [] } as any,
+      ptyService: {} as any,
+      computerUseArtifactBrokerService: {} as any,
+    });
+
+    activeDisposers.push(async () => {
+      await host.dispose();
+      db.close();
+      await new Promise<void>((resolve) => blocker.close(() => resolve()));
+    });
+
+    await expect(host.waitUntilListening()).rejects.toMatchObject({ code: "EADDRINUSE" });
+  }, 30_000);
+
   it("authenticates peers, relays CRDT changes, and rebroadcasts to other peers", async () => {
     const brainDb = await openKvDb(makeDbPath("ade-sync-brain-"), createLogger() as any);
     const dbA = await openKvDb(makeDbPath("ade-sync-peer-a-"), createLogger() as any);

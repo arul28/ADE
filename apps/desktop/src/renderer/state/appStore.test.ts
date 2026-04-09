@@ -27,6 +27,7 @@ const mockLocalStorage = {
     keybindings: { get: vi.fn(async () => null) },
     project: {
       openRepo: vi.fn(async () => null),
+      listRecent: vi.fn(async () => []),
       switchToPath: vi.fn(async () => null),
       closeCurrent: vi.fn(async () => {}),
     },
@@ -47,6 +48,8 @@ function resetStore() {
     project: null,
     projectHydrated: false,
     showWelcome: true,
+    projectTransition: null,
+    projectTransitionError: null,
     laneSnapshots: [],
     lanes: [],
     selectedLaneId: null,
@@ -224,6 +227,12 @@ describe("appStore", () => {
       useAppStore.getState().focusSession("session-abc");
       expect(useAppStore.getState().focusedSessionId).toBe("session-abc");
     });
+
+    it("clearProjectTransitionError clears project action errors", () => {
+      useAppStore.setState({ projectTransitionError: "Switch failed" });
+      useAppStore.getState().clearProjectTransitionError();
+      expect(useAppStore.getState().projectTransitionError).toBeNull();
+    });
   });
 
   // ─────────────────────────────────────────────────────────────
@@ -355,6 +364,67 @@ describe("appStore", () => {
       useAppStore.getState().setLaneWorkViewState("", "lane-1", { viewMode: "grid" });
       useAppStore.getState().setLaneWorkViewState("/proj", "", { viewMode: "grid" });
       expect(useAppStore.getState().laneWorkViewByScope).toEqual({});
+    });
+  });
+
+  describe("project transitions", () => {
+    it("tracks project switching progress and clears it on success", async () => {
+      const nextProject = { rootPath: "/tmp/next", displayName: "Next", baseRef: "main" } as any;
+      (window.ade.project.switchToPath as any).mockResolvedValueOnce(nextProject);
+      (window.ade.project.listRecent as any).mockResolvedValueOnce([{ rootPath: "/tmp/next" }]);
+
+      const pending = useAppStore.getState().switchProjectToPath("/tmp/next");
+      expect(useAppStore.getState().projectTransition).toEqual(
+        expect.objectContaining({
+          kind: "switching",
+          rootPath: "/tmp/next",
+        }),
+      );
+
+      await pending;
+
+      expect(useAppStore.getState().project).toEqual(nextProject);
+      expect(useAppStore.getState().projectTransition).toBeNull();
+      expect(useAppStore.getState().projectTransitionError).toBeNull();
+    });
+
+    it("stores a friendly timeout error when switching projects fails", async () => {
+      (window.ade.project.switchToPath as any).mockRejectedValueOnce(
+        new Error("IPC handler for 'ade.project.switchToPath' timed out after 30000ms (callId=51)"),
+      );
+
+      await expect(
+        useAppStore.getState().switchProjectToPath("/tmp/slow-project"),
+      ).rejects.toThrow("timed out after 30000ms");
+
+      expect(useAppStore.getState().projectTransition).toBeNull();
+      expect(useAppStore.getState().projectTransitionError).toBe(
+        "Switching projects took longer than 30 seconds, so ADE kept the current project active.",
+      );
+    });
+
+    it("tracks project opening progress and clears it when the user cancels", async () => {
+      let resolveOpen: (value: any) => void = () => {};
+      (window.ade.project.openRepo as any).mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolveOpen = resolve;
+          }),
+      );
+
+      const pending = useAppStore.getState().openRepo();
+      expect(useAppStore.getState().projectTransition).toEqual(
+        expect.objectContaining({
+          kind: "opening",
+          rootPath: null,
+        }),
+      );
+
+      resolveOpen(null);
+      await pending;
+
+      expect(useAppStore.getState().projectTransition).toBeNull();
+      expect(useAppStore.getState().projectTransitionError).toBeNull();
     });
   });
 });

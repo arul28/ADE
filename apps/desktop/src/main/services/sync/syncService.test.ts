@@ -471,4 +471,91 @@ describe.skipIf(!isCrsqliteAvailable())("syncService", () => {
     expect(status.pairingSession).toBeNull();
     expect(status.pairingConnectInfo).toBeNull();
   }, 30_000);
+
+  it("retries the sync host on bind conflicts so another project can still initialize", async () => {
+    const projectRoot = makeProjectRoot("ade-sync-service-port-retry-");
+    const db = await openKvDb(
+      path.join(projectRoot, ".ade", "ade.db"),
+      createLogger() as any,
+    );
+
+    const disposeFirstAttempt = vi.fn(async () => {});
+    const disposeSecondAttempt = vi.fn(async () => {});
+    createSyncHostServiceMock.mockImplementation((({ port }: { port?: number }) => {
+      const attemptedPort = port ?? 8787;
+      return {
+        async waitUntilListening() {
+          if (attemptedPort === 8787) {
+            const error = Object.assign(new Error("address already in use"), {
+              code: "EADDRINUSE",
+            });
+            throw error;
+          }
+          return attemptedPort;
+        },
+        getPort() {
+          return attemptedPort;
+        },
+        getBootstrapToken() {
+          return "test-bootstrap-token";
+        },
+        getPairingSession() {
+          const expires = new Date(Date.now() + 600_000).toISOString();
+          return { code: "TEST1234", expiresAt: expires, pairedDevices: [] };
+        },
+        revokePairedDevice() {},
+        getPeerStates() {
+          return [];
+        },
+        getBrainStatusSnapshot() {
+          return {};
+        },
+        handlePtyData() {},
+        handlePtyExit() {},
+        dispose: attemptedPort === 8787 ? disposeFirstAttempt : disposeSecondAttempt,
+      };
+    }) as any);
+
+    const service = createSyncService({
+      db,
+      logger: createLogger() as any,
+      projectRoot,
+      fileService: { dispose: () => {} } as any,
+      laneService: {
+        list: async () => [],
+        create: async () => ({}),
+        archive: async () => {},
+      } as any,
+      prService: {
+        listAll: async () => [],
+        getDetail: async () => null,
+        getStatus: async () => null,
+        getChecks: async () => [],
+        getReviews: async () => [],
+        getComments: async () => [],
+        getFiles: async () => [],
+        createFromLane: async () => ({}),
+        land: async () => ({}),
+        closePr: async () => {},
+        requestReviewers: async () => {},
+      } as any,
+      sessionService: { list: () => [] } as any,
+      ptyService: {} as any,
+      computerUseArtifactBrokerService: {} as any,
+      missionService: { list: () => [] } as any,
+      agentChatService: { listSessions: async () => [] } as any,
+      processService: { listRuntime: () => [] } as any,
+    });
+
+    activeDisposers.push(async () => {
+      await service.dispose();
+      db.close();
+    });
+
+    await service.initialize();
+
+    expect(createSyncHostServiceMock.mock.calls.map((call: any[]) => call[0]?.port)).toEqual([8787, 8788]);
+    expect(disposeFirstAttempt).toHaveBeenCalledTimes(1);
+    expect(service.getHostService()?.getPort()).toBe(8788);
+  }, 30_000);
 });

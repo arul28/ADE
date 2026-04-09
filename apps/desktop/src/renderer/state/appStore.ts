@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import type { KeybindingsSnapshot, LaneListSnapshot, LaneSummary, ProjectInfo, ProviderMode } from "../../shared/types";
 import { MODEL_REGISTRY, type ModelDescriptor } from "../../shared/modelRegistry";
+import { extractError } from "../lib/format";
 
 export type ThemeId = "dark" | "light";
 export const THEME_IDS: ThemeId[] = ["dark", "light"];
@@ -106,6 +107,14 @@ type AppState = {
   projectHydrated: boolean;
   /** True when the user removed all projects — forces welcome screen even though backend still has a project loaded. */
   showWelcome: boolean;
+  projectTransition:
+    | {
+        kind: "opening" | "switching" | "closing";
+        rootPath: string | null;
+        startedAtMs: number;
+      }
+    | null;
+  projectTransitionError: string | null;
   isNewTabOpen: boolean;
   laneSnapshots: LaneListSnapshot[];
   lanes: LaneSummary[];
@@ -124,6 +133,7 @@ type AppState = {
   setProject: (project: ProjectInfo | null) => void;
   setProjectHydrated: (hydrated: boolean) => void;
   setShowWelcome: (show: boolean) => void;
+  clearProjectTransitionError: () => void;
   setLanes: (lanes: LaneSummary[]) => void;
   selectLane: (laneId: string | null) => void;
   setLaneInspectorTab: (laneId: string, tab: LaneInspectorTab) => void;
@@ -205,10 +215,29 @@ function scheduleProjectHydration(get: () => AppState) {
   }, 1_800);
 }
 
+function formatProjectTransitionError(
+  kind: "opening" | "switching" | "closing",
+  error: unknown,
+): string {
+  const raw = extractError(error).trim();
+  if (/timed out after 30000ms/i.test(raw)) {
+    if (kind === "opening") {
+      return "Opening this project took longer than 30 seconds, so ADE stopped waiting.";
+    }
+    if (kind === "switching") {
+      return "Switching projects took longer than 30 seconds, so ADE kept the current project active.";
+    }
+    return "Closing the current project took longer than 30 seconds.";
+  }
+  return raw.length > 0 ? raw : "Project action failed.";
+}
+
 export const useAppStore = create<AppState>((set, get) => ({
   project: null,
   projectHydrated: false,
   showWelcome: true,
+  projectTransition: null,
+  projectTransitionError: null,
   isNewTabOpen: false,
   laneSnapshots: [],
   lanes: [],
@@ -227,6 +256,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   setProject: (project) => set({ project }),
   setProjectHydrated: (projectHydrated) => set({ projectHydrated }),
   setShowWelcome: (showWelcome) => set({ showWelcome }),
+  clearProjectTransitionError: () => set({ projectTransitionError: null }),
   setLanes: (lanes) => set({ lanes }),
   selectLane: (laneId) => set({ selectedLaneId: laneId }),
   setLaneInspectorTab: (laneId, tab) =>
@@ -426,89 +456,150 @@ export const useAppStore = create<AppState>((set, get) => ({
     // Invalidate in-flight lane refreshes before the async open so stale
     // responses from the previous project are discarded immediately.
     ++laneRefreshVersion;
-    const project = await window.ade.project.openRepo();
-    if (!project) return null;
     set({
-      project,
-      projectHydrated: true,
-      showWelcome: false,
-      isNewTabOpen: false,
-      laneSnapshots: [],
-      lanes: [],
-      selectedLaneId: null,
-      runLaneId: null,
-      focusedSessionId: null,
-      laneInspectorTabs: {},
-      keybindings: null,
-      terminalAttention: EMPTY_TERMINAL_ATTENTION
+      projectTransition: {
+        kind: "opening",
+        rootPath: null,
+        startedAtMs: Date.now(),
+      },
+      projectTransitionError: null,
     });
-    void Promise.allSettled([
-      get().refreshLanes({ includeStatus: false }),
-      get().refreshKeybindings()
-    ]);
-    scheduleProjectHydration(get);
-    return project;
+    try {
+      const project = await window.ade.project.openRepo();
+      if (!project) {
+        set({ projectTransition: null });
+        return null;
+      }
+      set({
+        project,
+        projectHydrated: true,
+        showWelcome: false,
+        projectTransition: null,
+        projectTransitionError: null,
+        isNewTabOpen: false,
+        laneSnapshots: [],
+        lanes: [],
+        selectedLaneId: null,
+        runLaneId: null,
+        focusedSessionId: null,
+        laneInspectorTabs: {},
+        keybindings: null,
+        terminalAttention: EMPTY_TERMINAL_ATTENTION
+      });
+      void Promise.allSettled([
+        get().refreshLanes({ includeStatus: false }),
+        get().refreshKeybindings()
+      ]);
+      scheduleProjectHydration(get);
+      return project;
+    } catch (error) {
+      set({
+        projectTransition: null,
+        projectTransitionError: formatProjectTransitionError("opening", error),
+      });
+      throw error;
+    }
   },
 
   switchProjectToPath: async (rootPath: string) => {
     // Invalidate in-flight lane refreshes before the async switch so stale
     // responses from the previous project are discarded immediately.
     ++laneRefreshVersion;
-    const project = await window.ade.project.switchToPath(rootPath);
     set({
-      project,
-      projectHydrated: true,
-      showWelcome: false,
-      isNewTabOpen: false,
-      laneSnapshots: [],
-      lanes: [],
-      selectedLaneId: null,
-      runLaneId: null,
-      focusedSessionId: null,
-      laneInspectorTabs: {},
-      keybindings: null,
-      terminalAttention: EMPTY_TERMINAL_ATTENTION
+      projectTransition: {
+        kind: "switching",
+        rootPath,
+        startedAtMs: Date.now(),
+      },
+      projectTransitionError: null,
     });
-    void Promise.allSettled([
-      get().refreshLanes({ includeStatus: false }),
-      get().refreshKeybindings()
-    ]);
-    scheduleProjectHydration(get);
+    try {
+      const project = await window.ade.project.switchToPath(rootPath);
+      set({
+        project,
+        projectHydrated: true,
+        showWelcome: false,
+        projectTransition: null,
+        projectTransitionError: null,
+        isNewTabOpen: false,
+        laneSnapshots: [],
+        lanes: [],
+        selectedLaneId: null,
+        runLaneId: null,
+        focusedSessionId: null,
+        laneInspectorTabs: {},
+        keybindings: null,
+        terminalAttention: EMPTY_TERMINAL_ATTENTION
+      });
+      void Promise.allSettled([
+        get().refreshLanes({ includeStatus: false }),
+        get().refreshKeybindings()
+      ]);
+      scheduleProjectHydration(get);
 
-    // Prune stale view state for projects no longer in recent list
-    const recentRoots = new Set(
-      (await window.ade.project.listRecent().catch(() => [])).map((r: { rootPath: string }) => r.rootPath)
-    );
-    const activeRoot = get().project?.rootPath ?? null;
-    set((prev) => {
-      const nextWorkViews: Record<string, WorkProjectViewState> = {};
-      const nextLaneWorkViews: Record<string, WorkProjectViewState> = {};
-      for (const [key, value] of Object.entries(prev.workViewByProject)) {
-        if (key === activeRoot || recentRoots.has(key)) nextWorkViews[key] = value;
-      }
-      for (const [scopeKey, value] of Object.entries(prev.laneWorkViewByScope)) {
-        const projectKey = scopeKey.split("::")[0];
-        if (projectKey === activeRoot || recentRoots.has(projectKey)) nextLaneWorkViews[scopeKey] = value;
-      }
-      return { workViewByProject: nextWorkViews, laneWorkViewByScope: nextLaneWorkViews };
-    });
+      // Prune stale view state for projects no longer in recent list
+      const recentRoots = new Set(
+        (await window.ade.project.listRecent().catch(() => [])).map((r: { rootPath: string }) => r.rootPath)
+      );
+      const activeRoot = get().project?.rootPath ?? null;
+      set((prev) => {
+        const nextWorkViews: Record<string, WorkProjectViewState> = {};
+        const nextLaneWorkViews: Record<string, WorkProjectViewState> = {};
+        for (const [key, value] of Object.entries(prev.workViewByProject)) {
+          if (key === activeRoot || recentRoots.has(key)) nextWorkViews[key] = value;
+        }
+        for (const [scopeKey, value] of Object.entries(prev.laneWorkViewByScope)) {
+          const projectKey = scopeKey.split("::")[0];
+          if (projectKey === activeRoot || recentRoots.has(projectKey)) nextLaneWorkViews[scopeKey] = value;
+        }
+        return {
+          projectTransition: null,
+          workViewByProject: nextWorkViews,
+          laneWorkViewByScope: nextLaneWorkViews,
+        };
+      });
+    } catch (error) {
+      set({
+        projectTransition: null,
+        projectTransitionError: formatProjectTransitionError("switching", error),
+      });
+      throw error;
+    }
   },
 
   closeProject: async () => {
-    await window.ade.project.closeCurrent();
     set({
-      project: null,
-      projectHydrated: true,
-      showWelcome: true,
-      isNewTabOpen: false,
-      laneSnapshots: [],
-      lanes: [],
-      selectedLaneId: null,
-      runLaneId: null,
-      focusedSessionId: null,
-      laneInspectorTabs: {},
-      keybindings: null,
-      terminalAttention: EMPTY_TERMINAL_ATTENTION
+      projectTransition: {
+        kind: "closing",
+        rootPath: get().project?.rootPath ?? null,
+        startedAtMs: Date.now(),
+      },
+      projectTransitionError: null,
     });
+    try {
+      await window.ade.project.closeCurrent();
+      set({
+        project: null,
+        projectHydrated: true,
+        showWelcome: true,
+        projectTransition: null,
+        projectTransitionError: null,
+        isNewTabOpen: false,
+        laneSnapshots: [],
+        lanes: [],
+        selectedLaneId: null,
+        runLaneId: null,
+        focusedSessionId: null,
+        laneInspectorTabs: {},
+        keybindings: null,
+        terminalAttention: EMPTY_TERMINAL_ATTENTION
+      });
+    } catch (error) {
+      set({
+        projectTransition: null,
+        projectTransitionError: formatProjectTransitionError("closing", error),
+      });
+      throw error;
+    }
   }
 }));

@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
-import { ChatCircleDots, Folder, FolderOpen, Plus, Minus, Trash, X } from "@phosphor-icons/react";
+import { ChatCircleDots, CircleNotch, Folder, FolderOpen, Plus, Minus, Trash, X } from "@phosphor-icons/react";
 import { useNavigate } from "react-router-dom";
 
 import { useAppStore } from "../../state/appStore";
@@ -52,6 +52,9 @@ export function TopBar() {
   const isNewTabOpen = useAppStore((s) => s.isNewTabOpen);
   const openNewTab = useAppStore((s) => s.openNewTab);
   const cancelNewTab = useAppStore((s) => s.cancelNewTab);
+  const projectTransition = useAppStore((s) => s.projectTransition);
+  const projectTransitionError = useAppStore((s) => s.projectTransitionError);
+  const clearProjectTransitionError = useAppStore((s) => s.clearProjectTransitionError);
   const switchProjectToPath = useAppStore((s) => s.switchProjectToPath);
   const [recentProjects, setRecentProjects] = useState<RecentProjectSummary[]>([]);
   const [relocatingPath, setRelocatingPath] = useState<string | null>(null);
@@ -61,6 +64,7 @@ export function TopBar() {
   const [dragIdx, setDragIdx] = useState<number | null>(null);
   const [dropIdx, setDropIdx] = useState<number | null>(null);
   const dragCounterRef = useRef(0);
+  const isProjectBusy = projectTransition != null || relocatingPath != null;
 
   const applyZoom = useCallback((pct: number) => {
     const clamped = Math.max(MIN_ZOOM_LEVEL, Math.min(MAX_ZOOM_LEVEL, pct));
@@ -166,13 +170,14 @@ export function TopBar() {
   }, [project?.rootPath]);
 
   const handleOpenNew = useCallback(() => {
+    if (isProjectBusy) return;
     openNewTab();
-  }, [openNewTab]);
+  }, [isProjectBusy, openNewTab]);
 
   const handleSwitchProject = useCallback((rootPath: string) => {
-    if (project?.rootPath === rootPath) return;
+    if (isProjectBusy || project?.rootPath === rootPath) return;
     switchProjectToPath(rootPath).catch(() => { });
-  }, [project?.rootPath, switchProjectToPath]);
+  }, [isProjectBusy, project?.rootPath, switchProjectToPath]);
 
   const handleRemoveTab = useCallback((rootPath: string) => {
     void (async () => {
@@ -243,6 +248,20 @@ export function TopBar() {
   }, []);
 
   const syncLabel = deriveSyncLabel(syncSnapshot);
+  const transitionTargetName =
+    projectTransition?.rootPath
+      ? (recentProjects.find((entry) => entry.rootPath === projectTransition.rootPath)?.displayName
+          ?? projectTransition.rootPath.split(/[\\/]/).filter(Boolean).pop()
+          ?? "project")
+      : "project";
+  const projectTransitionLabel =
+    projectTransition == null
+      ? null
+      : projectTransition.kind === "opening"
+        ? "Opening project…"
+        : projectTransition.kind === "switching"
+          ? `Switching to ${transitionTargetName}…`
+          : "Closing project…";
 
   return (
     <header
@@ -284,6 +303,10 @@ export function TopBar() {
               const isCurrent = project?.rootPath === rp.rootPath;
               const isMissing = !rp.exists;
               const isRelocating = relocatingPath === rp.rootPath;
+              const isSwitchTarget =
+                projectTransition?.kind === "switching" && projectTransition.rootPath === rp.rootPath;
+              const isClosingTarget =
+                projectTransition?.kind === "closing" && isCurrent;
               const isDragging = dragIdx === idx;
               const isDropTarget = dropIdx === idx && dragIdx !== idx;
               let projectTabState: string | undefined;
@@ -298,8 +321,8 @@ export function TopBar() {
                   tabIndex={isMissing ? -1 : 0}
                   data-state={projectTabState}
                   aria-current={isCurrent ? "true" : undefined}
-                  aria-disabled={isRelocating ? true : undefined}
-                  draggable={!isMissing && !isRelocating}
+                  aria-disabled={isRelocating || isProjectBusy ? true : undefined}
+                  draggable={!isMissing && !isRelocating && !isProjectBusy}
                   onDragStart={(e) => handleDragStart(e, idx)}
                   onDragOver={(e) => handleDragOver(e, idx)}
                   onDragLeave={handleDragLeave}
@@ -311,6 +334,7 @@ export function TopBar() {
                     !isMissing && "cursor-pointer",
                     isCurrent && "font-semibold",
                     isRelocating && "pointer-events-none opacity-80",
+                    (isSwitchTarget || isClosingTarget) && "pointer-events-none opacity-80",
                     isDragging && "opacity-40",
                     isDropTarget && "ring-1 ring-accent/50"
                   )}
@@ -332,9 +356,13 @@ export function TopBar() {
                     weight="regular"
                     className={cn(
                       "shrink-0 transition-opacity duration-150",
-                      isCurrent ? "opacity-90" : "opacity-70"
+                      isCurrent ? "opacity-90" : "opacity-70",
+                      (isSwitchTarget || isClosingTarget) && "animate-pulse"
                     )}
                   />
+                  {isSwitchTarget || isClosingTarget ? (
+                    <CircleNotch size={11} weight="bold" className="shrink-0 animate-spin opacity-80" />
+                  ) : null}
                   {isCurrent && indicator != null && indicator !== "none" ? (
                     <span
                       title={
@@ -365,10 +393,10 @@ export function TopBar() {
                         className="ade-shell-control inline-flex h-4 w-4 items-center justify-center text-current transition-[background-color,color,border-color,box-shadow] duration-100"
                         data-variant="ghost"
                         data-state={isRelocating ? "open" : undefined}
-                        disabled={isRelocating}
+                        disabled={isRelocating || isProjectBusy}
                         onClick={(e) => {
                           e.stopPropagation();
-                          if (isRelocating) return;
+                          if (isRelocating || isProjectBusy) return;
                           handleRelocate(rp.rootPath);
                         }}
                         title="Relocate project"
@@ -379,8 +407,10 @@ export function TopBar() {
                         type="button"
                         className="ade-shell-control inline-flex h-4 w-4 items-center justify-center text-current transition-[background-color,color,border-color,box-shadow] duration-100"
                         data-variant="ghost"
+                        disabled={isProjectBusy}
                         onClick={(e) => {
                           e.stopPropagation();
+                          if (isProjectBusy) return;
                           handleRemoveTab(rp.rootPath);
                         }}
                         title="Remove from list"
@@ -396,8 +426,10 @@ export function TopBar() {
                         "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity duration-150"
                       )}
                       data-variant="ghost"
+                      disabled={isProjectBusy}
                       onClick={(e) => {
                         e.stopPropagation();
+                        if (isProjectBusy) return;
                         handleRemoveTab(rp.rootPath);
                       }}
                       title="Remove project"
@@ -418,8 +450,14 @@ export function TopBar() {
                 data-state="active"
                 style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
               >
-                <img src="./logo.png" alt="" style={{ height: 12, width: 12 }} draggable={false} />
-                <span className="truncate text-[11px]">New Tab</span>
+                {projectTransition?.kind === "opening" ? (
+                  <CircleNotch size={12} weight="bold" className="animate-spin" />
+                ) : (
+                  <img src="./logo.png" alt="" style={{ height: 12, width: 12 }} draggable={false} />
+                )}
+                <span className="truncate text-[11px]">
+                  {projectTransition?.kind === "opening" ? "Opening…" : "New Tab"}
+                </span>
                 <button
                   type="button"
                   className={cn(
@@ -427,8 +465,10 @@ export function TopBar() {
                     "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity duration-150"
                   )}
                   data-variant="ghost"
+                  disabled={isProjectBusy}
                   onClick={(e) => {
                     e.stopPropagation();
+                    if (isProjectBusy) return;
                     cancelNewTab();
                   }}
                   title="Close new tab"
@@ -449,12 +489,48 @@ export function TopBar() {
           )}
           data-variant="ghost"
           onClick={handleOpenNew}
+          disabled={isProjectBusy}
           title="Open another project"
           style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
         >
           <Plus size={12} weight="regular" />
         </button>
       </div>
+
+      {projectTransitionLabel ? (
+        <div
+          className={cn(
+            "ade-shell-control shrink-0 inline-flex items-center gap-1.5 rounded-md px-2.5 py-1",
+            "text-[11px] font-medium"
+          )}
+          style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
+          title={projectTransitionLabel}
+        >
+          <CircleNotch size={12} weight="bold" className="animate-spin" />
+          <span className="max-w-[240px] truncate">{projectTransitionLabel}</span>
+        </div>
+      ) : null}
+
+      {!projectTransitionLabel && projectTransitionError ? (
+        <div
+          className={cn(
+            "ade-shell-control shrink-0 inline-flex items-center gap-1.5 rounded-md px-2.5 py-1",
+            "text-[11px] font-medium text-red-300"
+          )}
+          style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
+          title={projectTransitionError}
+        >
+          <span className="max-w-[320px] truncate">{projectTransitionError}</span>
+          <button
+            type="button"
+            className="inline-flex h-4 w-4 items-center justify-center rounded-sm text-current opacity-80 transition-opacity hover:opacity-100"
+            onClick={clearProjectTransitionError}
+            title="Dismiss project error"
+          >
+            <X size={10} weight="regular" />
+          </button>
+        </div>
+      ) : null}
 
       {syncSnapshot && syncLabel ? (
         <button

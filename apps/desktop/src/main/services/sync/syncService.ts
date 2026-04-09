@@ -71,6 +71,7 @@ const DRAFT_FILE = "sync-peer-draft.json";
 const TOKEN_FILE = "sync-bootstrap-token";
 const RUNNING_PROCESS_STATES = new Set(["starting", "running", "degraded"]);
 const CHAT_TOOL_TYPES = new Set(["codex-chat", "claude-chat", "opencode-chat"]);
+const SYNC_HOST_PORT_RETRY_WINDOW = 12;
 
 function sanitizeDraft(
   raw: unknown,
@@ -157,6 +158,43 @@ function buildPairingConnectInfo(argsIn: {
     qrPayload,
     qrPayloadText,
   };
+}
+
+function isRetryableHostBindError(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException | null | undefined)?.code ?? "";
+  return code === "EADDRINUSE" || code === "EACCES";
+}
+
+function buildHostPortCandidates(preferredPort: number | null | undefined): number[] {
+  const preferred = Number.isFinite(preferredPort)
+    ? Math.max(0, Math.min(65_535, Math.floor(Number(preferredPort))))
+    : DEFAULT_SYNC_HOST_PORT;
+  const candidates: number[] = [];
+  const seen = new Set<number>();
+  const add = (port: number) => {
+    const normalized = Math.max(0, Math.min(65_535, Math.floor(port)));
+    if (seen.has(normalized)) return;
+    seen.add(normalized);
+    candidates.push(normalized);
+  };
+  add(preferred);
+  if (preferred !== DEFAULT_SYNC_HOST_PORT) {
+    add(DEFAULT_SYNC_HOST_PORT);
+  }
+  for (let offset = 1; offset <= SYNC_HOST_PORT_RETRY_WINDOW; offset += 1) {
+    if (preferred + offset <= 65_535) {
+      add(preferred + offset);
+    }
+  }
+  if (preferred !== DEFAULT_SYNC_HOST_PORT) {
+    for (let offset = 1; offset <= Math.min(4, SYNC_HOST_PORT_RETRY_WINDOW); offset += 1) {
+      if (DEFAULT_SYNC_HOST_PORT + offset <= 65_535) {
+        add(DEFAULT_SYNC_HOST_PORT + offset);
+      }
+    }
+  }
+  add(0);
+  return candidates;
 }
 
 export function createSyncService(args: SyncServiceArgs) {
@@ -276,39 +314,66 @@ export function createSyncService(args: SyncServiceArgs) {
       return;
     }
     const localDevice = deviceRegistryService.ensureLocalDevice();
-    hostService = createSyncHostService({
-      db: args.db,
-      logger: args.logger,
-      projectRoot: args.projectRoot,
-      fileService: args.fileService,
-      laneService: args.laneService,
-      gitService: args.gitService,
-      diffService: args.diffService,
-      conflictService: args.conflictService,
-      prService: args.prService,
-      sessionService: args.sessionService,
-      ptyService: args.ptyService,
-      agentChatService: args.agentChatService,
-      projectConfigService: args.projectConfigService,
-      portAllocationService: args.portAllocationService,
-      laneEnvironmentService: args.laneEnvironmentService,
-      laneTemplateService: args.laneTemplateService,
-      rebaseSuggestionService: args.rebaseSuggestionService ?? undefined,
-      autoRebaseService: args.autoRebaseService ?? undefined,
-      computerUseArtifactBrokerService: args.computerUseArtifactBrokerService,
-      bootstrapTokenPath: tokenPath,
-      port: localDevice.lastPort ?? DEFAULT_SYNC_HOST_PORT,
-      deviceRegistryService,
-      onStateChanged: () => {
-        void refreshRoleState();
-      },
-    });
-    const port = await hostService.waitUntilListening();
-    deviceRegistryService.touchLocalDevice({
-      lastSeenAt: nowIso(),
-      lastHost: localDevice.lastHost,
-      lastPort: port,
-    });
+    const preferredPort = localDevice.lastPort ?? DEFAULT_SYNC_HOST_PORT;
+    let lastError: unknown = null;
+    for (const attemptedPort of buildHostPortCandidates(preferredPort)) {
+      const candidateHostService = createSyncHostService({
+        db: args.db,
+        logger: args.logger,
+        projectRoot: args.projectRoot,
+        fileService: args.fileService,
+        laneService: args.laneService,
+        gitService: args.gitService,
+        diffService: args.diffService,
+        conflictService: args.conflictService,
+        prService: args.prService,
+        sessionService: args.sessionService,
+        ptyService: args.ptyService,
+        agentChatService: args.agentChatService,
+        projectConfigService: args.projectConfigService,
+        portAllocationService: args.portAllocationService,
+        laneEnvironmentService: args.laneEnvironmentService,
+        laneTemplateService: args.laneTemplateService,
+        rebaseSuggestionService: args.rebaseSuggestionService ?? undefined,
+        autoRebaseService: args.autoRebaseService ?? undefined,
+        computerUseArtifactBrokerService: args.computerUseArtifactBrokerService,
+        bootstrapTokenPath: tokenPath,
+        port: attemptedPort,
+        deviceRegistryService,
+        onStateChanged: () => {
+          void refreshRoleState();
+        },
+      });
+      try {
+        const resolvedPort = await candidateHostService.waitUntilListening();
+        hostService = candidateHostService;
+        deviceRegistryService.touchLocalDevice({
+          lastSeenAt: nowIso(),
+          lastHost: localDevice.lastHost,
+          lastPort: resolvedPort,
+        });
+        return;
+      } catch (error) {
+        lastError = error;
+        await candidateHostService.dispose().catch(() => {});
+        const retryable = isRetryableHostBindError(error) && attemptedPort !== 0;
+        args.logger.warn(
+          retryable ? "sync.host_start_port_conflict" : "sync.host_start_failed",
+          {
+            preferredPort,
+            attemptedPort,
+            error: error instanceof Error ? error.message : String(error),
+            code: (error as NodeJS.ErrnoException | null | undefined)?.code ?? null,
+          },
+        );
+        if (!retryable) {
+          throw error;
+        }
+      }
+    }
+    throw lastError instanceof Error
+      ? lastError
+      : new Error("Unable to start the sync host.");
   };
 
   const stopHostIfRunning = async (): Promise<void> => {

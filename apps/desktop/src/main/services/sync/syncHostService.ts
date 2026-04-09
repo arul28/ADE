@@ -308,11 +308,26 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
   });
 
   let disposed = false;
+  let startupError: Error | null = null;
   let bonjourInstance: Bonjour | null = null;
   let bonjourAnnouncement: BonjourService | null = null;
   let bonjourPort: number | null = null;
   let lastBroadcastAt: string | null = null;
   const startedAtMs = Date.now();
+
+  server.on("error", (error: unknown) => {
+    const normalized = error instanceof Error ? error : new Error(String(error));
+    if (!disposed && !server.address()) {
+      startupError = normalized;
+    }
+    args.logger.warn("sync_host.server_error", {
+      error: normalized.message,
+      code: (normalized as NodeJS.ErrnoException).code ?? null,
+      port: args.port ?? DEFAULT_SYNC_HOST_PORT,
+    });
+    args.onStateChanged?.();
+  });
+
   const pollTimer = setInterval(() => {
     void pumpChanges().catch((error) => {
       args.logger.warn("sync_host.poll_failed", { error: error instanceof Error ? error.message : String(error) });
@@ -960,14 +975,41 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
 
   return {
     async waitUntilListening(): Promise<number> {
+      if (startupError) {
+        throw startupError;
+      }
       if (server.address()) {
         const address = server.address();
         const port = typeof address === "object" && address ? address.port : DEFAULT_SYNC_HOST_PORT;
         publishLanDiscovery(port);
         return port;
       }
-      await new Promise<void>((resolve) => {
-        server.once("listening", () => resolve());
+      await new Promise<void>((resolve, reject) => {
+        const onListening = () => {
+          cleanup();
+          resolve();
+        };
+        const onError = (error: unknown) => {
+          cleanup();
+          const normalized = error instanceof Error ? error : new Error(String(error));
+          startupError = normalized;
+          reject(normalized);
+        };
+        const cleanup = () => {
+          server.off("listening", onListening);
+          server.off("error", onError);
+        };
+        server.on("listening", onListening);
+        server.on("error", onError);
+        if (startupError) {
+          cleanup();
+          reject(startupError);
+          return;
+        }
+        if (server.address()) {
+          cleanup();
+          resolve();
+        }
       });
       const address = server.address();
       const port = typeof address === "object" && address ? address.port : DEFAULT_SYNC_HOST_PORT;
@@ -1054,6 +1096,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       clearInterval(heartbeatTimer);
       clearInterval(brainStatusTimer);
       await new Promise<void>((resolve) => {
+        const finish = () => resolve();
         for (const peer of peers) {
           try {
             peer.ws.close();
@@ -1061,7 +1104,15 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
             // ignore
           }
         }
-        server.close(() => resolve());
+        if (!server.address()) {
+          finish();
+          return;
+        }
+        try {
+          server.close(() => finish());
+        } catch {
+          finish();
+        }
       });
       if (bonjourAnnouncement) {
         try {
