@@ -1,0 +1,110 @@
+---
+title: "v1.0.14"
+description: "Release notes for ADE v1.0.14 — April 9, 2026"
+---
+
+Quick-fixes release following the v1.0.13 architecture overhaul. Focuses on chat UX polish, a new feedback reporter with diagnostics collection, OpenCode runtime hardening, and MCP server improvements.
+
+---
+
+## Chat UX
+
+### Redesigned work log block
+
+`ChatWorkLogBlock` was rewritten with a new expand/collapse interaction model. Work log entries (shell commands, file changes, tool calls) now render as a single summary row with a status glyph, entry count, and completion state. Clicking expands the full entry list with per-entry detail drawers showing arguments, results, diffs, and navigation suggestions.
+
+### New panels
+
+- **ChatSubagentsPanel** -- Dedicated panel for viewing and managing background subagents spawned during a chat session. Shows agent description, status, duration, and output preview
+- **ChatTasksPanel** -- Task list panel showing todo items reported by the agent during a turn, with completion progress tracking
+- **BottomDrawerSection** -- Collapsible drawer section below the chat composer for surfacing contextual panels (subagents, tasks, terminal)
+
+### Composer and message list
+
+- `AgentChatComposer` gained slash-command menu improvements and model warmup integration
+- `AgentChatMessageList` simplified with reduced CSS class coupling and cleaner turn dividers
+- `ChatTerminalDrawer` layout improvements for embedded terminal sessions
+- `ChatProposedPlanCard` and `ChatCommandMenu` visual refinements
+- `ChatSurfaceShell` theming updates via `chatSurfaceTheme.ts`
+
+### Chat transcript rows
+
+New `chatTranscriptRows.ts` helpers for structured value formatting, diff stat summarization, and inline text truncation. Includes 86 lines of unit tests covering edge cases.
+
+---
+
+## Feedback Reporter
+
+### Enhanced modal with diagnostics
+
+`FeedbackReporterModal` rewritten (187 added, 57 removed) with:
+- Structured feedback categories (bug report, feature request, general)
+- Automatic diagnostics collection (system info, active sessions, provider status)
+- Screenshot attachment support
+- 128 lines of new test coverage
+
+### Diagnostics dashboard
+
+New `DiagnosticsDashboardSection` in settings (198 lines) showing real-time system health, provider connectivity, and runtime state. Includes 176 lines of tests.
+
+---
+
+## OpenCode Runtime Hardening
+
+### Server manager
+
+New `openCodeServerManager.ts` (488 lines) providing managed OpenCode server lifecycle:
+- Server pooling with idle TTL and automatic cleanup
+- Health checking and restart on failure
+- Deduped concurrent start requests
+- 224 lines of tests
+
+### Runtime and inventory fixes
+
+- `openCodeRuntime.ts` expanded (+370/-50 lines) with improved session management and error recovery
+- `openCodeInventory.ts` restructured (+114/-144 lines) with better provider probing
+- `adeMcpLaunch.ts` hardened with additional validation
+- Full test suites added for all three modules
+
+---
+
+## MCP Server
+
+<Note>
+  PR [#144](https://github.com/arul28/ADE/pull/144) -- 183 lines added, 23 removed in the server, plus a 926/785 line test rewrite.
+</Note>
+
+- New tool capabilities and enhanced request routing
+- `parseInitializeIdentity` now validates `identity.missionId` against the server-authorized run context, preventing cross-mission request injection
+- `ask_user` tool routing to mission interventions with proper orchestrator pause semantics
+- Test suite restructured with corrected identity/environment alignment
+
+---
+
+## Model Catalog
+
+- `ModelCatalogPanel` restructured (+108/-96 lines) for cleaner provider grouping
+- `ProviderModelSelector` updated with improved model display
+- New `ClaudeCacheTtlBadge` component showing cache time-to-live status
+- `claudeCacheTtl.ts` utility with 49 lines of tests
+
+---
+
+## Orchestrator
+
+- `aiOrchestratorService.ts` expanded (+128/-1 lines) with improved run lifecycle management
+- `coordinatorAgent.ts` updated (+73/-5 lines) with refined coordination logic
+- `providerOrchestratorAdapter.ts` type alignment fix
+- 220 lines of new tests across both modules
+
+---
+
+## Housekeeping
+
+- Removed stale test files: `CtoPage.test.tsx`, `CommitTimeline.test.tsx`, `missionHelpers.test.ts`, `PrAiResolverPanel.test.tsx`
+- Removed 10 brittle `AgentChatMessageList` render tests broken by the work log redesign
+- Added global `lottie-react` jsdom stub in `vitest.workspace.ts` to prevent canvas crashes in renderer tests
+- New `opencode-ai-sdk.d.ts` type declarations
+- Type additions: `chat.ts` (+3 fields), `config.ts` (+35 lines), `sessions.ts` (+1 field), `git.ts` (+2 fields)
+- IPC channel additions in `ipc.ts` and `registerIpc.ts`
+- Preload API surface expanded in `preload.ts` and `global.d.ts`
