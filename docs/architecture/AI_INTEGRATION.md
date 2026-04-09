@@ -446,7 +446,8 @@ Every MCP tool invocation passes through a policy engine before execution:
 - **Read-only tools** (`read_context`, `check_conflicts`, `get_lane_status`, `list_lanes`, `run_tests`): Allowed by default for all authenticated sessions.
 - **Mutation tools** (`create_lane`, `merge_lane`, `commit_changes`): Require explicit grant from the orchestrator's claim system. An agent must hold an active claim on the relevant lane/scope before a mutation tool will execute.
 - **Intervention tools** (`ask_user`): Always allowed but rate-limited to prevent intervention flooding.
-- **Agent tools** (`spawn_agent`): Restricted to the orchestrator session; individual agents cannot spawn sub-agents without orchestrator approval.
+- **Agent tools** (`spawn_agent`): Restricted to the orchestrator session; individual agents cannot spawn sub-agents without orchestrator approval. Additionally hidden from standalone chat sessions (those with a `chatSessionId` but no mission/run/step/attempt context).
+- **Standalone chat filtering**: Standalone chat callers have `spawn_agent` and all coordinator tools hidden from both `tools/list` responses and `tools/call` execution. This prevents interactive chat users from invoking orchestration primitives that require mission infrastructure.
 
 #### Call Audit Logging
 

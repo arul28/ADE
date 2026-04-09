@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { useAppStore } from "../state/appStore";
 import { invalidateSessionListCache, listSessionsCached } from "./sessionListCache";
 
 const listMock = vi.fn();
@@ -32,6 +33,9 @@ describe("sessionListCache", () => {
   beforeEach(() => {
     invalidateSessionListCache();
     listMock.mockReset();
+    useAppStore.setState({
+      project: { rootPath: "/project/a" } as any,
+    });
     Object.defineProperty(globalThis, "window", {
       configurable: true,
       value: {
@@ -65,6 +69,27 @@ describe("sessionListCache", () => {
 
     expect(partial).toHaveLength(5);
     expect(full).toHaveLength(10);
+    expect(listMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps cache entries isolated per active project", async () => {
+    listMock
+      .mockResolvedValueOnce(makeRows(3))
+      .mockResolvedValueOnce(makeRows(4));
+
+    const projectARows = await listSessionsCached({ limit: 3 });
+    useAppStore.setState({
+      project: { rootPath: "/project/b" } as any,
+    });
+    const projectBRows = await listSessionsCached({ limit: 5 });
+    useAppStore.setState({
+      project: { rootPath: "/project/a" } as any,
+    });
+    const projectARowsAgain = await listSessionsCached({ limit: 3 });
+
+    expect(projectARows).toHaveLength(3);
+    expect(projectBRows).toHaveLength(4);
+    expect(projectARowsAgain).toHaveLength(3);
     expect(listMock).toHaveBeenCalledTimes(2);
   });
 });

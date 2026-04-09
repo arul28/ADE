@@ -35,10 +35,34 @@ const mocks = vi.hoisted(() => {
       }
       return { size: 0, isDirectory: () => true };
     }),
-    createWriteStream: vi.fn(() => ({
-      write: vi.fn(),
-      end: vi.fn(),
-    })),
+    createWriteStream: vi.fn(() => {
+      const listeners = {
+        finish: new Set<() => void>(),
+        error: new Set<() => void>(),
+      };
+      const stream: any = {
+        writableFinished: false,
+        destroyed: false,
+        write: vi.fn(),
+        once: vi.fn((event: "finish" | "error", cb: () => void) => {
+          listeners[event]?.add(cb);
+          return stream;
+        }),
+        removeListener: vi.fn((event: "finish" | "error", cb: () => void) => {
+          listeners[event]?.delete(cb);
+          return stream;
+        }),
+        end: vi.fn((cb?: () => void) => {
+          Promise.resolve().then(() => {
+            stream.writableFinished = true;
+            cb?.();
+            for (const listener of listeners.finish) listener();
+          });
+          return stream;
+        }),
+      };
+      return stream;
+    }),
     unlinkSync: vi.fn(),
     writeFileSync: vi.fn(),
     randomUUID: vi.fn(() => "uuid-" + Math.random().toString(36).slice(2, 10)),
@@ -180,6 +204,7 @@ function createHarness(overrides: {
     create: vi.fn((args: any) => {
       sessionStore.set(args.sessionId, {
         ...args,
+        id: args.sessionId,
         status: "running",
         laneName: "Test lane",
         laneId: args.laneId,
@@ -188,12 +213,32 @@ function createHarness(overrides: {
     }),
     end: vi.fn((args: any) => {
       const s = sessionStore.get(args.sessionId);
-      if (s) { s.status = args.status; s.exitCode = args.exitCode; }
+      if (s) {
+        s.status = args.status;
+        s.exitCode = args.exitCode;
+        s.endedAt = args.endedAt;
+        s.ptyId = null;
+      }
+    }),
+    reattach: vi.fn((args: any) => {
+      const session = sessionStore.get(args.sessionId);
+      if (!session) return null;
+      Object.assign(session, {
+        ptyId: args.ptyId,
+        status: "running",
+        endedAt: null,
+        exitCode: null,
+      });
+      return session;
     }),
     get: vi.fn((id: string) => sessionStore.get(id) ?? null),
     setSummary: vi.fn(),
     setLastOutputPreview: vi.fn(),
-    setResumeCommand: vi.fn(),
+    setResumeCommand: vi.fn((sessionId: string, resumeCommand: string | null) => {
+      const session = sessionStore.get(sessionId);
+      if (!session) return;
+      session.resumeCommand = resumeCommand;
+    }),
     setHeadShaStart: vi.fn(),
     setHeadShaEnd: vi.fn(),
     updateMeta: vi.fn((args: any) => {
@@ -476,6 +521,133 @@ describe("ptyService", () => {
       );
     });
 
+    it("reattaches a resumed tracked session instead of creating a duplicate terminal row", async () => {
+      const { service, sessionService } = createHarness();
+      sessionService.create({
+        sessionId: "session-existing",
+        laneId: "lane-1",
+        ptyId: null,
+        tracked: true,
+        title: "Codex CLI",
+        startedAt: "2026-04-09T12:00:00.000Z",
+        transcriptPath: "/tmp/transcripts/session-existing.log",
+        toolType: "codex",
+        resumeCommand: "codex --no-alt-screen resume thread-existing",
+        resumeMetadata: {
+          provider: "codex",
+          targetKind: "thread",
+          targetId: "thread-existing",
+          launch: { permissionMode: "config-toml" },
+        },
+      });
+      sessionService.end({
+        sessionId: "session-existing",
+        endedAt: "2026-04-09T12:30:00.000Z",
+        exitCode: 0,
+        status: "completed",
+      });
+      const createCallsBeforeResume = sessionService.create.mock.calls.length;
+
+      const result = await service.create({
+        sessionId: "session-existing",
+        laneId: "lane-1",
+        title: "Codex CLI",
+        cols: 80,
+        rows: 24,
+        toolType: "codex",
+        startupCommand: "codex --no-alt-screen resume thread-existing",
+      });
+
+      expect(result.sessionId).toBe("session-existing");
+      expect(sessionService.reattach).toHaveBeenCalledWith({
+        sessionId: "session-existing",
+        ptyId: expect.any(String),
+        startedAt: expect.any(String),
+      });
+      expect(sessionService.create).toHaveBeenCalledTimes(createCallsBeforeResume);
+    });
+
+    it("rejects reattaching a session into the wrong lane", async () => {
+      const { service, sessionService } = createHarness();
+      sessionService.create({
+        sessionId: "session-other-lane",
+        laneId: "lane-other",
+        ptyId: null,
+        tracked: true,
+        title: "Codex CLI",
+        startedAt: "2026-04-09T12:00:00.000Z",
+        transcriptPath: "/tmp/transcripts/session-other-lane.log",
+        toolType: "codex",
+        resumeCommand: "codex --no-alt-screen resume thread-existing",
+        resumeMetadata: {
+          provider: "codex",
+          targetKind: "thread",
+          targetId: "thread-existing",
+          launch: { permissionMode: "config-toml" },
+        },
+      });
+
+      await expect(service.create({
+        sessionId: "session-other-lane",
+        laneId: "lane-1",
+        title: "Codex CLI",
+        cols: 80,
+        rows: 24,
+        toolType: "codex",
+        startupCommand: "codex --no-alt-screen resume thread-existing",
+      })).rejects.toThrow(/belongs to lane/i);
+    });
+
+    it("preserves the previous session outcome when a reattached resume spawn fails", async () => {
+      const { service, sessionService, loadPty } = createHarness();
+      loadPty.mockReturnValue({
+        spawn: vi.fn(() => {
+          throw new Error("spawn failed");
+        }),
+      });
+      sessionService.create({
+        sessionId: "session-existing",
+        laneId: "lane-1",
+        ptyId: null,
+        tracked: true,
+        title: "Codex CLI",
+        startedAt: "2026-04-09T12:00:00.000Z",
+        transcriptPath: "/tmp/transcripts/session-existing.log",
+        toolType: "codex",
+        resumeCommand: "codex --no-alt-screen resume thread-existing",
+        resumeMetadata: {
+          provider: "codex",
+          targetKind: "thread",
+          targetId: "thread-existing",
+          launch: { permissionMode: "config-toml" },
+        },
+      });
+      sessionService.end({
+        sessionId: "session-existing",
+        endedAt: "2026-04-09T12:30:00.000Z",
+        exitCode: 0,
+        status: "completed",
+      });
+
+      await expect(service.create({
+        sessionId: "session-existing",
+        laneId: "lane-1",
+        title: "Codex CLI",
+        cols: 80,
+        rows: 24,
+        toolType: "codex",
+        startupCommand: "codex --no-alt-screen resume thread-existing",
+      })).rejects.toThrow(/spawn failed/i);
+
+      expect(sessionService.reattach).not.toHaveBeenCalled();
+      expect(sessionService.end).toHaveBeenCalledTimes(1);
+      expect(sessionService.get("session-existing")).toEqual(expect.objectContaining({
+        status: "completed",
+        exitCode: 0,
+        endedAt: "2026-04-09T12:30:00.000Z",
+      }));
+    });
+
     it("normalizes toolType to a known value", async () => {
       const { service, sessionService } = createHarness();
       await service.create({
@@ -588,6 +760,28 @@ describe("ptyService", () => {
         }),
       );
       expect(sessionService.get(createdSessionId)?.goal).toBe("Fix the flaky login tests");
+    });
+
+    it("backfills a missing tracked CLI resume target from the flushed transcript tail on exit", async () => {
+      mocks.extractResumeCommandFromOutput.mockReturnValue("codex resume thread-backfilled" as any);
+      const { service, mockPty, sessionService } = createHarness();
+      const created = await service.create({
+        laneId: "lane-1",
+        title: "Codex CLI",
+        cols: 80,
+        rows: 24,
+        toolType: "codex-orchestrated",
+        startupCommand: "codex --no-alt-screen",
+      });
+      const transcriptPath = sessionService.create.mock.calls[0]?.[0]?.transcriptPath;
+
+      mockPty._emitter.emit("exit", { exitCode: 0 });
+      await Promise.resolve();
+      await Promise.resolve();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      expect(sessionService.readTranscriptTail).toHaveBeenCalledWith(transcriptPath, 220_000);
+      expect(sessionService.setResumeCommand).toHaveBeenCalledWith(created.sessionId, "codex resume thread-backfilled");
     });
 
     it("does not overwrite a manually renamed CLI session title", async () => {

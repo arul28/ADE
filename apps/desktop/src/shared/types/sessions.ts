@@ -86,6 +86,7 @@ export type TerminalSessionDetail = TerminalSessionSummary & {
 };
 
 export type PtyCreateArgs = {
+  sessionId?: string;
   laneId: string;
   cwd?: string;
   cols: number;

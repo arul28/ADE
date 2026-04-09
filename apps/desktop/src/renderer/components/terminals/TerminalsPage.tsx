@@ -185,6 +185,8 @@ export function TerminalsPage() {
             setSessionListOrganization={work.setSessionListOrganization}
             workCollapsedLaneIds={work.workCollapsedLaneIds}
             toggleWorkLaneCollapsed={work.toggleWorkLaneCollapsed}
+            workCollapsedSectionIds={work.workCollapsedSectionIds}
+            toggleWorkSectionCollapsed={work.toggleWorkSectionCollapsed}
             sessionsGroupedByLane={work.sessionsGroupedByLane}
           />
         ),

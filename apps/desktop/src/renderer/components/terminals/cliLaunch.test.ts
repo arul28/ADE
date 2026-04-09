@@ -140,6 +140,22 @@ describe("tracked CLI resume helpers", () => {
     })).toBe("codex --no-alt-screen -c approval_policy=on-failure -c sandbox_mode=workspace-write resume thread-99");
   });
 
+  it("falls back to the provider resume picker when the concrete target is missing", () => {
+    expect(buildTrackedCliResumeCommand({
+      provider: "claude",
+      targetKind: "session",
+      targetId: null,
+      launch: { permissionMode: "default" },
+    })).toBe("claude --permission-mode default --resume");
+
+    expect(buildTrackedCliResumeCommand({
+      provider: "codex",
+      targetKind: "thread",
+      targetId: null,
+      launch: { permissionMode: "full-auto" },
+    })).toBe("codex --no-alt-screen --full-auto resume");
+  });
+
   it("prefers structured metadata over the legacy resume command string", () => {
     const session = {
       resumeCommand: "codex resume picker",

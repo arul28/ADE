@@ -74,7 +74,7 @@ The setup flow now favors completion over forced integration ceremony.
 
 Settings owns durable configuration and infrastructure concerns, organized into tabs:
 
-- **General** — AI mode, task routing, provider-specific permission policy, config reload, local/shared config boundaries
+- **General** — AI mode, task routing, provider-specific permission policy, config reload, local/shared config boundaries, terminal preferences (font size, line height, scrollback)
 - **Context & Docs** — context doc management, skill files, deterministic context health, and context doc generation preferences (`ContextDocPrefs`: provider, model, reasoning effort, refresh event triggers). Context doc status updates are pushed from the main process via the `onStatusChanged` callback (preload bridge), replacing the previous polling approach. Each doc shows its health state (`missing`, `incomplete`, `fallback`, `stale`, `ready`) with inline status text and color derived from `describeContextDocHealth`, and its output source (`ai`, `deterministic`, `previous_good`). This is the canonical surface for file-backed skills and legacy command files; ADE indexes them internally for retrieval and dedupe, but they are managed here rather than in the generic Memory browser. Generation controls are inline in the Context section rather than a separate modal.
 - **Memory** — consolidated memory management with two sub-tabs:
   - *Overview* — memory health, scope summaries, promotion status, embedding progress and health monitoring (service state, queue depth, error rates)

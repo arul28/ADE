@@ -97,7 +97,7 @@ describe("sessionService resume metadata", () => {
       permissionMode: "default",
       launch: { permissionMode: "default" },
     });
-    expect(created?.resumeCommand).toBe("claude --permission-mode default");
+    expect(created?.resumeCommand).toBe("claude --permission-mode default --resume");
 
     service.setResumeCommand("session-1", "claude --resume abc123");
     const resumed = service.get("session-1");
@@ -144,7 +144,7 @@ describe("sessionService resume metadata", () => {
 
     const created = service.get("session-2");
     expect(created?.resumeCommand).toBe(
-      "codex --no-alt-screen -c approval_policy=on-failure -c sandbox_mode=workspace-write",
+      "codex --no-alt-screen -c approval_policy=on-failure -c sandbox_mode=workspace-write resume",
     );
 
     service.setResumeCommand("session-2", "codex resume thread-1");
@@ -164,6 +164,103 @@ describe("sessionService resume metadata", () => {
     expect(resumed?.resumeCommand).toBe(
       "codex --no-alt-screen -c approval_policy=on-failure -c sandbox_mode=workspace-write resume thread-1",
     );
+
+    activeDisposers.push(async () => db.close());
+  });
+
+  it("round-trips Codex full-auto resume commands without dropping the thread id", async () => {
+    const projectRoot = makeProjectRoot("ade-session-service-");
+    const dbPath = path.join(projectRoot, ".ade", "ade.db");
+    const db = await openKvDb(dbPath, createLogger() as any);
+    insertProjectGraph(db);
+    const service = createSessionService({ db });
+
+    service.create({
+      sessionId: "session-2b",
+      laneId: "lane-1",
+      ptyId: null,
+      tracked: true,
+      title: "Codex CLI",
+      startedAt: "2026-03-17T00:10:00.000Z",
+      transcriptPath: "/tmp/session-2b.log",
+      toolType: "codex",
+      resumeMetadata: {
+        provider: "codex",
+        targetKind: "thread",
+        targetId: "thread-seed",
+        launch: {
+          permissionMode: "full-auto",
+          codexApprovalPolicy: "never",
+          codexSandbox: "danger-full-access",
+          codexConfigSource: "flags",
+        },
+      },
+    });
+
+    service.setResumeCommand("session-2b", "codex --no-alt-screen --full-auto resume thread-full-auto");
+    const resumed = service.get("session-2b");
+    expect(resumed?.resumeMetadata).toEqual({
+      provider: "codex",
+      targetKind: "thread",
+      targetId: "thread-full-auto",
+      permissionMode: "full-auto",
+      launch: {
+        permissionMode: "full-auto",
+        codexApprovalPolicy: "never",
+        codexSandbox: "danger-full-access",
+        codexConfigSource: "flags",
+      },
+    });
+    expect(resumed?.resumeCommand).toBe("codex --no-alt-screen --full-auto resume thread-full-auto");
+
+    activeDisposers.push(async () => db.close());
+  });
+
+  it("reattaches an existing tracked session to a new PTY without changing its identity", async () => {
+    const projectRoot = makeProjectRoot("ade-session-service-");
+    const dbPath = path.join(projectRoot, ".ade", "ade.db");
+    const db = await openKvDb(dbPath, createLogger() as any);
+    insertProjectGraph(db);
+    const service = createSessionService({ db });
+
+    service.create({
+      sessionId: "session-3",
+      laneId: "lane-1",
+      ptyId: null,
+      tracked: true,
+      title: "Codex CLI",
+      startedAt: "2026-03-17T00:10:00.000Z",
+      transcriptPath: "/tmp/session-3.log",
+      toolType: "codex",
+      resumeMetadata: {
+        provider: "codex",
+        targetKind: "thread",
+        targetId: "thread-3",
+        launch: { permissionMode: "edit" },
+      },
+    });
+    service.end({
+      sessionId: "session-3",
+      endedAt: "2026-03-17T00:20:00.000Z",
+      exitCode: 0,
+      status: "completed",
+    });
+
+    const reattached = service.reattach({
+      sessionId: "session-3",
+      ptyId: "pty-3b",
+      startedAt: "2026-03-17T00:30:00.000Z",
+    });
+    expect(reattached).toEqual(expect.objectContaining({
+      id: "session-3",
+      ptyId: "pty-3b",
+      status: "running",
+      endedAt: null,
+      exitCode: null,
+      startedAt: "2026-03-17T00:30:00.000Z",
+      title: "Codex CLI",
+      summary: null,
+    }));
 
     activeDisposers.push(async () => db.close());
   });

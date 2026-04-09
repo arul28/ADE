@@ -62,6 +62,8 @@ Agent tools are organized into three tiers, each scoped to the appropriate agent
 
 This tiering ensures agents have the tools appropriate to their role without exposing orchestrator-level control to regular chat sessions, or workflow actions to headless workers.
 
+Standalone chat sessions (those connected via MCP with a `chatSessionId` but no mission/run/step/attempt context) have an additional restriction: `spawn_agent` and all coordinator tools are hidden from both tool listing and tool execution. This prevents interactive chat users from invoking orchestration primitives that only function within mission infrastructure.
+
 ---
 
 ## Configuration Contract

@@ -1,7 +1,8 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useId, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import type { AppInfo } from "../../../shared/types";
-import { useAppStore, ThemeId, THEME_IDS } from "../../state/appStore";
+import { useAppStore, THEME_IDS } from "../../state/appStore";
+import type { ThemeId } from "../../state/appStore";
 import { EmptyState } from "../ui/EmptyState";
 import { Info } from "@phosphor-icons/react";
 import {
@@ -11,6 +12,10 @@ import {
   LABEL_STYLE,
   primaryButton,
 } from "../lanes/laneDesignTokens";
+
+const TERMINAL_FONT_SIZE_OPTIONS = [11, 11.5, 12, 12.5, 13, 13.5, 14, 15];
+const TERMINAL_LINE_HEIGHT_OPTIONS = [1.1, 1.15, 1.2, 1.25, 1.3, 1.35];
+const TERMINAL_SCROLLBACK_OPTIONS = [5000, 10000, 20000, 50000];
 
 const THEME_META: Record<
   ThemeId,
@@ -129,12 +134,15 @@ function ThemeSwatch({
 
 export function GeneralSection() {
   const navigate = useNavigate();
+  const terminalFieldId = useId();
   const [info, setInfo] = useState<AppInfo | null>(null);
   const [onboardingStatus, setOnboardingStatus] = useState<{ completedAt: string | null; dismissedAt: string | null; freshProject?: boolean } | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const providerMode = useAppStore((s) => s.providerMode);
   const theme = useAppStore((s) => s.theme);
   const setTheme = useAppStore((s) => s.setTheme);
+  const terminalPreferences = useAppStore((s) => s.terminalPreferences);
+  const setTerminalPreferences = useAppStore((s) => s.setTerminalPreferences);
 
   useEffect(() => {
     let cancelled = false;
@@ -268,6 +276,69 @@ export function GeneralSection() {
             >
               Provider authentication, connection checks, API keys, and worker permissions are managed in the AI tab.
             </span>
+          </div>
+        </div>
+      </section>
+
+      <section>
+        <div style={sectionLabelStyle}>TERMINAL</div>
+        <div style={{ ...cardStyle(), display: "grid", gap: 14 }}>
+          <div style={{ display: "grid", gap: 6 }}>
+            <label htmlFor={`${terminalFieldId}-fontSize`} style={{ ...LABEL_STYLE, marginBottom: 0 }}>
+              FONT SIZE
+            </label>
+            <select
+              id={`${terminalFieldId}-fontSize`}
+              value={String(terminalPreferences.fontSize)}
+              onChange={(event) => setTerminalPreferences({ fontSize: Number(event.target.value) })}
+              style={{ height: 34, border: `1px solid ${COLORS.border}`, background: COLORS.recessedBg, color: COLORS.textPrimary, fontSize: 12, fontFamily: MONO_FONT, padding: "0 10px" }}
+            >
+              {TERMINAL_FONT_SIZE_OPTIONS.map((value) => (
+                <option key={value} value={value}>
+                  {value.toFixed(1).replace(/\.0$/, "")} px
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div style={{ display: "grid", gap: 6 }}>
+            <label htmlFor={`${terminalFieldId}-lineHeight`} style={{ ...LABEL_STYLE, marginBottom: 0 }}>
+              LINE HEIGHT
+            </label>
+            <select
+              id={`${terminalFieldId}-lineHeight`}
+              value={String(terminalPreferences.lineHeight)}
+              onChange={(event) => setTerminalPreferences({ lineHeight: Number(event.target.value) })}
+              style={{ height: 34, border: `1px solid ${COLORS.border}`, background: COLORS.recessedBg, color: COLORS.textPrimary, fontSize: 12, fontFamily: MONO_FONT, padding: "0 10px" }}
+            >
+              {TERMINAL_LINE_HEIGHT_OPTIONS.map((value) => (
+                <option key={value} value={value}>
+                  {value.toFixed(2).replace(/0$/, "")}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div style={{ display: "grid", gap: 6 }}>
+            <label htmlFor={`${terminalFieldId}-scrollback`} style={{ ...LABEL_STYLE, marginBottom: 0 }}>
+              SCROLLBACK
+            </label>
+            <select
+              id={`${terminalFieldId}-scrollback`}
+              value={String(terminalPreferences.scrollback)}
+              onChange={(event) => setTerminalPreferences({ scrollback: Number(event.target.value) })}
+              style={{ height: 34, border: `1px solid ${COLORS.border}`, background: COLORS.recessedBg, color: COLORS.textPrimary, fontSize: 12, fontFamily: MONO_FONT, padding: "0 10px" }}
+            >
+              {TERMINAL_SCROLLBACK_OPTIONS.map((value) => (
+                <option key={value} value={value}>
+                  {value.toLocaleString()} lines
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div style={{ fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textMuted, lineHeight: 1.6 }}>
+            These preferences apply across work terminals, lane shells, resolver terminals, and the chat drawer.
           </div>
         </div>
       </section>

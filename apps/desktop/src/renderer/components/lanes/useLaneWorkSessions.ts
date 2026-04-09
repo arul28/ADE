@@ -18,6 +18,7 @@ const EMPTY_WORK_STATE: WorkProjectViewState = {
   search: "",
   sessionListOrganization: "by-lane",
   workCollapsedLaneIds: [],
+  workCollapsedSectionIds: [],
   workCollapsedTabGroupIds: [],
   workFocusSessionsHidden: false,
 };

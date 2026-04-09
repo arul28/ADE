@@ -140,12 +140,12 @@ export function parseTrackedCliResumeCommand(
   if (!provider) return null;
 
   if (provider === "claude") {
-    const match = normalized.match(/^claude(?:(?:\s+--[^\s]+)(?:\s+[^\s]+)?)*\s+(?:--resume|-r|resume)\s+([^\s]+)(?:\s|$)/i);
+    const match = normalized.match(/^claude(?:(?:\s+--[^\s]+)(?:\s+[^\s]+)?)*\s+(?:--resume|-r|resume)(?:\s+([^\s]+))?(?:\s|$)/i);
     if (!match) return { provider, targetId: null };
     return { provider, targetId: match[1] ?? null };
   }
 
-  const match = normalized.match(/^codex(?:\s+--no-alt-screen)?(?:\s+-c\s+[^\s]+)*(?:\s+resume)\s+([^\s]+)(?:\s|$)/i);
+  const match = normalized.match(/^codex(?:(?:\s+--no-alt-screen)|(?:\s+--full-auto)|(?:\s+-c\s+[^\s]+))*\s+resume(?:\s+([^\s]+))?(?:\s|$)/i);
   if (!match) return { provider, targetId: null };
   return { provider, targetId: match[1] ?? null };
 }
@@ -158,12 +158,14 @@ export function buildTrackedCliResumeCommand(metadata: TerminalResumeMetadata | 
 
   if (provider === "claude") {
     const parts = ["claude", ...permissionModeToClaudeFlag(permissionMode)];
-    if (targetId.length) parts.push("--resume", targetId);
+    parts.push("--resume");
+    if (targetId.length) parts.push(targetId);
     return parts.join(" ");
   }
 
   const parts = ["codex", "--no-alt-screen", ...permissionModeToCodexFlags(permissionMode)];
-  if (targetId.length) parts.push("resume", targetId);
+  parts.push("resume");
+  if (targetId.length) parts.push(targetId);
   return parts.join(" ");
 }
 

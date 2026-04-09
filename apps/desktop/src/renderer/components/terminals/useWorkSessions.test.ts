@@ -9,6 +9,20 @@ import { act, renderHook } from "@testing-library/react";
 const focusSessionSpy = vi.fn();
 const selectLaneSpy = vi.fn();
 const setWorkViewStateSpy = vi.fn();
+const navigateSpy = vi.fn();
+let fakeAppStoreState: Record<string, unknown>;
+
+function resetFakeAppStoreState() {
+  fakeAppStoreState = {
+    project: { rootPath: "/fake/project" },
+    lanes: [{ id: "lane-1", name: "Lane 1" }],
+    focusSession: focusSessionSpy,
+    focusedSessionId: null,
+    selectLane: selectLaneSpy,
+    workViewByProject: {},
+    setWorkViewState: setWorkViewStateSpy,
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Module-level mocks (hoisted by vitest)
@@ -58,22 +72,13 @@ vi.mock("../../lib/sessions", () => ({
 }));
 
 vi.mock("react-router-dom", () => ({
-  useNavigate: vi.fn(() => vi.fn()),
+  useNavigate: vi.fn(() => navigateSpy),
   useSearchParams: vi.fn(() => [new URLSearchParams(), vi.fn()]),
 }));
 
 vi.mock("../../state/appStore", () => ({
   useAppStore: vi.fn((selector: (state: Record<string, unknown>) => unknown) => {
-    const fakeState: Record<string, unknown> = {
-      project: { rootPath: "/fake/project" },
-      lanes: [{ id: "lane-1", name: "Lane 1" }],
-      focusSession: focusSessionSpy,
-      focusedSessionId: null,
-      selectLane: selectLaneSpy,
-      workViewByProject: {},
-      setWorkViewState: setWorkViewStateSpy,
-    };
-    return selector(fakeState);
+    return selector(fakeAppStoreState);
   }),
 }));
 
@@ -108,6 +113,7 @@ function installWindowAde() {
 describe("useWorkSessions — refresh-before-focus ordering", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    resetFakeAppStoreState();
     installWindowAde();
     listSessionsCachedMock.mockResolvedValue([]);
   });
@@ -226,12 +232,172 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
       draftKind: "chat",
     });
   });
+
+  it("resumeSession keeps the Work view active and reuses the existing tracked session id", async () => {
+    const session = {
+      id: "session-1",
+      laneId: "lane-1",
+      laneName: "Lane 1",
+      ptyId: null,
+      tracked: true,
+      pinned: false,
+      goal: "Resume codex",
+      toolType: "codex" as const,
+      title: "Codex",
+      status: "completed" as const,
+      startedAt: "2026-04-01T12:00:00.000Z",
+      endedAt: "2026-04-01T12:30:00.000Z",
+      exitCode: 0,
+      transcriptPath: "/tmp/session-1.log",
+      headShaStart: null,
+      headShaEnd: null,
+      lastOutputPreview: null,
+      summary: null,
+      runtimeState: "exited" as const,
+      resumeCommand: "codex --no-alt-screen --full-auto resume thread-1",
+      resumeMetadata: {
+        provider: "codex" as const,
+        targetKind: "thread" as const,
+        targetId: "thread-1",
+        launch: { permissionMode: "full-auto" as const },
+      },
+    };
+    listSessionsCachedMock.mockResolvedValue([session]);
+
+    const workState = {
+      openItemIds: [] as string[],
+      activeItemId: null as string | null,
+      selectedItemId: null as string | null,
+      viewMode: "tabs" as const,
+      draftKind: "chat" as const,
+      laneFilter: "all",
+      statusFilter: "all" as const,
+      search: "",
+      sessionListOrganization: "by-lane" as const,
+      workCollapsedLaneIds: [] as string[],
+      workCollapsedTabGroupIds: [] as string[],
+      workFocusSessionsHidden: false,
+    };
+    setWorkViewStateSpy.mockImplementation((_projectRoot: string, next: any) => {
+      const resolved = typeof next === "function" ? next(workState) : { ...workState, ...next };
+      Object.assign(workState, resolved);
+    });
+    (window as any).ade.pty.create.mockResolvedValue({ sessionId: "session-1", ptyId: "pty-2" });
+
+    const { result } = renderHook(() => useWorkSessions());
+
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 10));
+    });
+
+    await act(async () => {
+      await result.current.resumeSession(session);
+    });
+
+    expect((window as any).ade.pty.create).toHaveBeenCalledWith(expect.objectContaining({
+      sessionId: "session-1",
+      startupCommand: "codex --no-alt-screen --full-auto resume thread-1",
+    }));
+    expect(focusSessionSpy).toHaveBeenCalledWith("session-1");
+    expect(workState.activeItemId).toBe("session-1");
+    expect(workState.selectedItemId).toBe("session-1");
+    expect(navigateSpy).not.toHaveBeenCalled();
+  });
+
+  it("refreshes against the newly active project before pruning that project's saved tabs", async () => {
+    const sessionA = {
+      id: "session-a",
+      laneId: "lane-1",
+      laneName: "Lane 1",
+      ptyId: null,
+      tracked: true,
+      pinned: false,
+      goal: null,
+      toolType: "shell" as const,
+      title: "Session A",
+      status: "running" as const,
+      startedAt: "2026-04-01T12:00:00.000Z",
+      endedAt: null,
+      exitCode: null,
+      transcriptPath: "",
+      headShaStart: null,
+      headShaEnd: null,
+      lastOutputPreview: null,
+      summary: null,
+      runtimeState: "running" as const,
+      resumeCommand: null,
+    };
+    const sessionB = {
+      ...sessionA,
+      id: "session-b",
+      title: "Session B",
+    };
+    const persistedProjectBState = {
+      openItemIds: ["session-b"],
+      activeItemId: "session-b",
+      selectedItemId: "session-b",
+      viewMode: "grid" as const,
+      draftKind: "chat" as const,
+      laneFilter: "all",
+      statusFilter: "all" as const,
+      search: "",
+      sessionListOrganization: "by-lane" as const,
+      workCollapsedLaneIds: [],
+      workCollapsedTabGroupIds: [],
+      workFocusSessionsHidden: false,
+    };
+
+    listSessionsCachedMock
+      .mockResolvedValueOnce([sessionA])
+      .mockResolvedValueOnce([sessionB]);
+
+    const { result, rerender } = renderHook(() => useWorkSessions());
+
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 10));
+    });
+
+    expect(result.current.sessions.map((session) => session.id)).toEqual(["session-a"]);
+
+    fakeAppStoreState = {
+      ...fakeAppStoreState,
+      project: { rootPath: "/project/b" },
+      workViewByProject: {
+        "/project/b": persistedProjectBState,
+      },
+    };
+
+    act(() => {
+      rerender();
+    });
+
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 10));
+    });
+
+    expect(result.current.sessions.map((session) => session.id)).toEqual(["session-b"]);
+    expect(listSessionsCachedMock).toHaveBeenCalledTimes(2);
+
+    const projectBStates = setWorkViewStateSpy.mock.calls
+      .filter(([projectRoot]) => projectRoot === "/project/b")
+      .map(([, next]) => (
+        typeof next === "function"
+          ? next(persistedProjectBState)
+          : { ...persistedProjectBState, ...next }
+      ));
+
+    expect(projectBStates).not.toContainEqual(
+      expect.objectContaining({ openItemIds: [] }),
+    );
+  });
 });
 
 describe("useWorkSessions — grouping defaults and derived tab order", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    resetFakeAppStoreState();
     installWindowAde();
+    listSessionsCachedMock.mockResolvedValue([]);
   });
 
   afterEach(() => {

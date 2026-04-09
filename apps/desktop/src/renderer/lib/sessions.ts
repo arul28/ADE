@@ -76,6 +76,38 @@ export function buildOptimisticChatSessionSummary(args: {
   };
 }
 
+/** Exact tool-type -> short label map for compact card display. */
+const SHORT_TOOL_TYPE_LABELS: Record<string, string> = {
+  shell: "Shell",
+  "run-shell": "Run",
+  cursor: "Cursor",
+  aider: "Aider",
+  continue: "Continue",
+};
+
+/** Prefix -> short label entries, checked in order for tool types like "claude-chat". */
+const SHORT_TOOL_TYPE_PREFIXES: readonly [string, string][] = [
+  ["claude", "Claude"],
+  ["codex", "Codex"],
+  ["opencode", "OpenCode"],
+];
+
+/** Resolve a short label via exact match, prefix match, or hyphen-to-space fallback. */
+function getShortToolTypeLabel(toolType: string): string {
+  const exact = SHORT_TOOL_TYPE_LABELS[toolType];
+  if (exact) return exact;
+  for (const [prefix, label] of SHORT_TOOL_TYPE_PREFIXES) {
+    if (toolType.startsWith(prefix)) return label;
+  }
+  return toolType.replace(/-/g, " ");
+}
+
+/** Short tool type label for compact card display (e.g. "Claude", "Shell", "Codex"). */
+export function shortToolTypeLabel(toolType: string | null | undefined): string {
+  if (!toolType) return "Shell";
+  return getShortToolTypeLabel(toolType);
+}
+
 export function formatToolTypeLabel(toolType: string | null | undefined): string {
   if (toolType === "claude-orchestrated") return "Claude worker runtime";
   if (toolType === "codex-orchestrated") return "Codex worker runtime";

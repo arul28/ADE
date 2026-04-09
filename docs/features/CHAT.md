@@ -348,6 +348,13 @@ When a user switches model families mid-session (e.g., from Claude to Codex), th
   `persistent_identity` profile, giving it a distinct visual treatment.
 - **Mission threads** -- Mission-scoped views adapt chat events through
   `missionThreadEventAdapter` so they render in the mission feed format.
+- **Chat terminal drawer** -- The `AgentChatPane` includes a collapsible
+  terminal drawer (`ChatTerminalDrawer`) at the bottom of the chat
+  surface. Each drawer tab creates an untracked shell PTY in the current
+  lane. The drawer reuses the shared `TerminalView` component (with
+  global terminal preferences) rather than managing raw xterm instances
+  directly. Tabs track PTY exit state and auto-close the drawer when the
+  last tab is removed.
 
 ### Chat Header
 

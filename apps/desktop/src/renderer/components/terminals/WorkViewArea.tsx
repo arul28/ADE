@@ -323,9 +323,9 @@ export function WorkViewArea({
           style={{
             borderBottom: "1px solid var(--work-pane-border)",
             background: "transparent",
-            height: 28,
-            minHeight: 28,
-            maxHeight: 28,
+            height: 32,
+            minHeight: 32,
+            maxHeight: 32,
           }}
         >
           <ViewModeToggle viewMode={viewMode} setViewMode={setViewMode} />
@@ -343,7 +343,7 @@ export function WorkViewArea({
                   className="group/tab inline-flex shrink-0 items-center gap-1.5 transition-colors"
                   style={{
                     padding: "0 8px",
-                    height: 28,
+                    height: 32,
                     fontSize: 11,
                     fontWeight: isActive ? 500 : 400,
                     background: "transparent",
@@ -352,7 +352,7 @@ export function WorkViewArea({
                     border: "none",
                     borderBottom: isActive ? "2px solid var(--color-accent)" : "2px solid transparent",
                     borderRadius: "0",
-                    opacity: isActive ? 1 : 0.5,
+                    opacity: isActive ? 1 : 0.65,
                   }}
                   onClick={() => onSelectItem(session.id)}
                   onContextMenu={(e) => handleContextMenu(session, e)}
@@ -477,7 +477,7 @@ export function WorkViewArea({
               return (
                 <div
                   key={group.id}
-                  className="inline-flex shrink-0 flex-col overflow-hidden rounded-md border"
+                  className={`inline-flex shrink-0 flex-col overflow-hidden border ${group.collapsed ? "rounded-full" : "rounded-xl"}`}
                   style={{
                     borderColor: hasActive ? "rgba(168,130,255,0.35)" : "rgba(255,255,255,0.06)",
                     background: groupStyle,
@@ -485,7 +485,9 @@ export function WorkViewArea({
                 >
                   <button
                     type="button"
-                    className="inline-flex items-center gap-1.5 px-2 py-1 text-left text-[10px] font-medium transition-colors"
+                    aria-expanded={!group.collapsed}
+                    aria-controls={`tab-group-${group.id}`}
+                    className="inline-flex items-center gap-1.5 px-2.5 py-1 text-left text-[11px] font-medium transition-colors"
                     style={{
                       color: hasActive ? "var(--color-fg)" : "var(--color-muted-fg)",
                       cursor: "pointer",
@@ -495,7 +497,9 @@ export function WorkViewArea({
                   >
                     {group.kind === "lane" ? <GitBranch size={10} className="shrink-0 text-muted-fg/60" /> : null}
                     <span className="max-w-[130px] truncate">{group.label}</span>
-                    <span className="text-[10px] text-muted-fg/40">{group.sessions.length}</span>
+                    <span className="rounded-full bg-white/[0.06] px-1.5 py-0.5 text-[9px] text-muted-fg/40">
+                      {group.sessions.length}
+                    </span>
                     {group.collapsed ? (
                       <CaretRight size={10} className="shrink-0 text-muted-fg/35" />
                     ) : (
@@ -503,7 +507,7 @@ export function WorkViewArea({
                     )}
                   </button>
                   {!group.collapsed ? (
-                    <div className="flex min-w-0 items-stretch gap-0 overflow-x-auto scrollbar-none border-t border-white/[0.04]">
+                    <div id={`tab-group-${group.id}`} className="flex min-w-0 items-stretch gap-0.5 overflow-x-auto scrollbar-none border-t border-white/[0.04] px-0.5 py-0.5">
                       {group.sessions.map((session) => {
                         const isActive = activeSession?.id === session.id;
                         const dot = sessionStatusDot(session);
@@ -513,18 +517,17 @@ export function WorkViewArea({
                           <button
                             key={session.id}
                             type="button"
-                            className="group/tab inline-flex shrink-0 items-center gap-1.5 transition-colors"
+                            className="group/tab inline-flex shrink-0 items-center gap-1.5 transition-all"
                             style={{
                               padding: "0 8px",
                               height: 28,
                               fontSize: 11,
                               fontWeight: isActive ? 500 : 400,
-                              background: "transparent",
+                              background: isActive ? "rgba(167, 139, 250, 0.12)" : "transparent",
                               color: isActive ? "var(--color-fg)" : "var(--color-muted-fg)",
                               cursor: "pointer",
                               border: "none",
-                              borderBottom: isActive ? "2px solid var(--color-accent)" : "2px solid transparent",
-                              borderRadius: "0",
+                              borderRadius: 6,
                               opacity: isActive ? 1 : 0.7,
                             }}
                             onClick={() => onSelectItem(session.id)}
@@ -642,37 +645,40 @@ function ViewModeToggle({
   setViewMode: (mode: WorkViewMode) => void;
 }) {
   return (
-    <div className="flex items-center gap-0">
-      <button
-        onClick={() => setViewMode("tabs")}
-        className="transition-colors"
-        style={{
-          padding: "2px 4px",
-          border: "none",
-          cursor: "pointer",
-          background: "transparent",
-          color: viewMode === "tabs" ? "var(--color-fg)" : "var(--color-muted-fg)",
-          opacity: viewMode === "tabs" ? 0.8 : 0.3,
-        }}
-        title="Tab View"
-      >
-        <List size={12} />
-      </button>
-      <button
-        onClick={() => setViewMode("grid")}
-        className="transition-colors"
-        style={{
-          padding: "2px 4px",
-          border: "none",
-          cursor: "pointer",
-          background: "transparent",
-          color: viewMode === "grid" ? "var(--color-fg)" : "var(--color-muted-fg)",
-          opacity: viewMode === "grid" ? 0.8 : 0.3,
-        }}
-        title="Grid View"
-      >
-        <GridFour size={12} />
-      </button>
+    <div
+      className="inline-flex items-center rounded-full p-0.5"
+      style={{
+        background: "rgba(255, 255, 255, 0.04)",
+        border: "1px solid rgba(255, 255, 255, 0.08)",
+        height: 24,
+      }}
+    >
+      {([
+        { mode: "tabs" as const, icon: <List size={11} />, label: "Tabs", title: "Tab View" },
+        { mode: "grid" as const, icon: <GridFour size={11} />, label: "Grid", title: "Grid View" },
+      ]).map(({ mode, icon, label, title }) => {
+        const active = viewMode === mode;
+        return (
+          <button
+            key={mode}
+            type="button"
+            aria-pressed={active}
+            onClick={() => setViewMode(mode)}
+            className="inline-flex items-center gap-1 rounded-full px-2.5 text-[10px] font-medium transition-all"
+            style={{
+              height: 20,
+              background: active ? "rgba(167, 139, 250, 0.15)" : "transparent",
+              color: active ? "var(--color-accent)" : "var(--color-muted-fg)",
+              border: "none",
+              cursor: "pointer",
+            }}
+            title={title}
+          >
+            {icon}
+            {label}
+          </button>
+        );
+      })}
     </div>
   );
 }

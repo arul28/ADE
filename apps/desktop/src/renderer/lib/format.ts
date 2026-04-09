@@ -1,5 +1,20 @@
 /** Shared formatting utilities for the renderer. */
 
+/** Returns a compact relative time label (e.g. "now", "2m", "1h", "3d") for sidebar cards. */
+export function relativeTimeCompact(iso: string | null | undefined): string {
+  if (!iso) return "";
+  const ts = Date.parse(iso);
+  if (Number.isNaN(ts)) return "";
+  const delta = Math.max(0, Date.now() - ts);
+  const mins = Math.floor(delta / 60_000);
+  if (mins < 1) return "now";
+  if (mins < 60) return `${mins}m`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h`;
+  const days = Math.floor(hours / 24);
+  return `${days}d`;
+}
+
 /** Returns a human-readable relative time for an ISO timestamp. */
 export function relativeWhen(iso: string): string {
   const ts = Date.parse(iso);

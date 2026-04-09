@@ -77,6 +77,7 @@ export type FilesDeleteArgs = {
 
 export type FilesWatchArgs = {
   workspaceId: string;
+  includeIgnored?: boolean;
 };
 
 export type FileChangeEvent = {
@@ -91,6 +92,7 @@ export type FilesQuickOpenArgs = {
   workspaceId: string;
   query: string;
   limit?: number;
+  includeIgnored?: boolean;
 };
 
 export type FilesQuickOpenItem = {
@@ -102,6 +104,7 @@ export type FilesSearchTextArgs = {
   workspaceId: string;
   query: string;
   limit?: number;
+  includeIgnored?: boolean;
 };
 
 export type FilesSearchTextMatch = {

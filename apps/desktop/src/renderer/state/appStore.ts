@@ -5,6 +5,16 @@ import { extractError } from "../lib/format";
 
 export type ThemeId = "dark" | "light";
 export const THEME_IDS: ThemeId[] = ["dark", "light"];
+export type TerminalPreferences = {
+  fontSize: number;
+  lineHeight: number;
+  scrollback: number;
+};
+export const DEFAULT_TERMINAL_PREFERENCES: TerminalPreferences = {
+  fontSize: 12.5,
+  lineHeight: 1.25,
+  scrollback: 10_000,
+};
 export type TerminalAttentionIndicator = "none" | "running-active" | "running-needs-attention";
 export type WorkViewMode = "tabs" | "grid";
 export type WorkStatusFilter = "all" | "running" | "awaiting-input" | "ended";
@@ -29,6 +39,8 @@ export type WorkProjectViewState = {
   workCollapsedLaneIds: string[];
   /** Tab group ids collapsed in the Work tab strip. */
   workCollapsedTabGroupIds: string[];
+  /** Section ids collapsed in status/time sidebar groupings (e.g. "status:running", "time:today"). */
+  workCollapsedSectionIds: string[];
   /** When true, sessions sidebar is hidden for a full-width content area (persisted per project). */
   workFocusSessionsHidden: boolean;
 };
@@ -53,6 +65,9 @@ const EMPTY_TERMINAL_ATTENTION: TerminalAttentionSnapshot = {
   byLaneId: {}
 };
 
+const WORK_VIEW_STORAGE_KEY = "ade.workViewState.v1";
+const TERMINAL_PREFERENCES_STORAGE_KEY = "ade.terminalPreferences.v1";
+
 function createDefaultWorkProjectViewState(): WorkProjectViewState {
   return {
     openItemIds: [],
@@ -66,8 +81,118 @@ function createDefaultWorkProjectViewState(): WorkProjectViewState {
     sessionListOrganization: "by-lane",
     workCollapsedLaneIds: [],
     workCollapsedTabGroupIds: [],
+    workCollapsedSectionIds: [],
     workFocusSessionsHidden: false,
   };
+}
+
+function normalizeStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter((item): item is string => typeof item === "string")
+    .map((item) => item.trim())
+    .filter((item) => item.length > 0);
+}
+
+function normalizeOptionalString(value: unknown): string | null {
+  const normalized = typeof value === "string" ? value.trim() : "";
+  return normalized.length > 0 ? normalized : null;
+}
+
+function normalizeWorkProjectViewState(value: unknown): WorkProjectViewState {
+  const candidate = value && typeof value === "object"
+    ? value as Partial<WorkProjectViewState>
+    : {};
+  return {
+    openItemIds: normalizeStringArray(candidate.openItemIds),
+    activeItemId: normalizeOptionalString(candidate.activeItemId),
+    selectedItemId: normalizeOptionalString(candidate.selectedItemId),
+    viewMode: candidate.viewMode === "grid" ? "grid" : "tabs",
+    draftKind:
+      candidate.draftKind === "cli" || candidate.draftKind === "shell"
+        ? candidate.draftKind
+        : "chat",
+    laneFilter: normalizeOptionalString(candidate.laneFilter) ?? "all",
+    statusFilter:
+      candidate.statusFilter === "running"
+      || candidate.statusFilter === "awaiting-input"
+      || candidate.statusFilter === "ended"
+        ? candidate.statusFilter
+        : "all",
+    search: typeof candidate.search === "string" ? candidate.search : "",
+    sessionListOrganization:
+      candidate.sessionListOrganization === "all-lanes-by-status"
+      || candidate.sessionListOrganization === "by-time"
+        ? candidate.sessionListOrganization
+        : "by-lane",
+    workCollapsedLaneIds: normalizeStringArray(candidate.workCollapsedLaneIds),
+    workCollapsedTabGroupIds: normalizeStringArray(candidate.workCollapsedTabGroupIds),
+    workCollapsedSectionIds: normalizeStringArray(candidate.workCollapsedSectionIds),
+    workFocusSessionsHidden: candidate.workFocusSessionsHidden === true,
+  };
+}
+
+function readPersistedWorkViewState(): {
+  workViewByProject: Record<string, WorkProjectViewState>;
+  laneWorkViewByScope: Record<string, WorkProjectViewState>;
+} {
+  try {
+    const raw = window.localStorage.getItem(WORK_VIEW_STORAGE_KEY);
+    if (!raw) {
+      return { workViewByProject: {}, laneWorkViewByScope: {} };
+    }
+    const parsed = JSON.parse(raw) as {
+      workViewByProject?: Record<string, unknown>;
+      laneWorkViewByScope?: Record<string, unknown>;
+    };
+    const workViewByProject: Record<string, WorkProjectViewState> = {};
+    const laneWorkViewByScope: Record<string, WorkProjectViewState> = {};
+    for (const [projectRoot, viewState] of Object.entries(parsed.workViewByProject ?? {})) {
+      const key = normalizeProjectKey(projectRoot);
+      if (!key) continue;
+      workViewByProject[key] = normalizeWorkProjectViewState(viewState);
+    }
+    for (const [scopeKey, viewState] of Object.entries(parsed.laneWorkViewByScope ?? {})) {
+      const dividerIndex = scopeKey.indexOf("::");
+      if (dividerIndex <= 0 || dividerIndex >= scopeKey.length - 2) continue;
+      const projectRoot = normalizeProjectKey(scopeKey.slice(0, dividerIndex));
+      const laneId = scopeKey.slice(dividerIndex + 2).trim();
+      if (!projectRoot || !laneId) continue;
+      laneWorkViewByScope[`${projectRoot}::${laneId}`] = normalizeWorkProjectViewState(viewState);
+    }
+    return { workViewByProject, laneWorkViewByScope };
+  } catch {
+    return { workViewByProject: {}, laneWorkViewByScope: {} };
+  }
+}
+
+let _debouncePersistTimer: ReturnType<typeof setTimeout> | null = null;
+
+function persistWorkViewState(args: {
+  workViewByProject: Record<string, WorkProjectViewState>;
+  laneWorkViewByScope: Record<string, WorkProjectViewState>;
+}): void {
+  if (_debouncePersistTimer != null) {
+    clearTimeout(_debouncePersistTimer);
+    _debouncePersistTimer = null;
+  }
+  try {
+    window.localStorage.setItem(WORK_VIEW_STORAGE_KEY, JSON.stringify(args));
+  } catch {
+    // ignore
+  }
+}
+
+/** Debounced persist: batches rapid setter calls into a single localStorage write. */
+function debouncedPersistWorkViewState(args: {
+  workViewByProject: Record<string, WorkProjectViewState>;
+  laneWorkViewByScope: Record<string, WorkProjectViewState>;
+}): void {
+  if (_debouncePersistTimer != null) clearTimeout(_debouncePersistTimer);
+  _debouncePersistTimer = setTimeout(() => {
+    _debouncePersistTimer = null;
+    persistWorkViewState(args);
+  }, 300);
 }
 
 function normalizeProjectKey(projectRoot: string | null | undefined): string {
@@ -94,9 +219,58 @@ function readInitialTheme(): ThemeId {
   return "dark";
 }
 
+const initialPersistedWorkViews = readPersistedWorkViewState();
+
 function persistTheme(theme: ThemeId) {
   try {
     window.localStorage.setItem("ade.theme", theme);
+  } catch {
+    // ignore
+  }
+}
+
+function clampTerminalFontSize(value: unknown): number {
+  const next = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(next)) return DEFAULT_TERMINAL_PREFERENCES.fontSize;
+  return Math.max(10, Math.min(18, Math.round(next * 2) / 2));
+}
+
+function clampTerminalLineHeight(value: unknown): number {
+  const next = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(next)) return DEFAULT_TERMINAL_PREFERENCES.lineHeight;
+  return Math.max(1, Math.min(1.6, Math.round(next * 100) / 100));
+}
+
+function clampTerminalScrollback(value: unknown): number {
+  const next = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(next)) return DEFAULT_TERMINAL_PREFERENCES.scrollback;
+  return Math.max(2000, Math.min(100_000, Math.round(next / 1000) * 1000));
+}
+
+function normalizeTerminalPreferences(value: unknown): TerminalPreferences {
+  const candidate = value && typeof value === "object"
+    ? value as Partial<TerminalPreferences>
+    : {};
+  return {
+    fontSize: clampTerminalFontSize(candidate.fontSize),
+    lineHeight: clampTerminalLineHeight(candidate.lineHeight),
+    scrollback: clampTerminalScrollback(candidate.scrollback),
+  };
+}
+
+function readInitialTerminalPreferences(): TerminalPreferences {
+  try {
+    const raw = window.localStorage.getItem(TERMINAL_PREFERENCES_STORAGE_KEY);
+    if (!raw) return { ...DEFAULT_TERMINAL_PREFERENCES };
+    return normalizeTerminalPreferences(JSON.parse(raw));
+  } catch {
+    return { ...DEFAULT_TERMINAL_PREFERENCES };
+  }
+}
+
+function persistTerminalPreferences(preferences: TerminalPreferences) {
+  try {
+    window.localStorage.setItem(TERMINAL_PREFERENCES_STORAGE_KEY, JSON.stringify(preferences));
   } catch {
     // ignore
   }
@@ -122,6 +296,7 @@ type AppState = {
   runLaneId: string | null;
   focusedSessionId: string | null;
   theme: ThemeId;
+  terminalPreferences: TerminalPreferences;
   providerMode: ProviderMode;
   availableModels: ModelDescriptor[];
   laneInspectorTabs: Record<string, LaneInspectorTab>;
@@ -141,6 +316,11 @@ type AppState = {
   selectRunLane: (laneId: string | null) => void;
   focusSession: (sessionId: string | null) => void;
   setTheme: (theme: ThemeId) => void;
+  setTerminalPreferences: (
+    next:
+      | Partial<TerminalPreferences>
+      | ((prev: TerminalPreferences) => TerminalPreferences)
+  ) => void;
   setTerminalAttention: (snapshot: TerminalAttentionSnapshot) => void;
   getWorkViewState: (projectRoot: string | null | undefined) => WorkProjectViewState;
   setWorkViewState: (
@@ -245,13 +425,14 @@ export const useAppStore = create<AppState>((set, get) => ({
   runLaneId: null,
   focusedSessionId: null,
   theme: readInitialTheme(),
+  terminalPreferences: readInitialTerminalPreferences(),
   providerMode: "guest",
   availableModels: [...MODEL_REGISTRY].filter((m) => !m.deprecated),
   laneInspectorTabs: {},
   keybindings: null,
   terminalAttention: EMPTY_TERMINAL_ATTENTION,
-  workViewByProject: {},
-  laneWorkViewByScope: {},
+  workViewByProject: initialPersistedWorkViews.workViewByProject,
+  laneWorkViewByScope: initialPersistedWorkViews.laneWorkViewByScope,
 
   setProject: (project) => set({ project }),
   setProjectHydrated: (projectHydrated) => set({ projectHydrated }),
@@ -277,6 +458,16 @@ export const useAppStore = create<AppState>((set, get) => ({
     persistTheme(theme);
     set({ theme });
   },
+  setTerminalPreferences: (next) =>
+    set((prev) => {
+      const updated = normalizeTerminalPreferences(
+        typeof next === "function"
+          ? next(prev.terminalPreferences)
+          : { ...prev.terminalPreferences, ...next }
+      );
+      persistTerminalPreferences(updated);
+      return { terminalPreferences: updated };
+    }),
   setTerminalAttention: (terminalAttention) => set({ terminalAttention }),
   openNewTab: () => set({ isNewTabOpen: true, showWelcome: true }),
   cancelNewTab: () => {
@@ -300,11 +491,16 @@ export const useAppStore = create<AppState>((set, get) => ({
               ...current,
               ...next,
             };
+      const nextWorkViews = {
+        ...prev.workViewByProject,
+        [key]: updated,
+      };
+      debouncedPersistWorkViewState({
+        workViewByProject: nextWorkViews,
+        laneWorkViewByScope: prev.laneWorkViewByScope,
+      });
       return {
-        workViewByProject: {
-          ...prev.workViewByProject,
-          [key]: updated,
-        },
+        workViewByProject: nextWorkViews,
       };
     });
   },
@@ -325,11 +521,16 @@ export const useAppStore = create<AppState>((set, get) => ({
               ...current,
               ...next,
             };
+      const nextLaneWorkViews = {
+        ...prev.laneWorkViewByScope,
+        [key]: updated,
+      };
+      debouncedPersistWorkViewState({
+        workViewByProject: prev.workViewByProject,
+        laneWorkViewByScope: nextLaneWorkViews,
+      });
       return {
-        laneWorkViewByScope: {
-          ...prev.laneWorkViewByScope,
-          [key]: updated,
-        },
+        laneWorkViewByScope: nextLaneWorkViews,
       };
     });
   },
@@ -388,6 +589,10 @@ export const useAppStore = create<AppState>((set, get) => ({
         const nextSnapshots: LaneListSnapshot[] =
           laneSnapshots ??
           prev.laneSnapshots.filter((snapshot) => allowed.has(snapshot.lane.id));
+        persistWorkViewState({
+          workViewByProject: prev.workViewByProject,
+          laneWorkViewByScope: nextLaneWorkViews,
+        });
         return {
           laneSnapshots: nextSnapshots,
           lanes,
@@ -552,6 +757,10 @@ export const useAppStore = create<AppState>((set, get) => ({
           const projectKey = scopeKey.split("::")[0];
           if (projectKey === activeRoot || recentRoots.has(projectKey)) nextLaneWorkViews[scopeKey] = value;
         }
+        persistWorkViewState({
+          workViewByProject: nextWorkViews,
+          laneWorkViewByScope: nextLaneWorkViews,
+        });
         return {
           projectTransition: null,
           workViewByProject: nextWorkViews,

@@ -186,6 +186,13 @@ function installAdeMocks(options?: {
     prs: {
       getForLane: vi.fn().mockResolvedValue(null),
     },
+    pty: {
+      onExit: vi.fn().mockImplementation(() => () => undefined),
+      dispose: vi.fn().mockResolvedValue(undefined),
+      resize: vi.fn().mockResolvedValue(undefined),
+      write: vi.fn().mockResolvedValue(undefined),
+      onData: vi.fn().mockImplementation(() => () => undefined),
+    },
   } as any;
 
   return {

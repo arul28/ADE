@@ -68,12 +68,14 @@ export function buildTrackedCliResumeCommand(metadata: TerminalResumeMetadata): 
   const targetId = metadata.targetId?.trim() ?? "";
   if (metadata.provider === "claude") {
     const parts = ["claude", ...permissionModeToClaudeFlag(metadata.launch.permissionMode)];
-    if (targetId) parts.push("--resume", targetId);
+    parts.push("--resume");
+    if (targetId) parts.push(targetId);
     return parts.join(" ");
   }
 
   const parts = ["codex", "--no-alt-screen", ...permissionModeToCodexFlags(metadata.launch.permissionMode)];
-  if (targetId) parts.push("resume", targetId);
+  parts.push("resume");
+  if (targetId) parts.push(targetId);
   return parts.join(" ");
 }
 

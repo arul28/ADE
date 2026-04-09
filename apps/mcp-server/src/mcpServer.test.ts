@@ -1071,6 +1071,35 @@ describe("mcpServer", () => {
     );
   });
 
+  it("hides ADE spawn and mission-worker tools from standalone chat callers", async () => {
+    await withEnv({ ADE_DEFAULT_ROLE: "agent", ADE_CHAT_SESSION_ID: "chat-1" }, async () => {
+      const { runtime } = createRuntime();
+      const handler = createMcpRequestHandler({ runtime, serverVersion: "test" });
+
+      await initialize(handler, { callerId: "chat-1", role: "agent" });
+      const result = (await handler({ jsonrpc: "2.0", id: 3, method: "tools/list" })) as any;
+      const names = (result.tools ?? []).map((tool: any) => tool.name);
+
+      expect(names).toEqual(
+        expect.arrayContaining([
+          "ask_user",
+          "memory_search",
+          "memory_add",
+          "create_lane",
+          "run_tests",
+        ])
+      );
+      expect(names).not.toContain("spawn_agent");
+      expect(names).not.toContain("delegate_to_subagent");
+      expect(names).not.toContain("delegate_parallel");
+      expect(names).not.toContain("report_status");
+      expect(names).not.toContain("report_result");
+      expect(names).not.toContain("get_worker_output");
+      expect(names).not.toContain("read_mission_status");
+      expect(names).not.toContain("list_workers");
+    });
+  });
+
   it("lists CTO operator and Linear sync tools for cto callers", async () => {
     const { runtime } = createRuntime();
     const handler = createMcpRequestHandler({ runtime, serverVersion: "test" });
@@ -1378,6 +1407,23 @@ describe("mcpServer", () => {
 
       expect(response.isError).toBe(true);
       expect(JSON.stringify(response.error ?? response.structuredContent ?? {})).toContain("Unsupported tool: spawn_worker");
+    });
+  });
+
+  it("rejects standalone chat calls to ADE spawn_agent", async () => {
+    await withEnv({ ADE_DEFAULT_ROLE: "agent", ADE_CHAT_SESSION_ID: "chat-1" }, async () => {
+      const { runtime } = createRuntime();
+      const handler = createMcpRequestHandler({ runtime, serverVersion: "test" });
+
+      await initialize(handler, { callerId: "chat-1", role: "agent" });
+
+      const response = await callTool(handler, "spawn_agent", {
+        laneId: "lane-1",
+        prompt: "Handle a child task.",
+      });
+
+      expect(response.isError).toBe(true);
+      expect(JSON.stringify(response.error ?? response.structuredContent ?? {})).toContain("Unsupported tool: spawn_agent");
     });
   });
 

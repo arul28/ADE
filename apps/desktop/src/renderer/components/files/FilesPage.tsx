@@ -18,8 +18,6 @@ import {
   FloppyDisk as Save,
   MagnifyingGlass as Search,
   Sparkle as Sparkles,
-  Eye,
-  EyeSlash,
   Terminal as TerminalSquare,
   FileXls as FileSpreadsheet,
   X,
@@ -96,12 +94,12 @@ type FilesPageSessionState = {
 };
 
 const filesPageSessionByScope = new Map<string, FilesPageSessionState>();
+const MAX_QUEUED_TREE_PARENT_REFRESHES = 24;
 
 function filesSessionKey(projectRoot: string, laneId: string | null): string {
   return `${projectRoot}::${laneId ?? "__primary__"}`;
 }
 const FILES_EDITOR_THEME_KEY = "ade.files.editorTheme";
-const FILES_SHOW_HIDDEN_KEY = "ade.files.showHidden";
 
 function readStoredEditorTheme(): EditorThemeMode {
   try {
@@ -116,22 +114,6 @@ function readStoredEditorTheme(): EditorThemeMode {
 function persistEditorTheme(theme: EditorThemeMode): void {
   try {
     window.localStorage.setItem(FILES_EDITOR_THEME_KEY, theme);
-  } catch {
-    // ignore
-  }
-}
-
-function readStoredShowHidden(): boolean {
-  try {
-    return window.localStorage.getItem(FILES_SHOW_HIDDEN_KEY) === "true";
-  } catch {
-    return false;
-  }
-}
-
-function persistShowHidden(show: boolean): void {
-  try {
-    window.localStorage.setItem(FILES_SHOW_HIDDEN_KEY, show ? "true" : "false");
   } catch {
     // ignore
   }
@@ -234,11 +216,25 @@ function parentDirOfPath(filePath: string): string {
   return normalized.slice(0, idx);
 }
 
-function hasHiddenPathSegment(filePath: string): boolean {
-  return filePath
-    .replace(/\\/g, "/")
-    .split("/")
-    .some((segment) => segment.startsWith(".") && segment !== "." && segment !== "..");
+function normalizePath(filePath: string): string {
+  return filePath.replace(/\\/g, "/").replace(/^\/+/, "").replace(/\/+$/, "");
+}
+
+function isPathEqualOrDescendant(filePath: string, rootPath: string): boolean {
+  const normalizedPath = normalizePath(filePath);
+  const normalizedRoot = normalizePath(rootPath);
+  if (!normalizedRoot) return normalizedPath.length === 0;
+  return normalizedPath === normalizedRoot || normalizedPath.startsWith(`${normalizedRoot}/`);
+}
+
+function remapPathForRename(filePath: string, oldPath: string, newPath: string): string {
+  const normalizedPath = normalizePath(filePath);
+  const normalizedOld = normalizePath(oldPath);
+  const normalizedNew = normalizePath(newPath);
+  if (!normalizedOld || !normalizedNew) return normalizedPath;
+  if (normalizedPath === normalizedOld) return normalizedNew;
+  if (!normalizedPath.startsWith(`${normalizedOld}/`)) return normalizedPath;
+  return `${normalizedNew}${normalizedPath.slice(normalizedOld.length)}`;
 }
 
 const FILE_ICON_COLORS = {
@@ -362,16 +358,12 @@ export function FilesPage() {
     queuedFull: false,
     queuedParents: new Set<string>()
   });
-  const watcherRefreshTimerRef = useRef<number | null>(null);
-  const refreshTreeRef = useRef<((parentPath?: string) => Promise<void>) | null>(null);
   const refreshTreeNowRef = useRef<((parentPath?: string) => Promise<void>) | null>(null);
-  const scheduleTreeRefreshRef = useRef<((parentPath?: string, delayMs?: number) => void) | null>(null);
 
   const [openTabs, setOpenTabs] = useState<OpenTab[]>(() => initialSession?.openTabs.map((tab) => ({ ...tab })) ?? []);
   const [activeTabPath, setActiveTabPath] = useState<string | null>(initialSession?.activeTabPath ?? null);
   const [mode, setMode] = useState<EditorViewMode>(initialSession?.mode ?? "edit");
   const [editorTheme, setEditorTheme] = useState<EditorThemeMode>(initialSession?.editorTheme ?? readStoredEditorTheme());
-  const [showHidden, setShowHidden] = useState(readStoredShowHidden);
 
   const [quickOpen, setQuickOpen] = useState("");
   const [quickOpenResults, setQuickOpenResults] = useState<FilesQuickOpenItem[]>([]);
@@ -397,6 +389,7 @@ export function FilesPage() {
   const modelKeyRef = useRef<string | null>(null);
   const editorApplyingRef = useRef(false);
   const activeTabPathRef = useRef<string | null>(null);
+  const openTabsRef = useRef<OpenTab[]>([]);
 
   const searchInputRef = useRef<HTMLInputElement | null>(null);
   const openInMenuRef = useRef<HTMLDivElement | null>(null);
@@ -584,6 +577,10 @@ export function FilesPage() {
   }, [activeTabPath]);
 
   useEffect(() => {
+    openTabsRef.current = openTabs;
+  }, [openTabs]);
+
+  useEffect(() => {
     const st = (location.state as FilesPageNavState | null) ?? null;
     const openFilePath = st?.openFilePath?.trim();
     if (!openFilePath) return;
@@ -602,7 +599,7 @@ export function FilesPage() {
         workspaceId,
         parentPath,
         depth: parentPath ? 1 : 2,
-        includeIgnored: showHidden
+        includeIgnored: true
       });
       if (!parentPath) {
         setTree(nodes);
@@ -619,7 +616,7 @@ export function FilesPage() {
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
-  }, [workspaceId, showHidden]);
+  }, [workspaceId]);
 
   refreshTreeNowRef.current = refreshTreeNow;
 
@@ -640,8 +637,6 @@ export function FilesPage() {
     try {
       let nextParent: string | undefined = normalizedParent;
       while (true) {
-        // Use the ref so queued refreshes always pick up the latest
-        // showHidden / workspaceId values instead of a stale closure.
         await refreshTreeNowRef.current!(nextParent);
         if (state.queuedFull) {
           state.queuedFull = false;
@@ -662,42 +657,20 @@ export function FilesPage() {
     }
   }, [refreshTreeNow, workspaceId]);
 
-  const scheduleTreeRefresh = useCallback((parentPath?: string, delayMs = 140) => {
-    const normalizedParent = parentPath?.trim() ? parentPath : undefined;
-    if (normalizedParent) {
-      const state = treeRefreshStateRef.current;
-      if (!state.queuedFull) {
-        state.queuedParents.add(normalizedParent);
-      }
-    }
-    if (watcherRefreshTimerRef.current != null) return;
-    watcherRefreshTimerRef.current = window.setTimeout(() => {
-      watcherRefreshTimerRef.current = null;
-      void refreshTree(normalizedParent).catch(() => {});
-    }, delayMs);
-  }, [refreshTree]);
-
-  useEffect(() => {
-    refreshTreeRef.current = refreshTree;
-  }, [refreshTree]);
-
-  useEffect(() => {
-    scheduleTreeRefreshRef.current = scheduleTreeRefresh;
-  }, [scheduleTreeRefresh]);
-
   const openFile = useCallback(async (filePath: string, options: { forceReload?: boolean; preserveMode?: boolean } = {}) => {
     if (!workspaceId) return;
+    const normalizedPath = normalizePath(filePath);
     try {
-      const loaded = await window.ade.files.readFile({ workspaceId, path: filePath });
+      const loaded = await window.ade.files.readFile({ workspaceId, path: normalizedPath });
       if (loaded.isBinary) {
         setError("Binary files are read-only and cannot be edited in this view.");
       }
       setOpenTabs((prev) => {
-        const existing = prev.find((tab) => tab.path === filePath);
+        const existing = prev.find((tab) => tab.path === normalizedPath);
         if (existing && !options.forceReload) return prev;
         if (existing && options.forceReload) {
           return prev.map((tab) => (
-            tab.path === filePath
+            tab.path === normalizedPath
               ? {
                 ...tab,
                 content: loaded.content,
@@ -711,7 +684,7 @@ export function FilesPage() {
         return [
           ...prev,
           {
-            path: filePath,
+            path: normalizedPath,
             content: loaded.content,
             savedContent: loaded.content,
             languageId: loaded.languageId,
@@ -722,10 +695,48 @@ export function FilesPage() {
       if (!options.preserveMode) {
         setMode("edit");
       }
-      setActiveTabPath(filePath);
-      setSelectedNodePath(filePath);
+      setActiveTabPath(normalizedPath);
+      setSelectedNodePath(normalizedPath);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
+    }
+  }, [workspaceId]);
+
+  const syncCleanTabFromDisk = useCallback(async (filePathRaw: string) => {
+    if (!workspaceId) return;
+    const filePath = normalizePath(filePathRaw);
+    if (!filePath) return;
+    const hasCleanOpenTab = openTabsRef.current.some((tab) => tab.path === filePath && tab.content === tab.savedContent);
+    if (!hasCleanOpenTab) return;
+
+    try {
+      const loaded = await window.ade.files.readFile({ workspaceId, path: filePath });
+      setOpenTabs((prev) => {
+        let changed = false;
+        const next = prev.map((tab) => {
+          if (tab.path !== filePath) return tab;
+          if (tab.content !== tab.savedContent) return tab;
+          if (
+            tab.content === loaded.content &&
+            tab.savedContent === loaded.content &&
+            tab.languageId === loaded.languageId &&
+            tab.isBinary === loaded.isBinary
+          ) {
+            return tab;
+          }
+          changed = true;
+          return {
+            ...tab,
+            content: loaded.content,
+            savedContent: loaded.content,
+            languageId: loaded.languageId,
+            isBinary: loaded.isBinary
+          };
+        });
+        return changed ? next : prev;
+      });
+    } catch {
+      // A deleted or renamed path can race this sync; ignore quietly.
     }
   }, [workspaceId]);
 
@@ -751,13 +762,10 @@ export function FilesPage() {
     }
     if (!workspaceId) return;
 
-    if (!showHidden && hasHiddenPathSegment(pending.filePath)) {
-      setShowHidden(true);
-    }
     openFile(pending.filePath).catch(() => {});
     pendingOpenRef.current = null;
     navigate(location.pathname, { replace: true, state: null });
-  }, [workspaces, workspaceId, switchWorkspace, openFile, navigate, location.pathname, showHidden]);
+  }, [workspaces, workspaceId, switchWorkspace, openFile, navigate, location.pathname]);
 
   const closeTab = useCallback((filePath: string) => {
     setOpenTabs((prev) => {
@@ -921,36 +929,119 @@ export function FilesPage() {
     treeRefreshStateRef.current.inFlight = false;
     treeRefreshStateRef.current.queuedFull = false;
     treeRefreshStateRef.current.queuedParents.clear();
-    if (watcherRefreshTimerRef.current != null) {
-      window.clearTimeout(watcherRefreshTimerRef.current);
-      watcherRefreshTimerRef.current = null;
-    }
-    refreshTreeRef.current?.().catch(() => {});
-    window.ade.files.watchChanges({ workspaceId }).catch(() => {});
+    void refreshTree();
+
+    let refreshTimer: number | null = null;
+    let queuedFullRefresh = false;
+    const queuedParents = new Set<string>();
+    const pendingTabSyncPaths = new Set<string>();
+
+    const queueTreeRefresh = (parentPath?: string) => {
+      const normalizedParent = normalizePath(parentPath ?? "");
+      if (!normalizedParent) {
+        queuedFullRefresh = true;
+        queuedParents.clear();
+      } else if (!queuedFullRefresh) {
+        queuedParents.add(normalizedParent);
+        if (queuedParents.size > MAX_QUEUED_TREE_PARENT_REFRESHES) {
+          queuedFullRefresh = true;
+          queuedParents.clear();
+        }
+      }
+    };
+
+    const scheduleFlush = () => {
+      if (refreshTimer != null) window.clearTimeout(refreshTimer);
+      refreshTimer = window.setTimeout(() => {
+        refreshTimer = null;
+        const parentsToRefresh = queuedFullRefresh ? [] : Array.from(queuedParents);
+        queuedFullRefresh = false;
+        queuedParents.clear();
+
+        if (parentsToRefresh.length === 0) {
+          void refreshTree();
+        } else {
+          for (const parentPath of parentsToRefresh) {
+            void refreshTree(parentPath);
+          }
+        }
+
+        const pathsToSync = Array.from(pendingTabSyncPaths);
+        pendingTabSyncPaths.clear();
+        for (const path of pathsToSync) {
+          void syncCleanTabFromDisk(path);
+        }
+      }, 120);
+    };
+
+    window.ade.files.watchChanges({ workspaceId, includeIgnored: true }).catch(() => {});
 
     const unsub = window.ade.files.onChange((ev) => {
       if (ev.workspaceId !== workspaceId) return;
-      if (ev.type === "renamed") {
-        scheduleTreeRefreshRef.current?.(parentPathOf(ev.oldPath ?? ""));
-        scheduleTreeRefreshRef.current?.(parentPathOf(ev.path));
+
+      const nextPath = normalizePath(ev.path);
+      const oldPath = normalizePath(ev.oldPath ?? "");
+
+      if (ev.type === "renamed" && oldPath && nextPath) {
+        setOpenTabs((prev) => {
+          let changed = false;
+          const next = prev.map((tab) => {
+            const mappedPath = remapPathForRename(tab.path, oldPath, nextPath);
+            if (mappedPath === tab.path) return tab;
+            changed = true;
+            if (tab.content === tab.savedContent) pendingTabSyncPaths.add(mappedPath);
+            return { ...tab, path: mappedPath };
+          });
+          return changed ? next : prev;
+        });
+        setActiveTabPath((current) => (current ? remapPathForRename(current, oldPath, nextPath) : current));
+        setSelectedNodePath((current) => (current ? remapPathForRename(current, oldPath, nextPath) : current));
+        setExpanded((prev) => {
+          let changed = false;
+          const next = new Set<string>();
+          for (const path of prev) {
+            const mappedPath = remapPathForRename(path, oldPath, nextPath);
+            next.add(mappedPath);
+            if (mappedPath !== path) changed = true;
+          }
+          return changed ? next : prev;
+        });
+        queueTreeRefresh(parentPathOf(oldPath));
+        queueTreeRefresh(parentPathOf(nextPath));
+        scheduleFlush();
         return;
       }
-      scheduleTreeRefreshRef.current?.(parentPathOf(ev.path));
+
+      if (ev.type === "deleted" && nextPath) {
+        setOpenTabs((prev) => {
+          const next = prev.filter((tab) => !isPathEqualOrDescendant(tab.path, nextPath));
+          if (next.length !== prev.length) {
+            const activePath = activeTabPathRef.current;
+            if (activePath && !next.some((tab) => tab.path === activePath)) {
+              setActiveTabPath(next[next.length - 1]?.path ?? null);
+            }
+          }
+          return next.length === prev.length ? prev : next;
+        });
+        setSelectedNodePath((current) => (current && isPathEqualOrDescendant(current, nextPath) ? null : current));
+        setExpanded((prev) => {
+          const next = new Set(Array.from(prev).filter((path) => !isPathEqualOrDescendant(path, nextPath)));
+          return next.size === prev.size ? prev : next;
+        });
+      } else if (nextPath) {
+        pendingTabSyncPaths.add(nextPath);
+      }
+
+      queueTreeRefresh(parentPathOf(nextPath));
+      scheduleFlush();
     });
 
     return () => {
       unsub();
-      if (watcherRefreshTimerRef.current != null) {
-        window.clearTimeout(watcherRefreshTimerRef.current);
-        watcherRefreshTimerRef.current = null;
-      }
-      window.ade.files.stopWatching({ workspaceId }).catch(() => {});
+      if (refreshTimer != null) window.clearTimeout(refreshTimer);
+      window.ade.files.stopWatching({ workspaceId, includeIgnored: true }).catch(() => {});
     };
-  }, [workspaceId]);
-
-  useEffect(() => {
-    if (workspaceId) refreshTree().catch(() => {});
-  }, [showHidden]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [workspaceId, refreshTree, syncCleanTabFromDisk]);
 
   useEffect(() => {
     const onBeforeUnload = (event: BeforeUnloadEvent) => {
@@ -1029,7 +1120,7 @@ export function FilesPage() {
       return;
     }
     if (!showQuickOpen) return;
-    window.ade.files.quickOpen({ workspaceId, query: quickOpen, limit: 80 })
+    window.ade.files.quickOpen({ workspaceId, query: quickOpen, limit: 80, includeIgnored: true })
       .then(setQuickOpenResults)
       .catch(() => setQuickOpenResults([]));
   }, [quickOpen, workspaceId, showQuickOpen]);
@@ -1040,7 +1131,7 @@ export function FilesPage() {
       return;
     }
     const timer = setTimeout(() => {
-      window.ade.files.searchText({ workspaceId, query: searchQuery, limit: 200 })
+      window.ade.files.searchText({ workspaceId, query: searchQuery, limit: 200, includeIgnored: true })
         .then(setSearchResults)
         .catch(() => setSearchResults([]));
     }, 150);
@@ -1379,26 +1470,7 @@ export function FilesPage() {
                 </button>
               ) : null}
             </div>
-            <div className="mt-1.5 flex items-center justify-between">
-              <button
-                type="button"
-                title={showHidden ? "Hide dotfiles" : "Show dotfiles"}
-                style={{
-                  ...outlineButton({ height: 22, padding: "0 8px", fontSize: 9 }),
-                  ...(showHidden ? { borderColor: COLORS.accent, color: COLORS.accent } : {}),
-                }}
-                onClick={() => {
-                  const next = !showHidden;
-                  setShowHidden(next);
-                  persistShowHidden(next);
-                }}
-                onMouseEnter={(e) => { e.currentTarget.style.borderColor = COLORS.accent; e.currentTarget.style.color = COLORS.accent; }}
-                onMouseLeave={(e) => {
-                  if (!showHidden) { e.currentTarget.style.borderColor = COLORS.outlineBorder; e.currentTarget.style.color = COLORS.textSecondary; }
-                }}
-              >
-                {showHidden ? <Eye size={10} /> : <EyeSlash size={10} />} HIDDEN
-              </button>
+            <div className="mt-1.5 flex items-center justify-end">
               <button
                 type="button"
                 style={{ ...outlineButton({ height: 22, padding: "0 8px", fontSize: 9 }) }}

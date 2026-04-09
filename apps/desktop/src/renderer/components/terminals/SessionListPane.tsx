@@ -6,26 +6,7 @@ import { SessionCard } from "./SessionCard";
 import { LaneCombobox } from "./LaneCombobox";
 import { sortLanesForTabs } from "../lanes/laneUtils";
 import type { WorkDraftKind, WorkSessionListOrganization, WorkStatusFilter } from "../../state/appStore";
-import { sessionStatusBucket } from "../../lib/terminalAttention";
 import { iconGlyph } from "../graph/graphHelpers";
-
-function bucketSessions(sessions: TerminalSessionSummary[]) {
-  const running: TerminalSessionSummary[] = [];
-  const awaiting: TerminalSessionSummary[] = [];
-  const ended: TerminalSessionSummary[] = [];
-  for (const s of sessions) {
-    const b = sessionStatusBucket({
-      status: s.status,
-      lastOutputPreview: s.lastOutputPreview,
-      runtimeState: s.runtimeState,
-      toolType: s.toolType,
-    });
-    if (b === "running") running.push(s);
-    else if (b === "awaiting-input") awaiting.push(s);
-    else ended.push(s);
-  }
-  return { running, awaiting, ended };
-}
 
 function bucketByTime(sessions: TerminalSessionSummary[]) {
   const now = new Date();
@@ -44,28 +25,50 @@ function bucketByTime(sessions: TerminalSessionSummary[]) {
   return { today, yesterday, older };
 }
 
-function SessionSection({
-  title,
-  color,
+function StickyGroupHeader({
+  sectionId,
+  icon,
+  label,
   count,
+  collapsed,
+  onToggleCollapsed,
   children,
 }: {
-  title: string;
-  color: string;
+  sectionId: string;
+  icon: React.ReactNode;
+  label: string;
   count: number;
+  collapsed: boolean;
+  onToggleCollapsed: () => void;
   children: React.ReactNode;
 }) {
   if (count === 0) return null;
   return (
-    <div className="mt-1 first:mt-0">
-      <div className="flex items-center gap-1.5 px-2 py-1">
-        <span className="h-1 w-1 rounded-full" style={{ background: color }} />
-        <span className="text-[10px] font-medium" style={{ color, letterSpacing: "-0.01em" }}>
-          {title}
+    <div className="mt-0.5 first:mt-0">
+      <button
+        type="button"
+        className="sticky top-0 z-10 flex w-full items-center gap-1.5 rounded-md px-2 py-1.5 text-left transition-colors backdrop-blur-xl cursor-pointer select-none hover:bg-white/[0.04]"
+        style={{
+          background: "rgba(255, 255, 255, 0.02)",
+          borderBottom: "1px solid rgba(255, 255, 255, 0.04)",
+        }}
+        onClick={onToggleCollapsed}
+        data-section-id={sectionId}
+      >
+        {collapsed ? (
+          <CaretRight size={10} className="shrink-0 text-muted-fg/30" />
+        ) : (
+          <CaretDown size={10} className="shrink-0 text-muted-fg/30" />
+        )}
+        {icon}
+        <span className="min-w-0 flex-1 truncate text-[11px] font-semibold text-fg/90">{label}</span>
+        <span className="shrink-0 rounded-full bg-white/[0.06] px-1.5 py-0.5 text-[9px] font-medium text-muted-fg/50">
+          {count}
         </span>
-        <span className="text-[10px] text-muted-fg/40">{count}</span>
-      </div>
-      <div className="space-y-px">{children}</div>
+      </button>
+      {!collapsed && count > 0 ? (
+        <div className="space-y-px pb-0.5">{children}</div>
+      ) : null}
     </div>
   );
 }
@@ -95,6 +98,8 @@ export const SessionListPane = React.memo(function SessionListPane({
   setSessionListOrganization,
   workCollapsedLaneIds,
   toggleWorkLaneCollapsed,
+  workCollapsedSectionIds,
+  toggleWorkSectionCollapsed,
   sessionsGroupedByLane,
 }: {
   lanes: LaneSummary[];
@@ -121,6 +126,8 @@ export const SessionListPane = React.memo(function SessionListPane({
   setSessionListOrganization: (v: WorkSessionListOrganization) => void;
   workCollapsedLaneIds: string[];
   toggleWorkLaneCollapsed: (laneId: string) => void;
+  workCollapsedSectionIds: string[];
+  toggleWorkSectionCollapsed: (sectionId: string) => void;
   sessionsGroupedByLane: Map<string, TerminalSessionSummary[]> | null;
 }) {
   const navigate = useNavigate();
@@ -164,15 +171,36 @@ export const SessionListPane = React.memo(function SessionListPane({
 
   const groupedByStatusList = (
     <div className="px-1.5 pb-2">
-      <SessionSection title="Running" color="var(--color-success)" count={runningFiltered.length}>
+      <StickyGroupHeader
+        sectionId="status:running"
+        icon={<span className="h-2 w-2 shrink-0 rounded-full" style={{ background: "var(--color-success)" }} />}
+        label="Running"
+        count={runningFiltered.length}
+        collapsed={workCollapsedSectionIds.includes("status:running")}
+        onToggleCollapsed={() => toggleWorkSectionCollapsed("status:running")}
+      >
         {renderCards(runningFiltered)}
-      </SessionSection>
-      <SessionSection title="Awaiting" color="var(--color-warning)" count={awaitingInputFiltered.length}>
+      </StickyGroupHeader>
+      <StickyGroupHeader
+        sectionId="status:awaiting"
+        icon={<span className="h-2 w-2 shrink-0 rounded-full" style={{ background: "var(--color-warning)" }} />}
+        label="Awaiting"
+        count={awaitingInputFiltered.length}
+        collapsed={workCollapsedSectionIds.includes("status:awaiting")}
+        onToggleCollapsed={() => toggleWorkSectionCollapsed("status:awaiting")}
+      >
         {renderCards(awaitingInputFiltered)}
-      </SessionSection>
-      <SessionSection title="Ended" color="var(--color-error)" count={endedFiltered.length}>
+      </StickyGroupHeader>
+      <StickyGroupHeader
+        sectionId="status:ended"
+        icon={<span className="h-2 w-2 shrink-0 rounded-full" style={{ background: "var(--color-error)" }} />}
+        label="Ended"
+        count={endedFiltered.length}
+        collapsed={workCollapsedSectionIds.includes("status:ended")}
+        onToggleCollapsed={() => toggleWorkSectionCollapsed("status:ended")}
+      >
         {renderCards(endedFiltered)}
-      </SessionSection>
+      </StickyGroupHeader>
     </div>
   );
 
@@ -181,45 +209,24 @@ export const SessionListPane = React.memo(function SessionListPane({
       {orderedLanes.map((lane) => {
         const list = sessionsGroupedByLane?.get(lane.id) ?? [];
         const collapsed = workCollapsedLaneIds.includes(lane.id);
-        const { running, awaiting, ended } = bucketSessions(list);
         const total = list.length;
+        const laneIcon = (
+          <span className="inline-flex shrink-0 items-center justify-center text-muted-fg/55">
+            {lane.icon ? iconGlyph(lane.icon) : <GitBranch size={11} weight="regular" />}
+          </span>
+        );
         return (
-          <div key={lane.id} className="mt-0.5 first:mt-0">
-            <button
-              type="button"
-              className="flex w-full items-center gap-1.5 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-white/[0.04]"
-              onClick={() => toggleWorkLaneCollapsed(lane.id)}
-            >
-              {collapsed ? (
-                <CaretRight size={10} className="shrink-0 text-muted-fg/30" />
-              ) : (
-                <CaretDown size={10} className="shrink-0 text-muted-fg/30" />
-              )}
-              <span className="inline-flex shrink-0 items-center justify-center text-muted-fg/55">
-                {lane.icon ? iconGlyph(lane.icon) : <GitBranch size={11} weight="regular" />}
-              </span>
-              <span className="min-w-0 flex-1 truncate text-[11px] font-medium text-fg/90">{lane.name}</span>
-              <span className="shrink-0 text-[10px] text-muted-fg/30">{total}</span>
-            </button>
-            {!collapsed && total > 0 ? (
-              <div className="ml-4 border-l border-white/[0.04] pl-2 pb-0.5">
-                <SessionSection title="Running" color="var(--color-success)" count={running.length}>
-                  {renderCards(running)}
-                </SessionSection>
-                <SessionSection title="Awaiting" color="var(--color-warning)" count={awaiting.length}>
-                  {renderCards(awaiting)}
-                </SessionSection>
-                <SessionSection title="Ended" color="var(--color-error)" count={ended.length}>
-                  {renderCards(ended)}
-                </SessionSection>
-              </div>
-            ) : null}
-            {!collapsed && total === 0 ? (
-              <div className="ml-7 py-1 text-[10px] text-muted-fg/30">
-                No sessions
-              </div>
-            ) : null}
-          </div>
+          <StickyGroupHeader
+            key={lane.id}
+            sectionId={lane.id}
+            icon={laneIcon}
+            label={lane.name}
+            count={total}
+            collapsed={collapsed}
+            onToggleCollapsed={() => toggleWorkLaneCollapsed(lane.id)}
+          >
+            {renderCards(list)}
+          </StickyGroupHeader>
         );
       })}
     </div>
@@ -227,30 +234,36 @@ export const SessionListPane = React.memo(function SessionListPane({
 
   const byTimeList = (
     <div className="px-1.5 pb-2">
-      {timeBuckets.today.length > 0 ? (
-        <div className="mt-1 first:mt-0">
-          <div className="px-2 py-1">
-            <span className="text-[10px] font-medium text-fg/50">Today</span>
-          </div>
-          <div className="space-y-px">{renderCards(timeBuckets.today)}</div>
-        </div>
-      ) : null}
-      {timeBuckets.yesterday.length > 0 ? (
-        <div className="mt-1">
-          <div className="px-2 py-1">
-            <span className="text-[10px] font-medium text-fg/50">Yesterday</span>
-          </div>
-          <div className="space-y-px">{renderCards(timeBuckets.yesterday)}</div>
-        </div>
-      ) : null}
-      {timeBuckets.older.length > 0 ? (
-        <div className="mt-1">
-          <div className="px-2 py-1">
-            <span className="text-[10px] font-medium text-fg/50">Older</span>
-          </div>
-          <div className="space-y-px">{renderCards(timeBuckets.older)}</div>
-        </div>
-      ) : null}
+      <StickyGroupHeader
+        sectionId="time:today"
+        icon={null}
+        label="Today"
+        count={timeBuckets.today.length}
+        collapsed={workCollapsedSectionIds.includes("time:today")}
+        onToggleCollapsed={() => toggleWorkSectionCollapsed("time:today")}
+      >
+        {renderCards(timeBuckets.today)}
+      </StickyGroupHeader>
+      <StickyGroupHeader
+        sectionId="time:yesterday"
+        icon={null}
+        label="Yesterday"
+        count={timeBuckets.yesterday.length}
+        collapsed={workCollapsedSectionIds.includes("time:yesterday")}
+        onToggleCollapsed={() => toggleWorkSectionCollapsed("time:yesterday")}
+      >
+        {renderCards(timeBuckets.yesterday)}
+      </StickyGroupHeader>
+      <StickyGroupHeader
+        sectionId="time:older"
+        icon={null}
+        label="Older"
+        count={timeBuckets.older.length}
+        collapsed={workCollapsedSectionIds.includes("time:older")}
+        onToggleCollapsed={() => toggleWorkSectionCollapsed("time:older")}
+      >
+        {renderCards(timeBuckets.older)}
+      </StickyGroupHeader>
     </div>
   );
 
