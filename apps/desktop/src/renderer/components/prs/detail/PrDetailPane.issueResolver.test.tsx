@@ -489,12 +489,17 @@ describe("PrDetailPane issue resolver CTA", () => {
       onNavigate,
     });
 
+    expect(screen.getByRole("button", { name: /select model/i })).toBeTruthy();
     await user.click(screen.getByRole("button", { name: /run ade review/i }));
 
     await waitFor(() => {
       expect(startReviewRun).toHaveBeenCalledWith({
         target: { mode: "pr", laneId: "lane-1", prId: "pr-80" },
-        config: { publishBehavior: "auto_publish" },
+        config: {
+          publishBehavior: "auto_publish",
+          modelId: "openai/gpt-5.4-codex",
+          reasoningEffort: "high",
+        },
       });
       expect(onNavigate).toHaveBeenCalledWith("/review?runId=review-run-1");
     });

@@ -4,6 +4,8 @@ import type {
   ReviewEventPayload,
   ReviewEvidence,
   ReviewFinding,
+  ReviewFindingAdjudication,
+  ReviewFindingClass,
   ReviewPublication,
   ReviewPublicationDestination,
   ReviewPublicationInlineComment,
@@ -14,6 +16,7 @@ import type {
   ReviewRunConfig,
   ReviewRunDetail,
   ReviewRunStatus,
+  ReviewPassKey,
   ReviewSeverity,
   ReviewSeveritySummary,
   ReviewSourcePass,
@@ -32,8 +35,17 @@ import type { createLaneService } from "../lanes/laneService";
 import type { createGitOperationsService } from "../git/gitOperationsService";
 import type { createAgentChatService } from "../chat/agentChatService";
 import type { createSessionService } from "../sessions/sessionService";
+import type { createSessionDeltaService } from "../sessions/sessionDeltaService";
 import type { createPrService } from "../prs/prService";
+import type { createIssueInventoryService } from "../prs/issueInventoryService";
+import type { createTestService } from "../tests/testService";
 import { createReviewTargetMaterializer } from "./reviewTargetMaterializer";
+import { createReviewContextBuilder, type ReviewContextPacket } from "./reviewContextBuilder";
+import {
+  collectRulePromptGuidance,
+  overlayMatchesPath,
+  type MatchedReviewRuleOverlay,
+} from "./reviewRuleRegistry";
 
 type ReviewRunRow = {
   id: string;
@@ -60,6 +72,7 @@ type ReviewFindingRow = {
   run_id: string;
   title: string;
   severity: string;
+  finding_class: string | null;
   body: string;
   confidence: number;
   evidence_json: string | null;
@@ -68,6 +81,8 @@ type ReviewFindingRow = {
   anchor_state: string;
   source_pass: string;
   publication_state: string;
+  originating_passes_json: string | null;
+  adjudication_json: string | null;
 };
 
 type ReviewRunArtifactRow = {
@@ -103,7 +118,7 @@ const REVIEW_MODEL_FALLBACK_ID = "openai/gpt-5.4-codex";
 function resolveBuiltinReviewModelId(): string {
   const candidates = [
     getDefaultModelDescriptor("codex")?.id ?? null,
-    getDefaultModelDescriptor("unified")?.id ?? null,
+    getDefaultModelDescriptor("opencode")?.id ?? null,
     REVIEW_MODEL_FALLBACK_ID,
     getDefaultModelDescriptor("claude")?.id ?? null,
     getDefaultModelDescriptor("cursor")?.id ?? null,
@@ -124,6 +139,87 @@ const DEFAULT_BUDGETS: ReviewRunConfig["budgets"] = {
   maxDiffChars: 180_000,
   maxPromptChars: 220_000,
   maxFindings: 12,
+  maxFindingsPerPass: 6,
+  maxPublishedFindings: 6,
+};
+
+const REVIEW_PASS_ORDER: ReviewPassKey[] = [
+  "diff-risk",
+  "cross-file-impact",
+  "checks-and-tests",
+];
+
+const SEVERITY_SCORE: Record<ReviewSeverity, number> = {
+  critical: 5,
+  high: 4,
+  medium: 3,
+  low: 2,
+  info: 1,
+};
+
+type MaterializedChangedFile = {
+  filePath: string;
+  excerpt: string;
+  lineNumbers: number[];
+  diffPositionsByLine: Record<number, number>;
+};
+
+type PassDefinition = {
+  key: ReviewPassKey;
+  label: string;
+  focus: string;
+  extraInstructions: string[];
+};
+
+type PassCandidateFinding = {
+  id: string;
+  runId: string;
+  passKey: ReviewPassKey;
+  title: string;
+  severity: ReviewSeverity;
+  findingClass: ReviewFindingClass | null;
+  body: string;
+  confidence: number;
+  evidence: ReviewEvidence[];
+  filePath: string | null;
+  line: number | null;
+  anchorState: ReviewFinding["anchorState"];
+  evidenceScore: number;
+  lowSignal: boolean;
+  score: number;
+};
+
+type ReviewContextArtifactIds = {
+  provenanceArtifactId: string;
+  rulesArtifactId: string;
+  validationArtifactId: string;
+};
+
+type PassExecutionResult = {
+  pass: PassDefinition;
+  summary: string | null;
+  candidates: PassCandidateFinding[];
+  promptArtifactId: string;
+  outputArtifactId: string;
+  findingsArtifactId: string;
+  budgetTrimmedCount: number;
+};
+
+type AdjudicationRejectedFinding = {
+  candidateIds: string[];
+  passKeys: ReviewPassKey[];
+  title: string;
+  reason: "low_evidence" | "low_signal" | "duplicate" | "budget" | "rule_policy";
+  detail: string;
+  score: number;
+};
+
+type AdjudicationOutcome = {
+  summary: string;
+  findings: ReviewFinding[];
+  rejected: AdjudicationRejectedFinding[];
+  publicationEligibleCount: number;
+  totalCandidateCount: number;
 };
 
 function defaultSeveritySummary(): ReviewSeveritySummary {
@@ -171,6 +267,48 @@ function normalizeConfidence(value: unknown): number {
     if (Number.isFinite(parsed)) return clampNumber(parsed, 0, 1);
   }
   return 0.5;
+}
+
+function normalizeFindingClass(value: unknown): ReviewFindingClass | null {
+  const raw = typeof value === "string" ? value.trim().toLowerCase().replace(/[\s-]+/g, "_") : "";
+  if (raw === "intent_drift") return "intent_drift";
+  if (raw === "incomplete_rollout") return "incomplete_rollout";
+  if (raw === "late_stage_regression") return "late_stage_regression";
+  return null;
+}
+
+const FINDING_CLASS_PRIORITY: ReviewFindingClass[] = [
+  "late_stage_regression",
+  "incomplete_rollout",
+  "intent_drift",
+];
+
+function mergeFindingClass(classes: Array<ReviewFindingClass | null | undefined>): ReviewFindingClass | null {
+  for (const findingClass of FINDING_CLASS_PRIORITY) {
+    if (classes.some((candidate) => candidate === findingClass)) {
+      return findingClass;
+    }
+  }
+  return null;
+}
+
+function normalizeBudgetConfig(budgets?: Partial<ReviewRunConfig["budgets"]> | null): ReviewRunConfig["budgets"] {
+  return {
+    maxFiles: clampNumber(Number(budgets?.maxFiles ?? DEFAULT_BUDGETS.maxFiles), 1, 500),
+    maxDiffChars: clampNumber(Number(budgets?.maxDiffChars ?? DEFAULT_BUDGETS.maxDiffChars), 4_000, 1_000_000),
+    maxPromptChars: clampNumber(Number(budgets?.maxPromptChars ?? DEFAULT_BUDGETS.maxPromptChars), 4_000, 1_000_000),
+    maxFindings: clampNumber(Number(budgets?.maxFindings ?? DEFAULT_BUDGETS.maxFindings), 1, 50),
+    maxFindingsPerPass: clampNumber(
+      Number(budgets?.maxFindingsPerPass ?? DEFAULT_BUDGETS.maxFindingsPerPass ?? DEFAULT_BUDGETS.maxFindings),
+      1,
+      50,
+    ),
+    maxPublishedFindings: clampNumber(
+      Number(budgets?.maxPublishedFindings ?? DEFAULT_BUDGETS.maxPublishedFindings ?? DEFAULT_BUDGETS.maxFindings),
+      1,
+      50,
+    ),
+  };
 }
 
 function extractJsonObject(raw: string): Record<string, unknown> | null {
@@ -251,38 +389,115 @@ function serializeSeveritySummary(summary: ReviewSeveritySummary): string {
   return JSON.stringify(summary);
 }
 
-function buildPrompt(args: {
+const REVIEW_PASSES: PassDefinition[] = [
+  {
+    key: "diff-risk",
+    label: "Diff risk",
+    focus: "changed-file correctness, regressions, edge cases, migrations, and unsafe behavior directly visible in the diff",
+    extraInstructions: [
+      "Stay anchored to the changed code and changed lines first.",
+      "Prioritize regressions, broken invariants, unsafe defaults, and risky data handling.",
+    ],
+  },
+  {
+    key: "cross-file-impact",
+    label: "Cross-file impact",
+    focus: "impacted call sites, shared contracts, dependent code paths, and regressions likely to surface outside the touched files",
+    extraInstructions: [
+      "Follow interfaces, configuration, and likely callers beyond the edited files.",
+      "Reject speculative concerns unless the diff gives a concrete reason to believe a wider breakage is likely.",
+    ],
+  },
+  {
+    key: "checks-and-tests",
+    label: "Checks and tests",
+    focus: "failing checks, validation gaps, and the strongest missing-test risks that would allow a regression to slip through",
+    extraInstructions: [
+      "Prefer concrete missing-test risks over generic 'add more tests' advice.",
+      "Use check/test context when present, but do not invent failures that were not supplied.",
+    ],
+  },
+];
+
+function buildChangedFilesSummary(changedFiles: Array<{ filePath: string }>): string {
+  const changedFilesSummary = changedFiles.length > 0
+    ? changedFiles.map((entry) => `- ${entry.filePath}`).join("\n")
+    : "- No changed files were detected.";
+  return changedFilesSummary;
+}
+
+function buildContextArtifactHints(args: {
+  artifactIds: ReviewContextArtifactIds;
+  includeValidation: boolean;
+}): string[] {
+  const lines = [
+    `- provenance_brief artifact id: ${args.artifactIds.provenanceArtifactId}`,
+    `- rule_overlays artifact id: ${args.artifactIds.rulesArtifactId}`,
+  ];
+  if (args.includeValidation) {
+    lines.push(`- validation_signals artifact id: ${args.artifactIds.validationArtifactId}`);
+  }
+  return lines;
+}
+
+function buildPassPrompt(args: {
   run: ReviewRun;
+  pass: PassDefinition;
   diffText: string;
   changedFiles: Array<{ filePath: string }>;
+  context: ReviewContextPacket;
+  contextArtifactIds: ReviewContextArtifactIds;
 }): string {
-  const changedFilesSummary = args.changedFiles.length > 0
-    ? args.changedFiles.map((entry) => `- ${entry.filePath}`).join("\n")
-    : "- No changed files were detected.";
+  const changedFilesSummary = buildChangedFilesSummary(args.changedFiles);
+  const includeValidation = args.pass.key === "checks-and-tests";
+  const ruleGuidance = collectRulePromptGuidance(args.context.matchedRuleOverlays, args.pass.key);
 
   return [
     "You are ADE's local code reviewer.",
     "Review only the provided local diff bundle.",
+    `This pass is ${args.pass.label.toLowerCase()} and it focuses on ${args.pass.focus}.`,
     "Prioritize correctness, regressions, security, data loss, race conditions, risky migrations, and missing tests.",
     "Do not suggest style-only nits or speculative rewrites.",
+    "Every finding must include concrete evidence from the diff bundle or supplied review context.",
     `Return strict JSON only with this exact top-level shape: {"summary": string, "findings": Finding[]}.`,
     "Each Finding must be an object with:",
     '- "title": short issue title',
     '- "severity": one of "critical", "high", "medium", "low", "info"',
+    '- "findingClass": optional, one of "intent_drift", "incomplete_rollout", "late_stage_regression", or null',
     '- "body": concise explanation of the risk and why it matters',
     '- "confidence": number between 0 and 1',
     '- "filePath": changed file path when known, otherwise null',
     '- "line": line number when known, otherwise null',
-    '- "evidence": array of objects with {"summary": string, "quote": string|null, "filePath": string|null, "line": number|null}',
-    `Return at most ${args.run.config.budgets.maxFindings} findings.`,
+    '- "evidence": array of objects with {"summary": string, "quote": string|null, "filePath": string|null, "line": number|null, "artifactId": string|null}',
+    `Return at most ${args.run.config.budgets.maxFindingsPerPass ?? args.run.config.budgets.maxFindings} findings.`,
     "If there are no real issues, return an empty findings array and explain that in summary.",
     "",
+    `Pass key: ${args.pass.key}`,
     `Review target: ${args.run.targetLabel}`,
     `Selection mode: ${args.run.config.selectionMode}`,
     `Publish behavior: ${args.run.config.publishBehavior}`,
     "",
+    "Pass guidance:",
+    ...args.pass.extraInstructions.map((instruction) => `- ${instruction}`),
+    ...(ruleGuidance.length > 0 ? ["", "Matched rule guidance:", ...ruleGuidance.map((instruction) => `- ${instruction}`)] : []),
+    "",
     "Changed files:",
     changedFilesSummary,
+    "",
+    "Context artifact ids you may cite in evidence when relevant:",
+    ...buildContextArtifactHints({
+      artifactIds: args.contextArtifactIds,
+      includeValidation,
+    }),
+    "",
+    "ADE provenance and intent context:",
+    args.context.provenance.prompt,
+    "",
+    "Repo/path rule overlays:",
+    args.context.rules.prompt,
+    "",
+    "Checks and validation context:",
+    includeValidation ? args.context.validation.prompt : "- Full validation evidence is reserved for the checks-and-tests pass.",
     "",
     "Diff bundle:",
     truncateText(args.diffText, args.run.config.budgets.maxPromptChars),
@@ -295,8 +510,17 @@ function parseEvidence(value: unknown): ReviewEvidence[] {
     if (!isRecord(entry)) return [];
     const summary = cleanLine(String(entry.summary ?? ""));
     if (!summary) return [];
+    const rawKind = typeof entry.kind === "string" ? entry.kind.trim().toLowerCase() : "";
+    const kind: ReviewEvidence["kind"] =
+      rawKind === "artifact"
+        ? "artifact"
+        : rawKind === "file_snapshot"
+          ? "file_snapshot"
+          : rawKind === "diff_hunk"
+            ? "diff_hunk"
+            : "quote";
     return [{
-      kind: "quote",
+      kind,
       summary,
       filePath: typeof entry.filePath === "string" ? entry.filePath.trim() || null : null,
       line: typeof entry.line === "number" && Number.isInteger(entry.line) && entry.line > 0 ? entry.line : null,
@@ -318,11 +542,163 @@ function computeAnchorState(args: {
   return match.lineNumbers.has(args.line) ? "anchored" : "file_only";
 }
 
+function hasConcreteEvidence(evidence: ReviewEvidence[]): boolean {
+  return evidence.some((entry) => {
+    if (entry.kind === "artifact") return false;
+    return Boolean(
+      (typeof entry.quote === "string" && entry.quote.trim().length > 0)
+      || (entry.filePath && entry.line != null)
+      || (entry.filePath && entry.kind === "diff_hunk"),
+    );
+  });
+}
+
+function scoreEvidence(evidence: ReviewEvidence[]): number {
+  if (evidence.length === 0) return 0;
+  const quoteCount = evidence.filter((entry) => typeof entry.quote === "string" && entry.quote.trim().length > 0).length;
+  const anchoredCount = evidence.filter((entry) => Boolean(entry.filePath) && entry.line != null).length;
+  const artifactCount = evidence.filter((entry) => entry.kind === "artifact" && entry.artifactId).length;
+  return clampNumber(
+    0.18
+      + Math.min(quoteCount, 3) * 0.18
+      + Math.min(anchoredCount, 2) * 0.12
+      + Math.min(artifactCount, 2) * 0.08,
+    0,
+    1,
+  );
+}
+
+function isLowSignalFinding(args: {
+  title: string;
+  body: string;
+  severity: ReviewSeverity;
+  confidence: number;
+  evidenceScore: number;
+}): boolean {
+  const text = `${args.title} ${args.body}`.toLowerCase();
+  const nitPatterns = [
+    /\bnit\b/,
+    /\bnitpick\b/,
+    /\bstyle\b/,
+    /\bformat(?:ting)?\b/,
+    /\bwhitespace\b/,
+    /\brename\b/,
+    /\bnaming\b/,
+    /\bcomment\b/,
+    /\btypo\b/,
+    /\bdocs?\b/,
+  ];
+  const looksNitpicky = nitPatterns.some((pattern) => pattern.test(text));
+  return looksNitpicky && args.severity !== "critical" && args.severity !== "high" && args.confidence < 0.8 && args.evidenceScore < 0.7;
+}
+
+function buildCandidateScore(args: {
+  severity: ReviewSeverity;
+  confidence: number;
+  evidenceScore: number;
+  passCount?: number;
+}): number {
+  const corroborationBonus = Math.max(0, (args.passCount ?? 1) - 1) * 0.15;
+  return Number((SEVERITY_SCORE[args.severity] + args.confidence * 2 + args.evidenceScore * 1.5 + corroborationBonus).toFixed(4));
+}
+
+function tokenizeFindingText(value: string): string[] {
+  return cleanLine(value)
+    .toLowerCase()
+    .split(/[^a-z0-9]+/g)
+    .filter((token) => token.length >= 3)
+    .filter((token) => !new Set([
+      "this",
+      "that",
+      "with",
+      "from",
+      "into",
+      "when",
+      "then",
+      "there",
+      "return",
+      "returns",
+      "added",
+      "change",
+      "changes",
+      "issue",
+      "risk",
+      "will",
+      "could",
+      "should",
+      "missing",
+      "tests",
+      "test",
+      "check",
+      "checks",
+      "code",
+      "file",
+      "files",
+    ]).has(token));
+}
+
+function similarityScore(left: string, right: string): number {
+  const leftTokens = tokenizeFindingText(left);
+  const rightTokens = tokenizeFindingText(right);
+  if (leftTokens.length === 0 || rightTokens.length === 0) return 0;
+  const leftSet = new Set(leftTokens);
+  const rightSet = new Set(rightTokens);
+  const intersection = Array.from(leftSet).filter((token) => rightSet.has(token)).length;
+  const union = new Set([...leftSet, ...rightSet]).size;
+  return union > 0 ? intersection / union : 0;
+}
+
+function hasOverlappingEvidence(left: PassCandidateFinding, right: PassCandidateFinding): boolean {
+  for (const leftEntry of left.evidence) {
+    for (const rightEntry of right.evidence) {
+      if (leftEntry.filePath && leftEntry.filePath === rightEntry.filePath && leftEntry.line != null && leftEntry.line === rightEntry.line) {
+        return true;
+      }
+      if (leftEntry.quote && rightEntry.quote && cleanLine(leftEntry.quote) === cleanLine(rightEntry.quote)) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+function findingsOverlap(left: PassCandidateFinding, right: PassCandidateFinding): boolean {
+  const sameFile = left.filePath && right.filePath && left.filePath === right.filePath;
+  const lineDistance = left.line != null && right.line != null ? Math.abs(left.line - right.line) : null;
+  const titleSimilarity = similarityScore(left.title, right.title);
+  const bodySimilarity = similarityScore(left.body, right.body);
+  const similarText = Math.max(titleSimilarity, bodySimilarity, similarityScore(`${left.title} ${left.body}`, `${right.title} ${right.body}`));
+  if (sameFile && lineDistance != null && lineDistance <= 3 && similarText >= 0.22) return true;
+  if (sameFile && similarText >= 0.35) return true;
+  if (hasOverlappingEvidence(left, right) && similarText >= 0.18) return true;
+  return !left.filePath && !right.filePath && similarText >= 0.65;
+}
+
+function dedupeEvidenceEntries(evidence: ReviewEvidence[]): ReviewEvidence[] {
+  const seen = new Set<string>();
+  const deduped: ReviewEvidence[] = [];
+  for (const entry of evidence) {
+    const key = JSON.stringify([
+      entry.kind,
+      entry.summary,
+      entry.filePath,
+      entry.line,
+      entry.quote,
+      entry.artifactId,
+    ]);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    deduped.push(entry);
+  }
+  return deduped;
+}
+
 function normalizeParsedFindings(args: {
   runId: string;
+  passKey: ReviewPassKey;
   parsed: Record<string, unknown> | null;
   changedFilesByPath: Map<string, { excerpt: string; lineNumbers: Set<number> }>;
-}): { summary: string | null; findings: ReviewFinding[] } {
+}): { summary: string | null; findings: PassCandidateFinding[] } {
   const findingsRaw = Array.isArray(args.parsed?.findings) ? args.parsed?.findings : [];
   const findings = findingsRaw.flatMap((entry) => {
     if (!isRecord(entry)) return [];
@@ -350,26 +726,398 @@ function normalizeParsedFindings(args: {
       line,
       changedFilesByPath: args.changedFilesByPath,
     });
-
-    const finding: ReviewFinding = {
+    const evidenceScore = scoreEvidence(evidence);
+    const confidence = normalizeConfidence(entry.confidence);
+    const finding: PassCandidateFinding = {
       id: randomUUID(),
       runId: args.runId,
+      passKey: args.passKey,
       title,
       severity: normalizeSeverity(entry.severity),
+      findingClass: normalizeFindingClass(entry.findingClass),
       body,
-      confidence: normalizeConfidence(entry.confidence),
+      confidence,
       evidence,
       filePath,
       line,
       anchorState,
-      sourcePass: "single_pass" as ReviewSourcePass,
-      publicationState: "local_only" as ReviewPublicationState,
+      evidenceScore,
+      lowSignal: isLowSignalFinding({
+        title,
+        body,
+        severity: normalizeSeverity(entry.severity),
+        confidence,
+        evidenceScore,
+      }),
+      score: buildCandidateScore({
+        severity: normalizeSeverity(entry.severity),
+        confidence,
+        evidenceScore,
+      }),
     };
     return [finding];
   });
 
   const summary = typeof args.parsed?.summary === "string" ? cleanLine(args.parsed.summary) : null;
   return { summary, findings };
+}
+
+function summarizeAdjudication(args: {
+  keptFindings: ReviewFinding[];
+  rejected: AdjudicationRejectedFinding[];
+  totalCandidateCount: number;
+}): string {
+  if (args.keptFindings.length === 0) {
+    if (args.totalCandidateCount === 0) {
+      return "Multi-pass review completed with no actionable findings.";
+    }
+    return "Multi-pass review completed, but every candidate was filtered out during adjudication.";
+  }
+
+  const corroboratedCount = args.keptFindings.filter((finding) => (finding.originatingPasses?.length ?? 0) > 1).length;
+  const publicationEligibleCount = args.keptFindings.filter((finding) => finding.adjudication?.publicationEligible).length;
+  return [
+    `Multi-pass review kept ${args.keptFindings.length} high-signal finding(s) from ${args.totalCandidateCount} candidate(s).`,
+    corroboratedCount > 0 ? `${corroboratedCount} finding(s) were corroborated by multiple passes.` : null,
+    publicationEligibleCount > 0 ? `${publicationEligibleCount} finding(s) cleared the publication threshold.` : null,
+    args.rejected.length > 0 ? `${args.rejected.length} candidate(s) were filtered during adjudication.` : null,
+  ].filter((line): line is string => Boolean(line)).join(" ");
+}
+
+function selectPreferredAnchor(findings: PassCandidateFinding[]): Pick<PassCandidateFinding, "filePath" | "line" | "anchorState"> {
+  const ranked = [...findings].sort((left, right) => {
+    const anchorDelta = (left.anchorState === "anchored" ? 2 : left.anchorState === "file_only" ? 1 : 0)
+      - (right.anchorState === "anchored" ? 2 : right.anchorState === "file_only" ? 1 : 0);
+    if (anchorDelta !== 0) return -anchorDelta;
+    if (left.filePath && !right.filePath) return -1;
+    if (!left.filePath && right.filePath) return 1;
+    return (left.line ?? Number.MAX_SAFE_INTEGER) - (right.line ?? Number.MAX_SAFE_INTEGER);
+  });
+  const preferred = ranked[0];
+  return {
+    filePath: preferred?.filePath ?? null,
+    line: preferred?.line ?? null,
+    anchorState: preferred?.anchorState ?? "missing",
+  };
+}
+
+function combineConfidence(findings: PassCandidateFinding[]): number {
+  const combined = findings.reduce((product, finding) => product * (1 - clampNumber(finding.confidence, 0, 1)), 1);
+  return clampNumber(1 - combined, 0, 0.99);
+}
+
+function groupPassCandidates(candidates: PassCandidateFinding[]): PassCandidateFinding[][] {
+  const remaining = [...candidates].sort((left, right) => right.score - left.score);
+  const groups: PassCandidateFinding[][] = [];
+  while (remaining.length > 0) {
+    const seed = remaining.shift();
+    if (!seed) continue;
+    const group = [seed];
+    let index = 0;
+    while (index < remaining.length) {
+      const candidate = remaining[index];
+      if (candidate && group.some((entry) => findingsOverlap(entry, candidate))) {
+        group.push(candidate);
+        remaining.splice(index, 1);
+        continue;
+      }
+      index += 1;
+    }
+    groups.push(group);
+  }
+  return groups;
+}
+
+function getCandidatePathSet(group: PassCandidateFinding[]): string[] {
+  return Array.from(new Set(
+    group.flatMap((candidate) => [
+      candidate.filePath,
+      ...candidate.evidence.map((entry) => entry.filePath),
+    ]).filter((value): value is string => Boolean(value?.trim())),
+  ));
+}
+
+function countConcreteAnchorFiles(evidence: ReviewEvidence[]): number {
+  return new Set(
+    evidence
+      .filter((entry) => entry.kind !== "artifact")
+      .filter((entry) => Boolean(entry.filePath) && (entry.line != null || (entry.quote?.trim() ?? "").length > 0 || entry.kind === "diff_hunk"))
+      .map((entry) => entry.filePath as string),
+  ).size;
+}
+
+function hasArtifactEvidence(evidence: ReviewEvidence[], artifactIds: string[]): boolean {
+  const allowed = new Set(artifactIds);
+  return evidence.some((entry) => entry.kind === "artifact" && entry.artifactId && allowed.has(entry.artifactId));
+}
+
+function buildContextArtifactEvidence(args: {
+  group: PassCandidateFinding[];
+  context: ReviewContextPacket;
+  artifactIds: ReviewContextArtifactIds;
+  relevantOverlays: MatchedReviewRuleOverlay[];
+}): ReviewEvidence[] {
+  const pathSet = new Set(getCandidatePathSet(args.group));
+  const evidence: ReviewEvidence[] = [];
+  if (args.relevantOverlays.length > 0) {
+    evidence.push({
+      kind: "artifact",
+      summary: `Matched rule overlays: ${args.relevantOverlays.map((overlay) => overlay.id).join(", ")}`,
+      filePath: null,
+      line: null,
+      quote: null,
+      artifactId: args.artifactIds.rulesArtifactId,
+    });
+  }
+  const lateStageMatches = args.context.provenance.payload.lateStageSignals.filter((signal) =>
+    signal.filePaths.some((filePath) => pathSet.has(filePath)),
+  );
+  if (lateStageMatches.length > 0) {
+    evidence.push({
+      kind: "artifact",
+      summary: `Late-stage ADE signals overlap this area: ${lateStageMatches.map((signal) => signal.summary).join(" | ")}`,
+      filePath: null,
+      line: null,
+      quote: null,
+      artifactId: args.artifactIds.provenanceArtifactId,
+    });
+  }
+  const includesChecksPass = args.group.some((candidate) => candidate.passKey === "checks-and-tests");
+  if (includesChecksPass && args.context.validation.payload.signals.length > 0) {
+    evidence.push({
+      kind: "artifact",
+      summary: `Validation signals: ${args.context.validation.payload.signals.slice(0, 2).map((signal) => signal.summary).join(" | ")}`,
+      filePath: null,
+      line: null,
+      quote: null,
+      artifactId: args.artifactIds.validationArtifactId,
+    });
+  }
+  return evidence;
+}
+
+function inferFindingClass(args: {
+  group: PassCandidateFinding[];
+  context: ReviewContextPacket;
+  relevantOverlays: MatchedReviewRuleOverlay[];
+}): ReviewFindingClass | null {
+  const explicitClass = mergeFindingClass(args.group.map((candidate) => candidate.findingClass));
+  if (explicitClass) return explicitClass;
+  const pathSet = new Set(getCandidatePathSet(args.group));
+  const hasLateStageSignal = args.context.provenance.payload.lateStageSignals.some((signal) =>
+    signal.filePaths.some((filePath) => pathSet.has(filePath)),
+  );
+  if (hasLateStageSignal) return "late_stage_regression";
+  const hasStrictMissingRollout = args.relevantOverlays.some((overlay) =>
+    overlay.adjudicationPolicy.evidenceMode === "cross_boundary" && overlay.missingFamilies.length > 0,
+  );
+  if (hasStrictMissingRollout) return "incomplete_rollout";
+  const hasIntentContext = Boolean(
+    args.context.provenance.payload.missions.length > 0
+    || args.context.provenance.payload.laneSnapshot?.agentSummary
+    || args.context.provenance.payload.laneSnapshot?.missionSummary,
+  );
+  const wordingSuggestsDrift = args.group.some((candidate) =>
+    /\b(expected|intent|should|instead|missing|omits?|drift)\b/i.test(`${candidate.title} ${candidate.body}`),
+  );
+  if (hasIntentContext && wordingSuggestsDrift) {
+    return "intent_drift";
+  }
+  return null;
+}
+
+function evaluateRuleEvidencePolicy(args: {
+  evidence: ReviewEvidence[];
+  relevantOverlays: MatchedReviewRuleOverlay[];
+  artifactIds: ReviewContextArtifactIds;
+}): { ok: boolean; detail: string | null } {
+  const strictOverlays = args.relevantOverlays.filter((overlay) => overlay.adjudicationPolicy.evidenceMode === "cross_boundary");
+  if (strictOverlays.length === 0) {
+    return { ok: true, detail: null };
+  }
+  const concreteAnchorFiles = countConcreteAnchorFiles(args.evidence);
+  const hasSupportArtifact = hasArtifactEvidence(args.evidence, [
+    args.artifactIds.provenanceArtifactId,
+    args.artifactIds.validationArtifactId,
+  ]);
+  if (concreteAnchorFiles >= 2 || (concreteAnchorFiles >= 1 && hasSupportArtifact)) {
+    return { ok: true, detail: null };
+  }
+  return {
+    ok: false,
+    detail: `Rule overlays ${strictOverlays.map((overlay) => overlay.id).join(", ")} require either two concrete file anchors or one concrete anchor plus provenance/validation artifact support.`,
+  };
+}
+
+function adjudicatePassFindings(args: {
+  runId: string;
+  passResults: PassExecutionResult[];
+  budgets: ReviewRunConfig["budgets"];
+  context: ReviewContextPacket;
+  artifactIds: ReviewContextArtifactIds;
+}): AdjudicationOutcome {
+  const allCandidates = args.passResults.flatMap((result) => result.candidates);
+  const groupedCandidates = groupPassCandidates(allCandidates);
+  const findings: ReviewFinding[] = [];
+  const rejected: AdjudicationRejectedFinding[] = [];
+
+  for (const group of groupedCandidates) {
+    const passes = Array.from(new Set(group.map((candidate) => candidate.passKey))).sort(
+      (left, right) => REVIEW_PASS_ORDER.indexOf(left) - REVIEW_PASS_ORDER.indexOf(right),
+    );
+    const bestCandidate = [...group].sort((left, right) => right.score - left.score)[0];
+    if (!bestCandidate) continue;
+    const candidatePaths = getCandidatePathSet(group);
+    const relevantOverlays = args.context.matchedRuleOverlays.filter((overlay) =>
+      candidatePaths.some((filePath) => overlayMatchesPath(overlay, filePath)),
+    );
+    const mergedEvidence = dedupeEvidenceEntries([
+      ...group.flatMap((candidate) => candidate.evidence),
+      ...args.passResults
+        .filter((result) => passes.includes(result.pass.key))
+        .map((result) => ({
+          kind: "artifact" as const,
+          summary: `Raw ${result.pass.key} pass output`,
+          filePath: null,
+          line: null,
+          quote: null,
+          artifactId: result.findingsArtifactId,
+        })),
+      ...buildContextArtifactEvidence({
+        group,
+        context: args.context,
+        artifactIds: args.artifactIds,
+        relevantOverlays,
+      }),
+    ]).slice(0, 10);
+    const evidenceScore = Math.max(bestCandidate.evidenceScore, scoreEvidence(mergedEvidence));
+    const lowSignal = group.every((candidate) => candidate.lowSignal);
+    const findingClass = inferFindingClass({
+      group,
+      context: args.context,
+      relevantOverlays,
+    });
+    const score = buildCandidateScore({
+      severity: group
+        .map((candidate) => candidate.severity)
+        .sort((left, right) => SEVERITY_SCORE[right] - SEVERITY_SCORE[left])[0] ?? bestCandidate.severity,
+      confidence: combineConfidence(group),
+      evidenceScore,
+      passCount: passes.length,
+    });
+
+    if (!hasConcreteEvidence(mergedEvidence)) {
+      rejected.push({
+        candidateIds: group.map((candidate) => candidate.id),
+        passKeys: passes,
+        title: bestCandidate.title,
+        reason: "low_evidence",
+        detail: "The finding did not retain enough concrete evidence after adjudication.",
+        score,
+      });
+      continue;
+    }
+
+    if (lowSignal && passes.length < 2) {
+      rejected.push({
+        candidateIds: group.map((candidate) => candidate.id),
+        passKeys: passes,
+        title: bestCandidate.title,
+        reason: "low_signal",
+        detail: "The finding looked nitpicky and was not corroborated by another pass.",
+        score,
+      });
+      continue;
+    }
+
+    const rulePolicy = evaluateRuleEvidencePolicy({
+      evidence: mergedEvidence,
+      relevantOverlays,
+      artifactIds: args.artifactIds,
+    });
+    if (!rulePolicy.ok) {
+      rejected.push({
+        candidateIds: group.map((candidate) => candidate.id),
+        passKeys: passes,
+        title: bestCandidate.title,
+        reason: "rule_policy",
+        detail: rulePolicy.detail ?? "The finding did not satisfy the matched repo/path rule evidence policy.",
+        score,
+      });
+      continue;
+    }
+
+    const preferredAnchor = selectPreferredAnchor(group);
+    const confidence = combineConfidence(group);
+    const severity = group
+      .map((candidate) => candidate.severity)
+      .sort((left, right) => SEVERITY_SCORE[right] - SEVERITY_SCORE[left])[0] ?? bestCandidate.severity;
+    const publicationEligible = evidenceScore >= 0.55 && confidence >= 0.45 && severity !== "info";
+    const adjudication: ReviewFindingAdjudication = {
+      score,
+      candidateCount: group.length,
+      mergedFindingIds: group.map((candidate) => candidate.id),
+      rationale: [
+        passes.length > 1
+          ? `Merged overlapping findings from ${passes.join(", ")} with shared evidence.`
+          : "Accepted because the finding carried concrete evidence and cleared the adjudication threshold.",
+        relevantOverlays.length > 0
+          ? `Matched rule overlays: ${relevantOverlays.map((overlay) => overlay.id).join(", ")}.`
+          : null,
+        findingClass ? `Primary ADE-native class: ${findingClass}.` : null,
+      ].filter((value): value is string => Boolean(value)).join(" "),
+      publicationEligible,
+    };
+
+    findings.push({
+      id: randomUUID(),
+      runId: args.runId,
+      title: bestCandidate.title,
+      severity,
+      findingClass,
+      body: passes.length > 1
+        ? `${bestCandidate.body} This risk was corroborated by ${passes.join(", ")}.`
+        : bestCandidate.body,
+      confidence,
+      evidence: mergedEvidence,
+      filePath: preferredAnchor.filePath,
+      line: preferredAnchor.line,
+      anchorState: preferredAnchor.anchorState,
+      sourcePass: "adjudicated" as ReviewSourcePass,
+      publicationState: "local_only" as ReviewPublicationState,
+      originatingPasses: passes,
+      adjudication,
+    });
+  }
+
+  const keptFindings = findings
+    .sort((left, right) => (right.adjudication?.score ?? 0) - (left.adjudication?.score ?? 0))
+    .slice(0, args.budgets.maxFindings);
+  const keptIds = new Set(keptFindings.map((finding) => finding.id));
+  for (const finding of findings) {
+    if (keptIds.has(finding.id)) continue;
+    rejected.push({
+      candidateIds: finding.adjudication?.mergedFindingIds ?? [],
+      passKeys: finding.originatingPasses ?? [],
+      title: finding.title,
+      reason: "budget",
+      detail: "The finding cleared adjudication but was trimmed by the run-level budget.",
+      score: finding.adjudication?.score ?? 0,
+    });
+  }
+
+  const publicationEligibleCount = keptFindings.filter((finding) => finding.adjudication?.publicationEligible).length;
+  return {
+    summary: summarizeAdjudication({
+      keptFindings,
+      rejected,
+      totalCandidateCount: allCandidates.length,
+    }),
+    findings: keptFindings,
+    rejected,
+    publicationEligibleCount,
+    totalCandidateCount: allCandidates.length,
+  };
 }
 
 function tallySeveritySummary(findings: ReviewFinding[]): ReviewSeveritySummary {
@@ -381,6 +1129,15 @@ function tallySeveritySummary(findings: ReviewFinding[]): ReviewSeveritySummary 
 }
 
 function mapRunRow(row: ReviewRunRow): ReviewRun {
+  const config = safeJsonParse<ReviewRunConfig>(row.config_json, {
+    compareAgainst: { kind: "default_branch" },
+    selectionMode: "full_diff",
+    dirtyOnly: false,
+    modelId: DEFAULT_REVIEW_MODEL_ID,
+    reasoningEffort: null,
+    budgets: DEFAULT_BUDGETS,
+    publishBehavior: "local_only",
+  });
   return {
     id: row.id,
     projectId: row.project_id,
@@ -389,15 +1146,10 @@ function mapRunRow(row: ReviewRunRow): ReviewRun {
       mode: "working_tree",
       laneId: row.lane_id,
     }),
-    config: safeJsonParse<ReviewRunConfig>(row.config_json, {
-      compareAgainst: { kind: "default_branch" },
-      selectionMode: "full_diff",
-      dirtyOnly: false,
-      modelId: DEFAULT_REVIEW_MODEL_ID,
-      reasoningEffort: null,
-      budgets: DEFAULT_BUDGETS,
-      publishBehavior: "local_only",
-    }),
+    config: {
+      ...config,
+      budgets: normalizeBudgetConfig(config.budgets),
+    },
     targetLabel: row.target_label,
     compareTarget: safeJsonParse<ReviewResolvedCompareTarget | null>(row.compare_target_json, null),
     status: (row.status as ReviewRunStatus) ?? "failed",
@@ -419,6 +1171,7 @@ function mapFindingRow(row: ReviewFindingRow): ReviewFinding {
     runId: row.run_id,
     title: row.title,
     severity: normalizeSeverity(row.severity),
+    findingClass: normalizeFindingClass(row.finding_class),
     body: row.body,
     confidence: clampNumber(Number(row.confidence ?? 0.5), 0, 1),
     evidence: safeJsonParse<ReviewEvidence[]>(row.evidence_json, []),
@@ -427,6 +1180,8 @@ function mapFindingRow(row: ReviewFindingRow): ReviewFinding {
     anchorState: (row.anchor_state as ReviewFinding["anchorState"]) ?? "missing",
     sourcePass: (row.source_pass as ReviewSourcePass) ?? "single_pass",
     publicationState: (row.publication_state as ReviewPublicationState) ?? "local_only",
+    originatingPasses: safeJsonParse<ReviewPassKey[]>(row.originating_passes_json, []),
+    adjudication: safeJsonParse<ReviewFindingAdjudication | null>(row.adjudication_json, null),
   };
 }
 
@@ -479,6 +1234,9 @@ export function createReviewService({
   gitService,
   agentChatService,
   sessionService,
+  sessionDeltaService,
+  testService,
+  issueInventoryService,
   prService,
   onEvent,
 }: {
@@ -487,19 +1245,32 @@ export function createReviewService({
   projectId: string;
   projectRoot: string;
   projectDefaultBranch: string | null;
-  laneService: Pick<ReturnType<typeof createLaneService>, "getLaneBaseAndBranch" | "list">;
+  laneService: Pick<ReturnType<typeof createLaneService>, "getLaneBaseAndBranch" | "getStateSnapshot" | "list">;
   gitService: Pick<ReturnType<typeof createGitOperationsService>, "listRecentCommits">;
   agentChatService: Pick<ReturnType<typeof createAgentChatService>, "createSession" | "getSessionSummary" | "runSessionTurn">;
   sessionService: Pick<ReturnType<typeof createSessionService>, "updateMeta">;
-  prService?: Pick<ReturnType<typeof createPrService>, "getReviewSnapshot" | "publishReviewPublication">;
+  sessionDeltaService: Pick<ReturnType<typeof createSessionDeltaService>, "listRecentLaneSessionDeltas">;
+  testService: Pick<ReturnType<typeof createTestService>, "listRuns" | "getLogTail" | "listSuites">;
+  issueInventoryService: Pick<ReturnType<typeof createIssueInventoryService>, "getInventory">;
+  prService?: Pick<ReturnType<typeof createPrService>, "getReviewSnapshot" | "getChecks" | "publishReviewPublication">;
   onEvent?: (event: ReviewEventPayload) => void;
 }) {
   const materializer = createReviewTargetMaterializer({ laneService, prService });
+  const contextBuilder = createReviewContextBuilder({
+    db,
+    projectId,
+    logger,
+    laneService,
+    sessionDeltaService,
+    testService,
+    issueInventoryService,
+    prService,
+  });
   const activeRuns = new Set<string>();
   let disposed = false;
   const configuredDefaultModelId =
     getDefaultModelDescriptor("codex")?.id
-    ?? getDefaultModelDescriptor("unified")?.id
+    ?? getDefaultModelDescriptor("opencode")?.id
     ?? REVIEW_MODEL_FALLBACK_ID;
   const defaultReviewModelId = getModelById(configuredDefaultModelId)?.id ?? DEFAULT_REVIEW_MODEL_ID;
 
@@ -594,7 +1365,17 @@ export function createReviewService({
     );
   }
 
-  function insertArtifact(runId: string, artifact: Omit<ReviewRunArtifact, "id" | "runId" | "createdAt">): void {
+  function insertArtifact(runId: string, artifact: Omit<ReviewRunArtifact, "id" | "runId" | "createdAt">): ReviewRunArtifact {
+    const record: ReviewRunArtifact = {
+      id: randomUUID(),
+      runId,
+      artifactType: artifact.artifactType,
+      title: artifact.title,
+      mimeType: artifact.mimeType,
+      contentText: artifact.contentText,
+      metadata: artifact.metadata ?? null,
+      createdAt: nowIso(),
+    };
     db.run(
       `insert into review_run_artifacts (
         id,
@@ -607,16 +1388,17 @@ export function createReviewService({
         created_at
       ) values (?, ?, ?, ?, ?, ?, ?, ?)`,
       [
-        randomUUID(),
-        runId,
-        artifact.artifactType,
-        artifact.title,
-        artifact.mimeType,
-        artifact.contentText,
-        artifact.metadata ? JSON.stringify(artifact.metadata) : null,
-        nowIso(),
+        record.id,
+        record.runId,
+        record.artifactType,
+        record.title,
+        record.mimeType,
+        record.contentText,
+        record.metadata ? JSON.stringify(record.metadata) : null,
+        record.createdAt,
       ],
     );
+    return record;
   }
 
   function insertPublication(publication: ReviewPublication): void {
@@ -663,6 +1445,7 @@ export function createReviewService({
         run_id,
         title,
         severity,
+        finding_class,
         body,
         confidence,
         evidence_json,
@@ -670,13 +1453,16 @@ export function createReviewService({
         line,
         anchor_state,
         source_pass,
-        publication_state
-      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        publication_state,
+        originating_passes_json,
+        adjudication_json
+      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         finding.id,
         finding.runId,
         finding.title,
         finding.severity,
+        finding.findingClass ?? null,
         finding.body,
         finding.confidence,
         JSON.stringify(finding.evidence),
@@ -685,6 +1471,8 @@ export function createReviewService({
         finding.anchorState,
         finding.sourcePass,
         finding.publicationState,
+        JSON.stringify(finding.originatingPasses ?? []),
+        finding.adjudication ? JSON.stringify(finding.adjudication) : null,
       ],
     );
   }
@@ -727,12 +1515,7 @@ export function createReviewService({
       dirtyOnly: partial?.dirtyOnly ?? target.mode === "working_tree",
       modelId: partial?.modelId?.trim() || defaultReviewModelId,
       reasoningEffort: partial?.reasoningEffort?.trim() || null,
-      budgets: {
-        maxFiles: clampNumber(Number(partial?.budgets?.maxFiles ?? DEFAULT_BUDGETS.maxFiles), 1, 500),
-        maxDiffChars: clampNumber(Number(partial?.budgets?.maxDiffChars ?? DEFAULT_BUDGETS.maxDiffChars), 4_000, 1_000_000),
-        maxPromptChars: clampNumber(Number(partial?.budgets?.maxPromptChars ?? DEFAULT_BUDGETS.maxPromptChars), 4_000, 1_000_000),
-        maxFindings: clampNumber(Number(partial?.budgets?.maxFindings ?? DEFAULT_BUDGETS.maxFindings), 1, 50),
-      },
+      budgets: normalizeBudgetConfig(partial?.budgets),
       publishBehavior: target.mode === "pr" && partial?.publishBehavior === "auto_publish"
         ? "auto_publish"
         : "local_only",
@@ -752,6 +1535,11 @@ export function createReviewService({
       return null;
     }
 
+    const publishableFindings = [...args.findings]
+      .filter((finding) => finding.sourcePass === "adjudicated" && finding.adjudication?.publicationEligible)
+      .sort((left, right) => (right.adjudication?.score ?? 0) - (left.adjudication?.score ?? 0))
+      .slice(0, args.config.budgets.maxPublishedFindings ?? args.config.budgets.maxFindings);
+
     insertArtifact(args.runId, {
       artifactType: "publication_request",
       title: "Review publication request",
@@ -760,20 +1548,26 @@ export function createReviewService({
         destination: args.publicationTarget,
         targetLabel: args.targetLabel,
         summary: args.summary,
-        findingIds: args.findings.map((finding) => finding.id),
+        findingIds: publishableFindings.map((finding) => finding.id),
         changedFiles: args.changedFiles,
       }, null, 2),
       metadata: {
         publishBehavior: args.config.publishBehavior,
+        findingCount: publishableFindings.length,
+        skipped: publishableFindings.length === 0,
       },
     });
+
+    if (publishableFindings.length === 0) {
+      return null;
+    }
 
     const publication = await prService.publishReviewPublication({
       runId: args.runId,
       destination: args.publicationTarget,
       targetLabel: args.targetLabel,
       summary: args.summary,
-      findings: args.findings,
+      findings: publishableFindings,
       changedFiles: args.changedFiles,
     });
     insertPublication(publication);
@@ -793,13 +1587,106 @@ export function createReviewService({
         ...publication.inlineComments.map((comment) => comment.findingId),
         ...publication.summaryFindingIds,
       ]);
-      for (const finding of args.findings) {
+      for (const finding of publishableFindings) {
         if (!publishedFindingIds.has(finding.id)) continue;
         updateFindingPublicationState(args.runId, finding.id, "published");
       }
     }
 
     return publication;
+  }
+
+  async function executePass(args: {
+    runId: string;
+    run: ReviewRun;
+    sessionId: string;
+    sessionTitle: string;
+    descriptorId: string;
+    pass: PassDefinition;
+    diffText: string;
+    changedFiles: MaterializedChangedFile[];
+    changedFilesByPath: Map<string, { excerpt: string; lineNumbers: Set<number> }>;
+    context: ReviewContextPacket;
+    contextArtifactIds: ReviewContextArtifactIds;
+  }): Promise<PassExecutionResult> {
+    const prompt = buildPassPrompt({
+      run: args.run,
+      pass: args.pass,
+      diffText: args.diffText,
+      changedFiles: args.changedFiles,
+      context: args.context,
+      contextArtifactIds: args.contextArtifactIds,
+    });
+    const promptArtifact = insertArtifact(args.runId, {
+      artifactType: "pass_prompt",
+      title: `${args.pass.label} prompt`,
+      mimeType: "text/plain",
+      contentText: prompt,
+      metadata: {
+        passKey: args.pass.key,
+        modelId: args.descriptorId,
+        reasoningEffort: args.run.config.reasoningEffort,
+        matchedRuleIds: args.context.rules.metadata.matchedRuleIds ?? [],
+      },
+    });
+    const result = await agentChatService.runSessionTurn({
+      sessionId: args.sessionId,
+      text: prompt,
+      displayText: `${args.sessionTitle} · ${args.pass.label}`,
+      reasoningEffort: args.run.config.reasoningEffort,
+      timeoutMs: 15 * 60 * 1000,
+    });
+    const outputArtifact = insertArtifact(args.runId, {
+      artifactType: "pass_output",
+      title: `${args.pass.label} output`,
+      mimeType: "application/json",
+      contentText: result.outputText,
+      metadata: {
+        passKey: args.pass.key,
+        provider: result.provider,
+        model: result.model,
+        modelId: result.modelId ?? args.descriptorId,
+      },
+    });
+    const parsed = extractJsonObject(result.outputText);
+    const normalized = normalizeParsedFindings({
+      runId: args.runId,
+      passKey: args.pass.key,
+      parsed,
+      changedFilesByPath: args.changedFilesByPath,
+    });
+    const candidates = [...normalized.findings]
+      .sort((left, right) => right.score - left.score)
+      .slice(0, args.run.config.budgets.maxFindingsPerPass ?? args.run.config.budgets.maxFindings);
+    const findingsArtifact = insertArtifact(args.runId, {
+      artifactType: "pass_findings",
+      title: `${args.pass.label} findings`,
+      mimeType: "application/json",
+      contentText: JSON.stringify({
+        passKey: args.pass.key,
+        summary: normalized.summary,
+        totalParsedCount: normalized.findings.length,
+        keptCount: candidates.length,
+        budgetTrimmedCount: Math.max(0, normalized.findings.length - candidates.length),
+        candidates,
+      }, null, 2),
+      metadata: {
+        passKey: args.pass.key,
+        summary: normalized.summary,
+        totalParsedCount: normalized.findings.length,
+        keptCount: candidates.length,
+        budgetTrimmedCount: Math.max(0, normalized.findings.length - candidates.length),
+      },
+    });
+    return {
+      pass: args.pass,
+      summary: normalized.summary,
+      candidates,
+      promptArtifactId: promptArtifact.id,
+      outputArtifactId: outputArtifact.id,
+      findingsArtifactId: findingsArtifact.id,
+      budgetTrimmedCount: Math.max(0, normalized.findings.length - candidates.length),
+    };
   }
 
   async function executeRun(runId: string): Promise<void> {
@@ -876,44 +1763,71 @@ export function createReviewService({
         chat_session_id: session.id,
         updated_at: nowIso(),
       });
-
-      const prompt = buildPrompt({
-        run: {
-          ...run,
-          targetLabel: materialized.targetLabel,
-          compareTarget: materialized.compareTarget,
+      const effectiveRun: ReviewRun = {
+        ...run,
+        targetLabel: materialized.targetLabel,
+        compareTarget: materialized.compareTarget,
+      };
+      const diffText = truncateText(materialized.fullPatchText, effectiveRun.config.budgets.maxDiffChars);
+      const changedFiles = materialized.changedFiles.slice(0, effectiveRun.config.budgets.maxFiles);
+      const reviewContext = await contextBuilder.buildContext({
+        run: effectiveRun,
+        materialized: {
+          ...materialized,
+          changedFiles,
         },
-        diffText: truncateText(materialized.fullPatchText, run.config.budgets.maxDiffChars),
-        changedFiles: materialized.changedFiles.slice(0, run.config.budgets.maxFiles),
       });
+      const provenanceArtifact = insertArtifact(runId, {
+        artifactType: "provenance_brief",
+        title: "Provenance brief",
+        mimeType: "application/json",
+        contentText: JSON.stringify(reviewContext.provenance.payload, null, 2),
+        metadata: reviewContext.provenance.metadata,
+      });
+      const rulesArtifact = insertArtifact(runId, {
+        artifactType: "rule_overlays",
+        title: "Rule overlays",
+        mimeType: "application/json",
+        contentText: JSON.stringify(reviewContext.rules.payload, null, 2),
+        metadata: reviewContext.rules.metadata,
+      });
+      const validationArtifact = insertArtifact(runId, {
+        artifactType: "validation_signals",
+        title: "Validation signals",
+        mimeType: "application/json",
+        contentText: JSON.stringify(reviewContext.validation.payload, null, 2),
+        metadata: reviewContext.validation.metadata,
+      });
+      const contextArtifactIds: ReviewContextArtifactIds = {
+        provenanceArtifactId: provenanceArtifact.id,
+        rulesArtifactId: rulesArtifact.id,
+        validationArtifactId: validationArtifact.id,
+      };
       insertArtifact(runId, {
         artifactType: "prompt",
-        title: "Review prompt",
-        mimeType: "text/plain",
-        contentText: prompt,
+        title: "Review harness plan",
+        mimeType: "application/json",
+        contentText: JSON.stringify({
+          targetLabel: materialized.targetLabel,
+          passKeys: REVIEW_PASSES.map((pass) => pass.key),
+          budgets: effectiveRun.config.budgets,
+          changedFiles: changedFiles.map((entry) => entry.filePath),
+          context: {
+            provenanceSummary: reviewContext.provenance.summary,
+            rulesSummary: reviewContext.rules.summary,
+            validationSummary: reviewContext.validation.summary,
+            matchedRuleIds: reviewContext.rules.metadata.matchedRuleIds ?? [],
+            contextArtifactIds,
+          },
+        }, null, 2),
         metadata: {
           modelId: descriptor.id,
-          reasoningEffort: run.config.reasoningEffort,
-        },
-      });
-
-      const result = await agentChatService.runSessionTurn({
-        sessionId: session.id,
-        text: prompt,
-        displayText: sessionTitle,
-        reasoningEffort: run.config.reasoningEffort,
-        timeoutMs: 15 * 60 * 1000,
-      });
-      if (disposed) return;
-      insertArtifact(runId, {
-        artifactType: "review_output",
-        title: "Reviewer output",
-        mimeType: "application/json",
-        contentText: result.outputText,
-        metadata: {
-          provider: result.provider,
-          model: result.model,
-          modelId: result.modelId ?? descriptor.id,
+          reasoningEffort: effectiveRun.config.reasoningEffort,
+          passCount: REVIEW_PASSES.length,
+          matchedRuleCount: reviewContext.rules.metadata.matchedRuleCount ?? 0,
+          matchedRuleIds: reviewContext.rules.metadata.matchedRuleIds ?? [],
+          provenanceCount: reviewContext.provenance.metadata.provenanceCount ?? 0,
+          validationSignalCount: reviewContext.validation.metadata.signalCount ?? 0,
         },
       });
 
@@ -925,13 +1839,84 @@ export function createReviewService({
           diffPositionsByLine: entry.diffPositionsByLine,
         },
       ]));
-      const parsed = extractJsonObject(result.outputText);
-      const normalized = normalizeParsedFindings({
+      const passResults: PassExecutionResult[] = [];
+      for (const pass of REVIEW_PASSES) {
+        if (disposed) return;
+        const passResult = await executePass({
+          runId,
+          run: effectiveRun,
+          sessionId: session.id,
+          sessionTitle,
+          descriptorId: descriptor.id,
+          pass,
+          diffText,
+          changedFiles,
+          changedFilesByPath,
+          context: reviewContext,
+          contextArtifactIds,
+        });
+        passResults.push(passResult);
+      }
+
+      if (disposed) return;
+      const adjudication = adjudicatePassFindings({
         runId,
-        parsed,
-        changedFilesByPath,
+        passResults,
+        budgets: effectiveRun.config.budgets,
+        context: reviewContext,
+        artifactIds: contextArtifactIds,
       });
-      const findings = normalized.findings.slice(0, run.config.budgets.maxFindings);
+      insertArtifact(runId, {
+        artifactType: "adjudication_result",
+        title: "Review adjudication",
+        mimeType: "application/json",
+        contentText: JSON.stringify({
+          summary: adjudication.summary,
+          totalCandidateCount: adjudication.totalCandidateCount,
+          publicationEligibleCount: adjudication.publicationEligibleCount,
+          rejected: adjudication.rejected,
+          passSummaries: passResults.map((result) => ({
+            passKey: result.pass.key,
+            summary: result.summary,
+            keptCount: result.candidates.length,
+            budgetTrimmedCount: result.budgetTrimmedCount,
+            findingsArtifactId: result.findingsArtifactId,
+          })),
+        }, null, 2),
+        metadata: {
+          acceptedCount: adjudication.findings.length,
+          rejectedCount: adjudication.rejected.length,
+          publicationEligibleCount: adjudication.publicationEligibleCount,
+        },
+      });
+      insertArtifact(runId, {
+        artifactType: "merged_findings",
+        title: "Merged review findings",
+        mimeType: "application/json",
+        contentText: JSON.stringify({
+          summary: adjudication.summary,
+          findings: adjudication.findings,
+        }, null, 2),
+        metadata: {
+          findingCount: adjudication.findings.length,
+          publicationEligibleCount: adjudication.publicationEligibleCount,
+        },
+      });
+      insertArtifact(runId, {
+        artifactType: "review_output",
+        title: "Adjudicated review output",
+        mimeType: "application/json",
+        contentText: JSON.stringify({
+          summary: adjudication.summary,
+          findings: adjudication.findings,
+        }, null, 2),
+        metadata: {
+          stage: "adjudicated",
+          findingCount: adjudication.findings.length,
+        },
+      });
+
+      const findings = adjudication.findings;
       for (const finding of findings) {
         if (disposed) return;
         insertFinding(finding);
@@ -940,8 +1925,8 @@ export function createReviewService({
       await publishRun({
         runId,
         targetLabel: materialized.targetLabel,
-        summary: normalized.summary,
-        config: run.config,
+        summary: adjudication.summary,
+        config: effectiveRun.config,
         findings,
         publicationTarget: materialized.publicationTarget,
         changedFiles: materialized.changedFiles.map((entry) => ({
@@ -954,7 +1939,7 @@ export function createReviewService({
       const endedAt = nowIso();
       updateRun(runId, {
         status: "completed",
-        summary: normalized.summary ?? (findings.length > 0 ? `Review completed with ${findings.length} finding(s).` : "No actionable findings."),
+        summary: adjudication.summary,
         error_message: null,
         finding_count: findings.length,
         severity_summary_json: serializeSeveritySummary(severitySummary),

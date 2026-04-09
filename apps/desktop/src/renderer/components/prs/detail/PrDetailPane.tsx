@@ -34,6 +34,7 @@ import { formatTimeAgo, formatTimestampFull } from "../shared/prFormatters";
 import { describePrTargetDiff } from "../shared/laneBranchTargets";
 import { findMatchingRebaseNeed, rebaseNeedItemKey } from "../shared/rebaseNeedUtils";
 import { usePrs } from "../state/PrsContext";
+import { ReviewLaunchModelControls } from "../../shared/ReviewLaunchModelControls";
 
 // ---- Sub-tab type ----
 type DetailTab = "overview" | "convergence" | "files" | "checks" | "activity";
@@ -643,6 +644,8 @@ export function PrDetailPane({
   const [actionBusy, setActionBusy] = React.useState(false);
   const [actionError, setActionError] = React.useState<string | null>(null);
   const [actionResult, setActionResult] = React.useState<LandResult | null>(null);
+  const [reviewModelId, setReviewModelId] = React.useState(resolverModel);
+  const [reviewReasoningEffort, setReviewReasoningEffort] = React.useState(resolverReasoningLevel);
   const [commentDraft, setCommentDraft] = React.useState("");
   const [editingTitle, setEditingTitle] = React.useState(false);
   const [titleDraft, setTitleDraft] = React.useState("");
@@ -685,6 +688,8 @@ export function PrDetailPane({
   React.useEffect(() => {
     setActionError(null);
     setActionResult(null);
+    setReviewModelId(resolverModel);
+    setReviewReasoningEffort(resolverReasoningLevel);
     setIssueResolverError(null);
     setIssueResolverBusy(false);
     setIssueResolverCopyBusy(false);
@@ -733,7 +738,7 @@ export function PrDetailPane({
       inventoryLoadSeqRef.current += 1;
       convergenceLoadSeqRef.current += 1;
     };
-  }, [applyConvergenceRuntime, loadConvergenceState, loadDetail, pr.id]);
+  }, [applyConvergenceRuntime, loadConvergenceState, loadDetail, pr.id, resolverModel, resolverReasoningLevel]);
 
   // Poll actionRuns + activity + reviewThreads every 60s so CI data stays fresh.
   // PrsContext polls checks/status/reviews/comments, but action runs are only loaded
@@ -866,7 +871,11 @@ export function PrDetailPane({
         }
         const result = await reviewBridge.startRun({
           target: { mode: "pr", laneId: pr.laneId, prId: pr.id },
-          config: { publishBehavior: "auto_publish" },
+          config: {
+            publishBehavior: "auto_publish",
+            modelId: reviewModelId.trim(),
+            reasoningEffort: reviewReasoningEffort.trim() || null,
+          },
         });
         const nextRunId = typeof result === "string"
           ? result
@@ -2033,6 +2042,8 @@ export function PrDetailPane({
             pr={pr} detail={detail} status={status} checks={checks} actionRuns={actionRuns} reviews={reviews} comments={comments}
             detailBusy={detailBusy} aiSummary={aiSummary} aiSummaryBusy={aiSummaryBusy} adeReviewBusy={adeReviewBusy}
             actionBusy={actionBusy} mergeMethod={mergeMethod}
+            reviewModelId={reviewModelId}
+            reviewReasoningEffort={reviewReasoningEffort}
             commentDraft={commentDraft} setCommentDraft={setCommentDraft}
             editingBody={editingBody} setEditingBody={setEditingBody}
             bodyDraft={bodyDraft} setBodyDraft={setBodyDraft}
@@ -2050,6 +2061,8 @@ export function PrDetailPane({
             onClose={handleClosePr} onReopen={handleReopenPr}
             onAiSummary={handleAiSummary}
             onRunAdeReview={handleRunAdeReview}
+            onReviewModelChange={setReviewModelId}
+            onReviewReasoningEffortChange={setReviewReasoningEffort}
             onNavigate={onNavigate}
             onOpenRebaseTab={onOpenRebaseTab}
             matchingRebaseItemId={matchingRebaseItemId}
@@ -2379,6 +2392,8 @@ type OverviewTabProps = {
   adeReviewBusy: boolean;
   actionBusy: boolean;
   mergeMethod: MergeMethod;
+  reviewModelId: string;
+  reviewReasoningEffort: string;
   commentDraft: string;
   setCommentDraft: (v: string) => void;
   editingBody: boolean;
@@ -2409,6 +2424,8 @@ type OverviewTabProps = {
   onReopen: () => void;
   onAiSummary: () => void;
   onRunAdeReview: () => void;
+  onReviewModelChange: (value: string) => void;
+  onReviewReasoningEffortChange: (value: string) => void;
   onNavigate: (path: string) => void;
   onOpenRebaseTab?: (laneId?: string) => void;
   matchingRebaseItemId: string | null;
@@ -3011,6 +3028,16 @@ function OverviewTab(props: OverviewTabProps) {
             <Play size={13} weight="fill" />
             {adeReviewBusy ? "Launching..." : "Run ADE review"}
           </button>
+          <div style={{ display: "grid", gap: 6 }}>
+            <span style={{ ...LABEL_STYLE, color: COLORS.textDim }}>Review model</span>
+            <ReviewLaunchModelControls
+              modelId={props.reviewModelId}
+              reasoningEffort={props.reviewReasoningEffort}
+              onModelChange={props.onReviewModelChange}
+              onReasoningEffortChange={props.onReviewReasoningEffortChange}
+              disabled={actionBusy}
+            />
+          </div>
           <button type="button" onClick={props.onAiSummary} disabled={aiSummaryBusy} style={outlineButton({ height: 30, padding: "0 10px", color: COLORS.accent, borderColor: `${COLORS.accent}40`, width: "100%", justifyContent: "center" })}>
             <Sparkle size={13} weight="fill" />
             {aiSummaryBusy ? "Analyzing..." : "AI Review"}

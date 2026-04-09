@@ -2356,6 +2356,7 @@ create table if not exists review_findings (
       run_id text not null,
       title text not null,
       severity text not null,
+      finding_class text,
       body text not null,
       confidence real not null default 0.5,
       evidence_json text,
@@ -2364,6 +2365,8 @@ create table if not exists review_findings (
       anchor_state text not null,
       source_pass text not null,
       publication_state text not null,
+      originating_passes_json text,
+      adjudication_json text,
       foreign key(run_id) references review_runs(id) on delete cascade
     );
 
@@ -2404,6 +2407,12 @@ create table if not exists review_run_artifacts (
     );
 
 create index if not exists idx_review_run_artifacts_run on review_run_artifacts(run_id, created_at);
+
+alter table review_findings add column finding_class text;
+
+alter table review_findings add column originating_passes_json text;
+
+alter table review_findings add column adjudication_json text;
 
 create table if not exists pr_issue_inventory (
       id text primary key,

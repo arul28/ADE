@@ -2011,6 +2011,9 @@ app.whenReady().then(async () => {
       gitService,
       agentChatService,
       sessionService,
+      sessionDeltaService,
+      testService,
+      issueInventoryService,
       prService,
       onEvent: (event) => emitProjectEvent(projectRoot, IPC.reviewEvent, event),
     });

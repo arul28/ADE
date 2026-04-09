@@ -21,6 +21,7 @@ import { cn } from "../ui/cn";
 import { EmptyState } from "../ui/EmptyState";
 import { PaneTilingLayout, type PaneConfig, type PaneSplit } from "../ui/PaneTilingLayout";
 import { AgentChatPane } from "../chat/AgentChatPane";
+import { ReviewLaunchModelControls } from "../shared/ReviewLaunchModelControls";
 import {
   listReviewLaunchContext,
   listReviewRuns,
@@ -33,6 +34,7 @@ import type {
   ReviewArtifact,
   ReviewEvidenceEntry,
   ReviewFinding,
+  ReviewLaunchCommit,
   ReviewLaunchContext,
   ReviewRun,
   ReviewRunConfig,
@@ -65,7 +67,12 @@ type LaunchDraft = {
   maxDiffChars: number;
   maxPromptChars: number;
   maxFindings: number;
+  maxFindingsPerPass: number;
+  maxPublishedFindings: number;
 };
+
+const DEFAULT_REVIEW_LAUNCH_MODEL_ID = getDefaultModelDescriptor("codex")?.id ?? "openai/gpt-5.4-codex";
+const DEFAULT_REVIEW_REASONING_EFFORT = "medium";
 
 type NormalizedRun = Omit<ReviewRun, "createdAt" | "startedAt" | "updatedAt"> & {
   createdAt: string | null;
@@ -104,11 +111,43 @@ function toSeverityTone(severity: string): string {
   return "border-zinc-400/20 bg-zinc-400/[0.08] text-zinc-200";
 }
 
+function toFindingClassTone(value: string): string {
+  switch (value) {
+    case "intent_drift":
+      return "border-fuchsia-400/25 bg-fuchsia-400/[0.10] text-fuchsia-200";
+    case "incomplete_rollout":
+      return "border-cyan-400/25 bg-cyan-400/[0.10] text-cyan-200";
+    case "late_stage_regression":
+      return "border-rose-400/25 bg-rose-400/[0.10] text-rose-200";
+    default:
+      return "border-zinc-400/20 bg-zinc-400/[0.08] text-zinc-200";
+  }
+}
+
+function toFindingClassLabel(value: string): string {
+  return value.replaceAll("_", " ");
+}
+
 function formatTime(value: string | null | undefined): string {
   if (!value) return "—";
   const ts = Date.parse(value);
   if (Number.isNaN(ts)) return value;
   return new Date(ts).toLocaleString();
+}
+
+function formatRelativeTime(value: string | null | undefined): string {
+  if (!value) return "unknown time";
+  const ts = Date.parse(value);
+  if (Number.isNaN(ts)) return value;
+  const diffMs = Date.now() - ts;
+  const minutes = Math.floor(diffMs / 60_000);
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  if (days < 30) return `${days}d ago`;
+  return new Date(ts).toLocaleDateString();
 }
 
 function formatConfidence(value: number | string): string {
@@ -122,6 +161,97 @@ function formatConfidence(value: number | string): string {
 function normalizeEvidence(evidence: ReviewFinding["evidence"] | null | undefined): ReviewEvidenceEntry[] {
   if (!evidence) return [];
   return evidence.map((entry) => entry as ReviewEvidenceEntry);
+}
+
+function toTargetModeLabel(mode: ReviewTargetMode): string {
+  switch (mode) {
+    case "lane_diff":
+      return "Lane diff";
+    case "commit_range":
+      return "Commit range";
+    case "working_tree":
+      return "Uncommitted changes";
+    case "pr":
+      return "Pull request";
+    default:
+      return mode;
+  }
+}
+
+function toSelectionModeLabel(value: ReviewRunConfig["selectionMode"]): string {
+  switch (value) {
+    case "full_diff":
+      return "Full diff";
+    case "selected_commits":
+      return "Selected commits";
+    case "dirty_only":
+      return "Dirty working tree";
+    default:
+      return value;
+  }
+}
+
+function toPassLabel(value: string): string {
+  switch (value) {
+    case "diff-risk":
+      return "Diff risk";
+    case "cross-file-impact":
+      return "Cross-file impact";
+    case "checks-and-tests":
+      return "Checks and tests";
+    default:
+      return value;
+  }
+}
+
+function readArtifactMetaString(artifact: ReviewArtifact, key: string): string | null {
+  const value = artifact.metadata?.[key];
+  return typeof value === "string" && value.trim().length > 0 ? value : null;
+}
+
+function readArtifactMetaNumber(artifact: ReviewArtifact, key: string): number | null {
+  const value = artifact.metadata?.[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function readArtifactMetaCount(artifact: ReviewArtifact, keys: string[]): number | null {
+  for (const key of keys) {
+    const numericValue = readArtifactMetaNumber(artifact, key);
+    if (numericValue !== null) {
+      return numericValue;
+    }
+
+    const value = artifact.metadata?.[key];
+    if (Array.isArray(value)) {
+      return value.length;
+    }
+
+    if (typeof value === "string" && value.trim().length > 0) {
+      const parsed = Number(value);
+      if (Number.isFinite(parsed)) {
+        return parsed;
+      }
+    }
+  }
+
+  return null;
+}
+
+function toContextArtifactLabel(artifactType: string): string {
+  switch (artifactType) {
+    case "provenance_brief":
+      return "Provenance brief";
+    case "rule_overlays":
+      return "Rule overlays";
+    case "validation_signals":
+      return "Validation signals";
+    default:
+      return artifactType.replaceAll("_", " ");
+  }
+}
+
+function isContextArtifactType(artifactType: string): boolean {
+  return artifactType === "provenance_brief" || artifactType === "rule_overlays" || artifactType === "validation_signals";
 }
 
 function normalizeTimestamp(...values: unknown[]): string | null {
@@ -230,7 +360,7 @@ function formatTargetSummary(target: ReviewTarget, compareLabel?: string | null)
   if (target.mode === "pr") {
     return "Pull request review";
   }
-  return "Dirty working tree";
+  return "Uncommitted changes";
 }
 
 function describeRunTarget(run: Pick<ReviewRun, "target" | "targetLabel" | "compareTarget">): string {
@@ -242,6 +372,105 @@ function isLaunchDraftComplete(draft: LaunchDraft): boolean {
   if (draft.targetMode === "lane_diff" && draft.compareKind === "lane" && !draft.compareLaneId.trim()) return false;
   if (draft.targetMode === "commit_range" && (!draft.baseCommit.trim() || !draft.headCommit.trim())) return false;
   return true;
+}
+
+function orderLaunchCommits(commits: ReviewLaunchCommit[]): ReviewLaunchCommit[] {
+  return commits
+    .map((commit, index) => ({ commit, index }))
+    .sort((left, right) => {
+      const leftTs = Date.parse(left.commit.authoredAt);
+      const rightTs = Date.parse(right.commit.authoredAt);
+      if (!Number.isNaN(leftTs) && !Number.isNaN(rightTs) && leftTs !== rightTs) {
+        return rightTs - leftTs;
+      }
+      return left.index - right.index;
+    })
+    .map(({ commit }) => commit);
+}
+
+function getCommitIndex(order: Map<string, number>, sha: string): number | null {
+  if (!sha.trim()) return null;
+  const value = order.get(sha.trim());
+  return typeof value === "number" ? value : null;
+}
+
+function isCommitRangeOrdered(baseCommit: string, headCommit: string, order: Map<string, number>): boolean {
+  const baseIndex = getCommitIndex(order, baseCommit);
+  const headIndex = getCommitIndex(order, headCommit);
+  if (baseIndex === null || headIndex === null) return false;
+  return headIndex < baseIndex;
+}
+
+function getCommitRangeValidationMessage(
+  draft: Pick<LaunchDraft, "targetMode" | "baseCommit" | "headCommit">,
+  order: Map<string, number>,
+): string | null {
+  if (draft.targetMode !== "commit_range") return null;
+  if (!draft.baseCommit.trim() || !draft.headCommit.trim()) {
+    return "Choose both the earlier base commit and the later head commit.";
+  }
+  if (!isCommitRangeOrdered(draft.baseCommit, draft.headCommit, order)) {
+    return "Choose an earlier base commit and a later head commit.";
+  }
+  return null;
+}
+
+function describeLaunchCommit(commit: ReviewLaunchCommit | null | undefined): string {
+  if (!commit) return "Not selected";
+  return `${commit.shortSha} · ${formatRelativeTime(commit.authoredAt)} · ${commit.subject || "No subject"}`;
+}
+
+function CommitSelectField({
+  label,
+  helper,
+  value,
+  options,
+  selectedCommit,
+  disabled,
+  onChange,
+}: {
+  label: string;
+  helper: string;
+  value: string;
+  options: ReviewLaunchCommit[];
+  selectedCommit: ReviewLaunchCommit | null;
+  disabled: boolean;
+  onChange: (sha: string) => void;
+}) {
+  return (
+    <label className="grid gap-1.5">
+      <span className="font-mono text-[9px] uppercase tracking-[1px] text-[#8FA1B8]">{label}</span>
+      <div className="relative">
+        <select
+          aria-label={label}
+          value={value}
+          onChange={(event) => onChange(event.target.value)}
+          disabled={disabled}
+          className="h-10 w-full appearance-none rounded-xl border border-white/[0.08] bg-black/20 px-3 pr-8 text-sm text-[#F5FAFF] outline-none transition-colors disabled:cursor-not-allowed disabled:opacity-60 focus:border-[#A78BFA55]"
+        >
+          <option value="">{disabled ? "Not enough commits" : `Choose ${label.toLowerCase()}...`}</option>
+          {options.map((commit) => (
+            <option key={commit.sha} value={commit.sha}>
+              {describeLaunchCommit(commit)}
+            </option>
+          ))}
+        </select>
+        <CaretDown size={14} className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-[#8FA1B8]" />
+      </div>
+      <div className="text-[11px] text-[#94A3B8]">{helper}</div>
+      {selectedCommit ? (
+        <div className="rounded-xl border border-white/[0.06] bg-black/15 p-3">
+          <div className="flex flex-wrap items-center gap-2">
+            <Chip className="text-[9px]">{selectedCommit.shortSha}</Chip>
+            <Chip className="text-[9px]">{formatRelativeTime(selectedCommit.authoredAt)}</Chip>
+            <Chip className="text-[9px]">{selectedCommit.pushed ? "Remote" : "Local only"}</Chip>
+          </div>
+          <div className="mt-2 text-xs font-medium text-[#F5FAFF]">{selectedCommit.subject || "No subject"}</div>
+          <div className="mt-1 text-[11px] text-[#94A3B8]">{formatTime(selectedCommit.authoredAt)}</div>
+        </div>
+      ) : null}
+    </label>
+  );
 }
 
 function buildTargetConfig(
@@ -265,6 +494,8 @@ function buildTargetConfig(
           maxDiffChars: draft.maxDiffChars,
           maxPromptChars: draft.maxPromptChars,
           maxFindings: draft.maxFindings,
+          maxFindingsPerPass: draft.maxFindingsPerPass,
+          maxPublishedFindings: draft.maxPublishedFindings,
         },
         publishBehavior: "local_only",
       },
@@ -285,6 +516,8 @@ function buildTargetConfig(
           maxDiffChars: draft.maxDiffChars,
           maxPromptChars: draft.maxPromptChars,
           maxFindings: draft.maxFindings,
+          maxFindingsPerPass: draft.maxFindingsPerPass,
+          maxPublishedFindings: draft.maxPublishedFindings,
         },
         publishBehavior: "local_only",
       },
@@ -304,6 +537,8 @@ function buildTargetConfig(
         maxDiffChars: draft.maxDiffChars,
         maxPromptChars: draft.maxPromptChars,
         maxFindings: draft.maxFindings,
+        maxFindingsPerPass: draft.maxFindingsPerPass,
+        maxPublishedFindings: draft.maxPublishedFindings,
       },
       publishBehavior: "local_only",
     },
@@ -337,13 +572,16 @@ export function ReviewPage() {
     compareLaneId: "",
     baseCommit: "",
     headCommit: "",
-    modelId: getDefaultModelDescriptor("codex")?.id ?? "openai/gpt-5.4-codex",
-    reasoningEffort: "medium",
+    modelId: DEFAULT_REVIEW_LAUNCH_MODEL_ID,
+    reasoningEffort: DEFAULT_REVIEW_REASONING_EFFORT,
     maxFiles: 25,
     maxDiffChars: 120_000,
     maxPromptChars: 60_000,
     maxFindings: 8,
+    maxFindingsPerPass: 6,
+    maxPublishedFindings: 6,
   }));
+  const recommendedModelHydratedRef = React.useRef(false);
 
   const selectedLane = laneById.get(launchDraft.laneId) ?? laneById.get(defaultLaneId ?? "") ?? null;
   const selectedDetail = React.useMemo(
@@ -357,6 +595,22 @@ export function ReviewPage() {
   const selectedRunLane = React.useMemo(
     () => (selectedRun ? laneById.get(selectedRun.laneId) ?? null : null),
     [laneById, selectedRun],
+  );
+  const selectedPassArtifacts = React.useMemo(
+    () => selectedDetail?.artifacts?.filter((artifact) => artifact.artifactType === "pass_findings") ?? [],
+    [selectedDetail?.artifacts],
+  );
+  const selectedAdjudicationArtifact = React.useMemo(
+    () => selectedDetail?.artifacts?.find((artifact) => artifact.artifactType === "adjudication_result") ?? null,
+    [selectedDetail?.artifacts],
+  );
+  const selectedMergedArtifact = React.useMemo(
+    () => selectedDetail?.artifacts?.find((artifact) => artifact.artifactType === "merged_findings") ?? null,
+    [selectedDetail?.artifacts],
+  );
+  const selectedContextArtifacts = React.useMemo(
+    () => selectedDetail?.artifacts?.filter((artifact) => isContextArtifactType(String(artifact.artifactType))) ?? [],
+    [selectedDetail?.artifacts],
   );
 
   React.useEffect(() => {
@@ -473,24 +727,140 @@ export function ReviewPage() {
   }, [defaultLaneId, launchContext?.defaultLaneId, launchDraft.laneId]);
 
   React.useEffect(() => {
-    const laneCommits = launchContext?.recentCommitsByLane?.[launchDraft.laneId] ?? [];
-    if (laneCommits.length < 2) return;
+    const recommendedModelId = launchContext?.recommendedModelId?.trim();
+    if (!recommendedModelId || recommendedModelHydratedRef.current) return;
+    recommendedModelHydratedRef.current = true;
+    setLaunchDraft((prev) => {
+      const currentModelId = prev.modelId.trim();
+      if (currentModelId && currentModelId !== DEFAULT_REVIEW_LAUNCH_MODEL_ID) {
+        return prev;
+      }
+      if (currentModelId === recommendedModelId) return prev;
+      return { ...prev, modelId: recommendedModelId };
+    });
+  }, [launchContext?.recommendedModelId]);
+
+  React.useEffect(() => {
     setLaunchDraft((prev) => {
       if (prev.targetMode !== "commit_range") return prev;
-      if (prev.baseCommit || prev.headCommit) return prev;
-      const [head, base] = laneCommits;
+      const laneCommits = orderLaunchCommits(launchContext?.recentCommitsByLane?.[prev.laneId] ?? []);
+      if (laneCommits.length < 2) {
+        if (!prev.baseCommit && !prev.headCommit) return prev;
+        return { ...prev, baseCommit: "", headCommit: "" };
+      }
+      const commitOrder = new Map(laneCommits.map((commit, index) => [commit.sha, index]));
+      let nextHeadCommit = prev.headCommit;
+      let nextBaseCommit = prev.baseCommit;
+      if (!nextHeadCommit || !commitOrder.has(nextHeadCommit)) {
+        nextHeadCommit = laneCommits[0]?.sha ?? "";
+      }
+      if (!nextBaseCommit || !commitOrder.has(nextBaseCommit)) {
+        nextBaseCommit = laneCommits[1]?.sha ?? "";
+      }
+      if (!isCommitRangeOrdered(nextBaseCommit, nextHeadCommit, commitOrder)) {
+        nextHeadCommit = laneCommits[0]?.sha ?? "";
+        nextBaseCommit = laneCommits[1]?.sha ?? "";
+      }
+      if (nextBaseCommit === prev.baseCommit && nextHeadCommit === prev.headCommit) {
+        return prev;
+      }
       return {
         ...prev,
-        baseCommit: base?.sha ?? "",
-        headCommit: head?.sha ?? "",
+        baseCommit: nextBaseCommit,
+        headCommit: nextHeadCommit,
       };
     });
   }, [launchContext?.recentCommitsByLane, launchDraft.laneId, launchDraft.targetMode]);
 
-  const selectedLaneCommits = launchContext?.recentCommitsByLane?.[launchDraft.laneId] ?? [];
+  const defaultBranchLabel = launchContext?.defaultBranchName?.trim() || "default branch";
+  const selectedCompareLane = launchDraft.compareKind === "lane"
+    ? laneById.get(launchDraft.compareLaneId) ?? null
+    : null;
+  const selectedLaneCommits = React.useMemo(
+    () => orderLaunchCommits(launchContext?.recentCommitsByLane?.[launchDraft.laneId] ?? []),
+    [launchContext?.recentCommitsByLane, launchDraft.laneId],
+  );
+  const commitOrder = React.useMemo(
+    () => new Map(selectedLaneCommits.map((commit, index) => [commit.sha, index])),
+    [selectedLaneCommits],
+  );
+  const selectedBaseCommit = React.useMemo(
+    () => selectedLaneCommits.find((commit) => commit.sha === launchDraft.baseCommit) ?? null,
+    [selectedLaneCommits, launchDraft.baseCommit],
+  );
+  const selectedHeadCommit = React.useMemo(
+    () => selectedLaneCommits.find((commit) => commit.sha === launchDraft.headCommit) ?? null,
+    [selectedLaneCommits, launchDraft.headCommit],
+  );
+  const baseCommitOptions = React.useMemo(() => {
+    if (selectedLaneCommits.length < 2) return [];
+    const headIndex = getCommitIndex(commitOrder, launchDraft.headCommit);
+    const candidates = headIndex === null
+      ? selectedLaneCommits.slice(1)
+      : selectedLaneCommits.filter((_, index) => index > headIndex);
+    return [...candidates].reverse();
+  }, [commitOrder, launchDraft.headCommit, selectedLaneCommits]);
+  const headCommitOptions = React.useMemo(() => {
+    if (selectedLaneCommits.length < 2) return [];
+    const baseIndex = getCommitIndex(commitOrder, launchDraft.baseCommit);
+    const candidates = baseIndex === null
+      ? selectedLaneCommits.slice(0, -1)
+      : selectedLaneCommits.filter((_, index) => index < baseIndex);
+    return [...candidates].reverse();
+  }, [commitOrder, launchDraft.baseCommit, selectedLaneCommits]);
+  const commitRangeValidationMessage = React.useMemo(
+    () => getCommitRangeValidationMessage(launchDraft, commitOrder),
+    [commitOrder, launchDraft],
+  );
+  const launchValidationMessage = React.useMemo(() => {
+    if (!launchDraft.laneId.trim()) return "Choose a lane before launching a review.";
+    if (launchDraft.targetMode === "lane_diff" && launchDraft.compareKind === "lane" && !launchDraft.compareLaneId.trim()) {
+      return "Choose another lane to compare against.";
+    }
+    return commitRangeValidationMessage;
+  }, [commitRangeValidationMessage, launchDraft]);
+  const launchScope = React.useMemo(() => {
+    const laneLabel = laneDisplayName(selectedLane);
+    if (launchDraft.targetMode === "lane_diff") {
+      if (launchDraft.compareKind === "lane") {
+        return {
+          title: selectedCompareLane
+            ? `${laneLabel} against ${laneDisplayName(selectedCompareLane)}`
+            : `${laneLabel} against another lane`,
+          description: selectedCompareLane
+            ? `Review how ${laneLabel} differs from ${laneDisplayName(selectedCompareLane)}.`
+            : "Choose the comparison lane to finish the lane-to-lane review setup.",
+        };
+      }
+      return {
+        title: `${laneLabel} against ${defaultBranchLabel}`,
+        description: `Review the full lane diff by comparing ${laneLabel} against ${defaultBranchLabel}.`,
+      };
+    }
+    if (launchDraft.targetMode === "commit_range") {
+      return {
+        title: `${laneLabel}: selected commit range`,
+        description: selectedBaseCommit && selectedHeadCommit
+          ? `Review commits after ${selectedBaseCommit.shortSha} and up to ${selectedHeadCommit.shortSha}. The earlier base commit is excluded; the later head commit is included.`
+          : "Review only a slice of this lane's history. Pick the earlier commit first, then the later commit.",
+      };
+    }
+    return {
+      title: `${laneLabel}: uncommitted changes`,
+      description: "Review the staged, unstaged, and untracked changes currently in this lane. This compares the working tree to the checked-out HEAD commit, not to another lane.",
+    };
+  }, [
+    defaultBranchLabel,
+    launchDraft.compareKind,
+    launchDraft.targetMode,
+    selectedBaseCommit,
+    selectedCompareLane,
+    selectedHeadCommit,
+    selectedLane,
+  ]);
   const activeRuns = runs.filter((run) => run.status === "running" || run.status === "queued").length;
   const totalFindings = runs.reduce((sum, run) => sum + (run.findingCount ?? 0), 0);
-  const launchReady = isLaunchDraftComplete(launchDraft);
+  const launchReady = isLaunchDraftComplete(launchDraft) && !launchValidationMessage;
 
   const handleSelectRun = React.useCallback((runId: string) => {
     setSelectedRunId(runId);
@@ -507,12 +877,8 @@ export function ReviewPage() {
       setError("Choose a lane before launching a review.");
       return;
     }
-    if (launchDraft.targetMode === "lane_diff" && launchDraft.compareKind === "lane" && !launchDraft.compareLaneId.trim()) {
-      setError("Choose another lane to compare against.");
-      return;
-    }
-    if (launchDraft.targetMode === "commit_range" && (!launchDraft.baseCommit.trim() || !launchDraft.headCommit.trim())) {
-      setError("Enter both the base and head commit for a commit-range review.");
+    if (launchValidationMessage) {
+      setError(launchValidationMessage);
       return;
     }
     const { target, config } = buildTargetConfig(launchDraft.targetMode, launchDraft);
@@ -536,7 +902,7 @@ export function ReviewPage() {
     } finally {
       setLaunching(false);
     }
-  }, [launchDraft, laneById, refreshRuns, setSearchParams]);
+  }, [launchDraft, laneById, launchValidationMessage, refreshRuns, setSearchParams]);
 
   const handleRerun = React.useCallback(async (run: NormalizedRun | null) => {
     if (!run) return;
@@ -565,6 +931,33 @@ export function ReviewPage() {
   const updateDraft = React.useCallback(<K extends keyof LaunchDraft>(key: K, value: LaunchDraft[K]) => {
     setLaunchDraft((prev) => ({ ...prev, [key]: value }));
   }, []);
+
+  const handleCommitSelection = React.useCallback((kind: "base" | "head", sha: string) => {
+    setLaunchDraft((prev) => {
+      if (prev.targetMode !== "commit_range") return prev;
+      let nextBaseCommit = kind === "base" ? sha : prev.baseCommit;
+      let nextHeadCommit = kind === "head" ? sha : prev.headCommit;
+      const selectedIndex = getCommitIndex(commitOrder, sha);
+      if (selectedIndex !== null) {
+        if (kind === "base") {
+          const currentHeadIndex = getCommitIndex(commitOrder, nextHeadCommit);
+          if (currentHeadIndex === null || currentHeadIndex >= selectedIndex) {
+            nextHeadCommit = selectedLaneCommits[selectedIndex - 1]?.sha ?? "";
+          }
+        } else {
+          const currentBaseIndex = getCommitIndex(commitOrder, nextBaseCommit);
+          if (currentBaseIndex === null || currentBaseIndex <= selectedIndex) {
+            nextBaseCommit = selectedLaneCommits[selectedIndex + 1]?.sha ?? "";
+          }
+        }
+      }
+      return {
+        ...prev,
+        baseCommit: nextBaseCommit,
+        headCommit: nextHeadCommit,
+      };
+    });
+  }, [commitOrder, selectedLaneCommits]);
 
   const resolveFindingTarget = React.useCallback((finding: ReviewFinding): { laneId: string; target: string; rootPath: string | null } | null => {
     const path = finding.filePath?.trim();
@@ -631,7 +1024,7 @@ export function ReviewPage() {
               {([
                 ["lane_diff", "Lane diff"],
                 ["commit_range", "Commit range"],
-                ["working_tree", "Working tree"],
+                ["working_tree", "Uncommitted changes"],
               ] as Array<[ReviewTargetMode, string]>).map(([mode, label]) => {
                 const active = launchDraft.targetMode === mode;
                 return (
@@ -651,10 +1044,23 @@ export function ReviewPage() {
             </div>
           </label>
 
+          <div className="rounded-xl border border-white/[0.06] bg-white/[0.03] p-3">
+            <div className="flex flex-wrap items-center gap-2">
+              <Chip className="text-[9px]">{toTargetModeLabel(launchDraft.targetMode)}</Chip>
+              {launchDraft.targetMode === "lane_diff" ? (
+                <Chip className="text-[9px]">
+                  {launchDraft.compareKind === "lane" ? "Lane to lane" : `Against ${defaultBranchLabel}`}
+                </Chip>
+              ) : null}
+            </div>
+            <div className="mt-2 text-sm font-semibold text-[#F5FAFF]">{launchScope.title}</div>
+            <div className="mt-1 text-[11px] text-[#C5D2E6]">{launchScope.description}</div>
+          </div>
+
           {launchDraft.targetMode === "lane_diff" ? (
             <div className="grid gap-2 rounded-xl border border-white/[0.06] bg-white/[0.03] p-3">
               <div className="text-[11px] text-[#C5D2E6]">
-                Default compares this lane against its upstream / default branch. You can switch to another lane when you want a lane-to-lane review.
+                Default compares this lane against the primary / default branch. Switch to another lane when you want a lane-to-lane review instead.
               </div>
               <label className="grid gap-1.5">
                 <span className="font-mono text-[9px] uppercase tracking-[1px] text-[#8FA1B8]">Compare against</span>
@@ -671,7 +1077,7 @@ export function ReviewPage() {
                         )}
                         onClick={() => updateDraft("compareKind", kind)}
                       >
-                        {kind === "default_branch" ? "Default branch" : "Another lane"}
+                        {kind === "default_branch" ? "Primary / default branch" : "Another lane"}
                       </button>
                     );
                   })}
@@ -680,16 +1086,19 @@ export function ReviewPage() {
               {launchDraft.compareKind === "lane" ? (
                 <label className="grid gap-1.5">
                   <span className="font-mono text-[9px] uppercase tracking-[1px] text-[#8FA1B8]">Compare lane</span>
-                  <select
-                    className="h-9 w-full appearance-none rounded-xl border border-white/[0.08] bg-black/20 px-3 text-sm text-[#F5FAFF] outline-none transition-colors focus:border-[#A78BFA55]"
-                    value={launchDraft.compareLaneId}
-                    onChange={(e) => updateDraft("compareLaneId", e.target.value)}
-                  >
-                    <option value="">Choose lane...</option>
-                    {laneOptions.filter((lane) => lane.id !== launchDraft.laneId).map((lane) => (
-                      <option key={lane.id} value={lane.id}>{lane.name}</option>
-                    ))}
-                  </select>
+                  <div className="relative">
+                    <select
+                      className="h-9 w-full appearance-none rounded-xl border border-white/[0.08] bg-black/20 px-3 pr-8 text-sm text-[#F5FAFF] outline-none transition-colors focus:border-[#A78BFA55]"
+                      value={launchDraft.compareLaneId}
+                      onChange={(e) => updateDraft("compareLaneId", e.target.value)}
+                    >
+                      <option value="">Choose lane...</option>
+                      {laneOptions.filter((lane) => lane.id !== launchDraft.laneId).map((lane) => (
+                        <option key={lane.id} value={lane.id}>{lane.name}</option>
+                      ))}
+                    </select>
+                    <CaretDown size={14} className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-[#8FA1B8]" />
+                  </div>
                 </label>
               ) : null}
             </div>
@@ -698,113 +1107,144 @@ export function ReviewPage() {
           {launchDraft.targetMode === "commit_range" ? (
             <div className="grid gap-2 rounded-xl border border-white/[0.06] bg-white/[0.03] p-3">
               <div className="text-[11px] text-[#C5D2E6]">
-                Review only the commits between the base and head revision. The base commit is excluded; the head commit is included.
+                Review only part of this lane's history. Commit lists are ordered from earlier to later so you can pick the start and end of the range without typing raw SHAs.
               </div>
               <div className="grid grid-cols-2 gap-2">
-                <label className="grid gap-1.5">
-                  <span className="font-mono text-[9px] uppercase tracking-[1px] text-[#8FA1B8]">Base commit</span>
-                  <input
-                    value={launchDraft.baseCommit}
-                    onChange={(e) => updateDraft("baseCommit", e.target.value)}
-                    placeholder="abc1234"
-                    className="h-9 rounded-xl border border-white/[0.08] bg-black/20 px-3 text-sm text-[#F5FAFF] outline-none placeholder:text-[#64748B] focus:border-[#A78BFA55]"
-                  />
-                </label>
-                <label className="grid gap-1.5">
-                  <span className="font-mono text-[9px] uppercase tracking-[1px] text-[#8FA1B8]">Head commit</span>
-                  <input
-                    value={launchDraft.headCommit}
-                    onChange={(e) => updateDraft("headCommit", e.target.value)}
-                    placeholder="def4567"
-                    className="h-9 rounded-xl border border-white/[0.08] bg-black/20 px-3 text-sm text-[#F5FAFF] outline-none placeholder:text-[#64748B] focus:border-[#A78BFA55]"
-                  />
-                </label>
+                <CommitSelectField
+                  label="Earlier commit (base)"
+                  helper="Start just after this commit. ADE excludes the base commit itself."
+                  value={launchDraft.baseCommit}
+                  options={baseCommitOptions}
+                  selectedCommit={selectedBaseCommit}
+                  disabled={selectedLaneCommits.length < 2}
+                  onChange={(sha) => handleCommitSelection("base", sha)}
+                />
+                <CommitSelectField
+                  label="Later commit (head)"
+                  helper="Stop at this commit. ADE includes the head commit."
+                  value={launchDraft.headCommit}
+                  options={headCommitOptions}
+                  selectedCommit={selectedHeadCommit}
+                  disabled={selectedLaneCommits.length < 2}
+                  onChange={(sha) => handleCommitSelection("head", sha)}
+                />
               </div>
               {launchDraft.laneId && selectedLaneCommits.length < 2 ? (
                 <div className="text-[11px] text-[#94A3B8]">
-                  At least two recent commits are needed to auto-fill this range. Enter the base and head SHAs manually or choose a lane with more history.
+                  At least two recent commits are needed to review a commit range. Choose a lane with more history.
                 </div>
+              ) : null}
+              {selectedLaneCommits.length >= 2 && commitRangeValidationMessage ? (
+                <div className="text-[11px] text-amber-200">{commitRangeValidationMessage}</div>
               ) : null}
             </div>
           ) : null}
 
-          <div className="grid grid-cols-2 gap-2">
-            <label className="grid gap-1.5">
-              <span className="font-mono text-[9px] uppercase tracking-[1px] text-[#8FA1B8]">Model</span>
-              <input
-                value={launchDraft.modelId}
-                onChange={(e) => updateDraft("modelId", e.target.value)}
-                placeholder="openai/gpt-5.4-codex"
-                className="h-9 rounded-xl border border-white/[0.08] bg-black/20 px-3 text-sm text-[#F5FAFF] outline-none placeholder:text-[#64748B] focus:border-[#A78BFA55]"
-              />
-            </label>
-            <label className="grid gap-1.5">
-              <span className="font-mono text-[9px] uppercase tracking-[1px] text-[#8FA1B8]">Reasoning</span>
-              <select
-                value={launchDraft.reasoningEffort}
-                onChange={(e) => updateDraft("reasoningEffort", e.target.value)}
-                className="h-9 rounded-xl border border-white/[0.08] bg-black/20 px-3 text-sm text-[#F5FAFF] outline-none transition-colors focus:border-[#A78BFA55]"
-              >
-                {["low", "medium", "high", "xhigh", "max"].map((level) => (
-                  <option key={level} value={level}>{level}</option>
-                ))}
-              </select>
-            </label>
+          {launchDraft.targetMode === "working_tree" ? (
+            <div className="grid gap-2 rounded-xl border border-white/[0.06] bg-white/[0.03] p-3">
+              <div className="text-[11px] text-[#C5D2E6]">
+                Review the current staged, unstaged, and untracked changes in the selected lane. This mode compares the working tree against the lane's current HEAD commit. It does not compare against another lane.
+              </div>
+            </div>
+          ) : null}
+
+          <div className="grid gap-1.5">
+            <span className="font-mono text-[9px] uppercase tracking-[1px] text-[#8FA1B8]">Model and reasoning</span>
+            <ReviewLaunchModelControls
+              modelId={launchDraft.modelId}
+              reasoningEffort={launchDraft.reasoningEffort}
+              onModelChange={(value) => updateDraft("modelId", value)}
+              onReasoningEffortChange={(value) => updateDraft("reasoningEffort", value)}
+              disabled={launching}
+            />
           </div>
 
-          <div className="grid grid-cols-4 gap-2">
-            <label className="grid gap-1.5">
-              <span className="font-mono text-[9px] uppercase tracking-[1px] text-[#8FA1B8]">Files</span>
-              <input
-                type="number"
-                min={1}
-                value={launchDraft.maxFiles}
-                onChange={(e) => updateDraft("maxFiles", Number(e.target.value) || 1)}
-                className="h-9 rounded-xl border border-white/[0.08] bg-black/20 px-3 text-sm text-[#F5FAFF] outline-none focus:border-[#A78BFA55]"
-              />
-            </label>
-            <label className="grid gap-1.5">
-              <span className="font-mono text-[9px] uppercase tracking-[1px] text-[#8FA1B8]">Diff chars</span>
-              <input
-                type="number"
-                min={1024}
-                step={1024}
-                value={launchDraft.maxDiffChars}
-                onChange={(e) => updateDraft("maxDiffChars", Number(e.target.value) || 1024)}
-                className="h-9 rounded-xl border border-white/[0.08] bg-black/20 px-3 text-sm text-[#F5FAFF] outline-none focus:border-[#A78BFA55]"
-              />
-            </label>
-            <label className="grid gap-1.5">
-              <span className="font-mono text-[9px] uppercase tracking-[1px] text-[#8FA1B8]">Prompt chars</span>
-              <input
-                type="number"
-                min={1024}
-                step={1024}
-                value={launchDraft.maxPromptChars}
-                onChange={(e) => updateDraft("maxPromptChars", Number(e.target.value) || 1024)}
-                className="h-9 rounded-xl border border-white/[0.08] bg-black/20 px-3 text-sm text-[#F5FAFF] outline-none focus:border-[#A78BFA55]"
-              />
-            </label>
-            <label className="grid gap-1.5">
-              <span className="font-mono text-[9px] uppercase tracking-[1px] text-[#8FA1B8]">Findings</span>
-              <input
-                type="number"
-                min={1}
-                value={launchDraft.maxFindings}
-                onChange={(e) => updateDraft("maxFindings", Number(e.target.value) || 1)}
-                className="h-9 rounded-xl border border-white/[0.08] bg-black/20 px-3 text-sm text-[#F5FAFF] outline-none focus:border-[#A78BFA55]"
-              />
-            </label>
-          </div>
+          <details className="rounded-xl border border-white/[0.06] bg-white/[0.03]">
+            <summary className="cursor-pointer list-none px-3 py-3">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <div className="text-sm font-semibold text-[#F5FAFF]">Advanced review budgets</div>
+                  <div className="mt-1 text-[11px] text-[#94A3B8]">
+                    These limits keep runs bounded. Most reviews can keep the defaults.
+                  </div>
+                </div>
+                <Chip className="text-[9px]">advanced</Chip>
+              </div>
+            </summary>
+            <div className="grid gap-2 px-3 pb-3 md:grid-cols-3 xl:grid-cols-6">
+              <label className="grid gap-1.5">
+                <span className="font-mono text-[9px] uppercase tracking-[1px] text-[#8FA1B8]">Files</span>
+                <input
+                  type="number"
+                  min={1}
+                  value={launchDraft.maxFiles}
+                  onChange={(e) => updateDraft("maxFiles", Number(e.target.value) || 1)}
+                  className="h-9 rounded-xl border border-white/[0.08] bg-black/20 px-3 text-sm text-[#F5FAFF] outline-none focus:border-[#A78BFA55]"
+                />
+              </label>
+              <label className="grid gap-1.5">
+                <span className="font-mono text-[9px] uppercase tracking-[1px] text-[#8FA1B8]">Diff chars</span>
+                <input
+                  type="number"
+                  min={1024}
+                  step={1024}
+                  value={launchDraft.maxDiffChars}
+                  onChange={(e) => updateDraft("maxDiffChars", Number(e.target.value) || 1024)}
+                  className="h-9 rounded-xl border border-white/[0.08] bg-black/20 px-3 text-sm text-[#F5FAFF] outline-none focus:border-[#A78BFA55]"
+                />
+              </label>
+              <label className="grid gap-1.5">
+                <span className="font-mono text-[9px] uppercase tracking-[1px] text-[#8FA1B8]">Prompt chars</span>
+                <input
+                  type="number"
+                  min={1024}
+                  step={1024}
+                  value={launchDraft.maxPromptChars}
+                  onChange={(e) => updateDraft("maxPromptChars", Number(e.target.value) || 1024)}
+                  className="h-9 rounded-xl border border-white/[0.08] bg-black/20 px-3 text-sm text-[#F5FAFF] outline-none focus:border-[#A78BFA55]"
+                />
+              </label>
+              <label className="grid gap-1.5">
+                <span className="font-mono text-[9px] uppercase tracking-[1px] text-[#8FA1B8]">Findings</span>
+                <input
+                  type="number"
+                  min={1}
+                  value={launchDraft.maxFindings}
+                  onChange={(e) => updateDraft("maxFindings", Number(e.target.value) || 1)}
+                  className="h-9 rounded-xl border border-white/[0.08] bg-black/20 px-3 text-sm text-[#F5FAFF] outline-none focus:border-[#A78BFA55]"
+                />
+              </label>
+              <label className="grid gap-1.5">
+                <span className="font-mono text-[9px] uppercase tracking-[1px] text-[#8FA1B8]">Per pass</span>
+                <input
+                  type="number"
+                  min={1}
+                  value={launchDraft.maxFindingsPerPass}
+                  onChange={(e) => updateDraft("maxFindingsPerPass", Number(e.target.value) || 1)}
+                  className="h-9 rounded-xl border border-white/[0.08] bg-black/20 px-3 text-sm text-[#F5FAFF] outline-none focus:border-[#A78BFA55]"
+                />
+              </label>
+              <label className="grid gap-1.5">
+                <span className="font-mono text-[9px] uppercase tracking-[1px] text-[#8FA1B8]">Published</span>
+                <input
+                  type="number"
+                  min={1}
+                  value={launchDraft.maxPublishedFindings}
+                  onChange={(e) => updateDraft("maxPublishedFindings", Number(e.target.value) || 1)}
+                  className="h-9 rounded-xl border border-white/[0.08] bg-black/20 px-3 text-sm text-[#F5FAFF] outline-none focus:border-[#A78BFA55]"
+                />
+              </label>
+            </div>
+          </details>
 
           <div className="rounded-xl border border-white/[0.06] bg-white/[0.03] p-3 text-[11px] text-[#94A3B8]">
-            Reviews are saved locally. The transcript is attached as supporting context.
+            Every review run is saved locally. Use the list below as the run picker, then inspect the selected run's findings, context, and transcript in the right pane.
           </div>
         </div>
       </SectionCard>
 
       <SectionCard
-        title="Saved runs"
+        title="Review runs"
         icon={ClockCounterClockwise}
         action={(
           <Button size="sm" variant="ghost" onClick={() => void refreshRuns()} disabled={loadingRuns}>
@@ -814,9 +1254,12 @@ export function ReviewPage() {
         )}
       >
         <div className="space-y-2">
+          <div className="text-[11px] text-[#94A3B8]">
+            Pick a saved run here to inspect it on the right.
+          </div>
           {runs.length === 0 ? (
             <div className="rounded-xl border border-white/[0.06] bg-white/[0.03] p-3 text-xs text-[#94A3B8]">
-              No saved review runs yet in this workspace.
+              No review runs yet in this workspace. New runs will show up here and open on the right.
             </div>
           ) : runs.map((run) => {
             const active = run.id === selectedRunId;
@@ -847,7 +1290,7 @@ export function ReviewPage() {
                   {run.severitySummary ? Object.entries(run.severitySummary).slice(0, 2).map(([severity, count]) => (
                     <Chip key={severity} className="text-[9px]">{severity}:{count}</Chip>
                   )) : null}
-                  <Chip className="text-[9px]">{run.target.mode}</Chip>
+                  <Chip className="text-[9px]">{toTargetModeLabel(run.target.mode)}</Chip>
                 </div>
               </button>
             );
@@ -866,8 +1309,8 @@ export function ReviewPage() {
               <div className="min-w-0">
                 <div className="flex flex-wrap items-center gap-2">
                   <Chip className={cn("text-[9px]", toReviewStatusTone(selectedRun.status))}>{selectedRun.status}</Chip>
-                  <Chip className="text-[9px]">{selectedRun.target.mode}</Chip>
-                  <Chip className="text-[9px]">{selectedRun.config.selectionMode}</Chip>
+                  <Chip className="text-[9px]">{toTargetModeLabel(selectedRun.target.mode)}</Chip>
+                  <Chip className="text-[9px]">{toSelectionModeLabel(selectedRun.config.selectionMode)}</Chip>
                   <Chip className="text-[9px]">{selectedRun.config.modelId}</Chip>
                 </div>
                 <div className="mt-3 text-lg font-semibold text-[#F5FAFF]">
@@ -898,18 +1341,155 @@ export function ReviewPage() {
             <MetaCard label="Chat session" value={selectedRun.chatSessionId ?? "none"} />
           </section>
 
-          <SectionCard title="Target and configuration" icon={GitBranch}>
+          <SectionCard title="Launch setup" icon={GitBranch}>
             <div className="grid gap-3 md:grid-cols-2">
-              <MetaCard label="Target mode" value={selectedRun.target.mode} />
+              <MetaCard label="Target mode" value={toTargetModeLabel(selectedRun.target.mode)} />
               <MetaCard label="Review target" value={describeRunTarget(selectedRun)} />
-              <MetaCard label="Selection mode" value={selectedRun.config.selectionMode} />
-              <MetaCard label="Budget / files" value={selectedRun.config.budgets.maxFiles} />
-              <MetaCard label="Budget / diff chars" value={selectedRun.config.budgets.maxDiffChars} />
-              <MetaCard label="Budget / prompt chars" value={selectedRun.config.budgets.maxPromptChars} />
-              <MetaCard label="Budget / findings" value={selectedRun.config.budgets.maxFindings} />
-              <MetaCard label="Compare against" value={"kind" in selectedRun.config.compareAgainst ? selectedRun.config.compareAgainst.kind : "default_branch"} />
+              <MetaCard label="Selection mode" value={toSelectionModeLabel(selectedRun.config.selectionMode)} />
+              <MetaCard
+                label="Comparison"
+                value={
+                  selectedRun.compareTarget?.label
+                  ?? (selectedRun.target.mode === "working_tree"
+                    ? "Current HEAD in selected lane"
+                    : selectedRun.target.mode === "commit_range"
+                      ? "Earlier base commit to later head commit"
+                      : "Default branch")
+                }
+              />
+              <MetaCard label="File budget" value={selectedRun.config.budgets.maxFiles} />
+              <MetaCard label="Diff budget" value={selectedRun.config.budgets.maxDiffChars} />
+              <MetaCard label="Prompt budget" value={selectedRun.config.budgets.maxPromptChars} />
+              <MetaCard label="Finding budget" value={selectedRun.config.budgets.maxFindings} />
+              <MetaCard label="Per-pass budget" value={selectedRun.config.budgets.maxFindingsPerPass ?? selectedRun.config.budgets.maxFindings} />
+              <MetaCard label="Publish budget" value={selectedRun.config.budgets.maxPublishedFindings ?? selectedRun.config.budgets.maxFindings} />
             </div>
           </SectionCard>
+
+          {selectedContextArtifacts.length > 0 ? (
+            <SectionCard title="Context used for this review" icon={Sparkle}>
+              <div className="space-y-3">
+                <div className="grid gap-3 md:grid-cols-3">
+                  {selectedContextArtifacts.map((artifact) => {
+                    const artifactType = String(artifact.artifactType);
+                    const countValue =
+                      artifactType === "provenance_brief"
+                        ? readArtifactMetaCount(artifact, ["provenanceCount", "missionCount", "workerDigestCount", "sessionDeltaCount", "priorReviewCount"])
+                        : artifactType === "rule_overlays"
+                          ? readArtifactMetaCount(artifact, ["ruleCount", "matchedRuleCount", "overlayCount", "pathCount"])
+                          : readArtifactMetaCount(artifact, ["signalCount", "checkCount", "testRunCount", "issueCount"]);
+                    const detailChips =
+                      artifactType === "provenance_brief"
+                        ? [
+                            readArtifactMetaCount(artifact, ["missionCount", "missionsCount"]) ? `missions ${readArtifactMetaCount(artifact, ["missionCount", "missionsCount"])}` : null,
+                            readArtifactMetaCount(artifact, ["workerDigestCount", "workerCount"]) ? `workers ${readArtifactMetaCount(artifact, ["workerDigestCount", "workerCount"])}` : null,
+                            readArtifactMetaCount(artifact, ["sessionDeltaCount", "sessionCount"]) ? `sessions ${readArtifactMetaCount(artifact, ["sessionDeltaCount", "sessionCount"])}` : null,
+                          ].filter((value): value is string => Boolean(value))
+                        : artifactType === "rule_overlays"
+                          ? [
+                              readArtifactMetaCount(artifact, ["ruleCount", "matchedRuleCount"]) ? `rules ${readArtifactMetaCount(artifact, ["ruleCount", "matchedRuleCount"])}` : null,
+                              readArtifactMetaCount(artifact, ["pathCount"]) ? `paths ${readArtifactMetaCount(artifact, ["pathCount"])}` : null,
+                            ].filter((value): value is string => Boolean(value))
+                          : [
+                              readArtifactMetaCount(artifact, ["signalCount"]) ? `signals ${readArtifactMetaCount(artifact, ["signalCount"])}` : null,
+                              readArtifactMetaCount(artifact, ["checkCount", "testRunCount"]) ? `checks ${readArtifactMetaCount(artifact, ["checkCount", "testRunCount"])}` : null,
+                              readArtifactMetaCount(artifact, ["issueCount"]) ? `issues ${readArtifactMetaCount(artifact, ["issueCount"])}` : null,
+                            ].filter((value): value is string => Boolean(value));
+
+                    return (
+                      <article key={artifact.id} className="rounded-xl border border-white/[0.06] bg-white/[0.03] p-3">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <Chip className="text-[9px]">{toContextArtifactLabel(artifactType)}</Chip>
+                          {countValue !== null ? <Chip className="text-[9px]">{countValue} items</Chip> : null}
+                          {detailChips.map((chip) => (
+                            <Chip key={`${artifact.id}-${chip}`} className="text-[9px]">
+                              {chip}
+                            </Chip>
+                          ))}
+                        </div>
+                        <div className="mt-2 text-sm font-semibold text-[#F5FAFF]">{artifact.title}</div>
+                        <div className="mt-1 text-xs text-[#C5D2E6]">
+                          {readArtifactMetaString(artifact, "summary") ?? "Compact review context captured for this run."}
+                        </div>
+                        <div className="mt-3 grid gap-2 md:grid-cols-2">
+                          <MetaCard label="Created" value={formatTime(artifact.createdAt)} />
+                          <MetaCard label="Mime type" value={artifact.mimeType} />
+                        </div>
+                        {artifact.contentText ? (
+                          <pre className="mt-3 max-h-72 overflow-auto whitespace-pre-wrap rounded-lg border border-white/[0.06] bg-black/20 p-3 font-mono text-[11px] leading-relaxed text-[#D8E3F2]">
+                            {artifact.contentText}
+                          </pre>
+                        ) : null}
+                        {artifact.metadata ? (
+                          <pre className="mt-3 max-h-72 overflow-auto whitespace-pre-wrap rounded-lg border border-white/[0.06] bg-black/20 p-3 font-mono text-[11px] leading-relaxed text-[#B7C4D7]">
+                            {JSON.stringify(artifact.metadata, null, 2)}
+                          </pre>
+                        ) : null}
+                      </article>
+                    );
+                  })}
+                </div>
+              </div>
+            </SectionCard>
+          ) : null}
+
+          {(selectedPassArtifacts.length > 0 || selectedAdjudicationArtifact || selectedMergedArtifact) ? (
+            <SectionCard title="Passes and adjudication" icon={Sparkle}>
+              <div className="space-y-3">
+                {selectedPassArtifacts.length > 0 ? (
+                  <div className="grid gap-3 md:grid-cols-3">
+                    {selectedPassArtifacts.map((artifact) => (
+                      <article key={artifact.id} className="rounded-xl border border-white/[0.06] bg-white/[0.03] p-3">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <Chip className="text-[9px]">{toPassLabel(readArtifactMetaString(artifact, "passKey") ?? artifact.title)}</Chip>
+                          <Chip className="text-[9px]">{readArtifactMetaNumber(artifact, "keptCount") ?? 0} kept</Chip>
+                          {(readArtifactMetaNumber(artifact, "budgetTrimmedCount") ?? 0) > 0 ? (
+                            <Chip className="text-[9px]">trimmed {readArtifactMetaNumber(artifact, "budgetTrimmedCount")}</Chip>
+                          ) : null}
+                        </div>
+                        <div className="mt-2 text-xs text-[#C5D2E6]">
+                          {readArtifactMetaString(artifact, "summary") ?? "No summary recorded for this pass."}
+                        </div>
+                        <div className="mt-3 grid gap-2 md:grid-cols-2">
+                          <MetaCard label="Parsed" value={readArtifactMetaNumber(artifact, "totalParsedCount") ?? "—"} />
+                          <MetaCard label="Saved" value={readArtifactMetaNumber(artifact, "keptCount") ?? "—"} />
+                        </div>
+                      </article>
+                    ))}
+                  </div>
+                ) : null}
+
+                {(selectedAdjudicationArtifact || selectedMergedArtifact) ? (
+                  <div className="grid gap-3 md:grid-cols-2">
+                    {selectedAdjudicationArtifact ? (
+                      <article className="rounded-xl border border-white/[0.06] bg-white/[0.03] p-3">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <Chip className="text-[9px]">Adjudication</Chip>
+                          <Chip className="text-[9px]">accepted {readArtifactMetaNumber(selectedAdjudicationArtifact, "acceptedCount") ?? 0}</Chip>
+                          <Chip className="text-[9px]">rejected {readArtifactMetaNumber(selectedAdjudicationArtifact, "rejectedCount") ?? 0}</Chip>
+                        </div>
+                        <div className="mt-2 text-xs text-[#C5D2E6]">
+                          Merged overlaps, filtered low-signal candidates, and applied the explicit run/publication budgets before findings became final.
+                        </div>
+                      </article>
+                    ) : null}
+                    {selectedMergedArtifact ? (
+                      <article className="rounded-xl border border-white/[0.06] bg-white/[0.03] p-3">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <Chip className="text-[9px]">Final result</Chip>
+                          <Chip className="text-[9px]">findings {readArtifactMetaNumber(selectedMergedArtifact, "findingCount") ?? 0}</Chip>
+                          <Chip className="text-[9px]">publishable {readArtifactMetaNumber(selectedMergedArtifact, "publicationEligibleCount") ?? 0}</Chip>
+                        </div>
+                        <div className="mt-2 text-xs text-[#C5D2E6]">
+                          {selectedRun.summary ?? "No merged summary recorded."}
+                        </div>
+                      </article>
+                    ) : null}
+                  </div>
+                ) : null}
+              </div>
+            </SectionCard>
+          ) : null}
 
           {selectedDetail?.publications?.length ? (
             <SectionCard title="Publication" icon={ArrowSquareOut}>
@@ -949,12 +1529,18 @@ export function ReviewPage() {
             <div className="space-y-2">
               {selectedDetail?.findings?.length ? selectedDetail.findings.map((finding, index) => {
                 const evidence = normalizeEvidence(finding.evidence);
+                const findingClass = (finding as { findingClass?: string | null }).findingClass ?? null;
                 return (
                   <article key={finding.id ?? `${finding.title}-${index}`} className="rounded-xl border border-white/[0.06] bg-white/[0.03] p-3">
                     <div className="flex items-start justify-between gap-2">
                       <div className="min-w-0">
                         <div className="flex flex-wrap items-center gap-2">
                           <Chip className={cn("text-[9px]", toSeverityTone(finding.severity))}>{finding.severity}</Chip>
+                          {findingClass ? (
+                            <Chip className={cn("text-[9px]", toFindingClassTone(findingClass))}>
+                              {toFindingClassLabel(findingClass)}
+                            </Chip>
+                          ) : null}
                           <div className="truncate text-sm font-semibold text-[#F5FAFF]">{finding.title}</div>
                         </div>
                         <div className="mt-1 text-xs text-[#93A4B8]">{finding.body}</div>
@@ -966,6 +1552,14 @@ export function ReviewPage() {
                     </div>
                     <div className="mt-3 flex flex-wrap items-center gap-1.5">
                       <Chip className="text-[9px]">{finding.publicationState}</Chip>
+                      {finding.originatingPasses?.map((pass) => (
+                        <Chip key={`${finding.id}-${pass}`} className="text-[9px]">{toPassLabel(pass)}</Chip>
+                      ))}
+                      {finding.adjudication ? (
+                        <Chip className="text-[9px]">
+                          {finding.adjudication.publicationEligible ? "publication eligible" : "local only"}
+                        </Chip>
+                      ) : null}
                       {finding.filePath ? <Chip className="text-[9px]">{finding.filePath}{finding.line ? `:${finding.line}` : ""}</Chip> : null}
                       {finding.filePath ? (
                         <Button size="sm" variant="ghost" onClick={() => handleOpenFindingInFiles(finding)}>
@@ -980,6 +1574,11 @@ export function ReviewPage() {
                         </Button>
                       ) : null}
                     </div>
+                    {finding.adjudication ? (
+                      <div className="mt-3 rounded-lg border border-white/[0.06] bg-black/20 p-2 text-[11px] text-[#B7C4D7]">
+                        {finding.adjudication.rationale}
+                      </div>
+                    ) : null}
                     {evidence.length > 0 ? (
                       <div className="mt-3 space-y-2">
                         {evidence.map((entry, evidenceIndex) => (
@@ -1014,9 +1613,9 @@ export function ReviewPage() {
                     <div className="text-sm font-semibold text-[#F5FAFF]">{artifact.title}</div>
                     <span className="text-[11px] text-[#94A3B8]">{artifact.mimeType}</span>
                   </div>
-                  {artifact.contentText ? <pre className="mt-2 whitespace-pre-wrap rounded-lg border border-white/[0.06] bg-black/20 p-3 font-mono text-[11px] leading-relaxed text-[#D8E3F2]">{artifact.contentText}</pre> : null}
+                  {artifact.contentText ? <pre className="mt-2 max-h-72 overflow-auto whitespace-pre-wrap rounded-lg border border-white/[0.06] bg-black/20 p-3 font-mono text-[11px] leading-relaxed text-[#D8E3F2]">{artifact.contentText}</pre> : null}
                   {artifact.metadata ? (
-                    <pre className="mt-2 whitespace-pre-wrap rounded-lg border border-white/[0.06] bg-black/20 p-3 font-mono text-[11px] leading-relaxed text-[#B7C4D7]">
+                    <pre className="mt-2 max-h-72 overflow-auto whitespace-pre-wrap rounded-lg border border-white/[0.06] bg-black/20 p-3 font-mono text-[11px] leading-relaxed text-[#B7C4D7]">
                       {JSON.stringify(artifact.metadata, null, 2)}
                     </pre>
                   ) : null}
@@ -1070,13 +1669,13 @@ export function ReviewPage() {
 
   const paneConfigs: Record<string, PaneConfig> = {
     launch: {
-      title: "Launch and history",
+      title: "Launch and saved runs",
       icon: Sparkle,
       bodyClassName: "flex flex-col min-h-0",
       children: launchPane,
     },
     detail: {
-      title: "Run detail",
+      title: "Selected run",
       icon: MagnifyingGlass,
       bodyClassName: "flex flex-col min-h-0",
       children: detailPane,
@@ -1107,12 +1706,12 @@ export function ReviewPage() {
           </div>
           <div>
             <div className="text-[15px] font-bold tracking-tight text-[#FAFAFA]">Review</div>
-            <div className="text-[11px] text-[#94A3B8]">Saved review runs, findings, publication records, and transcript history.</div>
+            <div className="text-[11px] text-[#94A3B8]">Launch a review on the left, then inspect the selected run on the right.</div>
           </div>
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
-          <Chip className="text-[9px]">{runs.length} saved</Chip>
+          <Chip className="text-[9px]">{runs.length} runs</Chip>
           <Chip className="text-[9px]">{activeRuns} active</Chip>
           <Chip className="text-[9px]">{totalFindings} findings</Chip>
           <Chip className="text-[9px]">{selectedLane ? selectedLane.name : "No lane selected"}</Chip>

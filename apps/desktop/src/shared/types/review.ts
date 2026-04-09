@@ -10,11 +10,21 @@ export type ReviewSeverity = "critical" | "high" | "medium" | "low" | "info";
 export type ReviewAnchorState = "anchored" | "file_only" | "missing";
 export type ReviewPublicationState = "local_only" | "published";
 export type ReviewSourcePass = "single_pass" | "adjudicated";
+export type ReviewPassKey = "diff-risk" | "cross-file-impact" | "checks-and-tests";
+export type ReviewFindingClass = "intent_drift" | "incomplete_rollout" | "late_stage_regression";
 export type ReviewSelectionMode = "full_diff" | "selected_commits" | "dirty_only";
 export type ReviewPublishBehavior = "local_only" | "auto_publish";
 export type ReviewPublicationStatus = "published" | "failed";
 export type ReviewArtifactType =
   | "prompt"
+  | "pass_prompt"
+  | "pass_output"
+  | "pass_findings"
+  | "adjudication_result"
+  | "merged_findings"
+  | "provenance_brief"
+  | "rule_overlays"
+  | "validation_signals"
   | "diff_bundle"
   | "review_output"
   | "untracked_snapshot"
@@ -78,6 +88,8 @@ export type ReviewRunBudgetConfig = {
   maxDiffChars: number;
   maxPromptChars: number;
   maxFindings: number;
+  maxFindingsPerPass?: number;
+  maxPublishedFindings?: number;
 };
 
 export type ReviewRunConfig = {
@@ -120,11 +132,20 @@ export type ReviewEvidence = {
   artifactId: string | null;
 };
 
+export type ReviewFindingAdjudication = {
+  score: number;
+  candidateCount: number;
+  mergedFindingIds: string[];
+  rationale: string;
+  publicationEligible: boolean;
+};
+
 export type ReviewFinding = {
   id: string;
   runId: string;
   title: string;
   severity: ReviewSeverity;
+  findingClass?: ReviewFindingClass | null;
   body: string;
   confidence: number;
   evidence: ReviewEvidence[];
@@ -133,6 +154,8 @@ export type ReviewFinding = {
   anchorState: ReviewAnchorState;
   sourcePass: ReviewSourcePass;
   publicationState: ReviewPublicationState;
+  originatingPasses?: ReviewPassKey[];
+  adjudication?: ReviewFindingAdjudication | null;
 };
 
 export type ReviewSeveritySummary = {
