@@ -161,6 +161,25 @@ export function resolveCreateLaneRequest(args: {
   };
 }
 
+export function resolveLaneIdsDeepLinkSelection(args: {
+  laneIdsRaw: string | null;
+  inspectorTabParam?: string | null;
+  availableLaneIds: Iterable<string>;
+  consumedSignature: string | null;
+}): { laneIds: string[]; signature: string } | null {
+  const parsed = (args.laneIdsRaw ?? "")
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean);
+  if (parsed.length === 0) return null;
+  const signature = `${parsed.join(",")}::${args.inspectorTabParam ?? ""}`;
+  if (signature === args.consumedSignature) return null;
+  const available = new Set(args.availableLaneIds);
+  const laneIds = parsed.filter((laneId) => available.has(laneId));
+  if (laneIds.length !== parsed.length) return null;
+  return { laneIds, signature };
+}
+
 /* ---- Component ---- */
 
 export function LanesPage() {
@@ -254,6 +273,7 @@ export function LanesPage() {
   const [expandedGitActionsLaneId, setExpandedGitActionsLaneId] = useState<string | null>(null);
   const [integrationProposals, setIntegrationProposals] = useState<IntegrationProposal[]>([]);
   const laneSnapshots = useAppStore((s) => s.laneSnapshots);
+  const consumedLaneIdsDeepLinkSignatureRef = useRef<string | null>(null);
 
   useEffect(() => {
     logRendererDebugEvent("renderer.lanes.page_mount");
@@ -1286,24 +1306,34 @@ export function LanesPage() {
     if (params.get("action") === "create") {
       prepareCreateDialog();
     }
-    if (laneIdsRaw) {
-      const parsed = laneIdsRaw.split(",").map((s) => s.trim()).filter(Boolean);
-      const valid = parsed.filter((id) => lanesById.has(id));
-      if (valid.length) {
-        selectLane(valid[0]!);
-        setActiveLaneIds(valid);
-        setPinnedLaneIds(new Set());
-        if (inspectorTabParam && valid[0]) {
-          setLaneInspectorTab(valid[0], inspectorTabParam as LaneInspectorTab);
+    const laneIdsSelection = resolveLaneIdsDeepLinkSelection({
+      laneIdsRaw,
+      inspectorTabParam,
+      availableLaneIds: lanesById.keys(),
+      consumedSignature: consumedLaneIdsDeepLinkSignatureRef.current,
+    });
+    if (laneIdsSelection) {
+      consumedLaneIdsDeepLinkSignatureRef.current = laneIdsSelection.signature;
+      const valid = laneIdsSelection.laneIds;
+      selectLane(valid[0]!);
+      setActiveLaneIds(valid);
+      setPinnedLaneIds(new Set());
+      if (inspectorTabParam && valid[0]) {
+        setLaneInspectorTab(valid[0], inspectorTabParam as LaneInspectorTab);
+      }
+    } else if (laneIdsRaw) {
+      // Keep waiting for the referenced lanes to exist instead of consuming
+      // the deep link early. Once it succeeds, later refreshes will no-op.
+    } else {
+      consumedLaneIdsDeepLinkSignatureRef.current = null;
+      if (laneId) {
+        selectLane(laneId);
+        if (params.get("focus") === "single") {
+          setActiveLaneIds([laneId]);
         }
-      }
-    } else if (laneId) {
-      selectLane(laneId);
-      if (params.get("focus") === "single") {
-        setActiveLaneIds([laneId]);
-      }
-      if (inspectorTabParam) {
-        setLaneInspectorTab(laneId, inspectorTabParam as LaneInspectorTab);
+        if (inspectorTabParam) {
+          setLaneInspectorTab(laneId, inspectorTabParam as LaneInspectorTab);
+        }
       }
     }
     if (sessionId) focusSession(sessionId);

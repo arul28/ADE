@@ -168,6 +168,7 @@ import {
   openCodeEventStream,
   refreshOpenCodeSessionToolSelection,
   resolveOpenCodeModelSelection,
+  runOpenCodeTextPrompt,
   startOpenCodeSession,
   type DiscoveredLocalModelEntry,
   type OpenCodeSessionHandle,
@@ -4726,7 +4727,7 @@ export function createAgentChatService(args: {
       const preferredModelId =
         [
           requestedModelId,
-          config.autoTitleModelId,
+          config.titleModelId,
           DEFAULT_AUTO_TITLE_MODEL_ID,
           "anthropic/claude-haiku-4-5",
           "openai/gpt-5.4-mini",
@@ -4760,7 +4761,8 @@ export function createAgentChatService(args: {
         .trim()
         .replace(/\s+/g, '-')
         .replace(/-+/g, '-')
-        .slice(0, 60);
+        .slice(0, 60)
+        .replace(/^-+|-+$/g, "");
 
       return normalized.length > 0 ? normalized : fallback();
     } catch (error) {

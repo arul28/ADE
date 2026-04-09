@@ -78,6 +78,8 @@ import { playAgentTurnCompletionSound } from "../../lib/agentTurnCompletionSound
 
 const LAST_MODEL_ID_KEY = "ade.chat.lastModelId";
 const LAST_REASONING_KEY_PREFIX = "ade.chat.lastReasoningEffort";
+const PROJECT_CONTEXT_DOC_PATHS = [".ade/context/PRD.ade.md", ".ade/context/ARCHITECTURE.ade.md"] as const;
+export const DEFAULT_PARALLEL_ATTACHMENT_REQUEST = "Please review the attached files.";
 
 const LEGACY_PROVIDER_KEY = "ade.chat.lastProvider";
 const LEGACY_MODEL_KEY_PREFIX = "ade.chat.lastModel";
@@ -666,14 +668,89 @@ function preferredChatLabel(raw: string | null | undefined): string | null {
   return stripOutcomePrefix(normalized);
 }
 
-function parallelLaneModelSuffix(descriptor: ModelDescriptor | null | undefined): string {
+function slugifyParallelLaneSegment(value: string): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "");
+}
+
+function parallelLaneProviderPrefix(descriptor: ModelDescriptor | null | undefined): string {
   if (!descriptor) return "model";
-  if (descriptor.family === "openai" || descriptor.cliCommand === "codex") return "codex";
-  if (descriptor.family === "anthropic" || descriptor.cliCommand === "claude") return "claude";
+  if (descriptor.cliCommand === "codex" || (descriptor.isCliWrapped && descriptor.family === "openai")) return "codex";
+  if (descriptor.cliCommand === "claude" || (descriptor.isCliWrapped && descriptor.family === "anthropic")) return "claude";
   if (descriptor.family === "cursor") return "cursor";
-  const raw = (descriptor.displayName ?? descriptor.shortId ?? descriptor.id).trim();
-  const slug = raw.replace(/\s+/g, "-").replace(/[^a-zA-Z0-9-]+/g, "").replace(/-+/g, "-");
-  return slug.slice(0, 28) || "model";
+  return slugifyParallelLaneSegment(descriptor.family) || "model";
+}
+
+export function parallelLaneModelSuffix(descriptor: ModelDescriptor | null | undefined): string {
+  if (!descriptor) return "model";
+  const prefix = parallelLaneProviderPrefix(descriptor);
+  const rawBase =
+    descriptor.providerModelId?.trim()
+    || descriptor.shortId?.trim()
+    || descriptor.displayName?.trim()
+    || descriptor.id;
+  const base = slugifyParallelLaneSegment(rawBase)
+    .replace(/^(claude|codex|cursor)-+/, "")
+    .replace(new RegExp(`^${prefix}-+`), "");
+  const candidate = [prefix, base].filter(Boolean).join("-");
+  return candidate.slice(0, 40) || prefix || "model";
+}
+
+function projectContextDocsPrelude(docPaths: readonly string[] = PROJECT_CONTEXT_DOC_PATHS): string {
+  return [
+    "[Project Context — generated from main branch, may not reflect in-progress lane work]",
+    "The following project-level docs are available for reference. Read them with read_file if you need project context:",
+    ...docPaths.map((path) => `- ${path}`),
+  ].join("\n");
+}
+
+function prependProjectContextDocs(text: string): string {
+  return `${projectContextDocsPrelude()}\n\n---\n\n${text}`;
+}
+
+export function buildParallelLaunchPrompt(args: {
+  text: string;
+  attachmentCount: number;
+  includeProjectDocs: boolean;
+}): { sendText: string; displayText: string } {
+  const trimmed = args.text.trim();
+  const displayText = trimmed.length
+    ? trimmed
+    : args.attachmentCount > 0
+      ? DEFAULT_PARALLEL_ATTACHMENT_REQUEST
+      : "";
+  if (!displayText.length) {
+    return { sendText: "", displayText: "" };
+  }
+  const sendText = args.includeProjectDocs && !trimmed.startsWith("/")
+    ? prependProjectContextDocs(displayText)
+    : displayText;
+  return { sendText, displayText };
+}
+
+export async function cleanupTransientParallelLaunchLanes(args: {
+  laneIds: string[];
+  deleteLane: (args: { laneId: string; force?: boolean }) => Promise<void>;
+  refreshLanes: () => Promise<void>;
+  onCleanupError?: (args: { phase: "delete" | "refresh"; laneId: string | null; error: unknown }) => void;
+}): Promise<void> {
+  if (args.laneIds.length === 0) return;
+  for (const laneId of args.laneIds) {
+    try {
+      await args.deleteLane({ laneId, force: true });
+    } catch (error) {
+      args.onCleanupError?.({ phase: "delete", laneId, error });
+    }
+  }
+  try {
+    await args.refreshLanes();
+  } catch (error) {
+    args.onCleanupError?.({ phase: "refresh", laneId: null, error });
+  }
 }
 
 function chatSessionTitle(session: AgentChatSessionSummary): string {
@@ -2498,32 +2575,20 @@ export function AgentChatPane({
             provider,
             model,
             modelId: slot.modelId,
-            sessionProfile: resolveChatSessionProfile(computerUsePolicy),
+            sessionProfile: resolveChatSessionProfile(),
             reasoningEffort: slot.reasoningEffort,
             ...buildNativeControlPayloadForSlot(slot, provider),
-            computerUse: computerUsePolicy,
           });
           sessionByLane.set(childLane.id, created.id);
         }
 
         await refreshLanesStore();
 
-        let finalText = text;
-        if (!text.startsWith("/") && includeDocsSnapshot) {
-          const docPaths = [".ade/context/PRD.ade.md", ".ade/context/ARCHITECTURE.ade.md"];
-          const docNote = [
-            "[Project Context — generated from main branch, may not reflect in-progress lane work]",
-            "The following project-level docs are available for reference. Read them with read_file if you need project context:",
-            ...docPaths.map((p) => `- ${p}`),
-          ].join("\n");
-          finalText = `${docNote}\n\n---\n\n${finalText}`;
-        }
-        const sendText = finalText.length > 0
-          ? finalText
-          : attachmentsSnapshot.length
-            ? "Please review the attached files."
-            : finalText;
-        const displayForSend = text.length > 0 ? text : sendText;
+        const { sendText, displayText: displayForSend } = buildParallelLaunchPrompt({
+          text,
+          attachmentCount: attachmentsSnapshot.length,
+          includeProjectDocs: includeDocsSnapshot,
+        });
 
         setParallelLaunchStatus("Sending prompt to each lane…");
         for (let idx = 0; idx < parallelModelSlots.length; idx += 1) {
@@ -2588,10 +2653,19 @@ export function AgentChatPane({
         q.set("workFocus", "1");
         navigate(`/lanes?${q.toString()}`);
       } catch (submitError) {
-        // Best-effort cleanup of orphan child lanes
-        for (const orphanLaneId of createdLaneIds) {
-          try { await window.ade.lanes.delete({ laneId: orphanLaneId }); } catch { /* logged elsewhere */ }
-        }
+        setParallelLaunchStatus(createdLaneIds.length > 0 ? "Cleaning up child lanes…" : null);
+        await cleanupTransientParallelLaunchLanes({
+          laneIds: createdLaneIds,
+          deleteLane: (args) => window.ade.lanes.delete(args),
+          refreshLanes: refreshLanesStore,
+          onCleanupError: ({ phase, laneId, error: cleanupError }) => {
+            console.error("parallel launch cleanup failed", {
+              phase,
+              laneId,
+              error: cleanupError instanceof Error ? cleanupError.message : String(cleanupError),
+            });
+          },
+        });
         const message = submitError instanceof Error ? submitError.message : String(submitError);
         setDraft((current) => (current.trim().length ? current : draftSnapshot));
         setAttachments((current) => (current.length ? current : attachmentsSnapshot));
@@ -2631,13 +2705,7 @@ export function AgentChatPane({
 
       // Prepend project context docs if the user toggled the checkbox
       if (!isLiteralSlashCommand && includeProjectDocs) {
-        const docPaths = [".ade/context/PRD.ade.md", ".ade/context/ARCHITECTURE.ade.md"];
-        const docNote = [
-          "[Project Context — generated from main branch, may not reflect in-progress lane work]",
-          "The following project-level docs are available for reference. Read them with read_file if you need project context:",
-          ...docPaths.map((p) => `- ${p}`),
-        ].join("\n");
-        finalText = `${docNote}\n\n---\n\n${finalText}`;
+        finalText = prependProjectContextDocs(finalText);
         setIncludeProjectDocs(false);
       }
 

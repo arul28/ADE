@@ -416,6 +416,7 @@ export type IntegrationLaneSummary = {
   diffStat: { insertions: number; deletions: number; filesChanged: number };
 };
 
+export type IntegrationLaneOrigin = "ade-created" | "adopted";
 export type IntegrationWorkflowDisplayState = "active" | "history";
 export type IntegrationCleanupState = "none" | "required" | "declined" | "completed";
 
@@ -439,6 +440,7 @@ export type IntegrationProposal = {
   mergeIntoHeadSha?: string | null;
   status: "proposed" | "committed";
   integrationLaneId?: string | null;
+  integrationLaneOrigin?: IntegrationLaneOrigin | null;
   linkedGroupId?: string | null;
   linkedPrId?: string | null;
   workflowDisplayState?: IntegrationWorkflowDisplayState;

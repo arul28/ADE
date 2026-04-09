@@ -20,6 +20,7 @@ import type {
   DeletePrArgs,
   DeletePrResult,
   IntegrationLaneChangeStatus,
+  IntegrationLaneOrigin,
   IntegrationLaneSnapshot,
   GitHubRepoRef,
   IntegrationLaneSummary,
@@ -220,6 +221,23 @@ function parseWorkflowDisplayState(raw: string | null | undefined): IntegrationW
 
 function parseCleanupState(raw: string | null | undefined): IntegrationCleanupState {
   return raw === "required" || raw === "declined" || raw === "completed" ? raw : "none";
+}
+
+function getIntegrationLaneOrigin(row: {
+  integration_lane_id: string | null;
+  preferred_integration_lane_id: string | null;
+}): IntegrationLaneOrigin | null {
+  const integrationLaneId = asString(row.integration_lane_id).trim() || null;
+  if (!integrationLaneId) return null;
+  const preferredIntegrationLaneId = asString(row.preferred_integration_lane_id).trim() || null;
+  return preferredIntegrationLaneId === integrationLaneId ? "adopted" : "ade-created";
+}
+
+function isAdeOwnedIntegrationLane(row: {
+  integration_lane_id: string | null;
+  preferred_integration_lane_id: string | null;
+}): boolean {
+  return getIntegrationLaneOrigin(row) === "ade-created";
 }
 
 function createEmptyIntegrationResolutionState(integrationLaneId: string, updatedAt = nowIso()): IntegrationResolutionState {
@@ -1356,6 +1374,7 @@ export function createPrService({
       mergeIntoHeadSha: asString(row.merge_into_head_sha).trim() || null,
       status: String(row.status) as IntegrationProposal["status"],
       integrationLaneId,
+      integrationLaneOrigin: getIntegrationLaneOrigin(row),
       linkedGroupId: asString(row.linked_group_id).trim() || null,
       linkedPrId: asString(row.linked_pr_id).trim() || null,
       workflowDisplayState: parseWorkflowDisplayState(row.workflow_display_state),
@@ -3603,6 +3622,7 @@ export function createPrService({
       mergeIntoHeadSha: mergeIntoHeadSha ?? null,
       linkedGroupId: null,
       linkedPrId: null,
+      integrationLaneOrigin: null,
       workflowDisplayState: "active",
       cleanupState: "none",
       closedAt: null,
@@ -3748,6 +3768,7 @@ export function createPrService({
 
       const preparedLane = await createIntegrationLaneForProposal({
         proposalId: args.proposalId,
+        allowDirtyWorktree: args.allowDirtyWorktree,
       });
 
       if (preparedLane.conflictingLanes.length > 0) {
@@ -4233,9 +4254,13 @@ export function createPrService({
       ? args.archiveSourceLaneIds.filter((laneId): laneId is string => typeof laneId === "string" && laneId.trim().length > 0)
       : [];
     const targetLaneIds = new Set<string>();
+    const skippedLaneIds: string[] = [];
     if (args.archiveIntegrationLane !== false) {
       const integrationLaneId = asString(row.integration_lane_id).trim();
-      if (integrationLaneId) targetLaneIds.add(integrationLaneId);
+      if (integrationLaneId) {
+        if (isAdeOwnedIntegrationLane(row)) targetLaneIds.add(integrationLaneId);
+        else skippedLaneIds.push(integrationLaneId);
+      }
     }
     for (const laneId of requestedSourceLaneIds) {
       if (sourceLaneIds.includes(laneId)) targetLaneIds.add(laneId);
@@ -4250,7 +4275,6 @@ export function createPrService({
     const laneList = await laneService.list({ includeArchived: true, includeStatus: false });
     const laneById = new Map(laneList.map((lane) => [lane.id, lane]));
     const archivedLaneIds: string[] = [];
-    const skippedLaneIds: string[] = [];
 
     for (const laneId of targetLaneIds) {
       const lane = laneById.get(laneId);
@@ -4312,14 +4336,15 @@ export function createPrService({
     const proposalRow = db.get<{
       id: string;
       integration_lane_id: string | null;
+      preferred_integration_lane_id: string | null;
     }>(
-      `select id, integration_lane_id from integration_proposals where id = ?`,
+      `select id, integration_lane_id, preferred_integration_lane_id from integration_proposals where id = ?`,
       [args.proposalId]
     );
     if (!proposalRow) throw new Error(`Proposal not found: ${args.proposalId}`);
     let deletedIntegrationLane = false;
     const integrationLaneId = asString(proposalRow.integration_lane_id).trim() || null;
-    if (args.deleteIntegrationLane && integrationLaneId) {
+    if (args.deleteIntegrationLane && integrationLaneId && isAdeOwnedIntegrationLane(proposalRow)) {
       try {
         await laneService.delete({
           laneId: integrationLaneId,

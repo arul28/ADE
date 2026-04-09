@@ -298,16 +298,42 @@ function clearProposalIdFromLocation(): void {
   }
 }
 
+function normalizeIntegrationLaneSelection(value: string | null | undefined): string | null {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : null;
+}
+
+function getProposalIntegrationLaneOrigin(proposal: IntegrationProposal | null): "ade-created" | "adopted" | null {
+  if (!proposal?.integrationLaneId) return null;
+  if (proposal.integrationLaneOrigin) return proposal.integrationLaneOrigin;
+  const integrationLaneId = normalizeIntegrationLaneSelection(proposal.integrationLaneId);
+  const preferredIntegrationLaneId = normalizeIntegrationLaneSelection(proposal.preferredIntegrationLaneId);
+  return integrationLaneId && preferredIntegrationLaneId === integrationLaneId ? "adopted" : "ade-created";
+}
+
+function isAdeOwnedIntegrationLane(proposal: IntegrationProposal | null): boolean {
+  return getProposalIntegrationLaneOrigin(proposal) === "ade-created";
+}
+
 function getIntegrationLaneWarningMessages(proposal: IntegrationProposal | null): string[] {
   if (!proposal || !proposal.integrationLaneId) return [];
   const laneLabel = proposal.integrationLaneName?.trim() || "integration lane";
   const messages: string[] = [];
   const changeStatus = proposal.resolutionState?.laneChangeStatus;
+  const adeOwnedLane = isAdeOwnedIntegrationLane(proposal);
+
+  if (!adeOwnedLane) {
+    messages.push(`${laneLabel} is an existing lane this proposal uses as its merge target. ADE will keep the lane when you delete or re-simulate this proposal.`);
+  }
 
   if (changeStatus === "changed") {
-    messages.push(`${laneLabel} has changed since ADE created it. Deleting it will discard any manual or AI resolution work in that lane.`);
+    messages.push(
+      adeOwnedLane
+        ? `${laneLabel} has changed since ADE prepared it. Deleting it will discard any manual or AI resolution work in that lane.`
+        : `${laneLabel} has changed since this proposal captured its baseline. Re-simulating will keep the lane, so review any manual or AI changes there carefully.`,
+    );
   } else if (changeStatus === "unknown") {
-    messages.push(`${laneLabel} predates lane baseline tracking, so ADE cannot confirm whether it changed after creation.`);
+    messages.push(`${laneLabel} predates lane baseline tracking, so ADE cannot confirm whether it changed after preparation.`);
   } else if (changeStatus === "missing") {
     messages.push(`${laneLabel} is already missing from the workspace. Deleting the proposal will only remove ADE's proposal record.`);
   }
@@ -540,6 +566,10 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
     () => proposals.find((p) => p.proposalId === selectedProposalId) ?? null,
     [proposals, selectedProposalId],
   );
+  const selectedProposalAllowsLaneDeletion = React.useMemo(
+    () => isAdeOwnedIntegrationLane(selectedProposal),
+    [selectedProposal],
+  );
   const selectedProposalLaneWarnings = React.useMemo(
     () => getIntegrationLaneWarningMessages(selectedProposal),
     [selectedProposal],
@@ -672,7 +702,7 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
   };
 
   const handleResimulate = async (p: IntegrationProposal) => {
-    const deleteIntegrationLane = p.integrationLaneId
+    const deleteIntegrationLane = p.integrationLaneId && isAdeOwnedIntegrationLane(p)
       ? window.confirm(
           [
             "Re-simulating will replace this proposal.",
@@ -730,7 +760,7 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
     try {
       await window.ade.prs.deleteProposal({
         proposalId: proposal.proposalId,
-        deleteIntegrationLane: deleteProposalLaneToo && Boolean(proposal.integrationLaneId),
+        deleteIntegrationLane: deleteProposalLaneToo && Boolean(proposal.integrationLaneId) && isAdeOwnedIntegrationLane(proposal),
       });
       setProposals((prev) => prev.filter((entry) => entry.proposalId !== proposal.proposalId));
       setDeleteProposalConfirm(false);
@@ -1267,10 +1297,25 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
     setMergeIntoLaneDraft(fromProposal);
   }, [selectedProposal?.proposalId, selectedProposal?.preferredIntegrationLaneId]);
 
+  React.useEffect(() => {
+    if (!selectedProposalAllowsLaneDeletion) {
+      setDeleteProposalLaneToo(false);
+    }
+  }, [selectedProposalAllowsLaneDeletion, selectedProposal?.proposalId]);
+
+  const mergeIntoTargetChanged = React.useMemo(
+    () => normalizeIntegrationLaneSelection(selectedProposal?.preferredIntegrationLaneId) !== normalizeIntegrationLaneSelection(mergeIntoLaneDraft),
+    [mergeIntoLaneDraft, selectedProposal?.preferredIntegrationLaneId],
+  );
+
   const handleApplyMergeIntoTarget = React.useCallback(async () => {
     if (!selectedProposal) return;
-    const trimmed = mergeIntoLaneDraft.trim();
-    if (trimmed && selectedProposal.sourceLaneIds.includes(trimmed)) {
+    const nextPreferredIntegrationLaneId = normalizeIntegrationLaneSelection(mergeIntoLaneDraft);
+    if (nextPreferredIntegrationLaneId === normalizeIntegrationLaneSelection(selectedProposal.preferredIntegrationLaneId)) {
+      setCommitError(null);
+      return;
+    }
+    if (nextPreferredIntegrationLaneId && selectedProposal.sourceLaneIds.includes(nextPreferredIntegrationLaneId)) {
       setCommitError("Merge-into lane cannot be one of the source lanes.");
       return;
     }
@@ -1281,11 +1326,11 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
       const persisted = await window.ade.prs.simulateIntegration({
         sourceLaneIds: selectedProposal.sourceLaneIds,
         baseBranch: selectedProposal.baseBranch,
-        mergeIntoLaneId: trimmed || null,
+        mergeIntoLaneId: nextPreferredIntegrationLaneId,
       });
       await window.ade.prs.updateProposal({
         proposalId: persisted.proposalId,
-        preferredIntegrationLaneId: trimmed || null,
+        preferredIntegrationLaneId: nextPreferredIntegrationLaneId,
         mergeIntoHeadSha: persisted.mergeIntoHeadSha ?? null,
         ...(selectedProposal.title ? { title: selectedProposal.title } : {}),
         ...(selectedProposal.body !== undefined ? { body: selectedProposal.body } : {}),
@@ -2129,16 +2174,16 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
             </div>
             <button
               type="button"
-              disabled={proposalBusy}
+              disabled={proposalBusy || !mergeIntoTargetChanged}
               className="inline-flex items-center font-mono font-bold uppercase tracking-[1px] transition-all duration-100"
               style={{
                 fontSize: 10,
                 height: 36,
                 padding: "0 14px",
-                background: proposalBusy ? "#27272A" : "#A78BFA",
-                color: proposalBusy ? "#71717A" : "#0F0D14",
+                background: proposalBusy || !mergeIntoTargetChanged ? "#27272A" : "#A78BFA",
+                color: proposalBusy || !mergeIntoTargetChanged ? "#71717A" : "#0F0D14",
                 border: "none",
-                cursor: proposalBusy ? "not-allowed" : "pointer",
+                cursor: proposalBusy || !mergeIntoTargetChanged ? "not-allowed" : "pointer",
               }}
               onClick={() => void handleApplyMergeIntoTarget()}
             >
@@ -3034,9 +3079,11 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
                 DELETE THIS PROPOSAL?
               </div>
               <div className="font-mono" style={{ fontSize: 11, color: "#D4D4D8", marginBottom: 10 }}>
-                ADE will remove the saved integration proposal. You can optionally delete the integration lane it created for this proposal too.
+                {selectedProposalAllowsLaneDeletion
+                  ? "ADE will remove the saved integration proposal. You can optionally delete the integration lane it created for this proposal too."
+                  : "ADE will remove the saved integration proposal and keep the existing merge-target lane this proposal adopted."}
               </div>
-              {selectedProposal.integrationLaneId && (
+              {selectedProposal.integrationLaneId && selectedProposalAllowsLaneDeletion && (
                 <label className="flex items-start font-mono cursor-pointer" style={{ fontSize: 11, color: "#D4D4D8", gap: 8, marginBottom: 10 }}>
                   <input
                     type="checkbox"

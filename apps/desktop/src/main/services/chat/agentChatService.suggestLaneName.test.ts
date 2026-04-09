@@ -1,9 +1,17 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { generateText, streamText } from "ai";
+import { runOpenCodeTextPrompt } from "../opencode/openCodeRuntime";
 import { unstable_v2_createSession, unstable_v2_resumeSession } from "@anthropic-ai/claude-agent-sdk";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+vi.mock("@opencode-ai/sdk", () => ({
+  createOpencodeServer: vi.fn(async () => ({
+    url: "http://mock-opencode-server",
+    close: vi.fn(),
+  })),
+  createOpencodeClient: vi.fn(() => ({})),
+}));
 
 // ---------------------------------------------------------------------------
 // vi.hoisted mock state (mirrored from agentChatService.test.ts)
@@ -74,13 +82,6 @@ vi.mock("node:readline", () => ({
   })),
 }));
 
-vi.mock("ai", () => ({
-  generateText: vi.fn(),
-  streamText: vi.fn(),
-  stepCountIs: vi.fn(),
-  tool: vi.fn((def: Record<string, unknown>) => def),
-  jsonSchema: vi.fn((s: unknown) => s),
-}));
 
 vi.mock("@anthropic-ai/claude-agent-sdk", () => ({
   query: vi.fn(),
@@ -107,12 +108,27 @@ vi.mock("../ai/codexExecutable", () => ({
   resolveCodexExecutable: vi.fn(() => ({ path: "codex", source: "fallback-command" })),
 }));
 
-vi.mock("../ai/providerResolver", () => ({
-  normalizeCliMcpServers: vi.fn(() => ({})),
-  isModelCliWrapped: vi.fn((modelId: string) => !String(modelId).endsWith("-api")),
-  resolveModel: vi.fn(async () => ({})),
-  resolveProvider: vi.fn(),
-  buildProviderOptions: vi.fn(() => ({})),
+vi.mock("../opencode/openCodeRuntime", () => ({
+  buildOpenCodePromptParts: vi.fn(({ prompt, files = [] }: { prompt: string; files?: Array<Record<string, unknown>> }) => [
+    { type: "text", text: prompt },
+    ...files,
+  ]),
+  mapPermissionModeToOpenCodeAgent: vi.fn((mode: string) => {
+    if (mode === "plan") return "ade-plan";
+    if (mode === "full-auto") return "ade-full-auto";
+    return "ade-edit";
+  }),
+  resolveOpenCodeModelSelection: vi.fn((descriptor: Record<string, unknown>) => ({
+    providerID: String(descriptor.family ?? "openai"),
+    modelID: String(descriptor.providerModelId ?? descriptor.id ?? "model"),
+  })),
+  runOpenCodeTextPrompt: vi.fn(),
+  startOpenCodeSession: vi.fn(async () => ({
+    sessionId: "opencode-stub",
+    events: async function* () { /* noop */ },
+    abort: vi.fn(),
+  })),
+  openCodeEventStream: vi.fn(),
 }));
 
 vi.mock("../ai/tools/universalTools", () => ({
@@ -238,7 +254,6 @@ vi.mock("./cursorAcpPool", () => ({
 // ---------------------------------------------------------------------------
 import { createAgentChatService } from "./agentChatService";
 import { detectAllAuth } from "../ai/authDetector";
-import * as providerResolver from "../ai/providerResolver";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -419,6 +434,17 @@ function createService() {
   const transcriptsDir = path.join(tmpRoot, "transcripts");
   fs.mkdirSync(transcriptsDir, { recursive: true });
 
+  const aiIntegrationService = {
+    onLinearConnectionChange: vi.fn(),
+    getLinearProjectMapping: vi.fn(() => null),
+    setLinearProjectMapping: vi.fn(),
+    getLinearConnection: vi.fn(() => null),
+    setLinearConnection: vi.fn(),
+    getSettings: vi.fn(() => ({})),
+    updateSettings: vi.fn(),
+    getMode: vi.fn(() => "subscription"),
+  };
+
   const service = createAgentChatService({
     projectRoot: tmpRoot,
     transcriptsDir,
@@ -426,10 +452,10 @@ function createService() {
     laneService,
     sessionService,
     projectConfigService,
+    aiIntegrationService: aiIntegrationService as any,
     issueInventoryService,
     logger: logger as any,
     appVersion: "0.0.1-test",
-    getExternalMcpConfigs: () => [],
     getDirtyFileTextForPath: () => undefined,
   });
 
@@ -446,9 +472,8 @@ beforeEach(() => {
   fs.mkdirSync(path.join(tmpRoot, ".ade", "transcripts", "chat"), { recursive: true });
   mockState.sessions.clear();
   mockState.uuidCounter = 0;
-  vi.mocked(generateText).mockReset();
+  vi.mocked(runOpenCodeTextPrompt).mockReset();
   vi.mocked(detectAllAuth).mockResolvedValue([]);
-  vi.mocked(providerResolver.resolveModel).mockResolvedValue({} as any);
 });
 
 afterEach(() => {
@@ -536,12 +561,12 @@ describe("suggestLaneNameFromPrompt", () => {
     expect(result).toBe("fix-the-bug-now");
   });
 
-  it("falls back when generateText throws an error", async () => {
-    // Provide auth so models are available, but make generateText throw
+  it("falls back when the model runtime throws an error", async () => {
+    // Provide auth so models are available, but make the runtime throw
     vi.mocked(detectAllAuth).mockResolvedValue([
       { type: "cli-subscription" as any, cli: "claude", authenticated: true, path: "/usr/bin/claude", verified: true },
     ]);
-    vi.mocked(generateText).mockRejectedValue(new Error("API rate limited"));
+    vi.mocked(runOpenCodeTextPrompt).mockRejectedValue(new Error("API rate limited"));
 
     const { service, logger } = createService();
     const result = await service.suggestLaneNameFromPrompt({
@@ -559,14 +584,14 @@ describe("suggestLaneNameFromPrompt", () => {
     );
   });
 
-  it("uses AI-generated name when generateText succeeds", async () => {
+  it("uses AI-generated name when the model runtime succeeds", async () => {
     vi.mocked(detectAllAuth).mockResolvedValue([
       { type: "cli-subscription" as any, cli: "claude", authenticated: true, path: "/usr/bin/claude", verified: true },
     ]);
-    vi.mocked(generateText).mockResolvedValue({
+    vi.mocked(runOpenCodeTextPrompt).mockResolvedValue({
       text: "Login Bug Fix",
-      finishReason: "stop",
-      usage: { promptTokens: 10, completionTokens: 5 },
+      inputTokens: 10,
+      outputTokens: 5,
     } as any);
 
     const { service } = createService();
@@ -584,10 +609,10 @@ describe("suggestLaneNameFromPrompt", () => {
     vi.mocked(detectAllAuth).mockResolvedValue([
       { type: "cli-subscription" as any, cli: "claude", authenticated: true, path: "/usr/bin/claude", verified: true },
     ]);
-    vi.mocked(generateText).mockResolvedValue({
+    vi.mocked(runOpenCodeTextPrompt).mockResolvedValue({
       text: "JWT Auth Refactor!",
-      finishReason: "stop",
-      usage: { promptTokens: 10, completionTokens: 5 },
+      inputTokens: 10,
+      outputTokens: 5,
     } as any);
 
     const { service } = createService();
@@ -606,10 +631,10 @@ describe("suggestLaneNameFromPrompt", () => {
       { type: "cli-subscription" as any, cli: "claude", authenticated: true, path: "/usr/bin/claude", verified: true },
     ]);
     const longName = "a".repeat(70);
-    vi.mocked(generateText).mockResolvedValue({
+    vi.mocked(runOpenCodeTextPrompt).mockResolvedValue({
       text: longName,
-      finishReason: "stop",
-      usage: { promptTokens: 10, completionTokens: 5 },
+      inputTokens: 10,
+      outputTokens: 5,
     } as any);
 
     const { service } = createService();
@@ -622,15 +647,35 @@ describe("suggestLaneNameFromPrompt", () => {
     expect(result.length).toBeLessThanOrEqual(60);
   });
 
+  it("trims edge hyphens after AI title truncation", async () => {
+    vi.mocked(detectAllAuth).mockResolvedValue([
+      { type: "cli-subscription" as any, cli: "claude", authenticated: true, path: "/usr/bin/claude", verified: true },
+    ]);
+    vi.mocked(runOpenCodeTextPrompt).mockResolvedValue({
+      text: `${"a".repeat(55)}- tail`,
+      inputTokens: 10,
+      outputTokens: 5,
+    } as any);
+
+    const { service } = createService();
+    const result = await service.suggestLaneNameFromPrompt({
+      prompt: "Trim the generated lane name",
+      modelId: "anthropic/claude-haiku-4-5",
+      laneId: "lane-1",
+    });
+
+    expect(result).toBe("a".repeat(55));
+  });
+
   it("falls back when AI returns empty text after sanitization", async () => {
     vi.mocked(detectAllAuth).mockResolvedValue([
       { type: "cli-subscription" as any, cli: "claude", authenticated: true, path: "/usr/bin/claude", verified: true },
     ]);
     // Return only emoji/special chars that sanitizeAutoTitle will strip
-    vi.mocked(generateText).mockResolvedValue({
+    vi.mocked(runOpenCodeTextPrompt).mockResolvedValue({
       text: "!!!",
-      finishReason: "stop",
-      usage: { promptTokens: 10, completionTokens: 5 },
+      inputTokens: 10,
+      outputTokens: 5,
     } as any);
 
     const { service } = createService();

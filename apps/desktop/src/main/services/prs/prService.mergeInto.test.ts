@@ -1016,3 +1016,192 @@ describe("createIntegrationLaneForProposal with preferred lane adoption", () => 
     ).rejects.toThrow(/Uncommitted changes/);
   });
 });
+
+describe("commitIntegration dirty-worktree retries", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("propagates allowDirtyWorktree when preparing a new integration lane", async () => {
+    vi.mocked(buildIntegrationPreflight).mockReturnValue({
+      baseLane: baseLane as any,
+      uniqueSourceLaneIds: [SOURCE_LANE_A_ID],
+      duplicateSourceLaneIds: [],
+      missingSourceLaneIds: [],
+    });
+
+    const dirtySourceLane = {
+      ...sourceLaneA,
+      status: { dirty: true },
+    };
+    const laneService = makeLaneService([baseLane, dirtySourceLane]);
+    laneService.list.mockResolvedValue([baseLane, dirtySourceLane, integrationLane]);
+    const db = makeMockDb();
+    db.get.mockImplementation((sql: string) => {
+      if (sql.includes("from integration_proposals")) {
+        return {
+          id: "prop-dirty",
+          source_lane_ids_json: JSON.stringify([SOURCE_LANE_A_ID]),
+          base_branch: "main",
+          steps_json: JSON.stringify([
+            { laneId: SOURCE_LANE_A_ID, laneName: dirtySourceLane.name, position: 0, outcome: "clean", conflictingFiles: [], diffStat: { insertions: 0, deletions: 0, filesChanged: 0 } },
+          ]),
+          integration_lane_id: null,
+          integration_lane_name: "integration/test",
+          preferred_integration_lane_id: null,
+          overall_outcome: "clean",
+          merge_into_head_sha: null,
+          resolution_state_json: null,
+          created_at: "2026-01-01T00:00:00Z",
+        };
+      }
+      if (sql.includes("from pull_requests where id")) {
+        return {
+          id: "pr-integration",
+          lane_id: integrationLane.id,
+          repo_owner: "test-owner",
+          repo_name: "test-repo",
+          github_pr_number: 42,
+          github_url: "https://github.com/test-owner/test-repo/pull/42",
+          github_node_id: "PR_node42",
+          title: "Integration PR",
+          state: "open",
+          base_branch: "main",
+          head_branch: "integration/test",
+          checks_status: "none",
+          review_status: "none",
+          additions: 5,
+          deletions: 1,
+          last_synced_at: null,
+          created_at: "2026-01-01T00:00:00Z",
+          updated_at: "2026-01-01T00:00:00Z",
+        };
+      }
+      if (sql.includes("from pull_requests where lane_id")) {
+        return null;
+      }
+      return null;
+    });
+
+    const githubService = makeGithubService({
+      apiRequest: vi.fn().mockResolvedValue({
+        data: {
+          number: 42,
+          html_url: "https://github.com/test-owner/test-repo/pull/42",
+          node_id: "PR_node42",
+          title: "Integration PR",
+          state: "open",
+          draft: false,
+          merged_at: null,
+          additions: 5,
+          deletions: 1,
+        },
+        response: { status: 201, headers: new Headers() },
+      }),
+    });
+
+    mockGit.runGit.mockResolvedValue({ exitCode: 0, stdout: "", stderr: "" });
+
+    const { service } = buildService({ laneService, db, githubService });
+
+    await expect(
+      service.commitIntegration({
+        proposalId: "prop-dirty",
+        integrationLaneName: "integration/test",
+        title: "Integration PR",
+        body: "",
+        draft: false,
+        allowDirtyWorktree: true,
+      }),
+    ).resolves.toMatchObject({
+      integrationLaneId: "lane-integration",
+      pr: expect.objectContaining({
+        laneId: "lane-integration",
+        githubPrNumber: 42,
+      }),
+    });
+
+    expect(laneService.createChild).toHaveBeenCalledOnce();
+  });
+});
+
+describe("adopted integration lane cleanup", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("does not delete an adopted merge-into lane when deleting a proposal", async () => {
+    const laneService = makeLaneService([baseLane, sourceLaneA, mergeIntoLane]);
+    const db = makeMockDb();
+    db.get.mockReturnValue({
+      id: "prop-adopted",
+      integration_lane_id: MERGE_INTO_LANE_ID,
+      preferred_integration_lane_id: MERGE_INTO_LANE_ID,
+    });
+
+    const { service } = buildService({ laneService, db });
+
+    await expect(
+      service.deleteIntegrationProposal({
+        proposalId: "prop-adopted",
+        deleteIntegrationLane: true,
+      }),
+    ).resolves.toMatchObject({
+      proposalId: "prop-adopted",
+      integrationLaneId: MERGE_INTO_LANE_ID,
+      deletedIntegrationLane: false,
+    });
+
+    expect(laneService.delete).not.toHaveBeenCalled();
+  });
+
+  it("skips archiving an adopted merge-into lane during workflow cleanup", async () => {
+    const laneService = makeLaneService([baseLane, sourceLaneA, mergeIntoLane]);
+    const db = makeMockDb();
+    db.get.mockReturnValue({
+      id: "prop-adopted",
+      project_id: "proj-1",
+      source_lane_ids_json: JSON.stringify([SOURCE_LANE_A_ID]),
+      base_branch: "main",
+      steps_json: JSON.stringify([]),
+      overall_outcome: "clean",
+      created_at: "2026-01-01T00:00:00Z",
+      title: "",
+      body: "",
+      draft: 0,
+      integration_lane_name: mergeIntoLane.name,
+      status: "committed",
+      integration_lane_id: MERGE_INTO_LANE_ID,
+      preferred_integration_lane_id: MERGE_INTO_LANE_ID,
+      resolution_state_json: null,
+      pairwise_results_json: "[]",
+      lane_summaries_json: "[]",
+      linked_group_id: null,
+      linked_pr_id: null,
+      workflow_display_state: "active",
+      cleanup_state: "required",
+      closed_at: null,
+      merged_at: null,
+      completed_at: null,
+      cleanup_declined_at: null,
+      cleanup_completed_at: null,
+      merge_into_head_sha: "sha-merge-into",
+    });
+
+    const { service } = buildService({ laneService, db });
+
+    await expect(
+      service.cleanupIntegrationWorkflow({
+        proposalId: "prop-adopted",
+      }),
+    ).resolves.toMatchObject({
+      proposalId: "prop-adopted",
+      archivedLaneIds: [],
+      skippedLaneIds: [MERGE_INTO_LANE_ID],
+      workflowDisplayState: "history",
+      cleanupState: "completed",
+    });
+
+    expect(laneService.archive).not.toHaveBeenCalled();
+  });
+});
