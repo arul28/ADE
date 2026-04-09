@@ -132,7 +132,7 @@ The file explorer is a tree view of files and directories in the selected worksp
 **Tree behavior**:
 - Folders are expandable/collapsible with click or arrow keys.
 - Files and folders are sorted: directories first, then files, both alphabetical.
-- Respects `.gitignore` rules — ignored files and directories are hidden by default (with a toggle to show them).
+- Shows all files including those in `.gitignore` — the tree always operates with `includeIgnored: true` so hidden files (dotfiles, `.ade/`, `node_modules/`) are visible without a toggle.
 - Supports lazy loading for large directories (only fetch children when a folder is expanded).
 
 **Visual indicators**:
@@ -231,7 +231,7 @@ The Files tab includes several safeguards to prevent accidental data loss:
 
 | Service | Status | Responsibility |
 |---------|--------|---------------|
-| `fileService` | Exists | Atomic file writes (write to temp + rename). File tree listing with `.gitignore` support. File watching for external changes. Quick open and cross-file search. |
+| `fileService` | Exists | Atomic file writes (write to temp + rename). File tree listing with `.gitignore` support and `includeIgnored` mode. File watching for external changes with ref-counted watcher subscriptions. Quick open and cross-file search with dual-mode indexing. |
 | `diffService` | Exists | Diff computation for staged vs. unstaged, commit comparisons. Used by diff mode. |
 
 ### IPC Channels
@@ -239,18 +239,18 @@ The Files tab includes several safeguards to prevent accidental data loss:
 | Channel | Signature | Status | Description |
 |---------|-----------|--------|-------------|
 | `ade.files.listWorkspaces` | `() => WorkspaceInfo[]` | Exists | List available workspaces (primary, lane worktrees, attached) |
-| `ade.files.listTree` | `(args: { rootPath: string, depth?: number }) => FileTreeNode[]` | Exists | List directory contents as a tree structure. Respects `.gitignore`. Supports depth limiting for lazy loading. |
+| `ade.files.listTree` | `(args: { workspaceId: string, parentPath?: string, depth?: number, includeIgnored?: boolean }) => FileTreeNode[]` | Exists | List directory contents as a tree structure. Respects `.gitignore` unless `includeIgnored` is true. Supports depth limiting for lazy loading and scoped parent-path refreshes. |
 | `ade.files.readFile` | `(args: { filePath: string, encoding?: string }) => FileContent` | Exists | Read file contents. Returns content, encoding, size, and language ID for syntax highlighting. |
 | `ade.files.writeTextAtomic` | `(args: { filePath: string, content: string }) => void` | Exists | Atomically write text content to a file. |
 | `ade.files.writeText` | `(args: { filePath: string, content: string }) => void` | Exists | Write text content to a file (non-atomic). |
-| `ade.files.watchChanges` | `(args: { rootPath: string }) => void` | Exists | Start watching a directory for changes. Emits events via `ade.files.change` channel. |
-| `ade.files.stopWatching` | `(args: { rootPath: string }) => void` | Exists | Stop watching a directory. |
+| `ade.files.watchChanges` | `(args: { workspaceId: string, includeIgnored?: boolean }) => void` | Exists | Start watching a workspace for changes. The `includeIgnored` flag controls whether `.ade/` and `node_modules/` paths are included in watcher events and search indexes. Emits events via `ade.files.change` channel. |
+| `ade.files.stopWatching` | `(args: { workspaceId: string, includeIgnored?: boolean }) => void` | Exists | Stop watching a workspace. The `includeIgnored` flag must match the value used when starting the watcher. |
 | `ade.files.createFile` | `(args: { filePath: string, content?: string }) => void` | Exists | Create a new file. |
 | `ade.files.createDirectory` | `(args: { dirPath: string }) => void` | Exists | Create a new directory. |
 | `ade.files.rename` | `(args: { oldPath: string, newPath: string }) => void` | Exists | Rename a file or directory. |
 | `ade.files.delete` | `(args: { path: string }) => void` | Exists | Delete a file or directory. |
-| `ade.files.quickOpen` | `(args: { rootPath: string, query: string }) => FileMatch[]` | Exists | Fuzzy file search for quick open (Cmd+P). |
-| `ade.files.searchText` | `(args: { rootPath: string, query: string, options?: SearchOptions }) => SearchResult[]` | Exists | Cross-file text search (Cmd+Shift+F). |
+| `ade.files.quickOpen` | `(args: { workspaceId: string, query: string, limit?: number, includeIgnored?: boolean }) => FilesQuickOpenItem[]` | Exists | Fuzzy file search for quick open (Cmd+P). The `includeIgnored` flag controls whether ignored paths are included in results. |
+| `ade.files.searchText` | `(args: { workspaceId: string, query: string, limit?: number, includeIgnored?: boolean }) => FilesSearchTextMatch[]` | Exists | Cross-file text search (Cmd+Shift+F). The `includeIgnored` flag controls whether ignored paths are searched. |
 
 **File change events** (streamed via `ade.files.change`):
 - `created`: A new file or directory was created.
@@ -284,13 +284,20 @@ interface FileContent {
 File watching is a performance-sensitive feature that must handle large repositories without excessive resource consumption.
 
 **Approach**:
-1. Use `chokidar` (or Node.js `fs.watch` with polyfills) for cross-platform file watching.
-2. Watch the workspace root recursively, but respect `.gitignore` to exclude irrelevant paths (e.g., `node_modules/`, `dist/`).
-3. Debounce events (50ms window) to batch rapid changes (e.g., a build tool writing many files).
-4. Only send events to the renderer for files that are either:
-   - Visible in the expanded file tree, or
-   - Open in an editor tab.
-5. Dispose watchers when the workspace is switched or the Files tab is deactivated.
+1. Use `chokidar` for cross-platform recursive file watching.
+2. The watcher service supports an `includeIgnored` mode that controls which paths are excluded. In default mode, `.git/`, `node_modules/`, and `.ade/` directories are ignored. In `includeIgnored` mode, only `.git/` is ignored, allowing dotfiles, `node_modules/`, and `.ade/` paths to appear.
+3. Debounce events (140ms window) per file key to batch rapid changes (e.g., a build tool writing many files).
+4. The watcher service uses reference counting per subscription (`defaultRefCount` and `includeIgnoredRefCount`). Multiple callers sharing a workspace and sender ID share a single chokidar instance. When the last reference is released, the watcher is closed. If the include-ignored state changes due to reference removal, the watcher is restarted with the new ignored-path configuration.
+5. Dispose watchers when the workspace is switched, the Files tab is deactivated, or the sender window is closed (`stopAllForSender`).
+
+**File search index**:
+The `fileSearchIndexService` maintains separate indexes per workspace per `includeIgnored` mode, keyed as `workspaceId::default` and `workspaceId::all`. Incremental updates from the watcher propagate to all matching indexes for the workspace. Index invalidation clears both modes for the workspace.
+
+**External change sync for open tabs**:
+When the file watcher detects a modified file that is currently open as a clean (unsaved) tab, the renderer automatically re-reads the file from disk and updates the tab content. This keeps open editors synchronized with external changes (e.g., from terminal commands or other tools) without user intervention. Dirty (unsaved) tabs are never overwritten by external changes.
+
+**Tree refresh queue**:
+File watcher events queue parent-directory refreshes with a cap (`MAX_QUEUED_TREE_PARENT_REFRESHES = 24`). When the queue exceeds this cap, a full tree refresh is triggered instead of individual parent refreshes, preventing excessive incremental refreshes during bulk file operations.
 
 **Memory considerations**:
 - Large repositories may have tens of thousands of files. The file tree service uses lazy loading — only fetching children when a directory is expanded — to avoid loading the entire tree into memory.

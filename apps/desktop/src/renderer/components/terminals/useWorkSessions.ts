@@ -31,6 +31,7 @@ const DEFAULT_PROJECT_WORK_STATE: WorkProjectViewState = {
   search: "",
   sessionListOrganization: "by-lane",
   workCollapsedLaneIds: [],
+  workCollapsedSectionIds: [],
   workCollapsedTabGroupIds: [],
   workFocusSessionsHidden: false,
 };
@@ -278,6 +279,11 @@ export function useWorkSessions() {
   const backgroundRefreshTimerRef = useRef<number | null>(null);
   const appliedQuerySessionIdRef = useRef<string | null>(null);
   const hasLoadedOnceRef = useRef(false);
+  const projectRootRef = useRef<string | null>(projectRoot);
+
+  useEffect(() => {
+    projectRootRef.current = projectRoot;
+  }, [projectRoot]);
 
   const projectViewState = useMemo(() => {
     if (!projectRoot) return DEFAULT_PROJECT_WORK_STATE;
@@ -308,6 +314,7 @@ export function useWorkSessions() {
     projectViewState.sessionListOrganization ?? "by-lane";
   const workCollapsedLaneIds = projectViewState.workCollapsedLaneIds ?? [];
   const workCollapsedTabGroupIds = projectViewState.workCollapsedTabGroupIds ?? [];
+  const workCollapsedSectionIds = projectViewState.workCollapsedSectionIds ?? [];
   const workFocusSessionsHidden = projectViewState.workFocusSessionsHidden ?? false;
   const sessionsById = useMemo(() => {
     const map = new Map<string, TerminalSessionSummary>();
@@ -331,9 +338,7 @@ export function useWorkSessions() {
     [lanes, openSessions, sessionListOrganization, workCollapsedTabGroupIds],
   );
 
-  const visibleSessions = useMemo(() => {
-    return openSessions;
-  }, [openSessions]);
+  const visibleSessions = openSessions;
 
   const tabVisibleSessionIds = tabGroupModel.sessionIds;
 
@@ -378,32 +383,29 @@ export function useWorkSessions() {
     [setProjectViewState],
   );
 
-  const toggleWorkLaneCollapsed = useCallback(
-    (laneId: string) => {
-      setProjectViewState((prev) => {
-        const cur = prev.workCollapsedLaneIds ?? [];
-        const has = cur.includes(laneId);
-        return {
-          ...prev,
-          workCollapsedLaneIds: has ? cur.filter((id) => id !== laneId) : [...cur, laneId],
-        };
-      });
-    },
+  const makeCollapsedToggle = useCallback(
+    (key: "workCollapsedLaneIds" | "workCollapsedTabGroupIds" | "workCollapsedSectionIds") =>
+      (itemId: string) => {
+        setProjectViewState((prev) => {
+          const cur = prev[key] ?? [];
+          const has = cur.includes(itemId);
+          return { ...prev, [key]: has ? cur.filter((id) => id !== itemId) : [...cur, itemId] };
+        });
+      },
     [setProjectViewState],
   );
 
-  const toggleWorkTabGroupCollapsed = useCallback(
-    (groupId: string) => {
-      setProjectViewState((prev) => {
-        const cur = prev.workCollapsedTabGroupIds ?? [];
-        const has = cur.includes(groupId);
-        return {
-          ...prev,
-          workCollapsedTabGroupIds: has ? cur.filter((id) => id !== groupId) : [...cur, groupId],
-        };
-      });
-    },
-    [setProjectViewState],
+  const toggleWorkLaneCollapsed = useMemo(
+    () => makeCollapsedToggle("workCollapsedLaneIds"),
+    [makeCollapsedToggle],
+  );
+  const toggleWorkTabGroupCollapsed = useMemo(
+    () => makeCollapsedToggle("workCollapsedTabGroupIds"),
+    [makeCollapsedToggle],
+  );
+  const toggleWorkSectionCollapsed = useMemo(
+    () => makeCollapsedToggle("workCollapsedSectionIds"),
+    [makeCollapsedToggle],
   );
 
   const setWorkFocusSessionsHidden = useCallback(
@@ -504,6 +506,12 @@ export function useWorkSessions() {
   );
 
   const refresh = useCallback(async (options: { showLoading?: boolean; force?: boolean } = {}) => {
+    const requestedProjectRoot = projectRootRef.current;
+    if (!requestedProjectRoot) {
+      setSessions([]);
+      hasLoadedOnceRef.current = false;
+      return;
+    }
     const showLoading = options.showLoading ?? true;
     if (refreshInFlightRef.current) {
       if (refreshQueuedRef.current) {
@@ -533,6 +541,9 @@ export function useWorkSessions() {
           options.force ? { force: true } : undefined,
         )
       ).filter((session) => !isRunOwnedSession(session));
+      if (projectRootRef.current !== requestedProjectRoot) {
+        return;
+      }
       setSessions(rows);
       hasLoadedOnceRef.current = true;
     } finally {
@@ -571,8 +582,16 @@ export function useWorkSessions() {
   }, [refresh]);
 
   useEffect(() => {
-    refresh({ showLoading: true }).catch(() => {});
-  }, [refresh]);
+    invalidateSessionListCache();
+    setSessions([]);
+    setLoading(false);
+    refreshQueuedRef.current = null;
+    hasLoadedOnceRef.current = false;
+    hasRunningSessionsRef.current = false;
+    appliedQuerySessionIdRef.current = null;
+    if (!projectRoot) return;
+    refresh({ showLoading: true, force: true }).catch(() => {});
+  }, [projectRoot, refresh]);
 
   useEffect(() => {
     hasRunningSessionsRef.current = sessions.some((s) => s.status === "running");
@@ -856,7 +875,8 @@ export function useWorkSessions() {
       setResumingSessionId(session.id);
       try {
         const toolType = (session.toolType ?? inferToolFromResumeCommand(command) ?? null) as TerminalToolType | null;
-        const started = await window.ade.pty.create({
+        const resumed = await window.ade.pty.create({
+          sessionId: session.id,
           laneId: session.laneId,
           cols: 100,
           rows: 30,
@@ -867,15 +887,16 @@ export function useWorkSessions() {
             ? withCodexNoAltScreen(command)
             : command,
         });
+        invalidateSessionListCache();
+        await refresh({ showLoading: false, force: true });
         selectLane(session.laneId);
-        focusSession(started.sessionId);
-        setActiveItemId(started.sessionId);
-        navigate(`/lanes?laneId=${encodeURIComponent(session.laneId)}&sessionId=${encodeURIComponent(started.sessionId)}`);
+        focusSession(resumed.sessionId);
+        setActiveItemId(resumed.sessionId);
       } finally {
         setResumingSessionId(null);
       }
     },
-    [focusSession, navigate, refresh, resumingSessionId, selectLane, setActiveItemId],
+    [focusSession, refresh, resumingSessionId, selectLane, setActiveItemId],
   );
 
   const closeChatSession = useCallback(
@@ -975,6 +996,8 @@ export function useWorkSessions() {
     toggleWorkLaneCollapsed,
     workCollapsedTabGroupIds,
     toggleWorkTabGroupCollapsed,
+    workCollapsedSectionIds,
+    toggleWorkSectionCollapsed,
     sessionsGroupedByLane,
     tabGroups: tabGroupModel.groups,
     tabVisibleSessionIds,

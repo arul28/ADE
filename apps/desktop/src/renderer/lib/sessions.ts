@@ -76,6 +76,19 @@ export function buildOptimisticChatSessionSummary(args: {
   };
 }
 
+/** Short tool type label for compact card display (e.g. "Claude", "Shell", "Codex"). */
+export function shortToolTypeLabel(toolType: string | null | undefined): string {
+  if (!toolType || toolType === "shell") return "Shell";
+  if (toolType === "run-shell") return "Run";
+  if (toolType.startsWith("claude")) return "Claude";
+  if (toolType.startsWith("codex")) return "Codex";
+  if (toolType.startsWith("opencode")) return "OpenCode";
+  if (toolType === "cursor") return "Cursor";
+  if (toolType === "aider") return "Aider";
+  if (toolType === "continue") return "Continue";
+  return toolType.replace(/-/g, " ");
+}
+
 export function formatToolTypeLabel(toolType: string | null | undefined): string {
   if (toolType === "claude-orchestrated") return "Claude worker runtime";
   if (toolType === "codex-orchestrated") return "Codex worker runtime";

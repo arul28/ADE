@@ -311,5 +311,6 @@ Applied after Phase 7 close to tighten orchestrator invariants discovered during
 - Retry budget with exponential backoff prevents infinite retry loops; exhausted retries open recovery interventions.
 
 ### MCP Tool Visibility
-- MCP tool listing now correctly scopes tools to the coordinator's configured tool set rather than exposing the full internal tool surface.
+- MCP tool listing correctly scopes tools to the coordinator's configured tool set rather than exposing the full internal tool surface.
 - Planning-mode tool profiles restrict write operations during the planning phase.
+- Standalone chat sessions (identified by having a `chatSessionId` but no `missionId`, `runId`, `stepId`, or `attemptId`) have `spawn_agent` and all coordinator tools hidden from both tool listing and tool execution. This prevents interactive chat users from accessing orchestration primitives that are only meaningful in mission contexts.

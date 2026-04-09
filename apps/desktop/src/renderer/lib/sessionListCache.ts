@@ -1,4 +1,5 @@
 import type { ListSessionsArgs, TerminalSessionSummary } from "../../shared/types";
+import { useAppStore } from "../state/appStore";
 
 type CacheEntry = {
   value: TerminalSessionSummary[] | null;
@@ -23,6 +24,7 @@ function normalizeArgs(args?: ListSessionsArgs): ListSessionsArgs {
 function cacheKey(args?: ListSessionsArgs): string {
   const normalized = normalizeArgs(args);
   return JSON.stringify({
+    projectRoot: useAppStore.getState().project?.rootPath?.trim() || null,
     laneId: normalized.laneId ?? null,
     status: normalized.status ?? null,
   });

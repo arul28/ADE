@@ -246,6 +246,9 @@ export function createFileService({
     }
   };
 
+  const shouldIgnoreForRoot = (rootPath: string) =>
+    (relPath: string, includeIgnored: boolean) => isIgnoredPath(rootPath, relPath, includeIgnored);
+
   const emitLaneMutation = (workspaceId: string, reason: string) => {
     if (!onLaneWorktreeMutation) return;
     const workspace = resolveWorkspace(workspaceId);
@@ -471,7 +474,7 @@ export function createFileService({
         rootPath: workspace.rootPath,
         path: normalizedRel,
         type: "modified",
-        shouldIgnore: (relPath) => isIgnoredPath(workspace.rootPath, relPath, false)
+        shouldIgnore: shouldIgnoreForRoot(workspace.rootPath)
       });
       emitLaneMutation(args.workspaceId, "file_write");
     },
@@ -489,7 +492,7 @@ export function createFileService({
         rootPath: workspace.rootPath,
         path: normalizedRel,
         type: "created",
-        shouldIgnore: (relPath) => isIgnoredPath(workspace.rootPath, relPath, false)
+        shouldIgnore: shouldIgnoreForRoot(workspace.rootPath)
       });
       emitLaneMutation(args.workspaceId, "file_create");
     },
@@ -518,7 +521,7 @@ export function createFileService({
         type: "renamed",
         oldPath: oldRel,
         path: newRel,
-        shouldIgnore: (relPath) => isIgnoredPath(workspace.rootPath, relPath, false)
+        shouldIgnore: shouldIgnoreForRoot(workspace.rootPath)
       });
       emitLaneMutation(args.workspaceId, "file_rename");
     },
@@ -539,23 +542,27 @@ export function createFileService({
         rootPath: workspace.rootPath,
         path: normalizedRel,
         type: "deleted",
-        shouldIgnore: (relPath) => isIgnoredPath(workspace.rootPath, relPath, false)
+        shouldIgnore: shouldIgnoreForRoot(workspace.rootPath)
       });
       emitLaneMutation(args.workspaceId, "file_delete");
     },
 
     async watchWorkspace(args: FilesWatchArgs, callback: (ev: FileChangeEvent) => void, senderId: number): Promise<void> {
       const workspace = resolveWorkspace(args.workspaceId);
-      await indexService.ensureIndexed({
-        workspaceId: args.workspaceId,
-        rootPath: workspace.rootPath,
-        shouldIgnore: (relPath) => isIgnoredPath(workspace.rootPath, relPath, false)
-      });
+      if (!args.includeIgnored) {
+        await indexService.ensureIndexed({
+          workspaceId: args.workspaceId,
+          rootPath: workspace.rootPath,
+          includeIgnored: false,
+          shouldIgnore: shouldIgnoreForRoot(workspace.rootPath)
+        });
+      }
       watcherService.watch(
         {
           workspaceId: args.workspaceId,
           rootPath: workspace.rootPath,
-          senderId
+          senderId,
+          includeIgnored: Boolean(args.includeIgnored)
         },
         (ev) => {
           invalidateGitStatusCache(workspace.rootPath);
@@ -568,7 +575,7 @@ export function createFileService({
             type: ev.type,
             path: ev.path,
             oldPath: ev.oldPath,
-            shouldIgnore: (relPath) => isIgnoredPath(workspace.rootPath, relPath, false)
+            shouldIgnore: shouldIgnoreForRoot(workspace.rootPath)
           });
           callback(ev);
         }
@@ -576,7 +583,7 @@ export function createFileService({
     },
 
     stopWatching(args: FilesWatchArgs, senderId: number): void {
-      watcherService.stop(args.workspaceId, senderId);
+      watcherService.stop(args.workspaceId, senderId, Boolean(args.includeIgnored));
     },
 
     stopWatchingBySender(senderId: number): void {
@@ -593,7 +600,8 @@ export function createFileService({
         rootPath: workspace.rootPath,
         query,
         limit,
-        shouldIgnore: (relPath) => isIgnoredPath(workspace.rootPath, relPath, false)
+        includeIgnored: Boolean(args.includeIgnored),
+        shouldIgnore: shouldIgnoreForRoot(workspace.rootPath)
       });
     },
 
@@ -607,7 +615,8 @@ export function createFileService({
         rootPath: workspace.rootPath,
         query,
         limit,
-        shouldIgnore: (relPath) => isIgnoredPath(workspace.rootPath, relPath, false)
+        includeIgnored: Boolean(args.includeIgnored),
+        shouldIgnore: shouldIgnoreForRoot(workspace.rootPath)
       });
     },
 

@@ -43,11 +43,11 @@ The grid math module (`packedSessionGridMath.ts`) provides:
 
 Each `SessionSurface` receives a `layoutVariant` prop (`"standard"` or `"grid-tile"`) and a `terminalVisible` flag so that terminals in non-visible tiles can skip fit operations. Chat tiles use minimum dimensions of 440x340px; terminal tiles use 320x220px.
 
-The Work tab also supports a single-session focused view and a tab-bar mode with a "New Chat" button in the tab strip for quick session creation.
+The Work tab also supports a single-session focused view and a tab-bar mode with a "New Chat" button in the tab strip for quick session creation. The tab bar and grid view share a segmented view-mode toggle (`ViewModeToggle`) with labeled "Tabs" and "Grid" buttons in a pill-shaped container. Grid groups use rounded styling with an active-tab highlight and per-group count badges.
 
 ### Shared session-list cache
 
-The renderer now deduplicates repeated `ade.sessions.list` calls through a small shared cache layer. This cache is used by multiple surfaces that previously issued overlapping requests independently.
+The renderer deduplicates repeated `ade.sessions.list` calls through a small shared cache layer. The cache key includes the current project root (from `useAppStore`), lane ID, and status filter, so switching projects invalidates stale entries. This cache is used by multiple surfaces that previously issued overlapping requests independently.
 
 Current users include:
 
@@ -127,9 +127,19 @@ The lifecycle model remains the same:
 
 UI observers subscribe selectively and reuse cached list results where possible.
 
-### Session resume metadata
+### Work view state persistence
+
+The Work tab's per-project view state (open items, active/selected item, view mode, draft kind, filters, organization mode, collapsed lane/section/tab-group IDs, focus-hidden flag) is persisted to `localStorage` under `ade.workViewState.v1`. Lane-scoped view state is stored under the same key with a `projectRoot::laneId` composite key. State is read on app startup and written on every mutation, so the user's sidebar organization, collapsed groups, and active session survive page reloads and app restarts.
+
+### Session resume and reattach
 
 PTY sessions track structured resume metadata via `TerminalResumeMetadata`, which includes the provider (`claude` or `codex`), target kind (`session` or `thread`), target ID, and launch configuration (permission modes for each provider). This metadata enables the "resume" action in the session context menu and the `resumeCommand` field to reconstruct the appropriate CLI invocation for continuing a chat session.
+
+When a user resumes a session, the renderer passes the existing `sessionId` to `pty.create`. The PTY service validates that the session exists, belongs to the requested lane, is tracked, and is not already attached to a live PTY. Instead of creating a new session row, the service calls `sessionService.reattach()` to reset the existing session's status to `running`, clear its end state, and bind it to the new PTY. The transcript file is reopened in append mode so the resumed session's output continues in the same transcript. This keeps the session's identity, lane association, and history intact across resume cycles.
+
+If the resume target ID is missing from the session's metadata at close time, the PTY service performs a best-effort backfill by scanning the transcript tail for provider-specific session/thread identifiers. The backfill runs after the transcript stream is flushed and finalized, ensuring it reads complete output.
+
+The resume command is always constructed with the `--resume` (Claude) or `resume` (Codex) flag, even when no target ID is available yet. This allows the CLI to prompt for session selection interactively when the target is unknown.
 
 ### Stale session reconciliation
 
@@ -184,6 +194,32 @@ That preserves ADE's session-awareness while making the session system a lighter
 The `TerminalView` component accepts `isActive` and `isVisible` props that control runtime interaction and visibility state. The runtime tracks these via `active` and `visible` fields on the cached runtime. When a terminal is not visible, fit operations are skipped (unless it has never been fitted), and forced PTY resize requests are suppressed. This prevents unnecessary layout work for terminals in background tiles. The `documentOverride` option is set to `document` at creation time to support proper rendering when terminals are mounted in packed grid tiles.
 
 When a terminal is resized or re-parented (e.g. moved between grid tiles), the fit addon computes new column/row dimensions from the host container. If the computed dimensions are invalid (below `MIN_VALID_COLS = 20` / `MIN_VALID_ROWS = 6`, or the host is smaller than `MIN_HOST_WIDTH_PX = 120` / `MIN_HOST_HEIGHT_PX = 48`), the previous valid dimensions are restored, the fit is retried after a short delay (`INVALID_FIT_RETRY_MS = 90ms`), and the terminal content is refreshed to prevent visual artifacts. Successful retries after an initial invalid fit are counted as `fitRecoveries` in the `TerminalHealthCounters`. The `measureHost` helper uses the maximum of `getBoundingClientRect`, `clientWidth`/`clientHeight`, and `offsetWidth`/`offsetHeight` to handle edge cases where one measurement API returns zero during layout transitions. A `fitWarningLogged` flag prevents log spam when a host remains too small across multiple retry cycles.
+
+## Terminal preferences
+
+Terminal font size, line height, and scrollback depth are configurable via Settings > General > Terminal. Preferences are persisted to `localStorage` under `ade.terminalPreferences.v1` and applied globally across all terminal surfaces: work terminals, lane shells, resolver terminals, and the chat drawer.
+
+| Setting | Range | Default |
+|---------|-------|---------|
+| Font size | 10 -- 18 px (0.5 increments) | 12.5 |
+| Line height | 1.0 -- 1.6 | 1.25 |
+| Scrollback | 2,000 -- 100,000 lines | 10,000 |
+
+`TerminalView` reads preferences from `useAppStore` and applies them at runtime creation and on preference change. When preferences change, the runtime updates font family, font size, line height, and scrollback on the xterm instance, clears the texture atlas (to force glyph re-rasterization for WebGL), and re-triggers a fit cycle. The terminal font stack prioritizes platform-native monospace fonts (`ui-monospace`, `SFMono-Regular`, `Menlo`, `Monaco`, `Cascadia Mono`, `JetBrains Mono`, `Geist Mono`, `monospace`).
+
+## Session card design
+
+Each session card in the sidebar renders three rows:
+
+1. **Status dot + title + relative time** -- The status dot indicates session state (see below). The title uses `primarySessionLabel()`. A compact relative timestamp (`relativeTimeCompact` -- "now", "2m", "1h", "3d") is right-aligned.
+2. **Preview line** (conditional) -- Shows the session summary, last output preview (sanitized via `sanitizeTerminalInlineText`), or goal, whichever is available and different from the title.
+3. **Tool type + lane + badges** -- A short tool type label (`shortToolTypeLabel` -- "Claude", "Shell", "Codex", etc.), lane marker with name, cache timer badge (Claude sessions), delta chips, and exit code badge.
+
+The selected card has a left accent border and elevated background. Hover actions (info button, resume button) appear on mouse-over.
+
+## Session list organization
+
+The sidebar session list supports three organization modes: **by lane**, **by status** (running / awaiting / ended), and **by time** (today / yesterday / older). Each group uses a collapsible sticky header (`StickyGroupHeader`) with a caret toggle, icon, label, and count badge. Collapsed state is persisted per section ID in `workCollapsedSectionIds` (status/time groups) and `workCollapsedLaneIds` (lane groups) within the work view state.
 
 ## Terminal status indicators
 

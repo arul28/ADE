@@ -9,6 +9,12 @@ const mockState = vi.hoisted(() => ({
   nextFitDims: { cols: 120, rows: 40 },
   shouldThrowWebglAddon: false,
   lastContextLossHandler: null as (() => void) | null,
+  theme: "dark" as const,
+  terminalPreferences: {
+    fontSize: 12.5,
+    lineHeight: 1.25,
+    scrollback: 10_000,
+  },
 }));
 
 const resizeObservers: MockResizeObserver[] = [];
@@ -32,7 +38,22 @@ class MockIntersectionObserver {
 }
 
 vi.mock("../../state/appStore", () => ({
-  useAppStore: vi.fn((selector: (state: { theme: "dark" }) => unknown) => selector({ theme: "dark" })),
+  useAppStore: vi.fn((selector: (state: {
+    theme: "dark";
+    terminalPreferences: {
+      fontSize: number;
+      lineHeight: number;
+      scrollback: number;
+    };
+  }) => unknown) => selector({
+    theme: mockState.theme,
+    terminalPreferences: mockState.terminalPreferences,
+  })),
+  DEFAULT_TERMINAL_PREFERENCES: {
+    fontSize: 12.5,
+    lineHeight: 1.25,
+    scrollback: 10_000,
+  },
 }));
 
 vi.mock("@xterm/xterm", () => ({
@@ -230,6 +251,12 @@ describe("TerminalView", () => {
     mockState.nextFitDims = { cols: 120, rows: 40 };
     mockState.shouldThrowWebglAddon = false;
     mockState.lastContextLossHandler = null;
+    mockState.theme = "dark";
+    mockState.terminalPreferences = {
+      fontSize: 12.5,
+      lineHeight: 1.25,
+      scrollback: 10_000,
+    };
   });
 
   afterEach(() => {
@@ -325,14 +352,42 @@ describe("TerminalView", () => {
     const previousFallbacks = getTerminalRuntimeSnapshot("session-dom")?.health.rendererFallbacks ?? 0;
 
     render(<TerminalView ptyId="pty-dom" sessionId="session-dom" isActive />);
-    await flushAllTimers();
-    // Extra flush: initRendererChain is fire-and-forget and its dynamic import
-    // may not settle within a single timer flush cycle in CI environments.
-    await act(async () => {});
-    await flushAllTimers();
+    // initRendererChain is fire-and-forget with a dynamic import inside.
+    // Multiple flush cycles are needed for the microtask chain to fully settle:
+    // 1) timer flush kicks off the render + initRendererChain
+    // 2) microtask flush lets the dynamic import resolve
+    // 3) second timer flush lets the post-import code run
+    for (let i = 0; i < 4; i++) {
+      await act(async () => {});
+      await flushAllTimers();
+    }
 
     const runtime = getTerminalRuntimeSnapshot("session-dom");
     expect(runtime?.renderer).toBe("dom");
     expect(runtime?.health.rendererFallbacks).toBeGreaterThan(previousFallbacks);
+  });
+
+  it("applies updated terminal preferences to an existing runtime", async () => {
+    const view = render(<TerminalView ptyId="pty-prefs" sessionId="session-prefs" isActive />);
+    await flushAllTimers();
+
+    const terminal = mockState.terminalInstances.at(-1) as {
+      options: Record<string, unknown>;
+    } | undefined;
+    expect(terminal?.options.fontSize).toBe(12.5);
+    expect(terminal?.options.lineHeight).toBe(1.25);
+    expect(terminal?.options.scrollback).toBe(10_000);
+
+    mockState.terminalPreferences = {
+      fontSize: 14,
+      lineHeight: 1.3,
+      scrollback: 20_000,
+    };
+    view.rerender(<TerminalView ptyId="pty-prefs" sessionId="session-prefs" isActive />);
+    await flushAllTimers();
+
+    expect(terminal?.options.fontSize).toBe(14);
+    expect(terminal?.options.lineHeight).toBe(1.3);
+    expect(terminal?.options.scrollback).toBe(20_000);
   });
 });

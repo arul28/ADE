@@ -1538,6 +1538,11 @@ const AGENT_VISIBLE_COORDINATOR_TOOL_SPECS = COORDINATOR_TOOL_SPECS.filter((tool
   AGENT_VISIBLE_COORDINATOR_TOOL_NAMES.has(tool.name)
 );
 
+const STANDALONE_CHAT_HIDDEN_TOOL_NAMES = new Set([
+  "spawn_agent",
+  ...AGENT_VISIBLE_COORDINATOR_TOOL_NAMES,
+]);
+
 const CTO_OPERATOR_TOOL_NAMES = new Set(CTO_OPERATOR_TOOL_SPECS.map((tool) => tool.name));
 const CTO_LINEAR_SYNC_TOOL_NAMES = new Set(CTO_LINEAR_SYNC_TOOL_SPECS.map((tool) => tool.name));
 
@@ -2509,8 +2514,21 @@ function toExternalMcpIdentity(callerCtx: CallerContext): {
   };
 }
 
+function isStandaloneChatCaller(callerCtx: CallerContext): boolean {
+  return Boolean(callerCtx.chatSessionId)
+    && !callerCtx.missionId
+    && !callerCtx.runId
+    && !callerCtx.stepId
+    && !callerCtx.attemptId;
+}
+
+function isToolHiddenForStandaloneChat(name: string, callerCtx: CallerContext): boolean {
+  return isStandaloneChatCaller(callerCtx) && STANDALONE_CHAT_HIDDEN_TOOL_NAMES.has(name);
+}
+
 function canCallerAccessCoordinatorTool(name: string, callerCtx: CallerContext): boolean {
   if (!COORDINATOR_TOOL_NAMES.has(name)) return true;
+  if (isToolHiddenForStandaloneChat(name, callerCtx)) return false;
   if (callerCtx.role === "orchestrator") return true;
   if (callerCtx.role === "agent" && AGENT_VISIBLE_COORDINATOR_TOOL_NAMES.has(name)) return true;
   if (
@@ -2544,19 +2562,23 @@ async function listToolSpecsForSession(runtime: AdeMcpRuntime, session: SessionS
   const visibleBaseTools = shouldHideLocalComputerUse
     ? TOOL_SPECS.filter((tool) => !LOCAL_COMPUTER_USE_TOOL_NAMES.has(tool.name))
     : TOOL_SPECS;
-  if (callerCtx.role === "external" || !callerCtx.role) {
-    return [...visibleBaseTools, ...externalToolSpecs];
-  }
-  if (callerCtx.role === "agent") {
-    return [...visibleBaseTools, ...AGENT_VISIBLE_COORDINATOR_TOOL_SPECS, ...externalToolSpecs];
-  }
-  if (callerCtx.role === "cto") {
-    return [...visibleBaseTools, ...CTO_OPERATOR_TOOL_SPECS, ...CTO_LINEAR_SYNC_TOOL_SPECS, ...externalToolSpecs];
-  }
   const visibleCoordinatorTools = shouldHideLocalComputerUse
     ? COORDINATOR_TOOL_SPECS.filter((tool) => !LOCAL_COMPUTER_USE_TOOL_NAMES.has(tool.name))
     : COORDINATOR_TOOL_SPECS;
-  return [...visibleBaseTools, ...visibleCoordinatorTools, ...externalToolSpecs];
+  const allVisibleTools = (() => {
+    if (callerCtx.role === "external" || !callerCtx.role) {
+      return [...visibleBaseTools, ...externalToolSpecs];
+    }
+    if (callerCtx.role === "agent") {
+      return [...visibleBaseTools, ...AGENT_VISIBLE_COORDINATOR_TOOL_SPECS, ...externalToolSpecs];
+    }
+    if (callerCtx.role === "cto") {
+      return [...visibleBaseTools, ...CTO_OPERATOR_TOOL_SPECS, ...CTO_LINEAR_SYNC_TOOL_SPECS, ...externalToolSpecs];
+    }
+    return [...visibleBaseTools, ...visibleCoordinatorTools, ...externalToolSpecs];
+  })();
+
+  return allVisibleTools.filter((tool) => !isToolHiddenForStandaloneChat(tool.name, callerCtx));
 }
 
 function parseInitializeIdentity(runtime: AdeMcpRuntime, params: unknown): SessionIdentity {
@@ -3566,6 +3588,9 @@ async function runTool(args: {
 }): Promise<unknown> {
   const { runtime, session, name, toolArgs } = args;
   const callerCtx = await resolveEffectiveCallerContext(runtime, session);
+  if (isToolHiddenForStandaloneChat(name, callerCtx)) {
+    throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, `Unsupported tool: ${name}`);
+  }
   const runLocalCommand = (
     command: string,
     commandArgs: string[],

@@ -188,6 +188,10 @@ function buildInitialResumeMetadata(args: {
   return null;
 }
 
+function isTrackedCliToolType(toolType: TerminalToolType | null): toolType is "claude" | "codex" | "claude-orchestrated" | "codex-orchestrated" {
+  return toolType === "claude" || toolType === "codex" || toolType === "claude-orchestrated" || toolType === "codex-orchestrated";
+}
+
 const MAX_TRANSCRIPT_BYTES = 8 * 1024 * 1024;
 const TRANSCRIPT_LIMIT_NOTICE = "\n[ADE] transcript limit reached (8MB). Further output omitted.\n";
 
@@ -583,6 +587,74 @@ export function createPtyService({
       });
   };
 
+  const endTranscriptStream = (stream: fs.WriteStream | null): Promise<void> => {
+    if (!stream) return Promise.resolve();
+    if (stream.writableFinished || stream.destroyed) return Promise.resolve();
+    return new Promise((resolve) => {
+      let settled = false;
+      const complete = () => {
+        if (settled) return;
+        settled = true;
+        stream.removeListener("finish", complete);
+        stream.removeListener("error", complete);
+        resolve();
+      };
+      stream.once("finish", complete);
+      stream.once("error", complete);
+      try {
+        stream.end(() => complete());
+      } catch {
+        complete();
+      }
+    });
+  };
+
+  const scheduleTranscriptDependentWork = (
+    entry: Pick<PtyEntry, "sessionId" | "toolTypeHint" | "transcriptStream" | "laneWorktreePath" | "boundCwd">,
+    reason: "close" | "dispose" | "orphan-dispose",
+  ): void => {
+    void endTranscriptStream(entry.transcriptStream)
+      .finally(() => {
+        backfillResumeTargetFromTranscriptBestEffort(entry.sessionId, entry.toolTypeHint, reason);
+        summarizeSessionBestEffort(entry.sessionId, {
+          laneWorktreePath: entry.laneWorktreePath,
+          boundCwd: entry.boundCwd,
+        });
+      });
+  };
+
+  const backfillResumeTargetFromTranscriptBestEffort = (
+    sessionId: string,
+    preferredToolType: TerminalToolType | null,
+    reason: "close" | "dispose" | "orphan-dispose",
+  ): void => {
+    Promise.resolve()
+      .then(async () => {
+        const session = sessionService.get(sessionId);
+        if (!session?.tracked) return;
+        const effectiveToolType = preferredToolType ?? session.toolType ?? null;
+        if (!isTrackedCliToolType(effectiveToolType)) return;
+        if (session.resumeMetadata?.targetId?.trim()) return;
+
+        const transcript = await sessionService.readTranscriptTail(session.transcriptPath, 220_000);
+        const detected = extractResumeCommandFromOutput(transcript, effectiveToolType);
+        if (!detected) {
+          logger.warn("pty.resume_target_missing", { sessionId, toolType: effectiveToolType, reason });
+          return;
+        }
+        sessionService.setResumeCommand(sessionId, detected);
+        logger.info("pty.resume_target_backfilled", { sessionId, toolType: effectiveToolType, reason });
+      })
+      .catch((err) => {
+        logger.warn("pty.resume_target_backfill_failed", {
+          sessionId,
+          toolType: preferredToolType,
+          reason,
+          err: String(err),
+        });
+      });
+  };
+
   const closeEntry = (ptyId: string, exitCode: number | null) => {
     const entry = ptys.get(ptyId);
     if (!entry) return;
@@ -593,18 +665,13 @@ export function createPtyService({
       entry.aiTitleTimer = null;
     }
     clearToolAutoCloseTimer(ptyId);
-
-    try {
-      entry.transcriptStream?.end();
-    } catch {
-      // ignore
-    }
     cleanupEntryPaths(entry);
     flushPreview(entry);
 
     const endedAt = new Date().toISOString();
     const status = statusFromExit(exitCode);
     sessionService.end({ sessionId: entry.sessionId, endedAt, exitCode, status });
+    scheduleTranscriptDependentWork(entry, "close");
     clearIdleTimer(entry.sessionId);
     const finalRuntimeState = runtimeFromStatus(status);
     setRuntimeState(entry.sessionId, finalRuntimeState, { touch: false });
@@ -620,10 +687,6 @@ export function createPtyService({
     } catch {
       // ignore callback failures
     }
-    summarizeSessionBestEffort(entry.sessionId, {
-      laneWorktreePath: entry.laneWorktreePath,
-      boundCwd: entry.boundCwd,
-    });
 
     // Best-effort head SHA at end; never block exit.
     Promise.resolve()
@@ -741,18 +804,37 @@ export function createPtyService({
       const { laneWorktreePath: worktreePath, cwd } = launchContext;
       const { cols, rows } = clampDims(args.cols, args.rows);
 
+      const requestedSessionId = typeof args.sessionId === "string" ? args.sessionId.trim() : "";
+      const existingSession = requestedSessionId.length
+        ? sessionService.get(requestedSessionId)
+        : null;
+      if (requestedSessionId.length && !existingSession) {
+        throw new Error(`Terminal session '${requestedSessionId}' was not found.`);
+      }
+      if (existingSession && existingSession.laneId !== laneId) {
+        throw new Error(`Terminal session '${requestedSessionId}' belongs to lane '${existingSession.laneId}', not '${laneId}'.`);
+      }
+      if (existingSession && !existingSession.tracked) {
+        throw new Error(`Terminal session '${requestedSessionId}' is not tracked and cannot be resumed.`);
+      }
+      if (existingSession && Array.from(ptys.values()).some((entry) => entry.sessionId === existingSession.id && !entry.disposed)) {
+        throw new Error(`Terminal session '${requestedSessionId}' is already attached to a live PTY.`);
+      }
+
       const ptyId = randomUUID();
-      const sessionId = randomUUID();
+      const sessionId = existingSession?.id ?? randomUUID();
       const startedAt = new Date().toISOString();
-      const tracked = args.tracked !== false;
-      const toolTypeHint = normalizeToolType(args.toolType);
+      const tracked = existingSession?.tracked ?? (args.tracked !== false);
+      const toolTypeHint = normalizeToolType(args.toolType ?? existingSession?.toolType ?? null);
       const requestedStartupCommand = typeof args.startupCommand === "string" ? args.startupCommand.trim() : "";
-      const initialResumeCommand = defaultResumeCommandForTool(toolTypeHint);
-      const initialResumeMetadata = buildInitialResumeMetadata({
+      const initialResumeCommand = existingSession?.resumeCommand ?? defaultResumeCommandForTool(toolTypeHint);
+      const initialResumeMetadata = existingSession?.resumeMetadata ?? buildInitialResumeMetadata({
         toolType: toolTypeHint,
         startupCommand: requestedStartupCommand,
       });
-      const transcriptPath = safeTranscriptPathFor(sessionId);
+      const transcriptPath = tracked
+        ? (existingSession?.transcriptPath?.trim() || safeTranscriptPathFor(sessionId))
+        : "";
       const enrichedLaunch = enrichStartupCommandForAdeMcp({
         projectRoot,
         workspaceRoot: cwd,
@@ -774,27 +856,29 @@ export function createPtyService({
         transcriptStream = fs.createWriteStream(transcriptPath, { flags: "a" });
       }
 
-      sessionService.create({
-        sessionId,
-        laneId,
-        ptyId,
-        tracked,
-        title,
-        startedAt,
-        transcriptPath: tracked ? transcriptPath : "",
-        toolType: toolTypeHint,
-        resumeCommand: initialResumeCommand,
-        resumeMetadata: initialResumeMetadata,
-      });
-      setRuntimeState(sessionId, "running");
+      if (!existingSession) {
+        sessionService.create({
+          sessionId,
+          laneId,
+          ptyId,
+          tracked,
+          title,
+          startedAt,
+          transcriptPath: tracked ? transcriptPath : "",
+          toolType: toolTypeHint,
+          resumeCommand: initialResumeCommand,
+          resumeMetadata: initialResumeMetadata,
+        });
+        setRuntimeState(sessionId, "running");
 
-      // Best-effort head SHA at start; do not block terminal creation.
-      Promise.resolve()
-        .then(async () => {
-          const sha = await computeHeadShaBestEffort(cwd || worktreePath);
-          if (sha) sessionService.setHeadShaStart(sessionId, sha);
-        })
-        .catch(() => {});
+        // Best-effort head SHA at start; do not block terminal creation.
+        Promise.resolve()
+          .then(async () => {
+            const sha = await computeHeadShaBestEffort(cwd || worktreePath);
+            if (sha) sessionService.setHeadShaStart(sessionId, sha);
+          })
+          .catch(() => {});
+      }
 
       const shellCandidates = resolveShellCandidates();
       let pty: IPty;
@@ -857,10 +941,11 @@ export function createPtyService({
           }
         }
         try {
-          transcriptStream?.end();
+          await endTranscriptStream(transcriptStream);
         } catch {
           // ignore
         }
+        if (existingSession) throw err;
         sessionService.end({ sessionId, endedAt: new Date().toISOString(), exitCode: null, status: "failed" });
         clearIdleTimer(sessionId);
         setRuntimeState(sessionId, "exited", { touch: false });
@@ -871,6 +956,30 @@ export function createPtyService({
         });
         broadcastExit({ ptyId, sessionId, exitCode: null });
         throw err;
+      }
+
+      if (existingSession) {
+        sessionService.reattach({ sessionId, ptyId, startedAt });
+        setRuntimeState(sessionId, "running");
+        Promise.resolve()
+          .then(async () => {
+            const sha = await computeHeadShaBestEffort(cwd || worktreePath);
+            if (sha) sessionService.setHeadShaStart(sessionId, sha);
+          })
+          .catch(() => {});
+      }
+
+      if (
+        existingSession
+        && isTrackedCliToolType(toolTypeHint)
+        && !existingSession.resumeMetadata?.targetId?.trim()
+      ) {
+        logger.warn("pty.resume_target_missing", {
+          sessionId,
+          ptyId,
+          toolType: toolTypeHint,
+          reason: "resume-launch",
+        });
       }
 
       const entry: PtyEntry = {
@@ -1109,6 +1218,7 @@ export function createPtyService({
         // so stale sessions do not get stuck in a "running" state forever.
         const endedAt = new Date().toISOString();
         sessionService.end({ sessionId, endedAt, exitCode: null, status: "disposed" });
+        backfillResumeTargetFromTranscriptBestEffort(sessionId, session.toolType ?? null, "orphan-dispose");
         clearIdleTimer(sessionId);
         setRuntimeState(sessionId, "killed", { touch: false });
         runtimeStates.delete(sessionId);
@@ -1142,11 +1252,6 @@ export function createPtyService({
         entry.aiTitleTimer = null;
       }
       clearToolAutoCloseTimer(ptyId);
-      try {
-        entry.transcriptStream?.end();
-      } catch {
-        // ignore
-      }
       cleanupEntryPaths(entry);
       try {
         entry.pty.kill();
@@ -1155,6 +1260,7 @@ export function createPtyService({
       }
       const endedAt = new Date().toISOString();
       sessionService.end({ sessionId: entry.sessionId, endedAt, exitCode: null, status: "disposed" });
+      scheduleTranscriptDependentWork(entry, "dispose");
       clearIdleTimer(entry.sessionId);
       setRuntimeState(entry.sessionId, "killed", { touch: false });
       runtimeStates.delete(entry.sessionId);
@@ -1169,10 +1275,6 @@ export function createPtyService({
       } catch {
         // ignore callback failures
       }
-      summarizeSessionBestEffort(entry.sessionId, {
-        laneWorktreePath: entry.laneWorktreePath,
-        boundCwd: entry.boundCwd,
-      });
       broadcastExit({ ptyId, sessionId: entry.sessionId, exitCode: null });
       ptys.delete(ptyId);
 

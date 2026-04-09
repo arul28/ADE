@@ -443,6 +443,26 @@ export function createSessionService({ db }: { db: AdeDb }) {
       );
     },
 
+    reattach(args: { sessionId: string; ptyId: string | null; startedAt: string }): TerminalSessionSummary | null {
+      const sessionId = typeof args.sessionId === "string" ? args.sessionId.trim() : "";
+      if (!sessionId) return null;
+      db.run(
+        `
+          update terminal_sessions
+          set pty_id = ?,
+              started_at = ?,
+              status = 'running',
+              ended_at = null,
+              exit_code = null,
+              summary = null,
+              head_sha_end = null
+          where id = ?
+        `,
+        [args.ptyId, args.startedAt, sessionId],
+      );
+      return this.get(sessionId);
+    },
+
     setHeadShaStart(sessionId: string, sha: string): void {
       db.run("update terminal_sessions set head_sha_start = ? where id = ?", [sha, sessionId]);
     },

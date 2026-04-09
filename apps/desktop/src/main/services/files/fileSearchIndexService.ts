@@ -20,13 +20,15 @@ type IndexedFile = {
 type WorkspaceIndex = {
   workspaceId: string;
   rootPath: string;
+  includeIgnored: boolean;
   files: Map<string, IndexedFile>;
   totalContentBytes: number;
   buildingPromise: Promise<void> | null;
   builtAt: string | null;
 };
 
-function shouldSkipPathPrefix(relPath: string): boolean {
+function shouldSkipPathPrefix(relPath: string, includeIgnored: boolean): boolean {
+  if (includeIgnored) return false;
   return relPath === ".ade" || relPath.startsWith(".ade/");
 }
 
@@ -50,19 +52,24 @@ async function cooperativeYield(): Promise<void> {
 export function createFileSearchIndexService() {
   const byWorkspace = new Map<string, WorkspaceIndex>();
 
-  const getOrCreateWorkspaceIndex = (workspaceId: string, rootPath: string): WorkspaceIndex => {
-    const existing = byWorkspace.get(workspaceId);
+  const workspaceIndexKey = (workspaceId: string, includeIgnored: boolean): string =>
+    `${workspaceId}::${includeIgnored ? "all" : "default"}`;
+
+  const getOrCreateWorkspaceIndex = (workspaceId: string, rootPath: string, includeIgnored: boolean): WorkspaceIndex => {
+    const key = workspaceIndexKey(workspaceId, includeIgnored);
+    const existing = byWorkspace.get(key);
     if (existing && existing.rootPath === rootPath) return existing;
 
     const next: WorkspaceIndex = {
       workspaceId,
       rootPath,
+      includeIgnored,
       files: new Map(),
       totalContentBytes: 0,
       buildingPromise: null,
       builtAt: null
     };
-    byWorkspace.set(workspaceId, next);
+    byWorkspace.set(key, next);
     return next;
   };
 
@@ -134,14 +141,14 @@ export function createFileSearchIndexService() {
     });
   };
 
-  const shouldSkipDirectoryName = (name: string): boolean => {
+  const shouldSkipDirectoryName = (name: string, includeIgnored: boolean): boolean => {
     if (name === ".git") return true;
-    if (name === "node_modules") return true;
+    if (!includeIgnored && name === "node_modules") return true;
     return false;
   };
 
   const buildWorkspace = async (index: WorkspaceIndex, opts: {
-    shouldIgnore: (relPath: string) => Promise<boolean>;
+    shouldIgnore: (relPath: string, includeIgnored: boolean) => Promise<boolean>;
   }): Promise<void> => {
     index.files.clear();
     index.totalContentBytes = 0;
@@ -163,9 +170,9 @@ export function createFileSearchIndexService() {
       for (const entry of entries) {
         const relPath = normalizeRelative(path.join(relDir, entry.name));
         if (!relPath) continue;
-        if (shouldSkipPathPrefix(relPath)) continue;
-        if (entry.isDirectory() && shouldSkipDirectoryName(entry.name)) continue;
-        if (await opts.shouldIgnore(relPath)) continue;
+        if (shouldSkipPathPrefix(relPath, index.includeIgnored)) continue;
+        if (entry.isDirectory() && shouldSkipDirectoryName(entry.name, index.includeIgnored)) continue;
+        if (await opts.shouldIgnore(relPath, index.includeIgnored)) continue;
 
         if (entry.isDirectory()) {
           stack.push(relPath);
@@ -189,9 +196,10 @@ export function createFileSearchIndexService() {
   };
 
   const ensureBuilt = async (workspaceId: string, rootPath: string, opts: {
-    shouldIgnore: (relPath: string) => Promise<boolean>;
+    includeIgnored: boolean;
+    shouldIgnore: (relPath: string, includeIgnored: boolean) => Promise<boolean>;
   }): Promise<WorkspaceIndex> => {
-    const index = getOrCreateWorkspaceIndex(workspaceId, rootPath);
+    const index = getOrCreateWorkspaceIndex(workspaceId, rootPath, opts.includeIgnored);
     if (index.files.size > 0 || index.builtAt) return index;
     if (index.buildingPromise) {
       await index.buildingPromise;
@@ -209,9 +217,11 @@ export function createFileSearchIndexService() {
     async ensureIndexed(args: {
       workspaceId: string;
       rootPath: string;
-      shouldIgnore: (relPath: string) => Promise<boolean>;
+      includeIgnored: boolean;
+      shouldIgnore: (relPath: string, includeIgnored: boolean) => Promise<boolean>;
     }): Promise<void> {
       await ensureBuilt(args.workspaceId, args.rootPath, {
+        includeIgnored: args.includeIgnored,
         shouldIgnore: args.shouldIgnore
       });
     },
@@ -221,9 +231,11 @@ export function createFileSearchIndexService() {
       rootPath: string;
       query: string;
       limit: number;
-      shouldIgnore: (relPath: string) => Promise<boolean>;
+      includeIgnored: boolean;
+      shouldIgnore: (relPath: string, includeIgnored: boolean) => Promise<boolean>;
     }): Promise<FilesQuickOpenItem[]> {
       const index = await ensureBuilt(args.workspaceId, args.rootPath, {
+        includeIgnored: args.includeIgnored,
         shouldIgnore: args.shouldIgnore
       });
 
@@ -242,9 +254,11 @@ export function createFileSearchIndexService() {
       rootPath: string;
       query: string;
       limit: number;
-      shouldIgnore: (relPath: string) => Promise<boolean>;
+      includeIgnored: boolean;
+      shouldIgnore: (relPath: string, includeIgnored: boolean) => Promise<boolean>;
     }): Promise<FilesSearchTextMatch[]> {
       const index = await ensureBuilt(args.workspaceId, args.rootPath, {
+        includeIgnored: args.includeIgnored,
         shouldIgnore: args.shouldIgnore
       });
 
@@ -274,35 +288,44 @@ export function createFileSearchIndexService() {
       path: string;
       type: "created" | "modified" | "deleted" | "renamed";
       oldPath?: string;
-      shouldIgnore: (relPath: string) => Promise<boolean>;
+      shouldIgnore: (relPath: string, includeIgnored: boolean) => Promise<boolean>;
     }): void {
-      const index = getOrCreateWorkspaceIndex(args.workspaceId, args.rootPath);
-      // If this workspace was never indexed yet, defer indexing until first search/quick-open query.
-      if (!index.builtAt && index.files.size === 0) return;
-
-      if (args.oldPath) {
-        removePath(index, args.oldPath);
-      }
-
-      if (args.type === "deleted") {
-        removePath(index, args.path);
-        return;
-      }
-
       const relPath = normalizeRelative(args.path);
-      void args.shouldIgnore(relPath).then((ignored) => {
-        if (ignored) {
-          removePath(index, relPath);
-          return;
+      const matchingIndexes = Array.from(byWorkspace.values()).filter(
+        (index) => index.workspaceId === args.workspaceId && index.rootPath === args.rootPath
+      );
+
+      for (const index of matchingIndexes) {
+        // If this workspace/mode was never indexed yet, defer indexing until first query.
+        if (!index.builtAt && index.files.size === 0) continue;
+
+        if (args.oldPath) {
+          removePath(index, args.oldPath);
         }
-        upsertFile(index, relPath);
-      }).catch(() => {
-        // ignore indexing failures
-      });
+
+        if (args.type === "deleted") {
+          removePath(index, args.path);
+          continue;
+        }
+
+        void args.shouldIgnore(relPath, index.includeIgnored).then((ignored) => {
+          if (ignored || shouldSkipPathPrefix(relPath, index.includeIgnored)) {
+            removePath(index, relPath);
+            return;
+          }
+          upsertFile(index, relPath);
+        }).catch(() => {
+          // ignore indexing failures
+        });
+      }
     },
 
     invalidateWorkspace(workspaceId: string): void {
-      byWorkspace.delete(workspaceId);
+      for (const key of byWorkspace.keys()) {
+        if (key.startsWith(`${workspaceId}::`)) {
+          byWorkspace.delete(key);
+        }
+      }
     },
 
     dispose(): void {

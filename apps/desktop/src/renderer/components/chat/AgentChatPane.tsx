@@ -2832,7 +2832,6 @@ export function AgentChatPane({
                       open={terminalDrawerOpen}
                       onToggle={() => setTerminalDrawerOpen((v) => !v)}
                       laneId={laneId}
-                      sessionId={selectedSessionId ?? undefined}
                     />
                   </div>
 

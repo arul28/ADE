@@ -36,7 +36,7 @@ const mockLocalStorage = {
 
 // Import after window is set up
 import type { WorkProjectViewState } from "./appStore";
-import { useAppStore, THEME_IDS } from "./appStore";
+import { useAppStore, THEME_IDS, DEFAULT_TERMINAL_PREFERENCES } from "./appStore";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -55,6 +55,8 @@ function resetStore() {
     selectedLaneId: null,
     runLaneId: null,
     focusedSessionId: null,
+    theme: "dark",
+    terminalPreferences: { ...DEFAULT_TERMINAL_PREFERENCES },
     laneInspectorTabs: {},
     workViewByProject: {},
     laneWorkViewByScope: {},
@@ -89,6 +91,44 @@ describe("appStore", () => {
       useAppStore.getState().setTheme("dark");
       expect(useAppStore.getState().theme).toBe("dark");
       expect(mockLocalStorage.setItem).toHaveBeenCalledWith("ade.theme", "dark");
+    });
+  });
+
+  describe("setTerminalPreferences", () => {
+    it("updates terminal preferences in state and persists them to localStorage", () => {
+      useAppStore.getState().setTerminalPreferences({
+        fontSize: 14,
+        lineHeight: 1.3,
+        scrollback: 20_000,
+      });
+
+      expect(useAppStore.getState().terminalPreferences).toEqual({
+        fontSize: 14,
+        lineHeight: 1.3,
+        scrollback: 20_000,
+      });
+      expect(mockLocalStorage.setItem).toHaveBeenCalledWith(
+        "ade.terminalPreferences.v1",
+        JSON.stringify({
+          fontSize: 14,
+          lineHeight: 1.3,
+          scrollback: 20_000,
+        }),
+      );
+    });
+
+    it("clamps invalid terminal preferences to safe bounds", () => {
+      useAppStore.getState().setTerminalPreferences({
+        fontSize: 99,
+        lineHeight: 0.2,
+        scrollback: 10,
+      });
+
+      expect(useAppStore.getState().terminalPreferences).toEqual({
+        fontSize: 18,
+        lineHeight: 1,
+        scrollback: 2000,
+      });
     });
   });
 

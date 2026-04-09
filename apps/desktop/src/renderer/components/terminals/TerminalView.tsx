@@ -3,8 +3,12 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 import { cn } from "../ui/cn";
-import { MONO_FONT } from "../lanes/laneDesignTokens";
-import { useAppStore, type ThemeId } from "../../state/appStore";
+import {
+  DEFAULT_TERMINAL_PREFERENCES,
+  useAppStore,
+  type TerminalPreferences,
+  type ThemeId,
+} from "../../state/appStore";
 
 type XtermTheme = NonNullable<ConstructorParameters<typeof Terminal>[0]>["theme"];
 type TerminalRendererMode = "webgl" | "dom";
@@ -22,6 +26,8 @@ type RuntimeSnapshot = {
   renderer: TerminalRendererMode;
   health: TerminalHealthCounters;
 };
+
+type TerminalRenderPreferences = Pick<TerminalPreferences, "fontSize" | "lineHeight" | "scrollback">;
 
 type RuntimeListener = (snapshot: RuntimeSnapshot) => void;
 
@@ -77,6 +83,16 @@ const MIN_VALID_ROWS = 6;
 const MIN_HOST_WIDTH_PX = 120;
 const MIN_HOST_HEIGHT_PX = 48;
 const INVALID_FIT_RETRY_MS = 90;
+const TERMINAL_FONT_STACK = [
+  "ui-monospace",
+  "SFMono-Regular",
+  "Menlo",
+  "Monaco",
+  "\"Cascadia Mono\"",
+  "\"JetBrains Mono\"",
+  "\"Geist Mono\"",
+  "monospace",
+].join(", ");
 
 const runtimeCache = new Map<string, CachedRuntime>();
 let parkedRoot: HTMLDivElement | null = null;
@@ -190,6 +206,24 @@ function clearTextureAtlas(runtime: CachedRuntime) {
     runtime.term.clearTextureAtlas();
   } catch {
     // ignore when the active renderer doesn't support the texture atlas API
+  }
+}
+
+function applyRuntimeVisualOptions(
+  runtime: CachedRuntime,
+  args: {
+    theme: XtermTheme;
+    preferences: TerminalRenderPreferences;
+  },
+) {
+  try {
+    runtime.term.options.theme = args.theme ? { ...args.theme } : undefined;
+    runtime.term.options.fontFamily = TERMINAL_FONT_STACK;
+    runtime.term.options.fontSize = args.preferences.fontSize;
+    runtime.term.options.lineHeight = args.preferences.lineHeight;
+    runtime.term.options.scrollback = args.preferences.scrollback;
+  } catch {
+    // ignore updates after disposal
   }
 }
 
@@ -616,7 +650,12 @@ async function initRendererChain(runtime: CachedRuntime) {
   await setRenderer(runtime, "dom");
 }
 
-function createRuntime(args: { ptyId: string; sessionId: string; theme: XtermTheme }): CachedRuntime {
+function createRuntime(args: {
+  ptyId: string;
+  sessionId: string;
+  theme: XtermTheme;
+  preferences: TerminalRenderPreferences;
+}): CachedRuntime {
   const host = document.createElement("div");
   host.className = "h-full w-full m-0 p-0 border-0 overflow-hidden";
 
@@ -626,10 +665,10 @@ function createRuntime(args: { ptyId: string; sessionId: string; theme: XtermThe
     cursorBlink: true,
     cursorInactiveStyle: "none",
     documentOverride: document,
-    scrollback: 6000,
-    fontFamily: MONO_FONT,
-    fontSize: 13,
-    lineHeight: 1.2,
+    scrollback: args.preferences.scrollback,
+    fontFamily: TERMINAL_FONT_STACK,
+    fontSize: args.preferences.fontSize,
+    lineHeight: args.preferences.lineHeight,
     theme: args.theme
   });
 
@@ -811,11 +850,20 @@ function createRuntime(args: { ptyId: string; sessionId: string; theme: XtermThe
   return runtime;
 }
 
-function ensureRuntime(args: { ptyId: string; sessionId: string; theme: XtermTheme }): CachedRuntime {
+function ensureRuntime(args: {
+  ptyId: string;
+  sessionId: string;
+  theme: XtermTheme;
+  preferences: TerminalRenderPreferences;
+}): CachedRuntime {
   const existing = runtimeCache.get(args.sessionId);
   if (existing && !existing.disposed) {
     if (existing.ptyId === args.ptyId) {
       clearDisposeTimer(existing);
+      applyRuntimeVisualOptions(existing, {
+        theme: args.theme,
+        preferences: args.preferences,
+      });
       return existing;
     }
     teardownRuntime(existing);
@@ -854,21 +902,33 @@ export function TerminalView({
   isVisible?: boolean;
 }) {
   const appTheme = useAppStore((s) => s.theme);
+  const terminalPreferences = useAppStore((s) => s.terminalPreferences);
   const wrapperRef = useRef<HTMLDivElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const runtimeRef = useRef<CachedRuntime | null>(null);
   const [exited, setExited] = useState<number | null>(null);
 
   const termTheme = useMemo(() => terminalThemes[isDarkTheme(appTheme) ? "dark" : "light"], [appTheme]);
-  const mountConfigRef = useRef({ isActive, isVisible, theme: termTheme });
-  mountConfigRef.current = { isActive, isVisible, theme: termTheme };
+  const resolvedPreferences = useMemo<TerminalRenderPreferences>(() => ({
+    fontSize: terminalPreferences?.fontSize ?? DEFAULT_TERMINAL_PREFERENCES.fontSize,
+    lineHeight: terminalPreferences?.lineHeight ?? DEFAULT_TERMINAL_PREFERENCES.lineHeight,
+    scrollback: terminalPreferences?.scrollback ?? DEFAULT_TERMINAL_PREFERENCES.scrollback,
+  }), [terminalPreferences]);
+  const currentMountConfig = { isActive, isVisible, theme: termTheme, preferences: resolvedPreferences };
+  const mountConfigRef = useRef(currentMountConfig);
+  mountConfigRef.current = currentMountConfig;
 
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
 
     const mountConfig = mountConfigRef.current;
-    const runtime = ensureRuntime({ ptyId, sessionId, theme: mountConfig.theme });
+    const runtime = ensureRuntime({
+      ptyId,
+      sessionId,
+      theme: mountConfig.theme,
+      preferences: mountConfig.preferences,
+    });
     runtimeRef.current = runtime;
     runtime.refs += 1;
     clearDisposeTimer(runtime);
@@ -1074,14 +1134,15 @@ export function TerminalView({
     const runtime = runtimeRef.current ?? runtimeCache.get(sessionId);
     if (!runtime || runtime.disposed) return;
     const id = requestAnimationFrame(() => {
-      try {
-        runtime.term.options.theme = termTheme ? { ...termTheme } : undefined;
-      } catch {
-        // ignore theme updates when disposed
-      }
+      applyRuntimeVisualOptions(runtime, {
+        theme: termTheme,
+        preferences: resolvedPreferences,
+      });
+      clearTextureAtlas(runtime);
+      scheduleFit(runtime, true);
     });
     return () => cancelAnimationFrame(id);
-  }, [sessionId, termTheme]);
+  }, [resolvedPreferences, sessionId, termTheme]);
 
   // When this terminal becomes the active tab, force fit + focus + scroll
   useEffect(() => {

@@ -82,7 +82,7 @@ describe("terminalSessionSignals", () => {
       targetKind: "thread",
       targetId: null,
       launch: { permissionMode: "full-auto" },
-    })).toBe("codex --no-alt-screen --full-auto");
+    })).toBe("codex --no-alt-screen --full-auto resume");
   });
 
   it("extracts resume targets from Claude and Codex picker commands", () => {
@@ -97,6 +97,14 @@ describe("terminalSessionSignals", () => {
     expect(parseTrackedCliResumeCommand("codex resume thread_abc123", "codex")).toEqual({
       provider: "codex",
       targetId: "thread_abc123",
+    });
+    expect(parseTrackedCliResumeCommand("codex --no-alt-screen --full-auto resume thread_abc123", "codex")).toEqual({
+      provider: "codex",
+      targetId: "thread_abc123",
+    });
+    expect(parseTrackedCliResumeCommand("codex --no-alt-screen --full-auto resume", "codex")).toEqual({
+      provider: "codex",
+      targetId: null,
     });
   });
 });
