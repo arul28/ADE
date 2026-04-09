@@ -775,6 +775,11 @@ export function groupConsecutiveWorkLogRows(
       let cursor = index + 1;
       while (cursor < rows.length && rows[cursor]!.event.type === "reasoning") {
         const nextReasoning = rows[cursor]!.event as any;
+        const sameBlock =
+          (nextReasoning.turnId ?? null) === ((row.event as any).turnId ?? null)
+          && (nextReasoning.itemId ?? null) === ((row.event as any).itemId ?? null)
+          && (nextReasoning.summaryIndex ?? null) === ((row.event as any).summaryIndex ?? null);
+        if (!sameBlock) break;
         mergedText += "\n\n---\n\n" + (nextReasoning.text ?? "");
         cursor += 1;
       }
@@ -798,7 +803,13 @@ export function groupConsecutiveWorkLogRows(
     // Deduplicate consecutive status events with the same turnStatus
     if (row.event.type === "status") {
       const prev = grouped[grouped.length - 1];
-      if (prev && prev.event.type === "status" && (prev.event as any).turnStatus === (row.event as any).turnStatus) {
+      if (
+        prev
+        && prev.event.type === "status"
+        && (prev.event as any).turnStatus === (row.event as any).turnStatus
+        && ((prev.event as any).turnId ?? null) === ((row.event as any).turnId ?? null)
+        && ((prev.event as any).message ?? "") === ((row.event as any).message ?? "")
+      ) {
         // Keep the later one (replace the previous)
         grouped[grouped.length - 1] = row;
         index += 1;

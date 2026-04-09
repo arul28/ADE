@@ -187,8 +187,7 @@ describe("openCodeRuntime dynamic ADE MCP registration", () => {
       }),
     );
 
-    handle.close("handle_close");
-    await Promise.resolve();
+    await handle.close("handle_close");
 
     expect(global.fetch).toHaveBeenNthCalledWith(
       4,
@@ -251,8 +250,7 @@ describe("openCodeRuntime dynamic ADE MCP registration", () => {
       ownerId: "chat-success",
       ownerKey: "chat:chat-success",
     });
-    successHandle.close("handle_close");
-    await Promise.resolve();
+    await successHandle.close("handle_close");
 
     vi.mocked(global.fetch).mockRejectedValue(new Error("mcp unavailable"));
     await startOpenCodeSession({

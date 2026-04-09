@@ -105,7 +105,7 @@ describe("openCodeServerManager", () => {
     leaseB.release("handle_close");
   });
 
-  it("keeps shared leased servers alive when a config change is requested", async () => {
+  it("rejects a config change while the existing server is still leased, then allows it after release", async () => {
     const configA = { share: "disabled", autoupdate: false, snapshot: false } as const;
     const configB = {
       share: "disabled",
@@ -122,8 +122,23 @@ describe("openCodeServerManager", () => {
       ownerKind: "inventory",
       idleTtlMs: 1_000,
     });
-    const firstClose = mockState.created[0]?.close;
 
+    // Config change is rejected while leaseA is still held
+    await expect(
+      acquireSharedOpenCodeServer({
+        config: configB,
+        key: "shared:config-change",
+        ownerKind: "inventory",
+        idleTtlMs: 1_000,
+      }),
+    ).rejects.toThrow(/still in use/);
+
+    // Release the old lease and the old server shuts down on idle
+    leaseA.release("handle_close");
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(mockState.created[0]?.close).toHaveBeenCalledTimes(1);
+
+    // Now the config change succeeds — a new server is created
     const leaseB = await acquireSharedOpenCodeServer({
       config: configB,
       key: "shared:config-change",
@@ -131,13 +146,10 @@ describe("openCodeServerManager", () => {
       idleTtlMs: 1_000,
     });
 
-    expect(firstClose).not.toHaveBeenCalled();
-    expect(leaseB.url).toBe(leaseA.url);
+    expect(mockState.created).toHaveLength(2);
+    expect(getOpenCodeRuntimeDiagnostics().sharedCount).toBe(1);
+    expect(getOpenCodeRuntimeDiagnostics().entries[0]?.configFingerprint).toMatch(/^[a-f0-9]{64}$/);
 
-    const diagnostics = getOpenCodeRuntimeDiagnostics();
-    expect(diagnostics.entries[0]?.configFingerprint).toMatch(/^[a-f0-9]{64}$/);
-
-    leaseA.release("handle_close");
     leaseB.release("handle_close");
   });
 

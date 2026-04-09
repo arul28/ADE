@@ -2735,7 +2735,7 @@ describe("mcpServer", () => {
       const fixture = createRuntime();
       const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
 
-      await initialize(handler, { callerId: "coord-1", role: "orchestrator", missionId: "mission-from-identity", runId: "run-from-identity" });
+      await initialize(handler, { callerId: "coord-1", role: "orchestrator", missionId: "mission-1", runId: "run-1" });
       const response = await callTool(handler, "ask_user", {
         missionId: "mission-1",
         title: "Need decision",

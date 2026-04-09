@@ -130,10 +130,9 @@ function buildLaunchEnv(args: {
 
 export function resolveDesktopAdeMcpLaunch(args: DesktopAdeMcpLaunchArgs): AdeMcpLaunch {
   const projectRoot = resolveRequiredRoot(args.projectRoot, "projectRoot");
-  const explicitWorkspaceRoot = resolveRequiredRoot(args.workspaceRoot, "workspaceRoot");
   const workspaceRoot = args.workspaceBinding === "project_root"
     ? projectRoot
-    : explicitWorkspaceRoot;
+    : resolveRequiredRoot(args.workspaceRoot, "workspaceRoot");
   const socketPath = resolveAdeLayout(projectRoot).socketPath;
   const resourcesPath = resolveResourcesPath();
   const env = buildLaunchEnv({

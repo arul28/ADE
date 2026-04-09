@@ -43,13 +43,13 @@ export type OpenCodeSessionHandle = {
   client: OpencodeClient;
   server: {
     url: string;
-    close(): void;
+    close(): Promise<void>;
   };
   lease: OpenCodeServerLease;
   sessionId: string;
   directory: string;
   toolSelection: Record<string, boolean> | null;
-  close(reason?: OpenCodeServerShutdownReason): void;
+  close(reason?: OpenCodeServerShutdownReason): Promise<void>;
   touch(): void;
   setBusy(busy: boolean): void;
   setEvictionHandler(handler: ((reason: OpenCodeServerShutdownReason) => void) | null): void;
@@ -565,8 +565,12 @@ function createOpenCodeSessionHandle(args: {
     client: args.client,
     server: {
       url: args.lease.url,
-      close() {
-        args.dynamicMcp?.disconnect().catch(() => {});
+      async close() {
+        try {
+          await args.dynamicMcp?.disconnect();
+        } catch {
+          // best-effort — don't block lease release
+        }
         args.lease.close("handle_close");
       },
     },
@@ -574,8 +578,12 @@ function createOpenCodeSessionHandle(args: {
     sessionId: args.sessionId,
     directory: args.directory,
     toolSelection: args.dynamicMcp?.toolSelection ?? null,
-    close(reason = "handle_close") {
-      args.dynamicMcp?.disconnect().catch(() => {});
+    async close(reason = "handle_close") {
+      try {
+        await args.dynamicMcp?.disconnect();
+      } catch {
+        // best-effort — don't block lease release
+      }
       args.lease.close(reason);
     },
     touch() {
@@ -809,6 +817,6 @@ export async function runOpenCodeTextPrompt(
     return { text: text.trim(), inputTokens, outputTokens };
   } finally {
     args.signal?.removeEventListener("abort", forwardAbort);
-    handle.close("handle_close");
+    await handle.close("handle_close");
   }
 }

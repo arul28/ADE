@@ -353,13 +353,13 @@ export async function acquireSharedOpenCodeServer(args: {
         return buildLease(existing, args.logger);
       }
       if (existing && existing.refCount > 0) {
-        existing.lastUsedAt = Date.now();
-        logRuntimeEvent(args.logger, "opencode.server_config_mismatch_retained", existing, {
+        logRuntimeEvent(args.logger, "opencode.server_config_mismatch_rejected", existing, {
           requestedConfigFingerprint: configFingerprint,
           refCount: existing.refCount,
         });
-        existing.refCount += 1;
-        return buildLease(existing, args.logger);
+        throw new Error(
+          `Shared OpenCode server for key "${key}" is still in use (refCount=${existing.refCount}) with a different config. Cannot acquire a lease with the requested configuration.`
+        );
       }
       if (existing) {
         shutdownEntry(existing, "config_changed", args.logger);
@@ -407,13 +407,13 @@ export async function acquireDedicatedOpenCodeServer(args: {
         return buildLease(existing, args.logger);
       }
       if (existing && existing.refCount > 0) {
-        existing.lastUsedAt = Date.now();
-        logRuntimeEvent(args.logger, "opencode.server_config_mismatch_retained", existing, {
+        logRuntimeEvent(args.logger, "opencode.server_config_mismatch_rejected", existing, {
           requestedConfigFingerprint: configFingerprint,
           refCount: existing.refCount,
         });
-        existing.refCount += 1;
-        return buildLease(existing, args.logger);
+        throw new Error(
+          `Dedicated OpenCode server for "${ownerKey}" is still in use (refCount=${existing.refCount}) with a different config. Cannot acquire a lease with the requested configuration.`
+        );
       }
       if (existing) {
         shutdownEntry(existing, "config_changed", args.logger);

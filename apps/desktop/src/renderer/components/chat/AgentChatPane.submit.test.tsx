@@ -172,6 +172,20 @@ function installAdeMocks(options?: {
     files: {
       listWorkspaces: vi.fn().mockResolvedValue([]),
     },
+    lanes: {
+      list: vi.fn().mockResolvedValue([]),
+    },
+    git: {
+      listBranches: vi.fn().mockResolvedValue([]),
+      getActionRuntime: vi.fn().mockResolvedValue(null),
+      onActionRuntimeEvent: vi.fn().mockImplementation(() => () => undefined),
+    },
+    diff: {
+      getChanges: vi.fn().mockResolvedValue({ staged: [], unstaged: [] }),
+    },
+    prs: {
+      getForLane: vi.fn().mockResolvedValue(null),
+    },
   } as any;
 
   return {
@@ -805,7 +819,7 @@ describe("AgentChatPane submit recovery", () => {
     );
 
     // The git toolbar renders commit/push buttons when laneId is present
-    expect(await screen.findByText("Commit")).toBeTruthy();
+    expect(await screen.findByText("Stage & Commit")).toBeTruthy();
     expect(screen.getByText("Push")).toBeTruthy();
   });
 

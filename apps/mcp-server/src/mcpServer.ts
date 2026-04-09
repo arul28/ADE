@@ -2577,16 +2577,22 @@ function parseInitializeIdentity(runtime: AdeMcpRuntime, params: unknown): Sessi
     ? createDefaultComputerUsePolicy({ allowLocalFallback: false })
     : requestedComputerUsePolicy;
   const resolvedRunId = envContext.runId;
+  const requestedMissionId = asOptionalTrimmedString(identity.missionId);
   const resolvedMissionId =
-    asOptionalTrimmedString(identity.missionId)
-    ?? envContext.missionId
+    envContext.missionId
     ?? (resolvedRunId ? resolveMissionIdForRun(runtime, resolvedRunId) : null);
+  if (requestedMissionId && resolvedMissionId && requestedMissionId !== resolvedMissionId) {
+    throw new JsonRpcError(
+      JsonRpcErrorCode.invalidParams,
+      "identity.missionId does not match the server-authorized run context",
+    );
+  }
 
   return {
     callerId: asOptionalTrimmedString(identity.callerId) ?? envContext.chatSessionId ?? envContext.attemptId ?? "unknown",
     role: validRole,
     chatSessionId: envContext.chatSessionId,
-    missionId: resolvedMissionId,
+    missionId: resolvedMissionId ?? requestedMissionId ?? null,
     runId: resolvedRunId,
     stepId: asOptionalTrimmedString(identity.stepId) ?? envContext.stepId,
     attemptId: asOptionalTrimmedString(identity.attemptId) ?? envContext.attemptId,
@@ -2864,11 +2870,19 @@ function getCoordinatorToolSet(args: {
     logger: args.runtime.logger,
     db: args.runtime.db,
     projectRoot: args.runtime.projectRoot,
-    workspaceRoot:
-      resolveLaneWorktreePath(args.runtime, missionLaneId)
-      ?? (typeof args.runtime.workspaceRoot === "string" && args.runtime.workspaceRoot.trim().length > 0
-        ? args.runtime.workspaceRoot.trim()
-        : args.runtime.projectRoot),
+    workspaceRoot: (() => {
+      const laneWorkspaceRoot = resolveLaneWorktreePath(args.runtime, missionLaneId);
+      if (missionLaneId && !laneWorkspaceRoot) {
+        throw new JsonRpcError(
+          JsonRpcErrorCode.invalidParams,
+          `Mission lane '${missionLaneId}' does not have an available worktree.`,
+        );
+      }
+      return laneWorkspaceRoot
+        ?? (typeof args.runtime.workspaceRoot === "string" && args.runtime.workspaceRoot.trim().length > 0
+          ? args.runtime.workspaceRoot.trim()
+          : args.runtime.projectRoot);
+    })(),
     missionLaneId: missionLaneId ?? undefined,
     onRunFinalize: ({ runId }) => {
       args.runtime.aiOrchestratorService.finalizeRun({ runId, force: true });

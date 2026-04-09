@@ -721,6 +721,7 @@ export function ModelCatalogPanel({
                   onChange={(event) => setQuery(event.target.value)}
                   onKeyDown={handleListKeyDown}
                   placeholder="Search models…"
+                  aria-label="Search models"
                   className="min-w-0 w-[160px] bg-transparent font-sans text-[12px] text-fg/90 outline-none placeholder:text-muted-fg/30"
                   autoFocus={autoFocusSearch}
                   role="combobox"

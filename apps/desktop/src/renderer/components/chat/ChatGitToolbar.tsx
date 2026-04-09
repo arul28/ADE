@@ -112,8 +112,8 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
       setDirtyCount(dirtyFileCount(changes));
       const staged = changes.staged.length;
       const unstaged = changes.unstaged.length;
-      const totalAdds = changes.staged.reduce((acc, f) => acc + ((f as any).additions ?? 0), 0) + changes.unstaged.reduce((acc, f) => acc + ((f as any).additions ?? 0), 0);
-      const totalDels = changes.staged.reduce((acc, f) => acc + ((f as any).deletions ?? 0), 0) + changes.unstaged.reduce((acc, f) => acc + ((f as any).deletions ?? 0), 0);
+      const totalAdds = changes.staged.reduce((acc, f) => acc + (f.additions ?? 0), 0) + changes.unstaged.reduce((acc, f) => acc + (f.additions ?? 0), 0);
+      const totalDels = changes.staged.reduce((acc, f) => acc + (f.deletions ?? 0), 0) + changes.unstaged.reduce((acc, f) => acc + (f.deletions ?? 0), 0);
       setDiffStats({ adds: totalAdds, dels: totalDels, files: staged + unstaged });
     } catch {
       // best-effort
@@ -212,12 +212,9 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
     await runAction("Commit", async () => {
       // Stage all unstaged changes before committing
       const changes = await window.ade.diff.getChanges({ laneId });
-      const allPaths = [
-        ...changes.staged.map((f) => f.path),
-        ...changes.unstaged.map((f) => f.path),
-      ];
-      if (allPaths.length > 0) {
-        await window.ade.git.stageAll({ laneId, paths: allPaths });
+      const unstagedPaths = changes.unstaged.map((f) => f.path);
+      if (unstagedPaths.length > 0) {
+        await window.ade.git.stageAll({ laneId, paths: unstagedPaths });
       }
       await window.ade.git.commit({ laneId, message: msg });
       setCommitMsg("");
