@@ -3204,24 +3204,19 @@ app.whenReady().then(async () => {
     globalStatePath,
   });
 
-  await createWindow(getActiveContext().logger);
-
-  // Initial project context: load AFTER the window is visible so the main
-  // thread isn't blocked (DB load + service init) before anything renders.
+  // Dogfood and other explicit ADE_PROJECT_ROOT launches need the project
+  // context ready before the renderer boots, otherwise the window can paint
+  // the welcome state and swallow project selection into a confusing no-op.
   if (startupUserSelected) {
-    const startupRoot = normalizeProjectRoot(initialCandidate);
-    void (async () => {
-      try {
-        await switchProjectFromDialog(initialCandidate);
-      } catch {
-        if (!activeProjectRoot || activeProjectRoot === startupRoot) {
-          setActiveProject(null);
-          dormantContext = createDormantProjectContext();
-          emitProjectChanged(null);
-        }
-      }
-    })();
+    try {
+      await switchProjectFromDialog(initialCandidate);
+    } catch {
+      setActiveProject(null);
+      dormantContext = createDormantProjectContext();
+    }
   }
+
+  await createWindow(getActiveContext().logger);
 
   app.on("activate", async () => {
     if (BrowserWindow.getAllWindows().length === 0) {
@@ -3237,10 +3232,10 @@ app.whenReady().then(async () => {
     const current = getActiveContext();
     const previousRoot = current.project?.rootPath;
     current.logger.info("app.before_quit");
-    // Kill the shared OpenCode inventory server before quitting
+    // Kill any remaining OpenCode servers before quitting.
     try {
-      const { shutdownInventoryServer } = require("./services/opencode/openCodeInventory");
-      shutdownInventoryServer();
+      const { shutdownOpenCodeServers } = require("./services/opencode/openCodeServerManager");
+      shutdownOpenCodeServers();
     } catch { /* ignore if module not loaded */ }
     setActiveProject(null);
     dormantContext = createDormantProjectContext(previousRoot);

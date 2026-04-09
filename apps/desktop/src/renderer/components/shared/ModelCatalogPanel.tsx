@@ -10,7 +10,7 @@ import {
   type ModelDescriptor,
 } from "../../../shared/modelRegistry";
 import { cn } from "../ui/cn";
-import { Check, MagnifyingGlass } from "@phosphor-icons/react";
+import { Check, Cpu, MagnifyingGlass } from "@phosphor-icons/react";
 import { ModelRowLogo, ProviderLogo } from "./ProviderLogos";
 import {
   buildProviderGroupBlocks,
@@ -204,41 +204,46 @@ function OpenCodeCategorizedBadges({
     { key: "local", items: local },
     { key: "router", items: router },
   ];
+  const shouldBoundHeight = providers.length > 10;
 
   return (
-    <div className="flex min-w-0 flex-col gap-2">
+    <div
+      className={cn(
+        "flex min-w-0 flex-col gap-2",
+        shouldBoundHeight && "max-h-[11rem] overflow-y-auto overscroll-contain pr-1",
+      )}
+    >
       {categories.map(({ key: catKey, items }) => {
         if (!items.length) return null;
         return (
-          <div key={catKey} className="flex min-w-0 items-center gap-2">
-            <span className="shrink-0 font-sans text-[9px] font-medium uppercase tracking-[0.14em] text-zinc-500 w-10">
+          <div key={catKey} className="flex min-w-0 items-start gap-2">
+            <span className="w-10 shrink-0 pt-2 font-sans text-[9px] font-medium uppercase tracking-[0.14em] text-zinc-500">
               {PROVIDER_CATEGORY_LABELS[catKey]}
             </span>
-            <div className="flex min-w-0 gap-1.5 overflow-x-auto pb-0.5 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-            {items.map((prov) => {
-              const isProvActive = activeProviderKey === prov.key;
-              const fill = providerAccent(prov.key, prov.badgeColor);
-              const hasModels = prov.modelCount > 0;
-              return (
-                <button
-                  key={prov.key}
-                  type="button"
-                  className={cn(
-                    "flex shrink-0 items-center gap-1.5 rounded-lg py-1.5 pl-2.5 pr-2.5 text-left transition-colors",
-                    isProvActive
-                      ? "text-white shadow-md"
-                      : hasModels
-                        ? "border border-white/[0.08] bg-white/[0.04] text-fg/75 hover:border-white/[0.12] hover:bg-white/[0.06]"
-                        : "border border-white/[0.05] bg-white/[0.02] text-fg/75 opacity-40",
-                  )}
-                  style={isProvActive ? { backgroundColor: fill } : undefined}
-                  onClick={() => onSelect(prov.key)}
-                >
-                  <ProviderLogo family={prov.key} size={14} />
-                  <span className="font-sans text-[10px] font-semibold">{prov.label}</span>
-                </button>
-              );
-            })}
+            <div className="flex min-w-0 flex-1 flex-wrap gap-1.5">
+              {items.map((prov) => {
+                const isProvActive = activeProviderKey === prov.key;
+                const fill = providerAccent(prov.key, prov.badgeColor);
+                const hasModels = prov.modelCount > 0;
+                return (
+                  <button
+                    key={prov.key}
+                    type="button"
+                    className={cn(
+                      "flex items-center gap-1.5 rounded-lg py-1.5 pl-2.5 pr-2.5 text-left transition-all duration-150",
+                      isProvActive
+                        ? "bg-gradient-to-r from-violet-500/[0.10] to-violet-500/[0.04] border border-violet-400/20 text-fg shadow-sm"
+                        : hasModels
+                          ? "bg-white/[0.04] text-fg/65 hover:bg-white/[0.06] hover:text-fg/80"
+                          : "bg-white/[0.02] text-fg/65 opacity-40",
+                    )}
+                    onClick={() => onSelect(prov.key)}
+                  >
+                    <ProviderLogo family={prov.key} size={14} />
+                    <span className="font-sans text-[10px] font-semibold">{prov.label}</span>
+                  </button>
+                );
+              })}
             </div>
           </div>
         );
@@ -489,19 +494,21 @@ export function ModelCatalogPanel({
     const bgFocused = isFocused && (selectable ? isAvailable : true) ? rgbaFromHex(accent, 0.08) : undefined;
 
     const rowClass = cn(
-      "mx-1.5 flex w-[calc(100%-12px)] flex-col gap-1 rounded-xl px-3 py-2 text-left font-sans text-[11px] transition-[background-color,color] duration-150",
+      "mx-2 flex w-[calc(100%-16px)] flex-col gap-1 rounded-xl border px-4 py-3 text-left font-sans text-[13px] transition-all duration-150",
+      isSelected
+        ? "border-violet-400/20 bg-gradient-to-br from-violet-500/[0.08] to-violet-500/[0.03]"
+        : "border-white/[0.06] bg-white/[0.03]",
       isAvailable ? "text-fg/90" : "text-muted-fg/22",
       selectable &&
         isAvailable &&
         !isSelected &&
-        "hover:[background-color:color-mix(in_srgb,var(--model-row-accent)_5%,transparent)]",
+        "hover:bg-white/[0.05] hover:border-white/[0.08]",
     );
 
     const rowStyle: React.CSSProperties & { "--model-row-accent"?: string } = {
       "--model-row-accent": accent,
-      borderLeft,
       backgroundColor: isSelected
-        ? bgSelected
+        ? undefined
         : isFocused && (selectable ? isAvailable : true)
           ? bgFocused
           : isFocused && selectable && !isAvailable
@@ -511,28 +518,36 @@ export function ModelCatalogPanel({
 
     const inner = (
       <>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2.5">
           <span className={cn("inline-flex flex-shrink-0 items-center justify-center", !isAvailable && "opacity-40 grayscale")}>
-            <ModelRowLogo modelFamily={model.family} cliCommand={model.cliCommand} modelId={model.id} providerModelId={model.providerModelId} size={12} />
+            <ModelRowLogo modelFamily={model.family} cliCommand={model.cliCommand} modelId={model.id} providerModelId={model.providerModelId} size={14} />
           </span>
           <div className="min-w-0 flex-1">
-            <div className="flex items-center gap-1.5">
-              <div className="truncate font-medium">{model.displayName}</div>
+            <div className="flex items-center gap-2">
+              <div className="truncate text-[13px] font-medium text-fg/90">{model.displayName}</div>
+              {isSelected ? (
+                <span className="inline-flex shrink-0 items-center rounded-full border border-emerald-400/20 bg-emerald-500/[0.15] px-2 py-0.5 font-sans text-[9px] font-medium text-emerald-300">
+                  active
+                </span>
+              ) : null}
               {isUnknown ? (
                 <span className="inline-flex shrink-0 items-center rounded-full border border-zinc-400/25 bg-zinc-400/10 px-1.5 py-0.5 font-sans text-[8px] font-semibold uppercase tracking-[0.14em] text-zinc-300">
                   Unknown
                 </span>
               ) : null}
             </div>
-            <div className="truncate text-[9px] uppercase tracking-[0.12em] text-muted-fg/42">
+            <div className={cn("truncate text-[11px]", isAvailable ? "text-fg/50" : "text-muted-fg/35 italic")}>
               {modelAvailabilityLabel(model, isAvailable)}
             </div>
           </div>
-          <div className="flex shrink-0 items-center gap-1.5">
-            {isAvailable ? (
-              <span className="font-sans text-[9px] font-semibold uppercase tracking-wide text-muted-fg/50">Ready</span>
+          <div className="flex shrink-0 items-center gap-2">
+            {isAvailable && !isSelected ? (
+              <span className="inline-flex items-center gap-1 font-sans text-[9px] font-medium text-emerald-400/60">
+                <span className="inline-block h-1.5 w-1.5 rounded-full bg-emerald-400/60" />
+                Ready
+              </span>
             ) : null}
-            {isSelected ? <Check size={12} weight="bold" style={{ color: accent }} /> : <span className="w-[12px]" />}
+            {isSelected ? <Check size={13} weight="bold" className="text-emerald-400" /> : <span className="w-[13px]" />}
           </div>
         </div>
         {!isAvailable && openSettings ? (
@@ -599,8 +614,8 @@ export function ModelCatalogPanel({
         return <div className="px-4 py-5 font-sans text-[11px] text-muted-fg/45">No models match this search.</div>;
       }
       return searchTree.map((groupBlock) => (
-        <div key={groupBlock.key} className="border-b border-border/10 last:border-b-0">
-          <div className="sticky top-0 z-[1] border-b border-white/[0.06] px-3 py-2 backdrop-blur-sm" style={{ background: "var(--gradient-panel)" }}>
+        <div key={groupBlock.key} className="border-b border-white/[0.04] last:border-b-0">
+          <div className="sticky top-0 z-[1] border-b border-white/[0.06] px-4 py-2.5 backdrop-blur-md" style={{ background: "rgba(19,17,34,0.85)" }}>
             <div className="flex items-center gap-2 font-sans text-[10px] font-bold uppercase tracking-[0.2em] text-fg/55">
               <ProviderLogo family={groupBlock.key === "claude" ? "anthropic" : groupBlock.key === "codex" ? "openai" : groupBlock.key} size={14} />
               {groupBlock.label}
@@ -622,7 +637,7 @@ export function ModelCatalogPanel({
                       {subsectionTabTitle(sub)}
                     </div>
                   ) : null}
-                  <div className="py-1.5">{sub.models.map((m) => renderModelRow(m, `${groupBlock.key}:${prov.key}`))}</div>
+                  <div className="flex flex-col gap-1.5 py-2">{sub.models.map((m) => renderModelRow(m, `${groupBlock.key}:${prov.key}`))}</div>
                 </div>
               ))}
             </div>
@@ -676,7 +691,7 @@ export function ModelCatalogPanel({
       return <div className="px-4 py-5 font-sans text-[11px] text-muted-fg/45">No models in this group.</div>;
     }
 
-    return <div className="py-1.5">{flatModels.map((m) => renderModelRow(m, activeProviderBlock.key))}</div>;
+    return <div className="flex flex-col gap-1.5 py-2">{flatModels.map((m) => renderModelRow(m, activeProviderBlock.key))}</div>;
   })();
 
   return (
@@ -684,49 +699,54 @@ export function ModelCatalogPanel({
       ref={panelRef}
       role="presentation"
       className={cn(
-        "flex w-full flex-col overflow-hidden rounded-2xl border border-[color:var(--pane-border)] outline-none",
+        "flex w-full flex-col overflow-hidden rounded-[18px] border border-violet-400/[0.12] outline-none",
         "max-h-[min(560px,70vh)]",
         className,
       )}
-      style={{ background: "var(--gradient-panel)" }}
+      style={{ background: "#131122", backdropFilter: "blur(60px)", boxShadow: "0 28px 64px -16px rgba(0,0,0,0.67)" }}
     >
-      <div className="h-[3px] w-full shrink-0" style={{ backgroundColor: stripAccentColor }} />
 
-      <div className="shrink-0 space-y-3 px-4 pb-3 pt-4">
-        <div className="flex items-start gap-2">
-          <div className="min-w-0 flex-1 rounded-xl border-2 border-transparent bg-black/15 px-3 py-2.5 transition-colors focus-within:border-accent/40">
-            <div className="flex items-center gap-2">
-              <MagnifyingGlass size={14} className="shrink-0 text-muted-fg/45" />
-              <input
-                value={query}
-                onChange={(event) => setQuery(event.target.value)}
-                onKeyDown={handleListKeyDown}
-                placeholder="Search models, ids, aliases…"
-                className="min-w-0 flex-1 bg-transparent font-sans text-[12px] text-fg/90 outline-none placeholder:text-muted-fg/30"
-                autoFocus={autoFocusSearch}
-                role="combobox"
-                aria-controls={listboxId}
-                aria-expanded={true}
-                aria-activedescendant={
-                  focusedIndex >= 0 && flatModels[focusedIndex] ? `model-option-${flatModels[focusedIndex].id}` : undefined
-                }
-              />
-            </div>
+      <div className="shrink-0 space-y-3 border-b border-white/[0.04] px-6 pb-4 pt-5">
+        <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2 min-w-0 flex-1">
+            <Cpu size={18} weight="duotone" className="shrink-0 text-violet-400" />
+            <span className="font-semibold text-[15px] text-fg/[0.94] font-sans">Select Model</span>
           </div>
-          {headerTrailing ? <div className="shrink-0">{headerTrailing}</div> : null}
+          <div className="flex items-center gap-2">
+            <div className="rounded-[10px] border border-white/[0.08] bg-white/[0.05] px-3 py-2 transition-colors focus-within:border-violet-400/40">
+              <div className="flex items-center gap-2">
+                <MagnifyingGlass size={13} className="shrink-0 text-muted-fg/40" />
+                <input
+                  value={query}
+                  onChange={(event) => setQuery(event.target.value)}
+                  onKeyDown={handleListKeyDown}
+                  placeholder="Search models…"
+                  aria-label="Search models"
+                  className="min-w-0 w-[160px] bg-transparent font-sans text-[12px] text-fg/90 outline-none placeholder:text-muted-fg/30"
+                  autoFocus={autoFocusSearch}
+                  role="combobox"
+                  aria-controls={listboxId}
+                  aria-expanded={true}
+                  aria-activedescendant={
+                    focusedIndex >= 0 && flatModels[focusedIndex] ? `model-option-${flatModels[focusedIndex].id}` : undefined
+                  }
+                />
+              </div>
+            </div>
+            {headerTrailing ? <div className="shrink-0">{headerTrailing}</div> : null}
+          </div>
         </div>
 
         <div
           className={cn(
-            "flex gap-0 rounded-lg border border-white/[0.06] bg-black/20 p-0.5",
-            isSearchMode && "opacity-45",
+            "flex gap-1 rounded-xl border border-white/[0.06] bg-white/[0.02] p-1",
+            isSearchMode && "opacity-40",
           )}
         >
           {GROUP_KEYS.map((key) => {
             const count = groupModelCounts.get(key) ?? 0;
             const segActive = activeGroup === key && !isSearchMode;
             const empty = count === 0 && key !== "opencode";
-            const groupColor = PROVIDER_GROUP_COLORS[key];
             return (
               <button
                 key={key}
@@ -734,17 +754,12 @@ export function ModelCatalogPanel({
                 disabled={empty || isSearchMode}
                 title={empty ? `No ${providerGroupLabel(key)} models` : undefined}
                 className={cn(
-                  "flex-1 py-1.5 px-3 text-center font-sans text-[10px] font-semibold uppercase tracking-wide transition-colors",
+                  "flex-1 py-1.5 px-3 text-center font-sans text-[10px] font-semibold uppercase tracking-wide transition-all duration-150",
                   isSearchMode && "cursor-not-allowed",
-                  !isSearchMode && segActive && "rounded-md text-fg",
-                  !isSearchMode && !segActive && !empty && "text-muted-fg/45 hover:text-fg/60",
+                  !isSearchMode && segActive && "rounded-lg bg-gradient-to-r from-violet-500/[0.12] to-violet-500/[0.05] text-fg border border-violet-400/20 shadow-sm",
+                  !isSearchMode && !segActive && !empty && "rounded-lg text-muted-fg/45 hover:text-fg/60 hover:bg-white/[0.04]",
                   !isSearchMode && !segActive && empty && "cursor-not-allowed text-muted-fg/25",
                 )}
-                style={
-                  !isSearchMode && segActive
-                    ? { backgroundColor: `${groupColor}22`, boxShadow: `inset 0 -2px 0 0 ${groupColor}` }
-                    : undefined
-                }
                 onClick={() => {
                   if (isSearchMode) return;
                   setActiveGroup(key);
@@ -767,36 +782,34 @@ export function ModelCatalogPanel({
               onSelect={setActiveProvider}
             />
           ) : (
-            <div className="flex gap-2 overflow-x-auto pb-0.5 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+            <div className="flex flex-wrap gap-2">
               {providersInActiveGroup.map((prov) => {
                 const isProvActive = activeProviderBlock?.key === prov.key;
-                const fill = providerAccent(prov.key, prov.badgeColor);
                 return (
                   <button
                     key={prov.key}
                     type="button"
                     className={cn(
-                      "flex shrink-0 items-center gap-2 rounded-xl py-2 pl-3 pr-3 text-left transition-colors",
+                      "flex items-center gap-2 rounded-lg py-2 pl-3 pr-3.5 text-left transition-all duration-150",
                       isProvActive
-                        ? "text-white shadow-md"
-                        : "border border-white/[0.08] bg-white/[0.04] text-fg/75 hover:border-white/[0.12] hover:bg-white/[0.06]",
+                        ? "bg-gradient-to-r from-violet-500/[0.10] to-violet-500/[0.04] border border-violet-400/20 text-fg shadow-sm"
+                        : "bg-white/[0.04] text-fg/65 hover:bg-white/[0.06] hover:text-fg/80",
                     )}
-                    style={isProvActive ? { backgroundColor: fill } : undefined}
                     onClick={() => setActiveProvider(prov.key)}
                   >
-                    <ProviderLogo family={prov.key} size={18} />
-                    <span className="font-sans text-[11px] font-semibold">{prov.label}</span>
+                    <ProviderLogo family={prov.key} size={16} />
+                    <span className="font-sans text-[10px] font-semibold">{prov.label}</span>
                   </button>
                 );
               })}
             </div>
           )
         ) : (
-          <div className="font-sans text-[10px] font-medium uppercase tracking-wide text-muted-fg/50">Search results (all sources)</div>
+          <div className="font-sans text-[10px] font-medium uppercase tracking-wider text-muted-fg/40">Search results (all sources)</div>
         )}
 
         {!isSearchMode && activeProviderBlock && activeProviderBlock.subsections.length > 1 ? (
-          <div className="flex gap-1 overflow-x-auto pb-0.5 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+          <div className="flex flex-wrap gap-1.5">
             {activeProviderBlock.subsections.map((sub) => {
               const tabActive = activeSubsection === sub.key;
               const count = sub.models.length;
@@ -805,8 +818,8 @@ export function ModelCatalogPanel({
                   key={sub.key}
                   type="button"
                   className={cn(
-                    "shrink-0 rounded-full px-2.5 py-1 font-sans text-[10px] font-medium transition-colors",
-                    tabActive ? "bg-white/[0.08] text-fg" : "text-muted-fg/40 hover:text-fg/60",
+                    "rounded-full px-3 py-1 font-sans text-[10px] font-medium transition-all duration-150",
+                    tabActive ? "bg-violet-500/[0.10] border border-violet-400/20 text-fg" : "text-muted-fg/40 hover:text-fg/60 hover:bg-white/[0.04]",
                   )}
                   onClick={() => setActiveSubsection(sub.key)}
                 >
@@ -818,18 +831,17 @@ export function ModelCatalogPanel({
         ) : null}
       </div>
 
-      <div id={listboxId} role="listbox" className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-1">
+      <div id={listboxId} role="listbox" className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-2 py-1">
         {listContent}
       </div>
 
       {!hideOpenSettingsFooter && openSettings ? (
         <div
-          className="shrink-0 px-4 py-2.5"
-          style={{ borderTop: `1px solid color-mix(in srgb, ${stripAccentColor} 15%, transparent)` }}
+          className="shrink-0 border-t border-white/[0.04] px-6 py-3"
         >
           <button
             type="button"
-            className="font-sans text-[10px] text-accent/65 hover:text-accent"
+            className="font-sans text-[10px] text-violet-300/60 hover:text-violet-300 transition-colors"
             onClick={() => {
               openSettings();
             }}

@@ -2066,6 +2066,94 @@ function resolveChatSessionLaneId(runtime: AdeMcpRuntime, session: SessionState)
   return laneId.length ? laneId : null;
 }
 
+function resolveLaneWorktreePath(runtime: AdeMcpRuntime, laneId: string | null | undefined): string | null {
+  const normalizedLaneId = asOptionalTrimmedString(laneId);
+  if (!normalizedLaneId) return null;
+  try {
+    if (typeof runtime.laneService.getLaneWorktreePath === "function") {
+      const worktreePath = runtime.laneService.getLaneWorktreePath(normalizedLaneId);
+      const trimmed = typeof worktreePath === "string" ? worktreePath.trim() : "";
+      if (trimmed.length > 0) return trimmed;
+    }
+  } catch {
+    // Fall through to other lane resolvers below.
+  }
+  try {
+    if (typeof runtime.laneService.getLaneBaseAndBranch === "function") {
+      const lane = runtime.laneService.getLaneBaseAndBranch(normalizedLaneId);
+      const trimmed = typeof lane?.worktreePath === "string" ? lane.worktreePath.trim() : "";
+      if (trimmed.length > 0) return trimmed;
+    }
+  } catch {
+    // Ignore lane lookup failures and use the runtime fallback.
+  }
+  return null;
+}
+
+function resolveRunContextLaneId(runtime: AdeMcpRuntime, callerCtx: CallerContext): string | null {
+  const runId = asOptionalTrimmedString(callerCtx.runId);
+  if (!runId) return null;
+
+  const graph = getRunGraphSafe(runtime, runId);
+  if (graph) {
+    const inferredWorkerId = inferWorkerIdFromCaller(graph, callerCtx);
+    const step = resolveStepFromGraph(graph, callerCtx.stepId, inferredWorkerId);
+    const stepLaneId = asOptionalTrimmedString(step?.laneId);
+    if (stepLaneId) return stepLaneId;
+  }
+
+  const missionId = asOptionalTrimmedString(callerCtx.missionId) ?? resolveMissionIdForRun(runtime, runId);
+  if (!missionId) return null;
+  const mission = runtime.missionService.get(missionId) as Record<string, unknown> | null;
+  return asOptionalTrimmedString(mission?.laneId) ?? asOptionalTrimmedString(mission?.lane_id);
+}
+
+function resolveAuthorizedWorkspaceRoot(
+  runtime: AdeMcpRuntime,
+  session: SessionState,
+  toolArgs?: Record<string, unknown>,
+): string {
+  const requestedLaneId = toolArgs ? extractLaneId(toolArgs) : null;
+  if (requestedLaneId) {
+    const laneWorktreePath = resolveLaneWorktreePath(runtime, requestedLaneId);
+    if (!laneWorktreePath) {
+      throw new JsonRpcError(
+        JsonRpcErrorCode.invalidParams,
+        `Requested lane '${requestedLaneId}' does not have an available worktree.`,
+      );
+    }
+    return laneWorktreePath;
+  }
+
+  const sessionLaneId = resolveChatSessionLaneId(runtime, session);
+  if (sessionLaneId) {
+    const laneWorktreePath = resolveLaneWorktreePath(runtime, sessionLaneId);
+    if (!laneWorktreePath) {
+      throw new JsonRpcError(
+        JsonRpcErrorCode.invalidParams,
+        `Chat session lane '${sessionLaneId}' does not have an available worktree.`,
+      );
+    }
+    return laneWorktreePath;
+  }
+
+  const runContextLaneId = resolveRunContextLaneId(runtime, resolveCallerContext(session));
+  if (runContextLaneId) {
+    const laneWorktreePath = resolveLaneWorktreePath(runtime, runContextLaneId);
+    if (!laneWorktreePath) {
+      throw new JsonRpcError(
+        JsonRpcErrorCode.invalidParams,
+        `Run context lane '${runContextLaneId}' does not have an available worktree.`,
+      );
+    }
+    return laneWorktreePath;
+  }
+
+  const fallbackWorkspaceRoot = typeof runtime.workspaceRoot === "string" ? runtime.workspaceRoot.trim() : "";
+  if (fallbackWorkspaceRoot.length > 0) return fallbackWorkspaceRoot;
+  return runtime.projectRoot;
+}
+
 function resolveRequestedOrSessionLaneId(
   runtime: AdeMcpRuntime,
   session: SessionState,
@@ -2360,13 +2448,64 @@ function resolveCallerContext(session?: SessionState): CallerContext {
   return {
     callerId: asOptionalTrimmedString(session.identity.callerId),
     role: session.identity.role ?? envContext.role,
-    chatSessionId: session.identity.chatSessionId ?? envContext.chatSessionId,
+    chatSessionId: envContext.chatSessionId,
     missionId: session.identity.missionId ?? envContext.missionId,
-    runId: session.identity.runId ?? envContext.runId,
+    runId: envContext.runId,
     stepId: session.identity.stepId ?? envContext.stepId,
     attemptId: session.identity.attemptId ?? envContext.attemptId,
     ownerId: session.identity.ownerId ?? envContext.ownerId,
     computerUsePolicy: session.identity.computerUsePolicy ?? envContext.computerUsePolicy,
+  };
+}
+
+function resolveWorkerAgentOwnerId(identityKey: unknown): string | null {
+  const trimmed = typeof identityKey === "string" ? identityKey.trim() : "";
+  if (!trimmed || trimmed === "cto") return null;
+  const match = /^agent:(.+)$/.exec(trimmed);
+  return match?.[1]?.trim() || null;
+}
+
+async function resolveEffectiveCallerContext(
+  runtime: AdeMcpRuntime,
+  session?: SessionState,
+): Promise<CallerContext> {
+  const callerCtx = { ...resolveCallerContext(session) };
+
+  if (!callerCtx.missionId && callerCtx.runId) {
+    callerCtx.missionId = resolveMissionIdForRun(runtime, callerCtx.runId);
+  }
+
+  if (!callerCtx.ownerId && callerCtx.chatSessionId && runtime.agentChatService?.getSessionSummary) {
+    try {
+      const summary = await runtime.agentChatService.getSessionSummary(callerCtx.chatSessionId);
+      callerCtx.ownerId = resolveWorkerAgentOwnerId(summary?.identityKey);
+    } catch {
+      // Fall back to initialize/env identity when chat summaries are unavailable.
+    }
+  }
+
+  return callerCtx;
+}
+
+function toExternalMcpIdentity(callerCtx: CallerContext): {
+  callerId: string;
+  role: "cto" | "orchestrator" | "agent" | "external" | "evaluator";
+  chatSessionId: string | null;
+  missionId: string | null;
+  runId: string | null;
+  stepId: string | null;
+  attemptId: string | null;
+  ownerId: string | null;
+} {
+  return {
+    callerId: callerCtx.callerId ?? callerCtx.chatSessionId ?? callerCtx.attemptId ?? "unknown",
+    role: callerCtx.role ?? "external",
+    chatSessionId: callerCtx.chatSessionId,
+    missionId: callerCtx.missionId,
+    runId: callerCtx.runId,
+    stepId: callerCtx.stepId,
+    attemptId: callerCtx.attemptId,
+    ownerId: callerCtx.ownerId,
   };
 }
 
@@ -2389,9 +2528,9 @@ function isLocalComputerUseAllowed(policy: ComputerUsePolicy | null | undefined)
 }
 
 async function listToolSpecsForSession(runtime: AdeMcpRuntime, session: SessionState): Promise<ToolSpec[]> {
-  const callerCtx = resolveCallerContext(session);
+  const callerCtx = await resolveEffectiveCallerContext(runtime, session);
   const externalToolSpecs = runtime.externalMcpService
-    ? (await runtime.externalMcpService.listToolsForIdentity(session.identity)).map((tool) => ({
+    ? (await runtime.externalMcpService.listToolsForIdentity(toExternalMcpIdentity(callerCtx))).map((tool) => ({
         name: tool.namespacedName,
         description: tool.description ?? `${tool.serverName}: ${tool.name}`,
       inputSchema: tool.inputSchema,
@@ -2420,7 +2559,7 @@ async function listToolSpecsForSession(runtime: AdeMcpRuntime, session: SessionS
   return [...visibleBaseTools, ...visibleCoordinatorTools, ...externalToolSpecs];
 }
 
-function parseInitializeIdentity(params: unknown): SessionIdentity {
+function parseInitializeIdentity(runtime: AdeMcpRuntime, params: unknown): SessionIdentity {
   const data = safeObject(params);
   const identity = safeObject(data.identity);
   const envContext = resolveEnvCallerContext();
@@ -2437,13 +2576,24 @@ function parseInitializeIdentity(params: unknown): SessionIdentity {
   const effectiveComputerUsePolicy = validRole === "external"
     ? createDefaultComputerUsePolicy({ allowLocalFallback: false })
     : requestedComputerUsePolicy;
+  const resolvedRunId = envContext.runId;
+  const requestedMissionId = asOptionalTrimmedString(identity.missionId);
+  const resolvedMissionId =
+    envContext.missionId
+    ?? (resolvedRunId ? resolveMissionIdForRun(runtime, resolvedRunId) : null);
+  if (requestedMissionId && resolvedMissionId && requestedMissionId !== resolvedMissionId) {
+    throw new JsonRpcError(
+      JsonRpcErrorCode.invalidParams,
+      "identity.missionId does not match the server-authorized run context",
+    );
+  }
 
   return {
     callerId: asOptionalTrimmedString(identity.callerId) ?? envContext.chatSessionId ?? envContext.attemptId ?? "unknown",
     role: validRole,
-    chatSessionId: asOptionalTrimmedString(identity.chatSessionId) ?? envContext.chatSessionId,
-    missionId: asOptionalTrimmedString(identity.missionId) ?? envContext.missionId,
-    runId: asOptionalTrimmedString(identity.runId) ?? envContext.runId,
+    chatSessionId: envContext.chatSessionId,
+    missionId: resolvedMissionId ?? requestedMissionId ?? null,
+    runId: resolvedRunId,
     stepId: asOptionalTrimmedString(identity.stepId) ?? envContext.stepId,
     attemptId: asOptionalTrimmedString(identity.attemptId) ?? envContext.attemptId,
     ownerId: asOptionalTrimmedString(identity.ownerId) ?? envContext.ownerId,
@@ -2720,7 +2870,19 @@ function getCoordinatorToolSet(args: {
     logger: args.runtime.logger,
     db: args.runtime.db,
     projectRoot: args.runtime.projectRoot,
-    workspaceRoot: args.runtime.workspaceRoot,
+    workspaceRoot: (() => {
+      const laneWorkspaceRoot = resolveLaneWorktreePath(args.runtime, missionLaneId);
+      if (missionLaneId && !laneWorkspaceRoot) {
+        throw new JsonRpcError(
+          JsonRpcErrorCode.invalidParams,
+          `Mission lane '${missionLaneId}' does not have an available worktree.`,
+        );
+      }
+      return laneWorkspaceRoot
+        ?? (typeof args.runtime.workspaceRoot === "string" && args.runtime.workspaceRoot.trim().length > 0
+          ? args.runtime.workspaceRoot.trim()
+          : args.runtime.projectRoot);
+    })(),
     missionLaneId: missionLaneId ?? undefined,
     onRunFinalize: ({ runId }) => {
       args.runtime.aiOrchestratorService.finalizeRun({ runId, force: true });
@@ -3403,7 +3565,7 @@ async function runTool(args: {
   toolArgs: Record<string, unknown>;
 }): Promise<unknown> {
   const { runtime, session, name, toolArgs } = args;
-  const callerCtx = resolveCallerContext(session);
+  const callerCtx = await resolveEffectiveCallerContext(runtime, session);
   const runLocalCommand = (
     command: string,
     commandArgs: string[],
@@ -3440,11 +3602,10 @@ async function runTool(args: {
     }
   };
   const ensureLocalComputerUse = (
-    sessionState: SessionState,
     toolName: string,
     capabilityKey: "screenshot" | "browser_verification" | "browser_trace" | "video_recording" | "console_logs" | "appLaunch" | "guiInteraction" | "environmentInfo",
   ) => {
-    const policy = resolveCallerContext(sessionState).computerUsePolicy;
+    const policy = callerCtx.computerUsePolicy;
     const effectivePolicy = normalizeComputerUsePolicy(policy, createDefaultComputerUsePolicy());
     if (!isComputerUseModeEnabled(effectivePolicy.mode)) {
       throw new JsonRpcError(
@@ -3522,7 +3683,7 @@ async function runTool(args: {
     if (!runtime.externalMcpService) {
       throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, `Unsupported tool: ${name}`);
     }
-    return await runtime.externalMcpService.callTool(session.identity, name, toolArgs);
+    return await runtime.externalMcpService.callTool(toExternalMcpIdentity(callerCtx), name, toolArgs);
   }
 
   if (CTO_OPERATOR_TOOL_NAMES.has(name)) {
@@ -4021,7 +4182,7 @@ async function runTool(args: {
   }
 
   if (name === "launch_app") {
-    ensureLocalComputerUse(session, name, "appLaunch");
+    ensureLocalComputerUse(name, "appLaunch");
     const app = assertNonEmptyString(toolArgs.app, "app");
     const waitMs = Math.max(0, Math.min(30_000, Math.floor(asNumber(toolArgs.waitMs, 500))));
     const activate = asBoolean(toolArgs.activate, true);
@@ -4044,11 +4205,11 @@ async function runTool(args: {
     const action = assertNonEmptyString(toolArgs.action, "action");
     const app = asOptionalTrimmedString(toolArgs.app);
     if (app) {
-      ensureLocalComputerUse(session, name, "appLaunch");
+      ensureLocalComputerUse(name, "appLaunch");
       await activateApp(app);
     }
     if (action === "click") {
-      ensureLocalComputerUse(session, name, "guiInteraction");
+      ensureLocalComputerUse(name, "guiInteraction");
       const x = Math.floor(asNumber(toolArgs.x, Number.NaN));
       const y = Math.floor(asNumber(toolArgs.y, Number.NaN));
       if (!Number.isFinite(x) || !Number.isFinite(y)) {
@@ -4074,7 +4235,7 @@ async function runTool(args: {
       return { action, x, y, app };
     }
     if (action === "type") {
-      ensureLocalComputerUse(session, name, "guiInteraction");
+      ensureLocalComputerUse(name, "guiInteraction");
       const text = assertNonEmptyString(toolArgs.text, "text");
       runLocalCommand("osascript", [
         "-e",
@@ -4083,7 +4244,7 @@ async function runTool(args: {
       return { action, textLength: text.length, app };
     }
     if (action === "keypress") {
-      ensureLocalComputerUse(session, name, "guiInteraction");
+      ensureLocalComputerUse(name, "guiInteraction");
       const key = assertNonEmptyString(toolArgs.key, "key").trim().toLowerCase();
       const keyCodeMap: Record<string, number> = { enter: 36, return: 36, tab: 48, escape: 53, esc: 53, space: 49 };
       if (keyCodeMap[key] != null) {
@@ -4103,7 +4264,7 @@ async function runTool(args: {
   }
 
   if (name === "screenshot_environment") {
-    ensureLocalComputerUse(session, name, "screenshot");
+    ensureLocalComputerUse(name, "screenshot");
     const displayId = Number.isFinite(Number(toolArgs.displayId)) ? String(Math.floor(Number(toolArgs.displayId))) : null;
     const format = asOptionalTrimmedString(toolArgs.format) === "jpg" ? "jpg" : "png";
     const title = asOptionalTrimmedString(toolArgs.name) ?? "Environment screenshot";
@@ -4129,7 +4290,7 @@ async function runTool(args: {
   }
 
   if (name === "record_environment") {
-    ensureLocalComputerUse(session, name, "video_recording");
+    ensureLocalComputerUse(name, "video_recording");
     const displayId = Number.isFinite(Number(toolArgs.displayId)) ? String(Math.floor(Number(toolArgs.displayId))) : null;
     const durationSec = Math.max(1, Math.min(120, Math.floor(asNumber(toolArgs.durationSec, 10))));
     const title = asOptionalTrimmedString(toolArgs.name) ?? "Environment recording";
@@ -4389,7 +4550,6 @@ async function runTool(args: {
       throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "memory_update_core requires at least one patch field.");
     }
 
-    const callerCtx = resolveCallerContext(session);
     if (callerCtx.role === "agent" && callerCtx.ownerId && runtime.workerAgentService) {
       const coreMemory = runtime.workerAgentService.updateCoreMemory(callerCtx.ownerId, patch);
       return {
@@ -4929,7 +5089,7 @@ async function runTool(args: {
         const mcpConfigPath = path.join(mcpConfigDir, `spawn-${attemptId ?? Date.now()}.json`);
         const builtEntry = path.join(runtime.projectRoot, "apps", "mcp-server", "dist", "index.cjs");
         const srcEntry = path.join(runtime.projectRoot, "apps", "mcp-server", "src", "index.ts");
-        const workerWorkspaceRoot = runtime.workspaceRoot ?? runtime.projectRoot;
+        const workerWorkspaceRoot = resolveAuthorizedWorkspaceRoot(runtime, session, toolArgs);
         const mcpCmd = fs.existsSync(builtEntry) ? "node" : "npx";
         const mcpArgs = fs.existsSync(builtEntry)
           ? [builtEntry, "--project-root", runtime.projectRoot, "--workspace-root", workerWorkspaceRoot]
@@ -5632,7 +5792,7 @@ export function createMcpRequestHandler(args: {
     if (method === "initialize") {
       session.initialized = true;
       session.protocolVersion = asOptionalTrimmedString(params.protocolVersion) ?? DEFAULT_PROTOCOL_VERSION;
-      session.identity = parseInitializeIdentity(params);
+      session.identity = parseInitializeIdentity(runtime, params);
       const resourcesEnabled = session.identity.role !== "orchestrator";
       return {
         protocolVersion: session.protocolVersion,

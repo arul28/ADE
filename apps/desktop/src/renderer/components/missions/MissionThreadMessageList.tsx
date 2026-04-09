@@ -3,7 +3,7 @@ import type { AgentChatApprovalDecision, AgentChatEvent, AgentChatEventEnvelope,
 import { parseAgentChatTranscript } from "../../../shared/chatTranscript";
 import { AgentChatMessageList } from "../chat/AgentChatMessageList";
 import { AgentQuestionModal } from "../chat/AgentQuestionModal";
-import { ChatSubagentStrip } from "../chat/ChatSubagentStrip";
+import { ChatSubagentsPanel } from "../chat/ChatSubagentsPanel";
 import { deriveChatSubagentSnapshots } from "../chat/chatExecutionSummary";
 import { eventHasPayload } from "../chat/chatTranscriptRows";
 import { derivePendingInputRequests, type DerivedPendingInput } from "../chat/pendingInput";
@@ -354,13 +354,10 @@ export const MissionThreadMessageList = React.memo(function MissionThreadMessage
             : undefined}
         />
         {subagentSnapshots.length ? (
-          <div className="border-t border-white/[0.05] bg-[#0d0d10]">
-            <ChatSubagentStrip
-              snapshots={subagentSnapshots}
-              placement="read-only"
-              className="pb-2"
-            />
-          </div>
+          <ChatSubagentsPanel
+            snapshots={subagentSnapshots}
+            events={events}
+          />
         ) : null}
       </div>
       {pendingInput && onApproval && (pendingInput.request.kind === "question" || pendingInput.request.kind === "structured_question") ? (

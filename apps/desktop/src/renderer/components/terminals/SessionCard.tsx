@@ -9,6 +9,8 @@ import { MONO_FONT } from "../lanes/laneDesignTokens";
 import { ToolLogo } from "./ToolLogos";
 import { iconGlyph } from "../graph/graphHelpers";
 import { resolveTrackedCliResumeCommand } from "./cliLaunch";
+import { ClaudeCacheTtlBadge } from "../shared/ClaudeCacheTtlBadge";
+import { shouldShowClaudeCacheTtl } from "../../lib/claudeCacheTtl";
 
 const DELTA_CHIP_STYLE: React.CSSProperties = {
   fontSize: 10,
@@ -42,6 +44,12 @@ export const SessionCard = React.memo(function SessionCard({
   const delta = useSessionDelta(session.id, true);
   const primaryText = primarySessionLabel(session);
   const laneMarker = lane?.icon ? iconGlyph(lane.icon) : <GitBranch size={11} weight="regular" />;
+  const showClaudeCacheTimer = shouldShowClaudeCacheTtl({
+    provider: session.toolType === "claude-chat" ? "claude" : null,
+    status: session.runtimeState === "idle" ? "idle" : "active",
+    idleSinceAt: session.chatIdleSinceAt,
+    awaitingInput: session.runtimeState === "waiting-input",
+  });
 
   return (
     <div className="group relative" onContextMenu={onContextMenu}>
@@ -88,6 +96,10 @@ export const SessionCard = React.memo(function SessionCard({
               <span className="min-w-0 flex-1 truncate text-[10px] text-muted-fg/60">
                 {lane?.name ?? session.laneName}
               </span>
+
+              {showClaudeCacheTimer ? (
+                <ClaudeCacheTtlBadge idleSinceAt={session.chatIdleSinceAt} />
+              ) : null}
 
               {delta ? (
                 <>

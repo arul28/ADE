@@ -5,6 +5,7 @@ import type { Logger } from "../logging/logger";
 import type { AdeDb } from "../state/kvDb";
 import type { createAiIntegrationService } from "../ai/aiIntegrationService";
 import type { createGithubService } from "../github/githubService";
+import { parseStructuredOutput } from "../ai/utils";
 import type {
   FeedbackSubmission,
   FeedbackSubmitArgs,
@@ -12,9 +13,177 @@ import type {
 } from "../../../shared/types/feedback";
 
 const DB_KEY = "feedback:submissions";
+const ALLOWED_LABELS = new Set([
+  "bug", "enhancement", "question", "documentation",
+  "good first issue", "help wanted", "invalid", "wontfix",
+]);
+const FEEDBACK_ISSUE_JSON_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    title: { type: "string" },
+    body: { type: "string" },
+    labels: {
+      type: "array",
+      items: { type: "string" },
+    },
+  },
+  required: ["title", "body", "labels"],
+} as const;
+
+type FeedbackIssueDraft = {
+  title: string;
+  body: string;
+  labels: string[];
+};
 
 function nowIso(): string {
   return new Date().toISOString();
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function normalizeWhitespace(value: string): string {
+  return value.replace(/\s+/g, " ").trim();
+}
+
+function clampText(value: string, maxLength: number): string {
+  const trimmed = normalizeWhitespace(value);
+  if (trimmed.length <= maxLength) return trimmed;
+  return `${trimmed.slice(0, Math.max(1, maxLength - 1)).trimEnd()}…`;
+}
+
+function titleCaseFirst(value: string): string {
+  if (!value) return value;
+  return value[0]!.toUpperCase() + value.slice(1);
+}
+
+function defaultLabelsForCategory(category: FeedbackSubmission["category"]): string[] {
+  switch (category) {
+    case "bug":
+      return ["bug"];
+    case "question":
+      return ["question"];
+    case "feature":
+    case "enhancement":
+      return ["enhancement"];
+  }
+}
+
+function normalizeLabels(
+  category: FeedbackSubmission["category"],
+  labels: unknown,
+): string[] {
+  const normalized = Array.isArray(labels)
+    ? labels
+      .map((value) => String(value ?? "").trim().toLowerCase())
+      .filter((value) => ALLOWED_LABELS.has(value))
+    : [];
+  const combined = [...normalized, ...defaultLabelsForCategory(category)];
+  return Array.from(new Set(combined));
+}
+
+function fallbackTitle(submission: FeedbackSubmission): string {
+  const firstLine = submission.userDescription
+    .split(/\r?\n/)
+    .map((line) => normalizeWhitespace(line))
+    .find((line) => line.length > 0);
+  const candidate = firstLine && firstLine.length > 0
+    ? firstLine
+    : `${submission.category} report`;
+  return titleCaseFirst(clampText(candidate, 90));
+}
+
+function fallbackBody(submission: FeedbackSubmission): string {
+  const description = submission.userDescription.trim();
+  switch (submission.category) {
+    case "bug":
+      return [
+        "## Description",
+        "",
+        description,
+        "",
+        "## Steps to Reproduce",
+        "",
+        "Not provided.",
+        "",
+        "## Expected Behavior",
+        "",
+        "Not provided.",
+        "",
+        "## Actual Behavior",
+        "",
+        "Not provided.",
+        "",
+        "## Environment",
+        "",
+        "- App: ADE Desktop",
+        `- Model: ${submission.modelId}`,
+      ].join("\n");
+    case "question":
+      return [
+        "## Description",
+        "",
+        description,
+        "",
+        "## Context",
+        "",
+        "Not provided.",
+        "",
+        "## Expected Guidance",
+        "",
+        "Not provided.",
+      ].join("\n");
+    case "feature":
+    case "enhancement":
+      return [
+        "## Description",
+        "",
+        description,
+        "",
+        "## Use Case",
+        "",
+        "Not provided.",
+        "",
+        "## Proposed Solution",
+        "",
+        "Not provided.",
+        "",
+        "## Alternatives Considered",
+        "",
+        "Not provided.",
+      ].join("\n");
+  }
+}
+
+function normalizeIssueDraft(
+  submission: FeedbackSubmission,
+  structuredOutput: unknown,
+): { draft: FeedbackIssueDraft; usedFallback: boolean } {
+  const candidate = isRecord(structuredOutput) ? structuredOutput : null;
+  const title =
+    typeof candidate?.title === "string" && candidate.title.trim().length > 0
+      ? candidate.title.trim()
+      : fallbackTitle(submission);
+  const body =
+    typeof candidate?.body === "string" && candidate.body.trim().length > 0
+      ? candidate.body.trim()
+      : fallbackBody(submission);
+  const labels = normalizeLabels(submission.category, candidate?.labels);
+  const usedFallback = candidate == null
+    || title === fallbackTitle(submission)
+    || body === fallbackBody(submission);
+
+  return {
+    draft: {
+      title,
+      body,
+      labels,
+    },
+    usedFallback,
+  };
 }
 
 function emitUpdate(submission: FeedbackSubmission): void {
@@ -99,69 +268,74 @@ export function createFeedbackReporterService({
       save(submission);
       emitUpdate(submission);
 
-      const result = await aiIntegrationService.executeTask({
-        feature: "pr_descriptions",
-        taskType: "pr_description",
-        prompt: `Category: ${submission.category}\n\nUser description:\n${submission.userDescription}`,
-        systemPrompt: systemPromptForCategory(submission.category),
-        cwd: projectRoot,
-        model: submission.modelId,
-        permissionMode: "read-only",
-        oneShot: true,
-      });
-
-      let parsed: { title: string; body: string; labels: string[] };
+      let normalizedDraft: FeedbackIssueDraft;
       try {
-        const text = result.text.trim();
-        // Strip markdown fences if present
-        const jsonText = text.startsWith("```")
-          ? text.replace(/^```(?:json)?\n?/, "").replace(/\n?```$/, "")
-          : text;
-        parsed = JSON.parse(jsonText);
-        const ALLOWED_LABELS = new Set([
-          "bug", "enhancement", "question", "documentation",
-          "good first issue", "help wanted", "invalid", "wontfix",
-        ]);
-        parsed.labels = (parsed.labels ?? []).filter(
-          (label: string) => ALLOWED_LABELS.has(label),
-        );
-      } catch {
-        throw new Error("Failed to parse AI response as JSON");
-      }
+        const result = await aiIntegrationService.executeTask({
+          feature: "pr_descriptions",
+          taskType: "pr_description",
+          prompt: `Category: ${submission.category}\n\nUser description:\n${submission.userDescription}`,
+          systemPrompt: systemPromptForCategory(submission.category),
+          cwd: projectRoot,
+          model: submission.modelId,
+          jsonSchema: FEEDBACK_ISSUE_JSON_SCHEMA,
+          permissionMode: "read-only",
+          oneShot: true,
+        });
 
-      submission.generatedTitle = parsed.title;
-      submission.generatedBody = parsed.body;
+        const structuredCandidate = result.structuredOutput ?? parseStructuredOutput(result.text);
+        const normalized = normalizeIssueDraft(submission, structuredCandidate);
+        normalizedDraft = normalized.draft;
+
+        if (normalized.usedFallback) {
+          logger.warn("feedback.generated_with_fallback", {
+            id: submission.id,
+            category: submission.category,
+            modelId: submission.modelId,
+          });
+        }
+
+        submission.generatedTitle = normalized.draft.title;
+        submission.generatedBody = normalized.draft.body;
+      } catch (error: unknown) {
+        const message = error instanceof Error ? error.message : String(error);
+        throw new Error(`Generation failed: ${message}`);
+      }
 
       // -- Post to GitHub --
       submission.status = "posting";
       save(submission);
       emitUpdate(submission);
 
-      const { data } = await githubService.apiRequest<{
-        html_url: string;
-        number: number;
-      }>({
-        method: "POST",
-        path: "/repos/arul28/ADE/issues",
-        body: {
-          title: parsed.title,
-          body: parsed.body,
-          labels: parsed.labels,
-        },
-      });
+      try {
+        const { data } = await githubService.apiRequest<{
+          html_url: string;
+          number: number;
+        }>({
+          method: "POST",
+          path: "/repos/arul28/ADE/issues",
+          body: {
+            title: normalizedDraft.title,
+            body: normalizedDraft.body,
+            labels: normalizedDraft.labels,
+          },
+        });
 
-      submission.issueUrl = data.html_url;
-      submission.issueNumber = data.number;
-      submission.issueState = "open";
-      submission.status = "posted";
-      submission.completedAt = nowIso();
-      save(submission);
-      emitUpdate(submission);
+        submission.issueUrl = data.html_url;
+        submission.issueNumber = data.number;
+        submission.issueState = "open";
+        submission.status = "posted";
+        submission.completedAt = nowIso();
+        save(submission);
+        emitUpdate(submission);
 
-      logger.info("feedback.posted", {
-        id: submission.id,
-        issueNumber: data.number,
-      });
+        logger.info("feedback.posted", {
+          id: submission.id,
+          issueNumber: data.number,
+        });
+      } catch (error: unknown) {
+        const message = error instanceof Error ? error.message : String(error);
+        throw new Error(`Posting failed: ${message}`);
+      }
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);
       submission.status = "failed";

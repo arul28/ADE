@@ -8,7 +8,7 @@ import {
   useState,
 } from "react";
 import { AnimatePresence, motion } from "motion/react";
-import { Command, File, FolderOpen, MagnifyingGlass, SpinnerGap } from "@phosphor-icons/react";
+import { Command, File, MagnifyingGlass, SpinnerGap } from "@phosphor-icons/react";
 import { cn } from "../ui/cn";
 
 // ---------------------------------------------------------------------------
@@ -153,9 +153,11 @@ export const ChatCommandMenu = forwardRef<ChatCommandMenuHandle, ChatCommandMenu
     const handleSelect = useCallback(
       (index: number) => {
         const item = items[index];
-        if (item) onSelect(item);
+        if (!item) return;
+        onSelect(item);
+        onClose();
       },
-      [items, onSelect],
+      [items, onClose, onSelect],
     );
 
     useImperativeHandle(
@@ -186,28 +188,34 @@ export const ChatCommandMenu = forwardRef<ChatCommandMenuHandle, ChatCommandMenu
       return map;
     }, [slashCommands]);
 
+    const query = trigger?.query.trim() ?? "";
+    const isAtTrigger = trigger?.type === "at";
+    const isUnavailable = isAtTrigger && !sessionId;
+    const isIdle = Boolean(trigger) && !query.length && !isUnavailable;
+    const isNoResults = Boolean(query.length) && !fileLoading && items.length === 0 && (!isAtTrigger || Boolean(sessionId));
+
     return (
       <AnimatePresence>
         {visible && (
           <motion.div
-            initial={{ opacity: 0, y: 4 }}
+            initial={{ opacity: 0, y: 8 }}
             animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: 4 }}
+            exit={{ opacity: 0, y: 8 }}
             transition={{ duration: 0.12, ease: "easeOut" }}
-            className="absolute z-50 min-w-[280px] overflow-hidden rounded-xl border border-white/[0.08] bg-card/98 shadow-float backdrop-blur-xl"
-            style={{ top: anchor!.top, left: anchor!.left }}
+            className="absolute z-50 min-w-[300px] max-w-[340px] overflow-hidden rounded-[14px] border border-violet-400/[0.12] bg-[#151325]/95 shadow-[0_20px_50px_-12px_rgba(0,0,0,0.55)] backdrop-blur-[40px]"
+            style={{ top: anchor!.top, left: anchor!.left, marginTop: "-8px" }}
           >
             {/* Header hint */}
-            <div className="flex items-center gap-1.5 border-b border-white/[0.06] px-3 py-1.5">
+            <div className="flex items-center gap-2 border-b border-white/[0.06] px-3.5 py-2">
               {trigger!.type === "at" ? (
                 <>
-                  <MagnifyingGlass size={11} weight="bold" className="text-fg/30" />
-                  <span className="text-[10px] font-mono text-fg/30">File search</span>
+                  <MagnifyingGlass size={12} weight="bold" className="text-violet-400/60" />
+                  <span className="text-[10px] font-medium tracking-wide text-fg/40">File search</span>
                 </>
               ) : (
                 <>
-                  <Command size={11} weight="bold" className="text-fg/30" />
-                  <span className="text-[10px] font-mono text-fg/30">Commands</span>
+                  <Command size={12} weight="bold" className="text-violet-400/60" />
+                  <span className="text-[10px] font-medium tracking-wide text-fg/40">Slash commands</span>
                 </>
               )}
             </div>
@@ -217,14 +225,24 @@ export const ChatCommandMenu = forwardRef<ChatCommandMenuHandle, ChatCommandMenu
               {/* Loading state */}
               {fileLoading && trigger!.type === "at" && (
                 <div className="flex items-center gap-2 px-3 py-2">
-                  <SpinnerGap size={12} weight="bold" className="animate-spin text-fg/30" />
-                  <span className="text-[11px] font-mono text-fg/30">Searching...</span>
+                  <SpinnerGap size={12} weight="bold" className="animate-spin text-violet-400/50" />
+                  <span className="text-[11px] text-fg/30">Searching...</span>
                 </div>
               )}
 
               {/* Empty state */}
-              {!fileLoading && items.length === 0 && (
-                <div className="px-3 py-2 text-[11px] font-mono text-fg/30">No matches</div>
+              {!fileLoading && isIdle && (
+                <div className="px-3 py-2 text-[11px] text-fg/30">
+                  {isAtTrigger ? "Type to search files" : "Type to search commands"}
+                </div>
+              )}
+              {!fileLoading && isUnavailable && (
+                <div className="px-3 py-2 text-[11px] text-fg/30">File search unavailable for this session</div>
+              )}
+              {!fileLoading && isNoResults && (
+                <div className="px-3 py-2 text-[11px] text-fg/30">
+                  {isAtTrigger ? `No matches for "${query}"` : `No commands match "${query}"`}
+                </div>
               )}
 
               {/* Items */}
@@ -237,16 +255,18 @@ export const ChatCommandMenu = forwardRef<ChatCommandMenuHandle, ChatCommandMenu
                     <div
                       key={item.path}
                       className={cn(
-                        "mx-1 flex cursor-pointer items-center gap-2 px-3 py-1.5 text-[11px] font-mono transition-colors",
-                        isSelected ? "rounded-lg bg-white/[0.06]" : "rounded-lg",
+                        "mx-1 flex cursor-pointer items-center gap-2.5 px-3 py-2 text-[11px] transition-all",
+                        isSelected
+                          ? "rounded-md bg-gradient-to-r from-violet-500/[0.12] to-violet-500/[0.06] border border-violet-400/[0.15]"
+                          : "rounded-md border border-transparent hover:bg-white/[0.03]",
                       )}
                       onMouseEnter={() => setSelectedIndex(i)}
                       onClick={() => handleSelect(i)}
                     >
-                      <File size={13} weight="duotone" className="shrink-0 text-fg/40" />
+                      <File size={13} weight="duotone" className={cn("shrink-0", isSelected ? "text-violet-400/80" : "text-fg/30")} />
                       <span className="truncate">
                         {dir && <span className="text-fg/30">{dir}</span>}
-                        <span className="text-fg/70">{base}</span>
+                        <span className={cn(isSelected ? "text-violet-200/90 font-medium" : "text-fg/70")}>{base}</span>
                       </span>
                     </div>
                   );
@@ -257,14 +277,16 @@ export const ChatCommandMenu = forwardRef<ChatCommandMenuHandle, ChatCommandMenu
                   <div
                     key={item.name}
                     className={cn(
-                      "mx-1 flex cursor-pointer items-center gap-2 px-3 py-1.5 text-[11px] font-mono transition-colors",
-                      isSelected ? "rounded-lg bg-white/[0.06]" : "rounded-lg",
+                      "mx-1 flex cursor-pointer items-center gap-2.5 px-3 py-2 text-[11px] transition-all",
+                      isSelected
+                        ? "rounded-md bg-gradient-to-r from-violet-500/[0.12] to-violet-500/[0.06] border border-violet-400/[0.15]"
+                        : "rounded-md border border-transparent hover:bg-white/[0.03]",
                     )}
                     onMouseEnter={() => setSelectedIndex(i)}
                     onClick={() => handleSelect(i)}
                   >
-                    <FolderOpen size={13} weight="duotone" className="shrink-0 text-fg/40" />
-                    <span className="text-fg/80">/{item.name}</span>
+                    <Command size={13} weight="duotone" className={cn("shrink-0", isSelected ? "text-violet-400/80" : "text-fg/30")} />
+                    <span className={cn(isSelected ? "text-violet-200/90 font-medium" : "text-fg/70")}>/{item.name}</span>
                     {description && (
                       <span className="ml-auto truncate text-fg/40">{description}</span>
                     )}
@@ -292,6 +314,7 @@ ChatCommandMenu.displayName = "ChatCommandMenu";
 export function handleCommandMenuKeyDown(
   e: React.KeyboardEvent,
   menuRef: React.RefObject<ChatCommandMenuHandle | null>,
+  onClose?: () => void,
 ): boolean {
   const handle = menuRef.current;
   if (!handle) return false;
@@ -315,6 +338,7 @@ export function handleCommandMenuKeyDown(
     }
     case "Escape": {
       e.preventDefault();
+      onClose?.();
       return true;
     }
     default:

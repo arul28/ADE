@@ -26,6 +26,8 @@ import {
   CopySimple,
   Brain,
 } from "@phosphor-icons/react";
+import { useLottie } from "lottie-react";
+import brainThinkingAnimation from "../../assets/brain-thinking.json";
 import type {
   AgentChatApprovalDecision,
   AgentChatEvent,
@@ -36,7 +38,7 @@ import type {
   ChatSurfaceProfile,
   ChatSurfaceMode,
   OperatorNavigationSuggestion,
-  TurnDiffSummary,
+  TurnDiffFile,
 } from "../../../shared/types";
 import { getModelById, resolveModelDescriptor } from "../../../shared/modelRegistry";
 import { cn } from "../ui/cn";
@@ -49,7 +51,6 @@ import { ClaudeLogo, CodexLogo, CursorAgentLogo } from "../terminals/ToolLogos";
 import type { ChatSubagentSnapshot } from "./chatExecutionSummary";
 import { ChatWorkLogBlock } from "./ChatWorkLogBlock";
 import { ChatStatusGlyph } from "./chatStatusVisuals";
-import { ChatTurnDiffPanel } from "./ChatTurnDiffPanel";
 import {
   collapseChatTranscriptEventsIncremental,
   formatStructuredValue,
@@ -125,6 +126,21 @@ function formatFileAction(kind: Extract<AgentChatEvent, { type: "file_change" }>
       return "Created";
     case "delete":
       return "Deleted";
+    default:
+      return "Edited";
+  }
+}
+
+function formatTurnDiffAction(status: TurnDiffFile["status"]): string {
+  switch (status) {
+    case "A":
+      return "Created";
+    case "D":
+      return "Deleted";
+    case "R":
+      return "Renamed";
+    case "C":
+      return "Copied";
     default:
       return "Edited";
   }
@@ -225,13 +241,13 @@ function renderSubagentUsage(usage: {
 }
 
 const GLASS_CARD_CLASS =
-  "overflow-hidden rounded-[14px] border border-white/[0.08] bg-[#141220]";
+  "overflow-hidden rounded-[14px] border border-white/[0.06] bg-[#141220] shadow-[0_2px_12px_-4px_rgba(0,0,0,0.4)]";
 
 const WORK_LOG_CARD_CLASS =
-  "border border-white/[0.06] bg-[#13111B]/70";
+  "border border-white/[0.05] bg-[#13111B]/80 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.3)]";
 
 const RECESSED_BLOCK_CLASS =
-  "overflow-auto whitespace-pre-wrap break-words rounded-[10px] border border-white/[0.05] bg-[#0A090E] px-4 py-3 font-mono text-[11px] leading-[1.6] text-fg/76";
+  "overflow-auto whitespace-pre-wrap break-words rounded-[10px] border border-white/[0.05] bg-[#09080D] px-4 py-3 font-mono text-[11px] leading-[1.6] text-fg/78";
 
 function toolSourceChip(toolName: string): { label: string; tone: ChatSurfaceChipTone } | null {
   if (toolName.startsWith("mcp__")) {
@@ -253,18 +269,20 @@ function toolSourceChip(toolName: string): { label: string; tone: ChatSurfaceChi
 }
 
 const MESSAGE_CARD_STYLE: React.CSSProperties = {
-  borderColor: "rgba(167, 139, 250, 0.14)",
-  background: "#191624",
+  background: "linear-gradient(135deg, #7C3AED 0%, #6D28D9 50%, #5B21B6 100%)",
+  borderColor: "rgba(167, 139, 250, 0.30)",
+  boxShadow: "0 4px 16px -4px rgba(124, 58, 237, 0.35)",
 };
 
 const SURFACE_INLINE_CARD_STYLE: React.CSSProperties = {
-  borderColor: "rgba(255, 255, 255, 0.08)",
-  background: "#16141E",
+  borderColor: "rgba(255, 255, 255, 0.06)",
+  background: "#15131E",
 };
 
 const ASSISTANT_MESSAGE_CARD_STYLE: React.CSSProperties = {
-  borderColor: "rgba(148, 163, 184, 0.10)",
+  borderColor: "rgba(255, 255, 255, 0.06)",
   background: "#12101A",
+  boxShadow: "0 2px 12px -4px rgba(0, 0, 0, 0.4)",
 };
 
 function describeUserDeliveryState(event: Extract<AgentChatEvent, { type: "user_message" }>): { label: string; className: string } | null {
@@ -335,7 +353,7 @@ function MessageCopyButton({
     <button
       type="button"
       className={cn(
-        "inline-flex items-center gap-1 rounded-md border border-white/[0.08] bg-white/[0.03] px-1.5 py-0.5 font-sans text-[9px] text-fg/45 transition-all hover:border-white/[0.14] hover:bg-white/[0.05] hover:text-fg/72",
+        "inline-flex items-center gap-1 rounded-md border border-white/[0.06] bg-white/[0.03] px-1.5 py-0.5 font-sans text-[9px] text-fg/40 transition-all hover:border-violet-400/20 hover:bg-violet-500/[0.06] hover:text-fg/70",
         className,
       )}
       onClick={handleCopy}
@@ -455,7 +473,7 @@ function InlineDisclosureRow({
         type="button"
         aria-expanded={expandable ? open : undefined}
         className={cn(
-          "flex w-full items-center gap-2 rounded-lg px-1.5 py-1 text-left transition-colors hover:bg-white/[0.03]",
+          "flex w-full items-center gap-2 rounded-lg px-1.5 py-1 text-left transition-colors hover:bg-white/[0.04]",
           !expandable && "cursor-default hover:bg-transparent",
         )}
         onClick={() => {
@@ -470,7 +488,7 @@ function InlineDisclosureRow({
         <div className="min-w-0 flex-1">{summary}</div>
       </button>
       {expandable && open ? (
-        <div className="ml-5 mt-1 space-y-2 border-l border-white/[0.05] pl-3">
+        <div className="ml-5 mt-1 space-y-2 border-l border-violet-400/10 pl-3">
           {children}
         </div>
       ) : null}
@@ -562,7 +580,7 @@ const MarkdownBlock = React.memo(function MarkdownBlock({
             </blockquote>
           ),
           table: ({ children }) => (
-            <div className="my-4 overflow-x-auto rounded-xl border border-white/[0.08] bg-black/20 shadow-[inset_0_1px_0_rgba(255,255,255,0.02)]">
+            <div className="my-4 overflow-x-auto rounded-xl border border-white/[0.06] bg-[#0A090E]/60 shadow-[inset_0_1px_0_rgba(255,255,255,0.02)]">
               <table className="min-w-full border-separate border-spacing-0 text-[12px]">{children}</table>
             </div>
           ),
@@ -570,7 +588,7 @@ const MarkdownBlock = React.memo(function MarkdownBlock({
           tbody: ({ children, node: _, ...props }) => <tbody {...props}>{children}</tbody>,
           tr: ({ children, node: _, ...props }) => <tr className="align-top" {...props}>{children}</tr>,
           th: ({ children, node: _, ...props }) => (
-            <th className="border-b border-white/[0.08] px-3 py-2 text-left font-medium text-fg/82 first:rounded-tl-xl last:rounded-tr-xl" {...props}>
+            <th className="border-b border-white/[0.06] px-3 py-2 text-left font-medium text-fg/82 first:rounded-tl-xl last:rounded-tr-xl" {...props}>
               {children}
             </th>
           ),
@@ -679,12 +697,12 @@ function CollapsibleCard({
   const isOpen = forceOpen === true ? !userCollapsed : open;
 
   return (
-    <div className={cn(GLASS_CARD_CLASS, "transition-colors", className)} style={styleProp ?? SURFACE_INLINE_CARD_STYLE}>
+    <div className={cn(GLASS_CARD_CLASS, "transition-all hover:border-white/[0.08]", className)} style={styleProp ?? SURFACE_INLINE_CARD_STYLE}>
       <button
         type="button"
         aria-expanded={isOpen}
         aria-controls={panelId}
-        className="flex w-full items-center gap-2 px-3.5 py-3 text-left font-sans text-[11px]"
+        className="flex w-full items-center gap-2.5 px-4 py-3 text-left font-sans text-[11px] transition-colors hover:bg-white/[0.02]"
         onClick={() => {
           if (forceOpen === true) {
             setUserCollapsed((v) => !v);
@@ -693,10 +711,10 @@ function CollapsibleCard({
           }
         }}
       >
-        {isOpen ? <CaretDown size={10} weight="bold" className="text-muted-fg/60" /> : <CaretRight size={10} weight="bold" className="text-muted-fg/60" />}
+        {isOpen ? <CaretDown size={10} weight="bold" className="text-violet-400/40" /> : <CaretRight size={10} weight="bold" className="text-violet-400/40" />}
         <div className="flex flex-1 flex-wrap items-center gap-2">{summary}</div>
       </button>
-      {isOpen ? <div id={panelId} className="border-t border-white/[0.04] px-3.5 pb-3.5 pt-2.5">{children}</div> : null}
+      {isOpen ? <div id={panelId} className="border-t border-white/[0.05] px-4 pb-4 pt-3">{children}</div> : null}
     </div>
   );
 }
@@ -741,14 +759,25 @@ const ACTIVITY_LABELS: Record<string, string> = {
   tool_calling: "Calling tool"
 };
 
+function BrainLottie({ loop, size = 24 }: { loop: boolean; size?: number }) {
+  const { View } = useLottie({
+    animationData: brainThinkingAnimation,
+    loop,
+    autoplay: true,
+    style: { width: size, height: size, display: "inline-block" },
+    rendererSettings: { preserveAspectRatio: "xMidYMid slice" },
+  });
+  return <>{View}</>;
+}
+
 function ThinkingDots({ toneClass = "bg-emerald-300/70" }: { toneClass?: string }) {
   return (
-    <span className="inline-flex items-center gap-1" aria-hidden="true">
+    <span className="inline-flex items-center gap-1.5" aria-hidden="true">
       {[0, 1, 2].map((index) => (
         <span
           key={index}
-          className={cn("ade-thinking-pulse inline-block h-1.5 w-1.5 rounded-full", toneClass)}
-          style={{ animationDelay: `${index * 0.16}s` }}
+          className={cn("ade-thinking-pulse inline-block h-[5px] w-[5px] rounded-full", toneClass)}
+          style={{ animationDelay: `${index * 0.18}s` }}
         />
       ))}
     </span>
@@ -761,9 +790,12 @@ function ActivityIndicator({ activity, detail }: { activity: string; detail?: st
   const displayText = detail ? `${label}: ${replaceInternalToolNames(detail)}` : `${label}...`;
 
   return (
-    <div className="flex items-center gap-2 py-1 font-sans text-[12px] text-emerald-200/75">
-      <ThinkingDots toneClass="bg-emerald-300/75" />
-      <span className="truncate">{displayText}</span>
+    <div className="flex items-center gap-2.5 py-1.5 font-sans text-[12px] text-emerald-200/80">
+      <span className="relative flex items-center justify-center">
+        <span className="absolute h-5 w-5 animate-ping rounded-full bg-emerald-400/10" style={{ animationDuration: '2s' }} />
+        <ThinkingDots toneClass="bg-emerald-400/80" />
+      </span>
+      <span className="truncate font-medium">{displayText}</span>
     </div>
   );
 }
@@ -786,11 +818,19 @@ function ToolResultCard({ event }: { event: Extract<AgentChatEvent, { type: "too
   const preview = summarizeStructuredValue(event.result, 180);
 
   return (
+    <motion.div
+      className="w-fit max-w-full"
+      initial={{ opacity: 0, y: 6, scale: 0.99 }}
+      animate={{ opacity: 1, y: 0, scale: 1 }}
+      transition={{ duration: 0.25, ease: "easeOut" }}
+    >
     <CollapsibleCard
       summary={
-        <div className="flex items-center gap-2 font-mono text-[11px]">
-          <StatusIcon status={event.status ?? "completed"} />
-          <span className={cn("inline-flex items-center gap-1 border px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wider", meta.badgeCls)}>
+        <div className="flex items-center gap-2 font-sans text-[11px]">
+          <span className={cn("inline-flex", (event.status ?? "completed") === "running" && "ade-tool-bounce")}>
+            <StatusIcon status={event.status ?? "completed"} />
+          </span>
+          <span className={cn("inline-flex items-center gap-1.5 rounded-md border px-2 py-0.5 text-[9px] font-bold uppercase tracking-wider", meta.badgeCls)}>
             <ToolIcon size={11} weight="bold" />
             {meta.label}
           </span>
@@ -802,7 +842,7 @@ function ToolResultCard({ event }: { event: Extract<AgentChatEvent, { type: "too
           {toolDisplay.secondaryLabel ? (
             <span className="font-bold text-fg/75">{toolDisplay.secondaryLabel}</span>
           ) : null}
-          {preview.length ? <span className="max-w-[360px] truncate text-[10px] text-fg/40">{preview}</span> : null}
+          {preview.length && !event.tool.includes("memory") ? <span className="max-w-[360px] truncate text-[10px] text-fg/35">{preview}</span> : null}
           {event.status ? (
             <span className={cn("text-[10px] uppercase tracking-wider", statusColorClass(event.status))}>
               {event.status}
@@ -811,7 +851,7 @@ function ToolResultCard({ event }: { event: Extract<AgentChatEvent, { type: "too
         </div>
       }
       defaultOpen={navigationSuggestions.length > 0}
-      className="border-transparent"
+      className="border-transparent w-fit max-w-full"
     >
       {navigationSuggestions.length > 0 ? (
         <div className="mb-2 flex flex-wrap gap-2">
@@ -840,6 +880,7 @@ function ToolResultCard({ event }: { event: Extract<AgentChatEvent, { type: "too
         </button>
       ) : null}
     </CollapsibleCard>
+    </motion.div>
   );
 }
 
@@ -1143,13 +1184,13 @@ function renderEvent(
     return (
       <motion.div
         className="flex justify-end"
-        initial={{ opacity: 0.7, y: 20, scale: 1.02 }}
+        initial={{ opacity: 0, y: 14, scale: 1.01 }}
         animate={{ opacity: 1, y: 0, scale: 1 }}
         transition={{
           type: "spring",
-          stiffness: 300,
-          damping: 24,
-          mass: 0.8,
+          stiffness: 320,
+          damping: 26,
+          mass: 0.7,
         }}
       >
         <div className={cn(GLASS_CARD_CLASS, "group relative max-w-[82%] px-4 py-2.5")} style={MESSAGE_CARD_STYLE}>
@@ -1161,7 +1202,7 @@ function renderEvent(
           <div className="absolute right-2 top-1.5 opacity-0 transition-opacity duration-200 group-hover:opacity-100 focus-within:opacity-100">
             <MessageCopyButton value={event.text} />
           </div>
-          <div className="whitespace-pre-wrap break-words text-[13px] leading-[1.7] text-fg/96">{event.text}</div>
+          <div className="whitespace-pre-wrap break-words text-[13px] leading-[1.7] text-white">{event.text}</div>
           {event.attachments?.length ? (
             <ChatAttachmentTray attachments={event.attachments} mode={options?.surfaceMode ?? "standard"} className="mt-1 px-0 py-0" />
           ) : null}
@@ -1177,22 +1218,32 @@ function renderEvent(
       turnModel: options?.turnModel,
     });
     return (
-      <div className="flex justify-start">
+      <motion.div
+        className="flex justify-start"
+        initial={{ opacity: 0, y: 8 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.3, ease: "easeOut" }}
+      >
         <div
           className={cn(
             GLASS_CARD_CLASS,
-            "group max-w-[78ch] px-5 py-4",
-            options?.turnActive && "min-h-[5.5rem]",
+            "group relative max-w-[78ch] px-5 py-4",
+            options?.turnActive && "min-h-[5.5rem] ade-glow-pulse",
           )}
           style={ASSISTANT_MESSAGE_CARD_STYLE}
         >
-          <div className="mb-2 flex items-center gap-2">
-            <span className="inline-flex h-4.5 w-4.5 items-center justify-center rounded-md border border-white/[0.08] bg-white/[0.03]">
+          <div className="absolute top-0 left-0 right-0 h-px bg-gradient-to-r from-transparent via-violet-400/25 to-transparent" />
+          {options?.turnActive && (
+            <div className="pointer-events-none absolute inset-0 overflow-hidden rounded-[14px]">
+              <div className="absolute inset-0 ade-streaming-shimmer" />
+            </div>
+          )}
+          <div className="mb-2.5 flex items-center gap-2">
+            <span className="inline-flex h-6 w-6 items-center justify-center rounded-lg border border-violet-400/15 bg-gradient-to-br from-violet-500/[0.12] to-violet-500/[0.04] shadow-[0_0_10px_rgba(167,139,250,0.08)]">
               {assistant.glyph}
             </span>
-            <span className="font-sans text-[10px] font-medium text-fg/72">{assistant.label}</span>
             {options?.turnModel?.label ? (
-              <span className="inline-flex items-center rounded-full border border-white/[0.07] bg-white/[0.03] px-2 py-0.5 font-sans text-[9px] text-fg/44">
+              <span className="inline-flex items-center rounded-full border border-violet-400/10 bg-violet-500/[0.04] px-2 py-0.5 font-sans text-[9px] font-medium text-violet-300/50">
                 {options.turnModel.label}
               </span>
             ) : null}
@@ -1204,7 +1255,7 @@ function renderEvent(
             <MarkdownBlock markdown={event.text} onOpenWorkspacePath={options?.onOpenWorkspacePath} />
           </div>
         </div>
-      </div>
+      </motion.div>
     );
   }
 
@@ -1321,7 +1372,10 @@ function renderEvent(
     const isRunning = event.status === "running";
     const isFailed = event.status === "failed";
     return (
-      <div
+      <motion.div
+        initial={{ opacity: 0, y: 6 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.25, ease: "easeOut" }}
         className={cn(
           "group relative overflow-hidden rounded-xl border p-0",
           isFailed
@@ -1337,8 +1391,9 @@ function renderEvent(
         )} />
         <div className="flex items-start gap-3 px-4 py-3.5">
           <div className={cn(
-            "mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg",
+            "mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-xl",
             isFailed ? "bg-red-500/10" : "bg-cyan-500/10",
+            isRunning && "ade-glow-pulse",
           )}>
             {isRunning ? (
               <ChatStatusGlyph status="working" size={15} />
@@ -1372,7 +1427,7 @@ function renderEvent(
             </div>
           </div>
         </div>
-      </div>
+      </motion.div>
     );
   }
 
@@ -1422,10 +1477,15 @@ function renderEvent(
   /* ── Subagent Started ── */
   if (event.type === "subagent_started") {
     return (
-      <div className={cn("overflow-hidden rounded-xl border p-0", "border-violet-500/10 bg-gradient-to-br from-violet-950/20 via-[#0d0b14] to-[#0d0d10]")}>
+      <motion.div
+        className={cn("overflow-hidden rounded-xl border p-0", "border-violet-500/10 bg-gradient-to-br from-violet-950/20 via-[#0d0b14] to-[#0d0d10]")}
+        initial={{ opacity: 0, y: 8, scale: 0.98 }}
+        animate={{ opacity: 1, y: 0, scale: 1 }}
+        transition={{ duration: 0.3, ease: "easeOut" }}
+      >
         <div className="h-px w-full bg-gradient-to-r from-transparent via-violet-400/25 to-transparent" />
         <div className="flex items-center gap-3 px-4 py-3">
-          <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-violet-500/10">
+          <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-xl bg-violet-500/10 ade-glow-pulse">
             <ChatStatusGlyph status="working" size={14} />
           </div>
           <div className="min-w-0 flex-1">
@@ -1438,7 +1498,7 @@ function renderEvent(
             <div className="mt-0.5 truncate text-[12px] text-fg/70">{event.description}</div>
           </div>
         </div>
-      </div>
+      </motion.div>
     );
   }
 
@@ -1662,40 +1722,45 @@ function renderEvent(
     const durationLabel = isLive ? null : `${durationSec}s`;
 
     return (
-      <CollapsibleCard
-        defaultOpen={false}
-        summary={
-          <span className="flex flex-wrap items-center gap-x-2 gap-y-1 font-sans text-[11px] text-fg/52">
-            <Brain size={13} weight="duotone" className="text-fg/40" />
-            {isLive ? (
-              <span className="flex items-center gap-2">
-                <ThinkingDots toneClass="bg-fg/40" />
-                Thinking...
-              </span>
-            ) : (
-              <>
-                <span className="font-medium text-fg/62">Thought</span>
-                {durationLabel ? (
-                  <span className="rounded-full border border-white/[0.08] bg-white/[0.03] px-2 py-0.5 text-[9px] text-fg/42">
-                    {durationLabel}
-                  </span>
-                ) : null}
-                {reasoningPreview ? (
-                  <span className="max-w-[32rem] truncate text-[10px] text-fg/40">
-                    {reasoningPreview}
-                  </span>
-                ) : null}
-              </>
-            )}
-          </span>
-        }
-        className="border-0 bg-transparent rounded-none"
-        style={{ background: "transparent", border: "none" }}
+      <motion.div
+        className="w-fit max-w-full"
+        initial={{ opacity: 0, y: 6 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.25, ease: "easeOut" }}
       >
-        <div className="text-fg/55 text-[12px] leading-relaxed">
-          <MarkdownBlock markdown={reasoningText.length ? event.text : "Thinking..."} />
-        </div>
-      </CollapsibleCard>
+        <CollapsibleCard
+          defaultOpen={false}
+          forceOpen={isLive ? true : undefined}
+          summary={
+            <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1 font-sans text-[11px] text-fg/52">
+              <span className="inline-flex h-8 w-8 shrink-0 items-center justify-center">
+                <BrainLottie loop={isLive} size={32} />
+              </span>
+              {isLive ? (
+                <span className="flex items-center gap-2 text-violet-200/70">
+                  <ThinkingDots toneClass="bg-violet-400/60" />
+                  <span className="font-medium">Thinking...</span>
+                </span>
+              ) : (
+                <>
+                  <span className="font-medium text-fg/55">Thought</span>
+                  {durationLabel ? (
+                    <span className="rounded-full border border-violet-400/10 bg-violet-500/[0.04] px-2 py-0.5 text-[9px] text-violet-300/40">
+                      {durationLabel}
+                    </span>
+                  ) : null}
+                </>
+              )}
+            </div>
+          }
+          className="w-fit max-w-[70ch] border-violet-400/[0.06] bg-[#141220]/50"
+          style={{ background: "rgba(20, 18, 32, 0.5)", borderColor: "rgba(167, 139, 250, 0.06)" }}
+        >
+          <div className="text-fg/55 text-[12px] leading-relaxed">
+            <MarkdownBlock markdown={reasoningText.length ? event.text : "Thinking..."} />
+          </div>
+        </CollapsibleCard>
+      </motion.div>
     );
   }
 
@@ -1905,112 +1970,26 @@ function renderEvent(
     } else {
       bodyText = event.description;
     }
+    /* Compact inline indicator — the full interactive UI lives in the composer banner.
+       This avoids duplicate approval buttons in the chat vs. above the prompt box. */
+    const resolvedLabel = isPlanApproval
+      ? (resolvedState === "accepted" ? "Plan Approved" : resolvedState === "declined" ? "Plan Rejected" : "Closed")
+      : isAskUser
+        ? (resolvedState === "accepted" ? "Answered" : resolvedState === "declined" ? "Declined" : "Closed")
+        : (resolvedState === "accepted" ? "Accepted" : resolvedState === "declined" ? "Declined" : "Closed");
+
     return (
-      <div className={cn(GLASS_CARD_CLASS, "p-4")} style={SURFACE_INLINE_CARD_STYLE}>
-        <div className="mb-2 flex items-center gap-2">
-          {isAskUser ? (
-            <span className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-amber-500/[0.10] shadow-[0_0_0_3px_rgba(245,158,11,0.12)]">
-              <ChatStatusGlyph status="waiting" size={11} />
-            </span>
-          ) : isPlanApproval ? (
-            <span className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-violet-500/[0.10] shadow-[0_0_0_3px_rgba(139,92,246,0.12)]">
-              <ChatStatusGlyph status="waiting" size={11} />
-            </span>
-          ) : (
-            <Warning size={13} weight="bold" className="text-amber-500" />
-          )}
-          <span className="font-mono text-[11px] font-bold uppercase tracking-widest text-fg/85">
-            {isAskUser ? "Needs Input" : isPlanApproval ? "Plan Approval" : isPermissionRequest ? "Permission Request" : "Approval Required"}
-          </span>
-          <span className="font-mono text-[10px] text-muted-fg/40">{requestSource || event.kind}</span>
-        </div>
-        {isPlanApproval ? (
-          <div className="max-h-72 overflow-y-auto text-[12px] leading-relaxed text-fg/75 whitespace-pre-wrap">{bodyText}</div>
-        ) : (
-          <div className="text-[12px] leading-relaxed text-fg/75">{bodyText}</div>
-        )}
-        {isQuestionRequest && questionCards.length > 0 ? (
-          <div className="mt-3 space-y-2">
-            {questionCards.map((card) => (
-              <div key={card.id} className="rounded-[calc(var(--chat-radius-card)-6px)] border border-white/[0.06] bg-black/15 px-3 py-2">
-                <div className="flex items-center justify-between gap-2">
-                  <span className="font-mono text-[10px] uppercase tracking-wider text-amber-300/75">
-                    {card.header}
-                  </span>
-                  {card.allowsFreeform ? (
-                    <span className="font-mono text-[9px] uppercase tracking-[0.14em] text-fg/30">
-                      Freeform allowed
-                    </span>
-                  ) : null}
-                </div>
-                <div className="mt-1.5 text-[12px] leading-relaxed text-fg/78 whitespace-pre-wrap">
-                  {card.questionText}
-                </div>
-                {card.defaultAssumption.length || card.impact.length || card.isSecret ? (
-                  <div className="mt-1.5 flex flex-wrap gap-1.5 font-mono text-[9px] uppercase tracking-[0.14em] text-fg/32">
-                    {card.isSecret ? <span>Secret answer</span> : null}
-                    {card.defaultAssumption.length ? <span>Assumption: {card.defaultAssumption}</span> : null}
-                    {card.impact.length ? <span>Impact: {card.impact}</span> : null}
-                  </div>
-                ) : null}
-                {card.options.length > 0 && options?.onApproval && !isResolved ? (
-                  <div className="mt-2 flex flex-wrap items-center gap-1.5">
-                    {card.options.map((option) => (
-                      <button
-                        key={`${card.id}:${option.value}`}
-                        type="button"
-                        className={cn(
-                          "rounded-[var(--chat-radius-pill)] border px-3 py-1 font-mono text-[9px] font-bold uppercase tracking-wider transition-colors",
-                          option.recommended
-                            ? "border-emerald-400/30 bg-emerald-500/[0.10] text-emerald-100/85 hover:bg-emerald-500/[0.18]"
-                            : "border-accent/25 bg-accent/[0.08] text-fg/80 hover:bg-accent/[0.16]",
-                        )}
-                        onClick={() => options.onApproval?.(event.itemId, "accept", null, { [card.id]: [option.value] })}
-                      >
-                        {option.label}
-                      </button>
-                    ))}
-                  </div>
-                ) : null}
-              </div>
-            ))}
-          </div>
-        ) : null}
-        {detailText.length ? (
-          <div className="mt-3">
-            <CollapsibleCard
-              defaultOpen={false}
-              summary={<span className="font-mono text-[10px] uppercase tracking-wider text-amber-300/70">Request Details</span>}
-              className="border-transparent bg-surface/35"
-            >
-              <pre className={cn("max-h-52", RECESSED_BLOCK_CLASS)}>
-                {detailText}
-              </pre>
-            </CollapsibleCard>
-          </div>
-        ) : null}
-        {handleApproval && isAskUser && !isResolved ? (
-          <div className="mt-3 flex flex-wrap items-center gap-1.5">
-            <button
-              type="button"
-              disabled={isResponding}
-              className="border border-red-400/30 bg-red-500/10 px-3 py-1.5 font-mono text-[10px] font-bold uppercase tracking-wider text-red-200/80 transition-colors hover:bg-red-500/20 disabled:opacity-40 disabled:pointer-events-none"
-              onClick={() => handleApproval("decline")}
-            >
-              Decline
-            </button>
-          </div>
-        ) : null}
-        {isAskUser && isResolved ? (
-          <div className="mt-3 flex flex-wrap items-center gap-1.5">
+      <div className={cn(GLASS_CARD_CLASS, "px-4 py-2.5")} style={SURFACE_INLINE_CARD_STYLE}>
+        <div className="flex items-center gap-2">
+          {isResolved ? (
             <span
               className={cn(
-                "inline-flex items-center gap-1.5 rounded-[var(--chat-radius-pill)] px-3 py-1.5 font-mono text-[10px] font-bold uppercase tracking-wider",
+                "inline-flex items-center gap-1.5 font-mono text-[10px] font-bold uppercase tracking-wider",
                 resolvedState === "accepted"
-                  ? "border border-emerald-500/20 bg-emerald-500/8 text-emerald-300/70"
+                  ? "text-emerald-300/70"
                   : resolvedState === "declined"
-                    ? "border border-red-500/20 bg-red-500/8 text-red-300/75"
-                    : "border border-border/25 bg-transparent text-fg/45",
+                    ? "text-red-300/70"
+                    : "text-fg/45",
               )}
             >
               {resolvedState === "accepted" ? (
@@ -2020,87 +1999,23 @@ function renderEvent(
               ) : (
                 <Circle size={12} weight="bold" />
               )}
-              {resolvedState === "accepted"
-                ? "Answered"
-                : resolvedState === "declined"
-                  ? "Declined"
-                  : "Closed"}
+              {resolvedLabel}
             </span>
-          </div>
-        ) : null}
-        {handleApproval && !isAskUser ? (
-          isPlanApproval ? (
-            <div className="mt-3 flex flex-wrap items-center gap-1.5">
-              {isResolved ? (
-                <span className="inline-flex items-center gap-1.5 rounded-[var(--chat-radius-pill)] border border-emerald-500/20 bg-emerald-500/8 px-3 py-1.5 font-mono text-[10px] font-bold uppercase tracking-wider text-emerald-300/70">
-                  <Check size={12} weight="bold" /> Responded
-                </span>
-              ) : (
-                <>
-                  <button
-                    type="button"
-                    disabled={isResponding}
-                    className="border border-emerald-400/40 bg-emerald-500/15 px-3 py-1.5 font-mono text-[10px] font-bold uppercase tracking-wider text-emerald-200 transition-colors hover:bg-emerald-500/25 disabled:opacity-40 disabled:pointer-events-none"
-                    onClick={() => handleApproval("accept")}
-                  >
-                    {isResponding ? "Processing..." : "Approve & Implement"}
-                  </button>
-                  <button
-                    type="button"
-                    disabled={isResponding}
-                    className="border border-border/25 bg-transparent px-3 py-1.5 font-mono text-[10px] font-bold uppercase tracking-wider text-fg/50 transition-colors hover:bg-border/15 disabled:opacity-40 disabled:pointer-events-none"
-                    onClick={() => handleApproval("decline")}
-                  >
-                    Reject &amp; Revise
-                  </button>
-                </>
-              )}
-            </div>
           ) : (
-            <div className="mt-3 flex flex-wrap items-center gap-1.5">
-              {isResolved ? (
-                <span className="inline-flex items-center gap-1.5 rounded-[var(--chat-radius-pill)] border border-emerald-500/20 bg-emerald-500/8 px-3 py-1.5 font-mono text-[10px] font-bold uppercase tracking-wider text-emerald-300/70">
-                  <Check size={12} weight="bold" /> Responded
-                </span>
-              ) : (
-                <>
-                  <button
-                    type="button"
-                    disabled={isResponding}
-                    className="border border-accent/40 bg-accent/15 px-3 py-1.5 font-mono text-[10px] font-bold uppercase tracking-wider text-fg transition-colors hover:bg-accent/25 disabled:opacity-40 disabled:pointer-events-none"
-                    onClick={() => handleApproval("accept")}
-                  >
-                    {isResponding ? "Processing..." : "Accept"}
-                  </button>
-                  <button
-                    type="button"
-                    disabled={isResponding}
-                    className="border border-accent/20 bg-transparent px-3 py-1.5 font-mono text-[10px] font-bold uppercase tracking-wider text-fg/70 transition-colors hover:bg-accent/10 disabled:opacity-40 disabled:pointer-events-none"
-                    onClick={() => handleApproval("accept_for_session")}
-                  >
-                    Accept All
-                  </button>
-                  <button
-                    type="button"
-                    disabled={isResponding}
-                    className="border border-border/25 bg-transparent px-3 py-1.5 font-mono text-[10px] font-bold uppercase tracking-wider text-fg/50 transition-colors hover:bg-border/15 disabled:opacity-40 disabled:pointer-events-none"
-                    onClick={() => handleApproval("decline")}
-                  >
-                    Decline
-                  </button>
-                  <button
-                    type="button"
-                    disabled={isResponding}
-                    className="border border-border/25 bg-transparent px-3 py-1.5 font-mono text-[10px] font-bold uppercase tracking-wider text-fg/50 transition-colors hover:bg-border/15 disabled:opacity-40 disabled:pointer-events-none"
-                    onClick={() => handleApproval("cancel")}
-                  >
-                    Dismiss
-                  </button>
-                </>
-              )}
-            </div>
-          )
-        ) : null}
+            <>
+              <ChatStatusGlyph status="waiting" size={11} />
+              <span className="font-mono text-[10px] uppercase tracking-wider text-fg/50">
+                {isPlanApproval
+                  ? "Presenting plan for approval"
+                  : isAskUser
+                    ? "Waiting for input"
+                    : isPermissionRequest
+                      ? "Permission request"
+                      : "Approval required"}
+              </span>
+            </>
+          )}
+        </div>
       </div>
     );
   }
@@ -2213,26 +2128,26 @@ function renderEvent(
       return null;
     }
     const statusTone = event.status === "completed"
-      ? "border-teal-400/8 bg-teal-400/[0.03] text-fg/45"
+      ? "border-white/[0.04] bg-[#141220]/60 text-fg/45"
       : event.status === "failed"
-        ? "border-red-500/15 bg-red-500/[0.05] text-red-300"
-        : "border-amber-500/15 bg-amber-500/[0.05] text-amber-300";
+        ? "border-red-500/12 bg-red-500/[0.04] text-red-300"
+        : "border-amber-500/12 bg-amber-500/[0.04] text-amber-300";
 
     return (
-      <div className={cn("flex items-center justify-center gap-3 rounded-lg border px-3 py-1.5 font-sans text-[10px]", statusTone)}>
-        <div className="flex flex-wrap items-center justify-center gap-x-2 gap-y-1">
-          <span className="font-medium text-fg/40">Usage</span>
+      <div className={cn("flex items-center justify-center gap-3 rounded-xl border px-4 py-2 font-sans text-[10px]", statusTone)}>
+        <div className="flex flex-wrap items-center justify-center gap-x-3 gap-y-1">
+          <span className="font-medium text-fg/35 uppercase tracking-wide text-[9px]">Usage</span>
           {modelLabel ? (
-            <span className="inline-flex items-center gap-1.5 text-fg/35">
-              <ModelGlyph modelId={event.modelId} model={event.model} size={10} className="shrink-0 text-fg/40" />
-              <span>{modelLabel}</span>
+            <span className="inline-flex items-center gap-1.5 text-fg/30">
+              <ModelGlyph modelId={event.modelId} model={event.model} size={11} className="shrink-0 text-violet-400/40" />
+              <span className="font-medium">{modelLabel}</span>
             </span>
           ) : null}
-          {inputTokens ? <span className="text-fg/30">In {inputTokens}</span> : null}
-          {outputTokens ? <span className="text-fg/30">Out {outputTokens}</span> : null}
-          {cacheRead ? <span className="text-emerald-400/35">Cache {cacheRead}</span> : null}
-          {cacheCreation ? <span className="text-violet-400/35">New cache {cacheCreation}</span> : null}
-          {costLabel ? <span className="text-fg/30">{costLabel}</span> : null}
+          {inputTokens ? <span className="text-fg/25">In <span className="font-medium text-fg/35">{inputTokens}</span></span> : null}
+          {outputTokens ? <span className="text-fg/25">Out <span className="font-medium text-fg/35">{outputTokens}</span></span> : null}
+          {cacheRead ? <span className="text-emerald-400/30">Cache <span className="font-medium text-emerald-400/45">{cacheRead}</span></span> : null}
+          {cacheCreation ? <span className="text-violet-400/30">New cache <span className="font-medium text-violet-400/45">{cacheCreation}</span></span> : null}
+          {costLabel ? <span className="font-medium text-violet-300/35">{costLabel}</span> : null}
           {event.status !== "completed" ? (
             <span className="text-[9px] font-medium uppercase tracking-wide text-current">{event.status}</span>
           ) : null}
@@ -2241,17 +2156,35 @@ function renderEvent(
     );
   }
 
-  /* ── Turn diff summary ── */
-  if (event.type === "turn_diff_summary" && options?.sessionId) {
-    const summary: TurnDiffSummary = {
-      turnId: event.turnId,
-      beforeSha: event.beforeSha,
-      afterSha: event.afterSha,
-      files: event.files,
-      totalAdditions: event.totalAdditions,
-      totalDeletions: event.totalDeletions,
-    };
-    return <ChatTurnDiffPanel summary={summary} sessionId={options.sessionId} />;
+  /* ── Turn diff summary (minimal inline indicator — detail lives in bottom Tasks panel) ── */
+  if (event.type === "turn_diff_summary") {
+    return (
+      <details className="group rounded-lg border border-white/[0.04] bg-white/[0.02] px-3 py-2 font-mono text-[10px] text-fg/32">
+        <summary className="flex cursor-pointer list-none items-center gap-2 text-left outline-none">
+          <FileCode size={10} />
+          <span>{event.files.length} file{event.files.length !== 1 ? "s" : ""} changed</span>
+          {event.totalAdditions > 0 && <span className="text-emerald-400/50">+{event.totalAdditions}</span>}
+          {event.totalDeletions > 0 && <span className="text-red-400/50">-{event.totalDeletions}</span>}
+          <span className="ml-auto rounded-md border border-white/[0.06] bg-white/[0.03] px-1.5 py-0.5 text-[9px] text-fg/42 group-open:text-fg/60">
+            View files
+          </span>
+        </summary>
+        <div className="mt-2 space-y-1.5 text-[11px] text-fg/55">
+          {event.files.map((file) => (
+            <div
+              key={`${event.turnId}:${file.path}:${file.status}`}
+              className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-md border border-white/[0.05] bg-black/10 px-2.5 py-2"
+            >
+              <span className="font-medium text-fg/72">{formatTurnDiffAction(file.status)}</span>
+              <span className="text-fg/58">{basenamePathLabel(file.path)}</span>
+              {file.additions > 0 ? <span className="text-emerald-300/70">+{file.additions}</span> : null}
+              {file.deletions > 0 || file.status === "D" ? <span className="text-red-300/70">-{file.deletions}</span> : null}
+              <span className="ml-auto truncate font-mono text-[9px] text-fg/34">{dirnamePathLabel(file.path) ?? ""}</span>
+            </div>
+          ))}
+        </div>
+      </details>
+    );
   }
 
   /* ── Completion report ── */
@@ -2647,19 +2580,15 @@ const EventRow = React.memo(function EventRow({
   return (
     <div className="space-y-3">
       {showTurnDivider ? (
-        <div className="my-1 flex items-center gap-3">
-          <span className="h-px flex-1 bg-gradient-to-r from-transparent via-white/[0.07] to-transparent" />
-          <span className="inline-flex items-center gap-2 rounded-full border border-white/[0.06] bg-white/[0.02] px-2.5 py-1 font-sans text-[10px] text-fg/30">
-            {turnModel?.label ? (
-              <>
-                <ModelGlyph modelId={turnModel.modelId} model={turnModel.model} size={10} className="text-fg/25" />
-                <span className="text-fg/25">{turnModel.label}</span>
-                <span className="text-fg/12">&middot;</span>
-              </>
-            ) : null}
-            <span>{turnDividerLabel ?? "Turn"}</span>
+        <div className="my-3 flex items-center gap-4">
+          <span className="h-px flex-1 bg-gradient-to-r from-transparent via-violet-400/[0.08] to-transparent" />
+          <span
+            className="inline-flex items-center gap-2.5 rounded-full border border-white/[0.06] bg-[#141220]/80 px-3.5 py-1.5 font-sans text-[10px] text-fg/40 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.3)]"
+            style={{ backdropFilter: "blur(12px)", WebkitBackdropFilter: "blur(12px)" }}
+          >
+            <span className="text-fg/35">{turnDividerLabel ?? "Turn"}</span>
           </span>
-          <span className="h-px flex-1 bg-gradient-to-r from-transparent via-white/[0.07] to-transparent" />
+          <span className="h-px flex-1 bg-gradient-to-r from-transparent via-violet-400/[0.08] to-transparent" />
         </div>
       ) : null}
       {envelope.event.type === "work_log_group"
@@ -3176,16 +3105,32 @@ export function AgentChatMessageList({
   }, [shouldVirtualize, endIndex, groupedRows.length, rowHeight]);
 
   const streamingIndicator = showStreamingIndicator ? (
-    <div className="pt-3 pb-1">
-      {latestActivity ? (
-        <ActivityIndicator activity={latestActivity.activity} detail={latestActivity.detail} />
-      ) : (
-        <div className="flex items-center gap-2 py-1 font-sans text-[12px] text-emerald-200/75">
-          <ThinkingDots toneClass="bg-emerald-300/75" />
-          <span>Working...</span>
+    <motion.div
+      className="pt-3 pb-2"
+      initial={{ opacity: 0, y: 6 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.25, ease: "easeOut" }}
+    >
+      <div className="relative overflow-hidden rounded-xl border border-violet-400/[0.08] bg-[#141220]/60 px-4 py-3">
+        <div className="pointer-events-none absolute inset-0 overflow-hidden rounded-xl">
+          <div
+            className="absolute inset-0"
+            style={{
+              background: "linear-gradient(90deg, transparent, rgba(167,139,250,0.04), transparent)",
+              animation: "ade-streaming-shimmer 2.5s ease-in-out infinite",
+            }}
+          />
         </div>
-      )}
-    </div>
+        {latestActivity ? (
+          <ActivityIndicator activity={latestActivity.activity} detail={latestActivity.detail} />
+        ) : (
+          <div className="flex items-center gap-2.5 py-0.5 font-sans text-[12px] text-violet-200/70">
+            <ThinkingDots toneClass="bg-violet-400/70" />
+            <span className="font-medium">Working...</span>
+          </div>
+        )}
+      </div>
+    </motion.div>
   ) : null;
 
   const turnSummaryCard = turnSummary ? (
@@ -3195,7 +3140,7 @@ export function AgentChatMessageList({
   return (
     <div
       ref={scrollRef}
-      className={cn("h-full min-h-0 overflow-auto bg-[#09090b] px-4 pt-5 pb-8", className)}
+      className={cn("h-full min-h-0 overflow-auto bg-[#0C0B10] px-5 pt-5 pb-8", className)}
       onScroll={handleScroll}
     >
       {rows.length === 0 && !streamingIndicator ? (

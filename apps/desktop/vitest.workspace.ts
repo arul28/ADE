@@ -11,6 +11,11 @@ const lobeIconsStub = path.resolve(
   "src/test/__mocks__/lobehub-icons.js",
 );
 
+const lottieReactStub = path.resolve(
+  __dirname,
+  "src/test/__mocks__/lottie-react.js",
+);
+
 const shared = {
   testTimeout: 20_000,
   hookTimeout: 20_000,
@@ -33,6 +38,7 @@ const shared = {
 const sharedResolveAlias = {
   "@emoji-mart/data": emojiDataStub,
   "@lobehub/icons": lobeIconsStub,
+  "lottie-react": lottieReactStub,
 };
 
 export default defineWorkspace([

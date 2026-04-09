@@ -35,13 +35,13 @@ export function ChatSurfaceShell({
     >
       {header ? (
         <div
-          className="relative z-10 mx-3 mt-2 overflow-hidden rounded-[var(--chat-radius-shell)]"
+          className="relative z-10 mx-3 mt-2.5 overflow-visible rounded-[var(--chat-radius-shell)]"
           style={{
-            backdropFilter: "blur(20px)",
-            WebkitBackdropFilter: "blur(20px)",
-            background: "rgba(30, 30, 40, 0.7)",
-            border: "1px solid rgba(255, 255, 255, 0.08)",
-            boxShadow: "0 4px 16px rgba(0, 0, 0, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.05)",
+            backdropFilter: "blur(30px)",
+            WebkitBackdropFilter: "blur(30px)",
+            background: "rgba(20, 18, 32, 0.85)",
+            border: "1px solid rgba(255, 255, 255, 0.06)",
+            boxShadow: "0 8px 32px -8px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(167, 139, 250, 0.04), inset 0 1px 0 rgba(255, 255, 255, 0.04)",
           }}
         >
           {header}
@@ -51,7 +51,7 @@ export function ChatSurfaceShell({
         {children}
       </div>
       {footer ? (
-        <div className={cn("relative px-3 pb-3 pt-2", footerClassName)} style={{ background: "var(--color-bg)" }}>
+        <div className={cn("relative px-3 pb-2 pt-0", footerClassName)} style={{ background: "var(--color-bg)" }}>
           {footer}
         </div>
       ) : null}

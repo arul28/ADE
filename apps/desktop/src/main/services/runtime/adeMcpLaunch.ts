@@ -4,6 +4,7 @@ import { resolveAdeLayout } from "../../../shared/adeLayout";
 import type { ComputerUsePolicy } from "../../../shared/types";
 
 export type AdeMcpLaunchMode = "bundled_proxy" | "headless_built" | "headless_source";
+export type AdeMcpWorkspaceBinding = "explicit" | "project_root";
 
 export type AdeMcpLaunch = {
   mode: AdeMcpLaunchMode;
@@ -20,6 +21,7 @@ export type AdeMcpLaunch = {
 export type DesktopAdeMcpLaunchArgs = {
   projectRoot: string;
   workspaceRoot: string;
+  workspaceBinding?: AdeMcpWorkspaceBinding;
   runtimeRoot?: string;
   missionId?: string;
   runId?: string;
@@ -128,7 +130,9 @@ function buildLaunchEnv(args: {
 
 export function resolveDesktopAdeMcpLaunch(args: DesktopAdeMcpLaunchArgs): AdeMcpLaunch {
   const projectRoot = resolveRequiredRoot(args.projectRoot, "projectRoot");
-  const workspaceRoot = resolveRequiredRoot(args.workspaceRoot, "workspaceRoot");
+  const workspaceRoot = args.workspaceBinding === "project_root"
+    ? projectRoot
+    : resolveRequiredRoot(args.workspaceRoot, "workspaceRoot");
   const socketPath = resolveAdeLayout(projectRoot).socketPath;
   const resourcesPath = resolveResourcesPath();
   const env = buildLaunchEnv({

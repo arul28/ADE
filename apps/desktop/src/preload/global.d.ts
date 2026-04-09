@@ -124,6 +124,7 @@ import type {
   AiApiKeyVerificationResult,
   AiConfig,
   AiSettingsStatus,
+  OpenCodeRuntimeSnapshot,
   SyncDesktopConnectionDraft,
   SyncDeviceRecord,
   SyncDeviceRuntimeState,
@@ -615,6 +616,7 @@ declare global {
       };
       ai: {
         getStatus: (args?: { force?: boolean; refreshOpenCodeInventory?: boolean }) => Promise<AiSettingsStatus>;
+        getOpenCodeRuntimeDiagnostics: () => Promise<OpenCodeRuntimeSnapshot>;
         storeApiKey: (provider: string, key: string) => Promise<void>;
         deleteApiKey: (provider: string) => Promise<void>;
         listApiKeys: () => Promise<string[]>;

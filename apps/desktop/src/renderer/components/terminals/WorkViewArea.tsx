@@ -10,6 +10,8 @@ import { isChatToolType, primarySessionLabel, secondarySessionLabel, truncateSes
 import { sessionStatusDot } from "../../lib/terminalAttention";
 import { PackedSessionGrid } from "./PackedSessionGrid";
 import type { WorkTabGroup } from "./useWorkSessions";
+import { ClaudeCacheTtlBadge } from "../shared/ClaudeCacheTtlBadge";
+import { shouldShowClaudeCacheTtl } from "../../lib/claudeCacheTtl";
 
 const CHAT_TILE_MIN_WIDTH = 440;
 const CHAT_TILE_MIN_HEIGHT = 340;
@@ -180,6 +182,12 @@ export function WorkViewArea({
     const isBusy = session.ptyId ? closingPtyIds.has(session.ptyId) : false;
     const primary = primarySessionLabel(session);
     const secondary = secondarySessionLabel(session);
+    const showClaudeCacheTimer = shouldShowClaudeCacheTtl({
+      provider: session.toolType === "claude-chat" ? "claude" : null,
+      status: session.runtimeState === "idle" ? "idle" : "active",
+      idleSinceAt: session.chatIdleSinceAt,
+      awaitingInput: session.runtimeState === "waiting-input",
+    });
     return {
       id: session.id,
       minWidth: isChatToolType(session.toolType) ? CHAT_TILE_MIN_WIDTH : TERMINAL_TILE_MIN_WIDTH,
@@ -212,6 +220,9 @@ export function WorkViewArea({
               <span className="truncate text-fg">
                 {truncateSessionLabel(primary)}
               </span>
+              {showClaudeCacheTimer ? (
+                <ClaudeCacheTtlBadge idleSinceAt={session.chatIdleSinceAt} className="px-1 py-0.5 text-[8px]" />
+              ) : null}
             </span>
             <span className="mt-0.5 flex items-center gap-2 pl-[18px]">
               <span className="text-[10px] text-muted-fg/50">
@@ -296,87 +307,7 @@ export function WorkViewArea({
         ) : (
           <PackedSessionGrid
             layoutId={gridLayoutId}
-            tiles={visibleSessions.map((session) => {
-              const isActive = activeSession?.id === session.id;
-              const dot = sessionStatusDot(session);
-              const isBusy = session.ptyId ? closingPtyIds.has(session.ptyId) : false;
-              const primary = primarySessionLabel(session);
-              const secondary = secondarySessionLabel(session);
-              const isChat = isChatToolType(session.toolType);
-              return {
-                id: session.id,
-                minWidth: isChat ? CHAT_TILE_MIN_WIDTH : TERMINAL_TILE_MIN_WIDTH,
-                minHeight: isChat ? CHAT_TILE_MIN_HEIGHT : TERMINAL_TILE_MIN_HEIGHT,
-                selected: isActive,
-                onSelect: () => onSelectItem(session.id),
-                className: isActive
-                  ? "border border-white/[0.08] bg-white/[0.02]"
-                  : "border border-white/[0.04] bg-transparent",
-                header: (
-                  <div
-                    className="flex items-center gap-2 px-2 py-1.5"
-                    onContextMenu={(e) => handleContextMenu(session, e)}
-                    style={{
-                      borderBottom: "1px solid rgba(255,255,255,0.04)",
-                      background: isActive ? "rgba(255,255,255,0.02)" : "transparent",
-                    }}
-                  >
-                    <button
-                      type="button"
-                      className="min-w-0 flex-1 text-left"
-                      onClick={() => onSelectItem(session.id)}
-                    >
-                      <span className="flex items-center gap-2 text-[11px]">
-                        <span
-                          title={dot.label}
-                          className={`${dot.cls} h-2 w-2 shrink-0${dot.spinning ? " animate-spin" : ""}`}
-                        />
-                        <ToolLogo toolType={session.toolType} size={11} />
-                        <span className="truncate text-fg">
-                          {truncateSessionLabel(primary)}
-                        </span>
-                      </span>
-                      <span className="mt-0.5 flex items-center gap-2 pl-[18px]">
-                        <span className="text-[10px] text-muted-fg/50">
-                          {session.laneName}
-                        </span>
-                        {secondary ? (
-                          <span className="truncate text-[10px] text-muted-fg/60">
-                            {truncateSessionLabel(secondary, 36)}
-                          </span>
-                        ) : null}
-                      </span>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => onCloseItem(session.id)}
-                      title={isBusy ? "Closing..." : "Close"}
-                      disabled={isBusy}
-                      className="inline-flex h-5 w-5 items-center justify-center text-muted-fg/50 transition-colors hover:text-fg"
-                      style={{
-                        border: "none",
-                        background: "transparent",
-                        cursor: isBusy ? "default" : "pointer",
-                        opacity: isBusy ? 0.4 : 1,
-                      }}
-                    >
-                      <X size={10} />
-                    </button>
-                  </div>
-                ),
-                children: (
-                  <div className="min-h-0 h-full flex-1 overflow-hidden" onContextMenu={(e) => handleContextMenu(session, e)}>
-                    <SessionSurface
-                      session={session}
-                      isActive={isActive}
-                      terminalVisible
-                      layoutVariant="grid-tile"
-                      onOpenChatSession={onOpenChatSession}
-                    />
-                  </div>
-                ),
-              };
-            })}
+            tiles={packedGridTiles}
           />
         )}
       </div>

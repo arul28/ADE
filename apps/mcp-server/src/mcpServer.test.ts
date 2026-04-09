@@ -131,6 +131,10 @@ function createRuntime() {
     },
     laneService: {
       list: vi.fn(async () => laneRows),
+      getLaneWorktreePath: vi.fn((laneId: string) => {
+        const lane = laneRows.find((row) => row.id === laneId) ?? laneRows[0]!;
+        return lane.worktreePath;
+      }),
       getLaneBaseAndBranch: vi.fn((laneId: string) => {
         const lane = laneRows.find((row) => row.id === laneId) ?? laneRows[0]!;
         return {
@@ -191,6 +195,7 @@ function createRuntime() {
         id: missionId,
         prompt: "test mission",
         status: "running",
+        laneId: "lane-1",
         interventions: []
       })),
       create: vi.fn(({ prompt }: any) => ({ id: "mission-new", prompt, status: "planned" })),
@@ -889,6 +894,30 @@ async function callTool(
   });
 }
 
+async function withEnv<T>(vars: Record<string, string | undefined>, fn: () => Promise<T>): Promise<T> {
+  const previous = new Map<string, string | undefined>();
+  for (const [key, value] of Object.entries(vars)) {
+    previous.set(key, process.env[key]);
+    if (value == null) {
+      delete process.env[key];
+    } else {
+      process.env[key] = value;
+    }
+  }
+
+  try {
+    return await fn();
+  } finally {
+    for (const [key, value] of previous.entries()) {
+      if (value == null) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+  }
+}
+
 describe("mcpServer", () => {
   it("treats requested privileged roles as external without trusted env identity", async () => {
     const { runtime } = createRuntime();
@@ -1236,190 +1265,200 @@ describe("mcpServer", () => {
     }
   });
 
-  it("includes ADE-managed external MCP tools in tool discovery and preserves structured tool results", async () => {
-    const fixture = createRuntime();
-    fixture.runtime.externalMcpService.listToolsForIdentity = vi.fn(async () => [
-      {
-        name: "search",
-        serverName: "notion",
-        namespacedName: "ext.notion.search",
-        description: "Search Notion pages",
-        inputSchema: {
-          type: "object",
-          properties: {
-            query: { type: "string" },
+  it("includes ADE-managed external MCP tools in tool discovery and derives mission identity from run context", async () => {
+    await withEnv({ ADE_RUN_ID: "run-1" }, async () => {
+      const fixture = createRuntime();
+      fixture.runtime.externalMcpService.listToolsForIdentity = vi.fn(async () => [
+        {
+          name: "search",
+          serverName: "notion",
+          namespacedName: "ext.notion.search",
+          description: "Search Notion pages",
+          inputSchema: {
+            type: "object",
+            properties: {
+              query: { type: "string" },
+            },
+            required: ["query"],
           },
-          required: ["query"],
+          enabled: true,
+          safety: "read",
         },
-        enabled: true,
-        safety: "read",
-      },
-    ]);
-    fixture.runtime.externalMcpService.callTool = vi.fn(async () => ({
-      ok: true,
-      result: {
+      ]);
+      fixture.runtime.externalMcpService.callTool = vi.fn(async () => ({
+        ok: true,
+        result: {
+          content: [{ type: "text", text: "Found page" }],
+          structuredContent: { pageId: "page-1" },
+          isError: false,
+        },
+      }));
+      const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+      await initialize(handler, {
+        callerId: "worker-1",
+        role: "agent",
+        runId: "run-from-identity",
+        stepId: "step-1",
+        attemptId: "attempt-1",
+      });
+
+      const listResult = await handler({ jsonrpc: "2.0", id: 3, method: "tools/list" }) as any;
+      expect((listResult.tools ?? []).map((tool: any) => tool.name)).toContain("ext.notion.search");
+
+      const callResult = await callTool(handler, "ext.notion.search", { query: "roadmap" });
+      expect(callResult).toMatchObject({
         content: [{ type: "text", text: "Found page" }],
         structuredContent: { pageId: "page-1" },
         isError: false,
-      },
-    }));
-    const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
-
-    await initialize(handler, {
-      callerId: "worker-1",
-      role: "agent",
-      missionId: "mission-1",
-      runId: "run-1",
-      stepId: "step-1",
-      attemptId: "attempt-1",
+      });
+      expect(fixture.runtime.externalMcpService.callTool).toHaveBeenCalledWith(
+        expect.objectContaining({
+          callerId: "worker-1",
+          missionId: "mission-1",
+          runId: "run-1",
+        }),
+        "ext.notion.search",
+        { query: "roadmap" },
+      );
     });
-
-    const listResult = await handler({ jsonrpc: "2.0", id: 3, method: "tools/list" }) as any;
-    expect((listResult.tools ?? []).map((tool: any) => tool.name)).toContain("ext.notion.search");
-
-    const callResult = await callTool(handler, "ext.notion.search", { query: "roadmap" });
-    expect(callResult).toMatchObject({
-      content: [{ type: "text", text: "Found page" }],
-      structuredContent: { pageId: "page-1" },
-      isError: false,
-    });
-    expect(fixture.runtime.externalMcpService.callTool).toHaveBeenCalledWith(
-      expect.objectContaining({
-        callerId: "worker-1",
-        missionId: "mission-1",
-      }),
-      "ext.notion.search",
-      { query: "roadmap" },
-    );
   });
 
   it("lets agent callers use safe mission observation coordinator tools", async () => {
-    const fixture = createRuntime();
-    fixture.runtime.orchestratorService.getRunGraph = vi.fn(() => ({
-      run: { id: "run-1", missionId: "mission-1", status: "running", metadata: {} },
-      steps: [],
-      attempts: [],
-      claims: [],
-      contextSnapshots: [],
-      handoffs: [],
-      timeline: [],
-      runtimeEvents: [],
-      completionEvaluation: { complete: false }
-    }));
-    const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await withEnv({ ADE_RUN_ID: "run-1" }, async () => {
+      const fixture = createRuntime();
+      fixture.runtime.orchestratorService.getRunGraph = vi.fn(() => ({
+        run: { id: "run-1", missionId: "mission-1", status: "running", metadata: {} },
+        steps: [],
+        attempts: [],
+        claims: [],
+        contextSnapshots: [],
+        handoffs: [],
+        timeline: [],
+        runtimeEvents: [],
+        completionEvaluation: { complete: false }
+      }));
+      const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
 
-    await initialize(handler, {
-      callerId: "worker-1",
-      role: "agent",
-      missionId: "mission-1",
-      runId: "run-1",
-      stepId: "step-1",
-      attemptId: "attempt-1"
+      await initialize(handler, {
+        callerId: "worker-1",
+        role: "agent",
+        missionId: "mission-1",
+        runId: "run-from-identity",
+        stepId: "step-1",
+        attemptId: "attempt-1"
+      });
+
+      const response = await callTool(handler, "read_mission_status", {});
+
+      expect(response.isError).toBeUndefined();
+      expect(response.structuredContent.ok).toBe(true);
+      expect(response.structuredContent.runId).toBe("run-1");
     });
-
-    const response = await callTool(handler, "read_mission_status", {});
-
-    expect(response.isError).toBeUndefined();
-    expect(response.structuredContent.ok).toBe(true);
-    expect(response.structuredContent.runId).toBe("run-1");
   });
 
   it("rejects coordinator-only tool calls from agent callers before coordinator dispatch", async () => {
-    const { runtime } = createRuntime();
-    const handler = createMcpRequestHandler({ runtime, serverVersion: "test" });
+    await withEnv({ ADE_RUN_ID: "run-1" }, async () => {
+      const { runtime } = createRuntime();
+      const handler = createMcpRequestHandler({ runtime, serverVersion: "test" });
 
-    await initialize(handler, {
-      callerId: "worker-1",
-      role: "agent",
-      missionId: "mission-1",
-      runId: "run-1",
-      stepId: "step-1",
-      attemptId: "attempt-1"
+      await initialize(handler, {
+        callerId: "worker-1",
+        role: "agent",
+        missionId: "mission-1",
+        runId: "run-from-identity",
+        stepId: "step-1",
+        attemptId: "attempt-1"
+      });
+
+      const response = await callTool(handler, "spawn_worker", {
+        name: "implementation-worker",
+        prompt: "Do work"
+      });
+
+      expect(response.isError).toBe(true);
+      expect(JSON.stringify(response.error ?? response.structuredContent ?? {})).toContain("Unsupported tool: spawn_worker");
     });
-
-    const response = await callTool(handler, "spawn_worker", {
-      name: "implementation-worker",
-      prompt: "Do work"
-    });
-
-    expect(response.isError).toBe(true);
-    expect(JSON.stringify(response.error ?? response.structuredContent ?? {})).toContain("Unsupported tool: spawn_worker");
   });
 
   it("lets agent callers delegate nested work only beneath their own worker", async () => {
-    const fixture = createRuntime();
-    fixture.runtime.orchestratorService.getRunGraph = vi.fn(() => ({
-      run: { id: "run-1", missionId: "mission-1", status: "running", metadata: {} },
-      steps: [{ id: "step-1", stepKey: "step-a", laneId: "lane-1", status: "running", metadata: {} }],
-      attempts: [{ id: "attempt-1", stepId: "step-1", status: "running" }],
-      claims: [],
-      contextSnapshots: [],
-      handoffs: [],
-      timeline: [],
-      runtimeEvents: [],
-      completionEvaluation: { complete: false }
-    }));
-    const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await withEnv({ ADE_RUN_ID: "run-1" }, async () => {
+      const fixture = createRuntime();
+      fixture.runtime.orchestratorService.getRunGraph = vi.fn(() => ({
+        run: { id: "run-1", missionId: "mission-1", status: "running", metadata: {} },
+        steps: [{ id: "step-1", stepKey: "step-a", laneId: "lane-1", status: "running", metadata: {} }],
+        attempts: [{ id: "attempt-1", stepId: "step-1", status: "running" }],
+        claims: [],
+        contextSnapshots: [],
+        handoffs: [],
+        timeline: [],
+        runtimeEvents: [],
+        completionEvaluation: { complete: false }
+      }));
+      const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
 
-    await initialize(handler, {
-      callerId: "worker-1",
-      role: "agent",
-      missionId: "mission-1",
-      runId: "run-1",
-      stepId: "step-1",
-      attemptId: "attempt-1"
+      await initialize(handler, {
+        callerId: "worker-1",
+        role: "agent",
+        missionId: "mission-1",
+        runId: "run-from-identity",
+        stepId: "step-1",
+        attemptId: "attempt-1"
+      });
+
+      const response = await callTool(handler, "delegate_parallel", {
+        tasks: [
+          { name: "child-1", prompt: "Handle the first child task.", modelId: "openai/gpt-5.3-codex" },
+          { name: "child-2", prompt: "Handle the second child task.", modelId: "openai/gpt-5.3-codex" },
+        ]
+      });
+
+      expect(response.isError).toBeUndefined();
+      expect(response.structuredContent.ok).toBe(true);
+      expect(response.structuredContent.parentWorkerId).toBe("step-a");
+      expect(response.structuredContent.total).toBe(2);
     });
-
-    const response = await callTool(handler, "delegate_parallel", {
-      tasks: [
-        { name: "child-1", prompt: "Handle the first child task.", modelId: "openai/gpt-5.3-codex" },
-        { name: "child-2", prompt: "Handle the second child task.", modelId: "openai/gpt-5.3-codex" },
-      ]
-    });
-
-    expect(response.isError).toBeUndefined();
-    expect(response.structuredContent.ok).toBe(true);
-    expect(response.structuredContent.parentWorkerId).toBe("step-a");
-    expect(response.structuredContent.total).toBe(2);
   });
 
   it("rejects agent delegation attempts that target another worker", async () => {
-    const fixture = createRuntime();
-    fixture.runtime.orchestratorService.getRunGraph = vi.fn(() => ({
-      run: { id: "run-1", missionId: "mission-1", status: "running", metadata: {} },
-      steps: [
-        { id: "step-1", stepKey: "step-a", laneId: "lane-1", status: "running", metadata: {} },
-        { id: "step-2", stepKey: "step-b", laneId: "lane-1", status: "running", metadata: {} },
-      ],
-      attempts: [{ id: "attempt-1", stepId: "step-1", status: "running" }],
-      claims: [],
-      contextSnapshots: [],
-      handoffs: [],
-      timeline: [],
-      runtimeEvents: [],
-      completionEvaluation: { complete: false }
-    }));
-    const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await withEnv({ ADE_RUN_ID: "run-1" }, async () => {
+      const fixture = createRuntime();
+      fixture.runtime.orchestratorService.getRunGraph = vi.fn(() => ({
+        run: { id: "run-1", missionId: "mission-1", status: "running", metadata: {} },
+        steps: [
+          { id: "step-1", stepKey: "step-a", laneId: "lane-1", status: "running", metadata: {} },
+          { id: "step-2", stepKey: "step-b", laneId: "lane-1", status: "running", metadata: {} },
+        ],
+        attempts: [{ id: "attempt-1", stepId: "step-1", status: "running" }],
+        claims: [],
+        contextSnapshots: [],
+        handoffs: [],
+        timeline: [],
+        runtimeEvents: [],
+        completionEvaluation: { complete: false }
+      }));
+      const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
 
-    await initialize(handler, {
-      callerId: "worker-1",
-      role: "agent",
-      missionId: "mission-1",
-      runId: "run-1",
-      stepId: "step-1",
-      attemptId: "attempt-1"
+      await initialize(handler, {
+        callerId: "worker-1",
+        role: "agent",
+        missionId: "mission-1",
+        runId: "run-from-identity",
+        stepId: "step-1",
+        attemptId: "attempt-1"
+      });
+
+      const response = await callTool(handler, "delegate_to_subagent", {
+        parentWorkerId: "step-b",
+        name: "rogue-child",
+        prompt: "Try to escape the current worker scope."
+      });
+
+      expect(response.isError).toBe(true);
+      expect(JSON.stringify(response.error ?? response.structuredContent ?? {})).toContain(
+        "may only delegate beneath its own worker 'step-a'"
+      );
     });
-
-    const response = await callTool(handler, "delegate_to_subagent", {
-      parentWorkerId: "step-b",
-      name: "rogue-child",
-      prompt: "Try to escape the current worker scope."
-    });
-
-    expect(response.isError).toBe(true);
-    expect(JSON.stringify(response.error ?? response.structuredContent ?? {})).toContain(
-      "may only delegate beneath its own worker 'step-a'"
-    );
   });
 
   it("still routes coordinator-only tool calls for orchestrator callers", async () => {
@@ -1437,68 +1476,70 @@ describe("mcpServer", () => {
   });
 
   it("spawns workers for active runs when project and workspace roots differ", async () => {
-    const fixture = createRuntime();
-    fixture.runtime.workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-mcp-runtime-workspace-"));
-    fixture.runtime.orchestratorService.getRunGraph = vi.fn(({ runId }: any) => ({
-      run: {
-        id: runId,
-        missionId: "mission-1",
-        status: "running",
-        metadata: {
-          phaseOverride: [
-            {
-              id: "phase-planning",
-              phaseKey: "planning",
-              name: "Planning",
-              position: 0,
-              instructions: "Plan first.",
-              model: { modelId: "anthropic/claude-sonnet-4-6" },
-              budget: {},
-              askQuestions: { enabled: true, maxQuestions: 3 },
-              validationGate: { tier: "none", required: false },
-              orderingConstraints: { mustBeFirst: true },
-            },
-          ],
-          phaseRuntime: {
-            currentPhaseKey: "planning",
-            currentPhaseName: "Planning",
-            currentPhaseModel: {
-              modelId: "anthropic/claude-sonnet-4-6",
+    await withEnv({ ADE_MISSION_ID: "mission-1", ADE_RUN_ID: "run-1" }, async () => {
+      const fixture = createRuntime();
+      fixture.runtime.workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-mcp-runtime-workspace-"));
+      fixture.runtime.orchestratorService.getRunGraph = vi.fn(({ runId }: any) => ({
+        run: {
+          id: runId,
+          missionId: "mission-1",
+          status: "running",
+          metadata: {
+            phaseOverride: [
+              {
+                id: "phase-planning",
+                phaseKey: "planning",
+                name: "Planning",
+                position: 0,
+                instructions: "Plan first.",
+                model: { modelId: "anthropic/claude-sonnet-4-6" },
+                budget: {},
+                askQuestions: { enabled: true, maxQuestions: 3 },
+                validationGate: { tier: "none", required: false },
+                orderingConstraints: { mustBeFirst: true },
+              },
+            ],
+            phaseRuntime: {
+              currentPhaseKey: "planning",
+              currentPhaseName: "Planning",
+              currentPhaseModel: {
+                modelId: "anthropic/claude-sonnet-4-6",
+              },
             },
           },
         },
-      },
-      steps: [],
-      attempts: [],
-      claims: [],
-      contextSnapshots: [],
-      handoffs: [],
-      timeline: [],
-      runtimeEvents: [],
-      completionEvaluation: { complete: false },
-    }));
-    const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+        steps: [],
+        attempts: [],
+        claims: [],
+        contextSnapshots: [],
+        handoffs: [],
+        timeline: [],
+        runtimeEvents: [],
+        completionEvaluation: { complete: false },
+      }));
+      const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
 
-    await initialize(handler, {
-      callerId: "coord-1",
-      role: "orchestrator",
-      missionId: "mission-1",
-      runId: "run-1",
-    });
+      await initialize(handler, {
+        callerId: "coord-1",
+        role: "orchestrator",
+        missionId: "mission-1",
+        runId: "run-from-identity",
+      });
 
-    const response = await callTool(handler, "spawn_worker", {
-      name: "planning-worker",
-      prompt: "Research the codebase and propose a plan.",
-      laneId: "lane-1",
-    });
+      const response = await callTool(handler, "spawn_worker", {
+        name: "planning-worker",
+        prompt: "Research the codebase and propose a plan.",
+        laneId: "lane-1",
+      });
 
-    expect(response.isError).toBeUndefined();
-    expect(response.structuredContent).toMatchObject({
-      ok: true,
-      name: "planning-worker",
+      expect(response.isError).toBeUndefined();
+      expect(response.structuredContent).toMatchObject({
+        ok: true,
+        name: "planning-worker",
+      });
+      expect(fixture.runtime.projectRoot).not.toBe(fixture.runtime.workspaceRoot);
+      expect(JSON.stringify(response.structuredContent ?? {})).not.toContain("Run not found");
     });
-    expect(fixture.runtime.projectRoot).not.toBe(fixture.runtime.workspaceRoot);
-    expect(JSON.stringify(response.structuredContent ?? {})).not.toContain("Run not found");
   });
 
   it("falls back to env orchestrator role when initialize sends an unknown role", async () => {
@@ -1636,93 +1677,99 @@ describe("mcpServer", () => {
   });
 
   it("routes reflection_add and uses initialize identity fallback", async () => {
-    const fixture = createRuntime();
-    const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await withEnv({ ADE_RUN_ID: "run-1" }, async () => {
+      const fixture = createRuntime();
+      const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
 
-    await initialize(handler, {
-      callerId: "worker-1",
-      role: "agent",
-      missionId: "mission-1",
-      runId: "run-1",
-      stepId: "step-1",
-      attemptId: "attempt-1"
-    });
-
-    const response = await callTool(handler, "reflection_add", {
-      signalType: "frustration",
-      agentRole: "implementer",
-      phase: "development",
-      observation: "Typecheck takes too long for small edits",
-      recommendation: "Cache incremental build artifacts",
-      context: "Running npm run typecheck repeatedly",
-      occurredAt: "2026-03-05T01:23:45.000Z"
-    });
-
-    expect(response?.isError).toBeUndefined();
-    expect(fixture.runtime.orchestratorService.addReflection).toHaveBeenCalledWith(
-      expect.objectContaining({
+      await initialize(handler, {
+        callerId: "worker-1",
+        role: "agent",
         missionId: "mission-1",
-        runId: "run-1",
+        runId: "run-from-identity",
         stepId: "step-1",
-        attemptId: "attempt-1",
+        attemptId: "attempt-1"
+      });
+
+      const response = await callTool(handler, "reflection_add", {
         signalType: "frustration",
-      })
-    );
-    expect(response.structuredContent.reflection.id).toBe("reflection-1");
+        agentRole: "implementer",
+        phase: "development",
+        observation: "Typecheck takes too long for small edits",
+        recommendation: "Cache incremental build artifacts",
+        context: "Running npm run typecheck repeatedly",
+        occurredAt: "2026-03-05T01:23:45.000Z"
+      });
+
+      expect(response?.isError).toBeUndefined();
+      expect(fixture.runtime.orchestratorService.addReflection).toHaveBeenCalledWith(
+        expect.objectContaining({
+          missionId: "mission-1",
+          runId: "run-1",
+          stepId: "step-1",
+          attemptId: "attempt-1",
+          signalType: "frustration",
+        })
+      );
+      expect(response.structuredContent.reflection.id).toBe("reflection-1");
+    });
   });
 
   it("rejects reflection_add payloads missing strict fields", async () => {
-    const fixture = createRuntime();
-    const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
-    await initialize(handler, {
-      callerId: "worker-1",
-      role: "agent",
-      missionId: "mission-1",
-      runId: "run-1",
-    });
+    await withEnv({ ADE_RUN_ID: "run-1" }, async () => {
+      const fixture = createRuntime();
+      const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+      await initialize(handler, {
+        callerId: "worker-1",
+        role: "agent",
+        missionId: "mission-1",
+        runId: "run-from-identity",
+      });
 
-    const response = await callTool(handler, "reflection_add", {
-      signalType: "idea",
-      agentRole: "implementer",
-      phase: "development",
-      observation: "Need a faster test target",
-      recommendation: "Split unit and integration suites",
-      context: "running test command"
+      const response = await callTool(handler, "reflection_add", {
+        signalType: "idea",
+        agentRole: "implementer",
+        phase: "development",
+        observation: "Need a faster test target",
+        recommendation: "Split unit and integration suites",
+        context: "running test command"
+      });
+      expect(response.isError).toBe(true);
+      expect(JSON.stringify(response.structuredContent ?? {})).toContain("occurredAt");
     });
-    expect(response.isError).toBe(true);
-    expect(JSON.stringify(response.structuredContent ?? {})).toContain("occurredAt");
   });
 
   it("lists retrospectives, trends, and pattern stats with caller-context fallback", async () => {
-    const fixture = createRuntime();
-    const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
-    await initialize(handler, {
-      callerId: "worker-1",
-      role: "agent",
-      missionId: "mission-1",
-      runId: "run-1",
+    await withEnv({ ADE_RUN_ID: "run-1" }, async () => {
+      const fixture = createRuntime();
+      const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+      await initialize(handler, {
+        callerId: "worker-1",
+        role: "agent",
+        missionId: "mission-1",
+        runId: "run-from-identity",
+      });
+
+      const retrospectivesResponse = await callTool(handler, "list_retrospectives", {});
+      expect(retrospectivesResponse?.isError).toBeUndefined();
+      expect(fixture.runtime.orchestratorService.listRetrospectives).toHaveBeenCalledWith(
+        expect.objectContaining({ missionId: "mission-1" })
+      );
+      expect(Array.isArray(retrospectivesResponse.structuredContent.retrospectives)).toBe(true);
+
+      const trendsResponse = await callTool(handler, "list_reflection_trends", {});
+      expect(trendsResponse?.isError).toBeUndefined();
+      expect(fixture.runtime.orchestratorService.listRetrospectiveTrends).toHaveBeenCalledWith(
+        expect.objectContaining({ missionId: "mission-1", runId: "run-1" })
+      );
+      expect(Array.isArray(trendsResponse.structuredContent.trends)).toBe(true);
+
+      const patternStatsResponse = await callTool(handler, "list_reflection_pattern_stats", {});
+      expect(patternStatsResponse?.isError).toBeUndefined();
+      expect(fixture.runtime.orchestratorService.listRetrospectivePatternStats).toHaveBeenCalledWith(
+        expect.objectContaining({ limit: 100 })
+      );
+      expect(Array.isArray(patternStatsResponse.structuredContent.patternStats)).toBe(true);
     });
-
-    const retrospectivesResponse = await callTool(handler, "list_retrospectives", {});
-    expect(retrospectivesResponse?.isError).toBeUndefined();
-    expect(fixture.runtime.orchestratorService.listRetrospectives).toHaveBeenCalledWith(
-      expect.objectContaining({ missionId: "mission-1" })
-    );
-    expect(Array.isArray(retrospectivesResponse.structuredContent.retrospectives)).toBe(true);
-
-    const trendsResponse = await callTool(handler, "list_reflection_trends", {});
-    expect(trendsResponse?.isError).toBeUndefined();
-    expect(fixture.runtime.orchestratorService.listRetrospectiveTrends).toHaveBeenCalledWith(
-      expect.objectContaining({ missionId: "mission-1", runId: "run-1" })
-    );
-    expect(Array.isArray(trendsResponse.structuredContent.trends)).toBe(true);
-
-    const patternStatsResponse = await callTool(handler, "list_reflection_pattern_stats", {});
-    expect(patternStatsResponse?.isError).toBeUndefined();
-    expect(fixture.runtime.orchestratorService.listRetrospectivePatternStats).toHaveBeenCalledWith(
-      expect.objectContaining({ limit: 100 })
-    );
-    expect(Array.isArray(patternStatsResponse.structuredContent.patternStats)).toBe(true);
   });
 
   it("routes spawn_agent to lane-scoped tracked pty sessions", async () => {
@@ -1755,12 +1802,12 @@ describe("mcpServer", () => {
     expect(response.structuredContent.contextRef?.path).toBeNull();
   });
 
-  it("writes spawn_agent MCP config with canonical project root and workspace root", async () => {
+  it("writes spawn_agent MCP config with the authorized lane worktree", async () => {
     const fixture = createRuntime();
     fixture.runtime.workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-mcp-spawn-workspace-"));
     const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
 
-    await initialize(handler, { role: "orchestrator", runId: "run-1" });
+    await initialize(handler, { role: "orchestrator", runId: "run-from-identity" });
     const response = await callTool(handler, "spawn_agent", {
       laneId: "lane-1",
       provider: "claude",
@@ -1792,68 +1839,96 @@ describe("mcpServer", () => {
     expect(config.mcpServers.ade.args).toContain("--project-root");
     expect(config.mcpServers.ade.args).toContain(fixture.runtime.projectRoot);
     expect(config.mcpServers.ade.args).toContain("--workspace-root");
-    expect(config.mcpServers.ade.args).toContain(fixture.runtime.workspaceRoot);
+    expect(config.mcpServers.ade.args).toContain(path.join(fixture.runtime.projectRoot, ".ade", "worktrees", "lane-1"));
     expect(config.mcpServers.ade.env.ADE_PROJECT_ROOT).toBe(fixture.runtime.projectRoot);
-    expect(config.mcpServers.ade.env.ADE_WORKSPACE_ROOT).toBe(fixture.runtime.workspaceRoot);
+    expect(config.mcpServers.ade.env.ADE_WORKSPACE_ROOT).toBe(path.join(fixture.runtime.projectRoot, ".ade", "worktrees", "lane-1"));
+  });
+
+  it("fails closed when a requested lane does not have an available worktree", async () => {
+    const fixture = createRuntime();
+    fixture.runtime.workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-mcp-spawn-workspace-"));
+    fixture.runtime.laneService.getLaneWorktreePath = vi.fn(() => null);
+    fixture.runtime.laneService.getLaneBaseAndBranch = vi.fn(() => null);
+    const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+    await initialize(handler, { role: "orchestrator" });
+    const response = await callTool(handler, "spawn_agent", {
+      laneId: "lane-1",
+      provider: "claude",
+      model: "claude-sonnet-4-6",
+      prompt: "Implement API wiring",
+      title: "Orchestrator Spawn",
+      runId: "run-1",
+      attemptId: "attempt-1",
+    });
+
+    expect(response.isError).toBe(true);
+    expect(JSON.stringify(response.error ?? response.structuredContent ?? {})).toContain(
+      "does not have an available worktree",
+    );
+    expect(fixture.runtime.ptyService.create).not.toHaveBeenCalled();
   });
 
   it("routes coordinator report_status via MCP and mutates run metadata through coordinator tools", async () => {
-    const fixture = createRuntime();
-    fixture.runtime.orchestratorService.getRunGraph = vi.fn(() => ({
-      run: { id: "run-1", missionId: "mission-1", status: "running", metadata: {} },
-      steps: [
-        {
-          id: "step-worker-1",
-          runId: "run-1",
-          missionStepId: null,
-          stepKey: "worker-1",
-          stepIndex: 0,
-          title: "Worker 1",
-          laneId: "lane-1",
-          status: "running",
-          joinPolicy: "all_success",
-          quorumCount: null,
-          dependencyStepIds: [],
-          retryLimit: 1,
-          retryCount: 0,
-          lastAttemptId: null,
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-          startedAt: new Date().toISOString(),
-          completedAt: null,
-          metadata: {}
-        }
-      ],
-      attempts: [],
-      claims: [],
-      contextSnapshots: [],
-      handoffs: [],
-      timeline: [],
-      runtimeEvents: [],
-      completionEvaluation: null
-    }));
-    const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await withEnv({ ADE_RUN_ID: "run-1" }, async () => {
+      const fixture = createRuntime();
+      fixture.runtime.orchestratorService.getRunGraph = vi.fn(() => ({
+        run: { id: "run-1", missionId: "mission-1", status: "running", metadata: {} },
+        steps: [
+          {
+            id: "step-worker-1",
+            runId: "run-1",
+            missionStepId: null,
+            stepKey: "worker-1",
+            stepIndex: 0,
+            title: "Worker 1",
+            laneId: "lane-1",
+            status: "running",
+            joinPolicy: "all_success",
+            quorumCount: null,
+            dependencyStepIds: [],
+            retryLimit: 1,
+            retryCount: 0,
+            lastAttemptId: null,
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+            startedAt: new Date().toISOString(),
+            completedAt: null,
+            metadata: {}
+          }
+        ],
+        attempts: [],
+        claims: [],
+        contextSnapshots: [],
+        handoffs: [],
+        timeline: [],
+        runtimeEvents: [],
+        completionEvaluation: null
+      }));
+      const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
 
-    await initialize(handler, { callerId: "coord-1", role: "orchestrator", missionId: "mission-1", runId: "run-1" });
-    const response = await callTool(handler, "report_status", {
-      workerId: "worker-1",
-      progressPct: 45,
-      blockers: [],
-      confidence: 0.82,
-      nextAction: "continue implementation",
-      laneId: "lane-1",
-      details: "working through API edge cases"
+      await initialize(handler, { callerId: "coord-1", role: "orchestrator", missionId: "mission-1", runId: "run-from-identity" });
+      const response = await callTool(handler, "report_status", {
+        workerId: "worker-1",
+        progressPct: 45,
+        blockers: [],
+        confidence: 0.82,
+        nextAction: "continue implementation",
+        laneId: "lane-1",
+        details: "working through API edge cases"
+      });
+
+      expect(response?.isError).toBeUndefined();
+      expect(response.structuredContent.ok).toBe(true);
+      expect(fixture.runtime.orchestratorService.updateStepMetadata).toHaveBeenCalled();
+      expect(fixture.runtime.orchestratorService.appendRuntimeEvent).toHaveBeenCalled();
     });
-
-    expect(response?.isError).toBeUndefined();
-    expect(response.structuredContent.ok).toBe(true);
-    expect(fixture.runtime.orchestratorService.updateStepMetadata).toHaveBeenCalled();
-    expect(fixture.runtime.orchestratorService.appendRuntimeEvent).toHaveBeenCalled();
   });
 
   it("forwards sub-agent report_status updates to parent and emits worker_status_reported runtime events", async () => {
-    const fixture = createRuntime();
-    fixture.runtime.orchestratorService.getRunGraph = vi.fn(() => ({
+    await withEnv({ ADE_RUN_ID: "run-1" }, async () => {
+      const fixture = createRuntime();
+      fixture.runtime.orchestratorService.getRunGraph = vi.fn(() => ({
       run: { id: "run-1", missionId: "mission-1", status: "running", metadata: {} },
       steps: [
         {
@@ -1913,54 +1988,56 @@ describe("mcpServer", () => {
       runtimeEvents: [],
       completionEvaluation: null
     }));
-    const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+      const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
 
-    await initialize(handler, {
-      callerId: "attempt-child",
-      role: "agent",
-      missionId: "mission-1",
-      runId: "run-1",
-      stepId: "step-child",
-      attemptId: "attempt-child"
-    });
-    const response = await callTool(handler, "report_status", {
-      workerId: "child-worker",
-      progressPct: 45,
-      blockers: [],
-      confidence: 0.8,
-      nextAction: "Continue implementation",
-      laneId: "lane-1"
-    });
-
-    expect(response?.isError).toBeUndefined();
-    expect(response.structuredContent.ok).toBe(true);
-    expect(fixture.runtime.eventBuffer.push).toHaveBeenCalledWith(
-      expect.objectContaining({
-        category: "runtime",
-        payload: expect.objectContaining({
-          type: "worker_status_reported",
-          runId: "run-1",
-          reason: "report_status"
-        })
-      })
-    );
-    expect(fixture.runtime.aiOrchestratorService.sendAgentMessage).toHaveBeenCalledWith(
-      expect.objectContaining({
+      await initialize(handler, {
+        callerId: "attempt-child",
+        role: "agent",
         missionId: "mission-1",
-        fromAttemptId: "attempt-child",
-        toAttemptId: "attempt-parent",
-        content: expect.stringContaining("[sub-agent:Child Worker]"),
-        metadata: expect.objectContaining({
-          source: "subagent_status_rollup",
-          parentWorkerId: "parent-worker"
+        runId: "run-from-identity",
+        stepId: "step-child",
+        attemptId: "attempt-child"
+      });
+      const response = await callTool(handler, "report_status", {
+        workerId: "child-worker",
+        progressPct: 45,
+        blockers: [],
+        confidence: 0.8,
+        nextAction: "Continue implementation",
+        laneId: "lane-1"
+      });
+
+      expect(response?.isError).toBeUndefined();
+      expect(response.structuredContent.ok).toBe(true);
+      expect(fixture.runtime.eventBuffer.push).toHaveBeenCalledWith(
+        expect.objectContaining({
+          category: "runtime",
+          payload: expect.objectContaining({
+            type: "worker_status_reported",
+            runId: "run-1",
+            reason: "report_status"
+          })
         })
-      })
-    );
+      );
+      expect(fixture.runtime.aiOrchestratorService.sendAgentMessage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          missionId: "mission-1",
+          fromAttemptId: "attempt-child",
+          toAttemptId: "attempt-parent",
+          content: expect.stringContaining("[sub-agent:Child Worker]"),
+          metadata: expect.objectContaining({
+            source: "subagent_status_rollup",
+            parentWorkerId: "parent-worker"
+          })
+        })
+      );
+    });
   });
 
   it("auto-registers unknown native callers as claude-native teammates under the parent worker", async () => {
-    const fixture = createRuntime();
-    fixture.runtime.orchestratorService.getRunGraph = vi.fn(() => ({
+    await withEnv({ ADE_RUN_ID: "run-1" }, async () => {
+      const fixture = createRuntime();
+      fixture.runtime.orchestratorService.getRunGraph = vi.fn(() => ({
       run: {
         id: "run-1",
         missionId: "mission-1",
@@ -2000,49 +2077,51 @@ describe("mcpServer", () => {
       runtimeEvents: [],
       completionEvaluation: null
     }));
-    const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+      const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
 
-    await initialize(handler, {
-      callerId: "native-worker-1",
-      role: "agent",
-      missionId: "mission-1",
-      runId: "run-1",
-      stepId: "step-parent",
-      attemptId: "attempt-parent"
-    });
-    const response = await callTool(handler, "report_status", {
-      workerId: "parent-worker",
-      progressPct: 10,
-      blockers: [],
-      confidence: 0.7,
-      nextAction: "Running native sub-task"
-    });
+      await initialize(handler, {
+        callerId: "native-worker-1",
+        role: "agent",
+        missionId: "mission-1",
+        runId: "run-from-identity",
+        stepId: "step-parent",
+        attemptId: "attempt-parent"
+      });
+      const response = await callTool(handler, "report_status", {
+        workerId: "parent-worker",
+        progressPct: 10,
+        blockers: [],
+        confidence: 0.7,
+        nextAction: "Running native sub-task"
+      });
 
-    expect(response?.isError).toBeUndefined();
-    expect(response.structuredContent.ok).toBe(true);
-    const insertCall = fixture.runtime.db.run.mock.calls.find((call: any[]) =>
-      String(call[0] ?? "").toLowerCase().includes("insert into orchestrator_team_members")
-    );
-    expect(insertCall).toBeTruthy();
-    const metadataJson = String(insertCall?.[1]?.[9] ?? "{}");
-    const metadata = JSON.parse(metadataJson);
-    expect(metadata).toMatchObject({
-      source: "claude-native",
-      parentWorkerId: "parent-worker",
-      parentStepId: "step-parent",
-      nativeCallerId: "native-worker-1"
+      expect(response?.isError).toBeUndefined();
+      expect(response.structuredContent.ok).toBe(true);
+      const insertCall = fixture.runtime.db.run.mock.calls.find((call: any[]) =>
+        String(call[0] ?? "").toLowerCase().includes("insert into orchestrator_team_members")
+      );
+      expect(insertCall).toBeTruthy();
+      const metadataJson = String(insertCall?.[1]?.[9] ?? "{}");
+      const metadata = JSON.parse(metadataJson);
+      expect(metadata).toMatchObject({
+        source: "claude-native",
+        parentWorkerId: "parent-worker",
+        parentStepId: "step-parent",
+        nativeCallerId: "native-worker-1"
+      });
     });
   });
 
   it("blocks unknown native reports when parent allocation cap is exceeded", async () => {
-    const fixture = createRuntime();
-    fixture.runtime.aiOrchestratorService.getTeamMembers = vi.fn(() => [
+    await withEnv({ ADE_RUN_ID: "run-1" }, async () => {
+      const fixture = createRuntime();
+      fixture.runtime.aiOrchestratorService.getTeamMembers = vi.fn(() => [
       { id: "native-1", source: "claude-native", parentWorkerId: "parent-worker", status: "active", metadata: { source: "claude-native", parentWorkerId: "parent-worker" } },
       { id: "native-2", source: "claude-native", parentWorkerId: "parent-worker", status: "active", metadata: { source: "claude-native", parentWorkerId: "parent-worker" } },
       { id: "native-3", source: "claude-native", parentWorkerId: "parent-worker", status: "active", metadata: { source: "claude-native", parentWorkerId: "parent-worker" } },
       { id: "native-4", source: "claude-native", parentWorkerId: "parent-worker", status: "active", metadata: { source: "claude-native", parentWorkerId: "parent-worker" } }
     ]);
-    fixture.runtime.orchestratorService.getRunGraph = vi.fn(() => ({
+      fixture.runtime.orchestratorService.getRunGraph = vi.fn(() => ({
       run: { id: "run-1", missionId: "mission-1", status: "running", metadata: {} },
       steps: [
         {
@@ -2077,35 +2156,37 @@ describe("mcpServer", () => {
       runtimeEvents: [],
       completionEvaluation: null
     }));
-    const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+      const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
 
-    await initialize(handler, {
-      callerId: "native-worker-over-cap",
-      role: "agent",
-      missionId: "mission-1",
-      runId: "run-1",
-      stepId: "step-parent",
-      attemptId: "attempt-parent"
-    });
-    const response = await callTool(handler, "report_status", {
-      workerId: "parent-worker",
-      progressPct: 30,
-      blockers: [],
-      confidence: 0.6,
-      nextAction: "Still running"
-    });
+      await initialize(handler, {
+        callerId: "native-worker-over-cap",
+        role: "agent",
+        missionId: "mission-1",
+        runId: "run-from-identity",
+        stepId: "step-parent",
+        attemptId: "attempt-parent"
+      });
+      const response = await callTool(handler, "report_status", {
+        workerId: "parent-worker",
+        progressPct: 30,
+        blockers: [],
+        confidence: 0.6,
+        nextAction: "Still running"
+      });
 
-    expect(response.isError).toBe(true);
-    expect(JSON.stringify(response.error ?? response.structuredContent ?? {})).toContain("allocation cap exceeded");
-    const insertCalls = fixture.runtime.db.run.mock.calls.filter((call: any[]) =>
-      String(call[0] ?? "").toLowerCase().includes("insert into orchestrator_team_members")
-    );
-    expect(insertCalls).toHaveLength(0);
+      expect(response.isError).toBe(true);
+      expect(JSON.stringify(response.error ?? response.structuredContent ?? {})).toContain("allocation cap exceeded");
+      const insertCalls = fixture.runtime.db.run.mock.calls.filter((call: any[]) =>
+        String(call[0] ?? "").toLowerCase().includes("insert into orchestrator_team_members")
+      );
+      expect(insertCalls).toHaveLength(0);
+    });
   });
 
   it("surfaces forwarded status rollups through get_pending_messages for parent workers", async () => {
-    const fixture = createRuntime();
-    fixture.runtime.orchestratorService.getRunGraph = vi.fn(() => ({
+    await withEnv({ ADE_RUN_ID: "run-1" }, async () => {
+      const fixture = createRuntime();
+      fixture.runtime.orchestratorService.getRunGraph = vi.fn(() => ({
       run: { id: "run-1", missionId: "mission-1", status: "running", metadata: {} },
       steps: [
         {
@@ -2166,53 +2247,55 @@ describe("mcpServer", () => {
       completionEvaluation: null
     }));
 
-    const childHandler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
-    await initialize(childHandler, {
-      callerId: "attempt-child",
-      role: "agent",
-      missionId: "mission-1",
-      runId: "run-1",
-      stepId: "step-child",
-      attemptId: "attempt-child"
-    });
-    const statusResponse = await callTool(childHandler, "report_status", {
-      workerId: "child-worker",
-      progressPct: 60,
-      blockers: [],
-      confidence: 0.84,
-      nextAction: "Finalize patch set"
-    });
-    expect(statusResponse?.isError).toBeUndefined();
+      const childHandler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+      await initialize(childHandler, {
+        callerId: "attempt-child",
+        role: "agent",
+        missionId: "mission-1",
+        runId: "run-from-identity",
+        stepId: "step-child",
+        attemptId: "attempt-child"
+      });
+      const statusResponse = await callTool(childHandler, "report_status", {
+        workerId: "child-worker",
+        progressPct: 60,
+        blockers: [],
+        confidence: 0.84,
+        nextAction: "Finalize patch set"
+      });
+      expect(statusResponse?.isError).toBeUndefined();
 
-    const parentHandler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
-    await initialize(parentHandler, {
-      callerId: "attempt-parent",
-      role: "agent",
-      missionId: "mission-1",
-      runId: "run-1",
-      stepId: "step-parent",
-      attemptId: "attempt-parent"
-    });
-    const pending = await callTool(parentHandler, "get_pending_messages", {});
+      const parentHandler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+      await initialize(parentHandler, {
+        callerId: "attempt-parent",
+        role: "agent",
+        missionId: "mission-1",
+        runId: "run-from-identity",
+        stepId: "step-parent",
+        attemptId: "attempt-parent"
+      });
+      const pending = await callTool(parentHandler, "get_pending_messages", {});
 
-    expect(pending?.isError).toBeUndefined();
-    expect(pending.structuredContent.workerAttemptId).toBe("attempt-parent");
-    expect(pending.structuredContent.messages).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          role: "agent",
-          content: expect.stringContaining("[sub-agent:Child Worker]"),
-          metadata: expect.objectContaining({
-            source: "subagent_status_rollup"
+      expect(pending?.isError).toBeUndefined();
+      expect(pending.structuredContent.workerAttemptId).toBe("attempt-parent");
+      expect(pending.structuredContent.messages).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            role: "agent",
+            content: expect.stringContaining("[sub-agent:Child Worker]"),
+            metadata: expect.objectContaining({
+              source: "subagent_status_rollup"
+            })
           })
-        })
-      ])
-    );
+        ])
+      );
+    });
   });
 
   it("surfaces native terminal rollups through get_pending_messages after report_result", async () => {
-    const fixture = createRuntime();
-    fixture.runtime.orchestratorService.getRunGraph = vi.fn(() => ({
+    await withEnv({ ADE_RUN_ID: "run-1" }, async () => {
+      const fixture = createRuntime();
+      fixture.runtime.orchestratorService.getRunGraph = vi.fn(() => ({
       run: { id: "run-1", missionId: "mission-1", status: "running", metadata: {} },
       steps: [
         {
@@ -2248,53 +2331,55 @@ describe("mcpServer", () => {
       completionEvaluation: null
     }));
 
-    const nativeHandler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
-    await initialize(nativeHandler, {
-      callerId: "native-worker-result",
-      role: "agent",
-      missionId: "mission-1",
-      runId: "run-1",
-      stepId: "step-parent",
-      attemptId: "attempt-parent"
-    });
-    const resultResponse = await callTool(nativeHandler, "report_result", {
-      workerId: "parent-worker",
-      outcome: "succeeded",
-      summary: "Native child done.",
-      artifacts: [],
-      filesChanged: [],
-      testsRun: null
-    });
-    expect(resultResponse?.isError).toBeUndefined();
+      const nativeHandler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+      await initialize(nativeHandler, {
+        callerId: "native-worker-result",
+        role: "agent",
+        missionId: "mission-1",
+        runId: "run-from-identity",
+        stepId: "step-parent",
+        attemptId: "attempt-parent"
+      });
+      const resultResponse = await callTool(nativeHandler, "report_result", {
+        workerId: "parent-worker",
+        outcome: "succeeded",
+        summary: "Native child done.",
+        artifacts: [],
+        filesChanged: [],
+        testsRun: null
+      });
+      expect(resultResponse?.isError).toBeUndefined();
 
-    const parentHandler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
-    await initialize(parentHandler, {
-      callerId: "attempt-parent",
-      role: "agent",
-      missionId: "mission-1",
-      runId: "run-1",
-      stepId: "step-parent",
-      attemptId: "attempt-parent"
-    });
-    const pending = await callTool(parentHandler, "get_pending_messages", {});
+      const parentHandler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+      await initialize(parentHandler, {
+        callerId: "attempt-parent",
+        role: "agent",
+        missionId: "mission-1",
+        runId: "run-from-identity",
+        stepId: "step-parent",
+        attemptId: "attempt-parent"
+      });
+      const pending = await callTool(parentHandler, "get_pending_messages", {});
 
-    expect(pending?.isError).toBeUndefined();
-    expect(pending.structuredContent.messages).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          role: "agent",
-          content: expect.stringContaining("completed (succeeded): Native child done."),
-          metadata: expect.objectContaining({
-            source: "subagent_result_rollup"
+      expect(pending?.isError).toBeUndefined();
+      expect(pending.structuredContent.messages).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            role: "agent",
+            content: expect.stringContaining("completed (succeeded): Native child done."),
+            metadata: expect.objectContaining({
+              source: "subagent_result_rollup"
+            })
           })
-        })
-      ])
-    );
+        ])
+      );
+    });
   });
 
   it("infers workerId for report_result from initialized worker identity", async () => {
-    const fixture = createRuntime();
-    fixture.runtime.orchestratorService.getRunGraph = vi.fn(() => ({
+    await withEnv({ ADE_RUN_ID: "run-1" }, async () => {
+      const fixture = createRuntime();
+      fixture.runtime.orchestratorService.getRunGraph = vi.fn(() => ({
       run: { id: "run-1", missionId: "mission-1", status: "running", metadata: {} },
       steps: [
         {
@@ -2330,88 +2415,92 @@ describe("mcpServer", () => {
       completionEvaluation: null
     }));
 
-    const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
-    await initialize(handler, {
-      callerId: "attempt-parent",
-      role: "agent",
-      missionId: "mission-1",
-      runId: "run-1",
-      stepId: "step-parent",
-      attemptId: "attempt-parent"
-    });
-
-    const response = await callTool(handler, "report_result", {
-      outcome: "succeeded",
-      summary: "Finished without explicitly sending workerId.",
-      artifacts: [],
-      filesChanged: [],
-      testsRun: null
-    });
-
-    expect(response?.isError).toBeUndefined();
-    expect(response.structuredContent).toEqual(expect.objectContaining({
-      ok: true,
-      report: expect.objectContaining({
-        workerId: "parent-worker",
+      const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+      await initialize(handler, {
+        callerId: "attempt-parent",
+        role: "agent",
+        missionId: "mission-1",
+        runId: "run-from-identity",
         stepId: "step-parent",
+        attemptId: "attempt-parent"
+      });
+
+      const response = await callTool(handler, "report_result", {
         outcome: "succeeded",
-      }),
-    }));
+        summary: "Finished without explicitly sending workerId.",
+        artifacts: [],
+        filesChanged: [],
+        testsRun: null
+      });
+
+      expect(response?.isError).toBeUndefined();
+      expect(response.structuredContent).toEqual(expect.objectContaining({
+        ok: true,
+        report: expect.objectContaining({
+          workerId: "parent-worker",
+          stepId: "step-parent",
+          outcome: "succeeded",
+        }),
+      }));
+    });
   });
 
-  it("uses initialize identity context for shared-fact writes (proxy-mode identity forwarding path)", async () => {
-    const fixture = createRuntime();
-    const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+  it("uses trusted env run context for shared-fact writes instead of initialize payload runId", async () => {
+    await withEnv({ ADE_RUN_ID: "run-from-env" }, async () => {
+      const fixture = createRuntime();
+      const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
 
-    await initialize(handler, {
-      callerId: "worker-1",
-      role: "agent",
-      missionId: "mission-1",
-      runId: "run-from-identity",
-      stepId: "step-from-identity",
-      attemptId: "attempt-from-identity"
-    });
-    const response = await callTool(handler, "memory_add", {
-      content: "Cache layer requires warm-up before benchmark runs.",
-      category: "fact",
-      importance: "high"
-    });
-
-    expect(response?.isError).toBeUndefined();
-    expect(fixture.runtime.memoryService.writeMemory).toHaveBeenCalledWith(
-      expect.objectContaining({
-        scope: "mission",
-        scopeOwnerId: "run-from-identity",
-        status: "candidate",
-        tier: 3,
-        confidence: 0.6,
-      })
-    );
-    expect(fixture.runtime.memoryService.addSharedFact).toHaveBeenCalledWith(
-      expect.objectContaining({
+      await initialize(handler, {
+        callerId: "worker-1",
+        role: "agent",
+        missionId: "mission-1",
         runId: "run-from-identity",
         stepId: "step-from-identity",
-      })
-    );
-    expect(response.structuredContent.memory).toEqual(
-      expect.objectContaining({
-        written: true,
-        durability: "candidate",
-        tier: 3,
-      })
-    );
-    expect(response.structuredContent).toEqual(
-      expect.objectContaining({
-        saved: true,
-        durability: "candidate",
-      })
-    );
-    expect(response.structuredContent.sharedFact.written).toBe(true);
+        attemptId: "attempt-from-identity"
+      });
+      const response = await callTool(handler, "memory_add", {
+        content: "Cache layer requires warm-up before benchmark runs.",
+        category: "fact",
+        importance: "high"
+      });
+
+      expect(response?.isError).toBeUndefined();
+      expect(fixture.runtime.memoryService.writeMemory).toHaveBeenCalledWith(
+        expect.objectContaining({
+          scope: "mission",
+          scopeOwnerId: "run-from-env",
+          status: "candidate",
+          tier: 3,
+          confidence: 0.6,
+        })
+      );
+      expect(fixture.runtime.memoryService.addSharedFact).toHaveBeenCalledWith(
+        expect.objectContaining({
+          runId: "run-from-env",
+          stepId: "step-from-identity",
+        })
+      );
+      expect(response.structuredContent.memory).toEqual(
+        expect.objectContaining({
+          written: true,
+          durability: "candidate",
+          tier: 3,
+        })
+      );
+      expect(response.structuredContent).toEqual(
+        expect.objectContaining({
+          saved: true,
+          durability: "candidate",
+        })
+      );
+      expect(response.structuredContent.sharedFact.written).toBe(true);
+    });
   });
 
   it("supports memory_search scope/status filters and returns enriched memory rows", async () => {
-    const fixture = createRuntime();
-    fixture.runtime.memoryService.searchMemories = vi.fn(() => ([
+    await withEnv({ ADE_RUN_ID: "run-1" }, async () => {
+      const fixture = createRuntime();
+      fixture.runtime.memoryService.searchMemories = vi.fn(() => ([
       {
         id: "memory-42",
         scope: "mission",
@@ -2425,40 +2514,41 @@ describe("mcpServer", () => {
         sourceRunId: "run-1",
       }
     ]));
-    const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+      const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
 
-    await initialize(handler, {
-      callerId: "worker-1",
-      role: "agent",
-      missionId: "mission-1",
-      runId: "run-1",
-    });
-    const response = await callTool(handler, "memory_search", {
-      query: "deploy lag",
-      scope: "mission",
-      status: "candidate",
-      limit: 7,
-    });
-
-    expect(response?.isError).toBeUndefined();
-    expect(fixture.runtime.memoryService.searchMemories).toHaveBeenCalledWith(
-      "deploy lag",
-      "project-1",
-      "mission",
-      7,
-      "candidate",
-      "run-1",
-    );
-    expect(response.structuredContent.scope).toBe("mission");
-    expect(response.structuredContent.status).toBe("candidate");
-    expect(response.structuredContent.memories[0]).toEqual(
-      expect.objectContaining({
-        id: "memory-42",
+      await initialize(handler, {
+        callerId: "worker-1",
+        role: "agent",
+        missionId: "mission-1",
+        runId: "run-from-identity",
+      });
+      const response = await callTool(handler, "memory_search", {
+        query: "deploy lag",
         scope: "mission",
         status: "candidate",
-        confidence: 0.82,
-      })
-    );
+        limit: 7,
+      });
+
+      expect(response?.isError).toBeUndefined();
+      expect(fixture.runtime.memoryService.searchMemories).toHaveBeenCalledWith(
+        "deploy lag",
+        "project-1",
+        "mission",
+        7,
+        "candidate",
+        "run-1",
+      );
+      expect(response.structuredContent.scope).toBe("mission");
+      expect(response.structuredContent.status).toBe("candidate");
+      expect(response.structuredContent.memories[0]).toEqual(
+        expect.objectContaining({
+          id: "memory-42",
+          scope: "mission",
+          status: "candidate",
+          confidence: 0.82,
+        })
+      );
+    });
   });
 
   it("pins memory entries through memory_pin", async () => {
@@ -2532,6 +2622,47 @@ describe("mcpServer", () => {
     expect(response.structuredContent.updatedAt).toBe("2026-03-05T13:00:00.000Z");
   });
 
+  it("derives worker ownerId from chat session identity when OpenCode launch omits it", async () => {
+    await withEnv({ ADE_CHAT_SESSION_ID: "chat-1" }, async () => {
+      const fixture = createRuntime();
+      fixture.runtime.agentChatService.getSessionSummary = vi.fn(async (sessionId: string) => ({
+        sessionId,
+        laneId: "lane-1",
+        title: "Worker chat",
+        provider: "opencode",
+        model: "gpt-5.4-codex",
+        status: "idle",
+        lastActivityAt: "2026-03-17T19:00:00.000Z",
+        createdAt: "2026-03-17T19:00:00.000Z",
+        identityKey: "agent:worker-agent-1",
+      }));
+      const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+      await initialize(handler, {
+        callerId: "chat-from-identity",
+        role: "agent",
+        chatSessionId: "chat-from-identity",
+        missionId: "mission-1",
+        runId: "run-1",
+      });
+
+      const response = await callTool(handler, "memory_update_core", {
+        projectSummary: "Worker-specific checkout strategy",
+        activeFocus: ["checkout reliability"],
+      });
+
+      expect(response?.isError).toBeUndefined();
+      expect(fixture.runtime.workerAgentService.updateCoreMemory).toHaveBeenCalledWith(
+        "worker-agent-1",
+        expect.objectContaining({
+          projectSummary: "Worker-specific checkout strategy",
+          activeFocus: ["checkout reliability"],
+        }),
+      );
+      expect(fixture.runtime.ctoStateService.updateCoreMemory).not.toHaveBeenCalled();
+    });
+  });
+
   it("materializes compact context manifests for spawn_agent to keep prompts lightweight", async () => {
     const fixture = createRuntime();
     const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
@@ -2600,181 +2731,190 @@ describe("mcpServer", () => {
   });
 
   it("routes ask_user to mission interventions", async () => {
-    const fixture = createRuntime();
-    const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await withEnv({ ADE_MISSION_ID: "mission-1", ADE_RUN_ID: "run-1" }, async () => {
+      const fixture = createRuntime();
+      const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
 
-    await initialize(handler, { callerId: "coord-1", role: "orchestrator", missionId: "mission-1", runId: "run-1" });
-    const response = await callTool(handler, "ask_user", {
-      missionId: "mission-1",
-      title: "Need decision",
-      body: "Choose the merge order",
-      phase: "planning"
-    });
+      await initialize(handler, { callerId: "coord-1", role: "orchestrator", missionId: "mission-1", runId: "run-1" });
+      const response = await callTool(handler, "ask_user", {
+        missionId: "mission-1",
+        title: "Need decision",
+        body: "Choose the merge order",
+        phase: "planning"
+      });
 
-    expect(response?.isError).toBeUndefined();
-    expect(fixture.runtime.missionService.addIntervention).toHaveBeenCalledTimes(1);
-    expect(fixture.runtime.missionService.addIntervention).toHaveBeenCalledWith(expect.objectContaining({
-      metadata: expect.objectContaining({
-        source: "ask_user",
+      expect(response?.isError).toBeUndefined();
+      expect(fixture.runtime.missionService.addIntervention).toHaveBeenCalledTimes(1);
+      expect(fixture.runtime.missionService.addIntervention).toHaveBeenCalledWith(expect.objectContaining({
+        metadata: expect.objectContaining({
+          source: "ask_user",
+          runId: "run-1",
+          phase: "planning",
+          questionOwnerKind: "coordinator",
+          questionOwnerLabel: "Coordinator question",
+          blocking: true,
+          canProceedWithoutAnswer: false,
+        }),
+      }));
+      expect(fixture.runtime.orchestratorService.pauseRun).toHaveBeenCalledWith(expect.objectContaining({
         runId: "run-1",
-        phase: "planning",
-        questionOwnerKind: "coordinator",
-        questionOwnerLabel: "Coordinator question",
-        blocking: true,
-        canProceedWithoutAnswer: false,
-      }),
-    }));
-    expect(fixture.runtime.orchestratorService.pauseRun).toHaveBeenCalledWith(expect.objectContaining({
-      runId: "run-1",
-      metadata: expect.objectContaining({
-        interventionSource: "ask_user",
-      }),
-    }));
-    expect(response.structuredContent.awaitingUserResponse).toBe(true);
-    expect(response.structuredContent.blocking).toBe(true);
+        metadata: expect.objectContaining({
+          interventionSource: "ask_user",
+        }),
+      }));
+      expect(response.structuredContent.awaitingUserResponse).toBe(true);
+      expect(response.structuredContent.blocking).toBe(true);
+    });
   });
 
   it("returns explicit declined semantics for standalone ask_user with structured questions", async () => {
-    const fixture = createRuntime();
-    fixture.runtime.agentChatService.requestChatInput = vi.fn(async () => ({
-      decision: "decline",
-      answers: {},
-      responseText: null,
-    }));
-    const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await withEnv({ ADE_CHAT_SESSION_ID: "chat-session-env" }, async () => {
+      const fixture = createRuntime();
+      fixture.runtime.agentChatService.requestChatInput = vi.fn(async () => ({
+        decision: "decline",
+        answers: {},
+        responseText: null,
+      }));
+      const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
 
-    await initialize(handler, {
-      callerId: "chat-session-1",
-      role: "agent",
-      chatSessionId: "chat-session-1",
-    });
-    const response = await callTool(handler, "ask_user", {
-      title: "Pick a flow",
-      body: "Which part should we test first? 1. Question flow 2. Plan updates",
-      questions: [
-        {
-          id: "flow",
-          header: "Choose one",
-          question: "Which part should we test first?",
-          options: [
-            { label: "Question flow", value: "question_flow" },
-            { label: "Plan updates", value: "plan_updates" },
-          ],
-        },
-      ],
-    });
+      await initialize(handler, {
+        callerId: "chat-session-identity",
+        role: "agent",
+        chatSessionId: "chat-session-identity",
+      });
+      const response = await callTool(handler, "ask_user", {
+        title: "Pick a flow",
+        body: "Which part should we test first? 1. Question flow 2. Plan updates",
+        questions: [
+          {
+            id: "flow",
+            header: "Choose one",
+            question: "Which part should we test first?",
+            options: [
+              { label: "Question flow", value: "question_flow" },
+              { label: "Plan updates", value: "plan_updates" },
+            ],
+          },
+        ],
+      });
 
-    expect(response?.isError).toBeUndefined();
-    expect(fixture.runtime.agentChatService.requestChatInput).toHaveBeenCalledWith(expect.objectContaining({
-      chatSessionId: "chat-session-1",
-      questions: [
-        expect.objectContaining({
-          id: "flow",
-          question: "Which part should we test first?",
-          options: [
-            expect.objectContaining({ label: "Question flow", value: "question_flow" }),
-            expect.objectContaining({ label: "Plan updates", value: "plan_updates" }),
-          ],
-        }),
-      ],
-    }));
-    expect(response.structuredContent.outcome).toBe("declined");
-    expect(response.structuredContent.answered).toBe(false);
-    expect(response.structuredContent.declined).toBe(true);
-    expect(response.structuredContent.cancelled).toBe(false);
-    expect(response.structuredContent.timedOut).toBe(false);
-    expect(response.structuredContent.awaitingUserResponse).toBe(false);
-    expect(response.structuredContent.blocking).toBe(false);
-    expect(response.structuredContent.responseText).toContain("declined");
+      expect(response?.isError).toBeUndefined();
+      expect(fixture.runtime.agentChatService.requestChatInput).toHaveBeenCalledWith(expect.objectContaining({
+        chatSessionId: "chat-session-env",
+        questions: [
+          expect.objectContaining({
+            id: "flow",
+            question: "Which part should we test first?",
+            options: [
+              expect.objectContaining({ label: "Question flow", value: "question_flow" }),
+              expect.objectContaining({ label: "Plan updates", value: "plan_updates" }),
+            ],
+          }),
+        ],
+      }));
+      expect(response.structuredContent.outcome).toBe("declined");
+      expect(response.structuredContent.answered).toBe(false);
+      expect(response.structuredContent.declined).toBe(true);
+      expect(response.structuredContent.cancelled).toBe(false);
+      expect(response.structuredContent.timedOut).toBe(false);
+      expect(response.structuredContent.awaitingUserResponse).toBe(false);
+      expect(response.structuredContent.blocking).toBe(false);
+      expect(response.structuredContent.responseText).toContain("declined");
+    });
   });
 
   it("returns explicit timed_out semantics for standalone ask_user when the user does not answer in time", async () => {
-    const fixture = createRuntime();
-    fixture.runtime.agentChatService.requestChatInput = vi.fn(() => new Promise(() => {}));
-    const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await withEnv({ ADE_CHAT_SESSION_ID: "chat-session-env" }, async () => {
+      const fixture = createRuntime();
+      fixture.runtime.agentChatService.requestChatInput = vi.fn(() => new Promise(() => {}));
+      const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
 
-    await initialize(handler, {
-      callerId: "chat-session-2",
-      role: "agent",
-      chatSessionId: "chat-session-2",
-    });
-    const response = await callTool(handler, "ask_user", {
-      title: "Pick a flow",
-      body: "Which part should we test first? 1. Question flow 2. Plan updates",
-      waitForResolutionMs: 10,
-    });
+      await initialize(handler, {
+        callerId: "chat-session-identity",
+        role: "agent",
+        chatSessionId: "chat-session-identity",
+      });
+      const response = await callTool(handler, "ask_user", {
+        title: "Pick a flow",
+        body: "Which part should we test first? 1. Question flow 2. Plan updates",
+        waitForResolutionMs: 10,
+      });
 
-    expect(response?.isError).toBeUndefined();
-    expect(response.structuredContent.outcome).toBe("timed_out");
-    expect(response.structuredContent.decision).toBe("timeout");
-    expect(response.structuredContent.answered).toBe(false);
-    expect(response.structuredContent.timedOut).toBe(true);
-    expect(response.structuredContent.awaitingUserResponse).toBe(true);
-    expect(response.structuredContent.blocking).toBe(true);
-    expect(response.structuredContent.responseText).toContain("timed out");
+      expect(response?.isError).toBeUndefined();
+      expect(response.structuredContent.outcome).toBe("timed_out");
+      expect(response.structuredContent.decision).toBe("timeout");
+      expect(response.structuredContent.answered).toBe(false);
+      expect(response.structuredContent.timedOut).toBe(true);
+      expect(response.structuredContent.awaitingUserResponse).toBe(true);
+      expect(response.structuredContent.blocking).toBe(true);
+      expect(response.structuredContent.responseText).toContain("timed out");
+    });
   });
 
   it("stamps worker-owned ask_user provenance and enforces per-step phase policy", async () => {
-    const fixture = createRuntime();
-    fixture.runtime.orchestratorService.getRunGraph = vi.fn(() => ({
-      run: { id: "run-1", missionId: "mission-1", status: "running" },
-      steps: [
-        {
-          id: "step-plan-1",
-          stepKey: "planning-worker",
-          laneId: "lane-1",
-          status: "running",
-          metadata: {
-            phaseKey: "planning",
-            phaseName: "Planning",
-            phaseAskQuestions: { enabled: true, maxQuestions: 2 },
+    await withEnv({ ADE_RUN_ID: "run-1" }, async () => {
+      const fixture = createRuntime();
+      fixture.runtime.orchestratorService.getRunGraph = vi.fn(() => ({
+        run: { id: "run-1", missionId: "mission-1", status: "running" },
+        steps: [
+          {
+            id: "step-plan-1",
+            stepKey: "planning-worker",
+            laneId: "lane-1",
+            status: "running",
+            metadata: {
+              phaseKey: "planning",
+              phaseName: "Planning",
+              phaseAskQuestions: { enabled: true, maxQuestions: 2 },
+            },
           },
-        },
-      ],
-      attempts: [{ id: "attempt-1", stepId: "step-plan-1", status: "running" }],
-      claims: [],
-      contextSnapshots: [],
-      handoffs: [],
-      timeline: [],
-      runtimeEvents: [],
-      completionEvaluation: { complete: false },
-    }));
-    const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+        ],
+        attempts: [{ id: "attempt-1", stepId: "step-plan-1", status: "running" }],
+        claims: [],
+        contextSnapshots: [],
+        handoffs: [],
+        timeline: [],
+        runtimeEvents: [],
+        completionEvaluation: { complete: false },
+      }));
+      const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
 
-    await initialize(handler, {
-      callerId: "attempt-1",
-      role: "agent",
-      missionId: "mission-1",
-      runId: "run-1",
-      stepId: "step-plan-1",
-      attemptId: "attempt-1",
-    });
-    const response = await callTool(handler, "ask_user", {
-      missionId: "mission-1",
-      title: "Need product direction",
-      body: "Should the planner optimize for a lightweight patch or a more complete refactor?",
-    });
-
-    expect(response?.isError).toBeUndefined();
-    expect(fixture.runtime.missionService.addIntervention).toHaveBeenCalledWith(expect.objectContaining({
-      metadata: expect.objectContaining({
-        source: "ask_user",
-        runId: "run-1",
-        phase: "planning",
-        phaseName: "Planning",
+      await initialize(handler, {
+        callerId: "attempt-1",
+        role: "agent",
+        missionId: "mission-1",
+        runId: "run-from-identity",
         stepId: "step-plan-1",
-        stepKey: "planning-worker",
-        questionOwnerKind: "planner",
-        questionOwnerLabel: "Planner question",
-      }),
-    }));
-    expect(response.structuredContent.awaitingUserResponse).toBe(true);
-    expect(response.structuredContent.blocking).toBe(true);
+        attemptId: "attempt-1",
+      });
+      const response = await callTool(handler, "ask_user", {
+        missionId: "mission-1",
+        title: "Need product direction",
+        body: "Should the planner optimize for a lightweight patch or a more complete refactor?",
+      });
+
+      expect(response?.isError).toBeUndefined();
+      expect(fixture.runtime.missionService.addIntervention).toHaveBeenCalledWith(expect.objectContaining({
+        metadata: expect.objectContaining({
+          source: "ask_user",
+          runId: "run-1",
+          phase: "planning",
+          phaseName: "Planning",
+          stepId: "step-plan-1",
+          stepKey: "planning-worker",
+          questionOwnerKind: "planner",
+          questionOwnerLabel: "Planner question",
+        }),
+      }));
+      expect(response.structuredContent.awaitingUserResponse).toBe(true);
+      expect(response.structuredContent.blocking).toBe(true);
+    });
   });
 
   it("denies worker ask_user when the current phase disables questions", async () => {
-    const fixture = createRuntime();
-    fixture.runtime.orchestratorService.getRunGraph = vi.fn(() => ({
+    await withEnv({ ADE_RUN_ID: "run-1" }, async () => {
+      const fixture = createRuntime();
+      fixture.runtime.orchestratorService.getRunGraph = vi.fn(() => ({
       run: { id: "run-1", missionId: "mission-1", status: "running" },
       steps: [
         {
@@ -2797,25 +2937,26 @@ describe("mcpServer", () => {
       runtimeEvents: [],
       completionEvaluation: { complete: false },
     }));
-    const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+      const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
 
-    await initialize(handler, {
-      callerId: "attempt-1",
-      role: "agent",
-      missionId: "mission-1",
-      runId: "run-1",
-      stepId: "step-dev-1",
-      attemptId: "attempt-1",
-    });
-    const response = await callTool(handler, "ask_user", {
-      missionId: "mission-1",
-      title: "Need guidance",
-      body: "Should I stop and ask a development question?",
-    });
+      await initialize(handler, {
+        callerId: "attempt-1",
+        role: "agent",
+        missionId: "mission-1",
+        runId: "run-from-identity",
+        stepId: "step-dev-1",
+        attemptId: "attempt-1",
+      });
+      const response = await callTool(handler, "ask_user", {
+        missionId: "mission-1",
+        title: "Need guidance",
+        body: "Should I stop and ask a development question?",
+      });
 
-    expect(response?.isError).toBe(true);
-    expect(JSON.stringify(response?.error ?? response?.structuredContent ?? {})).toContain("Ask Questions is disabled for this phase");
-    expect(fixture.runtime.missionService.addIntervention).not.toHaveBeenCalled();
+      expect(response?.isError).toBe(true);
+      expect(JSON.stringify(response?.error ?? response?.structuredContent ?? {})).toContain("Ask Questions is disabled for this phase");
+      expect(fixture.runtime.missionService.addIntervention).not.toHaveBeenCalled();
+    });
   });
 
   it("allows mutations for any session", async () => {

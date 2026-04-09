@@ -16,6 +16,14 @@ import {
   normalizeCoordinatorUpdateForChat,
 } from "./aiOrchestratorService";
 
+vi.mock("@opencode-ai/sdk", () => ({
+  createOpencodeServer: vi.fn(async () => ({
+    url: "http://mock-opencode-server",
+    close: vi.fn(),
+  })),
+  createOpencodeClient: vi.fn(() => ({})),
+}));
+
 function createLogger() {
   return {
     debug: () => {},
@@ -1724,6 +1732,75 @@ describe("aiOrchestratorService", () => {
     }
   });
 
+  it("recreates the coordinator before resuming a paused run", async () => {
+    let capturedCoordinator: CoordinatorAgent | null = null;
+    const originalEnsurePlannerLaunchTrackerStep = (CoordinatorAgent.prototype as any).ensurePlannerLaunchTrackerStep;
+    const captureSpy = vi
+      .spyOn(CoordinatorAgent.prototype as any, "ensurePlannerLaunchTrackerStep")
+      .mockImplementation(function (this: CoordinatorAgent) {
+        capturedCoordinator = this;
+        return originalEnsurePlannerLaunchTrackerStep.call(this);
+      });
+    const fixture = await createFixture();
+    try {
+      const mission = fixture.missionService.create({
+        prompt: "Resume cleanly after the coordinator is intentionally torn down.",
+        laneId: fixture.laneId,
+      });
+      setMissionPlanningMode(fixture.db, mission.id, "auto");
+
+      const launched = await fixture.aiOrchestratorService.startMissionRun({
+        missionId: mission.id,
+        runMode: "autopilot",
+        defaultExecutorKind: "opencode",
+      });
+      const runId = launched.started?.run.id;
+      if (!runId) throw new Error("Expected mission run to start");
+      expect(capturedCoordinator).toBeTruthy();
+
+      (capturedCoordinator as any)?.deps.onCoordinatorRuntimeFailure?.({
+        category: "cli_runtime_failure",
+        reasonCode: "coordinator_runtime_cli_exit",
+        interventionType: "unrecoverable_error",
+        retryable: false,
+        recoveryOptions: ["retry", "cancel_run"],
+        message: "Codex CLI exited with code 1",
+        title: "Coordinator runtime exited unexpectedly",
+        body: "ADE paused the run because the coordinator process exited during execution. Error: Codex CLI exited with code 1.",
+        requestedAction: "Inspect coordinator runtime health, then resume the run to retry the same provider and mission state.",
+        turnId: "coord-turn-1",
+      });
+
+      await waitFor(() => fixture.orchestratorService.getRunGraph({ runId, timelineLimit: 20 }).run.status === "paused");
+
+      fixture.aiOrchestratorService.resumeRun({ runId });
+      await waitFor(() => fixture.orchestratorService.getRunGraph({ runId, timelineLimit: 20 }).run.status === "active");
+
+      fixture.aiOrchestratorService.onOrchestratorRuntimeEvent({
+        type: "orchestrator-run-updated",
+        runId,
+        at: new Date().toISOString(),
+        reason: "heartbeat",
+      } as any);
+
+      const refreshedMission = fixture.missionService.get(mission.id);
+      expect(fixture.orchestratorService.getRunGraph({ runId, timelineLimit: 20 }).run.status).toBe("active");
+      expect(
+        refreshedMission?.interventions.some((entry) =>
+          entry.status === "open"
+          && (String(entry.metadata?.reasonCode ?? "") === "coordinator_unavailable"
+            || String(entry.metadata?.reasonCode ?? "") === "coordinator_recovery_failed"),
+        ) ?? false,
+      ).toBe(false);
+
+      const runView = await fixture.aiOrchestratorService.getRunView({ missionId: mission.id, runId });
+      expect(runView?.coordinator.available).not.toBe(false);
+    } finally {
+      captureSpy.mockRestore();
+      fixture.dispose();
+    }
+  });
+
   it("persists a run-level autopilot cap from planner summary metadata in AI-first startup", async () => {
     const fixture = await createFixture();
     try {
@@ -2547,6 +2624,45 @@ describe("aiOrchestratorService", () => {
           (entry) => entry.status === "open" && /coordinator/i.test(entry.title),
         ) ?? [];
       expect(openCoordinatorInterventions).toHaveLength(0);
+    } finally {
+      shutdownSpy.mockRestore();
+      captureSpy.mockRestore();
+      fixture.dispose();
+    }
+  });
+
+  it("shuts down the live coordinator when a hard cap pause is triggered", async () => {
+    let capturedCoordinator: CoordinatorAgent | null = null;
+    const originalEnsurePlannerLaunchTrackerStep = (CoordinatorAgent.prototype as any).ensurePlannerLaunchTrackerStep;
+    const captureSpy = vi
+      .spyOn(CoordinatorAgent.prototype as any, "ensurePlannerLaunchTrackerStep")
+      .mockImplementation(function (this: CoordinatorAgent) {
+        capturedCoordinator = this;
+        return originalEnsurePlannerLaunchTrackerStep.call(this);
+      });
+    const shutdownSpy = vi.spyOn(CoordinatorAgent.prototype, "shutdown");
+    const fixture = await createFixture();
+    try {
+      const mission = fixture.missionService.create({
+        prompt: "Pause this mission on budget hard cap.",
+        laneId: fixture.laneId,
+      });
+      setMissionPlanningMode(fixture.db, mission.id, "auto");
+
+      const launched = await fixture.aiOrchestratorService.startMissionRun({
+        missionId: mission.id,
+        runMode: "autopilot",
+        defaultExecutorKind: "opencode",
+      });
+      const runId = launched.started?.run.id;
+      if (!runId) throw new Error("Expected mission run to start");
+      expect(capturedCoordinator).toBeTruthy();
+
+      (capturedCoordinator as any)?.deps.onHardCapTriggered?.("Budget hard cap reached during planning.");
+
+      expect(shutdownSpy).toHaveBeenCalled();
+      const runGraph = fixture.orchestratorService.getRunGraph({ runId, timelineLimit: 10 });
+      expect(runGraph.run.status).toBe("paused");
     } finally {
       shutdownSpy.mockRestore();
       captureSpy.mockRestore();

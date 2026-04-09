@@ -121,6 +121,8 @@ export type DiffMode = "unstaged" | "staged" | "commit";
 export type FileChange = {
   path: string;
   kind: "modified" | "added" | "deleted" | "renamed" | "untracked" | "unknown";
+  additions?: number;
+  deletions?: number;
 };
 
 export type DiffChanges = {

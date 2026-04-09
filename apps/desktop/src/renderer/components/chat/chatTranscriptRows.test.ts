@@ -414,6 +414,92 @@ describe("chatTranscriptRows", () => {
     expect(grouped[0]!.event.entries[0]!.result).toEqual({ error: "permission denied" });
   });
 
+  it("merges consecutive reasoning events with same turn/item/summaryIndex into one entry", () => {
+    // Build rows that bypass collapse (e.g. from different summaryIndex values that
+    // happened to resolve to the same identity after a prior pass). The grouping step
+    // should merge them with a "---" separator.
+    const rows = [
+      {
+        key: "s1:0:t0",
+        timestamp: "2026-04-08T12:00:00.000Z",
+        event: { type: "reasoning" as const, text: "First block.", turnId: "t1", itemId: "r1", summaryIndex: null },
+      },
+      {
+        key: "s1:1:t1",
+        timestamp: "2026-04-08T12:00:01.000Z",
+        event: { type: "reasoning" as const, text: "Second block.", turnId: "t1", itemId: "r1", summaryIndex: null },
+      },
+    ];
+
+    const grouped = groupConsecutiveWorkLogRows(rows as any);
+    const reasoning = grouped.filter((r) => r.event.type === "reasoning");
+    expect(reasoning).toHaveLength(1);
+    const text = (reasoning[0]!.event as any).text as string;
+    expect(text).toContain("First block.");
+    expect(text).toContain("---");
+    expect(text).toContain("Second block.");
+    // Should use the later timestamp
+    expect(reasoning[0]!.timestamp).toBe("2026-04-08T12:00:01.000Z");
+  });
+
+  it("does not merge consecutive reasoning events with different itemIds", () => {
+    const rows = [
+      {
+        key: "s1:0:t0",
+        timestamp: "2026-04-08T12:00:00.000Z",
+        event: { type: "reasoning" as const, text: "Thought A.", turnId: "t1", itemId: "r1" },
+      },
+      {
+        key: "s1:1:t1",
+        timestamp: "2026-04-08T12:00:01.000Z",
+        event: { type: "reasoning" as const, text: "Thought B.", turnId: "t1", itemId: "r2" },
+      },
+    ];
+
+    const grouped = groupConsecutiveWorkLogRows(rows as any);
+    const reasoning = grouped.filter((r) => r.event.type === "reasoning");
+    expect(reasoning).toHaveLength(2);
+  });
+
+  it("deduplicates consecutive status events with the same turnStatus, turnId, and message", () => {
+    const rows = [
+      {
+        key: "s1:0:t0",
+        timestamp: "2026-04-08T12:00:00.000Z",
+        event: { type: "status" as const, turnStatus: "interrupted", turnId: "t1", message: "Stopped" },
+      },
+      {
+        key: "s1:1:t1",
+        timestamp: "2026-04-08T12:00:01.000Z",
+        event: { type: "status" as const, turnStatus: "interrupted", turnId: "t1", message: "Stopped" },
+      },
+    ];
+
+    const grouped = groupConsecutiveWorkLogRows(rows as any);
+    const statuses = grouped.filter((r) => r.event.type === "status");
+    expect(statuses).toHaveLength(1);
+    expect(statuses[0]!.timestamp).toBe("2026-04-08T12:00:01.000Z");
+  });
+
+  it("keeps consecutive status events with different turnStatus values", () => {
+    const rows = [
+      {
+        key: "s1:0:t0",
+        timestamp: "2026-04-08T12:00:00.000Z",
+        event: { type: "status" as const, turnStatus: "failed", turnId: "t1", message: "Error" },
+      },
+      {
+        key: "s1:1:t1",
+        timestamp: "2026-04-08T12:00:01.000Z",
+        event: { type: "status" as const, turnStatus: "interrupted", turnId: "t1", message: "Stopped" },
+      },
+    ];
+
+    const grouped = groupConsecutiveWorkLogRows(rows as any);
+    const statuses = grouped.filter((r) => r.event.type === "status");
+    expect(statuses).toHaveLength(2);
+  });
+
   it("absorbs tool_use_summary into the preceding work log group", () => {
     const grouped = groupEvents([
       {

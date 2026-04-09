@@ -5,6 +5,8 @@ import { AnimatePresence, motion } from "motion/react";
 import {
   ArrowSquareOut,
   Bug,
+  CaretDown,
+  CaretRight,
   ChatCircleDots,
   Lightbulb,
   Question,
@@ -89,6 +91,13 @@ function statusLabel(status: FeedbackSubmission["status"]): {
     case "failed":
       return { text: "Failed", color: COLORS.danger };
   }
+}
+
+function formatSubmissionTimestamp(value: string | null): string {
+  if (!value) return "—";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleString();
 }
 
 function NewReportTab({
@@ -259,85 +268,206 @@ function NewReportTab({
 }
 
 function SubmissionRow({ submission }: { submission: FeedbackSubmission }) {
+  const [expanded, setExpanded] = useState(submission.status === "failed");
   const sl = statusLabel(submission.status);
   const preview =
     submission.generatedTitle || submission.userDescription.slice(0, 80);
 
+  useEffect(() => {
+    if (submission.status === "failed") {
+      setExpanded(true);
+    }
+  }, [submission.status]);
+
   return (
     <div
       style={{
-        display: "flex",
-        alignItems: "center",
-        gap: 8,
-        padding: "8px 12px",
         background: COLORS.recessedBg,
         border: `1px solid ${COLORS.border}`,
       }}
     >
-      <span
+      <button
+        type="button"
+        onClick={() => setExpanded((value) => !value)}
+        aria-expanded={expanded}
         style={{
-          ...categoryBadgeStyle(submission.category),
-          display: "inline-flex",
+          display: "flex",
           alignItems: "center",
-          gap: 4,
-          padding: "2px 6px",
-          fontSize: 10,
-          fontWeight: 700,
-          fontFamily: MONO_FONT,
-          textTransform: "uppercase",
-          flexShrink: 0,
+          gap: 8,
+          width: "100%",
+          padding: "8px 12px",
+          background: "transparent",
+          border: "none",
+          cursor: "pointer",
+          textAlign: "left",
         }}
       >
-        {categoryIcon(submission.category, 10)}
-        {submission.category}
-      </span>
+        {expanded ? (
+          <CaretDown size={12} weight="bold" style={{ color: COLORS.textMuted, flexShrink: 0 }} />
+        ) : (
+          <CaretRight size={12} weight="bold" style={{ color: COLORS.textMuted, flexShrink: 0 }} />
+        )}
 
-      <span
-        style={{
-          flex: 1,
-          minWidth: 0,
-          fontSize: 11,
-          color: COLORS.textSecondary,
-          overflow: "hidden",
-          textOverflow: "ellipsis",
-          whiteSpace: "nowrap",
-        }}
-      >
-        {preview}
-      </span>
+        <span
+          style={{
+            ...categoryBadgeStyle(submission.category),
+            display: "inline-flex",
+            alignItems: "center",
+            gap: 4,
+            padding: "2px 6px",
+            fontSize: 10,
+            fontWeight: 700,
+            fontFamily: MONO_FONT,
+            textTransform: "uppercase",
+            flexShrink: 0,
+          }}
+        >
+          {categoryIcon(submission.category, 10)}
+          {submission.category}
+        </span>
 
-      <span
-        style={{
-          flexShrink: 0,
-          fontSize: 10,
-          fontWeight: 600,
-          fontFamily: MONO_FONT,
-          color: sl.color,
-          animation: sl.pulse ? "pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite" : undefined,
-        }}
-      >
-        {sl.text}
-      </span>
+        <span
+          style={{
+            flex: 1,
+            minWidth: 0,
+            fontSize: 11,
+            color: COLORS.textSecondary,
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+          }}
+        >
+          {preview}
+        </span>
 
-      {submission.issueUrl ? (
-        <button
-          type="button"
+        <span
           style={{
             flexShrink: 0,
-            background: "none",
-            border: "none",
-            padding: 0,
-            cursor: "pointer",
-            color: COLORS.textMuted,
-            transition: "color 0.15s",
+            fontSize: 10,
+            fontWeight: 600,
+            fontFamily: MONO_FONT,
+            color: sl.color,
+            animation: sl.pulse ? "pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite" : undefined,
           }}
-          onClick={() => window.ade.app.openExternal(submission.issueUrl!)}
-          title={`Open issue #${submission.issueNumber}`}
-          onMouseEnter={(e) => { (e.target as HTMLElement).style.color = COLORS.textPrimary; }}
-          onMouseLeave={(e) => { (e.target as HTMLElement).style.color = COLORS.textMuted; }}
         >
-          <ArrowSquareOut size={12} weight="bold" />
-        </button>
+          {sl.text}
+        </span>
+      </button>
+
+      {expanded ? (
+        <div
+          style={{
+            display: "flex",
+            flexDirection: "column",
+            gap: 10,
+            padding: "0 12px 12px 32px",
+            borderTop: `1px solid ${COLORS.border}`,
+          }}
+        >
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
+              gap: 8,
+              paddingTop: 10,
+            }}
+          >
+            <div>
+              <div style={LABEL_STYLE}>Submitted</div>
+              <div style={{ fontSize: 11, color: COLORS.textSecondary }}>{formatSubmissionTimestamp(submission.createdAt)}</div>
+            </div>
+            <div>
+              <div style={LABEL_STYLE}>Completed</div>
+              <div style={{ fontSize: 11, color: COLORS.textSecondary }}>{formatSubmissionTimestamp(submission.completedAt)}</div>
+            </div>
+            <div>
+              <div style={LABEL_STYLE}>Model</div>
+              <div style={{ fontSize: 11, color: COLORS.textSecondary, wordBreak: "break-word" }}>{submission.modelId}</div>
+            </div>
+            <div>
+              <div style={LABEL_STYLE}>Issue</div>
+              {submission.issueUrl ? (
+                <button
+                  type="button"
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 6,
+                    background: "none",
+                    border: "none",
+                    padding: 0,
+                    cursor: "pointer",
+                    color: COLORS.accent,
+                    fontSize: 11,
+                  }}
+                  onClick={() => window.ade.app.openExternal(submission.issueUrl!)}
+                >
+                  <ArrowSquareOut size={12} weight="bold" />
+                  {submission.issueNumber ? `Open issue #${submission.issueNumber}` : "Open issue"}
+                </button>
+              ) : (
+                <div style={{ fontSize: 11, color: COLORS.textSecondary }}>Not posted</div>
+              )}
+            </div>
+          </div>
+
+          <div>
+            <div style={LABEL_STYLE}>Original submission</div>
+            <div
+              style={{
+                ...INPUT_STYLE,
+                padding: "8px 10px",
+                fontSize: 12,
+                whiteSpace: "pre-wrap",
+                color: COLORS.textSecondary,
+              }}
+            >
+              {submission.userDescription}
+            </div>
+          </div>
+
+          {submission.error ? (
+            <div>
+              <div style={{ ...LABEL_STYLE, color: COLORS.danger }}>Failure reason</div>
+              <div
+                style={{
+                  padding: "8px 10px",
+                  fontSize: 12,
+                  whiteSpace: "pre-wrap",
+                  color: COLORS.danger,
+                  background: "rgba(239,68,68,0.08)",
+                  border: "1px solid rgba(239,68,68,0.2)",
+                }}
+              >
+                {submission.error}
+              </div>
+            </div>
+          ) : null}
+
+          {submission.generatedTitle ? (
+            <div>
+              <div style={LABEL_STYLE}>Generated title</div>
+              <div style={{ fontSize: 12, color: COLORS.textPrimary }}>{submission.generatedTitle}</div>
+            </div>
+          ) : null}
+
+          {submission.generatedBody ? (
+            <div>
+              <div style={LABEL_STYLE}>Generated issue body</div>
+              <div
+                style={{
+                  ...INPUT_STYLE,
+                  padding: "8px 10px",
+                  fontSize: 12,
+                  whiteSpace: "pre-wrap",
+                  color: COLORS.textSecondary,
+                }}
+              >
+                {submission.generatedBody}
+              </div>
+            </div>
+          ) : null}
+        </div>
       ) : null}
     </div>
   );

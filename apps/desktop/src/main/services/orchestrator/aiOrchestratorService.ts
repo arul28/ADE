@@ -5891,6 +5891,27 @@ Check all worker statuses and continue managing the mission from here. Read work
     metadata?: Record<string, unknown>;
   }): void => {
     try {
+      const missionRuns = orchestratorService.listRuns({ missionId: args.missionId });
+      for (const run of missionRuns) {
+        if (run.status === "active" || run.status === "bootstrapping" || run.status === "queued") {
+          try {
+            orchestratorService.pauseRun({
+              runId: run.id,
+              reason: `${args.title}: ${args.body}`.slice(0, 400),
+            });
+          } catch {
+            // ignore pause failures here; intervention creation still proceeds
+          }
+          const evalTimer = pendingCoordinatorEvals.get(run.id);
+          if (evalTimer) {
+            clearTimeout(evalTimer);
+            pendingCoordinatorEvals.delete(run.id);
+          }
+        }
+        if (run.status === "active" || run.status === "bootstrapping" || run.status === "queued" || run.status === "paused") {
+          endCoordinatorAgentV2(run.id);
+        }
+      }
       missionService.addIntervention({
         missionId: args.missionId,
         interventionType: args.interventionType,
@@ -6240,6 +6261,7 @@ Check all worker statuses and continue managing the mission from here. Read work
         clearTimeout(evalTimer);
         pendingCoordinatorEvals.delete(args.runId);
       }
+      endCoordinatorAgentV2(args.runId);
     } catch (error) {
       logger.debug("ai_orchestrator.pause_run_failed", {
         runId: args.runId,
@@ -7148,6 +7170,56 @@ Check all worker statuses and continue managing the mission from here. Read work
     }
   };
 
+  const ensureCoordinatorAgentV2 = (runId: string): { agent: CoordinatorAgent | null; created: boolean } => {
+    const existingAgent = coordinatorAgents.get(runId) ?? null;
+    if (existingAgent?.isAlive) {
+      return { agent: existingAgent, created: false };
+    }
+    if (existingAgent && !existingAgent.isAlive) {
+      const recoveredAgent = attemptCoordinatorRecovery(runId);
+      return { agent: recoveredAgent, created: Boolean(recoveredAgent?.isAlive) };
+    }
+
+    const graph = getRunGraphSafe(runId);
+    const runStatus = graph?.run.status ?? null;
+    if (runStatus && TERMINAL_COORDINATOR_RUN_STATUSES.has(runStatus as OrchestratorRunStatus)) {
+      return { agent: null, created: false };
+    }
+
+    const missionId = graph?.run.missionId ?? getMissionIdForRun(runId);
+    if (!missionId) return { agent: null, created: false };
+
+    const mission = missionService.get(missionId);
+    if (!mission) return { agent: null, created: false };
+
+    const missionGoal = mission.prompt || mission.title;
+    const missionLaneId = resolvePersistedMissionLaneIdForRun(runId);
+    if (missionLaneId) {
+      persistMissionLaneIdForRun(runId, missionLaneId);
+    }
+    const coordinatorModelConfig = resolveOrchestratorModelConfig(missionId, "coordinator");
+    const { userRules, projectCtx, availableProviders, phases } = gatherCoordinatorContext(missionId, { missionId });
+    const agent = startCoordinatorAgentV2(missionId, runId, missionGoal, coordinatorModelConfig, {
+      userRules,
+      projectContext: projectCtx,
+      availableProviders,
+      phases,
+      skipInitialActivationMessage: true,
+      missionLaneId: missionLaneId ?? undefined,
+    });
+    if (!agent?.isAlive) {
+      return { agent: null, created: false };
+    }
+
+    logger.info("ai_orchestrator.coordinator_resumed_after_pause", {
+      runId,
+      missionId,
+      runStatus,
+    });
+
+    return { agent, created: true };
+  };
+
   const collectGracefulShutdownTargets = (runId: string): Array<{
     sessionId: string;
     attemptId: string | null;
@@ -7466,6 +7538,60 @@ Check all worker statuses and continue managing the mission from here. Read work
     return result;
   };
 
+  const resumeRun = (args: { runId: string }): OrchestratorRun => {
+    const runId = toOptionalString(args.runId);
+    if (!runId) throw new Error("runId is required.");
+
+    const currentRun = getRunGraphSafe(runId)?.run ?? null;
+    const shouldEnsureCoordinator =
+      currentRun?.status === "paused"
+      || currentRun?.status === "active"
+      || currentRun?.status === "bootstrapping"
+      || currentRun?.status === "queued";
+    const ensuredCoordinator = shouldEnsureCoordinator ? ensureCoordinatorAgentV2(runId) : { agent: null, created: false };
+
+    if (shouldEnsureCoordinator && !ensuredCoordinator.agent?.isAlive) {
+      throw new Error("Coordinator runtime did not start successfully. Run remains paused.");
+    }
+
+    try {
+      const resumedRun = orchestratorService.resumeRun({ runId });
+      const coordinatorAgent = ensuredCoordinator.agent;
+      if (ensuredCoordinator.created && coordinatorAgent) {
+        const resumedGraph = getRunGraphSafe(runId);
+        const stepSummaries = resumedGraph?.steps.map((step) => `  - ${step.stepKey} (${step.title}): ${step.status}`).join("\n") ?? "";
+        coordinatorAgent.injectMessage(
+          [
+            "[RUN RESUMED]",
+            "You were restarted after this run was paused and the prior coordinator session was intentionally shut down.",
+            "Call read_mission_status immediately, review any open interventions or failed attempts, and continue from the current DAG state without redoing completed work.",
+            "",
+            "Current steps:",
+            stepSummaries || "  (none)",
+          ].join("\n"),
+        );
+        emitMilestoneReadinessToCoordinator({ runId, reason: "run_resumed" });
+
+        const missionId = resumedRun.missionId ?? currentRun?.missionId ?? getMissionIdForRun(runId);
+        if (missionId) {
+          emitCoordinatorLifecycle({
+            missionId,
+            runId,
+            state: "booting",
+            message: "I’m back online and resuming the run.",
+            force: true,
+          });
+        }
+      }
+      return resumedRun;
+    } catch (error) {
+      if (ensuredCoordinator.created) {
+        endCoordinatorAgentV2(runId);
+      }
+      throw error;
+    }
+  };
+
   const steerMission = (steerArgs: SteerMissionArgs): SteerMissionResult => {
     const missionId = steerArgs.missionId?.trim();
     if (!missionId) throw new Error("missionId is required.");
@@ -7748,7 +7874,7 @@ Check all worker statuses and continue managing the mission from here. Read work
             try {
               const runGraph = orchestratorService.getRunGraph({ runId, timelineLimit: 0 });
               if (runGraph.run.status === "paused") {
-                orchestratorService.resumeRun({ runId });
+                resumeRun({ runId });
                 logger.info("ai_orchestrator.steer_auto_resumed_run", { missionId, runId });
               }
             } catch (resumeError) {
@@ -9530,6 +9656,7 @@ Check all worker statuses and continue managing the mission from here. Read work
 
   return {
     startMissionRun,
+    resumeRun,
     cancelRunGracefully,
     cleanupTeamResources,
 

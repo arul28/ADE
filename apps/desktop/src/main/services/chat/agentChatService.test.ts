@@ -2,11 +2,19 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { unstable_v2_createSession, unstable_v2_resumeSession } from "@anthropic-ai/claude-agent-sdk";
-import { buildOpenCodePromptParts } from "../opencode/openCodeRuntime";
+import { buildOpenCodePromptParts, startOpenCodeSession } from "../opencode/openCodeRuntime";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const generateText = vi.fn();
 const streamText = vi.fn();
+
+vi.mock("@opencode-ai/sdk", () => ({
+  createOpencodeServer: vi.fn(async () => ({
+    url: "http://mock-opencode-server",
+    close: vi.fn(),
+  })),
+  createOpencodeClient: vi.fn(() => ({})),
+}));
 
 // ---------------------------------------------------------------------------
 // vi.hoisted mock state
@@ -303,6 +311,9 @@ vi.mock("../opencode/openCodeRuntime", () => ({
         close: vi.fn(),
       },
       close: vi.fn(),
+      touch: vi.fn(),
+      setBusy: vi.fn(),
+      setEvictionHandler: vi.fn(),
       client,
     };
   }),
@@ -1601,7 +1612,20 @@ describe("createAgentChatService", () => {
       const promptCalls = vi.mocked(buildOpenCodePromptParts).mock.calls;
       const firstUserContent = String(promptCalls[0]?.[0]?.prompt ?? "");
       const secondUserContent = String(promptCalls[1]?.[0]?.prompt ?? "");
+      const resolvedTmpRoot = fs.realpathSync(tmpRoot);
+      const openCodeStartCalls = vi.mocked(startOpenCodeSession).mock.calls;
 
+      expect(vi.mocked(resolveAdeMcpServerLaunch)).toHaveBeenCalledWith(expect.objectContaining({
+        projectRoot: tmpRoot,
+        workspaceRoot: resolvedTmpRoot,
+        workspaceBinding: "project_root",
+        chatSessionId: session.id,
+      }));
+      expect(openCodeStartCalls.length).toBeGreaterThan(0);
+      expect(openCodeStartCalls[0]?.[0]).toEqual(expect.objectContaining({
+        leaseKind: "shared",
+        dynamicMcpLaunch: expect.any(Object),
+      }));
       expect(firstUserContent).toContain("[ADE launch directive]");
       expect(firstUserContent).toContain(tmpRoot);
       expect(firstUserContent).toContain("only inside that worktree");
@@ -3381,6 +3405,114 @@ describe("createAgentChatService", () => {
       expect(result.outputText).toContain("Plan via query control");
       expect(setPermissionMode).toHaveBeenCalledWith("plan");
       expect(setPermissionMode.mock.invocationCallOrder[0]).toBeLessThan(send.mock.invocationCallOrder[1]);
+    });
+
+    it("preserves Claude access overrides when entering and exiting plan mode", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+      const send = vi.fn().mockResolvedValue(undefined);
+      let streamCall = 0;
+      let service: ReturnType<typeof createService>["service"];
+      let sessionId = "";
+
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield {
+            type: "system",
+            subtype: "init",
+            session_id: "sdk-session-plan-preserve",
+            slash_commands: [],
+          };
+          return;
+        }
+
+        const sessionOpts = vi.mocked(unstable_v2_createSession).mock.calls.at(-1)?.[0] as any;
+        const enterResult = await sessionOpts.canUseTool("EnterPlanMode", {}, {
+          signal: new AbortController().signal,
+          toolUseID: "tool-enter-plan",
+        });
+        expect(enterResult).toEqual({ behavior: "allow" });
+
+        const entered = await service.getSessionSummary(sessionId);
+        expect(entered?.permissionMode).toBe("plan");
+        expect(entered?.claudePermissionMode).toBe("acceptEdits");
+
+        const exitPromise = sessionOpts.canUseTool("ExitPlanMode", {
+          planDescription: "Ship the approved Claude changes.",
+        }, {
+          signal: new AbortController().signal,
+          toolUseID: "tool-exit-plan",
+        });
+
+        const approvalEvent = await waitForEvent(
+          events,
+          (event): event is AgentChatEventEnvelope & {
+            event: Extract<AgentChatEventEnvelope["event"], { type: "approval_request" }>;
+          } =>
+            event.event.type === "approval_request"
+            && typeof ((event.event.detail as { request?: { kind?: string } } | undefined)?.request?.kind) === "string"
+            && ((event.event.detail as { request?: { kind?: string } } | undefined)?.request?.kind === "plan_approval"),
+        );
+
+        await service.approveToolUse({
+          sessionId,
+          itemId: approvalEvent.event.itemId,
+          decision: "accept",
+        });
+
+        const exitResult = await exitPromise;
+        expect(exitResult).toMatchObject({
+          behavior: "deny",
+          message: expect.stringContaining("exited plan mode"),
+        });
+
+        yield {
+          type: "assistant",
+          message: {
+            content: [{ type: "text", text: "Plan approved and preserved." }],
+            usage: { input_tokens: 1, output_tokens: 1 },
+          },
+        };
+        yield {
+          type: "result",
+          usage: { input_tokens: 1, output_tokens: 1 },
+        };
+      })());
+
+      vi.mocked(unstable_v2_createSession).mockReturnValue({
+        send,
+        stream,
+        close: vi.fn(),
+        sessionId: "sdk-session-plan-preserve",
+        setPermissionMode,
+      } as any);
+
+      ({ service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      }));
+
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+        modelId: "anthropic/claude-sonnet-4-6",
+        permissionMode: "edit",
+        claudePermissionMode: "acceptEdits",
+      });
+      sessionId = session.id;
+
+      const result = await service.runSessionTurn({
+        sessionId: session.id,
+        text: "Enter plan mode, then exit it after approval.",
+      });
+
+      expect(result.outputText).toContain("Plan approved and preserved.");
+      expect(setPermissionMode).toHaveBeenCalledWith("acceptEdits");
+
+      const summary = await service.getSessionSummary(session.id);
+      expect(summary?.permissionMode).toBe("edit");
+      expect(summary?.claudePermissionMode).toBe("acceptEdits");
     });
 
     it("emits todo_update events for Claude TodoWrite tool uses", async () => {

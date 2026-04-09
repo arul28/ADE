@@ -45,7 +45,7 @@ export function defaultSessionLabel(toolType: string | null | undefined): string
 }
 
 export function buildOptimisticChatSessionSummary(args: {
-  session: Pick<AgentChatSession, "id" | "laneId" | "provider" | "status" | "createdAt" | "lastActivityAt">;
+  session: Pick<AgentChatSession, "id" | "laneId" | "provider" | "status" | "createdAt" | "lastActivityAt" | "idleSinceAt">;
   laneName?: string | null;
 }): TerminalSessionSummary {
   const toolType = chatToolTypeForProvider(args.session.provider);
@@ -72,6 +72,7 @@ export function buildOptimisticChatSessionSummary(args: {
     summary: null,
     runtimeState: isEnded ? "exited" : args.session.status === "active" ? "running" : "idle",
     resumeCommand: null,
+    chatIdleSinceAt: args.session.status === "idle" ? args.session.idleSinceAt ?? null : null,
   };
 }
 

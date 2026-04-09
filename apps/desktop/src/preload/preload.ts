@@ -35,6 +35,7 @@ import type {
   AiApiKeyVerificationResult,
   AiConfig,
   AiSettingsStatus,
+  OpenCodeRuntimeSnapshot,
   SyncDesktopConnectionDraft,
   SyncDeviceRecord,
   SyncDeviceRuntimeState,
@@ -655,6 +656,8 @@ contextBridge.exposeInMainWorld("ade", {
   ai: {
     getStatus: async (args?: { force?: boolean; refreshOpenCodeInventory?: boolean }): Promise<AiSettingsStatus> =>
       ipcRenderer.invoke(IPC.aiGetStatus, args),
+    getOpenCodeRuntimeDiagnostics: async (): Promise<OpenCodeRuntimeSnapshot> =>
+      ipcRenderer.invoke(IPC.aiGetOpenCodeRuntimeDiagnostics),
     storeApiKey: async (provider: string, key: string): Promise<void> =>
       ipcRenderer.invoke(IPC.aiStoreApiKey, { provider, key }),
     deleteApiKey: async (provider: string): Promise<void> =>

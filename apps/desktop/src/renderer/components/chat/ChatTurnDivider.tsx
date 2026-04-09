@@ -62,29 +62,32 @@ export const ChatTurnDivider = React.memo(function ChatTurnDivider({
   if (!hasStats) return null;
 
   return (
-    <div className="flex items-center gap-3 py-2">
-      <div className="h-px flex-1 bg-white/[0.04]" />
-      <div className="flex items-center gap-2 font-sans text-[10px] text-fg/32">
-        <span className={cn("inline-flex h-1.5 w-1.5 rounded-full", statusDotColor)} />
-        {duration ? <span>{duration}</span> : null}
+    <div className="flex items-center gap-3 py-3">
+      <div className="h-px flex-1 bg-gradient-to-r from-transparent via-white/[0.06] to-transparent" />
+      <div
+        className="flex items-center gap-2.5 rounded-full border border-white/[0.06] bg-white/[0.02] px-3.5 py-1.5 font-sans text-[10px] text-fg/35"
+        style={{ backdropFilter: "blur(12px)", WebkitBackdropFilter: "blur(12px)" }}
+      >
+        <span className={cn("inline-flex h-2 w-2 rounded-full", statusDotColor)} />
+        {duration ? <span className="font-medium">{duration}</span> : null}
         {data.filesChanged ? (
           <span>
             {data.filesChanged} file{data.filesChanged !== 1 ? "s" : ""}
-            {data.insertions ? <span className="text-emerald-400/50"> +{data.insertions}</span> : null}
-            {data.deletions ? <span className="text-red-400/50"> -{data.deletions}</span> : null}
+            {data.insertions ? <span className="text-emerald-400/60"> +{data.insertions}</span> : null}
+            {data.deletions ? <span className="text-red-400/60"> -{data.deletions}</span> : null}
           </span>
         ) : null}
         {inputTok || outputTok ? (
-          <span className="text-fg/22">
+          <span className="text-fg/25">
             {inputTok ? `${inputTok} in` : ""}
-            {inputTok && outputTok ? " / " : ""}
+            {inputTok && outputTok ? " · " : ""}
             {outputTok ? `${outputTok} out` : ""}
             {cacheTok ? ` (${cacheTok} cached)` : ""}
           </span>
         ) : null}
-        {cost ? <span className="text-fg/22">{cost}</span> : null}
+        {cost ? <span className="font-medium text-violet-300/40">{cost}</span> : null}
       </div>
-      <div className="h-px flex-1 bg-white/[0.04]" />
+      <div className="h-px flex-1 bg-gradient-to-r from-transparent via-white/[0.06] to-transparent" />
     </div>
   );
 });

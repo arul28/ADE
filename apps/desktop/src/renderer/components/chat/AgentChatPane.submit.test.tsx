@@ -172,6 +172,20 @@ function installAdeMocks(options?: {
     files: {
       listWorkspaces: vi.fn().mockResolvedValue([]),
     },
+    lanes: {
+      list: vi.fn().mockResolvedValue([]),
+    },
+    git: {
+      listBranches: vi.fn().mockResolvedValue([]),
+      getActionRuntime: vi.fn().mockResolvedValue(null),
+      onActionRuntimeEvent: vi.fn().mockImplementation(() => () => undefined),
+    },
+    diff: {
+      getChanges: vi.fn().mockResolvedValue({ staged: [], unstaged: [] }),
+    },
+    prs: {
+      getForLane: vi.fn().mockResolvedValue(null),
+    },
   } as any;
 
   return {
@@ -455,6 +469,51 @@ describe("AgentChatPane submit recovery", () => {
         text: "Just plan the implementation.",
         interactionMode: "plan",
       }));
+    });
+  });
+
+  it("resyncs Claude composer permissions from refreshed session state", async () => {
+    const session = buildSession("session-1", {
+      provider: "claude",
+      model: "claude-sonnet-4-6",
+      modelId: "anthropic/claude-sonnet-4-6",
+      permissionMode: "edit",
+      interactionMode: "default",
+      claudePermissionMode: "default",
+    });
+    const sessions = [session];
+    const { emitChatEvent } = installAdeMocks({
+      includeClaudeModel: true,
+      sessions,
+    });
+
+    renderPane(session);
+
+    const planButton = await screen.findByRole("button", { name: "Plan" });
+    expect(planButton.getAttribute("aria-pressed")).toBe("false");
+
+    sessions[0] = {
+      ...session,
+      permissionMode: "plan",
+      interactionMode: "plan",
+      claudePermissionMode: "acceptEdits",
+    };
+
+    emitChatEvent({
+      sessionId: session.sessionId,
+      timestamp: "2026-03-24T07:10:00.000Z",
+      event: {
+        type: "system_notice",
+        noticeKind: "info",
+        message: "Session entered plan mode.",
+        detail: {
+          permissionModeTransition: "entered_plan_mode",
+        },
+      },
+    });
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "Plan" }).getAttribute("aria-pressed")).toBe("true");
     });
   });
 
@@ -760,7 +819,7 @@ describe("AgentChatPane submit recovery", () => {
     );
 
     // The git toolbar renders commit/push buttons when laneId is present
-    expect(await screen.findByText("Commit")).toBeTruthy();
+    expect(await screen.findByText("Stage & Commit")).toBeTruthy();
     expect(screen.getByText("Push")).toBeTruthy();
   });
 

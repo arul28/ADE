@@ -78,6 +78,7 @@ export type TerminalSessionSummary = {
   runtimeState: TerminalRuntimeState;
   resumeCommand: string | null;
   resumeMetadata?: TerminalResumeMetadata | null;
+  chatIdleSinceAt?: string | null;
 };
 
 export type TerminalSessionDetail = TerminalSessionSummary & {

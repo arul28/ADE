@@ -46,11 +46,11 @@ function loadXterm(): Promise<XtermModules> {
 /* ── Constants ── */
 
 const TERM_THEME = {
-  background: "#0a0a0e",
-  foreground: "#EDEDED",
-  cursor: "#F59E0B",
-  cursorAccent: "#0a0a0e",
-  selectionBackground: "rgba(245, 158, 11, 0.26)",
+  background: "#0A090E",
+  foreground: "#E8E8ED",
+  cursor: "#A78BFA",
+  cursorAccent: "#0A090E",
+  selectionBackground: "rgba(167, 139, 250, 0.22)",
 };
 
 let nextTabIndex = 1;
@@ -65,6 +65,29 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
 }: ChatTerminalDrawerProps) {
   const [tabs, setTabs] = useState<TabEntry[]>([]);
   const [activeTabId, setActiveTabId] = useState<string | null>(null);
+  const [drawerHeight, setDrawerHeight] = useState(300);
+  const dragRef = useRef<{ startY: number; startHeight: number } | null>(null);
+
+  const handleDragStart = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    dragRef.current = { startY: e.clientY, startHeight: drawerHeight };
+
+    const handleDragMove = (ev: MouseEvent) => {
+      if (!dragRef.current) return;
+      const delta = dragRef.current.startY - ev.clientY;
+      const newHeight = Math.max(150, Math.min(600, dragRef.current.startHeight + delta));
+      setDrawerHeight(newHeight);
+    };
+
+    const handleDragEnd = () => {
+      dragRef.current = null;
+      document.removeEventListener("mousemove", handleDragMove);
+      document.removeEventListener("mouseup", handleDragEnd);
+    };
+
+    document.addEventListener("mousemove", handleDragMove);
+    document.addEventListener("mouseup", handleDragEnd);
+  }, [drawerHeight]);
 
   /* Refs per-tab: terminal instance, fit addon, container, pty unsubs */
   const terminalsRef = useRef<
@@ -289,6 +312,16 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
     return () => observer.disconnect();
   }, [open, activeTabId, tabs]);
 
+  /* ── Re-fit terminals when drawer height changes ── */
+  useEffect(() => {
+    if (!open) return;
+    for (const [, entry] of terminalsRef.current) {
+      if (!entry.disposed) {
+        try { entry.fit.fit(); } catch { /* ignore */ }
+      }
+    }
+  }, [drawerHeight, open]);
+
   /* ── Cleanup all PTYs on unmount ── */
   useEffect(() => {
     return () => {
@@ -316,9 +349,16 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
   if (!open) return null;
 
   return (
-    <div className="flex flex-col bg-[#0a0a0e] border-t border-white/[0.06]" style={{ height: 240, minHeight: 100, maxHeight: 400 }}>
+    <div className="flex flex-col bg-[#0A090E] border-t border-white/[0.06] shadow-[inset_0_2px_8px_rgba(0,0,0,0.3)]" style={{ height: drawerHeight }}>
+      {/* Resize handle */}
+      <div
+        className="flex h-2 cursor-row-resize items-center justify-center hover:bg-white/[0.04] transition-colors"
+        onMouseDown={handleDragStart}
+      >
+        <div className="h-0.5 w-8 rounded-full bg-white/[0.12]" />
+      </div>
       {/* Tab bar */}
-      <div className="flex items-center h-6 shrink-0 border-b border-white/[0.06] overflow-x-auto">
+      <div className="flex items-center h-6 shrink-0 border-b border-white/[0.06] bg-[#0D0B12]/80 overflow-x-auto">
         <div className="flex items-center gap-0 min-w-0 overflow-x-auto scrollbar-none">
           {tabs.map((tab) => (
             <button
@@ -328,8 +368,8 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
               className={cn(
                 "group flex items-center gap-1 px-2 h-6 font-mono text-[10px] shrink-0 transition-colors border-r border-white/[0.04]",
                 activeTabId === tab.id
-                  ? "bg-white/[0.06] text-white/80"
-                  : "bg-transparent text-white/40 hover:text-white/60 hover:bg-white/[0.03]",
+                  ? "bg-white/[0.06] border-b-2 border-b-violet-400/40 text-fg/80"
+                  : "bg-transparent text-fg/35 hover:text-fg/55 hover:bg-white/[0.03]",
               )}
             >
               <TerminalIcon
@@ -366,7 +406,7 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
         <button
           type="button"
           onClick={createTab}
-          className="flex items-center justify-center w-6 h-6 shrink-0 text-white/30 hover:text-white/60 hover:bg-white/[0.04] transition-colors"
+          className="flex items-center justify-center w-6 h-6 shrink-0 border border-white/[0.06] rounded-md text-white/30 hover:text-white/60 hover:bg-white/[0.04] transition-colors mx-1"
           title="New terminal"
         >
           <Plus size={10} weight="bold" />
@@ -398,14 +438,15 @@ export const ChatTerminalToggle = memo(function ChatTerminalToggle({
       type="button"
       onClick={onToggle}
       className={cn(
-        "flex items-center justify-center w-6 h-6 rounded transition-colors",
+        "inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1 font-sans text-[10px] font-medium transition-all",
         open
-          ? "bg-white/[0.08] text-white/70"
-          : "text-white/30 hover:text-white/50 hover:bg-white/[0.04]",
+          ? "border-violet-400/20 bg-violet-500/[0.08] text-violet-200/80"
+          : "border-white/[0.08] bg-white/[0.03] text-fg/45 hover:border-white/[0.12] hover:text-fg/65",
       )}
-      title={open ? "Hide terminal" : "Show terminal"}
+      title={open ? "Close terminal" : "Open terminal"}
     >
-      <TerminalIcon size={14} weight={open ? "fill" : "regular"} />
+      <TerminalIcon size={12} weight={open ? "fill" : "regular"} />
+      <span>Terminal</span>
     </button>
   );
 });
