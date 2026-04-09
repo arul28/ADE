@@ -1089,18 +1089,14 @@ describe("mcpServer", () => {
           "run_tests",
         ])
       );
-      expect(names).not.toEqual(
-        expect.arrayContaining([
-          "spawn_agent",
-          "delegate_to_subagent",
-          "delegate_parallel",
-          "report_status",
-          "report_result",
-          "get_worker_output",
-          "read_mission_status",
-          "list_workers",
-        ])
-      );
+      expect(names).not.toContain("spawn_agent");
+      expect(names).not.toContain("delegate_to_subagent");
+      expect(names).not.toContain("delegate_parallel");
+      expect(names).not.toContain("report_status");
+      expect(names).not.toContain("report_result");
+      expect(names).not.toContain("get_worker_output");
+      expect(names).not.toContain("read_mission_status");
+      expect(names).not.toContain("list_workers");
     });
   });
 

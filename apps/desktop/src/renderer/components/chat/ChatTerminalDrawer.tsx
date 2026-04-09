@@ -31,6 +31,7 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
   const [creatingTab, setCreatingTab] = useState(false);
   const dragRef = useRef<{ startY: number; startHeight: number } | null>(null);
   const hadTabsRef = useRef(false);
+  const autoCreateDoneRef = useRef(false);
   const tabsRef = useRef<TabEntry[]>([]);
 
   tabsRef.current = tabs;
@@ -88,7 +89,8 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
   }, [creatingTab, laneId]);
 
   useEffect(() => {
-    if (!open || creatingTab || tabs.length > 0) return;
+    if (!open || creatingTab || tabs.length > 0 || autoCreateDoneRef.current) return;
+    autoCreateDoneRef.current = true;
     void createTab();
   }, [createTab, creatingTab, open, tabs.length]);
 
@@ -173,9 +175,9 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
                 className={tab.exited ? "shrink-0 text-red-400/60" : "shrink-0 text-white/30"}
               />
               <span className="max-w-[80px] truncate">{tab.label}</span>
-              <span
-                role="button"
-                tabIndex={-1}
+              <button
+                type="button"
+                aria-label="Close tab"
                 onClick={(event) => {
                   event.stopPropagation();
                   closeTab(tab.id);
@@ -189,7 +191,7 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
                 className="ml-0.5 text-white/30 opacity-0 transition-opacity group-hover:opacity-100 hover:text-white/60"
               >
                 <X size={8} weight="bold" />
-              </span>
+              </button>
             </button>
           ))}
         </div>

@@ -177,6 +177,19 @@ function persistWorkViewState(args: {
   }
 }
 
+/** Debounced persist: batches rapid setter calls into a single localStorage write. */
+let _debouncePersistTimer: ReturnType<typeof setTimeout> | null = null;
+function debouncedPersistWorkViewState(args: {
+  workViewByProject: Record<string, WorkProjectViewState>;
+  laneWorkViewByScope: Record<string, WorkProjectViewState>;
+}): void {
+  if (_debouncePersistTimer != null) clearTimeout(_debouncePersistTimer);
+  _debouncePersistTimer = setTimeout(() => {
+    _debouncePersistTimer = null;
+    persistWorkViewState(args);
+  }, 300);
+}
+
 function normalizeProjectKey(projectRoot: string | null | undefined): string {
   return typeof projectRoot === "string" ? projectRoot.trim() : "";
 }
@@ -477,7 +490,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         ...prev.workViewByProject,
         [key]: updated,
       };
-      persistWorkViewState({
+      debouncedPersistWorkViewState({
         workViewByProject: nextWorkViews,
         laneWorkViewByScope: prev.laneWorkViewByScope,
       });
@@ -507,7 +520,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         ...prev.laneWorkViewByScope,
         [key]: updated,
       };
-      persistWorkViewState({
+      debouncedPersistWorkViewState({
         workViewByProject: prev.workViewByProject,
         laneWorkViewByScope: nextLaneWorkViews,
       });

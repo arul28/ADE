@@ -51,6 +51,7 @@ type SessionIdentity = {
   callerId: string;
   role: "cto" | "orchestrator" | "agent" | "external" | "evaluator";
   chatSessionId: string | null;
+  standaloneChatSession: boolean;
   missionId: string | null;
   runId: string | null;
   stepId: string | null;
@@ -1540,7 +1541,7 @@ const AGENT_VISIBLE_COORDINATOR_TOOL_SPECS = COORDINATOR_TOOL_SPECS.filter((tool
 
 const STANDALONE_CHAT_HIDDEN_TOOL_NAMES = new Set([
   "spawn_agent",
-  ...AGENT_VISIBLE_COORDINATOR_TOOL_NAMES,
+  ...COORDINATOR_TOOL_SPECS.map((tool) => tool.name),
 ]);
 
 const CTO_OPERATOR_TOOL_NAMES = new Set(CTO_OPERATOR_TOOL_SPECS.map((tool) => tool.name));
@@ -2397,6 +2398,7 @@ type CallerContext = {
   callerId: string | null;
   role: SessionIdentity["role"] | null;
   chatSessionId: string | null;
+  standaloneChatSession: boolean;
   missionId: string | null;
   runId: string | null;
   stepId: string | null;
@@ -2427,14 +2429,19 @@ function resolveEnvCallerContext(): CallerContext {
     || envRetainArtifacts != null
     || envPreferredBackend != null;
   const envChatSessionId = process.env.ADE_CHAT_SESSION_ID?.trim() || null;
+  const envMissionId = process.env.ADE_MISSION_ID?.trim() || null;
+  const envRunId = process.env.ADE_RUN_ID?.trim() || null;
+  const envStepId = process.env.ADE_STEP_ID?.trim() || null;
+  const envAttemptId = process.env.ADE_ATTEMPT_ID?.trim() || null;
   return {
-    callerId: envChatSessionId ?? process.env.ADE_ATTEMPT_ID?.trim() ?? null,
+    callerId: envChatSessionId ?? envAttemptId ?? null,
     role: envRole,
     chatSessionId: envChatSessionId,
-    missionId: process.env.ADE_MISSION_ID?.trim() || null,
-    runId: process.env.ADE_RUN_ID?.trim() || null,
-    stepId: process.env.ADE_STEP_ID?.trim() || null,
-    attemptId: process.env.ADE_ATTEMPT_ID?.trim() || null,
+    standaloneChatSession: Boolean(envChatSessionId) && !envMissionId && !envRunId && !envStepId && !envAttemptId,
+    missionId: envMissionId,
+    runId: envRunId,
+    stepId: envStepId,
+    attemptId: envAttemptId,
     ownerId: process.env.ADE_OWNER_ID?.trim() || null,
     computerUsePolicy: hasEnvComputerUsePolicy
       ? normalizeComputerUsePolicy({
@@ -2454,6 +2461,7 @@ function resolveCallerContext(session?: SessionState): CallerContext {
     callerId: asOptionalTrimmedString(session.identity.callerId),
     role: session.identity.role ?? envContext.role,
     chatSessionId: envContext.chatSessionId,
+    standaloneChatSession: session.identity.standaloneChatSession,
     missionId: session.identity.missionId ?? envContext.missionId,
     runId: envContext.runId,
     stepId: session.identity.stepId ?? envContext.stepId,
@@ -2515,11 +2523,7 @@ function toExternalMcpIdentity(callerCtx: CallerContext): {
 }
 
 function isStandaloneChatCaller(callerCtx: CallerContext): boolean {
-  return Boolean(callerCtx.chatSessionId)
-    && !callerCtx.missionId
-    && !callerCtx.runId
-    && !callerCtx.stepId
-    && !callerCtx.attemptId;
+  return callerCtx.standaloneChatSession;
 }
 
 function isToolHiddenForStandaloneChat(name: string, callerCtx: CallerContext): boolean {
@@ -2610,10 +2614,17 @@ function parseInitializeIdentity(runtime: AdeMcpRuntime, params: unknown): Sessi
     );
   }
 
+  const standaloneChatSession = Boolean(envContext.chatSessionId)
+    && !envContext.missionId
+    && !envContext.runId
+    && !envContext.stepId
+    && !envContext.attemptId;
+
   return {
     callerId: asOptionalTrimmedString(identity.callerId) ?? envContext.chatSessionId ?? envContext.attemptId ?? "unknown",
     role: validRole,
     chatSessionId: envContext.chatSessionId,
+    standaloneChatSession,
     missionId: resolvedMissionId ?? requestedMissionId ?? null,
     runId: resolvedRunId,
     stepId: asOptionalTrimmedString(identity.stepId) ?? envContext.stepId,
@@ -5723,6 +5734,7 @@ export function createMcpRequestHandler(args: {
       callerId: "unknown",
       role: "external",
       chatSessionId: null,
+      standaloneChatSession: false,
       missionId: null,
       runId: null,
       stepId: null,

@@ -120,6 +120,8 @@ async function runGitCheckIgnoreBatch(args: { cwd: string; paths: string[]; time
       finish(ignored);
     });
 
+    child.stdin.on("error", () => finish(new Set<string>()));
+
     try {
       child.stdin.write(`${args.paths.join("\n")}\n`);
       child.stdin.end();

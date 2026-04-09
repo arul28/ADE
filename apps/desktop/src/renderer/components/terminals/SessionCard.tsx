@@ -166,10 +166,10 @@ export const SessionCard = React.memo(function SessionCard({
       </button>
 
       {/* Hover actions */}
-      <div className="absolute right-1.5 top-1 flex items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
+      <div className="absolute right-1.5 top-1 flex items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
         <button
           type="button"
-          className="inline-flex items-center justify-center h-5 w-5 rounded-full border border-white/[0.08] bg-white/[0.06] text-muted-fg/60 hover:text-fg hover:bg-white/[0.10] transition-colors"
+          className="inline-flex items-center justify-center h-5 w-5 rounded-full border border-white/[0.08] bg-white/[0.06] text-muted-fg/60 hover:text-fg hover:bg-white/[0.10] transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/60 focus-visible:ring-offset-1 focus-visible:ring-offset-transparent"
           onClick={(e) => { e.stopPropagation(); onInfoClick(e); }}
           title="Session details"
         >
@@ -179,7 +179,7 @@ export const SessionCard = React.memo(function SessionCard({
         {canResume ? (
           <button
             type="button"
-            className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded border border-white/[0.08] bg-white/[0.06] text-muted-fg/60 hover:text-fg hover:bg-white/[0.10] transition-colors text-[10px] font-medium"
+            className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded border border-white/[0.08] bg-white/[0.06] text-muted-fg/60 hover:text-fg hover:bg-white/[0.10] transition-colors text-[10px] font-medium focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/60 focus-visible:ring-offset-1 focus-visible:ring-offset-transparent"
             disabled={resumingSessionId != null}
             onClick={(e) => { e.stopPropagation(); onResume(); }}
             title="Resume"

@@ -395,7 +395,9 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
 describe("useWorkSessions — grouping defaults and derived tab order", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    resetFakeAppStoreState();
     installWindowAde();
+    listSessionsCachedMock.mockResolvedValue([]);
   });
 
   afterEach(() => {

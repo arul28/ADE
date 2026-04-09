@@ -52,6 +52,8 @@ describe("fileService", () => {
 
   it("includes ignored files in quick open and search when requested", async () => {
     const rootPath = fs.mkdtempSync(path.join(os.tmpdir(), "ade-file-service-search-"));
+    const { execSync } = await import("node:child_process");
+    execSync("git init", { cwd: rootPath, stdio: "ignore" });
     const laneService = createLaneServiceStub(rootPath);
     const service = createFileService({ laneService });
 

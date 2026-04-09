@@ -143,7 +143,7 @@ export function createFileSearchIndexService() {
 
   const shouldSkipDirectoryName = (name: string, includeIgnored: boolean): boolean => {
     if (name === ".git") return true;
-    if (!includeIgnored && name === "node_modules") return true;
+    if (name === "node_modules") return true;
     return false;
   };
 

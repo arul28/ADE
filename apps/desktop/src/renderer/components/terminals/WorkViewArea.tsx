@@ -485,6 +485,8 @@ export function WorkViewArea({
                 >
                   <button
                     type="button"
+                    aria-expanded={!group.collapsed}
+                    aria-controls={`tab-group-${group.id}`}
                     className="inline-flex items-center gap-1.5 px-2.5 py-1 text-left text-[11px] font-medium transition-colors"
                     style={{
                       color: hasActive ? "var(--color-fg)" : "var(--color-muted-fg)",
@@ -505,7 +507,7 @@ export function WorkViewArea({
                     )}
                   </button>
                   {!group.collapsed ? (
-                    <div className="flex min-w-0 items-stretch gap-0.5 overflow-x-auto scrollbar-none border-t border-white/[0.04] px-0.5 py-0.5">
+                    <div id={`tab-group-${group.id}`} className="flex min-w-0 items-stretch gap-0.5 overflow-x-auto scrollbar-none border-t border-white/[0.04] px-0.5 py-0.5">
                       {group.sessions.map((session) => {
                         const isActive = activeSession?.id === session.id;
                         const dot = sessionStatusDot(session);
@@ -659,6 +661,8 @@ function ViewModeToggle({
         return (
           <button
             key={mode}
+            type="button"
+            aria-pressed={active}
             onClick={() => setViewMode(mode)}
             className="inline-flex items-center gap-1 rounded-full px-2.5 text-[10px] font-medium transition-all"
             style={{

@@ -585,7 +585,10 @@ export function useWorkSessions() {
     invalidateSessionListCache();
     setSessions([]);
     setLoading(false);
-    refreshQueuedRef.current = null;
+    if (refreshQueuedRef.current) {
+      refreshQueuedRef.current.deferred.reject(new Error("projectRoot changed"));
+      refreshQueuedRef.current = null;
+    }
     hasLoadedOnceRef.current = false;
     hasRunningSessionsRef.current = false;
     appliedQuerySessionIdRef.current = null;
@@ -888,7 +891,9 @@ export function useWorkSessions() {
             : command,
         });
         invalidateSessionListCache();
-        await refresh({ showLoading: false, force: true });
+        try {
+          await refresh({ showLoading: false, force: true });
+        } catch { /* best-effort after reattach */ }
         selectLane(session.laneId);
         focusSession(resumed.sessionId);
         setActiveItemId(resumed.sessionId);
