@@ -31,12 +31,16 @@ const mockState = vi.hoisted(() => ({
     waiters: Array<() => void>;
     aborted: boolean;
   }>(),
+  droidSessionCounter: 0,
   codexRequestPayloads: [] as Array<Record<string, unknown>>,
   codexCollaborationModes: [{ mode: "default" }, { mode: "plan" }] as Array<Record<string, unknown> | string>,
   codexLineHandler: null as ((line: string) => void) | null,
   cursorAcquireCalls: [] as Array<Record<string, unknown>>,
   cursorNewSessionCalls: [] as Array<Record<string, unknown>>,
   cursorPromptCalls: [] as Array<Record<string, unknown>>,
+  droidAcquireCalls: [] as Array<Record<string, unknown>>,
+  droidNewSessionCalls: [] as Array<Record<string, unknown>>,
+  droidPromptCalls: [] as Array<Record<string, unknown>>,
   emitCodexPayload(payload: Record<string, unknown>) {
     mockState.codexLineHandler?.(JSON.stringify(payload));
   },
@@ -385,6 +389,10 @@ vi.mock("../ai/cursorAgentExecutable", () => ({
   resolveCursorAgentExecutable: vi.fn(() => ({ path: "/usr/local/bin/agent", source: "path" })),
 }));
 
+vi.mock("../ai/droidExecutable", () => ({
+  resolveDroidExecutable: vi.fn(() => ({ path: "/usr/local/bin/droid", source: "path" })),
+}));
+
 vi.mock("../ai/authDetector", () => ({
   detectAllAuth: vi.fn(async () => []),
 }));
@@ -469,6 +477,51 @@ vi.mock("./cursorAcpPool", () => ({
   releaseCursorAcpConnection: vi.fn(),
 }));
 
+vi.mock("./droidAcpPool", () => ({
+  acquireDroidAcpConnection: vi.fn(async (args: Record<string, unknown>) => {
+    mockState.droidAcquireCalls.push(args);
+    return {
+      generation: 1,
+      pooled: {
+        connection: {
+          newSession: vi.fn(async (params: Record<string, unknown>) => {
+            mockState.droidNewSessionCalls.push(params);
+            mockState.droidSessionCounter += 1;
+            return {
+              sessionId: `droid-acp-session-${mockState.droidSessionCounter}`,
+              models: { currentModelId: "claude-sonnet-4-5-20250929" },
+              configOptions: [],
+            };
+          }),
+          prompt: vi.fn(async (params: Record<string, unknown>) => {
+            mockState.droidPromptCalls.push(params);
+            return {
+              stopReason: "end_turn",
+              usage: { inputTokens: 3, outputTokens: 5 },
+            };
+          }),
+          cancel: vi.fn(),
+          unstable_closeSession: vi.fn(),
+        },
+        bridge: {
+          onPermission: null,
+          onSessionUpdate: null,
+          getRootPath: () => "",
+          getDirtyFileText: null,
+          onTerminalOutputDelta: null,
+          flushTerminalOutput: null,
+          onTerminalDisposed: null,
+        },
+        terminals: new Map(),
+        terminalWorkLogBindings: new Map(),
+        terminalOutputTimers: new Map(),
+        dispose: vi.fn(),
+      },
+    };
+  }),
+  releaseDroidAcpConnection: vi.fn(),
+}));
+
 // ---------------------------------------------------------------------------
 // Import system under test (after mocks)
 // ---------------------------------------------------------------------------
@@ -488,6 +541,7 @@ import { parseAgentChatTranscript } from "../../../shared/chatTranscript";
 import { createDefaultComputerUsePolicy } from "../../../shared/types";
 import { mapPermissionToClaude, mapPermissionToCodex } from "../orchestrator/permissionMapping";
 import { acquireCursorAcpConnection } from "./cursorAcpPool";
+import { acquireDroidAcpConnection } from "./droidAcpPool";
 import type { AgentChatEvent, AgentChatEventEnvelope, ComputerUseBackendStatus } from "../../../shared/types";
 import {
   createDynamicOpenCodeModelDescriptor,
@@ -811,13 +865,18 @@ beforeEach(() => {
   mockState.cursorSessionCounter = 0;
   mockState.openCodeSessionCounter = 0;
   mockState.openCodeSessions.clear();
+  mockState.droidSessionCounter = 0;
   mockState.codexRequestPayloads = [];
   mockState.codexCollaborationModes = [{ mode: "default" }, { mode: "plan" }];
   mockState.codexLineHandler = null;
   mockState.cursorAcquireCalls = [];
   mockState.cursorNewSessionCalls = [];
   mockState.cursorPromptCalls = [];
+  mockState.droidAcquireCalls = [];
+  mockState.droidNewSessionCalls = [];
+  mockState.droidPromptCalls = [];
   vi.mocked(acquireCursorAcpConnection).mockClear();
+  vi.mocked(acquireDroidAcpConnection).mockClear();
   vi.mocked(streamText).mockReset();
   vi.mocked(generateText).mockReset();
   vi.mocked(unstable_v2_createSession).mockReset();
@@ -6768,57 +6827,60 @@ describe("createAgentChatService", () => {
     vi.mocked(acquireCursorAcpConnection).mockImplementationOnce(async (args: Record<string, unknown>) => {
       mockState.cursorAcquireCalls.push(args);
       return {
-        connection: {
-          newSession: vi.fn(async (params: Record<string, unknown>) => {
-            mockState.cursorNewSessionCalls.push(params);
-            mockState.cursorSessionCounter += 1;
-            return {
-              sessionId: `cursor-acp-session-${mockState.cursorSessionCounter}`,
+        generation: 1,
+        pooled: {
+          connection: {
+            newSession: vi.fn(async (params: Record<string, unknown>) => {
+              mockState.cursorNewSessionCalls.push(params);
+              mockState.cursorSessionCounter += 1;
+              return {
+                sessionId: `cursor-acp-session-${mockState.cursorSessionCounter}`,
+                modes: { currentModeId: "edit" },
+                models: {
+                  currentModelId: "auto",
+                  availableModels: [{ modelId: "auto", name: "Auto" }],
+                },
+                configOptions: [],
+              };
+            }),
+            loadSession: vi.fn(async () => ({
               modes: { currentModeId: "edit" },
               models: {
                 currentModelId: "auto",
                 availableModels: [{ modelId: "auto", name: "Auto" }],
               },
               configOptions: [],
-            };
-          }),
-          loadSession: vi.fn(async () => ({
-            modes: { currentModeId: "edit" },
-            models: {
-              currentModelId: "auto",
-              availableModels: [{ modelId: "auto", name: "Auto" }],
-            },
-            configOptions: [],
-          })),
-          prompt: vi.fn((params: Record<string, unknown>) => {
-            mockState.cursorPromptCalls.push(params);
-            promptCall += 1;
-            if (promptCall === 1) {
-              return new Promise((resolve) => {
-                resolveFirstPrompt = resolve as typeof resolveFirstPrompt;
+            })),
+            prompt: vi.fn((params: Record<string, unknown>) => {
+              mockState.cursorPromptCalls.push(params);
+              promptCall += 1;
+              if (promptCall === 1) {
+                return new Promise((resolve) => {
+                  resolveFirstPrompt = resolve as typeof resolveFirstPrompt;
+                });
+              }
+              return Promise.resolve({
+                stopReason: "end_turn",
+                usage: { inputTokens: 2, outputTokens: 3 },
               });
-            }
-            return Promise.resolve({
-              stopReason: "end_turn",
-              usage: { inputTokens: 2, outputTokens: 3 },
-            });
-          }),
-          cancel: vi.fn(),
-          unstable_closeSession: vi.fn(),
+            }),
+            cancel: vi.fn(),
+            unstable_closeSession: vi.fn(),
+          },
+          bridge: {
+            onPermission: null,
+            onSessionUpdate: null,
+            getRootPath: () => "",
+            getDirtyFileText: null,
+            onTerminalOutputDelta: null,
+            flushTerminalOutput: null,
+            onTerminalDisposed: null,
+          },
+          terminals: new Map(),
+          terminalWorkLogBindings: new Map(),
+          terminalOutputTimers: new Map(),
+          dispose: vi.fn(),
         },
-        bridge: {
-          onPermission: null,
-          onSessionUpdate: null,
-          getRootPath: () => "",
-          getDirtyFileText: null,
-          onTerminalOutputDelta: null,
-          flushTerminalOutput: null,
-          onTerminalDisposed: null,
-        },
-        terminals: new Map(),
-        terminalWorkLogBindings: new Map(),
-        terminalOutputTimers: new Map(),
-        dispose: vi.fn(),
       } as any;
     });
 
@@ -7062,6 +7124,321 @@ describe("createAgentChatService", () => {
     expect(persisted.modelId).toBe("cursor/auto");
   });
 
+  it("realigns a new Droid ACP session to the selected model before prompting", async () => {
+    const events: AgentChatEventEnvelope[] = [];
+    let currentModelId = "claude-opus-4-6";
+    const setSessionModel = vi.fn(async ({ modelId }: { modelId: string }) => {
+      currentModelId = modelId;
+    });
+    const loadSession = vi.fn(async () => ({
+      models: {
+        currentModelId,
+        availableModels: [
+          { modelId: "claude-opus-4-6", name: "Claude Opus 4.6" },
+          { modelId: "custom:claude-sonnet-4-6-thinking-32000", name: "Custom Claude Sonnet 4.6 Thinking" },
+        ],
+      },
+      configOptions: [],
+    }));
+
+    vi.mocked(acquireDroidAcpConnection).mockImplementationOnce(async (args: Record<string, unknown>) => {
+      mockState.droidAcquireCalls.push(args);
+      return {
+        generation: 1,
+        pooled: {
+          connection: {
+            newSession: vi.fn(async (params: Record<string, unknown>) => {
+              mockState.droidNewSessionCalls.push(params);
+              mockState.droidSessionCounter += 1;
+              return {
+                sessionId: `droid-acp-session-${mockState.droidSessionCounter}`,
+                models: {
+                  currentModelId,
+                  availableModels: [
+                    { modelId: "claude-opus-4-6", name: "Claude Opus 4.6" },
+                    { modelId: "custom:claude-sonnet-4-6-thinking-32000", name: "Custom Claude Sonnet 4.6 Thinking" },
+                  ],
+                },
+                configOptions: [],
+              };
+            }),
+            loadSession,
+            unstable_setSessionModel: setSessionModel,
+            prompt: vi.fn(async (params: Record<string, unknown>) => {
+              mockState.droidPromptCalls.push(params);
+              return {
+                stopReason: "end_turn",
+                usage: { inputTokens: 2, outputTokens: 4 },
+              };
+            }),
+            cancel: vi.fn(),
+            unstable_closeSession: vi.fn(),
+          },
+          bridge: {
+            onPermission: null,
+            onSessionUpdate: null,
+            getRootPath: () => "",
+            getDirtyFileText: null,
+            onTerminalOutputDelta: null,
+            flushTerminalOutput: null,
+            onTerminalDisposed: null,
+          },
+          terminals: new Map(),
+          terminalWorkLogBindings: new Map(),
+          terminalOutputTimers: new Map(),
+          dispose: vi.fn(),
+        },
+      } as any;
+    });
+
+    const { service } = createService({
+      onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+    });
+
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "droid",
+      model: "custom:claude-sonnet-4-6-thinking-32000",
+      modelId: "droid/custom:claude-sonnet-4-6-thinking-32000",
+    });
+
+    await service.sendMessage({
+      sessionId: session.id,
+      text: "Use the selected Droid model.",
+    }, { awaitDispatch: true });
+
+    const doneEvent = await waitForEvent(
+      events,
+      (event): event is AgentChatEventEnvelope & {
+        event: Extract<AgentChatEventEnvelope["event"], { type: "done" }>;
+      } => event.event.type === "done" && event.sessionId === session.id,
+    );
+    const updated = await service.getSessionSummary(session.id);
+
+    expect(mockState.droidAcquireCalls[0]?.modelId).toBe("custom:claude-sonnet-4-6-thinking-32000");
+    expect(setSessionModel).toHaveBeenCalledWith({
+      sessionId: "droid-acp-session-1",
+      modelId: "custom:claude-sonnet-4-6-thinking-32000",
+    });
+    expect(updated?.model).toBe("custom:claude-sonnet-4-6-thinking-32000");
+    expect(updated?.modelId).toBe("droid/custom:claude-sonnet-4-6-thinking-32000");
+    expect(doneEvent.event.model).toBe("custom:claude-sonnet-4-6-thinking-32000");
+    expect(doneEvent.event.modelId).toBe("droid/custom:claude-sonnet-4-6-thinking-32000");
+  });
+
+  it("translates Droid custom help ids to ACP session ids before setting the model", async () => {
+    const events: AgentChatEventEnvelope[] = [];
+    let currentModelId = "claude-opus-4-6";
+    const setSessionModel = vi.fn(async ({ modelId }: { modelId: string }) => {
+      if (modelId !== "custom:Claude-Sonnet-4.6-(High)-1") {
+        const error = new Error("Invalid params: Model not recognized") as Error & {
+          code?: number;
+          data?: Record<string, unknown>;
+        };
+        error.code = -32602;
+        error.data = { modelId };
+        throw error;
+      }
+      currentModelId = modelId;
+    });
+
+    vi.mocked(acquireDroidAcpConnection).mockImplementationOnce(async (args: Record<string, unknown>) => {
+      mockState.droidAcquireCalls.push(args);
+      return {
+        generation: 1,
+        pooled: {
+          connection: {
+            newSession: vi.fn(async (params: Record<string, unknown>) => {
+              mockState.droidNewSessionCalls.push(params);
+              mockState.droidSessionCounter += 1;
+              return {
+                sessionId: `droid-acp-session-${mockState.droidSessionCounter}`,
+                models: {
+                  currentModelId,
+                  availableModels: [
+                    { modelId: "claude-opus-4-6", name: "Claude Opus 4.6" },
+                    { modelId: "custom:Claude-Sonnet-4.6-(High)-1", name: "Claude Sonnet 4.6 (High)" },
+                  ],
+                },
+                configOptions: [],
+              };
+            }),
+            loadSession: vi.fn(async () => ({})),
+            unstable_setSessionModel: setSessionModel,
+            prompt: vi.fn(async (params: Record<string, unknown>) => {
+              mockState.droidPromptCalls.push(params);
+              return {
+                stopReason: "end_turn",
+                usage: { inputTokens: 1, outputTokens: 2 },
+              };
+            }),
+            cancel: vi.fn(),
+            unstable_closeSession: vi.fn(),
+          },
+          bridge: {
+            onPermission: null,
+            onSessionUpdate: null,
+            getRootPath: () => "",
+            getDirtyFileText: null,
+            onTerminalOutputDelta: null,
+            flushTerminalOutput: null,
+            onTerminalDisposed: null,
+          },
+          terminals: new Map(),
+          terminalWorkLogBindings: new Map(),
+          terminalOutputTimers: new Map(),
+          dispose: vi.fn(),
+        },
+      } as any;
+    });
+
+    const { service } = createService({
+      onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+    });
+
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "droid",
+      model: "custom:claude-sonnet-4-6-thinking-32000",
+      modelId: "droid/custom:claude-sonnet-4-6-thinking-32000",
+    });
+
+    await service.sendMessage({
+      sessionId: session.id,
+      text: "Use the high-reasoning custom Sonnet model.",
+    }, { awaitDispatch: true });
+
+    const doneEvent = await waitForEvent(
+      events,
+      (event): event is AgentChatEventEnvelope & {
+        event: Extract<AgentChatEventEnvelope["event"], { type: "done" }>;
+      } => event.event.type === "done" && event.sessionId === session.id,
+    );
+    const updated = await service.getSessionSummary(session.id);
+
+    expect(setSessionModel).toHaveBeenCalledWith({
+      sessionId: "droid-acp-session-1",
+      modelId: "custom:Claude-Sonnet-4.6-(High)-1",
+    });
+    expect(updated?.model).toBe("custom:claude-sonnet-4-6-thinking-32000");
+    expect(updated?.modelId).toBe("droid/custom:claude-sonnet-4-6-thinking-32000");
+    expect(doneEvent.event.model).toBe("custom:claude-sonnet-4-6-thinking-32000");
+    expect(doneEvent.event.modelId).toBe("droid/custom:claude-sonnet-4-6-thinking-32000");
+  });
+
+  it("realigns a resumed Droid ACP session to the selected model during warmup", async () => {
+    let currentModelId = "claude-opus-4-6";
+    const setSessionModel = vi.fn(async ({ modelId }: { modelId: string }) => {
+      currentModelId = modelId;
+    });
+    const loadSession = vi.fn(async () => ({
+      models: {
+        currentModelId,
+        availableModels: [
+          { modelId: "claude-opus-4-6", name: "Claude Opus 4.6" },
+          { modelId: "custom:claude-sonnet-4-6-thinking-32000", name: "Custom Claude Sonnet 4.6 Thinking" },
+        ],
+      },
+      configOptions: [],
+    }));
+    const resumeSession = vi.fn(async () => ({
+      models: {
+        currentModelId,
+        availableModels: [
+          { modelId: "claude-opus-4-6", name: "Claude Opus 4.6" },
+          { modelId: "custom:claude-sonnet-4-6-thinking-32000", name: "Custom Claude Sonnet 4.6 Thinking" },
+        ],
+      },
+      configOptions: [],
+    }));
+
+    vi.mocked(acquireDroidAcpConnection).mockImplementationOnce(async (args: Record<string, unknown>) => {
+      mockState.droidAcquireCalls.push(args);
+      return {
+        generation: 1,
+        pooled: {
+          connection: {
+            newSession: vi.fn(async (params: Record<string, unknown>) => {
+              mockState.droidNewSessionCalls.push(params);
+              mockState.droidSessionCounter += 1;
+              return {
+                sessionId: `droid-acp-session-${mockState.droidSessionCounter}`,
+                models: {
+                  currentModelId,
+                  availableModels: [
+                    { modelId: "claude-opus-4-6", name: "Claude Opus 4.6" },
+                    { modelId: "custom:claude-sonnet-4-6-thinking-32000", name: "Custom Claude Sonnet 4.6 Thinking" },
+                  ],
+                },
+                configOptions: [],
+              };
+            }),
+            unstable_resumeSession: resumeSession,
+            loadSession,
+            unstable_setSessionModel: setSessionModel,
+            prompt: vi.fn(async (params: Record<string, unknown>) => {
+              mockState.droidPromptCalls.push(params);
+              return {
+                stopReason: "end_turn",
+                usage: { inputTokens: 2, outputTokens: 4 },
+              };
+            }),
+            cancel: vi.fn(),
+            unstable_closeSession: vi.fn(),
+          },
+          bridge: {
+            onPermission: null,
+            onSessionUpdate: null,
+            getRootPath: () => "",
+            getDirtyFileText: null,
+            onTerminalOutputDelta: null,
+            flushTerminalOutput: null,
+            onTerminalDisposed: null,
+          },
+          terminals: new Map(),
+          terminalWorkLogBindings: new Map(),
+          terminalOutputTimers: new Map(),
+          dispose: vi.fn(),
+        },
+      } as any;
+    });
+
+    const { service } = createService();
+
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "droid",
+      model: "custom:claude-sonnet-4-6-thinking-32000",
+      modelId: "droid/custom:claude-sonnet-4-6-thinking-32000",
+    });
+
+    const persisted = readPersistedChatState(session.id);
+    writePersistedChatState(session.id, {
+      ...persisted,
+      acpSessionId: "persisted-droid-session-1",
+    });
+
+    await service.warmupModel({
+      sessionId: session.id,
+      modelId: "droid/custom:claude-sonnet-4-6-thinking-32000",
+    });
+
+    const updated = await service.getSessionSummary(session.id);
+
+    expect(resumeSession).toHaveBeenCalledWith(expect.objectContaining({
+      sessionId: "persisted-droid-session-1",
+      cwd: fs.realpathSync(tmpRoot),
+      mcpServers: expect.any(Array),
+    }));
+    expect(setSessionModel).toHaveBeenCalledWith({
+      sessionId: "persisted-droid-session-1",
+      modelId: "custom:claude-sonnet-4-6-thinking-32000",
+    });
+    expect(mockState.droidNewSessionCalls).toHaveLength(0);
+    expect(updated?.model).toBe("custom:claude-sonnet-4-6-thinking-32000");
+    expect(updated?.modelId).toBe("droid/custom:claude-sonnet-4-6-thinking-32000");
+  });
+
   it("prefers an explicit Cursor mode over legacy full-auto launch settings", async () => {
     const { service } = createService();
 
@@ -7085,6 +7462,90 @@ describe("createAgentChatService", () => {
       sandbox: "enabled",
       force: false,
       approveMcps: false,
+    });
+  });
+
+  it("surfaces structured Droid ACP failures without collapsing them to [object Object]", async () => {
+    const events: AgentChatEventEnvelope[] = [];
+
+    vi.mocked(acquireDroidAcpConnection).mockImplementationOnce(async (args: Record<string, unknown>) => {
+      mockState.droidAcquireCalls.push(args);
+      return {
+        generation: 1,
+        pooled: {
+          connection: {
+            newSession: vi.fn(async (params: Record<string, unknown>) => {
+              mockState.droidNewSessionCalls.push(params);
+              mockState.droidSessionCounter += 1;
+              return {
+                sessionId: `droid-acp-session-${mockState.droidSessionCounter}`,
+                models: {
+                  currentModelId: "custom:Claude-Sonnet-4.6-(High)-1",
+                  availableModels: [
+                    { modelId: "custom:Claude-Sonnet-4.6-(High)-1", name: "Claude Sonnet 4.6 (High)" },
+                  ],
+                },
+                configOptions: [],
+              };
+            }),
+            loadSession: vi.fn(async () => ({})),
+            unstable_setSessionModel: vi.fn(async () => {}),
+            prompt: vi.fn(async () => {
+              throw {
+                code: -32603,
+                message: "Connection error.",
+                data: "This might be a network issue. Please check your internet connection.",
+              };
+            }),
+            cancel: vi.fn(),
+            unstable_closeSession: vi.fn(),
+          },
+          bridge: {
+            onPermission: null,
+            onSessionUpdate: null,
+            getRootPath: () => "",
+            getDirtyFileText: null,
+            onTerminalOutputDelta: null,
+            flushTerminalOutput: null,
+            onTerminalDisposed: null,
+          },
+          terminals: new Map(),
+          terminalWorkLogBindings: new Map(),
+          terminalOutputTimers: new Map(),
+          dispose: vi.fn(),
+        },
+      } as any;
+    });
+
+    const { service } = createService({
+      onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+    });
+
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "droid",
+      model: "custom:claude-sonnet-4-6-thinking-32000",
+      modelId: "droid/custom:claude-sonnet-4-6-thinking-32000",
+    });
+
+    await service.sendMessage({
+      sessionId: session.id,
+      text: "test",
+    }, { awaitDispatch: true });
+
+    const errorEvent = await waitForEvent(
+      events,
+      (event): event is AgentChatEventEnvelope & {
+        event: Extract<AgentChatEventEnvelope["event"], { type: "error" }>;
+      } => event.event.type === "error" && event.sessionId === session.id,
+    );
+
+    expect(errorEvent.event.message).toBe("Connection error.");
+    expect(errorEvent.event.detail).toContain("network issue");
+    expect(errorEvent.event.errorInfo).toEqual({
+      category: "network",
+      provider: "Factory Droid",
+      model: "Claude Sonnet 4.6 (High)",
     });
   });
 });

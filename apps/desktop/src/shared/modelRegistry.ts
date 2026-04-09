@@ -783,13 +783,129 @@ function colorForDroidModelId(providerModelId: string): string {
   return "#71717A";
 }
 
+function titleCaseDroidToken(token: string): string {
+  if (!token.length) return token;
+  const knownLabels: Record<string, string> = {
+    claude: "Claude",
+    codex: "Codex",
+    gemini: "Gemini",
+    glm: "GLM",
+    gpt: "GPT",
+    kimi: "Kimi",
+    minimax: "MiniMax",
+    openai: "OpenAI",
+  };
+  const known = knownLabels[token.toLowerCase()];
+  if (known) return known;
+  if (/^[A-Z0-9.]+$/.test(token)) return token;
+  return token.charAt(0).toUpperCase() + token.slice(1);
+}
+
+function humanizeDroidModelStem(stem: string): string {
+  const normalized = stem
+    .replace(/[_/]+/g, "-")
+    .replace(/\s+/g, "-")
+    .trim();
+  if (!normalized.length) return stem.trim();
+
+  const rawTokens = normalized.split("-").filter(Boolean);
+  const mergedTokens: string[] = [];
+  for (let index = 0; index < rawTokens.length;) {
+    const token = rawTokens[index]!;
+    if (/^\d+$/.test(token)) {
+      const parts = [token];
+      let nextIndex = index + 1;
+      while (nextIndex < rawTokens.length && /^\d+$/.test(rawTokens[nextIndex]!)) {
+        parts.push(rawTokens[nextIndex]!);
+        nextIndex += 1;
+      }
+      mergedTokens.push(parts.join("."));
+      index = nextIndex;
+      continue;
+    }
+    mergedTokens.push(token);
+    index += 1;
+  }
+
+  return mergedTokens.map(titleCaseDroidToken).join(" ");
+}
+
+function normalizeDroidEffortLabel(value: string): string {
+  const normalized = value.trim().toLowerCase();
+  if (!normalized.length) return value.trim();
+  if (normalized === "xhigh") return "XHigh";
+  if (normalized === "high") return "High";
+  if (normalized === "medium") return "Medium";
+  if (normalized === "low") return "Low";
+  if (normalized === "max") return "Max";
+  if (normalized === "off") return "Off";
+  if (normalized === "none") return "None";
+  return value.trim().replace(/\b\w/g, (char) => char.toUpperCase());
+}
+
+const KNOWN_DROID_COMPACT_DISPLAY_NAMES: Record<string, string> = {
+  "claude-opus-4-5-20251101": "Opus 4.5 (2x)",
+  "claude-opus-4-6": "Opus 4.6 (2x)",
+  "claude-opus-4-6-fast": "Opus 4.6 Fast Mode (12x)",
+  "claude-sonnet-4-5-20250929": "Sonnet 4.5 (1.2x)",
+  "claude-sonnet-4-6": "Sonnet 4.6 (1.2x)",
+  "claude-haiku-4-5-20251001": "Haiku 4.5 (0.4x)",
+  "gpt-5.1": "GPT-5.1 (0.5x)",
+  "gpt-5.1-codex": "GPT-5.1-Codex (0.5x)",
+  "gpt-5.1-codex-max": "GPT-5.1-Codex-Max (0.5x)",
+  "gpt-5.2": "GPT-5.2 (0.7x)",
+  "gpt-5.2-codex": "GPT-5.2-Codex (0.7x)",
+  "gpt-5.3-codex": "GPT-5.3-Codex (0.7x)",
+  "gemini-3.1-pro-preview": "Gemini 3.1 Pro (0.8x)",
+  "gemini-3-flash-preview": "Gemini 3 Flash (0.2x)",
+  "glm-4.7": "Droid Core (GLM-4.7) (0.25x)",
+  "glm-5": "Droid Core (GLM-5) (0.4x)",
+  "kimi-k2.5": "Droid Core (Kimi K2.5) (0.25x)",
+  "minimax-m2.5": "Droid Core (MiniMax M2.5) (0.12x)",
+};
+
+function formatDroidCliFallbackDisplayName(providerModelId: string): string {
+  const trimmed = providerModelId.trim();
+  const knownCompact = KNOWN_DROID_COMPACT_DISPLAY_NAMES[trimmed.toLowerCase()];
+  if (knownCompact) return knownCompact;
+  if (!trimmed.toLowerCase().startsWith("custom:")) {
+    return formatCursorSdkFallbackDisplayName(trimmed);
+  }
+
+  const rawTail = trimmed.slice("custom:".length).trim();
+  let baseModel = rawTail;
+  let effort: string | null = null;
+
+  const indexedEffortMatch = rawTail.match(/^(.*)\(([^)]+)\)-\d+$/i);
+  if (indexedEffortMatch) {
+    baseModel = indexedEffortMatch[1]!.replace(/[-_]+$/g, "");
+    effort = indexedEffortMatch[2] ?? null;
+  } else {
+    const effortMatch = rawTail.match(/^(.*)\(([^)]+)\)$/i);
+    if (effortMatch) {
+      baseModel = effortMatch[1]!.replace(/[-_]+$/g, "");
+      effort = effortMatch[2] ?? null;
+    } else {
+      const thinkingMatch = rawTail.match(/^(.*?)-thinking-\d+$/i);
+      if (thinkingMatch) {
+        baseModel = thinkingMatch[1]!;
+        effort = "High";
+      }
+    }
+  }
+
+  const display = humanizeDroidModelStem(baseModel);
+  if (!effort) return display;
+  return `${display} (${normalizeDroidEffortLabel(effort)})`;
+}
+
 export function parseDynamicDroidModelRef(modelId: string): { providerModelId: string } | null {
   const trimmed = modelId.trim();
   const lower = trimmed.toLowerCase();
   if (!lower.startsWith("droid/")) return null;
   const providerModelId = trimmed.slice("droid/".length).trim();
   if (!providerModelId.length) return null;
-  if (!/^[\w.:+-]+$/i.test(providerModelId)) return null;
+  if (!/^[\w.:()+-]+$/i.test(providerModelId)) return null;
   return { providerModelId };
 }
 
@@ -797,23 +913,27 @@ export function createDynamicDroidCliModelDescriptor(
   providerModelId: string,
   cliDisplayName?: string | null,
 ): ModelDescriptor {
-  const id = `droid/${providerModelId}`;
+  const trimmedProviderModelId = providerModelId.trim();
+  const id = `droid/${trimmedProviderModelId}`;
+  const knownCompact = KNOWN_DROID_COMPACT_DISPLAY_NAMES[trimmedProviderModelId.toLowerCase()];
   const display =
-    typeof cliDisplayName === "string" && cliDisplayName.trim().length
+    knownCompact
+      ? knownCompact
+      : typeof cliDisplayName === "string" && cliDisplayName.trim().length
       ? cliDisplayName.trim()
-      : formatCursorSdkFallbackDisplayName(providerModelId);
+      : formatDroidCliFallbackDisplayName(trimmedProviderModelId);
   return {
     id,
-    shortId: providerModelId,
+    shortId: trimmedProviderModelId,
     displayName: display,
     family: "factory",
     authTypes: ["cli-subscription"],
     contextWindow: 200_000,
     maxOutputTokens: 32_000,
     capabilities: ALL_CAPS,
-    color: colorForDroidModelId(providerModelId),
+    color: colorForDroidModelId(trimmedProviderModelId),
     providerRoute: "droid-cli",
-    providerModelId,
+    providerModelId: trimmedProviderModelId,
     cliCommand: "droid",
     isCliWrapped: true,
   };

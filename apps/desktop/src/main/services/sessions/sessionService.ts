@@ -185,6 +185,7 @@ export function createSessionService({ db }: { db: AdeDb }) {
       "claude-chat",
       "opencode-chat",
       "cursor",
+      "droid-chat",
       "aider",
       "continue",
       "other"
@@ -192,8 +193,26 @@ export function createSessionService({ db }: { db: AdeDb }) {
     return (allowed as string[]).includes(value) ? (value as TerminalToolType) : "other";
   };
 
+  const inferToolTypeFromResumeCommand = (
+    toolType: TerminalToolType | null,
+    resumeCommand: string | null,
+  ): TerminalToolType | null => {
+    if (toolType && toolType !== "other") return toolType;
+    const normalized = String(resumeCommand ?? "").trim().toLowerCase();
+    if (!normalized) return toolType;
+    if (normalized.startsWith("chat:droid:")) return "droid-chat";
+    if (normalized.startsWith("chat:cursor:")) return "cursor";
+    if (normalized.startsWith("chat:unified:")) return "opencode-chat";
+    if (normalized.startsWith("chat:claude:")) return "claude-chat";
+    if (normalized === "chat:codex" || normalized.startsWith("chat:codex:")) return "codex-chat";
+    return toolType;
+  };
+
   const mapRow = (row: SessionRow) => {
-    const toolType = normalizeToolType(row.toolType);
+    const toolType = inferToolTypeFromResumeCommand(
+      normalizeToolType(row.toolType),
+      row.resumeCommand ?? null,
+    );
     let resumeMetadata: TerminalResumeMetadata | null = null;
     if (row.resumeMetadataJson) {
       try {

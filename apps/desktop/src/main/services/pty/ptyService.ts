@@ -158,6 +158,7 @@ function normalizeToolType(raw: unknown): TerminalToolType | null {
     "claude-chat",
     "opencode-chat",
     "cursor",
+    "droid-chat",
     "aider",
     "continue",
     "other"

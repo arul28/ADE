@@ -34,6 +34,7 @@ import { createJobEngine } from "./services/jobs/jobEngine";
 import { createAiIntegrationService } from "./services/ai/aiIntegrationService";
 import { augmentProcessPathWithShellAndKnownCliDirs } from "./services/ai/cliExecutableResolver";
 import { createAgentChatService } from "./services/chat/agentChatService";
+import { shutdownAcpCliConnections } from "./services/chat/acpCliPool";
 import { createGithubService } from "./services/github/githubService";
 import { createFeedbackReporterService } from "./services/feedback/feedbackReporterService";
 import { createPrService } from "./services/prs/prService";
@@ -3512,6 +3513,7 @@ app.whenReady().then(async () => {
         // ignore
       })
       .finally(() => {
+        shutdownAcpCliConnections();
         app.quit();
       });
   });

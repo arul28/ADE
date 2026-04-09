@@ -14,6 +14,7 @@ import {
   uniqueStrings,
   asArray,
   firstLine,
+  spawnAsync,
   parseDiffNameOnly,
   safeJsonParse,
   isWithinDir,
@@ -175,6 +176,29 @@ describe("firstLine", () => {
   it("returns empty string for empty input", () => {
     expect(firstLine("")).toBe("");
   });
+});
+
+describe("spawnAsync", () => {
+  it(
+    "kills a child process tree when the child ignores SIGTERM",
+    async () => {
+      const grandchildScript = "setInterval(() => {}, 1000);";
+      const parentScript = `
+        const { spawn } = require("node:child_process");
+        spawn(process.execPath, ["-e", ${JSON.stringify(grandchildScript)}], { stdio: "inherit" });
+        process.on("SIGTERM", () => {});
+        setInterval(() => {}, 1000);
+      `.trim();
+
+      const start = Date.now();
+      const result = await spawnAsync(process.execPath, ["-e", parentScript], { timeout: 100 });
+      const elapsed = Date.now() - start;
+
+      expect(elapsed).toBeLessThan(5_000);
+      expect(result.status).toBeNull();
+    },
+    10_000,
+  );
 });
 
 describe("parseDiffNameOnly", () => {

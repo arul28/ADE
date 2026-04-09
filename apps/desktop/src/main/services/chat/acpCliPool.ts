@@ -8,6 +8,11 @@ import {
 } from "@agentclientprotocol/sdk";
 import type { AcpHostBridge, AcpHostTermState } from "./acpHostClient";
 import { createAcpHostClient } from "./acpHostClient";
+import {
+  destroyChildProcessStreams,
+  signalChildProcessTree,
+  terminateChildProcessTree,
+} from "../shared/utils";
 
 export type AcpCliSpawnSpec = {
   command: string;
@@ -37,6 +42,8 @@ export type AcpCliPooled = {
 const pools = new Map<string, { ref: number; pooled: AcpCliPooled }>();
 /** In-flight initialization per pool key — concurrent acquires share one spawn + handshake. */
 const pendingInit = new Map<string, Promise<void>>();
+const pendingInitProcesses = new Map<string, ChildProcessWithoutNullStreams>();
+let poolEpoch = 0;
 
 const STDERR_LOG_MAX = 8_192;
 const ACP_CLI_ACQUIRE_MAX_ATTEMPTS = 12;
@@ -45,17 +52,11 @@ const ACP_CLI_ACQUIRE_RETRY_BACKOFF_MS = 25;
 function killProcQuiet(proc: ChildProcessWithoutNullStreams | null): void {
   if (!proc) return;
   try {
-    proc.kill("SIGKILL");
+    signalChildProcessTree(proc, "SIGKILL");
   } catch {
     // ignore
   }
-  try {
-    proc.stdin?.destroy();
-    proc.stdout?.destroy();
-    proc.stderr?.destroy();
-  } catch {
-    // ignore
-  }
+  destroyChildProcessStreams(proc);
 }
 
 function evictPoolEntry(poolKey: string, reason: string, err?: unknown): void {
@@ -75,6 +76,7 @@ function evictPoolEntry(poolKey: string, reason: string, err?: unknown): void {
 
 export async function acquireAcpCliConnection(options: AcpCliPoolOptions): Promise<AcpCliPooled> {
   const key = options.poolKey;
+  const initEpoch = poolEpoch;
 
   for (let attempt = 0; attempt < ACP_CLI_ACQUIRE_MAX_ATTEMPTS; attempt += 1) {
     if (attempt > 0) {
@@ -111,6 +113,7 @@ export async function acquireAcpCliConnection(options: AcpCliPoolOptions): Promi
             cwd: options.spawn.cwd,
             detached: process.platform !== "win32",
           });
+          pendingInitProcesses.set(key, proc);
 
           let failureHandled = false;
           const onProcFailure = (label: string, err?: unknown) => {
@@ -177,20 +180,26 @@ export async function acquireAcpCliConnection(options: AcpCliPoolOptions): Promi
               }
               for (const t of terminals.values()) {
                 try {
-                  if (!t.exited) t.proc.kill("SIGKILL");
+                  if (!t.exited) signalChildProcessTree(t.proc, "SIGKILL");
                 } catch {
                   // ignore
                 }
+                destroyChildProcessStreams(t.proc);
               }
               terminals.clear();
               try {
-                proc?.kill("SIGTERM");
+                if (proc) {
+                  terminateChildProcessTree(proc, null, 1_500);
+                }
               } catch {
                 // ignore
               }
             },
           };
 
+          if (initEpoch !== poolEpoch) {
+            throw new Error("acpCliPool shutdown during initialization");
+          }
           pools.set(key, { ref: 1, pooled });
         } catch (err) {
           const tail = Buffer.concat(stderrChunks).toString("utf8").trim();
@@ -200,6 +209,8 @@ export async function acquireAcpCliConnection(options: AcpCliPoolOptions): Promi
           killProcQuiet(proc);
           evictPoolEntry(key, `${options.logPrefix} initialization failed`, err);
           throw err;
+        } finally {
+          pendingInitProcesses.delete(key);
         }
       })().finally(() => {
         pendingInit.delete(key);
@@ -242,4 +253,21 @@ export function releaseAcpCliConnection(poolKey: string): void {
 /** True when the inner ACP pool still holds a live connection for this key (not evicted after process exit). */
 export function hasActiveAcpCliPoolEntry(poolKey: string): boolean {
   return pools.has(poolKey);
+}
+
+export function shutdownAcpCliConnections(): void {
+  poolEpoch += 1;
+  for (const entry of pools.values()) {
+    try {
+      entry.pooled.dispose();
+    } catch {
+      // ignore
+    }
+  }
+  pools.clear();
+  for (const proc of pendingInitProcesses.values()) {
+    killProcQuiet(proc);
+  }
+  pendingInitProcesses.clear();
+  pendingInit.clear();
 }

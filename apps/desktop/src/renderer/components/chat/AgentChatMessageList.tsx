@@ -2028,6 +2028,9 @@ function renderEvent(
 
   /* ── Error ── */
   if (event.type === "error") {
+    const errorCopyValue = event.detail?.trim().length
+      ? `${event.message}\n\n${event.detail}`
+      : event.message;
     return (
       <div className={cn(GLASS_CARD_CLASS, "group border-red-500/12 p-0")} style={SURFACE_INLINE_CARD_STYLE}>
         <div className="h-px w-full bg-gradient-to-r from-transparent via-red-500/40 to-transparent" />
@@ -2043,10 +2046,15 @@ function renderEvent(
               </span>
             ) : null}
             <div className="ml-auto">
-              <MessageCopyButton value={event.message} className="opacity-0 group-hover:opacity-100 focus-within:opacity-100" />
+              <MessageCopyButton value={errorCopyValue} className="opacity-0 group-hover:opacity-100 focus-within:opacity-100" />
             </div>
           </div>
           <div className="whitespace-pre-wrap break-words text-[12px] leading-relaxed text-fg/80">{event.message}</div>
+          {event.detail?.trim().length ? (
+            <div className="mt-2 whitespace-pre-wrap break-words rounded-[calc(var(--chat-radius-card)-8px)] border border-red-500/10 bg-red-500/[0.04] px-3 py-2 text-[11px] leading-relaxed text-fg/68">
+              {event.detail}
+            </div>
+          ) : null}
           {event.errorInfo ? (
             <div className="mt-2 font-mono text-[10px] text-muted-fg/40">
               {typeof event.errorInfo === "string" ? event.errorInfo : `${event.errorInfo.provider ? `${event.errorInfo.provider}` : ""}${event.errorInfo.model ? ` / ${event.errorInfo.model}` : ""}`}

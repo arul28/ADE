@@ -708,6 +708,20 @@ describe("ptyService", () => {
       );
     });
 
+    it("preserves droid-chat as a known toolType", async () => {
+      const { service, sessionService } = createHarness();
+      await service.create({
+        laneId: "lane-1",
+        title: "Droid chat",
+        cols: 80,
+        rows: 24,
+        toolType: "droid-chat",
+      });
+      expect(sessionService.create).toHaveBeenCalledWith(
+        expect.objectContaining({ toolType: "droid-chat" }),
+      );
+    });
+
     it("normalizes unknown toolType to 'other'", async () => {
       const { service, sessionService } = createHarness();
       await service.create({

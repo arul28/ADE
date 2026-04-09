@@ -300,4 +300,67 @@ describe("sessionService resume metadata", () => {
 
     activeDisposers.push(async () => db.close());
   });
+
+  it("preserves droid chat sessions as droid-chat instead of coercing them to other", async () => {
+    const projectRoot = makeProjectRoot("ade-session-service-");
+    const dbPath = path.join(projectRoot, ".ade", "ade.db");
+    const db = await openKvDb(dbPath, createLogger() as any);
+    insertProjectGraph(db);
+    const service = createSessionService({ db });
+
+    service.create({
+      sessionId: "session-3",
+      laneId: "lane-1",
+      ptyId: null,
+      tracked: true,
+      title: "Droid chat",
+      startedAt: "2026-03-17T00:10:00.000Z",
+      transcriptPath: path.join(projectRoot, "session-3.chat.jsonl"),
+      toolType: "droid-chat",
+      resumeCommand: "chat:droid:session-3",
+    });
+
+    const session = service.get("session-3");
+    expect(session?.toolType).toBe("droid-chat");
+    expect(session?.resumeCommand).toBe("chat:droid:session-3");
+
+    const listed = service.list({ laneId: "lane-1" });
+    expect(listed).toHaveLength(1);
+    expect(listed[0]?.toolType).toBe("droid-chat");
+    expect(listed[0]?.resumeCommand).toBe("chat:droid:session-3");
+
+    activeDisposers.push(async () => db.close());
+  });
+
+  it("repairs legacy droid chat rows from their resume command", async () => {
+    const projectRoot = makeProjectRoot("ade-session-service-");
+    const dbPath = path.join(projectRoot, ".ade", "ade.db");
+    const db = await openKvDb(dbPath, createLogger() as any);
+    insertProjectGraph(db);
+    const service = createSessionService({ db });
+
+    db.run(
+      `
+        insert into terminal_sessions(
+          id, lane_id, pty_id, tracked, goal, tool_type, pinned, title, started_at, ended_at,
+          exit_code, transcript_path, head_sha_start, head_sha_end, status, last_output_preview,
+          last_output_at, summary, resume_command
+        ) values (?, ?, null, 1, null, 'other', 0, ?, ?, null, null, ?, null, null, 'running', null, null, null, ?)
+      `,
+      [
+        "session-legacy",
+        "lane-1",
+        "Droid chat",
+        "2026-03-17T00:10:00.000Z",
+        path.join(projectRoot, "session-legacy.chat.jsonl"),
+        "chat:droid:session-legacy",
+      ],
+    );
+
+    const session = service.get("session-legacy");
+    expect(session?.toolType).toBe("droid-chat");
+    expect(session?.resumeCommand).toBe("chat:droid:session-legacy");
+
+    activeDisposers.push(async () => db.close());
+  });
 });

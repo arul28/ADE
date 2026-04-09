@@ -417,6 +417,23 @@ async function inspectDroidCliPresence(command: string): Promise<{
     // missing or unreadable settings — not authenticated via file
   }
 
+  try {
+    const result = await spawnAsync(command, ["exec", "--list-tools"], { timeout: 12_000 });
+    const combined = `${result.stdout ?? ""}\n${result.stderr ?? ""}`.trim();
+    const normalized = combined.toLowerCase();
+    if (hasPattern(normalized, STRONG_UNAUTH_INDICATORS)) {
+      return { installed: true, authenticated: false, verified: true };
+    }
+    if (result.status === 0) {
+      return { installed: true, authenticated: true, verified: true };
+    }
+    if (hasPattern(normalized, AUTH_INDICATORS)) {
+      return { installed: true, authenticated: true, verified: true };
+    }
+  } catch {
+    // Current Droid releases may not support this probe or it may time out; fall back.
+  }
+
   const authProbes: string[][] = [
     ["account", "status"],
     ["whoami"],

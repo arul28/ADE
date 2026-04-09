@@ -23,6 +23,9 @@ import {
   readFileWithinRootSecure,
   resolvePathWithinRoot,
   secureWriteTextAtomicWithinRoot,
+  destroyChildProcessStreams,
+  signalChildProcessTree,
+  terminateChildProcessTree,
 } from "../shared/utils";
 
 /** Bridge hooks for an ACP host (Cursor agent, Droid exec, etc.). */
@@ -169,6 +172,7 @@ export function createAcpHostClient(
         cwd,
         env: mergeEnvVars(process.env, params.env ?? undefined),
         shell: process.platform === "win32",
+        detached: process.platform !== "win32",
         stdio: ["pipe", "pipe", "pipe"],
       });
       proc.on("error", (err) => {
@@ -238,12 +242,14 @@ export function createAcpHostClient(
         const timedOut = new Promise<void>((resolve) => {
           killTimer = setTimeout(() => {
             try {
-              if (!t.exited) t.proc.kill("SIGKILL");
+              if (!t.exited) {
+                killTimer = terminateChildProcessTree(t.proc, killTimer ?? null, 1_500);
+              }
             } catch {
               // ignore
             }
             console.warn(
-              `${logPrefix} waitForTerminalExit exceeded ${WAIT_FOR_TERMINAL_EXIT_MAX_MS}ms; sent SIGKILL`,
+              `${logPrefix} waitForTerminalExit exceeded ${WAIT_FOR_TERMINAL_EXIT_MAX_MS}ms; initiated tree termination`,
             );
             resolve();
           }, WAIT_FOR_TERMINAL_EXIT_MAX_MS);
@@ -266,7 +272,7 @@ export function createAcpHostClient(
       const t = terminals.get(params.terminalId);
       if (t && !t.exited) {
         try {
-          t.proc.kill("SIGTERM");
+          signalChildProcessTree(t.proc, "SIGTERM");
         } catch {
           // ignore
         }
@@ -277,10 +283,11 @@ export function createAcpHostClient(
       const t = terminals.get(params.terminalId);
       if (t) {
         try {
-          if (!t.exited) t.proc.kill("SIGKILL");
+          if (!t.exited) signalChildProcessTree(t.proc, "SIGKILL");
         } catch {
           // ignore
         }
+        destroyChildProcessStreams(t.proc);
         const id = params.terminalId;
         terminals.delete(id);
         bridge.onTerminalDisposed?.(id);

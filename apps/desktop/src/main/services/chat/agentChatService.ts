@@ -419,7 +419,13 @@ type DroidRuntime = {
   activeTurnId: string | null;
   busy: boolean;
   interrupted: boolean;
+  /** The model ADE intends this session to use. */
   modelId: string;
+  /** The model ACP reports the live session is currently using. */
+  currentModelId: string | null;
+  availableModelIds: string[];
+  acpModelIdByDisplayKey: Map<string, string>;
+  displayKeyByAcpModelId: Map<string, string>;
   pendingSteers: Array<{ steerId: string; text: string }>;
   permissionWaiters: Map<string, CursorPermissionWaiter>;
 };
@@ -1180,6 +1186,226 @@ function formatCodexErrorInfo(value: unknown): string | undefined {
   } catch {
     return String(value);
   }
+}
+
+type ChatErrorCategory = "auth" | "rate_limit" | "budget" | "network" | "unknown";
+
+function readErrorMessage(value: unknown): string {
+  if (value instanceof Error) {
+    const message = trimLine(value.message);
+    if (message) return message;
+  }
+  if (value && typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    const message = trimLine(typeof record.message === "string" ? record.message : null);
+    if (message) return message;
+  }
+  return trimLine(typeof value === "string" ? value : null)
+    ?? trimLine(String(value))
+    ?? "Unknown error.";
+}
+
+function readErrorStatusCode(value: unknown): number | null {
+  if (!value || typeof value !== "object") return null;
+  const record = value as Record<string, unknown>;
+  if (typeof record.status === "number") return record.status;
+  if (typeof record.statusCode === "number") return record.statusCode;
+  const data = record.data;
+  if (!data || typeof data !== "object" || Array.isArray(data)) return null;
+  const nested = data as Record<string, unknown>;
+  if (typeof nested.status === "number") return nested.status;
+  if (typeof nested.statusCode === "number") return nested.statusCode;
+  return null;
+}
+
+function parseEmbeddedJsonObject(value: string): Record<string, unknown> | null {
+  const trimmed = value.trim();
+  if (!trimmed.length) return null;
+  const start = trimmed.indexOf("{");
+  if (start === -1) return null;
+  try {
+    const parsed = JSON.parse(trimmed.slice(start)) as unknown;
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function readStructuredErrorPayload(value: unknown): Record<string, unknown> | null {
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    const record = value as Record<string, unknown>;
+    if ("detail" in record || "details" in record || "title" in record || "requestId" in record || "status" in record) {
+      return record;
+    }
+  }
+  if (typeof value === "string") {
+    return parseEmbeddedJsonObject(value);
+  }
+  return null;
+}
+
+function readErrorPayload(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== "object") return null;
+  const record = value as Record<string, unknown>;
+  return readStructuredErrorPayload(record.data) ?? readStructuredErrorPayload(value);
+}
+
+function splitDetailSummary(detail: string | null | undefined): { message: string | null; remainder: string | null } {
+  const trimmed = trimLine(detail);
+  if (!trimmed) return { message: null, remainder: null };
+  const [firstLine, ...rest] = trimmed.split(/\r?\n/);
+  return {
+    message: trimLine(firstLine),
+    remainder: trimLine(rest.join("\n")),
+  };
+}
+
+function readErrorDetail(value: unknown): string | null {
+  const payload = readErrorPayload(value);
+  if (payload) {
+    const title = trimLine(typeof payload.title === "string" ? payload.title : null);
+    const detail = trimLine(
+      typeof payload.detail === "string"
+        ? payload.detail
+        : typeof payload.details === "string"
+          ? payload.details
+          : typeof payload.message === "string"
+            ? payload.message
+            : null,
+    );
+    const requestId = trimLine(typeof payload.requestId === "string" ? payload.requestId : null);
+    const lines = uniqueNonEmpty([
+      detail,
+      title && title !== detail ? title : null,
+      requestId ? `Request ID: ${requestId}` : null,
+    ], 3);
+    if (lines.length) return lines.join("\n");
+  }
+
+  if (value && typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    const data = trimLine(typeof record.data === "string" ? record.data : null);
+    const message = readErrorMessage(value);
+    if (data && data !== message) return data;
+  }
+
+  return null;
+}
+
+function classifyAcpHostError(
+  error: unknown,
+  providerLabel: string,
+  modelDisplayName: string,
+): {
+  message: string;
+  detail?: string;
+  errorInfo: { category: ChatErrorCategory; provider?: string; model?: string };
+} {
+  const rawMessage = readErrorMessage(error);
+  const rawDetail = readErrorDetail(error);
+  const statusCode = readErrorStatusCode(error);
+  const combinedLower = `${rawMessage}\n${rawDetail ?? ""}`.toLowerCase();
+
+  const payload = readErrorPayload(error);
+  const payloadDetail = trimLine(
+    typeof payload?.detail === "string"
+      ? payload.detail
+      : typeof payload?.details === "string"
+        ? payload.details
+        : null,
+  );
+  const payloadRequestId = trimLine(typeof payload?.requestId === "string" ? payload.requestId : null);
+
+  if (
+    statusCode === 429
+    || combinedLower.includes("rate limit")
+    || combinedLower.includes("429")
+    || combinedLower.includes("too many requests")
+  ) {
+    return {
+      message: `Rate limited by ${providerLabel}. The runtime should recover automatically, but you may want to retry with a different model.`,
+      ...(rawDetail ? { detail: rawDetail } : {}),
+      errorInfo: { category: "rate_limit", provider: providerLabel, model: modelDisplayName },
+    };
+  }
+
+  if (
+    statusCode === 401
+    || statusCode === 403
+    || combinedLower.includes("unauthorized")
+    || combinedLower.includes("forbidden")
+    || combinedLower.includes("authentication failed")
+    || combinedLower.includes("invalid api key")
+    || combinedLower.includes("api key")
+  ) {
+    return {
+      message: `Authentication failed for ${modelDisplayName}. Check your ${providerLabel} credentials and try again.`,
+      ...(rawDetail ? { detail: rawDetail } : {}),
+      errorInfo: { category: "auth", provider: providerLabel, model: modelDisplayName },
+    };
+  }
+
+  if (
+    statusCode === 402
+    || combinedLower.includes("payment required")
+    || combinedLower.includes("billing")
+    || combinedLower.includes("subscribe")
+    || combinedLower.includes("token limit reached")
+  ) {
+    const detailLines = uniqueNonEmpty([
+      payloadRequestId ? `Request ID: ${payloadRequestId}` : null,
+      rawDetail && rawDetail !== payloadDetail ? rawDetail : null,
+    ], 3);
+    return {
+      message: payloadDetail ?? "Billing is required for this model before the request can continue.",
+      ...(detailLines.length ? { detail: detailLines.join("\n") } : {}),
+      errorInfo: { category: "budget", provider: providerLabel, model: modelDisplayName },
+    };
+  }
+
+  if (
+    combinedLower.includes("timeout")
+    || combinedLower.includes("timed out")
+    || combinedLower.includes("econnrefused")
+    || combinedLower.includes("enotfound")
+    || combinedLower.includes("network")
+    || combinedLower.includes("fetch failed")
+    || combinedLower.includes("econnreset")
+    || combinedLower.includes("socket hang up")
+    || combinedLower.includes("connection error")
+    || combinedLower.includes("proxy")
+    || combinedLower.includes("firewall")
+  ) {
+    return {
+      message: rawMessage,
+      ...(rawDetail ? { detail: rawDetail } : {}),
+      errorInfo: { category: "network", provider: providerLabel, model: modelDisplayName },
+    };
+  }
+
+  if (isAbortRelatedError(error)) {
+    return {
+      message: "Session was interrupted.",
+      errorInfo: { category: "unknown", provider: providerLabel, model: modelDisplayName },
+    };
+  }
+
+  if ((rawMessage === "[object Object]" || /^internal error(?::\s*agent error)?$/i.test(rawMessage)) && rawDetail) {
+    const promoted = splitDetailSummary(rawDetail);
+    return {
+      message: promoted.message ?? rawMessage,
+      ...(promoted.remainder ? { detail: promoted.remainder } : {}),
+      errorInfo: { category: "unknown", provider: providerLabel, model: modelDisplayName },
+    };
+  }
+
+  return {
+    message: rawMessage,
+    ...(rawDetail && rawDetail !== rawMessage ? { detail: rawDetail } : {}),
+    errorInfo: { category: "unknown", provider: providerLabel, model: modelDisplayName },
+  };
 }
 
 function mapApprovalDecisionForCodex(decision: AgentChatApprovalDecision): "accept" | "acceptForSession" | "decline" | "cancel" {
@@ -2378,6 +2604,34 @@ function normalizeCursorReportedModelId(
   if (availableModelIds.includes(trimmed) && looksLikeSdkModelId) return trimmed;
   const descriptor = getModelById(`cursor/${trimmed}`) ?? resolveModelDescriptorForProvider(trimmed, "cursor");
   return descriptor?.family === "cursor" ? descriptor.providerModelId : null;
+}
+
+function normalizeDroidReportedModelId(
+  modelId: string | null | undefined,
+  availableModelIds: readonly string[] = [],
+): string | null {
+  const trimmed = String(modelId ?? "").trim();
+  if (!trimmed.length) return null;
+  const descriptor = getModelById(`droid/${trimmed}`) ?? resolveModelDescriptorForProvider(trimmed, "droid");
+  if (descriptor?.family === "factory") {
+    return descriptor.providerModelId;
+  }
+  if (availableModelIds.includes(trimmed)) {
+    return trimmed;
+  }
+  return /^[\w.:()+-]+$/i.test(trimmed) ? trimmed : null;
+}
+
+function normalizeDroidDisplayKey(value: string | null | undefined): string | null {
+  const normalized = String(value ?? "").replace(/\s+/g, " ").trim().toLowerCase();
+  return normalized.length ? normalized : null;
+}
+
+function resolveDroidDisplayKeyForModelId(modelId: string | null | undefined): string | null {
+  const trimmed = String(modelId ?? "").trim();
+  if (!trimmed.length) return null;
+  const descriptor = getModelById(`droid/${trimmed}`) ?? resolveModelDescriptorForProvider(trimmed, "droid");
+  return normalizeDroidDisplayKey(descriptor?.displayName ?? trimmed);
 }
 
 function normalizeSessionNativePermissionControls(
@@ -4999,7 +5253,7 @@ export function createAgentChatService(args: {
       if (record.version !== 1 && record.version !== 2) return null;
       let provider = record.provider;
       if (provider === "unified") provider = "opencode";
-      if (provider !== "codex" && provider !== "claude" && provider !== "opencode" && provider !== "cursor") {
+      if (provider !== "codex" && provider !== "claude" && provider !== "opencode" && provider !== "cursor" && provider !== "droid") {
         return null;
       }
       const laneId = String(record.laneId ?? "").trim();
@@ -10934,7 +11188,15 @@ export function createAgentChatService(args: {
     const { managed } = prepared;
     if (managed.closed) return;
 
-    const message = error instanceof Error ? error.message : String(error);
+    const descriptor = resolveSessionModelDescriptor(managed.session);
+    const acpError = (managed.session.provider === "cursor" || managed.session.provider === "droid")
+      ? classifyAcpHostError(
+        error,
+        managed.session.provider === "droid" ? "Factory Droid" : "Cursor",
+        descriptor?.displayName ?? managed.session.model,
+      )
+      : null;
+    const message = acpError?.message ?? (error instanceof Error ? error.message : String(error));
     const turnId = prepared.turnId ?? randomUUID();
 
     // If the failure is "turn already active", the original turn is still running.
@@ -10976,6 +11238,8 @@ export function createAgentChatService(args: {
     emitChatEvent(managed, {
       type: "error",
       message,
+      ...(acpError?.detail ? { detail: acpError.detail } : {}),
+      ...(acpError?.errorInfo ? { errorInfo: acpError.errorInfo } : {}),
       turnId,
     });
     emitChatEvent(managed, {
@@ -11108,22 +11372,82 @@ export function createAgentChatService(args: {
   const syncDroidSessionDescriptor = (
     managed: ManagedChatSession,
     providerModelId: string,
+    options: {
+      runtime?: DroidRuntime | null;
+      updateSelection?: boolean;
+      updateCurrent?: boolean;
+    } = {},
   ): void => {
     const trimmed = providerModelId.trim();
     if (!trimmed.length) return;
+    const runtime = options.runtime ?? (managed.runtime?.kind === "droid" ? managed.runtime : null);
     managed.session.model = trimmed;
     const descriptor = getModelById(`droid/${trimmed}`) ?? resolveModelDescriptorForProvider(trimmed, "droid");
+    const runtimeModelId = descriptor?.providerModelId ?? trimmed;
     if (descriptor) {
       managed.session.modelId = descriptor.id;
-      if (managed.runtime?.kind === "droid") {
-        managed.runtime.modelId = descriptor.providerModelId;
+    } else {
+      delete managed.session.modelId;
+    }
+    if (runtime) {
+      if (options.updateSelection !== false) {
+        runtime.modelId = runtimeModelId;
       }
-      return;
+      if (options.updateCurrent) {
+        runtime.currentModelId = runtimeModelId;
+      }
     }
-    delete managed.session.modelId;
-    if (managed.runtime?.kind === "droid") {
-      managed.runtime.modelId = trimmed;
+  };
+
+  const updateDroidAcpModelLookups = (
+    runtime: DroidRuntime,
+    entries: Array<{ modelId?: string | null; name?: string | null } | null> | null | undefined,
+  ): void => {
+    for (const entry of entries ?? []) {
+      const rawModelId = String(entry?.modelId ?? "").trim();
+      if (!rawModelId.length) continue;
+      const displayKey = normalizeDroidDisplayKey(entry?.name)
+        ?? resolveDroidDisplayKeyForModelId(rawModelId);
+      if (!displayKey) continue;
+      runtime.acpModelIdByDisplayKey.set(displayKey, rawModelId);
+      runtime.displayKeyByAcpModelId.set(rawModelId, displayKey);
     }
+  };
+
+  const resolveDroidAcpModelId = (
+    runtime: DroidRuntime,
+    canonicalModelId: string,
+  ): string => {
+    const trimmed = canonicalModelId.trim();
+    if (!trimmed.length) return trimmed;
+    const displayKey = resolveDroidDisplayKeyForModelId(trimmed);
+    if (displayKey) {
+      return runtime.acpModelIdByDisplayKey.get(displayKey) ?? trimmed;
+    }
+    return trimmed;
+  };
+
+  const resolveCanonicalDroidModelId = (
+    managed: ManagedChatSession,
+    runtime: DroidRuntime,
+    acpModelId: string | null | undefined,
+  ): string | null => {
+    const trimmed = String(acpModelId ?? "").trim();
+    if (!trimmed.length) return null;
+
+    const direct = getModelById(`droid/${trimmed}`) ?? resolveModelDescriptorForProvider(trimmed, "droid");
+    if (direct?.family === "factory") {
+      const selectedCanonicalModelId = runtime.modelId.trim() || resolveDroidRuntimeModelId(managed.session);
+      const selectedDisplayKey = resolveDroidDisplayKeyForModelId(selectedCanonicalModelId);
+      const currentDisplayKey = runtime.displayKeyByAcpModelId.get(trimmed)
+        ?? resolveDroidDisplayKeyForModelId(trimmed);
+      if (selectedDisplayKey && currentDisplayKey && selectedDisplayKey === currentDisplayKey) {
+        return selectedCanonicalModelId;
+      }
+      return direct.providerModelId;
+    }
+
+    return /^[\w.:()+-]+$/i.test(trimmed) ? trimmed : null;
   };
 
   const applyCursorConfigSnapshot = (
@@ -11153,11 +11477,186 @@ export function createAgentChatService(args: {
     syncCursorModeSnapshot(managed, runtime);
   };
 
-  const ensureDroidSessionState = async (
+  const applyDroidModelSnapshot = (
     _managed: ManagedChatSession,
-    _runtime: DroidRuntime,
+    runtime: DroidRuntime,
+    payload: {
+      models?: {
+        currentModelId?: string | null;
+        availableModels?: Array<{ modelId?: string | null; name?: string | null } | null> | null;
+      } | null;
+      configOptions?: Parameters<typeof readCursorAcpConfigSnapshot>[0];
+    } | null | undefined,
+  ): {
+    currentModelId: string | null;
+    modelConfigId: string | null;
+  } => {
+    const configSnapshot = readCursorAcpConfigSnapshot(payload?.configOptions);
+    updateDroidAcpModelLookups(runtime, payload?.models?.availableModels);
+    for (const modelId of configSnapshot.availableModelIds) {
+      const rawModelId = String(modelId ?? "").trim();
+      if (!rawModelId.length) continue;
+      const displayKey = resolveDroidDisplayKeyForModelId(rawModelId);
+      if (!displayKey) continue;
+      runtime.acpModelIdByDisplayKey.set(displayKey, rawModelId);
+      runtime.displayKeyByAcpModelId.set(rawModelId, displayKey);
+    }
+    const reportedAvailableModelIds = payload?.models?.availableModels
+      ?.map((entry) => normalizeDroidReportedModelId(entry?.modelId ?? null))
+      .filter((entry): entry is string => Boolean(entry)) ?? [];
+    const availableModelIds = Array.from(new Set([
+      ...runtime.availableModelIds,
+      ...reportedAvailableModelIds,
+      ...configSnapshot.availableModelIds
+        .map((entry) => normalizeDroidReportedModelId(entry))
+        .filter((entry): entry is string => Boolean(entry)),
+    ]));
+    runtime.availableModelIds = availableModelIds;
+    const currentModelId = normalizeDroidReportedModelId(
+      payload?.models?.currentModelId ?? configSnapshot.currentModelId,
+      availableModelIds,
+    );
+    if (currentModelId) {
+      runtime.currentModelId = currentModelId;
+    }
+    return {
+      currentModelId,
+      modelConfigId: configSnapshot.modelConfigId,
+    };
+  };
+
+  const refreshDroidSessionState = async (
+    managed: ManagedChatSession,
+    runtime: DroidRuntime,
+    reason: "after_prompt" | "manual_sync" | "session_update" | "ensure_before_sync" | "set_model_failed",
+  ): Promise<{
+    currentModelId: string | null;
+    modelConfigId: string | null;
+  }> => {
+    const sessionId = runtime.acpSessionId?.trim();
+    if (!sessionId || !runtime.pooled) {
+      return { currentModelId: runtime.currentModelId, modelConfigId: null };
+    }
+
+    const loadSession = runtime.pooled.connection.loadSession?.bind(runtime.pooled.connection);
+    if (!loadSession) {
+      return { currentModelId: runtime.currentModelId, modelConfigId: null };
+    }
+
+    try {
+      const loaded = await loadSession({
+        sessionId,
+        cwd: managed.laneWorktreePath,
+        mcpServers: buildCursorAcpMcpServers(managed),
+      });
+      const snapshot = applyDroidModelSnapshot(managed, runtime, loaded);
+      if ((reason === "after_prompt" || reason === "set_model_failed") && snapshot.currentModelId) {
+        const canonicalModelId = resolveCanonicalDroidModelId(managed, runtime, snapshot.currentModelId);
+        if (canonicalModelId) {
+          syncDroidSessionDescriptor(managed, canonicalModelId, { runtime });
+          runtime.currentModelId = snapshot.currentModelId;
+        }
+      }
+      return snapshot;
+    } catch (error) {
+      logger.warn("agent_chat.droid_load_session_failed", {
+        sessionId: managed.session.id,
+        acpSessionId: sessionId,
+        reason,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return { currentModelId: runtime.currentModelId, modelConfigId: null };
+    }
+  };
+
+  const ensureDroidSessionState = async (
+    managed: ManagedChatSession,
+    runtime: DroidRuntime,
   ): Promise<void> => {
-    // Factory Droid over ACP does not mirror Cursor's mode/model config RPCs today.
+    const sessionId = runtime.acpSessionId?.trim();
+    if (!sessionId || !runtime.pooled) return;
+
+    if (!runtime.currentModelId) {
+      await refreshDroidSessionState(managed, runtime, "ensure_before_sync");
+    }
+
+    const desiredModelId = runtime.modelId.trim() || resolveDroidRuntimeModelId(managed.session);
+    const desiredAcpModelId = resolveDroidAcpModelId(runtime, desiredModelId);
+    if (!desiredModelId.length || !desiredAcpModelId.length) return;
+
+    if (runtime.currentModelId === desiredAcpModelId) {
+      syncDroidSessionDescriptor(managed, desiredModelId, { runtime });
+      runtime.currentModelId = desiredAcpModelId;
+      return;
+    }
+
+    let modelUpdated = false;
+    const loadSnapshot = await refreshDroidSessionState(managed, runtime, "manual_sync");
+    if (loadSnapshot.currentModelId === desiredAcpModelId) {
+      syncDroidSessionDescriptor(managed, desiredModelId, { runtime });
+      runtime.currentModelId = desiredAcpModelId;
+      return;
+    }
+
+    if (
+      loadSnapshot.modelConfigId
+      && runtime.availableModelIds.includes(desiredAcpModelId)
+      && typeof runtime.pooled.connection.setSessionConfigOption === "function"
+    ) {
+      try {
+        const response = await runtime.pooled.connection.setSessionConfigOption({
+          sessionId,
+          configId: loadSnapshot.modelConfigId,
+          value: desiredAcpModelId,
+        });
+        const applied = applyDroidModelSnapshot(managed, runtime, response);
+        if (!applied.currentModelId) {
+          runtime.currentModelId = desiredAcpModelId;
+        }
+        syncDroidSessionDescriptor(managed, desiredModelId, { runtime });
+        modelUpdated = true;
+      } catch (error) {
+        logger.warn("agent_chat.droid_set_session_model_config_failed", {
+          sessionId: managed.session.id,
+          acpSessionId: sessionId,
+          desiredModelId,
+          configId: loadSnapshot.modelConfigId,
+          currentModelId: runtime.currentModelId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+
+    if (!modelUpdated && typeof runtime.pooled.connection.unstable_setSessionModel === "function") {
+      try {
+        await runtime.pooled.connection.unstable_setSessionModel({
+          sessionId,
+          modelId: desiredAcpModelId,
+        });
+        syncDroidSessionDescriptor(managed, desiredModelId, { runtime });
+        runtime.currentModelId = desiredAcpModelId;
+        modelUpdated = true;
+      } catch (error) {
+        logger.warn("agent_chat.droid_set_session_model_failed", {
+          sessionId: managed.session.id,
+          acpSessionId: sessionId,
+          desiredModelId,
+          currentModelId: runtime.currentModelId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+
+    if (!modelUpdated) {
+      const refreshed = await refreshDroidSessionState(managed, runtime, "set_model_failed");
+      if (refreshed.currentModelId) {
+        const canonicalModelId = resolveCanonicalDroidModelId(managed, runtime, refreshed.currentModelId);
+        if (canonicalModelId) {
+          syncDroidSessionDescriptor(managed, canonicalModelId, { runtime });
+          runtime.currentModelId = refreshed.currentModelId;
+        }
+      }
+    }
   };
 
   const ensureCursorSessionState = async (
@@ -11480,6 +11979,10 @@ export function createAgentChatService(args: {
           applyCursorConfigSnapshot(owner, rt, readCursorAcpConfigSnapshot(note.update.configOptions));
           persistChatState(owner);
         }
+      } else if (rt.kind === "droid" && note.update.sessionUpdate === "config_option_update") {
+        void refreshDroidSessionState(owner, rt, "session_update").then(() => {
+          persistChatState(owner);
+        });
       }
       const turnId = rt.activeTurnId ?? "";
       const resolveTerminal = (tid: string) => {
@@ -11866,7 +12369,13 @@ export function createAgentChatService(args: {
       persistChatState(managed);
     } catch (error) {
       markSessionIdleWithFreshCache(managed);
-      const msg = error instanceof Error ? error.message : String(error);
+      const descriptor = resolveSessionModelDescriptor(managed.session);
+      const acpError = classifyAcpHostError(
+        error,
+        "Cursor",
+        descriptor?.displayName ?? managed.session.model,
+      );
+      const msg = acpError.message;
 
       // Drain pending permission waiters so they don't block future sends.
       for (const [, w] of runtime.permissionWaiters) {
@@ -11889,7 +12398,13 @@ export function createAgentChatService(args: {
           emitChatEvent(managed, ev);
         }
       } else {
-        emitChatEvent(managed, { type: "error", message: msg, turnId });
+        emitChatEvent(managed, {
+          type: "error",
+          message: msg,
+          ...(acpError.detail ? { detail: acpError.detail } : {}),
+          errorInfo: acpError.errorInfo,
+          turnId,
+        });
         emitChatEvent(managed, { type: "status", turnStatus: "failed", turnId });
         emitChatEvent(managed, {
           type: "done",
@@ -11964,6 +12479,8 @@ export function createAgentChatService(args: {
         wireAcpHostBridgeHandlers(existing.pooled);
         existing.pooled.bridge.getRootPath = () => managed.laneWorktreePath;
         existing.pooled.bridge.getDirtyFileText = getDirtyFileTextForPath;
+        await ensureDroidSessionState(managed, existing);
+        persistChatState(managed);
         return existing;
       }
     } else if (managed.runtime) {
@@ -11985,6 +12502,7 @@ export function createAgentChatService(args: {
     throwIfDroidSetupInterrupted();
     let pooled: DroidAcpPooled | null = null;
     let poolGeneration = 0;
+    let released = false;
     try {
       const auth = await detectAuth();
       throwIfDroidSetupInterrupted();
@@ -12013,6 +12531,10 @@ export function createAgentChatService(args: {
         busy: false,
         interrupted: false,
         modelId: launchModelId,
+        currentModelId: null,
+        availableModelIds: [],
+        acpModelIdByDisplayKey: new Map(),
+        displayKeyByAcpModelId: new Map(),
         pendingSteers: [],
         permissionWaiters: new Map(),
       };
@@ -12020,12 +12542,13 @@ export function createAgentChatService(args: {
       const persistedAcp = readPersistedState(managed.session.id)?.acpSessionId?.trim();
       if (persistedAcp && typeof pooled.connection.unstable_resumeSession === "function") {
         try {
-          await pooled.connection.unstable_resumeSession({
+          const resumed = await pooled.connection.unstable_resumeSession({
             sessionId: persistedAcp,
             cwd: managed.laneWorktreePath,
             mcpServers: buildCursorAcpMcpServers(managed),
           });
           rt.acpSessionId = persistedAcp;
+          applyDroidModelSnapshot(managed, rt, resumed);
           acpHostSessionOwners.set(persistedAcp, managed);
         } catch {
           // stale session id — create a new ACP session on first prompt
@@ -12033,7 +12556,6 @@ export function createAgentChatService(args: {
       }
 
       throwIfDroidSetupInterrupted();
-      let released = false;
       if (managed.closed) {
         releaseDroidAcpConnection(poolKey, poolGeneration);
         released = true;
@@ -12041,6 +12563,8 @@ export function createAgentChatService(args: {
         throw new Error("Droid session closed during setup.");
       }
       managed.runtime = rt;
+      await ensureDroidSessionState(managed, rt);
+      persistChatState(managed);
       droidRuntimeSetupInterruptRequested.delete(managed);
       return rt;
     } catch (err) {
@@ -12169,6 +12693,7 @@ export function createAgentChatService(args: {
         });
         const sid = created.sessionId;
         runtime.acpSessionId = sid;
+        applyDroidModelSnapshot(managed, runtime, created);
         acpHostSessionOwners.set(sid, managed);
         persistChatState(managed);
       }
@@ -12208,6 +12733,8 @@ export function createAgentChatService(args: {
         sessionId: runtime.acpSessionId!,
         prompt: promptBlocks,
       });
+
+      await refreshDroidSessionState(managed, runtime, "after_prompt");
 
       persistDeliveredLaneDirectiveKey(managed, args.laneDirectiveKey);
 
@@ -12261,7 +12788,13 @@ export function createAgentChatService(args: {
       persistChatState(managed);
     } catch (error) {
       markSessionIdleWithFreshCache(managed);
-      const msg = error instanceof Error ? error.message : String(error);
+      const descriptor = resolveSessionModelDescriptor(managed.session);
+      const acpError = classifyAcpHostError(
+        error,
+        "Factory Droid",
+        descriptor?.displayName ?? managed.session.model,
+      );
+      const msg = acpError.message;
       const treatAsInterrupt =
         runtime.interrupted || msg === "Droid session closed during setup.";
 
@@ -12284,7 +12817,13 @@ export function createAgentChatService(args: {
           emitChatEvent(managed, ev);
         }
       } else {
-        emitChatEvent(managed, { type: "error", message: msg, turnId });
+        emitChatEvent(managed, {
+          type: "error",
+          message: msg,
+          ...(acpError.detail ? { detail: acpError.detail } : {}),
+          errorInfo: acpError.errorInfo,
+          turnId,
+        });
         emitChatEvent(managed, { type: "status", turnStatus: "failed", turnId });
         emitChatEvent(managed, {
           type: "done",
@@ -14239,6 +14778,7 @@ export function createAgentChatService(args: {
         });
         const sid = created.sessionId;
         runtime.acpSessionId = sid;
+        applyDroidModelSnapshot(managed, runtime, created);
         acpHostSessionOwners.set(sid, managed);
       }
       await ensureDroidSessionState(managed, runtime);

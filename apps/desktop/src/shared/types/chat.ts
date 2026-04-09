@@ -224,6 +224,7 @@ export type AgentChatEvent =
   | {
       type: "error";
       message: string;
+      detail?: string;
       turnId?: string;
       itemId?: string;
       errorInfo?: string | {
