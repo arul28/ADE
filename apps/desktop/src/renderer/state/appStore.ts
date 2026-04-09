@@ -166,10 +166,16 @@ function readPersistedWorkViewState(): {
   }
 }
 
+let _debouncePersistTimer: ReturnType<typeof setTimeout> | null = null;
+
 function persistWorkViewState(args: {
   workViewByProject: Record<string, WorkProjectViewState>;
   laneWorkViewByScope: Record<string, WorkProjectViewState>;
 }): void {
+  if (_debouncePersistTimer != null) {
+    clearTimeout(_debouncePersistTimer);
+    _debouncePersistTimer = null;
+  }
   try {
     window.localStorage.setItem(WORK_VIEW_STORAGE_KEY, JSON.stringify(args));
   } catch {
@@ -178,7 +184,6 @@ function persistWorkViewState(args: {
 }
 
 /** Debounced persist: batches rapid setter calls into a single localStorage write. */
-let _debouncePersistTimer: ReturnType<typeof setTimeout> | null = null;
 function debouncedPersistWorkViewState(args: {
   workViewByProject: Record<string, WorkProjectViewState>;
   laneWorkViewByScope: Record<string, WorkProjectViewState>;
