@@ -458,6 +458,51 @@ describe("AgentChatPane submit recovery", () => {
     });
   });
 
+  it("resyncs Claude composer permissions from refreshed session state", async () => {
+    const session = buildSession("session-1", {
+      provider: "claude",
+      model: "claude-sonnet-4-6",
+      modelId: "anthropic/claude-sonnet-4-6",
+      permissionMode: "edit",
+      interactionMode: "default",
+      claudePermissionMode: "default",
+    });
+    const sessions = [session];
+    const { emitChatEvent } = installAdeMocks({
+      includeClaudeModel: true,
+      sessions,
+    });
+
+    renderPane(session);
+
+    const planButton = await screen.findByRole("button", { name: "Plan" });
+    expect(planButton.getAttribute("aria-pressed")).toBe("false");
+
+    sessions[0] = {
+      ...session,
+      permissionMode: "plan",
+      interactionMode: "plan",
+      claudePermissionMode: "acceptEdits",
+    };
+
+    emitChatEvent({
+      sessionId: session.sessionId,
+      timestamp: "2026-03-24T07:10:00.000Z",
+      event: {
+        type: "system_notice",
+        noticeKind: "info",
+        message: "Session entered plan mode.",
+        detail: {
+          permissionModeTransition: "entered_plan_mode",
+        },
+      },
+    });
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "Plan" }).getAttribute("aria-pressed")).toBe("true");
+    });
+  });
+
   it("moves the most recently selected work chat tab to the top", async () => {
     const newerSession = buildSession("session-newer", {
       title: "Newer chat",

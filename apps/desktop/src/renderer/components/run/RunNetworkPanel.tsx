@@ -94,9 +94,9 @@ export function RunNetworkPanel({ onClose }: RunNetworkPanelProps) {
           }}
         >
           <Pulse size={14} />
-          Runtime health
+          Proxy and lane health
         </div>
-        <DiagnosticsDashboardSection />
+        <DiagnosticsDashboardSection title="Proxy and lane health" openCodeMode="issues-only" />
       </div>
     </aside>
   );

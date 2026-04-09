@@ -59,14 +59,17 @@ import {
 import { ChatSurfaceShell } from "./ChatSurfaceShell";
 import { chatChipToneClass } from "./chatSurfaceTheme";
 import { ChatComputerUsePanel } from "./ChatComputerUsePanel";
-import { ChatSubagentStrip } from "./ChatSubagentStrip";
+import { ChatSubagentsPanel } from "./ChatSubagentsPanel";
+import { ChatTasksPanel } from "./ChatTasksPanel";
 import { ChatGitToolbar } from "./ChatGitToolbar";
 import { ChatTerminalDrawer, ChatTerminalToggle } from "./ChatTerminalDrawer";
-import { deriveChatSubagentSnapshots } from "./chatExecutionSummary";
+import { deriveChatSubagentSnapshots, deriveTurnDiffSummaries } from "./chatExecutionSummary";
 import { derivePendingInputRequests, type DerivedPendingInput } from "./pendingInput";
 import { ProviderModelSelector } from "../shared/ProviderModelSelector";
 import { useClickOutside } from "../../hooks/useClickOutside";
 import { useAppStore } from "../../state/appStore";
+import { ClaudeCacheTtlBadge } from "../shared/ClaudeCacheTtlBadge";
+import { shouldShowClaudeCacheTtl } from "../../lib/claudeCacheTtl";
 
 const LAST_MODEL_ID_KEY = "ade.chat.lastModelId";
 const LAST_REASONING_KEY_PREFIX = "ade.chat.lastReasoningEffort";
@@ -756,6 +759,7 @@ export function AgentChatPane({
     return [...selectedEvents, optimisticOutgoingMessage.envelope];
   }, [optimisticOutgoingMessage, selectedEvents, selectedSessionId]);
   const selectedSubagentSnapshots = useMemo(() => deriveChatSubagentSnapshots(selectedEvents), [selectedEvents]);
+  const selectedTurnDiffSummaries = useMemo(() => deriveTurnDiffSummaries(selectedEvents), [selectedEvents]);
   const pendingInput = selectedSessionId ? (pendingInputsBySession[selectedSessionId]?.[0] ?? null) : null;
   const selectedSessionAwaitingInput = Boolean(pendingInput) || selectedSession?.awaitingInput === true;
   const turnActive = selectedSessionId ? (turnActiveBySession[selectedSessionId] ?? false) : false;
@@ -1029,6 +1033,12 @@ export function AgentChatPane({
   const handoffButtonTitle = handoffBlocked
     ? "Wait for the current output or approval to finish before handing off this chat."
     : "Create a new work chat on another model and seed it with a summary of this chat.";
+  const showClaudeCacheTimer = shouldShowClaudeCacheTtl({
+    provider: selectedSession?.provider ?? null,
+    status: selectedSession?.status ?? null,
+    idleSinceAt: selectedSession?.idleSinceAt,
+    awaitingInput: selectedSessionAwaitingInput,
+  });
 
   const refreshAvailableModels = useCallback(async () => {
     try {
@@ -1353,7 +1363,21 @@ export function AgentChatPane({
 
   useEffect(() => {
     syncComposerToSession(selectedSession);
-  }, [selectedSession?.sessionId, selectedSessionModelId, syncComposerToSession]);
+  }, [
+    selectedSession?.sessionId,
+    selectedSessionModelId,
+    selectedSession?.interactionMode,
+    selectedSession?.claudePermissionMode,
+    selectedSession?.codexApprovalPolicy,
+    selectedSession?.codexSandbox,
+    selectedSession?.codexConfigSource,
+    selectedSession?.opencodePermissionMode,
+    selectedSession?.permissionMode,
+    selectedSession?.cursorModeId,
+    selectedSession?.cursorModeSnapshot?.currentModeId,
+    selectedSession?.cursorModeSnapshot?.configOptions,
+    syncComposerToSession,
+  ]);
 
   useEffect(() => {
     if (!selectedSessionId || !selectedSessionModelId || turnActive) return;
@@ -1610,6 +1634,15 @@ export function AgentChatPane({
     }, 120);
   }, [refreshSessions]);
 
+  const patchSessionSummary = useCallback((sessionId: string, patch: Partial<AgentChatSessionSummary>) => {
+    setSessions((prev) => {
+      const next = prev.map((session) => (
+        session.sessionId === sessionId ? { ...session, ...patch } : session
+      ));
+      return sortSessionSummariesByRecency(next, localTouchBySessionRef.current);
+    });
+  }, []);
+
   useEffect(() => {
     const unsubscribe = window.ade.agentChat.onEvent((envelope) => {
       if (
@@ -1623,6 +1656,17 @@ export function AgentChatPane({
       const touchTimestamp = getChatSessionLocalTouchTimestampForEvent(envelope);
       if (touchTimestamp) {
         touchSession(envelope.sessionId, touchTimestamp);
+      }
+      if (
+        envelope.event.type === "user_message"
+        || (envelope.event.type === "status" && envelope.event.turnStatus === "started")
+      ) {
+        patchSessionSummary(envelope.sessionId, {
+          status: "active",
+          idleSinceAt: null,
+          awaitingInput: false,
+          lastActivityAt: envelope.timestamp,
+        });
       }
 
       // "done" events must flush immediately so turnActive clears and the
@@ -1660,6 +1704,23 @@ export function AgentChatPane({
         scheduleSessionsRefresh();
       }
 
+      // Refresh sessions when permission mode changes so the UI permission
+      // picker stays in sync (e.g. when Claude enters/exits plan mode).
+      if (
+        envelope.event.type === "system_notice"
+        && envelope.event.noticeKind === "info"
+      ) {
+        const detail = envelope.event.detail && typeof envelope.event.detail === "object"
+          ? envelope.event.detail as Record<string, unknown>
+          : null;
+        const transition = typeof detail?.permissionModeTransition === "string"
+          ? detail.permissionModeTransition
+          : null;
+        if (transition === "entered_plan_mode" || transition === "exited_plan_mode") {
+          scheduleSessionsRefresh();
+        }
+      }
+
       const shouldRefreshSlashCommands =
         envelope.event.type === "done"
         || (
@@ -1679,7 +1740,7 @@ export function AgentChatPane({
       }
     });
     return unsubscribe;
-  }, [lockSessionId, flushQueuedEvents, scheduleQueuedEventFlush, scheduleSessionsRefresh, touchSession]);
+  }, [lockSessionId, flushQueuedEvents, patchSessionSummary, scheduleQueuedEventFlush, scheduleSessionsRefresh, touchSession]);
 
   useEffect(() => {
     const unsubscribe = window.ade.computerUse.onEvent((event) => {
@@ -1773,15 +1834,6 @@ export function AgentChatPane({
 
   const removeAttachment = useCallback((attachmentPath: string) => {
     setAttachments((prev) => prev.filter((entry) => entry.path !== attachmentPath));
-  }, []);
-
-  const patchSessionSummary = useCallback((sessionId: string, patch: Partial<AgentChatSessionSummary>) => {
-    setSessions((prev) => {
-      const next = prev.map((session) => (
-        session.sessionId === sessionId ? { ...session, ...patch } : session
-      ));
-      return sortSessionSummariesByRecency(next, localTouchBySessionRef.current);
-    });
   }, []);
 
   const currentNativeControls = useMemo<NativeControlState>(() => ({
@@ -2024,6 +2076,12 @@ export function AgentChatPane({
       }
 
       touchSession(sessionId);
+      patchSessionSummary(sessionId, {
+        status: "active",
+        idleSinceAt: null,
+        awaitingInput: false,
+        lastActivityAt: new Date().toISOString(),
+      });
 
       const steerText = selectedAttachments.length
         ? `${finalText}\n\nAttached context:\n${selectedAttachments.map((entry) => `- ${entry.type}: ${entry.path}`).join("\n")}`
@@ -2292,12 +2350,17 @@ export function AgentChatPane({
     </>
   );
   const shellHeader = (
-    <div className="space-y-2 px-4 py-2">
+    <div className="space-y-2 px-4 py-3">
       {/* Single-row header: title + git toolbar + actions */}
-      <div className="flex items-center gap-2">
-        <span className="min-w-0 shrink truncate font-sans text-[13px] font-medium text-fg/80">
-          {resolvedTitle}
-        </span>
+      <div className="flex items-center gap-3">
+        <div className="flex min-w-0 shrink items-center gap-2">
+          <span className="min-w-0 shrink truncate font-sans text-[14px] font-bold tracking-tight text-fg/90">
+            {resolvedTitle}
+          </span>
+          {showClaudeCacheTimer ? (
+            <ClaudeCacheTtlBadge idleSinceAt={selectedSession?.idleSinceAt} />
+          ) : null}
+        </div>
 
         {laneId ? <ChatGitToolbar laneId={laneId} /> : null}
 
@@ -2318,7 +2381,7 @@ export function AgentChatPane({
             <div ref={handoffRef} className="relative">
               <button
                 type="button"
-                className="inline-flex items-center rounded-md border border-white/[0.06] px-2 py-0.5 font-sans text-[10px] font-medium text-muted-fg/50 transition-colors hover:border-white/[0.1] hover:text-fg disabled:cursor-not-allowed disabled:opacity-40"
+                className="inline-flex items-center rounded-lg border border-violet-400/[0.12] bg-violet-500/[0.04] px-2.5 py-1 font-sans text-[10px] font-medium text-violet-200/60 transition-colors hover:border-violet-400/20 hover:bg-violet-500/[0.08] hover:text-violet-200/80 disabled:cursor-not-allowed disabled:opacity-40"
                 onClick={() => {
                   setError(null);
                   setHandoffOpen((current) => !current);
@@ -2329,7 +2392,7 @@ export function AgentChatPane({
                 Handoff
               </button>
               {handoffOpen ? (
-                <div className="absolute right-0 top-full z-30 mt-2 w-[min(24rem,calc(100vw-2rem))] rounded-xl border border-white/[0.08] bg-card/98 p-3 shadow-float backdrop-blur-xl">
+                <div className="absolute right-0 top-full z-[100] mt-2 w-[min(24rem,calc(100vw-2rem))] rounded-[14px] border border-violet-400/[0.10] bg-[#151325]/95 p-4 shadow-[0_20px_50px_-12px_rgba(0,0,0,0.55)] backdrop-blur-[40px]">
                   <div className="space-y-1">
                     <div className="font-sans text-[12px] font-semibold text-fg/82">Start a sibling chat on another model</div>
                     <div className="text-[11px] leading-5 text-fg/54">
@@ -2406,10 +2469,10 @@ export function AgentChatPane({
                   key={session.sessionId}
                   type="button"
                   className={cn(
-                    "inline-flex shrink-0 items-center gap-2 rounded-md border px-3 py-1.5 font-sans text-[11px] transition-colors",
+                    "inline-flex shrink-0 items-center gap-2 rounded-lg border px-3 py-1.5 font-sans text-[11px] transition-all",
                     isActive
-                      ? "border-white/[0.08] bg-white/[0.05] font-medium text-fg/80"
-                      : "border-transparent text-muted-fg/40 hover:text-fg/60",
+                      ? "border-violet-400/15 bg-violet-500/[0.06] font-semibold text-fg/90 shadow-[inset_0_-2px_0_rgba(167,139,250,0.6),0_0_12px_rgba(167,139,250,0.06)]"
+                      : "border-transparent text-muted-fg/40 hover:text-fg/60 hover:bg-white/[0.03]",
                   )}
                   onClick={() => {
                     pendingSelectedSessionIdRef.current = null;
@@ -2446,7 +2509,7 @@ export function AgentChatPane({
           </div>
           <button
             type="button"
-            className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-white/[0.06] text-muted-fg/30 transition-colors hover:text-fg/60"
+            className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-violet-400/25 bg-violet-500/[0.06] text-violet-300/60 transition-all hover:border-violet-400/35 hover:bg-violet-500/[0.12] hover:text-violet-200"
             title="New chat"
             onClick={() => {
               pendingSelectedSessionIdRef.current = null;
@@ -2659,7 +2722,7 @@ export function AgentChatPane({
         bodyClassName="flex min-h-0 flex-col overflow-hidden"
       >
         {error ? (
-          <div className="border-b border-red-500/10 px-4 py-2 font-mono text-[10px] text-red-300/80">
+          <div className="border-b border-red-500/[0.08] bg-red-500/[0.03] px-4 py-2.5 font-sans text-[11px] text-red-300/80">
             {error}
           </div>
         ) : null}
@@ -2707,13 +2770,13 @@ export function AgentChatPane({
         <div className="relative min-h-0 flex-1 overflow-hidden">
           {loading && !embedDraft && !selectedSessionId ? (
             <div className="flex h-full items-center justify-center">
-              <div className="flex flex-col items-center gap-3">
-                <div className="flex items-center gap-1.5">
-                  <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-[var(--chat-accent)] [animation-delay:0ms]" />
-                  <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-[var(--chat-accent)] [animation-delay:150ms]" />
-                  <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-[var(--chat-accent)] [animation-delay:300ms]" />
+              <div className="flex flex-col items-center gap-4">
+                <div className="flex items-center gap-2">
+                  <span className="h-2 w-2 rounded-full bg-violet-400/60 ade-thinking-pulse" style={{ animationDelay: '0s' }} />
+                  <span className="h-2 w-2 rounded-full bg-violet-400/60 ade-thinking-pulse" style={{ animationDelay: '0.16s' }} />
+                  <span className="h-2 w-2 rounded-full bg-violet-400/60 ade-thinking-pulse" style={{ animationDelay: '0.32s' }} />
                 </div>
-                <span className="font-mono text-[10px] uppercase tracking-[2px] text-muted-fg/25">Loading sessions...</span>
+                <span className="font-sans text-[11px] font-medium tracking-widest text-muted-fg/30 uppercase">Loading sessions</span>
               </div>
             </div>
           ) : (
@@ -2747,20 +2810,23 @@ export function AgentChatPane({
                       }}
                     />
                     {sessionDelta ? (
-                      <div className="flex items-center gap-3 border-t border-white/[0.04] px-4 py-1.5 font-mono text-[11px]">
-                        <span className="text-emerald-400/70">+{sessionDelta.insertions}</span>
-                        <span className="text-red-400/70">-{sessionDelta.deletions}</span>
+                      <div className="flex items-center gap-3 border-t border-white/[0.05] px-4 py-2 font-mono text-[11px]">
+                        <span className="text-emerald-400/75">+{sessionDelta.insertions}</span>
+                        <span className="text-red-400/75">-{sessionDelta.deletions}</span>
                       </div>
                     ) : null}
+                    {selectedTurnDiffSummaries.length && selectedSessionId ? (
+                      <ChatTasksPanel
+                        summaries={selectedTurnDiffSummaries}
+                        sessionId={selectedSessionId}
+                      />
+                    ) : null}
                     {selectedSubagentSnapshots.length ? (
-                      <div className="border-t border-white/[0.05] bg-[#0d0d10]">
-                        <ChatSubagentStrip
-                          snapshots={selectedSubagentSnapshots}
-                          placement="read-only"
-                          className="pb-2"
-                          onInterruptTurn={turnActive ? () => { void interrupt(); } : undefined}
-                        />
-                      </div>
+                      <ChatSubagentsPanel
+                        snapshots={selectedSubagentSnapshots}
+                        events={selectedEvents}
+                        onInterruptTurn={turnActive ? () => { void interrupt(); } : undefined}
+                      />
                     ) : null}
                     <ChatTerminalDrawer
                       open={terminalDrawerOpen}
@@ -2797,20 +2863,27 @@ export function AgentChatPane({
                       exit={{ opacity: 0, scale: 0.8, transition: { duration: 0.3, ease: "easeOut" } }}
                     >
                       <div
-                        className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 h-[400px] w-[400px] rounded-full pointer-events-none"
+                        className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 h-[500px] w-[500px] rounded-full pointer-events-none"
                         style={{
                           background: "var(--color-accent)",
-                          opacity: 0.08,
-                          filter: "blur(100px)",
+                          opacity: 0.06,
+                          filter: "blur(140px)",
                         }}
                       />
                       <img
                         src="./logo.png"
                         alt="ADE"
-                        className="relative z-10 w-64 h-64 object-contain"
+                        className="relative z-10 w-96 h-96 object-contain"
                         style={{ filter: "drop-shadow(0 0 40px rgba(168,130,255,0.15))" }}
                       />
                     </motion.div>
+
+                    <h2 className="font-sans text-[18px] font-semibold tracking-tight text-fg/80">
+                      Start a new conversation
+                    </h2>
+                    <p className="mt-1.5 mb-4 max-w-sm text-center text-[13px] leading-relaxed text-fg/35">
+                      Ask ADE anything — refactor code, debug issues, or explore ideas.
+                    </p>
 
                     {/* Lane selector pill */}
                     {availableLanes && availableLanes.length > 0 && onLaneChange ? (

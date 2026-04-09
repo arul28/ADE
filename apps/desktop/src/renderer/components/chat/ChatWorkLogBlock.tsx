@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import {
   CaretDown,
   CaretRight,
@@ -23,10 +23,9 @@ import { getToolMeta } from "./chatToolAppearance";
 import { ChatStatusGlyph, chatStatusTextClass, type ChatStatusVisualState } from "./chatStatusVisuals";
 import { replaceInternalToolNames } from "./toolPresentation";
 
-const MAX_VISIBLE_WORK_LOG_ENTRIES = 1;
 const MAX_SUMMARY_WORK_LOG_ENTRIES = 4;
 const RECESSED_BLOCK_CLASS =
-  "overflow-auto whitespace-pre-wrap break-words rounded-[10px] border border-white/[0.05] bg-[#09090b] px-4 py-3 font-mono text-[11px] leading-[1.6] text-fg/76";
+  "overflow-auto whitespace-pre-wrap break-words rounded-[10px] border border-white/[0.04] bg-[#09080D] px-4 py-3 font-mono text-[11px] leading-[1.6] text-fg/78";
 
 const NAVIGATION_SURFACES = new Set(["work", "missions", "lanes", "cto"]);
 
@@ -89,12 +88,12 @@ function DiffPreview({ diff }: { diff: string }) {
         let background = "";
         if (line.startsWith("+")) {
           tone = "text-emerald-400/90";
-          background = "bg-emerald-500/[0.06]";
+          background = "bg-emerald-500/[0.05]";
         } else if (line.startsWith("-")) {
           tone = "text-red-400/90";
-          background = "bg-rose-500/[0.06]";
+          background = "bg-rose-500/[0.05]";
         } else if (line.startsWith("@@")) {
-          tone = "text-accent/60";
+          tone = "text-violet-400/60";
         }
         return (
           <div key={`${index}:${line}`} className={cn(tone, background, "px-1 -mx-1")}>
@@ -120,7 +119,7 @@ function workToneIcon(entry: ChatWorkLogEntry): { icon: Icon; className: string 
     case "command":
       return { icon: Terminal, className: isFailed ? FAILED_ICON_CLASS : "text-amber-300/75" };
     case "file_change":
-      return { icon: FileCode, className: isFailed ? FAILED_ICON_CLASS : "text-emerald-300/75" };
+      return { icon: FileCode, className: isFailed ? FAILED_ICON_CLASS : "text-violet-300/75" };
     case "web_search":
       return { icon: Globe, className: isFailed ? FAILED_ICON_CLASS : "text-cyan-300/75" };
   }
@@ -386,8 +385,8 @@ function WorkLogEntryDetail({
             <div className="flex flex-wrap items-center gap-2 font-mono text-[10px] uppercase tracking-[0.14em] text-muted-fg/45">
               <span>{formatFileAction(file.kind)}</span>
               <span className="normal-case tracking-normal text-fg/70">{file.path}</span>
-              {file.additions > 0 ? <span className="text-emerald-300/70">+{file.additions}</span> : null}
-              {file.deletions > 0 ? <span className="text-red-300/70">-{file.deletions}</span> : null}
+              {file.additions > 0 ? <span className="text-emerald-400/70">+{file.additions}</span> : null}
+              {file.deletions > 0 ? <span className="text-red-400/70">-{file.deletions}</span> : null}
             </div>
             {file.diff.trim().length ? (
               <DiffPreview diff={file.diff} />
@@ -452,14 +451,39 @@ export function ChatWorkLogBlock({
   className?: string;
   onNavigateSuggestion?: (suggestion: OperatorNavigationSuggestion) => void;
 }) {
-  const [expandedGroup, setExpandedGroup] = useState(false);
+  const hasNavigationSuggestions = useMemo(
+    () => entries.some((e) => readNavigationSuggestions(e.result).length > 0),
+    [entries],
+  );
+  const [expanded, setExpanded] = useState(hasNavigationSuggestions);
   const [expandedEntries, setExpandedEntries] = useState<Record<string, boolean>>({});
-  const hasOverflow = entries.length > MAX_VISIBLE_WORK_LOG_ENTRIES;
-  const visibleEntries = hasOverflow && !expandedGroup
-    ? entries.slice(Math.max(0, entries.length - MAX_VISIBLE_WORK_LOG_ENTRIES))
-    : entries;
-  const hiddenCount = entries.length - visibleEntries.length;
+
+  useEffect(() => {
+    if (hasNavigationSuggestions) {
+      setExpanded(true);
+    }
+  }, [hasNavigationSuggestions]);
+
   const groupSummary = useMemo(() => buildWorkGroupSummary({ summary, entries }), [entries, summary]);
+
+  const groupStatus: ChatStatusVisualState = useMemo(() => {
+    if (entries.some((e) => e.status === "failed")) return "failed";
+    if (entries.some((e) => e.status === "running")) return "working";
+    if (entries.some((e) => e.status === "interrupted")) return "waiting";
+    return "completed";
+  }, [entries]);
+
+  const groupStatusLabel = useMemo(() => {
+    if (groupStatus === "failed") return "failed";
+    if (groupStatus === "working") return "running";
+    if (groupStatus === "waiting") return "interrupted";
+    return "completed";
+  }, [groupStatus]);
+
+  const latestEntry = entries[entries.length - 1];
+  const { icon: LatestIcon, className: latestIconClass } = latestEntry
+    ? workToneIcon(latestEntry)
+    : { icon: Warning, className: "text-fg/34" };
 
   const toggleEntry = (entryId: string) => {
     setExpandedEntries((current) => ({
@@ -468,83 +492,104 @@ export function ChatWorkLogBlock({
     }));
   };
 
+  const summaryText = entries.length === 1 && latestEntry
+    ? replaceInternalToolNames(workEntryHeading(latestEntry))
+    : groupSummary;
+
   return (
-    <div className={cn("rounded-2xl border border-white/[0.06] bg-[#111317]/78 px-3 py-3", className)}>
-      <div className="mb-2.5 flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <p className="font-mono text-[9px] uppercase tracking-[0.16em] text-muted-fg/50">
-            Tool calls
-          </p>
-          <p className="mt-1 text-[13px] leading-5 text-fg/82">
-            {groupSummary}
-          </p>
-        </div>
-        <div className="flex shrink-0 items-center gap-2">
-          <span className="rounded-full border border-white/[0.08] bg-white/[0.03] px-2 py-1 font-mono text-[9px] uppercase tracking-[0.12em] text-fg/46">
-            {entries.length} call{entries.length === 1 ? "" : "s"}
-          </span>
-          {hasOverflow ? (
-            <button
-              type="button"
-              className="font-mono text-[9px] uppercase tracking-[0.12em] text-muted-fg/55 transition-colors duration-150 hover:text-fg/75"
-              onClick={() => setExpandedGroup((current) => !current)}
-            >
-              {expandedGroup ? "Show fewer" : `Show ${hiddenCount} earlier`}
-            </button>
-          ) : null}
-        </div>
-      </div>
+    <div className={cn(
+      "rounded-lg transition-colors",
+      groupStatus === "failed" && "bg-red-500/[0.04] px-2 -mx-2",
+      className,
+    )}>
+      {/* Collapsed one-line summary */}
+      <button
+        type="button"
+        className="group flex w-full items-center gap-2 py-1 text-left"
+        onClick={() => setExpanded((prev) => !prev)}
+      >
+        <span className="inline-flex h-3 w-3 shrink-0 items-center justify-center">
+          <ChatStatusGlyph status={groupStatus} size={11} />
+        </span>
+        <LatestIcon size={12} weight="regular" className={cn("shrink-0", latestIconClass)} />
+        <span className="min-w-0 truncate font-mono text-[11px] text-fg/50">
+          {summaryText}
+        </span>
+        {entries.length > 1 ? (
+          <>
+            <span className="shrink-0 text-[10px] text-fg/20">&middot;</span>
+            <span className="shrink-0 font-mono text-[10px] text-fg/30">
+              {entries.length} calls
+            </span>
+          </>
+        ) : null}
+        <span className="shrink-0 text-[10px] text-fg/20">&middot;</span>
+        <span className={cn(
+          "shrink-0 font-mono text-[10px]",
+          chatStatusTextClass(groupStatus),
+        )}>
+          {groupStatusLabel}
+        </span>
+        {expanded ? (
+          <CaretDown size={10} weight="bold" className="ml-auto shrink-0 text-fg/20" />
+        ) : (
+          <CaretRight size={10} weight="bold" className="ml-auto shrink-0 text-fg/20 transition-colors group-hover:text-fg/40" />
+        )}
+      </button>
 
-      <div className="space-y-1.5">
-        {visibleEntries.map((entry) => {
-          const { icon: EntryIcon, className: iconClassName } = workToneIcon(entry);
-          const hasSuggestions = readNavigationSuggestions(entry.result).length > 0;
-          const isExpanded = (expandedEntries[entry.id] ?? hasSuggestions) || entry.status === "failed";
-          const heading = replaceInternalToolNames(workEntryHeading(entry));
-          const preview = workEntryPreview(entry);
-          const statusLabel = workStatusLabel(entry.status);
+      {/* Expanded entry list */}
+      {expanded ? (
+        <div className="ml-[23px] mt-1 space-y-0.5 border-l border-white/[0.06] pl-3 pb-1">
+          {entries.map((entry) => {
+            const { icon: EntryIcon, className: iconClassName } = workToneIcon(entry);
+            const hasSuggestions = readNavigationSuggestions(entry.result).length > 0;
+            const isEntryExpanded = expandedEntries[entry.id] ?? (hasSuggestions || entry.status === "failed");
+            const heading = replaceInternalToolNames(workEntryHeading(entry));
+            const preview = workEntryPreview(entry);
+            const statusLabel = workStatusLabel(entry.status);
 
-          return (
-            <div key={entry.id} className="rounded-xl border border-white/[0.05] bg-black/15">
-              <button
-                type="button"
-                className="flex w-full items-start gap-2.5 px-3 py-2.5 text-left"
-                onClick={() => toggleEntry(entry.id)}
-              >
-                {isExpanded ? (
-                  <CaretDown size={10} weight="bold" className="mt-1 text-fg/30" />
-                ) : (
-                  <CaretRight size={10} weight="bold" className="mt-1 text-fg/30" />
-                )}
-                <span className="mt-0.5 inline-flex h-3 w-3 items-center justify-center">
-                  <ChatStatusGlyph status={workStatusState(entry.status)} size={11} />
-                </span>
-                <EntryIcon size={12} weight="regular" className={cn("mt-0.5", iconClassName)} />
-                <div className="min-w-0 flex-1 overflow-hidden">
-                  <p className="truncate text-[12px] leading-5 text-fg/80">{heading}</p>
+            return (
+              <div key={entry.id}>
+                <button
+                  type="button"
+                  className="flex w-full items-center gap-2 py-1 text-left"
+                  onClick={() => toggleEntry(entry.id)}
+                >
+                  {isEntryExpanded ? (
+                    <CaretDown size={9} weight="bold" className="shrink-0 text-fg/25" />
+                  ) : (
+                    <CaretRight size={9} weight="bold" className="shrink-0 text-fg/25" />
+                  )}
+                  <span className="inline-flex h-2.5 w-2.5 shrink-0 items-center justify-center">
+                    <ChatStatusGlyph status={workStatusState(entry.status)} size={10} />
+                  </span>
+                  <EntryIcon size={11} weight="regular" className={cn("shrink-0", iconClassName)} />
+                  <span className="min-w-0 flex-1 truncate text-[11px] text-fg/70">
+                    {heading}
+                  </span>
                   {preview.length > 0 && preview !== heading ? (
-                    <p className="truncate font-mono text-[10px] leading-4 text-fg/42">
+                    <span className="hidden max-w-[240px] shrink truncate font-mono text-[10px] text-fg/30 sm:inline">
                       {replaceInternalToolNames(preview)}
-                    </p>
+                    </span>
                   ) : null}
-                </div>
-                <span className={cn(
-                  "mt-0.5 shrink-0 font-mono text-[9px] uppercase tracking-[0.12em]",
-                  chatStatusTextClass(workStatusState(entry.status)),
-                )}>
-                  {statusLabel}
-                </span>
-              </button>
+                  <span className={cn(
+                    "ml-auto shrink-0 font-mono text-[9px] uppercase tracking-[0.12em]",
+                    chatStatusTextClass(workStatusState(entry.status)),
+                  )}>
+                    {statusLabel}
+                  </span>
+                </button>
 
-              {isExpanded ? (
-                <div className="border-t border-white/[0.04] px-3 py-3">
-                  <WorkLogEntryDetail entry={entry} onNavigateSuggestion={onNavigateSuggestion} />
-                </div>
-              ) : null}
-            </div>
-          );
-        })}
-      </div>
+                {isEntryExpanded ? (
+                  <div className="ml-5 mb-1.5 mt-1 rounded-xl border border-white/[0.05] bg-[#141220]/70 px-3 py-2.5">
+                    <WorkLogEntryDetail entry={entry} onNavigateSuggestion={onNavigateSuggestion} />
+                  </div>
+                ) : null}
+              </div>
+            );
+          })}
+        </div>
+      ) : null}
     </div>
   );
 }

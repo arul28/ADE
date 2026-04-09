@@ -7,12 +7,14 @@ import {
   replaceDynamicOpenCodeModelDescriptors,
   type ModelDescriptor,
 } from "../../../shared/modelRegistry";
+import { stableStringify } from "../shared/utils";
 import {
+  buildSharedOpenCodeServerKey,
   buildOpenCodeMergedConfig,
-  createOpencodeServerWithRetry,
   resolveOpenCodeExecutablePath,
   type DiscoveredLocalModelEntry,
 } from "./openCodeRuntime";
+import { acquireSharedOpenCodeServer, shutdownOpenCodeServers } from "./openCodeServerManager";
 
 const TTL_MS = 60_000;
 /** How long an idle inventory server stays alive before being killed. */
@@ -36,74 +38,16 @@ type CacheEntry = {
 };
 
 let inventoryCache: CacheEntry | null = null;
-
-// ── Shared server with idle TTL (avoids spawning a new process per probe) ──
-
-type SharedServer = {
-  url: string;
-  close(): void;
-  configFingerprint: string;
-  idleTimer: ReturnType<typeof setTimeout> | null;
-};
-
-let sharedServer: SharedServer | null = null;
 const probeInFlightMap = new Map<string, Promise<{ modelIds: string[]; providers: OpenCodeProviderInfo[]; error: string | null; descriptors: ModelDescriptor[] }>>();
-
-function forceKillServer(server: { close(): void }): void {
-  try {
-    server.close();
-  } catch {
-    // ignore
-  }
-}
-
-function resetIdleTimer(): void {
-  if (!sharedServer) return;
-  if (sharedServer.idleTimer) clearTimeout(sharedServer.idleTimer);
-  sharedServer.idleTimer = setTimeout(() => {
-    if (sharedServer) {
-      forceKillServer(sharedServer);
-      sharedServer = null;
-    }
-  }, SERVER_IDLE_TTL_MS);
-}
-
-async function getOrCreateServer(
-  config: ReturnType<typeof buildOpenCodeMergedConfig>,
-  fp: string,
-): Promise<{ url: string }> {
-  // Reuse existing server if config hasn't changed
-  if (sharedServer && sharedServer.configFingerprint === fp) {
-    resetIdleTimer();
-    return { url: sharedServer.url };
-  }
-  // Config changed — kill old server
-  if (sharedServer) {
-    forceKillServer(sharedServer);
-    sharedServer = null;
-  }
-  const result = await createOpencodeServerWithRetry(config);
-  sharedServer = {
-    url: result.server.url,
-    close: result.server.close,
-    configFingerprint: fp,
-    idleTimer: null,
-  };
-  resetIdleTimer();
-  return { url: sharedServer.url };
-}
 
 export function clearOpenCodeInventoryCache(): void {
   inventoryCache = null;
 }
 
-/** Shut down the shared inventory server immediately (e.g. on app quit). */
+/** Shut down the shared inventory server immediately and clear the cached probe state (e.g. on app quit). */
 export function shutdownInventoryServer(): void {
-  if (sharedServer) {
-    if (sharedServer.idleTimer) clearTimeout(sharedServer.idleTimer);
-    forceKillServer(sharedServer);
-    sharedServer = null;
-  }
+  shutdownOpenCodeServers({ leaseKind: "shared", ownerKind: "inventory" });
+  clearOpenCodeInventoryCache();
 }
 
 function fingerprintOpenCodeConfig(
@@ -111,7 +55,7 @@ function fingerprintOpenCodeConfig(
   discoveredLocalModels?: DiscoveredLocalModelEntry[],
 ): string {
   const ai = projectConfig.ai ?? {};
-  return JSON.stringify({
+  return stableStringify({
     apiKeys: ai.apiKeys ?? {},
     localProviders: ai.localProviders ?? {},
     discoveredModels: discoveredLocalModels?.map((m) => `${m.provider}/${m.modelId}`).sort() ?? [],
@@ -172,99 +116,125 @@ export async function probeOpenCodeProviderInventory(args: {
         projectConfig: args.projectConfig,
         discoveredLocalModels: args.discoveredLocalModels,
       });
-      const { url } = await getOrCreateServer(config, fp);
+      const lease = await acquireSharedOpenCodeServer({
+        config,
+        key: buildSharedOpenCodeServerKey(config),
+        ownerKind: "inventory",
+        ownerId: args.projectRoot,
+        idleTtlMs: SERVER_IDLE_TTL_MS,
+        logger: args.logger,
+      });
       const client = createOpencodeClient({
-        baseUrl: url,
+        baseUrl: lease.url,
         directory: args.projectRoot,
       });
-      const listed = await client.provider.list({
-        query: { directory: args.projectRoot },
-      });
-      const data = listed.data;
-      if (!data) {
-        throw new Error("OpenCode provider.list returned no data.");
-      }
-      const connected = new Set(data.connected);
-      const descriptors: ModelDescriptor[] = [];
-      const providerInfos: OpenCodeProviderInfo[] = data.all.map((p) => ({
-        id: p.id,
-        name: typeof p.name === "string" ? p.name : p.id,
-        connected: connected.has(p.id),
-        modelCount: Object.keys(p.models ?? {}).length,
-      }));
+      try {
+        const listed = await client.provider.list({
+          query: { directory: args.projectRoot },
+        });
+        const data = listed.data as
+          | {
+              connected: string[];
+              all: Array<{
+                id: string;
+                name?: string;
+                models?: Record<string, Record<string, unknown>>;
+              }>;
+            }
+          | undefined;
+        if (!data) {
+          throw new Error("OpenCode provider.list returned no data.");
+        }
+        const connected = new Set(data.connected);
+        const descriptors: ModelDescriptor[] = [];
+        const providerInfos: OpenCodeProviderInfo[] = data.all.map((p: {
+          id: string;
+          name?: string;
+          models?: Record<string, Record<string, unknown>>;
+        }) => ({
+          id: p.id,
+          name: typeof p.name === "string" ? p.name : p.id,
+          connected: connected.has(p.id),
+          modelCount: Object.keys(p.models ?? {}).length,
+        }));
 
-      // Build a set of loaded local model IDs so we can filter out unloaded models
-      // that OpenCode discovers independently from the local provider endpoints.
-      const loadedLocalModelIds = new Map<string, Set<string>>();
-      if (args.discoveredLocalModels) {
-        for (const entry of args.discoveredLocalModels) {
-          if (entry.loaded === false) continue;
-          let set = loadedLocalModelIds.get(entry.provider);
-          if (!set) {
-            set = new Set();
-            loadedLocalModelIds.set(entry.provider, set);
+        // Build a set of loaded local model IDs so we can filter out unloaded models
+        // that OpenCode discovers independently from the local provider endpoints.
+        const loadedLocalModelIds = new Map<string, Set<string>>();
+        const discoveredLocalProviderIds = new Set<string>();
+        if (args.discoveredLocalModels) {
+          for (const entry of args.discoveredLocalModels) {
+            discoveredLocalProviderIds.add(entry.provider);
+            if (entry.loaded === false) continue;
+            let set = loadedLocalModelIds.get(entry.provider);
+            if (!set) {
+              set = new Set();
+              loadedLocalModelIds.set(entry.provider, set);
+            }
+            set.add(entry.modelId);
           }
-          set.add(entry.modelId);
         }
-      }
 
-      for (const provider of data.all) {
-        if (!connected.has(provider.id)) continue;
-        const isLocal = isLocalProviderFamily(provider.id);
-        const allowedModels = isLocal ? loadedLocalModelIds.get(provider.id) : undefined;
-        const models = provider.models ?? {};
-        for (const model of Object.values(models)) {
-          const mid = typeof model.id === "string" ? model.id.trim() : "";
-          if (!mid.length) continue;
-          // For local providers, only include models that are actively loaded.
-          if (isLocal && (!allowedModels || !allowedModels.has(mid))) continue;
-          const raw = model as Record<string, unknown>;
-          const variantKeys = extractVariantKeys(raw);
-          const displayName = typeof model.name === "string" && model.name.trim().length ? model.name.trim() : undefined;
-          const ctx = typeof model.limit === "object" && model.limit && "context" in model.limit
-            ? Number((model.limit as { context?: number }).context)
-            : undefined;
-          const out = typeof model.limit === "object" && model.limit && "output" in model.limit
-            ? Number((model.limit as { output?: number }).output)
-            : undefined;
-          descriptors.push(
-            createDynamicOpenCodeModelDescriptor("", {
-              openCodeProviderId: provider.id,
-              openCodeModelId: mid,
-              ...(displayName ? { displayName } : {}),
-              ...(Number.isFinite(ctx) && (ctx as number) > 0 ? { contextWindow: ctx as number } : {}),
-              ...(Number.isFinite(out) && (out as number) > 0 ? { maxOutputTokens: out as number } : {}),
-              ...(variantKeys.length ? { reasoningTiers: variantKeys } : {}),
-              capabilities: {
-                tools: model.tool_call !== false,
-                vision: Boolean(model.modalities?.input?.includes("image")),
-                reasoning: model.reasoning !== false,
-                streaming: true,
-              },
-            }),
-          );
+        for (const provider of data.all) {
+          if (!connected.has(provider.id)) continue;
+          const isLocal = isLocalProviderFamily(provider.id);
+          const discoveryExists = isLocal && discoveredLocalProviderIds.has(provider.id);
+          const allowedModels = discoveryExists ? loadedLocalModelIds.get(provider.id) : undefined;
+          const models = provider.models ?? {};
+          for (const model of Object.values(models)) {
+            const modelRecord = model as Record<string, unknown>;
+            const mid = typeof modelRecord.id === "string" ? modelRecord.id.trim() : "";
+            if (!mid.length) continue;
+            // For local providers, only include models that are actively loaded.
+            if (discoveryExists && (!allowedModels || !allowedModels.has(mid))) continue;
+            const variantKeys = extractVariantKeys(modelRecord);
+            const displayName = typeof modelRecord.name === "string" && modelRecord.name.trim().length ? modelRecord.name.trim() : undefined;
+            const limit = typeof modelRecord.limit === "object" && modelRecord.limit
+              ? modelRecord.limit as { context?: number; output?: number }
+              : null;
+            const ctx = typeof limit?.context === "number"
+              ? Number(limit.context)
+              : undefined;
+            const out = typeof limit?.output === "number"
+              ? Number(limit.output)
+              : undefined;
+            const modalities = modelRecord.modalities as { input?: string[] } | undefined;
+            descriptors.push(
+              createDynamicOpenCodeModelDescriptor("", {
+                openCodeProviderId: provider.id,
+                openCodeModelId: mid,
+                ...(displayName ? { displayName } : {}),
+                ...(Number.isFinite(ctx) && (ctx as number) > 0 ? { contextWindow: ctx as number } : {}),
+                ...(Number.isFinite(out) && (out as number) > 0 ? { maxOutputTokens: out as number } : {}),
+                ...(variantKeys.length ? { reasoningTiers: variantKeys } : {}),
+                capabilities: {
+                  tools: modelRecord.tool_call !== false,
+                  vision: Boolean(modalities?.input?.includes("image")),
+                  reasoning: modelRecord.reasoning !== false,
+                  streaming: true,
+                },
+              }),
+            );
+          }
         }
-      }
 
-      replaceDynamicOpenCodeModelDescriptors(descriptors);
-      const modelIds = [...descriptors.map((d) => d.id)].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }));
-      inventoryCache = {
-        cachedAt: Date.now(),
-        projectRoot: args.projectRoot,
-        configFingerprint: fp,
-        modelIds,
-        providers: providerInfos,
-        error: null,
-      };
-      return { modelIds, providers: providerInfos, error: null, descriptors };
+        replaceDynamicOpenCodeModelDescriptors(descriptors);
+        const modelIds = [...descriptors.map((d) => d.id)].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }));
+        inventoryCache = {
+          cachedAt: Date.now(),
+          projectRoot: args.projectRoot,
+          configFingerprint: fp,
+          modelIds,
+          providers: providerInfos,
+          error: null,
+        };
+        return { modelIds, providers: providerInfos, error: null, descriptors };
+      } finally {
+        lease.release("handle_close");
+      }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       args.logger.warn("opencode.inventory_probe_failed", { error: message });
-      // If the server died, clear it so next probe creates a fresh one
-      if (sharedServer) {
-        forceKillServer(sharedServer);
-        sharedServer = null;
-      }
       replaceDynamicOpenCodeModelDescriptors([]);
       inventoryCache = {
         cachedAt: Date.now(),

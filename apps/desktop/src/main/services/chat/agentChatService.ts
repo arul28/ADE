@@ -78,6 +78,7 @@ import type {
   AgentChatHandoffArgs,
   AgentChatHandoffResult,
   AgentChatIdentityKey,
+  AgentChatNoticeDetail,
   AgentChatInteractionMode,
   AgentChatInterruptArgs,
   AgentChatModelInfo,
@@ -251,6 +252,7 @@ type PersistedChatState = {
   lastLaneDirectiveKey?: string | null;
   manuallyNamed?: boolean;
   requestedCwd?: string | null;
+  idleSinceAt?: string | null;
   /** Persisted "Allow for Session" tool approval overrides (Claude runtime). */
   approvalOverrides?: string[];
   updatedAt: string;
@@ -869,7 +871,7 @@ const DEFAULT_COLLABORATION_MODES_LIST_TIMEOUT_MS = 1_500;
 // positives during long-running tool calls (Agent, Bash, etc.) where no
 // stream events are emitted while the SDK waits for tool results. The user
 // can always interrupt manually if something is genuinely stuck.
-const SESSION_INACTIVITY_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
+const SESSION_INACTIVITY_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
 const SESSION_CLEANUP_INTERVAL_MS = 60 * 1000; // check every 60 seconds
 const MAX_CONCURRENT_ACTIVE_RUNTIMES = 5;
 const MAX_SESSION_MAP_ENTRIES = 200;
@@ -1784,6 +1786,19 @@ function resolveSessionClaudeAccessMode(
     ?? "default";
 }
 
+function legacyClaudeAccessModeToPermissionMode(
+  mode: AgentChatClaudeAccessMode,
+): AgentChatSession["permissionMode"] {
+  switch (mode) {
+    case "acceptEdits":
+      return "edit";
+    case "bypassPermissions":
+      return "full-auto";
+    default:
+      return "default";
+  }
+}
+
 function legacyPermissionModeToCodexApprovalPolicy(
   mode: AgentChatSession["permissionMode"] | undefined,
 ): AgentChatCodexApprovalPolicy | undefined {
@@ -1876,6 +1891,36 @@ function applyLegacyPermissionModeToNativeControls(
   }
 
   session.opencodePermissionMode = legacyPermissionModeToOpenCodePermissionMode(mode);
+}
+
+type ClaudePlanModeTransition = "entered_plan_mode" | "exited_plan_mode";
+
+type ClaudePlanModeNoticeDetail = AgentChatNoticeDetail & {
+  permissionModeTransition: ClaudePlanModeTransition;
+};
+
+function buildClaudePlanModeNoticeDetail(transition: ClaudePlanModeTransition): ClaudePlanModeNoticeDetail {
+  return {
+    title: transition === "entered_plan_mode" ? "Plan mode entered" : "Plan mode exited",
+    summary: transition === "entered_plan_mode"
+      ? "Claude switched into plan mode for this turn."
+      : "Claude left plan mode and resumed its prior access mode.",
+    permissionModeTransition: transition,
+  };
+}
+
+function applyClaudePlanModeTransition(
+  session: Pick<AgentChatSession, "permissionMode" | "interactionMode" | "claudePermissionMode">,
+  nextInteractionMode: AgentChatInteractionMode,
+): void {
+  session.interactionMode = nextInteractionMode;
+  if (nextInteractionMode === "plan") {
+    session.permissionMode = "plan";
+    return;
+  }
+  session.permissionMode = legacyClaudeAccessModeToPermissionMode(
+    resolveSessionClaudeAccessMode(session, "default"),
+  );
 }
 
 function hydrateNativePermissionControls(
@@ -2935,10 +2980,44 @@ export function createAgentChatService(args: {
     runtime: ClaudeRuntime,
     managed: ManagedChatSession,
   ): ClaudeSDKOptions["canUseTool"] => async (toolName, input, sdkOptions): Promise<ClaudePermissionResult> => {
+    // ── EnterPlanMode interception ──
+    // Sync ADE session state when the SDK enters plan mode mid-session so
+    // the permission-mode picker in the UI stays in sync.
+    if (toolName === "EnterPlanMode") {
+      if (managed.session.permissionMode !== "plan") {
+        applyClaudePlanModeTransition(managed.session, "plan");
+        persistChatState(managed);
+        emitChatEvent(managed, {
+          type: "system_notice",
+          noticeKind: "info",
+          message: "Session entered plan mode",
+          detail: buildClaudePlanModeNoticeDetail("entered_plan_mode"),
+          turnId: runtime.activeTurnId ?? undefined,
+        });
+      }
+      return { behavior: "allow" };
+    }
+
     // ── ExitPlanMode interception ──
     // Intercept ExitPlanMode to show a plan approval UI instead of letting the
     // SDK handle it natively (which just collapses into the work log).
     if (toolName === "ExitPlanMode") {
+      // Idempotency guard: if plan mode was already exited (e.g. retry after
+      // the first approval), return immediately without showing the approval UI
+      // again. This prevents the retry loop caused by the SDK's ExitPlanMode
+      // handler failing with ZodError.
+      const alreadyExited = managed.session.permissionMode !== "plan"
+        && managed.session.interactionMode !== "plan";
+      if (alreadyExited) {
+        if (sdkOptions?.toolUseID) {
+          runtime.resolvedToolUseIds.add(String(sdkOptions.toolUseID));
+        }
+        return {
+          behavior: "deny",
+          message: "Plan mode has already been exited. Proceed with implementation.",
+        };
+      }
+
       // In bypass / full-auto mode, auto-approve the plan without showing
       // approval UI — the user opted out of all permission gates.
       const effectiveAccess = managed.session.claudePermissionMode ?? managed.session.permissionMode;
@@ -2946,8 +3025,7 @@ export function createAgentChatService(args: {
         // Transition out of plan mode so the UI reflects the change,
         // matching the state update performed after manual approval.
         if (managed.session.permissionMode === "plan" || managed.session.interactionMode === "plan") {
-          managed.session.permissionMode = "edit";
-          applyLegacyPermissionModeToNativeControls(managed.session, "edit");
+          applyClaudePlanModeTransition(managed.session, "default");
           persistChatState(managed);
         }
         return { behavior: "allow" };
@@ -3024,13 +3102,34 @@ export function createAgentChatService(args: {
       if (approved) {
         // Switch session out of plan mode so the UI reflects the transition.
         if (managed.session.permissionMode === "plan" || managed.session.interactionMode === "plan") {
-          managed.session.permissionMode = "edit";
-          applyLegacyPermissionModeToNativeControls(managed.session, "edit");
+          applyClaudePlanModeTransition(managed.session, "default");
           persistChatState(managed);
         }
-        // Allow the tool — the SDK will process ExitPlanMode normally and
-        // Claude will receive the standard "plan approved" tool result.
-        return { behavior: "allow" };
+
+        // Sync the SDK session so it knows plan mode ended.
+        try {
+          const sessionControl = getClaudeV2SessionControl(runtime.v2Session);
+          if (typeof sessionControl.setPermissionMode === "function") {
+            await sessionControl.setPermissionMode(resolveSessionClaudePermissionMode(managed.session, "default"));
+          }
+        } catch { /* best-effort — the deny result below handles the transition semantically */ }
+
+        // Emit permission mode change notice for UI sync.
+        emitChatEvent(managed, {
+          type: "system_notice",
+          noticeKind: "info",
+          message: "Session exited plan mode",
+          detail: buildClaudePlanModeNoticeDetail("exited_plan_mode"),
+          turnId: runtime.activeTurnId ?? undefined,
+        });
+
+        // Return deny to bypass the SDK's built-in ExitPlanMode handler
+        // entirely (which can fail with ZodError due to schema mismatch).
+        // Claude sees the message text and knows the plan was approved.
+        return {
+          behavior: "deny",
+          message: "Plan approved by the user. The session has exited plan mode. Proceed with implementing the plan. Do not call ExitPlanMode again.",
+        };
       }
 
       // Denied — tell Claude the user rejected the plan.
@@ -4371,10 +4470,10 @@ export function createAgentChatService(args: {
     const mcpLaunch = resolveAdeMcpServerLaunch({
       projectRoot,
       workspaceRoot: managed.laneWorktreePath,
+      workspaceBinding: "project_root",
       runtimeRoot,
       chatSessionId: managed.session.id,
       defaultRole: managed.session.identityKey === "cto" ? "cto" : "agent",
-      ownerId: resolveWorkerIdentityAgentId(managed.session.identityKey) ?? undefined,
       computerUsePolicy: managed.session.computerUse,
     });
     // Discover loaded local models so OpenCode's provider config includes them.
@@ -4404,8 +4503,13 @@ export function createAgentChatService(args: {
       title: sessionService.get(managed.session.id)?.title ?? defaultChatSessionTitle("opencode"),
       sessionId: persisted?.providerSessionId,
       projectConfig: configSnapshot.effective,
-      mcpLaunch: isLightweightSession(managed.session) ? undefined : mcpLaunch,
+      dynamicMcpLaunch: isLightweightSession(managed.session) ? undefined : mcpLaunch,
       discoveredLocalModels,
+      ownerKind: "chat",
+      ownerId: managed.session.id,
+      ownerKey: `chat:${managed.session.id}`,
+      leaseKind: "shared",
+      logger,
     });
 
     const runtime: OpenCodeRuntime = {
@@ -4423,6 +4527,13 @@ export function createAgentChatService(args: {
       reasoningByPartId: new Map(),
       toolStateByPartId: new Map(),
     };
+    handle.setEvictionHandler((reason) => {
+      if (managed.runtime?.kind === "opencode" && managed.runtime.handle === handle) {
+        teardownRuntime(managed, reason === "error" || reason === "config_changed" ? "handle_close" : reason);
+      }
+    });
+    handle.setBusy(false);
+    handle.touch();
 
     // Evict least-recent runtime if at capacity
     {
@@ -4669,7 +4780,7 @@ export function createAgentChatService(args: {
         || managed.runtime?.kind === "opencode"
         || managed.runtime?.kind === "cursor")
     ) {
-      teardownRuntime(managed);
+      teardownRuntime(managed, "project_close");
       refreshReconstructionContext(managed, { includeConversationTail: usesIdentityContinuity(managed) });
     }
     return launchContext;
@@ -4761,6 +4872,7 @@ export function createAgentChatService(args: {
       ...(managed.session.requestedCwd != null && String(managed.session.requestedCwd).trim().length
         ? { requestedCwd: String(managed.session.requestedCwd).trim() }
         : {}),
+      ...(managed.session.idleSinceAt !== undefined ? { idleSinceAt: managed.session.idleSinceAt ?? null } : {}),
       updatedAt: nowIso()
     };
 
@@ -4896,6 +5008,11 @@ export function createAgentChatService(args: {
         ...(typeof record.requestedCwd === "string" && record.requestedCwd.trim().length
           ? { requestedCwd: record.requestedCwd.trim() }
           : {}),
+        ...(typeof record.idleSinceAt === "string"
+          ? { idleSinceAt: record.idleSinceAt.trim() || null }
+          : record.idleSinceAt === null
+            ? { idleSinceAt: null }
+            : {}),
         updatedAt: typeof record.updatedAt === "string" && record.updatedAt.trim().length ? record.updatedAt : nowIso()
       };
       hydrateNativePermissionControls(hydrated as Parameters<typeof hydrateNativePermissionControls>[0]);
@@ -4953,6 +5070,30 @@ export function createAgentChatService(args: {
     if (next === managed.preview) return;
     managed.preview = next;
     sessionService.setLastOutputPreview(managed.session.id, next);
+  };
+
+  const setSessionActive = (managed: ManagedChatSession): void => {
+    managed.session.status = "active";
+    managed.session.idleSinceAt = null;
+  };
+
+  const setSessionIdle = (
+    managed: ManagedChatSession,
+    options?: { idleSinceAt?: string | null },
+  ): void => {
+    managed.session.status = "idle";
+    if (options && "idleSinceAt" in options) {
+      managed.session.idleSinceAt = options.idleSinceAt ?? null;
+    }
+  };
+
+  const markSessionIdleWithFreshCache = (managed: ManagedChatSession): void => {
+    setSessionIdle(managed, { idleSinceAt: nowIso() });
+  };
+
+  const setSessionEnded = (managed: ManagedChatSession): void => {
+    managed.session.status = "ended";
+    managed.session.idleSinceAt = null;
   };
 
   const clipText = (value: string, maxChars: number): string => {
@@ -5468,8 +5609,19 @@ export function createAgentChatService(args: {
     return resolvedLaneId;
   };
 
+  const setOpenCodeRuntimeBusy = (runtime: OpenCodeRuntime, busy: boolean): void => {
+    runtime.busy = busy;
+    runtime.handle.setBusy(busy);
+    if (!busy) {
+      runtime.handle.touch();
+    }
+  };
+
   /** Tear down the active runtime, releasing all resources and cancelling pending approvals. */
-  const teardownRuntime = (managed: ManagedChatSession): void => {
+  const teardownRuntime = (
+    managed: ManagedChatSession,
+    openCodeReason: "handle_close" | "idle_ttl" | "ended_session" | "model_switch" | "project_close" | "budget_eviction" | "paused_run" | "shutdown" = "handle_close",
+  ): void => {
     flushBufferedReasoning(managed);
     flushBufferedText(managed);
     if (managed.runtime?.kind === "codex") {
@@ -5504,6 +5656,7 @@ export function createAgentChatService(args: {
       // Mark interrupted so the streaming catch block takes the graceful path
       managed.runtime.interrupted = true;
       managed.runtime.eventAbortController?.abort();
+      managed.runtime.handle.setBusy(false);
       for (const pending of managed.runtime.pendingApprovals.values()) {
         managed.runtime.handle.client.postSessionIdPermissionsPermissionId({
           path: { id: managed.runtime.handle.sessionId, permissionID: pending.permissionId },
@@ -5512,7 +5665,8 @@ export function createAgentChatService(args: {
         }).catch(() => {});
       }
       managed.runtime.pendingApprovals.clear();
-      try { managed.runtime.handle.close(); } catch { /* ignore */ }
+      managed.runtime.handle.setEvictionHandler(null);
+      try { managed.runtime.handle.close(openCodeReason); } catch { /* ignore */ }
       managed.runtime = null;
     }
     if (managed.runtime?.kind === "cursor") {
@@ -5573,8 +5727,8 @@ export function createAgentChatService(args: {
       });
     }
 
-    managed.session.status = "idle";
-    teardownRuntime(managed);
+    setSessionIdle(managed);
+    teardownRuntime(managed, "handle_close");
     managed.closed = false;
     managed.endedNotified = false;
     sessionService.reopen(managed.session.id);
@@ -5752,12 +5906,12 @@ export function createAgentChatService(args: {
       sessionService.setHeadShaEnd(managed.session.id, endSha);
     }
 
-    managed.session.status = "ended";
+    setSessionEnded(managed);
     managed.closed = true;
     managed.ctoSessionStartedAt = null;
     persistChatState(managed);
 
-    teardownRuntime(managed);
+    teardownRuntime(managed, "ended_session");
 
     try {
       onSessionEnded?.({ laneId: managed.session.laneId, sessionId: managed.session.id, exitCode: options?.exitCode ?? null });
@@ -5818,6 +5972,7 @@ export function createAgentChatService(args: {
         computerUse: normalizePersistedComputerUse(persisted?.computerUse),
         completion: persisted?.completion ?? null,
         status: mapTerminalStatusToChatStatus(row.status),
+        idleSinceAt: persisted?.idleSinceAt ?? null,
         ...(persisted?.threadId ? { threadId: persisted.threadId } : {}),
         ...(persisted?.requestedCwd != null && String(persisted.requestedCwd).trim().length
           ? { requestedCwd: String(persisted.requestedCwd).trim() }
@@ -5938,7 +6093,7 @@ export function createAgentChatService(args: {
       _rootPath: managed.laneWorktreePath,
     }));
     const displayText = args.displayText?.trim().length ? args.displayText.trim() : args.promptText;
-    managed.session.status = "active";
+    setSessionActive(managed);
     emitPreparedUserMessage(managed, {
       text: displayText,
       attachments,
@@ -6170,7 +6325,7 @@ export function createAgentChatService(args: {
     runtime.activeTurnId = turnId;
     runtime.interrupted = false;
     runtime.resolvedToolUseIds.clear();
-    managed.session.status = "active";
+    setSessionActive(managed);
 
     const attachments = args.attachments ?? [];
     const resolvedAttachments = args.resolvedAttachments ?? attachments.map((attachment) => ({
@@ -6983,7 +7138,7 @@ export function createAgentChatService(args: {
       runtime.busy = false;
       runtime.activeTurnId = null;
       runtime.turnMemoryPolicyState = null;
-      managed.session.status = "idle";
+      markSessionIdleWithFreshCache(managed);
       reportProviderRuntimeReady("claude");
 
       // Flush deferred session reset from mid-turn reasoning effort change
@@ -7050,7 +7205,7 @@ export function createAgentChatService(args: {
       void emitTurnDiffSummaryIfChanged(managed, turnId);
 
       if (runtime.interrupted) {
-        managed.session.status = "idle";
+        markSessionIdleWithFreshCache(managed);
         emitChatEvent(managed, { type: "status", turnStatus: "interrupted", turnId });
         emitChatEvent(managed, {
           type: "done",
@@ -7059,7 +7214,7 @@ export function createAgentChatService(args: {
           ...doneModel,
         });
       } else if (timeoutError) {
-        managed.session.status = "idle";
+        markSessionIdleWithFreshCache(managed);
         const errorMessage = effectiveError instanceof Error ? effectiveError.message : String(effectiveError);
         reportProviderRuntimeFailure("claude", errorMessage);
         emitChatEvent(managed, {
@@ -7082,7 +7237,7 @@ export function createAgentChatService(args: {
       } else if (isAbortRelatedError(effectiveError)) {
         // System-triggered abort (dispose/teardown) that wasn't flagged as interrupted.
         // Treat as interruption to avoid surfacing raw SDK messages like "aborted by user".
-        managed.session.status = "idle";
+        markSessionIdleWithFreshCache(managed);
         emitChatEvent(managed, { type: "status", turnStatus: "interrupted", turnId });
         emitChatEvent(managed, {
           type: "done",
@@ -7091,7 +7246,7 @@ export function createAgentChatService(args: {
           ...doneModel,
         });
       } else {
-        managed.session.status = "idle";
+        markSessionIdleWithFreshCache(managed);
         const isAuthFailure = isClaudeRuntimeAuthError(effectiveError);
         const errorMessage = isAuthFailure
           ? CLAUDE_RUNTIME_AUTH_ERROR
@@ -7173,10 +7328,10 @@ export function createAgentChatService(args: {
       throw new Error(validation.reason);
     }
     const turnId = randomUUID();
-    runtime.busy = true;
+    setOpenCodeRuntimeBusy(runtime, true);
     runtime.activeTurnId = turnId;
     runtime.interrupted = false;
-    managed.session.status = "active";
+    setSessionActive(managed);
     const attachments = args.attachments ?? [];
     const resolvedAttachments = args.resolvedAttachments ?? attachments.map((attachment) => ({
       ...attachment,
@@ -7275,6 +7430,7 @@ export function createAgentChatService(args: {
         body: {
           agent: mapPermissionModeToOpenCodeAgent(runtime.permissionMode),
           model: resolveOpenCodeModelSelection(runtime.modelDescriptor),
+          ...(runtime.handle.toolSelection ? { tools: runtime.handle.toolSelection } : {}),
           parts: buildOpenCodePromptParts({
             prompt: userContent,
             files: toPromptFiles,
@@ -7563,7 +7719,7 @@ export function createAgentChatService(args: {
           emitChatEvent(managed, {
             type: "todo_update",
             items: event.properties.todos
-              .map((todo) => ({
+              .map((todo: { id: string; content: string; status: string }) => ({
                 id: todo.id,
                 description: todo.content,
                 status: todo.status === "completed"
@@ -7600,10 +7756,10 @@ export function createAgentChatService(args: {
       persistDeliveredLaneDirectiveKey(managed, args.laneDirectiveKey);
       void emitTurnDiffSummaryIfChanged(managed, turnId);
       if (runtime.interrupted) {
-        runtime.busy = false;
+        setOpenCodeRuntimeBusy(runtime, false);
         runtime.activeTurnId = null;
         runtime.eventAbortController = null;
-        managed.session.status = "idle";
+        markSessionIdleWithFreshCache(managed);
         emitChatEvent(managed, { type: "status", turnStatus: "interrupted", turnId });
         emitChatEvent(managed, {
           type: "done",
@@ -7614,10 +7770,10 @@ export function createAgentChatService(args: {
         });
         persistChatState(managed);
       } else {
-        runtime.busy = false;
+        setOpenCodeRuntimeBusy(runtime, false);
         runtime.activeTurnId = null;
         runtime.eventAbortController = null;
-        managed.session.status = "idle";
+        markSessionIdleWithFreshCache(managed);
 
         emitChatEvent(managed, { type: "status", turnStatus: "completed", turnId });
         emitChatEvent(managed, {
@@ -7649,13 +7805,13 @@ export function createAgentChatService(args: {
         }
       }
     } catch (error) {
-      runtime.busy = false;
+      setOpenCodeRuntimeBusy(runtime, false);
       runtime.activeTurnId = null;
       runtime.eventAbortController = null;
       void emitTurnDiffSummaryIfChanged(managed, turnId);
 
       if (runtime.interrupted) {
-        managed.session.status = "idle";
+        markSessionIdleWithFreshCache(managed);
         emitChatEvent(managed, { type: "status", turnStatus: "interrupted", turnId });
         emitChatEvent(managed, {
           type: "done",
@@ -7666,7 +7822,7 @@ export function createAgentChatService(args: {
         });
       } else if (isAbortRelatedError(error)) {
         // System-triggered abort (dispose/teardown) that wasn't flagged as interrupted.
-        managed.session.status = "idle";
+        markSessionIdleWithFreshCache(managed);
         emitChatEvent(managed, { type: "status", turnStatus: "interrupted", turnId });
         emitChatEvent(managed, {
           type: "done",
@@ -7676,7 +7832,7 @@ export function createAgentChatService(args: {
           ...(managed.session.modelId ? { modelId: managed.session.modelId } : {}),
         });
       } else {
-        managed.session.status = "idle";
+        markSessionIdleWithFreshCache(managed);
 
         const { message: errorMessage, errorInfo } = classifyOpenCodeError(
           error,
@@ -8547,7 +8703,7 @@ export function createAgentChatService(args: {
       runtime.agentMessageScopeByTurn.clear();
       runtime.agentMessageTextByTurn.clear();
       runtime.recentNotificationKeys.clear();
-      managed.session.status = "active";
+      setSessionActive(managed);
       if (!turnId || runtime.startedTurnId !== turnId) {
         runtime.startedTurnId = turnId;
         emitChatEvent(managed, {
@@ -8591,7 +8747,7 @@ export function createAgentChatService(args: {
       runtime.recentNotificationKeys.clear();
       const status = mapCodexTurnStatus(turn?.status);
       const usage = normalizeUsagePayload(turn?.usage ?? turn?.totalUsage);
-      managed.session.status = "idle";
+      markSessionIdleWithFreshCache(managed);
       runtime.approvals.clear();
 
       if (status === "failed" && turn?.error?.message) {
@@ -8817,7 +8973,7 @@ export function createAgentChatService(args: {
       runtime.agentMessageTextByTurn.clear();
       runtime.recentNotificationKeys.clear();
       runtime.approvals.clear();
-      managed.session.status = "idle";
+      markSessionIdleWithFreshCache(managed);
       stopActiveCodexSubagents(managed, runtime, turnId, "Interrupted by user");
       emitChatEvent(managed, {
         type: "status",
@@ -10002,6 +10158,7 @@ export function createAgentChatService(args: {
         model: DEFAULT_CODEX_MODEL,
         capabilityMode: "full_mcp",
         status: "idle",
+        idleSinceAt: null,
         createdAt: nowIso(),
         lastActivityAt: nowIso()
       },
@@ -10353,6 +10510,7 @@ export function createAgentChatService(args: {
         computerUse: computerUsePolicy,
         completion: null,
         status: "idle",
+        idleSinceAt: null,
         createdAt: startedAt,
         lastActivityAt: startedAt,
         ...(typeof requestedCwd === "string" && requestedCwd.trim().length
@@ -10587,7 +10745,7 @@ export function createAgentChatService(args: {
 
     if (managed.session.status === "ended") {
       sessionService.reopen(sessionId);
-      managed.session.status = "idle";
+      setSessionIdle(managed);
       managed.closed = false;
       managed.endedNotified = false;
       managed.ctoSessionStartedAt = managed.session.identityKey === "cto" ? nowIso() : null;
@@ -10663,7 +10821,7 @@ export function createAgentChatService(args: {
       || normalizedMsg.includes("busy");
 
     if (!isBusyError) {
-      managed.session.status = "idle";
+      setSessionIdle(managed);
     }
 
     if (managed.runtime?.kind === "codex" && !isBusyError) {
@@ -10672,7 +10830,7 @@ export function createAgentChatService(args: {
       managed.runtime.itemTurnIdByItemId.clear();
     }
     if (managed.runtime?.kind === "opencode" && !isBusyError) {
-      managed.runtime.busy = false;
+      setOpenCodeRuntimeBusy(managed.runtime, false);
       managed.runtime.activeTurnId = null;
       managed.runtime.eventAbortController = null;
     }
@@ -11270,7 +11428,7 @@ export function createAgentChatService(args: {
         return existing;
       }
     } else if (managed.runtime) {
-      teardownRuntime(managed);
+      teardownRuntime(managed, "handle_close");
     }
 
     // Evict least-recent runtime if at capacity
@@ -11372,7 +11530,7 @@ export function createAgentChatService(args: {
     runtime.interrupted = false;
     runtime.busy = true;
     runtime.activeTurnId = turnId;
-    managed.session.status = "active";
+    setSessionActive(managed);
 
     const displayText = args.displayText.trim().length ? args.displayText.trim() : args.promptText;
     if (!args.optimisticCursorTurnStart) {
@@ -11493,7 +11651,7 @@ export function createAgentChatService(args: {
 
       void emitTurnDiffSummaryIfChanged(managed, turnId);
       if (runtime.interrupted || promptRes.stopReason === "cancelled") {
-        managed.session.status = "idle";
+        markSessionIdleWithFreshCache(managed);
         cancelQueuedSteers(managed, runtime, "interrupted");
         emitChatEvent(managed, { type: "status", turnStatus: "interrupted", turnId });
         for (const ev of mapStopReasonToTerminalEvents({
@@ -11506,7 +11664,7 @@ export function createAgentChatService(args: {
           emitChatEvent(managed, ev);
         }
       } else {
-        managed.session.status = "idle";
+        markSessionIdleWithFreshCache(managed);
         emitChatEvent(managed, { type: "status", turnStatus: "completed", turnId });
         for (const ev of mapStopReasonToTerminalEvents({
           stopReason: promptRes.stopReason,
@@ -11530,7 +11688,7 @@ export function createAgentChatService(args: {
       });
       persistChatState(managed);
     } catch (error) {
-      managed.session.status = "idle";
+      markSessionIdleWithFreshCache(managed);
       const msg = error instanceof Error ? error.message : String(error);
 
       // Drain pending permission waiters so they don't block future sends.
@@ -11573,7 +11731,7 @@ export function createAgentChatService(args: {
       runtime.busy = false;
       runtime.activeTurnId = null;
       if (managed.session.status === "active") {
-        managed.session.status = "idle";
+        setSessionIdle(managed);
       }
     }
     if (!managed.closed && shouldDeliverQueuedSteer) {
@@ -11803,7 +11961,7 @@ export function createAgentChatService(args: {
       });
       emitChatEvent(prepared.managed, { type: "status", turnStatus: "started", turnId });
       captureTurnBeforeSha(prepared.managed);
-      prepared.managed.session.status = "active";
+      setSessionActive(prepared.managed);
       persistChatState(prepared.managed);
       // NOTE: onDispatched is NOT called here. It will be called inside
       // runCursorTurn after the real ACP prompt has been initiated, so the
@@ -12244,7 +12402,7 @@ export function createAgentChatService(args: {
     }
 
     sessionService.reopen(sessionId);
-    managed.session.status = "idle";
+    setSessionIdle(managed);
     managed.closed = false;
     managed.endedNotified = false;
     managed.ctoSessionStartedAt = managed.session.identityKey === "cto" ? nowIso() : null;
@@ -12316,6 +12474,9 @@ export function createAgentChatService(args: {
       computerUse: liveSession?.computerUse ?? normalizePersistedComputerUse(persisted?.computerUse),
       completion: liveSession?.completion ?? persisted?.completion ?? null,
       status: liveSession?.status ?? (row.status === "running" ? "idle" : "ended"),
+      idleSinceAt: (liveSession?.status ?? (row.status === "running" ? "idle" : "ended")) === "idle"
+        ? liveSession?.idleSinceAt ?? persisted?.idleSinceAt ?? null
+        : null,
       startedAt: row.startedAt,
       endedAt: row.endedAt,
       lastActivityAt: liveSession?.lastActivityAt ?? persisted?.updatedAt ?? row.endedAt ?? row.startedAt,
@@ -12903,7 +13064,7 @@ export function createAgentChatService(args: {
         && !managed.closed
         && now - managed.lastActivityTimestamp > SESSION_INACTIVITY_TIMEOUT_MS
       ) {
-        teardownRuntime(managed);
+        teardownRuntime(managed, "idle_ttl");
       }
     }
   }, SESSION_CLEANUP_INTERVAL_MS);
@@ -12923,7 +13084,7 @@ export function createAgentChatService(args: {
       }
     }
     if (oldest) {
-      teardownRuntime(oldest);
+      teardownRuntime(oldest, "budget_eviction");
     }
   };
 
@@ -12989,7 +13150,7 @@ export function createAgentChatService(args: {
         || managed.session.model !== nextModel;
 
       if (managed.runtime && modelChanged) {
-        teardownRuntime(managed);
+        teardownRuntime(managed, "model_switch");
         refreshReconstructionContext(managed, { includeConversationTail: true });
       }
 
@@ -13187,7 +13348,7 @@ export function createAgentChatService(args: {
     }
 
     if (resetRuntimeForComputerUse && managed.runtime) {
-      teardownRuntime(managed);
+      teardownRuntime(managed, "model_switch");
       refreshReconstructionContext(managed, { includeConversationTail: true });
     }
 

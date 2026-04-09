@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { CoordinatorAgent } from "./coordinatorAgent";
+import { startOpenCodeSession } from "../opencode/openCodeRuntime";
 
 const mockState = vi.hoisted(() => ({
   eventBatches: [] as Array<any[]>,
@@ -24,6 +25,9 @@ vi.mock("../opencode/openCodeRuntime", () => ({
     sessionId: "session-1",
     directory: args.directory,
     close: mockState.close,
+    touch: vi.fn(),
+    setBusy: vi.fn(),
+    setEvictionHandler: vi.fn(),
   })),
   openCodeEventStream: vi.fn(async () => ({
     async *[Symbol.asyncIterator]() {
@@ -325,6 +329,106 @@ describe("CoordinatorAgent", () => {
         turnStatus: "interrupted",
         turnId: "coord-turn-1",
       }));
+    } finally {
+      agent.shutdown();
+    }
+  });
+
+  it("releases idle coordinator sessions without shutting the agent down", async () => {
+    vi.useFakeTimers();
+    mockState.eventBatches.push([
+      { type: "session.idle", properties: { sessionID: "session-1" } },
+    ]);
+
+    const agent = createTestCoordinatorAgent() as any;
+
+    try {
+      const initialStartCalls = vi.mocked(startOpenCodeSession).mock.calls.length;
+      agent.injectMessage("Start planning.");
+      await vi.advanceTimersByTimeAsync(250);
+
+      const afterFirstBatchCalls = vi.mocked(startOpenCodeSession).mock.calls.length;
+      expect(afterFirstBatchCalls).toBeGreaterThan(initialStartCalls);
+
+      await vi.advanceTimersByTimeAsync(5 * 60 * 1000);
+      expect(mockState.close.mock.calls.length).toBeGreaterThan(0);
+
+      expect(agent.isAlive).toBe(true);
+    } finally {
+      agent.shutdown();
+      vi.useRealTimers();
+    }
+  });
+
+  it("releases paused OpenCode coordinator sessions when the idle timer fires", async () => {
+    vi.useFakeTimers();
+    const agent = createTestCoordinatorAgent({
+      runStatus: "paused",
+    }) as any;
+
+    try {
+      const handle = await agent.ensureOpenCodeCoordinatorSession();
+      expect(handle.setEvictionHandler).toHaveBeenCalledWith(expect.any(Function));
+
+      await vi.advanceTimersByTimeAsync(5 * 60 * 1000);
+
+      expect(handle.setEvictionHandler).toHaveBeenCalledWith(null);
+      expect(handle.setBusy).toHaveBeenCalledWith(false);
+      expect(handle.close).toHaveBeenCalledWith("paused_run");
+    } finally {
+      agent.shutdown();
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps OpenCode eviction handlers bound to the handle instance that registered them", async () => {
+    const agent = createTestCoordinatorAgent() as any;
+
+    try {
+      const firstHandle = await agent.ensureOpenCodeCoordinatorSession();
+      const firstEvictionHandler = (firstHandle.setEvictionHandler as any).mock.calls[0]?.[0] as ((reason: string) => void) | undefined;
+      expect(firstEvictionHandler).toBeTypeOf("function");
+
+      (agent as any).releaseOpenCodeCoordinatorSession("handle_close");
+      const secondHandle = await agent.ensureOpenCodeCoordinatorSession();
+      const secondCloseCallCount = secondHandle.close.mock.calls.length;
+
+      firstEvictionHandler?.("error");
+
+      expect(secondHandle.close.mock.calls.length).toBe(secondCloseCallCount);
+      expect(firstHandle.close).toHaveBeenCalledWith("handle_close");
+    } finally {
+      agent.shutdown();
+    }
+  });
+
+  it("uses project-root workspace binding for the OpenCode coordinator MCP launch", async () => {
+    mockState.eventBatches.push([
+      { type: "session.idle", properties: { sessionID: "session-1" } },
+    ]);
+
+    const agent = createTestCoordinatorAgent({
+      phases: createPlanningPhases(),
+    }) as any;
+
+    try {
+      agent.injectMessage("Start planning.");
+      await agent.processBatch();
+
+      const startCalls = vi.mocked(startOpenCodeSession).mock.calls;
+      expect(startCalls.length).toBeGreaterThan(0);
+      expect(startCalls[0]?.[0]?.leaseKind).toBe("shared");
+      const launch = startCalls[0]?.[0]?.dynamicMcpLaunch as {
+        cmdArgs?: string[];
+        env?: Record<string, string>;
+      };
+      expect(Array.isArray(launch?.cmdArgs)).toBe(true);
+      const workspaceFlagIndex = launch.cmdArgs!.indexOf("--workspace-root");
+      expect(workspaceFlagIndex).toBeGreaterThanOrEqual(0);
+      expect(launch.cmdArgs![workspaceFlagIndex + 1]).toBe("/tmp/ade-project");
+      expect(launch.env?.ADE_WORKSPACE_ROOT).toBe("/tmp/ade-project");
+      expect(launch.env?.ADE_RUN_ID).toBe("run-1");
+      expect(launch.env?.ADE_MISSION_ID).toBeFalsy();
     } finally {
       agent.shutdown();
     }

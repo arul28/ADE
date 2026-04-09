@@ -1,4 +1,4 @@
-import type { AgentChatEventEnvelope } from "../../../shared/types";
+import type { AgentChatEventEnvelope, TurnDiffSummary } from "../../../shared/types";
 
 export type ChatSubagentSnapshot = {
   taskId: string;
@@ -76,4 +76,66 @@ export function deriveChatSubagentSnapshots(events: AgentChatEventEnvelope[]): C
     if (right.status === "running" && left.status !== "running") return 1;
     return compareIsoDesc(left.updatedAt, right.updatedAt);
   });
+}
+
+export function deriveTurnDiffSummaries(events: AgentChatEventEnvelope[]): TurnDiffSummary[] {
+  const summaries: TurnDiffSummary[] = [];
+  for (const envelope of events) {
+    const event = envelope.event;
+    if (event.type === "turn_diff_summary") {
+      summaries.push({
+        turnId: event.turnId,
+        beforeSha: event.beforeSha,
+        afterSha: event.afterSha,
+        files: event.files,
+        totalAdditions: event.totalAdditions,
+        totalDeletions: event.totalDeletions,
+      });
+    }
+  }
+  return summaries;
+}
+
+export type SubagentTimelineEntry = {
+  timestamp: string;
+  type: "started" | "progress" | "result";
+  summary: string | null;
+  lastToolName: string | null;
+  status: string | null;
+};
+
+export function deriveSubagentTimeline(
+  events: AgentChatEventEnvelope[],
+  taskId: string,
+): SubagentTimelineEntry[] {
+  const entries: SubagentTimelineEntry[] = [];
+  for (const envelope of events) {
+    const event = envelope.event;
+    if (event.type === "subagent_started" && event.taskId === taskId) {
+      entries.push({
+        timestamp: envelope.timestamp,
+        type: "started",
+        summary: null,
+        lastToolName: null,
+        status: null,
+      });
+    } else if (event.type === "subagent_progress" && event.taskId === taskId) {
+      entries.push({
+        timestamp: envelope.timestamp,
+        type: "progress",
+        summary: event.summary?.trim() ?? null,
+        lastToolName: event.lastToolName ?? null,
+        status: null,
+      });
+    } else if (event.type === "subagent_result" && event.taskId === taskId) {
+      entries.push({
+        timestamp: envelope.timestamp,
+        type: "result",
+        summary: event.summary?.trim() ?? null,
+        lastToolName: null,
+        status: event.status,
+      });
+    }
+  }
+  return entries;
 }

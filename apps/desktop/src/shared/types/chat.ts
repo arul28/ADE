@@ -71,6 +71,7 @@ export type AgentChatNoticeDetail = {
   summary?: string;
   metrics?: AgentChatNoticeDetailMetric[];
   sections?: AgentChatNoticeDetailSection[];
+  permissionModeTransition?: "entered_plan_mode" | "exited_plan_mode";
 };
 
 export type AgentChatFileRef = {
@@ -484,6 +485,7 @@ export type AgentChatSession = {
   computerUse?: ComputerUsePolicy;
   completion?: AgentChatCompletionReport | null;
   status: AgentChatSessionStatus;
+  idleSinceAt?: string | null;
   threadId?: string;
   /** Subdirectory or absolute path under the lane worktree used as cwd; persisted for relaunch/resume. */
   requestedCwd?: string | null;
@@ -519,6 +521,7 @@ export type AgentChatSessionSummary = {
   computerUse?: ComputerUsePolicy;
   completion?: AgentChatCompletionReport | null;
   status: AgentChatSessionStatus;
+  idleSinceAt?: string | null;
   startedAt: string;
   endedAt: string | null;
   lastActivityAt: string;

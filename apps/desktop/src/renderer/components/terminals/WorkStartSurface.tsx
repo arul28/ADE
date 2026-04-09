@@ -234,7 +234,7 @@ export function WorkStartSurface({
   /* ---- Shell draft ---- */
   return (
     <div className="flex h-full min-h-0 flex-col items-center justify-center" style={{ background: "var(--color-bg)" }}>
-      <LogoGlow size="sm" />
+      <LogoGlow size="lg" />
       <GlassCard>
         {/* Lane */}
         <div className="flex items-center gap-2">
@@ -277,7 +277,7 @@ export function WorkStartSurface({
 }
 
 const LOGO_SIZES = {
-  lg: { glow: "h-[400px] w-[400px]", blur: "blur(100px)", img: "w-64 h-64" },
+  lg: { glow: "h-[500px] w-[500px]", blur: "blur(140px)", img: "w-96 h-96" },
   sm: { glow: "h-[200px] w-[200px]", blur: "blur(80px)", img: "h-[140px] w-[140px]" },
 } as const;
 

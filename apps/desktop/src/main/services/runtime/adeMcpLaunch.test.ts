@@ -82,6 +82,35 @@ describe("resolveDesktopAdeMcpLaunch", () => {
     });
   });
 
+  it("can bind workspace launch args to project root for shareable runtimes", () => {
+    const runtimeRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-launch-runtime-shared-"));
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-launch-project-shared-"));
+    const workspaceRoot = path.join(projectRoot, "workspace");
+    const builtEntry = path.join(runtimeRoot, "apps", "mcp-server", "dist", "index.cjs");
+
+    fs.mkdirSync(workspaceRoot, { recursive: true });
+    fs.mkdirSync(path.dirname(builtEntry), { recursive: true });
+    fs.writeFileSync(builtEntry, "module.exports = {};\n", "utf8");
+
+    const launch = resolveDesktopAdeMcpLaunch({
+      projectRoot,
+      workspaceRoot,
+      workspaceBinding: "project_root",
+      runtimeRoot,
+      preferBundledProxy: false,
+    });
+
+    expect(launch.cmdArgs).toEqual([
+      builtEntry,
+      "--project-root",
+      path.resolve(projectRoot),
+      "--workspace-root",
+      path.resolve(projectRoot),
+    ]);
+    expect(launch.env.ADE_PROJECT_ROOT).toBe(path.resolve(projectRoot));
+    expect(launch.env.ADE_WORKSPACE_ROOT).toBe(path.resolve(projectRoot));
+  });
+
   it("prefers the unpacked packaged proxy path over the asar path", () => {
     const resourcesPath = fs.mkdtempSync(path.join(os.tmpdir(), "ade-launch-resources-"));
     const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-launch-project-"));

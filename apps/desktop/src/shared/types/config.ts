@@ -510,6 +510,41 @@ export type RuntimeDiagnosticsStatus = {
   fallbackLanes: string[];
 };
 
+export type OpenCodeRuntimeLeaseKind = "shared" | "dedicated";
+export type OpenCodeRuntimeOwnerKind = "inventory" | "oneshot" | "chat" | "coordinator";
+
+export type OpenCodeRuntimeEntry = {
+  id: string;
+  key: string;
+  leaseKind: OpenCodeRuntimeLeaseKind;
+  ownerKind: OpenCodeRuntimeOwnerKind;
+  ownerId: string | null;
+  configFingerprint: string;
+  url: string;
+  busy: boolean;
+  refCount: number;
+  startedAt: number;
+  lastUsedAt: number;
+};
+
+export type OpenCodeDynamicMcpDiagnostics = {
+  registrationAttempts: number;
+  successfulRegistrations: number;
+  retryCount: number;
+  fallbackCount: number;
+  lastFallbackAt: string | null;
+  lastFallbackOwnerKind: OpenCodeRuntimeOwnerKind | null;
+  lastFallbackOwnerId: string | null;
+  lastFallbackError: string | null;
+};
+
+export type OpenCodeRuntimeSnapshot = {
+  sharedCount: number;
+  dedicatedCount: number;
+  entries: OpenCodeRuntimeEntry[];
+  dynamicMcp: OpenCodeDynamicMcpDiagnostics;
+};
+
 export type RuntimeDiagnosticsEvent = {
   type: "health-updated" | "fallback-activated" | "fallback-deactivated" | "diagnostics-refresh";
   laneId?: string;

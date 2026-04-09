@@ -39,9 +39,9 @@
   --font-sans: "Geist", -apple-system, BlinkMacSystemFont, sans-serif;
   --font-mono: "JetBrains Mono", "Geist Mono", ui-monospace, monospace;
 
-  --shadow-card: 0 2px 8px -2px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(45, 40, 64, 0.2);
-  --shadow-card-hover: 0 6px 20px -4px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(45, 40, 64, 0.35);
-  --shadow-float: 0 12px 40px -12px rgba(0, 0, 0, 0.7);
+  --shadow-card: 0 4px 16px -4px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(45, 40, 64, 0.25);
+  --shadow-card-hover: 0 8px 30px -6px rgba(0, 0, 0, 0.7), 0 0 0 1px rgba(167, 139, 250, 0.15);
+  --shadow-float: 0 20px 50px -16px rgba(0, 0, 0, 0.8), 0 0 0 1px rgba(167, 139, 250, 0.08);
 
   --chat-radius-shell: 18px;
   --chat-radius-card: 16px;
@@ -57,7 +57,7 @@
   --color-bg: #0C0B10;
   --color-fg: #F0F0F2;
   --color-surface: #16141E;
-  --color-card: #1C1926;
+  --color-card: #1A1830;
   --color-card-fg: #F0F0F2;
   --color-card-rgb: 28, 25, 38;
   --color-secondary: #252232;
@@ -68,9 +68,23 @@
   --color-accent: #A78BFA;
   --color-accent-fg: #0C0B10;
   --color-accent-muted: rgba(167, 139, 250, 0.20);
-  --color-surface-raised: #211E2E;
+  --color-accent-bright: #C4B5FD;
+  --color-accent-deep: #7C3AED;
+  --color-accent-glow-strong: rgba(168, 130, 255, 0.22);
+  --color-surface-raised: #1E1B2E;
   --color-surface-recessed: #0A090E;
-  --color-surface-overlay: #211E2E;
+  --color-surface-overlay: #1E1B2E;
+  --color-popup-bg: #151325;
+  --color-modal-bg: #1A1830;
+  --color-composer-bg: #14121F;
+  --color-glass-card: #141220;
+  --gradient-popup-border: linear-gradient(180deg, rgba(167, 139, 250, 0.20), rgba(124, 58, 237, 0.10));
+  --gradient-accent: linear-gradient(135deg, #7C3AED, #A78BFA);
+  --gradient-accent-soft: linear-gradient(135deg, rgba(124, 58, 237, 0.20), rgba(167, 139, 250, 0.10));
+  --shadow-popup: 0 20px 50px -12px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(167, 139, 250, 0.12);
+  --shadow-modal: 0 28px 64px -16px rgba(0, 0, 0, 0.67), 0 0 0 1px rgba(167, 139, 250, 0.10);
+  --blur-popup: 40px;
+  --blur-modal: 60px;
   --shadow-inset: inset 0 1px 2px rgba(0, 0, 0, 0.5);
   --shadow-separator: inset 0 0 4px 0 rgba(0, 0, 0, 0.4);
   --shadow-panel: 0 2px 12px -2px rgba(0, 0, 0, 0.6);
@@ -82,12 +96,12 @@
   --color-glow: rgba(167, 139, 250, 0.22);
   --pane-bg: rgba(28, 25, 38, 0.94);
   --pane-border: rgba(48, 44, 66, 0.6);
-  --chat-shell-shadow: 0 24px 60px -34px rgba(0, 0, 0, 0.8), 0 0 0 1px rgba(167, 139, 250, 0.10);
+  --chat-shell-shadow: 0 24px 64px -34px rgba(0, 0, 0, 0.85), 0 0 0 1px rgba(167, 139, 250, 0.12);
   --chat-card-shadow: 0 16px 32px -24px rgba(0, 0, 0, 0.7);
   --chat-composer-shadow: 0 -12px 30px -26px rgba(0, 0, 0, 0.7);
-  --chat-glass-bg: rgba(28, 25, 38, 0.7);
+  --chat-glass-bg: rgba(20, 18, 32, 0.75);
   --chat-glass-border: rgba(255, 255, 255, 0.08);
-  --chat-panel-bg: rgba(28, 25, 38, 0.82);
+  --chat-panel-bg: rgba(20, 18, 32, 0.85);
   --chat-panel-border: rgba(255, 255, 255, 0.10);
   --chat-panel-bg-strong: rgba(28, 25, 38, 0.92);
   --chat-streaming-shimmer: linear-gradient(90deg, transparent, rgba(255,255,255,0.07), transparent);
@@ -1866,12 +1880,12 @@ button:active, [role="button"]:active {
 @keyframes ade-status-pulse {
   0%,
   100% {
-    opacity: 1;
-    box-shadow: 0 0 0 0 currentColor;
+    opacity: 0.6;
+    transform: scale(1);
   }
   50% {
-    opacity: 0.7;
-    box-shadow: 0 0 0 3px transparent;
+    opacity: 1;
+    transform: scale(1.3);
   }
 }
 
@@ -1939,10 +1953,10 @@ button:active, [role="button"]:active {
 @keyframes ade-glow-pulse {
   0%,
   100% {
-    box-shadow: 0 0 4px 1px var(--color-glow);
+    box-shadow: 0 0 0 0 rgba(167, 139, 250, 0);
   }
   50% {
-    box-shadow: 0 0 12px 4px var(--color-glow);
+    box-shadow: 0 0 12px 2px rgba(167, 139, 250, 0.15);
   }
 }
 
@@ -2011,6 +2025,10 @@ button:active, [role="button"]:active {
   .ade-tab-bg::after {
     animation: none !important;
   }
+  .ade-streaming-shimmer,
+  .ade-streaming-shimmer::after,
+  .ade-tool-bounce,
+  .ade-fade-in,
   .ade-glow-pulse,
   .ade-glow-pulse-blue,
   .ade-glow-pulse-red,
@@ -2661,8 +2679,8 @@ button:active, [role="button"]:active {
 }
 
 @keyframes ade-thinking-pulse {
-  0%, 100% { opacity: 0.3; }
-  50% { opacity: 1; }
+  0%, 100% { opacity: 0.3; transform: scale(0.85); }
+  50% { opacity: 1; transform: scale(1.15); }
 }
 .ade-thinking-pulse {
   animation: ade-thinking-pulse 1.2s ease-in-out infinite;
@@ -2687,4 +2705,69 @@ button:active, [role="button"]:active {
 @keyframes pulse-glow {
   0%, 100% { filter: drop-shadow(0 0 18px var(--color-accent)) drop-shadow(0 0 40px var(--color-accent)); }
   50% { filter: drop-shadow(0 0 40px var(--color-accent)) drop-shadow(0 0 80px var(--color-accent)); }
+}
+
+/* ═══════════════════════════════════════════════════════════
+   Enhanced Animations
+   ═══════════════════════════════════════════════════════════ */
+
+/* Streaming shimmer - moves across AI response while streaming */
+@keyframes ade-streaming-shimmer {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(100%); }
+}
+
+/* Tool call icon bounce - subtle bounce when tool is called */
+@keyframes ade-tool-bounce {
+  0%, 100% { transform: translateY(0); }
+  25% { transform: translateY(-3px); }
+  50% { transform: translateY(0); }
+  75% { transform: translateY(-1.5px); }
+}
+
+/* Fade in with slide up - for new messages */
+@keyframes ade-fade-slide-up {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* Subtle rotate for spinner icons */
+@keyframes ade-icon-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+/* Progress bar indeterminate */
+@keyframes ade-progress-indeterminate {
+  0% { transform: translateX(-100%); }
+  50% { transform: translateX(0%); }
+  100% { transform: translateX(100%); }
+}
+
+/* ═══ Enhanced Animation Utility Classes ═══ */
+
+.ade-streaming-shimmer {
+  position: relative;
+  overflow: hidden;
+}
+
+.ade-streaming-shimmer::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, rgba(167, 139, 250, 0.06), transparent);
+  animation: ade-streaming-shimmer 2s ease-in-out infinite;
+  pointer-events: none;
+}
+
+.ade-tool-bounce {
+  animation: ade-tool-bounce 0.6s ease-out;
+}
+
+.ade-glow-pulse {
+  animation: ade-glow-pulse 2s ease-in-out infinite;
+}
+
+.ade-fade-in {
+  animation: ade-fade-slide-up 0.3s ease-out both;
 }

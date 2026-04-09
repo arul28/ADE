@@ -198,6 +198,7 @@ const MAX_EVENT_RETRY_COUNT = 2;
 const CHECKPOINT_TURN_INTERVAL = 5;
 const CHECKPOINT_SUMMARY_MAX_CHARS = 8_000;
 const COORDINATOR_TURN_TIMEOUT_MS = 120_000;
+const COORDINATOR_IDLE_SESSION_TTL_MS = 5 * 60 * 1000;
 const PLANNING_STARTUP_RETRY_LIMIT = 1;
 const PLANNER_LAUNCH_TRACKER_STEP_KEY = "planner-launch-tracker";
 const CHECKPOINT_DAG_MUTATION_TOOLS = new Set([
@@ -447,6 +448,7 @@ export class CoordinatorAgent {
   private lastEventTimestampMs: number | null = null;
   private activeAbortController: AbortController | null = null;
   private openCodeHandle: OpenCodeSessionHandle | null = null;
+  private openCodeIdleTimer: ReturnType<typeof setTimeout> | null = null;
   private planningStartupState: PlanningStartupState = "inactive";
   private planningStartupRetryCount = 0;
   private plannerLaunchTrackerStepId: string | null = null;
@@ -574,6 +576,7 @@ export class CoordinatorAgent {
       formattedMessage ?? formatRuntimeEvent(event).summary;
     this.lastEventTimestampMs = receivedAt;
     this.eventQueue.push({ message, receivedAt });
+    this.touchOpenCodeCoordinatorSession();
     this.scheduleBatch();
   }
 
@@ -585,6 +588,7 @@ export class CoordinatorAgent {
     const receivedAt = Date.now();
     this.lastEventTimestampMs = receivedAt;
     this.eventQueue.push({ message, receivedAt });
+    this.touchOpenCodeCoordinatorSession();
     this.scheduleBatch();
   }
 
@@ -594,12 +598,53 @@ export class CoordinatorAgent {
     this.eventQueue = [];
     this.activeAbortController?.abort();
     this.activeAbortController = null;
-    this.openCodeHandle?.close();
-    this.openCodeHandle = null;
+    this.releaseOpenCodeCoordinatorSession("shutdown");
     if (this.batchTimer) {
       clearTimeout(this.batchTimer);
       this.batchTimer = null;
     }
+  }
+
+  private clearOpenCodeIdleTimer(): void {
+    if (!this.openCodeIdleTimer) return;
+    clearTimeout(this.openCodeIdleTimer);
+    this.openCodeIdleTimer = null;
+  }
+
+  private releaseOpenCodeCoordinatorSession(
+    reason: "handle_close" | "idle_ttl" | "ended_session" | "model_switch" | "paused_run" | "project_close" | "budget_eviction" | "shutdown",
+  ): void {
+    this.clearOpenCodeIdleTimer();
+    const handle = this.openCodeHandle;
+    this.openCodeHandle = null;
+    if (!handle) return;
+    handle.setEvictionHandler(null);
+    handle.setBusy(false);
+    try {
+      handle.close(reason);
+    } catch {
+      // ignore shutdown failures
+    }
+  }
+
+  private touchOpenCodeCoordinatorSession(): void {
+    if (!this.openCodeHandle) return;
+    this.openCodeHandle.touch();
+    this.clearOpenCodeIdleTimer();
+    this.openCodeIdleTimer = setTimeout(() => {
+      if (this.dead) return;
+      if (!this.openCodeHandle) return;
+      if (this.isRunPaused()) {
+        this.releaseOpenCodeCoordinatorSession("paused_run");
+        return;
+      }
+      if (this.activeAbortController || this.processing || this.eventQueue.length > 0) {
+        this.touchOpenCodeCoordinatorSession();
+        return;
+      }
+      this.releaseOpenCodeCoordinatorSession("idle_ttl");
+    }, COORDINATOR_IDLE_SESSION_TTL_MS);
+    if (this.openCodeIdleTimer.unref) this.openCodeIdleTimer.unref();
   }
 
   get isAlive(): boolean {
@@ -741,8 +786,8 @@ export class CoordinatorAgent {
     const mcpLaunch = resolveAdeMcpServerLaunch({
       projectRoot: this.deps.projectRoot,
       workspaceRoot: this.deps.workspaceRoot,
+      workspaceBinding: "project_root",
       runtimeRoot: resolveOpenCodeRuntimeRoot(),
-      missionId: this.deps.missionId,
       runId: this.deps.runId,
       defaultRole: "orchestrator",
     });
@@ -765,9 +810,27 @@ export class CoordinatorAgent {
       directory: this.deps.workspaceRoot,
       title: `ADE coordinator: ${this.deps.missionGoal}`,
       projectConfig,
-      mcpLaunch,
+      dynamicMcpLaunch: mcpLaunch,
       discoveredLocalModels,
+      ownerKind: "coordinator",
+      ownerId: this.deps.runId,
+      ownerKey: `coordinator:${this.deps.runId}`,
+      leaseKind: "shared",
+      logger: this.deps.logger,
     });
+    const registeredHandle = this.openCodeHandle;
+    registeredHandle.setEvictionHandler((reason) => {
+      if (this.openCodeHandle !== registeredHandle) {
+        return;
+      }
+      if (this.openCodeHandle) {
+        this.releaseOpenCodeCoordinatorSession(
+          reason === "error" || reason === "config_changed" ? "handle_close" : reason,
+        );
+      }
+    });
+    registeredHandle.setBusy(false);
+    this.touchOpenCodeCoordinatorSession();
     return this.openCodeHandle;
   }
 
@@ -787,6 +850,8 @@ export class CoordinatorAgent {
       throw new Error(`Coordinator model '${this.deps.modelId}' is not registered.`);
     }
     const handle = await this.ensureOpenCodeCoordinatorSession();
+    handle.setBusy(true);
+    this.touchOpenCodeCoordinatorSession();
     const eventStream = await openCodeEventStream({
       client: handle.client,
       directory: handle.directory,
@@ -806,6 +871,7 @@ export class CoordinatorAgent {
       body: {
         agent: mapPermissionModeToOpenCodeAgent("plan"),
         model: resolveOpenCodeModelSelection(descriptor),
+        ...(handle.toolSelection ? { tools: handle.toolSelection } : {}),
         parts: buildOpenCodePromptParts({
           prompt: promptText,
           system: this.systemPrompt,
@@ -993,7 +1059,7 @@ export class CoordinatorAgent {
       if (event.type === "todo.updated") {
         this.deps.onCoordinatorEvent?.({
           type: "todo_update",
-          items: event.properties.todos.map((todo) => ({
+          items: event.properties.todos.map((todo: { id: string; content: string; status: string }) => ({
             id: todo.id,
             description: todo.content,
             status: todo.status === "completed"
@@ -1779,6 +1845,8 @@ export class CoordinatorAgent {
       }
       throw error;
     } finally {
+      this.openCodeHandle?.setBusy(false);
+      this.touchOpenCodeCoordinatorSession();
       if (this.activeAbortController === abortController) {
         this.activeAbortController = null;
       }

@@ -5,7 +5,6 @@ import {
   GitCommit,
   ArrowUp,
   GitPullRequest,
-  Sparkle,
   CircleNotch,
   CheckCircle,
   XCircle,
@@ -81,10 +80,23 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
   const runtime = useLaneGitActionRuntimeState(laneId);
 
   const [branch, setBranch] = useState<string | null>(null);
+  const [laneName, setLaneName] = useState<string | null>(null);
   const [dirtyCount, setDirtyCount] = useState(0);
+  const [diffStats, setDiffStats] = useState<{ adds: number; dels: number; files: number } | null>(null);
   const [commitOpen, setCommitOpen] = useState(false);
   const [commitMsg, setCommitMsg] = useState("");
   const [linkedPr, setLinkedPr] = useState<PrSummary | null>(null);
+
+  // Fetch lane display name
+  useEffect(() => {
+    let cancelled = false;
+    window.ade.lanes.list({}).then((lanes: Array<{ id: string; name: string }>) => {
+      if (cancelled) return;
+      const match = lanes.find((l) => l.id === laneId);
+      if (match) setLaneName(match.name);
+    }).catch(() => {});
+    return () => { cancelled = true; };
+  }, [laneId]);
 
   // -----------------------------------------------------------------------
   // Refresh git status + PR link
@@ -98,6 +110,11 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
       ]);
       setBranch(currentBranchName(branches));
       setDirtyCount(dirtyFileCount(changes));
+      const staged = changes.staged.length;
+      const unstaged = changes.unstaged.length;
+      const totalAdds = changes.staged.reduce((acc, f) => acc + ((f as any).additions ?? 0), 0) + changes.unstaged.reduce((acc, f) => acc + ((f as any).additions ?? 0), 0);
+      const totalDels = changes.staged.reduce((acc, f) => acc + ((f as any).deletions ?? 0), 0) + changes.unstaged.reduce((acc, f) => acc + ((f as any).deletions ?? 0), 0);
+      setDiffStats({ adds: totalAdds, dels: totalDels, files: staged + unstaged });
     } catch {
       // best-effort
     }
@@ -187,18 +204,26 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
 
   const handleCommit = useCallback(async () => {
     const msg = commitMsg.trim();
-    if (!msg) return;
+    if (!msg) {
+      // Auto-generate message when empty
+      await handleGenerateMessage();
+      return;
+    }
     await runAction("Commit", async () => {
+      // Stage all unstaged changes before committing
       const changes = await window.ade.diff.getChanges({ laneId });
-      const unstaged = changes.unstaged.map((f) => f.path);
-      if (unstaged.length > 0) {
-        await window.ade.git.stageAll({ laneId, paths: unstaged });
+      const allPaths = [
+        ...changes.staged.map((f) => f.path),
+        ...changes.unstaged.map((f) => f.path),
+      ];
+      if (allPaths.length > 0) {
+        await window.ade.git.stageAll({ laneId, paths: allPaths });
       }
       await window.ade.git.commit({ laneId, message: msg });
       setCommitMsg("");
       setCommitOpen(false);
     });
-  }, [laneId, commitMsg, runAction]);
+  }, [laneId, commitMsg, runAction, handleGenerateMessage]);
 
   const handlePush = useCallback(async () => {
     await runAction("Push", async () => {
@@ -255,12 +280,16 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
 
   return (
     <div className="flex items-center gap-1.5">
-      {/* Branch name */}
-      {branch ? (
-        <span className="inline-flex items-center gap-1 rounded-full border border-white/[0.06] px-2 py-0.5 font-mono text-[10px] text-fg/45">
-          <GitBranch size={10} weight="bold" className="shrink-0 text-fg/35" />
-          <span className="max-w-[120px] truncate">{branch}</span>
-        </span>
+      {/* Lane name (navigates to lane detail) */}
+      {laneId ? (
+        <button
+          type="button"
+          onClick={() => navigate(`/lanes/${laneId}`)}
+          className="inline-flex items-center gap-1.5 rounded-lg border border-violet-400/10 bg-violet-500/[0.04] px-2.5 py-1 font-mono text-[10px] text-violet-200/60 cursor-pointer transition-colors hover:border-violet-400/20 hover:bg-violet-500/[0.08]"
+        >
+          <GitBranch size={10} weight="bold" className="shrink-0 text-violet-400/50" />
+          <span className="max-w-[140px] truncate">{laneName ?? laneId}</span>
+        </button>
       ) : null}
 
       {/* Dirty count badge */}
@@ -287,35 +316,22 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
               value={commitMsg}
               onChange={(e) => setCommitMsg(e.target.value)}
               onKeyDown={handleCommitKeyDown}
-              placeholder="Commit message..."
-              className="h-[22px] w-[160px] rounded-full border border-white/[0.08] bg-white/[0.03] px-2 font-mono text-[10px] text-fg/70 placeholder:text-fg/25 outline-none focus:border-white/[0.14]"
+              placeholder="Commit message (empty = auto-generate)..."
+              className="h-[22px] w-[200px] rounded-full border border-white/[0.08] bg-white/[0.03] px-2 font-mono text-[10px] text-fg/70 placeholder:text-fg/25 outline-none focus:border-white/[0.14]"
               disabled={isBusy}
             />
             <button
               type="button"
-              className={cn(btnBase, "px-1.5")}
-              title="Generate commit message with AI"
-              onClick={() => void handleGenerateMessage()}
-              disabled={isBusy}
-            >
-              {runtime.busyAction === "Generating message" ? (
-                <CircleNotch size={10} className="animate-spin" />
-              ) : (
-                <Sparkle size={10} weight="fill" />
-              )}
-            </button>
-            <button
-              type="button"
               className={cn(btnBase)}
               onClick={() => void handleCommit()}
-              disabled={isBusy || !commitMsg.trim()}
+              disabled={isBusy}
             >
-              {runtime.busyAction === "Commit" ? (
+              {runtime.busyAction === "Commit" || runtime.busyAction === "Generating message" ? (
                 <CircleNotch size={10} className="animate-spin" />
               ) : (
                 <GitCommit size={10} weight="bold" />
               )}
-              <span>Go</span>
+              <span>Stage & Commit</span>
             </button>
           </motion.div>
         ) : (
@@ -331,7 +347,14 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
             transition={{ duration: 0.1 }}
           >
             <GitCommit size={10} weight="bold" />
-            <span>Commit</span>
+            <span>Stage & Commit</span>
+            {diffStats && diffStats.files > 0 ? (
+              <span className="ml-0.5 inline-flex items-center gap-1 font-mono text-[9px]">
+                <span className="text-emerald-400/60">+{diffStats.adds}</span>
+                <span className="text-red-400/60">-{diffStats.dels}</span>
+                <span className="text-fg/30">{diffStats.files}f</span>
+              </span>
+            ) : null}
           </motion.button>
         )}
       </AnimatePresence>
@@ -390,4 +413,4 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
 });
 
 const btnBase =
-  "inline-flex items-center gap-1 rounded-full border border-white/[0.06] px-2 py-0.5 font-mono text-[10px] text-fg/50 transition-all hover:border-white/[0.12] hover:text-fg/75 disabled:pointer-events-none disabled:opacity-40";
+  "inline-flex items-center gap-1.5 rounded-lg border border-white/[0.06] bg-white/[0.02] px-2.5 py-1 font-sans text-[10px] font-medium text-fg/50 transition-all hover:border-violet-400/15 hover:bg-violet-500/[0.04] hover:text-fg/80 disabled:pointer-events-none disabled:opacity-40";

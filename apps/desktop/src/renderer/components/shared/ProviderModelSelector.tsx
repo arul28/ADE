@@ -26,8 +26,8 @@ type ProviderModelSelectorProps = {
 };
 
 const selectCls = cn(
-  "h-8 rounded-lg border border-white/[0.08] bg-white/[0.04] px-2 font-sans text-[11px] text-fg/70",
-  "outline-none focus:border-white/[0.14]",
+  "h-7 rounded-md border border-white/[0.06] bg-white/[0.03] px-2 font-sans text-[10px] text-fg/70",
+  "outline-none transition-colors duration-150 focus:border-violet-400/30",
 );
 
 function tierLabel(tier: string): string {
@@ -96,11 +96,11 @@ export function ProviderModelSelector({
         <>
           <motion.div
             key="model-picker-backdrop"
-            className="fixed inset-0 z-[79] bg-black/50 backdrop-blur-sm"
+            className="fixed inset-0 z-[79] bg-black/60 backdrop-blur-md"
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            transition={{ duration: 0.15 }}
+            transition={{ duration: 0.18 }}
             aria-hidden
             onClick={() => setOpen(false)}
           />
@@ -108,7 +108,7 @@ export function ProviderModelSelector({
             <motion.div
               key="model-picker-panel"
               data-model-picker-panel="true"
-              className="pointer-events-auto w-full max-w-[520px] px-3"
+              className="pointer-events-auto w-full max-w-[720px] px-3"
               variants={fadeScale}
               initial="initial"
               animate="animate"
@@ -137,14 +137,14 @@ export function ProviderModelSelector({
                 headerTrailing={(
                   <button
                     type="button"
-                    className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-white/[0.08] bg-white/[0.04] text-muted-fg/55 transition-colors hover:border-white/[0.14] hover:bg-white/[0.06] hover:text-fg/80"
+                    className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-white/[0.06] bg-white/[0.03] text-muted-fg/45 transition-all duration-150 hover:border-white/[0.10] hover:bg-white/[0.05] hover:text-fg/70"
                     onClick={() => setOpen(false)}
                     aria-label="Close model picker"
                   >
-                    <X size={14} weight="bold" />
+                    <X size={13} weight="bold" />
                   </button>
                 )}
-                className="max-h-[min(520px,70vh)] shadow-[var(--shadow-float)]"
+                className="max-h-[min(520px,70vh)]"
               />
             </motion.div>
           </div>
@@ -165,10 +165,10 @@ export function ProviderModelSelector({
             setOpen((current) => !current);
           }}
           className={cn(
-            "inline-flex h-8 w-auto min-w-[170px] max-w-[15rem] flex-none items-center gap-1.5 rounded-lg border border-white/[0.08] bg-white/[0.04] px-2.5 font-sans text-[11px] text-fg/70",
-            "transition-colors hover:border-white/[0.12] hover:bg-white/[0.06]",
-            open && "border-white/[0.14] bg-white/[0.06]",
-            disabled && "cursor-not-allowed opacity-70 hover:border-white/[0.08] hover:bg-white/[0.04]",
+            "inline-flex h-7 w-auto min-w-[150px] max-w-[14rem] flex-none items-center gap-2 rounded-lg border border-white/[0.06] bg-white/[0.03] px-2.5 font-sans text-[10px] text-fg/70",
+            "transition-all duration-150 hover:border-violet-400/15 hover:bg-violet-500/[0.04]",
+            open && "border-violet-400/20 bg-violet-500/[0.06] shadow-[0_0_12px_rgba(167,139,250,0.08)]",
+            disabled && "cursor-not-allowed opacity-70 hover:border-white/[0.06] hover:bg-white/[0.03]",
           )}
           aria-label="Select model"
           aria-haspopup="listbox"
@@ -180,16 +180,16 @@ export function ProviderModelSelector({
               cliCommand={selectedModel.cliCommand}
               modelId={selectedModel.id}
               providerModelId={selectedModel.providerModelId}
-              size={14}
+              size={12}
             />
           ) : null}
-          <span className={cn("min-w-0 flex-1 truncate text-left", !selectedModel && !value && "text-muted-fg/40")}>
+          <span className={cn("min-w-0 flex-1 truncate text-left text-[10px] font-medium", !selectedModel && !value && "text-muted-fg/40")}>
             {selectedModel?.displayName ?? (value || "Select model")}
           </span>
           <CaretDown
-            size={10}
+            size={9}
             weight="bold"
-            className={cn("flex-shrink-0 text-muted-fg/50 transition-transform", open && "rotate-180")}
+            className={cn("flex-shrink-0 text-muted-fg/40 transition-transform duration-150", open && "rotate-180")}
           />
         </button>
       </div>

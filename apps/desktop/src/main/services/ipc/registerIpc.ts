@@ -326,6 +326,7 @@ import type {
   AiApiKeyVerificationResult,
   AiConfig,
   AiSettingsStatus,
+  OpenCodeRuntimeSnapshot,
   MemoryHealthScope,
   MemoryHealthStats,
   SyncDesktopConnectionDraft,
@@ -786,9 +787,9 @@ async function enrichSessionsForLaneList(
     if (session.status !== "running") return session;
     const chat = chatSummaryBySessionId.get(session.id);
     if (!chat) return session;
-    if (chat.awaitingInput) return { ...session, runtimeState: "waiting-input" as const };
-    if (chat.status === "active") return { ...session, runtimeState: "running" as const };
-    if (chat.status === "idle") return { ...session, runtimeState: "idle" as const };
+    if (chat.awaitingInput) return { ...session, runtimeState: "waiting-input" as const, chatIdleSinceAt: null };
+    if (chat.status === "active") return { ...session, runtimeState: "running" as const, chatIdleSinceAt: null };
+    if (chat.status === "idle") return { ...session, runtimeState: "idle" as const, chatIdleSinceAt: chat.idleSinceAt ?? null };
     return session;
   });
 }
@@ -2141,6 +2142,11 @@ export function registerIpc({
     }
   });
 
+  ipcMain.handle(IPC.aiGetOpenCodeRuntimeDiagnostics, async (): Promise<OpenCodeRuntimeSnapshot> => {
+    const { getOpenCodeRuntimeSnapshot } = await import("../opencode/openCodeRuntime");
+    return getOpenCodeRuntimeSnapshot();
+  });
+
   ipcMain.handle(IPC.aiStoreApiKey, async (_event, arg: { provider: string; key: string }): Promise<void> => {
     const { storeApiKey } = await import("../ai/apiKeyStore");
     storeApiKey(arg.provider, arg.key);
@@ -2804,7 +2810,7 @@ export function registerIpc({
 
   ipcMain.handle(IPC.orchestratorResumeRun, async (_event, arg: ResumeOrchestratorRunArgs): Promise<OrchestratorRun> => {
     const ctx = getCtx();
-    return ctx.orchestratorService.resumeRun(arg);
+    return ctx.aiOrchestratorService.resumeRun(arg);
   });
 
   ipcMain.handle(IPC.orchestratorCancelRun, async (_event, arg: CancelOrchestratorRunArgs): Promise<OrchestratorRun> => {
@@ -3902,9 +3908,9 @@ export function registerIpc({
           if (session.status !== "running") return session;
           const chat = chatSummaryBySessionId.get(session.id);
           if (!chat) return session;
-          if (chat.awaitingInput) return { ...session, runtimeState: "waiting-input" as const };
-          if (chat.status === "active") return { ...session, runtimeState: "running" as const };
-          if (chat.status === "idle") return { ...session, runtimeState: "idle" as const };
+          if (chat.awaitingInput) return { ...session, runtimeState: "waiting-input" as const, chatIdleSinceAt: null };
+          if (chat.status === "active") return { ...session, runtimeState: "running" as const, chatIdleSinceAt: null };
+          if (chat.status === "idle") return { ...session, runtimeState: "idle" as const, chatIdleSinceAt: chat.idleSinceAt ?? null };
           return session;
         });
       },

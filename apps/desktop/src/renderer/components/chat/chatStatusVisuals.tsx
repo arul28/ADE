@@ -35,12 +35,25 @@ export function ChatStatusGlyph({
 }) {
   switch (status) {
     case "completed":
-      return <CheckCircle size={size} weight="bold" className={cn("text-emerald-400", className)} />;
+      return (
+        <span className={cn("inline-flex ade-fade-in", className)}>
+          <CheckCircle size={size} weight="fill" className="text-emerald-400" />
+        </span>
+      );
     case "failed":
-      return <XCircle size={size} weight="bold" className={cn("text-red-400", className)} />;
+      return (
+        <span className={cn("inline-flex ade-fade-in", className)}>
+          <XCircle size={size} weight="fill" className="text-red-400" />
+        </span>
+      );
     case "waiting":
       return <Clock size={size} weight="bold" className={cn("text-amber-400", className)} />;
     case "working":
-      return <SpinnerGap size={size} weight="bold" className={cn("animate-spin text-emerald-400", className)} />;
+      return (
+        <span className={cn("relative inline-flex items-center justify-center", className)}>
+          <span className="absolute inset-0 animate-ping rounded-full bg-emerald-400/20" style={{ animationDuration: '2s' }} />
+          <SpinnerGap size={size} weight="bold" className="animate-spin text-emerald-400" />
+        </span>
+      );
   }
 }

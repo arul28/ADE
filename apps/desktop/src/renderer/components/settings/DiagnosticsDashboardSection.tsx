@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   COLORS,
   MONO_FONT,
@@ -13,6 +13,7 @@ import {
 import type {
   RuntimeDiagnosticsStatus,
   LaneHealthCheck,
+  OpenCodeRuntimeSnapshot,
 } from "../../../shared/types";
 
 // ---------------------------------------------------------------------------
@@ -123,11 +124,37 @@ function SummaryMetric({ label, value, color }: { label: string; value: number; 
 // Main component
 // ---------------------------------------------------------------------------
 
-export function DiagnosticsDashboardSection() {
+type DiagnosticsDashboardSectionProps = {
+  title?: string;
+  openCodeMode?: "full" | "issues-only" | "hidden";
+};
+
+export function DiagnosticsDashboardSection({
+  title = "Runtime Diagnostics",
+  openCodeMode = "full",
+}: DiagnosticsDashboardSectionProps = {}) {
   const [status, setStatus] = useState<RuntimeDiagnosticsStatus | null>(null);
+  const [openCode, setOpenCode] = useState<OpenCodeRuntimeSnapshot | null>(null);
   const [loading, setLoading] = useState(true);
   const [checkBusy, setCheckBusy] = useState(false);
   const [lastChecked, setLastChecked] = useState<string | null>(null);
+  const openCodeRequestSeqRef = useRef(0);
+
+  const refreshOpenCodeSnapshot = useCallback(async (clearOnError = false) => {
+    const requestSeq = ++openCodeRequestSeqRef.current;
+    try {
+      const snapshot = await window.ade.ai.getOpenCodeRuntimeDiagnostics();
+      if (requestSeq === openCodeRequestSeqRef.current) {
+        setOpenCode(snapshot);
+      }
+      return snapshot;
+    } catch {
+      if (clearOnError && requestSeq === openCodeRequestSeqRef.current) {
+        setOpenCode(null);
+      }
+      return null;
+    }
+  }, []);
 
   const syncLastChecked = useCallback((lanes: LaneHealthCheck[]) => {
     const timestamps = lanes.map((lane) => lane.lastCheckedAt).filter(Boolean);
@@ -151,6 +178,7 @@ export function DiagnosticsDashboardSection() {
     const loadStatus = async () => {
       try {
         const initial = await window.ade.lanes.diagnosticsGetStatus();
+        await refreshOpenCodeSnapshot(true);
         if (cancelled) {
           return;
         }
@@ -163,6 +191,7 @@ export function DiagnosticsDashboardSection() {
             return;
           }
           const refreshed = await window.ade.lanes.diagnosticsGetStatus();
+          await refreshOpenCodeSnapshot(true);
           if (cancelled) {
             return;
           }
@@ -172,6 +201,7 @@ export function DiagnosticsDashboardSection() {
       } catch {
         if (!cancelled) {
           setStatus(null);
+          setOpenCode(null);
           setLastChecked(null);
         }
       } finally {
@@ -182,6 +212,9 @@ export function DiagnosticsDashboardSection() {
     };
 
     void loadStatus();
+    const openCodePoll = window.setInterval(() => {
+      void refreshOpenCodeSnapshot();
+    }, 5_000);
 
     const unsub = window.ade.lanes.onDiagnosticsEvent((ev) => {
       if (cancelled) return;
@@ -227,9 +260,10 @@ export function DiagnosticsDashboardSection() {
 
     return () => {
       cancelled = true;
+      window.clearInterval(openCodePoll);
       unsub();
     };
-  }, [syncLastChecked]);
+  }, [syncLastChecked, refreshOpenCodeSnapshot]);
 
   // -------------------------------------------------------------------------
   // Actions
@@ -239,8 +273,12 @@ export function DiagnosticsDashboardSection() {
     setCheckBusy(true);
     try {
       await window.ade.lanes.diagnosticsRunFullCheck();
-      const refreshed = await window.ade.lanes.diagnosticsGetStatus();
+      const [refreshed, refreshedOpenCode] = await Promise.all([
+        window.ade.lanes.diagnosticsGetStatus(),
+        window.ade.ai.getOpenCodeRuntimeDiagnostics().catch(() => openCode),
+      ]);
       setStatus(refreshed);
+      setOpenCode(refreshedOpenCode);
       syncLastChecked(refreshed.lanes);
     } catch {
       /* silent */
@@ -286,6 +324,16 @@ export function DiagnosticsDashboardSection() {
   const activeConflicts = status?.activeConflicts ?? 0;
   const fallbackLanes = status?.fallbackLanes ?? [];
   const lanes = status?.lanes ?? [];
+  const openCodeUnavailable = !loading && openCode === null;
+  const openCodeEntries = openCode?.entries;
+  const dedicatedOpenCodeCount = openCode?.dedicatedCount;
+  const openCodeFallbackCount = openCode?.dynamicMcp.fallbackCount;
+  const openCodeLastFallbackAt = openCode?.dynamicMcp.lastFallbackAt ?? null;
+  const openCodeRetryCount = openCode?.dynamicMcp.retryCount;
+  const showOpenCodeSection = openCodeMode === "full"
+    || openCodeUnavailable
+    || (openCodeMode === "issues-only"
+      && ((dedicatedOpenCodeCount ?? 0) > 0 || (openCodeFallbackCount ?? 0) > 0 || (openCodeRetryCount ?? 0) > 0));
 
   // -------------------------------------------------------------------------
   // Render
@@ -294,7 +342,7 @@ export function DiagnosticsDashboardSection() {
   return (
     <div style={cardStyle({ display: "flex", flexDirection: "column", gap: 16 })}>
       {/* Label */}
-      <div style={LABEL_STYLE}>Runtime Diagnostics</div>
+      <div style={LABEL_STYLE}>{title}</div>
 
       {/* Summary row */}
       <div
@@ -332,6 +380,151 @@ export function DiagnosticsDashboardSection() {
           color={activeConflicts > 0 ? COLORS.danger : undefined}
         />
       </div>
+
+      {showOpenCodeSection ? (
+        <div
+          style={recessedStyle({
+            display: "flex",
+            flexDirection: "column",
+            gap: 12,
+          })}
+        >
+          {openCodeUnavailable ? (
+            <div
+              style={{
+                ...recessedStyle(),
+                display: "flex",
+                flexDirection: "column",
+                alignItems: "flex-start",
+                gap: 10,
+              }}
+            >
+              <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                <span style={{ fontSize: 12, fontFamily: MONO_FONT, color: COLORS.textPrimary, fontWeight: 700 }}>
+                  OpenCode diagnostics unavailable.
+                </span>
+                <span style={{ fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textMuted }}>
+                  We could not fetch the current OpenCode snapshot. Retry to refresh the section.
+                </span>
+              </div>
+              <button
+                type="button"
+                style={primaryButton()}
+                onClick={() => {
+                  void refreshOpenCodeSnapshot(true);
+                }}
+              >
+                Retry OpenCode diagnostics
+              </button>
+            </div>
+          ) : (
+            <>
+              <div style={{ display: "flex", alignItems: "center", gap: 24, flexWrap: "wrap" }}>
+                <SummaryMetric label="OpenCode shared" value={openCode?.sharedCount ?? 0} />
+                <SummaryMetric
+                  label="OpenCode dedicated"
+                  value={dedicatedOpenCodeCount ?? 0}
+                  color={(dedicatedOpenCodeCount ?? 0) > 0 ? COLORS.warning : undefined}
+                />
+                <SummaryMetric
+                  label="MCP fallbacks"
+                  value={openCodeFallbackCount ?? 0}
+                  color={(openCodeFallbackCount ?? 0) > 0 ? COLORS.warning : undefined}
+                />
+                <SummaryMetric label="MCP retries" value={openCodeRetryCount ?? 0} />
+                <SummaryMetric label="MCP attaches" value={openCode?.dynamicMcp.successfulRegistrations ?? 0} />
+              </div>
+
+              {openCodeLastFallbackAt && (
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 8,
+                    padding: "8px 12px",
+                    background: `${COLORS.warning}12`,
+                    border: `1px solid ${COLORS.warning}30`,
+                  }}
+                >
+                  <span
+                    style={{
+                      fontSize: 11,
+                      fontFamily: MONO_FONT,
+                      color: COLORS.warning,
+                      lineHeight: "16px",
+                    }}
+                  >
+                    Latest OpenCode fallback {formatTimestamp(openCodeLastFallbackAt)}
+                    {openCode?.dynamicMcp.lastFallbackOwnerKind ? ` • ${openCode.dynamicMcp.lastFallbackOwnerKind}` : ""}
+                    {openCode?.dynamicMcp.lastFallbackOwnerId ? `:${openCode.dynamicMcp.lastFallbackOwnerId}` : ""}
+                  </span>
+                </div>
+              )}
+
+              {openCodeEntries && openCodeEntries.length > 0 ? (
+                <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                  {openCodeEntries.slice(0, 6).map((entry) => (
+                    <div
+                      key={entry.id}
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 10,
+                        padding: "8px 12px",
+                        background: COLORS.recessedBg,
+                        flexWrap: "wrap",
+                      }}
+                    >
+                      <span style={inlineBadge(entry.leaseKind === "shared" ? COLORS.success : COLORS.warning, { fontSize: 9 })}>
+                        {entry.leaseKind.toUpperCase()}
+                      </span>
+                      <span
+                        style={{
+                          fontSize: 11,
+                          fontFamily: MONO_FONT,
+                          color: COLORS.textPrimary,
+                        }}
+                      >
+                        {entry.ownerKind}
+                        {entry.ownerId ? `:${entry.ownerId}` : ""}
+                      </span>
+                      {entry.busy && <span style={inlineBadge(COLORS.info, { fontSize: 9 })}>BUSY</span>}
+                      <span
+                        style={{
+                          fontSize: 10,
+                          fontFamily: MONO_FONT,
+                          color: COLORS.textDim,
+                        }}
+                      >
+                        refs {entry.refCount} • used {formatTimestamp(new Date(entry.lastUsedAt).toISOString())}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div
+                  style={{
+                    ...recessedStyle(),
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                  }}
+                >
+                  <span
+                    style={{
+                      fontSize: 11,
+                      fontFamily: MONO_FONT,
+                      color: COLORS.textMuted,
+                    }}
+                  >
+                    No active OpenCode runtimes.
+                  </span>
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      ) : null}
 
       {/* Fallback lanes banner */}
       {fallbackLanes.length > 0 && (

@@ -768,6 +768,44 @@ export function groupConsecutiveWorkLogRows(
       continue;
     }
 
+    // Group consecutive reasoning events into a single merged reasoning event
+    if (row.event.type === "reasoning") {
+      let mergedText = (row.event as any).text ?? "";
+      let mergedStartTimestamp = (row.event as any).startTimestamp ?? row.timestamp;
+      let cursor = index + 1;
+      while (cursor < rows.length && rows[cursor]!.event.type === "reasoning") {
+        const nextReasoning = rows[cursor]!.event as any;
+        mergedText += "\n\n---\n\n" + (nextReasoning.text ?? "");
+        cursor += 1;
+      }
+      if (cursor > index + 1) {
+        // Multiple consecutive reasoning events — merge them
+        const lastRow = rows[cursor - 1]!;
+        grouped.push({
+          key: `reasoning-group:${row.key}`,
+          timestamp: lastRow.timestamp,
+          event: {
+            ...row.event,
+            text: mergedText,
+            startTimestamp: mergedStartTimestamp,
+          } as any,
+        });
+        index = cursor;
+        continue;
+      }
+    }
+
+    // Deduplicate consecutive status events with the same turnStatus
+    if (row.event.type === "status") {
+      const prev = grouped[grouped.length - 1];
+      if (prev && prev.event.type === "status" && (prev.event as any).turnStatus === (row.event as any).turnStatus) {
+        // Keep the later one (replace the previous)
+        grouped[grouped.length - 1] = row;
+        index += 1;
+        continue;
+      }
+    }
+
     grouped.push(row);
     index += 1;
   }

@@ -853,6 +853,17 @@ export function AgentChatComposer({
     sessionProvider,
     opencodePermissionMode,
   ]);
+
+  const composerGlowColor = useMemo(() => {
+    const provider = sessionProvider ?? (modelId ? "anthropic" : null);
+    if (!provider) return null;
+    if (provider === "anthropic") return "rgba(249, 115, 22, 0.25)";
+    if (provider === "openai") return "rgba(255, 255, 255, 0.15)";
+    if (provider === "cursor") return "rgba(59, 130, 246, 0.25)";
+    if (provider === "opencode") return "rgba(255, 255, 255, 0.12)";
+    return null;
+  }, [sessionProvider, modelId]);
+
   /* ── Keyboard handler for textarea ── */
   const handleKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
     const commandModified = event.metaKey || event.ctrlKey;
@@ -977,6 +988,7 @@ export function AgentChatComposer({
     <>
       <ChatComposerShell
       mode={surfaceMode}
+      glowColor={composerGlowColor}
       className={cn(
         "m-3 mt-0 rounded-[var(--chat-radius-shell)]",
         layoutVariant === "grid-tile" ? "m-0 rounded-none border-0 bg-transparent shadow-none" : "",
@@ -1070,7 +1082,7 @@ export function AgentChatComposer({
             }}
           />
           {slashPickerOpen && filteredSlashCommands.length > 0 ? (
-            <div className="absolute bottom-full left-3 z-10 mb-3 w-80 rounded-[var(--chat-radius-card)] border border-white/[0.06] bg-card/95 shadow-[var(--chat-composer-shadow)] backdrop-blur-xl">
+            <div className="absolute bottom-full left-3 z-10 mb-3 w-80 rounded-[14px] border border-violet-400/[0.10] bg-[#151325]/95 shadow-[0_16px_40px_-12px_rgba(0,0,0,0.5)] backdrop-blur-[40px]">
               <div className="border-b border-white/[0.04] px-3 py-2 font-mono text-[9px] font-bold uppercase tracking-widest text-muted-fg/35">
                 Commands
               </div>
@@ -1098,7 +1110,7 @@ export function AgentChatComposer({
           ) : null}
 
           {attachmentPickerOpen ? (
-            <div className="absolute bottom-full left-3 z-10 mb-3 w-80 rounded-[var(--chat-radius-card)] border border-white/[0.06] bg-card/95 shadow-[var(--chat-composer-shadow)] backdrop-blur-xl">
+            <div className="absolute bottom-full left-3 z-10 mb-3 w-80 rounded-[14px] border border-violet-400/[0.10] bg-[#151325]/95 shadow-[0_16px_40px_-12px_rgba(0,0,0,0.5)] backdrop-blur-[40px]">
               <div className="flex items-center gap-2 border-b border-white/[0.04] px-3 py-2">
                 <At size={11} weight="bold" className="text-muted-fg/30" />
                 <input
@@ -1106,7 +1118,7 @@ export function AgentChatComposer({
                   value={attachmentQuery}
                   onChange={(e) => setAttachmentQuery(e.target.value)}
                   placeholder="Search files..."
-                  className="h-5 flex-1 bg-transparent font-mono text-[11px] text-fg/80 outline-none placeholder:text-muted-fg/25"
+                  className="h-5 flex-1 bg-transparent font-sans text-[11px] text-fg/80 outline-none placeholder:text-muted-fg/25"
                   onKeyDown={(event) => {
                     if (event.key === "Escape") { event.preventDefault(); setAttachmentPickerOpen(false); return; }
                     if (event.key === "ArrowDown") { event.preventDefault(); setAttachmentCursor((v) => Math.min(v + 1, Math.max(attachmentResults.length - 1, 0))); return; }
@@ -1130,7 +1142,7 @@ export function AgentChatComposer({
                       type="button"
                       className={cn(
                         "flex w-full items-center gap-2 px-3 py-2 text-left font-mono text-[10px] text-fg/60",
-                        index === attachmentCursor ? "bg-accent/10 text-fg/85" : "hover:bg-border/6",
+                        index === attachmentCursor ? "bg-violet-500/[0.08] text-fg/85" : "hover:bg-white/[0.03]",
                       )}
                       onMouseEnter={() => setAttachmentCursor(index)}
                       onClick={() => selectAttachment(result)}
@@ -1148,7 +1160,7 @@ export function AgentChatComposer({
         </>
       }
       footer={
-        <div className="flex flex-wrap items-center gap-2 px-3 py-1.5">
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 px-3.5 py-2">
           {/* Left: permission + model controls */}
           <div className="flex min-w-0 flex-wrap items-center gap-1.5">
             {nativeControlPanel}
@@ -1165,10 +1177,10 @@ export function AgentChatComposer({
           </div>
 
           {/* Right: attachment, commands, proof, context, send */}
-          <div className="ml-auto flex shrink-0 items-center gap-1">
+          <div className="ml-auto flex shrink-0 items-center gap-0.5">
             <button
               type="button"
-              className="rounded-md px-1.5 py-1 font-sans text-[10px] text-muted-fg/30 transition-colors hover:bg-white/5 hover:text-muted-fg/60"
+              className="rounded-md px-1.5 py-1 font-sans text-[10px] font-medium text-muted-fg/35 transition-colors hover:bg-violet-500/[0.06] hover:text-violet-300/60"
               disabled={!canAttach}
               onClick={() => canAttach && setAttachmentPickerOpen((o) => !o)}
               title="Attach files or images (@)"
@@ -1178,7 +1190,7 @@ export function AgentChatComposer({
             </button>
             <button
               type="button"
-              className="rounded-md px-1 py-1 text-muted-fg/30 transition-colors hover:bg-white/5 hover:text-muted-fg/60"
+              className="rounded-md px-1 py-1 text-muted-fg/35 transition-colors hover:bg-violet-500/[0.06] hover:text-violet-300/60"
               disabled={!canAttach}
               onClick={openUploadPicker}
               title="Upload file from disk"
@@ -1188,7 +1200,7 @@ export function AgentChatComposer({
             </button>
             <button
               type="button"
-              className="rounded-md px-1.5 py-1 font-sans text-[10px] text-muted-fg/30 transition-colors hover:bg-white/5 hover:text-muted-fg/60"
+              className="rounded-md px-1.5 py-1 font-sans text-[10px] font-medium text-muted-fg/35 transition-colors hover:bg-violet-500/[0.06] hover:text-violet-300/60"
               onClick={() => { const d = textareaRef.current?.value ?? ""; if (!d.length) { onDraftChange("/"); } setSlashPickerOpen(true); setSlashQuery(d.startsWith("/") ? d.slice(1) : ""); setSlashCursor(0); textareaRef.current?.focus(); }}
               title="Commands (/)"
               aria-label="Open command picker"
@@ -1235,7 +1247,6 @@ export function AgentChatComposer({
                 aria-pressed={!!includeProjectDocs}
               >
                 <BookOpen size={11} weight={includeProjectDocs ? "fill" : "regular"} />
-                <span>Context</span>
               </button>
             ) : null}
 
@@ -1264,7 +1275,7 @@ export function AgentChatComposer({
                 ) : null}
                 <button
                   type="button"
-                  className="inline-flex h-6 w-6 items-center justify-center rounded-md border border-red-500/20 bg-red-500/[0.06] text-red-400/70 transition-all hover:border-red-500/35 hover:bg-red-500/12 hover:text-red-400"
+                  className="inline-flex h-7 w-7 items-center justify-center rounded-lg border border-red-500/25 bg-red-500/[0.08] text-red-400/80 transition-all hover:border-red-500/40 hover:bg-red-500/[0.14] hover:text-red-400"
                   title="Stop the active turn only (Cmd+.)"
                   aria-label="Stop active turn"
                   onClick={onInterrupt}
@@ -1276,17 +1287,17 @@ export function AgentChatComposer({
               <button
                 type="button"
                 className={cn(
-                  "inline-flex h-6 items-center justify-center rounded-md border px-2.5 transition-all",
+                  "inline-flex h-8 items-center justify-center rounded-lg border px-4 transition-all",
                   busy || !draft.trim().length || !modelId
-                    ? "border-white/[0.04] text-muted-fg/12"
-                    : "border-[color:color-mix(in_srgb,var(--chat-accent)_28%,transparent)] bg-[color:color-mix(in_srgb,var(--chat-accent)_12%,transparent)] text-[var(--chat-accent)] hover:bg-[color:color-mix(in_srgb,var(--chat-accent)_20%,transparent)]",
+                    ? "border-white/[0.04] bg-white/[0.02] text-muted-fg/15"
+                    : "border-violet-400/30 bg-gradient-to-r from-violet-600/30 to-violet-500/20 text-white shadow-[0_0_16px_rgba(167,139,250,0.15),0_2px_8px_rgba(124,58,237,0.20)] hover:from-violet-600/40 hover:to-violet-500/30 hover:shadow-[0_0_24px_rgba(167,139,250,0.22),0_4px_12px_rgba(124,58,237,0.25)] active:scale-[0.97]",
                 )}
                 disabled={busy || !draft.trim().length || !modelId}
                 onClick={submitComposerDraft}
                 title={!modelId ? "Select a model first" : "Send"}
               >
-                <PaperPlaneTilt size={10} weight="fill" />
-                <span className="ml-1 font-sans text-[10px]">Send</span>
+                <PaperPlaneTilt size={11} weight="fill" />
+                <span className="ml-1.5 font-sans text-[11px] font-semibold">Send</span>
               </button>
             )}
           </div>
@@ -1371,7 +1382,7 @@ export function AgentChatComposer({
               }
             }}
             className={cn(
-              "min-h-[44px] w-full bg-transparent px-4 py-2.5 text-[13px] leading-[1.6] text-fg/88 outline-none transition-colors placeholder:text-muted-fg/25",
+              "min-h-[44px] w-full bg-transparent px-4 py-2.5 text-[13px] leading-[1.6] text-fg/88 outline-none transition-colors placeholder:text-muted-fg/30",
               layoutVariant === "grid-tile" ? "resize-y" : "max-h-[200px] resize-none",
               dragActive ? "opacity-30" : "",
             )}

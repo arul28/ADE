@@ -50,22 +50,22 @@ function statusMeta(status: ChatSubagentSnapshot["status"]): {
     case "failed":
       return {
         label: "Failed",
-        chipClassName: "border-red-500/15 bg-red-500/[0.06] text-red-300/90",
+        chipClassName: "border-red-500/20 bg-red-500/[0.08] text-red-300/90",
         icon: <XCircle size={12} weight="fill" className="text-red-400" />,
         accentColor: "red",
       };
     case "stopped":
       return {
         label: "Stopped",
-        chipClassName: "border-amber-400/15 bg-amber-500/[0.06] text-amber-300/90",
+        chipClassName: "border-amber-400/20 bg-amber-500/[0.08] text-amber-300/90",
         icon: <ClockCounterClockwise size={12} weight="bold" className="text-amber-400" />,
         accentColor: "amber",
       };
     default:
       return {
         label: "Running",
-        chipClassName: "border-emerald-400/15 bg-emerald-500/[0.06] text-emerald-300/90",
-        icon: <ChatStatusGlyph status="working" size={12} />,
+        chipClassName: "border-emerald-400/20 bg-emerald-500/[0.08] text-emerald-300",
+        icon: <ChatStatusGlyph status="working" size={12} className="ade-glow-pulse" />,
         accentColor: "emerald",
       };
   }
@@ -104,7 +104,7 @@ function PreviewCard({
   }, [snapshot.taskId]);
 
   return (
-    <div className="w-[min(30rem,calc(100vw-3rem))] overflow-hidden rounded-xl border border-white/[0.06] bg-[#0c0c0f] shadow-[0_24px_80px_-20px_rgba(0,0,0,0.9)]">
+    <div className="w-[min(30rem,calc(100vw-3rem))] overflow-hidden rounded-xl border border-white/[0.06] bg-[#141220]/80 shadow-[0_24px_80px_-20px_rgba(0,0,0,0.9)]">
       {/* Accent top bar */}
       <div className={cn(
         "h-px w-full",
@@ -136,7 +136,7 @@ function PreviewCard({
               </span>
             ) : null}
             {runtimeSummary ? (
-              <span className="font-mono text-[10px] text-fg/35">{runtimeSummary}</span>
+              <span className="text-[10px] text-fg/40 font-mono">{runtimeSummary}</span>
             ) : null}
           </div>
         </div>
@@ -304,10 +304,10 @@ export function ChatSubagentStrip({
                   key={snapshot.taskId}
                   type="button"
                   className={cn(
-                    "group flex w-full items-center gap-2 rounded-lg border px-2.5 py-2 text-left transition-colors",
+                    "group flex w-full items-center gap-2 rounded-xl border p-3 text-left transition-colors",
                     active
-                      ? "border-white/[0.12] bg-white/[0.06]"
-                      : "border-white/[0.05] bg-white/[0.015] hover:border-white/[0.1] hover:bg-white/[0.03]",
+                      ? "border-white/[0.12] bg-[#141220]"
+                      : "border-white/[0.06] bg-[#141220]/80 hover:border-white/[0.1] hover:bg-[#141220]",
                   )}
                   onMouseEnter={() => setHoveredTaskId(snapshot.taskId)}
                   onMouseLeave={() => setHoveredTaskId((cur) => (cur === snapshot.taskId ? null : cur))}
@@ -328,7 +328,7 @@ export function ChatSubagentStrip({
                     </span>
                   ) : null}
                   {runtimeSummary ? (
-                    <span className="font-mono text-[9px] text-fg/25 group-hover:text-fg/35">
+                    <span className="text-[10px] text-fg/40 font-mono group-hover:text-fg/50">
                       {runtimeSummary}
                     </span>
                   ) : null}

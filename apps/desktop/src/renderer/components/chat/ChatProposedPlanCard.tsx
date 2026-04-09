@@ -62,6 +62,7 @@ const ChatProposedPlanCard = React.memo(function ChatProposedPlanCard({
   onReject,
 }: ChatProposedPlanCardProps) {
   const [expanded, setExpanded] = useState(false);
+  const [animating, setAnimating] = useState(false);
   const [copied, setCopied] = useState(false);
 
   const bodyText = description ?? question ?? "The agent has prepared a plan.";
@@ -98,14 +99,17 @@ const ChatProposedPlanCard = React.memo(function ChatProposedPlanCard({
   }, [segments, showFull]);
 
   return (
-    <div className="overflow-hidden rounded-[14px] border border-white/[0.08] bg-[#16141E] p-4">
+    <div className="relative overflow-hidden rounded-xl border border-amber-500/[0.10] bg-gradient-to-br from-amber-950/15 via-[#12101A] to-[#12101A] p-4">
+      {/* Gradient accent line */}
+      <div className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-amber-400/25 to-transparent" />
+
       {/* ── Header ── */}
       <div className="mb-2.5 flex items-center gap-2">
-        <span className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-violet-500/[0.10] shadow-[0_0_0_3px_rgba(139,92,246,0.12)]">
+        <span className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-amber-500/[0.10] shadow-[0_0_0_3px_rgba(245,158,11,0.08)]">
           <ChatStatusGlyph status="waiting" size={11} />
         </span>
-        <ListChecks size={13} weight="bold" className="text-violet-300/60" />
-        <span className="font-mono text-[9px] font-bold uppercase tracking-widest text-violet-200">
+        <ListChecks size={13} weight="bold" className="text-amber-400/60" />
+        <span className="text-amber-300/50 font-mono text-[9px] uppercase tracking-[0.16em]">
           Plan Approval &middot; {source}
         </span>
       </div>
@@ -118,7 +122,9 @@ const ChatProposedPlanCard = React.memo(function ChatProposedPlanCard({
           animate={{ height: "auto", opacity: 1 }}
           exit={{ height: 0, opacity: 0 }}
           transition={{ duration: 0.2, ease: "easeInOut" }}
-          className="overflow-hidden"
+          onAnimationStart={() => setAnimating(true)}
+          onAnimationComplete={() => setAnimating(false)}
+          className={animating ? "overflow-hidden" : ""}
         >
           {structured ? (
             <div className="mb-2 space-y-1">
@@ -127,7 +133,7 @@ const ChatProposedPlanCard = React.memo(function ChatProposedPlanCard({
                   return (
                     <div
                       key={`h-${i}`}
-                      className="mt-1.5 font-mono text-[10px] font-bold uppercase tracking-[0.14em] text-violet-300/70"
+                      className="mt-1.5 font-mono text-[10px] font-bold uppercase tracking-[0.14em] text-amber-300/70"
                     >
                       {seg.text}
                     </div>
@@ -136,8 +142,8 @@ const ChatProposedPlanCard = React.memo(function ChatProposedPlanCard({
                 if (seg.kind === "step") {
                   return (
                     <div key={`s-${i}`} className="flex items-start gap-2 pl-0.5">
-                      <span className="mt-[3px] block h-1 w-1 shrink-0 rounded-full bg-violet-400/40" />
-                      <span className="font-mono text-[11px] leading-relaxed text-fg/68">
+                      <span className="mt-[3px] block h-1 w-1 shrink-0 rounded-full bg-amber-400/40" />
+                      <span className="text-[12px] leading-relaxed text-fg/80">
                         {seg.text}
                       </span>
                     </div>
@@ -168,7 +174,7 @@ const ChatProposedPlanCard = React.memo(function ChatProposedPlanCard({
       {isLong && (
         <button
           type="button"
-          className="mb-2.5 flex items-center gap-1 font-mono text-[9px] uppercase tracking-[0.14em] text-violet-300/55 transition-colors hover:text-violet-200/80"
+          className="mb-2.5 flex items-center gap-1 font-mono text-[9px] uppercase tracking-[0.14em] text-amber-300/55 transition-colors hover:text-amber-200/80"
           onClick={() => setExpanded((v) => !v)}
         >
           {expanded ? (
@@ -191,8 +197,8 @@ const ChatProposedPlanCard = React.memo(function ChatProposedPlanCard({
           type="button"
           disabled={disabled}
           className={cn(
-            "rounded-[var(--chat-radius-pill)] border border-emerald-400/30 bg-emerald-500/12 px-3 py-1 font-mono text-[9px] font-bold uppercase tracking-wider text-emerald-200/80 transition-colors",
-            "hover:bg-emerald-500/20 disabled:pointer-events-none disabled:opacity-40",
+            "rounded-lg border border-emerald-400/25 bg-emerald-500/[0.10] px-3 py-1.5 text-[11px] font-medium text-emerald-300 transition-colors",
+            "hover:bg-emerald-500/[0.16] disabled:pointer-events-none disabled:opacity-40",
           )}
           onClick={onApprove}
         >
@@ -202,8 +208,8 @@ const ChatProposedPlanCard = React.memo(function ChatProposedPlanCard({
           type="button"
           disabled={disabled}
           className={cn(
-            "rounded-[var(--chat-radius-pill)] border border-border/20 px-3 py-1 font-mono text-[9px] font-bold uppercase tracking-wider text-fg/40 transition-colors",
-            "hover:bg-border/10 disabled:pointer-events-none disabled:opacity-40",
+            "rounded-lg border border-white/[0.06] px-3 py-1.5 text-[11px] text-fg/50 transition-colors",
+            "hover:bg-white/[0.04] disabled:pointer-events-none disabled:opacity-40",
           )}
           onClick={onReject}
         >

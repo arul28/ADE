@@ -1,12 +1,10 @@
 version: 1
 processes:
   - id: hiwo8mbf
-    name: dogfood.sh local model fixes
+    name: dogfood.sh droid
     command:
-      - ./scripts/dogfood.sh
-      - local
-      - model
-      - fixes
+      - scripts/dogfood.sh
+      - droid-chat
     cwd: ./
 stackButtons: []
 testSuites: []

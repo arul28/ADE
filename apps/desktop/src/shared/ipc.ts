@@ -272,6 +272,7 @@ export const IPC = {
   keybindingsGet: "ade.keybindings.get",
   keybindingsSet: "ade.keybindings.set",
   aiGetStatus: "ade.ai.getStatus",
+  aiGetOpenCodeRuntimeDiagnostics: "ade.ai.getOpenCodeRuntimeDiagnostics",
   aiStoreApiKey: "ade.ai.storeApiKey",
   aiDeleteApiKey: "ade.ai.deleteApiKey",
   aiListApiKeys: "ade.ai.listApiKeys",

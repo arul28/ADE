@@ -10,6 +10,8 @@ import { isChatToolType, primarySessionLabel, secondarySessionLabel, truncateSes
 import { sessionStatusDot } from "../../lib/terminalAttention";
 import { PackedSessionGrid } from "./PackedSessionGrid";
 import type { WorkTabGroup } from "./useWorkSessions";
+import { ClaudeCacheTtlBadge } from "../shared/ClaudeCacheTtlBadge";
+import { shouldShowClaudeCacheTtl } from "../../lib/claudeCacheTtl";
 
 const CHAT_TILE_MIN_WIDTH = 440;
 const CHAT_TILE_MIN_HEIGHT = 340;
@@ -180,6 +182,12 @@ export function WorkViewArea({
     const isBusy = session.ptyId ? closingPtyIds.has(session.ptyId) : false;
     const primary = primarySessionLabel(session);
     const secondary = secondarySessionLabel(session);
+    const showClaudeCacheTimer = shouldShowClaudeCacheTtl({
+      provider: session.toolType === "claude-chat" ? "claude" : null,
+      status: session.runtimeState === "idle" ? "idle" : "active",
+      idleSinceAt: session.chatIdleSinceAt,
+      awaitingInput: session.runtimeState === "waiting-input",
+    });
     return {
       id: session.id,
       minWidth: isChatToolType(session.toolType) ? CHAT_TILE_MIN_WIDTH : TERMINAL_TILE_MIN_WIDTH,
@@ -212,6 +220,9 @@ export function WorkViewArea({
               <span className="truncate text-fg">
                 {truncateSessionLabel(primary)}
               </span>
+              {showClaudeCacheTimer ? (
+                <ClaudeCacheTtlBadge idleSinceAt={session.chatIdleSinceAt} className="px-1 py-0.5 text-[8px]" />
+              ) : null}
             </span>
             <span className="mt-0.5 flex items-center gap-2 pl-[18px]">
               <span className="text-[10px] text-muted-fg/50">

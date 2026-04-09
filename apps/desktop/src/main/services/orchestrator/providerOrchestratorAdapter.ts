@@ -59,6 +59,7 @@ function resolveWorkerOwnerId(metadata: Record<string, unknown> | null | undefin
 export function resolveAdeMcpServerLaunch(args: {
   projectRoot: string;
   workspaceRoot: string;
+  workspaceBinding?: "explicit" | "project_root";
   runtimeRoot: string;
   missionId?: string;
   runId?: string;
