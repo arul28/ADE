@@ -2459,6 +2459,8 @@ export function AgentChatPane({
       const id = targetId.trim() || ADE_LOCAL_EXECUTION_TARGET_ID;
       const profile = targetProfilesForPicker.find((p) => p.id === id);
       const label = profile ? executionTargetSummaryLabel(profile) : id === ADE_LOCAL_EXECUTION_TARGET_ID ? "This computer" : id;
+      const previousId = composerExecutionTargetId;
+      const previousLabel = composerExecutionTargetLabel;
       setComposerExecutionTargetId(id);
       setComposerExecutionTargetLabel(label);
       if (!selectedSessionId) return;
@@ -2471,10 +2473,19 @@ export function AgentChatPane({
         patchSessionSummary(selectedSessionId, { executionTargetId: id, executionTargetLabel: label });
         void refreshSessions().catch(() => {});
       } catch (err) {
+        setComposerExecutionTargetId(previousId);
+        setComposerExecutionTargetLabel(previousLabel);
         setError(err instanceof Error ? err.message : String(err));
       }
     },
-    [patchSessionSummary, refreshSessions, selectedSessionId, targetProfilesForPicker],
+    [
+      composerExecutionTargetId,
+      composerExecutionTargetLabel,
+      patchSessionSummary,
+      refreshSessions,
+      selectedSessionId,
+      targetProfilesForPicker,
+    ],
   );
 
   const handleClaudeModeChange = useCallback((mode: AgentChatClaudePermissionMode) => {

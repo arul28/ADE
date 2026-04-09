@@ -15,6 +15,11 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
 import { getDefaultModelDescriptor } from "../shared/modelRegistry";
+import {
+  defaultExecutionTargetsState,
+  normalizeExecutionTargetsState,
+  type AdeExecutionTargetsState,
+} from "../shared/types/executionTargets";
 
 const noop = () => () => {};
 const resolved =
@@ -31,6 +36,7 @@ const resolvedArg2 =
     v;
 const DEFAULT_BROWSER_MOCK_CODEX_MODEL =
   getDefaultModelDescriptor("codex")?.id ?? "openai/gpt-5.4-codex";
+let mockExecutionTargetsState: AdeExecutionTargetsState = defaultExecutionTargetsState();
 
 const MOCK_PROJECT = {
   id: "browser-mock",
@@ -1689,12 +1695,11 @@ if (typeof window !== "undefined" && !(window as any).ade) {
       onStateEvent: noop,
     },
     executionTargets: {
-      get: resolved({
-        version: 1,
-        profiles: [{ id: "local", kind: "local" as const, label: "This computer" }],
-        activeTargetId: "local",
-      }),
-      set: async (state: any) => state,
+      get: async () => mockExecutionTargetsState,
+      set: async (state: AdeExecutionTargetsState) => {
+        mockExecutionTargetsState = normalizeExecutionTargetsState(state);
+        return mockExecutionTargetsState;
+      },
     },
     keybindings: {
       get: resolved({ definitions: [], overrides: [] }),

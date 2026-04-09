@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { At, CaretDown, Check, Image, Paperclip, PencilSimple, Square, X, PaperPlaneTilt, Cube, BookOpen, DesktopTower } from "@phosphor-icons/react";
 import {
   inferAttachmentType,
@@ -425,7 +425,9 @@ export function AgentChatComposer({
   const [commandMenuAnchor, setCommandMenuAnchor] = useState<{ top: number; left: number } | null>(null);
   const commandMenuRef = useRef<ChatCommandMenuHandle | null>(null);
   const [targetMenuOpen, setTargetMenuOpen] = useState(false);
+  const targetMenuId = useId();
   const targetMenuRef = useRef<HTMLDivElement | null>(null);
+  const targetOptionRefs = useRef<Array<HTMLButtonElement | null>>([]);
 
   const attachmentInputRef = useRef<HTMLInputElement | null>(null);
   const uploadInputRef = useRef<HTMLInputElement | null>(null);
@@ -441,6 +443,64 @@ export function AgentChatComposer({
     document.addEventListener("mousedown", onDoc);
     return () => document.removeEventListener("mousedown", onDoc);
   }, [targetMenuOpen]);
+
+  const focusTargetOption = useCallback((index: number) => {
+    const option = targetOptionRefs.current[index];
+    option?.focus();
+  }, []);
+
+  const openTargetMenu = useCallback((focusIndex?: number) => {
+    setTargetMenuOpen(true);
+    if (focusIndex === undefined) return;
+    requestAnimationFrame(() => focusTargetOption(focusIndex));
+  }, [focusTargetOption]);
+
+  const handleTargetMenuButtonKeyDown = useCallback((event: React.KeyboardEvent<HTMLButtonElement>) => {
+    if (!executionTargetProfiles?.length) return;
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      openTargetMenu(0);
+      return;
+    }
+    if (event.key === "ArrowUp") {
+      event.preventDefault();
+      openTargetMenu(executionTargetProfiles.length - 1);
+      return;
+    }
+    if (event.key === "Escape") {
+      setTargetMenuOpen(false);
+    }
+  }, [executionTargetProfiles, openTargetMenu]);
+
+  const handleTargetMenuOptionKeyDown = useCallback((event: React.KeyboardEvent<HTMLButtonElement>, index: number) => {
+    const optionCount = executionTargetProfiles?.length ?? 0;
+    if (!optionCount) return;
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      focusTargetOption((index + 1) % optionCount);
+      return;
+    }
+    if (event.key === "ArrowUp") {
+      event.preventDefault();
+      focusTargetOption((index - 1 + optionCount) % optionCount);
+      return;
+    }
+    if (event.key === "Home") {
+      event.preventDefault();
+      focusTargetOption(0);
+      return;
+    }
+    if (event.key === "End") {
+      event.preventDefault();
+      focusTargetOption(optionCount - 1);
+      return;
+    }
+    if (event.key === "Escape") {
+      event.preventDefault();
+      setTargetMenuOpen(false);
+      targetMenuRef.current?.querySelector<HTMLButtonElement>("button[aria-haspopup='listbox']")?.focus();
+    }
+  }, [executionTargetProfiles, focusTargetOption]);
 
   const attachedPaths = useMemo(() => new Set(attachments.map((a) => a.path)), [attachments]);
   const selectedModel = useMemo(() => getModelById(modelId), [modelId]);
@@ -1235,22 +1295,38 @@ export function AgentChatComposer({
                   type="button"
                   className="inline-flex h-6 max-w-[140px] items-center gap-1 rounded-md border border-white/[0.06] bg-white/[0.02] px-1.5 font-sans text-[10px] font-medium text-muted-fg/55 transition-colors hover:border-white/[0.10] hover:text-fg/70"
                   onClick={() => setTargetMenuOpen((o) => !o)}
+                  onKeyDown={handleTargetMenuButtonKeyDown}
                   title="Tagged execution target for this chat. Remote runs are not wired yet — tools still execute on this computer."
+                  aria-controls={targetMenuOpen ? targetMenuId : undefined}
+                  aria-expanded={targetMenuOpen}
+                  aria-haspopup="listbox"
                 >
                   <DesktopTower size={11} className="shrink-0 text-sky-400/70" />
                   <span className="min-w-0 truncate">{executionTargetLabel ?? executionTargetId}</span>
                   <CaretDown size={9} className="shrink-0 opacity-50" />
                 </button>
                 {targetMenuOpen ? (
-                  <div className="absolute bottom-full left-0 z-40 mb-1 min-w-[200px] overflow-hidden rounded-lg border border-white/[0.08] bg-card py-1 shadow-lg">
-                    {executionTargetProfiles.map((p) => (
+                  <div
+                    id={targetMenuId}
+                    role="listbox"
+                    aria-label="Execution targets"
+                    className="absolute bottom-full left-0 z-40 mb-1 min-w-[200px] overflow-hidden rounded-lg border border-white/[0.08] bg-card py-1 shadow-lg"
+                  >
+                    {executionTargetProfiles.map((p, index) => (
                       <button
                         key={p.id}
+                        id={`${targetMenuId}-option-${index}`}
+                        ref={(element) => {
+                          targetOptionRefs.current[index] = element;
+                        }}
                         type="button"
+                        role="option"
+                        aria-selected={p.id === executionTargetId}
                         className={cn(
                           "flex w-full items-center gap-2 px-2 py-1.5 text-left text-[11px] transition-colors hover:bg-white/[0.04]",
                           p.id === executionTargetId && "bg-white/[0.06]",
                         )}
+                        onKeyDown={(event) => handleTargetMenuOptionKeyDown(event, index)}
                         onClick={() => {
                           onExecutionTargetChange(p.id);
                           setTargetMenuOpen(false);

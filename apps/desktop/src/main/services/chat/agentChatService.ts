@@ -2524,6 +2524,28 @@ export function createAgentChatService(args: {
   if (!getExternalMcpConfigs) {
     throw new Error("createAgentChatService: getExternalMcpConfigs is required");
   }
+
+  const normalizeExecutionTarget = (
+    requestedExecutionTargetId: unknown,
+    requestedExecutionTargetLabel: unknown,
+    fallbackExecutionTargetId: string = ADE_LOCAL_EXECUTION_TARGET_ID,
+  ): { executionTargetId: string; executionTargetLabel: string } => {
+    const normalizedFallbackExecutionTargetId =
+      typeof fallbackExecutionTargetId === "string" && fallbackExecutionTargetId.trim().length
+        ? fallbackExecutionTargetId.trim()
+        : ADE_LOCAL_EXECUTION_TARGET_ID;
+    const executionTargetId =
+      typeof requestedExecutionTargetId === "string" && requestedExecutionTargetId.trim().length
+        ? requestedExecutionTargetId.trim()
+        : normalizedFallbackExecutionTargetId;
+    const executionTargetLabel =
+      typeof requestedExecutionTargetLabel === "string" && requestedExecutionTargetLabel.trim().length
+        ? requestedExecutionTargetLabel.trim()
+        : executionTargetId === ADE_LOCAL_EXECUTION_TARGET_ID
+          ? "This computer"
+          : executionTargetId;
+    return { executionTargetId, executionTargetLabel };
+  };
   if (!getDirtyFileTextForPath) {
     throw new Error("createAgentChatService: getDirtyFileTextForPath is required");
   }
@@ -6001,14 +6023,10 @@ export function createAgentChatService(args: {
         ...(persisted?.requestedCwd != null && String(persisted.requestedCwd).trim().length
           ? { requestedCwd: String(persisted.requestedCwd).trim() }
           : {}),
-        ...(persisted?.executionTargetId != null && String(persisted.executionTargetId).trim().length
-          ? {
-              executionTargetId: String(persisted.executionTargetId).trim(),
-              ...(persisted?.executionTargetLabel != null && String(persisted.executionTargetLabel).trim().length
-                ? { executionTargetLabel: String(persisted.executionTargetLabel).trim() }
-                : {}),
-            }
-          : {}),
+        ...normalizeExecutionTarget(
+          persisted?.executionTargetId,
+          persisted?.executionTargetLabel,
+        ),
         createdAt: row.startedAt,
         lastActivityAt: persisted?.updatedAt ?? row.endedAt ?? row.startedAt
       },
@@ -10475,14 +10493,10 @@ export function createAgentChatService(args: {
     effectivePermissionMode = localHarnessPermissions.requestedPermissionMode;
     requestedOpenCodePermissionMode = localHarnessPermissions.requestedOpenCodePermissionMode;
 
-    const rawExecTargetId = typeof requestedExecutionTargetId === "string" ? requestedExecutionTargetId.trim() : "";
-    const normalizedExecTargetId = rawExecTargetId.length ? rawExecTargetId : ADE_LOCAL_EXECUTION_TARGET_ID;
-    const normalizedExecTargetLabel =
-      typeof requestedExecutionTargetLabel === "string" && requestedExecutionTargetLabel.trim().length
-        ? requestedExecutionTargetLabel.trim()
-        : normalizedExecTargetId === ADE_LOCAL_EXECUTION_TARGET_ID
-          ? "This computer"
-          : normalizedExecTargetId;
+    const {
+      executionTargetId: normalizedExecTargetId,
+      executionTargetLabel: normalizedExecTargetLabel,
+    } = normalizeExecutionTarget(requestedExecutionTargetId, requestedExecutionTargetLabel);
 
     const nativePermissionFields = (() => {
       if (effectiveProvider === "claude") {
@@ -12587,18 +12601,10 @@ export function createAgentChatService(args: {
       ...(liveSession?.threadId || persisted?.threadId
         ? { threadId: liveSession?.threadId ?? persisted?.threadId }
         : {}),
-      ...(() => {
-        const idRaw = liveSession?.executionTargetId ?? persisted?.executionTargetId;
-        const id = typeof idRaw === "string" && idRaw.trim().length ? idRaw.trim() : ADE_LOCAL_EXECUTION_TARGET_ID;
-        const labelRaw = liveSession?.executionTargetLabel ?? persisted?.executionTargetLabel;
-        const label =
-          typeof labelRaw === "string" && labelRaw.trim().length
-            ? labelRaw.trim()
-            : id === ADE_LOCAL_EXECUTION_TARGET_ID
-              ? "This computer"
-              : id;
-        return { executionTargetId: id, executionTargetLabel: label };
-      })()
+      ...normalizeExecutionTarget(
+        liveSession?.executionTargetId ?? persisted?.executionTargetId,
+        liveSession?.executionTargetLabel ?? persisted?.executionTargetLabel,
+      )
     } satisfies AgentChatSessionSummary;
   };
 
@@ -13476,29 +13482,21 @@ export function createAgentChatService(args: {
     }
 
     if (executionTargetId !== undefined) {
-      const nextId = typeof executionTargetId === "string" && executionTargetId.trim().length
-        ? executionTargetId.trim()
-        : ADE_LOCAL_EXECUTION_TARGET_ID;
-      managed.session.executionTargetId = nextId;
-      if (executionTargetLabel !== undefined) {
-        const nextLabel = typeof executionTargetLabel === "string" && executionTargetLabel.trim().length
-          ? executionTargetLabel.trim()
-          : nextId === ADE_LOCAL_EXECUTION_TARGET_ID
-            ? "This computer"
-            : nextId;
-        managed.session.executionTargetLabel = nextLabel;
-      } else if (nextId === ADE_LOCAL_EXECUTION_TARGET_ID) {
-        managed.session.executionTargetLabel = "This computer";
-      } else if (!managed.session.executionTargetLabel?.trim()) {
-        managed.session.executionTargetLabel = nextId;
-      }
+      const normalizedExecutionTarget = normalizeExecutionTarget(
+        executionTargetId,
+        executionTargetLabel,
+        managed.session.executionTargetId,
+      );
+      managed.session.executionTargetId = normalizedExecutionTarget.executionTargetId;
+      managed.session.executionTargetLabel = normalizedExecutionTarget.executionTargetLabel;
     } else if (executionTargetLabel !== undefined) {
-      const nextLabel = typeof executionTargetLabel === "string" && executionTargetLabel.trim().length
-        ? executionTargetLabel.trim()
-        : managed.session.executionTargetId === ADE_LOCAL_EXECUTION_TARGET_ID
-          ? "This computer"
-          : (managed.session.executionTargetId ?? "This computer");
-      managed.session.executionTargetLabel = nextLabel;
+      const normalizedExecutionTarget = normalizeExecutionTarget(
+        undefined,
+        executionTargetLabel,
+        managed.session.executionTargetId,
+      );
+      managed.session.executionTargetId = normalizedExecutionTarget.executionTargetId;
+      managed.session.executionTargetLabel = normalizedExecutionTarget.executionTargetLabel;
     }
 
     if (computerUse !== undefined) {

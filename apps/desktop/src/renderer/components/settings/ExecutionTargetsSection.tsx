@@ -1,6 +1,6 @@
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useId, useState } from "react";
 import { Plus, Trash } from "@phosphor-icons/react";
-import type { AdeExecutionTargetProfile, AdeExecutionTargetsState, AdeSshExecutionTargetProfile } from "../../../shared/types";
+import type { AdeExecutionTargetsState, AdeSshExecutionTargetProfile } from "../../../shared/types";
 import {
   ADE_LOCAL_EXECUTION_TARGET_ID,
   defaultExecutionTargetsState,
@@ -23,21 +23,34 @@ const FIELD: React.CSSProperties = {
   outline: "none",
 };
 
+const FIELD_LABEL: React.CSSProperties = {
+  fontFamily: SANS_FONT,
+  fontSize: 10,
+  color: COLORS.textMuted,
+};
+
 export function ExecutionTargetsSection() {
   const projectRoot = useAppStore((s) => s.project?.rootPath ?? null);
-  const { state, persist, refresh } = useExecutionTargets(projectRoot);
+  const { state, persist } = useExecutionTargets(projectRoot);
+  const fieldPrefix = useId();
   const [label, setLabel] = useState("");
   const [sshHost, setSshHost] = useState("");
   const [workspacePath, setWorkspacePath] = useState("~/project");
   const [jumpHost, setJumpHost] = useState("");
   const [mode, setMode] = useState<AdeSshExecutionTargetProfile["connectionMode"]>("planned");
   const [busy, setBusy] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   const saveState = useCallback(
-    async (next: AdeExecutionTargetsState) => {
+    async (next: AdeExecutionTargetsState): Promise<boolean> => {
+      setSaveError(null);
       setBusy(true);
       try {
         await persist(next);
+        return true;
+      } catch (error) {
+        setSaveError(error instanceof Error ? error.message : String(error));
+        return false;
       } finally {
         setBusy(false);
       }
@@ -67,7 +80,8 @@ export function ExecutionTargetsSection() {
       ...state,
       profiles: [...state.profiles.filter((p) => p.id !== id), nextProfile],
     };
-    await saveState(next);
+    const saved = await saveState(next);
+    if (!saved) return;
     setLabel("");
     setSshHost("");
     setJumpHost("");
@@ -104,6 +118,21 @@ export function ExecutionTargetsSection() {
         Choose where this project&apos;s workspace focus points. Chats can record a target for when remote execution is
         available; tools still run on this computer until SSH or a remote runner is connected.
       </p>
+      {saveError ? (
+        <div
+          role="alert"
+          style={{
+            ...cardStyle({ padding: 12 }),
+            marginBottom: 12,
+            borderColor: "rgba(239,68,68,0.25)",
+            color: COLORS.danger,
+            fontFamily: SANS_FONT,
+            fontSize: 11,
+          }}
+        >
+          Couldn&apos;t save execution target changes. {saveError}
+        </div>
+      ) : null}
 
       <div style={{ ...cardStyle({ padding: 12 }), marginBottom: 12 }}>
         <div style={{ fontFamily: SANS_FONT, fontSize: 11, fontWeight: 600, color: COLORS.textPrimary, marginBottom: 8 }}>
@@ -148,6 +177,7 @@ export function ExecutionTargetsSection() {
                   type="button"
                   style={{ ...outlineButton({ height: 24, padding: "0 6px", fontSize: 9 }), color: COLORS.danger }}
                   title="Remove target"
+                  aria-label={`Remove target ${executionTargetSummaryLabel(p)}`}
                   onClick={() => void removeTarget(p.id)}
                   disabled={busy}
                 >
@@ -164,15 +194,46 @@ export function ExecutionTargetsSection() {
           Add SSH target
         </div>
         <div style={{ display: "grid", gap: 8 }}>
-          <input style={FIELD} placeholder="Display name" value={label} onChange={(e) => setLabel(e.target.value)} />
-          <input style={FIELD} placeholder="SSH destination (user@host)" value={sshHost} onChange={(e) => setSshHost(e.target.value)} />
+          <label htmlFor={`${fieldPrefix}-label`} style={FIELD_LABEL}>
+            Display name
+          </label>
           <input
+            id={`${fieldPrefix}-label`}
+            style={FIELD}
+            placeholder="Display name"
+            value={label}
+            onChange={(e) => setLabel(e.target.value)}
+          />
+          <label htmlFor={`${fieldPrefix}-ssh-host`} style={FIELD_LABEL}>
+            SSH destination
+          </label>
+          <input
+            id={`${fieldPrefix}-ssh-host`}
+            style={FIELD}
+            placeholder="SSH destination (user@host)"
+            value={sshHost}
+            onChange={(e) => setSshHost(e.target.value)}
+          />
+          <label htmlFor={`${fieldPrefix}-workspace-path`} style={FIELD_LABEL}>
+            Remote workspace path
+          </label>
+          <input
+            id={`${fieldPrefix}-workspace-path`}
             style={FIELD}
             placeholder="Remote workspace path"
             value={workspacePath}
             onChange={(e) => setWorkspacePath(e.target.value)}
           />
-          <input style={FIELD} placeholder="Jump host (optional)" value={jumpHost} onChange={(e) => setJumpHost(e.target.value)} />
+          <label htmlFor={`${fieldPrefix}-jump-host`} style={FIELD_LABEL}>
+            Jump host
+          </label>
+          <input
+            id={`${fieldPrefix}-jump-host`}
+            style={FIELD}
+            placeholder="Jump host (optional)"
+            value={jumpHost}
+            onChange={(e) => setJumpHost(e.target.value)}
+          />
           <label style={{ fontFamily: SANS_FONT, fontSize: 10, color: COLORS.textMuted }}>
             Connection mode{" "}
             <select

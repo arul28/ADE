@@ -17,7 +17,7 @@ export function ExecutionTargetContextBanner({
   const isRemote = profile?.kind === "ssh";
   const detail =
     profile?.kind === "ssh"
-      ? `${profile.sshHost} · ${profile.workspacePath}`
+      ? `${profile.sshHost} · ${profile.workspacePath} · Saved remote target only; work still runs on this computer.`
       : "Files, terminals, and lanes use this machine.";
 
   if (variant === "inline") {
@@ -25,8 +25,8 @@ export function ExecutionTargetContextBanner({
       <span className={cn("inline-flex items-center gap-1 text-[10px] text-muted-fg/70", className)} title={detail}>
         <DesktopTower size={11} className={cn(isRemote ? "text-sky-400/80" : "text-muted-fg/50")} />
         <span className="font-medium text-fg/75">{label}</span>
-        {profile?.kind === "ssh" && profile.connectionMode === "planned" ? (
-          <span className="text-amber-400/80">(SSH not connected yet)</span>
+        {profile?.kind === "ssh" ? (
+          <span className="text-amber-400/80">(saved target only; local execution)</span>
         ) : null}
       </span>
     );

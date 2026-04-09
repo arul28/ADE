@@ -23,8 +23,12 @@ export function TopBarExecutionTargetSelect({ projectRoot }: { projectRoot: stri
 
   const onPick = useCallback(
     async (id: string) => {
-      await setActiveTargetId(id);
-      setOpen(false);
+      try {
+        await setActiveTargetId(id);
+        setOpen(false);
+      } catch (error) {
+        console.error("Failed to set execution target.", error);
+      }
     },
     [setActiveTargetId],
   );
