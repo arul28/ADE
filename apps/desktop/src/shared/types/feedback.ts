@@ -5,6 +5,7 @@ export type FeedbackSubmission = {
   category: FeedbackCategory;
   userDescription: string;
   modelId: string;
+  reasoningEffort?: string | null;
   status: "pending" | "generating" | "posting" | "posted" | "failed";
   generatedTitle: string | null;
   generatedBody: string | null;
@@ -20,6 +21,7 @@ export type FeedbackSubmitArgs = {
   category: FeedbackCategory;
   userDescription: string;
   modelId: string;
+  reasoningEffort?: string | null;
 };
 
 export type FeedbackSubmissionEvent = {

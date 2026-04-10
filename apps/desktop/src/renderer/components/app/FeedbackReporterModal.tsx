@@ -116,6 +116,7 @@ function NewReportTab({
   const [category, setCategory] = useState<FeedbackCategory>("bug");
   const [description, setDescription] = useState("");
   const [modelId, setModelId] = useState("");
+  const [reasoningEffort, setReasoningEffort] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [flash, setFlash] = useState<{ msg: string; ok: boolean } | null>(null);
   const flashTimer = useRef<number | null>(null);
@@ -128,6 +129,7 @@ function NewReportTab({
         category,
         userDescription: description.trim(),
         modelId,
+        reasoningEffort,
       };
       await window.ade.feedback.submit(args);
       setDescription("");
@@ -144,7 +146,7 @@ function NewReportTab({
     } finally {
       setSubmitting(false);
     }
-  }, [category, description, modelId, submitting, onSubmitted]);
+  }, [category, description, modelId, reasoningEffort, submitting, onSubmitted]);
 
   useEffect(() => {
     return () => {
@@ -216,8 +218,11 @@ function NewReportTab({
         <span style={LABEL_STYLE}>Model</span>
         <ProviderModelSelector
           value={modelId}
-          onChange={setModelId}
+          onChange={(id) => { setModelId(id); setReasoningEffort(null); }}
           availableModelIds={availableModelIds}
+          showReasoning
+          reasoningEffort={reasoningEffort}
+          onReasoningEffortChange={setReasoningEffort}
           onOpenAiSettings={openAiProvidersSettings}
         />
       </div>

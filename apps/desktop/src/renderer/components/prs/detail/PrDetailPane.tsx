@@ -308,8 +308,8 @@ type ChecksSummary = {
 };
 
 function summarizeChecks(checks: PrCheck[]): ChecksSummary {
-  const passing = checks.filter((check) => check.conclusion === "success").length;
-  const failing = checks.filter((check) => check.conclusion === "failure").length;
+  const passing = checks.filter((check) => check.conclusion === "success" || check.conclusion === "neutral" || check.conclusion === "skipped").length;
+  const failing = checks.filter((check) => check.conclusion === "failure" || check.conclusion === "cancelled").length;
   const pending = checks.filter((check) => check.status !== "completed").length;
   return {
     passing,
@@ -625,6 +625,26 @@ export function PrDetailPane({
       convergenceLoadSeqRef.current += 1;
     };
   }, [applyConvergenceRuntime, loadConvergenceState, loadDetail, pr.id]);
+
+  // Poll actionRuns + activity + reviewThreads every 60s so CI data stays fresh.
+  // PrsContext polls checks/status/reviews/comments, but action runs are only loaded
+  // in PrDetailPane and would otherwise go stale after the initial fetch.
+  React.useEffect(() => {
+    const id = window.setInterval(() => {
+      const reqId = detailLoadSeqRef.current;
+      Promise.allSettled([
+        window.ade.prs.getActionRuns(pr.id),
+        window.ade.prs.getActivity(pr.id),
+        window.ade.prs.getReviewThreads(pr.id),
+      ]).then(([arResult, actResult, thrResult]) => {
+        if (reqId !== detailLoadSeqRef.current) return;
+        if (arResult.status === "fulfilled") setActionRuns(arResult.value);
+        if (actResult.status === "fulfilled") setActivity(actResult.value);
+        if (thrResult.status === "fulfilled") setReviewThreads(thrResult.value);
+      });
+    }, 60_000);
+    return () => window.clearInterval(id);
+  }, [pr.id]);
 
   React.useEffect(() => {
     if (!issueResolverCopyNotice) return;
@@ -1661,7 +1681,7 @@ export function PrDetailPane({
     { id: "overview", label: "Overview", icon: Eye },
     { id: "convergence", label: "Path to Merge", icon: Sparkle, count: newIssueCount > 0 ? newIssueCount : undefined },
     { id: "files", label: "Files", icon: Code, count: files.length },
-    { id: "checks", label: "CI / Checks", icon: Play, count: checks.length + actionRuns.reduce((sum, run) => sum + run.jobs.length, 0) },
+    { id: "checks", label: "CI / Checks", icon: Play, count: buildUnifiedChecks(checks, actionRuns).length },
     { id: "activity", label: "Activity", icon: ClockCounterClockwise, count: activity.length > 0 ? activity.length : (comments.length + reviews.length) },
   ];
 
@@ -1824,7 +1844,7 @@ export function PrDetailPane({
       <div style={{ flex: 1, minHeight: 0, overflow: "auto" }}>
         {activeTab === "overview" && (
           <OverviewTab
-            pr={pr} detail={detail} status={status} checks={checks} reviews={reviews} comments={comments}
+            pr={pr} detail={detail} status={status} checks={checks} actionRuns={actionRuns} reviews={reviews} comments={comments}
             detailBusy={detailBusy} aiSummary={aiSummary} aiSummaryBusy={aiSummaryBusy}
             actionBusy={actionBusy} mergeMethod={mergeMethod}
             commentDraft={commentDraft} setCommentDraft={setCommentDraft}
@@ -2162,6 +2182,7 @@ type OverviewTabProps = {
   detail: PrDetail | null;
   status: PrStatus | null;
   checks: PrCheck[];
+  actionRuns: PrActionRun[];
   reviews: PrReview[];
   comments: PrComment[];
   detailBusy: boolean;
@@ -2207,7 +2228,7 @@ type OverviewTabProps = {
 };
 
 function OverviewTab(props: OverviewTabProps) {
-  const { pr, detail, status, checks, reviews, comments, aiSummary, aiSummaryBusy, actionBusy, mergeMethod, activity, lanes } = props;
+  const { pr, detail, status, checks, actionRuns, reviews, comments, aiSummary, aiSummaryBusy, actionBusy, mergeMethod, activity, lanes } = props;
   const [checksExpanded, setChecksExpanded] = React.useState(false);
   const [localMergeMethod, setLocalMergeMethod] = React.useState<MergeMethod>(mergeMethod);
   const [allowBlockedMerge, setAllowBlockedMerge] = React.useState(false);
@@ -2235,8 +2256,22 @@ function OverviewTab(props: OverviewTabProps) {
     [comments],
   );
 
-  // Checks summary
-  const checksSummary = summarizeChecks(checks);
+  // Unified checks: merge check-runs API data with action-runs API data so that
+  // merge readiness, stats sidebar, and convergence panel all reflect the same reality.
+  const allChecks: PrCheck[] = React.useMemo(() => {
+    const unified = buildUnifiedChecks(checks, actionRuns);
+    return unified.map((c): PrCheck => ({
+      name: c.displayName,
+      status: (c.status === "queued" || c.status === "in_progress" || c.status === "completed") ? c.status : "completed",
+      conclusion: (c.conclusion === "success" || c.conclusion === "failure" || c.conclusion === "neutral" || c.conclusion === "skipped" || c.conclusion === "cancelled") ? c.conclusion : null,
+      detailsUrl: c.detailsUrl,
+      startedAt: null,
+      completedAt: null,
+    }));
+  }, [checks, actionRuns]);
+
+  // Checks summary — uses unified checks (check-runs + action-runs)
+  const checksSummary = summarizeChecks(allChecks);
   const { someChecksFailing, checksRunning } = checksSummary;
   const checksRowVisuals = getChecksRowVisuals(checksSummary);
 
@@ -2590,17 +2625,17 @@ function OverviewTab(props: OverviewTabProps) {
             title={checksRowVisuals.title}
             titleAccessory={checksRunning && checksSummary.total > 0 ? <PrCiRunningIndicator showLabel label="running" /> : undefined}
             description={checksRowVisuals.description}
-            expandable={checks.length > 0}
+            expandable={allChecks.length > 0}
             expanded={checksExpanded}
             onToggle={() => setChecksExpanded(!checksExpanded)}
           >
             <div style={{ padding: "4px 0" }}>
-              {checks.map((check, idx) => {
-                const checkColor = check.conclusion === "success" ? COLORS.success : check.conclusion === "failure" ? COLORS.danger : check.status === "in_progress" ? COLORS.warning : COLORS.textMuted;
+              {allChecks.map((check, idx) => {
+                const checkColor = check.conclusion === "success" ? COLORS.success : check.conclusion === "failure" ? COLORS.danger : check.status === "in_progress" ? COLORS.warning : check.conclusion === "skipped" || check.conclusion === "neutral" ? COLORS.textDim : COLORS.textMuted;
                 return (
                   <div key={`${check.name}-${idx}`} style={{
                     display: "flex", alignItems: "center", gap: 10, padding: "8px 16px",
-                    borderBottom: idx < checks.length - 1 ? `1px solid ${COLORS.borderMuted}` : "none",
+                    borderBottom: idx < allChecks.length - 1 ? `1px solid ${COLORS.borderMuted}` : "none",
                   }}>
                     <CheckIcon check={check} />
                     <span style={{ fontFamily: SANS_FONT, fontSize: 12, color: COLORS.textPrimary, flex: 1 }}>{check.name}</span>
@@ -2860,7 +2895,7 @@ function OverviewTab(props: OverviewTabProps) {
           <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
             <StatRow label="Created" value={formatTimestampFull(pr.createdAt)} />
             <StatRow label="Updated" value={formatTimestampFull(pr.updatedAt)} />
-            <StatRow label="Checks" value={`${checks.filter(c => c.conclusion === "success").length}/${checks.length} passing`} />
+            <StatRow label="Checks" value={`${allChecks.filter(c => c.conclusion === "success" || c.conclusion === "neutral" || c.conclusion === "skipped").length}/${allChecks.length} passing`} />
             <StatRow label="Reviews" value={`${reviews.filter(r => r.state === "approved").length} approved`} />
             <StatRow label="Additions" value={`+${pr.additions}`} />
             <StatRow label="Deletions" value={`-${pr.deletions}`} />

@@ -280,6 +280,8 @@ export function createFeedbackReporterService({
           jsonSchema: FEEDBACK_ISSUE_JSON_SCHEMA,
           permissionMode: "read-only",
           oneShot: true,
+          timeoutMs: 300_000,
+          ...(submission.reasoningEffort ? { reasoningEffort: submission.reasoningEffort } : {}),
         });
 
         const structuredCandidate = result.structuredOutput ?? parseStructuredOutput(result.text);
@@ -298,7 +300,19 @@ export function createFeedbackReporterService({
         submission.generatedBody = normalized.draft.body;
       } catch (error: unknown) {
         const message = error instanceof Error ? error.message : String(error);
-        throw new Error(`Generation failed: ${message}`);
+        logger.warn("feedback.generation_failed_using_fallback", {
+          id: submission.id,
+          category: submission.category,
+          modelId: submission.modelId,
+          error: message,
+        });
+        normalizedDraft = {
+          title: fallbackTitle(submission),
+          body: fallbackBody(submission),
+          labels: defaultLabelsForCategory(submission.category),
+        };
+        submission.generatedTitle = normalizedDraft.title;
+        submission.generatedBody = normalizedDraft.body;
       }
 
       // -- Post to GitHub --
@@ -357,6 +371,7 @@ export function createFeedbackReporterService({
       category: args.category,
       userDescription: args.userDescription,
       modelId: args.modelId,
+      reasoningEffort: args.reasoningEffort ?? null,
       status: "pending",
       generatedTitle: null,
       generatedBody: null,

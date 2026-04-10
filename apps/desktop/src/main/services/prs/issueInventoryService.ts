@@ -18,17 +18,24 @@ import { isNoisyIssueComment } from "./resolverUtils";
 import { nowIso } from "../shared/utils";
 
 // ---------------------------------------------------------------------------
-// Source detection — maps GitHub comment authors to known review bot sources
+// Source detection — auto-detects review bot sources from GitHub author names
 // ---------------------------------------------------------------------------
 
-const SOURCE_PATTERNS: Array<{ pattern: RegExp; source: IssueSource }> = [
-  { pattern: /^coderabbitai(\[bot\])?$/i, source: "coderabbit" },
-  { pattern: /^chatgpt-codex-connector(\[bot\])?$/i, source: "codex" },
-  { pattern: /^codex(\[bot\])?$/i, source: "codex" },
-  { pattern: /^copilot(\[bot\])?$/i, source: "copilot" },
-  { pattern: /^github-copilot(\[bot\])?$/i, source: "copilot" },
-  { pattern: /^ade-review(\[bot\])?$/i, source: "ade" },
-];
+// Canonical name mappings for well-known bots (normalizes variant names).
+// Bots not listed here are auto-detected from the [bot] suffix and their
+// extracted name is used directly — no code change needed for new bots.
+const KNOWN_BOT_ALIASES: Record<string, IssueSource> = {
+  "coderabbitai": "coderabbit",
+  "chatgpt-codex-connector": "codex",
+  "codex": "codex",
+  "copilot": "copilot",
+  "github-copilot": "copilot",
+  "ade-review": "ade",
+  "greptile-review": "greptile",
+  "greptile": "greptile",
+  "seer-code-review": "seer",
+  "seer": "seer",
+};
 
 const CONVERGENCE_RUNTIME_STATUS_VALUES = new Set<ConvergenceRuntimeState["status"]>([
   "idle",
@@ -56,10 +63,22 @@ const CONVERGENCE_POLLER_STATUS_VALUES = new Set<ConvergenceRuntimeState["poller
 export function detectSource(author: string | null | undefined): IssueSource {
   const name = (author ?? "").trim();
   if (!name) return "unknown";
-  for (const { pattern, source } of SOURCE_PATTERNS) {
-    if (pattern.test(name)) return source;
+
+  // GitHub Apps always have "[bot]" suffix — extract the base name and normalize.
+  const botMatch = name.match(/^(.+?)(?:\[bot\])?$/i);
+  const baseName = (botMatch?.[1] ?? name).toLowerCase().trim();
+
+  // Check against known aliases for canonical naming
+  const known = KNOWN_BOT_ALIASES[baseName];
+  if (known) return known;
+
+  // Auto-detect any GitHub App bot (has [bot] suffix or "bot" in the name)
+  if (/\[bot\]/i.test(name)) {
+    // Return the base name as-is (e.g. "sonarqube-review" → "sonarqube-review")
+    return baseName;
   }
-  if (/\[bot\]/i.test(name) || /\bbot\b/i.test(name)) return "unknown";
+  if (/\bbot\b/i.test(name)) return "bot";
+
   return "human";
 }
 

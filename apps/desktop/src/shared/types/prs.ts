@@ -1119,7 +1119,9 @@ export type PrConvergenceStatePatch = Partial<Omit<ConvergenceRuntimeState, "prI
 
 export type IssueInventoryState = "new" | "sent_to_agent" | "fixed" | "dismissed" | "escalated";
 
-export type IssueSource = "coderabbit" | "codex" | "copilot" | "human" | "ade" | "unknown";
+// Well-known sources kept for backwards-compat; any other string is also valid
+// (e.g. "greptile", "seer", "sonarqube") — detectSource() auto-extracts bot names.
+export type IssueSource = "coderabbit" | "codex" | "copilot" | "human" | "ade" | "greptile" | "seer" | "bot" | "unknown" | (string & {});
 
 export type IssueInventoryItem = {
   id: string;
