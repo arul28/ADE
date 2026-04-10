@@ -781,6 +781,7 @@ export function AgentChatPane({
   const computerUseSnapshotInFlightRef = useRef<{ sessionId: string; promise: Promise<void> } | null>(null);
   const lastComputerUseSnapshotRef = useRef<{ sessionId: string; fetchedAt: number } | null>(null);
   const knownSessionIdsRef = useRef<Set<string>>(new Set());
+  const seededInitialSummaryRef = useRef(false);
   const handoffRef = useRef<HTMLDivElement | null>(null);
   const localTouchBySessionRef = useRef<Map<string, string>>(new Map());
   const cursorWarmupKeyRef = useRef<string | null>(null);
@@ -1173,9 +1174,13 @@ export function AgentChatPane({
       return null;
     }
 
-    const summary = initialSessionSummary?.sessionId === lockSessionId
-      ? initialSessionSummary
-      : await window.ade.agentChat.getSummary({ sessionId: lockSessionId });
+    let summary: AgentChatSessionSummary | null;
+    if (!seededInitialSummaryRef.current && initialSessionSummary?.sessionId === lockSessionId) {
+      summary = initialSessionSummary;
+      seededInitialSummaryRef.current = true;
+    } else {
+      summary = await window.ade.agentChat.getSummary({ sessionId: lockSessionId });
+    }
 
     setSessions(summary ? [summary] : []);
     setTurnActiveBySession((prev) => {

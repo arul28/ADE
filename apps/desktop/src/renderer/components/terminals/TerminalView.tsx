@@ -504,6 +504,8 @@ function scheduleFrameWriteFlush(runtime: CachedRuntime) {
     runtime.flushRafId = null;
     if (runtime.disposed) return;
     if (runtime.frameWriteChunks.length === 0) return;
+    // Keep writes buffered while no view is mounted; the remount path reschedules the flush.
+    if (runtime.refs === 0) return;
     const merged = runtime.frameWriteChunks.join("");
     runtime.frameWriteChunks.length = 0;
     runtime.frameWriteBytes = 0;

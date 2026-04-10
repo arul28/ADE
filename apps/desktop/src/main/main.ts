@@ -897,6 +897,15 @@ app.whenReady().then(async () => {
         });
         continue;
       }
+      // Re-check workloads immediately before eviction to avoid TOCTOU races
+      if (await hasActiveProjectWorkloads(projectRoot, ctx)) {
+        ctx.logger.info("project.context_retained", {
+          projectRoot,
+          policy: "became_active_during_rebalance",
+          activeProjectRoot: currentActiveRoot,
+        });
+        continue;
+      }
       ctx.logger.info("project.context_evicted", {
         projectRoot,
         policy: "idle_after_switch",

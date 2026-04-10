@@ -486,6 +486,7 @@ export function FilesPage() {
 
   const prevSessionKeyRef = useRef(sessionKey);
 
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- intentional snapshot of outgoing session state; deps are omitted so we capture values at the moment sessionKey changes
   useEffect(() => {
     if (prevSessionKeyRef.current === sessionKey) return;
     // Save current state under the old scope before switching

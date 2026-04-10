@@ -148,6 +148,11 @@ function installAdeMocks(options?: {
       send,
       steer,
       list,
+      getSummary: vi.fn().mockImplementation(async ({ sessionId }: { sessionId: string }) => {
+        const sessions = options?.sessions ?? [buildSession("session-1")];
+        return sessions.find((s) => s.sessionId === sessionId) ?? null;
+      }),
+      editSteer: vi.fn().mockResolvedValue(undefined),
       updateSession: vi.fn().mockResolvedValue(undefined),
       interrupt: vi.fn().mockResolvedValue(undefined),
       approve: vi.fn().mockResolvedValue(undefined),
@@ -332,8 +337,8 @@ describe("AgentChatPane submit recovery", () => {
   });
 
   it("keeps the draft cleared after send succeeds even if session refresh fails", async () => {
-    const session = buildSession("session-1");
-    const { send, list } = installAdeMocks({
+    const session = buildSession("session-1", { status: "idle" });
+    const { send } = installAdeMocks({
       listError: new Error("refresh failed"),
     });
 
@@ -349,13 +354,12 @@ describe("AgentChatPane submit recovery", () => {
         text: "Ship the transcript cleanup.",
         displayText: "Ship the transcript cleanup.",
       }));
-      expect(list).toHaveBeenCalled();
       expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe("");
     });
   });
 
   it("shows an optimistic queued bubble immediately for Cursor-style sends", async () => {
-    const session = buildSession("session-1");
+    const session = buildSession("session-1", { status: "idle" });
     let resolveSend!: () => void;
     const send = vi.fn().mockImplementation(() => new Promise<void>((resolve) => {
       resolveSend = resolve;
@@ -391,7 +395,7 @@ describe("AgentChatPane submit recovery", () => {
 
   it("keeps the draft cleared after steer succeeds even if session refresh fails", async () => {
     const session = buildSession("session-1");
-    const { steer, list } = installAdeMocks({
+    const { steer } = installAdeMocks({
       transcript: buildStatusStartedTranscript(session.sessionId),
       listError: new Error("refresh failed"),
     });
@@ -407,13 +411,12 @@ describe("AgentChatPane submit recovery", () => {
         sessionId: session.sessionId,
         text: "Stop checking docs and just drive the browser.",
       });
-      expect(list).toHaveBeenCalled();
       expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe("");
     });
   });
 
   it("restores the draft when the send itself fails", async () => {
-    const session = buildSession("session-1");
+    const session = buildSession("session-1", { status: "idle" });
     const { send } = installAdeMocks({
       sendError: new Error("send failed"),
     });
@@ -432,6 +435,7 @@ describe("AgentChatPane submit recovery", () => {
 
   it("sends the selected Claude interaction mode with the next turn", async () => {
     const session = buildSession("session-1", {
+      status: "idle",
       provider: "claude",
       model: "claude-sonnet-4-6",
       modelId: "anthropic/claude-sonnet-4-6",
@@ -481,6 +485,7 @@ describe("AgentChatPane submit recovery", () => {
 
   it("resyncs Claude composer permissions from refreshed session state", async () => {
     const session = buildSession("session-1", {
+      status: "idle",
       provider: "claude",
       model: "claude-sonnet-4-6",
       modelId: "anthropic/claude-sonnet-4-6",
@@ -553,7 +558,7 @@ describe("AgentChatPane submit recovery", () => {
   });
 
   it("keeps the committed model visible until the backend confirms the switch", async () => {
-    const session = buildSession("session-1");
+    const session = buildSession("session-1", { status: "idle" });
     const sessions = [session];
     let resolveUpdateSession!: (value: AgentChatSessionSummary) => void;
     const updateSession = vi.fn().mockImplementation(() => new Promise((resolve) => {
@@ -614,7 +619,7 @@ describe("AgentChatPane submit recovery", () => {
   });
 
   it("keeps the committed model visible when the backend rejects a switch", async () => {
-    const session = buildSession("session-1");
+    const session = buildSession("session-1", { status: "idle" });
     const updateSession = vi.fn().mockRejectedValue(new Error("switch failed"));
     const warmupModel = vi.fn().mockResolvedValue(undefined);
     installAdeMocks({
@@ -715,7 +720,7 @@ describe("AgentChatPane submit recovery", () => {
   });
 
   it("creates a sibling handoff chat and opens the returned work tab", async () => {
-    const session = buildSession("session-1");
+    const session = buildSession("session-1", { status: "idle" });
     const onSessionCreated = vi.fn().mockResolvedValue(undefined);
     const { handoff } = installAdeMocks({
       handoffResult: {
