@@ -130,6 +130,14 @@ describe("appStore", () => {
         scrollback: 2000,
       });
     });
+
+    it("caps scrollback at the renderer safety limit", () => {
+      useAppStore.getState().setTerminalPreferences({
+        scrollback: 250_000,
+      });
+
+      expect(useAppStore.getState().terminalPreferences.scrollback).toBe(30_000);
+    });
   });
 
   // ─────────────────────────────────────────────────────────────

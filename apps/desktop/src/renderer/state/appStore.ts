@@ -244,7 +244,7 @@ function clampTerminalLineHeight(value: unknown): number {
 function clampTerminalScrollback(value: unknown): number {
   const next = typeof value === "number" ? value : Number(value);
   if (!Number.isFinite(next)) return DEFAULT_TERMINAL_PREFERENCES.scrollback;
-  return Math.max(2000, Math.min(100_000, Math.round(next / 1000) * 1000));
+  return Math.max(2000, Math.min(30_000, Math.round(next / 1000) * 1000));
 }
 
 function normalizeTerminalPreferences(value: unknown): TerminalPreferences {

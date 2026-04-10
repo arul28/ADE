@@ -33,7 +33,7 @@ import type {
 import { MonacoDiffView } from "../lanes/MonacoDiffView";
 import { LaneTerminalsPanel } from "../lanes/LaneTerminalsPanel";
 import { useAppStore } from "../../state/appStore";
-import { replaceDirtyBuffersForWorkspace } from "../../lib/dirtyWorkspaceBuffers";
+import { clearDirtyBuffersForWorkspace, replaceDirtyBuffersForWorkspace } from "../../lib/dirtyWorkspaceBuffers";
 import { PaneTilingLayout } from "../ui/PaneTilingLayout";
 import { revealLabel } from "../../lib/platform";
 import type { PaneConfig, PaneSplit } from "../ui/PaneTilingLayout";
@@ -84,6 +84,7 @@ type ExternalEditorTarget = "finder" | "vscode" | "cursor" | "zed";
 
 type FilesPageSessionState = {
   workspaceId: string;
+  workspaceRootPath: string | null;
   allowPrimaryEdit: boolean;
   selectedNodePath: string | null;
   openTabs: OpenTab[];
@@ -94,11 +95,88 @@ type FilesPageSessionState = {
 };
 
 const filesPageSessionByScope = new Map<string, FilesPageSessionState>();
+const filesPageSessionLru: string[] = [];
+const MAX_FILES_PAGE_CACHED_SCOPES = 8;
 const MAX_QUEUED_TREE_PARENT_REFRESHES = 24;
 
 function filesSessionKey(projectRoot: string, laneId: string | null): string {
   return `${projectRoot}::${laneId ?? "__primary__"}`;
 }
+
+function touchFilesPageSession(sessionKey: string): void {
+  const existingIndex = filesPageSessionLru.indexOf(sessionKey);
+  if (existingIndex >= 0) {
+    filesPageSessionLru.splice(existingIndex, 1);
+  }
+  filesPageSessionLru.push(sessionKey);
+}
+
+function getFilesPageSession(sessionKey: string): FilesPageSessionState | undefined {
+  const session = filesPageSessionByScope.get(sessionKey);
+  if (session) touchFilesPageSession(sessionKey);
+  return session;
+}
+
+function filesPageSessionHasUnsavedTabs(session: FilesPageSessionState | undefined): boolean {
+  return session?.openTabs.some((tab) => tab.content !== tab.savedContent) ?? false;
+}
+
+function hasFilesPageSessionForWorkspaceRoot(workspaceRootPath: string, excludeSessionKey?: string): boolean {
+  for (const [key, session] of filesPageSessionByScope.entries()) {
+    if (excludeSessionKey && key === excludeSessionKey) continue;
+    if (session.workspaceRootPath === workspaceRootPath) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function setFilesPageSession(sessionKey: string, session: FilesPageSessionState): void {
+  filesPageSessionByScope.set(sessionKey, session);
+  touchFilesPageSession(sessionKey);
+  while (filesPageSessionLru.length > MAX_FILES_PAGE_CACHED_SCOPES) {
+    const evictIndex = filesPageSessionLru.findIndex((candidateKey) => {
+      if (candidateKey === sessionKey) return false;
+      return !filesPageSessionHasUnsavedTabs(filesPageSessionByScope.get(candidateKey));
+    });
+    if (evictIndex < 0) break;
+    const [evicted] = filesPageSessionLru.splice(evictIndex, 1);
+    if (!evicted) break;
+    const evictedSession = filesPageSessionByScope.get(evicted);
+    filesPageSessionByScope.delete(evicted);
+    if (
+      evictedSession?.workspaceRootPath
+      && !hasFilesPageSessionForWorkspaceRoot(evictedSession.workspaceRootPath, evicted)
+    ) {
+      clearDirtyBuffersForWorkspace(evictedSession.workspaceRootPath);
+    }
+  }
+}
+
+function snapshotFilesPageSessionState(args: {
+  workspaceId: string;
+  workspaceRootPath: string | null;
+  allowPrimaryEdit: boolean;
+  selectedNodePath: string | null;
+  openTabs: OpenTab[];
+  activeTabPath: string | null;
+  mode: EditorViewMode;
+  searchQuery: string;
+  editorTheme: EditorThemeMode;
+}): FilesPageSessionState {
+  return {
+    workspaceId: args.workspaceId,
+    workspaceRootPath: args.workspaceRootPath,
+    allowPrimaryEdit: args.allowPrimaryEdit,
+    selectedNodePath: args.selectedNodePath,
+    openTabs: args.openTabs,
+    activeTabPath: args.activeTabPath,
+    mode: args.mode,
+    searchQuery: args.searchQuery,
+    editorTheme: args.editorTheme,
+  };
+}
+
 const FILES_EDITOR_THEME_KEY = "ade.files.editorTheme";
 
 function readStoredEditorTheme(): EditorThemeMode {
@@ -340,7 +418,7 @@ export function FilesPage() {
   const selectedLaneId = useAppStore((s) => s.selectedLaneId);
   const projectRootPath = useAppStore((s) => s.project?.rootPath ?? "__unknown_project__");
   const sessionKey = filesSessionKey(projectRootPath, selectedLaneId);
-  const initialSession = filesPageSessionByScope.get(sessionKey);
+  const initialSession = getFilesPageSession(sessionKey);
 
   const [workspaces, setWorkspaces] = useState<FilesWorkspace[]>([]);
   const [workspaceId, setWorkspaceId] = useState<string>(initialSession?.workspaceId ?? "");
@@ -411,19 +489,20 @@ export function FilesPage() {
   useEffect(() => {
     if (prevSessionKeyRef.current === sessionKey) return;
     // Save current state under the old scope before switching
-    filesPageSessionByScope.set(prevSessionKeyRef.current, {
+    setFilesPageSession(prevSessionKeyRef.current, snapshotFilesPageSessionState({
       workspaceId,
+      workspaceRootPath: activeWorkspace?.rootPath ?? null,
       allowPrimaryEdit,
       selectedNodePath,
-      openTabs: openTabs.map((tab) => ({ ...tab })),
+      openTabs,
       activeTabPath,
       mode,
       searchQuery,
       editorTheme,
-    });
+    }));
     prevSessionKeyRef.current = sessionKey;
     // Restore state for the new scope (project + lane)
-    const session = filesPageSessionByScope.get(sessionKey);
+    const session = getFilesPageSession(sessionKey);
     setWorkspaceId(session?.workspaceId ?? "");
     setAllowPrimaryEdit(session?.allowPrimaryEdit ?? false);
     setSelectedNodePath(session?.selectedNodePath ?? null);
@@ -440,17 +519,18 @@ export function FilesPage() {
   );
 
   useEffect(() => {
-    filesPageSessionByScope.set(sessionKey, {
+    setFilesPageSession(sessionKey, snapshotFilesPageSessionState({
       workspaceId,
+      workspaceRootPath: activeWorkspace?.rootPath ?? null,
       allowPrimaryEdit,
       selectedNodePath,
-      openTabs: openTabs.map((tab) => ({ ...tab })),
+      openTabs,
       activeTabPath,
       mode,
       searchQuery,
-      editorTheme
-    });
-  }, [sessionKey, workspaceId, allowPrimaryEdit, selectedNodePath, openTabs, activeTabPath, mode, searchQuery, editorTheme]);
+      editorTheme,
+    }));
+  }, [sessionKey, workspaceId, activeWorkspace?.rootPath, allowPrimaryEdit, selectedNodePath, openTabs, activeTabPath, mode, searchQuery, editorTheme]);
 
   useEffect(() => {
     persistEditorTheme(editorTheme);

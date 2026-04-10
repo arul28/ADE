@@ -482,6 +482,10 @@ export function createTestService({
       return readTail(row.log_path, limit);
     },
 
+    hasActiveRuns(): boolean {
+      return activeRuns.size > 0;
+    },
+
     disposeAll() {
       for (const entry of activeRuns.values()) {
         if (entry.timeoutTimer) clearTimeout(entry.timeoutTimer);

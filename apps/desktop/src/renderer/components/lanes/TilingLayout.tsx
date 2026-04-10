@@ -137,7 +137,7 @@ function TileRenderer({
 
         <div className="min-h-0 flex-1 bg-bg">
           {isChat ? (
-            <AgentChatPane laneId={laneId} laneLabel={session.laneName} lockSessionId={session.id} />
+            <AgentChatPane laneId={laneId} laneLabel={session.laneName} lockSessionId={session.id} hideSessionTabs />
           ) : isRunning ? (
             <TerminalView ptyId={session.ptyId!} sessionId={session.id} isActive={isActive} className="h-full" />
           ) : (

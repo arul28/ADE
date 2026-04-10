@@ -6,13 +6,7 @@ import path from "path-browserify";
  */
 const dirtyByAbsPath = new Map<string, string>();
 
-/**
- * Replace dirty entries for paths under `rootPath` using the current open tab set for that workspace.
- */
-export function replaceDirtyBuffersForWorkspace(
-  rootPath: string,
-  tabs: ReadonlyArray<{ path: string; content: string; savedContent: string }>,
-): void {
+function clearWorkspaceEntries(rootPath: string): void {
   const rootNorm = path.normalize(rootPath);
   const prefix = rootNorm.endsWith(path.sep) ? rootNorm : `${rootNorm}${path.sep}`;
   for (const key of [...dirtyByAbsPath.keys()]) {
@@ -21,6 +15,17 @@ export function replaceDirtyBuffersForWorkspace(
       dirtyByAbsPath.delete(key);
     }
   }
+}
+
+/**
+ * Replace dirty entries for paths under `rootPath` using the current open tab set for that workspace.
+ */
+export function replaceDirtyBuffersForWorkspace(
+  rootPath: string,
+  tabs: ReadonlyArray<{ path: string; content: string; savedContent: string }>,
+): void {
+  const rootNorm = path.normalize(rootPath);
+  clearWorkspaceEntries(rootNorm);
   for (const tab of tabs) {
     const abs = path.isAbsolute(tab.path)
       ? path.normalize(tab.path)
@@ -29,6 +34,10 @@ export function replaceDirtyBuffersForWorkspace(
       dirtyByAbsPath.set(abs, tab.content);
     }
   }
+}
+
+export function clearDirtyBuffersForWorkspace(rootPath: string): void {
+  clearWorkspaceEntries(rootPath);
 }
 
 /** Called from main via executeJavaScript — must stay synchronous. */
