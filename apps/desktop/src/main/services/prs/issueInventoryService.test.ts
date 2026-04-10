@@ -5,7 +5,7 @@ import type {
   PrComment,
   PrReviewThread,
 } from "../../../shared/types";
-import { createIssueInventoryService } from "./issueInventoryService";
+import { createIssueInventoryService, detectSource } from "./issueInventoryService";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -534,7 +534,7 @@ describe("issueInventoryService", () => {
       expect(args[2]).toBe("human"); // source
     });
 
-    it("maps unrecognized bot authors as unknown source", () => {
+    it("maps known bot aliases to their canonical source", () => {
       const db = makeMockDb();
       db.get.mockReturnValue(null);
       db.all.mockReturnValue([]);
@@ -561,7 +561,7 @@ describe("issueInventoryService", () => {
         (call: unknown[]) => typeof call[0] === "string" && (call[0] as string).includes("insert into pr_issue_inventory"),
       );
       const args = insertCalls[0][1] as unknown[];
-      expect(args[2]).toBe("unknown"); // source
+      expect(args[2]).toBe("greptile"); // source — known alias
     });
 
     it("extracts severity from bold keywords (Critical/Major/Minor)", () => {
@@ -2047,5 +2047,52 @@ describe("issueInventoryService", () => {
       // dismiss_reason should be cleared
       expect(params[10]).toBeNull();
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// detectSource — map-based auto-detection
+// ---------------------------------------------------------------------------
+
+describe("detectSource", () => {
+  it("returns 'unknown' for null / undefined / empty", () => {
+    expect(detectSource(null)).toBe("unknown");
+    expect(detectSource(undefined)).toBe("unknown");
+    expect(detectSource("")).toBe("unknown");
+    expect(detectSource("   ")).toBe("unknown");
+  });
+
+  it("maps known bot aliases to their canonical name", () => {
+    expect(detectSource("coderabbitai[bot]")).toBe("coderabbit");
+    expect(detectSource("chatgpt-codex-connector[bot]")).toBe("codex");
+    expect(detectSource("copilot[bot]")).toBe("copilot");
+    expect(detectSource("github-copilot[bot]")).toBe("copilot");
+    expect(detectSource("ade-review[bot]")).toBe("ade");
+    expect(detectSource("greptile[bot]")).toBe("greptile");
+    expect(detectSource("greptile-review[bot]")).toBe("greptile");
+    expect(detectSource("seer[bot]")).toBe("seer");
+    expect(detectSource("seer-code-review[bot]")).toBe("seer");
+  });
+
+  it("known aliases work even without [bot] suffix", () => {
+    expect(detectSource("coderabbitai")).toBe("coderabbit");
+    expect(detectSource("codex")).toBe("codex");
+    expect(detectSource("greptile")).toBe("greptile");
+  });
+
+  it("auto-detects unknown bots by [bot] suffix", () => {
+    // Unknown GitHub App — should return the base name as-is
+    expect(detectSource("sonarqube-review[bot]")).toBe("sonarqube-review");
+    expect(detectSource("my-custom-tool[bot]")).toBe("my-custom-tool");
+  });
+
+  it("returns 'bot' for names containing the word bot without [bot] suffix", () => {
+    expect(detectSource("some-bot-thing")).toBe("bot");
+  });
+
+  it("returns 'human' for regular author names", () => {
+    expect(detectSource("octocat")).toBe("human");
+    expect(detectSource("jane-dev")).toBe("human");
+    expect(detectSource("Alice Smith")).toBe("human");
   });
 });
