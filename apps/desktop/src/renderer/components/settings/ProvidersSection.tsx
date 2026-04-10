@@ -400,9 +400,14 @@ export function ProvidersSection({ forceRefreshOnMount = false }: { forceRefresh
     setNotice(null);
     try {
       await window.ade.ai.storeApiKey(provider, trimmed);
+      setVerificationByProvider((prev) => {
+        const next = { ...prev };
+        delete next[provider];
+        return next;
+      });
       setNotice(`${provider} key saved.`);
       cancelEditing();
-      await refreshStatus();
+      await refreshStatus({ force: true, refreshOpenCodeInventory: true });
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
@@ -420,7 +425,7 @@ export function ProvidersSection({ forceRefreshOnMount = false }: { forceRefresh
         delete next[provider];
         return next;
       });
-      await refreshStatus();
+      await refreshStatus({ force: true, refreshOpenCodeInventory: true });
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
@@ -702,8 +707,53 @@ export function ProvidersSection({ forceRefreshOnMount = false }: { forceRefresh
         );
       })()}
 
+      {/* ── OpenCode Status ── */}
+      <section style={{ ...cardStyle(), borderLeft: `3px solid #2563EB` }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <OpenCodeLogo size={22} />
+            <div>
+              <div style={{ fontSize: 12, fontFamily: SANS_FONT, fontWeight: 700, color: COLORS.textPrimary }}>OpenCode Runtime</div>
+              <div style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textMuted, lineHeight: 1.35 }}>
+                Powers all API-backed and local model chats
+              </div>
+            </div>
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 4, color: status?.opencodeBinaryInstalled === false ? COLORS.warning : status?.opencodeInventoryError ? COLORS.danger : COLORS.success }}>
+            {status?.opencodeBinaryInstalled === false ? (
+              <WarningCircle size={14} weight="fill" />
+            ) : status?.opencodeInventoryError ? (
+              <XCircle size={14} weight="fill" />
+            ) : (
+              <CheckCircle size={14} weight="fill" />
+            )}
+            <span style={{ fontSize: 9, fontFamily: MONO_FONT, textTransform: "uppercase", letterSpacing: "1px" }}>
+              {status?.opencodeBinaryInstalled === false ? "Not found" : status?.opencodeInventoryError ? "Error" : "Installed"}
+            </span>
+          </div>
+        </div>
+
+        {status?.opencodeBinaryInstalled === false ? (
+          <div style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.warning, lineHeight: 1.55, marginTop: 8 }}>
+            OpenCode CLI was not found on your PATH. Install OpenCode and ensure the <code style={{ color: COLORS.textSecondary }}>opencode</code> binary is discoverable, then use Refresh.
+            The API keys and local model servers below require OpenCode to function.
+          </div>
+        ) : status?.opencodeInventoryError ? (
+          <div style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.danger, lineHeight: 1.55, marginTop: 8 }}>
+            Model inventory failed: {status.opencodeInventoryError}
+          </div>
+        ) : null}
+      </section>
+
       {/* ── API Provider Keys ── */}
-      <div>
+      <div style={{ position: "relative" }}>
+        {status?.opencodeBinaryInstalled === false && (
+          <div style={{ position: "absolute", inset: 0, zIndex: 2, background: `${COLORS.pageBg}CC`, display: "flex", alignItems: "center", justifyContent: "center", pointerEvents: "none" }}>
+            <span style={{ fontSize: 11, fontFamily: MONO_FONT, color: COLORS.warning, background: COLORS.pageBg, padding: "6px 14px", border: `1px solid ${COLORS.warning}40` }}>
+              Install OpenCode to use API providers
+            </span>
+          </div>
+        )}
         <div style={{ ...groupLabelStyle, marginBottom: 4 }}>API Provider Keys</div>
         <div style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textMuted, lineHeight: 1.6, marginBottom: 12 }}>
           Add API keys to unlock models. All API-backed models run through the OpenCode runtime.
@@ -774,9 +824,19 @@ export function ProvidersSection({ forceRefreshOnMount = false }: { forceRefresh
                     </>
                   ) : keySource ? (
                     <>
-                      <button type="button" style={outlineButton()} disabled={verifyingProvider === provider.provider} onClick={() => void verifyApiKey(provider.provider)}>
-                        {verifyingProvider === provider.provider ? "Checking..." : "Verify"}
-                      </button>
+                      {verification?.ok ? (
+                        <span style={{ display: "inline-flex", alignItems: "center", gap: 4, padding: "4px 10px", fontSize: 11, fontFamily: MONO_FONT, color: COLORS.success, background: `${COLORS.success}14`, border: `1px solid ${COLORS.success}30` }}>
+                          <CheckCircle size={13} weight="fill" /> Verified
+                        </span>
+                      ) : verification && !verification.ok ? (
+                        <span style={{ display: "inline-flex", alignItems: "center", gap: 4, padding: "4px 10px", fontSize: 11, fontFamily: MONO_FONT, color: COLORS.danger, background: `${COLORS.danger}14`, border: `1px solid ${COLORS.danger}30`, maxWidth: 180, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={verification.message}>
+                          <XCircle size={13} weight="fill" /> Failed
+                        </span>
+                      ) : (
+                        <button type="button" style={outlineButton()} disabled={verifyingProvider === provider.provider} onClick={() => void verifyApiKey(provider.provider)}>
+                          {verifyingProvider === provider.provider ? "Checking..." : "Verify"}
+                        </button>
+                      )}
                       {keySource === "store" ? (
                         <>
                           <button type="button" style={outlineButton()} onClick={() => beginEditing(provider.provider)}>Replace</button>
@@ -852,7 +912,14 @@ export function ProvidersSection({ forceRefreshOnMount = false }: { forceRefresh
       </div>
 
       {/* ── Local Model Servers ── */}
-      <div>
+      <div style={{ position: "relative" }}>
+        {status?.opencodeBinaryInstalled === false && (
+          <div style={{ position: "absolute", inset: 0, zIndex: 2, background: `${COLORS.pageBg}CC`, display: "flex", alignItems: "center", justifyContent: "center", pointerEvents: "none" }}>
+            <span style={{ fontSize: 11, fontFamily: MONO_FONT, color: COLORS.warning, background: COLORS.pageBg, padding: "6px 14px", border: `1px solid ${COLORS.warning}40` }}>
+              Install OpenCode to use local models
+            </span>
+          </div>
+        )}
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, marginBottom: 4 }}>
           <div style={groupLabelStyle}>Local Model Servers</div>
           <button
@@ -1004,42 +1071,6 @@ export function ProvidersSection({ forceRefreshOnMount = false }: { forceRefresh
         </div>
       </div>
 
-      {/* ── OpenCode Status ── */}
-      <section style={{ ...cardStyle(), borderLeft: `3px solid #2563EB` }}>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <OpenCodeLogo size={22} />
-            <div>
-              <div style={{ fontSize: 12, fontFamily: SANS_FONT, fontWeight: 700, color: COLORS.textPrimary }}>OpenCode Runtime</div>
-              <div style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textMuted, lineHeight: 1.35 }}>
-                Powers all API-backed and local model chats
-              </div>
-            </div>
-          </div>
-          <div style={{ display: "flex", alignItems: "center", gap: 4, color: status?.opencodeBinaryInstalled === false ? COLORS.warning : status?.opencodeInventoryError ? COLORS.danger : COLORS.success }}>
-            {status?.opencodeBinaryInstalled === false ? (
-              <WarningCircle size={14} weight="fill" />
-            ) : status?.opencodeInventoryError ? (
-              <XCircle size={14} weight="fill" />
-            ) : (
-              <CheckCircle size={14} weight="fill" />
-            )}
-            <span style={{ fontSize: 9, fontFamily: MONO_FONT, textTransform: "uppercase", letterSpacing: "1px" }}>
-              {status?.opencodeBinaryInstalled === false ? "Not found" : status?.opencodeInventoryError ? "Error" : "Installed"}
-            </span>
-          </div>
-        </div>
-
-        {status?.opencodeBinaryInstalled === false ? (
-          <div style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.warning, lineHeight: 1.55, marginTop: 8 }}>
-            OpenCode CLI was not found on your PATH. Install OpenCode and ensure the <code style={{ color: COLORS.textSecondary }}>opencode</code> binary is discoverable, then use Refresh.
-          </div>
-        ) : status?.opencodeInventoryError ? (
-          <div style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.danger, lineHeight: 1.55, marginTop: 8 }}>
-            Model inventory failed: {status.opencodeInventoryError}
-          </div>
-        ) : null}
-      </section>
     </div>
   );
 }

@@ -389,7 +389,18 @@ function buildProviderConfig(
     };
   };
 
-  // Pass ALL stored API keys to OpenCode — supports any of its 100+ providers dynamically.
+  // Merge keys from the encrypted local store first (lower priority).
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { getAllApiKeys } = require("../ai/apiKeyStore") as { getAllApiKeys: () => Record<string, string> };
+    for (const [providerId, key] of Object.entries(getAllApiKeys())) {
+      addApiProvider(providerId.trim().toLowerCase(), key);
+    }
+  } catch {
+    // Key store may not be available (e.g. unit tests).
+  }
+
+  // Pass ALL project-config API keys to OpenCode (higher priority — overwrites store keys).
   for (const [providerId, key] of Object.entries(apiKeys)) {
     addApiProvider(providerId, key);
   }

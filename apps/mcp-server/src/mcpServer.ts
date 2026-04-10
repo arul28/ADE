@@ -1689,6 +1689,47 @@ function safeObject(value: unknown): Record<string, unknown> {
   return isRecord(value) ? value : {};
 }
 
+/**
+ * Recursively fix JSON Schema issues that strict providers (OpenAI) reject:
+ * - arrays missing `items` → default to `items: {}`
+ * - objects missing `properties` → default to `properties: {}`
+ * - objects whose `required` doesn't include all property keys → patch it
+ */
+function sanitizeToolSchema(schema: unknown): unknown {
+  if (!isRecord(schema)) return schema;
+  const out = { ...schema };
+  if (out.type === "array" && out.items == null) {
+    out.items = {};
+  }
+  if (out.type === "object" && out.properties == null) {
+    out.properties = {};
+  }
+  if (out.type === "object" && isRecord(out.properties)) {
+    const propKeys = Object.keys(out.properties);
+    if (propKeys.length && (!Array.isArray(out.required) || !propKeys.every((k) => (out.required as string[]).includes(k)))) {
+      out.required = propKeys;
+    }
+    const sanitizedProps: Record<string, unknown> = {};
+    for (const [key, val] of Object.entries(out.properties)) {
+      sanitizedProps[key] = sanitizeToolSchema(val);
+    }
+    out.properties = sanitizedProps;
+  }
+  if (out.items != null) {
+    out.items = sanitizeToolSchema(out.items);
+  }
+  if (Array.isArray(out.anyOf)) {
+    out.anyOf = out.anyOf.map(sanitizeToolSchema);
+  }
+  if (Array.isArray(out.oneOf)) {
+    out.oneOf = out.oneOf.map(sanitizeToolSchema);
+  }
+  if (Array.isArray(out.allOf)) {
+    out.allOf = out.allOf.map(sanitizeToolSchema);
+  }
+  return out;
+}
+
 function asTrimmedString(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
 }
@@ -5870,7 +5911,7 @@ export function createMcpRequestHandler(args: {
         tools: (await listToolSpecsForSession(runtime, session)).map((tool) => ({
           name: tool.name,
           description: tool.description,
-          inputSchema: tool.inputSchema
+          inputSchema: sanitizeToolSchema(tool.inputSchema)
         }))
       };
     }
