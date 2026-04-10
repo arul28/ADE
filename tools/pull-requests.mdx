@@ -340,7 +340,7 @@ ADE automatically scans the PR and builds an **issue inventory** — a structure
 |--------|-----------|
 | **Review comments** | GitHub review threads requesting changes |
 | **CI check failures** | Any required check that is not passing |
-| **Bot reviews** | Comments from CodeRabbit, Copilot, Codex, and other review bots are detected and attributed automatically |
+| **Bot reviews** | Comments from review bots are auto-detected from the `[bot]` suffix on GitHub usernames — CodeRabbit, Copilot, Codex, Greptile, Seer, and any future GitHub App review bot are recognized without configuration |
 
 Each item in the inventory has:
 - **State**: `new`, `sent_to_agent`, `fixed`, `dismissed`, or `escalated`

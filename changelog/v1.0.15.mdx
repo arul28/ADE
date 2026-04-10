@@ -1,0 +1,144 @@
+---
+title: "v1.0.15"
+description: "Release notes for ADE v1.0.15 — April 10, 2026"
+---
+
+Terminal session management overhaul, file watcher refactor, PTY reattach improvements, new terminal preferences, PR tab unification with auto bot detection, and sync host resilience.
+
+---
+
+## Terminal Sessions Overhaul
+
+### Persisted work view state
+
+The Work view now persists its full layout state — open sessions, tile positions, column/row spans, and view mode selection — across app restarts and project switches. Layout writes are debounced to avoid blocking the UI, with a safety guard that cancels stale debounced writes when an immediate persist fires (e.g., during `refreshLanes` or project transitions).
+
+### Collapsible session groups
+
+Session cards in the Work view now render inside collapsible groups organized by session type (Interactive, Managed, Agent). Each group header shows the session count and aggregate status. Collapsed groups persist their state across sessions.
+
+### Session card redesign
+
+`SessionCard` received a visual refresh with:
+- `aria-pressed` and `aria-expanded` attributes for screen reader compatibility
+- `focus-visible` keyboard styles for full keyboard navigation
+- Cleaner status indicators and tool type labels extracted into a `TOOL_TYPE_LABELS` map
+
+### View mode toggle
+
+A new view mode toggle in the Work tab header switches between **grid** and **list** layouts. The choice is persisted as part of the work view state.
+
+### Terminal preferences
+
+New terminal appearance settings in **Settings > General**:
+
+| Setting | Range | Default |
+|---------|-------|---------|
+| Font size | 10–24 px | 13 px |
+| Line height | 1.0–2.0 | 1.2 |
+| Scrollback | 1,000–30,000 lines | 10,000 |
+
+Changes take effect immediately on all open terminal sessions without requiring a restart.
+
+---
+
+## File Watcher Refactor
+
+### Ref-counted subscriptions
+
+`fileWatcherService` was rewritten to use ref-counted subscriptions. Multiple consumers (file tree, search index, editor tabs) share a single underlying watcher per directory. The watcher is created when the first subscriber registers and disposed when the last unsubscribes — eliminating duplicate filesystem watchers and reducing inotify/FSEvents resource usage.
+
+### Dual-mode search indexes
+
+`fileSearchIndexService` now supports two indexing modes:
+- **Quick mode** — indexes filenames only for fast `Cmd+P` fuzzy matching
+- **Full mode** — indexes file contents for workspace-wide search (`Cmd+Shift+F`)
+
+Both modes now unconditionally skip `node_modules` regardless of the `includeIgnored` setting, preventing accidental index bloat.
+
+---
+
+## PTY Reattach and Transcript Resume
+
+### Improved session recovery
+
+PTY session reattach logic was expanded with:
+- Best-effort PTY reattach refresh on `projectRoot` change — when switching projects, ADE attempts to reconnect to any surviving PTY processes before creating new sessions
+- `autoCreateDoneRef` guard to prevent PTY leaks when the `ChatTerminalDrawer` is rapidly opened and closed
+- Terminal flush guard: frame writes are skipped when terminal refs reach zero, keeping data buffered until the terminal view remounts instead of writing to a detached DOM
+
+### ChatTerminalDrawer simplification
+
+`ChatTerminalDrawer` was refactored to reuse the shared `TerminalView` component, replacing a duplicate rendering path. The close button is now a proper `<button>` element for accessibility compliance.
+
+---
+
+## MCP Standalone Chat
+
+### Coordinator tool hiding
+
+When a chat session is opened from the standalone MCP entry point (not within a mission), all coordinator-specific tools (task delegation, worker management, mission lifecycle) are now hidden from the tool palette. This prevents confusing tool-not-found errors when users invoke tools that require a mission context.
+
+The session type is now determined by a server-validated flag rather than a caller-controlled field, closing a loophole where crafted requests could expose coordinator tools in standalone sessions.
+
+---
+
+## PR Tab Improvements
+
+### Unified CI checks
+
+<Note>
+  PR [#146](https://github.com/arul28/ADE/pull/146) — merge readiness and the stats sidebar now combine both GitHub check-runs and action-runs into a single unified view.
+</Note>
+
+Previously, the PR tab only queried the check-runs API, causing "No checks" or "0/0 passing" when a repository used GitHub Actions (action-runs) exclusively. The readiness calculation, stats sidebar, and convergence panel now merge both data sources. Skipped and neutral checks are counted as passing in the `summarizeChecks` rollup.
+
+### Auto bot detection
+
+Review bot sources are now auto-detected from the `[bot]` suffix on GitHub usernames instead of relying on a hardcoded list. Greptile, Seer, and any future GitHub App review bots are recognized without code changes. The `IssueSource` type has been widened to accept arbitrary bot source strings.
+
+### Polling
+
+`actionRuns`, `activity`, and `reviewThreads` now poll every 60 seconds (previously loaded once on PR open), keeping the PR detail view current without manual refresh.
+
+### Error logging
+
+`fetchCheckRuns` and `fetchCombinedStatus` errors are now logged instead of being silently swallowed.
+
+---
+
+## Sync Host Resilience
+
+### Port conflict retry
+
+`syncService` now retries starting the sync host on alternative ports when the default port is already in use (`EADDRINUSE`) or blocked (`EACCES`). The retry window uses `buildHostPortCandidates` to generate fallback ports, and failed server attempts are properly disposed before trying the next candidate. Non-retryable errors surface immediately.
+
+### Project transition UI
+
+The top bar now shows real-time feedback during project open, switch, and close operations:
+- A spinner with transition label during active transitions
+- A dismissable error banner when a transition fails
+- All action buttons are disabled while a transition is in progress
+
+The `appStore` tracks `projectTransition` and `projectTransitionError` state with `clearProjectTransitionError` and `formatProjectTransitionError` helpers.
+
+---
+
+## Accessibility and Quality
+
+- `WorkViewArea` and `SessionCard`: `aria-pressed`, `aria-expanded`, and `focus-visible` keyboard styles across all interactive elements
+- `ChatTerminalDrawer`: proper `<button>` element for the close tab action
+- `eslint-disable` annotation for an intentional dependency omission in `FilesPage` session-switch effect
+- TOCTOU guard in `rebalanceProjectContexts`: re-checks workloads immediately before eviction
+- Scrollback options in `GeneralSection` now offer 30k max to match the `appStore` clamp
+- Fix stale locked session summary: use `initialSessionSummary` only for the first render seed, then call `getSummary` for fresh data
+
+---
+
+## Tests
+
+- 6 new `detectSource` tests covering null/empty inputs, known aliases, bot suffix auto-detection, unknown bots, "bot" keyword fallback, and human authors
+- `WorkViewArea.test.tsx`: 110 lines of new tests for the session grid layout
+- Expanded `useWorkSessions.test.ts` with state isolation between tests
+- `syncHostService.test.ts` and `syncService.test.ts`: port conflict and retry behavior
+- `appStore.test.ts`: project transition lifecycle tests
