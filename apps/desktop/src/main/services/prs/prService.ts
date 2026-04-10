@@ -1515,7 +1515,7 @@ export function createPrService({
 
     const [combinedStatus, checkRuns, reviews] = await Promise.all([
       headSha ? fetchCombinedStatus(repo, headSha) : Promise.resolve({ state: "", statuses: [] }),
-      headSha ? fetchCheckRuns(repo, headSha).catch(() => []) : Promise.resolve([]),
+      headSha ? fetchCheckRuns(repo, headSha).catch((err) => { console.warn("[prService] fetchCheckRuns failed in refreshOne:", err?.message ?? err); return []; }) : Promise.resolve([]),
       fetchReviews(repo, Number(row.github_pr_number)).catch(() => [])
     ]);
     const reviewStatesByUser = new Map<string, string>();
@@ -1578,7 +1578,7 @@ export function createPrService({
 
     const [combinedStatus, checkRuns, reviews, compare] = await Promise.all([
       headSha ? fetchCombinedStatus(repo, headSha) : Promise.resolve({ state: "", statuses: [] }),
-      headSha ? fetchCheckRuns(repo, headSha).catch(() => []) : Promise.resolve([]),
+      headSha ? fetchCheckRuns(repo, headSha).catch((err) => { console.warn("[prService] fetchCheckRuns failed in computeStatus:", err?.message ?? err); return []; }) : Promise.resolve([]),
       fetchReviews(repo, summary.githubPrNumber).catch(() => []),
       baseSha && headSha ? fetchCompare(repo, baseSha, headSha).catch(() => ({ behindBy: 0 })) : Promise.resolve({ behindBy: 0 })
     ]);
@@ -1630,8 +1630,8 @@ export function createPrService({
     const headSha = asString(pr?.head?.sha);
     if (!headSha) return [];
     const [combinedStatus, checkRuns] = await Promise.all([
-      fetchCombinedStatus(repo, headSha).catch(() => ({ state: "", statuses: [] })),
-      fetchCheckRuns(repo, headSha).catch(() => [])
+      fetchCombinedStatus(repo, headSha).catch((err) => { console.warn("[prService] fetchCombinedStatus failed in getChecks:", err?.message ?? err); return { state: "", statuses: [] }; }),
+      fetchCheckRuns(repo, headSha).catch((err) => { console.warn("[prService] fetchCheckRuns failed in getChecks:", err?.message ?? err); return []; })
     ]);
 
     const out: PrCheck[] = [];

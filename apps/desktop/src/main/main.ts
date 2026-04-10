@@ -703,8 +703,11 @@ app.whenReady().then(async () => {
   const projectInitPromises = new Map<string, Promise<AppContext>>();
   const closeContextPromises = new Map<string, Promise<void>>();
   const mcpSocketCleanupByRoot = new Map<string, () => void>();
+  const projectLastActivatedAt = new Map<string, number>();
+  const MAX_WARM_IDLE_PROJECT_CONTEXTS = 1;
   let activeProjectRoot: string | null = null;
   let dormantContext!: AppContext;
+  let projectContextRebalancePromise: Promise<void> = Promise.resolve();
 
   const emitProjectChanged = (project: ProjectInfo | null): void => {
     broadcast(IPC.appProjectChanged, project);
@@ -713,6 +716,7 @@ app.whenReady().then(async () => {
   const setActiveProject = (projectRoot: string | null): void => {
     activeProjectRoot = projectRoot ? normalizeProjectRoot(projectRoot) : null;
     if (activeProjectRoot) {
+      projectLastActivatedAt.set(activeProjectRoot, Date.now());
       try {
         adeArtifactAllowedDir =
           resolveAdeLayout(activeProjectRoot).artifactsDir;
@@ -741,6 +745,194 @@ app.whenReady().then(async () => {
     if (!activeProjectRoot) return;
     if (normalizeProjectRoot(projectRoot) !== activeProjectRoot) return;
     broadcast(channel, payload);
+  };
+
+  const hasActiveProjectWorkloads = async (
+    projectRoot: string,
+    ctx: AppContext,
+  ): Promise<boolean> => {
+    const keepAliveOnProbeFailure = (
+      probe: string,
+      error: unknown,
+    ): boolean => {
+      ctx.logger.warn("project.context_workload_probe_failed", {
+        projectRoot,
+        probe,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return true;
+    };
+
+    try {
+      if (ctx.sessionService.list({ status: "running", limit: 1 }).length > 0) {
+        return true;
+      }
+    } catch (error) {
+      return keepAliveOnProbeFailure("sessions", error);
+    }
+
+    try {
+      if (ctx.missionService.list({ status: "active", limit: 1 }).length > 0) {
+        return true;
+      }
+    } catch (error) {
+      return keepAliveOnProbeFailure("missions", error);
+    }
+
+    try {
+      if (ctx.testService.hasActiveRuns()) {
+        return true;
+      }
+    } catch (error) {
+      return keepAliveOnProbeFailure("tests", error);
+    }
+
+    try {
+      const lanes = await ctx.laneService.list({
+        includeArchived: false,
+        includeStatus: false,
+      });
+      for (const lane of lanes) {
+        if (
+          ctx.processService.listRuntime(lane.id).some((runtime) =>
+            runtime.status === "starting"
+            || runtime.status === "running"
+            || runtime.status === "degraded"
+            || runtime.status === "stopping"
+          )
+        ) {
+          return true;
+        }
+      }
+    } catch (error) {
+      return keepAliveOnProbeFailure("processes", error);
+    }
+
+    try {
+      if ((ctx.laneProxyService?.getStatus().routes.length ?? 0) > 0) {
+        return true;
+      }
+    } catch (error) {
+      return keepAliveOnProbeFailure("proxy_routes", error);
+    }
+
+    try {
+      if (
+        ctx.oauthRedirectService?.listSessions().some((session) =>
+          session.status === "pending" || session.status === "active"
+        ) ?? false
+      ) {
+        return true;
+      }
+    } catch (error) {
+      return keepAliveOnProbeFailure("oauth_sessions", error);
+    }
+
+    try {
+      if ((ctx.getActiveMcpConnectionCount?.() ?? 0) > 0) {
+        return true;
+      }
+    } catch (error) {
+      return keepAliveOnProbeFailure("mcp_connections", error);
+    }
+
+    try {
+      if ((ctx.syncHostService?.getPeerStates().length ?? 0) > 0) {
+        return true;
+      }
+    } catch (error) {
+      return keepAliveOnProbeFailure("sync_peers", error);
+    }
+
+    try {
+      const syncStatus = await ctx.syncService?.getStatus?.();
+      if (syncStatus?.client.state === "connected") {
+        return true;
+      }
+    } catch (error) {
+      return keepAliveOnProbeFailure("sync_client", error);
+    }
+
+    return false;
+  };
+
+  const rebalanceProjectContexts = async (): Promise<void> => {
+    const currentActiveRoot = activeProjectRoot;
+    if (!currentActiveRoot) return;
+
+    const idleRoots: string[] = [];
+    for (const [projectRoot, ctx] of projectContexts.entries()) {
+      if (projectRoot === currentActiveRoot) continue;
+      if (await hasActiveProjectWorkloads(projectRoot, ctx)) {
+        ctx.logger.info("project.context_retained", {
+          projectRoot,
+          policy: "active_workload",
+        });
+        continue;
+      }
+      idleRoots.push(projectRoot);
+    }
+
+    idleRoots.sort(
+      (left, right) =>
+        (projectLastActivatedAt.get(right) ?? 0)
+        - (projectLastActivatedAt.get(left) ?? 0),
+    );
+    const warmRoots = new Set(
+      idleRoots.slice(0, MAX_WARM_IDLE_PROJECT_CONTEXTS),
+    );
+
+    for (const projectRoot of idleRoots) {
+      if (activeProjectRoot !== currentActiveRoot) {
+        return;
+      }
+      const ctx = projectContexts.get(projectRoot);
+      if (!ctx) continue;
+      if (projectRoot === activeProjectRoot) continue;
+      if (warmRoots.has(projectRoot)) {
+        ctx.logger.info("project.context_retained", {
+          projectRoot,
+          policy: "warm_idle",
+          activeProjectRoot: currentActiveRoot,
+        });
+        continue;
+      }
+      // Re-check workloads immediately before eviction to avoid TOCTOU races
+      if (await hasActiveProjectWorkloads(projectRoot, ctx)) {
+        ctx.logger.info("project.context_retained", {
+          projectRoot,
+          policy: "became_active_during_rebalance",
+          activeProjectRoot: currentActiveRoot,
+        });
+        continue;
+      }
+      ctx.logger.info("project.context_evicted", {
+        projectRoot,
+        policy: "idle_after_switch",
+        activeProjectRoot: currentActiveRoot,
+      });
+      await closeProjectContext(projectRoot);
+    }
+  };
+
+  const scheduleProjectContextRebalance = (): void => {
+    projectContextRebalancePromise = projectContextRebalancePromise
+      .catch(() => {
+        // Swallow previous rebalance failures so future rebalances still run.
+      })
+      .then(async () => {
+        try {
+          await rebalanceProjectContexts();
+        } catch (error) {
+          const logger = activeProjectRoot
+            ? projectContexts.get(activeProjectRoot)?.logger ?? dormantContext.logger
+            : dormantContext.logger;
+          logger.warn("project.context_rebalance_failed", {
+            activeProjectRoot,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      });
   };
 
   const initContextForProjectRoot = async ({
@@ -2697,6 +2889,7 @@ app.whenReady().then(async () => {
       projectId,
       adeDir: adePaths.adeDir,
       hasUserSelectedProject: userSelectedProject,
+      getActiveMcpConnectionCount: () => activeMcpConnections.size,
       disposeHeadWatcher,
       keybindingsService,
       agentToolsService,
@@ -2797,6 +2990,7 @@ app.whenReady().then(async () => {
       hasUserSelectedProject: false,
       projectId: "",
       adeDir: "",
+      getActiveMcpConnectionCount: () => 0,
       disposeHeadWatcher: () => {},
       keybindingsService: null,
       agentToolsService: null,
@@ -2952,6 +3146,26 @@ app.whenReady().then(async () => {
       // ignore
     }
     try {
+      ctx.embeddingService?.stopHealthCheck?.();
+    } catch {
+      // ignore
+    }
+    try {
+      await ctx.embeddingService?.dispose?.();
+    } catch {
+      // ignore
+    }
+    try {
+      await ctx.laneProxyService?.dispose?.();
+    } catch {
+      // ignore
+    }
+    try {
+      ctx.oauthRedirectService?.dispose?.();
+    } catch {
+      // ignore
+    }
+    try {
       await ctx.externalMcpService?.dispose?.();
     } catch {
       // ignore
@@ -3037,6 +3251,7 @@ app.whenReady().then(async () => {
     const closePromise = (async () => {
       await disposeContextResources(ctx);
       projectContexts.delete(normalizedRoot);
+      projectLastActivatedAt.delete(normalizedRoot);
       if (activeProjectRoot === normalizedRoot) {
         activeProjectRoot = null;
       }
@@ -3080,6 +3295,7 @@ app.whenReady().then(async () => {
         recordRecent: false,
       });
       emitProjectChanged(existing.project);
+      scheduleProjectContextRebalance();
       return existing.project;
     }
 
@@ -3111,6 +3327,7 @@ app.whenReady().then(async () => {
       recordRecent: false,
     });
     emitProjectChanged(ctx.project);
+    scheduleProjectContextRebalance();
     return ctx.project;
   };
 

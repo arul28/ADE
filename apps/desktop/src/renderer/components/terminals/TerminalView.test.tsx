@@ -9,6 +9,8 @@ const mockState = vi.hoisted(() => ({
   nextFitDims: { cols: 120, rows: 40 },
   shouldThrowWebglAddon: false,
   lastContextLossHandler: null as (() => void) | null,
+  ptyDataListeners: new Set<(event: { ptyId: string; sessionId?: string; data: string }) => void>(),
+  ptyExitListeners: new Set<(event: { ptyId: string; sessionId?: string; exitCode: number | null }) => void>(),
   theme: "dark" as const,
   terminalPreferences: {
     fontSize: 12.5,
@@ -132,8 +134,18 @@ function installWindowAde() {
     pty: {
       resize: vi.fn().mockResolvedValue(undefined),
       write: vi.fn().mockResolvedValue(undefined),
-      onData: vi.fn(() => () => {}),
-      onExit: vi.fn(() => () => {}),
+      onData: vi.fn((listener: (event: { ptyId: string; sessionId?: string; data: string }) => void) => {
+        mockState.ptyDataListeners.add(listener);
+        return () => {
+          mockState.ptyDataListeners.delete(listener);
+        };
+      }),
+      onExit: vi.fn((listener: (event: { ptyId: string; sessionId?: string; exitCode: number | null }) => void) => {
+        mockState.ptyExitListeners.add(listener);
+        return () => {
+          mockState.ptyExitListeners.delete(listener);
+        };
+      }),
     },
     sessions: {
       readTranscriptTail: vi.fn().mockResolvedValue(""),
@@ -251,6 +263,8 @@ describe("TerminalView", () => {
     mockState.nextFitDims = { cols: 120, rows: 40 };
     mockState.shouldThrowWebglAddon = false;
     mockState.lastContextLossHandler = null;
+    mockState.ptyDataListeners.clear();
+    mockState.ptyExitListeners.clear();
     mockState.theme = "dark";
     mockState.terminalPreferences = {
       fontSize: 12.5,
@@ -389,5 +403,51 @@ describe("TerminalView", () => {
     expect(terminal?.options.fontSize).toBe(14);
     expect(terminal?.options.lineHeight).toBe(1.3);
     expect(terminal?.options.scrollback).toBe(20_000);
+  });
+
+  it("keeps live parked runtimes available so switching away does not discard TUI state", async () => {
+    const view = render(<TerminalView ptyId="pty-live" sessionId="session-live" isActive />);
+    await flushAllTimers();
+
+    const terminal = mockState.terminalInstances.at(-1) as {
+      dispose: ReturnType<typeof vi.fn>;
+    } | undefined;
+
+    expect(getTerminalRuntimeSnapshot("session-live")).not.toBeNull();
+
+    view.unmount();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(14_000);
+    });
+    expect(getTerminalRuntimeSnapshot("session-live")).not.toBeNull();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1_100);
+    });
+    expect(getTerminalRuntimeSnapshot("session-live")).not.toBeNull();
+    expect(terminal?.dispose).not.toHaveBeenCalled();
+  });
+
+  it("buffers PTY output while unmounted instead of writing into a parked runtime", async () => {
+    const firstView = render(<TerminalView ptyId="pty-buffered" sessionId="session-buffered" isActive />);
+    await flushAllTimers();
+
+    const terminal = mockState.terminalInstances.at(-1) as {
+      write: ReturnType<typeof vi.fn>;
+    } | undefined;
+    expect(terminal).toBeTruthy();
+
+    terminal?.write.mockClear();
+    firstView.unmount();
+
+    for (const listener of mockState.ptyDataListeners) {
+      listener({ ptyId: "pty-buffered", sessionId: "session-buffered", data: "hello from background\n" });
+    }
+    await flushAnimationFrame();
+    expect(terminal?.write).not.toHaveBeenCalled();
+
+    render(<TerminalView ptyId="pty-buffered" sessionId="session-buffered" isActive />);
+    await flushAnimationFrame();
+    expect(terminal?.write).toHaveBeenCalledWith("hello from background\n");
   });
 });

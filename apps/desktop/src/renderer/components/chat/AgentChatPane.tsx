@@ -78,6 +78,10 @@ const LEGACY_PROVIDER_KEY = "ade.chat.lastProvider";
 const LEGACY_MODEL_KEY_PREFIX = "ade.chat.lastModel";
 
 const COMPUTER_USE_SNAPSHOT_COOLDOWN_MS = 750;
+const CHAT_HISTORY_READ_MAX_BYTES = 900_000;
+const MAX_RETAINED_CHAT_SESSION_HISTORIES = 6;
+const MAX_SELECTED_CHAT_SESSION_EVENTS = 1_200;
+const MAX_BACKGROUND_CHAT_SESSION_EVENTS = 240;
 
 type AiStatusSnapshot = AiSettingsStatus & {
   runtimeConnections?: Record<string, AiRuntimeConnectionStatus>;
@@ -498,6 +502,49 @@ export function resolveNextSelectedSessionId(args: {
   return rows[0]?.sessionId ?? null;
 }
 
+function trimChatEventHistory(events: AgentChatEventEnvelope[], maxEvents: number): AgentChatEventEnvelope[] {
+  return events.length > maxEvents ? events.slice(-maxEvents) : events;
+}
+
+function pruneSessionRecord<T>(record: Record<string, T>, keepIds: ReadonlySet<string>): Record<string, T> {
+  let changed = false;
+  const next: Record<string, T> = {};
+  for (const [sessionId, value] of Object.entries(record)) {
+    if (!keepIds.has(sessionId)) {
+      changed = true;
+      continue;
+    }
+    next[sessionId] = value;
+  }
+  return changed ? next : record;
+}
+
+function buildRetainedChatSessionIds(args: {
+  rows: AgentChatSessionSummary[];
+  selectedSessionId: string | null;
+  lockSessionId: string | null | undefined;
+  initialSessionId: string | null | undefined;
+  pendingSelectedSessionId: string | null;
+  optimisticSessionIds: ReadonlySet<string>;
+}): Set<string> {
+  const keep = new Set<string>();
+  if (args.selectedSessionId) keep.add(args.selectedSessionId);
+  if (args.lockSessionId) keep.add(args.lockSessionId);
+  if (args.initialSessionId) keep.add(args.initialSessionId);
+  if (args.pendingSelectedSessionId) keep.add(args.pendingSelectedSessionId);
+  for (const sessionId of args.optimisticSessionIds) keep.add(sessionId);
+
+  let recentAdded = 0;
+  for (const row of args.rows) {
+    if (keep.has(row.sessionId)) continue;
+    keep.add(row.sessionId);
+    recentAdded += 1;
+    if (recentAdded >= MAX_RETAINED_CHAT_SESSION_HISTORIES) break;
+  }
+
+  return keep;
+}
+
 function resolveRegistryModelId(value: string | null | undefined): string | null {
   const normalized = (value ?? "").trim().toLowerCase();
   if (!normalized.length) return null;
@@ -657,7 +704,7 @@ export function AgentChatPane({
     navigate("/settings?tab=ai#ai-providers");
   }, [navigate]);
   const selectLane = useAppStore((s) => s.selectLane);
-  const lockedSingleSessionMode = Boolean(lockSessionId && hideSessionTabs && initialSessionSummary);
+  const lockedSingleSessionMode = Boolean(lockSessionId && hideSessionTabs);
   const forceDraft = forceDraftMode || forceNewSession;
   const preferDraftStart = !lockSessionId && !initialSessionId && !forceNewSession;
   const surfaceProfile: ChatSurfaceProfile = presentation?.profile ?? "standard";
@@ -734,6 +781,7 @@ export function AgentChatPane({
   const computerUseSnapshotInFlightRef = useRef<{ sessionId: string; promise: Promise<void> } | null>(null);
   const lastComputerUseSnapshotRef = useRef<{ sessionId: string; fetchedAt: number } | null>(null);
   const knownSessionIdsRef = useRef<Set<string>>(new Set());
+  const seededInitialSummaryRef = useRef(false);
   const handoffRef = useRef<HTMLDivElement | null>(null);
   const localTouchBySessionRef = useRef<Map<string, string>>(new Map());
   const cursorWarmupKeyRef = useRef<string | null>(null);
@@ -1120,26 +1168,81 @@ export function AgentChatPane({
     });
   }, []);
 
+  const refreshLockedSessionSummary = useCallback(async () => {
+    if (!lockSessionId) {
+      setSessions([]);
+      return null;
+    }
+
+    let summary: AgentChatSessionSummary | null;
+    if (!seededInitialSummaryRef.current && initialSessionSummary?.sessionId === lockSessionId) {
+      summary = initialSessionSummary;
+      seededInitialSummaryRef.current = true;
+    } else {
+      summary = await window.ade.agentChat.getSummary({ sessionId: lockSessionId });
+    }
+
+    setSessions(summary ? [summary] : []);
+    setTurnActiveBySession((prev) => {
+      const nextRunning = Boolean(summary && summary.status === "active" && summary.awaitingInput !== true);
+      return prev[lockSessionId] === nextRunning
+        ? prev
+        : { ...prev, [lockSessionId]: nextRunning };
+    });
+    draftSelectionLockedRef.current = false;
+    setSelectedSessionId(lockSessionId);
+    return summary;
+  }, [initialSessionSummary, lockSessionId]);
+
   const refreshSessions = useCallback(async () => {
+    if (lockedSingleSessionMode && lockSessionId) {
+      await refreshLockedSessionSummary();
+      return;
+    }
     if (!laneId) {
       setSessions([]);
+      eventsBySessionRef.current = {};
+      loadedHistoryRef.current.clear();
+      setEventsBySession({});
+      setTurnActiveBySession({});
+      setPendingInputsBySession({});
+      setPendingSteersBySession({});
       return;
     }
 
     const rows = await window.ade.agentChat.list({ laneId });
     const nextRows = sortSessionSummariesByRecency(rows, localTouchBySessionRef.current);
     setSessions(nextRows);
+    const retainedSessionIds = buildRetainedChatSessionIds({
+      rows: nextRows,
+      selectedSessionId: selectedSessionIdRef.current,
+      lockSessionId,
+      initialSessionId,
+      pendingSelectedSessionId: pendingSelectedSessionIdRef.current,
+      optimisticSessionIds: optimisticSessionIdsRef.current,
+    });
+    eventsBySessionRef.current = pruneSessionRecord(eventsBySessionRef.current, retainedSessionIds);
+    for (const sessionId of [...loadedHistoryRef.current]) {
+      if (!retainedSessionIds.has(sessionId)) {
+        loadedHistoryRef.current.delete(sessionId);
+      }
+    }
+    setEventsBySession((prev) => pruneSessionRecord(prev, retainedSessionIds));
     setTurnActiveBySession((prev) => {
-      let next: Record<string, boolean> | null = null;
+      const base = pruneSessionRecord(prev, retainedSessionIds);
+      let next: Record<string, boolean> | null = base === prev ? null : base;
       for (const row of nextRows) {
         const shouldAppearRunning = row.status === "active" && row.awaitingInput !== true;
-        if ((prev[row.sessionId] ?? false) && !shouldAppearRunning) {
-          next ??= { ...prev };
+        const source = next ?? base;
+        if ((source[row.sessionId] ?? false) && !shouldAppearRunning) {
+          next ??= { ...source };
           next[row.sessionId] = false;
         }
       }
-      return next ?? prev;
+      return next ?? base;
     });
+    setPendingInputsBySession((prev) => pruneSessionRecord(prev, retainedSessionIds));
+    setPendingSteersBySession((prev) => pruneSessionRecord(prev, retainedSessionIds));
     const nextSessionIds = new Set(nextRows.map((row) => row.sessionId));
     for (const sessionId of [...localTouchBySessionRef.current.keys()]) {
       if (!nextSessionIds.has(sessionId) && !optimisticSessionIdsRef.current.has(sessionId)) {
@@ -1176,7 +1279,7 @@ export function AgentChatPane({
       }
       return nextSelectedSessionId;
     });
-  }, [forceDraft, laneId, lockSessionId, preferDraftStart]);
+  }, [forceDraft, initialSessionId, laneId, lockSessionId, lockedSingleSessionMode, preferDraftStart, refreshLockedSessionSummary]);
 
   // Save/restore per-session drafts when switching sessions
   const prevSessionIdRef = useRef<string | null | undefined>(undefined);
@@ -1268,7 +1371,7 @@ export function AgentChatPane({
       if (!summary || !isChatToolType(summary.toolType)) return;
       const raw = await window.ade.sessions.readTranscriptTail({
         sessionId,
-        maxBytes: 1_800_000,
+        maxBytes: CHAT_HISTORY_READ_MAX_BYTES,
         raw: true
       });
       const parsed = parseAgentChatTranscript(raw).filter((entry) => entry.sessionId === sessionId);
@@ -1290,6 +1393,12 @@ export function AgentChatPane({
       } else {
         merged = parsed;
       }
+      merged = trimChatEventHistory(
+        merged,
+        sessionId === selectedSessionIdRef.current || sessionId === lockSessionId
+          ? MAX_SELECTED_CHAT_SESSION_EVENTS
+          : MAX_BACKGROUND_CHAT_SESSION_EVENTS,
+      );
 
       const derived = deriveRuntimeState(merged);
       const sessionSummary = sessionsRef.current.find((entry) => entry.sessionId === sessionId)
@@ -1303,7 +1412,7 @@ export function AgentChatPane({
     } catch {
       // Ignore transcript history failures.
     }
-  }, [initialSessionSummary]);
+  }, [initialSessionSummary, lockSessionId]);
 
   const clearSessionView = useCallback((sessionId: string) => {
     eventsBySessionRef.current = { ...eventsBySessionRef.current, [sessionId]: [] };
@@ -1322,7 +1431,7 @@ export function AgentChatPane({
   }, [lockSessionId]);
 
   useEffect(() => {
-    if (!lockedSingleSessionMode || !lockSessionId || !initialSessionSummary) return;
+    if (!lockedSingleSessionMode || !lockSessionId || initialSessionSummary?.sessionId !== lockSessionId) return;
     setSessions([initialSessionSummary]);
     draftSelectionLockedRef.current = false;
     setSelectedSessionId(lockSessionId);
@@ -1417,15 +1526,7 @@ export function AgentChatPane({
       }
 
       try {
-        if (lockedSingleSessionMode) {
-          if (!cancelled && initialSessionSummary) {
-            setSessions([initialSessionSummary]);
-            setSelectedSessionId(lockSessionId ?? initialSessionSummary.sessionId);
-          }
-          await refreshAvailableModels();
-        } else {
-          await Promise.all([refreshAvailableModels(), refreshSessions()]);
-        }
+        await Promise.all([refreshAvailableModels(), refreshSessions()]);
       } finally {
         if (!cancelled) {
           setLoading(false);
@@ -1438,7 +1539,7 @@ export function AgentChatPane({
     return () => {
       cancelled = true;
     };
-  }, [initialSessionSummary, lockSessionId, lockedSingleSessionMode, refreshAvailableModels, refreshSessions]);
+  }, [refreshAvailableModels, refreshSessions]);
 
   useEffect(() => {
     if (loading || !availableModelIds.length) return;
@@ -1505,8 +1606,16 @@ export function AgentChatPane({
 
   useEffect(() => {
     if (!selectedSessionId) return;
+    const selectedEventCount = eventsBySessionRef.current[selectedSessionId]?.length ?? 0;
+    const shouldForceReloadSelectedHistory =
+      !lockedSingleSessionMode
+      && selectedEventCount >= MAX_BACKGROUND_CHAT_SESSION_EVENTS
+      && selectedEventCount < MAX_SELECTED_CHAT_SESSION_EVENTS;
     if (!lockedSingleSessionMode) {
-      void loadHistory(selectedSessionId);
+      void loadHistory(
+        selectedSessionId,
+        shouldForceReloadSelectedHistory ? { force: true } : undefined,
+      );
       return;
     }
     const handle = window.setTimeout(() => {
@@ -1587,7 +1696,12 @@ export function AgentChatPane({
       const sessionEvents = next === eventsBySessionRef.current
         ? (eventsBySessionRef.current[sessionId] ?? [])
         : (next[sessionId] ?? []);
-      const updated = [...sessionEvents, envelope];
+      const updated = trimChatEventHistory(
+        [...sessionEvents, envelope],
+        sessionId === selectedSessionIdRef.current || sessionId === lockSessionId
+          ? MAX_SELECTED_CHAT_SESSION_EVENTS
+          : MAX_BACKGROUND_CHAT_SESSION_EVENTS,
+      );
       if (next === eventsBySessionRef.current) {
         next = { ...eventsBySessionRef.current };
       }
@@ -1616,7 +1730,7 @@ export function AgentChatPane({
     setTurnActiveBySession((activePrev) => ({ ...activePrev, ...activePatch }));
     setPendingInputsBySession((pendingPrev) => ({ ...pendingPrev, ...pendingInputPatch }));
     setPendingSteersBySession((steerPrev) => ({ ...steerPrev, ...pendingSteerPatch }));
-  }, []);
+  }, [lockSessionId]);
 
   const scheduleQueuedEventFlush = useCallback(() => {
     if (eventFlushTimerRef.current != null) return;

@@ -494,11 +494,18 @@ function enqueueFrameWrite(runtime: CachedRuntime, chunk: string) {
     runtime.frameWriteBytes -= dropped?.length ?? 0;
     incrementHealth(runtime, "droppedChunks");
   }
+  if (runtime.refs === 0) return;
+  scheduleFrameWriteFlush(runtime);
+}
+
+function scheduleFrameWriteFlush(runtime: CachedRuntime) {
   if (runtime.flushRafId != null) return;
   runtime.flushRafId = requestAnimationFrame(() => {
     runtime.flushRafId = null;
     if (runtime.disposed) return;
     if (runtime.frameWriteChunks.length === 0) return;
+    // Keep writes buffered while no view is mounted; the remount path reschedules the flush.
+    if (runtime.refs === 0) return;
     const merged = runtime.frameWriteChunks.join("");
     runtime.frameWriteChunks.length = 0;
     runtime.frameWriteBytes = 0;
@@ -944,6 +951,7 @@ export function TerminalView({
     if (runtime.host.parentElement !== el) {
       el.replaceChildren(runtime.host);
     }
+    scheduleFrameWriteFlush(runtime);
 
     const schedule = (forceResize = false) => scheduleFit(runtime, forceResize);
 
@@ -1083,8 +1091,8 @@ export function TerminalView({
       }
 
       runtime.refs = Math.max(0, runtime.refs - 1);
-      // Keep live runtimes parked until the PTY exits. Restoring a full-screen
-      // TUI from transcript tail is brittle, especially once transcript capture truncates.
+      // Keep live runtimes parked until the PTY exits so switching away from a
+      // running terminal does not discard in-memory TUI state.
       if (runtime.refs === 0 && runtime.exitCode != null) {
         scheduleRuntimeDispose(runtime, EXITED_RUNTIME_KEEPALIVE_MS);
       }

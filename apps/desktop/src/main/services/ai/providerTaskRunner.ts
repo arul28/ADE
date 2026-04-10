@@ -88,6 +88,8 @@ async function runCommand(args: {
     let settled = false;
     const timeoutMs = Math.max(1_000, args.timeoutMs ?? 120_000);
     const timeoutHandle = setTimeout(() => {
+      if (settled) return;
+      settled = true;
       child.kill("SIGTERM");
       reject(new Error(`Provider task timed out after ${timeoutMs}ms.`));
     }, timeoutMs);

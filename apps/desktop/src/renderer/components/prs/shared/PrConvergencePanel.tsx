@@ -1034,7 +1034,7 @@ export function PrConvergencePanel({
   const runningChecks = checks.filter((c) => c.status === "in_progress");
   const queuedChecks = checks.filter((c) => c.status === "queued");
   const checksStillRunning = queuedChecks.length > 0 || runningChecks.length > 0;
-  const allChecksPassing = checks.length > 0 && checks.every((c) => c.conclusion === "success");
+  const allChecksPassing = checks.length > 0 && checks.every((c) => c.conclusion === "success" || c.conclusion === "neutral" || c.conclusion === "skipped");
   const passingChecks = checks.filter((c) => c.conclusion === "success");
   const otherChecks = checks.filter(
     (c) => c.conclusion !== "failure" && c.conclusion !== "success" && c.status !== "in_progress",

@@ -578,6 +578,7 @@ export type AppContext = {
   hasUserSelectedProject: boolean;
   projectId: string;
   adeDir: string;
+  getActiveMcpConnectionCount?: (() => number) | null;
   disposeHeadWatcher: () => void;
   keybindingsService: ReturnType<typeof createKeybindingsService>;
   agentToolsService: ReturnType<typeof createAgentToolsService>;

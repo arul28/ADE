@@ -44,6 +44,7 @@ const DEFAULT_PROCESS_COMMAND = '["npm", "run", "dev"]';
 const DEFAULT_PROCESS_COMMAND_LINE = "npm run dev";
 const DEFAULT_TEST_COMMAND = '["npm", "run", "test"]';
 const DEFAULT_ENV = "{}";
+const PROJECT_HOME_LOG_TAIL_MAX_BYTES = 220_000;
 
 function formatUptime(runtime: ProcessRuntime, nowMs: number): string {
   if (!runtime.startedAt) return "-";
@@ -147,6 +148,13 @@ function aggregateStackStatus(stack: StackButtonDefinition, runtimeById: Map<str
 
 function normalizeLog(raw: string): string {
   return raw.replace(/\u0000/g, "");
+}
+
+function appendLogChunk(previous: string, chunk: string): string {
+  const next = normalizeLog(`${previous}${chunk}`);
+  return next.length > PROJECT_HOME_LOG_TAIL_MAX_BYTES
+    ? next.slice(-PROJECT_HOME_LOG_TAIL_MAX_BYTES)
+    : next;
 }
 
 function filterLog(raw: string, query: string): string {
@@ -540,7 +548,7 @@ export function ProjectHomePage() {
       }
 
       if (ev.type === "log" && ev.laneId === effectiveLaneId && selectedProcessIdRef.current === ev.processId) {
-        setProcessLogRaw((prev) => normalizeLog(`${prev}${ev.chunk}`));
+        setProcessLogRaw((prev) => appendLogChunk(prev, ev.chunk));
       }
     });
 
@@ -563,7 +571,7 @@ export function ProjectHomePage() {
       }
 
       if (ev.type === "log" && selectedRunIdRef.current === ev.runId) {
-        setTestLogRaw((prev) => normalizeLog(`${prev}${ev.chunk}`));
+        setTestLogRaw((prev) => appendLogChunk(prev, ev.chunk));
       }
     });
 
@@ -588,7 +596,7 @@ export function ProjectHomePage() {
     }
 
     window.ade.processes
-      .getLogTail({ laneId: effectiveLaneId, processId: selectedProcessId, maxBytes: 220_000 })
+      .getLogTail({ laneId: effectiveLaneId, processId: selectedProcessId, maxBytes: PROJECT_HOME_LOG_TAIL_MAX_BYTES })
       .then((log) => setProcessLogRaw(normalizeLog(log)))
       .catch((err) => setError(err instanceof Error ? err.message : String(err)));
   }, [selectedProcessId, effectiveLaneId]);
@@ -600,7 +608,7 @@ export function ProjectHomePage() {
     }
 
     window.ade.tests
-      .getLogTail({ runId: selectedRunId, maxBytes: 220_000 })
+      .getLogTail({ runId: selectedRunId, maxBytes: PROJECT_HOME_LOG_TAIL_MAX_BYTES })
       .then((log) => setTestLogRaw(normalizeLog(log)))
       .catch((err) => setError(err instanceof Error ? err.message : String(err)));
   }, [selectedRunId]);

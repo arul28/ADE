@@ -378,19 +378,16 @@ export function LaneTerminalsPanel({ overrideLaneId }: { overrideLaneId?: string
             <div className="min-h-0 min-w-0 flex-1">
               {runningSessions.length > 0 ? (
                 <div className="relative h-full w-full">
-                  {runningSessions.map((session) =>
-                    session.ptyId ? (
-                      <TerminalView
-                        key={session.id}
-                        ptyId={session.ptyId}
-                        sessionId={session.id}
-                        isActive={current?.id === session.id}
-                        className={`absolute inset-0 h-full w-full ${
-                          current?.id === session.id ? "pointer-events-auto opacity-100" : "pointer-events-none opacity-0"
-                        }`}
-                      />
-                    ) : null
-                  )}
+                  {current?.status === "running" && current.ptyId ? (
+                    <TerminalView
+                      key={current.id}
+                      ptyId={current.ptyId}
+                      sessionId={current.id}
+                      isActive
+                      isVisible
+                      className="absolute inset-0 h-full w-full"
+                    />
+                  ) : null}
                   {current && current.status === "running" && current.ptyId ? null : (
                     <div className="absolute inset-0 flex items-center justify-center rounded border border-border bg-card/20 p-3">
                       <EmptyState title="Session not running" description="Pick a running session tab to view its output." />
