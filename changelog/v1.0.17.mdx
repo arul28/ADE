@@ -1,0 +1,62 @@
+---
+title: "v1.0.17"
+description: "Release notes for ADE v1.0.17 — April 11, 2026"
+---
+
+Work tab mount-thrash reduction, faster cached provider discovery, steadier file and git surfaces, and renderer stability polish.
+
+---
+
+## Work tab stability
+
+### Reduced mount thrash
+
+The work and files surfaces now avoid a class of unnecessary remounts and repeated refresh churn that could make the UI feel noisy while switching tabs or restoring panes.
+
+### Better pane coordination
+
+App shell and right-edge pane wiring were tightened so floating panes and tab navigation preserve state more predictably instead of forcing extra work on every surface transition.
+
+---
+
+## Cached renderer discovery
+
+### AI status and model caching
+
+The renderer now uses dedicated discovery caches for AI status and chat model availability. This reduces duplicate provider probes during startup and tab changes while still allowing targeted invalidation when project state changes.
+
+### Project config caching
+
+Project config reads now avoid repeated round-trips for the same renderer lifecycle, which cuts avoidable boot noise and helps chat and work surfaces settle faster.
+
+---
+
+## Files and git responsiveness
+
+### File watcher and file service updates
+
+File tree refresh behavior was tightened in the main process so the Files page can react with less churn under active workspace changes.
+
+### Git action hardening
+
+Git operation plumbing and lane action surfaces were updated together to reduce redundant refreshes and make lane-level actions behave more predictably under rapid UI activity.
+
+---
+
+## Desktop integration
+
+### Main/preload plumbing
+
+Desktop startup, preload exposure, and IPC registration were updated to support the new cached discovery paths and the related renderer state flow.
+
+### Error-boundary polish
+
+Renderer boundary and top-level app handling received follow-up cleanup so transient reload or surface-state issues are less likely to leave the UI in a bad state.
+
+---
+
+## Tests
+
+- Added renderer cache coverage for `aiDiscoveryCache`
+- Expanded file watcher and file service tests around refresh behavior
+- Added git operation and lane action regression coverage for the new stability paths

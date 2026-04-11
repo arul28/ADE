@@ -11,6 +11,7 @@ import {
   type AgentChatSessionSummary,
 } from "../../../shared/types";
 import { getModelById } from "../../../shared/modelRegistry";
+import { invalidateAiDiscoveryCache } from "../../lib/aiDiscoveryCache";
 import { AgentChatPane } from "./AgentChatPane";
 
 function escapeRegExp(value: string): string {
@@ -217,11 +218,13 @@ function installAdeMocks(options?: {
 const originalAde = globalThis.window.ade;
 
 beforeEach(() => {
+  invalidateAiDiscoveryCache();
   window.localStorage.clear();
 });
 
 afterEach(() => {
   cleanup();
+  invalidateAiDiscoveryCache();
   if (originalAde === undefined) {
     delete (globalThis.window as any).ade;
   } else {
