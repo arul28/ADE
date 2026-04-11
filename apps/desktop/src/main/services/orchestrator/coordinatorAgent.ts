@@ -17,6 +17,7 @@ import {
   buildOpenCodePromptParts,
   mapPermissionModeToOpenCodeAgent,
   openCodeEventStream,
+  refreshOpenCodeSessionToolSelection,
   resolveOpenCodeModelSelection,
   startOpenCodeSession,
   type OpenCodeSessionHandle,
@@ -864,6 +865,7 @@ export class CoordinatorAgent {
     const promptText = typeof latestUserMessage?.content === "string"
       ? latestUserMessage.content
       : "Continue coordinating the mission.";
+    const toolSelection = await refreshOpenCodeSessionToolSelection(handle);
 
     await handle.client.session.promptAsync({
       path: { id: handle.sessionId },
@@ -871,7 +873,7 @@ export class CoordinatorAgent {
       body: {
         agent: mapPermissionModeToOpenCodeAgent("plan"),
         model: resolveOpenCodeModelSelection(descriptor),
-        ...(handle.toolSelection ? { tools: handle.toolSelection } : {}),
+        ...(toolSelection ? { tools: toolSelection } : {}),
         parts: buildOpenCodePromptParts({
           prompt: promptText,
           system: this.systemPrompt,

@@ -556,13 +556,7 @@ function buildApiVerificationRequest(provider: string, key: string): {
       };
     case "openai":
       return {
-        url: "https://api.openai.com/v1/models",
-        init: {
-          method: "GET",
-          headers: {
-            Authorization: `Bearer ${key}`,
-          },
-        },
+        ...buildOpenAiVerificationRequest(key, "gpt-5-nano"),
       };
     case "google":
       return {
@@ -634,6 +628,64 @@ function buildApiVerificationRequest(provider: string, key: string): {
   }
 }
 
+function buildOpenAiVerificationRequest(key: string, model: string): {
+  url: string;
+  init: RequestInit;
+} {
+  return {
+    url: "https://api.openai.com/v1/responses",
+    init: {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${key}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        model,
+        input: "ping",
+        max_output_tokens: 1,
+      }),
+    },
+  };
+}
+
+function buildOpenAiModelListRequest(key: string): {
+  url: string;
+  init: RequestInit;
+} {
+  return {
+    url: "https://api.openai.com/v1/models",
+    init: {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${key}`,
+      },
+    },
+  };
+}
+
+function isOpenAiModelAvailabilityFailure(status: number, body: string): boolean {
+  if (![400, 403, 404].includes(status)) return false;
+  // Phrase-based matching. Bare substrings like "model" or "access" caused
+  // false positives on unrelated errors (e.g. "cannot connect to model server"
+  // or "invalid access token format"). These patterns require the word
+  // "model" to appear near a model-availability phrase, within a short
+  // window bounded by sentence/quote terminators.
+  const patterns: RegExp[] = [
+    // "The model <id> does not exist", "model <id> not found", etc.
+    /\bmodel\b[^.\n"]{0,80}\b(does not exist|not found|not available|unavailable)\b/i,
+    // "(you) do/does not have access to model <id>"
+    /\b(do|does) not have access to\b[^.\n"]{0,40}\bmodel\b/i,
+    // "not allowed to access model <id>"
+    /\bnot allowed to access\b[^.\n"]{0,40}\bmodel\b/i,
+    // "permission denied ... model"
+    /\bpermission denied\b[^.\n"]{0,40}\bmodel\b/i,
+    // "unsupported model"
+    /\bunsupported\b[^.\n"]{0,40}\bmodel\b/i,
+  ];
+  return patterns.some((pattern) => pattern.test(body));
+}
+
 export async function verifyProviderApiKey(
   provider: string,
   key: string,
@@ -673,52 +725,149 @@ export async function verifyProviderApiKey(
 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), API_KEY_VERIFY_TIMEOUT_MS);
+  const requests = normalizedProvider === "openai"
+    ? [
+        request,
+        buildOpenAiVerificationRequest(keyText, "gpt-5-mini"),
+      ]
+    : [request];
+
   try {
-    const response = await fetch(request.url, {
-      ...request.init,
-      signal: controller.signal,
-    });
+    let lastFailure: ApiKeyVerificationResult | null = null;
 
-    if (response.ok) {
-      return {
-        provider: normalizedProvider,
-        ok: true,
-        message: "Connection verified successfully.",
-        endpoint: request.url,
-        statusCode: response.status,
-        verifiedAt,
-      };
-    }
+    for (const candidate of requests) {
+      const response = await fetch(candidate.url, {
+        ...candidate.init,
+        signal: controller.signal,
+      });
+      const body = await response.text().catch(() => "");
+      const preview = previewResponseBody(body);
 
-    if (response.status === 401 || response.status === 403) {
-      return {
+      if (response.ok) {
+        return {
+          provider: normalizedProvider,
+          ok: true,
+          message: "Connection verified successfully.",
+          endpoint: candidate.url,
+          statusCode: response.status,
+          verifiedAt,
+        };
+      }
+
+      if (response.status === 401 || response.status === 403) {
+        if (
+          normalizedProvider === "openai"
+          && isOpenAiModelAvailabilityFailure(response.status, body)
+        ) {
+          lastFailure = {
+            provider: normalizedProvider,
+            ok: false,
+            message: preview
+              ? `Verification failed (${response.status}): ${preview}`
+              : `Verification failed (${response.status}).`,
+            endpoint: candidate.url,
+            statusCode: response.status,
+            verifiedAt,
+          };
+          continue;
+        }
+
+        return {
+          provider: normalizedProvider,
+          ok: false,
+          message: "Authentication failed. Check API key.",
+          endpoint: candidate.url,
+          statusCode: response.status,
+          verifiedAt,
+        };
+      }
+
+      if (response.status === 429) {
+        return {
+          provider: normalizedProvider,
+          ok: true,
+          message: "Authentication succeeded but provider is rate limiting requests.",
+          endpoint: candidate.url,
+          statusCode: response.status,
+          verifiedAt,
+        };
+      }
+
+      lastFailure = {
         provider: normalizedProvider,
         ok: false,
-        message: "Authentication failed. Check API key.",
-        endpoint: request.url,
+        message: preview ? `Verification failed (${response.status}): ${preview}` : `Verification failed (${response.status}).`,
+        endpoint: candidate.url,
         statusCode: response.status,
         verifiedAt,
       };
+
+      const shouldTryNextCandidate = normalizedProvider === "openai"
+        && isOpenAiModelAvailabilityFailure(response.status, body);
+      if (!shouldTryNextCandidate) {
+        return lastFailure;
+      }
     }
 
-    if (response.status === 429) {
-      return {
+    if (normalizedProvider === "openai") {
+      const listRequest = buildOpenAiModelListRequest(keyText);
+      const listResponse = await fetch(listRequest.url, {
+        ...listRequest.init,
+        signal: controller.signal,
+      });
+      const listBody = await listResponse.text().catch(() => "");
+      const listPreview = previewResponseBody(listBody);
+      if (listResponse.ok) {
+        return {
+          provider: normalizedProvider,
+          ok: false,
+          message: "API key is valid, but ADE could not verify GPT-5 access with a cheap test model. Check model availability for this account.",
+          endpoint: listRequest.url,
+          statusCode: listResponse.status,
+          verifiedAt,
+        };
+      }
+      if (listResponse.status === 401 || listResponse.status === 403) {
+        return {
+          provider: normalizedProvider,
+          ok: false,
+          message: "Authentication failed. Check API key.",
+          endpoint: listRequest.url,
+          statusCode: listResponse.status,
+          verifiedAt,
+        };
+      }
+      if (listResponse.status === 429) {
+        return {
+          provider: normalizedProvider,
+          ok: true,
+          message: "Authentication succeeded but provider is rate limiting requests.",
+          endpoint: listRequest.url,
+          statusCode: listResponse.status,
+          verifiedAt,
+        };
+      }
+      // Always refresh lastFailure on a model-list failure so earlier
+      // per-candidate errors don't linger as stale state. Fall back to a
+      // generic message when the response body is empty.
+      lastFailure = {
         provider: normalizedProvider,
-        ok: true,
-        message: "Authentication succeeded but provider is rate limiting requests.",
-        endpoint: request.url,
-        statusCode: response.status,
+        ok: false,
+        message: listPreview
+          ? `Verification failed (${listResponse.status}): ${listPreview}`
+          : `Verification failed (${listResponse.status}).`,
+        endpoint: listRequest.url,
+        statusCode: listResponse.status,
         verifiedAt,
       };
     }
 
-    const body = previewResponseBody(await response.text().catch(() => ""));
-    return {
+    return lastFailure ?? {
       provider: normalizedProvider,
       ok: false,
-      message: body ? `Verification failed (${response.status}): ${body}` : `Verification failed (${response.status}).`,
+      message: "Verification failed.",
       endpoint: request.url,
-      statusCode: response.status,
+      statusCode: null,
       verifiedAt,
     };
   } catch (error) {

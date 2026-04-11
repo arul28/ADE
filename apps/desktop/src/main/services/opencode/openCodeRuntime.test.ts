@@ -6,6 +6,41 @@ const originalFetch = global.fetch;
 
 const mockState = vi.hoisted(() => {
   let nextSessionId = 1;
+  const makeStream = (sessionId: string) => (async function* () {
+    yield {
+      type: "message.part.updated",
+      properties: {
+        part: {
+          id: `part-${sessionId}`,
+          sessionID: sessionId,
+          type: "text",
+          text: "pong",
+        },
+        delta: "pong",
+      },
+    };
+    yield {
+      type: "message.part.updated",
+      properties: {
+        part: {
+          id: `step-${sessionId}`,
+          sessionID: sessionId,
+          type: "step-finish",
+          tokens: {
+            input: 1,
+            output: 1,
+            cache: { read: 0, write: 0 },
+          },
+        },
+      },
+    };
+    yield {
+      type: "session.idle",
+      properties: {
+        sessionID: sessionId,
+      },
+    };
+  })();
   const makeLease = (url: string) => ({
     url,
     release: vi.fn(),
@@ -24,6 +59,13 @@ const mockState = vi.hoisted(() => {
     createSession: vi.fn(async () => ({
       data: { id: `opencode-session-${nextSessionId++}` },
     })),
+    promptAsync: vi.fn(async () => ({})),
+    eventSubscribe: vi.fn(async (args?: { query?: { directory?: string } }) => {
+      const sessionId = `opencode-session-${Math.max(1, nextSessionId - 1)}`;
+      return {
+        stream: makeStream(sessionId),
+      };
+    }),
     getSession: vi.fn(async () => {
       throw new Error("session not found");
     }),
@@ -32,9 +74,13 @@ const mockState = vi.hoisted(() => {
 
 vi.mock("@opencode-ai/sdk", () => ({
   createOpencodeClient: vi.fn(() => ({
+    event: {
+      subscribe: mockState.eventSubscribe,
+    },
     session: {
       create: mockState.createSession,
       get: mockState.getSession,
+      promptAsync: mockState.promptAsync,
     },
   })),
 }));
@@ -56,6 +102,7 @@ vi.mock("./openCodeServerManager", () => ({
 import {
   __resetOpenCodeRuntimeDiagnosticsForTests,
   getOpenCodeRuntimeSnapshot,
+  runOpenCodeTextPrompt,
   startOpenCodeSession,
 } from "./openCodeRuntime";
 import {
@@ -137,6 +184,10 @@ describe("openCodeRuntime dynamic ADE MCP registration", () => {
     vi.mocked(global.fetch).mockResolvedValueOnce(new Response("{}", { status: 200 }));
     vi.mocked(global.fetch).mockResolvedValueOnce(new Response("{}", { status: 200 }));
     vi.mocked(global.fetch).mockResolvedValueOnce(new Response("true", { status: 200 }));
+    vi.mocked(global.fetch).mockResolvedValueOnce(new Response(JSON.stringify({
+      [serverName]: { status: "connected" },
+      pencil: { status: "connected" },
+    }), { status: 200 }));
 
     const handle = await startOpenCodeSession({
       directory: "/repo",
@@ -153,6 +204,8 @@ describe("openCodeRuntime dynamic ADE MCP registration", () => {
     expect(acquireDedicatedOpenCodeServer).not.toHaveBeenCalled();
     expect(handle.toolSelection).toEqual(expect.objectContaining({
       "ade_session_*": false,
+      [`${serverName}_*`]: true,
+      "pencil_*": false,
     }));
 
     const enabledToolPattern = Object.entries(handle.toolSelection ?? {}).find(([, enabled]) => enabled === true)?.[0];
@@ -186,11 +239,20 @@ describe("openCodeRuntime dynamic ADE MCP registration", () => {
         method: "POST",
       }),
     );
+    expect(global.fetch).toHaveBeenNthCalledWith(
+      4,
+      expect.objectContaining({
+        href: "http://127.0.0.1:4101/mcp?directory=%2Frepo",
+      }),
+      expect.objectContaining({
+        method: "GET",
+      }),
+    );
 
     await handle.close("handle_close");
 
     expect(global.fetch).toHaveBeenNthCalledWith(
-      4,
+      5,
       expect.objectContaining({
         href: `http://127.0.0.1:4101/mcp/${encodeURIComponent(serverName)}/disconnect?directory=%2Frepo`,
       }),
@@ -212,6 +274,11 @@ describe("openCodeRuntime dynamic ADE MCP registration", () => {
     });
     vi.mocked(global.fetch).mockResolvedValueOnce(new Response(JSON.stringify({
       [serverName]: { status: "connected" },
+      pencil: { status: "connected" },
+    }), { status: 200 }));
+    vi.mocked(global.fetch).mockResolvedValueOnce(new Response(JSON.stringify({
+      [serverName]: { status: "connected" },
+      pencil: { status: "connected" },
     }), { status: 200 }));
 
     const handle = await startOpenCodeSession({
@@ -225,12 +292,69 @@ describe("openCodeRuntime dynamic ADE MCP registration", () => {
       ownerKey: "chat:chat-connected",
     });
 
-    expect(vi.mocked(global.fetch)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(global.fetch)).toHaveBeenCalledTimes(2);
     expect(acquireDedicatedOpenCodeServer).not.toHaveBeenCalled();
     expect(handle.toolSelection).toEqual(expect.objectContaining({
       "ade_session_*": false,
       [`${serverName}_*`]: true,
+      "pencil_*": false,
     }));
+  });
+
+  it("disables inherited MCP server tools for sessions without ADE MCP attached", async () => {
+    vi.mocked(global.fetch).mockResolvedValueOnce(new Response(JSON.stringify({
+      pencil: { status: "connected" },
+    }), { status: 200 }));
+
+    const handle = await startOpenCodeSession({
+      directory: "/repo",
+      title: "Lightweight chat",
+      leaseKind: "shared",
+      projectConfig: { ai: {} },
+      ownerKind: "chat",
+      ownerId: "chat-light",
+      ownerKey: "chat:chat-light",
+    });
+
+    expect(handle.toolSelection).toEqual({
+      "pencil_*": false,
+    });
+    expect(vi.mocked(global.fetch)).toHaveBeenCalledTimes(1);
+  });
+
+  it("applies refreshed tool selection to one-shot prompts", async () => {
+    vi.mocked(global.fetch)
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        pencil: { status: "connected" },
+      }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        pencil: { status: "connected" },
+      }), { status: 200 }));
+
+    const result = await runOpenCodeTextPrompt({
+      directory: "/repo",
+      title: "One-shot prompt",
+      modelDescriptor: {
+        id: "opencode/openai/gpt-5-mini",
+        family: "openai",
+        providerRoute: "opencode",
+        providerModelId: "openai/gpt-5-mini",
+        openCodeProviderId: "openai",
+        openCodeModelId: "gpt-5-mini",
+      } as any,
+      prompt: "ping",
+      projectConfig: { ai: {} },
+    });
+
+    expect(result.text).toBe("pong");
+    expect(mockState.promptAsync).toHaveBeenCalledWith(expect.objectContaining({
+      body: expect.objectContaining({
+        tools: {
+          "pencil_*": false,
+        },
+      }),
+    }));
+    expect(vi.mocked(global.fetch)).toHaveBeenCalledTimes(2);
   });
 
   it("records dynamic MCP fallback diagnostics for observability", async () => {
@@ -431,7 +555,7 @@ describe("openCodeRuntime dynamic ADE MCP registration", () => {
       expect(acquireSharedOpenCodeServer).toHaveBeenCalledTimes(1);
       expect(acquireDedicatedOpenCodeServer).not.toHaveBeenCalled();
       expect(handle.toolSelection).toBeTruthy();
-      expect(vi.mocked(global.fetch)).toHaveBeenCalledTimes(5);
+      expect(vi.mocked(global.fetch)).toHaveBeenCalledTimes(6);
     } finally {
       vi.useRealTimers();
     }

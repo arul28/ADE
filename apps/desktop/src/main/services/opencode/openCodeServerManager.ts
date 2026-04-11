@@ -1,11 +1,13 @@
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
+import fs from "node:fs";
 import { createServer } from "node:net";
-import {
-  createOpencodeServer,
-  type Config as OpenCodeConfig,
-} from "@opencode-ai/sdk";
+import os from "node:os";
+import path from "node:path";
+import type { Config as OpenCodeConfig } from "@opencode-ai/sdk";
 import type { Logger } from "../logging/logger";
 import { stableStringify } from "../shared/utils";
+import { resolveOpenCodeBinaryPath } from "./openCodeBinaryManager";
 
 export type OpenCodeServerLeaseKind = "shared" | "dedicated";
 export type OpenCodeServerOwnerKind = "inventory" | "oneshot" | "chat" | "coordinator";
@@ -21,7 +23,39 @@ export type OpenCodeServerShutdownReason =
   | "config_changed"
   | "error";
 
-type OpenCodeServerInstance = Awaited<ReturnType<typeof createOpencodeServer>>;
+type OpenCodeServerInstance = {
+  url: string;
+  close(): void;
+};
+
+type OpenCodeServerLaunchArgs = {
+  port: number;
+  config: OpenCodeConfig;
+};
+
+type OpenCodeIsolationPaths = {
+  root: string;
+  configHome: string;
+  dataHome: string;
+  stateHome: string;
+  cacheHome: string;
+  runtimeDir: string;
+};
+
+type OpenCodeServeLaunchSpec = {
+  executable: string;
+  args: string[];
+  env: NodeJS.ProcessEnv;
+  useShell: boolean;
+  xdgPaths: OpenCodeIsolationPaths;
+};
+
+type OpenCodeServerLauncher = (args: OpenCodeServerLaunchArgs) => Promise<OpenCodeServerInstance>;
+type ElectronLikeModule = {
+  app?: {
+    getPath(name: string): string;
+  };
+};
 
 type OpenCodeServerEntry = {
   id: string;
@@ -66,11 +100,14 @@ export type OpenCodeRuntimeDiagnosticsEntry = {
 const PORT_RETRY_ATTEMPTS = 3;
 const DEFAULT_SHARED_IDLE_TTL_MS = 60_000;
 const MAX_DEDICATED_OPENCODE_SERVERS = 6;
+const OPEN_CODE_SERVER_START_TIMEOUT_MS = 15_000;
+const ADE_OPENCODE_XDG_LAYOUT_VERSION = 1;
 
 const sharedEntries = new Map<string, OpenCodeServerEntry>();
 const dedicatedEntries = new Map<string, OpenCodeServerEntry>();
 const inFlightEntries = new Map<string, Promise<OpenCodeServerEntry>>();
 const acquireQueues = new Map<string, Array<() => void>>();
+let openCodeServerLauncher: OpenCodeServerLauncher = defaultOpenCodeServerLauncher;
 
 function serializeConfigFingerprint(config: OpenCodeConfig): string {
   return createHash("sha256").update(stableStringify(config)).digest("hex");
@@ -138,6 +175,188 @@ function isPortConflict(error: unknown): boolean {
   return false;
 }
 
+function stopChildProcess(proc: ChildProcess): void {
+  if (proc.exitCode !== null || proc.signalCode !== null) return;
+  if (process.platform === "win32" && proc.pid) {
+    const out = spawnSync("taskkill", ["/pid", String(proc.pid), "/T", "/F"], { windowsHide: true });
+    if (!out.error && out.status === 0) return;
+  }
+  proc.kill();
+}
+
+function resolveAdeManagedOpenCodeRoot(): string {
+  const override = process.env.ADE_OPENCODE_XDG_ROOT?.trim();
+  if (override) return path.resolve(override);
+  try {
+    const electron = require("electron") as ElectronLikeModule;
+    const userDataPath = electron.app?.getPath?.("userData");
+    if (typeof userDataPath === "string" && userDataPath.trim().length > 0) {
+      return path.resolve(userDataPath, "opencode-runtime");
+    }
+  } catch {
+    // Ignore when running outside Electron, such as unit tests.
+  }
+  const homeDir = os.homedir().trim();
+  if (homeDir.length > 0) {
+    return path.resolve(homeDir, ".ade", "opencode-runtime");
+  }
+  return path.resolve(os.tmpdir(), "ade-opencode-runtime");
+}
+
+function resolveOpenCodeIsolationPaths(): OpenCodeIsolationPaths {
+  const root = path.join(
+    resolveAdeManagedOpenCodeRoot(),
+    `xdg-v${ADE_OPENCODE_XDG_LAYOUT_VERSION}`,
+  );
+  return {
+    root,
+    configHome: path.join(root, "config"),
+    dataHome: path.join(root, "data"),
+    stateHome: path.join(root, "state"),
+    cacheHome: path.join(root, "cache"),
+    runtimeDir: path.join(root, "runtime"),
+  };
+}
+
+function ensureOpenCodeIsolationDirs(paths: OpenCodeIsolationPaths): void {
+  for (const dir of [
+    paths.root,
+    paths.configHome,
+    paths.dataHome,
+    paths.stateHome,
+    paths.cacheHome,
+    paths.runtimeDir,
+  ]) {
+    fs.mkdirSync(dir, { recursive: true });
+  }
+}
+
+function buildIsolatedOpenCodeEnv(
+  config: OpenCodeConfig,
+  paths: OpenCodeIsolationPaths,
+): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {};
+  for (const [key, value] of Object.entries(process.env)) {
+    if (value === undefined) continue;
+    if (key.startsWith("OPENCODE_")) continue;
+    env[key] = value;
+  }
+  return {
+    ...env,
+    XDG_CONFIG_HOME: paths.configHome,
+    XDG_DATA_HOME: paths.dataHome,
+    XDG_STATE_HOME: paths.stateHome,
+    XDG_CACHE_HOME: paths.cacheHome,
+    XDG_RUNTIME_DIR: paths.runtimeDir,
+    OPENCODE_CONFIG_DIR: path.join(paths.configHome, "opencode"),
+    OPENCODE_CONFIG_CONTENT: JSON.stringify(config ?? {}),
+    OPENCODE_DISABLE_PROJECT_CONFIG: "1",
+  };
+}
+
+function buildOpenCodeServeLaunchSpec(args: OpenCodeServerLaunchArgs): OpenCodeServeLaunchSpec {
+  const executable = resolveOpenCodeBinaryPath();
+  if (!executable) {
+    throw new Error("OpenCode executable is not available.");
+  }
+  const xdgPaths = resolveOpenCodeIsolationPaths();
+  ensureOpenCodeIsolationDirs(xdgPaths);
+  return {
+    executable,
+    args: [
+      "serve",
+      "--hostname=127.0.0.1",
+      `--port=${args.port}`,
+    ],
+    env: buildIsolatedOpenCodeEnv(args.config, xdgPaths),
+    useShell: process.platform === "win32" && /\.(cmd|bat)$/i.test(executable),
+    xdgPaths,
+  };
+}
+
+async function defaultOpenCodeServerLauncher(
+  args: OpenCodeServerLaunchArgs,
+): Promise<OpenCodeServerInstance> {
+  const launchSpec = buildOpenCodeServeLaunchSpec(args);
+  const proc = spawn(launchSpec.executable, launchSpec.args, {
+    env: launchSpec.env,
+    stdio: ["ignore", "pipe", "pipe"],
+    windowsHide: true,
+    shell: launchSpec.useShell,
+  });
+
+  let output = "";
+  let resolved = false;
+
+  return await new Promise<OpenCodeServerInstance>((resolve, reject) => {
+    const cleanup = (): void => {
+      clearTimeout(timeoutId);
+      proc.stdout?.off("data", onStdout);
+      proc.stderr?.off("data", onStderr);
+      proc.off("exit", onExit);
+      proc.off("error", onError);
+    };
+
+    const fail = (error: Error): void => {
+      cleanup();
+      stopChildProcess(proc);
+      reject(error);
+    };
+
+    const timeoutId = setTimeout(() => {
+      fail(new Error(`Timeout waiting for server to start after ${OPEN_CODE_SERVER_START_TIMEOUT_MS}ms`));
+    }, OPEN_CODE_SERVER_START_TIMEOUT_MS);
+
+    const onStdout = (chunk: Buffer): void => {
+      if (resolved) return;
+      output += chunk.toString();
+      const lines = output.split("\n");
+      for (const line of lines) {
+        if (!line.startsWith("opencode server listening")) continue;
+        const match = line.match(/on\s+(https?:\/\/[^\s]+)/);
+        if (!match) {
+          fail(new Error(`Failed to parse server url from output: ${line}`));
+          return;
+        }
+        resolved = true;
+        cleanup();
+        resolve({
+          url: match[1],
+          close() {
+            cleanup();
+            stopChildProcess(proc);
+          },
+        });
+        return;
+      }
+    };
+
+    const onStderr = (chunk: Buffer): void => {
+      output += chunk.toString();
+    };
+
+    const onExit = (code: number | null): void => {
+      if (resolved) return;
+      cleanup();
+      let message = `Server exited with code ${code}`;
+      if (output.trim()) {
+        message += `\nServer output: ${output}`;
+      }
+      reject(new Error(message));
+    };
+
+    const onError = (error: Error): void => {
+      cleanup();
+      reject(error);
+    };
+
+    proc.stdout?.on("data", onStdout);
+    proc.stderr?.on("data", onStderr);
+    proc.on("exit", onExit);
+    proc.on("error", onError);
+  });
+}
+
 async function createOpencodeServerWithRetry(
   config: OpenCodeConfig,
 ): Promise<OpenCodeServerInstance> {
@@ -145,7 +364,7 @@ async function createOpencodeServerWithRetry(
   for (let attempt = 0; attempt < PORT_RETRY_ATTEMPTS; attempt += 1) {
     const port = await findAvailablePort();
     try {
-      return await createOpencodeServer({ port, config });
+      return await openCodeServerLauncher({ port, config });
     } catch (error) {
       lastError = error;
       if (!isPortConflict(error)) throw error;
@@ -485,4 +704,21 @@ export function __resetOpenCodeServerManagerForTests(): void {
   shutdownOpenCodeServers();
   inFlightEntries.clear();
   acquireQueues.clear();
+  openCodeServerLauncher = defaultOpenCodeServerLauncher;
+}
+
+export function __setOpenCodeServerLauncherForTests(
+  launcher: OpenCodeServerLauncher | null,
+): void {
+  openCodeServerLauncher = launcher ?? defaultOpenCodeServerLauncher;
+}
+
+export function __buildOpenCodeServeLaunchSpecForTests(args: {
+  config: OpenCodeConfig;
+  port?: number;
+}): OpenCodeServeLaunchSpec {
+  return buildOpenCodeServeLaunchSpec({
+    port: args.port ?? 4096,
+    config: args.config,
+  });
 }

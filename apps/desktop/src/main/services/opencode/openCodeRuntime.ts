@@ -212,17 +212,12 @@ function buildDynamicAdeMcpServerName(args: {
   return `ade_session_${sanitizeDynamicMcpNamePart(args.ownerKind, "owner")}_${identity}_${fingerprintAdeMcpLaunch(args.launch)}`;
 }
 
-function buildDynamicAdeToolSelection(serverName: string): Record<string, boolean> {
-  return {
-    "ade_session_*": false,
-    [`${serverName}_*`]: true,
-  };
-}
-
 type OpenCodeMcpStatus = {
   status?: string;
   error?: string;
 };
+
+type OpenCodeMcpStatusMap = Record<string, OpenCodeMcpStatus>;
 
 function readDynamicMcpStatus(
   payload: Record<string, unknown> | null,
@@ -232,6 +227,80 @@ function readDynamicMcpStatus(
   const entry = payload[serverName];
   if (!entry || typeof entry !== "object") return null;
   return entry as OpenCodeMcpStatus;
+}
+
+function buildFallbackToolSelection(allowedServerNames: Iterable<string>): Record<string, boolean> | null {
+  const toolSelection: Record<string, boolean> = {};
+  let hasSelection = false;
+
+  for (const serverNameRaw of allowedServerNames) {
+    const serverName = serverNameRaw.trim();
+    if (!serverName) continue;
+    if (serverName.startsWith("ade_session_")) {
+      toolSelection["ade_session_*"] = false;
+      hasSelection = true;
+    }
+    toolSelection[`${serverName}_*`] = true;
+    hasSelection = true;
+  }
+
+  return hasSelection ? toolSelection : null;
+}
+
+function extractAllowedServerNamesFromToolSelection(
+  toolSelection: Record<string, boolean> | null,
+): string[] {
+  if (!toolSelection) return [];
+  return Object.entries(toolSelection)
+    .filter(([, enabled]) => enabled)
+    .map(([pattern]) => pattern.trim())
+    .filter((pattern) => pattern.endsWith("_*"))
+    .map((pattern) => pattern.slice(0, -2))
+    .filter((serverName) => serverName.length > 0);
+}
+
+function buildScopedMcpToolSelection(args: {
+  statuses: OpenCodeMcpStatusMap;
+  allowedServerNames: Iterable<string>;
+}): Record<string, boolean> | null {
+  const allowed = new Set(
+    Array.from(args.allowedServerNames)
+      .map((entry) => entry.trim())
+      .filter((entry) => entry.length > 0),
+  );
+  const toolSelection = buildFallbackToolSelection(allowed) ?? {};
+  let hasSelection = Object.keys(toolSelection).length > 0;
+
+  for (const serverNameRaw of Object.keys(args.statuses)) {
+    const serverName = serverNameRaw.trim();
+    if (!serverName) continue;
+    toolSelection[`${serverName}_*`] = allowed.has(serverName);
+    hasSelection = true;
+  }
+
+  return hasSelection ? toolSelection : null;
+}
+
+async function resolveScopedMcpToolSelection(args: {
+  baseUrl: string;
+  directory: string;
+  allowedServerNames: Iterable<string>;
+}): Promise<Record<string, boolean> | null> {
+  const fallback = buildFallbackToolSelection(args.allowedServerNames);
+  try {
+    const payload = await callOpenCodeServer<OpenCodeMcpStatusMap>({
+      baseUrl: args.baseUrl,
+      directory: args.directory,
+      path: "/mcp",
+    });
+    if (!payload || typeof payload !== "object") return fallback;
+    return buildScopedMcpToolSelection({
+      statuses: payload,
+      allowedServerNames: args.allowedServerNames,
+    }) ?? fallback;
+  } catch {
+    return fallback;
+  }
 }
 
 const DYNAMIC_ADE_MCP_REGISTRATION_ATTEMPTS = 3;
@@ -291,7 +360,6 @@ async function ensureDynamicAdeMcpRegistration(args: {
   launch: AdeMcpLaunch;
 }): Promise<{
   serverName: string;
-  toolSelection: Record<string, boolean>;
   disconnect(): Promise<void>;
 }> {
   const serverName = buildDynamicAdeMcpServerName(args);
@@ -347,7 +415,6 @@ async function ensureDynamicAdeMcpRegistration(args: {
   let disconnected = false;
   return {
     serverName,
-    toolSelection: buildDynamicAdeToolSelection(serverName),
     async disconnect(): Promise<void> {
       if (disconnected) return;
       disconnected = true;
@@ -570,6 +637,7 @@ function createOpenCodeSessionHandle(args: {
   lease: OpenCodeServerLease;
   sessionId: string;
   directory: string;
+  toolSelection: Record<string, boolean> | null;
   dynamicMcp?: Awaited<ReturnType<typeof ensureDynamicAdeMcpRegistration>> | null;
 }): OpenCodeSessionHandle {
   return {
@@ -588,7 +656,7 @@ function createOpenCodeSessionHandle(args: {
     lease: args.lease,
     sessionId: args.sessionId,
     directory: args.directory,
-    toolSelection: args.dynamicMcp?.toolSelection ?? null,
+    toolSelection: args.toolSelection,
     async close(reason = "handle_close") {
       try {
         await args.dynamicMcp?.disconnect();
@@ -613,7 +681,6 @@ async function startOpenCodeSessionInternal(
   args: StartOpenCodeSessionArgs,
 ): Promise<OpenCodeSessionHandle> {
   const config = buildOpenCodeConfig(args);
-  const configFingerprint = fingerprintOpenCodeConfig(config);
   const ownerKind = args.ownerKind ?? "oneshot";
   const leaseKind = args.leaseKind ?? "dedicated";
   const ownerKey = args.ownerKey?.trim()
@@ -658,6 +725,15 @@ async function startOpenCodeSessionInternal(
   }
 
   const resolvedSessionId = trimToUndefined(args.sessionId);
+  const scopedToolSelection = await resolveScopedMcpToolSelection({
+    baseUrl: lease.url,
+    directory: args.directory,
+    allowedServerNames: dynamicMcp
+      ? [dynamicMcp.serverName]
+      : args.mcpLaunch
+        ? ["ade"]
+        : [],
+  });
 
   if (resolvedSessionId) {
     try {
@@ -670,6 +746,7 @@ async function startOpenCodeSessionInternal(
         lease,
         sessionId: resolvedSessionId,
         directory: args.directory,
+        toolSelection: scopedToolSelection,
         dynamicMcp,
       });
     } catch {
@@ -693,6 +770,7 @@ async function startOpenCodeSessionInternal(
     lease,
     sessionId: created.data.id,
     directory: args.directory,
+    toolSelection: scopedToolSelection,
     dynamicMcp,
   });
 }
@@ -760,6 +838,18 @@ export async function openCodeEventStream(args: {
   return result.stream;
 }
 
+export async function refreshOpenCodeSessionToolSelection(
+  handle: OpenCodeSessionHandle,
+): Promise<Record<string, boolean> | null> {
+  const refreshed = await resolveScopedMcpToolSelection({
+    baseUrl: handle.lease.url,
+    directory: handle.directory,
+    allowedServerNames: extractAllowedServerNamesFromToolSelection(handle.toolSelection),
+  });
+  handle.toolSelection = refreshed;
+  return refreshed;
+}
+
 export async function runOpenCodeTextPrompt(
   args: RunOpenCodePromptArgs,
 ): Promise<{ text: string; inputTokens: number | null; outputTokens: number | null }> {
@@ -783,6 +873,7 @@ export async function runOpenCodeTextPrompt(
       directory: handle.directory,
       signal: controller.signal,
     });
+    const toolSelection = await refreshOpenCodeSessionToolSelection(handle);
 
     await handle.client.session.promptAsync({
       path: { id: handle.sessionId },
@@ -790,6 +881,7 @@ export async function runOpenCodeTextPrompt(
       body: {
         agent: args.agent ?? "ade-helper",
         model,
+        ...(toolSelection ? { tools: toolSelection } : {}),
         parts: buildOpenCodePromptParts({
           prompt: args.prompt,
           system: args.system,

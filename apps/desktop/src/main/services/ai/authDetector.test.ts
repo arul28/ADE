@@ -398,16 +398,70 @@ describe("authDetector", () => {
   });
 
   it("verifies API keys with provider endpoints", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () => new Response("{}", { status: 200 })),
-    );
+    const fetchMock = vi.fn(async () => new Response("{}", { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
 
     const result = await verifyProviderApiKey("openai", "sk-test");
     expect(result.ok).toBe(true);
     expect(result.provider).toBe("openai");
     expect(result.statusCode).toBe(200);
-    expect(result.endpoint).toContain("api.openai.com");
+    expect(result.endpoint).toBe("https://api.openai.com/v1/responses");
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://api.openai.com/v1/responses",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({
+          model: "gpt-5-nano",
+          input: "ping",
+          max_output_tokens: 1,
+        }),
+      }),
+    );
+  });
+
+  it("falls back to gpt-5-mini when gpt-5-nano is unavailable", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        error: { message: "The model gpt-5-nano does not exist or you do not have access to it." },
+      }), { status: 404 }))
+      .mockResolvedValueOnce(new Response("{}", { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await verifyProviderApiKey("openai", "sk-test");
+
+    expect(result.ok).toBe(true);
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      "https://api.openai.com/v1/responses",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({
+          model: "gpt-5-mini",
+          input: "ping",
+          max_output_tokens: 1,
+        }),
+      }),
+    );
+  });
+
+  it("reports model access gaps separately from invalid OpenAI keys", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        error: { message: "You do not have access to model gpt-5-nano." },
+      }), { status: 403 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        error: { message: "You do not have access to model gpt-5-mini." },
+      }), { status: 403 }))
+      .mockResolvedValueOnce(new Response("{}", { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await verifyProviderApiKey("openai", "sk-test");
+
+    expect(result.ok).toBe(false);
+    expect(result.message).toContain("API key is valid");
+    expect(result.endpoint).toBe("https://api.openai.com/v1/models");
   });
 
   it("returns auth failure for invalid API keys", async () => {

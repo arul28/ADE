@@ -163,6 +163,7 @@ import {
   buildOpenCodePromptParts,
   mapPermissionModeToOpenCodeAgent,
   openCodeEventStream,
+  refreshOpenCodeSessionToolSelection,
   resolveOpenCodeModelSelection,
   runOpenCodeTextPrompt,
   startOpenCodeSession,
@@ -7423,6 +7424,7 @@ export function createAgentChatService(args: {
           filename: path.basename(attachment._resolvedPath),
         }))
         .filter((entry) => fs.existsSync(entry.path));
+      const toolSelection = await refreshOpenCodeSessionToolSelection(runtime.handle);
 
       const promptAccepted = runtime.handle.client.session.promptAsync({
         path: { id: runtime.handle.sessionId },
@@ -7430,7 +7432,7 @@ export function createAgentChatService(args: {
         body: {
           agent: mapPermissionModeToOpenCodeAgent(runtime.permissionMode),
           model: resolveOpenCodeModelSelection(runtime.modelDescriptor),
-          ...(runtime.handle.toolSelection ? { tools: runtime.handle.toolSelection } : {}),
+          ...(toolSelection ? { tools: toolSelection } : {}),
           parts: buildOpenCodePromptParts({
             prompt: userContent,
             files: toPromptFiles,
