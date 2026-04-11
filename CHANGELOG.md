@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.16] - 2026-04-11
+
+### Added
+
+- **OpenAI responses-based verification** — `authDetector` now verifies OpenAI keys via `POST /v1/responses` with `gpt-5-nano`/`gpt-5-mini` fallback, distinguishing model-availability errors from invalid keys; secondary model-list fallback check for resilience
+- **Scoped OpenCode tool selection** — `buildFallbackToolSelection`, `buildScopedMcpToolSelection`, and `resolveScopedMcpToolSelection` pipeline ensures sessions get exactly the tools matching current MCP server config; `refreshOpenCodeSessionToolSelection` called before every prompt
+- **Isolated OpenCode server launches** — `openCodeServerManager` builds XDG-style isolated launch specs via `child_process.spawn`, sanitizes inherited `OPENCODE_*` env, and resolves binary via `resolveOpenCodeBinaryPath`; new test hooks for launch spec verification
+- **MCP schema sanitization** — `sanitizeToolSchema` recursively normalizes tool JSON Schemas (adds missing `items`/`properties`, ensures `required` completeness, recurses through `anyOf`/`oneOf`/`allOf`) to prevent strict-provider rejections
+- **Provider verification badges** — ProvidersSection shows verification badges, failure state indicators, and auto-refreshes OpenCode inventory on key changes
+
+### Changed
+
+- **OpenAI auth detection** — richer error classification separating invalid keys from model-unavailable errors
+- **Agent chat and coordinator** — both refresh OpenCode tool selection before dispatching prompts
+- **Provider Settings UI** — surfaces OpenCode runtime status; disables API/local model sections when binary is missing; clears verification state after saving
+
+### Fixed
+
+- **OpenCode key merging** — stored and project API keys now merge correctly (store keys loaded first, project keys overwrite) with safe require fallback
+
 ## [1.0.13] - 2026-04-07
 
 ### Added
