@@ -24,6 +24,7 @@ import {
 } from "@phosphor-icons/react";
 import { useLocation, useNavigate } from "react-router-dom";
 import type {
+  FileChangeEvent,
   FileTreeNode,
   FilesQuickOpenItem,
   FilesSearchTextMatch,
@@ -31,12 +32,10 @@ import type {
   GitCommitSummary
 } from "../../../shared/types";
 import { MonacoDiffView } from "../lanes/MonacoDiffView";
-import { LaneTerminalsPanel } from "../lanes/LaneTerminalsPanel";
 import { useAppStore } from "../../state/appStore";
 import { clearDirtyBuffersForWorkspace, replaceDirtyBuffersForWorkspace } from "../../lib/dirtyWorkspaceBuffers";
-import { PaneTilingLayout } from "../ui/PaneTilingLayout";
 import { revealLabel } from "../../lib/platform";
-import type { PaneConfig, PaneSplit } from "../ui/PaneTilingLayout";
+import { logRendererDebugEvent } from "../../lib/debugLog";
 import { COLORS, MONO_FONT, SANS_FONT, LABEL_STYLE, inlineBadge, outlineButton, primaryButton, dangerButton, cardStyle } from "../lanes/laneDesignTokens";
 import { cn } from "../ui/cn";
 type OpenTab = {
@@ -81,6 +80,14 @@ type TextPromptState = {
 type EditorViewMode = "edit" | "diff" | "conflict";
 type EditorThemeMode = "dark" | "light";
 type ExternalEditorTarget = "finder" | "vscode" | "cursor" | "zed";
+type FilesPaneConfig = {
+  title: string;
+  icon?: React.ElementType;
+  meta?: React.ReactNode;
+  headerActions?: React.ReactNode;
+  bodyClassName?: string;
+  children: React.ReactNode;
+};
 
 type FilesPageSessionState = {
   workspaceId: string;
@@ -98,6 +105,7 @@ const filesPageSessionByScope = new Map<string, FilesPageSessionState>();
 const filesPageSessionLru: string[] = [];
 const MAX_FILES_PAGE_CACHED_SCOPES = 8;
 const MAX_QUEUED_TREE_PARENT_REFRESHES = 24;
+const FILES_WATCH_START_DELAY_MS = import.meta.env.MODE === "test" || (window as any).__adeBrowserMock ? 0 : 2_000;
 
 function filesSessionKey(projectRoot: string, laneId: string | null): string {
   return `${projectRoot}::${laneId ?? "__primary__"}`;
@@ -378,40 +386,6 @@ function changeStatusColor(changeStatus: FileTreeNode["changeStatus"]): string {
   return COLORS.textDim;
 }
 
-/* ---- Floating-pane tiling layout for Files ---- */
-
-const FILES_TILING_TREE: PaneSplit = {
-  type: "split",
-  direction: "horizontal",
-  children: [
-    {
-      node: { type: "pane", id: "explorer" },
-      defaultSize: 22,
-      minSize: 12
-    },
-    {
-      node: {
-        type: "split",
-        direction: "vertical",
-        children: [
-          {
-            node: { type: "pane", id: "editor" },
-            defaultSize: 68,
-            minSize: 25
-          },
-          {
-            node: { type: "pane", id: "terminals" },
-            defaultSize: 32,
-            minSize: 10
-          }
-        ]
-      },
-      defaultSize: 78,
-      minSize: 40
-    }
-  ]
-};
-
 export function FilesPage() {
   const navigate = useNavigate();
   const location = useLocation();
@@ -458,7 +432,8 @@ export function FilesPage() {
   const [openInMenuOpen, setOpenInMenuOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [editorStatus, setEditorStatus] = useState<"loading" | "ready" | "failed">("loading");
-  // PaneTilingLayout mounts panes async, so the editor host can appear after the first effect pass.
+  // The editor host is assigned after the pane body commits, so the first effect
+  // pass may run before the host div exists.
   const [editorHostEl, setEditorHostEl] = useState<HTMLDivElement | null>(null);
 
   const monacoRef = useRef<typeof import("monaco-editor") | null>(null);
@@ -478,6 +453,7 @@ export function FilesPage() {
   const activeWorkspace = useMemo(() => workspaces.find((ws) => ws.id === workspaceId) ?? null, [workspaces, workspaceId]);
   const activeTab = useMemo(() => openTabs.find((tab) => tab.path === activeTabPath) ?? null, [openTabs, activeTabPath]);
   const canEdit = Boolean(activeWorkspace) && (!activeWorkspace?.isReadOnlyByDefault || allowPrimaryEdit);
+  const liveWatchEnabled = openTabs.length > 0;
 
   useEffect(() => {
     if (!activeWorkspace?.rootPath) return;
@@ -654,6 +630,38 @@ export function FilesPage() {
   }, [laneWorkspaces, selectedLaneId]);
 
   useEffect(() => {
+    logRendererDebugEvent("renderer.files.page_mount");
+    let cancelled = false;
+    const raf1 = window.requestAnimationFrame(() => {
+      if (cancelled) return;
+      logRendererDebugEvent("renderer.files.page_frame", { frame: 1 });
+      const raf2 = window.requestAnimationFrame(() => {
+        if (cancelled) return;
+        logRendererDebugEvent("renderer.files.page_frame", { frame: 2 });
+      });
+      return () => window.cancelAnimationFrame(raf2);
+    });
+    return () => {
+      cancelled = true;
+      window.cancelAnimationFrame(raf1);
+      logRendererDebugEvent("renderer.files.page_unmount");
+    };
+  }, []);
+
+  useEffect(() => {
+    logRendererDebugEvent("renderer.files.render_state", {
+      workspaceId: workspaceId || null,
+      treeRootCount: tree.length,
+      openTabCount: openTabs.length,
+      activeTabPath,
+      mode,
+      editorStatus,
+      searchQueryActive: searchQuery.trim().length > 0,
+      quickOpenVisible: showQuickOpen,
+    });
+  }, [workspaceId, tree.length, openTabs.length, activeTabPath, mode, editorStatus, searchQuery, showQuickOpen]);
+
+  useEffect(() => {
     activeTabPathRef.current = activeTabPath;
   }, [activeTabPath]);
 
@@ -675,13 +683,27 @@ export function FilesPage() {
 
   const refreshTreeNow = useCallback(async (parentPath?: string) => {
     if (!workspaceId) return;
+    const isRootRefresh = !parentPath;
+    const startedAt = isRootRefresh ? performance.now() : 0;
+    if (isRootRefresh) {
+      logRendererDebugEvent("renderer.files.refresh_tree.begin", {
+        workspaceId,
+      });
+    }
     try {
       const nodes = await window.ade.files.listTree({
         workspaceId,
         parentPath,
-        depth: parentPath ? 1 : 2,
+        depth: 1,
         includeIgnored: true
       });
+      if (isRootRefresh) {
+        logRendererDebugEvent("renderer.files.refresh_tree.done", {
+          workspaceId,
+          durationMs: Math.round(performance.now() - startedAt),
+          rootNodeCount: nodes.length,
+        });
+      }
       if (!parentPath) {
         setTree(nodes);
         return;
@@ -695,6 +717,13 @@ export function FilesPage() {
         });
       setTree((prev) => merge(prev));
     } catch (err) {
+      if (isRootRefresh) {
+        logRendererDebugEvent("renderer.files.refresh_tree.failed", {
+          workspaceId,
+          durationMs: Math.round(performance.now() - startedAt),
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
       setError(err instanceof Error ? err.message : String(err));
     }
   }, [workspaceId]);
@@ -987,8 +1016,14 @@ export function FilesPage() {
   }, [canEdit, workspaceId, requestTextInput, refreshTree]);
 
   useEffect(() => {
+    const startedAt = performance.now();
+    logRendererDebugEvent("renderer.files.list_workspaces.begin");
     window.ade.files.listWorkspaces()
       .then((items) => {
+        logRendererDebugEvent("renderer.files.list_workspaces.done", {
+          durationMs: Math.round(performance.now() - startedAt),
+          workspaceCount: items.length,
+        });
         setWorkspaces(items);
         setWorkspaceId((current) => {
           if (current && items.some((workspace) => workspace.id === current)) return current;
@@ -1000,22 +1035,45 @@ export function FilesPage() {
           return items[0]?.id ?? "";
         });
       })
-      .catch((err) => setError(err instanceof Error ? err.message : String(err)));
+      .catch((err) => {
+        logRendererDebugEvent("renderer.files.list_workspaces.failed", {
+          durationMs: Math.round(performance.now() - startedAt),
+          error: err instanceof Error ? err.message : String(err),
+        });
+        setError(err instanceof Error ? err.message : String(err));
+      });
   }, []);
 
   useEffect(() => {
     if (!workspaceId) return;
+    logRendererDebugEvent("renderer.files.workspace_effect.begin", {
+      workspaceId,
+    });
     setExpanded(new Set());
     setContextMenu(null);
     treeRefreshStateRef.current.inFlight = false;
     treeRefreshStateRef.current.queuedFull = false;
     treeRefreshStateRef.current.queuedParents.clear();
     void refreshTree();
+  }, [workspaceId, refreshTree]);
+
+  useEffect(() => {
+    if (!workspaceId) return;
+    if (!liveWatchEnabled) {
+      logRendererDebugEvent("renderer.files.watch.skipped", {
+        workspaceId,
+        reason: "no_open_tabs",
+      });
+      return;
+    }
 
     let refreshTimer: number | null = null;
+    let startupTimer: number | null = null;
     let queuedFullRefresh = false;
     const queuedParents = new Set<string>();
     const pendingTabSyncPaths = new Set<string>();
+    let watchRequested = false;
+    let unsub = () => {};
 
     const queueTreeRefresh = (parentPath?: string) => {
       const normalizedParent = normalizePath(parentPath ?? "");
@@ -1055,9 +1113,7 @@ export function FilesPage() {
       }, 120);
     };
 
-    window.ade.files.watchChanges({ workspaceId, includeIgnored: true }).catch(() => {});
-
-    const unsub = window.ade.files.onChange((ev) => {
+    const handleFileChange = (ev: FileChangeEvent) => {
       if (ev.workspaceId !== workspaceId) return;
 
       const nextPath = normalizePath(ev.path);
@@ -1115,14 +1171,58 @@ export function FilesPage() {
 
       queueTreeRefresh(parentPathOf(nextPath));
       scheduleFlush();
-    });
+    };
+
+    startupTimer = window.setTimeout(() => {
+      startupTimer = null;
+      const watchStartedAt = performance.now();
+      logRendererDebugEvent("renderer.files.watch.begin", {
+        workspaceId,
+      });
+      watchRequested = true;
+      window.ade.files.watchChanges({ workspaceId, includeIgnored: true })
+        .then(() => {
+          logRendererDebugEvent("renderer.files.watch.done", {
+            workspaceId,
+            durationMs: Math.round(performance.now() - watchStartedAt),
+          });
+        })
+        .catch((error) => {
+          logRendererDebugEvent("renderer.files.watch.failed", {
+            workspaceId,
+            durationMs: Math.round(performance.now() - watchStartedAt),
+            error: error instanceof Error ? error.message : String(error),
+          });
+        });
+
+      unsub = window.ade.files.onChange(handleFileChange);
+    }, FILES_WATCH_START_DELAY_MS);
 
     return () => {
+      logRendererDebugEvent("renderer.files.workspace_effect.cleanup_begin", {
+        workspaceId,
+      });
+      if (startupTimer != null) window.clearTimeout(startupTimer);
       unsub();
       if (refreshTimer != null) window.clearTimeout(refreshTimer);
-      window.ade.files.stopWatching({ workspaceId, includeIgnored: true }).catch(() => {});
+      if (!watchRequested) return;
+      const stopStartedAt = performance.now();
+      window.ade.files.stopWatching({ workspaceId, includeIgnored: true })
+        .then(() => {
+          logRendererDebugEvent("renderer.files.watch.cleanup_done", {
+            workspaceId,
+            durationMs: Math.round(performance.now() - stopStartedAt),
+          });
+        })
+        .catch((error) => {
+          logRendererDebugEvent("renderer.files.watch.cleanup_failed", {
+            workspaceId,
+            durationMs: Math.round(performance.now() - stopStartedAt),
+            error: error instanceof Error ? error.message : String(error),
+          });
+        });
     };
-  }, [workspaceId, refreshTree, syncCleanTabFromDisk]);
+  }, [workspaceId, liveWatchEnabled, refreshTree, syncCleanTabFromDisk]);
 
   useEffect(() => {
     const onBeforeUnload = (event: BeforeUnloadEvent) => {
@@ -1220,12 +1320,16 @@ export function FilesPage() {
   }, [searchQuery, workspaceId]);
 
   useEffect(() => {
+    if (!activeTab) return;
     if (mode !== "edit") return;
     if (!editorHostEl) return;
     if (editorRef.current) return;
 
     let disposed = false;
     setEditorStatus("loading");
+    logRendererDebugEvent("renderer.files.monaco_load.begin", {
+      path: activeTab.path,
+    });
     loadMonaco().then((monaco) => {
       if (disposed) return;
       monacoRef.current = monaco;
@@ -1246,9 +1350,16 @@ export function FilesPage() {
         setOpenTabs((prev) => prev.map((tab) => (tab.path === targetPath ? { ...tab, content: next } : tab)));
       });
       setEditorStatus("ready");
+      logRendererDebugEvent("renderer.files.monaco_load.done", {
+        path: activeTab.path,
+      });
     }).catch((err) => {
       if (disposed) return;
       setEditorStatus("failed");
+      logRendererDebugEvent("renderer.files.monaco_load.failed", {
+        path: activeTab.path,
+        error: err instanceof Error ? err.message : String(err),
+      });
       setError(`Monaco failed to initialize: ${err instanceof Error ? err.message : String(err)}`);
     });
 
@@ -1276,7 +1387,7 @@ export function FilesPage() {
   // canEdit intentionally excluded — the updateOptions effect below handles
   // readOnly toggling without destroying and recreating the entire editor.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mode, editorHostEl, editorTheme]);
+  }, [activeTab?.path, mode, editorHostEl, editorTheme]);
 
   useEffect(() => {
     const monaco = monacoRef.current;
@@ -1487,12 +1598,11 @@ export function FilesPage() {
 
   /* ---- Pane configs for the floating tiling layout ---- */
 
-  const paneConfigs: Record<string, PaneConfig> = useMemo(() => ({
+  const paneConfigs: Record<string, FilesPaneConfig> = useMemo(() => ({
     explorer: {
       title: "Explorer",
       icon: FolderOpen,
       meta: activeWorkspace?.name,
-      minimizable: true,
       headerActions: (
         <div className="flex items-center gap-1">
           <button
@@ -1598,7 +1708,6 @@ export function FilesPage() {
       title: "Editor",
       icon: FileCode2,
       meta: activeTabPath ? activeTabPath.split("/").pop() : undefined,
-      minimizable: true,
       headerActions: (
         <div className="flex items-center gap-1.5">
           {/* Mode toggle group */}
@@ -1763,13 +1872,15 @@ export function FilesPage() {
             ) : null}
             {mode === "edit" ? (
               <div className="h-full">
-                <div ref={setEditorHostRef} className={cn("h-full", editorStatus === "failed" && "hidden")} />
-                {editorStatus === "loading" ? (
+                {activeTab ? (
+                  <div ref={setEditorHostRef} className={cn("h-full", editorStatus === "failed" && "hidden")} />
+                ) : null}
+                {activeTab && editorStatus === "loading" ? (
                   <div className="flex h-full items-center justify-center" style={{ fontFamily: MONO_FONT, fontSize: 12, color: COLORS.textMuted }}>
                     <span className="animate-pulse">LOADING EDITOR...</span>
                   </div>
                 ) : null}
-                {editorStatus === "failed" ? (
+                {activeTab && editorStatus === "failed" ? (
                   <textarea
                     value={activeTab?.content ?? ""}
                     readOnly={!canEdit || Boolean(activeTab?.isBinary)}
@@ -1869,7 +1980,6 @@ export function FilesPage() {
       title: "Terminals",
       icon: TerminalSquare,
       meta: laneIdForDiff ? `lane ${activeWorkspace?.name ?? ""}` : "Pick a lane workspace",
-      minimizable: true,
       headerActions: (
         <button
           type="button"
@@ -1891,7 +2001,30 @@ export function FilesPage() {
       ),
       bodyClassName: "h-full overflow-hidden",
       children: (
-        <LaneTerminalsPanel overrideLaneId={laneIdForDiff ?? null} />
+        laneIdForDiff ? (
+          <div
+            className="flex h-full flex-col items-center justify-center gap-3 px-6 text-center"
+            style={{ background: COLORS.cardBg, color: COLORS.textDim, fontFamily: MONO_FONT, fontSize: 11 }}
+          >
+            <div style={{ maxWidth: 320, lineHeight: 1.6 }}>
+              FILES NO LONGER AUTO-MOUNTS THE EMBEDDED TERMINAL STACK. OPEN THE DEDICATED WORK TAB WHEN YOU ACTUALLY NEED LIVE SESSIONS.
+            </div>
+            <button
+              type="button"
+              style={primaryButton({ height: 28, padding: "0 12px", fontSize: 9 })}
+              onClick={() => navigate(`/work?laneId=${encodeURIComponent(laneIdForDiff)}`)}
+            >
+              OPEN WORK TAB
+            </button>
+          </div>
+        ) : (
+          <div
+            className="flex h-full items-center justify-center"
+            style={{ background: COLORS.cardBg, color: COLORS.textDim, fontFamily: MONO_FONT, fontSize: 11 }}
+          >
+            SELECT A LANE WORKSPACE TO LOAD TERMINALS
+          </div>
+        )
       )
     }
   }), [
@@ -1901,6 +2034,56 @@ export function FilesPage() {
     resolvedConflictKeys, renderTree, createFileAt, createDirectoryAt, saveActive,
     closeTab, stagePath, unstagePath, discardPath, openFile, setShowQuickOpen, navigate
   ]);
+
+  const renderPane = useCallback((paneId: keyof typeof paneConfigs) => {
+    const config = paneConfigs[paneId];
+    const Icon = config.icon;
+    return (
+      <section
+        className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden"
+        style={{
+          borderRadius: 16,
+          border: `1px solid ${COLORS.border}`,
+          background: `${COLORS.cardBg}f2`,
+          boxShadow: "0 18px 40px rgba(3, 8, 20, 0.18)",
+          backdropFilter: "blur(20px)",
+          WebkitBackdropFilter: "blur(20px)",
+        }}
+      >
+        <div
+          className="flex shrink-0 items-center gap-3"
+          style={{
+            minHeight: 46,
+            padding: "0 14px",
+            borderBottom: `1px solid ${COLORS.border}`,
+            background: "linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0))",
+          }}
+        >
+          <div className="flex min-w-0 items-center gap-2">
+            {Icon ? <Icon size={14} weight="fill" style={{ color: COLORS.accent }} /> : null}
+            <span style={{ fontFamily: MONO_FONT, fontSize: 10, fontWeight: 700, letterSpacing: "1px", color: COLORS.textSecondary }}>
+              {config.title.toUpperCase()}
+            </span>
+            {config.meta ? (
+              <span
+                className="truncate"
+                style={{ fontFamily: MONO_FONT, fontSize: 10, color: COLORS.textDim }}
+                title={typeof config.meta === "string" ? config.meta : undefined}
+              >
+                {config.meta}
+              </span>
+            ) : null}
+          </div>
+          <div className="ml-auto flex shrink-0 items-center gap-2">
+            {config.headerActions}
+          </div>
+        </div>
+        <div className={cn("min-h-0 flex-1 overflow-hidden", config.bodyClassName)}>
+          {config.children}
+        </div>
+      </section>
+    );
+  }, [paneConfigs]);
 
   return (
     <div className="relative flex h-full min-h-0 flex-col" style={{ background: COLORS.pageBg }}>
@@ -2066,13 +2249,22 @@ export function FilesPage() {
         </div>
       ) : null}
 
-      {/* Floating pane tiling area */}
-      <div className="flex-1 min-h-0">
-        <PaneTilingLayout
-          layoutId="files:tiling:v3"
-          tree={FILES_TILING_TREE}
-          panes={paneConfigs}
-        />
+      {/* Static split layout for Files. This intentionally bypasses the shared
+          tiling shell while Files-route crashes are under investigation. */}
+      <div className="flex-1 min-h-0 p-3">
+        <div className="flex h-full min-h-0 min-w-0 gap-3">
+          <div className="min-h-0 min-w-0 shrink-0" style={{ width: 320, maxWidth: "28vw" }}>
+            {renderPane("explorer")}
+          </div>
+          <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-3">
+            <div className="min-h-0 min-w-0" style={{ flex: "1 1 0%", minHeight: 0 }}>
+              {renderPane("editor")}
+            </div>
+            <div className="min-h-0 min-w-0" style={{ flex: "0 0 34%", minHeight: 180 }}>
+              {renderPane("terminals")}
+            </div>
+          </div>
+        </div>
       </div>
 
       {/* Context menu overlay */}

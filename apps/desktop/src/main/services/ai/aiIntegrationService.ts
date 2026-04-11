@@ -1129,6 +1129,7 @@ export function createAiIntegrationService(args: {
 
   const STATUS_CACHE_TTL_MS = 30_000; // 30 seconds
   let statusCache: { result: AiIntegrationStatus; cachedAt: number; runtimeHealthVersion: number } | null = null;
+  const statusRequestsInFlight = new Map<string, Promise<AiIntegrationStatus>>();
 
   const executeReadOnlyOneShotTask = async (args: {
     feature: AiFeatureKey;
@@ -1177,124 +1178,143 @@ export function createAiIntegrationService(args: {
         modelListCache.clear();
         runtimeHealthVersion = getProviderRuntimeHealthVersion();
       }
-      const auth = await detectAuth(options);
-      const available = await getResolvedAvailableModels(auth);
-      // detectAuth -> detectAllAuth already called detectCliAuthStatuses() and
-      // populated the cache, so this reads instantly from cache:
-      const cliStatuses = getCachedCliAuthStatuses();
-      const claudeCli = cliStatuses.find((entry) => entry.cli === "claude");
-      if (claudeCli?.installed && options?.force) {
-        await probeClaudeRuntimeHealth({
-          projectRoot,
-          logger,
-          force: true,
-        });
-        runtimeHealthVersion = getProviderRuntimeHealthVersion();
+      const requestKey = [
+        options?.force === true ? "force" : "default",
+        options?.refreshOpenCodeInventory === true ? "refresh-opencode" : "reuse-opencode",
+        String(runtimeHealthVersion),
+      ].join(":");
+      const existingRequest = statusRequestsInFlight.get(requestKey);
+      if (existingRequest) {
+        return existingRequest;
       }
-      const providerConnections = await buildProviderConnections(cliStatuses);
-      const configuredLocalProviders = extractConfiguredLocalProviders(projectConfigService.get());
-      const runtimeConnections = await buildRuntimeConnections({
-        configuredLocalProviders,
-        auth,
-        providerConnections,
-      });
-      const availability = {
-        claude: providerConnections.claude.runtimeAvailable,
-        codex: providerConnections.codex.runtimeAvailable,
-        cursor: providerConnections.cursor.runtimeAvailable,
-      };
-      const runtimeFilteredAvailable = available.filter((descriptor) => {
-        if (!descriptor.isCliWrapped) return true;
-        if (descriptor.family === "anthropic") return providerConnections.claude.runtimeAvailable;
-        if (descriptor.family === "openai") return providerConnections.codex.runtimeAvailable;
-        if (descriptor.family === "cursor") return providerConnections.cursor.runtimeAvailable;
-        return true;
-      });
 
-      const opencodeBinaryInfo = resolveOpenCodeBinary();
-      const opencodeBinaryInstalled = Boolean(opencodeBinaryInfo.path);
-      const opencodeBinarySource = opencodeBinaryInfo.source;
-      let opencodeInventoryError: string | null = null;
-      let opencodeModelIds: string[] = [];
-      let opencodeProviders: AiIntegrationStatus["opencodeProviders"] = [];
-      const effectiveConfig = projectConfigService.get().effective;
-      // Extract discovered local models from runtime connections so we can
-      // inject them into the OpenCode provider config.  This bridges ADE's
-      // local model discovery (LM Studio /v1/models, Ollama /api/tags, etc.)
-      // with OpenCode's static provider model list.
-      const discoveredLocalModels = extractDiscoveredLocalModels(runtimeConnections);
-      if (!opencodeBinaryInstalled) {
-        clearOpenCodeInventoryCache();
-        replaceDynamicOpenCodeModelDescriptors([]);
-      } else if (options?.refreshOpenCodeInventory === true) {
-        const probed = await probeOpenCodeProviderInventory({
-          projectRoot,
-          projectConfig: effectiveConfig,
-          logger,
-          force: true,
-          discoveredLocalModels,
+      const request = (async (): Promise<AiIntegrationStatus> => {
+        const auth = await detectAuth(options);
+        const available = await getResolvedAvailableModels(auth);
+        // detectAuth -> detectAllAuth already called detectCliAuthStatuses() and
+        // populated the cache, so this reads instantly from cache:
+        const cliStatuses = getCachedCliAuthStatuses();
+        const claudeCli = cliStatuses.find((entry) => entry.cli === "claude");
+        if (claudeCli?.installed && options?.force) {
+          await probeClaudeRuntimeHealth({
+            projectRoot,
+            logger,
+            force: true,
+          });
+          runtimeHealthVersion = getProviderRuntimeHealthVersion();
+        }
+        const providerConnections = await buildProviderConnections(cliStatuses);
+        const configuredLocalProviders = extractConfiguredLocalProviders(projectConfigService.get());
+        const runtimeConnections = await buildRuntimeConnections({
+          configuredLocalProviders,
+          auth,
+          providerConnections,
         });
-        opencodeInventoryError = probed.error;
-        opencodeModelIds = probed.modelIds;
-        opencodeProviders = probed.providers;
-      } else {
-        const peeked = peekOpenCodeInventoryCache({
-          projectRoot,
-          projectConfig: effectiveConfig,
+        const availability = {
+          claude: providerConnections.claude.runtimeAvailable,
+          codex: providerConnections.codex.runtimeAvailable,
+          cursor: providerConnections.cursor.runtimeAvailable,
+        };
+        const runtimeFilteredAvailable = available.filter((descriptor) => {
+          if (!descriptor.isCliWrapped) return true;
+          if (descriptor.family === "anthropic") return providerConnections.claude.runtimeAvailable;
+          if (descriptor.family === "openai") return providerConnections.codex.runtimeAvailable;
+          if (descriptor.family === "cursor") return providerConnections.cursor.runtimeAvailable;
+          return true;
         });
-        if (peeked) {
-          opencodeInventoryError = peeked.error;
-          opencodeModelIds = peeked.modelIds;
-          opencodeProviders = peeked.providers;
-        } else {
-          // No cache yet — auto-probe on first getStatus so free/connected models appear immediately.
+
+        const opencodeBinaryInfo = resolveOpenCodeBinary();
+        const opencodeBinaryInstalled = Boolean(opencodeBinaryInfo.path);
+        const opencodeBinarySource = opencodeBinaryInfo.source;
+        let opencodeInventoryError: string | null = null;
+        let opencodeModelIds: string[] = [];
+        let opencodeProviders: AiIntegrationStatus["opencodeProviders"] = [];
+        const effectiveConfig = projectConfigService.get().effective;
+        // Extract discovered local models from runtime connections so we can
+        // inject them into the OpenCode provider config. This bridges ADE's
+        // local model discovery with OpenCode's static provider model list.
+        const discoveredLocalModels = extractDiscoveredLocalModels(runtimeConnections);
+        if (!opencodeBinaryInstalled) {
+          clearOpenCodeInventoryCache();
+          replaceDynamicOpenCodeModelDescriptors([]);
+        } else if (options?.refreshOpenCodeInventory === true) {
           const probed = await probeOpenCodeProviderInventory({
             projectRoot,
             projectConfig: effectiveConfig,
             logger,
+            force: true,
             discoveredLocalModels,
           });
           opencodeInventoryError = probed.error;
           opencodeModelIds = probed.modelIds;
           opencodeProviders = probed.providers;
+        } else {
+          const peeked = peekOpenCodeInventoryCache({
+            projectRoot,
+            projectConfig: effectiveConfig,
+          });
+          if (peeked) {
+            opencodeInventoryError = peeked.error;
+            opencodeModelIds = peeked.modelIds;
+            opencodeProviders = peeked.providers;
+          } else {
+            // No cache yet — auto-probe on first getStatus so free/connected models appear immediately.
+            const probed = await probeOpenCodeProviderInventory({
+              projectRoot,
+              projectConfig: effectiveConfig,
+              logger,
+              discoveredLocalModels,
+            });
+            opencodeInventoryError = probed.error;
+            opencodeModelIds = probed.modelIds;
+            opencodeProviders = probed.providers;
+          }
+        }
+
+        // When OpenCode inventory has models for a local provider, remove the
+        // duplicate ADE-discovered entries to avoid showing the same model twice.
+        const opencodeLocalModelIds = new Set<string>();
+        for (const ocId of opencodeModelIds) {
+          const decoded = decodeOpenCodeRegistryId(ocId);
+          if (decoded && isLocalProviderFamily(decoded.openCodeProviderId)) {
+            opencodeLocalModelIds.add(`${decoded.openCodeProviderId}/${decoded.openCodeModelId}`);
+          }
+        }
+        const baseAvailableIds = runtimeFilteredAvailable
+          .map((descriptor) => descriptor.id)
+          .filter((id) => !opencodeLocalModelIds.has(id));
+        const mergedAvailableIds = [...new Set([...baseAvailableIds, ...opencodeModelIds])];
+
+        const result: AiIntegrationStatus = {
+          mode: deriveMode({ snapshot: projectConfigService.get(), auth, providerConnections }),
+          availableProviders: availability,
+          models: {
+            claude: availability.claude ? await listModels("claude") : [],
+            codex: availability.codex ? await listModels("codex") : [],
+            cursor: availability.cursor ? await listModels("cursor") : [],
+          },
+          detectedAuth: redactDetectedAuth(auth, cliStatuses),
+          providerConnections,
+          runtimeConnections,
+          availableModelIds: mergedAvailableIds,
+          opencodeBinaryInstalled,
+          opencodeBinarySource,
+          opencodeInventoryError,
+          opencodeProviders,
+          apiKeyStore: getApiKeyStoreStatus(),
+        };
+        statusCache = { result, cachedAt: Date.now(), runtimeHealthVersion };
+        return result;
+      })();
+
+      statusRequestsInFlight.set(requestKey, request);
+      try {
+        return await request;
+      } finally {
+        if (statusRequestsInFlight.get(requestKey) === request) {
+          statusRequestsInFlight.delete(requestKey);
         }
       }
-
-      // When OpenCode inventory has models for a local provider, remove the
-      // duplicate ADE-discovered entries (e.g. "lmstudio/qwen3.5-9b") to avoid
-      // showing the same model twice with different display names.
-      const opencodeLocalModelIds = new Set<string>();
-      for (const ocId of opencodeModelIds) {
-        const decoded = decodeOpenCodeRegistryId(ocId);
-        if (decoded && isLocalProviderFamily(decoded.openCodeProviderId)) {
-          opencodeLocalModelIds.add(`${decoded.openCodeProviderId}/${decoded.openCodeModelId}`);
-        }
-      }
-      const baseAvailableIds = runtimeFilteredAvailable
-        .map((descriptor) => descriptor.id)
-        .filter((id) => !opencodeLocalModelIds.has(id));
-      const mergedAvailableIds = [...new Set([...baseAvailableIds, ...opencodeModelIds])];
-
-      const result: AiIntegrationStatus = {
-        mode: deriveMode({ snapshot: projectConfigService.get(), auth, providerConnections }),
-        availableProviders: availability,
-        models: {
-          claude: availability.claude ? await listModels("claude") : [],
-          codex: availability.codex ? await listModels("codex") : [],
-          cursor: availability.cursor ? await listModels("cursor") : [],
-        },
-        detectedAuth: redactDetectedAuth(auth, cliStatuses),
-        providerConnections,
-        runtimeConnections,
-        availableModelIds: mergedAvailableIds,
-        opencodeBinaryInstalled,
-        opencodeBinarySource,
-        opencodeInventoryError,
-        opencodeProviders,
-        apiKeyStore: getApiKeyStoreStatus(),
-      };
-      statusCache = { result, cachedAt: Date.now(), runtimeHealthVersion };
-      return result;
     },
 
     executeTask,

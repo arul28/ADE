@@ -4,6 +4,7 @@ import { createRoot } from "react-dom/client";
 import "./index.css";
 import { App } from "./components/app/App";
 import { RendererErrorBoundary } from "./components/app/RendererErrorBoundary";
+import { logRendererDebugEvent } from "./lib/debugLog";
 
 const RootWrapper = (window as any).__adeBrowserMock ? React.StrictMode : React.Fragment;
 
@@ -25,6 +26,14 @@ function readRendererMemory() {
 }
 
 window.addEventListener("error", (event) => {
+  logRendererDebugEvent("renderer.window_error", {
+    message: event.message,
+    filename: event.filename,
+    lineno: event.lineno,
+    colno: event.colno,
+    stack: event.error instanceof Error ? event.error.stack ?? null : null,
+    route: window.location.hash || window.location.pathname,
+  });
   console.error(`renderer.window_error ${JSON.stringify({
     message: event.message,
     filename: event.filename,
@@ -37,6 +46,11 @@ window.addEventListener("error", (event) => {
 
 window.addEventListener("unhandledrejection", (event) => {
   const reason = event.reason;
+  logRendererDebugEvent("renderer.unhandled_rejection", {
+    reason: reason instanceof Error ? reason.message : String(reason),
+    stack: reason instanceof Error ? reason.stack ?? null : null,
+    route: window.location.hash || window.location.pathname,
+  });
   console.error(`renderer.unhandled_rejection ${JSON.stringify({
     reason: reason instanceof Error ? reason.message : String(reason),
     stack: reason instanceof Error ? reason.stack ?? null : null,
@@ -50,6 +64,12 @@ window.setInterval(() => {
   const driftMs = now - rendererWatchdogLastTick - 1000;
   rendererWatchdogLastTick = now;
   if (driftMs < 1500) return;
+  logRendererDebugEvent("renderer.event_loop_stall", {
+    driftMs: Math.round(driftMs),
+    route: window.location.hash || window.location.pathname,
+    visibilityState: document.visibilityState,
+    memory: readRendererMemory(),
+  });
   console.warn(`renderer.event_loop_stall ${JSON.stringify({
     driftMs: Math.round(driftMs),
     route: window.location.hash || window.location.pathname,

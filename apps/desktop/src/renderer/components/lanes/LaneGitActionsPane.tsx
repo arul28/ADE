@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { ArrowDown, ArrowsClockwise, Check, Stack, Trash, Upload, Warning } from "@phosphor-icons/react";
 import { useNavigate } from "react-router-dom";
 import { useAppStore } from "../../state/appStore";
+import { getProjectConfigCached } from "../../lib/projectConfigCache";
 import { cn } from "../ui/cn";
 import { COLORS, LABEL_STYLE, MONO_FONT, inlineBadge, outlineButton, primaryButton, dangerButton } from "./laneDesignTokens";
 import { CommitTimeline } from "./CommitTimeline";
@@ -29,7 +30,7 @@ type LaneTextPromptState = {
 };
 
 type NextActionHint = {
-  action: GitRecommendedAction | "rebase_push";
+  action: GitRecommendedAction | "rebase_push" | "resolve_conflicts";
   label: string;
   detail: string;
 };
@@ -460,6 +461,7 @@ export function LaneGitActionsPane({
   const lanes = useAppStore((s) => s.lanes);
   const refreshLanes = useAppStore((s) => s.refreshLanes);
   const selectLane = useAppStore((s) => s.selectLane);
+  const projectRoot = useAppStore((s) => s.project?.rootPath ?? null);
 
   const lane = useMemo(() => lanes.find((entry) => entry.id === laneId) ?? null, [lanes, laneId]);
   const parentLane = useMemo(() => {
@@ -649,7 +651,7 @@ export function LaneGitActionsPane({
 
   const refreshCommitMessageAiState = useCallback(async () => {
     try {
-      const snapshot = await window.ade.projectConfig.get();
+      const snapshot = await getProjectConfigCached({ projectRoot });
       const effectiveAi = snapshot.effective?.ai;
       const features = effectiveAi && typeof effectiveAi === "object" && "features" in effectiveAi
         ? (effectiveAi.features as Record<string, unknown> | undefined)
@@ -668,7 +670,7 @@ export function LaneGitActionsPane({
     } catch {
       setCommitMessageAi({ enabled: false, modelId: null });
     }
-  }, []);
+  }, [projectRoot]);
 
   const isNonFastForwardError = useCallback((rawMessage: string): boolean => {
     const lower = rawMessage.toLowerCase();
@@ -803,7 +805,7 @@ export function LaneGitActionsPane({
     setConflictState(null);
     setStuckRebase(null);
     if (!laneId) return;
-    refreshAll(undefined, laneId).catch((err) => {
+    Promise.all([refreshChanges(laneId), refreshGitMeta(laneId)]).catch((err) => {
       patchLaneGitActionRuntimeState(laneId, {
         notice: null,
         error: err instanceof Error ? err.message : String(err),
@@ -839,7 +841,6 @@ export function LaneGitActionsPane({
         refreshSyncStatus();
       }, delayMs);
     };
-    scheduleRefreshSyncStatus();
     const intervalId = window.setInterval(() => {
       if (document.visibilityState !== "visible") return;
       scheduleRefreshSyncStatus(250);
@@ -1011,6 +1012,13 @@ export function LaneGitActionsPane({
   const runPull = (mode: GitSyncMode) => {
     if (!laneId) return;
     void runAction("pull", async () => {
+      const latestConflictState = await window.ade.git.getConflictState(laneId).catch(() => null);
+      if (latestConflictState?.inProgress) {
+        setConflictState(latestConflictState);
+        setStuckRebase(latestConflictState.kind === "rebase" ? latestConflictState : null);
+        const kindLabel = latestConflictState.kind === "merge" ? "merge" : "rebase";
+        throw new Error(`Finish the current ${kindLabel} before pulling remote changes.`);
+      }
       const latestSyncStatus = await window.ade.git.getSyncStatus({ laneId }).catch(() => null);
       if (latestSyncStatus) setSyncStatus(latestSyncStatus);
       const targetBaseRef = latestSyncStatus?.hasUpstream && latestSyncStatus.upstreamRef
@@ -1083,6 +1091,16 @@ export function LaneGitActionsPane({
 
   const nextActionHint = useMemo<NextActionHint | null>(() => {
     if (!laneId) return null;
+    if (conflictState?.inProgress) {
+      const kindLabel = conflictState.kind === "merge" ? "merge" : "rebase";
+      return {
+        action: "resolve_conflicts",
+        label: conflictState.canContinue ? `Continue ${kindLabel}` : `Resolve ${kindLabel}`,
+        detail: conflictState.conflictedFiles.length > 0
+          ? `${conflictState.conflictedFiles.length} conflicted file${conflictState.conflictedFiles.length === 1 ? "" : "s"} must be resolved before pull/push can continue.`
+          : `Finish the current ${kindLabel} before doing any remote sync operations.`
+      };
+    }
     if (lane?.parentLaneId && lane.status.behind > 0) {
       return {
         action: "rebase_push",
@@ -1127,10 +1145,12 @@ export function LaneGitActionsPane({
       };
     }
     return null;
-  }, [forcePushSuggested, lane, laneId, syncStatus]);
+  }, [conflictState, forcePushSuggested, lane, laneId, syncStatus]);
 
   const divergedSync = Boolean(syncStatus?.diverged);
   const behindCount = syncStatus?.behind ?? 0;
+  const mergeConflictState = conflictState?.inProgress && conflictState.kind === "merge" ? conflictState : null;
+  const pullBlockedByConflict = Boolean(conflictState?.inProgress);
   const headerDotColor = getLaneHeaderDotColor(lane);
   const pushButtonTitle = syncStatus?.hasUpstream === false ? "Publish lane" : "Push to remote";
   const rebaseConflictParentLaneId = autoRebaseStatus?.parentLaneId ?? lane?.parentLaneId ?? null;
@@ -1400,6 +1420,63 @@ export function LaneGitActionsPane({
         </div>
       ) : null}
 
+      {mergeConflictState ? (
+        <div
+          className="shrink-0"
+          style={{
+            padding: "10px 16px",
+            background: `${COLORS.danger}12`,
+            borderBottom: `1px solid ${COLORS.danger}30`,
+          }}
+        >
+          <div className="flex flex-wrap items-center gap-3">
+            <Warning size={16} weight="bold" color={COLORS.danger} style={{ flexShrink: 0 }} />
+            <div style={{ flex: 1, minWidth: 220 }}>
+              <div style={{ fontSize: 11, fontWeight: 700, fontFamily: MONO_FONT, letterSpacing: "0.8px", textTransform: "uppercase", color: COLORS.danger }}>
+                Merge in progress
+              </div>
+              <div style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textMuted, marginTop: 2, letterSpacing: "0.3px" }}>
+                {mergeConflictState.conflictedFiles.length > 0
+                  ? `${mergeConflictState.conflictedFiles.length} conflicted file${mergeConflictState.conflictedFiles.length === 1 ? "" : "s"}. Resolve them before continuing or aborting the merge.`
+                  : "An interrupted merge is blocking pull and push actions. Continue or abort to unlock the lane."}
+              </div>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              {mergeConflictState.canAbort ? (
+                <button
+                  type="button"
+                  style={dangerButton({ height: 28, padding: "0 12px", fontSize: 10 })}
+                  disabled={busyAction != null}
+                  onClick={() => {
+                    if (!laneId) return;
+                    void runAction("abort merge", async () => {
+                      await window.ade.git.mergeAbort(laneId);
+                    });
+                  }}
+                >
+                  ABORT MERGE
+                </button>
+              ) : null}
+              {mergeConflictState.canContinue ? (
+                <button
+                  type="button"
+                  style={primaryButton({ height: 28, padding: "0 12px", fontSize: 10 })}
+                  disabled={busyAction != null}
+                  onClick={() => {
+                    if (!laneId) return;
+                    void runAction("continue merge", async () => {
+                      await window.ade.git.mergeContinue(laneId);
+                    });
+                  }}
+                >
+                  CONTINUE MERGE
+                </button>
+              ) : null}
+            </div>
+          </div>
+        </div>
+      ) : null}
+
       {autoRebaseStatus ? (() => {
         const bannerConfig = getAutoRebaseBannerConfig(autoRebaseStatus.state);
         const isAutoRebaseFailure = autoRebaseStatus.state === "rebaseConflict" || autoRebaseStatus.state === "rebaseFailed";
@@ -1561,11 +1638,17 @@ export function LaneGitActionsPane({
               className={behindCount > 0 ? "pull-btn-flash" : undefined}
               style={{
                 ...outlineButton({ height: 30, padding: "0 10px", fontSize: 10, borderRadius: 6 }),
-                ...(nextActionHint?.action === "pull" ? { color: COLORS.accent, border: `1px solid ${COLORS.accent}40`, background: `${COLORS.accent}08` } : {}),
+                ...((nextActionHint?.action === "pull" || nextActionHint?.action === "resolve_conflicts")
+                  ? { color: COLORS.accent, border: `1px solid ${COLORS.accent}40`, background: `${COLORS.accent}08` }
+                  : {}),
               }}
-              disabled={!laneId || busyAction != null}
+              disabled={!laneId || busyAction != null || pullBlockedByConflict}
               onClick={() => runPull(syncMode)}
-              title={`Pull (${syncMode}). ${getPullModeSummary(syncMode)}`}
+              title={
+                pullBlockedByConflict
+                  ? `Pull is blocked while a ${conflictState?.kind === "merge" ? "merge" : "rebase"} is in progress.`
+                  : `Pull (${syncMode}). ${getPullModeSummary(syncMode)}`
+              }
             >
               <ArrowDown size={12} weight="bold" style={{ marginRight: 4 }} />
               PULL

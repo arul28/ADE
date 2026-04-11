@@ -2,6 +2,8 @@ import { create } from "zustand";
 import type { KeybindingsSnapshot, LaneListSnapshot, LaneSummary, ProjectInfo, ProviderMode } from "../../shared/types";
 import { MODEL_REGISTRY, type ModelDescriptor } from "../../shared/modelRegistry";
 import { extractError } from "../lib/format";
+import { getAiStatusCached, invalidateAiDiscoveryCache } from "../lib/aiDiscoveryCache";
+import { getProjectConfigCached, invalidateProjectConfigCache } from "../lib/projectConfigCache";
 
 export type ThemeId = "dark" | "light";
 export const THEME_IDS: ThemeId[] = ["dark", "light"];
@@ -634,9 +636,10 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   refreshProviderMode: async () => {
+    const projectRoot = get().project?.rootPath ?? null;
     const [snapshot, aiStatus] = await Promise.all([
-      window.ade.projectConfig.get(),
-      window.ade.ai.getStatus().catch(() => null),
+      getProjectConfigCached({ projectRoot }),
+      getAiStatusCached({ projectRoot }).catch(() => null),
     ]);
     const configMode = snapshot.effective.providerMode ?? "guest";
     // Auto-elevate to subscription if any AI provider is configured
@@ -691,6 +694,8 @@ export const useAppStore = create<AppState>((set, get) => ({
         keybindings: null,
         terminalAttention: EMPTY_TERMINAL_ATTENTION
       });
+      invalidateAiDiscoveryCache(project.rootPath);
+      invalidateProjectConfigCache(project.rootPath);
       void Promise.allSettled([
         get().refreshLanes({ includeStatus: false }),
         get().refreshKeybindings()
@@ -736,6 +741,8 @@ export const useAppStore = create<AppState>((set, get) => ({
         keybindings: null,
         terminalAttention: EMPTY_TERMINAL_ATTENTION
       });
+      invalidateAiDiscoveryCache(rootPath);
+      invalidateProjectConfigCache(rootPath);
       void Promise.allSettled([
         get().refreshLanes({ includeStatus: false }),
         get().refreshKeybindings()
@@ -777,16 +784,19 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   closeProject: async () => {
+    const closingProjectRoot = get().project?.rootPath ?? null;
     set({
       projectTransition: {
         kind: "closing",
-        rootPath: get().project?.rootPath ?? null,
+        rootPath: closingProjectRoot,
         startedAtMs: Date.now(),
       },
       projectTransitionError: null,
     });
     try {
       await window.ade.project.closeCurrent();
+      invalidateAiDiscoveryCache(closingProjectRoot);
+      invalidateProjectConfigCache(closingProjectRoot);
       set({
         project: null,
         projectHydrated: true,

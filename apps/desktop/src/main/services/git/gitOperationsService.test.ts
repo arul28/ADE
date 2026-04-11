@@ -263,3 +263,73 @@ describe("gitOperationsService.generateCommitMessage", () => {
     ]);
   });
 });
+
+describe("gitOperationsService cached lane reads", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("coalesces concurrent getSyncStatus calls for the same lane", async () => {
+    let releaseUpstreamLookup!: () => void;
+    const upstreamLookupGate = new Promise<void>((resolve) => {
+      releaseUpstreamLookup = resolve;
+    });
+
+    mockGit.runGit.mockImplementation(async (args: string[]) => {
+      if (args[0] === "rev-parse") {
+        await upstreamLookupGate;
+        return { exitCode: 0, stdout: "origin/main\n", stderr: "" };
+      }
+      if (args[0] === "rev-list") {
+        return { exitCode: 0, stdout: "0\t0\n", stderr: "" };
+      }
+      if (args[0] === "merge-base") {
+        return { exitCode: 1, stdout: "", stderr: "" };
+      }
+      if (args[0] === "reflog") {
+        return { exitCode: 0, stdout: "", stderr: "" };
+      }
+      return { exitCode: 1, stdout: "", stderr: `unexpected git command: ${args.join(" ")}` };
+    });
+
+    const { service } = createTestGitOperationsService();
+    const first = service.getSyncStatus({ laneId: "lane-1" });
+    const second = service.getSyncStatus({ laneId: "lane-1" });
+
+    releaseUpstreamLookup();
+    const [firstResult, secondResult] = await Promise.all([first, second]);
+
+    expect(firstResult).toEqual(secondResult);
+    expect(mockGit.runGit).toHaveBeenCalledTimes(2);
+    expect(mockGit.runGit).toHaveBeenNthCalledWith(
+      1,
+      ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"],
+      expect.objectContaining({ cwd: "/tmp/ade-lane" }),
+    );
+    expect(mockGit.runGit).toHaveBeenNthCalledWith(
+      2,
+      ["rev-list", "--left-right", "--count", "origin/main...HEAD"],
+      expect.objectContaining({ cwd: "/tmp/ade-lane" }),
+    );
+  });
+
+  it("reuses a fresh cached commit list for immediate repeat reads", async () => {
+    mockGit.runGitOrThrow.mockResolvedValue(
+      "abc123\u001fab\u001fparent123\u001fArul\u001f2026-04-11T21:00:00.000Z\u001fInitial commit",
+    );
+    mockGit.runGit.mockResolvedValue({
+      exitCode: 1,
+      stdout: "",
+      stderr: "no upstream",
+    });
+
+    const { service } = createTestGitOperationsService();
+
+    const first = await service.listRecentCommits({ laneId: "lane-1", limit: 20 });
+    const second = await service.listRecentCommits({ laneId: "lane-1", limit: 20 });
+
+    expect(first).toEqual(second);
+    expect(mockGit.runGitOrThrow).toHaveBeenCalledTimes(1);
+    expect(mockGit.runGit).toHaveBeenCalledTimes(1);
+  });
+});

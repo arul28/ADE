@@ -36,7 +36,7 @@ import { createFileWatcherService } from "./fileWatcherService";
 import { createFileSearchIndexService } from "./fileSearchIndexService";
 
 const MAX_EDITOR_READ_BYTES = 5 * 1024 * 1024;
-const GIT_STATUS_CACHE_TTL_MS = 1_000;
+const GIT_STATUS_CACHE_TTL_MS = 5_000;
 
 function containsDotGit(absPath: string): boolean {
   const parts = absPath.split(path.sep);
@@ -262,7 +262,12 @@ export function createFileService({
   };
 
   const listWorkspaces = (_args: FilesListWorkspacesArgs = {}): FilesWorkspace[] => {
-    const scopes = laneService.getFilesWorkspaces();
+    const scopes = [...laneService.getFilesWorkspaces()].sort((a, b) => {
+      if (a.kind === b.kind) return 0;
+      if (a.kind === "primary") return -1;
+      if (b.kind === "primary") return 1;
+      return 0;
+    });
     return scopes.map((scope) => ({
       id: scope.id,
       kind: scope.kind,
@@ -367,29 +372,12 @@ export function createFileService({
         changeStatus: statusMap.get(rel) ?? null
       };
 
-      if (entry.isFile()) {
-        try {
-          node.size = fs.statSync(childAbs).size;
-        } catch {
-          node.size = 0;
-        }
-      }
-
       if (entry.isDirectory()) {
-        let hasChildren = false;
-        try {
-          const children = fs.readdirSync(childAbs);
-          hasChildren = children.length > 0;
-        } catch {
-          hasChildren = false;
-        }
-
-        node.hasChildren = hasChildren;
         if (!node.changeStatus) {
           node.changeStatus = inferDirectoryStatus(statusMap, rel);
         }
 
-        if (depth > 1 && hasChildren) {
+        if (depth > 1) {
           node.children = await listTreeNode({
             rootPath,
             parentPath: rel,

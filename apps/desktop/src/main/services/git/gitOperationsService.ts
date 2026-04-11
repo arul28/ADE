@@ -46,6 +46,12 @@ type CommitMessagePromptContext = {
   diffSnippet: string;
 };
 
+type CachedReadEntry<T> = {
+  expiresAt: number;
+  value?: T;
+  promise?: Promise<T>;
+};
+
 function localBranchNameFromRemoteRef(ref: string): string {
   const normalized = ref.trim();
   const slashIndex = normalized.indexOf("/");
@@ -118,6 +124,43 @@ export function createGitOperationsService({
     postHeadSha: string | null;
   }) => void;
 }) {
+  const laneReadCache = new Map<string, CachedReadEntry<unknown>>();
+
+  function invalidateLaneReadCache(laneId: string): void {
+    const needle = `:${laneId}:`;
+    for (const key of laneReadCache.keys()) {
+      if (key.includes(needle)) laneReadCache.delete(key);
+    }
+  }
+
+  async function readLaneCached<T>(key: string, ttlMs: number, load: () => Promise<T>): Promise<T> {
+    const now = Date.now();
+    const cached = laneReadCache.get(key) as CachedReadEntry<T> | undefined;
+    if (cached?.promise) return cached.promise;
+    if (cached && cached.value !== undefined && cached.expiresAt > now) {
+      return cached.value;
+    }
+
+    const promise = load()
+      .then((value) => {
+        laneReadCache.set(key, {
+          value,
+          expiresAt: Date.now() + ttlMs,
+        });
+        return value;
+      })
+      .catch((error) => {
+        laneReadCache.delete(key);
+        throw error;
+      });
+
+    laneReadCache.set(key, {
+      expiresAt: now + ttlMs,
+      promise,
+    });
+    return promise;
+  }
+
   function extractEffectiveAiConfig(): Record<string, unknown> {
     const snapshot = projectConfigService.get();
     return isRecord(snapshot.effective.ai) ? snapshot.effective.ai : {};
@@ -242,6 +285,7 @@ export function createGitOperationsService({
     metadata?: Record<string, unknown>;
     fn: (lane: LaneInfo) => Promise<T>;
   }): Promise<{ result: T; action: GitActionResult }> => {
+    invalidateLaneReadCache(laneId);
     const lane = laneService.getLaneBaseAndBranch(laneId);
     const preHeadSha = await getHeadSha(lane.worktreePath);
     const operation = operationService.start({
@@ -312,6 +356,8 @@ export function createGitOperationsService({
       });
       logger.warn("git.operation_failed", { laneId, kind, reason, error: message });
       throw error;
+    } finally {
+      invalidateLaneReadCache(laneId);
     }
   };
 
@@ -496,155 +542,149 @@ export function createGitOperationsService({
     },
 
     async listRecentCommits(args: { laneId: string; limit?: number }): Promise<GitCommitSummary[]> {
-      const lane = laneService.getLaneBaseAndBranch(args.laneId);
+      const laneId = args.laneId.trim();
       const limit = typeof args.limit === "number" ? Math.max(1, Math.min(200, Math.floor(args.limit))) : 30;
-      const out = await runGitOrThrow(
-        ["log", `-n${limit}`, "--date=iso-strict", "--pretty=format:%H%x1f%h%x1f%P%x1f%an%x1f%aI%x1f%s"],
-        { cwd: lane.worktreePath, timeoutMs: 15_000 }
-      );
+      return readLaneCached(`recent-commits:${laneId}:${limit}`, 2_000, async () => {
+        const lane = laneService.getLaneBaseAndBranch(laneId);
+        const out = await runGitOrThrow(
+          ["log", `-n${limit}`, "--date=iso-strict", "--pretty=format:%H%x1f%h%x1f%P%x1f%an%x1f%aI%x1f%s"],
+          { cwd: lane.worktreePath, timeoutMs: 15_000 }
+        );
 
-      // Determine which commits are unpushed by comparing with upstream.
-      let unpushedShas: Set<string> | null = null;
-      const upstreamRes = await runGit(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"], {
-        cwd: lane.worktreePath,
-        timeoutMs: 10_000
-      });
-      if (upstreamRes.exitCode === 0) {
-        const upstream = upstreamRes.stdout.trim();
-        if (upstream.length) {
-          const unpushedRes = await runGit(["log", "--format=%H", `${upstream}..HEAD`], {
-            cwd: lane.worktreePath,
-            timeoutMs: 15_000
-          });
-          if (unpushedRes.exitCode === 0) {
-            unpushedShas = new Set(
-              unpushedRes.stdout.split("\n").map((l) => l.trim()).filter(Boolean)
-            );
+        // Determine which commits are unpushed by comparing with upstream.
+        let unpushedShas: Set<string> | null = null;
+        const upstreamRes = await runGit(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"], {
+          cwd: lane.worktreePath,
+          timeoutMs: 10_000
+        });
+        if (upstreamRes.exitCode === 0) {
+          const upstream = upstreamRes.stdout.trim();
+          if (upstream.length) {
+            const unpushedRes = await runGit(["log", "--format=%H", `${upstream}..HEAD`], {
+              cwd: lane.worktreePath,
+              timeoutMs: 15_000
+            });
+            if (unpushedRes.exitCode === 0) {
+              unpushedShas = new Set(
+                unpushedRes.stdout.split("\n").map((l) => l.trim()).filter(Boolean)
+              );
+            }
           }
         }
-      }
 
-      const rows = out
-        .split("\n")
-        .map((line) => line.trim())
-        .filter(Boolean)
-        .map((line): GitCommitSummary | null => {
-          const [sha, shortSha, parentsRaw, authorName, authoredAt, subject] = parseDelimited(line);
-          if (!sha || !shortSha) return null;
-          const parents = (parentsRaw ?? "")
-            .split(" ")
-            .map((entry) => entry.trim())
-            .filter(Boolean);
-          return {
-            sha,
-            shortSha,
-            parents,
-            authorName: authorName ?? "",
-            authoredAt: authoredAt ?? "",
-            subject: subject ?? "",
-            pushed: unpushedShas ? !unpushedShas.has(sha) : false
-          };
-        })
-        .filter((entry): entry is GitCommitSummary => entry != null);
+        const rows = out
+          .split("\n")
+          .map((line) => line.trim())
+          .filter(Boolean)
+          .map((line): GitCommitSummary | null => {
+            const [sha, shortSha, parentsRaw, authorName, authoredAt, subject] = parseDelimited(line);
+            if (!sha || !shortSha) return null;
+            const parents = (parentsRaw ?? "")
+              .split(" ")
+              .map((entry) => entry.trim())
+              .filter(Boolean);
+            return {
+              sha,
+              shortSha,
+              parents,
+              authorName: authorName ?? "",
+              authoredAt: authoredAt ?? "",
+              subject: subject ?? "",
+              pushed: unpushedShas ? !unpushedShas.has(sha) : false
+            };
+          })
+          .filter((entry): entry is GitCommitSummary => entry != null);
 
-      return rows;
+        return rows;
+      });
     },
 
     async getSyncStatus(args: { laneId: string }): Promise<GitUpstreamSyncStatus> {
-      const lane = laneService.getLaneBaseAndBranch(args.laneId);
-      const upstreamRes = await runGit(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"], {
-        cwd: lane.worktreePath,
-        timeoutMs: 10_000
-      });
-
-      if (upstreamRes.exitCode !== 0) {
-        return {
-          hasUpstream: false,
-          upstreamRef: null,
-          ahead: 0,
-          behind: 0,
-          diverged: false,
-          recommendedAction: "push"
-        };
-      }
-
-      const upstreamRef = upstreamRes.stdout.trim();
-      if (!upstreamRef.length) {
-        return {
-          hasUpstream: false,
-          upstreamRef: null,
-          ahead: 0,
-          behind: 0,
-          diverged: false,
-          recommendedAction: "push"
-        };
-      }
-
-      const countRes = await runGit(["rev-list", "--left-right", "--count", `${upstreamRef}...HEAD`], {
-        cwd: lane.worktreePath,
-        timeoutMs: 10_000
-      });
-      if (countRes.exitCode !== 0) {
-        return {
-          hasUpstream: true,
-          upstreamRef,
-          ahead: 0,
-          behind: 0,
-          diverged: false,
-          recommendedAction: "none"
-        };
-      }
-
-      const parts = countRes.stdout.trim().split(/\s+/).filter(Boolean);
-      const behind = Number.parseInt(parts[0] ?? "0", 10);
-      const ahead = Number.parseInt(parts[1] ?? "0", 10);
-      const normalizedBehind = Number.isFinite(behind) && behind > 0 ? behind : 0;
-      const normalizedAhead = Number.isFinite(ahead) && ahead > 0 ? ahead : 0;
-      const diverged = normalizedAhead > 0 && normalizedBehind > 0;
-
-      let recommendedAction: GitRecommendedAction = "none";
-      if (normalizedAhead > 0 && normalizedBehind === 0) {
-        recommendedAction = "push";
-      } else if (normalizedBehind > 0 && normalizedAhead === 0) {
-        recommendedAction = "pull";
-      } else if (diverged) {
-        // Check if local HEAD contains the upstream tip.  When both sides have
-        // unique commits, the upstream tip is almost never an ancestor of HEAD
-        // (that only happens after a local rebase that replayed upstream), so
-        // the safest default for genuine divergence is "pull" (merge upstream
-        // into local).  We only suggest force-push when we can confirm the
-        // upstream tip IS already an ancestor — meaning the local branch was
-        // rebased on top of upstream and only needs a force-push to publish.
-        const mergeBaseRes = await runGit(["merge-base", "--is-ancestor", upstreamRef, "HEAD"], {
+      const laneId = args.laneId.trim();
+      return readLaneCached(`sync-status:${laneId}:default`, 2_000, async () => {
+        const lane = laneService.getLaneBaseAndBranch(laneId);
+        const upstreamRes = await runGit(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"], {
           cwd: lane.worktreePath,
-          timeoutMs: 5_000
+          timeoutMs: 10_000
         });
-        if (mergeBaseRes.exitCode === 0) {
-          recommendedAction = "force_push_lease";
-        } else {
-          // The --is-ancestor check fails when the lane was rebased onto a
-          // *base branch* (parent) rather than onto its own upstream, because
-          // all local commits get rewritten with new parents.  Fall back to
-          // checking the reflog for a recent rebase — if one happened, the
-          // divergence is expected and a force-push is the right next step.
-          const reflogRes = await runGit(["reflog", "show", "HEAD", "--format=%gs", "-n", "30"], {
+
+        if (upstreamRes.exitCode !== 0) {
+          return {
+            hasUpstream: false,
+            upstreamRef: null,
+            ahead: 0,
+            behind: 0,
+            diverged: false,
+            recommendedAction: "push"
+          };
+        }
+
+        const upstreamRef = upstreamRes.stdout.trim();
+        if (!upstreamRef.length) {
+          return {
+            hasUpstream: false,
+            upstreamRef: null,
+            ahead: 0,
+            behind: 0,
+            diverged: false,
+            recommendedAction: "push"
+          };
+        }
+
+        const countRes = await runGit(["rev-list", "--left-right", "--count", `${upstreamRef}...HEAD`], {
+          cwd: lane.worktreePath,
+          timeoutMs: 10_000
+        });
+        if (countRes.exitCode !== 0) {
+          return {
+            hasUpstream: true,
+            upstreamRef,
+            ahead: 0,
+            behind: 0,
+            diverged: false,
+            recommendedAction: "none"
+          };
+        }
+
+        const parts = countRes.stdout.trim().split(/\s+/).filter(Boolean);
+        const behind = Number.parseInt(parts[0] ?? "0", 10);
+        const ahead = Number.parseInt(parts[1] ?? "0", 10);
+        const normalizedBehind = Number.isFinite(behind) && behind > 0 ? behind : 0;
+        const normalizedAhead = Number.isFinite(ahead) && ahead > 0 ? ahead : 0;
+        const diverged = normalizedAhead > 0 && normalizedBehind > 0;
+
+        let recommendedAction: GitRecommendedAction = "none";
+        if (normalizedAhead > 0 && normalizedBehind === 0) {
+          recommendedAction = "push";
+        } else if (normalizedBehind > 0 && normalizedAhead === 0) {
+          recommendedAction = "pull";
+        } else if (diverged) {
+          const mergeBaseRes = await runGit(["merge-base", "--is-ancestor", upstreamRef, "HEAD"], {
             cwd: lane.worktreePath,
             timeoutMs: 5_000
           });
-          const hasRecentRebase = reflogRes.exitCode === 0 &&
-            reflogRes.stdout.split("\n").some((line) => /rebase/.test(line));
-          recommendedAction = hasRecentRebase ? "force_push_lease" : "pull";
+          if (mergeBaseRes.exitCode === 0) {
+            recommendedAction = "force_push_lease";
+          } else {
+            const reflogRes = await runGit(["reflog", "show", "HEAD", "--format=%gs", "-n", "30"], {
+              cwd: lane.worktreePath,
+              timeoutMs: 5_000
+            });
+            const hasRecentRebase = reflogRes.exitCode === 0 &&
+              reflogRes.stdout.split("\n").some((line) => /rebase/.test(line));
+            recommendedAction = hasRecentRebase ? "force_push_lease" : "pull";
+          }
         }
-      }
 
-      return {
-        hasUpstream: true,
-        upstreamRef,
-        ahead: normalizedAhead,
-        behind: normalizedBehind,
-        diverged,
-        recommendedAction
-      };
+        return {
+          hasUpstream: true,
+          upstreamRef,
+          ahead: normalizedAhead,
+          behind: normalizedBehind,
+          diverged,
+          recommendedAction
+        };
+      });
     },
 
     async listCommitFiles(args: GitListCommitFilesArgs): Promise<string[]> {
@@ -730,25 +770,28 @@ export function createGitOperationsService({
     },
 
     async listStashes(args: { laneId: string }): Promise<GitStashSummary[]> {
-      const lane = laneService.getLaneBaseAndBranch(args.laneId);
-      const out = await runGitOrThrow(["stash", "list", "--date=iso-strict", "--format=%gd%x1f%ci%x1f%gs"], {
-        cwd: lane.worktreePath,
-        timeoutMs: 15_000
+      const laneId = args.laneId.trim();
+      return readLaneCached(`stashes:${laneId}:default`, 1_500, async () => {
+        const lane = laneService.getLaneBaseAndBranch(laneId);
+        const out = await runGitOrThrow(["stash", "list", "--date=iso-strict", "--format=%gd%x1f%ci%x1f%gs"], {
+          cwd: lane.worktreePath,
+          timeoutMs: 15_000
+        });
+        return out
+          .split("\n")
+          .map((line) => line.trim())
+          .filter(Boolean)
+          .map((line): GitStashSummary | null => {
+            const [ref, createdAt, subject] = parseDelimited(line);
+            if (!ref) return null;
+            return {
+              ref,
+              createdAt: createdAt && createdAt.length ? createdAt : null,
+              subject: subject ?? ""
+            };
+          })
+          .filter((entry): entry is GitStashSummary => entry != null);
       });
-      return out
-        .split("\n")
-        .map((line) => line.trim())
-        .filter(Boolean)
-        .map((line): GitStashSummary | null => {
-          const [ref, createdAt, subject] = parseDelimited(line);
-          if (!ref) return null;
-          return {
-            ref,
-            createdAt: createdAt && createdAt.length ? createdAt : null,
-            subject: subject ?? ""
-          };
-        })
-        .filter((entry): entry is GitStashSummary => entry != null);
     },
 
     async stashApply(args: GitStashRefArgs): Promise<GitActionResult> {
@@ -882,25 +925,27 @@ export function createGitOperationsService({
     async getConflictState(args: { laneId: string }): Promise<GitConflictState> {
       const laneId = args.laneId.trim();
       if (!laneId) throw new Error("laneId is required");
-      const lane = laneService.getLaneBaseAndBranch(laneId);
-      const gitDir = await getAbsoluteGitDir(lane.worktreePath);
-      const kind = gitDir ? detectConflictKind(gitDir) : null;
+      return readLaneCached(`conflict-state:${laneId}:default`, 1_500, async () => {
+        const lane = laneService.getLaneBaseAndBranch(laneId);
+        const gitDir = await getAbsoluteGitDir(lane.worktreePath);
+        const kind = gitDir ? detectConflictKind(gitDir) : null;
 
-      const unmergedRes = await runGit(["diff", "--name-only", "--diff-filter=U"], {
-        cwd: lane.worktreePath,
-        timeoutMs: 10_000
+        const unmergedRes = await runGit(["diff", "--name-only", "--diff-filter=U"], {
+          cwd: lane.worktreePath,
+          timeoutMs: 10_000
+        });
+        const conflictedFiles = unmergedRes.exitCode === 0 ? parseNameOnly(unmergedRes.stdout) : [];
+        const inProgress = kind != null;
+
+        return {
+          laneId,
+          kind,
+          inProgress,
+          conflictedFiles,
+          canContinue: inProgress && conflictedFiles.length === 0,
+          canAbort: inProgress
+        };
       });
-      const conflictedFiles = unmergedRes.exitCode === 0 ? parseNameOnly(unmergedRes.stdout) : [];
-      const inProgress = kind != null;
-
-      return {
-        laneId,
-        kind,
-        inProgress,
-        conflictedFiles,
-        canContinue: inProgress && conflictedFiles.length === 0,
-        canAbort: inProgress
-      };
     },
 
     async rebaseContinue(args: { laneId: string }): Promise<GitActionResult> {

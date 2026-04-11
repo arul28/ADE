@@ -19,18 +19,6 @@ type MockEditorInstance = {
 
 let latestMockEditor: MockEditorInstance | null = null;
 
-vi.mock("../ui/PaneTilingLayout", () => ({
-  PaneTilingLayout: ({ panes }: { panes: Record<string, { children: React.ReactNode }> }) => (
-    <div data-testid="mock-pane-layout">
-      {Object.entries(panes).map(([id, pane]) => (
-        <section key={id} data-testid={`pane-${id}`}>
-          {pane.children}
-        </section>
-      ))}
-    </div>
-  ),
-}));
-
 vi.mock("../lanes/LaneTerminalsPanel", () => ({
   LaneTerminalsPanel: () => <div data-testid="lane-terminals" />,
 }));
@@ -193,6 +181,12 @@ async function waitForEditorText(text: string) {
   });
 }
 
+async function waitForFilesWatcherStartup() {
+  await waitFor(() => {
+    expect((window.ade.files.watchChanges as any).mock.calls.length).toBeGreaterThan(0);
+  });
+}
+
 describe("FilesPage", () => {
   const originalAde = globalThis.window.ade;
   const originalConfirm = globalThis.window.confirm;
@@ -302,7 +296,11 @@ describe("FilesPage", () => {
     expect(await screen.findByTitle(".ade")).toBeTruthy();
     expect(screen.queryByTitle("Hide dotfiles")).toBeNull();
     expect(screen.queryByTitle("Show dotfiles")).toBeNull();
-    expect((window.ade.files.listTree as any).mock.calls[0]?.[0]).toMatchObject({ includeIgnored: true });
+    expect((window.ade.files.listTree as any).mock.calls[0]?.[0]).toMatchObject({
+      includeIgnored: true,
+      depth: 1,
+    });
+    await waitForFilesWatcherStartup();
     expect((window.ade.files.watchChanges as any).mock.calls[0]?.[0]).toMatchObject({
       workspaceId: "primary",
       includeIgnored: true,
@@ -352,6 +350,7 @@ describe("FilesPage", () => {
     });
 
     await waitForEditorText("value = 1");
+    await waitForFilesWatcherStartup();
     fireEvent.click(await screen.findByTitle("src"));
     expect(await screen.findByTitle("src/index.ts")).toBeTruthy();
 
@@ -403,6 +402,7 @@ describe("FilesPage", () => {
     });
 
     await waitForEditorText("value = 1");
+    await waitForFilesWatcherStartup();
     fireEvent.click(await screen.findByTitle("src"));
     expect(await screen.findByTitle("src/index.ts")).toBeTruthy();
 
@@ -438,10 +438,7 @@ describe("FilesPage", () => {
     await waitFor(() => {
       expect(screen.getByText(/OPEN A FILE TO START EDITING/i)).toBeTruthy();
     });
-    await waitFor(() => {
-      expect(screen.queryByTitle("src/index.ts")).toBeNull();
-    });
-    expect(screen.getByTestId("mock-pane-layout")).toBeTruthy();
+    expect(screen.getByText("0 OPEN")).toBeTruthy();
   });
 
   it("refreshes clean tabs from disk but preserves dirty tabs", async () => {
@@ -451,6 +448,7 @@ describe("FilesPage", () => {
     });
 
     await waitForEditorText("value = 1");
+    await waitForFilesWatcherStartup();
 
     fileContents["src/index.ts"] = "export const value = 2;\n";
     emitFileChange({

@@ -9,7 +9,7 @@ import {
   FileCode,
   Terminal
 } from "@phosphor-icons/react";
-import { useNavigate } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 import { cn } from "../ui/cn";
 import { useAppStore } from "../../state/appStore";
 import { sortLanesForStackGraph } from "../lanes/laneUtils";
@@ -260,6 +260,7 @@ function resizePaneRect(
 }
 
 export function RightEdgeFloatingPane() {
+  const location = useLocation();
   const navigate = useNavigate();
   const lanes = useAppStore((s) => s.lanes);
   const selectedLaneId = useAppStore((s) => s.selectedLaneId);
@@ -529,6 +530,7 @@ export function RightEdgeFloatingPane() {
   }, [bounds, launcherRatio]);
 
   const launcherVisible = !paneOpen && (edgeHot || launcherHovered || launcherDragging);
+  const isDedicatedFilesRoute = location.pathname === "/files";
 
   const startLauncherDrag = React.useCallback(
     (event: React.PointerEvent<HTMLButtonElement>) => {
@@ -661,6 +663,13 @@ export function RightEdgeFloatingPane() {
     }
 
     if (workspaceView === "diff") {
+      if (isDedicatedFilesRoute) {
+        return (
+          <div className="ade-right-pane-empty-state">
+            Floating diff is paused while the Files tab is open.
+          </div>
+        );
+      }
       return (
         <LaneDiffPane
           laneId={activeLaneId}
@@ -673,6 +682,13 @@ export function RightEdgeFloatingPane() {
     }
 
     if (workspaceView === "files") {
+      if (isDedicatedFilesRoute) {
+        return (
+          <div className="ade-right-pane-empty-state">
+            Floating files is paused while the Files tab is open.
+          </div>
+        );
+      }
       return <FloatingFilesWorkspace preferredLaneId={activeLaneId} />;
     }
 
@@ -680,6 +696,7 @@ export function RightEdgeFloatingPane() {
   }, [
     activeLaneId,
     workspaceView,
+    isDedicatedFilesRoute,
     navigate,
     handleSelectFile,
     handleSelectCommit,

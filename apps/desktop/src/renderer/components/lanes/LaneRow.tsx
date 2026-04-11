@@ -21,7 +21,15 @@ function chipText(kind: ConflictChip["kind"]): string {
   return kind === "new-overlap" ? "new overlap" : "high risk";
 }
 
-function RemotePullBanner({ laneId, behindCount }: { laneId: string; behindCount: number }) {
+function RemotePullBanner({
+  laneId,
+  behindCount,
+  pullBlocked,
+}: {
+  laneId: string;
+  behindCount: number;
+  pullBlocked?: boolean;
+}) {
   const [pulling, setPulling] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const refreshLanes = useAppStore((s) => s.refreshLanes);
@@ -50,22 +58,25 @@ function RemotePullBanner({ laneId, behindCount }: { laneId: string; behindCount
     >
       <ArrowDown size={13} weight="bold" className="text-blue-400 shrink-0" />
       <span className="text-blue-300">
-        {behindCount} commit{behindCount > 1 ? "s" : ""} behind remote
+        {pullBlocked
+          ? "Remote updates are available, but this lane is blocked by active conflicts"
+          : `${behindCount} commit${behindCount > 1 ? "s" : ""} behind remote`}
       </span>
       <button
         type="button"
-        disabled={pulling}
+        disabled={pulling || pullBlocked}
         onClick={(e) => { e.stopPropagation(); void handlePull(); }}
         className="ml-auto font-bold uppercase tracking-[1px] text-[10px] px-2.5 py-1 rounded-md transition-colors"
         style={{
           background: "rgba(59,130,246,0.15)",
           border: "1px solid rgba(59,130,246,0.30)",
           color: "#60A5FA",
-          cursor: pulling ? "not-allowed" : "pointer",
-          opacity: pulling ? 0.5 : 1,
+          cursor: pulling || pullBlocked ? "not-allowed" : "pointer",
+          opacity: pulling || pullBlocked ? 0.5 : 1,
         }}
+        title={pullBlocked ? "Resolve the active lane conflicts before pulling from remote." : "Pull from remote"}
       >
-        {pulling ? "PULLING..." : "PULL"}
+        {pullBlocked ? "RESOLVE FIRST" : pulling ? "PULLING..." : "PULL"}
       </button>
       {error && <span className="text-red-400 text-[10px] truncate max-w-[200px]" title={error}>{error}</span>}
     </div>
@@ -500,7 +511,11 @@ export const LaneRow = React.memo(function LaneRow({
 
       {/* Pull from remote suggestion */}
       {lane.status.remoteBehind > 0 && (
-        <RemotePullBanner laneId={lane.id} behindCount={lane.status.remoteBehind} />
+        <RemotePullBanner
+          laneId={lane.id}
+          behindCount={lane.status.remoteBehind}
+          pullBlocked={lane.status.rebaseInProgress || conflictStatus?.status === "conflict-active"}
+        />
       )}
 
       <div className="mt-2 grid grid-cols-3 gap-2 pt-2 border-t border-white/[0.04] text-[11px] font-sans uppercase tracking-wider text-muted-fg">

@@ -3700,6 +3700,21 @@ describe("createAgentChatService", () => {
       const models = await service.getAvailableModels({ provider: "claude" });
       expect(Array.isArray(models)).toBe(true);
     });
+
+    it("coalesces concurrent codex model discovery requests", async () => {
+      const { service, logger } = createService();
+
+      const [first, second] = await Promise.all([
+        service.getAvailableModels({ provider: "codex" }),
+        service.getAvailableModels({ provider: "codex" }),
+      ]);
+
+      expect(second).toEqual(first);
+      const runtimeStarts = logger.info.mock.calls.filter(
+        ([event]) => event === "agent_chat.codex_runtime_start",
+      );
+      expect(runtimeStarts).toHaveLength(1);
+    });
   });
 
   describe("previewSessionToolNames", () => {

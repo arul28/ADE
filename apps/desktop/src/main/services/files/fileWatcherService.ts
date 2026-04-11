@@ -17,6 +17,24 @@ type WatchSubscription = {
 };
 
 const EVENT_DEBOUNCE_MS = 140;
+const IDLE_WATCHER_CLOSE_MS = 15_000;
+const VOLATILE_ADE_PREFIXES = [
+  ".ade/artifacts/",
+  ".ade/cache/",
+  ".ade/mcp-configs/",
+  ".ade/secrets/",
+  ".ade/transcripts/",
+] as const;
+const VOLATILE_ADE_EXACT_PATHS = new Set([
+  ".ade/ade.db",
+  ".ade/mcp.sock",
+]);
+
+function isVolatileAdePath(relPath: string): boolean {
+  if (VOLATILE_ADE_EXACT_PATHS.has(relPath)) return true;
+  if (relPath.startsWith(".ade/ade.db-")) return true;
+  return VOLATILE_ADE_PREFIXES.some((prefix) => relPath.startsWith(prefix));
+}
 
 function mapEventType(kind: "add" | "change" | "unlink" | "addDir" | "unlinkDir"): FileChangeEvent["type"] {
   if (kind === "add" || kind === "addDir") return "created";
@@ -27,6 +45,7 @@ function mapEventType(kind: "add" | "change" | "unlink" | "addDir" | "unlinkDir"
 export function createFileWatcherService() {
   const subscriptions = new Map<string, WatchSubscription>();
   const pendingBySub = new Map<string, Map<string, NodeJS.Timeout>>();
+  const pendingCloseBySub = new Map<string, NodeJS.Timeout>();
 
   const clearPending = (key: string): void => {
     const pending = pendingBySub.get(key);
@@ -38,6 +57,13 @@ export function createFileWatcherService() {
     }
   };
 
+  const clearPendingClose = (key: string): void => {
+    const timeout = pendingCloseBySub.get(key);
+    if (!timeout) return;
+    clearTimeout(timeout);
+    pendingCloseBySub.delete(key);
+  };
+
   const closeWatcher = (subscription: WatchSubscription | undefined): void => {
     if (!subscription?.watcher) return;
     const watcher = subscription.watcher;
@@ -45,6 +71,20 @@ export function createFileWatcherService() {
     void watcher.close().catch(() => {
       // ignore close errors
     });
+  };
+
+  const scheduleIdleClose = (key: string, subscription: WatchSubscription): void => {
+    clearPendingClose(key);
+    const timeout = setTimeout(() => {
+      pendingCloseBySub.delete(key);
+      const current = subscriptions.get(key);
+      if (!current) return;
+      if (current.defaultRefCount > 0 || current.includeIgnoredRefCount > 0) return;
+      clearPending(key);
+      subscriptions.delete(key);
+      closeWatcher(subscription);
+    }, IDLE_WATCHER_CLOSE_MS);
+    pendingCloseBySub.set(key, timeout);
   };
 
   const ALWAYS_IGNORED_PATTERNS: RegExp[] = [
@@ -76,6 +116,7 @@ export function createFileWatcherService() {
       const relPath = normalizeRelative(relRaw);
       if (!relPath || relPath.startsWith(".git/") || relPath === ".git") return;
       if (!subscription.includeIgnored && (relPath.startsWith(".ade/") || relPath === ".ade")) return;
+      if (isVolatileAdePath(relPath)) return;
       const fileKey = `${kind}:${relPath}`;
       emitDebounced(key, fileKey, () => {
         subscription.callback({
@@ -120,12 +161,13 @@ export function createFileWatcherService() {
     }
 
     if (current.defaultRefCount === 0 && current.includeIgnoredRefCount === 0) {
-      clearPending(key);
-      subscriptions.delete(key);
-      closeWatcher(current);
+      // Keep an idle watcher alive briefly so rapid route changes do not
+      // thrash chokidar setup/teardown on large repos.
+      scheduleIdleClose(key, current);
       return;
     }
 
+    clearPendingClose(key);
     const nextIncludeIgnored = current.includeIgnoredRefCount > 0;
     if (nextIncludeIgnored !== current.includeIgnored) {
       current.includeIgnored = nextIncludeIgnored;
@@ -137,6 +179,7 @@ export function createFileWatcherService() {
     const toRemove: string[] = [];
     for (const [key, sub] of subscriptions) {
       if (sub.senderId !== senderId) continue;
+      clearPendingClose(key);
       clearPending(key);
       closeWatcher(sub);
       toRemove.push(key);
@@ -171,6 +214,7 @@ export function createFileWatcherService() {
       const requestedIncludeIgnored = Boolean(args.includeIgnored);
       const current = subscriptions.get(key);
       if (current) {
+        clearPendingClose(key);
         const rootPathChanged = current.rootPath !== args.rootPath;
         current.callback = callback;
         current.rootPath = args.rootPath;
@@ -206,6 +250,9 @@ export function createFileWatcherService() {
     stopAllForSender,
 
     disposeAll(): void {
+      for (const key of pendingCloseBySub.keys()) {
+        clearPendingClose(key);
+      }
       for (const entry of subscriptions.values()) {
         closeWatcher(entry);
       }

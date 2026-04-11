@@ -12890,7 +12890,9 @@ export function createAgentChatService(args: {
     });
   };
 
-  const getAvailableModels = async ({ provider }: { provider: AgentChatProvider }): Promise<AgentChatModelInfo[]> => {
+  const availableModelsRequests = new Map<AgentChatProvider, Promise<AgentChatModelInfo[]>>();
+
+  const loadAvailableModels = async (provider: AgentChatProvider): Promise<AgentChatModelInfo[]> => {
     if (provider === "codex") {
       return listCodexModelsFromAppServer();
     }
@@ -12986,6 +12988,23 @@ export function createAgentChatService(args: {
       // fallback to empty
     }
     return [];
+  };
+
+  const getAvailableModels = async ({ provider }: { provider: AgentChatProvider }): Promise<AgentChatModelInfo[]> => {
+    const existingRequest = availableModelsRequests.get(provider);
+    if (existingRequest) {
+      return existingRequest;
+    }
+
+    const request = loadAvailableModels(provider);
+    availableModelsRequests.set(provider, request);
+    try {
+      return await request;
+    } finally {
+      if (availableModelsRequests.get(provider) === request) {
+        availableModelsRequests.delete(provider);
+      }
+    }
   };
 
   const dispose = async ({ sessionId }: AgentChatDisposeArgs): Promise<void> => {

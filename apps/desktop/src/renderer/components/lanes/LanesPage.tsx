@@ -37,6 +37,8 @@ import {
   type LaneBranchOption
 } from "./laneUtils";
 import { buildPrsRouteSearch } from "../prs/prsRouteState";
+import { getProjectConfigCached } from "../../lib/projectConfigCache";
+import { logRendererDebugEvent } from "../../lib/debugLog";
 import type {
   ConflictChip,
   DeleteLaneArgs,
@@ -75,6 +77,37 @@ type CreateLaneRequest =
   | { kind: "child"; args: { name: string; parentLaneId: string } }
   | { kind: "root"; args: { name: string; baseBranch: string } }
   | { kind: "import"; args: { branchRef: string; name: string; baseBranch?: string } };
+
+function DeferredLanePane({
+  cacheKey,
+  label,
+  children,
+}: {
+  cacheKey: string;
+  label: string;
+  children: React.ReactNode;
+}) {
+  const [ready, setReady] = useState(false);
+
+  useEffect(() => {
+    setReady(false);
+    const timer = window.setTimeout(() => {
+      setReady(true);
+    }, 140);
+    return () => window.clearTimeout(timer);
+  }, [cacheKey]);
+
+  if (ready) return <>{children}</>;
+
+  return (
+    <div
+      className="flex h-full items-center justify-center"
+      style={{ background: COLORS.cardBg, color: COLORS.textDim, fontFamily: MONO_FONT, fontSize: 11 }}
+    >
+      Preparing {label.toUpperCase()} pane...
+    </div>
+  );
+}
 
 export function resolveCreateLaneRequest(args: {
   name: string;
@@ -202,6 +235,13 @@ export function LanesPage() {
   const [expandedGitActionsLaneId, setExpandedGitActionsLaneId] = useState<string | null>(null);
   const [integrationProposals, setIntegrationProposals] = useState<IntegrationProposal[]>([]);
   const laneSnapshots = useAppStore((s) => s.laneSnapshots);
+
+  useEffect(() => {
+    logRendererDebugEvent("renderer.lanes.page_mount");
+    return () => {
+      logRendererDebugEvent("renderer.lanes.page_unmount");
+    };
+  }, []);
 
   const laneSnapshotByLaneId = useMemo(
     () => new Map(laneSnapshots.map((snapshot) => [snapshot.lane.id, snapshot] as const)),
@@ -348,11 +388,11 @@ export function LanesPage() {
   /* ---- Primary branch management ---- */
 
   useEffect(() => {
-    if (!primaryLane) return;
+    if (!primaryLane || !branchDropdownOpen) return;
     window.ade.git.listBranches({ laneId: primaryLane.id })
       .then(setPrimaryBranches)
       .catch(() => {});
-  }, [primaryLane?.id, primaryLane?.branchRef]);
+  }, [branchDropdownOpen, primaryLane?.id]);
 
   useEffect(() => {
     if (!primaryLane) return;
@@ -372,7 +412,7 @@ export function LanesPage() {
 
   const refreshAutoRebaseEnabled = useCallback(async () => {
     try {
-      const snapshot = await window.ade.projectConfig.get();
+      const snapshot = await getProjectConfigCached({ projectRoot: project?.rootPath ?? null });
       const enabled =
         typeof snapshot.effective.git?.autoRebaseOnHeadChange === "boolean"
           ? snapshot.effective.git.autoRebaseOnHeadChange
@@ -381,7 +421,7 @@ export function LanesPage() {
     } catch {
       setAutoRebaseEnabled(false);
     }
-  }, []);
+  }, [project?.rootPath]);
 
   const refreshIntegrationProposals = useCallback(async () => {
     try {
@@ -474,11 +514,19 @@ export function LanesPage() {
     return unsubscribe;
   }, [lanesById]);
 
-  useEffect(() => { void refreshAutoRebaseEnabled(); }, [refreshAutoRebaseEnabled]);
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      void refreshAutoRebaseEnabled();
+    }, 120);
+    return () => window.clearTimeout(timer);
+  }, [refreshAutoRebaseEnabled]);
 
   useEffect(() => {
-    void refreshIntegrationProposals();
-  }, [refreshIntegrationProposals, lanes.length, project?.rootPath]);
+    const timer = window.setTimeout(() => {
+      void refreshIntegrationProposals();
+    }, 140);
+    return () => window.clearTimeout(timer);
+  }, [refreshIntegrationProposals, project?.rootPath]);
 
   useEffect(() => {
     let timer: ReturnType<typeof setTimeout> | null = null;
@@ -1260,13 +1308,15 @@ export function LanesPage() {
         icon: Stack,
         bodyClassName: "overflow-hidden",
         children: (
-          <LaneStackPane
-            lanes={stackGraphLanes}
-            selectedLaneId={laneId}
-            onSelect={(id) => handleLaneSelect(id, { extend: false })}
-            runtimeByLaneId={laneRuntimeById}
-            integrationSourcesByLaneId={integrationSourcesByLaneId}
-          />
+          <DeferredLanePane cacheKey={`stack:${laneId ?? "none"}`} label="stack">
+            <LaneStackPane
+              lanes={stackGraphLanes}
+              selectedLaneId={laneId}
+              onSelect={(id) => handleLaneSelect(id, { extend: false })}
+              runtimeByLaneId={laneRuntimeById}
+              integrationSourcesByLaneId={integrationSourcesByLaneId}
+            />
+          </DeferredLanePane>
         )
       },
       "git-actions": {
@@ -1289,20 +1339,22 @@ export function LanesPage() {
         ) : null,
         bodyClassName: "overflow-hidden",
         children: (
-          <LaneGitActionsPane
-            laneId={laneId}
-            autoRebaseEnabled={autoRebaseEnabled}
-            onOpenSettings={openAutoRebaseSettings}
-            onRebaseNowLocal={(targetLaneId) => runRebaseFlow(targetLaneId, "local_only")}
-            onRebaseAndPush={(targetLaneId) => runRebaseFlow(targetLaneId, "local_and_remote")}
-            onViewRebaseDetails={openRebaseDetails}
-            onResolveRebaseConflict={openRebaseConflictResolver}
-            selectedPath={laneDetail.selectedFilePath}
-            selectedMode={laneDetail.selectedFileMode}
-            selectedCommitSha={laneDetail.selectedCommit?.sha ?? null}
-            onSelectFile={(path, mode) => { if (laneId) handleSelectFile(laneId, path, mode); }}
-            onSelectCommit={(commit) => { if (laneId) handleSelectCommit(laneId, commit); }}
-          />
+          <DeferredLanePane cacheKey={`git:${laneId ?? "none"}`} label="git actions">
+            <LaneGitActionsPane
+              laneId={laneId}
+              autoRebaseEnabled={autoRebaseEnabled}
+              onOpenSettings={openAutoRebaseSettings}
+              onRebaseNowLocal={(targetLaneId) => runRebaseFlow(targetLaneId, "local_only")}
+              onRebaseAndPush={(targetLaneId) => runRebaseFlow(targetLaneId, "local_and_remote")}
+              onViewRebaseDetails={openRebaseDetails}
+              onResolveRebaseConflict={openRebaseConflictResolver}
+              selectedPath={laneDetail.selectedFilePath}
+              selectedMode={laneDetail.selectedFileMode}
+              selectedCommitSha={laneDetail.selectedCommit?.sha ?? null}
+              onSelectFile={(path, mode) => { if (laneId) handleSelectFile(laneId, path, mode); }}
+              onSelectCommit={(commit) => { if (laneId) handleSelectCommit(laneId, commit); }}
+            />
+          </DeferredLanePane>
         )
       },
       "diff-viewer": {
@@ -1310,19 +1362,25 @@ export function LanesPage() {
         icon: FileCode,
         bodyClassName: "overflow-hidden",
         children: (
-          <LaneDiffPane
-            laneId={laneId}
-            selectedPath={laneDetail.selectedFilePath}
-            selectedFileMode={laneDetail.selectedFileMode}
-            selectedCommit={laneDetail.selectedCommit}
-          />
+          <DeferredLanePane cacheKey={`diff:${laneId ?? "none"}`} label="diff">
+            <LaneDiffPane
+              laneId={laneId}
+              selectedPath={laneDetail.selectedFilePath}
+              selectedFileMode={laneDetail.selectedFileMode}
+              selectedCommit={laneDetail.selectedCommit}
+            />
+          </DeferredLanePane>
         )
       },
       "work": {
         title: "Work",
         icon: Terminal as any,
         bodyClassName: "overflow-hidden",
-        children: <LaneWorkPane laneId={laneId} />
+        children: (
+          <DeferredLanePane cacheKey={`work:${laneId ?? "none"}`} label="work">
+            <LaneWorkPane laneId={laneId} />
+          </DeferredLanePane>
+        )
       },
     };
   }, [lanePaneDetails, stackGraphLanes, handleLaneSelect, handleSelectFile, handleSelectCommit, expandedGitActionsLaneId, autoRebaseEnabled, openAutoRebaseSettings, runRebaseFlow, openRebaseDetails, openRebaseConflictResolver, laneRuntimeById, integrationSourcesByLaneId]);

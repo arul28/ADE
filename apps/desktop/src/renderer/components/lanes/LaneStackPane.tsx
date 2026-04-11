@@ -4,6 +4,7 @@ import { useNavigate } from "react-router-dom";
 import type { LaneSummary } from "../../../shared/types";
 import type { IntegrationLaneSource } from "../../lib/integrationLanes";
 import { COLORS, LABEL_STYLE, MONO_FONT, SANS_FONT, outlineButton } from "./laneDesignTokens";
+import { logRendererDebugEvent } from "../../lib/debugLog";
 
 const TREE_ROW_H = 28;
 const TREE_INDENT = 22;
@@ -298,6 +299,18 @@ export function LaneStackPane({
   integrationSourcesByLaneId?: Map<string, IntegrationLaneSource[]>;
 }) {
   const navigate = useNavigate();
+  React.useEffect(() => {
+    logRendererDebugEvent("renderer.lanes.stack_pane_mount", {
+      laneCount: lanes.length,
+      selectedLaneId,
+    });
+    return () => {
+      logRendererDebugEvent("renderer.lanes.stack_pane_unmount", {
+        laneCount: lanes.length,
+        selectedLaneId,
+      });
+    };
+  }, [lanes.length, selectedLaneId]);
   const effectiveIntegrationSourcesByLaneId = React.useMemo(
     () => integrationSourcesByLaneId ?? new Map<string, IntegrationLaneSource[]>(),
     [integrationSourcesByLaneId],

@@ -70,6 +70,7 @@ import { useClickOutside } from "../../hooks/useClickOutside";
 import { useAppStore } from "../../state/appStore";
 import { ClaudeCacheTtlBadge } from "../shared/ClaudeCacheTtlBadge";
 import { shouldShowClaudeCacheTtl } from "../../lib/claudeCacheTtl";
+import { getAgentChatModelsCached, getAiStatusCached } from "../../lib/aiDiscoveryCache";
 
 const LAST_MODEL_ID_KEY = "ade.chat.lastModelId";
 const LAST_REASONING_KEY_PREFIX = "ade.chat.lastReasoningEffort";
@@ -699,6 +700,7 @@ export function AgentChatPane({
   /** Callback when lane selection changes in empty state */
   onLaneChange?: (laneId: string) => void;
 }) {
+  const projectRoot = useAppStore((s) => s.project?.rootPath ?? null);
   const navigate = useNavigate();
   const openAiProvidersSettings = useCallback(() => {
     navigate("/settings?tab=ai#ai-providers");
@@ -1090,7 +1092,7 @@ export function AgentChatPane({
 
   const refreshAvailableModels = useCallback(async () => {
     try {
-      const status = await window.ade.ai.getStatus();
+      const status = await getAiStatusCached({ projectRoot });
       setAiStatus(status);
       setProviderConnections({
         claude: status.providerConnections?.claude ?? null,
@@ -1108,10 +1110,10 @@ export function AgentChatPane({
 
     try {
       const [codexModels, claudeModels, cursorModels, openCodeModels] = await Promise.all([
-        window.ade.agentChat.models({ provider: "codex" }).catch(() => []),
-        window.ade.agentChat.models({ provider: "claude" }).catch(() => []),
-        window.ade.agentChat.models({ provider: "cursor" }).catch(() => []),
-        window.ade.agentChat.models({ provider: "opencode" }).catch(() => []),
+        getAgentChatModelsCached({ projectRoot, provider: "codex" }).catch(() => []),
+        getAgentChatModelsCached({ projectRoot, provider: "claude" }).catch(() => []),
+        getAgentChatModelsCached({ projectRoot, provider: "cursor" }).catch(() => []),
+        getAgentChatModelsCached({ projectRoot, provider: "opencode" }).catch(() => []),
       ]);
       const available = new Set<string>();
 
@@ -1152,7 +1154,7 @@ export function AgentChatPane({
       setAvailableModelIds([]);
       return [];
     }
-  }, []);
+  }, [projectRoot]);
 
   const touchSession = useCallback((sessionId: string | null | undefined, touchedAt = new Date().toISOString()) => {
     if (!sessionId) return;

@@ -42,6 +42,7 @@ import { isRunOwnedSession } from "../../lib/sessions";
 import { summarizeTerminalAttention } from "../../lib/terminalAttention";
 import { getStoredZoomLevel, displayZoomToLevel } from "../../lib/zoom";
 import { ONBOARDING_STATUS_UPDATED_EVENT } from "../../lib/onboardingStatusEvents";
+import { logRendererDebugEvent } from "../../lib/debugLog";
 import { cn } from "../ui/cn";
 import {
   describeContextDocHealth,
@@ -189,6 +190,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     (location.pathname === "/work" || location.pathname === "/lanes");
 
   useEffect(() => {
+    logRendererDebugEvent("renderer.route_change", {
+      pathname: location.pathname,
+      projectRoot: project?.rootPath ?? null,
+      showWelcome,
+    });
     console.info(
       `renderer.route_change ${JSON.stringify({
         pathname: location.pathname,

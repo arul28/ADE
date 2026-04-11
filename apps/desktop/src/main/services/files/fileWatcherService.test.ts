@@ -85,6 +85,22 @@ describe("fileWatcherService", () => {
     });
   });
 
+  it("suppresses volatile .ade runtime events even when includeIgnored is true", () => {
+    const service = createFileWatcherService();
+    const callback = vi.fn();
+
+    service.watch({ workspaceId: "ws-1", rootPath: "/repo", senderId: 1, includeIgnored: true }, callback);
+    const handlers = chokidarState.watchers[0]?.handlers;
+    expect(handlers).toBeTruthy();
+
+    handlers?.get("change")?.("/repo/.ade/transcripts/logs/main.jsonl");
+    handlers?.get("change")?.("/repo/.ade/cache/tree-index.json");
+    handlers?.get("change")?.("/repo/.ade/ade.db-wal");
+    vi.runAllTimers();
+
+    expect(callback).not.toHaveBeenCalled();
+  });
+
   it("continues filtering .ade events when includeIgnored is not enabled", () => {
     const service = createFileWatcherService();
     const callback = vi.fn();
@@ -109,6 +125,8 @@ describe("fileWatcherService", () => {
     service.stop("ws-1", 1, false);
     expect(chokidarState.watchers[0]?.close).not.toHaveBeenCalled();
     service.stop("ws-1", 1, false);
+    expect(chokidarState.watchers[0]?.close).not.toHaveBeenCalled();
+    vi.runOnlyPendingTimers();
     expect(chokidarState.watchers[0]?.close).toHaveBeenCalledTimes(1);
   });
 
@@ -125,6 +143,8 @@ describe("fileWatcherService", () => {
     expect(chokidarState.watchers[1]?.close).not.toHaveBeenCalled();
 
     service.stop("ws-1", 1, true);
+    expect(chokidarState.watchers[1]?.close).not.toHaveBeenCalled();
+    vi.runOnlyPendingTimers();
     expect(chokidarState.watchers[1]?.close).toHaveBeenCalledTimes(1);
   });
 
@@ -141,5 +161,41 @@ describe("fileWatcherService", () => {
     service.stopAllForSender(1);
 
     expect(chokidarState.watchers[1]?.close).toHaveBeenCalledTimes(1);
+  });
+
+  it("reuses idle watchers when a view is reopened before the close timer fires", () => {
+    const service = createFileWatcherService();
+
+    service.watch({ workspaceId: "ws-1", rootPath: "/repo", senderId: 1 }, vi.fn());
+    service.stop("ws-1", 1, false);
+
+    expect(chokidarState.watchers[0]?.close).not.toHaveBeenCalled();
+    expect(chokidarState.watchMock).toHaveBeenCalledTimes(1);
+
+    service.watch({ workspaceId: "ws-1", rootPath: "/repo", senderId: 1 }, vi.fn());
+
+    expect(chokidarState.watchers[0]?.close).not.toHaveBeenCalled();
+    expect(chokidarState.watchMock).toHaveBeenCalledTimes(1);
+
+    vi.runOnlyPendingTimers();
+
+    expect(chokidarState.watchers[0]?.close).not.toHaveBeenCalled();
+  });
+
+  it("eventually closes an idle watcher after the grace period expires", () => {
+    const service = createFileWatcherService();
+
+    service.watch({ workspaceId: "ws-1", rootPath: "/repo", senderId: 1 }, vi.fn());
+    service.stop("ws-1", 1, false);
+
+    expect(chokidarState.watchers[0]?.close).not.toHaveBeenCalled();
+
+    vi.runOnlyPendingTimers();
+
+    expect(chokidarState.watchers[0]?.close).toHaveBeenCalledTimes(1);
+
+    service.watch({ workspaceId: "ws-1", rootPath: "/repo", senderId: 1 }, vi.fn());
+
+    expect(chokidarState.watchMock).toHaveBeenCalledTimes(2);
   });
 });

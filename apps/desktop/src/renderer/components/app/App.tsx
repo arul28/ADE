@@ -16,6 +16,7 @@ const Router = (window as any).__adeBrowserMock ? BrowserRouter : HashRouter;
 import { AppShell } from "./AppShell";
 import { RunPage } from "../run/RunPage";
 import { ProjectSetupPage } from "../onboarding/ProjectSetupPage";
+import { logRendererDebugEvent } from "../../lib/debugLog";
 
 const LanesPage = React.lazy(() =>
   import("../lanes/LanesPage").then((m) => ({ default: m.LanesPage }))
@@ -86,6 +87,10 @@ class PageErrorBoundaryInner extends React.Component<
 
   componentDidCatch(error: unknown): void {
     console.error("page.crash", error);
+    logRendererDebugEvent("renderer.page_boundary_crash", {
+      message: error instanceof Error ? error.message : String(error),
+      route: window.location.hash || window.location.pathname,
+    });
   }
 
   render() {

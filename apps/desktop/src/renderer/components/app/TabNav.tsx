@@ -16,6 +16,7 @@ import {
 import { cn } from "../ui/cn";
 import { useAppStore } from "../../state/appStore";
 import { revealLabel } from "../../lib/platform";
+import { logRendererDebugEvent } from "../../lib/debugLog";
 
 const mainItems = [
   { to: "/work", label: "Work", icon: Terminal },
@@ -85,6 +86,14 @@ export function TabNav() {
         key={it.to}
         to={it.to}
         data-active={isActive ? "true" : undefined}
+        onClick={() => {
+          logRendererDebugEvent("renderer.tab_nav.click", {
+            from: location.pathname,
+            to: it.to,
+            showWelcome,
+            hasActiveProject,
+          });
+        }}
         className={cn(
           "ade-shell-sidebar-item group relative flex w-full items-center transition-colors duration-100",
         )}

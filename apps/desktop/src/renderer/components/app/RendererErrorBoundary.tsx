@@ -1,4 +1,5 @@
 import React from "react";
+import { logRendererDebugEvent } from "../../lib/debugLog";
 
 type RendererErrorBoundaryState = {
   hasError: boolean;
@@ -25,6 +26,11 @@ export class RendererErrorBoundary extends React.Component<{ children: React.Rea
       stack: error instanceof Error ? error.stack ?? null : null,
       componentStack: info.componentStack,
       route: window.location.hash || window.location.pathname,
+    });
+    logRendererDebugEvent("renderer.root_boundary_crash", {
+      message: error instanceof Error ? error.message : String(error),
+      route: window.location.hash || window.location.pathname,
+      componentStack: info.componentStack,
     });
   }
 

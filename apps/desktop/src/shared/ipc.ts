@@ -8,6 +8,7 @@ export const IPC = {
   appOpenPath: "ade.app.openPath",
   appWriteClipboardText: "ade.app.writeClipboardText",
   appOpenPathInEditor: "ade.app.openPathInEditor",
+  appLogDebugEvent: "ade.app.logDebugEvent",
   projectOpenRepo: "ade.project.openRepo",
   projectChooseDirectory: "ade.project.chooseDirectory",
   projectOpenAdeFolder: "ade.project.openAdeFolder",

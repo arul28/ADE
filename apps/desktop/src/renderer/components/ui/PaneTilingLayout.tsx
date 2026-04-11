@@ -5,6 +5,7 @@ import { ResizeGutter } from "./ResizeGutter";
 import { FloatingPane } from "./FloatingPane";
 import { useDockLayout } from "./DockLayoutState";
 import { cn } from "./cn";
+import { logRendererDebugEvent } from "../../lib/debugLog";
 import {
   collectLeafIds,
   detectDropEdge,
@@ -312,6 +313,16 @@ export function PaneTilingLayout({
   }, []);
 
   /* ---- Recursive renderer ---- */
+
+  useEffect(() => {
+    logRendererDebugEvent("renderer.pane_layout.ready", {
+      layoutId,
+      loaded,
+      treeLoaded,
+      liveLeafCount: collectLeafIds(liveTree).length,
+      paneCount: Object.keys(panes).length,
+    });
+  }, [layoutId, loaded, treeLoaded, liveTree, panes]);
 
   const renderNode = (
     node: PaneLeaf | PaneSplit,

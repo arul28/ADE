@@ -1778,6 +1778,25 @@ export function registerIpc({
 
   ipcMain.handle(IPC.appPing, async () => "pong" as const);
 
+  ipcMain.on(
+    IPC.appLogDebugEvent,
+    (event, arg: { event?: string; payload?: Record<string, unknown> | null }) => {
+      const ctx = getCtx();
+      const rawEvent = typeof arg?.event === "string" ? arg.event.trim() : "";
+      if (!rawEvent) return;
+      const eventName = rawEvent.startsWith("renderer.")
+        ? rawEvent
+        : `renderer.${rawEvent}`;
+      const payload =
+        arg?.payload && typeof arg.payload === "object" ? arg.payload : {};
+      ctx.logger.info(eventName, {
+        windowId: BrowserWindow.fromWebContents(event.sender)?.id ?? null,
+        projectRoot: ctx.project.rootPath,
+        ...payload,
+      });
+    },
+  );
+
   ipcMain.handle(IPC.appGetProject, async () => {
     const ctx = getCtx();
     return ctx.hasUserSelectedProject ? ctx.project : null;

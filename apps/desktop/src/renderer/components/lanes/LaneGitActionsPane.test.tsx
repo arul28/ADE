@@ -201,6 +201,52 @@ describe("LaneGitActionsPane rescue action", () => {
     );
   }
 
+  it("does not refresh the global lane store on initial mount", async () => {
+    renderPane();
+
+    await screen.findByRole("button", { name: "SYNC" });
+
+    expect(mockStoreState.refreshLanes).not.toHaveBeenCalled();
+    expect(window.ade.diff.getChanges).toHaveBeenCalledWith({ laneId: "lane-1" });
+    expect(window.ade.git.getSyncStatus).toHaveBeenCalledWith({ laneId: "lane-1" });
+    expect(window.ade.git.getSyncStatus).toHaveBeenCalledTimes(1);
+  });
+
+  it("blocks pull and surfaces merge recovery actions when a merge is in progress", async () => {
+    const user = userEvent.setup();
+    mockConflictState = {
+      laneId: "lane-1",
+      kind: "merge",
+      inProgress: true,
+      conflictedFiles: ["src/file.ts"],
+      canContinue: false,
+      canAbort: true,
+    };
+    mockSyncStatus = {
+      hasUpstream: true,
+      upstreamRef: "origin/feature/parent",
+      ahead: 0,
+      behind: 2,
+      diverged: false,
+      recommendedAction: "pull",
+    };
+    (window.ade.git as any).mergeAbort = vi.fn(async () => ({ operationId: "merge-abort", preHeadSha: "abc", postHeadSha: "abc" }));
+    (window.ade.git as any).mergeContinue = vi.fn(async () => ({ operationId: "merge-continue", preHeadSha: "abc", postHeadSha: "abc" }));
+
+    renderPane();
+
+    expect(await screen.findByText(/merge in progress/i)).toBeTruthy();
+    const pullButton = await screen.findByRole("button", { name: /pull/i });
+    expect((pullButton as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByText(/next: resolve merge/i)).toBeTruthy();
+
+    await user.click(screen.getByRole("button", { name: /abort merge/i }));
+
+    await waitFor(() => {
+      expect((window.ade.git as any).mergeAbort).toHaveBeenCalledWith("lane-1");
+    });
+  });
+
   it("enables the rescue button for unstaged-only changes and submits the quick prompt", async () => {
     const user = userEvent.setup();
     renderPane();

@@ -339,4 +339,29 @@ describe("aiIntegrationService", () => {
     expect(ollama?.endpoint).toBe(getLocalProviderDefaultEndpoint("ollama"));
     expect(ollama?.blocker).toBe(`Ollama did not respond at ${getLocalProviderDefaultEndpoint("ollama")}.`);
   });
+
+  it("coalesces concurrent getStatus calls for the same request shape", async () => {
+    const { service } = makeService();
+    let resolveAuth: ((value: Array<Record<string, unknown>>) => void) | null = null;
+    const authPromise = new Promise<Array<Record<string, unknown>>>((resolve) => {
+      resolveAuth = resolve;
+    });
+    mockState.detectAllAuth.mockReturnValue(authPromise);
+
+    const first = service.getStatus();
+    const second = service.getStatus();
+
+    expect(mockState.detectAllAuth).toHaveBeenCalledTimes(1);
+
+    expect(resolveAuth).not.toBeNull();
+    resolveAuth!([
+      { type: "cli-subscription", cli: "claude", path: "/usr/local/bin/claude", authenticated: true, verified: true },
+      { type: "cli-subscription", cli: "codex", path: "/usr/local/bin/codex", authenticated: true, verified: true },
+    ]);
+
+    const [firstStatus, secondStatus] = await Promise.all([first, second]);
+
+    expect(mockState.buildProviderConnections).toHaveBeenCalledTimes(1);
+    expect(secondStatus).toEqual(firstStatus);
+  });
 });

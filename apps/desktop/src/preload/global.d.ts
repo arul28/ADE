@@ -586,6 +586,10 @@ declare global {
           relativePath?: string;
           target: "finder" | "vscode" | "cursor" | "zed";
         }) => Promise<void>;
+        logDebugEvent: (
+          event: string,
+          payload?: Record<string, unknown>,
+        ) => void;
       };
       project: {
         openRepo: () => Promise<ProjectInfo | null>;

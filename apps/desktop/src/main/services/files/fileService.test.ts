@@ -92,4 +92,105 @@ describe("fileService", () => {
       fs.rmSync(rootPath, { recursive: true, force: true });
     }
   });
+
+  it("lists only the requested tree depth without extra file metadata", async () => {
+    const rootPath = fs.mkdtempSync(path.join(os.tmpdir(), "ade-file-service-tree-"));
+    const { execSync } = await import("node:child_process");
+    execSync("git init", { cwd: rootPath, stdio: "ignore" });
+    const laneService = createLaneServiceStub(rootPath);
+    const service = createFileService({ laneService });
+
+    try {
+      fs.mkdirSync(path.join(rootPath, "src"), { recursive: true });
+      fs.writeFileSync(path.join(rootPath, "package.json"), "{\n  \"name\": \"fixture\"\n}\n", "utf8");
+      fs.writeFileSync(path.join(rootPath, "src", "index.ts"), "export const value = 1;\n", "utf8");
+
+      const rootNodes = await service.listTree({
+        workspaceId: "workspace-1",
+        depth: 1,
+        includeIgnored: true,
+      });
+      const nestedNodes = await service.listTree({
+        workspaceId: "workspace-1",
+        parentPath: "src",
+        depth: 1,
+        includeIgnored: true,
+      });
+
+      expect(rootNodes).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            name: "src",
+            path: "src",
+            type: "directory",
+          }),
+          expect.objectContaining({
+            name: "package.json",
+            path: "package.json",
+            type: "file",
+          }),
+        ]),
+      );
+      expect(rootNodes.find((node) => node.path === "src")).not.toHaveProperty("children");
+      expect(rootNodes.find((node) => node.path === "src")).not.toHaveProperty("hasChildren");
+      expect(rootNodes.find((node) => node.path === "package.json")).not.toHaveProperty("size");
+      expect(nestedNodes).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            name: "index.ts",
+            path: "src/index.ts",
+            type: "file",
+          }),
+        ]),
+      );
+      expect(nestedNodes[0]).not.toHaveProperty("size");
+    } finally {
+      fs.rmSync(rootPath, { recursive: true, force: true });
+    }
+  });
+
+  it("returns the primary workspace first", () => {
+    const rootPath = fs.mkdtempSync(path.join(os.tmpdir(), "ade-file-service-workspaces-"));
+    const laneService = {
+      resolveWorkspaceById: vi.fn(),
+      getFilesWorkspaces: vi.fn(() => [
+        {
+          id: "lane-2",
+          kind: "lane",
+          laneId: "lane-2",
+          name: "Lane 2",
+          rootPath: path.join(rootPath, "lane-2"),
+          isReadOnlyByDefault: false,
+        },
+        {
+          id: "primary",
+          kind: "primary",
+          laneId: null,
+          name: "Repo",
+          rootPath,
+          isReadOnlyByDefault: true,
+        },
+        {
+          id: "lane-1",
+          kind: "lane",
+          laneId: "lane-1",
+          name: "Lane 1",
+          rootPath: path.join(rootPath, "lane-1"),
+          isReadOnlyByDefault: false,
+        },
+      ]),
+    } as any;
+    const service = createFileService({ laneService });
+
+    try {
+      const workspaces = service.listWorkspaces();
+      expect(workspaces.map((workspace) => workspace.id)).toEqual([
+        "primary",
+        "lane-2",
+        "lane-1",
+      ]);
+    } finally {
+      fs.rmSync(rootPath, { recursive: true, force: true });
+    }
+  });
 });

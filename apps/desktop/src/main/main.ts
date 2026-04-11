@@ -317,8 +317,35 @@ async function createWindow(logger?: Logger): Promise<BrowserWindow> {
     },
   );
 
+  win.webContents.on(
+    "did-start-navigation",
+    (_event, url, isInPlace, isMainFrame) => {
+      logger?.info("window.did_start_navigation", {
+        windowId: win.id,
+        url,
+        isInPlace,
+        isMainFrame,
+      });
+    },
+  );
+
+  win.webContents.on("did-navigate-in-page", (_event, url, isMainFrame) => {
+    logger?.info("window.did_navigate_in_page", {
+      windowId: win.id,
+      url,
+      isMainFrame,
+    });
+  });
+
   win.webContents.on("did-finish-load", () => {
     logger?.info("window.did_finish_load", {
+      windowId: win.id,
+      url: win.webContents.getURL(),
+    });
+  });
+
+  win.webContents.on("did-stop-loading", () => {
+    logger?.info("window.did_stop_loading", {
       windowId: win.id,
       url: win.webContents.getURL(),
     });

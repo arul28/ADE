@@ -596,6 +596,8 @@ contextBridge.exposeInMainWorld("ade", {
       relativePath?: string;
       target: "finder" | "vscode" | "cursor" | "zed";
     }): Promise<void> => ipcRenderer.invoke(IPC.appOpenPathInEditor, args),
+    logDebugEvent: (event: string, payload: Record<string, unknown> = {}): void =>
+      ipcRenderer.send(IPC.appLogDebugEvent, { event, payload }),
   },
   project: {
     openRepo: async (): Promise<ProjectInfo | null> =>

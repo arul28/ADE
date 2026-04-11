@@ -9,6 +9,7 @@ import { LaneRuntimeBar } from "./LaneRuntimeBar";
 import { RunNetworkPanel } from "./RunNetworkPanel";
 import { AddCommandDialog, type AddCommandInitialValues } from "./AddCommandDialog";
 import { commandArrayToLine, parseCommandLine } from "../../lib/shell";
+import { logRendererDebugEvent } from "../../lib/debugLog";
 import { toRelativeTime } from "../graph/graphHelpers";
 import type {
   ProcessDefinition,
@@ -214,6 +215,13 @@ export function RunPage() {
     [effectiveLaneId, lanes]
   );
 
+  useEffect(() => {
+    logRendererDebugEvent("renderer.run.page_mount");
+    return () => {
+      logRendererDebugEvent("renderer.run.page_unmount");
+    };
+  }, []);
+
   // Sync runLaneId from selectedLaneId
   useEffect(() => {
     if (!runLaneId && selectedLaneId) {
@@ -228,6 +236,10 @@ export function RunPage() {
       return;
     }
 
+    const startedAt = performance.now();
+    logRendererDebugEvent("renderer.run.refresh_definitions.begin", {
+      effectiveLaneId: effectiveLaneIdRef.current ?? null,
+    });
     setLoading(true);
     try {
       const [nextConfig, nextDefs] = await Promise.all([
@@ -236,7 +248,18 @@ export function RunPage() {
       ]);
       setConfig(nextConfig);
       setDefinitions(nextDefs);
+      logRendererDebugEvent("renderer.run.refresh_definitions.done", {
+        effectiveLaneId: effectiveLaneIdRef.current ?? null,
+        durationMs: Math.round(performance.now() - startedAt),
+        definitionCount: nextDefs.length,
+        processCount: nextConfig.effective.processes.length,
+      });
     } catch (err) {
+      logRendererDebugEvent("renderer.run.refresh_definitions.failed", {
+        effectiveLaneId: effectiveLaneIdRef.current ?? null,
+        durationMs: Math.round(performance.now() - startedAt),
+        error: err instanceof Error ? err.message : String(err),
+      });
       console.error("RunPage.refreshDefinitions", err);
     } finally {
       setLoading(false);
@@ -248,10 +271,24 @@ export function RunPage() {
       setRuntime([]);
       return;
     }
+    const startedAt = performance.now();
+    logRendererDebugEvent("renderer.run.refresh_runtime.begin", {
+      effectiveLaneId,
+    });
     try {
       const nextRuntime = await window.ade.processes.listRuntime(effectiveLaneId);
       setRuntime(nextRuntime);
+      logRendererDebugEvent("renderer.run.refresh_runtime.done", {
+        effectiveLaneId,
+        durationMs: Math.round(performance.now() - startedAt),
+        runtimeCount: nextRuntime.length,
+      });
     } catch (err) {
+      logRendererDebugEvent("renderer.run.refresh_runtime.failed", {
+        effectiveLaneId,
+        durationMs: Math.round(performance.now() - startedAt),
+        error: err instanceof Error ? err.message : String(err),
+      });
       console.error("RunPage.refreshRuntime", err);
     }
   }, [effectiveLaneId, showWelcome]);

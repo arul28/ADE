@@ -43,6 +43,7 @@ export function WorkStartSurface({
   const [cliProvider, setCliProvider] = useState<CliProvider>("claude");
   const [cliPermissionMode, setCliPermissionMode] = useState<AgentChatPermissionMode>("default");
   const [launchBusy, setLaunchBusy] = useState(false);
+  const [chatDraftReady, setChatDraftReady] = useState(false);
   const selectedLane = useMemo(
     () => lanes.find((lane) => lane.id === selectedLaneId) ?? lanes[0] ?? null,
     [lanes, selectedLaneId],
@@ -83,6 +84,17 @@ export function WorkStartSurface({
       setCliPermissionMode(defaultPermission);
     }
   }, [cliPermissionMode, cliPermissionOptions, cliProvider]);
+
+  useEffect(() => {
+    if (draftKind !== "chat") {
+      setChatDraftReady(false);
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      setChatDraftReady(true);
+    }, 140);
+    return () => window.clearTimeout(timer);
+  }, [draftKind]);
 
   const launchCli = async () => {
     if (!selectedLaneId || launchBusy) return;
@@ -134,16 +146,27 @@ export function WorkStartSurface({
     return (
       <div className="flex h-full min-h-0 flex-col" style={{ background: "var(--color-bg)" }}>
         <div className="min-h-0 flex-1 overflow-hidden">
-          <AgentChatPane
-            laneId={selectedLaneId}
-            laneLabel={selectedLane?.name ?? selectedLaneId}
-            hideSessionTabs
-            forceDraftMode
-            embeddedWorkLayout
-            onSessionCreated={onOpenChatSession}
-            availableLanes={lanes}
-            onLaneChange={setLaneAndSync}
-          />
+          {chatDraftReady ? (
+            <AgentChatPane
+              laneId={selectedLaneId}
+              laneLabel={selectedLane?.name ?? selectedLaneId}
+              hideSessionTabs
+              forceDraftMode
+              embeddedWorkLayout
+              onSessionCreated={onOpenChatSession}
+              availableLanes={lanes}
+              onLaneChange={setLaneAndSync}
+            />
+          ) : (
+            <div className="flex h-full items-center justify-center px-6">
+              <div className="rounded-lg px-4 py-3 text-center" style={{ background: "rgba(255,255,255,0.03)" }}>
+                <div className="text-[12px] font-medium text-fg">Preparing chat draft</div>
+                <div className="mt-1.5 text-[11px] text-muted-fg">
+                  ADE waits briefly before mounting the full chat surface so fast tab switches stay cheap.
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       </div>
     );
