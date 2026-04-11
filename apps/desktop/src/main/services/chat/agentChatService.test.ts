@@ -159,6 +159,7 @@ vi.mock("../opencode/openCodeRuntime", () => ({
     { type: "text", text: prompt },
     ...files,
   ]),
+  refreshOpenCodeSessionToolSelection: vi.fn(async () => null),
   mapPermissionModeToOpenCodeAgent: vi.fn((mode: string) => {
     if (mode === "plan") return "ade-plan";
     if (mode === "full-auto") return "ade-full-auto";

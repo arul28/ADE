@@ -11,6 +11,7 @@ const mockState = vi.hoisted(() => ({
 vi.mock("../opencode/openCodeRuntime", () => ({
   buildOpenCodePromptParts: vi.fn(({ prompt }: { prompt: string }) => [{ type: "text", text: prompt }]),
   mapPermissionModeToOpenCodeAgent: vi.fn(() => "ade-plan"),
+  refreshOpenCodeSessionToolSelection: vi.fn(async () => null),
   resolveOpenCodeModelSelection: vi.fn((descriptor: Record<string, unknown>) => ({
     providerID: String(descriptor.family ?? "anthropic"),
     modelID: String(descriptor.providerModelId ?? descriptor.id ?? "model"),
