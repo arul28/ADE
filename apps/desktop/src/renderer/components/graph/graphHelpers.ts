@@ -21,15 +21,18 @@ export const VIEW_MODE_META: Record<GraphViewMode, { label: string; helper: stri
   },
   stack: {
     label: "Dependencies",
-    helper: "Follow parent-child lane relationships and drag lanes to change how work is stacked."
+    helper:
+      "Same top-down tree as Overview: primary on top, children row by row. Drag lanes to change how work is stacked."
   },
   risk: {
     label: "Conflict Risk",
-    helper: "Highlight overlapping work and jump into the pair matrix when you need file-level conflict detail."
+    helper:
+      "Same tree layout as Overview; risk edges highlight overlapping work. Open the pair matrix for file-level detail."
   },
   activity: {
     label: "Activity",
-    helper: "Surface the lanes with the most recent work, sessions, and movement."
+    helper:
+      "Same tree rows as other modes; siblings within a row sort by recent activity, then stack depth and name."
   }
 };
 

@@ -131,82 +131,23 @@ export function laneHierarchyFromPrimary(lanes: LaneSummary[]): {
   return { primary, depthByLaneId, parentNameByLaneId };
 }
 
-export function buildTreeDepth(lanes: LaneSummary[]): Map<string, number> {
-  const byId = new Map(lanes.map((lane) => [lane.id, lane] as const));
-  const cache = new Map<string, number>();
-  const visit = (laneId: string): number => {
-    const existing = cache.get(laneId);
-    if (existing != null) return existing;
-    const lane = byId.get(laneId);
-    if (!lane || !lane.parentLaneId || !byId.has(lane.parentLaneId)) {
-      cache.set(laneId, 0);
-      return 0;
-    }
-    const depth = visit(lane.parentLaneId) + 1;
-    cache.set(laneId, depth);
-    return depth;
-  };
-  for (const lane of lanes) visit(lane.id);
-  return cache;
-}
-
-export function computeAutoLayout(
+/** Shared auto-layout: primary centered on top row, descendants on deeper rows (same for every view mode). */
+function layoutPrimaryCentricRows(
   lanes: LaneSummary[],
-  viewMode: GraphViewMode,
   activityScoreByLaneId: Record<string, number>,
-  _environmentByLaneId: Record<string, { env: string; color: string | null }>
+  tieBreak: "stack" | "activity"
 ): Record<string, { x: number; y: number }> {
   const positions: Record<string, { x: number; y: number }> = {};
   if (lanes.length === 0) return positions;
 
-  if (viewMode === "stack") {
-    const depthMap = buildTreeDepth(lanes);
-    const lanesByDepth = new Map<number, LaneSummary[]>();
-    for (const lane of lanes) {
-      const depth = depthMap.get(lane.id) ?? 0;
-      const list = lanesByDepth.get(depth) ?? [];
-      list.push(lane);
-      lanesByDepth.set(depth, list);
-    }
-    for (const [depth, levelLanes] of lanesByDepth.entries()) {
-      levelLanes.sort((a, b) => a.name.localeCompare(b.name));
-      levelLanes.forEach((lane, index) => {
-        positions[lane.id] = { x: index * 220, y: depth * 170 };
-      });
-    }
-    return positions;
-  }
-
-  if (viewMode === "risk") {
-    const radius = Math.max(180, lanes.length * 24);
-    const centerX = 380;
-    const centerY = 260;
-    lanes.forEach((lane, index) => {
-      const angle = (index / lanes.length) * Math.PI * 2;
-      positions[lane.id] = {
-        x: centerX + Math.cos(angle) * radius,
-        y: centerY + Math.sin(angle) * radius
-      };
-    });
-    return positions;
-  }
-
-  if (viewMode === "activity") {
-    const sorted = [...lanes].sort((a, b) => (activityScoreByLaneId[b.id] ?? 0) - (activityScoreByLaneId[a.id] ?? 0));
-    const cols = Math.max(1, Math.ceil(Math.sqrt(sorted.length)));
-    sorted.forEach((lane, index) => {
-      positions[lane.id] = {
-        x: (index % cols) * 230,
-        y: Math.floor(index / cols) * 180
-      };
-    });
-    return positions;
-  }
-
-  // Overview ("all"): primary at the top, then each generation of descendants on its own row.
   const { depthByLaneId } = laneHierarchyFromPrimary(lanes);
 
   const compareLanes = (a: LaneSummary, b: LaneSummary) => {
+    if (tieBreak === "activity") {
+      const scoreA = activityScoreByLaneId[a.id] ?? 0;
+      const scoreB = activityScoreByLaneId[b.id] ?? 0;
+      if (scoreB !== scoreA) return scoreB - scoreA;
+    }
     if (a.stackDepth !== b.stackDepth) return a.stackDepth - b.stackDepth;
     const nameCmp = a.name.localeCompare(b.name);
     if (nameCmp !== 0) return nameCmp;
@@ -247,4 +188,14 @@ export function computeAutoLayout(
   }
 
   return positions;
+}
+
+export function computeAutoLayout(
+  lanes: LaneSummary[],
+  viewMode: GraphViewMode,
+  activityScoreByLaneId: Record<string, number>,
+  _environmentByLaneId: Record<string, { env: string; color: string | null }>
+): Record<string, { x: number; y: number }> {
+  const tieBreak: "stack" | "activity" = viewMode === "activity" ? "activity" : "stack";
+  return layoutPrimaryCentricRows(lanes, activityScoreByLaneId, tieBreak);
 }

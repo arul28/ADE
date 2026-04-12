@@ -102,3 +102,29 @@ describe("computeAutoLayout overview", () => {
     expect(pos.y!.x).toBeLessThan(pos.x!.x);
   });
 });
+
+describe("computeAutoLayout aligned modes", () => {
+  it("matches stack and risk positions to overview for the same lanes", () => {
+    const lanes = [
+      lane({ id: "p", name: "main", laneType: "primary", parentLaneId: null, stackDepth: 0 }),
+      lane({ id: "c", name: "child", laneType: "worktree", parentLaneId: "p", stackDepth: 1 })
+    ];
+    const allPos = computeAutoLayout(lanes, "all", {}, {});
+    const stackPos = computeAutoLayout(lanes, "stack", {}, {});
+    const riskPos = computeAutoLayout(lanes, "risk", {}, {});
+    expect(stackPos).toEqual(allPos);
+    expect(riskPos).toEqual(allPos);
+  });
+
+  it("activity mode sorts siblings by activity score within the same depth", () => {
+    const lanes = [
+      lane({ id: "p", name: "main", laneType: "primary", parentLaneId: null, stackDepth: 0 }),
+      lane({ id: "low", name: "low", laneType: "worktree", parentLaneId: "p", stackDepth: 1 }),
+      lane({ id: "high", name: "high", laneType: "worktree", parentLaneId: "p", stackDepth: 1 })
+    ];
+    const scores = { low: 1, high: 99 };
+    const pos = computeAutoLayout(lanes, "activity", scores, {});
+    expect(pos.low!.y).toBe(pos.high!.y);
+    expect(pos.high!.x).toBeLessThan(pos.low!.x);
+  });
+});
