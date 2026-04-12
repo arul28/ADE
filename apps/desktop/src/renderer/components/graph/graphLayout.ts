@@ -96,6 +96,41 @@ export function normalizeGraphPreferences(state: unknown): {
   };
 }
 
+/** Workspace primary lane and hierarchy relative to it (for overview layout and cards). */
+export function laneHierarchyFromPrimary(lanes: LaneSummary[]): {
+  primary: LaneSummary;
+  depthByLaneId: Map<string, number>;
+  parentNameByLaneId: Map<string, string | null>;
+} {
+  const primary = lanes.find((lane) => lane.laneType === "primary") ?? lanes[0]!;
+  const byId = new Map(lanes.map((lane) => [lane.id, lane] as const));
+  const depthByLaneId = new Map<string, number>();
+  const parentNameByLaneId = new Map<string, string | null>();
+
+  const depthFromPrimary = (laneId: string): number => {
+    if (laneId === primary.id) return 0;
+    const seen = new Set<string>();
+    let hops = 0;
+    let cur: LaneSummary | undefined = byId.get(laneId);
+    while (cur && cur.id !== primary.id) {
+      if (seen.has(cur.id)) return 10_000;
+      seen.add(cur.id);
+      if (!cur.parentLaneId) return 10_000;
+      cur = byId.get(cur.parentLaneId);
+      hops += 1;
+    }
+    return cur?.id === primary.id ? hops : 10_000;
+  };
+
+  for (const lane of lanes) {
+    depthByLaneId.set(lane.id, depthFromPrimary(lane.id));
+    const parent = lane.parentLaneId ? byId.get(lane.parentLaneId) : null;
+    parentNameByLaneId.set(lane.id, parent?.name ?? null);
+  }
+
+  return { primary, depthByLaneId, parentNameByLaneId };
+}
+
 export function buildTreeDepth(lanes: LaneSummary[]): Map<string, number> {
   const byId = new Map(lanes.map((lane) => [lane.id, lane] as const));
   const cache = new Map<string, number>();
@@ -119,7 +154,7 @@ export function computeAutoLayout(
   lanes: LaneSummary[],
   viewMode: GraphViewMode,
   activityScoreByLaneId: Record<string, number>,
-  environmentByLaneId: Record<string, { env: string; color: string | null }>
+  _environmentByLaneId: Record<string, { env: string; color: string | null }>
 ): Record<string, { x: number; y: number }> {
   const positions: Record<string, { x: number; y: number }> = {};
   if (lanes.length === 0) return positions;
@@ -168,28 +203,48 @@ export function computeAutoLayout(
     return positions;
   }
 
-  const primary = lanes.find((lane) => lane.laneType === "primary") ?? lanes[0]!;
-  positions[primary.id] = { x: 420, y: 240 };
-  const rest = lanes.filter((lane) => lane.id !== primary.id);
-  const core = rest.filter((lane) => Boolean(environmentByLaneId[lane.id]));
-  const others = rest.filter((lane) => !environmentByLaneId[lane.id]);
+  // Overview ("all"): primary at the top, then each generation of descendants on its own row.
+  const { depthByLaneId } = laneHierarchyFromPrimary(lanes);
 
-  const innerRadius = Math.max(160, core.length * 26);
-  core.forEach((lane, index) => {
-    const angle = (index / Math.max(1, core.length)) * Math.PI * 2;
-    positions[lane.id] = {
-      x: 420 + Math.cos(angle) * innerRadius,
-      y: 240 + Math.sin(angle) * innerRadius
-    };
-  });
+  const compareLanes = (a: LaneSummary, b: LaneSummary) => {
+    if (a.stackDepth !== b.stackDepth) return a.stackDepth - b.stackDepth;
+    const nameCmp = a.name.localeCompare(b.name);
+    if (nameCmp !== 0) return nameCmp;
+    return a.createdAt.localeCompare(b.createdAt);
+  };
 
-  const outerRadius = Math.max(260, others.length * 26);
-  others.forEach((lane, index) => {
-    const angle = (index / Math.max(1, others.length)) * Math.PI * 2;
-    positions[lane.id] = {
-      x: 420 + Math.cos(angle) * outerRadius,
-      y: 240 + Math.sin(angle) * outerRadius
-    };
-  });
+  const depthBuckets = new Map<number, LaneSummary[]>();
+  for (const lane of lanes) {
+    const depth = depthByLaneId.get(lane.id) ?? 10_000;
+    const list = depthBuckets.get(depth) ?? [];
+    list.push(lane);
+    depthBuckets.set(depth, list);
+  }
+
+  const X_PITCH = 252;
+  const Y_STEP = 168;
+
+  const finiteDepths = [...depthBuckets.keys()].filter((d) => d < 5000).sort((a, b) => a - b);
+  const maxFiniteDepth = finiteDepths.length > 0 ? Math.max(...finiteDepths) : 0;
+
+  for (const depth of finiteDepths) {
+    const row = (depthBuckets.get(depth) ?? []).slice().sort(compareLanes);
+    const rowWidth = Math.max(1, row.length) * X_PITCH;
+    row.forEach((lane, index) => {
+      const x = index * X_PITCH - (rowWidth - X_PITCH) / 2;
+      positions[lane.id] = { x, y: depth * Y_STEP };
+    });
+  }
+
+  const orphans = (depthBuckets.get(10_000) ?? []).slice().sort(compareLanes);
+  if (orphans.length > 0) {
+    const baseY = (maxFiniteDepth + 1) * Y_STEP + 40;
+    const rowWidth = Math.max(1, orphans.length) * X_PITCH;
+    orphans.forEach((lane, index) => {
+      const x = index * X_PITCH - (rowWidth - X_PITCH) / 2;
+      positions[lane.id] = { x, y: baseY };
+    });
+  }
+
   return positions;
 }

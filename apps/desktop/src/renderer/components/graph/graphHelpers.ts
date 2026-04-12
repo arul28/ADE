@@ -16,7 +16,8 @@ export const VIEW_MODES: GraphViewMode[] = ["stack", "risk", "activity", "all"];
 export const VIEW_MODE_META: Record<GraphViewMode, { label: string; helper: string }> = {
   all: {
     label: "Overview",
-    helper: "See the full workspace map with dependencies, environments, and active pull requests."
+    helper:
+      "Primary lane on top, children row by row. Solid lines are stack order; use Show overlap web for conflict-risk links."
   },
   stack: {
     label: "Dependencies",
@@ -169,9 +170,9 @@ export function nodeDimensions(
     if (bucket === "high") return { width: 200, height: 100 };
     return { width: 160, height: 80 };
   }
-  if (isIntegration) return { width: 220, height: integrationSourceCount > 2 ? 122 : 110 };
-  if (lane.laneType === "primary") return { width: 200, height: 100 };
-  return { width: 160, height: 80 };
+  if (isIntegration) return { width: 228, height: integrationSourceCount > 2 ? 130 : 118 };
+  if (lane.laneType === "primary") return { width: 228, height: 132 };
+  return { width: 208, height: 124 };
 }
 
 export function branchNameFromRef(ref: string): string {
