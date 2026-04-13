@@ -38,6 +38,7 @@ import { revealLabel } from "../../lib/platform";
 import { logRendererDebugEvent } from "../../lib/debugLog";
 import { COLORS, MONO_FONT, SANS_FONT, LABEL_STYLE, inlineBadge, outlineButton, primaryButton, dangerButton, cardStyle } from "../lanes/laneDesignTokens";
 import { cn } from "../ui/cn";
+import { SmartTooltip } from "../ui/SmartTooltip";
 type OpenTab = {
   path: string;
   content: string;
@@ -1605,26 +1606,30 @@ export function FilesPage() {
       meta: activeWorkspace?.name,
       headerActions: (
         <div className="flex items-center gap-1">
-          <button
-            type="button"
-            title="New file"
-            style={{ ...outlineButton({ height: 24, padding: "0 6px", fontSize: 10 }) }}
-            onClick={() => createFileAt(activeContextDir).catch((err) => setError(err instanceof Error ? err.message : String(err)))}
-            onMouseEnter={(e) => { e.currentTarget.style.borderColor = COLORS.accent; e.currentTarget.style.color = COLORS.accent; }}
-            onMouseLeave={(e) => { e.currentTarget.style.borderColor = COLORS.outlineBorder; e.currentTarget.style.color = COLORS.textSecondary; }}
-          >
-            <FilePlus2 size={12} weight="regular" />
-          </button>
-          <button
-            type="button"
-            title="New folder"
-            style={{ ...outlineButton({ height: 24, padding: "0 6px", fontSize: 10 }) }}
-            onClick={() => createDirectoryAt(activeContextDir).catch((err) => setError(err instanceof Error ? err.message : String(err)))}
-            onMouseEnter={(e) => { e.currentTarget.style.borderColor = COLORS.accent; e.currentTarget.style.color = COLORS.accent; }}
-            onMouseLeave={(e) => { e.currentTarget.style.borderColor = COLORS.outlineBorder; e.currentTarget.style.color = COLORS.textSecondary; }}
-          >
-            <FolderPlus size={12} weight="regular" />
-          </button>
+          <SmartTooltip content={{ label: "New File", description: "Create a new file in the current directory." }}>
+            <button
+              type="button"
+              title="New file"
+              style={{ ...outlineButton({ height: 24, padding: "0 6px", fontSize: 10 }) }}
+              onClick={() => createFileAt(activeContextDir).catch((err) => setError(err instanceof Error ? err.message : String(err)))}
+              onMouseEnter={(e) => { e.currentTarget.style.borderColor = COLORS.accent; e.currentTarget.style.color = COLORS.accent; }}
+              onMouseLeave={(e) => { e.currentTarget.style.borderColor = COLORS.outlineBorder; e.currentTarget.style.color = COLORS.textSecondary; }}
+            >
+              <FilePlus2 size={12} weight="regular" />
+            </button>
+          </SmartTooltip>
+          <SmartTooltip content={{ label: "New Folder", description: "Create a new folder in the current directory." }}>
+            <button
+              type="button"
+              title="New folder"
+              style={{ ...outlineButton({ height: 24, padding: "0 6px", fontSize: 10 }) }}
+              onClick={() => createDirectoryAt(activeContextDir).catch((err) => setError(err instanceof Error ? err.message : String(err)))}
+              onMouseEnter={(e) => { e.currentTarget.style.borderColor = COLORS.accent; e.currentTarget.style.color = COLORS.accent; }}
+              onMouseLeave={(e) => { e.currentTarget.style.borderColor = COLORS.outlineBorder; e.currentTarget.style.color = COLORS.textSecondary; }}
+            >
+              <FolderPlus size={12} weight="regular" />
+            </button>
+          </SmartTooltip>
         </div>
       ),
       bodyClassName: "flex min-h-0 flex-col overflow-hidden",
@@ -1662,15 +1667,17 @@ export function FilesPage() {
               ) : null}
             </div>
             <div className="mt-1.5 flex items-center justify-end">
-              <button
-                type="button"
-                style={{ ...outlineButton({ height: 22, padding: "0 8px", fontSize: 9 }) }}
-                onClick={() => setShowQuickOpen(true)}
-                onMouseEnter={(e) => { e.currentTarget.style.borderColor = COLORS.accent; e.currentTarget.style.color = COLORS.accent; }}
-                onMouseLeave={(e) => { e.currentTarget.style.borderColor = COLORS.outlineBorder; e.currentTarget.style.color = COLORS.textSecondary; }}
-              >
-                <Search size={10} /> QUICK OPEN
-              </button>
+              <SmartTooltip content={{ label: "Quick Open", description: "Search and open any file in the project.", shortcut: "\u2318P" }}>
+                <button
+                  type="button"
+                  style={{ ...outlineButton({ height: 22, padding: "0 8px", fontSize: 9 }) }}
+                  onClick={() => setShowQuickOpen(true)}
+                  onMouseEnter={(e) => { e.currentTarget.style.borderColor = COLORS.accent; e.currentTarget.style.color = COLORS.accent; }}
+                  onMouseLeave={(e) => { e.currentTarget.style.borderColor = COLORS.outlineBorder; e.currentTarget.style.color = COLORS.textSecondary; }}
+                >
+                  <Search size={10} /> QUICK OPEN
+                </button>
+              </SmartTooltip>
             </div>
           </div>
           {/* Search results */}
@@ -1714,49 +1721,55 @@ export function FilesPage() {
           <div className="inline-flex items-center" style={{ border: `1px solid ${COLORS.outlineBorder}`, borderRadius: 8, overflow: "hidden" }}>
             {(["edit", "diff", "conflict"] as const).map((m) => {
               const label = m === "edit" ? "CODE" : m === "diff" ? "CHANGES" : "MERGE";
+              const description = m === "edit" ? "View and edit the file content." : m === "diff" ? "View the diff between working changes and the last commit." : "View and resolve merge conflicts.";
               const isActive = mode === m;
               const disabled = m === "diff" ? (!laneIdForDiff || !activeTabPath) : m === "conflict" ? !activeTabPath : false;
               return (
-                <button
-                  key={m}
-                  type="button"
-                  style={{
-                    height: 24, padding: "0 10px",
-                    fontFamily: MONO_FONT, fontSize: 9, fontWeight: 700, letterSpacing: "1px",
-                    color: isActive ? COLORS.pageBg : disabled ? COLORS.textDim : COLORS.textMuted,
-                    background: isActive ? COLORS.accent : "transparent",
-                    border: "none", cursor: disabled ? "default" : "pointer",
-                    opacity: disabled ? 0.4 : 1,
-                  }}
-                  onClick={() => !disabled && setMode(m)}
-                  disabled={disabled}
-                >
-                  {label}
-                </button>
+                <SmartTooltip key={m} content={{ label, description }}>
+                  <button
+                    type="button"
+                    style={{
+                      height: 24, padding: "0 10px",
+                      fontFamily: MONO_FONT, fontSize: 9, fontWeight: 700, letterSpacing: "1px",
+                      color: isActive ? COLORS.pageBg : disabled ? COLORS.textDim : COLORS.textMuted,
+                      background: isActive ? COLORS.accent : "transparent",
+                      border: "none", cursor: disabled ? "default" : "pointer",
+                      opacity: disabled ? 0.4 : 1,
+                    }}
+                    onClick={() => !disabled && setMode(m)}
+                    disabled={disabled}
+                  >
+                    {label}
+                  </button>
+                </SmartTooltip>
               );
             })}
           </div>
-          <button
-            type="button"
-            style={{ ...outlineButton({ height: 24, padding: "0 8px", fontSize: 9 }) }}
-            onClick={() => setEditorTheme((prev) => (prev === "dark" ? "light" : "dark"))}
-            title="Toggle editor theme"
-            onMouseEnter={(e) => { e.currentTarget.style.borderColor = COLORS.accent; e.currentTarget.style.color = COLORS.accent; }}
-            onMouseLeave={(e) => { e.currentTarget.style.borderColor = COLORS.outlineBorder; e.currentTarget.style.color = COLORS.textSecondary; }}
-          >
-            {editorTheme === "dark" ? "LIGHT" : "DARK"}
-          </button>
-          <button
-            type="button"
-            style={{
-              ...primaryButton({ height: 24, padding: "0 10px", fontSize: 9 }),
-              opacity: (!activeTab || !canEdit || activeTab.isBinary) ? 0.35 : 1,
-            }}
-            onClick={() => saveActive().catch(() => {})}
-            disabled={!activeTab || !canEdit || activeTab.isBinary}
-          >
-            <Save size={11} weight="bold" /> SAVE
-          </button>
+          <SmartTooltip content={{ label: "Toggle Theme", description: "Switch the editor between light and dark theme." }}>
+            <button
+              type="button"
+              style={{ ...outlineButton({ height: 24, padding: "0 8px", fontSize: 9 }) }}
+              onClick={() => setEditorTheme((prev) => (prev === "dark" ? "light" : "dark"))}
+              title="Toggle editor theme"
+              onMouseEnter={(e) => { e.currentTarget.style.borderColor = COLORS.accent; e.currentTarget.style.color = COLORS.accent; }}
+              onMouseLeave={(e) => { e.currentTarget.style.borderColor = COLORS.outlineBorder; e.currentTarget.style.color = COLORS.textSecondary; }}
+            >
+              {editorTheme === "dark" ? "LIGHT" : "DARK"}
+            </button>
+          </SmartTooltip>
+          <SmartTooltip content={{ label: "Save", description: "Save the current file to disk.", shortcut: "\u2318S" }}>
+            <button
+              type="button"
+              style={{
+                ...primaryButton({ height: 24, padding: "0 10px", fontSize: 9 }),
+                opacity: (!activeTab || !canEdit || activeTab.isBinary) ? 0.35 : 1,
+              }}
+              onClick={() => saveActive().catch(() => {})}
+              disabled={!activeTab || !canEdit || activeTab.isBinary}
+            >
+              <Save size={11} weight="bold" /> SAVE
+            </button>
+          </SmartTooltip>
         </div>
       ),
       bodyClassName: "flex flex-col",
@@ -1837,15 +1850,21 @@ export function FilesPage() {
                       {activeContextChangeStatus === "A" ? "ADDED" : activeContextChangeStatus === "D" ? "DELETED" : activeContextChangeStatus === "M" ? "MODIFIED" : activeContextChangeStatus}
                     </span>
                   ) : null}
-                  <button type="button" style={outlineButton({ height: 22, padding: "0 8px", fontSize: 9 })} title="git add" onClick={() => stagePath(activeContextPath).catch((err) => setError(err instanceof Error ? err.message : String(err)))}
-                    onMouseEnter={(e) => { e.currentTarget.style.borderColor = COLORS.success; e.currentTarget.style.color = COLORS.success; }}
-                    onMouseLeave={(e) => { e.currentTarget.style.borderColor = COLORS.outlineBorder; e.currentTarget.style.color = COLORS.textSecondary; }}
-                  >STAGE</button>
-                  <button type="button" style={outlineButton({ height: 22, padding: "0 8px", fontSize: 9 })} title="git reset" onClick={() => unstagePath(activeContextPath).catch((err) => setError(err instanceof Error ? err.message : String(err)))}
-                    onMouseEnter={(e) => { e.currentTarget.style.borderColor = COLORS.warning; e.currentTarget.style.color = COLORS.warning; }}
-                    onMouseLeave={(e) => { e.currentTarget.style.borderColor = COLORS.outlineBorder; e.currentTarget.style.color = COLORS.textSecondary; }}
-                  >UNSTAGE</button>
-                  <button type="button" style={dangerButton({ height: 22, padding: "0 8px", fontSize: 9 })} title="Discard local changes" onClick={() => discardPath(activeContextPath).catch((err) => setError(err instanceof Error ? err.message : String(err)))}>DISCARD</button>
+                  <SmartTooltip content={{ label: "Stage", description: "Add this file to the git staging area.", gitCommand: "git add <file>" }}>
+                    <button type="button" style={outlineButton({ height: 22, padding: "0 8px", fontSize: 9 })} title="git add" onClick={() => stagePath(activeContextPath).catch((err) => setError(err instanceof Error ? err.message : String(err)))}
+                      onMouseEnter={(e) => { e.currentTarget.style.borderColor = COLORS.success; e.currentTarget.style.color = COLORS.success; }}
+                      onMouseLeave={(e) => { e.currentTarget.style.borderColor = COLORS.outlineBorder; e.currentTarget.style.color = COLORS.textSecondary; }}
+                    >STAGE</button>
+                  </SmartTooltip>
+                  <SmartTooltip content={{ label: "Unstage", description: "Remove this file from the staging area.", gitCommand: "git reset HEAD <file>" }}>
+                    <button type="button" style={outlineButton({ height: 22, padding: "0 8px", fontSize: 9 })} title="git reset" onClick={() => unstagePath(activeContextPath).catch((err) => setError(err instanceof Error ? err.message : String(err)))}
+                      onMouseEnter={(e) => { e.currentTarget.style.borderColor = COLORS.warning; e.currentTarget.style.color = COLORS.warning; }}
+                      onMouseLeave={(e) => { e.currentTarget.style.borderColor = COLORS.outlineBorder; e.currentTarget.style.color = COLORS.textSecondary; }}
+                    >UNSTAGE</button>
+                  </SmartTooltip>
+                  <SmartTooltip content={{ label: "Discard", description: "Revert this file to its last committed state.", gitCommand: "git checkout -- <file>", warning: "This cannot be undone" }}>
+                    <button type="button" style={dangerButton({ height: 22, padding: "0 8px", fontSize: 9 })} title="Discard local changes" onClick={() => discardPath(activeContextPath).catch((err) => setError(err instanceof Error ? err.message : String(err)))}>DISCARD</button>
+                  </SmartTooltip>
                 </>
               ) : null}
             </div>
@@ -1935,18 +1954,24 @@ export function FilesPage() {
                             ) : null}
                           </div>
                           <div className="flex gap-1" style={{ marginTop: 6 }}>
-                            <button type="button" style={outlineButton({ height: 22, padding: "0 6px", fontSize: 8 })} onClick={() => applyConflictResolution(hunk, "ours")}
-                              onMouseEnter={(e) => { e.currentTarget.style.borderColor = COLORS.info; e.currentTarget.style.color = COLORS.info; }}
-                              onMouseLeave={(e) => { e.currentTarget.style.borderColor = COLORS.outlineBorder; e.currentTarget.style.color = COLORS.textSecondary; }}
-                            >OURS</button>
-                            <button type="button" style={outlineButton({ height: 22, padding: "0 6px", fontSize: 8 })} onClick={() => applyConflictResolution(hunk, "theirs")}
-                              onMouseEnter={(e) => { e.currentTarget.style.borderColor = COLORS.warning; e.currentTarget.style.color = COLORS.warning; }}
-                              onMouseLeave={(e) => { e.currentTarget.style.borderColor = COLORS.outlineBorder; e.currentTarget.style.color = COLORS.textSecondary; }}
-                            >THEIRS</button>
-                            <button type="button" style={outlineButton({ height: 22, padding: "0 6px", fontSize: 8 })} onClick={() => applyConflictResolution(hunk, "both")}
-                              onMouseEnter={(e) => { e.currentTarget.style.borderColor = COLORS.accent; e.currentTarget.style.color = COLORS.accent; }}
-                              onMouseLeave={(e) => { e.currentTarget.style.borderColor = COLORS.outlineBorder; e.currentTarget.style.color = COLORS.textSecondary; }}
-                            >BOTH</button>
+                            <SmartTooltip content={{ label: "Keep Ours", description: "Accept your version of this conflict." }}>
+                              <button type="button" style={outlineButton({ height: 22, padding: "0 6px", fontSize: 8 })} onClick={() => applyConflictResolution(hunk, "ours")}
+                                onMouseEnter={(e) => { e.currentTarget.style.borderColor = COLORS.info; e.currentTarget.style.color = COLORS.info; }}
+                                onMouseLeave={(e) => { e.currentTarget.style.borderColor = COLORS.outlineBorder; e.currentTarget.style.color = COLORS.textSecondary; }}
+                              >OURS</button>
+                            </SmartTooltip>
+                            <SmartTooltip content={{ label: "Keep Theirs", description: "Accept their version of this conflict." }}>
+                              <button type="button" style={outlineButton({ height: 22, padding: "0 6px", fontSize: 8 })} onClick={() => applyConflictResolution(hunk, "theirs")}
+                                onMouseEnter={(e) => { e.currentTarget.style.borderColor = COLORS.warning; e.currentTarget.style.color = COLORS.warning; }}
+                                onMouseLeave={(e) => { e.currentTarget.style.borderColor = COLORS.outlineBorder; e.currentTarget.style.color = COLORS.textSecondary; }}
+                              >THEIRS</button>
+                            </SmartTooltip>
+                            <SmartTooltip content={{ label: "Keep Both", description: "Keep both versions, yours first then theirs." }}>
+                              <button type="button" style={outlineButton({ height: 22, padding: "0 6px", fontSize: 8 })} onClick={() => applyConflictResolution(hunk, "both")}
+                                onMouseEnter={(e) => { e.currentTarget.style.borderColor = COLORS.accent; e.currentTarget.style.color = COLORS.accent; }}
+                                onMouseLeave={(e) => { e.currentTarget.style.borderColor = COLORS.outlineBorder; e.currentTarget.style.color = COLORS.textSecondary; }}
+                              >BOTH</button>
+                            </SmartTooltip>
                           </div>
                         </div>
                       );
@@ -1981,23 +2006,25 @@ export function FilesPage() {
       icon: TerminalSquare,
       meta: laneIdForDiff ? `lane ${activeWorkspace?.name ?? ""}` : "Pick a lane workspace",
       headerActions: (
-        <button
-          type="button"
-          style={{
-            ...outlineButton({ height: 22, padding: "0 8px", fontSize: 9 }),
-            opacity: laneIdForDiff ? 1 : 0.35,
-          }}
-          onClick={() => {
-            if (!laneIdForDiff) return;
-            navigate(`/work?laneId=${encodeURIComponent(laneIdForDiff)}`);
-          }}
-          disabled={!laneIdForDiff}
-          title={laneIdForDiff ? "Open this lane in the dedicated Terminals tab" : "Select a lane workspace to open terminals"}
-          onMouseEnter={(e) => { if (laneIdForDiff) { e.currentTarget.style.borderColor = COLORS.accent; e.currentTarget.style.color = COLORS.accent; } }}
-          onMouseLeave={(e) => { e.currentTarget.style.borderColor = COLORS.outlineBorder; e.currentTarget.style.color = COLORS.textSecondary; }}
-        >
-          OPEN TAB
-        </button>
+        <SmartTooltip content={{ label: "Open Work Tab", description: "Switch to the Work tab to manage terminal sessions for this lane." }}>
+          <button
+            type="button"
+            style={{
+              ...outlineButton({ height: 22, padding: "0 8px", fontSize: 9 }),
+              opacity: laneIdForDiff ? 1 : 0.35,
+            }}
+            onClick={() => {
+              if (!laneIdForDiff) return;
+              navigate(`/work?laneId=${encodeURIComponent(laneIdForDiff)}`);
+            }}
+            disabled={!laneIdForDiff}
+            title={laneIdForDiff ? "Open this lane in the dedicated Terminals tab" : "Select a lane workspace to open terminals"}
+            onMouseEnter={(e) => { if (laneIdForDiff) { e.currentTarget.style.borderColor = COLORS.accent; e.currentTarget.style.color = COLORS.accent; } }}
+            onMouseLeave={(e) => { e.currentTarget.style.borderColor = COLORS.outlineBorder; e.currentTarget.style.color = COLORS.textSecondary; }}
+          >
+            OPEN TAB
+          </button>
+        </SmartTooltip>
       ),
       bodyClassName: "h-full overflow-hidden",
       children: (
@@ -2009,13 +2036,15 @@ export function FilesPage() {
             <div style={{ maxWidth: 320, lineHeight: 1.6 }}>
               FILES NO LONGER AUTO-MOUNTS THE EMBEDDED TERMINAL STACK. OPEN THE DEDICATED WORK TAB WHEN YOU ACTUALLY NEED LIVE SESSIONS.
             </div>
-            <button
-              type="button"
-              style={primaryButton({ height: 28, padding: "0 12px", fontSize: 9 })}
-              onClick={() => navigate(`/work?laneId=${encodeURIComponent(laneIdForDiff)}`)}
-            >
-              OPEN WORK TAB
-            </button>
+            <SmartTooltip content={{ label: "Open Work Tab", description: "Switch to the Work tab to manage terminal sessions for this lane." }}>
+              <button
+                type="button"
+                style={primaryButton({ height: 28, padding: "0 12px", fontSize: 9 })}
+                onClick={() => navigate(`/work?laneId=${encodeURIComponent(laneIdForDiff)}`)}
+              >
+                OPEN WORK TAB
+              </button>
+            </SmartTooltip>
           </div>
         ) : (
           <div
@@ -2125,15 +2154,17 @@ export function FilesPage() {
 
         {/* Trust / edit toggle */}
         {activeWorkspace?.isReadOnlyByDefault ? (
-          <button
-            type="button"
-            style={allowPrimaryEdit ? dangerButton({ height: 28, padding: "0 10px", fontSize: 9 }) : outlineButton({ height: 28, padding: "0 10px", fontSize: 9 })}
-            onClick={() => setAllowPrimaryEdit((v) => !v)}
-            onMouseEnter={(e) => { if (!allowPrimaryEdit) { e.currentTarget.style.borderColor = COLORS.warning; e.currentTarget.style.color = COLORS.warning; } }}
-            onMouseLeave={(e) => { if (!allowPrimaryEdit) { e.currentTarget.style.borderColor = COLORS.outlineBorder; e.currentTarget.style.color = COLORS.textSecondary; } }}
-          >
-            {allowPrimaryEdit ? "DISABLE EDITS" : "TRUST & EDIT"}
-          </button>
+          <SmartTooltip content={{ label: allowPrimaryEdit ? "Disable Edits" : "Trust & Edit", description: allowPrimaryEdit ? "Lock the editor to prevent changes to the primary workspace." : "Unlock the editor to make changes directly on the primary workspace.", warning: allowPrimaryEdit ? undefined : "You will be editing the primary workspace directly" }}>
+            <button
+              type="button"
+              style={allowPrimaryEdit ? dangerButton({ height: 28, padding: "0 10px", fontSize: 9 }) : outlineButton({ height: 28, padding: "0 10px", fontSize: 9 })}
+              onClick={() => setAllowPrimaryEdit((v) => !v)}
+              onMouseEnter={(e) => { if (!allowPrimaryEdit) { e.currentTarget.style.borderColor = COLORS.warning; e.currentTarget.style.color = COLORS.warning; } }}
+              onMouseLeave={(e) => { if (!allowPrimaryEdit) { e.currentTarget.style.borderColor = COLORS.outlineBorder; e.currentTarget.style.color = COLORS.textSecondary; } }}
+            >
+              {allowPrimaryEdit ? "DISABLE EDITS" : "TRUST & EDIT"}
+            </button>
+          </SmartTooltip>
         ) : null}
 
         {/* Spacer */}
@@ -2141,20 +2172,22 @@ export function FilesPage() {
 
         {/* Open in external editor */}
         <div className="relative shrink-0" ref={openInMenuRef}>
-          <button
-            type="button"
-            style={{
-              ...outlineButton({ height: 28, padding: "0 10px", fontSize: 9 }),
-              opacity: (!activeWorkspace || !activeTabPath) ? 0.35 : 1,
-            }}
-            onClick={() => setOpenInMenuOpen((prev) => !prev)}
-            disabled={!activeWorkspace || !activeTabPath}
-            title={activeTabPath ? "Open current file in an external app" : "Open a file first"}
-            onMouseEnter={(e) => { if (activeWorkspace && activeTabPath) { e.currentTarget.style.borderColor = COLORS.accent; e.currentTarget.style.color = COLORS.accent; } }}
-            onMouseLeave={(e) => { e.currentTarget.style.borderColor = COLORS.outlineBorder; e.currentTarget.style.color = COLORS.textSecondary; }}
-          >
-            <ArrowSquareOut size={12} weight="regular" /> OPEN IN
-          </button>
+          <SmartTooltip content={{ label: "Open In", description: "Open the current file in an external editor or Finder." }}>
+            <button
+              type="button"
+              style={{
+                ...outlineButton({ height: 28, padding: "0 10px", fontSize: 9 }),
+                opacity: (!activeWorkspace || !activeTabPath) ? 0.35 : 1,
+              }}
+              onClick={() => setOpenInMenuOpen((prev) => !prev)}
+              disabled={!activeWorkspace || !activeTabPath}
+              title={activeTabPath ? "Open current file in an external app" : "Open a file first"}
+              onMouseEnter={(e) => { if (activeWorkspace && activeTabPath) { e.currentTarget.style.borderColor = COLORS.accent; e.currentTarget.style.color = COLORS.accent; } }}
+              onMouseLeave={(e) => { e.currentTarget.style.borderColor = COLORS.outlineBorder; e.currentTarget.style.color = COLORS.textSecondary; }}
+            >
+              <ArrowSquareOut size={12} weight="regular" /> OPEN IN
+            </button>
+          </SmartTooltip>
           {openInMenuOpen ? (
             <div className="absolute right-0 top-full z-50 mt-1" style={{ width: 220, background: COLORS.cardBg, backdropFilter: "blur(20px)", WebkitBackdropFilter: "blur(20px)", border: `1px solid ${COLORS.border}`, borderRadius: 12, padding: "2px 0", overflow: "hidden" }}>
               {(
@@ -2185,15 +2218,17 @@ export function FilesPage() {
         </div>
 
         {/* Nav buttons */}
-        <button
-          type="button"
-          style={outlineButton({ height: 28, padding: "0 10px", fontSize: 9 })}
-          onClick={() => navigate("/lanes")}
-          onMouseEnter={(e) => { e.currentTarget.style.borderColor = COLORS.accent; e.currentTarget.style.color = COLORS.accent; }}
-          onMouseLeave={(e) => { e.currentTarget.style.borderColor = COLORS.outlineBorder; e.currentTarget.style.color = COLORS.textSecondary; }}
-        >
-          LANES
-        </button>
+        <SmartTooltip content={{ label: "Lanes", description: "Switch to the Lanes tab to manage workspace lanes." }}>
+          <button
+            type="button"
+            style={outlineButton({ height: 28, padding: "0 10px", fontSize: 9 })}
+            onClick={() => navigate("/lanes")}
+            onMouseEnter={(e) => { e.currentTarget.style.borderColor = COLORS.accent; e.currentTarget.style.color = COLORS.accent; }}
+            onMouseLeave={(e) => { e.currentTarget.style.borderColor = COLORS.outlineBorder; e.currentTarget.style.color = COLORS.textSecondary; }}
+          >
+            LANES
+          </button>
+        </SmartTooltip>
 
         {/* File count stat */}
         <span style={{ fontFamily: MONO_FONT, fontSize: 10, fontWeight: 700, letterSpacing: "1px", color: COLORS.textMuted, textTransform: "uppercase", whiteSpace: "nowrap" }}>

@@ -24,7 +24,7 @@ export function ConnectionStatusDot({
   return (
     <span className={cn("inline-flex items-center gap-1.5 rounded-full border border-border/10 bg-surface-recessed px-2 py-1", className)}>
       <span className={cn("h-2 w-2 shrink-0 rounded-full", info.dotCls)} />
-      <span className="font-mono text-[9px] text-muted-fg">{displayLabel}</span>
+      <span className="font-sans text-[9px] text-muted-fg">{displayLabel}</span>
     </span>
   );
 }

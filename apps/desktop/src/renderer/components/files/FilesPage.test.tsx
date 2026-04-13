@@ -19,10 +19,6 @@ type MockEditorInstance = {
 
 let latestMockEditor: MockEditorInstance | null = null;
 
-vi.mock("../lanes/LaneTerminalsPanel", () => ({
-  LaneTerminalsPanel: () => <div data-testid="lane-terminals" />,
-}));
-
 vi.mock("../lanes/MonacoDiffView", () => ({
   MonacoDiffView: () => <div data-testid="monaco-diff" />,
 }));

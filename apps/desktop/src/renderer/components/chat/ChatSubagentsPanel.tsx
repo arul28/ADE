@@ -118,17 +118,17 @@ function SubagentDetailView({
       <div className="flex items-center gap-2.5 px-3 py-2 border-b border-white/[0.06]">
         <button
           type="button"
-          className="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] text-fg/40 transition-colors hover:bg-white/[0.04] hover:text-fg/70"
+          className="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[12px] text-fg/40 transition-colors hover:bg-white/[0.04] hover:text-fg/70"
           onClick={onBack}
         >
-          <ArrowLeft size={10} weight="bold" />
+          <ArrowLeft size={12} weight="bold" />
           Back
         </button>
-        <span className="min-w-0 flex-1 truncate text-[11px] text-fg/70">
+        <span className="min-w-0 flex-1 truncate text-[13px] text-fg/70">
           {snapshot.description}
         </span>
         <span className={cn(
-          "rounded-full border px-1.5 py-0.5 font-mono text-[8px] font-bold uppercase tracking-widest",
+          "rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider",
           meta.chipClassName,
         )}>
           {meta.label}
@@ -139,12 +139,12 @@ function SubagentDetailView({
       {runtimeSummary || snapshot.background ? (
         <div className="flex items-center gap-2 px-3 py-1.5">
           {snapshot.background ? (
-            <span className="rounded border border-sky-400/12 bg-sky-500/[0.06] px-1 py-px font-mono text-[7px] font-bold uppercase tracking-widest text-sky-300/55">
+            <span className="rounded border border-sky-400/12 bg-sky-500/[0.06] px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-sky-300/55">
               bg
             </span>
           ) : null}
           {runtimeSummary ? (
-            <span className="text-[10px] text-fg/40 font-mono">{runtimeSummary}</span>
+            <span className="text-[11px] text-fg/40">{runtimeSummary}</span>
           ) : null}
         </div>
       ) : null}
@@ -154,7 +154,7 @@ function SubagentDetailView({
         {hiddenCount > 0 && (
           <button
             type="button"
-            className="mb-2 font-mono text-[9px] text-fg/30 transition-colors hover:text-fg/50"
+            className="mb-2 text-[11px] text-fg/30 transition-colors hover:text-fg/50"
             onClick={() => setShowAll(true)}
           >
             Show {hiddenCount} earlier event{hiddenCount !== 1 ? "s" : ""}
@@ -162,22 +162,22 @@ function SubagentDetailView({
         )}
 
         {visibleTimeline.length === 0 ? (
-          <div className="py-4 text-center font-mono text-[10px] text-fg/25">
+          <div className="py-4 text-center text-[12px] text-fg/25">
             No activity recorded yet
           </div>
         ) : (
           <div className="space-y-0.5 border-l border-white/[0.06] ml-1 pl-3">
             {visibleTimeline.map((entry, index) => (
               <div key={`${entry.timestamp}-${index}`} className="flex items-start gap-2 py-0.5 relative before:absolute before:-left-3 before:top-[9px] before:h-px before:w-2 before:bg-white/[0.06]">
-                <span className="shrink-0 font-mono text-[9px] text-fg/20 pt-px">
+                <span className="shrink-0 font-mono text-[11px] text-fg/20 pt-px">
                   {formatTime(entry.timestamp)}
                 </span>
                 {entry.type === "started" ? (
-                  <span className="text-[10px] text-fg/40">Started</span>
+                  <span className="text-[12px] text-fg/40">Started</span>
                 ) : entry.type === "result" ? (
                   <div className="min-w-0 flex-1">
                     <span className={cn(
-                      "text-[10px] font-medium",
+                      "text-[12px] font-medium",
                       entry.status === "completed" ? "text-emerald-300/70" :
                       entry.status === "failed" ? "text-red-300/70" :
                       "text-amber-300/70",
@@ -185,24 +185,24 @@ function SubagentDetailView({
                       {entry.status === "completed" ? "Completed" : entry.status === "failed" ? "Failed" : "Stopped"}
                     </span>
                     {entry.summary ? (
-                      <p className="mt-0.5 truncate text-[10px] text-fg/45">{entry.summary}</p>
+                      <p className="mt-0.5 truncate text-[12px] text-fg/45">{entry.summary}</p>
                     ) : null}
                   </div>
                 ) : (
                   <div className="min-w-0 flex-1">
                     {entry.lastToolName ? (
-                      <span className="font-mono text-[10px] text-fg/45">{entry.lastToolName}</span>
+                      <span className="font-mono text-[12px] text-fg/45">{entry.lastToolName}</span>
                     ) : null}
                     {entry.summary ? (
                       <p className={cn(
-                        "truncate text-[10px] text-fg/35",
+                        "truncate text-[12px] text-fg/35",
                         entry.lastToolName && "mt-0.5",
                       )}>
                         {entry.summary}
                       </p>
                     ) : null}
                     {!entry.lastToolName && !entry.summary ? (
-                      <span className="text-[10px] text-fg/25">Working...</span>
+                      <span className="text-[12px] text-fg/25">Working...</span>
                     ) : null}
                   </div>
                 )}
@@ -214,11 +214,11 @@ function SubagentDetailView({
 
       {/* Footer */}
       <div className="flex items-center gap-2 border-t border-white/[0.06] px-3 py-1.5">
-        <span className="select-all font-mono text-[9px] text-fg/20">{snapshot.taskId}</span>
+        <span className="select-all font-mono text-[10px] text-fg/20">{snapshot.taskId}</span>
         <div className="ml-auto flex items-center gap-1.5">
           <button
             type="button"
-            className="inline-flex items-center gap-1 rounded-md border border-white/[0.06] px-2 py-0.5 font-mono text-[9px] text-fg/30 transition-all hover:border-white/[0.12] hover:text-fg/55"
+            className="inline-flex items-center gap-1 rounded-md border border-white/[0.06] px-2 py-0.5 text-[11px] text-fg/30 transition-all hover:border-white/[0.12] hover:text-fg/55"
             onClick={handleCopy}
             title="Copy agent id"
           >
@@ -228,7 +228,7 @@ function SubagentDetailView({
           {snapshot.status === "running" && onInterruptTurn ? (
             <button
               type="button"
-              className="inline-flex items-center gap-1 rounded-md border border-red-500/15 bg-red-500/[0.04] px-2 py-0.5 font-mono text-[9px] text-red-300/70 transition-all hover:bg-red-500/[0.08] hover:text-red-200"
+              className="inline-flex items-center gap-1 rounded-md border border-red-500/15 bg-red-500/[0.04] px-2 py-0.5 text-[11px] text-red-300/70 transition-all hover:bg-red-500/[0.08] hover:text-red-200"
               onClick={onInterruptTurn}
             >
               <XCircle size={10} />
@@ -325,27 +325,27 @@ export function ChatSubagentsPanel({
               <button
                 key={snapshot.taskId}
                 type="button"
-                className="group flex w-full items-center gap-2 rounded-xl border border-white/[0.06] bg-[#141220]/80 p-3 text-left transition-colors hover:bg-[#141220]"
+                className="group flex w-full items-center gap-2.5 rounded-xl border border-white/[0.06] bg-[#141220]/80 px-3.5 py-3 text-left transition-colors hover:bg-[#141220]"
                 onClick={() => setView({ mode: "detail", taskId: snapshot.taskId })}
                 title={snapshot.description}
               >
                 <span className="flex h-4 w-4 shrink-0 items-center justify-center">
                   {meta.icon}
                 </span>
-                <span className="min-w-0 flex-1 truncate text-[11px] text-fg/65 group-hover:text-fg/85">
+                <span className="min-w-0 flex-1 truncate text-[13px] text-fg/65 group-hover:text-fg/85">
                   {snapshot.description}
                 </span>
                 {snapshot.background ? (
-                  <span className="rounded border border-sky-400/12 bg-sky-500/[0.06] px-1 py-px font-mono text-[7px] font-bold uppercase tracking-widest text-sky-300/55">
+                  <span className="rounded border border-sky-400/12 bg-sky-500/[0.06] px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-sky-300/55">
                     bg
                   </span>
                 ) : null}
                 {runtimeSummary ? (
-                  <span className="text-[10px] text-fg/40 font-mono group-hover:text-fg/50">
+                  <span className="text-[11px] text-fg/40 group-hover:text-fg/50">
                     {runtimeSummary}
                   </span>
                 ) : null}
-                <span className={cn("rounded-full border px-1.5 py-0.5 font-mono text-[8px] font-bold uppercase tracking-widest", meta.chipClassName)}>
+                <span className={cn("rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider", meta.chipClassName)}>
                   {meta.label}
                 </span>
               </button>

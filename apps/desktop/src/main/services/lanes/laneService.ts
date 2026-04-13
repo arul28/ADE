@@ -1480,7 +1480,7 @@ export function createLaneService({
       }
     },
 
-    async importBranch(args: { branchRef: string; name?: string; description?: string; parentLaneId?: string | null; baseBranch?: string }): Promise<LaneSummary> {
+    async importBranch(args: { branchRef: string; name?: string; description?: string; baseBranch?: string }): Promise<LaneSummary> {
       const rawRef = (args.branchRef ?? "").trim();
       if (!rawRef) throw new Error("branchRef is required");
       if (rawRef.includes("\0")) throw new Error("Invalid branchRef");
@@ -1533,128 +1533,10 @@ export function createLaneService({
         });
         worktreeAdded = true;
 
-        // --- Detect real parent lane via git merge-base ---
-        const parentLaneIdRaw = typeof args.parentLaneId === "string" ? args.parentLaneId.trim() : "";
-        const explicitParentLaneId = parentLaneIdRaw.length ? parentLaneIdRaw : null;
-        let parentLaneId: string | null = null;
-
-        // Try to detect the true parent by finding which lane's HEAD shares the
-        // most recent common ancestor with the imported branch.
-        try {
-          const importedHeadSha = await getHeadSha(worktreePath);
-          if (importedHeadSha) {
-            const activeRows = getAllLaneRows(false);
-            let bestLaneId: string | null = null;
-            let bestScore = Infinity;
-            let bestTieBreak: string | null = null;
-
-            for (const row of activeRows) {
-              // Skip the lane we are currently importing (same id won't exist yet,
-              // but skip by branch_ref match just in case).
-              if (row.branch_ref === branchRef) continue;
-
-              const laneWorktree = row.worktree_path;
-              if (!laneWorktree) continue;
-
-              const laneHeadSha = await getHeadSha(laneWorktree);
-              if (!laneHeadSha) continue;
-
-              const mbResult = await runGit(
-                ["merge-base", laneHeadSha, importedHeadSha],
-                { cwd: projectRoot, timeoutMs: 10_000 },
-              );
-              if (mbResult.exitCode !== 0) continue;
-              const mergeBaseSha = mbResult.stdout.trim();
-              if (!mergeBaseSha) continue;
-
-              const importedCountResult = await runGit(
-                ["rev-list", "--count", `${mergeBaseSha}..${importedHeadSha}`],
-                { cwd: projectRoot, timeoutMs: 10_000 },
-              );
-              if (importedCountResult.exitCode !== 0) continue;
-              const importedDistance = parseInt(importedCountResult.stdout.trim(), 10);
-              if (isNaN(importedDistance)) continue;
-
-              const candidateCountResult = await runGit(
-                ["rev-list", "--count", `${mergeBaseSha}..${laneHeadSha}`],
-                { cwd: projectRoot, timeoutMs: 10_000 },
-              );
-              if (candidateCountResult.exitCode !== 0) continue;
-              const candidateDistance = parseInt(candidateCountResult.stdout.trim(), 10);
-              if (isNaN(candidateDistance)) continue;
-
-              const score = importedDistance + candidateDistance;
-              const tieBreak = `${row.id}\0${row.branch_ref}`;
-              if (
-                score < bestScore
-                || (score === bestScore && tieBreak.localeCompare(bestTieBreak ?? "") < 0)
-              ) {
-                bestScore = score;
-                bestLaneId = row.id;
-                bestTieBreak = tieBreak;
-              }
-            }
-
-            // Also score against defaultBaseRef (main) directly — if main is
-            // equally good or better, there is no real parent lane.
-            if (bestLaneId) {
-              let mainScore = Infinity;
-              try {
-                // Prefer the remote-tracking ref so the comparison uses the
-                // latest fetched state rather than a potentially stale local tip.
-                let mainShaRes = await runGit(
-                  ["rev-parse", `origin/${defaultBaseRef}`],
-                  { cwd: projectRoot, timeoutMs: 10_000 },
-                );
-                if (mainShaRes.exitCode !== 0) {
-                  mainShaRes = await runGit(
-                    ["rev-parse", defaultBaseRef],
-                    { cwd: projectRoot, timeoutMs: 10_000 },
-                  );
-                }
-                const mainSha = mainShaRes.exitCode === 0 ? mainShaRes.stdout.trim() : null;
-                if (mainSha) {
-                  const mbRes = await runGit(
-                    ["merge-base", mainSha, importedHeadSha],
-                    { cwd: projectRoot, timeoutMs: 10_000 },
-                  );
-                  if (mbRes.exitCode === 0 && mbRes.stdout.trim()) {
-                    const mb = mbRes.stdout.trim();
-                    const d1 = await runGit(["rev-list", "--count", `${mb}..${importedHeadSha}`], { cwd: projectRoot, timeoutMs: 10_000 });
-                    const d2 = await runGit(["rev-list", "--count", `${mb}..${mainSha}`], { cwd: projectRoot, timeoutMs: 10_000 });
-                    if (d1.exitCode === 0 && d2.exitCode === 0) {
-                      mainScore = parseInt(d1.stdout.trim(), 10) + parseInt(d2.stdout.trim(), 10);
-                    }
-                  }
-                }
-              } catch {
-                // If main scoring fails, fall through to lane-based parent.
-              }
-
-              if (mainScore <= bestScore) {
-                // The branch is based on main (or closer to it), no parent lane
-                // — unless the caller explicitly provided one.
-                parentLaneId = explicitParentLaneId ?? null;
-              } else {
-                if (explicitParentLaneId && explicitParentLaneId !== bestLaneId) {
-                  logger.warn("laneService.importBranch.parent_mismatch", {
-                    explicitParentLaneId,
-                    detectedParentLaneId: bestLaneId,
-                  });
-                }
-                parentLaneId = bestLaneId;
-              }
-            }
-          }
-        } catch (err) {
-          logger.warn("laneService.importBranch.parent_detection_failed", { error: err instanceof Error ? err.message : String(err) });
-        }
-
-        // Fallback: use only the explicit parent when detection yielded nothing.
-        if (!parentLaneId) {
-          parentLaneId = explicitParentLaneId;
-        }
-
+        // Imported branches are always root lanes. No caller passes
+        // parentLaneId — if a child lane is wanted, the "child" creation
+        // mode is used instead.
+        const parentLaneId: string | null = null;
         const parent = parentLaneId ? getLaneRow(parentLaneId) : null;
         if (parentLaneId && !parent) throw new Error(`Parent lane not found: ${parentLaneId}`);
         if (parent && parent.status === "archived") throw new Error("Parent lane is archived");

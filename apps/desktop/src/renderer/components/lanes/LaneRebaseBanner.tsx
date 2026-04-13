@@ -1,6 +1,7 @@
 import { Stack } from "@phosphor-icons/react";
 import type { AutoRebaseLaneStatus, LaneSummary, RebaseSuggestion } from "../../../shared/types";
 import { COLORS, LABEL_STYLE, inlineBadge, outlineButton, primaryButton } from "./laneDesignTokens";
+import { SmartTooltip } from "../ui/SmartTooltip";
 
 export function LaneRebaseBanner({
   visibleRebaseSuggestions,
@@ -54,9 +55,11 @@ export function LaneRebaseBanner({
               <span style={{ fontSize: 12, color: COLORS.info }}>
                 Auto-rebase is off. Enable in Settings &gt; Lane Templates.
               </span>
-              <button type="button" style={outlineButton({ height: 24, padding: "0 8px", fontSize: 10 })} onClick={onOpenAutoRebaseSettings}>
-                SETTINGS
-              </button>
+              <SmartTooltip content={{ label: "Settings", description: "Open Lane Templates settings to enable auto-rebase for child lanes." }}>
+                <button type="button" style={outlineButton({ height: 24, padding: "0 8px", fontSize: 10 })} onClick={onOpenAutoRebaseSettings}>
+                  SETTINGS
+                </button>
+              </SmartTooltip>
             </div>
           ) : null}
           <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 8 }}>
@@ -81,49 +84,59 @@ export function LaneRebaseBanner({
                     </div>
                   </div>
                   <div className="flex shrink-0 flex-wrap items-center gap-1.5">
-                    <button
-                      type="button"
-                      style={primaryButton({ height: 24, padding: "0 8px", fontSize: 10 })}
-                      disabled={Boolean(rebaseBusyLaneId)}
-                      onClick={() => onRebaseNowLocal(s.laneId)}
-                    >
-                      <Stack size={12} />
-                      {busy ? "Rebasing..." : "Rebase"}
-                    </button>
-                    <button
-                      type="button"
-                      style={outlineButton({ height: 24, padding: "0 8px", fontSize: 10 })}
-                      disabled={Boolean(rebaseBusyLaneId)}
-                      onClick={() => onRebaseAndPush(s.laneId)}
-                    >
-                      Rebase + Push
-                    </button>
-                    <button
-                      type="button"
-                      style={outlineButton({ height: 24, padding: "0 8px", fontSize: 10 })}
-                      disabled={Boolean(rebaseBusyLaneId)}
-                      onClick={() => onViewRebaseDetails(s.laneId)}
-                    >
-                      Details
-                    </button>
-                    <button
-                      type="button"
-                      style={outlineButton({ height: 24, padding: "0 6px", fontSize: 10 })}
-                      disabled={Boolean(rebaseBusyLaneId)}
-                      onClick={() => onDeferRebase(s.laneId, 60)}
-                      title="Defer this suggestion for 1 hour"
-                    >
-                      Defer
-                    </button>
-                    <button
-                      type="button"
-                      style={outlineButton({ height: 24, padding: "0 6px", fontSize: 10 })}
-                      disabled={Boolean(rebaseBusyLaneId)}
-                      onClick={() => onDismissRebase(s.laneId)}
-                      title="Dismiss this rebase suggestion"
-                    >
-                      Dismiss
-                    </button>
+                    <SmartTooltip content={{ label: "Rebase", description: "Replay this lane's commits on top of the parent branch locally without pushing.", gitCommand: "git rebase <parent>", effect: `Rebase ${lane?.name ?? "lane"} onto ${s.baseLabel?.trim() || "parent"}` }}>
+                      <button
+                        type="button"
+                        style={primaryButton({ height: 24, padding: "0 8px", fontSize: 10 })}
+                        disabled={Boolean(rebaseBusyLaneId)}
+                        onClick={() => onRebaseNowLocal(s.laneId)}
+                      >
+                        <Stack size={12} />
+                        {busy ? "Rebasing..." : "Rebase"}
+                      </button>
+                    </SmartTooltip>
+                    <SmartTooltip content={{ label: "Rebase + Push", description: "Rebase onto parent and immediately push the rewritten branch to remote.", gitCommand: "git rebase <parent> && git push" }}>
+                      <button
+                        type="button"
+                        style={outlineButton({ height: 24, padding: "0 8px", fontSize: 10 })}
+                        disabled={Boolean(rebaseBusyLaneId)}
+                        onClick={() => onRebaseAndPush(s.laneId)}
+                      >
+                        Rebase + Push
+                      </button>
+                    </SmartTooltip>
+                    <SmartTooltip content={{ label: "Details", description: "View detailed rebase history including conflicts and timing." }}>
+                      <button
+                        type="button"
+                        style={outlineButton({ height: 24, padding: "0 8px", fontSize: 10 })}
+                        disabled={Boolean(rebaseBusyLaneId)}
+                        onClick={() => onViewRebaseDetails(s.laneId)}
+                      >
+                        Details
+                      </button>
+                    </SmartTooltip>
+                    <SmartTooltip content={{ label: "Defer", description: "Hide this suggestion for 1 hour. It will reappear after the deferral period." }}>
+                      <button
+                        type="button"
+                        style={outlineButton({ height: 24, padding: "0 6px", fontSize: 10 })}
+                        disabled={Boolean(rebaseBusyLaneId)}
+                        onClick={() => onDeferRebase(s.laneId, 60)}
+                        title="Defer this suggestion for 1 hour"
+                      >
+                        Defer
+                      </button>
+                    </SmartTooltip>
+                    <SmartTooltip content={{ label: "Dismiss", description: "Remove this rebase suggestion permanently until new parent commits arrive." }}>
+                      <button
+                        type="button"
+                        style={outlineButton({ height: 24, padding: "0 6px", fontSize: 10 })}
+                        disabled={Boolean(rebaseBusyLaneId)}
+                        onClick={() => onDismissRebase(s.laneId)}
+                        title="Dismiss this rebase suggestion"
+                      >
+                        Dismiss
+                      </button>
+                    </SmartTooltip>
                   </div>
                 </div>
               );
@@ -149,9 +162,11 @@ export function LaneRebaseBanner({
             <span style={{ fontSize: 12, color: COLORS.info }}>
               Auto-rebase is off. Enable it in Settings {" > "} Lane Templates to auto-rebase child lanes after parent updates.
             </span>
-            <button type="button" style={outlineButton({ height: 24, padding: "0 8px", fontSize: 10 })} onClick={onOpenAutoRebaseSettings}>
-              SETTINGS
-            </button>
+            <SmartTooltip content={{ label: "Settings", description: "Open Lane Templates settings to enable auto-rebase for child lanes." }}>
+              <button type="button" style={outlineButton({ height: 24, padding: "0 8px", fontSize: 10 })} onClick={onOpenAutoRebaseSettings}>
+                SETTINGS
+              </button>
+            </SmartTooltip>
           </div>
         </div>
       ) : null}
@@ -191,38 +206,46 @@ export function LaneRebaseBanner({
                   </div>
                   <div className="shrink-0 flex items-center gap-1.5">
                     {status.state === "rebaseConflict" ? (
-                      <button
-                        type="button"
-                        style={outlineButton({ height: 24, padding: "0 8px", fontSize: 10 })}
-                        onClick={() => onOpenRebaseConflictResolver(status.laneId, status.parentLaneId ?? lane.parentLaneId ?? null)}
-                      >
-                        RESOLVE IN CONFLICTS
-                      </button>
+                      <SmartTooltip content={{ label: "Resolve in Conflicts", description: "Open the conflict resolver to manually resolve rebase conflicts for this lane." }}>
+                        <button
+                          type="button"
+                          style={outlineButton({ height: 24, padding: "0 8px", fontSize: 10 })}
+                          onClick={() => onOpenRebaseConflictResolver(status.laneId, status.parentLaneId ?? lane.parentLaneId ?? null)}
+                        >
+                          RESOLVE IN CONFLICTS
+                        </button>
+                      </SmartTooltip>
                     ) : status.state === "rebaseFailed" ? (
+                      <SmartTooltip content={{ label: "Open Rebase Tab", description: "Open the rebase tab to inspect failure details and retry the rebase." }}>
+                        <button
+                          type="button"
+                          style={outlineButton({ height: 24, padding: "0 8px", fontSize: 10 })}
+                          onClick={() => onViewRebaseDetails(status.laneId)}
+                        >
+                          OPEN REBASE TAB
+                        </button>
+                      </SmartTooltip>
+                    ) : (
+                      <SmartTooltip content={{ label: "Rebase Now", description: "Replay this lane's commits on top of the parent branch locally without pushing.", gitCommand: "git rebase <parent>" }}>
+                        <button
+                          type="button"
+                          style={primaryButton({ height: 24, padding: "0 8px", fontSize: 10 })}
+                          onClick={() => onRebaseNowLocal(status.laneId)}
+                        >
+                          <Stack size={12} />
+                          Rebase now (local only)
+                        </button>
+                      </SmartTooltip>
+                    )}
+                    <SmartTooltip content={{ label: status.state === "rebaseFailed" ? "Rebase Now" : "View Rebase Details", description: status.state === "rebaseFailed" ? "Retry the rebase operation for this lane." : "View detailed rebase history including conflicts and timing." }}>
                       <button
                         type="button"
                         style={outlineButton({ height: 24, padding: "0 8px", fontSize: 10 })}
-                        onClick={() => onViewRebaseDetails(status.laneId)}
+                        onClick={() => (status.state === "rebaseFailed" ? onRebaseNowLocal(status.laneId) : onViewRebaseDetails(status.laneId))}
                       >
-                        OPEN REBASE TAB
+                        {status.state === "rebaseFailed" ? "REBASE NOW" : "VIEW REBASE DETAILS"}
                       </button>
-                    ) : (
-                      <button
-                        type="button"
-                        style={primaryButton({ height: 24, padding: "0 8px", fontSize: 10 })}
-                        onClick={() => onRebaseNowLocal(status.laneId)}
-                      >
-                        <Stack size={12} />
-                        Rebase now (local only)
-                      </button>
-                    )}
-                    <button
-                      type="button"
-                      style={outlineButton({ height: 24, padding: "0 8px", fontSize: 10 })}
-                      onClick={() => (status.state === "rebaseFailed" ? onRebaseNowLocal(status.laneId) : onViewRebaseDetails(status.laneId))}
-                    >
-                      {status.state === "rebaseFailed" ? "REBASE NOW" : "VIEW REBASE DETAILS"}
-                    </button>
+                    </SmartTooltip>
                   </div>
                 </div>
               );

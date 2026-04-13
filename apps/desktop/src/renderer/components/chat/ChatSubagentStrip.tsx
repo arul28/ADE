@@ -125,25 +125,25 @@ function PreviewCard({
           </div>
           <div className="mt-2 flex flex-wrap items-center gap-2">
             <span className={cn(
-              "inline-flex items-center rounded-md border px-1.5 py-0.5 font-mono text-[9px] font-bold uppercase tracking-[0.14em]",
+              "inline-flex items-center rounded-md border px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider",
               meta.chipClassName,
             )}>
               {meta.label}
             </span>
             {snapshot.background ? (
-              <span className="inline-flex items-center rounded-md border border-sky-400/12 bg-sky-500/[0.06] px-1.5 py-0.5 font-mono text-[9px] font-bold uppercase tracking-[0.14em] text-sky-300/60">
+              <span className="inline-flex items-center rounded-md border border-sky-400/12 bg-sky-500/[0.06] px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-sky-300/60">
                 Background
               </span>
             ) : null}
             {runtimeSummary ? (
-              <span className="text-[10px] text-fg/40 font-mono">{runtimeSummary}</span>
+              <span className="text-[11px] text-fg/40">{runtimeSummary}</span>
             ) : null}
           </div>
         </div>
         {onDismiss ? (
           <button
             type="button"
-            className="rounded-md border border-white/[0.06] px-2 py-1 font-mono text-[9px] uppercase tracking-[0.14em] text-fg/35 transition-all hover:border-white/[0.12] hover:text-fg/65"
+            className="rounded-md border border-white/[0.06] px-2 py-1 text-[11px] uppercase tracking-wider text-fg/35 transition-all hover:border-white/[0.12] hover:text-fg/65"
             onClick={onDismiss}
           >
             Close
@@ -160,16 +160,16 @@ function PreviewCard({
 
       {/* Footer */}
       <div className="flex flex-wrap items-center gap-2 border-t border-white/[0.04] px-4 py-2.5">
-        <span className="font-mono text-[9px] text-fg/25 select-all">{snapshot.taskId}</span>
+        <span className="font-mono text-[10px] text-fg/25 select-all">{snapshot.taskId}</span>
         {snapshot.status === "running" && snapshot.lastToolName?.trim() ? (
-          <span className="rounded-md border border-white/[0.05] bg-white/[0.02] px-1.5 py-0.5 font-mono text-[9px] text-fg/35">
+          <span className="rounded-md border border-white/[0.05] bg-white/[0.02] px-1.5 py-0.5 font-mono text-[10px] text-fg/35">
             {snapshot.lastToolName.trim()}
           </span>
         ) : null}
         <div className="ml-auto flex items-center gap-1.5">
           <button
             type="button"
-            className="inline-flex items-center gap-1 rounded-md border border-white/[0.06] px-2 py-1 font-mono text-[9px] text-fg/35 transition-all hover:border-white/[0.12] hover:text-fg/60"
+            className="inline-flex items-center gap-1 rounded-md border border-white/[0.06] px-2 py-1 text-[11px] text-fg/35 transition-all hover:border-white/[0.12] hover:text-fg/60"
             onClick={handleCopy}
             title="Copy agent id"
           >
@@ -179,7 +179,7 @@ function PreviewCard({
           {snapshot.status === "running" && onInterruptTurn ? (
             <button
               type="button"
-              className="inline-flex items-center gap-1 rounded-md border border-red-500/15 bg-red-500/[0.04] px-2 py-1 font-mono text-[9px] text-red-300/70 transition-all hover:bg-red-500/[0.08] hover:text-red-200"
+              className="inline-flex items-center gap-1 rounded-md border border-red-500/15 bg-red-500/[0.04] px-2 py-1 text-[11px] text-red-300/70 transition-all hover:bg-red-500/[0.08] hover:text-red-200"
               onClick={onInterruptTurn}
             >
               <XCircle size={10} />
@@ -261,21 +261,21 @@ export function ChatSubagentStrip({
         title="Show or hide subagent details"
       >
         <div className="flex items-center gap-2">
-          <TreeStructure size={12} weight="bold" className="text-violet-400/45" />
-          <span className="font-mono text-[9px] font-bold uppercase tracking-[0.16em] text-fg/30">
+          <TreeStructure size={14} weight="bold" className="text-violet-400/45" />
+          <span className="text-[11px] font-semibold uppercase tracking-[0.08em] text-fg/35">
             Agents
           </span>
         </div>
-        <div className="min-w-0 flex-1 truncate text-[11px] text-fg/58">
+        <div className="min-w-0 flex-1 truncate text-[12px] text-fg/58">
           {summaryText}
         </div>
         {backgroundRunningCount > 0 ? (
-          <span className="rounded-full border border-sky-400/10 bg-sky-500/[0.04] px-2 py-0.5 font-mono text-[9px] text-sky-300/65">
+          <span className="rounded-full border border-sky-400/10 bg-sky-500/[0.04] px-2 py-0.5 text-[10px] text-sky-300/65">
             {backgroundRunningCount} bg
           </span>
         ) : null}
         {snapshots.length > 6 ? (
-          <span className="font-mono text-[9px] text-fg/25">
+          <span className="text-[10px] text-fg/25">
             +{snapshots.length - 6} more
           </span>
         ) : null}
@@ -319,20 +319,20 @@ export function ChatSubagentStrip({
                   <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-md border border-white/[0.05] bg-white/[0.02]">
                     {meta.icon}
                   </span>
-                  <span className="min-w-0 flex-1 truncate text-[11px] text-fg/72 group-hover:text-fg/88">
+                  <span className="min-w-0 flex-1 truncate text-[13px] text-fg/72 group-hover:text-fg/88">
                     {snapshot.description}
                   </span>
                   {snapshot.background ? (
-                    <span className="rounded border border-sky-400/12 bg-sky-500/[0.06] px-1 py-px font-mono text-[7px] font-bold uppercase tracking-widest text-sky-300/55">
+                    <span className="rounded border border-sky-400/12 bg-sky-500/[0.06] px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-sky-300/55">
                       bg
                     </span>
                   ) : null}
                   {runtimeSummary ? (
-                    <span className="text-[10px] text-fg/40 font-mono group-hover:text-fg/50">
+                    <span className="text-[11px] text-fg/40 group-hover:text-fg/50">
                       {runtimeSummary}
                     </span>
                   ) : null}
-                  <span className={cn("rounded-full border px-1.5 py-0.5 font-mono text-[8px] font-bold uppercase tracking-widest", meta.chipClassName)}>
+                  <span className={cn("rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider", meta.chipClassName)}>
                     {meta.label}
                   </span>
                 </button>

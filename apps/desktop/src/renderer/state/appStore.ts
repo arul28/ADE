@@ -7,12 +7,24 @@ import { getProjectConfigCached, invalidateProjectConfigCache } from "../lib/pro
 
 export type ThemeId = "dark" | "light";
 export const THEME_IDS: ThemeId[] = ["dark", "light"];
+export const DEFAULT_TERMINAL_FONT_FAMILY = [
+  "ui-monospace",
+  "SFMono-Regular",
+  "Menlo",
+  "Monaco",
+  "\"Cascadia Mono\"",
+  "\"JetBrains Mono\"",
+  "\"Geist Mono\"",
+  "monospace",
+].join(", ");
 export type TerminalPreferences = {
+  fontFamily: string;
   fontSize: number;
   lineHeight: number;
   scrollback: number;
 };
 export const DEFAULT_TERMINAL_PREFERENCES: TerminalPreferences = {
+  fontFamily: DEFAULT_TERMINAL_FONT_FAMILY,
   fontSize: 12.5,
   lineHeight: 1.25,
   scrollback: 10_000,
@@ -208,6 +220,24 @@ function normalizeLaneWorkScopeKey(projectRoot: string | null | undefined, laneI
   return `${projectKey}::${normalizedLaneId}`;
 }
 
+function readInitialSmartTooltips(): boolean {
+  try {
+    const raw = window.localStorage.getItem("ade.smartTooltips");
+    if (raw === "false") return false;
+  } catch {
+    // ignore
+  }
+  return true; // default on
+}
+
+function persistSmartTooltips(enabled: boolean) {
+  try {
+    window.localStorage.setItem("ade.smartTooltips", String(enabled));
+  } catch {
+    // ignore
+  }
+}
+
 function readInitialTheme(): ThemeId {
   try {
     const raw = window.localStorage.getItem("ade.theme");
@@ -249,11 +279,18 @@ function clampTerminalScrollback(value: unknown): number {
   return Math.max(2000, Math.min(30_000, Math.round(next / 1000) * 1000));
 }
 
+function normalizeTerminalFontFamily(value: unknown): string {
+  if (typeof value !== "string") return DEFAULT_TERMINAL_PREFERENCES.fontFamily;
+  const trimmed = value.trim();
+  return trimmed.length ? trimmed : DEFAULT_TERMINAL_PREFERENCES.fontFamily;
+}
+
 function normalizeTerminalPreferences(value: unknown): TerminalPreferences {
   const candidate = value && typeof value === "object"
     ? value as Partial<TerminalPreferences>
     : {};
   return {
+    fontFamily: normalizeTerminalFontFamily(candidate.fontFamily),
     fontSize: clampTerminalFontSize(candidate.fontSize),
     lineHeight: clampTerminalLineHeight(candidate.lineHeight),
     scrollback: clampTerminalScrollback(candidate.scrollback),
@@ -304,6 +341,7 @@ type AppState = {
   laneInspectorTabs: Record<string, LaneInspectorTab>;
   keybindings: KeybindingsSnapshot | null;
   terminalAttention: TerminalAttentionSnapshot;
+  smartTooltipsEnabled: boolean;
   workViewByProject: Record<string, WorkProjectViewState>;
   laneWorkViewByScope: Record<string, WorkProjectViewState>;
 
@@ -324,6 +362,7 @@ type AppState = {
       | ((prev: TerminalPreferences) => TerminalPreferences)
   ) => void;
   setTerminalAttention: (snapshot: TerminalAttentionSnapshot) => void;
+  setSmartTooltipsEnabled: (enabled: boolean) => void;
   getWorkViewState: (projectRoot: string | null | undefined) => WorkProjectViewState;
   setWorkViewState: (
     projectRoot: string | null | undefined,
@@ -433,6 +472,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   laneInspectorTabs: {},
   keybindings: null,
   terminalAttention: EMPTY_TERMINAL_ATTENTION,
+  smartTooltipsEnabled: readInitialSmartTooltips(),
   workViewByProject: initialPersistedWorkViews.workViewByProject,
   laneWorkViewByScope: initialPersistedWorkViews.laneWorkViewByScope,
 
@@ -471,6 +511,10 @@ export const useAppStore = create<AppState>((set, get) => ({
       return { terminalPreferences: updated };
     }),
   setTerminalAttention: (terminalAttention) => set({ terminalAttention }),
+  setSmartTooltipsEnabled: (enabled) => {
+    persistSmartTooltips(enabled);
+    set({ smartTooltipsEnabled: enabled });
+  },
   openNewTab: () => set({ isNewTabOpen: true, showWelcome: true }),
   cancelNewTab: () => {
     const hasProject = get().project != null;

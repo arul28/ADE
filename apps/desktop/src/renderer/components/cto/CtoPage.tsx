@@ -37,16 +37,16 @@ import { OnboardingWizard } from "./OnboardingWizard";
 import { OnboardingBanner } from "./OnboardingBanner";
 import { WorkerCreationWizard } from "./WorkerCreationWizard";
 import { TimelineEntry } from "./shared/TimelineEntry";
-import { cardCls, compactHeaderCls, statChipCls, shellBodyCls, shellTabBarCls } from "./shared/designTokens";
+import { cardCls, shellBodyCls } from "./shared/designTokens";
 
 /* ── Tab types ── */
 
-type TabId = "chat" | "team" | "linear" | "settings";
+type TabId = "chat" | "team" | "workflows" | "settings";
 
 const TABS: { id: TabId; label: string; icon: React.ElementType; color: string }[] = [
   { id: "chat", label: "Chat", icon: ChatCircle, color: "#A78BFA" },
   { id: "team", label: "Team", icon: UsersThree, color: "#60A5FA" },
-  { id: "linear", label: "Linear", icon: GitBranch, color: "#34D399" },
+  { id: "workflows", label: "Workflows", icon: GitBranch, color: "#34D399" },
   { id: "settings", label: "Settings", icon: Gear, color: "#F472B6" },
 ];
 
@@ -318,7 +318,7 @@ export function CtoPage() {
     const syncHash = () => {
       const hash = window.location.hash.toLowerCase();
       if (hash.includes("linear-sync")) {
-        setActiveTab("linear");
+        setActiveTab("workflows");
       } else if (hash.includes("team-setup")) {
         setActiveTab("team");
       }
@@ -670,118 +670,50 @@ export function CtoPage() {
           />
         )}
 
-        <div className="px-4 py-3">
-          <div
-            className={cn(cardCls, "overflow-hidden p-0")}
-            style={{
-              background: "radial-gradient(circle at top left, rgba(56,189,248,0.14), transparent 28%), radial-gradient(circle at top right, rgba(251,191,36,0.1), transparent 24%), linear-gradient(180deg, rgba(16,22,32,0.94), rgba(9,13,19,0.96))",
-            }}
-          >
-            {/* Compact header row */}
-            <div className={compactHeaderCls}>
-              {/* Left: Avatar + title + subtitle */}
-              <div className="flex items-center gap-3 min-w-0">
-                <div
-                  className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl border"
-                  style={{
-                    background: selectedWorker
-                      ? "linear-gradient(135deg, rgba(96,165,250,0.16), rgba(96,165,250,0.06))"
-                      : "linear-gradient(135deg, rgba(56,189,248,0.16), rgba(56,189,248,0.06))",
-                    borderColor: selectedWorker ? "rgba(96,165,250,0.26)" : "rgba(56,189,248,0.26)",
-                  }}
-                >
-                  <span className="text-sm font-bold" style={{ color: selectedWorker ? "#60A5FA" : "#38BDF8" }}>
-                    {pageTitle.charAt(0).toUpperCase()}
-                  </span>
-                </div>
-                <div className="min-w-0 flex items-baseline gap-2">
-                  <span className="shrink-0 text-sm font-semibold tracking-tight text-fg">{pageTitle}</span>
-                  <span className="truncate text-[11px] text-muted-fg/38">{pageSubtitle}</span>
-                </div>
-              </div>
-
-              {/* Center: Stats as compact chips */}
-              <div className="flex flex-wrap items-center gap-2">
-                {[
-                  {
-                    label: selectedWorker ? "Role" : "Focus",
-                    value: focusSummary,
-                    color: "#38BDF8",
-                  },
-                  {
-                    label: "Memory",
-                    value: selectedWorker ? "revisions" : "durable",
-                    color: "#A78BFA",
-                  },
-                  {
-                    label: "Team",
-                    value: `${teamStats.active}/${teamStats.total}`,
-                    color: "#34D399",
-                  },
-                  {
-                    label: "Sessions",
-                    value: String(sessionLogs.length),
-                    color: "#FBBF24",
-                  },
-                ].map((chip) => (
-                  <div key={chip.label} className={statChipCls}>
-                    <span className="text-muted-fg/46">{chip.label}</span>
-                    <span className="font-semibold" style={{ color: chip.color }}>{chip.value}</span>
-                  </div>
-                ))}
-              </div>
-
-              {/* Right: Bridge/brain status */}
-              <div className="flex shrink-0 items-center gap-2.5">
-                {[
-                  { label: bridgeSummary, tone: openclawStatus?.state === "connected" ? "#34D399" : "#38BDF8" },
-                  { label: currentBrainSummary || "Brain not set", tone: selectedWorker ? "#60A5FA" : "#38BDF8" },
-                ].map((item) => (
-                  <div
-                    key={item.label}
-                    className="rounded-full border px-3 py-1.5 text-[11px] font-semibold uppercase tracking-[0.08em]"
-                    style={{
-                      color: item.tone,
-                      borderColor: `${item.tone}22`,
-                      background: `${item.tone}0A`,
-                    }}
-                  >
-                    {item.label}
-                  </div>
-                ))}
-              </div>
+        {/* Minimal single-row header */}
+        <div className="flex items-center gap-4 border-b border-white/[0.06] px-5 py-2.5">
+          {/* Left: Avatar + name */}
+          <div className="flex items-center gap-2.5 shrink-0">
+            <div
+              className="flex h-7 w-7 items-center justify-center rounded-lg border border-accent/20"
+              style={{ background: "var(--color-accent-muted)" }}
+            >
+              <span className="text-xs font-bold text-accent">
+                {pageTitle.charAt(0).toUpperCase()}
+              </span>
             </div>
-
-            {/* Tab bar */}
-            <div className="px-4 pb-3 pt-1.5">
-              <div className={cn(shellTabBarCls, "w-full flex-wrap !p-1.5 !gap-1")}>
-                {TABS.map(({ id, label, icon: Icon, color }) => {
-                  const active = activeTab === id;
-                  return (
-                    <button
-                      key={id}
-                      type="button"
-                      onClick={() => setActiveTab(id)}
-                      className={cn(
-                        "flex items-center gap-2 rounded-xl px-3.5 py-2 text-xs font-semibold transition-all duration-200",
-                        active ? "text-fg" : "text-muted-fg/44 hover:text-muted-fg/68 hover:bg-white/[0.03]",
-                      )}
-                      style={active
-                        ? {
-                            background: `${color}12`,
-                            border: `1px solid ${color}24`,
-                            boxShadow: `0 8px 20px rgba(0,0,0,0.16), 0 0 12px ${color}08`,
-                          }
-                        : { border: "1px solid transparent" }}
-                    >
-                      <Icon size={14} weight={active ? "fill" : "regular"} style={active ? { color } : undefined} />
-                      {label}
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
+            <span className="text-sm font-semibold text-fg">{pageTitle}</span>
           </div>
+
+          {/* Center: Tab buttons */}
+          <div className="flex flex-1 items-center gap-1">
+            {TABS.map(({ id, label, icon: Icon }) => {
+              const active = activeTab === id;
+              return (
+                <button
+                  key={id}
+                  type="button"
+                  onClick={() => setActiveTab(id)}
+                  className={cn(
+                    "flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-all duration-150",
+                    active
+                      ? "bg-accent/10 text-accent border border-accent/20"
+                      : "text-muted-fg/50 hover:text-muted-fg/80 hover:bg-white/[0.03] border border-transparent",
+                  )}
+                >
+                  <Icon size={13} weight={active ? "fill" : "regular"} />
+                  {label}
+                </button>
+              );
+            })}
+          </div>
+
+          {/* Right: Model badge */}
+          {currentBrainSummary ? (
+            <div className="shrink-0 rounded-md border border-white/[0.06] bg-white/[0.03] px-2.5 py-1 text-[10px] font-medium text-muted-fg/60">
+              {currentBrainSummary}
+            </div>
+          ) : null}
         </div>
 
         {/* Tab content */}
@@ -907,7 +839,7 @@ export function CtoPage() {
                         </div>
                         <div className="space-y-1">
                           {subordinateActivity.length === 0 ? (
-                            <div className="py-4 font-mono text-xs text-muted-fg/40">No department activity recorded yet.</div>
+                            <div className="py-4 font-sans text-xs text-muted-fg/40">No department activity recorded yet.</div>
                           ) : subordinateActivity.map((entry) => (
                             <TimelineEntry
                               key={entry.id}
@@ -946,7 +878,7 @@ export function CtoPage() {
           )}
 
           {/* Linear tab */}
-          {activeTab === "linear" && <LinearSyncPanel lanes={lanes} selectedLaneId={laneId} />}
+          {activeTab === "workflows" && <LinearSyncPanel lanes={lanes} selectedLaneId={laneId} />}
 
           {/* Settings tab */}
           {activeTab === "settings" && (

@@ -50,6 +50,13 @@ function makeRoute(
   };
 }
 
+function locationFrom(res: any): string | null {
+  const call = res.writeHead.mock.calls.at(-1);
+  const headers = call?.[1] as Record<string, string | string[] | undefined> | undefined;
+  const location = headers?.location;
+  return typeof location === "string" ? location : Array.isArray(location) ? location[0] ?? null : null;
+}
+
 // ---------------------------------------------------------------------------
 // Test suite
 // ---------------------------------------------------------------------------
@@ -59,6 +66,7 @@ describe("oauthRedirectService", () => {
   let routes: ProxyRoute[];
   let logger: ReturnType<typeof createLogger>;
   let forwardToPort: ReturnType<typeof vi.fn>;
+  let requestUpstream: ReturnType<typeof vi.fn>;
   let svc: ReturnType<typeof createOAuthRedirectService>;
 
   beforeEach(() => {
@@ -66,6 +74,7 @@ describe("oauthRedirectService", () => {
     routes = [];
     logger = createLogger();
     forwardToPort = vi.fn();
+    requestUpstream = vi.fn();
 
     svc = createOAuthRedirectService({
       logger,
@@ -74,6 +83,7 @@ describe("oauthRedirectService", () => {
       getProxyPort: () => 8080,
       getHostnameSuffix: () => ".localhost",
       forwardToPort,
+      requestUpstream: requestUpstream as any,
     });
   });
 
@@ -394,6 +404,105 @@ describe("oauthRedirectService", () => {
       expect(sessions[0].status).toBe("failed");
       expect(sessions[0].error).toBeDefined();
     });
+
+    it("rewrites auth starts onto the stable ADE callback URL", async () => {
+      routes.push(makeRoute("lane-1", 3001));
+      requestUpstream.mockResolvedValue({
+        statusCode: 307,
+        headers: {
+          location:
+            "https://accounts.google.com/o/oauth2/v2/auth?state=raw-state&redirect_uri=http%3A%2F%2Flane-1.localhost%3A8080%2Fapi%2Fauth%2Fgoogle%2Fcallback&scope=openid",
+          "set-cookie": ["versic-oauth-state=raw-state; Path=/; HttpOnly"],
+        },
+        body: Buffer.alloc(0),
+      });
+
+      const req = mockReq("/api/auth/google", "lane-1.localhost:8080");
+      const res = mockRes();
+
+      expect(svc.handleRequest(req, res)).toBe(true);
+
+      await vi.waitFor(() => {
+        expect(res.writeHead).toHaveBeenCalled();
+      });
+
+      const rewrittenLocation = locationFrom(res);
+      expect(rewrittenLocation).toContain("redirect_uri=http%3A%2F%2Flocalhost%3A8080%2Foauth%2Fcallback");
+      expect(rewrittenLocation).toContain("state=ade%3A");
+      expect(svc.listSessions()).toHaveLength(1);
+      expect(svc.listSessions()[0].status).toBe("pending");
+    });
+
+    it("replays the callback response back on the lane host after routing through the stable callback", async () => {
+      routes.push(makeRoute("lane-1", 3001));
+      requestUpstream
+        .mockResolvedValueOnce({
+          statusCode: 307,
+          headers: {
+            location:
+              "https://accounts.google.com/o/oauth2/v2/auth?state=raw-state&redirect_uri=http%3A%2F%2Flane-1.localhost%3A8080%2Fapi%2Fauth%2Fgoogle%2Fcallback&scope=openid",
+            "set-cookie": [
+              "versic-oauth-state=raw-state; Path=/; HttpOnly",
+              "versic-oauth-redirect=%2Fdashboard; Path=/",
+            ],
+          },
+          body: Buffer.alloc(0),
+        })
+        .mockResolvedValueOnce({
+          statusCode: 302,
+          headers: {
+            location: "/dashboard",
+            "set-cookie": ["versic-access-token=test-token; Path=/; HttpOnly"],
+          },
+          body: Buffer.alloc(0),
+        });
+
+      const startReq = mockReq("/api/auth/google", "lane-1.localhost:8080");
+      const startRes = mockRes();
+      expect(svc.handleRequest(startReq, startRes)).toBe(true);
+      await vi.waitFor(() => {
+        expect(startRes.writeHead).toHaveBeenCalled();
+      });
+
+      const rewrittenLocation = locationFrom(startRes)!;
+      const encodedState = new URL(rewrittenLocation).searchParams.get("state");
+      expect(encodedState).toBeTruthy();
+
+      const callbackReq = mockReq(
+        `/oauth/callback?code=test-code&state=${encodeURIComponent(encodedState!)}`,
+      );
+      const callbackRes = mockRes();
+      expect(svc.handleRequest(callbackReq, callbackRes)).toBe(true);
+
+      await vi.waitFor(() => {
+        expect(callbackRes.writeHead).toHaveBeenCalled();
+      });
+
+      expect(requestUpstream).toHaveBeenCalledTimes(2);
+      expect(requestUpstream.mock.calls[1][0].overridePath).toContain("/api/auth/google/callback");
+      expect(requestUpstream.mock.calls[1][0].overridePath).toContain("state=raw-state");
+      expect(requestUpstream.mock.calls[1][0].overrideHeaders.cookie).toContain("versic-oauth-state=raw-state");
+      expect(requestUpstream.mock.calls[1][0].overrideHeaders.host).toBe("lane-1.localhost:8080");
+
+      const finalizeLocation = locationFrom(callbackRes);
+      expect(finalizeLocation).toContain("lane-1.localhost:8080/__ade/oauth/finalize?token=");
+      const finalizeToken = new URL(finalizeLocation!).searchParams.get("token");
+      expect(finalizeToken).toBeTruthy();
+
+      const finalizeReq = mockReq(
+        `/__ade/oauth/finalize?token=${encodeURIComponent(finalizeToken!)}`,
+        "lane-1.localhost:8080",
+      );
+      const finalizeRes = mockRes();
+      expect(svc.handleRequest(finalizeReq, finalizeRes)).toBe(true);
+
+      expect(finalizeRes.writeHead).toHaveBeenCalledWith(302, {
+        location: "/dashboard",
+        "set-cookie": ["versic-access-token=test-token; Path=/; HttpOnly"],
+      });
+      expect(svc.listSessions()).toHaveLength(1);
+      expect(svc.listSessions()[0].status).toBe("completed");
+    });
   });
 
   // =========================================================================
@@ -575,17 +684,12 @@ describe("oauthRedirectService", () => {
   // =========================================================================
 
   describe("redirect URI generation", () => {
-    it("generates generic URIs with all callback paths", () => {
+    it("generates one stable ADE-managed callback URI for the generic helper", () => {
       const infos = svc.generateRedirectUris();
       expect(infos).toHaveLength(1);
       expect(infos[0].provider).toBe("Generic");
-      expect(infos[0].uris).toEqual([
-        "http://localhost:8080/oauth/callback",
-        "http://localhost:8080/auth/callback",
-        "http://localhost:8080/api/auth/callback",
-        "http://localhost:8080/callback",
-      ]);
-      expect(infos[0].instructions).toBeTruthy();
+      expect(infos[0].uris).toEqual(["http://localhost:8080/oauth/callback"]);
+      expect(infos[0].instructions).toContain("ADE-managed callback URL");
     });
 
     it("Google provider returns specific URI and instructions", () => {
@@ -600,18 +704,15 @@ describe("oauthRedirectService", () => {
       const infos = svc.generateRedirectUris("github");
       expect(infos).toHaveLength(1);
       expect(infos[0].provider).toBe("GitHub");
-      expect(infos[0].uris).toEqual(["http://localhost:8080/auth/callback"]);
+      expect(infos[0].uris).toEqual(["http://localhost:8080/oauth/callback"]);
       expect(infos[0].instructions).toContain("GitHub OAuth App");
     });
 
-    it("Auth0 provider returns specific URIs and instructions", () => {
+    it("Auth0 provider returns the stable ADE callback URI and instructions", () => {
       const infos = svc.generateRedirectUris("auth0");
       expect(infos).toHaveLength(1);
       expect(infos[0].provider).toBe("Auth0");
-      expect(infos[0].uris).toEqual([
-        "http://localhost:8080/oauth/callback",
-        "http://localhost:8080/auth/callback",
-      ]);
+      expect(infos[0].uris).toEqual(["http://localhost:8080/oauth/callback"]);
       expect(infos[0].instructions).toContain("Auth0");
       expect(infos[0].instructions).toContain("Allowed Callback URLs");
     });
@@ -631,11 +732,11 @@ describe("oauthRedirectService", () => {
       custom.dispose();
     });
 
-    it("unknown provider falls back to generic URIs", () => {
+    it("unknown provider falls back to the generic stable callback URI", () => {
       const infos = svc.generateRedirectUris("okta");
       expect(infos).toHaveLength(1);
       expect(infos[0].provider).toBe("okta");
-      expect(infos[0].uris).toHaveLength(4);
+      expect(infos[0].uris).toEqual(["http://localhost:8080/oauth/callback"]);
     });
   });
 
@@ -719,6 +820,7 @@ describe("oauthRedirectService", () => {
         "/oauth/callback",
         "/auth/callback",
         "/api/auth/callback",
+        "/api/auth/google/callback",
         "/callback",
       ]);
       expect(status.activeSessions).toEqual([]);

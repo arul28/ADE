@@ -1,17 +1,19 @@
-import { useMemo } from "react";
-import { CaretDown, CaretRight, GitBranch, GridFour, List, Plus, X } from "@phosphor-icons/react";
+import { useMemo, useCallback, useState } from "react";
+import { CaretDown, CaretRight, Clipboard, GitBranch, GridFour, List, Play, Plus, X } from "@phosphor-icons/react";
 import type { AgentChatSession, LaneSummary, TerminalSessionSummary } from "../../../shared/types";
 import type { WorkDraftKind, WorkViewMode } from "../../state/appStore";
 import { TerminalView } from "./TerminalView";
 import { ToolLogo } from "./ToolLogos";
 import { AgentChatPane } from "../chat/AgentChatPane";
 import { WorkStartSurface } from "./WorkStartSurface";
-import { isChatToolType, primarySessionLabel, secondarySessionLabel, truncateSessionLabel } from "../../lib/sessions";
+import { isChatToolType, primarySessionLabel, secondarySessionLabel, truncateSessionLabel, formatToolTypeLabel } from "../../lib/sessions";
 import { sessionStatusDot } from "../../lib/terminalAttention";
 import { PackedSessionGrid } from "./PackedSessionGrid";
 import type { WorkTabGroup } from "./useWorkSessions";
 import { ClaudeCacheTtlBadge } from "../shared/ClaudeCacheTtlBadge";
 import { shouldShowClaudeCacheTtl } from "../../lib/claudeCacheTtl";
+import { SmartTooltip } from "../ui/SmartTooltip";
+import { resolveTrackedCliResumeCommand } from "./cliLaunch";
 
 const CHAT_TILE_MIN_WIDTH = 440;
 const CHAT_TILE_MIN_HEIGHT = 340;
@@ -36,6 +38,7 @@ function SessionSurface({
   layoutVariant = "standard",
   terminalVisible = isActive,
   onOpenChatSession,
+  onResume,
 }: {
   session: TerminalSessionSummary;
   isActive: boolean;
@@ -43,6 +46,7 @@ function SessionSurface({
   layoutVariant?: "standard" | "grid-tile";
   terminalVisible?: boolean;
   onOpenChatSession: (session: AgentChatSession) => void | Promise<void>;
+  onResume?: (session: TerminalSessionSummary) => void;
 }) {
   if (suspended) {
     const secondary = secondarySessionLabel(session);
@@ -101,11 +105,103 @@ function SessionSurface({
     );
   }
 
+  const resumeCommand = resolveTrackedCliResumeCommand(session);
+  const label = primarySessionLabel(session);
+  const toolLabel = session.toolType ? formatToolTypeLabel(session.toolType) : null;
+  const rawSummary = session.summary?.trim() || session.goal?.trim() || null;
+  // Don't show summary if it just repeats the title
+  const summary = rawSummary && rawSummary !== label && !rawSummary.startsWith(label) ? rawSummary : null;
+  const endedTime = session.endedAt
+    ? new Date(session.endedAt).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })
+    : null;
+
   return (
-    <div className="flex h-full w-full items-center justify-center px-5" style={{ background: "var(--color-card)" }}>
-      <div className="rounded-md px-3 py-2 text-[11px] text-muted-fg" style={{ background: "rgba(255,255,255,0.03)" }}>
-        Session ended
+    <div className="flex h-full w-full items-center justify-center px-6" style={{ background: "var(--color-card)" }}>
+      <div className="flex w-full max-w-md flex-col gap-4 rounded-lg border border-white/[0.06] px-5 py-5" style={{ background: "rgba(255,255,255,0.02)" }}>
+        {/* Header: tool logo + session name */}
+        <div className="flex items-start gap-3">
+          <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-md" style={{ background: "rgba(255,255,255,0.05)" }}>
+            <ToolLogo toolType={session.toolType} size={16} />
+          </div>
+          <div className="min-w-0 flex-1">
+            <div className="truncate text-sm font-medium text-fg">{label}</div>
+            <div className="mt-0.5 flex items-center gap-2 text-[11px] text-muted-fg/70">
+              {toolLabel && <span>{toolLabel}</span>}
+              {toolLabel && endedTime && <span>·</span>}
+              {endedTime && <span>Ended {endedTime}</span>}
+              {session.exitCode != null && session.exitCode !== 0 && (
+                <>
+                  <span>·</span>
+                  <span className="text-red-400">Exit {session.exitCode}</span>
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+
+        {/* Summary */}
+        {summary && (
+          <div className="text-[12px] leading-relaxed text-muted-fg">
+            {summary.length > 300 ? `${summary.slice(0, 300).trimEnd()}…` : summary}
+          </div>
+        )}
+
+        {/* Session ID */}
+        <div className="flex items-center gap-2 text-[10px] text-muted-fg/50">
+          <span className="font-mono">{session.id}</span>
+        </div>
+
+        {/* Resume command */}
+        {resumeCommand && (
+          <div className="flex flex-col gap-1.5">
+            <span className="text-[10px] font-medium uppercase tracking-wider text-muted-fg/50">Resume command</span>
+            <ResumeCommandBlock command={resumeCommand} />
+          </div>
+        )}
+
+        {/* Resume button */}
+        {resumeCommand && onResume && (
+          <button
+            type="button"
+            onClick={() => onResume(session)}
+            className="flex items-center justify-center gap-2 rounded-md px-4 py-2 text-[12px] font-medium text-fg transition-colors"
+            style={{ background: "rgba(255,255,255,0.08)", cursor: "pointer", border: "none" }}
+            onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = "rgba(255,255,255,0.14)"; }}
+            onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = "rgba(255,255,255,0.08)"; }}
+          >
+            <Play size={14} weight="fill" />
+            Resume session
+          </button>
+        )}
       </div>
+    </div>
+  );
+}
+
+function ResumeCommandBlock({ command }: { command: string }) {
+  const [copied, setCopied] = useState(false);
+  const copy = useCallback(() => {
+    navigator.clipboard.writeText(command).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    });
+  }, [command]);
+
+  return (
+    <div
+      className="group relative flex items-center rounded-md px-3 py-2 font-mono text-[11px] text-fg/80"
+      style={{ background: "rgba(0,0,0,0.25)" }}
+    >
+      <span className="flex-1 select-all break-all">{command}</span>
+      <button
+        type="button"
+        onClick={copy}
+        className="ml-2 shrink-0 opacity-0 transition-opacity group-hover:opacity-100"
+        style={{ cursor: "pointer", background: "none", border: "none", color: "var(--color-muted-fg)" }}
+        title="Copy to clipboard"
+      >
+        {copied ? <span className="text-[10px] text-green-400">Copied</span> : <Clipboard size={14} />}
+      </button>
     </div>
   );
 }
@@ -158,6 +254,7 @@ export function WorkViewArea({
   activeItemId,
   viewMode,
   draftKind,
+  onResumeSession,
   setViewMode,
   onSelectItem,
   onCloseItem,
@@ -192,6 +289,7 @@ export function WorkViewArea({
   onToggleTabGroupCollapsed?: (groupId: string) => void;
   closingPtyIds: Set<string>;
   onContextMenu?: (session: TerminalSessionSummary, e: React.MouseEvent) => void;
+  onResumeSession?: (session: TerminalSessionSummary) => void;
 }) {
   const sessionsById = useMemo(() => {
     const map = new Map<string, TerminalSessionSummary>();
@@ -295,6 +393,7 @@ export function WorkViewArea({
             terminalVisible
             layoutVariant="grid-tile"
             onOpenChatSession={onOpenChatSession}
+            onResume={onResumeSession}
           />
         </div>
       ),
@@ -429,25 +528,27 @@ export function WorkViewArea({
                 </button>
               );
             })}
-            <button
-              type="button"
-              className="inline-flex shrink-0 items-center justify-center transition-colors hover:opacity-80"
-              style={{
-                width: 22,
-                height: 22,
-                marginLeft: 4,
-                borderRadius: "50%",
-                border: "1px solid rgba(168,130,255,0.35)",
-                background: "rgba(168,130,255,0.08)",
-                color: "rgba(168,130,255,0.9)",
-                cursor: "pointer",
-              }}
-              onClick={() => onShowDraftKind("chat")}
-              title="New Chat"
-              aria-label="Start a new chat"
-            >
-              <Plus size={11} weight="bold" />
-            </button>
+            <SmartTooltip content={{ label: "New Chat", description: "Start a new AI chat session." }}>
+              <button
+                type="button"
+                className="inline-flex shrink-0 items-center justify-center transition-colors hover:opacity-80"
+                style={{
+                  width: 22,
+                  height: 22,
+                  marginLeft: 4,
+                  borderRadius: "50%",
+                  border: "1px solid rgba(168,130,255,0.35)",
+                  background: "rgba(168,130,255,0.08)",
+                  color: "rgba(168,130,255,0.9)",
+                  cursor: "pointer",
+                }}
+                onClick={() => onShowDraftKind("chat")}
+                title="New Chat"
+                aria-label="Start a new chat"
+              >
+                <Plus size={11} weight="bold" />
+              </button>
+            </SmartTooltip>
           </div>
         </div>
 
@@ -466,7 +567,7 @@ export function WorkViewArea({
           {activeSession ? (
             activeRunningTerminalSession ? null : (
               <div className="absolute inset-0">
-                <SessionSurface session={activeSession} isActive terminalVisible onOpenChatSession={onOpenChatSession} />
+                <SessionSurface session={activeSession} isActive terminalVisible onOpenChatSession={onOpenChatSession} onResume={onResumeSession} />
               </div>
             )
           ) : (
@@ -610,25 +711,27 @@ export function WorkViewArea({
                 </div>
               );
             })}
-            <button
-              type="button"
-              className="inline-flex shrink-0 items-center justify-center transition-colors hover:opacity-80"
-              style={{
-                width: 22,
-                height: 22,
-                marginTop: 3,
-                borderRadius: "50%",
-                border: "1px solid rgba(168,130,255,0.35)",
-                background: "rgba(168,130,255,0.08)",
-                color: "rgba(168,130,255,0.9)",
-                cursor: "pointer",
-              }}
-              onClick={() => onShowDraftKind("chat")}
-              title="New Chat"
-              aria-label="Start a new chat"
-            >
-              <Plus size={11} weight="bold" />
-            </button>
+            <SmartTooltip content={{ label: "New Chat", description: "Start a new AI chat session." }}>
+              <button
+                type="button"
+                className="inline-flex shrink-0 items-center justify-center transition-colors hover:opacity-80"
+                style={{
+                  width: 22,
+                  height: 22,
+                  marginTop: 3,
+                  borderRadius: "50%",
+                  border: "1px solid rgba(168,130,255,0.35)",
+                  background: "rgba(168,130,255,0.08)",
+                  color: "rgba(168,130,255,0.9)",
+                  cursor: "pointer",
+                }}
+                onClick={() => onShowDraftKind("chat")}
+                title="New Chat"
+                aria-label="Start a new chat"
+              >
+                <Plus size={11} weight="bold" />
+              </button>
+            </SmartTooltip>
           </div>
         </div>
       </div>
@@ -648,7 +751,7 @@ export function WorkViewArea({
         {activeSession ? (
           activeRunningTerminalSession ? null : (
             <div className="absolute inset-0">
-              <SessionSurface session={activeSession} isActive terminalVisible onOpenChatSession={onOpenChatSession} />
+              <SessionSurface session={activeSession} isActive terminalVisible onOpenChatSession={onOpenChatSession} onResume={onResumeSession} />
             </div>
           )
         ) : (
@@ -689,29 +792,30 @@ function ViewModeToggle({
       }}
     >
       {([
-        { mode: "tabs" as const, icon: <List size={11} />, label: "Tabs", title: "Tab View" },
-        { mode: "grid" as const, icon: <GridFour size={11} />, label: "Grid", title: "Grid View" },
-      ]).map(({ mode, icon, label, title }) => {
+        { mode: "tabs" as const, icon: <List size={11} />, label: "Tabs", title: "Tab View", description: "Display sessions as tabs in a single panel." },
+        { mode: "grid" as const, icon: <GridFour size={11} />, label: "Grid", title: "Grid View", description: "Display sessions side by side in a tiled grid." },
+      ]).map(({ mode, icon, label, title, description }) => {
         const active = viewMode === mode;
         return (
-          <button
-            key={mode}
-            type="button"
-            aria-pressed={active}
-            onClick={() => setViewMode(mode)}
-            className="inline-flex items-center gap-1 rounded-full px-2.5 text-[10px] font-medium transition-all"
-            style={{
-              height: 20,
-              background: active ? "rgba(167, 139, 250, 0.15)" : "transparent",
-              color: active ? "var(--color-accent)" : "var(--color-muted-fg)",
-              border: "none",
-              cursor: "pointer",
-            }}
-            title={title}
-          >
-            {icon}
-            {label}
-          </button>
+          <SmartTooltip key={mode} content={{ label: title, description }}>
+            <button
+              type="button"
+              aria-pressed={active}
+              onClick={() => setViewMode(mode)}
+              className="inline-flex items-center gap-1 rounded-full px-2.5 text-[10px] font-medium transition-all"
+              style={{
+                height: 20,
+                background: active ? "rgba(167, 139, 250, 0.15)" : "transparent",
+                color: active ? "var(--color-accent)" : "var(--color-muted-fg)",
+                border: "none",
+                cursor: "pointer",
+              }}
+              title={title}
+            >
+              {icon}
+              {label}
+            </button>
+          </SmartTooltip>
         );
       })}
     </div>

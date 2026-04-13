@@ -308,7 +308,7 @@ export function OpenclawConnectionPanel({
           <div className="grid gap-3 md:grid-cols-2">
             <label className="space-y-1">
               <div className={labelCls}>Enable Bridge</div>
-              <label className="flex items-center gap-2 font-mono text-[10px] text-fg">
+              <label className="flex items-center gap-2 font-sans text-[10px] text-fg">
                 <input
                   type="checkbox"
                   checked={draft.enabled}
@@ -380,7 +380,7 @@ export function OpenclawConnectionPanel({
             </label>
           </div>
 
-          <label className="mt-3 flex items-center gap-2 font-mono text-[10px] text-fg">
+          <label className="mt-3 flex items-center gap-2 font-sans text-[10px] text-fg">
             <input
               type="checkbox"
               checked={draft.allowEmployeeTargets}
@@ -394,7 +394,7 @@ export function OpenclawConnectionPanel({
               <div className={labelCls}>Notification Routes</div>
               {NOTIFICATION_TYPES.map((notificationType) => (
                 <div key={notificationType} className="grid gap-2 rounded border border-border/10 bg-surface-recessed p-3 md:grid-cols-[150px_minmax(0,1fr)_minmax(0,1fr)]">
-                  <label className="flex items-center gap-2 font-mono text-[10px] text-fg">
+                  <label className="flex items-center gap-2 font-sans text-[10px] text-fg">
                     <input
                       type="checkbox"
                       checked={draft.notificationRoutes[notificationType].enabled}
@@ -447,7 +447,7 @@ export function OpenclawConnectionPanel({
           )}
 
           <div className="mt-4 flex items-center justify-between gap-3">
-            <div className="font-mono text-[9px] text-muted-fg/50">
+            <div className="font-sans text-[9px] text-muted-fg/50">
               {state?.endpoints.healthUrl ? (
                 <>
                   Health: {state.endpoints.healthUrl}
@@ -470,14 +470,14 @@ export function OpenclawConnectionPanel({
       {state?.status.lastError && (
         <div className="flex items-start gap-2 rounded border border-error/20 bg-error/5 px-3 py-2">
           <WarningCircle size={14} className="mt-0.5 shrink-0 text-error" />
-          <div className="font-mono text-[10px] text-fg/80">{state.status.lastError}</div>
+          <div className="font-sans text-[10px] text-fg/80">{state.status.lastError}</div>
         </div>
       )}
 
       {error && (
         <div className="flex items-start gap-2 rounded border border-error/20 bg-error/5 px-3 py-2">
           <WarningCircle size={14} className="mt-0.5 shrink-0 text-error" />
-          <div className="font-mono text-[10px] text-fg/80">{error}</div>
+          <div className="font-sans text-[10px] text-fg/80">{error}</div>
         </div>
       )}
 
@@ -485,11 +485,11 @@ export function OpenclawConnectionPanel({
         <div className={cn(cardCls, compact ? "p-2.5" : "p-3")}>
           <div className="flex items-center gap-2">
             <CheckCircle size={14} weight="fill" className="text-success" />
-            <span className="font-mono text-[10px] text-fg">
+            <span className="font-sans text-[10px] text-fg">
               Paired device <span className="font-bold">{state.status.deviceId ?? "unknown"}</span>
             </span>
           </div>
-          <div className="mt-1 font-mono text-[9px] text-muted-fg/45">
+          <div className="mt-1 font-sans text-[9px] text-muted-fg/45">
             Last connected: {state.status.lastConnectedAt ? new Date(state.status.lastConnectedAt).toLocaleString() : "n/a"}
           </div>
         </div>
@@ -499,7 +499,7 @@ export function OpenclawConnectionPanel({
         <div className={cn(cardCls, "p-4")}>
           <div className="mb-3">
             <div className="font-sans text-xs font-bold text-fg">OpenClaw Context Policy</div>
-            <div className="mt-1 font-mono text-[10px] text-muted-fg/55">
+            <div className="mt-1 font-sans text-[10px] text-muted-fg/55">
               Controls which metadata ADE includes when it sends notifications or bridge replies back into OpenClaw.
             </div>
           </div>
@@ -528,7 +528,7 @@ export function OpenclawConnectionPanel({
             </label>
           </div>
 
-          {contextError && <div className="mt-3 font-mono text-[10px] text-error">{contextError}</div>}
+          {contextError && <div className="mt-3 font-sans text-[10px] text-error">{contextError}</div>}
 
           <div className="mt-4 flex justify-end">
             <Button variant="outline" size="sm" disabled={contextSaving} onClick={() => void saveContextPolicy()}>
@@ -542,7 +542,7 @@ export function OpenclawConnectionPanel({
         <div className={cn(cardCls, "p-4")}>
           <div className="mb-3">
             <div className="font-sans text-xs font-bold text-fg">Manual Outbound Message</div>
-            <div className="mt-1 font-mono text-[10px] text-muted-fg/55">
+            <div className="mt-1 font-sans text-[10px] text-muted-fg/55">
               Send a direct bridge message to a known OpenClaw session or agent to validate routing end to end.
             </div>
           </div>
@@ -579,8 +579,8 @@ export function OpenclawConnectionPanel({
             </label>
           </div>
 
-          {manualError && <div className="mt-3 font-mono text-[10px] text-error">{manualError}</div>}
-          {manualSuccess && <div className="mt-3 font-mono text-[10px] text-success">{manualSuccess}</div>}
+          {manualError && <div className="mt-3 font-sans text-[10px] text-error">{manualError}</div>}
+          {manualSuccess && <div className="mt-3 font-sans text-[10px] text-success">{manualSuccess}</div>}
 
           <div className="mt-4 flex justify-end">
             <Button variant="outline" size="sm" disabled={manualSending} onClick={() => void sendManualMessage()}>
@@ -595,7 +595,7 @@ export function OpenclawConnectionPanel({
           <div className="mb-3 flex items-center justify-between gap-3">
             <div>
               <div className="font-sans text-xs font-bold text-fg">Recent Bridge Traffic</div>
-              <div className="mt-1 font-mono text-[10px] text-muted-fg/55">
+              <div className="mt-1 font-sans text-[10px] text-muted-fg/55">
                 Last inbound and outbound bridge records persisted under `.ade/cto/`.
               </div>
             </div>
@@ -605,18 +605,18 @@ export function OpenclawConnectionPanel({
             {messages.map((message) => (
               <div key={message.id} className="rounded border border-border/10 bg-surface-recessed px-3 py-2">
                 <div className="flex items-center justify-between gap-3">
-                  <div className="font-mono text-[10px] text-fg">
+                  <div className="font-sans text-[10px] text-fg">
                     {message.direction} · {message.mode} · {message.status}
                   </div>
-                  <div className="font-mono text-[9px] text-muted-fg/45">
+                  <div className="font-sans text-[9px] text-muted-fg/45">
                     {new Date(message.createdAt).toLocaleString()}
                   </div>
                 </div>
-                <div className="mt-1 font-mono text-[10px] text-muted-fg/80">{message.summary}</div>
+                <div className="mt-1 font-sans text-[10px] text-muted-fg/80">{message.summary}</div>
               </div>
             ))}
             {messages.length === 0 && (
-              <div className="font-mono text-[10px] text-muted-fg/50">No OpenClaw traffic has been recorded yet.</div>
+              <div className="font-sans text-[10px] text-muted-fg/50">No OpenClaw traffic has been recorded yet.</div>
             )}
           </div>
         </div>

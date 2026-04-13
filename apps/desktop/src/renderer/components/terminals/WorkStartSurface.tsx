@@ -12,6 +12,7 @@ import { LaneCombobox } from "./LaneCombobox";
 import { COLORS } from "../lanes/laneDesignTokens";
 import { buildTrackedCliStartupCommand, type CliProvider } from "./cliLaunch";
 import { ClaudeLogo, CodexLogo } from "./ToolLogos";
+import { SmartTooltip } from "../ui/SmartTooltip";
 
 type WorkStartSurfaceProps = {
   draftKind: WorkDraftKind;
@@ -100,6 +101,8 @@ export function WorkStartSurface({
     if (!selectedLaneId || launchBusy) return;
     setLaunchBusy(true);
     try {
+      // Generate a session ID upfront for Claude so resume always works
+      const sessionId = cliProvider === "claude" ? crypto.randomUUID() : undefined;
       await onLaunchPtySession({
         laneId: selectedLaneId,
         profile: cliProvider,
@@ -107,6 +110,7 @@ export function WorkStartSurface({
         startupCommand: buildTrackedCliStartupCommand({
           provider: cliProvider,
           permissionMode: cliPermissionMode,
+          sessionId,
         }),
       });
     } finally {
@@ -192,23 +196,24 @@ export function WorkStartSurface({
             ] as const).map((opt) => {
               const active = cliProvider === opt.id;
               return (
-                <button
-                  key={opt.id}
-                  type="button"
-                  className="inline-flex flex-1 items-center justify-center gap-2 rounded-md py-2 transition-colors"
-                  style={{
-                    fontSize: 11,
-                    fontWeight: active ? 500 : 400,
-                    border: active ? "1px solid var(--color-accent-muted)" : "1px solid transparent",
-                    background: active ? "var(--color-accent-muted)" : "transparent",
-                    color: active ? "var(--color-fg)" : "var(--color-muted-fg)",
-                    cursor: "pointer",
-                  }}
-                  onClick={() => setCliProvider(opt.id)}
-                >
-                  <opt.Logo size={14} />
-                  {opt.label}
-                </button>
+                <SmartTooltip key={opt.id} content={{ label: opt.label, description: `Use ${opt.label} as the CLI provider for this session.` }}>
+                  <button
+                    type="button"
+                    className="inline-flex flex-1 items-center justify-center gap-2 rounded-md py-2 transition-colors"
+                    style={{
+                      fontSize: 11,
+                      fontWeight: active ? 500 : 400,
+                      border: active ? "1px solid var(--color-accent-muted)" : "1px solid transparent",
+                      background: active ? "var(--color-accent-muted)" : "transparent",
+                      color: active ? "var(--color-fg)" : "var(--color-muted-fg)",
+                      cursor: "pointer",
+                    }}
+                    onClick={() => setCliProvider(opt.id)}
+                  >
+                    <opt.Logo size={14} />
+                    {opt.label}
+                  </button>
+                </SmartTooltip>
               );
             })}
           </div>
@@ -219,36 +224,39 @@ export function WorkStartSurface({
               const active = cliPermissionMode === option.value;
               const colors = safetyColors(option.safety);
               return (
-                <button
-                  key={option.value}
-                  type="button"
-                  className={`ade-work-segmented-item ${active ? colors.activeBg : ""}`}
-                  data-active={active ? "true" : undefined}
-                  onClick={() => setCliPermissionMode(option.value)}
-                  title={option.detail}
-                >
-                  {option.label}
-                </button>
+                <SmartTooltip key={option.value} content={{ label: option.label, description: option.detail }}>
+                  <button
+                    type="button"
+                    className={`ade-work-segmented-item ${active ? colors.activeBg : ""}`}
+                    data-active={active ? "true" : undefined}
+                    onClick={() => setCliPermissionMode(option.value)}
+                    title={option.detail}
+                  >
+                    {option.label}
+                  </button>
+                </SmartTooltip>
               );
             })}
           </div>
 
           {/* Launch */}
-          <button
-            type="button"
-            className="inline-flex w-full items-center justify-center gap-2 rounded-md py-2 text-[11px] font-medium transition-colors"
-            style={{
-              background: "var(--color-fg)",
-              color: "var(--color-bg)",
-              cursor: selectedLaneId && !launchBusy ? "pointer" : "not-allowed",
-              opacity: selectedLaneId && !launchBusy ? 1 : 0.5,
-            }}
-            disabled={!selectedLaneId || launchBusy}
-            onClick={() => void launchCli()}
-          >
-            Open {cliProvider === "claude" ? "Claude Code" : "Codex CLI"}
-            <ArrowRight size={12} weight="regular" />
-          </button>
+          <SmartTooltip content={{ label: "Launch CLI", description: "Start a new CLI session with the selected provider and permission mode." }}>
+            <button
+              type="button"
+              className="inline-flex w-full items-center justify-center gap-2 rounded-md py-2 text-[11px] font-medium transition-colors"
+              style={{
+                background: "var(--color-fg)",
+                color: "var(--color-bg)",
+                cursor: selectedLaneId && !launchBusy ? "pointer" : "not-allowed",
+                opacity: selectedLaneId && !launchBusy ? 1 : 0.5,
+              }}
+              disabled={!selectedLaneId || launchBusy}
+              onClick={() => void launchCli()}
+            >
+              Open {cliProvider === "claude" ? "Claude Code" : "Codex CLI"}
+              <ArrowRight size={12} weight="regular" />
+            </button>
+          </SmartTooltip>
         </GlassCard>
       </div>
     );
@@ -279,21 +287,23 @@ export function WorkStartSurface({
         </div>
 
         {/* Launch */}
-        <button
-          type="button"
-          className="inline-flex w-full items-center justify-center gap-2 rounded-md py-2 text-[11px] font-medium transition-colors"
-          style={{
-            background: "var(--color-fg)",
-            color: "var(--color-bg)",
-            cursor: selectedLaneId && !launchBusy ? "pointer" : "not-allowed",
-            opacity: selectedLaneId && !launchBusy ? 1 : 0.5,
-          }}
-          disabled={!selectedLaneId || launchBusy}
-          onClick={() => void launchShell()}
-        >
-          Open Shell
-          <ArrowRight size={12} weight="regular" />
-        </button>
+        <SmartTooltip content={{ label: "Open Shell", description: "Launch a new terminal shell in this lane's worktree." }}>
+          <button
+            type="button"
+            className="inline-flex w-full items-center justify-center gap-2 rounded-md py-2 text-[11px] font-medium transition-colors"
+            style={{
+              background: "var(--color-fg)",
+              color: "var(--color-bg)",
+              cursor: selectedLaneId && !launchBusy ? "pointer" : "not-allowed",
+              opacity: selectedLaneId && !launchBusy ? 1 : 0.5,
+            }}
+            disabled={!selectedLaneId || launchBusy}
+            onClick={() => void launchShell()}
+          >
+            Open Shell
+            <ArrowRight size={12} weight="regular" />
+          </button>
+        </SmartTooltip>
       </GlassCard>
     </div>
   );

@@ -335,8 +335,13 @@ function toChecksStatusFromCheckRuns(checkRuns: any[]): PrChecksStatus | null {
     const status = asString(run?.status).toLowerCase();
     const conclusion = asString(run?.conclusion).toLowerCase();
     if (status && status !== "completed") {
-      hasPending = true;
-      continue;
+      // A check can have a conclusion (e.g. "skipped") even when its status
+      // hasn't flipped to "completed".  Treat it as finished if a terminal
+      // conclusion is present; otherwise it's genuinely pending.
+      if (!conclusion || (conclusion !== "success" && conclusion !== "neutral" && conclusion !== "skipped" && conclusion !== "failure" && conclusion !== "cancelled" && conclusion !== "timed_out" && conclusion !== "action_required" && conclusion !== "stale")) {
+        hasPending = true;
+        continue;
+      }
     }
     if (!conclusion) continue;
     if (conclusion === "success" || conclusion === "neutral" || conclusion === "skipped") {
@@ -3492,9 +3497,10 @@ export function createPrService({
     };
 
     const toGitHubState = (rawPr: any): PrState => {
-      if (Boolean(rawPr?.draft)) return "draft";
       if (rawPr?.merged_at) return "merged";
-      return asString(rawPr?.state).toLowerCase() === "closed" ? "closed" : "open";
+      if (asString(rawPr?.state).toLowerCase() === "closed") return "closed";
+      if (Boolean(rawPr?.draft)) return "draft";
+      return "open";
     };
 
     const toGitHubItem = (rawPr: any, scope: "repo" | "external"): GitHubPrListItem => {

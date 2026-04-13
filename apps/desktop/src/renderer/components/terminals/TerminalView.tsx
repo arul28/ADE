@@ -4,6 +4,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 import { cn } from "../ui/cn";
 import {
+  DEFAULT_TERMINAL_FONT_FAMILY,
   DEFAULT_TERMINAL_PREFERENCES,
   useAppStore,
   type TerminalPreferences,
@@ -27,7 +28,7 @@ type RuntimeSnapshot = {
   health: TerminalHealthCounters;
 };
 
-type TerminalRenderPreferences = Pick<TerminalPreferences, "fontSize" | "lineHeight" | "scrollback">;
+type TerminalRenderPreferences = Pick<TerminalPreferences, "fontFamily" | "fontSize" | "lineHeight" | "scrollback">;
 
 type RuntimeListener = (snapshot: RuntimeSnapshot) => void;
 
@@ -83,17 +84,6 @@ const MIN_VALID_ROWS = 6;
 const MIN_HOST_WIDTH_PX = 120;
 const MIN_HOST_HEIGHT_PX = 48;
 const INVALID_FIT_RETRY_MS = 90;
-const TERMINAL_FONT_STACK = [
-  "ui-monospace",
-  "SFMono-Regular",
-  "Menlo",
-  "Monaco",
-  "\"Cascadia Mono\"",
-  "\"JetBrains Mono\"",
-  "\"Geist Mono\"",
-  "monospace",
-].join(", ");
-
 const runtimeCache = new Map<string, CachedRuntime>();
 let parkedRoot: HTMLDivElement | null = null;
 
@@ -218,7 +208,7 @@ function applyRuntimeVisualOptions(
 ) {
   try {
     runtime.term.options.theme = args.theme ? { ...args.theme } : undefined;
-    runtime.term.options.fontFamily = TERMINAL_FONT_STACK;
+    runtime.term.options.fontFamily = args.preferences.fontFamily || DEFAULT_TERMINAL_FONT_FAMILY;
     runtime.term.options.fontSize = args.preferences.fontSize;
     runtime.term.options.lineHeight = args.preferences.lineHeight;
     runtime.term.options.scrollback = args.preferences.scrollback;
@@ -673,7 +663,7 @@ function createRuntime(args: {
     cursorInactiveStyle: "none",
     documentOverride: document,
     scrollback: args.preferences.scrollback,
-    fontFamily: TERMINAL_FONT_STACK,
+    fontFamily: args.preferences.fontFamily || DEFAULT_TERMINAL_FONT_FAMILY,
     fontSize: args.preferences.fontSize,
     lineHeight: args.preferences.lineHeight,
     theme: args.theme
@@ -917,6 +907,7 @@ export function TerminalView({
 
   const termTheme = useMemo(() => terminalThemes[isDarkTheme(appTheme) ? "dark" : "light"], [appTheme]);
   const resolvedPreferences = useMemo<TerminalRenderPreferences>(() => ({
+    fontFamily: terminalPreferences?.fontFamily ?? DEFAULT_TERMINAL_PREFERENCES.fontFamily,
     fontSize: terminalPreferences?.fontSize ?? DEFAULT_TERMINAL_PREFERENCES.fontSize,
     lineHeight: terminalPreferences?.lineHeight ?? DEFAULT_TERMINAL_PREFERENCES.lineHeight,
     scrollback: terminalPreferences?.scrollback ?? DEFAULT_TERMINAL_PREFERENCES.scrollback,

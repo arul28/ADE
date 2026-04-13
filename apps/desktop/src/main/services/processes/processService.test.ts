@@ -82,6 +82,69 @@ async function waitForExit(
 }
 
 describe("processService start logging", () => {
+  it("injects lane runtime env into spawned processes", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-process-env-"));
+    const dbPath = path.join(tmpDir, "kv.sqlite");
+    const logsDir = path.join(tmpDir, "logs");
+    const projectId = "proj-env";
+    const logger = createLogger();
+
+    const db = await openKvDb(dbPath, createLogger());
+    const now = "2026-03-24T12:00:00.000Z";
+    db.run(
+      "insert into projects(id, root_path, display_name, default_base_ref, created_at, last_opened_at) values (?, ?, ?, ?, ?, ?)",
+      [projectId, tmpDir, "test", "main", now, now],
+    );
+    db.run(
+      `insert into lanes(
+        id, project_id, name, description, lane_type, base_ref, branch_ref, worktree_path,
+        attached_root_path, is_edit_protected, parent_lane_id, color, icon, tags_json, status, created_at, archived_at
+      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ["lane-env", projectId, "Lane Env", null, "worktree", "main", "feature/env", tmpDir, null, 0, null, null, null, null, "active", now, null],
+    );
+
+    const config = makeMinimalConfig([
+      { id: "print-env", command: ["sh", "-c", "printf '%s' \"$PORT|$PORT_RANGE_START|$PORT_RANGE_END|$HOSTNAME|$PROXY_HOSTNAME\""] },
+    ]);
+
+    const service = createProcessService({
+      db,
+      projectId,
+      processLogsDir: logsDir,
+      logger,
+      laneService: {
+        getLaneWorktreePath: () => tmpDir,
+        list: async () => [makeLaneSummary(tmpDir, "lane-env")],
+      } as any,
+      projectConfigService: {
+        get: () => config,
+        getEffective: () => config.effective,
+        getExecutableConfig: () => config.effective,
+      } as any,
+      getLaneRuntimeEnv: async () => ({
+        PORT: "3001",
+        PORT_RANGE_START: "3001",
+        PORT_RANGE_END: "3099",
+        HOSTNAME: "lane-env.localhost",
+        PROXY_HOSTNAME: "lane-env.localhost",
+      }),
+      broadcastEvent: () => {},
+    });
+
+    try {
+      await service.start({ laneId: "lane-env", processId: "print-env" });
+      await waitForExit(service, "lane-env", "print-env");
+
+      const logPath = path.join(logsDir, "lane-env", "print-env.log");
+      const logText = fs.readFileSync(logPath, "utf8");
+      expect(logText).toContain("3001|3001|3099|lane-env.localhost|lane-env.localhost");
+    } finally {
+      service.disposeAll();
+      db.close();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
   it("includes envPath and envShell in the process.start log entry", async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-process-startlog-"));
     const dbPath = path.join(tmpDir, "kv.sqlite");
@@ -262,7 +325,7 @@ describe("processService start logging", () => {
 
     try {
       await expect(service.start({ laneId: "lane-cwd", processId: "escape-proc" })).rejects.toThrow(
-        /cwd escapes lane workspace/,
+        /cwd must stay within the lane workspace/,
       );
     } finally {
       service.disposeAll();

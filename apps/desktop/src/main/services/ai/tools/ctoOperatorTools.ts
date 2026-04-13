@@ -1,6 +1,7 @@
+import path from "node:path";
 import { executableTool as tool, type ExecutableTool as Tool } from "./executableTool";
 import { z } from "zod";
-import { getModelById, resolveChatProviderForDescriptor } from "../../../../shared/modelRegistry";
+import { getModelById, resolveModelDescriptor, resolveChatProviderForDescriptor } from "../../../../shared/modelRegistry";
 import type {
   AgentChatCreateArgs,
   AgentChatInterruptArgs,
@@ -677,7 +678,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
   };
 
   tools.listLanes = tool({
-    description: "List ADE lanes so you can inspect execution branches and choose where to open work.",
+    description: "List all ADE lanes with their status (dirty, ahead/behind, rebase state), branch info, and metadata. Use this to understand what work is happening across the project and choose where to open work.",
     inputSchema: z.object({
       includeArchived: z.boolean().optional().default(false),
     }),
@@ -761,18 +762,29 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
   });
 
   tools.spawnChat = tool({
-    description: "Create a normal ADE work chat, optionally seed it with an initial prompt, and return the session metadata.",
+    description:
+      "Create a native ADE work chat session — the primary way to launch an AI agent in ADE. " +
+      "IMPORTANT: Always pass modelId when the user specifies a model. Use the full model ID " +
+      "(e.g. 'anthropic/claude-opus-4-6' for Opus, 'anthropic/claude-sonnet-4-6' for Sonnet, " +
+      "'anthropic/claude-haiku-4-5' for Haiku, 'openai/gpt-5.4-codex' for GPT-5.4). " +
+      "If no modelId is passed, the CTO's default model preference is used. " +
+      "Set initialPrompt to seed the chat with a task description — the agent will begin working immediately. " +
+      "This creates a full ADE chat with UI, streaming, tool approval, and service integration. " +
+      "Use this when the user asks for 'a chat' or 'an agent'. If they explicitly want a terminal or CLI tool, use createTerminal instead.",
     inputSchema: z.object({
-      laneId: z.string().optional(),
-      modelId: z.string().optional(),
-      reasoningEffort: z.string().nullable().optional(),
-      title: z.string().optional(),
-      initialPrompt: z.string().optional(),
-      openInUi: z.boolean().optional().default(true),
+      laneId: z.string().optional().describe("Lane to run in. Defaults to CTO's lane. A new lane is auto-created if needed."),
+      modelId: z.string().optional().describe("Full model ID (e.g. 'anthropic/claude-sonnet-4-6'). MUST be set when user specifies a model."),
+      reasoningEffort: z.string().nullable().optional().describe("Reasoning effort: 'low', 'medium', 'high', 'max' (opus), 'xhigh' (openai)."),
+      title: z.string().optional().describe("Display title for the chat session."),
+      initialPrompt: z.string().optional().describe("Task description to seed the chat. The agent starts working immediately."),
+      openInUi: z.boolean().optional().default(true).describe("Whether to open the chat in the ADE UI."),
     }),
     execute: async ({ laneId, modelId, reasoningEffort, title, initialPrompt, openInUi }) => {
       try {
-        const selectedModelId = modelId?.trim() || deps.defaultModelId || null;
+        // Resolve model: supports full IDs (anthropic/claude-sonnet-4-6), short IDs (sonnet), and aliases (opus)
+        const rawModelId = modelId?.trim() || null;
+        const descriptor = rawModelId ? resolveModelDescriptor(rawModelId) : null;
+        const selectedModelId = descriptor?.id ?? rawModelId ?? deps.defaultModelId ?? null;
         const resolved = deriveChatProvider({ modelId: selectedModelId });
         const executionLaneId = await deps.resolveExecutionLane({
           requestedLaneId: laneId?.trim() || undefined,
@@ -2226,13 +2238,44 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
   // ---------------------------------------------------------------------------
 
   tools.deleteLane = tool({
-    description: "Delete an ADE lane and its associated worktree.",
+    description: "Delete an ADE lane and its associated worktree. This is destructive — the worktree and branch are removed.",
     inputSchema: z.object({
-      laneId: z.string().trim().min(1),
+      laneId: z.string().trim().min(1).describe("ID of the lane to delete."),
     }),
     execute: async ({ laneId }) => {
       try {
         await deps.laneService.delete({ laneId });
+        return { success: true, laneId };
+      } catch (error) {
+        return { success: false, error: getErrorMessage(error) };
+      }
+    },
+  });
+
+  tools.renameLane = tool({
+    description: "Rename a lane's display name. Does not change the git branch name.",
+    inputSchema: z.object({
+      laneId: z.string().trim().min(1).describe("ID of the lane to rename."),
+      name: z.string().trim().min(1).describe("New display name for the lane."),
+    }),
+    execute: async ({ laneId, name }) => {
+      try {
+        await deps.laneService.rename({ laneId, name });
+        return { success: true, laneId, name };
+      } catch (error) {
+        return { success: false, error: getErrorMessage(error) };
+      }
+    },
+  });
+
+  tools.archiveLane = tool({
+    description: "Archive a lane — hides it from the default lane list but preserves all data and the worktree.",
+    inputSchema: z.object({
+      laneId: z.string().trim().min(1).describe("ID of the lane to archive."),
+    }),
+    execute: async ({ laneId }) => {
+      try {
+        await deps.laneService.archive({ laneId });
         return { success: true, laneId };
       } catch (error) {
         return { success: false, error: getErrorMessage(error) };
@@ -2382,7 +2425,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
   // ---------------------------------------------------------------------------
 
   tools.createTerminal = tool({
-    description: "Create a new terminal session in an ADE lane.",
+    description: "Open a shell terminal (PTY) in a lane. Use for raw CLI commands only — for AI-powered work, use spawnChat instead. This does NOT create an AI chat session.",
     inputSchema: z.object({
       laneId: z.string().trim().min(1),
       title: z.string().optional(),
@@ -2561,8 +2604,8 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
   });
 
   tools.gitCommit = tool({
-    description: "Create a git commit in a lane.",
-    inputSchema: z.object({ laneId: z.string().optional(), message: z.string().min(1), stageAll: z.boolean().optional().default(true) }),
+    description: "Create a git commit in a lane. By default stages all changes (stageAll: true). Use gitStatus first to see what will be committed.",
+    inputSchema: z.object({ laneId: z.string().optional(), message: z.string().min(1).describe("Commit message."), stageAll: z.boolean().optional().default(true).describe("Stage all changes before committing.") }),
     execute: ({ laneId, message, stageAll }) => gitGuard(() => deps.gitService!.commit({ laneId: resolveLaneId(laneId), message, stageAll })),
   });
 
@@ -3394,6 +3437,57 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
         });
         return { success: true, monthKey: snapshot.monthKey, workerCount: breakdowns.length, breakdowns };
       } catch (error) {
+        return { success: false, error: getErrorMessage(error) };
+      }
+    },
+  });
+
+  // ---------------------------------------------------------------------------
+  // Codebase Self-Search (for when CTO needs to understand ADE internals)
+  // ---------------------------------------------------------------------------
+
+  tools.searchCodebase = tool({
+    description:
+      "Search the ADE codebase itself for patterns, function names, or implementation details. " +
+      "Use this when you need to understand how an ADE feature works internally, find the implementation " +
+      "of a specific function, or debug unexpected behavior. This searches the actual ADE source code, " +
+      "not the user's project files. Results are scoped and truncated to avoid context bloat.",
+    inputSchema: z.object({
+      pattern: z.string().trim().min(1).describe("Regex or text pattern to search for (e.g. 'spawnChat', 'createLane', 'modelId')."),
+      fileGlob: z.string().optional().describe("Optional file glob to narrow search (e.g. '*.ts', 'services/**/*.ts'). Defaults to all TypeScript files."),
+      maxResults: z.number().int().positive().max(30).optional().default(10).describe("Max number of file matches to return."),
+      contextLines: z.number().int().nonnegative().max(5).optional().default(2).describe("Lines of context around each match."),
+    }),
+    execute: async ({ pattern, fileGlob, maxResults, contextLines }) => {
+      try {
+        const { execSync } = await import("node:child_process");
+        const adeRoot = path.resolve(__dirname, "../../../../..");
+        const globArg = fileGlob?.trim() || "*.ts";
+        const args = [
+          "--no-heading", "--line-number", "--max-count=3",
+          `--context=${contextLines}`,
+          `--glob=${globArg}`,
+          "--max-filecount=" + String(maxResults),
+          "--", pattern, adeRoot,
+        ];
+        const result = execSync(
+          `rg ${args.map((a) => JSON.stringify(a)).join(" ")}`,
+          { encoding: "utf8", maxBuffer: 512 * 1024, timeout: 10_000 },
+        ).trim();
+        // Strip the absolute path prefix for cleaner output
+        const cleaned = result.replace(new RegExp(adeRoot.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "/", "g"), "");
+        const lines = cleaned.split("\n");
+        const truncated = lines.length > 200;
+        return {
+          success: true,
+          matchCount: lines.filter((l) => l.match(/^\S+:\d+:/)).length,
+          truncated,
+          output: lines.slice(0, 200).join("\n"),
+        };
+      } catch (error: any) {
+        if (error?.status === 1) {
+          return { success: true, matchCount: 0, truncated: false, output: "No matches found." };
+        }
         return { success: false, error: getErrorMessage(error) };
       }
     },

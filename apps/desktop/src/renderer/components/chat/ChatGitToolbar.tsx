@@ -12,7 +12,8 @@ import {
 } from "@phosphor-icons/react";
 import { AnimatePresence, motion } from "motion/react";
 import { cn } from "../ui/cn";
-import type { DiffChanges, GitBranchSummary, PrSummary } from "../../../shared/types";
+import { QuickRunMenu } from "../run/QuickRunMenu";
+import type { DiffChanges, PrSummary } from "../../../shared/types";
 import {
   beginLaneGitActionRuntime,
   patchLaneGitActionRuntimeStateIfCurrent,
@@ -31,11 +32,6 @@ type ChatGitToolbarProps = {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-function currentBranchName(branches: GitBranchSummary[]): string | null {
-  const current = branches.find((b) => b.isCurrent && !b.isRemote);
-  return current?.name ?? null;
-}
 
 function dirtyFileCount(changes: DiffChanges): number {
   return changes.staged.length + changes.unstaged.length;
@@ -79,7 +75,6 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
   const navigate = useNavigate();
   const runtime = useLaneGitActionRuntimeState(laneId);
 
-  const [branch, setBranch] = useState<string | null>(null);
   const [laneName, setLaneName] = useState<string | null>(null);
   const [dirtyCount, setDirtyCount] = useState(0);
   const [diffStats, setDiffStats] = useState<{ adds: number; dels: number; files: number } | null>(null);
@@ -104,11 +99,10 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
 
   const refreshStatus = useCallback(async () => {
     try {
-      const [branches, changes] = await Promise.all([
+      const [, changes] = await Promise.all([
         window.ade.git.listBranches({ laneId }),
         window.ade.diff.getChanges({ laneId }),
       ]);
-      setBranch(currentBranchName(branches));
       setDirtyCount(dirtyFileCount(changes));
       const staged = changes.staged.length;
       const unstaged = changes.unstaged.length;
@@ -279,14 +273,17 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
     <div className="flex items-center gap-1.5">
       {/* Lane name (navigates to lane detail) */}
       {laneId ? (
-        <button
-          type="button"
-          onClick={() => navigate(`/lanes/${laneId}`)}
-          className="inline-flex items-center gap-1.5 rounded-lg border border-violet-400/10 bg-violet-500/[0.04] px-2.5 py-1 font-mono text-[10px] text-violet-200/60 cursor-pointer transition-colors hover:border-violet-400/20 hover:bg-violet-500/[0.08]"
-        >
-          <GitBranch size={10} weight="bold" className="shrink-0 text-violet-400/50" />
-          <span className="max-w-[140px] truncate">{laneName ?? laneId}</span>
-        </button>
+        <>
+          <button
+            type="button"
+            onClick={() => navigate(`/lanes/${laneId}`)}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-violet-400/10 bg-violet-500/[0.04] px-2.5 py-1 font-mono text-[10px] text-violet-200/60 cursor-pointer transition-colors hover:border-violet-400/20 hover:bg-violet-500/[0.08]"
+          >
+            <GitBranch size={10} weight="bold" className="shrink-0 text-violet-400/50" />
+            <span className="max-w-[140px] truncate">{laneName ?? laneId}</span>
+          </button>
+          <QuickRunMenu laneId={laneId} compact label="Run" triggerStyle={{ height: 22, padding: "0 8px" }} />
+        </>
       ) : null}
 
       {/* Dirty count badge */}

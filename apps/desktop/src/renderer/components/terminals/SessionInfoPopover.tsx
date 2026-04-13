@@ -15,6 +15,7 @@ import { getTerminalRuntimeSnapshot } from "./TerminalView";
 import { SessionDeltaCard } from "./SessionDeltaCard";
 import { resolveTrackedCliResumeCommand } from "./cliLaunch";
 import { Button } from "../ui/Button";
+import { SmartTooltip } from "../ui/SmartTooltip";
 
 function runtimeStateLabel(state: TerminalSessionSummary["runtimeState"]): string {
   if (state === "waiting-input") return "waiting input";
@@ -160,23 +161,27 @@ export function SessionInfoPopover({
               {resumeCommand}
             </code>
             <div className="mt-2 flex items-center gap-1.5">
-              <Button
-                variant="outline"
-                size="sm"
-                disabled={resumingSessionId != null}
-                onClick={() => onResume(session)}
-              >
-                <Play size={14} weight="regular" />
-                {resumingSessionId === session.id ? "Resuming..." : "Resume"}
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => { navigator.clipboard.writeText(resumeCommand).catch(() => {}); }}
-              >
-                <Clipboard size={14} weight="regular" />
-                Copy
-              </Button>
+              <SmartTooltip content={{ label: "Resume", description: "Resume this session using the tracked CLI command." }}>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={resumingSessionId != null}
+                  onClick={() => onResume(session)}
+                >
+                  <Play size={14} weight="regular" />
+                  {resumingSessionId === session.id ? "Resuming..." : "Resume"}
+                </Button>
+              </SmartTooltip>
+              <SmartTooltip content={{ label: "Copy Command", description: "Copy the resume command to your clipboard." }}>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => { navigator.clipboard.writeText(resumeCommand).catch(() => {}); }}
+                >
+                  <Clipboard size={14} weight="regular" />
+                  Copy
+                </Button>
+              </SmartTooltip>
             </div>
           </div>
         ) : null}
@@ -207,30 +212,36 @@ export function SessionInfoPopover({
         {/* Actions */}
         <div className="flex flex-wrap gap-1.5 pt-0.5">
           {session.status === "running" && session.ptyId && !isChat ? (
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={closingPtyIds.has(session.ptyId)}
-              onClick={() => { if (session.ptyId) onCloseSession({ ptyId: session.ptyId, sessionId: session.id }); }}
-            >
-              <Square size={14} weight="regular" />
-              {closingPtyIds.has(session.ptyId) ? "Closing..." : "Close"}
-            </Button>
+            <SmartTooltip content={{ label: "Close Session", description: "Terminate this running terminal session." }}>
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={closingPtyIds.has(session.ptyId)}
+                onClick={() => { if (session.ptyId) onCloseSession({ ptyId: session.ptyId, sessionId: session.id }); }}
+              >
+                <Square size={14} weight="regular" />
+                {closingPtyIds.has(session.ptyId) ? "Closing..." : "Close"}
+              </Button>
+            </SmartTooltip>
           ) : null}
           {session.status === "running" && isChat ? (
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={closingChatSessionId === session.id}
-              onClick={() => onEndChat(session.id)}
-            >
-              <Square size={14} weight="regular" />
-              {closingChatSessionId === session.id ? "Ending..." : "End chat"}
-            </Button>
+            <SmartTooltip content={{ label: "End Chat", description: "Terminate this running chat session." }}>
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={closingChatSessionId === session.id}
+                onClick={() => onEndChat(session.id)}
+              >
+                <Square size={14} weight="regular" />
+                {closingChatSessionId === session.id ? "Ending..." : "End chat"}
+              </Button>
+            </SmartTooltip>
           ) : null}
-          <Button variant="outline" size="sm" onClick={() => onGoToLane(session)}>
-            Go to lane
-          </Button>
+          <SmartTooltip content={{ label: "Go to Lane", description: "Navigate to the lane that contains this session." }}>
+            <Button variant="outline" size="sm" onClick={() => onGoToLane(session)}>
+              Go to lane
+            </Button>
+          </SmartTooltip>
         </div>
       </div>
     </div>

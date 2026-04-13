@@ -1212,20 +1212,21 @@ ADE now ships a canonical `.ade` contract. The tracked/shareable subset lives al
 
 **Tracked/shareable state**:
 - `ade.yaml` — shared baseline config
-- `cto/` — CTO identity/core-memory/session-log/daily-log files
-- `agents/` — worker identity/core-memory/session-log files
-- `templates/`, `context/`, `memory/`, `history/`, `reflections/`, `skills/`
+- `cto/identity.yaml` — shared CTO identity
+- human-authored files under `templates/` and `skills/`
+- repo-backed workflow/config files under `workflows/` when present
 
 **Machine-local state**:
 - `local.yaml`, `local.secret.yaml`
 - `ade.db`, `embeddings.db`
 - `mcp.sock`
 - `artifacts/`, `transcripts/`, `cache/`, `worktrees/`, `secrets/`
+- generated runtime state under `agents/`, `context/`, `memory/`, `history/`, `reflections/`, and most of `cto/`
 
 **Repair and integrity baseline**:
 - startup repair creates the canonical tree, rewrites `.ade/.gitignore`, and removes stale `.git/info/exclude` rules for `.ade`
 - legacy runtime folders are moved into `artifacts/`, `transcripts/`, `cache/`, and `secrets/`
-- tracked JSONL files under `history/`, `cto/`, and `agents/` are normalized and hash-chained with `prevHash`
+- legacy repo-visible OpenClaw runtime files are migrated into `.ade/cache/openclaw/`
 
 **Embedding behavior**: Embeddings are generated locally by `@huggingface/transformers` (`Xenova/all-MiniLM-L6-v2`, 384-dim) and stored in `unified_memory_embeddings` within `.ade/ade.db`. Hybrid retrieval (FTS4 BM25 + cosine similarity + MMR re-ranking) is the active search path. The background embedding worker backfills missing embeddings automatically from the DB-backed memory store.
 

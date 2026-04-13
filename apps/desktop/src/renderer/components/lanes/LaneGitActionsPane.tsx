@@ -4,6 +4,7 @@ import { useNavigate } from "react-router-dom";
 import { useAppStore } from "../../state/appStore";
 import { getProjectConfigCached } from "../../lib/projectConfigCache";
 import { cn } from "../ui/cn";
+import { SmartTooltip, type SmartTooltipContent } from "../ui/SmartTooltip";
 import { COLORS, LABEL_STYLE, MONO_FONT, inlineBadge, outlineButton, primaryButton, dangerButton } from "./laneDesignTokens";
 import { CommitTimeline } from "./CommitTimeline";
 import type {
@@ -337,12 +338,14 @@ function SectionCard({
 
 function HoverTitleButton({
   tooltip,
+  smartTooltip,
   disabled,
   style,
   children,
   ...buttonProps
 }: React.ButtonHTMLAttributes<HTMLButtonElement> & {
   tooltip: string;
+  smartTooltip?: SmartTooltipContent;
 }) {
   const button = (
     <button
@@ -358,12 +361,16 @@ function HoverTitleButton({
     </button>
   );
 
-  if (!disabled) return button;
-  return (
+  const wrapped = !disabled ? button : (
     <span title={tooltip} style={{ display: "inline-flex" }}>
       {button}
     </span>
   );
+
+  if (smartTooltip) {
+    return <SmartTooltip content={smartTooltip}>{wrapped}</SmartTooltip>;
+  }
+  return wrapped;
 }
 
 function ActionButton({
@@ -375,6 +382,7 @@ function ActionButton({
   badge,
   icon,
   fullWidth = false,
+  smartTooltip,
 }: {
   title: string;
   detail: string;
@@ -384,6 +392,7 @@ function ActionButton({
   badge?: string | null;
   icon?: React.ReactNode;
   fullWidth?: boolean;
+  smartTooltip?: SmartTooltipContent;
 }) {
   const primary = emphasis === "primary";
   return (
@@ -392,6 +401,7 @@ function ActionButton({
       disabled={disabled}
       onClick={onClick}
       tooltip={`${title}. ${detail}`}
+      smartTooltip={smartTooltip}
       style={{
         display: "inline-flex",
         alignItems: "center",
@@ -1201,24 +1211,32 @@ export function LaneGitActionsPane({
           if (!rowSelected) event.currentTarget.style.background = "transparent";
         }}
       >
-        <button
-          type="button"
-          className="shrink-0 flex items-center justify-center"
-          style={{
-            width: 16,
-            height: 16,
-            background: COLORS.recessedBg,
-            border: `1px solid ${COLORS.border}`,
-            cursor: "pointer",
-          }}
-          onClick={(event) => {
-            event.stopPropagation();
-            void toggleStageFile(file.path, mode === "staged");
-          }}
-          title={mode === "staged" ? "Remove this file from the next commit." : "Include this file in the next commit."}
-        >
-          {mode === "staged" ? <Check size={9} style={{ color: COLORS.accent }} /> : null}
-        </button>
+        <SmartTooltip content={{
+          label: mode === "staged" ? "Unstage File" : "Stage File",
+          description: mode === "staged"
+            ? "Remove this file from the staging area. Changes are kept but won't be in the next commit."
+            : "Add this file to the staging area so it will be included in the next commit.",
+          gitCommand: mode === "staged" ? `git reset HEAD "${file.path}"` : `git add "${file.path}"`,
+          effect: mode === "staged" ? `Unstage ${file.path}` : `Stage ${file.path}`,
+        }}>
+          <button
+            type="button"
+            className="shrink-0 flex items-center justify-center"
+            style={{
+              width: 16,
+              height: 16,
+              background: COLORS.recessedBg,
+              border: `1px solid ${COLORS.border}`,
+              cursor: "pointer",
+            }}
+            onClick={(event) => {
+              event.stopPropagation();
+              void toggleStageFile(file.path, mode === "staged");
+            }}
+          >
+            {mode === "staged" ? <Check size={9} style={{ color: COLORS.accent }} /> : null}
+          </button>
+        </SmartTooltip>
         <span
           className="shrink-0"
           title={`${file.kind} file`}
@@ -1234,31 +1252,38 @@ export function LaneGitActionsPane({
           </span>
         ) : null}
         {mode === "unstaged" ? (
-          <button
-            type="button"
-            className="shrink-0 opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity flex items-center justify-center"
-            style={{
-              width: 20,
-              height: 20,
-              background: "transparent",
-              border: "none",
-              cursor: "pointer",
-              color: COLORS.textDim,
-            }}
-            aria-label={`Discard changes to ${file.path}`}
-            onMouseEnter={(e) => { e.currentTarget.style.color = COLORS.danger; }}
-            onMouseLeave={(e) => { e.currentTarget.style.color = COLORS.textDim; }}
-            onFocus={(e) => { e.currentTarget.style.color = COLORS.danger; }}
-            onBlur={(e) => { e.currentTarget.style.color = COLORS.textDim; }}
-            disabled={!!busyAction}
-            onClick={(event) => {
-              event.stopPropagation();
-              void discardFile(file.path);
-            }}
-            title="Discard changes to this file. This cannot be undone."
-          >
+          <SmartTooltip content={{
+            label: "Discard Changes",
+            description: `Revert ${file.path} to its last committed state.`,
+            gitCommand: `git checkout -- "${file.path}"`,
+            effect: `Discard all changes to ${file.path}`,
+            warning: "This cannot be undone",
+          }}>
+            <button
+              type="button"
+              className="shrink-0 opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity flex items-center justify-center"
+              style={{
+                width: 20,
+                height: 20,
+                background: "transparent",
+                border: "none",
+                cursor: "pointer",
+                color: COLORS.textDim,
+              }}
+              aria-label={`Discard changes to ${file.path}`}
+              onMouseEnter={(e) => { e.currentTarget.style.color = COLORS.danger; }}
+              onMouseLeave={(e) => { e.currentTarget.style.color = COLORS.textDim; }}
+              onFocus={(e) => { e.currentTarget.style.color = COLORS.danger; }}
+              onBlur={(e) => { e.currentTarget.style.color = COLORS.textDim; }}
+              disabled={!!busyAction}
+              onClick={(event) => {
+                event.stopPropagation();
+                void discardFile(file.path);
+              }}
+            >
             <Trash size={12} />
           </button>
+          </SmartTooltip>
         ) : null}
       </div>
     );
@@ -1386,34 +1411,49 @@ export function LaneGitActionsPane({
             </div>
             <div className="flex flex-wrap items-center gap-2">
               {stuckRebase.canAbort ? (
-                <button
-                  type="button"
-                  style={dangerButton({ height: 28, padding: "0 12px", fontSize: 10 })}
-                  disabled={busyAction != null}
-                  onClick={() => {
-                    if (!laneId) return;
-                    void runAction("abort rebase", async () => {
-                      await window.ade.git.rebaseAbort(laneId);
-                    });
-                  }}
-                >
-                  ABORT REBASE
-                </button>
+                <SmartTooltip content={{
+                  label: "Abort Rebase",
+                  description: "Cancel the rebase and return to the state before it started. All rebase progress is discarded.",
+                  gitCommand: "git rebase --abort",
+                  effect: "Undo the rebase and restore the previous branch state",
+                  warning: "Any resolved conflicts will be lost",
+                }}>
+                  <button
+                    type="button"
+                    style={dangerButton({ height: 28, padding: "0 12px", fontSize: 10 })}
+                    disabled={busyAction != null}
+                    onClick={() => {
+                      if (!laneId) return;
+                      void runAction("abort rebase", async () => {
+                        await window.ade.git.rebaseAbort(laneId);
+                      });
+                    }}
+                  >
+                    ABORT REBASE
+                  </button>
+                </SmartTooltip>
               ) : null}
               {stuckRebase.canContinue ? (
-                <button
-                  type="button"
-                  style={primaryButton({ height: 28, padding: "0 12px", fontSize: 10 })}
-                  disabled={busyAction != null}
-                  onClick={() => {
-                    if (!laneId) return;
-                    void runAction("continue rebase", async () => {
-                      await window.ade.git.rebaseContinue(laneId);
-                    });
-                  }}
-                >
-                  CONTINUE REBASE
-                </button>
+                <SmartTooltip content={{
+                  label: "Continue Rebase",
+                  description: "Continue the rebase after resolving conflicts. The next commit in the rebase sequence will be applied.",
+                  gitCommand: "git rebase --continue",
+                  effect: "Apply resolved conflicts and continue rebasing",
+                }}>
+                  <button
+                    type="button"
+                    style={primaryButton({ height: 28, padding: "0 12px", fontSize: 10 })}
+                    disabled={busyAction != null}
+                    onClick={() => {
+                      if (!laneId) return;
+                      void runAction("continue rebase", async () => {
+                        await window.ade.git.rebaseContinue(laneId);
+                      });
+                    }}
+                  >
+                    CONTINUE REBASE
+                  </button>
+                </SmartTooltip>
               ) : null}
             </div>
           </div>
@@ -1443,34 +1483,49 @@ export function LaneGitActionsPane({
             </div>
             <div className="flex flex-wrap items-center gap-2">
               {mergeConflictState.canAbort ? (
-                <button
-                  type="button"
-                  style={dangerButton({ height: 28, padding: "0 12px", fontSize: 10 })}
-                  disabled={busyAction != null}
-                  onClick={() => {
-                    if (!laneId) return;
-                    void runAction("abort merge", async () => {
-                      await window.ade.git.mergeAbort(laneId);
-                    });
-                  }}
-                >
-                  ABORT MERGE
-                </button>
+                <SmartTooltip content={{
+                  label: "Abort Merge",
+                  description: "Cancel the merge and return to the state before it started.",
+                  gitCommand: "git merge --abort",
+                  effect: "Undo the merge and restore the previous branch state",
+                  warning: "Any resolved conflicts will be lost",
+                }}>
+                  <button
+                    type="button"
+                    style={dangerButton({ height: 28, padding: "0 12px", fontSize: 10 })}
+                    disabled={busyAction != null}
+                    onClick={() => {
+                      if (!laneId) return;
+                      void runAction("abort merge", async () => {
+                        await window.ade.git.mergeAbort(laneId);
+                      });
+                    }}
+                  >
+                    ABORT MERGE
+                  </button>
+                </SmartTooltip>
               ) : null}
               {mergeConflictState.canContinue ? (
-                <button
-                  type="button"
-                  style={primaryButton({ height: 28, padding: "0 12px", fontSize: 10 })}
-                  disabled={busyAction != null}
-                  onClick={() => {
-                    if (!laneId) return;
-                    void runAction("continue merge", async () => {
-                      await window.ade.git.mergeContinue(laneId);
-                    });
-                  }}
-                >
-                  CONTINUE MERGE
-                </button>
+                <SmartTooltip content={{
+                  label: "Continue Merge",
+                  description: "Finish the merge after resolving all conflicts. A merge commit will be created.",
+                  gitCommand: "git merge --continue",
+                  effect: "Create the merge commit with resolved conflicts",
+                }}>
+                  <button
+                    type="button"
+                    style={primaryButton({ height: 28, padding: "0 12px", fontSize: 10 })}
+                    disabled={busyAction != null}
+                    onClick={() => {
+                      if (!laneId) return;
+                      void runAction("continue merge", async () => {
+                        await window.ade.git.mergeContinue(laneId);
+                      });
+                    }}
+                  >
+                    CONTINUE MERGE
+                  </button>
+                </SmartTooltip>
               ) : null}
             </div>
           </div>
@@ -1515,23 +1570,36 @@ export function LaneGitActionsPane({
             </span>
             {autoRebaseStatus.state !== "autoRebased" ? (
               isAutoRebaseFailure ? (
-                <button
-                  type="button"
-                  style={{ ...outlineButton({ height: 28, padding: "0 10px", fontSize: 10 }), border: `1px solid ${COLORS.accent}50` }}
-                  disabled={!laneId || busyAction != null}
-                  onClick={openRebaseTab}
-                >
-                  OPEN REBASE TAB
-                </button>
+                <SmartTooltip content={{
+                  label: "Open Rebase Tab",
+                  description: "View detailed rebase conflict information and resolve issues.",
+                  effect: "Navigate to the rebase details view",
+                }}>
+                  <button
+                    type="button"
+                    style={{ ...outlineButton({ height: 28, padding: "0 10px", fontSize: 10 }), border: `1px solid ${COLORS.accent}50` }}
+                    disabled={!laneId || busyAction != null}
+                    onClick={openRebaseTab}
+                  >
+                    OPEN REBASE TAB
+                  </button>
+                </SmartTooltip>
               ) : (
-                <button
-                  type="button"
-                  style={{ ...outlineButton({ height: 28, padding: "0 10px", fontSize: 10 }), border: `1px solid ${COLORS.accent}50` }}
-                  disabled={!laneId || busyAction != null}
-                  onClick={() => runRebaseAndPushFlow(true)}
-                >
-                  REBASE AND PUSH
-                </button>
+                <SmartTooltip content={{
+                  label: "Rebase and Push",
+                  description: "Rebase this lane onto its parent, then push the rewritten branch to remote.",
+                  gitCommand: "git rebase <parent> && git push",
+                  effect: "Rebase from parent and push to remote",
+                }}>
+                  <button
+                    type="button"
+                    style={{ ...outlineButton({ height: 28, padding: "0 10px", fontSize: 10 }), border: `1px solid ${COLORS.accent}50` }}
+                    disabled={!laneId || busyAction != null}
+                    onClick={() => runRebaseAndPushFlow(true)}
+                  >
+                    REBASE AND PUSH
+                  </button>
+                </SmartTooltip>
               )
             ) : null}
           </div>
@@ -1581,33 +1649,48 @@ export function LaneGitActionsPane({
                 }
               }}
             />
-            <button
-              type="button"
-              style={{
-                ...outlineButton({ height: 30, padding: "0 8px", fontSize: 10, borderRadius: 6 }),
-                color: amendCommit ? COLORS.warning : COLORS.textDim,
-                border: `1px solid ${amendCommit ? `${COLORS.warning}40` : COLORS.outlineBorder}`,
-                background: amendCommit ? `${COLORS.warning}10` : "transparent",
-              }}
-              disabled={busyAction != null}
-              onClick={() => setAmendCommit((prev) => !prev)}
-              title={getAmendSummary(amendCommit)}
-            >
-              {amendCommit ? "AMEND ON" : "AMEND"}
-            </button>
-            <button
-              type="button"
-              style={{
-                ...primaryButton({ height: 30, padding: "0 12px", fontSize: 10, borderRadius: 6 }),
-                opacity: ((!hasStaged && !amendCommit) || busyAction != null) ? 0.45 : 1,
-                pointerEvents: ((!hasStaged && !amendCommit) || busyAction != null) ? "none" : "auto",
-              }}
-              disabled={(!hasStaged && !amendCommit) || busyAction != null}
-              onClick={() => void submitCommit()}
-              title={amendCommit ? "Rewrite the latest commit" : "Create a new commit from staged changes"}
-            >
-              {commitButtonLabel}
-            </button>
+            <SmartTooltip content={{
+              label: amendCommit ? "Amend ON" : "Amend",
+              description: getAmendSummary(amendCommit),
+              gitCommand: amendCommit ? "git commit --amend" : undefined,
+              effect: amendCommit ? "Your next commit will rewrite the latest commit" : "Click to enable amend mode",
+            }}>
+              <button
+                type="button"
+                style={{
+                  ...outlineButton({ height: 30, padding: "0 8px", fontSize: 10, borderRadius: 6 }),
+                  color: amendCommit ? COLORS.warning : COLORS.textDim,
+                  border: `1px solid ${amendCommit ? `${COLORS.warning}40` : COLORS.outlineBorder}`,
+                  background: amendCommit ? `${COLORS.warning}10` : "transparent",
+                }}
+                disabled={busyAction != null}
+                onClick={() => setAmendCommit((prev) => !prev)}
+              >
+                {amendCommit ? "AMEND ON" : "AMEND"}
+              </button>
+            </SmartTooltip>
+            <SmartTooltip content={{
+              label: amendCommit ? "Amend Commit" : "Commit",
+              description: amendCommit ? "Rewrite the latest commit with current staged changes and message." : "Create a new commit from staged changes.",
+              gitCommand: amendCommit ? "git commit --amend" : "git commit",
+              effect: hasStaged
+                ? `${amendCommit ? "Amend" : "Commit"} ${stagedCount} staged file${stagedCount === 1 ? "" : "s"}`
+                : "No staged files to commit",
+              shortcut: "\u2318+Enter",
+            }}>
+              <button
+                type="button"
+                style={{
+                  ...primaryButton({ height: 30, padding: "0 12px", fontSize: 10, borderRadius: 6 }),
+                  opacity: ((!hasStaged && !amendCommit) || busyAction != null) ? 0.45 : 1,
+                  pointerEvents: ((!hasStaged && !amendCommit) || busyAction != null) ? "none" : "auto",
+                }}
+                disabled={(!hasStaged && !amendCommit) || busyAction != null}
+                onClick={() => void submitCommit()}
+              >
+                {commitButtonLabel}
+              </button>
+            </SmartTooltip>
 
             {/* Separator */}
             <div style={{ width: 1, height: 20, background: COLORS.border, margin: "0 2px", flexShrink: 0 }} />
@@ -1615,86 +1698,116 @@ export function LaneGitActionsPane({
             {/* Sync controls */}
             <div className="flex items-center" style={{ gap: 2 }}>
               {(["merge", "rebase"] as const).map((mode) => (
-                <button
-                  key={mode}
-                  type="button"
-                  disabled={!laneId || busyAction != null}
-                  onClick={() => setSyncMode(mode)}
-                  style={{
-                    ...outlineButton({ height: 26, padding: "0 6px", fontSize: 9, borderRadius: 4 }),
-                    color: syncMode === mode ? COLORS.accent : COLORS.textDim,
-                    border: `1px solid ${syncMode === mode ? `${COLORS.accent}40` : "transparent"}`,
-                    background: syncMode === mode ? `${COLORS.accent}10` : "transparent",
-                    opacity: !laneId || busyAction != null ? 0.5 : 1,
-                  }}
-                  title={getPullModeSummary(mode)}
-                >
-                  {mode === "merge" ? "MERGE" : "REBASE"}
-                </button>
+                <SmartTooltip key={mode} content={{
+                  label: mode === "merge" ? "Merge Mode" : "Rebase Mode",
+                  description: getPullModeSummary(mode),
+                  effect: syncMode === mode ? "Currently active" : `Switch pull strategy to ${mode}`,
+                }}>
+                  <button
+                    type="button"
+                    disabled={!laneId || busyAction != null}
+                    onClick={() => setSyncMode(mode)}
+                    style={{
+                      ...outlineButton({ height: 26, padding: "0 6px", fontSize: 9, borderRadius: 4 }),
+                      color: syncMode === mode ? COLORS.accent : COLORS.textDim,
+                      border: `1px solid ${syncMode === mode ? `${COLORS.accent}40` : "transparent"}`,
+                      background: syncMode === mode ? `${COLORS.accent}10` : "transparent",
+                      opacity: !laneId || busyAction != null ? 0.5 : 1,
+                    }}
+                  >
+                    {mode === "merge" ? "MERGE" : "REBASE"}
+                  </button>
+                </SmartTooltip>
               ))}
             </div>
-            <button
-              type="button"
-              className={behindCount > 0 ? "pull-btn-flash" : undefined}
-              style={{
-                ...outlineButton({ height: 30, padding: "0 10px", fontSize: 10, borderRadius: 6 }),
-                ...((nextActionHint?.action === "pull" || nextActionHint?.action === "resolve_conflicts")
-                  ? { color: COLORS.accent, border: `1px solid ${COLORS.accent}40`, background: `${COLORS.accent}08` }
-                  : {}),
-              }}
-              disabled={!laneId || busyAction != null || pullBlockedByConflict}
-              onClick={() => runPull(syncMode)}
-              title={
-                pullBlockedByConflict
-                  ? `Pull is blocked while a ${conflictState?.kind === "merge" ? "merge" : "rebase"} is in progress.`
-                  : `Pull (${syncMode}). ${getPullModeSummary(syncMode)}`
-              }
-            >
-              <ArrowDown size={12} weight="bold" style={{ marginRight: 4 }} />
-              PULL
-              {behindCount > 0 && (
-                <span
-                  style={{
-                    marginLeft: 5,
-                    background: COLORS.accent,
-                    color: "#fff",
-                    borderRadius: 8,
-                    padding: "1px 5px",
-                    fontSize: 9,
-                    fontWeight: 700,
-                    lineHeight: "14px",
-                    minWidth: 16,
-                    textAlign: "center" as const,
-                    display: "inline-block",
-                  }}
-                >
-                  {behindCount}
-                </span>
-              )}
-            </button>
-            <button
-              type="button"
-              style={{
-                ...outlineButton({ height: 30, padding: "0 10px", fontSize: 10, borderRadius: 6 }),
-                ...(nextActionHint?.action === "push" || nextActionHint?.action === "force_push_lease" ? { color: COLORS.accent, border: `1px solid ${COLORS.accent}40`, background: `${COLORS.accent}08` } : {}),
-              }}
-              disabled={!laneId || busyAction != null}
-              onClick={() => {
-                if (nextActionHint?.action === "force_push_lease") {
-                  const ok = window.confirm(
-                    "Force push with lease? This overwrites the remote branch with your local history. Only use this if you intend to publish rewritten commits.",
-                  );
-                  if (!ok) return;
-                  runPush(true);
-                } else {
-                  runPush(false);
-                }
-              }}
-              title={nextActionHint?.action === "force_push_lease" ? "Force push (lease) — history was rewritten" : getPushSummary(syncStatus)}
-            >
-              <Upload size={12} weight="bold" style={{ marginRight: 4 }} />
-              {syncStatus?.hasUpstream === false ? "PUBLISH" : nextActionHint?.action === "force_push_lease" ? "FORCE PUSH" : "PUSH"}
-            </button>
+            <SmartTooltip content={{
+              label: `Pull (${syncMode})`,
+              description: getPullModeSummary(syncMode),
+              gitCommand: syncMode === "merge" ? "git pull --no-rebase" : "git pull --rebase",
+              effect: pullBlockedByConflict
+                ? `Blocked: ${conflictState?.kind ?? "conflict"} in progress`
+                : behindCount > 0
+                  ? `Pull ${behindCount} commit${behindCount === 1 ? "" : "s"} from remote`
+                  : "Already up to date with remote",
+              warning: pullBlockedByConflict ? `Resolve the current ${conflictState?.kind ?? "conflict"} first` : undefined,
+            }}>
+              <button
+                type="button"
+                className={behindCount > 0 ? "pull-btn-flash" : undefined}
+                style={{
+                  ...outlineButton({ height: 30, padding: "0 10px", fontSize: 10, borderRadius: 6 }),
+                  ...((nextActionHint?.action === "pull" || nextActionHint?.action === "resolve_conflicts")
+                    ? { color: COLORS.accent, border: `1px solid ${COLORS.accent}40`, background: `${COLORS.accent}08` }
+                    : {}),
+                }}
+                disabled={!laneId || busyAction != null || pullBlockedByConflict}
+                onClick={() => runPull(syncMode)}
+              >
+                <ArrowDown size={12} weight="bold" style={{ marginRight: 4 }} />
+                PULL
+                {behindCount > 0 && (
+                  <span
+                    style={{
+                      marginLeft: 5,
+                      background: COLORS.accent,
+                      color: "#fff",
+                      borderRadius: 8,
+                      padding: "1px 5px",
+                      fontSize: 9,
+                      fontWeight: 700,
+                      lineHeight: "14px",
+                      minWidth: 16,
+                      textAlign: "center" as const,
+                      display: "inline-block",
+                    }}
+                  >
+                    {behindCount}
+                  </span>
+                )}
+              </button>
+            </SmartTooltip>
+            <SmartTooltip content={{
+              label: syncStatus?.hasUpstream === false ? "Publish" : nextActionHint?.action === "force_push_lease" ? "Force Push" : "Push",
+              description: syncStatus?.hasUpstream === false
+                ? "Create the remote branch and connect this lane to it."
+                : nextActionHint?.action === "force_push_lease"
+                  ? "Overwrite the remote branch with your local history after a rebase or amend."
+                  : "Send your local commits to the tracked remote branch.",
+              gitCommand: syncStatus?.hasUpstream === false
+                ? `git push -u origin ${lane?.branchRef ?? "HEAD"}`
+                : nextActionHint?.action === "force_push_lease"
+                  ? "git push --force-with-lease"
+                  : "git push",
+              effect: syncStatus?.hasUpstream === false
+                ? `Publish lane "${lane?.name ?? ""}" to remote`
+                : (syncStatus?.ahead ?? 0) > 0
+                  ? `Push ${syncStatus!.ahead} commit${syncStatus!.ahead === 1 ? "" : "s"} to remote`
+                  : "No local commits to push",
+              warning: nextActionHint?.action === "force_push_lease" ? "This overwrites remote history" : undefined,
+            }}>
+              <button
+                type="button"
+                style={{
+                  ...outlineButton({ height: 30, padding: "0 10px", fontSize: 10, borderRadius: 6 }),
+                  ...(nextActionHint?.action === "push" || nextActionHint?.action === "force_push_lease" ? { color: COLORS.accent, border: `1px solid ${COLORS.accent}40`, background: `${COLORS.accent}08` } : {}),
+                }}
+                disabled={!laneId || busyAction != null}
+                onClick={() => {
+                  if (nextActionHint?.action === "force_push_lease") {
+                    const ok = window.confirm(
+                      "Force push with lease? This overwrites the remote branch with your local history. Only use this if you intend to publish rewritten commits.",
+                    );
+                    if (!ok) return;
+                    runPush(true);
+                  } else {
+                    runPush(false);
+                  }
+                }}
+              >
+                <Upload size={12} weight="bold" style={{ marginRight: 4 }} />
+                {syncStatus?.hasUpstream === false ? "PUBLISH" : nextActionHint?.action === "force_push_lease" ? "FORCE PUSH" : "PUSH"}
+              </button>
+            </SmartTooltip>
             {lane?.parentLaneId ? (
               <HoverTitleButton
                 type="button"
@@ -1706,6 +1819,14 @@ export function LaneGitActionsPane({
                 disabled={syncButtonDisabled}
                 onClick={() => runRebaseAndPushFlow(true)}
                 tooltip={syncButtonTitle}
+                smartTooltip={{
+                  label: "Sync",
+                  description: syncButtonTitle,
+                  gitCommand: "git rebase <parent> && git push",
+                  effect: lane?.status.behind > 0
+                    ? `Rebase ${lane.status.behind} commit${lane.status.behind === 1 ? "" : "s"} from parent and push`
+                    : "Already in sync with parent",
+                }}
               >
                 <Stack size={12} weight="bold" style={{ marginRight: 4 }} />
                 SYNC
@@ -1716,40 +1837,51 @@ export function LaneGitActionsPane({
             <div style={{ width: 1, height: 20, background: COLORS.border, margin: "0 2px", flexShrink: 0 }} />
 
             {/* Advanced toggle */}
-            <button
-              type="button"
-              style={{
-                ...outlineButton({ height: 30, padding: "0 10px", fontSize: 10, borderRadius: 6 }),
-                color: showAdvanced ? COLORS.accent : COLORS.textMuted,
-                border: `1px solid ${showAdvanced ? `${COLORS.accent}30` : COLORS.outlineBorder}`,
-              }}
-              onClick={() => setShowAdvanced((prev) => !prev)}
-              title="Advanced git operations"
-            >
-              MORE {showAdvanced ? "\u25B4" : "\u25BE"}
-            </button>
+            <SmartTooltip content={{
+              label: "More",
+              description: "Show advanced git operations like fetch, force push, rebase, revert, and cherry-pick.",
+              effect: showAdvanced ? "Click to collapse" : "Click to expand",
+            }}>
+              <button
+                type="button"
+                style={{
+                  ...outlineButton({ height: 30, padding: "0 10px", fontSize: 10, borderRadius: 6 }),
+                  color: showAdvanced ? COLORS.accent : COLORS.textMuted,
+                  border: `1px solid ${showAdvanced ? `${COLORS.accent}30` : COLORS.outlineBorder}`,
+                }}
+                onClick={() => setShowAdvanced((prev) => !prev)}
+              >
+                MORE {showAdvanced ? "\u25B4" : "\u25BE"}
+              </button>
+            </SmartTooltip>
 
             {/* Refresh */}
-            <button
-              type="button"
-              style={{
-                display: "inline-flex",
-                alignItems: "center",
-                justifyContent: "center",
-                width: 30,
-                height: 30,
-                border: `1px solid ${COLORS.outlineBorder}`,
-                background: "transparent",
-                color: COLORS.textMuted,
-                cursor: "pointer",
-                borderRadius: 6,
-                flexShrink: 0,
-              }}
-              onClick={() => refreshAll({ fetchRemote: true }).catch(() => {})}
-              title="Refresh git state"
-            >
-              <ArrowsClockwise size={13} className={cn(loading && "animate-spin")} />
-            </button>
+            <SmartTooltip content={{
+              label: "Refresh",
+              description: "Fetch from remote and refresh all git state including file changes, sync status, and stashes.",
+              gitCommand: "git fetch",
+              effect: "Fetch latest remote state",
+            }}>
+              <button
+                type="button"
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  width: 30,
+                  height: 30,
+                  border: `1px solid ${COLORS.outlineBorder}`,
+                  background: "transparent",
+                  color: COLORS.textMuted,
+                  cursor: "pointer",
+                  borderRadius: 6,
+                  flexShrink: 0,
+                }}
+                onClick={() => refreshAll({ fetchRemote: true }).catch(() => {})}
+              >
+                <ArrowsClockwise size={13} className={cn(loading && "animate-spin")} />
+              </button>
+            </SmartTooltip>
           </div>
 
           {/* Helper / status row */}
@@ -1785,6 +1917,12 @@ export function LaneGitActionsPane({
                 detail="Download remote updates without changing your local branch."
                 disabled={!laneId || busyAction != null}
                 onClick={runFetchOnly}
+                smartTooltip={{
+                  label: "Fetch Only",
+                  description: "Download remote updates without merging or rebasing. Your local branch stays unchanged.",
+                  gitCommand: "git fetch",
+                  effect: "Check for new remote commits without modifying local files",
+                }}
               />
               <ActionButton
                 title="Force push (lease)"
@@ -1792,6 +1930,15 @@ export function LaneGitActionsPane({
                 badge={nextActionHint?.action === "force_push_lease" || divergedSync ? "CHECK FIRST" : null}
                 disabled={!laneId || busyAction != null}
                 onClick={() => runPush(true)}
+                smartTooltip={{
+                  label: "Force Push (Lease)",
+                  description: "Overwrite the remote branch only if nobody else pushed in the meantime. Safe for rebased or amended commits.",
+                  gitCommand: "git push --force-with-lease",
+                  effect: (syncStatus?.ahead ?? 0) > 0
+                    ? `Force push ${syncStatus!.ahead} commit${syncStatus!.ahead === 1 ? "" : "s"}`
+                    : "Force push current branch",
+                  warning: "This will overwrite remote history",
+                }}
               />
               {lane?.parentLaneId ? (
                 <ActionButton
@@ -1822,6 +1969,17 @@ export function LaneGitActionsPane({
                       }
                     });
                   }}
+                  smartTooltip={{
+                    label: "Rebase Local Only",
+                    description: "Replay your commits on top of the parent branch without pushing. Use this to stay current before pushing.",
+                    gitCommand: `git rebase ${parentLane?.branchRef ?? "<parent>"}`,
+                    effect: lane?.status.behind === 0
+                      ? "Already up to date with parent"
+                      : lane?.status.dirty
+                        ? "Cannot rebase: uncommitted changes present"
+                        : `Rebase onto parent (${lane.status.behind} commit${lane.status.behind === 1 ? "" : "s"} behind)`,
+                    warning: lane?.status.dirty ? "Commit or stash changes first" : undefined,
+                  }}
                 />
               ) : null}
               {lane?.parentLaneId ? (
@@ -1830,6 +1988,11 @@ export function LaneGitActionsPane({
                   detail="See detailed rebase history, including conflicts and timing."
                   disabled={!laneId || busyAction != null}
                   onClick={() => onViewRebaseDetails?.(laneId)}
+                  smartTooltip={{
+                    label: "View Rebase Details",
+                    description: "See detailed rebase history, including conflicts and timing.",
+                    effect: "Open the rebase details panel",
+                  }}
                 />
               ) : null}
               <ActionButton
@@ -1849,6 +2012,12 @@ export function LaneGitActionsPane({
                     await window.ade.git.revertCommit({ laneId, commitSha: sha });
                   });
                 }}
+                smartTooltip={{
+                  label: "Revert Commit",
+                  description: "Create a new commit that undoes the changes introduced by a previous commit. The original commit stays in history.",
+                  gitCommand: "git revert <sha>",
+                  effect: "You'll be prompted for a commit SHA to revert",
+                }}
               />
               <ActionButton
                 title="Cherry-pick"
@@ -1864,6 +2033,12 @@ export function LaneGitActionsPane({
                     if (!sha) throw new Error("__ade_cancelled__");
                     await window.ade.git.cherryPickCommit({ laneId, commitSha: sha });
                   });
+                }}
+                smartTooltip={{
+                  label: "Cherry-pick",
+                  description: "Copy a commit from another branch and apply it on top of this lane. Creates a new commit with the same changes.",
+                  gitCommand: "git cherry-pick <sha>",
+                  effect: "You'll be prompted for a commit SHA to cherry-pick",
                 }}
               />
             </div>
@@ -1927,47 +2102,75 @@ export function LaneGitActionsPane({
                 </span>
                 {changes.unstaged.length > 0 ? (
                   <>
-                    <button
-                      type="button"
-                      style={outlineButton({ height: 24, padding: "0 8px", fontSize: 10 })}
-                      onClick={stageAll}
-                      disabled={busyAction != null}
-                      title={busyAction != null ? "Action in progress" : "Stage all unstaged changes"}
-                    >
-                      STAGE ALL
-                    </button>
-                    <button
-                      type="button"
-                      style={dangerButton({ height: 24, padding: "0 8px", fontSize: 10 })}
-                      onClick={discardAll}
-                      disabled={busyAction != null}
-                      title="Discard all unstaged changes. This cannot be undone."
-                    >
-                      DISCARD ALL
-                    </button>
+                    <SmartTooltip content={{
+                      label: "Stage All",
+                      description: "Move all unstaged changes to the staging area so they will be included in the next commit.",
+                      gitCommand: "git add .",
+                      effect: `Stage ${changes.unstaged.length} file${changes.unstaged.length === 1 ? "" : "s"}`,
+                    }}>
+                      <button
+                        type="button"
+                        style={outlineButton({ height: 24, padding: "0 8px", fontSize: 10 })}
+                        onClick={stageAll}
+                        disabled={busyAction != null}
+                      >
+                        STAGE ALL
+                      </button>
+                    </SmartTooltip>
+                    <SmartTooltip content={{
+                      label: "Discard All",
+                      description: "Permanently discard all unstaged changes. Files revert to their last committed state.",
+                      gitCommand: "git checkout -- .",
+                      effect: `Discard changes in ${changes.unstaged.length} file${changes.unstaged.length === 1 ? "" : "s"}`,
+                      warning: "This cannot be undone",
+                    }}>
+                      <button
+                        type="button"
+                        style={dangerButton({ height: 24, padding: "0 8px", fontSize: 10 })}
+                        onClick={discardAll}
+                        disabled={busyAction != null}
+                      >
+                        DISCARD ALL
+                      </button>
+                    </SmartTooltip>
                   </>
                 ) : null}
                 {changes.staged.length > 0 ? (
-                  <button
-                    type="button"
-                    style={outlineButton({ height: 24, padding: "0 8px", fontSize: 10 })}
-                    onClick={unstageAll}
-                  >
-                    UNSTAGE ALL
-                  </button>
+                  <SmartTooltip content={{
+                    label: "Unstage All",
+                    description: "Remove all files from the staging area. Changes are kept but won't be included in the next commit.",
+                    gitCommand: "git reset HEAD",
+                    effect: `Unstage ${changes.staged.length} file${changes.staged.length === 1 ? "" : "s"}`,
+                  }}>
+                    <button
+                      type="button"
+                      style={outlineButton({ height: 24, padding: "0 8px", fontSize: 10 })}
+                      onClick={unstageAll}
+                    >
+                      UNSTAGE ALL
+                    </button>
+                  </SmartTooltip>
                 ) : null}
                 {showRescueButton ? (
-                  <button
-                    type="button"
-                    style={outlineButton({ height: 24, padding: "0 8px", fontSize: 10 })}
-                    disabled={rescueButtonDisabled}
-                    title={rescueButtonTitle}
-                    onClick={() => {
-                      void moveUnstagedToNewLane();
-                    }}
-                  >
-                    CREATE NEW LANE WITH CURRENT CHANGES
-                  </button>
+                  <SmartTooltip content={{
+                    label: "Create New Lane",
+                    description: rescueButtonTitle,
+                    effect: hasUnstaged && !hasStaged
+                      ? `Move ${changes.unstaged.length} unstaged file${changes.unstaged.length === 1 ? "" : "s"} to a new child lane`
+                      : "Unavailable",
+                  }}>
+                    <button
+                      type="button"
+                      style={outlineButton({ height: 24, padding: "0 8px", fontSize: 10 })}
+                      disabled={rescueButtonDisabled}
+                      title={rescueButtonTitle}
+                      onClick={() => {
+                        void moveUnstagedToNewLane();
+                      }}
+                    >
+                      CREATE NEW LANE WITH CURRENT CHANGES
+                    </button>
+                  </SmartTooltip>
                 ) : null}
               </div>
             }
@@ -1990,50 +2193,65 @@ export function LaneGitActionsPane({
                 </div>
                 <div className="flex flex-wrap items-center gap-2">
                   {stashes.length > 0 && (
+                    <SmartTooltip content={{
+                      label: "Clear All Stashes",
+                      description: "Permanently delete every stash entry. You'll be asked to confirm by typing the count.",
+                      gitCommand: "git stash clear",
+                      effect: `Delete all ${stashes.length} stash${stashes.length === 1 ? "" : "es"}`,
+                      warning: "This cannot be undone",
+                    }}>
+                      <button
+                        type="button"
+                        style={dangerButton({ height: 24, padding: "0 8px", fontSize: 10 })}
+                        disabled={!laneId || busyAction != null}
+                        onClick={() => {
+                          if (!laneId) return;
+                          void runAction("stash clear", async () => {
+                            const confirmation = await requestTextInput({
+                              title: "Clear all stashes?",
+                              message: `This will permanently delete ${stashes.length} stash${stashes.length === 1 ? "" : "es"}. Type "${stashes.length}" to confirm.`,
+                              placeholder: `Type ${stashes.length} to confirm`,
+                              confirmLabel: "Delete all",
+                              validate: (v) => v.trim() === String(stashes.length) ? null : "Type the number to confirm",
+                            });
+                            if (confirmation == null) throw new Error("__ade_cancelled__");
+                            await window.ade.git.stashClear({ laneId });
+                            await refreshGitMeta(laneId);
+                          });
+                        }}
+                      >
+                        CLEAR ALL
+                      </button>
+                    </SmartTooltip>
+                  )}
+                  <SmartTooltip content={{
+                    label: "Save Changes",
+                    description: "Save your current staged and unstaged changes to a stash without committing. You can restore them later.",
+                    gitCommand: "git stash push",
+                    effect: hasStaged || hasUnstaged
+                      ? `Stash ${changedFileCount} changed file${changedFileCount === 1 ? "" : "s"}`
+                      : "No changes to save",
+                  }}>
                     <button
                       type="button"
-                      style={dangerButton({ height: 24, padding: "0 8px", fontSize: 10 })}
-                      disabled={!laneId || busyAction != null}
-                      title="Permanently delete all stash entries"
+                      style={outlineButton({ height: 24, padding: "0 8px", fontSize: 10 })}
+                      disabled={!laneId || busyAction != null || (!hasStaged && !hasUnstaged)}
                       onClick={() => {
                         if (!laneId) return;
-                        void runAction("stash clear", async () => {
-                          const confirmation = await requestTextInput({
-                            title: "Clear all stashes?",
-                            message: `This will permanently delete ${stashes.length} stash${stashes.length === 1 ? "" : "es"}. Type "${stashes.length}" to confirm.`,
-                            placeholder: `Type ${stashes.length} to confirm`,
-                            confirmLabel: "Delete all",
-                            validate: (v) => v.trim() === String(stashes.length) ? null : "Type the number to confirm",
+                        void runAction("stash push", async () => {
+                          const msg = await requestTextInput({
+                            title: "Stash message",
+                            placeholder: "Optional note",
+                            confirmLabel: "Save stash",
                           });
-                          if (confirmation == null) throw new Error("__ade_cancelled__");
-                          await window.ade.git.stashClear({ laneId });
-                          await refreshGitMeta(laneId);
+                          if (msg == null) throw new Error("__ade_cancelled__");
+                          await window.ade.git.stashPush({ laneId, message: msg || undefined });
                         });
                       }}
                     >
-                      CLEAR ALL
+                      SAVE CHANGES
                     </button>
-                  )}
-                  <button
-                    type="button"
-                    style={outlineButton({ height: 24, padding: "0 8px", fontSize: 10 })}
-                    disabled={!laneId || busyAction != null || (!hasStaged && !hasUnstaged)}
-                    title={!hasStaged && !hasUnstaged ? "No changes to save" : "Save current changes without committing"}
-                    onClick={() => {
-                      if (!laneId) return;
-                      void runAction("stash push", async () => {
-                        const msg = await requestTextInput({
-                          title: "Stash message",
-                          placeholder: "Optional note",
-                          confirmLabel: "Save stash",
-                        });
-                        if (msg == null) throw new Error("__ade_cancelled__");
-                        await window.ade.git.stashPush({ laneId, message: msg || undefined });
-                      });
-                    }}
-                  >
-                    SAVE CHANGES
-                  </button>
+                  </SmartTooltip>
                 </div>
               </div>
               {stashes.length === 0 ? (
@@ -2064,50 +2282,71 @@ export function LaneGitActionsPane({
                             {stash.ref} · {formatRelativeTime(stash.createdAt)}
                           </div>
                         </div>
-                        <button
-                          type="button"
-                          style={{ ...outlineButton({ height: 24, padding: "0 8px", fontSize: 10 }), border: `1px solid ${COLORS.accent}50` }}
-                          disabled={!laneId || busyAction != null}
-                          title="Restores changes and removes this stash entry"
-                          onClick={() => {
-                            if (!laneId) return;
-                            void runAction("stash pop", async () => {
-                              await window.ade.git.stashPop({ laneId, stashRef: stash.ref });
-                              await refreshGitMeta(laneId);
-                            });
-                          }}
-                        >
-                          RESTORE
-                        </button>
-                        <button
-                          type="button"
-                          style={outlineButton({ height: 24, padding: "0 8px", fontSize: 10 })}
-                          disabled={!laneId || busyAction != null}
-                          title="Restores changes but keeps the stash entry saved"
-                          onClick={() => {
-                            if (!laneId) return;
-                            void runAction("stash apply", async () => {
-                              await window.ade.git.stashApply({ laneId, stashRef: stash.ref });
-                            });
-                          }}
-                        >
-                          COPY TO WORKTREE
-                        </button>
-                        <button
-                          type="button"
-                          style={dangerButton({ height: 24, padding: "0 8px", fontSize: 10 })}
-                          disabled={!laneId || busyAction != null}
-                          title="Permanently deletes this stash entry without restoring"
-                          onClick={() => {
-                            if (!laneId) return;
-                            void runAction("stash drop", async () => {
-                              await window.ade.git.stashDrop({ laneId, stashRef: stash.ref });
-                              await refreshGitMeta(laneId);
-                            });
-                          }}
-                        >
-                          DELETE
-                        </button>
+                        <SmartTooltip content={{
+                          label: "Restore",
+                          description: "Apply this stash's changes to your working directory and remove the stash entry. One-time use.",
+                          gitCommand: `git stash pop ${stash.ref}`,
+                          effect: `Restore "${stash.subject || stash.ref}" and remove it from stashes`,
+                        }}>
+                          <button
+                            type="button"
+                            style={{ ...outlineButton({ height: 24, padding: "0 8px", fontSize: 10 }), border: `1px solid ${COLORS.accent}50` }}
+                            disabled={!laneId || busyAction != null}
+                            onClick={() => {
+                              if (!laneId) return;
+                              void runAction("stash pop", async () => {
+                                await window.ade.git.stashPop({ laneId, stashRef: stash.ref });
+                                await refreshGitMeta(laneId);
+                              });
+                            }}
+                          >
+                            RESTORE
+                          </button>
+                        </SmartTooltip>
+                        <SmartTooltip content={{
+                          label: "Copy to Worktree",
+                          description: "Apply this stash's changes to your working directory but keep the stash entry. Can be reused multiple times.",
+                          gitCommand: `git stash apply ${stash.ref}`,
+                          effect: `Apply "${stash.subject || stash.ref}" (stash stays saved)`,
+                        }}>
+                          <button
+                            type="button"
+                            style={outlineButton({ height: 24, padding: "0 8px", fontSize: 10 })}
+                            disabled={!laneId || busyAction != null}
+                            onClick={() => {
+                              if (!laneId) return;
+                              void runAction("stash apply", async () => {
+                                await window.ade.git.stashApply({ laneId, stashRef: stash.ref });
+                              });
+                            }}
+                          >
+                            COPY TO WORKTREE
+                          </button>
+                        </SmartTooltip>
+                        <SmartTooltip content={{
+                          label: "Delete Stash",
+                          description: "Permanently delete this stash entry without restoring any changes.",
+                          gitCommand: `git stash drop ${stash.ref}`,
+                          effect: `Delete "${stash.subject || stash.ref}"`,
+                          warning: "Changes in this stash will be lost permanently",
+                        }}>
+                          <button
+                            type="button"
+                            style={dangerButton({ height: 24, padding: "0 8px", fontSize: 10 })}
+                            disabled={!laneId || busyAction != null}
+                            onClick={() => {
+                              if (!laneId) return;
+                              const ok = window.confirm(`Delete stash "${stash.subject || stash.ref}"? This cannot be undone.`);
+                              if (!ok) return;
+                              void runAction("stash drop", async () => {
+                                await window.ade.git.stashDrop({ laneId, stashRef: stash.ref });
+                                await refreshGitMeta(laneId);
+                              });
+                            }}
+                          >
+                            DELETE
+                          </button>
+                        </SmartTooltip>
                       </div>
                       <div style={{ fontSize: 9, color: COLORS.textDim, lineHeight: 1.4 }}>
                         Restore removes entry. Copy to Worktree keeps it. Delete discards permanently.

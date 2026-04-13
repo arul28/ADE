@@ -1,7 +1,7 @@
 import React, { useEffect, useId, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import type { AppInfo } from "../../../shared/types";
-import { useAppStore, THEME_IDS } from "../../state/appStore";
+import { DEFAULT_TERMINAL_FONT_FAMILY, useAppStore, THEME_IDS } from "../../state/appStore";
 import type { ThemeId } from "../../state/appStore";
 import { EmptyState } from "../ui/EmptyState";
 import { Info } from "@phosphor-icons/react";
@@ -16,6 +16,14 @@ import {
 const TERMINAL_FONT_SIZE_OPTIONS = [11, 11.5, 12, 12.5, 13, 13.5, 14, 15];
 const TERMINAL_LINE_HEIGHT_OPTIONS = [1.1, 1.15, 1.2, 1.25, 1.3, 1.35];
 const TERMINAL_SCROLLBACK_OPTIONS = [5000, 10000, 20000, 30000];
+const TERMINAL_FONT_FAMILY_OPTIONS = [
+  { label: "ADE default", value: DEFAULT_TERMINAL_FONT_FAMILY },
+  { label: "JetBrains Mono", value: "\"JetBrains Mono\", " + DEFAULT_TERMINAL_FONT_FAMILY },
+  { label: "Geist Mono", value: "\"Geist Mono\", " + DEFAULT_TERMINAL_FONT_FAMILY },
+  { label: "Cascadia Mono", value: "\"Cascadia Mono\", " + DEFAULT_TERMINAL_FONT_FAMILY },
+  { label: "Menlo", value: "Menlo, " + DEFAULT_TERMINAL_FONT_FAMILY },
+  { label: "Monaco", value: "Monaco, " + DEFAULT_TERMINAL_FONT_FAMILY },
+];
 
 const THEME_META: Record<
   ThemeId,
@@ -283,6 +291,42 @@ export function GeneralSection() {
       <section>
         <div style={sectionLabelStyle}>TERMINAL</div>
         <div style={{ ...cardStyle(), display: "grid", gap: 14 }}>
+          <div style={{ display: "grid", gap: 6 }}>
+            <label htmlFor={`${terminalFieldId}-fontFamily`} style={{ ...LABEL_STYLE, marginBottom: 0 }}>
+              FONT FAMILY
+            </label>
+            <select
+              id={`${terminalFieldId}-fontFamily`}
+              value={
+                TERMINAL_FONT_FAMILY_OPTIONS.some((option) => option.value === terminalPreferences.fontFamily)
+                  ? terminalPreferences.fontFamily
+                  : "__custom__"
+              }
+              onChange={(event) => {
+                const next = event.target.value;
+                if (next === "__custom__") return;
+                setTerminalPreferences({ fontFamily: next });
+              }}
+              style={{ height: 34, border: `1px solid ${COLORS.border}`, background: COLORS.recessedBg, color: COLORS.textPrimary, fontSize: 12, fontFamily: MONO_FONT, padding: "0 10px" }}
+            >
+              {TERMINAL_FONT_FAMILY_OPTIONS.map((option) => (
+                <option key={option.label} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+              <option value="__custom__">Custom stack</option>
+            </select>
+            <input
+              value={terminalPreferences.fontFamily}
+              onChange={(event) => setTerminalPreferences({ fontFamily: event.target.value })}
+              placeholder={DEFAULT_TERMINAL_FONT_FAMILY}
+              style={{ height: 34, border: `1px solid ${COLORS.border}`, background: COLORS.recessedBg, color: COLORS.textPrimary, fontSize: 12, fontFamily: MONO_FONT, padding: "0 10px" }}
+            />
+            <div style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textDim, lineHeight: 1.5 }}>
+              Use a CSS font-family stack. Example: <code>"JetBrains Mono", monospace</code>
+            </div>
+          </div>
+
           <div style={{ display: "grid", gap: 6 }}>
             <label htmlFor={`${terminalFieldId}-fontSize`} style={{ ...LABEL_STYLE, marginBottom: 0 }}>
               FONT SIZE

@@ -17,6 +17,7 @@ function buildDiagnosticsStatus(): RuntimeDiagnosticsStatus {
         fallbackMode: false,
         processAlive: true,
         portResponding: true,
+        respondingPort: 3000,
         proxyRouteActive: true,
       },
     ],

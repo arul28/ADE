@@ -1,13 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Play, Stop, Plus, X, FolderOpen, Folder, Rocket, Globe } from "@phosphor-icons/react";
+import { Play, Stop, Plus, X, FolderOpen, Folder, Terminal } from "@phosphor-icons/react";
 import { useAppStore } from "../../state/appStore";
 import { COLORS, MONO_FONT, SANS_FONT, LABEL_STYLE, outlineButton, primaryButton } from "../lanes/laneDesignTokens";
-import { RunSidebar } from "./RunSidebar";
 import { CommandCard } from "./CommandCard";
-import { ProcessMonitor } from "./ProcessMonitor";
+import { ProcessMonitor, type RunShellSession } from "./ProcessMonitor";
 import { LaneRuntimeBar } from "./LaneRuntimeBar";
-import { RunNetworkPanel } from "./RunNetworkPanel";
 import { AddCommandDialog, type AddCommandInitialValues } from "./AddCommandDialog";
+import { RunStackTabs } from "./RunStackTabs";
+import { RunNetworkPanel } from "./RunNetworkPanel";
 import { commandArrayToLine, parseCommandLine } from "../../lib/shell";
 import { logRendererDebugEvent } from "../../lib/debugLog";
 import { toRelativeTime } from "../graph/graphHelpers";
@@ -17,6 +17,7 @@ import type {
   ProcessEvent,
   StackButtonDefinition,
   ProjectConfigSnapshot,
+  ConfigProcessReadiness,
   ConfigProcessDefinition,
   ConfigStackButtonDefinition,
 } from "../../../shared/types";
@@ -44,6 +45,36 @@ function parseEnvText(text: string): Record<string, string> | undefined {
 function envToText(env: Record<string, string> | undefined): string {
   if (!env) return "";
   return Object.entries(env).map(([k, v]) => `${k}=${v}`).join("\n");
+}
+
+function parseDependsOnCsv(value: string): string[] | undefined {
+  const ids = value
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+  return ids.length > 0 ? ids : undefined;
+}
+
+function parseGracefulShutdownMs(value: string): number | undefined {
+  const parsed = Number.parseInt(value.trim(), 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) return undefined;
+  return parsed;
+}
+
+function buildReadinessConfig(args: {
+  readinessType: "none" | "port" | "logRegex";
+  readinessPort: string;
+  readinessPattern: string;
+}): ConfigProcessReadiness | undefined {
+  if (args.readinessType === "port") {
+    const port = Number.parseInt(args.readinessPort.trim(), 10);
+    return Number.isFinite(port) && port > 0 ? { type: "port", port } : undefined;
+  }
+  if (args.readinessType === "logRegex") {
+    const pattern = args.readinessPattern.trim();
+    return pattern.length > 0 ? { type: "logRegex", pattern } : undefined;
+  }
+  return undefined;
 }
 
 function WelcomeScreen() {
@@ -203,9 +234,14 @@ export function RunPage() {
   const [loading, setLoading] = useState(false);
   const [editingProcess, setEditingProcess] = useState<{ id: string; values: AddCommandInitialValues } | null>(null);
   const [moveToStackProcessId, setMoveToStackProcessId] = useState<string | null>(null);
-  const [networkDrawerOpen, setNetworkDrawerOpen] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [runShellSessions, setRunShellSessions] = useState<RunShellSession[]>([]);
+  const [shellBusy, setShellBusy] = useState(false);
+  const [networkDrawerOpen, setNetworkDrawerOpen] = useState(false);
+  const [monitorFocusTarget, setMonitorFocusTarget] = useState<{ kind: "process" | "shell"; id: string } | null>(null);
+  const [monitorFocusSequence, setMonitorFocusSequence] = useState(0);
   const runtimeRefreshTimerRef = useRef<number | null>(null);
+  const runShellSessionsRef = useRef<RunShellSession[]>([]);
 
   const effectiveLaneId = runLaneId ?? selectedLaneId ?? null;
   const effectiveLaneIdRef = useRef(effectiveLaneId);
@@ -214,6 +250,19 @@ export function RunPage() {
     () => lanes.find((lane) => lane.id === effectiveLaneId) ?? null,
     [effectiveLaneId, lanes]
   );
+  runShellSessionsRef.current = runShellSessions;
+
+  const focusMonitor = useCallback((target: { kind: "process" | "shell"; id: string } | null) => {
+    setMonitorFocusTarget(target);
+    setMonitorFocusSequence((current) => current + 1);
+  }, []);
+
+  const disposeRunShellSessions = useCallback(async (sessions: RunShellSession[]) => {
+    if (sessions.length === 0) return;
+    await Promise.allSettled(
+      sessions.map((session) => window.ade.pty.dispose({ ptyId: session.ptyId, sessionId: session.sessionId })),
+    );
+  }, []);
 
   useEffect(() => {
     logRendererDebugEvent("renderer.run.page_mount");
@@ -221,6 +270,12 @@ export function RunPage() {
       logRendererDebugEvent("renderer.run.page_unmount");
     };
   }, []);
+
+  useEffect(() => {
+    return () => {
+      void disposeRunShellSessions(runShellSessionsRef.current);
+    };
+  }, [disposeRunShellSessions]);
 
   // Sync runLaneId from selectedLaneId
   useEffect(() => {
@@ -303,6 +358,13 @@ export function RunPage() {
   }, [effectiveLaneId]);
 
   useEffect(() => {
+    const previousSessions = runShellSessionsRef.current;
+    setRunShellSessions([]);
+    if (previousSessions.length === 0) return;
+    void disposeRunShellSessions(previousSessions);
+  }, [disposeRunShellSessions, effectiveLaneId]);
+
+  useEffect(() => {
     if (runtimeRefreshTimerRef.current != null) {
       window.clearTimeout(runtimeRefreshTimerRef.current);
       runtimeRefreshTimerRef.current = null;
@@ -350,6 +412,10 @@ export function RunPage() {
     () => config?.effective.stackButtons ?? [],
     [config?.effective.stackButtons],
   );
+  const selectedStack = useMemo(
+    () => stacks.find((stack) => stack.id === selectedStackId) ?? null,
+    [selectedStackId, stacks],
+  );
   const processNames = useMemo(() => {
     const map: Record<string, string> = {};
     for (const d of definitions) map[d.id] = d.name;
@@ -383,12 +449,13 @@ export function RunPage() {
         if (!effectiveLaneId) return;
         setActionError(null);
         await window.ade.processes.start({ laneId: effectiveLaneId, processId });
+        focusMonitor({ kind: "process", id: processId });
       } catch (err) {
         setActionError(err instanceof Error ? err.message : String(err));
         console.error("[RunPage] handleRun failed:", err);
       }
     },
-    [effectiveLaneId]
+    [effectiveLaneId, focusMonitor]
   );
 
   const handleStop = useCallback(
@@ -403,6 +470,21 @@ export function RunPage() {
       }
     },
     [effectiveLaneId]
+  );
+
+  const handleRestart = useCallback(
+    async (processId: string) => {
+      try {
+        if (!effectiveLaneId) return;
+        setActionError(null);
+        await window.ade.processes.restart({ laneId: effectiveLaneId, processId });
+        focusMonitor({ kind: "process", id: processId });
+      } catch (err) {
+        setActionError(err instanceof Error ? err.message : String(err));
+        console.error("[RunPage] handleRestart failed:", err);
+      }
+    },
+    [effectiveLaneId, focusMonitor]
   );
 
   const handleKill = useCallback(
@@ -425,14 +507,37 @@ export function RunPage() {
       setActionError(null);
       if (selectedStackId) {
         await window.ade.processes.startStack({ laneId: effectiveLaneId, stackId: selectedStackId });
+        const firstProcessId = selectedStack?.processIds[0] ?? null;
+        if (firstProcessId) focusMonitor({ kind: "process", id: firstProcessId });
       } else {
         await window.ade.processes.startAll({ laneId: effectiveLaneId });
+        const firstProcessId = filteredDefinitions[0]?.id ?? null;
+        if (firstProcessId) focusMonitor({ kind: "process", id: firstProcessId });
       }
     } catch (err) {
+      // Auto-confirm trust when the user explicitly starts processes.
+      if (err instanceof Error && err.message.includes("ADE_TRUST_REQUIRED") && effectiveLaneId) {
+        try {
+          await window.ade.projectConfig.confirmTrust();
+          if (selectedStackId) {
+            await window.ade.processes.startStack({ laneId: effectiveLaneId, stackId: selectedStackId });
+            const firstProcessId = selectedStack?.processIds[0] ?? null;
+            if (firstProcessId) focusMonitor({ kind: "process", id: firstProcessId });
+          } else {
+            await window.ade.processes.startAll({ laneId: effectiveLaneId });
+            const firstProcessId = filteredDefinitions[0]?.id ?? null;
+            if (firstProcessId) focusMonitor({ kind: "process", id: firstProcessId });
+          }
+          return;
+        } catch (retryErr) {
+          setActionError(retryErr instanceof Error ? retryErr.message : String(retryErr));
+          return;
+        }
+      }
       setActionError(err instanceof Error ? err.message : String(err));
       console.error("[RunPage] handleStartAll failed:", err);
     }
-  }, [effectiveLaneId, selectedStackId]);
+  }, [effectiveLaneId, filteredDefinitions, focusMonitor, selectedStack, selectedStackId]);
 
   const handleStopAll = useCallback(async () => {
     try {
@@ -449,6 +554,59 @@ export function RunPage() {
     }
   }, [effectiveLaneId, selectedStackId]);
 
+  const handleRestartStack = useCallback(
+    async (stackId: string) => {
+      try {
+        if (!effectiveLaneId) return;
+        setActionError(null);
+        await window.ade.processes.restartStack({ laneId: effectiveLaneId, stackId });
+        const targetStack = stacks.find((stack) => stack.id === stackId);
+        const firstProcessId = targetStack?.processIds[0] ?? null;
+        if (firstProcessId) focusMonitor({ kind: "process", id: firstProcessId });
+      } catch (err) {
+        setActionError(err instanceof Error ? err.message : String(err));
+        console.error("[RunPage] handleRestartStack failed:", err);
+      }
+    },
+    [effectiveLaneId, focusMonitor, stacks],
+  );
+
+  const handleLaunchShell = useCallback(async () => {
+    if (!effectiveLaneId || shellBusy) return;
+    setShellBusy(true);
+    setActionError(null);
+    try {
+      const existingCount = runShellSessionsRef.current.length;
+      const title = existingCount > 0 ? `Shell ${existingCount + 1}` : "Shell";
+      const result = await window.ade.pty.create({
+        laneId: effectiveLaneId,
+        cols: 100,
+        rows: 30,
+        title,
+        tracked: false,
+        toolType: "shell",
+      });
+      const session: RunShellSession = { sessionId: result.sessionId, ptyId: result.ptyId, title };
+      setRunShellSessions((current) => [...current, session]);
+      focusMonitor({ kind: "shell", id: session.sessionId });
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setShellBusy(false);
+    }
+  }, [effectiveLaneId, focusMonitor, shellBusy]);
+
+  const handleCloseRunShell = useCallback(async (sessionId: string) => {
+    const target = runShellSessionsRef.current.find((session) => session.sessionId === sessionId);
+    setRunShellSessions((current) => current.filter((session) => session.sessionId !== sessionId));
+    if (!target) return;
+    try {
+      await window.ade.pty.dispose({ ptyId: target.ptyId, sessionId: target.sessionId });
+    } catch {
+      // ignore shell disposal failures in the Run tab
+    }
+  }, []);
+
   // Config mutations
   const saveProcessToConfig = useCallback(
     async (cmd: {
@@ -458,6 +616,13 @@ export function RunPage() {
       newStackName: string | null;
       cwd: string;
       env: string;
+      autostart: boolean;
+      restart: AddCommandInitialValues["restart"];
+      gracefulShutdownMs: string;
+      dependsOn: string;
+      readinessType: AddCommandInitialValues["readinessType"];
+      readinessPort: string;
+      readinessPattern: string;
     }) => {
       if (!config) return;
       const processId = generateId();
@@ -467,6 +632,11 @@ export function RunPage() {
         command: parseCommandLine(cmd.command),
         cwd: cmd.cwd === "." ? undefined : cmd.cwd,
         env: parseEnvText(cmd.env),
+        autostart: cmd.autostart ? true : undefined,
+        restart: cmd.restart !== "never" ? cmd.restart : undefined,
+        gracefulShutdownMs: parseGracefulShutdownMs(cmd.gracefulShutdownMs),
+        dependsOn: parseDependsOnCsv(cmd.dependsOn),
+        readiness: buildReadinessConfig(cmd),
       };
 
       const shared = { ...config.shared };
@@ -510,6 +680,13 @@ export function RunPage() {
         newStackName: string | null;
         cwd: string;
         env: string;
+        autostart: boolean;
+        restart: AddCommandInitialValues["restart"];
+        gracefulShutdownMs: string;
+        dependsOn: string;
+        readinessType: AddCommandInitialValues["readinessType"];
+        readinessPort: string;
+        readinessPattern: string;
       }
     ) => {
       if (!config) return;
@@ -524,6 +701,11 @@ export function RunPage() {
               command: parseCommandLine(cmd.command),
               cwd: cmd.cwd === "." ? undefined : cmd.cwd,
               env: parseEnvText(cmd.env),
+              autostart: cmd.autostart ? true : undefined,
+              restart: cmd.restart !== "never" ? cmd.restart : undefined,
+              gracefulShutdownMs: parseGracefulShutdownMs(cmd.gracefulShutdownMs),
+              dependsOn: parseDependsOnCsv(cmd.dependsOn),
+              readiness: buildReadinessConfig(cmd),
             }
           : p
       );
@@ -612,6 +794,19 @@ export function RunPage() {
     [config, refreshDefinitions, refreshRuntime, selectedStackId]
   );
 
+  const handleUpdateStackStartOrder = useCallback(
+    async (stackId: string, startOrder: "parallel" | "dependency") => {
+      if (!config) return;
+      const shared = { ...config.shared };
+      shared.stackButtons = (shared.stackButtons ?? []).map((stack) =>
+        stack.id === stackId ? { ...stack, startOrder } : stack,
+      );
+      await window.ade.projectConfig.save({ shared, local: config.local });
+      await Promise.all([refreshDefinitions(), refreshRuntime()]);
+    },
+    [config, refreshDefinitions, refreshRuntime],
+  );
+
   const handleEditProcess = useCallback(
     (processId: string) => {
       const def = definitions.find((d) => d.id === processId);
@@ -626,6 +821,13 @@ export function RunPage() {
           stackId: currentStack?.id ?? null,
           cwd: def.cwd || ".",
           env: envToText(def.env),
+          autostart: def.autostart,
+          restart: def.restart,
+          gracefulShutdownMs: String(def.gracefulShutdownMs ?? 7000),
+          dependsOn: (def.dependsOn ?? []).join(", "),
+          readinessType: def.readiness.type,
+          readinessPort: def.readiness.type === "port" ? String(def.readiness.port ?? "") : "",
+          readinessPattern: def.readiness.type === "logRegex" ? def.readiness.pattern ?? "" : "",
         },
       });
     },
@@ -731,7 +933,7 @@ export function RunPage() {
           </select>
         </div>
 
-        {/* Stack label + count (inline, only when processes exist) */}
+        {/* Selection summary */}
         {filteredDefinitions.length > 0 && (
           <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
             <span
@@ -743,8 +945,8 @@ export function RunPage() {
               }}
             >
               {selectedStackId
-                ? stacks.find((s) => s.id === selectedStackId)?.name ?? "Stack"
-                : "All Commands"}
+                ? selectedStack?.name ?? "Stack"
+                : "All commands"}
             </span>
             <span
               style={{
@@ -755,6 +957,19 @@ export function RunPage() {
             >
               ({filteredDefinitions.length})
             </span>
+            {selectedStack ? (
+              <span
+                style={{
+                  fontFamily: MONO_FONT,
+                  fontSize: 9,
+                  color: COLORS.textDim,
+                  border: `1px solid ${COLORS.border}`,
+                  padding: "1px 4px",
+                }}
+              >
+                {selectedStack.startOrder === "dependency" ? "dependency order" : "parallel order"}
+              </span>
+            ) : null}
           </div>
         )}
 
@@ -765,7 +980,7 @@ export function RunPage() {
           <>
             <button type="button" onClick={handleStartAll} style={primaryButton({ height: 28, fontSize: 10 })}>
               <Play size={12} weight="fill" />
-              Start All
+              {selectedStack ? "Start Stack" : "Start All"}
             </button>
             <button
               type="button"
@@ -790,168 +1005,190 @@ export function RunPage() {
               }}
             >
               <Stop size={12} weight="fill" />
-              Stop All
+              {selectedStack ? "Stop Stack" : "Stop All"}
             </button>
           </>
         )}
 
-        {/* Action buttons */}
+        <button
+          type="button"
+          onClick={() => void handleLaunchShell()}
+          disabled={!effectiveLaneId || shellBusy}
+          style={{
+            ...outlineButton(),
+            opacity: effectiveLaneId && !shellBusy ? 1 : 0.45,
+            cursor: effectiveLaneId && !shellBusy ? "pointer" : "default",
+          }}
+        >
+          <Terminal size={14} weight="bold" />
+          {shellBusy ? "Opening shell..." : "New shell"}
+        </button>
+
         <button
           type="button"
           onClick={() => setAddDialogOpen(true)}
           style={outlineButton()}
         >
           <Plus size={14} weight="bold" />
-          Add
-        </button>
-
-        {/* Network drawer toggle */}
-        <button
-          type="button"
-          onClick={() => setNetworkDrawerOpen((prev) => !prev)}
-          aria-label="Toggle network panel"
-          style={{
-            ...outlineButton({ height: 28, padding: "0 8px" }),
-            color: networkDrawerOpen ? COLORS.accent : COLORS.textMuted,
-            borderColor: networkDrawerOpen ? `${COLORS.accent}60` : COLORS.outlineBorder,
-          }}
-        >
-          <Globe size={14} />
+          Add command
         </button>
       </div>
 
       {/* ── Runtime Bar ── */}
-      <LaneRuntimeBar laneId={effectiveLaneId} />
+      <LaneRuntimeBar
+        laneId={effectiveLaneId}
+        onOpenPreviewRouting={() => setNetworkDrawerOpen(true)}
+      />
 
-      {/* ── Body: Sidebar + Main ── */}
-      <div style={{ display: "flex", flex: 1, overflow: "hidden", position: "relative" }}>
-        {/* Sidebar (hidden when no stacks) */}
-        {stacks.length > 0 && (
-          <RunSidebar
-            stacks={stacks}
-            selectedStackId={selectedStackId}
-            onSelectStack={setSelectedStackId}
-            onCreateStack={handleCreateStack}
-            onRenameStack={handleRenameStack}
-            onDeleteStack={handleDeleteStack}
-          />
-        )}
+      {/* ── Stack tabs ── */}
+      <RunStackTabs
+        stacks={stacks}
+        selectedStackId={selectedStackId}
+        onSelectStack={setSelectedStackId}
+        onCreateStack={handleCreateStack}
+        onRenameStack={handleRenameStack}
+        onDeleteStack={handleDeleteStack}
+        onStartStack={async (stackId) => {
+          if (!effectiveLaneId) return;
+          setActionError(null);
+          try {
+            await window.ade.processes.startStack({ laneId: effectiveLaneId, stackId });
+            const targetStack = stacks.find((stack) => stack.id === stackId);
+            const firstProcessId = targetStack?.processIds[0] ?? null;
+            if (firstProcessId) focusMonitor({ kind: "process", id: firstProcessId });
+          } catch (err) {
+            setActionError(err instanceof Error ? err.message : String(err));
+          }
+        }}
+        onStopStack={async (stackId) => {
+          if (!effectiveLaneId) return;
+          setActionError(null);
+          try {
+            await window.ade.processes.stopStack({ laneId: effectiveLaneId, stackId });
+          } catch (err) {
+            setActionError(err instanceof Error ? err.message : String(err));
+          }
+        }}
+        onRestartStack={(stackId) => {
+          void handleRestartStack(stackId);
+        }}
+        onUpdateStackStartOrder={handleUpdateStackStartOrder}
+      />
 
-        {/* Main content */}
+      {/* ── Main content ── */}
+      <div
+        style={{
+          flex: 1,
+          minWidth: 0,
+          display: "flex",
+          flexDirection: "column",
+          overflow: "hidden",
+          position: "relative",
+        }}
+      >
+        {actionError ? (
+          <div
+            style={{
+              margin: "20px 20px 0",
+              padding: "10px 12px",
+              border: `1px solid ${COLORS.danger}40`,
+              borderLeft: `3px solid ${COLORS.danger}`,
+              background: `${COLORS.danger}12`,
+              color: COLORS.textPrimary,
+              fontFamily: MONO_FONT,
+              fontSize: 11,
+              whiteSpace: "pre-wrap",
+            }}
+          >
+            {actionError}
+          </div>
+        ) : null}
+
         <div
           style={{
             flex: 1,
-            minWidth: 0,
-            display: "flex",
-            flexDirection: "column",
-            overflow: "hidden",
+            overflowY: "auto",
+            padding: 20,
           }}
         >
-          {actionError ? (
+          {loading && filteredDefinitions.length === 0 ? (
             <div
               style={{
-                margin: "20px 20px 0",
-                padding: "10px 12px",
-                border: `1px solid ${COLORS.danger}40`,
-                borderLeft: `3px solid ${COLORS.danger}`,
-                background: `${COLORS.danger}12`,
-                color: COLORS.textPrimary,
                 fontFamily: MONO_FONT,
                 fontSize: 11,
-                whiteSpace: "pre-wrap",
+                color: COLORS.textDim,
+                textAlign: "center",
+                padding: "40px 0",
               }}
             >
-              {actionError}
+              Loading...
             </div>
-          ) : null}
-
-          {/* Command cards grid */}
-          <div
-            style={{
-              flex: 1,
-              overflowY: "auto",
-              padding: 20,
-            }}
-          >
-            {loading && filteredDefinitions.length === 0 ? (
+          ) : filteredDefinitions.length === 0 ? (
+            <div
+              style={{
+                display: "flex",
+                flexDirection: "column",
+                alignItems: "center",
+                justifyContent: "center",
+                gap: 12,
+                padding: "60px 20px",
+              }}
+            >
+              <div
+                style={{
+                  fontFamily: MONO_FONT,
+                  fontSize: 12,
+                  color: COLORS.textMuted,
+                  textAlign: "center",
+                }}
+              >
+                No commands in this view
+              </div>
               <div
                 style={{
                   fontFamily: MONO_FONT,
                   fontSize: 11,
                   color: COLORS.textDim,
                   textAlign: "center",
-                  padding: "40px 0",
+                  maxWidth: 340,
                 }}
               >
-                Loading...
+                Add a command, pick a stack tab, then run it here. Output opens in the bottom panel automatically.
               </div>
-            ) : filteredDefinitions.length === 0 ? (
-              <div
-                style={{
-                  display: "flex",
-                  flexDirection: "column",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  gap: 12,
-                  padding: "60px 20px",
-                }}
-              >
-                <div
-                  style={{
-                    fontFamily: MONO_FONT,
-                    fontSize: 12,
-                    color: COLORS.textMuted,
-                    textAlign: "center",
-                  }}
-                >
-                  No commands configured
-                </div>
-                <div
-                  style={{
-                    fontFamily: MONO_FONT,
-                    fontSize: 11,
-                    color: COLORS.textDim,
-                    textAlign: "center",
-                    maxWidth: 300,
-                  }}
-                >
-                  Add a command for the lane you want to run, then start it here to get runtime state and preview routing.
-                </div>
-                <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
-                  <button type="button" onClick={() => setAddDialogOpen(true)} style={primaryButton()}>
-                    <Plus size={14} weight="bold" />
-                    Add Command
-                  </button>
-                </div>
+              <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
+                <button type="button" onClick={() => setAddDialogOpen(true)} style={primaryButton()}>
+                  <Plus size={14} weight="bold" />
+                  Add command
+                </button>
               </div>
-            ) : (
-              <div
-                style={{
-                  display: "grid",
-                  gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))",
-                  gap: 12,
-                }}
-              >
-                {filteredDefinitions.map((def) => (
-                  <CommandCard
-                    key={def.id}
-                    definition={def}
-                    runtime={runtimeMap[def.id] ?? null}
-                    stacks={stacks}
-                    onRun={handleRun}
-                    onStop={handleStop}
-                    onEdit={handleEditProcess}
-                    onDelete={handleDeleteProcess}
-                    onMoveToStack={handleMoveToStack}
-                  />
-                ))}
-              </div>
-            )}
-          </div>
+            </div>
+          ) : (
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))",
+                gap: 12,
+              }}
+            >
+              {filteredDefinitions.map((def) => (
+                <CommandCard
+                  key={def.id}
+                  definition={def}
+                  runtime={runtimeMap[def.id] ?? null}
+                  stacks={stacks}
+                  onRun={handleRun}
+                  onStop={handleStop}
+                  onRestart={handleRestart}
+                  onEdit={handleEditProcess}
+                  onDelete={handleDeleteProcess}
+                  onMoveToStack={handleMoveToStack}
+                />
+              ))}
+            </div>
+          )}
         </div>
 
-        {/* Network drawer (slide-out overlay from right) */}
-        {networkDrawerOpen && (
+        {networkDrawerOpen ? (
           <>
             <div
               style={{
@@ -974,7 +1211,7 @@ export function RunPage() {
               <RunNetworkPanel onClose={() => setNetworkDrawerOpen(false)} />
             </div>
           </>
-        )}
+        ) : null}
       </div>
 
       {/* ── Process Monitor (bottom bar) ── */}
@@ -983,7 +1220,13 @@ export function RunPage() {
         runtimes={runtime}
         processDefinitions={processDefinitions}
         processNames={processNames}
+        shellSessions={runShellSessions}
+        focusTarget={monitorFocusTarget}
+        focusSequence={monitorFocusSequence}
         onKill={handleKill}
+        onCloseShell={(sessionId) => {
+          void handleCloseRunShell(sessionId);
+        }}
       />
 
       {/* ── Dialogs ── */}
@@ -1007,8 +1250,8 @@ export function RunPage() {
           }
         }}
         initialValues={editingProcess?.values ?? null}
-        title="Edit Command"
-        submitLabel="Save"
+        title="Edit command"
+        submitLabel="Save changes"
         laneRootPath={selectedLane?.worktreePath ?? null}
       />
 

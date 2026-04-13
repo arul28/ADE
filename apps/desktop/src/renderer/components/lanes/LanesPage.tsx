@@ -15,6 +15,7 @@ import { LaneStackPane } from "./LaneStackPane";
 import { LaneGitActionsPane } from "./LaneGitActionsPane";
 import { LaneDiffPane } from "./LaneDiffPane";
 import { LaneWorkPane } from "./LaneWorkPane";
+import { QuickRunMenu } from "../run/QuickRunMenu";
 import { CreateLaneDialog, type CreateLaneMode } from "./CreateLaneDialog";
 import { AttachLaneDialog } from "./AttachLaneDialog";
 import { MultiAttachWorktreeDialog } from "./MultiAttachWorktreeDialog";
@@ -53,6 +54,7 @@ import type {
   LaneTemplate
 } from "../../../shared/types";
 import { eventMatchesBinding, getEffectiveBinding } from "../../lib/keybindings";
+import { SmartTooltip } from "../ui/SmartTooltip";
 
 type RebaseScopePromptState = {
   laneId: string;
@@ -151,6 +153,7 @@ export function LanesPage() {
   const [params] = useSearchParams();
   const navigate = useNavigate();
   const selectLane = useAppStore((s) => s.selectLane);
+  const selectRunLane = useAppStore((s) => s.selectRunLane);
   const selectedLaneId = useAppStore((s) => s.selectedLaneId);
   const focusSession = useAppStore((s) => s.focusSession);
   const lanes = useAppStore((s) => s.lanes);
@@ -1323,19 +1326,21 @@ export function LanesPage() {
         title: "Git Actions",
         icon: FileCode,
         headerActions: laneId ? (
-          <Button
-            size="sm"
-            variant="ghost"
-            className="h-5 w-5 p-0"
-            title={expandedGitActionsLaneId === laneId ? "Minimize Git Actions pane" : "Expand Git Actions pane"}
-            onClick={(event) => {
-              event.stopPropagation();
-              setExpandedLaneId(null);
-              setExpandedGitActionsLaneId((prev) => (prev === laneId ? null : laneId));
-            }}
-          >
-            {expandedGitActionsLaneId === laneId ? <ArrowsInSimple size={12} /> : <ArrowsOutSimple size={12} />}
-          </Button>
+          <SmartTooltip content={{ label: expandedGitActionsLaneId === laneId ? "Minimize" : "Expand", description: expandedGitActionsLaneId === laneId ? "Minimize the Git Actions pane back to its default size." : "Expand the Git Actions pane to fill the available space." }}>
+            <Button
+              size="sm"
+              variant="ghost"
+              className="h-5 w-5 p-0"
+              title={expandedGitActionsLaneId === laneId ? "Minimize Git Actions pane" : "Expand Git Actions pane"}
+              onClick={(event) => {
+                event.stopPropagation();
+                setExpandedLaneId(null);
+                setExpandedGitActionsLaneId((prev) => (prev === laneId ? null : laneId));
+              }}
+            >
+              {expandedGitActionsLaneId === laneId ? <ArrowsInSimple size={12} /> : <ArrowsOutSimple size={12} />}
+            </Button>
+          </SmartTooltip>
         ) : null,
         bodyClassName: "overflow-hidden",
         children: (
@@ -1402,21 +1407,23 @@ export function LanesPage() {
         {/* Branch selector */}
         {primaryLane && selectedLaneId === primaryLane.id ? (
           <div className="relative shrink-0" ref={branchDropdownRef}>
-            <button
-              type="button"
-              style={{
-                display: "inline-flex", alignItems: "center", gap: 8,
-                padding: "0 12px", height: 32, fontSize: 12, fontFamily: MONO_FONT, fontWeight: 600,
-                color: COLORS.success, background: "rgba(255,255,255,0.03)",
-                border: `1px solid ${COLORS.outlineBorder}`, borderRadius: 8, cursor: "pointer",
-              }}
-              onClick={() => setBranchDropdownOpen((prev) => !prev)}
-              disabled={branchCheckoutBusy}
-            >
-              <GitBranch size={14} />
-              <span>{currentPrimaryBranch || primaryLane.branchRef}</span>
-              <CaretDown size={12} style={{ opacity: 0.6 }} />
-            </button>
+            <SmartTooltip content={{ label: "Branch Selector", description: "Switch the primary lane to a different local or remote branch." }} side="bottom">
+              <button
+                type="button"
+                style={{
+                  display: "inline-flex", alignItems: "center", gap: 8,
+                  padding: "0 12px", height: 32, fontSize: 12, fontFamily: MONO_FONT, fontWeight: 600,
+                  color: COLORS.success, background: "rgba(255,255,255,0.03)",
+                  border: `1px solid ${COLORS.outlineBorder}`, borderRadius: 8, cursor: "pointer",
+                }}
+                onClick={() => setBranchDropdownOpen((prev) => !prev)}
+                disabled={branchCheckoutBusy}
+              >
+                <GitBranch size={14} />
+                <span>{currentPrimaryBranch || primaryLane.branchRef}</span>
+                <CaretDown size={12} style={{ opacity: 0.6 }} />
+              </button>
+            </SmartTooltip>
             {branchDropdownOpen ? (
               <div className="absolute left-0 top-full z-[200] mt-1 max-h-80 overflow-hidden flex flex-col" style={{ width: 288, background: COLORS.cardBgSolid, backdropFilter: "blur(20px)", WebkitBackdropFilter: "blur(20px)", border: `1px solid ${COLORS.outlineBorder}`, borderRadius: 12, padding: "4px 0" }}>
                 <div className="relative shrink-0" style={{ padding: "4px 8px" }}>
@@ -1583,9 +1590,11 @@ export function LanesPage() {
 
         {/* NEW LANE button + dropdown */}
         <div className="relative shrink-0" ref={addLaneDropdownRef}>
-          <button type="button" style={primaryButton({ height: 32, padding: "0 12px", fontSize: 10 })} disabled={!canCreateLane} onClick={() => setAddLaneDropdownOpen((prev) => !prev)}>
-            <Plus size={12} /> NEW LANE
-          </button>
+          <SmartTooltip content={{ label: "New Lane", description: "Create a new lane from the primary branch, an existing branch, or as a child of another lane." }}>
+            <button type="button" style={primaryButton({ height: 32, padding: "0 12px", fontSize: 10 })} disabled={!canCreateLane} onClick={() => setAddLaneDropdownOpen((prev) => !prev)}>
+              <Plus size={12} /> NEW LANE
+            </button>
+          </SmartTooltip>
           {addLaneDropdownOpen ? (
             <div className="absolute left-0 top-full z-[200] mt-2 w-60 rounded-xl p-1 shadow-float" style={{ background: COLORS.cardBgSolid, border: `1px solid ${COLORS.outlineBorder}` }}>
               <button
@@ -1629,24 +1638,26 @@ export function LanesPage() {
             className="shrink-0 flex items-center gap-2 rounded-lg border px-2 py-1"
             style={{ borderColor: `${COLORS.info}55`, background: `${COLORS.info}15` }}
           >
-            <button
-              type="button"
-              className="inline-flex items-center gap-1"
-              style={{
-                fontFamily: MONO_FONT,
-                fontSize: 10,
-                letterSpacing: "0.8px",
-                color: COLORS.info,
-                background: "transparent",
-                border: "none",
-                cursor: "pointer"
-              }}
-              title={`Move '${selectedAttachedLane.name}' to .ade/worktrees`}
-              onClick={() => requestAdoptAttachedLane(selectedAttachedLane.id)}
-            >
-              <ArrowSquareOut size={12} />
-              MOVE TO .ADE
-            </button>
+            <SmartTooltip content={{ label: "Move to .ade", description: "Move this attached worktree into .ade/worktrees for full ADE management. Uses git worktree move — branch and history stay the same." }}>
+              <button
+                type="button"
+                className="inline-flex items-center gap-1"
+                style={{
+                  fontFamily: MONO_FONT,
+                  fontSize: 10,
+                  letterSpacing: "0.8px",
+                  color: COLORS.info,
+                  background: "transparent",
+                  border: "none",
+                  cursor: "pointer"
+                }}
+                title={`Move '${selectedAttachedLane.name}' to .ade/worktrees`}
+                onClick={() => requestAdoptAttachedLane(selectedAttachedLane.id)}
+              >
+                <ArrowSquareOut size={12} />
+                MOVE TO .ADE
+              </button>
+            </SmartTooltip>
             <div className="relative group">
               <Info size={12} style={{ color: COLORS.info }} />
               <div
@@ -1677,22 +1688,24 @@ export function LanesPage() {
 
         {/* Reset grid + Stats */}
         {visibleLaneIds.length > 0 ? (
-          <button
-            type="button"
-            title="Reset grid to default layout"
-            onClick={resetGridLayout}
-            className="inline-flex items-center gap-1 shrink-0"
-            style={{
-              fontFamily: MONO_FONT, fontSize: 9, fontWeight: 700, letterSpacing: "0.8px",
-              textTransform: "uppercase", color: COLORS.textMuted, background: "transparent",
-              border: `1px solid ${COLORS.outlineBorder}`, borderRadius: 6,
-              padding: "0 8px", height: 24, cursor: "pointer",
-            }}
-            onMouseEnter={(e) => { e.currentTarget.style.borderColor = COLORS.accent; e.currentTarget.style.color = COLORS.accent; }}
-            onMouseLeave={(e) => { e.currentTarget.style.borderColor = COLORS.outlineBorder; e.currentTarget.style.color = COLORS.textMuted; }}
-          >
-            <ArrowCounterClockwise size={10} /> RESET GRID
-          </button>
+          <SmartTooltip content={{ label: "Reset Grid", description: "Reset all lane column widths and panel arrangements back to their default layout." }}>
+            <button
+              type="button"
+              title="Reset grid to default layout"
+              onClick={resetGridLayout}
+              className="inline-flex items-center gap-1 shrink-0"
+              style={{
+                fontFamily: MONO_FONT, fontSize: 9, fontWeight: 700, letterSpacing: "0.8px",
+                textTransform: "uppercase", color: COLORS.textMuted, background: "transparent",
+                border: `1px solid ${COLORS.outlineBorder}`, borderRadius: 6,
+                padding: "0 8px", height: 24, cursor: "pointer",
+              }}
+              onMouseEnter={(e) => { e.currentTarget.style.borderColor = COLORS.accent; e.currentTarget.style.color = COLORS.accent; }}
+              onMouseLeave={(e) => { e.currentTarget.style.borderColor = COLORS.outlineBorder; e.currentTarget.style.color = COLORS.textMuted; }}
+            >
+              <ArrowCounterClockwise size={10} /> RESET GRID
+            </button>
+          </SmartTooltip>
         ) : null}
         <span style={{ fontFamily: MONO_FONT, fontSize: 10, fontWeight: 700, letterSpacing: "1px", color: COLORS.textMuted, textTransform: "uppercase", whiteSpace: "nowrap" }}>
           {filteredLanes.length}/{sortedLanes.length} LANES
@@ -1787,15 +1800,22 @@ export function LanesPage() {
                     borderTopColor: "transparent",
                   }}
                 />
-              ) : laneRuntime.bucket === "ended" ? (
+	              ) : laneRuntime.bucket === "ended" ? (
                 <span
                   title={`${laneRuntime.endedCount} ended session${laneRuntime.endedCount === 1 ? "" : "s"}`}
                   className="shrink-0"
-                  style={{ width: 8, height: 8, borderRadius: "50%", background: COLORS.danger }}
-                />
-              ) : null}
-              {/* Lane name */}
-              <span className="truncate" style={{
+	                  style={{ width: 8, height: 8, borderRadius: "50%", background: COLORS.danger }}
+	                />
+	              ) : null}
+	              <span
+	                className="opacity-0 transition-opacity group-hover:opacity-100"
+	                onClick={(event) => event.stopPropagation()}
+	                onMouseDown={(event) => event.stopPropagation()}
+	              >
+	                <QuickRunMenu laneId={lane.id} compact iconOnly triggerStyle={{ height: 22, padding: "0 6px" }} />
+	              </span>
+	              {/* Lane name */}
+	              <span className="truncate" style={{
                 maxWidth: 180,
                 fontFamily: SANS_FONT, fontSize: 12, letterSpacing: "0.5px", textTransform: "uppercase",
                 fontWeight: isSelected ? 600 : 500,
@@ -2059,6 +2079,10 @@ export function LanesPage() {
             requestAdoptAttachedLane(laneId);
           }}
           onManage={openManageDialog}
+          onOpenRun={(laneId) => {
+            selectRunLane(laneId);
+            void navigate("/project");
+          }}
           selectLane={selectLane}
           onRemoveFromSplit={removeSplitLane}
           onCloseOtherSplits={(keepLaneId) => {

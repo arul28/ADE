@@ -1,5 +1,5 @@
 import React from "react";
-import { Play, Stop, DotsThreeVertical } from "@phosphor-icons/react";
+import { ArrowClockwise, DotsThreeVertical, Play, Stop } from "@phosphor-icons/react";
 import { COLORS, MONO_FONT, inlineBadge, processStatusColor } from "../lanes/laneDesignTokens";
 import { formatDurationMs } from "../../lib/format";
 import type { ProcessDefinition, ProcessRuntime } from "../../../shared/types";
@@ -12,6 +12,7 @@ type CommandCardProps = {
   runtime: ProcessRuntime | null;
   onRun: (processId: string) => void;
   onStop: (processId: string) => void;
+  onRestart: (processId: string) => void;
   onEdit: (processId: string) => void;
   onDelete: (processId: string) => void;
   onMoveToStack: (processId: string) => void;
@@ -23,6 +24,7 @@ export function CommandCard({
   runtime,
   onRun,
   onStop,
+  onRestart,
   onEdit,
   onDelete,
   onMoveToStack,
@@ -216,31 +218,58 @@ export function CommandCard({
       {/* Action row */}
       <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
         {running ? (
-          <button
-            type="button"
-            onClick={() => onStop(definition.id)}
-            style={{
-              display: "inline-flex",
-              alignItems: "center",
-              justifyContent: "center",
-              gap: 4,
-              height: 28,
-              padding: "0 10px",
-              fontSize: 10,
-              fontWeight: 700,
-              fontFamily: MONO_FONT,
-              textTransform: "uppercase",
-              letterSpacing: "1px",
-              color: COLORS.danger,
-              background: `${COLORS.danger}18`,
-              border: `1px solid ${COLORS.danger}30`,
-              borderRadius: 0,
-              cursor: "pointer",
-            }}
-          >
-            <Stop size={12} weight="fill" />
-            Stop
-          </button>
+          <>
+            <button
+              type="button"
+              onClick={() => onStop(definition.id)}
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                justifyContent: "center",
+                gap: 4,
+                height: 28,
+                padding: "0 10px",
+                fontSize: 10,
+                fontWeight: 700,
+                fontFamily: MONO_FONT,
+                textTransform: "uppercase",
+                letterSpacing: "1px",
+                color: COLORS.danger,
+                background: `${COLORS.danger}18`,
+                border: `1px solid ${COLORS.danger}30`,
+                borderRadius: 0,
+                cursor: "pointer",
+              }}
+            >
+              <Stop size={12} weight="fill" />
+              Stop
+            </button>
+            <button
+              type="button"
+              onClick={() => onRestart(definition.id)}
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                justifyContent: "center",
+                gap: 4,
+                height: 28,
+                padding: "0 10px",
+                fontSize: 10,
+                fontWeight: 700,
+                fontFamily: MONO_FONT,
+                textTransform: "uppercase",
+                letterSpacing: "1px",
+                color: COLORS.textSecondary,
+                background: COLORS.recessedBg,
+                border: `1px solid ${COLORS.outlineBorder}`,
+                borderRadius: 0,
+                cursor: "pointer",
+              }}
+            >
+              <ArrowClockwise size={12} weight="bold" />
+              Restart
+            </button>
+          </>
         ) : (
           <button
             type="button"

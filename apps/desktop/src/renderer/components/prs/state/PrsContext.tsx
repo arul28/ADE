@@ -167,6 +167,15 @@ function readInitialTab(): PrTab {
   return "normal";
 }
 
+function readInitialPrId(): string | null {
+  try {
+    const params = new URLSearchParams(window.location.search);
+    const prId = params.get("prId");
+    if (prId && prId.trim().length > 0) return prId.trim();
+  } catch { /* ignore */ }
+  return null;
+}
+
 function requirePrId(prId: string): string {
   const normalized = String(prId ?? "").trim();
   if (!normalized) throw new Error("PR id is required.");
@@ -212,7 +221,7 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
   const [prs, setPrs] = useState<PrWithConflicts[]>([]);
   const [lanes, setLanes] = useState<LaneSummary[]>([]);
   const [mergeContextByPrId, setMergeContextByPrId] = useState<Record<string, PrMergeContext>>({});
-  const [selectedPrId, setSelectedPrId] = useState<string | null>(null);
+  const [selectedPrId, setSelectedPrId] = useState<string | null>(readInitialPrId);
   const [selectedQueueGroupId, setSelectedQueueGroupId] = useState<string | null>(null);
   const [selectedRebaseItemId, setSelectedRebaseItemId] = useState<string | null>(null);
   const [mergeMethod, setMergeMethod] = useState<MergeMethod>("squash");

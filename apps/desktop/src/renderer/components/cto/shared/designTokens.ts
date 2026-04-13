@@ -1,41 +1,43 @@
 import type { AgentRole, AgentStatus, WorkerTemplate } from "../../../../shared/types";
 
-/* ── Shared form class patterns ── */
+/* ── Shared form class patterns (app-aligned) ── */
 
 export const inputCls =
-  "h-10 w-full rounded-xl border border-white/[0.08] bg-[linear-gradient(180deg,rgba(21,26,35,0.92),rgba(14,18,26,0.94))] px-3.5 text-sm font-sans text-fg shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] placeholder:text-muted-fg/36 hover:border-[rgba(56,189,248,0.28)] focus:border-[rgba(56,189,248,0.45)] focus:outline-none transition-all duration-200";
+  "h-8 w-full rounded-md border border-white/[0.06] bg-white/[0.03] px-3 text-xs font-sans text-fg placeholder:text-muted-fg/50 hover:border-white/[0.10] focus:border-accent/40 focus:shadow-[0_0_0_2px_var(--color-accent-muted)] focus:outline-none transition-all duration-150";
 
 export const selectCls = `${inputCls} appearance-none`;
 
 export const labelCls =
-  "mb-1.5 text-[11px] font-semibold uppercase tracking-[0.16em] text-muted-fg/46";
+  "mb-1.5 text-[11px] font-medium uppercase tracking-[0.08em] text-muted-fg/60";
 
-/* ── Accent palette ── */
+export const textareaCls =
+  "w-full rounded-md border border-white/[0.06] bg-white/[0.03] p-3 text-xs font-sans text-fg placeholder:text-muted-fg/50 hover:border-white/[0.10] focus:border-accent/40 focus:shadow-[0_0_0_2px_var(--color-accent-muted)] focus:outline-none resize-vertical transition-all duration-150";
+
+/* ── Accent palette (app-aligned) ── */
 export const ACCENT = {
-  purple: "#38BDF8",
+  purple: "var(--color-accent)",
   blue: "#60A5FA",
-  green: "#34D399",
+  green: "#22C55E",
   pink: "#FB7185",
   amber: "#FBBF24",
 } as const;
 
-export const textareaCls =
-  "w-full rounded-xl border border-white/[0.08] bg-[linear-gradient(180deg,rgba(21,26,35,0.92),rgba(14,18,26,0.94))] p-3.5 text-sm font-sans text-fg shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] placeholder:text-muted-fg/36 hover:border-[rgba(56,189,248,0.28)] focus:border-[rgba(56,189,248,0.45)] focus:outline-none resize-vertical transition-all duration-200";
+/* ── Card styles (app-aligned) ── */
 
 export const cardCls =
-  "rounded-2xl border border-white/[0.08] bg-[linear-gradient(180deg,rgba(19,24,34,0.92),rgba(12,15,23,0.95))] p-5 shadow-[0_24px_60px_rgba(0,0,0,0.28),inset_0_1px_0_rgba(255,255,255,0.04)] backdrop-blur-[22px] transition-all duration-200 hover:border-[rgba(56,189,248,0.18)] hover:shadow-[0_28px_72px_rgba(0,0,0,0.32),inset_0_1px_0_rgba(255,255,255,0.05)]";
+  "rounded-lg border border-white/[0.06] bg-white/[0.03] p-5 shadow-card backdrop-blur-[20px] transition-all duration-200 hover:shadow-card-hover";
 
 export const surfaceCardCls =
-  "rounded-2xl border border-white/[0.06] bg-[linear-gradient(180deg,rgba(15,20,28,0.82),rgba(11,14,22,0.88))] p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] backdrop-blur-[18px]";
+  "rounded-lg border border-white/[0.06] bg-white/[0.02] p-4 backdrop-blur-[18px]";
 
 export const recessedPanelCls =
-  "rounded-2xl border border-white/[0.06] bg-[linear-gradient(180deg,rgba(10,14,21,0.96),rgba(7,10,16,0.96))] shadow-[inset_0_1px_0_rgba(255,255,255,0.03)] backdrop-blur-[20px]";
+  "rounded-lg border border-white/[0.04] bg-white/[0.01] shadow-inset backdrop-blur-[20px]";
 
 export const shellTabBarCls =
-  "shrink-0 flex items-center gap-1 rounded-2xl border border-white/[0.06] bg-[rgba(8,11,18,0.72)] p-1.5 shadow-[inset_0_1px_0_rgba(255,255,255,0.03)] backdrop-blur-xl";
+  "shrink-0 flex items-center gap-1 rounded-lg border border-white/[0.06] bg-white/[0.02] p-1.5 backdrop-blur-xl";
 
 export const shellBodyCls =
-  "flex h-full w-full overflow-hidden bg-[radial-gradient(circle_at_top_left,rgba(56,189,248,0.12),transparent_32%),radial-gradient(circle_at_top_right,rgba(251,191,36,0.1),transparent_26%),linear-gradient(180deg,#0B1017_0%,#090D13_48%,#070A10_100%)] text-fg font-sans";
+  "flex h-full w-full overflow-hidden bg-bg text-fg font-sans";
 
 /* ── Compact header for the CTO page ── */
 export const compactHeaderCls =
@@ -43,17 +45,17 @@ export const compactHeaderCls =
 
 /* ── Stat chip for inline metrics ── */
 export const statChipCls =
-  "inline-flex items-center gap-2 rounded-full border border-white/[0.08] bg-[linear-gradient(135deg,rgba(21,28,40,0.72),rgba(14,18,28,0.82))] px-3 py-1.5 text-xs font-medium text-fg/68 backdrop-blur-md shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] transition-all duration-200 hover:border-[rgba(56,189,248,0.22)] hover:text-fg/82 hover:shadow-[0_0_12px_rgba(56,189,248,0.06)]";
+  "inline-flex items-center gap-2 rounded-full border border-white/[0.06] bg-white/[0.03] px-3 py-1.5 text-xs font-medium text-fg/68 backdrop-blur-md transition-all duration-200 hover:border-accent/20 hover:text-fg/82";
 
-/* ── Pipeline stage card with glow effect ── */
+/* ── Pipeline stage card ── */
 export const stageCardCls =
-  "rounded-2xl border border-white/[0.08] bg-[linear-gradient(180deg,rgba(19,24,38,0.88),rgba(12,16,26,0.92))] p-4 backdrop-blur-[22px] shadow-[0_16px_48px_rgba(0,0,0,0.22),inset_0_1px_0_rgba(255,255,255,0.04)] transition-all duration-300 hover:border-[rgba(56,189,248,0.24)] hover:shadow-[0_20px_56px_rgba(0,0,0,0.28),0_0_24px_rgba(56,189,248,0.06),inset_0_1px_0_rgba(255,255,255,0.05)] hover:translate-y-[-1px]";
+  "rounded-lg border border-white/[0.06] bg-white/[0.03] p-4 backdrop-blur-[20px] shadow-card transition-all duration-200 hover:shadow-card-hover hover:border-accent/20";
 
 /* ── Pipeline canvas background ── */
 export const pipelineCanvasCls =
-  "rounded-2xl border border-white/[0.05] bg-[radial-gradient(ellipse_at_top,rgba(56,189,248,0.05),transparent_60%),radial-gradient(ellipse_at_bottom_right,rgba(167,139,250,0.04),transparent_50%),linear-gradient(180deg,rgba(8,11,18,0.96),rgba(6,8,14,0.98))] shadow-[inset_0_2px_4px_rgba(0,0,0,0.3),inset_0_1px_0_rgba(255,255,255,0.02)] backdrop-blur-[24px]";
+  "rounded-lg border border-white/[0.04] bg-white/[0.01] shadow-inset backdrop-blur-[20px]";
 
-/* ── Agent status colors ── */
+/* ── Agent status colors (using app semantic colors) ── */
 
 export const agentStatusMap: Record<
   AgentStatus,

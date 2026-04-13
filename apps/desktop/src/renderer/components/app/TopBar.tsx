@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
-import { ChatCircleDots, CircleNotch, Folder, FolderOpen, Plus, Minus, Trash, X } from "@phosphor-icons/react";
+import { ChatCircleDots, CircleNotch, Folder, FolderOpen, Info, Plus, Minus, Trash, X } from "@phosphor-icons/react";
+import { SmartTooltip } from "../ui/SmartTooltip";
 import { useNavigate } from "react-router-dom";
 
 import { useAppStore } from "../../state/appStore";
@@ -56,6 +57,8 @@ export function TopBar() {
   const projectTransitionError = useAppStore((s) => s.projectTransitionError);
   const clearProjectTransitionError = useAppStore((s) => s.clearProjectTransitionError);
   const switchProjectToPath = useAppStore((s) => s.switchProjectToPath);
+  const smartTooltipsEnabled = useAppStore((s) => s.smartTooltipsEnabled);
+  const setSmartTooltipsEnabled = useAppStore((s) => s.setSmartTooltipsEnabled);
   const [recentProjects, setRecentProjects] = useState<RecentProjectSummary[]>([]);
   const [relocatingPath, setRelocatingPath] = useState<string | null>(null);
   const [zoom, setZoom] = useState(getStoredZoomLevel);
@@ -555,6 +558,32 @@ export function TopBar() {
       ) : null}
 
       <AutoUpdateControl />
+
+      <SmartTooltip
+        forceEnabled
+        content={{
+          label: "Smart Tooltips",
+          description: smartTooltipsEnabled
+            ? "Detailed tooltips are ON. Hover any button to see what it does and what would happen. Click to turn off."
+            : "Detailed tooltips are OFF. Click to turn on hover tooltips across the app.",
+        }}
+        side="bottom"
+      >
+        <button
+          type="button"
+          className={cn(
+            "ade-shell-control inline-flex h-[20px] w-[20px] items-center justify-center",
+            "transition-[background-color,color,border-color,box-shadow] duration-150"
+          )}
+          onClick={() => setSmartTooltipsEnabled(!smartTooltipsEnabled)}
+          style={{
+            WebkitAppRegion: "no-drag",
+            color: smartTooltipsEnabled ? "var(--color-accent)" : undefined,
+          } as React.CSSProperties}
+        >
+          <Info size={12} weight={smartTooltipsEnabled ? "fill" : "regular"} />
+        </button>
+      </SmartTooltip>
 
       <button
         type="button"

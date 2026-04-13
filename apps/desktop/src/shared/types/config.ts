@@ -495,6 +495,7 @@ export type LaneHealthCheck = {
   status: LaneHealthStatus;
   processAlive: boolean;
   portResponding: boolean;
+  respondingPort: number | null;
   proxyRouteActive: boolean;
   fallbackMode: boolean;
   lastCheckedAt: string;

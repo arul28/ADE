@@ -29,7 +29,7 @@
 
 ADE uses a dual persistence strategy: structured data lives in a SQLite database (via Node.js native `node:sqlite` with the vendored cr-sqlite CRDT extension), while large artifacts (terminal transcripts, logs, generated docs, and compatibility/history artifacts) are stored as files on the filesystem. This split balances the need for efficient querying of metadata with the practical reality that large text blobs are better served by filesystem storage.
 
-All persistence is local to the project. The primary database and all ADE artifact files live under the `.ade/` directory within the project root. `.ade` now has a canonical tracked/shareable subset (`ade.yaml`, selected portable files under `cto/`, `agents/`, `templates/`, `context/`, `memory/`, `history/`, `reflections/`, and `skills/`) plus a tracked `.ade/.gitignore` that ignores machine-local runtime state (`local.yaml`, `local.secret.yaml`, databases, caches, transcripts, worktrees, secrets, and generated artifacts). Unified memory in SQLite remains the canonical live runtime memory backend, but durable project intelligence that matters for desktop portability should also have a tracked portable representation. Persisted pack files under `.ade/artifacts/packs/...` remain compatibility/history artifacts, but live runtime exports are generated from current local state rather than loaded from pre-refreshed pack files. A separate global state file tracks the user's recent project list.
+All persistence is local to the project. The primary database and all ADE artifact files live under the `.ade/` directory within the project root. `.ade` now has a canonical tracked/shareable subset centered on shared scaffold and human-authored config (`ade.yaml`, `.gitignore`, `cto/identity.yaml`, human-authored files under `templates/`, `skills/`, and repo-backed workflow files under `workflows/` when present) plus a tracked `.ade/.gitignore` that ignores machine-local runtime state (`local.yaml`, `local.secret.yaml`, databases, caches, transcripts, worktrees, secrets, generated context/memory/history exports, and runtime artifacts). Unified memory in SQLite remains the canonical live runtime memory backend, but durable project intelligence that matters for desktop portability should also have a tracked portable representation. Persisted pack files under `.ade/artifacts/packs/...` remain compatibility/history artifacts, but live runtime exports are generated from current local state rather than loaded from pre-refreshed pack files. A separate global state file tracks the user's recent project list.
 
 ---
 
@@ -1115,14 +1115,14 @@ All ADE artifacts live under `.ade/` in the project root:
     ├── ade.yaml                         # Shared config (tracked)
     ├── local.yaml                       # Local config (ignored)
     ├── local.secret.yaml                # Secret config (ignored)
-    ├── cto/                             # Tracked CTO identity/core-memory/session files
-    ├── agents/                          # Tracked worker identity/core-memory/session files
+    ├── cto/                             # Shared CTO identity + local/generated CTO runtime files
+    ├── agents/                          # Local/generated worker state
     ├── templates/                       # Tracked mission templates
-    ├── context/                         # Tracked context docs
-    ├── memory/                          # Tracked file-backed memory artifacts
-    ├── history/                         # Tracked history / mission JSONL
-    ├── reflections/                     # Tracked reflections / retrospectives
-    ├── skills/                          # Tracked learned skill exports
+    ├── context/                         # Local/generated context docs
+    ├── memory/                          # Local/generated memory artifacts
+    ├── history/                         # Local/generated history / mission JSONL
+    ├── reflections/                     # Local/generated reflections / retrospectives
+    ├── skills/                          # Tracked human-authored skill files
     ├── worktrees/
     │   ├── <lane-slug-1>-<uuid>/        # Git worktree for lane 1
     │   └── <lane-slug-2>-<uuid>/        # Git worktree for lane 2

@@ -205,18 +205,26 @@ export function defaultResumeCommandForTool(toolType: TerminalToolType | null | 
   return null;
 }
 
+/** Strip ANSI escape codes so resume-command regexes can match TUI output. */
+function stripAnsiCodes(text: string): string {
+  return text.replace(/\x1b\[[0-9;?]*[a-zA-Z]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[()][A-Z0-9]|\x1b\[[\d;]*m/g, "");
+}
+
 export function extractResumeCommandFromOutput(
   text: string,
   preferredTool?: TerminalToolType | null
 ): string | null {
   if (!text.trim()) return null;
 
-  const fromBackticks = Array.from(text.matchAll(RESUME_BACKTICK_REGEX))
+  // Strip ANSI escape codes — TUI CLIs (claude/codex) embed escape codes that break regex matching
+  const cleaned = stripAnsiCodes(text);
+
+  const fromBackticks = Array.from(cleaned.matchAll(RESUME_BACKTICK_REGEX))
     .map((m) => normalizeResumeCommand(m[1] ?? "", preferredTool))
     .filter(Boolean);
   if (fromBackticks[0]) return fromBackticks[0];
 
-  const fromPlain = Array.from(text.matchAll(RESUME_PLAIN_REGEX))
+  const fromPlain = Array.from(cleaned.matchAll(RESUME_PLAIN_REGEX))
     .map((m) => normalizeResumeCommand(m[1] ?? "", preferredTool))
     .filter(Boolean);
   if (fromPlain[0]) return fromPlain[0];

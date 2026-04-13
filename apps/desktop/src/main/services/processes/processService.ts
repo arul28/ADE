@@ -199,6 +199,7 @@ export function createProcessService({
   logger,
   laneService,
   projectConfigService,
+  getLaneRuntimeEnv,
   broadcastEvent
 }: {
   db: AdeDb;
@@ -207,6 +208,7 @@ export function createProcessService({
   logger: Logger;
   laneService: ReturnType<typeof createLaneService>;
   projectConfigService: ReturnType<typeof createProjectConfigService>;
+  getLaneRuntimeEnv?: (laneId: string) => Promise<Record<string, string>> | Record<string, string>;
   broadcastEvent: (ev: ProcessEvent) => void;
 }) {
   const entries = new Map<string, ManagedProcessEntry>();
@@ -762,9 +764,14 @@ export function createProcessService({
     let cwd: string;
     try {
       cwd = resolvePathWithinRoot(laneRoot, cwdCandidate);
-    } catch {
-      throw new Error(`Process '${definition.id}' cwd escapes lane workspace`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (message.includes("Path does not exist")) {
+        throw new Error(`Process '${definition.id}' cwd does not exist: ${configuredCwd}`);
+      }
+      throw new Error(`Process '${definition.id}' cwd must stay within the lane workspace`);
     }
+    const laneRuntimeEnv = (await getLaneRuntimeEnv?.(laneId)) ?? {};
     const env = {
       ...process.env,
       // Inject color-friendly defaults for processes running without a PTY.
@@ -772,6 +779,7 @@ export function createProcessService({
       // these vars override that heuristic so log output stays readable.
       FORCE_COLOR: "1",
       TERM: "xterm-256color",
+      ...laneRuntimeEnv,
       ...definition.env,
       ...(opts.overlay?.env ?? {})
     };

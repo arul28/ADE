@@ -528,7 +528,7 @@ export function ProxyAndPreviewSection() {
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 32 }}>
       {/* ============ SECTION HEADER ============ */}
-      <div style={sectionLabelStyle}>PROXY &amp; PREVIEW</div>
+      <div style={sectionLabelStyle}>PREVIEW &amp; OAUTH</div>
 
       {/* ============ PROXY STATUS CARD ============ */}
       <div style={cardStyle()}>
@@ -550,7 +550,7 @@ export function ProxyAndPreviewSection() {
                 color: COLORS.textPrimary,
               }}
             >
-              Reverse Proxy
+              Preview gateway
             </span>
           </div>
 
@@ -562,6 +562,10 @@ export function ProxyAndPreviewSection() {
               {proxyRunning ? "RUNNING" : "STOPPED"}
             </span>
           </span>
+        </div>
+
+        <div style={{ ...descriptionStyle, marginBottom: 16 }}>
+          ADE listens on one local gateway port and gives each lane a stable preview URL, even when the app itself moves to a different localhost port.
         </div>
 
         {/* Status detail row */}
@@ -632,14 +636,14 @@ export function ProxyAndPreviewSection() {
           }
           disabled={proxyBusy}
           onClick={handleProxyToggle}
-          aria-label={proxyRunning ? "Stop reverse proxy" : "Start reverse proxy"}
+          aria-label={proxyRunning ? "Stop preview gateway" : "Start preview gateway"}
         >
           <ArrowsClockwise
             size={13}
             weight="bold"
             style={proxyBusy ? { animation: "spin 1s linear infinite" } : undefined}
           />
-          {proxyBusy ? "..." : proxyRunning ? "STOP PROXY" : "START PROXY"}
+          {proxyBusy ? "..." : proxyRunning ? "STOP GATEWAY" : "START GATEWAY"}
         </button>
       </div>
 
@@ -663,10 +667,10 @@ export function ProxyAndPreviewSection() {
                 color: COLORS.textPrimary,
               }}
             >
-              Automatic OAuth Routing
+              OAuth callback routing
             </span>
             <span
-              title="When enabled, OAuth callbacks flowing through the proxy are automatically routed to the correct lane based on the state parameter."
+              title="When enabled, ADE keeps one local callback URL on the gateway and routes each completed sign-in back to the correct lane."
               style={{
                 fontSize: 10,
                 fontFamily: MONO_FONT,
@@ -685,8 +689,7 @@ export function ProxyAndPreviewSection() {
         </div>
 
         <div style={{ ...descriptionStyle, marginBottom: 16 }}>
-          Automatic OAuth routing — callbacks are routed to the correct lane
-          using the OAuth state parameter.
+          Register one ADE callback URL with Google or another provider, then start sign-in from the lane preview URL. ADE routes the callback back to the correct lane for you.
         </div>
 
         {oauthError && (
@@ -728,7 +731,7 @@ export function ProxyAndPreviewSection() {
         <div style={{ ...LABEL_STYLE, marginBottom: 12 }}>REDIRECT URIS</div>
 
         <div style={{ ...descriptionStyle, marginBottom: 16 }}>
-          Copy these redirect URIs into your OAuth provider configuration.
+          Register this callback URL once with your OAuth provider, then keep opening sign-in from the lane preview URL.
         </div>
 
         {/* Provider selector */}

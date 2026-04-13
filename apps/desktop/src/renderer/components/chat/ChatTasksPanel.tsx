@@ -37,31 +37,31 @@ function statusBadge(status: TurnDiffFile["status"]) {
   switch (status) {
     case "A":
       return (
-        <span className="rounded px-1 py-px font-mono text-[9px] font-medium uppercase leading-none bg-emerald-500/15 text-emerald-400/70">
+        <span className="rounded px-1 py-px font-mono text-[10px] font-medium uppercase leading-none bg-emerald-500/15 text-emerald-400/70">
           A
         </span>
       );
     case "D":
       return (
-        <span className="rounded px-1 py-px font-mono text-[9px] font-medium uppercase leading-none bg-red-500/15 text-red-400/70">
+        <span className="rounded px-1 py-px font-mono text-[10px] font-medium uppercase leading-none bg-red-500/15 text-red-400/70">
           D
         </span>
       );
     case "R":
       return (
-        <span className="rounded px-1 py-px font-mono text-[9px] font-medium uppercase leading-none bg-amber-500/15 text-amber-400/70">
+        <span className="rounded px-1 py-px font-mono text-[10px] font-medium uppercase leading-none bg-amber-500/15 text-amber-400/70">
           R
         </span>
       );
     case "C":
       return (
-        <span className="rounded px-1 py-px font-mono text-[9px] font-medium uppercase leading-none bg-purple-500/15 text-purple-400/70">
+        <span className="rounded px-1 py-px font-mono text-[10px] font-medium uppercase leading-none bg-purple-500/15 text-purple-400/70">
           C
         </span>
       );
     default:
       return (
-        <span className="rounded px-1 py-px font-mono text-[9px] font-medium uppercase leading-none bg-sky-500/15 text-sky-400/70">
+        <span className="rounded px-1 py-px font-mono text-[10px] font-medium uppercase leading-none bg-sky-500/15 text-sky-400/70">
           M
         </span>
       );
@@ -182,7 +182,7 @@ export const ChatTasksPanel = React.memo(function ChatTasksPanel({
   if (!files.length) return null;
 
   const summaryContent = (
-    <span className="flex items-center gap-2 font-mono text-[10px]">
+    <span className="flex items-center gap-2 text-[12px]">
       <span className="text-fg/50">{files.length} file{files.length !== 1 ? "s" : ""}</span>
       {totalAdditions > 0 && <span className="text-emerald-400/70">+{totalAdditions}</span>}
       {totalDeletions > 0 && <span className="text-red-400/70">-{totalDeletions}</span>}
@@ -207,18 +207,18 @@ export const ChatTasksPanel = React.memo(function ChatTasksPanel({
                 key={file.path}
                 type="button"
                 className={cn(
-                  "flex w-full items-center gap-2 px-3 py-1.5 text-left transition-colors",
+                  "flex w-full items-center gap-2 px-3 py-2 text-left transition-colors",
                   isSelected ? "bg-white/[0.05]" : "hover:bg-white/[0.03]",
                 )}
                 onClick={() => void handleSelectFile(file.path)}
               >
                 {statusIcon(file.status)}
-                <span className="min-w-0 flex-1 truncate font-mono text-[10px] text-fg/60" title={file.path}>
+                <span className="min-w-0 flex-1 truncate text-[12px] text-fg/60" title={file.path}>
                   {basename(file.path)}
                 </span>
                 <div className="flex shrink-0 items-center gap-1.5">
-                  {file.additions > 0 && <span className="font-mono text-[9px] text-emerald-400/70">+{file.additions}</span>}
-                  {file.deletions > 0 && <span className="font-mono text-[9px] text-red-400/70">-{file.deletions}</span>}
+                  {file.additions > 0 && <span className="text-[11px] text-emerald-400/70">+{file.additions}</span>}
+                  {file.deletions > 0 && <span className="text-[11px] text-red-400/70">-{file.deletions}</span>}
                   {statusBadge(file.status)}
                 </div>
               </button>
@@ -230,12 +230,12 @@ export const ChatTasksPanel = React.memo(function ChatTasksPanel({
         <div className="min-w-0 flex-1">
           {!selectedPath && (
             <div className="flex h-full min-h-[200px] items-center justify-center p-4">
-              <span className="font-mono text-[10px] text-fg/25">Select a file to view its diff</span>
+              <span className="text-[12px] text-fg/25">Select a file to view its diff</span>
             </div>
           )}
           {selectedPath && loadingPath === selectedPath && (
             <div className="flex h-full min-h-[200px] items-center justify-center p-4">
-              <span className="animate-pulse font-mono text-[10px] text-fg/35">Loading diff...</span>
+              <span className="animate-pulse text-[12px] text-fg/35">Loading diff...</span>
             </div>
           )}
           {selectedPath && loadingPath !== selectedPath && activeDiff && (
@@ -245,7 +245,7 @@ export const ChatTasksPanel = React.memo(function ChatTasksPanel({
           )}
           {selectedPath && loadingPath !== selectedPath && !activeDiff && (
             <div className="flex h-full min-h-[200px] items-center justify-center p-4">
-              <span className="font-mono text-[10px] text-red-400/60">Failed to load diff</span>
+              <span className="text-[12px] text-red-400/60">Failed to load diff</span>
             </div>
           )}
         </div>

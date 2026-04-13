@@ -1,18 +1,18 @@
 import React, { useCallback, useState } from "react";
 import {
+  ArrowLeft,
   Code,
   Browsers,
   Bug,
   GearSix,
   BookOpen,
   Wrench,
-  UserPlus,
 } from "@phosphor-icons/react";
-import type { AgentIdentity, AgentRole, AdapterType, WorkerTemplate } from "../../../shared/types";
-import { StepWizard } from "./shared/StepWizard";
-import type { WizardStep } from "./shared/StepWizard";
-import { inputCls, labelCls, selectCls, cardCls, WORKER_TEMPLATES } from "./shared/designTokens";
+import type { AgentIdentity, AgentRole, WorkerTemplate } from "../../../shared/types";
+import { ProviderModelSelector } from "../shared/ProviderModelSelector";
+import { Button } from "../ui/Button";
 import { cn } from "../ui/cn";
+import { inputCls, labelCls, selectCls, WORKER_TEMPLATES } from "./shared/designTokens";
 
 const TEMPLATE_ICONS: Record<string, React.ElementType> = {
   "backend-engineer": Code,
@@ -23,50 +23,25 @@ const TEMPLATE_ICONS: Record<string, React.ElementType> = {
   custom: Wrench,
 };
 
-const STEPS: WizardStep[] = [
-  { id: "template", label: "Template", icon: UserPlus },
-  { id: "identity", label: "Identity", icon: Code },
-  { id: "runtime", label: "Runtime", icon: GearSix },
-];
-
 type WizardDraft = {
   templateId: string;
   name: string;
   role: AgentRole;
-  title: string;
   capabilities: string;
-  reportsTo: string;
-  adapterType: AdapterType;
   model: string;
-  webhookUrl: string;
-  processCommand: string;
   budgetDollars: number;
-  heartbeatEnabled: boolean;
-  heartbeatIntervalSec: number;
-  wakeOnDemand: boolean;
-  maxConcurrentRuns: number;
 };
 
 const defaultDraft: WizardDraft = {
   templateId: "",
   name: "",
   role: "engineer",
-  title: "",
   capabilities: "",
-  reportsTo: "",
-  adapterType: "claude-local",
   model: "claude-sonnet-4-6",
-  webhookUrl: "",
-  processCommand: "",
   budgetDollars: 0,
-  heartbeatEnabled: false,
-  heartbeatIntervalSec: 300,
-  wakeOnDemand: true,
-  maxConcurrentRuns: 1,
 };
 
 export function WorkerCreationWizard({
-  agents,
   onComplete,
   onCancel,
 }: {
@@ -74,7 +49,7 @@ export function WorkerCreationWizard({
   onComplete: () => void;
   onCancel: () => void;
 }) {
-  const [activeStep, setActiveStep] = useState("template");
+  const [step, setStep] = useState<"template" | "configure">("template");
   const [draft, setDraft] = useState<WizardDraft>(defaultDraft);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -85,12 +60,10 @@ export function WorkerCreationWizard({
       templateId: template.id,
       name: template.id === "custom" ? "" : template.name,
       role: template.role,
-      title: template.title,
       capabilities: template.capabilities.join(", "),
-      adapterType: template.adapterType,
       model: template.model ?? "claude-sonnet-4-6",
     }));
-    setActiveStep("identity");
+    setStep("configure");
   }, []);
 
   const handleSave = useCallback(async () => {
@@ -98,29 +71,16 @@ export function WorkerCreationWizard({
     setSaving(true);
     setError(null);
     try {
-      const adapterConfig: Record<string, unknown> =
-        draft.adapterType === "openclaw-webhook"
-          ? { url: draft.webhookUrl }
-          : draft.adapterType === "process"
-            ? { command: draft.processCommand }
-            : { model: draft.model.trim() || undefined };
-
       await window.ade.cto.saveAgent({
         agent: {
           name: draft.name,
           role: draft.role,
-          title: draft.title.trim() || undefined,
-          reportsTo: draft.reportsTo || null,
           capabilities: draft.capabilities.split(",").map((s) => s.trim()).filter(Boolean),
-          adapterType: draft.adapterType,
-          adapterConfig,
+          adapterType: "claude-local",
+          adapterConfig: { model: draft.model.trim() || undefined },
           runtimeConfig: {
-            heartbeat: {
-              enabled: draft.heartbeatEnabled,
-              intervalSec: draft.heartbeatIntervalSec,
-              wakeOnDemand: draft.wakeOnDemand,
-            },
-            maxConcurrentRuns: draft.maxConcurrentRuns,
+            heartbeat: { enabled: false, intervalSec: 0, wakeOnDemand: true },
+            maxConcurrentRuns: 1,
           },
           budgetMonthlyCents: Math.round(draft.budgetDollars * 100),
         },
@@ -133,156 +93,140 @@ export function WorkerCreationWizard({
     }
   }, [draft, onComplete]);
 
+  /* ── Step 1: Choose Template ── */
+  if (step === "template") {
+    return (
+      <div className="space-y-5">
+        <div className="flex items-center gap-3">
+          <button type="button" onClick={onCancel} className="text-muted-fg/50 hover:text-fg transition-colors">
+            <ArrowLeft size={16} />
+          </button>
+          <div>
+            <div className="text-sm font-semibold text-fg">Hire a Worker</div>
+            <div className="text-[11px] text-muted-fg/50">Step 1 of 2 — Choose a template to get started.</div>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-3 gap-3">
+          {WORKER_TEMPLATES.map((template) => {
+            const Icon = TEMPLATE_ICONS[template.id] ?? Wrench;
+            return (
+              <button
+                key={template.id}
+                type="button"
+                onClick={() => applyTemplate(template)}
+                className={cn(
+                  "text-left rounded-lg p-4 border transition-all duration-150",
+                  "border-white/[0.06] bg-white/[0.03] hover:border-accent/30 hover:bg-accent/5",
+                )}
+              >
+                <div className="flex items-center gap-2.5 mb-2">
+                  <div className="flex h-8 w-8 items-center justify-center rounded-md bg-accent/10 border border-accent/15">
+                    <Icon size={16} weight="duotone" className="text-accent" />
+                  </div>
+                  <span className="text-xs font-semibold text-fg">{template.name}</span>
+                </div>
+                <div className="text-[11px] leading-relaxed text-muted-fg/55 mb-2.5">{template.description}</div>
+                {template.capabilities.length > 0 && (
+                  <div className="flex flex-wrap gap-1">
+                    {template.capabilities.map((cap) => (
+                      <span key={cap} className="rounded-sm bg-white/[0.04] border border-white/[0.06] px-1.5 py-0.5 text-[10px] text-muted-fg/50">{cap}</span>
+                    ))}
+                  </div>
+                )}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+    );
+  }
+
+  /* ── Step 2: Name & Model ── */
   return (
-    <div className={cn(cardCls, "flex flex-col")} style={{ height: 480 }}>
-      <StepWizard
-        steps={STEPS}
-        activeStep={activeStep}
-        onStepChange={setActiveStep}
-        onComplete={handleSave}
-        onBack={onCancel}
-        onSkip={onCancel}
-        showSkip={false}
-        completing={saving}
-        completeLabel="Create Worker"
-      >
-        {/* Step 1: Template */}
-        {activeStep === "template" && (
-          <div className="space-y-3">
-            <div className="font-sans text-xs font-bold text-fg">Choose a Template</div>
-            <div className="grid grid-cols-2 gap-2">
-              {WORKER_TEMPLATES.map((template) => {
-                const Icon = TEMPLATE_ICONS[template.id] ?? Wrench;
-                const isSelected = draft.templateId === template.id;
-                return (
-                  <button
-                    key={template.id}
-                    type="button"
-                    onClick={() => applyTemplate(template)}
-                    className={cn(
-                      "text-left p-3 border transition-all",
-                      isSelected
-                        ? "border-accent/40 bg-accent/5"
-                        : "border-border/15 bg-surface-recessed hover:border-border/30",
-                    )}
-                  >
-                    <div className="flex items-center gap-2 mb-1.5">
-                      <Icon size={14} weight="duotone" className={isSelected ? "text-accent" : "text-muted-fg/50"} />
-                      <span className="font-mono text-[10px] font-bold text-fg">{template.name}</span>
-                    </div>
-                    <div className="font-mono text-[9px] text-muted-fg/50 line-clamp-2">{template.description}</div>
-                    {template.capabilities.length > 0 && (
-                      <div className="flex flex-wrap gap-1 mt-1.5">
-                        {template.capabilities.slice(0, 3).map((cap) => (
-                          <span key={cap} className="font-mono text-[8px] text-muted-fg/40 bg-border/10 px-1 py-0.5">{cap}</span>
-                        ))}
-                      </div>
-                    )}
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-        )}
+    <div className="space-y-5">
+      <div className="flex items-center gap-3">
+        <button type="button" onClick={() => setStep("template")} className="text-muted-fg/50 hover:text-fg transition-colors">
+          <ArrowLeft size={16} />
+        </button>
+        <div>
+          <div className="text-sm font-semibold text-fg">Configure Worker</div>
+          <div className="text-[11px] text-muted-fg/50">Step 2 of 2 — Set a name, model, and optional settings.</div>
+        </div>
+      </div>
 
-        {/* Step 2: Identity */}
-        {activeStep === "identity" && (
-          <div className="space-y-3 max-w-md">
-            <div className="font-sans text-xs font-bold text-fg">Configure Identity</div>
-            <div className="grid grid-cols-2 gap-3">
-              <label className="space-y-1">
-                <div className={labelCls}>Name</div>
-                <input className={inputCls} placeholder="Worker name" value={draft.name} onChange={(e) => setDraft((d) => ({ ...d, name: e.target.value }))} />
-              </label>
-              <label className="space-y-1">
-                <div className={labelCls}>Title</div>
-                <input className={inputCls} placeholder="Optional title" value={draft.title} onChange={(e) => setDraft((d) => ({ ...d, title: e.target.value }))} />
-              </label>
-            </div>
-            <div className="grid grid-cols-2 gap-3">
-              <label className="space-y-1">
-                <div className={labelCls}>Role</div>
-                <select className={selectCls} value={draft.role} onChange={(e) => setDraft((d) => ({ ...d, role: e.target.value as AgentRole }))}>
-                  <option value="engineer">Engineer</option>
-                  <option value="qa">QA</option>
-                  <option value="designer">Designer</option>
-                  <option value="devops">DevOps</option>
-                  <option value="researcher">Researcher</option>
-                  <option value="general">General</option>
-                </select>
-              </label>
-              <label className="space-y-1">
-                <div className={labelCls}>Reports to</div>
-                <select className={selectCls} value={draft.reportsTo} onChange={(e) => setDraft((d) => ({ ...d, reportsTo: e.target.value }))}>
-                  <option value="">CTO (root)</option>
-                  {agents.map((a) => (
-                    <option key={a.id} value={a.id}>{a.name}</option>
-                  ))}
-                </select>
-              </label>
-            </div>
-            <label className="space-y-1 block">
-              <div className={labelCls}>Capabilities</div>
-              <input className={inputCls} placeholder="api, db, react (comma-separated)" value={draft.capabilities} onChange={(e) => setDraft((d) => ({ ...d, capabilities: e.target.value }))} />
-            </label>
-          </div>
-        )}
+      <div className="max-w-lg space-y-4">
+        {/* Name + Role */}
+        <div className="grid grid-cols-2 gap-3">
+          <label className="space-y-1.5">
+            <div className={labelCls}>Worker Name</div>
+            <input
+              className={inputCls}
+              placeholder="e.g. Backend Engineer"
+              value={draft.name}
+              onChange={(e) => setDraft((d) => ({ ...d, name: e.target.value }))}
+              autoFocus
+            />
+          </label>
+          <label className="space-y-1.5">
+            <div className={labelCls}>Role</div>
+            <select className={selectCls} value={draft.role} onChange={(e) => setDraft((d) => ({ ...d, role: e.target.value as AgentRole }))}>
+              <option value="engineer">Engineer</option>
+              <option value="qa">QA</option>
+              <option value="designer">Designer</option>
+              <option value="devops">DevOps</option>
+              <option value="researcher">Researcher</option>
+              <option value="general">General</option>
+            </select>
+          </label>
+        </div>
 
-        {/* Step 3: Runtime */}
-        {activeStep === "runtime" && (
-          <div className="space-y-3 max-w-md">
-            <div className="font-sans text-xs font-bold text-fg">Adapter & Runtime</div>
-            <div className="grid grid-cols-2 gap-3">
-              <label className="space-y-1">
-                <div className={labelCls}>Adapter</div>
-                <select className={selectCls} value={draft.adapterType} onChange={(e) => setDraft((d) => ({ ...d, adapterType: e.target.value as AdapterType }))}>
-                  <option value="claude-local">claude-local</option>
-                  <option value="codex-local">codex-local</option>
-                  <option value="openclaw-webhook">openclaw-webhook</option>
-                  <option value="process">process</option>
-                </select>
-              </label>
-              {(draft.adapterType === "claude-local" || draft.adapterType === "codex-local") && (
-                <label className="space-y-1">
-                  <div className={labelCls}>Model</div>
-                  <input className={inputCls} placeholder="claude-sonnet-4-6" value={draft.model} onChange={(e) => setDraft((d) => ({ ...d, model: e.target.value }))} />
-                </label>
-              )}
-            </div>
+        {/* Capabilities */}
+        <label className="block space-y-1.5">
+          <div className={labelCls}>Capabilities</div>
+          <input
+            className={inputCls}
+            placeholder="api, database, react (comma-separated)"
+            value={draft.capabilities}
+            onChange={(e) => setDraft((d) => ({ ...d, capabilities: e.target.value }))}
+          />
+        </label>
 
-            <div className="grid grid-cols-2 gap-3">
-              <label className="space-y-1">
-                <div className={labelCls}>Budget $/mo</div>
-                <input className={inputCls} type="number" min={0} step={1} placeholder="0 = no cap" value={draft.budgetDollars || ""} onChange={(e) => setDraft((d) => ({ ...d, budgetDollars: Number(e.target.value || 0) }))} />
-              </label>
-              <label className="space-y-1">
-                <div className={labelCls}>Max concurrent</div>
-                <input className={inputCls} type="number" min={1} max={10} value={draft.maxConcurrentRuns} onChange={(e) => setDraft((d) => ({ ...d, maxConcurrentRuns: Number(e.target.value || 1) }))} />
-              </label>
-            </div>
+        {/* Model */}
+        <div className="space-y-1.5">
+          <div className={labelCls}>Model</div>
+          <ProviderModelSelector
+            value={draft.model}
+            onChange={(modelId) => setDraft((d) => ({ ...d, model: modelId }))}
+          />
+        </div>
 
-            <div className="border border-border/10 bg-card/60 p-3 space-y-2">
-              <div className={labelCls}>Heartbeat</div>
-              <label className="flex items-center gap-2 text-xs text-muted-fg cursor-pointer">
-                <input type="checkbox" checked={draft.heartbeatEnabled} onChange={(e) => setDraft((d) => ({ ...d, heartbeatEnabled: e.target.checked }))} />
-                Timer-based heartbeat
-              </label>
-              {draft.heartbeatEnabled && (
-                <label className="space-y-1 block pl-5">
-                  <div className="text-[9px] text-muted-fg/50">Interval (seconds)</div>
-                  <input className={inputCls} type="number" min={0} value={draft.heartbeatIntervalSec} onChange={(e) => setDraft((d) => ({ ...d, heartbeatIntervalSec: Number(e.target.value || 0) }))} />
-                </label>
-              )}
-              <label className="flex items-center gap-2 text-xs text-muted-fg cursor-pointer">
-                <input type="checkbox" checked={draft.wakeOnDemand} onChange={(e) => setDraft((d) => ({ ...d, wakeOnDemand: e.target.checked }))} />
-                Wake on demand
-              </label>
-            </div>
+        {/* Budget */}
+        <label className="block space-y-1.5">
+          <div className={labelCls}>Monthly Budget</div>
+          <input
+            className={cn(inputCls, "max-w-[200px]")}
+            type="number"
+            min={0}
+            step={1}
+            placeholder="$0 = unlimited"
+            value={draft.budgetDollars || ""}
+            onChange={(e) => setDraft((d) => ({ ...d, budgetDollars: Number(e.target.value || 0) }))}
+          />
+          <div className="text-[10px] text-muted-fg/40 mt-1">$0 means no spending cap.</div>
+        </label>
 
-            {error && <div className="text-xs text-error">{error}</div>}
-          </div>
-        )}
-      </StepWizard>
+        {/* Error */}
+        {error && <div className="text-xs text-error">{error}</div>}
+
+        {/* Actions */}
+        <div className="flex items-center gap-3 pt-2">
+          <Button variant="primary" onClick={() => void handleSave()} disabled={saving || !draft.name.trim()}>
+            {saving ? "Creating..." : "Create Worker"}
+          </Button>
+          <Button variant="outline" onClick={onCancel}>Cancel</Button>
+        </div>
+      </div>
     </div>
   );
 }

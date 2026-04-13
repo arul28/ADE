@@ -22,9 +22,15 @@ export function defaultTrackedCliStartupCommand(provider: CliProvider): string {
 export function buildTrackedCliStartupCommand(args: {
   provider: CliProvider;
   permissionMode: AgentChatPermissionMode;
+  /** Pre-assigned session ID for Claude CLI (enables reliable resume). */
+  sessionId?: string;
 }): string {
   if (args.provider === "claude") {
     const parts = ["claude"];
+    // Inject --session-id so we know the Claude session ID upfront for resume
+    if (args.sessionId) {
+      parts.push("--session-id", args.sessionId);
+    }
     if (args.permissionMode === "full-auto") {
       parts.push("--dangerously-skip-permissions");
     } else if (args.permissionMode === "edit") {
