@@ -1227,7 +1227,7 @@ function renderEvent(
         <div
           className={cn(
             GLASS_CARD_CLASS,
-            "group relative max-w-[78ch] px-5 py-4",
+            "group relative max-w-[min(96ch,75%)] px-5 py-4",
             options?.turnActive && "min-h-[5.5rem] ade-glow-pulse",
           )}
           style={ASSISTANT_MESSAGE_CARD_STYLE}
