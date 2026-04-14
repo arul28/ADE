@@ -1,0 +1,160 @@
+---
+title: "v1.0.18"
+description: "Release notes for ADE v1.0.18 — April 14, 2026"
+---
+
+A consolidation release: the Lanes, Missions, and Run surfaces shed several legacy panels in favour of fewer, denser screens; the chat transcript adds an in-line file-changes panel; a new Quick Run menu and stacked-run tabs land on the Run page; and the renderer picks up batched user-preference persistence, a visibility-aware watchdog, and a unified warmup timer.
+
+---
+
+## Workspace surface consolidation
+
+### Lanes UI streamlined
+
+A round of legacy lane panels were retired in favor of the consolidated lane workspace:
+
+- `LaneInspectorPane`, `LaneRow`, `LaneTerminalsPanel`, `LaneConflictsPanel`, `LaneOverlayConfigPanel`, and the `TilingLayout` shell are gone — their roles fold into `LanesPage` and the existing lane sidebar.
+- The standalone merge-simulation panel (`MergeSimulationPanel`, `ConflictFileDiff`, `extensionToLanguage`) is removed; merge previews now ride through the unified Conflicts experience.
+- `LanePrPanel` (and its tests) and the inline PR terminal (`InlineTerminal`) are removed; PR work is fully driven from the PRs page and the Path-to-Merge tab.
+- The `LaunchPanel` terminal launcher is gone — the same actions live in the new Quick Run menu and the existing Work surface.
+
+### Missions UI consolidation
+
+The bespoke mission micro-pages were absorbed into the main Missions experience:
+
+- `MissionControlPage`, `MissionPhaseBadge`, `UsageDashboard`, and `WorkerTranscriptPane` are removed — their content now renders inside `MissionsPage` and the associated panels there.
+- The `WorkerDetailSlideOut` slideout for individual worker inspection was retired; the same details surface inside the worker timeline.
+
+### Run page replaces Project Home
+
+The dedicated `ProjectHomePage` is removed. The Run tab (formerly "Project Home") is the canonical place to start work, monitor processes, and browse stacked runs. Three new components ship with it:
+
+- `QuickRunMenu` — a Radix dropdown attached to the Run header that lists the project's stack buttons (start, restart, stop, terminal) for the currently selected lane.
+- `RunStackTabs` — a tab strip for switching between concurrently running stack entries on the Run page.
+- A repositioned `RunNetworkPanel` and `ProcessMonitor` continue to render under the lane selector with the same wiring.
+
+### Chat: in-line file-changes panel
+
+A new `ChatFileChangesPanel` renders the turn's file diff summary directly inside the agent chat transcript using the existing `MonacoDiffView`. It replaces the older `ChatTurnDiffPanel` / `ChatTurnDivider` / `ChatContextMeter` triplet, which were retired together. The bottom drawer surfaces these per-turn diffs alongside Tasks, Subagents, and the existing tool log.
+
+### Conflict resolver cleanup
+
+The standalone `PostResolutionActions` and `ResolverTerminalModal` views are removed; resolver flows now run through the conflict-resolver workspace without modal pop-overs.
+
+### Settings: Automations section retired
+
+The Settings → Automations panel (`AutomationsSection`) is removed because the dedicated Automations tab covers the same surface area. The same applies to the legacy `RuleCard` automations component.
+
+---
+
+## Chat readability
+
+### Wider assistant bubbles on large displays
+
+Assistant message cards now scale up on wider screens. The bubble width changed from a flat `max-w-[78ch]` to `max-w-[min(96ch, 75%)]`, so long replies use more of a wide window without ever reaching edge-to-edge.
+
+### Tasks and Subagents panel typography
+
+Type sizes across `BottomDrawerSection`, `ChatTasksPanel`, `ChatSubagentsPanel`, and `ChatSubagentStrip` were nudged up (`9px → 11px`, `10px → 12px`, `11px → 13px`) for legibility. Labels, descriptions, and buttons moved off the monospace fallback to the system sans, with monospace kept where it actually belongs (timestamps, task IDs, tool names, status badges). Icons and padding got a small bump for better visual weight.
+
+### SmartTooltip across the renderer
+
+A new `components/ui/SmartTooltip.tsx` provides the project's standardized tooltip — used throughout the lane, run, chat, and CTO surfaces. Replaces a handful of one-off tooltip patterns with a single primitive.
+
+---
+
+## Renderer performance
+
+### Watchdog paused when the tab is hidden
+
+The 1 s renderer event-loop-stall watchdog in `apps/desktop/src/renderer/main.tsx` now starts and stops with `document.visibilityState`. Hidden windows no longer churn the interval, and the watchdog re-arms cleanly when the window comes back into focus.
+
+### Single warmup timer for project hydration
+
+`scheduleProjectHydration` previously juggled two cascading timers (a 1 200 ms lane warmup and a 1 800 ms provider-mode warmup). Both are now driven by a single `warmupTimer` that fires after `max(1 200, 1 800)` ms and dispatches both refreshes together. Fewer redundant network probes after each project open.
+
+### Atomic user-preferences store
+
+`theme`, `terminalPreferences`, and `smartTooltipsEnabled` now persist into a single `ade.userPreferences.v1` JSON entry instead of three separate `localStorage` keys. The three legacy keys are still read as a one-time migration fallback, so existing installs keep their saved settings on first launch.
+
+### Module-scoped config objects
+
+The `OutcomeDot` color/icon map in `IntegrationTab.tsx` was lifted to a module-level `OUTCOME_DOT_CONFIG` constant so it stops being reconstructed on every render. `EMPTY_TERMINAL_ATTENTION` in `AppShell.tsx` was already module-scoped — verified during the audit.
+
+### Configurable terminal font family
+
+`appStore` gained a `DEFAULT_TERMINAL_FONT_FAMILY` export (`ui-monospace` → `SFMono-Regular` → `Menlo` → `Monaco` → `"Cascadia Mono"` → `"JetBrains Mono"` → `"Geist Mono"` → `monospace`) and the terminal preferences now carry a `fontFamily` field so it can be customized later. Existing renderers fall back to the default if the field is missing.
+
+---
+
+## Main-process services
+
+### PTY service rewrite
+
+`apps/desktop/src/main/services/pty/ptyService.ts` was reworked (≈ 279 lines changed) to clean up session lifecycle and resize handling. Companion test updates land alongside.
+
+### Process service simplification
+
+`processService.ts` shed roughly 350 net lines while keeping the same public surface, with substantial test coverage added (`processService.test.ts` +219). The result is a tighter process registry without behavioural drift in `process.start` logging or env propagation.
+
+### Agent chat service refactor
+
+`agentChatService.ts` was reorganized (≈ 300 lines moved) and its tests gained ≈ 440 lines of new coverage to lock down the new shape. Tool-selection paths (`refreshOpenCodeSessionToolSelection`) and the Claude V2 message builder both got incremental fixes.
+
+### CTO state and operator tools
+
+- `ctoStateService.ts` grew by ≈ 380 lines for richer pipeline / persona state tracking.
+- `ctoOperatorTools.ts` (+142) and its tests (+232) round out the CTO operator API surface.
+
+### OAuth redirect flow
+
+`oauthRedirectService.ts` (+730) and its tests (+549) flesh out the lane OAuth redirect flow — more failure modes covered, more states observable from `runtimeDiagnosticsService`.
+
+### Lane service hardening
+
+`laneService.ts` (+128) and `runtimeDiagnosticsService.ts` (+55) tightened lane bring-up and runtime diagnostics; rebase / repair edge cases now have explicit handling.
+
+### Project + IPC plumbing
+
+- `main.ts` (+46) for desktop startup adjustments.
+- `registerIpc.ts` (+18) for the new IPC routes.
+- `projectConfigService.ts`, `prService.ts`, `adeProjectService.ts` received small targeted fixes.
+
+---
+
+## Settings polish
+
+- `GeneralSection.tsx` (+46): general settings tweaks aligned with the new typography and tooltip primitives.
+- `ProxyAndPreviewSection.tsx` (+21): proxy-and-preview UI cleanup.
+- `DiagnosticsDashboardSection.test.tsx`: regression coverage added.
+
+---
+
+## Test stability
+
+A round of test drift caused by the UI consolidation was fixed across four files:
+
+- `TerminalView.test.tsx` — added `DEFAULT_TERMINAL_FONT_FAMILY` to the `appStore` mock and `fontFamily` to the `terminalPreferences` fixtures (8 tests).
+- `AgentChatMessageList.test.tsx` — assertion updated to the widened bubble class (1 test).
+- `appStore.test.ts` — `fontFamily` added to terminal-preference expectations and persistence checks switched to the unified `ade.userPreferences.v1` store (2 tests).
+- `CtoSettingsPanel.test.tsx` — tests now navigate to the correct sub-tab before querying the DOM; assertions for removed UI (`Configured` / `Needs work` badges and the `CTO runtime` header) were dropped; tag and button matchers updated for the new layout (11 tests).
+
+A new `apps/desktop/src/shared/chatTranscript.test.ts` file lands shared transcript-helper coverage.
+
+---
+
+## Documentation
+
+The on-site docs at [ade-app.dev/docs](https://www.ade-app.dev/docs) received a readability pass on the densest settings, configuration, and tools pages: tighter ledes, clearer section openers, and short table-of-contents Cards at the top of long reference pages.
+
+A new `## Applied` section was appended to `docs/OPTIMIZATION_OPPORTUNITIES.md` describing the renderer optimizations that landed this release.
+
+The internal architecture notes were reorganized: legacy `docs/architecture/*` and `docs/final-plan/*` trees were removed in favor of a new `docs/features/*` hierarchy with per-feature READMEs (lanes, missions, chat, cto, computer-use, terminals-and-sessions, sync-and-multi-device, automations, conflicts, files-and-editor, history, linear-integration, memory, onboarding-and-settings, pull-requests, workspace-graph, agents, context-packs, project-home). The overall docs layout is captured in a top-level `docs/ARCHITECTURE.md` and `docs/README.md`.
+
+---
+
+## Tests
+
+- All 8 `apps/desktop` vitest shards green; typecheck clean; `npm run build` succeeds.
+- New shared transcript helpers covered by `apps/desktop/src/shared/chatTranscript.test.ts`.
+- Existing 35-test `appStore.test.ts` suite migrated to the unified preferences store without losing coverage.

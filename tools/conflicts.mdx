@@ -6,9 +6,7 @@ icon: "triangle-exclamation"
 
 ## What is the Conflicts View?
 
-The Conflicts view is ADE's proactive merge-safety system. Instead of waiting for a `git merge` to fail, ADE continuously runs merge simulations in the background using `git merge-tree` and surfaces predicted conflicts as soon as they are detected — often hours or days before a PR is ever opened.
-
-Every lane in your project is continuously simulated against its base branch and against every other active lane. When the simulation finds a conflict, ADE creates a **Conflict Pack**, generates an AI-assisted resolution proposal, and surfaces the conflict across multiple locations in the UI: the Conflicts tab, the lane status badges, the Workspace Graph edge colors, and the PR detail view.
+The Conflicts view is ADE's proactive merge-safety system: every lane is continuously simulated against its base branch and against every other active lane via `git merge-tree`, and predicted conflicts are surfaced hours or days before a PR is opened. Each detected conflict produces a **Conflict Pack** and an AI-assisted resolution proposal, visible in the Conflicts tab, lane status badges, Workspace Graph edges, and PR detail view.
 
 <CardGroup cols={3}>
   <Card title="Predictive, Not Reactive" icon="eye">
@@ -169,7 +167,7 @@ Conflict Packs are invalidated (and regenerated) when either lane receives a new
     Read the **Resolution Explanation** below the center pane — this is Claude's explanation of why it made the choices it did in the proposed resolution.
   </Step>
   <Step title="Choose a resolution path">
-    You have four options:
+    You have five options:
 
     | Option | When to use |
     |--------|-------------|

@@ -3,6 +3,26 @@ title: "Permissions & Security"
 description: "ADE's layered security model — trust boundaries, SHA-based config approval, per-agent permissions, file path restrictions, command policies, secret protection, and the audit trail."
 icon: "shield-check"
 ---
+
+ADE enforces security through layered controls: a trust-boundary architecture, SHA-gated config approval, per-agent permissions, path and command policies, network rules, secret handling, and an append-only audit trail.
+
+<CardGroup cols={3}>
+  <Card title="Core Principle" icon="shield-check" href="#core-security-principle">Local-first trust boundaries.</Card>
+  <Card title="SHA Config Approval" icon="fingerprint" href="#sha-based-config-approval">Gate commands in ade.yaml.</Card>
+  <Card title="Per-Agent Levels" icon="user-shield" href="#per-agent-permission-levels">From read-only to full access.</Card>
+  <Card title="File Paths" icon="folder-tree" href="#file-path-restrictions">Allow and block glob rules.</Card>
+  <Card title="Terminal Commands" icon="terminal" href="#terminal-command-policy">Allow, block, and ask-first.</Card>
+  <Card title="Git Operations" icon="code-branch" href="#git-operation-restrictions">Protected branches and merge policy.</Card>
+  <Card title="Network" icon="globe" href="#network-access-policy">Allow-all, allow-list, block-list.</Card>
+  <Card title="External MCP" icon="plug" href="#external-mcp-tool-permissions">Default server access controls.</Card>
+  <Card title="Secrets" icon="key" href="#secret-protection">Storage, redaction, rotation.</Card>
+  <Card title="Lane Proxy" icon="shield-halved" href="#per-lane-proxy-security">Cross-lane isolation rules.</Card>
+  <Card title="Audit Trail" icon="scroll" href="#audit-trail">What is logged and where.</Card>
+  <Card title="Team Practices" icon="users" href="#best-practices-for-teams">Recommended team patterns.</Card>
+</CardGroup>
+
+---
+
 ## Core Security Principle
 
 ADE is built on a **local-first, trust boundary model**. Your source code, API keys, and agent outputs never leave your machine through ADE's infrastructure. All sensitive operations are confined to the Electron main process, which is isolated from the renderer UI by a strictly typed IPC bridge.

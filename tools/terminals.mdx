@@ -6,9 +6,7 @@ icon: "terminal"
 
 ## Overview
 
-ADE provides real **PTY (pseudo-terminal) sessions** for every lane. These are not simulated command runners or output capture panels — they are full terminal emulators backed by xterm.js, with complete VT100/ANSI support, interactive programs, color output, and all the keyboard controls you expect from a native terminal.
-
-Every lane has its own terminal environment. Sessions in a lane run with the lane's working directory set to its git worktree, inherit the lane's environment variable overlay, and are isolated from sessions in every other lane.
+ADE gives every lane real **PTY sessions** — full xterm.js terminal emulators with VT100/ANSI support, interactive programs, and color output — each scoped to the lane's worktree and environment overlay, isolated from every other lane.
 
 <CardGroup cols={3}>
   <Card title="Real PTY" icon="terminal">
