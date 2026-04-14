@@ -370,7 +370,7 @@ struct ConnectionSettingsView: View {
       .adeScreenBackground()
       .adeNavigationGlass()
       .navigationTitle("Settings")
-      .sensoryFeedback(.success, trigger: syncService.connectionState == .connected)
+
       .onAppear {
         guard let profile = syncService.activeHostProfile else { return }
         host = profile.lastSuccessfulAddress ?? profile.savedAddressCandidates.first ?? host

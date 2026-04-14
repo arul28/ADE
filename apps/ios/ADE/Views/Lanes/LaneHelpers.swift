@@ -209,6 +209,35 @@ func flattenedString(_ value: RemoteJSONValue?) -> String? {
   }
 }
 
+func laneStackGraphOrder(_ snapshots: [LaneListSnapshot]) -> [LaneListSnapshot] {
+  let childrenByParent = Dictionary(grouping: snapshots) { snapshot in
+    snapshot.lane.parentLaneId ?? "__root__"
+  }
+  let primaryId = snapshots.first(where: { $0.lane.laneType == "primary" })?.lane.id
+
+  func visit(parentId: String?) -> [LaneListSnapshot] {
+    let key = parentId ?? "__root__"
+    let children = (childrenByParent[key] ?? []).sorted { lhs, rhs in
+      lhs.lane.createdAt < rhs.lane.createdAt
+    }
+    return children.flatMap { child in
+      [child] + visit(parentId: child.lane.id)
+    }
+  }
+
+  let primaryBranch = primaryId.flatMap { id in snapshots.first(where: { $0.lane.id == id }) }.map { [$0] + visit(parentId: $0.lane.id) } ?? []
+  let seen = Set(primaryBranch.map(\.lane.id))
+  let remaining = snapshots.filter { !seen.contains($0.lane.id) }
+  let remainingIds = Set(remaining.map(\.lane.id))
+  let roots = remaining
+    .filter { ($0.lane.parentLaneId == nil) || !remainingIds.contains($0.lane.parentLaneId!) }
+    .sorted { $0.lane.createdAt < $1.lane.createdAt }
+  let groupedRemaining = roots.flatMap { root in
+    [root] + visit(parentId: root.lane.id).filter { remainingIds.contains($0.lane.id) }
+  }
+  return primaryBranch + groupedRemaining
+}
+
 func runtimeTint(bucket: String) -> Color {
   switch bucket {
   case "running":

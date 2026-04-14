@@ -1496,6 +1496,22 @@ final class DatabaseService {
       )
     """)
     try exec("create index if not exists idx_lane_detail_snapshots_updated_at on lane_detail_snapshots(updated_at)")
+
+    for col in [
+      "execution_lane_id", "supervisor_identity_key", "review_ready_reason",
+      "pr_state", "pr_checks_status", "pr_review_status",
+      "latest_review_note", "route_context_json", "execution_context_json",
+    ] {
+      try ensureColumn(tableName: "linear_workflow_runs", columnName: col, definition: "text")
+    }
+
+    try ensureColumn(tableName: "external_mcp_usage_events", columnName: "chat_session_id", definition: "text")
+
+    try ensureColumn(tableName: "pr_issue_inventory", columnName: "thread_comment_count", definition: "integer")
+    try ensureColumn(tableName: "pr_issue_inventory", columnName: "thread_latest_comment_id", definition: "text")
+    try ensureColumn(tableName: "pr_issue_inventory", columnName: "thread_latest_comment_author", definition: "text")
+    try ensureColumn(tableName: "pr_issue_inventory", columnName: "thread_latest_comment_at", definition: "text")
+    try ensureColumn(tableName: "pr_issue_inventory", columnName: "thread_latest_comment_source", definition: "text")
   }
 
   private func ensureColumn(tableName: String, columnName: String, definition: String) throws {

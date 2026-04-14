@@ -174,7 +174,7 @@ extension LanesTabView {
                 detailSheetTarget = LaneDetailSheetTarget(
                   laneId: snapshot.lane.id,
                   snapshot: snapshot,
-                  initialSection: .manage
+                  initialSection: .git
                 )
               }
               Button(pinnedLaneIds.contains(snapshot.lane.id) ? "Unpin" : "Pin") {
@@ -296,6 +296,10 @@ extension LanesTabView {
     }
   }
 
+  var stackOrderedSnapshots: [LaneListSnapshot] {
+    laneStackGraphOrder(filteredSnapshots)
+  }
+
   @ViewBuilder
   var laneList: some View {
     if filteredSnapshots.isEmpty {
@@ -306,87 +310,104 @@ extension LanesTabView {
       )
       .padding(.top, 40)
     } else {
-      ForEach(filteredSnapshots) { snapshot in
-        NavigationLink {
-          LaneDetailScreen(
-            laneId: snapshot.lane.id,
-            initialSnapshot: snapshot,
-            allLaneSnapshots: laneSnapshots,
-            onRefreshRoot: { await reload(refreshRemote: true) }
-          )
-        } label: {
-          LaneListRow(
-            snapshot: snapshot,
-            isPinned: pinnedLaneIds.contains(snapshot.lane.id),
-            isOpen: openLaneIds.contains(snapshot.lane.id)
-          )
-          .equatable()
-        }
-        .buttonStyle(ADEScaleButtonStyle())
-        .contextMenu {
-          Button("Manage lane") {
-            detailSheetTarget = LaneDetailSheetTarget(
-              laneId: snapshot.lane.id,
-              snapshot: snapshot,
-              initialSection: .manage
+      let ordered = stackOrderedSnapshots
+      ForEach(Array(ordered.enumerated()), id: \.element.id) { index, snapshot in
+        VStack(spacing: 0) {
+          if index > 0 {
+            LaneStackConnector(
+              depth: snapshot.lane.stackDepth,
+              isLast: index == ordered.count - 1
             )
           }
-          Button(openLaneIds.contains(snapshot.lane.id) ? "Remove from open lanes" : "Add to open lanes") {
-            toggleOpenLane(snapshot.lane.id)
+
+          NavigationLink {
+            LaneDetailScreen(
+              laneId: snapshot.lane.id,
+              initialSnapshot: snapshot,
+              allLaneSnapshots: laneSnapshots,
+              onRefreshRoot: { await reload(refreshRemote: true) }
+            )
+          } label: {
+            LaneStackCard(
+              snapshot: snapshot,
+              isPinned: pinnedLaneIds.contains(snapshot.lane.id),
+              isOpen: openLaneIds.contains(snapshot.lane.id),
+              depth: snapshot.lane.stackDepth
+            )
+            .equatable()
           }
-          Button(pinnedLaneIds.contains(snapshot.lane.id) ? "Unpin" : "Pin") {
-            togglePin(snapshot.lane.id)
+          .buttonStyle(ADEScaleButtonStyle())
+          .padding(.leading, CGFloat(snapshot.lane.stackDepth) * 20)
+          .contextMenu {
+            laneContextMenu(snapshot: snapshot)
           }
-          Button("Close others") {
-            openLaneIds = [snapshot.lane.id]
+        }
+      }
+    }
+  }
+
+  @ViewBuilder
+  func laneContextMenu(snapshot: LaneListSnapshot) -> some View {
+    Button("Manage lane") {
+      detailSheetTarget = LaneDetailSheetTarget(
+        laneId: snapshot.lane.id,
+        snapshot: snapshot,
+        initialSection: .git
+      )
+    }
+    Button(openLaneIds.contains(snapshot.lane.id) ? "Remove from open lanes" : "Add to open lanes") {
+      toggleOpenLane(snapshot.lane.id)
+    }
+    Button(pinnedLaneIds.contains(snapshot.lane.id) ? "Unpin" : "Pin") {
+      togglePin(snapshot.lane.id)
+    }
+    Button("Close others") {
+      openLaneIds = [snapshot.lane.id]
+    }
+    Button("Select all visible") {
+      batchManageLaneIds = manageableVisibleLaneIds
+      batchManagePresented = !manageableVisibleLaneIds.isEmpty
+    }
+    if manageableVisibleLaneIds.count > 1 {
+      Button("Manage \(manageableVisibleLaneIds.count) visible lanes") {
+        batchManageLaneIds = manageableVisibleLaneIds
+        batchManagePresented = true
+      }
+    }
+    if snapshot.lane.archivedAt == nil && snapshot.lane.laneType != "primary" {
+      Button("Archive", role: .destructive) {
+        Task {
+          do {
+            try await syncService.archiveLane(snapshot.lane.id)
+            await reload(refreshRemote: true)
+          } catch {
+            errorMessage = error.localizedDescription
           }
-          Button("Select all visible") {
-            batchManageLaneIds = manageableVisibleLaneIds
-            batchManagePresented = !manageableVisibleLaneIds.isEmpty
+        }
+      }
+    } else if snapshot.lane.archivedAt != nil {
+      Button("Restore") {
+        Task {
+          do {
+            try await syncService.unarchiveLane(snapshot.lane.id)
+            await reload(refreshRemote: true)
+          } catch {
+            errorMessage = error.localizedDescription
           }
-          if manageableVisibleLaneIds.count > 1 {
-            Button("Manage \(manageableVisibleLaneIds.count) visible lanes") {
-              batchManageLaneIds = manageableVisibleLaneIds
-              batchManagePresented = true
-            }
-          }
-          if snapshot.lane.archivedAt == nil && snapshot.lane.laneType != "primary" {
-            Button("Archive", role: .destructive) {
-              Task {
-                do {
-                  try await syncService.archiveLane(snapshot.lane.id)
-                  await reload(refreshRemote: true)
-                } catch {
-                  errorMessage = error.localizedDescription
-                }
-              }
-            }
-          } else if snapshot.lane.archivedAt != nil {
-            Button("Restore") {
-              Task {
-                do {
-                  try await syncService.unarchiveLane(snapshot.lane.id)
-                  await reload(refreshRemote: true)
-                } catch {
-                  errorMessage = error.localizedDescription
-                }
-              }
-            }
-          }
-          Button("Copy path") {
-            UIPasteboard.general.string = snapshot.lane.worktreePath
-          }
-          if snapshot.adoptableAttached {
-            Button("Move to ADE-managed worktree") {
-              Task {
-                do {
-                  _ = try await syncService.adoptAttachedLane(snapshot.lane.id)
-                  await reload(refreshRemote: true)
-                } catch {
-                  errorMessage = error.localizedDescription
-                }
-              }
-            }
+        }
+      }
+    }
+    Button("Copy path") {
+      UIPasteboard.general.string = snapshot.lane.worktreePath
+    }
+    if snapshot.adoptableAttached {
+      Button("Move to ADE-managed worktree") {
+        Task {
+          do {
+            _ = try await syncService.adoptAttachedLane(snapshot.lane.id)
+            await reload(refreshRemote: true)
+          } catch {
+            errorMessage = error.localizedDescription
           }
         }
       }

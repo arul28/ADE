@@ -415,7 +415,7 @@ struct FilesTabView: View {
         await refreshFromPullGesture()
       }
       .sensoryFeedback(.selection, trigger: selectedWorkspaceId)
-      .sensoryFeedback(.success, trigger: quickOpenResults.count + textSearchResults.count)
+
       .sensoryFeedback(.success, trigger: refreshFeedbackToken)
       .task {
         await reload()

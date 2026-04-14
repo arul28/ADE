@@ -46,10 +46,7 @@ enum LaneRuntimeFilter: String, CaseIterable, Identifiable {
 }
 
 enum LaneDetailSection: String, CaseIterable, Identifiable {
-  case overview
-  case work
   case git
-  case manage
 
   var id: String { rawValue }
 
@@ -59,10 +56,7 @@ enum LaneDetailSection: String, CaseIterable, Identifiable {
 
   var symbol: String {
     switch self {
-    case .overview: return "square.grid.2x2"
     case .git: return "arrow.triangle.branch"
-    case .work: return "terminal"
-    case .manage: return "slider.horizontal.3"
     }
   }
 }

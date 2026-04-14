@@ -1,5 +1,16 @@
 import SwiftUI
 
+// MARK: - Bulk action model
+
+struct LaneFileTreeBulkAction: Identifiable {
+  let id = UUID()
+  let title: String
+  let symbol: String
+  let tint: Color
+  let isDestructive: Bool
+  let action: () -> Void
+}
+
 // MARK: - File tree section
 
 struct LaneFileTreeSection: View {
@@ -15,20 +26,34 @@ struct LaneFileTreeSection: View {
   let secondaryActionTitle: String
   let secondaryActionSymbol: String
   let secondaryActionTint: Color
+  var extraBulkActions: [LaneFileTreeBulkAction] = []
   let onBulkAction: (() -> Void)?
   let onDiff: (FileChange) -> Void
   let onPrimaryAction: (FileChange) -> Void
   let onSecondaryAction: (FileChange) -> Void
   let onOpenFiles: ((FileChange) -> Void)?
 
-  @State private var collapsedPaths = Set<String>()
+  @State private var collapsedPaths: Set<String>?
 
   var body: some View {
     GlassSection(title: title, subtitle: subtitle) {
       LazyVStack(alignment: .leading, spacing: 12) {
-        if let bulkActionTitle, let onBulkAction, changes.count > 1 {
-          LaneActionButton(title: bulkActionTitle, symbol: bulkActionSymbol, tint: bulkActionTint) {
-            onBulkAction()
+        HStack(spacing: 8) {
+          if let bulkActionTitle, let onBulkAction, changes.count > 1 {
+            LaneActionButton(title: bulkActionTitle, symbol: bulkActionSymbol, tint: bulkActionTint) {
+              onBulkAction()
+            }
+          }
+          ForEach(extraBulkActions) { extra in
+            if extra.isDestructive {
+              LaneHoldToConfirmButton(title: extra.title, symbol: extra.symbol, tint: extra.tint) {
+                extra.action()
+              }
+            } else {
+              LaneActionButton(title: extra.title, symbol: extra.symbol, tint: extra.tint) {
+                extra.action()
+              }
+            }
           }
         }
 
@@ -38,9 +63,13 @@ struct LaneFileTreeSection: View {
             .foregroundStyle(ADEColor.textSecondary)
         } else {
           let root = laneFileTreeRoot(from: changes)
+          let resolvedCollapsed = Binding<Set<String>>(
+            get: { collapsedPaths ?? allFolderPaths(in: root) },
+            set: { collapsedPaths = $0 }
+          )
           LaneFileTreeNodeView(
             node: root,
-            collapsedPaths: $collapsedPaths,
+            collapsedPaths: resolvedCollapsed,
             onDiff: onDiff,
             onPrimaryAction: onPrimaryAction,
             onSecondaryAction: onSecondaryAction,
@@ -56,6 +85,15 @@ struct LaneFileTreeSection: View {
       }
     }
   }
+}
+
+private func allFolderPaths(in node: LaneFileTreeNode) -> Set<String> {
+  var paths = Set<String>()
+  for child in node.children {
+    paths.insert(child.id)
+    paths.formUnion(allFolderPaths(in: child))
+  }
+  return paths
 }
 
 private struct LaneFileTreeNode: Identifiable {
@@ -120,6 +158,7 @@ private func insert(_ change: FileChange, components: [String], into node: inout
 
 private struct LaneFileTreeNodeView: View {
   let node: LaneFileTreeNode
+  var isRoot: Bool = true
   @Binding var collapsedPaths: Set<String>
   let onDiff: (FileChange) -> Void
   let onPrimaryAction: (FileChange) -> Void
@@ -133,7 +172,7 @@ private struct LaneFileTreeNodeView: View {
   let secondaryActionTint: Color
 
   var body: some View {
-    LazyVStack(alignment: .leading, spacing: 8) {
+    let content = LazyVStack(alignment: .leading, spacing: 8) {
       if !node.files.isEmpty {
         ForEach(node.files) { file in
           let openFilesAction: (() -> Void)? = onOpenFiles.map { handler in
@@ -159,6 +198,7 @@ private struct LaneFileTreeNodeView: View {
         DisclosureGroup(isExpanded: binding(for: child.id)) {
           LaneFileTreeNodeView(
             node: child,
+            isRoot: false,
             collapsedPaths: $collapsedPaths,
             onDiff: onDiff,
             onPrimaryAction: onPrimaryAction,
@@ -193,8 +233,18 @@ private struct LaneFileTreeNodeView: View {
         .tint(ADEColor.textSecondary)
       }
     }
-    .padding(12)
-    .background(ADEColor.surfaceBackground.opacity(0.24), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+    if isRoot {
+      content
+        .padding(12)
+        .background(ADEColor.surfaceBackground.opacity(0.08), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .glassEffect(in: .rect(cornerRadius: 14))
+        .overlay(
+          RoundedRectangle(cornerRadius: 14, style: .continuous)
+            .stroke(ADEColor.border.opacity(0.12), lineWidth: 0.5)
+        )
+    } else {
+      content
+    }
   }
 
   private func binding(for path: String) -> Binding<Bool> {
@@ -244,9 +294,8 @@ private struct LaneFileRow: View {
       }
       ScrollView(.horizontal, showsIndicators: false) {
         HStack(spacing: 6) {
-          LaneActionButton(title: "Diff", symbol: "doc.text.magnifyingglass") { onDiff() }
           if let onOpenFiles {
-            LaneActionButton(title: "Files", symbol: "folder") { onOpenFiles() }
+            LaneActionButton(title: "Open in Files", symbol: "folder") { onOpenFiles() }
           }
           LaneActionButton(title: primaryActionTitle, symbol: primaryActionSymbol, tint: primaryActionTint) {
             onPrimaryAction()

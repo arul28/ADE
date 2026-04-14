@@ -38,6 +38,7 @@
 		B10000000000000000000010 /* LaneSessionTranscriptView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000010 /* LaneSessionTranscriptView.swift */; };
 		B10000000000000000000011 /* LaneStackGraphSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000011 /* LaneStackGraphSheet.swift */; };
 		B10000000000000000000012 /* LaneTypes.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000012 /* LaneTypes.swift */; };
+		B10000000000000000000013 /* LaneCommitBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000013 /* LaneCommitBar.swift */; };
 		E689F42D41A500BB8CA233E4 /* LanesTabView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9270CF8A67F3FA79089F39C1 /* LanesTabView.swift */; };
 		F2A1C9D8456E7B3C1D2E4F90 /* FilesCodeSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = D6F9B21C0E4A6D8F1B3C5A77 /* FilesCodeSupport.swift */; };
 		FBEEF09EFB4911FEAC6A7E87 /* RemoteModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 483C5F1818BAE74B19B84617 /* RemoteModels.swift */; };
@@ -85,6 +86,7 @@
 		A10000000000000000000010 /* LaneSessionTranscriptView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LaneSessionTranscriptView.swift; path = ADE/Views/Lanes/LaneSessionTranscriptView.swift; sourceTree = "<group>"; };
 		A10000000000000000000011 /* LaneStackGraphSheet.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LaneStackGraphSheet.swift; path = ADE/Views/Lanes/LaneStackGraphSheet.swift; sourceTree = "<group>"; };
 		A10000000000000000000012 /* LaneTypes.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LaneTypes.swift; path = ADE/Views/Lanes/LaneTypes.swift; sourceTree = "<group>"; };
+		A10000000000000000000013 /* LaneCommitBar.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LaneCommitBar.swift; path = ADE/Views/Lanes/LaneCommitBar.swift; sourceTree = "<group>"; };
 		B5D5B5B87564C73F2FF34B0D /* KeychainService.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = KeychainService.swift; path = ADE/Services/KeychainService.swift; sourceTree = "<group>"; };
 		C9411193AF56B236BA32EFF5 /* ADEApp.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ADEApp.swift; path = ADE/App/ADEApp.swift; sourceTree = "<group>"; };
 		CCAB2414C359E971B780BF99 /* PreviewHost.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = PreviewHost.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -141,6 +143,7 @@
 				A10000000000000000000010 /* LaneSessionTranscriptView.swift */,
 				A10000000000000000000011 /* LaneStackGraphSheet.swift */,
 				A10000000000000000000012 /* LaneTypes.swift */,
+				A10000000000000000000013 /* LaneCommitBar.swift */,
 			);
 			name = Lanes;
 			sourceTree = "<group>";
@@ -375,6 +378,7 @@
 				B10000000000000000000010 /* LaneSessionTranscriptView.swift in Sources */,
 				B10000000000000000000011 /* LaneStackGraphSheet.swift in Sources */,
 				B10000000000000000000012 /* LaneTypes.swift in Sources */,
+				B10000000000000000000013 /* LaneCommitBar.swift in Sources */,
 				E689F42D41A500BB8CA233E4 /* LanesTabView.swift in Sources */,
 				889573D8A5ED468D3BD12894 /* PRsTabView.swift in Sources */,
 				56223CC3AF5A01B710CDC4CF /* WorkTabView.swift in Sources */,

@@ -592,7 +592,7 @@ struct PRsTabView: View {
           .disabled(!isLive || lanes.isEmpty)
         }
       }
-      .sensoryFeedback(.success, trigger: prs.count + integrationProposals.count + queueStates.count)
+
       .sensoryFeedback(.success, trigger: refreshFeedbackToken)
       .task {
         await reload(refreshRemote: true)

@@ -537,3 +537,143 @@ struct LaneListRow: View, Equatable {
     return parts.joined(separator: ", ")
   }
 }
+
+// MARK: - Stack card
+
+struct LaneStackCard: View, Equatable {
+  let snapshot: LaneListSnapshot
+  let isPinned: Bool
+  let isOpen: Bool
+  let depth: Int
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 8) {
+      HStack(alignment: .top, spacing: 10) {
+        LaneStatusIndicator(bucket: snapshot.runtime.bucket, size: 10)
+          .padding(.top, 4)
+
+        VStack(alignment: .leading, spacing: 4) {
+          HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text(snapshot.lane.name)
+              .font(.subheadline.weight(.semibold))
+              .foregroundStyle(ADEColor.textPrimary)
+              .lineLimit(1)
+            laneRoleBadge
+            Spacer(minLength: 0)
+            lanePriorityBadge(snapshot: snapshot)
+          }
+
+          Text(snapshot.lane.branchRef)
+            .font(.system(.caption, design: .monospaced))
+            .foregroundStyle(ADEColor.textSecondary)
+            .lineLimit(1)
+        }
+
+        Image(systemName: "chevron.right")
+          .font(.caption2.weight(.semibold))
+          .foregroundStyle(ADEColor.textMuted)
+          .padding(.top, 4)
+      }
+
+      HStack(spacing: 6) {
+        if snapshot.lane.status.dirty {
+          LaneMicroChip(icon: "circle.fill", text: "dirty", tint: ADEColor.warning)
+        }
+        if snapshot.lane.status.ahead > 0 {
+          LaneMicroChip(icon: "arrow.up", text: "\(snapshot.lane.status.ahead)", tint: ADEColor.success)
+        }
+        if snapshot.lane.status.behind > 0 {
+          LaneMicroChip(icon: "arrow.down", text: "\(snapshot.lane.status.behind)", tint: ADEColor.warning)
+        }
+        if snapshot.runtime.sessionCount > 0 {
+          LaneMicroChip(
+            icon: runtimeSymbol(snapshot.runtime.bucket),
+            text: "\(snapshot.runtime.sessionCount) running",
+            tint: runtimeTint(bucket: snapshot.runtime.bucket)
+          )
+        }
+        if snapshot.lane.childCount > 0 {
+          LaneMicroChip(icon: "square.stack.3d.up", text: "\(snapshot.lane.childCount)", tint: ADEColor.textMuted)
+        }
+        if isPinned {
+          LaneMicroChip(icon: "pin.fill", text: nil, tint: ADEColor.accent)
+        }
+        Spacer(minLength: 0)
+      }
+
+      if let activity = laneActivitySummary(snapshot) {
+        Text(activity)
+          .font(.caption2)
+          .foregroundStyle(ADEColor.textMuted)
+          .lineLimit(1)
+      }
+    }
+    .padding(14)
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .background(ADEColor.surfaceBackground.opacity(0.08), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+    .glassEffect(in: .rect(cornerRadius: 14))
+    .overlay(
+      RoundedRectangle(cornerRadius: 14, style: .continuous)
+        .stroke(isOpen ? ADEColor.accent.opacity(0.4) : ADEColor.border.opacity(0.18), lineWidth: isOpen ? 1.5 : 0.75)
+    )
+    .shadow(color: isOpen ? ADEColor.accent.opacity(0.08) : .clear, radius: 8, y: 2)
+    .accessibilityElement(children: .combine)
+    .accessibilityLabel(stackCardAccessibilityLabel)
+  }
+
+  @ViewBuilder
+  private var laneRoleBadge: some View {
+    if snapshot.lane.laneType == "primary" {
+      LaneTypeBadge(text: "Primary", tint: ADEColor.accent)
+    } else if snapshot.lane.laneType == "attached" {
+      LaneTypeBadge(text: "Attached", tint: ADEColor.textMuted)
+    } else if snapshot.lane.archivedAt != nil {
+      LaneTypeBadge(text: "Archived", tint: ADEColor.textMuted)
+    } else {
+      EmptyView()
+    }
+  }
+
+  private var stackCardAccessibilityLabel: String {
+    var parts = [snapshot.lane.name, snapshot.lane.branchRef]
+    if snapshot.lane.laneType == "primary" { parts.append("primary") }
+    if snapshot.lane.archivedAt != nil { parts.append("archived") }
+    if snapshot.runtime.bucket == "running" { parts.append("running") }
+    if snapshot.runtime.bucket == "awaiting-input" { parts.append("awaiting input") }
+    if snapshot.lane.status.dirty { parts.append("dirty") }
+    if isPinned { parts.append("pinned") }
+    if isOpen { parts.append("open") }
+    if snapshot.lane.status.ahead > 0 { parts.append("\(snapshot.lane.status.ahead) ahead") }
+    if snapshot.lane.status.behind > 0 { parts.append("\(snapshot.lane.status.behind) behind") }
+    if snapshot.runtime.sessionCount > 0 { parts.append("\(snapshot.runtime.sessionCount) sessions") }
+    return parts.joined(separator: ", ")
+  }
+}
+
+struct LaneStackConnector: View {
+  let depth: Int
+  let isLast: Bool
+
+  var body: some View {
+    HStack(spacing: 0) {
+      Spacer()
+        .frame(width: CGFloat(depth) * 20 + 24)
+      VStack(spacing: 0) {
+        Circle()
+          .fill(ADEColor.accent.opacity(0.25))
+          .frame(width: 5, height: 5)
+        Rectangle()
+          .fill(
+            LinearGradient(
+              colors: [ADEColor.accent.opacity(0.25), ADEColor.border.opacity(0.15)],
+              startPoint: .top,
+              endPoint: .bottom
+            )
+          )
+          .frame(width: 1.5, height: 10)
+      }
+      Spacer()
+    }
+    .frame(height: 16)
+  }
+}
