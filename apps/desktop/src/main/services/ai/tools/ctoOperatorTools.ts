@@ -3460,29 +3460,45 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
     }),
     execute: async ({ pattern, fileGlob, maxResults, contextLines }) => {
       try {
-        const { execSync } = await import("node:child_process");
+        const { execFileSync } = await import("node:child_process");
         const adeRoot = path.resolve(__dirname, "../../../../..");
-        const globArg = fileGlob?.trim() || "*.ts";
+        const searchPattern = pattern.trim().slice(0, 500);
+        const globArg = (fileGlob?.trim() || "*.ts").slice(0, 200);
         const args = [
-          "--no-heading", "--line-number", "--max-count=3",
+          "--no-heading",
+          "--line-number",
+          "--max-count=3",
           `--context=${contextLines}`,
-          `--glob=${globArg}`,
-          "--max-filecount=" + String(maxResults),
-          "--", pattern, adeRoot,
+          "--glob",
+          globArg,
+          "--",
+          searchPattern,
+          ".",
         ];
-        const result = execSync(
-          `rg ${args.map((a) => JSON.stringify(a)).join(" ")}`,
-          { encoding: "utf8", maxBuffer: 512 * 1024, timeout: 10_000 },
-        ).trim();
-        // Strip the absolute path prefix for cleaner output
-        const cleaned = result.replace(new RegExp(adeRoot.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "/", "g"), "");
-        const lines = cleaned.split("\n");
-        const truncated = lines.length > 200;
+        const result = execFileSync("rg", args, {
+          cwd: adeRoot,
+          encoding: "utf8",
+          maxBuffer: 512 * 1024,
+          timeout: 10_000,
+        }).trim();
+        const lines = result ? result.split("\n") : [];
+        const outputLines: string[] = [];
+        const seenFiles = new Set<string>();
+        for (const line of lines) {
+          const match = line.match(/^([^:]+):\d+:/);
+          if (match && !seenFiles.has(match[1])) {
+            if (seenFiles.size >= maxResults) break;
+            seenFiles.add(match[1]);
+          }
+          outputLines.push(line);
+          if (outputLines.length >= 200) break;
+        }
+        const truncated = outputLines.length < lines.length || seenFiles.size >= maxResults;
         return {
           success: true,
-          matchCount: lines.filter((l) => l.match(/^\S+:\d+:/)).length,
+          matchCount: outputLines.filter((l) => l.match(/^\S+:\d+:/)).length,
           truncated,
-          output: lines.slice(0, 200).join("\n"),
+          output: outputLines.join("\n"),
         };
       } catch (error: any) {
         if (error?.status === 1) {

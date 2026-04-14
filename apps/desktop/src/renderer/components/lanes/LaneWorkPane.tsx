@@ -67,7 +67,6 @@ export function LaneWorkPane({
                       cursor: "pointer",
                       transition: "all 120ms",
                     }}
-                    title={entry.label}
                   >
                     <Icon size={12} weight="regular" style={{ color: entry.color, opacity: active ? 1 : 0.7 }} />
                     {entry.label}

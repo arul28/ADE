@@ -224,7 +224,7 @@ export const ISSUE_STATE_LABELS: Record<string, EnumLabel> = {
 /* ── Stage card colors ── */
 
 export const STAGE_COLORS: Record<string, string> = {
-  employee_session: "#38BDF8", // sky
+  employee_session: "#A78BFA", // violet
   worker_run: "#34D399",      // emerald
   mission: "#A78BFA",         // violet
   pr_resolution: "#FB7185",   // rose

@@ -639,6 +639,7 @@ export type AgentChatSendArgs = {
 export type AgentChatSteerArgs = {
   sessionId: string;
   text: string;
+  attachments?: AgentChatFileRef[];
 };
 
 export type AgentChatSteerResult = {

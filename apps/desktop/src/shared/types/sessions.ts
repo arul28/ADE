@@ -95,11 +95,15 @@ export type PtyCreateArgs = {
   tracked?: boolean;
   toolType?: TerminalToolType | null;
   startupCommand?: string;
+  command?: string;
+  args?: string[];
+  env?: Record<string, string>;
 };
 
 export type PtyCreateResult = {
   ptyId: string;
   sessionId: string;
+  pid: number | null;
 };
 
 export type PtyDataEvent = {
@@ -112,6 +116,11 @@ export type PtyExitEvent = {
   ptyId: string;
   sessionId: string;
   exitCode: number | null;
+};
+
+export type TerminalSessionChangedEvent = {
+  sessionId: string;
+  reason: "meta-updated";
 };
 
 export type ListSessionsArgs = {

@@ -207,8 +207,8 @@ export function IdentityEditor({
                 className={cn(
                   "rounded-2xl border px-3 py-3 text-left transition-all duration-200",
                   draft.personality === preset.id
-                    ? "border-[rgba(56,189,248,0.28)] bg-[rgba(56,189,248,0.08)]"
-                    : "border-white/[0.06] bg-[rgba(24,20,35,0.4)] hover:border-[rgba(56,189,248,0.16)]",
+                    ? "border-[rgba(167,139,250,0.28)] bg-[rgba(167,139,250,0.08)]"
+                    : "border-white/[0.06] bg-[rgba(24,20,35,0.4)] hover:border-[rgba(167,139,250,0.16)]",
                 )}
               >
                 <div className="text-xs font-medium text-fg">{preset.label}</div>

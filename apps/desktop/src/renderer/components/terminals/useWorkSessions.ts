@@ -694,6 +694,15 @@ export function useWorkSessions() {
   }, [scheduleBackgroundRefresh]);
 
   useEffect(() => {
+    const unsubscribe = window.ade.sessions.onChanged(() => {
+      if (document.visibilityState !== "visible") return;
+      invalidateSessionListCache();
+      scheduleBackgroundRefresh(80);
+    });
+    return unsubscribe;
+  }, [scheduleBackgroundRefresh]);
+
+  useEffect(() => {
     return () => {
       if (backgroundRefreshTimerRef.current != null) {
         window.clearTimeout(backgroundRefreshTimerRef.current);

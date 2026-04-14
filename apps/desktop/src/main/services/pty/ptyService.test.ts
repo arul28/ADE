@@ -324,7 +324,7 @@ describe("ptyService", () => {
   });
 
   describe("create", () => {
-    it("creates a PTY and returns ptyId and sessionId", async () => {
+    it("creates a PTY and returns ptyId, sessionId, and pid", async () => {
       const { service } = createHarness();
       const result = await service.create({
         laneId: "lane-1",
@@ -334,6 +334,52 @@ describe("ptyService", () => {
       });
       expect(result.ptyId).toBe("uuid-1");
       expect(result.sessionId).toBe("uuid-2");
+      expect(result.pid).toBe(12345);
+    });
+
+    it("can spawn a direct command with merged lane env", async () => {
+      const harness = createHarness();
+      const getLaneRuntimeEnv = vi.fn(async () => ({
+        PORT: "3100",
+        HOSTNAME: "lane-1.localhost",
+      }));
+      const ptyService = createPtyService({
+        projectRoot: "/tmp/test-project",
+        transcriptsDir: "/tmp/transcripts",
+        chatSessionsDir: "/tmp/chat-sessions",
+        laneService: harness.laneService as any,
+        sessionService: harness.sessionService as any,
+        getLaneRuntimeEnv,
+        logger: harness.logger as any,
+        broadcastData: vi.fn(),
+        broadcastExit: vi.fn(),
+        onSessionEnded: vi.fn(),
+        onSessionRuntimeSignal: vi.fn(),
+        loadPty: harness.loadPty as any,
+      });
+
+      await ptyService.create({
+        laneId: "lane-1",
+        title: "Direct command",
+        cols: 80,
+        rows: 24,
+        command: "npm",
+        args: ["run", "dev"],
+        env: { CUSTOM_FLAG: "1" },
+      });
+
+      const ptyLib = harness.loadPty.mock.results.at(-1)?.value as { spawn: ReturnType<typeof vi.fn> };
+      expect(ptyLib.spawn).toHaveBeenCalledWith(
+        "npm",
+        ["run", "dev"],
+        expect.objectContaining({
+          env: expect.objectContaining({
+            PORT: "3100",
+            HOSTNAME: "lane-1.localhost",
+            CUSTOM_FLAG: "1",
+          }),
+        }),
+      );
     });
 
     it("registers the session via sessionService.create", async () => {

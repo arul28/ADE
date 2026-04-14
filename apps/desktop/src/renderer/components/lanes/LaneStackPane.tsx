@@ -333,7 +333,6 @@ export function LaneStackPane({
             type="button"
             style={outlineButton({ height: 24, gap: 4, padding: "4px 8px", fontSize: 10, fontWeight: 500, color: COLORS.textMuted })}
             onClick={() => navigate("/graph")}
-            title="Open workspace canvas"
           >
             <ArrowSquareOut size={12} />
             CANVAS

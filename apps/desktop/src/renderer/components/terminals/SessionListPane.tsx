@@ -299,7 +299,6 @@ export const SessionListPane = React.memo(function SessionListPane({
                 whiteSpace: "nowrap",
               }}
               onClick={() => onShowDraftKind("chat")}
-              title="New Chat"
               aria-label="Start a new chat"
             >
               <Plus size={10} weight="bold" />
@@ -316,7 +315,7 @@ export const SessionListPane = React.memo(function SessionListPane({
                 color: filterOpen ? "var(--color-fg)" : "var(--color-muted-fg)",
               }}
               onClick={() => setFilterOpen(!filterOpen)}
-              title="Filters"
+              aria-label="Filters"
             >
               <Funnel size={12} weight={filterOpen ? "fill" : "regular"} />
             </button>

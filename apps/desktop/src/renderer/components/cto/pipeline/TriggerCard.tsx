@@ -27,7 +27,7 @@ function buildTriggerSentence(triggers: LinearWorkflowTrigger): React.ReactNode[
         {assignees.map((name, i) => (
           <React.Fragment key={name}>
             {i > 0 && <span className="text-muted-fg/50"> or </span>}
-            <strong className="font-semibold text-[#38BDF8]">{name}</strong>
+            <strong className="font-semibold text-[#A78BFA]">{name}</strong>
           </React.Fragment>
         ))}
       </span>,
@@ -110,16 +110,16 @@ export function TriggerCard({ triggers, selected, onSelect }: Props) {
       className={cn(
         "relative flex flex-col items-start rounded-xl px-4 py-3 text-left transition-all duration-200",
         "min-w-[170px] max-w-[220px]",
-        selected ? "ring-1 ring-[#38BDF8]" : "hover:bg-white/[0.03]",
+        selected ? "ring-1 ring-[#A78BFA]" : "hover:bg-white/[0.03]",
       )}
       style={{
-        background: selected ? "rgba(56,189,248,0.05)" : "rgba(19,24,34,0.7)",
-        border: `1px solid ${selected ? "rgba(56,189,248,0.25)" : "rgba(255,255,255,0.06)"}`,
+        background: selected ? "rgba(167,139,250,0.05)" : "rgba(19,24,34,0.7)",
+        border: `1px solid ${selected ? "rgba(167,139,250,0.25)" : "rgba(255,255,255,0.06)"}`,
         backdropFilter: "blur(12px)",
       }}
     >
       <div className="flex items-center gap-2">
-        <Funnel size={14} style={{ color: "#38BDF8" }} weight="duotone" />
+        <Funnel size={14} style={{ color: "#A78BFA" }} weight="duotone" />
         <span className="text-[13px] font-medium text-fg">When</span>
       </div>
 

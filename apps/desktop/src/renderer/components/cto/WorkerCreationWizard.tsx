@@ -12,6 +12,7 @@ import type { AgentIdentity, AgentRole, WorkerTemplate } from "../../../shared/t
 import { ProviderModelSelector } from "../shared/ProviderModelSelector";
 import { Button } from "../ui/Button";
 import { cn } from "../ui/cn";
+import { SmartTooltip } from "../ui/SmartTooltip";
 import { inputCls, labelCls, selectCls, WORKER_TEMPLATES } from "./shared/designTokens";
 
 const TEMPLATE_ICONS: Record<string, React.ElementType> = {
@@ -116,8 +117,8 @@ export function WorkerCreationWizard({
                 type="button"
                 onClick={() => applyTemplate(template)}
                 className={cn(
-                  "text-left rounded-lg p-4 border transition-all duration-150",
-                  "border-white/[0.06] bg-white/[0.03] hover:border-accent/30 hover:bg-accent/5",
+                  "text-left rounded-xl p-4 border transition-all duration-150 backdrop-blur-[16px]",
+                  "border-white/[0.07] bg-[linear-gradient(180deg,rgba(26,24,48,0.6),rgba(18,16,34,0.7))] shadow-card hover:border-accent/30 hover:bg-[linear-gradient(180deg,rgba(167,139,250,0.08),rgba(26,24,48,0.6))] hover:shadow-card-hover",
                 )}
               >
                 <div className="flex items-center gap-2.5 mb-2">
@@ -194,7 +195,9 @@ export function WorkerCreationWizard({
 
         {/* Model */}
         <div className="space-y-1.5">
-          <div className={labelCls}>Model</div>
+          <SmartTooltip content={{ label: "Model", description: "Which AI model this worker uses. Affects capability, speed, and cost." }} side="bottom">
+            <div className={labelCls}>Model</div>
+          </SmartTooltip>
           <ProviderModelSelector
             value={draft.model}
             onChange={(modelId) => setDraft((d) => ({ ...d, model: modelId }))}
@@ -203,7 +206,9 @@ export function WorkerCreationWizard({
 
         {/* Budget */}
         <label className="block space-y-1.5">
-          <div className={labelCls}>Monthly Budget</div>
+          <SmartTooltip content={{ label: "Monthly Budget", description: "Maximum spend per month for this worker. $0 means unlimited. Worker pauses if budget is exceeded." }} side="bottom">
+            <div className={labelCls}>Monthly Budget</div>
+          </SmartTooltip>
           <input
             className={cn(inputCls, "max-w-[200px]")}
             type="number"

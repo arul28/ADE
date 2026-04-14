@@ -591,6 +591,9 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
 
     // Guard: don't attempt to load details for a PR that's not in our list.
     // The PR was likely deleted or merged -- the empty state will show naturally.
+    // Skip this validation until the initial PR list has finished loading so
+    // URL-derived selections are not cleared before the first refresh completes.
+    if (!initialLoadDone.current) return;
     if (!prsRef.current.some((p) => p.id === selectedPrId)) {
       setDetailStatus(null);
       setDetailChecks([]);

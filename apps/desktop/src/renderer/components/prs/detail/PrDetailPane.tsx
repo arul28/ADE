@@ -452,13 +452,18 @@ export function PrDetailPane({
   const onRefreshRef = React.useRef(onRefresh);
   onRefreshRef.current = onRefresh;
   cachedConvergenceRuntimeRef.current = convergenceStatesByPrId[pr.id] ?? null;
+  const convergenceChecksPrIdRef = React.useRef(pr.id);
 
   React.useEffect(() => {
+    const prChanged = convergenceChecksPrIdRef.current !== pr.id;
+    convergenceChecksPrIdRef.current = pr.id;
+
     // Always sync on PR change (even if empty — new PR starts fresh).
     // Within the same PR, only sync when the prop has data so that
     // transient PrsContext failures / rate-limits don't wipe out a
     // known-good convergence checks list.
     setConvergenceChecks((prev) => {
+      if (prChanged) return checks;
       if (checks.length > 0) return checks;
       if (prev.length > 0) return prev;
       return checks;

@@ -3,6 +3,22 @@ import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
 import { createOAuthRedirectService } from "./oauthRedirectService";
 import type { OAuthRedirectEvent, ProxyRoute } from "../../../shared/types";
 
+// Mock node:http — we replace `http.request` so the oauth service's
+// defaultRequestUpstream can be exercised deterministically. All other existing
+// tests inject a fake `requestUpstream`, so they never touch `http.request`.
+const httpRequestMock = vi.fn();
+vi.mock("node:http", async () => {
+  const actual = await vi.importActual<typeof import("node:http")>("node:http");
+  return {
+    ...actual,
+    default: {
+      ...actual,
+      request: (...args: unknown[]) => httpRequestMock(...args),
+    },
+    request: (...args: unknown[]) => httpRequestMock(...args),
+  };
+});
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -824,6 +840,405 @@ describe("oauthRedirectService", () => {
         "/callback",
       ]);
       expect(status.activeSessions).toEqual([]);
+    });
+  });
+
+  // =========================================================================
+  // 10. defaultRequestUpstream — timeout, abort/close listeners, body buffering
+  // =========================================================================
+  //
+  // These tests exercise the internal defaultRequestUpstream closure by NOT
+  // injecting a `requestUpstream` and driving flow through `handleRequest`.
+  // All http.request calls go through our mock so we can simulate upstream
+  // responses, timeouts, and client-side events deterministically.
+  describe("defaultRequestUpstream (private helper — driven through handleRequest)", () => {
+    let nativeSvc: ReturnType<typeof createOAuthRedirectService>;
+    let nativeRoutes: ProxyRoute[];
+    let nativeEvents: OAuthRedirectEvent[];
+
+    function makeIncomingReq(opts: {
+      url: string;
+      host: string;
+      method: string;
+    }): any {
+      const req: any = new EventEmitter();
+      req.url = opts.url;
+      req.headers = { host: opts.host };
+      req.method = opts.method;
+      req.complete = false;
+      return req;
+    }
+
+    /**
+     * Build a fake upstream ClientRequest returned from http.request().
+     * `onEnd` fires whenever the service calls `upstreamReq.end(…)`.
+     * `emitResponse(res)` delivers a fake upstream IncomingMessage to the callback.
+     * `emitError(err)` fires the "error" listener the service registered.
+     */
+    function makeFakeUpstream(): {
+      upstreamReq: any;
+      onEnd: ReturnType<typeof vi.fn>;
+      emitResponse: (statusCode: number, headers: Record<string, unknown>, body?: Buffer | string) => void;
+      emitError: (err: Error) => void;
+      setCallback: (cb: (res: any) => void) => void;
+      callback?: (res: any) => void;
+    } {
+      const onEnd = vi.fn();
+      const upstreamReq: any = new EventEmitter();
+      upstreamReq.end = onEnd;
+      const harness: any = { upstreamReq, onEnd };
+      harness.setCallback = (cb: (res: any) => void) => {
+        harness.callback = cb;
+      };
+      harness.emitResponse = (statusCode: number, headers: Record<string, unknown>, body: Buffer | string = "") => {
+        const upstreamRes: any = new EventEmitter();
+        upstreamRes.statusCode = statusCode;
+        upstreamRes.headers = headers;
+        // Invoke service-registered callback.
+        harness.callback?.(upstreamRes);
+        // Deliver body data then end.
+        const buf = Buffer.isBuffer(body) ? body : Buffer.from(body);
+        upstreamRes.emit("data", buf);
+        upstreamRes.emit("end");
+      };
+      harness.emitError = (err: Error) => {
+        upstreamReq.emit("error", err);
+      };
+      return harness;
+    }
+
+    beforeEach(() => {
+      httpRequestMock.mockReset();
+      nativeRoutes = [];
+      nativeEvents = [];
+      nativeSvc = createOAuthRedirectService({
+        logger: createLogger(),
+        broadcastEvent: (ev) => nativeEvents.push(ev),
+        getRoutes: () => nativeRoutes,
+        getProxyPort: () => 8080,
+        getHostnameSuffix: () => ".localhost",
+        forwardToPort: vi.fn(),
+        // deliberately NO requestUpstream — drives defaultRequestUpstream
+      });
+    });
+
+    afterEach(() => {
+      nativeSvc.dispose();
+      vi.useRealTimers();
+    });
+
+    // -----------------------------------------------------------------------
+    // GET-path (auth-start) covers:
+    //   * GET bypasses body buffering → upstreamReq.end() called immediately w/ no args
+    //   * 30s timeout rejects with TimeoutError and aborts the AbortController
+    //   * After success, a late timer tick is a no-op (settled guard)
+    // -----------------------------------------------------------------------
+
+    it("GET request bypasses body buffering: upstreamReq.end() called immediately with no args", () => {
+      nativeRoutes.push(makeRoute("lane-1", 3001));
+      const fake = makeFakeUpstream();
+      httpRequestMock.mockImplementation((_options: any, cb: (res: any) => void) => {
+        fake.setCallback(cb);
+        return fake.upstreamReq;
+      });
+
+      const req = makeIncomingReq({
+        url: "/api/auth/google",
+        host: "lane-1.localhost:8080",
+        method: "GET",
+      });
+      const res = mockRes();
+
+      expect(nativeSvc.handleRequest(req, res)).toBe(true);
+
+      expect(httpRequestMock).toHaveBeenCalledTimes(1);
+      // First end() call should be a single no-arg invocation (no body for GET).
+      expect(fake.onEnd).toHaveBeenCalledTimes(1);
+      expect(fake.onEnd.mock.calls[0]).toEqual([]);
+    });
+
+    it("upstream request signal is an AbortSignal (so aborts cancel the outbound socket)", () => {
+      nativeRoutes.push(makeRoute("lane-1", 3001));
+      const fake = makeFakeUpstream();
+      httpRequestMock.mockImplementation((_options: any, cb: (res: any) => void) => {
+        fake.setCallback(cb);
+        return fake.upstreamReq;
+      });
+
+      const req = makeIncomingReq({
+        url: "/api/auth/google",
+        host: "lane-1.localhost:8080",
+        method: "GET",
+      });
+      nativeSvc.handleRequest(req, mockRes());
+
+      const options = httpRequestMock.mock.calls[0][0];
+      expect(options, "http.request options must be defined").toBeTruthy();
+      expect(options.signal, "AbortSignal must be wired to the upstream request").toBeInstanceOf(AbortSignal);
+      expect(options.signal.aborted, "signal starts un-aborted").toBe(false);
+    });
+
+    it("30s timeout rejects with TimeoutError and aborts the AbortController signal", async () => {
+      vi.useFakeTimers();
+      nativeRoutes.push(makeRoute("lane-1", 3001));
+      const fake = makeFakeUpstream();
+      let capturedSignal: AbortSignal | undefined;
+      httpRequestMock.mockImplementation((options: any, cb: (res: any) => void) => {
+        capturedSignal = options.signal;
+        fake.setCallback(cb);
+        // Simulate http: when aborted via signal, the request emits an error.
+        options.signal?.addEventListener("abort", () => {
+          const reason = (options.signal as any).reason;
+          fake.emitError(reason instanceof Error ? reason : new Error("aborted"));
+        });
+        return fake.upstreamReq;
+      });
+
+      const req = makeIncomingReq({
+        url: "/api/auth/google",
+        host: "lane-1.localhost:8080",
+        method: "GET",
+      });
+      const res = mockRes();
+      expect(nativeSvc.handleRequest(req, res)).toBe(true);
+
+      // Advance 30 seconds → timeout fires.
+      await vi.advanceTimersByTimeAsync(30_000);
+      // Let any microtask follow-ups flush.
+      await vi.runAllTimersAsync();
+
+      expect(capturedSignal, "signal must have been captured").toBeTruthy();
+      expect(capturedSignal!.aborted, "AbortController.abort must fire on timeout").toBe(true);
+      const reason = (capturedSignal as any).reason;
+      expect(reason, "abort reason should be the TimeoutError").toBeInstanceOf(Error);
+      expect(reason.name).toBe("TimeoutError");
+      expect(reason.message).toMatch(/timed out after 30/i);
+
+      // handleRequest catches and writes a 502 error page.
+      expect(res.writeHead).toHaveBeenCalledWith(502, { "Content-Type": "text/html" });
+    });
+
+    it("resolves successfully on upstream response and a subsequent 30s timer tick is a no-op (settled flag)", async () => {
+      vi.useFakeTimers();
+      nativeRoutes.push(makeRoute("lane-1", 3001));
+      const fake = makeFakeUpstream();
+      httpRequestMock.mockImplementation((_options: any, cb: (res: any) => void) => {
+        fake.setCallback(cb);
+        return fake.upstreamReq;
+      });
+
+      const req = makeIncomingReq({
+        url: "/api/auth/google",
+        host: "lane-1.localhost:8080",
+        method: "GET",
+      });
+      const res = mockRes();
+      expect(nativeSvc.handleRequest(req, res)).toBe(true);
+
+      // Upstream responds immediately — status 200 w/ a non-redirect location (parsedRedirect is null)
+      // so the service just replays the response via sendUpstreamResponse.
+      fake.emitResponse(200, {}, "hello");
+      await vi.runAllTimersAsync();
+
+      // First writeHead call should be the success replay (status 200), not 502.
+      expect(res.writeHead).toHaveBeenCalled();
+      const firstCall = res.writeHead.mock.calls[0];
+      expect(firstCall[0], "success should not produce a 502").not.toBe(502);
+
+      const writeHeadCountBefore = res.writeHead.mock.calls.length;
+
+      // Fire the 30s timer that the timeout scheduled — cleanup should have
+      // cleared it, so we shouldn't see any additional writeHead(502) coming
+      // from a "late" timeout path.
+      await vi.advanceTimersByTimeAsync(60_000);
+      await vi.runAllTimersAsync();
+
+      expect(res.writeHead.mock.calls.length, "settled flag must prevent double-settle from late timeout").toBe(writeHeadCountBefore);
+    });
+
+    // -----------------------------------------------------------------------
+    // Non-GET path (managed callback) covers:
+    //   * POST buffers chunks and ends upstream with a concatenated Buffer
+    //   * Client 'aborted' rejects with AbortError and aborts the signal
+    //   * Client 'close' before complete rejects with AbortError
+    //   * Client 'close' after completion is a no-op
+    // -----------------------------------------------------------------------
+
+    /**
+     * Set up a pending OAuth start for lane-1 so that subsequent callbacks go
+     * through handleManagedCallback (which calls sendUpstreamRequest with the
+     * incoming req directly — allowing POST method etc).
+     *
+     * Returns the encoded state to be passed back in the callback.
+     */
+    async function primePendingStart(laneId: string, targetPort: number): Promise<string> {
+      nativeRoutes.push(makeRoute(laneId, targetPort));
+      const fake = makeFakeUpstream();
+      httpRequestMock.mockImplementationOnce((_options: any, cb: (res: any) => void) => {
+        fake.setCallback(cb);
+        return fake.upstreamReq;
+      });
+
+      const startReq = makeIncomingReq({
+        url: "/api/auth/google",
+        host: `${laneId}.localhost:8080`,
+        method: "GET",
+      });
+      const startRes = mockRes();
+      expect(nativeSvc.handleRequest(startReq, startRes)).toBe(true);
+
+      fake.emitResponse(307, {
+        location:
+          "https://accounts.google.com/o/oauth2/v2/auth?state=raw-state&redirect_uri=http%3A%2F%2Flane-1.localhost%3A8080%2Fapi%2Fauth%2Fgoogle%2Fcallback&scope=openid",
+      });
+
+      // Wait for the auth-start promise to settle (microtask flush).
+      await vi.waitFor(() => {
+        expect(startRes.writeHead).toHaveBeenCalled();
+      });
+
+      const rewrittenLocation = locationFrom(startRes);
+      expect(rewrittenLocation, "auth-start must rewrite to the stable callback").toBeTruthy();
+      const encodedState = new URL(rewrittenLocation!).searchParams.get("state");
+      expect(encodedState, "rewritten URL must embed an ADE state").toBeTruthy();
+      return encodedState!;
+    }
+
+    it("POST callback buffers chunks and sends a concatenated Buffer to upstreamReq.end()", async () => {
+      const encodedState = await primePendingStart("lane-1", 3001);
+
+      // Now set up the upstream for the managed callback call.
+      const fake = makeFakeUpstream();
+      httpRequestMock.mockImplementationOnce((_options: any, cb: (res: any) => void) => {
+        fake.setCallback(cb);
+        return fake.upstreamReq;
+      });
+
+      const callbackReq = makeIncomingReq({
+        url: `/oauth/callback?code=xyz&state=${encodeURIComponent(encodedState)}`,
+        host: "lane-1.localhost:8080",
+        method: "POST",
+      });
+      const callbackRes = mockRes();
+      expect(nativeSvc.handleRequest(callbackReq, callbackRes)).toBe(true);
+
+      // For POST, the service should NOT have called end() yet — it's waiting for body end.
+      expect(fake.onEnd, "POST must not call end() before client 'end' fires").not.toHaveBeenCalled();
+
+      // Feed body chunks (mix Buffer + string to exercise both branches).
+      callbackReq.emit("data", Buffer.from("hello "));
+      callbackReq.emit("data", "world");
+      callbackReq.emit("end");
+
+      // Service synchronously forwards end() with the concatenated buffer.
+      expect(fake.onEnd).toHaveBeenCalledTimes(1);
+      const endArg = fake.onEnd.mock.calls[0][0];
+      expect(Buffer.isBuffer(endArg), "upstream end() should receive a Buffer").toBe(true);
+      expect((endArg as Buffer).toString("utf8")).toBe("hello world");
+
+      // Complete the upstream so the flow can fully settle (no dangling timers).
+      fake.emitResponse(200, {}, "ok");
+      await vi.waitFor(() => {
+        expect(callbackRes.writeHead).toHaveBeenCalled();
+      });
+    });
+
+    it("client 'aborted' event rejects with AbortError and aborts the AbortController signal", async () => {
+      const encodedState = await primePendingStart("lane-1", 3001);
+
+      const fake = makeFakeUpstream();
+      let capturedSignal: AbortSignal | undefined;
+      httpRequestMock.mockImplementationOnce((options: any, cb: (res: any) => void) => {
+        capturedSignal = options.signal;
+        fake.setCallback(cb);
+        return fake.upstreamReq;
+      });
+
+      const callbackReq = makeIncomingReq({
+        url: `/oauth/callback?code=xyz&state=${encodeURIComponent(encodedState)}`,
+        host: "lane-1.localhost:8080",
+        method: "POST",
+      });
+      const callbackRes = mockRes();
+      expect(nativeSvc.handleRequest(callbackReq, callbackRes)).toBe(true);
+
+      callbackReq.emit("aborted");
+
+      await vi.waitFor(() => {
+        expect(callbackRes.writeHead).toHaveBeenCalledWith(502, { "Content-Type": "text/html" });
+      });
+
+      expect(capturedSignal!.aborted, "AbortController must have been aborted").toBe(true);
+      const reason = (capturedSignal as any).reason;
+      expect(reason, "abort reason should be an AbortError").toBeInstanceOf(Error);
+      expect(reason.name).toBe("AbortError");
+    });
+
+    it("client 'close' event before req.complete rejects with AbortError", async () => {
+      const encodedState = await primePendingStart("lane-1", 3001);
+
+      const fake = makeFakeUpstream();
+      let capturedSignal: AbortSignal | undefined;
+      httpRequestMock.mockImplementationOnce((options: any, cb: (res: any) => void) => {
+        capturedSignal = options.signal;
+        fake.setCallback(cb);
+        return fake.upstreamReq;
+      });
+
+      const callbackReq = makeIncomingReq({
+        url: `/oauth/callback?code=xyz&state=${encodeURIComponent(encodedState)}`,
+        host: "lane-1.localhost:8080",
+        method: "POST",
+      });
+      // Explicitly mark the request as incomplete → close should reject.
+      callbackReq.complete = false;
+      const callbackRes = mockRes();
+      expect(nativeSvc.handleRequest(callbackReq, callbackRes)).toBe(true);
+
+      callbackReq.emit("close");
+
+      await vi.waitFor(() => {
+        expect(callbackRes.writeHead).toHaveBeenCalledWith(502, { "Content-Type": "text/html" });
+      });
+
+      expect(capturedSignal!.aborted).toBe(true);
+      expect((capturedSignal as any).reason).toBeInstanceOf(Error);
+      expect((capturedSignal as any).reason.name).toBe("AbortError");
+    });
+
+    it("client 'close' fired AFTER the upstream response has settled is a no-op", async () => {
+      const encodedState = await primePendingStart("lane-1", 3001);
+
+      const fake = makeFakeUpstream();
+      httpRequestMock.mockImplementationOnce((_options: any, cb: (res: any) => void) => {
+        fake.setCallback(cb);
+        return fake.upstreamReq;
+      });
+
+      const callbackReq = makeIncomingReq({
+        url: `/oauth/callback?code=xyz&state=${encodeURIComponent(encodedState)}`,
+        host: "lane-1.localhost:8080",
+        method: "POST",
+      });
+      const callbackRes = mockRes();
+      expect(nativeSvc.handleRequest(callbackReq, callbackRes)).toBe(true);
+
+      // Drive body end → upstream end → response.
+      callbackReq.emit("end");
+      fake.emitResponse(200, {}, "done");
+
+      // Wait for the managed-callback promise to settle (it writes a 302 redirect).
+      await vi.waitFor(() => {
+        expect(callbackRes.writeHead).toHaveBeenCalled();
+      });
+      const callsBefore = callbackRes.writeHead.mock.calls.length;
+
+      // Now simulate the usual late "close" that fires when the client socket tears down.
+      callbackReq.complete = true;
+      callbackReq.emit("close");
+
+      // No second writeHead should happen (the settled flag + listener cleanup prevent it).
+      expect(callbackRes.writeHead.mock.calls.length, "late 'close' must be a no-op after settlement").toBe(callsBefore);
     });
   });
 });

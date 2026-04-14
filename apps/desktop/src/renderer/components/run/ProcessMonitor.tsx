@@ -82,6 +82,12 @@ export function ProcessMonitor({
   const activeShell = activeView?.kind === "shell"
     ? shellSessions.find((session) => session.sessionId === activeView.id) ?? null
     : null;
+  const activeRuntimeHasTerminal = Boolean(
+    activeRuntime
+    && activeRuntime.sessionId
+    && activeRuntime.ptyId
+    && isActiveProcessStatus(activeRuntime.status),
+  );
 
   React.useEffect(() => {
     const hasActiveProcess = activeView?.kind === "process"
@@ -135,7 +141,7 @@ export function ProcessMonitor({
   }, []);
 
   React.useEffect(() => {
-    if (!laneId || !activeRuntime || activeView?.kind !== "process") {
+    if (!laneId || !activeRuntime || activeView?.kind !== "process" || activeRuntimeHasTerminal) {
       setLogText("");
       setLogError(null);
       setLogLoading(false);
@@ -165,7 +171,7 @@ export function ProcessMonitor({
     return () => {
       cancelled = true;
     };
-  }, [activeRuntime, activeView, laneId]);
+  }, [activeRuntime, activeRuntimeHasTerminal, activeView, laneId]);
 
   React.useEffect(() => {
     if (pauseAutoscroll) return;
@@ -409,7 +415,7 @@ export function ProcessMonitor({
                 <Terminal size={14} weight="regular" style={{ color: COLORS.textMuted }} />
                 <span style={{ ...LABEL_STYLE, fontSize: 9 }}>Output</span>
               </div>
-              {activeRuntime && logText ? (
+              {activeRuntime && !activeRuntimeHasTerminal && logText ? (
                 <button
                   type="button"
                   onClick={() => void navigator.clipboard.writeText(logText).catch(() => {})}
@@ -622,7 +628,7 @@ export function ProcessMonitor({
                       </button>
                     </div>
 
-                    {logError ? (
+                    {!activeRuntimeHasTerminal && logError ? (
                       <div
                         style={{
                           padding: "10px 12px 0",
@@ -636,36 +642,48 @@ export function ProcessMonitor({
                       </div>
                     ) : null}
 
-                    <div
-                      ref={logRef}
-                      onScroll={(event) => {
-                        const element = event.currentTarget;
-                        const distanceFromBottom = element.scrollHeight - element.scrollTop - element.clientHeight;
-                        setPauseAutoscroll(distanceFromBottom > 24);
-                      }}
-                      style={{
-                        height: 220,
-                        overflowY: "auto",
-                        overflowX: "hidden",
-                        padding: 12,
-                        border: `1px solid ${COLORS.border}`,
-                        borderWidth: "1px 0 0",
-                      }}
-                    >
-                      <pre
+                    {activeRuntimeHasTerminal && activeRuntime?.sessionId && activeRuntime?.ptyId ? (
+                      <div style={{ height: 220 }}>
+                        <TerminalView
+                          ptyId={activeRuntime.ptyId}
+                          sessionId={activeRuntime.sessionId}
+                          isActive
+                          isVisible
+                          className="h-full w-full"
+                        />
+                      </div>
+                    ) : (
+                      <div
+                        ref={logRef}
+                        onScroll={(event) => {
+                          const element = event.currentTarget;
+                          const distanceFromBottom = element.scrollHeight - element.scrollTop - element.clientHeight;
+                          setPauseAutoscroll(distanceFromBottom > 24);
+                        }}
                         style={{
-                          margin: 0,
-                          fontFamily: MONO_FONT,
-                          fontSize: 11,
-                          color: COLORS.textPrimary,
-                          whiteSpace: "pre-wrap",
-                          wordBreak: "break-word",
-                          lineHeight: 1.5,
+                          height: 220,
+                          overflowY: "auto",
+                          overflowX: "hidden",
+                          padding: 12,
+                          border: `1px solid ${COLORS.border}`,
+                          borderWidth: "1px 0 0",
                         }}
                       >
-                        {logText || logPlaceholder}
-                      </pre>
-                    </div>
+                        <pre
+                          style={{
+                            margin: 0,
+                            fontFamily: MONO_FONT,
+                            fontSize: 11,
+                            color: COLORS.textPrimary,
+                            whiteSpace: "pre-wrap",
+                            wordBreak: "break-word",
+                            lineHeight: 1.5,
+                          }}
+                        >
+                          {logText || logPlaceholder}
+                        </pre>
+                      </div>
+                    )}
                   </div>
                 ) : activeShell ? (
                   <div

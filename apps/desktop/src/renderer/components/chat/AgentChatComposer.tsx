@@ -419,7 +419,7 @@ export function AgentChatComposer({
   const uploadInputRef = useRef<HTMLInputElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const fileAddInProgressRef = useRef(false);
-  const canAttach = !turnActive;
+  const canAttach = !turnActive || sessionProvider === "claude" || sessionProvider === "codex";
 
   const attachedPaths = useMemo(() => new Set(attachments.map((a) => a.path)), [attachments]);
   const selectedModel = useMemo(() => getModelById(modelId), [modelId]);

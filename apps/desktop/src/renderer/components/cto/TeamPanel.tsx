@@ -108,7 +108,7 @@ export function workerDraftFromAgent(agent?: AgentIdentity | null): WorkerEditor
 }
 
 const inputCls =
-  "h-8 w-full rounded-md border border-white/[0.06] bg-white/[0.03] px-3 text-xs font-sans text-fg placeholder:text-muted-fg/50 focus:border-accent/40 focus:shadow-[0_0_0_2px_var(--color-accent-muted)] focus:outline-none transition-all duration-150";
+  "h-8 w-full rounded-md border border-white/[0.08] bg-[rgba(12,10,22,0.6)] px-3 text-xs font-sans text-fg shadow-[inset_0_1px_2px_rgba(0,0,0,0.3)] placeholder:text-muted-fg/40 focus:border-accent/40 focus:shadow-[0_0_0_2px_var(--color-accent-muted)] focus:outline-none transition-all duration-150";
 const selectCls = `${inputCls} appearance-none`;
 const labelCls = "text-[11px] font-medium uppercase tracking-[0.08em] text-muted-fg/60";
 

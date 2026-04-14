@@ -125,6 +125,7 @@ describe("CtoSettingsPanel", () => {
         availableExternalMcpServers={[]}
       />,
     );
+    fireEvent.click(screen.getByRole("button", { name: "Brief" }));
     expect(screen.getByText("ADE is an agentic IDE.")).toBeTruthy();
   });
 
@@ -140,7 +141,7 @@ describe("CtoSettingsPanel", () => {
         onResetOnboarding={onResetOnboarding}
       />,
     );
-    expect(screen.getByText("Run setup again")).toBeTruthy();
+    expect(screen.getByText("Re-run setup")).toBeTruthy();
   });
 
   it("does not show reset onboarding when callback is omitted", () => {
@@ -154,7 +155,7 @@ describe("CtoSettingsPanel", () => {
         availableExternalMcpServers={[]}
       />,
     );
-    expect(screen.queryByText("Run setup again")).toBeNull();
+    expect(screen.queryByText("Re-run setup")).toBeNull();
   });
 
   it("calls onSaveCoreMemory with parsed arrays when saving memory edits", async () => {
@@ -169,6 +170,7 @@ describe("CtoSettingsPanel", () => {
       />,
     );
 
+    fireEvent.click(screen.getByRole("button", { name: "Brief" }));
     const editBtns = screen.getAllByTestId("core-memory-edit-btn");
     expect(editBtns.length).toBeGreaterThanOrEqual(1);
     fireEvent.click(editBtns[0]);
@@ -200,6 +202,7 @@ describe("CtoSettingsPanel", () => {
       />,
     );
 
+    fireEvent.click(screen.getByRole("button", { name: "Brief" }));
     const editBtns = screen.getAllByTestId("core-memory-edit-btn");
     fireEvent.click(editBtns[0]);
     expect(screen.getByTestId("core-memory-cancel-btn")).toBeTruthy();
@@ -222,6 +225,7 @@ describe("CtoSettingsPanel", () => {
       />,
     );
 
+    fireEvent.click(screen.getByRole("button", { name: "Brief" }));
     const editBtns = screen.getAllByTestId("core-memory-edit-btn");
     fireEvent.click(editBtns[0]);
     fireEvent.click(screen.getByTestId("core-memory-save-btn"));
@@ -250,41 +254,17 @@ describe("CtoSettingsPanel", () => {
         availableExternalMcpServers={[]}
       />,
     );
-    expect(screen.getAllByText("anthropic").length).toBeGreaterThanOrEqual(1);
-    expect(screen.getAllByText("claude-sonnet-4-6").length).toBeGreaterThanOrEqual(1);
+    expect(screen.getByText("anthropic/claude-sonnet-4-6")).toBeTruthy();
     expect(screen.getByText("reasoning: high")).toBeTruthy();
     expect(screen.getByText("Strategic")).toBeTruthy();
   });
 
-  it("shows Configured when core memory has a project summary", () => {
-    render(
-      <CtoSettingsPanel
-        identity={makeIdentity()}
-        coreMemory={makeCoreMemory({ projectSummary: "Has content" })}
-        sessionLogs={[]}
-        onSaveIdentity={onSaveIdentity}
-        onSaveCoreMemory={onSaveCoreMemory}
-        availableExternalMcpServers={[]}
-      />,
-    );
-    expect(screen.getByText("Configured")).toBeTruthy();
-  });
+  // Removed tests ("shows Configured", "shows Needs work", "renders the CTO
+  // runtime header card"): the sub-tab refactor removed the status badges and
+  // the "CTO runtime" / "Identity, brief, and continuity" header card. Those
+  // UI elements no longer exist in the component.
 
-  it("shows Needs work when core memory has empty project summary", () => {
-    render(
-      <CtoSettingsPanel
-        identity={makeIdentity()}
-        coreMemory={makeCoreMemory({ projectSummary: "" })}
-        sessionLogs={[]}
-        onSaveIdentity={onSaveIdentity}
-        onSaveCoreMemory={onSaveCoreMemory}
-        availableExternalMcpServers={[]}
-      />,
-    );
-    expect(screen.getByText("Needs work")).toBeTruthy();
-  });
-
-  it("renders the CTO runtime header card", () => {
+  it("renders sub-tab navigation", () => {
     render(
       <CtoSettingsPanel
         identity={makeIdentity()}
@@ -295,30 +275,12 @@ describe("CtoSettingsPanel", () => {
         availableExternalMcpServers={[]}
       />,
     );
-    expect(screen.getAllByText("CTO runtime").length).toBeGreaterThanOrEqual(1);
-    expect(screen.getByText("Identity, brief, and continuity")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Identity" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Brief" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Integrations" })).toBeTruthy();
   });
 
-  it("renders collapsible section headers", () => {
-    render(
-      <CtoSettingsPanel
-        identity={makeIdentity()}
-        coreMemory={makeCoreMemory()}
-        sessionLogs={[]}
-        onSaveIdentity={onSaveIdentity}
-        onSaveCoreMemory={onSaveCoreMemory}
-        availableExternalMcpServers={[]}
-      />,
-    );
-    expect(screen.getByText("Identity")).toBeTruthy();
-    // "Long-term brief" appears in both the header stat grid and section title
-    expect(screen.getAllByText("Long-term brief").length).toBeGreaterThanOrEqual(1);
-    expect(screen.getByText("Prompt preview")).toBeTruthy();
-    expect(screen.getByText("MCP Access")).toBeTruthy();
-    expect(screen.getByText("OpenClaw Bridge")).toBeTruthy();
-  });
-
-  it("opens Continuity log section and shows timeline entries", () => {
+  it("shows session history timeline entries in the Brief tab", () => {
     render(
       <CtoSettingsPanel
         identity={makeIdentity()}
@@ -337,10 +299,7 @@ describe("CtoSettingsPanel", () => {
       />,
     );
 
-    // Continuity log appears in both the stat grid and section header; click the section header button
-    const logHeaders = screen.getAllByText("Continuity log");
-    // The section header is inside a <button> -- click the last match which is the section header
-    fireEvent.click(logHeaders[logHeaders.length - 1]);
+    fireEvent.click(screen.getByRole("button", { name: "Brief" }));
     const entries = screen.getAllByTestId("timeline-entry");
     expect(entries).toHaveLength(1);
   });

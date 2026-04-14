@@ -3632,7 +3632,14 @@ export function registerIpc({
     const health = ctx.runtimeDiagnosticsService
       ? await ctx.runtimeDiagnosticsService.checkLaneHealth(laneId).catch(() => null)
       : null;
-    const targetPort = health?.respondingPort ?? lease.rangeStart;
+    const validatedRespondingPort =
+      Number.isInteger(health?.respondingPort) &&
+      (health?.respondingPort as number) > 0 &&
+      (health?.respondingPort as number) >= lease.rangeStart &&
+      (health?.respondingPort as number) <= lease.rangeEnd
+        ? (health?.respondingPort as number)
+        : null;
+    const targetPort = validatedRespondingPort ?? lease.rangeStart;
     const currentRoute = ctx.laneProxyService.getRoute(laneId);
     if (
       !currentRoute ||

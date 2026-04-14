@@ -100,6 +100,7 @@ export const IPC = {
   sessionsList: "ade.sessions.list",
   sessionsGet: "ade.sessions.get",
   sessionsUpdateMeta: "ade.sessions.updateMeta",
+  sessionsChanged: "ade.sessions.changed",
   sessionsReadTranscriptTail: "ade.sessions.readTranscriptTail",
   agentChatList: "ade.agentChat.list",
   agentChatGetSummary: "ade.agentChat.getSummary",

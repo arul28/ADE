@@ -230,7 +230,6 @@ export function WorkStartSurface({
                     className={`ade-work-segmented-item ${active ? colors.activeBg : ""}`}
                     data-active={active ? "true" : undefined}
                     onClick={() => setCliPermissionMode(option.value)}
-                    title={option.detail}
                   >
                     {option.label}
                   </button>

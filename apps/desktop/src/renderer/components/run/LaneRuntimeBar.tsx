@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Globe } from "@phosphor-icons/react";
 import { COLORS, MONO_FONT, LABEL_STYLE, inlineBadge, outlineButton, healthColor } from "../lanes/laneDesignTokens";
 import type {
@@ -29,8 +29,22 @@ export function LaneRuntimeBar({ laneId, onOpenPreviewRouting }: LaneRuntimeBarP
   const [runtimes, setRuntimes] = useState<ProcessRuntime[]>([]);
   const [oauthEnabled, setOauthEnabled] = useState(false);
   const [oauthCallbackUrl, setOauthCallbackUrl] = useState<string | null>(null);
+  const isMountedRef = useRef(true);
+  const activeLaneIdRef = useRef<string | null>(laneId);
+  const refreshSeqRef = useRef(0);
+
+  useEffect(() => {
+    activeLaneIdRef.current = laneId;
+  }, [laneId]);
+
+  useEffect(() => {
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, []);
 
   const refreshRuntimeState = useCallback((targetLaneId: string, opts?: { runHealthCheck?: boolean }) => {
+    const requestId = ++refreshSeqRef.current;
     const healthPromise = opts?.runHealthCheck
       ? window.ade.lanes.diagnosticsRunHealthCheck({ laneId: targetLaneId }).catch(() => null)
       : window.ade.lanes.diagnosticsGetLaneHealth({ laneId: targetLaneId }).catch(() => null);
@@ -44,6 +58,9 @@ export function LaneRuntimeBar({ laneId, onOpenPreviewRouting }: LaneRuntimeBarP
       window.ade.lanes.oauthGetStatus().catch(() => null),
       window.ade.lanes.oauthGenerateRedirectUris({ provider: "google" }).catch(() => []),
     ]).then(([nextHealth, nextPreview, nextLease, nextProxyStatus, nextRuntimes, nextOauthStatus, nextOauthUris]) => {
+      if (!isMountedRef.current) return;
+      if (refreshSeqRef.current !== requestId) return;
+      if (activeLaneIdRef.current !== targetLaneId) return;
       setHealth(nextHealth);
       setPreview(nextPreview);
       setLease(nextLease);

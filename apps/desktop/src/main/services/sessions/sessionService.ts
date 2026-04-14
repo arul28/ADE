@@ -2,6 +2,7 @@ import fs from "node:fs";
 import type { AdeDb } from "../state/kvDb";
 import type {
   TerminalSessionDetail,
+  TerminalSessionChangedEvent,
   TerminalResumeMetadata,
   TerminalResumeProvider,
   TerminalRuntimeState,
@@ -151,6 +152,18 @@ function parseLaunchMetadataFromCurrentSession(
 }
 
 export function createSessionService({ db }: { db: AdeDb }) {
+  const changeListeners = new Set<(event: TerminalSessionChangedEvent) => void>();
+
+  const emitChanged = (event: TerminalSessionChangedEvent): void => {
+    for (const listener of changeListeners) {
+      try {
+        listener(event);
+      } catch {
+        // Ignore listener failures so persistence stays best-effort.
+      }
+    }
+  };
+
   const runtimeStateFromStatus = (status: TerminalSessionStatus): TerminalRuntimeState => {
     if (status === "running") return "running";
     if (status === "disposed") return "killed";
@@ -237,6 +250,13 @@ export function createSessionService({ db }: { db: AdeDb }) {
 
   return {
     list,
+
+    onChanged(listener: (event: TerminalSessionChangedEvent) => void): () => void {
+      changeListeners.add(listener);
+      return () => {
+        changeListeners.delete(listener);
+      };
+    },
 
     reconcileStaleRunningSessions({
       endedAt,
@@ -363,6 +383,7 @@ export function createSessionService({ db }: { db: AdeDb }) {
       if (sets.length) {
         params.push(sessionId);
         db.run(`update terminal_sessions set ${sets.join(", ")} where id = ?`, params);
+        emitChanged({ sessionId, reason: "meta-updated" });
       }
 
       const updated = this.get(sessionId);

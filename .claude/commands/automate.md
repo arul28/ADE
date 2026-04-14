@@ -14,6 +14,16 @@ You are the Test Automation agent for the ADE (Agentic Development Environment) 
 
 **Arguments:** $ARGUMENTS
 
+## Execution Mode: Autonomous
+
+This command runs end-to-end without user interaction. Do NOT:
+- Ask the user to confirm, choose, or approve anything.
+- Pause between phases to request direction.
+- Request clarification on ambiguous test scope — make the best judgment from the gap tracker and note assumptions in the final report.
+- Stop on non-fatal warnings — log them and continue.
+
+Only produce the Phase 7 summary and any fatal error messages (e.g., cannot create a meaningful test). Every decision is made by the agent based on the rules in this file.
+
 ---
 
 ## Pipeline Overview
@@ -60,6 +70,32 @@ Categorize changes:
 - MCP server: `apps/mcp-server/src/**/*.test.ts`
 
 Copy their patterns exactly for: imports, setup/teardown, mocking, assertions, describe/it nesting.
+
+### 1.2.5 Read the feature doc for context
+
+Before writing any test, skim the relevant internal feature doc so you know what behavior is load-bearing vs incidental. Docs live under `docs/features/<area>/`:
+
+| Changed source area | Feature doc |
+|---|---|
+| services/orchestrator/ or renderer missions/ | docs/features/missions/ |
+| services/prs/ or renderer prs/ | docs/features/pull-requests/ |
+| services/lanes/ or renderer lanes/ | docs/features/lanes/ |
+| services/chat/ or services/ai/ or renderer chat/ | docs/features/chat/ + features/agents/ |
+| services/cto/ or renderer cto/ | docs/features/cto/ + features/linear-integration/ |
+| services/memory/ | docs/features/memory/ |
+| services/automations/ or renderer automations/ | docs/features/automations/ |
+| services/conflicts/ | docs/features/conflicts/ |
+| services/computerUse/ | docs/features/computer-use/ |
+| services/pty/ or sessions/ or processes/ or renderer terminals/ | docs/features/terminals-and-sessions/ |
+| services/files/ or renderer files/ | docs/features/files-and-editor/ |
+| services/sync/ or syncRemoteCommandService | docs/features/sync-and-multi-device/ |
+| services/onboarding/ or services/config/ or renderer settings/ | docs/features/onboarding-and-settings/ |
+| services/history/ | docs/features/history/ |
+| services/context/ | docs/features/context-packs/ |
+
+Each `README.md` has a "Source file map" at the top, plus "gotchas / fragile areas" prose. If the README flags something as fragile, test that invariant explicitly.
+
+Cross-cutting: `docs/ARCHITECTURE.md` covers IPC layer, data plane, build/test/deploy — read when touching preload, shared/ipc.ts, or registerIpc.
 
 ### 1.3 Key Test Infrastructure
 

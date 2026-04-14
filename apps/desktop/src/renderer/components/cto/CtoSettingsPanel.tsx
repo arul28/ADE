@@ -1,11 +1,12 @@
 import React, { useCallback, useEffect, useState } from "react";
-import { ArrowCounterClockwise, Brain, CaretDown, CaretRight, PencilSimple } from "@phosphor-icons/react";
+import { ArrowCounterClockwise, PencilSimple } from "@phosphor-icons/react";
 import type { CtoCoreMemory, CtoIdentity, CtoSessionLogEntry, ExternalMcpAccessPolicy } from "../../../shared/types";
 import { IdentityEditor } from "./IdentityEditor";
 import { TimelineEntry } from "./shared/TimelineEntry";
 import { Button } from "../ui/Button";
 import { cn } from "../ui/cn";
-import { inputCls, labelCls, textareaCls, cardCls, ACCENT } from "./shared/designTokens";
+import { inputCls, labelCls, textareaCls } from "./shared/designTokens";
+import { SmartTooltip } from "../ui/SmartTooltip";
 import { ExternalMcpAccessEditor } from "../shared/ExternalMcpAccessEditor";
 import { OpenclawConnectionPanel } from "./OpenclawConnectionPanel";
 import { getCtoPersonalityPreset } from "./identityPresets";
@@ -31,36 +32,6 @@ type CoreMemoryPatch = Partial<{
   activeFocus: string[];
   notes: string[];
 }>;
-
-/* ── Collapsible section ── */
-
-function CollapsibleSection({ title, color, defaultOpen = true, right, children }: {
-  title: string;
-  color: string;
-  defaultOpen?: boolean;
-  right?: React.ReactNode;
-  children: React.ReactNode;
-}) {
-  const [open, setOpen] = useState(defaultOpen);
-  return (
-    <div className={cn(cardCls, "overflow-hidden !p-0")}>
-      <div className="flex items-center justify-between gap-3 px-4 py-3.5 hover:bg-white/[0.02] transition-colors">
-        <button
-          type="button"
-          onClick={() => setOpen((v) => !v)}
-          className="flex min-w-0 flex-1 items-center gap-2 text-left"
-          aria-expanded={open}
-        >
-          <div className="h-2 w-2 rounded-full shrink-0" style={{ background: color, boxShadow: `0 0 14px ${color}55` }} />
-          <span className="text-xs font-semibold uppercase tracking-[0.16em] text-fg/86">{title}</span>
-          {open ? <CaretDown size={10} className="text-muted-fg/30 shrink-0" /> : <CaretRight size={10} className="text-muted-fg/30 shrink-0" />}
-        </button>
-        {right ? <div className="shrink-0">{right}</div> : null}
-      </div>
-      {open && <div className="border-t border-white/[0.05]" role="region">{children}</div>}
-    </div>
-  );
-}
 
 /* ── Main Panel ── */
 
@@ -134,216 +105,199 @@ export function CtoSettingsPanel({
     } finally { setExternalMcpSaving(false); }
   }, [externalMcpDraft, onSaveIdentity]);
 
-  return (
-    <div className="flex flex-col h-full min-h-0 overflow-y-auto p-4 gap-3">
-      <div className={cn(cardCls, "overflow-hidden")}>
-        <div
-          className="px-5 py-5"
-          style={{
-            background: "radial-gradient(circle at top left, rgba(56,189,248,0.16), transparent 34%), linear-gradient(180deg, rgba(18,24,34,0.96), rgba(10,14,21,0.94))",
-          }}
-        >
-          <div className="flex flex-wrap items-start justify-between gap-4">
-            <div className="max-w-[48rem]">
-              <div className="text-[11px] font-semibold uppercase tracking-[0.2em] text-muted-fg/42">
-                CTO runtime
-              </div>
-              <div className="mt-2 flex items-center gap-2">
-                <Brain size={16} weight="duotone" style={{ color: ACCENT.purple }} />
-                <div className="text-base font-semibold text-fg">Identity, brief, and continuity</div>
-              </div>
-              <div className="mt-2 text-[12px] leading-6 text-muted-fg/44">
-                This is the private control surface for the CTO. Update who it is, what it should permanently remember,
-                and what external systems it can touch.
-              </div>
-            </div>
+  const [settingsTab, setSettingsTab] = useState<"identity" | "brief" | "integrations">("identity");
 
-            <div className="grid min-w-[260px] gap-2 sm:grid-cols-2">
-              {[
-                { label: "Model", value: identity ? `${identity.modelPreferences.provider}/${identity.modelPreferences.model}` : "Loading" },
-                { label: "Long-term brief", value: coreMemory?.projectSummary?.trim() ? "Configured" : "Needs work" },
-                { label: "Continuity log", value: sessionLogs.length ? `${sessionLogs.length} recent sessions` : "No recent sessions" },
-                { label: "Memory mode", value: "Layered + durable" },
-              ].map((item) => (
-                <div key={item.label} className="rounded-2xl border border-white/[0.06] bg-black/20 px-3 py-3">
-                  <div className="text-[10px] font-semibold uppercase tracking-[0.16em] text-muted-fg/34">{item.label}</div>
-                  <div className="mt-1 text-[12px] leading-5 text-fg/76">{item.value}</div>
-                </div>
-              ))}
-            </div>
-          </div>
-        </div>
+  const SUB_TABS = [
+    { id: "identity" as const, label: "Identity", tooltip: "CTO personality, model, and reasoning configuration." },
+    { id: "brief" as const, label: "Brief", tooltip: "Project summary, conventions, and focus areas that persist across sessions." },
+    { id: "integrations" as const, label: "Integrations", tooltip: "MCP server access and OpenClaw bridge configuration." },
+  ];
+
+  return (
+    <div className="flex flex-col h-full min-h-0 p-4 gap-4">
+      {/* Sub-tab bar */}
+      <div className="flex items-center gap-1">
+        {SUB_TABS.map(({ id, label, tooltip }) => (
+          <SmartTooltip key={id} content={{ label, description: tooltip }} side="bottom">
+            <button
+              type="button"
+              onClick={() => setSettingsTab(id)}
+              className={cn(
+                "rounded-md px-3 py-1.5 text-xs font-medium transition-all duration-150",
+                settingsTab === id
+                  ? "bg-accent/10 text-accent border border-accent/20"
+                  : "text-muted-fg/50 hover:text-muted-fg/80 hover:bg-white/[0.03] border border-transparent",
+              )}
+            >
+              {label}
+            </button>
+          </SmartTooltip>
+        ))}
+        {onResetOnboarding && (
+          <Button variant="ghost" size="sm" className="ml-auto !text-[10px] text-muted-fg/40" onClick={onResetOnboarding}>
+            <ArrowCounterClockwise size={10} />
+            Re-run setup
+          </Button>
+        )}
       </div>
 
-      {/* Identity */}
-      <CollapsibleSection
-        title="Identity"
-        color={ACCENT.purple}
-        right={
-          !identityEditing ? (
-            <Button variant="ghost" size="sm" className="!h-5 !px-1.5" onClick={() => setIdentityEditing(true)}>
-              <PencilSimple size={10} />
-            </Button>
-          ) : undefined
-        }
-      >
-        {identityEditing ? (
-          <div className="px-4 pb-4">
-            <IdentityEditor identity={identity} onSave={onSaveIdentity} onCancel={() => setIdentityEditing(false)} />
-          </div>
-        ) : identity ? (
-          <div className="px-4 pb-4 space-y-2">
-            <div className="flex items-center gap-2">
-              <span className="text-sm font-semibold text-fg">CTO</span>
-              <span className="text-[10px] text-muted-fg/35">v{identity.version}</span>
-            </div>
-            <div className="text-xs text-muted-fg/55 leading-relaxed line-clamp-3">{describeIdentityPersonality(identity)}</div>
-            <div className="flex flex-wrap gap-1.5 mt-1">
-              {[
-                { label: identity.modelPreferences.provider, color: ACCENT.blue },
-                { label: identity.modelPreferences.model, color: ACCENT.green },
-                ...(identity.personality ? [{ label: getCtoPersonalityPreset(identity.personality).label, color: ACCENT.pink }] : []),
-                ...(identity.modelPreferences.reasoningEffort ? [{ label: `reasoning: ${identity.modelPreferences.reasoningEffort}`, color: ACCENT.amber }] : []),
-              ].map((tag) => (
-                <span key={tag.label} className="rounded-md px-2 py-0.5 text-[10px] font-medium" style={{ color: tag.color, background: `${tag.color}12`, border: `1px solid ${tag.color}20` }}>
-                  {tag.label}
-                </span>
-              ))}
-            </div>
-          </div>
-        ) : (
-          <div className="px-4 pb-4 text-xs text-muted-fg/40">Loading...</div>
-        )}
-      </CollapsibleSection>
+      <div className="flex-1 min-h-0 overflow-y-auto space-y-4">
+        {/* ── Identity sub-tab ── */}
+        {settingsTab === "identity" && (
+          <>
+            {identityEditing ? (
+              <IdentityEditor identity={identity} onSave={onSaveIdentity} onCancel={() => setIdentityEditing(false)} />
+            ) : identity ? (
+              <div className="space-y-4">
+                {/* Identity card */}
+                <div className="rounded-xl border border-white/[0.07] bg-[linear-gradient(180deg,rgba(26,24,48,0.7),rgba(18,16,34,0.8))] backdrop-blur-[20px] shadow-card p-4" style={{ borderLeft: "3px solid var(--color-accent)" }}>
+                  <div className="flex items-center justify-between mb-3">
+                    <div className="text-xs font-semibold text-fg">CTO Identity</div>
+                    <Button variant="outline" size="sm" onClick={() => setIdentityEditing(true)}>
+                      <PencilSimple size={10} /> Edit
+                    </Button>
+                  </div>
+                  <div className="text-xs text-muted-fg/55 leading-relaxed mb-3">{describeIdentityPersonality(identity)}</div>
+                  <div className="flex flex-wrap gap-1.5">
+                    {[
+                      { label: `${identity.modelPreferences.provider}/${identity.modelPreferences.model}` },
+                      ...(identity.personality ? [{ label: getCtoPersonalityPreset(identity.personality).label }] : []),
+                      ...(identity.modelPreferences.reasoningEffort ? [{ label: `reasoning: ${identity.modelPreferences.reasoningEffort}` }] : []),
+                    ].map((tag) => (
+                      <span key={tag.label} className="rounded-md border border-accent/15 bg-accent/8 px-2 py-0.5 text-[10px] font-medium text-accent">
+                        {tag.label}
+                      </span>
+                    ))}
+                  </div>
+                </div>
 
-      <CollapsibleSection title="Prompt preview" color={ACCENT.blue} defaultOpen={false}>
-        <div className="px-4 pb-4">
-          <CtoPromptPreview compact />
-        </div>
-      </CollapsibleSection>
-
-      {/* Core Memory */}
-      <CollapsibleSection
-        title="Long-term brief"
-        color={ACCENT.green}
-        right={
-          !memoryEditing ? (
-            <Button variant="ghost" size="sm" className="!h-5 !px-1.5" onClick={() => setMemoryEditing(true)} data-testid="core-memory-edit-btn">
-              <PencilSimple size={10} />
-            </Button>
-          ) : undefined
-        }
-      >
-        {memoryEditing ? (
-          <div className="px-4 pb-4 space-y-3">
-            {[
-              { key: "projectSummary" as const, label: "Summary", multiline: true },
-              { key: "criticalConventions" as const, label: "Conventions", multiline: false },
-              { key: "userPreferences" as const, label: "Preferences", multiline: false },
-              { key: "activeFocus" as const, label: "Focus", multiline: false },
-              { key: "notes" as const, label: "Notes", multiline: false },
-            ].map(({ key, label, multiline }) => (
-              <label key={key} className="space-y-1 block">
-                <div className={labelCls}>{label}</div>
-                {multiline ? (
-                  <textarea className={cn(textareaCls, "min-h-[40px]")} rows={2} value={memoryDraft[key]} onChange={(e) => setMemoryDraft((d) => ({ ...d, [key]: e.target.value }))} />
-                ) : (
-                  <input className={inputCls} placeholder="comma-separated" value={memoryDraft[key]} onChange={(e) => setMemoryDraft((d) => ({ ...d, [key]: e.target.value }))} />
-                )}
-              </label>
-            ))}
-            {memoryError && <div className="text-xs text-error" data-testid="core-memory-save-error">{memoryError}</div>}
-            <div className="flex gap-2">
-              <Button variant="primary" className="flex-1" disabled={memorySaving} onClick={handleSaveMemory} data-testid="core-memory-save-btn">
-                {memorySaving ? "Saving..." : "Save"}
-              </Button>
-              <Button variant="outline" className="flex-1" disabled={memorySaving} onClick={() => { setMemoryEditing(false); setMemoryError(null); }} data-testid="core-memory-cancel-btn">
-                Cancel
-              </Button>
-            </div>
-          </div>
-        ) : coreMemory ? (
-          <div className="px-4 pb-4" data-testid="core-memory-view">
-            <div className="text-xs text-muted-fg/55 leading-relaxed line-clamp-3">
-              {coreMemory.projectSummary || "No project summary yet."}
-            </div>
-            <div className="mt-2 text-[11px] leading-5 text-muted-fg/40">
-              This is the persistent CTO brief that ADE reloads after compaction and across fresh chat resumes.
-            </div>
-            {[
-              { items: coreMemory.criticalConventions, label: "Conventions", color: ACCENT.blue },
-              { items: coreMemory.activeFocus, label: "Focus", color: ACCENT.green },
-              { items: coreMemory.userPreferences, label: "Prefs", color: ACCENT.pink },
-              { items: coreMemory.notes, label: "Notes", color: ACCENT.amber },
-            ].filter(({ items }) => items.length > 0).map(({ items, label, color }) => (
-              <div key={label} className="mt-1.5 flex items-start gap-1.5">
-                <span className="text-[10px] font-medium shrink-0" style={{ color }}>{label}:</span>
-                <span className="text-[10px] text-muted-fg/50">{items.join(", ")}</span>
+                {/* Prompt preview card */}
+                <div className="rounded-xl border border-white/[0.07] bg-[linear-gradient(180deg,rgba(26,24,48,0.7),rgba(18,16,34,0.8))] backdrop-blur-[20px] shadow-card p-4" style={{ borderLeft: "3px solid #60A5FA" }}>
+                  <div className="text-xs font-semibold text-fg mb-3">Prompt Preview</div>
+                  <CtoPromptPreview compact />
+                </div>
               </div>
-            ))}
-          </div>
-        ) : (
-          <div className="px-4 pb-4 text-xs text-muted-fg/40">Loading...</div>
+            ) : (
+              <div className="text-xs text-muted-fg/40">Loading...</div>
+            )}
+          </>
         )}
-      </CollapsibleSection>
 
-      {/* External MCP Access — collapsed by default */}
-      <CollapsibleSection title="MCP Access" color={ACCENT.blue} defaultOpen={false}>
-        <div className="px-4 pb-4 space-y-3">
-          <ExternalMcpAccessEditor
-            value={externalMcpDraft}
-            availableServers={availableExternalMcpServers}
-            description="Controls which MCP servers the CTO and mission workers can access."
-            onChange={setExternalMcpDraft}
-          />
-          {externalMcpError && <div className="text-xs text-error">{externalMcpError}</div>}
-          <div className="flex justify-end">
-            <Button variant="outline" size="sm" disabled={externalMcpSaving} onClick={() => void handleSaveExternalMcp()}>
-              {externalMcpSaving ? "Saving..." : "Save"}
-            </Button>
-          </div>
-        </div>
-      </CollapsibleSection>
+        {/* ── Brief sub-tab ── */}
+        {settingsTab === "brief" && (
+          <>
+            {/* Brief card */}
+            <div className="rounded-xl border border-white/[0.07] bg-[linear-gradient(180deg,rgba(26,24,48,0.7),rgba(18,16,34,0.8))] backdrop-blur-[20px] shadow-card p-4" style={{ borderLeft: "3px solid #22C55E" }}>
+              <div className="flex items-center justify-between mb-2">
+                <div className="text-xs font-semibold text-fg">Project Brief</div>
+                {!memoryEditing && (
+                  <Button variant="outline" size="sm" onClick={() => setMemoryEditing(true)} data-testid="core-memory-edit-btn">
+                    <PencilSimple size={10} /> Edit
+                  </Button>
+                )}
+              </div>
+              <div className="text-[11px] text-muted-fg/40 mb-3">
+                The persistent brief ADE reloads after compaction and across fresh chat resumes.
+              </div>
 
-      {/* OpenClaw Bridge — collapsed by default */}
-      <CollapsibleSection title="OpenClaw Bridge" color={ACCENT.pink} defaultOpen={false}>
-        <div className="px-4 pb-4">
-          <OpenclawConnectionPanel identity={identity} onSaveIdentity={onSaveIdentity} />
-        </div>
-      </CollapsibleSection>
+            {memoryEditing ? (
+              <div className="space-y-3">
+                {[
+                  { key: "projectSummary" as const, label: "Summary", multiline: true },
+                  { key: "criticalConventions" as const, label: "Conventions", multiline: false },
+                  { key: "userPreferences" as const, label: "Preferences", multiline: false },
+                  { key: "activeFocus" as const, label: "Focus", multiline: false },
+                  { key: "notes" as const, label: "Notes", multiline: false },
+                ].map(({ key, label, multiline }) => (
+                  <label key={key} className="space-y-1.5 block">
+                    <div className={labelCls}>{label}</div>
+                    {multiline ? (
+                      <textarea className={cn(textareaCls, "min-h-[60px]")} rows={3} value={memoryDraft[key]} onChange={(e) => setMemoryDraft((d) => ({ ...d, [key]: e.target.value }))} />
+                    ) : (
+                      <input className={inputCls} placeholder="comma-separated" value={memoryDraft[key]} onChange={(e) => setMemoryDraft((d) => ({ ...d, [key]: e.target.value }))} />
+                    )}
+                  </label>
+                ))}
+                {memoryError && <div className="text-xs text-error" data-testid="core-memory-save-error">{memoryError}</div>}
+                <div className="flex gap-2">
+                  <Button variant="primary" disabled={memorySaving} onClick={handleSaveMemory} data-testid="core-memory-save-btn">
+                    {memorySaving ? "Saving..." : "Save"}
+                  </Button>
+                  <Button variant="outline" disabled={memorySaving} onClick={() => { setMemoryEditing(false); setMemoryError(null); }} data-testid="core-memory-cancel-btn">
+                    Cancel
+                  </Button>
+                </div>
+              </div>
+            ) : coreMemory ? (
+              <div className="space-y-3" data-testid="core-memory-view">
+                <div className="text-xs text-muted-fg/55 leading-relaxed">
+                  {coreMemory.projectSummary || "No project summary yet."}
+                </div>
+                {[
+                  { items: coreMemory.criticalConventions, label: "Conventions" },
+                  { items: coreMemory.activeFocus, label: "Focus" },
+                  { items: coreMemory.userPreferences, label: "Preferences" },
+                  { items: coreMemory.notes, label: "Notes" },
+                ].filter(({ items }) => items.length > 0).map(({ items, label }) => (
+                  <div key={label} className="flex items-start gap-2">
+                    <span className="text-[10px] font-medium text-muted-fg/50 shrink-0">{label}:</span>
+                    <span className="text-[10px] text-muted-fg/40">{items.join(", ")}</span>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="text-xs text-muted-fg/40">Loading...</div>
+            )}
+            </div>
 
-      {/* Recent Sessions */}
-      <CollapsibleSection title="Continuity log" color={ACCENT.amber} defaultOpen={false}>
-        <div className="px-4 pb-3 max-h-48 overflow-y-auto space-y-1" data-testid="session-history-list">
-          {sessionLogs.length === 0 ? (
-            <div className="text-[10px] text-muted-fg/40 py-2">No sessions yet.</div>
-          ) : sessionLogs.map((s) => (
-            <TimelineEntry
-              key={s.id}
-              timestamp={s.createdAt}
-              title={s.summary}
-              status={s.capabilityMode}
-              statusVariant={s.capabilityMode === "full_mcp" ? "success" : "muted"}
-            />
-          ))}
-        </div>
-      </CollapsibleSection>
+            {/* Session history card */}
+            <div className="rounded-xl border border-white/[0.07] bg-[linear-gradient(180deg,rgba(26,24,48,0.7),rgba(18,16,34,0.8))] backdrop-blur-[20px] shadow-card p-4" style={{ borderLeft: "3px solid #FBBF24" }}>
+              <div className="text-xs font-semibold text-fg mb-3">Session History</div>
+              <div className="max-h-48 overflow-y-auto space-y-1" data-testid="session-history-list">
+                {sessionLogs.length === 0 ? (
+                  <div className="text-[10px] text-muted-fg/40 py-2">No sessions yet.</div>
+                ) : sessionLogs.map((s) => (
+                  <TimelineEntry
+                    key={s.id}
+                    timestamp={s.createdAt}
+                    title={s.summary}
+                    status={s.capabilityMode}
+                    statusVariant={s.capabilityMode === "full_mcp" ? "success" : "muted"}
+                  />
+                ))}
+              </div>
+            </div>
+          </>
+        )}
 
-      {/* Re-run Setup */}
-      {onResetOnboarding && (
-        <div className="flex items-center justify-between rounded-2xl border border-white/[0.06] bg-[linear-gradient(180deg,rgba(15,20,28,0.74),rgba(10,14,21,0.82))] px-4 py-3">
-          <div>
-            <div className="text-xs font-semibold text-fg/74">Run setup again</div>
-            <div className="mt-1 text-[11px] leading-5 text-muted-fg/38">
-              Revisit the guided flow if you want to rebuild the CTO identity, brief, or integration choices from scratch.
+        {/* ── Integrations sub-tab ── */}
+        {settingsTab === "integrations" && (
+          <div className="space-y-4">
+            {/* MCP Access card */}
+            <div className="rounded-xl border border-white/[0.07] bg-[linear-gradient(180deg,rgba(26,24,48,0.7),rgba(18,16,34,0.8))] backdrop-blur-[20px] shadow-card p-4" style={{ borderLeft: "3px solid #3B82F6" }}>
+              <div className="text-xs font-semibold text-fg mb-3">MCP Access</div>
+              <ExternalMcpAccessEditor
+                value={externalMcpDraft}
+                availableServers={availableExternalMcpServers}
+                description="Controls which MCP servers the CTO and workers can access."
+                onChange={setExternalMcpDraft}
+              />
+              {externalMcpError && <div className="text-xs text-error mt-2">{externalMcpError}</div>}
+              <div className="flex justify-end mt-3">
+                <Button variant="outline" size="sm" disabled={externalMcpSaving} onClick={() => void handleSaveExternalMcp()}>
+                  {externalMcpSaving ? "Saving..." : "Save MCP Policy"}
+                </Button>
+              </div>
+            </div>
+
+            {/* OpenClaw Bridge card */}
+            <div className="rounded-xl border border-white/[0.07] bg-[linear-gradient(180deg,rgba(26,24,48,0.7),rgba(18,16,34,0.8))] backdrop-blur-[20px] shadow-card p-4" style={{ borderLeft: "3px solid #FB7185" }}>
+              <div className="text-xs font-semibold text-fg mb-3">OpenClaw Bridge</div>
+              <OpenclawConnectionPanel identity={identity} onSaveIdentity={onSaveIdentity} />
             </div>
           </div>
-          <Button variant="outline" size="sm" className="shrink-0" onClick={onResetOnboarding}>
-            <ArrowCounterClockwise size={10} />
-            Re-run
-          </Button>
-        </div>
-      )}
+        )}
+      </div>
     </div>
   );
 }

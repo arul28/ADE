@@ -66,6 +66,8 @@ export function inferAttachmentMediaType(attachment: AgentChatFileRef): string {
  */
 export type SDKUserMessagePartial = {
   type: "user";
+  session_id: string;
+  parent_tool_use_id: string | null;
   message: {
     role: "user";
     content: Array<Record<string, unknown>>;
@@ -81,7 +83,7 @@ export type SDKUserMessagePartial = {
 export function buildClaudeV2Message(
   promptText: string,
   attachments: ResolvedAgentChatFileRef[],
-  options: { baseDir?: string } = {},
+  options: { baseDir?: string; sessionId?: string | null } = {},
 ): string | SDKUserMessagePartial {
   const imageAttachments = attachments.filter((a) => a.type === "image");
   if (!imageAttachments.length) {
@@ -126,10 +128,13 @@ export function buildClaudeV2Message(
     }
   }
 
-  // Match the streaming input format from the SDK docs -- minimal fields,
-  // let the SDK fill in session_id, parent_tool_use_id, etc.
+  // Match the SDKUserMessage shape that session.send() accepts in V2.
+  // An empty session_id mirrors the SDK's own string-to-message conversion
+  // before the first init event establishes the concrete session ID.
   return {
     type: "user",
+    session_id: options.sessionId?.trim() ?? "",
+    parent_tool_use_id: null,
     message: { role: "user", content },
   };
 }

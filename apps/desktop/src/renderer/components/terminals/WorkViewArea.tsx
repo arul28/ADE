@@ -1,4 +1,4 @@
-import { useMemo, useCallback, useState } from "react";
+import { useMemo, useCallback, useEffect, useRef, useState } from "react";
 import { CaretDown, CaretRight, Clipboard, GitBranch, GridFour, List, Play, Plus, X } from "@phosphor-icons/react";
 import type { AgentChatSession, LaneSummary, TerminalSessionSummary } from "../../../shared/types";
 import type { WorkDraftKind, WorkViewMode } from "../../state/appStore";
@@ -180,12 +180,32 @@ function SessionSurface({
 
 function ResumeCommandBlock({ command }: { command: string }) {
   const [copied, setCopied] = useState(false);
-  const copy = useCallback(() => {
-    navigator.clipboard.writeText(command).then(() => {
+  const copyTimeoutRef = useRef<number | null>(null);
+  const copy = useCallback(async () => {
+    if (copyTimeoutRef.current != null) {
+      window.clearTimeout(copyTimeoutRef.current);
+      copyTimeoutRef.current = null;
+    }
+    try {
+      await navigator.clipboard.writeText(command);
       setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
-    });
+      copyTimeoutRef.current = window.setTimeout(() => {
+        copyTimeoutRef.current = null;
+        setCopied(false);
+      }, 1500);
+    } catch (err) {
+      console.warn("[WorkViewArea] Failed to copy resume command:", err);
+    }
   }, [command]);
+
+  useEffect(() => {
+    return () => {
+      if (copyTimeoutRef.current != null) {
+        window.clearTimeout(copyTimeoutRef.current);
+        copyTimeoutRef.current = null;
+      }
+    };
+  }, []);
 
   return (
     <div
@@ -389,7 +409,7 @@ export function WorkViewArea({
           <SessionSurface
             session={session}
             isActive={isActive}
-            suspended={!isActive}
+            suspended={!isActive && !isChatToolType(session.toolType)}
             terminalVisible
             layoutVariant="grid-tile"
             onOpenChatSession={onOpenChatSession}

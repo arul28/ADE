@@ -26,13 +26,15 @@ import { findLaneBaseNeed, findMatchingRebaseNeed, rebaseNeedItemKey } from "../
 
 /* ---- Outcome dot with design-system colors ---- */
 
+const OUTCOME_DOT_CONFIG = {
+  clean:   { icon: CheckCircle, color: "#22C55E" },
+  conflict:{ icon: Warning,     color: "#F59E0B" },
+  blocked: { icon: XCircle,     color: "#EF4444" },
+  pending: { icon: Clock,       color: "#71717A" },
+};
+
 function OutcomeDot({ outcome }: { outcome: "clean" | "conflict" | "blocked" | "pending" }) {
-  const config = {
-    clean:   { icon: CheckCircle, color: "#22C55E" },
-    conflict:{ icon: Warning,     color: "#F59E0B" },
-    blocked: { icon: XCircle,     color: "#EF4444" },
-    pending: { icon: Clock,       color: "#71717A" },
-  }[outcome];
+  const config = OUTCOME_DOT_CONFIG[outcome];
   const Icon = config.icon;
   return (
     <span

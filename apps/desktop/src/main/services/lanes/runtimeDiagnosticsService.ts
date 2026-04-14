@@ -184,6 +184,7 @@ export function createRuntimeDiagnosticsService({
           type: "proxy-route-missing",
           message: `App is responding on port ${respondingPort}, but preview is still routed to port ${route.targetPort}.`,
           actionLabel: "Refresh preview",
+          actionType: "refresh-preview",
         });
       } else if (!route) {
         issues.push({

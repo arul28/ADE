@@ -155,7 +155,6 @@ export function CommitTimeline({
             }}
             onClick={() => void load()}
             disabled={!laneId || loading}
-            title="Refresh"
             onMouseEnter={(e) => { e.currentTarget.style.color = COLORS.textPrimary; }}
             onMouseLeave={(e) => { e.currentTarget.style.color = COLORS.textMuted; }}
           >

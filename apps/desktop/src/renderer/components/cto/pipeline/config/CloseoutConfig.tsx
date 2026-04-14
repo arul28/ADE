@@ -65,7 +65,7 @@ function LabelChipInput({
   );
 
   return (
-    <div className="flex flex-wrap items-center gap-1.5 rounded-xl border border-white/[0.08] bg-[linear-gradient(180deg,rgba(21,26,35,0.92),rgba(14,18,26,0.94))] px-3 py-2 transition-all duration-200 focus-within:border-[rgba(56,189,248,0.45)]">
+    <div className="flex flex-wrap items-center gap-1.5 rounded-xl border border-white/[0.08] bg-[linear-gradient(180deg,rgba(21,26,35,0.92),rgba(14,18,26,0.94))] px-3 py-2 transition-all duration-200 focus-within:border-[rgba(167,139,250,0.45)]">
       {items.map((item, i) => (
         <span
           key={`${item}-${i}`}

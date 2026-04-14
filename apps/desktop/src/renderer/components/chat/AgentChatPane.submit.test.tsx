@@ -792,6 +792,181 @@ describe("AgentChatPane submit recovery", () => {
     });
   });
 
+  it("keeps immediate agent events for a freshly created chat before session refresh catches up", async () => {
+    const { create, emitChatEvent } = installAdeMocks({ sessions: [] });
+    const send = vi.fn().mockImplementation(async ({ sessionId }: { sessionId: string }) => {
+      emitChatEvent({
+        sessionId,
+        timestamp: "2026-03-24T05:57:46.000Z",
+        event: {
+          type: "status",
+          turnStatus: "started",
+          turnId: "turn-1",
+        },
+      });
+      emitChatEvent({
+        sessionId,
+        timestamp: "2026-03-24T05:57:46.100Z",
+        event: {
+          type: "text",
+          text: "Fresh session reply",
+          turnId: "turn-1",
+          messageId: "assistant-1",
+        },
+      });
+      emitChatEvent({
+        sessionId,
+        timestamp: "2026-03-24T05:57:46.200Z",
+        event: {
+          type: "done",
+          turnId: "turn-1",
+          status: "completed",
+          model: "gpt-5.4",
+        },
+      });
+    });
+    window.ade.agentChat.send = send as any;
+
+    render(
+      <MemoryRouter>
+        <AgentChatPane
+          laneId="lane-1"
+          forceNewSession
+        />
+      </MemoryRouter>,
+    );
+
+    const trigger = await screen.findByRole("button", { name: "Select model" });
+    const codexLabel = getModelById("openai/gpt-5.4-codex")?.displayName ?? "GPT-5.4 Codex";
+
+    fireEvent.click(trigger);
+    fireEvent.click(await screen.findByRole("button", { name: /^Codex$/i }));
+    await clickEnabledModelOption(new RegExp(escapeRegExp(codexLabel), "i"));
+
+    const textbox = await screen.findByRole("textbox");
+    fireEvent.change(textbox, { target: { value: "Ship it." } });
+    fireEvent.click(screen.getByTitle("Send"));
+
+    await waitFor(() => {
+      expect(create).toHaveBeenCalled();
+      expect(send).toHaveBeenCalledWith(expect.objectContaining({
+        sessionId: "created-session",
+        text: "Ship it.",
+      }));
+    });
+
+    expect(await screen.findByText("Fresh session reply")).toBeTruthy();
+  });
+
+  it("preserves background streamed events when switching back to a chat with same-timestamp transcript entries", async () => {
+    const primarySession = buildSession("session-1", {
+      title: "Primary chat",
+      lastActivityAt: "2026-03-24T05:57:45.700Z",
+    });
+    const backgroundSession = buildSession("session-2", {
+      title: "Background chat",
+      lastActivityAt: "2026-03-24T05:57:45.600Z",
+    });
+    const { emitChatEvent } = installAdeMocks({
+      sessions: [primarySession, backgroundSession],
+    });
+    window.ade.sessions.readTranscriptTail = vi.fn().mockImplementation(async ({ sessionId }: { sessionId: string }) => {
+      if (sessionId === "session-2") {
+        return `${JSON.stringify({
+          sessionId: "session-2",
+          timestamp: "2026-03-24T06:00:00.000Z",
+          sequence: 1,
+          event: {
+            type: "status",
+            turnStatus: "started",
+            turnId: "turn-2",
+          },
+        })}\n`;
+      }
+      return "";
+    });
+
+    renderTabbedPane(primarySession);
+
+    await screen.findByRole("button", { name: /Primary chat/i });
+    await screen.findByRole("button", { name: /Background chat/i });
+
+    emitChatEvent({
+      sessionId: "session-2",
+      timestamp: "2026-03-24T06:00:00.000Z",
+      sequence: 2,
+      event: {
+        type: "text",
+        text: "Background output kept streaming",
+        turnId: "turn-2",
+        messageId: "assistant-2",
+      },
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: /Background chat/i }));
+
+    expect(await screen.findByText("Background output kept streaming")).toBeTruthy();
+  });
+
+  it("reloads a previously viewed chat transcript when switching back to recover missed background output", async () => {
+    const primarySession = buildSession("session-1", {
+      title: "Primary chat",
+      lastActivityAt: "2026-03-24T05:57:45.700Z",
+    });
+    const backgroundSession = buildSession("session-2", {
+      title: "Background chat",
+      lastActivityAt: "2026-03-24T05:57:45.600Z",
+    });
+    let backgroundTranscript = `${JSON.stringify({
+      sessionId: "session-2",
+      timestamp: "2026-03-24T06:00:00.000Z",
+      sequence: 1,
+      event: {
+        type: "status",
+        turnStatus: "started",
+        turnId: "turn-2",
+      },
+    })}\n`;
+
+    installAdeMocks({
+      sessions: [primarySession, backgroundSession],
+    });
+    const readTranscriptTail = vi.fn().mockImplementation(async ({ sessionId }: { sessionId: string }) => {
+      if (sessionId === "session-2") return backgroundTranscript;
+      return "";
+    });
+    window.ade.sessions.readTranscriptTail = readTranscriptTail as any;
+
+    renderTabbedPane(primarySession);
+
+    const primaryTab = await screen.findByRole("button", { name: /Primary chat/i });
+    const backgroundTab = await screen.findByRole("button", { name: /Background chat/i });
+
+    fireEvent.click(backgroundTab);
+    await waitFor(() => {
+      expect(readTranscriptTail).toHaveBeenCalledWith(expect.objectContaining({ sessionId: "session-2" }));
+    });
+
+    fireEvent.click(primaryTab);
+
+    backgroundTranscript += `${JSON.stringify({
+      sessionId: "session-2",
+      timestamp: "2026-03-24T06:00:01.000Z",
+      sequence: 2,
+      event: {
+        type: "text",
+        text: "Recovered from transcript on revisit",
+        turnId: "turn-2",
+        messageId: "assistant-2",
+      },
+    })}\n`;
+
+    fireEvent.click(backgroundTab);
+
+    expect(await screen.findByText("Recovered from transcript on revisit")).toBeTruthy();
+    expect(readTranscriptTail).toHaveBeenCalledWith(expect.objectContaining({ sessionId: "session-2" }));
+  });
+
   it("shows 'New chat' in the header when no session is selected", async () => {
     installAdeMocks({ sessions: [] });
 

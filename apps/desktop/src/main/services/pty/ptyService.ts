@@ -41,7 +41,7 @@ export const PTY_AI_TITLE_DEBOUNCE_MS = 6000;
 const CLI_USER_TITLE_TOOL_TYPES = new Set<TerminalToolType>(["claude", "codex"]);
 
 function shouldScheduleOutputSnippetTitle(tool: TerminalToolType | null): boolean {
-  if (!tool || tool === "shell") return false;
+  if (!tool || tool === "shell" || tool === "run-shell") return false;
   return !CLI_USER_TITLE_TOOL_TYPES.has(tool);
 }
 
@@ -103,6 +103,10 @@ type RuntimeStateEntry = {
   lastActivityAt: number;
   idleTimer: ReturnType<typeof setTimeout> | null;
 };
+
+type PtyDataListener = (event: PtyDataEvent & { laneId: string }) => void;
+
+type PtyExitListener = (event: PtyExitEvent & { laneId: string }) => void;
 
 type ShellSpec = { file: string; args: string[] };
 
@@ -281,6 +285,7 @@ export function createPtyService({
   sessionService,
   aiIntegrationService,
   projectConfigService,
+  getLaneRuntimeEnv,
   logger,
   broadcastData,
   broadcastExit,
@@ -295,6 +300,7 @@ export function createPtyService({
   sessionService: ReturnType<typeof createSessionService>;
   aiIntegrationService?: ReturnType<typeof createAiIntegrationService>;
   projectConfigService?: ReturnType<typeof createProjectConfigService>;
+  getLaneRuntimeEnv?: (laneId: string) => Promise<Record<string, string>> | Record<string, string>;
   logger: Logger;
   broadcastData: (ev: PtyDataEvent) => void;
   broadcastExit: (ev: PtyExitEvent) => void;
@@ -310,6 +316,8 @@ export function createPtyService({
 }) {
   const ptys = new Map<string, PtyEntry>();
   const runtimeStates = new Map<string, RuntimeStateEntry>();
+  const dataListeners = new Set<PtyDataListener>();
+  const exitListeners = new Set<PtyExitListener>();
   /** Timers for auto-closing tool-typed PTYs when the CLI tool exits back to shell prompt */
   const toolAutoCloseTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
@@ -709,11 +717,11 @@ export function createPtyService({
       for (const candidate of candidates.slice(0, 10)) {
         // Only consider files modified in the last 5 minutes
         if (now.getTime() - candidate.mtimeMs > 5 * 60 * 1000) break;
+        let fd: number | null = null;
         try {
-          const fd = fs.openSync(candidate.filePath, "r");
+          fd = fs.openSync(candidate.filePath, "r");
           const buf = Buffer.alloc(1024);
           const bytesRead = fs.readSync(fd, buf, 0, 1024, 0);
-          fs.closeSync(fd);
           const firstLine = buf.subarray(0, bytesRead).toString("utf8").split("\n")[0] ?? "";
           const meta = JSON.parse(firstLine);
           if (meta?.type === "session_meta" && meta?.payload?.cwd === cwd && meta?.payload?.id) {
@@ -721,6 +729,14 @@ export function createPtyService({
           }
         } catch {
           continue;
+        } finally {
+          if (fd !== null) {
+            try {
+              fs.closeSync(fd);
+            } catch {
+              // Ignore close errors while scanning best-effort session metadata.
+            }
+          }
         }
       }
       return null;
@@ -836,7 +852,7 @@ export function createPtyService({
         }
       });
 
-    broadcastExit({ ptyId, sessionId: entry.sessionId, exitCode });
+    emitPtyExit(entry, { ptyId, sessionId: entry.sessionId, exitCode });
     ptys.delete(ptyId);
   };
 
@@ -920,6 +936,30 @@ export function createPtyService({
         fs.unlinkSync(cleanupPath);
       } catch {
         // best effort
+      }
+    }
+  };
+
+  const emitPtyData = (entry: PtyEntry, event: PtyDataEvent) => {
+    broadcastData(event);
+    const enriched = { ...event, laneId: entry.laneId };
+    for (const listener of dataListeners) {
+      try {
+        listener(enriched);
+      } catch {
+        // ignore listener failures
+      }
+    }
+  };
+
+  const emitPtyExit = (entry: Pick<PtyEntry, "laneId" | "sessionId">, event: PtyExitEvent) => {
+    broadcastExit(event);
+    const enriched = { ...event, laneId: entry.laneId };
+    for (const listener of exitListeners) {
+      try {
+        listener(enriched);
+      } catch {
+        // ignore listener failures
       }
     }
   };
@@ -1012,9 +1052,16 @@ export function createPtyService({
           .catch(() => {});
       }
 
+      const launchEnv = {
+        ...process.env,
+        ...((await getLaneRuntimeEnv?.(laneId)) ?? {}),
+        ...(args.env ?? {})
+      };
       const shellCandidates = resolveShellCandidates();
       let pty: IPty;
       let selectedShell: ShellSpec | null = null;
+      const directCommand = typeof args.command === "string" ? args.command.trim() : "";
+      const directArgs = Array.isArray(args.args) ? args.args.filter((value): value is string => typeof value === "string") : [];
       try {
         const ptyLib = loadPty();
         const opts: IWindowsPtyForkOptions = {
@@ -1022,29 +1069,37 @@ export function createPtyService({
           cols,
           rows,
           cwd,
-          env: { ...process.env }
+          env: launchEnv
         };
         let lastErr: unknown = null;
         let created: IPty | null = null;
-        for (const shell of shellCandidates) {
+        if (directCommand) {
           try {
-            created = ptyLib.spawn(shell.file, shell.args, opts);
-            selectedShell = shell;
-            break;
+            created = ptyLib.spawn(directCommand, directArgs, opts);
           } catch (err) {
             lastErr = err;
-            logger.warn("pty.spawn_retry", {
-              ptyId,
-              sessionId,
-              shell: shell.file,
-              cwd,
-              toolType: toolTypeHint,
-              startupCommandPresent: Boolean(startupCommand),
-              envShell: process.env.SHELL ?? "",
-              envPath: process.env.PATH ?? "",
-              resourcesPath: process.resourcesPath ?? "",
-              err: String(err),
-            });
+          }
+        } else {
+          for (const shell of shellCandidates) {
+            try {
+              created = ptyLib.spawn(shell.file, shell.args, opts);
+              selectedShell = shell;
+              break;
+            } catch (err) {
+              lastErr = err;
+              logger.warn("pty.spawn_retry", {
+                ptyId,
+                sessionId,
+                shell: shell.file,
+                cwd,
+                toolType: toolTypeHint,
+                startupCommandPresent: Boolean(startupCommand),
+                envShell: process.env.SHELL ?? "",
+                envPath: process.env.PATH ?? "",
+                resourcesPath: process.resourcesPath ?? "",
+                err: String(err),
+              });
+            }
           }
         }
         if (!created) {
@@ -1058,6 +1113,8 @@ export function createPtyService({
           cwd,
           toolType: toolTypeHint,
           startupCommandPresent: Boolean(startupCommand),
+          command: directCommand || null,
+          args: directArgs,
           selectedShell: selectedShell?.file ?? null,
           shellCandidates: shellCandidates.map((shell) => shell.file),
           envShell: process.env.SHELL ?? "",
@@ -1152,7 +1209,7 @@ export function createPtyService({
       pty.onData((data) => {
         writeTranscript(entry, data);
         updatePreviewThrottled(entry, data);
-        broadcastData({ ptyId, sessionId, data });
+        emitPtyData(entry, { ptyId, sessionId, data });
 
         const prevState = runtimeStates.get(sessionId)?.state ?? "running";
         const runtimeState = runtimeStateFromOsc133Chunk(data, prevState);
@@ -1300,7 +1357,7 @@ export function createPtyService({
 
       logger.info("pty.create", { ptyId, sessionId, laneId, cwd, shell: selectedShell?.file ?? "unknown" });
 
-      return { ptyId, sessionId };
+      return { ptyId, sessionId, pid: pty.pid ?? null };
     },
 
     write({ ptyId, data }: { ptyId: string; data: string }): void {
@@ -1366,7 +1423,7 @@ export function createPtyService({
           // ignore callback failures
         }
         summarizeSessionBestEffort(sessionId);
-        broadcastExit({ ptyId, sessionId, exitCode: null });
+        emitPtyExit({ laneId: session.laneId, sessionId }, { ptyId, sessionId, exitCode: null });
         if (session.tracked) {
           try {
             onSessionEnded?.({ laneId: session.laneId, sessionId, exitCode: null });
@@ -1407,7 +1464,7 @@ export function createPtyService({
       } catch {
         // ignore callback failures
       }
-      broadcastExit({ ptyId, sessionId: entry.sessionId, exitCode: null });
+      emitPtyExit(entry, { ptyId, sessionId: entry.sessionId, exitCode: null });
       ptys.delete(ptyId);
 
       if (!entry.tracked) {
@@ -1429,6 +1486,20 @@ export function createPtyService({
           // ignore
         }
       }
+    },
+
+    onData(listener: PtyDataListener): () => void {
+      dataListeners.add(listener);
+      return () => {
+        dataListeners.delete(listener);
+      };
+    },
+
+    onExit(listener: PtyExitListener): () => void {
+      exitListeners.add(listener);
+      return () => {
+        exitListeners.delete(listener);
+      };
     }
   };
 }

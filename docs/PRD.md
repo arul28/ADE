@@ -1,174 +1,119 @@
-# ADE product requirements document
+# ADE — Product Requirements
 
-> Architecture, service layout, and storage contracts live under [`docs/architecture/`](./architecture/SYSTEM_OVERVIEW.md). This document owns product behavior, operator workflows, and scope.
->
-> Last updated: 2026-03-25
+ADE is an Electron desktop app for AI-assisted software engineering. It orchestrates lanes of work (git-worktree isolation), multi-provider AI chat, multi-agent missions, a persistent CTO agent, pipeline automations, PR stacking, conflict simulation, computer-use proofs, a cross-scope memory system, and optional iOS companion sync.
 
-## What ADE is
+This doc is the entry point. Every major feature and concept is linked to its detailed breakdown in [`features/`](./features/). For how the pieces fit together, read [ARCHITECTURE.md](./ARCHITECTURE.md) next.
 
-ADE (Agentic Development Environment) is a local-first desktop workspace for orchestrating coding agents across parallel lanes, missions, pull requests, and proof capture flows. It is a control plane for software delivery work that already happens in repositories, branches, terminals, and AI runtimes.
+---
 
-ADE is not a hosted agent platform and it is not an IDE replacement. It sits beside the repo and gives operators one place to launch, supervise, coordinate, and audit AI-assisted development work.
+## What ADE Is
 
-## Problem statement
+ADE is a single-user, project-local workbench that runs AI agents against your codebase without them stepping on each other. The primary unit is a **lane**: an isolated git worktree + runtime + agent session. You can run many lanes concurrently — each with its own chat, its own processes, its own PR. Lanes compose into **stacks** (dependency chains) and graduate into **missions** (multi-agent, multi-step orchestrated runs) when the work is bigger than a single session.
 
-Teams using multiple AI coding agents run into the same operational failures repeatedly:
+Layered on top:
+- **Agents** — chat, CTO operator, workers. Multi-provider (Anthropic, OpenAI, Claude Code CLI, Codex, OpenCode, Cursor). Tool-aware.
+- **Memory** — persistent knowledge across sessions. Scoped to global/project/session/agent.
+- **Automations** — rule-based background workflows triggered by events, cron, webhooks.
+- **Computer use** — control plane that fans out to Ghost OS, agent-browser, or local fallback for UI automation proofs.
+- **Linear** — first-class two-way integration owned by the CTO agent.
+- **Multi-device sync** — cr-sqlite CRDT replication between desktop and iOS companion.
 
-- context gets scattered across terminals, branches, and PRs
-- parallel work collides late, usually during merge or review
-- humans have to reconstruct what each agent changed before they can trust it
-- tool access and proof collection vary by workflow, making runs hard to compare
-- there is no stable control surface for orchestrating work across different AI providers
+ADE is the control plane. It does not execute browser automation or computer-use itself — it dispatches to backends and normalizes their artifacts.
 
-ADE exists to make that workflow explicit, observable, and recoverable.
+---
 
-## Product goals
+## Core Concepts
 
-- Keep agent-driven work local-first and repo-native.
-- Make parallel work visible through lanes, missions, PR views, and conflict tooling.
-- Give operators durable context without dumping raw transcripts into every run.
-- Preserve explicit human control around risky transitions such as merge, escalation, and computer use.
-- Stay provider-flexible across CLI subscriptions, API-backed models, and local endpoints.
+| Concept | Summary | Doc |
+| --- | --- | --- |
+| Lane | Isolated git worktree + runtime + agent session for one task. | [lanes/README.md](./features/lanes/README.md) |
+| Stack | Dependency chain of lanes → stacked PRs. | [lanes/stacking.md](./features/lanes/stacking.md) |
+| Mission | Multi-step orchestrated run with a coordinator agent, sub-workers, validation gates, and a result lane. | [missions/README.md](./features/missions/README.md) |
+| Agent | Typed persona with identity, tool tier, budget, and session log. CTO + workers + chat agents. | [agents/README.md](./features/agents/README.md) |
+| Worktree | Git clone dir under `.ade/worktrees/<lane-id>/`, one per lane. | [lanes/worktree-isolation.md](./features/lanes/worktree-isolation.md) |
+| Runtime | Per-lane process pool + env + ports + proxy + diagnostics. | [lanes/runtime.md](./features/lanes/runtime.md) |
+| Session | PTY-backed terminal session pinned to a lane. | [terminals-and-sessions/README.md](./features/terminals-and-sessions/README.md) |
+| Context pack | Canonical `.ade/context/*.ade.md` docs generated from repo state. | [context-packs/README.md](./features/context-packs/README.md) |
+| Memory | Structured, searchable, compaction-aware knowledge entries. | [memory/README.md](./features/memory/README.md) |
+| Proof | Normalized computer-use artifact (screenshot, recording, network log). | [computer-use/artifact-broker.md](./features/computer-use/artifact-broker.md) |
 
-## Product principles
+---
 
-- Local-first by default: project state lives under `.ade/` inside the repo, with machine-local secrets and cache stored separately.
-- Operational over promotional: surfaces should say what changed, what is blocked, and what the next action is.
-- Shared contracts over renderer workarounds: changes that affect state or workflows should be enforced in services and shared types.
-- Explicit trust boundaries: the renderer does not mutate the repo directly.
-- Proof matters: screenshots, recordings, traces, and other artifacts are first-class outputs when workflows require them.
+## Feature Index
 
-## Primary users
+### Work execution
 
-### Solo AI-native developers
+- [**Lanes**](./features/lanes/README.md) — Worktree isolation, stacking, runtime, OAuth redirect, diagnostics. Each lane is a sandbox. Stacks are dependency chains. Runtime covers ports, env, proxy, processes.
+- [**Pull Requests**](./features/pull-requests/README.md) — Stacked PRs, merge queue, conflict simulation. Backed by lanes; dependencies rebase automatically.
+- [**Conflicts**](./features/conflicts/README.md) — Pre-flight detection (full pairwise matrix up to 15 lanes, prefilter above), live simulation via `git merge-tree`, AI-assisted resolution, external CLI resolver flow.
+- [**Workspace Graph**](./features/workspace-graph/README.md) — React Flow canvas projecting lanes/PRs/conflicts/sessions into a single view. Staged hydration (topology first, then activity/risk/sync).
 
-Developers running several coding agents in parallel across multiple branches who need one place to understand what is active, blocked, or ready to review.
+### Agents and chat
 
-### Small teams with stacked or parallel delivery
+- [**Agents**](./features/agents/README.md) — Three surfaces: chat, CTO operator, workers. Identity, capability modes, tool tiers, heartbeats.
+- [**Chat**](./features/chat/README.md) — Multi-provider, streaming, tool-aware. Transcript and turns, tool system (universal/workflow/coordinator), agent routing, composer + derived panels.
+- [**Memory**](./features/memory/README.md) — Unified SQLite + FTS + embeddings. Write gate, compaction, procedural learning, daily sweep, hybrid retrieval (BM25+cosine+MMR).
+- [**History**](./features/history/README.md) — Operations timeline + chat transcripts + exports. Every service follows the same `runTrackedOperation` recording pattern.
 
-Teams coordinating feature work, integration work, and review across several lanes, often with stacked PRs or branch dependencies.
+### Orchestration
 
-### Operators building agent workflows on top of a local repo
+- [**Missions**](./features/missions/README.md) — Coordinator agent, delegation graph, validation gates (19 VAL-XXX assertions), result-lane closeout, worker fan-out.
+- [**Automations**](./features/automations/README.md) — Rule triggers (time, action, webhook) → three execution surfaces (mission, agent-session, built-in). Confidence + verification + human review.
+- [**CTO**](./features/cto/README.md) — Persistent project-level AI operator with four-layer prompt model. Owns Linear workflows, pipeline builder, worker team, identity/memory.
 
-People using ADE as the development backend for broader systems through the MCP server, CTO flows, automations, or external integrations.
+### Workspace surfaces
 
-## Core product concepts
+- [**Terminals and Sessions**](./features/terminals-and-sessions/README.md) — PTY, session, process services (all rewritten on current branch — fragile). AI-title pipeline, resume backfill, stale reconciliation.
+- [**Files and Editor**](./features/files-and-editor/README.md) — Atomic writes, ref-counted chokidar watcher, file search index, Monaco surfaces (edit/diff/conflict), preload trust boundary.
+- [**Project Home**](./features/project-home/README.md) — Combined welcome + per-lane runtime dashboard. Loads lane-independent metadata vs lane runtime separately.
+- [**Onboarding and Settings**](./features/onboarding-and-settings/README.md) — First-run wizard (stack detection, suggested config, import), 8-tab settings, configuration schema with trust model.
 
-### Lane
+### Integrations
 
-A lane is ADE's unit of isolated work. It usually maps to a git worktree and branch, and carries its own runtime, sessions, and status.
+- [**Linear Integration**](./features/linear-integration/README.md) — Webhook + relay + reconciliation. Workflow presets, target types (mission/session/worker/PR), bidirectional sync.
+- [**Computer Use**](./features/computer-use/README.md) — Control plane for Ghost OS, agent-browser, ADE local backends. Canonical artifact model, ownership-linked storage.
+- [**Context Packs**](./features/context-packs/README.md) — Three notions: canonical docs, live exports, persisted packs. Event-driven regeneration with seven refresh events.
+- [**Sync and Multi-Device**](./features/sync-and-multi-device/README.md) — cr-sqlite CRDT (desktop native ext, iOS pure-SQL emulation). Host/controller model. WebSocket envelope. Remote commands.
 
-### Mission
+---
 
-A mission is a structured multi-step execution flow. Missions plan work, launch workers, track attempts and interventions, and keep a durable audit trail.
+## Cross-Cutting Architecture
 
-### CTO
+For the system-wide picture — apps, processes, data plane, IPC, security, build/test/deploy — read [**ARCHITECTURE.md**](./ARCHITECTURE.md).
 
-The CTO is ADE's persistent project-aware operator. It acts as the long-lived entry point for project context, routing, and workflow supervision.
+Quick pointers:
 
-### Computer use
+- **Apps**: `apps/desktop/` (Electron main + preload + renderer), `apps/mcp-server/` (headless MCP tool server), `apps/web/` (marketing), `apps/ios/` (companion).
+- **Main-process services**: `apps/desktop/src/main/services/<domain>/` — one directory per capability.
+- **Renderer components**: `apps/desktop/src/renderer/components/<feature>/`.
+- **Shared types + IPC contract**: `apps/desktop/src/shared/`.
+- **Data**: SQLite + cr-sqlite. `.ade/` per project, `~/.ade/` global.
 
-Computer use covers screenshot, browser, GUI, and proof-oriented flows where artifact capture and policy enforcement matter as much as the prompt.
+---
 
-### Context docs
+## For AI Agents Reading This
 
-`.ade/context/PRD.ade.md` and `.ade/context/ARCHITECTURE.ade.md` are generated agent-facing bootstrap cards. They are not the canonical source of truth; they compress the product and technical docs into bounded startup context.
+If you are an AI agent working on ADE, read in this order:
 
-## Product surfaces
+1. **This PRD** — product scope + feature index.
+2. **[ARCHITECTURE.md](./ARCHITECTURE.md)** — how the apps fit, where state lives, IPC contract, services catalog.
+3. **Feature READMEs** — pick only the features relevant to your task. Each README has a "Source file map" at the top so you can go straight to code.
+4. **Detail docs** — when you need depth on a specific area (e.g., `features/cto/pipeline-builder.md` for pipeline internals).
 
-### Run
+The source of truth is always the code. Docs may lag on specific code paths — cross-check `git log` and the referenced files when in doubt.
 
-Run is the execution control center for managed processes, tests, and project runtime controls.
+Fragile areas flagged across the docs (read docs before editing):
+- CTO pipeline builder — recent work, custom flat/nested target-chain translation.
+- PTY / sessions / processes services — rewritten this branch.
+- OAuth redirect service — complex three-state machine with HMAC signing.
+- Chat transcript render pipeline — two-layer event→state→render path.
+- Mission coordinator delegation — 19 VAL-XXX behavioral invariants.
 
-### Lanes
+---
 
-Lanes shows isolated work surfaces, branch/worktree state, lane relationships, and lane-specific actions.
+## Out of scope (deliberate non-goals)
 
-### Files
-
-Files is ADE's repo-aware file browser and editor surface for working inside the selected workspace.
-
-### Work
-
-Work tracks active and historical sessions, including AI and terminal workflows.
-
-### Missions
-
-Missions is the structured orchestration surface for planning, delegation, execution, and intervention.
-
-### PRs
-
-PRs manages pull request creation, review state, queue/merge handling, and PR-linked operational workflows.
-
-### CTO
-
-CTO provides persistent project context, routing, and operator tooling across missions, lanes, and integrations.
-
-### Automations
-
-Automations runs background workflows on triggers with explicit guardrails and reviewable outputs.
-
-### Settings
-
-Settings owns provider setup, context generation preferences, memory controls, integrations, and system health.
-
-## Core workflows
-
-### Start focused work in an isolated lane
-
-The user creates or selects a lane, opens the relevant session or files, and runs commands or agents against that lane's workspace.
-
-### Coordinate parallel delivery
-
-The user keeps several lanes active, tracks their status, inspects overlaps early, and moves work into PRs with explicit queue or merge handling.
-
-### Launch a mission
-
-The user describes a task, lets ADE plan it, reviews the plan if needed, then supervises workers, interventions, validation, and closeout.
-
-### Route work through the CTO or MCP
-
-The user or an external system enters through the CTO or the MCP server, asks for context, launches work, or supervises existing runs without bypassing ADE's state model.
-
-## Current shipped state
-
-ADE currently ships a substantial desktop workflow surface:
-
-- lane management backed by git worktrees and branch-aware status, with support for creating child lanes from unstaged changes
-- mission orchestration with structured run, step, attempt, and intervention state
-- PR workflows with review/check awareness and queue-oriented handling
-- persistent memory and context generation systems
-- computer-use artifact capture
-- provider-flexible AI execution
-- an MCP server that exposes ADE-managed capabilities outside the UI
-
-The product is still early beta. Responsiveness, operator clarity, and workflow hardening matter more than breadth for its next iterations.
-
-## Operational expectations
-
-- User-facing copy should be concrete and stateful.
-- UI changes that touch workflows should preserve existing desktop patterns unless there is a clear product reason to change them.
-- IPC, preload, shared types, and renderer behavior must stay aligned when contracts change.
-- Context generation should prefer compact, non-overlapping cards over broad markdown dumps.
-- For computer-use workflows, policy enforcement and artifact ownership must be implemented in code paths, not left to prompts alone.
-
-## Non-goals
-
-- Replacing the IDE with a full general-purpose editor platform
-- Reframing ADE as a generic docs site or template app
-- Depending on an ADE-hosted account layer to make core workflows work
-- Treating prompt-only behavior as sufficient enforcement for policy-sensitive flows
-
-## Success signals
-
-- Operators can tell what each active lane, mission, and PR is doing without reading raw transcripts first.
-- Parallel work conflicts are surfaced before merge time often enough to change operator behavior.
-- Generated context docs are compact, distinct, and useful for agent startup.
-- New provider or integration support can be added without changing ADE's operator model.
-
-## Related docs
-
-- Product surface details: [`docs/features/`](./features/)
-- Technical architecture index: [`docs/architecture/SYSTEM_OVERVIEW.md`](./architecture/SYSTEM_OVERVIEW.md)
-- Context generation ownership contract: [`docs/architecture/CONTEXT_CONTRACT.md`](./architecture/CONTEXT_CONTRACT.md)
-- Sequencing and roadmap notes: [`docs/final-plan/README.md`](./final-plan/README.md)
+- ADE does not run browser automation or accessibility-based UI control itself. It is a control plane; executors run elsewhere (Ghost OS, agent-browser CLI).
+- ADE does not host remote git servers. It operates on local worktrees against a GitHub remote.
+- ADE does not multiplex multiple users. Single-user, project-local.
+- ADE does not ship a server-side web app. The `apps/web/` is marketing/docs-site only.

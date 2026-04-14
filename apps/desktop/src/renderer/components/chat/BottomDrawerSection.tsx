@@ -35,7 +35,7 @@ export function BottomDrawerSection({
           <CaretRight size={12} weight="bold" className="shrink-0 text-fg/35" />
         )}
         <IconComponent size={14} weight="bold" className="shrink-0 text-fg/35" />
-        <span className="text-[11px] font-semibold uppercase tracking-[0.08em] text-fg/45">
+        <span className="text-[11px] font-semibold tracking-[0.08em] text-fg/45">
           {label}
         </span>
         <div className="min-w-0 flex-1 truncate text-[12px] text-fg/50">

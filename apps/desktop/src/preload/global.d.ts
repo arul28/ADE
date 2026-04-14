@@ -384,6 +384,7 @@ import type {
   SuggestResolverTargetArgs,
   SuggestResolverTargetResult,
   SessionDeltaSummary,
+  TerminalSessionChangedEvent,
   StackChainItem,
   StopTestRunArgs,
   TerminalSessionDetail,
@@ -1059,6 +1060,7 @@ declare global {
         updateMeta: (args: UpdateSessionMetaArgs) => Promise<TerminalSessionSummary | null>;
         readTranscriptTail: (args: ReadTranscriptTailArgs) => Promise<string>;
         getDelta: (sessionId: string) => Promise<SessionDeltaSummary | null>;
+        onChanged: (cb: (ev: TerminalSessionChangedEvent) => void) => () => void;
       };
       agentChat: {
         list: (args?: AgentChatListArgs) => Promise<AgentChatSessionSummary[]>;

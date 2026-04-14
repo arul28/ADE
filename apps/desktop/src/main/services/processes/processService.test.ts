@@ -25,13 +25,11 @@ function makeMinimalConfig(processes: Array<{
     command: p.command,
     cwd: p.cwd ?? ".",
     env: {},
-    readiness: { type: "immediate" as const },
-    restart: { policy: "never" as const },
+    autostart: false,
+    restart: "never" as const,
+    gracefulShutdownMs: 1000,
     dependsOn: [],
-    healthCheck: null,
-    icon: null,
-    color: null,
-    description: null,
+    readiness: { type: "none" as const },
   }));
   return {
     effective: {
@@ -65,32 +63,103 @@ function makeLaneSummary(tmpDir: string, laneId: string) {
   };
 }
 
-/** Wait for a process to fully exit by polling its runtime status. */
-async function waitForExit(
-  service: ReturnType<typeof createProcessService>,
-  laneId: string,
-  processId: string,
-  timeoutMs = 5000,
-): Promise<void> {
-  const start = Date.now();
-  while (Date.now() - start < timeoutMs) {
-    const runtimes = service.listRuntime(laneId);
-    const rt = runtimes.find((r) => r.processId === processId);
-    if (rt && (rt.status === "stopped" || rt.status === "crashed")) return;
-    await new Promise((r) => setTimeout(r, 50));
-  }
+function createPtyHarness(tmpDir: string) {
+  const sessionStore = new Map<string, { id: string; laneId: string; ptyId: string | null; transcriptPath: string }>();
+  const dataListeners = new Set<(event: { laneId: string; ptyId: string; sessionId: string; data: string }) => void>();
+  const exitListeners = new Set<(event: { laneId: string; ptyId: string; sessionId: string; exitCode: number | null }) => void>();
+
+  const sessionService = {
+    get: vi.fn((sessionId: string) => sessionStore.get(sessionId) ?? null),
+  } as any;
+
+  const ptyService = {
+    create: vi.fn(async (args: any) => {
+      const transcriptPath = path.join(tmpDir, ".ade", "transcripts", `${args.sessionId}.log`);
+      fs.mkdirSync(path.dirname(transcriptPath), { recursive: true });
+      fs.writeFileSync(transcriptPath, "", "utf8");
+      const ptyId = `pty-${args.sessionId}`;
+      sessionStore.set(args.sessionId, {
+        id: args.sessionId,
+        laneId: args.laneId,
+        ptyId,
+        transcriptPath,
+      });
+      return {
+        ptyId,
+        sessionId: args.sessionId,
+        pid: 4321,
+      };
+    }),
+    dispose: vi.fn((args: { ptyId: string; sessionId?: string }) => {
+      const sessionId = args.sessionId ?? Array.from(sessionStore.values()).find((session) => session.ptyId === args.ptyId)?.id;
+      if (!sessionId) return;
+      const session = sessionStore.get(sessionId);
+      if (!session) return;
+      for (const listener of exitListeners) {
+        listener({
+          laneId: session.laneId,
+          ptyId: args.ptyId,
+          sessionId,
+          exitCode: null,
+        });
+      }
+      session.ptyId = null;
+    }),
+    onData: vi.fn((listener: (event: { laneId: string; ptyId: string; sessionId: string; data: string }) => void) => {
+      dataListeners.add(listener);
+      return () => {
+        dataListeners.delete(listener);
+      };
+    }),
+    onExit: vi.fn((listener: (event: { laneId: string; ptyId: string; sessionId: string; exitCode: number | null }) => void) => {
+      exitListeners.add(listener);
+      return () => {
+        exitListeners.delete(listener);
+      };
+    }),
+  } as any;
+
+  const emitData = (sessionId: string, data: string) => {
+    const session = sessionStore.get(sessionId);
+    if (!session?.ptyId) throw new Error(`No live PTY for session ${sessionId}`);
+    fs.appendFileSync(session.transcriptPath, data, "utf8");
+    for (const listener of dataListeners) {
+      listener({
+        laneId: session.laneId,
+        ptyId: session.ptyId,
+        sessionId,
+        data,
+      });
+    }
+  };
+
+  const emitExit = (sessionId: string, exitCode: number | null) => {
+    const session = sessionStore.get(sessionId);
+    if (!session?.ptyId) throw new Error(`No live PTY for session ${sessionId}`);
+    for (const listener of exitListeners) {
+      listener({
+        laneId: session.laneId,
+        ptyId: session.ptyId,
+        sessionId,
+        exitCode,
+      });
+    }
+    session.ptyId = null;
+  };
+
+  return { sessionService, ptyService, emitData, emitExit };
 }
 
-describe("processService start logging", () => {
-  it("injects lane runtime env into spawned processes", async () => {
+describe("processService PTY-backed run commands", () => {
+  it("injects lane runtime env into PTY-backed run commands", async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-process-env-"));
     const dbPath = path.join(tmpDir, "kv.sqlite");
-    const logsDir = path.join(tmpDir, "logs");
     const projectId = "proj-env";
     const logger = createLogger();
-
     const db = await openKvDb(dbPath, createLogger());
     const now = "2026-03-24T12:00:00.000Z";
+    const { ptyService, sessionService } = createPtyHarness(tmpDir);
+
     db.run(
       "insert into projects(id, root_path, display_name, default_base_ref, created_at, last_opened_at) values (?, ?, ?, ?, ?, ?)",
       [projectId, tmpDir, "test", "main", now, now],
@@ -104,13 +173,12 @@ describe("processService start logging", () => {
     );
 
     const config = makeMinimalConfig([
-      { id: "print-env", command: ["sh", "-c", "printf '%s' \"$PORT|$PORT_RANGE_START|$PORT_RANGE_END|$HOSTNAME|$PROXY_HOSTNAME\""] },
+      { id: "print-env", command: ["npx", "sst", "dev", "--mode=mono"] },
     ]);
 
     const service = createProcessService({
       db,
       projectId,
-      processLogsDir: logsDir,
       logger,
       laneService: {
         getLaneWorktreePath: () => tmpDir,
@@ -121,6 +189,8 @@ describe("processService start logging", () => {
         getEffective: () => config.effective,
         getExecutableConfig: () => config.effective,
       } as any,
+      sessionService,
+      ptyService,
       getLaneRuntimeEnv: async () => ({
         PORT: "3001",
         PORT_RANGE_START: "3001",
@@ -133,11 +203,15 @@ describe("processService start logging", () => {
 
     try {
       await service.start({ laneId: "lane-env", processId: "print-env" });
-      await waitForExit(service, "lane-env", "print-env");
-
-      const logPath = path.join(logsDir, "lane-env", "print-env.log");
-      const logText = fs.readFileSync(logPath, "utf8");
-      expect(logText).toContain("3001|3001|3099|lane-env.localhost|lane-env.localhost");
+      expect(ptyService.create).toHaveBeenCalledWith(expect.objectContaining({
+        env: expect.objectContaining({
+          PORT: "3001",
+          PORT_RANGE_START: "3001",
+          PORT_RANGE_END: "3099",
+          HOSTNAME: "lane-env.localhost",
+          PROXY_HOSTNAME: "lane-env.localhost",
+        }),
+      }));
     } finally {
       service.disposeAll();
       db.close();
@@ -148,12 +222,12 @@ describe("processService start logging", () => {
   it("includes envPath and envShell in the process.start log entry", async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-process-startlog-"));
     const dbPath = path.join(tmpDir, "kv.sqlite");
-    const logsDir = path.join(tmpDir, "logs");
     const projectId = "proj-startlog";
     const logger = createLogger();
-
     const db = await openKvDb(dbPath, createLogger());
     const now = "2026-03-24T12:00:00.000Z";
+    const { ptyService, sessionService } = createPtyHarness(tmpDir);
+
     db.run(
       "insert into projects(id, root_path, display_name, default_base_ref, created_at, last_opened_at) values (?, ?, ?, ?, ?, ?)",
       [projectId, tmpDir, "test", "main", now, now],
@@ -173,7 +247,6 @@ describe("processService start logging", () => {
     const service = createProcessService({
       db,
       projectId,
-      processLogsDir: logsDir,
       logger,
       laneService: {
         getLaneWorktreePath: () => tmpDir,
@@ -184,15 +257,14 @@ describe("processService start logging", () => {
         getEffective: () => config.effective,
         getExecutableConfig: () => config.effective,
       } as any,
+      sessionService,
+      ptyService,
       broadcastEvent: () => {},
     });
 
     try {
       const runtime = await service.start({ laneId: "lane-ok", processId: "echo-proc" });
-      expect(runtime.status).toMatch(/starting|running|stopped/);
-
-      // Wait for echo to complete before asserting / closing db
-      await waitForExit(service, "lane-ok", "echo-proc");
+      expect(runtime.status).toBe("running");
 
       const infoCalls = logger.info.mock.calls.filter(
         (call: any[]) => call[0] === "process.start",
@@ -212,16 +284,16 @@ describe("processService start logging", () => {
     }
   });
 
-  it("transitions to crashed status when the spawned process exits with non-zero code", async () => {
+  it("transitions to crashed status when the PTY-backed command exits with non-zero code", async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-process-error-"));
     const dbPath = path.join(tmpDir, "kv.sqlite");
-    const logsDir = path.join(tmpDir, "logs");
     const projectId = "proj-crash";
     const logger = createLogger();
     const events: any[] = [];
-
     const db = await openKvDb(dbPath, createLogger());
     const now = "2026-03-24T12:00:00.000Z";
+    const { ptyService, sessionService, emitExit } = createPtyHarness(tmpDir);
+
     db.run(
       "insert into projects(id, root_path, display_name, default_base_ref, created_at, last_opened_at) values (?, ?, ?, ?, ?, ?)",
       [projectId, tmpDir, "test", "main", now, now],
@@ -241,7 +313,6 @@ describe("processService start logging", () => {
     const service = createProcessService({
       db,
       projectId,
-      processLogsDir: logsDir,
       logger,
       laneService: {
         getLaneWorktreePath: () => tmpDir,
@@ -252,17 +323,19 @@ describe("processService start logging", () => {
         getEffective: () => config.effective,
         getExecutableConfig: () => config.effective,
       } as any,
+      sessionService,
+      ptyService,
       broadcastEvent: (ev: any) => events.push(ev),
     });
 
     try {
-      await service.start({ laneId: "lane-err", processId: "fail-proc" });
+      const runtime = await service.start({ laneId: "lane-err", processId: "fail-proc" });
+      expect(runtime.sessionId).toBeTruthy();
 
-      // Wait for the process to exit
-      await waitForExit(service, "lane-err", "fail-proc");
+      emitExit(String(runtime.sessionId), 42);
 
       const runtimes = service.listRuntime("lane-err");
-      const current = runtimes.find((r) => r.processId === "fail-proc");
+      const current = runtimes.find((row) => row.processId === "fail-proc");
       expect(current).toBeTruthy();
       expect(current!.status).toBe("crashed");
       expect(current!.lastExitCode).toBe(42);
@@ -274,6 +347,7 @@ describe("processService start logging", () => {
       expect(runRow).toBeTruthy();
       expect(runRow!.exit_code).toBe(42);
       expect(runRow!.termination_reason).toBe("crashed");
+      expect(events.some((event) => event.type === "runtime" && event.runtime.status === "crashed")).toBe(true);
     } finally {
       service.disposeAll();
       db.close();
@@ -284,12 +358,12 @@ describe("processService start logging", () => {
   it("rejects process cwd values that escape the lane workspace", async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-process-cwd-"));
     const dbPath = path.join(tmpDir, "kv.sqlite");
-    const logsDir = path.join(tmpDir, "logs");
     const projectId = "proj-cwd";
     const logger = createLogger();
-
     const db = await openKvDb(dbPath, createLogger());
     const now = "2026-03-24T12:00:00.000Z";
+    const { ptyService, sessionService } = createPtyHarness(tmpDir);
+
     db.run(
       "insert into projects(id, root_path, display_name, default_base_ref, created_at, last_opened_at) values (?, ?, ?, ?, ?, ?)",
       [projectId, tmpDir, "test", "main", now, now],
@@ -309,7 +383,6 @@ describe("processService start logging", () => {
     const service = createProcessService({
       db,
       projectId,
-      processLogsDir: logsDir,
       logger,
       laneService: {
         getLaneWorktreePath: () => tmpDir,
@@ -320,6 +393,8 @@ describe("processService start logging", () => {
         getEffective: () => config.effective,
         getExecutableConfig: () => config.effective,
       } as any,
+      sessionService,
+      ptyService,
       broadcastEvent: () => {},
     });
 
@@ -327,6 +402,7 @@ describe("processService start logging", () => {
       await expect(service.start({ laneId: "lane-cwd", processId: "escape-proc" })).rejects.toThrow(
         /cwd must stay within the lane workspace/,
       );
+      expect(ptyService.create).not.toHaveBeenCalled();
     } finally {
       service.disposeAll();
       db.close();

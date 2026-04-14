@@ -11,6 +11,18 @@ export type WizardStep = {
   completed?: boolean;
 };
 
+function stepIconStyle(isDone: boolean, isActive: boolean): React.CSSProperties {
+  if (isDone) return { background: "rgba(52, 211, 153, 0.14)", border: "1px solid rgba(52, 211, 153, 0.24)" };
+  if (isActive) return { background: "rgba(167, 139, 250, 0.14)", border: "1px solid rgba(167, 139, 250, 0.24)" };
+  return { background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.05)" };
+}
+
+function stepLabelCls(isDone: boolean, isActive: boolean): string {
+  if (isActive) return "text-fg";
+  if (isDone) return "text-fg/72";
+  return "text-muted-fg/42";
+}
+
 export function StepWizard({
   steps,
   activeStep,
@@ -95,8 +107,8 @@ export function StepWizard({
                 className="h-full rounded-full transition-all duration-300"
                 style={{
                   width: `${progress}%`,
-                  background: "linear-gradient(90deg, rgba(56,189,248,0.95), rgba(251,191,36,0.95))",
-                  boxShadow: "0 0 18px rgba(56, 189, 248, 0.25)",
+                  background: "linear-gradient(90deg, rgba(167,139,250,0.95), rgba(251,191,36,0.95))",
+                  boxShadow: "0 0 18px rgba(167, 139, 250, 0.25)",
                 }}
               />
             </div>
@@ -118,12 +130,12 @@ export function StepWizard({
                 className={cn(
                   "flex min-w-[170px] items-start gap-3 rounded-2xl px-3.5 py-3 text-left transition-all duration-200 lg:w-full lg:min-w-0",
                   isActive
-                    ? "bg-[linear-gradient(180deg,rgba(56,189,248,0.12),rgba(56,189,248,0.07))]"
+                    ? "bg-[linear-gradient(180deg,rgba(167,139,250,0.12),rgba(167,139,250,0.07))]"
                     : "hover:bg-white/[0.03]",
                 )}
                 style={isActive
                   ? {
-                      border: "1px solid rgba(56, 189, 248, 0.22)",
+                      border: "1px solid rgba(167, 139, 250, 0.22)",
                       boxShadow: "0 12px 28px rgba(0, 0, 0, 0.18)",
                     }
                   : { border: "1px solid rgba(255,255,255,0.04)" }}
@@ -131,34 +143,19 @@ export function StepWizard({
                 <div
                   className={cn(
                     "flex h-8 w-8 shrink-0 items-center justify-center rounded-xl transition-all",
-                    isDone
-                      ? "text-fg"
-                      : isActive
-                        ? "text-fg"
-                        : "text-muted-fg/25",
+                    isDone || isActive ? "text-fg" : "text-muted-fg/25",
                   )}
-                  style={
-                    isDone
-                      ? { background: "rgba(52, 211, 153, 0.14)", border: "1px solid rgba(52, 211, 153, 0.24)" }
-                      : isActive
-                        ? { background: "rgba(56, 189, 248, 0.14)", border: "1px solid rgba(56, 189, 248, 0.24)" }
-                        : { background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.05)" }
-                  }
+                  style={stepIconStyle(isDone, isActive)}
                 >
                   {isDone ? (
                     <Check size={10} weight="bold" style={{ color: "#34D399" }} />
                   ) : (
-                    <Icon size={12} weight={isActive ? "bold" : "regular"} style={isActive ? { color: "#38BDF8" } : undefined} />
+                    <Icon size={12} weight={isActive ? "bold" : "regular"} style={isActive ? { color: "#A78BFA" } : undefined} />
                   )}
                 </div>
 
                 <div className="min-w-0 flex-1">
-                  <div
-                    className={cn(
-                      "text-xs font-semibold",
-                      isActive ? "text-fg" : isDone ? "text-fg/72" : "text-muted-fg/42",
-                    )}
-                  >
+                  <div className={cn("text-xs font-semibold", stepLabelCls(isDone, isActive))}>
                     {step.label}
                   </div>
                   {step.description ? (

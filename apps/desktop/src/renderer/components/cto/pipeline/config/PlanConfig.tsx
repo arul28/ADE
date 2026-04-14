@@ -126,7 +126,7 @@ export function PlanConfig({ visualPlan, onPatchPlan, agents, humanReview, onUpd
             type="checkbox"
             checked={visualPlan.notificationEnabled}
             onChange={(e) => onPatchPlan({ notificationEnabled: e.target.checked })}
-            className="accent-[#38BDF8]"
+            className="accent-[#A78BFA]"
           />
           <span className="text-xs text-fg/60">{fieldLabel("notificationEnabled")}</span>
         </label>

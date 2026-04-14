@@ -434,6 +434,82 @@ p{font-size:13px;color:#A1A1AA;line-height:1.5;margin:0 0 8px}
     };
 
     return new Promise((resolve, reject) => {
+      const timeoutMs = 30_000;
+      const controller = new AbortController();
+      let settled = false;
+      let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
+      let bodyChunks: Buffer[] | null = null;
+      const shouldBufferBody = args.req.method !== "GET" && args.req.method !== "HEAD";
+
+      const cleanup = () => {
+        if (timeoutHandle) {
+          clearTimeout(timeoutHandle);
+          timeoutHandle = null;
+        }
+        args.req.off("aborted", onRequestAborted);
+        args.req.off("close", onRequestClose);
+        args.req.off("error", onRequestError);
+        if (shouldBufferBody) {
+          args.req.off("data", onRequestData);
+          args.req.off("end", onRequestEnd);
+        }
+      };
+
+      const settleResolve = (value: UpstreamResponse) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        resolve(value);
+      };
+
+      const settleReject = (error: Error) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        reject(error);
+      };
+
+      const abortWithTimeout = () => {
+        const timeoutError = new Error("Upstream OAuth request timed out after 30 seconds.");
+        timeoutError.name = "TimeoutError";
+        settled = true;
+        cleanup();
+        controller.abort(timeoutError);
+        reject(timeoutError);
+      };
+
+      const onRequestAborted = () => {
+        if (settled) return;
+        const abortError = new Error("Client request was aborted before the upstream OAuth request completed.");
+        abortError.name = "AbortError";
+        settleReject(abortError);
+        controller.abort(abortError);
+      };
+
+      const onRequestClose = () => {
+        if (settled || args.req.complete) return;
+        const closeError = new Error("Client request closed before the upstream OAuth request completed.");
+        closeError.name = "AbortError";
+        settleReject(closeError);
+        controller.abort(closeError);
+      };
+
+      const onRequestError = (error: Error) => {
+        settleReject(error);
+        controller.abort(error);
+      };
+
+      const onRequestData = (chunk: Buffer | string) => {
+        if (!bodyChunks) bodyChunks = [];
+        bodyChunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+      };
+
+      const onRequestEnd = () => {
+        if (settled) return;
+        upstreamReq.end(bodyChunks ? Buffer.concat(bodyChunks) : undefined);
+      };
+
+      timeoutHandle = setTimeout(abortWithTimeout, timeoutMs);
       const upstreamReq = http.request(
         {
           hostname: "127.0.0.1",
@@ -441,6 +517,7 @@ p{font-size:13px;color:#A1A1AA;line-height:1.5;margin:0 0 8px}
           path: args.overridePath ?? args.req.url,
           method: args.req.method,
           headers,
+          signal: controller.signal,
         },
         (upstreamRes) => {
           const chunks: Buffer[] = [];
@@ -448,30 +525,28 @@ p{font-size:13px;color:#A1A1AA;line-height:1.5;margin:0 0 8px}
             chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
           });
           upstreamRes.on("end", () => {
-            resolve({
+            settleResolve({
               statusCode: upstreamRes.statusCode ?? 502,
               headers: upstreamRes.headers,
               body: Buffer.concat(chunks),
             });
           });
+          upstreamRes.once("error", settleReject);
         },
       );
 
-      upstreamReq.once("error", reject);
+      upstreamReq.once("error", settleReject);
 
-      if (args.req.method === "GET" || args.req.method === "HEAD") {
+      if (!shouldBufferBody) {
         upstreamReq.end();
         return;
       }
 
-      const chunks: Buffer[] = [];
-      args.req.on("data", (chunk) => {
-        chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-      });
-      args.req.once("end", () => {
-        upstreamReq.end(Buffer.concat(chunks));
-      });
-      args.req.once("error", reject);
+      args.req.once("aborted", onRequestAborted);
+      args.req.once("close", onRequestClose);
+      args.req.once("error", onRequestError);
+      args.req.on("data", onRequestData);
+      args.req.once("end", onRequestEnd);
     });
   }
 

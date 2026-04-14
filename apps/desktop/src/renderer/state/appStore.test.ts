@@ -84,13 +84,23 @@ describe("appStore", () => {
     it("updates the theme in state and persists to localStorage", () => {
       useAppStore.getState().setTheme("light");
       expect(useAppStore.getState().theme).toBe("light");
-      expect(mockLocalStorage.setItem).toHaveBeenCalledWith("ade.theme", "light");
+      const calls = mockLocalStorage.setItem.mock.calls.filter(
+        ([key]) => key === "ade.userPreferences.v1",
+      );
+      const latest = calls[calls.length - 1];
+      expect(latest).toBeTruthy();
+      expect(JSON.parse(latest![1])).toMatchObject({ theme: "light" });
     });
 
     it("persists dark theme", () => {
       useAppStore.getState().setTheme("dark");
       expect(useAppStore.getState().theme).toBe("dark");
-      expect(mockLocalStorage.setItem).toHaveBeenCalledWith("ade.theme", "dark");
+      const calls = mockLocalStorage.setItem.mock.calls.filter(
+        ([key]) => key === "ade.userPreferences.v1",
+      );
+      const latest = calls[calls.length - 1];
+      expect(latest).toBeTruthy();
+      expect(JSON.parse(latest![1])).toMatchObject({ theme: "dark" });
     });
   });
 
@@ -103,18 +113,22 @@ describe("appStore", () => {
       });
 
       expect(useAppStore.getState().terminalPreferences).toEqual({
+        fontFamily: DEFAULT_TERMINAL_PREFERENCES.fontFamily,
         fontSize: 14,
         lineHeight: 1.3,
         scrollback: 20_000,
       });
-      expect(mockLocalStorage.setItem).toHaveBeenCalledWith(
-        "ade.terminalPreferences.v1",
-        JSON.stringify({
-          fontSize: 14,
-          lineHeight: 1.3,
-          scrollback: 20_000,
-        }),
+      const calls = mockLocalStorage.setItem.mock.calls.filter(
+        ([key]) => key === "ade.userPreferences.v1",
       );
+      const latest = calls[calls.length - 1];
+      expect(latest).toBeTruthy();
+      expect(JSON.parse(latest![1]).terminalPreferences).toEqual({
+        fontFamily: DEFAULT_TERMINAL_PREFERENCES.fontFamily,
+        fontSize: 14,
+        lineHeight: 1.3,
+        scrollback: 20_000,
+      });
     });
 
     it("clamps invalid terminal preferences to safe bounds", () => {
@@ -125,6 +139,7 @@ describe("appStore", () => {
       });
 
       expect(useAppStore.getState().terminalPreferences).toEqual({
+        fontFamily: DEFAULT_TERMINAL_PREFERENCES.fontFamily,
         fontSize: 18,
         lineHeight: 1,
         scrollback: 2000,

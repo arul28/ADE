@@ -81,6 +81,7 @@ const EMPTY_TERMINAL_ATTENTION: TerminalAttentionSnapshot = {
 
 const WORK_VIEW_STORAGE_KEY = "ade.workViewState.v1";
 const TERMINAL_PREFERENCES_STORAGE_KEY = "ade.terminalPreferences.v1";
+const USER_PREFERENCES_STORAGE_KEY = "ade.userPreferences.v1";
 
 function createDefaultWorkProjectViewState(): WorkProjectViewState {
   return {
@@ -220,46 +221,75 @@ function normalizeLaneWorkScopeKey(projectRoot: string | null | undefined, laneI
   return `${projectKey}::${normalizedLaneId}`;
 }
 
-function readInitialSmartTooltips(): boolean {
-  try {
-    const raw = window.localStorage.getItem("ade.smartTooltips");
-    if (raw === "false") return false;
-  } catch {
-    // ignore
-  }
-  return true; // default on
+type PersistedUserPreferences = {
+  theme: ThemeId;
+  terminalPreferences: TerminalPreferences;
+  smartTooltipsEnabled: boolean;
+};
+
+function coerceTheme(value: unknown): ThemeId | null {
+  if (value === "dark" || value === "light") return value;
+  if (value === "github" || value === "bloomberg" || value === "rainbow" || value === "pats") return "dark";
+  if (value === "e-paper" || value === "sky") return "light";
+  return null;
 }
 
-function persistSmartTooltips(enabled: boolean) {
+function readUnifiedUserPreferences(): PersistedUserPreferences | null {
   try {
-    window.localStorage.setItem("ade.smartTooltips", String(enabled));
+    const raw = window.localStorage.getItem(USER_PREFERENCES_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<PersistedUserPreferences>;
+    return {
+      theme: coerceTheme(parsed.theme) ?? "dark",
+      terminalPreferences: normalizeTerminalPreferences(parsed.terminalPreferences),
+      smartTooltipsEnabled: parsed.smartTooltipsEnabled !== false,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function readLegacyUserPreferences(): PersistedUserPreferences {
+  let theme: ThemeId = "dark";
+  try {
+    theme = coerceTheme(window.localStorage.getItem("ade.theme")) ?? "dark";
+  } catch {
+    // ignore
+  }
+  let terminalPreferences: TerminalPreferences = { ...DEFAULT_TERMINAL_PREFERENCES };
+  try {
+    const raw = window.localStorage.getItem(TERMINAL_PREFERENCES_STORAGE_KEY);
+    if (raw) terminalPreferences = normalizeTerminalPreferences(JSON.parse(raw));
+  } catch {
+    // ignore
+  }
+  let smartTooltipsEnabled = true;
+  try {
+    if (window.localStorage.getItem("ade.smartTooltips") === "false") smartTooltipsEnabled = false;
+  } catch {
+    // ignore
+  }
+  return { theme, terminalPreferences, smartTooltipsEnabled };
+}
+
+function persistUserPreferences(prefs: PersistedUserPreferences) {
+  try {
+    window.localStorage.setItem(USER_PREFERENCES_STORAGE_KEY, JSON.stringify(prefs));
   } catch {
     // ignore
   }
 }
 
-function readInitialTheme(): ThemeId {
-  try {
-    const raw = window.localStorage.getItem("ade.theme");
-    if (raw === "dark" || raw === "light") return raw as ThemeId;
-    // Migrate old themes: dark-ish themes → dark, light-ish → light
-    if (raw === "github" || raw === "bloomberg" || raw === "rainbow" || raw === "pats") return "dark";
-    if (raw === "e-paper" || raw === "sky") return "light";
-  } catch {
-    // ignore
-  }
-  return "dark";
+function readInitialUserPreferences(): PersistedUserPreferences {
+  const unified = readUnifiedUserPreferences();
+  if (unified) return unified;
+  const legacy = readLegacyUserPreferences();
+  persistUserPreferences(legacy);
+  return legacy;
 }
 
 const initialPersistedWorkViews = readPersistedWorkViewState();
-
-function persistTheme(theme: ThemeId) {
-  try {
-    window.localStorage.setItem("ade.theme", theme);
-  } catch {
-    // ignore
-  }
-}
+const initialUserPreferences = readInitialUserPreferences();
 
 function clampTerminalFontSize(value: unknown): number {
   const next = typeof value === "number" ? value : Number(value);
@@ -295,24 +325,6 @@ function normalizeTerminalPreferences(value: unknown): TerminalPreferences {
     lineHeight: clampTerminalLineHeight(candidate.lineHeight),
     scrollback: clampTerminalScrollback(candidate.scrollback),
   };
-}
-
-function readInitialTerminalPreferences(): TerminalPreferences {
-  try {
-    const raw = window.localStorage.getItem(TERMINAL_PREFERENCES_STORAGE_KEY);
-    if (!raw) return { ...DEFAULT_TERMINAL_PREFERENCES };
-    return normalizeTerminalPreferences(JSON.parse(raw));
-  } catch {
-    return { ...DEFAULT_TERMINAL_PREFERENCES };
-  }
-}
-
-function persistTerminalPreferences(preferences: TerminalPreferences) {
-  try {
-    window.localStorage.setItem(TERMINAL_PREFERENCES_STORAGE_KEY, JSON.stringify(preferences));
-  } catch {
-    // ignore
-  }
 }
 
 type AppState = {
@@ -396,8 +408,7 @@ type LaneRefreshRequest = {
   includeStatus: boolean;
 };
 
-let warmLaneStatusTimer: number | null = null;
-let warmProviderModeTimer: number | null = null;
+let warmupTimer: number | null = null;
 /** Monotonic counter incremented before each lane refresh request.
  *  Slower responses whose token doesn't match the latest value are discarded. */
 let laneRefreshVersion = 0;
@@ -416,24 +427,17 @@ function mergeLaneRefreshRequests(current: LaneRefreshRequest, next: LaneRefresh
 }
 
 function scheduleProjectHydration(get: () => AppState) {
-  if (warmLaneStatusTimer != null) {
-    window.clearTimeout(warmLaneStatusTimer);
+  if (warmupTimer != null) {
+    window.clearTimeout(warmupTimer);
   }
-  if (warmProviderModeTimer != null) {
-    window.clearTimeout(warmProviderModeTimer);
-  }
-
-  warmLaneStatusTimer = window.setTimeout(() => {
-    warmLaneStatusTimer = null;
+  const delay = Math.max(1_200, 1_800);
+  warmupTimer = window.setTimeout(() => {
+    warmupTimer = null;
     void get().refreshLanes({ includeStatus: true }).catch((err) => {
       console.debug("Scheduled lane refresh failed:", err);
     });
-  }, 1_200);
-
-  warmProviderModeTimer = window.setTimeout(() => {
-    warmProviderModeTimer = null;
     void get().refreshProviderMode();
-  }, 1_800);
+  }, delay);
 }
 
 function formatProjectTransitionError(
@@ -465,14 +469,14 @@ export const useAppStore = create<AppState>((set, get) => ({
   selectedLaneId: null,
   runLaneId: null,
   focusedSessionId: null,
-  theme: readInitialTheme(),
-  terminalPreferences: readInitialTerminalPreferences(),
+  theme: initialUserPreferences.theme,
+  terminalPreferences: initialUserPreferences.terminalPreferences,
   providerMode: "guest",
   availableModels: [...MODEL_REGISTRY].filter((m) => !m.deprecated),
   laneInspectorTabs: {},
   keybindings: null,
   terminalAttention: EMPTY_TERMINAL_ATTENTION,
-  smartTooltipsEnabled: readInitialSmartTooltips(),
+  smartTooltipsEnabled: initialUserPreferences.smartTooltipsEnabled,
   workViewByProject: initialPersistedWorkViews.workViewByProject,
   laneWorkViewByScope: initialPersistedWorkViews.laneWorkViewByScope,
 
@@ -496,10 +500,15 @@ export const useAppStore = create<AppState>((set, get) => ({
     }),
   selectRunLane: (laneId) => set({ runLaneId: laneId }),
   focusSession: (sessionId) => set({ focusedSessionId: sessionId }),
-  setTheme: (theme) => {
-    persistTheme(theme);
-    set({ theme });
-  },
+  setTheme: (theme) =>
+    set((prev) => {
+      persistUserPreferences({
+        theme,
+        terminalPreferences: prev.terminalPreferences,
+        smartTooltipsEnabled: prev.smartTooltipsEnabled,
+      });
+      return { theme };
+    }),
   setTerminalPreferences: (next) =>
     set((prev) => {
       const updated = normalizeTerminalPreferences(
@@ -507,14 +516,23 @@ export const useAppStore = create<AppState>((set, get) => ({
           ? next(prev.terminalPreferences)
           : { ...prev.terminalPreferences, ...next }
       );
-      persistTerminalPreferences(updated);
+      persistUserPreferences({
+        theme: prev.theme,
+        terminalPreferences: updated,
+        smartTooltipsEnabled: prev.smartTooltipsEnabled,
+      });
       return { terminalPreferences: updated };
     }),
   setTerminalAttention: (terminalAttention) => set({ terminalAttention }),
-  setSmartTooltipsEnabled: (enabled) => {
-    persistSmartTooltips(enabled);
-    set({ smartTooltipsEnabled: enabled });
-  },
+  setSmartTooltipsEnabled: (enabled) =>
+    set((prev) => {
+      persistUserPreferences({
+        theme: prev.theme,
+        terminalPreferences: prev.terminalPreferences,
+        smartTooltipsEnabled: enabled,
+      });
+      return { smartTooltipsEnabled: enabled };
+    }),
   openNewTab: () => set({ isNewTabOpen: true, showWelcome: true }),
   cancelNewTab: () => {
     const hasProject = get().project != null;

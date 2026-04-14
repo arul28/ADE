@@ -24,10 +24,10 @@ type Props = {
 
 /** Resolve the accent color for a given stage. */
 function stageColor(stage: PipelineStage): string {
-  return STAGE_COLORS[stage.type] ?? "#38BDF8";
+  return STAGE_COLORS[stage.type] ?? "#A78BFA";
 }
 
-const TRIGGER_COLOR = "#38BDF8";
+const TRIGGER_COLOR = "#A78BFA";
 const CLOSEOUT_COLOR = "#34D399";
 
 export function PipelineVisualization({ workflow, selection, onSelect, onAddStage, onRemoveStage }: Props) {
@@ -113,9 +113,9 @@ export function PipelineVisualization({ workflow, selection, onSelect, onAddStag
                     <span
                       className="flex h-4 w-4 items-center justify-center rounded-full text-[9px] font-semibold shrink-0"
                       style={{
-                        background: "rgba(56,189,248,0.10)",
-                        color: "rgba(56,189,248,0.70)",
-                        border: "1px solid rgba(56,189,248,0.15)",
+                        background: "rgba(167,139,250,0.10)",
+                        color: "rgba(167,139,250,0.70)",
+                        border: "1px solid rgba(167,139,250,0.15)",
                       }}
                     >
                       {i + 1}

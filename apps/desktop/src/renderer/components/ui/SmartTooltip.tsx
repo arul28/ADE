@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useId, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useAppStore } from "../../state/appStore";
 
@@ -37,6 +37,7 @@ export function SmartTooltip({
 }: SmartTooltipProps) {
   const globalEnabled = useAppStore((s) => s.smartTooltipsEnabled);
   const enabled = forceEnabled ?? globalEnabled;
+  const tooltipId = useId();
 
   const [visible, setVisible] = useState(false);
   const [coords, setCoords] = useState<{ x: number; y: number; side: "top" | "bottom" } | null>(null);
@@ -90,6 +91,13 @@ export function SmartTooltip({
   }, [visible, coords]);
 
   const hasExtra = Boolean(content.gitCommand || content.effect || content.warning || content.shortcut);
+  const childDescribedBy = children.props["aria-describedby"];
+  const describedBy = visible
+    ? [childDescribedBy, tooltipId].filter(Boolean).join(" ") || undefined
+    : childDescribedBy;
+  const trigger = React.cloneElement(children, {
+    "aria-describedby": describedBy,
+  });
 
   return (
     <>
@@ -101,12 +109,14 @@ export function SmartTooltip({
         onBlur={hide}
         style={{ display: "inline-flex" }}
       >
-        {children}
+        {trigger}
       </div>
       {visible && coords
         ? createPortal(
             <div
               ref={tooltipRef}
+              id={tooltipId}
+              role="tooltip"
               className="ade-smart-tooltip"
               data-side={coords.side}
               style={{
