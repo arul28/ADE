@@ -2,8 +2,6 @@ import fs from "node:fs";
 import path from "node:path";
 import net from "node:net";
 import { randomUUID } from "node:crypto";
-import { spawn, type ChildProcessByStdio } from "node:child_process";
-import type { Readable } from "node:stream";
 import type {
   EffectiveProjectConfig,
   LaneOverlayOverrides,
@@ -15,36 +13,36 @@ import type {
   ProcessRuntime,
   ProcessRuntimeStatus,
   ProcessStackArgs,
+  StackButtonDefinition,
   StackStartOrder,
-  StackButtonDefinition
 } from "../../../shared/types";
+import { stripAnsi } from "../../utils/ansiStrip";
 import type { Logger } from "../logging/logger";
 import type { AdeDb } from "../state/kvDb";
 import type { createProjectConfigService } from "../config/projectConfigService";
 import type { createLaneService } from "../lanes/laneService";
+import type { createPtyService } from "../pty/ptyService";
+import type { createSessionService } from "../sessions/sessionService";
 import { matchLaneOverlayPolicies } from "../config/laneOverlayMatcher";
-import { isWithinDir, fileSizeOrZero, nowIso, resolvePathWithinRoot } from "../shared/utils";
+import { nowIso, resolvePathWithinRoot } from "../shared/utils";
 
 type ManagedTerminationReason = "stopped" | "killed" | "crashed" | "restart";
 
 type ManagedProcessEntry = {
   laneId: string;
   runtime: ProcessRuntime;
-  child: ChildProcessByStdio<null, Readable, Readable> | null;
-  processGroupId: number | null;
   definition: ProcessDefinition | null;
   runId: string | null;
   stopIntent: ManagedTerminationReason | null;
-  logStream: fs.WriteStream | null;
-  logBytesWritten: number;
-  logLimitReached: boolean;
+  sessionId: string | null;
+  ptyId: string | null;
+  transcriptPath: string | null;
   readinessRegex: RegExp | null;
   readinessTimeout: NodeJS.Timeout | null;
   readinessInterval: NodeJS.Timeout | null;
   healthFailures: number;
   healthInterval: NodeJS.Timeout | null;
   restartAttempts: number;
-  gracefulKillTimeout: NodeJS.Timeout | null;
 };
 
 const READINESS_TIMEOUT_MS = 15_000;
@@ -52,8 +50,6 @@ const HEALTH_CHECK_INTERVAL_MS = 2_500;
 const HEALTH_DEGRADED_AFTER_FAILURES = 2;
 const RESTART_BACKOFF_BASE_MS = 400;
 const RESTART_BACKOFF_MAX_MS = 30_000;
-const MAX_PROCESS_LOG_BYTES = 10 * 1024 * 1024;
-const PROCESS_LOG_LIMIT_NOTICE = "\n[ADE] process log limit reached (10MB). Further output omitted.\n";
 
 function clampMaxBytes(maxBytes: number | undefined, fallback: number): number {
   if (typeof maxBytes !== "number" || !Number.isFinite(maxBytes)) return fallback;
@@ -69,7 +65,7 @@ function readTail(filePath: string, maxBytes: number): string {
     try {
       const buf = Buffer.alloc(size - start);
       fs.readSync(fd, buf, 0, buf.length, start);
-      return buf.toString("utf8");
+      return stripAnsi(buf.toString("utf8"));
     } finally {
       fs.closeSync(fd);
     }
@@ -139,128 +135,34 @@ function checkPortReady(port: number): Promise<boolean> {
   });
 }
 
-function isAliveSignalError(error: unknown): boolean {
-  return Boolean(error && typeof error === "object" && "code" in error && (error as { code?: string }).code === "EPERM");
-}
-
-function isProcessIdAlive(pid: number | null): boolean {
-  if (pid == null || !Number.isInteger(pid) || pid <= 0) return false;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return isAliveSignalError(error);
-  }
-}
-
-function isProcessGroupAlive(processGroupId: number | null): boolean {
-  if (process.platform === "win32") return false;
-  if (processGroupId == null || !Number.isInteger(processGroupId) || processGroupId <= 0) return false;
-  try {
-    process.kill(-processGroupId, 0);
-    return true;
-  } catch (error) {
-    return isAliveSignalError(error);
-  }
-}
-
 function keyFor(laneId: string, processId: string): string {
   return `${laneId}:${processId}`;
-}
-
-function resolveSafeProcessLogPath(processLogsDir: string, laneId: string, processId: string): string {
-  const laneSegment = laneId.trim();
-  const processSegment = processId.trim();
-  if (!laneSegment.length || !processSegment.length) {
-    throw new Error("laneId and processId are required.");
-  }
-  if (laneSegment.includes("\0") || processSegment.includes("\0")) {
-    throw new Error("Invalid process log path.");
-  }
-  if (
-    laneSegment.includes("/") ||
-    laneSegment.includes("\\") ||
-    processSegment.includes("/") ||
-    processSegment.includes("\\")
-  ) {
-    throw new Error("Invalid process log path.");
-  }
-  const resolved = path.resolve(processLogsDir, laneSegment, `${processSegment}.log`);
-  if (!isWithinDir(processLogsDir, resolved)) {
-    throw new Error("Invalid process log path.");
-  }
-  return resolved;
 }
 
 export function createProcessService({
   db,
   projectId,
-  processLogsDir,
   logger,
   laneService,
   projectConfigService,
-  broadcastEvent
+  sessionService,
+  ptyService,
+  getLaneRuntimeEnv,
+  broadcastEvent,
 }: {
   db: AdeDb;
   projectId: string;
-  processLogsDir: string;
   logger: Logger;
   laneService: ReturnType<typeof createLaneService>;
   projectConfigService: ReturnType<typeof createProjectConfigService>;
+  sessionService: ReturnType<typeof createSessionService>;
+  ptyService: Pick<ReturnType<typeof createPtyService>, "create" | "dispose" | "onData" | "onExit">;
+  getLaneRuntimeEnv?: (laneId: string) => Promise<Record<string, string>> | Record<string, string>;
   broadcastEvent: (ev: ProcessEvent) => void;
 }) {
   const entries = new Map<string, ManagedProcessEntry>();
-
-  const processLogPath = (laneId: string, processId: string) =>
-    resolveSafeProcessLogPath(processLogsDir, laneId, processId);
-
-  const rotateProcessLogIfNeeded = (filePath: string) => {
-    const currentSize = fileSizeOrZero(filePath);
-    if (currentSize < MAX_PROCESS_LOG_BYTES) return;
-    const rotatedPath = `${filePath}.1`;
-    try {
-      fs.rmSync(rotatedPath, { force: true });
-    } catch {
-      // ignore
-    }
-    try {
-      fs.renameSync(filePath, rotatedPath);
-    } catch {
-      // ignore
-    }
-  };
-
-  const writeProcessLogChunk = (entry: ManagedProcessEntry, chunk: string | Buffer) => {
-    if (!entry.logStream || entry.logLimitReached) return;
-    const data = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk, "utf8");
-    const remaining = MAX_PROCESS_LOG_BYTES - entry.logBytesWritten;
-    if (remaining <= 0) {
-      entry.logLimitReached = true;
-      try {
-        entry.logStream.write(PROCESS_LOG_LIMIT_NOTICE);
-      } catch {
-        // ignore
-      }
-      return;
-    }
-    if (data.length > remaining) {
-      try {
-        entry.logStream.write(data.subarray(0, remaining));
-        entry.logBytesWritten += remaining;
-        entry.logLimitReached = true;
-        entry.logStream.write(PROCESS_LOG_LIMIT_NOTICE);
-      } catch {
-        // ignore
-      }
-      return;
-    }
-    try {
-      entry.logStream.write(data);
-      entry.logBytesWritten += data.length;
-    } catch {
-      // ignore
-    }
-  };
+  const sessionToEntryKey = new Map<string, string>();
+  const ptyToEntryKey = new Map<string, string>();
 
   const persistRuntime = (runtime: ProcessRuntime) => {
     db.run(
@@ -286,8 +188,8 @@ export function createProcessService({
         runtime.endedAt,
         runtime.lastExitCode,
         runtime.readiness,
-        runtime.updatedAt
-      ]
+        runtime.updatedAt,
+      ],
     );
   };
 
@@ -303,8 +205,8 @@ export function createProcessService({
     broadcastEvent({ type: "runtime", runtime: { ...runtime } });
   };
 
-  const emitLog = (laneId: string, processId: string, stream: "stdout" | "stderr", chunk: string) => {
-    broadcastEvent({ type: "log", laneId, processId, stream, chunk, ts: nowIso() });
+  const emitLog = (laneId: string, processId: string, chunk: string) => {
+    broadcastEvent({ type: "log", laneId, processId, stream: "stdout", chunk, ts: nowIso() });
   };
 
   const upsertRunStart = (runId: string, laneId: string, processId: string, startedAt: string, logPath: string) => {
@@ -313,7 +215,7 @@ export function createProcessService({
         insert into process_runs(id, project_id, lane_id, process_key, started_at, ended_at, exit_code, termination_reason, log_path)
         values (?, ?, ?, ?, ?, null, null, 'stopped', ?)
       `,
-      [runId, projectId, laneId, processId, startedAt, logPath]
+      [runId, projectId, laneId, processId, startedAt, logPath],
     );
   };
 
@@ -322,7 +224,7 @@ export function createProcessService({
       endedAt,
       exitCode,
       reason,
-      runId
+      runId,
     ]);
   };
 
@@ -345,39 +247,13 @@ export function createProcessService({
     entry.healthFailures = 0;
   };
 
-  const clearKillTimer = (entry: ManagedProcessEntry) => {
-    if (entry.gracefulKillTimeout) {
-      clearTimeout(entry.gracefulKillTimeout);
-      entry.gracefulKillTimeout = null;
-    }
-  };
-
-  const signalManagedProcess = (entry: ManagedProcessEntry, signal: NodeJS.Signals) => {
-    const processGroupId = process.platform !== "win32" ? entry.processGroupId : null;
-    if (processGroupId != null) {
-      try {
-        process.kill(-processGroupId, signal);
-        return;
-      } catch {
-        // Fall through to direct child signaling if the process group is gone.
-      }
-    }
-
-    if (entry.child) {
-      try {
-        entry.child.kill(signal);
-        return;
-      } catch {
-        // ignore
-      }
-    }
-
-    if (entry.runtime.pid == null) return;
-    try {
-      process.kill(entry.runtime.pid, signal);
-    } catch {
-      // ignore
-    }
+  const bindLiveSession = (entry: ManagedProcessEntry, args: { sessionId: string | null; ptyId: string | null }) => {
+    if (entry.sessionId) sessionToEntryKey.delete(entry.sessionId);
+    if (entry.ptyId) ptyToEntryKey.delete(entry.ptyId);
+    entry.sessionId = args.sessionId;
+    entry.ptyId = args.ptyId;
+    if (args.sessionId) sessionToEntryKey.set(args.sessionId, keyFor(entry.laneId, entry.runtime.processId));
+    if (args.ptyId) ptyToEntryKey.set(args.ptyId, keyFor(entry.laneId, entry.runtime.processId));
   };
 
   const ensureEntry = (laneId: string, processId: string, definition: ProcessDefinition | null): ManagedProcessEntry => {
@@ -404,55 +280,50 @@ export function createProcessService({
         where project_id = ? and lane_id = ? and process_key = ?
         limit 1
       `,
-      [projectId, laneId, processId]
+      [projectId, laneId, processId],
     );
 
     const hadActiveStatus =
-      persisted?.status === "running" ||
-      persisted?.status === "starting" ||
-      persisted?.status === "stopping" ||
-      persisted?.status === "degraded";
+      persisted?.status === "running"
+      || persisted?.status === "starting"
+      || persisted?.status === "stopping"
+      || persisted?.status === "degraded";
 
-    const persistedPid = persisted?.pid ?? null;
-    const recoveredProcessGroupId = isProcessGroupAlive(persistedPid) ? persistedPid : null;
-    const recoveredPidAlive = isProcessIdAlive(persistedPid);
-    const recoveredActive = hadActiveStatus && (recoveredProcessGroupId != null || recoveredPidAlive);
     const now = nowIso();
     const runtime: ProcessRuntime = {
       laneId,
       processId,
-      status: recoveredActive ? persisted?.status ?? "running" : hadActiveStatus ? "exited" : persisted?.status ?? "stopped",
+      status: hadActiveStatus ? "exited" : persisted?.status ?? "stopped",
       readiness: persisted?.readiness ?? "unknown",
-      pid: recoveredActive ? persistedPid : null,
-      startedAt: recoveredActive ? persisted?.started_at ?? null : hadActiveStatus ? null : persisted?.started_at ?? null,
-      endedAt: recoveredActive ? null : hadActiveStatus ? now : persisted?.ended_at ?? null,
+      pid: null,
+      sessionId: null,
+      ptyId: null,
+      startedAt: persisted?.started_at ?? null,
+      endedAt: hadActiveStatus ? now : persisted?.ended_at ?? null,
       exitCode: persisted?.exit_code ?? null,
       lastExitCode: persisted?.exit_code ?? null,
-      lastEndedAt: recoveredActive ? persisted?.ended_at ?? null : hadActiveStatus ? now : persisted?.ended_at ?? null,
+      lastEndedAt: hadActiveStatus ? now : persisted?.ended_at ?? null,
       uptimeMs: null,
       ports: definition?.readiness.type === "port" ? [definition.readiness.port] : [],
-      logPath: processLogPath(laneId, processId),
-      updatedAt: persisted?.updated_at ?? now
+      logPath: null,
+      updatedAt: persisted?.updated_at ?? now,
     };
 
     const entry: ManagedProcessEntry = {
       laneId,
       runtime,
-      child: null,
-      processGroupId: recoveredProcessGroupId,
       definition,
       runId: null,
       stopIntent: null,
-      logStream: null,
-      logBytesWritten: 0,
-      logLimitReached: false,
+      sessionId: null,
+      ptyId: null,
+      transcriptPath: null,
       readinessRegex: null,
       readinessTimeout: null,
       readinessInterval: null,
       healthFailures: 0,
       healthInterval: null,
       restartAttempts: 0,
-      gracefulKillTimeout: null
     };
     entries.set(k, entry);
     persistRuntime(runtime);
@@ -496,16 +367,13 @@ export function createProcessService({
     if (entry.runtime.status === "starting") entry.runtime.status = "running";
     emitRuntime(entry);
 
-    // Periodically re-check readiness for port-based processes so we can reflect degraded/recovered states.
     clearHealthTimers(entry);
     if (entry.definition?.readiness.type === "port") {
       const port = entry.definition.readiness.port;
       entry.healthInterval = setInterval(() => {
-        if (!entry.child) return;
         if (entry.runtime.status !== "running" && entry.runtime.status !== "degraded") return;
         void checkPortReady(port)
           .then((ok) => {
-            if (!entry.child) return;
             if (ok) {
               if (entry.runtime.readiness !== "ready" || entry.runtime.status === "degraded") {
                 entry.runtime.readiness = "ready";
@@ -580,33 +448,29 @@ export function createProcessService({
   const handleProcessExit = (entry: ManagedProcessEntry, processId: string, exitCode: number | null) => {
     clearReadinessTimers(entry);
     clearHealthTimers(entry);
-    clearKillTimer(entry);
+
     const endedAt = nowIso();
-
-    if (entry.logStream) {
-      writeProcessLogChunk(entry, `\n# process ended at ${endedAt} exit=${exitCode ?? "null"}\n`);
-      try {
-        entry.logStream.end();
-      } catch {
-        // ignore
-      }
-      entry.logStream = null;
-    }
-
     const stopIntent = entry.stopIntent;
     const reason = stopIntent ?? (exitCode === 0 ? "stopped" : "crashed");
     const runtimeStatus: ProcessRuntimeStatus = reason === "crashed" ? "crashed" : "exited";
+    const activeSessionId = entry.sessionId;
+    const activePtyId = entry.ptyId;
 
-    entry.child = null;
+    if (activeSessionId) sessionToEntryKey.delete(activeSessionId);
+    if (activePtyId) ptyToEntryKey.delete(activePtyId);
+
     entry.stopIntent = null;
-    entry.processGroupId = null;
+    entry.ptyId = null;
     entry.runtime.pid = null;
+    entry.runtime.ptyId = null;
+    entry.runtime.sessionId = activeSessionId;
     entry.runtime.status = runtimeStatus;
     entry.runtime.readiness = "unknown";
     entry.runtime.endedAt = endedAt;
     entry.runtime.lastEndedAt = endedAt;
     entry.runtime.exitCode = exitCode;
     entry.runtime.lastExitCode = exitCode;
+    entry.runtime.logPath = entry.transcriptPath;
     emitRuntime(entry);
 
     if (entry.runId) {
@@ -625,11 +489,10 @@ export function createProcessService({
 
     const policy = entry.definition?.restart ?? "never";
     const shouldAutoRestart =
-      policy === "always" ||
-      ((policy === "on-failure" || policy === "on_crash") && (exitCode == null || exitCode !== 0));
+      policy === "always"
+      || ((policy === "on-failure" || policy === "on_crash") && (exitCode == null || exitCode !== 0));
 
     if (reason === "crashed" || reason === "stopped") {
-      // Reset restart backoff if the process stayed up for a while.
       const startedAt = entry.runtime.startedAt;
       const startedAtMs = startedAt ? Date.parse(startedAt) : NaN;
       const endedAtMs = Date.parse(endedAt);
@@ -651,75 +514,28 @@ export function createProcessService({
     }
   };
 
-  const monitorRecoveredStop = (
-    entry: ManagedProcessEntry,
-    processId: string,
-    forceKillAtMs: number,
-    startedAtMs = Date.now(),
-    sentSigKill = false
-  ) => {
-    clearKillTimer(entry);
-    entry.gracefulKillTimeout = setTimeout(() => {
-      const alive = entry.processGroupId != null ? isProcessGroupAlive(entry.processGroupId) : isProcessIdAlive(entry.runtime.pid);
-      if (!alive) {
-        handleProcessExit(entry, processId, entry.runtime.lastExitCode ?? null);
-        return;
-      }
-
-      const shouldForceKill = !sentSigKill && Date.now() - startedAtMs >= forceKillAtMs;
-      if (shouldForceKill) {
-        signalManagedProcess(entry, "SIGKILL");
-      }
-
-      monitorRecoveredStop(
-        entry,
-        processId,
-        forceKillAtMs,
-        startedAtMs,
-        sentSigKill || shouldForceKill
-      );
-    }, 250);
-  };
-
-  const attachProcessStreams = (
-    entry: ManagedProcessEntry,
-    laneId: string,
-    processId: string,
-    child: ChildProcessByStdio<null, Readable, Readable>
-  ) => {
-    child.stdout.setEncoding("utf8");
-    child.stderr.setEncoding("utf8");
-
-    const onChunk = (stream: "stdout" | "stderr", chunk: string) => {
-      writeProcessLogChunk(entry, chunk);
-      emitLog(laneId, processId, stream, chunk);
-      if (entry.definition?.readiness.type === "logRegex" && entry.runtime.status === "starting" && entry.readinessRegex && entry.readinessRegex.test(chunk)) {
-        markReadinessReady(entry);
-      }
-    };
-
-    child.stdout.on("data", (chunk: string) => onChunk("stdout", chunk));
-    child.stderr.on("data", (chunk: string) => onChunk("stderr", chunk));
-  };
-
   const handleProcessStartFailure = (args: {
     entry: ManagedProcessEntry;
     laneId: string;
     definition: ProcessDefinition;
     runId: string;
+    sessionId: string;
     startedAt: string;
     endedAt: string;
-    logPath: string;
-    cwd: string;
+    logPath: string | null;
     error: unknown;
   }) => {
-    const { entry, laneId, definition, runId, startedAt, endedAt, logPath, cwd, error } = args;
+    const { entry, laneId, definition, runId, sessionId, startedAt, endedAt, logPath, error } = args;
+    sessionToEntryKey.delete(sessionId);
+    if (entry.ptyId) ptyToEntryKey.delete(entry.ptyId);
 
-    entry.child = null;
-    entry.processGroupId = null;
     entry.runId = null;
     entry.stopIntent = null;
+    entry.ptyId = null;
+    entry.transcriptPath = logPath;
     entry.runtime.pid = null;
+    entry.runtime.sessionId = sessionId;
+    entry.runtime.ptyId = null;
     entry.runtime.status = "crashed";
     entry.runtime.readiness = "unknown";
     entry.runtime.startedAt = startedAt;
@@ -730,13 +546,12 @@ export function createProcessService({
     entry.runtime.logPath = logPath;
     emitRuntime(entry);
 
-    upsertRunStart(runId, laneId, definition.id, startedAt, logPath);
+    upsertRunStart(runId, laneId, definition.id, startedAt, logPath ?? "");
     upsertRunEnd(runId, endedAt, null, "crashed");
 
     logger.warn("process.start_failed", {
       laneId,
       processId: definition.id,
-      cwd,
       command: definition.command,
       envPath: process.env.PATH ?? "",
       envShell: process.env.SHELL ?? "",
@@ -748,13 +563,15 @@ export function createProcessService({
   const startByDefinition = async (
     laneId: string,
     definition: ProcessDefinition,
-    opts: { skipTrust?: boolean; overlay?: LaneOverlayOverrides } = {}
+    opts: { skipTrust?: boolean; overlay?: LaneOverlayOverrides } = {},
   ): Promise<ProcessRuntime> => {
     if (!opts.skipTrust) projectConfigService.getExecutableConfig();
     const entry = ensureEntry(laneId, definition.id, definition);
-    if (entry.child && isProcessActive(entry.runtime.status)) return { ...entry.runtime };
+    if (entry.ptyId && entry.sessionId && isProcessActive(entry.runtime.status)) return { ...entry.runtime };
 
-    if (!definition.command.length) throw new Error(`Process '${definition.id}' has an empty command`);
+    if (!definition.command.length || !definition.command[0]?.trim()) {
+      throw new Error(`Process '${definition.id}' has an empty command`);
+    }
 
     const laneRoot = laneService.getLaneWorktreePath(laneId);
     const configuredCwd = opts.overlay?.cwd?.trim() ? opts.overlay.cwd : definition.cwd;
@@ -762,106 +579,94 @@ export function createProcessService({
     let cwd: string;
     try {
       cwd = resolvePathWithinRoot(laneRoot, cwdCandidate);
-    } catch {
-      throw new Error(`Process '${definition.id}' cwd escapes lane workspace`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (message.includes("Path does not exist")) {
+        throw new Error(`Process '${definition.id}' cwd does not exist: ${configuredCwd}`);
+      }
+      throw new Error(`Process '${definition.id}' cwd must stay within the lane workspace`);
     }
+
+    const laneRuntimeEnv = (await getLaneRuntimeEnv?.(laneId)) ?? {};
     const env = {
       ...process.env,
-      // Inject color-friendly defaults for processes running without a PTY.
-      // Many CLI tools (SST, Vite, Next.js) check isTTY and suppress colors;
-      // these vars override that heuristic so log output stays readable.
       FORCE_COLOR: "1",
       TERM: "xterm-256color",
+      ...laneRuntimeEnv,
       ...definition.env,
-      ...(opts.overlay?.env ?? {})
+      ...(opts.overlay?.env ?? {}),
     };
-    fs.mkdirSync(path.dirname(processLogPath(laneId, definition.id)), { recursive: true });
 
     const startedAt = nowIso();
     const runId = randomUUID();
-    const logPath = processLogPath(laneId, definition.id);
-    rotateProcessLogIfNeeded(logPath);
-    const logStream = fs.createWriteStream(logPath, { flags: "a" });
+    const sessionId = randomUUID();
 
-    let child: ChildProcessByStdio<null, Readable, Readable>;
+    bindLiveSession(entry, { sessionId, ptyId: null });
+    entry.transcriptPath = null;
+    entry.definition = definition;
+    entry.runId = runId;
+    entry.stopIntent = null;
+    entry.runtime.status = "starting";
+    entry.runtime.readiness = "unknown";
+    entry.runtime.pid = null;
+    entry.runtime.sessionId = sessionId;
+    entry.runtime.ptyId = null;
+    entry.runtime.startedAt = startedAt;
+    entry.runtime.endedAt = null;
+    entry.runtime.exitCode = null;
+    entry.runtime.ports = definition.readiness.type === "port" ? [definition.readiness.port] : [];
+    emitRuntime(entry);
+
     try {
-      child = spawn(definition.command[0]!, definition.command.slice(1), {
+      const result = await ptyService.create({
+        sessionId,
+        laneId,
         cwd,
+        cols: 120,
+        rows: 32,
+        title: definition.name,
+        tracked: true,
+        toolType: "run-shell",
+        command: definition.command[0],
+        args: definition.command.slice(1),
         env,
-        detached: process.platform !== "win32",
-        shell: false,
-        stdio: ["ignore", "pipe", "pipe"]
       });
-    } catch (err) {
-      const endedAt = nowIso();
-      try {
-        logStream.write(`\n[process start failure] ${String(err)}\n`);
-      } catch {
-        // ignore
-      }
-      try {
-        logStream.end();
-      } catch {
-        // ignore
-      }
+
+      bindLiveSession(entry, { sessionId: result.sessionId, ptyId: result.ptyId });
+      const session = sessionService.get(result.sessionId);
+      entry.transcriptPath = session?.transcriptPath?.trim() || null;
+      entry.runtime.pid = result.pid;
+      entry.runtime.sessionId = result.sessionId;
+      entry.runtime.ptyId = result.ptyId;
+      entry.runtime.logPath = entry.transcriptPath;
+      upsertRunStart(runId, laneId, definition.id, startedAt, entry.transcriptPath ?? "");
+      emitRuntime(entry);
+      setupReadinessChecks(entry, definition);
+
+      logger.info("process.start", {
+        laneId,
+        processId: definition.id,
+        cwd,
+        command: definition.command,
+        runId,
+        envPath: process.env.PATH ?? "",
+        envShell: process.env.SHELL ?? "",
+      });
+      return { ...entry.runtime };
+    } catch (error) {
       handleProcessStartFailure({
         entry,
         laneId,
         definition,
         runId,
+        sessionId,
         startedAt,
-        endedAt,
-        logPath,
-        cwd,
-        error: err,
+        endedAt: nowIso(),
+        logPath: sessionService.get(sessionId)?.transcriptPath?.trim() || null,
+        error,
       });
-      throw err;
+      throw error;
     }
-
-    entry.child = child;
-    entry.processGroupId = process.platform !== "win32" ? (child.pid ?? null) : null;
-    entry.definition = definition;
-    entry.stopIntent = null;
-    entry.runId = runId;
-    entry.logStream = logStream;
-    entry.logBytesWritten = fileSizeOrZero(logPath);
-    entry.logLimitReached = entry.logBytesWritten >= MAX_PROCESS_LOG_BYTES;
-    writeProcessLogChunk(entry, `\n# process start ${startedAt} cmd=${JSON.stringify(definition.command)} cwd=${cwd}\n`);
-    entry.runtime.status = "starting";
-    entry.runtime.readiness = "unknown";
-    entry.runtime.pid = child.pid ?? null;
-    entry.runtime.startedAt = startedAt;
-    entry.runtime.endedAt = null;
-    entry.runtime.exitCode = null;
-    entry.runtime.ports = definition.readiness.type === "port" ? [definition.readiness.port] : [];
-    upsertRunStart(runId, laneId, definition.id, startedAt, logPath);
-    emitRuntime(entry);
-    setupReadinessChecks(entry, definition);
-    attachProcessStreams(entry, laneId, definition.id, child);
-
-    child.on("spawn", () => {
-      entry.runtime.pid = child.pid ?? null;
-      emitRuntime(entry);
-    });
-    child.on("error", (err) => {
-      logger.warn("process.child_error", { laneId, processId: definition.id, err: String(err) });
-      writeProcessLogChunk(entry, `\n[process error] ${String(err)}\n`);
-    });
-    child.on("close", (code) => {
-      logger.info("process.exit", { laneId, processId: definition.id, code });
-      handleProcessExit(entry, definition.id, code ?? null);
-    });
-
-    logger.info("process.start", {
-      laneId,
-      processId: definition.id,
-      cwd,
-      command: definition.command,
-      runId,
-      envPath: process.env.PATH ?? "",
-      envShell: process.env.SHELL ?? "",
-    });
-    return { ...entry.runtime };
   };
 
   const startById = async (laneId: string, processId: string, opts: { skipTrust?: boolean } = {}) => {
@@ -877,37 +682,17 @@ export function createProcessService({
     return await startByDefinition(laneId, definition, { ...opts, overlay });
   };
 
-  const stopById = async (laneId: string, processId: string, intent: ManagedTerminationReason, force: boolean): Promise<ProcessRuntime> => {
+  const stopById = async (laneId: string, processId: string, intent: ManagedTerminationReason): Promise<ProcessRuntime> => {
     const config = projectConfigService.get();
     ensureEntriesForLane(laneId, config.effective);
     const entry = entries.get(keyFor(laneId, processId));
     if (!entry) throw new Error(`Process not found: ${processId}`);
-    if (!entry.child && entry.processGroupId == null && entry.runtime.pid == null) return { ...entry.runtime };
+    if (!entry.ptyId || !entry.sessionId || !isProcessActive(entry.runtime.status)) return { ...entry.runtime };
 
-    clearKillTimer(entry);
     entry.stopIntent = intent;
     entry.runtime.status = "stopping";
     emitRuntime(entry);
-
-    if (force) {
-      signalManagedProcess(entry, "SIGKILL");
-      if (!entry.child) {
-        monitorRecoveredStop(entry, processId, 0);
-      }
-      return { ...entry.runtime };
-    }
-
-    const shutdownMs = Math.max(250, entry.definition?.gracefulShutdownMs ?? 7000);
-    signalManagedProcess(entry, "SIGTERM");
-    if (entry.child) {
-      entry.gracefulKillTimeout = setTimeout(() => {
-        if (!entry.child && entry.processGroupId == null) return;
-        signalManagedProcess(entry, "SIGKILL");
-      }, shutdownMs);
-    } else {
-      monitorRecoveredStop(entry, processId, shutdownMs);
-    }
-
+    ptyService.dispose({ ptyId: entry.ptyId, sessionId: entry.sessionId });
     return { ...entry.runtime };
   };
 
@@ -934,7 +719,7 @@ export function createProcessService({
     const byId = new Map(config.effective.processes.map((p) => [p.id, p] as const));
     const known = applyProcessFilter(processIds.filter((id) => byId.has(id)), overlay);
     const ordered = startOrder === "dependency" ? resolveDependencyOrder(known, byId).reverse() : sortByDefinitions(known, byId).reverse();
-    await Promise.all(ordered.map((id) => stopById(laneId, id, "stopped", false).catch(() => {})));
+    await Promise.all(ordered.map((id) => stopById(laneId, id, "stopped").catch(() => {})));
   };
 
   const stackById = (config: EffectiveProjectConfig, stackId: string): StackButtonDefinition => {
@@ -942,6 +727,37 @@ export function createProcessService({
     if (!stack) throw new Error(`Stack button not found: ${stackId}`);
     return stack;
   };
+
+  const unsubscribePtyData = ptyService.onData((event) => {
+    const entryKey = ptyToEntryKey.get(event.ptyId) ?? sessionToEntryKey.get(event.sessionId);
+    if (!entryKey) return;
+    const entry = entries.get(entryKey);
+    if (!entry) return;
+    emitLog(entry.laneId, entry.runtime.processId, event.data);
+    if (
+      entry.definition?.readiness.type === "logRegex"
+      && entry.runtime.status === "starting"
+      && entry.readinessRegex
+      && entry.readinessRegex.test(event.data)
+    ) {
+      markReadinessReady(entry);
+    }
+  });
+
+  const unsubscribePtyExit = ptyService.onExit((event) => {
+    const entryKey = ptyToEntryKey.get(event.ptyId) ?? sessionToEntryKey.get(event.sessionId);
+    if (!entryKey) return;
+    const entry = entries.get(entryKey);
+    if (!entry) return;
+    logger.info("process.exit", {
+      laneId: entry.laneId,
+      processId: entry.runtime.processId,
+      sessionId: event.sessionId,
+      ptyId: event.ptyId,
+      code: event.exitCode,
+    });
+    handleProcessExit(entry, entry.runtime.processId, event.exitCode ?? null);
+  });
 
   return {
     listDefinitions(): ProcessDefinition[] {
@@ -970,17 +786,19 @@ export function createProcessService({
     },
 
     async stop(arg: ProcessActionArgs): Promise<ProcessRuntime> {
-      return await stopById(arg.laneId, arg.processId, "stopped", false);
+      return await stopById(arg.laneId, arg.processId, "stopped");
     },
 
     async restart(arg: ProcessActionArgs): Promise<ProcessRuntime> {
       const entry = entries.get(keyFor(arg.laneId, arg.processId));
-      if (!entry?.child) return await startById(arg.laneId, arg.processId);
-      return await stopById(arg.laneId, arg.processId, "restart", false);
+      if (!entry?.ptyId || !entry.sessionId || !isProcessActive(entry.runtime.status)) {
+        return await startById(arg.laneId, arg.processId);
+      }
+      return await stopById(arg.laneId, arg.processId, "restart");
     },
 
     async kill(arg: ProcessActionArgs): Promise<ProcessRuntime> {
-      return await stopById(arg.laneId, arg.processId, "killed", true);
+      return await stopById(arg.laneId, arg.processId, "killed");
     },
 
     async startStack(arg: ProcessStackArgs): Promise<void> {
@@ -1013,26 +831,27 @@ export function createProcessService({
     },
 
     getLogTail({ laneId, processId, maxBytes }: { laneId: string; processId: string; maxBytes?: number }): string {
-      const safePath = processLogPath(laneId, processId);
-      return readTail(safePath, clampMaxBytes(maxBytes, 180_000));
+      const entry = entries.get(keyFor(laneId, processId));
+      const transcriptPath = entry?.transcriptPath ?? entry?.runtime.logPath ?? null;
+      if (!transcriptPath) return "";
+      return readTail(transcriptPath, clampMaxBytes(maxBytes, 180_000));
     },
 
     disposeAll() {
+      unsubscribePtyData();
+      unsubscribePtyExit();
       for (const entry of entries.values()) {
         clearReadinessTimers(entry);
         clearHealthTimers(entry);
-        clearKillTimer(entry);
         entry.stopIntent = "killed";
-        signalManagedProcess(entry, "SIGKILL");
-        if (entry.logStream) {
+        if (entry.ptyId && entry.sessionId) {
           try {
-            entry.logStream.end();
+            ptyService.dispose({ ptyId: entry.ptyId, sessionId: entry.sessionId });
           } catch {
             // ignore
           }
-          entry.logStream = null;
         }
       }
-    }
+    },
   };
 }

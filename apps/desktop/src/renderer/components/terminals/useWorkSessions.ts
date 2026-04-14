@@ -694,6 +694,15 @@ export function useWorkSessions() {
   }, [scheduleBackgroundRefresh]);
 
   useEffect(() => {
+    const unsubscribe = window.ade.sessions.onChanged(() => {
+      if (document.visibilityState !== "visible") return;
+      invalidateSessionListCache();
+      scheduleBackgroundRefresh(80);
+    });
+    return unsubscribe;
+  }, [scheduleBackgroundRefresh]);
+
+  useEffect(() => {
     return () => {
       if (backgroundRefreshTimerRef.current != null) {
         window.clearTimeout(backgroundRefreshTimerRef.current);
@@ -843,6 +852,15 @@ export function useWorkSessions() {
         return next;
       });
       markPtyClosed(ptyId);
+
+      // Optimistically mark the session as disposed so the UI updates
+      // immediately instead of waiting for a full session list refresh.
+      if (sessionId) {
+        setSessions((prev) =>
+          prev.map((s) => (s.id === sessionId ? { ...s, status: "disposed" as const } : s)),
+        );
+      }
+
       try {
         await window.ade.pty.dispose({ ptyId, ...(sessionId ? { sessionId } : {}) });
       } finally {
@@ -851,10 +869,11 @@ export function useWorkSessions() {
           next.delete(ptyId);
           return next;
         });
-        await refresh();
+        // Reconcile with the real backend state in the background.
+        scheduleBackgroundRefresh();
       }
     },
-    [refresh],
+    [scheduleBackgroundRefresh],
   );
 
   const resumeSession = useCallback(

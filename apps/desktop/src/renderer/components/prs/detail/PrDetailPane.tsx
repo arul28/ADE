@@ -310,7 +310,7 @@ type ChecksSummary = {
 function summarizeChecks(checks: PrCheck[]): ChecksSummary {
   const passing = checks.filter((check) => check.conclusion === "success" || check.conclusion === "neutral" || check.conclusion === "skipped").length;
   const failing = checks.filter((check) => check.conclusion === "failure" || check.conclusion === "cancelled").length;
-  const pending = checks.filter((check) => check.status !== "completed").length;
+  const pending = checks.filter((check) => check.status !== "completed" && !check.conclusion).length;
   return {
     passing,
     failing,
@@ -452,9 +452,22 @@ export function PrDetailPane({
   const onRefreshRef = React.useRef(onRefresh);
   onRefreshRef.current = onRefresh;
   cachedConvergenceRuntimeRef.current = convergenceStatesByPrId[pr.id] ?? null;
+  const convergenceChecksPrIdRef = React.useRef(pr.id);
 
   React.useEffect(() => {
-    setConvergenceChecks(checks);
+    const prChanged = convergenceChecksPrIdRef.current !== pr.id;
+    convergenceChecksPrIdRef.current = pr.id;
+
+    // Always sync on PR change (even if empty — new PR starts fresh).
+    // Within the same PR, only sync when the prop has data so that
+    // transient PrsContext failures / rate-limits don't wipe out a
+    // known-good convergence checks list.
+    setConvergenceChecks((prev) => {
+      if (prChanged) return checks;
+      if (checks.length > 0) return checks;
+      if (prev.length > 0) return prev;
+      return checks;
+    });
   }, [checks, pr.id]);
 
   const buildSessionHref = React.useCallback((laneId: string, sessionId: string) => {
@@ -858,7 +871,12 @@ export function PrDetailPane({
       ]);
       if (requestId !== inventoryLoadSeqRef.current) return null;
       setInventorySnapshot(snapshot);
-      setConvergenceChecks(freshChecks);
+      // Only update convergence checks if we got real data back — avoid
+      // overwriting a known-good list with an empty one from a transient
+      // API failure or rate-limit.
+      if (freshChecks.length > 0) {
+        setConvergenceChecks(freshChecks);
+      }
       return snapshot;
     } catch {
       return null;
@@ -1136,7 +1154,9 @@ export function PrDetailPane({
             window.ade.prs.issueInventorySync(pr.id),
           ]);
           setInventorySnapshot(snapshot);
-          setConvergenceChecks(freshChecks);
+          if (freshChecks.length > 0) {
+            setConvergenceChecks(freshChecks);
+          }
 
           // Skip rebase logic while an agent session is still active
           if (!convergenceSessionIdRef.current) {
@@ -1677,6 +1697,22 @@ export function PrDetailPane({
 
   const newIssueCount = inventorySnapshot?.items.filter(i => i.state === "new").length ?? 0;
 
+  // Merge convergence checks with action runs so the Path to Merge panel
+  // shows the same unified view as the CI / Checks tab.  Raw check-runs
+  // from getChecks() can be empty when all CI data comes through the
+  // Actions workflow-runs API.
+  const unifiedConvergenceChecks: PrCheck[] = React.useMemo(() => {
+    const unified = buildUnifiedChecks(convergenceChecks, actionRuns);
+    return unified.map((c): PrCheck => ({
+      name: c.displayName,
+      status: (c.status === "queued" || c.status === "in_progress" || c.status === "completed") ? c.status : "completed",
+      conclusion: (c.conclusion === "success" || c.conclusion === "failure" || c.conclusion === "neutral" || c.conclusion === "skipped" || c.conclusion === "cancelled") ? c.conclusion : null,
+      detailsUrl: c.detailsUrl,
+      startedAt: null,
+      completedAt: null,
+    }));
+  }, [convergenceChecks, actionRuns]);
+
   const DETAIL_TABS: Array<{ id: DetailTab; label: string; icon: React.ElementType; count?: number }> = [
     { id: "overview", label: "Overview", icon: Eye },
     { id: "convergence", label: "Path to Merge", icon: Sparkle, count: newIssueCount > 0 ? newIssueCount : undefined },
@@ -1879,7 +1915,7 @@ export function PrDetailPane({
             baseBranch={pr.baseBranch}
             items={mapInventoryItems(inventorySnapshot)}
             convergence={mapConvergenceStatus(inventorySnapshot)}
-            checks={convergenceChecks}
+            checks={unifiedConvergenceChecks}
             modelId={resolverModel}
             reasoningEffort={resolverReasoningLevel}
             permissionMode={resolverPermissionMode}
@@ -2283,18 +2319,35 @@ function OverviewTab(props: OverviewTabProps) {
   const canAttemptBlockedMerge = Boolean(status) && !status?.isMergeable && !status?.mergeConflicts && pr.state === "open";
   const isBypassMerge = allowBlockedMerge && canAttemptBlockedMerge;
   const mergeActionEnabled = canMerge || isBypassMerge;
+
+  // Determine if there are warnings that should visually downgrade the merge button
+  // even when GitHub says the PR is technically mergeable.
+  const hasCheckWarnings = someChecksFailing || checksRunning;
+  const hasReviewWarnings = reviewStatus === "changes_requested" || reviewStatus === "requested";
+  const hasMergeWarnings = canMerge && (hasCheckWarnings || hasReviewWarnings);
+
   const mergeActionLabel = actionBusy
     ? (isBypassMerge ? "Attempting merge..." : "Merging...")
-    : (isBypassMerge ? "Attempt merge anyway" : "Merge pull request");
+    : hasMergeWarnings
+      ? (someChecksFailing ? "Merge (checks failing)" : checksRunning ? "Merge (checks pending)" : "Merge (review pending)")
+      : (isBypassMerge ? "Attempt merge anyway" : "Merge pull request");
   // Derive merge button styling from the merge/bypass state in one place:
-  const mergeAccentColor = canMerge ? COLORS.success : isBypassMerge ? COLORS.warning : null;
+  const mergeAccentColor = canMerge
+    ? (hasMergeWarnings ? COLORS.warning : COLORS.success)
+    : isBypassMerge ? COLORS.warning : null;
   const mergeActionBackground = mergeAccentColor
-    ? `linear-gradient(135deg, ${mergeAccentColor} 0%, ${canMerge ? "#16a34a" : "#d97706"} 100%)`
+    ? `linear-gradient(135deg, ${mergeAccentColor} 0%, ${canMerge && !hasMergeWarnings ? "#16a34a" : "#d97706"} 100%)`
     : COLORS.recessedBg;
   const mergeActionBorderColor = mergeAccentColor ?? COLORS.border;
   const mergeActionShadow = mergeAccentColor
-    ? `0 2px 16px ${mergeAccentColor}${canMerge ? "40" : "35"}, 0 0 0 1px ${mergeAccentColor}${canMerge ? "30" : "25"}`
+    ? `0 2px 16px ${mergeAccentColor}${canMerge && !hasMergeWarnings ? "40" : "35"}, 0 0 0 1px ${mergeAccentColor}${canMerge && !hasMergeWarnings ? "30" : "25"}`
     : "none";
+
+  // Auto-expand checks list when failures are detected so the user
+  // immediately sees which checks failed.
+  React.useEffect(() => {
+    if (someChecksFailing) setChecksExpanded(true);
+  }, [someChecksFailing]);
 
   React.useEffect(() => {
     if (!canAttemptBlockedMerge) {
@@ -2590,9 +2643,9 @@ function OverviewTab(props: OverviewTabProps) {
         </div>
 
         {/* ---- Merge Readiness Section ---- */}
-        <div style={{ ...cardStyle({ padding: 0, overflow: "hidden" }), flexShrink: 0, borderColor: canMerge ? `${COLORS.success}30` : someChecksFailing ? `${COLORS.danger}20` : COLORS.border }}>
+        <div style={{ ...cardStyle({ padding: 0, overflow: "hidden" }), flexShrink: 0, borderColor: canMerge && !hasMergeWarnings ? `${COLORS.success}30` : someChecksFailing ? `${COLORS.danger}20` : hasMergeWarnings ? `${COLORS.warning}20` : COLORS.border }}>
           <div style={{ padding: "12px 16px", borderBottom: `1px solid ${COLORS.border}`, display: "flex", alignItems: "center", gap: 8 }}>
-            <GitMerge size={16} weight="bold" style={{ color: canMerge ? COLORS.success : COLORS.textMuted }} />
+            <GitMerge size={16} weight="bold" style={{ color: canMerge && !hasMergeWarnings ? COLORS.success : hasMergeWarnings ? COLORS.warning : COLORS.textMuted }} />
             <span style={{ fontFamily: SANS_FONT, fontSize: 13, fontWeight: 700, color: COLORS.textPrimary }}>Merge Readiness</span>
           </div>
 
@@ -2686,7 +2739,7 @@ function OverviewTab(props: OverviewTabProps) {
               style={{
                 padding: "16px",
                 borderTop: `1px solid ${COLORS.border}`,
-                background: canMerge ? `${COLORS.success}06` : isBypassMerge ? `${COLORS.warning}06` : "transparent",
+                background: canMerge && !hasMergeWarnings ? `${COLORS.success}06` : (isBypassMerge || hasMergeWarnings) ? `${COLORS.warning}06` : "transparent",
               }}
             >
               {/* Merge method selector */}
@@ -2702,8 +2755,8 @@ function OverviewTab(props: OverviewTabProps) {
                         flex: 1, height: 30, border: "none", borderRadius: 6, cursor: "pointer",
                         fontFamily: SANS_FONT, fontSize: 12, fontWeight: isActive ? 600 : 400,
                         color: isActive ? COLORS.textPrimary : COLORS.textMuted,
-                        background: isActive ? `${COLORS.success}18` : "transparent",
-                        boxShadow: isActive ? `0 0 0 1px ${COLORS.success}30` : "none",
+                        background: isActive ? `${mergeAccentColor ?? COLORS.success}18` : "transparent",
+                        boxShadow: isActive ? `0 0 0 1px ${mergeAccentColor ?? COLORS.success}30` : "none",
                         transition: "all 120ms ease",
                         textTransform: "capitalize",
                       }}
@@ -3167,8 +3220,8 @@ function ChecksTab({ checks, actionRuns, actionBusy, onRerunChecks, showIssueRes
 
   const passing = unifiedChecks.filter(c => c.conclusion === "success").length;
   const failing = unifiedChecks.filter(c => c.conclusion === "failure").length;
-  const pending = unifiedChecks.filter(c => c.status !== "completed").length;
-  const skipped = unifiedChecks.filter(c => c.status === "completed" && (c.conclusion === "neutral" || c.conclusion === "skipped" || c.conclusion === "cancelled")).length;
+  const pending = unifiedChecks.filter(c => c.status !== "completed" && !c.conclusion).length;
+  const skipped = unifiedChecks.filter(c => c.conclusion === "neutral" || c.conclusion === "skipped" || c.conclusion === "cancelled").length;
   const total = unifiedChecks.length;
 
   const toggleExpand = (id: string) => {

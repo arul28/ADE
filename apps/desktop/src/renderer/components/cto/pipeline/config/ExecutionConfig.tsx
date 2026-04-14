@@ -32,7 +32,7 @@ function toOptions(labels: Record<string, { displayName: string; description?: s
 }
 
 export function ExecutionConfig({ stage, agents, onUpdate }: Props) {
-  const accent = STAGE_COLORS[stage.type] ?? "#38BDF8";
+  const accent = STAGE_COLORS[stage.type] ?? "#A78BFA";
   const showSessionHandling = stage.type === "employee_session";
   const showWorkerSelector = stage.type === "worker_run" || stage.type === "mission" || stage.type === "pr_resolution";
   const showPrStrategy = stage.type !== "review_gate";
@@ -49,7 +49,7 @@ export function ExecutionConfig({ stage, agents, onUpdate }: Props) {
         <VisualSelector
           options={toOptions(TARGET_TYPE_LABELS).map((o) => ({
             ...o,
-            color: STAGE_COLORS[o.value] ?? "#38BDF8",
+            color: STAGE_COLORS[o.value] ?? "#A78BFA",
           }))}
           value={stage.type}
           onChange={(v) => onUpdate({ type: v as PipelineStage["type"] })}

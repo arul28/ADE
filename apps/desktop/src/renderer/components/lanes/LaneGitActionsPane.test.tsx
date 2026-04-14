@@ -16,6 +16,7 @@ let mockStoreState: {
   lanes: LaneSummary[];
   refreshLanes: ReturnType<typeof vi.fn>;
   selectLane: ReturnType<typeof vi.fn>;
+  smartTooltipsEnabled: boolean;
 };
 
 let mockAutoRebaseStatuses: Array<{
@@ -73,6 +74,7 @@ function buildStash(ref: string, subject: string, createdAt = "2026-03-31T12:00:
 
 describe("LaneGitActionsPane rescue action", () => {
   const originalAde = globalThis.window.ade;
+  const originalConfirm = globalThis.window.confirm;
   let mockChangesByLaneId: Record<string, DiffChanges>;
   let mockStashesByLaneId: Record<string, GitStashSummary[]>;
   let mockConflictState: GitConflictState;
@@ -80,6 +82,7 @@ describe("LaneGitActionsPane rescue action", () => {
   let failDiffRefresh: boolean;
 
   beforeEach(() => {
+    globalThis.window.confirm = vi.fn(() => true);
     mockStoreState = {
       lanes: [
         buildLane(),
@@ -99,6 +102,7 @@ describe("LaneGitActionsPane rescue action", () => {
       ],
       refreshLanes: vi.fn(async () => undefined),
       selectLane: vi.fn(),
+      smartTooltipsEnabled: false,
     };
     __resetLaneGitActionRuntimeForTests();
     mockChangesByLaneId = {
@@ -176,6 +180,7 @@ describe("LaneGitActionsPane rescue action", () => {
   afterEach(() => {
     cleanup();
     __resetLaneGitActionRuntimeForTests();
+    globalThis.window.confirm = originalConfirm;
     if (originalAde === undefined) {
       delete (globalThis.window as any).ade;
     } else {

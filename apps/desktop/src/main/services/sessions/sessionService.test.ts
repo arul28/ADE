@@ -264,4 +264,40 @@ describe("sessionService resume metadata", () => {
 
     activeDisposers.push(async () => db.close());
   });
+
+  it("emits a change event when metadata is updated", async () => {
+    const projectRoot = makeProjectRoot("ade-session-service-");
+    const dbPath = path.join(projectRoot, ".ade", "ade.db");
+    const db = await openKvDb(dbPath, createLogger() as any);
+    insertProjectGraph(db);
+    const service = createSessionService({ db });
+    const events: string[] = [];
+
+    service.create({
+      sessionId: "session-4",
+      laneId: "lane-1",
+      ptyId: null,
+      tracked: true,
+      title: "Claude Chat",
+      startedAt: "2026-03-17T00:10:00.000Z",
+      transcriptPath: "/tmp/session-4.log",
+      toolType: "claude-chat",
+    });
+
+    const unsubscribe = service.onChanged((event) => {
+      events.push(`${event.reason}:${event.sessionId}`);
+    });
+
+    service.updateMeta({
+      sessionId: "session-4",
+      title: "Investigate flaky auth tests",
+      manuallyNamed: false,
+    });
+
+    unsubscribe();
+
+    expect(events).toEqual(["meta-updated:session-4"]);
+
+    activeDisposers.push(async () => db.close());
+  });
 });

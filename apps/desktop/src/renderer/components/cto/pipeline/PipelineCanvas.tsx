@@ -99,9 +99,9 @@ export function PipelineCanvas({ workflow, onUpdateWorkflow, onSave, saving, age
           <span
             className="shrink-0 rounded-full px-2 py-0.5 text-[9px] font-medium uppercase tracking-wider"
             style={{
-              color: workflow.source === "repo" ? "#FBBF24" : "#38BDF8",
-              background: workflow.source === "repo" ? "rgba(251,191,36,0.08)" : "rgba(56,189,248,0.08)",
-              border: `1px solid ${workflow.source === "repo" ? "rgba(251,191,36,0.15)" : "rgba(56,189,248,0.15)"}`,
+              color: workflow.source === "repo" ? "#FBBF24" : "#A78BFA",
+              background: workflow.source === "repo" ? "rgba(251,191,36,0.08)" : "rgba(167,139,250,0.08)",
+              border: `1px solid ${workflow.source === "repo" ? "rgba(251,191,36,0.15)" : "rgba(167,139,250,0.15)"}`,
             }}
           >
             {workflow.source === "repo" ? "From repo YAML" : "Generated"}
@@ -111,7 +111,7 @@ export function PipelineCanvas({ workflow, onUpdateWorkflow, onSave, saving, age
               type="checkbox"
               checked={workflow.enabled}
               onChange={(e) => onUpdateWorkflow((w) => ({ ...w, enabled: e.target.checked }))}
-              className="accent-[#38BDF8]"
+              className="accent-[#A78BFA]"
             />
             <span className="text-xs text-muted-fg/50">Active</span>
           </label>

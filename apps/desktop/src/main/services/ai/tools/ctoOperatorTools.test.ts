@@ -1,5 +1,16 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi, beforeEach } from "vitest";
 import { createCtoOperatorTools, type CtoOperatorToolDeps } from "./ctoOperatorTools";
+
+// Mock only execFileSync on node:child_process so searchCodebase can exercise it deterministically.
+// Preserve the rest of the module (e.g. spawn, exec) for unrelated tests.
+const execFileSyncMock = vi.fn();
+vi.mock("node:child_process", async () => {
+  const actual = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+  return {
+    ...actual,
+    execFileSync: (...args: unknown[]) => execFileSyncMock(...args),
+  };
+});
 
 const baseSession = {
   id: "chat-1",
@@ -1729,6 +1740,225 @@ describe("createCtoOperatorTools", () => {
       const result = await (tools.listFileWorkspaces as any).execute({});
 
       expect(result).toMatchObject({ success: false, error: expect.stringContaining("File service") });
+    });
+  });
+
+  // ── searchCodebase tool ─────────────────────────────────────────
+  describe("searchCodebase tool (execFileSync-backed rg)", () => {
+    beforeEach(() => {
+      execFileSyncMock.mockReset();
+    });
+
+    function getTool() {
+      const deps = buildDeps();
+      const tools = createCtoOperatorTools(deps);
+      const tool = tools.searchCodebase as any;
+      expect(tool, "searchCodebase tool must be registered").toBeTruthy();
+      return tool;
+    }
+
+    it("invokes execFileSync('rg', argv, opts) with the expected argv order and cwd", async () => {
+      execFileSyncMock.mockReturnValue("");
+      const tool = getTool();
+
+      await tool.execute({
+        pattern: "spawnChat",
+        fileGlob: "services/**/*.ts",
+        maxResults: 3,
+        contextLines: 2,
+      });
+
+      expect(execFileSyncMock).toHaveBeenCalledTimes(1);
+      const [cmd, argv, opts] = execFileSyncMock.mock.calls[0];
+      expect(cmd, "command must be rg, not a shell string").toBe("rg");
+      expect(Array.isArray(argv), "argv must be an array (execFileSync form, not shell)").toBe(true);
+      expect(argv).toEqual([
+        "--no-heading",
+        "--line-number",
+        "--max-count=3",
+        "--context=2",
+        "--glob",
+        "services/**/*.ts",
+        "--",
+        "spawnChat",
+        ".",
+      ]);
+      const optsRec = opts as Record<string, unknown>;
+      expect(optsRec.encoding).toBe("utf8");
+      expect(optsRec.maxBuffer).toBe(512 * 1024);
+      expect(optsRec.timeout).toBe(10_000);
+      expect(typeof optsRec.cwd, "cwd must be a string path to ADE root").toBe("string");
+      expect((optsRec.cwd as string).length, "cwd path must be non-empty").toBeGreaterThan(0);
+    });
+
+    it("defaults fileGlob to '*.ts' when not provided (executor-level fallback)", async () => {
+      execFileSyncMock.mockReturnValue("");
+      const tool = getTool();
+
+      await tool.execute({ pattern: "foo", contextLines: 2 });
+
+      const argv = execFileSyncMock.mock.calls[0][1] as string[];
+      const globIdx = argv.indexOf("--glob");
+      expect(globIdx, "--glob must appear").toBeGreaterThanOrEqual(0);
+      expect(argv[globIdx + 1]).toBe("*.ts");
+    });
+
+    it("empty/whitespace fileGlob falls back to '*.ts'", async () => {
+      execFileSyncMock.mockReturnValue("");
+      const tool = getTool();
+
+      await tool.execute({ pattern: "foo", fileGlob: "   ", contextLines: 2 });
+
+      const argv = execFileSyncMock.mock.calls[0][1] as string[];
+      const globIdx = argv.indexOf("--glob");
+      expect(argv[globIdx + 1]).toBe("*.ts");
+    });
+
+    it("dedupes output lines by filename so duplicate-file matches do not exhaust maxResults", async () => {
+      // Same file a.ts has 3 matches, then b.ts has 1, then c.ts has 1.
+      // With maxResults=2 we should still include a.ts + b.ts (2 unique files) but NOT c.ts.
+      const rgOutput = [
+        "a.ts:10:first",
+        "a.ts:20:second",
+        "a.ts:30:third",
+        "b.ts:5:first",
+        "c.ts:1:first",
+      ].join("\n");
+      execFileSyncMock.mockReturnValue(rgOutput);
+      const tool = getTool();
+
+      const result = await tool.execute({
+        pattern: "xyz",
+        maxResults: 2,
+        contextLines: 0,
+      });
+
+      expect(result.success).toBe(true);
+      // Output must contain a.ts and b.ts content but NOT c.ts (dedup stops before adding c.ts).
+      expect(result.output).toContain("a.ts:10:first");
+      expect(result.output).toContain("a.ts:20:second");
+      expect(result.output).toContain("a.ts:30:third");
+      expect(result.output).toContain("b.ts:5:first");
+      expect(result.output, "maxResults=2 should cut c.ts out").not.toContain("c.ts:1:first");
+      expect(result.truncated, "hitting maxResults must mark result truncated").toBe(true);
+    });
+
+    it("marks truncated=true when unique-file count reaches maxResults", async () => {
+      const rgOutput = ["a.ts:1:m", "b.ts:1:m", "c.ts:1:m"].join("\n");
+      execFileSyncMock.mockReturnValue(rgOutput);
+      const tool = getTool();
+
+      const result = await tool.execute({
+        pattern: "m",
+        maxResults: 3,
+        contextLines: 0,
+      });
+
+      expect(result.success).toBe(true);
+      expect(result.truncated).toBe(true);
+    });
+
+    it("marks truncated=true when output exceeds 200 lines", async () => {
+      // 210 matches from distinct files so no dedup cap trips before the 200-line cap.
+      const lines: string[] = [];
+      for (let i = 0; i < 210; i += 1) {
+        lines.push(`file${i}.ts:1:match`);
+      }
+      execFileSyncMock.mockReturnValue(lines.join("\n"));
+      const tool = getTool();
+
+      const result = await tool.execute({
+        pattern: "match",
+        maxResults: 30,
+        contextLines: 0,
+      });
+
+      expect(result.success).toBe(true);
+      expect(result.truncated, "output over 200 lines must be truncated").toBe(true);
+      expect(result.output.split("\n").length).toBeLessThanOrEqual(200);
+    });
+
+    it("returns success with matchCount=0 and empty output when rg exits with status 1 (no matches)", async () => {
+      const err: any = new Error("rg exit 1");
+      err.status = 1;
+      execFileSyncMock.mockImplementation(() => {
+        throw err;
+      });
+      const tool = getTool();
+
+      const result = await tool.execute({ pattern: "never-matches", contextLines: 0 });
+
+      expect(result).toMatchObject({
+        success: true,
+        matchCount: 0,
+        truncated: false,
+      });
+      expect(typeof result.output).toBe("string");
+    });
+
+    it("returns success=false with error message for non-1 execution failures", async () => {
+      const err: any = new Error("boom");
+      err.status = 2;
+      execFileSyncMock.mockImplementation(() => {
+        throw err;
+      });
+      const tool = getTool();
+
+      const result = await tool.execute({ pattern: "[bad-regex", contextLines: 0 });
+
+      expect(result.success).toBe(false);
+      expect(typeof result.error).toBe("string");
+      expect(result.error.length, "error message must not be empty").toBeGreaterThan(0);
+    });
+
+    it("truncates pattern to 500 chars before passing to argv", async () => {
+      execFileSyncMock.mockReturnValue("");
+      const tool = getTool();
+      const longPattern = "x".repeat(700);
+
+      await tool.execute({ pattern: longPattern, contextLines: 0 });
+
+      const argv = execFileSyncMock.mock.calls[0][1] as string[];
+      // The pattern sits at the position right after "--" separator.
+      const sep = argv.indexOf("--");
+      expect(sep, "-- separator must be present").toBeGreaterThan(0);
+      const sentPattern = argv[sep + 1];
+      expect(sentPattern.length, "pattern must be capped at 500 chars").toBe(500);
+      expect(sentPattern).toBe("x".repeat(500));
+    });
+
+    it("truncates fileGlob to 200 chars before passing to argv", async () => {
+      execFileSyncMock.mockReturnValue("");
+      const tool = getTool();
+      const longGlob = "*".repeat(300);
+
+      await tool.execute({ pattern: "p", fileGlob: longGlob, contextLines: 0 });
+
+      const argv = execFileSyncMock.mock.calls[0][1] as string[];
+      const globIdx = argv.indexOf("--glob");
+      expect(globIdx).toBeGreaterThanOrEqual(0);
+      const sentGlob = argv[globIdx + 1];
+      expect(sentGlob.length, "fileGlob must be capped at 200 chars").toBe(200);
+      expect(sentGlob).toBe("*".repeat(200));
+    });
+
+    it("passes dangerous shell characters through argv verbatim (execFileSync avoids shell injection)", async () => {
+      execFileSyncMock.mockReturnValue("");
+      const tool = getTool();
+      const evil = "foo; rm -rf / && echo pwned `whoami` $(id)";
+
+      await tool.execute({ pattern: evil, contextLines: 0 });
+
+      const [cmd, argv] = execFileSyncMock.mock.calls[0];
+      expect(cmd, "must call rg directly, not through a shell").toBe("rg");
+      expect(Array.isArray(argv), "argv must be an array (no shell string)").toBe(true);
+      const sep = (argv as string[]).indexOf("--");
+      const sentPattern = (argv as string[])[sep + 1];
+      expect(sentPattern, "dangerous chars must be passed through as a literal argv element").toBe(evil);
+      // Make sure no arg was concatenated into a shell string.
+      for (const a of argv as string[]) {
+        expect(typeof a).toBe("string");
+      }
     });
   });
 });

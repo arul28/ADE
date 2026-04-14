@@ -1,5 +1,5 @@
 import React from "react";
-import { Plus, Trash, PencilSimple } from "@phosphor-icons/react";
+import { ArrowClockwise, PencilSimple, Play, Plus, Stop, Trash } from "@phosphor-icons/react";
 import { COLORS, MONO_FONT, LABEL_STYLE } from "../lanes/laneDesignTokens";
 import type { StackButtonDefinition } from "../../../shared/types";
 
@@ -10,6 +10,10 @@ type RunSidebarProps = {
   onCreateStack: (name: string) => void;
   onRenameStack: (stackId: string, name: string) => void;
   onDeleteStack: (stackId: string) => void;
+  onStartStack: (stackId: string) => void;
+  onStopStack: (stackId: string) => void;
+  onRestartStack: (stackId: string) => void;
+  onUpdateStackStartOrder: (stackId: string, startOrder: "parallel" | "dependency") => void;
 };
 
 export function RunSidebar({
@@ -19,6 +23,10 @@ export function RunSidebar({
   onCreateStack,
   onRenameStack,
   onDeleteStack,
+  onStartStack,
+  onStopStack,
+  onRestartStack,
+  onUpdateStackStartOrder,
 }: RunSidebarProps) {
   const [creating, setCreating] = React.useState(false);
   const [newName, setNewName] = React.useState("");
@@ -161,7 +169,21 @@ export function RunSidebar({
                   if (selectedStackId !== stack.id) (e.currentTarget as HTMLButtonElement).style.background = "transparent";
                 }}
               >
-                {stack.name}
+                <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }}>
+                  {stack.name}
+                </span>
+                <span
+                  style={{
+                    fontSize: 9,
+                    color: selectedStackId === stack.id ? COLORS.accent : COLORS.textDim,
+                    border: `1px solid ${selectedStackId === stack.id ? COLORS.accent : COLORS.border}`,
+                    padding: "1px 4px",
+                    lineHeight: 1.2,
+                  }}
+                  title={stack.startOrder === "dependency" ? "Starts in dependency order" : "Starts in parallel order"}
+                >
+                  {stack.startOrder === "dependency" ? "DEP" : "PAR"}
+                </span>
               </button>
             )}
           </div>
@@ -251,6 +273,138 @@ export function RunSidebar({
           <button
             type="button"
             onClick={() => {
+              onStartStack(contextMenu.stackId);
+              setContextMenu(null);
+            }}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 6,
+              width: "100%",
+              textAlign: "left",
+              background: "transparent",
+              border: "none",
+              padding: "6px 12px",
+              fontFamily: MONO_FONT,
+              fontSize: 11,
+              fontWeight: 600,
+              color: COLORS.textSecondary,
+              cursor: "pointer",
+            }}
+            onMouseEnter={(e) => {
+              (e.currentTarget as HTMLButtonElement).style.background = COLORS.hoverBg;
+            }}
+            onMouseLeave={(e) => {
+              (e.currentTarget as HTMLButtonElement).style.background = "transparent";
+            }}
+          >
+            <Play size={12} weight="fill" />
+            Start stack
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              onStopStack(contextMenu.stackId);
+              setContextMenu(null);
+            }}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 6,
+              width: "100%",
+              textAlign: "left",
+              background: "transparent",
+              border: "none",
+              padding: "6px 12px",
+              fontFamily: MONO_FONT,
+              fontSize: 11,
+              fontWeight: 600,
+              color: COLORS.textSecondary,
+              cursor: "pointer",
+            }}
+            onMouseEnter={(e) => {
+              (e.currentTarget as HTMLButtonElement).style.background = COLORS.hoverBg;
+            }}
+            onMouseLeave={(e) => {
+              (e.currentTarget as HTMLButtonElement).style.background = "transparent";
+            }}
+          >
+            <Stop size={12} weight="fill" />
+            Stop stack
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              onRestartStack(contextMenu.stackId);
+              setContextMenu(null);
+            }}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 6,
+              width: "100%",
+              textAlign: "left",
+              background: "transparent",
+              border: "none",
+              padding: "6px 12px",
+              fontFamily: MONO_FONT,
+              fontSize: 11,
+              fontWeight: 600,
+              color: COLORS.textSecondary,
+              cursor: "pointer",
+            }}
+            onMouseEnter={(e) => {
+              (e.currentTarget as HTMLButtonElement).style.background = COLORS.hoverBg;
+            }}
+            onMouseLeave={(e) => {
+              (e.currentTarget as HTMLButtonElement).style.background = "transparent";
+            }}
+          >
+            <ArrowClockwise size={12} />
+            Restart stack
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              const stack = stacks.find((entry) => entry.id === contextMenu.stackId);
+              if (stack) {
+                onUpdateStackStartOrder(
+                  stack.id,
+                  stack.startOrder === "dependency" ? "parallel" : "dependency",
+                );
+              }
+              setContextMenu(null);
+            }}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 6,
+              width: "100%",
+              textAlign: "left",
+              background: "transparent",
+              border: "none",
+              padding: "6px 12px",
+              fontFamily: MONO_FONT,
+              fontSize: 11,
+              fontWeight: 600,
+              color: COLORS.textSecondary,
+              cursor: "pointer",
+            }}
+            onMouseEnter={(e) => {
+              (e.currentTarget as HTMLButtonElement).style.background = COLORS.hoverBg;
+            }}
+            onMouseLeave={(e) => {
+              (e.currentTarget as HTMLButtonElement).style.background = "transparent";
+            }}
+          >
+            <ArrowClockwise size={12} />
+            {stacks.find((entry) => entry.id === contextMenu.stackId)?.startOrder === "dependency"
+              ? "Use parallel order"
+              : "Use dependency order"}
+          </button>
+          <button
+            type="button"
+            onClick={() => {
               const stack = stacks.find((s) => s.id === contextMenu.stackId);
               if (stack) {
                 setRenamingId(stack.id);
@@ -283,6 +437,7 @@ export function RunSidebar({
             <PencilSimple size={12} />
             Rename
           </button>
+          <div style={{ height: 1, background: COLORS.border, margin: "4px 0" }} />
           <button
             type="button"
             onClick={() => {

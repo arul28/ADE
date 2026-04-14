@@ -206,6 +206,16 @@ export function useLaneWorkSessions(laneId: string | null) {
     return unsubscribe;
   }, [laneId, scheduleBackgroundRefresh]);
 
+  useEffect(() => {
+    const unsubscribe = window.ade.sessions.onChanged(() => {
+      if (!laneId) return;
+      if (document.visibilityState !== "visible") return;
+      invalidateSessionListCache();
+      scheduleBackgroundRefresh(80);
+    });
+    return unsubscribe;
+  }, [laneId, scheduleBackgroundRefresh]);
+
   const activeSessions = useMemo(
     () => sessions.filter((session) => isActiveSession(session)),
     [sessions],

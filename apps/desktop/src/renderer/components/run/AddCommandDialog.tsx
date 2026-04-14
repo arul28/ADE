@@ -1,6 +1,7 @@
 import React from "react";
 import { X, CaretRight, CaretDown } from "@phosphor-icons/react";
 import { COLORS, MONO_FONT, LABEL_STYLE, primaryButton, outlineButton } from "../lanes/laneDesignTokens";
+import type { ProcessRestartPolicy } from "../../../shared/types";
 import type { StackButtonDefinition } from "../../../shared/types";
 import { parseCommandLine } from "../../lib/shell";
 
@@ -10,6 +11,13 @@ export type AddCommandInitialValues = {
   stackId: string | null;
   cwd: string;
   env: string;
+  autostart: boolean;
+  restart: ProcessRestartPolicy;
+  gracefulShutdownMs: string;
+  dependsOn: string;
+  readinessType: "none" | "port" | "logRegex";
+  readinessPort: string;
+  readinessPattern: string;
 };
 
 type AddCommandDialogProps = {
@@ -24,12 +32,19 @@ type AddCommandDialogProps = {
     newStackName: string | null;
     cwd: string;
     env: string;
+    autostart: boolean;
+    restart: ProcessRestartPolicy;
+    gracefulShutdownMs: string;
+    dependsOn: string;
+    readinessType: "none" | "port" | "logRegex";
+    readinessPort: string;
+    readinessPattern: string;
   }) => void;
   /** When provided, the dialog operates in "edit" mode with pre-filled values. */
   initialValues?: AddCommandInitialValues | null;
-  /** Dialog title override. Defaults to "Add Command". */
+  /** Dialog title override. Defaults to "Add command". */
   title?: string;
-  /** Submit button label override. Defaults to "Add". */
+  /** Submit button label override. Defaults to "Add command". */
   submitLabel?: string;
 };
 
@@ -49,11 +64,18 @@ export function AddCommandDialog({
   const [newStackName, setNewStackName] = React.useState("");
   const [cwd, setCwd] = React.useState(".");
   const [envText, setEnvText] = React.useState("");
+  const [autostart, setAutostart] = React.useState(false);
+  const [restart, setRestart] = React.useState<ProcessRestartPolicy>("never");
+  const [gracefulShutdownMs, setGracefulShutdownMs] = React.useState("7000");
+  const [dependsOn, setDependsOn] = React.useState("");
+  const [readinessType, setReadinessType] = React.useState<"none" | "port" | "logRegex">("none");
+  const [readinessPort, setReadinessPort] = React.useState("");
+  const [readinessPattern, setReadinessPattern] = React.useState("");
   const [showAdvanced, setShowAdvanced] = React.useState(false);
   const nameRef = React.useRef<HTMLInputElement>(null);
 
-  const dialogTitle = title ?? "Add Command";
-  const dialogSubmitLabel = submitLabel ?? "Add";
+  const dialogTitle = title ?? "Add command";
+  const dialogSubmitLabel = submitLabel ?? "Add command";
   const normalizedLaneRoot = React.useMemo(() => normalizePath(laneRootPath), [laneRootPath]);
   const commandError = React.useMemo(() => {
     const trimmed = command.trim();
@@ -65,6 +87,11 @@ export function AddCommandDialog({
       return error instanceof Error ? error.message : String(error);
     }
   }, [command]);
+  const readinessError = React.useMemo(() => {
+    if (readinessType === "port" && !readinessPort.trim()) return "Readiness port is required.";
+    if (readinessType === "logRegex" && !readinessPattern.trim()) return "Readiness pattern is required.";
+    return null;
+  }, [readinessPattern, readinessPort, readinessType]);
 
   React.useEffect(() => {
     if (open) {
@@ -74,17 +101,37 @@ export function AddCommandDialog({
         setStackId(initialValues.stackId ?? "__none__");
         setCwd(initialValues.cwd || ".");
         setEnvText(initialValues.env || "");
+        setAutostart(initialValues.autostart ?? false);
+        setRestart(initialValues.restart ?? "never");
+        setGracefulShutdownMs(initialValues.gracefulShutdownMs || "7000");
+        setDependsOn(initialValues.dependsOn || "");
+        setReadinessType(initialValues.readinessType ?? "none");
+        setReadinessPort(initialValues.readinessPort || "");
+        setReadinessPattern(initialValues.readinessPattern || "");
         // Auto-expand advanced section when editing a command with non-default values
         const hasStack = initialValues.stackId != null;
         const hasCwd = Boolean(initialValues.cwd) && initialValues.cwd !== ".";
         const hasEnv = Boolean(initialValues.env?.trim());
-        setShowAdvanced(hasStack || hasCwd || hasEnv);
+        const hasBehavior =
+          initialValues.autostart
+          || initialValues.restart !== "never"
+          || (initialValues.gracefulShutdownMs || "7000") !== "7000"
+          || Boolean(initialValues.dependsOn?.trim())
+          || initialValues.readinessType !== "none";
+        setShowAdvanced(hasStack || hasCwd || hasEnv || hasBehavior);
       } else {
         setName("");
         setCommand("");
         setStackId("__none__");
         setCwd(".");
         setEnvText("");
+        setAutostart(false);
+        setRestart("never");
+        setGracefulShutdownMs("7000");
+        setDependsOn("");
+        setReadinessType("none");
+        setReadinessPort("");
+        setReadinessPattern("");
         setShowAdvanced(false);
       }
       setNewStackName("");
@@ -103,7 +150,7 @@ export function AddCommandDialog({
 
   if (!open) return null;
 
-  const canSubmit = Boolean(name.trim() && command.trim() && !commandError);
+  const canSubmit = Boolean(name.trim() && command.trim() && !commandError && !readinessError);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -115,6 +162,13 @@ export function AddCommandDialog({
       newStackName: showAdvanced && stackId === "__new__" ? newStackName.trim() || null : null,
       cwd: showAdvanced ? (cwd.trim() || ".") : ".",
       env: showAdvanced ? envText.trim() : "",
+      autostart: showAdvanced ? autostart : false,
+      restart: showAdvanced ? restart : "never",
+      gracefulShutdownMs: showAdvanced ? gracefulShutdownMs.trim() || "7000" : "7000",
+      dependsOn: showAdvanced ? dependsOn.trim() : "",
+      readinessType: showAdvanced ? readinessType : "none",
+      readinessPort: showAdvanced ? readinessPort.trim() : "",
+      readinessPattern: showAdvanced ? readinessPattern.trim() : "",
     });
     onClose();
   };
@@ -123,7 +177,7 @@ export function AddCommandDialog({
     width: "100%",
     height: 32,
     padding: "0 10px",
-    background: COLORS.recessedBg,
+    background: COLORS.pageBg,
     border: `1px solid ${COLORS.outlineBorder}`,
     borderRadius: 0,
     fontFamily: MONO_FONT,
@@ -155,11 +209,12 @@ export function AddCommandDialog({
     >
       <div
         style={{
-          background: COLORS.cardBg,
+          background: COLORS.cardBgSolid,
           border: `1px solid ${COLORS.border}`,
           borderRadius: 0,
           width: 420,
           maxWidth: "90vw",
+          boxShadow: "0 24px 60px rgba(0,0,0,0.55)",
         }}
       >
         {/* Header */}
@@ -230,7 +285,7 @@ export function AddCommandDialog({
                 lineHeight: 1.5,
               }}
             >
-              {commandError ?? "Quoted args are supported. For shell pipelines or redirects, wrap them in a script or invoke a shell explicitly."}
+              {commandError ?? "Runs exactly what you type here. Use a script for pipes, redirects, or multi-step shell logic."}
             </div>
           </div>
 
@@ -251,7 +306,7 @@ export function AddCommandDialog({
             }}
           >
             {showAdvanced ? <CaretDown size={12} weight="bold" /> : <CaretRight size={12} weight="bold" />}
-            More options
+            Advanced runtime options
           </button>
 
           {showAdvanced && (
@@ -302,6 +357,17 @@ export function AddCommandDialog({
                     Browse
                   </button>
                 </div>
+                <div
+                  style={{
+                    marginTop: 6,
+                    fontFamily: MONO_FONT,
+                    fontSize: 10,
+                    color: COLORS.textDim,
+                    lineHeight: 1.5,
+                  }}
+                >
+                  Relative to the lane root. Use `.` to run from the lane root itself.
+                </div>
               </div>
 
               <div>
@@ -331,6 +397,124 @@ export function AddCommandDialog({
                   One KEY=value per line. FORCE_COLOR=1 is set by default for all processes.
                 </div>
               </div>
+
+              <div>
+                <label style={labelStyle}>Restart Policy</label>
+                <select
+                  value={restart}
+                  onChange={(e) => setRestart(e.target.value as ProcessRestartPolicy)}
+                  style={{
+                    ...inputStyle,
+                    appearance: "none",
+                    cursor: "pointer",
+                  }}
+                >
+                  <option value="never">Never restart</option>
+                  <option value="on-failure">Restart on failure</option>
+                  <option value="always">Always restart</option>
+                  <option value="on_crash">Restart on crash</option>
+                </select>
+              </div>
+
+              <div>
+                <label style={labelStyle}>Readiness Check</label>
+                <select
+                  value={readinessType}
+                  onChange={(e) => setReadinessType(e.target.value as "none" | "port" | "logRegex")}
+                  style={{
+                    ...inputStyle,
+                    appearance: "none",
+                    cursor: "pointer",
+                  }}
+                >
+                  <option value="none">None</option>
+                  <option value="port">Port</option>
+                  <option value="logRegex">Log pattern</option>
+                </select>
+              </div>
+
+              {readinessType === "port" ? (
+                <div>
+                  <label style={labelStyle}>Readiness Port</label>
+                  <input
+                    value={readinessPort}
+                    onChange={(e) => setReadinessPort(e.target.value)}
+                    placeholder="e.g. 3000"
+                    style={inputStyle}
+                  />
+                </div>
+              ) : null}
+
+              {readinessType === "logRegex" ? (
+                <div>
+                  <label style={labelStyle}>Readiness Pattern</label>
+                  <input
+                    value={readinessPattern}
+                    onChange={(e) => setReadinessPattern(e.target.value)}
+                    placeholder="e.g. ready on http"
+                    style={inputStyle}
+                  />
+                </div>
+              ) : null}
+
+              <div>
+                <label style={labelStyle}>Graceful Shutdown (ms)</label>
+                <input
+                  value={gracefulShutdownMs}
+                  onChange={(e) => setGracefulShutdownMs(e.target.value)}
+                  placeholder="7000"
+                  style={inputStyle}
+                />
+              </div>
+
+              <div>
+                <label style={labelStyle}>Depends On</label>
+                <input
+                  value={dependsOn}
+                  onChange={(e) => setDependsOn(e.target.value)}
+                  placeholder="comma-separated process ids"
+                  style={inputStyle}
+                />
+                <div
+                  style={{
+                    marginTop: 6,
+                    fontFamily: MONO_FONT,
+                    fontSize: 10,
+                    color: COLORS.textDim,
+                    lineHeight: 1.5,
+                  }}
+                >
+                  Use process ids, not labels. Dependencies start before this command.
+                </div>
+              </div>
+
+              <label
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 8,
+                  fontFamily: MONO_FONT,
+                  fontSize: 11,
+                  color: COLORS.textSecondary,
+                  cursor: "pointer",
+                }}
+              >
+                <input type="checkbox" checked={autostart} onChange={(e) => setAutostart(e.target.checked)} />
+                Start automatically when the lane opens
+              </label>
+
+              {readinessError ? (
+                <div
+                  style={{
+                    fontFamily: MONO_FONT,
+                    fontSize: 10,
+                    color: COLORS.danger,
+                    lineHeight: 1.5,
+                  }}
+                >
+                  {readinessError}
+                </div>
+              ) : null}
             </>
           )}
 

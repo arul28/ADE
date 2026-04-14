@@ -100,6 +100,7 @@ export function TerminalsPage() {
         onToggleTabGroupCollapsed={work.toggleWorkTabGroupCollapsed}
         closingPtyIds={work.closingPtyIds}
         onContextMenu={handleContextMenu}
+        onResumeSession={(s) => work.resumeSession(s).catch(() => {})}
       />
     ),
     [
@@ -119,6 +120,7 @@ export function TerminalsPage() {
       work.launchPtySession,
       work.toggleWorkTabGroupCollapsed,
       work.closingPtyIds,
+      work.resumeSession,
       handleOpenChatSession,
       handleContextMenu,
     ],

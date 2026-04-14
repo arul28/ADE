@@ -84,6 +84,9 @@ import { useLaneWorkSessions } from "./useLaneWorkSessions";
 
 function installWindowAde() {
   (window as any).ade = {
+    sessions: {
+      onChanged: vi.fn(() => () => {}),
+    },
     pty: {
       create: vi.fn().mockResolvedValue({ sessionId: "new-pty-session", ptyId: "pty-1" }),
       onExit: vi.fn(() => () => {}),

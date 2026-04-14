@@ -111,7 +111,7 @@ export function WorkflowListSidebar({
               {workflows.length > 0 && (
                 <span
                   className="inline-flex h-[1.125rem] min-w-[18px] items-center justify-center rounded-full px-1.5 text-[10px] font-bold tabular-nums"
-                  style={{ background: "rgba(56,189,248,0.12)", color: "#38BDF8" }}
+                  style={{ background: "rgba(167,139,250,0.12)", color: "#A78BFA" }}
                 >
                   {workflows.length}
                 </span>
@@ -134,10 +134,10 @@ export function WorkflowListSidebar({
             className="mb-2.5 flex w-full items-center justify-center gap-2 rounded-lg px-3 py-2.5 text-xs font-semibold transition-all duration-200 hover:bg-white/[0.04]"
             style={{
               border: "1px solid transparent",
-              backgroundImage: "linear-gradient(rgba(12,10,20,0.95), rgba(12,10,20,0.95)), linear-gradient(135deg, rgba(56,189,248,0.5), rgba(167,139,250,0.5))",
+              backgroundImage: "linear-gradient(rgba(12,10,20,0.95), rgba(12,10,20,0.95)), linear-gradient(135deg, rgba(167,139,250,0.5), rgba(167,139,250,0.5))",
               backgroundOrigin: "border-box",
               backgroundClip: "padding-box, border-box",
-              color: "#38BDF8",
+              color: "#A78BFA",
             }}
           >
             <Plus size={12} weight="bold" />

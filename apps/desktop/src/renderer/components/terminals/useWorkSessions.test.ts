@@ -93,6 +93,9 @@ import { buildWorkTabGroupModel, useWorkSessions } from "./useWorkSessions";
 
 function installWindowAde() {
   (window as any).ade = {
+    sessions: {
+      onChanged: vi.fn(() => () => {}),
+    },
     pty: {
       create: vi.fn().mockResolvedValue({ sessionId: "new-pty-session", ptyId: "pty-1" }),
       onExit: vi.fn(() => () => {}),
@@ -389,6 +392,57 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
     expect(projectBStates).not.toContainEqual(
       expect.objectContaining({ openItemIds: [] }),
     );
+  });
+
+  it("refetches after a session metadata update arrives", async () => {
+    let onChangedHandler: (() => void) | null = null;
+    (window as any).ade.sessions.onChanged.mockImplementation((cb: () => void) => {
+      onChangedHandler = cb;
+      return () => {
+        onChangedHandler = null;
+      };
+    });
+
+    const session = {
+      id: "session-1",
+      laneId: "lane-1",
+      laneName: "Lane 1",
+      ptyId: null,
+      tracked: true,
+      pinned: false,
+      goal: null,
+      toolType: "claude-chat" as const,
+      title: "Claude Chat",
+      status: "completed" as const,
+      startedAt: "2026-04-01T12:00:00.000Z",
+      endedAt: "2026-04-01T12:10:00.000Z",
+      exitCode: 0,
+      transcriptPath: "",
+      headShaStart: null,
+      headShaEnd: null,
+      lastOutputPreview: null,
+      summary: null,
+      runtimeState: "exited" as const,
+      resumeCommand: null,
+    };
+
+    listSessionsCachedMock.mockResolvedValue([session]);
+
+    renderHook(() => useWorkSessions());
+
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 10));
+    });
+
+    listSessionsCachedMock.mockClear();
+    expect(onChangedHandler).toBeTypeOf("function");
+
+    await act(async () => {
+      onChangedHandler?.();
+      await new Promise((r) => setTimeout(r, 120));
+    });
+
+    expect(listSessionsCachedMock).toHaveBeenCalledWith({ limit: 500 }, undefined);
   });
 });
 

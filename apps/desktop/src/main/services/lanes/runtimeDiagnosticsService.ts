@@ -27,6 +27,7 @@ export function createRuntimeDiagnosticsService({
   detectPortConflicts,
   getProxyStatus,
   getProxyRoute,
+  probePort,
 }: {
   logger: Logger;
   broadcastEvent: (ev: RuntimeDiagnosticsEvent) => void;
@@ -35,6 +36,7 @@ export function createRuntimeDiagnosticsService({
   detectPortConflicts: () => PortConflict[];
   getProxyStatus: () => ProxyStatus;
   getProxyRoute: (laneId: string) => ProxyRoute | null;
+  probePort?: (port: number, timeoutMs?: number) => Promise<boolean>;
 }) {
   // Internal state
   const healthCache = new Map<string, LaneHealthCheck>();
@@ -52,6 +54,36 @@ export function createRuntimeDiagnosticsService({
       socket.once("error", () => { socket.destroy(); resolve(false); });
       socket.connect(port, "127.0.0.1");
     });
+  }
+
+  const probe = probePort ?? checkPort;
+
+  async function findResponsivePort(
+    lease: PortLease,
+    preferredPorts: number[],
+  ): Promise<number | null> {
+    const inRange = (port: number) => port >= lease.rangeStart && port <= lease.rangeEnd;
+    const orderedPreferred = Array.from(new Set(preferredPorts.filter(inRange)));
+
+    for (const port of orderedPreferred) {
+      if (await probe(port, 150)) return port;
+    }
+
+    const remainingPorts: number[] = [];
+    for (let port = lease.rangeStart; port <= lease.rangeEnd; port += 1) {
+      if (!orderedPreferred.includes(port)) remainingPorts.push(port);
+    }
+
+    if (remainingPorts.length === 0) return null;
+
+    const results = await Promise.all(
+      remainingPorts.map(async (port) => ({
+        port,
+        ok: await probe(port, 75).catch(() => false),
+      })),
+    );
+
+    return results.find((result) => result.ok)?.port ?? null;
   }
 
   function deriveStatus(issues: LaneHealthIssue[], fallback: boolean): LaneHealthStatus {
@@ -81,6 +113,7 @@ export function createRuntimeDiagnosticsService({
         status: "unhealthy",
         processAlive: false,
         portResponding: false,
+        respondingPort: null,
         proxyRouteActive: false,
         fallbackMode: fallbackLanes.has(laneId),
         lastCheckedAt: new Date().toISOString(),
@@ -93,13 +126,15 @@ export function createRuntimeDiagnosticsService({
     const isFallback = fallbackLanes.has(laneId);
 
     // 1. Port responding check
+    let respondingPort: number | null = null;
     let portResponding = false;
     if (lease && lease.status === "active") {
-      portResponding = await checkPort(lease.rangeStart);
+      respondingPort = await findResponsivePort(lease, [route?.targetPort ?? -1, lease.rangeStart]);
+      portResponding = respondingPort !== null;
       if (!portResponding) {
         issues.push({
           type: "port-unresponsive",
-          message: `Port ${lease.rangeStart} is not responding. The dev server may not be running.`,
+          message: `No dev server responded in the assigned lane port range ${lease.rangeStart}-${lease.rangeEnd}.`,
           actionLabel: "Check dev server",
         });
       }
@@ -122,7 +157,13 @@ export function createRuntimeDiagnosticsService({
     }
 
     // 3. Proxy route active
-    const proxyRouteActive = !!(route && route.status === "active" && proxyStatus.running);
+    const proxyRouteActive = !!(
+      route &&
+      route.status === "active" &&
+      proxyStatus.running &&
+      respondingPort !== null &&
+      route.targetPort === respondingPort
+    );
     if (!proxyRouteActive) {
       if (isFallback) {
         issues.push({
@@ -137,6 +178,13 @@ export function createRuntimeDiagnosticsService({
           message: "Proxy server is not running. Lane isolation is inactive.",
           actionLabel: "Start proxy",
           actionType: "restart-proxy",
+        });
+      } else if (route && respondingPort !== null && route.targetPort !== respondingPort) {
+        issues.push({
+          type: "proxy-route-missing",
+          message: `App is responding on port ${respondingPort}, but preview is still routed to port ${route.targetPort}.`,
+          actionLabel: "Refresh preview",
+          actionType: "refresh-preview",
         });
       } else if (!route) {
         issues.push({
@@ -180,6 +228,7 @@ export function createRuntimeDiagnosticsService({
       status: deriveStatus(dedupedIssues, isFallback),
       processAlive,
       portResponding,
+      respondingPort,
       proxyRouteActive,
       fallbackMode: isFallback,
       lastCheckedAt: new Date().toISOString(),

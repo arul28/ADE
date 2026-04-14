@@ -16,7 +16,6 @@ import type {
   CtoIdentity,
   CtoOnboardingState,
   CtoSessionLogEntry,
-  CtoSubordinateActivityEntry,
   AgentStatus,
   AgentChatSessionSummary,
   ChatSurfacePresentation,
@@ -36,18 +35,18 @@ import { CtoSettingsPanel } from "./CtoSettingsPanel";
 import { OnboardingWizard } from "./OnboardingWizard";
 import { OnboardingBanner } from "./OnboardingBanner";
 import { WorkerCreationWizard } from "./WorkerCreationWizard";
-import { TimelineEntry } from "./shared/TimelineEntry";
-import { cardCls, compactHeaderCls, statChipCls, shellBodyCls, shellTabBarCls } from "./shared/designTokens";
+import { shellBodyCls } from "./shared/designTokens";
+import { SmartTooltip } from "../ui/SmartTooltip";
 
 /* ── Tab types ── */
 
-type TabId = "chat" | "team" | "linear" | "settings";
+type TabId = "chat" | "team" | "workflows" | "settings";
 
-const TABS: { id: TabId; label: string; icon: React.ElementType; color: string }[] = [
-  { id: "chat", label: "Chat", icon: ChatCircle, color: "#A78BFA" },
-  { id: "team", label: "Team", icon: UsersThree, color: "#60A5FA" },
-  { id: "linear", label: "Linear", icon: GitBranch, color: "#34D399" },
-  { id: "settings", label: "Settings", icon: Gear, color: "#F472B6" },
+const TABS: { id: TabId; label: string; icon: React.ElementType; color: string; tooltip: string }[] = [
+  { id: "chat", label: "Chat", icon: ChatCircle, color: "#A78BFA", tooltip: "Chat directly with the CTO or a selected worker." },
+  { id: "team", label: "Team", icon: UsersThree, color: "#60A5FA", tooltip: "Manage workers — hire, configure, and monitor your AI team." },
+  { id: "workflows", label: "Workflows", icon: GitBranch, color: "#34D399", tooltip: "Automated pipelines that route Linear issues to workers." },
+  { id: "settings", label: "Settings", icon: Gear, color: "#F472B6", tooltip: "CTO identity, project brief, and integration settings." },
 ];
 
 function splitTrimmed(value: string): string[] {
@@ -57,16 +56,19 @@ function splitTrimmed(value: string): string[] {
     .filter(Boolean);
 }
 
-function summarizeList(values: string[] | null | undefined, emptyFallback: string): string {
-  const entries = (values ?? []).map((value) => value.trim()).filter(Boolean);
-  if (!entries.length) return emptyFallback;
-  return entries.slice(0, 3).join(" · ");
-}
-
 function summarizeText(value: string | null | undefined, fallback: string): string {
   const normalized = value?.trim();
   if (!normalized) return fallback;
   return normalized.length > 180 ? `${normalized.slice(0, 177).trimEnd()}...` : normalized;
+}
+
+function statusDotCls(status: AgentStatus): string {
+  switch (status) {
+    case "running": return "bg-info animate-pulse";
+    case "active": return "bg-success";
+    case "paused": return "bg-warning";
+    default: return "bg-muted-fg/40";
+  }
 }
 
 /* ── Main Page ── */
@@ -83,7 +85,6 @@ export function CtoPage() {
   const [ctoIdentity, setCtoIdentity] = useState<CtoIdentity | null>(null);
   const [coreMemory, setCoreMemory] = useState<CtoCoreMemory | null>(null);
   const [sessionLogs, setSessionLogs] = useState<CtoSessionLogEntry[]>([]);
-  const [subordinateActivity, setSubordinateActivity] = useState<CtoSubordinateActivityEntry[]>([]);
   const [openclawStatus, setOpenclawStatus] = useState<OpenclawBridgeStatus | null>(null);
 
   // Onboarding state
@@ -164,7 +165,6 @@ export function CtoPage() {
       setCtoIdentity(snapshot.identity);
       setCoreMemory(snapshot.coreMemory);
       setSessionLogs(snapshot.recentSessions);
-      setSubordinateActivity(snapshot.recentSubordinateActivity);
       ctoHistoryLoadedRef.current = true;
     } catch {
       // non-fatal
@@ -318,7 +318,7 @@ export function CtoPage() {
     const syncHash = () => {
       const hash = window.location.hash.toLowerCase();
       if (hash.includes("linear-sync")) {
-        setActiveTab("linear");
+        setActiveTab("workflows");
       } else if (hash.includes("team-setup")) {
         setActiveTab("team");
       }
@@ -556,16 +556,6 @@ export function CtoPage() {
 
   /* ── Render ── */
 
-  const teamStats = useMemo(() => {
-    const counts = {
-      total: agents.length,
-      active: agents.filter((agent) => agent.status === "active").length,
-      running: agents.filter((agent) => agent.status === "running").length,
-      paused: agents.filter((agent) => agent.status === "paused").length,
-    };
-    return counts;
-  }, [agents]);
-
   const persistentIdentityPresentation = useMemo<ChatSurfacePresentation>(() => ({
     mode: "standard",
     profile: "persistent_identity",
@@ -598,7 +588,6 @@ export function CtoPage() {
 
   const handleSelectSidebarAgent = useCallback((id: string) => {
     setSelectedAgentId(id);
-    setActiveTab("team");
   }, []);
 
   const handleSelectSidebarCto = useCallback(() => {
@@ -606,37 +595,16 @@ export function CtoPage() {
     setActiveTab("chat");
   }, []);
 
-  const bridgeSummary = useMemo(() => {
-    if (!openclawStatus) return "Local ADE runtime";
-    if (openclawStatus.state === "connected") return "Bridge connected";
-    if (openclawStatus.state === "connecting" || openclawStatus.state === "reconnecting") return "Bridge warming up";
-    return "Bridge offline";
-  }, [openclawStatus]);
-
-  const currentBrainSummary = useMemo(() => (
-    session
-      ? [session.provider, session.model].filter(Boolean).join(" / ")
-      : selectedWorker
-        ? [selectedWorker.adapterType, String((selectedWorker.adapterConfig as { model?: string } | null)?.model ?? "adaptive")].join(" / ")
-        : [ctoIdentity?.modelPreferences.provider, ctoIdentity?.modelPreferences.model].filter(Boolean).join(" / ")
-  ), [ctoIdentity?.modelPreferences.model, ctoIdentity?.modelPreferences.provider, selectedWorker, session]);
-
-  const focusSummary = useMemo(() => (
-    selectedWorker
-      ? summarizeList(selectedWorker.capabilities, "Generalist execution")
-      : summarizeList(coreMemory?.activeFocus, "No focus saved yet")
-  ), [coreMemory?.activeFocus, selectedWorker]);
+  const currentBrainSummary = useMemo(() => {
+    if (session) return [session.provider, session.model].filter(Boolean).join(" / ");
+    if (selectedWorker) {
+      const workerModel = String((selectedWorker.adapterConfig as { model?: string } | null)?.model ?? "adaptive");
+      return [selectedWorker.adapterType, workerModel].join(" / ");
+    }
+    return [ctoIdentity?.modelPreferences.provider, ctoIdentity?.modelPreferences.model].filter(Boolean).join(" / ");
+  }, [ctoIdentity?.modelPreferences.model, ctoIdentity?.modelPreferences.provider, selectedWorker, session]);
 
   const pageTitle = selectedWorker ? selectedWorker.name : ctoDisplayName;
-  const pageSubtitle = selectedWorker
-    ? summarizeText(
-        selectedWorker.title || summarizeList(selectedWorker.capabilities, ""),
-        "Persistent worker session with durable memory and delegated execution context.",
-      )
-    : summarizeText(
-        coreMemory?.projectSummary,
-        "Your persistent project CTO with layered memory, durable context, and full ADE reach.",
-      );
 
   return (
     <div className={shellBodyCls}>
@@ -670,118 +638,51 @@ export function CtoPage() {
           />
         )}
 
-        <div className="px-4 py-3">
-          <div
-            className={cn(cardCls, "overflow-hidden p-0")}
-            style={{
-              background: "radial-gradient(circle at top left, rgba(56,189,248,0.14), transparent 28%), radial-gradient(circle at top right, rgba(251,191,36,0.1), transparent 24%), linear-gradient(180deg, rgba(16,22,32,0.94), rgba(9,13,19,0.96))",
-            }}
-          >
-            {/* Compact header row */}
-            <div className={compactHeaderCls}>
-              {/* Left: Avatar + title + subtitle */}
-              <div className="flex items-center gap-3 min-w-0">
-                <div
-                  className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl border"
-                  style={{
-                    background: selectedWorker
-                      ? "linear-gradient(135deg, rgba(96,165,250,0.16), rgba(96,165,250,0.06))"
-                      : "linear-gradient(135deg, rgba(56,189,248,0.16), rgba(56,189,248,0.06))",
-                    borderColor: selectedWorker ? "rgba(96,165,250,0.26)" : "rgba(56,189,248,0.26)",
-                  }}
-                >
-                  <span className="text-sm font-bold" style={{ color: selectedWorker ? "#60A5FA" : "#38BDF8" }}>
-                    {pageTitle.charAt(0).toUpperCase()}
-                  </span>
-                </div>
-                <div className="min-w-0 flex items-baseline gap-2">
-                  <span className="shrink-0 text-sm font-semibold tracking-tight text-fg">{pageTitle}</span>
-                  <span className="truncate text-[11px] text-muted-fg/38">{pageSubtitle}</span>
-                </div>
-              </div>
-
-              {/* Center: Stats as compact chips */}
-              <div className="flex flex-wrap items-center gap-2">
-                {[
-                  {
-                    label: selectedWorker ? "Role" : "Focus",
-                    value: focusSummary,
-                    color: "#38BDF8",
-                  },
-                  {
-                    label: "Memory",
-                    value: selectedWorker ? "revisions" : "durable",
-                    color: "#A78BFA",
-                  },
-                  {
-                    label: "Team",
-                    value: `${teamStats.active}/${teamStats.total}`,
-                    color: "#34D399",
-                  },
-                  {
-                    label: "Sessions",
-                    value: String(sessionLogs.length),
-                    color: "#FBBF24",
-                  },
-                ].map((chip) => (
-                  <div key={chip.label} className={statChipCls}>
-                    <span className="text-muted-fg/46">{chip.label}</span>
-                    <span className="font-semibold" style={{ color: chip.color }}>{chip.value}</span>
-                  </div>
-                ))}
-              </div>
-
-              {/* Right: Bridge/brain status */}
-              <div className="flex shrink-0 items-center gap-2.5">
-                {[
-                  { label: bridgeSummary, tone: openclawStatus?.state === "connected" ? "#34D399" : "#38BDF8" },
-                  { label: currentBrainSummary || "Brain not set", tone: selectedWorker ? "#60A5FA" : "#38BDF8" },
-                ].map((item) => (
-                  <div
-                    key={item.label}
-                    className="rounded-full border px-3 py-1.5 text-[11px] font-semibold uppercase tracking-[0.08em]"
-                    style={{
-                      color: item.tone,
-                      borderColor: `${item.tone}22`,
-                      background: `${item.tone}0A`,
-                    }}
-                  >
-                    {item.label}
-                  </div>
-                ))}
-              </div>
+        {/* Minimal single-row header */}
+        <div className="flex items-center gap-4 border-b border-white/[0.06] px-5 py-2.5">
+          {/* Left: Avatar + name */}
+          <div className="flex items-center gap-2.5 shrink-0">
+            <div
+              className="flex h-7 w-7 items-center justify-center rounded-lg border border-accent/20"
+              style={{ background: "var(--color-accent-muted)" }}
+            >
+              <span className="text-xs font-bold text-accent">
+                {pageTitle.charAt(0).toUpperCase()}
+              </span>
             </div>
-
-            {/* Tab bar */}
-            <div className="px-4 pb-3 pt-1.5">
-              <div className={cn(shellTabBarCls, "w-full flex-wrap !p-1.5 !gap-1")}>
-                {TABS.map(({ id, label, icon: Icon, color }) => {
-                  const active = activeTab === id;
-                  return (
-                    <button
-                      key={id}
-                      type="button"
-                      onClick={() => setActiveTab(id)}
-                      className={cn(
-                        "flex items-center gap-2 rounded-xl px-3.5 py-2 text-xs font-semibold transition-all duration-200",
-                        active ? "text-fg" : "text-muted-fg/44 hover:text-muted-fg/68 hover:bg-white/[0.03]",
-                      )}
-                      style={active
-                        ? {
-                            background: `${color}12`,
-                            border: `1px solid ${color}24`,
-                            boxShadow: `0 8px 20px rgba(0,0,0,0.16), 0 0 12px ${color}08`,
-                          }
-                        : { border: "1px solid transparent" }}
-                    >
-                      <Icon size={14} weight={active ? "fill" : "regular"} style={active ? { color } : undefined} />
-                      {label}
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
+            <span className="text-sm font-semibold text-fg">{pageTitle}</span>
           </div>
+
+          {/* Center: Tab buttons */}
+          <div className="flex flex-1 items-center gap-1">
+            {TABS.map(({ id, label, icon: Icon, tooltip }) => {
+              const active = activeTab === id;
+              return (
+                <SmartTooltip key={id} content={{ label, description: tooltip }} side="bottom">
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab(id)}
+                    className={cn(
+                      "flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-all duration-150",
+                      active
+                        ? "bg-accent/10 text-accent border border-accent/20"
+                        : "text-muted-fg/50 hover:text-muted-fg/80 hover:bg-white/[0.03] border border-transparent",
+                    )}
+                  >
+                    <Icon size={13} weight={active ? "fill" : "regular"} />
+                    {label}
+                  </button>
+                </SmartTooltip>
+              );
+            })}
+          </div>
+
+          {/* Right: Model badge */}
+          {currentBrainSummary ? (
+            <div className="shrink-0 rounded-md border border-white/[0.06] bg-white/[0.03] px-2.5 py-1 text-[10px] font-medium text-muted-fg/60">
+              {currentBrainSummary}
+            </div>
+          ) : null}
         </div>
 
         {/* Tab content */}
@@ -799,7 +700,7 @@ export function CtoPage() {
             <div
               className="min-h-0 flex-1 overflow-hidden rounded-[24px] border border-white/[0.07]"
               style={{
-                background: "radial-gradient(circle at top left, rgba(56,189,248,0.08), transparent 26%), linear-gradient(180deg, rgba(13,18,27,0.88), rgba(9,12,18,0.94))",
+                background: "radial-gradient(circle at top left, rgba(167,139,250,0.08), transparent 26%), linear-gradient(180deg, rgba(13,18,27,0.88), rgba(9,12,18,0.94))",
               }}
             >
               {showOnboarding || needsOnboarding ? (
@@ -865,12 +766,12 @@ export function CtoPage() {
                 </div>
               ) : agents.length === 0 ? (
                 <div className="flex flex-col items-center justify-center h-full p-8">
-                  <div className="flex h-12 w-12 items-center justify-center rounded-2xl mb-4" style={{ background: "rgba(56, 189, 248, 0.12)", border: "1px solid rgba(56, 189, 248, 0.16)" }}>
-                    <UsersThree size={22} weight="duotone" style={{ color: "#38BDF8" }} />
+                  <div className="flex h-12 w-12 items-center justify-center rounded-lg mb-4 bg-accent/10 border border-accent/15">
+                    <UsersThree size={22} weight="duotone" className="text-accent" />
                   </div>
-                  <div className="font-sans text-base font-semibold text-fg">No workers yet</div>
-                  <div className="text-xs text-muted-fg/45 mt-1.5 text-center max-w-[36ch]">
-                    Hire autonomous workers from templates or build custom ones.
+                  <div className="text-base font-semibold text-fg">No workers yet</div>
+                  <div className="text-xs text-muted-fg/50 mt-1.5 text-center max-w-[36ch]">
+                    Hire workers to delegate tasks. Each worker gets its own chat session, memory, and model.
                   </div>
                   <Button variant="primary" className="mt-4" onClick={handleHireWorker}>
                     Hire Worker
@@ -881,47 +782,70 @@ export function CtoPage() {
                   {!selectedWorker ? (
                     <div className="space-y-4" data-testid="team-overview">
                       <div className="flex items-center justify-between">
-                        <div className="font-sans text-sm font-semibold text-fg">Team Overview</div>
-                        <Button variant="outline" size="sm" onClick={handleHireWorker}>
-                          Hire Worker
-                        </Button>
+                        <div className="text-sm font-semibold text-fg">Team</div>
+                        <SmartTooltip content={{ label: "Hire Worker", description: "Create a new worker from a template. Each worker gets its own chat session, memory, and model." }}>
+                          <Button variant="outline" size="sm" onClick={handleHireWorker}>
+                            Hire Worker
+                          </Button>
+                        </SmartTooltip>
                       </div>
 
-                      <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
-                        {[
-                          { label: "Workers", value: String(teamStats.total) },
-                          { label: "Active", value: String(teamStats.active) },
-                          { label: "Running", value: String(teamStats.running) },
-                          { label: "Paused", value: String(teamStats.paused) },
-                        ].map((item) => (
-                          <div key={item.label} className={cn(cardCls, "p-4")}>
-                            <div className="text-[11px] font-semibold uppercase tracking-[0.1em] text-muted-fg/45">{item.label}</div>
-                            <div className="mt-2 font-sans text-2xl font-bold text-fg">{item.value}</div>
-                          </div>
-                        ))}
-                      </div>
-
-                      <div className={cn(cardCls, "p-4")} data-testid="cto-subordinate-activity">
-                        <div className="mb-3">
-                          <div className="font-sans text-sm font-semibold text-fg">Recent Activity</div>
-                        </div>
-                        <div className="space-y-1">
-                          {subordinateActivity.length === 0 ? (
-                            <div className="py-4 font-mono text-xs text-muted-fg/40">No department activity recorded yet.</div>
-                          ) : subordinateActivity.map((entry) => (
-                            <TimelineEntry
-                              key={entry.id}
-                              timestamp={entry.createdAt}
-                              title={`${entry.agentName} · ${entry.activityType === "worker_run" ? "Worker run" : "Chat turn"}`}
-                              subtitle={[entry.summary, entry.issueKey, entry.taskKey].filter(Boolean).join(" · ")}
-                              status={entry.activityType === "worker_run" ? "run" : "chat"}
-                              statusVariant={entry.activityType === "worker_run" ? "info" : "muted"}
-                            />
-                          ))}
-                        </div>
+                      <div className="grid grid-cols-2 gap-3 xl:grid-cols-3">
+                        {agents.map((agent) => {
+                          const workerBudget = budgetSnapshot?.workers.find((w) => w.agentId === agent.id);
+                          const modelId = (agent.adapterConfig as { model?: string } | null)?.model;
+                          return (
+                            <button
+                              key={agent.id}
+                              type="button"
+                              onClick={() => { setSelectedAgentId(agent.id); }}
+                              className="text-left rounded-xl border border-white/[0.07] bg-[linear-gradient(180deg,rgba(26,24,48,0.6),rgba(18,16,34,0.7))] p-4 shadow-card backdrop-blur-[16px] transition-all duration-150 hover:border-accent/25 hover:shadow-card-hover"
+                            >
+                              <div className="flex items-center gap-2 mb-2">
+                                <div className={cn("h-2 w-2 rounded-full shrink-0", statusDotCls(agent.status))} />
+                                <span className="text-xs font-semibold text-fg truncate">{agent.name}</span>
+                              </div>
+                              <div className="flex items-center gap-2 text-[10px] text-muted-fg/50 mb-3">
+                                <span>{agent.role}</span>
+                                {modelId && <><span className="text-white/[0.08]">&middot;</span><span className="truncate">{modelId}</span></>}
+                              </div>
+                              <div className="flex items-center justify-between">
+                                <span className="text-[10px] text-muted-fg/40">
+                                  {workerBudget ? `$${(workerBudget.spentMonthlyCents / 100).toFixed(2)}/mo` : "$0.00/mo"}
+                                </span>
+                                <div className="flex items-center gap-1">
+                                  <Button
+                                    variant="ghost"
+                                    size="sm"
+                                    className="!h-5 !px-1.5 !text-[10px]"
+                                    onClick={(e) => { e.stopPropagation(); void wakeSelectedWorker(); setSelectedAgentId(agent.id); }}
+                                  >
+                                    Wake
+                                  </Button>
+                                  <Button
+                                    variant="ghost"
+                                    size="sm"
+                                    className="!h-5 !px-1.5 !text-[10px]"
+                                    onClick={(e) => { e.stopPropagation(); setSelectedAgentId(agent.id); handleEditWorker(); }}
+                                  >
+                                    Edit
+                                  </Button>
+                                </div>
+                              </div>
+                            </button>
+                          );
+                        })}
                       </div>
                     </div>
                   ) : (
+                    <div className="space-y-3">
+                      <button
+                        type="button"
+                        onClick={() => setSelectedAgentId(null)}
+                        className="flex items-center gap-1.5 text-xs text-muted-fg/50 hover:text-fg transition-colors"
+                      >
+                        <span className="text-[10px]">&larr;</span> Back to Team
+                      </button>
                     <WorkerDetailPanel
                       worker={selectedWorker}
                       coreMemory={workerCoreMemory}
@@ -939,6 +863,7 @@ export function CtoPage() {
                       onRollbackRevision={(id) => void rollbackRevision(id)}
                       onSaveCoreMemory={handleSaveWorkerCoreMemory}
                     />
+                    </div>
                   )}
                 </div>
               )}
@@ -946,7 +871,7 @@ export function CtoPage() {
           )}
 
           {/* Linear tab */}
-          {activeTab === "linear" && <LinearSyncPanel lanes={lanes} selectedLaneId={laneId} />}
+          {activeTab === "workflows" && <LinearSyncPanel lanes={lanes} selectedLaneId={laneId} />}
 
           {/* Settings tab */}
           {activeTab === "settings" && (

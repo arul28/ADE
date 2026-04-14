@@ -19,7 +19,7 @@ export function VisualSelector({ options, value, onChange }: Props) {
     <div className="flex flex-wrap gap-2">
       {options.map((opt) => {
         const active = opt.value === value;
-        const accent = opt.color ?? "#38BDF8";
+        const accent = opt.color ?? "#A78BFA";
         return (
           <button
             key={opt.value}

@@ -1926,6 +1926,27 @@ describe("createAgentChatService", () => {
       const sessionsWithAutomation = await service.listSessions(undefined, { includeAutomation: true });
       expect(sessionsWithAutomation.length).toBe(1);
     });
+
+    it("does not expose completion summaries as the session summary before the chat is ended", async () => {
+      const { service } = createService();
+
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+
+      writePersistedChatState(session.id, {
+        ...readPersistedChatState(session.id),
+        completion: {
+          status: "completed",
+          summary: "Wrapped up the first pass and proposed a follow-up.",
+        },
+      });
+
+      const sessions = await service.listSessions();
+      expect(sessions[0]?.summary).toBeNull();
+    });
   });
 
   describe("ensureIdentitySession", () => {
@@ -2064,6 +2085,82 @@ describe("createAgentChatService", () => {
       expect(send).toHaveBeenCalledWith(expect.stringContaining("Keep the OpenClaw bridge runtime state in machine-local cache."));
       expect(send).toHaveBeenCalledWith(expect.stringContaining("User: What lane should frontend use?"));
       expect(send).toHaveBeenCalledWith(expect.stringContaining("Assistant: Use the primary-hosted coordinator first."));
+    });
+
+    it("reconstructs recent conversation tail for non-identity Claude sessions after resume", async () => {
+      const send = vi.fn().mockResolvedValue(undefined);
+      const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+      let streamCall = 0;
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield {
+            type: "system",
+            subtype: "init",
+            session_id: "sdk-session-non-identity",
+            slash_commands: [],
+          };
+          yield {
+            type: "result",
+            usage: { input_tokens: 1, output_tokens: 1 },
+          };
+          return;
+        }
+
+        yield {
+          type: "assistant",
+          session_id: "sdk-session-non-identity",
+          message: {
+            content: [{ type: "text", text: "We should keep the lane state intact." }],
+            usage: { input_tokens: 1, output_tokens: 1 },
+          },
+        };
+        yield {
+          type: "result",
+          usage: { input_tokens: 1, output_tokens: 1 },
+        };
+      })());
+      vi.mocked(unstable_v2_createSession).mockReturnValue({
+        send,
+        stream,
+        close: vi.fn(),
+        sessionId: "sdk-session-non-identity",
+        setPermissionMode,
+      } as any);
+
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+
+      const persisted = readPersistedChatState(session.id);
+      writePersistedChatState(session.id, {
+        ...persisted,
+        recentConversationEntries: [
+          { role: "user", text: "Can you keep the lane warm?" },
+          { role: "assistant", text: "Yes, I will keep the lane session alive." },
+        ],
+      });
+
+      const resumed = createService().service;
+      await resumed.resumeSession({ sessionId: session.id });
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      send.mockClear();
+
+      const result = await resumed.runSessionTurn({
+        sessionId: session.id,
+        text: "What changed?",
+        timeoutMs: 15_000,
+      });
+
+      expect(result.sessionId).toBe(session.id);
+      expect(send).toHaveBeenCalledTimes(1);
+      expect(send).toHaveBeenCalledWith(expect.stringContaining("Recent Conversation Tail"));
+      expect(send).toHaveBeenCalledWith(expect.stringContaining("User: Can you keep the lane warm?"));
+      expect(send).toHaveBeenCalledWith(expect.stringContaining("Assistant: Yes, I will keep the lane session alive."));
+      expect(send).not.toHaveBeenCalledWith(expect.stringContaining("Continuity Summary"));
     });
 
     it("persists a continuity snapshot and prewarms a fresh Claude session after identity session reset errors", async () => {
@@ -2641,6 +2738,36 @@ describe("createAgentChatService", () => {
   // --------------------------------------------------------------------------
 
   describe("dispose", () => {
+    it("only writes the persisted chat summary when the session is explicitly disposed", async () => {
+      vi.mocked(streamText).mockReturnValue({
+        fullStream: (async function* () {
+          yield { type: "finish", totalUsage: { inputTokens: 1, outputTokens: 1 } };
+        })(),
+      } as any);
+
+      const { service, sessionService } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "opencode",
+        model: "",
+        modelId: "opencode/anthropic/claude-sonnet-4-6",
+      });
+
+      await service.runSessionTurn({
+        sessionId: session.id,
+        text: "Investigate the flaky login tests",
+      });
+
+      expect(sessionService.setSummary).not.toHaveBeenCalled();
+
+      await service.dispose({ sessionId: session.id });
+
+      expect(sessionService.setSummary).toHaveBeenCalledWith(
+        session.id,
+        expect.stringContaining("Session closed"),
+      );
+    });
+
     it("disposes a session and marks it ended", async () => {
       const { service, sessionService } = createService();
       const session = await service.createSession({
@@ -3211,6 +3338,76 @@ describe("createAgentChatService", () => {
       ]));
     });
 
+    it("sends Codex image steer payloads as localImage input blocks", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Start working",
+      }, { awaitDispatch: true });
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope & {
+          event: Extract<AgentChatEventEnvelope["event"], { type: "status" }>;
+        } =>
+          event.event.type === "status"
+          && event.event.turnStatus === "started"
+          && event.event.turnId === "turn-1",
+      );
+
+      const imagePath = path.join(tmpRoot, "codex-steer-image.png");
+      fs.writeFileSync(imagePath, "fake-image-bytes");
+
+      const result = await service.steer({
+        sessionId: session.id,
+        text: "Use this screenshot while you keep going.",
+        attachments: [{ path: imagePath, type: "image" }],
+      });
+
+      expect(result.queued).toBe(false);
+      const steerRequest = mockState.codexRequestPayloads.find((payload) => payload.method === "turn/steer");
+      expect(steerRequest).toBeTruthy();
+      expect(steerRequest).toEqual(expect.objectContaining({
+        method: "turn/steer",
+        params: expect.objectContaining({
+          threadId: "thread-1",
+          expectedTurnId: "turn-1",
+          input: expect.arrayContaining([
+            expect.objectContaining({
+              type: "text",
+              text: "Use this screenshot while you keep going.",
+            }),
+            expect.objectContaining({
+              type: "localImage",
+              path: expect.stringContaining("codex-steer-image.png"),
+            }),
+          ]),
+        }),
+      }));
+
+      expect(events).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          event: expect.objectContaining({
+            type: "user_message",
+            text: "Use this screenshot while you keep going.",
+            attachments: [{ path: imagePath, type: "image" }],
+            deliveryState: "delivered",
+            steerId: result.steerId,
+            turnId: "turn-1",
+          }),
+        }),
+      ]));
+    });
+
     it("marks active Codex subagents stopped on interrupt and ignores late child updates", async () => {
       const events: AgentChatEventEnvelope[] = [];
       const { service } = createService({
@@ -3433,7 +3630,7 @@ describe("createAgentChatService", () => {
           signal: new AbortController().signal,
           toolUseID: "tool-enter-plan",
         });
-        expect(enterResult).toEqual({ behavior: "allow" });
+        expect(enterResult).toMatchObject({ behavior: "allow" });
 
         const entered = await service.getSessionSummary(sessionId);
         expect(entered?.permissionMode).toBe("plan");
@@ -4209,9 +4406,8 @@ describe("createAgentChatService", () => {
       try {
         const events: AgentChatEventEnvelope[] = [];
         let primaryStreamCall = 0;
-        let primaryClosed = false;
+        let releaseInterruptedTurn = false;
         const primarySend = vi.fn().mockResolvedValue(undefined);
-        const resumedSend = vi.fn().mockResolvedValue(undefined);
         const setPermissionMode = vi.fn().mockResolvedValue(undefined);
 
         const primarySession = {
@@ -4241,40 +4437,32 @@ describe("createAgentChatService", () => {
               },
             };
 
-            while (!primaryClosed) {
-              await new Promise((resolve) => setTimeout(resolve, 1_000));
+            if (primaryStreamCall === 2) {
+              while (!releaseInterruptedTurn) {
+                await new Promise((resolve) => setTimeout(resolve, 1_000));
+              }
+              return;
             }
 
-            throw new Error("aborted by user");
-          })()),
-          close: vi.fn(() => {
-            primaryClosed = true;
-          }),
-          sessionId: "sdk-session-1",
-          setPermissionMode,
-        };
-
-        const resumedSession = {
-          send: resumedSend,
-          stream: vi.fn(() => (async function* () {
-            yield {
-              type: "system",
-              subtype: "init",
-              session_id: "sdk-session-1",
-              slash_commands: [],
-            };
-            yield {
-              type: "assistant",
-              session_id: "sdk-session-1",
-              message: {
-                content: [{ type: "text", text: "You were asking about the new chat buttons." }],
+            if (primaryStreamCall === 3) {
+              yield {
+                type: "assistant",
+                session_id: "sdk-session-1",
+                message: {
+                  content: [{ type: "text", text: "You were asking about the new chat buttons." }],
+                  usage: { input_tokens: 1, output_tokens: 1 },
+                },
+              };
+              yield {
+                type: "result",
                 usage: { input_tokens: 1, output_tokens: 1 },
-              },
-            };
-            yield {
-              type: "result",
-              usage: { input_tokens: 1, output_tokens: 1 },
-            };
+              };
+              return;
+            }
+
+            while (true) {
+              await new Promise((resolve) => setTimeout(resolve, 1_000));
+            }
           })()),
           close: vi.fn(),
           sessionId: "sdk-session-1",
@@ -4282,7 +4470,6 @@ describe("createAgentChatService", () => {
         };
 
         vi.mocked(unstable_v2_createSession).mockReturnValue(primarySession as any);
-        vi.mocked(unstable_v2_resumeSession).mockReturnValue(resumedSession as any);
 
         const { service } = createService({
           onEvent: (event: AgentChatEventEnvelope) => events.push(event),
@@ -4303,6 +4490,11 @@ describe("createAgentChatService", () => {
           .then(() => null as Error | null)
           .catch((error) => error instanceof Error ? error : new Error(String(error)));
         await vi.advanceTimersByTimeAsync(120_000);
+        expect(events.find((event) =>
+          event.event.type === "status" && event.event.turnStatus === "interrupted",
+        )).toBeDefined();
+        releaseInterruptedTurn = true;
+        await vi.advanceTimersByTimeAsync(1_000);
         const timeoutError = await firstTurnError;
         expect(timeoutError?.message ?? "").toMatch(/Timed out waiting for session .* The turn was interrupted, but the chat stayed open\./i);
 
@@ -4320,11 +4512,8 @@ describe("createAgentChatService", () => {
           timeoutMs: 15_000,
         });
 
-        expect(unstable_v2_resumeSession).toHaveBeenCalledWith(
-          "sdk-session-1",
-          expect.objectContaining({ model: "sonnet" }),
-        );
-        expect(resumedSend).toHaveBeenCalledTimes(1);
+        expect(unstable_v2_resumeSession).not.toHaveBeenCalled();
+        expect(primarySend).toHaveBeenCalledTimes(3);
         expect(followUp.outputText).toContain("new chat buttons");
       } finally {
         vi.useRealTimers();
@@ -4406,7 +4595,10 @@ describe("createAgentChatService", () => {
           timeoutMs: 500_000,
         });
 
-        await vi.advanceTimersByTimeAsync(361_000);
+        for (let index = 0; index < 6; index += 1) {
+          await vi.advanceTimersByTimeAsync(60_000);
+        }
+        await vi.advanceTimersByTimeAsync(1_000);
         const result = await turn;
 
         expect(result.outputText).toContain("Finished after a long run.");
@@ -4671,6 +4863,90 @@ describe("createAgentChatService", () => {
 
       hangResolve!();
       await expect(sendPromise).resolves.toBeUndefined();
+    });
+
+    it("emits a single interrupted status and done event without closing the Claude session", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      let streamCall = 0;
+      let warmupComplete = false;
+      let hangResolve: (() => void) | null = null;
+      const hangPromise = new Promise<void>((resolve) => { hangResolve = resolve; });
+      const send = vi.fn().mockResolvedValue(undefined);
+      const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+      const close = vi.fn();
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield { type: "system", subtype: "init", session_id: "sdk-single-interrupt", slash_commands: [] };
+          warmupComplete = true;
+          yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+          return;
+        }
+
+        yield {
+          type: "stream_event",
+          event: {
+            type: "content_block_delta",
+            index: 0,
+            delta: { type: "text_delta", text: "still working" },
+          },
+        };
+        await hangPromise;
+        return;
+      })());
+      vi.mocked(unstable_v2_createSession).mockReturnValue({
+        send,
+        stream,
+        close,
+        sessionId: "sdk-single-interrupt",
+        setPermissionMode,
+      } as any);
+
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+
+      await vi.waitFor(() => {
+        expect(warmupComplete).toBe(true);
+      });
+
+      const sendPromise = service.sendMessage({
+        sessionId: session.id,
+        text: "Please keep working",
+      });
+
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope => event.event.type === "text",
+      );
+
+      await service.interrupt({ sessionId: session.id });
+
+      const interruptedStatuses = events.filter(
+        (event) => event.event.type === "status" && event.event.turnStatus === "interrupted",
+      );
+      const interruptedDone = events.filter(
+        (event) => event.event.type === "done" && event.event.status === "interrupted",
+      );
+      expect(interruptedStatuses).toHaveLength(1);
+      expect(interruptedDone).toHaveLength(1);
+      expect(close).not.toHaveBeenCalled();
+
+      hangResolve!();
+      await expect(sendPromise).resolves.toBeUndefined();
+
+      expect(events.filter(
+        (event) => event.event.type === "status" && event.event.turnStatus === "interrupted",
+      )).toHaveLength(1);
+      expect(events.filter(
+        (event) => event.event.type === "done" && event.event.status === "interrupted",
+      )).toHaveLength(1);
     });
 
   });
@@ -4944,6 +5220,87 @@ describe("createAgentChatService", () => {
           || (typeof arg === "object" && JSON.stringify(arg).includes("updated text")),
       );
       expect(deliveredWithUpdatedText).toBeUndefined();
+    });
+
+    it("sends Claude image follow-ups as SDK user messages after an earlier text turn", async () => {
+      const send = vi.fn().mockResolvedValue(undefined);
+      const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+      let streamCall = 0;
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield {
+            type: "system",
+            subtype: "init",
+            session_id: "sdk-session-1",
+            slash_commands: [],
+          };
+          yield {
+            type: "result",
+            usage: { input_tokens: 1, output_tokens: 1 },
+          };
+          return;
+        }
+
+        yield {
+          type: "assistant",
+          message: {
+            content: [{ type: "text", text: streamCall === 2 ? "First turn done" : "Follow-up done" }],
+            usage: { input_tokens: 1, output_tokens: 1 },
+          },
+        };
+        yield {
+          type: "result",
+          usage: { input_tokens: 1, output_tokens: 1 },
+        };
+      })());
+
+      const mockSession = {
+        send,
+        stream,
+        close: vi.fn(),
+        sessionId: "sdk-session-1",
+        setPermissionMode,
+      };
+
+      vi.mocked(unstable_v2_createSession).mockReturnValue(mockSession as any);
+      vi.mocked(unstable_v2_resumeSession).mockReturnValue(mockSession as any);
+
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+
+      const imagePath = path.join(tmpRoot, "follow-up.png");
+      fs.writeFileSync(imagePath, "fake-image-bytes");
+
+      await service.runSessionTurn({
+        sessionId: session.id,
+        text: "Start with text only",
+      });
+
+      await service.runSessionTurn({
+        sessionId: session.id,
+        text: "Now use this screenshot",
+        attachments: [{ path: imagePath, type: "image" }],
+      });
+
+      expect(send).toHaveBeenCalledTimes(3);
+      expect(String(send.mock.calls[1]?.[0] ?? "")).toContain("Start with text only");
+
+      const followUpPayload = send.mock.calls[2]?.[0] as Record<string, unknown>;
+      expect(followUpPayload.type).toBe("user");
+      expect(followUpPayload.session_id).toBe("sdk-session-1");
+      expect(followUpPayload.parent_tool_use_id).toBeNull();
+
+      const message = followUpPayload.message as { role: string; content: Array<Record<string, unknown>> };
+      expect(message.role).toBe("user");
+      expect(message.content[0]?.type).toBe("text");
+      expect(String(message.content[0]?.text ?? "")).toContain("Now use this screenshot");
+      expect(message.content[1]?.type).toBe("image");
+      expect((message.content[1]?.source as Record<string, unknown>).type).toBe("base64");
     });
   });
 

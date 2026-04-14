@@ -14,6 +14,17 @@ It guarantees three outcomes:
 
 **Usage:** `/finalize`
 
+## Execution Mode: Autonomous
+
+This command runs end-to-end without user interaction. Do NOT:
+- Ask the user to confirm, choose, or approve anything.
+- Pause between phases to request direction.
+- Stop on non-fatal warnings — log them and continue.
+- Request clarification on ambiguous simplifications — skip the risky ones and note in the final report.
+- Ask before reverting your own work (e.g., Phase 3i drift check reverts simplifier edits silently).
+
+The only outputs are the Phase 4 summary and any error messages for genuinely fatal failures (typecheck/lint errors, build crashes, test failures the agent itself caused). Every decision is made by the agent based on the rules in this file.
+
 ## Pipeline Overview
 
 ```
@@ -68,51 +79,108 @@ Spawn agents in parallel using the **Agent** tool:
 
 ### Simplifier agents (1-3 based on batch size)
 
-Use `subagent_type: "code-simplifier"` for each batch.
+Use `subagent_type: "code-simplifier:code-simplifier"` for each batch (note the full namespaced form — plain `"code-simplifier"` is not a valid agent type).
 
 Prompt each with:
 - The list of files in their batch
 - Branch context (what feature/area was changed)
 - Instructions: focus on recently modified code, don't refactor untouched code
+- **Explicit safety rule**: before removing code that looks dead (unused helpers, "unused" local components, stale state), grep for references **including the file's colocated `*.test.ts(x)` neighbor**. Test expectations often lag behind feature refactors — removing "unused" code can silently break a test suite that will only light up in Phase 3e. When in doubt, leave it and note in the report.
+- **Diff-only scope**: `git diff main -- <file>` first; if zero diff, do not edit (a previous run tried to simplify files it thought were modified, and wasted time on unchanged code).
+- **Typecheck after every file**: `cd apps/desktop && npx tsc --noEmit -p . 2>&1 | head -20`.
 
 ### Doc updater agent
+
+The internal docs live under `docs/` with this structure (rebuilt; do NOT confuse with the public Mintlify site at repo root `docs.json` + `*.mdx`):
+
+```
+docs/
+├── README.md                          # navigation map
+├── PRD.md                             # product entry point — links to every feature
+├── ARCHITECTURE.md                    # consolidated system architecture
+├── OPTIMIZATION_OPPORTUNITIES.md      # backlog (append-only)
+└── features/
+    ├── agents/              ├── memory/
+    ├── automations/         ├── missions/
+    ├── chat/                ├── onboarding-and-settings/
+    ├── computer-use/        ├── project-home/
+    ├── conflicts/           ├── pull-requests/
+    ├── context-packs/       ├── sync-and-multi-device/
+    ├── cto/                 ├── terminals-and-sessions/
+    ├── files-and-editor/    └── workspace-graph/
+    ├── history/
+    ├── lanes/
+    └── linear-integration/
+```
+
+Each `features/<name>/` contains a `README.md` (overview + source file map at top) plus 1–4 detail `*.md` files.
 
 Spawn a general-purpose agent with this prompt:
 
 ```
 You are the documentation updater for the ADE project.
 
-Analyze all changes on the current branch vs main and update relevant documentation.
+Analyze all changes on the current branch vs main and update relevant internal
+docs under `docs/`. The public Mintlify site (docs.json + root-level .mdx files)
+is out of scope — do NOT touch it.
 
 Step 1: Get changed files
   git diff main --name-only
   git diff main --stat | tail -30
 
-Step 2: Identify affected docs
+Step 2: Map changed source to internal docs
 
-Map changed source directories to documentation:
+| Source Directory                                   | Doc Location                                       |
+|----------------------------------------------------|----------------------------------------------------|
+| apps/desktop/src/main/services/orchestrator/       | docs/features/missions/                            |
+| apps/desktop/src/main/services/prs/                | docs/features/pull-requests/                       |
+| apps/desktop/src/main/services/lanes/              | docs/features/lanes/                               |
+| apps/desktop/src/main/services/memory/             | docs/features/memory/                              |
+| apps/desktop/src/main/services/cto/                | docs/features/cto/ (+ linear-integration/)         |
+| apps/desktop/src/main/services/ai/                 | docs/features/chat/ + features/agents/             |
+| apps/desktop/src/main/services/chat/               | docs/features/chat/                                |
+| apps/desktop/src/main/services/automations/        | docs/features/automations/                         |
+| apps/desktop/src/main/services/computerUse/        | docs/features/computer-use/                        |
+| apps/desktop/src/main/services/context/            | docs/features/context-packs/                       |
+| apps/desktop/src/main/services/conflicts/          | docs/features/conflicts/                           |
+| apps/desktop/src/main/services/files/              | docs/features/files-and-editor/                    |
+| apps/desktop/src/main/services/history/            | docs/features/history/                             |
+| apps/desktop/src/main/services/onboarding/         | docs/features/onboarding-and-settings/             |
+| apps/desktop/src/main/services/pty/                | docs/features/terminals-and-sessions/              |
+| apps/desktop/src/main/services/sessions/           | docs/features/terminals-and-sessions/              |
+| apps/desktop/src/main/services/processes/          | docs/features/terminals-and-sessions/              |
+| apps/desktop/src/main/services/sync/               | docs/features/sync-and-multi-device/               |
+| apps/desktop/src/main/services/config/             | docs/features/onboarding-and-settings/             |
+| apps/desktop/src/main/services/ipc/                | docs/ARCHITECTURE.md (IPC section)                 |
+| apps/desktop/src/main/services/git/                | docs/ARCHITECTURE.md (Git engine section) + lanes/ |
+| apps/desktop/src/preload/                          | docs/ARCHITECTURE.md (IPC contract)                |
+| apps/desktop/src/shared/                           | docs/ARCHITECTURE.md + touching feature's doc      |
+| apps/desktop/src/renderer/components/<area>/       | docs/features/<same-area>/                         |
+| apps/desktop/src/renderer/state/                   | docs/ARCHITECTURE.md (UI framework)                |
+| apps/mcp-server/                                   | docs/ARCHITECTURE.md + features/linear-integration/|
+| .github/workflows/                                 | docs/ARCHITECTURE.md (Build/Test/Deploy)           |
+| apps/ios/                                          | docs/features/sync-and-multi-device/ios-companion.md |
+| apps/web/                                          | docs/ARCHITECTURE.md (Apps & Processes)            |
 
-| Source Directory | Doc Location |
-|-----------------|--------------|
-| apps/desktop/src/main/services/orchestrator/ | docs/architecture/, docs/features/ |
-| apps/desktop/src/main/services/prs/ | docs/features/ (PR-related) |
-| apps/desktop/src/main/services/lanes/ | docs/features/ (lanes-related) |
-| apps/desktop/src/main/services/memory/ | docs/features/ (memory-related) |
-| apps/desktop/src/main/services/cto/ | docs/features/ (CTO/Linear-related) |
-| apps/desktop/src/main/services/ai/ | docs/architecture/ (AI integration) |
-| apps/desktop/src/renderer/components/ | docs/features/ (UI-related) |
-| apps/mcp-server/ | docs/ (MCP-related) |
-| .github/workflows/ | docs/ (CI/CD-related) |
+Step 3: Update docs in place
+- Prefer editing existing docs over creating new ones.
+- If a feature gets a genuinely new sub-concept worth its own page, add a new detail doc inside the existing features/<name>/ folder.
+- Keep each README.md's "Source file map" section current — it is the primary way an agent orients itself.
+- Rewrite prose to reflect current reality (not a changelog of what changed).
+- Remove outdated information.
+- Do NOT add changelog sections, "Updated on X" notes, or dated markers.
+- Do NOT modify docs/OPTIMIZATION_OPPORTUNITIES.md via this agent — it is append-only and human-curated.
 
-Step 3: Update docs
-- Rewrite sections to reflect current reality (not what changed)
-- Remove outdated information
-- Update code examples, file paths, API references
-- Do NOT add changelog sections or "Updated on X" notes
-- Do NOT create new doc files unless absolutely necessary
+Step 4: Append-only — NEVER touch the public Mintlify site
+- Do NOT modify docs.json or any *.mdx file at repo root.
+- Do NOT modify ./chat/, ./tools/, ./missions/, ./changelog/, ./configuration/, ./computer-use/, ./context-packs/, ./getting-started/, ./guides/, ./automations/, ./lanes/, ./cto/ (these are Mintlify pages).
 
-Step 4: Run doc validation
+Step 5: Run doc validation
   node scripts/validate-docs.mjs
+
+This validator only covers the Mintlify site. For internal docs, self-check:
+  - Every features/<name>/README.md still has a "Source file map" section.
+  - PRD.md links resolve (grep for broken relative links).
 
 Report what docs were updated and what was changed.
 ```
@@ -207,7 +275,40 @@ cd apps/web && npm run build
 node scripts/validate-docs.mjs
 ```
 
+This only validates the public Mintlify site (`docs.json` + `.mdx`). Also run these automated checks for the internal `docs/` tree:
+
+```bash
+# Every features/<name>/README.md has a "Source file map" section.
+for d in docs/features/*/README.md; do
+  grep -q "Source file map" "$d" || echo "MISSING map: $d"
+done
+
+# PRD.md links resolve.
+grep -oE "\[.*\]\([^)]+\.md\)" docs/PRD.md | \
+  sed -E 's/.*\(([^)]+)\).*/\1/' | \
+  while read -r p; do
+    test -f "docs/$p" || echo "BROKEN LINK: $p"
+  done
+```
+
+Both commands should produce empty output. Any `MISSING map:` or `BROKEN LINK:` line is a failure — fix the offending doc and re-run. Do not prompt the user; resolve autonomously.
+
 All checks must pass. If any fail, fix and re-run only the failed step.
+
+### 3i. Test-simplifier drift check (catch Phase 2 over-reach)
+
+When a simplifier agent removed "unused" code, the colocated test may still reference it — the test will only light up in Phase 3e. If a test failure appears **only in a file the simplifier touched (or its test sibling)**, treat it as suspect:
+
+```bash
+# Files the simplifier touched this run:
+# (Run once before Phase 2; diff after to see what changed.)
+git diff main --name-only | sort > /tmp/finalize-branch-files.txt
+
+# After Phase 2, list what changed in this session on top of the prior branch state:
+git diff --name-only | sort > /tmp/finalize-session-files.txt
+```
+
+If Phase 3e fails only inside files the simplifier touched, revert the simplifier's edits to those files and re-run. Do NOT rewrite the test suite in Phase 3 — tests that drift because the feature branch refactored UI are a separate follow-up.
 
 ---
 

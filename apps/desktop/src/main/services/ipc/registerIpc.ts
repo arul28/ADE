@@ -3629,13 +3629,25 @@ export function registerIpc({
     }
 
     const expectedHostname = ctx.laneProxyService.generateHostname(laneId, lane.name);
+    const health = ctx.runtimeDiagnosticsService
+      ? await ctx.runtimeDiagnosticsService.checkLaneHealth(laneId).catch(() => null)
+      : null;
+    const validatedRespondingPort =
+      Number.isInteger(health?.respondingPort) &&
+      (health?.respondingPort as number) > 0 &&
+      (health?.respondingPort as number) >= lease.rangeStart &&
+      (health?.respondingPort as number) <= lease.rangeEnd
+        ? (health?.respondingPort as number)
+        : null;
+    const targetPort = validatedRespondingPort ?? lease.rangeStart;
     const currentRoute = ctx.laneProxyService.getRoute(laneId);
     if (
       !currentRoute ||
-      currentRoute.targetPort !== lease.rangeStart ||
-      currentRoute.hostname !== expectedHostname
+      currentRoute.targetPort !== targetPort ||
+      currentRoute.hostname !== expectedHostname ||
+      currentRoute.status !== "active"
     ) {
-      ctx.laneProxyService.addRoute(laneId, lease.rangeStart, lane.name);
+      ctx.laneProxyService.addRoute(laneId, targetPort, lane.name);
     }
 
     return ctx.laneProxyService.getPreviewInfo(laneId);

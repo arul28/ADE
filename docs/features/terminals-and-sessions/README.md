@@ -1,0 +1,267 @@
+# Terminals and Sessions
+
+PTY-backed terminal sessions plus agent chat sessions, both tracked through a
+single `terminal_sessions` row and surfaced in the Work view, lane panels, and
+the Sessions sidebar. The session model is the backbone for transcripts,
+deltas, lane association, and resume flows.
+
+The main-process services for this feature have been heavily rewritten on the
+current branch: `ptyService.ts`, `sessionService.ts`, and `processService.ts`
+all carry large diffs. Treat them as fragile and re-read whenever wiring
+changes.
+
+## Source file map
+
+Main process:
+
+- `apps/desktop/src/main/services/pty/ptyService.ts` — PTY lifecycle,
+  transcript capture, runtime state, AI auto-titles, tool-type routing,
+  resume backfill. ~1,500 lines. Branch rewrite.
+- `apps/desktop/src/main/services/pty/ptyService.test.ts` — PTY behavior
+  tests. Branch updated.
+- `apps/desktop/src/main/services/sessions/sessionService.ts` — persistence
+  layer for `terminal_sessions` rows. CRUD, resume metadata normalization,
+  `reattach`, `reconcileStaleRunningSessions`. ~580 lines. Branch rewrite.
+- `apps/desktop/src/main/services/sessions/sessionService.test.ts` —
+  session persistence tests.
+- `apps/desktop/src/main/services/sessions/sessionDeltaService.ts` —
+  end-of-session git diff + transcript delta computation, reads from
+  `session_deltas` table.
+- `apps/desktop/src/main/services/processes/processService.ts` — managed
+  process lifecycle, readiness checks, restart policy, stack buttons.
+  ~860 lines. Branch rewrite (551 lines changed).
+- `apps/desktop/src/main/services/processes/processService.test.ts` —
+  managed process tests.
+- `apps/desktop/src/main/services/lanes/laneLaunchContext.ts` —
+  per-lane cwd resolution that gates PTY creation to the lane worktree.
+
+Shared types and IPC:
+
+- `apps/desktop/src/shared/types/sessions.ts` — `TerminalSessionSummary`,
+  `TerminalSessionStatus`, `TerminalToolType`, `TerminalRuntimeState`,
+  `TerminalResumeMetadata`, `PtyCreateArgs`, `SessionDeltaSummary`.
+- `apps/desktop/src/shared/types/config.ts` — `ProcessDefinition`,
+  `ProcessRuntime`, `ProcessRuntimeStatus`, `ProcessReadinessConfig`,
+  `StackButtonDefinition`, `ProcessRestartPolicy`.
+- `apps/desktop/src/shared/ipc.ts` — channels `ade.sessions.*`,
+  `ade.pty.*`, `ade.processes.*`.
+
+Preload bridge:
+
+- `apps/desktop/src/preload/preload.ts` — `window.ade.sessions`,
+  `window.ade.pty`, `window.ade.processes` APIs.
+
+IPC registration:
+
+- `apps/desktop/src/main/services/ipc/registerIpc.ts` — registers
+  `sessionsList`, `sessionsGet`, `sessionsUpdateMeta`,
+  `sessionsReadTranscriptTail`, `sessionsGetDelta`, `ptyCreate`,
+  `ptyWrite`, `ptyResize`, `ptyDispose`, and the `processes.*` handlers.
+
+Renderer surfaces:
+
+- `apps/desktop/src/renderer/components/terminals/TerminalsPage.tsx` —
+  entry surface with `PaneTilingLayout` (sessions list + work view).
+- `apps/desktop/src/renderer/components/terminals/SessionListPane.tsx` —
+  sidebar list with three organization modes (lane / status / time),
+  sticky group headers, search/filter.
+- `apps/desktop/src/renderer/components/terminals/SessionCard.tsx` —
+  per-session card (status dot, title, preview line, tool type, lane,
+  delta chips).
+- `apps/desktop/src/renderer/components/terminals/WorkViewArea.tsx` —
+  multi-tab and multi-tile Work view that owns the `PackedSessionGrid`.
+- `apps/desktop/src/renderer/components/terminals/WorkStartSurface.tsx` —
+  empty-state "start new chat / terminal" surface.
+- `apps/desktop/src/renderer/components/terminals/TerminalView.tsx` —
+  xterm.js wrapper; WebGL renderer with DOM fallback, fit retries, health
+  counters.
+- `apps/desktop/src/renderer/components/terminals/PackedSessionGrid.tsx`
+  + `packedSessionGridMath.ts` — bin-packed resizable grid for multiple
+  simultaneous sessions.
+- `apps/desktop/src/renderer/components/terminals/useWorkSessions.ts` —
+  hook that owns work view state (open items, active tab, draft kind,
+  view mode, filters) and persists it to `localStorage` under
+  `ade.workViewState.v1`.
+- `apps/desktop/src/renderer/components/terminals/useSessionDelta.ts` —
+  fetches `SessionDeltaSummary` for a given session.
+- `apps/desktop/src/renderer/components/terminals/cliLaunch.ts` —
+  builds Claude/Codex CLI command strings with permission and sandbox
+  flags.
+- `apps/desktop/src/renderer/components/terminals/SessionContextMenu.tsx`
+  and `SessionInfoPopover.tsx` — right-click actions and info overlay.
+- `apps/desktop/src/renderer/lib/sessionListCache.ts` — shared renderer
+  cache for `ade.sessions.list` calls, keyed by `projectRoot/laneId/status`.
+
+## Detail docs
+
+- [pty-and-processes.md](./pty-and-processes.md) — lifecycle, tool-type
+  detection, transcript and preview handling, auto-titles, resume
+  backfill, stale reconciliation. Covers the branch-heavy main-process
+  code.
+- [ui-surfaces.md](./ui-surfaces.md) — the renderer surfaces:
+  `TerminalsPage`, `SessionListPane`, `WorkViewArea`, `WorkStartSurface`,
+  `TerminalView`, `PackedSessionGrid`, and state hooks.
+- [runtime-isolation.md](./runtime-isolation.md) — how a session stays
+  bound to a single lane worktree and a single mission/run context.
+
+## Session model
+
+A session is a row in `terminal_sessions` (SQLite via `AdeDb`). The same
+schema is used for:
+
+- interactive shell PTYs (`toolType = "shell"`)
+- managed processes launched by `processService` (`toolType = "run-shell"`)
+- CLI agent terminals (`claude`, `codex`, `claude-orchestrated`,
+  `codex-orchestrated`, `opencode-orchestrated`)
+- agent chat sessions that run through the Claude/Codex SDKs rather than
+  a PTY (`claude-chat`, `codex-chat`, `opencode-chat`)
+- other tracked tools (`cursor`, `aider`, `continue`, `other`)
+
+Status transitions: `running` → `completed` | `failed` | `disposed`.
+
+Fields that feed UI and downstream systems:
+
+- identity: `id`, `laneId`, `laneName`, `ptyId`, `tracked`, `pinned`,
+  `manuallyNamed`
+- title and intent: `title`, `goal`, `toolType`
+- lifecycle: `status`, `startedAt`, `endedAt`, `exitCode`, `runtimeState`
+  (derived), `chatIdleSinceAt`
+- content: `transcriptPath`, `lastOutputPreview`, `summary`
+- git anchoring: `headShaStart`, `headShaEnd` (used by
+  `sessionDeltaService`)
+- resume: `resumeCommand`, `resumeMetadata` (provider, target kind,
+  target ID, launch config)
+
+See `apps/desktop/src/shared/types/sessions.ts` for the full shape.
+
+## Session lifecycle
+
+1. **Create** — `ptyService.create()` resolves the lane worktree via
+   `resolveLaneLaunchContext`, allocates `ptyId` and `sessionId`
+   (or reuses an existing ID on resume), opens a transcript stream,
+   spawns the shell or direct command, and inserts a
+   `terminal_sessions` row through `sessionService.create()`.
+
+2. **Stream** — PTY `data` events are written to the transcript
+   (capped at `MAX_TRANSCRIPT_BYTES = 8 MB`), throttled into a
+   `lastOutputPreview`, forwarded to `broadcastData`, and scanned for
+   runtime state signals (OSC 133 prompt markers).
+
+3. **Tag** — the tool type is inferred or passed by the renderer.
+   Claude/Codex sessions also get a best-effort `--session-id` extraction
+   so resume works after the CLI itself assigns an ID.
+
+4. **Auto-title** — after 6 seconds (`PTY_AI_TITLE_DEBOUNCE_MS`) the
+   service may summarize the early output into a short title via the AI
+   integration service. For Claude/Codex it prefers the first submitted
+   user line (`tryCliUserTitleFromWrite`) because the TUI hides useful
+   text in the alternate screen.
+
+5. **End** — on PTY exit, `sessionService.end()` finalizes `endedAt`,
+   `exitCode`, and `status`. The transcript stream is flushed, then:
+   - `backfillResumeTargetFromTranscriptBestEffort` tries to recover a
+     Claude/Codex session UUID from transcript output or from Claude/Codex
+     local JSONL storage.
+   - `summarizeSessionBestEffort` generates an optional end-of-session
+     summary and, when `refreshOnComplete` is enabled, regenerates the
+     title from the transcript tail.
+   - `sessionDeltaService` can compute file-level git deltas using
+     `headShaStart`/`headShaEnd`.
+
+6. **Reattach** — `sessionService.reattach()` reuses an existing session
+   row when a user clicks "resume" and the PTY service opens the
+   transcript in append mode. This keeps identity, lane association, and
+   transcript history intact.
+
+7. **Reconcile** — on startup, `reconcileStaleRunningSessions` marks
+   orphaned `running` rows as `disposed`. An `excludeToolTypes` option
+   lets the caller keep chat sessions alive so they can be resumed via
+   their SDK rather than force-closed.
+
+## Hot paths worth knowing
+
+- **Session list cache** — the renderer shares `listSessionsCached()`
+  (`sessionListCache.ts`) across Work, lanes, graph, and top-bar
+  attention. Invalidate it when a new session is created outside the
+  normal paths.
+- **Refresh-before-activate** — every surface that creates or opens a
+  session awaits `refresh()` before activating a tab, so
+  `sessionsById.get(activeItemId)` resolves on the first render.
+- **Runtime isolation** — `resolveLaneLaunchContext` is the single gate
+  that converts a `laneId` + optional `cwd` into a real directory inside
+  the lane worktree. Bypass it and you risk launching a session in the
+  wrong worktree. See [runtime-isolation.md](./runtime-isolation.md).
+- **Work view state persistence** — the Work tab persists per-project
+  UI state (open items, filters, collapsed groups, focus-hidden flag)
+  to `localStorage` under `ade.workViewState.v1`. Lane-scoped state
+  uses a composite `projectRoot::laneId` key.
+
+## IPC surface summary
+
+Sessions:
+
+| Channel | Purpose |
+|---|---|
+| `ade.sessions.list` | list by lane/status; cached at renderer |
+| `ade.sessions.get` | single session detail including runtime state |
+| `ade.sessions.updateMeta` | rename (sets `manuallyNamed`), pin, edit goal, update resume metadata |
+| `ade.sessions.readTranscriptTail` | tail bytes of transcript (raw or ANSI-stripped) |
+| `ade.sessions.getDelta` | `SessionDeltaSummary` |
+| `ade.sessions.changed` (event) | fired on meta updates |
+
+PTY:
+
+| Channel | Purpose |
+|---|---|
+| `ade.pty.create` | create or reattach; returns `{ ptyId, sessionId, pid }` |
+| `ade.pty.write` | write bytes to PTY |
+| `ade.pty.resize` | cols/rows resize |
+| `ade.pty.dispose` | close PTY; optional `sessionId` used for logging |
+| `ade.pty.data` (event) | stream stdout/stderr to the renderer |
+| `ade.pty.exit` (event) | final exit code |
+
+Processes (managed):
+
+| Channel | Purpose |
+|---|---|
+| `ade.processes.listDefinitions` | read from project config |
+| `ade.processes.listRuntime` | current status per lane |
+| `ade.processes.start` / `stop` / `restart` / `kill` | lifecycle |
+| `ade.processes.startStack` / `stopStack` / `restartStack` | stack buttons |
+| `ade.processes.startAll` / `stopAll` | bulk ops |
+| `ade.processes.getLogTail` | transcript tail for the focused process |
+| `ade.processes.event` (event) | `runtime` and `log` events |
+
+## Gotchas
+
+- Chat sessions backed by the Claude/Codex SDK still insert a
+  `terminal_sessions` row but they are not attached to a PTY. Guard
+  UI code with `isChatToolType(toolType)` before calling PTY-only APIs.
+- `reconcileStaleRunningSessions` now accepts `excludeToolTypes`. If
+  you add a new chat-style tool type, add it to the exclusion list in
+  `main.ts` or chat sessions will be force-disposed on every startup.
+- `transcriptPath` may be blank for untracked sessions (tracked=false)
+  and for processes that died before their PTY opened — always
+  null-check before reading.
+- `resumeCommand` is derived from `resumeMetadata` when present, then
+  falls back to `defaultResumeCommandForTool(toolType)`. Editing it
+  directly is only allowed through `sessionService.setResumeCommand` or
+  `updateMeta`, both of which re-derive the metadata.
+- Transcript writes are capped at 8 MB; after the cap a notice line is
+  written once and further output is dropped. The runtime counter
+  `transcriptBytesWritten` is not persisted.
+- Preview updates are throttled (~900 ms) and the string is capped at
+  220 chars via `derivePreviewFromChunk`.
+- `PackedSessionGrid` mounts every tile; tiles that are not visible set
+  `terminalVisible={false}` so xterm skips fit work. Do not unmount a
+  grid tile just because it is offscreen — the PTY will detach.
+
+## Cross-links
+
+- Lanes feature: [lanes/](../lanes/)
+- Files surface used by terminals for the transcript: see
+  [../files-and-editor/](../files-and-editor/) (the file watcher is
+  scoped per workspace, not per session).
+- Configuration-driven processes: [../onboarding-and-settings/configuration-schema.md](../onboarding-and-settings/configuration-schema.md)
+- Context packs / exports that reference session deltas:
+  [../context-packs/](../context-packs/)

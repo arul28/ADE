@@ -125,7 +125,7 @@ export function formatToolTypeLabel(toolType: string | null | undefined): string
 
 /* ── Session label helpers ──
  * Shared logic for deriving human-readable labels from session metadata.
- * Used by SessionCard, WorkViewArea, and LaneTerminalsPanel.
+ * Used by SessionCard and WorkViewArea.
  */
 
 export function normalizeSessionLabel(raw: string | null | undefined): string | null {

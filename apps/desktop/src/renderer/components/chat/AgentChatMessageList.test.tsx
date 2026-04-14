@@ -253,7 +253,7 @@ describe("AgentChatMessageList transcript rendering", () => {
       },
     ]);
 
-    expect(view.container.innerHTML).toContain("max-w-[78ch]");
+    expect(view.container.innerHTML).toContain("max-w-[min(96ch,75%)]");
   });
 
   it("renders markdown tables inside a dedicated scroll shell", () => {

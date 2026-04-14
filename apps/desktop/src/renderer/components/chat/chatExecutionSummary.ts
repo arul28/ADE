@@ -96,6 +96,31 @@ export function deriveTurnDiffSummaries(events: AgentChatEventEnvelope[]): TurnD
   return summaries;
 }
 
+export type TodoItemSnapshot = {
+  id: string;
+  description: string;
+  status: "pending" | "in_progress" | "completed";
+};
+
+/**
+ * Returns the latest todo_update snapshot from the event stream.
+ * Each todo_update replaces the full list, so we just take the last one.
+ */
+export function deriveTodoItems(events: AgentChatEventEnvelope[]): TodoItemSnapshot[] {
+  let latest: TodoItemSnapshot[] = [];
+  for (const envelope of events) {
+    const event = envelope.event;
+    if (event.type === "todo_update") {
+      latest = event.items.map((item) => ({
+        id: item.id,
+        description: item.description,
+        status: item.status,
+      }));
+    }
+  }
+  return latest;
+}
+
 export type SubagentTimelineEntry = {
   timestamp: string;
   type: "started" | "progress" | "result";

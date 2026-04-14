@@ -1,5 +1,6 @@
 import React from "react";
 import type { GitCommitSummary } from "../../../shared/types";
+import { SmartTooltip } from "../ui/SmartTooltip";
 import { COLORS, LABEL_STYLE, MONO_FONT, inlineBadge } from "./laneDesignTokens";
 
 function formatTs(ts: string): string {
@@ -141,21 +142,25 @@ export function CommitTimeline({
             blue = merge
           </span>
         </div>
-        <button
-          type="button"
-          style={{
-            fontFamily: MONO_FONT, fontSize: 10, fontWeight: 700,
-            color: COLORS.textMuted, background: "transparent", border: "none", cursor: "pointer",
-            textTransform: "uppercase", letterSpacing: "1px",
-          }}
-          onClick={() => void load()}
-          disabled={!laneId || loading}
-          title="Refresh"
-          onMouseEnter={(e) => { e.currentTarget.style.color = COLORS.textPrimary; }}
-          onMouseLeave={(e) => { e.currentTarget.style.color = COLORS.textMuted; }}
-        >
-          REFRESH
-        </button>
+        <SmartTooltip content={{
+          label: "Refresh",
+          description: "Reload the commit history to show the latest commits on this lane.",
+        }}>
+          <button
+            type="button"
+            style={{
+              fontFamily: MONO_FONT, fontSize: 10, fontWeight: 700,
+              color: COLORS.textMuted, background: "transparent", border: "none", cursor: "pointer",
+              textTransform: "uppercase", letterSpacing: "1px",
+            }}
+            onClick={() => void load()}
+            disabled={!laneId || loading}
+            onMouseEnter={(e) => { e.currentTarget.style.color = COLORS.textPrimary; }}
+            onMouseLeave={(e) => { e.currentTarget.style.color = COLORS.textMuted; }}
+          >
+            REFRESH
+          </button>
+        </SmartTooltip>
       </div>
 
       {error ? (

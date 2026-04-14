@@ -726,6 +726,170 @@ describe("createSyncRemoteCommandService", () => {
         .rejects.toThrow("chat.steer requires text.");
     });
 
+    // ==========================================================
+    // parseAgentChatSendArgs / parseAgentChatSteerArgs extensions
+    // ==========================================================
+
+    describe("parseAgentChatSendArgs (via chat.send) — new attachment / metadata fields", () => {
+      it("returns only sessionId and text when no optional metadata is provided", async () => {
+        await service.execute(makePayload("chat.send", {
+          sessionId: "sess-1",
+          text: "plain",
+        }));
+        expect(agentChatService.sendMessage).toHaveBeenCalledTimes(1);
+        const sentArg = agentChatService.sendMessage.mock.calls[0][0] as Record<string, unknown>;
+        expect(sentArg).toEqual({ sessionId: "sess-1", text: "plain" });
+        // Explicitly ensure none of the new optional keys leaked in.
+        expect(sentArg).not.toHaveProperty("displayText");
+        expect(sentArg).not.toHaveProperty("attachments");
+        expect(sentArg).not.toHaveProperty("reasoningEffort");
+        expect(sentArg).not.toHaveProperty("executionMode");
+        expect(sentArg).not.toHaveProperty("interactionMode");
+      });
+
+      it("includes valid attachments when path + type are well-formed", async () => {
+        await service.execute(makePayload("chat.send", {
+          sessionId: "sess-1",
+          text: "hello",
+          attachments: [
+            { path: "a", type: "image" },
+            { path: "b", type: "file" },
+          ],
+        }));
+        expect(agentChatService.sendMessage).toHaveBeenCalledWith({
+          sessionId: "sess-1",
+          text: "hello",
+          attachments: [
+            { path: "a", type: "image" },
+            { path: "b", type: "file" },
+          ],
+        });
+      });
+
+      it("filters out attachment entries missing a valid path or valid type", async () => {
+        await service.execute(makePayload("chat.send", {
+          sessionId: "sess-1",
+          text: "hello",
+          attachments: [
+            { path: "ok", type: "file" },
+            { path: "   ", type: "image" }, // whitespace-only path
+            { path: "no-type" }, // missing type
+            { path: "bad-type", type: "binary" }, // unknown type
+            "not-a-record", // not an object
+            null,
+            { type: "file" }, // missing path entirely
+          ],
+        }));
+        const sent = agentChatService.sendMessage.mock.calls[0][0] as { attachments?: unknown[] };
+        expect(sent.attachments, "only the single valid entry should survive").toEqual([
+          { path: "ok", type: "file" },
+        ]);
+      });
+
+      it("omits attachments entirely when every entry is invalid", async () => {
+        await service.execute(makePayload("chat.send", {
+          sessionId: "sess-1",
+          text: "hello",
+          attachments: [
+            { path: "", type: "file" },
+            { type: "image" },
+            { path: "x" },
+          ],
+        }));
+        const sent = agentChatService.sendMessage.mock.calls[0][0] as Record<string, unknown>;
+        expect(sent, "attachments key must be omitted when no valid entries").not.toHaveProperty("attachments");
+      });
+
+      it("ignores non-array attachments values (object, string, undefined)", async () => {
+        for (const attachments of [{ not: "array" }, "image", 42, null]) {
+          agentChatService.sendMessage.mockClear();
+          await service.execute(makePayload("chat.send", {
+            sessionId: "sess-1",
+            text: "hello",
+            attachments,
+          }));
+          const sent = agentChatService.sendMessage.mock.calls[0][0] as Record<string, unknown>;
+          expect(sent, `non-array attachments (${JSON.stringify(attachments)}) must not attach anything`).not.toHaveProperty("attachments");
+        }
+      });
+
+      it("includes displayText, reasoningEffort, executionMode, interactionMode only when non-empty strings", async () => {
+        await service.execute(makePayload("chat.send", {
+          sessionId: "sess-1",
+          text: "hello",
+          displayText: "shown to user",
+          reasoningEffort: "high",
+          executionMode: "autonomous",
+          interactionMode: "chat",
+        }));
+        expect(agentChatService.sendMessage).toHaveBeenCalledWith({
+          sessionId: "sess-1",
+          text: "hello",
+          displayText: "shown to user",
+          reasoningEffort: "high",
+          executionMode: "autonomous",
+          interactionMode: "chat",
+        });
+      });
+
+      it("trims string metadata and omits empty/blank values", async () => {
+        agentChatService.sendMessage.mockClear();
+        await service.execute(makePayload("chat.send", {
+          sessionId: "sess-1",
+          text: "hello",
+          displayText: "  padded  ",
+          reasoningEffort: "",
+          executionMode: "   ",
+          interactionMode: 42, // non-string, must be ignored
+        }));
+        const sent = agentChatService.sendMessage.mock.calls[0][0] as Record<string, unknown>;
+        expect(sent.displayText, "displayText should be trimmed").toBe("padded");
+        expect(sent, "reasoningEffort empty string should be omitted").not.toHaveProperty("reasoningEffort");
+        expect(sent, "executionMode whitespace-only should be omitted").not.toHaveProperty("executionMode");
+        expect(sent, "non-string interactionMode should be omitted").not.toHaveProperty("interactionMode");
+      });
+    });
+
+    describe("parseAgentChatSteerArgs — new attachments support", () => {
+      it("includes attachments when present and valid", async () => {
+        await service.execute(makePayload("chat.steer", {
+          sessionId: "sess-1",
+          text: "redirect",
+          attachments: [
+            { path: "img.png", type: "image" },
+            { path: "notes.txt", type: "file" },
+          ],
+        }));
+        expect(agentChatService.steer).toHaveBeenCalledWith({
+          sessionId: "sess-1",
+          text: "redirect",
+          attachments: [
+            { path: "img.png", type: "image" },
+            { path: "notes.txt", type: "file" },
+          ],
+        });
+      });
+
+      it("omits attachments when array has no valid entries", async () => {
+        agentChatService.steer.mockClear();
+        await service.execute(makePayload("chat.steer", {
+          sessionId: "sess-1",
+          text: "redirect",
+          attachments: [{ path: "", type: "image" }, { type: "file" }],
+        }));
+        const sent = agentChatService.steer.mock.calls[0][0] as Record<string, unknown>;
+        expect(sent, "no valid attachments → key omitted").not.toHaveProperty("attachments");
+        expect(sent).toEqual({ sessionId: "sess-1", text: "redirect" });
+      });
+
+      it("still throws when text is missing even if attachments are provided", async () => {
+        await expect(service.execute(makePayload("chat.steer", {
+          sessionId: "sess-1",
+          attachments: [{ path: "x", type: "file" }],
+        }))).rejects.toThrow("chat.steer requires text.");
+      });
+    });
+
     it("chat.resume routes to agentChatService.resumeSession", async () => {
       await service.execute(makePayload("chat.resume", {
         sessionId: "sess-1",

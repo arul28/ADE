@@ -248,7 +248,7 @@ async function createWindow(logger?: Logger): Promise<BrowserWindow> {
     ? "'self' http://localhost:* http://127.0.0.1:*"
     : "'self' file: app:";
   const cspWsSources = isDevMode ? " ws://localhost:* ws://127.0.0.1:*" : "";
-  const cspImageSources = `${cspSources} https://avatars.githubusercontent.com https://*.githubusercontent.com https://github.githubassets.com https://opengraph.githubassets.com https://github.com https://vercel.com https://*.vercel.com https://img.shields.io`;
+  const cspImageSources = `${cspSources} https://avatars.githubusercontent.com https://*.githubusercontent.com https://github.githubassets.com https://opengraph.githubassets.com https://github.com https://vercel.com https://*.vercel.com https://img.shields.io https://*.s3.amazonaws.com`;
   const cspPolicy = [
     `default-src ${cspSources}`,
     `base-uri 'self'`,
@@ -1120,6 +1120,9 @@ app.whenReady().then(async () => {
     });
 
     const sessionService = createSessionService({ db });
+    sessionService.onChanged((event) => {
+      emitProjectEvent(projectRoot, IPC.sessionsChanged, event);
+    });
     const reconciledSessions = sessionService.reconcileStaleRunningSessions({
       status: "disposed",
       excludeToolTypes: ["claude-chat", "codex-chat", "opencode-chat", "cursor"],
@@ -1460,16 +1463,23 @@ app.whenReady().then(async () => {
       },
     });
 
-    const processService = createProcessService({
-      db,
-      projectId,
-      processLogsDir: adePaths.processLogsDir,
-      logger,
-      laneService,
-      projectConfigService,
-      broadcastEvent: (ev) =>
-        emitProjectEvent(projectRoot, IPC.processesEvent, ev),
-    });
+    const getLaneRuntimeEnv = async (laneId: string) => {
+      const lease = portAllocationService.getLease(laneId);
+      const lane = (await laneService.list({ includeArchived: false, includeStatus: false })).find(
+        (entry) => entry.id === laneId,
+      );
+      const hostname = laneProxyService.getRoute(laneId)?.hostname
+        ?? laneProxyService.generateHostname(laneId, lane?.name);
+      const portStart = lease?.rangeStart ?? 3000;
+      const portEnd = lease?.rangeEnd ?? portStart;
+      return {
+        PORT: String(portStart),
+        PORT_RANGE_START: String(portStart),
+        PORT_RANGE_END: String(portEnd),
+        HOSTNAME: hostname,
+        PROXY_HOSTNAME: hostname,
+      };
+    };
 
     const onTrackedSessionEnded = ({
       laneId,
@@ -1515,6 +1525,7 @@ app.whenReady().then(async () => {
       sessionService,
       aiIntegrationService,
       projectConfigService,
+      getLaneRuntimeEnv,
       logger,
       broadcastData: (ev) => {
         emitProjectEvent(projectRoot, IPC.ptyData, ev);
@@ -1529,6 +1540,19 @@ app.whenReady().then(async () => {
         aiOrchestratorServiceRef?.onSessionRuntimeSignal(signal);
       },
       loadPty,
+    });
+
+    const processService = createProcessService({
+      db,
+      projectId,
+      logger,
+      laneService,
+      projectConfigService,
+      sessionService,
+      ptyService,
+      getLaneRuntimeEnv,
+      broadcastEvent: (ev) =>
+        emitProjectEvent(projectRoot, IPC.processesEvent, ev),
     });
 
     const sessionDeltaService = createSessionDeltaService({

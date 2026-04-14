@@ -67,7 +67,7 @@ export function WorkerActivityFeed({
     return (
       <div className="flex flex-col items-center justify-center py-8">
         <Brain size={24} weight="thin" className="mb-2 text-muted-fg/20" />
-        <div className="font-mono text-[10px] text-muted-fg/50">No activity recorded yet.</div>
+        <div className="font-sans text-[10px] text-muted-fg/50">No activity recorded yet.</div>
       </div>
     );
   }

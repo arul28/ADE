@@ -1,6 +1,5 @@
 import { randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import path from "node:path";
 import type { Logger } from "../../desktop/src/main/services/logging/logger";
 import type { AdeDb } from "../../desktop/src/main/services/state/kvDb";
 import type { createLaneService } from "../../desktop/src/main/services/lanes/laneService";
@@ -629,13 +628,25 @@ export function createHeadlessLinearServices(args: HeadlessLinearDeps): Headless
     laneService: args.laneService,
     onLaneWorktreeMutation: () => {},
   });
+  const sessionService = {
+    get: () => null,
+  } as any;
+  const ptyService = {
+    create: async () => {
+      throw new Error("PTY-backed run commands are unavailable in headless Linear services.");
+    },
+    dispose: () => {},
+    onData: () => () => {},
+    onExit: () => () => {},
+  } as any;
   const processService = createProcessServiceImpl({
     db: args.db,
     projectId: args.projectId,
-    processLogsDir: path.join(args.paths.processLogsDir),
     logger: args.logger,
     laneService: args.laneService,
     projectConfigService: args.projectConfigService,
+    sessionService,
+    ptyService,
     broadcastEvent: () => {},
   });
   const prService = createPrServiceImpl({

@@ -131,7 +131,6 @@ export type ImportBranchLaneArgs = {
   branchRef: string;
   name?: string;
   description?: string;
-  parentLaneId?: string | null;
   baseBranch?: string;
 };
 

@@ -329,11 +329,23 @@ describe("AgentChatComposer", () => {
     expect(screen.getByText("2 Questions · codex")).toBeTruthy();
   });
 
-  it("disables attachments while steering an active turn", () => {
+  it("allows attachments while steering an active Codex turn", () => {
     renderComposer({ turnActive: true });
 
-    expect((screen.getByTitle("Attach files or images (@)") as HTMLButtonElement).disabled).toBe(true);
-    expect((screen.getByTitle("Upload file from disk") as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByTitle("Attach files or images (@)") as HTMLButtonElement).disabled).toBe(false);
+    expect((screen.getByTitle("Upload file from disk") as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it("allows attachments while steering an active Claude turn", () => {
+    renderComposer({
+      turnActive: true,
+      sessionProvider: "claude",
+      modelId: "anthropic/claude-sonnet-4-6",
+      availableModelIds: ["anthropic/claude-sonnet-4-6"],
+    });
+
+    expect((screen.getByTitle("Attach files or images (@)") as HTMLButtonElement).disabled).toBe(false);
+    expect((screen.getByTitle("Upload file from disk") as HTMLButtonElement).disabled).toBe(false);
   });
 
   it("shows inline proof toggle and wires callback", () => {

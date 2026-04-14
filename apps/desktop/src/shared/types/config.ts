@@ -487,7 +487,7 @@ export type LaneHealthIssue = {
   type: "process-dead" | "port-unresponsive" | "proxy-route-missing" | "port-conflict" | "env-init-failed";
   message: string;
   actionLabel?: string;
-  actionType?: "reassign-port" | "restart-proxy" | "reinit-env" | "enable-fallback";
+  actionType?: "reassign-port" | "restart-proxy" | "reinit-env" | "enable-fallback" | "refresh-preview";
 };
 
 export type LaneHealthCheck = {
@@ -495,6 +495,7 @@ export type LaneHealthCheck = {
   status: LaneHealthStatus;
   processAlive: boolean;
   portResponding: boolean;
+  respondingPort: number | null;
   proxyRouteActive: boolean;
   fallbackMode: boolean;
   lastCheckedAt: string;
@@ -1258,6 +1259,8 @@ export type ProcessRuntime = {
   status: ProcessRuntimeStatus;
   readiness: ProcessReadinessState;
   pid: number | null;
+  sessionId?: string | null;
+  ptyId?: string | null;
   startedAt: string | null;
   endedAt: string | null;
   exitCode: number | null;

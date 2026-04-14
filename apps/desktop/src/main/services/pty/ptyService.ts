@@ -41,7 +41,7 @@ export const PTY_AI_TITLE_DEBOUNCE_MS = 6000;
 const CLI_USER_TITLE_TOOL_TYPES = new Set<TerminalToolType>(["claude", "codex"]);
 
 function shouldScheduleOutputSnippetTitle(tool: TerminalToolType | null): boolean {
-  if (!tool || tool === "shell") return false;
+  if (!tool || tool === "shell" || tool === "run-shell") return false;
   return !CLI_USER_TITLE_TOOL_TYPES.has(tool);
 }
 
@@ -104,6 +104,10 @@ type RuntimeStateEntry = {
   idleTimer: ReturnType<typeof setTimeout> | null;
 };
 
+type PtyDataListener = (event: PtyDataEvent & { laneId: string }) => void;
+
+type PtyExitListener = (event: PtyExitEvent & { laneId: string }) => void;
+
 type ShellSpec = { file: string; args: string[] };
 
 function resolveShellCandidates(): ShellSpec[] {
@@ -161,28 +165,36 @@ function normalizeToolType(raw: unknown): TerminalToolType | null {
   return (allowed as string[]).includes(value) ? (value as TerminalToolType) : "other";
 }
 
+/** Extract --session-id <uuid> from a Claude startup command if present. */
+function extractClaudeSessionIdFromCommand(command: string): string | null {
+  const match = command.match(/--session-id\s+([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i);
+  return match?.[1] ?? null;
+}
+
 function buildInitialResumeMetadata(args: {
   toolType: TerminalToolType | null;
   startupCommand: string;
 }): TerminalResumeMetadata | null {
   const parsedLaunch = parseTrackedCliLaunchConfig(args.startupCommand, args.toolType);
+  const isClaude = args.toolType === "claude" || args.toolType === "claude-orchestrated";
+  const isCodex = args.toolType === "codex" || args.toolType === "codex-orchestrated";
+
+  // Extract pre-assigned --session-id from Claude startup command
+  const preAssignedId = isClaude ? extractClaudeSessionIdFromCommand(args.startupCommand) : null;
+
   if (parsedLaunch) {
     return {
-      provider: args.toolType === "codex" || args.toolType === "codex-orchestrated"
-        ? "codex"
-        : "claude",
-      targetKind: args.toolType === "codex" || args.toolType === "codex-orchestrated"
-        ? "thread"
-        : "session",
-      targetId: null,
+      provider: isCodex ? "codex" : "claude",
+      targetKind: isCodex ? "thread" : "session",
+      targetId: preAssignedId,
       launch: parsedLaunch,
     };
   }
 
-  if (args.toolType === "claude" || args.toolType === "claude-orchestrated") {
-    return { provider: "claude", targetKind: "session", targetId: null, launch: {} };
+  if (isClaude) {
+    return { provider: "claude", targetKind: "session", targetId: preAssignedId, launch: {} };
   }
-  if (args.toolType === "codex" || args.toolType === "codex-orchestrated") {
+  if (isCodex) {
     return { provider: "codex", targetKind: "thread", targetId: null, launch: {} };
   }
   return null;
@@ -273,6 +285,7 @@ export function createPtyService({
   sessionService,
   aiIntegrationService,
   projectConfigService,
+  getLaneRuntimeEnv,
   logger,
   broadcastData,
   broadcastExit,
@@ -287,6 +300,7 @@ export function createPtyService({
   sessionService: ReturnType<typeof createSessionService>;
   aiIntegrationService?: ReturnType<typeof createAiIntegrationService>;
   projectConfigService?: ReturnType<typeof createProjectConfigService>;
+  getLaneRuntimeEnv?: (laneId: string) => Promise<Record<string, string>> | Record<string, string>;
   logger: Logger;
   broadcastData: (ev: PtyDataEvent) => void;
   broadcastExit: (ev: PtyExitEvent) => void;
@@ -302,6 +316,8 @@ export function createPtyService({
 }) {
   const ptys = new Map<string, PtyEntry>();
   const runtimeStates = new Map<string, RuntimeStateEntry>();
+  const dataListeners = new Set<PtyDataListener>();
+  const exitListeners = new Set<PtyExitListener>();
   /** Timers for auto-closing tool-typed PTYs when the CLI tool exits back to shell prompt */
   const toolAutoCloseTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
@@ -615,7 +631,7 @@ export function createPtyService({
   ): void => {
     void endTranscriptStream(entry.transcriptStream)
       .finally(() => {
-        backfillResumeTargetFromTranscriptBestEffort(entry.sessionId, entry.toolTypeHint, reason);
+        backfillResumeTargetFromTranscriptBestEffort(entry.sessionId, entry.toolTypeHint, reason, entry.boundCwd);
         summarizeSessionBestEffort(entry.sessionId, {
           laneWorktreePath: entry.laneWorktreePath,
           boundCwd: entry.boundCwd,
@@ -623,10 +639,117 @@ export function createPtyService({
       });
   };
 
+  /**
+   * Try to find the Claude session ID from Claude's local JSONL storage.
+   * Claude Code stores conversations at ~/.claude/projects/<escaped-cwd>/<uuid>.jsonl.
+   * We find the most recently modified JSONL in the project dir and return its UUID.
+   */
+  const resolveClaudeSessionIdFromStorage = (cwd: string): string | null => {
+    try {
+      const homedir = require("node:os").homedir();
+      // Claude encodes the cwd by replacing / with - (and leading -)
+      // Claude encodes cwd by replacing all / with - (e.g. /Users/admin/Projects/ADE → -Users-admin-Projects-ADE)
+      const escapedCwd = cwd.replace(/\//g, "-");
+      const claudeProjectDir = path.join(homedir, ".claude", "projects", escapedCwd);
+      if (!fs.existsSync(claudeProjectDir)) return null;
+
+      // Find the most recently modified .jsonl that is a direct session (not in subagents/)
+      const entries = fs.readdirSync(claudeProjectDir, { withFileTypes: true });
+      let newest: { name: string; mtimeMs: number } | null = null;
+      for (const entry of entries) {
+        if (!entry.isFile() || !entry.name.endsWith(".jsonl")) continue;
+        const stat = fs.statSync(path.join(claudeProjectDir, entry.name));
+        if (!newest || stat.mtimeMs > newest.mtimeMs) {
+          newest = { name: entry.name, mtimeMs: stat.mtimeMs };
+        }
+      }
+      if (!newest) return null;
+      // UUID is the filename without .jsonl extension
+      const uuid = newest.name.replace(/\.jsonl$/, "");
+      // Basic UUID format check
+      if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(uuid)) return null;
+      // Only consider if modified within the last 5 minutes (to avoid picking up stale sessions)
+      if (Date.now() - newest.mtimeMs > 5 * 60 * 1000) return null;
+      return uuid;
+    } catch {
+      return null;
+    }
+  };
+
+  /**
+   * Try to find the Codex session ID from Codex's local storage.
+   * Codex stores sessions at ~/.codex/sessions/YYYY/MM/DD/rollout-<ts>-<uuid>.jsonl.
+   * Each JSONL starts with a session_meta event containing `payload.id` and `payload.cwd`.
+   * We find the most recently modified JSONL whose cwd matches, and return its UUID.
+   */
+  const resolveCodexSessionIdFromStorage = (cwd: string): string | null => {
+    try {
+      const homedir = require("node:os").homedir();
+      const sessionsBase = path.join(homedir, ".codex", "sessions");
+      if (!fs.existsSync(sessionsBase)) return null;
+
+      // Walk the date-based directory tree (YYYY/MM/DD) and find recent JSONLs
+      const now = new Date();
+      const candidates: Array<{ filePath: string; mtimeMs: number }> = [];
+      // Check today and yesterday's directories
+      for (let dayOffset = 0; dayOffset <= 1; dayOffset++) {
+        const d = new Date(now.getTime() - dayOffset * 86400_000);
+        const dirPath = path.join(
+          sessionsBase,
+          String(d.getFullYear()),
+          String(d.getMonth() + 1).padStart(2, "0"),
+          String(d.getDate()).padStart(2, "0"),
+        );
+        if (!fs.existsSync(dirPath)) continue;
+        for (const entry of fs.readdirSync(dirPath)) {
+          if (!entry.endsWith(".jsonl")) continue;
+          const fp = path.join(dirPath, entry);
+          const stat = fs.statSync(fp);
+          candidates.push({ filePath: fp, mtimeMs: stat.mtimeMs });
+        }
+      }
+      if (!candidates.length) return null;
+
+      // Sort by most recently modified
+      candidates.sort((a, b) => b.mtimeMs - a.mtimeMs);
+
+      // Find one whose cwd matches (read first line)
+      for (const candidate of candidates.slice(0, 10)) {
+        // Only consider files modified in the last 5 minutes
+        if (now.getTime() - candidate.mtimeMs > 5 * 60 * 1000) break;
+        let fd: number | null = null;
+        try {
+          fd = fs.openSync(candidate.filePath, "r");
+          const buf = Buffer.alloc(1024);
+          const bytesRead = fs.readSync(fd, buf, 0, 1024, 0);
+          const firstLine = buf.subarray(0, bytesRead).toString("utf8").split("\n")[0] ?? "";
+          const meta = JSON.parse(firstLine);
+          if (meta?.type === "session_meta" && meta?.payload?.cwd === cwd && meta?.payload?.id) {
+            return meta.payload.id;
+          }
+        } catch {
+          continue;
+        } finally {
+          if (fd !== null) {
+            try {
+              fs.closeSync(fd);
+            } catch {
+              // Ignore close errors while scanning best-effort session metadata.
+            }
+          }
+        }
+      }
+      return null;
+    } catch {
+      return null;
+    }
+  };
+
   const backfillResumeTargetFromTranscriptBestEffort = (
     sessionId: string,
     preferredToolType: TerminalToolType | null,
     reason: "close" | "dispose" | "orphan-dispose",
+    sessionCwd?: string | null,
   ): void => {
     Promise.resolve()
       .then(async () => {
@@ -636,14 +759,39 @@ export function createPtyService({
         if (!isTrackedCliToolType(effectiveToolType)) return;
         if (session.resumeMetadata?.targetId?.trim()) return;
 
+        // Strategy 1: Try parsing the transcript for an explicit resume command
         const transcript = await sessionService.readTranscriptTail(session.transcriptPath, 220_000);
         const detected = extractResumeCommandFromOutput(transcript, effectiveToolType);
-        if (!detected) {
-          logger.warn("pty.resume_target_missing", { sessionId, toolType: effectiveToolType, reason });
+        if (detected) {
+          sessionService.setResumeCommand(sessionId, detected);
+          logger.info("pty.resume_target_backfilled", { sessionId, toolType: effectiveToolType, reason, source: "transcript" });
           return;
         }
-        sessionService.setResumeCommand(sessionId, detected);
-        logger.info("pty.resume_target_backfilled", { sessionId, toolType: effectiveToolType, reason });
+
+        // Strategy 2: Read the session/thread ID from the CLI's local storage
+        const cwd = sessionCwd ?? session.transcriptPath?.split("/.ade/transcripts/")?.[0] ?? null;
+
+        if ((effectiveToolType === "claude" || effectiveToolType === "claude-orchestrated") && cwd) {
+          const claudeSessionId = resolveClaudeSessionIdFromStorage(cwd);
+          if (claudeSessionId) {
+            const resumeCmd = `claude --resume ${claudeSessionId}`;
+            sessionService.setResumeCommand(sessionId, resumeCmd);
+            logger.info("pty.resume_target_backfilled", { sessionId, toolType: effectiveToolType, reason, source: "claude-storage", claudeSessionId });
+            return;
+          }
+        }
+
+        if ((effectiveToolType === "codex" || effectiveToolType === "codex-orchestrated") && cwd) {
+          const codexSessionId = resolveCodexSessionIdFromStorage(cwd);
+          if (codexSessionId) {
+            const resumeCmd = `codex resume ${codexSessionId}`;
+            sessionService.setResumeCommand(sessionId, resumeCmd);
+            logger.info("pty.resume_target_backfilled", { sessionId, toolType: effectiveToolType, reason, source: "codex-storage", codexSessionId });
+            return;
+          }
+        }
+
+        logger.warn("pty.resume_target_missing", { sessionId, toolType: effectiveToolType, reason });
       })
       .catch((err) => {
         logger.warn("pty.resume_target_backfill_failed", {
@@ -704,7 +852,7 @@ export function createPtyService({
         }
       });
 
-    broadcastExit({ ptyId, sessionId: entry.sessionId, exitCode });
+    emitPtyExit(entry, { ptyId, sessionId: entry.sessionId, exitCode });
     ptys.delete(ptyId);
   };
 
@@ -788,6 +936,30 @@ export function createPtyService({
         fs.unlinkSync(cleanupPath);
       } catch {
         // best effort
+      }
+    }
+  };
+
+  const emitPtyData = (entry: PtyEntry, event: PtyDataEvent) => {
+    broadcastData(event);
+    const enriched = { ...event, laneId: entry.laneId };
+    for (const listener of dataListeners) {
+      try {
+        listener(enriched);
+      } catch {
+        // ignore listener failures
+      }
+    }
+  };
+
+  const emitPtyExit = (entry: Pick<PtyEntry, "laneId" | "sessionId">, event: PtyExitEvent) => {
+    broadcastExit(event);
+    const enriched = { ...event, laneId: entry.laneId };
+    for (const listener of exitListeners) {
+      try {
+        listener(enriched);
+      } catch {
+        // ignore listener failures
       }
     }
   };
@@ -880,9 +1052,16 @@ export function createPtyService({
           .catch(() => {});
       }
 
+      const launchEnv = {
+        ...process.env,
+        ...((await getLaneRuntimeEnv?.(laneId)) ?? {}),
+        ...(args.env ?? {})
+      };
       const shellCandidates = resolveShellCandidates();
       let pty: IPty;
       let selectedShell: ShellSpec | null = null;
+      const directCommand = typeof args.command === "string" ? args.command.trim() : "";
+      const directArgs = Array.isArray(args.args) ? args.args.filter((value): value is string => typeof value === "string") : [];
       try {
         const ptyLib = loadPty();
         const opts: IWindowsPtyForkOptions = {
@@ -890,29 +1069,37 @@ export function createPtyService({
           cols,
           rows,
           cwd,
-          env: { ...process.env }
+          env: launchEnv
         };
         let lastErr: unknown = null;
         let created: IPty | null = null;
-        for (const shell of shellCandidates) {
+        if (directCommand) {
           try {
-            created = ptyLib.spawn(shell.file, shell.args, opts);
-            selectedShell = shell;
-            break;
+            created = ptyLib.spawn(directCommand, directArgs, opts);
           } catch (err) {
             lastErr = err;
-            logger.warn("pty.spawn_retry", {
-              ptyId,
-              sessionId,
-              shell: shell.file,
-              cwd,
-              toolType: toolTypeHint,
-              startupCommandPresent: Boolean(startupCommand),
-              envShell: process.env.SHELL ?? "",
-              envPath: process.env.PATH ?? "",
-              resourcesPath: process.resourcesPath ?? "",
-              err: String(err),
-            });
+          }
+        } else {
+          for (const shell of shellCandidates) {
+            try {
+              created = ptyLib.spawn(shell.file, shell.args, opts);
+              selectedShell = shell;
+              break;
+            } catch (err) {
+              lastErr = err;
+              logger.warn("pty.spawn_retry", {
+                ptyId,
+                sessionId,
+                shell: shell.file,
+                cwd,
+                toolType: toolTypeHint,
+                startupCommandPresent: Boolean(startupCommand),
+                envShell: process.env.SHELL ?? "",
+                envPath: process.env.PATH ?? "",
+                resourcesPath: process.resourcesPath ?? "",
+                err: String(err),
+              });
+            }
           }
         }
         if (!created) {
@@ -926,6 +1113,8 @@ export function createPtyService({
           cwd,
           toolType: toolTypeHint,
           startupCommandPresent: Boolean(startupCommand),
+          command: directCommand || null,
+          args: directArgs,
           selectedShell: selectedShell?.file ?? null,
           shellCandidates: shellCandidates.map((shell) => shell.file),
           envShell: process.env.SHELL ?? "",
@@ -1020,7 +1209,7 @@ export function createPtyService({
       pty.onData((data) => {
         writeTranscript(entry, data);
         updatePreviewThrottled(entry, data);
-        broadcastData({ ptyId, sessionId, data });
+        emitPtyData(entry, { ptyId, sessionId, data });
 
         const prevState = runtimeStates.get(sessionId)?.state ?? "running";
         const runtimeState = runtimeStateFromOsc133Chunk(data, prevState);
@@ -1168,7 +1357,7 @@ export function createPtyService({
 
       logger.info("pty.create", { ptyId, sessionId, laneId, cwd, shell: selectedShell?.file ?? "unknown" });
 
-      return { ptyId, sessionId };
+      return { ptyId, sessionId, pid: pty.pid ?? null };
     },
 
     write({ ptyId, data }: { ptyId: string; data: string }): void {
@@ -1234,7 +1423,7 @@ export function createPtyService({
           // ignore callback failures
         }
         summarizeSessionBestEffort(sessionId);
-        broadcastExit({ ptyId, sessionId, exitCode: null });
+        emitPtyExit({ laneId: session.laneId, sessionId }, { ptyId, sessionId, exitCode: null });
         if (session.tracked) {
           try {
             onSessionEnded?.({ laneId: session.laneId, sessionId, exitCode: null });
@@ -1275,7 +1464,7 @@ export function createPtyService({
       } catch {
         // ignore callback failures
       }
-      broadcastExit({ ptyId, sessionId: entry.sessionId, exitCode: null });
+      emitPtyExit(entry, { ptyId, sessionId: entry.sessionId, exitCode: null });
       ptys.delete(ptyId);
 
       if (!entry.tracked) {
@@ -1297,6 +1486,20 @@ export function createPtyService({
           // ignore
         }
       }
+    },
+
+    onData(listener: PtyDataListener): () => void {
+      dataListeners.add(listener);
+      return () => {
+        dataListeners.delete(listener);
+      };
+    },
+
+    onExit(listener: PtyExitListener): () => void {
+      exitListeners.add(listener);
+      return () => {
+        exitListeners.delete(listener);
+      };
     }
   };
 }

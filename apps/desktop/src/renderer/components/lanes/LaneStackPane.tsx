@@ -5,6 +5,7 @@ import type { LaneSummary } from "../../../shared/types";
 import type { IntegrationLaneSource } from "../../lib/integrationLanes";
 import { COLORS, LABEL_STYLE, MONO_FONT, SANS_FONT, outlineButton } from "./laneDesignTokens";
 import { logRendererDebugEvent } from "../../lib/debugLog";
+import { SmartTooltip } from "../ui/SmartTooltip";
 
 const TREE_ROW_H = 28;
 const TREE_INDENT = 22;
@@ -327,15 +328,16 @@ export function LaneStackPane({
         style={{ height: 36, padding: "0 16px", background: COLORS.cardBg, backdropFilter: "blur(20px)", WebkitBackdropFilter: "blur(20px)", borderBottom: `1px solid ${COLORS.border}` }}
       >
         <span style={{ ...LABEL_STYLE, color: COLORS.textDim }}>STACK GRAPH</span>
-        <button
-          type="button"
-          style={outlineButton({ height: 24, gap: 4, padding: "4px 8px", fontSize: 10, fontWeight: 500, color: COLORS.textMuted })}
-          onClick={() => navigate("/graph")}
-          title="Open workspace canvas"
-        >
-          <ArrowSquareOut size={12} />
-          CANVAS
-        </button>
+        <SmartTooltip content={{ label: "Open Canvas", description: "Open the full workspace canvas view showing all lanes and their relationships." }}>
+          <button
+            type="button"
+            style={outlineButton({ height: 24, gap: 4, padding: "4px 8px", fontSize: 10, fontWeight: 500, color: COLORS.textMuted })}
+            onClick={() => navigate("/graph")}
+          >
+            <ArrowSquareOut size={12} />
+            CANVAS
+          </button>
+        </SmartTooltip>
       </div>
       {selectedIntegrationSources.length > 0 ? (
         <div

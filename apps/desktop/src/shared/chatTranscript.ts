@@ -46,6 +46,9 @@ export function parseAgentChatTranscript(raw: string): AgentChatEventEnvelope[] 
         sessionId,
         timestamp,
         event: event as AgentChatEvent,
+        ...(typeof parsed.sequence === "number" && Number.isFinite(parsed.sequence)
+          ? { sequence: parsed.sequence }
+          : {}),
         provenance:
           parsed.provenance && typeof parsed.provenance === "object" && !Array.isArray(parsed.provenance)
             ? parsed.provenance as AgentChatEventEnvelope["provenance"]

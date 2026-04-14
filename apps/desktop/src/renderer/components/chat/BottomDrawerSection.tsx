@@ -25,20 +25,20 @@ export function BottomDrawerSection({
     <div className={cn("border-t border-white/[0.06] bg-[#0D0B12]/60", className)}>
       <button
         type="button"
-        className="flex w-full items-center gap-2.5 px-3 py-2 text-left"
+        className="flex w-full items-center gap-2.5 px-3 py-2.5 text-left"
         onClick={onToggle}
         aria-expanded={expanded}
       >
         {expanded ? (
-          <CaretDown size={10} weight="bold" className="shrink-0 text-fg/35" />
+          <CaretDown size={12} weight="bold" className="shrink-0 text-fg/35" />
         ) : (
-          <CaretRight size={10} weight="bold" className="shrink-0 text-fg/35" />
+          <CaretRight size={12} weight="bold" className="shrink-0 text-fg/35" />
         )}
-        <IconComponent size={12} weight="bold" className="shrink-0 text-fg/35" />
-        <span className="font-mono text-[9px] font-bold uppercase tracking-[0.16em] text-fg/40">
+        <IconComponent size={14} weight="bold" className="shrink-0 text-fg/35" />
+        <span className="text-[11px] font-semibold tracking-[0.08em] text-fg/45">
           {label}
         </span>
-        <div className="min-w-0 flex-1 truncate text-[11px] text-fg/50">
+        <div className="min-w-0 flex-1 truncate text-[12px] text-fg/50">
           {summary}
         </div>
       </button>

@@ -61,9 +61,10 @@ import { chatChipToneClass } from "./chatSurfaceTheme";
 import { ChatComputerUsePanel } from "./ChatComputerUsePanel";
 import { ChatSubagentsPanel } from "./ChatSubagentsPanel";
 import { ChatTasksPanel } from "./ChatTasksPanel";
+import { ChatFileChangesPanel } from "./ChatFileChangesPanel";
 import { ChatGitToolbar } from "./ChatGitToolbar";
 import { ChatTerminalDrawer, ChatTerminalToggle } from "./ChatTerminalDrawer";
-import { deriveChatSubagentSnapshots, deriveTurnDiffSummaries } from "./chatExecutionSummary";
+import { deriveChatSubagentSnapshots, deriveTodoItems, deriveTurnDiffSummaries } from "./chatExecutionSummary";
 import { derivePendingInputRequests, type DerivedPendingInput } from "./pendingInput";
 import { ProviderModelSelector } from "../shared/ProviderModelSelector";
 import { useClickOutside } from "../../hooks/useClickOutside";
@@ -810,6 +811,7 @@ export function AgentChatPane({
   }, [optimisticOutgoingMessage, selectedEvents, selectedSessionId]);
   const selectedSubagentSnapshots = useMemo(() => deriveChatSubagentSnapshots(selectedEvents), [selectedEvents]);
   const selectedTurnDiffSummaries = useMemo(() => deriveTurnDiffSummaries(selectedEvents), [selectedEvents]);
+  const selectedTodoItems = useMemo(() => deriveTodoItems(selectedEvents), [selectedEvents]);
   const pendingInput = selectedSessionId ? (pendingInputsBySession[selectedSessionId]?.[0] ?? null) : null;
   const selectedSessionAwaitingInput = Boolean(pendingInput) || selectedSession?.awaitingInput === true;
   const turnActive = selectedSessionId ? (turnActiveBySession[selectedSessionId] ?? false) : false;
@@ -1386,8 +1388,17 @@ export function AgentChatPane({
       let merged: AgentChatEventEnvelope[];
       if (existing.length && parsed.length) {
         // Find real-time events that are newer than the last transcript entry.
-        const lastParsedTs = parsed[parsed.length - 1]!.timestamp;
-        const tail = existing.filter((e) => e.timestamp > lastParsedTs);
+        // Prefer the monotonic event sequence when available because multiple
+        // events can share the same millisecond timestamp during streaming.
+        const lastParsed = parsed[parsed.length - 1]!;
+        const lastParsedSequence = typeof lastParsed.sequence === "number" ? lastParsed.sequence : null;
+        const lastParsedTs = lastParsed.timestamp;
+        const tail = existing.filter((entry) => {
+          if (lastParsedSequence != null && typeof entry.sequence === "number") {
+            return entry.sequence > lastParsedSequence;
+          }
+          return entry.timestamp > lastParsedTs;
+        });
         merged = tail.length ? [...parsed, ...tail] : parsed;
       } else if (existing.length) {
         // No transcript on disk — keep the real-time events as-is.
@@ -1608,16 +1619,11 @@ export function AgentChatPane({
 
   useEffect(() => {
     if (!selectedSessionId) return;
-    const selectedEventCount = eventsBySessionRef.current[selectedSessionId]?.length ?? 0;
-    const shouldForceReloadSelectedHistory =
-      !lockedSingleSessionMode
-      && selectedEventCount >= MAX_BACKGROUND_CHAT_SESSION_EVENTS
-      && selectedEventCount < MAX_SELECTED_CHAT_SESSION_EVENTS;
     if (!lockedSingleSessionMode) {
-      void loadHistory(
-        selectedSessionId,
-        shouldForceReloadSelectedHistory ? { force: true } : undefined,
-      );
+      // Re-read the selected transcript on every tab switch so the selected
+      // chat can recover from any background event loss instead of relying
+      // solely on the in-memory background buffer.
+      void loadHistory(selectedSessionId, { force: true });
       return;
     }
     const handle = window.setTimeout(() => {
@@ -1767,7 +1773,11 @@ export function AgentChatPane({
       ) {
         setOptimisticOutgoingMessage(null);
       }
-      if (!knownSessionIdsRef.current.has(envelope.sessionId)) return;
+      const acceptsEvent =
+        knownSessionIdsRef.current.has(envelope.sessionId)
+        || optimisticSessionIdsRef.current.has(envelope.sessionId)
+        || pendingSelectedSessionIdRef.current === envelope.sessionId;
+      if (!acceptsEvent) return;
       pendingEventQueueRef.current.push(envelope);
       const touchTimestamp = getChatSessionLocalTouchTimestampForEvent(envelope);
       if (touchTimestamp) {
@@ -2058,6 +2068,7 @@ export function AgentChatPane({
       });
       loadedHistoryRef.current.delete(created.id);
       optimisticSessionIdsRef.current.add(created.id);
+      knownSessionIdsRef.current.add(created.id);
       pendingSelectedSessionIdRef.current = created.id;
       draftSelectionLockedRef.current = false;
       touchSession(created.id);
@@ -2199,12 +2210,18 @@ export function AgentChatPane({
         lastActivityAt: new Date().toISOString(),
       });
 
-      const steerText = selectedAttachments.length
+      const steerSupportsAttachments = sessionProvider === "claude" || sessionProvider === "codex";
+      const steerAttachments = steerSupportsAttachments ? selectedAttachments : [];
+      const steerText = selectedAttachments.length && !steerSupportsAttachments
         ? `${finalText}\n\nAttached context:\n${selectedAttachments.map((entry) => `- ${entry.type}: ${entry.path}`).join("\n")}`
         : finalText;
       if (turnActiveBySession[sessionId]) {
         setOptimisticOutgoingMessage(null);
-        await window.ade.agentChat.steer({ sessionId, text: steerText });
+        await window.ade.agentChat.steer({
+          sessionId,
+          text: steerText,
+          ...(steerAttachments.length ? { attachments: steerAttachments } : {}),
+        });
       } else {
         try {
           setOptimisticOutgoingMessage({ sessionId, envelope: optimisticEnvelope(sessionId) });
@@ -2224,7 +2241,11 @@ export function AgentChatPane({
           const sendMsg = sendError instanceof Error ? sendError.message : String(sendError);
           const isBusy = /turn is already active|already active/i.test(sendMsg);
           if (isBusy) {
-            await window.ade.agentChat.steer({ sessionId, text: steerText });
+            await window.ade.agentChat.steer({
+              sessionId,
+              text: steerText,
+              ...(steerAttachments.length ? { attachments: steerAttachments } : {}),
+            });
           } else {
             throw sendError;
           }
@@ -2280,6 +2301,8 @@ export function AgentChatPane({
 
   const interrupt = useCallback(async () => {
     if (!selectedSessionId) return;
+    // Let the stop button disappear immediately while the main-process interrupt finishes.
+    setTurnActiveBySession((prev) => ({ ...prev, [selectedSessionId]: false }));
     try {
       touchSession(selectedSessionId);
       await window.ade.agentChat.interrupt({ sessionId: selectedSessionId });
@@ -2931,17 +2954,20 @@ export function AgentChatPane({
                         <span className="text-red-400/75">-{sessionDelta.deletions}</span>
                       </div>
                     ) : null}
-                    {selectedTurnDiffSummaries.length && selectedSessionId ? (
-                      <ChatTasksPanel
-                        summaries={selectedTurnDiffSummaries}
-                        sessionId={selectedSessionId}
-                      />
+                    {selectedTodoItems.length ? (
+                      <ChatTasksPanel items={selectedTodoItems} />
                     ) : null}
                     {selectedSubagentSnapshots.length ? (
                       <ChatSubagentsPanel
                         snapshots={selectedSubagentSnapshots}
                         events={selectedEvents}
                         onInterruptTurn={turnActive ? () => { void interrupt(); } : undefined}
+                      />
+                    ) : null}
+                    {selectedTurnDiffSummaries.length && selectedSessionId ? (
+                      <ChatFileChangesPanel
+                        summaries={selectedTurnDiffSummaries}
+                        sessionId={selectedSessionId}
                       />
                     ) : null}
                     <ChatTerminalDrawer

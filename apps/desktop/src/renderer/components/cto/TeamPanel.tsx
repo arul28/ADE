@@ -108,9 +108,9 @@ export function workerDraftFromAgent(agent?: AgentIdentity | null): WorkerEditor
 }
 
 const inputCls =
-  "h-8 w-full border border-border/15 bg-surface-recessed px-3 text-xs font-mono text-fg placeholder:text-muted-fg/50 focus:border-accent/40 focus:outline-none transition-colors";
+  "h-8 w-full rounded-md border border-white/[0.08] bg-[rgba(12,10,22,0.6)] px-3 text-xs font-sans text-fg shadow-[inset_0_1px_2px_rgba(0,0,0,0.3)] placeholder:text-muted-fg/40 focus:border-accent/40 focus:shadow-[0_0_0_2px_var(--color-accent-muted)] focus:outline-none transition-all duration-150";
 const selectCls = `${inputCls} appearance-none`;
-const labelCls = "text-[10px] font-mono font-bold uppercase tracking-[1px] text-muted-fg/60";
+const labelCls = "text-[11px] font-medium uppercase tracking-[0.08em] text-muted-fg/60";
 
 /* ── Worker Editor ── */
 
@@ -181,7 +181,7 @@ export function WorkerEditorPanel({
       <div className="border border-border/10 bg-card/60 p-3 space-y-3">
         <div>
           <div className={labelCls}>Linear Identity Matching</div>
-          <div className="mt-1 font-mono text-[10px] text-muted-fg/60">
+          <div className="mt-1 font-sans text-[10px] text-muted-fg/60">
             These values let CTO &gt; Linear match real Linear assignees back to this ADE employee. Use the Linear user id, display name, or any aliases you expect in webhook payloads.
           </div>
         </div>
@@ -381,14 +381,14 @@ export function WorkerDetailPanel({
             <span className="font-sans text-sm font-bold text-fg truncate">{worker.name}</span>
             <AgentStatusBadge status={worker.status} />
           </div>
-          <div className="font-mono text-[10px] text-muted-fg mt-0.5">
+          <div className="font-sans text-[10px] text-muted-fg mt-0.5">
             {worker.role} · {worker.adapterType}
             {worker.title ? ` · ${worker.title}` : ""}
           </div>
           {worker.capabilities.length > 0 && (
             <div className="flex flex-wrap gap-1 mt-2">
               {worker.capabilities.map((cap) => (
-                <span key={cap} className="font-mono text-[9px] text-muted-fg/60 bg-surface-recessed border border-border/10 px-1.5 py-0.5">{cap}</span>
+                <span key={cap} className="font-sans text-[9px] text-muted-fg/60 bg-surface-recessed border border-border/10 px-1.5 py-0.5">{cap}</span>
               ))}
             </div>
           )}
@@ -421,8 +421,8 @@ export function WorkerDetailPanel({
         </div>
       </div>
 
-      {wakeStatus && <div className="text-[10px] text-success font-mono" data-testid="worker-wake-status">{wakeStatus}</div>}
-      {wakeError && <div className="text-[10px] text-error font-mono" data-testid="worker-wake-error">{wakeError}</div>}
+      {wakeStatus && <div className="text-[10px] text-success font-sans" data-testid="worker-wake-status">{wakeStatus}</div>}
+      {wakeError && <div className="text-[10px] text-error font-sans" data-testid="worker-wake-error">{wakeError}</div>}
       {opsError && <div className="text-xs text-error" data-testid="worker-ops-error">{opsError}</div>}
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
@@ -446,7 +446,7 @@ export function WorkerDetailPanel({
               }
             />
             <div className="p-3">
-              <div className="font-mono text-[10px] text-muted-fg leading-relaxed" data-testid="worker-core-memory-view">
+              <div className="font-sans text-[10px] text-muted-fg leading-relaxed" data-testid="worker-core-memory-view">
                 {coreMemory.projectSummary || "No summary yet."}
               </div>
               {[
@@ -456,8 +456,8 @@ export function WorkerDetailPanel({
                 { items: coreMemory.notes, label: "Notes" },
               ].filter(({ items }) => items.length > 0).map(({ items, label }) => (
                 <div key={label} className="mt-1">
-                  <span className="font-mono text-[9px] text-muted-fg/40">{label}: </span>
-                  <span className="font-mono text-[9px] text-muted-fg/60">{items.join(", ")}</span>
+                  <span className="font-sans text-[9px] text-muted-fg/40">{label}: </span>
+                  <span className="font-sans text-[9px] text-muted-fg/60">{items.join(", ")}</span>
                 </div>
               ))}
             </div>
@@ -472,8 +472,8 @@ export function WorkerDetailPanel({
               <div className="text-[10px] text-muted-fg/50 py-2">No revisions yet.</div>
             ) : revisions.map((rev) => (
               <div key={rev.id} className="bg-surface-recessed border border-border/10 px-2.5 py-2">
-                <div className="font-mono text-[9px] text-muted-fg/40">{formatDate(rev.createdAt)}</div>
-                <div className="font-mono text-[10px] text-muted-fg mt-0.5">
+                <div className="font-sans text-[9px] text-muted-fg/40">{formatDate(rev.createdAt)}</div>
+                <div className="font-sans text-[10px] text-muted-fg mt-0.5">
                   {rev.changedKeys.length > 0 ? rev.changedKeys.slice(0, 3).join(", ") : "Created"}
                 </div>
                 {rev.hadRedactions && <div className="text-[9px] text-warning mt-1">Redacted — rollback blocked</div>}

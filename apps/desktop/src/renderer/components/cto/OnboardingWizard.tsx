@@ -117,7 +117,7 @@ export function OnboardingWizard({
     <div
       className="fixed inset-0 z-50 flex items-center justify-center p-4"
       style={{
-        background: "radial-gradient(circle at top left, rgba(56,189,248,0.12), transparent 24%), rgba(0, 0, 0, 0.72)",
+        background: "radial-gradient(circle at top left, rgba(167,139,250,0.12), transparent 24%), rgba(0, 0, 0, 0.72)",
         backdropFilter: "blur(14px)",
       }}
     >

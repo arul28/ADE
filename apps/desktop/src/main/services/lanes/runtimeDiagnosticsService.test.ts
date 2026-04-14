@@ -278,6 +278,52 @@ describe("createRuntimeDiagnosticsService", () => {
       expect(health.proxyRouteActive).toBe(false);
       expect(health.issues.some((i) => i.type === "proxy-route-missing")).toBe(true);
     });
+
+    it("treats a responding port elsewhere in the lane range as the live app", async () => {
+      leases.set("lane-1", makeLease("lane-1"));
+      routes.set("lane-1", makeRoute("lane-1", 3007));
+      svc.dispose();
+      svc = createRuntimeDiagnosticsService({
+        logger: createLogger(),
+        broadcastEvent: (ev) => events.push(ev),
+        getPortLease: (laneId) => leases.get(laneId) ?? null,
+        getPortConflicts: () => conflicts,
+        detectPortConflicts: () => conflicts,
+        getProxyStatus: () => proxyStatus,
+        getProxyRoute: (laneId) => routes.get(laneId) ?? null,
+        probePort: async (port) => port === 3007,
+      });
+
+      const health = await svc.checkLaneHealth("lane-1");
+
+      expect(health.status).toBe("healthy");
+      expect(health.portResponding).toBe(true);
+      expect(health.respondingPort).toBe(3007);
+      expect(health.proxyRouteActive).toBe(true);
+    });
+
+    it("reports when the app responds on a different port than the active preview route", async () => {
+      leases.set("lane-1", makeLease("lane-1"));
+      routes.set("lane-1", makeRoute("lane-1", 3000));
+      svc.dispose();
+      svc = createRuntimeDiagnosticsService({
+        logger: createLogger(),
+        broadcastEvent: (ev) => events.push(ev),
+        getPortLease: (laneId) => leases.get(laneId) ?? null,
+        getPortConflicts: () => conflicts,
+        detectPortConflicts: () => conflicts,
+        getProxyStatus: () => proxyStatus,
+        getProxyRoute: (laneId) => routes.get(laneId) ?? null,
+        probePort: async (port) => port === 3007,
+      });
+
+      const health = await svc.checkLaneHealth("lane-1");
+
+      expect(health.status).toBe("degraded");
+      expect(health.respondingPort).toBe(3007);
+      expect(health.proxyRouteActive).toBe(false);
+      expect(health.issues.some((i) => i.message.includes("responding on port 3007"))).toBe(true);
+    });
   });
 
   // =========================================================================

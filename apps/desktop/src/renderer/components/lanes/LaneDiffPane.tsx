@@ -6,6 +6,7 @@ import { EmptyState } from "../ui/EmptyState";
 import { ResizeGutter } from "../ui/ResizeGutter";
 import { MonacoDiffView, type MonacoDiffHandle } from "./MonacoDiffView";
 import type { FileDiff, GitCommitSummary } from "../../../shared/types";
+import { SmartTooltip } from "../ui/SmartTooltip";
 import { COLORS, LABEL_STYLE, MONO_FONT, inlineBadge, outlineButton } from "./laneDesignTokens";
 
 function normalizePath(pathValue: string): string {
@@ -315,39 +316,51 @@ export function LaneDiffPane({
           </div>
           <div className="flex items-center" style={{ gap: 3 }}>
             {selectedFileMode === "unstaged" ? (
-              <button
-                type="button"
-                className="focus-visible:ring-2 focus-visible:ring-purple-400/50 focus-visible:ring-offset-0"
-                style={outlineButton({ height: 24, gap: 4, padding: "4px 8px", fontSize: 10 })}
-                onClick={() => navigate("/files", { state: { openFilePath: selectedPath, laneId } })}
-                title="Open in Files tab"
-              >
-                <FolderOpen size={12} />
-                FILES
-              </button>
+              <SmartTooltip content={{
+                label: "Open in Files",
+                description: "Open this file in the Files tab for full editing.",
+                effect: `Open ${selectedPath}`,
+              }}>
+                <button
+                  type="button"
+                  className="focus-visible:ring-2 focus-visible:ring-purple-400/50 focus-visible:ring-offset-0"
+                  style={outlineButton({ height: 24, gap: 4, padding: "4px 8px", fontSize: 10 })}
+                  onClick={() => navigate("/files", { state: { openFilePath: selectedPath, laneId } })}
+                  title="Open in Files tab"
+                >
+                  <FolderOpen size={12} />
+                  FILES
+                </button>
+              </SmartTooltip>
             ) : null}
             {selectedFileMode === "unstaged" && !diff.isBinary ? (
-              <button
-                type="button"
-                className="focus-visible:ring-2 focus-visible:ring-purple-400/50 focus-visible:ring-offset-0"
-                style={outlineButton({ height: 24, gap: 4, padding: "4px 8px", fontSize: 10 })}
-                disabled={busyAction != null}
-                onClick={() => {
-                  const text = diffRef.current?.getModifiedValue();
-                  if (text == null) return;
-                  setBusyAction("save");
-                  window.ade.files
-                    .writeTextAtomic({ laneId, path: selectedPath, text })
-                    .then(() => {
-                      return refreshWorkingDiff();
-                    })
-                    .catch(() => {})
-                    .finally(() => setBusyAction(null));
-                }}
-              >
-                <FloppyDisk size={12} />
-                SAVE
-              </button>
+              <SmartTooltip content={{
+                label: "Save",
+                description: "Write the edited content back to the working tree.",
+                effect: `Save changes to ${selectedPath}`,
+              }}>
+                <button
+                  type="button"
+                  className="focus-visible:ring-2 focus-visible:ring-purple-400/50 focus-visible:ring-offset-0"
+                  style={outlineButton({ height: 24, gap: 4, padding: "4px 8px", fontSize: 10 })}
+                  disabled={busyAction != null}
+                  onClick={() => {
+                    const text = diffRef.current?.getModifiedValue();
+                    if (text == null) return;
+                    setBusyAction("save");
+                    window.ade.files
+                      .writeTextAtomic({ laneId, path: selectedPath, text })
+                      .then(() => {
+                        return refreshWorkingDiff();
+                      })
+                      .catch(() => {})
+                      .finally(() => setBusyAction(null));
+                  }}
+                >
+                  <FloppyDisk size={12} />
+                  SAVE
+                </button>
+              </SmartTooltip>
             ) : null}
           </div>
         </div>

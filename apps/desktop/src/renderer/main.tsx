@@ -59,24 +59,54 @@ window.addEventListener("unhandledrejection", (event) => {
 });
 
 let rendererWatchdogLastTick = performance.now();
-window.setInterval(() => {
-  const now = performance.now();
-  const driftMs = now - rendererWatchdogLastTick - 1000;
-  rendererWatchdogLastTick = now;
-  if (driftMs < 1500) return;
-  logRendererDebugEvent("renderer.event_loop_stall", {
-    driftMs: Math.round(driftMs),
-    route: window.location.hash || window.location.pathname,
-    visibilityState: document.visibilityState,
-    memory: readRendererMemory(),
-  });
-  console.warn(`renderer.event_loop_stall ${JSON.stringify({
-    driftMs: Math.round(driftMs),
-    route: window.location.hash || window.location.pathname,
-    visibilityState: document.visibilityState,
-    memory: readRendererMemory(),
-  })}`);
-}, 1000);
+let rendererWatchdogIntervalId: number | null = null;
+
+function startWatchdog() {
+  if (rendererWatchdogIntervalId !== null) return;
+  rendererWatchdogLastTick = performance.now();
+  rendererWatchdogIntervalId = window.setInterval(() => {
+    const now = performance.now();
+    const driftMs = now - rendererWatchdogLastTick - 1000;
+    rendererWatchdogLastTick = now;
+    if (driftMs < 1500) return;
+    logRendererDebugEvent("renderer.event_loop_stall", {
+      driftMs: Math.round(driftMs),
+      route: window.location.hash || window.location.pathname,
+      visibilityState: document.visibilityState,
+      memory: readRendererMemory(),
+    });
+    console.warn(`renderer.event_loop_stall ${JSON.stringify({
+      driftMs: Math.round(driftMs),
+      route: window.location.hash || window.location.pathname,
+      visibilityState: document.visibilityState,
+      memory: readRendererMemory(),
+    })}`);
+  }, 1000);
+}
+
+function stopWatchdog() {
+  if (rendererWatchdogIntervalId === null) return;
+  window.clearInterval(rendererWatchdogIntervalId);
+  rendererWatchdogIntervalId = null;
+}
+
+function handleVisibilityChange() {
+  if (document.visibilityState === "visible") {
+    startWatchdog();
+  } else {
+    stopWatchdog();
+  }
+}
+
+document.addEventListener("visibilitychange", handleVisibilityChange);
+window.addEventListener("beforeunload", () => {
+  stopWatchdog();
+  document.removeEventListener("visibilitychange", handleVisibilityChange);
+});
+
+if (document.visibilityState === "visible") {
+  startWatchdog();
+}
 
 createRoot(document.getElementById("root")!).render(
   <RootWrapper>

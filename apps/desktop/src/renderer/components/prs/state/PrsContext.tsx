@@ -167,6 +167,15 @@ function readInitialTab(): PrTab {
   return "normal";
 }
 
+function readInitialPrId(): string | null {
+  try {
+    const params = new URLSearchParams(window.location.search);
+    const prId = params.get("prId");
+    if (prId && prId.trim().length > 0) return prId.trim();
+  } catch { /* ignore */ }
+  return null;
+}
+
 function requirePrId(prId: string): string {
   const normalized = String(prId ?? "").trim();
   if (!normalized) throw new Error("PR id is required.");
@@ -212,7 +221,7 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
   const [prs, setPrs] = useState<PrWithConflicts[]>([]);
   const [lanes, setLanes] = useState<LaneSummary[]>([]);
   const [mergeContextByPrId, setMergeContextByPrId] = useState<Record<string, PrMergeContext>>({});
-  const [selectedPrId, setSelectedPrId] = useState<string | null>(null);
+  const [selectedPrId, setSelectedPrId] = useState<string | null>(readInitialPrId);
   const [selectedQueueGroupId, setSelectedQueueGroupId] = useState<string | null>(null);
   const [selectedRebaseItemId, setSelectedRebaseItemId] = useState<string | null>(null);
   const [mergeMethod, setMergeMethod] = useState<MergeMethod>("squash");
@@ -582,6 +591,9 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
 
     // Guard: don't attempt to load details for a PR that's not in our list.
     // The PR was likely deleted or merged -- the empty state will show naturally.
+    // Skip this validation until the initial PR list has finished loading so
+    // URL-derived selections are not cleared before the first refresh completes.
+    if (!initialLoadDone.current) return;
     if (!prsRef.current.some((p) => p.id === selectedPrId)) {
       setDetailStatus(null);
       setDetailChecks([]);

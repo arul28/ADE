@@ -4,6 +4,8 @@ import React from "react";
 import { act, render, cleanup } from "@testing-library/react";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
+const MOCK_TERMINAL_FONT_FAMILY = vi.hoisted(() => "monospace");
+
 const mockState = vi.hoisted(() => ({
   terminalInstances: [] as Array<Record<string, unknown>>,
   nextFitDims: { cols: 120, rows: 40 },
@@ -13,6 +15,7 @@ const mockState = vi.hoisted(() => ({
   ptyExitListeners: new Set<(event: { ptyId: string; sessionId?: string; exitCode: number | null }) => void>(),
   theme: "dark" as const,
   terminalPreferences: {
+    fontFamily: "monospace",
     fontSize: 12.5,
     lineHeight: 1.25,
     scrollback: 10_000,
@@ -43,6 +46,7 @@ vi.mock("../../state/appStore", () => ({
   useAppStore: vi.fn((selector: (state: {
     theme: "dark";
     terminalPreferences: {
+      fontFamily: string;
       fontSize: number;
       lineHeight: number;
       scrollback: number;
@@ -51,7 +55,9 @@ vi.mock("../../state/appStore", () => ({
     theme: mockState.theme,
     terminalPreferences: mockState.terminalPreferences,
   })),
+  DEFAULT_TERMINAL_FONT_FAMILY: MOCK_TERMINAL_FONT_FAMILY,
   DEFAULT_TERMINAL_PREFERENCES: {
+    fontFamily: MOCK_TERMINAL_FONT_FAMILY,
     fontSize: 12.5,
     lineHeight: 1.25,
     scrollback: 10_000,
@@ -267,6 +273,7 @@ describe("TerminalView", () => {
     mockState.ptyExitListeners.clear();
     mockState.theme = "dark";
     mockState.terminalPreferences = {
+      fontFamily: MOCK_TERMINAL_FONT_FAMILY,
       fontSize: 12.5,
       lineHeight: 1.25,
       scrollback: 10_000,
@@ -393,6 +400,7 @@ describe("TerminalView", () => {
     expect(terminal?.options.scrollback).toBe(10_000);
 
     mockState.terminalPreferences = {
+      fontFamily: MOCK_TERMINAL_FONT_FAMILY,
       fontSize: 14,
       lineHeight: 1.3,
       scrollback: 20_000,

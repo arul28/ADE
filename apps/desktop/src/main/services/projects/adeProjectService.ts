@@ -222,6 +222,10 @@ function repairLegacyPaths(paths: AdeLayoutPaths, actions: AdeSyncAction[]): voi
   moveIfExists(path.join(paths.adeDir, "log-bundles"), paths.logBundlesDir, "artifacts/log-bundles", actions);
   moveIfExists(path.join(paths.adeDir, "github"), paths.githubSecretsDir, "secrets/github", actions);
   moveIfExists(path.join(paths.adeDir, "api-keys.json"), path.join(paths.secretsDir, "api-keys.json"), "secrets/api-keys.json", actions);
+  moveIfExists(path.join(paths.ctoDir, "openclaw-history.json"), path.join(paths.cacheDir, "openclaw", "openclaw-history.json"), "cache/openclaw/openclaw-history.json", actions);
+  moveIfExists(path.join(paths.ctoDir, "openclaw-idempotency.json"), path.join(paths.cacheDir, "openclaw", "openclaw-idempotency.json"), "cache/openclaw/openclaw-idempotency.json", actions);
+  moveIfExists(path.join(paths.ctoDir, "openclaw-outbox.json"), path.join(paths.cacheDir, "openclaw", "openclaw-outbox.json"), "cache/openclaw/openclaw-outbox.json", actions);
+  moveIfExists(path.join(paths.ctoDir, "openclaw-routes.json"), path.join(paths.cacheDir, "openclaw", "openclaw-routes.json"), "cache/openclaw/openclaw-routes.json", actions);
 
   const legacyFiles = fs.existsSync(paths.adeDir) ? fs.readdirSync(paths.adeDir) : [];
   for (const fileName of legacyFiles) {
@@ -285,6 +289,7 @@ export function initializeOrRepairAdeProject(projectRoot: string, options: Repai
   ensureDir(paths.chatSessionsDir, "cache/chat-sessions", actions);
   ensureDir(paths.chatTranscriptsDir, "transcripts/chat", actions);
   ensureDir(paths.orchestratorCacheDir, "cache/orchestrator", actions);
+  ensureDir(path.join(paths.cacheDir, "openclaw"), "cache/openclaw", actions);
   ensureDir(paths.missionStateDir, "cache/mission-state", actions);
   ensureDir(paths.packsDir, "artifacts/packs", actions);
   ensureDir(paths.logBundlesDir, "artifacts/log-bundles", actions);

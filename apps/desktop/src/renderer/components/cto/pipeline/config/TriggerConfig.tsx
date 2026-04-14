@@ -10,6 +10,16 @@ type Props = {
 
 /* ── Chip input ── */
 
+function withAlpha(color: string, alpha: number): string {
+  const match = color.trim().match(/^#([0-9a-f]{6})$/i);
+  if (!match) return color;
+  const value = match[1];
+  const r = Number.parseInt(value.slice(0, 2), 16);
+  const g = Number.parseInt(value.slice(2, 4), 16);
+  const b = Number.parseInt(value.slice(4, 6), 16);
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+}
+
 function ChipInput({
   items,
   onAdd,
@@ -24,6 +34,7 @@ function ChipInput({
   color: string;
 }) {
   const [draft, setDraft] = useState("");
+  const focusBorderColor = withAlpha(color, 0.45);
 
   const handleKey = useCallback(
     (e: KeyboardEvent<HTMLInputElement>) => {
@@ -41,7 +52,8 @@ function ChipInput({
 
   return (
     <div
-      className="flex flex-wrap items-center gap-1.5 rounded-xl border border-white/[0.08] bg-[linear-gradient(180deg,rgba(21,26,35,0.92),rgba(14,18,26,0.94))] px-3 py-2 transition-all duration-200 focus-within:border-[rgba(56,189,248,0.45)]"
+      className="flex flex-wrap items-center gap-1.5 rounded-xl border border-white/[0.08] bg-[linear-gradient(180deg,rgba(21,26,35,0.92),rgba(14,18,26,0.94))] px-3 py-2 transition-all duration-200 focus-within:border-[var(--chip-focus-color)]"
+      style={{ "--chip-focus-color": focusBorderColor } as React.CSSProperties}
     >
       {items.map((item, i) => (
         <span
@@ -72,7 +84,7 @@ function ChipInput({
 
 /* ── Expandable section ── */
 
-function Section({ title, tier, children }: { title: string; tier: string; children: React.ReactNode }) {
+function Section({ title, children }: { title: string; children: React.ReactNode }) {
   const [open, setOpen] = useState(false);
   return (
     <div className="border-t border-white/[0.04] pt-3 mt-3">
@@ -119,7 +131,7 @@ export function TriggerConfig({ triggers, onUpdate }: Props) {
           onAdd={(v) => onUpdate("assignees", addItem(triggers.assignees, v))}
           onRemove={(i) => onUpdate("assignees", removeItem(triggers.assignees, i))}
           placeholder="Type an assignee name, press Enter"
-          color="#38BDF8"
+          color="#A78BFA"
         />
       </div>
 
@@ -137,7 +149,7 @@ export function TriggerConfig({ triggers, onUpdate }: Props) {
       </div>
 
       {/* Advanced */}
-      <Section title="Advanced" tier="advanced">
+      <Section title="Advanced">
         <div>
           <label className={labelCls}>{fieldLabel("triggers.projectSlugs")}</label>
           <p className="mb-2 text-[10px] text-muted-fg/35">{fieldDescription("triggers.projectSlugs")}</p>
@@ -174,7 +186,7 @@ export function TriggerConfig({ triggers, onUpdate }: Props) {
       </Section>
 
       {/* Expert */}
-      <Section title="Expert" tier="expert">
+      <Section title="Expert">
         <div>
           <label className={labelCls}>{fieldLabel("triggers.owner")}</label>
           <p className="mb-2 text-[10px] text-muted-fg/35">{fieldDescription("triggers.owner")}</p>

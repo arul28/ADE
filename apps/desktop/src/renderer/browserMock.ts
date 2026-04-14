@@ -2611,7 +2611,7 @@ if (typeof window !== "undefined" && !(window as any).ade) {
       }),
     },
     pty: {
-      create: resolvedArg({ ptyId: "mock" }),
+      create: resolvedArg({ ptyId: "mock", sessionId: "mock-session", pid: 1234 }),
       write: resolvedArg(undefined),
       resize: resolvedArg(undefined),
       dispose: resolvedArg(undefined),

@@ -66,6 +66,8 @@ describe("buildClaudeV2Message", () => {
     expect(typeof result).toBe("object");
     const msg = result as SDKUserMessagePartial;
     expect(msg.type).toBe("user");
+    expect(msg.session_id).toBe("");
+    expect(msg.parent_tool_use_id).toBeNull();
     expect(msg.message.role).toBe("user");
 
     // Should have two content blocks: text + image
@@ -92,6 +94,8 @@ describe("buildClaudeV2Message", () => {
 
     const result = buildClaudeV2Message("Describe this image", attachments, { baseDir: tmpDir });
     const msg = result as SDKUserMessagePartial;
+    expect(msg.session_id).toBe("");
+    expect(msg.parent_tool_use_id).toBeNull();
     const imgBlock = msg.message.content[1] as Record<string, unknown>;
     const source = imgBlock.source as Record<string, unknown>;
 
@@ -110,6 +114,8 @@ describe("buildClaudeV2Message", () => {
 
     expect(typeof result).toBe("object");
     const msg = result as SDKUserMessagePartial;
+    expect(msg.session_id).toBe("");
+    expect(msg.parent_tool_use_id).toBeNull();
     const content = msg.message.content;
     expect(content).toHaveLength(2);
     expect(content[0]).toEqual({ type: "text", text: "Look at this" });
@@ -133,6 +139,8 @@ describe("buildClaudeV2Message", () => {
 
     expect(typeof result).toBe("object");
     const msg = result as SDKUserMessagePartial;
+    expect(msg.session_id).toBe("");
+    expect(msg.parent_tool_use_id).toBeNull();
     const content = msg.message.content;
     expect(content).toHaveLength(2);
     expect(content[0]).toEqual({ type: "text", text: "Check this diagram" });
@@ -157,6 +165,8 @@ describe("buildClaudeV2Message", () => {
 
     expect(typeof result).toBe("object");
     const msg = result as SDKUserMessagePartial;
+    expect(msg.session_id).toBe("");
+    expect(msg.parent_tool_use_id).toBeNull();
     const content = msg.message.content;
 
     // 4 blocks: prompt text + file hint + image + file hint

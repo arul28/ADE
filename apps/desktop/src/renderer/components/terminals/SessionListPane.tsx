@@ -7,6 +7,7 @@ import { LaneCombobox } from "./LaneCombobox";
 import { sortLanesForTabs } from "../lanes/laneUtils";
 import type { WorkDraftKind, WorkSessionListOrganization, WorkStatusFilter } from "../../state/appStore";
 import { iconGlyph } from "../graph/graphHelpers";
+import { SmartTooltip } from "../ui/SmartTooltip";
 
 function bucketByTime(sessions: TerminalSessionSummary[]) {
   const now = new Date();
@@ -286,36 +287,39 @@ export const SessionListPane = React.memo(function SessionListPane({
               onChange={(e) => setQ(e.target.value)}
             />
           </div>
-          <button
-            type="button"
-            className="inline-flex h-7 shrink-0 items-center gap-1 rounded-lg px-2 text-[10px] font-medium transition-colors"
-            style={{
-              border: "1px solid rgba(168,130,255,0.35)",
-              background: "rgba(168,130,255,0.08)",
-              color: "rgba(168,130,255,0.9)",
-              cursor: "pointer",
-              whiteSpace: "nowrap",
-            }}
-            onClick={() => onShowDraftKind("chat")}
-            title="New Chat"
-            aria-label="Start a new chat"
-          >
-            <Plus size={10} weight="bold" />
-            New Chat
-          </button>
-          <button
-            type="button"
-            className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg transition-colors"
-            style={{
-              border: "1px solid rgba(255,255,255,0.06)",
-              background: filterOpen ? "rgba(255,255,255,0.06)" : "rgba(255,255,255,0.03)",
-              color: filterOpen ? "var(--color-fg)" : "var(--color-muted-fg)",
-            }}
-            onClick={() => setFilterOpen(!filterOpen)}
-            title="Filters"
-          >
-            <Funnel size={12} weight={filterOpen ? "fill" : "regular"} />
-          </button>
+          <SmartTooltip content={{ label: "New Chat", description: "Start a new AI chat session." }}>
+            <button
+              type="button"
+              className="inline-flex h-7 shrink-0 items-center gap-1 rounded-lg px-2 text-[10px] font-medium transition-colors"
+              style={{
+                border: "1px solid rgba(168,130,255,0.35)",
+                background: "rgba(168,130,255,0.08)",
+                color: "rgba(168,130,255,0.9)",
+                cursor: "pointer",
+                whiteSpace: "nowrap",
+              }}
+              onClick={() => onShowDraftKind("chat")}
+              aria-label="Start a new chat"
+            >
+              <Plus size={10} weight="bold" />
+              New Chat
+            </button>
+          </SmartTooltip>
+          <SmartTooltip content={{ label: "Filters", description: "Toggle the filter panel to organize sessions by lane, status, or time." }}>
+            <button
+              type="button"
+              className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg transition-colors"
+              style={{
+                border: "1px solid rgba(255,255,255,0.06)",
+                background: filterOpen ? "rgba(255,255,255,0.06)" : "rgba(255,255,255,0.03)",
+                color: filterOpen ? "var(--color-fg)" : "var(--color-muted-fg)",
+              }}
+              onClick={() => setFilterOpen(!filterOpen)}
+              aria-label="Filters"
+            >
+              <Funnel size={12} weight={filterOpen ? "fill" : "regular"} />
+            </button>
+          </SmartTooltip>
         </div>
 
         {/* Expandable filter panel */}
@@ -329,18 +333,30 @@ export const SessionListPane = React.memo(function SessionListPane({
                   { key: "all-lanes-by-status" as const, label: "Status" },
                   { key: "by-time" as const, label: "Time" },
                 ] as const).map((opt) => (
-                  <button
+                  <SmartTooltip
                     key={opt.key}
-                    type="button"
-                    className="flex-1 rounded-md px-2 py-1 text-[10px] font-medium transition-colors"
-                    style={{
-                      background: sessionListOrganization === opt.key ? "rgba(255,255,255,0.08)" : "transparent",
-                      color: sessionListOrganization === opt.key ? "var(--color-fg)" : "var(--color-muted-fg)",
+                    content={{
+                      label: opt.label,
+                      description:
+                        opt.key === "by-lane"
+                          ? "Group sessions by the lane they belong to."
+                          : opt.key === "all-lanes-by-status"
+                            ? "Group by status: running, awaiting, or ended."
+                            : "Group by when sessions were started.",
                     }}
-                    onClick={() => setSessionListOrganization(opt.key)}
                   >
-                    {opt.label}
-                  </button>
+                    <button
+                      type="button"
+                      className="flex-1 rounded-md px-2 py-1 text-[10px] font-medium transition-colors"
+                      style={{
+                        background: sessionListOrganization === opt.key ? "rgba(255,255,255,0.08)" : "transparent",
+                        color: sessionListOrganization === opt.key ? "var(--color-fg)" : "var(--color-muted-fg)",
+                      }}
+                      onClick={() => setSessionListOrganization(opt.key)}
+                    >
+                      {opt.label}
+                    </button>
+                  </SmartTooltip>
                 ))}
               </div>
             </div>
@@ -383,20 +399,22 @@ export const SessionListPane = React.memo(function SessionListPane({
 
       {/* Add Lane button */}
       <div className="shrink-0 px-2 pb-2 pt-1" style={{ borderTop: "1px solid var(--work-pane-border)" }}>
-        <button
-          type="button"
-          className="inline-flex w-full items-center justify-center gap-1.5 rounded-lg py-1.5 text-[11px] font-medium transition-colors hover:bg-white/[0.06]"
-          style={{
-            color: "var(--color-muted-fg)",
-            border: "1px solid rgba(255,255,255,0.06)",
-            background: "rgba(255,255,255,0.02)",
-            cursor: "pointer",
-          }}
-          onClick={() => navigate("/lanes?action=create")}
-        >
-          <Plus size={11} weight="bold" />
-          Add Lane
-        </button>
+        <SmartTooltip content={{ label: "Add Lane", description: "Navigate to the Lanes tab to create a new lane." }}>
+          <button
+            type="button"
+            className="inline-flex w-full items-center justify-center gap-1.5 rounded-lg py-1.5 text-[11px] font-medium transition-colors hover:bg-white/[0.06]"
+            style={{
+              color: "var(--color-muted-fg)",
+              border: "1px solid rgba(255,255,255,0.06)",
+              background: "rgba(255,255,255,0.02)",
+              cursor: "pointer",
+            }}
+            onClick={() => navigate("/lanes?action=create")}
+          >
+            <Plus size={11} weight="bold" />
+            Add Lane
+          </button>
+        </SmartTooltip>
       </div>
     </div>
   );

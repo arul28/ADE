@@ -29,7 +29,7 @@ type Props = {
 };
 
 export function StageCard({ stage, index, selected, onSelect, onRemove }: Props) {
-  const color = STAGE_COLORS[stage.type] ?? "#38BDF8";
+  const color = STAGE_COLORS[stage.type] ?? "#A78BFA";
   const Icon = TYPE_ICONS[stage.type] ?? Robot;
   const typeName = enumLabel(TARGET_TYPE_LABELS, stage.type);
   const typeDesc = enumDescription(TARGET_TYPE_LABELS, stage.type);

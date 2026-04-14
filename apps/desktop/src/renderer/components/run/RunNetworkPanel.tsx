@@ -75,6 +75,28 @@ export function RunNetworkPanel({ onClose }: RunNetworkPanelProps) {
               </button>
             </div>
           </div>
+          <div
+            style={{
+              display: "grid",
+              gap: 8,
+              padding: "12px 14px",
+              background: COLORS.recessedBg,
+              border: `1px solid ${COLORS.border}`,
+              color: COLORS.textSecondary,
+              fontFamily: MONO_FONT,
+              fontSize: 11,
+              lineHeight: 1.5,
+            }}
+          >
+            <div style={{ color: COLORS.textPrimary, fontWeight: 700 }}>
+              How this works
+            </div>
+            <div>1. Start a web command in Run.</div>
+            <div>2. ADE detects the live app port for this lane, even if your dev server bumps from 3000 to 3001 or higher.</div>
+            <div>3. Open the stable preview URL shown in the Run bar. ADE keeps that URL steady while the app port changes.</div>
+            <div>4. If you use OAuth, register the ADE callback URL once and start sign-in from the preview URL.</div>
+            <div>5. Use the controls below only if preview routing or callback routing needs setup or debugging.</div>
+          </div>
         </div>
 
         <ProxyAndPreviewSection />

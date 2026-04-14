@@ -198,7 +198,7 @@ export function CreateLaneDialog({
                   </select>
                   {createImportBranch ? (
                     <div className="mt-1.5 text-[11px] text-muted-fg/60">
-                      Base will be auto-detected from git history
+                      Imported as a root lane
                     </div>
                   ) : null}
                   {importBranchWarning ? (

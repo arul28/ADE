@@ -2227,11 +2227,12 @@ function validateEffectiveConfig(
       issues.push({ path: `${p}.gracefulShutdownMs`, message: "gracefulShutdownMs must be > 0" });
     }
 
-    const absCwd = path.isAbsolute(proc.cwd) ? proc.cwd : path.join(projectRoot, proc.cwd);
-    if (proc.cwd && !isDirectory(absCwd)) {
-      issues.push({ path: `${p}.cwd`, message: `cwd does not exist: ${proc.cwd}` });
-    } else if (proc.cwd && !isPathWithinProjectRoot(projectRoot, absCwd)) {
-      issues.push({ path: `${p}.cwd`, message: `cwd must stay within the project root: ${proc.cwd}` });
+    if (proc.cwd) {
+      try {
+        resolvePathWithinRoot(projectRoot, proc.cwd, { allowMissing: true });
+      } catch {
+        issues.push({ path: `${p}.cwd`, message: `cwd must stay within the project root: ${proc.cwd}` });
+      }
     }
 
     if (proc.readiness.type === "port") {

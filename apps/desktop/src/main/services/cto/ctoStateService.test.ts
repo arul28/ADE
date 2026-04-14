@@ -58,6 +58,7 @@ describe("ctoStateService", () => {
     expect(buildAdeGitignore()).not.toContain("cto/identity.yaml");
     expect(buildAdeGitignore()).toContain("cto/core-memory.json");
     expect(buildAdeGitignore()).toContain("cto/CURRENT.md");
+    expect(buildAdeGitignore()).toContain("cto/openclaw-history.json");
 
     fixture.db.close();
   });
@@ -549,14 +550,15 @@ describe("ctoStateService", () => {
     expect(preview.sections[2]?.content).toContain("Immutable doctrine");
     expect(preview.sections[2]?.content).toContain("Use memoryUpdateCore only when the standing project brief changes");
     expect(preview.sections[2]?.content).toContain("Do not write ephemeral turn-by-turn status");
-    // Knowledge section: ADE environment glossary, chat vs terminal disambiguation, task routing
-    expect(preview.sections[3]?.content).toContain("ADE environment glossary");
+    // Knowledge section: ADE architecture, chat vs terminal disambiguation, task routing, model selection
+    expect(preview.sections[3]?.content).toContain("ADE Architecture");
     expect(preview.sections[3]?.content).toContain("spawnChat");
     expect(preview.sections[3]?.content).toContain("createTerminal");
     expect(preview.sections[3]?.content).toContain("spawn_agent is an MCP tool");
-    // Capabilities section: concrete tool list
-    expect(preview.sections[4]?.content).toContain("ADE operator tools");
-    expect(preview.sections[4]?.content).toContain("listLanes, inspectLane, createLane");
+    expect(preview.sections[3]?.content).toContain("Model Selection");
+    // Capabilities section: organized tool reference with descriptions
+    expect(preview.sections[4]?.content).toContain("ADE Operator Tools");
+    expect(preview.sections[4]?.content).toContain("listLanes");
     expect(preview.sections[4]?.content).toContain("UI navigation is suggestion-only.");
     expect(preview.prompt).toContain("Immutable ADE doctrine");
     expect(preview.prompt).toContain("Selected personality overlay");

@@ -2,6 +2,7 @@ import type {
   AgentChatCreateArgs,
   AgentChatApproveArgs,
   AgentChatDisposeArgs,
+  AgentChatFileRef,
   AgentChatGetSummaryArgs,
   AgentChatListArgs,
   AgentChatProvider,
@@ -120,6 +121,19 @@ function asOptionalNumber(value: unknown): number | undefined {
 function asStringArray(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
   return value.map((entry) => asTrimmedString(entry)).filter((entry): entry is string => Boolean(entry));
+}
+
+function parseAgentChatFileRefs(value: unknown): AgentChatFileRef[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const attachments: AgentChatFileRef[] = [];
+  for (const entry of value) {
+    if (!isRecord(entry)) continue;
+    const path = asTrimmedString(entry.path);
+    const type = entry.type === "image" ? "image" : entry.type === "file" ? "file" : null;
+    if (!path || !type) continue;
+    attachments.push({ path, type });
+  }
+  return attachments;
 }
 
 function requireString(value: unknown, message: string): string {
@@ -309,16 +323,24 @@ function parseAgentChatCreateArgs(value: Record<string, unknown>): AgentChatCrea
 }
 
 function parseAgentChatSendArgs(value: Record<string, unknown>): AgentChatSendArgs {
+  const attachments = parseAgentChatFileRefs(value.attachments);
   return {
     sessionId: requireString(value.sessionId, "chat.send requires sessionId."),
     text: requireString(value.text, "chat.send requires text."),
+    ...(asTrimmedString(value.displayText) ? { displayText: asTrimmedString(value.displayText)! } : {}),
+    ...(attachments?.length ? { attachments } : {}),
+    ...(asTrimmedString(value.reasoningEffort) ? { reasoningEffort: asTrimmedString(value.reasoningEffort)! } : {}),
+    ...(asTrimmedString(value.executionMode) ? { executionMode: asTrimmedString(value.executionMode)! as AgentChatSendArgs["executionMode"] } : {}),
+    ...(asTrimmedString(value.interactionMode) ? { interactionMode: asTrimmedString(value.interactionMode)! as AgentChatSendArgs["interactionMode"] } : {}),
   };
 }
 
 function parseAgentChatSteerArgs(value: Record<string, unknown>): AgentChatSteerArgs {
+  const attachments = parseAgentChatFileRefs(value.attachments);
   return {
     sessionId: requireString(value.sessionId, "chat.steer requires sessionId."),
     text: requireString(value.text, "chat.steer requires text."),
+    ...(attachments?.length ? { attachments } : {}),
   };
 }
 

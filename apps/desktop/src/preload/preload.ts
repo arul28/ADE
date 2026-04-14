@@ -410,6 +410,7 @@ import type {
   DecodeOAuthStateResult,
   RunTestSuiteArgs,
   SessionDeltaSummary,
+  TerminalSessionChangedEvent,
   StackChainItem,
   StopTestRunArgs,
   TerminalSessionDetail,
@@ -1483,6 +1484,14 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.sessionsReadTranscriptTail, args),
     getDelta: async (sessionId: string): Promise<SessionDeltaSummary | null> =>
       ipcRenderer.invoke(IPC.sessionsGetDelta, { sessionId }),
+    onChanged: (cb: (ev: TerminalSessionChangedEvent) => void) => {
+      const listener = (
+        _event: Electron.IpcRendererEvent,
+        payload: TerminalSessionChangedEvent,
+      ) => cb(payload);
+      ipcRenderer.on(IPC.sessionsChanged, listener);
+      return () => ipcRenderer.removeListener(IPC.sessionsChanged, listener);
+    },
   },
   agentChat: {
     list: async (
