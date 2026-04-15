@@ -3,6 +3,7 @@ import type {
   PrComment,
   PrDetail,
   PrFile,
+  PrReview,
   PrReviewThread,
 } from "../../../shared/types";
 import type { AdeDb } from "../state/kvDb";
@@ -32,16 +33,23 @@ function toStringArray(value: unknown): string[] {
   return value.filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0);
 }
 
-function summarizeBotReviews(comments: PrComment[]): string {
-  const bots = comments.filter((c) => {
-    const login = c.author?.toLowerCase() ?? "";
-    return login.includes("bot") || login.includes("greptile") || login.includes("seer") || login.includes("coderabbit");
-  });
-  if (bots.length === 0) return "(no bot reviews)";
-  return bots
+function isBotLogin(login: string | null | undefined): boolean {
+  const l = (login ?? "").toLowerCase();
+  return l.includes("bot") || l.includes("greptile") || l.includes("seer") || l.includes("coderabbit");
+}
+
+function summarizeBotReviews(comments: PrComment[], reviews: PrReview[]): string {
+  const commentParts = comments
+    .filter((c) => isBotLogin(c.author))
     .slice(0, 5)
-    .map((c) => `- @${c.author}: ${(c.body ?? "").slice(0, 280)}`)
-    .join("\n");
+    .map((c) => `- @${c.author}: ${(c.body ?? "").slice(0, 280)}`);
+  const reviewParts = reviews
+    .filter((r) => isBotLogin(r.reviewer) && (r.body ?? "").trim().length > 0)
+    .slice(0, 3)
+    .map((r) => `- @${r.reviewer} [${r.state}]: ${(r.body ?? "").slice(0, 280)}`);
+  const all = [...commentParts, ...reviewParts];
+  if (all.length === 0) return "(no bot reviews)";
+  return all.join("\n");
 }
 
 export function buildPrSummaryPrompt(args: {
@@ -49,6 +57,7 @@ export function buildPrSummaryPrompt(args: {
   body: string | null;
   changedFiles: PrFile[];
   issueComments: PrComment[];
+  reviews: PrReview[];
   unresolvedThreadCount: number;
 }): string {
   const fileList = args.changedFiles
@@ -78,7 +87,7 @@ export function buildPrSummaryPrompt(args: {
     `Unresolved review threads: ${args.unresolvedThreadCount}`,
     "",
     "Bot review summaries:",
-    summarizeBotReviews(args.issueComments),
+    summarizeBotReviews(args.issueComments, args.reviews),
     "",
     "Return the JSON object only. No code fences, no prose.",
   ].join("\n");
@@ -109,20 +118,21 @@ async function fetchPrInputs(deps: PrSummaryServiceDeps, prId: string): Promise<
   body: string | null;
   files: PrFile[];
   issueComments: PrComment[];
+  reviews: PrReview[];
   unresolvedThreadCount: number;
   headSha: string | null;
   detail: PrDetail | null;
 }> {
   const summaries = deps.prService.listAll();
   const summary = summaries.find((s) => s.id === prId);
-  const [detail, files, comments, threads] = await Promise.all([
+  const [detail, files, comments, threads, reviews] = await Promise.all([
     deps.prService.getDetail(prId).catch((): PrDetail | null => null),
     deps.prService.getFiles(prId).catch((): PrFile[] => []),
     deps.prService.getComments(prId).catch((): PrComment[] => []),
     deps.prService.getReviewThreads(prId).catch((): PrReviewThread[] => []),
+    deps.prService.getReviews(prId).catch((): PrReview[] => []),
   ]);
   const unresolved = threads.filter((t) => !t.isResolved).length;
-  // headSha lookup: prefer pull_requests.head_sha column; fall back to null if unavailable.
   const row = deps.db.get<{ head_sha: string | null }>(
     "select head_sha from pull_requests where id = ? limit 1",
     [prId],
@@ -133,6 +143,7 @@ async function fetchPrInputs(deps: PrSummaryServiceDeps, prId: string): Promise<
     body: detail?.body ?? null,
     files,
     issueComments: comments,
+    reviews,
     unresolvedThreadCount: unresolved,
     headSha,
     detail,
@@ -200,6 +211,7 @@ export function createPrSummaryService(deps: PrSummaryServiceDeps) {
       body: inputs.body,
       changedFiles: inputs.files,
       issueComments: inputs.issueComments,
+      reviews: inputs.reviews,
       unresolvedThreadCount: inputs.unresolvedThreadCount,
     });
 

@@ -76,6 +76,15 @@ describe("buildPrSummaryPrompt", () => {
           updatedAt: null,
         },
       ],
+      reviews: [
+        {
+          reviewer: "coderabbitai[bot]",
+          reviewerAvatarUrl: null,
+          state: "commented",
+          body: "Formal bot review body",
+          submittedAt: null,
+        },
+      ],
       unresolvedThreadCount: 3,
     });
     expect(prompt).toContain("Add feature");
@@ -197,6 +206,7 @@ describe("createPrSummaryService", () => {
             comments: [],
           },
         ]),
+        getReviews: vi.fn(async () => []),
       };
 
       const aiIntegrationService = {
@@ -255,6 +265,7 @@ describe("createPrSummaryService", () => {
         getFiles: async () => [],
         getComments: async () => [],
         getReviewThreads: async () => [],
+        getReviews: async () => [],
       };
       const svc = createPrSummaryService({
         db,

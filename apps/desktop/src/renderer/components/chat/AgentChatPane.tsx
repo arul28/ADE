@@ -1097,9 +1097,6 @@ export function AgentChatPane({
   });
 
   const refreshAvailableModels = useCallback(async () => {
-    const shouldProbeOpenCodeFallback = selectedSession?.provider === "opencode"
-      || selectedSessionModelId?.startsWith("opencode/") === true;
-
     try {
       const status = await getAiStatusCached({ projectRoot });
       setAiStatus(status);
@@ -1122,9 +1119,7 @@ export function AgentChatPane({
         getAgentChatModelsCached({ projectRoot, provider: "codex" }).catch(() => []),
         getAgentChatModelsCached({ projectRoot, provider: "claude" }).catch(() => []),
         getAgentChatModelsCached({ projectRoot, provider: "cursor" }).catch(() => []),
-        shouldProbeOpenCodeFallback
-          ? getAgentChatModelsCached({ projectRoot, provider: "opencode" }).catch(() => [])
-          : Promise.resolve([]),
+        getAgentChatModelsCached({ projectRoot, provider: "opencode" }).catch(() => []),
       ]);
       const available = new Set<string>();
 
@@ -1165,7 +1160,7 @@ export function AgentChatPane({
       setAvailableModelIds([]);
       return [];
     }
-  }, [projectRoot, selectedSession?.provider, selectedSessionModelId]);
+  }, [projectRoot]);
 
   const touchSession = useCallback((sessionId: string | null | undefined, touchedAt = new Date().toISOString()) => {
     if (!sessionId) return;

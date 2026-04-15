@@ -175,24 +175,19 @@ async function main(): Promise<void> {
   }
 
   const socket = await connectToSocketWithRetry(socketPath);
-  let connected = false;
 
   socket.on("error", (err) => {
-    const prefix = connected ? "[ade-mcp-proxy]" : "[ade-mcp-proxy] Failed to connect";
-    process.stderr.write(`${prefix}: ${err.message}\n`);
+    process.stderr.write(`[ade-mcp-proxy]: ${err.message}\n`);
     process.exit(1);
   });
 
-  socket.on("connect", () => {
-    connected = true;
-    process.stdin.resume();
-    relayProxyInputWithIdentity(socket);
-    socket.pipe(process.stdout);
+  socket.on("close", () => {
+    process.exit(0);
   });
 
-  socket.on("close", () => {
-    process.exit(connected ? 0 : 1);
-  });
+  process.stdin.resume();
+  relayProxyInputWithIdentity(socket);
+  socket.pipe(process.stdout);
 }
 
 void main().catch((error) => {

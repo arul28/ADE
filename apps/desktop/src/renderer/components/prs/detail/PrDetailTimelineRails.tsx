@@ -3,6 +3,7 @@ import { useLocation, useNavigate } from "react-router-dom";
 import { buildPrsRouteSearch, parsePrsRouteState } from "../prsRouteState";
 import type {
   PrActivityEvent,
+  PrAiSummary,
   PrCheck,
   PrComment,
   PrDeployment,
@@ -43,7 +44,7 @@ type Props = {
   viewerLogin: string | null;
   filters: PrTimelineFilters;
   onFiltersChange: (next: PrTimelineFilters) => void;
-  aiSummary: import("../../../../shared/types").PrAiSummary | null;
+  aiSummary: PrAiSummary | null;
   aiSummaryDismissed: boolean;
   onDismissAiSummary: () => void;
   onRegenerateAiSummary: () => void;
@@ -57,10 +58,6 @@ function shortenSha(sha: string): string {
 function readActivityString(event: PrActivityEvent, key: string): string | null {
   const value = (event.metadata as Record<string, unknown>)[key];
   return typeof value === "string" ? value : null;
-}
-
-function readActivityBool(event: PrActivityEvent, key: string): boolean {
-  return (event.metadata as Record<string, unknown>)[key] === true;
 }
 
 function threadFirstCommentAuthor(thread: PrReviewThread): string | null {
