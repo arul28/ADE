@@ -316,6 +316,7 @@ export function AgentChatComposer({
   layoutVariant = "standard",
   composerMaxHeightPx = null,
   isActive = false,
+  shouldAutofocus = isActive,
   sdkSlashCommands = [],
   modelId,
   availableModelIds,
@@ -382,6 +383,7 @@ export function AgentChatComposer({
   layoutVariant?: "standard" | "grid-tile";
   composerMaxHeightPx?: number | null;
   isActive?: boolean;
+  shouldAutofocus?: boolean;
   sdkSlashCommands?: AgentChatSlashCommand[];
   modelId: string;
   availableModelIds?: string[];
@@ -484,10 +486,10 @@ export function AgentChatComposer({
     el.style.overflowY = el.scrollHeight > maxH ? "auto" : "hidden";
   }, [layoutVariant, composerMaxHeightPx]);
   useEffect(() => {
-    if (!isActive) return;
-    textareaRef.current?.focus({ preventScroll: true });
     resizeTextarea();
-  }, [isActive, resizeTextarea]);
+    if (!shouldAutofocus) return;
+    textareaRef.current?.focus({ preventScroll: true });
+  }, [resizeTextarea, shouldAutofocus]);
   useLayoutEffect(() => {
     resizeTextarea();
   }, [draft, resizeTextarea]);

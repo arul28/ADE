@@ -679,6 +679,7 @@ export function AgentChatPane({
   embeddedWorkLayout = false,
   layoutVariant = "standard",
   isTileActive = false,
+  shouldAutofocusComposer = false,
   onSessionCreated,
   availableLanes,
   onLaneChange,
@@ -699,6 +700,7 @@ export function AgentChatPane({
   embeddedWorkLayout?: boolean;
   layoutVariant?: "standard" | "grid-tile";
   isTileActive?: boolean;
+  shouldAutofocusComposer?: boolean;
   onSessionCreated?: (session: AgentChatSession) => void | Promise<void>;
   /** Available lanes for the lane selector in empty state */
   availableLanes?: Array<{ id: string; name: string; color?: string | null }>;
@@ -1550,7 +1552,7 @@ export function AgentChatPane({
       try {
         await Promise.all([refreshAvailableModels(), refreshSessions()]);
       } catch {
-        // refresh errors surface via setError inside the individual refresh callbacks
+        // boot-time refresh errors are swallowed here; individual callbacks fall back to empty state
       } finally {
         if (!cancelled) {
           setLoading(false);
@@ -2733,6 +2735,7 @@ export function AgentChatPane({
             layoutVariant={layoutVariant}
             composerMaxHeightPx={composerMaxHeightPx}
             isActive={layoutVariant === "grid-tile" ? isTileActive : false}
+            shouldAutofocus={layoutVariant === "grid-tile" ? shouldAutofocusComposer : false}
             sdkSlashCommands={sdkSlashCommands}
             modelId={modelId}
             availableModelIds={effectiveAvailableModelIds}

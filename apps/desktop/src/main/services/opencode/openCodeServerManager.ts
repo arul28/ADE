@@ -130,10 +130,26 @@ const dedicatedEntries = new Map<string, OpenCodeServerEntry>();
 const inFlightEntries = new Map<string, Promise<OpenCodeServerEntry>>();
 const acquireQueues = new Map<string, Array<() => void>>();
 let openCodeServerLauncher: OpenCodeServerLauncher = defaultOpenCodeServerLauncher;
+
+function readLinuxProcessEnvironment(pid: number): string[] {
+  try {
+    const raw = fs.readFileSync(`/proc/${pid}/environ`, "utf8");
+    return raw
+      .split("\0")
+      .map((entry) => entry.trim())
+      .filter((entry) => entry.length > 0);
+  } catch {
+    return [];
+  }
+}
+
 const defaultOpenCodeProcessController: OpenCodeProcessController = {
   listProcesses(): OpenCodeProcessSnapshot[] {
     if (process.platform === "win32") return [];
-    const result = spawnSync("ps", ["-wwE", "-axo", "pid=,ppid=,command="], {
+    const psArgs = process.platform === "linux"
+      ? ["-ww", "-axo", "pid=,ppid=,command="]
+      : ["-wwE", "-axo", "pid=,ppid=,command="];
+    const result = spawnSync("ps", psArgs, {
       encoding: "utf8",
       windowsHide: true,
     });
@@ -147,7 +163,9 @@ const defaultOpenCodeProcessController: OpenCodeProcessController = {
       rows.push({
         pid: Number(match[1]),
         ppid: Number(match[2]),
-        command: match[3],
+        command: process.platform === "linux"
+          ? [match[3], ...readLinuxProcessEnvironment(Number(match[1]))].join(" ")
+          : match[3],
       });
     }
     return rows;
@@ -288,7 +306,6 @@ function resolveKnownAdeManagedOpenCodeRoots(): string[] {
   roots.add(resolveAdeManagedOpenCodeRoot());
   const homeRoot = resolveHomeManagedOpenCodeRoot();
   if (homeRoot) roots.add(homeRoot);
-  roots.add(path.resolve(os.tmpdir(), "ade-opencode-runtime"));
   return [...roots];
 }
 
@@ -435,6 +452,16 @@ export async function recoverManagedOpenCodeOrphans(args: {
       const exitedGracefully = await waitForProcessExit(proc.pid, ORPHAN_RECOVERY_TERM_GRACE_MS);
       if (!exitedGracefully && openCodeProcessController.isProcessAlive(proc.pid)) {
         openCodeProcessController.killProcess(proc.pid, "SIGKILL");
+        const exitedAfterKill = await waitForProcessExit(proc.pid, ORPHAN_RECOVERY_TERM_GRACE_MS);
+        if (!exitedAfterKill && openCodeProcessController.isProcessAlive(proc.pid)) {
+          skippedPids.push(proc.pid);
+          args.logger?.warn("opencode.server_orphan_recovery_failed", {
+            pid: proc.pid,
+            ownerPid,
+            ppid: proc.ppid,
+          });
+          continue;
+        }
       }
       recoveredPids.push(proc.pid);
       args.logger?.warn("opencode.server_orphan_recovered", {

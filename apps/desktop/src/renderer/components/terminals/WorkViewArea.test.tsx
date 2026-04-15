@@ -2,7 +2,7 @@
 
 import type { ReactNode } from "react";
 import { act, render, screen } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { TerminalSessionSummary } from "../../../shared/types";
 import { WorkViewArea } from "./WorkViewArea";
 
@@ -53,6 +53,10 @@ let latestPackedSessionGridProps: {
   tiles: Array<{ id: string; children: ReactNode; onHover?: () => void; onSelect?: () => void }>;
   onViewportMouseLeave?: () => void;
 } | null = null;
+
+beforeEach(() => {
+  latestPackedSessionGridProps = null;
+});
 
 vi.mock("./ToolLogos", () => ({
   ToolLogo: () => <span data-testid="tool-logo" />,

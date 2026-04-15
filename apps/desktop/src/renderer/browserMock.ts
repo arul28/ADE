@@ -1662,15 +1662,21 @@ if (typeof window !== "undefined" && !(window as any).ade) {
     project: {
       openRepo: resolved(MOCK_PROJECT),
       chooseDirectory: resolvedArg(null),
-      browseDirectories: resolvedArg({
-        inputPath: "~/",
-        resolvedPath: "/tmp/mock",
-        directoryPath: "/tmp/mock",
-        parentPath: "/tmp",
-        exactDirectoryPath: "/tmp/mock",
-        openableProjectRoot: "/tmp/mock",
-        entries: [],
-      }),
+      browseDirectories: async (args?: { inputPath?: string }) => {
+        const inputPath =
+          typeof args?.inputPath === "string" && args.inputPath.trim().length > 0
+            ? args.inputPath
+            : "~/";
+        return {
+          inputPath,
+          resolvedPath: "/tmp/mock",
+          directoryPath: "/tmp/mock",
+          parentPath: "/tmp",
+          exactDirectoryPath: "/tmp/mock",
+          openableProjectRoot: "/tmp/mock",
+          entries: [],
+        };
+      },
       getDetail: resolvedArg({
         rootPath: "/tmp/mock",
         isGitRepo: true,

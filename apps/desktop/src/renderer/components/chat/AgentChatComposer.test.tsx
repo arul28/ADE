@@ -427,4 +427,21 @@ describe("AgentChatComposer", () => {
     expect(document.activeElement).toBe(textarea);
   });
 
+  it("does not autofocus the grid composer when only hover state changes", () => {
+    const props = buildComposerProps({
+      layoutVariant: "grid-tile",
+      composerMaxHeightPx: 128,
+      isActive: false,
+      shouldAutofocus: false,
+    });
+    const view = render(<AgentChatComposer {...props} />);
+
+    const textarea = screen.getByPlaceholderText("Steer the active turn...") as HTMLTextAreaElement;
+    expect(document.activeElement).not.toBe(textarea);
+
+    view.rerender(<AgentChatComposer {...props} isActive shouldAutofocus={false} />);
+
+    expect(document.activeElement).not.toBe(textarea);
+  });
+
 });

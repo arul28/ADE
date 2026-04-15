@@ -34,6 +34,7 @@ function isRunningPtySession(
 function SessionSurface({
   session,
   isActive,
+  shouldAutofocus = false,
   layoutVariant = "standard",
   terminalVisible = isActive,
   onOpenChatSession,
@@ -41,6 +42,7 @@ function SessionSurface({
 }: {
   session: TerminalSessionSummary;
   isActive: boolean;
+  shouldAutofocus?: boolean;
   layoutVariant?: "standard" | "grid-tile";
   terminalVisible?: boolean;
   onOpenChatSession: (session: AgentChatSession) => void | Promise<void>;
@@ -57,6 +59,7 @@ function SessionSurface({
         onSessionCreated={onOpenChatSession}
         layoutVariant={layoutVariant}
         isTileActive={isActive}
+        shouldAutofocusComposer={shouldAutofocus}
       />
     );
   }
@@ -306,6 +309,7 @@ export function WorkViewArea({
     }
   }, [onContextMenu]);
   const packedGridTiles = useMemo(() => visibleSessions.map((session) => {
+    const isSelected = activeItemId === session.id;
     const isActive = (hoveredGridSessionId ?? activeItemId) === session.id;
     const dot = sessionStatusDot(session);
     const isBusy = session.ptyId ? closingPtyIds.has(session.ptyId) : false;
@@ -383,6 +387,7 @@ export function WorkViewArea({
           <SessionSurface
             session={session}
             isActive={isActive}
+            shouldAutofocus={isSelected}
             terminalVisible
             layoutVariant="grid-tile"
             onOpenChatSession={onOpenChatSession}

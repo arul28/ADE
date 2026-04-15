@@ -141,7 +141,11 @@ vi.mock("@xterm/addon-webgl", () => ({
 
 vi.mock("@xterm/xterm/css/xterm.css", () => ({}));
 
-import { TerminalView, getTerminalRuntimeSnapshot } from "./TerminalView";
+import {
+  TerminalView,
+  disposeTerminalRuntimesForProjectChange,
+  getTerminalRuntimeSnapshot,
+} from "./TerminalView";
 
 function installWindowAde() {
   (window as any).ade = {
@@ -483,6 +487,30 @@ describe("TerminalView", () => {
     expect(firstTerminal?.dispose).toHaveBeenCalledTimes(1);
     expect(readTranscriptTailMock.mock.calls).toHaveLength(2);
     expect(getTerminalRuntimeSnapshot("session-switch")).not.toBeNull();
+  });
+
+  it("disposes parked runtimes when the project changes without a mounted terminal view", async () => {
+    const view = render(<TerminalView ptyId="pty-background" sessionId="session-background" isActive />);
+    await flushAllTimers();
+
+    const terminal = mockState.terminalInstances.at(-1) as {
+      dispose: ReturnType<typeof vi.fn>;
+    } | undefined;
+    expect(terminal).toBeTruthy();
+    expect(getTerminalRuntimeSnapshot("session-background")).not.toBeNull();
+
+    view.unmount();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1_000);
+    });
+    expect(getTerminalRuntimeSnapshot("session-background")).not.toBeNull();
+
+    mockState.projectRoot = "/project/b";
+    mockState.projectRevision += 1;
+    disposeTerminalRuntimesForProjectChange(mockState.projectRoot, mockState.projectRevision);
+
+    expect(terminal?.dispose).toHaveBeenCalledTimes(1);
+    expect(getTerminalRuntimeSnapshot("session-background")).toBeNull();
   });
 
   it("writes PTY output into the parked runtime so the terminal state stays current", async () => {

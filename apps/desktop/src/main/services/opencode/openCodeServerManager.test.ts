@@ -388,7 +388,12 @@ describe("openCodeServerManager", () => {
   });
 
   it("reaps orphaned ADE-managed OpenCode processes and skips ones with a live owner", async () => {
-    const killProcess = vi.fn();
+    let orphanAlive = true;
+    const killProcess = vi.fn((pid: number, signal: NodeJS.Signals) => {
+      if (pid === 4101 && signal === "SIGKILL") {
+        orphanAlive = false;
+      }
+    });
     const homeDir = os.homedir();
     __setOpenCodeProcessControllerForTests({
       listProcesses: () => ([
@@ -413,7 +418,10 @@ describe("openCodeServerManager", () => {
           ].join(" "),
         },
       ]),
-      isProcessAlive: (pid) => pid === 4101 || pid === 4102 || pid === 7788,
+      isProcessAlive: (pid) => {
+        if (pid === 4101) return orphanAlive;
+        return pid === 4102 || pid === 7788;
+      },
       killProcess,
     });
     const result = await recoverManagedOpenCodeOrphans();
@@ -423,6 +431,38 @@ describe("openCodeServerManager", () => {
     expect(killProcess).toHaveBeenCalledWith(4101, "SIGTERM");
     expect(killProcess).toHaveBeenCalledWith(4101, "SIGKILL");
     expect(killProcess).not.toHaveBeenCalledWith(4102, "SIGTERM");
+  });
+
+  it("does not mark stubborn orphaned processes as recovered", async () => {
+    const logger = { warn: vi.fn() } as any;
+    const killProcess = vi.fn();
+    const homeDir = os.homedir();
+    __setOpenCodeProcessControllerForTests({
+      listProcesses: () => ([
+        {
+          pid: 6101,
+          ppid: 1,
+          command: [
+            "/Users/admin/.opencode/bin/opencode serve --hostname=127.0.0.1 --port=62301",
+            "OPENCODE_DISABLE_PROJECT_CONFIG=1",
+            `XDG_CONFIG_HOME=${homeDir}/.ade/opencode-runtime/xdg-v1/config`,
+          ].join(" "),
+        },
+      ]),
+      isProcessAlive: (pid) => pid === 6101,
+      killProcess,
+    });
+
+    const result = await recoverManagedOpenCodeOrphans({ force: true, logger });
+
+    expect(result.recoveredPids).toEqual([]);
+    expect(result.skippedPids).toEqual([6101]);
+    expect(killProcess).toHaveBeenCalledWith(6101, "SIGTERM");
+    expect(killProcess).toHaveBeenCalledWith(6101, "SIGKILL");
+    expect(logger.warn).toHaveBeenCalledWith(
+      "opencode.server_orphan_recovery_failed",
+      expect.objectContaining({ pid: 6101 }),
+    );
   });
 
   it("waits for an in-flight forced recovery before starting another forced scan", async () => {

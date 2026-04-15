@@ -13121,8 +13121,19 @@ export function createAgentChatService(args: {
             projectRoot,
             projectConfig: effectiveConfig,
           });
-          modelIds = peeked?.modelIds ?? [];
-          error = peeked?.error ?? null;
+          if (peeked) {
+            modelIds = peeked.modelIds;
+            error = peeked.error;
+          } else {
+            const inventory = await probeOpenCodeProviderInventory({
+              projectRoot,
+              projectConfig: effectiveConfig,
+              logger,
+              force: false,
+            });
+            modelIds = inventory.modelIds;
+            error = inventory.error;
+          }
         }
         if (error) {
           logger.warn("agent_chat.opencode_inventory_empty", { error });
@@ -13352,6 +13363,7 @@ export function createAgentChatService(args: {
     }
     for (const [sessionId, managed] of managedSessions) {
       try {
+        managed.deleted = true;
         clearSubagentSnapshots(sessionId);
         for (const pending of managed.localPendingInputs.values()) {
           pending.resolve({ decision: "cancel" });

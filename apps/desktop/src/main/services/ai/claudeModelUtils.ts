@@ -42,7 +42,9 @@ export function resolveClaudeCliModel(model: string | null | undefined): string 
   const mapped = CLAUDE_CLI_MODEL_ALIAS_MAP[normalized];
   if (mapped) return mapped;
 
-  if (normalized.includes("opus") && (normalized.includes("1m") || normalized.includes("[1m]"))) {
+  const hasOpus1mToken =
+    normalized.includes("[1m]") || /(^|[^0-9])1m($|[^0-9])/.test(normalized);
+  if (normalized.includes("opus") && hasOpus1mToken) {
     return "opus[1m]";
   }
   if (normalized.includes("sonnet")) return "sonnet";

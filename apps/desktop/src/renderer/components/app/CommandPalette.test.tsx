@@ -104,11 +104,11 @@ describe("CommandPalette", () => {
       });
     });
 
-    expect(await screen.findByRole("button", { name: /finder/i })).toBeTruthy();
+    expect(await screen.findByRole("button", { name: /open directory/i })).toBeTruthy();
     expect(screen.getByText("Versic")).toBeTruthy();
   });
 
-  it("can fall back to the Finder picker from the browser footer", async () => {
+  it("can fall back to the directory picker from the browser footer", async () => {
     const switchProjectToPath = vi.fn(async () => {});
     seedStore({ switchProjectToPath });
     browseDirectories.mockResolvedValue({
@@ -132,7 +132,7 @@ describe("CommandPalette", () => {
       </MemoryRouter>
     );
 
-    const button = await screen.findByRole("button", { name: /finder/i });
+    const button = await screen.findByRole("button", { name: /open directory/i });
     fireEvent.click(button);
 
     await waitFor(() => {
@@ -146,7 +146,7 @@ describe("CommandPalette", () => {
     });
   });
 
-  it("ignores stale dropped-folder browse results when a newer drop starts", async () => {
+  it("opens the latest dropped folder and ignores stale browse results", async () => {
     const switchProjectToPath = vi.fn(async () => {});
     seedStore({ switchProjectToPath });
 
@@ -219,9 +219,9 @@ describe("CommandPalette", () => {
     });
 
     await waitFor(() => {
-      expect(switchProjectToPath).not.toHaveBeenCalled();
-      expect(browseDirectories).toHaveBeenCalledTimes(4);
-      expect(input.value).toBe("/Users/admin/Projects/FreshFolder/");
+      expect(switchProjectToPath).toHaveBeenCalledWith("/Users/admin/Projects/FreshFolder");
+      expect(switchProjectToPath).toHaveBeenCalledTimes(1);
+      expect(browseDirectories).toHaveBeenCalledTimes(3);
     });
   });
 });

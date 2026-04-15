@@ -301,6 +301,13 @@ function disposeStaleRuntimes(activeProjectRoot: string | null, activeProjectRev
   }
 }
 
+export function disposeTerminalRuntimesForProjectChange(
+  activeProjectRoot: string | null,
+  activeProjectRevision: number,
+): void {
+  disposeStaleRuntimes(activeProjectRoot, activeProjectRevision);
+}
+
 function setRuntimeInteractionState(runtime: CachedRuntime, active: boolean) {
   runtime.active = active;
   runtime.inputEnabled = active;
@@ -976,7 +983,7 @@ export function TerminalView({
   mountConfigRef.current = currentMountConfig;
 
   useEffect(() => {
-    disposeStaleRuntimes(projectRoot, projectRevision);
+    disposeTerminalRuntimesForProjectChange(projectRoot, projectRevision);
   }, [projectRoot, projectRevision]);
 
   useEffect(() => {

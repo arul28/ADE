@@ -60,4 +60,17 @@ describe("getProjectDetail", () => {
     await expect(getProjectDetail(filePath)).rejects.toThrow(/existing directory/i);
     await expect(getProjectDetail(path.join(root, "missing-project"))).rejects.toThrow(/existing directory/i);
   });
+
+  it("strips repeated leading HTML comments from README excerpts", async () => {
+    const root = makeTempDir("ade-project-detail-");
+    fs.writeFileSync(
+      path.join(root, "README.md"),
+      "<!-- generated -->\n<!-- review -->\n# Hello\n\nVisible body.\n",
+      "utf8",
+    );
+
+    const detail = await getProjectDetail(root);
+
+    expect(detail.readmeExcerpt).toBe("# Hello\n\nVisible body.");
+  });
 });

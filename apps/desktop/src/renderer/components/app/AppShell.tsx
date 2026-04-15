@@ -49,6 +49,7 @@ import {
   listActionableContextDocs,
   listContextDocsByHealth,
 } from "../context/contextShared";
+import { disposeTerminalRuntimesForProjectChange } from "../terminals/TerminalView";
 
 type PrToast = {
   id: string;
@@ -143,6 +144,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const keybindings = useAppStore((s) => s.keybindings);
   const lanes = useAppStore((s) => s.lanes);
   const project = useAppStore((s) => s.project);
+  const projectRevision = useAppStore((s) => s.projectRevision);
   const setShowWelcome = useAppStore((s) => s.setShowWelcome);
   const showWelcome = useAppStore((s) => s.showWelcome);
   const openRepo = useAppStore((s) => s.openRepo);
@@ -203,6 +205,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       })}`,
     );
   }, [location.pathname, project?.rootPath, showWelcome]);
+
+  useEffect(() => {
+    disposeTerminalRuntimesForProjectChange(project?.rootPath ?? null, projectRevision);
+  }, [project?.rootPath, projectRevision]);
 
   useEffect(() => {
     let cancelled = false;

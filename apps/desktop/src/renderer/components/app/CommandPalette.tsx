@@ -375,6 +375,8 @@ export function CommandPalette({
     : openableProjectRoot;
   const openTargetLabel = openTarget ? pathLabel(openTarget) : null;
   const canOpenHighlighted = Boolean(openTarget) && openTarget !== project?.rootPath;
+  const isMac = typeof navigator !== "undefined" && /mac/i.test(navigator.platform);
+  const openShortcutLabel = `${isMac ? "⌘" : "Ctrl"}↵`;
 
   useEffect(() => {
     if (!open || mode !== "project-browse") return;
@@ -649,8 +651,13 @@ export function CommandPalette({
         })
         .then((result) => {
           if (browseRequestRef.current !== requestId) return;
-          if (result.openableProjectRoot) {
-            void handleOpenProject(result.openableProjectRoot);
+          const nextTarget =
+            result.openableProjectRoot
+            ?? result.exactDirectoryPath
+            ?? result.directoryPath
+            ?? droppedPath;
+          if (nextTarget) {
+            void handleOpenProject(nextTarget);
             return;
           }
           setBrowseInput(nextBrowseInput);
@@ -914,8 +921,8 @@ export function CommandPalette({
                             <span>navigate</span>
                             <kbd className="ml-2 rounded border border-[var(--color-border)] bg-[var(--color-surface)] px-1.5 py-0.5 font-mono text-[10px]">↵</kbd>
                             <span>step in</span>
-                            <kbd className="ml-2 rounded border border-[var(--color-border)] bg-[var(--color-surface)] px-1.5 py-0.5 font-mono text-[10px]">⌘↵</kbd>
-                            <span>open repo</span>
+                            <kbd className="ml-2 rounded border border-[var(--color-border)] bg-[var(--color-surface)] px-1.5 py-0.5 font-mono text-[10px]">{openShortcutLabel}</kbd>
+                            <span>open directory</span>
                           </>
                         )}
                       </div>
@@ -934,7 +941,7 @@ export function CommandPalette({
                           ) : (
                             <FolderOpen size={14} weight="regular" />
                           )}
-                          Finder…
+                          Open directory…
                         </button>
                         <button
                           type="button"

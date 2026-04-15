@@ -101,7 +101,7 @@ async function readReadmeExcerpt(rootPath: string): Promise<string | null> {
         const buffer = Buffer.alloc(README_EXCERPT_CHARS * 2);
         const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
         const raw = buffer.slice(0, bytesRead).toString("utf8");
-        const cleaned = raw.replace(/^<!--[\s\S]*?-->/g, "").trim();
+        const cleaned = raw.replace(/^(\s*<!--[\s\S]*?-->\s*)+/, "").trim();
         if (!cleaned) return null;
         if (cleaned.length <= README_EXCERPT_CHARS) return cleaned;
         const truncated = cleaned.slice(0, README_EXCERPT_CHARS);
@@ -134,8 +134,6 @@ async function countFilesByLanguage(rootPath: string): Promise<ProjectLanguageSh
     for (const dirent of dirents) {
       if (filesVisited >= LANGUAGE_SCAN_FILE_CAP) return;
       if (dirent.name.startsWith(".") && dirent.name !== ".github") {
-        if (EXCLUDED_DIRS.has(dirent.name)) continue;
-        // leave hidden-only-non-excluded dirs alone
         continue;
       }
       if (dirent.isDirectory()) {
