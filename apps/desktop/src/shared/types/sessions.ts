@@ -120,13 +120,17 @@ export type PtyExitEvent = {
 
 export type TerminalSessionChangedEvent = {
   sessionId: string;
-  reason: "meta-updated";
+  reason: "meta-updated" | "deleted";
 };
 
 export type ListSessionsArgs = {
   laneId?: string;
   status?: TerminalSessionStatus;
   limit?: number;
+};
+
+export type DeleteSessionArgs = {
+  sessionId: string;
 };
 
 export type UpdateSessionMetaArgs = {

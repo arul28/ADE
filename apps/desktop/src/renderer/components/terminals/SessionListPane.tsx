@@ -324,7 +324,7 @@ export const SessionListPane = React.memo(function SessionListPane({
 
         {/* Expandable filter panel */}
         {filterOpen ? (
-          <div className="space-y-1.5 rounded-lg p-2" style={{ background: "rgba(255,255,255,0.02)", border: "1px solid rgba(255,255,255,0.04)" }}>
+          <div className="ade-chat-drawer-glass space-y-1.5 p-2">
             <div className="flex items-center gap-1">
               <span className="text-[9px] font-medium text-muted-fg/50 uppercase tracking-wider shrink-0 w-10">Group</span>
               <div className="flex items-center gap-0.5 flex-1">
@@ -347,9 +347,9 @@ export const SessionListPane = React.memo(function SessionListPane({
                   >
                     <button
                       type="button"
-                      className="flex-1 rounded-md px-2 py-1 text-[10px] font-medium transition-colors"
+                      className="ade-chat-drawer-row flex-1 rounded-md px-2 py-1 text-[10px] font-medium"
+                      data-active={sessionListOrganization === opt.key ? "true" : undefined}
                       style={{
-                        background: sessionListOrganization === opt.key ? "rgba(255,255,255,0.08)" : "transparent",
                         color: sessionListOrganization === opt.key ? "var(--color-fg)" : "var(--color-muted-fg)",
                       }}
                       onClick={() => setSessionListOrganization(opt.key)}

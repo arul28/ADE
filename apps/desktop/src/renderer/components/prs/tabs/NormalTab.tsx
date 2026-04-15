@@ -3,6 +3,7 @@ import {
   MagnifyingGlass, Funnel, XCircle,
 } from "@phosphor-icons/react";
 import { useNavigate } from "react-router-dom";
+import { useVirtualizer } from "@tanstack/react-virtual";
 import type {
   MergeMethod, PrMergeContext, PrWithConflicts, LaneSummary,
 } from "../../../../shared/types";
@@ -21,6 +22,8 @@ function statusDotColor(state: string): string {
   if (state === "draft") return COLORS.warning;
   return COLORS.textMuted;
 }
+
+const VIRTUALIZE_AT = 50;
 
 /* ---- Filter types ---- */
 type FilterState = {
@@ -213,66 +216,24 @@ export function NormalTab({ prs, lanes, mergeContextByPrId, mergeMethod, selecte
             <div style={{ padding: 20 }}>
               <EmptyState title={hasActiveFilters ? "No matching PRs" : "No PRs"} description={hasActiveFilters ? "Try adjusting your filters." : "Create a PR from a lane or link an existing GitHub PR."} />
             </div>
+          ) : filteredPrs.length > VIRTUALIZE_AT ? (
+            <NormalTabVirtualList
+              parentRef={listRef}
+              prs={filteredPrs}
+              selectedPrId={selectedPrId}
+              laneById={laneById}
+              onSelectPr={onSelectPr}
+            />
           ) : (
-            filteredPrs.map((pr) => {
-              const isSelected = pr.id === selectedPrId;
-              const laneName = laneById.get(pr.laneId)?.name ?? pr.laneId;
-              const sc = getPrStateBadge(pr.state);
-              const cc = getPrChecksBadge(pr.checksStatus);
-              const rc = getPrReviewsBadge(pr.reviewStatus);
-
-              return (
-                <button
-                  key={pr.id}
-                  type="button"
-                  onClick={() => onSelectPr(pr.id)}
-                  style={{
-                    display: "flex", width: "100%", alignItems: "flex-start", gap: 10,
-                    padding: "12px 14px", textAlign: "left", border: "none", cursor: "pointer",
-                    borderLeft: isSelected ? `3px solid ${COLORS.accent}` : "3px solid transparent",
-                    background: isSelected ? `${COLORS.accent}12` : "transparent",
-                    borderBottom: `1px solid ${COLORS.border}`, transition: "background 100ms",
-                  }}
-                  onMouseEnter={(e) => { if (!isSelected) e.currentTarget.style.background = COLORS.hoverBg; }}
-                  onMouseLeave={(e) => { if (!isSelected) e.currentTarget.style.background = "transparent"; }}
-                >
-                  {/* Status dot */}
-                  <div style={{
-                    width: 8, height: 8, borderRadius: "50%", marginTop: 5, flexShrink: 0,
-                    background: statusDotColor(pr.state),
-                  }} />
-
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                      <span style={{ fontFamily: MONO_FONT, fontSize: 11, color: COLORS.textMuted }}>#{pr.githubPrNumber}</span>
-                      <span style={{ fontWeight: 600, fontSize: 12, color: COLORS.textPrimary, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }}>
-                        {pr.title}
-                      </span>
-                    </div>
-                    <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 4 }}>
-                      <span style={{ fontFamily: MONO_FONT, fontSize: 10, color: COLORS.textDim, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }}>
-                        {laneName}
-                      </span>
-                      <span style={{ fontFamily: MONO_FONT, fontSize: 10, color: COLORS.textDim, flexShrink: 0 }}>
-                        {formatTimeAgoCompact(pr.updatedAt)}
-                      </span>
-                    </div>
-                    <div style={{ display: "flex", alignItems: "center", gap: 4, marginTop: 6, flexWrap: "wrap" }}>
-                      <PrConflictBadge riskLevel={pr.conflictAnalysis?.riskLevel ?? null} overlappingFileCount={pr.conflictAnalysis?.overlapCount} />
-                      <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
-                        <InlinePrBadge {...cc} />
-                        {pr.checksStatus === "pending" ? <PrCiRunningIndicator /> : null}
-                      </span>
-                      <InlinePrBadge {...rc} />
-                      <InlinePrBadge {...sc} />
-                      {/* Diff stats mini */}
-                      <span style={{ fontFamily: MONO_FONT, fontSize: 9, color: COLORS.success }}>+{pr.additions}</span>
-                      <span style={{ fontFamily: MONO_FONT, fontSize: 9, color: COLORS.danger }}>-{pr.deletions}</span>
-                    </div>
-                  </div>
-                </button>
-              );
-            })
+            filteredPrs.map((pr) => (
+              <NormalTabPrRow
+                key={pr.id}
+                pr={pr}
+                laneById={laneById}
+                isSelected={pr.id === selectedPrId}
+                onSelectPr={onSelectPr}
+              />
+            ))
           )}
         </div>
 
@@ -376,6 +337,133 @@ function KbdHint({ keys, label }: { keys: string; label: string }) {
         {keys}
       </span>
       <span style={{ fontFamily: MONO_FONT, fontSize: 9, color: COLORS.textDim }}>{label}</span>
+    </div>
+  );
+}
+
+/* ---- PR row (shared between list and virtualizer) ---- */
+function NormalTabPrRow({
+  pr,
+  laneById,
+  isSelected,
+  onSelectPr,
+}: {
+  pr: PrWithConflicts;
+  laneById: Map<string, LaneSummary>;
+  isSelected: boolean;
+  onSelectPr: (id: string | null) => void;
+}) {
+  const laneName = laneById.get(pr.laneId)?.name ?? pr.laneId;
+  const sc = getPrStateBadge(pr.state);
+  const cc = getPrChecksBadge(pr.checksStatus);
+  const rc = getPrReviewsBadge(pr.reviewStatus);
+  return (
+    <button
+      type="button"
+      onClick={() => onSelectPr(pr.id)}
+      style={{
+        display: "flex", width: "100%", alignItems: "flex-start", gap: 10,
+        padding: "12px 14px", textAlign: "left", border: "none", cursor: "pointer",
+        borderLeft: isSelected ? `3px solid ${COLORS.accent}` : "3px solid transparent",
+        background: isSelected ? `${COLORS.accent}12` : "transparent",
+        borderBottom: `1px solid ${COLORS.border}`, transition: "background 100ms",
+      }}
+      onMouseEnter={(e) => { if (!isSelected) e.currentTarget.style.background = COLORS.hoverBg; }}
+      onMouseLeave={(e) => { if (!isSelected) e.currentTarget.style.background = "transparent"; }}
+    >
+      <div style={{
+        width: 8, height: 8, borderRadius: "50%", marginTop: 5, flexShrink: 0,
+        background: statusDotColor(pr.state),
+      }} />
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          <span style={{ fontFamily: MONO_FONT, fontSize: 11, color: COLORS.textMuted }}>#{pr.githubPrNumber}</span>
+          <span style={{ fontWeight: 600, fontSize: 12, color: COLORS.textPrimary, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }}>
+            {pr.title}
+          </span>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 4 }}>
+          <span style={{ fontFamily: MONO_FONT, fontSize: 10, color: COLORS.textDim, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }}>
+            {laneName}
+          </span>
+          <span style={{ fontFamily: MONO_FONT, fontSize: 10, color: COLORS.textDim, flexShrink: 0 }}>
+            {formatTimeAgoCompact(pr.updatedAt)}
+          </span>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 4, marginTop: 6, flexWrap: "wrap" }}>
+          <PrConflictBadge riskLevel={pr.conflictAnalysis?.riskLevel ?? null} overlappingFileCount={pr.conflictAnalysis?.overlapCount} />
+          <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+            <InlinePrBadge {...cc} />
+            {pr.checksStatus === "pending" ? <PrCiRunningIndicator /> : null}
+          </span>
+          <InlinePrBadge {...rc} />
+          <InlinePrBadge {...sc} />
+          <span style={{ fontFamily: MONO_FONT, fontSize: 9, color: COLORS.success }}>+{pr.additions}</span>
+          <span style={{ fontFamily: MONO_FONT, fontSize: 9, color: COLORS.danger }}>-{pr.deletions}</span>
+        </div>
+      </div>
+    </button>
+  );
+}
+
+/* ---- Virtual list for PR sidebar (activated above VIRTUALIZE_AT) ---- */
+function NormalTabVirtualList({
+  parentRef,
+  prs,
+  selectedPrId,
+  laneById,
+  onSelectPr,
+}: {
+  parentRef: React.RefObject<HTMLDivElement>;
+  prs: PrWithConflicts[];
+  selectedPrId: string | null;
+  laneById: Map<string, LaneSummary>;
+  onSelectPr: (id: string | null) => void;
+}) {
+  const virtualizer = useVirtualizer({
+    count: prs.length,
+    getScrollElement: () => parentRef.current,
+    estimateSize: () => 96,
+    overscan: 6,
+  });
+  // Keyboard navigation moves selectedPrId outside the rendered window; scroll
+  // the selected row into view so the user can see what is highlighted.
+  React.useEffect(() => {
+    if (!selectedPrId) return;
+    const index = prs.findIndex((p) => p.id === selectedPrId);
+    if (index < 0) return;
+    virtualizer.scrollToIndex(index, { align: "auto" });
+  }, [selectedPrId, prs, virtualizer]);
+  return (
+    <div
+      data-testid="pr-normal-list-virtual"
+      style={{ height: virtualizer.getTotalSize(), position: "relative" }}
+    >
+      {virtualizer.getVirtualItems().map((virtualRow) => {
+        const pr = prs[virtualRow.index];
+        if (!pr) return null;
+        return (
+          <div
+            key={pr.id}
+            data-index={virtualRow.index}
+            ref={virtualizer.measureElement}
+            style={{
+              position: "absolute",
+              top: 0,
+              left: 0,
+              width: "100%",
+              transform: `translateY(${virtualRow.start}px)`,
+            }}
+          >
+            <NormalTabPrRow
+              pr={pr}
+              laneById={laneById}
+              isSelected={pr.id === selectedPrId}
+              onSelectPr={onSelectPr}
+            />
+          </div>
+        );
+      })}
     </div>
   );
 }

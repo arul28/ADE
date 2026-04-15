@@ -46,7 +46,6 @@ import { isRecord } from "../shared/utils";
 import { parseStructuredOutput } from "./utils";
 import { getApiKeyStoreStatus } from "./apiKeyStore";
 import type { createMemoryService } from "../memory/memoryService";
-import type { CompactionFlushService } from "../memory/compactionFlushService";
 import { inspectLocalProvider } from "./localModelDiscovery";
 import { discoverCursorCliModelDescriptors, clearCursorCliModelsCache } from "../chat/cursorModelsDiscovery";
 import { resolveCursorAgentExecutable } from "./cursorAgentExecutable";
@@ -655,7 +654,6 @@ export function createAiIntegrationService(args: {
   projectRoot: string;
 }) {
   const { db, logger, projectConfigService, projectRoot } = args;
-  let compactionFlushService: CompactionFlushService | null = null;
 
   // Non-blocking: fetch models.dev data and enrich pricing + registry
   initModelsDevService().then((modelData) => {
@@ -1257,17 +1255,6 @@ export function createAiIntegrationService(args: {
             opencodeInventoryError = peeked.error;
             opencodeModelIds = peeked.modelIds;
             opencodeProviders = peeked.providers;
-          } else {
-            // No cache yet — auto-probe on first getStatus so free/connected models appear immediately.
-            const probed = await probeOpenCodeProviderInventory({
-              projectRoot,
-              projectConfig: effectiveConfig,
-              logger,
-              discoveredLocalModels,
-            });
-            opencodeInventoryError = probed.error;
-            opencodeModelIds = probed.modelIds;
-            opencodeProviders = probed.providers;
           }
         }
 
@@ -1338,9 +1325,6 @@ export function createAiIntegrationService(args: {
 
     getAvailabilityAsync,
     resolveModelForTask,
-    setCompactionFlushService(service: CompactionFlushService | null) {
-      compactionFlushService = service;
-    },
 
     // Backward-compatible convenience methods used by migrated services.
     async generateNarrative(args: {

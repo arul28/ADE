@@ -108,11 +108,23 @@ function PRsPageInner() {
   }, [location.search, rebaseNeeds, setActiveTab, setSelectedPrId, setSelectedQueueGroupId, setSelectedRebaseItemId]);
 
   React.useEffect(() => {
+    const current = parsePrsRouteState({ search: location.search });
+    // Preserve per-PR deep-link params (eventId/threadId/commitSha) as long as
+    // the URL still points at the currently selected PR. When the PR changes,
+    // stale deep-link params for the old PR get dropped.
+    const preserveDeepLinks =
+      activeTab === "normal" &&
+      selectedPrId !== null &&
+      current.prId === selectedPrId;
+    const deepLinks = preserveDeepLinks
+      ? { eventId: current.eventId, threadId: current.threadId, commitSha: current.commitSha }
+      : { eventId: null, threadId: null, commitSha: null };
     const nextSearch = buildPrsRouteSearch({
       activeTab,
       selectedPrId,
       selectedQueueGroupId,
       selectedRebaseItemId,
+      ...deepLinks,
     });
     if (location.search === nextSearch) return;
     void navigate({ pathname: location.pathname, search: nextSearch }, { replace: true });

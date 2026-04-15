@@ -258,14 +258,12 @@ export function RunSidebar({
       {contextMenu && (
         <div
           ref={contextMenuRef}
+          className="ade-liquid-glass-menu"
           style={{
             position: "fixed",
             top: Math.min(contextMenu.y, window.innerHeight - 100),
             left: Math.min(contextMenu.x, window.innerWidth - 160),
             zIndex: 100,
-            background: COLORS.cardBg,
-            border: `1px solid ${COLORS.border}`,
-            borderRadius: 0,
             minWidth: 140,
             padding: "4px 0",
           }}

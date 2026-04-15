@@ -25,7 +25,7 @@ import { replaceInternalToolNames } from "./toolPresentation";
 
 const MAX_SUMMARY_WORK_LOG_ENTRIES = 4;
 const RECESSED_BLOCK_CLASS =
-  "overflow-auto whitespace-pre-wrap break-words rounded-[10px] border border-white/[0.04] bg-[#09080D] px-4 py-3 font-mono text-[11px] leading-[1.6] text-fg/78";
+  "ade-chat-recessed overflow-auto whitespace-pre-wrap break-words rounded-[10px] px-4 py-3 font-mono text-[11px] leading-[1.6] text-fg/78";
 
 const NAVIGATION_SURFACES = new Set(["work", "missions", "lanes", "cto"]);
 
@@ -106,6 +106,13 @@ function DiffPreview({ diff }: { diff: string }) {
 }
 
 const FAILED_ICON_CLASS = "text-red-300/80";
+
+const MEMORY_TOOL_LABELS = new Set(["Memory", "Core Memory", "Memory Add", "Memory Pin"]);
+
+function isMemoryToolEntry(entry: ChatWorkLogEntry): boolean {
+  if (entry.entryKind !== "tool" || !entry.toolName) return false;
+  return MEMORY_TOOL_LABELS.has(getToolMeta(entry.toolName).label);
+}
 
 function workToneIcon(entry: ChatWorkLogEntry): { icon: Icon; className: string } {
   const isFailed = entry.status === "failed";
@@ -319,7 +326,7 @@ function WorkLogEntryDetail({
           <button
             key={`${suggestion.surface}:${suggestion.href}`}
             type="button"
-            className="rounded-[8px] border border-accent/20 bg-accent/[0.08] px-2.5 py-1 font-mono text-[10px] font-semibold text-accent/85 transition-colors hover:bg-accent/[0.14] hover:text-accent"
+            className="ade-liquid-glass-pill rounded-full px-2.5 py-1 font-mono text-[10px] font-semibold text-accent/85 transition-colors hover:border-accent/25 hover:bg-accent/[0.14] hover:text-accent"
             onClick={() => onNavigateSuggestion(suggestion)}
           >
             {suggestion.label}
@@ -484,6 +491,7 @@ export function ChatWorkLogBlock({
   const { icon: LatestIcon, className: latestIconClass } = latestEntry
     ? workToneIcon(latestEntry)
     : { icon: Warning, className: "text-fg/34" };
+  const latestIsMemory = latestEntry ? isMemoryToolEntry(latestEntry) : false;
 
   const toggleEntry = (entryId: string) => {
     setExpandedEntries((current) => ({
@@ -498,34 +506,40 @@ export function ChatWorkLogBlock({
 
   return (
     <div className={cn(
-      "rounded-lg transition-colors",
-      groupStatus === "failed" && "bg-red-500/[0.04] px-2 -mx-2",
+      "ade-chat-work-card rounded-[16px] px-3 py-2.5 transition-all",
+      groupStatus === "failed" && "border-red-400/14 bg-red-500/[0.05] shadow-[0_16px_32px_-28px_rgba(239,68,68,0.45)]",
       className,
     )}>
       {/* Collapsed one-line summary */}
       <button
         type="button"
-        className="group flex w-full items-center gap-2 py-1 text-left"
+        className="group flex w-full items-center gap-2 rounded-[12px] px-1 py-1.5 text-left transition-colors hover:bg-white/[0.03]"
         onClick={() => setExpanded((prev) => !prev)}
       >
         <span className="inline-flex h-3 w-3 shrink-0 items-center justify-center">
           <ChatStatusGlyph status={groupStatus} size={11} />
         </span>
-        <LatestIcon size={12} weight="regular" className={cn("shrink-0", latestIconClass)} />
-        <span className="min-w-0 truncate font-mono text-[11px] text-fg/50">
+        {latestIsMemory ? (
+          <span className="ade-memory-chip inline-flex h-5 w-5 shrink-0 items-center justify-center">
+            <LatestIcon size={11} weight="regular" className={latestIconClass} />
+          </span>
+        ) : (
+          <LatestIcon size={12} weight="regular" className={cn("shrink-0", latestIconClass)} />
+        )}
+        <span className="min-w-0 truncate font-mono text-[11px] text-fg/58">
           {summaryText}
         </span>
         {entries.length > 1 ? (
           <>
             <span className="shrink-0 text-[10px] text-fg/20">&middot;</span>
-            <span className="shrink-0 font-mono text-[10px] text-fg/30">
+            <span className="ade-liquid-glass-pill shrink-0 rounded-full px-2 py-0.5 font-mono text-[9px] text-fg/34">
               {entries.length} calls
             </span>
           </>
         ) : null}
         <span className="shrink-0 text-[10px] text-fg/20">&middot;</span>
         <span className={cn(
-          "shrink-0 font-mono text-[10px]",
+          "ade-liquid-glass-pill shrink-0 rounded-full px-2 py-0.5 font-mono text-[9px] uppercase tracking-[0.12em]",
           chatStatusTextClass(groupStatus),
         )}>
           {groupStatusLabel}
@@ -539,9 +553,10 @@ export function ChatWorkLogBlock({
 
       {/* Expanded entry list */}
       {expanded ? (
-        <div className="ml-[23px] mt-1 space-y-0.5 border-l border-white/[0.06] pl-3 pb-1">
+        <div className="ml-[23px] mt-1 space-y-1 border-l border-white/[0.06] pl-3 pb-1">
           {entries.map((entry) => {
             const { icon: EntryIcon, className: iconClassName } = workToneIcon(entry);
+            const entryIsMemory = isMemoryToolEntry(entry);
             const hasSuggestions = readNavigationSuggestions(entry.result).length > 0;
             const isEntryExpanded = expandedEntries[entry.id] ?? (hasSuggestions || entry.status === "failed");
             const heading = replaceInternalToolNames(workEntryHeading(entry));
@@ -552,7 +567,7 @@ export function ChatWorkLogBlock({
               <div key={entry.id}>
                 <button
                   type="button"
-                  className="flex w-full items-center gap-2 py-1 text-left"
+                  className="flex w-full items-center gap-2 rounded-[10px] px-2 py-1.5 text-left transition-colors hover:bg-white/[0.03]"
                   onClick={() => toggleEntry(entry.id)}
                 >
                   {isEntryExpanded ? (
@@ -563,7 +578,13 @@ export function ChatWorkLogBlock({
                   <span className="inline-flex h-2.5 w-2.5 shrink-0 items-center justify-center">
                     <ChatStatusGlyph status={workStatusState(entry.status)} size={10} />
                   </span>
-                  <EntryIcon size={11} weight="regular" className={cn("shrink-0", iconClassName)} />
+                  {entryIsMemory ? (
+                    <span className="ade-memory-chip inline-flex h-5 w-5 shrink-0 items-center justify-center">
+                      <EntryIcon size={10} weight="regular" className={iconClassName} />
+                    </span>
+                  ) : (
+                    <EntryIcon size={11} weight="regular" className={cn("shrink-0", iconClassName)} />
+                  )}
                   <span className="min-w-0 flex-1 truncate text-[11px] text-fg/70">
                     {heading}
                   </span>
@@ -581,7 +602,7 @@ export function ChatWorkLogBlock({
                 </button>
 
                 {isEntryExpanded ? (
-                  <div className="ml-5 mb-1.5 mt-1 rounded-xl border border-white/[0.05] bg-[#141220]/70 px-3 py-2.5">
+                  <div className="ade-liquid-glass ml-5 mb-1.5 mt-1 rounded-[14px] px-3 py-2.5">
                     <WorkLogEntryDetail entry={entry} onNavigateSuggestion={onNavigateSuggestion} />
                   </div>
                 ) : null}

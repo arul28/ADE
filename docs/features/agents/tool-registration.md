@@ -101,7 +101,10 @@ flow through the subprocess into the proxy. The proxy's job:
 2. Read `ADE_CHAT_SESSION_ID`, `ADE_MISSION_ID`, `ADE_RUN_ID`,
    `ADE_STEP_ID`, `ADE_ATTEMPT_ID`, `ADE_OWNER_ID`, `ADE_DEFAULT_ROLE`,
    and the `ADE_COMPUTER_USE_*` policy vars.
-3. Connect to the socket server.
+3. Connect to the socket server. Connect retries `ENOENT`/`ECONNREFUSED`
+   every 150 ms for up to 5 s so a CLI that spawns the proxy
+   fractionally before the desktop's socket server is listening still
+   succeeds; other socket errors fail fast.
 4. For each incoming JSON-RPC message, if it is an `initialize`
    request, inject the identity into `params.identity` via
    `injectIdentityIntoInitializePayload`. Otherwise pass through

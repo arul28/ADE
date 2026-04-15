@@ -101,6 +101,9 @@
   --chat-composer-shadow: 0 -12px 30px -26px rgba(0, 0, 0, 0.7);
   --chat-glass-bg: rgba(20, 18, 32, 0.75);
   --chat-glass-border: rgba(255, 255, 255, 0.08);
+  --chat-glass-highlight: rgba(255, 255, 255, 0.10);
+  --chat-glass-lowlight: rgba(10, 8, 18, 0.34);
+  --chat-glass-sheen: rgba(167, 139, 250, 0.10);
   --chat-panel-bg: rgba(20, 18, 32, 0.85);
   --chat-panel-border: rgba(255, 255, 255, 0.10);
   --chat-panel-bg-strong: rgba(28, 25, 38, 0.92);
@@ -227,6 +230,9 @@
   --chat-composer-shadow: 0 -12px 22px -24px rgba(15, 23, 42, 0.12);
   --chat-glass-bg: rgba(255, 255, 255, 0.76);
   --chat-glass-border: rgba(26, 26, 30, 0.08);
+  --chat-glass-highlight: rgba(255, 255, 255, 0.65);
+  --chat-glass-lowlight: rgba(182, 190, 204, 0.14);
+  --chat-glass-sheen: rgba(4, 144, 104, 0.08);
   --chat-panel-bg: rgba(255, 255, 255, 0.82);
   --chat-panel-border: rgba(26, 26, 30, 0.10);
   --chat-panel-bg-strong: rgba(255, 255, 255, 0.92);
@@ -2547,6 +2553,447 @@ button:active, [role="button"]:active {
 .ade-glass-card:hover {
   border-color: rgba(var(--tab-tint-rgb, 113, 113, 122), 0.22);
   box-shadow: var(--shadow-card-hover);
+}
+
+.ade-liquid-glass {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--chat-glass-bg) 88%, transparent) 0%, color-mix(in srgb, var(--chat-panel-bg-strong) 84%, transparent) 100%);
+  border: 1px solid var(--chat-glass-border);
+  box-shadow:
+    inset 0 1px 0 var(--chat-glass-highlight),
+    inset 0 -1px 0 color-mix(in srgb, var(--chat-glass-lowlight) 86%, transparent),
+    0 18px 45px -28px rgba(0, 0, 0, 0.65),
+    0 0 0 1px color-mix(in srgb, var(--chat-liquid-highlight, var(--chat-glass-sheen)) 18%, transparent);
+  backdrop-filter: blur(28px) saturate(150%);
+  -webkit-backdrop-filter: blur(28px) saturate(150%);
+}
+
+.ade-liquid-glass::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(circle at top left, color-mix(in srgb, var(--chat-liquid-highlight, var(--chat-glass-sheen)) 75%, transparent) 0%, transparent 40%),
+    linear-gradient(135deg, var(--chat-glass-highlight) 0%, transparent 28%, transparent 72%, color-mix(in srgb, var(--chat-liquid-sheen, var(--chat-glass-sheen)) 60%, transparent) 100%);
+  opacity: 0.9;
+}
+
+.ade-liquid-glass > * {
+  z-index: 1;
+}
+
+.ade-liquid-glass-strong {
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--chat-panel-bg-strong) 92%, transparent) 0%, color-mix(in srgb, var(--chat-panel-bg) 94%, transparent) 100%);
+  border-color: color-mix(in srgb, var(--chat-glass-border) 120%, var(--chat-liquid-highlight, var(--chat-glass-sheen)) 26%);
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, var(--chat-glass-highlight) 120%, transparent),
+    inset 0 -1px 0 color-mix(in srgb, var(--chat-glass-lowlight) 110%, transparent),
+    0 26px 64px -34px rgba(0, 0, 0, 0.72),
+    0 0 0 1px color-mix(in srgb, var(--chat-liquid-highlight, var(--chat-glass-sheen)) 26%, transparent);
+}
+
+.ade-liquid-glass-menu {
+  border-radius: 16px;
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--chat-panel-bg-strong) 96%, transparent) 0%, color-mix(in srgb, var(--chat-panel-bg) 94%, transparent) 100%);
+  border-color: color-mix(in srgb, var(--chat-glass-border) 120%, var(--chat-liquid-highlight, var(--chat-glass-sheen)) 28%);
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, var(--chat-glass-highlight) 115%, transparent),
+    0 24px 56px -20px rgba(0, 0, 0, 0.58),
+    0 0 0 1px color-mix(in srgb, var(--chat-liquid-highlight, var(--chat-glass-sheen)) 20%, transparent);
+}
+
+.ade-liquid-glass-pill {
+  position: relative;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--chat-glass-border) 110%, transparent);
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--chat-glass-bg) 78%, transparent) 0%, color-mix(in srgb, var(--chat-panel-bg) 76%, transparent) 100%);
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, var(--chat-glass-highlight) 82%, transparent),
+    0 8px 22px -18px rgba(0, 0, 0, 0.48);
+  backdrop-filter: blur(20px) saturate(145%);
+  -webkit-backdrop-filter: blur(20px) saturate(145%);
+}
+
+.ade-chat-timeline-pane {
+  background:
+    radial-gradient(circle at top, color-mix(in srgb, var(--chat-liquid-sheen, var(--chat-glass-sheen)) 50%, transparent) 0%, transparent 26%),
+    linear-gradient(180deg, color-mix(in srgb, var(--color-bg) 96%, var(--chat-panel-bg-strong) 4%) 0%, color-mix(in srgb, var(--color-bg) 92%, var(--chat-panel-bg) 8%) 100%);
+}
+
+.ade-chat-message-card-user {
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--chat-accent) 76%, #ffffff 6%) 0%, color-mix(in srgb, var(--chat-accent) 60%, #7c3aed 40%) 50%, color-mix(in srgb, var(--chat-accent) 58%, #4c1d95 42%) 100%);
+  border-color: color-mix(in srgb, var(--chat-accent) 26%, rgba(255, 255, 255, 0.14));
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.12),
+    0 18px 28px -24px color-mix(in srgb, var(--chat-accent) 34%, transparent),
+    0 10px 26px -22px rgba(0, 0, 0, 0.52);
+}
+
+.ade-chat-message-card-assistant {
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--chat-panel-bg-strong) 96%, transparent) 0%, color-mix(in srgb, var(--chat-panel-bg) 94%, transparent) 100%);
+  border-color: color-mix(in srgb, var(--chat-glass-border) 100%, transparent);
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, var(--chat-glass-highlight) 72%, transparent),
+    0 16px 32px -26px rgba(0, 0, 0, 0.5);
+}
+
+.ade-chat-work-card {
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--chat-panel-bg-strong) 78%, transparent) 0%, color-mix(in srgb, var(--chat-panel-bg) 74%, transparent) 100%);
+  border: 1px solid color-mix(in srgb, var(--chat-glass-border) 90%, transparent);
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, var(--chat-glass-highlight) 55%, transparent),
+    0 10px 24px -22px rgba(0,0,0,0.58);
+  backdrop-filter: blur(20px) saturate(140%);
+  -webkit-backdrop-filter: blur(20px) saturate(140%);
+}
+
+.ade-chat-recessed {
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--chat-code-bg) 92%, black 8%) 0%, color-mix(in srgb, var(--chat-code-bg) 84%, black 16%) 100%);
+  border: 1px solid color-mix(in srgb, var(--chat-code-border) 92%, transparent);
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.03),
+    inset 0 -1px 0 rgba(0,0,0,0.16);
+}
+
+/* ═══════════════════════════════════════════════════════════
+   Work Tab: Liquid Glass Primitives
+   — follow Apple HIG: content leads, glass recedes, concentric radii
+   ═══════════════════════════════════════════════════════════ */
+
+/* Floating header bar — refracts content beneath, hairline bottom */
+.ade-work-glass-header {
+  position: relative;
+  background:
+    linear-gradient(180deg,
+      color-mix(in srgb, var(--chat-panel-bg-strong) 62%, transparent) 0%,
+      color-mix(in srgb, var(--chat-panel-bg) 42%, transparent) 100%);
+  border-bottom: 1px solid var(--work-pane-border);
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, var(--chat-glass-highlight) 70%, transparent),
+    0 1px 0 rgba(0, 0, 0, 0.14);
+  backdrop-filter: blur(22px) saturate(150%);
+  -webkit-backdrop-filter: blur(22px) saturate(150%);
+}
+
+/* Session tile shell — very subtle so content stays primary */
+.ade-work-glass-tile {
+  position: relative;
+  overflow: hidden;
+  border-radius: 14px;
+  border: 1px solid color-mix(in srgb, var(--chat-glass-border) 75%, transparent);
+  background: linear-gradient(180deg,
+    color-mix(in srgb, var(--chat-panel-bg) 18%, transparent) 0%,
+    color-mix(in srgb, var(--chat-panel-bg-strong) 10%, transparent) 100%);
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, var(--chat-glass-highlight) 40%, transparent),
+    0 8px 24px -20px rgba(0, 0, 0, 0.5);
+  transition: border-color 160ms ease, box-shadow 220ms ease;
+}
+
+.ade-work-glass-tile:hover {
+  border-color: color-mix(in srgb, var(--color-accent) 22%, var(--chat-glass-border));
+}
+
+/* Active tile — purple specular ring, no heavy fill */
+.ade-work-glass-tile-active {
+  border-color: color-mix(in srgb, var(--color-accent) 38%, var(--chat-glass-border));
+  background: linear-gradient(180deg,
+    color-mix(in srgb, var(--chat-panel-bg-strong) 40%, transparent) 0%,
+    color-mix(in srgb, var(--chat-panel-bg) 26%, transparent) 100%);
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, var(--chat-glass-highlight) 80%, transparent),
+    0 0 0 1px color-mix(in srgb, var(--color-accent) 26%, transparent),
+    0 22px 46px -28px rgba(124, 58, 237, 0.32),
+    0 10px 24px -22px rgba(0, 0, 0, 0.55);
+}
+
+.ade-work-glass-tile-active::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: radial-gradient(
+    circle at top left,
+    color-mix(in srgb, var(--color-accent-glow-strong) 55%, transparent) 0%,
+    transparent 40%
+  );
+  opacity: 0.85;
+}
+
+.ade-work-glass-tile > *,
+.ade-work-glass-tile-active > * {
+  position: relative;
+  z-index: 1;
+}
+
+/* Thin header strip inside a tile */
+.ade-work-glass-tile-header {
+  background: linear-gradient(180deg,
+    color-mix(in srgb, var(--chat-panel-bg-strong) 55%, transparent) 0%,
+    color-mix(in srgb, var(--chat-panel-bg) 30%, transparent) 100%);
+  border-bottom: 1px solid color-mix(in srgb, var(--chat-glass-border) 90%, transparent);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--chat-glass-highlight) 60%, transparent);
+  backdrop-filter: blur(18px) saturate(145%);
+  -webkit-backdrop-filter: blur(18px) saturate(145%);
+}
+
+/* Tab-group container (lane or custom) */
+.ade-work-glass-group {
+  border-radius: 14px;
+  border: 1px solid color-mix(in srgb, var(--chat-glass-border) 100%, transparent);
+  background: linear-gradient(180deg,
+    color-mix(in srgb, var(--chat-panel-bg) 30%, transparent) 0%,
+    color-mix(in srgb, var(--chat-panel-bg-strong) 18%, transparent) 100%);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--chat-glass-highlight) 40%, transparent);
+  backdrop-filter: blur(14px) saturate(140%);
+  -webkit-backdrop-filter: blur(14px) saturate(140%);
+  transition: border-color 160ms ease, box-shadow 220ms ease;
+}
+
+.ade-work-glass-group-active {
+  border-color: color-mix(in srgb, var(--color-accent) 34%, var(--chat-glass-border));
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, var(--chat-glass-highlight) 70%, transparent),
+    0 0 0 1px color-mix(in srgb, var(--color-accent) 18%, transparent);
+}
+
+/* Active tab pill */
+.ade-work-tab-active {
+  background: linear-gradient(180deg,
+    color-mix(in srgb, var(--color-accent) 22%, transparent) 0%,
+    color-mix(in srgb, var(--color-accent) 12%, transparent) 100%);
+  color: var(--color-fg);
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, white 10%, transparent),
+    0 0 0 1px color-mix(in srgb, var(--color-accent) 28%, transparent);
+}
+
+/* Purple specular plus button ("New Chat") */
+.ade-work-new-chat-btn {
+  position: relative;
+  border: 1px solid color-mix(in srgb, var(--color-accent) 38%, transparent);
+  background: linear-gradient(180deg,
+    color-mix(in srgb, var(--color-accent) 20%, transparent) 0%,
+    color-mix(in srgb, var(--color-accent) 10%, transparent) 100%);
+  color: color-mix(in srgb, var(--color-accent-bright) 85%, white);
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, white 14%, transparent),
+    0 6px 18px -12px color-mix(in srgb, var(--color-accent) 50%, transparent);
+  transition: transform 160ms ease, box-shadow 200ms ease, background 180ms ease;
+  backdrop-filter: blur(12px) saturate(140%);
+  -webkit-backdrop-filter: blur(12px) saturate(140%);
+}
+
+.ade-work-new-chat-btn:hover {
+  transform: translateY(-0.5px);
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, white 18%, transparent),
+    0 8px 22px -10px color-mix(in srgb, var(--color-accent) 58%, transparent);
+}
+
+/* Unified hero shell for the "start new conversation" surface */
+.ade-work-glass-hero {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  border-radius: 22px;
+  border: 1px solid color-mix(in srgb, var(--chat-glass-border) 120%, transparent);
+  background: linear-gradient(180deg,
+    color-mix(in srgb, var(--chat-panel-bg-strong) 70%, transparent) 0%,
+    color-mix(in srgb, var(--chat-panel-bg) 58%, transparent) 100%);
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, var(--chat-glass-highlight) 110%, transparent),
+    0 32px 72px -32px rgba(0, 0, 0, 0.58),
+    0 0 0 1px color-mix(in srgb, var(--color-accent) 14%, transparent);
+  backdrop-filter: blur(30px) saturate(160%);
+  -webkit-backdrop-filter: blur(30px) saturate(160%);
+}
+
+.ade-work-glass-hero::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(circle at 22% 0%,
+      color-mix(in srgb, var(--color-accent-glow-strong) 75%, transparent) 0%,
+      transparent 45%),
+    linear-gradient(160deg,
+      color-mix(in srgb, var(--chat-glass-highlight) 110%, transparent) 0%,
+      transparent 35%);
+  opacity: 0.9;
+}
+
+.ade-work-glass-hero > * {
+  position: relative;
+  z-index: 1;
+}
+
+/* Inline chat popovers / drawers — shared by attachment tray, slash menu, etc. */
+.ade-chat-drawer-glass {
+  position: relative;
+  overflow: hidden;
+  border-radius: 14px;
+  border: 1px solid color-mix(in srgb, var(--chat-glass-border) 110%, var(--chat-liquid-highlight, var(--chat-glass-sheen)) 20%);
+  background: linear-gradient(180deg,
+    color-mix(in srgb, var(--chat-panel-bg-strong) 92%, transparent) 0%,
+    color-mix(in srgb, var(--chat-panel-bg) 88%, transparent) 100%);
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, var(--chat-glass-highlight) 95%, transparent),
+    inset 0 -1px 0 color-mix(in srgb, var(--chat-glass-lowlight) 90%, transparent),
+    0 22px 50px -26px rgba(0, 0, 0, 0.62),
+    0 0 0 1px color-mix(in srgb, var(--chat-liquid-highlight, var(--chat-glass-sheen)) 22%, transparent);
+  backdrop-filter: blur(26px) saturate(150%);
+  -webkit-backdrop-filter: blur(26px) saturate(150%);
+}
+
+.ade-chat-drawer-glass::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: radial-gradient(circle at top left,
+    color-mix(in srgb, var(--chat-liquid-highlight, var(--chat-glass-sheen)) 60%, transparent) 0%,
+    transparent 45%);
+  opacity: 0.8;
+}
+
+.ade-chat-drawer-glass > * {
+  position: relative;
+  z-index: 1;
+}
+
+/* Row in a chat drawer — glass-on-glass avoidance: flat rows, accent on hover */
+.ade-chat-drawer-row {
+  transition: background 140ms ease, color 140ms ease;
+}
+
+.ade-chat-drawer-row:hover,
+.ade-chat-drawer-row[data-active="true"] {
+  background: color-mix(in srgb, var(--color-accent) 14%, transparent);
+  color: var(--color-fg);
+}
+
+/* ═══════════════════════════════════════════════════════════
+   Internal Chat Elements: Liquid Glass
+   — thinking, subagents, task rows, memory
+   ═══════════════════════════════════════════════════════════ */
+
+/* Reasoning/thinking block — violet-tinted glass with soft specular */
+.ade-chat-thinking-glass {
+  position: relative;
+  overflow: hidden;
+  border-radius: 14px;
+  border: 1px solid color-mix(in srgb, var(--color-accent) 18%, var(--chat-glass-border));
+  background: linear-gradient(180deg,
+    color-mix(in srgb, var(--chat-panel-bg-strong) 58%, transparent) 0%,
+    color-mix(in srgb, var(--chat-panel-bg) 42%, transparent) 100%);
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, var(--chat-glass-highlight) 60%, transparent),
+    0 10px 28px -22px color-mix(in srgb, var(--color-accent) 30%, transparent);
+  backdrop-filter: blur(22px) saturate(150%);
+  -webkit-backdrop-filter: blur(22px) saturate(150%);
+}
+
+.ade-chat-thinking-glass::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: radial-gradient(circle at 18% 0%,
+    color-mix(in srgb, var(--color-accent-glow-strong) 50%, transparent) 0%,
+    transparent 45%);
+  opacity: 0.7;
+}
+
+.ade-chat-thinking-glass > * {
+  position: relative;
+  z-index: 1;
+}
+
+/* Subagent card — idle glass, subtle border */
+.ade-chat-subagent-card {
+  position: relative;
+  border-radius: 14px;
+  border: 1px solid color-mix(in srgb, var(--chat-glass-border) 100%, transparent);
+  background: linear-gradient(180deg,
+    color-mix(in srgb, var(--chat-panel-bg-strong) 60%, transparent) 0%,
+    color-mix(in srgb, var(--chat-panel-bg) 46%, transparent) 100%);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--chat-glass-highlight) 50%, transparent);
+  backdrop-filter: blur(18px) saturate(145%);
+  -webkit-backdrop-filter: blur(18px) saturate(145%);
+  transition: border-color 160ms ease, box-shadow 200ms ease;
+}
+
+.ade-chat-subagent-card:hover {
+  border-color: color-mix(in srgb, var(--color-accent) 22%, var(--chat-glass-border));
+}
+
+/* Active subagent card — purple accent ring, no heavy fill */
+.ade-chat-subagent-card-active {
+  border-color: color-mix(in srgb, var(--color-accent) 36%, var(--chat-glass-border));
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, var(--chat-glass-highlight) 75%, transparent),
+    0 0 0 1px color-mix(in srgb, var(--color-accent) 22%, transparent),
+    0 14px 30px -22px color-mix(in srgb, var(--color-accent) 34%, transparent);
+}
+
+/* Task row — flat base, accent fill only when in-progress */
+.ade-chat-task-row {
+  position: relative;
+  border-radius: 8px;
+  transition: background 140ms ease, color 140ms ease;
+}
+
+.ade-chat-task-row:hover {
+  background: color-mix(in srgb, var(--color-accent) 8%, transparent);
+}
+
+.ade-chat-task-row-active {
+  background: linear-gradient(90deg,
+    color-mix(in srgb, var(--color-accent) 14%, transparent) 0%,
+    color-mix(in srgb, var(--color-accent) 4%, transparent) 100%);
+  box-shadow: inset 2px 0 0 var(--color-accent);
+}
+
+/* Memory chip — small purple specular pill for memory-related tool calls */
+.ade-memory-chip {
+  position: relative;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--color-accent) 32%, transparent);
+  background: linear-gradient(180deg,
+    color-mix(in srgb, var(--color-accent) 16%, transparent) 0%,
+    color-mix(in srgb, var(--color-accent) 8%, transparent) 100%);
+  color: color-mix(in srgb, var(--color-accent-bright) 85%, white);
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, white 12%, transparent),
+    0 4px 14px -10px color-mix(in srgb, var(--color-accent) 40%, transparent);
+  backdrop-filter: blur(12px) saturate(145%);
+  -webkit-backdrop-filter: blur(12px) saturate(145%);
+}
+
+/* Tonal status pill — glass chip that tints with its semantic color */
+.ade-chat-status-pill {
+  position: relative;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--chat-glass-border) 110%, transparent);
+  background: linear-gradient(180deg,
+    color-mix(in srgb, var(--chat-panel-bg-strong) 65%, transparent) 0%,
+    color-mix(in srgb, var(--chat-panel-bg) 48%, transparent) 100%);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--chat-glass-highlight) 55%, transparent);
+  backdrop-filter: blur(14px) saturate(140%);
+  -webkit-backdrop-filter: blur(14px) saturate(140%);
 }
 
 /* Animated timeline connector */

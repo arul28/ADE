@@ -264,6 +264,7 @@ export function RunStackTabs({
       {contextMenu ? (
         <div
           ref={contextMenuRef}
+          className="ade-liquid-glass-menu"
           style={{
             position: "fixed",
             top: contextMenu.y,
@@ -271,9 +272,6 @@ export function RunStackTabs({
             zIndex: 120,
             minWidth: 190,
             padding: "4px 0",
-            background: COLORS.cardBgSolid,
-            border: `1px solid ${COLORS.border}`,
-            boxShadow: "0 18px 40px rgba(0,0,0,0.42)",
           }}
         >
           {([

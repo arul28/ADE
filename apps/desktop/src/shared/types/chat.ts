@@ -689,6 +689,10 @@ export type AgentChatDisposeArgs = {
   sessionId: string;
 };
 
+export type AgentChatDeleteArgs = {
+  sessionId: string;
+};
+
 export type AgentChatUpdateSessionArgs = {
   sessionId: string;
   title?: string | null;

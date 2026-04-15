@@ -1193,3 +1193,172 @@ export type IssueInventorySnapshot = {
   convergence: ConvergenceStatus;
   runtime: ConvergenceRuntimeState;
 };
+
+// ---------------------------------------------------------------------------
+// PRs Tab — Timeline + Rails redesign (new)
+// ---------------------------------------------------------------------------
+
+export type PrDeploymentState =
+  | "pending"
+  | "in_progress"
+  | "queued"
+  | "success"
+  | "failure"
+  | "error"
+  | "inactive"
+  | "unknown";
+
+export type PrDeployment = {
+  id: string;
+  environment: string;
+  state: PrDeploymentState;
+  description: string | null;
+  /** The environment URL exposed by GitHub (public preview link, when available). */
+  environmentUrl: string | null;
+  /** GitHub log URL for the latest status update. */
+  logUrl: string | null;
+  sha: string | null;
+  ref: string | null;
+  creator: string | null;
+  createdAt: string | null;
+  updatedAt: string | null;
+};
+
+export type PrTimelineEventBase = {
+  id: string;
+  timestamp: string;
+  author: string | null;
+  avatarUrl: string | null;
+};
+
+export type PrTimelineEvent =
+  | (PrTimelineEventBase & {
+      type: "description";
+      body: string | null;
+    })
+  | (PrTimelineEventBase & {
+      type: "commit_push";
+      sha: string;
+      shortSha: string;
+      subject: string;
+      commitCount: number;
+      forcePushed: boolean;
+    })
+  | (PrTimelineEventBase & {
+      type: "review";
+      reviewId: string;
+      state: "pending" | "approved" | "changes_requested" | "commented" | "dismissed";
+      body: string | null;
+      isBot: boolean;
+    })
+  | (PrTimelineEventBase & {
+      type: "review_thread";
+      threadId: string;
+      path: string | null;
+      line: number | null;
+      startLine: number | null;
+      isResolved: boolean;
+      isOutdated: boolean;
+      commentCount: number;
+      firstCommentBody: string | null;
+    })
+  | (PrTimelineEventBase & {
+      type: "issue_comment";
+      commentId: string;
+      body: string | null;
+      isBot: boolean;
+    })
+  | (PrTimelineEventBase & {
+      type: "check_update";
+      checkName: string;
+      status: "queued" | "in_progress" | "completed";
+      conclusion: "success" | "failure" | "neutral" | "skipped" | "cancelled" | null;
+      detailsUrl: string | null;
+    })
+  | (PrTimelineEventBase & {
+      type: "deployment";
+      deploymentId: string;
+      environment: string;
+      state: PrDeploymentState;
+      environmentUrl: string | null;
+    })
+  | (PrTimelineEventBase & {
+      type: "label_change";
+      action: "added" | "removed";
+      label: string;
+      color: string | null;
+    })
+  | (PrTimelineEventBase & {
+      type: "merge";
+      mergeCommitSha: string | null;
+      method: MergeMethod | null;
+    });
+
+export type PrTimelineEventType = PrTimelineEvent["type"];
+
+/** AI-generated summary of a PR. Cached per (prId, headSha). */
+export type PrAiSummary = {
+  prId: string;
+  summary: string;
+  riskAreas: string[];
+  reviewerHotspots: string[];
+  unresolvedConcerns: string[];
+  generatedAt: string;
+  headSha: string;
+};
+
+export type PrReviewThreadReaction = {
+  id: string;
+  content: PrReactionContent;
+  user: string;
+};
+
+export type PrReactionContent =
+  | "+1"
+  | "-1"
+  | "laugh"
+  | "confused"
+  | "heart"
+  | "hooray"
+  | "rocket"
+  | "eyes";
+
+export type PostPrReviewCommentArgs = {
+  prId: string;
+  threadId: string;
+  body: string;
+};
+
+export type SetPrReviewThreadResolvedArgs = {
+  prId: string;
+  threadId: string;
+  resolved: boolean;
+};
+
+export type SetPrReviewThreadResolvedResult = {
+  threadId: string;
+  isResolved: boolean;
+};
+
+export type ReactToPrCommentArgs = {
+  prId: string;
+  commentId: string;
+  content: PrReactionContent;
+};
+
+export type LaunchPrIssueResolutionFromThreadArgs = {
+  prId: string;
+  threadId: string;
+  commentId?: string | null;
+  modelId?: string | null;
+  reasoning?: string | null;
+  permissionMode?: AiPermissionMode;
+  additionalInstructions?: string | null;
+  fileContext?: {
+    path: string | null;
+    line?: number | null;
+    startLine?: number | null;
+  } | null;
+};
+
+export type LaunchPrIssueResolutionFromThreadResult = PrIssueResolutionStartResult;

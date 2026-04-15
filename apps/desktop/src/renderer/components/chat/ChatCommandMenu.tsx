@@ -202,20 +202,20 @@ export const ChatCommandMenu = forwardRef<ChatCommandMenuHandle, ChatCommandMenu
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: 8 }}
             transition={{ duration: 0.12, ease: "easeOut" }}
-            className="absolute z-50 min-w-[300px] max-w-[340px] overflow-hidden rounded-[14px] border border-violet-400/[0.12] bg-[#151325]/95 shadow-[0_20px_50px_-12px_rgba(0,0,0,0.55)] backdrop-blur-[40px]"
+            className="ade-chat-drawer-glass absolute z-50 min-w-[300px] max-w-[340px] overflow-hidden"
             style={{ top: anchor!.top, left: anchor!.left, marginTop: "-8px" }}
           >
             {/* Header hint */}
-            <div className="flex items-center gap-2 border-b border-white/[0.06] px-3.5 py-2">
+            <div className="flex items-center gap-2 border-b border-white/[0.06] px-3.5 py-2.5">
               {trigger!.type === "at" ? (
                 <>
                   <MagnifyingGlass size={12} weight="bold" className="text-violet-400/60" />
-                  <span className="text-[10px] font-medium tracking-wide text-fg/40">File search</span>
+                  <span className="text-[10px] font-medium tracking-wide text-fg/46">File search</span>
                 </>
               ) : (
                 <>
                   <Command size={12} weight="bold" className="text-violet-400/60" />
-                  <span className="text-[10px] font-medium tracking-wide text-fg/40">Slash commands</span>
+                  <span className="text-[10px] font-medium tracking-wide text-fg/46">Slash commands</span>
                 </>
               )}
             </div>
@@ -254,11 +254,10 @@ export const ChatCommandMenu = forwardRef<ChatCommandMenuHandle, ChatCommandMenu
                   return (
                     <div
                       key={item.path}
+                      data-active={isSelected}
                       className={cn(
-                        "mx-1 flex cursor-pointer items-center gap-2.5 px-3 py-2 text-[11px] transition-all",
-                        isSelected
-                          ? "rounded-md bg-gradient-to-r from-violet-500/[0.12] to-violet-500/[0.06] border border-violet-400/[0.15]"
-                          : "rounded-md border border-transparent hover:bg-white/[0.03]",
+                        "ade-chat-drawer-row mx-1 flex cursor-pointer items-center gap-2.5 rounded-lg px-3 py-2.5 text-[11px]",
+                        isSelected ? "text-fg/88" : "text-fg/58",
                       )}
                       onMouseEnter={() => setSelectedIndex(i)}
                       onClick={() => handleSelect(i)}
@@ -276,11 +275,10 @@ export const ChatCommandMenu = forwardRef<ChatCommandMenuHandle, ChatCommandMenu
                 return (
                   <div
                     key={item.name}
+                    data-active={isSelected}
                     className={cn(
-                      "mx-1 flex cursor-pointer items-center gap-2.5 px-3 py-2 text-[11px] transition-all",
-                      isSelected
-                        ? "rounded-md bg-gradient-to-r from-violet-500/[0.12] to-violet-500/[0.06] border border-violet-400/[0.15]"
-                        : "rounded-md border border-transparent hover:bg-white/[0.03]",
+                      "ade-chat-drawer-row mx-1 flex cursor-pointer items-center gap-2.5 rounded-lg px-3 py-2.5 text-[11px]",
+                      isSelected ? "text-fg/88" : "text-fg/58",
                     )}
                     onMouseEnter={() => setSelectedIndex(i)}
                     onClick={() => handleSelect(i)}

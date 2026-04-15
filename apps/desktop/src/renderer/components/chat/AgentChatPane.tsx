@@ -47,6 +47,7 @@ import { CURSOR_AVAILABLE_MODE_IDS } from "../../../shared/cursorModes";
 import { cn } from "../ui/cn";
 import { AgentChatComposer } from "./AgentChatComposer";
 import { AgentChatMessageList } from "./AgentChatMessageList";
+import { AgentQuestionModal } from "./AgentQuestionModal";
 import { ChatStatusGlyph } from "./chatStatusVisuals";
 import { isChatToolType } from "../../lib/sessions";
 import { ToolLogo } from "../terminals/ToolLogos";
@@ -72,6 +73,7 @@ import { useAppStore } from "../../state/appStore";
 import { ClaudeCacheTtlBadge } from "../shared/ClaudeCacheTtlBadge";
 import { shouldShowClaudeCacheTtl } from "../../lib/claudeCacheTtl";
 import { getAgentChatModelsCached, getAiStatusCached } from "../../lib/aiDiscoveryCache";
+import { invalidateSessionListCache } from "../../lib/sessionListCache";
 
 const LAST_MODEL_ID_KEY = "ade.chat.lastModelId";
 const LAST_REASONING_KEY_PREFIX = "ade.chat.lastReasoningEffort";
@@ -751,6 +753,8 @@ export function AgentChatPane({
   const [loading, setLoading] = useState(false);
   const [preferencesReady, setPreferencesReady] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [closingChatSessionId, setClosingChatSessionId] = useState<string | null>(null);
+  const [deletingChatSessionId, setDeletingChatSessionId] = useState<string | null>(null);
   const [computerUseSnapshot, setComputerUseSnapshot] = useState<ComputerUseOwnerSnapshot | null>(null);
   const [proofDrawerOpen, setProofDrawerOpen] = useState(false);
   const [terminalDrawerOpen, setTerminalDrawerOpen] = useState(false);
@@ -2112,6 +2116,51 @@ export function AgentChatPane({
     }
   }, [canShowHandoff, handoffBlocked, handoffModelId, notifySessionCreated, refreshSessions, selectedSessionId]);
 
+  const handleEndSelectedChat = useCallback(() => {
+    if (!selectedSessionId || !selectedSession || selectedSession.status === "ended") return;
+    setError(null);
+    setClosingChatSessionId(selectedSessionId);
+    void window.ade.agentChat.dispose({ sessionId: selectedSessionId })
+      .then(async () => {
+        invalidateSessionListCache();
+        await refreshSessions().catch(() => {});
+      })
+      .catch((err: unknown) => {
+        const message = err instanceof Error ? err.message : String(err);
+        setError(`End chat failed: ${message}`);
+      })
+      .finally(() => {
+        setClosingChatSessionId((current) => (current === selectedSessionId ? null : current));
+      });
+  }, [refreshSessions, selectedSession, selectedSessionId]);
+
+  const handleDeleteSelectedChat = useCallback(() => {
+    if (!selectedSessionId || !selectedSession || selectedSession.status !== "ended") return;
+    const label = chatSessionTitle(selectedSession).trim() || "this chat";
+    const confirmed = window.confirm(
+      `Delete "${label}"?\n\nThis permanently removes the saved chat history from ADE.`,
+    );
+    if (!confirmed) return;
+
+    setError(null);
+    setDeletingChatSessionId(selectedSessionId);
+    void window.ade.agentChat.delete({ sessionId: selectedSessionId })
+      .then(async () => {
+        invalidateSessionListCache();
+        draftsPerSessionRef.current.delete(selectedSessionId);
+        localTouchBySessionRef.current.delete(selectedSessionId);
+        loadedHistoryRef.current.delete(selectedSessionId);
+        await refreshSessions().catch(() => {});
+      })
+      .catch((err: unknown) => {
+        const message = err instanceof Error ? err.message : String(err);
+        setError(`Delete failed: ${message}`);
+      })
+      .finally(() => {
+        setDeletingChatSessionId((current) => (current === selectedSessionId ? null : current));
+      });
+  }, [refreshSessions, selectedSession, selectedSessionId]);
+
   // ── Eager session creation ──
   // Create a session as soon as we have a model + lane, so slash commands,
   // MCP status, and other pre-chat metadata are available immediately.
@@ -2570,6 +2619,26 @@ export function AgentChatPane({
               ) : null}
             </div>
           ) : null}
+          {!lockedSingleSessionMode && selectedSessionId && selectedSession?.status !== "ended" ? (
+            <button
+              type="button"
+              className="inline-flex items-center rounded-md border border-white/[0.06] px-2 py-0.5 font-sans text-[10px] font-medium text-muted-fg/50 transition-colors hover:border-white/[0.1] hover:text-fg disabled:cursor-not-allowed disabled:opacity-40"
+              onClick={handleEndSelectedChat}
+              disabled={closingChatSessionId === selectedSessionId || deletingChatSessionId === selectedSessionId}
+            >
+              {closingChatSessionId === selectedSessionId ? "Ending..." : "End chat"}
+            </button>
+          ) : null}
+          {!lockedSingleSessionMode && selectedSessionId && selectedSession?.status === "ended" ? (
+            <button
+              type="button"
+              className="inline-flex items-center rounded-md border border-red-500/20 px-2 py-0.5 font-sans text-[10px] font-medium text-red-200/70 transition-colors hover:border-red-500/30 hover:text-red-100 disabled:cursor-not-allowed disabled:opacity-40"
+              onClick={handleDeleteSelectedChat}
+              disabled={deletingChatSessionId === selectedSessionId}
+            >
+              {deletingChatSessionId === selectedSessionId ? "Deleting..." : "Delete chat"}
+            </button>
+          ) : null}
           {isPersistentIdentitySurface && selectedSessionId ? (
             <button
               type="button"
@@ -2997,24 +3066,19 @@ export function AgentChatPane({
                   exit={{ opacity: 0, scale: 0.95, transition: { duration: 0.2, ease: "easeIn" } }}
                   className="absolute inset-0 flex flex-col items-center justify-center px-6"
                 >
-                  <div className="flex flex-col items-center text-center">
-                    {/* ADE logo with subtle glow */}
+                  <div className="flex w-full max-w-2xl flex-col items-center gap-4 text-center">
                     <motion.div
-                      className="relative mb-5"
+                      className="relative"
                       exit={{ opacity: 0, scale: 0.8, transition: { duration: 0.3, ease: "easeOut" } }}
                     >
                       <div
-                        className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 h-[500px] w-[500px] rounded-full pointer-events-none"
-                        style={{
-                          background: "var(--color-accent)",
-                          opacity: 0.06,
-                          filter: "blur(140px)",
-                        }}
+                        className="pointer-events-none absolute top-1/2 left-1/2 h-[360px] w-[360px] -translate-x-1/2 -translate-y-1/2 rounded-full"
+                        style={{ background: "var(--color-accent)", opacity: 0.08, filter: "blur(110px)" }}
                       />
                       <img
                         src="./logo.png"
                         alt="ADE"
-                        className="relative z-10 w-96 h-96 object-contain"
+                        className="relative z-10 h-96 w-96 object-contain"
                         style={{ filter: "drop-shadow(0 0 40px rgba(168,130,255,0.15))" }}
                       />
                     </motion.div>
@@ -3022,14 +3086,13 @@ export function AgentChatPane({
                     <h2 className="font-sans text-[18px] font-semibold tracking-tight text-fg/80">
                       Start a new conversation
                     </h2>
-                    <p className="mt-1.5 mb-4 max-w-sm text-center text-[13px] leading-relaxed text-fg/35">
+                    <p className="max-w-sm text-center text-[13px] leading-relaxed text-fg/35">
                       Ask ADE anything — refactor code, debug issues, or explore ideas.
                     </p>
 
                     {/* Lane selector pill */}
                     {availableLanes && availableLanes.length > 0 && onLaneChange ? (
                       <motion.div
-                        className="mb-4"
                         exit={{ opacity: 0, transition: { duration: 0.15 } }}
                       >
                         <select
@@ -3055,7 +3118,7 @@ export function AgentChatPane({
                       </motion.div>
                     ) : laneDisplayLabel ? (
                       <motion.div
-                        className="mb-4 flex items-center gap-2 rounded-full px-4 py-1.5"
+                        className="flex items-center gap-2 rounded-full px-4 py-1.5"
                         style={{ background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)" }}
                         exit={{ opacity: 0, transition: { duration: 0.15 } }}
                       >
@@ -3075,6 +3138,16 @@ export function AgentChatPane({
           )}
         </div>
       </ChatSurfaceShell>
+      {pendingInput
+        && (pendingInput.request.kind === "question" || pendingInput.request.kind === "structured_question")
+        && selectedSessionId ? (
+        <AgentQuestionModal
+          request={pendingInput.request}
+          onClose={() => { void approve("cancel"); }}
+          onSubmit={({ answers, responseText }) => { void approve("accept", responseText ?? null, answers); }}
+          onDecline={() => { void approve("decline"); }}
+        />
+      ) : null}
     </>
   );
 }

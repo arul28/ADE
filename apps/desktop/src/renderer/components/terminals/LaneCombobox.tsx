@@ -201,7 +201,7 @@ export function LaneCombobox({
         ? createPortal(
             <div
               ref={popoverRef}
-              className="ade-lane-popover"
+              className="ade-lane-popover ade-liquid-glass-menu"
               style={popoverStyle}
               onKeyDown={handleKeyDown}
             >

@@ -544,6 +544,19 @@ export function createSessionService({ db }: { db: AdeDb }) {
       ]);
     },
 
+    deleteSession(sessionId: string): boolean {
+      const trimmed = sessionId.trim();
+      if (!trimmed) return false;
+      const existing = db.get<{ present: number }>(
+        "select 1 as present from terminal_sessions where id = ? limit 1",
+        [trimmed],
+      );
+      if (!existing) return false;
+      db.run("delete from terminal_sessions where id = ?", [trimmed]);
+      emitChanged({ sessionId: trimmed, reason: "deleted" });
+      return true;
+    },
+
     async readTranscriptTail(
       transcriptPath: string,
       maxBytes: number,

@@ -1,8 +1,15 @@
+import fs from "node:fs";
 import { createHash } from "node:crypto";
+import { createServer, type Server } from "node:net";
+import os from "node:os";
+import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { stableStringify } from "../shared/utils";
 
 const originalFetch = global.fetch;
+let dynamicSocketServer: Server | null = null;
+let dynamicSocketDir: string | null = null;
+let dynamicSocketPath = "/tmp/ade.sock";
 
 const mockState = vi.hoisted(() => {
   let nextSessionId = 1;
@@ -123,7 +130,7 @@ function createLaunch(overrides: Partial<Record<string, string>> = {}) {
     },
     entryPath: "dist/main/adeMcpProxy.cjs",
     runtimeRoot: null,
-    socketPath: "/tmp/ade.sock",
+    socketPath: dynamicSocketPath,
     packaged: false,
     resourcesPath: null,
   };
@@ -159,15 +166,48 @@ function expectedDynamicServerName(args: {
 }
 
 describe("openCodeRuntime dynamic ADE MCP registration", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks();
     mockState.resetSessionIds();
     __resetOpenCodeRuntimeDiagnosticsForTests();
     global.fetch = vi.fn();
+    dynamicSocketDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-opencode-sock-"));
+    dynamicSocketPath = path.join(dynamicSocketDir, "mcp.sock");
+    dynamicSocketServer = createServer((socket) => {
+      socket.end();
+    });
+    await new Promise<void>((resolve, reject) => {
+      dynamicSocketServer!.once("error", reject);
+      dynamicSocketServer!.listen(dynamicSocketPath, resolve);
+    });
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     global.fetch = originalFetch;
+    await new Promise<void>((resolve) => {
+      if (!dynamicSocketServer) {
+        resolve();
+        return;
+      }
+      dynamicSocketServer.close(() => resolve());
+    });
+    dynamicSocketServer = null;
+    if (dynamicSocketPath) {
+      try {
+        fs.unlinkSync(dynamicSocketPath);
+      } catch {
+        // ignore
+      }
+    }
+    if (dynamicSocketDir) {
+      try {
+        fs.rmdirSync(dynamicSocketDir);
+      } catch {
+        // ignore
+      }
+    }
+    dynamicSocketDir = null;
+    dynamicSocketPath = "/tmp/ade.sock";
   });
 
   it("registers a per-session ADE MCP server on the shared OpenCode runtime and scopes tools to it", async () => {
@@ -522,42 +562,101 @@ describe("openCodeRuntime dynamic ADE MCP registration", () => {
       expect.objectContaining({
         ownerKind: "chat",
         ownerId: "chat-fallback",
+        fallbackStrategy: "dedicated_static",
+      }),
+    );
+  });
+
+  it("skips dedicated fallback and degrades to a shared session without ADE MCP tools when the socket is unavailable", async () => {
+    vi.mocked(global.fetch).mockRejectedValue(
+      new Error("[ade-mcp-proxy] Failed to connect: connect ENOENT /tmp/ade.sock"),
+    );
+    const logger = { warn: vi.fn() } as any;
+
+    const handle = await startOpenCodeSession({
+      directory: "/repo",
+      title: "No MCP chat",
+      leaseKind: "shared",
+      projectConfig: { ai: {} },
+      dynamicMcpLaunch: createLaunch({
+        ADE_CHAT_SESSION_ID: "chat-no-mcp",
+      }),
+      ownerKind: "chat",
+      ownerId: "chat-no-mcp",
+      ownerKey: "chat:chat-no-mcp",
+      logger,
+    });
+
+    expect(acquireSharedOpenCodeServer).toHaveBeenCalledTimes(2);
+    expect(acquireDedicatedOpenCodeServer).not.toHaveBeenCalled();
+    expect(handle.toolSelection).toBeNull();
+    expect(logger.warn).toHaveBeenCalledWith(
+      "opencode.dynamic_mcp_attach_failed",
+      expect.objectContaining({
+        ownerKind: "chat",
+        ownerId: "chat-no-mcp",
+        fallbackStrategy: "shared_without_mcp",
+      }),
+    );
+  });
+
+  it("fails fast for coordinator sessions when ADE MCP socket startup is unrecoverable", async () => {
+    vi.mocked(global.fetch).mockRejectedValue(
+      new Error("local mcp startup failed: [ade-mcp-proxy] Failed to connect: connect ENOENT /tmp/ade.sock"),
+    );
+    const logger = { warn: vi.fn() } as any;
+
+    await expect(startOpenCodeSession({
+      directory: "/repo",
+      title: "Coordinator",
+      leaseKind: "shared",
+      projectConfig: { ai: {} },
+      dynamicMcpLaunch: createLaunch({
+        ADE_RUN_ID: "run-1",
+      }),
+      ownerKind: "coordinator",
+      ownerId: "run-1",
+      ownerKey: "coordinator:run-1",
+      logger,
+    })).rejects.toThrow(/local mcp startup failed/i);
+
+    expect(acquireSharedOpenCodeServer).toHaveBeenCalledTimes(1);
+    expect(acquireDedicatedOpenCodeServer).not.toHaveBeenCalled();
+    expect(logger.warn).toHaveBeenCalledWith(
+      "opencode.dynamic_mcp_attach_failed",
+      expect.objectContaining({
+        ownerKind: "coordinator",
+        ownerId: "run-1",
+        fallbackStrategy: "abort",
       }),
     );
   });
 
   it("retries dynamic ADE MCP registration before falling back", async () => {
-    vi.useFakeTimers();
-    try {
-      vi.mocked(global.fetch)
-        .mockRejectedValueOnce(new Error("server warming up"))
-        .mockRejectedValueOnce(new Error("server warming up"))
-        .mockResolvedValueOnce(new Response("{}", { status: 200 }))
-        .mockResolvedValueOnce(new Response("{}", { status: 200 }))
-        .mockResolvedValueOnce(new Response("true", { status: 200 }));
+    vi.mocked(global.fetch)
+      .mockRejectedValueOnce(new Error("server warming up"))
+      .mockRejectedValueOnce(new Error("server warming up"))
+      .mockResolvedValueOnce(new Response("{}", { status: 200 }))
+      .mockResolvedValueOnce(new Response("{}", { status: 200 }))
+      .mockResolvedValueOnce(new Response("true", { status: 200 }))
+      .mockResolvedValueOnce(new Response("{}", { status: 200 }));
 
-      const promise = startOpenCodeSession({
-        directory: "/repo",
-        title: "Retry chat",
-        leaseKind: "shared",
-        projectConfig: { ai: {} },
-        dynamicMcpLaunch: createLaunch({
-          ADE_CHAT_SESSION_ID: "chat-retry",
-        }),
-        ownerKind: "chat",
-        ownerId: "chat-retry",
-        ownerKey: "chat:chat-retry",
-      });
+    const handle = await startOpenCodeSession({
+      directory: "/repo",
+      title: "Retry chat",
+      leaseKind: "shared",
+      projectConfig: { ai: {} },
+      dynamicMcpLaunch: createLaunch({
+        ADE_CHAT_SESSION_ID: "chat-retry",
+      }),
+      ownerKind: "chat",
+      ownerId: "chat-retry",
+      ownerKey: "chat:chat-retry",
+    });
 
-      await vi.advanceTimersByTimeAsync(2 * 150);
-      const handle = await promise;
-
-      expect(acquireSharedOpenCodeServer).toHaveBeenCalledTimes(1);
-      expect(acquireDedicatedOpenCodeServer).not.toHaveBeenCalled();
-      expect(handle.toolSelection).toBeTruthy();
-      expect(vi.mocked(global.fetch)).toHaveBeenCalledTimes(6);
-    } finally {
-      vi.useRealTimers();
-    }
+    expect(acquireSharedOpenCodeServer).toHaveBeenCalledTimes(1);
+    expect(acquireDedicatedOpenCodeServer).not.toHaveBeenCalled();
+    expect(handle.toolSelection).toBeTruthy();
+    expect(vi.mocked(global.fetch)).toHaveBeenCalledTimes(6);
   });
 });

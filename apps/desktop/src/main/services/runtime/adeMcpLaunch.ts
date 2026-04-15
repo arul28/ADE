@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { resolveAdeLayout } from "../../../shared/adeLayout";
 import type { ComputerUsePolicy } from "../../../shared/types";
+import { resolveExecutableFromKnownLocations } from "../ai/cliExecutableResolver";
 
 export type AdeMcpLaunchMode = "bundled_proxy" | "headless_built" | "headless_source";
 export type AdeMcpWorkspaceBinding = "explicit" | "project_root";
@@ -74,6 +75,21 @@ function resolveBundledProxyPath(overridePath?: string): string | null {
   }
 
   return null;
+}
+
+function resolveBundledProxyCommand(packaged: boolean): string {
+  if (packaged && pathExists(process.execPath)) {
+    return process.execPath;
+  }
+  const resolvedNode = resolveExecutableFromKnownLocations("node")?.path;
+  if (resolvedNode) {
+    return resolvedNode;
+  }
+  const argv0 = typeof process.argv0 === "string" ? process.argv0.trim() : "";
+  if (argv0.length > 0) {
+    return argv0;
+  }
+  return process.execPath;
 }
 
 export function resolveRepoRuntimeRoot(): string {
@@ -154,7 +170,7 @@ export function resolveDesktopAdeMcpLaunch(args: DesktopAdeMcpLaunchArgs): AdeMc
   if (bundledProxyPath) {
     return {
       mode: "bundled_proxy",
-      command: process.execPath,
+      command: resolveBundledProxyCommand(packaged),
       cmdArgs: [bundledProxyPath, "--project-root", projectRoot, "--workspace-root", workspaceRoot],
       env: {
         ...env,

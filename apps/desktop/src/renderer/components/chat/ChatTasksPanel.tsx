@@ -89,8 +89,8 @@ export const ChatTasksPanel = React.memo(function ChatTasksPanel({
           <div
             key={item.id}
             className={cn(
-              "flex items-start gap-2.5 px-3 py-1.5 transition-colors",
-              item.status === "in_progress" && "bg-sky-500/[0.03]",
+              "ade-chat-task-row flex items-start gap-2.5 px-3 py-1.5",
+              item.status === "in_progress" && "ade-chat-task-row-active",
             )}
           >
             <span className="mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center">

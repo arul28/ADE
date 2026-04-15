@@ -994,6 +994,10 @@ export function useWorkSessions() {
     [focusSession, openSessionTab, refresh, selectLane],
   );
 
+  const removeSessionFromList = useCallback((sessionId: string) => {
+    setSessions((prev) => prev.filter((session) => session.id !== sessionId));
+  }, []);
+
   return {
     sessions,
     lanes,
@@ -1048,6 +1052,7 @@ export function useWorkSessions() {
 
     refresh,
     upsertOptimisticChatSession,
+    removeSessionFromList,
     closeSession,
     closeAllRunning,
     resumeSession,

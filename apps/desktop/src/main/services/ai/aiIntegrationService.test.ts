@@ -14,6 +14,10 @@ const mockState = vi.hoisted(() => ({
   probeClaudeRuntimeHealth: vi.fn(),
   resetClaudeRuntimeProbeCache: vi.fn(),
   runProviderTask: vi.fn(),
+  clearOpenCodeInventoryCache: vi.fn(),
+  peekOpenCodeInventoryCache: vi.fn(),
+  probeOpenCodeProviderInventory: vi.fn(),
+  resolveOpenCodeBinary: vi.fn(),
 }));
 
 vi.mock("./authDetector", () => ({
@@ -51,6 +55,16 @@ vi.mock("./claudeRuntimeProbe", () => ({
 
 vi.mock("./providerTaskRunner", () => ({
   runProviderTask: (...args: unknown[]) => mockState.runProviderTask(...args),
+}));
+
+vi.mock("../opencode/openCodeInventory", () => ({
+  clearOpenCodeInventoryCache: (...args: unknown[]) => mockState.clearOpenCodeInventoryCache(...args),
+  peekOpenCodeInventoryCache: (...args: unknown[]) => mockState.peekOpenCodeInventoryCache(...args),
+  probeOpenCodeProviderInventory: (...args: unknown[]) => mockState.probeOpenCodeProviderInventory(...args),
+}));
+
+vi.mock("../opencode/openCodeBinaryManager", () => ({
+  resolveOpenCodeBinary: (...args: unknown[]) => mockState.resolveOpenCodeBinary(...args),
 }));
 
 import { getLocalProviderDefaultEndpoint } from "../../../shared/modelRegistry";
@@ -217,6 +231,18 @@ beforeEach(() => {
   });
   mockState.initModelsDevService.mockResolvedValue(new Map());
   mockState.probeClaudeRuntimeHealth.mockResolvedValue(undefined);
+  mockState.clearOpenCodeInventoryCache.mockImplementation(() => undefined);
+  mockState.peekOpenCodeInventoryCache.mockReturnValue(null);
+  mockState.probeOpenCodeProviderInventory.mockResolvedValue({
+    modelIds: ["opencode/openai/gpt-5.4-mini"],
+    providers: [{ id: "openai", name: "OpenAI", connected: true, modelCount: 1 }],
+    error: null,
+    descriptors: [],
+  });
+  mockState.resolveOpenCodeBinary.mockReturnValue({
+    path: "/Users/admin/.opencode/bin/opencode",
+    source: "user-installed",
+  });
 });
 
 describe("aiIntegrationService", () => {
@@ -363,5 +389,29 @@ describe("aiIntegrationService", () => {
 
     expect(mockState.buildProviderConnections).toHaveBeenCalledTimes(1);
     expect(secondStatus).toEqual(firstStatus);
+  });
+
+  it("does not cold-probe OpenCode inventory on default getStatus", async () => {
+    const { service } = makeService();
+
+    const status = await service.getStatus();
+
+    expect(status.opencodeBinaryInstalled).toBe(true);
+    expect(status.opencodeProviders).toEqual([]);
+    expect(status.availableModelIds).not.toContain("opencode/openai/gpt-5.4-mini");
+    expect(mockState.peekOpenCodeInventoryCache).toHaveBeenCalledTimes(1);
+    expect(mockState.probeOpenCodeProviderInventory).not.toHaveBeenCalled();
+  });
+
+  it("probes OpenCode inventory when explicitly refreshed", async () => {
+    const { service } = makeService();
+
+    const status = await service.getStatus({ refreshOpenCodeInventory: true });
+
+    expect(mockState.probeOpenCodeProviderInventory).toHaveBeenCalledTimes(1);
+    expect(status.opencodeProviders).toEqual([
+      { id: "openai", name: "OpenAI", connected: true, modelCount: 1 },
+    ]);
+    expect(status.availableModelIds).toContain("opencode/openai/gpt-5.4-mini");
   });
 });

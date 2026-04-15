@@ -175,6 +175,7 @@ export function LanesPage() {
   const [createMode, setCreateMode] = useState<CreateLaneMode>("primary");
   const [createBaseBranch, setCreateBaseBranch] = useState("");
   const [createImportBranch, setCreateImportBranch] = useState("");
+  const [createChildBaseBranch, setCreateChildBaseBranch] = useState("");
   const [createBranches, setCreateBranches] = useState<LaneBranchOption[]>([]);
   const [createBusy, setCreateBusy] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
@@ -1101,6 +1102,7 @@ export function LanesPage() {
     setCreateMode("primary");
     setCreateBaseBranch("");
     setCreateImportBranch("");
+    setCreateChildBaseBranch("");
     setCreateBusy(false);
     setCreateError(null);
     setCreateEnvInitProgress(null);
@@ -1113,6 +1115,7 @@ export function LanesPage() {
     setCreateMode("primary");
     setCreateBaseBranch("");
     setCreateImportBranch("");
+    setCreateChildBaseBranch("");
     setCreateBranches([]);
     setLaneCreated(false);
     createBaseBranchUserPickedRef.current = false;
@@ -1246,7 +1249,17 @@ export function LanesPage() {
       if (request.kind === "import") {
         lane = await window.ade.lanes.importBranch(request.args);
       } else if (request.kind === "child") {
-        lane = await window.ade.lanes.createChild(request.args);
+        const trimmedBase = createChildBaseBranch.trim();
+        const parentLane = lanes.find((l) => l.id === request.args.parentLaneId);
+        if (!parentLane) {
+          setCreateError("Parent lane no longer exists. Please close and reopen the dialog.");
+          setCreateBusy(false);
+          return;
+        }
+        const childArgs = trimmedBase && trimmedBase !== parentLane.branchRef
+          ? { ...request.args, baseBranchRef: trimmedBase }
+          : request.args;
+        lane = await window.ade.lanes.createChild(childArgs);
       } else {
         lane = await window.ade.lanes.create(request.args);
       }
@@ -1264,7 +1277,7 @@ export function LanesPage() {
       setCreateError(err instanceof Error ? err.message : String(err));
       setCreateBusy(false);
     }
-  }, [createLaneName, createMode, createParentLaneId, createBaseBranch, createImportBranch, createBusy, navigate, refreshLanes, runEnvSetupForCreatedLane, selectedTemplateId, templates]);
+  }, [createLaneName, createMode, createParentLaneId, createBaseBranch, createImportBranch, createChildBaseBranch, lanes, createBusy, navigate, refreshLanes, runEnvSetupForCreatedLane, selectedTemplateId, templates]);
 
   const handleAttachSubmit = useCallback(async () => {
     const name = attachName.trim();
@@ -1425,7 +1438,7 @@ export function LanesPage() {
               </button>
             </SmartTooltip>
             {branchDropdownOpen ? (
-              <div className="absolute left-0 top-full z-[200] mt-1 max-h-80 overflow-hidden flex flex-col" style={{ width: 288, background: COLORS.cardBgSolid, backdropFilter: "blur(20px)", WebkitBackdropFilter: "blur(20px)", border: `1px solid ${COLORS.outlineBorder}`, borderRadius: 12, padding: "4px 0" }}>
+              <div className="ade-liquid-glass-menu absolute left-0 top-full z-[200] mt-1 max-h-80 overflow-hidden flex flex-col" style={{ width: 288, padding: "4px 0" }}>
                 <div className="relative shrink-0" style={{ padding: "4px 8px" }}>
                   <MagnifyingGlass size={13} className="pointer-events-none absolute" style={{ left: 16, top: "50%", transform: "translateY(-50%)", color: COLORS.textDim }} />
                   <input
@@ -2140,6 +2153,8 @@ export function LanesPage() {
         setCreateBaseBranch={handleSetCreateBaseBranch}
         createImportBranch={createImportBranch}
         setCreateImportBranch={setCreateImportBranch}
+        createChildBaseBranch={createChildBaseBranch}
+        setCreateChildBaseBranch={setCreateChildBaseBranch}
         createBranches={createBranches}
         lanes={lanes}
         onSubmit={handleCreateSubmit}

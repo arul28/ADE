@@ -475,6 +475,19 @@ function scheduleFit(runtime: CachedRuntime, forcePtyResize = false) {
   });
 }
 
+function flushFrameWriteChunksSync(runtime: CachedRuntime) {
+  if (runtime.disposed) return;
+  if (runtime.frameWriteChunks.length === 0) return;
+  const merged = runtime.frameWriteChunks.join("");
+  runtime.frameWriteChunks.length = 0;
+  runtime.frameWriteBytes = 0;
+  try {
+    runtime.term.write(merged);
+  } catch {
+    // ignore write errors after disposal
+  }
+}
+
 function enqueueFrameWrite(runtime: CachedRuntime, chunk: string) {
   if (!chunk) return;
   runtime.frameWriteChunks.push(chunk);
@@ -484,7 +497,6 @@ function enqueueFrameWrite(runtime: CachedRuntime, chunk: string) {
     runtime.frameWriteBytes -= dropped?.length ?? 0;
     incrementHealth(runtime, "droppedChunks");
   }
-  if (runtime.refs === 0) return;
   scheduleFrameWriteFlush(runtime);
 }
 
@@ -492,18 +504,11 @@ function scheduleFrameWriteFlush(runtime: CachedRuntime) {
   if (runtime.flushRafId != null) return;
   runtime.flushRafId = requestAnimationFrame(() => {
     runtime.flushRafId = null;
-    if (runtime.disposed) return;
-    if (runtime.frameWriteChunks.length === 0) return;
-    // Keep writes buffered while no view is mounted; the remount path reschedules the flush.
-    if (runtime.refs === 0) return;
-    const merged = runtime.frameWriteChunks.join("");
-    runtime.frameWriteChunks.length = 0;
-    runtime.frameWriteBytes = 0;
-    try {
-      runtime.term.write(merged);
-    } catch {
-      // ignore write errors after disposal
-    }
+    // Write to xterm even while parked: xterm.write only updates the internal
+    // buffer, so it is safe to call when the host is detached. Writing through
+    // keeps the terminal state current so switching back shows the latest
+    // output instead of a stale snapshot (issue #157).
+    flushFrameWriteChunksSync(runtime);
   });
 }
 
@@ -942,7 +947,14 @@ export function TerminalView({
     if (runtime.host.parentElement !== el) {
       el.replaceChildren(runtime.host);
     }
-    scheduleFrameWriteFlush(runtime);
+    // Drain any buffered output synchronously on remount so the user sees the
+    // latest terminal state immediately when they switch back, even if a
+    // previously-scheduled flush RAF got throttled while the host was parked.
+    if (runtime.flushRafId != null) {
+      cancelAnimationFrame(runtime.flushRafId);
+      runtime.flushRafId = null;
+    }
+    flushFrameWriteChunksSync(runtime);
 
     const schedule = (forceResize = false) => scheduleFit(runtime, forceResize);
 

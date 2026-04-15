@@ -1292,6 +1292,48 @@ export function createLaneService({
       if (!parent) throw new Error(`Parent lane not found: ${args.parentLaneId}`);
       if (parent.status === "archived") throw new Error("Parent lane is archived");
 
+      const trimmedBaseBranchRef = args.baseBranchRef?.trim() ?? "";
+      const hasOverride = trimmedBaseBranchRef.length > 0 && trimmedBaseBranchRef !== parent.branch_ref;
+
+      if (hasOverride) {
+        let localBranchName = trimmedBaseBranchRef;
+        const localExists = await runGit(
+          ["show-ref", "--verify", "--quiet", `refs/heads/${trimmedBaseBranchRef}`],
+          { cwd: projectRoot, timeoutMs: 8_000 },
+        ).then((r) => r.exitCode === 0);
+
+        if (!localExists) {
+          const resolved = await resolveImportBranchTarget({ projectRoot, rawRef: trimmedBaseBranchRef });
+          localBranchName = resolved.localBranchName;
+          const resolvedLocalExists = await runGit(
+            ["show-ref", "--verify", "--quiet", `refs/heads/${resolved.localBranchName}`],
+            { cwd: projectRoot, timeoutMs: 8_000 },
+          ).then((r) => r.exitCode === 0);
+          if (!resolvedLocalExists) {
+            await runGitOrThrow(
+              ["branch", "--track", resolved.localBranchName, resolved.remoteRef],
+              { cwd: projectRoot, timeoutMs: 15_000 },
+            );
+          }
+        }
+
+        const headRes = await runGit(["rev-parse", localBranchName], { cwd: projectRoot, timeoutMs: 10_000 });
+        const startPoint = headRes.exitCode === 0 && headRes.stdout.trim().length
+          ? headRes.stdout.trim()
+          : localBranchName;
+
+        return await createWorktreeLane({
+          name: args.name,
+          description: args.description,
+          baseRef: localBranchName,
+          startPoint,
+          parentLaneId: parent.id,
+          folder: args.folder,
+          missionId: args.missionId ?? null,
+          laneRole: args.laneRole ?? null,
+        });
+      }
+
       if (parent.lane_type === "primary") {
         const requestedBaseRef = defaultBaseRef;
         const headRes = await runGit(["rev-parse", requestedBaseRef], { cwd: projectRoot, timeoutMs: 10_000 });

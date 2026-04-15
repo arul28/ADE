@@ -349,7 +349,7 @@ describe("AgentChatPane submit recovery", () => {
 
     const textbox = await screen.findByRole("textbox");
     fireEvent.change(textbox, { target: { value: "Ship the transcript cleanup." } });
-    fireEvent.click(screen.getByTitle("Send"));
+    fireEvent.click(await screen.findByTitle("Send"));
 
     await waitFor(() => {
       expect(send).toHaveBeenCalledWith(expect.objectContaining({
@@ -378,7 +378,7 @@ describe("AgentChatPane submit recovery", () => {
 
     const textbox = await screen.findByRole("textbox");
     fireEvent.change(textbox, { target: { value: "Ship the optimistic bubble." } });
-    fireEvent.click(screen.getByTitle("Send"));
+    fireEvent.click(await screen.findByTitle("Send"));
 
     await waitFor(() => {
       expect(screen.getByText(/Queued — will be delivered after this turn/i)).toBeTruthy();
@@ -428,7 +428,7 @@ describe("AgentChatPane submit recovery", () => {
 
     const textbox = await screen.findByRole("textbox");
     fireEvent.change(textbox, { target: { value: "Retry after the failure." } });
-    fireEvent.click(screen.getByTitle("Send"));
+    fireEvent.click(await screen.findByTitle("Send"));
 
     await waitFor(() => {
       expect(send).toHaveBeenCalled();
@@ -475,7 +475,7 @@ describe("AgentChatPane submit recovery", () => {
 
     const textbox = await screen.findByRole("textbox");
     fireEvent.change(textbox, { target: { value: "Just plan the implementation." } });
-    fireEvent.click(screen.getByTitle("Send"));
+    fireEvent.click(await screen.findByTitle("Send"));
 
     await waitFor(() => {
       expect(send).toHaveBeenCalledWith(expect.objectContaining({
@@ -779,7 +779,7 @@ describe("AgentChatPane submit recovery", () => {
 
     const textbox = await screen.findByRole("textbox");
     fireEvent.change(textbox, { target: { value: "Ship the instant route fix." } });
-    fireEvent.click(screen.getByTitle("Send"));
+    fireEvent.click(await screen.findByTitle("Send"));
 
     await waitFor(() => {
       expect(create).toHaveBeenCalled();
@@ -845,7 +845,7 @@ describe("AgentChatPane submit recovery", () => {
 
     const textbox = await screen.findByRole("textbox");
     fireEvent.change(textbox, { target: { value: "Ship it." } });
-    fireEvent.click(screen.getByTitle("Send"));
+    fireEvent.click(await screen.findByTitle("Send"));
 
     await waitFor(() => {
       expect(create).toHaveBeenCalled();

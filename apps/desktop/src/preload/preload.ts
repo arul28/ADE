@@ -202,6 +202,14 @@ import type {
   AddPrCommentArgs,
   ReplyToPrReviewThreadArgs,
   ResolvePrReviewThreadArgs,
+  PrDeployment,
+  PrAiSummary,
+  PostPrReviewCommentArgs,
+  SetPrReviewThreadResolvedArgs,
+  SetPrReviewThreadResolvedResult,
+  ReactToPrCommentArgs,
+  LaunchPrIssueResolutionFromThreadArgs,
+  LaunchPrIssueResolutionFromThreadResult,
   UpdatePrTitleArgs,
   UpdatePrBodyArgs,
   SetPrLabelsArgs,
@@ -233,6 +241,7 @@ import type {
   AgentTool,
   AgentChatApproveArgs,
   AgentChatCreateArgs,
+  AgentChatDeleteArgs,
   AgentChatDisposeArgs,
   AgentChatEventEnvelope,
   AgentChatGetSummaryArgs,
@@ -274,6 +283,7 @@ import type {
   ImportBranchLaneArgs,
   ListOperationsArgs,
   ListSessionsArgs,
+  DeleteSessionArgs,
   ListTestRunsArgs,
   MergeSimulationArgs,
   MergeSimulationResult,
@@ -565,9 +575,11 @@ import type {
   ComputerUseOwnerSnapshot,
   ComputerUseOwnerSnapshotArgs,
   ComputerUseSettingsSnapshot,
-  FeedbackSubmitArgs,
+  FeedbackPrepareDraftArgs,
+  FeedbackPreparedDraft,
   FeedbackSubmission,
   FeedbackSubmissionEvent,
+  FeedbackSubmitDraftArgs,
 } from "../shared/types";
 
 contextBridge.exposeInMainWorld("ade", {
@@ -1478,6 +1490,8 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.sessionsList, args),
     get: async (sessionId: string): Promise<TerminalSessionDetail | null> =>
       ipcRenderer.invoke(IPC.sessionsGet, { sessionId }),
+    delete: async (args: DeleteSessionArgs): Promise<void> =>
+      ipcRenderer.invoke(IPC.sessionsDelete, args),
     updateMeta: async (args: UpdateSessionMetaArgs): Promise<TerminalSessionSummary | null> =>
       ipcRenderer.invoke(IPC.sessionsUpdateMeta, args),
     readTranscriptTail: async (args: ReadTranscriptTailArgs): Promise<string> =>
@@ -1528,6 +1542,8 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.agentChatModels, args),
     dispose: async (args: AgentChatDisposeArgs): Promise<void> =>
       ipcRenderer.invoke(IPC.agentChatDispose, args),
+    delete: async (args: AgentChatDeleteArgs): Promise<void> =>
+      ipcRenderer.invoke(IPC.agentChatDelete, args),
     updateSession: async (
       args: AgentChatUpdateSessionArgs,
     ): Promise<AgentChatSession> =>
@@ -1863,8 +1879,10 @@ contextBridge.exposeInMainWorld("ade", {
     },
   },
   feedback: {
-    submit: async (args: FeedbackSubmitArgs): Promise<FeedbackSubmission> =>
-      ipcRenderer.invoke(IPC.feedbackSubmit, args),
+    prepareDraft: async (args: FeedbackPrepareDraftArgs): Promise<FeedbackPreparedDraft> =>
+      ipcRenderer.invoke(IPC.feedbackPrepareDraft, args),
+    submitDraft: async (args: FeedbackSubmitDraftArgs): Promise<FeedbackSubmission> =>
+      ipcRenderer.invoke(IPC.feedbackSubmitDraft, args),
     list: async (): Promise<FeedbackSubmission[]> =>
       ipcRenderer.invoke(IPC.feedbackList),
     onUpdate: (cb: (event: FeedbackSubmissionEvent) => void): (() => void) => {
@@ -2139,6 +2157,26 @@ contextBridge.exposeInMainWorld("ade", {
       args: CleanupIntegrationWorkflowArgs,
     ): Promise<CleanupIntegrationWorkflowResult> =>
       ipcRenderer.invoke(IPC.prsCleanupIntegrationWorkflow, args),
+    getDeployments: async (prId: string): Promise<PrDeployment[]> =>
+      ipcRenderer.invoke(IPC.prsGetDeployments, { prId }),
+    getAiSummary: async (prId: string): Promise<PrAiSummary | null> =>
+      ipcRenderer.invoke(IPC.prsGetAiSummary, { prId }),
+    regenerateAiSummary: async (prId: string): Promise<PrAiSummary> =>
+      ipcRenderer.invoke(IPC.prsRegenerateAiSummary, { prId }),
+    postReviewComment: async (
+      args: PostPrReviewCommentArgs,
+    ): Promise<PrReviewThreadComment> =>
+      ipcRenderer.invoke(IPC.prsPostReviewComment, args),
+    setReviewThreadResolved: async (
+      args: SetPrReviewThreadResolvedArgs,
+    ): Promise<SetPrReviewThreadResolvedResult> =>
+      ipcRenderer.invoke(IPC.prsSetReviewThreadResolved, args),
+    reactToComment: async (args: ReactToPrCommentArgs): Promise<void> =>
+      ipcRenderer.invoke(IPC.prsReactToComment, args),
+    launchIssueResolutionFromThread: async (
+      args: LaunchPrIssueResolutionFromThreadArgs,
+    ): Promise<LaunchPrIssueResolutionFromThreadResult> =>
+      ipcRenderer.invoke(IPC.prsLaunchIssueResolutionFromThread, args),
   },
   rebase: {
     scanNeeds: async (): Promise<RebaseNeed[]> =>

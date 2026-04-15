@@ -37,7 +37,7 @@ export function ChatAttachmentTray({
         <span
           key={attachment.path}
           className={cn(
-            "group inline-flex max-w-full items-center gap-2 border px-2.5 py-1 font-mono text-[10px] transition-colors",
+            "ade-liquid-glass-pill group inline-flex max-w-full items-center gap-2 rounded-[var(--chat-radius-pill)] px-2.5 py-1.5 font-mono text-[10px] transition-colors",
             chipTone,
           )}
         >
@@ -46,7 +46,7 @@ export function ChatAttachmentTray({
           {onRemove ? (
             <button
               type="button"
-              className="text-current/45 transition-colors hover:text-current"
+              className="rounded-full text-current/45 transition-colors hover:bg-white/[0.06] hover:text-current"
               title={`Remove ${attachment.path}`}
               onClick={() => onRemove(attachment.path)}
             >

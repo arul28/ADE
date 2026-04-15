@@ -33,22 +33,140 @@ describe("createFeedbackReporterService", () => {
     vi.clearAllMocks();
   });
 
-  it("posts successfully when the model wraps JSON in prose", async () => {
+  it("prepares a deterministic bug body and uses AI for title and labels when available", async () => {
     const db = createDb();
     const logger = createLogger();
     const executeTask = vi.fn(async () => ({
       text: [
-        "I reviewed the request. Here is the issue:",
+        "Here is the metadata:",
         "```json",
         JSON.stringify({
-          title: "Improve failed submission details in feedback reporter",
-          body: "## Description\n\nShow the saved error in My Submissions.",
-          labels: ["bug"],
+          title: "Failed submissions should show the error reason",
+          labels: ["bug", "documentation"],
         }),
         "```",
       ].join("\n"),
       structuredOutput: null,
     }));
+
+    const service = createFeedbackReporterService({
+      db: db as any,
+      logger: logger as any,
+      projectRoot: "/Users/admin/Projects/ADE",
+      aiIntegrationService: { executeTask } as any,
+      githubService: { apiRequest: vi.fn() } as any,
+    });
+
+    const draft = await service.prepareDraft({
+      modelId: "anthropic/claude-opus-4-6",
+      draftInput: {
+        category: "bug",
+        summary: "Failed submissions should show the error reason.",
+        stepsToReproduce: "1. Submit a report\n2. Force GitHub failure",
+        expectedBehavior: "Show the saved error.",
+        actualBehavior: "Only a failed badge is visible.",
+        environment: "ADE Desktop on macOS",
+        additionalContext: "The issue is easier to debug when the saved payload is visible.",
+      },
+    });
+
+    expect(draft.generationMode).toBe("ai_assisted");
+    expect(draft.generationWarning).toBeNull();
+    expect(draft.title).toBe("Failed submissions should show the error reason");
+    expect(draft.labels).toEqual(["bug", "documentation"]);
+    expect(draft.body).toContain("## Steps to Reproduce");
+    expect(draft.body).toContain("Only a failed badge is visible.");
+    expect(draft.body).toContain("## Additional Context");
+  });
+
+  it("prepares a deterministic draft when no AI model is selected", async () => {
+    const db = createDb();
+    const logger = createLogger();
+    const executeTask = vi.fn();
+
+    const service = createFeedbackReporterService({
+      db: db as any,
+      logger: logger as any,
+      projectRoot: "/Users/admin/Projects/ADE",
+      aiIntegrationService: { executeTask } as any,
+      githubService: { apiRequest: vi.fn() } as any,
+    });
+
+    const draft = await service.prepareDraft({
+      draftInput: {
+        category: "enhancement",
+        summary: "Make previous submissions expandable.",
+        useCase: "Inspect what was posted and why it failed.",
+        proposedSolution: "Show a preview panel before posting.",
+        alternativesConsidered: "",
+        additionalContext: "",
+      },
+    });
+
+    expect(executeTask).not.toHaveBeenCalled();
+    expect(draft.generationMode).toBe("deterministic");
+    expect(draft.generationWarning).toContain("no AI model was selected");
+    expect(draft.title).toBe("Make previous submissions expandable.");
+    expect(draft.labels).toEqual(["enhancement"]);
+    expect(draft.body).toContain("## Proposed Solution");
+  });
+
+  it("stores a failed submission when GitHub posting fails", async () => {
+    const db = createDb();
+    const logger = createLogger();
+    const apiRequest = vi.fn(async () => {
+      throw new Error("GitHub API unavailable");
+    });
+
+    const service = createFeedbackReporterService({
+      db: db as any,
+      logger: logger as any,
+      projectRoot: "/Users/admin/Projects/ADE",
+      aiIntegrationService: { executeTask: vi.fn() } as any,
+      githubService: { apiRequest } as any,
+    });
+
+    const submission = await service.submitPreparedDraft({
+      draft: {
+        category: "bug",
+        draftInput: {
+          category: "bug",
+          summary: "Posting should preserve the prepared draft.",
+          stepsToReproduce: "1. Prepare draft",
+          expectedBehavior: "Keep the reviewed draft when post fails.",
+          actualBehavior: "GitHub rejects the request.",
+          environment: "ADE Desktop",
+          additionalContext: "",
+        },
+        userDescription: "## Summary\n\nPosting should preserve the prepared draft.",
+        modelId: "anthropic/claude-opus-4-6",
+        reasoningEffort: null,
+        title: "Preserve reviewed drafts when GitHub posting fails",
+        body: "## Description\n\nDeterministic body.",
+        labels: ["bug"],
+        generationMode: "ai_assisted",
+        generationWarning: null,
+      },
+      title: "Preserve reviewed drafts when GitHub posting fails",
+      body: "## Description\n\nDeterministic body.",
+      labels: ["bug"],
+    });
+
+    expect(submission.generatedTitle).toBe("Preserve reviewed drafts when GitHub posting fails");
+    expect(submission.generationMode).toBe("ai_assisted");
+    expect(submission.status).toBe("failed");
+    expect(submission.error).toBe("Posting failed: GitHub API unavailable");
+    expect(logger.error).toHaveBeenCalledWith(
+      "feedback.failed",
+      expect.objectContaining({
+        error: "Posting failed: GitHub API unavailable",
+      }),
+    );
+  });
+
+  it("stores a posted submission after a reviewed draft is submitted", async () => {
+    const db = createDb();
+    const logger = createLogger();
     const apiRequest = vi.fn(async () => ({
       data: {
         html_url: "https://github.com/arul28/ADE/issues/999",
@@ -60,122 +178,40 @@ describe("createFeedbackReporterService", () => {
       db: db as any,
       logger: logger as any,
       projectRoot: "/Users/admin/Projects/ADE",
-      aiIntegrationService: { executeTask } as any,
+      aiIntegrationService: { executeTask: vi.fn() } as any,
       githubService: { apiRequest } as any,
     });
 
-    service.submit({
-      category: "bug",
-      userDescription: "The failed submission view should show the saved error.",
-      modelId: "anthropic/claude-opus-4-6",
-    });
-
-    await vi.waitFor(() => {
-      expect(apiRequest).toHaveBeenCalledTimes(1);
-    });
-
-    const [submission] = service.list();
-    expect(submission?.status).toBe("posted");
-    expect(submission?.generatedTitle).toBe("Improve failed submission details in feedback reporter");
-    expect(submission?.generatedBody).toContain("Show the saved error");
-    expect(submission?.issueNumber).toBe(999);
-    expect(logger.warn).not.toHaveBeenCalledWith("feedback.generated_with_fallback", expect.anything());
-  });
-
-  it("falls back to a deterministic issue draft when the model output is unusable", async () => {
-    const db = createDb();
-    const logger = createLogger();
-    const executeTask = vi.fn(async () => ({
-      text: "I could not comply with the requested format, but the report seems valid.",
-      structuredOutput: null,
-    }));
-    const apiRequest = vi.fn(async () => ({
-      data: {
-        html_url: "https://github.com/arul28/ADE/issues/1000",
-        number: 1000,
+    const submission = await service.submitPreparedDraft({
+      draft: {
+        category: "question",
+        draftInput: {
+          category: "question",
+          summary: "Clarify what happens when feedback posting fails.",
+          context: "Users currently only see a failed badge.",
+          expectedGuidance: "Explain the failure and preserve the draft.",
+          additionalContext: "",
+        },
+        userDescription: "## Summary\n\nClarify what happens when feedback posting fails.",
+        modelId: null,
+        reasoningEffort: null,
+        title: "Clarify failed feedback submission behavior",
+        body: "## Description\n\nExplain the failure state.",
+        labels: ["question"],
+        generationMode: "deterministic",
+        generationWarning: "ADE used a deterministic draft because no AI model was selected.",
       },
-    }));
-
-    const service = createFeedbackReporterService({
-      db: db as any,
-      logger: logger as any,
-      projectRoot: "/Users/admin/Projects/ADE",
-      aiIntegrationService: { executeTask } as any,
-      githubService: { apiRequest } as any,
+      title: "Clarify failed feedback submission behavior",
+      body: "## Description\n\nExplain the failure state.",
+      labels: ["question"],
     });
 
-    service.submit({
-      category: "enhancement",
-      userDescription: "The previous submissions tab should expand each report and show the original text.",
-      modelId: "anthropic/claude-opus-4-6",
-    });
-
-    await vi.waitFor(() => {
-      expect(apiRequest).toHaveBeenCalledTimes(1);
-    });
-
-    const [submission] = service.list();
-    expect(submission?.status).toBe("posted");
-    expect(submission?.generatedTitle).toContain("previous submissions tab");
-    expect(submission?.generatedBody).toContain("## Description");
-    expect(submission?.generatedBody).toContain("## Proposed Solution");
-    const request = (apiRequest as any).mock.calls[0]?.[0] as { body?: { labels?: string[] } } | undefined;
-    expect(request?.body?.labels).toEqual(["enhancement"]);
-    expect(logger.warn).toHaveBeenCalledWith(
-      "feedback.generated_with_fallback",
-      expect.objectContaining({
-        category: "enhancement",
-        modelId: "anthropic/claude-opus-4-6",
-      }),
-    );
-  });
-
-  it("stores a stage-specific error when GitHub posting fails", async () => {
-    const db = createDb();
-    const logger = createLogger();
-    const executeTask = vi.fn(async () => ({
-      text: JSON.stringify({
-        title: "Improve feedback reporter determinism",
-        body: "## Description\n\nDeterministic fallback formatting.",
-        labels: ["bug"],
-      }),
-      structuredOutput: {
-        title: "Improve feedback reporter determinism",
-        body: "## Description\n\nDeterministic fallback formatting.",
-        labels: ["bug"],
-      },
-    }));
-    const apiRequest = vi.fn(async () => {
-      throw new Error("GitHub API unavailable");
-    });
-
-    const service = createFeedbackReporterService({
-      db: db as any,
-      logger: logger as any,
-      projectRoot: "/Users/admin/Projects/ADE",
-      aiIntegrationService: { executeTask } as any,
-      githubService: { apiRequest } as any,
-    });
-
-    service.submit({
-      category: "bug",
-      userDescription: "Posting should preserve the generated content if GitHub fails.",
-      modelId: "anthropic/claude-opus-4-6",
-    });
-
-    await vi.waitFor(() => {
-      const [submission] = service.list();
-      expect(submission?.status).toBe("failed");
-    });
-
-    const [submission] = service.list();
-    expect(submission?.generatedTitle).toBe("Improve feedback reporter determinism");
-    expect(submission?.error).toBe("Posting failed: GitHub API unavailable");
-    expect(logger.error).toHaveBeenCalledWith(
-      "feedback.failed",
-      expect.objectContaining({
-        error: "Posting failed: GitHub API unavailable",
-      }),
+    expect(submission.status).toBe("posted");
+    expect(submission.issueNumber).toBe(999);
+    expect(submission.modelId).toBeNull();
+    expect(logger.info).toHaveBeenCalledWith(
+      "feedback.posted",
+      expect.objectContaining({ issueNumber: 999 }),
     );
   });
 });

@@ -17,7 +17,8 @@ machinery layered on top.
 | `apps/desktop/src/main/services/chat/sessionRecovery.ts` | Version-2 persisted-state reconstruction when sessions resume from disk. |
 | `apps/desktop/src/shared/chatTranscript.ts` | Pure JSON-lines parser for `AgentChatEventEnvelope` values. Used by both the main process and the renderer. |
 | `apps/desktop/src/shared/types/chat.ts` | All chat types: `AgentChatSession`, `AgentChatEvent` union, permission modes, pending input, completion reports. |
-| `apps/desktop/src/renderer/components/chat/AgentChatPane.tsx` | Top-level renderer surface: state derivation, IPC wiring, composer mount, message-list mount. |
+| `apps/desktop/src/renderer/components/chat/AgentChatPane.tsx` | Top-level renderer surface: state derivation, IPC wiring, composer mount, message-list mount, End/Delete chat controls in the header. Mounts `AgentQuestionModal` when the active pending input is a question/structured-question. |
+| `apps/desktop/src/renderer/components/chat/AgentQuestionModal.tsx` | Floating modal surface for question / structured-question pending inputs. Rendered above the transcript so the user can type or pick an option without losing the chat context. |
 | `apps/desktop/src/renderer/components/chat/chatTranscriptRows.ts` | Two-layer event-to-row pipeline (render events + grouped envelopes) that powers the message list. |
 | `apps/desktop/src/main/services/ai/tools/` | Tool tiers consumed by the service when it provisions a Claude/Codex/OpenCode runtime (see [Tool System](tool-system.md)). |
 | `apps/desktop/src/shared/ipc.ts` | `ade.agentChat.*` IPC channel constants. |
@@ -93,6 +94,8 @@ handlers live in `apps/desktop/src/main/services/ipc/registerIpc.ts`.
 | `ade.agentChat.interrupt` | invoke | Provider-specific interruption of the in-flight turn. |
 | `ade.agentChat.approve` | invoke | Legacy approval channel (pre-pending-input). |
 | `ade.agentChat.respondToInput` | invoke | Unified pending-input answer channel. |
+| `ade.agentChat.dispose` | invoke | End the runtime and persist final state ("End chat"). The row stays in `terminal_sessions` as `ended` so it remains resumable. |
+| `ade.agentChat.delete` | invoke | Permanently remove a chat session: disposes the runtime if still running, cancels any pending turn collector, resolves outstanding input waiters, removes the persisted JSON + transcript, and deletes the `terminal_sessions` row. Renderer surfaces this as "Delete chat" on ended sessions. |
 | `ade.agentChat.updateSession` | invoke | Mutate permission modes, `manuallyNamed`, capability mode. |
 | `ade.agentChat.warmupModel` | invoke | Preload a Claude V2 session for an eventual turn. |
 | `ade.agentChat.slashCommands` | invoke | List provider + local slash commands. |
@@ -132,6 +135,13 @@ handlers live in `apps/desktop/src/main/services/ipc/registerIpc.ts`.
   identity session undergoes context compaction, the service calls
   `refreshReconstructionContext()` to re-inject persona + core memory +
   protocols. Missing this path loses CTO identity mid-session.
+- **MCP approval bypass during auto-compaction.** The Claude runtime
+  sets `compactionInProgress` when the SDK `PreCompact` hook fires and
+  keeps it set for 60 s (the SDK emits no `PostCompact` signal). While
+  the flag is true, `canUseTool` auto-approves MCP tools (notably
+  `memory_add`) so the compaction flush can persist memories without
+  blocking on an approval prompt that no user is present to answer.
+  Non-MCP tools still go through the normal approval gate.
 - **Transcript persistence.** Sessions persist version-2 state under the
   `.ade` layout. Re-derivation goes through `sessionRecovery.ts`;
   changing the on-disk format without bumping the version silently

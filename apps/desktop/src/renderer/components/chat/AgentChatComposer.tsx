@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { At, CaretDown, Check, Image, Paperclip, PencilSimple, Square, X, PaperPlaneTilt, Cube, BookOpen } from "@phosphor-icons/react";
 import {
   inferAttachmentType,
@@ -420,6 +420,19 @@ export function AgentChatComposer({
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const fileAddInProgressRef = useRef(false);
   const canAttach = !turnActive || sessionProvider === "claude" || sessionProvider === "codex";
+
+  const resizeTextarea = useCallback(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+    el.style.height = "0px";
+    const maxH = layoutVariant === "grid-tile" ? (composerMaxHeightPx ?? 200) : 200;
+    const next = Math.min(Math.max(el.scrollHeight, 28), maxH);
+    el.style.height = `${next}px`;
+    el.style.overflowY = el.scrollHeight > maxH ? "auto" : "hidden";
+  }, [layoutVariant, composerMaxHeightPx]);
+  useLayoutEffect(() => {
+    resizeTextarea();
+  }, [draft, resizeTextarea]);
 
   const attachedPaths = useMemo(() => new Set(attachments.map((a) => a.path)), [attachments]);
   const selectedModel = useMemo(() => getModelById(modelId), [modelId]);
@@ -984,6 +997,15 @@ export function AgentChatComposer({
   const pendingQuestionCount = getPendingInputQuestionCount(pendingInput);
   const showPendingInputOptionsHint = hasPendingInputOptions(pendingInput);
 
+  let composerHintText: string;
+  if (turnActive) {
+    composerHintText = "Steer the active turn, or press Cmd+. to stop it";
+  } else if (sendOnEnter) {
+    composerHintText = "Enter sends. Shift+Enter adds a newline.";
+  } else {
+    composerHintText = "Cmd+Enter sends. Enter keeps a newline.";
+  }
+
   return (
     <>
       <ChatComposerShell
@@ -1017,19 +1039,23 @@ export function AgentChatComposer({
                     : "Input needed"} · {pendingInput.source}
               </span>
             </div>
-            <div className="mb-2 font-mono text-[11px] leading-relaxed text-fg/68">
-              {pendingInput.description ?? pendingInput.questions[0]?.question ?? "The agent is waiting for input."}
-            </div>
             {pendingInput.kind === "approval" || pendingInput.kind === "permissions" ? (
-              <div className="flex items-center gap-1.5">
-                <button type="button" disabled={approvalResponding} className="rounded-[var(--chat-radius-pill)] border border-accent/30 bg-accent/12 px-3 py-1 font-mono text-[9px] font-bold uppercase tracking-wider text-fg/80 transition-colors hover:bg-accent/20 disabled:opacity-40 disabled:pointer-events-none" onClick={() => onApproval("accept")}>{approvalResponding ? "Processing..." : "Accept"}</button>
-                <button type="button" disabled={approvalResponding} className="rounded-[var(--chat-radius-pill)] border border-border/20 px-3 py-1 font-mono text-[9px] font-bold uppercase tracking-wider text-fg/50 transition-colors hover:bg-border/10 disabled:opacity-40 disabled:pointer-events-none" onClick={() => onApproval("accept_for_session")}>Accept all</button>
-                <button type="button" disabled={approvalResponding} className="rounded-[var(--chat-radius-pill)] border border-border/20 px-3 py-1 font-mono text-[9px] font-bold uppercase tracking-wider text-fg/40 transition-colors hover:bg-border/10 disabled:opacity-40 disabled:pointer-events-none" onClick={() => onApproval("decline")}>Decline</button>
-              </div>
+              <>
+                <div className="mb-2 font-mono text-[11px] leading-relaxed text-fg/68">
+                  {pendingInput.description ?? pendingInput.questions[0]?.question ?? "The agent is waiting for input."}
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <button type="button" disabled={approvalResponding} className="rounded-[var(--chat-radius-pill)] border border-accent/30 bg-accent/12 px-3 py-1 font-mono text-[9px] font-bold uppercase tracking-wider text-fg/80 transition-colors hover:bg-accent/20 disabled:opacity-40 disabled:pointer-events-none" onClick={() => onApproval("accept")}>{approvalResponding ? "Processing..." : "Accept"}</button>
+                  <button type="button" disabled={approvalResponding} className="rounded-[var(--chat-radius-pill)] border border-border/20 px-3 py-1 font-mono text-[9px] font-bold uppercase tracking-wider text-fg/50 transition-colors hover:bg-border/10 disabled:opacity-40 disabled:pointer-events-none" onClick={() => onApproval("accept_for_session")}>Accept all</button>
+                  <button type="button" disabled={approvalResponding} className="rounded-[var(--chat-radius-pill)] border border-border/20 px-3 py-1 font-mono text-[9px] font-bold uppercase tracking-wider text-fg/40 transition-colors hover:bg-border/10 disabled:opacity-40 disabled:pointer-events-none" onClick={() => onApproval("decline")}>Decline</button>
+                </div>
+              </>
             ) : (
               <div className="flex items-center gap-1.5">
                 <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-amber-200/60">
-                  {showPendingInputOptionsHint ? "Type your answer below or pick an option above." : "Type your answer below."}
+                  {showPendingInputOptionsHint
+                    ? "Answer in the question window above, or pick an option there."
+                    : "Answer in the question window above, or type below."}
                 </span>
                 <button
                   type="button"
@@ -1082,8 +1108,8 @@ export function AgentChatComposer({
             }}
           />
           {slashPickerOpen && filteredSlashCommands.length > 0 ? (
-            <div className="absolute bottom-full left-3 z-10 mb-3 w-80 rounded-[14px] border border-violet-400/[0.10] bg-[#151325]/95 shadow-[0_16px_40px_-12px_rgba(0,0,0,0.5)] backdrop-blur-[40px]">
-              <div className="border-b border-white/[0.04] px-3 py-2 font-mono text-[9px] font-bold uppercase tracking-widest text-muted-fg/35">
+            <div className="ade-chat-drawer-glass absolute bottom-full left-3 z-10 mb-3 w-80 overflow-hidden">
+              <div className="border-b border-white/[0.04] px-3 py-2 font-mono text-[9px] font-bold uppercase tracking-widest text-muted-fg/40">
                 Commands
               </div>
               <div className="max-h-52 overflow-auto py-1">
@@ -1091,9 +1117,10 @@ export function AgentChatComposer({
                   <button
                     key={cmd.command}
                     type="button"
+                    data-active={index === slashCursor}
                     className={cn(
-                      "flex w-full items-center gap-3 px-3 py-2 text-left font-mono text-[10px]",
-                      index === slashCursor ? "bg-accent/10 text-fg" : "text-fg/55 hover:bg-border/6",
+                      "ade-chat-drawer-row mx-1 flex w-[calc(100%-0.5rem)] items-center gap-3 rounded-lg px-3 py-2.5 text-left font-mono text-[10px]",
+                      index === slashCursor ? "text-fg" : "text-fg/55",
                     )}
                     onMouseEnter={() => setSlashCursor(index)}
                     onClick={() => handleSlashSelect(cmd)}
@@ -1110,8 +1137,8 @@ export function AgentChatComposer({
           ) : null}
 
           {attachmentPickerOpen ? (
-            <div className="absolute bottom-full left-3 z-10 mb-3 w-80 rounded-[14px] border border-violet-400/[0.10] bg-[#151325]/95 shadow-[0_16px_40px_-12px_rgba(0,0,0,0.5)] backdrop-blur-[40px]">
-              <div className="flex items-center gap-2 border-b border-white/[0.04] px-3 py-2">
+            <div className="ade-chat-drawer-glass absolute bottom-full left-3 z-10 mb-3 w-80 overflow-hidden">
+              <div className="flex items-center gap-2 border-b border-white/[0.04] px-3 py-2.5">
                 <At size={11} weight="bold" className="text-muted-fg/30" />
                 <input
                   ref={attachmentInputRef}
@@ -1140,9 +1167,10 @@ export function AgentChatComposer({
                     <button
                       key={result.path}
                       type="button"
+                      data-active={index === attachmentCursor}
                       className={cn(
-                        "flex w-full items-center gap-2 px-3 py-2 text-left font-mono text-[10px] text-fg/60",
-                        index === attachmentCursor ? "bg-violet-500/[0.08] text-fg/85" : "hover:bg-white/[0.03]",
+                        "ade-chat-drawer-row mx-1 flex w-[calc(100%-0.5rem)] items-center gap-2 rounded-lg px-3 py-2.5 text-left font-mono text-[10px]",
+                        index === attachmentCursor ? "text-fg/85" : "text-fg/60",
                       )}
                       onMouseEnter={() => setAttachmentCursor(index)}
                       onClick={() => selectAttachment(result)}
@@ -1162,7 +1190,7 @@ export function AgentChatComposer({
       footer={
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 px-3.5 py-2">
           {/* Left: permission + model controls */}
-          <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+          <div className="ade-liquid-glass-pill flex min-w-0 flex-wrap items-center gap-1.5 px-2 py-1.5">
             {nativeControlPanel}
             <ProviderModelSelector
               value={modelId}
@@ -1176,8 +1204,14 @@ export function AgentChatComposer({
             />
           </div>
 
+          <div className="hidden min-w-0 flex-1 items-center justify-center xl:flex">
+            <span className="truncate font-mono text-[10px] uppercase tracking-[0.16em] text-fg/34">
+              {composerHintText}
+            </span>
+          </div>
+
           {/* Right: attachment, commands, proof, context, send */}
-          <div className="ml-auto flex shrink-0 items-center gap-0.5">
+          <div className="ade-liquid-glass-pill ml-auto flex shrink-0 items-center gap-0.5 p-1">
             <button
               type="button"
               className="rounded-md px-1.5 py-1 font-sans text-[10px] font-medium text-muted-fg/35 transition-colors hover:bg-violet-500/[0.06] hover:text-violet-300/60"
@@ -1306,7 +1340,7 @@ export function AgentChatComposer({
     >
       {/* Pending steers queue — shows queued messages above the input */}
       {pendingSteers.length > 0 ? (
-        <div className="border-b border-white/[0.06] px-3 py-2 space-y-1.5">
+        <div className="border-b border-white/[0.06] bg-white/[0.02] px-3 py-2 space-y-1.5">
           <div className="font-mono text-[9px] uppercase tracking-[0.16em] text-fg/30">
             Pending {pendingSteers.length === 1 ? "message" : `messages (${pendingSteers.length})`}
           </div>
@@ -1381,14 +1415,12 @@ export function AgentChatComposer({
                 setCommandMenuTrigger(null);
               }
             }}
+            rows={1}
+            onInput={resizeTextarea}
             className={cn(
-              "min-h-[44px] w-full bg-transparent px-4 py-2.5 text-[13px] leading-[1.6] text-fg/88 outline-none transition-colors placeholder:text-muted-fg/30",
-              layoutVariant === "grid-tile" ? "resize-y" : "max-h-[200px] resize-none",
+              "block w-full resize-none bg-transparent px-4 py-2.5 text-[13px] leading-[1.6] text-fg/88 outline-none transition-colors placeholder:text-muted-fg/30",
               dragActive ? "opacity-30" : "",
             )}
-            style={layoutVariant === "grid-tile" && composerMaxHeightPx != null
-              ? { maxHeight: `${composerMaxHeightPx}px` }
-              : undefined}
             data-chat-layout-variant={layoutVariant}
             placeholder={turnActive ? "Steer the active turn..." : (promptSuggestion ? "" : (messagePlaceholder ?? "Type to vibecode..."))}
             onKeyDown={handleKeyDown}

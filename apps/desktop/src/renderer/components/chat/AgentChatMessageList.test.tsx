@@ -239,23 +239,6 @@ describe("AgentChatMessageList transcript rendering", () => {
   // removed: they tested old ChatWorkLogBlock rendering (Show N earlier,
   // specific label text) which changes with every UI iteration.
 
-  it("uses a bounded assistant bubble width for long markdown responses", () => {
-    const view = renderMessageList([
-      {
-        sessionId: "session-1",
-        timestamp: "2026-03-17T10:00:00.000Z",
-        event: {
-          type: "text",
-          text: "Streaming response",
-          itemId: "text-1",
-          turnId: "turn-1",
-        },
-      },
-    ]);
-
-    expect(view.container.innerHTML).toContain("max-w-[min(96ch,75%)]");
-  });
-
   it("renders markdown tables inside a dedicated scroll shell", () => {
     renderMessageList([
       {

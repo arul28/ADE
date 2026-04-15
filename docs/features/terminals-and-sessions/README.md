@@ -89,6 +89,8 @@ Renderer surfaces:
   flags.
 - `apps/desktop/src/renderer/components/terminals/SessionContextMenu.tsx`
   and `SessionInfoPopover.tsx` — right-click actions and info overlay.
+  Ended chat sessions get an additional "Delete chat" action wired to
+  `ade.agentChat.delete`.
 - `apps/desktop/src/renderer/lib/sessionListCache.ts` — shared renderer
   cache for `ade.sessions.list` calls, keyed by `projectRoot/laneId/status`.
 
@@ -174,9 +176,22 @@ See `apps/desktop/src/shared/types/sessions.ts` for the full shape.
    transcript history intact.
 
 7. **Reconcile** — on startup, `reconcileStaleRunningSessions` marks
-   orphaned `running` rows as `disposed`. An `excludeToolTypes` option
-   lets the caller keep chat sessions alive so they can be resumed via
-   their SDK rather than force-closed.
+   orphaned `running` rows as `disposed`. The service still accepts an
+   `excludeToolTypes` option, but `main.ts` no longer passes chat tool
+   types: chat runtimes always warm up afresh on app start, so leaving
+   stale `running` chat rows behind only causes UI confusion. Ended
+   chat sessions stay in the table and are resumable through the SDK
+   (or removable via `ade.agentChat.delete`).
+
+8. **Delete** — `sessionService.deleteSession(sessionId)` removes a
+   row outright and emits `terminalSessionChanged` with
+   `reason: "deleted"` so renderer caches drop it immediately.
+   `agentChatService.deleteSession` wraps this for chat rows: it
+   disposes a live runtime, cancels the pending turn collector,
+   rejects outstanding input waiters, deletes the persisted JSON and
+   transcript (path-safe under `.ade/`), and then calls the session
+   service. PTY rows use the same `deleteSession` as their deletion
+   primitive.
 
 ## Hot paths worth knowing
 
@@ -205,9 +220,11 @@ Sessions:
 | `ade.sessions.list` | list by lane/status; cached at renderer |
 | `ade.sessions.get` | single session detail including runtime state |
 | `ade.sessions.updateMeta` | rename (sets `manuallyNamed`), pin, edit goal, update resume metadata |
+| `ade.sessions.delete` | remove a row outright; emits `terminalSessionChanged` with `reason: "deleted"` |
 | `ade.sessions.readTranscriptTail` | tail bytes of transcript (raw or ANSI-stripped) |
 | `ade.sessions.getDelta` | `SessionDeltaSummary` |
-| `ade.sessions.changed` (event) | fired on meta updates |
+| `ade.sessions.changed` (event) | fired on meta updates and deletions (`reason: "meta-updated" \| "deleted"`) |
+| `ade.agentChat.delete` | delete a chat session: disposes the runtime, resolves waiters, wipes persisted JSON + transcript, then calls `sessions.delete` |
 
 PTY:
 
@@ -237,9 +254,11 @@ Processes (managed):
 - Chat sessions backed by the Claude/Codex SDK still insert a
   `terminal_sessions` row but they are not attached to a PTY. Guard
   UI code with `isChatToolType(toolType)` before calling PTY-only APIs.
-- `reconcileStaleRunningSessions` now accepts `excludeToolTypes`. If
-  you add a new chat-style tool type, add it to the exclusion list in
-  `main.ts` or chat sessions will be force-disposed on every startup.
+- `reconcileStaleRunningSessions` accepts `excludeToolTypes` but the
+  main-process startup no longer excludes chat tool types — stale
+  `running` chat rows are swept to `disposed` like any other orphaned
+  row. If you need a row to survive reconciliation, the caller has to
+  pass `excludeToolTypes` explicitly.
 - `transcriptPath` may be blank for untracked sessions (tracked=false)
   and for processes that died before their PTY opened — always
   null-check before reading.

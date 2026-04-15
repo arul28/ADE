@@ -699,11 +699,10 @@ export function ModelCatalogPanel({
       ref={panelRef}
       role="presentation"
       className={cn(
-        "flex w-full flex-col overflow-hidden rounded-[18px] border border-violet-400/[0.12] outline-none",
+        "ade-chat-drawer-glass flex w-full flex-col overflow-hidden outline-none",
         "max-h-[min(560px,70vh)]",
         className,
       )}
-      style={{ background: "#131122", backdropFilter: "blur(60px)", boxShadow: "0 28px 64px -16px rgba(0,0,0,0.67)" }}
     >
 
       <div className="shrink-0 space-y-3 border-b border-white/[0.04] px-6 pb-4 pt-5">

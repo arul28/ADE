@@ -18,6 +18,9 @@ type RuntimeRoots = {
   workspaceRoot: string;
 };
 
+const MCP_SOCKET_CONNECT_TIMEOUT_MS = 5_000;
+const MCP_SOCKET_CONNECT_RETRY_DELAY_MS = 150;
+
 function resolveCliArg(flag: string): string | null {
   const args = process.argv.slice(2);
   for (let i = 0; i < args.length; i += 1) {
@@ -118,6 +121,43 @@ function relayProxyInputWithIdentity(socket: net.Socket): void {
   });
 }
 
+function isRetriableSocketConnectError(error: NodeJS.ErrnoException): boolean {
+  return error.code === "ENOENT" || error.code === "ECONNREFUSED";
+}
+
+async function connectToSocketWithRetry(socketPath: string): Promise<net.Socket> {
+  const deadline = Date.now() + MCP_SOCKET_CONNECT_TIMEOUT_MS;
+
+  while (true) {
+    const socket = net.createConnection(socketPath);
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const handleConnect = () => {
+          socket.off("error", handleError);
+          resolve();
+        };
+        const handleError = (error: NodeJS.ErrnoException) => {
+          socket.off("connect", handleConnect);
+          reject(error);
+        };
+        socket.once("connect", handleConnect);
+        socket.once("error", handleError);
+      });
+      return socket;
+    } catch (error) {
+      socket.destroy();
+      const nextError = error as NodeJS.ErrnoException;
+      if (!isRetriableSocketConnectError(nextError) || Date.now() >= deadline) {
+        throw nextError;
+      }
+      await new Promise((resolve) => {
+        const timer = setTimeout(resolve, MCP_SOCKET_CONNECT_RETRY_DELAY_MS);
+        timer.unref?.();
+      });
+    }
+  }
+}
+
 async function main(): Promise<void> {
   const roots = resolveRuntimeRoots();
   const socketPath = process.env.ADE_MCP_SOCKET_PATH?.trim() || resolveAdeLayout(roots.projectRoot).socketPath;
@@ -134,25 +174,20 @@ async function main(): Promise<void> {
     process.exit(0);
   }
 
-  const socket = net.createConnection(socketPath);
-  let connected = false;
+  const socket = await connectToSocketWithRetry(socketPath);
 
   socket.on("error", (err) => {
-    const prefix = connected ? "[ade-mcp-proxy]" : "[ade-mcp-proxy] Failed to connect";
-    process.stderr.write(`${prefix}: ${err.message}\n`);
+    process.stderr.write(`[ade-mcp-proxy]: ${err.message}\n`);
     process.exit(1);
   });
 
-  socket.on("connect", () => {
-    connected = true;
-    process.stdin.resume();
-    relayProxyInputWithIdentity(socket);
-    socket.pipe(process.stdout);
+  socket.on("close", () => {
+    process.exit(0);
   });
 
-  socket.on("close", () => {
-    process.exit(connected ? 0 : 1);
-  });
+  process.stdin.resume();
+  relayProxyInputWithIdentity(socket);
+  socket.pipe(process.stdout);
 }
 
 void main().catch((error) => {

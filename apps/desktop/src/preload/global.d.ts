@@ -63,6 +63,7 @@ import type {
   AgentTool,
   AgentChatApproveArgs,
   AgentChatCreateArgs,
+  AgentChatDeleteArgs,
   AgentChatDisposeArgs,
   AgentChatEventEnvelope,
   AgentChatGetSummaryArgs,
@@ -309,6 +310,14 @@ import type {
   PrStatus,
   PrSummary,
   PrWithConflicts,
+  PrDeployment,
+  PrAiSummary,
+  PostPrReviewCommentArgs,
+  SetPrReviewThreadResolvedArgs,
+  SetPrReviewThreadResolvedResult,
+  ReactToPrCommentArgs,
+  LaunchPrIssueResolutionFromThreadArgs,
+  LaunchPrIssueResolutionFromThreadResult,
   ReplyToPrReviewThreadArgs,
   ResolvePrReviewThreadArgs,
   ResumeQueueAutomationArgs,
@@ -341,6 +350,7 @@ import type {
   ListLanesArgs,
   ListOperationsArgs,
   ListSessionsArgs,
+  DeleteSessionArgs,
   ListTestRunsArgs,
   OperationRecord,
   ProcessActionArgs,
@@ -561,9 +571,11 @@ import type {
   ComputerUseOwnerSnapshot,
   ComputerUseOwnerSnapshotArgs,
   ComputerUseSettingsSnapshot,
-  FeedbackSubmitArgs,
+  FeedbackPrepareDraftArgs,
+  FeedbackPreparedDraft,
   FeedbackSubmission,
   FeedbackSubmissionEvent,
+  FeedbackSubmitDraftArgs,
 } from "../shared/types";
 
 export {};
@@ -1057,6 +1069,7 @@ declare global {
       sessions: {
         list: (args?: ListSessionsArgs) => Promise<TerminalSessionSummary[]>;
         get: (sessionId: string) => Promise<TerminalSessionDetail | null>;
+        delete: (args: DeleteSessionArgs) => Promise<void>;
         updateMeta: (args: UpdateSessionMetaArgs) => Promise<TerminalSessionSummary | null>;
         readTranscriptTail: (args: ReadTranscriptTailArgs) => Promise<string>;
         getDelta: (sessionId: string) => Promise<SessionDeltaSummary | null>;
@@ -1081,6 +1094,7 @@ declare global {
         respondToInput: (args: AgentChatRespondToInputArgs) => Promise<void>;
         models: (args: AgentChatModelsArgs) => Promise<AgentChatModelInfo[]>;
         dispose: (args: AgentChatDisposeArgs) => Promise<void>;
+        delete: (args: AgentChatDeleteArgs) => Promise<void>;
         updateSession: (
           args: AgentChatUpdateSessionArgs,
         ) => Promise<AgentChatSession>;
@@ -1271,7 +1285,8 @@ declare global {
         onStatusChanged: (cb: (status: ContextStatus) => void) => () => void;
       };
       feedback: {
-        submit: (args: FeedbackSubmitArgs) => Promise<FeedbackSubmission>;
+        prepareDraft: (args: FeedbackPrepareDraftArgs) => Promise<FeedbackPreparedDraft>;
+        submitDraft: (args: FeedbackSubmitDraftArgs) => Promise<FeedbackSubmission>;
         list: () => Promise<FeedbackSubmission[]>;
         onUpdate: (cb: (event: FeedbackSubmissionEvent) => void) => () => void;
       };
@@ -1442,6 +1457,19 @@ declare global {
         cleanupIntegrationWorkflow: (
           args: CleanupIntegrationWorkflowArgs,
         ) => Promise<CleanupIntegrationWorkflowResult>;
+        getDeployments: (prId: string) => Promise<PrDeployment[]>;
+        getAiSummary: (prId: string) => Promise<PrAiSummary | null>;
+        regenerateAiSummary: (prId: string) => Promise<PrAiSummary>;
+        postReviewComment: (
+          args: PostPrReviewCommentArgs,
+        ) => Promise<PrReviewThreadComment>;
+        setReviewThreadResolved: (
+          args: SetPrReviewThreadResolvedArgs,
+        ) => Promise<SetPrReviewThreadResolvedResult>;
+        reactToComment: (args: ReactToPrCommentArgs) => Promise<void>;
+        launchIssueResolutionFromThread: (
+          args: LaunchPrIssueResolutionFromThreadArgs,
+        ) => Promise<LaunchPrIssueResolutionFromThreadResult>;
       };
       rebase: {
         scanNeeds: () => Promise<RebaseNeed[]>;
