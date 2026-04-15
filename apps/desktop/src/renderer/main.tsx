@@ -2,9 +2,41 @@ import "./browserMock"; // Must be first — stubs window.ade when outside Elect
 import React from "react";
 import { createRoot } from "react-dom/client";
 import "./index.css";
+import jetbrainsMonoUrl from "../../node_modules/@fontsource-variable/jetbrains-mono/files/jetbrains-mono-latin-wght-normal.woff2?url";
+import geistVariableUrl from "../../node_modules/geist/dist/fonts/geist-sans/Geist-Variable.woff2?url";
+import geistMonoVariableUrl from "../../node_modules/geist/dist/fonts/geist-mono/GeistMono-Variable.woff2?url";
 import { App } from "./components/app/App";
 import { RendererErrorBoundary } from "./components/app/RendererErrorBoundary";
 import { logRendererDebugEvent } from "./lib/debugLog";
+
+(function injectFontFaces() {
+  const style = document.createElement("style");
+  style.dataset.adeFonts = "true";
+  style.textContent = `
+    @font-face {
+      font-family: 'JetBrains Mono';
+      src: url('${jetbrainsMonoUrl}') format('woff2');
+      font-weight: 100 800;
+      font-style: normal;
+      font-display: swap;
+    }
+    @font-face {
+      font-family: 'Geist';
+      src: url('${geistVariableUrl}') format('woff2');
+      font-weight: 100 900;
+      font-style: normal;
+      font-display: swap;
+    }
+    @font-face {
+      font-family: 'Geist Mono';
+      src: url('${geistMonoVariableUrl}') format('woff2');
+      font-weight: 100 900;
+      font-style: normal;
+      font-display: swap;
+    }
+  `;
+  document.head.appendChild(style);
+})();
 
 const RootWrapper = (window as any).__adeBrowserMock ? React.StrictMode : React.Fragment;
 

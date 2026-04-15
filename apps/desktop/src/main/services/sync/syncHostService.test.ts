@@ -7,8 +7,21 @@ import { WebSocket } from "ws";
 import { openKvDb } from "../state/kvDb";
 import { isCrsqliteAvailable } from "../state/crsqliteExtension";
 import { createSyncHostService } from "./syncHostService";
+import type { SyncPinStore } from "./syncPinStore";
 import { encodeSyncEnvelope, parseSyncEnvelope } from "./syncProtocol";
 import type { ParsedSyncEnvelope } from "./syncProtocol";
+
+function createStubPinStore(initialPin: string | null = null): SyncPinStore {
+  let pin = initialPin;
+  return {
+    getPin: () => pin,
+    setPin: (value: string) => {
+      if (!/^\d{6}$/.test(value)) throw new Error("PIN must be 6 digits.");
+      pin = value;
+    },
+    clearPin: () => { pin = null; },
+  };
+}
 
 function createLogger() {
   return {
@@ -217,6 +230,7 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
       logger: createLogger() as any,
       projectRoot,
       port: blockedPort,
+      pinStore: createStubPinStore(),
       fileService: createStubFileService(workspaceRoot) as any,
       laneService: {
         list: vi.fn().mockResolvedValue([]),
@@ -263,6 +277,7 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
       logger: createLogger() as any,
       projectRoot,
       port: 0,
+      pinStore: createStubPinStore(),
       fileService: createStubFileService(workspaceRoot) as any,
       laneService: {
         list: vi.fn().mockResolvedValue([]),
@@ -419,6 +434,7 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
       logger: createLogger() as any,
       projectRoot,
       port: 0,
+      pinStore: createStubPinStore(),
       fileService: createStubFileService(workspaceRoot) as any,
       laneService: {
         list: vi.fn().mockResolvedValue([]),
@@ -608,6 +624,7 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
       logger: createLogger() as any,
       projectRoot,
       port: 0,
+      pinStore: createStubPinStore(),
       fileService: createStubFileService(workspaceRoot) as any,
       laneService: {
         list: vi.fn().mockResolvedValue([]),
@@ -842,7 +859,7 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
     expect((rejectedResult.payload as { ok: boolean; error?: { code: string } }).error?.code).toBe("unsupported_command");
   });
 
-  it("pairs a phone peer with a short-lived code and allows paired reconnect auth", async () => {
+  it("pairs a phone peer using the desktop PIN and allows paired reconnect auth", async () => {
     const brainDb = await openKvDb(makeDbPath("ade-sync-pairing-"), createLogger() as any);
     const projectRoot = makeProjectRoot("ade-sync-pairing-project-");
     const workspaceRoot = path.join(projectRoot, "workspace");
@@ -853,6 +870,7 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
       logger: createLogger() as any,
       projectRoot,
       port: 0,
+      pinStore: createStubPinStore("428193"),
       fileService: createStubFileService(workspaceRoot) as any,
       laneService: {
         list: vi.fn().mockResolvedValue([]),
@@ -896,12 +914,11 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
       pairWs.once("error", reject);
     });
     const pairQueue = createMessageQueue(pairWs);
-    const pairingSession = host.getPairingSession();
     pairWs.send(encodeSyncEnvelope({
       type: "pairing_request",
       requestId: "pair-me",
       payload: {
-        code: pairingSession.code,
+        code: "428193",
         peer: {
           deviceId: "ios-phone-1",
           deviceName: "Arul iPhone",

@@ -1,8 +1,9 @@
 import fs from "node:fs";
 import path from "node:path";
 import { createHash, randomBytes } from "node:crypto";
-import type { SyncPairingSession, SyncPeerMetadata } from "../../../shared/types";
+import type { SyncPeerMetadata } from "../../../shared/types";
 import { nowIso, safeJsonParse, writeTextAtomic } from "../shared/utils";
+import type { SyncPinStore } from "./syncPinStore";
 
 type PairingRecord = {
   secretHash: string;
@@ -17,20 +18,15 @@ type PairingSecretsFile = Record<string, PairingRecord>;
 
 type SyncPairingStoreArgs = {
   filePath: string;
-  codeTtlMs?: number;
+  pinStore: SyncPinStore;
 };
-
-const DEFAULT_CODE_TTL_MS = 10 * 60 * 1000;
 
 function hashSecret(secret: string): string {
   return createHash("sha256").update(secret).digest("hex");
 }
 
 export function createSyncPairingStore(args: SyncPairingStoreArgs) {
-  const codeTtlMs = Math.max(60_000, Math.floor(args.codeTtlMs ?? DEFAULT_CODE_TTL_MS));
   fs.mkdirSync(path.dirname(args.filePath), { recursive: true });
-
-  let activeSession: SyncPairingSession | null = null;
 
   const readRecords = (): PairingSecretsFile => {
     if (!fs.existsSync(args.filePath)) return {};
@@ -41,50 +37,18 @@ export function createSyncPairingStore(args: SyncPairingStoreArgs) {
     writeTextAtomic(args.filePath, `${JSON.stringify(records, null, 2)}\n`);
   };
 
-  const isExpired = (session: SyncPairingSession | null): boolean => {
-    if (!session) return true;
-    const expiresAtMs = Date.parse(session.expiresAt);
-    return !Number.isFinite(expiresAtMs) || expiresAtMs <= Date.now();
-  };
-
-  const mintSession = (): SyncPairingSession => {
-    const issuedAt = nowIso();
-    const expiresAt = new Date(Date.now() + codeTtlMs).toISOString();
-    activeSession = {
-      code: randomBytes(3).toString("hex").slice(0, 6).toUpperCase(),
-      issuedAt,
-      expiresAt,
-    };
-    return activeSession;
-  };
-
-  const ensureSession = (): SyncPairingSession => {
-    if (isExpired(activeSession)) {
-      return mintSession();
-    }
-    return activeSession!;
-  };
-
   return {
-    getCodeTtlMs(): number {
-      return codeTtlMs;
-    },
-
-    getActiveSession(): SyncPairingSession {
-      return ensureSession();
-    },
-
-    refreshSession(): SyncPairingSession {
-      return mintSession();
-    },
-
-    pairPeer(peer: SyncPeerMetadata, code: string): { deviceId: string; secret: string } {
-      const session = ensureSession();
-      if (session.code !== code.trim().toUpperCase()) {
-        throw new Error("Invalid pairing code.");
+    pairPeer(peer: SyncPeerMetadata, pin: string): { deviceId: string; secret: string } {
+      const storedPin = args.pinStore.getPin();
+      if (!storedPin) {
+        const err = new Error("No pairing PIN is set on this computer.");
+        (err as Error & { code?: string }).code = "pin_not_set";
+        throw err;
       }
-      if (isExpired(session)) {
-        throw new Error("Pairing code expired.");
+      if (storedPin !== pin.trim()) {
+        const err = new Error("Incorrect pairing PIN.");
+        (err as Error & { code?: string }).code = "invalid_pin";
+        throw err;
       }
       const secret = randomBytes(24).toString("hex");
       const records = readRecords();
@@ -97,7 +61,6 @@ export function createSyncPairingStore(args: SyncPairingStoreArgs) {
         peerDeviceType: peer.deviceType,
       };
       writeRecords(records);
-      activeSession = null;
       return {
         deviceId: peer.deviceId,
         secret,

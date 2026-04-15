@@ -235,10 +235,10 @@ export function createDeviceRegistryService(args: DeviceRegistryServiceArgs) {
       platform: existing?.platform ?? defaults.platform,
       deviceType: existing?.deviceType ?? defaults.deviceType,
       lastSeenAt: nowIso(),
-      lastHost: existing?.lastHost ?? defaults.lastHost,
+      lastHost: defaults.lastHost ?? existing?.lastHost ?? null,
       lastPort: existing?.lastPort ?? null,
-      tailscaleIp: existing?.tailscaleIp ?? defaults.tailscaleIp,
-      ipAddresses: existing?.ipAddresses.length ? existing.ipAddresses : defaults.ipAddresses,
+      tailscaleIp: defaults.tailscaleIp ?? existing?.tailscaleIp ?? null,
+      ipAddresses: defaults.ipAddresses.length > 0 ? defaults.ipAddresses : (existing?.ipAddresses ?? []),
       metadata: {
         ...(existing?.metadata ?? {}),
         hostname: os.hostname(),

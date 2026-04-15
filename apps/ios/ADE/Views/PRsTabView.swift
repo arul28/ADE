@@ -415,10 +415,6 @@ struct PRsTabView: View {
           notice.prListRow()
         }
 
-        if let notice = statusNotice {
-          notice.prListRow()
-        }
-
         if isLoadingSkeleton {
           ForEach(0..<3, id: \.self) { _ in
             ADECardSkeleton(rows: 3)
@@ -574,6 +570,9 @@ struct PRsTabView: View {
       .navigationBarTitleDisplayMode(.inline)
       .searchable(text: $searchText, prompt: "Search PR titles")
       .toolbar {
+        ToolbarItem(placement: .topBarLeading) {
+          ADEConnectionPill()
+        }
         ToolbarItemGroup(placement: .topBarTrailing) {
           Button {
             Task { await reload(refreshRemote: true) }
@@ -595,7 +594,7 @@ struct PRsTabView: View {
 
       .sensoryFeedback(.success, trigger: refreshFeedbackToken)
       .task {
-        await reload(refreshRemote: true)
+        await reload()
       }
       .task(id: syncService.localStateRevision) {
         await reload()
@@ -1046,7 +1045,7 @@ private struct PrDetailView: View {
     .navigationBarTitleDisplayMode(.inline)
     .adeNavigationZoomTransition(id: transitionNamespace == nil ? nil : "pr-container-\(prId)", in: transitionNamespace)
     .task {
-      await reload(refreshRemote: true)
+      await reload()
     }
     .task(id: syncService.localStateRevision) {
       await reload()

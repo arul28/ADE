@@ -662,6 +662,9 @@ declare global {
         forgetDevice: (deviceId: string) => Promise<SyncRoleSnapshot>;
         getTransferReadiness: () => Promise<SyncTransferReadiness>;
         transferBrainToLocal: () => Promise<SyncRoleSnapshot>;
+        getPin: () => Promise<{ pin: string | null }>;
+        setPin: (pin: string) => Promise<SyncRoleSnapshot>;
+        clearPin: () => Promise<SyncRoleSnapshot>;
         onEvent: (cb: (event: SyncStatusEventPayload) => void) => () => void;
       };
       externalMcp: {

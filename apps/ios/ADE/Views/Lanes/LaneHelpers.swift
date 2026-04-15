@@ -279,6 +279,17 @@ func runtimeSymbol(_ bucket: String) -> String {
   }
 }
 
+func devicePresenceSymbol(for devices: [DeviceMarker]) -> String {
+  let platforms = Set(devices.map { $0.platform.lowercased() })
+  if platforms.contains("ios") || platforms.contains("ipados") {
+    return "iphone"
+  }
+  if platforms.contains("macos") || platforms.contains("darwin") {
+    return "laptopcomputer"
+  }
+  return "rectangle.on.rectangle"
+}
+
 private let cachedISO8601Formatter: ISO8601DateFormatter = {
   let f = ISO8601DateFormatter()
   f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]

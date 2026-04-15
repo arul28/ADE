@@ -211,10 +211,6 @@ struct FilesTabView: View {
   var body: some View {
     NavigationStack(path: $navigationPath) {
       List {
-        if let notice = statusNotice {
-          notice.filesListRow()
-        }
-
         if isLoadingSkeleton {
           ForEach(0..<3, id: \.self) { _ in
             ADECardSkeleton(rows: 3)
@@ -401,6 +397,9 @@ struct FilesTabView: View {
         }
       }
       .toolbar {
+        ToolbarItem(placement: .topBarLeading) {
+          ADEConnectionPill()
+        }
         ToolbarItem(placement: .topBarTrailing) {
           Button {
             Task { await reload(refreshRemote: true) }

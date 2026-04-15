@@ -96,15 +96,47 @@ struct SyncPairingQrPayload: Codable, Equatable {
   var version: Int
   var hostIdentity: SyncPairingHostIdentity
   var port: Int
-  var pairingCode: String
-  var expiresAt: String
+  // Legacy v1 payloads carried a short-lived pairing code and expiry.
+  // v2 payloads omit both fields (a user-set PIN is entered manually instead).
+  // Keeping these as optionals lets us decode either wire format without breaking.
+  var pairingCode: String?
+  var expiresAt: String?
   var addressCandidates: [SyncAddressCandidate]
-}
 
-struct SyncPairingSession: Codable, Equatable {
-  var code: String
-  var issuedAt: String
-  var expiresAt: String
+  private enum CodingKeys: String, CodingKey {
+    case version
+    case hostIdentity
+    case port
+    case pairingCode
+    case expiresAt
+    case addressCandidates
+  }
+
+  init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    self.version = try container.decode(Int.self, forKey: .version)
+    self.hostIdentity = try container.decode(SyncPairingHostIdentity.self, forKey: .hostIdentity)
+    self.port = try container.decode(Int.self, forKey: .port)
+    self.pairingCode = try container.decodeIfPresent(String.self, forKey: .pairingCode)
+    self.expiresAt = try container.decodeIfPresent(String.self, forKey: .expiresAt)
+    self.addressCandidates = try container.decode([SyncAddressCandidate].self, forKey: .addressCandidates)
+  }
+
+  init(
+    version: Int,
+    hostIdentity: SyncPairingHostIdentity,
+    port: Int,
+    pairingCode: String? = nil,
+    expiresAt: String? = nil,
+    addressCandidates: [SyncAddressCandidate]
+  ) {
+    self.version = version
+    self.hostIdentity = hostIdentity
+    self.port = port
+    self.pairingCode = pairingCode
+    self.expiresAt = expiresAt
+    self.addressCandidates = addressCandidates
+  }
 }
 
 enum SyncDomain: String, CaseIterable, Hashable {
@@ -173,6 +205,15 @@ struct LaneSummary: Codable, Identifiable, Equatable {
   var folder: String?
   var createdAt: String
   var archivedAt: String?
+  var devicesOpen: [DeviceMarker]?
+}
+
+struct DeviceMarker: Codable, Identifiable, Equatable, Hashable {
+  var deviceId: String
+  var displayName: String
+  var platform: String
+
+  var id: String { deviceId }
 }
 
 enum RemoteJSONValue: Codable, Equatable {

@@ -1599,6 +1599,21 @@ final class DatabaseService {
   }
 
   private func ensureCrrTables() throws {
+    // One-time cleanup: earlier builds registered local-only cache tables as
+    // CRR, which meant every cache write produced crsql_changes that got
+    // exported to the host (which does NOT register those tables as CRR).
+    // Drop the clock + triggers and purge pending changes so no more leak out.
+    for cacheTable in DatabaseService.localOnlyCacheTables where hasTable(named: "\(cacheTable)__crsql_clock") {
+      try dropCrrTriggers(for: cacheTable)
+      try exec("drop table if exists \(quoteIdentifier("\(cacheTable)__crsql_clock"))")
+      _ = try execute("delete from crsql_master where tbl_name = ?") { statement in
+        try bindText(cacheTable, to: statement, index: 1)
+      }
+      _ = try execute("delete from crsql_changes where [table] = ?") { statement in
+        try bindText(cacheTable, to: statement, index: 1)
+      }
+    }
+
     for tableName in listEligibleCrrTables() {
       if hasTable(named: "\(tableName)__crsql_clock") {
         continue
@@ -1606,6 +1621,15 @@ final class DatabaseService {
       try enableCrr(for: tableName)
     }
   }
+
+  /// Tables that exist on the iOS client only as local read-through caches.
+  /// They are populated from sync responses, never edited by the user, and
+  /// the host does NOT register them as CRR — so exporting CRDT changes for
+  /// them produces "could not find schema information" errors upstream.
+  private static let localOnlyCacheTables: Set<String> = [
+    "lane_detail_snapshots",
+    "lane_list_snapshots",
+  ]
 
   private func listEligibleCrrTables() -> [String] {
     let sql = """
@@ -1625,7 +1649,9 @@ final class DatabaseService {
         sql: stringValue(statement, index: 1) ?? ""
       )
     }.filter { row in
-      !row.sql.lowercased().hasPrefix("create virtual table") && tableHasPrimaryKey(row.name)
+      !row.sql.lowercased().hasPrefix("create virtual table")
+        && !DatabaseService.localOnlyCacheTables.contains(row.name)
+        && tableHasPrimaryKey(row.name)
     }.map(\.name)
   }
 

@@ -17,10 +17,6 @@ const { createSyncHostServiceMock } = vi.hoisted(() => ({
     getBootstrapToken() {
       return "test-bootstrap-token";
     },
-    getPairingSession() {
-      const expires = new Date(Date.now() + 600_000).toISOString();
-      return { code: "TEST1234", expiresAt: expires, pairedDevices: [] };
-    },
     revokePairedDevice() {},
     getPeerStates() {
       return [];
@@ -386,7 +382,6 @@ describe.skipIf(!isCrsqliteAvailable())("syncService", () => {
 
     const status = await service.getStatus();
     expect(status.mode === "brain" || status.mode === "standalone").toBe(true);
-    expect(status.pairingSession).toBeTruthy();
     expect(status.pairingConnectInfo).toBeTruthy();
     const addressCandidates =
       status.pairingConnectInfo?.addressCandidates ?? [];
@@ -396,8 +391,12 @@ describe.skipIf(!isCrsqliteAvailable())("syncService", () => {
     const tailscaleCandidateIndex = addressCandidates.findIndex(
       (entry) => entry.kind === "tailscale" && entry.host === "100.100.12.4",
     );
+    const loopbackCandidateIndex = addressCandidates.findIndex(
+      (entry) => entry.kind === "loopback" && entry.host === "127.0.0.1",
+    );
     expect(savedCandidateIndex).toBeGreaterThanOrEqual(0);
     expect(tailscaleCandidateIndex).toBeGreaterThan(savedCandidateIndex);
+    expect(loopbackCandidateIndex).toBe(addressCandidates.length - 1);
     expect(
       addressCandidates
         .slice(0, Math.max(savedCandidateIndex, 0))
@@ -407,13 +406,13 @@ describe.skipIf(!isCrsqliteAvailable())("syncService", () => {
     const encodedPayload =
       status.pairingConnectInfo?.qrPayloadText.split("payload=")[1] ?? "";
     const parsedPayload = JSON.parse(decodeURIComponent(encodedPayload)) as {
+      version: number;
       hostIdentity: { deviceId: string };
-      pairingCode: string;
-      expiresAt: string;
+      addressCandidates: Array<{ host: string; kind: string }>;
     };
+    expect(parsedPayload.version).toBe(2);
     expect(parsedPayload.hostIdentity.deviceId).toBe(localDeviceId);
-    expect(parsedPayload.pairingCode).toBe(status.pairingSession?.code);
-    expect(parsedPayload.expiresAt).toBe(status.pairingSession?.expiresAt);
+    expect(parsedPayload.addressCandidates.some((c) => c.kind === "loopback" && c.host === "127.0.0.1")).toBe(true);
   }, 30_000);
 
   it("does not start the sync host or expose pairing details when host startup is disabled", async () => {
@@ -468,7 +467,7 @@ describe.skipIf(!isCrsqliteAvailable())("syncService", () => {
     expect(status.role).toBe("brain");
     expect(status.mode).toBe("standalone");
     expect(status.bootstrapToken).toBeNull();
-    expect(status.pairingSession).toBeNull();
+    expect(status.pairingPin).toBeNull();
     expect(status.pairingConnectInfo).toBeNull();
   }, 30_000);
 
@@ -498,10 +497,6 @@ describe.skipIf(!isCrsqliteAvailable())("syncService", () => {
         },
         getBootstrapToken() {
           return "test-bootstrap-token";
-        },
-        getPairingSession() {
-          const expires = new Date(Date.now() + 600_000).toISOString();
-          return { code: "TEST1234", expiresAt: expires, pairedDevices: [] };
         },
         revokePairedDevice() {},
         getPeerStates() {

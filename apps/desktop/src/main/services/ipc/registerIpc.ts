@@ -2331,6 +2331,30 @@ export function registerIpc({
     return await ctx.syncService.transferBrainToLocal();
   });
 
+  ipcMain.handle(IPC.syncGetPin, async (): Promise<{ pin: string | null }> => {
+    const ctx = getCtx();
+    if (!ctx.syncService) {
+      throw new Error("Sync service is not available.");
+    }
+    return { pin: ctx.syncService.getPin() };
+  });
+
+  ipcMain.handle(IPC.syncSetPin, async (_event, pin: string): Promise<SyncRoleSnapshot> => {
+    const ctx = getCtx();
+    if (!ctx.syncService) {
+      throw new Error("Sync service is not available.");
+    }
+    return await ctx.syncService.setPin(typeof pin === "string" ? pin : "");
+  });
+
+  ipcMain.handle(IPC.syncClearPin, async (): Promise<SyncRoleSnapshot> => {
+    const ctx = getCtx();
+    if (!ctx.syncService) {
+      throw new Error("Sync service is not available.");
+    }
+    return await ctx.syncService.clearPin();
+  });
+
   ipcMain.handle(IPC.externalMcpListServers, async (): Promise<ExternalMcpServerSnapshot[]> => {
     const service = getCtx().externalMcpService;
     if (!service) return [];

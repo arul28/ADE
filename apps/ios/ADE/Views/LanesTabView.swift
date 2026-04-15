@@ -11,11 +11,9 @@ struct LanesTabView: View {
   @State var searchText = ""
   @State var scope: LaneListScope = .active
   @State var runtimeFilter: LaneRuntimeFilter = .all
-  @State var createPresented = false
-  @State var createMode: LaneCreateMode = .primary
-  @State var attachPresented = false
+  @State var addLaneSheetPresented = false
   @State var openLaneIds: [String] = []
-  @State var pinnedLaneIds = Set<String>()
+  @AppStorage("ade.lanes.pinnedIds") private var pinnedLaneIdsStorage: String = ""
   @State var primaryBranches: [GitBranchSummary] = []
   @State var primaryBranchLaneId: String?
   @State var primaryBranchError: String?
@@ -23,6 +21,15 @@ struct LanesTabView: View {
   @State var batchManageLaneIds: [String] = []
   @State var batchManagePresented = false
   @State var refreshFeedbackToken = 0
+
+  var pinnedLaneIds: Set<String> {
+    get {
+      Set(pinnedLaneIdsStorage.split(separator: ",").map(String.init).filter { !$0.isEmpty })
+    }
+    nonmutating set {
+      pinnedLaneIdsStorage = newValue.sorted().joined(separator: ",")
+    }
+  }
 
   var laneStatus: SyncDomainStatus {
     syncService.status(for: .lanes)
@@ -32,60 +39,61 @@ struct LanesTabView: View {
     syncService.activeHostProfile == nil && !laneSnapshots.isEmpty
   }
 
+  var isConnected: Bool {
+    switch syncService.connectionState {
+    case .connected, .syncing: return true
+    case .connecting, .disconnected, .error: return false
+    }
+  }
+
   var body: some View {
     NavigationStack {
-      ScrollView {
-        LazyVStack(spacing: 14) {
-          if let notice = statusNotice {
-            notice
-              .transition(.asymmetric(
-                insertion: .move(edge: .top).combined(with: .opacity),
-                removal: .opacity
-              ))
+      Group {
+        if isConnected {
+          ScrollView {
+            LazyVStack(spacing: 14) {
+              if let errorMessage, laneStatus.phase == .ready {
+                ADENoticeCard(
+                  title: "Lane view error",
+                  message: errorMessage,
+                  icon: "exclamationmark.triangle.fill",
+                  tint: ADEColor.danger,
+                  actionTitle: "Retry",
+                  action: { Task { await reload(refreshRemote: true) } }
+                )
+                .transition(.opacity)
+              }
+              if laneSnapshots.isEmpty && (laneStatus.phase == .hydrating || laneStatus.phase == .syncingInitialData) {
+                ADECardSkeleton(rows: 4)
+                ADECardSkeleton(rows: 3)
+              }
+              if !openLaneSnapshots.isEmpty {
+                openLanesTray
+                  .transition(.move(edge: .top).combined(with: .opacity))
+              }
+              if !visibleSuggestions.isEmpty || !visibleAutoRebaseAttention.isEmpty {
+                attentionSection
+                  .transition(.move(edge: .top).combined(with: .opacity))
+              }
+              laneList
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 8)
           }
-          quickActionsRow
-          if let errorMessage, laneStatus.phase == .ready {
-            ADENoticeCard(
-              title: "Lane view error",
-              message: errorMessage,
-              icon: "exclamationmark.triangle.fill",
-              tint: ADEColor.danger,
-              actionTitle: "Retry",
-              action: { Task { await reload(refreshRemote: true) } }
-            )
-            .transition(.opacity)
-          }
-          if let notice = primaryBranchNotice {
-            notice
-              .transition(.opacity)
-          }
-          if laneStatus.phase == .hydrating || laneStatus.phase == .syncingInitialData {
-            ADECardSkeleton(rows: 4)
-            ADECardSkeleton(rows: 3)
-          }
-          if !openLaneSnapshots.isEmpty {
-            openLanesTray
-              .transition(.move(edge: .top).combined(with: .opacity))
-          }
-          if !visibleSuggestions.isEmpty || !visibleAutoRebaseAttention.isEmpty {
-            attentionSection
-              .transition(.move(edge: .top).combined(with: .opacity))
-          }
-          laneList
+          .scrollBounceBehavior(.basedOnSize)
+          .searchable(text: $searchText, prompt: "Filter by lane, branch, is:dirty...")
+          .refreshable { await refreshFromPullGesture() }
+        } else {
+          LanesOfflineEmptyState()
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 8)
       }
       .adeScreenBackground()
       .adeNavigationGlass()
-      .scrollBounceBehavior(.basedOnSize)
-      .searchable(text: $searchText, prompt: "Filter by lane, branch, is:dirty...")
       .navigationTitle("Lanes")
       .navigationBarTitleDisplayMode(.inline)
       .toolbar { toolbarContent }
-      .refreshable { await refreshFromPullGesture() }
       .sensoryFeedback(.success, trigger: refreshFeedbackToken)
-      .task { await reload(refreshRemote: true) }
+      .task { await reload() }
       .task(id: primaryLane?.id) {
         await refreshPrimaryBranches(force: true)
       }
@@ -93,23 +101,25 @@ struct LanesTabView: View {
         guard laneStatus.phase == .ready else { return }
         await reload(refreshRemote: false)
       }
-      .sheet(isPresented: $createPresented) {
-        LaneCreateSheet(primaryLane: primaryLane, lanes: laneSnapshots.map(\.lane), initialMode: createMode) { createdLaneId in
-          createPresented = false
-          if !openLaneIds.contains(createdLaneId) {
-            openLaneIds.insert(createdLaneId, at: 0)
-          }
-          await reload(refreshRemote: true)
+      .onChange(of: syncService.connectionState) { oldValue, newValue in
+        let wasOnline = oldValue == .connected || oldValue == .syncing
+        let nowOnline = newValue == .connected || newValue == .syncing
+        if wasOnline && !nowOnline {
+          ADEHaptics.warning()
         }
       }
-      .sheet(isPresented: $attachPresented) {
-        LaneAttachSheet { attachedLaneId in
-          attachPresented = false
-          if !openLaneIds.contains(attachedLaneId) {
-            openLaneIds.insert(attachedLaneId, at: 0)
+      .sheet(isPresented: $addLaneSheetPresented) {
+        AddLaneSheet(
+          primaryLane: primaryLane,
+          lanes: laneSnapshots.map(\.lane),
+          onLaneCreated: { createdLaneId in
+            addLaneSheetPresented = false
+            if !openLaneIds.contains(createdLaneId) {
+              openLaneIds.insert(createdLaneId, at: 0)
+            }
+            await reload(refreshRemote: true)
           }
-          await reload(refreshRemote: true)
-        }
+        )
       }
       .sheet(item: $detailSheetTarget) { target in
         NavigationStack {
@@ -136,6 +146,9 @@ struct LanesTabView: View {
 
   @ToolbarContentBuilder
   private var toolbarContent: some ToolbarContent {
+    ToolbarItem(placement: .topBarLeading) {
+      ADEConnectionDot()
+    }
     ToolbarItemGroup(placement: .topBarTrailing) {
       Menu {
         Section("Scope") {
@@ -196,65 +209,14 @@ struct LanesTabView: View {
       }
       .accessibilityLabel("Lane filters")
 
-      Menu {
-        Button {
-          createMode = .primary
-          createPresented = true
-        } label: {
-          Label("New lane", systemImage: "plus.square")
-        }
-        Button {
-          createMode = .child
-          createPresented = true
-        } label: {
-          Label("Child lane", systemImage: "arrow.turn.up.right")
-        }
-        Button {
-          createMode = .importBranch
-          createPresented = true
-        } label: {
-          Label("Import branch", systemImage: "arrow.down.square")
-        }
-        Button {
-          createMode = .rescueUnstaged
-          createPresented = true
-        } label: {
-          Label("Rescue unstaged", systemImage: "bandage")
-        }
-        Button {
-          attachPresented = true
-        } label: {
-          Label("Attach worktree", systemImage: "link")
-        }
+      Button {
+        addLaneSheetPresented = true
       } label: {
-        Image(systemName: "plus.circle.fill")
-          .symbolRenderingMode(.hierarchical)
+        Image(systemName: "plus")
+          .font(.body.weight(.semibold))
+          .foregroundStyle(ADEColor.accent)
       }
-      .accessibilityLabel("Create or attach lane")
-    }
-  }
-
-  @ViewBuilder
-  private var quickActionsRow: some View {
-    ScrollView(.horizontal, showsIndicators: false) {
-      HStack(spacing: 8) {
-        LaneQuickAction(title: "New", symbol: "plus", tint: ADEColor.accent) {
-          createMode = .primary
-          createPresented = true
-        }
-        LaneQuickAction(title: "Import", symbol: "arrow.down.square", tint: ADEColor.accent) {
-          createMode = .importBranch
-          createPresented = true
-        }
-        LaneQuickAction(title: "Rescue", symbol: "bandage", tint: ADEColor.warning) {
-          createMode = .rescueUnstaged
-          createPresented = true
-        }
-        LaneQuickAction(title: "Attach", symbol: "link", tint: ADEColor.textSecondary) {
-          attachPresented = true
-        }
-      }
-      .padding(.vertical, 2)
+      .accessibilityLabel("Add lane")
     }
   }
 }

@@ -2,18 +2,67 @@ import CryptoKit
 import SwiftUI
 import UIKit
 
+enum ADEColorSchemeChoice: String, CaseIterable, Identifiable {
+  case system
+  case light
+  case dark
+
+  var id: String { rawValue }
+
+  var preferredColorScheme: ColorScheme? {
+    switch self {
+    case .system: return nil
+    case .light: return .light
+    case .dark: return .dark
+    }
+  }
+
+  var label: String {
+    switch self {
+    case .system: return "System"
+    case .light: return "Light"
+    case .dark: return "Dark"
+    }
+  }
+
+  var symbol: String {
+    switch self {
+    case .system: return "circle.righthalf.filled"
+    case .light: return "sun.max.fill"
+    case .dark: return "moon.fill"
+    }
+  }
+}
+
+private func adaptiveColor(light: UIColor, dark: UIColor) -> Color {
+  Color(uiColor: UIColor { traits in
+    traits.userInterfaceStyle == .dark ? dark : light
+  })
+}
+
+private func hex(_ value: UInt32, alpha: CGFloat = 1.0) -> UIColor {
+  UIColor(
+    red: CGFloat((value >> 16) & 0xff) / 255.0,
+    green: CGFloat((value >> 8) & 0xff) / 255.0,
+    blue: CGFloat(value & 0xff) / 255.0,
+    alpha: alpha
+  )
+}
+
 enum ADEColor {
-  static let pageBackground = Color(.systemGroupedBackground)
-  static let surfaceBackground = Color(.secondarySystemGroupedBackground)
-  static let recessedBackground = Color(.tertiarySystemGroupedBackground)
-  static let border = Color(.separator)
-  static let textPrimary = Color.primary
-  static let textSecondary = Color.secondary
-  static let textMuted = Color(.tertiaryLabel)
-  static let accent = Color.accentColor
+  static let pageBackground = adaptiveColor(light: hex(0xf5f5f6), dark: hex(0x0f0f11))
+  static let surfaceBackground = adaptiveColor(light: hex(0xffffff), dark: hex(0x18181b))
+  static let recessedBackground = adaptiveColor(light: hex(0xeeeef0), dark: hex(0x111114))
+  static let border = adaptiveColor(light: hex(0xd4d4d8), dark: hex(0x27272a))
+  static let textPrimary = adaptiveColor(light: hex(0x0f0f11), dark: hex(0xe4e4e7))
+  static let textSecondary = adaptiveColor(light: hex(0x52525b), dark: hex(0xa1a1aa))
+  static let textMuted = adaptiveColor(light: hex(0x71717a), dark: hex(0x71717a))
+  static let accent = adaptiveColor(light: hex(0x7C3AED), dark: hex(0xA78BFA))
   static let success = Color.green
   static let warning = Color.orange
   static let danger = Color.red
+  static let purpleAccent = Color(red: 167.0 / 255.0, green: 139.0 / 255.0, blue: 250.0 / 255.0)  // #A78BFA
+  static let purpleGlow = purpleAccent.opacity(0.35)
 }
 
 enum ADEListRowMetrics {
@@ -163,6 +212,109 @@ struct ADEStatusPill: View {
       .foregroundStyle(tint)
       .glassEffect()
       .accessibilityLabel("Status: \(text)")
+  }
+}
+
+struct ADEConnectionPill: View {
+  @EnvironmentObject private var syncService: SyncService
+
+  private var tint: Color {
+    switch syncService.connectionState {
+    case .connected, .syncing: return ADEColor.success
+    case .connecting: return ADEColor.accent
+    case .disconnected, .error: return ADEColor.danger
+    }
+  }
+
+  private var label: String {
+    switch syncService.connectionState {
+    case .connected, .syncing: return "Connected"
+    case .connecting: return "Connecting"
+    case .disconnected: return "Not connected"
+    case .error: return "Offline"
+    }
+  }
+
+  var body: some View {
+    Button {
+      syncService.settingsPresented = true
+    } label: {
+      HStack(spacing: 6) {
+        Circle()
+          .fill(tint)
+          .frame(width: 8, height: 8)
+        Text(label)
+          .font(.caption.weight(.semibold))
+          .foregroundStyle(ADEColor.textPrimary)
+      }
+    }
+    .buttonStyle(.plain)
+    .accessibilityLabel("Connection: \(label). Tap to open settings.")
+  }
+}
+
+struct ADEConnectionDot: View {
+  @EnvironmentObject private var syncService: SyncService
+
+  private var tint: Color {
+    switch syncService.connectionState {
+    case .connected, .syncing: return ADEColor.success
+    case .connecting: return ADEColor.warning
+    case .error: return ADEColor.danger
+    case .disconnected: return ADEColor.textMuted
+    }
+  }
+
+  private var showsHostName: Bool {
+    switch syncService.connectionState {
+    case .connected, .syncing: return true
+    default: return false
+    }
+  }
+
+  private var truncatedHostName: String? {
+    guard let rawName = syncService.hostName else { return nil }
+    let cleaned = rawName
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+      .trimmingCharacters(in: CharacterSet(charactersIn: ".…"))
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !cleaned.isEmpty else { return nil }
+    if cleaned.count <= 10 { return cleaned }
+    return String(cleaned.prefix(9)) + "…"
+  }
+
+  private var accessibilityLabel: String {
+    switch syncService.connectionState {
+    case .connected, .syncing:
+      if let name = syncService.hostName, !name.isEmpty {
+        return "Connected to \(name). Tap to open settings."
+      }
+      return "Connected. Tap to open settings."
+    case .connecting: return "Connecting. Tap to open settings."
+    case .error: return "Connection error. Tap to open settings."
+    case .disconnected: return "Not connected. Tap to open settings."
+    }
+  }
+
+  var body: some View {
+    Button {
+      syncService.settingsPresented = true
+    } label: {
+      HStack(spacing: 6) {
+        Circle()
+          .fill(tint)
+          .frame(width: 10, height: 10)
+          .shadow(color: tint.opacity(showsHostName ? 0.5 : 0), radius: showsHostName ? 4 : 0)
+        if showsHostName, let name = truncatedHostName {
+          Text(name)
+            .font(.caption.weight(.medium))
+            .foregroundStyle(ADEColor.textSecondary)
+            .lineLimit(1)
+        }
+      }
+    }
+    .buttonStyle(.plain)
+    .accessibilityLabel(accessibilityLabel)
   }
 }
 

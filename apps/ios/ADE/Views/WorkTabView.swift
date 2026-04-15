@@ -161,12 +161,6 @@ struct WorkTabView: View {
   var body: some View {
     NavigationStack(path: $path) {
       List {
-        if let notice = statusNotice {
-          notice
-            .listRowBackground(Color.clear)
-            .listRowSeparator(.hidden)
-        }
-
         if isLoadingSkeleton {
           ForEach(0..<3, id: \.self) { _ in
             ADECardSkeleton(rows: 3)
@@ -298,6 +292,9 @@ struct WorkTabView: View {
       .navigationTitle("Work")
       .navigationBarTitleDisplayMode(.inline)
       .toolbar {
+        ToolbarItem(placement: .topBarLeading) {
+          ADEConnectionPill()
+        }
         ToolbarItem(placement: .topBarTrailing) {
           Button {
             newChatPresented = true
@@ -313,7 +310,7 @@ struct WorkTabView: View {
       }
       .sensoryFeedback(.success, trigger: refreshFeedbackToken)
       .task {
-        await reload(refreshRemote: isLive)
+        await reload()
       }
       .task(id: syncService.localStateRevision) {
         await reload()

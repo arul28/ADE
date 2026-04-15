@@ -98,22 +98,6 @@ extension LanesTabView {
     }
   }
 
-  var primaryBranchNotice: ADENoticeCard? {
-    guard let primaryBranchError else { return nil }
-    return ADENoticeCard(
-      title: "Primary branch update failed",
-      message: primaryBranchError,
-      icon: "exclamationmark.triangle.fill",
-      tint: ADEColor.danger,
-      actionTitle: "Retry",
-      action: {
-        Task {
-          await refreshPrimaryBranches(force: true)
-        }
-      }
-    )
-  }
-
   @MainActor
   func refreshPrimaryBranches(force: Bool = false) async {
     guard let primaryLane else {
@@ -300,9 +284,24 @@ extension LanesTabView {
     laneStackGraphOrder(filteredSnapshots)
   }
 
+  var stickyPrimarySnapshot: LaneListSnapshot? {
+    stackOrderedSnapshots.first(where: { $0.lane.laneType == "primary" })
+  }
+
+  var treeSnapshots: [LaneListSnapshot] {
+    stackOrderedSnapshots.filter { $0.lane.laneType != "primary" }
+  }
+
   @ViewBuilder
   var laneList: some View {
-    if filteredSnapshots.isEmpty {
+    if laneSnapshots.isEmpty {
+      ADEEmptyStateView(
+        symbol: "plus.circle.dashed",
+        title: "No lanes yet",
+        message: "Tap + to create your first lane."
+      )
+      .padding(.top, 40)
+    } else if filteredSnapshots.isEmpty {
       ADEEmptyStateView(
         symbol: "square.stack.3d.up.slash",
         title: laneListEmptyStateTitle(scope: scope),
@@ -310,37 +309,49 @@ extension LanesTabView {
       )
       .padding(.top, 40)
     } else {
-      let ordered = stackOrderedSnapshots
-      ForEach(Array(ordered.enumerated()), id: \.element.id) { index, snapshot in
-        VStack(spacing: 0) {
-          if index > 0 {
-            LaneStackConnector(
-              depth: snapshot.lane.stackDepth,
-              isLast: index == ordered.count - 1
-            )
-          }
-
+      VStack(spacing: 10) {
+        if let primarySnapshot = stickyPrimarySnapshot {
           NavigationLink {
             LaneDetailScreen(
-              laneId: snapshot.lane.id,
-              initialSnapshot: snapshot,
+              laneId: primarySnapshot.lane.id,
+              initialSnapshot: primarySnapshot,
               allLaneSnapshots: laneSnapshots,
               onRefreshRoot: { await reload(refreshRemote: true) }
             )
           } label: {
             LaneStackCard(
-              snapshot: snapshot,
-              isPinned: pinnedLaneIds.contains(snapshot.lane.id),
-              isOpen: openLaneIds.contains(snapshot.lane.id),
-              depth: snapshot.lane.stackDepth
+              snapshot: primarySnapshot,
+              isPinned: pinnedLaneIds.contains(primarySnapshot.lane.id),
+              isOpen: openLaneIds.contains(primarySnapshot.lane.id),
+              depth: 0
             )
             .equatable()
           }
           .buttonStyle(ADEScaleButtonStyle())
-          .padding(.leading, CGFloat(snapshot.lane.stackDepth) * 20)
-          .contextMenu {
-            laneContextMenu(snapshot: snapshot)
+          .contextMenu { laneContextMenu(snapshot: primarySnapshot) } preview: {
+            LanePeekPreview(snapshot: primarySnapshot)
           }
+          .swipeActions(edge: .leading, allowsFullSwipe: false) {
+            Button {
+              togglePin(primarySnapshot.lane.id)
+            } label: {
+              Label(pinnedLaneIds.contains(primarySnapshot.lane.id) ? "Unpin" : "Pin",
+                    systemImage: pinnedLaneIds.contains(primarySnapshot.lane.id) ? "pin.slash.fill" : "pin.fill")
+            }
+            .tint(ADEColor.accent)
+          }
+        }
+
+        if !treeSnapshots.isEmpty {
+          LaneTreeView(
+            snapshots: treeSnapshots,
+            pinnedLaneIds: pinnedLaneIds,
+            openLaneIds: openLaneIds,
+            allLaneSnapshots: laneSnapshots,
+            onRefreshRoot: { await reload(refreshRemote: true) },
+            onContextMenu: { snapshot in AnyView(laneContextMenu(snapshot: snapshot)) },
+            onTogglePin: { laneId in togglePin(laneId) }
+          )
         }
       }
     }
@@ -462,14 +473,17 @@ extension LanesTabView {
   }
 
   func togglePin(_ laneId: String) {
-    if pinnedLaneIds.contains(laneId) {
-      pinnedLaneIds.remove(laneId)
+    var next = pinnedLaneIds
+    if next.contains(laneId) {
+      next.remove(laneId)
     } else {
-      pinnedLaneIds.insert(laneId)
+      next.insert(laneId)
       if !openLaneIds.contains(laneId) {
         openLaneIds.insert(laneId, at: 0)
       }
     }
+    pinnedLaneIds = next
+    ADEHaptics.light()
   }
 
   @MainActor

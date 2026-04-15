@@ -27,6 +27,12 @@ export type LaneStatus = {
   rebaseInProgress: boolean;
 };
 
+export type DeviceMarker = {
+  deviceId: string;
+  displayName: string;
+  platform: string;
+};
+
 export type LaneSummary = {
   id: string;
   name: string;
@@ -50,6 +56,7 @@ export type LaneSummary = {
   laneRole?: MissionLaneRole | null;
   createdAt: string;
   archivedAt?: string | null;
+  devicesOpen?: DeviceMarker[];
 };
 
 export type LaneRuntimeBucket = "running" | "awaiting-input" | "ended" | "none";

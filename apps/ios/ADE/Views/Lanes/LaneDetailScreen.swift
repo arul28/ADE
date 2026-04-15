@@ -62,7 +62,6 @@ struct LaneDetailScreen: View {
   var body: some View {
     ScrollView {
       LazyVStack(spacing: 14) {
-        if let banner = connectionBanner { banner }
 
         if let busyAction {
           HStack(spacing: 10) {
@@ -89,10 +88,6 @@ struct LaneDetailScreen: View {
           .background(ADEColor.danger.opacity(0.08), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
         }
 
-        if detail == nil && errorMessage == nil {
-          ADECardSkeleton(rows: 4)
-        }
-
         detailHeader
         gitSections
       }
@@ -104,7 +99,12 @@ struct LaneDetailScreen: View {
     .scrollBounceBehavior(.basedOnSize)
     .navigationTitle(detail?.lane.name ?? initialSnapshot.lane.name)
     .navigationBarTitleDisplayMode(.inline)
-    .task { await loadDetail(refreshRemote: true) }
+    .task {
+      await loadDetail(refreshRemote: false)
+      if detail == nil, canRunLiveActions {
+        await loadDetail(refreshRemote: true)
+      }
+    }
     .task(id: syncService.localStateRevision) {
       guard busyAction == nil, detail != nil else { return }
       await loadDetail(refreshRemote: false)

@@ -8,6 +8,7 @@ struct LaneCreateSheet: View {
 
   let primaryLane: LaneSummary?
   let lanes: [LaneSummary]
+  let showsModePicker: Bool
   let onComplete: @MainActor (String) async -> Void
 
   @State private var name = ""
@@ -29,16 +30,30 @@ struct LaneCreateSheet: View {
     primaryLane: LaneSummary?,
     lanes: [LaneSummary],
     initialMode: LaneCreateMode = .primary,
+    showsModePicker: Bool = true,
     onComplete: @escaping @MainActor (String) async -> Void
   ) {
     self.primaryLane = primaryLane
     self.lanes = lanes
+    self.showsModePicker = showsModePicker
     self.onComplete = onComplete
     _createMode = State(initialValue: initialMode)
   }
 
   var body: some View {
-    NavigationStack {
+    Group {
+      if showsModePicker {
+        NavigationStack {
+          content
+        }
+      } else {
+        content
+      }
+    }
+  }
+
+  @ViewBuilder
+  private var content: some View {
       ScrollView {
         VStack(spacing: 14) {
           GlassSection(title: "Create lane", subtitle: createSubtitle) {
@@ -48,53 +63,80 @@ struct LaneCreateSheet: View {
             }
           }
 
-          GlassSection(title: "Mode") {
+          GlassSection(title: showsModePicker ? "Mode" : modeSectionTitle) {
             VStack(alignment: .leading, spacing: 12) {
-              Picker("Create mode", selection: $createMode) {
-                ForEach(LaneCreateMode.allCases) { mode in
-                  Text(mode.title)
-                    .tag(mode)
-                    .accessibilityLabel(mode.fullTitle)
+              if showsModePicker {
+                Picker("Create mode", selection: $createMode) {
+                  ForEach(LaneCreateMode.allCases) { mode in
+                    Text(mode.title)
+                      .tag(mode)
+                      .accessibilityLabel(mode.fullTitle)
+                  }
                 }
+                .pickerStyle(.segmented)
               }
-              .pickerStyle(.segmented)
 
               switch createMode {
               case .primary:
                 VStack(alignment: .leading, spacing: 12) {
                   Picker("Base branch", selection: $selectedBaseBranch) {
                     ForEach(branches.filter { !$0.isRemote }) { branch in
-                      Text(branch.name).tag(branch.name)
+                      Text(branch.isCurrent ? "\(branch.name) (current)" : branch.name).tag(branch.name)
+                    }
+                  }
+                  .pickerStyle(.menu)
+                  if branches.filter({ !$0.isRemote }).isEmpty {
+                    Text("No local branches found.")
+                      .font(.caption)
+                      .foregroundStyle(ADEColor.textMuted)
+                  }
+                }
+              case .child:
+                VStack(alignment: .leading, spacing: 12) {
+                  Picker("Parent lane", selection: $selectedParentLaneId) {
+                    Text("Select parent lane…").tag("")
+                    ForEach(lanes.filter { $0.archivedAt == nil }) { lane in
+                      Text("\(lane.name) (\(lane.branchRef))").tag(lane.id)
                     }
                   }
                   .pickerStyle(.menu)
                 }
-              case .child:
-                Picker("Parent lane", selection: $selectedParentLaneId) {
-                  Text("Select parent").tag("")
-                  ForEach(lanes.filter { $0.archivedAt == nil }) { lane in
-                    Text("\(lane.name) (\(lane.branchRef))").tag(lane.id)
-                  }
-                }
-                .pickerStyle(.menu)
               case .importBranch:
                 VStack(alignment: .leading, spacing: 12) {
-                  LaneTextField("Existing branch", text: $selectedImportBranch)
+                  Picker("Existing branch", selection: $selectedImportBranch) {
+                    Text("Select a branch…").tag("")
+                    ForEach(branches) { branch in
+                      Text(branch.isRemote ? "\(branch.name) (remote)" : branch.name).tag(branch.name)
+                    }
+                  }
+                  .pickerStyle(.menu)
+                  if branches.isEmpty {
+                    Text("No branches found.")
+                      .font(.caption)
+                      .foregroundStyle(ADEColor.textMuted)
+                  }
                   Picker("Base branch", selection: $selectedBaseBranch) {
                     ForEach(branches.filter { !$0.isRemote }) { branch in
-                      Text(branch.name).tag(branch.name)
+                      Text(branch.isCurrent ? "\(branch.name) (current)" : branch.name).tag(branch.name)
                     }
                   }
                   .pickerStyle(.menu)
                 }
               case .rescueUnstaged:
-                Picker("Source lane", selection: $selectedRescueLaneId) {
-                  Text("Select lane").tag("")
-                  ForEach(lanes.filter { $0.archivedAt == nil && $0.status.dirty }) { lane in
-                    Text("\(lane.name) (\(lane.branchRef))").tag(lane.id)
+                VStack(alignment: .leading, spacing: 12) {
+                  Picker("Source lane", selection: $selectedRescueLaneId) {
+                    Text("Select lane").tag("")
+                    ForEach(lanes.filter { $0.archivedAt == nil && $0.status.dirty }) { lane in
+                      Text("\(lane.name) (\(lane.branchRef))").tag(lane.id)
+                    }
+                  }
+                  .pickerStyle(.menu)
+                  if lanes.filter({ $0.archivedAt == nil && $0.status.dirty }).isEmpty {
+                    Text("No lanes with unstaged changes.")
+                      .font(.caption)
+                      .foregroundStyle(ADEColor.textMuted)
                   }
                 }
-                .pickerStyle(.menu)
               }
             }
           }
@@ -155,7 +197,7 @@ struct LaneCreateSheet: View {
       }
       .adeScreenBackground()
       .adeNavigationGlass()
-      .navigationTitle("Create lane")
+      .navigationTitle(showsModePicker ? "Create lane" : navigationTitleForMode)
       .navigationBarTitleDisplayMode(.inline)
       .toolbar {
         ToolbarItem(placement: .cancellationAction) {
@@ -172,7 +214,6 @@ struct LaneCreateSheet: View {
       .task {
         await loadOptions()
       }
-    }
   }
 
   @MainActor
@@ -281,6 +322,24 @@ struct LaneCreateSheet: View {
       return "Import an existing branch into ADE."
     case .rescueUnstaged:
       return "Split unstaged work into a new lane."
+    }
+  }
+
+  private var modeSectionTitle: String {
+    switch createMode {
+    case .primary: return "Base branch"
+    case .child: return "Parent lane"
+    case .importBranch: return "Branch to import"
+    case .rescueUnstaged: return "Source lane"
+    }
+  }
+
+  private var navigationTitleForMode: String {
+    switch createMode {
+    case .primary: return "New lane"
+    case .child: return "Child lane"
+    case .importBranch: return "Import branch"
+    case .rescueUnstaged: return "Rescue unstaged"
     }
   }
 }

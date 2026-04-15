@@ -1,7 +1,10 @@
 import Foundation
 import SwiftUI
 import UIKit
+import os
 import zlib
+
+private let syncConnectLog = Logger(subsystem: "com.ade.sync", category: "connect")
 
 enum RemoteConnectionState: String {
   case disconnected
@@ -462,8 +465,29 @@ final class SyncService: ObservableObject {
       }
       allowAutoReconnect = true
       let addressCandidates = deduplicatedAddresses([host] + candidateAddresses)
-      let preferredAddress = addressCandidates.first ?? host
-      try await openSocket(host: preferredAddress, port: port)
+      // If we have multiple candidates (e.g. discovered LAN + loopback + tailscale),
+      // walk them in order and only fail if every one fails to open a socket.
+      // A single-address manual entry retains short-circuit behavior since the
+      // loop will still surface that sole failure.
+      var openedAddress: String?
+      var lastOpenError: Error?
+      for candidate in addressCandidates {
+        syncConnectLog.info("attempt host=\(candidate, privacy: .public) port=\(port) kind=pair")
+        do {
+          try await openSocket(host: candidate, port: port)
+          syncConnectLog.info("success host=\(candidate, privacy: .public)")
+          openedAddress = candidate
+          break
+        } catch {
+          syncConnectLog.info("failure host=\(candidate, privacy: .public) error=\(String(describing: error), privacy: .public)")
+          lastOpenError = error
+          teardownSocket()
+          continue
+        }
+      }
+      guard let preferredAddress = openedAddress else {
+        throw lastOpenError ?? NSError(domain: "ADE", code: 19, userInfo: [NSLocalizedDescriptionKey: "Unable to reach the host."])
+      }
       let requestId = makeRequestId()
       let raw = try await awaitResponse(requestId: requestId) {
         self.sendEnvelope(type: "pairing_request", requestId: requestId, payload: [
@@ -491,7 +515,18 @@ final class SyncService: ObservableObject {
         lastHostDeviceId: nil,
         lastSuccessfulAddress: preferredAddress,
         savedAddressCandidates: addressCandidates,
-        discoveredLanAddresses: addressCandidates.filter { !$0.contains("100.") && !$0.contains(":") },
+        discoveredLanAddresses: addressCandidates.filter { host in
+          guard !host.contains(":") else { return false }
+          if host == "127.0.0.1" { return false }
+          let octets = host.split(separator: ".")
+          guard octets.count == 4 else { return false }
+          guard let first = octets.first.flatMap({ Int($0) }),
+                let second = octets.dropFirst().first.flatMap({ Int($0) }) else {
+            return false
+          }
+          let isTailscale = first == 100 && (64...127).contains(second)
+          return !isTailscale
+        },
         tailscaleAddress: tailscaleAddress
       )
       saveProfile(profile)
@@ -507,10 +542,16 @@ final class SyncService: ObservableObject {
 
   func pairAndConnect(using payload: SyncPairingQrPayload) async {
     let candidateAddresses = deduplicatedAddresses(payload.addressCandidates.map(\.host))
+    // v1 payloads embed the pairing code in the QR; v2 payloads omit it because
+    // the user types a manually-set PIN. In the v2 case we skip auto-pairing
+    // and let the UI collect the PIN before calling the explicit overload.
+    guard let pairingCode = payload.pairingCode, !pairingCode.isEmpty else {
+      return
+    }
     await pairAndConnect(
       host: candidateAddresses.first ?? "127.0.0.1",
       port: payload.port,
-      code: payload.pairingCode,
+      code: pairingCode,
       hostIdentity: payload.hostIdentity.deviceId,
       hostName: payload.hostIdentity.name,
       candidateAddresses: candidateAddresses,
@@ -542,10 +583,12 @@ final class SyncService: ObservableObject {
     let message = error?["message"] as? String
 
     switch code {
+    case "invalid_pin", "invalid_code":
+      return "Incorrect PIN."
+    case "pin_not_set":
+      return "No PIN set on that computer. Set one in the desktop app's Sync settings."
     case "expired_code":
-      return "That pairing code expired. Open Sync on the host again and use the fresh code shown there."
-    case "invalid_code":
-      return "That pairing code does not match the current host. Open Sync on the host again and enter the fresh code."
+      return "Incorrect PIN."
     case "pairing_unavailable":
       return "Phone pairing is not available on the host right now. Reopen Sync on the host and try again."
     default:
@@ -1333,14 +1376,20 @@ final class SyncService: ObservableObject {
 
     let liveLan = matchingDiscovery.flatMap(\.addresses)
     let liveTailscale = matchingDiscovery.compactMap(\.tailscaleAddress)
-    return deduplicatedAddresses(
-      liveLan +
-      (profile.lastSuccessfulAddress.map { [$0] } ?? []) +
-      profile.savedAddressCandidates +
-      profile.discoveredLanAddresses +
-      liveTailscale +
-      (profile.tailscaleAddress.map { [$0] } ?? [])
-    )
+    let liveSet = Set(liveLan + liveTailscale)
+    // Prefer addresses we see RIGHT NOW on the network over anything we have
+    // cached from previous sessions. If the user changed subnets, stale
+    // entries would otherwise consume the first few attempts (each with its
+    // own timeout) before we finally try the correct current IP. Only fall
+    // back to cached saved candidates if no live discovery is available.
+    let prioritizedLive = liveLan
+      + (profile.lastSuccessfulAddress.flatMap { liveSet.contains($0) ? [$0] : [] } ?? [])
+      + liveTailscale
+    let fallbackSaved = (profile.lastSuccessfulAddress.flatMap { liveSet.contains($0) ? nil : [$0] } ?? [])
+      + profile.savedAddressCandidates
+      + profile.discoveredLanAddresses
+      + (profile.tailscaleAddress.map { [$0] } ?? [])
+    return deduplicatedAddresses(prioritizedLive + fallbackSaved)
   }
 
   private func connectUsingProfile(_ profile: HostConnectionProfile, token: String) async throws -> String {
@@ -1351,6 +1400,8 @@ final class SyncService: ObservableObject {
     }
 
     for address in addresses {
+      let kindString: String? = nil
+      syncConnectLog.info("attempt host=\(address, privacy: .public) port=\(profile.port) kind=\(kindString ?? "unknown", privacy: .public)")
       do {
         try await openSocket(host: address, port: profile.port)
         try await hello(
@@ -1361,14 +1412,19 @@ final class SyncService: ObservableObject {
           pairedDeviceId: profile.pairedDeviceId,
           expectedHostIdentity: profile.hostIdentity
         )
+        syncConnectLog.info("success host=\(address, privacy: .public)")
         return address
       } catch {
+        syncConnectLog.info("failure host=\(address, privacy: .public) error=\(String(describing: error), privacy: .public)")
         lastFailure = error
         if shouldInvalidateSavedPairing(for: error) {
           forgetHost()
           throw error
         }
+        // Tear down this attempt's socket and keep iterating through the
+        // remaining candidates. Only surface an error if every candidate fails.
         teardownSocket()
+        continue
       }
     }
 
@@ -1552,11 +1608,16 @@ final class SyncService: ObservableObject {
     let matchingDiscovery = discoveredHosts.first { discovered in
       discovered.hostIdentity == remoteHostIdentity || discovered.addresses.contains(connectedHost)
     }
-    let savedCandidates = deduplicatedAddresses(
+    // Cap saved candidates to avoid unbounded growth when the user moves
+    // between networks. Put the currently-connected host first, then any
+    // live-discovered addresses, then older saved entries. Old stale IPs
+    // from previous subnets fall off the tail once the cap is reached.
+    let savedCandidatesUncapped = deduplicatedAddresses(
       [connectedHost] +
-      (activeHostProfile?.savedAddressCandidates ?? []) +
-      (matchingDiscovery?.addresses ?? [])
+      (matchingDiscovery?.addresses ?? []) +
+      (activeHostProfile?.savedAddressCandidates ?? [])
     )
+    let savedCandidates = Array(savedCandidatesUncapped.prefix(6))
     let discoveredLan = deduplicatedAddresses(
       matchingDiscovery?.addresses ?? activeHostProfile?.discoveredLanAddresses ?? []
     )
@@ -1661,7 +1722,6 @@ final class SyncService: ObservableObject {
     case "pairing_result":
       resolve(requestId: requestId, result: .success(payload))
     case "changeset_batch":
-      connectionState = .syncing
       let batch = try decode(payload, as: SyncChangesetBatchPayload.self)
       let result = try database.applyChanges(batch.changes)
       latestRemoteDbVersion = max(latestRemoteDbVersion, batch.toDbVersion, result.dbVersion)
@@ -1670,12 +1730,6 @@ final class SyncService: ObservableObject {
         profile.lastRemoteDbVersion = latestRemoteDbVersion
       }
       resolve(requestId: requestId, result: .success(payload))
-      Task { @MainActor in
-        try? await Task.sleep(nanoseconds: 150_000_000)
-        if self.connectionState == .syncing {
-          self.connectionState = .connected
-        }
-      }
     case "brain_status":
       if let dict = payload as? [String: Any], let brain = dict["brain"] as? [String: Any] {
         hostName = brain["deviceName"] as? String
@@ -2308,13 +2362,25 @@ private final class SyncBonjourBrowser: NSObject, NetServiceBrowserDelegate, Net
     let hostName = txtRecord["deviceName"] ?? service.hostName ?? service.name
     let hostIdentity = txtRecord["deviceId"]
     let id = hostIdentity ?? serviceKey(for: service)
+    // Preserve source order (resolved first, TXT-announced next), dedup, and
+    // force any loopback candidate to the tail — a simulator sharing the host's
+    // loopback can use it, but a physical device would waste a roundtrip if it
+    // tried 127.0.0.1 first.
+    var seen = Set<String>()
+    var ordered: [String] = []
+    for host in addresses where seen.insert(host).inserted {
+      ordered.append(host)
+    }
+    let isLoopback = { (host: String) -> Bool in host == "127.0.0.1" || host == "::1" }
+    let nonLoopback = ordered.filter { !isLoopback($0) }
+    let loopback = ordered.filter(isLoopback)
     return DiscoveredSyncHost(
       id: id,
       serviceName: service.name,
       hostName: hostName,
       hostIdentity: hostIdentity,
       port: port,
-      addresses: Array(Set(addresses)).sorted(),
+      addresses: nonLoopback + loopback,
       tailscaleAddress: txtRecord["tailscaleIp"],
       lastResolvedAt: ISO8601DateFormatter().string(from: Date())
     )

@@ -159,7 +159,7 @@ export type SyncRoleSnapshot = {
   currentBrain: SyncDeviceRecord | null;
   clusterState: SyncClusterState | null;
   bootstrapToken: string | null;
-  pairingSession: SyncPairingSession | null;
+  pairingPin: string | null;
   pairingConnectInfo: SyncPairingConnectInfo | null;
   connectedPeers: SyncPeerConnectionState[];
   client: SyncClientStatus;
@@ -179,7 +179,7 @@ export type SyncFeatureFlags = {
   bootstrapAuth: true;
   pairingAuth: {
     enabled: true;
-    codeTtlMs: number;
+    pinDigits: 6;
   };
   commandRouting: {
     mode: "allowlisted";
@@ -212,13 +212,7 @@ export type SyncHelloErrorPayload = {
   message: string;
 };
 
-export type SyncPairingSession = {
-  code: string;
-  issuedAt: string;
-  expiresAt: string;
-};
-
-export type SyncAddressCandidateKind = "lan" | "saved" | "tailscale";
+export type SyncAddressCandidateKind = "lan" | "saved" | "tailscale" | "loopback";
 
 export type SyncAddressCandidate = {
   host: string;
@@ -226,7 +220,7 @@ export type SyncAddressCandidate = {
 };
 
 export type SyncPairingQrPayload = {
-  version: 1;
+  version: 2;
   hostIdentity: {
     deviceId: string;
     siteId: string;
@@ -235,16 +229,12 @@ export type SyncPairingQrPayload = {
     deviceType: SyncPeerDeviceType;
   };
   port: number;
-  pairingCode: string;
-  expiresAt: string;
   addressCandidates: SyncAddressCandidate[];
 };
 
 export type SyncPairingConnectInfo = {
   hostIdentity: SyncPairingQrPayload["hostIdentity"];
   port: number;
-  pairingCode: string;
-  expiresAt: string;
   addressCandidates: SyncAddressCandidate[];
   qrPayload: SyncPairingQrPayload;
   qrPayloadText: string;
@@ -260,7 +250,14 @@ export type SyncPairingResultPayload = {
   deviceId?: string;
   secret?: string;
   error?: {
-    code: "invalid_code" | "expired_code" | "pairing_unavailable" | "pairing_failed";
+    code:
+      | "invalid_pin"
+      | "pin_not_set"
+      | "pairing_unavailable"
+      | "pairing_failed"
+      // Legacy codes kept for backwards wire compatibility.
+      | "invalid_code"
+      | "expired_code";
     message: string;
   };
 };

@@ -35,6 +35,7 @@ import { nowIso, safeJsonParse, sleep, writeTextAtomic } from "../shared/utils";
 import { createDeviceRegistryService } from "./deviceRegistryService";
 import { createSyncHostService, type SyncHostService } from "./syncHostService";
 import { createSyncPeerService } from "./syncPeerService";
+import { createSyncPinStore } from "./syncPinStore";
 import { DEFAULT_SYNC_HOST_PORT } from "./syncProtocol";
 
 type SyncServiceArgs = {
@@ -69,6 +70,7 @@ type SyncServiceArgs = {
 
 const DRAFT_FILE = "sync-peer-draft.json";
 const TOKEN_FILE = "sync-bootstrap-token";
+const PIN_FILE = "sync-pin.json";
 const RUNNING_PROCESS_STATES = new Set(["starting", "running", "degraded"]);
 const CHAT_TOOL_TYPES = new Set(["codex-chat", "claude-chat", "opencode-chat"]);
 const SYNC_HOST_PORT_RETRY_WINDOW = 12;
@@ -122,15 +124,13 @@ function buildAddressCandidates(
   }
   append(localDevice.lastHost, "saved");
   append(localDevice.tailscaleIp, "tailscale");
+  append("127.0.0.1", "loopback");
   return candidates;
 }
 
 function buildPairingConnectInfo(argsIn: {
   localDevice: SyncRoleSnapshot["localDevice"];
-  pairingSession: SyncRoleSnapshot["pairingSession"];
-}): SyncPairingConnectInfo | null {
-  const pairingSession = argsIn.pairingSession;
-  if (!pairingSession) return null;
+}): SyncPairingConnectInfo {
   const port = argsIn.localDevice.lastPort ?? DEFAULT_SYNC_HOST_PORT;
   const addressCandidates = buildAddressCandidates(argsIn.localDevice);
   const hostIdentity = {
@@ -141,19 +141,15 @@ function buildPairingConnectInfo(argsIn: {
     deviceType: argsIn.localDevice.deviceType,
   };
   const qrPayload: SyncPairingQrPayload = {
-    version: 1,
+    version: 2,
     hostIdentity,
     port,
-    pairingCode: pairingSession.code,
-    expiresAt: pairingSession.expiresAt,
     addressCandidates,
   };
   const qrPayloadText = `ade-sync://pair?payload=${encodeURIComponent(JSON.stringify(qrPayload))}`;
   return {
     hostIdentity,
     port,
-    pairingCode: pairingSession.code,
-    expiresAt: pairingSession.expiresAt,
     addressCandidates,
     qrPayload,
     qrPayloadText,
@@ -201,7 +197,10 @@ export function createSyncService(args: SyncServiceArgs) {
   const layout = resolveAdeLayout(args.projectRoot);
   const draftPath = path.join(layout.secretsDir, DRAFT_FILE);
   const tokenPath = path.join(layout.secretsDir, TOKEN_FILE);
+  const pinPath = path.join(layout.secretsDir, PIN_FILE);
   fs.mkdirSync(path.dirname(draftPath), { recursive: true });
+
+  const pinStore = createSyncPinStore({ filePath: pinPath });
 
   const deviceRegistryService = createDeviceRegistryService({
     db: args.db,
@@ -337,6 +336,7 @@ export function createSyncService(args: SyncServiceArgs) {
         rebaseSuggestionService: args.rebaseSuggestionService ?? undefined,
         autoRebaseService: args.autoRebaseService ?? undefined,
         computerUseArtifactBrokerService: args.computerUseArtifactBrokerService,
+        pinStore,
         bootstrapTokenPath: tokenPath,
         port: attemptedPort,
         deviceRegistryService,
@@ -569,10 +569,6 @@ export function createSyncService(args: SyncServiceArgs) {
         : !savedDraft && !syncPeerService.isConnected();
       const role = isLocalBrain ? "brain" : "viewer";
       const client = syncPeerService.getStatus();
-      const pairingSession =
-        role === "brain" && hostStartupEnabled && hostService
-          ? hostService.getPairingSession()
-          : null;
       const mode =
         role === "viewer"
           ? "viewer"
@@ -587,10 +583,10 @@ export function createSyncService(args: SyncServiceArgs) {
         clusterState: cluster,
         bootstrapToken:
           role === "brain" && hostStartupEnabled ? readToken() : null,
-        pairingSession,
+        pairingPin: role === "brain" && hostStartupEnabled ? pinStore.getPin() : null,
         pairingConnectInfo:
           role === "brain" && hostStartupEnabled
-            ? buildPairingConnectInfo({ localDevice, pairingSession })
+            ? buildPairingConnectInfo({ localDevice })
             : null,
         connectedPeers: hostService
           ? hostService.getPeerStates()
@@ -645,6 +641,24 @@ export function createSyncService(args: SyncServiceArgs) {
       deviceRegistryService.clearClusterRegistryForViewerJoin();
       await refreshRoleState();
       return await this.getStatus();
+    },
+
+    getPin(): string | null {
+      return pinStore.getPin();
+    },
+
+    async setPin(pin: string): Promise<SyncRoleSnapshot> {
+      pinStore.setPin(pin);
+      const snapshot = await service.getStatus();
+      args.onStatusChanged?.(snapshot);
+      return snapshot;
+    },
+
+    async clearPin(): Promise<SyncRoleSnapshot> {
+      pinStore.clearPin();
+      const snapshot = await service.getStatus();
+      args.onStatusChanged?.(snapshot);
+      return snapshot;
     },
 
     async forgetDevice(deviceId: string): Promise<SyncRoleSnapshot> {

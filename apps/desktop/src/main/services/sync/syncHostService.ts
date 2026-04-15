@@ -29,7 +29,6 @@ import type {
   SyncPairingRequestPayload,
   SyncPeerConnectionState,
   SyncPeerMetadata,
-  SyncPairingSession,
   SyncTerminalSnapshotPayload,
 } from "../../../shared/types";
 import { parseAgentChatTranscript } from "../../../shared/chatTranscript";
@@ -54,6 +53,7 @@ import type { AdeDb } from "../state/kvDb";
 import { hasNullByte, normalizeRelative, nowIso, resolvePathWithinRoot, toOptionalString } from "../shared/utils";
 import type { DeviceRegistryService } from "./deviceRegistryService";
 import { createSyncPairingStore } from "./syncPairingStore";
+import type { SyncPinStore } from "./syncPinStore";
 import { DEFAULT_SYNC_COMPRESSION_THRESHOLD_BYTES, DEFAULT_SYNC_HOST_PORT, encodeSyncEnvelope, mapPlatform, parseSyncEnvelope, wsDataToText } from "./syncProtocol";
 import { createSyncRemoteCommandService } from "./syncRemoteCommandService";
 const DEFAULT_SYNC_HEARTBEAT_INTERVAL_MS = 30_000;
@@ -101,6 +101,7 @@ type SyncHostServiceArgs = {
   rebaseSuggestionService?: ReturnType<typeof createRebaseSuggestionService>;
   autoRebaseService?: ReturnType<typeof createAutoRebaseService>;
   computerUseArtifactBrokerService: ReturnType<typeof createComputerUseArtifactBrokerService>;
+  pinStore: SyncPinStore;
   bootstrapTokenPath?: string;
   port?: number;
   heartbeatIntervalMs?: number;
@@ -264,6 +265,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
   const bootstrapToken = ensureBootstrapToken(bootstrapTokenPath);
   const pairingStore = createSyncPairingStore({
     filePath: pairingSecretsPath,
+    pinStore: args.pinStore,
   });
   const remoteCommandService = createSyncRemoteCommandService({
     laneService: args.laneService,
@@ -301,6 +303,27 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
   };
 
   const peers = new Set<PeerState>();
+  const PAIR_FAILURE_THRESHOLD = 5;
+  const PAIR_COOLDOWN_MS = 10 * 60_000;
+  const pairFailures = new Map<string, { count: number; cooldownUntilMs: number }>();
+  const registerPairFailure = (ip: string | null): void => {
+    if (!ip) return;
+    const now = Date.now();
+    const entry = pairFailures.get(ip) ?? { count: 0, cooldownUntilMs: 0 };
+    entry.count += 1;
+    if (entry.count >= PAIR_FAILURE_THRESHOLD) {
+      entry.cooldownUntilMs = now + PAIR_COOLDOWN_MS;
+      entry.count = 0;
+    }
+    pairFailures.set(ip, entry);
+  };
+  const pairingCooldownMsRemaining = (ip: string | null): number => {
+    if (!ip) return 0;
+    const entry = pairFailures.get(ip);
+    if (!entry) return 0;
+    const remaining = entry.cooldownUntilMs - Date.now();
+    return remaining > 0 ? remaining : 0;
+  };
   const server = new WebSocketServer({
     host: "0.0.0.0",
     port: args.port ?? DEFAULT_SYNC_HOST_PORT,
@@ -357,6 +380,20 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
   }, brainStatusIntervalMs);
 
   server.on("connection", (ws, request) => {
+    const remoteAddress = sanitizeRemoteAddress(request.socket.remoteAddress);
+    const cooldownMs = pairingCooldownMsRemaining(remoteAddress);
+    if (cooldownMs > 0) {
+      const minutes = Math.ceil(cooldownMs / 60_000);
+      send(ws, "pairing_result", {
+        ok: false,
+        error: {
+          code: "pairing_failed",
+          message: `Too many failed PIN attempts. Try again in ${minutes} minute${minutes === 1 ? "" : "s"}.`,
+        },
+      }, null);
+      try { ws.close(4004, "Pairing cooldown"); } catch { /* ignore */ }
+      return;
+    }
     const peer: PeerState = {
       ws,
       metadata: null,
@@ -369,7 +406,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       lastKnownServerDbVersion: 0,
       latencyMs: null,
       awaitingHeartbeatAt: null,
-      remoteAddress: sanitizeRemoteAddress(request.socket.remoteAddress),
+      remoteAddress,
       remotePort: request.socket.remotePort ?? null,
       subscribedSessionIds: new Set(),
       subscribedChatSessionIds: new Set(),
@@ -403,6 +440,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     const localDevice = args.deviceRegistryService?.ensureLocalDevice() ?? null;
     const hostName = localDevice?.name ?? os.hostname();
     const ipAddresses = (localDevice?.ipAddresses ?? []).filter((value) => value.trim().length > 0);
+    const addressesCsv = [...ipAddresses, "127.0.0.1"].join(",");
     const txt = {
       version: "1",
       deviceId: localDevice?.deviceId ?? "",
@@ -410,7 +448,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       deviceName: hostName,
       port: String(port),
       host: localDevice?.lastHost ?? "",
-      addresses: ipAddresses.join(","),
+      addresses: addressesCsv,
       tailscaleIp: localDevice?.tailscaleIp ?? "",
     };
     if (!bonjourInstance) {
@@ -760,6 +798,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
               message: "Invalid pairing request payload.",
             },
           }, envelope.requestId);
+          try { peer.ws.close(4003, "Pairing failed"); } catch { /* ignore */ }
           return;
         }
         try {
@@ -776,13 +815,27 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           }, envelope.requestId);
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
+          const thrownCode = (error as { code?: string } | null)?.code ?? null;
+          const resultCode =
+            thrownCode === "pin_not_set"
+              ? "pin_not_set"
+              : thrownCode === "invalid_pin"
+                ? "invalid_pin"
+                : "pairing_failed";
           send(peer.ws, "pairing_result", {
             ok: false,
             error: {
-              code: /expired/i.test(message) ? "expired_code" : "invalid_code",
+              code: resultCode,
               message,
             },
           }, envelope.requestId);
+          // Drop the socket after any failed pair so brute-forcing the 6-digit
+          // PIN requires a new TCP+WS handshake per attempt, and track per-IP
+          // failures so sustained guessers hit a cooldown.
+          if (resultCode === "invalid_pin" || resultCode === "pairing_failed") {
+            registerPairFailure(peer.remoteAddress);
+          }
+          try { peer.ws.close(4003, "Pairing failed"); } catch { /* ignore */ }
         }
         return;
       }
@@ -845,7 +898,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           bootstrapAuth: true,
           pairingAuth: {
             enabled: true,
-            codeTtlMs: pairingStore.getCodeTtlMs(),
+            pinDigits: 6,
           },
           commandRouting: {
             mode: "allowlisted",
@@ -1024,10 +1077,6 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
 
     getBootstrapToken(): string {
       return bootstrapToken;
-    },
-
-    getPairingSession(): SyncPairingSession {
-      return pairingStore.getActiveSession();
     },
 
     revokePairedDevice(deviceId: string): void {

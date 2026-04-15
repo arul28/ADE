@@ -724,6 +724,12 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.syncGetTransferReadiness),
     transferBrainToLocal: async (): Promise<SyncRoleSnapshot> =>
       ipcRenderer.invoke(IPC.syncTransferBrainToLocal),
+    getPin: async (): Promise<{ pin: string | null }> =>
+      ipcRenderer.invoke(IPC.syncGetPin),
+    setPin: async (pin: string): Promise<SyncRoleSnapshot> =>
+      ipcRenderer.invoke(IPC.syncSetPin, pin),
+    clearPin: async (): Promise<SyncRoleSnapshot> =>
+      ipcRenderer.invoke(IPC.syncClearPin),
     onEvent: (cb: (event: SyncStatusEventPayload) => void) => {
       const listener = (
         _event: Electron.IpcRendererEvent,

@@ -569,6 +569,14 @@ struct LaneStackCard: View, Equatable {
             .lineLimit(1)
         }
 
+        if let devices = snapshot.lane.devicesOpen, !devices.isEmpty {
+          Image(systemName: devicePresenceSymbol(for: devices))
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(ADEColor.accent)
+            .padding(.top, 4)
+            .accessibilityLabel("Open on \(devices.count) other device\(devices.count == 1 ? "" : "s")")
+        }
+
         Image(systemName: "chevron.right")
           .font(.caption2.weight(.semibold))
           .foregroundStyle(ADEColor.textMuted)
@@ -650,30 +658,3 @@ struct LaneStackCard: View, Equatable {
   }
 }
 
-struct LaneStackConnector: View {
-  let depth: Int
-  let isLast: Bool
-
-  var body: some View {
-    HStack(spacing: 0) {
-      Spacer()
-        .frame(width: CGFloat(depth) * 20 + 24)
-      VStack(spacing: 0) {
-        Circle()
-          .fill(ADEColor.accent.opacity(0.25))
-          .frame(width: 5, height: 5)
-        Rectangle()
-          .fill(
-            LinearGradient(
-              colors: [ADEColor.accent.opacity(0.25), ADEColor.border.opacity(0.15)],
-              startPoint: .top,
-              endPoint: .bottom
-            )
-          )
-          .frame(width: 1.5, height: 10)
-      }
-      Spacer()
-    }
-    .frame(height: 16)
-  }
-}
