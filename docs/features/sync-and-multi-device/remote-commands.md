@@ -8,16 +8,7 @@ host-side services, and replies with `command_ack` and then
 `command_result`.
 
 Source file: `apps/desktop/src/main/services/sync/syncRemoteCommandService.ts`
-(1,207 lines).
-
-> **Branch-modified note:** this file is currently modified on the
-> working branch relative to `main`. The diff adds
-> `AgentChatFileRef` parsing to `chat.send` and `chat.steer` payloads
-> (attachments, displayText, reasoningEffort, executionMode,
-> interactionMode). Treat the action set in this doc as authoritative
-> for the branch state; on `main` the `chat.send`/`chat.steer` payload
-> parsers are narrower. See the diff summary at the bottom of this
-> file.
+(~1,210 lines).
 
 ## Shape
 
@@ -266,31 +257,23 @@ can be sensitive.
   payloads and streaming reads outside the command surface to avoid
   bloating the command envelope.
 
-## Branch modifications (current working branch)
+## Chat command payload shape
 
-The repository is currently on a branch with the following changes
-to `syncRemoteCommandService.ts` relative to `main`:
+`parseAgentChatSendArgs` and `parseAgentChatSteerArgs` accept the full
+`AgentChatSendArgs` surface: `sessionId`, `text`, `attachments` (via
+`parseAgentChatFileRefs`, array of `{ path, type: "file" | "image" }`),
+`displayText`, `reasoningEffort`, `executionMode`, `interactionMode`.
+Steers accept `sessionId`, `text`, and `attachments`. Controllers
+(phones and desktop peers) can therefore attach files/images and
+specify reasoning / execution / interaction modes remotely; the
+host-side `agentChatService` consumes the same shape end-to-end.
 
-1. Import added: `AgentChatFileRef`.
-2. New helper `parseAgentChatFileRefs(value)` that accepts an array
-   of `{ path, type: "file" | "image" }` entries.
-3. `parseAgentChatSendArgs` extended to accept and forward
-   `attachments`, `displayText`, `reasoningEffort`, `executionMode`,
-   `interactionMode`.
-4. `parseAgentChatSteerArgs` extended to accept and forward
-   `attachments`.
-
-The effect: controllers (phones and desktop peers) can attach
-files/images to a chat send or steer, and specify reasoning effort
-/ execution mode / interaction mode from the controller side. The
-corresponding host-side agent chat service must accept those
-`AgentChatSendArgs` fields; treat these parsers as the contract at
-the sync boundary on this branch.
-
-If you back out the branch changes, `chat.send` and `chat.steer`
-accept only `{ sessionId, text }`. Consumers on the controller side
-that rely on attachment passthrough need to check `AgentChatSendArgs`
-in the shared types to see whether the fields exist at all.
+`parseChatModelsArgs` accepts `{ provider, activateRuntime? }`. When
+`chat.create` is missing an explicit model, `resolveChatCreateArgs`
+forwards `activateRuntime: true` only for the `opencode` provider so
+the host actually launches the OpenCode probe server before resolving
+a default model. All other providers use passive (cache-only) resolution;
+see the chat README for the passive/active contract.
 
 ## Gotchas
 

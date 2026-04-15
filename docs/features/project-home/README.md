@@ -62,6 +62,21 @@ Main process (the substrate):
   — aggregated lane runtime health.
 - `apps/desktop/src/main/services/agentTools/` — detects installed
   agent CLI tools (Claude Code, Codex, Cursor, Aider, Continue).
+- `apps/desktop/src/main/services/projects/projectBrowserService.ts`
+  — serves the Command Palette project browser: expands `~`, handles
+  platform-appropriate relative / absolute paths, lists matching
+  subdirectories with `.git` detection (concurrency-limited, capped at
+  `limit` with 500 max), and resolves any exact-directory match up to
+  an openable repo root via `resolveRepoRoot()`. Windows-style paths
+  are rejected on non-Windows hosts.
+- `apps/desktop/src/main/services/projects/projectDetailService.ts` —
+  produces the palette's preview pane: branch name, dirty-file count,
+  ahead/behind counts, last commit (subject / ISO date / short sha),
+  README excerpt (first ~1,600 chars, trimmed on paragraph / sentence
+  boundary), top-four languages by file count (extension-mapped,
+  depth-2 walk capped at 2,000 files), subdirectory count, and — when
+  the path matches a recent-projects row in the global state file —
+  lane count and last-opened timestamp.
 
 Shared types:
 
@@ -83,13 +98,50 @@ Rendered by `RunPage` when `useAppStore((s) => s.showWelcome)` is true
 a prior session. Shows:
 
 - ADE logo with a subtle pulse-glow
-- "OPEN PROJECT" primary button → `appStore.openRepo()`
+- "OPEN PROJECT" primary button → opens the Command Palette in
+  `intent="project-browse"` mode (see the next subsection)
 - recent projects list from `window.ade.project.listRecent()`, with
   display name, host path, lane count, and last-opened timestamp
 
 Clicking a recent project calls `appStore.switchProjectToPath(path)`
 which goes through the project open flow
 (`adeProjectService.openProject`).
+
+### Command Palette project browser
+
+The Command Palette (`renderer/components/app/CommandPalette.tsx`) is a
+dual-mode Radix dialog. In default mode it fuzzy-filters navigation /
+action commands; in `intent="project-browse"` mode it becomes a
+keyboard-first project opener. The palette mounts from two places:
+
+- **`AppShell`** — global ⌘K shortcut opens the palette in default
+  mode. The "Open project" / "Open another project" command switches
+  it into `project-browse` mode without closing.
+- **`WelcomeScreen` in `RunPage`** — the "OPEN PROJECT" button mounts
+  a dedicated palette instance with `intent="project-browse"` so the
+  empty-project state skips straight to the browser.
+
+Project-browse behavior:
+
+1. The input field debounces into `window.ade.project.browseDirectories({
+   partialPath, cwd, limit })`. `cwd` is the active project root
+   (so `../` is a usable starting point); if no project is open the
+   default input is `~/`.
+2. Results render as a list: a "Go up" row if the current directory
+   has a parent, then matching subdirectories (alphabetically sorted,
+   `.git`-detected marked with a branch icon).
+3. A debounced `window.ade.project.getDetail(target)` populates a
+   preview pane alongside the list — branch, dirty/ahead/behind,
+   last commit, README excerpt (rendered through `react-markdown` +
+   `remark-gfm`), language swatches, lane count, last-opened.
+4. Enter activates the highlighted directory (walks into it). ⌘/Ctrl+
+   Enter opens the openable project root (the first ancestor with a
+   `.git` entry).
+5. Drag-and-drop onto the palette uses
+   `window.ade.project.getDroppedPath(file)` to resolve the dropped
+   folder's absolute path and then opens it.
+6. A "Choose folder…" escape hatch falls through to the OS directory
+   picker via `window.ade.project.chooseDirectory`.
 
 ### Per-lane runtime dashboard
 

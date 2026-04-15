@@ -3010,6 +3010,36 @@ describe("createAgentChatService", () => {
     });
   });
 
+  describe("forceDisposeAll", () => {
+    it("rejects active runSessionTurn calls during shutdown", async () => {
+      vi.mocked(streamText).mockReturnValue({
+        fullStream: (async function* () {
+          yield { type: "text-delta", textDelta: "Still working" };
+          await new Promise(() => {});
+        })(),
+      } as any);
+
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "opencode",
+        model: "",
+        modelId: "opencode/anthropic/claude-sonnet-4-6",
+      });
+
+      const turn = service.runSessionTurn({
+        sessionId: session.id,
+        text: "Keep running",
+        timeoutMs: null,
+      });
+      const turnExpectation = expect(turn).rejects.toThrow(/shutdown/i);
+
+      service.forceDisposeAll();
+
+      await turnExpectation;
+    });
+  });
+
   describe("deleteSession", () => {
     it("removes persisted chat artifacts and the stored session row", async () => {
       const { service, sessionService } = createService();

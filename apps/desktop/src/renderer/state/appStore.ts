@@ -346,6 +346,7 @@ type AppState = {
   selectedLaneId: string | null;
   runLaneId: string | null;
   focusedSessionId: string | null;
+  projectRevision: number;
   theme: ThemeId;
   terminalPreferences: TerminalPreferences;
   providerMode: ProviderMode;
@@ -469,6 +470,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   selectedLaneId: null,
   runLaneId: null,
   focusedSessionId: null,
+  projectRevision: 0,
   theme: initialUserPreferences.theme,
   terminalPreferences: initialUserPreferences.terminalPreferences,
   providerMode: "guest",
@@ -480,7 +482,16 @@ export const useAppStore = create<AppState>((set, get) => ({
   workViewByProject: initialPersistedWorkViews.workViewByProject,
   laneWorkViewByScope: initialPersistedWorkViews.laneWorkViewByScope,
 
-  setProject: (project) => set({ project }),
+  setProject: (project) =>
+    set((prev) => {
+      const previousProjectRoot = prev.project?.rootPath ?? null;
+      const nextProjectRoot = project?.rootPath ?? null;
+      return {
+        project,
+        projectRevision:
+          previousProjectRoot !== nextProjectRoot ? prev.projectRevision + 1 : prev.projectRevision,
+      };
+    }),
   setProjectHydrated: (projectHydrated) => set({ projectHydrated }),
   setShowWelcome: (showWelcome) => set({ showWelcome }),
   clearProjectTransitionError: () => set({ projectTransitionError: null }),
@@ -601,7 +612,8 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   refreshProject: async () => {
     const project = await window.ade.app.getProject();
-    set({ project, projectHydrated: true });
+    get().setProject(project);
+    set({ projectHydrated: true });
   },
 
   refreshLanes: async (options) => {
@@ -740,8 +752,8 @@ export const useAppStore = create<AppState>((set, get) => ({
         set({ projectTransition: null });
         return null;
       }
+      get().setProject(project);
       set({
-        project,
         projectHydrated: true,
         showWelcome: false,
         projectTransition: null,
@@ -787,8 +799,8 @@ export const useAppStore = create<AppState>((set, get) => ({
     });
     try {
       const project = await window.ade.project.switchToPath(rootPath);
+      get().setProject(project);
       set({
-        project,
         projectHydrated: true,
         showWelcome: false,
         projectTransition: null,
@@ -859,8 +871,8 @@ export const useAppStore = create<AppState>((set, get) => ({
       await window.ade.project.closeCurrent();
       invalidateAiDiscoveryCache(closingProjectRoot);
       invalidateProjectConfigCache(closingProjectRoot);
+      get().setProject(null);
       set({
-        project: null,
         projectHydrated: true,
         showWelcome: true,
         projectTransition: null,

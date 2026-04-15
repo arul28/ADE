@@ -1,6 +1,6 @@
 import { getDefaultModelDescriptor, getModelById, resolveModelAlias } from "../../../shared/modelRegistry";
 
-export type ClaudeCliModelAlias = "opus" | "sonnet" | "haiku";
+export type ClaudeCliModelAlias = "opus" | "opus[1m]" | "sonnet" | "haiku";
 
 const CLAUDE_CLI_MODEL_ALIAS_MAP: Record<string, ClaudeCliModelAlias> = {
   opus: "opus",
@@ -8,6 +8,12 @@ const CLAUDE_CLI_MODEL_ALIAS_MAP: Record<string, ClaudeCliModelAlias> = {
   "claude-opus-4-6": "opus",
   "anthropic/claude-opus-4-6": "opus",
   "anthropic/claude-opus-4-6-api": "opus",
+  "opus[1m]": "opus[1m]",
+  "opus-1m": "opus[1m]",
+  "opus-4-6-1m": "opus[1m]",
+  "claude-opus-4-6[1m]": "opus[1m]",
+  "claude-opus-4-6-1m": "opus[1m]",
+  "anthropic/claude-opus-4-6-1m": "opus[1m]",
   sonnet: "sonnet",
   "sonnet-4-6": "sonnet",
   "sonnet-4-5": "sonnet",
@@ -26,7 +32,7 @@ const CLAUDE_CLI_MODEL_ALIAS_MAP: Record<string, ClaudeCliModelAlias> = {
 
 /**
  * Normalize arbitrary Claude model strings into the CLI-safe aliases expected
- * by Claude Code (`opus`, `sonnet`, `haiku`) where possible.
+ * by Claude Code (`opus`, `opus[1m]`, `sonnet`, `haiku`) where possible.
  */
 export function resolveClaudeCliModel(model: string | null | undefined): string {
   const raw = String(model ?? "").trim();
@@ -36,6 +42,9 @@ export function resolveClaudeCliModel(model: string | null | undefined): string 
   const mapped = CLAUDE_CLI_MODEL_ALIAS_MAP[normalized];
   if (mapped) return mapped;
 
+  if (normalized.includes("opus") && (normalized.includes("1m") || normalized.includes("[1m]"))) {
+    return "opus[1m]";
+  }
   if (normalized.includes("sonnet")) return "sonnet";
   if (normalized.includes("opus")) return "opus";
   if (normalized.includes("haiku")) return "haiku";

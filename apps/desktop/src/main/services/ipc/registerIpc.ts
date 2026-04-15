@@ -10,6 +10,8 @@ import { getModelById } from "../../../shared/modelRegistry";
 import { buildPrAiResolutionContextKey } from "../../../shared/types";
 import { launchPrIssueResolutionChat, previewPrIssueResolutionPrompt } from "../prs/prIssueResolver";
 import { launchRebaseResolutionChat } from "../prs/prRebaseResolver";
+import { browseProjectDirectories } from "../projects/projectBrowserService";
+import { getProjectDetail } from "../projects/projectDetailService";
 import { runGit } from "../git/git";
 import type { AdeCleanupResult, AdeProjectSnapshot } from "../../../shared/types";
 import { toRecentProjectSummary } from "../projects/recentProjectSummary";
@@ -235,6 +237,9 @@ import type {
   ProjectConfigSnapshot,
   ProjectConfigTrust,
   ProjectConfigValidationResult,
+  ProjectBrowseInput,
+  ProjectBrowseResult,
+  ProjectDetail,
   ProjectInfo,
   RecentProjectSummary,
   PtyCreateArgs,
@@ -2044,6 +2049,21 @@ export function registerIpc({
       const result = win ? await dialog.showOpenDialog(win, options) : await dialog.showOpenDialog(options);
       if (result.canceled || result.filePaths.length === 0) return null;
       return result.filePaths[0] ?? null;
+    }
+  );
+
+  ipcMain.handle(
+    IPC.projectBrowseDirectories,
+    async (_event, args: ProjectBrowseInput = {}): Promise<ProjectBrowseResult> =>
+      browseProjectDirectories(args)
+  );
+
+  ipcMain.handle(
+    IPC.projectGetDetail,
+    async (_event, args: { rootPath: string }): Promise<ProjectDetail> => {
+      const rootPath = typeof args?.rootPath === "string" ? args.rootPath.trim() : "";
+      if (!rootPath) throw new Error("rootPath is required");
+      return getProjectDetail(rootPath, { globalStatePath });
     }
   );
 

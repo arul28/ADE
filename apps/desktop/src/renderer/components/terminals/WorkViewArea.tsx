@@ -34,7 +34,6 @@ function isRunningPtySession(
 function SessionSurface({
   session,
   isActive,
-  suspended = false,
   layoutVariant = "standard",
   terminalVisible = isActive,
   onOpenChatSession,
@@ -42,43 +41,11 @@ function SessionSurface({
 }: {
   session: TerminalSessionSummary;
   isActive: boolean;
-  suspended?: boolean;
   layoutVariant?: "standard" | "grid-tile";
   terminalVisible?: boolean;
   onOpenChatSession: (session: AgentChatSession) => void | Promise<void>;
   onResume?: (session: TerminalSessionSummary) => void;
 }) {
-  if (suspended) {
-    const secondary = secondarySessionLabel(session);
-    const status = sessionStatusDot(session);
-    const preview = session.summary?.trim()
-      || session.lastOutputPreview?.trim()
-      || (isChatToolType(session.toolType) ? "Select this tile to resume the live chat view." : "Select this tile to resume the live terminal view.");
-    return (
-      <div className="ade-work-glass-tile flex h-full w-full flex-col justify-between px-4 py-3 text-left">
-        <div className="flex items-start justify-between gap-3">
-          <div className="min-w-0">
-            <div className="flex items-center gap-2 text-[11px] text-fg">
-              <ToolLogo toolType={session.toolType} size={12} />
-              <span className="truncate font-medium">{primarySessionLabel(session)}</span>
-            </div>
-            <div className="mt-1 text-[10px] text-muted-fg/70">
-              {session.laneName}
-              {secondary ? ` • ${truncateSessionLabel(secondary, 40)}` : ""}
-            </div>
-          </div>
-          <span
-            title={status.label}
-            className={`${status.cls} mt-0.5 h-2 w-2 shrink-0${status.spinning ? " animate-spin" : ""}`}
-          />
-        </div>
-        <div className="mt-3 line-clamp-6 text-[11px] leading-relaxed text-muted-fg/80">
-          {preview}
-        </div>
-      </div>
-    );
-  }
-
   const isChat = isChatToolType(session.toolType);
   if (isChat) {
     return (
@@ -89,6 +56,7 @@ function SessionSurface({
         hideSessionTabs
         onSessionCreated={onOpenChatSession}
         layoutVariant={layoutVariant}
+        isTileActive={isActive}
       />
     );
   }
@@ -325,13 +293,20 @@ export function WorkViewArea({
       .filter((session): session is TerminalSessionSummary => session != null),
     [sessionsById, tabVisibleSessionIds, visibleSessions],
   );
+  const [hoveredGridSessionId, setHoveredGridSessionId] = useState<string | null>(null);
   const showingDraft = activeItemId == null;
   const activeSession = showingDraft
     ? null
     : sessionsById.get(activeItemId) ?? tabVisibleSessions[0] ?? visibleSessions[0] ?? null;
   const activeRunningTerminalSession = isRunningPtySession(activeSession) ? activeSession : null;
+  const handleContextMenu = useCallback((session: TerminalSessionSummary, e: React.MouseEvent): void => {
+    if (onContextMenu) {
+      e.preventDefault();
+      onContextMenu(session, e);
+    }
+  }, [onContextMenu]);
   const packedGridTiles = useMemo(() => visibleSessions.map((session) => {
-    const isActive = activeSession?.id === session.id;
+    const isActive = (hoveredGridSessionId ?? activeItemId) === session.id;
     const dot = sessionStatusDot(session);
     const isBusy = session.ptyId ? closingPtyIds.has(session.ptyId) : false;
     const primary = primarySessionLabel(session);
@@ -348,6 +323,7 @@ export function WorkViewArea({
       minHeight: isChatToolType(session.toolType) ? CHAT_TILE_MIN_HEIGHT : TERMINAL_TILE_MIN_HEIGHT,
       selected: isActive,
       onSelect: () => onSelectItem(session.id),
+      onHover: () => setHoveredGridSessionId(session.id),
       className: isActive
         ? "ade-work-glass-tile-active"
         : "ade-work-glass-tile",
@@ -407,7 +383,6 @@ export function WorkViewArea({
           <SessionSurface
             session={session}
             isActive={isActive}
-            suspended={!isActive && !isChatToolType(session.toolType)}
             terminalVisible
             layoutVariant="grid-tile"
             onOpenChatSession={onOpenChatSession}
@@ -416,17 +391,22 @@ export function WorkViewArea({
         </div>
       ),
     };
-  }), [activeSession?.id, closingPtyIds, handleContextMenu, onCloseItem, onOpenChatSession, onSelectItem, visibleSessions]);
+  }), [activeItemId, closingPtyIds, handleContextMenu, hoveredGridSessionId, onCloseItem, onOpenChatSession, onResumeSession, onSelectItem, visibleSessions]);
   const resolvedTabGroups = tabGroups ?? [];
   const hasGroupedTabs = resolvedTabGroups.length > 0;
   const toggleTabGroupCollapsed = onToggleTabGroupCollapsed ?? (() => {});
 
-  function handleContextMenu(session: TerminalSessionSummary, e: React.MouseEvent): void {
-    if (onContextMenu) {
-      e.preventDefault();
-      onContextMenu(session, e);
+  useEffect(() => {
+    if (viewMode !== "grid") {
+      setHoveredGridSessionId(null);
     }
-  }
+  }, [viewMode]);
+
+  useEffect(() => {
+    if (hoveredGridSessionId && !sessionsById.has(hoveredGridSessionId)) {
+      setHoveredGridSessionId(null);
+    }
+  }, [hoveredGridSessionId, sessionsById]);
 
   if (viewMode === "grid") {
     return (
@@ -457,6 +437,7 @@ export function WorkViewArea({
           <PackedSessionGrid
             layoutId={gridLayoutId}
             tiles={packedGridTiles}
+            onViewportMouseLeave={() => setHoveredGridSessionId(null)}
           />
         )}
       </div>

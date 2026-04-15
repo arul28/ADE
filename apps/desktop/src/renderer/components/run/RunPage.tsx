@@ -3,6 +3,7 @@ import { Play, Stop, Plus, X, FolderOpen, Folder, Terminal } from "@phosphor-ico
 import { useAppStore } from "../../state/appStore";
 import { COLORS, MONO_FONT, SANS_FONT, LABEL_STYLE, outlineButton, primaryButton } from "../lanes/laneDesignTokens";
 import { CommandCard } from "./CommandCard";
+import { CommandPalette } from "../app/CommandPalette";
 import { ProcessMonitor, type RunShellSession } from "./ProcessMonitor";
 import { LaneRuntimeBar } from "./LaneRuntimeBar";
 import { AddCommandDialog, type AddCommandInitialValues } from "./AddCommandDialog";
@@ -78,9 +79,9 @@ function buildReadinessConfig(args: {
 }
 
 function WelcomeScreen() {
-  const openRepo = useAppStore((s) => s.openRepo);
   const switchProjectToPath = useAppStore((s) => s.switchProjectToPath);
   const [recentProjects, setRecentProjects] = useState<Array<{ rootPath: string; displayName: string; exists: boolean; lastOpenedAt?: string; laneCount?: number }>>([]);
+  const [projectBrowserOpen, setProjectBrowserOpen] = useState(false);
 
   useEffect(() => {
     window.ade.project.listRecent().then(setRecentProjects).catch(() => {});
@@ -115,7 +116,7 @@ function WelcomeScreen() {
 
       <button
         type="button"
-        onClick={() => void openRepo()}
+        onClick={() => setProjectBrowserOpen(true)}
         style={{
           ...primaryButton({ height: 48, padding: "0 32px", fontSize: 14 }),
           gap: 12,
@@ -215,6 +216,12 @@ function WelcomeScreen() {
           </div>
         </div>
       )}
+
+      <CommandPalette
+        open={projectBrowserOpen}
+        onOpenChange={setProjectBrowserOpen}
+        intent="project-browse"
+      />
     </div>
   );
 }

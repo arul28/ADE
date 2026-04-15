@@ -45,6 +45,53 @@ export type ProjectInfo = {
   baseRef: string;
 };
 
+export type ProjectBrowseInput = {
+  partialPath?: string;
+  cwd?: string | null;
+  limit?: number;
+};
+
+export type ProjectBrowseEntry = {
+  name: string;
+  fullPath: string;
+  isGitRepo: boolean;
+};
+
+export type ProjectLanguageShare = {
+  name: string;
+  fraction: number;
+};
+
+export type ProjectLastCommit = {
+  subject: string;
+  isoDate: string;
+  shortSha: string;
+};
+
+export type ProjectDetail = {
+  rootPath: string;
+  isGitRepo: boolean;
+  branchName: string | null;
+  dirtyCount: number | null;
+  aheadBehind: { ahead: number; behind: number } | null;
+  lastCommit: ProjectLastCommit | null;
+  readmeExcerpt: string | null;
+  languages: ProjectLanguageShare[];
+  laneCount: number | null;
+  lastOpenedAt: string | null;
+  subdirectoryCount: number | null;
+};
+
+export type ProjectBrowseResult = {
+  inputPath: string;
+  resolvedPath: string;
+  directoryPath: string;
+  parentPath: string | null;
+  exactDirectoryPath: string | null;
+  openableProjectRoot: string | null;
+  entries: ProjectBrowseEntry[];
+};
+
 export type ClearLocalAdeDataArgs = {
   packs?: boolean;
   logs?: boolean;

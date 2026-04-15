@@ -5,7 +5,6 @@ import {
   GRID_GAP_PX,
   GRID_MAX_ROW_SPAN,
   GRID_COLUMN_SUBDIVISIONS,
-  clampPackedGridSpan,
   computeDefaultRowSpan,
   computeMinimumColSpan,
   computeGridColumnCount,
@@ -13,10 +12,13 @@ import {
   computePackedGridRowHeight,
   computePackedSpanPixels,
   packGridItems,
+  readPackedGridPlacement,
   readPackedGridSpan,
   reconcilePackedGridLayout,
+  clampPackedGridSpan,
   type PackedGridPlacement,
   type PackedGridSpan,
+  resizePackedGridItem,
 } from "./packedSessionGridMath";
 
 type ResizeDirection = "n" | "s" | "e" | "w" | "ne" | "nw" | "se" | "sw";
@@ -27,6 +29,7 @@ type PackedSessionGridTile = {
   minHeight: number;
   selected?: boolean;
   onSelect?: () => void;
+  onHover?: () => void;
   header: React.ReactNode;
   children: React.ReactNode;
   className?: string;
@@ -37,8 +40,8 @@ type ResizeState = {
   direction: ResizeDirection;
   startX: number;
   startY: number;
-  startSpan: PackedGridSpan;
-  currentSpan: PackedGridSpan;
+  startPlacementsById: Record<string, PackedGridPlacement>;
+  currentPlacementsById: Record<string, PackedGridPlacement>;
   pointerId: number;
   pointerTarget: HTMLElement | null;
 };
@@ -66,10 +69,12 @@ export function PackedSessionGrid({
   layoutId,
   tiles,
   className,
+  onViewportMouseLeave,
 }: {
   layoutId: string;
   tiles: PackedSessionGridTile[];
   className?: string;
+  onViewportMouseLeave?: () => void;
 }) {
   const { layout, loaded, saveLayout } = useDockLayout(layoutId, {});
   const viewportRef = useRef<HTMLDivElement | null>(null);
@@ -77,6 +82,7 @@ export function PackedSessionGrid({
   const [viewportSize, setViewportSize] = useState({ width: 0, height: 0 });
   const [resizingTileId, setResizingTileId] = useState<string | null>(null);
   const [draftSpansById, setDraftSpansById] = useState<Record<string, PackedGridSpan>>({});
+  const [draftPlacementsById, setDraftPlacementsById] = useState<Record<string, { column: number; row: number }>>({});
 
   useEffect(() => {
     const node = viewportRef.current;
@@ -116,20 +122,6 @@ export function PackedSessionGrid({
     }
     return next;
   }, [defaultRowSpan, minRowSpans, tiles]);
-
-  useEffect(() => {
-    if (!loaded) return;
-    const nextLayout = reconcilePackedGridLayout({
-      layout,
-      tileIds: tiles.map((tile) => tile.id),
-      defaultSpansById,
-    });
-    const sameKeys = Object.keys(nextLayout).length === Object.keys(layout).length
-      && Object.entries(nextLayout).every(([key, value]) => layout[key] === value);
-    if (!sameKeys) {
-      saveLayout(nextLayout);
-    }
-  }, [defaultSpansById, layout, loaded, saveLayout, tiles]);
 
   const columnCount = useMemo(() => {
     const minTileWidth = tiles.reduce((largest, tile) => Math.max(largest, tile.minWidth), 0);
@@ -185,13 +177,38 @@ export function PackedSessionGrid({
     return next;
   }, [draftSpansById, spansById]);
 
+  const placementsById = useMemo(() => {
+    const next: Record<string, { column: number; row: number }> = {};
+    for (const tile of tiles) {
+      const persisted = readPackedGridPlacement(layout, tile.id);
+      if (persisted) {
+        next[tile.id] = persisted;
+      }
+    }
+    return next;
+  }, [layout, tiles]);
+
+  const effectivePlacementsById = useMemo(() => {
+    if (!Object.keys(draftPlacementsById).length) return placementsById;
+    return {
+      ...placementsById,
+      ...draftPlacementsById,
+    };
+  }, [draftPlacementsById, placementsById]);
+
   const packedItems = useMemo(() => {
-    return tiles.map((tile) => ({
+    const next = tiles.map((tile) => ({
       id: tile.id,
       minRowSpan: minRowSpans[tile.id] ?? 1,
       span: effectiveSpansById[tile.id] ?? defaultSpansById[tile.id] ?? { colSpan: 1, rowSpan: 1 },
+      placement: effectivePlacementsById[tile.id],
     }));
-  }, [defaultSpansById, effectiveSpansById, minRowSpans, tiles]);
+    if (!resizingTileId) return next;
+    const activeIndex = next.findIndex((item) => item.id === resizingTileId);
+    if (activeIndex <= 0) return next;
+    const [active] = next.splice(activeIndex, 1);
+    return [active, ...next];
+  }, [defaultSpansById, effectivePlacementsById, effectiveSpansById, minRowSpans, resizingTileId, tiles]);
 
   const packed = useMemo(
     () => packGridItems(packedItems, trackCount),
@@ -215,6 +232,21 @@ export function PackedSessionGrid({
     return next;
   }, [packed.placements]);
 
+  useEffect(() => {
+    if (!loaded) return;
+    const nextLayout = reconcilePackedGridLayout({
+      layout,
+      tileIds: tiles.map((tile) => tile.id),
+      defaultSpansById,
+      columnCount: trackCount,
+    });
+    const sameKeys = Object.keys(nextLayout).length === Object.keys(layout).length
+      && Object.entries(nextLayout).every(([key, value]) => layout[key] === value);
+    if (!sameKeys) {
+      saveLayout(nextLayout);
+    }
+  }, [defaultSpansById, layout, loaded, saveLayout, tiles, trackCount]);
+
   const contentHeight = useMemo(
     () => computePackedSpanPixels(packed.totalRows, rowHeight),
     [packed.totalRows, rowHeight],
@@ -229,6 +261,7 @@ export function PackedSessionGrid({
     setResizingTileId(null);
     if (clearDraft) {
       setDraftSpansById({});
+      setDraftPlacementsById({});
     }
     document.body.style.userSelect = "";
     document.body.style.cursor = "";
@@ -246,63 +279,83 @@ export function PackedSessionGrid({
       if (!state || trackWidth <= 0 || rowHeight <= 0) return;
       const colUnit = trackWidth + GRID_GAP_PX;
       const rowUnit = rowHeight + GRID_GAP_PX;
-
-      let nextColSpan = state.startSpan.colSpan;
-      let nextRowSpan = state.startSpan.rowSpan;
-
-      if (hasHorizontalResize(state.direction)) {
-        const rawDelta = (event.clientX - state.startX) / colUnit;
-        const normalizedDelta = state.direction.includes("w") ? -rawDelta : rawDelta;
-        nextColSpan = state.startSpan.colSpan + Math.round(normalizedDelta);
-      }
-
-      if (hasVerticalResize(state.direction)) {
-        const rawDelta = (event.clientY - state.startY) / rowUnit;
-        const normalizedDelta = state.direction.includes("n") ? -rawDelta : rawDelta;
-        nextRowSpan = state.startSpan.rowSpan + Math.round(normalizedDelta);
-      }
-
-      const clamped = clampPackedGridSpan({
-        span: { colSpan: nextColSpan, rowSpan: nextRowSpan },
+      const deltaCols = hasHorizontalResize(state.direction)
+        ? Math.round((event.clientX - state.startX) / colUnit)
+        : 0;
+      const deltaRows = hasVerticalResize(state.direction)
+        ? Math.round((event.clientY - state.startY) / rowUnit)
+        : 0;
+      const nextPlacementsById = resizePackedGridItem({
+        placementsById: state.startPlacementsById,
+        tileId: state.tileId,
+        direction: state.direction,
+        deltaCols,
+        deltaRows,
         columnCount: trackCount,
-        minColSpan: minColSpans[state.tileId] ?? 1,
-        minRowSpan: minRowSpans[state.tileId] ?? 1,
+        minColSpans,
+        minRowSpans,
         maxRowSpan: GRID_MAX_ROW_SPAN,
       });
-      if (
-        clamped.colSpan === state.currentSpan.colSpan
-        && clamped.rowSpan === state.currentSpan.rowSpan
-      ) {
-        return;
+
+      const sameLayout = Object.keys(nextPlacementsById).length === Object.keys(state.currentPlacementsById).length
+        && Object.entries(nextPlacementsById).every(([tileId, nextPlacement]) => {
+          const currentPlacement = state.currentPlacementsById[tileId];
+          return currentPlacement
+            && currentPlacement.column === nextPlacement.column
+            && currentPlacement.row === nextPlacement.row
+            && currentPlacement.colSpan === nextPlacement.colSpan
+            && currentPlacement.rowSpan === nextPlacement.rowSpan;
+        });
+      if (sameLayout) return;
+
+      const nextDraftSpansById: Record<string, { colSpan: number; rowSpan: number }> = {};
+      const nextDraftPlacementsById: Record<string, { column: number; row: number }> = {};
+      for (const [tileId, nextPlacement] of Object.entries(nextPlacementsById)) {
+        nextDraftSpansById[tileId] = {
+          colSpan: nextPlacement.colSpan,
+          rowSpan: nextPlacement.rowSpan,
+        };
+        nextDraftPlacementsById[tileId] = {
+          column: nextPlacement.column,
+          row: nextPlacement.row,
+        };
       }
 
       resizeStateRef.current = {
         ...state,
-        currentSpan: clamped,
+        currentPlacementsById: nextPlacementsById,
       };
-      setDraftSpansById((prev) => {
-        const current = prev[state.tileId];
-        if (current?.colSpan === clamped.colSpan && current?.rowSpan === clamped.rowSpan) {
-          return prev;
-        }
-        return {
-          ...prev,
-          [state.tileId]: clamped,
-        };
-      });
+      setDraftSpansById(nextDraftSpansById);
+      setDraftPlacementsById(nextDraftPlacementsById);
     };
 
     const handlePointerUp = () => {
       const state = resizeStateRef.current;
-      if (state && (
-        state.currentSpan.colSpan !== state.startSpan.colSpan
-        || state.currentSpan.rowSpan !== state.startSpan.rowSpan
-      )) {
-        saveLayout((prev) => ({
-          ...prev,
-          [`${state.tileId}:col`]: state.currentSpan.colSpan,
-          [`${state.tileId}:row`]: state.currentSpan.rowSpan,
-        }));
+      if (state) {
+        const changedTileIds = Object.keys(state.currentPlacementsById).filter((tileId) => {
+          const startPlacement = state.startPlacementsById[tileId];
+          const currentPlacement = state.currentPlacementsById[tileId];
+          return !startPlacement
+            || startPlacement.column !== currentPlacement.column
+            || startPlacement.row !== currentPlacement.row
+            || startPlacement.colSpan !== currentPlacement.colSpan
+            || startPlacement.rowSpan !== currentPlacement.rowSpan;
+        });
+        if (changedTileIds.length > 0) {
+          saveLayout((prev) => {
+            const next = { ...prev };
+            for (const tileId of changedTileIds) {
+              const currentPlacement = state.currentPlacementsById[tileId];
+              next[`${tileId}:colStart`] = currentPlacement.column;
+              next[`${tileId}:rowStart`] = currentPlacement.row;
+              next[`${tileId}:colSpan`] = currentPlacement.colSpan;
+              next[`${tileId}:rowSpan`] = currentPlacement.rowSpan;
+              next[`${tileId}:col`] = currentPlacement.colSpan;
+              next[`${tileId}:row`] = currentPlacement.rowSpan;
+            }
+            return next;
+          });
+        }
       }
       stopResize();
     };
@@ -320,22 +373,30 @@ export function PackedSessionGrid({
     event.stopPropagation();
     event.currentTarget.setPointerCapture?.(event.pointerId);
     document.body.style.cursor = `${direction}-resize`;
+    const startPlacementsById: Record<string, PackedGridPlacement> = {};
+    for (const placement of packed.placements) {
+      startPlacementsById[placement.id] = { ...placement };
+    }
     resizeStateRef.current = {
       tileId,
       direction,
       startX: event.clientX,
       startY: event.clientY,
-      startSpan: spansById[tileId] ?? { colSpan: 1, rowSpan: 1 },
-      currentSpan: spansById[tileId] ?? { colSpan: 1, rowSpan: 1 },
+      startPlacementsById,
+      currentPlacementsById: startPlacementsById,
       pointerId: event.pointerId,
       pointerTarget: event.currentTarget,
     };
     setResizingTileId(tileId);
     document.body.style.userSelect = "none";
-  }, [spansById]);
+  }, [packed.placements]);
 
   return (
-    <div ref={viewportRef} className={cn("min-h-0 flex-1 overflow-auto p-2", className)}>
+    <div
+      ref={viewportRef}
+      className={cn("min-h-0 flex-1 overflow-auto p-2", className)}
+      onMouseLeave={() => onViewportMouseLeave?.()}
+    >
       <div
         className="relative min-h-full"
         style={{ height: `${Math.max(contentHeight, viewportSize.height)}px` }}
@@ -356,8 +417,10 @@ export function PackedSessionGrid({
               data-grid-tile-id={tile.id}
               data-grid-slot-start={slotStart}
               data-grid-col-start={placement.column}
+              data-grid-col-end={placement.column + placement.colSpan - 1}
               data-grid-col-span={placement.colSpan}
               data-grid-row-start={placement.row}
+              data-grid-row-end={placement.row + placement.rowSpan - 1}
               data-grid-row-span={placement.rowSpan}
               className={cn(
                 "group absolute min-h-0 min-w-0",
@@ -369,6 +432,10 @@ export function PackedSessionGrid({
                 height,
               }}
               onMouseDown={() => tile.onSelect?.()}
+              onPointerEnter={() => {
+                if (resizeStateRef.current) return;
+                tile.onHover?.();
+              }}
             >
               <div className={cn(
                 "flex h-full min-h-0 min-w-0 flex-col overflow-hidden rounded-xl",

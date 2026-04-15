@@ -36,6 +36,8 @@ type CachedRuntime = {
   key: string;
   ptyId: string;
   sessionId: string;
+  projectRoot: string | null;
+  projectRevision: number;
   term: Terminal;
   fit: FitAddon;
   host: HTMLDivElement;
@@ -62,6 +64,7 @@ type CachedRuntime = {
   frameWriteChunks: string[];
   frameWriteBytes: number;
   flushRafId: number | null;
+  flushTimer: ReturnType<typeof setTimeout> | null;
   disposeTimer: ReturnType<typeof setTimeout> | null;
   lastFitSafetyAt: number;
   ptyDataUnsub: (() => void) | null;
@@ -283,6 +286,21 @@ function parkRuntime(runtime: CachedRuntime) {
   }
 }
 
+function disposeStaleRuntimes(activeProjectRoot: string | null, activeProjectRevision: number) {
+  for (const runtime of runtimeCache.values()) {
+    if (activeProjectRoot == null) {
+      if (runtime.projectRoot != null) {
+        teardownRuntime(runtime);
+      }
+      continue;
+    }
+
+    if (runtime.projectRoot !== activeProjectRoot || runtime.projectRevision !== activeProjectRevision) {
+      teardownRuntime(runtime);
+    }
+  }
+}
+
 function setRuntimeInteractionState(runtime: CachedRuntime, active: boolean) {
   runtime.active = active;
   runtime.inputEnabled = active;
@@ -312,6 +330,7 @@ function teardownRuntime(runtime: CachedRuntime) {
   clearDisposeTimer(runtime);
   if (runtime.fitRafId != null) cancelAnimationFrame(runtime.fitRafId);
   if (runtime.flushRafId != null) cancelAnimationFrame(runtime.flushRafId);
+  if (runtime.flushTimer) clearTimeout(runtime.flushTimer);
   if (runtime.settleTimer1) clearTimeout(runtime.settleTimer1);
   if (runtime.settleTimer2) clearTimeout(runtime.settleTimer2);
   if (runtime.hydrateTimer) clearTimeout(runtime.hydrateTimer);
@@ -488,6 +507,22 @@ function flushFrameWriteChunksSync(runtime: CachedRuntime) {
   }
 }
 
+function clearFrameWriteSchedule(runtime: CachedRuntime) {
+  if (runtime.flushRafId != null) {
+    cancelAnimationFrame(runtime.flushRafId);
+    runtime.flushRafId = null;
+  }
+  if (runtime.flushTimer) {
+    clearTimeout(runtime.flushTimer);
+    runtime.flushTimer = null;
+  }
+}
+
+function flushPendingFrameWrites(runtime: CachedRuntime) {
+  clearFrameWriteSchedule(runtime);
+  flushFrameWriteChunksSync(runtime);
+}
+
 function enqueueFrameWrite(runtime: CachedRuntime, chunk: string) {
   if (!chunk) return;
   runtime.frameWriteChunks.push(chunk);
@@ -501,15 +536,21 @@ function enqueueFrameWrite(runtime: CachedRuntime, chunk: string) {
 }
 
 function scheduleFrameWriteFlush(runtime: CachedRuntime) {
-  if (runtime.flushRafId != null) return;
-  runtime.flushRafId = requestAnimationFrame(() => {
+  if (runtime.flushRafId != null || runtime.flushTimer) return;
+  const flush = () => {
     runtime.flushRafId = null;
+    runtime.flushTimer = null;
     // Write to xterm even while parked: xterm.write only updates the internal
     // buffer, so it is safe to call when the host is detached. Writing through
     // keeps the terminal state current so switching back shows the latest
     // output instead of a stale snapshot (issue #157).
     flushFrameWriteChunksSync(runtime);
-  });
+  };
+  if (runtime.refs === 0 || !runtime.visible || document.visibilityState !== "visible") {
+    runtime.flushTimer = setTimeout(flush, 16);
+    return;
+  }
+  runtime.flushRafId = requestAnimationFrame(flush);
 }
 
 function flushHydrationData(runtime: CachedRuntime, tail: string) {
@@ -655,6 +696,8 @@ async function initRendererChain(runtime: CachedRuntime) {
 function createRuntime(args: {
   ptyId: string;
   sessionId: string;
+  projectRoot: string | null;
+  projectRevision: number;
   theme: XtermTheme;
   preferences: TerminalRenderPreferences;
 }): CachedRuntime {
@@ -681,6 +724,8 @@ function createRuntime(args: {
     key: args.sessionId,
     ptyId: args.ptyId,
     sessionId: args.sessionId,
+    projectRoot: args.projectRoot,
+    projectRevision: args.projectRevision,
     term,
     fit,
     host,
@@ -707,6 +752,7 @@ function createRuntime(args: {
     frameWriteChunks: [],
     frameWriteBytes: 0,
     flushRafId: null,
+    flushTimer: null,
     disposeTimer: null,
     lastFitSafetyAt: 0,
     ptyDataUnsub: null,
@@ -855,12 +901,18 @@ function createRuntime(args: {
 function ensureRuntime(args: {
   ptyId: string;
   sessionId: string;
+  projectRoot: string | null;
+  projectRevision: number;
   theme: XtermTheme;
   preferences: TerminalRenderPreferences;
 }): CachedRuntime {
   const existing = runtimeCache.get(args.sessionId);
   if (existing && !existing.disposed) {
-    if (existing.ptyId === args.ptyId) {
+    if (
+      existing.ptyId === args.ptyId
+      && existing.projectRoot === args.projectRoot
+      && existing.projectRevision === args.projectRevision
+    ) {
       clearDisposeTimer(existing);
       applyRuntimeVisualOptions(existing, {
         theme: args.theme,
@@ -905,6 +957,8 @@ export function TerminalView({
 }) {
   const appTheme = useAppStore((s) => s.theme);
   const terminalPreferences = useAppStore((s) => s.terminalPreferences);
+  const projectRoot = useAppStore((s) => s.project?.rootPath ?? null);
+  const projectRevision = useAppStore((s) => s.projectRevision);
   const wrapperRef = useRef<HTMLDivElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const runtimeRef = useRef<CachedRuntime | null>(null);
@@ -922,6 +976,10 @@ export function TerminalView({
   mountConfigRef.current = currentMountConfig;
 
   useEffect(() => {
+    disposeStaleRuntimes(projectRoot, projectRevision);
+  }, [projectRoot, projectRevision]);
+
+  useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
 
@@ -929,6 +987,8 @@ export function TerminalView({
     const runtime = ensureRuntime({
       ptyId,
       sessionId,
+      projectRoot,
+      projectRevision,
       theme: mountConfig.theme,
       preferences: mountConfig.preferences,
     });
@@ -950,11 +1010,14 @@ export function TerminalView({
     // Drain any buffered output synchronously on remount so the user sees the
     // latest terminal state immediately when they switch back, even if a
     // previously-scheduled flush RAF got throttled while the host was parked.
-    if (runtime.flushRafId != null) {
-      cancelAnimationFrame(runtime.flushRafId);
-      runtime.flushRafId = null;
+    flushPendingFrameWrites(runtime);
+    if (runtime.term.rows > 0) {
+      try {
+        runtime.term.refresh(0, Math.max(0, runtime.term.rows - 1));
+      } catch {
+        // ignore refresh failures after disposal
+      }
     }
-    flushFrameWriteChunksSync(runtime);
 
     const schedule = (forceResize = false) => scheduleFit(runtime, forceResize);
 
@@ -1080,6 +1143,7 @@ export function TerminalView({
       el.removeEventListener("wheel", onWheel);
 
       if (runtime.host.parentElement === el) {
+        flushPendingFrameWrites(runtime);
         try {
           runtime.term.blur();
         } catch {
@@ -1100,7 +1164,7 @@ export function TerminalView({
         scheduleRuntimeDispose(runtime, EXITED_RUNTIME_KEEPALIVE_MS);
       }
     };
-  }, [ptyId, sessionId]);
+  }, [projectRevision, projectRoot, ptyId, sessionId]);
 
   useEffect(() => {
     const runtime = runtimeRef.current ?? runtimeCache.get(sessionId);
@@ -1122,6 +1186,8 @@ export function TerminalView({
     }
 
     if (isVisible) {
+      clearTextureAtlas(runtime);
+      flushPendingFrameWrites(runtime);
       requestAnimationFrame(() => {
         scheduleFit(runtime, false);
       });
@@ -1139,7 +1205,7 @@ export function TerminalView({
         // ignore
       }
     }
-  }, [isActive, isVisible, sessionId]);
+  }, [isActive, isVisible, projectRoot, sessionId]);
 
   useEffect(() => {
     const runtime = runtimeRef.current ?? runtimeCache.get(sessionId);
@@ -1153,7 +1219,7 @@ export function TerminalView({
       scheduleFit(runtime, true);
     });
     return () => cancelAnimationFrame(id);
-  }, [resolvedPreferences, sessionId, termTheme]);
+  }, [projectRoot, resolvedPreferences, sessionId, termTheme]);
 
   // When this terminal becomes the active tab, force fit + focus + scroll
   useEffect(() => {
@@ -1192,7 +1258,7 @@ export function TerminalView({
       cancelAnimationFrame(raf);
       clearTimeout(timer);
     };
-  }, [isActive, isVisible, sessionId]);
+  }, [isActive, isVisible, projectRoot, sessionId]);
 
   return (
     <div

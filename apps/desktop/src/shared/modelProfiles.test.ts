@@ -118,9 +118,9 @@ describe("getModelsForProvider", () => {
 // ---------------------------------------------------------------------------
 
 describe("thinking levels", () => {
-  it("CLAUDE_THINKING_LEVELS has three levels", () => {
-    expect(CLAUDE_THINKING_LEVELS).toHaveLength(3);
-    expect(CLAUDE_THINKING_LEVELS.map((t) => t.value)).toEqual(["low", "medium", "high"]);
+  it("CLAUDE_THINKING_LEVELS exposes the Opus-capable effort ladder", () => {
+    expect(CLAUDE_THINKING_LEVELS).toHaveLength(4);
+    expect(CLAUDE_THINKING_LEVELS.map((t) => t.value)).toEqual(["low", "medium", "high", "max"]);
   });
 
   it("CODEX_THINKING_LEVELS has four levels including xhigh", () => {

@@ -58,6 +58,7 @@ vi.mock("./openCodeServerManager", () => ({
 
 import {
   clearOpenCodeInventoryCache,
+  peekOpenCodeInventoryCache,
   probeOpenCodeProviderInventory,
   shutdownInventoryServer,
 } from "./openCodeInventory";
@@ -122,5 +123,30 @@ describe("openCodeInventory", () => {
 
     expect(result.modelIds).toContain("opencode/ollama/llama-3.1");
     expect(result.descriptors).toHaveLength(1);
+  });
+
+  it("allows passive cache reads after a probe warmed inventory with discovered local models", async () => {
+    const logger = { warn: vi.fn() } as any;
+
+    await probeOpenCodeProviderInventory({
+      projectRoot: "/repo",
+      projectConfig: { ai: { localProviders: { ollama: { enabled: true } } } },
+      logger,
+      force: true,
+      discoveredLocalModels: [
+        {
+          provider: "ollama",
+          modelId: "llama-3.1",
+          loaded: true,
+        },
+      ],
+    });
+
+    expect(peekOpenCodeInventoryCache({
+      projectRoot: "/repo",
+      projectConfig: { ai: { localProviders: { ollama: { enabled: true } } } },
+    })).toEqual(expect.objectContaining({
+      modelIds: expect.arrayContaining(["opencode/openai/gpt-5.4"]),
+    }));
   });
 });

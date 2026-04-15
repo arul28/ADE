@@ -14,8 +14,7 @@ does and does not travel, and the layers that implement it. Deep-dives:
 - `ios-companion.md` — the iPhone controller path: SwiftUI app, native
   SQLite, pairing, tab structure, command routing from phone to host.
 - `remote-commands.md` — the `syncRemoteCommandService` registry that
-  turns controller actions into host-executed mutations. **Branch-modified
-  at time of writing** (see that doc for specifics).
+  turns controller actions into host-executed mutations.
 
 ## Who participates
 
@@ -93,6 +92,8 @@ only when they join the same sync cluster.
 └────────────────────────────────────────────────────────────────┘
 ```
 
+## Source file map
+
 Host-side service files
 (`apps/desktop/src/main/services/sync/`):
 
@@ -113,7 +114,7 @@ Host-side service files
   `devices` table and `sync_cluster_state` singleton.
 - `syncPairingStore.ts` (128 lines) — local pairing-secret storage
   per-peer for W4 pairing flow.
-- `syncRemoteCommandService.ts` (1,207 lines) — command action
+- `syncRemoteCommandService.ts` (~1,210 lines) — command action
   registry (lanes, chat, git, PR, sessions, conflicts). Documented
   separately in `remote-commands.md`.
 

@@ -302,7 +302,7 @@ export function TopBar() {
           </button>
         ) : (
           <>
-              {recentProjects.map((rp, idx) => {
+            {recentProjects.map((rp, idx) => {
               const isCurrent = project?.rootPath === rp.rootPath;
               const isMissing = !rp.exists;
               const isRelocating = relocatingPath === rp.rootPath;

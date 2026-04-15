@@ -2,6 +2,9 @@ import type {
   AdeCleanupResult,
   AdeProjectEvent,
   AdeProjectSnapshot,
+  ProjectBrowseInput,
+  ProjectBrowseResult,
+  ProjectDetail,
   BatchAssessmentResult,
   ApplyConflictProposalArgs,
   AttachLaneArgs,
@@ -610,6 +613,11 @@ declare global {
           title?: string;
           defaultPath?: string;
         }) => Promise<string | null>;
+        browseDirectories: (
+          args?: ProjectBrowseInput,
+        ) => Promise<ProjectBrowseResult>;
+        getDetail: (rootPath: string) => Promise<ProjectDetail>;
+        getDroppedPath: (file: File) => string;
         openAdeFolder: () => Promise<void>;
         clearLocalData: (
           args?: ClearLocalAdeDataArgs,

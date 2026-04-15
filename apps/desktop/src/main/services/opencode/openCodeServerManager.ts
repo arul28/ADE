@@ -19,6 +19,7 @@ export type OpenCodeServerShutdownReason =
   | "model_switch"
   | "project_close"
   | "budget_eviction"
+  | "pool_compaction"
   | "shutdown"
   | "config_changed"
   | "error";
@@ -48,6 +49,24 @@ type OpenCodeServeLaunchSpec = {
   env: NodeJS.ProcessEnv;
   useShell: boolean;
   xdgPaths: OpenCodeIsolationPaths;
+};
+
+type OpenCodeProcessSnapshot = {
+  pid: number;
+  ppid: number;
+  command: string;
+};
+
+type OpenCodeProcessController = {
+  listProcesses(): OpenCodeProcessSnapshot[];
+  isProcessAlive(pid: number): boolean;
+  killProcess(pid: number, signal: NodeJS.Signals): void;
+  waitForMs(ms: number): Promise<void>;
+};
+
+export type OpenCodeOrphanRecoveryResult = {
+  recoveredPids: number[];
+  skippedPids: number[];
 };
 
 type OpenCodeServerLauncher = (args: OpenCodeServerLaunchArgs) => Promise<OpenCodeServerInstance>;
@@ -98,16 +117,71 @@ export type OpenCodeRuntimeDiagnosticsEntry = {
 };
 
 const PORT_RETRY_ATTEMPTS = 3;
-const DEFAULT_SHARED_IDLE_TTL_MS = 60_000;
+const DEFAULT_SHARED_IDLE_TTL_MS = 15_000;
 const MAX_DEDICATED_OPENCODE_SERVERS = 6;
 const OPEN_CODE_SERVER_START_TIMEOUT_MS = 15_000;
+const ORPHAN_RECOVERY_TERM_GRACE_MS = 250;
 const ADE_OPENCODE_XDG_LAYOUT_VERSION = 1;
+const ADE_OPENCODE_MANAGED_ENV = "ADE_OPENCODE_MANAGED";
+const ADE_OPENCODE_OWNER_PID_ENV = "ADE_OPENCODE_OWNER_PID";
 
 const sharedEntries = new Map<string, OpenCodeServerEntry>();
 const dedicatedEntries = new Map<string, OpenCodeServerEntry>();
 const inFlightEntries = new Map<string, Promise<OpenCodeServerEntry>>();
 const acquireQueues = new Map<string, Array<() => void>>();
 let openCodeServerLauncher: OpenCodeServerLauncher = defaultOpenCodeServerLauncher;
+const defaultOpenCodeProcessController: OpenCodeProcessController = {
+  listProcesses(): OpenCodeProcessSnapshot[] {
+    if (process.platform === "win32") return [];
+    const result = spawnSync("ps", ["-wwE", "-axo", "pid=,ppid=,command="], {
+      encoding: "utf8",
+      windowsHide: true,
+    });
+    if (result.error || result.status !== 0 || typeof result.stdout !== "string") {
+      return [];
+    }
+    const rows: OpenCodeProcessSnapshot[] = [];
+    for (const line of result.stdout.split(/\r?\n/)) {
+      const match = line.match(/^\s*(\d+)\s+(\d+)\s+(.*)$/);
+      if (!match) continue;
+      rows.push({
+        pid: Number(match[1]),
+        ppid: Number(match[2]),
+        command: match[3],
+      });
+    }
+    return rows;
+  },
+  isProcessAlive(pid: number): boolean {
+    if (!Number.isInteger(pid) || pid <= 0) return false;
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  },
+  killProcess(pid: number, signal: NodeJS.Signals): void {
+    if (!Number.isInteger(pid) || pid <= 0) return;
+    try {
+      process.kill(pid, signal);
+    } catch {
+      // ignore
+    }
+  },
+  waitForMs(ms: number): Promise<void> {
+    return new Promise((resolve) => {
+      setTimeout(resolve, ms);
+    });
+  },
+};
+let openCodeProcessController: OpenCodeProcessController = defaultOpenCodeProcessController;
+let orphanRecoveryPromise: Promise<OpenCodeOrphanRecoveryResult> | null = null;
+let lastOrphanRecoveryResult: OpenCodeOrphanRecoveryResult = {
+  recoveredPids: [],
+  skippedPids: [],
+};
+let orphanRecoveryCompleted = false;
 
 function serializeConfigFingerprint(config: OpenCodeConfig): string {
   return createHash("sha256").update(stableStringify(config)).digest("hex");
@@ -203,6 +277,21 @@ function resolveAdeManagedOpenCodeRoot(): string {
   return path.resolve(os.tmpdir(), "ade-opencode-runtime");
 }
 
+function resolveHomeManagedOpenCodeRoot(): string | null {
+  const homeDir = os.homedir().trim();
+  if (!homeDir.length) return null;
+  return path.resolve(homeDir, ".ade", "opencode-runtime");
+}
+
+function resolveKnownAdeManagedOpenCodeRoots(): string[] {
+  const roots = new Set<string>();
+  roots.add(resolveAdeManagedOpenCodeRoot());
+  const homeRoot = resolveHomeManagedOpenCodeRoot();
+  if (homeRoot) roots.add(homeRoot);
+  roots.add(path.resolve(os.tmpdir(), "ade-opencode-runtime"));
+  return [...roots];
+}
+
 function resolveOpenCodeIsolationPaths(): OpenCodeIsolationPaths {
   const root = path.join(
     resolveAdeManagedOpenCodeRoot(),
@@ -251,7 +340,119 @@ function buildIsolatedOpenCodeEnv(
     OPENCODE_CONFIG_DIR: path.join(paths.configHome, "opencode"),
     OPENCODE_CONFIG_CONTENT: JSON.stringify(config ?? {}),
     OPENCODE_DISABLE_PROJECT_CONFIG: "1",
+    [ADE_OPENCODE_MANAGED_ENV]: "1",
+    [ADE_OPENCODE_OWNER_PID_ENV]: String(process.pid),
   };
+}
+
+function buildManagedConfigMarkers(): string[] {
+  const markers = new Set<string>();
+  for (const root of resolveKnownAdeManagedOpenCodeRoots()) {
+    const xdgRoot = path.join(root, `xdg-v${ADE_OPENCODE_XDG_LAYOUT_VERSION}`);
+    markers.add(`XDG_CONFIG_HOME=${path.join(xdgRoot, "config")}`);
+    markers.add(`OPENCODE_CONFIG_DIR=${path.join(xdgRoot, "config", "opencode")}`);
+  }
+  return [...markers];
+}
+
+function isManagedOpenCodeServeCommand(command: string, configMarkers: string[]): boolean {
+  if (!/\bopencode(?:\.cmd|\.exe)?\b\s+serve\b/i.test(command)) return false;
+  if (!command.includes("OPENCODE_DISABLE_PROJECT_CONFIG=1")) return false;
+  if (command.includes(`${ADE_OPENCODE_MANAGED_ENV}=1`)) return true;
+  return configMarkers.some((marker) => command.includes(marker));
+}
+
+function parseManagedOwnerPid(command: string): number | null {
+  const match = command.match(new RegExp(`\\b${ADE_OPENCODE_OWNER_PID_ENV}=(\\d+)\\b`));
+  if (!match) return null;
+  const pid = Number(match[1]);
+  return Number.isInteger(pid) && pid > 0 ? pid : null;
+}
+
+async function waitForProcessExit(pid: number, timeoutMs: number): Promise<boolean> {
+  const attempts = Math.max(1, Math.ceil(timeoutMs / 50));
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    if (!openCodeProcessController.isProcessAlive(pid)) {
+      return true;
+    }
+    await openCodeProcessController.waitForMs(50);
+  }
+  return !openCodeProcessController.isProcessAlive(pid);
+}
+
+function pruneIdleSharedEntries(
+  excludeKey: string | null,
+  logger?: Logger | null,
+): void {
+  for (const entry of [...sharedEntries.values()]) {
+    if (excludeKey && entry.key === excludeKey) continue;
+    if (entry.refCount > 0) continue;
+    shutdownEntry(entry, "pool_compaction", logger);
+  }
+}
+
+export async function recoverManagedOpenCodeOrphans(args: {
+  force?: boolean;
+  logger?: Logger | null;
+} = {}): Promise<OpenCodeOrphanRecoveryResult> {
+  if (orphanRecoveryPromise) {
+    const inFlightResult = await orphanRecoveryPromise;
+    if (!args.force) {
+      return inFlightResult;
+    }
+  }
+
+  if (!args.force && orphanRecoveryCompleted) {
+    return lastOrphanRecoveryResult;
+  }
+
+  const recoveryPromise = (async () => {
+    const configMarkers = buildManagedConfigMarkers();
+    const recoveredPids: number[] = [];
+    const skippedPids: number[] = [];
+
+    for (const proc of openCodeProcessController.listProcesses()) {
+      if (proc.pid === process.pid) continue;
+      if (!isManagedOpenCodeServeCommand(proc.command, configMarkers)) continue;
+
+      const ownerPid = parseManagedOwnerPid(proc.command);
+      if (ownerPid === process.pid) {
+        skippedPids.push(proc.pid);
+        continue;
+      }
+      const ownerAlive = ownerPid != null
+        && openCodeProcessController.isProcessAlive(ownerPid);
+      const isOrphan = ownerPid != null
+        ? !ownerAlive
+        : proc.ppid === 1;
+
+      if (!isOrphan) {
+        skippedPids.push(proc.pid);
+        continue;
+      }
+
+      openCodeProcessController.killProcess(proc.pid, "SIGTERM");
+      const exitedGracefully = await waitForProcessExit(proc.pid, ORPHAN_RECOVERY_TERM_GRACE_MS);
+      if (!exitedGracefully && openCodeProcessController.isProcessAlive(proc.pid)) {
+        openCodeProcessController.killProcess(proc.pid, "SIGKILL");
+      }
+      recoveredPids.push(proc.pid);
+      args.logger?.warn("opencode.server_orphan_recovered", {
+        pid: proc.pid,
+        ownerPid,
+        ppid: proc.ppid,
+      });
+    }
+
+    lastOrphanRecoveryResult = { recoveredPids, skippedPids };
+    orphanRecoveryCompleted = true;
+    return lastOrphanRecoveryResult;
+  })().finally(() => {
+    orphanRecoveryPromise = null;
+  });
+
+  orphanRecoveryPromise = recoveryPromise;
+  return await recoveryPromise;
 }
 
 function buildOpenCodeServeLaunchSpec(args: OpenCodeServerLaunchArgs): OpenCodeServeLaunchSpec {
@@ -524,6 +725,7 @@ async function createEntry(args: {
   if (existingPromise) return await existingPromise;
 
   const createPromise = (async () => {
+    await recoverManagedOpenCodeOrphans({ logger: args.logger });
     const server = await createOpencodeServerWithRetry(args.config);
     const entry: OpenCodeServerEntry = {
       id: randomUUID(),
@@ -569,6 +771,7 @@ export async function acquireSharedOpenCodeServer(args: {
         existing.refCount += 1;
         existing.lastUsedAt = Date.now();
         logRuntimeEvent(args.logger, "opencode.server_reused", existing, { refCount: existing.refCount });
+        pruneIdleSharedEntries(key, args.logger);
         return buildLease(existing, args.logger);
       }
       if (existing && existing.refCount > 0) {
@@ -599,6 +802,7 @@ export async function acquireSharedOpenCodeServer(args: {
       }
       entry.refCount = 1;
       sharedEntries.set(key, entry);
+      pruneIdleSharedEntries(key, args.logger);
       return buildLease(entry, args.logger);
     }
   });
@@ -705,12 +909,32 @@ export function __resetOpenCodeServerManagerForTests(): void {
   inFlightEntries.clear();
   acquireQueues.clear();
   openCodeServerLauncher = defaultOpenCodeServerLauncher;
+  openCodeProcessController = defaultOpenCodeProcessController;
+  orphanRecoveryPromise = null;
+  lastOrphanRecoveryResult = { recoveredPids: [], skippedPids: [] };
+  orphanRecoveryCompleted = false;
 }
 
 export function __setOpenCodeServerLauncherForTests(
   launcher: OpenCodeServerLauncher | null,
 ): void {
   openCodeServerLauncher = launcher ?? defaultOpenCodeServerLauncher;
+}
+
+export function __setOpenCodeProcessControllerForTests(
+  controller: Partial<OpenCodeProcessController> | null,
+): void {
+  openCodeProcessController = controller
+    ? {
+        listProcesses: controller.listProcesses ?? (() => []),
+        isProcessAlive: controller.isProcessAlive ?? (() => false),
+        killProcess: controller.killProcess ?? (() => {}),
+        waitForMs: controller.waitForMs ?? (async () => {}),
+      }
+    : defaultOpenCodeProcessController;
+  orphanRecoveryPromise = null;
+  lastOrphanRecoveryResult = { recoveredPids: [], skippedPids: [] };
+  orphanRecoveryCompleted = false;
 }
 
 export function __buildOpenCodeServeLaunchSpecForTests(args: {
