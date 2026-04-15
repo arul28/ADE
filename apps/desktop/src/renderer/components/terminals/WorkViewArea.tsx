@@ -55,7 +55,7 @@ function SessionSurface({
       || session.lastOutputPreview?.trim()
       || (isChatToolType(session.toolType) ? "Select this tile to resume the live chat view." : "Select this tile to resume the live terminal view.");
     return (
-      <div className="flex h-full w-full flex-col justify-between bg-[var(--color-card)] px-4 py-3 text-left">
+      <div className="ade-work-glass-tile flex h-full w-full flex-col justify-between px-4 py-3 text-left">
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
             <div className="flex items-center gap-2 text-[11px] text-fg">
@@ -116,8 +116,13 @@ function SessionSurface({
     : null;
 
   return (
-    <div className="flex h-full w-full items-center justify-center px-6" style={{ background: "var(--color-card)" }}>
-      <div className="flex w-full max-w-md flex-col gap-4 rounded-lg border border-white/[0.06] px-5 py-5" style={{ background: "rgba(255,255,255,0.02)" }}>
+    <div
+      className="flex h-full w-full items-center justify-center px-6"
+      style={{
+        background: "radial-gradient(circle at top, color-mix(in srgb, var(--color-accent-glow-strong) 30%, transparent) 0%, transparent 40%), var(--color-card)",
+      }}
+    >
+      <div className="ade-liquid-glass-menu flex w-full max-w-md flex-col gap-4 rounded-lg px-5 py-5">
         {/* Header: tool logo + session name */}
         <div className="flex items-start gap-3">
           <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-md" style={{ background: "rgba(255,255,255,0.05)" }}>
@@ -164,10 +169,8 @@ function SessionSurface({
           <button
             type="button"
             onClick={() => onResume(session)}
-            className="flex items-center justify-center gap-2 rounded-md px-4 py-2 text-[12px] font-medium text-fg transition-colors"
-            style={{ background: "rgba(255,255,255,0.08)", cursor: "pointer", border: "none" }}
-            onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = "rgba(255,255,255,0.14)"; }}
-            onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = "rgba(255,255,255,0.08)"; }}
+            className="ade-work-new-chat-btn flex items-center justify-center gap-2 px-4 py-2 text-[12px] font-medium"
+            style={{ cursor: "pointer" }}
           >
             <Play size={14} weight="fill" />
             Resume session
@@ -209,8 +212,7 @@ function ResumeCommandBlock({ command }: { command: string }) {
 
   return (
     <div
-      className="group relative flex items-center rounded-md px-3 py-2 font-mono text-[11px] text-fg/80"
-      style={{ background: "rgba(0,0,0,0.25)" }}
+      className="ade-chat-recessed group relative flex items-center rounded-md px-3 py-2 font-mono text-[11px] text-fg/80"
     >
       <span className="flex-1 select-all break-all">{command}</span>
       <button
@@ -240,16 +242,16 @@ function ModeSwitcherPills({
   onShowDraftKind: (kind: WorkDraftKind) => void;
 }) {
   return (
-    <div className="inline-flex items-center rounded-full p-0.5" style={{ background: "rgba(255,255,255,0.04)" }}>
+    <div className="ade-liquid-glass-pill inline-flex items-center rounded-full p-0.5">
       {MODE_OPTIONS.map((opt) => {
         const active = draftKind === opt.kind;
         return (
           <button
             key={opt.kind}
             type="button"
-            className="rounded-full px-3 py-1 text-[11px] font-medium transition-all"
+            className={`rounded-full px-3 py-1 text-[11px] font-medium transition-all${active ? " ade-work-tab-active" : ""}`}
             style={{
-              background: active ? "rgba(255,255,255,0.10)" : "transparent",
+              background: active ? undefined : "transparent",
               color: active ? "var(--color-fg)" : "var(--color-muted-fg)",
               cursor: "pointer",
               border: "none",
@@ -347,16 +349,12 @@ export function WorkViewArea({
       selected: isActive,
       onSelect: () => onSelectItem(session.id),
       className: isActive
-        ? "border border-white/[0.08] bg-white/[0.02]"
-        : "border border-white/[0.04] bg-transparent",
+        ? "ade-work-glass-tile-active"
+        : "ade-work-glass-tile",
       header: (
         <div
-          className="flex items-center gap-2 px-2 py-1.5"
+          className="ade-work-glass-tile-header flex items-center gap-2 px-2 py-1.5"
           onContextMenu={(e) => handleContextMenu(session, e)}
-          style={{
-            borderBottom: "1px solid rgba(255,255,255,0.04)",
-            background: isActive ? "rgba(255,255,255,0.02)" : "transparent",
-          }}
         >
           <button
             type="button"
@@ -433,13 +431,10 @@ export function WorkViewArea({
   if (viewMode === "grid") {
     return (
       <div className="flex h-full flex-col">
-        <div
-          className="flex items-center gap-3 px-3 py-1.5"
-          style={{ borderBottom: "1px solid var(--work-pane-border)", background: "transparent" }}
-        >
+        <div className="ade-work-glass-header flex items-center gap-3 px-3 py-1.5">
           <ViewModeToggle viewMode={viewMode} setViewMode={setViewMode} />
           <span className="text-[11px] font-medium text-muted-fg">Grid</span>
-          <span className="inline-flex items-center px-1.5 text-[10px] text-muted-fg/60 rounded" style={{ background: "rgba(255,255,255,0.04)" }}>
+          <span className="ade-liquid-glass-pill inline-flex items-center px-1.5 text-[10px] text-muted-fg/60 rounded">
             {visibleSessions.length}
           </span>
         </div>
@@ -473,10 +468,8 @@ export function WorkViewArea({
     return (
       <div className="flex h-full flex-col">
         <div
-          className="flex items-center gap-0 px-0.5"
+          className="ade-work-glass-header flex items-center gap-0 px-0.5"
           style={{
-            borderBottom: "1px solid var(--work-pane-border)",
-            background: "transparent",
             height: 32,
             minHeight: 32,
             maxHeight: 32,
@@ -551,15 +544,11 @@ export function WorkViewArea({
             <SmartTooltip content={{ label: "New Chat", description: "Start a new AI chat session." }}>
               <button
                 type="button"
-                className="inline-flex shrink-0 items-center justify-center transition-colors hover:opacity-80"
+                className="ade-work-new-chat-btn inline-flex shrink-0 items-center justify-center"
                 style={{
                   width: 22,
                   height: 22,
                   marginLeft: 4,
-                  borderRadius: "50%",
-                  border: "1px solid rgba(168,130,255,0.35)",
-                  background: "rgba(168,130,255,0.08)",
-                  color: "rgba(168,130,255,0.9)",
                   cursor: "pointer",
                 }}
                 onClick={() => onShowDraftKind("chat")}
@@ -612,13 +601,7 @@ export function WorkViewArea({
 
   return (
     <div className="flex h-full flex-col">
-      <div
-        className="flex items-start gap-1.5 px-1 py-1"
-        style={{
-          borderBottom: "1px solid var(--work-pane-border)",
-          background: "transparent",
-        }}
-      >
+      <div className="ade-work-glass-header flex items-start gap-1.5 px-1 py-1">
         <div className="shrink-0">
           <ViewModeToggle viewMode={viewMode} setViewMode={setViewMode} />
         </div>
@@ -627,17 +610,10 @@ export function WorkViewArea({
           <div className="flex items-stretch gap-1.5">
             {resolvedTabGroups.map((group) => {
               const hasActive = group.sessionIds.includes(activeSession?.id ?? "");
-              const groupStyle = group.kind === "lane"
-                ? "rgba(255,255,255,0.03)"
-                : "rgba(255,255,255,0.025)";
               return (
                 <div
                   key={group.id}
-                  className={`inline-flex shrink-0 flex-col overflow-hidden border ${group.collapsed ? "rounded-full" : "rounded-xl"}`}
-                  style={{
-                    borderColor: hasActive ? "rgba(168,130,255,0.35)" : "rgba(255,255,255,0.06)",
-                    background: groupStyle,
-                  }}
+                  className={`ade-work-glass-group${hasActive ? " ade-work-glass-group-active" : ""} inline-flex shrink-0 flex-col overflow-hidden ${group.collapsed ? "rounded-full" : "rounded-xl"}`}
                 >
                   <button
                     type="button"
@@ -673,13 +649,13 @@ export function WorkViewArea({
                           <button
                             key={session.id}
                             type="button"
-                            className="group/tab inline-flex shrink-0 items-center gap-1.5 transition-all"
+                            className={`group/tab inline-flex shrink-0 items-center gap-1.5 transition-all${isActive ? " ade-work-tab-active" : ""}`}
                             style={{
                               padding: "0 8px",
                               height: 28,
                               fontSize: 11,
                               fontWeight: isActive ? 500 : 400,
-                              background: isActive ? "rgba(167, 139, 250, 0.12)" : "transparent",
+                              background: isActive ? undefined : "transparent",
                               color: isActive ? "var(--color-fg)" : "var(--color-muted-fg)",
                               cursor: "pointer",
                               border: "none",
@@ -734,15 +710,11 @@ export function WorkViewArea({
             <SmartTooltip content={{ label: "New Chat", description: "Start a new AI chat session." }}>
               <button
                 type="button"
-                className="inline-flex shrink-0 items-center justify-center transition-colors hover:opacity-80"
+                className="ade-work-new-chat-btn inline-flex shrink-0 items-center justify-center"
                 style={{
                   width: 22,
                   height: 22,
                   marginTop: 3,
-                  borderRadius: "50%",
-                  border: "1px solid rgba(168,130,255,0.35)",
-                  background: "rgba(168,130,255,0.08)",
-                  color: "rgba(168,130,255,0.9)",
                   cursor: "pointer",
                 }}
                 onClick={() => onShowDraftKind("chat")}
@@ -804,10 +776,8 @@ function ViewModeToggle({
 }) {
   return (
     <div
-      className="inline-flex items-center rounded-full p-0.5"
+      className="ade-liquid-glass-pill inline-flex items-center rounded-full p-0.5"
       style={{
-        background: "rgba(255, 255, 255, 0.04)",
-        border: "1px solid rgba(255, 255, 255, 0.08)",
         height: 24,
       }}
     >
@@ -822,10 +792,10 @@ function ViewModeToggle({
               type="button"
               aria-pressed={active}
               onClick={() => setViewMode(mode)}
-              className="inline-flex items-center gap-1 rounded-full px-2.5 text-[10px] font-medium transition-all"
+              className={`inline-flex items-center gap-1 rounded-full px-2.5 text-[10px] font-medium transition-all${active ? " ade-work-tab-active" : ""}`}
               style={{
                 height: 20,
-                background: active ? "rgba(167, 139, 250, 0.15)" : "transparent",
+                background: active ? undefined : "transparent",
                 color: active ? "var(--color-accent)" : "var(--color-muted-fg)",
                 border: "none",
                 cursor: "pointer",

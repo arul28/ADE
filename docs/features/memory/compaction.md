@@ -8,7 +8,7 @@ that keep the memory store healthy.
 
 | Path | Role |
 |---|---|
-| `apps/desktop/src/main/services/memory/compactionFlushService.ts` | Hidden pre-compaction prompt injector. Runs before provider context compaction so durable findings are saved. |
+| `apps/desktop/src/main/services/memory/compactionFlushPrompt.ts` | `DEFAULT_FLUSH_PROMPT` — the text fed into the Claude SDK `PreCompact` hook so durable findings can be saved before compaction runs. |
 | `apps/desktop/src/main/services/memory/episodicSummaryService.ts` | Post-session episode extraction: task description, approach, outcome, patterns, gotchas, decisions, tools. |
 | `apps/desktop/src/main/services/memory/proceduralLearningService.ts` | Clusters episodes into procedures; tracks confidence via `memory_procedure_history`; exports skill files. |
 | `apps/desktop/src/main/services/memory/batchConsolidationService.ts` | Weekly batch AI-driven consolidation: merges clusters of similar entries into a single higher-quality entry. |
@@ -19,66 +19,65 @@ that keep the memory store healthy.
 
 ## Compaction flush
 
-When a chat session approaches its context window limit, the provider
-may compact (summarise + discard) earlier turns. Before that happens,
-ADE injects a hidden system prompt asking the agent to save durable
-findings via `memoryAdd`.
+When a Claude chat session approaches its context window limit, the
+Claude Agent SDK auto-compacts (summarises + discards) earlier turns.
+ADE nudges the agent to save durable findings before that happens by
+registering a `PreCompact` SDK hook that returns `DEFAULT_FLUSH_PROMPT`
+as a `systemMessage`. The hook runs inside the SDK's compaction flow,
+so the prompt never becomes a visible chat turn and does not consume
+conversation tokens.
 
 ### Flow
 
-1. `agentChatService` monitors conversation token count and compares
-   against `maxTokens - reserveTokensFloor`.
-2. When the threshold is crossed, `compactionFlushService.maybeFlush()`
-   runs.
-3. It appends a hidden `{ role: "system", content: <flush prompt>,
-   hidden: true }` message and invokes `flushTurn()` to run a
-   provider turn dedicated to saving memories.
-4. The prompt includes explicit SAVE / DO-NOT-SAVE guidance to keep
-   memory quality high (see `CompactionFlushConfig.flushPrompt`).
-5. After the flush completes (or fails), normal compaction proceeds.
+1. Claude SDK auto-compacts when approaching the context limit.
+2. The SDK fires `PreCompact` on the hook registered by
+   `buildClaudeSessionOpts` in `agentChatService.ts`.
+3. The hook returns `{ continue: true, systemMessage:
+   DEFAULT_FLUSH_PROMPT }`; the SDK folds the prompt into the
+   compaction step (best-effort — see "Caveats").
+4. The SDK then emits `system:compact_boundary`.
+   `agentChatService.ts` translates that into a `context_compact` chat
+   event rendered as the amber "Context compacted" badge.
+5. For CTO sessions, post-compaction identity re-injection runs
+   (`ctoStateService.appendContinuityCheckpoint` +
+   `refreshReconstructionContext`) to restore persona/memory context.
 
-### Config
+### Where the prompt lives
 
-```ts
-type CompactionFlushConfig = {
-  enabled?: boolean;                      // default true
-  reserveTokensFloor?: number;            // token safety margin
-  maxFlushTurnsPerSession?: number;       // cap; prevents runaway flushes
-  flushPrompt?: string;                   // override default prompt
-};
-```
+`apps/desktop/src/main/services/memory/compactionFlushPrompt.ts`
+exports `DEFAULT_FLUSH_PROMPT`. It encodes the quality bar (one
+actionable insight per memory, SAVE vs DO-NOT-SAVE lists, the
+`NO_DISCOVERIES` escape hatch) so Claude doesn't over-save.
 
-### State tracking
+### Scope
 
-`SessionFlushState` (per session):
+- **Claude** — `PreCompact` hook registered for non-lightweight
+  sessions. Boundary event `system:compact_boundary` translates to the
+  `context_compact` chat event.
+- **OpenCode** — auto-compacts at ~96% of context. The SDK emits
+  `session.compacted` (payload `{ sessionID }`) on the SSE stream; the
+  OpenCode runtime maps it to `context_compact`. No client-side
+  pre-compact hook; OpenCode's `experimental.session.compacting` is a
+  server-side plugin hook, not exposed to hosts.
+- **Codex** — auto-compacts around `model_auto_compact_token_limit`
+  (default ~64k). The app-server emits `item/started` +
+  `item/completed` where `item.type === "contextCompaction"`; the
+  Codex runtime emits `context_compact` on completion. Codex has no
+  pre-compact hook equivalent.
+- **Cursor / ACP** — no compaction signal. Neither the base ACP spec
+  nor Cursor's extensions define a compaction or summarization
+  notification. Cursor summarizes internally but keeps it hidden from
+  the protocol. No indicator possible today.
 
-```ts
-type SessionFlushState = {
-  flushCount: number;
-  flushedBoundaries: Set<string>;
-};
-```
+### Caveats
 
-Each compaction boundary gets a unique `boundaryId` (derived from the
-message count + timestamp). The service refuses to flush the same
-boundary twice; if the boundary budget is exceeded, the service logs
-`budget-exceeded` and skips.
-
-### Result
-
-`CompactionFlushResult.reason` can be:
-
-- `disabled` -- config disabled.
-- `below-threshold` -- token count below the flush threshold.
-- `flush-handler-unavailable` -- no `flushTurn` provided.
-- `already-flushed-boundary` -- same boundary seen before.
-- `max-flush-turns-reached` -- session budget exhausted.
-- `flushed` -- success.
-- `flush-failed` -- handler threw.
-- `flush-budget-exceeded` -- flush handler reported `budget_exceeded`.
-
-`proceedWithCompaction` is always `true` -- the caller should compact
-regardless of flush outcome.
+- `PreCompactHookInput.custom_instructions` is what the SDK feeds the
+  hook (e.g. text from a `/compact <instructions>` invocation); the
+  hook itself influences compaction via `SyncHookJSONOutput`. Routing
+  of `systemMessage` into the compaction prompt is SDK-internal — the
+  primary guarantee of this design is that the prompt never leaks as a
+  visible turn. Memory saving still happens opportunistically through
+  the MCP `memory_add` guidance already in the system prompt.
 
 ## Episodic summary
 
@@ -273,10 +272,11 @@ counts.
 
 ## Fragile and tricky wiring
 
-- **Compaction flush relies on the provider emitting a compaction
-  event.** Claude, Codex, and OpenCode all emit `context_compact`
-  events, but the thresholds differ. The service listens for the
-  common event; new providers must integrate the watcher.
+- **Pre-compact hook nudge is Claude-only.** Only the Claude Agent
+  SDK exposes a `PreCompact` hook that fires *before* compaction and
+  can influence it. Compaction *boundary events* are wired for
+  Claude, OpenCode, and Codex; Cursor/ACP has no signal to listen
+  for.
 - **Procedural learning clustering is text-similarity based.** If
   `normalizeText` drops too much signal (e.g., stripping numbers in a
   way that merges distinct procedures), procedures can get confused.

@@ -26,7 +26,8 @@ export function TerminalsPage() {
 
   const [contextMenu, setContextMenu] = useState<SessionContextMenuState>(null);
   const [infoPopover, setInfoPopover] = useState<InfoPopoverState>(null);
-  const [renameError, setRenameError] = useState<string | null>(null);
+  const [sessionActionError, setSessionActionError] = useState<string | null>(null);
+  const [deletingSessionId, setDeletingSessionId] = useState<string | null>(null);
 
   const handleSelectSession = useCallback(
     (id: string) => {
@@ -79,6 +80,83 @@ export function TerminalsPage() {
     [work],
   );
 
+  const handleDeleteChat = useCallback(
+    (session: TerminalSessionSummary) => {
+      const label = (session.goal ?? session.title).trim() || "this chat";
+      const confirmed = window.confirm(
+        `Delete "${label}"?\n\nThis permanently removes the saved chat history from ADE.`,
+      );
+      if (!confirmed) return;
+
+      setSessionActionError(null);
+      setDeletingSessionId(session.id);
+      void window.ade.agentChat.delete({ sessionId: session.id })
+        .then(async () => {
+          invalidateSessionListCache();
+          work.removeSessionFromList(session.id);
+          work.closeTab(session.id);
+          setContextMenu((current) => (current?.session.id === session.id ? null : current));
+          setInfoPopover((current) => (current?.session.id === session.id ? null : current));
+          // Refresh is post-delete housekeeping; a failure here must not be
+          // reported as "Delete failed" because the delete itself succeeded.
+          await work.refresh({ showLoading: false, force: true }).catch((refreshErr: unknown) => {
+            console.error("[TerminalsPage] refresh after delete failed", { sessionId: session.id, refreshErr });
+          });
+        })
+        .catch((err: unknown) => {
+          const message = err instanceof Error ? err.message : String(err);
+          console.error("[TerminalsPage] delete chat failed", { sessionId: session.id, err });
+          setSessionActionError(`Delete failed: ${message}`);
+          window.setTimeout(() => setSessionActionError(null), 6000);
+        })
+        .finally(() => {
+          setDeletingSessionId((current) => (current === session.id ? null : current));
+        });
+    },
+    [work],
+  );
+
+  const handleDeleteSession = useCallback(
+    (session: TerminalSessionSummary) => {
+      const label = (session.goal ?? session.title).trim() || "this session";
+      const confirmed = window.confirm(
+        `Delete "${label}"?\n\nThis permanently removes the saved terminal session from ADE.`,
+      );
+      if (!confirmed) return;
+
+      setSessionActionError(null);
+      setDeletingSessionId(session.id);
+      void window.ade.sessions.delete({ sessionId: session.id })
+        .then(async () => {
+          invalidateSessionListCache();
+          work.removeSessionFromList(session.id);
+          work.closeTab(session.id);
+          setContextMenu((current) => (current?.session.id === session.id ? null : current));
+          setInfoPopover((current) => (current?.session.id === session.id ? null : current));
+          await work.refresh({ showLoading: false, force: true }).catch((refreshErr: unknown) => {
+            console.error("[TerminalsPage] refresh after session delete failed", { sessionId: session.id, refreshErr });
+          });
+        })
+        .catch((err: unknown) => {
+          const message = err instanceof Error ? err.message : String(err);
+          console.error("[TerminalsPage] delete session failed", { sessionId: session.id, err });
+          setSessionActionError(`Delete failed: ${message}`);
+          window.setTimeout(() => setSessionActionError(null), 6000);
+        })
+        .finally(() => {
+          setDeletingSessionId((current) => (current === session.id ? null : current));
+        });
+    },
+    [work],
+  );
+
+  const handleResumeSession = useCallback(
+    (session: TerminalSessionSummary) => {
+      void work.resumeSession(session).catch(() => {});
+    },
+    [work],
+  );
+
   const workViewArea = useMemo(
     () => (
       <WorkViewArea
@@ -100,7 +178,7 @@ export function TerminalsPage() {
         onToggleTabGroupCollapsed={work.toggleWorkTabGroupCollapsed}
         closingPtyIds={work.closingPtyIds}
         onContextMenu={handleContextMenu}
-        onResumeSession={(s) => work.resumeSession(s).catch(() => {})}
+        onResumeSession={handleResumeSession}
       />
     ),
     [
@@ -120,8 +198,8 @@ export function TerminalsPage() {
       work.launchPtySession,
       work.toggleWorkTabGroupCollapsed,
       work.closingPtyIds,
-      work.resumeSession,
       handleOpenChatSession,
+      handleResumeSession,
       handleContextMenu,
     ],
   );
@@ -213,13 +291,13 @@ export function TerminalsPage() {
 
   return (
     <div className="flex h-full min-w-0 flex-col" style={{ background: "var(--color-bg)" }}>
-      {renameError ? (
+      {sessionActionError ? (
         <div
           className="shrink-0 border-b border-red-500/25 px-4 py-2 text-[12px] text-red-300/95"
           style={{ background: "rgba(239, 68, 68, 0.08)" }}
           role="status"
         >
-          {renameError}
+          {sessionActionError}
         </div>
       ) : null}
       {work.workFocusSessionsHidden ? (
@@ -269,12 +347,15 @@ export function TerminalsPage() {
         onClose={() => setContextMenu(null)}
         onCloseSession={({ ptyId, sessionId }) => work.closeSession(ptyId, sessionId).catch(() => {})}
         onEndChat={(id) => work.closeChatSession(id).catch(() => {})}
-        onResume={(s) => work.resumeSession(s).catch(() => {})}
+        onDeleteChat={handleDeleteChat}
+        onDeleteSession={handleDeleteSession}
+        deletingSessionId={deletingSessionId}
+        onResume={handleResumeSession}
         onCopyResumeCommand={(cmd) => navigator.clipboard.writeText(cmd).catch(() => {})}
         onGoToLane={handleGoToLane}
         onCopySessionId={(id) => navigator.clipboard.writeText(id).catch(() => {})}
         onRename={(session, newTitle) => {
-          setRenameError(null);
+          setSessionActionError(null);
           const renamePromise = isChatToolType(session.toolType)
             ? window.ade.agentChat.updateSession({ sessionId: session.id, title: newTitle, manuallyNamed: true })
             : window.ade.sessions.updateMeta({ sessionId: session.id, title: newTitle, manuallyNamed: true });
@@ -288,8 +369,8 @@ export function TerminalsPage() {
             .catch((err: unknown) => {
               const message = err instanceof Error ? err.message : String(err);
               console.error("[TerminalsPage] rename session failed", { sessionId: session.id, err });
-              setRenameError(`Rename failed: ${message}`);
-              window.setTimeout(() => setRenameError(null), 6000);
+              setSessionActionError(`Rename failed: ${message}`);
+              window.setTimeout(() => setSessionActionError(null), 6000);
             });
         }}
       />
@@ -299,10 +380,13 @@ export function TerminalsPage() {
         onClose={() => setInfoPopover(null)}
         onCloseSession={({ ptyId, sessionId }) => work.closeSession(ptyId, sessionId).catch(() => {})}
         onEndChat={(id) => work.closeChatSession(id).catch(() => {})}
-        onResume={(s) => work.resumeSession(s).catch(() => {})}
+        onDeleteChat={handleDeleteChat}
+        onDeleteSession={handleDeleteSession}
+        onResume={handleResumeSession}
         onGoToLane={handleGoToLane}
         closingPtyIds={work.closingPtyIds}
         closingChatSessionId={work.closingChatSessionId}
+        deletingSessionId={deletingSessionId}
         resumingSessionId={work.resumingSessionId}
       />
     </div>

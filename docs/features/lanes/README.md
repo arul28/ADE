@@ -134,7 +134,10 @@ default from the Lanes list (see `isMissionLaneHiddenByDefault` in
    worktree path under `.ade/worktrees/<slug>/`, runs `git worktree
    add`, inserts the lane row, and returns a `LaneSummary`.
 2. **Create child** — same as create but with `parentLaneId`. Child's
-   base ref defaults to the parent's branch ref.
+   base ref defaults to the parent's branch ref. Callers can override
+   with `baseBranchRef` on `CreateChildLaneArgs` to fork from any local
+   or remote branch (the service resolves/tracks remote refs via
+   `resolveImportBranchTarget` before creating the worktree).
 3. **Create from unstaged** — `createFromUnstaged` rescues uncommitted
    work into a new child lane via `git stash` in the source worktree
    plus `git stash apply` in the child. Rolls back the child if apply

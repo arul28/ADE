@@ -16,10 +16,17 @@ import {
 import { ProviderModelSelector } from "../shared/ProviderModelSelector";
 import { useAppStore } from "../../state/appStore";
 import { COLORS, MONO_FONT, SANS_FONT } from "../lanes/laneDesignTokens";
+import type { AppInfo, ProjectInfo } from "../../../shared/types/core";
+import type { GitCommitSummary } from "../../../shared/types/git";
+import type { LaneSummary } from "../../../shared/types/lanes";
 import type {
   FeedbackCategory,
+  FeedbackDraftInput,
+  FeedbackGenerationMode,
+  FeedbackPreparedDraft,
+  FeedbackPrepareDraftArgs,
   FeedbackSubmission,
-  FeedbackSubmitArgs,
+  FeedbackSubmitDraftArgs,
 } from "../../../shared/types/feedback";
 
 const CATEGORIES: { value: FeedbackCategory; label: string }[] = [
@@ -44,6 +51,14 @@ const INPUT_STYLE: React.CSSProperties = {
   color: COLORS.textPrimary,
   fontFamily: SANS_FONT,
   borderRadius: 0,
+};
+
+const TEXTAREA_STYLE: React.CSSProperties = {
+  ...INPUT_STYLE,
+  padding: "8px 12px",
+  fontSize: 12,
+  resize: "none",
+  outline: "none",
 };
 
 function categoryIcon(cat: FeedbackCategory, size = 12) {
@@ -100,6 +115,145 @@ function formatSubmissionTimestamp(value: string | null): string {
   return date.toLocaleString();
 }
 
+function formattingLabel(mode: FeedbackGenerationMode | null): { text: string; color: string } | null {
+  switch (mode) {
+    case "ai_assisted":
+      return { text: "AI assisted", color: COLORS.success };
+    case "deterministic":
+      return { text: "Deterministic", color: COLORS.warning };
+    default:
+      return null;
+  }
+}
+
+type DraftFormState = {
+  summary: string;
+  additionalContext: string;
+  stepsToReproduce: string;
+  expectedBehavior: string;
+  actualBehavior: string;
+  environment: string;
+  useCase: string;
+  proposedSolution: string;
+  alternativesConsidered: string;
+  context: string;
+  expectedGuidance: string;
+};
+
+function createEmptyDraftForm(): DraftFormState {
+  return {
+    summary: "",
+    additionalContext: "",
+    stepsToReproduce: "",
+    expectedBehavior: "",
+    actualBehavior: "",
+    environment: "",
+    useCase: "",
+    proposedSolution: "",
+    alternativesConsidered: "",
+    context: "",
+    expectedGuidance: "",
+  };
+}
+
+function buildDraftInput(category: FeedbackCategory, form: DraftFormState): FeedbackDraftInput {
+  switch (category) {
+    case "bug":
+      return {
+        category: "bug",
+        summary: form.summary,
+        stepsToReproduce: form.stepsToReproduce,
+        expectedBehavior: form.expectedBehavior,
+        actualBehavior: form.actualBehavior,
+        environment: form.environment,
+        additionalContext: form.additionalContext,
+      };
+    case "feature":
+    case "enhancement":
+      return {
+        category,
+        summary: form.summary,
+        useCase: form.useCase,
+        proposedSolution: form.proposedSolution,
+        alternativesConsidered: form.alternativesConsidered,
+        additionalContext: form.additionalContext,
+      };
+    case "question":
+      return {
+        category: "question",
+        summary: form.summary,
+        context: form.context,
+        expectedGuidance: form.expectedGuidance,
+        additionalContext: form.additionalContext,
+      };
+  }
+}
+
+function labelsToInputValue(labels: string[]): string {
+  return labels.join(", ");
+}
+
+function parseLabelInput(value: string): string[] {
+  return value
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0);
+}
+
+function helperText(text: string) {
+  return (
+    <div style={{ fontSize: 11, color: COLORS.textMuted, lineHeight: 1.5 }}>
+      {text}
+    </div>
+  );
+}
+
+function simplifyRef(ref: string | null | undefined): string {
+  const trimmed = typeof ref === "string" ? ref.trim() : "";
+  if (!trimmed) return "Unknown";
+  return trimmed
+    .replace(/^refs\/heads\//, "")
+    .replace(/^refs\/remotes\//, "");
+}
+
+function describeLaneStatus(lane: LaneSummary): string {
+  const parts = [lane.status.dirty ? "dirty worktree" : "clean worktree"];
+  if (lane.status.ahead > 0) parts.push(`ahead ${lane.status.ahead}`);
+  if (lane.status.behind > 0) parts.push(`behind ${lane.status.behind}`);
+  if (lane.status.remoteBehind > 0) parts.push(`remote ahead ${lane.status.remoteBehind}`);
+  if (lane.status.rebaseInProgress) parts.push("rebase in progress");
+  return parts.join(", ");
+}
+
+function buildAutoEnvironmentText(args: {
+  appInfo: AppInfo | null;
+  project: ProjectInfo | null;
+  selectedLane: LaneSummary | null;
+  headCommit: GitCommitSummary | null;
+}): string {
+  const lines: string[] = [];
+  if (args.appInfo) {
+    const version = args.appInfo.appVersion.trim();
+    lines.push(`ADE version: ${version}${args.appInfo.isPackaged ? "" : " (dev)"}`);
+    lines.push(`Platform: ${args.appInfo.platform} ${args.appInfo.arch}`);
+    lines.push(`Electron: ${args.appInfo.versions.electron}`);
+  }
+  if (args.project) {
+    lines.push(`Project: ${args.project.displayName}`);
+    lines.push(`Project base ref: ${simplifyRef(args.project.baseRef)}`);
+  }
+  if (args.selectedLane) {
+    lines.push(`Selected lane: ${args.selectedLane.name}`);
+    lines.push(`Lane branch: ${simplifyRef(args.selectedLane.branchRef)}`);
+    lines.push(`Lane base ref: ${simplifyRef(args.selectedLane.baseRef)}`);
+    lines.push(`Lane status: ${describeLaneStatus(args.selectedLane)}`);
+  }
+  if (args.headCommit) {
+    lines.push(`HEAD commit: ${args.headCommit.shortSha} ${args.headCommit.subject}`);
+  }
+  return lines.join("\n");
+}
+
 function NewReportTab({
   hasGithubToken,
   onSubmitted,
@@ -111,42 +265,179 @@ function NewReportTab({
   const openAiProvidersSettings = useCallback(() => {
     navigate("/settings?tab=ai#ai-providers");
   }, [navigate]);
+  const project = useAppStore((s) => s.project);
+  const lanes = useAppStore((s) => s.lanes);
+  const selectedLaneId = useAppStore((s) => s.selectedLaneId);
   const availableModels = useAppStore((s) => s.availableModels);
   const availableModelIds = availableModels.map((m) => m.id);
+  const selectedLane = (selectedLaneId
+    ? lanes.find((lane) => lane.id === selectedLaneId)
+    : lanes[0]) ?? null;
   const [category, setCategory] = useState<FeedbackCategory>("bug");
-  const [description, setDescription] = useState("");
+  const [form, setForm] = useState<DraftFormState>(() => createEmptyDraftForm());
   const [modelId, setModelId] = useState("");
   const [reasoningEffort, setReasoningEffort] = useState<string | null>(null);
+  const [preparedDraft, setPreparedDraft] = useState<FeedbackPreparedDraft | null>(null);
+  const [draftTitle, setDraftTitle] = useState("");
+  const [draftBody, setDraftBody] = useState("");
+  const [draftLabelsText, setDraftLabelsText] = useState("");
+  const [preparing, setPreparing] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [flash, setFlash] = useState<{ msg: string; ok: boolean } | null>(null);
+  const [autoEnvironmentText, setAutoEnvironmentText] = useState("");
   const flashTimer = useRef<number | null>(null);
+  const lastAppliedEnvironmentRef = useRef("");
 
-  const handleSubmit = useCallback(async () => {
-    if (!description.trim() || !modelId || submitting) return;
-    setSubmitting(true);
+  const clearPreparedDraft = useCallback(() => {
+    setPreparedDraft(null);
+    setDraftTitle("");
+    setDraftBody("");
+    setDraftLabelsText("");
+  }, []);
+
+  const setFlashMessage = useCallback((msg: string, ok: boolean, timeoutMs: number) => {
+    setFlash({ msg, ok });
+    if (flashTimer.current) window.clearTimeout(flashTimer.current);
+    flashTimer.current = window.setTimeout(() => setFlash(null), timeoutMs);
+  }, []);
+
+  const updateField = useCallback((key: keyof DraftFormState, value: string) => {
+    setForm((prev) => ({ ...prev, [key]: value }));
+    clearPreparedDraft();
+  }, [clearPreparedDraft]);
+
+  const applyAutoEnvironment = useCallback((nextEnvironment: string) => {
+    const trimmed = nextEnvironment.trim();
+    if (!trimmed) return;
+    lastAppliedEnvironmentRef.current = trimmed;
+    let shouldClearDraft = false;
+    setForm((prev) => {
+      if (prev.environment === trimmed) return prev;
+      shouldClearDraft = true;
+      return { ...prev, environment: trimmed };
+    });
+    if (shouldClearDraft) clearPreparedDraft();
+  }, [clearPreparedDraft]);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function hydrateEnvironment() {
+      const [appInfo, latestCommit] = await Promise.all([
+        window.ade.app.getInfo().catch(() => null),
+        selectedLane
+          ? window.ade.git
+            .listRecentCommits({ laneId: selectedLane.id, limit: 1 })
+            .then((commits) => commits[0] ?? null)
+            .catch(() => null)
+          : Promise.resolve(null),
+      ]);
+      if (cancelled) return;
+      const nextEnvironment = buildAutoEnvironmentText({
+        appInfo,
+        project,
+        selectedLane,
+        headCommit: latestCommit,
+      }).trim();
+      setAutoEnvironmentText(nextEnvironment);
+      let shouldClearDraft = false;
+      setForm((prev) => {
+        const currentEnvironment = prev.environment.trim();
+        const lastAppliedEnvironment = lastAppliedEnvironmentRef.current.trim();
+        if (!nextEnvironment) return prev;
+        if (currentEnvironment.length === 0 || currentEnvironment === lastAppliedEnvironment) {
+          lastAppliedEnvironmentRef.current = nextEnvironment;
+          if (prev.environment === nextEnvironment) return prev;
+          shouldClearDraft = true;
+          return { ...prev, environment: nextEnvironment };
+        }
+        return prev;
+      });
+      if (shouldClearDraft) clearPreparedDraft();
+    }
+    void hydrateEnvironment();
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    clearPreparedDraft,
+    project,
+    selectedLane,
+  ]);
+
+  const handleGenerateDraft = useCallback(async () => {
+    if (!form.summary.trim() || preparing || submitting) return;
+    setPreparing(true);
     try {
-      const args: FeedbackSubmitArgs = {
-        category,
-        userDescription: description.trim(),
-        modelId,
-        reasoningEffort,
+      const args: FeedbackPrepareDraftArgs = {
+        draftInput: buildDraftInput(category, form),
+        modelId: modelId.trim() || null,
+        reasoningEffort: modelId.trim() ? reasoningEffort : null,
       };
-      await window.ade.feedback.submit(args);
-      setDescription("");
-      setFlash({ msg: "Submitted! Report is generating in the background.", ok: true });
-      if (flashTimer.current) window.clearTimeout(flashTimer.current);
-      flashTimer.current = window.setTimeout(() => setFlash(null), 4000);
-      onSubmitted();
+      const nextDraft = await window.ade.feedback.prepareDraft(args);
+      setPreparedDraft(nextDraft);
+      setDraftTitle(nextDraft.title);
+      setDraftBody(nextDraft.body);
+      setDraftLabelsText(labelsToInputValue(nextDraft.labels));
+      setFlashMessage("Draft ready. Review and edit it before posting to GitHub.", true, 4000);
     } catch (err: unknown) {
       const msg =
-        err instanceof Error ? err.message : "Failed to submit feedback";
-      setFlash({ msg, ok: false });
-      if (flashTimer.current) window.clearTimeout(flashTimer.current);
-      flashTimer.current = window.setTimeout(() => setFlash(null), 6000);
+        err instanceof Error ? err.message : "Failed to prepare feedback draft";
+      setFlashMessage(msg, false, 6000);
+    } finally {
+      setPreparing(false);
+    }
+  }, [category, form, modelId, preparing, reasoningEffort, setFlashMessage, submitting]);
+
+  const handleSubmitDraft = useCallback(async () => {
+    if (!preparedDraft || !draftTitle.trim() || !draftBody.trim() || preparing || submitting) return;
+    setSubmitting(true);
+    try {
+      const args: FeedbackSubmitDraftArgs = {
+        draft: preparedDraft,
+        title: draftTitle.trim(),
+        body: draftBody.trim(),
+        labels: parseLabelInput(draftLabelsText),
+      };
+      const submission = await window.ade.feedback.submitDraft(args);
+      if (submission.status === "posted") {
+        setForm({ ...createEmptyDraftForm(), environment: autoEnvironmentText });
+        lastAppliedEnvironmentRef.current = autoEnvironmentText.trim();
+        clearPreparedDraft();
+        setFlashMessage(
+          submission.issueNumber
+            ? `Posted issue #${submission.issueNumber}.`
+            : "Posted issue to GitHub.",
+          true,
+          5000,
+        );
+        onSubmitted();
+      } else {
+        setFlashMessage(
+          submission.error ?? "GitHub posting failed. The reviewed draft was saved in My Submissions.",
+          false,
+          7000,
+        );
+        onSubmitted();
+      }
+    } catch (err: unknown) {
+      const msg =
+        err instanceof Error ? err.message : "Failed to post feedback draft";
+      setFlashMessage(msg, false, 7000);
     } finally {
       setSubmitting(false);
     }
-  }, [category, description, modelId, reasoningEffort, submitting, onSubmitted]);
+  }, [
+    clearPreparedDraft,
+    draftBody,
+    draftLabelsText,
+    draftTitle,
+    autoEnvironmentText,
+    onSubmitted,
+    preparedDraft,
+    preparing,
+    setFlashMessage,
+    submitting,
+  ]);
 
   useEffect(() => {
     return () => {
@@ -154,7 +445,13 @@ function NewReportTab({
     };
   }, []);
 
-  const submitDisabled = !description.trim() || !modelId || submitting;
+  const canPrepareDraft = form.summary.trim().length > 0 && !preparing && !submitting;
+  const canSubmitDraft = preparedDraft != null
+    && draftTitle.trim().length > 0
+    && draftBody.trim().length > 0
+    && !preparing
+    && !submitting;
+  const draftSource = formattingLabel(preparedDraft?.generationMode ?? null);
 
   if (!hasGithubToken) {
     return (
@@ -179,12 +476,14 @@ function NewReportTab({
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 14, paddingTop: 12 }}>
-      {/* Category */}
       <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
         <span style={LABEL_STYLE}>Category</span>
         <select
           value={category}
-          onChange={(e) => setCategory(e.target.value as FeedbackCategory)}
+          onChange={(e) => {
+            setCategory(e.target.value as FeedbackCategory);
+            clearPreparedDraft();
+          }}
           style={{ ...INPUT_STYLE, height: 32, padding: "0 8px", fontSize: 12 }}
         >
           {CATEGORIES.map((c) => (
@@ -195,39 +494,178 @@ function NewReportTab({
         </select>
       </div>
 
-      {/* Description */}
       <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-        <span style={LABEL_STYLE}>Description</span>
+        <span style={LABEL_STYLE}>Summary</span>
         <textarea
-          value={description}
-          onChange={(e) => setDescription(e.target.value)}
-          placeholder="Describe the bug you found or feature you'd like to see..."
-          rows={4}
-          style={{
-            ...INPUT_STYLE,
-            padding: "8px 12px",
-            fontSize: 12,
-            resize: "none",
-            outline: "none",
-          }}
+          value={form.summary}
+          onChange={(e) => updateField("summary", e.target.value)}
+          placeholder="What changed, what broke, or what should ADE do differently?"
+          rows={3}
+          style={TEXTAREA_STYLE}
+        />
+        {helperText("This becomes the Description section and fallback title seed if no AI assist is used.")}
+      </div>
+
+      {category === "bug" ? (
+        <>
+          <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+            <span style={LABEL_STYLE}>Steps to reproduce</span>
+            <textarea
+              value={form.stepsToReproduce}
+              onChange={(e) => updateField("stepsToReproduce", e.target.value)}
+              placeholder={"1. Open the feedback reporter\n2. Submit a report\n3. Observe the result"}
+              rows={4}
+              style={TEXTAREA_STYLE}
+            />
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+            <span style={LABEL_STYLE}>Expected behavior</span>
+            <textarea
+              value={form.expectedBehavior}
+              onChange={(e) => updateField("expectedBehavior", e.target.value)}
+              placeholder="What should have happened?"
+              rows={3}
+              style={TEXTAREA_STYLE}
+            />
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+            <span style={LABEL_STYLE}>Actual behavior</span>
+            <textarea
+              value={form.actualBehavior}
+              onChange={(e) => updateField("actualBehavior", e.target.value)}
+              placeholder="What actually happened?"
+              rows={3}
+              style={TEXTAREA_STYLE}
+            />
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+              <span style={LABEL_STYLE}>Environment</span>
+              <button
+                type="button"
+                onClick={() => applyAutoEnvironment(autoEnvironmentText)}
+                disabled={!autoEnvironmentText.trim()}
+                style={{
+                  padding: 0,
+                  background: "transparent",
+                  border: "none",
+                  color: autoEnvironmentText.trim() ? COLORS.accent : COLORS.textDim,
+                  fontSize: 10,
+                  fontWeight: 700,
+                  fontFamily: MONO_FONT,
+                  textTransform: "uppercase",
+                  letterSpacing: "0.5px",
+                  cursor: autoEnvironmentText.trim() ? "pointer" : "not-allowed",
+                  opacity: autoEnvironmentText.trim() ? 1 : 0.5,
+                }}
+              >
+                Refresh details
+              </button>
+            </div>
+            <textarea
+              value={form.environment}
+              onChange={(e) => updateField("environment", e.target.value)}
+              placeholder="OS, ADE version, repro scope, lane, or anything else that matters"
+              rows={3}
+              style={TEXTAREA_STYLE}
+            />
+            {helperText("ADE autofills version, platform, selected lane, and current lane HEAD commit when available. Edit anything before posting.")}
+          </div>
+        </>
+      ) : null}
+
+      {category === "feature" || category === "enhancement" ? (
+        <>
+          <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+            <span style={LABEL_STYLE}>Use case</span>
+            <textarea
+              value={form.useCase}
+              onChange={(e) => updateField("useCase", e.target.value)}
+              placeholder="Who needs this, and what workflow does it unblock?"
+              rows={3}
+              style={TEXTAREA_STYLE}
+            />
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+            <span style={LABEL_STYLE}>Proposed solution</span>
+            <textarea
+              value={form.proposedSolution}
+              onChange={(e) => updateField("proposedSolution", e.target.value)}
+              placeholder="Describe the change you want ADE to make."
+              rows={3}
+              style={TEXTAREA_STYLE}
+            />
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+            <span style={LABEL_STYLE}>Alternatives considered</span>
+            <textarea
+              value={form.alternativesConsidered}
+              onChange={(e) => updateField("alternativesConsidered", e.target.value)}
+              placeholder="What have you tried instead, and why was it not enough?"
+              rows={3}
+              style={TEXTAREA_STYLE}
+            />
+          </div>
+        </>
+      ) : null}
+
+      {category === "question" ? (
+        <>
+          <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+            <span style={LABEL_STYLE}>Context</span>
+            <textarea
+              value={form.context}
+              onChange={(e) => updateField("context", e.target.value)}
+              placeholder="What were you trying to do when the question came up?"
+              rows={3}
+              style={TEXTAREA_STYLE}
+            />
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+            <span style={LABEL_STYLE}>Expected guidance</span>
+            <textarea
+              value={form.expectedGuidance}
+              onChange={(e) => updateField("expectedGuidance", e.target.value)}
+              placeholder="What answer or guidance would unblock you?"
+              rows={3}
+              style={TEXTAREA_STYLE}
+            />
+          </div>
+        </>
+      ) : null}
+
+      <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+        <span style={LABEL_STYLE}>Additional context</span>
+        <textarea
+          value={form.additionalContext}
+          onChange={(e) => updateField("additionalContext", e.target.value)}
+          placeholder="Links, screenshots, workaround notes, or anything else useful."
+          rows={3}
+          style={TEXTAREA_STYLE}
         />
       </div>
 
-      {/* Model */}
       <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-        <span style={LABEL_STYLE}>Model</span>
+        <span style={LABEL_STYLE}>AI assist (optional)</span>
         <ProviderModelSelector
           value={modelId}
-          onChange={(id) => { setModelId(id); setReasoningEffort(null); }}
+          onChange={(id) => {
+            setModelId(id);
+            setReasoningEffort(null);
+            clearPreparedDraft();
+          }}
           availableModelIds={availableModelIds}
           showReasoning
           reasoningEffort={reasoningEffort}
-          onReasoningEffortChange={setReasoningEffort}
+          onReasoningEffortChange={(value) => {
+            setReasoningEffort(value);
+            clearPreparedDraft();
+          }}
           onOpenAiSettings={openAiProvidersSettings}
         />
+        {helperText("Leave this empty to build a fully deterministic draft. If you pick a model, ADE only uses it to suggest the title and labels.")}
       </div>
 
-      {/* Flash message */}
       {flash ? (
         <div
           style={{
@@ -243,12 +681,11 @@ function NewReportTab({
         </div>
       ) : null}
 
-      {/* Submit */}
       <div style={{ display: "flex", justifyContent: "flex-end" }}>
         <button
           type="button"
-          disabled={submitDisabled}
-          onClick={handleSubmit}
+          disabled={!canPrepareDraft}
+          onClick={handleGenerateDraft}
           style={{
             height: 32,
             padding: "0 20px",
@@ -257,17 +694,112 @@ function NewReportTab({
             fontFamily: MONO_FONT,
             textTransform: "uppercase",
             letterSpacing: "0.5px",
-            background: submitDisabled ? COLORS.textDim : COLORS.accent,
+            background: canPrepareDraft ? COLORS.accent : COLORS.textDim,
             color: "#fff",
             border: "none",
-            cursor: submitDisabled ? "not-allowed" : "pointer",
-            opacity: submitDisabled ? 0.5 : 1,
+            cursor: canPrepareDraft ? "pointer" : "not-allowed",
+            opacity: canPrepareDraft ? 1 : 0.5,
             transition: "opacity 0.15s, background 0.15s",
           }}
         >
-          {submitting ? "Submitting..." : "Submit"}
+          {preparing ? "Preparing..." : "Generate draft"}
         </button>
       </div>
+
+      {preparedDraft ? (
+        <div
+          style={{
+            display: "flex",
+            flexDirection: "column",
+            gap: 12,
+            padding: 12,
+            border: `1px solid ${COLORS.border}`,
+            background: COLORS.recessedBg,
+          }}
+        >
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+            <div>
+              <div style={LABEL_STYLE}>Draft preview</div>
+              <div style={{ fontSize: 12, color: COLORS.textSecondary }}>
+                Review the generated issue before ADE posts it to GitHub.
+              </div>
+            </div>
+            <div style={{ fontSize: 11, fontFamily: MONO_FONT, color: draftSource?.color ?? COLORS.textMuted }}>
+              {draftSource?.text ?? "Unknown"}
+            </div>
+          </div>
+
+          {preparedDraft.generationWarning ? (
+            <div
+              style={{
+                padding: "8px 10px",
+                fontSize: 12,
+                color: COLORS.warning,
+                background: "rgba(245,158,11,0.08)",
+                border: "1px solid rgba(245,158,11,0.2)",
+                whiteSpace: "pre-wrap",
+              }}
+            >
+              {preparedDraft.generationWarning}
+            </div>
+          ) : null}
+
+          <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+            <span style={LABEL_STYLE}>Labels</span>
+            <input
+              value={draftLabelsText}
+              onChange={(e) => setDraftLabelsText(e.target.value)}
+              placeholder="bug, enhancement"
+              style={{ ...INPUT_STYLE, height: 32, padding: "0 10px", fontSize: 12 }}
+            />
+          </div>
+
+          <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+            <span style={LABEL_STYLE}>Title</span>
+            <textarea
+              value={draftTitle}
+              onChange={(e) => setDraftTitle(e.target.value)}
+              rows={2}
+              style={TEXTAREA_STYLE}
+            />
+          </div>
+
+          <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+            <span style={LABEL_STYLE}>Issue body</span>
+            <textarea
+              value={draftBody}
+              onChange={(e) => setDraftBody(e.target.value)}
+              rows={14}
+              style={{ ...INPUT_STYLE, padding: "8px 12px", fontSize: 12, resize: "vertical", outline: "none", minHeight: 240 }}
+            />
+          </div>
+
+          <div style={{ display: "flex", justifyContent: "flex-end" }}>
+            <button
+              type="button"
+              disabled={!canSubmitDraft}
+              onClick={handleSubmitDraft}
+              style={{
+                height: 32,
+                padding: "0 20px",
+                fontSize: 11,
+                fontWeight: 700,
+                fontFamily: MONO_FONT,
+                textTransform: "uppercase",
+                letterSpacing: "0.5px",
+                background: canSubmitDraft ? COLORS.success : COLORS.textDim,
+                color: "#fff",
+                border: "none",
+                cursor: canSubmitDraft ? "pointer" : "not-allowed",
+                opacity: canSubmitDraft ? 1 : 0.5,
+                transition: "opacity 0.15s, background 0.15s",
+              }}
+            >
+              {submitting ? "Posting..." : "Post to GitHub"}
+            </button>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -275,6 +807,7 @@ function NewReportTab({
 function SubmissionRow({ submission }: { submission: FeedbackSubmission }) {
   const [expanded, setExpanded] = useState(submission.status === "failed");
   const sl = statusLabel(submission.status);
+  const formatting = formattingLabel(submission.generationMode);
   const preview =
     submission.generatedTitle || submission.userDescription.slice(0, 80);
 
@@ -387,7 +920,15 @@ function SubmissionRow({ submission }: { submission: FeedbackSubmission }) {
             </div>
             <div>
               <div style={LABEL_STYLE}>Model</div>
-              <div style={{ fontSize: 11, color: COLORS.textSecondary, wordBreak: "break-word" }}>{submission.modelId}</div>
+              <div style={{ fontSize: 11, color: COLORS.textSecondary, wordBreak: "break-word" }}>
+                {submission.modelId ?? "Not used"}
+              </div>
+            </div>
+            <div>
+              <div style={LABEL_STYLE}>Draft source</div>
+              <div style={{ fontSize: 11, color: formatting?.color ?? COLORS.textSecondary }}>
+                {formatting?.text ?? "Unknown"}
+              </div>
             </div>
             <div>
               <div style={LABEL_STYLE}>Issue</div>
@@ -445,6 +986,24 @@ function SubmissionRow({ submission }: { submission: FeedbackSubmission }) {
                 }}
               >
                 {submission.error}
+              </div>
+            </div>
+          ) : null}
+
+          {submission.generationWarning ? (
+            <div>
+              <div style={{ ...LABEL_STYLE, color: COLORS.warning }}>Formatting note</div>
+              <div
+                style={{
+                  padding: "8px 10px",
+                  fontSize: 12,
+                  whiteSpace: "pre-wrap",
+                  color: COLORS.warning,
+                  background: "rgba(245,158,11,0.08)",
+                  border: "1px solid rgba(245,158,11,0.2)",
+                }}
+              >
+                {submission.generationWarning}
               </div>
             </div>
           ) : null}

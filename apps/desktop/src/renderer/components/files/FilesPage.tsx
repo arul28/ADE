@@ -31,7 +31,7 @@ import type {
   FilesWorkspace,
   GitCommitSummary
 } from "../../../shared/types";
-import { MonacoDiffView } from "../lanes/MonacoDiffView";
+import { MonacoDiffView, type MonacoDiffHandle } from "../lanes/MonacoDiffView";
 import { useAppStore } from "../../state/appStore";
 import { clearDirtyBuffersForWorkspace, replaceDirtyBuffersForWorkspace } from "../../lib/dirtyWorkspaceBuffers";
 import { revealLabel } from "../../lib/platform";
@@ -51,6 +51,8 @@ type FilesPageNavState = {
   openFilePath?: string;
   laneId?: string;
   preferPrimaryWorkspace?: boolean;
+  mode?: "edit" | "diff";
+  startLine?: number;
 };
 
 type ConflictHunk = {
@@ -401,7 +403,8 @@ export function FilesPage() {
   const [tree, setTree] = useState<FileTreeNode[]>([]);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [selectedNodePath, setSelectedNodePath] = useState<string | null>(initialSession?.selectedNodePath ?? null);
-  const pendingOpenRef = useRef<{ filePath: string; laneId: string | null; preferPrimaryWorkspace: boolean; key: string } | null>(null);
+  const pendingOpenRef = useRef<{ filePath: string; laneId: string | null; preferPrimaryWorkspace: boolean; key: string; mode?: "edit" | "diff"; startLine?: number } | null>(null);
+  const diffViewRef = useRef<MonacoDiffHandle | null>(null);
   const treeRefreshStateRef = useRef<{
     inFlight: boolean;
     queuedFull: boolean;
@@ -679,6 +682,8 @@ export function FilesPage() {
       filePath: openFilePath,
       laneId: st?.laneId ?? null,
       preferPrimaryWorkspace: st?.preferPrimaryWorkspace === true,
+      mode: st?.mode,
+      startLine: st?.startLine,
     };
   }, [location.key, location.state]);
 
@@ -873,9 +878,40 @@ export function FilesPage() {
     }
     if (!workspaceId) return;
 
-    openFile(pending.filePath).catch(() => {});
+    const pendingMode = pending.mode;
+    const pendingStartLine = pending.startLine;
+    let cancelled = false;
+    let pendingTimer: ReturnType<typeof setTimeout> | null = null;
+    openFile(pending.filePath)
+      .then(() => {
+        if (cancelled) return;
+        if (pendingMode === "diff") setMode("diff");
+        if (typeof pendingStartLine === "number" && pendingStartLine > 0) {
+          const attemptReveal = (attemptsLeft: number) => {
+            if (cancelled) return;
+            const handle = diffViewRef.current;
+            if (handle) {
+              try {
+                handle.revealLineInCenter(pendingStartLine);
+              } catch {
+                /* ignore */
+              }
+              return;
+            }
+            if (attemptsLeft > 0) {
+              pendingTimer = setTimeout(() => attemptReveal(attemptsLeft - 1), 80);
+            }
+          };
+          attemptReveal(6);
+        }
+      })
+      .catch(() => {});
     pendingOpenRef.current = null;
     navigate(location.pathname, { replace: true, state: null });
+    return () => {
+      cancelled = true;
+      if (pendingTimer !== null) clearTimeout(pendingTimer);
+    };
   }, [workspaces, workspaceId, switchWorkspace, openFile, navigate, location.pathname]);
 
   const closeTab = useCallback((filePath: string) => {
@@ -1919,7 +1955,7 @@ export function FilesPage() {
               </div>
             ) : mode === "diff" ? (
               laneIdForDiff && activeTabPath ? (
-                <FilesDiffPanel laneId={laneIdForDiff} path={activeTabPath} theme={editorTheme} />
+                <FilesDiffPanel laneId={laneIdForDiff} path={activeTabPath} theme={editorTheme} diffViewRef={diffViewRef} />
               ) : (
                 <div style={{ padding: 16, fontFamily: MONO_FONT, fontSize: 12, color: COLORS.textMuted }}>
                   DIFF MODE REQUIRES A LANE WORKSPACE AND AN OPEN FILE.
@@ -2189,7 +2225,7 @@ export function FilesPage() {
             </button>
           </SmartTooltip>
           {openInMenuOpen ? (
-            <div className="absolute right-0 top-full z-50 mt-1" style={{ width: 220, background: COLORS.cardBg, backdropFilter: "blur(20px)", WebkitBackdropFilter: "blur(20px)", border: `1px solid ${COLORS.border}`, borderRadius: 12, padding: "2px 0", overflow: "hidden" }}>
+            <div className="ade-liquid-glass-menu absolute right-0 top-full z-50 mt-1 overflow-hidden" style={{ width: 220, padding: "2px 0" }}>
               {(
                 [
                   { key: "finder", label: revealLabel.toUpperCase() },
@@ -2305,8 +2341,8 @@ export function FilesPage() {
       {/* Context menu overlay */}
       {contextMenu ? (
         <div
-          className="fixed z-40"
-          style={{ left: contextMenu.x, top: contextMenu.y, minWidth: 200, background: COLORS.cardBg, backdropFilter: "blur(20px)", WebkitBackdropFilter: "blur(20px)", border: `1px solid ${COLORS.border}`, borderRadius: 12, padding: "4px 0" }}
+          className="ade-liquid-glass-menu fixed z-40"
+          style={{ left: contextMenu.x, top: contextMenu.y, minWidth: 200, padding: "4px 0" }}
           onPointerDown={(e) => e.stopPropagation()}
         >
           {contextMenu.nodeType === "file" ? (
@@ -2454,7 +2490,17 @@ export function FilesPage() {
   );
 }
 
-function FilesDiffPanel({ laneId, path, theme }: { laneId: string; path: string; theme: EditorThemeMode }) {
+function FilesDiffPanel({
+  laneId,
+  path,
+  theme,
+  diffViewRef,
+}: {
+  laneId: string;
+  path: string;
+  theme: EditorThemeMode;
+  diffViewRef?: React.MutableRefObject<MonacoDiffHandle | null>;
+}) {
   const [mode, setMode] = useState<"unstaged" | "staged" | "commit">("unstaged");
   const [diff, setDiff] = useState<any>(null);
   const [error, setError] = useState<string | null>(null);
@@ -2562,7 +2608,7 @@ function FilesDiffPanel({ laneId, path, theme }: { laneId: string; path: string;
       </div>
 
       {error ? <div style={{ padding: 12, fontFamily: MONO_FONT, fontSize: 11, color: COLORS.danger }}>{error}</div> : null}
-      <div className="min-h-0 flex-1">{diff ? <MonacoDiffView diff={diff} className="h-full" theme={theme} /> : null}</div>
+      <div className="min-h-0 flex-1">{diff ? <MonacoDiffView ref={diffViewRef} diff={diff} className="h-full" theme={theme} /> : null}</div>
     </div>
   );
 }

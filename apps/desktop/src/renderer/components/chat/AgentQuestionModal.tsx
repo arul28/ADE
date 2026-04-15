@@ -1,11 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import ReactMarkdown from "react-markdown";
-import rehypeRaw from "rehype-raw";
-import rehypeSanitize, { defaultSchema } from "rehype-sanitize";
-import remarkGfm from "remark-gfm";
 import { ChatCircleText, HandPalm, PaperPlaneTilt, X } from "@phosphor-icons/react";
 import type { PendingInputRequest } from "../../../shared/types";
 import { Button } from "../ui/Button";
+import { ChatMarkdown } from "./chatMarkdown";
 
 type AgentQuestionModalProps = {
   request: PendingInputRequest;
@@ -18,29 +15,6 @@ type QuestionDraft = {
   text: string;
   selectedValues: string[];
   activePreviewValue: string | null;
-};
-
-const SAFE_PREVIEW_SCHEMA = {
-  ...defaultSchema,
-  tagNames: [
-    "p",
-    "ul",
-    "ol",
-    "li",
-    "strong",
-    "em",
-    "code",
-    "pre",
-    "blockquote",
-    "table",
-    "thead",
-    "tbody",
-    "tr",
-    "th",
-    "td",
-    "br",
-    "hr",
-  ],
 };
 
 function createEmptyDraft(): QuestionDraft {
@@ -152,7 +126,7 @@ export function AgentQuestionModal({
         if (passiveDismissAllowed && event.target === event.currentTarget) onClose();
       }}
     >
-      <div className="ade-glass-card w-full max-w-3xl overflow-hidden border-border/20 bg-[linear-gradient(180deg,rgba(18,24,38,0.94),rgba(11,15,24,0.88))] shadow-[var(--shadow-panel)]">
+      <div className="ade-liquid-glass ade-liquid-glass-strong w-full max-w-3xl overflow-hidden rounded-2xl shadow-[var(--shadow-panel)]">
         <div className="flex items-start justify-between gap-3 border-b border-border/15 bg-[linear-gradient(90deg,rgba(78,154,241,0.12),transparent)] px-5 py-3">
           <div className="min-w-0">
             <div className="mb-1 flex flex-wrap items-center gap-2">
@@ -342,36 +316,7 @@ export function AgentQuestionModal({
                             </div>
                           </div>
                           <div className="max-h-[320px] overflow-auto px-3 py-3 text-[12px] leading-6 text-fg/86">
-                            <ReactMarkdown
-                              remarkPlugins={[remarkGfm]}
-                              rehypePlugins={[rehypeRaw, [rehypeSanitize, SAFE_PREVIEW_SCHEMA]]}
-                              components={{
-                                p: ({ children }) => <p className="mb-3 whitespace-pre-wrap">{children}</p>,
-                                ul: ({ children }) => <ul className="mb-3 list-disc space-y-1 pl-5">{children}</ul>,
-                                ol: ({ children }) => <ol className="mb-3 list-decimal space-y-1 pl-5">{children}</ol>,
-                                li: ({ children }) => <li>{children}</li>,
-                                pre: ({ children }) => (
-                                  <pre className="mb-3 overflow-auto rounded-sm border border-white/[0.06] bg-black/25 p-3 font-mono text-[11px] leading-5">
-                                    {children}
-                                  </pre>
-                                ),
-                                code: ({ children, className }) => (
-                                  <code className={className ?? "rounded-sm bg-black/30 px-1 py-0.5 font-mono text-[11px]"}>
-                                    {children}
-                                  </code>
-                                ),
-                                blockquote: ({ children }) => (
-                                  <blockquote className="mb-3 border-l-2 border-sky-300/25 pl-3 text-muted-fg/72">
-                                    {children}
-                                  </blockquote>
-                                ),
-                                table: ({ children }) => <table className="mb-3 w-full border-collapse text-left">{children}</table>,
-                                th: ({ children }) => <th className="border border-white/[0.08] px-2 py-1 font-semibold">{children}</th>,
-                                td: ({ children }) => <td className="border border-white/[0.08] px-2 py-1 align-top">{children}</td>,
-                              }}
-                            >
-                              {activePreviewOption.preview}
-                            </ReactMarkdown>
+                            <ChatMarkdown tone="sky">{activePreviewOption.preview}</ChatMarkdown>
                           </div>
                         </div>
                       ) : null}

@@ -14,6 +14,9 @@ describe("prsRouteState", () => {
       laneId: "lane-search",
       prId: "pr-123",
       queueGroupId: "group-hash",
+      eventId: null,
+      threadId: null,
+      commitSha: null,
     });
   });
 
@@ -29,7 +32,41 @@ describe("prsRouteState", () => {
       laneId: "lane-456",
       prId: "pr-789",
       queueGroupId: "group-1",
+      eventId: null,
+      threadId: null,
+      commitSha: null,
     });
+  });
+
+  it("parses deep-link event, thread, and commit params", () => {
+    expect(
+      parsePrsRouteState({
+        search: "?tab=normal&prId=pr-1&eventId=evt-99&threadId=thr-12&commitSha=abc123",
+      }),
+    ).toEqual({
+      tab: "normal",
+      workflowTab: null,
+      laneId: null,
+      prId: "pr-1",
+      queueGroupId: null,
+      eventId: "evt-99",
+      threadId: "thr-12",
+      commitSha: "abc123",
+    });
+  });
+
+  it("builds search with deep-link params", () => {
+    expect(
+      buildPrsRouteSearch({
+        activeTab: "normal",
+        selectedPrId: "pr-1",
+        selectedQueueGroupId: null,
+        selectedRebaseItemId: null,
+        eventId: "evt-5",
+        threadId: "thr-3",
+        commitSha: "abc",
+      }),
+    ).toBe("?tab=normal&prId=pr-1&eventId=evt-5&threadId=thr-3&commitSha=abc");
   });
 
   it("builds normal and workflow route searches with the expected ids", () => {

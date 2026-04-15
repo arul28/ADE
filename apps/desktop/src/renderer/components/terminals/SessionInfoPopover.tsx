@@ -6,6 +6,7 @@ import {
   Monitor,
   Play,
   Stop as Square,
+  Trash,
   X,
 } from "@phosphor-icons/react";
 import type { TerminalSessionSummary } from "../../../shared/types";
@@ -33,20 +34,26 @@ export function SessionInfoPopover({
   onClose,
   onCloseSession,
   onEndChat,
+  onDeleteChat,
+  onDeleteSession,
   onResume,
   onGoToLane,
   closingPtyIds,
   closingChatSessionId,
+  deletingSessionId,
   resumingSessionId,
 }: {
   popover: InfoPopoverState;
   onClose: () => void;
   onCloseSession: (args: { ptyId: string; sessionId: string }) => void;
   onEndChat: (sessionId: string) => void;
+  onDeleteChat: (session: TerminalSessionSummary) => void;
+  onDeleteSession: (session: TerminalSessionSummary) => void;
   onResume: (session: TerminalSessionSummary) => void;
   onGoToLane: (session: TerminalSessionSummary) => void;
   closingPtyIds: Set<string>;
   closingChatSessionId: string | null;
+  deletingSessionId: string | null;
   resumingSessionId: string | null;
 }) {
   const ref = useRef<HTMLDivElement>(null);
@@ -234,6 +241,32 @@ export function SessionInfoPopover({
               >
                 <Square size={14} weight="regular" />
                 {closingChatSessionId === session.id ? "Ending..." : "End chat"}
+              </Button>
+            </SmartTooltip>
+          ) : null}
+          {session.status !== "running" && isChat ? (
+            <SmartTooltip content={{ label: "Delete Chat", description: "Permanently remove this saved chat from ADE." }}>
+              <Button
+                variant="danger"
+                size="sm"
+                disabled={deletingSessionId === session.id}
+                onClick={() => onDeleteChat(session)}
+              >
+                <Trash size={14} weight="regular" />
+                {deletingSessionId === session.id ? "Deleting..." : "Delete chat"}
+              </Button>
+            </SmartTooltip>
+          ) : null}
+          {session.status !== "running" && !isChat ? (
+            <SmartTooltip content={{ label: "Delete Session", description: "Permanently remove this saved terminal session from ADE." }}>
+              <Button
+                variant="danger"
+                size="sm"
+                disabled={deletingSessionId === session.id}
+                onClick={() => onDeleteSession(session)}
+              >
+                <Trash size={14} weight="regular" />
+                {deletingSessionId === session.id ? "Deleting..." : "Delete session"}
               </Button>
             </SmartTooltip>
           ) : null}

@@ -153,6 +153,11 @@ import type {
   QueueLandingState,
   ReplyToPrReviewThreadArgs,
   ResolvePrReviewThreadArgs,
+  PostPrReviewCommentArgs,
+  SetPrReviewThreadResolvedArgs,
+  ReactToPrCommentArgs,
+  LaunchPrIssueResolutionFromThreadArgs,
+  LaunchPrIssueResolutionFromThreadResult,
   SimulateIntegrationArgs,
   UpdatePrDescriptionArgs,
   LandPrArgs,
@@ -167,6 +172,7 @@ import type {
   AgentChatApproveArgs,
   AgentChatClaudePermissionMode,
   AgentChatCreateArgs,
+  AgentChatDeleteArgs,
   AgentChatDisposeArgs,
   AgentChatGetSummaryArgs,
   AgentChatHandoffArgs,
@@ -211,6 +217,7 @@ import type {
   ListLanesArgs,
   ListMissionsArgs,
   ListSessionsArgs,
+  DeleteSessionArgs,
   ListTestRunsArgs,
   MergeSimulationArgs,
   MergeSimulationResult,
@@ -479,8 +486,10 @@ import type {
   GenerateRedirectUrisArgs,
   EncodeOAuthStateArgs,
   DecodeOAuthStateArgs,
-  FeedbackSubmitArgs,
+  FeedbackPrepareDraftArgs,
+  FeedbackPreparedDraft,
   FeedbackSubmission,
+  FeedbackSubmitDraftArgs,
 } from "../../../shared/types";
 import type { Logger } from "../logging/logger";
 import type { AdeDb } from "../state/kvDb";
@@ -512,6 +521,7 @@ import type { createPrService } from "../prs/prService";
 import type { createPrPollingService } from "../prs/prPollingService";
 import type { createQueueLandingService } from "../prs/queueLandingService";
 import type { createIssueInventoryService } from "../prs/issueInventoryService";
+import type { createPrSummaryService } from "../prs/prSummaryService";
 import type { createAgentChatService } from "../chat/agentChatService";
 import type { createComputerUseArtifactBrokerService } from "../computerUse/computerUseArtifactBrokerService";
 import {
@@ -608,6 +618,7 @@ export type AppContext = {
   prPollingService: ReturnType<typeof createPrPollingService>;
   queueLandingService: ReturnType<typeof createQueueLandingService>;
   issueInventoryService: ReturnType<typeof createIssueInventoryService>;
+  prSummaryService: ReturnType<typeof createPrSummaryService>;
   jobEngine: ReturnType<typeof createJobEngine>;
   automationService: ReturnType<typeof createAutomationService>;
   automationPlannerService: ReturnType<typeof createAutomationPlannerService>;
@@ -1453,6 +1464,29 @@ function getAllowedDirs(getCtx: () => AppContext): string[] {
     app.getPath("documents"),
     app.getPath("temp"),
   ];
+}
+
+function buildIssueResolutionInstructionsFromThread(arg: LaunchPrIssueResolutionFromThreadArgs): string {
+  const lines: string[] = [
+    `Focus on review thread ${arg.threadId} on PR ${arg.prId}.`,
+  ];
+  if (arg.commentId) {
+    lines.push(`The relevant comment id is ${arg.commentId}.`);
+  }
+  const fileContext = arg.fileContext;
+  if (fileContext?.path) {
+    const lineNumber = fileContext.startLine ?? fileContext.line ?? null;
+    lines.push(
+      lineNumber != null
+        ? `Start by inspecting ${fileContext.path}:${lineNumber}.`
+        : `Start by inspecting ${fileContext.path}.`,
+    );
+  }
+  if (arg.additionalInstructions) {
+    lines.push("");
+    lines.push(arg.additionalInstructions);
+  }
+  return lines.join("\n");
 }
 
 export function registerIpc({
@@ -3963,6 +3997,25 @@ export function registerIpc({
     };
   });
 
+  ipcMain.handle(IPC.sessionsDelete, async (_event, arg: DeleteSessionArgs): Promise<void> => {
+    const ctx = getCtx();
+    const sessionId = typeof arg?.sessionId === "string" ? arg.sessionId.trim() : "";
+    if (!sessionId) {
+      throw new Error("Session id is required.");
+    }
+    const session = ctx.sessionService.get(sessionId);
+    if (!session) {
+      throw new Error(`Session '${sessionId}' was not found.`);
+    }
+    if (isChatToolType(session.toolType)) {
+      throw new Error(`Session '${sessionId}' is an agent chat session. Use the chat delete flow instead.`);
+    }
+    if (session.status === "running" || session.ptyId) {
+      throw new Error("Running terminal sessions must be closed before they can be deleted.");
+    }
+    ctx.sessionService.deleteSession(sessionId);
+  });
+
   ipcMain.handle(IPC.sessionsUpdateMeta, async (_event, arg: UpdateSessionMetaArgs): Promise<TerminalSessionSummary | null> => {
     const ctx = getCtx();
     return ctx.sessionService.updateMeta(arg);
@@ -4054,6 +4107,11 @@ export function registerIpc({
   ipcMain.handle(IPC.agentChatDispose, async (_event, arg: AgentChatDisposeArgs): Promise<void> => {
     const ctx = getCtx();
     await ctx.agentChatService.dispose(arg);
+  });
+
+  ipcMain.handle(IPC.agentChatDelete, async (_event, arg: AgentChatDeleteArgs): Promise<void> => {
+    const ctx = getCtx();
+    await ctx.agentChatService.deleteSession(arg);
   });
 
   ipcMain.handle(IPC.agentChatUpdateSession, async (_event, arg: AgentChatUpdateSessionArgs): Promise<AgentChatSession> => {
@@ -4669,10 +4727,16 @@ export function registerIpc({
   });
 
   // ── Feedback Reporter ──────────────────────────────────────────────
-  ipcMain.handle(IPC.feedbackSubmit, async (_event, arg: FeedbackSubmitArgs): Promise<FeedbackSubmission> => {
+  ipcMain.handle(IPC.feedbackPrepareDraft, async (_event, arg: FeedbackPrepareDraftArgs): Promise<FeedbackPreparedDraft> => {
     const ctx = getCtx();
     if (!ctx.feedbackReporterService) throw new Error("Feedback reporter not available");
-    return await ctx.feedbackReporterService.submit(arg);
+    return await ctx.feedbackReporterService.prepareDraft(arg);
+  });
+
+  ipcMain.handle(IPC.feedbackSubmitDraft, async (_event, arg: FeedbackSubmitDraftArgs): Promise<FeedbackSubmission> => {
+    const ctx = getCtx();
+    if (!ctx.feedbackReporterService) throw new Error("Feedback reporter not available");
+    return await ctx.feedbackReporterService.submitPreparedDraft(arg);
   });
 
   ipcMain.handle(IPC.feedbackList, async (): Promise<FeedbackSubmission[]> => {
@@ -5309,6 +5373,44 @@ export function registerIpc({
   ipcMain.handle(IPC.prsReopen, (_e, args) => getCtx().prService.reopenPr(args));
   ipcMain.handle(IPC.prsRerunChecks, (_e, args) => getCtx().prService.rerunChecks(args));
   ipcMain.handle(IPC.prsAiReviewSummary, (_e, args) => getCtx().prService.aiReviewSummary(args));
+
+  // PRs Tab redesign (Timeline + Rails)
+  ipcMain.handle(IPC.prsGetDeployments, (_e, args: { prId: string }) => getCtx().prService.getDeployments(args.prId));
+  ipcMain.handle(IPC.prsGetAiSummary, (_e, args: { prId: string }) => getCtx().prSummaryService.getSummary(args.prId));
+  ipcMain.handle(IPC.prsRegenerateAiSummary, (_e, args: { prId: string }) => getCtx().prSummaryService.regenerateSummary(args.prId));
+  ipcMain.handle(IPC.prsPostReviewComment, (_e, args: PostPrReviewCommentArgs) => getCtx().prService.postReviewComment(args));
+  ipcMain.handle(
+    IPC.prsSetReviewThreadResolved,
+    (_e, args: SetPrReviewThreadResolvedArgs) => getCtx().prService.setReviewThreadResolved(args),
+  );
+  ipcMain.handle(IPC.prsReactToComment, (_e, args: ReactToPrCommentArgs) => getCtx().prService.reactToComment(args));
+  ipcMain.handle(
+    IPC.prsLaunchIssueResolutionFromThread,
+    async (_e, arg: LaunchPrIssueResolutionFromThreadArgs): Promise<LaunchPrIssueResolutionFromThreadResult> => {
+      const ctx = getCtx();
+      const additionalInstructions = buildIssueResolutionInstructionsFromThread(arg);
+      if (!arg.modelId) {
+        throw new Error("modelId is required for prsLaunchIssueResolutionFromThread.");
+      }
+      return await launchPrIssueResolutionChat(
+        {
+          prService: ctx.prService,
+          laneService: ctx.laneService,
+          agentChatService: ctx.agentChatService,
+          sessionService: ctx.sessionService,
+          issueInventoryService: ctx.issueInventoryService,
+        },
+        {
+          prId: arg.prId,
+          scope: "comments",
+          modelId: arg.modelId,
+          reasoning: arg.reasoning ?? null,
+          permissionMode: arg.permissionMode,
+          additionalInstructions,
+        },
+      );
+    },
+  );
 
   // Issue Inventory (PR convergence loop)
   ipcMain.handle(IPC.prsIssueInventorySync, async (_e, args: { prId: string }): Promise<IssueInventorySnapshot> => {

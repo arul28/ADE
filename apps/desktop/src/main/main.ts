@@ -40,6 +40,7 @@ import { createPrService } from "./services/prs/prService";
 import { createPrPollingService } from "./services/prs/prPollingService";
 import { createQueueLandingService } from "./services/prs/queueLandingService";
 import { createIssueInventoryService } from "./services/prs/issueInventoryService";
+import { createPrSummaryService } from "./services/prs/prSummaryService";
 import {
   detectDefaultBaseRef,
   resolveRepoRoot,
@@ -76,7 +77,6 @@ import { createRebaseSuggestionService } from "./services/lanes/rebaseSuggestion
 import { createAutoRebaseService } from "./services/lanes/autoRebaseService";
 import { createMissionService } from "./services/missions/missionService";
 import { createMissionPreflightService } from "./services/missions/missionPreflightService";
-import { createCompactionFlushService } from "./services/memory/compactionFlushService";
 import { createBatchConsolidationService } from "./services/memory/batchConsolidationService";
 import { createEmbeddingService } from "./services/memory/embeddingService";
 import { createEmbeddingWorkerService } from "./services/memory/embeddingWorkerService";
@@ -1125,7 +1125,6 @@ app.whenReady().then(async () => {
     });
     const reconciledSessions = sessionService.reconcileStaleRunningSessions({
       status: "disposed",
-      excludeToolTypes: ["claude-chat", "codex-chat", "opencode-chat", "cursor"],
     });
     if (reconciledSessions > 0) {
       logger.warn("sessions.reconciled_stale_running", {
@@ -1378,6 +1377,7 @@ app.whenReady().then(async () => {
       logger,
       prService,
       projectConfigService,
+      db,
       onEvent: (event) => emitProjectEvent(projectRoot, IPC.prsEvent, event),
       onPullRequestsChanged: async ({ changedPrs, changes }) => {
         if (changedPrs.length > 0) {
@@ -1455,6 +1455,14 @@ app.whenReady().then(async () => {
     queueLandingService.init();
 
     const issueInventoryService = createIssueInventoryService({ db });
+
+    const prSummaryService = createPrSummaryService({
+      db,
+      logger,
+      projectRoot,
+      prService,
+      aiIntegrationService,
+    });
 
     const fileService = createFileService({
       laneService,
@@ -1620,10 +1628,6 @@ app.whenReady().then(async () => {
       memoryService,
     });
     memoryFilesServiceRef = memoryFilesService;
-    const compactionFlushService = createCompactionFlushService(undefined, {
-      logger,
-    });
-    aiIntegrationService.setCompactionFlushService(compactionFlushService);
     const batchConsolidationService = createBatchConsolidationService({
       db,
       logger,
@@ -1904,32 +1908,6 @@ app.whenReady().then(async () => {
         aiOrchestratorServiceRef?.onAgentChatEvent(event);
         openclawBridgeServiceRef?.onAgentChatEvent(event);
         emitProjectEvent(projectRoot, IPC.agentChatEvent, event);
-
-        // Compaction flush: when context compaction occurs, trigger a flush steer
-        // so the agent can save durable discoveries to memory before they are lost.
-        if (event.event.type === "context_compact") {
-          const sid = event.sessionId;
-          const compactEvt = event.event as { preTokens?: number };
-          void compactionFlushService
-            .beforeCompaction({
-              sessionId: sid,
-              boundaryId: `chat:${sid}:${Date.now()}`,
-              conversationTokenCount: compactEvt.preTokens ?? 200_000,
-              maxTokens: 200_000,
-              flushTurn: async ({ prompt }) => {
-                try {
-                  await agentChatService.steer({
-                    sessionId: sid,
-                    text: prompt,
-                  });
-                  return { status: "flushed" };
-                } catch {
-                  return { status: "budget_exceeded" };
-                }
-              },
-            })
-            .catch(() => {});
-        }
 
         // Capture agent session errors as failure gotchas for the memory system
         if (event.event.type === "error" && event.provenance?.runId) {
@@ -2930,7 +2908,19 @@ app.whenReady().then(async () => {
       });
       conn.on("error", () => {}); // ignore connection errors
     });
-    mcpSocketServer.listen(mcpSocketPath);
+    await new Promise<void>((resolve, reject) => {
+      const handleListening = () => {
+        mcpSocketServer.off("error", handleError);
+        resolve();
+      };
+      const handleError = (error: Error) => {
+        mcpSocketServer.off("listening", handleListening);
+        reject(error);
+      };
+      mcpSocketServer.once("listening", handleListening);
+      mcpSocketServer.once("error", handleError);
+      mcpSocketServer.listen(mcpSocketPath);
+    });
     logger.info("mcp.socket_server_started", { socketPath: mcpSocketPath });
 
     return {
@@ -2970,6 +2960,7 @@ app.whenReady().then(async () => {
       computerUseArtifactBrokerService,
       queueLandingService,
       issueInventoryService,
+      prSummaryService,
       jobEngine,
       automationService,
       automationPlannerService,
@@ -3068,6 +3059,7 @@ app.whenReady().then(async () => {
       prPollingService: null,
       queueLandingService: null,
       issueInventoryService: null,
+      prSummaryService: null,
       jobEngine: null,
       automationService: null,
       automationPlannerService: null,

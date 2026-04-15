@@ -99,25 +99,22 @@ export const ChatInput = React.memo(function ChatInput({
     <div
       className="px-4 pb-4 pt-3"
       style={{
-        background: `linear-gradient(180deg, ${BG_MAIN} 0%, ${BG_ELEVATED} 100%)`,
+        background: `radial-gradient(circle at top, color-mix(in srgb, var(--chat-liquid-sheen, rgba(255,255,255,0.08)) 34%, transparent) 0%, transparent 34%), linear-gradient(180deg, ${BG_MAIN} 0%, ${BG_ELEVATED} 100%)`,
       }}
     >
       <div
-        className="mb-3 flex flex-wrap items-start gap-3 px-4 py-3"
+        className="ade-liquid-glass ade-liquid-glass-strong mb-3 flex flex-wrap items-start gap-3 rounded-[18px] px-4 py-3"
         style={{
-          border: `1px solid ${BORDER}`,
-          background: `${BG_MAIN}CC`,
-          boxShadow: "0 18px 48px rgba(4, 2, 10, 0.32)",
+          borderColor: `color-mix(in srgb, ${BORDER} 70%, rgba(255,255,255,0.08))`,
+          boxShadow: "0 22px 52px -28px rgba(4, 2, 10, 0.58)",
         }}
       >
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
             <span style={LABEL_STYLE}>Compose</span>
             <span
-              className="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] font-bold uppercase tracking-[0.14em]"
+              className="ade-liquid-glass-pill inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-[10px] font-bold uppercase tracking-[0.14em]"
               style={{
-                border: "1px solid color-mix(in srgb, var(--chat-accent) 18%, rgba(255,255,255,0.08))",
-                background: "color-mix(in srgb, var(--chat-accent) 10%, transparent)",
                 color: TEXT_PRIMARY,
                 fontFamily: MONO,
               }}
@@ -126,7 +123,7 @@ export const ChatInput = React.memo(function ChatInput({
             </span>
             {chatBlocked ? (
               <span
-                className="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] font-bold uppercase tracking-[0.14em]"
+                className="ade-liquid-glass-pill inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-[10px] font-bold uppercase tracking-[0.14em]"
                 style={{
                   border: `1px solid ${WARNING}28`,
                   background: `${WARNING}12`,
@@ -144,17 +141,15 @@ export const ChatInput = React.memo(function ChatInput({
         </div>
 
         {quickTargets.length > 0 ? (
-          <div className="flex min-w-0 flex-wrap justify-end gap-1.5">
+          <div className="flex min-w-0 flex-wrap justify-end gap-2">
             {quickTargets.map((target) => (
               <button
                 key={target.id}
                 type="button"
                 onClick={() => onAppendMentionTarget(target.id)}
                 disabled={sending || chatBlocked}
-                className="inline-flex items-center gap-1.5 px-2.5 py-1 text-[10px] transition-opacity hover:opacity-90 disabled:opacity-50"
+                className="ade-liquid-glass-pill inline-flex items-center gap-1.5 rounded-full px-2.5 py-1.5 text-[10px] transition-all hover:border-white/[0.12] hover:opacity-100 disabled:opacity-50"
                 style={{
-                  background: "color-mix(in srgb, var(--chat-accent) 9%, transparent)",
-                  border: "1px solid color-mix(in srgb, var(--chat-accent) 16%, rgba(255,255,255,0.08))",
                   color: TEXT_PRIMARY,
                   fontFamily: MONO,
                 }}

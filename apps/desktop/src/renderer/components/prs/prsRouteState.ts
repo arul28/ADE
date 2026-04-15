@@ -7,6 +7,9 @@ export type ParsedPrsRouteState = {
   laneId: string | null;
   prId: string | null;
   queueGroupId: string | null;
+  eventId: string | null;
+  threadId: string | null;
+  commitSha: string | null;
 };
 
 function parseSearch(search: string): URLSearchParams {
@@ -42,12 +45,18 @@ export function parsePrsRouteState(args: { search?: string | null; hash?: string
   const searchParams = parseSearch(args.search ?? "");
   const hashParams = parseHashParams(args.hash ?? "");
 
+  const pick = (key: string): string | null =>
+    parseOptionalId(searchParams.get(key)) ?? parseOptionalId(hashParams.get(key));
+
   return {
     tab: parseTab(searchParams.get("tab") ?? hashParams.get("tab")),
     workflowTab: parseWorkflowTab(searchParams.get("workflow") ?? hashParams.get("workflow")),
-    laneId: parseOptionalId(searchParams.get("laneId")) ?? parseOptionalId(hashParams.get("laneId")),
-    prId: parseOptionalId(searchParams.get("prId")) ?? parseOptionalId(hashParams.get("prId")),
-    queueGroupId: parseOptionalId(searchParams.get("queueGroupId")) ?? parseOptionalId(hashParams.get("queueGroupId")),
+    laneId: pick("laneId"),
+    prId: pick("prId"),
+    queueGroupId: pick("queueGroupId"),
+    eventId: pick("eventId"),
+    threadId: pick("threadId"),
+    commitSha: pick("commitSha"),
   };
 }
 
@@ -56,12 +65,18 @@ export function buildPrsRouteSearch(args: {
   selectedPrId: string | null;
   selectedQueueGroupId: string | null;
   selectedRebaseItemId: string | null;
+  eventId?: string | null;
+  threadId?: string | null;
+  commitSha?: string | null;
 }): string {
   const params = new URLSearchParams();
 
   if (args.activeTab === "normal" || args.activeTab === "github") {
     params.set("tab", args.activeTab);
     if (args.selectedPrId) params.set("prId", args.selectedPrId);
+    if (args.eventId) params.set("eventId", args.eventId);
+    if (args.threadId) params.set("threadId", args.threadId);
+    if (args.commitSha) params.set("commitSha", args.commitSha);
   } else {
     params.set("tab", "workflows");
     params.set("workflow", args.activeTab);

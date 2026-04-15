@@ -5,6 +5,7 @@ import { cn } from "../ui/cn";
 
 export type MonacoDiffHandle = {
   getModifiedValue: () => string | null;
+  revealLineInCenter: (line: number) => void;
 };
 
 let monacoInit: Promise<typeof import("monaco-editor")> | null = null;
@@ -73,7 +74,15 @@ export const MonacoDiffView = forwardRef<MonacoDiffHandle, { diff: FileDiff; edi
     const monacoTheme = theme === "light" ? "vs" : "vs-dark";
 
     useImperativeHandle(ref, () => ({
-      getModifiedValue: () => diffEditorRef.current?.getModel()?.modified.getValue() ?? null
+      getModifiedValue: () => diffEditorRef.current?.getModel()?.modified.getValue() ?? null,
+      revealLineInCenter: (line: number) => {
+        try {
+          const modifiedEditor = diffEditorRef.current?.getModifiedEditor();
+          modifiedEditor?.revealLineInCenter(line);
+        } catch {
+          /* ignore */
+        }
+      },
     }));
 
     useEffect(() => {

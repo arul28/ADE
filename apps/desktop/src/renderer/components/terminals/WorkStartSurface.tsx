@@ -135,7 +135,7 @@ export function WorkStartSurface({
   if (!lanes.length) {
     return (
       <div className="flex h-full items-center justify-center px-6" style={{ background: "var(--color-bg)" }}>
-        <div className="rounded-lg p-5 text-center" style={{ background: "rgba(255,255,255,0.03)" }}>
+        <div className="ade-liquid-glass ade-liquid-glass-menu rounded-lg p-5 text-center">
           <div className="text-[12px] font-medium text-fg">No lanes available</div>
           <div className="mt-1.5 text-[11px] text-muted-fg">
             Create or reopen a lane before starting work.
@@ -149,7 +149,7 @@ export function WorkStartSurface({
   if (draftKind === "chat") {
     return (
       <div className="flex h-full min-h-0 flex-col" style={{ background: "var(--color-bg)" }}>
-        <div className="min-h-0 flex-1 overflow-hidden">
+        <div className="mx-auto flex w-full min-h-0 max-w-2xl flex-1 flex-col overflow-hidden">
           {chatDraftReady ? (
             <AgentChatPane
               laneId={selectedLaneId}
@@ -162,8 +162,8 @@ export function WorkStartSurface({
               onLaneChange={setLaneAndSync}
             />
           ) : (
-            <div className="flex h-full items-center justify-center px-6">
-              <div className="rounded-lg px-4 py-3 text-center" style={{ background: "rgba(255,255,255,0.03)" }}>
+            <div className="flex flex-1 items-center justify-center px-6">
+              <div className="ade-liquid-glass ade-liquid-glass-menu rounded-lg px-4 py-3 text-center">
                 <div className="text-[12px] font-medium text-fg">Preparing chat draft</div>
                 <div className="mt-1.5 text-[11px] text-muted-fg">
                   ADE waits briefly before mounting the full chat surface so fast tab switches stay cheap.
@@ -179,9 +179,10 @@ export function WorkStartSurface({
   /* ---- CLI draft ---- */
   if (draftKind === "cli") {
     return (
-      <div className="flex h-full min-h-0 flex-col items-center justify-center" style={{ background: "var(--color-bg)" }}>
+      <div className="flex h-full min-h-0 flex-col items-center justify-center gap-8 px-6 py-6" style={{ background: "var(--color-bg)" }}>
         <LogoGlow size="lg" />
-        <GlassCard>
+        <div className="flex w-full max-w-sm flex-col items-center">
+          <GlassCard>
           {/* Lane */}
           <div className="flex items-center gap-2">
             <span className="text-[10px] text-muted-fg/60 shrink-0">Lane</span>
@@ -256,16 +257,18 @@ export function WorkStartSurface({
               <ArrowRight size={12} weight="regular" />
             </button>
           </SmartTooltip>
-        </GlassCard>
+          </GlassCard>
+        </div>
       </div>
     );
   }
 
   /* ---- Shell draft ---- */
   return (
-    <div className="flex h-full min-h-0 flex-col items-center justify-center" style={{ background: "var(--color-bg)" }}>
+    <div className="flex h-full min-h-0 flex-col items-center justify-center gap-8 px-6 py-6" style={{ background: "var(--color-bg)" }}>
       <LogoGlow size="lg" />
-      <GlassCard>
+      <div className="flex w-full max-w-sm flex-col items-center">
+        <GlassCard>
         {/* Lane */}
         <div className="flex items-center gap-2">
           <span className="text-[10px] text-muted-fg/60 shrink-0">Lane</span>
@@ -273,7 +276,7 @@ export function WorkStartSurface({
         </div>
 
         {/* Description */}
-        <div className="rounded-md px-3 py-2.5" style={{ background: "rgba(255,255,255,0.02)" }}>
+        <div className="ade-chat-recessed rounded-md px-3 py-2.5">
           <div className="flex items-center gap-2">
             <Terminal size={14} weight="regular" className="text-muted-fg/50 shrink-0" />
             <div>
@@ -303,7 +306,8 @@ export function WorkStartSurface({
             <ArrowRight size={12} weight="regular" />
           </button>
         </SmartTooltip>
-      </GlassCard>
+        </GlassCard>
+      </div>
     </div>
   );
 }
@@ -333,16 +337,7 @@ function LogoGlow({ size }: { size: "lg" | "sm" }) {
 
 function GlassCard({ children }: { children: React.ReactNode }) {
   return (
-    <div
-      className="flex w-full max-w-sm flex-col gap-4 rounded-lg p-5"
-      style={{
-        backdropFilter: "blur(20px)",
-        WebkitBackdropFilter: "blur(20px)",
-        background: "rgba(30, 30, 40, 0.7)",
-        border: "1px solid rgba(255, 255, 255, 0.08)",
-        boxShadow: "0 8px 32px rgba(0, 0, 0, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.05)",
-      }}
-    >
+    <div className="ade-liquid-glass ade-liquid-glass-strong flex w-full max-w-sm flex-col gap-4 rounded-xl p-5">
       {children}
     </div>
   );

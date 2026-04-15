@@ -1,5 +1,6 @@
+import fs from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
-import { createServer } from "node:net";
+import { createConnection, createServer } from "node:net";
 import { pathToFileURL } from "node:url";
 import {
   createOpencodeClient,
@@ -305,6 +306,8 @@ async function resolveScopedMcpToolSelection(args: {
 
 const DYNAMIC_ADE_MCP_REGISTRATION_ATTEMPTS = 3;
 const DYNAMIC_ADE_MCP_REGISTRATION_RETRY_DELAY_MS = 150;
+const DYNAMIC_ADE_MCP_SOCKET_READY_TIMEOUT_MS = 1_500;
+const DYNAMIC_ADE_MCP_SOCKET_READY_RETRY_DELAY_MS = 75;
 const dynamicMcpDiagnostics: OpenCodeDynamicMcpDiagnostics = {
   registrationAttempts: 0,
   successfulRegistrations: 0,
@@ -318,6 +321,58 @@ const dynamicMcpDiagnostics: OpenCodeDynamicMcpDiagnostics = {
 
 async function wait(ms: number): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function waitForAdeMcpSocketReady(socketPath: string): Promise<void> {
+  const normalizedPath = socketPath.trim();
+  if (!normalizedPath.length) return;
+  const deadline = Date.now() + DYNAMIC_ADE_MCP_SOCKET_READY_TIMEOUT_MS;
+  let lastError: unknown = null;
+
+  while (Date.now() < deadline) {
+    if (fs.existsSync(normalizedPath)) {
+      try {
+        await new Promise<void>((resolve, reject) => {
+          const socket = createConnection(normalizedPath);
+          const cleanup = (): void => {
+            socket.off("connect", handleConnect);
+            socket.off("error", handleError);
+          };
+          const handleConnect = () => {
+            cleanup();
+            socket.end();
+            socket.destroy();
+            resolve();
+          };
+          const handleError = (error: Error) => {
+            cleanup();
+            socket.destroy();
+            reject(error);
+          };
+          socket.once("connect", handleConnect);
+          socket.once("error", handleError);
+        });
+        return;
+      } catch (error) {
+        lastError = error;
+      }
+    }
+    await wait(DYNAMIC_ADE_MCP_SOCKET_READY_RETRY_DELAY_MS);
+  }
+
+  const detail = lastError instanceof Error ? `: ${lastError.message}` : "";
+  throw new Error(`ADE MCP socket not ready at ${normalizedPath}${detail}`);
+}
+
+function isUnrecoverableAdeMcpSocketError(error: unknown): boolean {
+  const message = (error instanceof Error ? error.message : String(error)).toLowerCase();
+  return (
+    message.includes("enoent")
+    || message.includes("econnrefused")
+    || message.includes("local mcp startup failed")
+    || message.includes("[ade-mcp-proxy] failed to connect")
+    || (message.includes("mcp.sock") && message.includes("connect"))
+  );
 }
 
 async function callOpenCodeServer<T>(args: {
@@ -367,6 +422,7 @@ async function ensureDynamicAdeMcpRegistration(args: {
   let lastError: unknown = null;
   for (let attempt = 0; attempt < DYNAMIC_ADE_MCP_REGISTRATION_ATTEMPTS; attempt += 1) {
     try {
+      await waitForAdeMcpSocketReady(args.launch.socketPath);
       let status = readDynamicMcpStatus(await callOpenCodeServer<Record<string, unknown>>({
         baseUrl: args.baseUrl,
         directory: args.directory,
@@ -786,17 +842,32 @@ export async function startOpenCodeSession(
         mcpLaunch: undefined,
       });
     } catch (error) {
-      dynamicMcpDiagnostics.fallbackCount += 1;
-      dynamicMcpDiagnostics.lastFallbackAt = new Date().toISOString();
-      dynamicMcpDiagnostics.lastFallbackOwnerKind = args.ownerKind ?? "oneshot";
-      dynamicMcpDiagnostics.lastFallbackOwnerId = args.ownerId?.trim() || null;
-      dynamicMcpDiagnostics.lastFallbackError = error instanceof Error ? error.message : String(error);
+      const ownerKind = args.ownerKind ?? "oneshot";
+      const fallbackStrategy = isUnrecoverableAdeMcpSocketError(error)
+        ? (ownerKind === "coordinator" ? "abort" : "shared_without_mcp")
+        : "dedicated_static";
       args.logger?.warn("opencode.dynamic_mcp_attach_failed", {
-        ownerKind: args.ownerKind ?? "oneshot",
+        ownerKind,
         ownerId: args.ownerId ?? null,
         sessionId: args.sessionId ?? null,
         error: error instanceof Error ? error.message : String(error),
+        fallbackStrategy,
       });
+      if (fallbackStrategy === "abort") {
+        throw error;
+      }
+      dynamicMcpDiagnostics.fallbackCount += 1;
+      dynamicMcpDiagnostics.lastFallbackAt = new Date().toISOString();
+      dynamicMcpDiagnostics.lastFallbackOwnerKind = ownerKind;
+      dynamicMcpDiagnostics.lastFallbackOwnerId = args.ownerId?.trim() || null;
+      dynamicMcpDiagnostics.lastFallbackError = error instanceof Error ? error.message : String(error);
+      if (fallbackStrategy === "shared_without_mcp") {
+        return await startOpenCodeSessionInternal({
+          ...args,
+          dynamicMcpLaunch: undefined,
+          mcpLaunch: undefined,
+        });
+      }
       return await startOpenCodeSessionInternal({
         ...args,
         dynamicMcpLaunch: undefined,

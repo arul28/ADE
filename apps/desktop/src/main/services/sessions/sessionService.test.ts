@@ -216,6 +216,32 @@ describe("sessionService resume metadata", () => {
     activeDisposers.push(async () => db.close());
   });
 
+  it("hard deletes a stored session row", async () => {
+    const projectRoot = makeProjectRoot("ade-session-service-");
+    const dbPath = path.join(projectRoot, ".ade", "ade.db");
+    const db = await openKvDb(dbPath, createLogger() as any);
+    insertProjectGraph(db);
+    const service = createSessionService({ db });
+
+    service.create({
+      sessionId: "session-delete",
+      laneId: "lane-1",
+      ptyId: null,
+      tracked: true,
+      title: "Disposable chat",
+      startedAt: "2026-03-17T00:10:00.000Z",
+      transcriptPath: "/tmp/session-delete.log",
+      toolType: "opencode-chat",
+    });
+
+    expect(service.get("session-delete")?.id).toBe("session-delete");
+    expect(service.deleteSession("session-delete")).toBe(true);
+    expect(service.get("session-delete")).toBeNull();
+    expect(service.deleteSession("session-delete")).toBe(false);
+
+    activeDisposers.push(async () => db.close());
+  });
+
   it("reattaches an existing tracked session to a new PTY without changing its identity", async () => {
     const projectRoot = makeProjectRoot("ade-session-service-");
     const dbPath = path.join(projectRoot, ".ade", "ade.db");
@@ -297,6 +323,40 @@ describe("sessionService resume metadata", () => {
     unsubscribe();
 
     expect(events).toEqual(["meta-updated:session-4"]);
+
+    activeDisposers.push(async () => db.close());
+  });
+
+  it("reconciles stale running chat sessions when no exclusions are provided", async () => {
+    const projectRoot = makeProjectRoot("ade-session-service-");
+    const dbPath = path.join(projectRoot, ".ade", "ade.db");
+    const db = await openKvDb(dbPath, createLogger() as any);
+    insertProjectGraph(db);
+    const service = createSessionService({ db });
+
+    service.create({
+      sessionId: "session-chat-stale",
+      laneId: "lane-1",
+      ptyId: "pty-chat-stale",
+      tracked: true,
+      title: "Claude chat",
+      startedAt: "2026-03-17T00:10:00.000Z",
+      transcriptPath: "/tmp/session-chat-stale.log",
+      toolType: "claude-chat",
+    });
+
+    const reconciled = service.reconcileStaleRunningSessions({
+      endedAt: "2026-03-17T00:20:00.000Z",
+      status: "disposed",
+    });
+
+    expect(reconciled).toBe(1);
+    expect(service.get("session-chat-stale")).toEqual(expect.objectContaining({
+      id: "session-chat-stale",
+      ptyId: null,
+      status: "disposed",
+      endedAt: "2026-03-17T00:20:00.000Z",
+    }));
 
     activeDisposers.push(async () => db.close());
   });

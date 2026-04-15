@@ -241,13 +241,13 @@ function renderSubagentUsage(usage: {
 }
 
 const GLASS_CARD_CLASS =
-  "overflow-hidden rounded-[14px] border border-white/[0.06] bg-[#141220] shadow-[0_2px_12px_-4px_rgba(0,0,0,0.4)]";
+  "ade-liquid-glass overflow-hidden rounded-[14px]";
 
 const WORK_LOG_CARD_CLASS =
-  "border border-white/[0.05] bg-[#13111B]/80 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.3)]";
+  "ade-chat-work-card overflow-hidden rounded-[14px]";
 
 const RECESSED_BLOCK_CLASS =
-  "overflow-auto whitespace-pre-wrap break-words rounded-[10px] border border-white/[0.05] bg-[#09080D] px-4 py-3 font-mono text-[11px] leading-[1.6] text-fg/78";
+  "ade-chat-recessed overflow-auto whitespace-pre-wrap break-words rounded-[10px] px-4 py-3 font-mono text-[11px] leading-[1.6] text-fg/78";
 
 function toolSourceChip(toolName: string): { label: string; tone: ChatSurfaceChipTone } | null {
   if (toolName.startsWith("mcp__")) {
@@ -269,45 +269,42 @@ function toolSourceChip(toolName: string): { label: string; tone: ChatSurfaceChi
 }
 
 const MESSAGE_CARD_STYLE: React.CSSProperties = {
-  background: "linear-gradient(135deg, #7C3AED 0%, #6D28D9 50%, #5B21B6 100%)",
-  borderColor: "rgba(167, 139, 250, 0.30)",
-  boxShadow: "0 4px 16px -4px rgba(124, 58, 237, 0.35)",
+  borderColor: "color-mix(in srgb, var(--chat-accent) 26%, rgba(255,255,255,0.14))",
+  boxShadow: "0 18px 28px -24px color-mix(in srgb, var(--chat-accent) 34%, transparent), 0 10px 26px -22px rgba(0,0,0,0.52)",
 };
 
 const SURFACE_INLINE_CARD_STYLE: React.CSSProperties = {
-  borderColor: "rgba(255, 255, 255, 0.06)",
-  background: "#15131E",
+  borderColor: "color-mix(in srgb, var(--chat-glass-border) 100%, transparent)",
 };
 
 const ASSISTANT_MESSAGE_CARD_STYLE: React.CSSProperties = {
-  borderColor: "rgba(255, 255, 255, 0.06)",
-  background: "#12101A",
-  boxShadow: "0 2px 12px -4px rgba(0, 0, 0, 0.4)",
+  borderColor: "color-mix(in srgb, var(--chat-glass-border) 100%, transparent)",
+  boxShadow: "0 16px 32px -26px rgba(0, 0, 0, 0.5)",
 };
 
 function describeUserDeliveryState(event: Extract<AgentChatEvent, { type: "user_message" }>): { label: string; className: string } | null {
   if (event.deliveryState === "failed") {
     return {
       label: "failed",
-      className: "border-red-500/18 bg-red-500/[0.08] text-red-300",
+      className: "ade-chat-status-pill border-red-500/25 text-red-300",
     };
   }
   if (event.deliveryState === "queued") {
     return {
       label: "queued",
-      className: "border-violet-500/18 bg-violet-500/[0.08] text-violet-300",
+      className: "ade-chat-status-pill border-violet-500/25 text-violet-300",
     };
   }
   if (event.processed) {
     return {
       label: "processed",
-      className: "border-emerald-500/18 bg-emerald-500/[0.08] text-emerald-300",
+      className: "ade-chat-status-pill border-emerald-500/25 text-emerald-300",
     };
   }
   if (event.deliveryState === "delivered") {
     return {
       label: "sent",
-      className: "border-sky-500/18 bg-sky-500/[0.08] text-sky-300",
+      className: "ade-chat-status-pill border-sky-500/25 text-sky-300",
     };
   }
   return null;
@@ -820,9 +817,9 @@ function ToolResultCard({ event }: { event: Extract<AgentChatEvent, { type: "too
   return (
     <motion.div
       className="w-fit max-w-full"
-      initial={{ opacity: 0, y: 6, scale: 0.99 }}
-      animate={{ opacity: 1, y: 0, scale: 1 }}
-      transition={{ duration: 0.25, ease: "easeOut" }}
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      transition={{ duration: 0.12, ease: "easeOut" }}
     >
     <CollapsibleCard
       summary={
@@ -830,7 +827,7 @@ function ToolResultCard({ event }: { event: Extract<AgentChatEvent, { type: "too
           <span className={cn("inline-flex", (event.status ?? "completed") === "running" && "ade-tool-bounce")}>
             <StatusIcon status={event.status ?? "completed"} />
           </span>
-          <span className={cn("inline-flex items-center gap-1.5 rounded-md border px-2 py-0.5 text-[9px] font-bold uppercase tracking-wider", meta.badgeCls)}>
+          <span className={cn("ade-chat-status-pill inline-flex items-center gap-1.5 border px-2 py-0.5 text-[9px] font-bold uppercase tracking-wider", meta.badgeCls)}>
             <ToolIcon size={11} weight="bold" />
             {meta.label}
           </span>
@@ -1184,16 +1181,11 @@ function renderEvent(
     return (
       <motion.div
         className="flex justify-end"
-        initial={{ opacity: 0, y: 14, scale: 1.01 }}
-        animate={{ opacity: 1, y: 0, scale: 1 }}
-        transition={{
-          type: "spring",
-          stiffness: 320,
-          damping: 26,
-          mass: 0.7,
-        }}
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        transition={{ duration: 0.14, ease: "easeOut" }}
       >
-        <div className={cn(GLASS_CARD_CLASS, "group relative max-w-[82%] px-4 py-2.5")} style={MESSAGE_CARD_STYLE}>
+        <div className={cn(GLASS_CARD_CLASS, "ade-chat-message-card-user group relative max-w-[82%] px-4 py-2.5")} style={MESSAGE_CARD_STYLE}>
           {deliveryChip ? (
             <span className={cn("mb-1 inline-flex items-center border px-1.5 py-0.5 font-sans text-[9px] font-medium", deliveryChip.className)}>
               {deliveryChip.label}
@@ -1220,14 +1212,14 @@ function renderEvent(
     return (
       <motion.div
         className="flex justify-start"
-        initial={{ opacity: 0, y: 8 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.3, ease: "easeOut" }}
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        transition={{ duration: 0.14, ease: "easeOut" }}
       >
         <div
           className={cn(
             GLASS_CARD_CLASS,
-            "group relative max-w-[min(96ch,75%)] px-5 py-4",
+            "ade-chat-message-card-assistant group relative max-w-[min(104ch,78%)] px-5 py-4",
             options?.turnActive && "min-h-[5.5rem] ade-glow-pulse",
           )}
           style={ASSISTANT_MESSAGE_CARD_STYLE}
@@ -1373,9 +1365,9 @@ function renderEvent(
     const isFailed = event.status === "failed";
     return (
       <motion.div
-        initial={{ opacity: 0, y: 6 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.25, ease: "easeOut" }}
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        transition={{ duration: 0.12, ease: "easeOut" }}
         className={cn(
           "group relative overflow-hidden rounded-xl border p-0",
           isFailed
@@ -1479,9 +1471,9 @@ function renderEvent(
     return (
       <motion.div
         className={cn("overflow-hidden rounded-xl border p-0", "border-violet-500/10 bg-gradient-to-br from-violet-950/20 via-[#0d0b14] to-[#0d0d10]")}
-        initial={{ opacity: 0, y: 8, scale: 0.98 }}
-        animate={{ opacity: 1, y: 0, scale: 1 }}
-        transition={{ duration: 0.3, ease: "easeOut" }}
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        transition={{ duration: 0.14, ease: "easeOut" }}
       >
         <div className="h-px w-full bg-gradient-to-r from-transparent via-violet-400/25 to-transparent" />
         <div className="flex items-center gap-3 px-4 py-3">
@@ -1724,9 +1716,9 @@ function renderEvent(
     return (
       <motion.div
         className="w-fit max-w-full"
-        initial={{ opacity: 0, y: 6 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.25, ease: "easeOut" }}
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        transition={{ duration: 0.12, ease: "easeOut" }}
       >
         <CollapsibleCard
           defaultOpen={false}
@@ -1745,7 +1737,7 @@ function renderEvent(
                 <>
                   <span className="font-medium text-fg/55">Thought</span>
                   {durationLabel ? (
-                    <span className="rounded-full border border-violet-400/10 bg-violet-500/[0.04] px-2 py-0.5 text-[9px] text-violet-300/40">
+                    <span className="ade-liquid-glass-pill px-2 py-0.5 text-[9px] text-violet-300/40">
                       {durationLabel}
                     </span>
                   ) : null}
@@ -1753,8 +1745,7 @@ function renderEvent(
               )}
             </div>
           }
-          className="w-fit max-w-[70ch] border-violet-400/[0.06] bg-[#141220]/50"
-          style={{ background: "rgba(20, 18, 32, 0.5)", borderColor: "rgba(167, 139, 250, 0.06)" }}
+          className="ade-chat-thinking-glass w-fit max-w-[70ch]"
         >
           <div className="text-fg/55 text-[12px] leading-relaxed">
             <MarkdownBlock markdown={reasoningText.length ? event.text : "Thinking..."} />
@@ -2582,11 +2573,14 @@ const EventRow = React.memo(function EventRow({
       {showTurnDivider ? (
         <div className="my-3 flex items-center gap-4">
           <span className="h-px flex-1 bg-gradient-to-r from-transparent via-violet-400/[0.08] to-transparent" />
-          <span
-            className="inline-flex items-center gap-2.5 rounded-full border border-white/[0.06] bg-[#141220]/80 px-3.5 py-1.5 font-sans text-[10px] text-fg/40 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.3)]"
-            style={{ backdropFilter: "blur(12px)", WebkitBackdropFilter: "blur(12px)" }}
-          >
+          <span className="ade-liquid-glass-pill inline-flex items-center gap-2.5 rounded-full px-3.5 py-1.5 font-sans text-[10px] text-fg/42">
             <span className="text-fg/35">{turnDividerLabel ?? "Turn"}</span>
+            {turnModel?.label ? (
+              <span className="inline-flex items-center gap-1 rounded-full border border-white/[0.06] bg-white/[0.04] px-2 py-0.5 text-[9px] text-fg/42">
+                <ModelGlyph modelId={turnModel.modelId} model={turnModel.model} size={10} className="text-fg/36" />
+                <span>{turnModel.label}</span>
+              </span>
+            ) : null}
           </span>
           <span className="h-px flex-1 bg-gradient-to-r from-transparent via-violet-400/[0.08] to-transparent" />
         </div>
@@ -3107,11 +3101,11 @@ export function AgentChatMessageList({
   const streamingIndicator = showStreamingIndicator ? (
     <motion.div
       className="pt-3 pb-2"
-      initial={{ opacity: 0, y: 6 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.25, ease: "easeOut" }}
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      transition={{ duration: 0.12, ease: "easeOut" }}
     >
-      <div className="relative overflow-hidden rounded-xl border border-violet-400/[0.08] bg-[#141220]/60 px-4 py-3">
+      <div className="ade-liquid-glass relative overflow-hidden rounded-xl px-4 py-3">
         <div className="pointer-events-none absolute inset-0 overflow-hidden rounded-xl">
           <div
             className="absolute inset-0"
@@ -3140,7 +3134,7 @@ export function AgentChatMessageList({
   return (
     <div
       ref={scrollRef}
-      className={cn("h-full min-h-0 overflow-auto bg-[#0C0B10] px-5 pt-5 pb-8", className)}
+      className={cn("ade-chat-timeline-pane h-full min-h-0 overflow-auto px-5 pt-5 pb-8", className)}
       onScroll={handleScroll}
     >
       {rows.length === 0 && !streamingIndicator ? (

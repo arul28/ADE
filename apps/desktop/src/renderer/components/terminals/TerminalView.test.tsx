@@ -436,7 +436,7 @@ describe("TerminalView", () => {
     expect(terminal?.dispose).not.toHaveBeenCalled();
   });
 
-  it("buffers PTY output while unmounted instead of writing into a parked runtime", async () => {
+  it("writes PTY output into the parked runtime so the terminal state stays current", async () => {
     const firstView = render(<TerminalView ptyId="pty-buffered" sessionId="session-buffered" isActive />);
     await flushAllTimers();
 
@@ -452,10 +452,17 @@ describe("TerminalView", () => {
       listener({ ptyId: "pty-buffered", sessionId: "session-buffered", data: "hello from background\n" });
     }
     await flushAnimationFrame();
-    expect(terminal?.write).not.toHaveBeenCalled();
+    // xterm.write is safe on a parked runtime (host is detached but the
+    // instance still owns a valid internal buffer). Writing through while
+    // parked keeps the terminal state in sync so switching back shows the
+    // latest output instead of a stale snapshot.
+    expect(terminal?.write).toHaveBeenCalledWith("hello from background\n");
 
+    terminal?.write.mockClear();
     render(<TerminalView ptyId="pty-buffered" sessionId="session-buffered" isActive />);
     await flushAnimationFrame();
-    expect(terminal?.write).toHaveBeenCalledWith("hello from background\n");
+    // Remount should not duplicate the write — the data was already applied
+    // via the parked-runtime path, so no further synchronous flush is needed.
+    expect(terminal?.write).not.toHaveBeenCalledWith("hello from background\n");
   });
 });

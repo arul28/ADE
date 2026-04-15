@@ -194,8 +194,8 @@ describe("AgentChatComposer", () => {
       },
     });
 
-    expect(screen.getByText("Type your answer below.")).toBeTruthy();
-    expect(screen.queryByText("Type your answer below or pick an option above.")).toBeNull();
+    expect(screen.getByText("Answer in the question window above, or type below.")).toBeTruthy();
+    expect(screen.queryByText("Answer in the question window above, or pick an option there.")).toBeNull();
   });
 
   it("keeps the option hint when a pending question includes selectable options", () => {
@@ -224,7 +224,7 @@ describe("AgentChatComposer", () => {
       },
     });
 
-    expect(screen.getByText("Type your answer below or pick an option above.")).toBeTruthy();
+    expect(screen.getByText("Answer in the question window above, or pick an option there.")).toBeTruthy();
   });
 
   it("keeps the option hint when any pending question includes selectable options", () => {
@@ -261,7 +261,7 @@ describe("AgentChatComposer", () => {
       },
     });
 
-    expect(screen.getByText("Type your answer below or pick an option above.")).toBeTruthy();
+    expect(screen.getByText("Answer in the question window above, or pick an option there.")).toBeTruthy();
   });
 
   it("uses decline wording for native Codex structured questions", () => {
@@ -386,7 +386,7 @@ describe("AgentChatComposer", () => {
     expect(screen.queryByTitle("Include project context (PRD + architecture) with first message")).toBeNull();
   });
 
-  it("uses a constrained resizable textarea in grid-tile mode", () => {
+  it("marks the textarea layout variant in grid-tile mode", () => {
     renderComposer({
       layoutVariant: "grid-tile",
       composerMaxHeightPx: 128,
@@ -394,8 +394,7 @@ describe("AgentChatComposer", () => {
 
     const textarea = screen.getByPlaceholderText("Steer the active turn...") as HTMLTextAreaElement;
     expect(textarea.dataset.chatLayoutVariant).toBe("grid-tile");
-    expect(textarea.style.maxHeight).toBe("128px");
-    expect(textarea.className).toContain("resize-y");
+    expect(textarea.className).toContain("resize-none");
   });
 
 });

@@ -371,7 +371,7 @@ export function PackedSessionGrid({
               onMouseDown={() => tile.onSelect?.()}
             >
               <div className={cn(
-                "flex h-full min-h-0 min-w-0 flex-col overflow-hidden rounded-md",
+                "flex h-full min-h-0 min-w-0 flex-col overflow-hidden rounded-xl",
                 tile.className,
               )}>
                 {tile.header}
@@ -379,7 +379,7 @@ export function PackedSessionGrid({
               </div>
               <div
                 className={cn(
-                  "pointer-events-none absolute inset-0 rounded-md border border-white/[0.04] transition-opacity",
+                  "pointer-events-none absolute inset-0 rounded-xl border border-[color-mix(in_srgb,var(--color-accent)_30%,transparent)] transition-opacity",
                   tile.selected || resizingTileId === tile.id ? "opacity-100" : "opacity-0 group-hover:opacity-100",
                 )}
               />

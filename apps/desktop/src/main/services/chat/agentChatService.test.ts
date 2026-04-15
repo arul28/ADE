@@ -596,6 +596,10 @@ function createMockSessionService() {
         row.endedAt = args?.endedAt ?? new Date().toISOString();
       }
     }),
+    deleteSession: vi.fn((sessionId: string) => {
+      sessions.delete(sessionId);
+      return true;
+    }),
     updateMeta: vi.fn((args: any) => {
       const row = sessions.get(args.sessionId);
       if (row) {
@@ -944,6 +948,7 @@ describe("createAgentChatService", () => {
     expect(service.getAvailableModels).toBeTypeOf("function");
     expect(service.getSlashCommands).toBeTypeOf("function");
     expect(service.dispose).toBeTypeOf("function");
+    expect(service.deleteSession).toBeTypeOf("function");
     expect(service.disposeAll).toBeTypeOf("function");
     expect(service.updateSession).toBeTypeOf("function");
     expect(service.warmupModel).toBeTypeOf("function");
@@ -2328,6 +2333,146 @@ describe("createAgentChatService", () => {
   });
 
   // --------------------------------------------------------------------------
+  // compaction flush (issue #153): no visible flush message; PreCompact hook
+  // --------------------------------------------------------------------------
+
+  describe("compaction flush", () => {
+    it("emits context_compact without a user_message carrying the flush prompt", async () => {
+      const send = vi.fn().mockResolvedValue(undefined);
+      const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+      let streamCall = 0;
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield {
+            type: "system",
+            subtype: "init",
+            session_id: "sdk-session-compact",
+            slash_commands: [],
+          };
+          yield {
+            type: "result",
+            usage: { input_tokens: 1, output_tokens: 1 },
+          };
+          return;
+        }
+
+        yield {
+          type: "system",
+          subtype: "compact_boundary",
+          session_id: "sdk-session-compact",
+          compact_metadata: { trigger: "auto", pre_tokens: 150_000 },
+        };
+        yield {
+          type: "assistant",
+          session_id: "sdk-session-compact",
+          message: {
+            content: [{ type: "text", text: "Continuing after compaction" }],
+            usage: { input_tokens: 1, output_tokens: 1 },
+          },
+        };
+        yield {
+          type: "result",
+          usage: { input_tokens: 1, output_tokens: 1 },
+        };
+      })());
+      vi.mocked(unstable_v2_createSession).mockReturnValue({
+        send,
+        stream,
+        close: vi.fn(),
+        sessionId: "sdk-session-compact",
+        setPermissionMode,
+      } as any);
+
+      const onEvent = vi.fn();
+      const { service } = createService({ onEvent });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+
+      await service.runSessionTurn({
+        sessionId: session.id,
+        text: "keep going",
+        timeoutMs: 15_000,
+      });
+      await new Promise((resolve) => setTimeout(resolve, 25));
+
+      const compactEvents = onEvent.mock.calls
+        .map((call) => call[0])
+        .filter((env: any) => env?.event?.type === "context_compact");
+      expect(compactEvents).toHaveLength(1);
+      expect(compactEvents[0].event).toMatchObject({
+        type: "context_compact",
+        trigger: "auto",
+        preTokens: 150_000,
+      });
+
+      const leakedUserMessages = onEvent.mock.calls
+        .map((call) => call[0])
+        .filter((env: any) =>
+          env?.event?.type === "user_message"
+          && typeof env.event.text === "string"
+          && env.event.text.includes("Before context compaction runs"),
+        );
+      expect(leakedUserMessages).toHaveLength(0);
+
+      // Defence in depth: the pre-fix leak happened when main.ts reacted to
+      // the context_compact chat event by calling steer(), which pushed the
+      // flush prompt to the SDK via send(). Assert the SDK never received a
+      // turn whose payload contains the flush-prompt text, regardless of
+      // whether the leak originated from the SDK side or a downstream handler.
+      const flushedSends = send.mock.calls.filter(([payload]) =>
+        typeof payload === "string"
+          ? payload.includes("Before context compaction runs")
+          : JSON.stringify(payload ?? "").includes("Before context compaction runs"),
+      );
+      expect(flushedSends).toHaveLength(0);
+    });
+
+    it("registers a PreCompact hook on non-lightweight Claude sessions", async () => {
+      vi.mocked(unstable_v2_createSession).mockReturnValue({
+        send: vi.fn(),
+        stream: vi.fn(async function* () {
+          return;
+        }),
+        close: vi.fn(),
+        sessionId: "sdk-session-precompact",
+      } as any);
+
+      const { service } = createService();
+      await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+
+      await vi.waitFor(() => {
+        expect(unstable_v2_createSession).toHaveBeenCalled();
+      });
+
+      const opts = vi.mocked(unstable_v2_createSession).mock.calls[0]?.[0] as {
+        hooks?: Record<string, Array<{ hooks: Array<(...args: unknown[]) => Promise<any>> }>>;
+      } | undefined;
+      const matchers = opts?.hooks?.PreCompact;
+      expect(matchers).toBeDefined();
+      expect(matchers!.length).toBeGreaterThan(0);
+      const callback = matchers![0].hooks[0];
+      const result = await callback(
+        { hook_event_name: "PreCompact", trigger: "auto", custom_instructions: null } as any,
+        undefined as any,
+        { signal: new AbortController().signal } as any,
+      );
+      expect(result).toMatchObject({ continue: true });
+      expect(typeof (result as { systemMessage?: string }).systemMessage).toBe("string");
+      expect((result as { systemMessage: string }).systemMessage).toContain(
+        "Before context compaction runs",
+      );
+    });
+  });
+
+  // --------------------------------------------------------------------------
   // getSessionSummary
   // --------------------------------------------------------------------------
 
@@ -2862,6 +3007,55 @@ describe("createAgentChatService", () => {
 
       // Should not throw
       await expect(service.disposeAll()).resolves.toBeUndefined();
+    });
+  });
+
+  describe("deleteSession", () => {
+    it("removes persisted chat artifacts and the stored session row", async () => {
+      const { service, sessionService } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "opencode",
+        model: "",
+        modelId: "opencode/anthropic/claude-sonnet-4-6",
+      });
+
+      const metadataPath = path.join(tmpRoot, ".ade", "cache", "chat-sessions", `${session.id}.json`);
+      const dedicatedTranscriptPath = path.join(tmpRoot, ".ade", "transcripts", "chat", `${session.id}.jsonl`);
+      const mainTranscriptPath = sessionService.get(session.id)?.transcriptPath ?? "";
+
+      fs.writeFileSync(metadataPath, JSON.stringify({ sessionId: session.id }), "utf8");
+      fs.mkdirSync(path.dirname(dedicatedTranscriptPath), { recursive: true });
+      fs.writeFileSync(dedicatedTranscriptPath, "{\"event\":\"done\"}\n", "utf8");
+      fs.mkdirSync(path.dirname(mainTranscriptPath), { recursive: true });
+      fs.writeFileSync(mainTranscriptPath, "{\"event\":\"done\"}\n", "utf8");
+
+      await service.dispose({ sessionId: session.id });
+      await service.deleteSession({ sessionId: session.id });
+
+      expect(sessionService.deleteSession).toHaveBeenCalledWith(session.id);
+      expect(sessionService.get(session.id)).toBeNull();
+      expect(fs.existsSync(metadataPath)).toBe(false);
+      expect(fs.existsSync(dedicatedTranscriptPath)).toBe(false);
+      expect(fs.existsSync(mainTranscriptPath)).toBe(false);
+      await expect(service.getSessionSummary(session.id)).resolves.toBeNull();
+    });
+
+    it("disposes running chats before purging them", async () => {
+      const { service, sessionService } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "opencode",
+        model: "",
+        modelId: "opencode/anthropic/claude-sonnet-4-6",
+      });
+
+      await service.deleteSession({ sessionId: session.id });
+
+      expect(sessionService.end).toHaveBeenCalledWith(
+        expect.objectContaining({ sessionId: session.id }),
+      );
+      expect(sessionService.deleteSession).toHaveBeenCalledWith(session.id);
     });
   });
 
@@ -4604,6 +4798,74 @@ describe("createAgentChatService", () => {
         expect(result.outputText).toContain("Finished after a long run.");
         expect(events.find((event) => event.event.type === "status" && event.event.turnStatus === "failed")).toBeUndefined();
         expect(events.find((event) => event.event.type === "status" && event.event.turnStatus === "interrupted")).toBeUndefined();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("tears down idle Claude runtimes after the inactivity ttl", async () => {
+      vi.useFakeTimers();
+      try {
+        const close = vi.fn();
+        let streamCall = 0;
+        const send = vi.fn().mockResolvedValue(undefined);
+        const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+
+        const sessionHandle = {
+          send,
+          stream: vi.fn(() => (async function* () {
+            streamCall += 1;
+            if (streamCall === 1) {
+              yield {
+                type: "system",
+                subtype: "init",
+                session_id: "sdk-session-idle-ttl",
+                slash_commands: [],
+              };
+              yield {
+                type: "result",
+                usage: { input_tokens: 1, output_tokens: 1 },
+              };
+              return;
+            }
+
+            yield {
+              type: "assistant",
+              session_id: "sdk-session-idle-ttl",
+              message: {
+                content: [{ type: "text", text: "Done." }],
+                usage: { input_tokens: 1, output_tokens: 1 },
+              },
+            };
+            yield {
+              type: "result",
+              usage: { input_tokens: 1, output_tokens: 1 },
+            };
+          })()),
+          close,
+          sessionId: "sdk-session-idle-ttl",
+          setPermissionMode,
+        };
+
+        vi.mocked(unstable_v2_createSession).mockReturnValue(sessionHandle as any);
+        vi.mocked(unstable_v2_resumeSession).mockReturnValue(sessionHandle as any);
+
+        const { service } = createService();
+        const session = await service.createSession({
+          laneId: "lane-1",
+          provider: "claude",
+          model: "sonnet",
+        });
+
+        await service.runSessionTurn({
+          sessionId: session.id,
+          text: "Say hi",
+          timeoutMs: 15_000,
+        });
+
+        await vi.advanceTimersByTimeAsync(6 * 60_000);
+
+        expect(close).toHaveBeenCalledTimes(1);
       } finally {
         vi.useRealTimers();
       }

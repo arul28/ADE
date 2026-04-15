@@ -70,10 +70,16 @@ downstream code always sees a normalized command even for old rows.
 - `readTranscriptTail(transcriptPath, maxBytes, opts)` — async file
   read, can align to a line boundary and optionally strip ANSI.
 - `reconcileStaleRunningSessions({ endedAt?, status?, excludeToolTypes? })`
-  — on-startup cleanup. Accepts `excludeToolTypes` so chat sessions
-  survive a restart and can be resumed via their SDK.
-- `onChanged(listener)` — in-process event bus, fired only from
-  `updateMeta` with reason `"meta-updated"`.
+  — on-startup cleanup. `excludeToolTypes` is still accepted but
+  `main.ts` no longer passes chat tool types; chat runtimes restart
+  fresh on app launch, so leaving stale `running` chat rows behind is
+  a net negative.
+- `deleteSession(sessionId)` — remove a row outright. Emits
+  `terminalSessionChanged` with `reason: "deleted"`. Used by both PTY
+  cleanup and `agentChatService.deleteSession`.
+- `onChanged(listener)` — in-process event bus, fires from
+  `updateMeta` (`reason: "meta-updated"`) and `deleteSession`
+  (`reason: "deleted"`).
 
 ### Notes
 

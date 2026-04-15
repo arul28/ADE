@@ -85,6 +85,13 @@ import type {
   PrReviewThreadComment,
   ReplyToPrReviewThreadArgs,
   ResolvePrReviewThreadArgs,
+  PrDeployment,
+  PrDeploymentState,
+  PostPrReviewCommentArgs,
+  SetPrReviewThreadResolvedArgs,
+  SetPrReviewThreadResolvedResult,
+  ReactToPrCommentArgs,
+  PrReactionContent,
 } from "../../../shared/types";
 import type { AdeDb } from "../state/kvDb";
 import type { Logger } from "../logging/logger";
@@ -552,6 +559,34 @@ function toFileStatus(raw: unknown): PrFile["status"] {
   if (s === "renamed") return "renamed";
   if (s === "copied") return "copied";
   return "modified";
+}
+
+const DEPLOYMENT_STATES = new Set<PrDeploymentState>([
+  "success",
+  "failure",
+  "error",
+  "pending",
+  "in_progress",
+  "queued",
+  "inactive",
+]);
+
+function toDeploymentState(raw: unknown): PrDeploymentState {
+  const s = asString(raw).toLowerCase() as PrDeploymentState;
+  return DEPLOYMENT_STATES.has(s) ? s : "unknown";
+}
+
+function reactionToGraphqlEnum(content: PrReactionContent): string {
+  switch (content) {
+    case "+1": return "THUMBS_UP";
+    case "-1": return "THUMBS_DOWN";
+    case "laugh": return "LAUGH";
+    case "confused": return "CONFUSED";
+    case "heart": return "HEART";
+    case "hooray": return "HOORAY";
+    case "rocket": return "ROCKET";
+    case "eyes": return "EYES";
+  }
 }
 
 function toUser(raw: any): PrUser {
@@ -1569,6 +1604,19 @@ export function createPrService({
       invalidateGithubSnapshotCache();
     }
     upsertRow(updated);
+
+    // Keep `head_sha` in sync so downstream features (AI summary cache, deployments)
+    // can reliably reference the latest commit on the PR head branch.
+    if (headSha) {
+      try {
+        db.run("update pull_requests set head_sha = ? where id = ? and project_id = ?", [headSha, row.id, projectId]);
+      } catch (err) {
+        logger.warn("prs.head_sha_persist_failed", {
+          prId: row.id,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
 
     return updated;
   };
@@ -4891,6 +4939,178 @@ export function createPrService({
         `,
         { threadId: args.threadId },
       );
+    },
+
+    async postReviewComment(args: PostPrReviewCommentArgs): Promise<PrReviewThreadComment> {
+      const row = requireRow(args.prId);
+      const repo = repoFromRow(row);
+      const threads = await fetchReviewThreads(repo, Number(row.github_pr_number));
+      if (!threads.some((t) => t.id === args.threadId)) {
+        throw new Error(`Thread ${args.threadId} does not belong to PR ${args.prId}`);
+      }
+      const data = await graphqlRequest<{
+        addPullRequestReviewThreadReply?: {
+          comment?: {
+            id?: unknown;
+            body?: unknown;
+            url?: unknown;
+            createdAt?: unknown;
+            updatedAt?: unknown;
+            author?: { login?: unknown; avatarUrl?: unknown } | null;
+          } | null;
+        } | null;
+      }>(
+        `
+          mutation AdePostReviewComment($threadId: ID!, $body: String!) {
+            addPullRequestReviewThreadReply(input: { pullRequestReviewThreadId: $threadId, body: $body }) {
+              comment {
+                id
+                body
+                url
+                createdAt
+                updatedAt
+                author { login avatarUrl }
+              }
+            }
+          }
+        `,
+        { threadId: args.threadId, body: args.body },
+      );
+      const comment = data.addPullRequestReviewThreadReply?.comment;
+      if (!comment) {
+        throw new Error("GitHub did not return the review-thread reply.");
+      }
+      return {
+        id: asString(comment.id) || String(randomUUID()),
+        author: asString(comment.author?.login) || "unknown",
+        authorAvatarUrl: asString(comment.author?.avatarUrl) || null,
+        body: asString(comment.body) || null,
+        url: asString(comment.url) || null,
+        createdAt: asString(comment.createdAt) || null,
+        updatedAt: asString(comment.updatedAt) || null,
+      };
+    },
+
+    async setReviewThreadResolved(args: SetPrReviewThreadResolvedArgs): Promise<SetPrReviewThreadResolvedResult> {
+      const row = requireRow(args.prId);
+      const repo = repoFromRow(row);
+      const threads = await fetchReviewThreads(repo, Number(row.github_pr_number));
+      if (!threads.some((t) => t.id === args.threadId)) {
+        throw new Error(`Thread ${args.threadId} does not belong to PR ${args.prId}`);
+      }
+      if (args.resolved) {
+        const data = await graphqlRequest<{
+          resolveReviewThread?: { thread?: { id?: unknown; isResolved?: unknown } | null } | null;
+        }>(
+          `
+            mutation AdeResolveReviewThread($threadId: ID!) {
+              resolveReviewThread(input: { threadId: $threadId }) {
+                thread { id isResolved }
+              }
+            }
+          `,
+          { threadId: args.threadId },
+        );
+        const thread = data.resolveReviewThread?.thread ?? null;
+        return {
+          threadId: asString(thread?.id) || args.threadId,
+          isResolved: thread?.isResolved === true,
+        };
+      }
+      const data = await graphqlRequest<{
+        unresolveReviewThread?: { thread?: { id?: unknown; isResolved?: unknown } | null } | null;
+      }>(
+        `
+          mutation AdeUnresolveReviewThread($threadId: ID!) {
+            unresolveReviewThread(input: { threadId: $threadId }) {
+              thread { id isResolved }
+            }
+          }
+        `,
+        { threadId: args.threadId },
+      );
+      const thread = data.unresolveReviewThread?.thread ?? null;
+      return {
+        threadId: asString(thread?.id) || args.threadId,
+        isResolved: thread?.isResolved === true,
+      };
+    },
+
+    async reactToComment(args: ReactToPrCommentArgs): Promise<void> {
+      // requireRow gates the caller's access to the PR, but the commentId is
+      // trusted from the UI: reactions can target review comments, issue
+      // comments, or review threads — validating ownership for every node type
+      // would require an extra GraphQL round-trip per click and offers little
+      // defense given the user already has write access to the PR's comments.
+      requireRow(args.prId);
+      const contentEnum = reactionToGraphqlEnum(args.content);
+      await graphqlRequest(
+        `
+          mutation AdeReactToComment($subjectId: ID!, $content: ReactionContent!) {
+            addReaction(input: { subjectId: $subjectId, content: $content }) {
+              reaction { id content }
+            }
+          }
+        `,
+        { subjectId: args.commentId, content: contentEnum },
+      );
+    },
+
+    async getDeployments(prId: string): Promise<PrDeployment[]> {
+      const row = requireRow(prId);
+      const repo = repoFromRow(row);
+      const pr = await fetchPr(repo, Number(row.github_pr_number));
+      const headSha = asString(pr?.head?.sha);
+      if (!headSha) return [];
+      const { data } = await githubService.apiRequest<any[]>({
+        method: "GET",
+        path: `/repos/${repo.owner}/${repo.name}/deployments`,
+        query: { sha: headSha, per_page: 100 },
+      });
+      const list = Array.isArray(data) ? data : [];
+      const deployments: PrDeployment[] = await Promise.all(
+        list.map(async (d): Promise<PrDeployment> => {
+          const deploymentId = String(asNumber(d?.id) ?? asString(d?.id) ?? "");
+          let state: PrDeploymentState = "unknown";
+          let environmentUrl: string | null = asString(d?.payload?.web_url) || null;
+          let logUrl: string | null = null;
+          let updatedAt: string | null = asString(d?.updated_at) || null;
+          try {
+            const { data: statuses } = await githubService.apiRequest<any[]>({
+              method: "GET",
+              path: `/repos/${repo.owner}/${repo.name}/deployments/${deploymentId}/statuses`,
+              query: { per_page: 1 },
+            });
+            const latest = Array.isArray(statuses) && statuses.length > 0 ? statuses[0] : null;
+            if (latest) {
+              state = toDeploymentState(latest.state);
+              environmentUrl = asString(latest.environment_url) || environmentUrl;
+              logUrl = asString(latest.log_url) || asString(latest.target_url) || null;
+              updatedAt = asString(latest.updated_at) || updatedAt;
+            }
+          } catch (err) {
+            logger.warn("prs.get_deployments_status_failed", {
+              prId,
+              deploymentId,
+              error: err instanceof Error ? err.message : String(err),
+            });
+          }
+          return {
+            id: deploymentId || randomUUID(),
+            environment: asString(d?.environment) || "unknown",
+            state,
+            description: asString(d?.description) || null,
+            environmentUrl,
+            logUrl,
+            sha: asString(d?.sha) || headSha,
+            ref: asString(d?.ref) || null,
+            creator: asString(d?.creator?.login) || null,
+            createdAt: asString(d?.created_at) || null,
+            updatedAt,
+          };
+        }),
+      );
+      return deployments;
     },
 
     async updateTitle(args: UpdatePrTitleArgs): Promise<void> {

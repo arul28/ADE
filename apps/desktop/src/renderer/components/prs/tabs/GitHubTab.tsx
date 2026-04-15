@@ -1,6 +1,7 @@
 import React from "react";
 import { ArrowsClockwise, ArrowSquareOut, ChatText, CheckCircle, CircleNotch, GitMerge, GithubLogo, Link, MagnifyingGlass, Warning, XCircle } from "@phosphor-icons/react";
 import { useNavigate } from "react-router-dom";
+import { useVirtualizer } from "@tanstack/react-virtual";
 import type { GitHubPrListItem, GitHubPrSnapshot, LaneSummary, MergeMethod, PrSummary } from "../../../../shared/types";
 import { EmptyState } from "../../ui/EmptyState";
 import { COLORS, LABEL_STYLE, MONO_FONT, SANS_FONT, cardStyle, inlineBadge, outlineButton, primaryButton } from "../../lanes/laneDesignTokens";
@@ -9,6 +10,8 @@ import { PrDetailPane } from "../detail/PrDetailPane";
 import { formatTimestampShort, formatTimeAgoCompact } from "../shared/prFormatters";
 import { PrCiRunningIndicator } from "../shared/prVisuals";
 import { usePrs } from "../state/PrsContext";
+
+const VIRTUALIZE_AT = 50;
 
 type GitHubTabProps = {
   lanes: LaneSummary[];
@@ -358,6 +361,7 @@ export function GitHubTab({ lanes, mergeMethod, selectedPrId, onSelectPr, onRefr
   const hotRefreshUntilRef = React.useRef(0);
   const hotRefreshTimerRef = React.useRef<number | null>(null);
   const inFlightSnapshotRef = React.useRef<Promise<GitHubPrSnapshot> | null>(null);
+  const listRef = React.useRef<HTMLDivElement | null>(null);
   snapshotRef.current = snapshot;
 
   /* Build a lookup from linkedPrId -> PrSummary for CI/review indicators */
@@ -798,7 +802,7 @@ export function GitHubTab({ lanes, mergeMethod, selectedPrId, onSelectPr, onRefr
 
       <div style={{ display: "flex", minHeight: 0, flex: 1 }}>
         {/* PR list sidebar */}
-        <div style={{ width: 380, borderRight: "1px solid rgba(255,255,255,0.06)", overflow: "auto", flexShrink: 0 }}>
+        <div ref={listRef} style={{ width: 380, borderRight: "1px solid rgba(255,255,255,0.06)", overflow: "auto", flexShrink: 0 }}>
           {/* Section header */}
           <div style={{
             padding: "10px 14px",
@@ -827,243 +831,26 @@ export function GitHubTab({ lanes, mergeMethod, selectedPrId, onSelectPr, onRefr
             <div style={{ padding: 20 }}>
               <EmptyState title="No pull requests" description="No pull requests match the current filters." />
             </div>
+          ) : filteredItems.length > VIRTUALIZE_AT ? (
+            <GitHubTabVirtualList
+              parentRef={listRef}
+              items={filteredItems}
+              selectedItemId={selectedItemId}
+              prsByIdMap={prsByIdMap}
+              onSelect={handleSelectItem}
+              onOpenQueueView={onOpenQueueView}
+            />
           ) : (
-            filteredItems.map((item) => {
-              const selected = item.id === selectedItemId;
-              const sc = stateColor(item.state);
-              const linkedPr = item.linkedPrId ? prsByIdMap.get(item.linkedPrId) ?? null : null;
-              const ci = ciDotColor(linkedPr);
-              const ciRunning = linkedPr?.checksStatus === "pending";
-              const review = reviewIndicator(linkedPr);
-              const ago = formatTimeAgoCompact(item.createdAt);
-              const visibleLabels = item.labels.slice(0, 4);
-              const overflowCount = item.labels.length - 4;
-              return (
-                <button
-                  key={item.id}
-                  type="button"
-                  onClick={() => handleSelectItem(item)}
-                  style={{
-                    display: "flex",
-                    width: "100%",
-                    flexDirection: "column",
-                    gap: 6,
-                    padding: "11px 14px",
-                    textAlign: "left",
-                    border: "none",
-                    borderLeft: selected ? `3px solid ${sc.text}` : "3px solid transparent",
-                    borderBottom: "1px solid rgba(255,255,255,0.04)",
-                    background: selected
-                      ? `linear-gradient(90deg, ${sc.bg} 0%, rgba(255,255,255,0.02) 100%)`
-                      : "transparent",
-                    cursor: "pointer",
-                    transition: "background 150ms ease",
-                  }}
-                  onMouseEnter={(e) => { if (!selected) e.currentTarget.style.background = "rgba(255,255,255,0.025)"; }}
-                  onMouseLeave={(e) => { if (!selected) e.currentTarget.style.background = "transparent"; }}
-                >
-                  {/* Row 1: avatar, bot badge, PR number, title, CI icon, time, comments */}
-                  <div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0 }}>
-                    {item.author ? (
-                      <img
-                        src={`https://avatars.githubusercontent.com/${item.author}?size=32`}
-                        alt=""
-                        style={{
-                          width: 22,
-                          height: 22,
-                          borderRadius: "50%",
-                          flexShrink: 0,
-                          border: `1.5px solid ${sc.bg}`,
-                        }}
-                        onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
-                      />
-                    ) : (
-                      <div style={{
-                        width: 22,
-                        height: 22,
-                        borderRadius: "50%",
-                        flexShrink: 0,
-                        background: "rgba(255,255,255,0.05)",
-                        border: "1px solid rgba(255,255,255,0.08)",
-                      }} />
-                    )}
-                    {item.isBot ? (
-                      <span style={{
-                        fontSize: 9,
-                        fontWeight: 700,
-                        fontFamily: SANS_FONT,
-                        textTransform: "uppercase",
-                        padding: "1px 5px",
-                        borderRadius: 3,
-                        background: "rgba(255,255,255,0.06)",
-                        color: COLORS.textDim,
-                        flexShrink: 0,
-                        letterSpacing: "0.3px",
-                      }}>
-                        bot
-                      </span>
-                    ) : null}
-                    <span style={{ fontFamily: MONO_FONT, fontSize: 11, color: sc.text, flexShrink: 0 }}>
-                      #{item.githubPrNumber}
-                    </span>
-                    <span style={{
-                      fontSize: 12,
-                      fontWeight: 600,
-                      color: COLORS.textPrimary,
-                      overflow: "hidden",
-                      textOverflow: "ellipsis",
-                      whiteSpace: "nowrap",
-                      fontFamily: SANS_FONT,
-                      flex: 1,
-                      minWidth: 0,
-                    }}>
-                      {item.title}
-                    </span>
-                    {ci ? (
-                      <span title={ci.title} style={{ display: "inline-flex", flexShrink: 0 }}>
-                        {linkedPr?.checksStatus === "passing" ? (
-                          <CheckCircle size={14} weight="fill" style={{ color: "#4ADE80" }} />
-                        ) : linkedPr?.checksStatus === "failing" ? (
-                          <XCircle size={14} weight="fill" style={{ color: "#EF4444" }} />
-                        ) : ciRunning ? (
-                          <PrCiRunningIndicator color="#FBBF24" size={14} />
-                        ) : null}
-                      </span>
-                    ) : null}
-                    {ago ? (
-                      <span style={{ fontFamily: MONO_FONT, fontSize: 10, color: COLORS.textDim, flexShrink: 0 }}>
-                        {ago}
-                      </span>
-                    ) : null}
-                    {item.commentCount > 0 ? (
-                      <span style={{ display: "inline-flex", alignItems: "center", gap: 3, flexShrink: 0, color: COLORS.textDim }}>
-                        <ChatText size={12} />
-                        <span style={{ fontFamily: MONO_FONT, fontSize: 10 }}>{item.commentCount}</span>
-                      </span>
-                    ) : null}
-                  </div>
-                  {/* Row 1.5: labels */}
-                  {visibleLabels.length > 0 ? (
-                    <div style={{ display: "flex", alignItems: "center", gap: 4, paddingLeft: 30, flexWrap: "wrap" }}>
-                      {visibleLabels.map((label) => {
-                        const bg = `#${label.color}`;
-                        const textColor = labelTextColor(label.color);
-                        return (
-                          <span
-                            key={label.name}
-                            style={{
-                              display: "inline-flex",
-                              alignItems: "center",
-                              padding: "1px 8px",
-                              fontSize: 10,
-                              fontWeight: 600,
-                              fontFamily: SANS_FONT,
-                              color: textColor,
-                              background: bg,
-                              borderRadius: 10,
-                              lineHeight: "16px",
-                            }}
-                          >
-                            {label.name}
-                          </span>
-                        );
-                      })}
-                      {overflowCount > 0 ? (
-                        <span style={{ fontSize: 10, fontFamily: SANS_FONT, color: COLORS.textDim }}>
-                          +{overflowCount}
-                        </span>
-                      ) : null}
-                    </div>
-                  ) : null}
-                  {/* Row 2: branch info */}
-                  {item.baseBranch && item.headBranch ? (
-                    <div style={{ display: "flex", alignItems: "center", gap: 4, paddingLeft: 30, fontFamily: MONO_FONT, fontSize: 10, color: COLORS.textDim }}>
-                      <span>{item.baseBranch}</span>
-                      <span style={{ color: COLORS.textMuted }}>←</span>
-                      <span style={{ color: COLORS.textMuted, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.headBranch}</span>
-                    </div>
-                  ) : null}
-                  {/* Row 3: inline stats */}
-                  <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 6, paddingLeft: 30 }}>
-                    <span style={stateBadgeStyle(item)}>{item.state}</span>
-                    {adeKindBadge(item.adeKind) ? <span style={adeKindBadge(item.adeKind)!}>{item.adeKind}</span> : null}
-                    {item.scope === "external" ? (
-                      <span style={{ fontFamily: MONO_FONT, fontSize: 10, color: COLORS.textDim }}>
-                        {item.repoOwner}/{item.repoName}
-                      </span>
-                    ) : null}
-                    {item.linkedLaneName ? (
-                      <span style={{ ...inlineBadge(COLORS.textSecondary), fontSize: 10, padding: "2px 7px", borderRadius: 5 }}>
-                        {item.linkedLaneName}
-                      </span>
-                    ) : (
-                      <span style={{ display: "inline-flex", alignItems: "center", padding: "2px 7px", fontSize: 10, fontWeight: 600, fontFamily: SANS_FONT, color: "#FBBF24", background: "rgba(245,158,11,0.10)", border: "1px solid rgba(245,158,11,0.18)", borderRadius: 5 }}>
-                        unmapped
-                      </span>
-                    )}
-                    {review ? (
-                      <span style={{ display: "inline-flex", alignItems: "center", padding: "2px 6px", fontSize: 10, fontWeight: 500, fontFamily: SANS_FONT, color: review.color, background: `${review.color}10`, borderRadius: 4 }}>
-                        {review.label}
-                      </span>
-                    ) : null}
-                    {linkedPr ? (
-                      <span style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 10, fontFamily: MONO_FONT }}>
-                        <span style={{ color: COLORS.success }}>+{linkedPr.additions}</span>
-                        <span style={{ color: COLORS.danger }}>-{linkedPr.deletions}</span>
-                      </span>
-                    ) : null}
-                    {item.cleanupState === "required" ? (
-                      <span style={{ ...inlineBadge(COLORS.warning), fontSize: 10, padding: "2px 7px", borderRadius: 5 }}>cleanup</span>
-                    ) : null}
-                    {item.adeKind === "queue" && item.linkedGroupId && onOpenQueueView ? (
-                      <span
-                        role="button"
-                        tabIndex={0}
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          onOpenQueueView(item.linkedGroupId!);
-                        }}
-                        onKeyDown={(event) => {
-                          if (event.key === "Enter" || event.key === " ") {
-                            event.preventDefault();
-                            event.stopPropagation();
-                            onOpenQueueView(item.linkedGroupId!);
-                          }
-                        }}
-                        style={{
-                          display: "inline-flex",
-                          alignItems: "center",
-                          padding: "2px 7px",
-                          fontSize: 10,
-                          fontWeight: 600,
-                          fontFamily: SANS_FONT,
-                          color: COLORS.info,
-                          background: "rgba(59,130,246,0.10)",
-                          border: "1px solid rgba(59,130,246,0.18)",
-                          borderRadius: 5,
-                          cursor: "pointer",
-                        }}
-                        title="Open queue workflow"
-                      >
-                        open queue
-                      </span>
-                    ) : null}
-                    <span
-                      role="link"
-                      tabIndex={0}
-                      onClick={(e) => { e.stopPropagation(); void window.ade.app.openExternal(item.githubUrl); }}
-                      onKeyDown={(e) => { if (e.key === "Enter") { e.stopPropagation(); void window.ade.app.openExternal(item.githubUrl); } }}
-                      style={{ display: "inline-flex", alignItems: "center", marginLeft: "auto", padding: 0, cursor: "pointer", color: COLORS.textDim, transition: "color 100ms ease" }}
-                      title="Open on GitHub"
-                      onMouseEnter={(e) => { e.currentTarget.style.color = COLORS.textSecondary; }}
-                      onMouseLeave={(e) => { e.currentTarget.style.color = COLORS.textDim; }}
-                    >
-                      <ArrowSquareOut size={13} />
-                    </span>
-                  </div>
-                </button>
-              );
-            })
+            filteredItems.map((item) => (
+              <GitHubTabPrRow
+                key={item.id}
+                item={item}
+                selected={item.id === selectedItemId}
+                linkedPr={item.linkedPrId ? prsByIdMap.get(item.linkedPrId) ?? null : null}
+                onSelect={handleSelectItem}
+                onOpenQueueView={onOpenQueueView}
+              />
+            ))
           )}
         </div>
 
@@ -1101,6 +888,309 @@ export function GitHubTab({ lanes, mergeMethod, selectedPrId, onSelectPr, onRefr
           )}
         </div>
       </div>
+    </div>
+  );
+}
+
+/* ---- PR row (shared between list and virtualizer) ---- */
+function GitHubTabPrRow({
+  item,
+  selected,
+  linkedPr,
+  onSelect,
+  onOpenQueueView,
+}: {
+  item: GitHubPrListItem;
+  selected: boolean;
+  linkedPr: PrSummary | null;
+  onSelect: (item: GitHubPrListItem) => void;
+  onOpenQueueView?: (groupId: string) => void;
+}) {
+  const sc = stateColor(item.state);
+  const ci = ciDotColor(linkedPr);
+  const ciRunning = linkedPr?.checksStatus === "pending";
+  const review = reviewIndicator(linkedPr);
+  const ago = formatTimeAgoCompact(item.createdAt);
+  const visibleLabels = item.labels.slice(0, 4);
+  const overflowCount = item.labels.length - 4;
+  return (
+    <button
+      type="button"
+      onClick={() => onSelect(item)}
+      style={{
+        display: "flex",
+        width: "100%",
+        flexDirection: "column",
+        gap: 6,
+        padding: "11px 14px",
+        textAlign: "left",
+        border: "none",
+        borderLeft: selected ? `3px solid ${sc.text}` : "3px solid transparent",
+        borderBottom: "1px solid rgba(255,255,255,0.04)",
+        background: selected
+          ? `linear-gradient(90deg, ${sc.bg} 0%, rgba(255,255,255,0.02) 100%)`
+          : "transparent",
+        cursor: "pointer",
+        transition: "background 150ms ease",
+      }}
+      onMouseEnter={(e) => { if (!selected) e.currentTarget.style.background = "rgba(255,255,255,0.025)"; }}
+      onMouseLeave={(e) => { if (!selected) e.currentTarget.style.background = "transparent"; }}
+    >
+      {/* Row 1: avatar, bot badge, PR number, title, CI icon, time, comments */}
+      <div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0 }}>
+        {item.author ? (
+          <img
+            src={`https://avatars.githubusercontent.com/${item.author}?size=32`}
+            alt=""
+            style={{
+              width: 22,
+              height: 22,
+              borderRadius: "50%",
+              flexShrink: 0,
+              border: `1.5px solid ${sc.bg}`,
+            }}
+            onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
+          />
+        ) : (
+          <div style={{
+            width: 22,
+            height: 22,
+            borderRadius: "50%",
+            flexShrink: 0,
+            background: "rgba(255,255,255,0.05)",
+            border: "1px solid rgba(255,255,255,0.08)",
+          }} />
+        )}
+        {item.isBot ? (
+          <span style={{
+            fontSize: 9,
+            fontWeight: 700,
+            fontFamily: SANS_FONT,
+            textTransform: "uppercase",
+            padding: "1px 5px",
+            borderRadius: 3,
+            background: "rgba(255,255,255,0.06)",
+            color: COLORS.textDim,
+            flexShrink: 0,
+            letterSpacing: "0.3px",
+          }}>
+            bot
+          </span>
+        ) : null}
+        <span style={{ fontFamily: MONO_FONT, fontSize: 11, color: sc.text, flexShrink: 0 }}>
+          #{item.githubPrNumber}
+        </span>
+        <span style={{
+          fontSize: 12,
+          fontWeight: 600,
+          color: COLORS.textPrimary,
+          overflow: "hidden",
+          textOverflow: "ellipsis",
+          whiteSpace: "nowrap",
+          fontFamily: SANS_FONT,
+          flex: 1,
+          minWidth: 0,
+        }}>
+          {item.title}
+        </span>
+        {ci ? (
+          <span title={ci.title} style={{ display: "inline-flex", flexShrink: 0 }}>
+            {linkedPr?.checksStatus === "passing" ? (
+              <CheckCircle size={14} weight="fill" style={{ color: "#4ADE80" }} />
+            ) : linkedPr?.checksStatus === "failing" ? (
+              <XCircle size={14} weight="fill" style={{ color: "#EF4444" }} />
+            ) : ciRunning ? (
+              <PrCiRunningIndicator color="#FBBF24" size={14} />
+            ) : null}
+          </span>
+        ) : null}
+        {ago ? (
+          <span style={{ fontFamily: MONO_FONT, fontSize: 10, color: COLORS.textDim, flexShrink: 0 }}>
+            {ago}
+          </span>
+        ) : null}
+        {item.commentCount > 0 ? (
+          <span style={{ display: "inline-flex", alignItems: "center", gap: 3, flexShrink: 0, color: COLORS.textDim }}>
+            <ChatText size={12} />
+            <span style={{ fontFamily: MONO_FONT, fontSize: 10 }}>{item.commentCount}</span>
+          </span>
+        ) : null}
+      </div>
+      {/* Row 1.5: labels */}
+      {visibleLabels.length > 0 ? (
+        <div style={{ display: "flex", alignItems: "center", gap: 4, paddingLeft: 30, flexWrap: "wrap" }}>
+          {visibleLabels.map((label) => {
+            const bg = `#${label.color}`;
+            const textColor = labelTextColor(label.color);
+            return (
+              <span
+                key={label.name}
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  padding: "1px 8px",
+                  fontSize: 10,
+                  fontWeight: 600,
+                  fontFamily: SANS_FONT,
+                  color: textColor,
+                  background: bg,
+                  borderRadius: 10,
+                  lineHeight: "16px",
+                }}
+              >
+                {label.name}
+              </span>
+            );
+          })}
+          {overflowCount > 0 ? (
+            <span style={{ fontSize: 10, fontFamily: SANS_FONT, color: COLORS.textDim }}>
+              +{overflowCount}
+            </span>
+          ) : null}
+        </div>
+      ) : null}
+      {/* Row 2: branch info */}
+      {item.baseBranch && item.headBranch ? (
+        <div style={{ display: "flex", alignItems: "center", gap: 4, paddingLeft: 30, fontFamily: MONO_FONT, fontSize: 10, color: COLORS.textDim }}>
+          <span>{item.baseBranch}</span>
+          <span style={{ color: COLORS.textMuted }}>←</span>
+          <span style={{ color: COLORS.textMuted, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.headBranch}</span>
+        </div>
+      ) : null}
+      {/* Row 3: inline stats */}
+      <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 6, paddingLeft: 30 }}>
+        <span style={stateBadgeStyle(item)}>{item.state}</span>
+        {adeKindBadge(item.adeKind) ? <span style={adeKindBadge(item.adeKind)!}>{item.adeKind}</span> : null}
+        {item.scope === "external" ? (
+          <span style={{ fontFamily: MONO_FONT, fontSize: 10, color: COLORS.textDim }}>
+            {item.repoOwner}/{item.repoName}
+          </span>
+        ) : null}
+        {item.linkedLaneName ? (
+          <span style={{ ...inlineBadge(COLORS.textSecondary), fontSize: 10, padding: "2px 7px", borderRadius: 5 }}>
+            {item.linkedLaneName}
+          </span>
+        ) : (
+          <span style={{ display: "inline-flex", alignItems: "center", padding: "2px 7px", fontSize: 10, fontWeight: 600, fontFamily: SANS_FONT, color: "#FBBF24", background: "rgba(245,158,11,0.10)", border: "1px solid rgba(245,158,11,0.18)", borderRadius: 5 }}>
+            unmapped
+          </span>
+        )}
+        {review ? (
+          <span style={{ display: "inline-flex", alignItems: "center", padding: "2px 6px", fontSize: 10, fontWeight: 500, fontFamily: SANS_FONT, color: review.color, background: `${review.color}10`, borderRadius: 4 }}>
+            {review.label}
+          </span>
+        ) : null}
+        {linkedPr ? (
+          <span style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 10, fontFamily: MONO_FONT }}>
+            <span style={{ color: COLORS.success }}>+{linkedPr.additions}</span>
+            <span style={{ color: COLORS.danger }}>-{linkedPr.deletions}</span>
+          </span>
+        ) : null}
+        {item.cleanupState === "required" ? (
+          <span style={{ ...inlineBadge(COLORS.warning), fontSize: 10, padding: "2px 7px", borderRadius: 5 }}>cleanup</span>
+        ) : null}
+        {item.adeKind === "queue" && item.linkedGroupId && onOpenQueueView ? (
+          <span
+            role="button"
+            tabIndex={0}
+            onClick={(event) => {
+              event.stopPropagation();
+              onOpenQueueView(item.linkedGroupId!);
+            }}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" || event.key === " ") {
+                event.preventDefault();
+                event.stopPropagation();
+                onOpenQueueView(item.linkedGroupId!);
+              }
+            }}
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              padding: "2px 7px",
+              fontSize: 10,
+              fontWeight: 600,
+              fontFamily: SANS_FONT,
+              color: COLORS.info,
+              background: "rgba(59,130,246,0.10)",
+              border: "1px solid rgba(59,130,246,0.18)",
+              borderRadius: 5,
+              cursor: "pointer",
+            }}
+            title="Open queue workflow"
+          >
+            open queue
+          </span>
+        ) : null}
+        <span
+          role="link"
+          tabIndex={0}
+          onClick={(e) => { e.stopPropagation(); void window.ade.app.openExternal(item.githubUrl); }}
+          onKeyDown={(e) => { if (e.key === "Enter") { e.stopPropagation(); void window.ade.app.openExternal(item.githubUrl); } }}
+          style={{ display: "inline-flex", alignItems: "center", marginLeft: "auto", padding: 0, cursor: "pointer", color: COLORS.textDim, transition: "color 100ms ease" }}
+          title="Open on GitHub"
+          onMouseEnter={(e) => { e.currentTarget.style.color = COLORS.textSecondary; }}
+          onMouseLeave={(e) => { e.currentTarget.style.color = COLORS.textDim; }}
+        >
+          <ArrowSquareOut size={13} />
+        </span>
+      </div>
+    </button>
+  );
+}
+
+/* ---- Virtual list for GitHub PR sidebar (activated above VIRTUALIZE_AT) ---- */
+function GitHubTabVirtualList({
+  parentRef,
+  items,
+  selectedItemId,
+  prsByIdMap,
+  onSelect,
+  onOpenQueueView,
+}: {
+  parentRef: React.RefObject<HTMLDivElement | null>;
+  items: GitHubPrListItem[];
+  selectedItemId: string | null;
+  prsByIdMap: Map<string, PrSummary>;
+  onSelect: (item: GitHubPrListItem) => void;
+  onOpenQueueView?: (groupId: string) => void;
+}) {
+  const virtualizer = useVirtualizer({
+    count: items.length,
+    getScrollElement: () => parentRef.current,
+    estimateSize: () => 108,
+    overscan: 6,
+  });
+  return (
+    <div
+      data-testid="pr-github-list-virtual"
+      style={{ height: virtualizer.getTotalSize(), position: "relative" }}
+    >
+      {virtualizer.getVirtualItems().map((virtualRow) => {
+        const item = items[virtualRow.index]!;
+        return (
+          <div
+            key={item.id}
+            data-index={virtualRow.index}
+            ref={virtualizer.measureElement}
+            style={{
+              position: "absolute",
+              top: 0,
+              left: 0,
+              width: "100%",
+              transform: `translateY(${virtualRow.start}px)`,
+            }}
+          >
+            <GitHubTabPrRow
+              item={item}
+              selected={item.id === selectedItemId}
+              linkedPr={item.linkedPrId ? prsByIdMap.get(item.linkedPrId) ?? null : null}
+              onSelect={onSelect}
+              onOpenQueueView={onOpenQueueView}
+            />
+          </div>
+        );
+      })}
     </div>
   );
 }

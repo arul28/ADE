@@ -56,6 +56,7 @@ import {
   resolvePathWithinRoot,
 } from "../shared/utils";
 import type { EpisodicSummaryService } from "../memory/episodicSummaryService";
+import { DEFAULT_FLUSH_PROMPT } from "../memory/compactionFlushPrompt";
 import {
   createDefaultComputerUsePolicy,
   normalizeComputerUsePolicy,
@@ -69,6 +70,7 @@ import type {
   AgentChatCodexConfigSource,
   AgentChatCodexSandbox,
   AgentChatCreateArgs,
+  AgentChatDeleteArgs,
   AgentChatDisposeArgs,
   AgentChatEditSteerArgs,
   AgentChatExecutionMode,
@@ -350,6 +352,16 @@ type ClaudeRuntime = {
   pauseIdleWatchdog?: (() => void) | null;
   /** Resume the active-turn idle watchdog after the blocking wait finishes. */
   resumeIdleWatchdog?: (() => void) | null;
+  /**
+   * Set while the SDK is running its auto-compaction flow. During compaction
+   * the PreCompact hook nudges the model to persist memories via MCP tools,
+   * which would normally surface an approval prompt. Auto-compaction runs
+   * without a user present, so we bypass MCP approvals while this is true.
+   * Reset by a timeout since the SDK does not emit a PostCompact signal.
+   */
+  compactionInProgress?: boolean;
+  /** Timer used to clear compactionInProgress after a reasonable window. */
+  compactionResetTimer?: ReturnType<typeof setTimeout> | null;
 };
 
 type PendingOpenCodeApproval = {
@@ -714,6 +726,8 @@ type ManagedChatSession = {
   preview: string | null;
   closed: boolean;
   endedNotified: boolean;
+  /** Set when deleteSession begins — persistence paths bail to avoid re-creating deleted files. */
+  deleted: boolean;
   ctoSessionStartedAt: string | null;
   pendingReconstructionContext: string | null;
   autoTitleSeed: string | null;
@@ -3238,10 +3252,15 @@ export function createAgentChatService(args: {
     // Surface approval prompts for non-bypass permission modes so the user can
     // allow or deny individual tool calls (matching the opencode runtime pattern).
     const effectivePermMode = managed.session.claudePermissionMode ?? "default";
-    if (claudeToolNeedsApproval(toolName, input, effectivePermMode)) {
+    const normalizedToolName = normalizeToolNameForApproval(toolName);
+    // During auto-compaction the PreCompact hook asks the model to persist
+    // memories via ADE MCP memory tools. No user is present to approve, so
+    // only those specific tools are auto-allowed — not every MCP tool.
+    const bypassForCompaction = runtime.compactionInProgress === true
+      && normalizedToolName.startsWith("mcp_ade_memory_");
+    if (!bypassForCompaction && claudeToolNeedsApproval(toolName, input, effectivePermMode)) {
       // Check session-wide overrides — user already said "Allow for Session" for this tool
-      const normalizedForOverride = normalizeToolNameForApproval(toolName);
-      if (runtime.approvalOverrides.has(normalizedForOverride)) {
+      if (runtime.approvalOverrides.has(normalizedToolName)) {
         return { behavior: "allow", updatedInput: input };
       }
 
@@ -3280,7 +3299,7 @@ export function createAgentChatService(args: {
       };
 
       emitPendingInputRequest(managed, request, {
-        kind: normalizedForOverride.includes("bash") ? "command" : "file_change",
+        kind: normalizedToolName.includes("bash") ? "command" : "file_change",
         description,
         detail: { tool: toolName, ...(sdkOptions?.blockedPath ? { blockedPath: sdkOptions.blockedPath } : {}) },
       });
@@ -3298,7 +3317,7 @@ export function createAgentChatService(args: {
 
       const approved = response.decision === "accept" || response.decision === "accept_for_session";
       if (response.decision === "accept_for_session") {
-        runtime.approvalOverrides.add(normalizedForOverride);
+        runtime.approvalOverrides.add(normalizedToolName);
       }
       if (approved) {
         return {
@@ -4307,6 +4326,7 @@ export function createAgentChatService(args: {
     managed: ManagedChatSession,
     args: { stage: "initial" | "final"; latestUserText?: string | null; summary?: string | null }
   ): Promise<void> => {
+    if (managed.deleted) return;
     const config = resolveChatConfig();
     if (!config.autoTitleEnabled) return;
     if (managed.manuallyNamed) return;
@@ -4805,7 +4825,47 @@ export function createAgentChatService(args: {
 
   const metadataPathFor = (sessionId: string): string => path.join(chatSessionsDir, `${sessionId}.json`);
 
+  const deletePersistedChatFile = (filePath: string | null | undefined): void => {
+    const trimmed = typeof filePath === "string" ? filePath.trim() : "";
+    if (!trimmed.length) return;
+    const resolvedPath = path.resolve(trimmed);
+    // Resolve symlinks on the target and both roots before comparing, so a
+    // symlink placed inside the chat dir cannot redirect rmSync outside.
+    const safeRealpath = (p: string): string | null => {
+      try { return fs.realpathSync(p); } catch { return null; }
+    };
+    const realTarget = safeRealpath(resolvedPath);
+    // Missing target is safe to skip — nothing to delete.
+    if (!realTarget) return;
+    const realAdeDir = safeRealpath(layout.adeDir);
+    const realTranscriptRoot = safeRealpath(path.resolve(transcriptsDir));
+    const isWithin = (root: string | null): boolean => {
+      if (!root) return false;
+      const rel = path.relative(root, realTarget);
+      return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
+    };
+    if (!isWithin(realAdeDir) && !isWithin(realTranscriptRoot)) {
+      logger.warn("agent_chat.delete_skipped_path_outside_ade", {
+        filePath: resolvedPath,
+        realTarget,
+      });
+      return;
+    }
+    try {
+      fs.rmSync(realTarget, { force: true });
+    } catch (error) {
+      if (isEnoentError(error)) return;
+      logger.warn("agent_chat.delete_file_failed", {
+        filePath: realTarget,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
+
   const persistChatState = (managed: ManagedChatSession): void => {
+    // Tombstoned sessions (deleted while async work was in flight) must not be
+    // re-persisted — otherwise the file recreates after deleteSession removed it.
+    if (managed.deleted) return;
     // When runtime has been torn down (null) but NOT intentionally invalidated,
     // fall back to the last persisted state so that provider session ids and
     // lastLaneDirectiveKey survive a transient teardown (e.g. app backgrounding).
@@ -5627,6 +5687,10 @@ export function createAgentChatService(args: {
       // Mark interrupted so the streaming catch block takes the graceful path
       managed.runtime.interrupted = true;
       cancelClaudeWarmup(managed, managed.runtime, "teardown");
+      if (managed.runtime.compactionResetTimer) {
+        clearTimeout(managed.runtime.compactionResetTimer);
+        managed.runtime.compactionResetTimer = null;
+      }
       try { managed.runtime.v2Session?.close(); } catch { /* ignore */ }
       managed.runtime.v2Session = null;
       managed.runtime.v2WarmupDone = null;
@@ -5724,6 +5788,7 @@ export function createAgentChatService(args: {
     managed: ManagedChatSession,
     deterministicSummary: string | null
   ): Promise<void> => {
+    if (managed.deleted) return;
     const config = resolveChatConfig();
     if (!config.summaryEnabled) return;
     if (managed.summaryInFlight) return;
@@ -5974,6 +6039,7 @@ export function createAgentChatService(args: {
       preview: row.lastOutputPreview ?? null,
       closed: row.status !== "running",
       endedNotified: row.status !== "running",
+      deleted: false,
       ctoSessionStartedAt: row.status === "running" ? row.startedAt : null,
       pendingReconstructionContext: null,
       autoTitleSeed: null,
@@ -7471,12 +7537,23 @@ export function createAgentChatService(args: {
               return event.properties.sessionID ?? null;
             case "command.executed":
               return event.properties.sessionID;
+            case "session.compacted":
+              return event.properties.sessionID;
             default:
               return null;
           }
         };
 
         if (resolveSessionId() !== runtime.handle.sessionId) {
+          continue;
+        }
+
+        if (event.type === "session.compacted") {
+          emitChatEvent(managed, {
+            type: "context_compact",
+            trigger: "auto",
+            turnId,
+          });
           continue;
         }
 
@@ -8382,6 +8459,20 @@ export function createAgentChatService(args: {
       runtime.itemTurnIdByItemId.delete(itemId);
       return completedTurnId;
     })();
+
+    if (itemType === "contextCompaction") {
+      // Codex emits contextCompaction via item/started + item/completed.
+      // Emit the boundary event once, on completion, so the UI badge matches
+      // Claude's post-compaction behavior.
+      if (eventKind === "completed") {
+        emitChatEvent(managed, {
+          type: "context_compact",
+          trigger: "auto",
+          turnId,
+        });
+      }
+      return;
+    }
 
     if (itemType === "commandExecution") {
       emitChatEvent(managed, {
@@ -9519,6 +9610,36 @@ export function createAgentChatService(args: {
       }
       opts.canUseTool = buildClaudeCanUseTool(runtime, managed) as any;
 
+      // PreCompact hook: nudge the model to save durable discoveries into
+      // ADE memory before the SDK compacts context. Runs inside the SDK's
+      // compaction flow so the text never surfaces as a visible user turn.
+      //
+      // Mark the runtime as in-compaction so the canUseTool gate auto-allows
+      // MCP memory tools the model calls in response to the flush prompt.
+      // Auto-compaction runs unattended; surfacing an approval prompt would
+      // hang the flow waiting on a user who may not be present. Flag is
+      // cleared by a timer since the SDK does not emit a PostCompact signal.
+      (opts as any).hooks = {
+        PreCompact: [
+          {
+            hooks: [
+              async () => {
+                runtime.compactionInProgress = true;
+                if (runtime.compactionResetTimer) clearTimeout(runtime.compactionResetTimer);
+                runtime.compactionResetTimer = setTimeout(() => {
+                  runtime.compactionInProgress = false;
+                  runtime.compactionResetTimer = null;
+                }, 60_000);
+                return {
+                  continue: true,
+                  systemMessage: DEFAULT_FLUSH_PROMPT,
+                };
+              },
+            ],
+          },
+        ],
+      };
+
       // Handle MCP elicitation requests (form input or OAuth URL flows).
       (opts as any).onElicitation = async (
         elicitReq: { serverName: string; message: string; mode?: "form" | "url"; url?: string; elicitationId?: string; requestedSchema?: Record<string, unknown> },
@@ -10171,6 +10292,7 @@ export function createAgentChatService(args: {
       preview: null,
       closed: false,
       endedNotified: false,
+      deleted: false,
       lastActivitySignature: null,
       bufferedReasoning: null,
       ctoSessionStartedAt: null,
@@ -10526,6 +10648,7 @@ export function createAgentChatService(args: {
       preview: null,
       closed: false,
       endedNotified: false,
+      deleted: false,
       ctoSessionStartedAt: identityKey === "cto" ? startedAt : null,
       pendingReconstructionContext: null,
       autoTitleSeed: null,
@@ -13102,6 +13225,79 @@ export function createAgentChatService(args: {
     });
   };
 
+  const deleteSession = async ({ sessionId }: AgentChatDeleteArgs): Promise<void> => {
+    const trimmedSessionId = typeof sessionId === "string" ? sessionId.trim() : "";
+    if (!trimmedSessionId.length) {
+      throw new Error("Chat session id is required.");
+    }
+
+    const existing = sessionService.get(trimmedSessionId);
+    if (!existing) {
+      throw new Error(`Chat session '${trimmedSessionId}' was not found.`);
+    }
+    if (!isChatToolType(existing.toolType)) {
+      throw new Error(`Session '${trimmedSessionId}' is not an agent chat session.`);
+    }
+
+    // Tombstone the session before any async work so in-flight persistence
+    // (auto-title, summary, chat state writes) bails instead of recreating files.
+    // We do NOT set endedNotified here — dispose() still needs to run finishSession
+    // so sessionService.end fires.
+    const tombstoned = managedSessions.get(trimmedSessionId);
+    if (tombstoned) {
+      tombstoned.deleted = true;
+    }
+
+    if (existing.status === "running") {
+      await dispose({ sessionId: trimmedSessionId });
+    }
+
+    const current = sessionService.get(trimmedSessionId);
+    if (!current) return;
+
+    const activeCollector = sessionTurnCollectors.get(trimmedSessionId);
+    if (activeCollector) {
+      if (activeCollector.timeout) {
+        clearTimeout(activeCollector.timeout);
+      }
+      sessionTurnCollectors.delete(trimmedSessionId);
+      activeCollector.reject(new Error(`Chat session '${trimmedSessionId}' was deleted.`));
+    }
+
+    const managed = managedSessions.get(trimmedSessionId);
+    if (managed) {
+      // Resolve any outstanding input waiters (plan approvals, questions, etc.)
+      // so callers awaiting them unblock with a cancellation instead of hanging
+      // forever once the session is gone.
+      for (const pending of managed.localPendingInputs.values()) {
+        pending.resolve({ decision: "cancel" });
+      }
+      managed.localPendingInputs.clear();
+      managed.deleted = true;
+      managed.closed = true;
+      managed.endedNotified = true;
+      managed.ctoSessionStartedAt = null;
+      clearSubagentSnapshots(trimmedSessionId);
+      teardownRuntime(managed, "ended_session");
+      managedSessions.delete(trimmedSessionId);
+    } else {
+      clearSubagentSnapshots(trimmedSessionId);
+    }
+
+    const persistedMetadataPath = metadataPathFor(trimmedSessionId);
+    const dedicatedTranscriptPath = path.join(chatTranscriptsDir, `${trimmedSessionId}.jsonl`);
+    const transcriptPaths = new Set<string>([
+      persistedMetadataPath,
+      dedicatedTranscriptPath,
+      current.transcriptPath,
+    ]);
+    for (const filePath of transcriptPaths) {
+      deletePersistedChatFile(filePath);
+    }
+
+    sessionService.deleteSession(trimmedSessionId);
+  };
+
   const disposeAll = async (): Promise<void> => {
     clearInterval(sessionCleanupTimer);
     for (const sessionId of [...managedSessions.keys()]) {
@@ -13120,8 +13316,8 @@ export function createAgentChatService(args: {
       if (
         managed.runtime
         && !managed.closed
-        // Keep Claude sessions warm until the user explicitly ends them.
-        && managed.runtime.kind !== "claude"
+        && managed.session.status === "idle"
+        && !hasLivePendingInput(managed)
         && now - managed.lastActivityTimestamp > SESSION_INACTIVITY_TIMEOUT_MS
       ) {
         teardownRuntime(managed, "idle_ttl");
@@ -13138,9 +13334,8 @@ export function createAgentChatService(args: {
     for (const [id, managed] of managedSessions) {
       if (id === excludeSessionId) continue;
       if (!managed.runtime) continue;
-      // Claude V2 runtimes keep their in-memory session state and should not be
-      // evicted behind the user's back.
-      if (managed.runtime.kind === "claude") continue;
+      if (managed.session.status !== "idle") continue;
+      if (hasLivePendingInput(managed)) continue;
       if (managed.lastActivityTimestamp < oldestTimestamp) {
         oldestTimestamp = managed.lastActivityTimestamp;
         oldest = managed;
@@ -13897,6 +14092,7 @@ export function createAgentChatService(args: {
     getSlashCommands,
     codexFuzzyFileSearch,
     dispose,
+    deleteSession,
     disposeAll,
     updateSession,
     warmupModel,

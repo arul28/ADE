@@ -2,15 +2,23 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { resolveExecutableFromKnownLocations } from "../ai/cliExecutableResolver";
 import { resolveDesktopAdeMcpLaunch, resolveRepoRuntimeRoot } from "./adeMcpLaunch";
 
 const originalResourcesPath = process.resourcesPath;
+const originalExecPath = process.execPath;
+const originalPath = process.env.PATH;
 
 afterEach(() => {
   Object.defineProperty(process, "resourcesPath", {
     configurable: true,
     value: originalResourcesPath,
   });
+  Object.defineProperty(process, "execPath", {
+    configurable: true,
+    value: originalExecPath,
+  });
+  process.env.PATH = originalPath;
 });
 
 describe("resolveDesktopAdeMcpLaunch", () => {
@@ -29,7 +37,7 @@ describe("resolveDesktopAdeMcpLaunch", () => {
     });
 
     expect(launch.mode).toBe("bundled_proxy");
-    expect(launch.command).toBe(process.execPath);
+    expect(launch.command).toBe(resolveExecutableFromKnownLocations("node")?.path ?? process.argv0 ?? process.execPath);
     expect(launch.cmdArgs).toEqual([
       path.resolve(proxyEntry),
       "--project-root",
@@ -313,6 +321,33 @@ describe("resolveDesktopAdeMcpLaunch", () => {
 
     expect(launch.mode).toBe("bundled_proxy");
     expect(launch.runtimeRoot).toBeNull();
+  });
+
+  it("falls back to a resolvable node executable when process.execPath is stale", () => {
+    const tempBinDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-launch-node-bin-"));
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-launch-project-stale-"));
+    const workspaceRoot = path.join(projectRoot, "workspace");
+    const proxyEntry = path.join(projectRoot, "dist", "main", "adeMcpProxy.cjs");
+    const fakeNode = path.join(tempBinDir, "node");
+
+    fs.mkdirSync(workspaceRoot, { recursive: true });
+    fs.mkdirSync(path.dirname(proxyEntry), { recursive: true });
+    fs.writeFileSync(proxyEntry, "module.exports = {};\n", "utf8");
+    fs.writeFileSync(fakeNode, "#!/bin/sh\nexit 0\n", { encoding: "utf8", mode: 0o755 });
+    Object.defineProperty(process, "execPath", {
+      configurable: true,
+      value: path.join(tempBinDir, "missing-node"),
+    });
+    process.env.PATH = `${tempBinDir}${path.delimiter}${originalPath ?? ""}`;
+
+    const launch = resolveDesktopAdeMcpLaunch({
+      projectRoot,
+      workspaceRoot,
+      bundledProxyPath: proxyEntry,
+    });
+
+    expect(launch.mode).toBe("bundled_proxy");
+    expect(launch.command).toBe(fakeNode);
   });
 });
 

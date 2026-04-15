@@ -120,6 +120,7 @@ export type CreateChildLaneArgs = {
   folder?: string;
   missionId?: string | null;
   laneRole?: MissionLaneRole | null;
+  baseBranchRef?: string;
 };
 
 export type CreateLaneFromUnstagedArgs = {
