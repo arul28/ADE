@@ -3172,8 +3172,9 @@ describe("aiOrchestratorService", () => {
         ["2000-01-01T00:00:00.000Z", "2000-01-01T00:00:00.000Z", attempt.id]
       );
 
-      const sweep = await fixture.aiOrchestratorService.runHealthSweep("test");
-      expect(sweep.staleRecovered).toBeGreaterThanOrEqual(1);
+      // The explicit sweep may do the recovery itself, or a background startup/interval
+      // sweep may have already reconciled the stale attempt before this call returns.
+      await fixture.aiOrchestratorService.runHealthSweep("test");
 
       const refreshedGraph = fixture.orchestratorService.getRunGraph({ runId });
       const refreshedAttempt = refreshedGraph.attempts.find((entry) => entry.id === attempt.id);

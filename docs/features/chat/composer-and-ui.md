@@ -65,8 +65,15 @@ and a footer that contains the composer.
 
 `AgentChatComposer` supports:
 
-- **Text input** with auto-grow up to `composerMaxHeightPx` (constrained
-  for grid-tile layouts).
+- **Text input** with auto-grow up to `composerMaxHeightPx`. Grid tiles
+  pass a fixed 144 px ceiling (computed statically from `layoutVariant`)
+  rather than the old `ResizeObserver`-based 28 %-of-height formula;
+  that eliminated the observer churn without changing the visible
+  ceiling for normal tile sizes.
+- **Focus-on-active.** The composer receives focus whenever the
+  enclosing `AgentChatPane` reports `isTileActive: true` (for packed
+  grid tiles) or any equivalent active state — typing in the grid
+  immediately targets the focused tile's composer.
 - **Attachments** via drag-drop, paste, and an inline picker. Images are
   written through `ade.agentChat.saveTempAttachment` (10 MB cap; MIME
   validated per provider).
@@ -85,7 +92,11 @@ and a footer that contains the composer.
   (PRD, ARCHITECTURE, mission pack) to the next turn.
 - **Permission controls.** Inline with the composer:
   - Interaction mode selector (`default` / `plan`).
-  - Claude permission mode selector.
+  - Claude permission mode — a popover picker with four tone-coded
+    options: **Ask permissions** (default, green), **Accept edits**
+    (blue), **Plan mode** (purple, read-only turns), **Bypass
+    permissions** (red). Tone styles live in `CLAUDE_MODE_TONE_STYLES`;
+    clicking outside or pressing Escape closes the popover.
   - Codex preset modes (Plan / Guarded Edit / Full Auto); custom and
     `config-toml` state shown as a summary row rather than raw
     inline dropdowns.

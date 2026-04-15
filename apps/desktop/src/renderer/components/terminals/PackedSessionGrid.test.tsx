@@ -230,8 +230,51 @@ describe("PackedSessionGrid", () => {
     const lastCall = layoutSetMock.mock.calls.at(-1);
     expect(lastCall?.[0]).toBe("work:grid:test");
     expect(lastCall?.[1]).toMatchObject({
-      "tile-1:col": 36,
-      "tile-1:row": 3,
+      "tile-1:colStart": 1,
+      "tile-1:colSpan": 13,
+      "tile-1:col": 13,
+      "tile-2:colStart": 14,
+      "tile-2:colSpan": 11,
     });
+  });
+
+  it("keeps the dragged edge anchored when resizing from the west", async () => {
+    const { container } = renderGrid(2, 300, 220);
+
+    await act(async () => {
+      await vi.runAllTimersAsync();
+    });
+    triggerResizeObservers();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(150);
+    });
+    layoutSetMock.mockClear();
+
+    const tile = container.querySelector('[data-grid-tile-id="tile-2"]');
+    const handle = container.querySelector('[data-grid-tile-id="tile-2"] [data-grid-resize-handle="w"]');
+    expect(tile).toBeTruthy();
+    expect(handle).toBeTruthy();
+    expect(tile?.getAttribute("data-grid-col-start")).toBe("13");
+    expect(tile?.getAttribute("data-grid-col-end")).toBe("24");
+
+    fireEvent.pointerDown(handle!, { clientX: 0, clientY: 0 });
+    fireEvent.pointerMove(window, { clientX: -42, clientY: 0 });
+    fireEvent.pointerUp(window);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(150);
+    });
+
+    expect(layoutSetMock).toHaveBeenCalledTimes(1);
+    const lastCall = layoutSetMock.mock.calls.at(-1);
+    expect(lastCall?.[1]).toMatchObject({
+      "tile-1:colSpan": 11,
+      "tile-1:col": 11,
+      "tile-2:colStart": 12,
+      "tile-2:colSpan": 13,
+      "tile-2:col": 13,
+    });
+    expect(container.querySelector('[data-grid-tile-id="tile-2"]')?.getAttribute("data-grid-col-start")).toBe("12");
+    expect(container.querySelector('[data-grid-tile-id="tile-2"]')?.getAttribute("data-grid-col-end")).toBe("24");
   });
 });

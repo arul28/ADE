@@ -172,7 +172,7 @@ import {
   type DiscoveredLocalModelEntry,
   type OpenCodeSessionHandle,
 } from "../opencode/openCodeRuntime";
-import { probeOpenCodeProviderInventory } from "../opencode/openCodeInventory";
+import { peekOpenCodeInventoryCache, probeOpenCodeProviderInventory } from "../opencode/openCodeInventory";
 import { inspectLocalProvider, type DiscoveredLocalModel } from "../ai/localModelDiscovery";
 import { resolveAdeMcpServerLaunch, resolveOpenCodeRuntimeRoot } from "../orchestrator/providerOrchestratorAdapter";
 import type { McpServer, PermissionOption, RequestPermissionRequest, RequestPermissionResponse } from "@agentclientprotocol/sdk";
@@ -893,7 +893,8 @@ const DEFAULT_COLLABORATION_MODES_LIST_TIMEOUT_MS = 1_500;
 // stream events are emitted while the SDK waits for tool results. The user
 // can always interrupt manually if something is genuinely stuck.
 const SESSION_INACTIVITY_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
-const SESSION_CLEANUP_INTERVAL_MS = 60 * 1000; // check every 60 seconds
+const OPENCODE_SESSION_INACTIVITY_TIMEOUT_MS = 60 * 1000; // 1 minute
+const SESSION_CLEANUP_INTERVAL_MS = 15 * 1000; // check every 15 seconds
 const MAX_CONCURRENT_ACTIVE_RUNTIMES = 5;
 const MAX_RECENT_CONVERSATION_ENTRIES = 50;
 const MAX_SESSION_MAP_ENTRIES = 200;
@@ -4862,6 +4863,16 @@ export function createAgentChatService(args: {
     }
   };
 
+  const rejectActiveSessionTurnCollector = (sessionId: string, message: string): void => {
+    const activeCollector = sessionTurnCollectors.get(sessionId);
+    if (!activeCollector) return;
+    if (activeCollector.timeout) {
+      clearTimeout(activeCollector.timeout);
+    }
+    sessionTurnCollectors.delete(sessionId);
+    activeCollector.reject(new Error(message));
+  };
+
   const persistChatState = (managed: ManagedChatSession): void => {
     // Tombstoned sessions (deleted while async work was in flight) must not be
     // re-persisted — otherwise the file recreates after deleteSession removed it.
@@ -5668,7 +5679,7 @@ export function createAgentChatService(args: {
   /** Tear down the active runtime, releasing all resources and cancelling pending approvals. */
   const teardownRuntime = (
     managed: ManagedChatSession,
-    openCodeReason: "handle_close" | "idle_ttl" | "ended_session" | "model_switch" | "project_close" | "budget_eviction" | "paused_run" | "shutdown" = "handle_close",
+    openCodeReason: "handle_close" | "idle_ttl" | "ended_session" | "model_switch" | "project_close" | "budget_eviction" | "pool_compaction" | "paused_run" | "shutdown" = "handle_close",
   ): void => {
     flushBufferedReasoning(managed);
     flushBufferedText(managed);
@@ -5782,6 +5793,13 @@ export function createAgentChatService(args: {
     managed.endedNotified = false;
     sessionService.reopen(managed.session.id);
     persistChatState(managed);
+  };
+
+  const getSessionInactivityTimeoutMs = (managed: ManagedChatSession): number => {
+    if (managed.runtime?.kind === "opencode") {
+      return OPENCODE_SESSION_INACTIVITY_TIMEOUT_MS;
+    }
+    return SESSION_INACTIVITY_TIMEOUT_MS;
   };
 
   const maybeGenerateSessionSummary = async (
@@ -13050,9 +13068,13 @@ export function createAgentChatService(args: {
     });
   };
 
-  const availableModelsRequests = new Map<AgentChatProvider, Promise<AgentChatModelInfo[]>>();
+  const availableModelsRequests = new Map<string, Promise<AgentChatModelInfo[]>>();
 
-  const loadAvailableModels = async (provider: AgentChatProvider): Promise<AgentChatModelInfo[]> => {
+  const loadAvailableModels = async (args: {
+    provider: AgentChatProvider;
+    activateRuntime?: boolean;
+  }): Promise<AgentChatModelInfo[]> => {
+    const provider = args.provider;
     if (provider === "codex") {
       return listCodexModelsFromAppServer();
     }
@@ -13082,12 +13104,37 @@ export function createAgentChatService(args: {
 
     if (provider === "opencode") {
       try {
-        const { modelIds, error } = await probeOpenCodeProviderInventory({
-          projectRoot,
-          projectConfig: projectConfigService.get().effective,
-          logger,
-          force: false,
-        });
+        const effectiveConfig = projectConfigService.get().effective;
+        let modelIds: string[];
+        let error: string | null;
+        if (args.activateRuntime) {
+          const inventory = await probeOpenCodeProviderInventory({
+            projectRoot,
+            projectConfig: effectiveConfig,
+            logger,
+            force: false,
+          });
+          modelIds = inventory.modelIds;
+          error = inventory.error;
+        } else {
+          const peeked = peekOpenCodeInventoryCache({
+            projectRoot,
+            projectConfig: effectiveConfig,
+          });
+          if (peeked) {
+            modelIds = peeked.modelIds;
+            error = peeked.error;
+          } else {
+            const inventory = await probeOpenCodeProviderInventory({
+              projectRoot,
+              projectConfig: effectiveConfig,
+              logger,
+              force: false,
+            });
+            modelIds = inventory.modelIds;
+            error = inventory.error;
+          }
+        }
         if (error) {
           logger.warn("agent_chat.opencode_inventory_empty", { error });
         }
@@ -13150,19 +13197,26 @@ export function createAgentChatService(args: {
     return [];
   };
 
-  const getAvailableModels = async ({ provider }: { provider: AgentChatProvider }): Promise<AgentChatModelInfo[]> => {
-    const existingRequest = availableModelsRequests.get(provider);
+  const getAvailableModels = async ({
+    provider,
+    activateRuntime,
+  }: {
+    provider: AgentChatProvider;
+    activateRuntime?: boolean;
+  }): Promise<AgentChatModelInfo[]> => {
+    const requestKey = `${provider}:${activateRuntime === true ? "active" : "passive"}`;
+    const existingRequest = availableModelsRequests.get(requestKey);
     if (existingRequest) {
       return existingRequest;
     }
 
-    const request = loadAvailableModels(provider);
-    availableModelsRequests.set(provider, request);
+    const request = loadAvailableModels({ provider, activateRuntime });
+    availableModelsRequests.set(requestKey, request);
     try {
       return await request;
     } finally {
-      if (availableModelsRequests.get(provider) === request) {
-        availableModelsRequests.delete(provider);
+      if (availableModelsRequests.get(requestKey) === request) {
+        availableModelsRequests.delete(requestKey);
       }
     }
   };
@@ -13255,14 +13309,7 @@ export function createAgentChatService(args: {
     const current = sessionService.get(trimmedSessionId);
     if (!current) return;
 
-    const activeCollector = sessionTurnCollectors.get(trimmedSessionId);
-    if (activeCollector) {
-      if (activeCollector.timeout) {
-        clearTimeout(activeCollector.timeout);
-      }
-      sessionTurnCollectors.delete(trimmedSessionId);
-      activeCollector.reject(new Error(`Chat session '${trimmedSessionId}' was deleted.`));
-    }
+    rejectActiveSessionTurnCollector(trimmedSessionId, `Chat session '${trimmedSessionId}' was deleted.`);
 
     const managed = managedSessions.get(trimmedSessionId);
     if (managed) {
@@ -13309,6 +13356,30 @@ export function createAgentChatService(args: {
     }
   };
 
+  const forceDisposeAll = (): void => {
+    clearInterval(sessionCleanupTimer);
+    for (const sessionId of [...sessionTurnCollectors.keys()]) {
+      rejectActiveSessionTurnCollector(sessionId, `Chat session '${sessionId}' was closed during shutdown.`);
+    }
+    for (const [sessionId, managed] of managedSessions) {
+      try {
+        managed.deleted = true;
+        clearSubagentSnapshots(sessionId);
+        for (const pending of managed.localPendingInputs.values()) {
+          pending.resolve({ decision: "cancel" });
+        }
+        managed.localPendingInputs.clear();
+        managed.closed = true;
+        managed.endedNotified = true;
+        managed.ctoSessionStartedAt = null;
+        teardownRuntime(managed, "shutdown");
+      } catch {
+        // ignore emergency shutdown failures
+      }
+    }
+    managedSessions.clear();
+  };
+
   // --- Session inactivity cleanup ---
   const sessionCleanupTimer = setInterval(() => {
     const now = Date.now();
@@ -13318,7 +13389,7 @@ export function createAgentChatService(args: {
         && !managed.closed
         && managed.session.status === "idle"
         && !hasLivePendingInput(managed)
-        && now - managed.lastActivityTimestamp > SESSION_INACTIVITY_TIMEOUT_MS
+        && now - managed.lastActivityTimestamp > getSessionInactivityTimeoutMs(managed)
       ) {
         teardownRuntime(managed, "idle_ttl");
       }
@@ -14094,6 +14165,7 @@ export function createAgentChatService(args: {
     dispose,
     deleteSession,
     disposeAll,
+    forceDisposeAll,
     updateSession,
     warmupModel,
     listSubagents,

@@ -464,7 +464,8 @@ describe("AgentChatPane submit recovery", () => {
 
     renderPane(session);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Plan" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Claude permission mode" }));
+    fireEvent.click(await screen.findByRole("option", { name: "Plan mode" }));
 
     await waitFor(() => {
       expect(updateSession).toHaveBeenCalledWith(expect.objectContaining({
@@ -504,8 +505,8 @@ describe("AgentChatPane submit recovery", () => {
 
     renderPane(session);
 
-    const planButton = await screen.findByRole("button", { name: "Plan" });
-    expect(planButton.getAttribute("aria-pressed")).toBe("false");
+    const trigger = await screen.findByRole("button", { name: "Claude permission mode" });
+    expect(trigger.textContent ?? "").not.toContain("Plan mode");
 
     sessions[0] = {
       ...session,
@@ -528,7 +529,7 @@ describe("AgentChatPane submit recovery", () => {
     });
 
     await waitFor(() => {
-      expect(screen.getByRole("button", { name: "Plan" }).getAttribute("aria-pressed")).toBe("true");
+      expect(trigger.textContent ?? "").toContain("Plan mode");
     });
   });
 
@@ -744,7 +745,9 @@ describe("AgentChatPane submit recovery", () => {
       </MemoryRouter>,
     );
 
-    fireEvent.click(await screen.findByRole("button", { name: "Handoff" }));
+    const handoffBtn = await screen.findByRole("button", { name: "Handoff" }) as HTMLButtonElement;
+    await waitFor(() => expect(handoffBtn.disabled).toBe(false));
+    fireEvent.click(handoffBtn);
     fireEvent.click(await screen.findByRole("button", { name: "Create handoff chat" }));
 
     await waitFor(() => {

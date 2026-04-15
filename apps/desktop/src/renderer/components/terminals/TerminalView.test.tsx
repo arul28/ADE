@@ -13,6 +13,8 @@ const mockState = vi.hoisted(() => ({
   lastContextLossHandler: null as (() => void) | null,
   ptyDataListeners: new Set<(event: { ptyId: string; sessionId?: string; data: string }) => void>(),
   ptyExitListeners: new Set<(event: { ptyId: string; sessionId?: string; exitCode: number | null }) => void>(),
+  projectRoot: "/project/a",
+  projectRevision: 0,
   theme: "dark" as const,
   terminalPreferences: {
     fontFamily: "monospace",
@@ -51,9 +53,15 @@ vi.mock("../../state/appStore", () => ({
       lineHeight: number;
       scrollback: number;
     };
+    project: { rootPath: string; name: string } | null;
+    projectRevision: number;
   }) => unknown) => selector({
     theme: mockState.theme,
     terminalPreferences: mockState.terminalPreferences,
+    project: mockState.projectRoot
+      ? { rootPath: mockState.projectRoot, name: "Project" }
+      : null,
+    projectRevision: mockState.projectRevision,
   })),
   DEFAULT_TERMINAL_FONT_FAMILY: MOCK_TERMINAL_FONT_FAMILY,
   DEFAULT_TERMINAL_PREFERENCES: {
@@ -133,7 +141,11 @@ vi.mock("@xterm/addon-webgl", () => ({
 
 vi.mock("@xterm/xterm/css/xterm.css", () => ({}));
 
-import { TerminalView, getTerminalRuntimeSnapshot } from "./TerminalView";
+import {
+  TerminalView,
+  disposeTerminalRuntimesForProjectChange,
+  getTerminalRuntimeSnapshot,
+} from "./TerminalView";
 
 function installWindowAde() {
   (window as any).ade = {
@@ -264,6 +276,10 @@ describe("TerminalView", () => {
     vi.clearAllMocks();
     cleanup();
     installWindowAde();
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      value: "visible",
+    });
     resizeObservers.length = 0;
     mockState.terminalInstances.length = 0;
     mockState.nextFitDims = { cols: 120, rows: 40 };
@@ -271,6 +287,8 @@ describe("TerminalView", () => {
     mockState.lastContextLossHandler = null;
     mockState.ptyDataListeners.clear();
     mockState.ptyExitListeners.clear();
+    mockState.projectRoot = "/project/a";
+    mockState.projectRevision = 0;
     mockState.theme = "dark";
     mockState.terminalPreferences = {
       fontFamily: MOCK_TERMINAL_FONT_FAMILY,
@@ -436,6 +454,65 @@ describe("TerminalView", () => {
     expect(terminal?.dispose).not.toHaveBeenCalled();
   });
 
+  it("drops parked runtimes after switching away and back across projects before remounting", async () => {
+    const view = render(<TerminalView ptyId="pty-switch" sessionId="session-switch" isActive />);
+    await flushAllTimers();
+
+    const readTranscriptTailMock = window.ade.sessions.readTranscriptTail as unknown as { mock: { calls: unknown[][] } };
+    const firstTerminal = mockState.terminalInstances.at(-1) as {
+      dispose: ReturnType<typeof vi.fn>;
+    } | undefined;
+    expect(firstTerminal).toBeTruthy();
+    expect(getTerminalRuntimeSnapshot("session-switch")).not.toBeNull();
+
+    view.unmount();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1_000);
+    });
+    expect(getTerminalRuntimeSnapshot("session-switch")).not.toBeNull();
+
+    mockState.projectRoot = "/project/b";
+    mockState.projectRevision += 1;
+    mockState.projectRoot = "/project/a";
+    mockState.projectRevision += 1;
+
+    render(<TerminalView ptyId="pty-switch" sessionId="session-switch" isActive />);
+    await flushAllTimers();
+
+    const secondTerminal = mockState.terminalInstances.at(-1) as {
+      dispose: ReturnType<typeof vi.fn>;
+    } | undefined;
+    expect(mockState.terminalInstances).toHaveLength(2);
+    expect(secondTerminal).not.toBe(firstTerminal);
+    expect(firstTerminal?.dispose).toHaveBeenCalledTimes(1);
+    expect(readTranscriptTailMock.mock.calls).toHaveLength(2);
+    expect(getTerminalRuntimeSnapshot("session-switch")).not.toBeNull();
+  });
+
+  it("disposes parked runtimes when the project changes without a mounted terminal view", async () => {
+    const view = render(<TerminalView ptyId="pty-background" sessionId="session-background" isActive />);
+    await flushAllTimers();
+
+    const terminal = mockState.terminalInstances.at(-1) as {
+      dispose: ReturnType<typeof vi.fn>;
+    } | undefined;
+    expect(terminal).toBeTruthy();
+    expect(getTerminalRuntimeSnapshot("session-background")).not.toBeNull();
+
+    view.unmount();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1_000);
+    });
+    expect(getTerminalRuntimeSnapshot("session-background")).not.toBeNull();
+
+    mockState.projectRoot = "/project/b";
+    mockState.projectRevision += 1;
+    disposeTerminalRuntimesForProjectChange(mockState.projectRoot, mockState.projectRevision);
+
+    expect(terminal?.dispose).toHaveBeenCalledTimes(1);
+    expect(getTerminalRuntimeSnapshot("session-background")).toBeNull();
+  });
+
   it("writes PTY output into the parked runtime so the terminal state stays current", async () => {
     const firstView = render(<TerminalView ptyId="pty-buffered" sessionId="session-buffered" isActive />);
     await flushAllTimers();
@@ -451,7 +528,9 @@ describe("TerminalView", () => {
     for (const listener of mockState.ptyDataListeners) {
       listener({ ptyId: "pty-buffered", sessionId: "session-buffered", data: "hello from background\n" });
     }
-    await flushAnimationFrame();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(16);
+    });
     // xterm.write is safe on a parked runtime (host is detached but the
     // instance still owns a valid internal buffer). Writing through while
     // parked keeps the terminal state in sync so switching back shows the
@@ -464,5 +543,36 @@ describe("TerminalView", () => {
     // Remount should not duplicate the write — the data was already applied
     // via the parked-runtime path, so no further synchronous flush is needed.
     expect(terminal?.write).not.toHaveBeenCalledWith("hello from background\n");
+  });
+
+  it("uses a timer flush for parked runtimes while the document is hidden", async () => {
+    const rafSpy = vi.spyOn(globalThis, "requestAnimationFrame");
+    const firstView = render(<TerminalView ptyId="pty-hidden" sessionId="session-hidden" isActive />);
+    await flushAllTimers();
+
+    const terminal = mockState.terminalInstances.at(-1) as {
+      write: ReturnType<typeof vi.fn>;
+    } | undefined;
+    expect(terminal).toBeTruthy();
+
+    firstView.unmount();
+    terminal?.write.mockClear();
+    rafSpy.mockClear();
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      value: "hidden",
+    });
+
+    for (const listener of mockState.ptyDataListeners) {
+      listener({ ptyId: "pty-hidden", sessionId: "session-hidden", data: "buffered while hidden\n" });
+    }
+
+    expect(rafSpy).not.toHaveBeenCalled();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(16);
+    });
+
+    expect(terminal?.write).toHaveBeenCalledWith("buffered while hidden\n");
   });
 });

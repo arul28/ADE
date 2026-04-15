@@ -1662,6 +1662,35 @@ if (typeof window !== "undefined" && !(window as any).ade) {
     project: {
       openRepo: resolved(MOCK_PROJECT),
       chooseDirectory: resolvedArg(null),
+      browseDirectories: async (args?: { inputPath?: string }) => {
+        const inputPath =
+          typeof args?.inputPath === "string" && args.inputPath.trim().length > 0
+            ? args.inputPath
+            : "~/";
+        return {
+          inputPath,
+          resolvedPath: "/tmp/mock",
+          directoryPath: "/tmp/mock",
+          parentPath: "/tmp",
+          exactDirectoryPath: "/tmp/mock",
+          openableProjectRoot: "/tmp/mock",
+          entries: [],
+        };
+      },
+      getDetail: resolvedArg({
+        rootPath: "/tmp/mock",
+        isGitRepo: true,
+        branchName: "main",
+        dirtyCount: 0,
+        aheadBehind: null,
+        lastCommit: null,
+        readmeExcerpt: null,
+        languages: [],
+        laneCount: null,
+        lastOpenedAt: null,
+        subdirectoryCount: null,
+      }),
+      getDroppedPath: (_file: unknown) => "",
       openAdeFolder: resolved(undefined),
       clearLocalData: resolved({
         deletedPaths: [],

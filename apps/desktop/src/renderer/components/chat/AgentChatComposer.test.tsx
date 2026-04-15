@@ -8,7 +8,7 @@ import { AgentChatComposer } from "./AgentChatComposer";
 
 afterEach(cleanup);
 
-function renderComposer(overrides: Partial<ComponentProps<typeof AgentChatComposer>> = {}) {
+function buildComposerProps(overrides: Partial<ComponentProps<typeof AgentChatComposer>> = {}) {
   const props: ComponentProps<typeof AgentChatComposer> = {
     modelId: "openai/gpt-5.4-codex",
     availableModelIds: ["openai/gpt-5.4-codex"],
@@ -49,6 +49,12 @@ function renderComposer(overrides: Partial<ComponentProps<typeof AgentChatCompos
     onComputerUsePolicyChange: vi.fn(),
     ...overrides,
   };
+
+  return props;
+}
+
+function renderComposer(overrides: Partial<ComponentProps<typeof AgentChatComposer>> = {}) {
+  const props = buildComposerProps(overrides);
 
   render(<AgentChatComposer {...props} />);
   return props;
@@ -91,7 +97,7 @@ describe("AgentChatComposer", () => {
     expect(props.onClearDraft).not.toHaveBeenCalled();
   });
 
-  it("renders Claude mode buttons without a Chat toggle", () => {
+  it("renders Claude mode dropdown without a Chat toggle", () => {
     renderComposer({
       sessionProvider: "claude",
       modelId: "anthropic/claude-sonnet-4-6",
@@ -99,10 +105,16 @@ describe("AgentChatComposer", () => {
     });
 
     expect(screen.queryByRole("button", { name: "Chat" })).toBeNull();
-    expect(screen.getByRole("button", { name: "Default" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Plan" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Accept edits" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Bypass" })).toBeTruthy();
+    const trigger = screen.getByRole("button", { name: "Claude permission mode" });
+    expect(trigger.textContent).toContain("Ask permissions");
+
+    fireEvent.click(trigger);
+
+    expect(screen.getByRole("listbox", { name: "Claude permission mode" })).toBeTruthy();
+    expect(screen.getByRole("option", { name: /Ask permissions/ })).toBeTruthy();
+    expect(screen.getByRole("option", { name: /Accept edits/ })).toBeTruthy();
+    expect(screen.getByRole("option", { name: /Plan mode/ })).toBeTruthy();
+    expect(screen.getByRole("option", { name: /Bypass permissions/ })).toBeTruthy();
   });
 
   it("routes Claude plan through both interaction and permission callbacks", () => {
@@ -116,7 +128,8 @@ describe("AgentChatComposer", () => {
       onClaudePermissionModeChange,
     });
 
-    fireEvent.click(screen.getByRole("button", { name: "Plan" }));
+    fireEvent.click(screen.getByRole("button", { name: "Claude permission mode" }));
+    fireEvent.click(screen.getByRole("option", { name: /Plan mode/ }));
 
     expect(onInteractionModeChange).toHaveBeenCalledWith("plan");
     expect(onClaudePermissionModeChange).toHaveBeenCalledWith("plan");
@@ -135,7 +148,8 @@ describe("AgentChatComposer", () => {
       onClaudePermissionModeChange,
     });
 
-    fireEvent.click(screen.getByRole("button", { name: "Plan" }));
+    fireEvent.click(screen.getByRole("button", { name: "Claude permission mode" }));
+    fireEvent.click(screen.getByRole("option", { name: /Plan mode/ }));
 
     expect(onClaudeModeChange).toHaveBeenCalledWith("plan");
     expect(onInteractionModeChange).not.toHaveBeenCalled();
@@ -395,6 +409,39 @@ describe("AgentChatComposer", () => {
     const textarea = screen.getByPlaceholderText("Steer the active turn...") as HTMLTextAreaElement;
     expect(textarea.dataset.chatLayoutVariant).toBe("grid-tile");
     expect(textarea.className).toContain("resize-none");
+  });
+
+  it("focuses the grid composer when the tile becomes active", () => {
+    const props = buildComposerProps({
+      layoutVariant: "grid-tile",
+      composerMaxHeightPx: 128,
+      isActive: false,
+    });
+    const view = render(<AgentChatComposer {...props} />);
+
+    const textarea = screen.getByPlaceholderText("Steer the active turn...") as HTMLTextAreaElement;
+    expect(document.activeElement).not.toBe(textarea);
+
+    view.rerender(<AgentChatComposer {...props} isActive />);
+
+    expect(document.activeElement).toBe(textarea);
+  });
+
+  it("does not autofocus the grid composer when only hover state changes", () => {
+    const props = buildComposerProps({
+      layoutVariant: "grid-tile",
+      composerMaxHeightPx: 128,
+      isActive: false,
+      shouldAutofocus: false,
+    });
+    const view = render(<AgentChatComposer {...props} />);
+
+    const textarea = screen.getByPlaceholderText("Steer the active turn...") as HTMLTextAreaElement;
+    expect(document.activeElement).not.toBe(textarea);
+
+    view.rerender(<AgentChatComposer {...props} isActive shouldAutofocus={false} />);
+
+    expect(document.activeElement).not.toBe(textarea);
   });
 
 });

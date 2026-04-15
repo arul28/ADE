@@ -28,8 +28,12 @@ function statusCacheKey(projectRoot: string | null | undefined): string {
   return normalizeProjectRoot(projectRoot);
 }
 
-function modelsCacheKey(projectRoot: string | null | undefined, provider: AgentChatProvider): string {
-  return `${normalizeProjectRoot(projectRoot)}::${provider}`;
+function modelsCacheKey(
+  projectRoot: string | null | undefined,
+  provider: AgentChatProvider,
+  activateRuntime: boolean,
+): string {
+  return `${normalizeProjectRoot(projectRoot)}::${provider}::${activateRuntime ? "active" : "passive"}`;
 }
 
 export async function getAiStatusCached(args: {
@@ -104,10 +108,12 @@ export async function getAiStatusCached(args: {
 export async function getAgentChatModelsCached(args: {
   projectRoot: string | null | undefined;
   provider: AgentChatProvider;
+  activateRuntime?: boolean;
   force?: boolean;
   ttlMs?: number;
 }): Promise<AgentChatModelInfo[]> {
-  const key = modelsCacheKey(args.projectRoot, args.provider);
+  const activateRuntime = args.activateRuntime === true;
+  const key = modelsCacheKey(args.projectRoot, args.provider, activateRuntime);
   const ttlMs = args.ttlMs ?? DEFAULT_MODELS_TTL_MS;
   const now = Date.now();
   const existing = providerModelsCache.get(key);
@@ -120,7 +126,10 @@ export async function getAgentChatModelsCached(args: {
   }
 
   let request: Promise<AgentChatModelInfo[]> | null = null;
-  request = window.ade.agentChat.models({ provider: args.provider }).then((models) => {
+  request = window.ade.agentChat.models({
+    provider: args.provider,
+    ...(activateRuntime ? { activateRuntime: true } : {}),
+  }).then((models) => {
     const current = providerModelsCache.get(key);
     if (current?.inFlight === request) {
       providerModelsCache.set(key, {

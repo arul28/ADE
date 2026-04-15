@@ -95,6 +95,10 @@ Props that matter:
 - `layoutVariant` — `"standard"` (single tab) vs `"grid-tile"`
   (compact chrome, smaller fonts).
 
+Grid mode keeps running PTY sessions mounted so multiple terminals can
+stay live at once; `isActive` only controls focus/input, not whether the
+terminal renderer exists.
+
 Constants:
 
 - `CHAT_TILE_MIN_WIDTH = 440`, `CHAT_TILE_MIN_HEIGHT = 340`
@@ -110,20 +114,49 @@ gaps:
 - `computeMinimumRowSpan()` / `computeMinimumColSpan()`
 - `clampPackedGridSpan()` — enforces per-tile min/max spans
 - `packGridItems(items)` — places each tile in the first available
-  slot scanning rows then columns
+  slot scanning rows then columns. Accepts optional `placement` hints
+  (`{ column, row }`) so resized tiles stay anchored to their
+  persisted origin instead of being re-flowed by the packer.
 - `computePackedGridRowHeight(containerHeight, rowCount)` — distributes
   height evenly, min `GRID_BASE_ROW_PX = 120`
-- `reconcilePackedGridLayout(persistedLayout, activeIds)` — preserves
-  spans for tiles that come back later
+- `reconcilePackedGridLayout({ layout, tileIds, defaultSpansById,
+  columnCount })` — preserves spans and persisted `colStart/rowStart/
+  colSpan/rowSpan` quads for tiles that come back later.
+- `resizePackedGridItem({ placementsById, tileId, direction, delta,
+  … })` — directional edge move (n/s/e/w, plus the diagonal
+  compositions). Pushes contiguous neighbors when the edge has zero
+  gap, or consumes free space when there is a gap. `moveEastEdge`,
+  `moveWestEdge`, and the north/south variants enforce per-tile
+  min-span floors and the column-count / `GRID_MAX_ROW_SPAN` ceilings.
 
-Spans are persisted per session via `readPackedGridSpan` /
-`reconcilePackedGridLayout` and survive session switches.
+Persistence now carries both the span and the origin: the persisted
+layout stores `<id>:colStart`, `<id>:rowStart`, `<id>:colSpan`,
+`<id>:rowSpan` per tile and legacy `<id>:col` / `<id>:row` are still
+read for backward compatibility. `readPackedGridPlacement(layout, id)`
+returns the `{ column, row, colSpan, rowSpan }` record when one has been
+written.
+
+West-edge drags keep the dragged edge anchored while the tile grows
+leftward (the covered test in `PackedSessionGrid.test.tsx` asserts
+`colStart` decreases by exactly the drag delta). During a resize, the
+active tile is promoted to the front of the pack order so it "wins"
+any overlap with newly-repositioned neighbors.
+
+`PackedSessionGrid` also accepts an `onViewportMouseLeave` callback
+and an `onHover` per tile, so surrounding layouts can clear keyboard
+focus / hover state when the pointer exits the grid.
 
 ## Terminal renderer: `TerminalView.tsx`
 
 Thin wrapper over xterm.js + `FitAddon`. Caches `Terminal` instances in
 a module-level map keyed by `(ptyId, sessionId)` so a remount does not
-rebuild the emulator.
+rebuild the emulator. Each cached entry also records the
+`(projectRoot, projectRevision)` it was created under; on mount,
+`disposeStaleRuntimes(activeProjectRoot, activeProjectRevision)` tears
+down any entries whose project context no longer matches, which is how
+terminal cache state gets cleared on project switch or close without
+ever leaking PTYs between projects. The `projectRevision` counter
+lives in `useAppStore` and is bumped on every real project change.
 
 Renderer strategy: WebGL-first, fall back to the DOM renderer on any
 init failure or context loss. Canvas renderer is intentionally skipped
@@ -150,6 +183,13 @@ Key behaviors:
   `terminalPreferences` changes and applies font family, font size,
   line height, and scrollback to the live terminal, clearing the
   texture atlas to force glyph re-rasterization for WebGL.
+- **Frame-write scheduling** — pending frame writes are coalesced on
+  `requestAnimationFrame` when the runtime is visible and the page is
+  foregrounded; a 16 ms `setTimeout` fallback takes over whenever the
+  runtime is parked (no refs), hidden, or the document is
+  backgrounded, so background terminals don't stall on `rAF` ticks
+  that the browser suppresses. `flushPendingFrameWrites` / `clearFrameWriteSchedule`
+  own both code paths.
 
 Font stack defaults: `ui-monospace`, `SFMono-Regular`, `Menlo`,
 `Monaco`, `Cascadia Mono`, `JetBrains Mono`, `Geist Mono`, `monospace`.

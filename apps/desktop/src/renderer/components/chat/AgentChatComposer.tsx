@@ -107,12 +107,61 @@ function buildSlashCommands(sdkCommands: AgentChatSlashCommand[], modelFamily?: 
   return result;
 }
 
-const CLAUDE_MODE_OPTIONS: Array<{ value: AgentChatClaudePermissionMode; label: string; detail: string; safety: "safe" | "semi-auto" | "danger" }> = [
-  { value: "default", label: "Default", detail: "Claude uses the normal approval flow for reads, edits, and tools.", safety: "safe" },
-  { value: "plan", label: "Plan", detail: "Read-only Claude turns for analysis and implementation planning.", safety: "safe" },
-  { value: "acceptEdits", label: "Accept edits", detail: "File edits are auto-approved; higher-risk actions still prompt.", safety: "semi-auto" },
-  { value: "bypassPermissions", label: "Bypass", detail: "Skip Claude permission prompts for this chat.", safety: "danger" },
+type ClaudeModeTone = "green" | "blue" | "purple" | "red";
+
+type ClaudeModeOption = {
+  value: AgentChatClaudePermissionMode;
+  label: string;
+  detail: string;
+  tone: ClaudeModeTone;
+};
+
+const CLAUDE_MODE_OPTIONS: ClaudeModeOption[] = [
+  { value: "default", label: "Ask permissions", detail: "Claude asks before edits, Bash, and other sensitive tools.", tone: "green" },
+  { value: "acceptEdits", label: "Accept edits", detail: "File edits are auto-approved; higher-risk actions still prompt.", tone: "blue" },
+  { value: "plan", label: "Plan mode", detail: "Read-only Claude turns for analysis and implementation planning.", tone: "purple" },
+  { value: "bypassPermissions", label: "Bypass permissions", detail: "Skip every Claude permission prompt for this chat.", tone: "red" },
 ];
+
+const CLAUDE_MODE_TONE_STYLES: Record<
+  ClaudeModeTone,
+  {
+    activeBg: string;
+    activeText: string;
+    activeBorder: string;
+    dot: string;
+    hoverBg: string;
+  }
+> = {
+  green: {
+    activeBg: "bg-emerald-500/12",
+    activeText: "text-emerald-200",
+    activeBorder: "border-emerald-500/35",
+    dot: "bg-emerald-400",
+    hoverBg: "hover:bg-emerald-500/10 hover:text-emerald-100",
+  },
+  blue: {
+    activeBg: "bg-sky-500/14",
+    activeText: "text-sky-200",
+    activeBorder: "border-sky-500/35",
+    dot: "bg-sky-400",
+    hoverBg: "hover:bg-sky-500/10 hover:text-sky-100",
+  },
+  purple: {
+    activeBg: "bg-violet-500/14",
+    activeText: "text-violet-200",
+    activeBorder: "border-violet-500/35",
+    dot: "bg-violet-400",
+    hoverBg: "hover:bg-violet-500/10 hover:text-violet-100",
+  },
+  red: {
+    activeBg: "bg-red-500/14",
+    activeText: "text-red-200",
+    activeBorder: "border-red-500/35",
+    dot: "bg-red-400",
+    hoverBg: "hover:bg-red-500/10 hover:text-red-100",
+  },
+};
 
 type CodexPermissionPreset = "plan" | "edit" | "full-auto" | "custom";
 
@@ -266,6 +315,8 @@ export function AgentChatComposer({
   surfaceMode = "standard",
   layoutVariant = "standard",
   composerMaxHeightPx = null,
+  isActive = false,
+  shouldAutofocus = isActive,
   sdkSlashCommands = [],
   modelId,
   availableModelIds,
@@ -331,6 +382,8 @@ export function AgentChatComposer({
   surfaceMode?: ChatSurfaceMode;
   layoutVariant?: "standard" | "grid-tile";
   composerMaxHeightPx?: number | null;
+  isActive?: boolean;
+  shouldAutofocus?: boolean;
   sdkSlashCommands?: AgentChatSlashCommand[];
   modelId: string;
   availableModelIds?: string[];
@@ -409,6 +462,8 @@ export function AgentChatComposer({
   const [slashCursor, setSlashCursor] = useState(0);
   const [hoveredClaudeMode, setHoveredClaudeMode] = useState<AgentChatClaudePermissionMode | null>(null);
   const [hoveredCodexPreset, setHoveredCodexPreset] = useState<"plan" | "edit" | "full-auto" | null>(null);
+  const [claudeModePickerOpen, setClaudeModePickerOpen] = useState(false);
+  const claudeModePickerRef = useRef<HTMLDivElement | null>(null);
 
   const [dragActive, setDragActive] = useState(false);
   const [commandMenuTrigger, setCommandMenuTrigger] = useState<{ type: "at" | "slash"; query: string; cursorIndex: number } | null>(null);
@@ -430,6 +485,11 @@ export function AgentChatComposer({
     el.style.height = `${next}px`;
     el.style.overflowY = el.scrollHeight > maxH ? "auto" : "hidden";
   }, [layoutVariant, composerMaxHeightPx]);
+  useEffect(() => {
+    resizeTextarea();
+    if (!shouldAutofocus) return;
+    textareaRef.current?.focus({ preventScroll: true });
+  }, [resizeTextarea, shouldAutofocus]);
   useLayoutEffect(() => {
     resizeTextarea();
   }, [draft, resizeTextarea]);
@@ -600,6 +660,28 @@ export function AgentChatComposer({
     const option = CLAUDE_MODE_OPTIONS.find((item) => item.value === (hoveredClaudeMode ?? claudeSelectionMode));
     return option?.detail ?? null;
   }, [claudeSelectionMode, hoveredClaudeMode, sessionProvider]);
+
+  useEffect(() => {
+    if (!claudeModePickerOpen) return;
+    const handleClick = (event: MouseEvent) => {
+      if (!claudeModePickerRef.current) return;
+      if (claudeModePickerRef.current.contains(event.target as Node)) return;
+      setClaudeModePickerOpen(false);
+      setHoveredClaudeMode(null);
+    };
+    const handleKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setClaudeModePickerOpen(false);
+        setHoveredClaudeMode(null);
+      }
+    };
+    window.addEventListener("mousedown", handleClick);
+    window.addEventListener("keydown", handleKey);
+    return () => {
+      window.removeEventListener("mousedown", handleClick);
+      window.removeEventListener("keydown", handleKey);
+    };
+  }, [claudeModePickerOpen]);
   const codexCustomSummary = useMemo(() => {
     if (sessionProvider !== "codex" || codexPreset !== "custom") return null;
     if (codexConfigSource === "config-toml") {
@@ -672,21 +754,94 @@ export function AgentChatComposer({
     );
 
     if (sessionProvider === "claude") {
+      const selectedOption =
+        CLAUDE_MODE_OPTIONS.find((option) => option.value === claudeSelectionMode) ?? CLAUDE_MODE_OPTIONS[0];
+      const selectedTone = CLAUDE_MODE_TONE_STYLES[selectedOption.tone];
+      const applyClaudeMode = (mode: AgentChatClaudePermissionMode) => {
+        if (onClaudeModeChange) {
+          onClaudeModeChange(mode);
+          return;
+        }
+        if (mode === "plan") {
+          onInteractionModeChange?.("plan");
+          onClaudePermissionModeChange?.("plan");
+          return;
+        }
+        onInteractionModeChange?.("default");
+        onClaudePermissionModeChange?.(mode);
+      };
       return (
         <div className="flex flex-wrap items-start gap-2">
-          {renderButtonGroup("Claude", claudeSelectionMode, CLAUDE_MODE_OPTIONS, (mode) => {
-            if (onClaudeModeChange) {
-              onClaudeModeChange(mode);
-              return;
-            }
-            if (mode === "plan") {
-              onInteractionModeChange?.("plan");
-              onClaudePermissionModeChange?.("plan");
-              return;
-            }
-            onInteractionModeChange?.("default");
-            onClaudePermissionModeChange?.(mode);
-          }, nativeControlsDisabled, setHoveredClaudeMode)}
+          <div ref={claudeModePickerRef} className="relative">
+            <button
+              type="button"
+              aria-haspopup="listbox"
+              aria-expanded={claudeModePickerOpen}
+              aria-label="Claude permission mode"
+              disabled={nativeControlsDisabled}
+              onClick={() => {
+                if (nativeControlsDisabled) return;
+                setClaudeModePickerOpen((open) => !open);
+              }}
+              className={cn(
+                "inline-flex items-center gap-2 rounded-md border px-2.5 py-1.5 font-sans text-[11px] transition-colors",
+                selectedTone.activeBorder,
+                selectedTone.activeBg,
+                selectedTone.activeText,
+                nativeControlsDisabled ? "cursor-not-allowed opacity-50" : "hover:brightness-110",
+              )}
+              title={selectedOption.detail}
+            >
+              <span className={cn("h-1.5 w-1.5 shrink-0 rounded-full", selectedTone.dot)} aria-hidden />
+              <span className="font-sans text-[11px] leading-none">{selectedOption.label}</span>
+              <CaretDown size={10} weight="bold" className="opacity-70" />
+            </button>
+            {claudeModePickerOpen ? (
+              <div
+                role="listbox"
+                aria-label="Claude permission mode"
+                className="absolute bottom-full left-0 z-20 mb-2 w-56 overflow-hidden rounded-lg border border-white/[0.08] bg-[#15151c] shadow-lg shadow-black/40"
+              >
+                <div className="border-b border-white/[0.05] px-3 py-1.5 font-mono text-[9px] font-bold uppercase tracking-[0.18em] text-muted-fg/50">
+                  Mode
+                </div>
+                <ul className="py-1">
+                  {CLAUDE_MODE_OPTIONS.map((option) => {
+                    const tone = CLAUDE_MODE_TONE_STYLES[option.tone];
+                    const active = option.value === claudeSelectionMode;
+                    return (
+                      <li key={option.value}>
+                        <button
+                          type="button"
+                          role="option"
+                          aria-selected={active}
+                          onClick={() => {
+                            applyClaudeMode(option.value);
+                            setClaudeModePickerOpen(false);
+                            setHoveredClaudeMode(null);
+                          }}
+                          onMouseEnter={() => setHoveredClaudeMode(option.value)}
+                          onMouseLeave={() => setHoveredClaudeMode(null)}
+                          onFocus={() => setHoveredClaudeMode(option.value)}
+                          onBlur={() => setHoveredClaudeMode(null)}
+                          className={cn(
+                            "flex w-full items-center gap-2 px-3 py-1.5 text-left font-sans text-[11px] transition-colors",
+                            active ? cn(tone.activeBg, tone.activeText) : "text-fg/72",
+                            tone.hoverBg,
+                          )}
+                          title={option.detail}
+                        >
+                          <span className={cn("h-1.5 w-1.5 shrink-0 rounded-full", tone.dot)} aria-hidden />
+                          <span className="flex-1 truncate leading-none">{option.label}</span>
+                          {active ? <Check size={10} weight="bold" className="opacity-80" /> : null}
+                        </button>
+                      </li>
+                    );
+                  })}
+                </ul>
+              </div>
+            ) : null}
+          </div>
         </div>
       );
     }
@@ -848,6 +1003,7 @@ export function AgentChatComposer({
   }, [
     claudeSelectionMode,
     claudePermissionMode,
+    claudeModePickerOpen,
     applyCodexPreset,
     codexPreset,
     codexPresetOptions,

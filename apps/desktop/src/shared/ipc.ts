@@ -11,6 +11,8 @@ export const IPC = {
   appLogDebugEvent: "ade.app.logDebugEvent",
   projectOpenRepo: "ade.project.openRepo",
   projectChooseDirectory: "ade.project.chooseDirectory",
+  projectBrowseDirectories: "ade.project.browseDirectories",
+  projectGetDetail: "ade.project.getDetail",
   projectOpenAdeFolder: "ade.project.openAdeFolder",
   projectClearLocalData: "ade.project.clearLocalData",
   projectListRecent: "ade.project.listRecent",

@@ -678,6 +678,8 @@ export function AgentChatPane({
   presentation,
   embeddedWorkLayout = false,
   layoutVariant = "standard",
+  isTileActive = false,
+  shouldAutofocusComposer = false,
   onSessionCreated,
   availableLanes,
   onLaneChange,
@@ -697,6 +699,8 @@ export function AgentChatPane({
   /** Work tab draft: flatter shell, no duplicate header chrome above the composer. */
   embeddedWorkLayout?: boolean;
   layoutVariant?: "standard" | "grid-tile";
+  isTileActive?: boolean;
+  shouldAutofocusComposer?: boolean;
   onSessionCreated?: (session: AgentChatSession) => void | Promise<void>;
   /** Available lanes for the lane selector in empty state */
   availableLanes?: Array<{ id: string; name: string; color?: string | null }>;
@@ -769,8 +773,7 @@ export function AgentChatPane({
   const [handoffBusy, setHandoffBusy] = useState(false);
   const [handoffModelId, setHandoffModelId] = useState("");
   const shellRef = useRef<HTMLElement | null>(null);
-  const [composerMaxHeightPx, setComposerMaxHeightPx] = useState<number | null>(null);
-  const composerMaxHeightPxRef = useRef<number | null>(null);
+  const composerMaxHeightPx = layoutVariant === "grid-tile" ? 144 : null;
   const sessionsRef = useRef<AgentChatSessionSummary[]>(sessions);
 
   const appliedInitialSessionIdRef = useRef<string | null>(initialSessionId ?? null);
@@ -967,10 +970,6 @@ export function AgentChatPane({
     sessionsRef.current = sessions;
   }, [sessions]);
 
-  useEffect(() => {
-    composerMaxHeightPxRef.current = composerMaxHeightPx;
-  }, [composerMaxHeightPx]);
-
   const modelSelectionDiffersFromSession = Boolean(selectedSession && selectedSessionModelId && selectedSessionModelId !== modelId);
 
   const sessionProvider = useMemo(() => {
@@ -1097,8 +1096,12 @@ export function AgentChatPane({
   });
 
   const refreshAvailableModels = useCallback(async () => {
+    const shouldRefreshOpenCodeInventory = sessionProvider === "opencode";
     try {
-      const status = await getAiStatusCached({ projectRoot });
+      const status = await getAiStatusCached({
+        projectRoot,
+        ...(shouldRefreshOpenCodeInventory ? { refreshOpenCodeInventory: true } : {}),
+      });
       setAiStatus(status);
       setProviderConnections({
         claude: status.providerConnections?.claude ?? null,
@@ -1119,7 +1122,11 @@ export function AgentChatPane({
         getAgentChatModelsCached({ projectRoot, provider: "codex" }).catch(() => []),
         getAgentChatModelsCached({ projectRoot, provider: "claude" }).catch(() => []),
         getAgentChatModelsCached({ projectRoot, provider: "cursor" }).catch(() => []),
-        getAgentChatModelsCached({ projectRoot, provider: "opencode" }).catch(() => []),
+        getAgentChatModelsCached({
+          projectRoot,
+          provider: "opencode",
+          activateRuntime: shouldRefreshOpenCodeInventory,
+        }).catch(() => []),
       ]);
       const available = new Set<string>();
 
@@ -1160,7 +1167,7 @@ export function AgentChatPane({
       setAvailableModelIds([]);
       return [];
     }
-  }, [projectRoot]);
+  }, [projectRoot, sessionProvider]);
 
   const touchSession = useCallback((sessionId: string | null | undefined, touchedAt = new Date().toISOString()) => {
     if (!sessionId) return;
@@ -1544,6 +1551,8 @@ export function AgentChatPane({
 
       try {
         await Promise.all([refreshAvailableModels(), refreshSessions()]);
+      } catch {
+        // boot-time refresh errors are swallowed here; individual callbacks fall back to empty state
       } finally {
         if (!cancelled) {
           setLoading(false);
@@ -2484,26 +2493,6 @@ export function AgentChatPane({
     }
   }, [isPersistentIdentitySurface, patchSessionSummary, refreshComputerUseSnapshot, refreshSessions, selectedSessionId, sessionMutationKind]);
 
-  useEffect(() => {
-    if (layoutVariant !== "grid-tile") {
-      setComposerMaxHeightPx(null);
-      return;
-    }
-    const node = shellRef.current;
-    if (!node || typeof ResizeObserver === "undefined") return;
-    const observer = new ResizeObserver((entries) => {
-      const entry = entries[0];
-      if (!entry) return;
-      const next = Math.max(96, Math.min(168, Math.floor(entry.contentRect.height * 0.28)));
-      if (composerMaxHeightPxRef.current !== next) {
-        composerMaxHeightPxRef.current = next;
-        setComposerMaxHeightPx(next);
-      }
-    });
-    observer.observe(node);
-    return () => observer.disconnect();
-  }, [layoutVariant]);
-
   if (!laneId) {
     return (
       <ChatSurfaceShell mode={surfaceMode} accentColor={presentation?.accentColor}>
@@ -2745,6 +2734,8 @@ export function AgentChatPane({
             surfaceMode={surfaceMode}
             layoutVariant={layoutVariant}
             composerMaxHeightPx={composerMaxHeightPx}
+            isActive={layoutVariant === "grid-tile" ? isTileActive : false}
+            shouldAutofocus={layoutVariant === "grid-tile" ? shouldAutofocusComposer : false}
             sdkSlashCommands={sdkSlashCommands}
             modelId={modelId}
             availableModelIds={effectiveAvailableModelIds}

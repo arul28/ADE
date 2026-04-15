@@ -252,10 +252,10 @@ Agent tools are split by domain:
 
 `apps/desktop/src/shared/modelRegistry.ts` + `apps/desktop/src/shared/modelProfiles.ts`:
 
-- `MODEL_REGISTRY` — static CLI-wrapped entries + dynamically populated API-key/local entries.
+- `MODEL_REGISTRY` — static CLI-wrapped entries + dynamically populated API-key/local entries. Includes the Claude Opus 4.6 1M-context entry (`anthropic/claude-opus-4-6-1m`, aliases `opus[1m]` / `claude-opus-4-6[1m]`, 1,000,000 context / 32,000 max output, `costTier: "very_high"`, full `low|medium|high|max` reasoning tiers).
 - `ModelProviderGroup` = `"claude" | "codex" | "opencode" | "cursor"`.
 - Helpers: `getModelById`, `getModelPricing`, `updateModelPricingInRegistry`, `replaceDynamicOpenCodeModelDescriptors`, `resolveProviderGroupForModel`, `resolveModelDescriptorForProvider`, `getRuntimeModelRefForDescriptor`.
-- Reasoning tier passthrough (`providerOptions.ts`) maps tier strings directly to each provider's native config (`thinking.type`, `reasoningEffort`, `thinkingConfig.thinkingLevel`, etc.) — no arbitrary token budgets.
+- Reasoning tier passthrough (`providerOptions.ts`) maps tier strings directly to each provider's native config (`thinking.type`, `reasoningEffort`, `thinkingConfig.thinkingLevel`, etc.) — no arbitrary token budgets. The Claude vocabulary is `low | medium | high | max`.
 - Model profiles (`modelProfiles.ts`) derive the Missions UI model catalog and per-call-type intelligence defaults from `MODEL_REGISTRY` rather than maintaining parallel lists.
 
 ### 4.5 AI Orchestrator (deterministic runtime)
@@ -287,6 +287,7 @@ Full contract: [`docs/architecture/AI_INTEGRATION.md`](../docs/architecture/AI_I
 - Two categories: **invoke methods** (`ipcRenderer.invoke(channel, args)` returning `Promise<T>`) and **event subscriptions** (`ipcRenderer.on(channel, handler)`).
 - `contextIsolation: true`, `nodeIntegration: false`, `sandbox: false` (required for preload functionality).
 - Global window type: `apps/desktop/src/preload/global.d.ts`.
+- `window.ade.project.getDroppedPath(file)` wraps Electron's `webUtils.getPathForFile()` so renderer drag-drop handlers can resolve the absolute path of a `File` payload without the renderer needing Node APIs. Used by the Command Palette project browser to accept dropped folders.
 
 ### 5.2 Channel design
 
@@ -294,7 +295,7 @@ Full contract: [`docs/architecture/AI_INTEGRATION.md`](../docs/architecture/AI_I
 
 ```
 ade.app.*                    # app lifecycle, clipboard, paths
-ade.project.*                # project open/close/switch/state
+ade.project.*                # project open/close/switch/state, in-app directory browser (browseDirectories, getDetail)
 ade.onboarding.*
 ade.lanes.*                  # lane list/create/delete/stack/template/env/port/proxy/rebase
 ade.files.*                  # file tree, read, write, search, watch
@@ -390,7 +391,7 @@ Every service lives under `apps/desktop/src/main/services/<domain>/`. Summary:
 | `opencode/` | `openCodeRuntime.ts`, `openCodeServerManager.ts`, `openCodeBinaryManager.ts`, `openCodeInventory.ts`, `openCodeModelCatalog.ts` | OpenCode server spawn, binary resolution, model discovery. |
 | `orchestrator/` | See §4.5. | Deterministic mission runtime + intelligent coordinator. |
 | `processes/` | `processService.ts` | Managed-process lifecycle per lane, readiness probes, restart policies. |
-| `projects/` | `adeProjectService.ts`, `configReloadService.ts`, `projectService.ts`, `logIntegrityService.ts`, `recentProjectSummary.ts` | Project detection + `.ade` repair/bootstrap, reload on config change, recent-project metadata. |
+| `projects/` | `adeProjectService.ts`, `configReloadService.ts`, `projectService.ts`, `logIntegrityService.ts`, `recentProjectSummary.ts`, `projectBrowserService.ts`, `projectDetailService.ts` | Project detection + `.ade` repair/bootstrap, reload on config change, recent-project metadata. `projectBrowserService` is the in-app directory autocomplete used by the Command Palette project browser (typed-path completion, `.git` detection, home expansion, system-picker fallback); `projectDetailService` returns repo metadata (branch, dirty count, ahead/behind, last commit, README excerpt, language mix, lane count, last-opened) for the palette's preview pane. |
 | `prs/` | `prService.ts`, `prPollingService.ts`, `prSummaryService.ts`, `queueLandingService.ts`, `issueInventoryService.ts`, `prIssueResolver.ts`, `prRebaseResolver.ts`, `integrationPlanning.ts`, `integrationValidation.ts` | PR CRUD, polling (with per-PR `last_polled_at` cursor), AI summary cache keyed by `(prId, head_sha)`, stacked-queue landing, issue inventory, AI-assisted resolution, integration planning. |
 | `pty/` | `ptyService.ts` | `node-pty` spawn, PTY I/O bridging, transcript writing. |
 | `runtime/` | `adeMcpLaunch.ts`, `tempCleanupService.ts` | MCP launch resolver (bundled proxy/headless/source), temp cleanup. |
@@ -403,6 +404,12 @@ Every service lives under `apps/desktop/src/main/services/<domain>/`. Summary:
 | `usage/` | `usageTrackingService.ts`, `budgetCapService.ts` | Token/cost accounting, budget enforcement. |
 
 Startup sequencing: every background service goes through `scheduleBackgroundProjectTask()` in `main.ts`, which provides explicit labels, `ADE_ENABLE_*` env gates, `project.startup_task_begin`/`_done`/`_enabled`/`_skipped` telemetry, and per-task delays. Integrations stay **dormant-until-configured**.
+
+Project-init step timing goes through `measureProjectInitStep(step, task)` — a wrapper that logs `project.init_step { projectRoot, step, durationMs }` around each hot-path operation (`db_open`, `lane.ensure_primary`, `mcp.socket_server_start`, `memory.files.initial_sync`, `sync.initialize`, etc.) so cold-start latency shows up in the logs by phase. The memory-file mirror sync and sync-service initialization are now scheduled through `scheduleBackgroundProjectTask` rather than awaited inline, gated by `ADE_ENABLE_MEMORY_FILE_SYNC` and `ADE_ENABLE_SYNC_INIT` respectively (both default-on).
+
+Shutdown pipeline: `main.ts` owns a single `requestAppShutdown({ reason, exitCode, fastKillFirst?, forceAfterMs? })` path driving a central state machine (`shutdownRequested` → `shutdownPromise` → `shutdownFinalized`). Hooks into `before-quit`, `window close`, `SIGINT`, `SIGTERM`, `process.exit`, `will-quit`, and `uncaughtException` all funnel through it. `runImmediateProcessCleanup()` disposes the orchestrator, automations, tests, processes, PTYs, agent chat runtimes, DB flush, and then calls `shutdownOpenCodeServers()`. A `forceAfterMs` timer (default 8 s, 5 s for signals/uncaught) hard-exits if cleanup hangs. User-initiated quit (main window close or `before-quit`) routes through `confirmQuitWarning()` — a modal dialog that explains that closing will stop OpenCode servers, terminal sessions, and test runs.
+
+On startup the main process also invokes `recoverManagedOpenCodeOrphans({ force: true })` (see `services/opencode/openCodeServerManager.ts`) to reap previous-run OpenCode processes left behind after a crash. Orphan detection matches processes by the managed marker env (`ADE_OPENCODE_MANAGED=1`) and/or the shared XDG config root, and confirms orphaning either by dead owner PID (`ADE_OPENCODE_OWNER_PID`) or reparent-to-init. Each acquire of a shared OpenCode server also invokes `pruneIdleSharedEntries()` which compacts idle entries from older configs (`pool_compaction` reason).
 
 ---
 
@@ -434,6 +441,7 @@ Electron renderer runtime does **not** wrap the app in `React.StrictMode`. Brows
 - Narrow selectors on components to minimize re-renders.
 - Per-project work-view state keyed by project root (`WorkProjectViewState`).
 - Store-owned event subscriptions for high-frequency streams (e.g., missions).
+- `projectRevision` is a monotonically incrementing counter bumped inside `setProject` whenever the active project root actually changes. Long-lived renderer-side caches (most notably the module-level xterm runtime cache in `TerminalView.tsx`) subscribe to it and tear down any entries whose `projectRoot`/`projectRevision` no longer match, so PTYs never bleed between projects. All project-transition paths (`refreshProject`, `openRepo`, `switchProjectToPath`, `closeProject`) go through `setProject` to keep the counter honest.
 
 Domain stores co-located with their pages:
 

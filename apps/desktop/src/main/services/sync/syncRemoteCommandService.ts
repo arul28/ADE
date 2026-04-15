@@ -568,9 +568,10 @@ function parseConflictLaneArgs(value: Record<string, unknown>, action: string): 
   };
 }
 
-function parseChatModelsArgs(value: Record<string, unknown>): { provider: AgentChatProvider } {
+function parseChatModelsArgs(value: Record<string, unknown>): { provider: AgentChatProvider; activateRuntime?: boolean } {
   return {
     provider: (asTrimmedString(value.provider) ?? "codex") as AgentChatProvider,
+    ...(value.activateRuntime === true ? { activateRuntime: true } : {}),
   };
 }
 
@@ -724,7 +725,10 @@ async function resolveChatCreateArgs(
   payload: AgentChatCreateArgs,
 ): Promise<AgentChatCreateArgs> {
   if (payload.model.trim().length > 0) return payload;
-  const available = await service.getAvailableModels({ provider: payload.provider });
+  const available = await service.getAvailableModels({
+    provider: payload.provider,
+    ...(payload.provider === "opencode" ? { activateRuntime: true } : {}),
+  });
   const chosen = available[0];
   if (!chosen) {
     throw new Error(`No configured ${payload.provider} chat model is available on the host.`);

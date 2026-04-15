@@ -3,6 +3,11 @@ import os from "node:os";
 import path from "node:path";
 import { unstable_v2_createSession, unstable_v2_resumeSession } from "@anthropic-ai/claude-agent-sdk";
 import { buildOpenCodePromptParts, startOpenCodeSession } from "../opencode/openCodeRuntime";
+import {
+  clearOpenCodeInventoryCache,
+  peekOpenCodeInventoryCache,
+  probeOpenCodeProviderInventory,
+} from "../opencode/openCodeInventory";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const generateText = vi.fn();
@@ -334,6 +339,18 @@ vi.mock("../opencode/openCodeRuntime", () => ({
       }
     })();
   }),
+}));
+
+vi.mock("../opencode/openCodeInventory", () => ({
+  clearOpenCodeInventoryCache: vi.fn(),
+  shutdownInventoryServer: vi.fn(),
+  peekOpenCodeInventoryCache: vi.fn(() => null),
+  probeOpenCodeProviderInventory: vi.fn(async () => ({
+    modelIds: ["opencode/openai/gpt-5.4"],
+    providers: [],
+    error: null,
+    descriptors: [],
+  })),
 }));
 
 vi.mock("../ai/tools/universalTools", () => ({
@@ -824,6 +841,16 @@ beforeEach(() => {
   vi.mocked(unstable_v2_createSession).mockReset();
   vi.mocked(detectAllAuth).mockResolvedValue([]);
   vi.mocked(parseAgentChatTranscript).mockReturnValue([]);
+  vi.mocked(clearOpenCodeInventoryCache).mockClear();
+  vi.mocked(peekOpenCodeInventoryCache).mockReset();
+  vi.mocked(peekOpenCodeInventoryCache).mockReturnValue(null);
+  vi.mocked(probeOpenCodeProviderInventory).mockReset();
+  vi.mocked(probeOpenCodeProviderInventory).mockResolvedValue({
+    modelIds: ["opencode/openai/gpt-5.4"],
+    providers: [],
+    error: null,
+    descriptors: [],
+  });
   replaceDynamicOpenCodeModelDescriptors([]);
 });
 
@@ -3010,6 +3037,43 @@ describe("createAgentChatService", () => {
     });
   });
 
+  describe("forceDisposeAll", () => {
+    it("rejects active runSessionTurn calls during shutdown", async () => {
+      let releaseStream!: () => void;
+      const streamGate = new Promise<void>((resolve) => {
+        releaseStream = () => resolve();
+      });
+      vi.mocked(streamText).mockReturnValue({
+        fullStream: (async function* () {
+          yield { type: "text-delta", textDelta: "Still working" };
+          await streamGate;
+        })(),
+      } as any);
+
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "opencode",
+        model: "",
+        modelId: "opencode/anthropic/claude-sonnet-4-6",
+      });
+
+      const turn = service.runSessionTurn({
+        sessionId: session.id,
+        text: "Keep running",
+        timeoutMs: null,
+      });
+      const turnExpectation = expect(turn).rejects.toThrow(/shutdown/i);
+
+      try {
+        service.forceDisposeAll();
+        await turnExpectation;
+      } finally {
+        releaseStream();
+      }
+    });
+  });
+
   describe("deleteSession", () => {
     it("removes persisted chat artifacts and the stored session row", async () => {
       const { service, sessionService } = createService();
@@ -4074,10 +4138,14 @@ describe("createAgentChatService", () => {
   // --------------------------------------------------------------------------
 
   describe("getAvailableModels", () => {
-    it("returns an array for opencode provider", async () => {
+    it("warms OpenCode models on a passive cache miss", async () => {
+      clearOpenCodeInventoryCache();
       const { service } = createService();
       const models = await service.getAvailableModels({ provider: "opencode" });
-      expect(Array.isArray(models)).toBe(true);
+
+      expect(peekOpenCodeInventoryCache).toHaveBeenCalled();
+      expect(probeOpenCodeProviderInventory).toHaveBeenCalled();
+      expect(models.map((model) => model.id)).toContain("opencode/openai/gpt-5.4");
     });
 
     it("returns an array for codex provider", async () => {

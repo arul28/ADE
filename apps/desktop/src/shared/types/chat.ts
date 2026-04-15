@@ -683,6 +683,7 @@ export type AgentChatRespondToInputArgs = {
 
 export type AgentChatModelsArgs = {
   provider: AgentChatProvider;
+  activateRuntime?: boolean;
 };
 
 export type AgentChatDisposeArgs = {

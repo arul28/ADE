@@ -77,6 +77,22 @@ See the detail docs for the specifics:
    buffered text, and pulls the next queued steer.
 6. `dispose({ sessionId })` ends the runtime and persists the final state.
 
+Inactivity eviction runs every 15 s (`SESSION_CLEANUP_INTERVAL_MS`). A
+runtime is torn down when its session is idle, has no live pending
+input, and has exceeded its provider-specific inactivity window:
+`SESSION_INACTIVITY_TIMEOUT_MS = 5 min` for Claude/Codex/Cursor runtimes,
+`OPENCODE_SESSION_INACTIVITY_TIMEOUT_MS = 60 s` for OpenCode runtimes
+(OpenCode holds a pooled server, so its idle window is much shorter to
+free the underlying server sooner). Teardown routes through
+`teardownRuntime(managed, "idle_ttl")`.
+
+On app shutdown the service exposes `forceDisposeAll()` — called from
+`runImmediateProcessCleanup()` in `main.ts`. It stops the cleanup timer,
+rejects every outstanding `sessionTurnCollector` with a "closed during
+shutdown" error so IPC callers don't hang, resolves local pending-input
+promises with a `cancel` decision, and tears down every managed runtime
+with reason `"shutdown"`.
+
 ## IPC surface
 
 All channel constants live in `apps/desktop/src/shared/ipc.ts`; service
@@ -102,6 +118,7 @@ handlers live in `apps/desktop/src/main/services/ipc/registerIpc.ts`.
 | `ade.agentChat.fileSearch` | invoke | Debounced attachment picker backend. |
 | `ade.agentChat.saveTempAttachment` | invoke | Write pasted/dropped image bytes to a temp file (10 MB cap). |
 | `ade.agentChat.listSubagents` | invoke | Claude subagent snapshot list. |
+| `ade.agentChat.models` | invoke | `{ provider, activateRuntime? }`. For OpenCode `activateRuntime: true` is required to *launch* a probe server; otherwise the main process only returns the cached inventory (via `peekOpenCodeInventoryCache`) and an empty list until a real probe has been run. The renderer cache (`aiDiscoveryCache.ts`) keys on `(projectRoot, provider, activateRuntime)` so passive and active reads don't collide. |
 | `ade.agentChat.getSessionCapabilities` | invoke | Discover supported subagent/review features. |
 | `ade.agentChat.getTurnFileDiff` | invoke | Lazy diff expansion for a turn-file-summary row. |
 | `ade.agentChat.event` | push | Stream of `AgentChatEventEnvelope` into the renderer. |
@@ -151,6 +168,29 @@ handlers live in `apps/desktop/src/main/services/ipc/registerIpc.ts`.
   chats. Regular renderer surfaces pass `undefined` to exclude them;
   CTO and worker pages pass `true`. Double-check when wiring new chat
   lists.
+- **OpenCode passive vs. active inventory reads.** `loadAvailableModels`
+  for `provider: "opencode"` no longer unconditionally starts a probe
+  server. A passive call (the default for Settings page mounts, model
+  dropdown hydration, etc.) hits `peekOpenCodeInventoryCache` and
+  returns whatever was last probed; only explicit `activateRuntime: true`
+  calls (chat pane refresh for a Claude-to-OpenCode switch, sync
+  remote command resolution for a `chat.create` missing an explicit
+  model) will spin up the shared server. This avoids repeatedly
+  launching an OpenCode process just to render chrome. The registered
+  request key in `availableModelsRequests` is `${provider}:${mode}`
+  so an active probe and a passive peek can be in flight concurrently
+  without cross-resolving.
+- **OpenCode shared server pool compaction.** Acquiring a shared
+  OpenCode server (`acquireSharedOpenCodeServer`) now calls
+  `pruneIdleSharedEntries(excludeKey)` which shuts down every other
+  idle shared entry with reason `"pool_compaction"`. The runtime /
+  coordinator shutdown-reason union was widened accordingly
+  (`teardownRuntime` in the chat service and
+  `releaseOpenCodeCoordinatorSession` in `coordinatorAgent.ts` both
+  accept `"pool_compaction"`). The effect: only one shared OpenCode
+  server runs at a time per project; switching provider config or
+  between chats with different configs recycles the pool instead of
+  stacking processes.
 
 ## Configuration
 

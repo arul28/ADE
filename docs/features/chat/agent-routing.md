@@ -84,6 +84,17 @@ registry at runtime when LM Studio or Ollama report available models.
 These descriptors carry `discoverySource` and a `harnessProfile` that
 defaults to `guarded` unless explicitly whitelisted.
 
+### Reasoning tiers (Claude)
+
+Claude's reasoning-tier vocabulary is `low | medium | high | max`
+(`CLAUDE_THINKING_LEVELS` in `shared/modelProfiles.ts`). `max` was added
+alongside the Claude Opus 4.6 1M entry (`anthropic/claude-opus-4-6-1m`,
+aliases `opus[1m]` / `claude-opus-4-6[1m]`, 1,000,000-token context,
+32 k output, tier `very_high`) — it's the first registry entry that
+advertises the full `low|medium|high|max` tier set. Passthrough to the
+provider config is unchanged (the tier string is forwarded directly to
+the CLI / SDK — no synthesized token budgets).
+
 ## Auth and credentials
 
 `authDetector.ts` (`detectAllAuth`) probes every provider:

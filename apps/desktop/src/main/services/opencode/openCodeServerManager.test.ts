@@ -1,3 +1,4 @@
+import os from "node:os";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockState = vi.hoisted(() => ({
@@ -11,10 +12,12 @@ vi.mock("./openCodeBinaryManager", () => ({
 import {
   __buildOpenCodeServeLaunchSpecForTests,
   __resetOpenCodeServerManagerForTests,
+  __setOpenCodeProcessControllerForTests,
   __setOpenCodeServerLauncherForTests,
   acquireDedicatedOpenCodeServer,
   acquireSharedOpenCodeServer,
   getOpenCodeRuntimeDiagnostics,
+  recoverManagedOpenCodeOrphans,
 } from "./openCodeServerManager";
 
 describe("openCodeServerManager", () => {
@@ -41,6 +44,12 @@ describe("openCodeServerManager", () => {
     vi.useFakeTimers();
     mockState.created.length = 0;
     __resetOpenCodeServerManagerForTests();
+    __setOpenCodeProcessControllerForTests({
+      listProcesses: () => [],
+      isProcessAlive: () => false,
+      killProcess: () => {},
+      waitForMs: async () => {},
+    });
     __setOpenCodeServerLauncherForTests(async ({ port }) => {
       const close = vi.fn();
       const entry = {
@@ -91,6 +100,44 @@ describe("openCodeServerManager", () => {
 
     expect(mockState.created[0]?.close).toHaveBeenCalledTimes(1);
     expect(getOpenCodeRuntimeDiagnostics().sharedCount).toBe(0);
+  });
+
+  it("coalesces parallel shared acquires into a single launched server", async () => {
+    let releaseCreate!: () => void;
+    const createGate = new Promise<void>((resolve) => {
+      releaseCreate = resolve;
+    });
+    __setOpenCodeServerLauncherForTests(async ({ port }) => {
+      await createGate;
+      const close = vi.fn();
+      const entry = {
+        close,
+        url: `http://127.0.0.1:${port}`,
+      };
+      mockState.created.push(entry);
+      return entry;
+    });
+
+    const config = { share: "disabled", autoupdate: false, snapshot: false } as const;
+    const leasePromiseA = acquireSharedOpenCodeServer({
+      config,
+      key: "shared:parallel",
+      ownerKind: "chat",
+    });
+    const leasePromiseB = acquireSharedOpenCodeServer({
+      config,
+      key: "shared:parallel",
+      ownerKind: "chat",
+    });
+
+    releaseCreate();
+    const [leaseA, leaseB] = await Promise.all([leasePromiseA, leasePromiseB]);
+
+    expect(mockState.created).toHaveLength(1);
+    expect(leaseA.url).toBe(leaseB.url);
+
+    leaseA.release("handle_close");
+    leaseB.release("handle_close");
   });
 
   it("treats semantically identical shared configs as the same runtime even when key order differs", async () => {
@@ -179,6 +226,45 @@ describe("openCodeServerManager", () => {
     expect(getOpenCodeRuntimeDiagnostics().sharedCount).toBe(1);
     expect(getOpenCodeRuntimeDiagnostics().entries[0]?.configFingerprint).toMatch(/^[a-f0-9]{64}$/);
 
+    leaseB.release("handle_close");
+  });
+
+  it("compacts idle shared servers from older configs as soon as a new shared runtime is acquired", async () => {
+    const configA = {
+      share: "disabled",
+      autoupdate: false,
+      snapshot: false,
+      provider: {
+        openai: { options: { apiKey: "one" } },
+      },
+    } as const;
+    const configB = {
+      share: "disabled",
+      autoupdate: false,
+      snapshot: false,
+      provider: {
+        openai: { options: { apiKey: "two" } },
+      },
+    } as const;
+
+    const leaseA = await acquireSharedOpenCodeServer({
+      config: configA,
+      key: "shared:a",
+      ownerKind: "chat",
+      idleTtlMs: 60_000,
+    });
+    leaseA.release("handle_close");
+    expect(mockState.created[0]?.close).not.toHaveBeenCalled();
+
+    const leaseB = await acquireSharedOpenCodeServer({
+      config: configB,
+      key: "shared:b",
+      ownerKind: "chat",
+      idleTtlMs: 60_000,
+    });
+
+    expect(mockState.created[0]?.close).toHaveBeenCalledTimes(1);
+    expect(mockState.created).toHaveLength(2);
     leaseB.release("handle_close");
   });
 
@@ -295,7 +381,134 @@ describe("openCodeServerManager", () => {
     expect(spec.env.OPENCODE_CONFIG_DIR).toBe("/tmp/ade-opencode-test-home/xdg-v1/config/opencode");
     expect(spec.env.OPENCODE_DISABLE_PROJECT_CONFIG).toBe("1");
     expect(spec.env.OPENCODE_CONFIG_CONTENT).toBe(JSON.stringify(config));
+    expect(spec.env.ADE_OPENCODE_MANAGED).toBe("1");
+    expect(spec.env.ADE_OPENCODE_OWNER_PID).toBe(String(process.pid));
     expect(spec.env.OPENCODE_API_KEY).toBeUndefined();
     expect(spec.env.OPENCODE_BIN_PATH).toBeUndefined();
+  });
+
+  it("reaps orphaned ADE-managed OpenCode processes and skips ones with a live owner", async () => {
+    let orphanAlive = true;
+    const killProcess = vi.fn((pid: number, signal: NodeJS.Signals) => {
+      if (pid === 4101 && signal === "SIGKILL") {
+        orphanAlive = false;
+      }
+    });
+    const homeDir = os.homedir();
+    __setOpenCodeProcessControllerForTests({
+      listProcesses: () => ([
+        {
+          pid: 4101,
+          ppid: 1,
+          command: [
+            "/Users/admin/.opencode/bin/opencode serve --hostname=127.0.0.1 --port=62298",
+            "OPENCODE_DISABLE_PROJECT_CONFIG=1",
+            `XDG_CONFIG_HOME=${homeDir}/.ade/opencode-runtime/xdg-v1/config`,
+          ].join(" "),
+        },
+        {
+          pid: 4102,
+          ppid: 1,
+          command: [
+            "/Users/admin/.opencode/bin/opencode serve --hostname=127.0.0.1 --port=62299",
+            "OPENCODE_DISABLE_PROJECT_CONFIG=1",
+            "ADE_OPENCODE_MANAGED=1",
+            "ADE_OPENCODE_OWNER_PID=7788",
+            `XDG_CONFIG_HOME=${homeDir}/.ade/opencode-runtime/xdg-v1/config`,
+          ].join(" "),
+        },
+      ]),
+      isProcessAlive: (pid) => {
+        if (pid === 4101) return orphanAlive;
+        return pid === 4102 || pid === 7788;
+      },
+      killProcess,
+    });
+    const result = await recoverManagedOpenCodeOrphans();
+
+    expect(result.recoveredPids).toEqual([4101]);
+    expect(result.skippedPids).toEqual([4102]);
+    expect(killProcess).toHaveBeenCalledWith(4101, "SIGTERM");
+    expect(killProcess).toHaveBeenCalledWith(4101, "SIGKILL");
+    expect(killProcess).not.toHaveBeenCalledWith(4102, "SIGTERM");
+  });
+
+  it("does not mark stubborn orphaned processes as recovered", async () => {
+    const logger = { warn: vi.fn() } as any;
+    const killProcess = vi.fn();
+    const homeDir = os.homedir();
+    __setOpenCodeProcessControllerForTests({
+      listProcesses: () => ([
+        {
+          pid: 6101,
+          ppid: 1,
+          command: [
+            "/Users/admin/.opencode/bin/opencode serve --hostname=127.0.0.1 --port=62301",
+            "OPENCODE_DISABLE_PROJECT_CONFIG=1",
+            `XDG_CONFIG_HOME=${homeDir}/.ade/opencode-runtime/xdg-v1/config`,
+          ].join(" "),
+        },
+      ]),
+      isProcessAlive: (pid) => pid === 6101,
+      killProcess,
+    });
+
+    const result = await recoverManagedOpenCodeOrphans({ force: true, logger });
+
+    expect(result.recoveredPids).toEqual([]);
+    expect(result.skippedPids).toEqual([6101]);
+    expect(killProcess).toHaveBeenCalledWith(6101, "SIGTERM");
+    expect(killProcess).toHaveBeenCalledWith(6101, "SIGKILL");
+    expect(logger.warn).toHaveBeenCalledWith(
+      "opencode.server_orphan_recovery_failed",
+      expect.objectContaining({ pid: 6101 }),
+    );
+  });
+
+  it("waits for an in-flight forced recovery before starting another forced scan", async () => {
+    let releaseFirstWait!: () => void;
+    const firstWaitGate = new Promise<void>((resolve) => {
+      releaseFirstWait = resolve;
+    });
+    let orphanAlive = true;
+    const homeDir = os.homedir();
+    const listProcesses = vi.fn()
+      .mockImplementationOnce(() => ([
+        {
+          pid: 5101,
+          ppid: 1,
+          command: [
+            "/Users/admin/.opencode/bin/opencode serve --hostname=127.0.0.1 --port=62301",
+            "OPENCODE_DISABLE_PROJECT_CONFIG=1",
+            `XDG_CONFIG_HOME=${homeDir}/.ade/opencode-runtime/xdg-v1/config`,
+          ].join(" "),
+        },
+      ]))
+      .mockImplementationOnce(() => []);
+    const killProcess = vi.fn();
+    __setOpenCodeProcessControllerForTests({
+      listProcesses,
+      isProcessAlive: (pid) => pid === 5101 && orphanAlive,
+      killProcess,
+      waitForMs: async () => {
+        await firstWaitGate;
+        orphanAlive = false;
+      },
+    });
+
+    const firstRecovery = recoverManagedOpenCodeOrphans({ force: true });
+    const secondRecovery = recoverManagedOpenCodeOrphans({ force: true });
+
+    expect(listProcesses).toHaveBeenCalledTimes(1);
+
+    releaseFirstWait();
+
+    const [firstResult, secondResult] = await Promise.all([firstRecovery, secondRecovery]);
+
+    expect(firstResult.recoveredPids).toEqual([5101]);
+    expect(secondResult.recoveredPids).toEqual([]);
+    expect(listProcesses).toHaveBeenCalledTimes(2);
+    expect(killProcess).toHaveBeenCalledTimes(1);
+    expect(killProcess).toHaveBeenCalledWith(5101, "SIGTERM");
   });
 });

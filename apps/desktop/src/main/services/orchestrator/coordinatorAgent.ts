@@ -613,7 +613,7 @@ export class CoordinatorAgent {
   }
 
   private releaseOpenCodeCoordinatorSession(
-    reason: "handle_close" | "idle_ttl" | "ended_session" | "model_switch" | "paused_run" | "project_close" | "budget_eviction" | "shutdown",
+    reason: "handle_close" | "idle_ttl" | "ended_session" | "model_switch" | "paused_run" | "project_close" | "budget_eviction" | "pool_compaction" | "shutdown",
   ): void {
     this.clearOpenCodeIdleTimer();
     const handle = this.openCodeHandle;

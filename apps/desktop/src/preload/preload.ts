@@ -1,9 +1,12 @@
-import { contextBridge, ipcRenderer, webFrame } from "electron";
+import { contextBridge, ipcRenderer, webFrame, webUtils } from "electron";
 import { IPC } from "../shared/ipc";
 import type {
   AdeCleanupResult,
   AdeProjectEvent,
   AdeProjectSnapshot,
+  ProjectBrowseInput,
+  ProjectBrowseResult,
+  ProjectDetail,
 } from "../shared/types";
 import type {
   BatchAssessmentResult,
@@ -619,6 +622,19 @@ contextBridge.exposeInMainWorld("ade", {
       args: { title?: string; defaultPath?: string } = {},
     ): Promise<string | null> =>
       ipcRenderer.invoke(IPC.projectChooseDirectory, args),
+    browseDirectories: async (
+      args: ProjectBrowseInput = {},
+    ): Promise<ProjectBrowseResult> =>
+      ipcRenderer.invoke(IPC.projectBrowseDirectories, args),
+    getDetail: async (rootPath: string): Promise<ProjectDetail> =>
+      ipcRenderer.invoke(IPC.projectGetDetail, { rootPath }),
+    getDroppedPath: (file: File): string => {
+      try {
+        return webUtils.getPathForFile(file);
+      } catch {
+        return "";
+      }
+    },
     openAdeFolder: async (): Promise<void> =>
       ipcRenderer.invoke(IPC.projectOpenAdeFolder),
     clearLocalData: async (
