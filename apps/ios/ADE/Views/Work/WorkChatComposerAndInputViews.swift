@@ -59,33 +59,62 @@ struct WorkSessionControlBar: View {
 
   var body: some View {
     HStack(spacing: 10) {
-      if status == "active" {
-        Button("Interrupt") {
+      switch status {
+      case "active":
+        // Running turn — primary action is stopping it. End chat is a
+        // secondary escape hatch.
+        Button {
           Task { await onInterrupt() }
+        } label: {
+          Label("Interrupt", systemImage: "stop.fill")
+            .frame(maxWidth: .infinity)
         }
-        .buttonStyle(.glass)
+        .buttonStyle(.glassProminent)
         .tint(ADEColor.warning)
         .disabled(actionInFlight)
-      } else if status == "idle" || status == "ended" {
-        Button(status == "ended" ? "Resume chat" : "Resume") {
-          Task { await onResume() }
+
+        Button("End") {
+          Task { await onDispose() }
         }
         .buttonStyle(.glass)
+        .tint(ADEColor.textSecondary)
+        .disabled(actionInFlight)
+
+      case "idle", "awaiting-input":
+        Button {
+          Task { await onResume() }
+        } label: {
+          Label("Resume", systemImage: "play.fill")
+            .frame(maxWidth: .infinity)
+        }
+        .buttonStyle(.glassProminent)
+        .tint(ADEColor.accent)
+        .disabled(actionInFlight)
+
+        Button("End") {
+          Task { await onDispose() }
+        }
+        .buttonStyle(.glass)
+        .tint(ADEColor.textSecondary)
+        .disabled(actionInFlight)
+
+      default:
+        // Ended — only a single primary CTA matters. "Close session" on an
+        // already-closed session was nonsense.
+        Button {
+          Task { await onResume() }
+        } label: {
+          Label("Resume chat", systemImage: "play.fill")
+            .frame(maxWidth: .infinity)
+        }
+        .buttonStyle(.glassProminent)
         .tint(ADEColor.accent)
         .disabled(actionInFlight)
       }
-
-      Spacer(minLength: 0)
-
-      Button(status == "ended" ? "Close session" : "End chat") {
-        Task { await onDispose() }
-      }
-      .buttonStyle(.glassProminent)
-      .tint(status == "ended" ? ADEColor.textSecondary : ADEColor.danger)
-      .disabled(actionInFlight)
     }
-    .padding(14)
-    .background(ADEColor.surfaceBackground.opacity(0.6), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+    .controlSize(.large)
+    .padding(12)
+    .background(ADEColor.surfaceBackground.opacity(0.55), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
   }
 }
 

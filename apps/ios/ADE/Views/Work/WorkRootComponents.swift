@@ -387,34 +387,53 @@ struct WorkSessionListRow: View {
 }
 
 /// Provider mark: renders the branded SVG asset for known families (Claude /
-/// Codex / Cursor / OpenCode) and falls back to a tinted SF Symbol for
-/// anything else. Mirrors the desktop `ToolLogo` component so mobile sessions
-/// don't all share the same generic grey icon.
+/// Codex / Cursor / OpenCode) inside a tinted rounded-card container so each
+/// mark reads the way desktop's `Claude.Avatar` / `Codex.Avatar` do — logo
+/// centered on a tinted squircle, not a raw glyph on the page. Falls back to
+/// a tinted SF Symbol for unknown providers.
 struct WorkProviderLogo: View {
   let provider: String?
   let fallbackSymbol: String
   let tint: Color
   let size: CGFloat
 
-  init(provider: String?, fallbackSymbol: String = "terminal.fill", tint: Color = ADEColor.textSecondary, size: CGFloat = 26) {
+  init(provider: String?, fallbackSymbol: String = "terminal.fill", tint: Color = ADEColor.textSecondary, size: CGFloat = 28) {
     self.provider = provider
     self.fallbackSymbol = fallbackSymbol
     self.tint = tint
     self.size = size
   }
 
+  private var containerTint: Color {
+    providerTint(provider) == ADEColor.accent && provider == nil ? tint : providerTint(provider)
+  }
+
   var body: some View {
     if let assetName = providerAssetName(provider) {
+      let padded = size * 0.54
       Image(assetName)
         .resizable()
         .aspectRatio(contentMode: .fit)
+        .frame(width: padded, height: padded)
         .frame(width: size, height: size)
+        .background(
+          containerTint.opacity(0.16),
+          in: RoundedRectangle(cornerRadius: size * 0.3, style: .continuous)
+        )
+        .overlay(
+          RoundedRectangle(cornerRadius: size * 0.3, style: .continuous)
+            .stroke(containerTint.opacity(0.22), lineWidth: 0.5)
+        )
     } else {
       Image(systemName: fallbackSymbol)
         .font(.system(size: size * 0.58, weight: .semibold))
         .foregroundStyle(tint)
         .frame(width: size, height: size)
-        .background(tint.opacity(0.14), in: RoundedRectangle(cornerRadius: size * 0.36, style: .continuous))
+        .background(tint.opacity(0.14), in: RoundedRectangle(cornerRadius: size * 0.3, style: .continuous))
+        .overlay(
+          RoundedRectangle(cornerRadius: size * 0.3, style: .continuous)
+            .stroke(tint.opacity(0.18), lineWidth: 0.5)
+        )
     }
   }
 }
@@ -471,11 +490,16 @@ struct WorkSessionRow: View {
 
         ScrollView(.horizontal, showsIndicators: false) {
           HStack(spacing: 6) {
-            ADEStatusPill(
-              text: isArchived ? "ARCHIVED" : sessionStatusLabel(session, summary: chatSummary),
-              tint: isArchived ? ADEColor.warning : rowTint
-            )
-            .adeMatchedGeometry(id: isSelectedTransitionSource ? "work-status-\(session.id)" : nil, in: transitionNamespace)
+            // Redundant when the section header already reads "Ended", so only
+            // surface a status pill for sessions whose status differs from
+            // their group (needs input, running, pinned, archived).
+            if shouldSurfaceStatusPill {
+              ADEStatusPill(
+                text: isArchived ? "ARCHIVED" : sessionStatusLabel(session, summary: chatSummary),
+                tint: isArchived ? ADEColor.warning : rowTint
+              )
+              .adeMatchedGeometry(id: isSelectedTransitionSource ? "work-status-\(session.id)" : nil, in: transitionNamespace)
+            }
             WorkTag(text: session.laneName, icon: "arrow.triangle.branch", tint: ADEColor.textSecondary)
             if lane?.status.dirty == true {
               WorkTag(text: "Dirty", icon: "circle.fill", tint: ADEColor.warning)
@@ -503,6 +527,12 @@ struct WorkSessionRow: View {
   var rowTint: Color {
     if isArchived { return ADEColor.warning }
     return workChatStatusTint(normalizedWorkChatSessionStatus(session: session, summary: chatSummary))
+  }
+
+  private var shouldSurfaceStatusPill: Bool {
+    if isArchived { return true }
+    let status = normalizedWorkChatSessionStatus(session: session, summary: chatSummary)
+    return status == "awaiting-input" || status == "active" || status == "idle"
   }
 
   var accessibilityLabel: String {
