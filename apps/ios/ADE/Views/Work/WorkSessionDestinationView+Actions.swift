@@ -114,6 +114,86 @@ extension WorkSessionDestinationView {
   }
 
   @MainActor
+  func selectRuntimeMode(_ modeId: String) async {
+    guard let summary = chatSummary else { return }
+    // Mirror the per-provider flag mapping from the retired session settings
+    // sheet so access-pill menu picks land with the same sync payload shape.
+    var permissionMode: String?
+    var interactionMode: String?
+    var claudePermissionMode: String?
+    var codexApprovalPolicy: String?
+    var codexSandbox: String?
+    var codexConfigSource: String?
+    var opencodePermissionMode: String?
+
+    switch summary.provider.lowercased() {
+    case "claude":
+      switch modeId {
+      case "plan":
+        interactionMode = "plan"
+        claudePermissionMode = "default"
+        permissionMode = "plan"
+      case "edit":
+        interactionMode = "default"
+        claudePermissionMode = "acceptEdits"
+        permissionMode = "edit"
+      case "full-auto":
+        interactionMode = "default"
+        claudePermissionMode = "bypassPermissions"
+        permissionMode = "full-auto"
+      default:
+        interactionMode = "default"
+        claudePermissionMode = "default"
+        permissionMode = "default"
+      }
+    case "codex":
+      codexConfigSource = "flags"
+      switch modeId {
+      case "plan":
+        codexApprovalPolicy = "untrusted"
+        codexSandbox = "read-only"
+        permissionMode = "plan"
+      case "edit":
+        codexApprovalPolicy = "on-failure"
+        codexSandbox = "workspace-write"
+        permissionMode = "edit"
+      case "full-auto":
+        codexApprovalPolicy = "never"
+        codexSandbox = "danger-full-access"
+        permissionMode = "full-auto"
+      default:
+        codexApprovalPolicy = "on-request"
+        codexSandbox = "workspace-write"
+        permissionMode = "default"
+      }
+    case "opencode":
+      opencodePermissionMode = modeId
+      permissionMode = modeId
+    default:
+      return
+    }
+
+    do {
+      _ = try await syncService.updateChatSession(
+        sessionId: sessionId,
+        permissionMode: permissionMode,
+        interactionMode: interactionMode,
+        claudePermissionMode: claudePermissionMode,
+        codexApprovalPolicy: codexApprovalPolicy,
+        codexSandbox: codexSandbox,
+        codexConfigSource: codexConfigSource,
+        opencodePermissionMode: opencodePermissionMode
+      )
+      await refreshChatStateAfterAction(forceRemote: true)
+      errorMessage = nil
+      ADEHaptics.light()
+    } catch {
+      ADEHaptics.error()
+      errorMessage = error.localizedDescription
+    }
+  }
+
+  @MainActor
   func respondToQuestion(itemId: String, answer: String?, responseText: String?) async {
     do {
       let answerValue = answer?.trimmingCharacters(in: .whitespacesAndNewlines)

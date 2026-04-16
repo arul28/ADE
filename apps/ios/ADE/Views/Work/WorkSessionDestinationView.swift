@@ -27,7 +27,6 @@ struct WorkSessionDestinationView: View {
   @State var sending = false
   @State var errorMessage: String?
   @State var announcedLaneId: String?
-  @State var settingsPresented = false
   @State var lastSessionRowRefreshAt = Date.distantPast
   @State var handledOpeningPromptKey: String?
   @State var stagedOpeningPromptKey: String?
@@ -44,11 +43,11 @@ struct WorkSessionDestinationView: View {
     sessionDestinationRoot
       .navigationTitle(sessionDestinationNavigationTitle)
       .navigationBarTitleDisplayMode(.inline)
+      .toolbar(.hidden, for: .tabBar)
       .adeNavigationZoomTransition(id: sessionDestinationZoomTransitionId, in: transitionNamespace)
       .sheet(item: $fullscreenImage) { image in
         WorkFullscreenImageView(image: image)
       }
-      .sheet(isPresented: $settingsPresented, content: sessionSettingsSheet)
       .task {
         session = initialSession
         chatSummary = initialChatSummary
@@ -105,9 +104,6 @@ struct WorkSessionDestinationView: View {
           disconnectedNotice: disconnectedNotice,
           transitionNamespace: transitionNamespace,
           onOpenLane: openSessionLane,
-          onOpenSettings: {
-            settingsPresented = true
-          },
           onSend: sendMessage,
           onInterrupt: interruptSession,
           onDispose: disposeSession,
@@ -120,7 +116,8 @@ struct WorkSessionDestinationView: View {
           onLoadArtifact: loadArtifactContent,
           onCancelSteer: cancelSteer,
           onEditSteer: editSteer,
-          onSelectModel: selectModel
+          onSelectModel: selectModel,
+          onSelectRuntimeMode: selectRuntimeMode
         )
       } else {
         WorkTerminalSessionView(
@@ -138,21 +135,6 @@ struct WorkSessionDestinationView: View {
         message: "This session is no longer cached on the phone. Reconnect and refresh Work to restore it."
       )
       .adeScreenBackground()
-    }
-  }
-
-  @ViewBuilder
-  func sessionSettingsSheet() -> some View {
-    if let chatSummary {
-      WorkSessionSettingsSheet(
-        sessionId: sessionId,
-        laneName: session?.laneName ?? initialSession?.laneName ?? "",
-        summary: chatSummary,
-        onSaved: {
-          await load()
-        }
-      )
-      .environmentObject(syncService)
     }
   }
 

@@ -13,7 +13,6 @@ struct WorkSessionHeader: View {
   // in each matched-geometry group.
   let transitionNamespace: Namespace.ID?
   let onOpenLane: (() -> Void)?
-  let onOpenSettings: (() -> Void)?
 
   private var status: String {
     normalizedWorkChatSessionStatus(session: session, summary: chatSummary)
@@ -71,18 +70,6 @@ struct WorkSessionHeader: View {
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Open lane")
-          }
-
-          if let onOpenSettings {
-            Button(action: onOpenSettings) {
-              Image(systemName: "slider.horizontal.3")
-                .font(.system(size: 14, weight: .semibold))
-                .foregroundStyle(ADEColor.textPrimary)
-                .frame(width: 34, height: 34)
-                .background(ADEColor.surfaceBackground.opacity(0.6), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Open chat settings")
           }
         }
       }

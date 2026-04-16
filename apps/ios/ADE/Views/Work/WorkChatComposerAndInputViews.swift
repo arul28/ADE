@@ -155,43 +155,30 @@ struct WorkComposerInputBanner: View {
   }
 }
 
+/// Compact horizontal strip matching the desktop composer toolbar: small
+/// single-line pills for access / model / reasoning, queued/pending status
+/// chips, and nothing else. The access pill is a SwiftUI `Menu` so runtime
+/// modes flip inline — no extra "session settings" sheet to wade through.
 struct WorkComposerChipStrip: View {
   let chatSummary: AgentChatSessionSummary?
   let queuedSteerCount: Int
   let pendingInputCount: Int
   let onOpenModelPicker: (() -> Void)?
-  let onOpenSettings: (() -> Void)?
+  let onSelectRuntimeMode: ((String) -> Void)?
 
   var body: some View {
     ScrollView(.horizontal, showsIndicators: false) {
-      HStack(spacing: 8) {
+      HStack(spacing: 6) {
         if let chatSummary {
-          modelChip(summary: chatSummary)
-          if let runtime = runtimeLabel(for: chatSummary) {
-            labeledChip(
-              icon: "shield.lefthalf.filled",
-              label: "Access",
-              value: runtime,
-              tint: ADEColor.accent,
-              action: onOpenSettings
-            )
-          }
-          if let profile = chatSummary.sessionProfile, !profile.isEmpty {
-            labeledChip(
-              icon: "slider.horizontal.3",
-              label: "Profile",
-              value: profile,
-              tint: ADEColor.textSecondary,
-              action: onOpenSettings
-            )
-          }
+          accessPill(summary: chatSummary)
+          modelPill(summary: chatSummary)
         }
 
         if queuedSteerCount > 0 {
-          statusChip(icon: "paperplane.circle", label: "\(queuedSteerCount) queued", tint: ADEColor.accent)
+          statusChip(icon: "paperplane.circle.fill", label: "\(queuedSteerCount) queued", tint: ADEColor.accent)
         }
         if pendingInputCount > 0 {
-          statusChip(icon: "hand.raised.circle", label: "\(pendingInputCount) waiting", tint: ADEColor.warning)
+          statusChip(icon: "hand.raised.circle.fill", label: "\(pendingInputCount) waiting", tint: ADEColor.warning)
         }
       }
       .padding(.horizontal, 2)
@@ -200,37 +187,31 @@ struct WorkComposerChipStrip: View {
   }
 
   @ViewBuilder
-  private func modelChip(summary: AgentChatSessionSummary) -> some View {
+  private func modelPill(summary: AgentChatSessionSummary) -> some View {
     Button {
       onOpenModelPicker?()
     } label: {
-      HStack(spacing: 8) {
+      HStack(spacing: 6) {
         WorkProviderLogo(
           provider: summary.provider,
           fallbackSymbol: providerIcon(summary.provider),
           tint: providerTint(summary.provider),
-          size: 22
+          size: 16
         )
-        VStack(alignment: .leading, spacing: 1) {
-          Text("Model")
-            .font(.caption2.monospaced().weight(.bold))
-            .tracking(0.4)
-            .foregroundStyle(ADEColor.textMuted)
-          Text(summary.model)
-            .font(.caption.weight(.semibold))
-            .foregroundStyle(ADEColor.textPrimary)
-            .lineLimit(1)
-        }
-        Image(systemName: "chevron.up.chevron.down")
-          .font(.caption2.weight(.semibold))
+        Text(prettyModelName(summary.model))
+          .font(.caption.weight(.semibold))
+          .foregroundStyle(ADEColor.textPrimary)
+          .lineLimit(1)
+        Image(systemName: "chevron.down")
+          .font(.system(size: 9, weight: .bold))
           .foregroundStyle(ADEColor.textMuted)
       }
-      .padding(.horizontal, 10)
+      .padding(.horizontal, 9)
       .padding(.vertical, 6)
-      .background(ADEColor.surfaceBackground.opacity(0.7), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+      .background(ADEColor.surfaceBackground.opacity(0.7), in: Capsule(style: .continuous))
       .overlay(
-        RoundedRectangle(cornerRadius: 12, style: .continuous)
-          .stroke(providerTint(summary.provider).opacity(0.3), lineWidth: 0.6)
+        Capsule(style: .continuous)
+          .stroke(ADEColor.border.opacity(0.28), lineWidth: 0.6)
       )
     }
     .buttonStyle(.plain)
@@ -239,36 +220,59 @@ struct WorkComposerChipStrip: View {
   }
 
   @ViewBuilder
-  private func labeledChip(icon: String, label: String, value: String, tint: Color, action: (() -> Void)?) -> some View {
-    Button {
-      action?()
-    } label: {
-      HStack(spacing: 6) {
-        Image(systemName: icon)
-          .font(.caption2.weight(.semibold))
-          .foregroundStyle(tint)
-        VStack(alignment: .leading, spacing: 1) {
-          Text(label.uppercased())
-            .font(.caption2.monospaced().weight(.bold))
-            .tracking(0.4)
-            .foregroundStyle(ADEColor.textMuted)
-          Text(value)
-            .font(.caption.weight(.medium))
-            .foregroundStyle(ADEColor.textPrimary)
-            .lineLimit(1)
+  private func accessPill(summary: AgentChatSessionSummary) -> some View {
+    let options = runtimeMenuOptions(for: summary)
+    let currentMode = workInitialRuntimeMode(summary)
+    let label = runtimeDisplayLabel(summary: summary, currentMode: currentMode)
+    let tint = runtimeTint(currentMode)
+
+    if options.isEmpty || onSelectRuntimeMode == nil {
+      pillContent(dotColor: tint, label: label, showChevron: false)
+    } else {
+      Menu {
+        ForEach(options, id: \.id) { option in
+          Button {
+            onSelectRuntimeMode?(option.id)
+          } label: {
+            if option.id == currentMode {
+              Label(option.title, systemImage: "checkmark")
+            } else {
+              Text(option.title)
+            }
+          }
         }
+      } label: {
+        pillContent(dotColor: tint, label: label, showChevron: true)
       }
-      .padding(.horizontal, 10)
-      .padding(.vertical, 6)
-      .background(ADEColor.surfaceBackground.opacity(0.55), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-      .overlay(
-        RoundedRectangle(cornerRadius: 12, style: .continuous)
-          .stroke(ADEColor.border.opacity(0.18), lineWidth: 0.5)
-      )
+      .menuStyle(.borderlessButton)
+      .buttonStyle(.plain)
+      .accessibilityLabel("Access mode: \(label). Tap to change.")
     }
-    .buttonStyle(.plain)
-    .disabled(action == nil)
-    .accessibilityLabel("\(label): \(value). Tap to change.")
+  }
+
+  @ViewBuilder
+  private func pillContent(dotColor: Color, label: String, showChevron: Bool) -> some View {
+    HStack(spacing: 6) {
+      Circle()
+        .fill(dotColor)
+        .frame(width: 6, height: 6)
+      Text(label)
+        .font(.caption.weight(.semibold))
+        .foregroundStyle(ADEColor.textPrimary)
+        .lineLimit(1)
+      if showChevron {
+        Image(systemName: "chevron.down")
+          .font(.system(size: 9, weight: .bold))
+          .foregroundStyle(ADEColor.textMuted)
+      }
+    }
+    .padding(.horizontal, 9)
+    .padding(.vertical, 6)
+    .background(dotColor.opacity(0.12), in: Capsule(style: .continuous))
+    .overlay(
+      Capsule(style: .continuous)
+        .stroke(dotColor.opacity(0.35), lineWidth: 0.6)
+    )
   }
 
   @ViewBuilder
@@ -281,7 +285,7 @@ struct WorkComposerChipStrip: View {
         .lineLimit(1)
     }
     .foregroundStyle(tint)
-    .padding(.horizontal, 10)
+    .padding(.horizontal, 9)
     .padding(.vertical, 6)
     .background(tint.opacity(0.1), in: Capsule(style: .continuous))
     .overlay(
@@ -290,20 +294,94 @@ struct WorkComposerChipStrip: View {
     )
   }
 
-  func runtimeLabel(for summary: AgentChatSessionSummary) -> String? {
-    let normalizedProvider = summary.provider.lowercased()
-    switch normalizedProvider {
-    case "claude":
-      return summary.claudePermissionMode ?? summary.permissionMode
-    case "codex":
-      if let policy = summary.codexApprovalPolicy, let sandbox = summary.codexSandbox {
-        return "\(policy) · \(sandbox)"
+  private func prettyModelName(_ model: String) -> String {
+    // Strip marketing prefixes so the pill stays on one compact line —
+    // "claude-opus-4-6" → "Opus 4.6", "gpt-5-codex" → "GPT-5 Codex".
+    let trimmed = model.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else { return "Model" }
+    if trimmed.lowercased().hasPrefix("claude-") {
+      let tail = trimmed.dropFirst("claude-".count)
+      return beautifyModelSegment(String(tail))
+    }
+    return beautifyModelSegment(trimmed)
+  }
+
+  private func beautifyModelSegment(_ raw: String) -> String {
+    raw
+      .split(separator: "-")
+      .map { part -> String in
+        let s = String(part)
+        if s.range(of: #"^\d+$"#, options: .regularExpression) != nil {
+          return s
+        }
+        if s.lowercased() == "gpt" { return "GPT" }
+        return s.prefix(1).uppercased() + s.dropFirst()
       }
-      return summary.codexApprovalPolicy ?? summary.codexSandbox
+      .joined(separator: " ")
+      .replacingOccurrences(of: #"(\d+) (\d+)"#, with: "$1.$2", options: .regularExpression)
+  }
+
+  private struct RuntimeMenuOption {
+    let id: String
+    let title: String
+  }
+
+  private func runtimeMenuOptions(for summary: AgentChatSessionSummary) -> [RuntimeMenuOption] {
+    switch summary.provider.lowercased() {
+    case "claude":
+      return [
+        RuntimeMenuOption(id: "default", title: "Default"),
+        RuntimeMenuOption(id: "plan", title: "Plan"),
+        RuntimeMenuOption(id: "edit", title: "Accept edits"),
+        RuntimeMenuOption(id: "full-auto", title: "Bypass permissions"),
+      ]
+    case "codex":
+      return [
+        RuntimeMenuOption(id: "default", title: "Default"),
+        RuntimeMenuOption(id: "plan", title: "Plan"),
+        RuntimeMenuOption(id: "edit", title: "On-failure approvals"),
+        RuntimeMenuOption(id: "full-auto", title: "Full auto"),
+      ]
     case "opencode":
-      return summary.opencodePermissionMode ?? summary.permissionMode
+      return [
+        RuntimeMenuOption(id: "plan", title: "Plan"),
+        RuntimeMenuOption(id: "edit", title: "Edit"),
+        RuntimeMenuOption(id: "full-auto", title: "Full auto"),
+      ]
     default:
-      return summary.permissionMode ?? summary.executionMode
+      return []
+    }
+  }
+
+  private func runtimeDisplayLabel(summary: AgentChatSessionSummary, currentMode: String) -> String {
+    switch summary.provider.lowercased() {
+    case "claude":
+      switch currentMode {
+      case "plan": return "Plan"
+      case "edit": return "Accept edits"
+      case "full-auto": return "Bypass permissions"
+      default: return "Default"
+      }
+    case "codex":
+      switch currentMode {
+      case "plan": return "Plan"
+      case "edit": return "On-failure"
+      case "full-auto": return "Full auto"
+      default: return "Default"
+      }
+    case "opencode":
+      return currentMode.isEmpty ? "Edit" : currentMode.capitalized
+    default:
+      return summary.permissionMode?.capitalized ?? summary.executionMode?.capitalized ?? "Access"
+    }
+  }
+
+  private func runtimeTint(_ mode: String) -> Color {
+    switch mode {
+    case "full-auto": return ADEColor.danger
+    case "edit": return ADEColor.warning
+    case "plan": return ADEColor.accent
+    default: return ADEColor.textSecondary
     }
   }
 }

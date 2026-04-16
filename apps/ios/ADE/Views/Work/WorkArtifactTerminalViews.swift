@@ -136,8 +136,7 @@ struct WorkTerminalSessionView: View {
           session: session,
           chatSummary: nil,
           transitionNamespace: transitionNamespace,
-          onOpenLane: onOpenLane,
-          onOpenSettings: nil
+          onOpenLane: onOpenLane
         )
 
         if disconnectedNotice {

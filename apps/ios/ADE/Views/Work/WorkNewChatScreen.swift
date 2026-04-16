@@ -100,8 +100,7 @@ struct WorkNewChatScreen: View {
           modelId = option.id
           provider = option.provider
           modelPickerPresented = false
-        },
-        onOpenSettings: nil
+        }
       )
     }
   }

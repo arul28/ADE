@@ -26,7 +26,6 @@ struct WorkChatSessionView: View {
   let disconnectedNotice: Bool
   let transitionNamespace: Namespace.ID?
   let onOpenLane: (() -> Void)?
-  let onOpenSettings: (() -> Void)?
   let onSend: @MainActor () async -> Void
   let onInterrupt: @MainActor () async -> Void
   let onDispose: @MainActor () async -> Void
@@ -40,6 +39,7 @@ struct WorkChatSessionView: View {
   let onCancelSteer: @MainActor (String) async -> Void
   let onEditSteer: @MainActor (String, String) async -> Void
   let onSelectModel: @MainActor (String) async -> Void
+  let onSelectRuntimeMode: @MainActor (String) async -> Void
 
   @State var steerEditDrafts: [String: String] = [:]
   @State var modelPickerPresented = false
@@ -129,8 +129,7 @@ struct WorkChatSessionView: View {
           session: session,
           chatSummary: chatSummary,
           transitionNamespace: transitionNamespace,
-          onOpenLane: onOpenLane,
-          onOpenSettings: onOpenSettings
+          onOpenLane: onOpenLane
         )
 
         if let sessionUsageSummary {
@@ -327,7 +326,9 @@ struct WorkChatSessionView: View {
           queuedSteerCount: pendingSteers.count,
           pendingInputCount: pendingInputs.count,
           onOpenModelPicker: chatSummary == nil ? nil : { modelPickerPresented = true },
-          onOpenSettings: onOpenSettings
+          onSelectRuntimeMode: chatSummary == nil ? nil : { mode in
+            Task { await onSelectRuntimeMode(mode) }
+          }
         )
 
         if let primary = primaryPendingInput {
@@ -491,8 +492,7 @@ struct WorkChatSessionView: View {
               modelUpdateInFlight = false
               modelPickerPresented = false
             }
-          },
-          onOpenSettings: onOpenSettings
+          }
         )
       }
     }
