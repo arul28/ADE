@@ -112,9 +112,8 @@ struct ConnectionSettingsView: View {
         }
       }
       .sheet(item: $pinPreset) { preset in
-        PinSheet(preset: preset)
-          .environmentObject(syncService)
-          .presentationDetents([.medium])
+        PinSheet(preset: preset, syncService: syncService)
+          .presentationDetents([.large])
       }
     }
   }
@@ -168,17 +167,6 @@ enum PinPreset: Identifiable {
       return payload.hostIdentity.name
     case .manual(let host, _):
       return host
-    }
-  }
-
-  var hostAddress: String {
-    switch self {
-    case .discover(let host):
-      return host.addresses.first ?? host.hostName
-    case .qr(let payload):
-      return payload.addressCandidates.first?.host ?? ""
-    case .manual(let host, let port):
-      return "\(host):\(port)"
     }
   }
 }
@@ -708,16 +696,14 @@ private struct ManualEntrySheet: View {
 // MARK: - PIN sheet
 
 private struct PinSheet: View {
-  @EnvironmentObject private var syncService: SyncService
   @Environment(\.dismiss) private var dismiss
 
   let preset: PinPreset
+  let syncService: SyncService
 
   @State private var pin: String = ""
-  @FocusState private var isFocused: Bool
   @State private var isSubmitting = false
   @State private var localError: String?
-  @State private var submittedOnce = false
 
   var body: some View {
     NavigationStack {
@@ -732,32 +718,27 @@ private struct PinSheet: View {
             .lineLimit(1)
         }
 
-        ZStack {
-          TextField("", text: pinBinding)
-            .keyboardType(.numberPad)
-            .textContentType(.oneTimeCode)
-            .focused($isFocused)
-            .frame(width: 1, height: 1)
-            .opacity(0.01)
-            .accessibilityHidden(true)
-
-          HStack(spacing: 10) {
-            ForEach(0..<6, id: \.self) { index in
-              PinDigitBox(
-                digit: digit(at: index),
-                isFocused: isFocused && index == cursorIndex
-              )
-            }
-          }
-          .contentShape(Rectangle())
-          .onTapGesture {
-            isFocused = true
+        HStack(spacing: 10) {
+          ForEach(0..<6, id: \.self) { index in
+            PinDigitBox(
+              digit: digit(at: index),
+              isActive: !isSubmitting && index == cursorIndex
+            )
           }
         }
+        .accessibilityLabel("Pairing PIN")
+        .accessibilityValue(pin.isEmpty ? "No digits entered" : "\(pin.count) of 6 digits entered")
 
         Text("Shown on your Mac under Settings, then Sync.")
           .font(.footnote)
           .foregroundStyle(ADEColor.textSecondary)
+
+        PinKeypad(
+          isDisabled: isSubmitting,
+          onDigit: appendDigit,
+          onDelete: deleteDigit
+        )
+        .padding(.top, 2)
 
         if let error = localError {
           Text(error)
@@ -770,6 +751,9 @@ private struct PinSheet: View {
 
         HStack(spacing: 10) {
           Button {
+            if isSubmitting {
+              syncService.disconnect(clearCredentials: false)
+            }
             dismiss()
           } label: {
             Text("Cancel")
@@ -802,23 +786,7 @@ private struct PinSheet: View {
       .adeScreenBackground()
       .adeNavigationGlass()
       .navigationBarTitleDisplayMode(.inline)
-      .onAppear {
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
-          isFocused = true
-        }
-      }
-      .onChange(of: syncService.connectionState) { _, newValue in
-        if newValue == .connected {
-          let generator = UIImpactFeedbackGenerator(style: .medium)
-          generator.impactOccurred()
-          dismiss()
-        } else if newValue == .error, submittedOnce {
-          isSubmitting = false
-          localError = syncService.lastError ?? "Incorrect PIN."
-          pin = ""
-          isFocused = true
-        }
-      }
+      .interactiveDismissDisabled(isSubmitting)
     }
   }
 
@@ -831,31 +799,25 @@ private struct PinSheet: View {
     return index < chars.count ? String(chars[index]) : ""
   }
 
-  private var pinBinding: Binding<String> {
-    Binding(
-      get: { pin },
-      set: { newValue in
-        let filtered = String(newValue.filter(\.isNumber).prefix(6))
-        if filtered != pin {
-          UIImpactFeedbackGenerator(style: .light).impactOccurred()
-        }
-        pin = filtered
-        if filtered.count == 6 {
-          isFocused = false
-        }
-      }
-    )
+  private func appendDigit(_ digit: String) {
+    guard !isSubmitting, pin.count < 6 else { return }
+    localError = nil
+    pin.append(digit)
+  }
+
+  private func deleteDigit() {
+    guard !isSubmitting, !pin.isEmpty else { return }
+    localError = nil
+    pin.removeLast()
   }
 
   private func submit() {
     guard isComplete, !isSubmitting else { return }
     isSubmitting = true
-    submittedOnce = true
     localError = nil
-    isFocused = false
     let code = pin
 
-    Task {
+    Task { @MainActor in
       switch preset {
       case .discover(let host):
         await syncService.pairAndConnect(
@@ -891,6 +853,19 @@ private struct PinSheet: View {
           tailscaleAddress: nil
         )
       }
+
+      guard isSubmitting else { return }
+      if syncService.connectionState == .connected {
+        let generator = UIImpactFeedbackGenerator(style: .medium)
+        generator.impactOccurred()
+        isSubmitting = false
+        dismiss()
+      } else {
+        ADEHaptics.error()
+        isSubmitting = false
+        localError = syncService.lastError ?? "Incorrect PIN."
+        pin = ""
+      }
     }
   }
 }
@@ -899,17 +874,17 @@ private struct PinSheet: View {
 
 private struct PinDigitBox: View {
   let digit: String
-  let isFocused: Bool
+  let isActive: Bool
 
   var body: some View {
     ZStack {
       RoundedRectangle(cornerRadius: 12, style: .continuous)
-        .fill(ADEColor.recessedBackground.opacity(0.55))
+        .fill(ADEColor.recessedBackground.opacity(0.82))
 
       RoundedRectangle(cornerRadius: 12, style: .continuous)
         .stroke(
-          isFocused ? ADEColor.purpleAccent : ADEColor.border.opacity(0.25),
-          lineWidth: isFocused ? 1.5 : 0.75
+          isActive ? ADEColor.purpleAccent : ADEColor.border.opacity(0.25),
+          lineWidth: isActive ? 1.5 : 0.75
         )
 
       Text(digit)
@@ -917,10 +892,88 @@ private struct PinDigitBox: View {
         .foregroundStyle(ADEColor.textPrimary)
     }
     .frame(width: 44, height: 54)
-    .glassEffect(in: .rect(cornerRadius: 12))
-    .shadow(color: isFocused ? ADEColor.purpleGlow.opacity(0.5) : .clear, radius: 8)
-    .animation(.spring(response: 0.3, dampingFraction: 0.8), value: isFocused)
-    .animation(.spring(response: 0.3, dampingFraction: 0.7), value: digit)
+  }
+}
+
+// MARK: - PIN keypad
+
+private struct PinKeypad: View {
+  let isDisabled: Bool
+  let onDigit: (String) -> Void
+  let onDelete: () -> Void
+
+  private let rows = [
+    ["1", "2", "3"],
+    ["4", "5", "6"],
+    ["7", "8", "9"],
+  ]
+
+  var body: some View {
+    VStack(spacing: 8) {
+      ForEach(rows, id: \.self) { row in
+        HStack(spacing: 8) {
+          ForEach(row, id: \.self) { digit in
+            PinKeyButton(title: digit, isDisabled: isDisabled) {
+              onDigit(digit)
+            }
+          }
+        }
+      }
+
+      HStack(spacing: 8) {
+        Color.clear
+          .frame(maxWidth: .infinity, minHeight: 48)
+
+        PinKeyButton(title: "0", isDisabled: isDisabled) {
+          onDigit("0")
+        }
+
+        Button(action: onDelete) {
+          Image(systemName: "delete.left")
+            .font(.headline.weight(.semibold))
+            .frame(maxWidth: .infinity, minHeight: 48)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(isDisabled)
+        .foregroundStyle(isDisabled ? ADEColor.textMuted.opacity(0.5) : ADEColor.textPrimary)
+        .background(
+          RoundedRectangle(cornerRadius: 14, style: .continuous)
+            .fill(ADEColor.recessedBackground.opacity(isDisabled ? 0.35 : 0.78))
+        )
+        .overlay(
+          RoundedRectangle(cornerRadius: 14, style: .continuous)
+            .stroke(ADEColor.border.opacity(0.18), lineWidth: 0.75)
+        )
+        .accessibilityLabel("Delete digit")
+      }
+    }
+  }
+}
+
+private struct PinKeyButton: View {
+  let title: String
+  let isDisabled: Bool
+  let action: () -> Void
+
+  var body: some View {
+    Button(action: action) {
+      Text(title)
+        .font(.title3.weight(.semibold))
+        .frame(maxWidth: .infinity, minHeight: 48)
+        .contentShape(Rectangle())
+    }
+    .buttonStyle(.plain)
+    .disabled(isDisabled)
+    .foregroundStyle(isDisabled ? ADEColor.textMuted.opacity(0.5) : ADEColor.textPrimary)
+    .background(
+      RoundedRectangle(cornerRadius: 14, style: .continuous)
+        .fill(ADEColor.recessedBackground.opacity(isDisabled ? 0.35 : 0.78))
+    )
+    .overlay(
+      RoundedRectangle(cornerRadius: 14, style: .continuous)
+        .stroke(ADEColor.border.opacity(0.18), lineWidth: 0.75)
+    )
   }
 }
 
@@ -979,7 +1032,7 @@ private struct SyncAuroraBackground: View {
   }
 }
 
-// MARK: - QR scanner bridge (reused from legacy ContentView implementation)
+// MARK: - QR scanner bridge
 
 private struct PairingQrScannerRepresentable: UIViewControllerRepresentable {
   let onScan: (String) -> Void
@@ -991,12 +1044,12 @@ private struct PairingQrScannerRepresentable: UIViewControllerRepresentable {
   func makeUIViewController(context: Context) -> DataScannerViewController {
     let controller = DataScannerViewController(
       recognizedDataTypes: [.barcode(symbologies: [.qr])],
-      qualityLevel: .balanced,
+      qualityLevel: .fast,
       recognizesMultipleItems: false,
-      isHighFrameRateTrackingEnabled: true,
+      isHighFrameRateTrackingEnabled: false,
       isPinchToZoomEnabled: true,
       isGuidanceEnabled: true,
-      isHighlightingEnabled: true
+      isHighlightingEnabled: false
     )
     controller.delegate = context.coordinator
     try? controller.startScanning()

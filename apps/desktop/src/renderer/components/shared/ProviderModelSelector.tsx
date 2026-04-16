@@ -14,6 +14,7 @@ type ProviderModelSelectorProps = {
   filter?: (model: ModelDescriptor) => boolean;
   availableModelIds?: string[];
   catalogMode?: "all" | "available-only";
+  layoutVariant?: "standard" | "mobile";
   className?: string;
   disabled?: boolean;
   showReasoning?: boolean;
@@ -41,6 +42,7 @@ export function ProviderModelSelector({
   filter,
   availableModelIds,
   catalogMode = "all",
+  layoutVariant = "standard",
   className,
   disabled = false,
   showReasoning,
@@ -49,6 +51,7 @@ export function ProviderModelSelector({
   onOpenAiSettings,
   onConfigureMore,
 }: ProviderModelSelectorProps) {
+  const mobileLayout = layoutVariant === "mobile";
   const openSettings = onOpenAiSettings ?? onConfigureMore;
 
   const [open, setOpen] = useState(false);
@@ -108,7 +111,12 @@ export function ProviderModelSelector({
             <motion.div
               key="model-picker-panel"
               data-model-picker-panel="true"
-              className="pointer-events-auto w-full max-w-[720px] px-3"
+              className={cn(
+                "pointer-events-auto w-full",
+                mobileLayout
+                  ? "mt-auto px-0 pb-0 pt-20"
+                  : "mt-auto px-0 pb-0 pt-20 sm:mt-0 sm:px-3 sm:pb-0 sm:pt-[12vh]",
+              )}
               variants={fadeScale}
               initial="initial"
               animate="animate"
@@ -137,14 +145,24 @@ export function ProviderModelSelector({
                 headerTrailing={(
                   <button
                     type="button"
-                    className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-white/[0.06] bg-white/[0.03] text-muted-fg/45 transition-all duration-150 hover:border-white/[0.10] hover:bg-white/[0.05] hover:text-fg/70"
+                    className={cn(
+                      "inline-flex shrink-0 items-center justify-center border border-white/[0.06] bg-white/[0.03] text-muted-fg/45 transition-all duration-150 hover:border-white/[0.10] hover:bg-white/[0.05] hover:text-fg/70",
+                      mobileLayout
+                        ? "h-9 w-9 rounded-xl"
+                        : "h-9 w-9 rounded-xl sm:h-8 sm:w-8 sm:rounded-lg",
+                    )}
                     onClick={() => setOpen(false)}
                     aria-label="Close model picker"
                   >
                     <X size={13} weight="bold" />
                   </button>
                 )}
-                className="max-h-[min(520px,70vh)]"
+                className={cn(
+                  "max-h-[min(82dvh,48rem)] rounded-t-[26px] border-x-0 border-b-0",
+                  mobileLayout
+                    ? "rounded-b-none"
+                    : "sm:max-h-[min(520px,70vh)] sm:rounded-[18px] sm:border sm:border-violet-400/[0.12]",
+                )}
               />
             </motion.div>
           </div>
@@ -156,7 +174,7 @@ export function ProviderModelSelector({
 
   return (
     <div className={cn("flex max-w-full flex-wrap items-center gap-1.5", className)}>
-      <div ref={containerRef} className="relative min-w-0">
+      <div ref={containerRef} className={cn("relative min-w-0", mobileLayout ? "w-full" : "w-full sm:w-auto")}>
         <button
           type="button"
           disabled={disabled}
@@ -165,7 +183,10 @@ export function ProviderModelSelector({
             setOpen((current) => !current);
           }}
           className={cn(
-            "inline-flex h-7 w-auto min-w-[150px] max-w-[14rem] flex-none items-center gap-2 rounded-lg border border-white/[0.06] bg-white/[0.03] px-2.5 font-sans text-[10px] text-fg/70",
+            "inline-flex min-w-0 items-center gap-2 border border-white/[0.06] bg-white/[0.03] font-sans text-fg/70",
+            mobileLayout
+              ? "h-10 w-full rounded-xl px-3 text-[11px]"
+              : "h-10 w-full rounded-xl px-3 text-[11px] sm:h-7 sm:min-w-[150px] sm:max-w-[14rem] sm:flex-none sm:rounded-lg sm:px-2.5 sm:text-[10px]",
             "transition-all duration-150 hover:border-violet-400/15 hover:bg-violet-500/[0.04]",
             open && "border-violet-400/20 bg-violet-500/[0.06] shadow-[0_0_12px_rgba(167,139,250,0.08)]",
             disabled && "cursor-not-allowed opacity-70 hover:border-white/[0.06] hover:bg-white/[0.03]",
@@ -201,7 +222,13 @@ export function ProviderModelSelector({
           value={reasoningEffort ?? ""}
           disabled={disabled}
           onChange={(event) => onReasoningEffortChange(event.target.value || null)}
-          className={cn(selectCls, "min-w-[92px]", disabled && "cursor-not-allowed opacity-70")}
+          className={cn(
+            selectCls,
+            mobileLayout
+              ? "h-10 w-full rounded-xl px-3 text-[11px]"
+              : "h-10 w-full rounded-xl px-3 text-[11px] sm:h-7 sm:w-auto sm:min-w-[92px] sm:rounded-md sm:px-2 sm:text-[10px]",
+            disabled && "cursor-not-allowed opacity-70",
+          )}
           aria-label="Reasoning effort"
         >
           {reasoningTiers.map((tier) => (

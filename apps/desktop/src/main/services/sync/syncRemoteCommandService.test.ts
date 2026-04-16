@@ -60,6 +60,7 @@ function createMockPtyService() {
   return {
     create: vi.fn().mockResolvedValue({ sessionId: "pty-1" }),
     dispose: vi.fn().mockResolvedValue(undefined),
+    enrichSessions: vi.fn((sessions) => sessions),
   } as any;
 }
 
@@ -125,6 +126,8 @@ function createMockAgentChatService() {
     sendMessage: vi.fn().mockResolvedValue(undefined),
     interrupt: vi.fn().mockResolvedValue(undefined),
     steer: vi.fn().mockResolvedValue(undefined),
+    cancelSteer: vi.fn().mockResolvedValue(undefined),
+    editSteer: vi.fn().mockResolvedValue(undefined),
     approveToolUse: vi.fn().mockResolvedValue(undefined),
     respondToInput: vi.fn().mockResolvedValue(undefined),
     resumeSession: vi.fn().mockResolvedValue(undefined),
@@ -688,6 +691,27 @@ describe("createSyncRemoteCommandService", () => {
         .rejects.toThrow("chat.send requires text.");
     });
 
+    it("chat.updateSession forwards cursor mode and config values", async () => {
+      await service.execute(makePayload("chat.updateSession", {
+        sessionId: "sess-1",
+        cursorModeId: "ask",
+        cursorConfigValues: {
+          mode: "ask",
+          enabled: true,
+          ignored: 42,
+        },
+      }));
+
+      expect(agentChatService.updateSession).toHaveBeenCalledWith({
+        sessionId: "sess-1",
+        cursorModeId: "ask",
+        cursorConfigValues: {
+          mode: "ask",
+          enabled: true,
+        },
+      });
+    });
+
     it("chat.dispose routes to agentChatService.dispose", async () => {
       const result = await service.execute(makePayload("chat.dispose", {
         sessionId: "sess-1",
@@ -724,6 +748,45 @@ describe("createSyncRemoteCommandService", () => {
     it("chat.steer throws when text is missing", async () => {
       await expect(service.execute(makePayload("chat.steer", { sessionId: "sess-1" })))
         .rejects.toThrow("chat.steer requires text.");
+    });
+
+    it("chat.cancelSteer routes to agentChatService.cancelSteer", async () => {
+      const result = await service.execute(makePayload("chat.cancelSteer", {
+        sessionId: "sess-1",
+        steerId: "steer-9",
+      }));
+      expect(agentChatService.cancelSteer).toHaveBeenCalledWith({
+        sessionId: "sess-1",
+        steerId: "steer-9",
+      });
+      expect(result).toEqual({ ok: true });
+    });
+
+    it("chat.cancelSteer throws when steerId is missing", async () => {
+      await expect(service.execute(makePayload("chat.cancelSteer", { sessionId: "sess-1" })))
+        .rejects.toThrow("chat.cancelSteer requires steerId.");
+    });
+
+    it("chat.editSteer routes to agentChatService.editSteer", async () => {
+      const result = await service.execute(makePayload("chat.editSteer", {
+        sessionId: "sess-1",
+        steerId: "steer-9",
+        text: "updated instruction",
+      }));
+      expect(agentChatService.editSteer).toHaveBeenCalledWith({
+        sessionId: "sess-1",
+        steerId: "steer-9",
+        text: "updated instruction",
+      });
+      expect(result).toEqual({ ok: true });
+    });
+
+    it("chat.editSteer throws when text is missing", async () => {
+      await expect(service.execute(makePayload("chat.editSteer", {
+        sessionId: "sess-1",
+        steerId: "steer-9",
+      })))
+        .rejects.toThrow("chat.editSteer requires text.");
     });
 
     // ==========================================================

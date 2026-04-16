@@ -134,6 +134,7 @@ struct LaneDiffScreen: View {
                 do {
                   let workspaces = try await syncService.listWorkspaces()
                   guard let workspace = workspaces.first(where: { $0.laneId == request.laneId }) else {
+                    ADEHaptics.error()
                     errorMessage = "Workspace not found for lane \(request.laneId)."
                     return
                   }
@@ -143,6 +144,7 @@ struct LaneDiffScreen: View {
                   )
                   dismiss()
                 } catch {
+                  ADEHaptics.error()
                   errorMessage = error.localizedDescription
                 }
               }
@@ -154,6 +156,7 @@ struct LaneDiffScreen: View {
         do {
           try await load()
         } catch {
+          ADEHaptics.error()
           errorMessage = error.localizedDescription
         }
       }
@@ -196,6 +199,7 @@ struct LaneDiffScreen: View {
       try await load()
       errorMessage = nil
     } catch {
+      ADEHaptics.error()
       errorMessage = error.localizedDescription
     }
   }

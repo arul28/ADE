@@ -207,6 +207,7 @@ struct LaneChatLaunchSheet: View {
       }
       errorMessage = nil
     } catch {
+      ADEHaptics.error()
       errorMessage = error.localizedDescription
     }
   }
@@ -232,6 +233,7 @@ struct LaneChatLaunchSheet: View {
       await onComplete(session)
       dismiss()
     } catch {
+      ADEHaptics.error()
       errorMessage = error.localizedDescription
     }
     busy = false

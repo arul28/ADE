@@ -343,6 +343,7 @@ struct PRsTabView: View {
   @State private var createPresented = false
   @State private var stackPresentation: PrStackPresentation?
   @State private var refreshFeedbackToken = 0
+  @State private var lastPrsLocalProjectionReload = Date.distantPast
   @State private var selectedPrTransitionId: String?
   @State private var laneContextLaneId: String?
   @SceneStorage("ade.prs.stateFilter") private var stateFilterRawValue = PrListStateFilter.all.rawValue
@@ -597,6 +598,9 @@ struct PRsTabView: View {
         await reload()
       }
       .task(id: syncService.localStateRevision) {
+        let now = Date()
+        guard now.timeIntervalSince(lastPrsLocalProjectionReload) >= 0.35 else { return }
+        lastPrsLocalProjectionReload = now
         await reload()
       }
       .refreshable {
@@ -717,7 +721,7 @@ struct PRsTabView: View {
             syncService.settingsPresented = true
           } else {
             Task {
-              await syncService.reconnectIfPossible()
+              await syncService.reconnectIfPossible(userInitiated: true)
               await reload(refreshRemote: true)
             }
           }

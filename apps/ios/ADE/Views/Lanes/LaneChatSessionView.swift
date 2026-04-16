@@ -137,6 +137,7 @@ struct LaneChatSessionView: View {
       errorMessage = nil
     } catch {
       guard myId == transcriptRequestId else { return }
+      ADEHaptics.error()
       errorMessage = error.localizedDescription
     }
   }
@@ -149,6 +150,7 @@ struct LaneChatSessionView: View {
       try await syncService.sendChatMessage(sessionId: summary.sessionId, text: text)
       errorMessage = nil
     } catch {
+      ADEHaptics.error()
       errorMessage = "Message not sent. \(error.localizedDescription)"
       return
     }
@@ -162,6 +164,7 @@ struct LaneChatSessionView: View {
       errorMessage = nil
     } catch {
       guard myId == transcriptRequestId else { return }
+      ADEHaptics.error()
       errorMessage = "Message sent, but the transcript did not refresh. \(error.localizedDescription)"
     }
   }

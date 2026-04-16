@@ -6,6 +6,7 @@ private let workDateFormatter = ISO8601DateFormatter()
 
 private enum WorkSessionStatusFilter: String, CaseIterable, Identifiable {
   case all
+  case needsInput
   case running
   case ended
   case archived
@@ -15,7 +16,8 @@ private enum WorkSessionStatusFilter: String, CaseIterable, Identifiable {
   var title: String {
     switch self {
     case .all: return "All"
-    case .running: return "Running"
+    case .needsInput: return "Needs input"
+    case .running: return "Live"
     case .ended: return "Ended"
     case .archived: return "Archived"
     }
@@ -24,6 +26,7 @@ private enum WorkSessionStatusFilter: String, CaseIterable, Identifiable {
 
 private struct WorkSessionRoute: Hashable {
   let sessionId: String
+  var openingPrompt: String? = nil
 }
 
 private struct WorkDraftChatSession {
@@ -52,6 +55,8 @@ struct WorkTabView: View {
   @State private var optimisticSessions: [String: TerminalSessionSummary] = [:]
   @State private var refreshFeedbackToken = 0
   @State private var selectedSessionTransitionId: String?
+  /// Coalesces expensive per-lane `listChatSessions` refreshes when `localStateRevision` bumps during CRDT sync.
+  @State private var lastCoalescedChatSummaryRefresh = Date.distantPast
   @AppStorage("ade.work.archivedSessionIds") private var archivedSessionIdsStorage = ""
 
   private var workStatus: SyncDomainStatus {
@@ -74,6 +79,10 @@ struct WorkTabView: View {
     Set(archivedSessionIdsStorage.split(separator: "\n").map(String.init))
   }
 
+  private var laneById: [String: LaneSummary] {
+    Dictionary(uniqueKeysWithValues: lanes.map { ($0.id, $0) })
+  }
+
   private var mergedSessions: [TerminalSessionSummary] {
     let draftValues = optimisticSessions.values.filter { draft in
       !sessions.contains(where: { $0.id == draft.id })
@@ -89,8 +98,10 @@ struct WorkTabView: View {
       let chatStatus = normalizedWorkChatSessionStatus(session: session, summary: chatSummaries[session.id])
       if selectedStatus != .all {
         switch selectedStatus {
+        case .needsInput:
+          guard !isArchived && chatStatus == "awaiting-input" else { return false }
         case .running:
-          guard !isArchived && chatStatus == "active" else { return false }
+          guard !isArchived && (chatStatus == "active" || chatStatus == "idle") else { return false }
         case .ended:
           guard !isArchived && chatStatus == "ended" else { return false }
         case .archived:
@@ -118,26 +129,53 @@ struct WorkTabView: View {
     }
   }
 
-  private var pinnedSessions: [TerminalSessionSummary] {
-    displaySessions.filter { $0.pinned && !archivedSessionIds.contains($0.id) }
+  private var needsInputSessions: [TerminalSessionSummary] {
+    displaySessions.filter {
+      !archivedSessionIds.contains($0.id)
+      && normalizedWorkChatSessionStatus(session: $0, summary: chatSummaries[$0.id]) == "awaiting-input"
+    }
   }
 
-  private var unpinnedSessions: [TerminalSessionSummary] {
-    displaySessions.filter { !$0.pinned && !archivedSessionIds.contains($0.id) }
+  private var pinnedSessions: [TerminalSessionSummary] {
+    displaySessions.filter {
+      $0.pinned
+      && !archivedSessionIds.contains($0.id)
+      && normalizedWorkChatSessionStatus(session: $0, summary: chatSummaries[$0.id]) != "awaiting-input"
+    }
+  }
+
+  private var liveSessions: [TerminalSessionSummary] {
+    displaySessions.filter { session in
+      !session.pinned
+      && !archivedSessionIds.contains(session.id)
+      && {
+        let status = normalizedWorkChatSessionStatus(session: session, summary: chatSummaries[session.id])
+        return status == "active" || status == "idle"
+      }()
+    }
+  }
+
+  private var endedSessions: [TerminalSessionSummary] {
+    displaySessions.filter {
+      !$0.pinned
+      && !archivedSessionIds.contains($0.id)
+      && normalizedWorkChatSessionStatus(session: $0, summary: chatSummaries[$0.id]) == "ended"
+    }
   }
 
   private var archivedSessions: [TerminalSessionSummary] {
     displaySessions.filter { archivedSessionIds.contains($0.id) }
   }
 
-  private var runningChatSessions: [TerminalSessionSummary] {
+  private var liveChatSessions: [TerminalSessionSummary] {
     mergedSessions.filter {
-      normalizedWorkChatSessionStatus(session: $0, summary: chatSummaries[$0.id]) == "active" && !archivedSessionIds.contains($0.id)
+      let status = normalizedWorkChatSessionStatus(session: $0, summary: chatSummaries[$0.id])
+      return status != "ended" && !archivedSessionIds.contains($0.id)
     }
   }
 
   private var activityFeed: [WorkAgentActivity] {
-    runningChatSessions.flatMap { session in
+    liveChatSessions.flatMap { session in
       let transcript = transcriptCache[session.id] ?? parseWorkChatTranscript(syncService.terminalBuffers[session.id] ?? "")
       return deriveWorkAgentActivities(
         from: transcript,
@@ -173,13 +211,14 @@ struct WorkTabView: View {
             selectedLaneId: $selectedLaneId,
             selectedStatus: $selectedStatus,
             lanes: lanes,
-            runningCount: runningChatSessions.count
+            runningCount: liveSessions.count,
+            needsInputCount: needsInputSessions.count
           )
           .listRowBackground(Color.clear)
           .listRowSeparator(.hidden)
 
-          if !runningChatSessions.isEmpty {
-            WorkRunningBanner(count: runningChatSessions.count)
+          if !liveSessions.isEmpty || !needsInputSessions.isEmpty {
+            WorkRunningBanner(activeCount: liveSessions.count, attentionCount: needsInputSessions.count)
               .listRowBackground(Color.clear)
               .listRowSeparator(.hidden)
           }
@@ -213,7 +252,7 @@ struct WorkTabView: View {
               symbol: isLive ? "bubble.left.and.bubble.right" : "terminal",
               title: selectedStatus == .archived ? "No archived sessions" : "No work sessions yet",
               message: isLive
-                ? "Start a new Claude or Codex chat, then filter by lane or status as activity comes in."
+                ? "Start a new chat, then filter by lane or status as activity comes in."
                 : "Cached sessions stay visible here. Reconnect to create chats or refresh live agent work."
             ) {
               Button("New chat") {
@@ -221,15 +260,16 @@ struct WorkTabView: View {
               }
               .buttonStyle(.glassProminent)
               .tint(ADEColor.accent)
-              .disabled(!isLive || lanes.isEmpty)
+              .disabled(!isLive)
             }
             .listRowBackground(Color.clear)
             .listRowSeparator(.hidden)
           } else {
-            if !pinnedSessions.isEmpty {
+            if !needsInputSessions.isEmpty {
               WorkSessionSection(
-                title: "Pinned",
-                sessions: pinnedSessions,
+                title: "Needs input",
+                sessions: needsInputSessions,
+                laneById: laneById,
                 chatSummaries: chatSummaries,
                 archivedSessionIds: archivedSessionIds,
                 transitionNamespace: ADEMotion.allowsMatchedGeometry(reduceMotion: reduceMotion) ? sessionTransitionNamespace : nil,
@@ -245,10 +285,51 @@ struct WorkTabView: View {
               )
             }
 
-            if !unpinnedSessions.isEmpty {
+            if !pinnedSessions.isEmpty {
               WorkSessionSection(
-                title: selectedStatus == .running ? "Running" : selectedStatus == .ended ? "Ended" : "Sessions",
-                sessions: unpinnedSessions,
+                title: "Pinned",
+                sessions: pinnedSessions,
+                laneById: laneById,
+                chatSummaries: chatSummaries,
+                archivedSessionIds: archivedSessionIds,
+                transitionNamespace: ADEMotion.allowsMatchedGeometry(reduceMotion: reduceMotion) ? sessionTransitionNamespace : nil,
+                selectedSessionId: $selectedSessionTransitionId,
+                path: $path,
+                onArchive: toggleArchive,
+                onPin: togglePin,
+                onRename: beginRename,
+                onEnd: { session in endTarget = session },
+                onResume: resumeSession,
+                onCopyId: copySessionId,
+                onGoToLane: goToLane
+              )
+            }
+
+            if !liveSessions.isEmpty {
+              WorkSessionSection(
+                title: selectedStatus == .running ? "Live" : "Running",
+                sessions: liveSessions,
+                laneById: laneById,
+                chatSummaries: chatSummaries,
+                archivedSessionIds: archivedSessionIds,
+                transitionNamespace: ADEMotion.allowsMatchedGeometry(reduceMotion: reduceMotion) ? sessionTransitionNamespace : nil,
+                selectedSessionId: $selectedSessionTransitionId,
+                path: $path,
+                onArchive: toggleArchive,
+                onPin: togglePin,
+                onRename: beginRename,
+                onEnd: { session in endTarget = session },
+                onResume: resumeSession,
+                onCopyId: copySessionId,
+                onGoToLane: goToLane
+              )
+            }
+
+            if !endedSessions.isEmpty {
+              WorkSessionSection(
+                title: selectedStatus == .ended ? "Ended" : "Recent",
+                sessions: endedSessions,
+                laneById: laneById,
                 chatSummaries: chatSummaries,
                 archivedSessionIds: archivedSessionIds,
                 transitionNamespace: ADEMotion.allowsMatchedGeometry(reduceMotion: reduceMotion) ? sessionTransitionNamespace : nil,
@@ -268,6 +349,7 @@ struct WorkTabView: View {
               WorkSessionSection(
                 title: "Archived",
                 sessions: archivedSessions,
+                laneById: laneById,
                 chatSummaries: chatSummaries,
                 archivedSessionIds: archivedSessionIds,
                 transitionNamespace: ADEMotion.allowsMatchedGeometry(reduceMotion: reduceMotion) ? sessionTransitionNamespace : nil,
@@ -302,7 +384,7 @@ struct WorkTabView: View {
             Image(systemName: "plus.bubble.fill")
           }
           .accessibilityLabel("Create new chat")
-          .disabled(!isLive || lanes.isEmpty)
+          .disabled(!isLive)
         }
       }
       .refreshable {
@@ -313,7 +395,7 @@ struct WorkTabView: View {
         await reload()
       }
       .task(id: syncService.localStateRevision) {
-        await reload()
+        await reloadFromPersistedProjection()
       }
       .task(id: pollingKey) {
         await pollRunningChats()
@@ -321,6 +403,7 @@ struct WorkTabView: View {
       .navigationDestination(for: WorkSessionRoute.self) { route in
         WorkSessionDestinationView(
           sessionId: route.sessionId,
+          initialOpeningPrompt: route.openingPrompt,
           initialSession: mergedSessions.first(where: { $0.id == route.sessionId }),
           initialChatSummary: chatSummaries[route.sessionId],
           initialTranscript: transcriptCache[route.sessionId],
@@ -331,16 +414,18 @@ struct WorkTabView: View {
         .environmentObject(syncService)
       }
       .sheet(isPresented: $newChatPresented) {
-        WorkNewChatSheet(lanes: lanes) { draft in
-          optimisticSessions[draft.summary.sessionId] = makeOptimisticSession(for: draft.summary)
-          chatSummaries[draft.summary.sessionId] = draft.summary
-          newChatPresented = false
-          await reload(refreshRemote: true)
-          if let initialMessage = draft.initialMessage?.trimmingCharacters(in: .whitespacesAndNewlines), !initialMessage.isEmpty {
-            try? await syncService.sendChatMessage(sessionId: draft.summary.sessionId, text: initialMessage)
+        WorkNewChatSheet(lanes: lanes, onRefreshLanes: { await reload(refreshRemote: true) }) { draft in
+          let sessionId = draft.summary.sessionId
+          let openingMessage = draft.initialMessage?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+          optimisticSessions[sessionId] = makeOptimisticSession(for: draft.summary)
+          chatSummaries[sessionId] = draft.summary
+          selectedStatus = .all
+          selectedLaneId = draft.summary.laneId
+          selectedSessionTransitionId = sessionId
+          path.append(WorkSessionRoute(sessionId: sessionId, openingPrompt: openingMessage))
+          Task { @MainActor in
+            await reload(refreshRemote: true)
           }
-          selectedSessionTransitionId = draft.summary.sessionId
-          path.append(WorkSessionRoute(sessionId: draft.summary.sessionId))
         }
         .environmentObject(syncService)
       }
@@ -394,8 +479,10 @@ struct WorkTabView: View {
   }
 
   private var pollingKey: String {
-    let ids = runningChatSessions.map(\.id).joined(separator: ",")
-    return "\(isLive)-\(ids)-\(syncService.localStateRevision)"
+    let ids = liveChatSessions.map(\.id).sorted().joined(separator: ",")
+    // Intentionally omit `localStateRevision`: it changes constantly during host DB sync and was
+    // restarting this poll loop while the list `.task(id:)` also reloaded sessions every tick.
+    return "\(isLive)-\(ids)"
   }
 
   @MainActor
@@ -416,6 +503,34 @@ struct WorkTabView: View {
       }
       async let sessionsTask = syncService.fetchSessions()
       async let lanesTask = syncService.fetchLanes()
+      var loadedSessions = try await sessionsTask
+      var loadedLanes = try await lanesTask
+      if refreshRemote, loadedLanes.filter({ $0.archivedAt == nil }).isEmpty {
+        try? await syncService.refreshLaneSnapshots()
+        loadedSessions = try await syncService.fetchSessions()
+        loadedLanes = try await syncService.fetchLanes()
+      }
+      sessions = loadedSessions
+      lanes = loadedLanes.filter { $0.archivedAt == nil }
+      for session in loadedSessions where optimisticSessions[session.id] != nil {
+        optimisticSessions[session.id] = nil
+      }
+      if isLive {
+        lastCoalescedChatSummaryRefresh = Date()
+        await refreshChatSummaries(for: loadedLanes)
+      }
+      errorMessage = nil
+    } catch {
+      errorMessage = error.localizedDescription
+    }
+  }
+
+  /// Applies replicated SQLite rows to the Work list without fanning out per-lane host `listChatSessions` on every CRDT tick.
+  @MainActor
+  private func reloadFromPersistedProjection() async {
+    do {
+      async let sessionsTask = syncService.fetchSessions()
+      async let lanesTask = syncService.fetchLanes()
       let loadedSessions = try await sessionsTask
       let loadedLanes = try await lanesTask
       sessions = loadedSessions
@@ -424,7 +539,11 @@ struct WorkTabView: View {
         optimisticSessions[session.id] = nil
       }
       if isLive {
-        await refreshChatSummaries(for: loadedLanes)
+        let now = Date()
+        if now.timeIntervalSince(lastCoalescedChatSummaryRefresh) >= 2.6 {
+          lastCoalescedChatSummaryRefresh = now
+          await refreshChatSummaries(for: loadedLanes)
+        }
       }
       errorMessage = nil
     } catch {
@@ -453,22 +572,38 @@ struct WorkTabView: View {
       }
     }
 
-    chatSummaries = updated
+    let relevantSessionIds = Set((sessions + Array(optimisticSessions.values)).map(\.id)).union(updated.keys)
+    var nextSummaries = chatSummaries.filter { relevantSessionIds.contains($0.key) }
+    for (sessionId, summary) in updated {
+      nextSummaries[sessionId] = summary
+    }
+    chatSummaries = nextSummaries
   }
 
   @MainActor
   private func pollRunningChats() async {
     guard isLive else { return }
-    let running = runningChatSessions
+    let running = liveChatSessions
     guard !running.isEmpty else { return }
 
-    while !Task.isCancelled && isLive && !runningChatSessions.isEmpty {
-      for session in runningChatSessions {
+    var lastTranscriptFingerprint: [String: String] = [:]
+    while !Task.isCancelled && isLive && !liveChatSessions.isEmpty {
+      for session in liveChatSessions {
         try? await syncService.subscribeToChatEvents(sessionId: session.id)
         let streamed = syncService.chatEventHistory(sessionId: session.id)
-        transcriptCache[session.id] = streamed.isEmpty
+        let revision = syncService.chatEventRevision(for: session.id)
+        let terminalTail = syncService.terminalBuffers[session.id] ?? ""
+        var terminalHasher = Hasher()
+        terminalHasher.combine(terminalTail)
+        let fingerprint = "\(revision)|\(streamed.count)|\(terminalHasher.finalize())"
+        if lastTranscriptFingerprint[session.id] == fingerprint {
+          continue
+        }
+        lastTranscriptFingerprint[session.id] = fingerprint
+        let nextTranscript: [WorkChatEnvelope] = streamed.isEmpty
           ? parseWorkChatTranscript(syncService.terminalBuffers[session.id] ?? "")
           : makeWorkChatTranscript(from: streamed)
+        transcriptCache[session.id] = nextTranscript
       }
       try? await Task.sleep(nanoseconds: 900_000_000)
     }
@@ -486,8 +621,13 @@ struct WorkTabView: View {
 
   private func togglePin(_ session: TerminalSessionSummary) {
     Task {
-      try? await syncService.setSessionPinned(sessionId: session.id, pinned: !session.pinned)
-      await reload()
+      do {
+        try await syncService.setSessionPinned(sessionId: session.id, pinned: !session.pinned)
+        await reload()
+      } catch {
+        ADEHaptics.error()
+        errorMessage = error.localizedDescription
+      }
     }
   }
 
@@ -499,12 +639,36 @@ struct WorkTabView: View {
   @MainActor
   private func submitRename() async {
     guard let renameTarget else { return }
+    let trimmedTitle = renameText.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmedTitle.isEmpty else {
+      ADEHaptics.error()
+      errorMessage = "Session title cannot be empty."
+      return
+    }
     do {
-      try await syncService.renameSession(sessionId: renameTarget.id, title: renameText)
+      _ = try await syncService.updateChatSession(
+        sessionId: renameTarget.id,
+        title: trimmedTitle,
+        manuallyNamed: true
+      )
+      try await syncService.updateSessionMeta(
+        sessionId: renameTarget.id,
+        title: trimmedTitle,
+        manuallyNamed: true
+      )
+      if var summary = chatSummaries[renameTarget.id] {
+        summary.title = trimmedTitle
+        chatSummaries[renameTarget.id] = summary
+      }
+      if var session = optimisticSessions[renameTarget.id] {
+        session.title = trimmedTitle
+        optimisticSessions[renameTarget.id] = session
+      }
       self.renameTarget = nil
       renameText = ""
       await reload()
     } catch {
+      ADEHaptics.error()
       errorMessage = error.localizedDescription
     }
   }
@@ -552,6 +716,7 @@ struct WorkTabView: View {
       ptyId: nil,
       tracked: true,
       pinned: false,
+      manuallyNamed: nil,
       goal: summary.goal,
       toolType: toolTypeForProvider(summary.provider),
       title: summary.title ?? defaultWorkChatTitle(provider: summary.provider),
@@ -564,8 +729,9 @@ struct WorkTabView: View {
       headShaEnd: nil,
       lastOutputPreview: summary.lastOutputPreview,
       summary: summary.summary,
-      runtimeState: summary.endedAt == nil ? "running" : "idle",
-      resumeCommand: nil
+      runtimeState: normalizedRuntimeState(for: summary),
+      resumeCommand: nil,
+      chatIdleSinceAt: summary.idleSinceAt
     )
   }
 
@@ -607,7 +773,7 @@ struct WorkTabView: View {
             syncService.settingsPresented = true
           } else {
             Task {
-              await syncService.reconnectIfPossible()
+              await syncService.reconnectIfPossible(userInitiated: true)
               await reload(refreshRemote: true)
             }
           }
@@ -616,7 +782,7 @@ struct WorkTabView: View {
     case .hydrating:
       return ADENoticeCard(
         title: "Hydrating work sessions",
-        message: "Pulling host sessions, chat metadata, and proof artifacts so Work matches the desktop history.",
+        message: "Pulling host sessions, chat metadata, and proof artifacts so Work matches the desktop chat surface.",
         icon: "arrow.trianglehead.2.clockwise.rotate.90",
         tint: ADEColor.accent,
         actionTitle: nil,
@@ -652,6 +818,7 @@ private struct WorkFiltersSection: View {
   @Binding var selectedStatus: WorkSessionStatusFilter
   let lanes: [LaneSummary]
   let runningCount: Int
+  let needsInputCount: Int
 
   var body: some View {
     VStack(alignment: .leading, spacing: 12) {
@@ -674,6 +841,9 @@ private struct WorkFiltersSection: View {
                 Text(status.title)
                 if status == .running && runningCount > 0 {
                   Text("\(runningCount)")
+                    .font(.caption2.weight(.semibold))
+                } else if status == .needsInput && needsInputCount > 0 {
+                  Text("\(needsInputCount)")
                     .font(.caption2.weight(.semibold))
                 }
               }
@@ -699,6 +869,14 @@ private struct WorkFiltersSection: View {
       }
       .pickerStyle(.menu)
       .adeInsetField(cornerRadius: 14, padding: 10)
+
+      HStack(spacing: 8) {
+        LaneMicroChip(icon: "waveform.path.ecg", text: "\(runningCount) live", tint: ADEColor.success)
+        if needsInputCount > 0 {
+          LaneMicroChip(icon: "exclamationmark.bubble.fill", text: "\(needsInputCount) waiting", tint: ADEColor.warning)
+        }
+        Spacer(minLength: 0)
+      }
     }
     .adeGlassCard(cornerRadius: 18, padding: 14)
   }
@@ -707,14 +885,15 @@ private struct WorkFiltersSection: View {
 private struct WorkRunningBanner: View {
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-  let count: Int
+  let activeCount: Int
+  let attentionCount: Int
 
   @State private var isPulsing = false
 
   var body: some View {
     HStack(spacing: 10) {
       Circle()
-        .fill(ADEColor.success)
+        .fill(attentionCount > 0 ? ADEColor.warning : ADEColor.success)
         .frame(width: 10, height: 10)
         .scaleEffect(isPulsing && !reduceMotion ? 1.2 : 1.0)
         .animation(ADEMotion.pulse(reduceMotion: reduceMotion), value: isPulsing)
@@ -723,10 +902,10 @@ private struct WorkRunningBanner: View {
           isPulsing = true
         }
       VStack(alignment: .leading, spacing: 2) {
-        Text(count == 1 ? "1 agent is running" : "\(count) agents are running")
+        Text(bannerTitle)
           .font(.subheadline.weight(.semibold))
           .foregroundStyle(ADEColor.textPrimary)
-        Text("The Work tab badge stays visible until every active chat turn finishes.")
+        Text(bannerMessage)
           .font(.caption)
           .foregroundStyle(ADEColor.textSecondary)
       }
@@ -734,11 +913,29 @@ private struct WorkRunningBanner: View {
     }
     .adeGlassCard(cornerRadius: 18, padding: 14)
   }
+
+  private var bannerTitle: String {
+    if attentionCount > 0 && activeCount > 0 {
+      return "\(attentionCount) chat\(attentionCount == 1 ? "" : "s") need input, \(activeCount) still live"
+    }
+    if attentionCount > 0 {
+      return attentionCount == 1 ? "1 chat needs input" : "\(attentionCount) chats need input"
+    }
+    return activeCount == 1 ? "1 chat is live" : "\(activeCount) chats are live"
+  }
+
+  private var bannerMessage: String {
+    if attentionCount > 0 {
+      return "Open the waiting chat to approve, answer, or resume work without leaving the phone."
+    }
+    return "The Work tab badge stays visible until every active chat turn finishes."
+  }
 }
 
 private struct WorkSessionSection: View {
   let title: String
   let sessions: [TerminalSessionSummary]
+  let laneById: [String: LaneSummary]
   let chatSummaries: [String: AgentChatSessionSummary]
   let archivedSessionIds: Set<String>
   let transitionNamespace: Namespace.ID?
@@ -755,18 +952,20 @@ private struct WorkSessionSection: View {
   var body: some View {
     Section(title) {
       ForEach(sessions) { session in
-        NavigationLink(value: WorkSessionRoute(sessionId: session.id)) {
+        Button {
+          selectedSessionId = session.id
+          path.append(WorkSessionRoute(sessionId: session.id))
+        } label: {
           WorkSessionRow(
             session: session,
+            lane: laneById[session.laneId],
             chatSummary: chatSummaries[session.id],
             isArchived: archivedSessionIds.contains(session.id),
             transitionNamespace: transitionNamespace,
             isSelectedTransitionSource: selectedSessionId == session.id
           )
         }
-        .simultaneousGesture(TapGesture().onEnded {
-          selectedSessionId = session.id
-        })
+        .buttonStyle(.plain)
         .swipeActions(edge: .trailing, allowsFullSwipe: false) {
           Button(archivedSessionIds.contains(session.id) ? "Restore" : "Archive") {
             onArchive(session)
@@ -788,11 +987,11 @@ private struct WorkSessionSection: View {
           Button(archivedSessionIds.contains(session.id) ? "Restore from archive" : "Archive") {
             onArchive(session)
           }
-          if normalizedWorkChatSessionStatus(session: session, summary: chatSummaries[session.id]) == "active" {
+          if shouldShowEndAction(for: session) {
             Button(isChatSession(session) ? "End chat" : "Close session", role: .destructive) {
               onEnd(session)
             }
-          } else {
+          } else if shouldShowResumeAction(for: session) {
             Button("Resume") {
               onResume(session)
             }
@@ -810,10 +1009,25 @@ private struct WorkSessionSection: View {
       }
     }
   }
+
+  private func sessionStatus(for session: TerminalSessionSummary) -> String {
+    normalizedWorkChatSessionStatus(session: session, summary: chatSummaries[session.id])
+  }
+
+  private func shouldShowEndAction(for session: TerminalSessionSummary) -> Bool {
+    let status = sessionStatus(for: session)
+    return status == "active" || status == "awaiting-input"
+  }
+
+  private func shouldShowResumeAction(for session: TerminalSessionSummary) -> Bool {
+    let status = sessionStatus(for: session)
+    return status == "idle" || status == "ended"
+  }
 }
 
 private struct WorkSessionRow: View {
   let session: TerminalSessionSummary
+  let lane: LaneSummary?
   let chatSummary: AgentChatSessionSummary?
   let isArchived: Bool
   let transitionNamespace: Namespace.ID?
@@ -847,6 +1061,16 @@ private struct WorkSessionRow: View {
             ScrollView(.horizontal, showsIndicators: false) {
               HStack(spacing: 8) {
                 WorkTag(text: session.laneName, icon: "arrow.triangle.branch", tint: ADEColor.textSecondary)
+                if lane?.status.dirty == true {
+                  WorkTag(text: "Dirty", icon: "circle.fill", tint: ADEColor.warning)
+                }
+                if let devices = lane?.devicesOpen, !devices.isEmpty {
+                  WorkTag(
+                    text: devices.count == 1 ? "1 device" : "\(devices.count) devices",
+                    icon: devicePresenceSymbol(for: devices),
+                    tint: ADEColor.accent
+                  )
+                }
                 if let chatSummary {
                   WorkTag(text: providerLabel(chatSummary.provider), icon: providerIcon(chatSummary.provider), tint: rowTint)
                   WorkTag(text: chatSummary.model, icon: "cpu", tint: ADEColor.textSecondary)
@@ -970,103 +1194,344 @@ private struct WorkNewChatSheet: View {
   @EnvironmentObject private var syncService: SyncService
 
   let lanes: [LaneSummary]
+  let onRefreshLanes: @MainActor () async -> Void
   let onCreated: @MainActor (WorkDraftChatSession) async -> Void
 
   @State private var provider = "claude"
   @State private var models: [AgentChatModelInfo] = []
   @State private var selectedModelId = ""
+  @State private var selectedReasoningEffort = ""
   @State private var selectedLaneId = ""
   @State private var initialMessage = ""
   @State private var busy = false
   @State private var errorMessage: String?
 
+  private let providerColumns = [
+    GridItem(.flexible(), spacing: 12),
+    GridItem(.flexible(), spacing: 12),
+  ]
+
+  private var selectedModel: AgentChatModelInfo? {
+    models.first(where: { $0.id == selectedModelId })
+  }
+
+  private var trimmedInitialMessage: String {
+    initialMessage.trimmingCharacters(in: .whitespacesAndNewlines)
+  }
+
+  private var canStartChat: Bool {
+    !busy && !selectedLaneId.isEmpty && !selectedModelId.isEmpty && !trimmedInitialMessage.isEmpty
+  }
+
+  private var startDisabledReason: String? {
+    if busy { return nil }
+    if selectedLaneId.isEmpty { return "Choose a lane." }
+    if selectedModelId.isEmpty { return "Choose a model." }
+    if trimmedInitialMessage.isEmpty { return "Enter an opening prompt." }
+    return nil
+  }
+
+  private var providerOptions: [WorkProviderOption] {
+    [
+      WorkProviderOption(
+        id: "claude",
+        title: "Claude",
+        subtitle: "Long-form reasoning and review",
+        icon: providerIcon("claude"),
+        tint: providerTint("claude")
+      ),
+      WorkProviderOption(
+        id: "codex",
+        title: "Codex",
+        subtitle: "Fast code execution and edits",
+        icon: providerIcon("codex"),
+        tint: providerTint("codex")
+      ),
+      WorkProviderOption(
+        id: "opencode",
+        title: "OpenCode",
+        subtitle: "Open runtime workflows and tools",
+        icon: providerIcon("opencode"),
+        tint: providerTint("opencode")
+      ),
+      WorkProviderOption(
+        id: "cursor",
+        title: "Cursor",
+        subtitle: "Cursor-native chat sessions",
+        icon: providerIcon("cursor"),
+        tint: providerTint("cursor")
+      ),
+    ]
+  }
+
   var body: some View {
     NavigationStack {
-      List {
-        Section("Provider") {
-          Picker("Provider", selection: $provider) {
-            Text("Claude").tag("claude")
-            Text("Codex").tag("codex")
-          }
-          .pickerStyle(.segmented)
-          .listRowBackground(Color.clear)
-        }
-
-        Section("Model") {
-          if models.isEmpty {
-            ProgressView()
-              .frame(maxWidth: .infinity, alignment: .leading)
-          } else {
-            Picker("Model", selection: $selectedModelId) {
-              ForEach(models) { model in
-                Text(model.displayName).tag(model.id)
-              }
-            }
-            .pickerStyle(.menu)
-            if let selected = models.first(where: { $0.id == selectedModelId }),
-               let description = selected.description,
-               !description.isEmpty {
-              Text(description)
-                .font(.caption)
-                .foregroundStyle(ADEColor.textSecondary)
-            }
-          }
-        }
-
-        Section("Lane") {
-          if lanes.isEmpty {
-            ADEEmptyStateView(
-              symbol: "arrow.triangle.branch",
-              title: "No lanes available",
-              message: "Create or sync a lane before starting a new chat session."
-            )
-            .listRowBackground(Color.clear)
-          } else {
-            ForEach(lanes) { lane in
-              Button {
-                selectedLaneId = lane.id
-              } label: {
-                HStack(spacing: 12) {
-                  Circle()
-                    .fill(lane.status.dirty ? ADEColor.warning : ADEColor.success)
-                    .frame(width: 10, height: 10)
-                  VStack(alignment: .leading, spacing: 4) {
-                    Text(lane.name)
+      ScrollView {
+        VStack(spacing: 14) {
+          GlassSection(title: "Provider") {
+            LazyVGrid(columns: providerColumns, spacing: 12) {
+              ForEach(providerOptions) { option in
+                Button {
+                  provider = option.id
+                } label: {
+                  VStack(alignment: .leading, spacing: 10) {
+                    HStack(spacing: 10) {
+                      Image(systemName: option.icon)
+                        .font(.system(size: 18, weight: .semibold))
+                        .foregroundStyle(option.tint)
+                        .frame(width: 34, height: 34)
+                        .background(option.tint.opacity(0.14), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                      Spacer(minLength: 0)
+                      if provider == option.id {
+                        Image(systemName: "checkmark.circle.fill")
+                          .foregroundStyle(ADEColor.accent)
+                      }
+                    }
+                    Text(option.title)
                       .font(.subheadline.weight(.semibold))
                       .foregroundStyle(ADEColor.textPrimary)
-                    Text(lane.branchRef)
-                      .font(.caption.monospaced())
+                    Text(option.subtitle)
+                      .font(.caption)
                       .foregroundStyle(ADEColor.textSecondary)
+                      .lineLimit(2)
                   }
-                  Spacer()
-                  if selectedLaneId == lane.id {
-                    Image(systemName: "checkmark.circle.fill")
-                      .foregroundStyle(ADEColor.accent)
-                  }
+                  .frame(maxWidth: .infinity, minHeight: 118, alignment: .leading)
+                  .padding(12)
+                  .background(
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                      .fill(provider == option.id ? option.tint.opacity(0.14) : ADEColor.surfaceBackground.opacity(0.55))
+                  )
+                  .overlay(
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                      .stroke(provider == option.id ? option.tint.opacity(0.45) : ADEColor.border.opacity(0.18), lineWidth: provider == option.id ? 1.3 : 0.8)
+                  )
+                  .glassEffect(in: .rect(cornerRadius: 16))
                 }
+                .buttonStyle(.plain)
               }
-              .buttonStyle(.plain)
-              .listRowBackground(Color.clear)
             }
           }
-        }
 
-        Section("Optional first message") {
-          TextField("Tell the agent what to do", text: $initialMessage, axis: .vertical)
-            .textInputAutocapitalization(.sentences)
-            .autocorrectionDisabled()
-        }
+          GlassSection(title: "Model") {
+            VStack(alignment: .leading, spacing: 12) {
+              if models.isEmpty && errorMessage == nil {
+                HStack(spacing: 10) {
+                  ProgressView()
+                    .tint(ADEColor.accent)
+                  Text("Loading \(providerLabel(provider)) models…")
+                    .font(.subheadline)
+                    .foregroundStyle(ADEColor.textSecondary)
+                }
+              } else if models.isEmpty {
+                Text(errorMessage ?? "No models are currently available for \(providerLabel(provider)).")
+                  .font(.caption)
+                  .foregroundStyle(errorMessage == nil ? ADEColor.textSecondary : ADEColor.danger)
+              } else {
+                ForEach(models) { model in
+                  Button {
+                    selectedModelId = model.id
+                  } label: {
+                    VStack(alignment: .leading, spacing: 8) {
+                      HStack(spacing: 10) {
+                        VStack(alignment: .leading, spacing: 4) {
+                          Text(model.displayName)
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(ADEColor.textPrimary)
+                          if let description = model.description, !description.isEmpty {
+                            Text(description)
+                              .font(.caption)
+                              .foregroundStyle(ADEColor.textSecondary)
+                              .lineLimit(2)
+                          }
+                        }
+                        Spacer(minLength: 8)
+                        if selectedModelId == model.id {
+                          Image(systemName: "checkmark.circle.fill")
+                            .foregroundStyle(ADEColor.accent)
+                        }
+                      }
 
-        if let errorMessage {
-          Section {
-            Text(errorMessage)
-              .font(.caption)
-              .foregroundStyle(ADEColor.danger)
+                      HStack(spacing: 6) {
+                        if let family = model.family, !family.isEmpty {
+                          LaneMicroChip(icon: "circle.grid.2x2.fill", text: family, tint: ADEColor.textSecondary)
+                        }
+                        if model.supportsReasoning == true {
+                          LaneMicroChip(icon: "brain", text: "Reasoning", tint: ADEColor.accent)
+                        }
+                        if model.supportsTools == true {
+                          LaneMicroChip(icon: "hammer.fill", text: "Tools", tint: ADEColor.success)
+                        }
+                        if model.isDefault {
+                          LaneMicroChip(icon: "star.fill", text: "Default", tint: ADEColor.warning)
+                        }
+                        Spacer(minLength: 0)
+                      }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(12)
+                    .background(
+                      RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .fill(selectedModelId == model.id ? providerTint(provider).opacity(0.14) : ADEColor.surfaceBackground.opacity(0.55))
+                    )
+                    .overlay(
+                      RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .stroke(selectedModelId == model.id ? providerTint(provider).opacity(0.42) : ADEColor.border.opacity(0.18), lineWidth: selectedModelId == model.id ? 1.3 : 0.8)
+                    )
+                    .glassEffect(in: .rect(cornerRadius: 16))
+                  }
+                  .buttonStyle(.plain)
+                }
+              }
+            }
+          }
+
+          if let reasoningEfforts = selectedModel?.reasoningEfforts, !reasoningEfforts.isEmpty {
+            GlassSection(title: "Reasoning") {
+              VStack(alignment: .leading, spacing: 12) {
+                Picker("Reasoning", selection: $selectedReasoningEffort) {
+                  Text("Default").tag("")
+                  ForEach(reasoningEfforts) { effort in
+                    Text(effort.effort.capitalized).tag(effort.effort)
+                  }
+                }
+                .pickerStyle(.segmented)
+
+                if let effort = reasoningEfforts.first(where: { $0.effort == selectedReasoningEffort }) {
+                  Text(effort.description)
+                    .font(.caption)
+                    .foregroundStyle(ADEColor.textSecondary)
+                }
+              }
+            }
+          }
+
+          GlassSection(title: "Lane") {
+            if lanes.isEmpty {
+              VStack(spacing: 14) {
+                ADEEmptyStateView(
+                  symbol: "arrow.triangle.branch",
+                  title: "No lanes on this phone yet",
+                  message: "Lanes are created on the ADE host. After the host syncs lane metadata, pull to refresh on Work or tap below."
+                )
+                Button {
+                  Task { await onRefreshLanes() }
+                } label: {
+                  Label("Refresh lanes from host", systemImage: "arrow.trianglehead.2.clockwise.rotate.90")
+                    .font(.subheadline.weight(.semibold))
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 10)
+                }
+                .buttonStyle(.glassProminent)
+                .tint(ADEColor.accent)
+              }
+            } else {
+              VStack(spacing: 12) {
+                ForEach(lanes) { lane in
+                  Button {
+                    selectedLaneId = lane.id
+                  } label: {
+                    VStack(alignment: .leading, spacing: 8) {
+                      HStack(spacing: 12) {
+                        Circle()
+                          .fill(lane.status.dirty ? ADEColor.warning : ADEColor.success)
+                          .frame(width: 10, height: 10)
+                        VStack(alignment: .leading, spacing: 4) {
+                          Text(lane.name)
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(ADEColor.textPrimary)
+                          Text(lane.branchRef)
+                            .font(.caption.monospaced())
+                            .foregroundStyle(ADEColor.textSecondary)
+                            .lineLimit(1)
+                        }
+                        Spacer(minLength: 0)
+                        if let devices = lane.devicesOpen, !devices.isEmpty {
+                          Image(systemName: devicePresenceSymbol(for: devices))
+                            .foregroundStyle(ADEColor.accent)
+                        }
+                        if selectedLaneId == lane.id {
+                          Image(systemName: "checkmark.circle.fill")
+                            .foregroundStyle(ADEColor.accent)
+                        }
+                      }
+
+                      HStack(spacing: 6) {
+                        if lane.status.dirty {
+                          LaneMicroChip(icon: "circle.fill", text: "dirty", tint: ADEColor.warning)
+                        }
+                        if lane.status.ahead > 0 {
+                          LaneMicroChip(icon: "arrow.up", text: "\(lane.status.ahead)", tint: ADEColor.success)
+                        }
+                        if lane.status.behind > 0 {
+                          LaneMicroChip(icon: "arrow.down", text: "\(lane.status.behind)", tint: ADEColor.warning)
+                        }
+                        if let devices = lane.devicesOpen, !devices.isEmpty {
+                          LaneMicroChip(icon: devicePresenceSymbol(for: devices), text: "\(devices.count)", tint: ADEColor.accent)
+                        }
+                        Spacer(minLength: 0)
+                      }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(12)
+                    .background(
+                      RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .fill(selectedLaneId == lane.id ? ADEColor.accent.opacity(0.12) : ADEColor.surfaceBackground.opacity(0.55))
+                    )
+                    .overlay(
+                      RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .stroke(selectedLaneId == lane.id ? ADEColor.accent.opacity(0.4) : ADEColor.border.opacity(0.18), lineWidth: selectedLaneId == lane.id ? 1.3 : 0.8)
+                    )
+                    .glassEffect(in: .rect(cornerRadius: 16))
+                  }
+                  .buttonStyle(.plain)
+                }
+              }
+            }
+          }
+
+          GlassSection(title: "Opening prompt") {
+            VStack(alignment: .leading, spacing: 8) {
+              TextField("Tell the agent what to do", text: $initialMessage, axis: .vertical)
+                .textInputAutocapitalization(.sentences)
+                .autocorrectionDisabled()
+                .adeInsetField(cornerRadius: 14, padding: 12)
+                .disabled(busy)
+
+              if let startDisabledReason {
+                Label(startDisabledReason, systemImage: "info.circle")
+                  .font(.caption2)
+                  .foregroundStyle(ADEColor.textMuted)
+              }
+            }
+          }
+
+          if let errorMessage {
+            HStack(spacing: 10) {
+              Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(ADEColor.danger)
+              Text(errorMessage)
+                .font(.caption)
+                .foregroundStyle(ADEColor.danger)
+              Spacer()
+            }
+            .padding(12)
+            .background(ADEColor.danger.opacity(0.08), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+          }
+
+          if busy {
+            HStack(spacing: 10) {
+              ProgressView()
+                .tint(ADEColor.accent)
+              Text("Creating \(providerLabel(provider)) chat…")
+                .font(.subheadline)
+                .foregroundStyle(ADEColor.textSecondary)
+              Spacer()
+            }
+            .adeGlassCard(cornerRadius: 12, padding: 12)
           }
         }
+        .padding(16)
       }
-      .listStyle(.insetGrouped)
-      .scrollContentBackground(.hidden)
       .adeScreenBackground()
       .adeNavigationGlass()
       .navigationTitle("New chat")
@@ -1080,11 +1545,23 @@ private struct WorkNewChatSheet: View {
           Button("Start") {
             Task { await submit() }
           }
-          .disabled(busy || selectedLaneId.isEmpty || selectedModelId.isEmpty)
+          .disabled(!canStartChat)
+        }
+      }
+      .onChange(of: selectedModelId) { _, _ in
+        if let reasoningEfforts = selectedModel?.reasoningEfforts, !reasoningEfforts.isEmpty {
+          if !reasoningEfforts.contains(where: { $0.effort == selectedReasoningEffort }) {
+            selectedReasoningEffort = ""
+          }
+        } else {
+          selectedReasoningEffort = ""
         }
       }
       .task(id: provider) {
-        await loadModels()
+        models = []
+        selectedModelId = ""
+        selectedReasoningEffort = ""
+        await loadModels(resetSelection: true)
       }
       .onAppear {
         if selectedLaneId.isEmpty {
@@ -1095,12 +1572,24 @@ private struct WorkNewChatSheet: View {
   }
 
   @MainActor
-  private func loadModels() async {
+  private func loadModels(resetSelection: Bool) async {
+    let requestedProvider = provider
     do {
-      models = try await syncService.listChatModels(provider: provider)
-      selectedModelId = models.first(where: \.isDefault)?.id ?? models.first?.id ?? ""
+      let loadedModels = try await syncService.listChatModels(provider: requestedProvider)
+      guard provider == requestedProvider else { return }
+      models = loadedModels
+      if resetSelection || loadedModels.contains(where: { $0.id == selectedModelId }) == false {
+        if let preferred = loadedModels.first(where: \.isDefault) ?? loadedModels.first {
+          selectedModelId = preferred.id
+          selectedReasoningEffort = ""
+        } else {
+          selectedModelId = ""
+          selectedReasoningEffort = ""
+        }
+      }
       errorMessage = nil
     } catch {
+      ADEHaptics.error()
       errorMessage = error.localizedDescription
       models = []
       selectedModelId = ""
@@ -1109,15 +1598,550 @@ private struct WorkNewChatSheet: View {
 
   @MainActor
   private func submit() async {
+    let openingMessage = trimmedInitialMessage
+    guard !openingMessage.isEmpty else {
+      errorMessage = "Enter an opening message before starting a chat."
+      return
+    }
     do {
       busy = true
-      let summary = try await syncService.createChatSession(laneId: selectedLaneId, provider: provider, model: selectedModelId)
-      await onCreated(WorkDraftChatSession(summary: summary, initialMessage: initialMessage))
+      let summary = try await syncService.createChatSession(
+        laneId: selectedLaneId,
+        provider: provider,
+        model: selectedModelId,
+        reasoningEffort: {
+          guard !selectedReasoningEffort.isEmpty else { return nil }
+          guard selectedModel?.reasoningEfforts?.contains(where: { $0.effort == selectedReasoningEffort }) == true else { return nil }
+          return selectedReasoningEffort
+        }()
+      )
+      await onCreated(WorkDraftChatSession(summary: summary, initialMessage: openingMessage))
       dismiss()
     } catch {
+      ADEHaptics.error()
       errorMessage = error.localizedDescription
     }
     busy = false
+  }
+}
+
+private struct WorkProviderOption: Identifiable {
+  let id: String
+  let title: String
+  let subtitle: String
+  let icon: String
+  let tint: Color
+}
+
+private struct WorkRuntimeOption: Identifiable {
+  let id: String
+  let title: String
+  let subtitle: String
+}
+
+private struct WorkSessionSettingsSheet: View {
+  @Environment(\.dismiss) private var dismiss
+  @EnvironmentObject private var syncService: SyncService
+
+  let sessionId: String
+  let laneName: String
+  let summary: AgentChatSessionSummary
+  let onSaved: @MainActor () async -> Void
+
+  @State private var titleText: String
+  @State private var models: [AgentChatModelInfo] = []
+  @State private var selectedModelId: String
+  @State private var selectedReasoningEffort: String
+  @State private var selectedRuntimeMode: String
+  @State private var selectedCursorModeId: String
+  @State private var busy = false
+  @State private var errorMessage: String?
+
+  init(
+    sessionId: String,
+    laneName: String,
+    summary: AgentChatSessionSummary,
+    onSaved: @escaping @MainActor () async -> Void
+  ) {
+    self.sessionId = sessionId
+    self.laneName = laneName
+    self.summary = summary
+    self.onSaved = onSaved
+    _titleText = State(initialValue: summary.title ?? defaultWorkChatTitle(provider: summary.provider))
+    _selectedModelId = State(initialValue: summary.modelId ?? summary.model)
+    _selectedReasoningEffort = State(initialValue: summary.reasoningEffort ?? "")
+    _selectedRuntimeMode = State(initialValue: workInitialRuntimeMode(summary))
+    _selectedCursorModeId = State(initialValue: workInitialCursorModeId(summary))
+  }
+
+  private var selectedModel: AgentChatModelInfo? {
+    models.first(where: { $0.id == selectedModelId })
+  }
+
+  private var resolvedInitialModelId: String {
+    summary.modelId ?? summary.model
+  }
+
+  private var resolvedInitialTitle: String {
+    (summary.title ?? defaultWorkChatTitle(provider: summary.provider))
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+  }
+
+  private var resolvedInitialReasoningEffort: String {
+    summary.reasoningEffort ?? ""
+  }
+
+  private var runtimeOptions: [WorkRuntimeOption] {
+    switch summary.provider {
+    case "claude":
+      return [
+        WorkRuntimeOption(id: "default", title: "Default", subtitle: "Standard approval flow."),
+        WorkRuntimeOption(id: "plan", title: "Plan", subtitle: "Analysis and planning turns."),
+        WorkRuntimeOption(id: "edit", title: "Edit", subtitle: "Auto-approve file edits."),
+        WorkRuntimeOption(id: "full-auto", title: "Full auto", subtitle: "Skip permission prompts."),
+      ]
+    case "codex":
+      return [
+        WorkRuntimeOption(id: "default", title: "Default", subtitle: "Ask on request with workspace write."),
+        WorkRuntimeOption(id: "plan", title: "Plan", subtitle: "Untrusted approvals with read-only sandbox."),
+        WorkRuntimeOption(id: "edit", title: "Edit", subtitle: "Approve on failure with workspace write."),
+        WorkRuntimeOption(id: "full-auto", title: "Full auto", subtitle: "Never ask, full sandbox access."),
+      ]
+    case "opencode":
+      return [
+        WorkRuntimeOption(id: "plan", title: "Plan", subtitle: "Read-first runtime mode."),
+        WorkRuntimeOption(id: "edit", title: "Edit", subtitle: "Normal edit loop."),
+        WorkRuntimeOption(id: "full-auto", title: "Full auto", subtitle: "Let the runtime operate freely."),
+      ]
+    default:
+      return []
+    }
+  }
+
+  private var cursorModeOptions: [WorkRuntimeOption] {
+    workCursorModeIds(summary.cursorModeSnapshot, fallback: workInitialCursorModeId(summary)).map { modeId in
+      WorkRuntimeOption(
+        id: modeId,
+        title: workCursorModeLabel(modeId),
+        subtitle: modeId == (summary.cursorModeId ?? workInitialCursorModeId(summary))
+          ? "Current cursor mode."
+          : "Switch this session to \(workCursorModeLabel(modeId))."
+      )
+    }
+  }
+
+  var body: some View {
+    NavigationStack {
+      ScrollView {
+        VStack(spacing: 14) {
+          GlassSection(title: "Session") {
+            VStack(alignment: .leading, spacing: 12) {
+              HStack(spacing: 12) {
+                Image(systemName: providerIcon(summary.provider))
+                  .font(.system(size: 18, weight: .semibold))
+                  .foregroundStyle(providerTint(summary.provider))
+                  .frame(width: 34, height: 34)
+                  .background(providerTint(summary.provider).opacity(0.14), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+
+                VStack(alignment: .leading, spacing: 4) {
+                  Text(providerLabel(summary.provider))
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(ADEColor.textPrimary)
+                  Text("Update the live chat without leaving mobile.")
+                    .font(.caption)
+                    .foregroundStyle(ADEColor.textSecondary)
+                }
+
+                Spacer(minLength: 0)
+              }
+
+              HStack(spacing: 8) {
+                WorkTag(text: laneName, icon: "arrow.triangle.branch", tint: ADEColor.textSecondary)
+                WorkTag(
+                  text: sessionStatusLabel(for: normalizedWorkChatSessionStatus(session: nil, summary: summary)),
+                  icon: workChatStatusIcon(normalizedWorkChatSessionStatus(session: nil, summary: summary)),
+                  tint: workChatStatusTint(normalizedWorkChatSessionStatus(session: nil, summary: summary))
+                )
+              }
+            }
+          }
+
+          GlassSection(title: "Title") {
+            TextField("Name this chat", text: $titleText)
+              .textInputAutocapitalization(.sentences)
+              .autocorrectionDisabled()
+              .adeInsetField(cornerRadius: 14, padding: 12)
+          }
+
+          GlassSection(title: "Model") {
+            VStack(alignment: .leading, spacing: 12) {
+              if models.isEmpty && errorMessage == nil {
+                HStack(spacing: 10) {
+                  ProgressView()
+                    .tint(ADEColor.accent)
+                  Text("Loading \(providerLabel(summary.provider)) models…")
+                    .font(.subheadline)
+                    .foregroundStyle(ADEColor.textSecondary)
+                }
+              } else if models.isEmpty {
+                Text(errorMessage ?? "No models are currently available for \(providerLabel(summary.provider)).")
+                  .font(.caption)
+                  .foregroundStyle(errorMessage == nil ? ADEColor.textSecondary : ADEColor.danger)
+              } else {
+                ForEach(models) { model in
+                  Button {
+                    selectedModelId = model.id
+                  } label: {
+                    VStack(alignment: .leading, spacing: 8) {
+                      HStack(spacing: 10) {
+                        VStack(alignment: .leading, spacing: 4) {
+                          Text(model.displayName)
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(ADEColor.textPrimary)
+                          if let description = model.description, !description.isEmpty {
+                            Text(description)
+                              .font(.caption)
+                              .foregroundStyle(ADEColor.textSecondary)
+                              .lineLimit(2)
+                          }
+                        }
+
+                        Spacer(minLength: 8)
+
+                        if selectedModelId == model.id {
+                          Image(systemName: "checkmark.circle.fill")
+                            .foregroundStyle(ADEColor.accent)
+                        }
+                      }
+
+                      HStack(spacing: 6) {
+                        if let family = model.family, !family.isEmpty {
+                          LaneMicroChip(icon: "circle.grid.2x2.fill", text: family, tint: ADEColor.textSecondary)
+                        }
+                        if model.supportsReasoning == true {
+                          LaneMicroChip(icon: "brain", text: "Reasoning", tint: ADEColor.accent)
+                        }
+                        if model.supportsTools == true {
+                          LaneMicroChip(icon: "hammer.fill", text: "Tools", tint: ADEColor.success)
+                        }
+                        if model.isDefault {
+                          LaneMicroChip(icon: "star.fill", text: "Default", tint: ADEColor.warning)
+                        }
+                        Spacer(minLength: 0)
+                      }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(12)
+                    .background(
+                      RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .fill(selectedModelId == model.id ? providerTint(summary.provider).opacity(0.14) : ADEColor.surfaceBackground.opacity(0.55))
+                    )
+                    .overlay(
+                      RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .stroke(selectedModelId == model.id ? providerTint(summary.provider).opacity(0.42) : ADEColor.border.opacity(0.18), lineWidth: selectedModelId == model.id ? 1.3 : 0.8)
+                    )
+                    .glassEffect(in: .rect(cornerRadius: 16))
+                  }
+                  .buttonStyle(.plain)
+                }
+              }
+            }
+          }
+
+          if let reasoningEfforts = selectedModel?.reasoningEfforts, !reasoningEfforts.isEmpty {
+            GlassSection(title: "Reasoning") {
+              VStack(alignment: .leading, spacing: 12) {
+                Picker("Reasoning", selection: $selectedReasoningEffort) {
+                  Text("Default").tag("")
+                  ForEach(reasoningEfforts) { effort in
+                    Text(effort.effort.capitalized).tag(effort.effort)
+                  }
+                }
+                .pickerStyle(.segmented)
+
+                if let effort = reasoningEfforts.first(where: { $0.effort == selectedReasoningEffort }) {
+                  Text(effort.description)
+                    .font(.caption)
+                    .foregroundStyle(ADEColor.textSecondary)
+                }
+              }
+            }
+          }
+
+          if summary.provider == "cursor", !cursorModeOptions.isEmpty {
+            GlassSection(title: "Cursor mode") {
+              VStack(alignment: .leading, spacing: 12) {
+                ForEach(cursorModeOptions) { option in
+                  Button {
+                    selectedCursorModeId = option.id
+                  } label: {
+                    runtimeCard(option: option, isSelected: selectedCursorModeId == option.id)
+                  }
+                  .buttonStyle(.plain)
+                }
+              }
+            }
+          } else if !runtimeOptions.isEmpty {
+            GlassSection(title: "Runtime mode") {
+              VStack(alignment: .leading, spacing: 12) {
+                ForEach(runtimeOptions) { option in
+                  Button {
+                    selectedRuntimeMode = option.id
+                  } label: {
+                    runtimeCard(option: option, isSelected: selectedRuntimeMode == option.id)
+                  }
+                  .buttonStyle(.plain)
+                }
+              }
+            }
+          }
+
+          if let errorMessage {
+            HStack(spacing: 10) {
+              Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(ADEColor.danger)
+              Text(errorMessage)
+                .font(.caption)
+                .foregroundStyle(ADEColor.danger)
+              Spacer()
+            }
+            .padding(12)
+            .background(ADEColor.danger.opacity(0.08), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+          }
+
+          if busy {
+            HStack(spacing: 10) {
+              ProgressView()
+                .tint(ADEColor.accent)
+              Text("Updating chat settings…")
+                .font(.subheadline)
+                .foregroundStyle(ADEColor.textSecondary)
+              Spacer()
+            }
+            .adeGlassCard(cornerRadius: 12, padding: 12)
+          }
+        }
+        .padding(16)
+      }
+      .adeScreenBackground()
+      .adeNavigationGlass()
+      .navigationTitle("Chat settings")
+      .navigationBarTitleDisplayMode(.inline)
+      .toolbar {
+        ToolbarItem(placement: .cancellationAction) {
+          Button("Cancel") { dismiss() }
+            .disabled(busy)
+        }
+        ToolbarItem(placement: .confirmationAction) {
+          Button("Save") {
+            Task { await submit() }
+          }
+          .disabled(busy || selectedModelId.isEmpty)
+        }
+      }
+      .onChange(of: selectedModelId) { _, _ in
+        if let reasoningEfforts = selectedModel?.reasoningEfforts, !reasoningEfforts.isEmpty {
+          if !reasoningEfforts.contains(where: { $0.effort == selectedReasoningEffort }) {
+            selectedReasoningEffort = ""
+          }
+        } else {
+          selectedReasoningEffort = ""
+        }
+      }
+      .task {
+        await loadModels()
+      }
+    }
+  }
+
+  @MainActor
+  private func loadModels() async {
+    do {
+      let loadedModels = try await syncService.listChatModels(provider: summary.provider)
+      models = loadedModels
+
+      let matchedModelId =
+        loadedModels.first(where: { $0.id == selectedModelId })?.id
+        ?? loadedModels.first(where: { $0.id == summary.modelId })?.id
+        ?? loadedModels.first(where: { $0.id == summary.model })?.id
+        ?? loadedModels.first(where: { $0.displayName == summary.model })?.id
+        ?? loadedModels.first(where: \.isDefault)?.id
+        ?? loadedModels.first?.id
+        ?? ""
+
+      selectedModelId = matchedModelId
+      if let selectedModel,
+         let reasoningEfforts = selectedModel.reasoningEfforts,
+         reasoningEfforts.contains(where: { $0.effort == selectedReasoningEffort }) == false {
+        selectedReasoningEffort = ""
+      }
+      errorMessage = nil
+    } catch {
+      ADEHaptics.error()
+      errorMessage = error.localizedDescription
+      models = []
+      selectedModelId = ""
+    }
+  }
+
+  @MainActor
+  private func submit() async {
+    let trimmedTitle = titleText.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmedTitle.isEmpty else {
+      ADEHaptics.error()
+      errorMessage = "Chat title cannot be empty."
+      return
+    }
+
+    let titleChanged = trimmedTitle != resolvedInitialTitle
+    let modelChanged = selectedModelId != resolvedInitialModelId
+    let normalizedReasoning = selectedReasoningEffort.trimmingCharacters(in: .whitespacesAndNewlines)
+    let reasoningPayload = normalizedReasoning.isEmpty ? "" : normalizedReasoning
+    let reasoningChanged = reasoningPayload != resolvedInitialReasoningEffort
+    let initialRuntimeMode = workInitialRuntimeMode(summary)
+    let initialCursorModeId = workInitialCursorModeId(summary)
+
+    var permissionMode: String?
+    var interactionMode: String?
+    var claudePermissionMode: String?
+    var codexApprovalPolicy: String?
+    var codexSandbox: String?
+    var codexConfigSource: String?
+    var opencodePermissionMode: String?
+    var cursorModeId: String?
+    var runtimeChanged = false
+
+    switch summary.provider {
+    case "claude":
+      if selectedRuntimeMode != initialRuntimeMode {
+        runtimeChanged = true
+        switch selectedRuntimeMode {
+        case "plan":
+          interactionMode = "plan"
+          claudePermissionMode = "default"
+          permissionMode = "plan"
+        case "edit":
+          interactionMode = "default"
+          claudePermissionMode = "acceptEdits"
+          permissionMode = "edit"
+        case "full-auto":
+          interactionMode = "default"
+          claudePermissionMode = "bypassPermissions"
+          permissionMode = "full-auto"
+        default:
+          interactionMode = "default"
+          claudePermissionMode = "default"
+          permissionMode = "default"
+        }
+      }
+    case "codex":
+      if selectedRuntimeMode != initialRuntimeMode {
+        runtimeChanged = true
+        codexConfigSource = "flags"
+        switch selectedRuntimeMode {
+        case "plan":
+          codexApprovalPolicy = "untrusted"
+          codexSandbox = "read-only"
+          permissionMode = "plan"
+        case "edit":
+          codexApprovalPolicy = "on-failure"
+          codexSandbox = "workspace-write"
+          permissionMode = "edit"
+        case "full-auto":
+          codexApprovalPolicy = "never"
+          codexSandbox = "danger-full-access"
+          permissionMode = "full-auto"
+        default:
+          codexApprovalPolicy = "on-request"
+          codexSandbox = "workspace-write"
+          permissionMode = "default"
+        }
+      }
+    case "opencode":
+      if selectedRuntimeMode != initialRuntimeMode {
+        runtimeChanged = true
+        opencodePermissionMode = selectedRuntimeMode
+        permissionMode = selectedRuntimeMode
+      }
+    case "cursor":
+      if !selectedCursorModeId.isEmpty && selectedCursorModeId != initialCursorModeId {
+        runtimeChanged = true
+        cursorModeId = selectedCursorModeId
+      }
+    default:
+      break
+    }
+
+    guard titleChanged || modelChanged || reasoningChanged || runtimeChanged else {
+      dismiss()
+      return
+    }
+
+    do {
+      busy = true
+      _ = try await syncService.updateChatSession(
+        sessionId: sessionId,
+        title: titleChanged ? trimmedTitle : nil,
+        modelId: modelChanged ? selectedModelId : nil,
+        reasoningEffort: reasoningChanged ? reasoningPayload : nil,
+        permissionMode: permissionMode,
+        interactionMode: interactionMode,
+        claudePermissionMode: claudePermissionMode,
+        codexApprovalPolicy: codexApprovalPolicy,
+        codexSandbox: codexSandbox,
+        codexConfigSource: codexConfigSource,
+        opencodePermissionMode: opencodePermissionMode,
+        cursorModeId: cursorModeId,
+        manuallyNamed: titleChanged ? true : nil
+      )
+      if titleChanged {
+        try await syncService.updateSessionMeta(
+          sessionId: sessionId,
+          title: trimmedTitle,
+          manuallyNamed: true
+        )
+      }
+      await onSaved()
+      dismiss()
+    } catch {
+      ADEHaptics.error()
+      errorMessage = error.localizedDescription
+    }
+    busy = false
+  }
+
+  private func runtimeCard(option: WorkRuntimeOption, isSelected: Bool) -> some View {
+    VStack(alignment: .leading, spacing: 8) {
+      HStack(spacing: 10) {
+        VStack(alignment: .leading, spacing: 4) {
+          Text(option.title)
+            .font(.subheadline.weight(.semibold))
+            .foregroundStyle(ADEColor.textPrimary)
+          Text(option.subtitle)
+            .font(.caption)
+            .foregroundStyle(ADEColor.textSecondary)
+            .lineLimit(2)
+        }
+
+        Spacer(minLength: 8)
+
+        if isSelected {
+          Image(systemName: "checkmark.circle.fill")
+            .foregroundStyle(ADEColor.accent)
+        }
+      }
+    }
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .padding(12)
+    .background(
+      RoundedRectangle(cornerRadius: 16, style: .continuous)
+        .fill(isSelected ? providerTint(summary.provider).opacity(0.14) : ADEColor.surfaceBackground.opacity(0.55))
+    )
+    .overlay(
+      RoundedRectangle(cornerRadius: 16, style: .continuous)
+        .stroke(isSelected ? providerTint(summary.provider).opacity(0.42) : ADEColor.border.opacity(0.18), lineWidth: isSelected ? 1.3 : 0.8)
+    )
+    .glassEffect(in: .rect(cornerRadius: 16))
   }
 }
 
@@ -1125,6 +2149,7 @@ private struct WorkSessionDestinationView: View {
   @EnvironmentObject private var syncService: SyncService
 
   let sessionId: String
+  let initialOpeningPrompt: String?
   let initialSession: TerminalSessionSummary?
   let initialChatSummary: AgentChatSessionSummary?
   let initialTranscript: [WorkChatEnvelope]?
@@ -1144,89 +2169,155 @@ private struct WorkSessionDestinationView: View {
   @State private var composer = ""
   @State private var sending = false
   @State private var errorMessage: String?
+  @State private var announcedLaneId: String?
+  @State private var settingsPresented = false
+  @State private var lastSessionRowRefreshAt = Date.distantPast
+  @State private var handledOpeningPromptKey: String?
+  @State private var stagedOpeningPromptKey: String?
+
+  private var sessionDestinationNavigationTitle: String {
+    chatSummary?.title ?? session?.title ?? "Session"
+  }
+
+  private var sessionDestinationZoomTransitionId: String? {
+    transitionNamespace == nil ? nil : "work-container-\(sessionId)"
+  }
 
   var body: some View {
-    Group {
-      if let session {
-        if isChatSession(session) {
-          WorkChatSessionView(
-            session: session,
-            chatSummary: chatSummary,
-            transcript: transcript,
-            fallbackEntries: fallbackEntries,
-            artifacts: artifacts,
-            localEchoMessages: localEchoMessages,
-            expandedToolCardIds: $expandedToolCardIds,
-            artifactContent: $artifactContent,
-            fullscreenImage: $fullscreenImage,
-            composer: $composer,
-            sending: $sending,
-            errorMessage: $errorMessage,
-            isLive: isLive,
-            disconnectedNotice: disconnectedNotice,
-            transitionNamespace: transitionNamespace,
-            onSend: sendMessage,
-            onInterrupt: interruptSession,
-            onDispose: disposeSession,
-            onResume: resumeSession,
-            onApproveRequest: approveRequest,
-            onRespondToQuestion: respondToQuestion,
-            onRetryLoad: load,
-            onOpenFile: openFileReference,
-            onOpenPr: openPullRequestReference,
-            onLoadArtifact: loadArtifactContent
-          )
-        } else {
-          WorkTerminalSessionView(
-            session: session,
-            disconnectedNotice: disconnectedNotice,
-            transitionNamespace: transitionNamespace
-          )
-            .environmentObject(syncService)
+    sessionDestinationRoot
+      .navigationTitle(sessionDestinationNavigationTitle)
+      .navigationBarTitleDisplayMode(.inline)
+      .adeNavigationZoomTransition(id: sessionDestinationZoomTransitionId, in: transitionNamespace)
+      .sheet(item: $fullscreenImage) { image in
+        WorkFullscreenImageView(image: image)
+      }
+      .sheet(isPresented: $settingsPresented, content: sessionSettingsSheet)
+      .task {
+        session = initialSession
+        chatSummary = initialChatSummary
+        transcript = initialTranscript ?? []
+        stageInitialOpeningPromptEchoIfNeeded()
+        await load()
+        await sendInitialOpeningPromptIfNeeded()
+      }
+      .task(id: liveChatObservationKey) {
+        syncTranscriptFromLiveEvents()
+        let now = Date()
+        if now.timeIntervalSince(lastSessionRowRefreshAt) >= 1.2 {
+          lastSessionRowRefreshAt = now
+          if let refreshedSession = try? await syncService.fetchSessions().first(where: { $0.id == sessionId }) {
+            session = refreshedSession
+          }
         }
-      } else {
-        ADEEmptyStateView(
-          symbol: "bubble.left.and.bubble.right",
-          title: "Session unavailable",
-          message: "This session is no longer cached on the phone. Reconnect and refresh Work to restore it."
+      }
+      .task(id: session?.laneId ?? initialSession?.laneId ?? "") {
+        await syncLanePresence()
+      }
+      .task(id: pollingKey) {
+        await pollIfNeeded()
+      }
+      .onDisappear {
+        if let announcedLaneId {
+          syncService.releaseLaneOpen(laneId: announcedLaneId)
+          self.announcedLaneId = nil
+        }
+        Task {
+          try? await syncService.unsubscribeFromChatEvents(sessionId: sessionId)
+        }
+      }
+  }
+
+  @ViewBuilder
+  private var sessionDestinationRoot: some View {
+    if let session {
+      if isChatSession(session) {
+        WorkChatSessionView(
+          session: session,
+          chatSummary: chatSummary,
+          transcript: transcript,
+          fallbackEntries: fallbackEntries,
+          artifacts: artifacts,
+          localEchoMessages: localEchoMessages,
+          expandedToolCardIds: $expandedToolCardIds,
+          artifactContent: $artifactContent,
+          fullscreenImage: $fullscreenImage,
+          composer: $composer,
+          sending: $sending,
+          errorMessage: $errorMessage,
+          isLive: isLive,
+          disconnectedNotice: disconnectedNotice,
+          transitionNamespace: transitionNamespace,
+          onOpenSettings: {
+            settingsPresented = true
+          },
+          onSend: sendMessage,
+          onInterrupt: interruptSession,
+          onDispose: disposeSession,
+          onResume: resumeSession,
+          onApproveRequest: approveRequest,
+          onRespondToQuestion: respondToQuestion,
+          onRetryLoad: load,
+          onOpenFile: openFileReference,
+          onOpenPr: openPullRequestReference,
+          onLoadArtifact: loadArtifactContent,
+          onCancelSteer: cancelSteer,
+          onEditSteer: editSteer
         )
-        .adeScreenBackground()
+      } else {
+        WorkTerminalSessionView(
+          session: session,
+          disconnectedNotice: disconnectedNotice,
+          transitionNamespace: transitionNamespace
+        )
+        .environmentObject(syncService)
       }
+    } else {
+      ADEEmptyStateView(
+        symbol: "bubble.left.and.bubble.right",
+        title: "Session unavailable",
+        message: "This session is no longer cached on the phone. Reconnect and refresh Work to restore it."
+      )
+      .adeScreenBackground()
     }
-    .navigationTitle(chatSummary?.title ?? session?.title ?? "Session")
-    .navigationBarTitleDisplayMode(.inline)
-    .adeNavigationZoomTransition(id: transitionNamespace == nil ? nil : "work-container-\(sessionId)", in: transitionNamespace)
-    .sheet(item: $fullscreenImage) { image in
-      WorkFullscreenImageView(image: image)
-    }
-    .task {
-      session = initialSession
-      chatSummary = initialChatSummary
-      transcript = initialTranscript ?? []
-      await load()
-    }
-    .task(id: liveChatObservationKey) {
-      syncTranscriptFromLiveEvents()
-      if let refreshedSession = try? await syncService.fetchSessions().first(where: { $0.id == sessionId }) {
-        session = refreshedSession
-      }
-    }
-    .task(id: pollingKey) {
-      await pollIfNeeded()
-    }
-    .onDisappear {
-      Task {
-        try? await syncService.unsubscribeFromChatEvents(sessionId: sessionId)
-      }
+  }
+
+  @ViewBuilder
+  private func sessionSettingsSheet() -> some View {
+    if let chatSummary {
+      WorkSessionSettingsSheet(
+        sessionId: sessionId,
+        laneName: session?.laneName ?? initialSession?.laneName ?? "",
+        summary: chatSummary,
+        onSaved: {
+          await load()
+        }
+      )
+      .environmentObject(syncService)
     }
   }
 
   private var pollingKey: String {
-    "\(session?.id ?? sessionId)-\(session?.status ?? "unknown")-\(isLive)"
+    let status = normalizedWorkChatSessionStatus(session: session, summary: chatSummary)
+    return "\(session?.id ?? sessionId)-\(status)-\(isLive)"
   }
 
   private var liveChatObservationKey: String {
     "\(sessionId)-\(syncService.chatEventRevision(for: sessionId))"
+  }
+
+  private var trimmedInitialOpeningPrompt: String {
+    initialOpeningPrompt?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+  }
+
+  @MainActor
+  private func syncLanePresence() async {
+    guard let laneId = session?.laneId ?? initialSession?.laneId else { return }
+    guard announcedLaneId != laneId else { return }
+    if let announcedLaneId {
+      syncService.releaseLaneOpen(laneId: announcedLaneId)
+    }
+    announcedLaneId = laneId
+    syncService.announceLaneOpen(laneId: laneId)
   }
 
   @MainActor
@@ -1256,43 +2347,103 @@ private struct WorkSessionDestinationView: View {
     }
 
     let liveTranscript = makeWorkChatTranscript(from: syncService.chatEventHistory(sessionId: sessionId))
+    var baseTranscript: [WorkChatEnvelope] = []
+    var fetchedFallbackEntries: [AgentChatTranscriptEntry] = []
+
+    if let response = try? await syncService.fetchChatTranscriptResponse(sessionId: sessionId) {
+      fetchedFallbackEntries = response.entries
+      baseTranscript = makeWorkChatTranscript(from: response.entries, sessionId: sessionId)
+    }
+
     if forceRemote {
       try? await syncService.subscribeTerminal(sessionId: sessionId)
       let raw = syncService.terminalBuffers[sessionId] ?? ""
       let parsed = parseWorkChatTranscript(raw)
       if !parsed.isEmpty {
-        transcript = mergeWorkChatTranscripts(base: parsed, live: liveTranscript)
-        fallbackEntries = []
-      } else if let response = try? await syncService.fetchChatTranscriptResponse(sessionId: sessionId) {
-        fallbackEntries = []
-        transcript = mergeWorkChatTranscripts(
-          base: makeWorkChatTranscript(from: response.entries, sessionId: sessionId),
-          live: liveTranscript
-        )
+        baseTranscript = mergeWorkChatTranscripts(base: baseTranscript, live: parsed)
       }
-    } else if let response = try? await syncService.fetchChatTranscriptResponse(sessionId: sessionId) {
-      fallbackEntries = []
-      transcript = mergeWorkChatTranscripts(
-        base: makeWorkChatTranscript(from: response.entries, sessionId: sessionId),
-        live: liveTranscript
-      )
     }
 
-    if !liveTranscript.isEmpty {
-      let baseTranscript = transcript.isEmpty && !fallbackEntries.isEmpty
-        ? makeWorkChatTranscript(from: fallbackEntries, sessionId: sessionId)
-        : transcript
-      transcript = mergeWorkChatTranscripts(base: baseTranscript, live: liveTranscript)
+    if baseTranscript.isEmpty {
+      baseTranscript = transcript
     }
+
+    let mergedTranscript = mergeWorkChatTranscripts(base: baseTranscript, live: liveTranscript)
+    if !mergedTranscript.isEmpty {
+      transcript = mergedTranscript
+    }
+    fallbackEntries = fetchedFallbackEntries
 
     localEchoMessages.removeAll { echo in
       transcript.contains(where: { envelope in
-        if case .userMessage(let text, _) = envelope.event {
+        if case .userMessage(let text, _, _, _, _) = envelope.event {
           return text.trimmingCharacters(in: .whitespacesAndNewlines) == echo.text.trimmingCharacters(in: .whitespacesAndNewlines)
         }
         return false
       })
     }
+  }
+
+  @MainActor
+  private func refreshChatStateAfterAction(forceRemote: Bool = true) async {
+    await loadTranscript(forceRemote: forceRemote)
+    if let refreshedSummary = try? await syncService.fetchChatSummary(sessionId: sessionId) {
+      chatSummary = refreshedSummary
+    }
+    if let refreshedSession = try? await syncService.fetchSessions().first(where: { $0.id == sessionId }) {
+      session = refreshedSession
+    }
+  }
+
+  @MainActor
+  private func sendInitialOpeningPromptIfNeeded() async {
+    let prompt = trimmedInitialOpeningPrompt
+    guard !prompt.isEmpty else { return }
+    let promptKey = "\(sessionId)|\(prompt)"
+    guard handledOpeningPromptKey != promptKey else { return }
+    if transcript.contains(where: { envelope in
+      if case .userMessage(let text, _, _, _, _) = envelope.event {
+        return text.trimmingCharacters(in: .whitespacesAndNewlines) == prompt
+      }
+      return false
+    }) {
+      handledOpeningPromptKey = promptKey
+      return
+    }
+    handledOpeningPromptKey = promptKey
+
+    let echo: WorkLocalEchoMessage
+    if let existingEcho = localEchoMessages.first(where: {
+      $0.text.trimmingCharacters(in: .whitespacesAndNewlines) == prompt
+    }) {
+      echo = existingEcho
+    } else {
+      let nextEcho = WorkLocalEchoMessage(text: prompt, timestamp: workDateFormatter.string(from: Date()))
+      localEchoMessages.append(nextEcho)
+      echo = nextEcho
+    }
+    sending = true
+    do {
+      try await syncService.sendChatMessage(sessionId: sessionId, text: prompt)
+      await refreshChatStateAfterAction(forceRemote: true)
+      errorMessage = nil
+    } catch {
+      ADEHaptics.error()
+      localEchoMessages.removeAll { $0.id == echo.id }
+      composer = prompt
+      errorMessage = "Opening message did not reach the host. The chat exists; tap Send to retry. \(error.localizedDescription)"
+    }
+    sending = false
+  }
+
+  @MainActor
+  private func stageInitialOpeningPromptEchoIfNeeded() {
+    let prompt = trimmedInitialOpeningPrompt
+    guard !prompt.isEmpty else { return }
+    let promptKey = "\(sessionId)|\(prompt)"
+    guard stagedOpeningPromptKey != promptKey else { return }
+    stagedOpeningPromptKey = promptKey
+    localEchoMessages.append(WorkLocalEchoMessage(text: prompt, timestamp: workDateFormatter.string(from: Date())))
   }
 
   private func syncTranscriptFromLiveEvents() {
@@ -1306,17 +2457,32 @@ private struct WorkSessionDestinationView: View {
 
   @MainActor
   private func pollIfNeeded() async {
-    guard isLive, let session, isChatSession(session), normalizedWorkChatSessionStatus(session: session, summary: chatSummary) == "active" else { return }
+    guard isLive,
+          let session,
+          isChatSession(session)
+    else { return }
+    let initialStatus = normalizedWorkChatSessionStatus(session: session, summary: chatSummary)
+    guard initialStatus == "active" || initialStatus == "awaiting-input" else { return }
+    var pollCycle = 0
     while !Task.isCancelled, isLive,
-      normalizedWorkChatSessionStatus(session: self.session, summary: self.chatSummary) == "active" {
-      await loadTranscript(forceRemote: true)
-      if let refreshedSummary = try? await syncService.fetchChatSummary(sessionId: sessionId) {
-        chatSummary = refreshedSummary
+      {
+        let status = normalizedWorkChatSessionStatus(session: self.session, summary: self.chatSummary)
+        return status == "active" || status == "awaiting-input"
+      }() {
+      pollCycle += 1
+      syncTranscriptFromLiveEvents()
+      if pollCycle % 3 == 1 {
+        await loadTranscript(forceRemote: true)
       }
-      if let refreshedSession = try? await syncService.fetchSessions().first(where: { $0.id == sessionId }) {
-        self.session = refreshedSession
+      if pollCycle % 2 == 1 {
+        if let refreshedSummary = try? await syncService.fetchChatSummary(sessionId: sessionId) {
+          chatSummary = refreshedSummary
+        }
+        if let refreshedSession = try? await syncService.fetchSessions().first(where: { $0.id == sessionId }) {
+          self.session = refreshedSession
+        }
       }
-      try? await Task.sleep(nanoseconds: 850_000_000)
+      try? await Task.sleep(nanoseconds: 1_700_000_000)
     }
   }
 
@@ -1330,9 +2496,14 @@ private struct WorkSessionDestinationView: View {
     sending = true
     do {
       try await syncService.sendChatMessage(sessionId: sessionId, text: text)
-      await loadTranscript(forceRemote: true)
+      await refreshChatStateAfterAction(forceRemote: true)
       errorMessage = nil
     } catch {
+      ADEHaptics.error()
+      localEchoMessages.removeAll { echo in
+        echo.text.trimmingCharacters(in: .whitespacesAndNewlines) == text
+      }
+      composer = text
       errorMessage = error.localizedDescription
     }
     sending = false
@@ -1342,8 +2513,10 @@ private struct WorkSessionDestinationView: View {
   private func interruptSession() async {
     do {
       try await syncService.interruptChatSession(sessionId: sessionId)
+      await refreshChatStateAfterAction(forceRemote: true)
       errorMessage = nil
     } catch {
+      ADEHaptics.error()
       errorMessage = error.localizedDescription
     }
   }
@@ -1355,6 +2528,7 @@ private struct WorkSessionDestinationView: View {
       await load()
       errorMessage = nil
     } catch {
+      ADEHaptics.error()
       errorMessage = error.localizedDescription
     }
   }
@@ -1366,6 +2540,7 @@ private struct WorkSessionDestinationView: View {
       await load()
       errorMessage = nil
     } catch {
+      ADEHaptics.error()
       errorMessage = error.localizedDescription
     }
   }
@@ -1374,8 +2549,36 @@ private struct WorkSessionDestinationView: View {
   private func approveRequest(itemId: String, decision: AgentChatApprovalDecision) async {
     do {
       try await syncService.approveChatSession(sessionId: sessionId, itemId: itemId, decision: decision)
+      await refreshChatStateAfterAction(forceRemote: true)
       errorMessage = nil
     } catch {
+      ADEHaptics.error()
+      errorMessage = error.localizedDescription
+    }
+  }
+
+  @MainActor
+  private func cancelSteer(_ steerId: String) async {
+    do {
+      try await syncService.cancelChatSteer(sessionId: sessionId, steerId: steerId)
+      await refreshChatStateAfterAction(forceRemote: true)
+      errorMessage = nil
+    } catch {
+      ADEHaptics.error()
+      errorMessage = error.localizedDescription
+    }
+  }
+
+  @MainActor
+  private func editSteer(_ steerId: String, _ text: String) async {
+    let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else { return }
+    do {
+      try await syncService.editChatSteer(sessionId: sessionId, steerId: steerId, text: trimmed)
+      await refreshChatStateAfterAction(forceRemote: true)
+      errorMessage = nil
+    } catch {
+      ADEHaptics.error()
       errorMessage = error.localizedDescription
     }
   }
@@ -1391,8 +2594,10 @@ private struct WorkSessionDestinationView: View {
         answers: answerValue.flatMap { $0.isEmpty ? nil : ["response": .string($0)] },
         responseText: responseValue?.isEmpty == true ? nil : responseValue
       )
+      await refreshChatStateAfterAction(forceRemote: true)
       errorMessage = nil
     } catch {
+      ADEHaptics.error()
       errorMessage = error.localizedDescription
     }
   }
@@ -1512,6 +2717,7 @@ private struct WorkChatSessionView: View {
   let isLive: Bool
   let disconnectedNotice: Bool
   let transitionNamespace: Namespace.ID?
+  let onOpenSettings: (() -> Void)?
   let onSend: @MainActor () async -> Void
   let onInterrupt: @MainActor () async -> Void
   let onDispose: @MainActor () async -> Void
@@ -1522,27 +2728,25 @@ private struct WorkChatSessionView: View {
   let onOpenFile: @MainActor (String) async -> Void
   let onOpenPr: @MainActor (Int) async -> Void
   let onLoadArtifact: @MainActor (ComputerUseArtifactSummary) async -> Void
+  let onCancelSteer: @MainActor (String) async -> Void
+  let onEditSteer: @MainActor (String, String) async -> Void
+
+  @State private var steerEditDrafts: [String: String] = [:]
 
   private var sessionStatus: String {
     normalizedWorkChatSessionStatus(session: session, summary: chatSummary)
   }
 
-  private var latestApprovalRequest: WorkPendingApprovalModel? {
-    transcript.reversed().compactMap { envelope in
-      guard case .approvalRequest(let description, let detail, let itemId, _) = envelope.event else {
-        return nil
-      }
-      return WorkPendingApprovalModel(id: itemId, description: description, detail: detail)
-    }.first
+  private var pendingInputs: [WorkPendingInputItem] {
+    derivePendingWorkInputs(from: transcript)
   }
 
-  private var latestStructuredQuestion: WorkPendingQuestionModel? {
-    transcript.reversed().compactMap { envelope in
-      guard case .structuredQuestion(let question, let options, let itemId, _) = envelope.event else {
-        return nil
-      }
-      return WorkPendingQuestionModel(id: itemId, question: question, options: options)
-    }.first
+  private var pendingSteers: [WorkPendingSteerModel] {
+    derivePendingWorkSteers(from: transcript)
+  }
+
+  private var primaryPendingInput: WorkPendingInputItem? {
+    pendingInputs.first
   }
 
   private var toolCards: [WorkToolCardModel] {
@@ -1586,158 +2790,374 @@ private struct WorkChatSessionView: View {
     max(timeline.count - visibleTimeline.count, 0)
   }
 
+  private var canCompose: Bool {
+    isLive && !sending && sessionStatus != "ended"
+  }
+
+  private var composerFeedback: String? {
+    if !isLive {
+      return "Reconnect to send or resume this chat."
+    }
+    if sessionStatus == "ended" {
+      return "Resume this chat before sending another message."
+    }
+    if sending {
+      return "Sending message to host..."
+    }
+    if sessionStatus == "awaiting-input" {
+      return "Answer the waiting prompt above, or send extra context."
+    }
+    return nil
+  }
+
+  private var sessionOverviewSection: AnyView {
+    AnyView(
+      Group {
+        WorkSessionHeader(
+          session: session,
+          chatSummary: chatSummary,
+          transitionNamespace: transitionNamespace,
+          onOpenSettings: onOpenSettings
+        )
+
+        if let sessionUsageSummary {
+          WorkSessionUsageSummaryCard(summary: sessionUsageSummary)
+        }
+
+        if isLive {
+          WorkSessionControlBar(
+            status: sessionStatus,
+            actionInFlight: actionInFlight,
+            onInterrupt: {
+              await runSessionAction(onInterrupt)
+            },
+            onResume: {
+              await runSessionAction(onResume)
+            },
+            onDispose: {
+              await runSessionAction(onDispose)
+            }
+          )
+        }
+
+        ForEach(pendingInputs) { item in
+          if isLive {
+            switch item {
+            case .approval(let approval):
+              WorkApprovalRequestCard(
+                approval: approval,
+                busy: actionInFlight,
+                onDecision: { decision in
+                  await runSessionAction {
+                    await onApproveRequest(approval.id, decision)
+                  }
+                }
+              )
+            case .question(let question):
+              WorkStructuredQuestionCard(
+                question: question,
+                responseText: $inputResponseText,
+                busy: actionInFlight,
+                onSelectOption: { option in
+                  await runSessionAction {
+                    await onRespondToQuestion(question.id, option, inputResponseText)
+                    inputResponseText = ""
+                  }
+                },
+                onSubmitFreeform: {
+                  await runSessionAction {
+                    await onRespondToQuestion(question.id, nil, inputResponseText)
+                    inputResponseText = ""
+                  }
+                }
+              )
+            }
+          } else {
+            switch item {
+            case .approval:
+              ADENoticeCard(
+                title: "Approval waiting on host",
+                message: "Reconnect to approve or deny this tool request. Cached transcript data may be slightly behind the desktop.",
+                icon: "lock.shield",
+                tint: ADEColor.warning,
+                actionTitle: nil,
+                action: nil
+              )
+            case .question:
+              ADENoticeCard(
+                title: "Host needs your answer",
+                message: "Reconnect to respond to this question. The host keeps the session paused until input arrives.",
+                icon: "questionmark.circle",
+                tint: ADEColor.warning,
+                actionTitle: nil,
+                action: nil
+              )
+            }
+          }
+        }
+
+        if disconnectedNotice {
+          ADENoticeCard(
+            title: "Connection lost",
+            message: "Cached messages stay visible, but sending, streaming, and artifact refresh are paused until the host reconnects.",
+            icon: "wifi.slash",
+            tint: ADEColor.warning,
+            actionTitle: nil,
+            action: nil
+          )
+        }
+
+        if let errorMessage {
+          ADENoticeCard(
+            title: "Chat error",
+            message: errorMessage,
+            icon: "exclamationmark.triangle.fill",
+            tint: ADEColor.danger,
+            actionTitle: "Retry",
+            action: { Task { await onRetryLoad() } }
+          )
+        }
+      }
+    )
+  }
+
+  private var timelineSection: AnyView {
+    AnyView(
+      Group {
+        if timeline.isEmpty {
+          ADEEmptyStateView(
+            symbol: "bubble.left.and.bubble.right",
+            title: "No chat messages yet",
+            message: isLive ? "Send a message to start streaming the transcript." : "Reconnect to load the latest chat history from the host."
+          )
+        } else {
+          if hiddenTimelineCount > 0 {
+            Button {
+              loadEarlierTimelineEntries()
+            } label: {
+              Label(
+                "Load \(min(hiddenTimelineCount, workTimelinePageSize)) earlier message\(min(hiddenTimelineCount, workTimelinePageSize) == 1 ? "" : "s")",
+                systemImage: "chevron.up.circle"
+              )
+              .font(.footnote.weight(.semibold))
+              .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.glass)
+            .tint(ADEColor.accent)
+            .controlSize(.small)
+            .accessibilityLabel("Load earlier messages")
+          }
+
+          ForEach(visibleTimeline) { entry in
+            switch entry.payload {
+            case .message(let message):
+              WorkChatMessageBubble(message: message)
+            case .toolCard(let toolCard):
+              WorkToolCardView(
+                toolCard: toolCard,
+                references: extractWorkNavigationTargets(from: [toolCard.argsText, toolCard.resultText].compactMap { $0 }.joined(separator: "\n")),
+                isExpanded: toolCard.status == .running || expandedToolCardIds.contains(toolCard.id),
+                onToggle: { toggleToolCard(toolCard.id) },
+                onOpenFile: { path in
+                  Task { await onOpenFile(path) }
+                },
+                onOpenPr: { prNumber in
+                  Task { await onOpenPr(prNumber) }
+                }
+              )
+            case .eventCard(let card):
+              WorkEventCardView(
+                card: card,
+                onOpenFile: { path in Task { await onOpenFile(path) } },
+                onOpenPr: { number in Task { await onOpenPr(number) } }
+              )
+            case .commandCard(let commandCard):
+              WorkCommandCardView(card: commandCard)
+            case .fileChangeCard(let fileChangeCard):
+              WorkFileChangeCardView(card: fileChangeCard)
+            case .artifact(let artifact):
+              WorkArtifactView(
+                artifact: artifact,
+                content: artifactContent[artifact.id],
+                onAppear: { Task { await onLoadArtifact(artifact) } },
+                onOpenImage: { image in
+                  fullscreenImage = WorkFullscreenImage(title: artifact.title, image: image)
+                }
+              )
+            }
+          }
+        }
+      }
+    )
+  }
+
+  private var streamingStatusSection: AnyView {
+    AnyView(
+      Group {
+        if sessionStatus == "active" && isLive {
+          HStack(spacing: 10) {
+            ProgressView()
+              .controlSize(.small)
+            Text("Streaming new output…")
+              .font(.caption)
+              .foregroundStyle(ADEColor.textSecondary)
+          }
+          .padding(.horizontal, 12)
+          .padding(.vertical, 10)
+          .background(ADEColor.surfaceBackground.opacity(0.55), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        }
+      }
+    )
+  }
+
+  private func composerInset(proxy: ScrollViewProxy) -> AnyView {
+    AnyView(
+      VStack(spacing: 10) {
+        HStack(spacing: 8) {
+          ADEStatusPill(
+            text: isLive ? sessionStatusLabel(for: sessionStatus) : "OFFLINE",
+            tint: isLive ? workChatStatusTint(sessionStatus) : ADEColor.warning
+          )
+
+          if sessionStatus == "active" && isLive {
+            ProgressView()
+              .controlSize(.small)
+              .tint(ADEColor.accent)
+          }
+
+          Spacer(minLength: 0)
+
+          if sessionStatus == "active" && isLive {
+            Button {
+              Task { await runSessionAction(onInterrupt) }
+            } label: {
+              Label("Stop", systemImage: "stop.fill")
+                .labelStyle(.iconOnly)
+                .frame(width: 32, height: 32)
+            }
+            .buttonStyle(.glass)
+            .tint(ADEColor.warning)
+            .disabled(actionInFlight || sending)
+            .accessibilityLabel("Interrupt chat")
+          } else if (sessionStatus == "idle" || sessionStatus == "ended") && isLive {
+            Button {
+              Task { await runSessionAction(onResume) }
+            } label: {
+              Label("Resume", systemImage: "play.fill")
+                .labelStyle(.iconOnly)
+                .frame(width: 32, height: 32)
+            }
+            .buttonStyle(.glass)
+            .tint(ADEColor.accent)
+            .disabled(actionInFlight || sending)
+            .accessibilityLabel("Resume chat")
+          }
+        }
+
+        WorkComposerChipStrip(
+          chatSummary: chatSummary,
+          queuedSteerCount: pendingSteers.count,
+          pendingInputCount: pendingInputs.count,
+          onOpenSettings: onOpenSettings
+        )
+
+        if let primary = primaryPendingInput {
+          let overflow = max(pendingInputs.count - 1, 0)
+          switch primary {
+          case .approval(let approval):
+            WorkComposerInputBanner(
+              title: overflow > 0 ? "Approval waiting (+\(overflow) more)" : "Approval waiting",
+              message: approval.description,
+              icon: "checkmark.shield",
+              tint: ADEColor.warning
+            )
+          case .question(let question):
+            WorkComposerInputBanner(
+              title: overflow > 0 ? "Question waiting (+\(overflow) more)" : "Question waiting",
+              message: question.question,
+              icon: "questionmark.circle",
+              tint: ADEColor.warning
+            )
+          }
+        }
+
+        if !pendingSteers.isEmpty {
+          WorkQueuedSteerStrip(
+            steers: pendingSteers,
+            drafts: $steerEditDrafts,
+            busy: actionInFlight,
+            isLive: isLive,
+            onCancel: { steerId in
+              await runSessionAction {
+                await onCancelSteer(steerId)
+                steerEditDrafts.removeValue(forKey: steerId)
+              }
+            },
+            onSaveEdit: { steerId, text in
+              await runSessionAction {
+                await onEditSteer(steerId, text)
+                steerEditDrafts.removeValue(forKey: steerId)
+              }
+            }
+          )
+        }
+
+        HStack(alignment: .bottom, spacing: 10) {
+          TextField("Send a message", text: $composer, axis: .vertical)
+            .textFieldStyle(.plain)
+            .lineLimit(1...6)
+            .adeInsetField(cornerRadius: 14, padding: 12)
+            .disabled(!canCompose)
+
+          Button {
+            Task {
+              await onSend()
+              withAnimation(ADEMotion.quick(reduceMotion: transitionNamespace == nil)) {
+                proxy.scrollTo("chat-end", anchor: .bottom)
+              }
+            }
+          } label: {
+            Image(systemName: sending ? "ellipsis.circle" : "paperplane.fill")
+              .font(.system(size: 18, weight: .semibold))
+              .foregroundStyle(ADEColor.accent)
+              .frame(width: 44, height: 44)
+              .background(ADEColor.accent.opacity(0.12), in: Circle())
+          }
+          .accessibilityLabel(sending ? "Sending message" : "Send message")
+          .disabled(!canCompose || composer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        }
+
+        if let composerFeedback {
+          Text(composerFeedback)
+            .font(.caption2)
+            .foregroundStyle(sessionStatus == "awaiting-input" ? ADEColor.warning : ADEColor.textMuted)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, sessionStatus == "awaiting-input" ? 10 : 0)
+            .padding(.vertical, sessionStatus == "awaiting-input" ? 7 : 0)
+            .background(
+              Group {
+                if sessionStatus == "awaiting-input" {
+                  RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(ADEColor.warning.opacity(0.08))
+                }
+              }
+            )
+        }
+      }
+      .padding(.horizontal, 16)
+      .padding(.vertical, 10)
+      .background(ADEColor.surfaceBackground.opacity(0.08))
+      .glassEffect()
+    )
+  }
+
   var body: some View {
     ScrollViewReader { proxy in
       ScrollView {
         LazyVStack(alignment: .leading, spacing: 14) {
-          WorkSessionHeader(session: session, chatSummary: chatSummary, transitionNamespace: transitionNamespace)
-
-          if let sessionUsageSummary {
-            WorkSessionUsageSummaryCard(summary: sessionUsageSummary)
-          }
-
-          if isLive {
-            WorkSessionControlBar(
-              status: sessionStatus,
-              actionInFlight: actionInFlight,
-              onInterrupt: {
-                await runSessionAction(onInterrupt)
-              },
-              onResume: {
-                await runSessionAction(onResume)
-              },
-              onDispose: {
-                await runSessionAction(onDispose)
-              }
-            )
-          }
-
-          if let approval = latestApprovalRequest, isLive {
-            WorkApprovalRequestCard(
-              approval: approval,
-              busy: actionInFlight,
-              onDecision: { decision in
-                await runSessionAction {
-                  await onApproveRequest(approval.id, decision)
-                }
-              }
-            )
-          }
-
-          if let question = latestStructuredQuestion, isLive {
-            WorkStructuredQuestionCard(
-              question: question,
-              responseText: $inputResponseText,
-              busy: actionInFlight,
-              onSelectOption: { option in
-                await runSessionAction {
-                  await onRespondToQuestion(question.id, option, inputResponseText)
-                  inputResponseText = ""
-                }
-              },
-              onSubmitFreeform: {
-                await runSessionAction {
-                  await onRespondToQuestion(question.id, nil, inputResponseText)
-                  inputResponseText = ""
-                }
-              }
-            )
-          }
-
-          if disconnectedNotice {
-            ADENoticeCard(
-              title: "Connection lost",
-              message: "Cached messages stay visible, but sending, streaming, and artifact refresh are paused until the host reconnects.",
-              icon: "wifi.slash",
-              tint: ADEColor.warning,
-              actionTitle: nil,
-              action: nil
-            )
-          }
-
-          if let errorMessage {
-            ADENoticeCard(
-              title: "Chat error",
-              message: errorMessage,
-              icon: "exclamationmark.triangle.fill",
-              tint: ADEColor.danger,
-              actionTitle: "Retry",
-              action: { Task { await onRetryLoad() } }
-            )
-          }
-
-          if timeline.isEmpty {
-            ADEEmptyStateView(
-              symbol: "bubble.left.and.bubble.right",
-              title: "No chat messages yet",
-              message: isLive ? "Send a message to start streaming the transcript." : "Reconnect to load the latest chat history from the host."
-            )
-          } else {
-            if hiddenTimelineCount > 0 {
-              Button {
-                loadEarlierTimelineEntries()
-              } label: {
-                Label(
-                  "Load \(min(hiddenTimelineCount, workTimelinePageSize)) earlier message\(min(hiddenTimelineCount, workTimelinePageSize) == 1 ? "" : "s")",
-                  systemImage: "chevron.up.circle"
-                )
-                .font(.footnote.weight(.semibold))
-                .frame(maxWidth: .infinity)
-              }
-              .buttonStyle(.glass)
-              .tint(ADEColor.accent)
-              .controlSize(.small)
-              .accessibilityLabel("Load earlier messages")
-            }
-
-            ForEach(visibleTimeline) { entry in
-              switch entry.payload {
-              case .message(let message):
-                WorkChatMessageBubble(message: message)
-              case .toolCard(let toolCard):
-                WorkToolCardView(
-                  toolCard: toolCard,
-                  references: extractWorkNavigationTargets(from: [toolCard.argsText, toolCard.resultText].compactMap { $0 }.joined(separator: "\n")),
-                  isExpanded: toolCard.status == .running || expandedToolCardIds.contains(toolCard.id),
-                  onToggle: { toggleToolCard(toolCard.id) },
-                  onOpenFile: { path in
-                    Task { await onOpenFile(path) }
-                  },
-                  onOpenPr: { prNumber in
-                    Task { await onOpenPr(prNumber) }
-                  }
-                )
-              case .eventCard(let card):
-                WorkEventCardView(card: card)
-              case .commandCard(let commandCard):
-                WorkCommandCardView(card: commandCard)
-              case .fileChangeCard(let fileChangeCard):
-                WorkFileChangeCardView(card: fileChangeCard)
-              case .artifact(let artifact):
-                WorkArtifactView(
-                  artifact: artifact,
-                  content: artifactContent[artifact.id],
-                  onAppear: { Task { await onLoadArtifact(artifact) } },
-                  onOpenImage: { image in
-                    fullscreenImage = WorkFullscreenImage(title: artifact.title, image: image)
-                  }
-                )
-              }
-            }
-          }
-
-          if sessionStatus == "active" && isLive {
-            HStack(spacing: 10) {
-              ProgressView()
-                .controlSize(.small)
-              Text("Streaming new output…")
-                .font(.caption)
-                .foregroundStyle(ADEColor.textSecondary)
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 10)
-            .background(ADEColor.surfaceBackground.opacity(0.55), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-          }
+          sessionOverviewSection
+          timelineSection
+          streamingStatusSection
 
           Color.clear
             .frame(height: 1)
@@ -1755,43 +3175,7 @@ private struct WorkChatSessionView: View {
       .adeScreenBackground()
       .adeNavigationGlass()
       .safeAreaInset(edge: .bottom) {
-        VStack(spacing: 10) {
-          HStack(alignment: .bottom, spacing: 10) {
-            TextField("Send a message", text: $composer, axis: .vertical)
-              .textFieldStyle(.plain)
-              .lineLimit(1...6)
-              .adeInsetField(cornerRadius: 14, padding: 12)
-              .disabled(!isLive || sending)
-
-            Button {
-              Task {
-                await onSend()
-                withAnimation(ADEMotion.quick(reduceMotion: transitionNamespace == nil)) {
-                  proxy.scrollTo("chat-end", anchor: .bottom)
-                }
-              }
-            } label: {
-              Image(systemName: sending ? "ellipsis.circle" : "paperplane.fill")
-                .font(.system(size: 18, weight: .semibold))
-                .foregroundStyle(ADEColor.accent)
-                .frame(width: 44, height: 44)
-                .background(ADEColor.accent.opacity(0.12), in: Circle())
-            }
-            .accessibilityLabel(sending ? "Sending message" : "Send message")
-            .disabled(!isLive || sending || composer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-          }
-
-          if !isLive {
-            Text("Reconnect to send or resume this chat.")
-              .font(.caption2)
-              .foregroundStyle(ADEColor.textMuted)
-              .frame(maxWidth: .infinity, alignment: .leading)
-          }
-        }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 10)
-        .background(ADEColor.surfaceBackground.opacity(0.08))
-        .glassEffect()
+        composerInset(proxy: proxy)
       }
       .onChange(of: timeline.count) { _, _ in
         guard isNearBottom else { return }
@@ -1828,6 +3212,7 @@ private struct WorkSessionHeader: View {
   let session: TerminalSessionSummary
   let chatSummary: AgentChatSessionSummary?
   let transitionNamespace: Namespace.ID?
+  let onOpenSettings: (() -> Void)?
 
   var body: some View {
     VStack(alignment: .leading, spacing: 12) {
@@ -1857,7 +3242,18 @@ private struct WorkSessionHeader: View {
             WorkTag(text: session.laneName, icon: "arrow.triangle.branch", tint: ADEColor.textSecondary)
           }
         }
-        Spacer()
+        Spacer(minLength: 8)
+        if let onOpenSettings {
+          Button(action: onOpenSettings) {
+            Image(systemName: "slider.horizontal.3")
+              .font(.system(size: 15, weight: .semibold))
+              .foregroundStyle(ADEColor.textPrimary)
+              .frame(width: 36, height: 36)
+              .background(ADEColor.surfaceBackground.opacity(0.6), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+          }
+          .buttonStyle(.plain)
+          .accessibilityLabel("Open chat settings")
+        }
       }
 
       HStack(spacing: 12) {
@@ -1911,6 +3307,9 @@ private struct WorkChatMessageBubble: View {
         Text(message.role == "assistant" ? "Assistant" : "You")
           .font(.caption.weight(.semibold))
           .foregroundStyle(ADEColor.textSecondary)
+        if let deliveryBadge {
+          WorkDeliveryBadge(state: deliveryBadge)
+        }
         Spacer(minLength: 8)
         Text(relativeTimestamp(message.timestamp))
           .font(.caption2)
@@ -1926,10 +3325,75 @@ private struct WorkChatMessageBubble: View {
         .fill(message.role == "assistant" ? ADEColor.accent.opacity(0.08) : ADEColor.surfaceBackground.opacity(0.7))
     )
     .contextMenu {
-      Button("Copy") {
+      Button {
         UIPasteboard.general.string = message.markdown
+      } label: {
+        Label("Copy message", systemImage: "doc.on.doc")
       }
     }
+  }
+
+  private var deliveryBadge: WorkDeliveryBadge.State? {
+    guard message.role == "user" else { return nil }
+    if let state = message.deliveryState {
+      switch state {
+      case "queued": return .queued
+      case "delivered":
+        return message.processed == true ? nil : .delivered
+      case "failed": return .failed
+      case "sending": return .sending
+      default: return nil
+      }
+    }
+    return nil
+  }
+}
+
+private struct WorkDeliveryBadge: View {
+  enum State {
+    case queued, sending, delivered, failed
+
+    var label: String {
+      switch self {
+      case .queued: return "Queued"
+      case .sending: return "Sending"
+      case .delivered: return "Delivered"
+      case .failed: return "Failed"
+      }
+    }
+
+    var icon: String {
+      switch self {
+      case .queued: return "clock"
+      case .sending: return "arrow.up.circle"
+      case .delivered: return "checkmark.circle"
+      case .failed: return "exclamationmark.triangle"
+      }
+    }
+
+    var tint: Color {
+      switch self {
+      case .queued: return ADEColor.accent
+      case .sending: return ADEColor.accent
+      case .delivered: return ADEColor.success
+      case .failed: return ADEColor.danger
+      }
+    }
+  }
+
+  let state: State
+
+  var body: some View {
+    HStack(spacing: 4) {
+      Image(systemName: state.icon)
+      Text(state.label)
+    }
+    .font(.caption2.weight(.semibold))
+    .foregroundStyle(state.tint)
+    .padding(.horizontal, 6)
+    .padding(.vertical, 2)
+    .background(state.tint.opacity(0.12), in: Capsule(style: .continuous))
+    .accessibilityLabel("Delivery state: \(state.label)")
   }
 }
 
@@ -2040,9 +3504,7 @@ private struct WorkStructuredOutputBlock: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 6) {
-      Text(title)
-        .font(.caption2.weight(.semibold))
-        .foregroundStyle(ADEColor.textMuted)
+      WorkOutputBlockHeader(title: title, copyText: text)
       ScrollView {
         Text(text)
           .frame(maxWidth: .infinity, alignment: .leading)
@@ -2063,9 +3525,7 @@ private struct WorkANSIOutputBlock: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 6) {
-      Text(title)
-        .font(.caption2.weight(.semibold))
-        .foregroundStyle(ADEColor.textMuted)
+      WorkOutputBlockHeader(title: title, copyText: text)
       ScrollView([.horizontal, .vertical]) {
         Text(ansiAttributedString(text))
           .frame(maxWidth: .infinity, alignment: .leading)
@@ -2075,6 +3535,38 @@ private struct WorkANSIOutputBlock: View {
       .frame(maxHeight: 200)
       .padding(10)
       .background(ADEColor.recessedBackground.opacity(0.9), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+  }
+}
+
+private struct WorkOutputBlockHeader: View {
+  let title: String
+  let copyText: String
+  @State private var copied = false
+
+  var body: some View {
+    HStack(spacing: 6) {
+      Text(title)
+        .font(.caption2.weight(.semibold))
+        .foregroundStyle(ADEColor.textMuted)
+      Spacer(minLength: 0)
+      Button {
+        UIPasteboard.general.string = copyText
+        copied = true
+        Task {
+          try? await Task.sleep(nanoseconds: 1_400_000_000)
+          copied = false
+        }
+      } label: {
+        HStack(spacing: 4) {
+          Image(systemName: copied ? "checkmark" : "doc.on.doc")
+          Text(copied ? "Copied" : "Copy")
+        }
+        .font(.caption2.weight(.semibold))
+        .foregroundStyle(copied ? ADEColor.success : ADEColor.textSecondary)
+      }
+      .buttonStyle(.plain)
+      .accessibilityLabel(copied ? "Copied to clipboard" : "Copy \(title.lowercased())")
     }
   }
 }
@@ -2227,7 +3719,19 @@ private struct WorkFileChangeCardView: View {
 private struct WorkEventCardView: View {
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   let card: WorkEventCardModel
+  var onOpenFile: ((String) -> Void)? = nil
+  var onOpenPr: ((Int) -> Void)? = nil
   @State private var isAnimating = false
+
+  private var navigationTargets: WorkNavigationTargets? {
+    guard card.kind == "completionReport" else { return nil }
+    let blob = ([card.body] + card.bullets).compactMap { $0 }.joined(separator: "\n")
+    let targets = extractWorkNavigationTargets(from: blob)
+    if targets.filePaths.isEmpty && targets.pullRequestNumbers.isEmpty {
+      return nil
+    }
+    return targets
+  }
 
   var body: some View {
     VStack(alignment: .leading, spacing: 10) {
@@ -2271,6 +3775,35 @@ private struct WorkEventCardView: View {
                 .font(.caption)
                 .foregroundStyle(ADEColor.textPrimary)
                 .frame(maxWidth: .infinity, alignment: .leading)
+            }
+          }
+        }
+      }
+
+      if let navigationTargets {
+        ScrollView(.horizontal, showsIndicators: false) {
+          ADEGlassGroup(spacing: 8) {
+            ForEach(navigationTargets.filePaths.prefix(6), id: \.self) { path in
+              Button {
+                onOpenFile?(path)
+              } label: {
+                Label(workReferenceLabel(for: path), systemImage: "doc.text")
+                  .font(.caption.weight(.semibold))
+              }
+              .buttonStyle(.glass)
+              .disabled(onOpenFile == nil)
+              .accessibilityLabel("Open file \(path)")
+            }
+            ForEach(navigationTargets.pullRequestNumbers.prefix(6), id: \.self) { number in
+              Button {
+                onOpenPr?(number)
+              } label: {
+                Label("PR #\(number)", systemImage: "arrow.triangle.pull")
+                  .font(.caption.weight(.semibold))
+              }
+              .buttonStyle(.glass)
+              .disabled(onOpenPr == nil)
+              .accessibilityLabel("Open pull request \(number)")
             }
           }
         }
@@ -2351,8 +3884,8 @@ private struct WorkSessionControlBar: View {
         .buttonStyle(.glass)
         .tint(ADEColor.warning)
         .disabled(actionInFlight)
-      } else if status == "idle" {
-        Button("Resume") {
+      } else if status == "idle" || status == "ended" {
+        Button(status == "ended" ? "Resume chat" : "Resume") {
           Task { await onResume() }
         }
         .buttonStyle(.glass)
@@ -2371,6 +3904,250 @@ private struct WorkSessionControlBar: View {
     }
     .padding(14)
     .background(ADEColor.surfaceBackground.opacity(0.6), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+  }
+}
+
+private struct WorkComposerInputBanner: View {
+  let title: String
+  let message: String
+  let icon: String
+  let tint: Color
+
+  var body: some View {
+    HStack(alignment: .top, spacing: 10) {
+      Image(systemName: icon)
+        .font(.system(size: 15, weight: .semibold))
+        .foregroundStyle(tint)
+        .frame(width: 24, height: 24)
+        .background(tint.opacity(0.12), in: Circle())
+
+      VStack(alignment: .leading, spacing: 3) {
+        Text(title)
+          .font(.caption.weight(.semibold))
+          .foregroundStyle(ADEColor.textPrimary)
+        Text(message)
+          .font(.caption2)
+          .foregroundStyle(ADEColor.textSecondary)
+          .lineLimit(2)
+      }
+
+      Spacer(minLength: 0)
+    }
+    .padding(10)
+    .background(tint.opacity(0.08), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+    .overlay(
+      RoundedRectangle(cornerRadius: 12, style: .continuous)
+        .stroke(tint.opacity(0.18), lineWidth: 0.8)
+    )
+    .accessibilityElement(children: .combine)
+    .accessibilityLabel("\(title). \(message)")
+  }
+}
+
+private struct WorkComposerChipStrip: View {
+  let chatSummary: AgentChatSessionSummary?
+  let queuedSteerCount: Int
+  let pendingInputCount: Int
+  let onOpenSettings: (() -> Void)?
+
+  var body: some View {
+    ScrollView(.horizontal, showsIndicators: false) {
+      HStack(spacing: 8) {
+        if let chatSummary {
+          chip(
+            icon: providerIcon(chatSummary.provider),
+            label: chatSummary.model,
+            tint: providerTint(chatSummary.provider)
+          )
+          if let runtime = runtimeLabel(for: chatSummary) {
+            chip(icon: "shield.lefthalf.filled", label: runtime, tint: ADEColor.accent)
+          }
+          if let profile = chatSummary.sessionProfile, !profile.isEmpty {
+            chip(icon: "slider.horizontal.3", label: profile, tint: ADEColor.textSecondary)
+          }
+        }
+
+        if queuedSteerCount > 0 {
+          chip(icon: "paperplane.circle", label: "\(queuedSteerCount) queued", tint: ADEColor.accent)
+        }
+        if pendingInputCount > 0 {
+          chip(icon: "hand.raised.circle", label: "\(pendingInputCount) waiting", tint: ADEColor.warning)
+        }
+      }
+      .padding(.horizontal, 2)
+    }
+    .frame(maxWidth: .infinity, alignment: .leading)
+  }
+
+  private func chip(icon: String, label: String, tint: Color) -> some View {
+    Button {
+      onOpenSettings?()
+    } label: {
+      HStack(spacing: 6) {
+        Image(systemName: icon)
+          .font(.caption2.weight(.semibold))
+        Text(label)
+          .font(.caption2.weight(.semibold))
+          .lineLimit(1)
+      }
+      .foregroundStyle(tint)
+      .padding(.horizontal, 10)
+      .padding(.vertical, 5)
+      .background(tint.opacity(0.1), in: Capsule(style: .continuous))
+      .overlay(
+        Capsule(style: .continuous)
+          .stroke(tint.opacity(0.18), lineWidth: 0.6)
+      )
+    }
+    .buttonStyle(.plain)
+    .disabled(onOpenSettings == nil)
+    .accessibilityLabel("\(label). Open chat settings")
+  }
+
+  private func runtimeLabel(for summary: AgentChatSessionSummary) -> String? {
+    let normalizedProvider = summary.provider.lowercased()
+    switch normalizedProvider {
+    case "claude":
+      return summary.claudePermissionMode ?? summary.permissionMode
+    case "codex":
+      if let policy = summary.codexApprovalPolicy, let sandbox = summary.codexSandbox {
+        return "\(policy) · \(sandbox)"
+      }
+      return summary.codexApprovalPolicy ?? summary.codexSandbox
+    case "opencode":
+      return summary.opencodePermissionMode ?? summary.permissionMode
+    default:
+      return summary.permissionMode ?? summary.executionMode
+    }
+  }
+}
+
+private struct WorkQueuedSteerStrip: View {
+  let steers: [WorkPendingSteerModel]
+  @Binding var drafts: [String: String]
+  let busy: Bool
+  let isLive: Bool
+  let onCancel: @MainActor (String) async -> Void
+  let onSaveEdit: @MainActor (String, String) async -> Void
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 8) {
+      HStack(spacing: 6) {
+        Image(systemName: "paperplane.circle")
+          .font(.caption.weight(.semibold))
+          .foregroundStyle(ADEColor.accent)
+        Text(steers.count == 1 ? "1 queued message" : "\(steers.count) queued messages")
+          .font(.caption.weight(.semibold))
+          .foregroundStyle(ADEColor.textSecondary)
+        Spacer(minLength: 0)
+      }
+
+      VStack(spacing: 6) {
+        ForEach(steers) { steer in
+          WorkQueuedSteerRow(
+            steer: steer,
+            draft: Binding(
+              get: { drafts[steer.id] ?? steer.text },
+              set: { drafts[steer.id] = $0 }
+            ),
+            isEditing: drafts[steer.id] != nil,
+            busy: busy,
+            isLive: isLive,
+            onBeginEdit: { drafts[steer.id] = steer.text },
+            onCancelEdit: { drafts.removeValue(forKey: steer.id) },
+            onCancel: { await onCancel(steer.id) },
+            onSave: { text in await onSaveEdit(steer.id, text) }
+          )
+        }
+      }
+    }
+    .padding(10)
+    .background(ADEColor.accent.opacity(0.06), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+    .overlay(
+      RoundedRectangle(cornerRadius: 14, style: .continuous)
+        .stroke(ADEColor.accent.opacity(0.18), lineWidth: 0.8)
+    )
+  }
+}
+
+private struct WorkQueuedSteerRow: View {
+  let steer: WorkPendingSteerModel
+  @Binding var draft: String
+  let isEditing: Bool
+  let busy: Bool
+  let isLive: Bool
+  let onBeginEdit: () -> Void
+  let onCancelEdit: () -> Void
+  let onCancel: @MainActor () async -> Void
+  let onSave: @MainActor (String) async -> Void
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 8) {
+      if isEditing {
+        TextField("Queued message", text: $draft, axis: .vertical)
+          .lineLimit(1...5)
+          .adeInsetField(cornerRadius: 12, padding: 10)
+          .disabled(busy || !isLive)
+
+        HStack(spacing: 8) {
+          Spacer(minLength: 0)
+          Button("Cancel edit", action: onCancelEdit)
+            .buttonStyle(.glass)
+            .tint(ADEColor.textSecondary)
+            .controlSize(.small)
+            .disabled(busy)
+
+          Button("Save") {
+            let trimmed = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { return }
+            Task { await onSave(trimmed) }
+          }
+          .buttonStyle(.glassProminent)
+          .tint(ADEColor.accent)
+          .controlSize(.small)
+          .disabled(busy || !isLive || draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        }
+      } else {
+        Text(steer.text)
+          .font(.caption)
+          .foregroundStyle(ADEColor.textPrimary)
+          .frame(maxWidth: .infinity, alignment: .leading)
+
+        HStack(spacing: 8) {
+          Text(relativeTimestamp(steer.timestamp))
+            .font(.caption2)
+            .foregroundStyle(ADEColor.textMuted)
+          Spacer(minLength: 0)
+          Button {
+            onBeginEdit()
+          } label: {
+            Label("Edit", systemImage: "pencil")
+              .labelStyle(.titleAndIcon)
+              .font(.caption2.weight(.semibold))
+          }
+          .buttonStyle(.glass)
+          .tint(ADEColor.accent)
+          .controlSize(.mini)
+          .disabled(busy || !isLive)
+
+          Button(role: .destructive) {
+            Task { await onCancel() }
+          } label: {
+            Label("Cancel", systemImage: "xmark")
+              .labelStyle(.titleAndIcon)
+              .font(.caption2.weight(.semibold))
+          }
+          .buttonStyle(.glass)
+          .tint(ADEColor.danger)
+          .controlSize(.mini)
+          .disabled(busy || !isLive)
+        }
+      }
+    }
+    .padding(10)
+    .background(ADEColor.surfaceBackground.opacity(0.55), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+    .accessibilityElement(children: .combine)
+    .accessibilityLabel("Queued message: \(steer.text)")
   }
 }
 
@@ -2597,7 +4374,12 @@ private struct WorkTerminalSessionView: View {
   var body: some View {
     ScrollView {
       VStack(alignment: .leading, spacing: 14) {
-        WorkSessionHeader(session: session, chatSummary: nil, transitionNamespace: transitionNamespace)
+        WorkSessionHeader(
+          session: session,
+          chatSummary: nil,
+          transitionNamespace: transitionNamespace,
+          onOpenSettings: nil
+        )
 
         if disconnectedNotice {
           ADENoticeCard(
@@ -2853,6 +4635,9 @@ struct WorkChatMessage: Identifiable, Equatable {
   let timestamp: String
   let turnId: String?
   let itemId: String?
+  var steerId: String? = nil
+  var deliveryState: String? = nil
+  var processed: Bool? = nil
 }
 
 struct WorkLocalEchoMessage: Identifiable, Equatable {
@@ -2994,7 +4779,7 @@ struct WorkChatEnvelope: Identifiable, Equatable {
 }
 
 enum WorkChatEvent: Equatable {
-  case userMessage(text: String, turnId: String?)
+  case userMessage(text: String, turnId: String?, steerId: String?, deliveryState: String?, processed: Bool?)
   case assistantText(text: String, turnId: String?, itemId: String?)
   case toolCall(tool: String, argsText: String, itemId: String, parentItemId: String?, turnId: String?)
   case toolResult(tool: String, resultText: String, itemId: String, parentItemId: String?, turnId: String?, status: WorkToolCardStatus)
@@ -3005,8 +4790,9 @@ enum WorkChatEvent: Equatable {
   case subagentResult(taskId: String, status: String, summary: String, turnId: String?)
   case structuredQuestion(question: String, options: [String], itemId: String, turnId: String?)
   case approvalRequest(description: String, detail: String?, itemId: String, turnId: String?)
+  case pendingInputResolved(itemId: String, resolution: String, turnId: String?)
   case todoUpdate(items: [String], turnId: String?)
-  case systemNotice(kind: String, message: String, detail: String?, turnId: String?)
+  case systemNotice(kind: String, message: String, detail: String?, turnId: String?, steerId: String?)
   case error(message: String, detail: String?, category: String, turnId: String?)
   case done(status: String, summary: String, usage: WorkUsageSummary?, turnId: String)
   case promptSuggestion(text: String, turnId: String?)
@@ -3035,6 +4821,7 @@ enum WorkChatEvent: Equatable {
     case .subagentResult: return "subagent_result"
     case .structuredQuestion: return "structured_question"
     case .approvalRequest: return "approval_request"
+    case .pendingInputResolved: return "pending_input_resolved"
     case .todoUpdate: return "todo_update"
     case .systemNotice: return "system_notice"
     case .error: return "error"
@@ -3077,7 +4864,13 @@ func parseWorkChatTranscript(_ raw: String) -> [WorkChatEnvelope] {
 
       switch type {
       case "user_message":
-        event = .userMessage(text: stringValue(eventDict["text"]), turnId: turnId)
+        event = .userMessage(
+          text: stringValue(eventDict["text"]),
+          turnId: turnId,
+          steerId: optionalString(eventDict["steerId"]),
+          deliveryState: optionalString(eventDict["deliveryState"]),
+          processed: eventDict["processed"] as? Bool
+        )
       case "text":
         event = .assistantText(text: stringValue(eventDict["text"]), turnId: turnId, itemId: itemId)
       case "tool_call":
@@ -3139,6 +4932,12 @@ func parseWorkChatTranscript(_ raw: String) -> [WorkChatEnvelope] {
           itemId: itemId ?? UUID().uuidString,
           turnId: turnId
         )
+      case "pending_input_resolved":
+        event = .pendingInputResolved(
+          itemId: itemId ?? UUID().uuidString,
+          resolution: stringValue(eventDict["resolution"]),
+          turnId: turnId
+        )
       case "structured_question":
         let options = (eventDict["options"] as? [[String: Any]] ?? []).compactMap { optionalString($0["label"]) ?? optionalString($0["value"]) }
         event = .structuredQuestion(
@@ -3159,7 +4958,8 @@ func parseWorkChatTranscript(_ raw: String) -> [WorkChatEnvelope] {
           kind: stringValue(eventDict["noticeKind"]),
           message: stringValue(eventDict["message"]),
           detail: optionalString(prettyPrintedJSONString(eventDict["detail"])),
-          turnId: turnId
+          turnId: turnId,
+          steerId: optionalString(eventDict["steerId"])
         )
       case "error":
         let detailText = optionalString(prettyPrintedJSONString(eventDict["errorInfo"]))
@@ -3908,6 +5708,18 @@ private func buildWorkEventCards(from transcript: [WorkChatEnvelope]) -> [WorkEv
         bullets: detail.map { [$0] } ?? [],
         metadata: []
       )
+    case .pendingInputResolved(_, let resolution, _):
+      return WorkEventCardModel(
+        id: envelope.id,
+        kind: "pendingInputResolved",
+        title: "Input resolved",
+        icon: pendingInputResolutionIcon(for: resolution),
+        tint: pendingInputResolutionTint(for: resolution),
+        timestamp: envelope.timestamp,
+        body: nil,
+        bullets: [],
+        metadata: [pendingInputResolutionLabel(for: resolution)]
+      )
     case .structuredQuestion(let question, let options, _, _):
       return WorkEventCardModel(
         id: envelope.id,
@@ -3932,7 +5744,7 @@ private func buildWorkEventCards(from transcript: [WorkChatEnvelope]) -> [WorkEv
         bullets: items,
         metadata: []
       )
-    case .systemNotice(let kind, let message, let detail, _):
+    case .systemNotice(let kind, let message, let detail, _, _):
       return WorkEventCardModel(
         id: envelope.id,
         kind: "notice",
@@ -4228,14 +6040,35 @@ private func buildWorkChatMessages(from transcript: [WorkChatEnvelope]) -> [Work
 
   for envelope in transcript {
     switch envelope.event {
-    case .userMessage(let text, let turnId):
+    case .userMessage(let text, let turnId, let steerId, let deliveryState, let processed):
+      // Queued steers render as inline cards above the composer, not in the message stream.
+      if deliveryState == "queued", steerId != nil {
+        continue
+      }
       if let lastIndex = messages.indices.last,
          messages[lastIndex].role == "user",
          messages[lastIndex].turnId == turnId,
+         messages[lastIndex].steerId == steerId,
          messages[lastIndex].timestamp == envelope.timestamp {
         messages[lastIndex].markdown += text
+        if let deliveryState {
+          messages[lastIndex].deliveryState = deliveryState
+        }
+        if let processed {
+          messages[lastIndex].processed = processed
+        }
       } else {
-        messages.append(WorkChatMessage(id: envelope.id, role: "user", markdown: text, timestamp: envelope.timestamp, turnId: turnId, itemId: nil))
+        messages.append(WorkChatMessage(
+          id: envelope.id,
+          role: "user",
+          markdown: text,
+          timestamp: envelope.timestamp,
+          turnId: turnId,
+          itemId: nil,
+          steerId: steerId,
+          deliveryState: deliveryState,
+          processed: processed
+        ))
       }
     case .assistantText(let text, let turnId, let itemId):
       if let lastIndex = messages.indices.last,
@@ -4262,7 +6095,7 @@ private func makeWorkChatTranscript(from entries: [AgentChatTranscriptEntry], se
       sequence: nil,
       event: entry.role == "assistant"
         ? .assistantText(text: entry.text, turnId: entry.turnId, itemId: nil)
-        : .userMessage(text: entry.text, turnId: entry.turnId)
+        : .userMessage(text: entry.text, turnId: entry.turnId, steerId: nil, deliveryState: nil, processed: nil)
     )
   }
 }
@@ -4284,7 +6117,7 @@ private func makeWorkChatTranscript(from entries: [AgentChatEventEnvelope]) -> [
   }
 }
 
-private func mergeWorkChatTranscripts(base: [WorkChatEnvelope], live: [WorkChatEnvelope]) -> [WorkChatEnvelope] {
+func mergeWorkChatTranscripts(base: [WorkChatEnvelope], live: [WorkChatEnvelope]) -> [WorkChatEnvelope] {
   guard !live.isEmpty else { return base }
   guard !base.isEmpty else { return live }
 
@@ -4303,7 +6136,134 @@ private func mergeWorkChatTranscripts(base: [WorkChatEnvelope], live: [WorkChatE
     }
   }
 
-  return merged
+  return merged.sorted { lhs, rhs in
+    if lhs.timestamp == rhs.timestamp {
+      return (lhs.sequence ?? 0) < (rhs.sequence ?? 0)
+    }
+    return lhs.timestamp < rhs.timestamp
+  }
+}
+
+enum WorkPendingInputItem: Identifiable, Equatable {
+  case approval(WorkPendingApprovalModel)
+  case question(WorkPendingQuestionModel)
+
+  var id: String {
+    switch self {
+    case .approval(let model): return "approval:\(model.id)"
+    case .question(let model): return "question:\(model.id)"
+    }
+  }
+
+  var itemId: String {
+    switch self {
+    case .approval(let model): return model.id
+    case .question(let model): return model.id
+    }
+  }
+}
+
+struct WorkPendingSteerModel: Identifiable, Equatable {
+  let id: String
+  var text: String
+  let turnId: String?
+  let timestamp: String
+}
+
+/// Ordered list of still-open pending inputs (approvals + structured questions) in the order
+/// they were requested. Mirrors the desktop `derivePendingInputRequests` helper — resolved items
+/// are filtered out using the same predicate as `pendingWorkInputItemIds`.
+func derivePendingWorkInputs(from transcript: [WorkChatEnvelope]) -> [WorkPendingInputItem] {
+  let openIds = pendingWorkInputItemIds(from: transcript)
+  var seen = Set<String>()
+  var results: [WorkPendingInputItem] = []
+  for envelope in sortedWorkChatEnvelopes(transcript) {
+    switch envelope.event {
+    case .approvalRequest(let description, let detail, let itemId, _):
+      guard openIds.contains(itemId), !seen.contains(itemId) else { continue }
+      seen.insert(itemId)
+      results.append(.approval(WorkPendingApprovalModel(id: itemId, description: description, detail: detail)))
+    case .structuredQuestion(let question, let options, let itemId, _):
+      guard openIds.contains(itemId), !seen.contains(itemId) else { continue }
+      seen.insert(itemId)
+      results.append(.question(WorkPendingQuestionModel(id: itemId, question: question, options: options)))
+    default:
+      continue
+    }
+  }
+  return results
+}
+
+/// Ordered list of queued steer messages (user messages with `deliveryState == "queued"` and a
+/// `steerId`). Removed once a `system_notice` referencing the same steerId arrives (desktop emits
+/// one for both "cancelled" and "delivering") or once the event graduates out of the queued state.
+func derivePendingWorkSteers(from transcript: [WorkChatEnvelope]) -> [WorkPendingSteerModel] {
+  var queue: [String: WorkPendingSteerModel] = [:]
+  var order: [String] = []
+  var resolved = Set<String>()
+  for envelope in sortedWorkChatEnvelopes(transcript) {
+    switch envelope.event {
+    case .userMessage(let text, let turnId, let steerId, let deliveryState, _):
+      guard let steerId, !resolved.contains(steerId) else { continue }
+      if deliveryState == "queued" {
+        if queue[steerId] == nil { order.append(steerId) }
+        queue[steerId] = WorkPendingSteerModel(id: steerId, text: text, turnId: turnId, timestamp: envelope.timestamp)
+      } else if deliveryState == "delivered" || deliveryState == "failed" {
+        queue.removeValue(forKey: steerId)
+        resolved.insert(steerId)
+      }
+    case .systemNotice(_, _, _, _, let steerId):
+      if let steerId {
+        queue.removeValue(forKey: steerId)
+        resolved.insert(steerId)
+      }
+    default:
+      continue
+    }
+  }
+  return order.compactMap { queue[$0] }
+}
+
+func pendingWorkInputItemIds(from transcript: [WorkChatEnvelope]) -> Set<String> {
+  var approvals: [String: String?] = [:]
+  var questions: [String: String?] = [:]
+
+  for envelope in sortedWorkChatEnvelopes(transcript) {
+    switch envelope.event {
+    case .approvalRequest(_, _, let itemId, let turnId):
+      approvals.updateValue(turnId, forKey: itemId)
+    case .structuredQuestion(_, _, let itemId, let turnId):
+      questions.updateValue(turnId, forKey: itemId)
+    case .pendingInputResolved(let itemId, _, _):
+      approvals.removeValue(forKey: itemId)
+      questions.removeValue(forKey: itemId)
+    case .toolResult(_, _, let itemId, _, _, _),
+         .command(_, _, _, _, let itemId, _, _, _),
+         .fileChange(_, _, _, _, let itemId, _):
+      approvals.removeValue(forKey: itemId)
+      questions.removeValue(forKey: itemId)
+    case .done(let status, _, _, let turnId):
+      if status == "completed" {
+        approvals = approvals.filter { $0.value != turnId }
+      } else {
+        approvals.removeAll()
+        questions.removeAll()
+      }
+    default:
+      continue
+    }
+  }
+
+  return Set(approvals.keys).union(questions.keys)
+}
+
+private func sortedWorkChatEnvelopes(_ transcript: [WorkChatEnvelope]) -> [WorkChatEnvelope] {
+  transcript.sorted { lhs, rhs in
+    if lhs.timestamp == rhs.timestamp {
+      return (lhs.sequence ?? 0) < (rhs.sequence ?? 0)
+    }
+    return lhs.timestamp < rhs.timestamp
+  }
 }
 
 private func workChatEnvelopeMergeKey(_ envelope: WorkChatEnvelope) -> String {
@@ -4312,8 +6272,13 @@ private func workChatEnvelopeMergeKey(_ envelope: WorkChatEnvelope) -> String {
 
 private func workChatEventMergeKey(_ event: WorkChatEvent) -> String {
   switch event {
-  case .userMessage(let text, let turnId):
-    return ["user_message", turnId ?? "", text].joined(separator: "|")
+  case .userMessage(let text, let turnId, let steerId, let deliveryState, let processed):
+    // Queued steers are uniquely identified by steerId so that editSteer replaces the existing
+    // entry in place instead of spawning a duplicate row whose only difference is the edited text.
+    if let steerId, deliveryState == "queued" {
+      return ["user_message", turnId ?? "", steerId, "queued"].joined(separator: "|")
+    }
+    return ["user_message", turnId ?? "", steerId ?? "", deliveryState ?? "", processed.map { $0 ? "1" : "0" } ?? "", text].joined(separator: "|")
   case .assistantText(let text, let turnId, let itemId):
     return ["text", turnId ?? "", itemId ?? "", text].joined(separator: "|")
   case .toolCall(let tool, let argsText, let itemId, let parentItemId, let turnId):
@@ -4334,10 +6299,12 @@ private func workChatEventMergeKey(_ event: WorkChatEvent) -> String {
     return ["structured_question", turnId ?? "", itemId, question, options.joined(separator: "\n")].joined(separator: "|")
   case .approvalRequest(let description, let detail, let itemId, let turnId):
     return ["approval_request", turnId ?? "", itemId, description, detail ?? ""].joined(separator: "|")
+  case .pendingInputResolved(let itemId, let resolution, let turnId):
+    return ["pending_input_resolved", turnId ?? "", itemId, resolution].joined(separator: "|")
   case .todoUpdate(let items, let turnId):
     return ["todo_update", turnId ?? "", items.joined(separator: "\n")].joined(separator: "|")
-  case .systemNotice(let kind, let message, let detail, let turnId):
-    return ["system_notice", turnId ?? "", kind, message, detail ?? ""].joined(separator: "|")
+  case .systemNotice(let kind, let message, let detail, let turnId, let steerId):
+    return ["system_notice", turnId ?? "", steerId ?? "", kind, message, detail ?? ""].joined(separator: "|")
   case .error(let message, let detail, let category, let turnId):
     return ["error", turnId ?? "", category, message, detail ?? ""].joined(separator: "|")
   case .done(let status, let summary, let usage, let turnId):
@@ -4399,8 +6366,8 @@ private func workCompletionArtifactsMergeKey(_ artifacts: [WorkCompletionArtifac
 
 private func makeWorkChatEvent(from event: AgentChatEvent) -> WorkChatEvent {
   switch event {
-  case .userMessage(let text, _, let turnId, _, _):
-    return .userMessage(text: text, turnId: turnId)
+  case .userMessage(let text, _, let turnId, let steerId, let deliveryState, let processed):
+    return .userMessage(text: text, turnId: turnId, steerId: steerId, deliveryState: deliveryState, processed: processed)
   case .text(let text, _, let turnId, let itemId):
     return .assistantText(text: text, turnId: turnId, itemId: itemId)
   case .toolCall(let tool, let args, let itemId, _, let parentItemId, let turnId):
@@ -4438,13 +6405,15 @@ private func makeWorkChatEvent(from event: AgentChatEvent) -> WorkChatEvent {
     return .structuredQuestion(question: question, options: options?.map(\.label) ?? [], itemId: itemId, turnId: turnId)
   case .approvalRequest(let itemId, _, _, let description, let turnId, let detail):
     return .approvalRequest(description: description, detail: prettyPrintedRemoteJSONValue(detail), itemId: itemId, turnId: turnId)
+  case .pendingInputResolved(let itemId, let resolution, let turnId):
+    return .pendingInputResolved(itemId: itemId, resolution: resolution, turnId: turnId)
   case .todoUpdate(let items, let turnId):
     let renderedItems = items.map { item in
       "\(item.status.rawValue.replacingOccurrences(of: "_", with: " ").capitalized): \(item.description)"
     }
     return .todoUpdate(items: renderedItems, turnId: turnId)
-  case .systemNotice(let noticeKind, let message, let detail, let turnId):
-    return .systemNotice(kind: noticeKind.rawValue, message: message, detail: prettyPrintedRemoteJSONValue(detail), turnId: turnId)
+  case .systemNotice(let noticeKind, let message, let detail, let turnId, let steerId):
+    return .systemNotice(kind: noticeKind.rawValue, message: message, detail: prettyPrintedRemoteJSONValue(detail), turnId: turnId, steerId: steerId)
   case .error(let message, let turnId, _, let errorInfo):
     let detailText = prettyPrintedRemoteJSONValue(errorInfo)
     return .error(message: message, detail: detailText, category: workErrorCategory(message: message, detail: detailText), turnId: turnId)
@@ -4626,33 +6595,75 @@ private func optionalString(_ value: Any?) -> String? {
   return text.isEmpty ? nil : text
 }
 
-private func isChatSession(_ session: TerminalSessionSummary) -> Bool {
-  session.toolType?.contains("chat") == true
+func isChatSession(_ session: TerminalSessionSummary) -> Bool {
+  let raw = session.toolType?
+    .trimmingCharacters(in: .whitespacesAndNewlines)
+    .lowercased() ?? ""
+  guard !raw.isEmpty else { return false }
+  // Must match desktop `isChatToolType` (`apps/desktop/src/renderer/lib/sessions.ts`) — explicit chat tools plus `*-chat` providers.
+  if raw == "codex-chat" || raw == "claude-chat" || raw == "opencode-chat" || raw == "cursor" {
+    return true
+  }
+  return raw.hasSuffix("-chat")
 }
 
 private func defaultWorkChatTitle(provider: String) -> String {
-  provider.lowercased().contains("codex") ? "Codex chat" : "Claude chat"
+  switch provider.lowercased() {
+  case "codex":
+    return "Codex chat"
+  case "opencode":
+    return "OpenCode chat"
+  case "cursor":
+    return "Cursor chat"
+  default:
+    return "Claude chat"
+  }
 }
 
 private func toolTypeForProvider(_ provider: String) -> String {
-  provider.lowercased().contains("codex") ? "codex-chat" : "claude-chat"
+  switch provider.lowercased() {
+  case "codex": return "codex-chat"
+  case "opencode": return "opencode-chat"
+  case "cursor": return "cursor"
+  default: return "claude-chat"
+  }
 }
 
 private func providerLabel(_ provider: String) -> String {
   switch provider.lowercased() {
   case "codex": return "Codex"
   case "claude": return "Claude"
+  case "opencode": return "OpenCode"
+  case "cursor": return "Cursor"
   default: return provider.capitalized
   }
 }
 
 private func providerIcon(_ provider: String) -> String {
-  provider.lowercased().contains("codex") ? "sparkle" : "brain.head.profile"
+  switch provider.lowercased() {
+  case "codex":
+    return "sparkle"
+  case "opencode":
+    return "hammer.fill"
+  case "cursor":
+    return "cursorarrow"
+  default:
+    return "brain.head.profile"
+  }
 }
 
 private func providerTint(_ provider: String?) -> Color {
   guard let provider else { return ADEColor.accent }
-  return provider.lowercased().contains("codex") ? .blue : ADEColor.accent
+  switch provider.lowercased() {
+  case "codex":
+    return .blue
+  case "opencode":
+    return .teal
+  case "cursor":
+    return .indigo
+  default:
+    return ADEColor.accent
+  }
 }
 
 private func sessionSymbol(_ session: TerminalSessionSummary, provider: String?) -> String {
@@ -4662,7 +6673,10 @@ private func sessionSymbol(_ session: TerminalSessionSummary, provider: String?)
   return "terminal.fill"
 }
 
-private func normalizedWorkChatSessionStatus(session: TerminalSessionSummary?, summary: AgentChatSessionSummary?) -> String {
+func normalizedWorkChatSessionStatus(session: TerminalSessionSummary?, summary: AgentChatSessionSummary?) -> String {
+  if summary?.awaitingInput == true {
+    return "awaiting-input"
+  }
   if let status = summary?.status.lowercased() {
     switch status {
     case "active", "running":
@@ -4677,35 +6691,144 @@ private func normalizedWorkChatSessionStatus(session: TerminalSessionSummary?, s
   }
 
   guard let session else { return "ended" }
-  return session.status == "running" ? "active" : "ended"
+  switch session.runtimeState.lowercased() {
+  case "waiting-input":
+    return "awaiting-input"
+  case "idle":
+    return "idle"
+  case "running":
+    return "active"
+  default:
+    return session.status == "running" ? "active" : "ended"
+  }
+}
+
+private func normalizedRuntimeState(for summary: AgentChatSessionSummary) -> String {
+  if summary.awaitingInput == true {
+    return "waiting-input"
+  }
+  switch summary.status.lowercased() {
+  case "idle", "paused":
+    return "idle"
+  case "ended", "completed", "failed", "interrupted":
+    return "exited"
+  default:
+    return "running"
+  }
 }
 
 private func workChatStatusSortRank(_ status: String) -> Int {
   switch status {
-  case "active": return 0
-  case "idle": return 1
-  default: return 2
+  case "awaiting-input": return 0
+  case "active": return 1
+  case "idle": return 2
+  default: return 3
   }
 }
 
 private func workChatStatusTint(_ status: String) -> Color {
   switch status {
+  case "awaiting-input": return ADEColor.warning
   case "active": return ADEColor.success
-  case "idle": return ADEColor.warning
+  case "idle": return ADEColor.accent
   default: return ADEColor.textSecondary
   }
 }
 
 private func workChatStatusIcon(_ status: String) -> String {
   switch status {
+  case "awaiting-input": return "exclamationmark.bubble.fill"
   case "active": return "waveform.path.ecg"
   case "idle": return "pause.circle"
   default: return "checkmark.circle"
   }
 }
 
+private func workInitialRuntimeMode(_ summary: AgentChatSessionSummary) -> String {
+  switch summary.provider {
+  case "claude":
+    if summary.interactionMode == "plan" || summary.permissionMode == "plan" {
+      return "plan"
+    }
+    if summary.claudePermissionMode == "bypassPermissions" || summary.permissionMode == "full-auto" {
+      return "full-auto"
+    }
+    if summary.claudePermissionMode == "acceptEdits" || summary.permissionMode == "edit" {
+      return "edit"
+    }
+    return "default"
+  case "codex":
+    if summary.codexApprovalPolicy == "untrusted" && summary.codexSandbox == "read-only" {
+      return "plan"
+    }
+    if summary.codexApprovalPolicy == "on-failure" && summary.codexSandbox == "workspace-write" {
+      return "edit"
+    }
+    if summary.codexApprovalPolicy == "never" && summary.codexSandbox == "danger-full-access" {
+      return "full-auto"
+    }
+    return "default"
+  case "opencode":
+    return summary.opencodePermissionMode ?? summary.permissionMode ?? "edit"
+  default:
+    return ""
+  }
+}
+
+private func workInitialCursorModeId(_ summary: AgentChatSessionSummary) -> String {
+  summary.cursorModeId ?? workCursorCurrentModeId(summary.cursorModeSnapshot) ?? "agent"
+}
+
+private func workCursorModeIds(_ snapshot: RemoteJSONValue?, fallback: String) -> [String] {
+  if case .object(let object) = snapshot,
+     case .array(let entries)? = object["availableModeIds"] {
+    let ids = entries.compactMap { value -> String? in
+      guard case .string(let string) = value else { return nil }
+      let trimmed = string.trimmingCharacters(in: .whitespacesAndNewlines)
+      return trimmed.isEmpty ? nil : trimmed
+    }
+    if !ids.isEmpty {
+      return ids
+    }
+  }
+  return [fallback]
+}
+
+private func workCursorCurrentModeId(_ snapshot: RemoteJSONValue?) -> String? {
+  guard case .object(let object)? = snapshot,
+        case .string(let currentModeId)? = object["currentModeId"]
+  else {
+    return nil
+  }
+  let trimmed = currentModeId.trimmingCharacters(in: .whitespacesAndNewlines)
+  return trimmed.isEmpty ? nil : trimmed
+}
+
+private func workCursorModeLabel(_ modeId: String) -> String {
+  let normalized = modeId.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+  if normalized.isEmpty { return "Agent" }
+  switch normalized {
+  case "agent": return "Agent"
+  case "ask": return "Ask"
+  case "manual": return "Manual"
+  default:
+    return normalized
+      .split(whereSeparator: { $0 == "-" || $0 == "_" || $0 == "/" })
+      .map { part in
+        let word = String(part)
+        return word.prefix(1).uppercased() + word.dropFirst()
+      }
+      .joined(separator: " ")
+  }
+}
+
 private func sessionStatusLabel(_ session: TerminalSessionSummary, summary: AgentChatSessionSummary? = nil) -> String {
-  switch normalizedWorkChatSessionStatus(session: session, summary: summary) {
+  sessionStatusLabel(for: normalizedWorkChatSessionStatus(session: session, summary: summary))
+}
+
+private func sessionStatusLabel(for status: String) -> String {
+  switch status {
+  case "awaiting-input": return "NEEDS INPUT"
   case "active": return "RUNNING"
   case "idle": return "IDLE"
   default: return "ENDED"
@@ -4750,6 +6873,33 @@ private func activityTitle(for kind: String) -> String {
   case "web_searching": return "Searching the web"
   case "spawning_agent": return "Spawning agent"
   default: return kind.replacingOccurrences(of: "_", with: " ").capitalized
+  }
+}
+
+private func pendingInputResolutionLabel(for resolution: String) -> String {
+  switch resolution {
+  case "accepted": return "Accepted"
+  case "declined": return "Declined"
+  case "cancelled": return "Cancelled"
+  default: return resolution.replacingOccurrences(of: "_", with: " ").capitalized
+  }
+}
+
+private func pendingInputResolutionIcon(for resolution: String) -> String {
+  switch resolution {
+  case "accepted": return "checkmark.circle.fill"
+  case "declined": return "xmark.circle.fill"
+  case "cancelled": return "minus.circle.fill"
+  default: return "checkmark.circle"
+  }
+}
+
+private func pendingInputResolutionTint(for resolution: String) -> ColorToken {
+  switch resolution {
+  case "accepted": return .success
+  case "declined": return .danger
+  case "cancelled": return .secondary
+  default: return .accent
   }
 }
 

@@ -9,7 +9,10 @@ import type {
   AgentChatRespondToInputArgs,
   AgentChatResumeArgs,
   AgentChatSendArgs,
+  AgentChatSessionSummary,
   AgentChatSteerArgs,
+  AgentChatCancelSteerArgs,
+  AgentChatEditSteerArgs,
   AgentChatInterruptArgs,
   AgentChatUpdateSessionArgs,
   ApplyLaneTemplateArgs,
@@ -56,6 +59,7 @@ import type {
   SyncRemoteCommandDescriptor,
   SyncRemoteCommandPolicy,
   SyncRunQuickCommandArgs,
+  UpdateSessionMetaArgs,
   TerminalToolType,
   UpdateLaneAppearanceArgs,
   WriteTextAtomicArgs,
@@ -274,6 +278,27 @@ function parseListSessionsArgs(value: Record<string, unknown>): ListSessionsArgs
   };
 }
 
+function parseUpdateSessionMetaArgs(value: Record<string, unknown>): UpdateSessionMetaArgs {
+  const parsed: UpdateSessionMetaArgs = {
+    sessionId: requireString(value.sessionId, "work.updateSessionMeta requires sessionId."),
+  };
+
+  if ("pinned" in value) parsed.pinned = value.pinned === true;
+  if ("manuallyNamed" in value) parsed.manuallyNamed = value.manuallyNamed === true;
+  if ("title" in value) parsed.title = value.title == null ? undefined : requireString(value.title, "work.updateSessionMeta requires a non-empty title when title is provided.");
+  if ("goal" in value) parsed.goal = value.goal == null ? null : asTrimmedString(value.goal) ?? null;
+  if ("toolType" in value) {
+    parsed.toolType = value.toolType == null
+      ? null
+      : asTrimmedString(value.toolType) as UpdateSessionMetaArgs["toolType"];
+  }
+  if ("resumeCommand" in value) {
+    parsed.resumeCommand = value.resumeCommand == null ? null : asTrimmedString(value.resumeCommand) ?? null;
+  }
+
+  return parsed;
+}
+
 function parseQuickCommandArgs(value: Record<string, unknown>): SyncRunQuickCommandArgs {
   const laneId = requireString(value.laneId, "work.runQuickCommand requires laneId.");
   const title = requireString(value.title, "work.runQuickCommand requires title.");
@@ -291,6 +316,55 @@ function parseQuickCommandArgs(value: Record<string, unknown>): SyncRunQuickComm
     toolType,
     tracked: asOptionalBoolean(value.tracked),
   };
+}
+
+function isChatToolType(toolType: string | null | undefined): boolean {
+  if (!toolType) return false;
+  const t = toolType.trim().toLowerCase();
+  return (
+    t === "codex-chat"
+    || t === "claude-chat"
+    || t === "opencode-chat"
+    || t === "cursor"
+    || t.endsWith("-chat")
+  );
+}
+
+async function listRemoteWorkSessions(
+  args: SyncRemoteCommandServiceArgs,
+  filters: ListSessionsArgs,
+) {
+  let sessions = args.ptyService.enrichSessions(args.sessionService.list(filters));
+  const laneId = typeof filters.laneId === "string" ? filters.laneId.trim() : "";
+  let allChats: AgentChatSessionSummary[] = [];
+  try {
+    allChats = await args.agentChatService?.listSessions(laneId || undefined, { includeIdentity: true }) ?? [];
+  } catch {
+    allChats = [];
+  }
+
+  const identitySessionIds = new Set(
+    allChats
+      .filter((chat) => Boolean(chat.identityKey))
+      .map((chat) => chat.sessionId),
+  );
+  if (identitySessionIds.size > 0) {
+    sessions = sessions.filter((session) => !identitySessionIds.has(session.id));
+  }
+
+  const chats = allChats.filter((chat) => !chat.identityKey);
+  if (chats.length === 0) return sessions;
+  const chatSummaryBySessionId = new Map(chats.map((chat) => [chat.sessionId, chat] as const));
+  return sessions.map((session) => {
+    if (!isChatToolType(session.toolType)) return session;
+    if (session.status !== "running") return session;
+    const chat = chatSummaryBySessionId.get(session.id);
+    if (!chat) return session;
+    if (chat.awaitingInput) return { ...session, runtimeState: "waiting-input" as const, chatIdleSinceAt: null };
+    if (chat.status === "active") return { ...session, runtimeState: "running" as const, chatIdleSinceAt: null };
+    if (chat.status === "idle") return { ...session, runtimeState: "idle" as const, chatIdleSinceAt: chat.idleSinceAt ?? null };
+    return session;
+  });
 }
 
 function parseCloseSessionArgs(value: Record<string, unknown>): { sessionId: string } {
@@ -341,6 +415,21 @@ function parseAgentChatSteerArgs(value: Record<string, unknown>): AgentChatSteer
     sessionId: requireString(value.sessionId, "chat.steer requires sessionId."),
     text: requireString(value.text, "chat.steer requires text."),
     ...(attachments?.length ? { attachments } : {}),
+  };
+}
+
+function parseAgentChatCancelSteerArgs(value: Record<string, unknown>): AgentChatCancelSteerArgs {
+  return {
+    sessionId: requireString(value.sessionId, "chat.cancelSteer requires sessionId."),
+    steerId: requireString(value.steerId, "chat.cancelSteer requires steerId."),
+  };
+}
+
+function parseAgentChatEditSteerArgs(value: Record<string, unknown>): AgentChatEditSteerArgs {
+  return {
+    sessionId: requireString(value.sessionId, "chat.editSteer requires sessionId."),
+    steerId: requireString(value.steerId, "chat.editSteer requires steerId."),
+    text: requireString(value.text, "chat.editSteer requires text."),
   };
 }
 
@@ -405,6 +494,15 @@ function parseAgentChatUpdateSessionArgs(value: Record<string, unknown>): AgentC
   if ("codexSandbox" in value) parsed.codexSandbox = value.codexSandbox == null ? undefined : asTrimmedString(value.codexSandbox) as AgentChatUpdateSessionArgs["codexSandbox"];
   if ("codexConfigSource" in value) parsed.codexConfigSource = value.codexConfigSource == null ? undefined : asTrimmedString(value.codexConfigSource) as AgentChatUpdateSessionArgs["codexConfigSource"];
   if ("opencodePermissionMode" in value) parsed.opencodePermissionMode = value.opencodePermissionMode == null ? undefined : asTrimmedString(value.opencodePermissionMode) as AgentChatUpdateSessionArgs["opencodePermissionMode"];
+  if ("cursorModeId" in value) parsed.cursorModeId = value.cursorModeId == null ? null : asTrimmedString(value.cursorModeId) ?? null;
+  if ("cursorConfigValues" in value) {
+    parsed.cursorConfigValues = value.cursorConfigValues == null
+      ? null
+      : Object.fromEntries(
+          Object.entries(isRecord(value.cursorConfigValues) ? value.cursorConfigValues : {})
+            .filter((entry): entry is [string, string | boolean] => typeof entry[1] === "string" || typeof entry[1] === "boolean"),
+        );
+  }
   if ("computerUse" in value) parsed.computerUse = value.computerUse == null ? null : value.computerUse as AgentChatUpdateSessionArgs["computerUse"];
   if ("manuallyNamed" in value) parsed.manuallyNamed = value.manuallyNamed === true;
   return parsed;
@@ -998,7 +1096,11 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
     return await laneEnvironmentService.initLaneEnvironment(context.lane, mergedEnvInitConfig, mergedOverrides);
   });
 
-  register("work.listSessions", { viewerAllowed: true }, async (payload) => args.sessionService.list(parseListSessionsArgs(payload)));
+  register("work.listSessions", { viewerAllowed: true }, async (payload) => listRemoteWorkSessions(args, parseListSessionsArgs(payload)));
+  register("work.updateSessionMeta", { viewerAllowed: true, queueable: true }, async (payload) => {
+    args.sessionService.updateMeta(parseUpdateSessionMetaArgs(payload));
+    return { ok: true };
+  });
   register("work.runQuickCommand", { viewerAllowed: true, queueable: true }, async (payload) => {
     const parsed = parseQuickCommandArgs(payload);
     return await args.ptyService.create({
@@ -1044,6 +1146,14 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
   });
   register("chat.steer", { viewerAllowed: true, queueable: false }, async (payload) => {
     await requireService(args.agentChatService, "Agent chat service not available.").steer(parseAgentChatSteerArgs(payload));
+    return { ok: true };
+  });
+  register("chat.cancelSteer", { viewerAllowed: true, queueable: false }, async (payload) => {
+    await requireService(args.agentChatService, "Agent chat service not available.").cancelSteer(parseAgentChatCancelSteerArgs(payload));
+    return { ok: true };
+  });
+  register("chat.editSteer", { viewerAllowed: true, queueable: false }, async (payload) => {
+    await requireService(args.agentChatService, "Agent chat service not available.").editSteer(parseAgentChatEditSteerArgs(payload));
     return { ok: true };
   });
   register("chat.approve", { viewerAllowed: true, queueable: false }, async (payload) => {

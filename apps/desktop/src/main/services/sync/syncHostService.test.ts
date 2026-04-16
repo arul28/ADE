@@ -310,7 +310,9 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
         requestReviewers: async () => {},
       } as any,
       sessionService: { list: () => [] } as any,
-      ptyService: {} as any,
+      ptyService: {
+        enrichSessions: (rows: any[]) => rows,
+      } as any,
       computerUseArtifactBrokerService: {} as any,
     });
 
@@ -416,6 +418,7 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
       } as any,
       ptyService: {
         create: vi.fn(),
+        enrichSessions: (rows: any[]) => rows,
       } as any,
       computerUseArtifactBrokerService: {
         listArtifacts: () => [],
@@ -577,6 +580,7 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
       } as any,
       ptyService: {
         create: vi.fn(),
+        enrichSessions: (rows: any[]) => rows,
       } as any,
       computerUseArtifactBrokerService: {
         listArtifacts: ({ artifactId }: { artifactId?: string }) => artifactId === "artifact-1"
@@ -796,6 +800,7 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
       } as any,
       ptyService: {
         create: createSpy,
+        enrichSessions: (rows: any[]) => rows,
       } as any,
       computerUseArtifactBrokerService: {
         listArtifacts: () => [],
@@ -1296,6 +1301,7 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
       } as any,
       ptyService: {
         create: vi.fn(),
+        enrichSessions: (rows: any[]) => rows,
       } as any,
       computerUseArtifactBrokerService: {
         listArtifacts: () => [],
@@ -1442,5 +1448,139 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
     expect(revokedPayload.code).toBe("auth_failed");
     revokedWs.close();
     await new Promise((resolve) => revokedWs.once("close", resolve));
+  });
+
+  it("clears prior PIN failures after a successful pair and still allows paired hello", async () => {
+    const brainDb = await openKvDb(makeDbPath("ade-sync-pairing-cooldown-"), createLogger() as any);
+    const projectRoot = makeProjectRoot("ade-sync-pairing-cooldown-project-");
+    const workspaceRoot = path.join(projectRoot, "workspace");
+    fs.mkdirSync(workspaceRoot, { recursive: true });
+
+    const host = createSyncHostService({
+      db: brainDb,
+      logger: createLogger() as any,
+      projectRoot,
+      port: 0,
+      pinStore: createStubPinStore("428193"),
+      fileService: createStubFileService(workspaceRoot) as any,
+      laneService: {
+        list: vi.fn().mockResolvedValue([]),
+        create: vi.fn(),
+        archive: vi.fn(),
+      } as any,
+      prService: {
+        listAll: vi.fn().mockResolvedValue([]),
+        getDetail: vi.fn(),
+        getStatus: vi.fn(),
+        getChecks: vi.fn(),
+        getReviews: vi.fn(),
+        getComments: vi.fn(),
+        getFiles: vi.fn(),
+        createFromLane: vi.fn(),
+        land: vi.fn(),
+        closePr: vi.fn(),
+        requestReviewers: vi.fn(),
+      } as any,
+      sessionService: {
+        list: () => [],
+        get: () => null,
+        readTranscriptTail: async () => "",
+      } as any,
+      ptyService: {
+        create: vi.fn(),
+        enrichSessions: (rows: any[]) => rows,
+      } as any,
+      computerUseArtifactBrokerService: {
+        listArtifacts: () => [],
+      } as any,
+    });
+    activeDisposers.push(async () => {
+      await host.dispose();
+      brainDb.close();
+    });
+
+    const port = await host.waitUntilListening();
+
+    const sendPairRequest = async (requestId: string, code: string, deviceId: string) => {
+      const ws = new WebSocket(`ws://127.0.0.1:${port}`);
+      await new Promise<void>((resolve, reject) => {
+        ws.once("open", () => resolve());
+        ws.once("error", reject);
+      });
+      const queue = createMessageQueue(ws);
+      ws.send(encodeSyncEnvelope({
+        type: "pairing_request",
+        requestId,
+        payload: {
+          code,
+          peer: {
+            deviceId,
+            deviceName: "Audit iPhone",
+            platform: "iOS",
+            deviceType: "phone",
+            siteId: `${deviceId}-site`,
+            dbVersion: 0,
+          },
+        },
+      }));
+      const response = await queue.next("pairing_result");
+      return {
+        ws,
+        payload: response.payload as {
+          ok: boolean;
+          secret?: string;
+          error?: { code?: string; message?: string };
+        },
+      };
+    };
+
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      const failed = await sendPairRequest(`pair-bad-${attempt}`, "000000", `ios-bad-${attempt}`);
+      expect(failed.payload.ok).toBe(false);
+      expect(failed.payload.error?.code).toBe("invalid_pin");
+      await new Promise((resolve) => failed.ws.once("close", resolve));
+    }
+
+    const paired = await sendPairRequest("pair-good", "428193", "ios-phone-2");
+    expect(paired.payload.ok).toBe(true);
+    expect(paired.payload.secret).toBeTruthy();
+    paired.ws.close();
+    await new Promise((resolve) => paired.ws.once("close", resolve));
+
+    const failedAfterSuccess = await sendPairRequest("pair-after-success", "000000", "ios-after-success");
+    expect(failedAfterSuccess.payload.ok).toBe(false);
+    expect(failedAfterSuccess.payload.error?.code).toBe("invalid_pin");
+    expect(failedAfterSuccess.payload.error?.message).not.toMatch(/Too many failed PIN attempts/i);
+    await new Promise((resolve) => failedAfterSuccess.ws.once("close", resolve));
+
+    const authWs = new WebSocket(`ws://127.0.0.1:${port}`);
+    await new Promise<void>((resolve, reject) => {
+      authWs.once("open", () => resolve());
+      authWs.once("error", reject);
+    });
+    const authQueue = createMessageQueue(authWs);
+    authWs.send(encodeSyncEnvelope({
+      type: "hello",
+      requestId: "hello-after-success",
+      payload: {
+        peer: {
+          deviceId: "ios-phone-2",
+          deviceName: "Audit iPhone",
+          platform: "iOS",
+          deviceType: "phone",
+          siteId: "ios-phone-2-site",
+          dbVersion: 0,
+        },
+        auth: {
+          kind: "paired",
+          deviceId: "ios-phone-2",
+          secret: paired.payload.secret,
+        },
+      },
+    }));
+    const helloOk = await authQueue.next("hello_ok");
+    expect(helloOk.type).toBe("hello_ok");
+    authWs.close();
+    await new Promise((resolve) => authWs.once("close", resolve));
   });
 });

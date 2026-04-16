@@ -730,6 +730,10 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.syncSetPin, pin),
     clearPin: async (): Promise<SyncRoleSnapshot> =>
       ipcRenderer.invoke(IPC.syncClearPin),
+    setActiveLanePresence: async (args: {
+      laneIds: string[];
+    }): Promise<void> =>
+      ipcRenderer.invoke(IPC.syncSetActiveLanePresence, args),
     onEvent: (cb: (event: SyncStatusEventPayload) => void) => {
       const listener = (
         _event: Electron.IpcRendererEvent,

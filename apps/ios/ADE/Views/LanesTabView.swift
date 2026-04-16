@@ -21,6 +21,7 @@ struct LanesTabView: View {
   @State var batchManageLaneIds: [String] = []
   @State var batchManagePresented = false
   @State var refreshFeedbackToken = 0
+  @State private var lastLanesLocalProjectionReload = Date.distantPast
 
   var pinnedLaneIds: Set<String> {
     get {
@@ -63,6 +64,17 @@ struct LanesTabView: View {
                 )
                 .transition(.opacity)
               }
+              if let primaryBranchError, laneStatus.phase == .ready {
+                ADENoticeCard(
+                  title: "Primary branch error",
+                  message: primaryBranchError,
+                  icon: "exclamationmark.triangle.fill",
+                  tint: ADEColor.danger,
+                  actionTitle: "Retry",
+                  action: { Task { await refreshPrimaryBranches(force: true) } }
+                )
+                .transition(.opacity)
+              }
               if laneSnapshots.isEmpty && (laneStatus.phase == .hydrating || laneStatus.phase == .syncingInitialData) {
                 ADECardSkeleton(rows: 4)
                 ADECardSkeleton(rows: 3)
@@ -99,6 +111,9 @@ struct LanesTabView: View {
       }
       .task(id: syncService.localStateRevision) {
         guard laneStatus.phase == .ready else { return }
+        let now = Date()
+        guard now.timeIntervalSince(lastLanesLocalProjectionReload) >= 0.35 else { return }
+        lastLanesLocalProjectionReload = now
         await reload(refreshRemote: false)
       }
       .onChange(of: syncService.connectionState) { oldValue, newValue in
@@ -195,6 +210,7 @@ struct LanesTabView: View {
                     await reload(refreshRemote: true)
                     await refreshPrimaryBranches(force: true)
                   } catch {
+                    ADEHaptics.error()
                     primaryBranchError = error.localizedDescription
                   }
                 }

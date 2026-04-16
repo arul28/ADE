@@ -30,6 +30,7 @@ struct LaneDetailScreen: View {
   @State var commitDiffFiles: [String] = []
   @State var commitDiffSha = ""
   @State var commitDiffSubject = ""
+  @State private var lastLaneDetailLocalReload = Date.distantPast
 
   init(
     laneId: String,
@@ -100,6 +101,7 @@ struct LaneDetailScreen: View {
     .navigationTitle(detail?.lane.name ?? initialSnapshot.lane.name)
     .navigationBarTitleDisplayMode(.inline)
     .task {
+      syncService.announceLaneOpen(laneId: laneId)
       await loadDetail(refreshRemote: false)
       if detail == nil, canRunLiveActions {
         await loadDetail(refreshRemote: true)
@@ -107,6 +109,9 @@ struct LaneDetailScreen: View {
     }
     .task(id: syncService.localStateRevision) {
       guard busyAction == nil, detail != nil else { return }
+      let now = Date()
+      guard now.timeIntervalSince(lastLaneDetailLocalReload) >= 0.35 else { return }
+      lastLaneDetailLocalReload = now
       await loadDetail(refreshRemote: false)
     }
     .refreshable { await loadDetail(refreshRemote: true) }
@@ -144,6 +149,9 @@ struct LaneDetailScreen: View {
     }
     .sheet(isPresented: $showCommitDiffPicker) {
       commitDiffPickerSheet
+    }
+    .onDisappear {
+      syncService.releaseLaneOpen(laneId: laneId)
     }
     .safeAreaInset(edge: .bottom) {
       if detail != nil { commitBar }
@@ -189,6 +197,7 @@ struct LaneDetailScreen: View {
             let msg = try await syncService.generateCommitMessage(laneId: laneId, amend: amendCommit)
             commitMessage = msg
           } catch {
+            ADEHaptics.error()
             errorMessage = error.localizedDescription
           }
         }
@@ -303,6 +312,7 @@ struct LaneDetailScreen: View {
 
       errorMessage = nil
     } catch {
+      ADEHaptics.error()
       errorMessage = error.localizedDescription
     }
   }
@@ -318,6 +328,7 @@ struct LaneDetailScreen: View {
         await onRefreshRoot()
       }
     } catch {
+      ADEHaptics.error()
       errorMessage = error.localizedDescription
     }
     busyAction = nil
@@ -365,6 +376,7 @@ struct LaneDetailScreen: View {
       )
     } catch {
       filesWorkspaceId = nil
+      ADEHaptics.error()
       errorMessage = error.localizedDescription
     }
   }

@@ -2203,6 +2203,23 @@ create table if not exists linear_workflow_runs (
       updated_at text not null
     );
 
+alter table linear_workflow_runs add column execution_lane_id text;
+
+alter table linear_workflow_runs add column supervisor_identity_key text;
+
+alter table linear_workflow_runs add column review_ready_reason text;
+
+alter table linear_workflow_runs add column pr_state text;
+
+alter table linear_workflow_runs add column pr_checks_status text;
+
+alter table linear_workflow_runs add column pr_review_status text;
+
+alter table linear_workflow_runs add column latest_review_note text;
+
+alter table linear_workflow_runs add column route_context_json text;
+
+alter table linear_workflow_runs add column execution_context_json text;
 
 create index if not exists idx_linear_workflow_runs_project_status on linear_workflow_runs(project_id, status, updated_at);
 
@@ -2279,6 +2296,7 @@ create table if not exists external_mcp_usage_events (
       created_at text not null
     );
 
+alter table external_mcp_usage_events add column chat_session_id text;
 
 create index if not exists idx_external_mcp_usage_events_project_occurred on external_mcp_usage_events(project_id, occurred_at);
 
@@ -2328,6 +2346,15 @@ create table if not exists pr_issue_inventory (
       foreign key(pr_id) references pull_requests(id) on delete cascade
     );
 
+alter table pr_issue_inventory add column thread_comment_count integer;
+
+alter table pr_issue_inventory add column thread_latest_comment_id text;
+
+alter table pr_issue_inventory add column thread_latest_comment_author text;
+
+alter table pr_issue_inventory add column thread_latest_comment_at text;
+
+alter table pr_issue_inventory add column thread_latest_comment_source text;
 
 create index if not exists idx_inventory_pr_state on pr_issue_inventory(pr_id, state);
 

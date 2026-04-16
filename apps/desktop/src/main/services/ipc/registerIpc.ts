@@ -205,6 +205,7 @@ import type {
   AgentChatFileSearchResult,
   AgentChatGetTurnFileDiffArgs,
   AgentTool,
+  DeviceMarker,
   KeybindingOverride,
   KeybindingsSnapshot,
   ImportBranchLaneArgs,
@@ -778,6 +779,30 @@ function summarizeLaneRuntime(
   };
 }
 
+function buildLanePresenceByLaneId(syncService: ReturnType<typeof createSyncService> | null | undefined): Map<string, DeviceMarker[]> {
+  const hostService = syncService?.getHostService?.() ?? null;
+  const snapshot = hostService?.getLanePresenceSnapshot?.() ?? [];
+  return new Map(snapshot.map((entry) => [entry.laneId, entry.devicesOpen] as const));
+}
+
+function decorateLaneSummaryWithPresence(
+  lane: LaneSummary,
+  devicesOpenByLaneId: Map<string, DeviceMarker[]>,
+): LaneSummary {
+  const devicesOpen = devicesOpenByLaneId.get(lane.id) ?? [];
+  return {
+    ...lane,
+    ...(devicesOpen.length > 0 ? { devicesOpen } : { devicesOpen: undefined }),
+  };
+}
+
+function decorateLaneSummariesWithPresence(
+  lanes: LaneSummary[],
+  devicesOpenByLaneId: Map<string, DeviceMarker[]>,
+): LaneSummary[] {
+  return lanes.map((lane) => decorateLaneSummaryWithPresence(lane, devicesOpenByLaneId));
+}
+
 async function enrichSessionsForLaneList(
   args: Pick<AppContext, "sessionService" | "ptyService" | "agentChatService">,
 ): Promise<TerminalSessionSummary[]> {
@@ -812,7 +837,9 @@ async function enrichSessionsForLaneList(
 }
 
 async function buildLaneListSnapshots(
-  args: Pick<AppContext, "laneService" | "sessionService" | "ptyService" | "agentChatService" | "rebaseSuggestionService" | "autoRebaseService" | "conflictService">,
+  args: Pick<AppContext, "laneService" | "sessionService" | "ptyService" | "agentChatService" | "rebaseSuggestionService" | "autoRebaseService" | "conflictService"> & {
+    syncService?: ReturnType<typeof createSyncService> | null;
+  },
   lanes: LaneSummary[],
 ): Promise<LaneListSnapshot[]> {
   const [sessions, rebaseSuggestions, autoRebaseStatuses, stateSnapshots, batchAssessment] = await Promise.all([
@@ -827,9 +854,10 @@ async function buildLaneListSnapshots(
   const autoRebaseByLaneId = new Map(autoRebaseStatuses.map((entry) => [entry.laneId, entry] as const));
   const stateByLaneId = new Map(stateSnapshots.map((entry) => [entry.laneId, entry] as const));
   const conflictByLaneId = new Map((batchAssessment?.lanes ?? []).map((entry) => [entry.laneId, entry] as const));
+  const devicesOpenByLaneId = buildLanePresenceByLaneId(args.syncService);
 
   return lanes.map((lane) => ({
-    lane,
+    lane: decorateLaneSummaryWithPresence(lane, devicesOpenByLaneId),
     runtime: summarizeLaneRuntime(lane.id, sessions),
     rebaseSuggestion: rebaseByLaneId.get(lane.id) ?? null,
     autoRebaseStatus: autoRebaseByLaneId.get(lane.id) ?? null,
@@ -1356,7 +1384,15 @@ function summarizeProjectScan(result: OnboardingDetectionResult | null): Partial
 
 
 function isChatToolType(toolType: string | null | undefined): boolean {
-  return toolType === "codex-chat" || toolType === "claude-chat" || toolType === "opencode-chat" || toolType === "cursor";
+  if (!toolType) return false;
+  const t = toolType.trim().toLowerCase();
+  return (
+    t === "codex-chat"
+    || t === "claude-chat"
+    || t === "opencode-chat"
+    || t === "cursor"
+    || t.endsWith("-chat")
+  );
 }
 
 function inferPrAiProvider(modelId: string): "codex" | "claude" {
@@ -2355,6 +2391,19 @@ export function registerIpc({
     return await ctx.syncService.clearPin();
   });
 
+  ipcMain.handle(
+    IPC.syncSetActiveLanePresence,
+    async (_event, arg: { laneIds?: string[] | null }): Promise<void> => {
+      const ctx = getCtx();
+      if (!ctx.syncService) {
+        throw new Error("Sync service is not available.");
+      }
+      await ctx.syncService.setActiveLanePresence(
+        Array.isArray(arg?.laneIds) ? arg.laneIds : [],
+      );
+    },
+  );
+
   ipcMain.handle(IPC.externalMcpListServers, async (): Promise<ExternalMcpServerSnapshot[]> => {
     const service = getCtx().externalMcpService;
     if (!service) return [];
@@ -3342,10 +3391,14 @@ export function registerIpc({
 
   ipcMain.handle(IPC.lanesList, async (_event, arg: ListLanesArgs): Promise<LaneSummary[]> => {
     const ctx = getCtx();
+    const devicesOpenByLaneId = buildLanePresenceByLaneId(ctx.syncService);
     return await withIpcTiming(
       ctx,
       "lanes.list",
-      async () => await ctx.laneService.list(arg),
+      async () => {
+        const lanes = await ctx.laneService.list(arg);
+        return decorateLaneSummariesWithPresence(lanes, devicesOpenByLaneId);
+      },
       {
         includeArchived: Boolean(arg?.includeArchived),
         includeStatus: arg?.includeStatus !== false

@@ -389,6 +389,7 @@ extension LaneDetailScreen {
                     commitDiffSubject = commit.subject
                     showCommitDiffPicker = true
                   } catch {
+                    ADEHaptics.error()
                     errorMessage = error.localizedDescription
                   }
                 }
@@ -398,6 +399,7 @@ extension LaneDetailScreen {
                   do {
                     UIPasteboard.general.string = try await syncService.getCommitMessage(laneId: laneId, commitSha: commit.sha)
                   } catch {
+                    ADEHaptics.error()
                     errorMessage = error.localizedDescription
                   }
                 }
@@ -474,4 +476,3 @@ struct GlassDisclosureStyle: DisclosureGroupStyle {
     .adeGlassCard(cornerRadius: 14, padding: 14)
   }
 }
-

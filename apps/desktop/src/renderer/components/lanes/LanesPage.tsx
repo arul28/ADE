@@ -2,7 +2,7 @@ import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "rea
 import { useClickOutside } from "../../hooks/useClickOutside";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { Group, Panel } from "react-resizable-panels";
-import { Check, CaretDown, FileCode, GitBranch, House, Stack, Link, ArrowsOutSimple, ArrowsInSimple, PushPin, Plus, MagnifyingGlass, Terminal, X, ArrowSquareOut, Info, ArrowCounterClockwise } from "@phosphor-icons/react";
+import { Check, CaretDown, FileCode, GitBranch, House, Stack, Link, ArrowsOutSimple, ArrowsInSimple, PushPin, Plus, MagnifyingGlass, Terminal, X, ArrowSquareOut, Info, ArrowCounterClockwise, UsersThree } from "@phosphor-icons/react";
 import { useAppStore, type LaneInspectorTab } from "../../state/appStore";
 import { buildIntegrationSourcesByLaneId } from "../../lib/integrationLanes";
 import { EmptyState } from "../ui/EmptyState";
@@ -74,6 +74,15 @@ const LANE_ACCENT_COLORS = [
   "#a78bfa", "#60a5fa", "#34d399", "#fbbf24",
   "#f472b6", "#fb923c", "#2dd4bf", "#c084fc",
 ] as const;
+
+function getDevicePresenceTitle(devicesOpen: LaneSummary["devicesOpen"]): string {
+  const names = (devicesOpen ?? [])
+    .map((device) => device.displayName.trim())
+    .filter((name) => name.length > 0);
+  if (names.length === 0) return "Open on this device";
+  if (names.length === 1) return `Open on ${names[0]}`;
+  return `Open on ${names.length} devices: ${names.join(", ")}`;
+}
 
 type CreateLaneRequest =
   | { kind: "child"; args: { name: string; parentLaneId: string } }
@@ -371,6 +380,25 @@ export function LanesPage() {
     () => activeWithPins.filter((id) => lanesById.has(id) && filteredSet.has(id)),
     [activeWithPins, lanesById, filteredSet]
   );
+
+  useEffect(() => {
+    const syncApi = window.ade.sync;
+    if (!syncApi?.setActiveLanePresence) {
+      return;
+    }
+    const laneIds = project?.rootPath ? [...visibleLaneIds] : [];
+    void syncApi.setActiveLanePresence({ laneIds }).catch(() => {});
+  }, [project?.rootPath, visibleLaneIds]);
+
+  useEffect(() => {
+    const syncApi = window.ade.sync;
+    if (!syncApi?.setActiveLanePresence) {
+      return;
+    }
+    return () => {
+      void syncApi.setActiveLanePresence({ laneIds: [] }).catch(() => {});
+    };
+  }, []);
 
   const managedLane = selectedLaneId ? lanesById.get(selectedLaneId) ?? null : null;
   const managedLanes = useMemo(
@@ -1746,6 +1774,7 @@ export function LanesPage() {
           };
           const rebaseSuggestion = laneSnapshot?.rebaseSuggestion ?? null;
           const autoRebaseStatus = laneSnapshot?.autoRebaseStatus ?? null;
+          const devicesOpen = lane.devicesOpen ?? [];
           const tabNumber = String(index + 1).padStart(2, "0");
 
           return (
@@ -1829,12 +1858,33 @@ export function LanesPage() {
 	              </span>
 	              {/* Lane name */}
 	              <span className="truncate" style={{
-                maxWidth: 180,
-                fontFamily: SANS_FONT, fontSize: 12, letterSpacing: "0.5px", textTransform: "uppercase",
-                fontWeight: isSelected ? 600 : 500,
-                color: isSelected ? COLORS.textPrimary : COLORS.textMuted,
-              }}>{lane.name}</span>
-              {/* Branch ref pill for primary */}
+	                maxWidth: 180,
+	                fontFamily: SANS_FONT, fontSize: 12, letterSpacing: "0.5px", textTransform: "uppercase",
+	                fontWeight: isSelected ? 600 : 500,
+	                color: isSelected ? COLORS.textPrimary : COLORS.textMuted,
+	              }}>{lane.name}</span>
+	              {devicesOpen.length > 0 ? (
+	                <span
+	                  style={{
+	                    display: "inline-flex",
+	                    alignItems: "center",
+	                    gap: 4,
+	                    padding: "2px 6px",
+	                    borderRadius: 6,
+	                    fontFamily: MONO_FONT,
+	                    fontSize: 9,
+	                    fontWeight: 700,
+	                    color: COLORS.accent,
+	                    background: COLORS.accentSubtle,
+	                    border: `1px solid ${COLORS.accentBorder}`,
+	                  }}
+	                  title={getDevicePresenceTitle(devicesOpen)}
+	                >
+	                  <UsersThree size={10} weight="bold" />
+	                  {devicesOpen.length}
+	                </span>
+	              ) : null}
+	              {/* Branch ref pill for primary */}
               {isPrimary ? (
                 <span style={{
                   display: "inline-flex", alignItems: "center", padding: "2px 6px",

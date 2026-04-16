@@ -3,7 +3,6 @@ import SQLite3
 
 private let sqliteTransient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
 private let localDeleteColumnId = "-1"
-private let legacyDeleteColumnId = "__ade_deleted"
 
 extension Notification.Name {
   static let adeDatabaseDidChange = Notification.Name("ADE.DatabaseDidChange")
@@ -324,6 +323,11 @@ final class DatabaseService {
       """
       for rawChange in changes {
         let change = normalizeIncomingChange(rawChange)
+        // These snapshot tables are fully replaced by explicit hydration after
+        // connect, so accepting CRDT deltas for them is redundant and brittle.
+        if DatabaseService.hydrationOwnedCrrExcludedTables.contains(change.table) {
+          continue
+        }
         let changed = try execute(sql) { statement in
           try bindText(change.table, to: statement, index: 1)
           try bindScalar(change.pk, to: statement, index: 2)
@@ -901,6 +905,7 @@ final class DatabaseService {
         ptyId: row.ptyId,
         tracked: row.tracked,
         pinned: row.pinned,
+        manuallyNamed: nil,
         goal: row.goal,
         toolType: row.toolType,
         title: row.title,
@@ -914,7 +919,8 @@ final class DatabaseService {
         lastOutputPreview: row.lastOutputPreview,
         summary: row.summary,
         runtimeState: runtimeState(for: row.status),
-        resumeCommand: row.resumeCommand
+        resumeCommand: row.resumeCommand,
+        chatIdleSinceAt: nil
       )
     }
   }
@@ -1474,9 +1480,34 @@ final class DatabaseService {
       definition: "text"
     )
     try ensureColumn(
+      tableName: "lanes",
+      columnName: "mission_id",
+      definition: "text"
+    )
+    try ensureColumn(
+      tableName: "lanes",
+      columnName: "lane_role",
+      definition: "text"
+    )
+    try ensureColumn(
       tableName: "terminal_sessions",
       columnName: "lane_name",
       definition: "text not null default ''"
+    )
+    try ensureColumn(
+      tableName: "terminal_sessions",
+      columnName: "resume_command",
+      definition: "text"
+    )
+    try ensureColumn(
+      tableName: "terminal_sessions",
+      columnName: "resume_metadata_json",
+      definition: "text"
+    )
+    try ensureColumn(
+      tableName: "terminal_sessions",
+      columnName: "manually_named",
+      definition: "integer not null default 0"
     )
     try exec("""
       create table if not exists lane_list_snapshots (
@@ -1512,16 +1543,37 @@ final class DatabaseService {
     try ensureColumn(tableName: "pr_issue_inventory", columnName: "thread_latest_comment_author", definition: "text")
     try ensureColumn(tableName: "pr_issue_inventory", columnName: "thread_latest_comment_at", definition: "text")
     try ensureColumn(tableName: "pr_issue_inventory", columnName: "thread_latest_comment_source", definition: "text")
+
+    try ensureColumn(tableName: "integration_proposals", columnName: "linked_group_id", definition: "text")
+    try ensureColumn(tableName: "integration_proposals", columnName: "linked_pr_id", definition: "text")
+    try ensureColumn(tableName: "integration_proposals", columnName: "workflow_display_state", definition: "text not null default 'active'")
+    try ensureColumn(tableName: "integration_proposals", columnName: "cleanup_state", definition: "text not null default 'none'")
+    try ensureColumn(tableName: "integration_proposals", columnName: "closed_at", definition: "text")
+    try ensureColumn(tableName: "integration_proposals", columnName: "merged_at", definition: "text")
+    try ensureColumn(tableName: "integration_proposals", columnName: "completed_at", definition: "text")
+    try ensureColumn(tableName: "integration_proposals", columnName: "cleanup_declined_at", definition: "text")
+    try ensureColumn(tableName: "integration_proposals", columnName: "cleanup_completed_at", definition: "text")
+
+    try ensureColumn(tableName: "queue_landing_state", columnName: "config_json", definition: "text not null default '{}'")
+    try ensureColumn(tableName: "queue_landing_state", columnName: "active_pr_id", definition: "text")
+    try ensureColumn(tableName: "queue_landing_state", columnName: "active_resolver_run_id", definition: "text")
+    try ensureColumn(tableName: "queue_landing_state", columnName: "last_error", definition: "text")
+    try ensureColumn(tableName: "queue_landing_state", columnName: "wait_reason", definition: "text")
+    try ensureColumn(tableName: "queue_landing_state", columnName: "updated_at", definition: "text")
+
+    try ensureColumn(tableName: "missions", columnName: "mission_lane_id", definition: "text")
+    try ensureColumn(tableName: "missions", columnName: "result_lane_id", definition: "text")
+    try ensureColumn(tableName: "missions", columnName: "queue_claim_token", definition: "text")
+    try ensureColumn(tableName: "missions", columnName: "queue_claimed_at", definition: "text")
+    try ensureColumn(tableName: "missions", columnName: "archived_at", definition: "text")
+
+    try ensureColumn(tableName: "mission_interventions", columnName: "resolution_kind", definition: "text")
+    try ensureColumn(tableName: "unified_memories", columnName: "access_score", definition: "real not null default 0")
+    try ensureColumn(tableName: "worker_agents", columnName: "linear_identity_json", definition: "text not null default '{}'")
   }
 
   private func ensureColumn(tableName: String, columnName: String, definition: String) throws {
-    guard hasTable(named: tableName) else { return }
-    let existingColumns = Set(
-      query("pragma table_info('\(tableName.replacingOccurrences(of: "'", with: "''"))')") { statement in
-        stringValue(statement, index: 1) ?? ""
-      }
-    )
-    guard !existingColumns.contains(columnName) else { return }
+    guard hasTable(named: tableName), !tableHasColumn(tableName: tableName, columnName: columnName) else { return }
     try exec("alter table \(tableName) add column \(columnName) \(definition)")
   }
 
@@ -1565,7 +1617,7 @@ final class DatabaseService {
       let isComplete = trimmed.withCString { sqlite3_complete($0) == 1 }
       guard isComplete else { continue }
 
-      try runMigratingStatement(trimmed)
+      try runBootstrapStatement(trimmed)
       currentStatement.removeAll(keepingCapacity: true)
     }
 
@@ -1575,7 +1627,7 @@ final class DatabaseService {
     }
   }
 
-  private func runMigratingStatement(_ sql: String) throws {
+  private func runBootstrapStatement(_ sql: String) throws {
     do {
       try run(sql)
     } catch {
@@ -1591,7 +1643,10 @@ final class DatabaseService {
         """)
         return
       }
-      if lowered.hasPrefix("alter table"), message.contains("duplicate column name") {
+      // Desktop wraps `alter table ... add column` in try/catch for idempotency;
+      // the extracted bootstrap loses that context, so tolerate the re-run here.
+      if lowered.contains("alter table"), lowered.contains("add column"),
+         message.contains("duplicate column name") {
         return
       }
       throw error
@@ -1599,11 +1654,10 @@ final class DatabaseService {
   }
 
   private func ensureCrrTables() throws {
-    // One-time cleanup: earlier builds registered local-only cache tables as
-    // CRR, which meant every cache write produced crsql_changes that got
-    // exported to the host (which does NOT register those tables as CRR).
-    // Drop the clock + triggers and purge pending changes so no more leak out.
-    for cacheTable in DatabaseService.localOnlyCacheTables where hasTable(named: "\(cacheTable)__crsql_clock") {
+    // One-time cleanup: excluded cache/snapshot tables should not participate
+    // in phone-side CRDT at all. Drop their CRR metadata and pending changes
+    // so they only flow through explicit hydration commands.
+    for cacheTable in DatabaseService.excludedCrrTables where hasTable(named: "\(cacheTable)__crsql_clock") {
       try dropCrrTriggers(for: cacheTable)
       try exec("drop table if exists \(quoteIdentifier("\(cacheTable)__crsql_clock"))")
       _ = try execute("delete from crsql_master where tbl_name = ?") { statement in
@@ -1631,6 +1685,16 @@ final class DatabaseService {
     "lane_list_snapshots",
   ]
 
+  /// Tables the phone replaces from explicit hydration commands after connect.
+  /// Treating them as CRDT tables is redundant and can break first-connect
+  /// materialization when the incoming delta stream is not row-complete.
+  private static let hydrationOwnedCrrExcludedTables: Set<String> = [
+    "lane_state_snapshots",
+    "pull_request_snapshots",
+  ]
+
+  private static let excludedCrrTables = localOnlyCacheTables.union(hydrationOwnedCrrExcludedTables)
+
   private func listEligibleCrrTables() -> [String] {
     let sql = """
       select name, sql
@@ -1650,7 +1714,7 @@ final class DatabaseService {
       )
     }.filter { row in
       !row.sql.lowercased().hasPrefix("create virtual table")
-        && !DatabaseService.localOnlyCacheTables.contains(row.name)
+        && !DatabaseService.excludedCrrTables.contains(row.name)
         && tableHasPrimaryKey(row.name)
     }.map(\.name)
   }
@@ -1659,6 +1723,13 @@ final class DatabaseService {
     query("pragma table_info('\(tableName.replacingOccurrences(of: "'", with: "''"))')") { statement in
       sqlite3_column_int(statement, 5) > 0
     }.contains(true)
+  }
+
+  private func tableHasColumn(tableName: String, columnName: String) -> Bool {
+    let normalizedColumnName = columnName.lowercased()
+    return query("pragma table_info('\(tableName.replacingOccurrences(of: "'", with: "''"))')") { statement in
+      (stringValue(statement, index: 1) ?? "").lowercased()
+    }.contains(normalizedColumnName)
   }
 
   private func forceSiteId(_ siteId: String) throws {
@@ -2371,7 +2442,7 @@ final class DatabaseService {
   }
 
   private func isDeleteColumnId(_ cid: String) -> Bool {
-    cid == localDeleteColumnId || cid == legacyDeleteColumnId
+    cid == localDeleteColumnId
   }
 
   /// Decode a cr-sqlite packed primary key blob into actual column values.

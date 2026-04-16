@@ -109,6 +109,11 @@ enum SyncBonjourTiming {
   static let resolveTimeout: TimeInterval = 10
 }
 
+enum SyncSocketTiming {
+  static let openTimeoutNanoseconds: UInt64 = 5_000_000_000
+  static let lanePresenceHeartbeatNanoseconds: UInt64 = 30_000_000_000
+}
+
 struct SyncReconnectState {
   private(set) var attempts = 0
 
@@ -120,10 +125,13 @@ struct SyncReconnectState {
   }
 
   mutating func nextDelayNanoseconds(forCloseCodeRawValue closeCodeRawValue: Int?) -> UInt64 {
+    let base = nextDelayNanoseconds()
+    // Close 4001 is used for heartbeat / idle disconnect on the host. A zero delay caused
+    // immediate reconnect storms (many TCP opens per second) and UI lag.
     if closeCodeRawValue == 4001 {
-      return 0
+      return max(1_500_000_000, base)
     }
-    return nextDelayNanoseconds()
+    return base
   }
 
   mutating func reset() {
@@ -223,6 +231,31 @@ func shouldHandleSocketSendCompletionError(
   currentSocket === callbackSocket
 }
 
+private final class SyncSocketSessionDelegate: NSObject, URLSessionWebSocketDelegate, URLSessionTaskDelegate {
+  weak var service: SyncService?
+
+  func urlSession(
+    _ session: URLSession,
+    webSocketTask: URLSessionWebSocketTask,
+    didOpenWithProtocol protocol: String?
+  ) {
+    Task { @MainActor [weak service] in
+      service?.handleSocketDidOpen(webSocketTask)
+    }
+  }
+
+  func urlSession(
+    _ session: URLSession,
+    task: URLSessionTask,
+    didCompleteWithError error: Error?
+  ) {
+    guard let webSocketTask = task as? URLSessionWebSocketTask, let error else { return }
+    Task { @MainActor [weak service] in
+      service?.handleSocketDidComplete(webSocketTask, error: error)
+    }
+  }
+}
+
 struct FilesNavigationRequest: Equatable, Identifiable {
   let id: String
   let workspaceId: String
@@ -288,12 +321,14 @@ final class SyncService: ObservableObject {
   @Published var requestedLaneNavigation: LaneNavigationRequest?
   @Published var requestedPrNavigation: PrNavigationRequest?
 
-  private let legacyDraftKey = "ade.sync.connectionDraft"
   private let profileKey = "ade.sync.hostProfile"
+  private let autoReconnectPausedKey = "ade.sync.autoReconnectPausedByUser"
   private let pendingOperationsKey = "ade.sync.pendingOperations"
   private let remoteCommandDescriptorsKey = "ade.sync.remoteCommandDescriptors"
   private let keychain = KeychainService()
   private let database: DatabaseService
+  private let socketSessionDelegate: SyncSocketSessionDelegate
+  private let socketSession: URLSession
   private var socket: URLSessionWebSocketTask?
   private struct PendingRequest {
     let completion: (Result<Any, Error>) -> Void
@@ -301,19 +336,34 @@ final class SyncService: ObservableObject {
   }
 
   private var pending: [String: PendingRequest] = [:]
+  private var pendingSocketOpen: [Int: CheckedContinuation<Void, Error>] = [:]
+  private var pendingSocketOpenTimeoutTasks: [Int: Task<Void, Never>] = [:]
   private let decoder = JSONDecoder()
   private let encoder = JSONEncoder()
   private let compressionThresholdBytes = 4 * 1024
   private var relayTask: Task<Void, Never>?
   private var hydrationTask: Task<Void, Never>?
   private var reconnectTask: Task<Void, Never>?
+  private var lanePresenceHeartbeatTask: Task<Void, Never>?
+  private var openLaneReferenceCounts: [String: Int] = [:]
   private var databaseObserver: NSObjectProtocol?
+  /// Coalesces bursty `adeDatabaseDidChange` notifications so SwiftUI `.task(id: localStateRevision)` surfaces
+  /// do not reload on every CRDT row during host sync (was freezing the Work tab and Settings UI).
+  private var databaseRevisionDebounceTask: Task<Void, Never>?
   private var latestRemoteDbVersion = 0
   private var outboundLocalDbVersion = 0
   private let discoveryBrowser = SyncBonjourBrowser()
   private var reconnectState = SyncReconnectState()
   private var connectionGeneration: UInt64 = 0
+  private var connectAttemptGeneration: UInt64 = 0
   private var allowAutoReconnect = true
+  /// User-initiated disconnects should stay disconnected until the user explicitly reconnects or pairs again.
+  private var autoReconnectPausedByUser = false
+  /// When a saved pairing exists but discovery has not resolved the host yet, wait
+  /// for live Bonjour data instead of dialing stale cached IPs on launch.
+  private var autoReconnectAwaitingLiveDiscovery = false
+  /// Prevents overlapping `reconnectIfPossible` runs from stacking TCP/WebSocket attempts.
+  private var reconnectConnectInFlight = false
   private(set) var deviceId: String
   private var remoteCommandDescriptors: [SyncRemoteCommandDescriptor] = []
   private var supportsChatStreaming = false
@@ -339,7 +389,18 @@ final class SyncService: ObservableObject {
   }
 
   init(database: DatabaseService = DatabaseService()) {
+    let socketSessionDelegate = SyncSocketSessionDelegate()
+    let socketSessionConfiguration = URLSessionConfiguration.default
+    socketSessionConfiguration.waitsForConnectivity = false
+    let socketSession = URLSession(
+      configuration: socketSessionConfiguration,
+      delegate: socketSessionDelegate,
+      delegateQueue: nil
+    )
+    self.socketSessionDelegate = socketSessionDelegate
+    self.socketSession = socketSession
     self.database = database
+    self.autoReconnectPausedByUser = UserDefaults.standard.bool(forKey: autoReconnectPausedKey)
     if let existing = UserDefaults.standard.string(forKey: "ade.sync.deviceId") {
       deviceId = existing
     } else {
@@ -372,18 +433,67 @@ final class SyncService: ObservableObject {
     ) { [weak self] _ in
       guard let self else { return }
       Task { @MainActor in
-        self.localStateRevision += 1
+        self.scheduleLocalStateRevisionBumpAfterDatabaseChange()
       }
     }
+    socketSessionDelegate.service = self
   }
 
   deinit {
+    databaseRevisionDebounceTask?.cancel()
     relayTask?.cancel()
     hydrationTask?.cancel()
     reconnectTask?.cancel()
+    lanePresenceHeartbeatTask?.cancel()
     discoveryBrowser.stop()
+    socketSession.invalidateAndCancel()
     if let databaseObserver {
       NotificationCenter.default.removeObserver(databaseObserver)
+    }
+  }
+
+  private func scheduleLocalStateRevisionBumpAfterDatabaseChange() {
+    databaseRevisionDebounceTask?.cancel()
+    databaseRevisionDebounceTask = Task { @MainActor [weak self] in
+      guard let self else { return }
+      try? await Task.sleep(nanoseconds: 280_000_000)
+      guard !Task.isCancelled else { return }
+      localStateRevision += 1
+    }
+  }
+
+  func announceLaneOpen(laneId: String) {
+    guard let normalizedLaneId = normalizeOpenLaneId(laneId) else { return }
+    let nextCount = (openLaneReferenceCounts[normalizedLaneId] ?? 0) + 1
+    openLaneReferenceCounts[normalizedLaneId] = nextCount
+    scheduleLanePresenceHeartbeatIfNeeded()
+    guard nextCount == 1 else { return }
+
+    Task { @MainActor [weak self] in
+      await self?.sendLanePresenceCommand(
+        action: "lanes.presence.announce",
+        laneId: normalizedLaneId,
+        refreshSnapshots: true
+      )
+    }
+  }
+
+  func releaseLaneOpen(laneId: String) {
+    guard let normalizedLaneId = normalizeOpenLaneId(laneId) else { return }
+    let currentCount = openLaneReferenceCounts[normalizedLaneId] ?? 0
+    guard currentCount > 0 else { return }
+    if currentCount == 1 {
+      openLaneReferenceCounts.removeValue(forKey: normalizedLaneId)
+      scheduleLanePresenceHeartbeatIfNeeded()
+      Task { @MainActor [weak self] in
+        await self?.sendLanePresenceCommand(
+          action: "lanes.presence.release",
+          laneId: normalizedLaneId,
+          refreshSnapshots: true
+        )
+      }
+    } else {
+      openLaneReferenceCounts[normalizedLaneId] = currentCount - 1
     }
   }
 
@@ -392,28 +502,10 @@ final class SyncService: ObservableObject {
        let profile = try? decoder.decode(HostConnectionProfile.self, from: data) {
       return profile
     }
-    guard let data = UserDefaults.standard.data(forKey: legacyDraftKey),
-          let draft = try? decoder.decode(ConnectionDraft.self, from: data) else {
-      return nil
-    }
-    let migrated = HostConnectionProfile(legacy: draft)
-    saveProfile(migrated)
-    return migrated
+    return nil
   }
 
-  func loadDraft() -> ConnectionDraft? {
-    guard let profile = loadProfile() else { return nil }
-    return ConnectionDraft(
-      host: profile.lastSuccessfulAddress ?? profile.savedAddressCandidates.first ?? "127.0.0.1",
-      port: profile.port,
-      authKind: profile.authKind,
-      pairedDeviceId: profile.pairedDeviceId,
-      lastRemoteDbVersion: profile.lastRemoteDbVersion,
-      lastBrainDeviceId: profile.lastHostDeviceId
-    )
-  }
-
-  func reconnectIfPossible() async {
+  func reconnectIfPossible(userInitiated: Bool = false) async {
     do {
       try ensureDatabaseReady()
     } catch {
@@ -421,17 +513,57 @@ final class SyncService: ObservableObject {
       connectionState = .error
       return
     }
+    if userInitiated {
+      setAutoReconnectPausedByUser(false)
+      autoReconnectAwaitingLiveDiscovery = false
+    }
+    guard userInitiated || allowAutoReconnect else {
+      syncConnectLog.info("reconnect skipped: automatic reconnect disabled")
+      return
+    }
+    guard userInitiated || !autoReconnectPausedByUser else {
+      syncConnectLog.info("reconnect skipped: paused by user")
+      return
+    }
     allowAutoReconnect = true
     guard let profile = loadProfile(), let token = keychain.loadToken() else { return }
+    if !userInitiated && automaticReconnectAddresses(for: profile).isEmpty {
+      if !autoReconnectAwaitingLiveDiscovery {
+        syncConnectLog.info("reconnect skipped: waiting for live discovery")
+      }
+      autoReconnectAwaitingLiveDiscovery = true
+      return
+    }
+    autoReconnectAwaitingLiveDiscovery = false
+    guard !reconnectConnectInFlight else {
+      syncConnectLog.info("reconnect skipped: connect already in flight")
+      return
+    }
+    reconnectConnectInFlight = true
+    defer { reconnectConnectInFlight = false }
+    let connectAttemptGeneration = beginConnectAttempt()
     do {
-      let connectedAddress = try await connectUsingProfile(profile, token: token)
+      let connectedAddress = try await connectUsingProfile(
+        profile,
+        token: token,
+        connectAttemptGeneration: connectAttemptGeneration,
+        preferLiveCandidatesOnly: !userInitiated
+      )
+      guard isCurrentConnectAttempt(connectAttemptGeneration) else { return }
       currentAddress = connectedAddress
     } catch {
-      handleReconnectFailure(error)
+      guard isCurrentConnectAttempt(connectAttemptGeneration) else { return }
+      handleReconnectFailure(
+        error,
+        shouldScheduleRetry: false,
+        phase: userInitiated ? .failed : .disconnected,
+        connectionState: userInitiated ? .error : .disconnected
+      )
     }
   }
 
   func handleForegroundTransition() async {
+    guard !reconnectConnectInFlight else { return }
     if canSendLiveRequests() {
       do {
         try await refreshLaneSnapshots()
@@ -463,13 +595,44 @@ final class SyncService: ObservableObject {
       connectionState = .error
       return
     }
+    let connectAttemptGeneration: UInt64
     do {
-      if socket != nil || !pending.isEmpty || connectionState == .connected || connectionState == .connecting || connectionState == .syncing {
-        disconnect(clearCredentials: false)
-      }
+      cancelReconnectLoop()
+      allowAutoReconnect = false
+      setAutoReconnectPausedByUser(false)
+      disconnect(clearCredentials: false, suspendAutoReconnect: false)
+      connectAttemptGeneration = beginConnectAttempt()
       resetChatEventState(clearHistory: true)
-      allowAutoReconnect = true
-      let addressCandidates = deduplicatedAddresses([host] + candidateAddresses)
+      let matchingDiscovery = discoveredHosts.filter { discovered in
+        if let hostIdentity, !hostIdentity.isEmpty {
+          return discovered.hostIdentity == hostIdentity
+        }
+        if let hostName, !hostName.isEmpty {
+          return discovered.hostName.localizedCaseInsensitiveCompare(hostName) == .orderedSame
+        }
+        return false
+      }
+      let discoveryAddresses = matchingDiscovery.flatMap(\.addresses)
+      let discoveryTailscaleAddresses = matchingDiscovery.compactMap(\.tailscaleAddress)
+      let explicitTailscaleAddresses = tailscaleAddress.map { [$0] } ?? []
+      let lastSuccessfulAddress = preferredPairedAddress(
+        host: host,
+        hostIdentity: hostIdentity,
+        hostName: hostName,
+        candidateAddresses: discoveryAddresses
+          + discoveryTailscaleAddresses
+          + [host]
+          + explicitTailscaleAddresses
+          + candidateAddresses
+      )
+      let addressCandidates = deduplicatedAddresses(
+        lastSuccessfulAddress +
+        [host] +
+        discoveryAddresses +
+        discoveryTailscaleAddresses +
+        explicitTailscaleAddresses +
+        candidateAddresses
+      )
       // If we have multiple candidates (e.g. discovered LAN + loopback + tailscale),
       // walk them in order and only fail if every one fails to open a socket.
       // A single-address manual entry retains short-circuit behavior since the
@@ -477,9 +640,16 @@ final class SyncService: ObservableObject {
       var openedAddress: String?
       var lastOpenError: Error?
       for candidate in addressCandidates {
+        guard isCurrentConnectAttempt(connectAttemptGeneration) else {
+          throw CancellationError()
+        }
         syncConnectLog.info("attempt host=\(candidate, privacy: .public) port=\(port) kind=pair")
         do {
-          try await openSocket(host: candidate, port: port)
+          try await openSocket(
+            host: candidate,
+            port: port,
+            connectAttemptGeneration: connectAttemptGeneration
+          )
           syncConnectLog.info("success host=\(candidate, privacy: .public)")
           openedAddress = candidate
           break
@@ -499,6 +669,9 @@ final class SyncService: ObservableObject {
           "code": code.trimmingCharacters(in: .whitespacesAndNewlines).uppercased(),
           "peer": self.currentPeerMetadata(),
         ])
+      }
+      guard isCurrentConnectAttempt(connectAttemptGeneration) else {
+        throw CancellationError()
       }
       guard let payload = raw as? [String: Any], (payload["ok"] as? Bool) == true else {
         throw NSError(domain: "ADE", code: 2, userInfo: [
@@ -536,50 +709,51 @@ final class SyncService: ObservableObject {
       )
       saveProfile(profile)
       currentAddress = preferredAddress
-      try await hello(host: preferredAddress, port: port, token: secret, authKind: "paired", pairedDeviceId: pairedDeviceId, expectedHostIdentity: hostIdentity)
+      try await hello(
+        host: preferredAddress,
+        port: port,
+        token: secret,
+        authKind: "paired",
+        pairedDeviceId: pairedDeviceId,
+        expectedHostIdentity: hostIdentity,
+        connectAttemptGeneration: connectAttemptGeneration
+      )
     } catch {
+      guard isCurrentConnectAttempt(connectAttemptGeneration) else { return }
       let friendlyMessage = SyncUserFacingError.message(for: error)
+      cancelReconnectLoop()
+      allowAutoReconnect = false
+      setAutoReconnectPausedByUser(true)
+      teardownSocket(reason: friendlyMessage)
       lastError = friendlyMessage
       connectionState = .error
       setDomainStatus(SyncDomain.allCases, phase: .failed, error: friendlyMessage)
     }
   }
 
-  func pairAndConnect(using payload: SyncPairingQrPayload) async {
-    let candidateAddresses = deduplicatedAddresses(payload.addressCandidates.map(\.host))
-    // v1 payloads embed the pairing code in the QR; v2 payloads omit it because
-    // the user types a manually-set PIN. In the v2 case we skip auto-pairing
-    // and let the UI collect the PIN before calling the explicit overload.
-    guard let pairingCode = payload.pairingCode, !pairingCode.isEmpty else {
-      return
-    }
-    await pairAndConnect(
-      host: candidateAddresses.first ?? "127.0.0.1",
-      port: payload.port,
-      code: pairingCode,
-      hostIdentity: payload.hostIdentity.deviceId,
-      hostName: payload.hostIdentity.name,
-      candidateAddresses: candidateAddresses,
-      tailscaleAddress: payload.addressCandidates.first(where: { $0.kind == "tailscale" })?.host
-    )
-  }
-
   func decodePairingQrPayload(from rawValue: String) throws -> SyncPairingQrPayload {
     let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
-
-    if let data = trimmed.data(using: .utf8), let payload = try? decoder.decode(SyncPairingQrPayload.self, from: data) {
-      return payload
-    }
-
     if let url = URL(string: trimmed), let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
        let payloadValue = components.queryItems?.first(where: { $0.name == "payload" })?.value {
       let json = payloadValue.removingPercentEncoding ?? payloadValue
-      if let data = json.data(using: .utf8), let payload = try? decoder.decode(SyncPairingQrPayload.self, from: data) {
+      if let data = json.data(using: .utf8), let payload = try? decodeCurrentPairingQrPayload(from: data) {
         return payload
       }
     }
 
     throw NSError(domain: "ADE", code: 22, userInfo: [NSLocalizedDescriptionKey: "That QR code is not a valid ADE pairing payload."])
+  }
+
+  private func decodeCurrentPairingQrPayload(from data: Data) throws -> SyncPairingQrPayload {
+    let payload = try decoder.decode(SyncPairingQrPayload.self, from: data)
+    guard payload.version == 2 else {
+      throw NSError(
+        domain: "ADE",
+        code: 22,
+        userInfo: [NSLocalizedDescriptionKey: "That QR code uses an unsupported ADE pairing format."]
+      )
+    }
+    return payload
   }
 
   private func friendlyPairingFailureMessage(_ raw: Any) -> String {
@@ -588,21 +762,23 @@ final class SyncService: ObservableObject {
     let message = error?["message"] as? String
 
     switch code {
-    case "invalid_pin", "invalid_code":
+    case "invalid_pin":
       return "Incorrect PIN."
     case "pin_not_set":
       return "No PIN set on that computer. Set one in the desktop app's Sync settings."
-    case "expired_code":
-      return "Incorrect PIN."
-    case "pairing_unavailable":
-      return "Phone pairing is not available on the host right now. Reopen Sync on the host and try again."
     default:
       return message ?? "Pairing failed."
     }
   }
 
-  func disconnect(clearCredentials: Bool = false) {
+  func disconnect(clearCredentials: Bool = false, suspendAutoReconnect: Bool = true) {
+    beginConnectAttempt()
+    autoReconnectAwaitingLiveDiscovery = false
+    if suspendAutoReconnect {
+      setAutoReconnectPausedByUser(true)
+    }
     allowAutoReconnect = false
+    reconnectConnectInFlight = false
     reconnectTask?.cancel()
     teardownSocket(closeCode: .normalClosure)
     connectionState = .disconnected
@@ -742,7 +918,40 @@ final class SyncService: ObservableObject {
   }
 
   func setSessionPinned(sessionId: String, pinned: Bool) async throws {
+    if supportsRemoteAction("work.updateSessionMeta") {
+      _ = try await sendCommand(action: "work.updateSessionMeta", args: [
+        "sessionId": sessionId,
+        "pinned": pinned,
+      ])
+    }
     try database.setSessionPinned(sessionId: sessionId, pinned: pinned)
+  }
+
+  func updateSessionMeta(
+    sessionId: String,
+    title: String? = nil,
+    pinned: Bool? = nil,
+    manuallyNamed: Bool? = nil
+  ) async throws {
+    var args: [String: Any] = ["sessionId": sessionId]
+    if let title {
+      args["title"] = title
+    }
+    if let pinned {
+      args["pinned"] = pinned
+    }
+    if let manuallyNamed {
+      args["manuallyNamed"] = manuallyNamed
+    }
+    if supportsRemoteAction("work.updateSessionMeta") {
+      _ = try await sendCommand(action: "work.updateSessionMeta", args: args)
+    }
+    if let title {
+      try database.updateSessionTitle(sessionId: sessionId, title: title)
+    }
+    if let pinned {
+      try database.setSessionPinned(sessionId: sessionId, pinned: pinned)
+    }
   }
 
   func fetchPullRequests() async throws -> [PrSummary] {
@@ -1237,11 +1446,15 @@ final class SyncService: ObservableObject {
   }
 
   func createChatSession(laneId: String, provider: String, model: String = "", reasoningEffort: String? = nil) async throws -> AgentChatSessionSummary {
+    let trimmedModel = model.trimmingCharacters(in: .whitespacesAndNewlines)
     var args: [String: Any] = [
       "laneId": laneId,
       "provider": provider,
       "model": model,
     ]
+    if !trimmedModel.isEmpty {
+      args["modelId"] = trimmedModel
+    }
     if let reasoningEffort, !reasoningEffort.isEmpty {
       args["reasoningEffort"] = reasoningEffort
     }
@@ -1275,6 +1488,20 @@ final class SyncService: ObservableObject {
 
   func steerChatSession(sessionId: String, text: String) async throws {
     _ = try await sendChatCommand(action: "chat.steer", payload: AgentChatSteerRequest(sessionId: sessionId, text: text))
+  }
+
+  func cancelChatSteer(sessionId: String, steerId: String) async throws {
+    _ = try await sendChatCommand(
+      action: "chat.cancelSteer",
+      payload: AgentChatCancelSteerRequest(sessionId: sessionId, steerId: steerId)
+    )
+  }
+
+  func editChatSteer(sessionId: String, steerId: String, text: String) async throws {
+    _ = try await sendChatCommand(
+      action: "chat.editSteer",
+      payload: AgentChatEditSteerRequest(sessionId: sessionId, steerId: steerId, text: text)
+    )
   }
 
   func approveChatSession(
@@ -1327,8 +1554,12 @@ final class SyncService: ObservableObject {
     codexApprovalPolicy: String? = nil,
     codexSandbox: String? = nil,
     codexConfigSource: String? = nil,
+    opencodePermissionMode: String? = nil,
+    cursorModeId: String? = nil,
+    cursorConfigValues: [String: RemoteJSONValue]? = nil,
     unifiedPermissionMode: String? = nil,
-    computerUse: RemoteJSONValue? = nil
+    computerUse: RemoteJSONValue? = nil,
+    manuallyNamed: Bool? = nil
   ) async throws -> AgentChatSession {
     try await sendDecodableChatCommand(
       action: "chat.updateSession",
@@ -1343,8 +1574,12 @@ final class SyncService: ObservableObject {
         codexApprovalPolicy: codexApprovalPolicy,
         codexSandbox: codexSandbox,
         codexConfigSource: codexConfigSource,
+        opencodePermissionMode: opencodePermissionMode,
+        cursorModeId: cursorModeId,
+        cursorConfigValues: cursorConfigValues,
         unifiedPermissionMode: unifiedPermissionMode,
-        computerUse: computerUse
+        computerUse: computerUse,
+        manuallyNamed: manuallyNamed
       ),
       as: AgentChatSession.self
     )
@@ -1445,7 +1680,6 @@ final class SyncService: ObservableObject {
       hostName = profile.hostName
     } else {
       UserDefaults.standard.removeObject(forKey: profileKey)
-      UserDefaults.standard.removeObject(forKey: legacyDraftKey)
     }
   }
 
@@ -1485,6 +1719,94 @@ final class SyncService: ObservableObject {
     commandDescriptor(for: action) != nil
   }
 
+  private func normalizeOpenLaneId(_ laneId: String) -> String? {
+    let normalized = laneId.trimmingCharacters(in: .whitespacesAndNewlines)
+    return normalized.isEmpty ? nil : normalized
+  }
+
+  private func setAutoReconnectPausedByUser(_ paused: Bool) {
+    autoReconnectPausedByUser = paused
+    UserDefaults.standard.set(paused, forKey: autoReconnectPausedKey)
+  }
+
+  @discardableResult
+  private func beginConnectAttempt() -> UInt64 {
+    connectAttemptGeneration &+= 1
+    return connectAttemptGeneration
+  }
+
+  private func isCurrentConnectAttempt(_ generation: UInt64) -> Bool {
+    connectAttemptGeneration == generation
+  }
+
+  private func trackedOpenLaneIds() -> [String] {
+    openLaneReferenceCounts
+      .filter { $0.value > 0 }
+      .map(\.key)
+      .sorted()
+  }
+
+  private func scheduleLanePresenceHeartbeatIfNeeded() {
+    lanePresenceHeartbeatTask?.cancel()
+    lanePresenceHeartbeatTask = nil
+    guard canSendLiveRequests(),
+          supportsRemoteAction("lanes.presence.announce"),
+          !trackedOpenLaneIds().isEmpty else { return }
+    lanePresenceHeartbeatTask = Task { @MainActor [weak self] in
+      while let self, !Task.isCancelled {
+        try? await Task.sleep(nanoseconds: SyncSocketTiming.lanePresenceHeartbeatNanoseconds)
+        guard !Task.isCancelled else { return }
+        await self.reannounceTrackedOpenLanes()
+      }
+    }
+  }
+
+  private func restoreTrackedOpenLanesAfterReconnect() async {
+    scheduleLanePresenceHeartbeatIfNeeded()
+    guard canSendLiveRequests(),
+          supportsRemoteAction("lanes.presence.announce") else { return }
+    let laneIds = trackedOpenLaneIds()
+    guard !laneIds.isEmpty else { return }
+    await reannounceTrackedOpenLanes()
+  }
+
+  private func reannounceTrackedOpenLanes() async {
+    guard canSendLiveRequests(),
+          supportsRemoteAction("lanes.presence.announce") else {
+      scheduleLanePresenceHeartbeatIfNeeded()
+      return
+    }
+    for laneId in trackedOpenLaneIds() {
+      await sendLanePresenceCommand(
+        action: "lanes.presence.announce",
+        laneId: laneId,
+        refreshSnapshots: false
+      )
+    }
+  }
+
+  private func sendLanePresenceCommand(
+    action: String,
+    laneId: String,
+    refreshSnapshots: Bool
+  ) async {
+    guard canSendLiveRequests(), supportsRemoteAction(action) else {
+      scheduleLanePresenceHeartbeatIfNeeded()
+      return
+    }
+    do {
+      _ = try await performCommandRequest(action: action, args: ["laneId": laneId])
+      if refreshSnapshots {
+        try? await refreshLaneSnapshots()
+      }
+    } catch {
+      syncConnectLog.info(
+        "lane presence action=\(action, privacy: .public) lane=\(laneId, privacy: .public) error=\(String(describing: error), privacy: .public)"
+      )
+    }
+    scheduleLanePresenceHeartbeatIfNeeded()
+  }
+
   private func deduplicatedAddresses(_ addresses: [String]) -> [String] {
     var seen = Set<String>()
     return addresses
@@ -1493,50 +1815,161 @@ final class SyncService: ObservableObject {
       .filter { seen.insert($0).inserted }
   }
 
+  private func preferredPairedAddress(
+    host: String,
+    hostIdentity: String?,
+    hostName: String?,
+    candidateAddresses: [String]
+  ) -> [String] {
+    guard let profile = activeHostProfile,
+          let lastSuccessfulAddress = profile.lastSuccessfulAddress?.trimmingCharacters(in: .whitespacesAndNewlines),
+          !lastSuccessfulAddress.isEmpty else {
+      return []
+    }
+
+    let identityMatches = hostIdentity.flatMap { identity in
+      let trimmed = identity.trimmingCharacters(in: .whitespacesAndNewlines)
+      guard !trimmed.isEmpty else { return nil }
+      return profile.hostIdentity == trimmed
+    } ?? false
+    let nameMatches = hostName.flatMap { name in
+      let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+      guard !trimmed.isEmpty else { return nil }
+      return profile.hostName?.localizedCaseInsensitiveCompare(trimmed) == .orderedSame
+    } ?? false
+    guard identityMatches || nameMatches else { return [] }
+
+    let candidates = Set(deduplicatedAddresses(
+      candidateAddresses
+      + profile.savedAddressCandidates
+      + profile.discoveredLanAddresses
+      + [host]
+      + (profile.tailscaleAddress.map { [$0] } ?? [])
+    ))
+    return candidates.contains(lastSuccessfulAddress) ? [lastSuccessfulAddress] : []
+  }
+
+  private func matchesDiscoveredHost(_ discovered: DiscoveredSyncHost, profile: HostConnectionProfile) -> Bool {
+    let knownAddresses = Set(
+      profile.savedAddressCandidates
+      + profile.discoveredLanAddresses
+      + (profile.lastSuccessfulAddress.map { [$0] } ?? [])
+      + (profile.tailscaleAddress.map { [$0] } ?? [])
+    )
+    let discoveredAddresses = Set(
+      discovered.addresses
+      + (discovered.tailscaleAddress.map { [$0] } ?? [])
+    )
+    if !knownAddresses.isDisjoint(with: discoveredAddresses) {
+      return true
+    }
+
+    if let hostIdentity = profile.hostIdentity?.trimmingCharacters(in: .whitespacesAndNewlines),
+       !hostIdentity.isEmpty {
+      let discoveredIdentity = discovered.hostIdentity?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+      guard !discoveredIdentity.isEmpty else {
+        // Older / partial Bonjour rows can briefly miss TXT identity fields.
+        // Fall back to host name only for that case rather than matching every
+        // anonymous row on the subnet.
+        if let hostName = profile.hostName?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !hostName.isEmpty {
+          return discovered.hostName.localizedCaseInsensitiveCompare(hostName) == .orderedSame
+        }
+        return false
+      }
+      return discoveredIdentity == hostIdentity
+    }
+
+    if let hostName = profile.hostName?.trimmingCharacters(in: .whitespacesAndNewlines),
+       !hostName.isEmpty {
+      return discovered.hostName.localizedCaseInsensitiveCompare(hostName) == .orderedSame
+    }
+
+    return false
+  }
+
   private func prioritizedAddresses(for profile: HostConnectionProfile) -> [String] {
     let matchingDiscovery = discoveredHosts.filter { host in
-      guard let hostIdentity = profile.hostIdentity else { return true }
-      return host.hostIdentity == nil || host.hostIdentity == hostIdentity
+      matchesDiscoveredHost(host, profile: profile)
     }
 
     let liveLan = matchingDiscovery.flatMap(\.addresses)
     let liveTailscale = matchingDiscovery.compactMap(\.tailscaleAddress)
     let liveSet = Set(liveLan + liveTailscale)
+    let liveLastSuccessful = profile.lastSuccessfulAddress.flatMap { address in
+      liveSet.contains(address) ? [address] : nil
+    } ?? []
     // Prefer addresses we see RIGHT NOW on the network over anything we have
     // cached from previous sessions. If the user changed subnets, stale
     // entries would otherwise consume the first few attempts (each with its
     // own timeout) before we finally try the correct current IP. Only fall
     // back to cached saved candidates if no live discovery is available.
-    let prioritizedLive = liveLan
-      + (profile.lastSuccessfulAddress.flatMap { liveSet.contains($0) ? [$0] : [] } ?? [])
+    let prioritizedLive = liveLastSuccessful
+      + liveLan
       + liveTailscale
-    let fallbackSaved = (profile.lastSuccessfulAddress.flatMap { liveSet.contains($0) ? nil : [$0] } ?? [])
+    let fallbackSaved = (liveLastSuccessful.isEmpty ? (profile.lastSuccessfulAddress.map { [$0] } ?? []) : [])
       + profile.savedAddressCandidates
       + profile.discoveredLanAddresses
       + (profile.tailscaleAddress.map { [$0] } ?? [])
     return deduplicatedAddresses(prioritizedLive + fallbackSaved)
   }
 
-  private func connectUsingProfile(_ profile: HostConnectionProfile, token: String) async throws -> String {
+  private func automaticReconnectAddresses(for profile: HostConnectionProfile) -> [String] {
+    let matchingDiscovery = discoveredHosts.filter { host in
+      matchesDiscoveredHost(host, profile: profile)
+    }
+
+    let liveLan = matchingDiscovery.flatMap(\.addresses)
+    let liveTailscale = matchingDiscovery.compactMap(\.tailscaleAddress)
+    let liveSet = Set(liveLan + liveTailscale)
+    let liveLastSuccessful = profile.lastSuccessfulAddress.flatMap { address in
+      liveSet.contains(address) ? [address] : nil
+    } ?? []
+
+    if !matchingDiscovery.isEmpty {
+      return deduplicatedAddresses(liveLastSuccessful + liveLan + liveTailscale)
+    }
+
+    return []
+  }
+
+  private func connectUsingProfile(
+    _ profile: HostConnectionProfile,
+    token: String,
+    connectAttemptGeneration: UInt64,
+    preferLiveCandidatesOnly: Bool
+  ) async throws -> String {
     var lastFailure: Error?
-    let addresses = prioritizedAddresses(for: profile)
+    let addresses = preferLiveCandidatesOnly
+      ? automaticReconnectAddresses(for: profile)
+      : prioritizedAddresses(for: profile)
     guard !addresses.isEmpty else {
       throw NSError(domain: "ADE", code: 18, userInfo: [NSLocalizedDescriptionKey: "No saved address is available for this host."])
     }
 
     for address in addresses {
-      let kindString: String? = nil
-      syncConnectLog.info("attempt host=\(address, privacy: .public) port=\(profile.port) kind=\(kindString ?? "unknown", privacy: .public)")
+      guard isCurrentConnectAttempt(connectAttemptGeneration) else {
+        throw CancellationError()
+      }
+      syncConnectLog.info("attempt host=\(address, privacy: .public) port=\(profile.port) kind=unknown")
       do {
-        try await openSocket(host: address, port: profile.port)
+        try await openSocket(
+          host: address,
+          port: profile.port,
+          connectAttemptGeneration: connectAttemptGeneration
+        )
         try await hello(
           host: address,
           port: profile.port,
           token: token,
           authKind: profile.authKind,
           pairedDeviceId: profile.pairedDeviceId,
-          expectedHostIdentity: profile.hostIdentity
+          expectedHostIdentity: profile.hostIdentity,
+          connectAttemptGeneration: connectAttemptGeneration
         )
+        guard isCurrentConnectAttempt(connectAttemptGeneration) else {
+          throw CancellationError()
+        }
         syncConnectLog.info("success host=\(address, privacy: .public)")
         return address
       } catch {
@@ -1556,16 +1989,29 @@ final class SyncService: ObservableObject {
     throw lastFailure ?? NSError(domain: "ADE", code: 19, userInfo: [NSLocalizedDescriptionKey: "Unable to reach the saved ADE host."])
   }
 
-  private func handleReconnectFailure(_ error: Error) {
+  private func handleReconnectFailure(
+    _ error: Error,
+    shouldScheduleRetry: Bool,
+    phase: SyncDomainPhase,
+    connectionState: RemoteConnectionState
+  ) {
     if shouldInvalidateSavedPairing(for: error) {
       forgetHost()
       return
     }
     let friendlyMessage = SyncUserFacingError.message(for: error)
     lastError = friendlyMessage
-    connectionState = .error
-    setDomainStatus(SyncDomain.allCases, phase: .failed, error: friendlyMessage)
-    scheduleReconnectIfNeeded(after: reconnectDelay())
+    self.connectionState = connectionState
+    if phase == .failed {
+      setDomainStatus(SyncDomain.allCases, phase: .failed, error: friendlyMessage)
+    } else {
+      setDomainStatus(SyncDomain.allCases, phase: .disconnected)
+    }
+    if shouldScheduleRetry {
+      scheduleReconnectIfNeeded(after: reconnectDelay())
+    } else {
+      cancelReconnectLoop()
+    }
   }
 
   private func reconnectDelay() -> UInt64 {
@@ -1573,7 +2019,7 @@ final class SyncService: ObservableObject {
   }
 
   private func scheduleReconnectIfNeeded(after delayNanoseconds: UInt64) {
-    guard allowAutoReconnect, loadProfile() != nil, keychain.loadToken() != nil else { return }
+    guard allowAutoReconnect, !autoReconnectPausedByUser, loadProfile() != nil, keychain.loadToken() != nil else { return }
     reconnectTask?.cancel()
     reconnectTask = Task { @MainActor in
       try? await Task.sleep(nanoseconds: delayNanoseconds)
@@ -1594,19 +2040,75 @@ final class SyncService: ObservableObject {
   }
 
   private func applyDiscoveredHosts(_ hosts: [DiscoveredSyncHost]) {
-    discoveredHosts = hosts.sorted { $0.hostName.localizedCaseInsensitiveCompare($1.hostName) == .orderedAscending }
+    var mergedByIdentity: [String: DiscoveredSyncHost] = [:]
+    var noIdentity: [DiscoveredSyncHost] = []
+    for host in hosts {
+      guard let identity = host.hostIdentity?.trimmingCharacters(in: .whitespacesAndNewlines), !identity.isEmpty else {
+        noIdentity.append(host)
+        continue
+      }
+      if let existing = mergedByIdentity[identity] {
+        let preferred = host.lastResolvedAt >= existing.lastResolvedAt ? host : existing
+        let fallback = host.lastResolvedAt >= existing.lastResolvedAt ? existing : host
+        let addresses = deduplicatedAddresses(preferred.addresses + fallback.addresses)
+        let tailscale = preferred.tailscaleAddress ?? fallback.tailscaleAddress
+        let port = preferred.port > 0 ? preferred.port : fallback.port
+        let mergedName = preferred.hostName.isEmpty ? fallback.hostName : preferred.hostName
+        mergedByIdentity[identity] = DiscoveredSyncHost(
+          id: identity,
+          serviceName: existing.serviceName,
+          hostName: mergedName,
+          hostIdentity: identity,
+          port: port,
+          addresses: addresses,
+          tailscaleAddress: tailscale,
+          lastResolvedAt: host.lastResolvedAt > existing.lastResolvedAt ? host.lastResolvedAt : existing.lastResolvedAt
+        )
+      } else {
+        var tagged = host
+        tagged.id = identity
+        mergedByIdentity[identity] = tagged
+      }
+    }
+    let merged = Array(mergedByIdentity.values) + noIdentity
+    discoveredHosts = merged.sorted { $0.hostName.localizedCaseInsensitiveCompare($1.hostName) == .orderedAscending }
     guard let profile = activeHostProfile else { return }
     let matching = discoveredHosts.filter { discovered in
-      guard let hostIdentity = profile.hostIdentity else { return true }
-      return discovered.hostIdentity == hostIdentity
+      matchesDiscoveredHost(discovered, profile: profile)
     }
     guard !matching.isEmpty else { return }
     updateProfile { profile in
-      profile.discoveredLanAddresses = deduplicatedAddresses(matching.flatMap(\.addresses))
-      profile.tailscaleAddress = matching.compactMap(\.tailscaleAddress).first ?? profile.tailscaleAddress
+      let liveLanAddresses = deduplicatedAddresses(matching.flatMap(\.addresses))
+      let liveTailscaleAddress = matching.compactMap(\.tailscaleAddress).first ?? profile.tailscaleAddress
+      profile.discoveredLanAddresses = liveLanAddresses
+      profile.tailscaleAddress = liveTailscaleAddress
+      profile.savedAddressCandidates = Array(
+        deduplicatedAddresses(
+          (profile.lastSuccessfulAddress.map { [$0] } ?? [])
+          + liveLanAddresses
+          + (liveTailscaleAddress.map { [$0] } ?? [])
+        ).prefix(6)
+      )
+      if profile.hostIdentity == nil {
+        profile.hostIdentity = matching.compactMap(\.hostIdentity).first
+      }
       if profile.hostName == nil {
         profile.hostName = matching.first?.hostName
       }
+    }
+    guard autoReconnectAwaitingLiveDiscovery,
+          allowAutoReconnect,
+          !autoReconnectPausedByUser,
+          keychain.loadToken() != nil,
+          !reconnectConnectInFlight,
+          !canSendLiveRequests(),
+          let refreshedProfile = activeHostProfile,
+          !automaticReconnectAddresses(for: refreshedProfile).isEmpty else {
+      return
+    }
+    autoReconnectAwaitingLiveDiscovery = false
+    Task { @MainActor [weak self] in
+      await self?.reconnectIfPossible()
     }
   }
 
@@ -1621,7 +2123,11 @@ final class SyncService: ObservableObject {
     ]
   }
 
-  private func openSocket(host: String, port: Int) async throws {
+  private func openSocket(
+    host: String,
+    port: Int,
+    connectAttemptGeneration: UInt64
+  ) async throws {
     teardownSocket(closeCode: .goingAway)
     connectionState = .connecting
     hostName = activeHostProfile?.hostName
@@ -1637,9 +2143,13 @@ final class SyncService: ObservableObject {
     guard let url = URL(string: urlString) else {
       throw NSError(domain: "ADE", code: 1, userInfo: [NSLocalizedDescriptionKey: "Invalid host address."])
     }
-    let task = URLSession.shared.webSocketTask(with: url)
-    task.resume()
+    let task = socketSession.webSocketTask(with: url)
     socket = task
+    try await awaitSocketOpen(task)
+    guard isCurrentConnectAttempt(connectAttemptGeneration) else {
+      teardownSocket(reason: "Connection superseded.")
+      throw CancellationError()
+    }
     receiveLoop(for: task)
   }
 
@@ -1649,7 +2159,8 @@ final class SyncService: ObservableObject {
     token: String,
     authKind: String,
     pairedDeviceId: String?,
-    expectedHostIdentity: String?
+    expectedHostIdentity: String?,
+    connectAttemptGeneration: UInt64
   ) async throws {
     let requestId = makeRequestId()
     let auth: [String: Any]
@@ -1672,6 +2183,9 @@ final class SyncService: ObservableObject {
         "auth": auth,
       ])
     }
+    guard isCurrentConnectAttempt(connectAttemptGeneration) else {
+      throw CancellationError()
+    }
     guard let payload = raw as? [String: Any] else {
       throw NSError(domain: "ADE", code: 4, userInfo: [NSLocalizedDescriptionKey: "Invalid hello response."])
     }
@@ -1681,8 +2195,10 @@ final class SyncService: ObservableObject {
       port: port,
       authKind: authKind,
       pairedDeviceId: pairedDeviceId,
-      expectedHostIdentity: expectedHostIdentity
+      expectedHostIdentity: expectedHostIdentity,
+      connectAttemptGeneration: connectAttemptGeneration
     )
+    await restoreTrackedOpenLanesAfterReconnect()
   }
 
   private func applyHelloPayload(
@@ -1691,8 +2207,12 @@ final class SyncService: ObservableObject {
     port: Int,
     authKind: String,
     pairedDeviceId: String?,
-    expectedHostIdentity: String?
+    expectedHostIdentity: String?,
+    connectAttemptGeneration: UInt64
   ) throws {
+    guard isCurrentConnectAttempt(connectAttemptGeneration) else {
+      throw CancellationError()
+    }
     let remoteDbVersion = payload["serverDbVersion"] as? Int ?? 0
     let brain = payload["brain"] as? [String: Any]
     let remoteHostIdentity = brain?["deviceId"] as? String
@@ -1735,6 +2255,8 @@ final class SyncService: ObservableObject {
     }
 
     reconnectState.reset()
+    allowAutoReconnect = true
+    setAutoReconnectPausedByUser(false)
     // Do NOT set latestRemoteDbVersion to the server's version here.
     // The mobile should only claim a dbVersion it actually received via
     // changeset_batch. Setting it prematurely causes the desktop to skip
@@ -1811,7 +2333,14 @@ final class SyncService: ObservableObject {
           @unknown default:
             text = ""
           }
-          try self.handleIncoming(text)
+          do {
+            try self.handleIncoming(text)
+          } catch {
+            if self.socket === task {
+              self.handleIncomingFailure(error, text: text)
+            }
+            break
+          }
         } catch {
           if self.socket === task {
             let closeCodeRawValue = Int(task.closeCode.rawValue)
@@ -1837,6 +2366,28 @@ final class SyncService: ObservableObject {
         }
       }
     }
+  }
+
+  private func handleIncomingFailure(_ error: Error, text: String) {
+    let type: String = {
+      guard let data = text.data(using: .utf8),
+            let envelope = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+        return "unknown"
+      }
+      return (envelope["type"] as? String) ?? "unknown"
+    }()
+    syncConnectLog.error(
+      "incoming message failed type=\(type, privacy: .public) error=\(String(describing: error), privacy: .public)"
+    )
+    allowAutoReconnect = false
+    autoReconnectAwaitingLiveDiscovery = false
+    let friendlyError = SyncUserFacingError.error(from: error)
+    teardownSocket(reason: friendlyError.localizedDescription)
+    lastError = friendlyError.localizedDescription
+    connectionState = .error
+    setDomainStatus(SyncDomain.allCases, phase: .failed, error: friendlyError.localizedDescription)
+    failPendingRequests(with: friendlyError)
+    cancelReconnectLoop()
   }
 
   private func handleIncoming(_ text: String) throws {
@@ -1897,6 +2448,12 @@ final class SyncService: ObservableObject {
       }
     case "command_result", "file_response", "terminal_snapshot":
       resolve(requestId: requestId, result: .success(payload))
+    case "chat_subscribe":
+      if supportsChatStreaming,
+         let dict = payload as? [String: Any],
+         let snapshot = try? decode(dict, as: SyncChatSubscribeSnapshotPayload.self) {
+        replaceChatEventHistory(sessionId: snapshot.sessionId, events: snapshot.events)
+      }
     case "chat_event":
       if supportsChatStreaming,
          let dict = payload as? [String: Any],
@@ -2034,11 +2591,64 @@ final class SyncService: ObservableObject {
     }
   }
 
+  private func awaitSocketOpen(_ task: URLSessionWebSocketTask) async throws {
+    try await withCheckedThrowingContinuation { continuation in
+      let taskIdentifier = task.taskIdentifier
+      pendingSocketOpen[taskIdentifier] = continuation
+      pendingSocketOpenTimeoutTasks[taskIdentifier]?.cancel()
+      pendingSocketOpenTimeoutTasks[taskIdentifier] = Task { @MainActor [weak self] in
+        try? await Task.sleep(nanoseconds: SyncSocketTiming.openTimeoutNanoseconds)
+        guard !Task.isCancelled else { return }
+        self?.resolveSocketOpen(
+          task,
+          result: .failure(
+            NSError(
+              domain: "ADE",
+              code: 25,
+              userInfo: [NSLocalizedDescriptionKey: "Timed out waiting for the host connection to open."]
+            )
+          )
+        )
+      }
+      task.resume()
+    }
+  }
+
+  private func resolveSocketOpen(_ task: URLSessionWebSocketTask, result: Result<Void, Error>) {
+    let taskIdentifier = task.taskIdentifier
+    pendingSocketOpenTimeoutTasks.removeValue(forKey: taskIdentifier)?.cancel()
+    guard let continuation = pendingSocketOpen.removeValue(forKey: taskIdentifier) else { return }
+    continuation.resume(with: result)
+  }
+
+  fileprivate func handleSocketDidOpen(_ task: URLSessionWebSocketTask) {
+    guard socket === task else { return }
+    resolveSocketOpen(task, result: .success(()))
+  }
+
+  fileprivate func handleSocketDidComplete(_ task: URLSessionWebSocketTask, error: Error) {
+    resolveSocketOpen(task, result: .failure(error))
+  }
+
   private func teardownSocket(closeCode: URLSessionWebSocketTask.CloseCode = .goingAway, reason: String? = nil) {
     relayTask?.cancel()
     relayTask = nil
     hydrationTask?.cancel()
     hydrationTask = nil
+    lanePresenceHeartbeatTask?.cancel()
+    lanePresenceHeartbeatTask = nil
+    if let socket {
+      resolveSocketOpen(
+        socket,
+        result: .failure(
+          NSError(
+            domain: "ADE",
+            code: 26,
+            userInfo: [NSLocalizedDescriptionKey: reason ?? "Connection closed."]
+          )
+        )
+      )
+    }
     socket?.cancel(with: closeCode, reason: reason?.data(using: .utf8))
     socket = nil
     currentAddress = nil
@@ -2237,6 +2847,12 @@ final class SyncService: ObservableObject {
     }
     chatEventEnvelopesBySession[envelope.sessionId] = events
     chatEventRevisionsBySession[envelope.sessionId, default: 0] += 1
+    lastSyncAt = Date()
+  }
+
+  func replaceChatEventHistory(sessionId: String, events: [AgentChatEventEnvelope]) {
+    chatEventEnvelopesBySession[sessionId] = events
+    chatEventRevisionsBySession[sessionId, default: 0] += 1
     lastSyncAt = Date()
   }
 
@@ -2547,17 +3163,31 @@ private final class SyncBonjourBrowser: NSObject, NetServiceBrowserDelegate, Net
 
   private func makeHost(from service: NetService) -> DiscoveredSyncHost? {
     let txtRecord = decodedTxtRecord(from: service)
+    let preferredHost = txtRecord["host"]?
+      .trimmingCharacters(in: .whitespacesAndNewlines)
     let announcedAddresses = txtRecord["addresses"]?
       .split(separator: ",")
       .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) } ?? []
-    let addresses = ((service.addresses?
+    let resolvedAddresses = service.addresses?
       .compactMap(parseHost(from:))
-      .filter { !$0.isEmpty } ?? []) + announcedAddresses)
+      .filter { !$0.isEmpty } ?? []
+    let addresses = ([preferredHost]
+      .compactMap { $0 }
+      .filter { !$0.isEmpty })
+      + resolvedAddresses
+      + announcedAddresses
     let port = service.port > 0 ? service.port : Int(txtRecord["port"] ?? "") ?? 8787
     let hostName = txtRecord["deviceName"] ?? service.hostName ?? service.name
     let hostIdentity = txtRecord["deviceId"]
-    let id = hostIdentity ?? serviceKey(for: service)
-    // Preserve source order (resolved first, TXT-announced next), dedup, and
+    let sk = serviceKey(for: service)
+    // Stable unique row id for SwiftUI: same `deviceId` can appear on multiple Bonjour rows.
+    let id: String
+    if let hostIdentity, !hostIdentity.isEmpty {
+      id = "\(hostIdentity)::\(sk)"
+    } else {
+      id = sk
+    }
+    // Preserve source order (TXT-preferred first, resolved next), dedup, and
     // force any loopback candidate to the tail — a simulator sharing the host's
     // loopback can use it, but a physical device would waste a roundtrip if it
     // tried 127.0.0.1 first.

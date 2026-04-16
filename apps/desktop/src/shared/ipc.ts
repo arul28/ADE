@@ -295,6 +295,7 @@ export const IPC = {
   syncGetPin: "ade.sync.getPin",
   syncSetPin: "ade.sync.setPin",
   syncClearPin: "ade.sync.clearPin",
+  syncSetActiveLanePresence: "ade.sync.setActiveLanePresence",
   syncEvent: "ade.sync.event",
   externalMcpListServers: "ade.externalMcp.listServers",
   externalMcpListConfigs: "ade.externalMcp.listConfigs",

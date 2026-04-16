@@ -74,6 +74,7 @@ const PIN_FILE = "sync-pin.json";
 const RUNNING_PROCESS_STATES = new Set(["starting", "running", "degraded"]);
 const CHAT_TOOL_TYPES = new Set(["codex-chat", "claude-chat", "opencode-chat"]);
 const SYNC_HOST_PORT_RETRY_WINDOW = 12;
+const LOCAL_LANE_PRESENCE_HEARTBEAT_MS = 30_000;
 
 function sanitizeDraft(
   raw: unknown,
@@ -94,8 +95,6 @@ function sanitizeDraft(
     lastRemoteDbVersion: Number.isFinite(row.lastRemoteDbVersion)
       ? Number(row.lastRemoteDbVersion)
       : 0,
-    lastBrainDeviceId:
-      typeof row.lastBrainDeviceId === "string" ? row.lastBrainDeviceId : null,
   };
 }
 
@@ -119,10 +118,20 @@ function buildAddressCandidates(
     seen.add(normalized);
     candidates.push({ host: normalized, kind });
   };
+  const preferredSavedHost = normalizeHost(localDevice.lastHost);
+  const preferredSavedHostIsCurrent = preferredSavedHost != null && (
+    localDevice.ipAddresses.some((host) => normalizeHost(host) === preferredSavedHost)
+    || normalizeHost(localDevice.tailscaleIp) === preferredSavedHost
+  );
+  if (preferredSavedHostIsCurrent) {
+    append(localDevice.lastHost, "saved");
+  }
   for (const lanAddress of localDevice.ipAddresses) {
     append(lanAddress, "lan");
   }
-  append(localDevice.lastHost, "saved");
+  if (!preferredSavedHostIsCurrent) {
+    append(localDevice.lastHost, "saved");
+  }
   append(localDevice.tailscaleIp, "tailscale");
   append("127.0.0.1", "loopback");
   return candidates;
@@ -213,6 +222,11 @@ export function createSyncService(args: SyncServiceArgs) {
   let refreshQueued = false;
   let disposed = false;
   const hostStartupEnabled = args.hostStartupEnabled !== false;
+  let activeLocalLanePresenceIds: string[] = [];
+  const localLanePresenceHeartbeatTimer = setInterval(() => {
+    if (disposed || !hostService || activeLocalLanePresenceIds.length === 0) return;
+    hostService.setLocalActiveLanePresence?.(activeLocalLanePresenceIds);
+  }, LOCAL_LANE_PRESENCE_HEARTBEAT_MS);
 
   const readToken = (): string | null => {
     if (!fs.existsSync(tokenPath)) return null;
@@ -252,7 +266,6 @@ export function createSyncService(args: SyncServiceArgs) {
           authKind: draft.authKind ?? "bootstrap",
           pairedDeviceId: draft.pairedDeviceId ?? null,
           lastRemoteDbVersion: draft.lastRemoteDbVersion ?? 0,
-          lastBrainDeviceId: draft.lastBrainDeviceId ?? null,
         },
         null,
         2,
@@ -275,7 +288,6 @@ export function createSyncService(args: SyncServiceArgs) {
             authKind: status.savedDraft.authKind ?? "bootstrap",
             pairedDeviceId: status.savedDraft.pairedDeviceId ?? null,
             lastRemoteDbVersion: status.savedDraft.lastRemoteDbVersion ?? 0,
-            lastBrainDeviceId: status.savedDraft.lastBrainDeviceId ?? null,
           });
         }
       }
@@ -300,16 +312,21 @@ export function createSyncService(args: SyncServiceArgs) {
       if (hostService) {
         await stopHostIfRunning();
       }
+      const currentLocalDevice = deviceRegistryService.ensureLocalDevice();
       deviceRegistryService.touchLocalDevice({
         lastSeenAt: nowIso(),
+        lastHost: currentLocalDevice.ipAddresses[0] ?? currentLocalDevice.tailscaleIp ?? currentLocalDevice.lastHost,
       });
       return;
     }
     if (hostService) {
+      const currentLocalDevice = deviceRegistryService.ensureLocalDevice();
       deviceRegistryService.touchLocalDevice({
         lastSeenAt: nowIso(),
+        lastHost: currentLocalDevice.ipAddresses[0] ?? currentLocalDevice.tailscaleIp ?? currentLocalDevice.lastHost,
         lastPort: hostService.getPort(),
       });
+      hostService.refreshLanDiscovery?.();
       return;
     }
     const localDevice = deviceRegistryService.ensureLocalDevice();
@@ -347,9 +364,10 @@ export function createSyncService(args: SyncServiceArgs) {
       try {
         const resolvedPort = await candidateHostService.waitUntilListening();
         hostService = candidateHostService;
+        hostService.setLocalActiveLanePresence?.(activeLocalLanePresenceIds);
         deviceRegistryService.touchLocalDevice({
           lastSeenAt: nowIso(),
-          lastHost: localDevice.lastHost,
+          lastHost: localDevice.ipAddresses[0] ?? localDevice.tailscaleIp ?? localDevice.lastHost,
           lastPort: resolvedPort,
         });
         return;
@@ -389,14 +407,16 @@ export function createSyncService(args: SyncServiceArgs) {
       const token = readToken();
       if (!cluster || !token) return null;
       const brain = deviceRegistryService.getDevice(cluster.brainDeviceId);
-      if (!brain?.lastHost || !brain.lastPort) return null;
+      const host =
+        brain != null ? buildAddressCandidates(brain)[0]?.host ?? null : null;
+      const port = brain?.lastPort ?? DEFAULT_SYNC_HOST_PORT;
+      if (!host) return null;
       return {
-        host: brain.lastHost,
-        port: brain.lastPort,
+        host,
+        port,
         token,
         lastRemoteDbVersion:
           syncPeerService.getStatus().lastRemoteDbVersion ?? 0,
-        lastBrainDeviceId: brain.deviceId,
       };
     };
 
@@ -609,6 +629,7 @@ export function createSyncService(args: SyncServiceArgs) {
       deviceType?: "desktop" | "phone" | "vps" | "unknown";
     }) {
       const updated = deviceRegistryService.updateLocalDevice(argsIn);
+      hostService?.setLocalActiveLanePresence(activeLocalLanePresenceIds);
       await emitStatus();
       return updated;
     },
@@ -648,6 +669,11 @@ export function createSyncService(args: SyncServiceArgs) {
     },
 
     async setPin(pin: string): Promise<SyncRoleSnapshot> {
+      if (!hostStartupEnabled) {
+        throw new Error(
+          "Phone pairing is unavailable because the sync host is disabled for this ADE process.",
+        );
+      }
       pinStore.setPin(pin);
       const snapshot = await service.getStatus();
       args.onStatusChanged?.(snapshot);
@@ -659,6 +685,18 @@ export function createSyncService(args: SyncServiceArgs) {
       const snapshot = await service.getStatus();
       args.onStatusChanged?.(snapshot);
       return snapshot;
+    },
+
+    async setActiveLanePresence(laneIds: string[]): Promise<void> {
+      const normalized = Array.isArray(laneIds)
+        ? [...new Set(
+            laneIds
+              .map((laneId) => (typeof laneId === "string" ? laneId.trim() : ""))
+              .filter((laneId) => laneId.length > 0),
+          )]
+        : [];
+      activeLocalLanePresenceIds = normalized;
+      hostService?.setLocalActiveLanePresence(activeLocalLanePresenceIds);
     },
 
     async forgetDevice(deviceId: string): Promise<SyncRoleSnapshot> {
@@ -717,6 +755,7 @@ export function createSyncService(args: SyncServiceArgs) {
     async dispose(): Promise<void> {
       disposed = true;
       syncPeerService.disconnect();
+      clearInterval(localLanePresenceHeartbeatTimer);
       await stopHostIfRunning();
       await syncPeerService.dispose();
     },

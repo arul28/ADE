@@ -60,7 +60,7 @@ extension LanesTabView {
             syncService.settingsPresented = true
           } else {
             Task { [weak syncService] in
-              await syncService?.reconnectIfPossible()
+              await syncService?.reconnectIfPossible(userInitiated: true)
               await reload(refreshRemote: true)
             }
           }
@@ -116,6 +116,7 @@ extension LanesTabView {
     } catch {
       primaryBranches = []
       primaryBranchLaneId = primaryLane.id
+      ADEHaptics.error()
       primaryBranchError = error.localizedDescription
     }
   }
@@ -201,6 +202,7 @@ extension LanesTabView {
                 try await syncService.startLaneRebase(laneId: snapshot.lane.id)
                 await reload(refreshRemote: true)
               } catch {
+                ADEHaptics.error()
                 errorMessage = error.localizedDescription
               }
             }
@@ -215,6 +217,7 @@ extension LanesTabView {
                   try await syncService.deferRebaseSuggestion(laneId: snapshot.lane.id)
                   await reload(refreshRemote: true)
                 } catch {
+                  ADEHaptics.error()
                   errorMessage = error.localizedDescription
                 }
               }
@@ -226,6 +229,7 @@ extension LanesTabView {
                   try await syncService.dismissRebaseSuggestion(laneId: snapshot.lane.id)
                   await reload(refreshRemote: true)
                 } catch {
+                  ADEHaptics.error()
                   errorMessage = error.localizedDescription
                 }
               }
@@ -392,6 +396,7 @@ extension LanesTabView {
             try await syncService.archiveLane(snapshot.lane.id)
             await reload(refreshRemote: true)
           } catch {
+            ADEHaptics.error()
             errorMessage = error.localizedDescription
           }
         }
@@ -403,6 +408,7 @@ extension LanesTabView {
             try await syncService.unarchiveLane(snapshot.lane.id)
             await reload(refreshRemote: true)
           } catch {
+            ADEHaptics.error()
             errorMessage = error.localizedDescription
           }
         }
@@ -418,6 +424,7 @@ extension LanesTabView {
             _ = try await syncService.adoptAttachedLane(snapshot.lane.id)
             await reload(refreshRemote: true)
           } catch {
+            ADEHaptics.error()
             errorMessage = error.localizedDescription
           }
         }
@@ -446,6 +453,7 @@ extension LanesTabView {
       }
       errorMessage = nil
     } catch {
+      ADEHaptics.error()
       errorMessage = error.localizedDescription
     }
   }

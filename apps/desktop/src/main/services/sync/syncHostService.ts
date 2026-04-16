@@ -8,11 +8,15 @@ import { resolveAdeLayout } from "../../../shared/adeLayout";
 import type {
   AgentChatEventEnvelope,
   CrsqlChangeRow,
+  DeviceMarker,
   FileContent,
   FileTreeNode,
   FilesQuickOpenItem,
   FilesSearchTextMatch,
   FilesWorkspace,
+  LaneDetailPayload,
+  LaneListSnapshot,
+  LaneSummary,
   PtyDataEvent,
   PtyExitEvent,
   SyncBrainStatusPayload,
@@ -29,6 +33,7 @@ import type {
   SyncPairingRequestPayload,
   SyncPeerConnectionState,
   SyncPeerMetadata,
+  SyncRemoteCommandDescriptor,
   SyncTerminalSnapshotPayload,
 } from "../../../shared/types";
 import { parseAgentChatTranscript } from "../../../shared/chatTranscript";
@@ -50,7 +55,7 @@ import type { createPrService } from "../prs/prService";
 import type { createSessionService } from "../sessions/sessionService";
 import type { createComputerUseArtifactBrokerService } from "../computerUse/computerUseArtifactBrokerService";
 import type { AdeDb } from "../state/kvDb";
-import { hasNullByte, normalizeRelative, nowIso, resolvePathWithinRoot, toOptionalString } from "../shared/utils";
+import { hasNullByte, normalizeRelative, nowIso, resolvePathWithinRoot, toOptionalString, uniqueStrings } from "../shared/utils";
 import type { DeviceRegistryService } from "./deviceRegistryService";
 import { createSyncPairingStore } from "./syncPairingStore";
 import type { SyncPinStore } from "./syncPinStore";
@@ -60,7 +65,14 @@ const DEFAULT_SYNC_HEARTBEAT_INTERVAL_MS = 30_000;
 const DEFAULT_SYNC_POLL_INTERVAL_MS = 400;
 const DEFAULT_BRAIN_STATUS_INTERVAL_MS = 5_000;
 const DEFAULT_TERMINAL_SNAPSHOT_BYTES = 220_000;
+const LANE_PRESENCE_TTL_MS = 60_000;
 const SYNC_MDNS_SERVICE_TYPE = "ade-sync";
+
+type LanePresenceEntry = {
+  marker: DeviceMarker;
+  lastAnnouncedAtMs: number;
+  source: "local" | "remote";
+};
 
 type PeerState = {
   ws: WebSocket;
@@ -74,6 +86,7 @@ type PeerState = {
   lastKnownServerDbVersion: number;
   latencyMs: number | null;
   awaitingHeartbeatAt: string | null;
+  missedHeartbeatCount: number;
   remoteAddress: string | null;
   remotePort: number | null;
   subscribedSessionIds: Set<string>;
@@ -289,6 +302,16 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
   const pollIntervalMs = Math.max(100, Math.floor(args.pollIntervalMs ?? DEFAULT_SYNC_POLL_INTERVAL_MS));
   const brainStatusIntervalMs = Math.max(1_000, Math.floor(args.brainStatusIntervalMs ?? DEFAULT_BRAIN_STATUS_INTERVAL_MS));
   const compressionThresholdBytes = Math.max(256, Math.floor(args.compressionThresholdBytes ?? DEFAULT_SYNC_COMPRESSION_THRESHOLD_BYTES));
+  const localPresenceCommandDescriptors: SyncRemoteCommandDescriptor[] = [
+    {
+      action: "lanes.presence.announce",
+      policy: { viewerAllowed: true },
+    },
+    {
+      action: "lanes.presence.release",
+      policy: { viewerAllowed: true },
+    },
+  ];
 
   const readBrainMetadata = (): SyncPeerMetadata => {
     const localDevice = args.deviceRegistryService?.ensureLocalDevice();
@@ -303,6 +326,8 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
   };
 
   const peers = new Set<PeerState>();
+  const lanePresenceByLaneId = new Map<string, Map<string, LanePresenceEntry>>();
+  let localActiveLaneIds = new Set<string>();
   const PAIR_FAILURE_THRESHOLD = 5;
   const PAIR_COOLDOWN_MS = 10 * 60_000;
   const pairFailures = new Map<string, { count: number; cooldownUntilMs: number }>();
@@ -324,6 +349,215 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     const remaining = entry.cooldownUntilMs - Date.now();
     return remaining > 0 ? remaining : 0;
   };
+
+  const normalizeLaneId = (laneId: string | null | undefined): string | null => {
+    const normalized = toOptionalString(laneId);
+    return normalized && normalized.length > 0 ? normalized : null;
+  };
+
+  const listLanePresenceMarkers = (laneId: string): DeviceMarker[] => {
+    const entries = lanePresenceByLaneId.get(laneId);
+    if (!entries) return [];
+    return [...entries.values()]
+      .map((entry) => entry.marker)
+      .sort((left, right) => left.displayName.localeCompare(right.displayName));
+  };
+
+  const upsertLanePresence = (argsIn: {
+    laneId: string;
+    marker: DeviceMarker;
+    source: "local" | "remote";
+  }): boolean => {
+    const laneId = normalizeLaneId(argsIn.laneId);
+    if (!laneId) return false;
+    const byDevice = lanePresenceByLaneId.get(laneId) ?? new Map<string, LanePresenceEntry>();
+    const existing = byDevice.get(argsIn.marker.deviceId) ?? null;
+    const nextEntry: LanePresenceEntry = {
+      marker: argsIn.marker,
+      lastAnnouncedAtMs: Date.now(),
+      source: argsIn.source,
+    };
+    byDevice.set(argsIn.marker.deviceId, nextEntry);
+    lanePresenceByLaneId.set(laneId, byDevice);
+    return (
+      existing == null
+      || existing.source !== nextEntry.source
+      || existing.marker.displayName !== nextEntry.marker.displayName
+      || existing.marker.platform !== nextEntry.marker.platform
+    );
+  };
+
+  const removeLanePresence = (laneId: string | null | undefined, deviceId: string | null | undefined): boolean => {
+    const normalizedLaneId = normalizeLaneId(laneId);
+    const normalizedDeviceId = toOptionalString(deviceId);
+    if (!normalizedLaneId || !normalizedDeviceId) return false;
+    const byDevice = lanePresenceByLaneId.get(normalizedLaneId);
+    if (!byDevice?.delete(normalizedDeviceId)) return false;
+    if (byDevice.size === 0) {
+      lanePresenceByLaneId.delete(normalizedLaneId);
+    }
+    return true;
+  };
+
+  const removeAllPresenceForDevice = (
+    deviceId: string | null | undefined,
+    source?: LanePresenceEntry["source"],
+  ): boolean => {
+    const normalizedDeviceId = toOptionalString(deviceId);
+    if (!normalizedDeviceId) return false;
+    let changed = false;
+    for (const [laneId, byDevice] of lanePresenceByLaneId) {
+      const entry = byDevice.get(normalizedDeviceId);
+      if (!entry || (source && entry.source !== source)) continue;
+      byDevice.delete(normalizedDeviceId);
+      changed = true;
+      if (byDevice.size === 0) {
+        lanePresenceByLaneId.delete(laneId);
+      }
+    }
+    return changed;
+  };
+
+  const pruneExpiredLanePresence = (): boolean => {
+    const cutoff = Date.now() - LANE_PRESENCE_TTL_MS;
+    let changed = false;
+    for (const [laneId, byDevice] of lanePresenceByLaneId) {
+      for (const [deviceId, entry] of byDevice) {
+        if (entry.lastAnnouncedAtMs > cutoff) continue;
+        byDevice.delete(deviceId);
+        changed = true;
+      }
+      if (byDevice.size === 0) {
+        lanePresenceByLaneId.delete(laneId);
+      }
+    }
+    return changed;
+  };
+
+  const readLocalPresenceMarker = (): DeviceMarker | null => {
+    const localDevice = args.deviceRegistryService?.ensureLocalDevice() ?? null;
+    if (!localDevice) return null;
+    return {
+      deviceId: localDevice.deviceId,
+      displayName: localDevice.name,
+      platform: localDevice.platform,
+    };
+  };
+
+  const refreshLocalLanePresence = (): boolean => {
+    if (localActiveLaneIds.size === 0) return false;
+    const marker = readLocalPresenceMarker();
+    if (!marker) return false;
+    let changed = false;
+    for (const laneId of localActiveLaneIds) {
+      changed = upsertLanePresence({
+        laneId,
+        marker,
+        source: "local",
+      }) || changed;
+    }
+    return changed;
+  };
+
+  const setLocalActiveLanePresence = (laneIds: string[]): void => {
+    const nextLaneIds = new Set(
+      laneIds
+        .map((laneId) => normalizeLaneId(laneId))
+        .filter((laneId): laneId is string => laneId != null),
+    );
+    const marker = readLocalPresenceMarker();
+    let changed = false;
+    if (marker) {
+      for (const laneId of localActiveLaneIds) {
+        if (!nextLaneIds.has(laneId)) {
+          changed = removeLanePresence(laneId, marker.deviceId) || changed;
+        }
+      }
+    }
+    localActiveLaneIds = nextLaneIds;
+    if (marker) {
+      for (const laneId of localActiveLaneIds) {
+        changed = upsertLanePresence({ laneId, marker, source: "local" }) || changed;
+      }
+    }
+    if (changed) {
+      args.onStateChanged?.();
+      broadcastBrainStatus();
+    }
+  };
+
+  const buildRemotePresenceMarker = (peer: PeerState): DeviceMarker | null => {
+    if (!peer.metadata) return null;
+    return {
+      deviceId: peer.metadata.deviceId,
+      displayName: peer.metadata.deviceName,
+      platform: peer.metadata.platform,
+    };
+  };
+
+  const decorateLaneSummary = (lane: LaneSummary): LaneSummary => {
+    const devicesOpen = listLanePresenceMarkers(lane.id);
+    return {
+      ...lane,
+      ...(devicesOpen.length > 0 ? { devicesOpen } : { devicesOpen: undefined }),
+    };
+  };
+
+  const decorateLaneSummaries = (lanes: LaneSummary[]): LaneSummary[] =>
+    lanes.map((lane) => decorateLaneSummary(lane));
+
+  const decorateLaneListSnapshots = (snapshots: LaneListSnapshot[]): LaneListSnapshot[] =>
+    snapshots.map((snapshot) => ({
+      ...snapshot,
+      lane: decorateLaneSummary(snapshot.lane),
+    }));
+
+  const decorateLaneDetailPayload = (detail: LaneDetailPayload): LaneDetailPayload => ({
+    ...detail,
+    lane: decorateLaneSummary(detail.lane),
+    children: decorateLaneSummaries(detail.children),
+  });
+
+  const decorateCommandResult = (
+    action: SyncCommandPayload["action"],
+    result: unknown,
+  ): unknown => {
+    pruneExpiredLanePresence();
+    switch (action) {
+      case "lanes.list":
+      case "lanes.getChildren":
+        return Array.isArray(result) ? decorateLaneSummaries(result as LaneSummary[]) : result;
+      case "lanes.refreshSnapshots": {
+        const payload = result as
+          | { lanes?: LaneSummary[]; snapshots?: LaneListSnapshot[] }
+          | null
+          | undefined;
+        if (!payload || typeof payload !== "object") return result;
+        return {
+          ...payload,
+          ...(Array.isArray(payload.lanes) ? { lanes: decorateLaneSummaries(payload.lanes) } : {}),
+          ...(Array.isArray(payload.snapshots)
+            ? { snapshots: decorateLaneListSnapshots(payload.snapshots) }
+            : {}),
+        };
+      }
+      case "lanes.getDetail":
+        return result && typeof result === "object"
+          ? decorateLaneDetailPayload(result as LaneDetailPayload)
+          : result;
+      case "lanes.create":
+      case "lanes.createChild":
+      case "lanes.createFromUnstaged":
+      case "lanes.importBranch":
+      case "lanes.attach":
+      case "lanes.adoptAttached":
+        return result && typeof result === "object"
+          ? decorateLaneSummary(result as LaneSummary)
+          : result;
+      default:
+        return result;
+    }
+  };
   const server = new WebSocketServer({
     host: "0.0.0.0",
     port: args.port ?? DEFAULT_SYNC_HOST_PORT,
@@ -335,6 +569,8 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
   let bonjourInstance: Bonjour | null = null;
   let bonjourAnnouncement: BonjourService | null = null;
   let bonjourPort: number | null = null;
+  let bonjourSignature: string | null = null;
+  let nativeDnsSdProcess: ChildProcess | null = null;
   let lastBroadcastAt: string | null = null;
   const startedAtMs = Date.now();
 
@@ -360,16 +596,26 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     });
   }, pollIntervalMs);
   const heartbeatTimer = setInterval(() => {
+    const refreshedLocalPresence = refreshLocalLanePresence();
+    if (refreshedLocalPresence || pruneExpiredLanePresence()) {
+      args.onStateChanged?.();
+      broadcastBrainStatus();
+    }
     const sentAt = nowIso();
     for (const peer of peers) {
       if (!peer.authenticated || peer.ws.readyState !== WebSocket.OPEN) continue;
       if (peer.awaitingHeartbeatAt) {
-        try {
-          peer.ws.close(4001, "Heartbeat timed out");
-        } catch {
-          // ignore
+        peer.missedHeartbeatCount += 1;
+        if (peer.missedHeartbeatCount >= 2) {
+          try {
+            peer.ws.close(4001, "Heartbeat timed out");
+          } catch {
+            // ignore
+          }
+          continue;
         }
-        continue;
+      } else {
+        peer.missedHeartbeatCount = 0;
       }
       peer.awaitingHeartbeatAt = sentAt;
       send(peer.ws, "heartbeat", { kind: "ping", sentAt, dbVersion: args.db.sync.getDbVersion() });
@@ -381,19 +627,6 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
 
   server.on("connection", (ws, request) => {
     const remoteAddress = sanitizeRemoteAddress(request.socket.remoteAddress);
-    const cooldownMs = pairingCooldownMsRemaining(remoteAddress);
-    if (cooldownMs > 0) {
-      const minutes = Math.ceil(cooldownMs / 60_000);
-      send(ws, "pairing_result", {
-        ok: false,
-        error: {
-          code: "pairing_failed",
-          message: `Too many failed PIN attempts. Try again in ${minutes} minute${minutes === 1 ? "" : "s"}.`,
-        },
-      }, null);
-      try { ws.close(4004, "Pairing cooldown"); } catch { /* ignore */ }
-      return;
-    }
     const peer: PeerState = {
       ws,
       metadata: null,
@@ -406,6 +639,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       lastKnownServerDbVersion: 0,
       latencyMs: null,
       awaitingHeartbeatAt: null,
+      missedHeartbeatCount: 0,
       remoteAddress,
       remotePort: request.socket.remotePort ?? null,
       subscribedSessionIds: new Set(),
@@ -422,6 +656,9 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       });
     });
     ws.on("close", () => {
+      if (removeAllPresenceForDevice(peer.metadata?.deviceId, "remote")) {
+        broadcastBrainStatus();
+      }
       peers.delete(peer);
       args.onStateChanged?.();
       broadcastBrainStatus();
@@ -436,21 +673,26 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
 
   const publishLanDiscovery = (port: number): void => {
     if (disposed) return;
-    if (bonjourAnnouncement && bonjourPort === port) return;
     const localDevice = args.deviceRegistryService?.ensureLocalDevice() ?? null;
     const hostName = localDevice?.name ?? os.hostname();
-    const ipAddresses = (localDevice?.ipAddresses ?? []).filter((value) => value.trim().length > 0);
-    const addressesCsv = [...ipAddresses, "127.0.0.1"].join(",");
+    const ipAddresses = uniqueStrings([
+      ...(localDevice?.ipAddresses ?? []),
+      localDevice?.tailscaleIp ?? null,
+    ].filter((value): value is string => typeof value === "string" && value.trim().length > 0));
+    const addressesCsv = ipAddresses.length > 0 ? ipAddresses.join(",") : "127.0.0.1";
+    const preferredHost = ipAddresses[0] ?? localDevice?.lastHost ?? "";
     const txt = {
       version: "1",
       deviceId: localDevice?.deviceId ?? "",
       siteId: localDevice?.siteId ?? "",
       deviceName: hostName,
       port: String(port),
-      host: localDevice?.lastHost ?? "",
+      host: preferredHost,
       addresses: addressesCsv,
       tailscaleIp: localDevice?.tailscaleIp ?? "",
     };
+    const signature = JSON.stringify({ hostName, port, txt });
+    if (bonjourAnnouncement && bonjourPort === port && bonjourSignature === signature) return;
     if (!bonjourInstance) {
       bonjourInstance = new Bonjour(undefined, (error: unknown) => {
         args.logger.warn("sync_host.discovery_error", {
@@ -467,6 +709,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       bonjourAnnouncement = null;
     }
     bonjourPort = port;
+    bonjourSignature = signature;
     bonjourAnnouncement = bonjourInstance.publish({
       name: `ADE Sync ${hostName} ${port}`,
       type: SYNC_MDNS_SERVICE_TYPE,
@@ -582,6 +825,14 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           send(peer.ws, "chat_event", event);
         }
       }
+    }
+  }
+
+  function broadcastChatEvent(event: AgentChatEventEnvelope): void {
+    for (const peer of peers) {
+      if (!peer.authenticated || peer.ws.readyState !== WebSocket.OPEN) continue;
+      if (!peer.subscribedChatSessionIds.has(event.sessionId)) continue;
+      send(peer.ws, "chat_event", event);
     }
   }
 
@@ -735,6 +986,39 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     };
 
     const policy = remoteCommandService.getPolicy(payload.action);
+    if (payload.action === "lanes.presence.announce" || payload.action === "lanes.presence.release") {
+      const laneId = normalizeLaneId((payload.args as Record<string, unknown> | null | undefined)?.laneId as string | null);
+      if (!laneId) {
+        reject(`${payload.action} requires laneId.`, "invalid_command");
+        return;
+      }
+      const marker = buildRemotePresenceMarker(peer);
+      if (!marker) {
+        reject("Lane presence requires authenticated peer metadata.", "invalid_command");
+        return;
+      }
+      const changed = payload.action === "lanes.presence.announce"
+        ? upsertLanePresence({ laneId, marker, source: "remote" })
+        : removeLanePresence(laneId, marker.deviceId);
+      if (changed) {
+        args.onStateChanged?.();
+        broadcastBrainStatus();
+      }
+      send(peer.ws, "command_ack", {
+        commandId,
+        accepted: true,
+        status: "accepted",
+        message: payload.action === "lanes.presence.announce"
+          ? `Marked ${laneId} as open on ${marker.displayName}.`
+          : `Released ${laneId} on ${marker.displayName}.`,
+      }, requestId);
+      send(peer.ws, "command_result", {
+        commandId,
+        ok: true,
+        result: { ok: true },
+      }, requestId);
+      return;
+    }
     if (!policy) {
       reject(`Unsupported remote command: ${payload.action}.`);
       return;
@@ -756,7 +1040,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       send(peer.ws, "command_result", {
         commandId,
         ok: true,
-        result: created,
+        result: decorateCommandResult(payload.action, created),
       }, requestId);
     } catch (error) {
       send(peer.ws, "command_result", {
@@ -773,7 +1057,10 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
   async function handleMessage(peer: PeerState, raw: RawData): Promise<void> {
     const rawText = wsDataToText(raw);
     const envelope = parseSyncEnvelope(rawText);
+    const heartbeatAwaitedAt = peer.awaitingHeartbeatAt;
     peer.lastSeenAt = nowIso();
+    peer.awaitingHeartbeatAt = null;
+    peer.missedHeartbeatCount = 0;
 
     if (!peer.authenticated) {
       if (envelope.type !== "hello" && envelope.type !== "pairing_request") {
@@ -801,8 +1088,24 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           try { peer.ws.close(4003, "Pairing failed"); } catch { /* ignore */ }
           return;
         }
+        const cooldownMs = pairingCooldownMsRemaining(peer.remoteAddress);
+        if (cooldownMs > 0) {
+          const minutes = Math.ceil(cooldownMs / 60_000);
+          send(peer.ws, "pairing_result", {
+            ok: false,
+            error: {
+              code: "pairing_failed",
+              message: `Too many failed PIN attempts. Try again in ${minutes} minute${minutes === 1 ? "" : "s"}.`,
+            },
+          }, envelope.requestId);
+          try { peer.ws.close(4004, "Pairing cooldown"); } catch { /* ignore */ }
+          return;
+        }
         try {
           const result = pairingStore.pairPeer(pairing.peer, pairing.code);
+          if (peer.remoteAddress) {
+            pairFailures.delete(peer.remoteAddress);
+          }
           args.deviceRegistryService?.upsertPeerMetadata(pairing.peer, {
             lastSeenAt: nowIso(),
             lastHost: peer.remoteAddress,
@@ -905,8 +1208,14 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           },
           commandRouting: {
             mode: "allowlisted",
-            supportedActions: remoteCommandService.getSupportedActions(),
-            actions: remoteCommandService.getDescriptors(),
+            supportedActions: [
+              ...remoteCommandService.getSupportedActions(),
+              ...localPresenceCommandDescriptors.map((entry) => entry.action),
+            ],
+            actions: [
+              ...remoteCommandService.getDescriptors(),
+              ...localPresenceCommandDescriptors,
+            ],
           },
         },
       }, envelope.requestId);
@@ -925,9 +1234,9 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
             sentAt: payload.sentAt ?? nowIso(),
             dbVersion: args.db.sync.getDbVersion(),
           }, envelope.requestId);
-        } else if (payload?.kind === "pong" && peer.awaitingHeartbeatAt) {
+        } else if (payload?.kind === "pong" && heartbeatAwaitedAt) {
           const now = Date.now();
-          const sentAtMs = Date.parse(peer.awaitingHeartbeatAt);
+          const sentAtMs = Date.parse(heartbeatAwaitedAt);
           peer.latencyMs = Number.isFinite(sentAtMs) ? Math.max(0, now - sentAtMs) : null;
           peer.awaitingHeartbeatAt = null;
         }
@@ -1029,6 +1338,16 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     }
   }
 
+  const getLanePresenceSnapshot = (): Array<{ laneId: string; devicesOpen: DeviceMarker[] }> => {
+    return [...lanePresenceByLaneId.keys()]
+      .sort((left, right) => left.localeCompare(right))
+      .map((laneId) => ({
+        laneId,
+        devicesOpen: listLanePresenceMarkers(laneId),
+      }))
+      .filter((entry) => entry.devicesOpen.length > 0);
+  };
+
   return {
     async waitUntilListening(): Promise<number> {
       if (startupError) {
@@ -1082,6 +1401,17 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       return bootstrapToken;
     },
 
+    setLocalActiveLanePresence(laneIds: string[]): void {
+      setLocalActiveLanePresence(laneIds);
+    },
+
+    refreshLanDiscovery(): void {
+      const address = server.address();
+      if (typeof address === "object" && address) {
+        publishLanDiscovery(address.port);
+      }
+    },
+
     revokePairedDevice(deviceId: string): void {
       pairingStore.revoke(deviceId);
       let revokedConnectedPeer = false;
@@ -1109,6 +1439,10 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       return [...peers]
         .map((peer) => toSyncPeerConnectionState(peer, dbVersion))
         .filter((peer): peer is SyncPeerConnectionState => peer != null);
+    },
+
+    getLanePresenceSnapshot(): Array<{ laneId: string; devicesOpen: DeviceMarker[] }> {
+      return getLanePresenceSnapshot();
     },
 
     getChatSubscriptionSnapshot(): Array<{ deviceId: string; subscribedChatSessionIds: string[] }> {
@@ -1156,6 +1490,9 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     async dispose(): Promise<void> {
       if (disposed) return;
       disposed = true;
+      localActiveLaneIds = new Set<string>();
+      lanePresenceByLaneId.clear();
+      chatEventSubscription?.();
       clearInterval(pollTimer);
       clearInterval(heartbeatTimer);
       clearInterval(brainStatusTimer);
@@ -1186,6 +1523,8 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         }
         bonjourAnnouncement = null;
       }
+      bonjourPort = null;
+      bonjourSignature = null;
       if (bonjourInstance) {
         try {
           bonjourInstance.destroy();

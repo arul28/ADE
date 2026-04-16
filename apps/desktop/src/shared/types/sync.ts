@@ -97,8 +97,6 @@ export type SyncDesktopConnectionDraft = {
   authKind?: "bootstrap" | "paired";
   pairedDeviceId?: string | null;
   lastRemoteDbVersion?: number;
-  // Legacy draft field name retained to match the desktop/iOS saved contract.
-  lastBrainDeviceId?: string | null;
 };
 
 export type SyncClientStatus = {
@@ -211,7 +209,7 @@ export type SyncHelloOkPayload = {
 };
 
 export type SyncHelloErrorPayload = {
-  code: "auth_failed" | "invalid_hello" | "already_authenticated" | "unsupported_version";
+  code: "auth_failed" | "invalid_hello";
   message: string;
 };
 
@@ -256,11 +254,7 @@ export type SyncPairingResultPayload = {
     code:
       | "invalid_pin"
       | "pin_not_set"
-      | "pairing_unavailable"
-      | "pairing_failed"
-      // Legacy codes kept for backwards wire compatibility.
-      | "invalid_code"
-      | "expired_code";
+      | "pairing_failed";
     message: string;
   };
 };
@@ -387,11 +381,14 @@ export type SyncRunQuickCommandArgs = {
 
 export type SyncRemoteCommandAction =
   | "lanes.list"
+  | "lanes.presence.announce"
+  | "lanes.presence.release"
   | "lanes.refreshSnapshots"
   | "lanes.getDetail"
   | "lanes.create"
   | "lanes.createChild"
   | "lanes.createFromUnstaged"
+  | "lanes.importBranch"
   | "lanes.attach"
   | "lanes.adoptAttached"
   | "lanes.rename"
@@ -416,6 +413,7 @@ export type SyncRemoteCommandAction =
   | "lanes.getEnvStatus"
   | "lanes.applyTemplate"
   | "work.listSessions"
+  | "work.updateSessionMeta"
   | "work.runQuickCommand"
   | "work.closeSession"
   | "chat.listSessions"
@@ -425,6 +423,8 @@ export type SyncRemoteCommandAction =
   | "chat.send"
   | "chat.interrupt"
   | "chat.steer"
+  | "chat.cancelSteer"
+  | "chat.editSteer"
   | "chat.approve"
   | "chat.respondToInput"
   | "chat.resume"

@@ -665,6 +665,9 @@ declare global {
         getPin: () => Promise<{ pin: string | null }>;
         setPin: (pin: string) => Promise<SyncRoleSnapshot>;
         clearPin: () => Promise<SyncRoleSnapshot>;
+        setActiveLanePresence: (args: {
+          laneIds: string[];
+        }) => Promise<void>;
         onEvent: (cb: (event: SyncStatusEventPayload) => void) => () => void;
       };
       externalMcp: {

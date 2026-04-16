@@ -84,6 +84,7 @@ struct LaneAttachSheet: View {
       await onComplete(lane.id)
       dismiss()
     } catch {
+      ADEHaptics.error()
       errorMessage = error.localizedDescription
     }
     busy = false

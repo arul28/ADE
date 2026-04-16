@@ -186,6 +186,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const [feedbackGenerating, setFeedbackGenerating] = useState(false);
   const previousProjectRootRef = useRef<string | null | undefined>(undefined);
   const isOnboardingRoute = location.pathname === "/onboarding";
+  const isLanesRoute = location.pathname.startsWith("/lanes");
   const shouldTrackTerminalAttention =
     Boolean(project?.rootPath) &&
     !showWelcome &&
@@ -209,6 +210,37 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     disposeTerminalRuntimesForProjectChange(project?.rootPath ?? null, projectRevision);
   }, [project?.rootPath, projectRevision]);
+
+  useEffect(() => {
+    const syncApi = window.ade.sync;
+    if (!syncApi?.onEvent || !project?.rootPath || !isLanesRoute) {
+      return;
+    }
+    let cancelled = false;
+    let refreshTimer: number | null = null;
+
+    const scheduleLaneRefresh = () => {
+      if (refreshTimer != null) return;
+      refreshTimer = window.setTimeout(() => {
+        refreshTimer = null;
+        if (cancelled) return;
+        void refreshLanes({ includeStatus: false }).catch(() => {});
+      }, 200);
+    };
+
+    const dispose = syncApi.onEvent((event) => {
+      if (event.type !== "sync-status") return;
+      scheduleLaneRefresh();
+    });
+
+    return () => {
+      cancelled = true;
+      if (refreshTimer != null) {
+        window.clearTimeout(refreshTimer);
+      }
+      dispose();
+    };
+  }, [isLanesRoute, project?.rootPath, refreshLanes]);
 
   useEffect(() => {
     let cancelled = false;

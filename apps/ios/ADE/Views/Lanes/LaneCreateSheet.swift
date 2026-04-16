@@ -233,6 +233,7 @@ struct LaneCreateSheet: View {
           ?? (lanes.first(where: { $0.status.dirty })?.id ?? "")
       }
     } catch {
+      ADEHaptics.error()
       errorMessage = error.localizedDescription
     }
   }
@@ -275,11 +276,13 @@ struct LaneCreateSheet: View {
       } catch let queuedError as QueuedRemoteCommandError {
         queuedNotice = queuedError.errorDescription
       } catch {
+        ADEHaptics.error()
         errorMessage = error.localizedDescription
       }
     } catch let queuedError as QueuedRemoteCommandError {
       queuedNotice = queuedError.errorDescription
     } catch {
+      ADEHaptics.error()
       errorMessage = error.localizedDescription
     }
     busy = false

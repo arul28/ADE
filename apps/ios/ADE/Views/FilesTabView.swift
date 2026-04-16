@@ -187,6 +187,7 @@ struct FilesTabView: View {
   @State private var navigationPath: [FilesRoute] = []
   @State private var refreshFeedbackToken = 0
   @State private var selectedFileTransitionPath: String?
+  @State private var lastFilesLocalProjectionReload = Date.distantPast
 
   private var filesStatus: SyncDomainStatus {
     syncService.status(for: .files)
@@ -420,6 +421,9 @@ struct FilesTabView: View {
         await reload()
       }
       .task(id: syncService.localStateRevision) {
+        let now = Date()
+        guard now.timeIntervalSince(lastFilesLocalProjectionReload) >= 0.35 else { return }
+        lastFilesLocalProjectionReload = now
         await reload()
       }
       .task(id: FilesSearchKey(workspaceId: selectedWorkspaceId, query: quickOpenQuery, isLive: canUseLiveFileActions)) {
@@ -616,7 +620,7 @@ struct FilesTabView: View {
             syncService.settingsPresented = true
           } else {
             Task {
-              await syncService.reconnectIfPossible()
+              await syncService.reconnectIfPossible(userInitiated: true)
               await reload(refreshRemote: true)
             }
           }
@@ -1086,7 +1090,7 @@ private struct FilesDirectoryContentsView: View {
           syncService.settingsPresented = true
         } else {
           Task {
-            await syncService.reconnectIfPossible()
+            await syncService.reconnectIfPossible(userInitiated: true)
           }
         }
       }
@@ -1632,7 +1636,7 @@ private struct FileEditorView: View {
           syncService.settingsPresented = true
         } else {
           Task {
-            await syncService.reconnectIfPossible()
+            await syncService.reconnectIfPossible(userInitiated: true)
           }
         }
       }

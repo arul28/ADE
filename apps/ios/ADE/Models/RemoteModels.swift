@@ -1,15 +1,5 @@
 import Foundation
 
-struct ConnectionDraft: Codable, Equatable {
-  var host: String
-  var port: Int
-  var authKind: String
-  var pairedDeviceId: String?
-  var lastRemoteDbVersion: Int
-  // Legacy saved-field naming kept for compatibility with existing drafts.
-  var lastBrainDeviceId: String?
-}
-
 struct HostConnectionProfile: Codable, Equatable {
   var hostIdentity: String?
   var hostName: String?
@@ -51,20 +41,6 @@ struct HostConnectionProfile: Codable, Equatable {
     self.tailscaleAddress = tailscaleAddress
     self.updatedAt = updatedAt
   }
-
-  init(legacy draft: ConnectionDraft) {
-    self.init(
-      port: draft.port,
-      authKind: draft.authKind,
-      pairedDeviceId: draft.pairedDeviceId,
-      lastRemoteDbVersion: draft.lastRemoteDbVersion,
-      lastHostDeviceId: draft.lastBrainDeviceId,
-      lastSuccessfulAddress: draft.host,
-      savedAddressCandidates: [draft.host],
-      discoveredLanAddresses: [],
-      tailscaleAddress: nil
-    )
-  }
 }
 
 struct DiscoveredSyncHost: Codable, Equatable, Identifiable {
@@ -96,47 +72,7 @@ struct SyncPairingQrPayload: Codable, Equatable {
   var version: Int
   var hostIdentity: SyncPairingHostIdentity
   var port: Int
-  // Legacy v1 payloads carried a short-lived pairing code and expiry.
-  // v2 payloads omit both fields (a user-set PIN is entered manually instead).
-  // Keeping these as optionals lets us decode either wire format without breaking.
-  var pairingCode: String?
-  var expiresAt: String?
   var addressCandidates: [SyncAddressCandidate]
-
-  private enum CodingKeys: String, CodingKey {
-    case version
-    case hostIdentity
-    case port
-    case pairingCode
-    case expiresAt
-    case addressCandidates
-  }
-
-  init(from decoder: Decoder) throws {
-    let container = try decoder.container(keyedBy: CodingKeys.self)
-    self.version = try container.decode(Int.self, forKey: .version)
-    self.hostIdentity = try container.decode(SyncPairingHostIdentity.self, forKey: .hostIdentity)
-    self.port = try container.decode(Int.self, forKey: .port)
-    self.pairingCode = try container.decodeIfPresent(String.self, forKey: .pairingCode)
-    self.expiresAt = try container.decodeIfPresent(String.self, forKey: .expiresAt)
-    self.addressCandidates = try container.decode([SyncAddressCandidate].self, forKey: .addressCandidates)
-  }
-
-  init(
-    version: Int,
-    hostIdentity: SyncPairingHostIdentity,
-    port: Int,
-    pairingCode: String? = nil,
-    expiresAt: String? = nil,
-    addressCandidates: [SyncAddressCandidate]
-  ) {
-    self.version = version
-    self.hostIdentity = hostIdentity
-    self.port = port
-    self.pairingCode = pairingCode
-    self.expiresAt = expiresAt
-    self.addressCandidates = addressCandidates
-  }
 }
 
 enum SyncDomain: String, CaseIterable, Hashable {
@@ -420,18 +356,30 @@ struct AgentChatSessionSummary: Codable, Identifiable, Equatable {
   var reasoningEffort: String?
   var executionMode: String?
   var permissionMode: String?
+  var interactionMode: String?
+  var claudePermissionMode: String?
+  var codexApprovalPolicy: String?
+  var codexSandbox: String?
+  var codexConfigSource: String?
+  var opencodePermissionMode: String?
+  var cursorModeSnapshot: RemoteJSONValue?
+  var cursorModeId: String?
+  var cursorConfigValues: [String: RemoteJSONValue]?
   var identityKey: String?
   var surface: String?
   var automationId: String?
   var automationRunId: String?
   var capabilityMode: String?
+  var computerUse: RemoteJSONValue?
   var completion: ChatCompletionReport?
   var status: String
+  var idleSinceAt: String?
   var startedAt: String
   var endedAt: String?
   var lastActivityAt: String
   var lastOutputPreview: String?
   var summary: String?
+  var awaitingInput: Bool?
   var threadId: String?
 }
 
@@ -451,6 +399,10 @@ struct AgentChatSession: Codable, Identifiable, Equatable {
   var codexApprovalPolicy: String?
   var codexSandbox: String?
   var codexConfigSource: String?
+  var opencodePermissionMode: String?
+  var cursorModeSnapshot: RemoteJSONValue?
+  var cursorModeId: String?
+  var cursorConfigValues: [String: RemoteJSONValue]?
   var unifiedPermissionMode: String?
   var identityKey: String?
   var surface: String?
@@ -460,7 +412,9 @@ struct AgentChatSession: Codable, Identifiable, Equatable {
   var computerUse: RemoteJSONValue?
   var completion: ChatCompletionReport?
   var status: String
+  var idleSinceAt: String?
   var threadId: String?
+  var requestedCwd: String?
   var createdAt: String
   var lastActivityAt: String
 }
@@ -643,7 +597,7 @@ struct AgentChatFileRef: Codable, Equatable {
 }
 
 enum AgentChatEvent: Decodable, Equatable {
-  case userMessage(text: String, attachments: [AgentChatFileRef]?, turnId: String?, deliveryState: String?, processed: Bool?)
+  case userMessage(text: String, attachments: [AgentChatFileRef]?, turnId: String?, steerId: String?, deliveryState: String?, processed: Bool?)
   case text(text: String, messageId: String?, turnId: String?, itemId: String?)
   case toolCall(tool: String, args: RemoteJSONValue, itemId: String, logicalItemId: String?, parentItemId: String?, turnId: String?)
   case toolResult(tool: String, result: RemoteJSONValue, itemId: String, logicalItemId: String?, parentItemId: String?, turnId: String?, status: String?)
@@ -652,6 +606,7 @@ enum AgentChatEvent: Decodable, Equatable {
   case plan(steps: [AgentChatPlanStep], turnId: String?, explanation: String?)
   case reasoning(text: String, turnId: String?, itemId: String?, summaryIndex: Int?)
   case approvalRequest(itemId: String, logicalItemId: String?, kind: AgentChatApprovalRequestKind, description: String, turnId: String?, detail: RemoteJSONValue?)
+  case pendingInputResolved(itemId: String, resolution: String, turnId: String?)
   case status(turnStatus: AgentChatTurnStatus, turnId: String?, message: String?)
   case delegationState(contract: RemoteJSONValue, message: String?, turnId: String?)
   case error(message: String, turnId: String?, itemId: String?, errorInfo: RemoteJSONValue?)
@@ -665,7 +620,7 @@ enum AgentChatEvent: Decodable, Equatable {
   case structuredQuestion(question: String, options: [AgentChatStructuredQuestionOption]?, itemId: String, turnId: String?)
   case toolUseSummary(summary: String, toolUseIds: [String], turnId: String?)
   case contextCompact(trigger: AgentChatContextCompactTrigger, preTokens: Int?, turnId: String?)
-  case systemNotice(noticeKind: AgentChatNoticeKind, message: String, detail: RemoteJSONValue?, turnId: String?)
+  case systemNotice(noticeKind: AgentChatNoticeKind, message: String, detail: RemoteJSONValue?, turnId: String?, steerId: String?)
   case completionReport(report: ChatCompletionReport, turnId: String?)
   case webSearch(query: String, action: String?, itemId: String, logicalItemId: String?, turnId: String?, status: String)
   case autoApprovalReview(targetItemId: String, reviewStatus: AgentChatAutoApprovalReviewStatus, action: String?, review: String?, turnId: String?)
@@ -680,6 +635,7 @@ extension AgentChatEvent {
     case text
     case attachments
     case turnId
+    case steerId
     case deliveryState
     case processed
     case messageId
@@ -731,6 +687,7 @@ extension AgentChatEvent {
     case review
     case suggestion
     case targetItemId
+    case resolution
   }
 
   init(from decoder: Decoder) throws {
@@ -743,6 +700,7 @@ extension AgentChatEvent {
         text: try container.decode(String.self, forKey: .text),
         attachments: try container.decodeIfPresent([AgentChatFileRef].self, forKey: .attachments),
         turnId: try container.decodeIfPresent(String.self, forKey: .turnId),
+        steerId: try container.decodeIfPresent(String.self, forKey: .steerId),
         deliveryState: try container.decodeIfPresent(String.self, forKey: .deliveryState),
         processed: try container.decodeIfPresent(Bool.self, forKey: .processed)
       )
@@ -815,6 +773,12 @@ extension AgentChatEvent {
         description: try container.decode(String.self, forKey: .description),
         turnId: try container.decodeIfPresent(String.self, forKey: .turnId),
         detail: try container.decodeIfPresent(RemoteJSONValue.self, forKey: .detail)
+      )
+    case "pending_input_resolved":
+      self = .pendingInputResolved(
+        itemId: try container.decode(String.self, forKey: .itemId),
+        resolution: try container.decode(String.self, forKey: .resolution),
+        turnId: try container.decodeIfPresent(String.self, forKey: .turnId)
       )
     case "status":
       self = .status(
@@ -908,7 +872,8 @@ extension AgentChatEvent {
         noticeKind: try container.decode(AgentChatNoticeKind.self, forKey: .noticeKind),
         message: try container.decode(String.self, forKey: .message),
         detail: try container.decodeIfPresent(RemoteJSONValue.self, forKey: .detail),
-        turnId: try container.decodeIfPresent(String.self, forKey: .turnId)
+        turnId: try container.decodeIfPresent(String.self, forKey: .turnId),
+        steerId: try container.decodeIfPresent(String.self, forKey: .steerId)
       )
     case "completion_report":
       self = .completionReport(
@@ -959,6 +924,7 @@ extension AgentChatEvent {
     case .plan: return "plan"
     case .reasoning: return "reasoning"
     case .approvalRequest: return "approval_request"
+    case .pendingInputResolved: return "pending_input_resolved"
     case .status: return "status"
     case .delegationState: return "delegation_state"
     case .error: return "error"
@@ -994,8 +960,26 @@ struct AgentChatSubscriptionRequest: Codable, Equatable {
   var sessionId: String
 }
 
+struct SyncChatSubscribeSnapshotPayload: Decodable, Equatable {
+  var sessionId: String
+  var capturedAt: String
+  var truncated: Bool
+  var events: [AgentChatEventEnvelope]
+}
+
 struct AgentChatSteerRequest: Codable, Equatable {
   var sessionId: String
+  var text: String
+}
+
+struct AgentChatCancelSteerRequest: Codable, Equatable {
+  var sessionId: String
+  var steerId: String
+}
+
+struct AgentChatEditSteerRequest: Codable, Equatable {
+  var sessionId: String
+  var steerId: String
   var text: String
 }
 
@@ -1037,8 +1021,12 @@ struct AgentChatUpdateSessionRequest: Codable, Equatable {
   var codexApprovalPolicy: String?
   var codexSandbox: String?
   var codexConfigSource: String?
+  var opencodePermissionMode: String?
+  var cursorModeId: String?
+  var cursorConfigValues: [String: RemoteJSONValue]?
   var unifiedPermissionMode: String?
   var computerUse: RemoteJSONValue?
+  var manuallyNamed: Bool?
 }
 
 struct AgentChatTranscriptEntry: Codable, Identifiable, Equatable {
@@ -1219,6 +1207,7 @@ struct TerminalSessionSummary: Codable, Identifiable, Equatable {
   var ptyId: String?
   var tracked: Bool
   var pinned: Bool
+  var manuallyNamed: Bool?
   var goal: String?
   var toolType: String?
   var title: String
@@ -1233,6 +1222,7 @@ struct TerminalSessionSummary: Codable, Identifiable, Equatable {
   var summary: String?
   var runtimeState: String
   var resumeCommand: String?
+  var chatIdleSinceAt: String?
 }
 
 struct PrSummary: Codable, Identifiable, Equatable {

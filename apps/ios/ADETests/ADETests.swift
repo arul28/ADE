@@ -123,12 +123,12 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(state.nextDelayNanoseconds(), 1_000_000_000)
   }
 
-  func testSyncReconnectStateReconnectsImmediatelyAfterHeartbeatTimeout() {
+  func testSyncReconnectStateUsesHeartbeatReconnectFloor() {
     var state = SyncReconnectState()
 
-    XCTAssertEqual(state.nextDelayNanoseconds(forCloseCodeRawValue: 4001), 0)
-    XCTAssertEqual(state.attempts, 0)
-    XCTAssertEqual(state.nextDelayNanoseconds(), 1_000_000_000)
+    XCTAssertEqual(state.nextDelayNanoseconds(forCloseCodeRawValue: 4001), 1_500_000_000)
+    XCTAssertEqual(state.attempts, 1)
+    XCTAssertEqual(state.nextDelayNanoseconds(), 2_000_000_000)
   }
 
   func testSyncBonjourTimingMatchesReliabilityRequirements() {
@@ -241,7 +241,7 @@ final class ADETests: XCTestCase {
     """
 
     let noticeEnvelope = try JSONDecoder().decode(AgentChatEventEnvelope.self, from: Data(noticeJSON.utf8))
-    guard case .systemNotice(let noticeKind, let message, let detail, _) = noticeEnvelope.event else {
+    guard case .systemNotice(let noticeKind, let message, let detail, _, _) = noticeEnvelope.event else {
       return XCTFail("Expected system notice event.")
     }
     XCTAssertEqual(noticeKind, .rateLimit)
@@ -250,6 +250,27 @@ final class ADETests: XCTestCase {
       return XCTFail("Expected system notice detail object.")
     }
     XCTAssertEqual(detailObject["summary"], .string("Retry later"))
+
+    let resolvedJSON = """
+    {
+      "sessionId": "session-3",
+      "timestamp": "2026-03-17T00:02:00.000Z",
+      "event": {
+        "type": "pending_input_resolved",
+        "itemId": "approval-1",
+        "resolution": "accepted",
+        "turnId": "turn-1"
+      }
+    }
+    """
+
+    let resolvedEnvelope = try JSONDecoder().decode(AgentChatEventEnvelope.self, from: Data(resolvedJSON.utf8))
+    guard case .pendingInputResolved(let itemId, let resolution, let turnId) = resolvedEnvelope.event else {
+      return XCTFail("Expected pending input resolution event.")
+    }
+    XCTAssertEqual(itemId, "approval-1")
+    XCTAssertEqual(resolution, "accepted")
+    XCTAssertEqual(turnId, "turn-1")
   }
 
   @MainActor
@@ -468,24 +489,10 @@ final class ADETests: XCTestCase {
     database.close()
   }
 
-  func testConnectionDraftRoundTrip() throws {
-    let draft = ConnectionDraft(
-      host: "127.0.0.1",
-      port: 8787,
-      authKind: "paired",
-      pairedDeviceId: "phone-1",
-      lastRemoteDbVersion: 42,
-      lastBrainDeviceId: "brain-1"
-    )
-    let data = try JSONEncoder().encode(draft)
-    let decoded = try JSONDecoder().decode(ConnectionDraft.self, from: data)
-    XCTAssertEqual(decoded, draft)
-  }
-
   @MainActor
   func testSyncPairingQrPayloadRoundTripFromDesktopLink() throws {
     let payload = """
-    {"version":1,"hostIdentity":{"deviceId":"host-1","siteId":"site-1","name":"Mac Studio","platform":"macOS","deviceType":"desktop"},"port":8787,"pairingCode":"ABC123","expiresAt":"2026-03-17T12:00:00.000Z","addressCandidates":[{"host":"192.168.1.8","kind":"lan"},{"host":"100.101.102.103","kind":"tailscale"}]}
+    {"version":2,"hostIdentity":{"deviceId":"host-1","siteId":"site-1","name":"Mac Studio","platform":"macOS","deviceType":"desktop"},"port":8787,"addressCandidates":[{"host":"192.168.1.8","kind":"lan"},{"host":"100.101.102.103","kind":"tailscale"}]}
     """
     let url = "ade-sync://pair?payload=\(payload.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? payload)"
 
@@ -494,8 +501,19 @@ final class ADETests: XCTestCase {
 
     XCTAssertEqual(decoded.hostIdentity.deviceId, "host-1")
     XCTAssertEqual(decoded.hostIdentity.name, "Mac Studio")
-    XCTAssertEqual(decoded.pairingCode, "ABC123")
+    XCTAssertEqual(decoded.version, 2)
     XCTAssertEqual(decoded.addressCandidates.map(\.host), ["192.168.1.8", "100.101.102.103"])
+  }
+
+  @MainActor
+  func testSyncPairingQrPayloadRejectsUnsupportedVersion() throws {
+    let payload = """
+    {"version":3,"hostIdentity":{"deviceId":"host-1","siteId":"site-1","name":"Mac Studio","platform":"macOS","deviceType":"desktop"},"port":8787,"addressCandidates":[{"host":"192.168.1.8","kind":"lan"}]}
+    """
+    let url = "ade-sync://pair?payload=\(payload.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? payload)"
+
+    let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
+    XCTAssertThrowsError(try service.decodePairingQrPayload(from: url))
   }
 
   func testDatabasePersistsStableSiteIdAcrossReopen() throws {
@@ -566,6 +584,54 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(mirrored.first?.id, laneId)
     XCTAssertEqual(mirrored.first?.name, "Primary")
 
+    database.close()
+  }
+
+  func testDatabaseIgnoresHydrationOwnedLaneStateSnapshotChanges() throws {
+    let baseURL = makeTemporaryDirectory()
+    let database = makeLaneHydrationDatabase(baseURL: baseURL)
+    XCTAssertNil(database.initializationError)
+
+    let laneSnapshotChanges = [
+      CrsqlChangeRow(
+        table: "lane_state_snapshots",
+        pk: packedDesktopTextPrimaryKey("lane-primary"),
+        cid: "dirty",
+        val: .number(1),
+        colVersion: 1,
+        dbVersion: 2,
+        siteId: "b00e9b92c864a27958669c1595fcb2c3",
+        cl: 1,
+        seq: 0
+      ),
+      CrsqlChangeRow(
+        table: "lane_state_snapshots",
+        pk: packedDesktopTextPrimaryKey("lane-primary"),
+        cid: "ahead",
+        val: .number(3),
+        colVersion: 1,
+        dbVersion: 2,
+        siteId: "b00e9b92c864a27958669c1595fcb2c3",
+        cl: 1,
+        seq: 1
+      ),
+    ]
+
+    let result = try database.applyChanges(laneSnapshotChanges)
+
+    XCTAssertEqual(result.appliedCount, 0)
+    XCTAssertEqual(try countRows(in: baseURL, table: "lane_state_snapshots"), 0)
+    database.close()
+  }
+
+  func testHydrationOwnedSnapshotTablesDoNotRegisterCrrMetadata() throws {
+    let baseURL = makeTemporaryDirectory()
+    let database = makeControllerHydrationDatabase(baseURL: baseURL)
+    XCTAssertNil(database.initializationError)
+
+    XCTAssertTrue(try tableExists(in: baseURL, table: "lanes__crsql_clock"))
+    XCTAssertFalse(try tableExists(in: baseURL, table: "lane_state_snapshots__crsql_clock"))
+    XCTAssertFalse(try tableExists(in: baseURL, table: "pull_request_snapshots__crsql_clock"))
     database.close()
   }
 
@@ -1881,6 +1947,346 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(sessionUsage?.costUsd, 1.23)
   }
 
+  func testWorkChatStatusNormalizationPrefersAwaitingInputAndIdle() {
+    let waitingSummary = makeAgentChatSessionSummary(status: "active", awaitingInput: true)
+    XCTAssertEqual(normalizedWorkChatSessionStatus(session: nil, summary: waitingSummary), "awaiting-input")
+
+    let idleSummary = makeAgentChatSessionSummary(status: "paused", awaitingInput: false)
+    XCTAssertEqual(normalizedWorkChatSessionStatus(session: nil, summary: idleSummary), "idle")
+
+    let session = makeTerminalSessionSummary(toolType: "codex-chat", runtimeState: "waiting-input", status: "running")
+    XCTAssertEqual(normalizedWorkChatSessionStatus(session: session, summary: nil), "awaiting-input")
+  }
+
+  func testWorkChatStatusNormalizationFallsBackToSessionRuntimeStateAndTerminalState() {
+    let completedSummary = makeAgentChatSessionSummary(status: "completed", awaitingInput: false)
+    XCTAssertEqual(normalizedWorkChatSessionStatus(session: nil, summary: completedSummary), "ended")
+
+    let runningSession = makeTerminalSessionSummary(toolType: "codex-chat", runtimeState: "running", status: "running")
+    XCTAssertEqual(normalizedWorkChatSessionStatus(session: runningSession, summary: nil), "active")
+
+    let idleSession = makeTerminalSessionSummary(toolType: "codex-chat", runtimeState: "idle", status: "running")
+    XCTAssertEqual(normalizedWorkChatSessionStatus(session: idleSession, summary: nil), "idle")
+
+    let endedSession = makeTerminalSessionSummary(toolType: "codex-chat", runtimeState: "stopped", status: "exited")
+    XCTAssertEqual(normalizedWorkChatSessionStatus(session: endedSession, summary: nil), "ended")
+  }
+
+  func testWorkChatSessionClassificationMatchesDesktopChatToolTypes() {
+    XCTAssertTrue(isChatSession(makeTerminalSessionSummary(toolType: "codex-chat")))
+    XCTAssertTrue(isChatSession(makeTerminalSessionSummary(toolType: "cursor")))
+    XCTAssertTrue(isChatSession(makeTerminalSessionSummary(toolType: "custom-chat")))
+    XCTAssertFalse(isChatSession(makeTerminalSessionSummary(toolType: "run-shell")))
+  }
+
+  func testWorkChatSessionClassificationTrimsWhitespaceAndRejectsBlankValues() {
+    XCTAssertTrue(isChatSession(makeTerminalSessionSummary(toolType: "  claude-chat  ")))
+    XCTAssertTrue(isChatSession(makeTerminalSessionSummary(toolType: "\ncustom-chat\t")))
+    XCTAssertFalse(isChatSession(makeTerminalSessionSummary(toolType: "   ")))
+    XCTAssertFalse(isChatSession(makeTerminalSessionSummary(toolType: nil)))
+  }
+
+  func testAgentChatSessionSummaryDecodesCursorAndControlFields() throws {
+    let payload: [String: Any] = [
+      "sessionId": "chat-1",
+      "laneId": "lane-1",
+      "provider": "cursor",
+      "model": "cursor-agent",
+      "modelId": "cursor-agent-1",
+      "sessionProfile": "profile-1",
+      "title": "Cursor chat",
+      "goal": "Land Work tab parity",
+      "reasoningEffort": "medium",
+      "executionMode": "agent",
+      "permissionMode": "edit",
+      "interactionMode": "chat",
+      "claudePermissionMode": "acceptEdits",
+      "codexApprovalPolicy": "on-request",
+      "codexSandbox": "workspace-write",
+      "codexConfigSource": "host",
+      "opencodePermissionMode": "edit",
+      "cursorModeSnapshot": [
+        "currentModeId": "ask",
+        "availableModeIds": ["agent", "ask", "manual"],
+      ],
+      "cursorModeId": "ask",
+      "cursorConfigValues": [
+        "voice": true,
+        "temperature": 0.5,
+        "notes": "mobile",
+      ],
+      "identityKey": "identity-1",
+      "surface": "work",
+      "automationId": "automation-1",
+      "automationRunId": "run-1",
+      "capabilityMode": "full",
+      "computerUse": [
+        "enabled": true,
+      ],
+      "completion": [
+        "timestamp": "2026-03-25T00:00:02.000Z",
+        "summary": "Done",
+        "status": "completed",
+        "artifacts": [
+          [
+            "type": "file",
+            "description": "Updated transcript",
+            "reference": "docs/transcript.md",
+          ],
+        ],
+        "blockerDescription": "None",
+      ],
+      "status": "running",
+      "idleSinceAt": "2026-03-25T00:00:01.000Z",
+      "startedAt": "2026-03-25T00:00:00.000Z",
+      "endedAt": NSNull(),
+      "lastActivityAt": "2026-03-25T00:00:02.000Z",
+      "lastOutputPreview": "Working...",
+      "summary": "Primary chat session",
+      "awaitingInput": true,
+      "threadId": "thread-1",
+    ]
+
+    let data = try JSONSerialization.data(withJSONObject: payload)
+    let summary = try JSONDecoder().decode(AgentChatSessionSummary.self, from: data)
+
+    XCTAssertEqual(summary.sessionId, "chat-1")
+    XCTAssertEqual(summary.provider, "cursor")
+    XCTAssertEqual(summary.cursorModeId, "ask")
+    XCTAssertEqual(summary.cursorModeSnapshot, .object([
+      "currentModeId": .string("ask"),
+      "availableModeIds": .array([.string("agent"), .string("ask"), .string("manual")]),
+    ]))
+    XCTAssertEqual(summary.cursorConfigValues?["voice"], .bool(true))
+    XCTAssertEqual(summary.cursorConfigValues?["temperature"], .number(0.5))
+    XCTAssertEqual(summary.completion?.artifacts?.first?.reference, "docs/transcript.md")
+    XCTAssertTrue(summary.awaitingInput ?? false)
+  }
+
+  func testMergeWorkChatTranscriptsReplacesDuplicatesAndSortsByTime() {
+    let base = [
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-03-25T00:00:02.000Z",
+        sequence: 2,
+        event: .assistantText(text: "Second", turnId: "turn-1", itemId: "msg-2")
+      ),
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-03-25T00:00:01.000Z",
+        sequence: 1,
+        event: .userMessage(text: "First", turnId: "turn-1", steerId: nil, deliveryState: nil, processed: nil)
+      ),
+    ]
+    let live = [
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-03-25T00:00:01.000Z",
+        sequence: 1,
+        event: .userMessage(text: "First", turnId: "turn-1", steerId: nil, deliveryState: nil, processed: nil)
+      ),
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-03-25T00:00:03.000Z",
+        sequence: 3,
+        event: .assistantText(text: "Third", turnId: "turn-1", itemId: "msg-3")
+      ),
+    ]
+
+    let merged = mergeWorkChatTranscripts(base: base, live: live)
+
+    XCTAssertEqual(merged.count, 3)
+    XCTAssertEqual(merged.map(\.timestamp), [
+      "2026-03-25T00:00:01.000Z",
+      "2026-03-25T00:00:02.000Z",
+      "2026-03-25T00:00:03.000Z",
+    ])
+  }
+
+  func testPendingWorkInputItemIdsTracksResolvedApprovalAndQuestionEvents() {
+    let transcript = [
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-03-25T00:00:01.000Z",
+        sequence: 1,
+        event: .approvalRequest(description: "Run tests?", detail: nil, itemId: "approval-1", turnId: "turn-1")
+      ),
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-03-25T00:00:02.000Z",
+        sequence: 2,
+        event: .structuredQuestion(question: "Deploy?", options: ["Yes", "No"], itemId: "question-1", turnId: "turn-1")
+      ),
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-03-25T00:00:03.000Z",
+        sequence: 3,
+        event: .pendingInputResolved(itemId: "approval-1", resolution: "accepted", turnId: "turn-1")
+      ),
+    ]
+
+    XCTAssertEqual(pendingWorkInputItemIds(from: transcript), Set(["question-1"]))
+  }
+
+  func testParseWorkChatTranscriptDecodesSteerIdAndDeliveryState() {
+    let raw = """
+    {"sessionId":"chat-1","timestamp":"2026-03-25T00:00:01.000Z","sequence":1,"event":{"type":"user_message","text":"ship it","turnId":"turn-1","steerId":"steer-1","deliveryState":"queued"}}
+    {"sessionId":"chat-1","timestamp":"2026-03-25T00:00:02.000Z","sequence":2,"event":{"type":"system_notice","kind":"steer_cancelled","message":"Cancelled","steerId":"steer-1","turnId":"turn-1"}}
+    """
+
+    let transcript = parseWorkChatTranscript(raw)
+    XCTAssertEqual(transcript.count, 2)
+
+    guard case .userMessage(let text, _, let steerId, let deliveryState, _) = transcript[0].event else {
+      return XCTFail("Expected user_message event.")
+    }
+    XCTAssertEqual(text, "ship it")
+    XCTAssertEqual(steerId, "steer-1")
+    XCTAssertEqual(deliveryState, "queued")
+
+    guard case .systemNotice(_, _, _, _, let noticeSteerId) = transcript[1].event else {
+      return XCTFail("Expected system_notice event.")
+    }
+    XCTAssertEqual(noticeSteerId, "steer-1")
+  }
+
+  func testDerivePendingWorkInputsReturnsApprovalsAndQuestionsInRequestOrder() {
+    let transcript = [
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-03-25T00:00:01.000Z",
+        sequence: 1,
+        event: .approvalRequest(description: "Run tests?", detail: nil, itemId: "approval-1", turnId: "turn-1")
+      ),
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-03-25T00:00:02.000Z",
+        sequence: 2,
+        event: .structuredQuestion(question: "Deploy?", options: ["Yes", "No"], itemId: "question-1", turnId: "turn-1")
+      ),
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-03-25T00:00:03.000Z",
+        sequence: 3,
+        event: .approvalRequest(description: "Push branch?", detail: nil, itemId: "approval-2", turnId: "turn-1")
+      ),
+    ]
+
+    let items = derivePendingWorkInputs(from: transcript)
+    XCTAssertEqual(items.map(\.itemId), ["approval-1", "question-1", "approval-2"])
+  }
+
+  func testDerivePendingWorkInputsRemovesResolvedItems() {
+    let transcript = [
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-03-25T00:00:01.000Z",
+        sequence: 1,
+        event: .approvalRequest(description: "Run tests?", detail: nil, itemId: "approval-1", turnId: "turn-1")
+      ),
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-03-25T00:00:02.000Z",
+        sequence: 2,
+        event: .structuredQuestion(question: "Deploy?", options: [], itemId: "question-1", turnId: "turn-1")
+      ),
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-03-25T00:00:03.000Z",
+        sequence: 3,
+        event: .pendingInputResolved(itemId: "approval-1", resolution: "accepted", turnId: "turn-1")
+      ),
+    ]
+
+    let items = derivePendingWorkInputs(from: transcript)
+    XCTAssertEqual(items.map(\.itemId), ["question-1"])
+  }
+
+  func testDerivePendingWorkSteersTracksQueuedEditsAndCancellations() {
+    let transcript = [
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-03-25T00:00:01.000Z",
+        sequence: 1,
+        event: .userMessage(text: "ship", turnId: "turn-1", steerId: "steer-1", deliveryState: "queued", processed: nil)
+      ),
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-03-25T00:00:02.000Z",
+        sequence: 2,
+        event: .userMessage(text: "ship it fast", turnId: "turn-1", steerId: "steer-1", deliveryState: "queued", processed: nil)
+      ),
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-03-25T00:00:03.000Z",
+        sequence: 3,
+        event: .userMessage(text: "also run tests", turnId: "turn-1", steerId: "steer-2", deliveryState: "queued", processed: nil)
+      ),
+    ]
+
+    let steers = derivePendingWorkSteers(from: transcript)
+    XCTAssertEqual(steers.map(\.id), ["steer-1", "steer-2"])
+    XCTAssertEqual(steers.first?.text, "ship it fast")
+  }
+
+  func testDerivePendingWorkSteersClearsOnSystemNoticeAndDelivery() {
+    let transcript = [
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-03-25T00:00:01.000Z",
+        sequence: 1,
+        event: .userMessage(text: "first", turnId: "turn-1", steerId: "steer-1", deliveryState: "queued", processed: nil)
+      ),
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-03-25T00:00:02.000Z",
+        sequence: 2,
+        event: .userMessage(text: "second", turnId: "turn-1", steerId: "steer-2", deliveryState: "queued", processed: nil)
+      ),
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-03-25T00:00:03.000Z",
+        sequence: 3,
+        event: .systemNotice(kind: "steer_cancelled", message: "Cancelled", detail: nil, turnId: "turn-1", steerId: "steer-1")
+      ),
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-03-25T00:00:04.000Z",
+        sequence: 4,
+        event: .userMessage(text: "second", turnId: "turn-1", steerId: "steer-2", deliveryState: "delivered", processed: nil)
+      ),
+    ]
+
+    let steers = derivePendingWorkSteers(from: transcript)
+    XCTAssertTrue(steers.isEmpty)
+  }
+
+  func testMergeWorkChatTranscriptsReplacesQueuedSteerEditInPlace() {
+    let base = [
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-03-25T00:00:01.000Z",
+        sequence: 1,
+        event: .userMessage(text: "ship", turnId: "turn-1", steerId: "steer-1", deliveryState: "queued", processed: nil)
+      ),
+    ]
+    let live = [
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-03-25T00:00:01.000Z",
+        sequence: 1,
+        event: .userMessage(text: "ship it fast", turnId: "turn-1", steerId: "steer-1", deliveryState: "queued", processed: nil)
+      ),
+    ]
+
+    let merged = mergeWorkChatTranscripts(base: base, live: live)
+    XCTAssertEqual(merged.count, 1)
+    guard case .userMessage(let text, _, _, _, _) = merged[0].event else {
+      return XCTFail("Expected user_message event.")
+    }
+    XCTAssertEqual(text, "ship it fast")
+  }
+
   func testVisibleWorkTimelineEntriesKeepsNewestPage() {
     let entries = (1...6).map { index in
       WorkTimelineEntry(
@@ -2303,8 +2709,99 @@ final class ADETests: XCTestCase {
     return Int(sqlite3_column_int64(statement, 0))
   }
 
+  private func tableExists(in baseURL: URL, table: String) throws -> Bool {
+    let dbURL = baseURL.appendingPathComponent("ADE", isDirectory: true).appendingPathComponent("ade.db")
+    var handle: OpaquePointer?
+    XCTAssertEqual(sqlite3_open(dbURL.path, &handle), SQLITE_OK)
+    defer { sqlite3_close(handle) }
+
+    var statement: OpaquePointer?
+    XCTAssertEqual(
+      sqlite3_prepare_v2(handle, "select 1 from sqlite_master where type = 'table' and name = ? limit 1", -1, &statement, nil),
+      SQLITE_OK
+    )
+    defer { sqlite3_finalize(statement) }
+    sqlite3_bind_text(statement, 1, (table as NSString).utf8String, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
+    return sqlite3_step(statement) == SQLITE_ROW
+  }
+
   private struct DummyHydrationPayload: Decodable {
     let refreshedCount: Int
+  }
+
+  private func makeAgentChatSessionSummary(
+    status: String,
+    awaitingInput: Bool? = nil
+  ) -> AgentChatSessionSummary {
+    AgentChatSessionSummary(
+      sessionId: "chat-1",
+      laneId: "lane-1",
+      provider: "codex",
+      model: "gpt-5.4",
+      modelId: nil,
+      sessionProfile: nil,
+      title: nil,
+      goal: nil,
+      reasoningEffort: nil,
+      executionMode: nil,
+      permissionMode: nil,
+      interactionMode: nil,
+      claudePermissionMode: nil,
+      codexApprovalPolicy: nil,
+      codexSandbox: nil,
+      codexConfigSource: nil,
+      opencodePermissionMode: nil,
+      cursorModeSnapshot: nil,
+      cursorModeId: nil,
+      cursorConfigValues: nil,
+      identityKey: nil,
+      surface: nil,
+      automationId: nil,
+      automationRunId: nil,
+      capabilityMode: nil,
+      computerUse: nil,
+      completion: nil,
+      status: status,
+      idleSinceAt: nil,
+      startedAt: "2026-03-25T00:00:00.000Z",
+      endedAt: nil,
+      lastActivityAt: "2026-03-25T00:00:00.000Z",
+      lastOutputPreview: nil,
+      summary: nil,
+      awaitingInput: awaitingInput,
+      threadId: nil
+    )
+  }
+
+  private func makeTerminalSessionSummary(
+    toolType: String?,
+    runtimeState: String = "running",
+    status: String = "running"
+  ) -> TerminalSessionSummary {
+    TerminalSessionSummary(
+      id: "chat-1",
+      laneId: "lane-1",
+      laneName: "feature/work",
+      ptyId: nil,
+      tracked: true,
+      pinned: false,
+      manuallyNamed: nil,
+      goal: nil,
+      toolType: toolType,
+      title: "Codex chat",
+      status: status,
+      startedAt: "2026-03-25T00:00:00.000Z",
+      endedAt: nil,
+      exitCode: nil,
+      transcriptPath: "",
+      headShaStart: nil,
+      headShaEnd: nil,
+      lastOutputPreview: nil,
+      summary: nil,
+      runtimeState: runtimeState,
+      resumeCommand: nil,
+      chatIdleSinceAt: nil
+    )
   }
 
   private func jsonDictionary<T: Encodable>(from value: T) throws -> [String: Any] {

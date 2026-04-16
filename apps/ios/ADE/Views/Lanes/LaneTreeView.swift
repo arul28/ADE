@@ -32,15 +32,15 @@ struct LaneTreeView: View {
   let onTogglePin: (String) -> Void
 
   private var depthByLane: [String: Int] {
+    let visibleLaneIds = Set(snapshots.map { $0.lane.id })
     let laneById = Dictionary(uniqueKeysWithValues: allLaneSnapshots.map { ($0.lane.id, $0.lane) })
-    let primaryId = allLaneSnapshots.first(where: { $0.lane.laneType == "primary" })?.lane.id
 
     var memo: [String: Int] = [:]
 
     func depthFor(_ laneId: String, visiting: Set<String> = []) -> Int {
       if let cached = memo[laneId] { return cached }
       if visiting.contains(laneId) { return 0 }
-      guard let lane = laneById[laneId] else {
+      guard visibleLaneIds.contains(laneId), let lane = laneById[laneId] else {
         memo[laneId] = 0
         return 0
       }
@@ -48,15 +48,13 @@ struct LaneTreeView: View {
         memo[laneId] = 0
         return 0
       }
-      let parentId = (lane.parentLaneId.flatMap { laneById[$0] == nil ? nil : $0 }) ?? primaryId
-      guard let resolvedParent = parentId, resolvedParent != laneId else {
-        // Orphan with no primary to anchor under — depth 1 so it still indents visibly.
-        memo[laneId] = 1
-        return 1
+      guard let parentId = lane.parentLaneId, parentId != laneId, visibleLaneIds.contains(parentId) else {
+        memo[laneId] = 0
+        return 0
       }
       var next = visiting
       next.insert(laneId)
-      let depth = depthFor(resolvedParent, visiting: next) + 1
+      let depth = depthFor(parentId, visiting: next) + 1
       memo[laneId] = depth
       return depth
     }
@@ -73,7 +71,7 @@ struct LaneTreeView: View {
       ForEach(snapshots) { snapshot in
         LaneTreeRow(
           snapshot: snapshot,
-          depth: depths[snapshot.lane.id] ?? 1,
+          depth: depths[snapshot.lane.id] ?? 0,
           allLaneSnapshots: allLaneSnapshots,
           isPinned: pinnedLaneIds.contains(snapshot.lane.id),
           isOpen: openLaneIds.contains(snapshot.lane.id),
