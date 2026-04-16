@@ -36,7 +36,8 @@ struct LaneTreeView: View {
 
   private var depthByLane: [String: Int] {
     let visibleLaneIds = Set(snapshots.map { $0.lane.id })
-    let laneById = Dictionary(uniqueKeysWithValues: allLaneSnapshots.map { ($0.lane.id, $0.lane) })
+    // Snapshots can overlap during sync reconciliation; coalesce instead of crashing.
+    let laneById = Dictionary(allLaneSnapshots.map { ($0.lane.id, $0.lane) }, uniquingKeysWith: { _, new in new })
 
     var memo: [String: Int] = [:]
 

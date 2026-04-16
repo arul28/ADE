@@ -431,7 +431,8 @@ final class DatabaseService {
       )
     }
 
-    let rowsById = Dictionary(uniqueKeysWithValues: rows.map { ($0.id, $0) })
+    // Harden against duplicate ids arriving from sync merges: last writer wins.
+    let rowsById = Dictionary(rows.map { ($0.id, $0) }, uniquingKeysWith: { _, new in new })
     let childCounts = rows.reduce(into: [String: Int]()) { partial, row in
       guard let parent = row.parentLaneId, row.archivedAt == nil else { return }
       partial[parent, default: 0] += 1

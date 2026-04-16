@@ -5,6 +5,12 @@ import AVKit
 struct WorkSessionHeader: View {
   let session: TerminalSessionSummary
   let chatSummary: AgentChatSessionSummary?
+  // transitionNamespace is retained on the init for caller compatibility but
+  // intentionally unused in body: navigationTransition(.zoom(sourceID:)) on
+  // the container already interpolates child layouts during the push, so
+  // this destination must NOT emit per-element matchedGeometryEffect for
+  // work-icon/title/status — the list row is the sole isSource=true view
+  // in each matched-geometry group.
   let transitionNamespace: Namespace.ID?
   let onOpenLane: (() -> Void)?
   let onOpenSettings: (() -> Void)?
@@ -17,19 +23,16 @@ struct WorkSessionHeader: View {
           .foregroundStyle(providerTint(chatSummary?.provider))
           .frame(width: 34, height: 34)
           .background(providerTint(chatSummary?.provider).opacity(0.12), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-          .adeMatchedGeometry(id: transitionNamespace == nil ? nil : "work-icon-\(session.id)", in: transitionNamespace)
         VStack(alignment: .leading, spacing: 6) {
           Text(chatSummary?.title ?? session.title)
             .font(.headline)
             .foregroundStyle(ADEColor.textPrimary)
-            .adeMatchedGeometry(id: transitionNamespace == nil ? nil : "work-title-\(session.id)", in: transitionNamespace)
           HStack(spacing: 8) {
             WorkTag(
               text: sessionStatusLabel(session, summary: chatSummary),
               icon: workChatStatusIcon(normalizedWorkChatSessionStatus(session: session, summary: chatSummary)),
               tint: workChatStatusTint(normalizedWorkChatSessionStatus(session: session, summary: chatSummary))
             )
-              .adeMatchedGeometry(id: transitionNamespace == nil ? nil : "work-status-\(session.id)", in: transitionNamespace)
             if let chatSummary {
               WorkTag(text: providerLabel(chatSummary.provider), icon: providerIcon(chatSummary.provider), tint: providerTint(chatSummary.provider))
               WorkTag(text: chatSummary.model, icon: "cpu", tint: ADEColor.textSecondary)
