@@ -39,6 +39,7 @@
 		E10000000000000000000036 /* WorkErrorAndMessageHelpers.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000036 /* WorkErrorAndMessageHelpers.swift */; };
 		E10000000000000000000037 /* WorkEventMapping.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000037 /* WorkEventMapping.swift */; };
 		E10000000000000000000038 /* WorkStatusAndFormattingHelpers.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000038 /* WorkStatusAndFormattingHelpers.swift */; };
+		E10000000000000000000039 /* WorkChatSessionView+Timeline.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000039 /* WorkChatSessionView+Timeline.swift */; };
 		E20000000000000000000042 /* FilesModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000042 /* FilesModels.swift */; };
 		E20000000000000000000043 /* FilesHelpers.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000043 /* FilesHelpers.swift */; };
 		E20000000000000000000044 /* FilesRootScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000044 /* FilesRootScreen.swift */; };
@@ -75,6 +76,12 @@
 		B10000000000000000000012 /* LaneTypes.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000012 /* LaneTypes.swift */; };
 		B10000000000000000000013 /* LaneCommitBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000013 /* LaneCommitBar.swift */; };
 		B10000000000000000000014 /* ConnectionSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000014 /* ConnectionSettingsView.swift */; };
+		F10000000000000000000001 /* SettingsSupportTypes.swift in Sources */ = {isa = PBXBuildFile; fileRef = F20000000000000000000001 /* SettingsSupportTypes.swift */; };
+		F10000000000000000000002 /* SettingsConnectionHeader.swift in Sources */ = {isa = PBXBuildFile; fileRef = F20000000000000000000002 /* SettingsConnectionHeader.swift */; };
+		F10000000000000000000003 /* SettingsPairingSection.swift in Sources */ = {isa = PBXBuildFile; fileRef = F20000000000000000000003 /* SettingsPairingSection.swift */; };
+		F10000000000000000000004 /* SettingsPinSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = F20000000000000000000004 /* SettingsPinSheet.swift */; };
+		F10000000000000000000005 /* SettingsAppearanceSection.swift in Sources */ = {isa = PBXBuildFile; fileRef = F20000000000000000000005 /* SettingsAppearanceSection.swift */; };
+		F10000000000000000000006 /* SettingsDiagnosticsSection.swift in Sources */ = {isa = PBXBuildFile; fileRef = F20000000000000000000006 /* SettingsDiagnosticsSection.swift */; };
 		B10000000000000000000017 /* LaneTreeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000017 /* LaneTreeView.swift */; };
 		B10000000000000000000018 /* AddLaneSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000018 /* AddLaneSheet.swift */; };
 		B10000000000000000000019 /* LanesOfflineEmptyState.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000019 /* LanesOfflineEmptyState.swift */; };
@@ -125,6 +132,7 @@
 		D10000000000000000000036 /* WorkErrorAndMessageHelpers.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkErrorAndMessageHelpers.swift; path = ADE/Views/Work/WorkErrorAndMessageHelpers.swift; sourceTree = "<group>"; };
 		D10000000000000000000037 /* WorkEventMapping.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkEventMapping.swift; path = ADE/Views/Work/WorkEventMapping.swift; sourceTree = "<group>"; };
 		D10000000000000000000038 /* WorkStatusAndFormattingHelpers.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkStatusAndFormattingHelpers.swift; path = ADE/Views/Work/WorkStatusAndFormattingHelpers.swift; sourceTree = "<group>"; };
+		D10000000000000000000039 /* WorkChatSessionView+Timeline.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = "WorkChatSessionView+Timeline.swift"; path = "ADE/Views/Work/WorkChatSessionView+Timeline.swift"; sourceTree = "<group>"; };
 		D20000000000000000000042 /* FilesModels.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = FilesModels.swift; path = ADE/Views/Files/FilesModels.swift; sourceTree = "<group>"; };
 		D20000000000000000000043 /* FilesHelpers.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = FilesHelpers.swift; path = ADE/Views/Files/FilesHelpers.swift; sourceTree = "<group>"; };
 		D20000000000000000000044 /* FilesRootScreen.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = FilesRootScreen.swift; path = ADE/Views/Files/FilesRootScreen.swift; sourceTree = "<group>"; };
@@ -168,6 +176,12 @@
 		A10000000000000000000012 /* LaneTypes.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LaneTypes.swift; path = ADE/Views/Lanes/LaneTypes.swift; sourceTree = "<group>"; };
 		A10000000000000000000013 /* LaneCommitBar.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LaneCommitBar.swift; path = ADE/Views/Lanes/LaneCommitBar.swift; sourceTree = "<group>"; };
 		A10000000000000000000014 /* ConnectionSettingsView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ConnectionSettingsView.swift; path = ADE/Views/Settings/ConnectionSettingsView.swift; sourceTree = "<group>"; };
+		F20000000000000000000001 /* SettingsSupportTypes.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SettingsSupportTypes.swift; path = ADE/Views/Settings/SettingsSupportTypes.swift; sourceTree = "<group>"; };
+		F20000000000000000000002 /* SettingsConnectionHeader.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SettingsConnectionHeader.swift; path = ADE/Views/Settings/SettingsConnectionHeader.swift; sourceTree = "<group>"; };
+		F20000000000000000000003 /* SettingsPairingSection.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SettingsPairingSection.swift; path = ADE/Views/Settings/SettingsPairingSection.swift; sourceTree = "<group>"; };
+		F20000000000000000000004 /* SettingsPinSheet.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SettingsPinSheet.swift; path = ADE/Views/Settings/SettingsPinSheet.swift; sourceTree = "<group>"; };
+		F20000000000000000000005 /* SettingsAppearanceSection.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SettingsAppearanceSection.swift; path = ADE/Views/Settings/SettingsAppearanceSection.swift; sourceTree = "<group>"; };
+		F20000000000000000000006 /* SettingsDiagnosticsSection.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SettingsDiagnosticsSection.swift; path = ADE/Views/Settings/SettingsDiagnosticsSection.swift; sourceTree = "<group>"; };
 		A10000000000000000000017 /* LaneTreeView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LaneTreeView.swift; path = ADE/Views/Lanes/LaneTreeView.swift; sourceTree = "<group>"; };
 		A10000000000000000000018 /* AddLaneSheet.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = AddLaneSheet.swift; path = ADE/Views/Lanes/AddLaneSheet.swift; sourceTree = "<group>"; };
 		A10000000000000000000019 /* LanesOfflineEmptyState.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LanesOfflineEmptyState.swift; path = ADE/Views/Lanes/LanesOfflineEmptyState.swift; sourceTree = "<group>"; };
@@ -295,6 +309,7 @@
 				D10000000000000000000029 /* WorkSessionDestinationView+Actions.swift */,
 				D1000000000000000000002A /* WorkChatSessionView.swift */,
 				D1000000000000000000002B /* WorkChatSessionView+Actions.swift */,
+				D10000000000000000000039 /* WorkChatSessionView+Timeline.swift */,
 				D1000000000000000000002C /* WorkChatHeaderAndMessageViews.swift */,
 				D1000000000000000000002D /* WorkChatRichCardViews.swift */,
 				D1000000000000000000002E /* WorkChatComposerAndInputViews.swift */,
@@ -316,6 +331,12 @@
 			isa = PBXGroup;
 			children = (
 				A10000000000000000000014 /* ConnectionSettingsView.swift */,
+				F20000000000000000000001 /* SettingsSupportTypes.swift */,
+				F20000000000000000000002 /* SettingsConnectionHeader.swift */,
+				F20000000000000000000003 /* SettingsPairingSection.swift */,
+				F20000000000000000000004 /* SettingsPinSheet.swift */,
+				F20000000000000000000005 /* SettingsAppearanceSection.swift */,
+				F20000000000000000000006 /* SettingsDiagnosticsSection.swift */,
 			);
 			name = Settings;
 			sourceTree = "<group>";
@@ -555,6 +576,12 @@
 				B10000000000000000000012 /* LaneTypes.swift in Sources */,
 				B10000000000000000000013 /* LaneCommitBar.swift in Sources */,
 				B10000000000000000000014 /* ConnectionSettingsView.swift in Sources */,
+				F10000000000000000000001 /* SettingsSupportTypes.swift in Sources */,
+				F10000000000000000000002 /* SettingsConnectionHeader.swift in Sources */,
+				F10000000000000000000003 /* SettingsPairingSection.swift in Sources */,
+				F10000000000000000000004 /* SettingsPinSheet.swift in Sources */,
+				F10000000000000000000005 /* SettingsAppearanceSection.swift in Sources */,
+				F10000000000000000000006 /* SettingsDiagnosticsSection.swift in Sources */,
 				B10000000000000000000017 /* LaneTreeView.swift in Sources */,
 				B10000000000000000000018 /* AddLaneSheet.swift in Sources */,
 				B10000000000000000000019 /* LanesOfflineEmptyState.swift in Sources */,
@@ -573,6 +600,7 @@
 				E10000000000000000000029 /* WorkSessionDestinationView+Actions.swift in Sources */,
 				E1000000000000000000002A /* WorkChatSessionView.swift in Sources */,
 				E1000000000000000000002B /* WorkChatSessionView+Actions.swift in Sources */,
+				E10000000000000000000039 /* WorkChatSessionView+Timeline.swift in Sources */,
 				E1000000000000000000002C /* WorkChatHeaderAndMessageViews.swift in Sources */,
 				E1000000000000000000002D /* WorkChatRichCardViews.swift in Sources */,
 				E1000000000000000000002E /* WorkChatComposerAndInputViews.swift in Sources */,
