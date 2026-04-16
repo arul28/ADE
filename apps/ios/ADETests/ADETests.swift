@@ -2109,6 +2109,53 @@ final class ADETests: XCTestCase {
     )
   }
 
+  func testFilesEditorModesKeepDiffAvailableForLaneBackedReadOnlyPreview() {
+    XCTAssertEqual(filesEditorModes(laneId: nil), [.preview])
+    XCTAssertEqual(filesEditorModes(laneId: "lane-1"), [.preview, .diff])
+  }
+
+  func testFilesHistoryFallbackExplainsUnsupportedAndEmptyStates() {
+    XCTAssertEqual(
+      filesHistoryFallback(laneId: nil, entries: [], errorMessage: nil),
+      FilesSectionFallback(
+        title: "History unavailable",
+        message: "This workspace is not lane-backed, so Files can only show the current preview and metadata on iPhone."
+      )
+    )
+
+    XCTAssertEqual(
+      filesHistoryFallback(laneId: "lane-1", entries: [], errorMessage: nil),
+      FilesSectionFallback(
+        title: "No recent history",
+        message: "The host did not return recent commits for this file yet. Reconnect or refresh to try again."
+      )
+    )
+  }
+
+  func testFilesHistoryFallbackPrefersEntriesAndExplicitErrors() {
+    let entries = [
+      GitFileHistoryEntry(
+        commitSha: "abc123",
+        shortSha: "abc123",
+        authorName: "Arul",
+        authoredAt: "2026-04-11T21:00:00.000Z",
+        subject: "Update app",
+        path: "Sources/App.swift",
+        previousPath: nil,
+        changeType: "modified"
+      )
+    ]
+
+    XCTAssertNil(filesHistoryFallback(laneId: "lane-1", entries: entries, errorMessage: nil))
+    XCTAssertEqual(
+      filesHistoryFallback(laneId: "lane-1", entries: [], errorMessage: "Cache missing"),
+      FilesSectionFallback(
+        title: "History unavailable",
+        message: "Cache missing"
+      )
+    )
+  }
+
   func testDatabaseCachesFilesWorkspaceDirectoryBlobDiffAndHistorySnapshots() throws {
     let database = DatabaseService(baseURL: makeTemporaryDirectory())
     XCTAssertNil(database.initializationError)
@@ -2456,6 +2503,45 @@ final class ADETests: XCTestCase {
       "2026-03-25T00:00:01.000Z",
       "2026-03-25T00:00:02.000Z",
       "2026-03-25T00:00:03.000Z",
+    ])
+  }
+
+  /// Regression: hosts occasionally replay the same activity envelope during resume, so the cached
+  /// `base` can contain two rows with identical merge keys. The old `Dictionary(uniqueKeysWithValues:)`
+  /// crashed on that; the merge must dedupe in place and keep the transcript stable.
+  func testMergeWorkChatTranscriptsToleratesDuplicateMergeKeysInBase() {
+    let duplicate = WorkChatEnvelope(
+      sessionId: "chat-1",
+      timestamp: "2026-04-16T07:34:53.872Z",
+      sequence: 1,
+      event: .activity(kind: "reading", detail: "app", turnId: "turn-1")
+    )
+    let base = [
+      duplicate,
+      duplicate,
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-04-16T07:34:55.000Z",
+        sequence: 2,
+        event: .assistantText(text: "hello", turnId: "turn-1", itemId: "msg-1")
+      ),
+    ]
+    let live = [
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-04-16T07:34:56.000Z",
+        sequence: 3,
+        event: .assistantText(text: "world", turnId: "turn-1", itemId: "msg-2")
+      ),
+    ]
+
+    let merged = mergeWorkChatTranscripts(base: base, live: live)
+
+    XCTAssertEqual(merged.count, 3)
+    XCTAssertEqual(merged.map(\.timestamp), [
+      "2026-04-16T07:34:53.872Z",
+      "2026-04-16T07:34:55.000Z",
+      "2026-04-16T07:34:56.000Z",
     ])
   }
 

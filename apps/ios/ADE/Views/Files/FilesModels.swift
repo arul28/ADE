@@ -30,7 +30,6 @@ struct FilesBreadcrumbItem: Equatable {
 
 enum FilesEditorMode: String, CaseIterable, Identifiable {
   case preview
-  case edit
   case diff
 
   var id: String { rawValue }
@@ -38,10 +37,41 @@ enum FilesEditorMode: String, CaseIterable, Identifiable {
   var title: String {
     switch self {
     case .preview: return "Preview"
-    case .edit: return "Edit"
     case .diff: return "Diff"
     }
   }
+}
+
+struct FilesSectionFallback: Equatable {
+  let title: String
+  let message: String
+}
+
+func filesEditorModes(laneId: String?) -> [FilesEditorMode] {
+  laneId == nil ? [.preview] : [.preview, .diff]
+}
+
+func filesHistoryFallback(
+  laneId: String?,
+  entries: [GitFileHistoryEntry],
+  errorMessage: String?
+) -> FilesSectionFallback? {
+  if let errorMessage, !errorMessage.isEmpty {
+    return FilesSectionFallback(title: "History unavailable", message: errorMessage)
+  }
+  if laneId == nil {
+    return FilesSectionFallback(
+      title: "History unavailable",
+      message: "This workspace is not lane-backed, so Files can only show the current preview and metadata on iPhone."
+    )
+  }
+  if entries.isEmpty {
+    return FilesSectionFallback(
+      title: "No recent history",
+      message: "The host did not return recent commits for this file yet. Reconnect or refresh to try again."
+    )
+  }
+  return nil
 }
 
 enum FilesDiffMode: String, CaseIterable, Identifiable {
@@ -55,56 +85,6 @@ enum FilesDiffMode: String, CaseIterable, Identifiable {
     case .unstaged: return "Working tree"
     case .staged: return "Staged"
     }
-  }
-}
-
-enum FilesDestructiveKind {
-  case discard(path: String)
-  case discardUnsaved
-}
-
-struct FilesDestructiveConfirmation: Identifiable {
-  let id = UUID()
-  let kind: FilesDestructiveKind
-
-  var title: String {
-    switch kind {
-    case .discard(let path):
-      return "Discard changes for \(lastPathComponent(path))?"
-    case .discardUnsaved:
-      return "Discard unsaved changes?"
-    }
-  }
-
-  var message: String {
-    switch kind {
-    case .discard:
-      return "This permanently loses your local edits."
-    case .discardUnsaved:
-      return "Your unsaved edits on iPhone will be lost."
-    }
-  }
-
-  var confirmLabel: String {
-    switch kind {
-    case .discard, .discardUnsaved:
-      return "Discard"
-    }
-  }
-}
-
-struct FilesGitState {
-  var staged: Set<String> = []
-  var unstaged: Set<String> = []
-
-  static let empty = FilesGitState()
-
-  func isStaged(_ path: String) -> Bool {
-    staged.contains(path)
-  }
-
-  func isUnstaged(_ path: String) -> Bool {
-    unstaged.contains(path)
   }
 }
 

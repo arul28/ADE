@@ -1,28 +1,126 @@
 import SwiftUI
 import UIKit
 
-struct FilesGitActionGroup: View {
-  let path: String
-  let gitState: FilesGitState
-  let stage: () -> Void
-  let unstage: () -> Void
-  let discard: () -> Void
+struct FilesHeaderStrip: View {
+  let relativePath: String
+  let language: FilesLanguage
+  let fileSize: Int
+  let isFilesLive: Bool
+  let transitionNamespace: Namespace.ID?
 
   var body: some View {
-    ADEGlassGroup(spacing: 8) {
-      if gitState.isUnstaged(path) {
-        Button("Stage", action: stage)
-          .buttonStyle(.glass)
+    HStack(alignment: .center, spacing: 12) {
+      Image(systemName: fileIcon(for: relativePath))
+        .font(.system(size: 17, weight: .semibold))
+        .foregroundStyle(fileTint(for: relativePath))
+        .frame(width: 38, height: 38)
+        .background(ADEColor.surfaceBackground, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .glassEffect(in: .rect(cornerRadius: 12))
+        .adeMatchedGeometry(id: transitionNamespace == nil ? nil : "files-icon-\(relativePath)", in: transitionNamespace)
+
+      VStack(alignment: .leading, spacing: 3) {
+        Text(lastPathComponent(relativePath))
+          .font(.subheadline.weight(.semibold))
+          .foregroundStyle(ADEColor.textPrimary)
+          .lineLimit(1)
+          .truncationMode(.middle)
+          .adeMatchedGeometry(id: transitionNamespace == nil ? nil : "files-title-\(relativePath)", in: transitionNamespace)
+
+        HStack(spacing: 6) {
+          Text(language.displayName.uppercased())
+            .font(.caption2.monospaced().weight(.semibold))
+            .foregroundStyle(ADEColor.accent)
+          Text("·").foregroundStyle(ADEColor.textMuted)
+          Text(formattedFileSize(fileSize))
+            .font(.caption2.monospaced())
+            .foregroundStyle(ADEColor.textSecondary)
+          Text("·").foregroundStyle(ADEColor.textMuted)
+          Text("Read only")
+            .font(.caption2.weight(.medium))
+            .foregroundStyle(ADEColor.textSecondary)
+          if !isFilesLive {
+            Text("·").foregroundStyle(ADEColor.textMuted)
+            Text("Offline")
+              .font(.caption2.weight(.semibold))
+              .foregroundStyle(ADEColor.warning)
+          }
+        }
       }
-      if gitState.isStaged(path) {
-        Button("Unstage", action: unstage)
+
+      Spacer(minLength: 0)
+    }
+    .accessibilityElement(children: .combine)
+  }
+}
+
+struct FilesCompactBanner: View {
+  let symbol: String
+  let tint: Color
+  let title: String
+  let actionTitle: String?
+  let onAction: (() -> Void)?
+
+  var body: some View {
+    HStack(alignment: .center, spacing: 10) {
+      Image(systemName: symbol)
+        .font(.system(size: 13, weight: .semibold))
+        .foregroundStyle(tint)
+        .frame(width: 20, height: 20)
+
+      Text(title)
+        .font(.caption.weight(.medium))
+        .foregroundStyle(ADEColor.textPrimary)
+        .lineLimit(2)
+        .fixedSize(horizontal: false, vertical: true)
+
+      Spacer(minLength: 8)
+
+      if let actionTitle, let onAction {
+        Button(actionTitle, action: onAction)
           .buttonStyle(.glass)
-      }
-      if gitState.isUnstaged(path) {
-        Button("Discard", role: .destructive, action: discard)
-          .buttonStyle(.glass)
+          .controlSize(.mini)
+          .tint(tint)
       }
     }
+    .padding(.horizontal, 12)
+    .padding(.vertical, 10)
+    .background(tint.opacity(0.08), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+    .overlay(
+      RoundedRectangle(cornerRadius: 12, style: .continuous)
+        .stroke(tint.opacity(0.24), lineWidth: 0.5)
+    )
+    .accessibilityElement(children: .combine)
+    .accessibilityLabel("\(title)\(actionTitle.map { ". Action: \($0)" } ?? "")")
+  }
+}
+
+struct FilesContentFallback: View {
+  let symbol: String
+  let title: String
+  let message: String
+
+  var body: some View {
+    VStack(spacing: 12) {
+      Image(systemName: symbol)
+        .font(.system(size: 24, weight: .semibold))
+        .foregroundStyle(ADEColor.accent)
+        .frame(width: 50, height: 50)
+        .background(ADEColor.accent.opacity(0.12), in: Circle())
+        .glassEffect(in: .circle)
+
+      Text(title)
+        .font(.headline)
+        .foregroundStyle(ADEColor.textPrimary)
+
+      Text(message)
+        .font(.subheadline)
+        .foregroundStyle(ADEColor.textSecondary)
+        .multilineTextAlignment(.center)
+        .fixedSize(horizontal: false, vertical: true)
+    }
+    .frame(maxWidth: .infinity)
+    .padding(24)
+    .adeInsetField(cornerRadius: 18, padding: 24)
   }
 }
 
@@ -39,6 +137,212 @@ struct FilesMetadataRow: View {
         .font(label == "Path" ? .caption.monospaced() : .subheadline)
         .foregroundStyle(ADEColor.textPrimary)
         .textSelection(.enabled)
+    }
+  }
+}
+
+struct FilesDetailsFallback: View {
+  let fallback: FilesSectionFallback
+  let symbol: String
+
+  var body: some View {
+    HStack(alignment: .top, spacing: 12) {
+      Image(systemName: symbol)
+        .font(.system(size: 15, weight: .semibold))
+        .foregroundStyle(ADEColor.textMuted)
+        .frame(width: 20, height: 20)
+      VStack(alignment: .leading, spacing: 4) {
+        Text(fallback.title)
+          .font(.subheadline.weight(.semibold))
+          .foregroundStyle(ADEColor.textPrimary)
+        Text(fallback.message)
+          .font(.caption)
+          .foregroundStyle(ADEColor.textSecondary)
+          .fixedSize(horizontal: false, vertical: true)
+      }
+      Spacer(minLength: 0)
+    }
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .padding(14)
+    .adeInsetField(cornerRadius: 14, padding: 14)
+  }
+}
+
+struct FilesHistoryEntryCard: View {
+  let entry: GitFileHistoryEntry
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 10) {
+      HStack(alignment: .top, spacing: 10) {
+        VStack(alignment: .leading, spacing: 4) {
+          Text(entry.subject)
+            .font(.subheadline.weight(.semibold))
+            .foregroundStyle(ADEColor.textPrimary)
+          Text(entry.path)
+            .font(.caption.monospaced())
+            .foregroundStyle(ADEColor.textSecondary)
+            .textSelection(.enabled)
+        }
+
+        Spacer(minLength: 8)
+
+        ADEStatusPill(text: historyChangeTypeLabel(entry.changeType).uppercased(), tint: historyChangeTypeTint(entry.changeType))
+      }
+
+      if let previousPath = entry.previousPath, !previousPath.isEmpty, previousPath != entry.path {
+        FilesMetadataRow(label: "Previous path", value: previousPath)
+      }
+
+      HStack(spacing: 10) {
+        Label(entry.shortSha, systemImage: "arrow.triangle.branch")
+        Label(entry.authorName, systemImage: "person.crop.circle")
+        if let relativeDate = relativeDateDescription(from: entry.authoredAt) {
+          Label(relativeDate, systemImage: "clock")
+        }
+      }
+      .font(.caption)
+      .foregroundStyle(ADEColor.textSecondary)
+    }
+    .adeInsetField(cornerRadius: 14, padding: 14)
+  }
+
+  private func historyChangeTypeLabel(_ changeType: String) -> String {
+    switch changeType.lowercased() {
+    case "add", "added":
+      return "Added"
+    case "delete", "deleted", "remove", "removed":
+      return "Deleted"
+    case "rename", "renamed":
+      return "Renamed"
+    default:
+      return "Modified"
+    }
+  }
+
+  private func historyChangeTypeTint(_ changeType: String) -> Color {
+    switch changeType.lowercased() {
+    case "add", "added":
+      return ADEColor.success
+    case "delete", "deleted", "remove", "removed":
+      return ADEColor.danger
+    case "rename", "renamed":
+      return ADEColor.accent
+    default:
+      return ADEColor.warning
+    }
+  }
+}
+
+struct FilesDetailsSheet: View {
+  @Environment(\.dismiss) private var dismiss
+
+  let relativePath: String
+  let blob: SyncFileBlob?
+  let metadata: FilesFileMetadata?
+  let language: FilesLanguage
+  let historyEntries: [GitFileHistoryEntry]
+  let historyFallback: FilesSectionFallback?
+  let hasLoadedHistory: Bool
+  let isLaneBacked: Bool
+
+  var body: some View {
+    NavigationStack {
+      ScrollView {
+        VStack(alignment: .leading, spacing: 22) {
+          sheetHeader
+          metadataSection
+          historySection
+        }
+        .padding(16)
+      }
+      .adeScreenBackground()
+      .navigationTitle("Details")
+      .navigationBarTitleDisplayMode(.inline)
+      .toolbar {
+        ToolbarItem(placement: .topBarTrailing) {
+          Button("Done") { dismiss() }
+            .fontWeight(.semibold)
+        }
+      }
+    }
+  }
+
+  @ViewBuilder
+  private var sheetHeader: some View {
+    HStack(alignment: .center, spacing: 12) {
+      Image(systemName: fileIcon(for: relativePath))
+        .font(.system(size: 19, weight: .semibold))
+        .foregroundStyle(fileTint(for: relativePath))
+        .frame(width: 42, height: 42)
+        .background(ADEColor.surfaceBackground, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .glassEffect(in: .rect(cornerRadius: 12))
+
+      VStack(alignment: .leading, spacing: 3) {
+        Text(lastPathComponent(relativePath))
+          .font(.headline)
+          .foregroundStyle(ADEColor.textPrimary)
+          .lineLimit(1)
+          .truncationMode(.middle)
+        Text(parentDirectory(of: relativePath).isEmpty ? "Workspace root" : parentDirectory(of: relativePath))
+          .font(.caption.monospaced())
+          .foregroundStyle(ADEColor.textSecondary)
+          .lineLimit(1)
+          .truncationMode(.middle)
+      }
+
+      Spacer(minLength: 0)
+    }
+  }
+
+  @ViewBuilder
+  private var metadataSection: some View {
+    VStack(alignment: .leading, spacing: 10) {
+      Text("Metadata")
+        .font(.subheadline.weight(.semibold))
+        .foregroundStyle(ADEColor.textPrimary)
+
+      VStack(alignment: .leading, spacing: 14) {
+        FilesMetadataRow(label: "Path", value: relativePath)
+        FilesMetadataRow(
+          label: "Size",
+          value: metadata?.sizeText ?? blob.map { formattedFileSize($0.size) } ?? "—"
+        )
+        FilesMetadataRow(label: "Language", value: metadata?.languageLabel ?? language.displayName)
+        FilesMetadataRow(label: "Last commit", value: metadata?.lastCommitTitle ?? "No commit information available")
+        if let lastCommitDateText = metadata?.lastCommitDateText {
+          FilesMetadataRow(label: "Last change", value: lastCommitDateText)
+        }
+      }
+      .frame(maxWidth: .infinity, alignment: .leading)
+      .adeInsetField(cornerRadius: 16, padding: 16)
+    }
+  }
+
+  @ViewBuilder
+  private var historySection: some View {
+    VStack(alignment: .leading, spacing: 10) {
+      Text("History")
+        .font(.subheadline.weight(.semibold))
+        .foregroundStyle(ADEColor.textPrimary)
+
+      if !hasLoadedHistory, isLaneBacked, historyFallback == nil {
+        VStack(alignment: .leading, spacing: 10) {
+          ADESkeletonView(width: 220, height: 14)
+          ADESkeletonView(height: 12)
+          ADESkeletonView(width: 160, height: 12)
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .adeInsetField(cornerRadius: 14, padding: 0)
+      } else if let fallback = historyFallback {
+        FilesDetailsFallback(fallback: fallback, symbol: "clock.arrow.circlepath")
+      } else {
+        VStack(spacing: 10) {
+          ForEach(historyEntries) { entry in
+            FilesHistoryEntryCard(entry: entry)
+          }
+        }
+      }
     }
   }
 }
@@ -78,7 +382,6 @@ struct SyntaxHighlightedCodeView: View {
         }
         .padding(10)
       }
-      .frame(minHeight: 320)
       .adeInsetField(cornerRadius: 16, padding: 0)
       .task(id: focusLine) {
         guard let focusLine else { return }
@@ -115,7 +418,6 @@ struct FilesInlineDiffView: View {
       }
       .padding(10)
     }
-    .frame(minHeight: 320)
     .adeInsetField(cornerRadius: 16, padding: 0)
   }
 

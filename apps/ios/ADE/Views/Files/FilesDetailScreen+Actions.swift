@@ -15,8 +15,7 @@ extension FilesDetailScreen {
           languageId: nil
         )
         blob = cachedBlob
-        await loadGitState()
-        await loadMetadata(from: cachedBlob)
+        await loadHistoryAndMetadata(from: cachedBlob)
         if refreshDiff {
           await loadDiff()
         }
@@ -24,17 +23,12 @@ extension FilesDetailScreen {
         return
       }
 
-      let wasDirty = isDirty
       let loaded = try await syncService.readFile(workspaceId: workspace.id, path: relativePath)
       blob = loaded
       if loaded.isBinary, isImagePreviewable, let data = imageData {
         ADEImageCache.shared.store(data, for: imageCacheKey)
       }
-      if !loaded.isBinary && (!wasDirty || draftText.isEmpty) {
-        draftText = loaded.content
-      }
-      await loadGitState()
-      await loadMetadata(from: loaded)
+      await loadHistoryAndMetadata(from: loaded)
       if refreshDiff {
         await loadDiff()
       }
@@ -45,42 +39,27 @@ extension FilesDetailScreen {
   }
 
   @MainActor
-  func loadGitState() async {
-    guard let laneId = workspace.laneId, isFilesLive else { return }
-    do {
-      let changes = try await syncService.fetchLaneChanges(laneId: laneId)
-      gitState = FilesGitState(
-        staged: Set(changes.staged.map(\.path)),
-        unstaged: Set(changes.unstaged.map(\.path))
-      )
-    } catch {
-      // Preserve current git state if fetch fails.
-    }
-  }
-
-  @MainActor
-  func loadMetadata(from blob: SyncFileBlob) async {
-    var lastCommitTitle: String?
-    var lastCommitDateText: String?
+  func loadHistoryAndMetadata(from blob: SyncFileBlob) async {
+    hasLoadedHistory = false
+    historyErrorMessage = nil
+    historyEntries = []
 
     if let laneId = workspace.laneId {
       do {
-        let entries = try await syncService.fetchFileHistory(workspaceId: workspace.id, laneId: laneId, path: relativePath, limit: 10)
-        if let latest = entries.first {
-          lastCommitTitle = latest.subject
-          lastCommitDateText = relativeDateDescription(from: latest.authoredAt)
-        }
+        historyEntries = try await syncService.fetchFileHistory(workspaceId: workspace.id, laneId: laneId, path: relativePath, limit: 10)
       } catch {
-        // Best-effort metadata.
+        historyErrorMessage = error.localizedDescription
       }
     }
 
+    let latest = historyEntries.first
     metadata = FilesFileMetadata(
       sizeText: formattedFileSize(blob.size),
       languageLabel: language.displayName,
-      lastCommitTitle: lastCommitTitle,
-      lastCommitDateText: lastCommitDateText
+      lastCommitTitle: latest?.subject,
+      lastCommitDateText: relativeDateDescription(from: latest?.authoredAt)
     )
+    hasLoadedHistory = true
   }
 
   @MainActor
@@ -88,81 +67,26 @@ extension FilesDetailScreen {
     guard let laneId = workspace.laneId else {
       diff = nil
       diffErrorMessage = nil
+      hasLoadedDiff = true
       return
     }
+    hasLoadedDiff = false
     do {
       diff = try await syncService.fetchFileDiff(workspaceId: workspace.id, laneId: laneId, path: relativePath, mode: diffMode.rawValue)
       diffErrorMessage = nil
     } catch {
+      diff = nil
       diffErrorMessage = error.localizedDescription
     }
-  }
-
-  @MainActor
-  func save() async {
-    guard canEdit else { return }
-    do {
-      try await syncService.writeText(workspaceId: workspace.id, path: relativePath, text: draftText)
-      saveTrigger += 1
-      await load(refreshDiff: mode == .diff)
-    } catch {
-      errorMessage = error.localizedDescription
-    }
-  }
-
-  @MainActor
-  func stageCurrentFile() async {
-    guard let laneId = workspace.laneId else { return }
-    do {
-      try await syncService.stageFile(laneId: laneId, path: relativePath)
-      await load(refreshDiff: true)
-    } catch {
-      errorMessage = error.localizedDescription
-    }
-  }
-
-  @MainActor
-  func unstageCurrentFile() async {
-    guard let laneId = workspace.laneId else { return }
-    do {
-      try await syncService.unstageFile(laneId: laneId, path: relativePath)
-      await load(refreshDiff: true)
-    } catch {
-      errorMessage = error.localizedDescription
-    }
-  }
-
-  func attemptNavigation(_ target: EditorNavigationTarget) {
-    guard isDirty else {
-      performNavigation(target)
-      return
-    }
-    pendingNavigationTarget = target
-    pendingDestructiveConfirmation = FilesDestructiveConfirmation(kind: .discardUnsaved)
-  }
-
-  func performNavigationTarget() {
-    if let target = pendingNavigationTarget {
-      performNavigation(target)
-      pendingNavigationTarget = nil
-    }
-  }
-
-  func performNavigation(_ target: EditorNavigationTarget) {
-    switch target {
-    case .dismiss:
-      dismiss()
-    case .directory(let path):
-      navigateToDirectory(path)
-    }
+    hasLoadedDiff = true
   }
 
   var disconnectedNotice: ADENoticeCard {
     ADENoticeCard(
       title: "Read-only while disconnected",
       message: needsRepairing
-        ? "Pair again before trusting file state or saving edits."
-        : "The last-loaded file content stays visible, but editing and file operations are disabled until the host reconnects.",
+        ? "Pair again before trusting cached file previews, metadata, history, or diffs."
+        : "The last-loaded file preview, metadata, history, and diff stay visible, but refresh waits for the host to reconnect.",
       icon: "icloud.slash",
       tint: ADEColor.warning,
       actionTitle: syncService.activeHostProfile == nil ? "Open Settings" : "Reconnect",
