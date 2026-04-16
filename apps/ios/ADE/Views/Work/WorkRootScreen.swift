@@ -33,7 +33,6 @@ struct WorkRootScreen: View {
   @State var searchText = ""
   @State var selectedLaneId = "all"
   @State var selectedStatus: WorkSessionStatusFilter = .all
-  @State var newChatPresented = false
   @State var renameTarget: TerminalSessionSummary?
   @State var renameText = ""
   @State var endTarget: TerminalSessionSummary?
@@ -168,6 +167,11 @@ struct WorkRootScreen: View {
     collapsedSectionIdsStorage = workSerializeCollapsedSectionIds(ids)
   }
 
+  func pushNewChatRoute() {
+    let preferred = selectedLaneId == "all" ? lanes.first?.id : selectedLaneId
+    path.append(WorkNewChatRoute(preferredLaneId: preferred))
+  }
+
   var sessionGroups: [WorkSessionGroup] {
     workSessionGroups(
       organization: WorkSessionOrganization(rawValue: sessionOrganizationRaw) ?? .byStatus,
@@ -222,7 +226,7 @@ struct WorkRootScreen: View {
             lanes: lanes,
             runningCount: liveSessions.count,
             needsInputCount: needsInputSessions.count,
-            onNewChat: { newChatPresented = true },
+            onNewChat: pushNewChatRoute,
             newChatEnabled: isLive
           )
           .listRowBackground(Color.clear)
@@ -270,7 +274,7 @@ struct WorkRootScreen: View {
               )
             ) {
               Button("New chat") {
-                newChatPresented = true
+                pushNewChatRoute()
               }
               .buttonStyle(.glassProminent)
               .tint(ADEColor.accent)
@@ -328,7 +332,7 @@ struct WorkRootScreen: View {
         }
         ToolbarItem(placement: .topBarTrailing) {
           Button {
-            newChatPresented = true
+            pushNewChatRoute()
           } label: {
             Image(systemName: "plus.bubble.fill")
           }
@@ -365,24 +369,30 @@ struct WorkRootScreen: View {
         )
         .environmentObject(syncService)
       }
-      .sheet(isPresented: $newChatPresented) {
-        WorkNewChatSheet(
+      .navigationDestination(for: WorkNewChatRoute.self) { route in
+        WorkNewChatScreen(
           lanes: lanes,
-          initialLaneId: selectedLaneId == "all" ? lanes.first?.id : selectedLaneId,
+          preferredLaneId: route.preferredLaneId,
+          onStarted: { summary, opener in
+            let sessionId = summary.sessionId
+            let trimmed = opener.trimmingCharacters(in: .whitespacesAndNewlines)
+            optimisticSessions[sessionId] = makeOptimisticSession(for: summary)
+            chatSummaries[sessionId] = summary
+            selectedStatus = .all
+            selectedLaneId = summary.laneId
+            selectedSessionTransitionId = sessionId
+            // Replace the new-chat page with the live session view so hitting
+            // Back goes to the sidebar, not to an empty "Start a new chat"
+            // form.
+            var fresh = NavigationPath()
+            fresh.append(WorkSessionRoute(sessionId: sessionId, openingPrompt: trimmed))
+            path = fresh
+            Task { @MainActor in
+              await reload(refreshRemote: true)
+            }
+          },
           onRefreshLanes: { await reload(refreshRemote: true) }
-        ) { draft in
-          let sessionId = draft.summary.sessionId
-          let openingMessage = draft.initialMessage?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-          optimisticSessions[sessionId] = makeOptimisticSession(for: draft.summary)
-          chatSummaries[sessionId] = draft.summary
-          selectedStatus = .all
-          selectedLaneId = draft.summary.laneId
-          selectedSessionTransitionId = sessionId
-          path.append(WorkSessionRoute(sessionId: sessionId, openingPrompt: openingMessage))
-          Task { @MainActor in
-            await reload(refreshRemote: true)
-          }
-        }
+        )
         .environmentObject(syncService)
       }
       .alert("Rename session", isPresented: renamePresentedBinding) {
