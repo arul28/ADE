@@ -3452,6 +3452,97 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(capabilities.defaultBaseBranch, "main")
   }
 
+  func testBuildStackRowsJoinsGroupMembersAndSnapshotDirtyFlags() {
+    let members: [PrGroupMemberSummary] = [
+      PrGroupMemberSummary(
+        groupId: "g1", groupType: "stack", groupName: nil, targetBranch: "main",
+        prId: "pr-root", laneId: "lane-root", laneName: "root",
+        title: "Root PR", state: "open", githubPrNumber: 1,
+        githubUrl: "https://github.com/o/r/pull/1",
+        baseBranch: "main", headBranch: "feat/root", position: 0
+      ),
+      PrGroupMemberSummary(
+        groupId: "g1", groupType: "stack", groupName: nil, targetBranch: "main",
+        prId: "pr-mid", laneId: "lane-mid", laneName: "middle",
+        title: "Middle PR", state: "draft", githubPrNumber: 2,
+        githubUrl: "https://github.com/o/r/pull/2",
+        baseBranch: "feat/root", headBranch: "feat/mid", position: 1
+      ),
+      PrGroupMemberSummary(
+        groupId: "g1", groupType: "stack", groupName: nil, targetBranch: "main",
+        prId: "pr-leaf", laneId: "lane-leaf", laneName: "leaf",
+        title: "Leaf PR", state: "open", githubPrNumber: 3,
+        githubUrl: "https://github.com/o/r/pull/3",
+        baseBranch: "feat/mid", headBranch: "feat/leaf", position: 2
+      ),
+    ]
+
+    let stack = PrStackInfo(
+      stackId: "stack:lane-root",
+      rootLaneId: "lane-root",
+      members: [
+        PrStackMember(laneId: "lane-root", laneName: "root", parentLaneId: nil,
+                      depth: 0, role: "root", dirty: false,
+                      prId: "pr-root", prNumber: 1, prState: "open",
+                      prTitle: "Root PR", baseBranch: "main", headBranch: "feat/root",
+                      checksStatus: "passing", reviewStatus: "approved"),
+        PrStackMember(laneId: "lane-mid", laneName: "middle", parentLaneId: "lane-root",
+                      depth: 1, role: "middle", dirty: true,
+                      prId: "pr-mid", prNumber: 2, prState: "draft",
+                      prTitle: "Middle PR", baseBranch: "feat/root", headBranch: "feat/mid",
+                      checksStatus: "none", reviewStatus: "none"),
+        PrStackMember(laneId: "lane-leaf", laneName: "leaf", parentLaneId: "lane-mid",
+                      depth: 2, role: "leaf", dirty: false,
+                      prId: "pr-leaf", prNumber: 3, prState: "open",
+                      prTitle: "Leaf PR", baseBranch: "feat/mid", headBranch: "feat/leaf",
+                      checksStatus: "passing", reviewStatus: "none"),
+      ],
+      size: 3,
+      prCount: 3
+    )
+
+    let rows = buildStackRows(members: members, stackInfo: stack)
+    XCTAssertEqual(rows.map(\.laneId), ["lane-root", "lane-mid", "lane-leaf"])
+    XCTAssertEqual(rows[0].role, .base)
+    XCTAssertEqual(rows[1].role, .body)
+    XCTAssertEqual(rows[2].role, .head)
+    XCTAssertEqual(rows[0].depth, 0)
+    XCTAssertEqual(rows[1].depth, 1)
+    XCTAssertEqual(rows[2].depth, 2)
+    XCTAssertFalse(rows[0].dirty)
+    XCTAssertTrue(rows[1].dirty)
+    XCTAssertFalse(rows[2].dirty)
+    XCTAssertEqual(rows[0].prId, "pr-root")
+  }
+
+  func testBuildStackRowsFallsBackToPositionDepthWhenSnapshotMissing() {
+    let members: [PrGroupMemberSummary] = [
+      PrGroupMemberSummary(
+        groupId: "g1", groupType: "stack", groupName: nil, targetBranch: "main",
+        prId: "pr-1", laneId: "lane-1", laneName: "one",
+        title: "One", state: "open", githubPrNumber: 1,
+        githubUrl: "https://github.com/o/r/pull/1",
+        baseBranch: "main", headBranch: "feat/1", position: 0
+      ),
+      PrGroupMemberSummary(
+        groupId: "g1", groupType: "stack", groupName: nil, targetBranch: "main",
+        prId: "pr-2", laneId: "lane-2", laneName: "two",
+        title: "Two", state: "open", githubPrNumber: 2,
+        githubUrl: "https://github.com/o/r/pull/2",
+        baseBranch: "feat/1", headBranch: "feat/2", position: 1
+      ),
+    ]
+
+    let rows = buildStackRows(members: members, stackInfo: nil)
+    XCTAssertEqual(rows.count, 2)
+    XCTAssertEqual(rows[0].role, .base)
+    XCTAssertEqual(rows[1].role, .head)
+    XCTAssertFalse(rows[0].dirty)
+    XCTAssertFalse(rows[1].dirty)
+    XCTAssertEqual(rows[0].depth, 0)
+    XCTAssertEqual(rows[1].depth, 1)
+  }
+
   private func makeTemporaryDirectory() -> URL {
     let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
     try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)

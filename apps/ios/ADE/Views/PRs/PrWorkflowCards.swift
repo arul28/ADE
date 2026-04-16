@@ -176,9 +176,16 @@ struct PrMobileWorkflowCardView: View {
   private var queueSection: some View {
     HStack(alignment: .top, spacing: 10) {
       VStack(alignment: .leading, spacing: 4) {
-        Text(card.groupName.nonEmpty ?? "Queue workflow")
-          .font(.headline)
-          .foregroundStyle(ADEColor.textPrimary)
+        HStack(spacing: 6) {
+          Text(card.groupName.nonEmpty ?? "Queue workflow")
+            .font(.headline)
+            .foregroundStyle(ADEColor.textPrimary)
+          // Inline position chip next to the title so users see progress
+          // at a glance instead of after the action buttons.
+          if let position = card.currentPosition, let total = card.totalEntries, total > 0 {
+            ADEStatusPill(text: "\(position + 1)/\(total)", tint: ADEColor.textMuted)
+          }
+        }
         if let targetBranch = card.targetBranch {
           Text("Target: \(targetBranch)")
             .font(.caption.monospaced())
@@ -226,12 +233,6 @@ struct PrMobileWorkflowCardView: View {
         .buttonStyle(.glass)
       }
     }
-
-    if let position = card.currentPosition, let total = card.totalEntries {
-      Text("Position \(position + 1) of \(total)")
-        .font(.caption2.monospaced())
-        .foregroundStyle(ADEColor.textMuted)
-    }
   }
 
   @ViewBuilder
@@ -272,11 +273,20 @@ struct PrMobileWorkflowCardView: View {
         .foregroundStyle(ADEColor.textSecondary)
     }
 
+    // Larger, prominent tap target so users immediately see the PR escape
+    // hatch. Uses the prominent glass button style to separate it from the
+    // passive status pills above.
     if let linkedPrId = card.linkedPrId {
-      Button("Open linked PR") {
+      Button {
         onOpenPr(linkedPrId)
+      } label: {
+        HStack(spacing: 6) {
+          Image(systemName: "arrow.up.right.square.fill")
+          Text("Open linked PR")
+        }
+        .frame(maxWidth: .infinity)
       }
-      .buttonStyle(.glass)
+      .buttonStyle(.glassProminent)
       .tint(ADEColor.accent)
     }
   }
@@ -296,7 +306,10 @@ struct PrMobileWorkflowCardView: View {
       }
       Spacer(minLength: 8)
       if card.conflictPredicted == true {
-        ADEStatusPill(text: "CONFLICT", tint: ADEColor.danger)
+        // Solid red badge — a predicted conflict is a blocker the user
+        // must see before they tap Rebase, so it gets stronger contrast
+        // than the other tinted pills on this card.
+        PrConflictBadge()
       }
     }
 
@@ -343,6 +356,26 @@ private extension Optional where Wrapped == String {
     case .some(let value) where !value.isEmpty: return value
     default: return nil
     }
+  }
+}
+
+/// High-contrast solid badge used when a rebase or integration would
+/// collide. Stronger visual weight than ADEStatusPill (which only tints)
+/// so a predicted conflict can't be glanced past.
+struct PrConflictBadge: View {
+  var text: String = "CONFLICT"
+
+  var body: some View {
+    HStack(spacing: 4) {
+      Image(systemName: "exclamationmark.triangle.fill")
+      Text(text)
+    }
+    .font(.system(.caption2, design: .monospaced).weight(.bold))
+    .padding(.horizontal, 10)
+    .padding(.vertical, 5)
+    .foregroundStyle(Color.white)
+    .background(ADEColor.danger, in: Capsule())
+    .accessibilityLabel("Warning: \(text)")
   }
 }
 

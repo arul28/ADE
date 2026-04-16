@@ -207,21 +207,38 @@ struct CreatePrWizardView: View {
             .adeInsetField()
 
           if !blockedLaneOptions.isEmpty {
-            VStack(alignment: .leading, spacing: 6) {
-              Text("Not eligible")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(ADEColor.textPrimary)
+            VStack(alignment: .leading, spacing: 8) {
+              HStack(spacing: 6) {
+                Image(systemName: "lock.fill")
+                  .font(.caption.weight(.semibold))
+                  .foregroundStyle(ADEColor.warning)
+                Text("Not eligible (\(blockedLaneOptions.count))")
+                  .font(.caption.weight(.semibold))
+                  .foregroundStyle(ADEColor.textPrimary)
+              }
               ForEach(blockedLaneOptions) { entry in
-                VStack(alignment: .leading, spacing: 2) {
-                  Text(entry.laneName)
+                HStack(alignment: .top, spacing: 8) {
+                  Image(systemName: "minus.circle.fill")
                     .font(.caption)
-                    .foregroundStyle(ADEColor.textPrimary)
-                  if let reason = entry.blockedReason, !reason.isEmpty {
-                    Text(reason)
-                      .font(.caption2)
-                      .foregroundStyle(ADEColor.textSecondary)
+                    .foregroundStyle(ADEColor.textMuted)
+                  VStack(alignment: .leading, spacing: 2) {
+                    Text(entry.laneName)
+                      .font(.caption.weight(.semibold))
+                      .foregroundStyle(ADEColor.textPrimary)
+                    if let reason = entry.blockedReason, !reason.isEmpty {
+                      Text(reason)
+                        .font(.caption2)
+                        .foregroundStyle(ADEColor.textSecondary)
+                    }
                   }
+                  Spacer(minLength: 0)
                 }
+                .padding(.vertical, 8)
+                .padding(.horizontal, 10)
+                .background(
+                  RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(ADEColor.warning.opacity(0.08))
+                )
               }
             }
           }
@@ -316,13 +333,21 @@ struct CreatePrLaneOption: Identifiable, Equatable {
 struct PrStepIndicator: View {
   let step: Int
 
-  var body: some View {
-    VStack(alignment: .leading, spacing: 10) {
-      Text("Step \(step) of 3")
-        .font(.caption.weight(.semibold))
-        .foregroundStyle(ADEColor.textSecondary)
+  private let titles = ["Branch", "Details", "Review"]
 
-      HStack(spacing: 8) {
+  var body: some View {
+    VStack(alignment: .leading, spacing: 14) {
+      HStack(alignment: .firstTextBaseline) {
+        Text("Step \(step) of 3")
+          .font(.caption.weight(.semibold))
+          .foregroundStyle(ADEColor.textSecondary)
+        Spacer(minLength: 8)
+        Text(titles[safe: step - 1] ?? "")
+          .font(.subheadline.weight(.semibold))
+          .foregroundStyle(ADEColor.textPrimary)
+      }
+
+      HStack(spacing: 10) {
         ForEach(1...3, id: \.self) { index in
           RoundedRectangle(cornerRadius: 8, style: .continuous)
             .fill(index <= step ? ADEColor.accent : ADEColor.border.opacity(0.35))
@@ -330,15 +355,22 @@ struct PrStepIndicator: View {
         }
       }
 
-      HStack(spacing: 8) {
-        Text("Branch")
-        Text("Details")
-        Text("Review")
+      HStack(spacing: 10) {
+        ForEach(Array(titles.enumerated()), id: \.offset) { index, label in
+          Text(label)
+            .font(.caption.weight(index + 1 == step ? .semibold : .regular))
+            .foregroundStyle(index + 1 <= step ? ADEColor.textPrimary : ADEColor.textSecondary)
+            .frame(maxWidth: .infinity, alignment: .center)
+        }
       }
-      .font(.caption)
-      .foregroundStyle(ADEColor.textSecondary)
     }
     .adeGlassCard(cornerRadius: 18)
+  }
+}
+
+private extension Array {
+  subscript(safe index: Int) -> Element? {
+    indices.contains(index) ? self[index] : nil
   }
 }
 
