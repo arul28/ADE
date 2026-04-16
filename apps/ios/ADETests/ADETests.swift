@@ -2563,6 +2563,122 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(resolved, "apps/ios/ADE/Helpers/WorkView.swift")
   }
 
+  func testWorkFilteredSessionsIncludesTerminalRowsAndMatchesSearchAndLaneFilters() {
+    let chatSession = makeTerminalSessionSummary(
+      id: "chat-1",
+      laneId: "lane-1",
+      laneName: "feature/work",
+      toolType: "codex-chat",
+      title: "Fix Work root"
+    )
+    let terminalSession = makeTerminalSessionSummary(
+      id: "terminal-1",
+      laneId: "lane-2",
+      laneName: "release",
+      toolType: "run-shell",
+      runtimeState: "idle",
+      title: "Deploy logs",
+      lastOutputPreview: "Tail the deploy terminal output"
+    )
+    let chatSummary = makeAgentChatSessionSummary(
+      sessionId: "chat-1",
+      laneId: "lane-1",
+      provider: "codex",
+      model: "gpt-5.4",
+      title: "Fix Work root",
+      status: "active"
+    )
+
+    let filtered = workFilteredSessions(
+      [chatSession, terminalSession],
+      chatSummaries: ["chat-1": chatSummary],
+      archivedSessionIds: [],
+      selectedStatus: .running,
+      selectedLaneId: "lane-2",
+      searchText: "deploy terminal"
+    )
+
+    XCTAssertEqual(filtered.map(\.id), ["terminal-1"])
+  }
+
+  func testWorkFilteredSessionsPrioritizesWaitingBeforeActiveAndEnded() {
+    let waitingChat = makeTerminalSessionSummary(
+      id: "chat-waiting",
+      laneId: "lane-1",
+      laneName: "feature/work",
+      toolType: "codex-chat",
+      title: "Needs approval"
+    )
+    let activeTerminal = makeTerminalSessionSummary(
+      id: "terminal-active",
+      laneId: "lane-1",
+      laneName: "feature/work",
+      toolType: "run-shell",
+      runtimeState: "running",
+      title: "Build logs"
+    )
+    let endedChat = makeTerminalSessionSummary(
+      id: "chat-ended",
+      laneId: "lane-1",
+      laneName: "feature/work",
+      toolType: "claude-chat",
+      runtimeState: "stopped",
+      status: "exited",
+      title: "Wrapped up"
+    )
+    let chatSummaries = [
+      "chat-waiting": makeAgentChatSessionSummary(
+        sessionId: "chat-waiting",
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+        title: "Needs approval",
+        status: "active",
+        awaitingInput: true,
+        lastActivityAt: "2026-03-25T00:00:03.000Z"
+      ),
+      "chat-ended": makeAgentChatSessionSummary(
+        sessionId: "chat-ended",
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+        title: "Wrapped up",
+        status: "completed",
+        lastActivityAt: "2026-03-25T00:00:04.000Z"
+      ),
+    ]
+
+    let filtered = workFilteredSessions(
+      [endedChat, activeTerminal, waitingChat],
+      chatSummaries: chatSummaries,
+      archivedSessionIds: [],
+      selectedStatus: .all,
+      selectedLaneId: "all",
+      searchText: ""
+    )
+
+    XCTAssertEqual(filtered.map(\.id), ["chat-waiting", "terminal-active", "chat-ended"])
+  }
+
+  func testWorkSessionEmptyStateMessagingExplainsSearchAndArchiveFallbacks() {
+    XCTAssertEqual(
+      workSessionEmptyStateTitle(status: .all, searchText: "deploy", hasFilters: true),
+      "No sessions match"
+    )
+    XCTAssertEqual(
+      workSessionEmptyStateMessage(status: .all, searchText: "deploy", hasFilters: true, isLive: false),
+      "Try a different search or clear the current filters."
+    )
+    XCTAssertEqual(
+      workSessionEmptyStateTitle(status: .archived, searchText: "", hasFilters: false),
+      "No archived sessions"
+    )
+    XCTAssertEqual(
+      workSessionEmptyStateMessage(status: .archived, searchText: "", hasFilters: false, isLive: true),
+      "Archived sessions stay here until you restore them."
+    )
+  }
+
   func testADEImageCacheStoresAndRestoresDiskBackedEntries() {
     let directory = makeTemporaryDirectory().appendingPathComponent("image-cache", isDirectory: true)
     let cache = ADEImageCache(cacheDirectory: directory)
@@ -2937,17 +3053,23 @@ final class ADETests: XCTestCase {
   }
 
   private func makeAgentChatSessionSummary(
+    sessionId: String = "chat-1",
+    laneId: String = "lane-1",
+    provider: String = "codex",
+    model: String = "gpt-5.4",
+    title: String? = nil,
     status: String,
-    awaitingInput: Bool? = nil
+    awaitingInput: Bool? = nil,
+    lastActivityAt: String = "2026-03-25T00:00:00.000Z"
   ) -> AgentChatSessionSummary {
     AgentChatSessionSummary(
-      sessionId: "chat-1",
-      laneId: "lane-1",
-      provider: "codex",
-      model: "gpt-5.4",
+      sessionId: sessionId,
+      laneId: laneId,
+      provider: provider,
+      model: model,
       modelId: nil,
       sessionProfile: nil,
-      title: nil,
+      title: title,
       goal: nil,
       reasoningEffort: nil,
       executionMode: nil,
@@ -2972,7 +3094,7 @@ final class ADETests: XCTestCase {
       idleSinceAt: nil,
       startedAt: "2026-03-25T00:00:00.000Z",
       endedAt: nil,
-      lastActivityAt: "2026-03-25T00:00:00.000Z",
+      lastActivityAt: lastActivityAt,
       lastOutputPreview: nil,
       summary: nil,
       awaitingInput: awaitingInput,
@@ -2982,21 +3104,26 @@ final class ADETests: XCTestCase {
   }
 
   private func makeTerminalSessionSummary(
+    id: String = "chat-1",
+    laneId: String = "lane-1",
+    laneName: String = "feature/work",
     toolType: String?,
     runtimeState: String = "running",
-    status: String = "running"
+    status: String = "running",
+    title: String = "Codex chat",
+    lastOutputPreview: String? = nil
   ) -> TerminalSessionSummary {
     TerminalSessionSummary(
-      id: "chat-1",
-      laneId: "lane-1",
-      laneName: "feature/work",
+      id: id,
+      laneId: laneId,
+      laneName: laneName,
       ptyId: nil,
       tracked: true,
       pinned: false,
       manuallyNamed: nil,
       goal: nil,
       toolType: toolType,
-      title: "Codex chat",
+      title: title,
       status: status,
       startedAt: "2026-03-25T00:00:00.000Z",
       endedAt: nil,
@@ -3004,7 +3131,7 @@ final class ADETests: XCTestCase {
       transcriptPath: "",
       headShaStart: nil,
       headShaEnd: nil,
-      lastOutputPreview: nil,
+      lastOutputPreview: lastOutputPreview,
       summary: nil,
       runtimeState: runtimeState,
       resumeCommand: nil,

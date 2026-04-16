@@ -15,6 +15,7 @@
 		28CFE3D489EA1B208D231519 /* SyncService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 66B5024B0A05F3D9754101F1 /* SyncService.swift */; };
 		4DC17C7C8E82D387043B01FD /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 73B17472FAC08845853BC6B4 /* ContentView.swift */; };
 		56223CC3AF5A01B710CDC4CF /* WorkTabView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0C6ECFA9D57E70E57A60E8AB /* WorkTabView.swift */; };
+		B10000000000000000000020 /* WorkBrowserHelpers.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000020 /* WorkBrowserHelpers.swift */; };
 		60F4CDDB763C0A9F0E650B40 /* Foundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 31EC445F22FD38F90C16343E /* Foundation.framework */; };
 		63A9C60B0E0F0E2707634B2E /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 8943C47805A871A4E4A4BF68 /* Assets.xcassets */; };
 		6BDC22C6450AF0B3CBDB2650 /* FilesTabView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4EBFB65019F4C3F8A89428CE /* FilesTabView.swift */; };
@@ -66,6 +67,7 @@
 
 /* Begin PBXFileReference section */
 		0C6ECFA9D57E70E57A60E8AB /* WorkTabView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkTabView.swift; path = ADE/Views/WorkTabView.swift; sourceTree = "<group>"; };
+		A10000000000000000000020 /* WorkBrowserHelpers.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkBrowserHelpers.swift; path = ADE/Views/Work/WorkBrowserHelpers.swift; sourceTree = "<group>"; };
 		14C0DF7FEB4C2EB854BAC888 /* ADETests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ADETests.swift; path = ADETests/ADETests.swift; sourceTree = "<group>"; };
 		27A125DE2C17BA32F9291513 /* ADE.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = ADE.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		2856F8D2F2D630DD985B870A /* DatabaseBootstrap.sql */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text; name = DatabaseBootstrap.sql; path = ADE/Resources/DatabaseBootstrap.sql; sourceTree = "<group>"; };
@@ -187,6 +189,7 @@
 				9270CF8A67F3FA79089F39C1 /* LanesTabView.swift */,
 				5EE4D463D21266B62B422D11 /* PRsTabView.swift */,
 				0C6ECFA9D57E70E57A60E8AB /* WorkTabView.swift */,
+				A10000000000000000000020 /* WorkBrowserHelpers.swift */,
 			);
 			name = Views;
 			sourceTree = "<group>";
@@ -430,6 +433,7 @@
 				E689F42D41A500BB8CA233E4 /* LanesTabView.swift in Sources */,
 				889573D8A5ED468D3BD12894 /* PRsTabView.swift in Sources */,
 				56223CC3AF5A01B710CDC4CF /* WorkTabView.swift in Sources */,
+				B10000000000000000000020 /* WorkBrowserHelpers.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

@@ -4,26 +4,6 @@ import AVKit
 
 private let workDateFormatter = ISO8601DateFormatter()
 
-private enum WorkSessionStatusFilter: String, CaseIterable, Identifiable {
-  case all
-  case needsInput
-  case running
-  case ended
-  case archived
-
-  var id: String { rawValue }
-
-  var title: String {
-    switch self {
-    case .all: return "All"
-    case .needsInput: return "Needs input"
-    case .running: return "Live"
-    case .ended: return "Ended"
-    case .archived: return "Archived"
-    }
-  }
-}
-
 private struct WorkSessionRoute: Hashable {
   let sessionId: String
   var openingPrompt: String? = nil
@@ -68,7 +48,7 @@ struct WorkTabView: View {
   }
 
   private var needsRepairing: Bool {
-    syncService.activeHostProfile == nil && !displaySessions.isEmpty
+    syncService.activeHostProfile == nil && !mergedSessions.isEmpty
   }
 
   private var isLoadingSkeleton: Bool {
@@ -88,45 +68,18 @@ struct WorkTabView: View {
       !sessions.contains(where: { $0.id == draft.id })
     }
     return (sessions + draftValues)
-      .filter { isChatSession($0) }
-      .sorted(by: compareWorkSessionSortOrder)
+      .sorted { compareWorkSessionSortOrder($0, $1, chatSummaries: chatSummaries) }
   }
 
   private var displaySessions: [TerminalSessionSummary] {
-    mergedSessions.filter { session in
-      let isArchived = archivedSessionIds.contains(session.id)
-      let chatStatus = normalizedWorkChatSessionStatus(session: session, summary: chatSummaries[session.id])
-      if selectedStatus != .all {
-        switch selectedStatus {
-        case .needsInput:
-          guard !isArchived && chatStatus == "awaiting-input" else { return false }
-        case .running:
-          guard !isArchived && (chatStatus == "active" || chatStatus == "idle") else { return false }
-        case .ended:
-          guard !isArchived && chatStatus == "ended" else { return false }
-        case .archived:
-          guard isArchived else { return false }
-        case .all:
-          break
-        }
-      }
-      if selectedLaneId != "all" && session.laneId != selectedLaneId {
-        return false
-      }
-      let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-      guard !query.isEmpty else { return true }
-      let haystack = [
-        session.title,
-        session.goal ?? "",
-        session.laneName,
-        session.toolType ?? "",
-        session.lastOutputPreview ?? "",
-        session.summary ?? "",
-        chatSummaries[session.id]?.model ?? "",
-        chatSummaries[session.id]?.provider ?? "",
-      ].joined(separator: " ").lowercased()
-      return haystack.contains(query)
-    }
+    workFilteredSessions(
+      mergedSessions,
+      chatSummaries: chatSummaries,
+      archivedSessionIds: archivedSessionIds,
+      selectedStatus: selectedStatus,
+      selectedLaneId: selectedLaneId,
+      searchText: searchText
+    )
   }
 
   private var needsInputSessions: [TerminalSessionSummary] {
@@ -168,10 +121,14 @@ struct WorkTabView: View {
   }
 
   private var liveChatSessions: [TerminalSessionSummary] {
-    mergedSessions.filter {
-      let status = normalizedWorkChatSessionStatus(session: $0, summary: chatSummaries[$0.id])
-      return status != "ended" && !archivedSessionIds.contains($0.id)
+    mergedSessions.filter { session in
+      let status = normalizedWorkChatSessionStatus(session: session, summary: chatSummaries[session.id])
+      return isChatSession(session) && status != "ended" && !archivedSessionIds.contains(session.id)
     }
+  }
+
+  private var hasActiveFilters: Bool {
+    selectedStatus != .all || selectedLaneId != "all"
   }
 
   private var activityFeed: [WorkAgentActivity] {
@@ -199,6 +156,12 @@ struct WorkTabView: View {
   var body: some View {
     NavigationStack(path: $path) {
       List {
+        if let statusNotice {
+          statusNotice
+            .listRowBackground(Color.clear)
+            .listRowSeparator(.hidden)
+        }
+
         if isLoadingSkeleton {
           ForEach(0..<3, id: \.self) { _ in
             ADECardSkeleton(rows: 3)
@@ -250,10 +213,13 @@ struct WorkTabView: View {
           if displaySessions.isEmpty {
             ADEEmptyStateView(
               symbol: isLive ? "bubble.left.and.bubble.right" : "terminal",
-              title: selectedStatus == .archived ? "No archived sessions" : "No work sessions yet",
-              message: isLive
-                ? "Start a new chat, then filter by lane or status as activity comes in."
-                : "Cached sessions stay visible here. Reconnect to create chats or refresh live agent work."
+              title: workSessionEmptyStateTitle(status: selectedStatus, searchText: searchText, hasFilters: hasActiveFilters),
+              message: workSessionEmptyStateMessage(
+                status: selectedStatus,
+                searchText: searchText,
+                hasFilters: hasActiveFilters,
+                isLive: isLive
+              )
             ) {
               Button("New chat") {
                 newChatPresented = true
@@ -414,7 +380,11 @@ struct WorkTabView: View {
         .environmentObject(syncService)
       }
       .sheet(isPresented: $newChatPresented) {
-        WorkNewChatSheet(lanes: lanes, onRefreshLanes: { await reload(refreshRemote: true) }) { draft in
+        WorkNewChatSheet(
+          lanes: lanes,
+          initialLaneId: selectedLaneId == "all" ? lanes.first?.id : selectedLaneId,
+          onRefreshLanes: { await reload(refreshRemote: true) }
+        ) { draft in
           let sessionId = draft.summary.sessionId
           let openingMessage = draft.initialMessage?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
           optimisticSessions[sessionId] = makeOptimisticSession(for: draft.summary)
@@ -736,36 +706,19 @@ struct WorkTabView: View {
     )
   }
 
-  private func compareWorkSessionSortOrder(_ lhs: TerminalSessionSummary, _ rhs: TerminalSessionSummary) -> Bool {
-    let lhsSummary = chatSummaries[lhs.id]
-    let rhsSummary = chatSummaries[rhs.id]
-    let lhsRank = workChatStatusSortRank(normalizedWorkChatSessionStatus(session: lhs, summary: lhsSummary))
-    let rhsRank = workChatStatusSortRank(normalizedWorkChatSessionStatus(session: rhs, summary: rhsSummary))
-    if lhsRank != rhsRank {
-      return lhsRank < rhsRank
-    }
-
-    let lhsActivity = lhsSummary?.lastActivityAt ?? lhs.startedAt
-    let rhsActivity = rhsSummary?.lastActivityAt ?? rhs.startedAt
-    if lhsActivity != rhsActivity {
-      return lhsActivity > rhsActivity
-    }
-
-    return lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
-  }
-
   private var statusNotice: ADENoticeCard? {
+    let hasCachedSessions = !mergedSessions.isEmpty
     switch workStatus.phase {
     case .disconnected:
       return ADENoticeCard(
-        title: displaySessions.isEmpty ? "Host disconnected" : "Showing cached sessions",
-        message: displaySessions.isEmpty
-          ? (syncService.activeHostProfile == nil
+        title: hasCachedSessions ? "Showing cached work" : "Host disconnected",
+        message: hasCachedSessions
+          ? (needsRepairing
+              ? "Cached chats and terminal sessions stay readable, but the previous host trust was cleared. Pair again before trusting active work state."
+              : "Cached chats and terminal sessions stay readable. Reconnect to stream output, refresh status, or start a new chat.")
+          : (syncService.activeHostProfile == nil
               ? "Pair with a host to create chats, stream tool activity, and fetch proof artifacts."
-              : "Reconnect to create chats, stream transcripts, and refresh agent activity.")
-          : (needsRepairing
-              ? "Cached work is still visible, but the previous host trust was cleared. Pair again before trusting active session state."
-              : "Cached sessions stay readable. Reconnect to stream new output, fetch artifacts, and create chats."),
+              : "Reconnect to create chats, stream transcripts, and refresh agent activity."),
         icon: "terminal",
         tint: ADEColor.warning,
         actionTitle: syncService.activeHostProfile == nil ? (needsRepairing ? "Pair again" : "Pair with host") : "Reconnect",
@@ -1075,8 +1028,8 @@ private struct WorkSessionRow: View {
                 if let chatSummary {
                   WorkTag(text: providerLabel(chatSummary.provider), icon: providerIcon(chatSummary.provider), tint: rowTint)
                   WorkTag(text: chatSummary.model, icon: "cpu", tint: ADEColor.textSecondary)
-                } else if let toolType = session.toolType {
-                  WorkTag(text: toolType.replacingOccurrences(of: "-", with: " "), icon: "terminal", tint: ADEColor.textSecondary)
+                } else if session.toolType != nil {
+                  WorkTag(text: workSessionRuntimeLabel(session: session), icon: isChatSession(session) ? "bubble.left.and.bubble.right.fill" : "terminal.fill", tint: ADEColor.textSecondary)
                 }
               }
             }
@@ -1090,7 +1043,7 @@ private struct WorkSessionRow: View {
               tint: isArchived ? ADEColor.warning : rowTint
             )
             .adeMatchedGeometry(id: isSelectedTransitionSource ? "work-status-\(session.id)" : nil, in: transitionNamespace)
-            Text(relativeTimestamp(chatSummary?.lastActivityAt ?? session.startedAt))
+            Text(relativeTimestamp(workSessionActivityTimestamp(session: session, summary: chatSummary)))
               .font(.caption2)
               .foregroundStyle(ADEColor.textMuted)
             Text(formattedSessionDuration(startedAt: session.startedAt, endedAt: session.endedAt))
@@ -1195,6 +1148,7 @@ private struct WorkNewChatSheet: View {
   @EnvironmentObject private var syncService: SyncService
 
   let lanes: [LaneSummary]
+  let initialLaneId: String?
   let onRefreshLanes: @MainActor () async -> Void
   let onCreated: @MainActor (WorkDraftChatSession) async -> Void
 
@@ -1566,7 +1520,12 @@ private struct WorkNewChatSheet: View {
       }
       .onAppear {
         if selectedLaneId.isEmpty {
-          selectedLaneId = lanes.first?.id ?? ""
+          if let initialLaneId,
+             lanes.contains(where: { $0.id == initialLaneId }) {
+            selectedLaneId = initialLaneId
+          } else {
+            selectedLaneId = lanes.first?.id ?? ""
+          }
         }
       }
     }
