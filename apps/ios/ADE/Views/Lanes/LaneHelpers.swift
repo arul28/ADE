@@ -65,10 +65,6 @@ private func parseLaneTimestamp(_ rawValue: String) -> Date? {
 func laneListSortSnapshots(_ lhs: LaneListSnapshot, _ rhs: LaneListSnapshot) -> Bool {
   if lhs.lane.laneType == "primary" && rhs.lane.laneType != "primary" { return true }
   if lhs.lane.laneType != "primary" && rhs.lane.laneType == "primary" { return false }
-  let lhsAwaiting = lhs.runtime.bucket == "awaiting-input"
-  let rhsAwaiting = rhs.runtime.bucket == "awaiting-input"
-  if lhsAwaiting && !rhsAwaiting { return true }
-  if !lhsAwaiting && rhsAwaiting { return false }
   if let ld = parseLaneTimestamp(lhs.lane.createdAt), let rd = parseLaneTimestamp(rhs.lane.createdAt), ld != rd {
     return ld > rd
   }

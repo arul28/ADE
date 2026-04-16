@@ -48,7 +48,6 @@ xcuserdata/
 apps/ios/.dry-run-derived-data/
 
 # Tool configs (personal)
-.factory/
 .codex/
 .pnpm-store/
 /apps/desktop/.ade

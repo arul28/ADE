@@ -1045,6 +1045,65 @@ final class DatabaseService {
   }
 
   func fetchPullRequestListItems(forLane laneId: String?) -> [PullRequestListItem] {
+    let hasPrGroupContext = hasTable(named: "pr_group_members")
+      && hasTable(named: "pr_groups")
+      && tableHasColumn(tableName: "pr_group_members", columnName: "group_id")
+      && tableHasColumn(tableName: "pr_group_members", columnName: "pr_id")
+      && tableHasColumn(tableName: "pr_group_members", columnName: "position")
+      && tableHasColumn(tableName: "pr_groups", columnName: "id")
+      && tableHasColumn(tableName: "pr_groups", columnName: "group_type")
+      && tableHasColumn(tableName: "pr_groups", columnName: "name")
+
+    let hasIntegrationWorkflowContext = hasTable(named: "integration_proposals")
+      && tableHasColumn(tableName: "integration_proposals", columnName: "linked_pr_id")
+      && tableHasColumn(tableName: "integration_proposals", columnName: "workflow_display_state")
+      && tableHasColumn(tableName: "integration_proposals", columnName: "cleanup_state")
+      && tableHasColumn(tableName: "integration_proposals", columnName: "linked_group_id")
+
+    let prGroupSelect = hasPrGroupContext
+      ? """
+             gm.group_id,
+             g.group_type,
+             g.name,
+             gm.position,
+             coalesce(group_counts.member_count, 0),
+      """
+      : """
+             null as group_id,
+             null as group_type,
+             null as group_name,
+             null as position,
+             0 as member_count,
+      """
+
+    let integrationSelect = hasIntegrationWorkflowContext
+      ? """
+             ip.workflow_display_state,
+             ip.cleanup_state,
+             ip.linked_group_id
+      """
+      : """
+             null as workflow_display_state,
+             null as cleanup_state,
+             null as linked_group_id
+      """
+
+    let prGroupJoins = hasPrGroupContext
+      ? """
+        left join pr_group_members gm on gm.pr_id = pr.id
+        left join pr_groups g on g.id = gm.group_id
+        left join (
+          select group_id, count(*) as member_count
+            from pr_group_members
+           group by group_id
+        ) group_counts on group_counts.group_id = gm.group_id
+      """
+      : ""
+
+    let integrationJoin = hasIntegrationWorkflowContext
+      ? "left join integration_proposals ip on ip.linked_pr_id = pr.id"
+      : ""
+
     let sql = """
       select pr.id,
              pr.lane_id,
@@ -1065,24 +1124,12 @@ final class DatabaseService {
              pr.last_synced_at,
              pr.created_at,
              pr.updated_at,
-             gm.group_id,
-             g.group_type,
-             g.name,
-             gm.position,
-             coalesce(group_counts.member_count, 0),
-             ip.workflow_display_state,
-             ip.cleanup_state,
-             ip.linked_group_id
+    \(prGroupSelect)
+    \(integrationSelect)
         from pull_requests pr
         left join lanes l on l.id = pr.lane_id
-        left join pr_group_members gm on gm.pr_id = pr.id
-        left join pr_groups g on g.id = gm.group_id
-        left join (
-          select group_id, count(*) as member_count
-            from pr_group_members
-           group by group_id
-        ) group_counts on group_counts.group_id = gm.group_id
-        left join integration_proposals ip on ip.linked_pr_id = pr.id
+    \(prGroupJoins)
+    \(integrationJoin)
     """
     let filteredSQL: String
     if laneId == nil {
