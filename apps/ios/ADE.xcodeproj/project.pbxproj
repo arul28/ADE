@@ -16,6 +16,29 @@
 		4DC17C7C8E82D387043B01FD /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 73B17472FAC08845853BC6B4 /* ContentView.swift */; };
 		56223CC3AF5A01B710CDC4CF /* WorkTabView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0C6ECFA9D57E70E57A60E8AB /* WorkTabView.swift */; };
 		B10000000000000000000020 /* WorkBrowserHelpers.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000020 /* WorkBrowserHelpers.swift */; };
+		E10000000000000000000022 /* WorkRootScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000022 /* WorkRootScreen.swift */; };
+		E10000000000000000000023 /* WorkRootScreen+Actions.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000023 /* WorkRootScreen+Actions.swift */; };
+		E10000000000000000000024 /* WorkRootComponents.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000024 /* WorkRootComponents.swift */; };
+		E10000000000000000000025 /* WorkNewChatSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000025 /* WorkNewChatSheet.swift */; };
+		E10000000000000000000026 /* WorkSessionSettingsSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000026 /* WorkSessionSettingsSheet.swift */; };
+		E10000000000000000000027 /* WorkSessionSettingsSheet+Actions.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000027 /* WorkSessionSettingsSheet+Actions.swift */; };
+		E10000000000000000000028 /* WorkSessionDestinationView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000028 /* WorkSessionDestinationView.swift */; };
+		E10000000000000000000029 /* WorkSessionDestinationView+Actions.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000029 /* WorkSessionDestinationView+Actions.swift */; };
+		E1000000000000000000002A /* WorkChatSessionView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1000000000000000000002A /* WorkChatSessionView.swift */; };
+		E1000000000000000000002B /* WorkChatSessionView+Actions.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1000000000000000000002B /* WorkChatSessionView+Actions.swift */; };
+		E1000000000000000000002C /* WorkChatHeaderAndMessageViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1000000000000000000002C /* WorkChatHeaderAndMessageViews.swift */; };
+		E1000000000000000000002D /* WorkChatRichCardViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1000000000000000000002D /* WorkChatRichCardViews.swift */; };
+		E1000000000000000000002E /* WorkChatComposerAndInputViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1000000000000000000002E /* WorkChatComposerAndInputViews.swift */; };
+		E1000000000000000000002F /* WorkArtifactTerminalViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1000000000000000000002F /* WorkArtifactTerminalViews.swift */; };
+		E10000000000000000000030 /* WorkMarkdownViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000030 /* WorkMarkdownViews.swift */; };
+		E10000000000000000000031 /* WorkModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000031 /* WorkModels.swift */; };
+		E10000000000000000000032 /* WorkTranscriptParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000032 /* WorkTranscriptParser.swift */; };
+		E10000000000000000000033 /* WorkNavigationAndTranscriptHelpers.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000033 /* WorkNavigationAndTranscriptHelpers.swift */; };
+		E10000000000000000000034 /* WorkMarkdownParsing.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000034 /* WorkMarkdownParsing.swift */; };
+		E10000000000000000000035 /* WorkTimelineHelpers.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000035 /* WorkTimelineHelpers.swift */; };
+		E10000000000000000000036 /* WorkErrorAndMessageHelpers.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000036 /* WorkErrorAndMessageHelpers.swift */; };
+		E10000000000000000000037 /* WorkEventMapping.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000037 /* WorkEventMapping.swift */; };
+		E10000000000000000000038 /* WorkStatusAndFormattingHelpers.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000038 /* WorkStatusAndFormattingHelpers.swift */; };
 		60F4CDDB763C0A9F0E650B40 /* Foundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 31EC445F22FD38F90C16343E /* Foundation.framework */; };
 		63A9C60B0E0F0E2707634B2E /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 8943C47805A871A4E4A4BF68 /* Assets.xcassets */; };
 		6BDC22C6450AF0B3CBDB2650 /* FilesTabView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4EBFB65019F4C3F8A89428CE /* FilesTabView.swift */; };
@@ -68,6 +91,29 @@
 /* Begin PBXFileReference section */
 		0C6ECFA9D57E70E57A60E8AB /* WorkTabView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkTabView.swift; path = ADE/Views/WorkTabView.swift; sourceTree = "<group>"; };
 		A10000000000000000000020 /* WorkBrowserHelpers.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkBrowserHelpers.swift; path = ADE/Views/Work/WorkBrowserHelpers.swift; sourceTree = "<group>"; };
+		D10000000000000000000022 /* WorkRootScreen.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkRootScreen.swift; path = ADE/Views/Work/WorkRootScreen.swift; sourceTree = "<group>"; };
+		D10000000000000000000023 /* WorkRootScreen+Actions.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = "WorkRootScreen+Actions.swift"; path = "ADE/Views/Work/WorkRootScreen+Actions.swift"; sourceTree = "<group>"; };
+		D10000000000000000000024 /* WorkRootComponents.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkRootComponents.swift; path = ADE/Views/Work/WorkRootComponents.swift; sourceTree = "<group>"; };
+		D10000000000000000000025 /* WorkNewChatSheet.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkNewChatSheet.swift; path = ADE/Views/Work/WorkNewChatSheet.swift; sourceTree = "<group>"; };
+		D10000000000000000000026 /* WorkSessionSettingsSheet.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkSessionSettingsSheet.swift; path = ADE/Views/Work/WorkSessionSettingsSheet.swift; sourceTree = "<group>"; };
+		D10000000000000000000027 /* WorkSessionSettingsSheet+Actions.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = "WorkSessionSettingsSheet+Actions.swift"; path = "ADE/Views/Work/WorkSessionSettingsSheet+Actions.swift"; sourceTree = "<group>"; };
+		D10000000000000000000028 /* WorkSessionDestinationView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkSessionDestinationView.swift; path = ADE/Views/Work/WorkSessionDestinationView.swift; sourceTree = "<group>"; };
+		D10000000000000000000029 /* WorkSessionDestinationView+Actions.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = "WorkSessionDestinationView+Actions.swift"; path = "ADE/Views/Work/WorkSessionDestinationView+Actions.swift"; sourceTree = "<group>"; };
+		D1000000000000000000002A /* WorkChatSessionView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkChatSessionView.swift; path = ADE/Views/Work/WorkChatSessionView.swift; sourceTree = "<group>"; };
+		D1000000000000000000002B /* WorkChatSessionView+Actions.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = "WorkChatSessionView+Actions.swift"; path = "ADE/Views/Work/WorkChatSessionView+Actions.swift"; sourceTree = "<group>"; };
+		D1000000000000000000002C /* WorkChatHeaderAndMessageViews.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkChatHeaderAndMessageViews.swift; path = ADE/Views/Work/WorkChatHeaderAndMessageViews.swift; sourceTree = "<group>"; };
+		D1000000000000000000002D /* WorkChatRichCardViews.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkChatRichCardViews.swift; path = ADE/Views/Work/WorkChatRichCardViews.swift; sourceTree = "<group>"; };
+		D1000000000000000000002E /* WorkChatComposerAndInputViews.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkChatComposerAndInputViews.swift; path = ADE/Views/Work/WorkChatComposerAndInputViews.swift; sourceTree = "<group>"; };
+		D1000000000000000000002F /* WorkArtifactTerminalViews.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkArtifactTerminalViews.swift; path = ADE/Views/Work/WorkArtifactTerminalViews.swift; sourceTree = "<group>"; };
+		D10000000000000000000030 /* WorkMarkdownViews.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkMarkdownViews.swift; path = ADE/Views/Work/WorkMarkdownViews.swift; sourceTree = "<group>"; };
+		D10000000000000000000031 /* WorkModels.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkModels.swift; path = ADE/Views/Work/WorkModels.swift; sourceTree = "<group>"; };
+		D10000000000000000000032 /* WorkTranscriptParser.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkTranscriptParser.swift; path = ADE/Views/Work/WorkTranscriptParser.swift; sourceTree = "<group>"; };
+		D10000000000000000000033 /* WorkNavigationAndTranscriptHelpers.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkNavigationAndTranscriptHelpers.swift; path = ADE/Views/Work/WorkNavigationAndTranscriptHelpers.swift; sourceTree = "<group>"; };
+		D10000000000000000000034 /* WorkMarkdownParsing.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkMarkdownParsing.swift; path = ADE/Views/Work/WorkMarkdownParsing.swift; sourceTree = "<group>"; };
+		D10000000000000000000035 /* WorkTimelineHelpers.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkTimelineHelpers.swift; path = ADE/Views/Work/WorkTimelineHelpers.swift; sourceTree = "<group>"; };
+		D10000000000000000000036 /* WorkErrorAndMessageHelpers.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkErrorAndMessageHelpers.swift; path = ADE/Views/Work/WorkErrorAndMessageHelpers.swift; sourceTree = "<group>"; };
+		D10000000000000000000037 /* WorkEventMapping.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkEventMapping.swift; path = ADE/Views/Work/WorkEventMapping.swift; sourceTree = "<group>"; };
+		D10000000000000000000038 /* WorkStatusAndFormattingHelpers.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkStatusAndFormattingHelpers.swift; path = ADE/Views/Work/WorkStatusAndFormattingHelpers.swift; sourceTree = "<group>"; };
 		14C0DF7FEB4C2EB854BAC888 /* ADETests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ADETests.swift; path = ADETests/ADETests.swift; sourceTree = "<group>"; };
 		27A125DE2C17BA32F9291513 /* ADE.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = ADE.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		2856F8D2F2D630DD985B870A /* DatabaseBootstrap.sql */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text; name = DatabaseBootstrap.sql; path = ADE/Resources/DatabaseBootstrap.sql; sourceTree = "<group>"; };
@@ -184,14 +230,45 @@
 			children = (
 				02B9E655310A24835B5CFC3B /* Components */,
 				A10000000000000000000001 /* Lanes */,
+				D10000000000000000000021 /* Work */,
 				A10000000000000000000015 /* Settings */,
 				4EBFB65019F4C3F8A89428CE /* FilesTabView.swift */,
 				9270CF8A67F3FA79089F39C1 /* LanesTabView.swift */,
 				5EE4D463D21266B62B422D11 /* PRsTabView.swift */,
-				0C6ECFA9D57E70E57A60E8AB /* WorkTabView.swift */,
-				A10000000000000000000020 /* WorkBrowserHelpers.swift */,
 			);
 			name = Views;
+			sourceTree = "<group>";
+		};
+		D10000000000000000000021 /* Work */ = {
+			isa = PBXGroup;
+			children = (
+				0C6ECFA9D57E70E57A60E8AB /* WorkTabView.swift */,
+				A10000000000000000000020 /* WorkBrowserHelpers.swift */,
+				D10000000000000000000022 /* WorkRootScreen.swift */,
+				D10000000000000000000023 /* WorkRootScreen+Actions.swift */,
+				D10000000000000000000024 /* WorkRootComponents.swift */,
+				D10000000000000000000025 /* WorkNewChatSheet.swift */,
+				D10000000000000000000026 /* WorkSessionSettingsSheet.swift */,
+				D10000000000000000000027 /* WorkSessionSettingsSheet+Actions.swift */,
+				D10000000000000000000028 /* WorkSessionDestinationView.swift */,
+				D10000000000000000000029 /* WorkSessionDestinationView+Actions.swift */,
+				D1000000000000000000002A /* WorkChatSessionView.swift */,
+				D1000000000000000000002B /* WorkChatSessionView+Actions.swift */,
+				D1000000000000000000002C /* WorkChatHeaderAndMessageViews.swift */,
+				D1000000000000000000002D /* WorkChatRichCardViews.swift */,
+				D1000000000000000000002E /* WorkChatComposerAndInputViews.swift */,
+				D1000000000000000000002F /* WorkArtifactTerminalViews.swift */,
+				D10000000000000000000030 /* WorkMarkdownViews.swift */,
+				D10000000000000000000031 /* WorkModels.swift */,
+				D10000000000000000000032 /* WorkTranscriptParser.swift */,
+				D10000000000000000000033 /* WorkNavigationAndTranscriptHelpers.swift */,
+				D10000000000000000000034 /* WorkMarkdownParsing.swift */,
+				D10000000000000000000035 /* WorkTimelineHelpers.swift */,
+				D10000000000000000000036 /* WorkErrorAndMessageHelpers.swift */,
+				D10000000000000000000037 /* WorkEventMapping.swift */,
+				D10000000000000000000038 /* WorkStatusAndFormattingHelpers.swift */,
+			);
+			name = Work;
 			sourceTree = "<group>";
 		};
 		A10000000000000000000015 /* Settings */ = {
@@ -434,6 +511,29 @@
 				889573D8A5ED468D3BD12894 /* PRsTabView.swift in Sources */,
 				56223CC3AF5A01B710CDC4CF /* WorkTabView.swift in Sources */,
 				B10000000000000000000020 /* WorkBrowserHelpers.swift in Sources */,
+				E10000000000000000000022 /* WorkRootScreen.swift in Sources */,
+				E10000000000000000000023 /* WorkRootScreen+Actions.swift in Sources */,
+				E10000000000000000000024 /* WorkRootComponents.swift in Sources */,
+				E10000000000000000000025 /* WorkNewChatSheet.swift in Sources */,
+				E10000000000000000000026 /* WorkSessionSettingsSheet.swift in Sources */,
+				E10000000000000000000027 /* WorkSessionSettingsSheet+Actions.swift in Sources */,
+				E10000000000000000000028 /* WorkSessionDestinationView.swift in Sources */,
+				E10000000000000000000029 /* WorkSessionDestinationView+Actions.swift in Sources */,
+				E1000000000000000000002A /* WorkChatSessionView.swift in Sources */,
+				E1000000000000000000002B /* WorkChatSessionView+Actions.swift in Sources */,
+				E1000000000000000000002C /* WorkChatHeaderAndMessageViews.swift in Sources */,
+				E1000000000000000000002D /* WorkChatRichCardViews.swift in Sources */,
+				E1000000000000000000002E /* WorkChatComposerAndInputViews.swift in Sources */,
+				E1000000000000000000002F /* WorkArtifactTerminalViews.swift in Sources */,
+				E10000000000000000000030 /* WorkMarkdownViews.swift in Sources */,
+				E10000000000000000000031 /* WorkModels.swift in Sources */,
+				E10000000000000000000032 /* WorkTranscriptParser.swift in Sources */,
+				E10000000000000000000033 /* WorkNavigationAndTranscriptHelpers.swift in Sources */,
+				E10000000000000000000034 /* WorkMarkdownParsing.swift in Sources */,
+				E10000000000000000000035 /* WorkTimelineHelpers.swift in Sources */,
+				E10000000000000000000036 /* WorkErrorAndMessageHelpers.swift in Sources */,
+				E10000000000000000000037 /* WorkEventMapping.swift in Sources */,
+				E10000000000000000000038 /* WorkStatusAndFormattingHelpers.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
