@@ -150,8 +150,26 @@ func splitMarkdownTableRow(_ row: String) -> [String] {
 }
 
 func markdownAttributedString(_ text: String) -> AttributedString {
-  if let attributed = try? AttributedString(markdown: text) {
-    return attributed
+  // Preserve line breaks so multi-line paragraphs render correctly — the
+  // default `AttributedString(markdown:)` initializer collapses them.
+  let options = AttributedString.MarkdownParsingOptions(
+    interpretedSyntax: .inlineOnlyPreservingWhitespace
+  )
+  guard var attributed = try? AttributedString(markdown: text, options: options) else {
+    return AttributedString(text)
   }
-  return AttributedString(text)
+
+  // Give inline code runs the desktop "pill" look: tinted background,
+  // monospaced font, and a slight accent on the foreground color so
+  // identifiers / branch names / file paths visually pop from prose.
+  for run in attributed.runs {
+    let intent = run.inlinePresentationIntent ?? []
+    guard intent.contains(.code) else { continue }
+    let range = run.range
+    attributed[range].backgroundColor = ADEColor.accent.opacity(0.14)
+    attributed[range].foregroundColor = ADEColor.accent
+    attributed[range].font = Font.system(.caption, design: .monospaced).weight(.semibold)
+  }
+
+  return attributed
 }

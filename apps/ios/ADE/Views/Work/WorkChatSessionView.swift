@@ -103,6 +103,13 @@ struct WorkChatSessionView: View {
   }
 
   var canCompose: Bool {
+    // Typing is always allowed so users can draft a message before hitting
+    // Resume. Only Send is gated via `canSend`; the feedback line below the
+    // composer explains why send is disabled.
+    isLive && !sending
+  }
+
+  var canSend: Bool {
     isLive && !sending && sessionStatus != "ended"
   }
 
@@ -358,17 +365,17 @@ struct WorkChatSessionView: View {
             } label: {
               Image(systemName: sending ? "ellipsis.circle" : "paperplane.fill")
                 .font(.system(size: 16, weight: .semibold))
-                .foregroundStyle(canCompose && !composer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? Color.white : ADEColor.textMuted)
+                .foregroundStyle(canSend && !composer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? Color.white : ADEColor.textMuted)
                 .frame(width: 36, height: 36)
                 .background(
-                  canCompose && !composer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                  canSend && !composer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                     ? ADEColor.accent
                     : ADEColor.surfaceBackground.opacity(0.55),
                   in: Circle()
                 )
             }
             .accessibilityLabel(sending ? "Sending message" : "Send message")
-            .disabled(!canCompose || composer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            .disabled(!canSend || composer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
           }
         }
         .padding(.horizontal, 12)
