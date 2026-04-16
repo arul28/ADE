@@ -419,13 +419,11 @@ struct WorkChatSessionView: View {
           )
         }
 
-        composerCard(proxy: proxy)
-
         if let composerFeedback {
           Text(composerFeedback)
             .font(.caption2)
             .foregroundStyle(sessionStatus == "awaiting-input" ? ADEColor.warning : ADEColor.textMuted)
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .center)
             .padding(.horizontal, sessionStatus == "awaiting-input" ? 10 : 0)
             .padding(.vertical, sessionStatus == "awaiting-input" ? 7 : 0)
             .background(
@@ -437,10 +435,12 @@ struct WorkChatSessionView: View {
               }
             )
         }
+
+        composerCard(proxy: proxy)
       }
       .padding(.horizontal, 16)
       .padding(.top, 8)
-      .padding(.bottom, 4)
+      .padding(.bottom, 0)
     )
   }
 
