@@ -280,56 +280,11 @@ struct WorkChatSessionView: View {
   func composerInset(proxy: ScrollViewProxy) -> AnyView {
     AnyView(
       VStack(spacing: 10) {
-        HStack(spacing: 8) {
-          ADEStatusPill(
-            text: isLive ? sessionStatusLabel(for: sessionStatus) : "OFFLINE",
-            tint: isLive ? workChatStatusTint(sessionStatus) : ADEColor.warning
-          )
-
-          if sessionStatus == "active" && isLive {
-            ProgressView()
-              .controlSize(.small)
-              .tint(ADEColor.accent)
-          }
-
-          Spacer(minLength: 0)
-
-          if sessionStatus == "active" && isLive {
-            Button {
-              Task { await runSessionAction(onInterrupt) }
-            } label: {
-              Label("Stop", systemImage: "stop.fill")
-                .labelStyle(.iconOnly)
-                .frame(width: 32, height: 32)
-            }
-            .buttonStyle(.glass)
-            .tint(ADEColor.warning)
-            .disabled(actionInFlight || sending)
-            .accessibilityLabel("Interrupt chat")
-          } else if (sessionStatus == "idle" || sessionStatus == "ended") && isLive {
-            Button {
-              Task { await runSessionAction(onResume) }
-            } label: {
-              Label("Resume", systemImage: "play.fill")
-                .labelStyle(.iconOnly)
-                .frame(width: 32, height: 32)
-            }
-            .buttonStyle(.glass)
-            .tint(ADEColor.accent)
-            .disabled(actionInFlight || sending)
-            .accessibilityLabel("Resume chat")
-          }
-        }
-
-        WorkComposerChipStrip(
-          chatSummary: chatSummary,
-          queuedSteerCount: pendingSteers.count,
-          pendingInputCount: pendingInputs.count,
-          onOpenModelPicker: chatSummary == nil ? nil : { modelPickerPresented = true },
-          onSelectRuntimeMode: chatSummary == nil ? nil : { mode in
-            Task { await onSelectRuntimeMode(mode) }
-          }
-        )
+        // The redundant ENDED/RUNNING status pill + inline play/stop button
+        // row has been retired. The session control bar above the transcript
+        // already carries the primary Resume/Interrupt CTA, and the
+        // "Resume this chat before sending another message." feedback line
+        // below the text field communicates status in prose.
 
         if let primary = primaryPendingInput {
           let overflow = max(pendingInputs.count - 1, 0)
@@ -372,30 +327,57 @@ struct WorkChatSessionView: View {
           )
         }
 
-        HStack(alignment: .bottom, spacing: 10) {
-          TextField("Send a message", text: $composer, axis: .vertical)
+        VStack(alignment: .leading, spacing: 8) {
+          TextField("Type to vibecode…", text: $composer, axis: .vertical)
             .textFieldStyle(.plain)
             .lineLimit(1...6)
-            .adeInsetField(cornerRadius: 14, padding: 12)
+            .font(.body)
+            .foregroundStyle(ADEColor.textPrimary)
             .disabled(!canCompose)
 
-          Button {
-            Task {
-              await onSend()
-              withAnimation(ADEMotion.quick(reduceMotion: transitionNamespace == nil)) {
-                proxy.scrollTo("chat-end", anchor: .bottom)
+          HStack(alignment: .center, spacing: 8) {
+            WorkComposerChipStrip(
+              chatSummary: chatSummary,
+              queuedSteerCount: pendingSteers.count,
+              pendingInputCount: pendingInputs.count,
+              onOpenModelPicker: chatSummary == nil ? nil : { modelPickerPresented = true },
+              onSelectRuntimeMode: chatSummary == nil ? nil : { mode in
+                Task { await onSelectRuntimeMode(mode) }
               }
+            )
+
+            Spacer(minLength: 0)
+
+            Button {
+              Task {
+                await onSend()
+                withAnimation(ADEMotion.quick(reduceMotion: transitionNamespace == nil)) {
+                  proxy.scrollTo("chat-end", anchor: .bottom)
+                }
+              }
+            } label: {
+              Image(systemName: sending ? "ellipsis.circle" : "paperplane.fill")
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundStyle(canCompose && !composer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? Color.white : ADEColor.textMuted)
+                .frame(width: 36, height: 36)
+                .background(
+                  canCompose && !composer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    ? ADEColor.accent
+                    : ADEColor.surfaceBackground.opacity(0.55),
+                  in: Circle()
+                )
             }
-          } label: {
-            Image(systemName: sending ? "ellipsis.circle" : "paperplane.fill")
-              .font(.system(size: 18, weight: .semibold))
-              .foregroundStyle(ADEColor.accent)
-              .frame(width: 44, height: 44)
-              .background(ADEColor.accent.opacity(0.12), in: Circle())
+            .accessibilityLabel(sending ? "Sending message" : "Send message")
+            .disabled(!canCompose || composer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
           }
-          .accessibilityLabel(sending ? "Sending message" : "Send message")
-          .disabled(!canCompose || composer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
         }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(ADEColor.recessedBackground.opacity(0.6), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .overlay(
+          RoundedRectangle(cornerRadius: 18, style: .continuous)
+            .stroke(ADEColor.border.opacity(0.22), lineWidth: 0.6)
+        )
 
         if let composerFeedback {
           Text(composerFeedback)
