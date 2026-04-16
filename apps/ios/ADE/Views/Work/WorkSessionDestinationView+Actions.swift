@@ -173,8 +173,8 @@ extension WorkSessionDestinationView {
 
     do {
       let workspaces = try await syncService.listWorkspaces()
-      guard let workspace = workspaces.first(where: { $0.laneId == session.laneId }) ?? workspaces.first else {
-        errorMessage = "No Files workspace is available for this lane yet."
+      guard let workspace = workFilesWorkspace(for: session.laneId, in: workspaces) else {
+        errorMessage = "This lane does not have a matching Files workspace on this phone yet. Refresh Files and try again."
         return
       }
 

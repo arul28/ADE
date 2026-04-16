@@ -430,6 +430,34 @@ extension LanesTabView {
   }
 
   @MainActor
+  func handleRequestedLaneNavigation() async {
+    guard let request = syncService.requestedLaneNavigation else { return }
+
+    var snapshot = laneSnapshots.first(where: { $0.lane.id == request.laneId })
+    if snapshot == nil {
+      await reload(refreshRemote: canRunLiveActions)
+      snapshot = laneSnapshots.first(where: { $0.lane.id == request.laneId })
+    }
+
+    guard let snapshot else {
+      errorMessage = "The requested lane is not cached on this phone yet. Refresh Lanes and try again."
+      syncService.requestedLaneNavigation = nil
+      return
+    }
+
+    if !openLaneIds.contains(request.laneId) {
+      openLaneIds.insert(request.laneId, at: 0)
+    }
+    selectedLaneTransitionId = request.laneId
+    detailSheetTarget = LaneDetailSheetTarget(
+      laneId: request.laneId,
+      snapshot: snapshot,
+      initialSection: .git
+    )
+    syncService.requestedLaneNavigation = nil
+  }
+
+  @MainActor
   func refreshFromPullGesture() async {
     await reload(refreshRemote: true)
     if errorMessage == nil {

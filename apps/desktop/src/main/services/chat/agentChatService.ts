@@ -254,6 +254,7 @@ type PersistedChatState = {
   selectedExecutionLaneId?: string | null;
   lastLaneDirectiveKey?: string | null;
   manuallyNamed?: boolean;
+  awaitingInput?: boolean;
   requestedCwd?: string | null;
   idleSinceAt?: string | null;
   /** Persisted "Allow for Session" tool approval overrides (Claude runtime). */
@@ -4951,6 +4952,7 @@ export function createAgentChatService(args: {
           const trimmedTitle = String(sessionService.get(managed.session.id)?.title || "").trim();
           return trimmedTitle.length > 0 && !DEFAULT_SESSION_TITLES.has(trimmedTitle);
         })(),
+      ...(hasLivePendingInput(managed) ? { awaitingInput: true } : {}),
       ...(managed.session.requestedCwd != null && String(managed.session.requestedCwd).trim().length
         ? { requestedCwd: String(managed.session.requestedCwd).trim() }
         : {}),
@@ -5087,6 +5089,7 @@ export function createAgentChatService(args: {
           ? { lastLaneDirectiveKey: record.lastLaneDirectiveKey.trim() }
           : {}),
         ...(record.manuallyNamed === true ? { manuallyNamed: true } : {}),
+        ...(record.awaitingInput === true ? { awaitingInput: true } : {}),
         ...(typeof record.requestedCwd === "string" && record.requestedCwd.trim().length
           ? { requestedCwd: record.requestedCwd.trim() }
           : {}),
@@ -5483,6 +5486,7 @@ export function createAgentChatService(args: {
       },
       turnId: request.turnId ?? undefined,
     });
+    persistChatState(managed);
   };
 
   const emitPendingInputResolved = (
@@ -5504,6 +5508,7 @@ export function createAgentChatService(args: {
             : "accepted",
       ...(typeof args.turnId === "string" && args.turnId.trim().length ? { turnId: args.turnId.trim() } : {}),
     });
+    persistChatState(managed);
   };
 
   const normalizePendingInputAnswers = (
@@ -12669,7 +12674,7 @@ export function createAgentChatService(args: {
       lastActivityAt: liveSession?.lastActivityAt ?? persisted?.updatedAt ?? row.endedAt ?? row.startedAt,
       lastOutputPreview: row.lastOutputPreview,
       summary: row.summary ?? null,
-      ...(hasLivePendingInput(liveManaged) ? { awaitingInput: true } : {}),
+      ...((hasLivePendingInput(liveManaged) || persisted?.awaitingInput === true) ? { awaitingInput: true } : {}),
       ...(liveSession?.threadId || persisted?.threadId
         ? { threadId: liveSession?.threadId ?? persisted?.threadId }
         : {}),

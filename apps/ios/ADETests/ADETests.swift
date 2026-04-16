@@ -2563,6 +2563,107 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(resolved, "apps/ios/ADE/Helpers/WorkView.swift")
   }
 
+  func testWorkActivitySourceSessionsReuseFilteredWorkCollection() {
+    let lane1Chat = makeTerminalSessionSummary(
+      id: "chat-1",
+      laneId: "lane-1",
+      laneName: "feature/work",
+      toolType: "codex-chat",
+      title: "Fix Work root"
+    )
+    let lane2Chat = makeTerminalSessionSummary(
+      id: "chat-2",
+      laneId: "lane-2",
+      laneName: "release",
+      toolType: "claude-chat",
+      title: "Deploy release"
+    )
+    let lane2Terminal = makeTerminalSessionSummary(
+      id: "terminal-1",
+      laneId: "lane-2",
+      laneName: "release",
+      toolType: "run-shell",
+      runtimeState: "idle",
+      title: "Deploy logs",
+      lastOutputPreview: "Tail the deploy terminal output"
+    )
+
+    let chatSummaries = [
+      "chat-1": makeAgentChatSessionSummary(
+        sessionId: "chat-1",
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+        title: "Fix Work root",
+        status: "active"
+      ),
+      "chat-2": makeAgentChatSessionSummary(
+        sessionId: "chat-2",
+        laneId: "lane-2",
+        provider: "claude",
+        model: "sonnet",
+        title: "Deploy release",
+        status: "active"
+      ),
+    ]
+
+    let filtered = workFilteredSessions(
+      [lane1Chat, lane2Terminal, lane2Chat],
+      chatSummaries: chatSummaries,
+      archivedSessionIds: [],
+      selectedStatus: .running,
+      selectedLaneId: "lane-2",
+      searchText: "deploy"
+    )
+    let activitySessions = workActivitySourceSessions(
+      filtered,
+      chatSummaries: chatSummaries,
+      archivedSessionIds: []
+    )
+
+    XCTAssertEqual(filtered.map(\.id), ["chat-2", "terminal-1"])
+    XCTAssertEqual(activitySessions.map(\.id), ["chat-2"])
+  }
+
+  func testWorkRunningBannerCopyDescribesMixedLiveSessions() {
+    XCTAssertEqual(
+      workRunningBannerTitle(liveChatCount: 1, liveTerminalCount: 1, attentionCount: 1),
+      "1 chat needs input, 2 other sessions are live"
+    )
+    XCTAssertEqual(
+      workRunningBannerTitle(liveChatCount: 1, liveTerminalCount: 1, attentionCount: 0),
+      "2 live sessions across chat and terminal"
+    )
+    XCTAssertEqual(
+      workRunningBannerMessage(liveTerminalCount: 1, attentionCount: 0),
+      "The Work tab badge stays visible while live chats or terminal sessions continue running."
+    )
+  }
+
+  func testWorkFilesWorkspaceSelectionRequiresMatchingLaneWorkspace() {
+    let workspaces = [
+      FilesWorkspace(
+        id: "workspace-root",
+        kind: "project",
+        laneId: nil,
+        name: "Project",
+        rootPath: "/repo/ade",
+        isReadOnlyByDefault: true
+      ),
+      FilesWorkspace(
+        id: "workspace-lane-2",
+        kind: "lane",
+        laneId: "lane-2",
+        name: "Release",
+        rootPath: "/repo/ade/lane-2",
+        isReadOnlyByDefault: true
+      ),
+    ]
+
+    XCTAssertEqual(workFilesWorkspace(for: "lane-2", in: workspaces)?.id, "workspace-lane-2")
+    XCTAssertNil(workFilesWorkspace(for: "lane-1", in: workspaces))
+  }
+
   func testWorkFilteredSessionsIncludesTerminalRowsAndMatchesSearchAndLaneFilters() {
     let chatSession = makeTerminalSessionSummary(
       id: "chat-1",

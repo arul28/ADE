@@ -117,6 +117,9 @@ struct LanesTabView: View {
         lastLanesLocalProjectionReload = now
         await reload(refreshRemote: false)
       }
+      .task(id: syncService.requestedLaneNavigation?.id) {
+        await handleRequestedLaneNavigation()
+      }
       .onChange(of: syncService.connectionState) { oldValue, newValue in
         let wasOnline = oldValue == .connected || oldValue == .syncing
         let nowOnline = newValue == .connected || newValue == .syncing

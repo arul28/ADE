@@ -82,6 +82,60 @@ func workFilteredSessions(
     .sorted { compareWorkSessionSortOrder($0, $1, chatSummaries: chatSummaries) }
 }
 
+func workActivitySourceSessions(
+  _ displaySessions: [TerminalSessionSummary],
+  chatSummaries: [String: AgentChatSessionSummary],
+  archivedSessionIds: Set<String>
+) -> [TerminalSessionSummary] {
+  displaySessions.filter { session in
+    !archivedSessionIds.contains(session.id)
+      && isChatSession(session)
+      && normalizedWorkChatSessionStatus(session: session, summary: chatSummaries[session.id]) != "ended"
+  }
+}
+
+func workRunningBannerLiveCounts(_ liveSessions: [TerminalSessionSummary]) -> (chat: Int, terminal: Int) {
+  let chatCount = liveSessions.filter(isChatSession).count
+  return (chat: chatCount, terminal: max(0, liveSessions.count - chatCount))
+}
+
+func workRunningBannerTitle(liveChatCount: Int, liveTerminalCount: Int, attentionCount: Int) -> String {
+  let liveCount = liveChatCount + liveTerminalCount
+  if attentionCount > 0 && liveCount > 0 {
+    if liveTerminalCount > 0 {
+      return attentionCount == 1
+        ? (liveCount == 1 ? "1 chat needs input, 1 other session is live" : "1 chat needs input, \(liveCount) other sessions are live")
+        : (liveCount == 1 ? "\(attentionCount) chats need input, 1 other session is live" : "\(attentionCount) chats need input, \(liveCount) other sessions are live")
+    }
+    return "\(attentionCount) chat\(attentionCount == 1 ? "" : "s") need input, \(liveCount) still live"
+  }
+  if attentionCount > 0 {
+    return attentionCount == 1 ? "1 chat needs input" : "\(attentionCount) chats need input"
+  }
+  if liveTerminalCount > 0 && liveChatCount > 0 {
+    return "\(liveCount) live sessions across chat and terminal"
+  }
+  if liveTerminalCount > 0 {
+    return liveCount == 1 ? "1 terminal session is live" : "\(liveCount) terminal sessions are live"
+  }
+  return liveCount == 1 ? "1 chat is live" : "\(liveCount) chats are live"
+}
+
+func workRunningBannerMessage(liveTerminalCount: Int, attentionCount: Int) -> String {
+  if attentionCount > 0 {
+    return liveTerminalCount > 0
+      ? "Open the waiting chat to approve or answer it while the rest of the live work keeps streaming below."
+      : "Open the waiting chat to approve, answer, or resume work without leaving the phone."
+  }
+  return liveTerminalCount > 0
+    ? "The Work tab badge stays visible while live chats or terminal sessions continue running."
+    : "The Work tab badge stays visible until every active chat turn finishes."
+}
+
+func workFilesWorkspace(for laneId: String, in workspaces: [FilesWorkspace]) -> FilesWorkspace? {
+  workspaces.first { $0.laneId == laneId }
+}
+
 func workSessionDisplayTitle(session: TerminalSessionSummary, summary: AgentChatSessionSummary?) -> String {
   summary?.title ?? session.title
 }

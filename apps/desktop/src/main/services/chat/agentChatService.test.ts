@@ -1979,6 +1979,49 @@ describe("createAgentChatService", () => {
       const sessions = await service.listSessions();
       expect(sessions[0]?.summary).toBeNull();
     });
+
+    it("hydrates requestedCwd, cursorConfigValues, and awaitingInput from persisted summaries", async () => {
+      const { service, sessionService } = createService();
+      sessionService.create({
+        sessionId: "restored-cursor-session",
+        laneId: "lane-1",
+        toolType: "cursor",
+        title: "Restored Cursor chat",
+        startedAt: "2026-03-25T00:00:00.000Z",
+      });
+
+      writePersistedChatState("restored-cursor-session", {
+        version: 2,
+        sessionId: "restored-cursor-session",
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "auto",
+        modelId: "cursor/auto",
+        cursorModeId: "ask",
+        cursorConfigValues: {
+          voice: true,
+          temperature: 0.5,
+          notes: "mobile",
+        },
+        awaitingInput: true,
+        requestedCwd: "apps/ios/ADE",
+        updatedAt: "2026-03-25T00:00:05.000Z",
+      });
+
+      await expect(service.listSessions()).resolves.toMatchObject([
+        expect.objectContaining({
+          sessionId: "restored-cursor-session",
+          cursorModeId: "ask",
+          cursorConfigValues: {
+            voice: true,
+            temperature: 0.5,
+            notes: "mobile",
+          },
+          awaitingInput: true,
+          requestedCwd: "apps/ios/ADE",
+        }),
+      ]);
+    });
   });
 
   describe("ensureIdentitySession", () => {
@@ -6672,6 +6715,59 @@ describe("createAgentChatService", () => {
     const result = await requestPromise;
     expect(result.decision).toBe("decline");
     expect(events.filter((event) => event.event.type === "tool_result")).toHaveLength(0);
+  });
+
+  it("persists awaitingInput while chat input is pending and clears it after resolution", async () => {
+    const events: AgentChatEventEnvelope[] = [];
+    const { service } = createService({
+      onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+    });
+
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "codex",
+      model: "gpt-5.4",
+    });
+
+    const requestPromise = service.requestChatInput({
+      chatSessionId: session.id,
+      title: "Pending question",
+      body: "Which path should we take?",
+      questions: [{
+        id: "answer",
+        header: "Question 1",
+        question: "Which path should we take?",
+        allowsFreeform: true,
+      }],
+    });
+
+    const approvalEvent = await waitForEvent(
+      events,
+      (event): event is AgentChatEventEnvelope & {
+        event: Extract<AgentChatEventEnvelope["event"], { type: "approval_request" }>;
+      } => {
+        const detail = event.event.type === "approval_request"
+          ? (event.event.detail as { request?: { title?: string } } | undefined)
+          : undefined;
+        return event.event.type === "approval_request" && detail?.request?.title === "Pending question";
+      },
+    );
+
+    expect(readPersistedChatState(session.id).awaitingInput).toBe(true);
+
+    await service.respondToInput({
+      sessionId: session.id,
+      itemId: approvalEvent.event.itemId,
+      decision: "accept",
+      responseText: "Take the safe path.",
+    });
+
+    await expect(requestPromise).resolves.toMatchObject({
+      decision: "accept",
+      answers: { answer: ["Take the safe path."] },
+      responseText: "Take the safe path.",
+    });
+    expect(readPersistedChatState(session.id).awaitingInput).toBeUndefined();
   });
 
   it("maps freeform replies to the single pending question when only one answer is needed", async () => {

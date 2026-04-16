@@ -75,7 +75,7 @@ struct WorkFiltersSection: View {
 struct WorkRunningBanner: View {
   @Environment(\.accessibilityReduceMotion) var reduceMotion
 
-  let activeCount: Int
+  let liveSessions: [TerminalSessionSummary]
   let attentionCount: Int
 
   @State var isPulsing = false
@@ -105,20 +105,19 @@ struct WorkRunningBanner: View {
   }
 
   var bannerTitle: String {
-    if attentionCount > 0 && activeCount > 0 {
-      return "\(attentionCount) chat\(attentionCount == 1 ? "" : "s") need input, \(activeCount) still live"
-    }
-    if attentionCount > 0 {
-      return attentionCount == 1 ? "1 chat needs input" : "\(attentionCount) chats need input"
-    }
-    return activeCount == 1 ? "1 chat is live" : "\(activeCount) chats are live"
+    workRunningBannerTitle(
+      liveChatCount: liveCounts.chat,
+      liveTerminalCount: liveCounts.terminal,
+      attentionCount: attentionCount
+    )
   }
 
   var bannerMessage: String {
-    if attentionCount > 0 {
-      return "Open the waiting chat to approve, answer, or resume work without leaving the phone."
-    }
-    return "The Work tab badge stays visible until every active chat turn finishes."
+    workRunningBannerMessage(liveTerminalCount: liveCounts.terminal, attentionCount: attentionCount)
+  }
+
+  var liveCounts: (chat: Int, terminal: Int) {
+    workRunningBannerLiveCounts(liveSessions)
   }
 }
 

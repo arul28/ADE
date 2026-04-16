@@ -128,12 +128,20 @@ struct WorkRootScreen: View {
     }
   }
 
+  var activitySessions: [TerminalSessionSummary] {
+    workActivitySourceSessions(
+      displaySessions,
+      chatSummaries: chatSummaries,
+      archivedSessionIds: archivedSessionIds
+    )
+  }
+
   var hasActiveFilters: Bool {
     selectedStatus != .all || selectedLaneId != "all"
   }
 
   var activityFeed: [WorkAgentActivity] {
-    liveChatSessions.flatMap { session in
+    activitySessions.flatMap { session in
       let transcript = transcriptCache[session.id] ?? parseWorkChatTranscript(syncService.terminalBuffers[session.id] ?? "")
       return deriveWorkAgentActivities(
         from: transcript,
@@ -182,7 +190,7 @@ struct WorkRootScreen: View {
           .listRowSeparator(.hidden)
 
           if !liveSessions.isEmpty || !needsInputSessions.isEmpty {
-            WorkRunningBanner(activeCount: liveSessions.count, attentionCount: needsInputSessions.count)
+            WorkRunningBanner(liveSessions: liveSessions, attentionCount: needsInputSessions.count)
               .listRowBackground(Color.clear)
               .listRowSeparator(.hidden)
           }

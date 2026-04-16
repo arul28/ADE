@@ -536,6 +536,7 @@ struct FilesTabView: View {
       await reload()
     }
     guard let workspace = workspaces.first(where: { $0.id == request.workspaceId }) else {
+      errorMessage = "The requested lane workspace is not cached on this phone yet. Refresh Files and try again."
       syncService.requestedFilesNavigation = nil
       return
     }
