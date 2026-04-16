@@ -212,35 +212,46 @@ struct WorkQueuedSteerStrip: View {
   let onCancel: @MainActor (String) async -> Void
   let onSaveEdit: @MainActor (String, String) async -> Void
 
-  var body: some View {
-    VStack(alignment: .leading, spacing: 8) {
-      HStack(spacing: 6) {
-        Image(systemName: "paperplane.circle")
-          .font(.caption.weight(.semibold))
-          .foregroundStyle(ADEColor.accent)
-        Text(steers.count == 1 ? "1 queued message" : "\(steers.count) queued messages")
-          .font(.caption.weight(.semibold))
-          .foregroundStyle(ADEColor.textSecondary)
-        Spacer(minLength: 0)
-      }
+  // Collapsed by default: with long turns users can have 3-5 queued items
+  // and the composer area is the most vertical-space-constrained region
+  // on iPhone. Users open the strip only when they need to edit/cancel.
+  @State private var isExpanded: Bool = false
+  // Cancel haptic token: bumped each time a row's cancel lands so the
+  // whole strip can drive a single sensoryFeedback modifier.
+  @State private var cancelHapticToken: Int = 0
+  // Always expand while any row is actively being edited so edits aren't
+  // hidden behind a collapse tap.
+  private var anyEditing: Bool {
+    steers.contains(where: { drafts[$0.id] != nil })
+  }
 
-      VStack(spacing: 6) {
-        ForEach(steers) { steer in
-          WorkQueuedSteerRow(
-            steer: steer,
-            draft: Binding(
-              get: { drafts[steer.id] ?? steer.text },
-              set: { drafts[steer.id] = $0 }
-            ),
-            isEditing: drafts[steer.id] != nil,
-            busy: busy,
-            isLive: isLive,
-            onBeginEdit: { drafts[steer.id] = steer.text },
-            onCancelEdit: { drafts.removeValue(forKey: steer.id) },
-            onCancel: { await onCancel(steer.id) },
-            onSave: { text in await onSaveEdit(steer.id, text) }
-          )
+  var body: some View {
+    VStack(alignment: .leading, spacing: 10) {
+      header
+
+      if isExpanded || anyEditing {
+        VStack(spacing: 6) {
+          ForEach(steers) { steer in
+            WorkQueuedSteerRow(
+              steer: steer,
+              draft: Binding(
+                get: { drafts[steer.id] ?? steer.text },
+                set: { drafts[steer.id] = $0 }
+              ),
+              isEditing: drafts[steer.id] != nil,
+              busy: busy,
+              isLive: isLive,
+              onBeginEdit: { drafts[steer.id] = steer.text },
+              onCancelEdit: { drafts.removeValue(forKey: steer.id) },
+              onCancel: {
+                cancelHapticToken &+= 1
+                await onCancel(steer.id)
+              },
+              onSave: { text in await onSaveEdit(steer.id, text) }
+            )
+          }
         }
+        .transition(.opacity.combined(with: .move(edge: .top)))
       }
     }
     .padding(10)
@@ -249,6 +260,45 @@ struct WorkQueuedSteerStrip: View {
       RoundedRectangle(cornerRadius: 14, style: .continuous)
         .stroke(ADEColor.accent.opacity(0.18), lineWidth: 0.8)
     )
+    .sensoryFeedback(.impact(weight: .light), trigger: cancelHapticToken)
+    .animation(.smooth(duration: 0.22), value: isExpanded)
+    .animation(.smooth(duration: 0.22), value: anyEditing)
+  }
+
+  private var header: some View {
+    Button {
+      withAnimation(.smooth(duration: 0.22)) {
+        isExpanded.toggle()
+      }
+    } label: {
+      HStack(spacing: 6) {
+        Image(systemName: "paperplane.circle")
+          .font(.caption.weight(.semibold))
+          .foregroundStyle(ADEColor.accent)
+        Text(steers.count == 1 ? "1 queued" : "\(steers.count) queued")
+          .font(.caption.weight(.semibold))
+          .foregroundStyle(ADEColor.textSecondary)
+        if !isExpanded && !anyEditing, let preview = steers.first?.text {
+          Text("·")
+            .font(.caption2)
+            .foregroundStyle(ADEColor.textMuted)
+          Text(preview)
+            .font(.caption)
+            .foregroundStyle(ADEColor.textSecondary)
+            .lineLimit(1)
+            .truncationMode(.tail)
+        }
+        Spacer(minLength: 4)
+        Image(systemName: isExpanded || anyEditing ? "chevron.up" : "chevron.down")
+          .font(.caption2.weight(.semibold))
+          .foregroundStyle(ADEColor.textMuted)
+      }
+      .contentShape(Rectangle())
+    }
+    .buttonStyle(.plain)
+    .accessibilityLabel(steers.count == 1 ? "1 queued message" : "\(steers.count) queued messages")
+    .accessibilityHint(isExpanded || anyEditing ? "Collapse queued messages" : "Expand to edit or cancel queued messages")
+    .disabled(anyEditing)
   }
 }
 
@@ -290,15 +340,31 @@ struct WorkQueuedSteerRow: View {
           .disabled(busy || !isLive || draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
         }
       } else {
-        Text(steer.text)
-          .font(.caption)
-          .foregroundStyle(ADEColor.textPrimary)
-          .frame(maxWidth: .infinity, alignment: .leading)
-
-        HStack(spacing: 8) {
+        // "Queued" ribbon mirrors the desktop PendingSteerItem treatment so
+        // users see at a glance that this item hasn't been sent yet.
+        HStack(spacing: 6) {
+          Text("Queued")
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(ADEColor.accent)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 2)
+            .background(ADEColor.accent.opacity(0.12), in: Capsule())
           Text(relativeTimestamp(steer.timestamp))
             .font(.caption2)
             .foregroundStyle(ADEColor.textMuted)
+          Spacer(minLength: 0)
+        }
+
+        // Clip the preview at two lines so long queued messages don't blow
+        // out the composer. Full text is still reachable via Edit.
+        Text(steer.text)
+          .font(.caption)
+          .foregroundStyle(ADEColor.textPrimary)
+          .lineLimit(2)
+          .truncationMode(.tail)
+          .frame(maxWidth: .infinity, alignment: .leading)
+
+        HStack(spacing: 8) {
           Spacer(minLength: 0)
           Button {
             onBeginEdit()
