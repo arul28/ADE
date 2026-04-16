@@ -284,6 +284,76 @@ struct WorkChatSessionView: View {
     )
   }
 
+  /// Single desktop-shaped composer card: text field on top, chip strip and
+  /// send button on the bottom, everything wrapped in one rounded container
+  /// with clear contrast against the chat background.
+  @ViewBuilder
+  private func composerCard(proxy: ScrollViewProxy) -> some View {
+    let sendEnabled = canSend && !composer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+
+    VStack(alignment: .leading, spacing: 10) {
+      TextField("Type to vibecode…", text: $composer, axis: .vertical)
+        .textFieldStyle(.plain)
+        .lineLimit(1...6)
+        .font(.body)
+        .foregroundStyle(ADEColor.textPrimary)
+        .tint(ADEColor.accent)
+        .disabled(!canCompose)
+        .frame(maxWidth: .infinity, alignment: .leading)
+
+      HStack(alignment: .center, spacing: 8) {
+        WorkComposerChipStrip(
+          chatSummary: chatSummary,
+          queuedSteerCount: pendingSteers.count,
+          pendingInputCount: pendingInputs.count,
+          onOpenModelPicker: chatSummary == nil ? nil : { modelPickerPresented = true },
+          onSelectRuntimeMode: chatSummary == nil ? nil : { mode in
+            Task { await onSelectRuntimeMode(mode) }
+          }
+        )
+
+        Spacer(minLength: 0)
+
+        Button {
+          Task {
+            await onSend()
+            withAnimation(ADEMotion.quick(reduceMotion: transitionNamespace == nil)) {
+              proxy.scrollTo("chat-end", anchor: .bottom)
+            }
+          }
+        } label: {
+          Image(systemName: sending ? "ellipsis" : "paperplane.fill")
+            .font(.system(size: 15, weight: .bold))
+            .foregroundStyle(sendEnabled ? Color.white : ADEColor.textSecondary)
+            .frame(width: 34, height: 34)
+            .background(
+              sendEnabled ? ADEColor.accent : ADEColor.surfaceBackground.opacity(0.9),
+              in: Circle()
+            )
+            .overlay(
+              Circle()
+                .stroke(sendEnabled ? Color.clear : ADEColor.border.opacity(0.35), lineWidth: 0.8)
+            )
+            .shadow(color: sendEnabled ? ADEColor.accent.opacity(0.35) : .clear, radius: 6, y: 1)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(sending ? "Sending message" : "Send message")
+        .disabled(!sendEnabled)
+      }
+    }
+    .padding(.horizontal, 14)
+    .padding(.vertical, 12)
+    .background(
+      RoundedRectangle(cornerRadius: 22, style: .continuous)
+        .fill(ADEColor.recessedBackground.opacity(0.92))
+    )
+    .overlay(
+      RoundedRectangle(cornerRadius: 22, style: .continuous)
+        .stroke(ADEColor.border.opacity(0.35), lineWidth: 0.8)
+    )
+    .shadow(color: Color.black.opacity(0.35), radius: 18, y: 6)
+  }
+
   func composerInset(proxy: ScrollViewProxy) -> AnyView {
     AnyView(
       VStack(spacing: 10) {
@@ -334,57 +404,7 @@ struct WorkChatSessionView: View {
           )
         }
 
-        VStack(alignment: .leading, spacing: 8) {
-          TextField("Type to vibecode…", text: $composer, axis: .vertical)
-            .textFieldStyle(.plain)
-            .lineLimit(1...6)
-            .font(.body)
-            .foregroundStyle(ADEColor.textPrimary)
-            .disabled(!canCompose)
-
-          HStack(alignment: .center, spacing: 8) {
-            WorkComposerChipStrip(
-              chatSummary: chatSummary,
-              queuedSteerCount: pendingSteers.count,
-              pendingInputCount: pendingInputs.count,
-              onOpenModelPicker: chatSummary == nil ? nil : { modelPickerPresented = true },
-              onSelectRuntimeMode: chatSummary == nil ? nil : { mode in
-                Task { await onSelectRuntimeMode(mode) }
-              }
-            )
-
-            Spacer(minLength: 0)
-
-            Button {
-              Task {
-                await onSend()
-                withAnimation(ADEMotion.quick(reduceMotion: transitionNamespace == nil)) {
-                  proxy.scrollTo("chat-end", anchor: .bottom)
-                }
-              }
-            } label: {
-              Image(systemName: sending ? "ellipsis.circle" : "paperplane.fill")
-                .font(.system(size: 16, weight: .semibold))
-                .foregroundStyle(canSend && !composer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? Color.white : ADEColor.textMuted)
-                .frame(width: 36, height: 36)
-                .background(
-                  canSend && !composer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                    ? ADEColor.accent
-                    : ADEColor.surfaceBackground.opacity(0.55),
-                  in: Circle()
-                )
-            }
-            .accessibilityLabel(sending ? "Sending message" : "Send message")
-            .disabled(!canSend || composer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-          }
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 10)
-        .background(ADEColor.recessedBackground.opacity(0.6), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-        .overlay(
-          RoundedRectangle(cornerRadius: 18, style: .continuous)
-            .stroke(ADEColor.border.opacity(0.22), lineWidth: 0.6)
-        )
+        composerCard(proxy: proxy)
 
         if let composerFeedback {
           Text(composerFeedback)
