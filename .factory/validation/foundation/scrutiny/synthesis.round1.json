@@ -5,88 +5,76 @@
   "validatorsRun": {
     "test": {
       "passed": true,
-      "command": "cd apps/ios && xcodebuild -project ADE.xcodeproj -scheme ADE -destination 'platform=iOS Simulator,id=2107A402-C2A7-4323-AF26-74A0AC406C44' -derivedDataPath /tmp/ade-build test",
+      "command": "xcodebuild test -project /Users/admin/Projects/ADE/.ade/worktrees/mobile-droid-attempt-bbdcd095/apps/ios/ADE.xcodeproj -scheme ADE -destination 'platform=iOS Simulator,name=iPhone 17 Pro,OS=26.3.1' -quiet",
       "exitCode": 0
     },
     "typecheck": {
       "passed": true,
-      "command": "cd apps/ios && xcodebuild -project ADE.xcodeproj -scheme ADE -destination 'platform=iOS Simulator,id=2107A402-C2A7-4323-AF26-74A0AC406C44' -derivedDataPath /tmp/ade-build build",
+      "command": "xcodebuild build -project /Users/admin/Projects/ADE/.ade/worktrees/mobile-droid-attempt-bbdcd095/apps/ios/ADE.xcodeproj -scheme ADE -destination 'platform=iOS Simulator,name=iPhone 17 Pro,OS=26.3.1' -quiet",
       "exitCode": 0
     },
     "lint": {
       "passed": true,
-      "command": "cd apps/ios && xcodebuild -project ADE.xcodeproj -scheme ADE -destination 'platform=iOS Simulator,id=2107A402-C2A7-4323-AF26-74A0AC406C44' -derivedDataPath /tmp/ade-build analyze",
+      "command": "xcodebuild -project /Users/admin/Projects/ADE/.ade/worktrees/mobile-droid-attempt-bbdcd095/apps/ios/ADE.xcodeproj -scheme ADE -destination 'platform=iOS Simulator,name=iPhone 17 Pro,OS=26.3.1' -derivedDataPath /tmp/ade-build analyze",
       "exitCode": 0
     }
   },
   "reviewsSummary": {
     "total": 3,
-    "passed": 0,
-    "failed": 3,
+    "passed": 1,
+    "failed": 2,
     "failedFeatures": [
-      "sync-hydration-race-fix",
-      "sync-reliability-and-ux",
-      "design-system-overhaul"
+      "foundation-fix-ios-baseline-tests",
+      "foundation-lanes-benchmark-polish"
     ]
   },
   "blockingIssues": [
     {
-      "featureId": "sync-hydration-race-fix",
+      "featureId": "foundation-fix-ios-baseline-tests",
       "severity": "blocking",
-      "description": "Initial hydration is launched in an untracked task, so a stale 15-second wait from an older connection can survive disconnect/reconnect and later overwrite a newer healthy connection's domain statuses."
+      "description": "`.factory/services.yaml` still defines the mission `test` hard gate as `npm --prefix apps/desktop run test && xcodebuild test ...`, so the foundation baseline remains coupled to unrelated red desktop suites instead of the promised green iOS-only simulator path."
     },
     {
-      "featureId": "sync-reliability-and-ux",
+      "featureId": "foundation-lanes-benchmark-polish",
       "severity": "blocking",
-      "description": "sendEnvelope handles any send callback error as active, so a late cancellation error from an intentionally closed socket can tear down a newly connected socket during reconnect or host switching."
-    },
-    {
-      "featureId": "sync-reliability-and-ux",
-      "severity": "blocking",
-      "description": "SyncUserFacingError still falls back to raw technical strings like `Invalid hello response.` and `Unknown queued operation type.`, so the feature does not fully meet the user-friendly sync error requirement."
-    },
-    {
-      "featureId": "design-system-overhaul",
-      "severity": "blocking",
-      "description": "VAL-DS-007 remains unmet because Files swipe actions do not expose delete/rename and Work swipe actions do not expose archive/pin, even though the feature claims that assertion."
+      "description": "Lane detail now disables diff entry points while offline or syncing, even though the validation contract says cached lane context should remain inspectable and only live-only git mutations should gate in those states."
     }
   ],
   "appliedUpdates": [
     {
-      "target": "services.yaml",
-      "description": "Removed `xcodebuild ... | tail` pipelines from the iOS build/test commands and added explicit `typecheck` and `lint` commands so scrutiny validators preserve real exit codes.",
-      "sourceFeature": "sync-reliability-and-ux"
-    },
-    {
       "target": "library",
-      "description": "Documented in `.factory/library/architecture.md` that long-lived `SyncService` tasks and WebSocket callbacks must be scoped to the active connection and canceled or ignored on disconnect/host switch.",
-      "sourceFeature": "sync-hydration-race-fix"
+      "description": "Documented the shared `ADEMobilePrimitives.swift` layer in `.factory/library/ios-design-system.md`, including `ADEGlassSection`, `ADEGlassChip`, `ADEGlassActionButton`, and `ADEMatchedTransitionScope` so later iOS workers reuse the shared mobile primitive layer.",
+      "sourceFeature": "foundation-shared-mobile-design-system-and-performance-primitives"
     }
   ],
   "suggestedGuidanceUpdates": [
     {
-      "target": "skill",
-      "suggestion": "Update `.factory/skills/ios-worker/SKILL.md` to use raw `xcodebuild` commands (or `set -o pipefail`) instead of `| tail` pipelines in its validation procedure and examples.",
-      "evidence": "The sync-reliability-and-ux review found the skill still recommends tailed `xcodebuild` commands, and that worker explicitly had to deviate because the pipeline can hide failing exit codes.",
-      "isSystemic": true
-    },
-    {
       "target": "AGENTS.md",
-      "suggestion": "Update the generated iOS mission AGENTS template to use direct `xcodebuild` commands, or require `pipefail` when truncating output for display.",
-      "evidence": "The sync-reliability-and-ux review found this mission's AGENTS instructions still used tailed build/test commands, which conflicts with trustworthy validator execution.",
+      "suggestion": "Reconcile the mission hard-gate guidance with `.factory/services.yaml` by explicitly pointing iOS-only workers at the `ios-*` commands or otherwise clarifying that the generic `test` command is not the foundation gate when unrelated desktop suites are known red.",
+      "evidence": "Both `foundation-fix-ios-baseline-tests` and `foundation-lanes-benchmark-polish` flagged the mismatch between `/Users/admin/.factory/missions/3d6b3fd2-ee5a-4122-83b2-d6dff0c07f04/AGENTS.md` saying unrelated desktop failures should not block iOS-only work and `/Users/admin/Projects/ADE/.ade/worktrees/mobile-droid-attempt-bbdcd095/.factory/services.yaml:4` still running `npm --prefix apps/desktop run test && xcodebuild test ...`.",
       "isSystemic": true
     },
     {
       "target": "skill",
-      "suggestion": "Resolve the ios-worker skill's simulator-verification contradiction by removing simulator-based `interactiveChecks` from the example handoff or changing the procedure if simulator interaction is actually expected.",
-      "evidence": "The design-system-overhaul review found the skill tells workers not to launch the simulator or take screenshots, but its example handoff still includes simulator-based interactive checks.",
+      "suggestion": "Clarify the `sync-parity-worker` baseline-failure procedure so features whose explicit job is to repair a known-red validation path are not told to abort back to the orchestrator before diagnosing and fixing that baseline.",
+      "evidence": "The `foundation-fix-ios-baseline-tests` handoff recorded a deliberate deviation because the current skill text says to stop when the baseline command fails, but this feature existed specifically to repair the failing iOS baseline.",
+      "isSystemic": false
+    },
+    {
+      "target": "skill",
+      "suggestion": "Tighten `ios-worker` manual-verification guidance for shared UI/polish features so workers either perform a real simulator spot-check when available or explicitly record why only code-path inspection was possible.",
+      "evidence": "The `foundation-shared-mobile-design-system-and-performance-primitives` review found the skill encourages the strongest available manual verification, but the worker's recorded checks stayed at code-inspection level for a feature that claimed visible mobile polish primitives.",
       "isSystemic": true
     }
   ],
   "rejectedObservations": [
     {
-      "observation": "A worker launched the simulator and captured screenshots even though the mission AGENTS file and ios-worker skill already forbid that for iOS validation.",
-      "reason": "already-documented; existing instructions are explicit, so this is a worker compliance/handoff accuracy problem rather than a missing shared-state update"
+      "observation": "Mission guidance and the checked-in service manifest disagree about whether the foundation hard gate is iOS-only.",
+      "reason": "duplicate; both failing reviews reported the same services-vs-guidance mismatch and it is represented once in blocking issues and suggested guidance updates"
+    },
+    {
+      "observation": "`init.sh` generated additional `.factory/library` and skill files during the baseline-repair feature, which caused unrelated factory artifacts to appear in that feature's commit.",
+      "reason": "ambiguous; the review did not establish a durable codebase rule change beyond this one-time bootstrap sequence"
     }
   ],
   "previousRound": null
