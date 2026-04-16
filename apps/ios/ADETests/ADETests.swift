@@ -1793,6 +1793,27 @@ final class ADETests: XCTestCase {
     XCTAssertTrue(tokens.contains(where: { $0.role == .string && $0.text == "\"/users\"" }))
   }
 
+  func testSyntaxHighlighterRepeatedCallsReturnStableTokensAndHighlights() {
+    let source = "import Foundation\nstruct Demo {\n  let title = \"Hello\"\n  // Greets the workspace\n}"
+
+    let firstTokens = SyntaxHighlighter.tokenize(source, as: .swift)
+    let secondTokens = SyntaxHighlighter.tokenize(source, as: .swift)
+    XCTAssertEqual(secondTokens, firstTokens)
+
+    let firstHighlight = SyntaxHighlighter.highlightedAttributedString(source, as: .swift)
+    let secondHighlight = SyntaxHighlighter.highlightedAttributedString(source, as: .swift)
+    XCTAssertEqual(secondHighlight, firstHighlight)
+  }
+
+  func testMatchedTransitionScopeReturnsNilIdsWithoutNamespace() {
+    let scope = ADEMatchedTransitionScope(namespace: nil, stem: "work-session-1")
+
+    XCTAssertNil(scope.id(.container))
+    XCTAssertNil(scope.id(.icon))
+    XCTAssertNil(scope.id(.title))
+    XCTAssertNil(scope.id(.status))
+  }
+
   func testInlineDiffBuilderMarksAddedAndRemovedLines() {
     let lines = buildInlineDiffLines(
       original: "let value = 1\nprint(value)",
