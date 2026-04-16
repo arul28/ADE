@@ -59,6 +59,28 @@ func providerIcon(_ provider: String) -> String {
   }
 }
 
+/// Returns the bundled branded-logo asset name for a provider family when one
+/// exists, so the session row and chat header can render the real Claude /
+/// Codex / Cursor / OpenCode mark instead of a generic SF Symbol. Matches the
+/// desktop `ToolLogo` palette (LobeHub static SVGs copied into the iOS asset
+/// catalog). Returns nil for unknown providers so callers can fall back to
+/// `providerIcon(_:)`.
+func providerAssetName(_ provider: String?) -> String? {
+  guard let provider, !provider.isEmpty else { return nil }
+  switch provider.lowercased() {
+  case "claude", "claude-chat", "claude-orchestrated", "anthropic":
+    return "ProviderClaude"
+  case "codex", "codex-chat", "codex-orchestrated", "openai":
+    return "ProviderCodex"
+  case "cursor":
+    return "ProviderCursor"
+  case "opencode", "opencode-chat", "opencode-orchestrated":
+    return "ProviderOpenCode"
+  default:
+    return nil
+  }
+}
+
 func providerTint(_ provider: String?) -> Color {
   guard let provider else { return ADEColor.accent }
   switch provider.lowercased() {
@@ -242,9 +264,18 @@ func sessionStatusLabel(for status: String) -> String {
   }
 }
 
+private let workDateFormatterFractional: ISO8601DateFormatter = {
+  let formatter = ISO8601DateFormatter()
+  formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+  return formatter
+}()
+
 func workParsedDate(_ value: String?) -> Date? {
   guard let value, !value.isEmpty else { return nil }
-  return workDateFormatter.date(from: value)
+  // Sync hosts emit timestamps with fractional seconds (`...095Z`); the default
+  // ISO8601DateFormatter rejects those, leaving `relativeTimestamp` to fall back
+  // to the raw ISO string and leaking it into the UI.
+  return workDateFormatterFractional.date(from: value) ?? workDateFormatter.date(from: value)
 }
 
 func formattedSessionDuration(startedAt: String, endedAt: String?) -> String {

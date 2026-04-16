@@ -15,40 +15,59 @@ struct WorkSessionHeader: View {
   let onOpenLane: (() -> Void)?
   let onOpenSettings: (() -> Void)?
 
+  private var status: String {
+    normalizedWorkChatSessionStatus(session: session, summary: chatSummary)
+  }
+
+  private var metaLine: String {
+    var parts: [String] = [relativeTimestamp(session.startedAt)]
+    let status = status
+    if status == "active" || status == "idle" || status == "awaiting-input" {
+      let duration = formattedSessionDuration(startedAt: session.startedAt, endedAt: session.endedAt)
+      if duration != "—" { parts.append(duration) }
+    }
+    if let chatSummary, !chatSummary.model.isEmpty {
+      parts.append(chatSummary.model)
+    }
+    return parts.joined(separator: " · ")
+  }
+
+  private var summaryLine: String? {
+    let raw = chatSummary?.summary ?? session.summary ?? ""
+    let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+    return trimmed.isEmpty ? nil : trimmed
+  }
+
   var body: some View {
     VStack(alignment: .leading, spacing: 12) {
       HStack(alignment: .top, spacing: 12) {
-        Image(systemName: providerIcon(chatSummary?.provider ?? ""))
-          .font(.system(size: 20, weight: .semibold))
-          .foregroundStyle(providerTint(chatSummary?.provider))
-          .frame(width: 34, height: 34)
-          .background(providerTint(chatSummary?.provider).opacity(0.12), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-        VStack(alignment: .leading, spacing: 6) {
+        WorkProviderLogo(
+          provider: chatSummary?.provider,
+          fallbackSymbol: providerIcon(chatSummary?.provider ?? ""),
+          tint: providerTint(chatSummary?.provider),
+          size: 36
+        )
+
+        VStack(alignment: .leading, spacing: 4) {
           Text(chatSummary?.title ?? session.title)
             .font(.headline)
             .foregroundStyle(ADEColor.textPrimary)
-          HStack(spacing: 8) {
-            WorkTag(
-              text: sessionStatusLabel(session, summary: chatSummary),
-              icon: workChatStatusIcon(normalizedWorkChatSessionStatus(session: session, summary: chatSummary)),
-              tint: workChatStatusTint(normalizedWorkChatSessionStatus(session: session, summary: chatSummary))
-            )
-            if let chatSummary {
-              WorkTag(text: providerLabel(chatSummary.provider), icon: providerIcon(chatSummary.provider), tint: providerTint(chatSummary.provider))
-              WorkTag(text: chatSummary.model, icon: "cpu", tint: ADEColor.textSecondary)
-            }
-            WorkTag(text: session.laneName, icon: "arrow.triangle.branch", tint: ADEColor.textSecondary)
-          }
+            .lineLimit(2)
+          Text(metaLine)
+            .font(.caption.monospacedDigit())
+            .foregroundStyle(ADEColor.textMuted)
         }
+
         Spacer(minLength: 8)
+
         HStack(spacing: 8) {
           if let onOpenLane {
             Button(action: onOpenLane) {
               Image(systemName: "arrow.triangle.branch")
-                .font(.system(size: 15, weight: .semibold))
+                .font(.system(size: 14, weight: .semibold))
                 .foregroundStyle(ADEColor.accent)
-                .frame(width: 36, height: 36)
-                .background(ADEColor.accent.opacity(0.12), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .frame(width: 34, height: 34)
+                .background(ADEColor.accent.opacity(0.12), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Open lane")
@@ -57,10 +76,10 @@ struct WorkSessionHeader: View {
           if let onOpenSettings {
             Button(action: onOpenSettings) {
               Image(systemName: "slider.horizontal.3")
-                .font(.system(size: 15, weight: .semibold))
+                .font(.system(size: 14, weight: .semibold))
                 .foregroundStyle(ADEColor.textPrimary)
-                .frame(width: 36, height: 36)
-                .background(ADEColor.surfaceBackground.opacity(0.6), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .frame(width: 34, height: 34)
+                .background(ADEColor.surfaceBackground.opacity(0.6), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Open chat settings")
@@ -68,30 +87,34 @@ struct WorkSessionHeader: View {
         }
       }
 
-      HStack(spacing: 12) {
-        metric(title: "Started", value: relativeTimestamp(session.startedAt))
-        metric(title: "Duration", value: formattedSessionDuration(startedAt: session.startedAt, endedAt: session.endedAt))
-        if let preview = chatSummary?.summary ?? session.summary, !preview.isEmpty {
-          metric(title: "Summary", value: preview)
+      ScrollView(.horizontal, showsIndicators: false) {
+        HStack(spacing: 6) {
+          WorkTag(
+            text: sessionStatusLabel(session, summary: chatSummary),
+            icon: workChatStatusIcon(status),
+            tint: workChatStatusTint(status)
+          )
+          if let chatSummary {
+            WorkTag(
+              text: providerLabel(chatSummary.provider),
+              icon: providerIcon(chatSummary.provider),
+              tint: providerTint(chatSummary.provider)
+            )
+          }
+          WorkTag(text: session.laneName, icon: "arrow.triangle.branch", tint: ADEColor.textSecondary)
         }
+      }
+
+      if let summaryLine {
+        Text(summaryLine)
+          .font(.subheadline)
+          .foregroundStyle(ADEColor.textSecondary)
+          .lineLimit(3)
       }
     }
     .adeListCard()
     .accessibilityElement(children: .combine)
     .accessibilityLabel("\(chatSummary?.title ?? session.title), \(sessionStatusLabel(session, summary: chatSummary)), lane \(session.laneName)")
-  }
-
-  func metric(title: String, value: String) -> some View {
-    VStack(alignment: .leading, spacing: 4) {
-      Text(title)
-        .font(.caption2.weight(.semibold))
-        .foregroundStyle(ADEColor.textMuted)
-      Text(value)
-        .font(.caption)
-        .foregroundStyle(ADEColor.textPrimary)
-        .lineLimit(2)
-    }
-    .frame(maxWidth: .infinity, alignment: .leading)
   }
 }
 

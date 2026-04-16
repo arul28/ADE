@@ -386,6 +386,39 @@ struct WorkSessionListRow: View {
   }
 }
 
+/// Provider mark: renders the branded SVG asset for known families (Claude /
+/// Codex / Cursor / OpenCode) and falls back to a tinted SF Symbol for
+/// anything else. Mirrors the desktop `ToolLogo` component so mobile sessions
+/// don't all share the same generic grey icon.
+struct WorkProviderLogo: View {
+  let provider: String?
+  let fallbackSymbol: String
+  let tint: Color
+  let size: CGFloat
+
+  init(provider: String?, fallbackSymbol: String = "terminal.fill", tint: Color = ADEColor.textSecondary, size: CGFloat = 26) {
+    self.provider = provider
+    self.fallbackSymbol = fallbackSymbol
+    self.tint = tint
+    self.size = size
+  }
+
+  var body: some View {
+    if let assetName = providerAssetName(provider) {
+      Image(assetName)
+        .resizable()
+        .aspectRatio(contentMode: .fit)
+        .frame(width: size, height: size)
+    } else {
+      Image(systemName: fallbackSymbol)
+        .font(.system(size: size * 0.58, weight: .semibold))
+        .foregroundStyle(tint)
+        .frame(width: size, height: size)
+        .background(tint.opacity(0.14), in: RoundedRectangle(cornerRadius: size * 0.36, style: .continuous))
+    }
+  }
+}
+
 struct WorkSessionRow: View {
   let session: TerminalSessionSummary
   let lane: LaneSummary?
@@ -395,68 +428,36 @@ struct WorkSessionRow: View {
   let isSelectedTransitionSource: Bool
 
   var body: some View {
-    HStack(alignment: .top, spacing: 12) {
-      Image(systemName: sessionSymbol(session, provider: chatSummary?.provider))
-        .font(.system(size: 18, weight: .semibold))
-        .foregroundStyle(rowTint)
-        .frame(width: 28, height: 28)
-        .background(rowTint.opacity(0.14), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-        .adeMatchedGeometry(id: isSelectedTransitionSource ? "work-icon-\(session.id)" : nil, in: transitionNamespace)
+    HStack(alignment: .top, spacing: 10) {
+      WorkProviderLogo(
+        provider: chatSummary?.provider ?? session.toolType,
+        fallbackSymbol: sessionSymbol(session, provider: chatSummary?.provider),
+        tint: rowTint,
+        size: 28
+      )
+      .adeMatchedGeometry(id: isSelectedTransitionSource ? "work-icon-\(session.id)" : nil, in: transitionNamespace)
 
-      VStack(alignment: .leading, spacing: 8) {
-        HStack(alignment: .top, spacing: 8) {
-          VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 6) {
-              Text(chatSummary?.title ?? session.title)
-                .font(.headline)
-                .foregroundStyle(ADEColor.textPrimary)
-                .lineLimit(1)
-                .adeMatchedGeometry(id: isSelectedTransitionSource ? "work-title-\(session.id)" : nil, in: transitionNamespace)
-              if session.pinned {
-                Image(systemName: "pin.fill")
-                  .font(.caption2)
-                  .foregroundStyle(ADEColor.accent)
-              }
-            }
-
-            ScrollView(.horizontal, showsIndicators: false) {
-              HStack(spacing: 8) {
-                WorkTag(text: session.laneName, icon: "arrow.triangle.branch", tint: ADEColor.textSecondary)
-                if lane?.status.dirty == true {
-                  WorkTag(text: "Dirty", icon: "circle.fill", tint: ADEColor.warning)
-                }
-                if let devices = lane?.devicesOpen, !devices.isEmpty {
-                  WorkTag(
-                    text: devices.count == 1 ? "1 device" : "\(devices.count) devices",
-                    icon: devicePresenceSymbol(for: devices),
-                    tint: ADEColor.accent
-                  )
-                }
-                if let chatSummary {
-                  WorkTag(text: providerLabel(chatSummary.provider), icon: providerIcon(chatSummary.provider), tint: rowTint)
-                  WorkTag(text: chatSummary.model, icon: "cpu", tint: ADEColor.textSecondary)
-                } else if session.toolType != nil {
-                  WorkTag(text: workSessionRuntimeLabel(session: session), icon: isChatSession(session) ? "bubble.left.and.bubble.right.fill" : "terminal.fill", tint: ADEColor.textSecondary)
-                }
-              }
-            }
-          }
-
-          Spacer(minLength: 8)
-
-          VStack(alignment: .trailing, spacing: 6) {
-            ADEStatusPill(
-              text: isArchived ? "ARCHIVED" : sessionStatusLabel(session, summary: chatSummary),
-              tint: isArchived ? ADEColor.warning : rowTint
-            )
-            .adeMatchedGeometry(id: isSelectedTransitionSource ? "work-status-\(session.id)" : nil, in: transitionNamespace)
-            Text(relativeTimestamp(workSessionActivityTimestamp(session: session, summary: chatSummary)))
+      VStack(alignment: .leading, spacing: 5) {
+        HStack(alignment: .center, spacing: 6) {
+          Circle()
+            .fill(rowTint)
+            .frame(width: 6, height: 6)
+          Text(chatSummary?.title ?? session.title)
+            .font(.subheadline.weight(.semibold))
+            .foregroundStyle(ADEColor.textPrimary)
+            .lineLimit(1)
+            .truncationMode(.tail)
+            .adeMatchedGeometry(id: isSelectedTransitionSource ? "work-title-\(session.id)" : nil, in: transitionNamespace)
+          if session.pinned {
+            Image(systemName: "pin.fill")
               .font(.caption2)
-              .foregroundStyle(ADEColor.textMuted)
-            Text(formattedSessionDuration(startedAt: session.startedAt, endedAt: session.endedAt))
-              .font(.caption2.monospacedDigit())
-              .foregroundStyle(ADEColor.textMuted)
+              .foregroundStyle(ADEColor.accent)
           }
+          Spacer(minLength: 6)
+          Text(relativeTimestamp(workSessionActivityTimestamp(session: session, summary: chatSummary)))
+            .font(.caption2.monospacedDigit())
+            .foregroundStyle(ADEColor.textMuted)
+            .lineLimit(1)
         }
 
         if let preview = chatSummary?.summary ?? chatSummary?.lastOutputPreview ?? session.summary ?? session.lastOutputPreview,
@@ -464,7 +465,32 @@ struct WorkSessionRow: View {
           Text(preview)
             .font(.caption)
             .foregroundStyle(ADEColor.textSecondary)
-            .lineLimit(2)
+            .lineLimit(1)
+            .truncationMode(.tail)
+        }
+
+        ScrollView(.horizontal, showsIndicators: false) {
+          HStack(spacing: 6) {
+            ADEStatusPill(
+              text: isArchived ? "ARCHIVED" : sessionStatusLabel(session, summary: chatSummary),
+              tint: isArchived ? ADEColor.warning : rowTint
+            )
+            .adeMatchedGeometry(id: isSelectedTransitionSource ? "work-status-\(session.id)" : nil, in: transitionNamespace)
+            WorkTag(text: session.laneName, icon: "arrow.triangle.branch", tint: ADEColor.textSecondary)
+            if lane?.status.dirty == true {
+              WorkTag(text: "Dirty", icon: "circle.fill", tint: ADEColor.warning)
+            }
+            if let chatSummary {
+              WorkTag(text: chatSummary.model, icon: "cpu", tint: ADEColor.textSecondary)
+            }
+            if let devices = lane?.devicesOpen, !devices.isEmpty {
+              WorkTag(
+                text: devices.count == 1 ? "1 device" : "\(devices.count) devices",
+                icon: devicePresenceSymbol(for: devices),
+                tint: ADEColor.accent
+              )
+            }
+          }
         }
       }
     }
