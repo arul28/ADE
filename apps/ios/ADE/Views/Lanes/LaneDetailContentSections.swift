@@ -6,9 +6,16 @@ struct LaneDetailHeaderCard: View {
   let snapshot: LaneListSnapshot
   let detail: LaneDetailPayload?
   let linkedPullRequests: [PullRequestListItem]
+  let transitionNamespace: Namespace.ID?
+  let transitionLaneId: String?
+  let canManage: Bool
   let onManageTapped: () -> Void
   let onStackTapped: () -> Void
   let onOpenLinkedPullRequest: (PullRequestListItem) -> Void
+
+  private var transitionId: String? {
+    transitionNamespace == nil ? nil : transitionLaneId
+  }
 
   var body: some View {
     VStack(alignment: .leading, spacing: 12) {
@@ -30,6 +37,7 @@ struct LaneDetailHeaderCard: View {
   private var headerTopRow: some View {
     HStack(alignment: .top, spacing: 10) {
       LaneStatusIndicator(bucket: snapshot.runtime.bucket, size: 12)
+        .adeMatchedGeometry(id: transitionId.map { "lane-icon-\($0)" }, in: transitionNamespace)
 
       VStack(alignment: .leading, spacing: 4) {
         HStack(spacing: 8) {
@@ -37,6 +45,7 @@ struct LaneDetailHeaderCard: View {
             .font(.headline.weight(.semibold))
             .foregroundStyle(ADEColor.textPrimary)
             .lineLimit(2)
+            .adeMatchedGeometry(id: transitionId.map { "lane-title-\($0)" }, in: transitionNamespace)
 
           laneTypeBadge
         }
@@ -52,6 +61,7 @@ struct LaneDetailHeaderCard: View {
           .background(ADEColor.surfaceBackground.opacity(0.45), in: Circle())
       }
       .buttonStyle(.plain)
+      .disabled(!canManage)
       .accessibilityLabel("Manage lane")
     }
   }
@@ -74,6 +84,7 @@ struct LaneDetailHeaderCard: View {
     ScrollView(.horizontal, showsIndicators: false) {
       HStack(spacing: 6) {
         laneStatusBadge
+          .adeMatchedGeometry(id: transitionId.map { "lane-status-\($0)" }, in: transitionNamespace)
         if snapshot.lane.status.ahead > 0 {
           LaneMicroChip(icon: "arrow.up", text: "\(snapshot.lane.status.ahead) ahead", tint: ADEColor.success)
         }

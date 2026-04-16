@@ -327,12 +327,23 @@ struct LaneStackCard: View, Equatable {
   let isPinned: Bool
   let isOpen: Bool
   let depth: Int
+  var transitionNamespace: Namespace.ID? = nil
+  var isSelectedTransitionSource = false
+
+  static func == (lhs: LaneStackCard, rhs: LaneStackCard) -> Bool {
+    lhs.snapshot == rhs.snapshot
+      && lhs.isPinned == rhs.isPinned
+      && lhs.isOpen == rhs.isOpen
+      && lhs.depth == rhs.depth
+      && lhs.isSelectedTransitionSource == rhs.isSelectedTransitionSource
+  }
 
   var body: some View {
     VStack(alignment: .leading, spacing: 8) {
       HStack(alignment: .top, spacing: 10) {
         LaneStatusIndicator(bucket: snapshot.runtime.bucket, size: 10)
           .padding(.top, 4)
+          .adeMatchedGeometry(id: isSelectedTransitionSource ? "lane-icon-\(snapshot.lane.id)" : nil, in: transitionNamespace)
 
         VStack(alignment: .leading, spacing: 4) {
           HStack(alignment: .firstTextBaseline, spacing: 8) {
@@ -340,9 +351,11 @@ struct LaneStackCard: View, Equatable {
               .font(.subheadline.weight(.semibold))
               .foregroundStyle(ADEColor.textPrimary)
               .lineLimit(1)
+              .adeMatchedGeometry(id: isSelectedTransitionSource ? "lane-title-\(snapshot.lane.id)" : nil, in: transitionNamespace)
             laneRoleBadge
             Spacer(minLength: 0)
             lanePriorityBadge(snapshot: snapshot)
+              .adeMatchedGeometry(id: isSelectedTransitionSource ? "lane-status-\(snapshot.lane.id)" : nil, in: transitionNamespace)
           }
 
           Text(snapshot.lane.branchRef)
@@ -407,6 +420,7 @@ struct LaneStackCard: View, Equatable {
         .stroke(isOpen ? ADEColor.accent.opacity(0.4) : ADEColor.border.opacity(0.18), lineWidth: isOpen ? 1.5 : 0.75)
     )
     .shadow(color: isOpen ? ADEColor.accent.opacity(0.08) : .clear, radius: 8, y: 2)
+    .adeMatchedTransitionSource(id: isSelectedTransitionSource ? "lane-container-\(snapshot.lane.id)" : nil, in: transitionNamespace)
     .accessibilityElement(children: .combine)
     .accessibilityLabel(stackCardAccessibilityLabel)
   }

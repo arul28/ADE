@@ -17,6 +17,7 @@ struct LaneFileTreeSection: View {
   let title: String
   let subtitle: String?
   let changes: [FileChange]
+  let allowsLiveActions: Bool
   let bulkActionTitle: String?
   let bulkActionSymbol: String
   let bulkActionTint: Color
@@ -43,16 +44,19 @@ struct LaneFileTreeSection: View {
             LaneActionButton(title: bulkActionTitle, symbol: bulkActionSymbol, tint: bulkActionTint) {
               onBulkAction()
             }
+            .disabled(!allowsLiveActions)
           }
           ForEach(extraBulkActions) { extra in
             if extra.isDestructive {
               LaneHoldToConfirmButton(title: extra.title, symbol: extra.symbol, tint: extra.tint) {
                 extra.action()
               }
+              .disabled(!allowsLiveActions)
             } else {
               LaneActionButton(title: extra.title, symbol: extra.symbol, tint: extra.tint) {
                 extra.action()
               }
+              .disabled(!allowsLiveActions)
             }
           }
         }
@@ -74,6 +78,7 @@ struct LaneFileTreeSection: View {
             onPrimaryAction: onPrimaryAction,
             onSecondaryAction: onSecondaryAction,
             onOpenFiles: onOpenFiles,
+            allowsLiveActions: allowsLiveActions,
             primaryActionTitle: primaryActionTitle,
             primaryActionSymbol: primaryActionSymbol,
             primaryActionTint: primaryActionTint,
@@ -164,6 +169,7 @@ private struct LaneFileTreeNodeView: View {
   let onPrimaryAction: (FileChange) -> Void
   let onSecondaryAction: (FileChange) -> Void
   let onOpenFiles: ((FileChange) -> Void)?
+  let allowsLiveActions: Bool
   let primaryActionTitle: String
   let primaryActionSymbol: String
   let primaryActionTint: Color
@@ -184,6 +190,7 @@ private struct LaneFileTreeNodeView: View {
             onPrimaryAction: { onPrimaryAction(file) },
             onSecondaryAction: { onSecondaryAction(file) },
             onOpenFiles: openFilesAction,
+            allowsLiveActions: allowsLiveActions,
             primaryActionTitle: primaryActionTitle,
             primaryActionSymbol: primaryActionSymbol,
             primaryActionTint: primaryActionTint,
@@ -204,6 +211,7 @@ private struct LaneFileTreeNodeView: View {
             onPrimaryAction: onPrimaryAction,
             onSecondaryAction: onSecondaryAction,
             onOpenFiles: onOpenFiles,
+            allowsLiveActions: allowsLiveActions,
             primaryActionTitle: primaryActionTitle,
             primaryActionSymbol: primaryActionSymbol,
             primaryActionTint: primaryActionTint,
@@ -267,6 +275,7 @@ private struct LaneFileRow: View {
   let onPrimaryAction: () -> Void
   let onSecondaryAction: () -> Void
   let onOpenFiles: (() -> Void)?
+  let allowsLiveActions: Bool
   let primaryActionTitle: String
   let primaryActionSymbol: String
   let primaryActionTint: Color
@@ -294,15 +303,19 @@ private struct LaneFileRow: View {
       }
       ScrollView(.horizontal, showsIndicators: false) {
         HStack(spacing: 6) {
+          LaneActionButton(title: "Diff", symbol: "doc.text.magnifyingglass") { onDiff() }
+            .disabled(!allowsLiveActions)
           if let onOpenFiles {
             LaneActionButton(title: "Open in Files", symbol: "folder") { onOpenFiles() }
           }
           LaneActionButton(title: primaryActionTitle, symbol: primaryActionSymbol, tint: primaryActionTint) {
             onPrimaryAction()
           }
+          .disabled(!allowsLiveActions)
           LaneActionButton(title: secondaryActionTitle, symbol: secondaryActionSymbol, tint: secondaryActionTint) {
             onSecondaryAction()
           }
+          .disabled(!allowsLiveActions)
         }
       }
     }

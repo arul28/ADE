@@ -15,6 +15,11 @@ struct LaneDiffScreen: View {
   @State private var isSaving = false
   @State private var side = "modified"
 
+  private var canEditDiff: Bool {
+    request.mode == "unstaged"
+      && laneAllowsLiveActions(connectionState: syncService.connectionState, laneStatus: syncService.status(for: .lanes))
+  }
+
   var body: some View {
     NavigationStack {
       VStack(spacing: 0) {
@@ -76,9 +81,9 @@ struct LaneDiffScreen: View {
                   .foregroundStyle(ADEColor.textMuted)
                 Spacer()
                 if request.mode == "unstaged" && side == "modified" {
-                  Text("Editable")
+                  Text(canEditDiff ? "Editable" : "Reconnect to edit")
                     .font(.caption2.weight(.semibold))
-                    .foregroundStyle(ADEColor.accent)
+                    .foregroundStyle(canEditDiff ? ADEColor.accent : ADEColor.textMuted)
                 }
               }
               TextEditor(text: Binding(
@@ -92,7 +97,7 @@ struct LaneDiffScreen: View {
               .font(.system(.footnote, design: .monospaced))
               .scrollContentBackground(.hidden)
               .adeInsetField(cornerRadius: 14, padding: 12)
-              .disabled(side == "original")
+              .disabled(side == "original" || !canEditDiff)
             }
             .padding(.horizontal, 16)
             .padding(.bottom, 16)
@@ -124,7 +129,7 @@ struct LaneDiffScreen: View {
                 Text("Save")
               }
             }
-            .disabled(isSaving)
+            .disabled(isSaving || !canEditDiff)
           }
         }
         ToolbarItem(placement: .topBarTrailing) {

@@ -9,6 +9,7 @@ struct LaneDetailScreen: View {
   let laneId: String
   let initialSnapshot: LaneListSnapshot
   let allLaneSnapshots: [LaneListSnapshot]
+  let transitionNamespace: Namespace.ID?
   let onRefreshRoot: @MainActor () async -> Void
 
   @State private(set) var detail: LaneDetailPayload?
@@ -36,12 +37,14 @@ struct LaneDetailScreen: View {
     laneId: String,
     initialSnapshot: LaneListSnapshot,
     allLaneSnapshots: [LaneListSnapshot],
+    transitionNamespace: Namespace.ID? = nil,
     initialSection: LaneDetailSection = .git,
     onRefreshRoot: @escaping @MainActor () async -> Void
   ) {
     self.laneId = laneId
     self.initialSnapshot = initialSnapshot
     self.allLaneSnapshots = allLaneSnapshots
+    self.transitionNamespace = transitionNamespace
     self.onRefreshRoot = onRefreshRoot
   }
 
@@ -63,7 +66,6 @@ struct LaneDetailScreen: View {
   var body: some View {
     ScrollView {
       LazyVStack(spacing: 14) {
-
         if let busyAction {
           HStack(spacing: 10) {
             ProgressView()
@@ -89,8 +91,17 @@ struct LaneDetailScreen: View {
           .background(ADEColor.danger.opacity(0.08), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
         }
 
+        if let detailConnectionNotice {
+          connectionNoticeCard(detailConnectionNotice)
+        }
+
         detailHeader
-        gitSections
+
+        if detail != nil {
+          gitSections
+        } else if let detailEmptyStatePresentation {
+          detailEmptyStateCard(detailEmptyStatePresentation)
+        }
       }
       .padding(.horizontal, 16)
       .padding(.vertical, 8)
@@ -100,6 +111,7 @@ struct LaneDetailScreen: View {
     .scrollBounceBehavior(.basedOnSize)
     .navigationTitle(detail?.lane.name ?? initialSnapshot.lane.name)
     .navigationBarTitleDisplayMode(.inline)
+    .adeNavigationZoomTransition(id: transitionNamespace == nil ? nil : "lane-container-\(laneId)", in: transitionNamespace)
     .task {
       syncService.announceLaneOpen(laneId: laneId)
       await loadDetail(refreshRemote: false)
@@ -164,6 +176,9 @@ struct LaneDetailScreen: View {
       snapshot: currentSnapshot,
       detail: detail,
       linkedPullRequests: lanePullRequests,
+      transitionNamespace: transitionNamespace,
+      transitionLaneId: laneId,
+      canManage: canRunLiveActions,
       onManageTapped: { managePresented = true },
       onStackTapped: { showStackGraph = true },
       onOpenLinkedPullRequest: { pr in openPullRequest(pr) }
@@ -243,43 +258,25 @@ struct LaneDetailScreen: View {
   }
 
   var canRunLiveActions: Bool {
-    syncService.connectionState == .connected || syncService.connectionState == .syncing
+    laneAllowsLiveActions(connectionState: syncService.connectionState, laneStatus: syncService.status(for: .lanes))
   }
 
-  private var connectionBanner: ADENoticeCard? {
-    let lanesStatus = syncService.status(for: .lanes)
-    switch syncService.connectionState {
-    case .connected:
-      if lanesStatus.phase == .ready {
-        return nil
-      }
-      return ADENoticeCard(
-        title: "Hydrating",
-        message: "Lane data is still loading from the host.",
-        icon: "arrow.trianglehead.2.clockwise.rotate.90",
-        tint: ADEColor.warning,
-        actionTitle: nil,
-        action: nil
-      )
-    case .syncing, .connecting:
-      return ADENoticeCard(
-        title: "Syncing",
-        message: "Actions will run when sync settles.",
-        icon: "arrow.trianglehead.2.clockwise.rotate.90",
-        tint: ADEColor.warning,
-        actionTitle: nil,
-        action: nil
-      )
-    case .disconnected, .error:
-      return ADENoticeCard(
-        title: "Offline",
-        message: "Showing last cached lane state.",
-        icon: "icloud.slash",
-        tint: ADEColor.textSecondary,
-        actionTitle: nil,
-        action: nil
-      )
-    }
+  private var detailConnectionNotice: LaneConnectionNoticePresentation? {
+    laneDetailConnectionNotice(
+      connectionState: syncService.connectionState,
+      laneStatus: syncService.status(for: .lanes),
+      hasCachedDetail: detail != nil,
+      hasHostProfile: syncService.activeHostProfile != nil,
+      needsRepairing: syncService.activeHostProfile == nil && detail != nil
+    )
+  }
+
+  private var detailEmptyStatePresentation: LaneEmptyStatePresentation? {
+    laneDetailEmptyState(
+      connectionState: syncService.connectionState,
+      laneStatus: syncService.status(for: .lanes),
+      hasHostProfile: syncService.activeHostProfile != nil
+    )
   }
 
   @MainActor
@@ -353,6 +350,50 @@ struct LaneDetailScreen: View {
 
   private func openPullRequest(_ pr: PullRequestListItem) {
     syncService.requestedPrNavigation = PrNavigationRequest(prId: pr.id, laneId: pr.laneId)
+  }
+
+  @ViewBuilder
+  private func connectionNoticeCard(_ presentation: LaneConnectionNoticePresentation) -> some View {
+    ADENoticeCard(
+      title: presentation.title,
+      message: presentation.message,
+      icon: presentation.icon,
+      tint: presentation.tintRole.color,
+      actionTitle: presentation.actionTitle,
+      action: presentation.action.map { action in
+        {
+          handleNoticeAction(action)
+        }
+      }
+    )
+  }
+
+  @ViewBuilder
+  private func detailEmptyStateCard(_ presentation: LaneEmptyStatePresentation) -> some View {
+    ADEEmptyStateView(symbol: presentation.symbol, title: presentation.title, message: presentation.message) {
+      if let actionTitle = presentation.actionTitle, let action = presentation.action {
+        Button(actionTitle) {
+          handleNoticeAction(action)
+        }
+        .buttonStyle(.glassProminent)
+        .tint(ADEColor.accent)
+      }
+    }
+  }
+
+  private func handleNoticeAction(_ action: LaneConnectionNoticeAction) {
+    switch action {
+    case .openSettings:
+      syncService.settingsPresented = true
+    case .reconnect:
+      Task {
+        await syncService.reconnectIfPossible(userInitiated: true)
+        await loadDetail(refreshRemote: true)
+        await onRefreshRoot()
+      }
+    case .retry:
+      Task { await loadDetail(refreshRemote: true) }
+    }
   }
 
   @MainActor

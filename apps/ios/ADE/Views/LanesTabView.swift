@@ -5,6 +5,7 @@ import SwiftUI
 struct LanesTabView: View {
   @Environment(\.accessibilityReduceMotion) var reduceMotion
   @EnvironmentObject var syncService: SyncService
+  @Namespace private var laneTransitionNamespace
 
   @State var laneSnapshots: [LaneListSnapshot] = []
   @State var errorMessage: String?
@@ -21,6 +22,7 @@ struct LanesTabView: View {
   @State var batchManageLaneIds: [String] = []
   @State var batchManagePresented = false
   @State var refreshFeedbackToken = 0
+  @State var selectedLaneTransitionId: String?
   @State private var lastLanesLocalProjectionReload = Date.distantPast
 
   var pinnedLaneIds: Set<String> {
@@ -40,65 +42,64 @@ struct LanesTabView: View {
     syncService.activeHostProfile == nil && !laneSnapshots.isEmpty
   }
 
-  var isConnected: Bool {
-    switch syncService.connectionState {
-    case .connected, .syncing: return true
-    case .connecting, .disconnected, .error: return false
-    }
+  var canRunLiveActions: Bool {
+    laneAllowsLiveActions(connectionState: syncService.connectionState, laneStatus: laneStatus)
+  }
+
+  var transitionNamespace: Namespace.ID? {
+    ADEMotion.allowsMatchedGeometry(reduceMotion: reduceMotion) ? laneTransitionNamespace : nil
   }
 
   var body: some View {
     NavigationStack {
-      Group {
-        if isConnected {
-          ScrollView {
-            LazyVStack(spacing: 14) {
-              if let errorMessage, laneStatus.phase == .ready {
-                ADENoticeCard(
-                  title: "Lane view error",
-                  message: errorMessage,
-                  icon: "exclamationmark.triangle.fill",
-                  tint: ADEColor.danger,
-                  actionTitle: "Retry",
-                  action: { Task { await reload(refreshRemote: true) } }
-                )
-                .transition(.opacity)
-              }
-              if let primaryBranchError, laneStatus.phase == .ready {
-                ADENoticeCard(
-                  title: "Primary branch error",
-                  message: primaryBranchError,
-                  icon: "exclamationmark.triangle.fill",
-                  tint: ADEColor.danger,
-                  actionTitle: "Retry",
-                  action: { Task { await refreshPrimaryBranches(force: true) } }
-                )
-                .transition(.opacity)
-              }
-              if laneSnapshots.isEmpty && (laneStatus.phase == .hydrating || laneStatus.phase == .syncingInitialData) {
-                ADECardSkeleton(rows: 4)
-                ADECardSkeleton(rows: 3)
-              }
-              if !openLaneSnapshots.isEmpty {
-                openLanesTray
-                  .transition(.move(edge: .top).combined(with: .opacity))
-              }
-              if !visibleSuggestions.isEmpty || !visibleAutoRebaseAttention.isEmpty {
-                attentionSection
-                  .transition(.move(edge: .top).combined(with: .opacity))
-              }
-              laneList
-            }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 8)
+      ScrollView {
+        LazyVStack(spacing: 14) {
+          if let statusNotice {
+            noticeCard(statusNotice)
+              .transition(.opacity)
           }
-          .scrollBounceBehavior(.basedOnSize)
-          .searchable(text: $searchText, prompt: "Filter by lane, branch, is:dirty...")
-          .refreshable { await refreshFromPullGesture() }
-        } else {
-          LanesOfflineEmptyState()
+          if let errorMessage, laneStatus.phase == .ready {
+            ADENoticeCard(
+              title: "Lane view error",
+              message: errorMessage,
+              icon: "exclamationmark.triangle.fill",
+              tint: ADEColor.danger,
+              actionTitle: "Retry",
+              action: { Task { await reload(refreshRemote: true) } }
+            )
+            .transition(.opacity)
+          }
+          if let primaryBranchError, laneStatus.phase == .ready {
+            ADENoticeCard(
+              title: "Primary branch error",
+              message: primaryBranchError,
+              icon: "exclamationmark.triangle.fill",
+              tint: ADEColor.danger,
+              actionTitle: "Retry",
+              action: { Task { await refreshPrimaryBranches(force: true) } }
+            )
+            .transition(.opacity)
+          }
+          if showsLaneLoadingSkeletons {
+            ADECardSkeleton(rows: 4)
+            ADECardSkeleton(rows: 3)
+          }
+          if !openLaneSnapshots.isEmpty {
+            openLanesTray
+              .transition(.move(edge: .top).combined(with: .opacity))
+          }
+          if !visibleSuggestions.isEmpty || !visibleAutoRebaseAttention.isEmpty {
+            attentionSection
+              .transition(.move(edge: .top).combined(with: .opacity))
+          }
+          laneList
         }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
       }
+      .scrollBounceBehavior(.basedOnSize)
+      .searchable(text: $searchText, prompt: "Filter by lane, branch, is:dirty...")
+      .refreshable { await refreshFromPullGesture() }
       .adeScreenBackground()
       .adeNavigationGlass()
       .navigationTitle("Lanes")
@@ -198,6 +199,7 @@ struct LanesTabView: View {
             } label: {
               Label("Manage visible lanes", systemImage: "slider.horizontal.3")
             }
+            .disabled(!canRunLiveActions)
           }
         }
         if let primaryLane {
@@ -215,6 +217,7 @@ struct LanesTabView: View {
                   }
                 }
               }
+              .disabled(!canRunLiveActions)
             }
           }
         }
@@ -232,6 +235,7 @@ struct LanesTabView: View {
           .font(.body.weight(.semibold))
           .foregroundStyle(ADEColor.accent)
       }
+      .disabled(!canRunLiveActions)
       .accessibilityLabel("Add lane")
     }
   }

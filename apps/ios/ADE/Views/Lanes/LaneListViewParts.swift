@@ -40,87 +40,6 @@ extension LanesTabView {
     }
   }
 
-  var statusNotice: ADENoticeCard? {
-    switch laneStatus.phase {
-    case .disconnected:
-      return ADENoticeCard(
-        title: laneSnapshots.isEmpty ? "Host disconnected" : "Showing cached lanes",
-        message: laneSnapshots.isEmpty
-          ? (syncService.activeHostProfile == nil
-            ? "Pair with a host to load the current lane graph."
-            : "Reconnect to load the current lane graph from the host.")
-          : (needsRepairing
-            ? "Cached data shown. Re-pair to verify the lane graph."
-            : "Cached data available. Reconnect to refresh."),
-        icon: "bolt.horizontal.circle",
-        tint: ADEColor.warning,
-        actionTitle: syncService.activeHostProfile == nil ? (needsRepairing ? "Pair again" : "Pair with host") : "Reconnect",
-        action: {
-          if syncService.activeHostProfile == nil {
-            syncService.settingsPresented = true
-          } else {
-            Task { [weak syncService] in
-              await syncService?.reconnectIfPossible(userInitiated: true)
-              await reload(refreshRemote: true)
-            }
-          }
-        }
-      )
-    case .hydrating:
-      return ADENoticeCard(
-        title: "Hydrating lane graph",
-        message: "Pulling lane snapshots from the host.",
-        icon: "arrow.trianglehead.2.clockwise.rotate.90",
-        tint: ADEColor.accent,
-        actionTitle: nil,
-        action: nil
-      )
-    case .syncingInitialData:
-      return ADENoticeCard(
-        title: "Syncing initial data",
-        message: "Waiting for host to finish syncing before lane graph loads.",
-        icon: "arrow.trianglehead.2.clockwise.rotate.90",
-        tint: ADEColor.warning,
-        actionTitle: nil,
-        action: nil
-      )
-    case .failed:
-      return ADENoticeCard(
-        title: "Lane hydration failed",
-        message: laneStatus.lastError ?? "Lane hydration did not complete.",
-        icon: "exclamationmark.triangle.fill",
-        tint: ADEColor.danger,
-        actionTitle: "Retry",
-        action: { Task { await reload(refreshRemote: true) } }
-      )
-    case .ready:
-      return nil
-    }
-  }
-
-  @MainActor
-  func refreshPrimaryBranches(force: Bool = false) async {
-    guard let primaryLane else {
-      primaryBranches = []
-      primaryBranchLaneId = nil
-      primaryBranchError = nil
-      return
-    }
-    if !force, primaryBranchLaneId == primaryLane.id, !primaryBranches.isEmpty {
-      return
-    }
-    do {
-      primaryBranches = try await syncService.listBranches(laneId: primaryLane.id)
-      primaryBranchLaneId = primaryLane.id
-      primaryBranchError = nil
-    } catch {
-      primaryBranches = []
-      primaryBranchLaneId = primaryLane.id
-      ADEHaptics.error()
-      primaryBranchError = error.localizedDescription
-    }
-  }
-
   @ViewBuilder
   var openLanesTray: some View {
     VStack(alignment: .leading, spacing: 12) {
@@ -148,6 +67,7 @@ extension LanesTabView {
                 laneId: snapshot.lane.id,
                 initialSnapshot: snapshot,
                 allLaneSnapshots: laneSnapshots,
+                transitionNamespace: nil,
                 onRefreshRoot: { await reload(refreshRemote: true) }
               )
             } label: {
@@ -299,12 +219,17 @@ extension LanesTabView {
   @ViewBuilder
   var laneList: some View {
     if laneSnapshots.isEmpty {
-      ADEEmptyStateView(
-        symbol: "plus.circle.dashed",
-        title: "No lanes yet",
-        message: "Tap + to create your first lane."
-      )
-      .padding(.top, 40)
+      if let emptyStatePresentation {
+        emptyStateCard(emptyStatePresentation)
+          .padding(.top, 24)
+      } else if !showsLaneLoadingSkeletons {
+        ADEEmptyStateView(
+          symbol: "plus.circle.dashed",
+          title: "No lanes yet",
+          message: "Tap + to create your first lane."
+        )
+        .padding(.top, 40)
+      }
     } else if filteredSnapshots.isEmpty {
       ADEEmptyStateView(
         symbol: "square.stack.3d.up.slash",
@@ -320,6 +245,7 @@ extension LanesTabView {
               laneId: primarySnapshot.lane.id,
               initialSnapshot: primarySnapshot,
               allLaneSnapshots: laneSnapshots,
+              transitionNamespace: transitionNamespace,
               onRefreshRoot: { await reload(refreshRemote: true) }
             )
           } label: {
@@ -327,10 +253,15 @@ extension LanesTabView {
               snapshot: primarySnapshot,
               isPinned: pinnedLaneIds.contains(primarySnapshot.lane.id),
               isOpen: openLaneIds.contains(primarySnapshot.lane.id),
-              depth: 0
+              depth: 0,
+              transitionNamespace: transitionNamespace,
+              isSelectedTransitionSource: selectedLaneTransitionId == primarySnapshot.lane.id
             )
             .equatable()
           }
+          .simultaneousGesture(TapGesture().onEnded {
+            selectedLaneTransitionId = primarySnapshot.lane.id
+          })
           .buttonStyle(ADEScaleButtonStyle())
           .contextMenu { laneContextMenu(snapshot: primarySnapshot) } preview: {
             LanePeekPreview(snapshot: primarySnapshot)
@@ -352,9 +283,12 @@ extension LanesTabView {
             pinnedLaneIds: pinnedLaneIds,
             openLaneIds: openLaneIds,
             allLaneSnapshots: laneSnapshots,
+            transitionNamespace: transitionNamespace,
+            selectedLaneId: selectedLaneTransitionId,
             onRefreshRoot: { await reload(refreshRemote: true) },
             onContextMenu: { snapshot in AnyView(laneContextMenu(snapshot: snapshot)) },
-            onTogglePin: { laneId in togglePin(laneId) }
+            onTogglePin: { laneId in togglePin(laneId) },
+            onSelectLane: { laneId in selectedLaneTransitionId = laneId }
           )
         }
       }
@@ -383,11 +317,13 @@ extension LanesTabView {
       batchManageLaneIds = manageableVisibleLaneIds
       batchManagePresented = !manageableVisibleLaneIds.isEmpty
     }
+    .disabled(!canRunLiveActions)
     if manageableVisibleLaneIds.count > 1 {
       Button("Manage \(manageableVisibleLaneIds.count) visible lanes") {
         batchManageLaneIds = manageableVisibleLaneIds
         batchManagePresented = true
       }
+      .disabled(!canRunLiveActions)
     }
     if snapshot.lane.archivedAt == nil && snapshot.lane.laneType != "primary" {
       Button("Archive", role: .destructive) {
@@ -401,6 +337,7 @@ extension LanesTabView {
           }
         }
       }
+      .disabled(!canRunLiveActions)
     } else if snapshot.lane.archivedAt != nil {
       Button("Restore") {
         Task {
@@ -413,6 +350,7 @@ extension LanesTabView {
           }
         }
       }
+      .disabled(!canRunLiveActions)
     }
     Button("Copy path") {
       UIPasteboard.general.string = snapshot.lane.worktreePath
@@ -429,6 +367,7 @@ extension LanesTabView {
           }
         }
       }
+      .disabled(!canRunLiveActions)
     }
   }
 
@@ -456,10 +395,6 @@ extension LanesTabView {
       ADEHaptics.error()
       errorMessage = error.localizedDescription
     }
-  }
-
-  var canRunLiveActions: Bool {
-    syncService.connectionState == .connected || syncService.connectionState == .syncing
   }
 
   func toggleOpenLane(_ laneId: String) {

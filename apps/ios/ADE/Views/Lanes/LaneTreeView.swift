@@ -27,9 +27,12 @@ struct LaneTreeView: View {
   let pinnedLaneIds: Set<String>
   let openLaneIds: [String]
   let allLaneSnapshots: [LaneListSnapshot]
+  let transitionNamespace: Namespace.ID?
+  let selectedLaneId: String?
   let onRefreshRoot: () async -> Void
   let onContextMenu: (LaneListSnapshot) -> AnyView
   let onTogglePin: (String) -> Void
+  let onSelectLane: (String) -> Void
 
   private var depthByLane: [String: Int] {
     let visibleLaneIds = Set(snapshots.map { $0.lane.id })
@@ -75,9 +78,12 @@ struct LaneTreeView: View {
           allLaneSnapshots: allLaneSnapshots,
           isPinned: pinnedLaneIds.contains(snapshot.lane.id),
           isOpen: openLaneIds.contains(snapshot.lane.id),
+          transitionNamespace: transitionNamespace,
+          isSelectedTransitionSource: selectedLaneId == snapshot.lane.id,
           onRefreshRoot: onRefreshRoot,
           onContextMenu: onContextMenu,
-          onTogglePin: onTogglePin
+          onTogglePin: onTogglePin,
+          onSelectLane: onSelectLane
         )
       }
     }
@@ -90,9 +96,12 @@ struct LaneTreeRow: View {
   let allLaneSnapshots: [LaneListSnapshot]
   let isPinned: Bool
   let isOpen: Bool
+  let transitionNamespace: Namespace.ID?
+  let isSelectedTransitionSource: Bool
   let onRefreshRoot: () async -> Void
   let onContextMenu: (LaneListSnapshot) -> AnyView
   let onTogglePin: (String) -> Void
+  let onSelectLane: (String) -> Void
 
   private var isChild: Bool { snapshot.lane.laneType != "primary" && depth > 0 }
 
@@ -114,6 +123,7 @@ struct LaneTreeRow: View {
           laneId: snapshot.lane.id,
           initialSnapshot: snapshot,
           allLaneSnapshots: allLaneSnapshots,
+          transitionNamespace: transitionNamespace,
           onRefreshRoot: onRefreshRoot
         )
       } label: {
@@ -121,10 +131,15 @@ struct LaneTreeRow: View {
           snapshot: snapshot,
           isPinned: isPinned,
           isOpen: isOpen,
-          depth: depth
+          depth: depth,
+          transitionNamespace: transitionNamespace,
+          isSelectedTransitionSource: isSelectedTransitionSource
         )
         .equatable()
       }
+      .simultaneousGesture(TapGesture().onEnded {
+        onSelectLane(snapshot.lane.id)
+      })
       .buttonStyle(ADEScaleButtonStyle())
       .contextMenu {
         onContextMenu(snapshot)

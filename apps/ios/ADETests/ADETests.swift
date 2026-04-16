@@ -1527,6 +1527,89 @@ final class ADETests: XCTestCase {
     )
   }
 
+  func testLaneRootConnectionNoticeKeepsCachedLanesVisibleWhileOffline() {
+    let notice = laneRootConnectionNotice(
+      connectionState: .disconnected,
+      laneStatus: .disconnected,
+      hasCachedLanes: true,
+      hasHostProfile: true,
+      needsRepairing: false
+    )
+
+    XCTAssertEqual(notice?.title, "Showing cached lanes")
+    XCTAssertEqual(notice?.actionTitle, "Reconnect")
+    XCTAssertEqual(notice?.action, .reconnect)
+    XCTAssertFalse(notice?.allowsLiveActions ?? true)
+    XCTAssertEqual(
+      notice?.message,
+      "Cached lane state stays visible. Reconnect to refresh or run live lane actions."
+    )
+  }
+
+  func testLaneRootEmptyStateGuidesUnpairedUsersWhenNoCacheExists() {
+    let emptyState = laneRootEmptyState(
+      connectionState: .disconnected,
+      laneStatus: .disconnected,
+      hasHostProfile: false
+    )
+
+    XCTAssertEqual(emptyState?.title, "Pair to load lanes")
+    XCTAssertEqual(emptyState?.actionTitle, "Pair with host")
+    XCTAssertEqual(emptyState?.action, .openSettings)
+  }
+
+  func testLaneDetailNoticeDisablesLiveActionsWhileSyncing() {
+    let notice = laneDetailConnectionNotice(
+      connectionState: .syncing,
+      laneStatus: SyncDomainStatus(phase: .ready, lastError: nil, lastHydratedAt: nil),
+      hasCachedDetail: true,
+      hasHostProfile: true,
+      needsRepairing: false
+    )
+
+    XCTAssertEqual(notice?.title, "Syncing live lane detail")
+    XCTAssertFalse(notice?.allowsLiveActions ?? true)
+    XCTAssertNil(notice?.action)
+    XCTAssertEqual(
+      notice?.message,
+      "Cached lane detail remains visible while sync catches up. Live git actions unlock when sync finishes."
+    )
+  }
+
+  func testLaneDetailEmptyStateSurfacesRetryWhenHydrationFailsWithoutCache() {
+    let emptyState = laneDetailEmptyState(
+      connectionState: .connected,
+      laneStatus: SyncDomainStatus(phase: .failed, lastError: "The host stopped before lane detail loaded.", lastHydratedAt: nil),
+      hasHostProfile: true
+    )
+
+    XCTAssertEqual(emptyState?.title, "Lane detail unavailable")
+    XCTAssertEqual(emptyState?.message, "The host stopped before lane detail loaded.")
+    XCTAssertEqual(emptyState?.actionTitle, "Retry")
+    XCTAssertEqual(emptyState?.action, .retry)
+  }
+
+  func testLaneAllowsLiveActionsRequiresConnectedAndReadyState() {
+    XCTAssertTrue(
+      laneAllowsLiveActions(
+        connectionState: .connected,
+        laneStatus: SyncDomainStatus(phase: .ready, lastError: nil, lastHydratedAt: nil)
+      )
+    )
+    XCTAssertFalse(
+      laneAllowsLiveActions(
+        connectionState: .syncing,
+        laneStatus: SyncDomainStatus(phase: .ready, lastError: nil, lastHydratedAt: nil)
+      )
+    )
+    XCTAssertFalse(
+      laneAllowsLiveActions(
+        connectionState: .connected,
+        laneStatus: SyncDomainStatus(phase: .hydrating, lastError: nil, lastHydratedAt: nil)
+      )
+    )
+  }
+
   func testBuildPullRequestTimelineOrdersStateReviewsAndComments() {
     let pr = PullRequestListItem(
       id: "pr-9",

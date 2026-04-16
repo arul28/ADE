@@ -125,7 +125,7 @@ extension LaneDetailScreen {
         }
         .buttonStyle(.borderedProminent)
         .tint(ADEColor.accent)
-        .disabled(!conflictState.canContinue)
+        .disabled(!canRunLiveActions || !conflictState.canContinue)
 
         Button {
           Task { await performAction("rebase abort") { try await syncService.rebaseAbortGit(laneId: laneId) } }
@@ -137,7 +137,7 @@ extension LaneDetailScreen {
         }
         .buttonStyle(.bordered)
         .tint(ADEColor.danger)
-        .disabled(!conflictState.canAbort)
+        .disabled(!canRunLiveActions || !conflictState.canAbort)
       }
     }
     .padding(14)
@@ -157,6 +157,7 @@ extension LaneDetailScreen {
       title: "Unstaged files",
       subtitle: "\(changes.count) file\(changes.count == 1 ? "" : "s")",
       changes: changes,
+      allowsLiveActions: canRunLiveActions,
       bulkActionTitle: changes.count > 1 ? "Stage all" : nil,
       bulkActionSymbol: "plus.circle.fill",
       bulkActionTint: ADEColor.accent,
@@ -184,7 +185,16 @@ extension LaneDetailScreen {
           }
         }
       },
-      onDiff: { _ in },
+      onDiff: { file in
+        selectedDiffRequest = LaneDiffRequest(
+          laneId: laneId,
+          path: file.path,
+          mode: "unstaged",
+          compareRef: nil,
+          compareTo: nil,
+          title: (file.path as NSString).lastPathComponent
+        )
+      },
       onPrimaryAction: { file in
         Task { await performAction("stage file") { try await syncService.stageFile(laneId: laneId, path: file.path) } }
       },
@@ -205,6 +215,7 @@ extension LaneDetailScreen {
       title: "Staged files",
       subtitle: "\(changes.count) file\(changes.count == 1 ? "" : "s")",
       changes: changes,
+      allowsLiveActions: canRunLiveActions,
       bulkActionTitle: changes.count > 1 ? "Unstage all" : nil,
       bulkActionSymbol: "minus.circle",
       bulkActionTint: ADEColor.warning,
@@ -222,7 +233,16 @@ extension LaneDetailScreen {
           }
         }
       },
-      onDiff: { _ in },
+      onDiff: { file in
+        selectedDiffRequest = LaneDiffRequest(
+          laneId: laneId,
+          path: file.path,
+          mode: "staged",
+          compareRef: nil,
+          compareTo: nil,
+          title: (file.path as NSString).lastPathComponent
+        )
+      },
       onPrimaryAction: { file in
         Task { await performAction("unstage file") { try await syncService.unstageFile(laneId: laneId, path: file.path) } }
       },
@@ -244,6 +264,7 @@ extension LaneDetailScreen {
         LaneQuickAction(title: "Fetch", symbol: "arrow.down.circle", tint: ADEColor.textSecondary) {
           Task { await performAction("fetch") { try await syncService.fetchGit(laneId: laneId) } }
         }
+        .disabled(!canRunLiveActions)
         Menu {
           Button("Pull (merge)") {
             Task { await performAction("pull merge") { try await syncService.pullGit(laneId: laneId) } }
@@ -254,6 +275,7 @@ extension LaneDetailScreen {
         } label: {
           LaneQuickAction(title: "Pull", symbol: "arrow.down.to.line", tint: ADEColor.textSecondary) {}
         }
+        .disabled(!canRunLiveActions)
         LaneQuickAction(
           title: detail.syncStatus?.hasUpstream == false ? "Publish" : "Push",
           symbol: "arrow.up.circle",
@@ -261,6 +283,7 @@ extension LaneDetailScreen {
         ) {
           Task { await performAction("push") { try await syncService.pushGit(laneId: laneId) } }
         }
+        .disabled(!canRunLiveActions)
         Menu {
           Button("Force push") {
             Task { await performAction("force push") { try await syncService.pushGit(laneId: laneId, forceWithLease: true) } }
@@ -277,6 +300,13 @@ extension LaneDetailScreen {
         } label: {
           LaneQuickAction(title: "More", symbol: "ellipsis.circle", tint: ADEColor.textSecondary) {}
         }
+        .disabled(!canRunLiveActions)
+      }
+
+      if !canRunLiveActions {
+        Text("Live git actions unlock after reconnect and lane sync finish.")
+          .font(.caption)
+          .foregroundStyle(ADEColor.textSecondary)
       }
 
       if let upstreamRef = detail.syncStatus?.upstreamRef {
@@ -295,6 +325,7 @@ extension LaneDetailScreen {
         TextField("Stash message", text: $stashMessage)
           .textFieldStyle(.plain)
           .adeInsetField(cornerRadius: 10, padding: 10)
+          .disabled(!canRunLiveActions)
         LaneActionButton(title: "Stash", symbol: "tray.and.arrow.down", tint: ADEColor.accent) {
           Task {
             await performAction("stash") {
@@ -303,6 +334,7 @@ extension LaneDetailScreen {
             if errorMessage == nil { stashMessage = "" }
           }
         }
+        .disabled(!canRunLiveActions)
       }
 
       if detail.stashes.count > 1 {
@@ -315,6 +347,7 @@ extension LaneDetailScreen {
             }
           }
         }
+        .disabled(!canRunLiveActions)
       }
 
       ForEach(detail.stashes.prefix(20)) { stash in
@@ -334,12 +367,15 @@ extension LaneDetailScreen {
             LaneActionButton(title: "Apply", symbol: "tray.and.arrow.up") {
               Task { await performAction("stash apply") { try await syncService.stashApply(laneId: laneId, stashRef: stash.ref) } }
             }
+            .disabled(!canRunLiveActions)
             LaneActionButton(title: "Pop", symbol: "arrow.up.right.square") {
               Task { await performAction("stash pop") { try await syncService.stashPop(laneId: laneId, stashRef: stash.ref) } }
             }
+            .disabled(!canRunLiveActions)
             LaneActionButton(title: "Drop", symbol: "trash", tint: ADEColor.danger) {
               Task { await performAction("stash drop") { try await syncService.stashDrop(laneId: laneId, stashRef: stash.ref) } }
             }
+            .disabled(!canRunLiveActions)
           }
         }
         if stash.id != detail.stashes.last?.id { Divider() }
@@ -394,6 +430,7 @@ extension LaneDetailScreen {
                   }
                 }
               }
+              .disabled(!canRunLiveActions)
               LaneActionButton(title: "Copy message", symbol: "doc.on.doc") {
                 Task {
                   do {
@@ -404,12 +441,15 @@ extension LaneDetailScreen {
                   }
                 }
               }
+              .disabled(!canRunLiveActions)
               LaneActionButton(title: "Revert", symbol: "arrow.uturn.backward", tint: ADEColor.warning) {
                 Task { await performAction("revert commit") { try await syncService.revertCommit(laneId: laneId, commitSha: commit.sha) } }
               }
+              .disabled(!canRunLiveActions)
               LaneActionButton(title: "Cherry-pick", symbol: "arrow.triangle.merge") {
                 Task { await performAction("cherry pick") { try await syncService.cherryPickCommit(laneId: laneId, commitSha: commit.sha) } }
               }
+              .disabled(!canRunLiveActions)
             }
           }
         }
@@ -417,62 +457,5 @@ extension LaneDetailScreen {
       }
     }
     .padding(.top, 8)
-  }
-
-  // MARK: - Section header helper
-
-  @ViewBuilder
-  func sectionHeader(title: String, symbol: String, subtitle: String? = nil, badge: String? = nil) -> some View {
-    HStack(spacing: 8) {
-      Image(systemName: symbol)
-        .font(.system(size: 12, weight: .semibold))
-        .foregroundStyle(ADEColor.textSecondary)
-      Text(title)
-        .font(.subheadline.weight(.semibold))
-        .foregroundStyle(ADEColor.textPrimary)
-      if let badge {
-        Text(badge)
-          .font(.caption2.weight(.bold))
-          .foregroundStyle(ADEColor.textMuted)
-          .padding(.horizontal, 6)
-          .padding(.vertical, 2)
-          .background(ADEColor.surfaceBackground.opacity(0.5), in: Capsule())
-      }
-      Spacer()
-      if let subtitle {
-        Text(subtitle)
-          .font(.caption2)
-          .foregroundStyle(ADEColor.textMuted)
-          .lineLimit(1)
-      }
-    }
-  }
-}
-
-// MARK: - Glass disclosure group style
-
-struct GlassDisclosureStyle: DisclosureGroupStyle {
-  func makeBody(configuration: Configuration) -> some View {
-    VStack(alignment: .leading, spacing: 0) {
-      Button {
-        withAnimation(.smooth(duration: 0.25)) {
-          configuration.isExpanded.toggle()
-        }
-      } label: {
-        HStack {
-          configuration.label
-          Image(systemName: "chevron.right")
-            .font(.caption2.weight(.bold))
-            .foregroundStyle(ADEColor.textMuted)
-            .rotationEffect(.degrees(configuration.isExpanded ? 90 : 0))
-        }
-      }
-      .buttonStyle(.plain)
-
-      if configuration.isExpanded {
-        configuration.content
-      }
-    }
-    .adeGlassCard(cornerRadius: 14, padding: 14)
   }
 }
