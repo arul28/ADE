@@ -4,6 +4,10 @@ struct PrOverviewTab: View {
   let pr: PullRequestListItem
   let snapshot: PullRequestSnapshot?
   let actionAvailability: PrActionAvailability
+  /// Host-provided capability gates. Nil when the mobile snapshot is
+  /// unavailable (offline, pre-contract host); the view falls back to
+  /// `actionAvailability` in that case so cached behavior is preserved.
+  let capabilities: PrActionCapabilities?
   @Binding var mergeMethod: PrMergeMethodOption
   @Binding var reviewerInput: String
   let isLive: Bool
@@ -15,6 +19,28 @@ struct PrOverviewTab: View {
   let onOpenGitHub: () -> Void
   let onArchiveLane: () -> Void
   let onDeleteBranch: () -> Void
+
+  // Merge derivation: host capability wins when present. It already folds in
+  // draft/failing-checks/closed state via mergeBlockedReason, so we don't
+  // also need to AND with actionAvailability.mergeEnabled there.
+  private var showsMerge: Bool {
+    capabilities?.canMerge ?? actionAvailability.showsMerge
+  }
+  private var mergeEnabled: Bool {
+    if let capabilities {
+      return capabilities.canMerge && mergeable
+    }
+    return actionAvailability.mergeEnabled && mergeable
+  }
+  private var showsClose: Bool {
+    capabilities?.canClose ?? actionAvailability.showsClose
+  }
+  private var showsReopen: Bool {
+    capabilities?.canReopen ?? actionAvailability.showsReopen
+  }
+  private var showsRequestReviewers: Bool {
+    capabilities?.canRequestReviewers ?? actionAvailability.showsRequestReviewers
+  }
 
   private var mergeable: Bool {
     (snapshot?.status?.isMergeable ?? true) && !(snapshot?.status?.mergeConflicts ?? false)
@@ -112,16 +138,22 @@ struct PrOverviewTab: View {
             .font(.caption)
             .foregroundStyle(ADEColor.textSecondary)
 
-          if actionAvailability.showsMerge {
+          if showsMerge {
             Button(mergeMethod.title) {
               onMerge()
             }
             .buttonStyle(.glassProminent)
             .tint(ADEColor.accent)
-            .disabled(!isLive || !actionAvailability.mergeEnabled || !mergeable)
+            .disabled(!isLive || !mergeEnabled)
+
+            if let reason = capabilities?.mergeBlockedReason, !reason.isEmpty {
+              Text("Merge blocked: \(reason)")
+                .font(.caption)
+                .foregroundStyle(ADEColor.warning)
+            }
           }
 
-          if actionAvailability.showsClose {
+          if showsClose {
             Button("Close PR", role: .destructive) {
               onClose()
             }
@@ -129,7 +161,7 @@ struct PrOverviewTab: View {
             .disabled(!isLive)
           }
 
-          if actionAvailability.showsReopen {
+          if showsReopen {
             Button("Reopen PR") {
               onReopen()
             }
@@ -137,7 +169,7 @@ struct PrOverviewTab: View {
             .disabled(!isLive)
           }
 
-          if actionAvailability.showsRequestReviewers {
+          if showsRequestReviewers {
             TextField("Request reviewers (comma-separated)", text: $reviewerInput)
               .adeInsetField()
             Button("Request reviewers") {

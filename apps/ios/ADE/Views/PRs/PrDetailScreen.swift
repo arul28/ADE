@@ -9,6 +9,7 @@ struct PrDetailView: View {
   @State private var pr: PullRequestListItem?
   @State private var snapshot: PullRequestSnapshot?
   @State private var groupMembers: [PrGroupMemberSummary] = []
+  @State private var capabilities: PrActionCapabilities?
   @State private var selectedTab: PrDetailTab = .overview
   @State private var mergeMethod: PrMergeMethodOption = .squash
   @State private var reviewerInput = ""
@@ -61,12 +62,15 @@ struct PrDetailView: View {
     PrActionAvailability(prState: snapshot?.status?.state ?? currentPr.state)
   }
 
+  // Snapshot-driven capability gate. Falls back to the legacy
+  // supportsRemoteAction probe when the host hasn't sent capabilities yet
+  // (cached-only / offline), so we never regress below the current gating.
   private var canRerunChecks: Bool {
-    syncService.supportsRemoteAction("prs.rerunChecks")
+    capabilities?.canRerunChecks ?? syncService.supportsRemoteAction("prs.rerunChecks")
   }
 
   private var canAddComment: Bool {
-    syncService.supportsRemoteAction("prs.addComment")
+    capabilities?.canComment ?? syncService.supportsRemoteAction("prs.addComment")
   }
 
   var body: some View {
@@ -100,6 +104,7 @@ struct PrDetailView: View {
           pr: currentPr,
           snapshot: snapshot,
           actionAvailability: actionAvailability,
+          capabilities: capabilities,
           mergeMethod: $mergeMethod,
           reviewerInput: $reviewerInput,
           isLive: isLive,
@@ -183,6 +188,19 @@ struct PrDetailView: View {
       errorMessage = nil
     } catch {
       errorMessage = error.localizedDescription
+    }
+
+    // Capability fetch is best-effort and live-only: failure leaves
+    // `capabilities` nil so the view falls back to supportsRemoteAction.
+    if isLive {
+      do {
+        let mobileSnapshot = try await syncService.fetchPrMobileSnapshot()
+        capabilities = mobileSnapshot.capabilities[prId]
+      } catch {
+        capabilities = nil
+      }
+    } else {
+      capabilities = nil
     }
   }
 

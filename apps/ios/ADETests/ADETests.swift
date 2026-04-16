@@ -3363,6 +3363,95 @@ final class ADETests: XCTestCase {
     XCTAssertNil(snapshot.createCapabilities.defaultBaseBranch)
   }
 
+  func testPrActionCapabilitiesGateMergeAndSurfaceBlockedReason() {
+    let capabilitiesAllow = PrActionCapabilities(
+      prId: "pr-1",
+      canOpenInGithub: true,
+      canMerge: true,
+      canClose: true,
+      canReopen: false,
+      canRequestReviewers: true,
+      canRerunChecks: true,
+      canComment: true,
+      canUpdateDescription: true,
+      canDelete: true,
+      mergeBlockedReason: nil,
+      requiresLive: true
+    )
+
+    let capabilitiesBlock = PrActionCapabilities(
+      prId: "pr-1",
+      canOpenInGithub: true,
+      canMerge: false,
+      canClose: true,
+      canReopen: false,
+      canRequestReviewers: true,
+      canRerunChecks: true,
+      canComment: true,
+      canUpdateDescription: true,
+      canDelete: true,
+      mergeBlockedReason: "Required checks are failing.",
+      requiresLive: true
+    )
+
+    XCTAssertTrue(capabilitiesAllow.canMerge)
+    XCTAssertNil(capabilitiesAllow.mergeBlockedReason)
+    XCTAssertFalse(capabilitiesBlock.canMerge)
+    XCTAssertEqual(capabilitiesBlock.mergeBlockedReason, "Required checks are failing.")
+
+    // When capabilities drive the view, canMerge=false must short-circuit
+    // regardless of the legacy PrActionAvailability state.
+    let availabilityForOpen = PrActionAvailability(prState: "open")
+    XCTAssertTrue(availabilityForOpen.showsMerge)
+    XCTAssertTrue(availabilityForOpen.mergeEnabled)
+
+    // Emulate the derivation used in PrOverviewTab.
+    let mergeable = true
+    let effectiveMergeEnabled = capabilitiesBlock.canMerge && mergeable
+    XCTAssertFalse(effectiveMergeEnabled)
+  }
+
+  func testPrCreateCapabilitiesFilterEligibleLanesAndKeepBlockedVisible() {
+    let eligible = PrCreateLaneEligibility(
+      laneId: "lane-new",
+      laneName: "feat/new",
+      parentLaneId: nil,
+      repoOwner: nil,
+      repoName: nil,
+      defaultBaseBranch: "main",
+      defaultTitle: "feat/new",
+      dirty: false,
+      hasExistingPr: false,
+      canCreate: true,
+      blockedReason: nil
+    )
+    let blocked = PrCreateLaneEligibility(
+      laneId: "lane-blocked",
+      laneName: "feat/blocked",
+      parentLaneId: nil,
+      repoOwner: nil,
+      repoName: nil,
+      defaultBaseBranch: "main",
+      defaultTitle: "feat/blocked",
+      dirty: false,
+      hasExistingPr: true,
+      canCreate: false,
+      blockedReason: "Lane already has an open PR (#12)."
+    )
+    let capabilities = PrCreateCapabilities(
+      canCreateAny: true,
+      defaultBaseBranch: "main",
+      lanes: [eligible, blocked]
+    )
+
+    XCTAssertTrue(capabilities.canCreateAny)
+    let eligibleOnly = capabilities.lanes.filter { $0.canCreate }
+    XCTAssertEqual(eligibleOnly.map(\.laneId), ["lane-new"])
+    let blockedOnly = capabilities.lanes.filter { !$0.canCreate }
+    XCTAssertEqual(blockedOnly.first?.blockedReason, "Lane already has an open PR (#12).")
+    XCTAssertEqual(capabilities.defaultBaseBranch, "main")
+  }
+
   private func makeTemporaryDirectory() -> URL {
     let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
     try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)

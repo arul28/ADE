@@ -5,11 +5,26 @@ struct CreatePrWizardView: View {
   @Environment(\.dismiss) private var dismiss
 
   let lanes: [LaneSummary]
+  /// Host-provided create eligibility. When present, drives the lane picker
+  /// (filtered to canCreate=true entries), default base branch, and per-lane
+  /// blocked-reason subtitles. When nil, the view falls back to the raw
+  /// `lanes` list so cached/offline flows still work.
+  let createCapabilities: PrCreateCapabilities?
   let onCreate: (String, String, String, Bool, String, [String], [String]) -> Void
+
+  init(
+    lanes: [LaneSummary],
+    createCapabilities: PrCreateCapabilities? = nil,
+    onCreate: @escaping (String, String, String, Bool, String, [String], [String]) -> Void
+  ) {
+    self.lanes = lanes
+    self.createCapabilities = createCapabilities
+    self.onCreate = onCreate
+  }
 
   @State private var step = 1
   @State private var selectedLaneId = ""
-  @State private var baseBranch = "main"
+  @State private var baseBranch = ""
   @State private var title = ""
   @State private var bodyText = ""
   @State private var draft = false
@@ -18,14 +33,54 @@ struct CreatePrWizardView: View {
   @State private var isGenerating = false
   @State private var errorMessage: String?
 
+  // Eligible lanes for the picker. When createCapabilities is present, only
+  // entries with canCreate=true are selectable — blocked lanes are hidden
+  // from the picker and surfaced separately below so users still see why.
+  private var eligibleLaneOptions: [CreatePrLaneOption] {
+    if let capabilities = createCapabilities {
+      return capabilities.lanes
+        .filter { $0.canCreate }
+        .map { eligibility in
+          CreatePrLaneOption(
+            id: eligibility.laneId,
+            title: eligibility.laneName,
+            branchRef: lanes.first(where: { $0.id == eligibility.laneId })?.branchRef ?? eligibility.laneName,
+            defaultBaseBranch: eligibility.defaultBaseBranch,
+            defaultTitle: eligibility.defaultTitle,
+            subtitle: eligibility.blockedReason
+          )
+        }
+    }
+    return lanes.map { lane in
+      CreatePrLaneOption(
+        id: lane.id,
+        title: lane.name,
+        branchRef: lane.branchRef,
+        defaultBaseBranch: lane.baseRef,
+        defaultTitle: lane.name,
+        subtitle: nil
+      )
+    }
+  }
+
+  private var blockedLaneOptions: [PrCreateLaneEligibility] {
+    guard let capabilities = createCapabilities else { return [] }
+    return capabilities.lanes.filter { !$0.canCreate }
+  }
+
+  private var selectedOption: CreatePrLaneOption? {
+    eligibleLaneOptions.first(where: { $0.id == selectedLaneId }) ?? eligibleLaneOptions.first
+  }
+
   private var selectedLane: LaneSummary? {
-    lanes.first(where: { $0.id == selectedLaneId }) ?? lanes.first
+    guard let id = selectedOption?.id else { return nil }
+    return lanes.first(where: { $0.id == id })
   }
 
   private var canAdvance: Bool {
     switch step {
     case 1:
-      return selectedLane != nil && !baseBranch.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+      return selectedOption != nil && !baseBranch.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     case 2:
       return !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     default:
@@ -91,9 +146,9 @@ struct CreatePrWizardView: View {
             .disabled(!canAdvance)
           } else {
             Button("Create") {
-              guard let selectedLane else { return }
+              guard let selectedOption else { return }
               onCreate(
-                selectedLane.id,
+                selectedOption.id,
                 title.trimmingCharacters(in: .whitespacesAndNewlines),
                 bodyText,
                 draft,
@@ -107,9 +162,15 @@ struct CreatePrWizardView: View {
         }
       }
       .onAppear {
-        selectedLaneId = selectedLaneId.isEmpty ? (lanes.first?.id ?? "") : selectedLaneId
-        if let selectedLane, baseBranch == "main" {
-          baseBranch = selectedLane.baseRef
+        if selectedLaneId.isEmpty {
+          selectedLaneId = selectedOption?.id ?? ""
+        }
+        if baseBranch.isEmpty {
+          // Host-provided default wins; else the selected lane's base; else
+          // fall back to "main" so the field is never empty at step 1.
+          baseBranch = createCapabilities?.defaultBaseBranch
+            ?? selectedOption?.defaultBaseBranch
+            ?? "main"
         }
       }
     }
@@ -119,18 +180,24 @@ struct CreatePrWizardView: View {
     VStack(alignment: .leading, spacing: 12) {
       PrDetailSectionCard("Step 1 · lane and branch") {
         VStack(alignment: .leading, spacing: 12) {
-          Picker("Lane", selection: $selectedLaneId) {
-            ForEach(lanes) { lane in
-              Text("\(lane.name) · \(lane.branchRef)").tag(lane.id)
-            }
-          }
-          .pickerStyle(.menu)
-          .adeInsetField()
-
-          if let selectedLane {
-            Text("Source branch: \(selectedLane.branchRef)")
-              .font(.caption)
+          if eligibleLaneOptions.isEmpty {
+            Text("No lanes are eligible to open a PR right now.")
+              .font(.subheadline)
               .foregroundStyle(ADEColor.textSecondary)
+          } else {
+            Picker("Lane", selection: $selectedLaneId) {
+              ForEach(eligibleLaneOptions) { option in
+                Text("\(option.title) · \(option.branchRef)").tag(option.id)
+              }
+            }
+            .pickerStyle(.menu)
+            .adeInsetField()
+
+            if let selectedOption {
+              Text("Source branch: \(selectedOption.branchRef)")
+                .font(.caption)
+                .foregroundStyle(ADEColor.textSecondary)
+            }
           }
 
           TextField("Target branch", text: $baseBranch)
@@ -138,6 +205,26 @@ struct CreatePrWizardView: View {
 
           Toggle("Create as draft", isOn: $draft)
             .adeInsetField()
+
+          if !blockedLaneOptions.isEmpty {
+            VStack(alignment: .leading, spacing: 6) {
+              Text("Not eligible")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(ADEColor.textPrimary)
+              ForEach(blockedLaneOptions) { entry in
+                VStack(alignment: .leading, spacing: 2) {
+                  Text(entry.laneName)
+                    .font(.caption)
+                    .foregroundStyle(ADEColor.textPrimary)
+                  if let reason = entry.blockedReason, !reason.isEmpty {
+                    Text(reason)
+                      .font(.caption2)
+                      .foregroundStyle(ADEColor.textSecondary)
+                  }
+                }
+              }
+            }
+          }
         }
       }
     }
@@ -158,7 +245,7 @@ struct CreatePrWizardView: View {
             Task { await generateDraft() }
           }
           .buttonStyle(.glass)
-          .disabled(isGenerating || selectedLane == nil)
+          .disabled(isGenerating || selectedOption == nil)
         }
       }
     }
@@ -191,30 +278,39 @@ struct CreatePrWizardView: View {
 
   @MainActor
   private func generateDraft() async {
-    guard let selectedLane else { return }
+    guard let option = selectedOption else { return }
     isGenerating = true
     defer { isGenerating = false }
 
     do {
       let suggestion: PullRequestDraftSuggestion
       if syncService.supportsRemoteAction("prs.draftDescription") {
-        suggestion = try await syncService.draftPullRequestDescription(laneId: selectedLane.id)
+        suggestion = try await syncService.draftPullRequestDescription(laneId: option.id)
+      } else if let lane = lanes.first(where: { $0.id == option.id }) {
+        let detail = try? await syncService.refreshLaneDetail(laneId: option.id)
+        suggestion = prHeuristicDraft(lane: lane, detail: detail)
       } else {
-        let detail = try? await syncService.refreshLaneDetail(laneId: selectedLane.id)
-        suggestion = prHeuristicDraft(lane: selectedLane, detail: detail)
+        suggestion = PullRequestDraftSuggestion(title: option.defaultTitle, body: "")
       }
 
       title = suggestion.title
-      if bodyText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-        bodyText = suggestion.body
-      } else {
-        bodyText = suggestion.body
-      }
+      bodyText = suggestion.body
       errorMessage = nil
     } catch {
       errorMessage = error.localizedDescription
     }
   }
+}
+
+/// Unified lane option for the wizard picker — abstracts both the legacy
+/// LaneSummary list and the host-provided PrCreateLaneEligibility entries.
+struct CreatePrLaneOption: Identifiable, Equatable {
+  let id: String
+  let title: String
+  let branchRef: String
+  let defaultBaseBranch: String
+  let defaultTitle: String
+  let subtitle: String?
 }
 
 struct PrStepIndicator: View {
