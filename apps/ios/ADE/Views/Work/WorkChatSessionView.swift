@@ -439,9 +439,8 @@ struct WorkChatSessionView: View {
         }
       }
       .padding(.horizontal, 16)
-      .padding(.vertical, 10)
-      .background(ADEColor.surfaceBackground.opacity(0.08))
-      .glassEffect()
+      .padding(.top, 8)
+      .padding(.bottom, 4)
     )
   }
 
