@@ -1,0 +1,434 @@
+import SwiftUI
+import UIKit
+
+struct PRsTabView: View {
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  @EnvironmentObject private var syncService: SyncService
+  @Namespace private var prTransitionNamespace
+
+  @State private var path = NavigationPath()
+  @State private var prs: [PullRequestListItem] = []
+  @State private var lanes: [LaneSummary] = []
+  @State private var laneSnapshots: [LaneListSnapshot] = []
+  @State private var integrationProposals: [IntegrationProposal] = []
+  @State private var queueStates: [QueueLandingState] = []
+  @State private var errorMessage: String?
+  @State private var createPresented = false
+  @State private var stackPresentation: PrStackPresentation?
+  @State private var refreshFeedbackToken = 0
+  @State private var lastPrsLocalProjectionReload = Date.distantPast
+  @State private var selectedPrTransitionId: String?
+  @State private var laneContextLaneId: String?
+  @SceneStorage("ade.prs.stateFilter") private var stateFilterRawValue = PrListStateFilter.all.rawValue
+  @State private var searchText = ""
+
+  private var prsStatus: SyncDomainStatus {
+    syncService.status(for: .prs)
+  }
+
+  private var isLive: Bool {
+    prsStatus.phase == .ready && (syncService.connectionState == .connected || syncService.connectionState == .syncing)
+  }
+
+  private var needsRepairing: Bool {
+    syncService.activeHostProfile == nil && !prs.isEmpty
+  }
+
+  private var isLoadingSkeleton: Bool {
+    prsStatus.phase == .hydrating || prsStatus.phase == .syncingInitialData
+  }
+
+  private var selectedStateFilter: Binding<PrListStateFilter> {
+    Binding(
+      get: { PrListStateFilter(rawValue: stateFilterRawValue) ?? .all },
+      set: { stateFilterRawValue = $0.rawValue }
+    )
+  }
+
+  private var filteredPrs: [PullRequestListItem] {
+    filterPullRequestListItems(prs, query: searchText, state: selectedStateFilter.wrappedValue)
+  }
+
+  private var rebaseWorkflowItems: [PrRebaseWorkflowItem] {
+    laneSnapshots.compactMap { snapshot in
+      guard let suggestion = snapshot.rebaseSuggestion, suggestion.dismissedAt == nil else { return nil }
+      let severity: String
+      if snapshot.autoRebaseStatus?.state == "rebaseConflict" {
+        severity = "critical"
+      } else if suggestion.behindCount >= 10 {
+        severity = "warning"
+      } else {
+        severity = "info"
+      }
+
+      let message = snapshot.autoRebaseStatus?.message
+        ?? "\(snapshot.lane.name) is \(suggestion.behindCount) commit\(suggestion.behindCount == 1 ? "" : "s") behind its parent lane."
+
+      return PrRebaseWorkflowItem(
+        laneId: snapshot.lane.id,
+        laneName: snapshot.lane.name,
+        branchRef: snapshot.lane.branchRef,
+        behindCount: suggestion.behindCount,
+        severity: severity,
+        statusMessage: message,
+        deferredUntil: suggestion.deferredUntil
+      )
+    }
+    .sorted { lhs, rhs in
+      if lhs.severity == rhs.severity {
+        return lhs.behindCount > rhs.behindCount
+      }
+      return severityRank(lhs.severity) < severityRank(rhs.severity)
+    }
+  }
+
+  var body: some View {
+    NavigationStack(path: $path) {
+      List {
+        if let notice = laneContextNotice {
+          notice.prListRow()
+        }
+
+        if isLoadingSkeleton {
+          ForEach(0..<3, id: \.self) { _ in
+            ADECardSkeleton(rows: 3)
+              .prListRow()
+          }
+        } else {
+          PrFiltersCard(
+            stateFilter: selectedStateFilter,
+            visibleCount: filteredPrs.count,
+            totalCount: prs.count,
+            isLive: isLive,
+            onRefresh: { Task { await reload(refreshRemote: true) } }
+          )
+          .prListRow()
+
+          if let errorMessage, prsStatus.phase == .ready {
+            ADENoticeCard(
+              title: "PR view error",
+              message: errorMessage,
+              icon: "exclamationmark.triangle.fill",
+              tint: ADEColor.danger,
+              actionTitle: "Retry",
+              action: { Task { await reload(refreshRemote: true) } }
+            )
+            .prListRow()
+          }
+
+          if prsStatus.phase == .ready && filteredPrs.isEmpty {
+            ADEEmptyStateView(
+              symbol: searchText.isEmpty ? "arrow.triangle.pull" : "magnifyingglass",
+              title: searchText.isEmpty ? "No pull requests on this host" : "No PRs match this search",
+              message: searchText.isEmpty
+                ? "Open PRs and workflow lanes will appear here once the host syncs GitHub state to iPhone."
+                : "Try a broader title query or switch the state filter."
+            )
+            .prListRow()
+          }
+
+          if !filteredPrs.isEmpty {
+            Section("Pull requests") {
+              ForEach(filteredPrs) { pr in
+                NavigationLink(value: pr.id) {
+                  PrRowCard(
+                    pr: pr,
+                    transitionNamespace: ADEMotion.allowsMatchedGeometry(reduceMotion: reduceMotion) ? prTransitionNamespace : nil,
+                    isSelectedTransitionSource: selectedPrTransitionId == pr.id
+                  ) { groupId, groupName in
+                    stackPresentation = PrStackPresentation(id: groupId, groupName: groupName)
+                  }
+                }
+                .simultaneousGesture(TapGesture().onEnded {
+                  selectedPrTransitionId = pr.id
+                })
+                .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                  Button("Open") {
+                    openGitHub(urlString: pr.githubUrl)
+                  }
+                  .tint(ADEColor.accent)
+
+                  if pr.state == "open" {
+                    Button("Close", role: .destructive) {
+                      Task {
+                        try? await syncService.closePullRequest(prId: pr.id)
+                        await reload(refreshRemote: true)
+                      }
+                    }
+                  } else if pr.state == "closed" {
+                    Button("Reopen") {
+                      Task {
+                        try? await syncService.reopenPullRequest(prId: pr.id)
+                        await reload(refreshRemote: true)
+                      }
+                    }
+                    .tint(ADEColor.success)
+                  }
+                }
+                .prListRow()
+              }
+            }
+          }
+
+          if !integrationProposals.isEmpty {
+            Section("Integration") {
+              ForEach(integrationProposals) { proposal in
+                IntegrationWorkflowCard(proposal: proposal) { prId in
+                  path.append(prId)
+                }
+                .prListRow()
+              }
+            }
+          }
+
+          if !queueStates.isEmpty {
+            Section("Queue") {
+              ForEach(queueStates) { queueState in
+                QueueWorkflowCard(
+                  queueState: queueState,
+                  isLive: isLive,
+                  onOpenPr: { prId in path.append(prId) },
+                  onLand: { prId, method in
+                    Task {
+                      try? await syncService.mergePullRequest(prId: prId, method: method.rawValue)
+                      await reload(refreshRemote: true)
+                    }
+                  },
+                  onRebaseLane: { laneId in
+                    Task {
+                      try? await syncService.startLaneRebase(laneId: laneId)
+                      await reload(refreshRemote: true)
+                    }
+                  }
+                )
+                .prListRow()
+              }
+            }
+          }
+
+          if !rebaseWorkflowItems.isEmpty {
+            Section("Rebase") {
+              ForEach(rebaseWorkflowItems) { item in
+                RebaseWorkflowCard(
+                  item: item,
+                  onRebase: {
+                    Task {
+                      try? await syncService.startLaneRebase(laneId: item.laneId)
+                      await reload(refreshRemote: true)
+                    }
+                  },
+                  onDefer: {
+                    Task {
+                      try? await syncService.deferRebaseSuggestion(laneId: item.laneId)
+                      await reload(refreshRemote: true)
+                    }
+                  },
+                  onDismiss: {
+                    Task {
+                      try? await syncService.dismissRebaseSuggestion(laneId: item.laneId)
+                      await reload(refreshRemote: true)
+                    }
+                  }
+                )
+                .prListRow()
+              }
+            }
+          }
+        }
+      }
+      .listStyle(.plain)
+      .scrollContentBackground(.hidden)
+      .adeScreenBackground()
+      .adeNavigationGlass()
+      .navigationTitle("PRs")
+      .navigationBarTitleDisplayMode(.inline)
+      .searchable(text: $searchText, prompt: "Search PR titles")
+      .toolbar {
+        ToolbarItem(placement: .topBarLeading) {
+          ADEConnectionPill()
+        }
+        ToolbarItemGroup(placement: .topBarTrailing) {
+          Button {
+            Task { await reload(refreshRemote: true) }
+          } label: {
+            Image(systemName: "arrow.clockwise")
+          }
+          .accessibilityLabel("Refresh pull requests")
+          .disabled(prsStatus.phase == .hydrating)
+
+          Button {
+            createPresented = true
+          } label: {
+            Image(systemName: "plus")
+          }
+          .accessibilityLabel("Create pull request")
+          .disabled(!isLive || lanes.isEmpty)
+        }
+      }
+
+      .sensoryFeedback(.success, trigger: refreshFeedbackToken)
+      .task {
+        await reload()
+      }
+      .task(id: syncService.localStateRevision) {
+        let now = Date()
+        guard now.timeIntervalSince(lastPrsLocalProjectionReload) >= 0.35 else { return }
+        lastPrsLocalProjectionReload = now
+        await reload()
+      }
+      .refreshable {
+        await refreshFromPullGesture()
+      }
+      .onChange(of: syncService.requestedPrNavigation?.id) { _, requestId in
+        guard requestId != nil, let prId = syncService.requestedPrNavigation?.prId else { return }
+        stateFilterRawValue = PrListStateFilter.all.rawValue
+        selectedPrTransitionId = prId
+        laneContextLaneId = syncService.requestedPrNavigation?.laneId
+        path = NavigationPath()
+        path.append(prId)
+        syncService.requestedPrNavigation = nil
+      }
+      .navigationDestination(for: String.self) { prId in
+        PrDetailView(
+          prId: prId,
+          transitionNamespace: ADEMotion.allowsMatchedGeometry(reduceMotion: reduceMotion) ? prTransitionNamespace : nil
+        )
+          .environmentObject(syncService)
+      }
+      .sheet(isPresented: $createPresented) {
+        CreatePrWizardView(lanes: lanes) { laneId, title, body, draft, baseBranch, labels, reviewers in
+          Task {
+            try? await syncService.createPullRequest(
+              laneId: laneId,
+              title: title,
+              body: body,
+              draft: draft,
+              baseBranch: baseBranch,
+              labels: labels,
+              reviewers: reviewers
+            )
+            try? await syncService.refreshPullRequestSnapshots()
+            createPresented = false
+            await reload()
+          }
+        }
+        .environmentObject(syncService)
+      }
+      .sheet(item: $stackPresentation) { presentation in
+        PrStackSheet(groupId: presentation.id, groupName: presentation.groupName)
+          .environmentObject(syncService)
+      }
+    }
+  }
+
+  private var laneContextNotice: ADENoticeCard? {
+    guard let laneContextLaneId else { return nil }
+    let laneName = laneSnapshots.first(where: { $0.lane.id == laneContextLaneId })?.lane.name ?? "lane context"
+    return ADENoticeCard(
+      title: "Opened from \(laneName)",
+      message: "Review the linked pull request or keep scanning PRs from the native tab.",
+      icon: "arrow.triangle.pull",
+      tint: ADEColor.accent,
+      actionTitle: "Clear",
+      action: { self.laneContextLaneId = nil }
+    )
+  }
+
+  @MainActor
+  private func refreshFromPullGesture() async {
+    await reload(refreshRemote: true)
+    if errorMessage == nil {
+      withAnimation(ADEMotion.emphasis(reduceMotion: reduceMotion)) {
+        refreshFeedbackToken += 1
+      }
+    }
+  }
+
+  @MainActor
+  private func reload(refreshRemote: Bool = false) async {
+    do {
+      if refreshRemote {
+        try? await syncService.refreshPullRequestSnapshots()
+        try? await syncService.refreshLaneSnapshots()
+      }
+
+      async let prsTask = syncService.fetchPullRequestListItems()
+      async let lanesTask = syncService.fetchLanes()
+      async let laneSnapshotsTask = syncService.fetchLaneListSnapshots()
+      async let integrationTask = syncService.fetchIntegrationProposals()
+      async let queueTask = syncService.fetchQueueStates()
+
+      prs = try await prsTask
+      lanes = try await lanesTask
+      laneSnapshots = try await laneSnapshotsTask
+      integrationProposals = try await integrationTask
+      queueStates = try await queueTask
+      errorMessage = nil
+    } catch {
+      errorMessage = error.localizedDescription
+    }
+  }
+
+  private func openGitHub(urlString: String) {
+    guard let url = URL(string: urlString) else { return }
+    UIApplication.shared.open(url)
+  }
+
+  private var statusNotice: ADENoticeCard? {
+    switch prsStatus.phase {
+    case .disconnected:
+      return ADENoticeCard(
+        title: prs.isEmpty ? "Host disconnected" : "Showing cached PRs",
+        message: prs.isEmpty
+          ? (syncService.activeHostProfile == nil
+              ? "Pair with a host to hydrate pull requests, stacks, and workflow state."
+              : "Reconnect to hydrate pull requests, stacks, and workflow state.")
+          : (needsRepairing
+              ? "Cached PR state is still visible, but the previous host trust was cleared. Pair again before trusting review or workflow status."
+              : "Cached PR state is visible. Reconnect before trusting live merge, review, or queue readiness."),
+        icon: "arrow.triangle.pull",
+        tint: ADEColor.warning,
+        actionTitle: syncService.activeHostProfile == nil ? (needsRepairing ? "Pair again" : "Pair with host") : "Reconnect",
+        action: {
+          if syncService.activeHostProfile == nil {
+            syncService.settingsPresented = true
+          } else {
+            Task {
+              await syncService.reconnectIfPossible(userInitiated: true)
+              await reload(refreshRemote: true)
+            }
+          }
+        }
+      )
+    case .hydrating:
+      return ADENoticeCard(
+        title: "Hydrating pull requests",
+        message: "Refreshing PR summaries, stack relationships, and cached detail so iPhone does not show partial state.",
+        icon: "arrow.trianglehead.2.clockwise.rotate.90",
+        tint: ADEColor.accent,
+        actionTitle: nil,
+        action: nil
+      )
+    case .syncingInitialData:
+      return ADENoticeCard(
+        title: "Syncing initial data",
+        message: "Waiting for the host to finish syncing project data before PR hydration starts.",
+        icon: "arrow.trianglehead.2.clockwise.rotate.90",
+        tint: ADEColor.warning,
+        actionTitle: nil,
+        action: nil
+      )
+    case .failed:
+      return ADENoticeCard(
+        title: "PR hydration failed",
+        message: prsStatus.lastError ?? "The host PR state did not hydrate cleanly.",
+        icon: "exclamationmark.triangle.fill",
+        tint: ADEColor.danger,
+        actionTitle: "Retry",
+        action: { Task { await reload(refreshRemote: true) } }
+      )
+    case .ready:
+      return nil
+    }
+  }
+}

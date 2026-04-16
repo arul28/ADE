@@ -82,6 +82,20 @@
 		F10000000000000000000004 /* SettingsPinSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = F20000000000000000000004 /* SettingsPinSheet.swift */; };
 		F10000000000000000000005 /* SettingsAppearanceSection.swift in Sources */ = {isa = PBXBuildFile; fileRef = F20000000000000000000005 /* SettingsAppearanceSection.swift */; };
 		F10000000000000000000006 /* SettingsDiagnosticsSection.swift in Sources */ = {isa = PBXBuildFile; fileRef = F20000000000000000000006 /* SettingsDiagnosticsSection.swift */; };
+		G10000000000000000000001 /* PrModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = G20000000000000000000001 /* PrModels.swift */; };
+		G10000000000000000000002 /* PrHelpers.swift in Sources */ = {isa = PBXBuildFile; fileRef = G20000000000000000000002 /* PrHelpers.swift */; };
+		G10000000000000000000003 /* PrListRowModifier.swift in Sources */ = {isa = PBXBuildFile; fileRef = G20000000000000000000003 /* PrListRowModifier.swift */; };
+		G10000000000000000000004 /* PrFiltersCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = G20000000000000000000004 /* PrFiltersCard.swift */; };
+		G10000000000000000000005 /* PrRowCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = G20000000000000000000005 /* PrRowCard.swift */; };
+		G10000000000000000000006 /* PrsRootScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = G20000000000000000000006 /* PrsRootScreen.swift */; };
+		G10000000000000000000007 /* PrDetailScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = G20000000000000000000007 /* PrDetailScreen.swift */; };
+		G10000000000000000000008 /* PrDetailOverviewTab.swift in Sources */ = {isa = PBXBuildFile; fileRef = G20000000000000000000008 /* PrDetailOverviewTab.swift */; };
+		G10000000000000000000009 /* PrDetailFilesTab.swift in Sources */ = {isa = PBXBuildFile; fileRef = G20000000000000000000009 /* PrDetailFilesTab.swift */; };
+		G1000000000000000000000A /* PrDetailChecksTab.swift in Sources */ = {isa = PBXBuildFile; fileRef = G2000000000000000000000A /* PrDetailChecksTab.swift */; };
+		G1000000000000000000000B /* PrDetailActivityTab.swift in Sources */ = {isa = PBXBuildFile; fileRef = G2000000000000000000000B /* PrDetailActivityTab.swift */; };
+		G1000000000000000000000C /* PrWorkflowCards.swift in Sources */ = {isa = PBXBuildFile; fileRef = G2000000000000000000000C /* PrWorkflowCards.swift */; };
+		G1000000000000000000000D /* PrStackSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = G2000000000000000000000D /* PrStackSheet.swift */; };
+		G1000000000000000000000E /* CreatePrWizardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = G2000000000000000000000E /* CreatePrWizardView.swift */; };
 		B10000000000000000000017 /* LaneTreeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000017 /* LaneTreeView.swift */; };
 		B10000000000000000000018 /* AddLaneSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000018 /* AddLaneSheet.swift */; };
 		B10000000000000000000019 /* LanesOfflineEmptyState.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000019 /* LanesOfflineEmptyState.swift */; };
@@ -182,6 +196,20 @@
 		F20000000000000000000004 /* SettingsPinSheet.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SettingsPinSheet.swift; path = ADE/Views/Settings/SettingsPinSheet.swift; sourceTree = "<group>"; };
 		F20000000000000000000005 /* SettingsAppearanceSection.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SettingsAppearanceSection.swift; path = ADE/Views/Settings/SettingsAppearanceSection.swift; sourceTree = "<group>"; };
 		F20000000000000000000006 /* SettingsDiagnosticsSection.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SettingsDiagnosticsSection.swift; path = ADE/Views/Settings/SettingsDiagnosticsSection.swift; sourceTree = "<group>"; };
+		G20000000000000000000001 /* PrModels.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrModels.swift; path = ADE/Views/PRs/PrModels.swift; sourceTree = "<group>"; };
+		G20000000000000000000002 /* PrHelpers.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrHelpers.swift; path = ADE/Views/PRs/PrHelpers.swift; sourceTree = "<group>"; };
+		G20000000000000000000003 /* PrListRowModifier.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrListRowModifier.swift; path = ADE/Views/PRs/PrListRowModifier.swift; sourceTree = "<group>"; };
+		G20000000000000000000004 /* PrFiltersCard.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrFiltersCard.swift; path = ADE/Views/PRs/PrFiltersCard.swift; sourceTree = "<group>"; };
+		G20000000000000000000005 /* PrRowCard.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrRowCard.swift; path = ADE/Views/PRs/PrRowCard.swift; sourceTree = "<group>"; };
+		G20000000000000000000006 /* PrsRootScreen.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrsRootScreen.swift; path = ADE/Views/PRs/PrsRootScreen.swift; sourceTree = "<group>"; };
+		G20000000000000000000007 /* PrDetailScreen.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrDetailScreen.swift; path = ADE/Views/PRs/PrDetailScreen.swift; sourceTree = "<group>"; };
+		G20000000000000000000008 /* PrDetailOverviewTab.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrDetailOverviewTab.swift; path = ADE/Views/PRs/PrDetailOverviewTab.swift; sourceTree = "<group>"; };
+		G20000000000000000000009 /* PrDetailFilesTab.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrDetailFilesTab.swift; path = ADE/Views/PRs/PrDetailFilesTab.swift; sourceTree = "<group>"; };
+		G2000000000000000000000A /* PrDetailChecksTab.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrDetailChecksTab.swift; path = ADE/Views/PRs/PrDetailChecksTab.swift; sourceTree = "<group>"; };
+		G2000000000000000000000B /* PrDetailActivityTab.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrDetailActivityTab.swift; path = ADE/Views/PRs/PrDetailActivityTab.swift; sourceTree = "<group>"; };
+		G2000000000000000000000C /* PrWorkflowCards.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrWorkflowCards.swift; path = ADE/Views/PRs/PrWorkflowCards.swift; sourceTree = "<group>"; };
+		G2000000000000000000000D /* PrStackSheet.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrStackSheet.swift; path = ADE/Views/PRs/PrStackSheet.swift; sourceTree = "<group>"; };
+		G2000000000000000000000E /* CreatePrWizardView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CreatePrWizardView.swift; path = ADE/Views/PRs/CreatePrWizardView.swift; sourceTree = "<group>"; };
 		A10000000000000000000017 /* LaneTreeView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LaneTreeView.swift; path = ADE/Views/Lanes/LaneTreeView.swift; sourceTree = "<group>"; };
 		A10000000000000000000018 /* AddLaneSheet.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = AddLaneSheet.swift; path = ADE/Views/Lanes/AddLaneSheet.swift; sourceTree = "<group>"; };
 		A10000000000000000000019 /* LanesOfflineEmptyState.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LanesOfflineEmptyState.swift; path = ADE/Views/Lanes/LanesOfflineEmptyState.swift; sourceTree = "<group>"; };
@@ -268,11 +296,33 @@
 				D20000000000000000000041 /* Files */,
 				A10000000000000000000001 /* Lanes */,
 				D10000000000000000000021 /* Work */,
+				G20000000000000000000000 /* PRs */,
 				A10000000000000000000015 /* Settings */,
 				9270CF8A67F3FA79089F39C1 /* LanesTabView.swift */,
 				5EE4D463D21266B62B422D11 /* PRsTabView.swift */,
 			);
 			name = Views;
+			sourceTree = "<group>";
+		};
+		G20000000000000000000000 /* PRs */ = {
+			isa = PBXGroup;
+			children = (
+				G20000000000000000000001 /* PrModels.swift */,
+				G20000000000000000000002 /* PrHelpers.swift */,
+				G20000000000000000000003 /* PrListRowModifier.swift */,
+				G20000000000000000000004 /* PrFiltersCard.swift */,
+				G20000000000000000000005 /* PrRowCard.swift */,
+				G20000000000000000000006 /* PrsRootScreen.swift */,
+				G20000000000000000000007 /* PrDetailScreen.swift */,
+				G20000000000000000000008 /* PrDetailOverviewTab.swift */,
+				G20000000000000000000009 /* PrDetailFilesTab.swift */,
+				G2000000000000000000000A /* PrDetailChecksTab.swift */,
+				G2000000000000000000000B /* PrDetailActivityTab.swift */,
+				G2000000000000000000000C /* PrWorkflowCards.swift */,
+				G2000000000000000000000D /* PrStackSheet.swift */,
+				G2000000000000000000000E /* CreatePrWizardView.swift */,
+			);
+			name = PRs;
 			sourceTree = "<group>";
 		};
 		D20000000000000000000041 /* Files */ = {
@@ -582,6 +632,20 @@
 				F10000000000000000000004 /* SettingsPinSheet.swift in Sources */,
 				F10000000000000000000005 /* SettingsAppearanceSection.swift in Sources */,
 				F10000000000000000000006 /* SettingsDiagnosticsSection.swift in Sources */,
+				G10000000000000000000001 /* PrModels.swift in Sources */,
+				G10000000000000000000002 /* PrHelpers.swift in Sources */,
+				G10000000000000000000003 /* PrListRowModifier.swift in Sources */,
+				G10000000000000000000004 /* PrFiltersCard.swift in Sources */,
+				G10000000000000000000005 /* PrRowCard.swift in Sources */,
+				G10000000000000000000006 /* PrsRootScreen.swift in Sources */,
+				G10000000000000000000007 /* PrDetailScreen.swift in Sources */,
+				G10000000000000000000008 /* PrDetailOverviewTab.swift in Sources */,
+				G10000000000000000000009 /* PrDetailFilesTab.swift in Sources */,
+				G1000000000000000000000A /* PrDetailChecksTab.swift in Sources */,
+				G1000000000000000000000B /* PrDetailActivityTab.swift in Sources */,
+				G1000000000000000000000C /* PrWorkflowCards.swift in Sources */,
+				G1000000000000000000000D /* PrStackSheet.swift in Sources */,
+				G1000000000000000000000E /* CreatePrWizardView.swift in Sources */,
 				B10000000000000000000017 /* LaneTreeView.swift in Sources */,
 				B10000000000000000000018 /* AddLaneSheet.swift in Sources */,
 				B10000000000000000000019 /* LanesOfflineEmptyState.swift in Sources */,
