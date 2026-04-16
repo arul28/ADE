@@ -18,6 +18,7 @@ struct LaneFileTreeSection: View {
   let subtitle: String?
   let changes: [FileChange]
   let allowsLiveActions: Bool
+  let allowsDiffInspection: Bool
   let bulkActionTitle: String?
   let bulkActionSymbol: String
   let bulkActionTint: Color
@@ -79,6 +80,7 @@ struct LaneFileTreeSection: View {
             onSecondaryAction: onSecondaryAction,
             onOpenFiles: onOpenFiles,
             allowsLiveActions: allowsLiveActions,
+            allowsDiffInspection: allowsDiffInspection,
             primaryActionTitle: primaryActionTitle,
             primaryActionSymbol: primaryActionSymbol,
             primaryActionTint: primaryActionTint,
@@ -170,6 +172,7 @@ private struct LaneFileTreeNodeView: View {
   let onSecondaryAction: (FileChange) -> Void
   let onOpenFiles: ((FileChange) -> Void)?
   let allowsLiveActions: Bool
+  let allowsDiffInspection: Bool
   let primaryActionTitle: String
   let primaryActionSymbol: String
   let primaryActionTint: Color
@@ -191,6 +194,7 @@ private struct LaneFileTreeNodeView: View {
             onSecondaryAction: { onSecondaryAction(file) },
             onOpenFiles: openFilesAction,
             allowsLiveActions: allowsLiveActions,
+            allowsDiffInspection: allowsDiffInspection,
             primaryActionTitle: primaryActionTitle,
             primaryActionSymbol: primaryActionSymbol,
             primaryActionTint: primaryActionTint,
@@ -212,6 +216,7 @@ private struct LaneFileTreeNodeView: View {
             onSecondaryAction: onSecondaryAction,
             onOpenFiles: onOpenFiles,
             allowsLiveActions: allowsLiveActions,
+            allowsDiffInspection: allowsDiffInspection,
             primaryActionTitle: primaryActionTitle,
             primaryActionSymbol: primaryActionSymbol,
             primaryActionTint: primaryActionTint,
@@ -276,6 +281,7 @@ private struct LaneFileRow: View {
   let onSecondaryAction: () -> Void
   let onOpenFiles: (() -> Void)?
   let allowsLiveActions: Bool
+  let allowsDiffInspection: Bool
   let primaryActionTitle: String
   let primaryActionSymbol: String
   let primaryActionTint: Color
@@ -304,7 +310,7 @@ private struct LaneFileRow: View {
       ScrollView(.horizontal, showsIndicators: false) {
         HStack(spacing: 6) {
           LaneActionButton(title: "Diff", symbol: "doc.text.magnifyingglass") { onDiff() }
-            .disabled(!allowsLiveActions)
+            .disabled(!allowsDiffInspection)
           if let onOpenFiles {
             LaneActionButton(title: "Open in Files", symbol: "folder") { onOpenFiles() }
           }

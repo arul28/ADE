@@ -158,6 +158,7 @@ extension LaneDetailScreen {
       subtitle: "\(changes.count) file\(changes.count == 1 ? "" : "s")",
       changes: changes,
       allowsLiveActions: canRunLiveActions,
+      allowsDiffInspection: true,
       bulkActionTitle: changes.count > 1 ? "Stage all" : nil,
       bulkActionSymbol: "plus.circle.fill",
       bulkActionTint: ADEColor.accent,
@@ -216,6 +217,7 @@ extension LaneDetailScreen {
       subtitle: "\(changes.count) file\(changes.count == 1 ? "" : "s")",
       changes: changes,
       allowsLiveActions: canRunLiveActions,
+      allowsDiffInspection: true,
       bulkActionTitle: changes.count > 1 ? "Unstage all" : nil,
       bulkActionSymbol: "minus.circle",
       bulkActionTint: ADEColor.warning,
@@ -390,6 +392,12 @@ extension LaneDetailScreen {
   func historySectionContent(detail: LaneDetailPayload) -> some View {
     VStack(alignment: .leading, spacing: 12) {
       ForEach(detail.recentCommits.prefix(20)) { commit in
+        let cachedCommitFiles = cachedCommitDiffFilesBySha[commit.sha] ?? []
+        let allowsCommitDiffInspection = laneAllowsDiffInspection(
+          connectionState: syncService.connectionState,
+          laneStatus: syncService.status(for: .lanes),
+          hasCachedTargets: !cachedCommitFiles.isEmpty
+        )
         VStack(alignment: .leading, spacing: 6) {
           HStack {
             Text(commit.subject)
@@ -413,24 +421,9 @@ extension LaneDetailScreen {
           ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 6) {
               LaneActionButton(title: "Files", symbol: "doc.text.magnifyingglass") {
-                Task {
-                  do {
-                    let files = try await syncService.listCommitFiles(laneId: laneId, commitSha: commit.sha)
-                    guard !files.isEmpty else {
-                      errorMessage = "This commit has no file changes."
-                      return
-                    }
-                    commitDiffFiles = files
-                    commitDiffSha = commit.sha
-                    commitDiffSubject = commit.subject
-                    showCommitDiffPicker = true
-                  } catch {
-                    ADEHaptics.error()
-                    errorMessage = error.localizedDescription
-                  }
-                }
+                Task { await openCommitDiffs(for: commit) }
               }
-              .disabled(!canRunLiveActions)
+              .disabled(!allowsCommitDiffInspection)
               LaneActionButton(title: "Copy message", symbol: "doc.on.doc") {
                 Task {
                   do {
@@ -457,5 +450,32 @@ extension LaneDetailScreen {
       }
     }
     .padding(.top, 8)
+  }
+
+  @MainActor
+  private func openCommitDiffs(for commit: GitCommitSummary) async {
+    do {
+      let files: [String]
+      if let cached = cachedCommitDiffFilesBySha[commit.sha], !cached.isEmpty {
+        files = cached
+      } else {
+        let loadedFiles = try await syncService.listCommitFiles(laneId: laneId, commitSha: commit.sha)
+        cachedCommitDiffFilesBySha[commit.sha] = loadedFiles
+        files = loadedFiles
+      }
+
+      guard !files.isEmpty else {
+        errorMessage = "This commit has no file changes."
+        return
+      }
+
+      commitDiffFiles = files
+      commitDiffSha = commit.sha
+      commitDiffSubject = commit.subject
+      showCommitDiffPicker = true
+    } catch {
+      ADEHaptics.error()
+      errorMessage = error.localizedDescription
+    }
   }
 }

@@ -1610,6 +1610,37 @@ final class ADETests: XCTestCase {
     )
   }
 
+  func testLaneAllowsDiffInspectionKeepsCachedTargetsReadableWhileOfflineOrSyncing() {
+    XCTAssertTrue(
+      laneAllowsDiffInspection(
+        connectionState: .disconnected,
+        laneStatus: .disconnected,
+        hasCachedTargets: true
+      )
+    )
+    XCTAssertTrue(
+      laneAllowsDiffInspection(
+        connectionState: .syncing,
+        laneStatus: SyncDomainStatus(phase: .ready, lastError: nil, lastHydratedAt: nil),
+        hasCachedTargets: true
+      )
+    )
+    XCTAssertFalse(
+      laneAllowsDiffInspection(
+        connectionState: .disconnected,
+        laneStatus: .disconnected,
+        hasCachedTargets: false
+      )
+    )
+    XCTAssertTrue(
+      laneAllowsDiffInspection(
+        connectionState: .connected,
+        laneStatus: SyncDomainStatus(phase: .ready, lastError: nil, lastHydratedAt: nil),
+        hasCachedTargets: false
+      )
+    )
+  }
+
   func testBuildPullRequestTimelineOrdersStateReviewsAndComments() {
     let pr = PullRequestListItem(
       id: "pr-9",

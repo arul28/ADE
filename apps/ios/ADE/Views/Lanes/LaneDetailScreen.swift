@@ -31,6 +31,7 @@ struct LaneDetailScreen: View {
   @State var commitDiffFiles: [String] = []
   @State var commitDiffSha = ""
   @State var commitDiffSubject = ""
+  @State var cachedCommitDiffFilesBySha: [String: [String]] = [:]
   @State private var lastLaneDetailLocalReload = Date.distantPast
 
   init(

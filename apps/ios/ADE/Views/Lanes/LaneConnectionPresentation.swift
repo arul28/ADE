@@ -48,6 +48,14 @@ func laneAllowsLiveActions(connectionState: RemoteConnectionState, laneStatus: S
   connectionState == .connected && laneStatus.phase == .ready
 }
 
+func laneAllowsDiffInspection(
+  connectionState: RemoteConnectionState,
+  laneStatus: SyncDomainStatus,
+  hasCachedTargets: Bool
+) -> Bool {
+  hasCachedTargets || laneAllowsLiveActions(connectionState: connectionState, laneStatus: laneStatus)
+}
+
 func laneRootConnectionNotice(
   connectionState: RemoteConnectionState,
   laneStatus: SyncDomainStatus,
