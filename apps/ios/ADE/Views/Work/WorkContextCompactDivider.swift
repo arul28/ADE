@@ -92,9 +92,9 @@ struct WorkContextCompactSummary: Equatable {
     }
 
     let trigger: String?
-    if raw.contains("auto") {
+    if raw.range(of: #"\bauto\b"#, options: .regularExpression) != nil {
       trigger = "AUTO"
-    } else if raw.contains("manual") {
+    } else if raw.range(of: #"\bmanual\b"#, options: .regularExpression) != nil {
       trigger = "MANUAL"
     } else {
       trigger = nil

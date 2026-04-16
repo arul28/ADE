@@ -210,7 +210,7 @@ func buildStackRows(
     // distinct indentation when the snapshot computed a richer tree.
     let depth = stackMember?.depth ?? index
     return PrStackRowData(
-      id: member.prId,
+      id: member.prId.isEmpty ? "lane:\(member.laneId)" : member.prId,
       prId: member.prId.isEmpty ? nil : member.prId,
       title: member.title,
       laneId: member.laneId,

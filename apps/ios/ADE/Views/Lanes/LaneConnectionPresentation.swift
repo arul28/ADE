@@ -298,8 +298,11 @@ private func laneOfflineAction(
   hasHostProfile: Bool,
   needsRepairing: Bool
 ) -> (title: String, action: LaneConnectionNoticeAction)? {
+  if needsRepairing {
+    return ("Pair again", .openSettings)
+  }
   if hasHostProfile {
     return ("Reconnect", .reconnect)
   }
-  return (needsRepairing ? "Pair again" : "Pair with host", .openSettings)
+  return ("Pair with host", .openSettings)
 }

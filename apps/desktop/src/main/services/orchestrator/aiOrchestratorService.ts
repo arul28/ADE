@@ -1969,6 +1969,7 @@ export function createAiOrchestratorService(args: {
         projectId: coordinatorProjectId,
         projectRoot,
         workspaceRoot,
+        aiIntegrationService: aiIntegrationService ?? null,
         memoryService: plannerMemoryService,
         projectConfigService: projectConfigService ?? null,
         getMissionBudgetStatus: missionBudgetService

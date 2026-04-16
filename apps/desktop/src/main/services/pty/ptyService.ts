@@ -328,8 +328,7 @@ export function createPtyService({
 
   const isTitleGenerationEnabled = (): boolean => {
     const si = getSessionIntelligence();
-    const ai = projectConfigService?.get().effective.ai;
-    return si?.titles?.enabled ?? (ai?.chat as any)?.autoTitleEnabled ?? true;
+    return si?.titles?.enabled ?? true;
   };
 
   const resolveTitleModelId = (): string | undefined => {
@@ -386,6 +385,7 @@ export function createPtyService({
         .summarizeTerminal({
           cwd: entry.boundCwd || entry.laneWorktreePath,
           prompt,
+          taskType: "session_title",
           timeoutMs: 8_000,
           ...(titleModelId ? { model: titleModelId } : {}),
         })
@@ -551,9 +551,7 @@ export function createPtyService({
 
         // Refresh title on complete — runs independently of AI summaries toggle
         if (hasAi) {
-          const refreshOnComplete = getSessionIntelligence()?.titles?.refreshOnComplete
-            ?? (projectConfigService?.get().effective.ai?.chat as any)?.autoTitleRefreshOnComplete
-            ?? true;
+          const refreshOnComplete = getSessionIntelligence()?.titles?.refreshOnComplete ?? true;
           if (refreshOnComplete && isTitleGenerationEnabled()) {
             try {
               if (isSessionManuallyNamed(sessionService, sessionId)) {
@@ -576,6 +574,7 @@ export function createPtyService({
               const titleResult = await aiIntegrationService!.summarizeTerminal({
                 cwd: summaryCwd || laneService.getLaneBaseAndBranch(session.laneId).worktreePath,
                 prompt: titlePrompt,
+                taskType: "session_title",
                 timeoutMs: 8_000,
                 ...(titleModelId ? { model: titleModelId } : {}),
               });
@@ -1332,6 +1331,7 @@ export function createPtyService({
             .summarizeTerminal({
               cwd: entry.boundCwd || entry.laneWorktreePath,
               prompt,
+              taskType: "session_title",
               timeoutMs: 8_000,
               ...(titleModelId ? { model: titleModelId } : {}),
             })

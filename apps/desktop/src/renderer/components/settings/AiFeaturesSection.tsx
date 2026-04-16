@@ -25,6 +25,13 @@ type FeatureInfo = {
   icon: Icon;
 };
 
+type ChatTitleSettingsPatch = {
+  enabled?: boolean;
+  modelId?: string;
+  refreshOnComplete?: boolean;
+  reasoningEffort?: string | null;
+};
+
 const FEATURES: FeatureInfo[] = [
   { key: "terminal_summaries", label: "Chat & terminal summaries", description: "Summarize closed terminal sessions and keep chat session summaries updated", subtitle: "Never lose track of what happened in closed sessions", icon: ChatCircleDots },
   { key: "pr_descriptions", label: "PR description drafting", description: "Draft PR descriptions when you trigger the action in the PR flows", subtitle: "Get a head start on PR descriptions when you're ready to merge", icon: GitPullRequest },
@@ -146,13 +153,13 @@ export function AiFeaturesSection() {
       const effectiveAi = effectiveAiRaw && typeof effectiveAiRaw === "object" ? (effectiveAiRaw as AiConfig) : null;
       setFeatureModels(mergeFeatureModels(defaultFeatureModels, effectiveAi));
       setUtilityModel(
-        normalizeModelSetting(effectiveAi?.chat?.autoTitleModelId)
+        normalizeModelSetting(effectiveAi?.sessionIntelligence?.titles?.modelId)
         || normalizeModelSetting(effectiveAi?.sessionIntelligence?.summaries?.modelId)
         || normalizeModelSetting(effectiveAi?.featureModelOverrides?.terminal_summaries)
         || "",
       );
-      setChatAutoTitleEnabled(effectiveAi?.chat?.autoTitleEnabled !== false);
-      setChatAutoTitleRefresh(effectiveAi?.chat?.autoTitleRefreshOnComplete !== false);
+      setChatAutoTitleEnabled(effectiveAi?.sessionIntelligence?.titles?.enabled ?? true);
+      setChatAutoTitleRefresh(effectiveAi?.sessionIntelligence?.titles?.refreshOnComplete ?? true);
       setChatAutoTitleReasoning(effectiveAi?.chat?.autoTitleReasoningEffort ?? null);
 
       const persistedReasoning = effectiveAi?.featureReasoningOverrides ?? {};
@@ -174,35 +181,39 @@ export function AiFeaturesSection() {
 
   const featureRowHoverCss = `.ai-feature-row:hover { background: ${COLORS.hoverBg}; }`;
 
-  const saveChatTitleSettings = useCallback(async (patch: Partial<NonNullable<AiConfig["chat"]>>) => {
+  const saveChatTitleSettings = useCallback(async (patch: ChatTitleSettingsPatch) => {
     const nextModelId =
-      patch.autoTitleModelId !== undefined
-        ? patch.autoTitleModelId
+      patch.modelId !== undefined
+        ? patch.modelId
         : utilityModel || "";
     const nextEnabled =
-      patch.autoTitleEnabled !== undefined ? patch.autoTitleEnabled : chatAutoTitleEnabled;
+      patch.enabled !== undefined ? patch.enabled : chatAutoTitleEnabled;
     const nextRefresh =
-      patch.autoTitleRefreshOnComplete !== undefined
-        ? patch.autoTitleRefreshOnComplete
+      patch.refreshOnComplete !== undefined
+        ? patch.refreshOnComplete
         : chatAutoTitleRefresh;
     const nextReasoning =
-      patch.autoTitleReasoningEffort !== undefined
-        ? patch.autoTitleReasoningEffort
+      patch.reasoningEffort !== undefined
+        ? patch.reasoningEffort
         : chatAutoTitleReasoning;
 
     await window.ade.ai.updateConfig({
+      sessionIntelligence: {
+        titles: {
+          enabled: nextEnabled,
+          modelId: nextModelId || undefined,
+          refreshOnComplete: nextRefresh,
+        },
+      } as AiConfig["sessionIntelligence"],
       chat: {
-        autoTitleEnabled: nextEnabled,
-        autoTitleModelId: nextModelId || undefined,
-        autoTitleRefreshOnComplete: nextRefresh,
         autoTitleReasoningEffort: nextReasoning,
       } as AiConfig["chat"],
     });
 
     setChatAutoTitleEnabled(nextEnabled);
     setChatAutoTitleRefresh(nextRefresh);
-    if (patch.autoTitleReasoningEffort !== undefined) {
-      setChatAutoTitleReasoning(patch.autoTitleReasoningEffort);
+    if (patch.reasoningEffort !== undefined) {
+      setChatAutoTitleReasoning(patch.reasoningEffort);
     }
   }, [chatAutoTitleEnabled, chatAutoTitleRefresh, chatAutoTitleReasoning, utilityModel]);
 
@@ -436,7 +447,7 @@ export function AiFeaturesSection() {
           >
             <Toggle
               checked={chatAutoTitleEnabled}
-              onChange={(value) => void saveChatTitleSettings({ autoTitleEnabled: value })}
+              onChange={(value) => void saveChatTitleSettings({ enabled: value })}
             />
 
             <div style={{ display: "flex", alignItems: "flex-start", gap: 10, minWidth: 0 }}>
@@ -478,7 +489,7 @@ export function AiFeaturesSection() {
                     <input
                       type="checkbox"
                       checked={chatAutoTitleRefresh}
-                      onChange={(e) => void saveChatTitleSettings({ autoTitleRefreshOnComplete: e.target.checked })}
+                      onChange={(e) => void saveChatTitleSettings({ refreshOnComplete: e.target.checked })}
                       style={{ margin: 0 }}
                     />
                     <span style={{ fontSize: 11, color: COLORS.textMuted, fontFamily: SANS_FONT }}>
@@ -494,7 +505,7 @@ export function AiFeaturesSection() {
                 value={utilityModel}
                 onChange={(modelId) => {
                   setUtilityModel(modelId);
-                  void saveChatTitleSettings({ autoTitleModelId: modelId });
+                  void saveChatTitleSettings({ modelId });
                 }}
                 availableModelIds={availableModelIds}
                 disabled={!chatAutoTitleEnabled}
@@ -502,7 +513,7 @@ export function AiFeaturesSection() {
                 reasoningEffort={chatAutoTitleReasoning}
                 onReasoningEffortChange={(effort) => {
                   setChatAutoTitleReasoning(effort);
-                  void saveChatTitleSettings({ autoTitleReasoningEffort: effort });
+                  void saveChatTitleSettings({ reasoningEffort: effort });
                 }}
                 onOpenAiSettings={openAiProvidersSettings}
               />

@@ -94,15 +94,15 @@ ADE's default model applies to all agents unless you set role-specific overrides
 
 | Role | Description | Recommended Model |
 |------|-------------|-----------------|
-| Orchestrator | Mission planning and worker coordination | `claude-opus-4-6` |
+| Orchestrator | Mission planning and worker coordination | `claude-opus-4-7` |
 | Worker | Mission execution tasks | `claude-sonnet-4-6` |
 | Validator | Mission validation and review | `claude-sonnet-4-6` |
 | Automation | Event-driven automation runs | `claude-haiku-4-5` |
 | Chat | Interactive chat sessions | `claude-sonnet-4-6` |
-| CTO | Project-level memory and delegation | `claude-opus-4-6` |
+| CTO | Project-level memory and delegation | `claude-opus-4-7` |
 
 <Tip>
-Routing automation runs to `claude-haiku-4-5` while keeping `claude-opus-4-6` for mission planning is the single most impactful cost optimization for users running frequent automations. Most PR-review and routine triage tasks do not require Opus-level reasoning.
+Routing automation runs to `claude-haiku-4-5` while keeping `claude-opus-4-7` for mission planning is the single most impactful cost optimization for users running frequent automations. Most PR-review and routine triage tasks do not require Opus-level reasoning.
 </Tip>
 
 ### Context Management
@@ -364,7 +364,7 @@ Settings for debugging, diagnostics, and low-level access.
     Prioritize speed and cost efficiency:
 
     - **Default model**: `claude-sonnet-4-6`
-    - **Orchestrator model**: `claude-opus-4-6`
+    - **Orchestrator model**: `claude-opus-4-7`
     - **Automation model**: `claude-haiku-4-5`
     - **Per-session budget**: $2.00
     - **Monthly cap**: $50.00

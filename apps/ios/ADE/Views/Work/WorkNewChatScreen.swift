@@ -272,8 +272,8 @@ struct WorkNewChatScreen: View {
     guard !trimmed.isEmpty else { return "Model" }
     let lower = trimmed.lowercased()
     switch lower {
-    case "opus": return "Claude Opus 4.6"
-    case "opus[1m]", "opus-1m": return "Claude Opus 4.6 1M"
+    case "opus": return "Claude Opus 4.7"
+    case "opus[1m]", "opus-1m": return "Claude Opus 4.7 1M"
     case "sonnet": return "Claude Sonnet 4.6"
     case "haiku": return "Claude Haiku 4.5"
     default: break

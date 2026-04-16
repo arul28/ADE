@@ -47,6 +47,7 @@ struct ADEStreamingShimmer: ViewModifier {
               .fill(.white)
           )
           .onAppear {
+            sweepOffset = -1.1
             withAnimation(.linear(duration: 2.1).repeatForever(autoreverses: false)) {
               sweepOffset = 1.1
             }

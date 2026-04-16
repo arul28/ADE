@@ -1,6 +1,8 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import type { ChildProcess } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { randomBytes } from "node:crypto";
 import { Bonjour, type Service as BonjourService } from "bonjour-service";
 import { WebSocketServer, WebSocket, type RawData } from "ws";
@@ -67,6 +69,13 @@ const DEFAULT_BRAIN_STATUS_INTERVAL_MS = 5_000;
 const DEFAULT_TERMINAL_SNAPSHOT_BYTES = 220_000;
 const LANE_PRESENCE_TTL_MS = 60_000;
 const SYNC_MDNS_SERVICE_TYPE = "ade-sync";
+const MOBILE_MUTATING_FILE_ACTIONS = new Set<SyncFileRequest["action"]>([
+  "writeText",
+  "createFile",
+  "createDirectory",
+  "rename",
+  "deletePath",
+]);
 
 type LanePresenceEntry = {
   marker: DeviceMarker;
@@ -92,6 +101,7 @@ type PeerState = {
   subscribedSessionIds: Set<string>;
   subscribedChatSessionIds: Set<string>;
   chatTranscriptOffsets: Map<string, number>;
+  chatEventIdsSent: Map<string, Set<string>>;
 };
 
 type SyncHostServiceArgs = {
@@ -624,6 +634,13 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
   const brainStatusTimer = setInterval(() => {
     broadcastBrainStatus();
   }, brainStatusIntervalMs);
+  const maybeChatEventSubscription = (args.agentChatService as
+    | { subscribeToEvents?: (callback: (event: AgentChatEventEnvelope) => void) => (() => void) | void }
+    | undefined
+  )?.subscribeToEvents?.((event) => broadcastChatEvent(event));
+  const chatEventSubscription = typeof maybeChatEventSubscription === "function"
+    ? maybeChatEventSubscription
+    : null;
 
   server.on("connection", (ws, request) => {
     const remoteAddress = sanitizeRemoteAddress(request.socket.remoteAddress);
@@ -645,6 +662,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       subscribedSessionIds: new Set(),
       subscribedChatSessionIds: new Set(),
       chatTranscriptOffsets: new Map(),
+      chatEventIdsSent: new Map(),
     };
     peers.add(peer);
     ws.on("message", (raw) => {
@@ -807,6 +825,31 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     }
   }
 
+  function chatEventDeliveryKey(event: AgentChatEventEnvelope): string {
+    return `${event.sessionId}:${event.sequence ?? -1}:${event.timestamp}:${event.event.type}`;
+  }
+
+  function rememberChatEventSent(peer: PeerState, event: AgentChatEventEnvelope): boolean {
+    const key = chatEventDeliveryKey(event);
+    let sent = peer.chatEventIdsSent.get(event.sessionId);
+    if (!sent) {
+      sent = new Set();
+      peer.chatEventIdsSent.set(event.sessionId, sent);
+    }
+    if (sent.has(key)) return false;
+    sent.add(key);
+    if (sent.size > 800) {
+      const overflow = sent.size - 800;
+      let removed = 0;
+      for (const existingKey of sent) {
+        sent.delete(existingKey);
+        removed += 1;
+        if (removed >= overflow) break;
+      }
+    }
+    return true;
+  }
+
   async function pumpChatEvents(): Promise<void> {
     if (disposed) return;
 
@@ -822,6 +865,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           peer.chatTranscriptOffsets.set(sessionId, nextOffset);
         }
         for (const event of events) {
+          if (!rememberChatEventSent(peer, event)) continue;
           send(peer.ws, "chat_event", event);
         }
       }
@@ -832,6 +876,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     for (const peer of peers) {
       if (!peer.authenticated || peer.ws.readyState !== WebSocket.OPEN) continue;
       if (!peer.subscribedChatSessionIds.has(event.sessionId)) continue;
+      if (!rememberChatEventSent(peer, event)) continue;
       send(peer.ws, "chat_event", event);
     }
   }
@@ -873,6 +918,13 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     if (/^https?:\/\//i.test(candidate)) {
       throw new Error("Remote artifact URLs are not supported by the desktop sync host.");
     }
+    if (/^file:\/\//i.test(candidate)) {
+      try {
+        candidate = fileURLToPath(candidate);
+      } catch {
+        throw new Error("Artifact file URL is invalid.");
+      }
+    }
     const absolute = path.isAbsolute(candidate)
       ? candidate
       : path.resolve(args.projectRoot, candidate);
@@ -888,12 +940,39 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     return resolvedArtifactPath;
   }
 
+  function isMobilePeer(peer: PeerState): boolean {
+    return peer.metadata?.platform === "iOS" || peer.metadata?.deviceType === "phone";
+  }
+
+  function assertMobileFileMutationAllowed(peer: PeerState, payload: SyncFileRequest): void {
+    if (!MOBILE_MUTATING_FILE_ACTIONS.has(payload.action)) return;
+    if (!isMobilePeer(peer)) return;
+
+    const workspaceId = toOptionalString((payload as { args?: { workspaceId?: unknown } }).args?.workspaceId);
+    if (!workspaceId) return;
+    const workspace = args.fileService.listWorkspaces({ includeArchived: true })
+      .find((entry) => entry.id === workspaceId);
+    if (!workspace) return;
+    if (workspace.mobileReadOnly === true || workspace.isReadOnlyByDefault) {
+      throw new Error("Mobile file access is read-only for this workspace.");
+    }
+  }
+
+  function isMobileLaneFileMutationBlocked(payload: SyncCommandPayload): boolean {
+    const laneId = toOptionalString((payload.args as Record<string, unknown> | null | undefined)?.laneId);
+    if (!laneId) return false;
+    const workspace = args.fileService.listWorkspaces({ includeArchived: true })
+      .find((entry) => entry.laneId === laneId);
+    return workspace ? workspace.mobileReadOnly === true || workspace.isReadOnlyByDefault : true;
+  }
+
   async function handleFileRequest(peer: PeerState, requestId: string | null, payload: SyncFileRequest): Promise<void> {
     const respond = (response: SyncFileResponsePayload) => {
       send(peer.ws, "file_response", response, requestId);
     };
 
     try {
+      assertMobileFileMutationAllowed(peer, payload);
       let result:
         | FilesWorkspace[]
         | FileTreeNode[]
@@ -1025,6 +1104,14 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     }
     if (!policy.viewerAllowed) {
       reject(`Remote command ${payload.action} is not available to paired controller devices.`, "forbidden_command");
+      return;
+    }
+    if (payload.action === "files.writeTextAtomic" && isMobilePeer(peer) && isMobileLaneFileMutationBlocked(payload)) {
+      reject("Mobile file access is read-only for this workspace.", "mobile_read_only");
+      return;
+    }
+    if (policy.localOnly || policy.requiresApproval) {
+      reject(`Remote command ${payload.action} requires approval on the desktop.`, "approval_required");
       return;
     }
 
@@ -1327,6 +1414,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         if (sessionId) {
           peer.subscribedChatSessionIds.delete(sessionId);
           peer.chatTranscriptOffsets.delete(sessionId);
+          peer.chatEventIdsSent.delete(sessionId);
         }
         break;
       }

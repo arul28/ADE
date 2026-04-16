@@ -430,6 +430,115 @@ struct AgentChatSession: Codable, Identifiable, Equatable {
   var requestedCwd: String?
   var createdAt: String
   var lastActivityAt: String
+
+  enum CodingKeys: String, CodingKey {
+    case id
+    case sessionId
+    case laneId
+    case provider
+    case model
+    case modelId
+    case sessionProfile
+    case reasoningEffort
+    case executionMode
+    case permissionMode
+    case interactionMode
+    case claudePermissionMode
+    case codexApprovalPolicy
+    case codexSandbox
+    case codexConfigSource
+    case opencodePermissionMode
+    case cursorModeSnapshot
+    case cursorModeId
+    case cursorConfigValues
+    case unifiedPermissionMode
+    case identityKey
+    case surface
+    case automationId
+    case automationRunId
+    case capabilityMode
+    case computerUse
+    case completion
+    case status
+    case idleSinceAt
+    case threadId
+    case requestedCwd
+    case createdAt
+    case lastActivityAt
+  }
+
+  init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    sessionId = try container.decodeIfPresent(String.self, forKey: .sessionId)
+      ?? container.decode(String.self, forKey: .id)
+    laneId = try container.decode(String.self, forKey: .laneId)
+    provider = try container.decode(String.self, forKey: .provider)
+    model = try container.decode(String.self, forKey: .model)
+    modelId = try container.decodeIfPresent(String.self, forKey: .modelId)
+    sessionProfile = try container.decodeIfPresent(String.self, forKey: .sessionProfile)
+    reasoningEffort = try container.decodeIfPresent(String.self, forKey: .reasoningEffort)
+    executionMode = try container.decodeIfPresent(String.self, forKey: .executionMode)
+    permissionMode = try container.decodeIfPresent(String.self, forKey: .permissionMode)
+    interactionMode = try container.decodeIfPresent(String.self, forKey: .interactionMode)
+    claudePermissionMode = try container.decodeIfPresent(String.self, forKey: .claudePermissionMode)
+    codexApprovalPolicy = try container.decodeIfPresent(String.self, forKey: .codexApprovalPolicy)
+    codexSandbox = try container.decodeIfPresent(String.self, forKey: .codexSandbox)
+    codexConfigSource = try container.decodeIfPresent(String.self, forKey: .codexConfigSource)
+    opencodePermissionMode = try container.decodeIfPresent(String.self, forKey: .opencodePermissionMode)
+    cursorModeSnapshot = try container.decodeIfPresent(RemoteJSONValue.self, forKey: .cursorModeSnapshot)
+    cursorModeId = try container.decodeIfPresent(String.self, forKey: .cursorModeId)
+    cursorConfigValues = try container.decodeIfPresent([String: RemoteJSONValue].self, forKey: .cursorConfigValues)
+    unifiedPermissionMode = try container.decodeIfPresent(String.self, forKey: .unifiedPermissionMode)
+    identityKey = try container.decodeIfPresent(String.self, forKey: .identityKey)
+    surface = try container.decodeIfPresent(String.self, forKey: .surface)
+    automationId = try container.decodeIfPresent(String.self, forKey: .automationId)
+    automationRunId = try container.decodeIfPresent(String.self, forKey: .automationRunId)
+    capabilityMode = try container.decodeIfPresent(String.self, forKey: .capabilityMode)
+    computerUse = try container.decodeIfPresent(RemoteJSONValue.self, forKey: .computerUse)
+    completion = try container.decodeIfPresent(ChatCompletionReport.self, forKey: .completion)
+    status = try container.decode(String.self, forKey: .status)
+    idleSinceAt = try container.decodeIfPresent(String.self, forKey: .idleSinceAt)
+    threadId = try container.decodeIfPresent(String.self, forKey: .threadId)
+    requestedCwd = try container.decodeIfPresent(String.self, forKey: .requestedCwd)
+    createdAt = try container.decode(String.self, forKey: .createdAt)
+    lastActivityAt = try container.decodeIfPresent(String.self, forKey: .lastActivityAt) ?? createdAt
+  }
+
+  func encode(to encoder: Encoder) throws {
+    var container = encoder.container(keyedBy: CodingKeys.self)
+    try container.encode(sessionId, forKey: .sessionId)
+    try container.encode(laneId, forKey: .laneId)
+    try container.encode(provider, forKey: .provider)
+    try container.encode(model, forKey: .model)
+    try container.encodeIfPresent(modelId, forKey: .modelId)
+    try container.encodeIfPresent(sessionProfile, forKey: .sessionProfile)
+    try container.encodeIfPresent(reasoningEffort, forKey: .reasoningEffort)
+    try container.encodeIfPresent(executionMode, forKey: .executionMode)
+    try container.encodeIfPresent(permissionMode, forKey: .permissionMode)
+    try container.encodeIfPresent(interactionMode, forKey: .interactionMode)
+    try container.encodeIfPresent(claudePermissionMode, forKey: .claudePermissionMode)
+    try container.encodeIfPresent(codexApprovalPolicy, forKey: .codexApprovalPolicy)
+    try container.encodeIfPresent(codexSandbox, forKey: .codexSandbox)
+    try container.encodeIfPresent(codexConfigSource, forKey: .codexConfigSource)
+    try container.encodeIfPresent(opencodePermissionMode, forKey: .opencodePermissionMode)
+    try container.encodeIfPresent(cursorModeSnapshot, forKey: .cursorModeSnapshot)
+    try container.encodeIfPresent(cursorModeId, forKey: .cursorModeId)
+    try container.encodeIfPresent(cursorConfigValues, forKey: .cursorConfigValues)
+    try container.encodeIfPresent(unifiedPermissionMode, forKey: .unifiedPermissionMode)
+    try container.encodeIfPresent(identityKey, forKey: .identityKey)
+    try container.encodeIfPresent(surface, forKey: .surface)
+    try container.encodeIfPresent(automationId, forKey: .automationId)
+    try container.encodeIfPresent(automationRunId, forKey: .automationRunId)
+    try container.encodeIfPresent(capabilityMode, forKey: .capabilityMode)
+    try container.encodeIfPresent(computerUse, forKey: .computerUse)
+    try container.encodeIfPresent(completion, forKey: .completion)
+    try container.encode(status, forKey: .status)
+    try container.encodeIfPresent(idleSinceAt, forKey: .idleSinceAt)
+    try container.encodeIfPresent(threadId, forKey: .threadId)
+    try container.encodeIfPresent(requestedCwd, forKey: .requestedCwd)
+    try container.encode(createdAt, forKey: .createdAt)
+    try container.encode(lastActivityAt, forKey: .lastActivityAt)
+  }
 }
 
 struct AgentChatCompletionArtifact: Codable, Equatable {
@@ -964,7 +1073,7 @@ extension AgentChatEvent {
 
 extension AgentChatEvent {
   static func decode(from raw: Any) throws -> AgentChatEvent {
-    let data = try JSONSerialization.data(withJSONObject: raw, options: [])
+    let data = try adeJSONData(withJSONObject: raw)
     return try JSONDecoder().decode(AgentChatEvent.self, from: data)
   }
 }
@@ -1241,6 +1350,15 @@ struct ComputerUseArtifactSummary: Codable, Identifiable, Equatable {
   var ownerKind: String
   var ownerId: String
   var relation: String
+  var reviewState: String?
+  var workflowState: String?
+  var reviewNote: String?
+}
+
+struct ComputerUseArtifactReviewMetadata: Codable, Equatable {
+  var reviewState: String?
+  var workflowState: String?
+  var reviewNote: String?
 }
 
 struct TerminalResumeLaunchConfig: Codable, Equatable {

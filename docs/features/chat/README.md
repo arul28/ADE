@@ -199,8 +199,8 @@ config service):
 
 - `ai.mode` -- `subscription` vs `guest`; gates auto-title, tool
   availability, and provider selection.
-- `ai.chat.autoTitleEnabled`, `ai.chat.autoTitleReasoningEffort`,
-  `ai.chat.autoTitleRefreshOnComplete` -- AI title generation.
+- `ai.sessionIntelligence.titles.*` and
+  `ai.chat.autoTitleReasoningEffort` -- AI title generation.
 - `ai.permissions.*` -- per-provider permission defaults
   (`claudePermissionMode`, Codex approval/sandbox defaults, OpenCode
   permission).

@@ -103,6 +103,8 @@ async function connectClient(args: {
   deviceName: string;
   siteId: string;
   dbVersion: number;
+  platform?: "macOS" | "linux" | "windows" | "iOS" | "unknown";
+  deviceType?: "desktop" | "phone" | "vps" | "unknown";
 }) {
   const ws = new WebSocket(`ws://127.0.0.1:${args.port}`);
   await new Promise<void>((resolve, reject) => {
@@ -118,8 +120,8 @@ async function connectClient(args: {
       peer: {
         deviceId: args.deviceId,
         deviceName: args.deviceName,
-        platform: "macOS",
-        deviceType: "desktop",
+        platform: args.platform ?? "macOS",
+        deviceType: args.deviceType ?? "desktop",
         siteId: args.siteId,
         dbVersion: args.dbVersion,
       },
@@ -158,6 +160,7 @@ function createStubFileService(workspaceRoot: string) {
       name: "Primary",
       rootPath: workspaceRoot,
       isReadOnlyByDefault: false,
+      mobileReadOnly: true,
     }],
     listTree: async () => [{
       name: "notes.txt",
@@ -620,6 +623,54 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
     expect(writeResponse.requestId).toBe("write-text");
     expect(fs.readFileSync(path.join(workspaceRoot, "notes.txt"), "utf8")).toBe("updated");
 
+    const phoneClient = await connectClient({
+      port: await host.waitUntilListening(),
+      token: host.getBootstrapToken(),
+      deviceId: "peer-files-phone",
+      deviceName: "Peer Files Phone",
+      platform: "iOS",
+      deviceType: "phone",
+      siteId: "peer-files-phone-site",
+      dbVersion: brainDb.sync.getDbVersion(),
+    });
+    activeDisposers.push(phoneClient.close);
+    phoneClient.ws.send(encodeSyncEnvelope({
+      type: "file_request",
+      requestId: "mobile-write-text",
+      payload: {
+        action: "writeText",
+        args: {
+          workspaceId: "workspace-1",
+          path: "notes.txt",
+          text: "mobile update",
+        },
+      },
+    }));
+    const mobileWriteResponse = await phoneClient.queue.next("file_response");
+    const mobileWritePayload = mobileWriteResponse.payload as { ok: boolean; error?: { message: string } };
+    expect(mobileWriteResponse.requestId).toBe("mobile-write-text");
+    expect(mobileWritePayload.ok).toBe(false);
+    expect(mobileWritePayload.error?.message).toMatch(/read-only/i);
+    expect(fs.readFileSync(path.join(workspaceRoot, "notes.txt"), "utf8")).toBe("updated");
+
+    const atomicWrite = await sendCommand(phoneClient.ws, phoneClient.queue, {
+      commandId: "mobile-atomic-write",
+      action: "files.writeTextAtomic",
+      args: {
+        laneId: "lane-1",
+        path: "notes.txt",
+        text: "mobile atomic update",
+      },
+    });
+    const atomicAckPayload = atomicWrite.ack.payload as { accepted: boolean; status: string };
+    const atomicResultPayload = atomicWrite.result.payload as { ok: boolean; error?: { code: string; message: string } };
+    expect(atomicAckPayload.accepted).toBe(false);
+    expect(atomicAckPayload.status).toBe("rejected");
+    expect(atomicResultPayload.ok).toBe(false);
+    expect(atomicResultPayload.error?.code).toBe("mobile_read_only");
+    expect(atomicResultPayload.error?.message).toMatch(/read-only/i);
+    expect(fs.readFileSync(path.join(workspaceRoot, "notes.txt"), "utf8")).toBe("updated");
+
     client.ws.send(encodeSyncEnvelope({
       type: "file_request",
       requestId: "artifact-read",
@@ -968,6 +1019,7 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
       computerUseArtifactBrokerService: {
         listArtifacts: () => [],
       } as any,
+      pinStore: createStubPinStore(),
     });
     activeDisposers.push(async () => {
       await host.dispose();
@@ -1113,6 +1165,7 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
       computerUseArtifactBrokerService: {
         listArtifacts: () => [],
       } as any,
+      pinStore: createStubPinStore(),
     });
     activeDisposers.push(async () => {
       await host.dispose();

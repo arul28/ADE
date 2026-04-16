@@ -58,6 +58,123 @@ struct FilesWorkspaceHeader: View {
   }
 }
 
+struct FilesProofSection: View {
+  let artifacts: [ComputerUseArtifactSummary]
+  let errorMessage: String?
+  let onRefresh: () -> Void
+  let onOpenArtifact: (ComputerUseArtifactSummary) -> Void
+  let onCopyReference: (ComputerUseArtifactSummary) -> Void
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 12) {
+      HStack(alignment: .center, spacing: 10) {
+        VStack(alignment: .leading, spacing: 3) {
+          Text("Proof")
+            .font(.headline)
+            .foregroundStyle(ADEColor.textPrimary)
+          Text("Recent screenshot and video artifacts linked to this lane.")
+            .font(.caption)
+            .foregroundStyle(ADEColor.textSecondary)
+        }
+        Spacer(minLength: 8)
+        Button(action: onRefresh) {
+          Image(systemName: "arrow.clockwise")
+            .font(.system(size: 14, weight: .semibold))
+        }
+        .buttonStyle(.glass)
+        .accessibilityLabel("Refresh proof artifacts")
+      }
+
+      if let errorMessage {
+        FilesCompactBanner(
+          symbol: "exclamationmark.triangle.fill",
+          tint: ADEColor.danger,
+          title: errorMessage,
+          actionTitle: "Retry",
+          onAction: onRefresh
+        )
+      } else if artifacts.isEmpty {
+        Text("No proof artifacts are cached for this lane yet.")
+          .font(.caption)
+          .foregroundStyle(ADEColor.textSecondary)
+          .frame(maxWidth: .infinity, alignment: .leading)
+          .padding(12)
+          .adeInsetField(cornerRadius: 12, padding: 0)
+      } else {
+        VStack(spacing: 10) {
+          ForEach(artifacts) { artifact in
+            FilesProofArtifactRow(
+              artifact: artifact,
+              onOpen: { onOpenArtifact(artifact) },
+              onCopyReference: { onCopyReference(artifact) }
+            )
+          }
+        }
+      }
+    }
+    .adeGlassCard(cornerRadius: 18)
+  }
+}
+
+struct FilesProofArtifactRow: View {
+  let artifact: ComputerUseArtifactSummary
+  let onOpen: () -> Void
+  let onCopyReference: () -> Void
+
+  private var icon: String {
+    artifact.artifactKind == "video_recording" ? "video.fill" : "photo.fill"
+  }
+
+  var body: some View {
+    HStack(alignment: .top, spacing: 10) {
+      Image(systemName: icon)
+        .font(.system(size: 15, weight: .semibold))
+        .foregroundStyle(ADEColor.accent)
+        .frame(width: 32, height: 32)
+        .background(ADEColor.accent.opacity(0.1), in: Circle())
+
+      VStack(alignment: .leading, spacing: 4) {
+        Text(artifact.title)
+          .font(.subheadline.weight(.semibold))
+          .foregroundStyle(ADEColor.textPrimary)
+          .lineLimit(2)
+        Text(artifact.artifactKind.replacingOccurrences(of: "_", with: " ").capitalized)
+          .font(.caption2.monospaced())
+          .foregroundStyle(ADEColor.textSecondary)
+        if let description = artifact.description, !description.isEmpty {
+          Text(description)
+            .font(.caption)
+            .foregroundStyle(ADEColor.textSecondary)
+            .lineLimit(2)
+        }
+      }
+
+      Spacer(minLength: 8)
+
+      Menu {
+        Button {
+          onOpen()
+        } label: {
+          Label("Open proof", systemImage: "eye")
+        }
+        Button {
+          onCopyReference()
+        } label: {
+          Label("Copy reference", systemImage: "doc.on.doc")
+        }
+      } label: {
+        Image(systemName: "ellipsis.circle")
+          .font(.system(size: 18, weight: .semibold))
+          .foregroundStyle(ADEColor.textSecondary)
+          .frame(width: 32, height: 32)
+      }
+      .accessibilityLabel("Actions for \(artifact.title)")
+    }
+    .padding(12)
+    .adeInsetField(cornerRadius: 14, padding: 0)
+  }
+}
+
 struct FilesQueryCard: View {
   let title: String
   let prompt: String
@@ -225,7 +342,7 @@ struct FilesBreadcrumbBar: View {
         }
         .buttonStyle(.glass)
 
-        ForEach(Array(filesBreadcrumbItems(relativePath: relativePath, includeCurrentFile: includeCurrentFile).enumerated()), id: \.offset) { _, breadcrumb in
+        ForEach(filesBreadcrumbItems(relativePath: relativePath, includeCurrentFile: includeCurrentFile), id: \.path) { breadcrumb in
           Image(systemName: "chevron.right")
             .font(.caption2.weight(.semibold))
             .foregroundStyle(ADEColor.textMuted)

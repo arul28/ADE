@@ -4,26 +4,27 @@ import AVKit
 
 extension WorkSessionDestinationView {
   @MainActor
-  func sendMessage() async {
-    let text = composer.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !text.isEmpty else { return }
+  func sendMessage(_ text: String) async -> Bool {
+    guard !sending else { return false }
+    let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !text.isEmpty else { return false }
 
     localEchoMessages.append(WorkLocalEchoMessage(text: text, timestamp: workDateFormatter.string(from: Date())))
-    composer = ""
     sending = true
+    defer { sending = false }
     do {
       try await syncService.sendChatMessage(sessionId: sessionId, text: text)
       await refreshChatStateAfterAction(forceRemote: true)
       errorMessage = nil
+      return true
     } catch {
       ADEHaptics.error()
       localEchoMessages.removeAll { echo in
         echo.text.trimmingCharacters(in: .whitespacesAndNewlines) == text
       }
-      composer = text
       errorMessage = error.localizedDescription
+      return false
     }
-    sending = false
   }
 
   @MainActor
@@ -215,6 +216,9 @@ extension WorkSessionDestinationView {
   @MainActor
   func loadArtifactContent(_ artifact: ComputerUseArtifactSummary) async {
     guard artifactContent[artifact.id] == nil else { return }
+    guard !artifactContentLoadsInFlight.contains(artifact.id) else { return }
+    artifactContentLoadsInFlight.insert(artifact.id)
+    defer { artifactContentLoadsInFlight.remove(artifact.id) }
 
     let cacheKey = "work-artifact::\(artifact.id)::\(artifact.uri)"
 
@@ -236,11 +240,16 @@ extension WorkSessionDestinationView {
 
     do {
       let blob = try await syncService.readArtifact(artifactId: artifact.id, uri: artifact.uri)
-      let data: Data
+      let data: Data?
       if blob.isBinary {
-        data = Data(base64Encoded: blob.content) ?? Data()
+        data = Data(base64Encoded: blob.content)
       } else {
-        data = blob.content.data(using: .utf8) ?? Data()
+        data = blob.content.data(using: .utf8)
+      }
+
+      guard let data else {
+        artifactContent[artifact.id] = .error("The host returned an artifact payload that could not be decoded.")
+        return
       }
 
       if artifact.artifactKind == "video_recording" || (artifact.mimeType?.contains("video") == true) {

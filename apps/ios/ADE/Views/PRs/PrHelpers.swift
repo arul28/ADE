@@ -95,6 +95,31 @@ func parsePullRequestPatch(_ patch: String) -> [PrDiffDisplayLine] {
   }
 }
 
+func prPatchPreviewLimit(for patch: String) -> PrPatchPreviewLimit? {
+  let lineCount = patch.reduce(1) { count, character in
+    character == "\n" ? count + 1 : count
+  }
+  let byteCount = patch.utf8.count
+  let maxLines = 1_500
+  let maxBytes = 300 * 1024
+
+  if lineCount > maxLines {
+    return PrPatchPreviewLimit(
+      title: "Diff preview paused",
+      message: "This patch has \(lineCount) lines. Open the file in Files or GitHub to inspect it without slowing the PR view."
+    )
+  }
+
+  if byteCount > maxBytes {
+    return PrPatchPreviewLimit(
+      title: "Diff preview paused",
+      message: "This patch is \(formattedFileSize(byteCount)). Open the file in Files or GitHub to inspect the full diff."
+    )
+  }
+
+  return nil
+}
+
 func buildPullRequestTimeline(pr: PullRequestListItem, snapshot: PullRequestSnapshot) -> [PrTimelineEvent] {
   var events: [PrTimelineEvent] = [
     PrTimelineEvent(

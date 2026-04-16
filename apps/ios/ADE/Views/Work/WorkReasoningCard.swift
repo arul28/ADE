@@ -68,7 +68,7 @@ struct WorkReasoningCard: View {
         .contentShape(Rectangle())
       }
       .buttonStyle(.plain)
-      .accessibilityLabel(isLive ? "Reasoning in progress. Tap to collapse." : "Reasoning. Tap to expand.")
+      .accessibilityLabel("\(isLive ? "Reasoning in progress." : "Reasoning.") Tap to \(isExpanded ? "collapse" : "expand").")
 
       if isExpanded, let bodyText {
         Text(bodyText)

@@ -14,6 +14,8 @@ struct PRsTabView: View {
   @State private var queueStates: [QueueLandingState] = []
   @State private var mobileSnapshot: PrMobileSnapshot?
   @State private var errorMessage: String?
+  @State private var actionMessage: String?
+  @State private var busyAction: String?
   @State private var createPresented = false
   @State private var stackPresentation: PrStackPresentation?
   @State private var refreshFeedbackToken = 0
@@ -111,9 +113,13 @@ struct PRsTabView: View {
 
   private var canCreatePr: Bool {
     if let createCaps = mobileSnapshot?.createCapabilities {
-      return createCaps.canCreateAny && isLive
+      return createCaps.canCreateAny && canRunWorkflowActions
     }
-    return isLive && !lanes.isEmpty
+    return canRunWorkflowActions && !lanes.isEmpty
+  }
+
+  private var canRunWorkflowActions: Bool {
+    isLive && busyAction == nil
   }
 
   var body: some View {
@@ -154,6 +160,31 @@ struct PRsTabView: View {
             .prListRow()
           }
 
+          if let busyAction {
+            HStack(spacing: 10) {
+              ProgressView()
+                .tint(ADEColor.accent)
+              Text(busyAction)
+                .font(.subheadline)
+                .foregroundStyle(ADEColor.textSecondary)
+              Spacer(minLength: 0)
+            }
+            .adeGlassCard(cornerRadius: 12, padding: 12)
+            .prListRow()
+          }
+
+          if let actionMessage {
+            ADENoticeCard(
+              title: "PR workflow updated",
+              message: actionMessage,
+              icon: "checkmark.circle.fill",
+              tint: ADEColor.success,
+              actionTitle: nil,
+              action: nil
+            )
+            .prListRow()
+          }
+
           if prsStatus.phase == .ready && filteredPrs.isEmpty {
             ADEEmptyStateView(
               symbol: searchText.isEmpty ? "arrow.triangle.pull" : "magnifyingglass",
@@ -188,35 +219,31 @@ struct PRsTabView: View {
             }
           }
 
-          ForEach(Array(groupedWorkflowCards.enumerated()), id: \.offset) { _, group in
+          ForEach(groupedWorkflowCards, id: \.title) { group in
             Section(group.title) {
               ForEach(group.cards) { card in
                 PrMobileWorkflowCardView(
                   card: card,
-                  isLive: isLive,
+                  isLive: canRunWorkflowActions,
                   onOpenPr: { prId in path.append(prId) },
                   onLand: { prId, method in
-                    Task {
-                      try? await syncService.mergePullRequest(prId: prId, method: method.rawValue)
-                      await reload(refreshRemote: true)
+                    runPrRootAction("Landing active PR") {
+                      try await syncService.mergePullRequest(prId: prId, method: method.rawValue)
                     }
                   },
                   onRebaseLane: { laneId in
-                    Task {
-                      try? await syncService.startLaneRebase(laneId: laneId)
-                      await reload(refreshRemote: true)
+                    runPrRootAction("Rebasing lane") {
+                      try await syncService.startLaneRebase(laneId: laneId)
                     }
                   },
                   onDeferRebase: { laneId in
-                    Task {
-                      try? await syncService.deferRebaseSuggestion(laneId: laneId)
-                      await reload(refreshRemote: true)
+                    runPrRootAction("Deferring rebase") {
+                      try await syncService.deferRebaseSuggestion(laneId: laneId)
                     }
                   },
                   onDismissRebase: { laneId in
-                    Task {
-                      try? await syncService.dismissRebaseSuggestion(laneId: laneId)
-                      await reload(refreshRemote: true)
+                    runPrRootAction("Dismissing rebase") {
+                      try await syncService.dismissRebaseSuggestion(laneId: laneId)
                     }
                   }
                 )
@@ -289,8 +316,8 @@ struct PRsTabView: View {
           lanes: lanes,
           createCapabilities: mobileSnapshot?.createCapabilities
         ) { laneId, title, body, draft, baseBranch, labels, reviewers in
-          Task {
-            try? await syncService.createPullRequest(
+          runPrRootAction("Creating pull request") {
+            try await syncService.createPullRequest(
               laneId: laneId,
               title: title,
               body: body,
@@ -299,9 +326,8 @@ struct PRsTabView: View {
               labels: labels,
               reviewers: reviewers
             )
-            try? await syncService.refreshPullRequestSnapshots()
+          } onSuccess: {
             createPresented = false
-            await reload()
           }
         }
         .environmentObject(syncService)
@@ -324,16 +350,14 @@ struct PRsTabView: View {
 
     if caps?.canClose ?? (pr.state == "open") {
       Button("Close", role: .destructive) {
-        Task {
-          try? await syncService.closePullRequest(prId: pr.id)
-          await reload(refreshRemote: true)
+        runPrRootAction("Closing pull request") {
+          try await syncService.closePullRequest(prId: pr.id)
         }
       }
     } else if caps?.canReopen ?? (pr.state == "closed") {
       Button("Reopen") {
-        Task {
-          try? await syncService.reopenPullRequest(prId: pr.id)
-          await reload(refreshRemote: true)
+        runPrRootAction("Reopening pull request") {
+          try await syncService.reopenPullRequest(prId: pr.id)
         }
       }
       .tint(ADEColor.success)
@@ -392,9 +416,14 @@ struct PRsTabView: View {
   @MainActor
   private func reload(refreshRemote: Bool = false) async {
     do {
+      var refreshError: Error?
       if refreshRemote {
-        try? await syncService.refreshPullRequestSnapshots()
-        try? await syncService.refreshLaneSnapshots()
+        do {
+          try await syncService.refreshPullRequestSnapshots()
+          try await syncService.refreshLaneSnapshots()
+        } catch {
+          refreshError = error
+        }
       }
 
       async let prsTask = syncService.fetchPullRequestListItems()
@@ -414,9 +443,33 @@ struct PRsTabView: View {
       // throws — swallow it and fall back to the legacy per-kind fetches above.
       mobileSnapshot = try? await syncService.fetchPrMobileSnapshot()
 
-      errorMessage = nil
+      errorMessage = refreshError?.localizedDescription
     } catch {
       errorMessage = error.localizedDescription
+    }
+  }
+
+  @MainActor
+  private func runPrRootAction(
+    _ label: String,
+    operation: @escaping () async throws -> Void,
+    onSuccess: @escaping @MainActor () -> Void = {}
+  ) {
+    Task { @MainActor in
+      busyAction = label
+      errorMessage = nil
+      actionMessage = nil
+      do {
+        try await operation()
+        onSuccess()
+        await reload(refreshRemote: true)
+        actionMessage = "\(label) finished."
+      } catch {
+        let message = error.localizedDescription
+        await reload(refreshRemote: false)
+        errorMessage = message
+      }
+      busyAction = nil
     }
   }
 

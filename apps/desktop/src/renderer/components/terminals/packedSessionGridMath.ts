@@ -637,17 +637,11 @@ export function computePackedGridRowHeight(args: {
   containerHeight: number;
   totalRows: number;
   gapPx?: number;
-  baseRowPx?: number;
 }): number {
-  const {
-    containerHeight,
-    totalRows,
-    gapPx = GRID_GAP_PX,
-    baseRowPx = GRID_BASE_ROW_PX,
-  } = args;
-  if (!Number.isFinite(containerHeight) || containerHeight <= 0 || totalRows <= 0) return baseRowPx;
+  const { containerHeight, totalRows, gapPx = GRID_GAP_PX } = args;
+  if (!Number.isFinite(containerHeight) || containerHeight <= 0 || totalRows <= 0) return 0;
   const available = (containerHeight - gapPx * Math.max(0, totalRows - 1)) / totalRows;
-  return Math.max(baseRowPx, Math.floor(available));
+  return Math.max(0, available);
 }
 
 export function computePackedSpanPixels(span: number, unitPx: number, gapPx = GRID_GAP_PX): number {

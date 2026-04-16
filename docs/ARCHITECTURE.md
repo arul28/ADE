@@ -252,7 +252,7 @@ Agent tools are split by domain:
 
 `apps/desktop/src/shared/modelRegistry.ts` + `apps/desktop/src/shared/modelProfiles.ts`:
 
-- `MODEL_REGISTRY` — static CLI-wrapped entries + dynamically populated API-key/local entries. Includes the Claude Opus 4.6 1M-context entry (`anthropic/claude-opus-4-6-1m`, aliases `opus[1m]` / `claude-opus-4-6[1m]`, 1,000,000 context / 32,000 max output, `costTier: "very_high"`, full `low|medium|high|max` reasoning tiers).
+- `MODEL_REGISTRY` — static CLI-wrapped entries + dynamically populated API-key/local entries. Includes the Claude Opus 4.7 1M-context entry (`anthropic/claude-opus-4-7-1m`, aliases `opus[1m]` / `claude-opus-4-7[1m]`, 1,000,000 context / 128,000 max output, `costTier: "very_high"`, full `low|medium|high|max` reasoning tiers).
 - `ModelProviderGroup` = `"claude" | "codex" | "opencode" | "cursor"`.
 - Helpers: `getModelById`, `getModelPricing`, `updateModelPricingInRegistry`, `replaceDynamicOpenCodeModelDescriptors`, `resolveProviderGroupForModel`, `resolveModelDescriptorForProvider`, `getRuntimeModelRefForDescriptor`.
 - Reasoning tier passthrough (`providerOptions.ts`) maps tier strings directly to each provider's native config (`thinking.type`, `reasoningEffort`, `thinkingConfig.thinkingLevel`, etc.) — no arbitrary token budgets. The Claude vocabulary is `low | medium | high | max`.

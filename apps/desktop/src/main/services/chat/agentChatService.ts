@@ -139,6 +139,7 @@ import { createCtoOperatorTools, type CtoOperatorToolDeps } from "../ai/tools/ct
 import { buildCodingAgentSystemPrompt } from "../ai/tools/systemPrompt";
 import { decideFrontendRepoToolExposure, filterFrontendRepoDiscoveryTools } from "../ai/toolExposurePolicy";
 import { resolveClaudeCliModel } from "../ai/claudeModelUtils";
+import type { createAiIntegrationService } from "../ai/aiIntegrationService";
 import {
   getProviderRuntimeHealth,
   reportProviderRuntimeAuthFailure,
@@ -167,7 +168,6 @@ import {
   openCodeEventStream,
   refreshOpenCodeSessionToolSelection,
   resolveOpenCodeModelSelection,
-  runOpenCodeTextPrompt,
   startOpenCodeSession,
   type DiscoveredLocalModelEntry,
   type OpenCodeSessionHandle,
@@ -857,9 +857,9 @@ type ResolvedChatConfig = {
   claudePermissionMode: AgentChatClaudePermissionMode;
   opencodePermissionMode: AgentChatOpenCodePermissionMode;
   sessionBudgetUsd: number | null;
-  autoTitleEnabled: boolean;
-  autoTitleModelId: string | null;
-  autoTitleRefreshOnComplete: boolean;
+  titleGenerationEnabled: boolean;
+  titleModelId: string | null;
+  titleRefreshOnComplete: boolean;
   summaryEnabled: boolean;
   summaryModelId: string | null;
 };
@@ -2491,6 +2491,7 @@ export function createAgentChatService(args: {
   laneService: ReturnType<typeof createLaneService>;
   sessionService: ReturnType<typeof createSessionService>;
   projectConfigService: ReturnType<typeof createProjectConfigService>;
+  aiIntegrationService: ReturnType<typeof createAiIntegrationService>;
   logger: Logger;
   appVersion: string;
   onEvent?: (event: AgentChatEventEnvelope) => void;
@@ -2530,6 +2531,7 @@ export function createAgentChatService(args: {
     laneService,
     sessionService,
     projectConfigService,
+    aiIntegrationService,
     logger,
     appVersion,
     onEvent,
@@ -2544,6 +2546,8 @@ export function createAgentChatService(args: {
   if (!getDirtyFileTextForPath) {
     throw new Error("createAgentChatService: getDirtyFileTextForPath is required");
   }
+
+  const eventSubscribers = new Set<(event: AgentChatEventEnvelope) => void>();
   if (!issueInventoryService) {
     throw new Error("Issue inventory service is required to initialize agent chat.");
   }
@@ -2560,6 +2564,24 @@ export function createAgentChatService(args: {
   fs.mkdirSync(chatSessionsDir, { recursive: true });
   fs.mkdirSync(transcriptsDir, { recursive: true });
   fs.mkdirSync(chatTranscriptsDir, { recursive: true });
+
+  const runSessionIntelligencePrompt = async (args: {
+    cwd: string;
+    modelId: string;
+    prompt: string;
+    systemPrompt?: string;
+    timeoutMs?: number;
+    taskType: "session_title" | "session_summary" | "handoff_summary" | "continuity_summary";
+  }) => {
+    return await aiIntegrationService.summarizeTerminal({
+      cwd: args.cwd,
+      model: args.modelId,
+      prompt: args.prompt,
+      ...(args.systemPrompt ? { systemPrompt: args.systemPrompt } : {}),
+      ...(args.timeoutMs ? { timeoutMs: args.timeoutMs } : {}),
+      taskType: args.taskType,
+    });
+  };
 
   const stageAttachmentForCodexInput = (attachment: ResolvedAgentChatFileRef): string => {
     const content = readFileWithinRootSecure(attachment._rootPath, attachment._resolvedPath);
@@ -4007,12 +4029,11 @@ export function createAgentChatService(args: {
 
     managed.continuitySummaryInFlight = true;
     try {
-      const result = await runOpenCodeTextPrompt({
-        directory: managed.laneWorktreePath,
-        title: "ADE continuity summary",
-        modelDescriptor: descriptor,
+      const result = await runSessionIntelligencePrompt({
+        cwd: managed.laneWorktreePath,
+        modelId: descriptor.id,
         prompt,
-        projectConfig: projectConfigService.get().effective,
+        taskType: "continuity_summary",
       });
       const text = result.text.trim();
       if (text.length) {
@@ -4275,12 +4296,11 @@ export function createAgentChatService(args: {
     ].filter(Boolean).join("\n");
 
     try {
-      const result = await runOpenCodeTextPrompt({
-        directory: args.managed.laneWorktreePath,
-        title: "ADE handoff brief",
-        modelDescriptor: descriptor,
+      const result = await runSessionIntelligencePrompt({
+        cwd: args.managed.laneWorktreePath,
+        modelId: descriptor.id,
         prompt,
-        projectConfig: projectConfigService.get().effective,
+        taskType: "handoff_summary",
       });
       const brief = result.text.trim();
       if (!brief.length) {
@@ -4334,12 +4354,12 @@ export function createAgentChatService(args: {
   ): Promise<void> => {
     if (managed.deleted) return;
     const config = resolveChatConfig();
-    if (!config.autoTitleEnabled) return;
+    if (!config.titleGenerationEnabled) return;
     if (managed.manuallyNamed) return;
     if (managed.autoTitleInFlight) return;
     if (args.stage === "initial" && managed.autoTitleStage !== "none") return;
     if (args.stage === "final") {
-      if (!config.autoTitleRefreshOnComplete) return;
+      if (!config.titleRefreshOnComplete) return;
       if (managed.autoTitleStage === "final") return;
     }
 
@@ -4352,7 +4372,7 @@ export function createAgentChatService(args: {
 
     const preferredModelId =
       [
-        config.autoTitleModelId,
+        config.titleModelId,
         DEFAULT_AUTO_TITLE_MODEL_ID,
         "anthropic/claude-haiku-4-5",
         "openai/gpt-5.4-mini",
@@ -4387,18 +4407,17 @@ export function createAgentChatService(args: {
 
     managed.autoTitleInFlight = true;
     try {
-      const result = await runOpenCodeTextPrompt({
-        directory: managed.laneWorktreePath,
-        title: args.stage === "final" ? "ADE final chat title" : "ADE initial chat title",
-        modelDescriptor: descriptor,
-        system: AUTO_TITLE_SYSTEM_PROMPT,
+      const result = await runSessionIntelligencePrompt({
+        cwd: managed.laneWorktreePath,
+        modelId: descriptor.id,
+        systemPrompt: AUTO_TITLE_SYSTEM_PROMPT,
         prompt: [
           args.stage === "final"
             ? "Write a final concise title for this completed coding chat."
             : "Write a concise title for this new coding chat.",
           titleContext.join("\n"),
         ].join("\n\n"),
-        projectConfig: projectConfigService.get().effective,
+        taskType: "session_title",
       });
       // Re-check after async — user may have manually renamed while the request was in flight.
       if (managed.manuallyNamed) return;
@@ -4634,13 +4653,12 @@ export function createAgentChatService(args: {
     const budget = Number(chat.sessionBudgetUsd ?? permissions.cli?.maxBudgetUsd ?? NaN);
     const sessionBudgetUsd = Number.isFinite(budget) && budget > 0 ? budget : null;
 
-    // Session-intelligence titles with chat.autoTitle* fallback
-    const autoTitleEnabled = si?.titles?.enabled ?? chat.autoTitleEnabled ?? true;
-    const autoTitleModelIdRaw = si?.titles?.modelId ?? chat.autoTitleModelId;
-    const autoTitleModelId = typeof autoTitleModelIdRaw === "string" && autoTitleModelIdRaw.trim().length
-      ? autoTitleModelIdRaw.trim()
+    const titleGenerationEnabled = si?.titles?.enabled ?? true;
+    const titleModelIdRaw = si?.titles?.modelId;
+    const titleModelId = typeof titleModelIdRaw === "string" && titleModelIdRaw.trim().length
+      ? titleModelIdRaw.trim()
       : null;
-    const autoTitleRefreshOnComplete = si?.titles?.refreshOnComplete ?? chat.autoTitleRefreshOnComplete ?? true;
+    const titleRefreshOnComplete = si?.titles?.refreshOnComplete ?? true;
 
     // Session-intelligence summaries
     const summaryEnabled = si?.summaries?.enabled ?? true;
@@ -4655,9 +4673,9 @@ export function createAgentChatService(args: {
       claudePermissionMode,
       opencodePermissionMode,
       sessionBudgetUsd,
-      autoTitleEnabled,
-      autoTitleModelId,
-      autoTitleRefreshOnComplete,
+      titleGenerationEnabled,
+      titleModelId,
+      titleRefreshOnComplete,
       summaryEnabled,
       summaryModelId,
     };
@@ -5279,6 +5297,16 @@ export function createAgentChatService(args: {
 
     writeTranscript(managed, envelope);
     onEvent?.(envelope);
+    for (const subscriber of eventSubscribers) {
+      try {
+        subscriber(envelope);
+      } catch (error) {
+        logger.warn("agent_chat.event_subscriber_failed", {
+          sessionId: envelope.sessionId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
 
     // Passive proof capture: observe tool results for screenshots/artifacts.
     if (proofObserver && event.type === "tool_result") {
@@ -5867,12 +5895,11 @@ export function createAgentChatService(args: {
 
     managed.summaryInFlight = true;
     try {
-      const result = await runOpenCodeTextPrompt({
-        directory: managed.laneWorktreePath,
-        title: "ADE session summary",
-        modelDescriptor: descriptor,
+      const result = await runSessionIntelligencePrompt({
+        cwd: managed.laneWorktreePath,
+        modelId: descriptor.id,
         prompt,
-        projectConfig: projectConfigService.get().effective,
+        taskType: "session_summary",
       });
       const text = result.text.trim();
       if (text.length) {
@@ -9858,7 +9885,7 @@ export function createAgentChatService(args: {
         opts.thinking = { type: "adaptive" };
       }
     }
-    const model = opts.model ?? resolveClaudeCliModel(managed.session.model) ?? "claude-sonnet-4-6";
+    const model = opts.model ?? resolveClaudeCliModel(managed.session.model) ?? DEFAULT_CLAUDE_MODEL;
     return { ...opts, model };
   };
 
@@ -14186,6 +14213,12 @@ export function createAgentChatService(args: {
     listSubagents,
     getSessionCapabilities,
     previewSessionToolNames,
+    subscribeToEvents(callback: (event: AgentChatEventEnvelope) => void) {
+      eventSubscribers.add(callback);
+      return () => {
+        eventSubscribers.delete(callback);
+      };
+    },
     /** Clean up temp attachment files older than 7 days. Call on app startup. */
     cleanupStaleAttachments() {
       try {

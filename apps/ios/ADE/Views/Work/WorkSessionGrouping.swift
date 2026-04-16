@@ -39,6 +39,7 @@ struct WorkSessionGroup: Identifiable, Equatable {
     lhs.id == rhs.id
       && lhs.label == rhs.label
       && lhs.icon == rhs.icon
+      && lhs.tint == rhs.tint
       && lhs.sessions.map(\.id) == rhs.sessions.map(\.id)
   }
 }

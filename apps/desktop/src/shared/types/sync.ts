@@ -475,10 +475,13 @@ export type SyncRemoteCommandAction =
   | "prs.getComments"
   | "prs.getFiles"
   | "prs.createFromLane"
+  | "prs.draftDescription"
   | "prs.land"
   | "prs.close"
   | "prs.reopen"
   | "prs.requestReviewers"
+  | "prs.rerunChecks"
+  | "prs.addComment"
   | "prs.getMobileSnapshot";
 
 export type SyncRemoteCommandPolicy = {

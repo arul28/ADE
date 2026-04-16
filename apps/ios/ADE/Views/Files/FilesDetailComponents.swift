@@ -440,6 +440,145 @@ struct FilesInlineDiffView: View {
   }
 }
 
+struct FilesProofArtifactSheet: View {
+  @Environment(\.dismiss) private var dismiss
+  @EnvironmentObject private var syncService: SyncService
+
+  let artifact: ComputerUseArtifactSummary
+
+  @State private var blob: SyncFileBlob?
+  @State private var errorMessage: String?
+
+  private var artifactURL: URL? {
+    URL(string: artifact.uri)
+  }
+
+  private var decodedData: Data? {
+    guard let blob else { return nil }
+    if blob.encoding.lowercased() == "base64" {
+      return Data(base64Encoded: blob.content)
+    }
+    return Data(blob.content.utf8)
+  }
+
+  var body: some View {
+    NavigationStack {
+      ScrollView {
+        VStack(alignment: .leading, spacing: 16) {
+          HStack(alignment: .top, spacing: 12) {
+            Image(systemName: artifact.artifactKind == "video_recording" ? "video.fill" : "photo.fill")
+              .font(.system(size: 20, weight: .semibold))
+              .foregroundStyle(ADEColor.accent)
+              .frame(width: 44, height: 44)
+              .background(ADEColor.accent.opacity(0.12), in: Circle())
+
+            VStack(alignment: .leading, spacing: 4) {
+              Text(artifact.title)
+                .font(.headline)
+                .foregroundStyle(ADEColor.textPrimary)
+              Text(artifact.artifactKind.replacingOccurrences(of: "_", with: " ").capitalized)
+                .font(.caption.monospaced())
+                .foregroundStyle(ADEColor.textSecondary)
+              if let description = artifact.description, !description.isEmpty {
+                Text(description)
+                  .font(.subheadline)
+                  .foregroundStyle(ADEColor.textSecondary)
+              }
+            }
+          }
+
+          proofPreview
+
+          VStack(alignment: .leading, spacing: 12) {
+            FilesMetadataRow(label: "Reference", value: artifact.uri)
+            FilesMetadataRow(label: "Captured", value: relativeDateDescription(from: artifact.createdAt) ?? artifact.createdAt)
+          }
+          .adeInsetField(cornerRadius: 16, padding: 16)
+        }
+        .padding(16)
+      }
+      .adeScreenBackground()
+      .navigationTitle("Proof")
+      .navigationBarTitleDisplayMode(.inline)
+      .toolbar {
+        ToolbarItem(placement: .topBarLeading) {
+          Button("Done") { dismiss() }
+        }
+        ToolbarItemGroup(placement: .topBarTrailing) {
+          if let artifactURL, artifactURL.scheme?.hasPrefix("http") == true {
+            Link(destination: artifactURL) {
+              Image(systemName: "arrow.up.right.square")
+            }
+            .accessibilityLabel("Open proof URL")
+          }
+          Button {
+            UIPasteboard.general.string = artifact.uri
+          } label: {
+            Image(systemName: "doc.on.doc")
+          }
+          .accessibilityLabel("Copy proof reference")
+        }
+      }
+      .task(id: artifact.id) {
+        await loadArtifact()
+      }
+    }
+    .presentationDetents([.medium, .large])
+    .presentationDragIndicator(.visible)
+  }
+
+  @ViewBuilder
+  private var proofPreview: some View {
+    if let errorMessage {
+      FilesCompactBanner(
+        symbol: "exclamationmark.triangle.fill",
+        tint: ADEColor.danger,
+        title: errorMessage,
+        actionTitle: "Retry",
+        onAction: { Task { await loadArtifact() } }
+      )
+    } else if artifact.artifactKind == "video_recording" || artifact.mimeType?.contains("video") == true {
+      FilesContentFallback(
+        symbol: "video.fill",
+        title: "Video proof",
+        message: "The artifact is available from its reference. Open the URL or copy the reference to inspect it."
+      )
+    } else if let decodedData, let image = UIImage(data: decodedData) {
+      Image(uiImage: image)
+        .resizable()
+        .scaledToFit()
+        .frame(maxWidth: .infinity)
+        .adeInsetField(cornerRadius: 16, padding: 0)
+    } else if let blob, !blob.isBinary {
+      Text(blob.content)
+        .font(.system(.caption, design: .monospaced))
+        .foregroundStyle(ADEColor.textPrimary)
+        .textSelection(.enabled)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .adeInsetField(cornerRadius: 16, padding: 14)
+    } else if blob == nil {
+      ADECardSkeleton(rows: 4)
+    } else {
+      FilesContentFallback(
+        symbol: "doc.badge.gearshape",
+        title: "Preview unavailable",
+        message: "The host returned proof metadata, but iPhone could not render this artifact inline."
+      )
+    }
+  }
+
+  @MainActor
+  private func loadArtifact() async {
+    errorMessage = nil
+    do {
+      blob = try await syncService.readArtifact(artifactId: artifact.id, uri: artifact.uri)
+    } catch {
+      blob = nil
+      errorMessage = error.localizedDescription
+    }
+  }
+}
+
 struct ZoomableImageView: View {
   let image: UIImage
 

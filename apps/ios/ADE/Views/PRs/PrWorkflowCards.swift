@@ -328,10 +328,12 @@ struct PrMobileWorkflowCardView: View {
 
         Button("Defer") { onDeferRebase(laneId) }
           .buttonStyle(.glass)
+          .disabled(!isLive)
 
         Button("Dismiss") { onDismissRebase(laneId) }
           .buttonStyle(.glass)
           .tint(ADEColor.textSecondary)
+          .disabled(!isLive)
       }
 
       if let prId = card.prId {

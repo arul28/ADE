@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 struct FilesRootScreen: View {
   @Environment(\.accessibilityReduceMotion) var reduceMotion
@@ -12,6 +13,9 @@ struct FilesRootScreen: View {
   @State var quickOpenResults: [FilesQuickOpenItem] = []
   @State var textSearchQuery = ""
   @State var textSearchResults: [FilesSearchTextMatch] = []
+  @State var proofArtifacts: [ComputerUseArtifactSummary] = []
+  @State var proofErrorMessage: String?
+  @State var selectedProofArtifact: ComputerUseArtifactSummary?
   @State var errorMessage: String?
   @State var navigationPath: [FilesRoute] = []
   @State var refreshFeedbackToken = 0
@@ -69,6 +73,20 @@ struct FilesRootScreen: View {
               selectedWorkspace: workspace,
               showHidden: $showHidden
             )
+
+            if workspace.laneId != nil {
+              FilesProofSection(
+                artifacts: proofArtifacts,
+                errorMessage: proofErrorMessage,
+                onRefresh: { Task { await loadProofArtifacts() } },
+                onOpenArtifact: { artifact in
+                  selectedProofArtifact = artifact
+                },
+                onCopyReference: { artifact in
+                  UIPasteboard.general.string = artifact.uri
+                }
+              )
+            }
 
             FilesQueryCard(
               title: "Quick open",
@@ -246,10 +264,17 @@ struct FilesRootScreen: View {
       .task(id: syncService.requestedFilesNavigation?.id) {
         await handleRequestedNavigation()
       }
+      .task(id: selectedWorkspaceId) {
+        await loadProofArtifacts()
+      }
       .onChange(of: selectedWorkspaceId) { _, _ in
         navigationPath = []
         quickOpenResults = []
         textSearchResults = []
+      }
+      .sheet(item: $selectedProofArtifact) { artifact in
+        FilesProofArtifactSheet(artifact: artifact)
+          .environmentObject(syncService)
       }
     }
   }

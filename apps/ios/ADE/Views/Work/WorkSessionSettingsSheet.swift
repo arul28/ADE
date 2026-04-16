@@ -259,7 +259,7 @@ struct WorkSessionSettingsSheet: View {
             }
           }
 
-          if let errorMessage {
+          if let errorMessage, !models.isEmpty {
             HStack(spacing: 10) {
               Image(systemName: "exclamationmark.triangle.fill")
                 .foregroundStyle(ADEColor.danger)

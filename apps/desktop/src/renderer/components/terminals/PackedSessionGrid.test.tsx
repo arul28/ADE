@@ -209,7 +209,7 @@ describe("PackedSessionGrid", () => {
     });
     layoutSetMock.mockClear();
 
-    const handle = container.querySelector('[data-grid-tile-id="tile-1"] [data-grid-resize-handle="se"]');
+    const handle = container.querySelector('[data-grid-tile-id="tile-1"] [data-grid-resize-handle="e"]');
     expect(handle).toBeTruthy();
 
     fireEvent.pointerDown(handle!, { clientX: 0, clientY: 0 });

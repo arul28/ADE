@@ -14,7 +14,8 @@ struct WorkChatSessionView: View {
   @Binding var expandedToolCardIds: Set<String>
   @Binding var artifactContent: [String: WorkLoadedArtifactContent]
   @Binding var fullscreenImage: WorkFullscreenImage?
-  @Binding var composer: String
+  let artifactRefreshInFlight: Bool
+  let artifactRefreshError: String?
   @Binding var sending: Bool
   @Binding var errorMessage: String?
   @State var visibleTimelineCount = workTimelinePageSize
@@ -22,11 +23,13 @@ struct WorkChatSessionView: View {
   @State var actionInFlight = false
   @State var isNearBottom = true
   @State var unreadBelowCount = 0
+  @State var artifactDrawerPresented = false
+  @State var timelineSnapshot = WorkChatTimelineSnapshot.empty
   let isLive: Bool
   let disconnectedNotice: Bool
   let transitionNamespace: Namespace.ID?
   let onOpenLane: (() -> Void)?
-  let onSend: @MainActor () async -> Void
+  let onSend: @MainActor (String) async -> Bool
   let onInterrupt: @MainActor () async -> Void
   let onDispose: @MainActor () async -> Void
   let onResume: @MainActor () async -> Void
@@ -36,6 +39,7 @@ struct WorkChatSessionView: View {
   let onOpenFile: @MainActor (String) async -> Void
   let onOpenPr: @MainActor (Int) async -> Void
   let onLoadArtifact: @MainActor (ComputerUseArtifactSummary) async -> Void
+  let onRefreshArtifacts: @MainActor () async -> Void
   let onCancelSteer: @MainActor (String) async -> Void
   let onEditSteer: @MainActor (String, String) async -> Void
   let onSelectModel: @MainActor (String) async -> Void
@@ -50,11 +54,11 @@ struct WorkChatSessionView: View {
   }
 
   var pendingInputs: [WorkPendingInputItem] {
-    derivePendingWorkInputs(from: transcript)
+    timelineSnapshot.pendingInputs
   }
 
   var pendingSteers: [WorkPendingSteerModel] {
-    derivePendingWorkSteers(from: transcript)
+    timelineSnapshot.pendingSteers
   }
 
   var primaryPendingInput: WorkPendingInputItem? {
@@ -62,36 +66,27 @@ struct WorkChatSessionView: View {
   }
 
   var toolCards: [WorkToolCardModel] {
-    buildWorkToolCards(from: transcript)
+    timelineSnapshot.toolCards
   }
 
   var eventCards: [WorkEventCardModel] {
-    buildWorkEventCards(from: transcript)
+    timelineSnapshot.eventCards
   }
 
   var commandCards: [WorkCommandCardModel] {
-    buildWorkCommandCards(from: transcript)
+    timelineSnapshot.commandCards
   }
 
   var fileChangeCards: [WorkFileChangeCardModel] {
-    buildWorkFileChangeCards(from: transcript)
+    timelineSnapshot.fileChangeCards
   }
 
   var sessionUsageSummary: WorkUsageSummary? {
-    summarizeWorkSessionUsage(from: transcript)
+    timelineSnapshot.sessionUsageSummary
   }
 
   var timeline: [WorkTimelineEntry] {
-    buildWorkTimeline(
-      transcript: transcript,
-      fallbackEntries: fallbackEntries,
-      toolCards: toolCards,
-      commandCards: commandCards,
-      fileChangeCards: fileChangeCards,
-      eventCards: eventCards,
-      artifacts: artifacts,
-      localEchoMessages: localEchoMessages
-    )
+    timelineSnapshot.timeline
   }
 
   var visibleTimeline: [WorkTimelineEntry] {
@@ -137,6 +132,19 @@ struct WorkChatSessionView: View {
           chatSummary: chatSummary,
           transitionNamespace: transitionNamespace,
           onOpenLane: onOpenLane
+        )
+
+        WorkArtifactEntryPoint(
+          count: artifacts.count,
+          latestArtifact: artifacts.last,
+          isRefreshing: artifactRefreshInFlight,
+          refreshError: artifactRefreshError,
+          onOpen: {
+            artifactDrawerPresented = true
+          },
+          onRefresh: {
+            Task { await onRefreshArtifacts() }
+          }
         )
 
         if let sessionUsageSummary {
@@ -287,88 +295,6 @@ struct WorkChatSessionView: View {
   /// Single desktop-shaped composer card: text field on top, chip strip and
   /// send button on the bottom, everything wrapped in one rounded container
   /// with clear contrast against the chat background.
-  @ViewBuilder
-  private func composerCard(proxy: ScrollViewProxy) -> some View {
-    let sendEnabled = canSend && !composer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-
-    VStack(alignment: .leading, spacing: 12) {
-      TextField("Type to vibecode…", text: $composer, axis: .vertical)
-        .textFieldStyle(.plain)
-        .lineLimit(1...6)
-        .font(.body)
-        .foregroundStyle(ADEColor.textPrimary)
-        .tint(ADEColor.accent)
-        .disabled(!canCompose)
-        .frame(maxWidth: .infinity, minHeight: 28, alignment: .leading)
-
-      HStack(alignment: .center, spacing: 8) {
-        WorkComposerChipStrip(
-          chatSummary: chatSummary,
-          queuedSteerCount: pendingSteers.count,
-          pendingInputCount: pendingInputs.count,
-          onOpenModelPicker: chatSummary == nil ? nil : { modelPickerPresented = true },
-          onSelectRuntimeMode: chatSummary == nil ? nil : { mode in
-            Task { await onSelectRuntimeMode(mode) }
-          }
-        )
-
-        Spacer(minLength: 0)
-
-        Button {
-          Task {
-            await onSend()
-            withAnimation(ADEMotion.quick(reduceMotion: transitionNamespace == nil)) {
-              proxy.scrollTo("chat-end", anchor: .bottom)
-            }
-          }
-        } label: {
-          HStack(spacing: 5) {
-            if sending {
-              ProgressView()
-                .controlSize(.mini)
-                .tint(sendEnabled ? Color.white : ADEColor.textSecondary)
-            } else {
-              Image(systemName: "paperplane.fill")
-                .font(.system(size: 12, weight: .bold))
-            }
-            Text("Send")
-              .font(.caption.weight(.semibold))
-          }
-          .foregroundStyle(sendEnabled ? Color.white : ADEColor.textSecondary)
-          .padding(.horizontal, 12)
-          .padding(.vertical, 8)
-          .background(
-            Capsule(style: .continuous)
-              .fill(sendEnabled ? ADEColor.accent : ADEColor.surfaceBackground.opacity(0.85))
-          )
-          .overlay(
-            Capsule(style: .continuous)
-              .stroke(sendEnabled ? Color.clear : ADEColor.border.opacity(0.35), lineWidth: 0.8)
-          )
-          .shadow(color: sendEnabled ? ADEColor.accent.opacity(0.4) : .clear, radius: 8, y: 2)
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel(sending ? "Sending message" : "Send message")
-        .disabled(!sendEnabled)
-      }
-    }
-    .padding(.horizontal, 14)
-    .padding(.vertical, 14)
-    .background(
-      RoundedRectangle(cornerRadius: 24, style: .continuous)
-        .fill(Color.black.opacity(0.55))
-        .background(
-          RoundedRectangle(cornerRadius: 24, style: .continuous)
-            .fill(.ultraThinMaterial)
-        )
-    )
-    .overlay(
-      RoundedRectangle(cornerRadius: 24, style: .continuous)
-        .stroke(ADEColor.border.opacity(0.45), lineWidth: 1)
-    )
-    .shadow(color: Color.black.opacity(0.4), radius: 20, y: 8)
-  }
-
   func composerInset(proxy: ScrollViewProxy) -> AnyView {
     AnyView(
       VStack(spacing: 10) {
@@ -436,7 +362,24 @@ struct WorkChatSessionView: View {
             )
         }
 
-        composerCard(proxy: proxy)
+        WorkChatComposerCard(
+          chatSummary: chatSummary,
+          queuedSteerCount: pendingSteers.count,
+          pendingInputCount: pendingInputs.count,
+          canCompose: canCompose,
+          canSend: canSend,
+          sending: sending,
+          onOpenModelPicker: chatSummary == nil ? nil : { modelPickerPresented = true },
+          onSelectRuntimeMode: chatSummary == nil ? nil : { mode in
+            Task { await onSelectRuntimeMode(mode) }
+          },
+          onSend: onSend,
+          onSent: {
+            withAnimation(ADEMotion.quick(reduceMotion: reduceMotion)) {
+              proxy.scrollTo("chat-end", anchor: .bottom)
+            }
+          }
+        )
       }
       .padding(.horizontal, 16)
       .padding(.top, 8)
@@ -503,6 +446,33 @@ struct WorkChatSessionView: View {
           unreadBelowCount = 0
         }
       }
+      .onAppear {
+        rebuildTimelineSnapshot()
+      }
+      .onChange(of: transcript) { _, _ in
+        rebuildTimelineSnapshot()
+      }
+      .onChange(of: fallbackEntries) { _, _ in
+        rebuildTimelineSnapshot()
+      }
+      .onChange(of: artifacts) { _, _ in
+        rebuildTimelineSnapshot()
+      }
+      .onChange(of: localEchoMessages) { _, _ in
+        rebuildTimelineSnapshot()
+      }
+      .sheet(isPresented: $artifactDrawerPresented) {
+        WorkArtifactDrawerSheet(
+          artifacts: artifacts,
+          artifactContent: $artifactContent,
+          isRefreshing: artifactRefreshInFlight,
+          refreshError: artifactRefreshError,
+          onRefresh: onRefreshArtifacts,
+          onLoadArtifact: onLoadArtifact
+        )
+        .presentationDetents([.medium, .large])
+        .presentationDragIndicator(.visible)
+      }
       .sheet(isPresented: $modelPickerPresented) {
         WorkModelPickerSheet(
           currentModelId: chatSummary?.model ?? "",
@@ -519,5 +489,111 @@ struct WorkChatSessionView: View {
         )
       }
     }
+  }
+}
+
+private struct WorkChatComposerCard: View {
+  @Environment(\.accessibilityReduceMotion) var reduceMotion
+
+  let chatSummary: AgentChatSessionSummary?
+  let queuedSteerCount: Int
+  let pendingInputCount: Int
+  let canCompose: Bool
+  let canSend: Bool
+  let sending: Bool
+  let onOpenModelPicker: (() -> Void)?
+  let onSelectRuntimeMode: ((String) -> Void)?
+  let onSend: @MainActor (String) async -> Bool
+  let onSent: () -> Void
+
+  @State private var draft = ""
+
+  private var trimmedDraft: String {
+    draft.trimmingCharacters(in: .whitespacesAndNewlines)
+  }
+
+  private var sendEnabled: Bool {
+    canSend && !trimmedDraft.isEmpty
+  }
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 12) {
+      TextField("Type to vibecode…", text: $draft, axis: .vertical)
+        .textFieldStyle(.plain)
+        .lineLimit(1...6)
+        .font(.body)
+        .foregroundStyle(ADEColor.textPrimary)
+        .tint(ADEColor.accent)
+        .disabled(!canCompose)
+        .frame(maxWidth: .infinity, minHeight: 28, alignment: .leading)
+
+      HStack(alignment: .center, spacing: 8) {
+        WorkComposerChipStrip(
+          chatSummary: chatSummary,
+          queuedSteerCount: queuedSteerCount,
+          pendingInputCount: pendingInputCount,
+          onOpenModelPicker: onOpenModelPicker,
+          onSelectRuntimeMode: onSelectRuntimeMode
+        )
+
+        Spacer(minLength: 0)
+
+        Button {
+          let text = trimmedDraft
+          draft = ""
+          Task {
+            let sent = await onSend(text)
+            if sent {
+              onSent()
+            } else {
+              draft = text
+            }
+          }
+        } label: {
+          HStack(spacing: 5) {
+            if sending {
+              ProgressView()
+                .controlSize(.mini)
+                .tint(sendEnabled ? Color.white : ADEColor.textSecondary)
+            } else {
+              Image(systemName: "paperplane.fill")
+                .font(.system(size: 12, weight: .bold))
+            }
+            Text("Send")
+              .font(.caption.weight(.semibold))
+          }
+          .foregroundStyle(sendEnabled ? Color.white : ADEColor.textSecondary)
+          .padding(.horizontal, 12)
+          .padding(.vertical, 8)
+          .background(
+            Capsule(style: .continuous)
+              .fill(sendEnabled ? ADEColor.accent : ADEColor.surfaceBackground.opacity(0.85))
+          )
+          .overlay(
+            Capsule(style: .continuous)
+              .stroke(sendEnabled ? Color.clear : ADEColor.border.opacity(0.35), lineWidth: 0.8)
+          )
+          .shadow(color: sendEnabled ? ADEColor.accent.opacity(0.4) : .clear, radius: 8, y: 2)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(sending ? "Sending message" : "Send message")
+        .disabled(!sendEnabled)
+      }
+    }
+    .padding(.horizontal, 14)
+    .padding(.vertical, 14)
+    .background(
+      RoundedRectangle(cornerRadius: 24, style: .continuous)
+        .fill(Color.black.opacity(0.55))
+        .background(
+          RoundedRectangle(cornerRadius: 24, style: .continuous)
+            .fill(.ultraThinMaterial)
+        )
+    )
+    .overlay(
+      RoundedRectangle(cornerRadius: 24, style: .continuous)
+        .stroke(ADEColor.border.opacity(0.45), lineWidth: 1)
+    )
+    .shadow(color: Color.black.opacity(0.4), radius: 20, y: 8)
   }
 }

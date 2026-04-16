@@ -139,6 +139,8 @@ async function runClaudeTask(args: ProviderTaskRunnerArgs): Promise<ProviderTask
   const sessionId = args.sessionId?.trim() || (args.feature === "orchestrator" ? randomUUID() : null);
   const cliArgs = [
     "-p",
+    "--model",
+    args.descriptor.providerModelId,
     "--output-format",
     args.jsonSchema ? "json" : "text",
     "--permission-mode",

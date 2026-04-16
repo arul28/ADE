@@ -9,8 +9,6 @@ import {
   computeMinimumColSpan,
   computeGridColumnCount,
   computeMinimumRowSpan,
-  computePackedGridRowHeight,
-  computePackedSpanPixels,
   packGridItems,
   readPackedGridPlacement,
   readPackedGridSpan,
@@ -47,22 +45,12 @@ type ResizeState = {
 };
 
 const RESIZE_HANDLES: Array<{ direction: ResizeDirection; style: CSSProperties }> = [
-  { direction: "n", style: { top: -6, left: 4, right: 4, height: 16, cursor: "n-resize" } },
-  { direction: "s", style: { bottom: -6, left: 4, right: 4, height: 16, cursor: "s-resize" } },
   { direction: "e", style: { right: -6, top: 4, bottom: 4, width: 16, cursor: "e-resize" } },
   { direction: "w", style: { left: -6, top: 4, bottom: 4, width: 16, cursor: "w-resize" } },
-  { direction: "ne", style: { right: -8, top: -8, width: 20, height: 20, cursor: "ne-resize" } },
-  { direction: "nw", style: { left: -8, top: -8, width: 20, height: 20, cursor: "nw-resize" } },
-  { direction: "se", style: { right: -8, bottom: -8, width: 20, height: 20, cursor: "se-resize" } },
-  { direction: "sw", style: { left: -8, bottom: -8, width: 20, height: 20, cursor: "sw-resize" } },
 ];
 
 function hasHorizontalResize(direction: ResizeDirection): boolean {
   return direction.includes("e") || direction.includes("w");
-}
-
-function hasVerticalResize(direction: ResizeDirection): boolean {
-  return direction.includes("n") || direction.includes("s");
 }
 
 export function PackedSessionGrid({
@@ -157,16 +145,22 @@ export function PackedSessionGrid({
   const spansById = useMemo(() => {
     const next: Record<string, PackedGridSpan> = {};
     for (const tile of tiles) {
-      next[tile.id] = clampPackedGridSpan({
-        span: readPackedGridSpan(layout, tile.id, defaultSpansById[tile.id] ?? { colSpan: 1, rowSpan: 1 }),
+      const defaults = defaultSpansById[tile.id] ?? { colSpan: GRID_COLUMN_SUBDIVISIONS, rowSpan: defaultRowSpan };
+      const persisted = readPackedGridSpan(layout, tile.id, defaults);
+      const clamped = clampPackedGridSpan({
+        span: persisted,
         columnCount: trackCount,
         minColSpan: minColSpans[tile.id] ?? 1,
         minRowSpan: minRowSpans[tile.id] ?? 1,
         maxRowSpan: GRID_MAX_ROW_SPAN,
       });
+      next[tile.id] = {
+        colSpan: clamped.colSpan,
+        rowSpan: defaults.rowSpan,
+      };
     }
     return next;
-  }, [defaultSpansById, layout, minColSpans, minRowSpans, tiles, trackCount]);
+  }, [defaultRowSpan, defaultSpansById, layout, minColSpans, minRowSpans, tiles, trackCount]);
 
   const effectiveSpansById = useMemo(() => {
     if (!Object.keys(draftSpansById).length) return spansById;
@@ -215,15 +209,6 @@ export function PackedSessionGrid({
     [packedItems, trackCount],
   );
 
-  const rowHeight = useMemo(
-    () =>
-      computePackedGridRowHeight({
-        containerHeight: viewportSize.height,
-        totalRows: packed.totalRows,
-      }),
-    [packed.totalRows, viewportSize.height],
-  );
-
   const placementById = useMemo(() => {
     const next = new Map<string, PackedGridPlacement>();
     for (const placement of packed.placements) {
@@ -246,11 +231,6 @@ export function PackedSessionGrid({
       saveLayout(nextLayout);
     }
   }, [defaultSpansById, layout, loaded, saveLayout, tiles, trackCount]);
-
-  const contentHeight = useMemo(
-    () => computePackedSpanPixels(packed.totalRows, rowHeight),
-    [packed.totalRows, rowHeight],
-  );
 
   const stopResize = useCallback((clearDraft = true) => {
     const state = resizeStateRef.current;
@@ -276,15 +256,12 @@ export function PackedSessionGrid({
   useEffect(() => {
     const handlePointerMove = (event: PointerEvent) => {
       const state = resizeStateRef.current;
-      if (!state || trackWidth <= 0 || rowHeight <= 0) return;
+      if (!state || trackWidth <= 0) return;
       const colUnit = trackWidth + GRID_GAP_PX;
-      const rowUnit = rowHeight + GRID_GAP_PX;
       const deltaCols = hasHorizontalResize(state.direction)
         ? Math.round((event.clientX - state.startX) / colUnit)
         : 0;
-      const deltaRows = hasVerticalResize(state.direction)
-        ? Math.round((event.clientY - state.startY) / rowUnit)
-        : 0;
+      const deltaRows = 0;
       const nextPlacementsById = resizePackedGridItem({
         placementsById: state.startPlacementsById,
         tileId: state.tileId,
@@ -366,7 +343,7 @@ export function PackedSessionGrid({
       window.removeEventListener("pointermove", handlePointerMove);
       window.removeEventListener("pointerup", handlePointerUp);
     };
-  }, [minColSpans, minRowSpans, rowHeight, saveLayout, stopResize, trackCount, trackWidth]);
+  }, [minColSpans, minRowSpans, saveLayout, stopResize, trackCount, trackWidth]);
 
   const beginResize = useCallback((tileId: string, direction: ResizeDirection, event: ReactPointerEvent<HTMLElement>) => {
     event.preventDefault();
@@ -391,24 +368,29 @@ export function PackedSessionGrid({
     document.body.style.userSelect = "none";
   }, [packed.placements]);
 
+  const hasPackedLayout = trackCount > 0 && packed.totalRows > 0;
+
   return (
     <div
       ref={viewportRef}
-      className={cn("min-h-0 flex-1 overflow-auto p-2", className)}
+      className={cn("min-h-0 flex-1 overflow-hidden p-2", className)}
       onMouseLeave={() => onViewportMouseLeave?.()}
     >
       <div
-        className="relative min-h-full"
-        style={{ height: `${Math.max(contentHeight, viewportSize.height)}px` }}
+        className="grid h-full w-full min-h-0 min-w-0"
+        style={{
+          gridTemplateColumns: hasPackedLayout
+            ? `repeat(${trackCount}, minmax(0, 1fr))`
+            : "minmax(0, 1fr)",
+          gridTemplateRows: hasPackedLayout
+            ? `repeat(${packed.totalRows}, minmax(0, 1fr))`
+            : "minmax(0, 1fr)",
+          gap: `${GRID_GAP_PX}px`,
+        }}
       >
         {tiles.map((tile) => {
           const placement = placementById.get(tile.id);
           if (!placement) return null;
-
-          const left = (placement.column - 1) * (trackWidth + GRID_GAP_PX);
-          const top = (placement.row - 1) * (rowHeight + GRID_GAP_PX);
-          const width = computePackedSpanPixels(placement.colSpan, trackWidth);
-          const height = computePackedSpanPixels(placement.rowSpan, rowHeight);
           const slotStart = Math.ceil(placement.column / GRID_COLUMN_SUBDIVISIONS);
 
           return (
@@ -422,14 +404,10 @@ export function PackedSessionGrid({
               data-grid-row-start={placement.row}
               data-grid-row-end={placement.row + placement.rowSpan - 1}
               data-grid-row-span={placement.rowSpan}
-              className={cn(
-                "group absolute min-h-0 min-w-0",
-              )}
+              className="group relative min-h-0 min-w-0"
               style={{
-                left,
-                top,
-                width,
-                height,
+                gridColumn: `${placement.column} / span ${placement.colSpan}`,
+                gridRow: `${placement.row} / span ${placement.rowSpan}`,
               }}
               onMouseDown={() => tile.onSelect?.()}
               onPointerEnter={() => {

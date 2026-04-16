@@ -822,6 +822,11 @@ export type AiTaskRoutingKey =
   | "narrative"
   | "pr_description"
   | "terminal_summary"
+  | "session_title"
+  | "session_summary"
+  | "handoff_summary"
+  | "continuity_summary"
+  | "context_compaction"
   | "mission_planning"
   | "initial_context";
 
@@ -1088,12 +1093,6 @@ export type AiChatConfig = {
   defaultProvider?: "codex" | "claude" | "cursor" | "opencode" | "last_used";
   defaultApprovalPolicy?: "auto" | "approve_mutations" | "approve_all";
   sendOnEnter?: boolean;
-  /** @deprecated Use ai.sessionIntelligence.titles instead */
-  autoTitleEnabled?: boolean;
-  /** @deprecated Use ai.sessionIntelligence.titles.modelId instead */
-  autoTitleModelId?: ModelId;
-  /** @deprecated Use ai.sessionIntelligence.titles.refreshOnComplete instead */
-  autoTitleRefreshOnComplete?: boolean;
   /** Reasoning effort for auto-title generation */
   autoTitleReasoningEffort?: string | null;
   codexSandbox?: "read-only" | "workspace-write" | "danger-full-access";

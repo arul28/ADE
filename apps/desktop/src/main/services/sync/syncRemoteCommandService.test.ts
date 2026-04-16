@@ -1,6 +1,111 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { createSyncRemoteCommandService } from "./syncRemoteCommandService";
-import type { SyncCommandPayload } from "../../../shared/types";
+import type { SyncCommandPayload, SyncFileRequest, SyncRemoteCommandAction } from "../../../shared/types";
+
+const IOS_REMOTE_COMMAND_ACTIONS = [
+  "lanes.presence.announce",
+  "lanes.presence.release",
+  "lanes.refreshSnapshots",
+  "work.listSessions",
+  "prs.refresh",
+  "lanes.getDetail",
+  "work.updateSessionMeta",
+  "prs.getMobileSnapshot",
+  "work.runQuickCommand",
+  "work.closeSession",
+  "lanes.create",
+  "lanes.createFromUnstaged",
+  "lanes.importBranch",
+  "lanes.createChild",
+  "lanes.attach",
+  "lanes.adoptAttached",
+  "lanes.rename",
+  "lanes.reparent",
+  "lanes.updateAppearance",
+  "lanes.archive",
+  "lanes.unarchive",
+  "lanes.delete",
+  "lanes.listTemplates",
+  "lanes.getDefaultTemplate",
+  "lanes.getEnvStatus",
+  "lanes.initEnv",
+  "lanes.applyTemplate",
+  "lanes.rebaseStart",
+  "lanes.rebasePush",
+  "lanes.rebaseRollback",
+  "lanes.rebaseAbort",
+  "lanes.dismissRebaseSuggestion",
+  "lanes.deferRebaseSuggestion",
+  "git.listBranches",
+  "git.checkoutBranch",
+  "git.getChanges",
+  "git.getFile",
+  "git.getFileHistory",
+  "files.writeTextAtomic",
+  "git.stageFile",
+  "git.stageAll",
+  "git.unstageFile",
+  "git.unstageAll",
+  "git.discardFile",
+  "git.restoreStagedFile",
+  "git.commit",
+  "git.generateCommitMessage",
+  "git.listRecentCommits",
+  "git.listCommitFiles",
+  "git.getCommitMessage",
+  "git.revertCommit",
+  "git.cherryPickCommit",
+  "git.stashPush",
+  "git.stashList",
+  "git.stashApply",
+  "git.stashPop",
+  "git.stashDrop",
+  "git.fetch",
+  "git.pull",
+  "git.getSyncStatus",
+  "git.sync",
+  "git.push",
+  "git.getConflictState",
+  "git.rebaseContinue",
+  "git.rebaseAbort",
+  "chat.models",
+  "chat.listSessions",
+  "chat.create",
+  "chat.getSummary",
+  "chat.getTranscript",
+  "chat.send",
+  "chat.interrupt",
+  "chat.steer",
+  "chat.cancelSteer",
+  "chat.editSteer",
+  "chat.approve",
+  "chat.respondToInput",
+  "chat.resume",
+  "chat.updateSession",
+  "chat.dispose",
+  "prs.createFromLane",
+  "prs.land",
+  "prs.close",
+  "prs.reopen",
+  "prs.requestReviewers",
+  "prs.draftDescription",
+  "prs.rerunChecks",
+  "prs.addComment",
+] satisfies SyncRemoteCommandAction[];
+
+const IOS_FILE_REQUEST_ACTIONS = [
+  "listWorkspaces",
+  "readFile",
+  "writeText",
+  "createFile",
+  "createDirectory",
+  "rename",
+  "deletePath",
+  "quickOpen",
+  "searchText",
+  "listTree",
+  "readArtifact",
+] satisfies SyncFileRequest["action"][];
 
 function createLogger() {
   return {
@@ -18,6 +123,7 @@ function createMockLaneService() {
     create: vi.fn().mockResolvedValue({ id: "lane-1" }),
     createChild: vi.fn().mockResolvedValue({ id: "child-1" }),
     createFromUnstaged: vi.fn().mockResolvedValue({ id: "unstaged-1" }),
+    importBranch: vi.fn().mockResolvedValue({ id: "imported-1" }),
     attach: vi.fn().mockResolvedValue({ id: "attached-1" }),
     adoptAttached: vi.fn().mockResolvedValue({ ok: true }),
     rename: vi.fn(),
@@ -49,10 +155,13 @@ function createMockPrService() {
     getComments: vi.fn().mockResolvedValue([]),
     getFiles: vi.fn().mockResolvedValue([]),
     createFromLane: vi.fn().mockResolvedValue({ prId: "pr-1" }),
+    draftDescription: vi.fn().mockResolvedValue({ title: "Draft title", body: "Draft body" }),
     land: vi.fn().mockResolvedValue({ ok: true }),
     closePr: vi.fn().mockResolvedValue(undefined),
     reopenPr: vi.fn().mockResolvedValue(undefined),
     requestReviewers: vi.fn().mockResolvedValue(undefined),
+    rerunChecks: vi.fn().mockResolvedValue(undefined),
+    addComment: vi.fn().mockResolvedValue({ id: "comment-1", body: "Looks good" }),
     getMobileSnapshot: vi.fn().mockResolvedValue({
       generatedAt: "2026-04-01T00:00:00Z",
       prs: [],
@@ -130,9 +239,28 @@ function createMockDiffService() {
 function createMockAgentChatService() {
   return {
     listSessions: vi.fn().mockResolvedValue([]),
-    getSessionSummary: vi.fn().mockResolvedValue({}),
+    getSessionSummary: vi.fn().mockResolvedValue({
+      sessionId: "chat-1",
+      laneId: "lane-1",
+      provider: "codex",
+      model: "gpt-4",
+      status: "idle",
+      startedAt: "2026-01-01T00:00:00.000Z",
+      endedAt: null,
+      lastActivityAt: "2026-01-01T00:00:00.000Z",
+      lastOutputPreview: null,
+      summary: null,
+    }),
     getChatTranscript: vi.fn().mockResolvedValue([]),
-    createSession: vi.fn().mockResolvedValue({ sessionId: "chat-1" }),
+    createSession: vi.fn().mockResolvedValue({
+      id: "chat-1",
+      laneId: "lane-1",
+      provider: "codex",
+      model: "gpt-4",
+      status: "idle",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      lastActivityAt: "2026-01-01T00:00:00.000Z",
+    }),
     sendMessage: vi.fn().mockResolvedValue(undefined),
     interrupt: vi.fn().mockResolvedValue(undefined),
     steer: vi.fn().mockResolvedValue(undefined),
@@ -213,8 +341,12 @@ describe("createSyncRemoteCommandService", () => {
       const actions = service.getSupportedActions();
       expect(actions).toContain("lanes.list");
       expect(actions).toContain("lanes.create");
+      expect(actions).toContain("lanes.importBranch");
       expect(actions).toContain("prs.list");
       expect(actions).toContain("prs.createFromLane");
+      expect(actions).toContain("prs.draftDescription");
+      expect(actions).toContain("prs.rerunChecks");
+      expect(actions).toContain("prs.addComment");
       expect(actions).toContain("git.commit");
       expect(actions).toContain("git.push");
       expect(actions).toContain("git.getFileHistory");
@@ -223,6 +355,30 @@ describe("createSyncRemoteCommandService", () => {
       expect(actions).toContain("files.writeTextAtomic");
       expect(actions).toContain("work.listSessions");
       expect(actions).toContain("conflicts.getLaneStatus");
+    });
+
+    it("keeps iOS remote command names shared and registered", () => {
+      const registeredActions = new Set<SyncRemoteCommandAction | string>([
+        ...service.getSupportedActions(),
+        "lanes.presence.announce",
+        "lanes.presence.release",
+      ]);
+      for (const action of IOS_REMOTE_COMMAND_ACTIONS) {
+        expect(registeredActions.has(action)).toBe(true);
+      }
+      expect(IOS_FILE_REQUEST_ACTIONS).toEqual([
+        "listWorkspaces",
+        "readFile",
+        "writeText",
+        "createFile",
+        "createDirectory",
+        "rename",
+        "deletePath",
+        "quickOpen",
+        "searchText",
+        "listTree",
+        "readArtifact",
+      ]);
     });
   });
 
@@ -323,6 +479,27 @@ describe("createSyncRemoteCommandService", () => {
         .rejects.toThrow("lanes.createChild requires parentLaneId.");
     });
 
+    it("lanes.importBranch parses branchRef and optional metadata", async () => {
+      const result = await service.execute(makePayload("lanes.importBranch", {
+        branchRef: "origin/feature/mobile",
+        name: "Mobile import",
+        description: "Imported from mobile",
+        baseBranch: "main",
+      }));
+      expect(laneService.importBranch).toHaveBeenCalledWith({
+        branchRef: "origin/feature/mobile",
+        name: "Mobile import",
+        description: "Imported from mobile",
+        baseBranch: "main",
+      });
+      expect(result).toEqual({ id: "imported-1" });
+    });
+
+    it("lanes.importBranch throws when branchRef is missing", async () => {
+      await expect(service.execute(makePayload("lanes.importBranch", {})))
+        .rejects.toThrow("lanes.importBranch requires branchRef.");
+    });
+
     it("lanes.rename parses laneId and name", async () => {
       await service.execute(makePayload("lanes.rename", {
         laneId: "lane-1",
@@ -403,6 +580,20 @@ describe("createSyncRemoteCommandService", () => {
         .rejects.toThrow("prs.createFromLane requires laneId and title.");
     });
 
+    it("prs.draftDescription parses laneId and optional model controls", async () => {
+      const result = await service.execute(makePayload("prs.draftDescription", {
+        laneId: "lane-1",
+        model: "gpt-5.4",
+        reasoningEffort: "medium",
+      }));
+      expect(prService.draftDescription).toHaveBeenCalledWith({
+        laneId: "lane-1",
+        model: "gpt-5.4",
+        reasoningEffort: "medium",
+      });
+      expect(result).toEqual({ title: "Draft title", body: "Draft body" });
+    });
+
     it("prs.land validates method enum", async () => {
       await expect(service.execute(makePayload("prs.land", {
         prId: "pr-1",
@@ -450,6 +641,39 @@ describe("createSyncRemoteCommandService", () => {
         reviewers: ["alice", "bob"],
       });
       expect(result).toEqual({ ok: true });
+    });
+
+    it("prs.rerunChecks parses optional checkRunIds", async () => {
+      const result = await service.execute(makePayload("prs.rerunChecks", {
+        prId: "pr-1",
+        checkRunIds: [101, 202],
+      }));
+      expect(prService.rerunChecks).toHaveBeenCalledWith({
+        prId: "pr-1",
+        checkRunIds: [101, 202],
+      });
+      expect(result).toEqual({ ok: true });
+    });
+
+    it("prs.rerunChecks rejects invalid checkRunIds", async () => {
+      await expect(service.execute(makePayload("prs.rerunChecks", {
+        prId: "pr-1",
+        checkRunIds: [101, "bad"],
+      }))).rejects.toThrow("prs.rerunChecks requires checkRunIds to be an array of numbers when provided.");
+    });
+
+    it("prs.addComment parses body and optional reply target", async () => {
+      const result = await service.execute(makePayload("prs.addComment", {
+        prId: "pr-1",
+        body: "Looks good",
+        inReplyToCommentId: "comment-parent",
+      }));
+      expect(prService.addComment).toHaveBeenCalledWith({
+        prId: "pr-1",
+        body: "Looks good",
+        inReplyToCommentId: "comment-parent",
+      });
+      expect(result).toEqual({ id: "comment-1", body: "Looks good" });
     });
 
     it("prs.getMobileSnapshot is viewer-allowed and returns the aggregated payload", async () => {
@@ -675,8 +899,8 @@ describe("createSyncRemoteCommandService", () => {
   // ---------------------------------------------------------------
 
   describe("execute — chat commands", () => {
-    it("chat.create parses laneId + provider + model", async () => {
-      await service.execute(makePayload("chat.create", {
+    it("chat.create parses laneId + provider + model and returns a mobile summary", async () => {
+      const result = await service.execute(makePayload("chat.create", {
         laneId: "lane-1",
         provider: "codex",
         model: "gpt-4",
@@ -686,6 +910,8 @@ describe("createSyncRemoteCommandService", () => {
         provider: "codex",
         model: "gpt-4",
       });
+      expect(agentChatService.getSessionSummary).toHaveBeenCalledWith("chat-1");
+      expect(result).toEqual(expect.objectContaining({ sessionId: "chat-1", startedAt: "2026-01-01T00:00:00.000Z" }));
     });
 
     it("chat.create resolves model from available models when model is empty", async () => {

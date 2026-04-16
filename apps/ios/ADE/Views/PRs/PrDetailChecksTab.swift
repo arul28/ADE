@@ -65,10 +65,18 @@ struct PrCheckRow: View {
           }
 
           if let detailsUrl = check.detailsUrl, !detailsUrl.isEmpty {
-            Text(detailsUrl)
-              .font(.caption2)
-              .foregroundStyle(ADEColor.textMuted)
-              .lineLimit(1)
+            if let url = URL(string: detailsUrl) {
+              Link(destination: url) {
+                Label("Open check details", systemImage: "arrow.up.right.square")
+                  .font(.caption.weight(.semibold))
+              }
+              .foregroundStyle(ADEColor.accent)
+            } else {
+              Text(detailsUrl)
+                .font(.caption2)
+                .foregroundStyle(ADEColor.textMuted)
+                .lineLimit(1)
+            }
           }
         }
       }

@@ -9,12 +9,14 @@ import type {
   AgentChatRespondToInputArgs,
   AgentChatResumeArgs,
   AgentChatSendArgs,
+  AgentChatSession,
   AgentChatSessionSummary,
   AgentChatSteerArgs,
   AgentChatCancelSteerArgs,
   AgentChatEditSteerArgs,
   AgentChatInterruptArgs,
   AgentChatUpdateSessionArgs,
+  AddPrCommentArgs,
   ApplyLaneTemplateArgs,
   ArchiveLaneArgs,
   AttachLaneArgs,
@@ -24,6 +26,7 @@ import type {
   CreateLaneFromUnstagedArgs,
   CreatePrFromLaneArgs,
   DeleteLaneArgs,
+  DraftPrDescriptionArgs,
   GetDiffChangesArgs,
   GetFileDiffArgs,
   GitBatchFileActionArgs,
@@ -40,6 +43,7 @@ import type {
   GitStashPushArgs,
   GitStashRefArgs,
   GitSyncArgs,
+  ImportBranchLaneArgs,
   LandPrArgs,
   LaneEnvInitConfig,
   LaneEnvInitProgress,
@@ -55,6 +59,7 @@ import type {
   ReopenPrArgs,
   ReparentLaneArgs,
   RequestPrReviewersArgs,
+  RerunPrChecksArgs,
   SyncCommandPayload,
   SyncRemoteCommandAction,
   SyncRemoteCommandDescriptor,
@@ -175,6 +180,51 @@ function requireService<T>(value: T | null | undefined, message: string): T {
   return value;
 }
 
+async function summarizeChatSessionForRemote(
+  agentChatService: ReturnType<typeof createAgentChatService>,
+  session: AgentChatSession,
+): Promise<AgentChatSessionSummary> {
+  const summary = await agentChatService.getSessionSummary(session.id);
+  if (summary) return summary;
+
+  return {
+    sessionId: session.id,
+    laneId: session.laneId,
+    provider: session.provider,
+    model: session.model,
+    ...(session.modelId ? { modelId: session.modelId } : {}),
+    ...(session.sessionProfile ? { sessionProfile: session.sessionProfile } : {}),
+    reasoningEffort: session.reasoningEffort ?? null,
+    executionMode: session.executionMode ?? null,
+    ...(session.permissionMode ? { permissionMode: session.permissionMode } : {}),
+    ...(session.interactionMode !== undefined ? { interactionMode: session.interactionMode } : {}),
+    ...(session.claudePermissionMode ? { claudePermissionMode: session.claudePermissionMode } : {}),
+    ...(session.codexApprovalPolicy ? { codexApprovalPolicy: session.codexApprovalPolicy } : {}),
+    ...(session.codexSandbox ? { codexSandbox: session.codexSandbox } : {}),
+    ...(session.codexConfigSource ? { codexConfigSource: session.codexConfigSource } : {}),
+    ...(session.opencodePermissionMode ? { opencodePermissionMode: session.opencodePermissionMode } : {}),
+    ...(session.cursorModeSnapshot ? { cursorModeSnapshot: session.cursorModeSnapshot } : {}),
+    ...(session.cursorModeId !== undefined ? { cursorModeId: session.cursorModeId } : {}),
+    ...(session.cursorConfigValues ? { cursorConfigValues: session.cursorConfigValues } : {}),
+    ...(session.identityKey ? { identityKey: session.identityKey } : {}),
+    ...(session.surface ? { surface: session.surface } : {}),
+    automationId: session.automationId ?? null,
+    automationRunId: session.automationRunId ?? null,
+    ...(session.capabilityMode ? { capabilityMode: session.capabilityMode } : {}),
+    ...(session.computerUse ? { computerUse: session.computerUse } : {}),
+    completion: session.completion ?? null,
+    status: session.status,
+    idleSinceAt: session.idleSinceAt ?? null,
+    startedAt: session.createdAt,
+    endedAt: null,
+    lastActivityAt: session.lastActivityAt,
+    lastOutputPreview: null,
+    summary: null,
+    ...(session.threadId ? { threadId: session.threadId } : {}),
+    ...(session.requestedCwd !== undefined ? { requestedCwd: session.requestedCwd } : {}),
+  };
+}
+
 function parseListLanesArgs(value: Record<string, unknown>): ListLanesArgs {
   return {
     includeArchived: asOptionalBoolean(value.includeArchived),
@@ -204,6 +254,15 @@ function parseCreateLaneFromUnstagedArgs(value: Record<string, unknown>): Create
   return {
     name: requireString(value.name, "lanes.createFromUnstaged requires name."),
     sourceLaneId: requireString(value.sourceLaneId, "lanes.createFromUnstaged requires sourceLaneId."),
+  };
+}
+
+function parseImportBranchArgs(value: Record<string, unknown>): ImportBranchLaneArgs {
+  return {
+    branchRef: requireString(value.branchRef, "lanes.importBranch requires branchRef."),
+    ...(asTrimmedString(value.name) ? { name: asTrimmedString(value.name)! } : {}),
+    ...(asTrimmedString(value.description) ? { description: asTrimmedString(value.description)! } : {}),
+    ...(asTrimmedString(value.baseBranch) ? { baseBranch: asTrimmedString(value.baseBranch)! } : {}),
   };
 }
 
@@ -730,6 +789,16 @@ function parseCreatePrArgs(value: Record<string, unknown>): CreatePrFromLaneArgs
   };
 }
 
+function parseDraftPrDescriptionArgs(value: Record<string, unknown>): DraftPrDescriptionArgs {
+  return {
+    laneId: requireString(value.laneId, "prs.draftDescription requires laneId."),
+    ...(asTrimmedString(value.model) ? { model: asTrimmedString(value.model)! } : {}),
+    ...("reasoningEffort" in value
+      ? { reasoningEffort: value.reasoningEffort == null ? null : asTrimmedString(value.reasoningEffort) ?? null }
+      : {}),
+  };
+}
+
 function parseLandPrArgs(value: Record<string, unknown>): LandPrArgs {
   const prId = requirePrId(value, "prs.land");
   const method = asTrimmedString(value.method) as LandPrArgs["method"];
@@ -757,6 +826,33 @@ function parseRequestReviewersArgs(value: Record<string, unknown>): RequestPrRev
   const reviewers = asStringArray(value.reviewers);
   if (reviewers.length === 0) throw new Error("prs.requestReviewers requires at least one reviewer.");
   return { prId, reviewers };
+}
+
+function parseRerunPrChecksArgs(value: Record<string, unknown>): RerunPrChecksArgs {
+  const checkRunIds = (() => {
+    if (value.checkRunIds == null) return undefined;
+    if (!Array.isArray(value.checkRunIds)) {
+      throw new Error("prs.rerunChecks requires checkRunIds to be an array of numbers when provided.");
+    }
+    return value.checkRunIds.map((entry) => {
+      if (typeof entry !== "number" || !Number.isSafeInteger(entry) || entry <= 0) {
+        throw new Error("prs.rerunChecks requires checkRunIds to be an array of numbers when provided.");
+      }
+      return entry;
+    });
+  })();
+  return {
+    prId: requirePrId(value, "prs.rerunChecks"),
+    ...(checkRunIds?.length ? { checkRunIds } : {}),
+  };
+}
+
+function parseAddPrCommentArgs(value: Record<string, unknown>): AddPrCommentArgs {
+  return {
+    prId: requirePrId(value, "prs.addComment"),
+    body: requireString(value.body, "prs.addComment requires body."),
+    ...(asTrimmedString(value.inReplyToCommentId) ? { inReplyToCommentId: asTrimmedString(value.inReplyToCommentId)! } : {}),
+  };
 }
 
 function mergeLaneDockerConfig(
@@ -1045,6 +1141,8 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
   register("lanes.createChild", { viewerAllowed: true, queueable: true }, async (payload) => args.laneService.createChild(parseCreateChildLaneArgs(payload)));
   register("lanes.createFromUnstaged", { viewerAllowed: true, queueable: true }, async (payload) =>
     args.laneService.createFromUnstaged(parseCreateLaneFromUnstagedArgs(payload)));
+  register("lanes.importBranch", { viewerAllowed: true, queueable: true }, async (payload) =>
+    args.laneService.importBranch(parseImportBranchArgs(payload)));
   register("lanes.attach", { viewerAllowed: true, queueable: true }, async (payload) => args.laneService.attach(parseAttachLaneArgs(payload)));
   register("lanes.adoptAttached", { viewerAllowed: true, queueable: true }, async (payload) =>
     args.laneService.adoptAttached({ laneId: requireString(payload.laneId, "lanes.adoptAttached requires laneId.") }));
@@ -1170,7 +1268,8 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
   register("chat.create", { viewerAllowed: true, queueable: true }, async (payload) => {
     const agentChatService = requireService(args.agentChatService, "Agent chat service not available.");
     const parsed = parseAgentChatCreateArgs(payload);
-    return await agentChatService.createSession(await resolveChatCreateArgs(agentChatService, parsed));
+    const session = await agentChatService.createSession(await resolveChatCreateArgs(agentChatService, parsed));
+    return summarizeChatSessionForRemote(agentChatService, session);
   });
   register("chat.send", { viewerAllowed: true, queueable: true }, async (payload) => {
     await requireService(args.agentChatService, "Agent chat service not available.").sendMessage(parseAgentChatSendArgs(payload));
@@ -1314,6 +1413,8 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
   register("prs.getComments", { viewerAllowed: true }, async (payload) => args.prService.getComments(requirePrId(payload, "prs.getComments")));
   register("prs.getFiles", { viewerAllowed: true }, async (payload) => args.prService.getFiles(requirePrId(payload, "prs.getFiles")));
   register("prs.createFromLane", { viewerAllowed: true, queueable: true }, async (payload) => args.prService.createFromLane(parseCreatePrArgs(payload)));
+  register("prs.draftDescription", { viewerAllowed: true, queueable: true }, async (payload) =>
+    args.prService.draftDescription(parseDraftPrDescriptionArgs(payload)));
   register("prs.land", { viewerAllowed: true, queueable: true }, async (payload) => args.prService.land(parseLandPrArgs(payload)));
   register("prs.close", { viewerAllowed: true, queueable: true }, async (payload) => {
     await args.prService.closePr(parseClosePrArgs(payload));
@@ -1327,6 +1428,12 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
     await args.prService.requestReviewers(parseRequestReviewersArgs(payload));
     return { ok: true };
   });
+  register("prs.rerunChecks", { viewerAllowed: true, queueable: true }, async (payload) => {
+    await args.prService.rerunChecks(parseRerunPrChecksArgs(payload));
+    return { ok: true };
+  });
+  register("prs.addComment", { viewerAllowed: true, queueable: true }, async (payload) =>
+    args.prService.addComment(parseAddPrCommentArgs(payload)));
   register("prs.getMobileSnapshot", { viewerAllowed: true }, async () => args.prService.getMobileSnapshot());
 
   return {

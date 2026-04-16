@@ -107,7 +107,7 @@ struct WorkFileChangeCardModel: Identifiable, Equatable {
   let timestamp: String
 }
 
-enum WorkTimelinePayload {
+enum WorkTimelinePayload: Equatable {
   case message(WorkChatMessage)
   case toolCard(WorkToolCardModel)
   case commandCard(WorkCommandCardModel)
@@ -116,11 +116,33 @@ enum WorkTimelinePayload {
   case artifact(ComputerUseArtifactSummary)
 }
 
-struct WorkTimelineEntry: Identifiable {
+struct WorkTimelineEntry: Identifiable, Equatable {
   let id: String
   let timestamp: String
   let rank: Int
   let payload: WorkTimelinePayload
+}
+
+struct WorkChatTimelineSnapshot: Equatable {
+  var pendingInputs: [WorkPendingInputItem]
+  var pendingSteers: [WorkPendingSteerModel]
+  var toolCards: [WorkToolCardModel]
+  var eventCards: [WorkEventCardModel]
+  var commandCards: [WorkCommandCardModel]
+  var fileChangeCards: [WorkFileChangeCardModel]
+  var sessionUsageSummary: WorkUsageSummary?
+  var timeline: [WorkTimelineEntry]
+
+  static let empty = WorkChatTimelineSnapshot(
+    pendingInputs: [],
+    pendingSteers: [],
+    toolCards: [],
+    eventCards: [],
+    commandCards: [],
+    fileChangeCards: [],
+    sessionUsageSummary: nil,
+    timeline: []
+  )
 }
 
 struct WorkEventCardModel: Identifiable, Equatable {

@@ -187,12 +187,6 @@ function coerceAiChatConfig(value: unknown): AiConfig["chat"] {
   }
   const sendOnEnter = asBool(value.sendOnEnter);
   if (sendOnEnter != null) chat.sendOnEnter = sendOnEnter;
-  const autoTitleEnabled = asBool(value.autoTitleEnabled);
-  if (autoTitleEnabled != null) chat.autoTitleEnabled = autoTitleEnabled;
-  const autoTitleModelId = asString(value.autoTitleModelId)?.trim();
-  if (autoTitleModelId) chat.autoTitleModelId = autoTitleModelId;
-  const autoTitleRefreshOnComplete = asBool(value.autoTitleRefreshOnComplete);
-  if (autoTitleRefreshOnComplete != null) chat.autoTitleRefreshOnComplete = autoTitleRefreshOnComplete;
   const codexSandbox = asString(value.codexSandbox)?.trim();
   if (codexSandbox === "read-only" || codexSandbox === "workspace-write" || codexSandbox === "danger-full-access") {
     chat.codexSandbox = codexSandbox;
@@ -208,6 +202,35 @@ function coerceAiChatConfig(value: unknown): AiConfig["chat"] {
     chat.opencodePermissionMode = opencodePermissionMode;
   }
   return Object.keys(chat).length ? chat : undefined;
+}
+
+function coerceSessionIntelligenceConfig(value: unknown): AiConfig["sessionIntelligence"] {
+  if (!isRecord(value)) return undefined;
+  const out: NonNullable<AiConfig["sessionIntelligence"]> = {};
+
+  const titlesRaw = isRecord(value.titles) ? value.titles : null;
+  if (titlesRaw) {
+    const titles: NonNullable<NonNullable<AiConfig["sessionIntelligence"]>["titles"]> = {};
+    const enabled = asBool(titlesRaw.enabled);
+    if (enabled != null) titles.enabled = enabled;
+    const modelId = asString(titlesRaw.modelId)?.trim();
+    if (modelId) titles.modelId = modelId;
+    const refreshOnComplete = asBool(titlesRaw.refreshOnComplete);
+    if (refreshOnComplete != null) titles.refreshOnComplete = refreshOnComplete;
+    if (Object.keys(titles).length) out.titles = titles;
+  }
+
+  const summariesRaw = isRecord(value.summaries) ? value.summaries : null;
+  if (summariesRaw) {
+    const summaries: NonNullable<NonNullable<AiConfig["sessionIntelligence"]>["summaries"]> = {};
+    const enabled = asBool(summariesRaw.enabled);
+    if (enabled != null) summaries.enabled = enabled;
+    const modelId = asString(summariesRaw.modelId)?.trim();
+    if (modelId) summaries.modelId = modelId;
+    if (Object.keys(summaries).length) out.summaries = summaries;
+  }
+
+  return Object.keys(out).length ? out : undefined;
 }
 
 function coerceFeatureModelOverrides(value: unknown): AiConfig["featureModelOverrides"] {
@@ -985,6 +1008,11 @@ const AI_TASK_KEYS: AiTaskRoutingKey[] = [
   "narrative",
   "pr_description",
   "terminal_summary",
+  "session_title",
+  "session_summary",
+  "handoff_summary",
+  "continuity_summary",
+  "context_compaction",
   "mission_planning",
   "initial_context"
 ];
@@ -1257,8 +1285,35 @@ function coerceAiConfig(value: unknown): AiConfig | undefined {
     if (Object.keys(orchestrator).length) out.orchestrator = orchestrator;
   }
 
+  const chatRaw = isRecord(value.chat) ? value.chat : null;
   const chat = coerceAiChatConfig(value.chat);
   if (chat) out.chat = chat;
+
+  const legacySessionIntelligence: AiConfig["sessionIntelligence"] = (() => {
+    const titles: NonNullable<NonNullable<AiConfig["sessionIntelligence"]>["titles"]> = {};
+    const autoTitleEnabled = asBool(chatRaw?.autoTitleEnabled);
+    if (autoTitleEnabled != null) titles.enabled = autoTitleEnabled;
+    const autoTitleModelId = asString(chatRaw?.autoTitleModelId)?.trim();
+    if (autoTitleModelId) titles.modelId = autoTitleModelId;
+    const autoTitleRefreshOnComplete = asBool(chatRaw?.autoTitleRefreshOnComplete);
+    if (autoTitleRefreshOnComplete != null) titles.refreshOnComplete = autoTitleRefreshOnComplete;
+
+    const summaries: NonNullable<NonNullable<AiConfig["sessionIntelligence"]>["summaries"]> = {};
+    if (featureModelOverrides?.terminal_summaries) {
+      summaries.modelId = featureModelOverrides.terminal_summaries;
+    }
+
+    const migrated: NonNullable<AiConfig["sessionIntelligence"]> = {
+      ...(Object.keys(titles).length ? { titles } : {}),
+      ...(Object.keys(summaries).length ? { summaries } : {}),
+    };
+    return Object.keys(migrated).length ? migrated : undefined;
+  })();
+  const sessionIntelligence = mergeSessionIntelligenceConfig(
+    legacySessionIntelligence,
+    coerceSessionIntelligenceConfig(value.sessionIntelligence),
+  );
+  if (sessionIntelligence) out.sessionIntelligence = sessionIntelligence;
 
   const defaultModel = asString(value.defaultModel)?.trim();
   if (defaultModel) out.defaultModel = defaultModel;
@@ -1553,6 +1608,26 @@ function mergeAiOrchestrator(
   return Object.keys(orchestrator).length ? orchestrator : undefined;
 }
 
+function mergeSessionIntelligenceConfig(
+  sharedSessionIntelligence?: AiConfig["sessionIntelligence"],
+  localSessionIntelligence?: AiConfig["sessionIntelligence"],
+): AiConfig["sessionIntelligence"] {
+  if (!sharedSessionIntelligence && !localSessionIntelligence) return undefined;
+  const titles = {
+    ...(sharedSessionIntelligence?.titles ?? {}),
+    ...(localSessionIntelligence?.titles ?? {}),
+  };
+  const summaries = {
+    ...(sharedSessionIntelligence?.summaries ?? {}),
+    ...(localSessionIntelligence?.summaries ?? {}),
+  };
+  const sessionIntelligence: NonNullable<AiConfig["sessionIntelligence"]> = {
+    ...(Object.keys(titles).length ? { titles } : {}),
+    ...(Object.keys(summaries).length ? { summaries } : {}),
+  };
+  return Object.keys(sessionIntelligence).length ? sessionIntelligence : undefined;
+}
+
 export function mergeAiConfig(sharedAi?: AiConfig, localAi?: Partial<AiConfig>): AiConfig | undefined {
   if (!sharedAi && !localAi) return undefined;
   const taskRouting: Partial<Record<AiTaskRoutingKey, AiTaskRoutingRule>> = {
@@ -1577,6 +1652,7 @@ export function mergeAiConfig(sharedAi?: AiConfig, localAi?: Partial<AiConfig>):
     ...(sharedAi?.chat ?? {}),
     ...(localAi?.chat ?? {})
   };
+  const sessionIntelligence = mergeSessionIntelligenceConfig(sharedAi?.sessionIntelligence, localAi?.sessionIntelligence);
   const featureModelOverrides = {
     ...(sharedAi?.featureModelOverrides ?? {}),
     ...(localAi?.featureModelOverrides ?? {})
@@ -1611,6 +1687,7 @@ export function mergeAiConfig(sharedAi?: AiConfig, localAi?: Partial<AiConfig>):
     ...(Object.keys(conflictResolution).length ? { conflictResolution } : {}),
     ...(orchestrator ? { orchestrator } : {}),
     ...(Object.keys(chat).length ? { chat } : {}),
+    ...(sessionIntelligence ? { sessionIntelligence } : {}),
     ...(Object.keys(featureModelOverrides).length ? { featureModelOverrides } : {}),
     ...(Object.keys(apiKeys).length ? { apiKeys } : {}),
     ...(localProvidersEntries.length ? { localProviders } : {}),

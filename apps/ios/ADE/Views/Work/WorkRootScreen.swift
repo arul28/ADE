@@ -186,10 +186,15 @@ struct WorkRootScreen: View {
     activityFeedEntries
   }
 
+  var isWorkRootActive: Bool {
+    path.isEmpty
+  }
+
   /// Composite fingerprint that changes only when the Activity feed actually needs to rebuild.
   /// Built from the activity session ids, their streamed transcript counts, and a cheap buffer
   /// fingerprint so typical `localStateRevision` bumps do not trigger a rebuild.
   var activityFeedFingerprint: String {
+    guard isWorkRootActive else { return "paused" }
     var parts: [String] = []
     parts.reserveCapacity(activitySessions.count)
     for session in activitySessions {
@@ -347,23 +352,33 @@ struct WorkRootScreen: View {
       .task {
         await reload()
       }
-      .task(id: syncService.localStateRevision) {
+      .task(id: "\(syncService.localStateRevision)-\(isWorkRootActive)") {
+        guard isWorkRootActive else { return }
         await reloadFromPersistedProjection()
       }
       .task(id: pollingKey) {
         await pollRunningChats()
       }
       .task(id: activityFeedFingerprint) {
+        guard isWorkRootActive else { return }
         rebuildActivityFeed()
       }
+      .task(id: isWorkRootActive) {
+        if isWorkRootActive {
+          await reload()
+        }
+      }
       .navigationDestination(for: WorkSessionRoute.self) { route in
+        let routeTransitionNamespace = route.openingPrompt == nil && selectedSessionTransitionId == route.sessionId
+          ? (ADEMotion.allowsMatchedGeometry(reduceMotion: reduceMotion) ? sessionTransitionNamespace : nil)
+          : nil
         WorkSessionDestinationView(
           sessionId: route.sessionId,
           initialOpeningPrompt: route.openingPrompt,
           initialSession: mergedSessions.first(where: { $0.id == route.sessionId }),
           initialChatSummary: chatSummaries[route.sessionId],
           initialTranscript: transcriptCache[route.sessionId],
-          transitionNamespace: ADEMotion.allowsMatchedGeometry(reduceMotion: reduceMotion) ? sessionTransitionNamespace : nil,
+          transitionNamespace: routeTransitionNamespace,
           isLive: isLive,
           disconnectedNotice: !isLive
         )
@@ -380,12 +395,13 @@ struct WorkRootScreen: View {
             chatSummaries[sessionId] = summary
             selectedStatus = .all
             selectedLaneId = summary.laneId
-            selectedSessionTransitionId = sessionId
+            selectedSessionTransitionId = nil
             // Replace the new-chat page with the live session view so hitting
             // Back goes to the sidebar, not to an empty "Start a new chat"
             // form.
             var fresh = NavigationPath()
             fresh.append(WorkSessionRoute(sessionId: sessionId, openingPrompt: trimmed))
+            await Task.yield()
             path = fresh
             Task { @MainActor in
               await reload(refreshRemote: true)
@@ -445,6 +461,7 @@ struct WorkRootScreen: View {
   }
 
   var pollingKey: String {
+    guard isWorkRootActive else { return "paused" }
     let ids = liveChatSessions.map(\.id).sorted().joined(separator: ",")
     // Intentionally omit `localStateRevision`: it changes constantly during host DB sync and was
     // restarting this poll loop while the list `.task(id:)` also reloaded sessions every tick.

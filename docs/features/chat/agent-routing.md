@@ -88,9 +88,9 @@ defaults to `guarded` unless explicitly whitelisted.
 
 Claude's reasoning-tier vocabulary is `low | medium | high | max`
 (`CLAUDE_THINKING_LEVELS` in `shared/modelProfiles.ts`). `max` was added
-alongside the Claude Opus 4.6 1M entry (`anthropic/claude-opus-4-6-1m`,
-aliases `opus[1m]` / `claude-opus-4-6[1m]`, 1,000,000-token context,
-32 k output, tier `very_high`) — it's the first registry entry that
+alongside the Claude Opus 4.7 1M entry (`anthropic/claude-opus-4-7-1m`,
+aliases `opus[1m]` / `claude-opus-4-7[1m]`, 1,000,000-token context,
+128 k output, tier `very_high`) — it's the first registry entry that
 advertises the full `low|medium|high|max` tier set. Passthrough to the
 provider config is unchanged (the tier string is forwarded directly to
 the CLI / SDK — no synthesized token budgets).
@@ -222,7 +222,7 @@ The `AgentChatHandoffResult` reports whether a fallback summary was used
 ## Auto-title generation
 
 Sessions auto-title through two stages when
-`ai.chat.autoTitleEnabled` is true and the runtime is not `guest`:
+`ai.sessionIntelligence.titles.enabled` is true and the runtime is not `guest`:
 
 - **Initial** -- generated early in the conversation from the first
   user message, providing an immediate label while the session is still
@@ -230,7 +230,7 @@ Sessions auto-title through two stages when
 - **Final** -- generated once enough transcript has accumulated,
   producing a more accurate title.
 
-`ai.chat.autoTitleRefreshOnComplete` (default true) triggers a final
+`ai.sessionIntelligence.titles.refreshOnComplete` (default true) triggers a final
 refresh after a turn completes.
 
 Manual renaming sets `manuallyNamed: true`, which permanently

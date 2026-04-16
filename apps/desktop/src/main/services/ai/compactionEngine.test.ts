@@ -7,10 +7,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // Mocks — must be declared before importing the module under test
 // ---------------------------------------------------------------------------
 
-vi.mock("../opencode/openCodeRuntime", () => ({
-  runOpenCodeTextPrompt: vi.fn(),
-}));
-
 vi.mock("../../../shared/modelRegistry", async (importOriginal) => {
   const orig = (await importOriginal()) as Record<string, unknown>;
   return {
@@ -31,7 +27,6 @@ import {
   preCompactionWriteback,
   type TranscriptEntry,
 } from "./compactionEngine";
-import { runOpenCodeTextPrompt } from "../opencode/openCodeRuntime";
 import { getModelById } from "../../../shared/modelRegistry";
 import type { ModelDescriptor } from "../../../shared/modelRegistry";
 
@@ -94,6 +89,26 @@ const fakeModelDescriptor: ModelDescriptor = {
   providerModelId: "test-model",
   isCliWrapped: false,
 };
+
+function createAiIntegrationService(results: Array<{ text: string; inputTokens?: number; outputTokens?: number }>) {
+  return {
+    executeTask: vi.fn(async () => {
+      const next = results.shift();
+      if (!next) throw new Error("Unexpected executeTask call");
+      return {
+        text: next.text,
+        provider: "claude" as const,
+        model: "test-model",
+        sessionId: null,
+        inputTokens: next.inputTokens ?? null,
+        outputTokens: next.outputTokens ?? null,
+        reasoningTokens: null,
+        structuredOutput: null,
+        durationMs: 1,
+      };
+    }),
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Transcript CRUD — appendTranscriptEntry / getTranscript / getTranscriptRecord
@@ -293,17 +308,17 @@ describe("createCompactionMonitor", () => {
 // ---------------------------------------------------------------------------
 
 describe("compactConversation", () => {
-  const mockedRunPrompt = runOpenCodeTextPrompt as ReturnType<typeof vi.fn>;
   const mockedGetModel = getModelById as ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
     mockedGetModel.mockReturnValue(fakeModelDescriptor);
   });
 
-  it("calls runOpenCodeTextPrompt for summarization and fact extraction", async () => {
-    mockedRunPrompt
-      .mockResolvedValueOnce({ text: "## Summary\nDid stuff", inputTokens: 100, outputTokens: 50 })
-      .mockResolvedValueOnce({ text: '["The auth API needs X-Request-ID"]', inputTokens: 80, outputTokens: 20 });
+  it("routes summarization and fact extraction through the selected AI integration task", async () => {
+    const aiIntegrationService = createAiIntegrationService([
+      { text: "## Summary\nDid stuff", inputTokens: 100, outputTokens: 50 },
+      { text: '["The auth API needs X-Request-ID"]', inputTokens: 80, outputTokens: 20 },
+    ]);
 
     const messages: TranscriptEntry[] = [
       { role: "user", content: "Fix the auth bug", timestamp: "2026-01-01T00:00:00Z", tokenEstimate: 10 },
@@ -313,14 +328,21 @@ describe("compactConversation", () => {
     const result = await compactConversation({
       messages,
       modelId: "test-model",
-      projectConfig: { models: {} } as any,
+      aiIntegrationService,
     });
 
     expect(result.summary).toBe("## Summary\nDid stuff");
     expect(result.factsExtracted).toEqual(["The auth API needs X-Request-ID"]);
     expect(result.previousTokenCount).toBe(30); // 10 + 20
     expect(result.newTokenCount).toBeGreaterThan(0);
-    expect(mockedRunPrompt).toHaveBeenCalledTimes(2);
+    expect(aiIntegrationService.executeTask).toHaveBeenCalledTimes(2);
+    expect(aiIntegrationService.executeTask).toHaveBeenCalledWith(expect.objectContaining({
+      feature: "terminal_summaries",
+      taskType: "context_compaction",
+      model: "test-model",
+      permissionMode: "read-only",
+      oneShot: true,
+    }));
   });
 
   it("throws when model ID is unknown", async () => {
@@ -330,20 +352,21 @@ describe("compactConversation", () => {
       compactConversation({
         messages: [makeEntry()],
         modelId: "nonexistent-model",
-        projectConfig: { models: {} } as any,
+        aiIntegrationService: createAiIntegrationService([]),
       }),
     ).rejects.toThrow("Unknown compaction model");
   });
 
   it("returns empty facts when fact extraction produces invalid JSON", async () => {
-    mockedRunPrompt
-      .mockResolvedValueOnce({ text: "Summary text", inputTokens: 10, outputTokens: 5 })
-      .mockResolvedValueOnce({ text: "not valid json at all", inputTokens: 10, outputTokens: 5 });
+    const aiIntegrationService = createAiIntegrationService([
+      { text: "Summary text", inputTokens: 10, outputTokens: 5 },
+      { text: "not valid json at all", inputTokens: 10, outputTokens: 5 },
+    ]);
 
     const result = await compactConversation({
       messages: [makeEntry()],
       modelId: "test-model",
-      projectConfig: { models: {} } as any,
+      aiIntegrationService,
     });
 
     expect(result.factsExtracted).toEqual([]);
@@ -351,29 +374,31 @@ describe("compactConversation", () => {
   });
 
   it("filters non-string entries from fact extraction array", async () => {
-    mockedRunPrompt
-      .mockResolvedValueOnce({ text: "Summary", inputTokens: 10, outputTokens: 5 })
-      .mockResolvedValueOnce({ text: '["valid fact", 42, null, "another fact"]', inputTokens: 10, outputTokens: 5 });
+    const aiIntegrationService = createAiIntegrationService([
+      { text: "Summary", inputTokens: 10, outputTokens: 5 },
+      { text: '["valid fact", 42, null, "another fact"]', inputTokens: 10, outputTokens: 5 },
+    ]);
 
     const result = await compactConversation({
       messages: [makeEntry()],
       modelId: "test-model",
-      projectConfig: { models: {} } as any,
+      aiIntegrationService,
     });
 
     expect(result.factsExtracted).toEqual(["valid fact", "another fact"]);
   });
 
   it("estimates tokens from content length when tokenEstimate is missing", async () => {
-    mockedRunPrompt
-      .mockResolvedValueOnce({ text: "Summary", inputTokens: 10, outputTokens: 5 })
-      .mockResolvedValueOnce({ text: "[]", inputTokens: 10, outputTokens: 5 });
+    const aiIntegrationService = createAiIntegrationService([
+      { text: "Summary", inputTokens: 10, outputTokens: 5 },
+      { text: "[]", inputTokens: 10, outputTokens: 5 },
+    ]);
 
     // 40 chars -> ceil(40/4) = 10 tokens
     const result = await compactConversation({
       messages: [{ role: "user", content: "a".repeat(40), timestamp: "2026-01-01T00:00:00Z" }],
       modelId: "test-model",
-      projectConfig: { models: {} } as any,
+      aiIntegrationService,
     });
 
     expect(result.previousTokenCount).toBe(10);

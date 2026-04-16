@@ -14,12 +14,11 @@ struct WorkActivityIndicator: View {
 
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
+  @ViewBuilder
   var body: some View {
-    guard isStreaming else { return AnyView(EmptyView()) }
+    if isStreaming {
+      let presentation = Self.derivePresentation(from: transcript)
 
-    let presentation = Self.derivePresentation(from: transcript)
-
-    return AnyView(
       HStack(spacing: 10) {
         WorkActivityPulseDot(reduceMotion: reduceMotion, tint: presentation.tint)
 
@@ -52,7 +51,7 @@ struct WorkActivityIndicator: View {
       )
       .accessibilityElement(children: .combine)
       .accessibilityLabel(presentation.accessibilityLabel)
-    )
+    }
   }
 
   struct Presentation: Equatable {

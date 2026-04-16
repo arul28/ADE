@@ -95,6 +95,65 @@ struct FilesFileMetadata {
   let lastCommitDateText: String?
 }
 
+struct FilesPreviewLimit: Equatable {
+  let title: String
+  let message: String
+}
+
+private let filesTextPreviewByteLimit = 300 * 1024
+private let filesTextPreviewLineLimit = 4_000
+private let filesDiffPreviewByteLimit = 400 * 1024
+private let filesDiffPreviewLineLimit = 6_000
+
+func filesTextPreviewLimit(blob: SyncFileBlob) -> FilesPreviewLimit? {
+  guard !blob.isBinary else { return nil }
+  return filesTextLimit(
+    byteCount: max(blob.size, blob.content.utf8.count),
+    lineCount: filesEstimatedLineCount(blob.content),
+    lineLimit: filesTextPreviewLineLimit,
+    byteLimit: filesTextPreviewByteLimit,
+    title: "Preview paused",
+    action: "Use desktop ADE or narrow the file before previewing it on iPhone."
+  )
+}
+
+func filesDiffPreviewLimit(diff: FileDiff) -> FilesPreviewLimit? {
+  let combinedText = "\(diff.original.text)\n\(diff.modified.text)"
+  return filesTextLimit(
+    byteCount: combinedText.utf8.count,
+    lineCount: filesEstimatedLineCount(combinedText),
+    lineLimit: filesDiffPreviewLineLimit,
+    byteLimit: filesDiffPreviewByteLimit,
+    title: "Diff preview paused",
+    action: "Open the file on desktop or inspect a smaller diff before rendering it on iPhone."
+  )
+}
+
+private func filesTextLimit(byteCount: Int, lineCount: Int, lineLimit: Int, byteLimit: Int, title: String, action: String) -> FilesPreviewLimit? {
+  if lineCount > lineLimit {
+    return FilesPreviewLimit(
+      title: title,
+      message: "This content has \(lineCount) lines. \(action)"
+    )
+  }
+
+  if byteCount > byteLimit {
+    return FilesPreviewLimit(
+      title: title,
+      message: "This content is \(formattedFileSize(byteCount)). \(action)"
+    )
+  }
+
+  return nil
+}
+
+private func filesEstimatedLineCount(_ text: String) -> Int {
+  guard !text.isEmpty else { return 0 }
+  return text.reduce(1) { count, character in
+    character == "\n" ? count + 1 : count
+  }
+}
+
 func resolveFilesWorkspace(for request: FilesNavigationRequest, in workspaces: [FilesWorkspace]) -> FilesWorkspace? {
   if let exact = workspaces.first(where: { $0.id == request.workspaceId }) {
     return exact

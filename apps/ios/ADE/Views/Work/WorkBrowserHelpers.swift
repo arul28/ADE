@@ -62,7 +62,7 @@ func workFilteredSessions(
       let status = normalizedWorkChatSessionStatus(session: session, summary: chatSummaries[session.id])
       switch selectedStatus {
       case .all:
-        break
+        guard !isArchived else { return false }
       case .needsInput:
         guard !isArchived && status == "awaiting-input" else { return false }
       case .running:

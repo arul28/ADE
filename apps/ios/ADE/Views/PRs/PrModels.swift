@@ -77,6 +77,11 @@ struct PrDiffDisplayLine: Identifiable, Equatable {
   let newLineNumber: Int?
 }
 
+struct PrPatchPreviewLimit: Equatable {
+  let title: String
+  let message: String
+}
+
 enum PrTimelineEventKind: Equatable {
   case stateChange
   case review

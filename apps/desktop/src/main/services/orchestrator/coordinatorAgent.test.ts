@@ -162,6 +162,18 @@ function createTestCoordinatorAgent(args?: {
     missionService: {
       get: vi.fn(() => ({ interventions: [] })),
     } as any,
+    aiIntegrationService: {
+      executeTask: vi.fn(async () => ({
+        text: "Compacted summary",
+        structuredOutput: null,
+        provider: "claude",
+        model: args?.modelId ?? "anthropic/claude-sonnet-4-6",
+        sessionId: null,
+        inputTokens: null,
+        outputTokens: null,
+        durationMs: 1,
+      })),
+    } as any,
     projectConfigService: {
       get: vi.fn(() => ({ effective: { ai: {} } })),
     } as any,

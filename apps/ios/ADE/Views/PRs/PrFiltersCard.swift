@@ -29,6 +29,7 @@ struct PrFiltersCard: View {
           Image(systemName: "arrow.clockwise")
             .font(.body.weight(.semibold))
         }
+        .accessibilityLabel("Refresh PR list")
         .buttonStyle(.glass)
         .tint(ADEColor.accent)
       }

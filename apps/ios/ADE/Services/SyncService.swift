@@ -38,7 +38,7 @@ func unwrapSyncCommandResponse(_ raw: Any) throws -> Any {
 
 func decodeHydrationPayload<T: Decodable>(_ raw: Any, as type: T.Type, domainLabel: String, decoder: JSONDecoder) throws -> T {
   do {
-    let data = try JSONSerialization.data(withJSONObject: raw, options: [])
+    let data = try adeJSONData(withJSONObject: raw)
     return try decoder.decode(T.self, from: data)
   } catch {
     throw NSError(
@@ -50,6 +50,30 @@ func decodeHydrationPayload<T: Decodable>(_ raw: Any, as type: T.Type, domainLab
       ]
     )
   }
+}
+
+func adeJSONData(withJSONObject object: Any, options: JSONSerialization.WritingOptions = []) throws -> Data {
+  let writingOptions = options.union(.fragmentsAllowed)
+  guard JSONSerialization.isValidJSONObject(object) || adeIsValidJSONFragment(object) else {
+    throw NSError(domain: "ADE", code: 30, userInfo: [NSLocalizedDescriptionKey: "Invalid JSON payload."])
+  }
+  return try JSONSerialization.data(withJSONObject: object, options: writingOptions)
+}
+
+private func adeIsValidJSONFragment(_ object: Any) -> Bool {
+  if object is String || object is NSNumber || object is NSNull {
+    return true
+  }
+
+  let mirror = Mirror(reflecting: object)
+  guard mirror.displayStyle == .optional else {
+    return false
+  }
+
+  guard let child = mirror.children.first else {
+    return true
+  }
+  return JSONSerialization.isValidJSONObject(child.value) || adeIsValidJSONFragment(child.value)
 }
 
 private func syncFoundationObject(from value: RemoteJSONValue) -> Any {
@@ -110,7 +134,7 @@ enum SyncRequestTimeout {
   static let defaultTimeoutNanoseconds: UInt64 = 30_000_000_000
   static let message = "The host took too long to respond. Reconnecting now."
 
-  static func error(underlyingError: Error? = nil) -> NSError {
+  static func error(message: String = Self.message, underlyingError: Error? = nil) -> NSError {
     var userInfo: [String: Any] = [NSLocalizedDescriptionKey: message]
     if let underlyingError {
       userInfo[NSUnderlyingErrorKey] = underlyingError
@@ -118,6 +142,9 @@ enum SyncRequestTimeout {
     return NSError(domain: "ADE", code: 23, userInfo: userInfo)
   }
 }
+
+private let syncTerminalSubscriptionMaxBytes = 80_000
+private let syncTerminalBufferMaxCharacters = 80_000
 
 enum SyncBonjourTiming {
   static let searchRetryNanoseconds: UInt64 = 2_000_000_000
@@ -331,9 +358,8 @@ final class SyncService: ObservableObject {
   @Published private(set) var lastSyncAt: Date?
   @Published private(set) var currentAddress: String?
   @Published private(set) var lastError: String?
-  @Published private(set) var terminalBuffers: [String: String] = [:]
-  @Published private(set) var chatEventEnvelopesBySession: [String: [AgentChatEventEnvelope]] = [:]
-  @Published private(set) var chatEventRevisionsBySession: [String: Int] = [:]
+  @Published private(set) var terminalBufferRevision = 0
+  @Published private(set) var chatEventNotificationRevision = 0
   @Published private(set) var subscribedChatSessionIds: Set<String> = []
   @Published private(set) var pendingOperationCount = 0
   @Published private(set) var localStateRevision = 0
@@ -341,6 +367,10 @@ final class SyncService: ObservableObject {
   @Published var requestedFilesNavigation: FilesNavigationRequest?
   @Published var requestedLaneNavigation: LaneNavigationRequest?
   @Published var requestedPrNavigation: PrNavigationRequest?
+
+  private(set) var terminalBuffers: [String: String] = [:]
+  private(set) var chatEventEnvelopesBySession: [String: [AgentChatEventEnvelope]] = [:]
+  private(set) var chatEventRevisionsBySession: [String: Int] = [:]
 
   private let profileKey = "ade.sync.hostProfile"
   private let autoReconnectPausedKey = "ade.sync.autoReconnectPausedByUser"
@@ -367,6 +397,8 @@ final class SyncService: ObservableObject {
   private var reconnectTask: Task<Void, Never>?
   private var lanePresenceHeartbeatTask: Task<Void, Never>?
   private var openLaneReferenceCounts: [String: Int] = [:]
+  private var terminalBufferRevisionTask: Task<Void, Never>?
+  private var chatEventRevisionTask: Task<Void, Never>?
   private var databaseObserver: NSObjectProtocol?
   /// Coalesces bursty `adeDatabaseDidChange` notifications so SwiftUI `.task(id: localStateRevision)` surfaces
   /// do not reload on every CRDT row during host sync (was freezing the Work tab and Settings UI).
@@ -466,6 +498,8 @@ final class SyncService: ObservableObject {
     hydrationTask?.cancel()
     reconnectTask?.cancel()
     lanePresenceHeartbeatTask?.cancel()
+    terminalBufferRevisionTask?.cancel()
+    chatEventRevisionTask?.cancel()
     discoveryBrowser.stop()
     socketSession.invalidateAndCancel()
     if let databaseObserver {
@@ -1069,10 +1103,10 @@ final class SyncService: ObservableObject {
   private func ensureMobileFileMutationsAllowed(workspaceId: String) throws {
     let workspace = database.listWorkspaces().first { $0.id == workspaceId }
     guard let workspace else {
-      throw NSError(domain: "ADE", code: 18, userInfo: [NSLocalizedDescriptionKey: "The selected Files workspace is no longer available on this phone."])
+      throw NSError(domain: "ADE", code: 118, userInfo: [NSLocalizedDescriptionKey: "The selected Files workspace is no longer available on this phone."])
     }
     guard !workspace.readOnlyOnMobile else {
-      throw NSError(domain: "ADE", code: 19, userInfo: [NSLocalizedDescriptionKey: "Files stays read-only on iPhone for this mission."])
+      throw NSError(domain: "ADE", code: 119, userInfo: [NSLocalizedDescriptionKey: "Files stays read-only on iPhone for this mission."])
     }
   }
 
@@ -1178,11 +1212,12 @@ final class SyncService: ObservableObject {
     let raw = try await awaitResponse(requestId: requestId) {
       self.sendEnvelope(type: "terminal_subscribe", requestId: requestId, payload: [
         "sessionId": sessionId,
-        "maxBytes": 220000,
+        "maxBytes": syncTerminalSubscriptionMaxBytes,
       ])
     }
     let snapshot = try decode(raw, as: TerminalSnapshot.self)
-    terminalBuffers[sessionId] = snapshot.transcript
+    terminalBuffers[sessionId] = trimmedTerminalBuffer(snapshot.transcript)
+    markTerminalBufferChanged(immediate: true)
   }
 
   func subscribeToChatEvents(sessionId: String) async throws {
@@ -1954,7 +1989,12 @@ final class SyncService: ObservableObject {
       return
     }
     do {
-      _ = try await performCommandRequest(action: action, args: ["laneId": laneId])
+      _ = try await performCommandRequest(
+        action: action,
+        args: ["laneId": laneId],
+        disconnectOnTimeout: false,
+        timeoutMessage: "The host did not acknowledge lane presence in time."
+      )
       if refreshSnapshots {
         try? await refreshLaneSnapshots()
       }
@@ -2372,7 +2412,6 @@ final class SyncService: ObservableObject {
     guard isCurrentConnectAttempt(connectAttemptGeneration) else {
       throw CancellationError()
     }
-    let remoteDbVersion = payload["serverDbVersion"] as? Int ?? 0
     let brain = payload["brain"] as? [String: Any]
     let remoteHostIdentity = brain?["deviceId"] as? String
     let remoteHostName = brain?["deviceName"] as? String
@@ -2451,7 +2490,7 @@ final class SyncService: ObservableObject {
       port: port,
       authKind: authKind,
       pairedDeviceId: pairedDeviceId ?? activeHostProfile?.pairedDeviceId,
-      lastRemoteDbVersion: remoteDbVersion,
+      lastRemoteDbVersion: latestRemoteDbVersion,
       lastHostDeviceId: remoteHostIdentity ?? activeHostProfile?.lastHostDeviceId,
       lastSuccessfulAddress: connectedHost,
       savedAddressCandidates: savedCandidates,
@@ -2621,12 +2660,14 @@ final class SyncService: ObservableObject {
       }
     case "terminal_data":
       if let dict = payload as? [String: Any], let sessionId = dict["sessionId"] as? String, let chunk = dict["data"] as? String {
-        terminalBuffers[sessionId, default: ""] += chunk
+        terminalBuffers[sessionId] = trimmedTerminalBuffer((terminalBuffers[sessionId] ?? "") + chunk)
+        markTerminalBufferChanged()
       }
     case "terminal_exit":
       if let dict = payload as? [String: Any], let sessionId = dict["sessionId"] as? String {
         let exitCode = dict["exitCode"] as? Int
-        terminalBuffers[sessionId, default: ""] += "\n\n[process exited\(exitCode.map { " with \($0)" } ?? "")]"
+        terminalBuffers[sessionId] = trimmedTerminalBuffer((terminalBuffers[sessionId] ?? "") + "\n\n[process exited\(exitCode.map { " with \($0)" } ?? "")]")
+        markTerminalBufferChanged(immediate: true)
       }
     default:
       break
@@ -2690,12 +2731,21 @@ final class SyncService: ObservableObject {
     }
   }
 
-  private func awaitResponse(requestId: String, send: () -> Void) async throws -> Any {
+  private func awaitResponse(
+    requestId: String,
+    disconnectOnTimeout: Bool = true,
+    timeoutMessage: String = SyncRequestTimeout.message,
+    send: () -> Void
+  ) async throws -> Any {
     try await withCheckedThrowingContinuation { continuation in
       let timeoutTask = Task { @MainActor [weak self] in
         try? await Task.sleep(nanoseconds: SyncRequestTimeout.defaultTimeoutNanoseconds)
         guard !Task.isCancelled else { return }
-        self?.handlePendingRequestTimeout(requestId: requestId)
+        self?.handlePendingRequestTimeout(
+          requestId: requestId,
+          disconnectOnTimeout: disconnectOnTimeout,
+          timeoutError: SyncRequestTimeout.error(message: timeoutMessage)
+        )
       }
       pending[requestId] = PendingRequest(
         completion: { result in
@@ -2710,7 +2760,7 @@ final class SyncService: ObservableObject {
   private func sendEnvelope(type: String, requestId: String?, payload: Any) {
     guard let socket else { return }
     let sendSocket = socket
-    guard let payloadData = try? JSONSerialization.data(withJSONObject: payload, options: []) else { return }
+    guard let payloadData = try? adeJSONData(withJSONObject: payload) else { return }
 
     let envelope: [String: Any]
     if payloadData.count >= compressionThresholdBytes {
@@ -2734,7 +2784,7 @@ final class SyncService: ObservableObject {
       ]
     }
 
-    guard let data = try? JSONSerialization.data(withJSONObject: envelope, options: []),
+    guard let data = try? adeJSONData(withJSONObject: envelope),
           let text = String(data: data, encoding: .utf8)
     else { return }
 
@@ -2833,9 +2883,17 @@ final class SyncService: ObservableObject {
     scheduleReconnectIfNeeded(after: reconnectDelayNanoseconds ?? reconnectDelay())
   }
 
-  private func handlePendingRequestTimeout(requestId: String) {
+  private func handlePendingRequestTimeout(
+    requestId: String,
+    disconnectOnTimeout: Bool = true,
+    timeoutError: NSError = SyncRequestTimeout.error()
+  ) {
     guard pending[requestId] != nil else { return }
-    handleTransportFailure(SyncRequestTimeout.error())
+    if disconnectOnTimeout {
+      handleTransportFailure(timeoutError)
+    } else {
+      resolve(requestId: requestId, result: .failure(timeoutError))
+    }
   }
 
   private func decodeEnvelopePayload(_ envelope: [String: Any]) throws -> Any {
@@ -2858,7 +2916,7 @@ final class SyncService: ObservableObject {
   }
 
   private func decode<T: Decodable>(_ object: Any, as type: T.Type) throws -> T {
-    let data = try JSONSerialization.data(withJSONObject: object, options: [])
+    let data = try adeJSONData(withJSONObject: object)
     return try decoder.decode(T.self, from: data)
   }
 
@@ -2908,7 +2966,7 @@ final class SyncService: ObservableObject {
     guard JSONSerialization.isValidJSONObject(args) else {
       throw NSError(domain: "ADE", code: 11, userInfo: [NSLocalizedDescriptionKey: "Invalid queued operation payload."])
     }
-    let payload = try JSONSerialization.data(withJSONObject: args, options: [])
+    let payload = try adeJSONData(withJSONObject: args)
     var queued = loadPendingOperations()
     queued.append(PendingOperation(
       id: makeRequestId(),
@@ -2942,8 +3000,14 @@ final class SyncService: ObservableObject {
         let args = try decodeQueuedArgs(operation)
         switch operation.kind {
         case "command":
+          guard commandPolicy(for: operation.action) != nil else {
+            throw NSError(domain: "ADE", code: 16, userInfo: [NSLocalizedDescriptionKey: "Queued action \(operation.action) is no longer available on this host."])
+          }
           _ = try await performCommandRequest(action: operation.action, args: args)
         case "file":
+          guard queueableFileActions.contains(operation.action) else {
+            throw NSError(domain: "ADE", code: 17, userInfo: [NSLocalizedDescriptionKey: "Queued file action \(operation.action) is no longer supported."])
+          }
           _ = try await performFileRequest(action: operation.action, args: args)
         default:
           throw NSError(domain: "ADE", code: 13, userInfo: [NSLocalizedDescriptionKey: "Unknown queued operation type."])
@@ -2952,18 +3016,33 @@ final class SyncService: ObservableObject {
         savePendingOperations(queued)
       } catch {
         lastError = SyncUserFacingError.message(for: error)
+        if canSendLiveRequests() {
+          queued.removeFirst()
+          savePendingOperations(queued)
+          continue
+        }
+        savePendingOperations(queued)
         connectionState = .error
         break
       }
     }
   }
 
-  private func performCommandRequest(action: String, args: [String: Any]) async throws -> Any {
+  private func performCommandRequest(
+    action: String,
+    args: [String: Any],
+    disconnectOnTimeout: Bool = true,
+    timeoutMessage: String = SyncRequestTimeout.message
+  ) async throws -> Any {
     guard canSendLiveRequests() else {
       throw NSError(domain: "ADE", code: 14, userInfo: [NSLocalizedDescriptionKey: "The host is offline."])
     }
     let requestId = makeRequestId()
-    let raw = try await awaitResponse(requestId: requestId) {
+    let raw = try await awaitResponse(
+      requestId: requestId,
+      disconnectOnTimeout: disconnectOnTimeout,
+      timeoutMessage: timeoutMessage
+    ) {
       self.sendEnvelope(type: "command", requestId: requestId, payload: [
         "commandId": requestId,
         "action": action,
@@ -3000,6 +3079,7 @@ final class SyncService: ObservableObject {
 
   func recordChatEventEnvelope(_ envelope: AgentChatEventEnvelope) {
     var events = chatEventEnvelopesBySession[envelope.sessionId] ?? []
+    guard !events.contains(where: { $0.id == envelope.id }) else { return }
     events.append(envelope)
     if events.count > 500 {
       events.removeFirst(events.count - 500)
@@ -3007,12 +3087,58 @@ final class SyncService: ObservableObject {
     chatEventEnvelopesBySession[envelope.sessionId] = events
     chatEventRevisionsBySession[envelope.sessionId, default: 0] += 1
     lastSyncAt = Date()
+    markChatEventsChanged()
   }
 
   func replaceChatEventHistory(sessionId: String, events: [AgentChatEventEnvelope]) {
-    chatEventEnvelopesBySession[sessionId] = events
+    var seen = Set<String>()
+    chatEventEnvelopesBySession[sessionId] = events.filter { event in
+      guard !seen.contains(event.id) else { return false }
+      seen.insert(event.id)
+      return true
+    }
     chatEventRevisionsBySession[sessionId, default: 0] += 1
     lastSyncAt = Date()
+    markChatEventsChanged(immediate: true)
+  }
+
+  private func trimmedTerminalBuffer(_ buffer: String) -> String {
+    guard buffer.count > syncTerminalBufferMaxCharacters else { return buffer }
+    return String(buffer.suffix(syncTerminalBufferMaxCharacters))
+  }
+
+  private func markTerminalBufferChanged(immediate: Bool = false) {
+    if immediate {
+      terminalBufferRevisionTask?.cancel()
+      terminalBufferRevisionTask = nil
+      terminalBufferRevision += 1
+      return
+    }
+
+    guard terminalBufferRevisionTask == nil else { return }
+    terminalBufferRevisionTask = Task { @MainActor [weak self] in
+      try? await Task.sleep(nanoseconds: 120_000_000)
+      guard let self, !Task.isCancelled else { return }
+      self.terminalBufferRevision += 1
+      self.terminalBufferRevisionTask = nil
+    }
+  }
+
+  private func markChatEventsChanged(immediate: Bool = false) {
+    if immediate {
+      chatEventRevisionTask?.cancel()
+      chatEventRevisionTask = nil
+      chatEventNotificationRevision += 1
+      return
+    }
+
+    guard chatEventRevisionTask == nil else { return }
+    chatEventRevisionTask = Task { @MainActor [weak self] in
+      try? await Task.sleep(nanoseconds: 120_000_000)
+      guard let self, !Task.isCancelled else { return }
+      self.chatEventNotificationRevision += 1
+      self.chatEventRevisionTask = nil
+    }
   }
 
   private func resetChatEventState(clearHistory: Bool) {
@@ -3021,6 +3147,7 @@ final class SyncService: ObservableObject {
       chatEventEnvelopesBySession.removeAll()
       chatEventRevisionsBySession.removeAll()
     }
+    markChatEventsChanged(immediate: true)
     localStateRevision += 1
   }
 

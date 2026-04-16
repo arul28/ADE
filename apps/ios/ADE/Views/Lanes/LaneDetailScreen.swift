@@ -32,6 +32,7 @@ struct LaneDetailScreen: View {
   @State var commitDiffSha = ""
   @State var commitDiffSubject = ""
   @State var cachedCommitDiffFilesBySha: [String: [String]] = [:]
+  @State var pendingGitConfirmation: LaneGitConfirmation?
   @State private var lastLaneDetailLocalReload = Date.distantPast
 
   init(
@@ -151,6 +152,16 @@ struct LaneDetailScreen: View {
     } message: {
       Text("Unstaged changes to this file will be permanently lost.")
     }
+    .alert(item: $pendingGitConfirmation) { confirmation in
+      Alert(
+        title: Text(confirmation.title),
+        message: Text(confirmation.message),
+        primaryButton: .destructive(Text(confirmation.confirmTitle)) {
+          Task { await performConfirmedGitAction(confirmation) }
+        },
+        secondaryButton: .cancel()
+      )
+    }
     .sheet(isPresented: $managePresented) {
       LaneManageSheet(
         snapshot: currentSnapshot,
@@ -198,10 +209,17 @@ struct LaneDetailScreen: View {
       canRunLiveActions: canRunLiveActions,
       onCommit: {
         Task {
-          await performAction("commit") {
-            try await syncService.commitLane(laneId: laneId, message: commitMessage, amend: amendCommit)
+          if commitMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            await performAction("generate message", refreshRoot: false) {
+              let msg = try await syncService.generateCommitMessage(laneId: laneId, amend: amendCommit)
+              commitMessage = msg
+            }
+          } else {
+            await performAction("commit") {
+              try await syncService.commitLane(laneId: laneId, message: commitMessage, amend: amendCommit)
+            }
+            if errorMessage == nil { commitMessage = ""; amendCommit = false }
           }
-          if errorMessage == nil { commitMessage = ""; amendCommit = false }
         }
       },
       onPush: {
@@ -228,7 +246,7 @@ struct LaneDetailScreen: View {
         Task { await performAction("pull rebase") { try await syncService.syncGit(laneId: laneId, mode: "rebase") } }
       },
       onForcePush: {
-        Task { await performAction("force push") { try await syncService.pushGit(laneId: laneId, forceWithLease: true) } }
+        requestGitConfirmation(.forcePush)
       },
       onStash: {
         Task {
@@ -245,7 +263,7 @@ struct LaneDetailScreen: View {
         Task { await performAction("rebase descendants") { try await syncService.startLaneRebase(laneId: laneId, scope: "lane_and_descendants") } }
       },
       onRebaseAndPush: {
-        Task { await performAction("rebase and push") { try await runRebaseAndPush() } }
+        requestGitConfirmation(.rebaseAndPush)
       }
     )
   }
@@ -332,9 +350,29 @@ struct LaneDetailScreen: View {
     busyAction = nil
   }
 
+  @MainActor
+  func requestGitConfirmation(_ confirmation: LaneGitConfirmation) {
+    pendingGitConfirmation = confirmation
+  }
+
+  @MainActor
+  private func performConfirmedGitAction(_ confirmation: LaneGitConfirmation) async {
+    pendingGitConfirmation = nil
+    switch confirmation {
+    case .forcePush:
+      await performAction(confirmation.actionLabel) {
+        try await syncService.pushGit(laneId: laneId, forceWithLease: true)
+      }
+    case .rebaseAndPush:
+      await performAction(confirmation.actionLabel) {
+        try await runRebaseAndPush()
+      }
+    }
+  }
+
   func runRebaseAndPush() async throws {
     try await syncService.startLaneRebase(laneId: laneId, scope: "lane_only", pushMode: "none")
-    try? await syncService.fetchGit(laneId: laneId)
+    try await syncService.fetchGit(laneId: laneId)
     let syncStatus = try await syncService.fetchSyncStatus(laneId: laneId)
     if syncStatus.hasUpstream == false {
       try await syncService.pushGit(laneId: laneId)

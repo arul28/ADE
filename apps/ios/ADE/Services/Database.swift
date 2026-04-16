@@ -30,6 +30,11 @@ final class DatabaseService {
     }
   }
 
+  private struct AlterTableAddColumnTarget {
+    let tableName: String
+    let columnName: String
+  }
+
   private struct LaneRow {
     let id: String
     let name: String
@@ -1216,7 +1221,8 @@ final class DatabaseService {
         relation: stringValue(statement, index: 15) ?? "attached_to"
       )
     }).map { row in
-      ComputerUseArtifactSummary(
+      let reviewMetadata = decodeJson(row.metadataJson, as: ComputerUseArtifactReviewMetadata.self)
+      return ComputerUseArtifactSummary(
         id: row.id,
         artifactKind: row.artifactKind,
         backendStyle: row.backendStyle,
@@ -1232,7 +1238,10 @@ final class DatabaseService {
         createdAt: row.createdAt,
         ownerKind: row.ownerKind,
         ownerId: row.ownerId,
-        relation: row.relation
+        relation: row.relation,
+        reviewState: reviewMetadata?.reviewState,
+        workflowState: reviewMetadata?.workflowState,
+        reviewNote: reviewMetadata?.reviewNote
       )
     }
   }
@@ -1915,6 +1924,12 @@ final class DatabaseService {
   }
 
   private func runBootstrapStatement(_ sql: String) throws {
+    if let target = parseAlterTableAddColumnTarget(sql),
+       hasTable(named: target.tableName),
+       tableHasColumn(tableName: target.tableName, columnName: target.columnName) {
+      return
+    }
+
     do {
       try run(sql)
     } catch {
@@ -2364,15 +2379,37 @@ final class DatabaseService {
   }
 
   private func parseAlterTableTarget(_ sql: String) -> String? {
-    guard let regex = try? NSRegularExpression(pattern: #"^\s*alter\s+table\s+([`"'[\]A-Za-z0-9_]+)\s+add\s+column\s+"#, options: [.caseInsensitive]) else {
+    parseAlterTableAddColumnTarget(sql)?.tableName
+  }
+
+  private func parseAlterTableAddColumnTarget(_ sql: String) -> AlterTableAddColumnTarget? {
+    var statement = sql.trimmingCharacters(in: .whitespacesAndNewlines)
+    if statement.hasSuffix(";") {
+      statement.removeLast()
+    }
+
+    let tokens = statement.split(whereSeparator: \.isWhitespace).map(String.init)
+    guard tokens.count >= 6,
+          tokens[0].caseInsensitiveCompare("alter") == .orderedSame,
+          tokens[1].caseInsensitiveCompare("table") == .orderedSame,
+          tokens[3].caseInsensitiveCompare("add") == .orderedSame,
+          tokens[4].caseInsensitiveCompare("column") == .orderedSame else {
       return nil
     }
-    let range = NSRange(location: 0, length: sql.utf16.count)
-    guard let match = regex.firstMatch(in: sql, options: [], range: range), match.numberOfRanges > 1,
-          let resultRange = Range(match.range(at: 1), in: sql) else {
-      return nil
-    }
-    return sql[resultRange].replacingOccurrences(of: "\"", with: "").replacingOccurrences(of: "'", with: "").replacingOccurrences(of: "`", with: "").replacingOccurrences(of: "[", with: "").replacingOccurrences(of: "]", with: "")
+
+    return AlterTableAddColumnTarget(
+      tableName: unquoteSqlIdentifier(tokens[2]),
+      columnName: unquoteSqlIdentifier(tokens[5])
+    )
+  }
+
+  private func unquoteSqlIdentifier(_ identifier: String) -> String {
+    identifier
+      .replacingOccurrences(of: "\"", with: "")
+      .replacingOccurrences(of: "'", with: "")
+      .replacingOccurrences(of: "`", with: "")
+      .replacingOccurrences(of: "[", with: "")
+      .replacingOccurrences(of: "]", with: "")
   }
 
   private func ensureSyncMetadataTables() throws {

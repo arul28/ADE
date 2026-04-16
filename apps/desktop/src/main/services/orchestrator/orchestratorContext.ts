@@ -1238,8 +1238,8 @@ export function getModelCapabilities(): GetModelCapabilitiesResult {
   const profiles: ModelCapabilityProfile[] = [
     {
       provider: "claude",
-      modelId: "claude-opus-4-6",
-      displayName: "Claude Opus 4.6",
+      modelId: "claude-opus-4-7",
+      displayName: "Claude Opus 4.7",
       strengths: ["complex reasoning", "architectural planning", "nuanced review", "deep analysis"],
       weaknesses: ["high cost tier", "not recommended for bulk implementation"],
       costTier: "very_high",

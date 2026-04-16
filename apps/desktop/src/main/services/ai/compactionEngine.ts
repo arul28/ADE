@@ -7,9 +7,8 @@ import {
   getModelById,
   type ModelDescriptor,
 } from "../../../shared/modelRegistry";
-import type { EffectiveProjectConfig, ProjectConfigFile } from "../../../shared/types";
 import type { AdeDb } from "../state/kvDb";
-import { runOpenCodeTextPrompt } from "../opencode/openCodeRuntime";
+import type { createAiIntegrationService } from "./aiIntegrationService";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -221,9 +220,9 @@ Example: ["The auth middleware requires X-Request-ID header", "PostgreSQL JSONB 
 export async function compactConversation(opts: {
   messages: TranscriptEntry[];
   modelId: string;
-  projectConfig: ProjectConfigFile | EffectiveProjectConfig;
+  aiIntegrationService: Pick<ReturnType<typeof createAiIntegrationService>, "executeTask">;
 }): Promise<CompactionResult> {
-  const { messages, modelId, projectConfig } = opts;
+  const { messages, modelId } = opts;
   const descriptor = getModelById(modelId);
   if (!descriptor) {
     throw new Error(`Unknown compaction model '${modelId}'.`);
@@ -241,24 +240,28 @@ export async function compactConversation(opts: {
     .join("\n\n");
 
   // Summarize
-  const summaryResult = await runOpenCodeTextPrompt({
-    directory: process.cwd(),
-    title: "ADE compaction summary",
-    modelDescriptor: descriptor,
-    system: COMPACTION_SYSTEM_PROMPT,
+  const summaryResult = await opts.aiIntegrationService.executeTask({
+    feature: "terminal_summaries",
+    taskType: "context_compaction",
+    cwd: process.cwd(),
+    model: descriptor.id,
+    systemPrompt: COMPACTION_SYSTEM_PROMPT,
     prompt: `Summarize this conversation:\n\n${conversationText}`,
-    projectConfig,
+    permissionMode: "read-only",
+    oneShot: true,
   });
   const summary = summaryResult.text;
 
   // Extract facts
-  const factsResult = await runOpenCodeTextPrompt({
-    directory: process.cwd(),
-    title: "ADE compaction facts",
-    modelDescriptor: descriptor,
-    system: FACT_EXTRACTION_PROMPT,
+  const factsResult = await opts.aiIntegrationService.executeTask({
+    feature: "terminal_summaries",
+    taskType: "context_compaction",
+    cwd: process.cwd(),
+    model: descriptor.id,
+    systemPrompt: FACT_EXTRACTION_PROMPT,
     prompt: `Extract facts from this conversation:\n\n${conversationText}`,
-    projectConfig,
+    permissionMode: "read-only",
+    oneShot: true,
   });
   const factsText = factsResult.text;
 

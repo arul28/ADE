@@ -1922,6 +1922,7 @@ app.whenReady().then(async () => {
       laneService,
       sessionService,
       projectConfigService,
+      aiIntegrationService,
       ctoStateService,
       logger,
       appVersion: app.getVersion(),
@@ -2411,7 +2412,6 @@ app.whenReady().then(async () => {
     const linearDispatcherService = createLinearDispatcherService({
       db,
       projectId,
-      logger,
       issueTracker: linearIssueTracker,
       workerAgentService,
       workerHeartbeatService,

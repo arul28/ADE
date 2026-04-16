@@ -312,7 +312,11 @@ func sanitizeLooseJSONControlCharacters(in raw: String) -> String {
       case "\t":
         sanitized.append("\\t")
       default:
-        sanitized.append(character)
+        if let scalar = character.unicodeScalars.first, scalar.value < 0x20 {
+          sanitized.append(String(format: "\\u%04X", scalar.value))
+        } else {
+          sanitized.append(character)
+        }
       }
       continue
     }

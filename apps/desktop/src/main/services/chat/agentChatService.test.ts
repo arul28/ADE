@@ -10,7 +10,6 @@ import {
 } from "../opencode/openCodeInventory";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const generateText = vi.fn();
 const streamText = vi.fn();
 
 vi.mock("@opencode-ai/sdk", () => ({
@@ -174,10 +173,6 @@ vi.mock("../opencode/openCodeRuntime", () => ({
     providerID: String(descriptor.family ?? "openai"),
     modelID: String(descriptor.providerModelId ?? descriptor.id ?? "model"),
   })),
-  runOpenCodeTextPrompt: vi.fn(async (args: Record<string, unknown>) => {
-    const result = await generateText(args as any);
-    return { text: String((result as { text?: unknown })?.text ?? "").trim() };
-  }),
   startOpenCodeSession: vi.fn(async (args: { directory: string }) => {
     mockState.openCodeSessionCounter += 1;
     const sessionId = `opencode-session-${mockState.openCodeSessionCounter}`;
@@ -752,6 +747,19 @@ function createService(overrides: Record<string, unknown> = {}) {
   const sessionService = createMockSessionService();
   const projectConfigService = createMockProjectConfigService();
   const issueInventoryService = createMockIssueInventoryService();
+  const aiIntegrationService = {
+    summarizeTerminal: vi.fn(async () => ({
+      text: "Generated session intelligence",
+      structuredOutput: null,
+      provider: "claude",
+      model: "anthropic/claude-haiku-4-5",
+      sessionId: null,
+      inputTokens: null,
+      outputTokens: null,
+      durationMs: 1,
+    })),
+    getMode: vi.fn(() => "subscription"),
+  };
   const transcriptsDir = path.join(tmpRoot, "transcripts");
   fs.mkdirSync(transcriptsDir, { recursive: true });
 
@@ -762,6 +770,7 @@ function createService(overrides: Record<string, unknown> = {}) {
     laneService,
     sessionService,
     projectConfigService,
+    aiIntegrationService: aiIntegrationService as any,
     issueInventoryService,
     logger: logger as any,
     appVersion: "0.0.1-test",
@@ -770,7 +779,7 @@ function createService(overrides: Record<string, unknown> = {}) {
     ...overrides,
   });
 
-  return { service, logger, laneService, sessionService, projectConfigService, issueInventoryService };
+  return { service, logger, laneService, sessionService, projectConfigService, issueInventoryService, aiIntegrationService };
 }
 
 function readPersistedChatState(sessionId: string): Record<string, any> {
@@ -837,7 +846,6 @@ beforeEach(() => {
   mockState.cursorPromptCalls = [];
   vi.mocked(acquireCursorAcpConnection).mockClear();
   vi.mocked(streamText).mockReset();
-  vi.mocked(generateText).mockReset();
   vi.mocked(unstable_v2_createSession).mockReset();
   vi.mocked(detectAllAuth).mockResolvedValue([]);
   vi.mocked(parseAgentChatTranscript).mockReturnValue([]);
@@ -1419,7 +1427,8 @@ describe("createAgentChatService", () => {
         { type: "api-key", provider: "openai" },
         { type: "cli-subscription", cli: "claude", authenticated: true },
       ] as any);
-      vi.mocked(generateText).mockResolvedValue({
+      const { service, sessionService, aiIntegrationService } = createService();
+      vi.mocked(aiIntegrationService.summarizeTerminal).mockResolvedValueOnce({
         text: [
           "## Current goal",
           "- Continue the same ADE work item.",
@@ -1433,9 +1442,14 @@ describe("createAgentChatService", () => {
           "## Next action or open issue",
           "- Finish wiring the handoff flow.",
         ].join("\n"),
+        structuredOutput: null,
+        provider: "codex",
+        model: "opencode/openai/gpt-5.4",
+        sessionId: null,
+        inputTokens: null,
+        outputTokens: null,
+        durationMs: 1,
       } as any);
-
-      const { service, sessionService } = createService();
       const source = await service.createSession({
         laneId: "lane-1",
         provider: "opencode",
@@ -1452,8 +1466,10 @@ describe("createAgentChatService", () => {
         targetModelId: "opencode/openai/gpt-5.4-mini",
       });
 
-      expect(generateText).toHaveBeenCalled();
       expect(result.usedFallbackSummary).toBe(false);
+      expect(aiIntegrationService.summarizeTerminal).toHaveBeenCalledWith(expect.objectContaining({
+        taskType: "handoff_summary",
+      }));
     });
   });
 
@@ -2901,12 +2917,7 @@ describe("createAgentChatService", () => {
         setPermissionMode,
       } as any);
 
-      // Mock generateText so auto-title would produce a different name if called
-      vi.mocked(generateText).mockResolvedValue({
-        text: "Auto Generated Title",
-      } as any);
-
-      const { service, sessionService } = createService({
+      const { service, sessionService, aiIntegrationService } = createService({
         onEvent: (event: AgentChatEventEnvelope) => events.push(event),
       });
 
@@ -2942,9 +2953,7 @@ describe("createAgentChatService", () => {
       // Give auto-title a chance to fire (it's a void promise)
       await new Promise((resolve) => setTimeout(resolve, 50));
 
-      // generateText should NOT have been called for auto-titling because
-      // manuallyNamed suppresses it. (generateText is only used for auto-titling.)
-      expect(generateText).not.toHaveBeenCalled();
+      expect(aiIntegrationService.summarizeTerminal).not.toHaveBeenCalled();
     });
   });
 
@@ -3379,7 +3388,6 @@ describe("createAgentChatService", () => {
       });
       const attachmentDir = path.join(tmpRoot, "attachment-dir");
       fs.mkdirSync(attachmentDir, { recursive: true });
-      vi.mocked(generateText).mockResolvedValue({ text: "Attachment fallback test" } as any);
       let streamArgs: Record<string, unknown> | null = null;
       vi.mocked(streamText).mockImplementation((args: Record<string, unknown>) => {
         streamArgs = args;

@@ -188,7 +188,7 @@ struct PrOverviewTab: View {
       }
 
       if pr.state == "merged" {
-        PrLaneCleanupBanner(laneName: pr.laneName, onArchive: onArchiveLane, onDeleteBranch: onDeleteBranch)
+        PrLaneCleanupBanner(laneName: pr.laneName, isLive: isLive, onArchive: onArchiveLane, onDeleteBranch: onDeleteBranch)
       }
     }
   }
@@ -271,6 +271,7 @@ struct PrChipWrap: View {
 
 struct PrLaneCleanupBanner: View {
   let laneName: String?
+  let isLive: Bool
   let onArchive: () -> Void
   let onDeleteBranch: () -> Void
 
@@ -294,12 +295,14 @@ struct PrLaneCleanupBanner: View {
           onArchive()
         }
         .buttonStyle(.glass)
+        .disabled(!isLive)
 
-        Button("Delete branch") {
+        Button("Delete branch", role: .destructive) {
           onDeleteBranch()
         }
         .buttonStyle(.glassProminent)
         .tint(ADEColor.warning)
+        .disabled(!isLive)
       }
     }
     .adeGlassCard(cornerRadius: 18)

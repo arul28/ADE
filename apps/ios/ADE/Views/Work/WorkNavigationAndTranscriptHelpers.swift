@@ -7,6 +7,13 @@ struct WorkActivityTranscriptCacheEntry {
   let transcript: [WorkChatEnvelope]
 }
 
+struct WorkTerminalDisplay {
+  let text: String
+  let truncated: Bool
+}
+
+private let workTerminalDisplayMaxCharacters = 24_000
+
 /// Cheap, deterministic fingerprint for a terminal buffer. We intentionally avoid hashing the whole
 /// string on every `localStateRevision` tick — length + short head/tail windows give us >99% stability
 /// against spurious cache invalidations while still changing whenever new output actually arrives.
@@ -23,6 +30,77 @@ func workActivityBufferFingerprint(_ buffer: String) -> String {
   hasher.combine(head)
   hasher.combine(tail)
   return "\(count):\(hasher.finalize())"
+}
+
+func workTerminalDisplay(raw: String?, fallback: String?) -> WorkTerminalDisplay {
+  let source = (raw?.isEmpty == false ? raw : fallback) ?? "No output yet."
+  let sanitized = sanitizeTerminalOutputForDisplay(source)
+  guard sanitized.count > workTerminalDisplayMaxCharacters else {
+    return WorkTerminalDisplay(text: sanitized, truncated: false)
+  }
+  return WorkTerminalDisplay(
+    text: String(sanitized.suffix(workTerminalDisplayMaxCharacters)),
+    truncated: true
+  )
+}
+
+func sanitizeTerminalOutputForDisplay(_ input: String) -> String {
+  var output = String.UnicodeScalarView()
+  var index = input.unicodeScalars.startIndex
+
+  func skipUntilCSICommand() {
+    while index < input.unicodeScalars.endIndex {
+      let scalar = input.unicodeScalars[index]
+      index = input.unicodeScalars.index(after: index)
+      if scalar.value >= 0x40 && scalar.value <= 0x7E {
+        break
+      }
+    }
+  }
+
+  while index < input.unicodeScalars.endIndex {
+    let scalar = input.unicodeScalars[index]
+    index = input.unicodeScalars.index(after: index)
+
+    if scalar == "\u{001B}" {
+      guard index < input.unicodeScalars.endIndex else { break }
+      let next = input.unicodeScalars[index]
+      index = input.unicodeScalars.index(after: index)
+      if next == "[" {
+        skipUntilCSICommand()
+      } else if next == "]" {
+        while index < input.unicodeScalars.endIndex {
+          let current = input.unicodeScalars[index]
+          index = input.unicodeScalars.index(after: index)
+          if current == "\u{0007}" {
+            break
+          }
+          if current == "\u{001B}", index < input.unicodeScalars.endIndex, input.unicodeScalars[index] == "\\" {
+            index = input.unicodeScalars.index(after: index)
+            break
+          }
+        }
+      } else if next == "(" || next == ")" || next == "*" || next == "+" {
+        if index < input.unicodeScalars.endIndex {
+          index = input.unicodeScalars.index(after: index)
+        }
+      }
+      continue
+    }
+
+    switch scalar {
+    case "\n", "\t":
+      output.append(scalar)
+    case "\r":
+      output.append("\n")
+    default:
+      if scalar.value >= 0x20 && scalar.value != 0x7F {
+        output.append(scalar)
+      }
+    }
+  }
+
+  return String(output)
 }
 
 func extractWorkNavigationTargets(from text: String) -> WorkNavigationTargets {
@@ -235,12 +313,27 @@ func parseANSISegments(_ input: String) -> [ANSISegment] {
     if character == "\u{001B}" {
       let next = input.index(after: index)
       guard next < input.endIndex, input[next] == "[" else {
-        buffer.append(character)
-        index = input.index(after: index)
+        index = next < input.endIndex ? input.index(after: next) : input.endIndex
         continue
       }
-      guard let commandIndex = input[next...].firstIndex(of: "m") else {
-        break
+      var commandIndex = input.index(after: next)
+      var finalCharacter: Character?
+      while commandIndex < input.endIndex {
+        let candidate = input[commandIndex]
+        if let scalar = candidate.unicodeScalars.first,
+           scalar.value >= 0x40 && scalar.value <= 0x7E {
+          finalCharacter = candidate
+          break
+        }
+        commandIndex = input.index(after: commandIndex)
+      }
+      guard let finalCharacter else {
+        index = input.endIndex
+        continue
+      }
+      guard finalCharacter == "m" else {
+        index = input.index(after: commandIndex)
+        continue
       }
       flush()
       let codeString = String(input[input.index(after: next)..<commandIndex])

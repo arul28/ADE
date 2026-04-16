@@ -127,9 +127,6 @@ struct FilesDetailScreen: View {
       .presentationDragIndicator(.visible)
       .environmentObject(syncService)
     }
-    .task {
-      await load()
-    }
     .task(id: syncService.localStateRevision) {
       await load(refreshDiff: mode == .diff)
     }
@@ -255,11 +252,19 @@ struct FilesDetailScreen: View {
         )
       }
     } else {
-      SyntaxHighlightedCodeView(
-        text: blob.content,
-        language: language,
-        focusLine: focusLine
-      )
+      if let limit = filesTextPreviewLimit(blob: blob) {
+        FilesContentFallback(
+          symbol: "doc.text.magnifyingglass",
+          title: limit.title,
+          message: limit.message
+        )
+      } else {
+        SyntaxHighlightedCodeView(
+          text: blob.content,
+          language: language,
+          focusLine: focusLine
+        )
+      }
     }
   }
 
@@ -286,6 +291,12 @@ struct FilesDetailScreen: View {
         symbol: "doc.badge.gearshape",
         title: "Binary diff",
         message: "The host reported a binary diff that cannot be rendered inline."
+      )
+    } else if let diff, let limit = filesDiffPreviewLimit(diff: diff) {
+      FilesContentFallback(
+        symbol: "arrow.left.arrow.right",
+        title: limit.title,
+        message: limit.message
       )
     } else if let diff {
       FilesInlineDiffView(

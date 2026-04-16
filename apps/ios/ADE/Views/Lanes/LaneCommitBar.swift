@@ -75,6 +75,10 @@ struct LaneCommitBar: View {
     hasStaged ? "Ready" : "None"
   }
 
+  private var trimmedCommitMessage: String {
+    commitMessage.trimmingCharacters(in: .whitespacesAndNewlines)
+  }
+
   private var commitField: some View {
     HStack(spacing: 6) {
       TextField("Commit message…", text: $commitMessage, axis: .vertical)
@@ -83,7 +87,7 @@ struct LaneCommitBar: View {
         .lineLimit(1...3)
         .focused($messageFieldFocused)
 
-      if commitMessage.isEmpty && hasStaged {
+      if commitMessage.isEmpty && hasDirty {
         Button(action: onGenerateMessage) {
           Image(systemName: "sparkles")
             .font(.system(size: 14, weight: .semibold))
@@ -107,14 +111,14 @@ struct LaneCommitBar: View {
 
   private var commitButton: some View {
     Button(action: onCommit) {
-      Text(amendCommit ? "Amend" : "Commit")
+      Text(trimmedCommitMessage.isEmpty ? "Suggest" : amendCommit ? "Amend" : "Commit")
         .font(.subheadline.weight(.semibold))
         .padding(.horizontal, 14)
         .padding(.vertical, 9)
     }
     .buttonStyle(.borderedProminent)
     .tint(ADEColor.accent)
-    .disabled(!hasStaged || commitMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !canRunLiveActions)
+    .disabled(!hasStaged || !canRunLiveActions)
   }
 
   private var pushButton: some View {

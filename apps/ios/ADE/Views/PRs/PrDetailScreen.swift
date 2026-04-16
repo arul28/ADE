@@ -15,8 +15,11 @@ struct PrDetailView: View {
   @State private var reviewerInput = ""
   @State private var commentInput = ""
   @State private var errorMessage: String?
+  @State private var actionMessage: String?
+  @State private var busyAction: String?
   @State private var cleanupChoice: PrCleanupChoice = .archive
   @State private var cleanupConfirmationPresented = false
+  @State private var filesWorkspaceId: String?
 
   private var prsStatus: SyncDomainStatus {
     syncService.status(for: .prs)
@@ -24,6 +27,10 @@ struct PrDetailView: View {
 
   private var isLive: Bool {
     prsStatus.phase == .ready && (syncService.connectionState == .connected || syncService.connectionState == .syncing)
+  }
+
+  private var canRunPrActions: Bool {
+    isLive && busyAction == nil
   }
 
   private var currentPr: PullRequestListItem {
@@ -75,6 +82,31 @@ struct PrDetailView: View {
 
   var body: some View {
     List {
+      if let busyAction {
+        HStack(spacing: 10) {
+          ProgressView()
+            .tint(ADEColor.accent)
+          Text(busyAction)
+            .font(.subheadline)
+            .foregroundStyle(ADEColor.textSecondary)
+          Spacer(minLength: 0)
+        }
+        .adeGlassCard(cornerRadius: 12, padding: 12)
+        .prListRow()
+      }
+
+      if let actionMessage {
+        ADENoticeCard(
+          title: "PR action complete",
+          message: actionMessage,
+          icon: "checkmark.circle.fill",
+          tint: ADEColor.success,
+          actionTitle: nil,
+          action: nil
+        )
+        .prListRow()
+      }
+
       if let errorMessage {
         ADENoticeCard(
           title: "PR detail failed",
@@ -107,7 +139,7 @@ struct PrDetailView: View {
           capabilities: capabilities,
           mergeMethod: $mergeMethod,
           reviewerInput: $reviewerInput,
-          isLive: isLive,
+          isLive: canRunPrActions,
           groupMembers: groupMembers,
           onMerge: mergeCurrentPr,
           onClose: closeCurrentPr,
@@ -125,13 +157,18 @@ struct PrDetailView: View {
         )
         .prListRow()
       case .files:
-        PrFilesTab(snapshot: snapshot)
+        PrFilesTab(
+          snapshot: snapshot,
+          canOpenFiles: !currentPr.laneId.isEmpty,
+          onOpenFile: { file in Task { await openFileInFiles(file) } },
+          onCopyPath: copyFilePath
+        )
           .prListRow()
       case .checks:
         PrChecksTab(
           checks: snapshot?.checks ?? [],
           canRerunChecks: canRerunChecks,
-          isLive: isLive,
+          isLive: canRunPrActions,
           onRerun: rerunChecks
         )
         .prListRow()
@@ -140,7 +177,7 @@ struct PrDetailView: View {
           timeline: buildPullRequestTimeline(pr: currentPr, snapshot: snapshot ?? PullRequestSnapshot(detail: nil, status: nil, checks: [], reviews: [], comments: [], files: [])),
           commentInput: $commentInput,
           canAddComment: canAddComment,
-          isLive: isLive,
+          isLive: canRunPrActions,
           onSubmitComment: submitComment
         )
         .prListRow()
@@ -153,9 +190,6 @@ struct PrDetailView: View {
     .navigationTitle(currentPr.title)
     .navigationBarTitleDisplayMode(.inline)
     .adeNavigationZoomTransition(id: transitionNamespace == nil ? nil : "pr-container-\(prId)", in: transitionNamespace)
-    .task {
-      await reload()
-    }
     .task(id: syncService.localStateRevision) {
       await reload()
     }
@@ -174,8 +208,13 @@ struct PrDetailView: View {
   @MainActor
   private func reload(refreshRemote: Bool = false) async {
     do {
+      var refreshError: Error?
       if refreshRemote {
-        try? await syncService.refreshPullRequestSnapshots(prId: prId)
+        do {
+          try await syncService.refreshPullRequestSnapshots(prId: prId)
+        } catch {
+          refreshError = error
+        }
       }
       let listItems = try await syncService.fetchPullRequestListItems()
       pr = listItems.first(where: { $0.id == prId })
@@ -185,7 +224,7 @@ struct PrDetailView: View {
       } else {
         groupMembers = []
       }
-      errorMessage = nil
+      errorMessage = refreshError?.localizedDescription
     } catch {
       errorMessage = error.localizedDescription
     }
@@ -204,25 +243,36 @@ struct PrDetailView: View {
     }
   }
 
-  private func mergeCurrentPr() {
-    Task {
-      try? await syncService.mergePullRequest(prId: prId, method: mergeMethod.rawValue)
-      await reload(refreshRemote: true)
+  @MainActor
+  private func runPrAction(_ label: String, action: @escaping () async throws -> Void, onSuccess: @escaping @MainActor () -> Void = {}) {
+    Task { @MainActor in
+      busyAction = label
+      errorMessage = nil
+      actionMessage = nil
+      do {
+        try await action()
+        onSuccess()
+        await reload(refreshRemote: true)
+        actionMessage = "\(label) finished."
+      } catch {
+        let message = error.localizedDescription
+        await reload(refreshRemote: false)
+        errorMessage = message
+      }
+      busyAction = nil
     }
+  }
+
+  private func mergeCurrentPr() {
+    runPrAction("Merging pull request") { try await syncService.mergePullRequest(prId: prId, method: mergeMethod.rawValue) }
   }
 
   private func closeCurrentPr() {
-    Task {
-      try? await syncService.closePullRequest(prId: prId)
-      await reload(refreshRemote: true)
-    }
+    runPrAction("Closing pull request") { try await syncService.closePullRequest(prId: prId) }
   }
 
   private func reopenCurrentPr() {
-    Task {
-      try? await syncService.reopenPullRequest(prId: prId)
-      await reload(refreshRemote: true)
-    }
+    runPrAction("Reopening pull request") { try await syncService.reopenPullRequest(prId: prId) }
   }
 
   private func requestReviewers() {
@@ -233,44 +283,92 @@ struct PrDetailView: View {
 
     guard !reviewers.isEmpty else { return }
 
-    Task {
-      try? await syncService.requestReviewers(prId: prId, reviewers: reviewers)
-      reviewerInput = ""
-      await reload(refreshRemote: true)
-    }
+    runPrAction(
+      "Requesting reviewers",
+      action: { try await syncService.requestReviewers(prId: prId, reviewers: reviewers) },
+      onSuccess: { reviewerInput = "" }
+    )
   }
 
   private func rerunChecks() {
-    Task {
-      try? await syncService.rerunPullRequestChecks(prId: prId)
-      await reload(refreshRemote: true)
-    }
+    runPrAction("Re-running checks") { try await syncService.rerunPullRequestChecks(prId: prId) }
   }
 
   private func submitComment() {
     let trimmed = commentInput.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmed.isEmpty else { return }
 
-    Task {
-      try? await syncService.addPullRequestComment(prId: prId, body: trimmed)
-      commentInput = ""
-      await reload(refreshRemote: true)
-    }
+    runPrAction(
+      "Posting comment",
+      action: { try await syncService.addPullRequestComment(prId: prId, body: trimmed) },
+      onSuccess: { commentInput = "" }
+    )
   }
 
   private func performCleanup() async {
     guard let laneId = pr?.laneId, !laneId.isEmpty else { return }
-    switch cleanupChoice {
-    case .archive:
-      try? await syncService.archiveLane(laneId)
-    case .deleteBranch:
-      try? await syncService.deleteLane(laneId, deleteBranch: true, deleteRemoteBranch: true)
+    busyAction = cleanupChoice == .archive ? "Archiving lane" : "Deleting lane and branch"
+    errorMessage = nil
+    actionMessage = nil
+    do {
+      switch cleanupChoice {
+      case .archive:
+        try await syncService.archiveLane(laneId)
+      case .deleteBranch:
+        try await syncService.deleteLane(laneId, deleteBranch: true, deleteRemoteBranch: true)
+      }
+      actionMessage = cleanupChoice == .archive ? "Lane archived." : "Lane and branch cleanup requested."
+    } catch {
+      errorMessage = error.localizedDescription
     }
     await reload(refreshRemote: true)
+    busyAction = nil
   }
 
   private func openGitHub(urlString: String) {
     guard let url = URL(string: urlString) else { return }
     UIApplication.shared.open(url)
+  }
+
+  @MainActor
+  private func openFileInFiles(_ file: PrFile) async {
+    let laneId = currentPr.laneId
+    guard !laneId.isEmpty else {
+      errorMessage = "This PR is not linked to a lane, so Files cannot open \(file.filename)."
+      return
+    }
+
+    do {
+      let workspaceId: String
+      if let filesWorkspaceId {
+        workspaceId = filesWorkspaceId
+      } else {
+        let workspaces = try await syncService.listWorkspaces()
+        guard let workspace = workspaces.first(where: { $0.laneId == laneId }) else {
+          errorMessage = "No Files workspace is cached for this PR lane."
+          return
+        }
+        filesWorkspaceId = workspace.id
+        workspaceId = workspace.id
+      }
+
+      syncService.requestedFilesNavigation = FilesNavigationRequest(
+        workspaceId: workspaceId,
+        laneId: laneId,
+        relativePath: file.filename
+      )
+      actionMessage = "Opening \(file.filename) in Files."
+      errorMessage = nil
+    } catch {
+      filesWorkspaceId = nil
+      ADEHaptics.error()
+      errorMessage = error.localizedDescription
+    }
+  }
+
+  private func copyFilePath(_ file: PrFile) {
+    UIPasteboard.general.string = file.filename
+    actionMessage = "Copied \(file.filename)."
+    errorMessage = nil
   }
 }

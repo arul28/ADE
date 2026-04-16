@@ -2,13 +2,21 @@ import SwiftUI
 
 struct PrFilesTab: View {
   let snapshot: PullRequestSnapshot?
+  let canOpenFiles: Bool
+  let onOpenFile: (PrFile) -> Void
+  let onCopyPath: (PrFile) -> Void
 
   var body: some View {
     Group {
       if let files = snapshot?.files, !files.isEmpty {
         VStack(spacing: 12) {
           ForEach(files) { file in
-            PrFileDiffCard(file: file)
+            PrFileDiffCard(
+              file: file,
+              canOpenFiles: canOpenFiles,
+              onOpenFile: onOpenFile,
+              onCopyPath: onCopyPath
+            )
           }
         }
       } else {
@@ -24,6 +32,9 @@ struct PrFilesTab: View {
 
 struct PrFileDiffCard: View {
   let file: PrFile
+  let canOpenFiles: Bool
+  let onOpenFile: (PrFile) -> Void
+  let onCopyPath: (PrFile) -> Void
   @State private var expanded = true
 
   var body: some View {
@@ -58,6 +69,26 @@ struct PrFileDiffCard: View {
               .foregroundStyle(ADEColor.textSecondary)
           }
           Spacer(minLength: 0)
+          Menu {
+            Button {
+              onOpenFile(file)
+            } label: {
+              Label("Open in Files", systemImage: "folder")
+            }
+            .disabled(!canOpenFiles)
+
+            Button {
+              onCopyPath(file)
+            } label: {
+              Label("Copy path", systemImage: "doc.on.doc")
+            }
+          } label: {
+            Image(systemName: "ellipsis.circle")
+              .font(.system(size: 18, weight: .semibold))
+              .foregroundStyle(ADEColor.textSecondary)
+              .frame(width: 32, height: 32)
+          }
+          .accessibilityLabel("File actions for \(file.filename)")
         }
       }
     }
@@ -78,41 +109,70 @@ struct PrUnifiedDiffView: View {
   }
 
   var body: some View {
-    ScrollView(.horizontal, showsIndicators: false) {
-      VStack(alignment: .leading, spacing: 2) {
-        ForEach(lines) { line in
-          HStack(alignment: .top, spacing: 8) {
-            Text(line.oldLineNumber.map(String.init) ?? "")
-              .frame(width: 34, alignment: .trailing)
-              .foregroundStyle(ADEColor.textMuted)
-            Text(line.newLineNumber.map(String.init) ?? "")
-              .frame(width: 34, alignment: .trailing)
-              .foregroundStyle(ADEColor.textMuted)
+    if let limit = prPatchPreviewLimit(for: patch) {
+      PrDiffPreviewLimitNotice(limit: limit)
+    } else {
+      ScrollView(.horizontal, showsIndicators: false) {
+        VStack(alignment: .leading, spacing: 2) {
+          ForEach(lines) { line in
+            HStack(alignment: .top, spacing: 8) {
+              Text(line.oldLineNumber.map(String.init) ?? "")
+                .frame(width: 34, alignment: .trailing)
+                .foregroundStyle(ADEColor.textMuted)
+              Text(line.newLineNumber.map(String.init) ?? "")
+                .frame(width: 34, alignment: .trailing)
+                .foregroundStyle(ADEColor.textMuted)
 
-            if line.kind == .hunk || line.kind == .note {
-              Text(line.text)
-                .font(.system(.caption, design: .monospaced))
-                .foregroundStyle(line.kind == .hunk ? ADEColor.accent : ADEColor.textSecondary)
-            } else {
-              HStack(spacing: 0) {
-                Text(verbatim: line.prefix)
-                  .font(.system(.caption, design: .monospaced).weight(.semibold))
-                  .foregroundStyle(diffPrefixTint(line.kind))
-                Text(SyntaxHighlighter.highlightedAttributedString(line.text.isEmpty ? " " : line.text, as: language))
+              if line.kind == .hunk || line.kind == .note {
+                Text(line.text)
                   .font(.system(.caption, design: .monospaced))
+                  .foregroundStyle(line.kind == .hunk ? ADEColor.accent : ADEColor.textSecondary)
+              } else {
+                HStack(spacing: 0) {
+                  Text(verbatim: line.prefix)
+                    .font(.system(.caption, design: .monospaced).weight(.semibold))
+                    .foregroundStyle(diffPrefixTint(line.kind))
+                  Text(SyntaxHighlighter.highlightedAttributedString(line.text.isEmpty ? " " : line.text, as: language))
+                    .font(.system(.caption, design: .monospaced))
+                }
               }
+              Spacer(minLength: 0)
             }
-            Spacer(minLength: 0)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(diffBackground(line.kind), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
           }
-          .padding(.horizontal, 8)
-          .padding(.vertical, 4)
-          .background(diffBackground(line.kind), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
         }
       }
+      .adeInsetField(cornerRadius: 14, padding: 10)
     }
-    .adeInsetField(cornerRadius: 14, padding: 10)
   }
+}
 
+struct PrDiffPreviewLimitNotice: View {
+  let limit: PrPatchPreviewLimit
+
+  var body: some View {
+    HStack(alignment: .top, spacing: 10) {
+      Image(systemName: "doc.text.magnifyingglass")
+        .font(.system(size: 16, weight: .semibold))
+        .foregroundStyle(ADEColor.warning)
+      VStack(alignment: .leading, spacing: 4) {
+        Text(limit.title)
+          .font(.subheadline.weight(.semibold))
+          .foregroundStyle(ADEColor.textPrimary)
+        Text(limit.message)
+          .font(.caption)
+          .foregroundStyle(ADEColor.textSecondary)
+          .fixedSize(horizontal: false, vertical: true)
+      }
+    }
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .adeInsetField(cornerRadius: 14, padding: 12)
+  }
+}
+
+extension PrUnifiedDiffView {
   private func diffBackground(_ kind: PrDiffDisplayLineKind) -> Color {
     switch kind {
     case .added:

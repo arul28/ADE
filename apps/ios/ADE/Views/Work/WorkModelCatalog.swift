@@ -7,7 +7,7 @@ import SwiftUI
 /// branded row (logo + display name + tier hint) and send a `modelId` to
 /// `SyncService.updateChatSession`.
 struct WorkModelOption: Identifiable, Hashable {
-  /// Stable sync-contract id the host accepts (e.g. "claude-opus-4-6").
+  /// Stable sync-contract id the host accepts (e.g. "claude-opus-4-7").
   let id: String
   let displayName: String
   let tier: Tier
@@ -91,8 +91,8 @@ func workModelCatalogGroups(currentModelId: String, currentProvider: String) -> 
         key: "anthropic",
         displayName: "Anthropic",
         models: [
-          WorkModelOption(id: "claude-opus-4-6", displayName: "Claude Opus 4.6", tier: .flagship, tagline: "Flagship · best for complex reasoning", provider: "claude"),
-          WorkModelOption(id: "claude-opus-4-6-1m", displayName: "Claude Opus 4.6 1M", tier: .flagship, tagline: "1M-token context window", provider: "claude"),
+          WorkModelOption(id: "claude-opus-4-7", displayName: "Claude Opus 4.7", tier: .flagship, tagline: "Flagship · best for complex reasoning", provider: "claude"),
+          WorkModelOption(id: "claude-opus-4-7-1m", displayName: "Claude Opus 4.7 1M", tier: .flagship, tagline: "1M-token context window", provider: "claude"),
           WorkModelOption(id: "claude-sonnet-4-6", displayName: "Claude Sonnet 4.6", tier: .balanced, tagline: "Balanced · great default for coding", provider: "claude"),
           WorkModelOption(id: "claude-haiku-4-5", displayName: "Claude Haiku 4.5", tier: .fast, tagline: "Fastest · cheapest", provider: "claude"),
         ]
@@ -159,7 +159,7 @@ func workModelCatalogGroups(currentModelId: String, currentProvider: String) -> 
         displayName: "Anthropic",
         models: [
           WorkModelOption(id: "opencode/anthropic/claude-sonnet-4-6", displayName: "Claude Sonnet 4.6", tier: .balanced, tagline: "Balanced coder", provider: "claude"),
-          WorkModelOption(id: "opencode/anthropic/claude-opus-4-6", displayName: "Claude Opus 4.6", tier: .flagship, tagline: "Flagship reasoning", provider: "claude"),
+          WorkModelOption(id: "opencode/anthropic/claude-opus-4-7", displayName: "Claude Opus 4.7", tier: .flagship, tagline: "Flagship reasoning", provider: "claude"),
           WorkModelOption(id: "opencode/anthropic/claude-haiku-4-5", displayName: "Claude Haiku 4.5", tier: .fast, tagline: "Fastest Anthropic", provider: "claude"),
         ]
       ),

@@ -127,9 +127,30 @@ extension FilesRootScreen {
         quickOpenResults = []
         textSearchResults = []
       }
+      await loadProofArtifacts()
       errorMessage = nil
     } catch {
       errorMessage = error.localizedDescription
+    }
+  }
+
+  @MainActor
+  func loadProofArtifacts() async {
+    guard let laneId = selectedWorkspace?.laneId else {
+      proofArtifacts = []
+      proofErrorMessage = nil
+      return
+    }
+
+    do {
+      let artifacts = try await syncService.fetchComputerUseArtifacts(ownerKind: "lane", ownerId: laneId)
+      proofArtifacts = Array(artifacts.sorted { lhs, rhs in
+        lhs.createdAt > rhs.createdAt
+      }.prefix(6))
+      proofErrorMessage = nil
+    } catch {
+      proofArtifacts = []
+      proofErrorMessage = error.localizedDescription
     }
   }
 

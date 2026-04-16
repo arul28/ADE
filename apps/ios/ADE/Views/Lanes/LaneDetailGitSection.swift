@@ -288,7 +288,7 @@ extension LaneDetailScreen {
         .disabled(!canRunLiveActions)
         Menu {
           Button("Force push") {
-            Task { await performAction("force push") { try await syncService.pushGit(laneId: laneId, forceWithLease: true) } }
+            requestGitConfirmation(.forcePush)
           }
           Button("Rebase lane only") {
             Task { await performAction("rebase lane") { try await syncService.startLaneRebase(laneId: laneId, scope: "lane_only") } }
@@ -297,7 +297,7 @@ extension LaneDetailScreen {
             Task { await performAction("rebase descendants") { try await syncService.startLaneRebase(laneId: laneId, scope: "lane_and_descendants") } }
           }
           Button("Rebase and push") {
-            Task { await performAction("rebase and push") { try await runRebaseAndPush() } }
+            requestGitConfirmation(.rebaseAndPush)
           }
         } label: {
           LaneQuickAction(title: "More", symbol: "ellipsis.circle", tint: ADEColor.textSecondary) {}

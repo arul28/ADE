@@ -2,6 +2,42 @@ import SwiftUI
 import UIKit
 import AVKit
 
+func buildWorkChatTimelineSnapshot(
+  transcript: [WorkChatEnvelope],
+  fallbackEntries: [AgentChatTranscriptEntry],
+  artifacts: [ComputerUseArtifactSummary],
+  localEchoMessages: [WorkLocalEchoMessage]
+) -> WorkChatTimelineSnapshot {
+  let pendingInputs = derivePendingWorkInputs(from: transcript)
+  let pendingSteers = derivePendingWorkSteers(from: transcript)
+  let toolCards = buildWorkToolCards(from: transcript)
+  let eventCards = buildWorkEventCards(from: transcript)
+  let commandCards = buildWorkCommandCards(from: transcript)
+  let fileChangeCards = buildWorkFileChangeCards(from: transcript)
+  let usageSummary = summarizeWorkSessionUsage(from: transcript)
+  let timeline = buildWorkTimeline(
+    transcript: transcript,
+    fallbackEntries: fallbackEntries,
+    toolCards: toolCards,
+    commandCards: commandCards,
+    fileChangeCards: fileChangeCards,
+    eventCards: eventCards,
+    artifacts: artifacts,
+    localEchoMessages: localEchoMessages
+  )
+
+  return WorkChatTimelineSnapshot(
+    pendingInputs: pendingInputs,
+    pendingSteers: pendingSteers,
+    toolCards: toolCards,
+    eventCards: eventCards,
+    commandCards: commandCards,
+    fileChangeCards: fileChangeCards,
+    sessionUsageSummary: usageSummary,
+    timeline: timeline
+  )
+}
+
 func buildWorkTimeline(
   transcript: [WorkChatEnvelope],
   fallbackEntries: [AgentChatTranscriptEntry],

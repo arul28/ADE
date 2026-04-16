@@ -22,12 +22,15 @@ struct WorkSessionDestinationView: View {
   @State var localEchoMessages: [WorkLocalEchoMessage] = []
   @State var expandedToolCardIds = Set<String>()
   @State var artifactContent: [String: WorkLoadedArtifactContent] = [:]
+  @State var artifactContentLoadsInFlight = Set<String>()
+  @State var artifactRefreshInFlight = false
+  @State var artifactRefreshError: String?
   @State var fullscreenImage: WorkFullscreenImage?
-  @State var composer = ""
   @State var sending = false
   @State var errorMessage: String?
   @State var announcedLaneId: String?
   @State var lastSessionRowRefreshAt = Date.distantPast
+  @State var lastArtifactRefreshAt = Date.distantPast
   @State var handledOpeningPromptKey: String?
   @State var stagedOpeningPromptKey: String?
 
@@ -72,6 +75,9 @@ struct WorkSessionDestinationView: View {
       .task(id: pollingKey) {
         await pollIfNeeded()
       }
+      .task(id: syncService.localStateRevision) {
+        await refreshArtifacts(force: false)
+      }
       .onDisappear {
         if let announcedLaneId {
           syncService.releaseLaneOpen(laneId: announcedLaneId)
@@ -97,7 +103,8 @@ struct WorkSessionDestinationView: View {
           expandedToolCardIds: $expandedToolCardIds,
           artifactContent: $artifactContent,
           fullscreenImage: $fullscreenImage,
-          composer: $composer,
+          artifactRefreshInFlight: artifactRefreshInFlight,
+          artifactRefreshError: artifactRefreshError,
           sending: $sending,
           errorMessage: $errorMessage,
           isLive: isLive,
@@ -114,6 +121,9 @@ struct WorkSessionDestinationView: View {
           onOpenFile: openFileReference,
           onOpenPr: openPullRequestReference,
           onLoadArtifact: loadArtifactContent,
+          onRefreshArtifacts: {
+            await refreshArtifacts(force: true)
+          },
           onCancelSteer: cancelSteer,
           onEditSteer: editSteer,
           onSelectModel: selectModel,
@@ -144,7 +154,7 @@ struct WorkSessionDestinationView: View {
   }
 
   var liveChatObservationKey: String {
-    "\(sessionId)-\(syncService.chatEventRevision(for: sessionId))"
+    "\(sessionId)-\(syncService.chatEventNotificationRevision)-\(syncService.chatEventRevision(for: sessionId))"
   }
 
   var trimmedInitialOpeningPrompt: String {
@@ -174,7 +184,7 @@ struct WorkSessionDestinationView: View {
       if isLive, let currentSession = session ?? initialSession, isChatSession(currentSession) {
         try? await syncService.subscribeToChatEvents(sessionId: sessionId)
       }
-      artifacts = (try? await syncService.fetchComputerUseArtifacts(ownerKind: "chat_session", ownerId: sessionId)) ?? []
+      await refreshArtifacts(force: true)
       await loadTranscript(forceRemote: isLive)
       errorMessage = nil
     } catch {
@@ -211,24 +221,20 @@ struct WorkSessionDestinationView: View {
     }
 
     let mergedTranscript = mergeWorkChatTranscripts(base: baseTranscript, live: liveTranscript)
-    if !mergedTranscript.isEmpty {
+    if !mergedTranscript.isEmpty, mergedTranscript != transcript {
       transcript = mergedTranscript
     }
-    fallbackEntries = fetchedFallbackEntries
-
-    localEchoMessages.removeAll { echo in
-      transcript.contains(where: { envelope in
-        if case .userMessage(let text, _, _, _, _) = envelope.event {
-          return text.trimmingCharacters(in: .whitespacesAndNewlines) == echo.text.trimmingCharacters(in: .whitespacesAndNewlines)
-        }
-        return false
-      })
+    if fallbackEntries != fetchedFallbackEntries {
+      fallbackEntries = fetchedFallbackEntries
     }
+
+    reconcileLocalEchoMessages()
   }
 
   @MainActor
   func refreshChatStateAfterAction(forceRemote: Bool = true) async {
     await loadTranscript(forceRemote: forceRemote)
+    await refreshArtifacts(force: true)
     if let refreshedSummary = try? await syncService.fetchChatSummary(sessionId: sessionId) {
       chatSummary = refreshedSummary
     }
@@ -238,9 +244,45 @@ struct WorkSessionDestinationView: View {
   }
 
   @MainActor
+  func refreshArtifacts(force: Bool) async {
+    guard let currentSession = session ?? initialSession,
+          isChatSession(currentSession)
+    else { return }
+
+    let now = Date()
+    guard force || now.timeIntervalSince(lastArtifactRefreshAt) >= 0.8 else { return }
+    guard !artifactRefreshInFlight else { return }
+
+    artifactRefreshInFlight = true
+    lastArtifactRefreshAt = now
+    defer { artifactRefreshInFlight = false }
+
+    do {
+      let previousURIs = Dictionary(uniqueKeysWithValues: artifacts.map { ($0.id, $0.uri) })
+      let refreshed = try await syncService.fetchComputerUseArtifacts(ownerKind: "chat_session", ownerId: sessionId)
+      let validArtifactIds = Set(refreshed.map(\.id))
+
+      artifactContent = artifactContent.filter { validArtifactIds.contains($0.key) }
+      artifactContentLoadsInFlight = Set(artifactContentLoadsInFlight.filter { validArtifactIds.contains($0) })
+
+      for artifact in refreshed where previousURIs[artifact.id] != nil && previousURIs[artifact.id] != artifact.uri {
+        artifactContent.removeValue(forKey: artifact.id)
+      }
+
+      if artifacts != refreshed {
+        artifacts = refreshed
+      }
+      artifactRefreshError = nil
+    } catch {
+      artifactRefreshError = error.localizedDescription
+    }
+  }
+
+  @MainActor
   func sendInitialOpeningPromptIfNeeded() async {
     let prompt = trimmedInitialOpeningPrompt
     guard !prompt.isEmpty else { return }
+    guard !sending else { return }
     let promptKey = "\(sessionId)|\(prompt)"
     guard handledOpeningPromptKey != promptKey else { return }
     if transcript.contains(where: { envelope in
@@ -272,7 +314,6 @@ struct WorkSessionDestinationView: View {
     } catch {
       ADEHaptics.error()
       localEchoMessages.removeAll { $0.id == echo.id }
-      composer = prompt
       errorMessage = "Opening message did not reach the host. The chat exists; tap Send to retry. \(error.localizedDescription)"
     }
     sending = false
@@ -288,13 +329,31 @@ struct WorkSessionDestinationView: View {
     localEchoMessages.append(WorkLocalEchoMessage(text: prompt, timestamp: workDateFormatter.string(from: Date())))
   }
 
+  @MainActor
   func syncTranscriptFromLiveEvents() {
     let liveTranscript = makeWorkChatTranscript(from: syncService.chatEventHistory(sessionId: sessionId))
     guard !liveTranscript.isEmpty else { return }
     let baseTranscript = transcript.isEmpty && !fallbackEntries.isEmpty
       ? makeWorkChatTranscript(from: fallbackEntries, sessionId: sessionId)
       : transcript
-    transcript = mergeWorkChatTranscripts(base: baseTranscript, live: liveTranscript)
+    let mergedTranscript = mergeWorkChatTranscripts(base: baseTranscript, live: liveTranscript)
+    if mergedTranscript != transcript {
+      transcript = mergedTranscript
+    }
+    reconcileLocalEchoMessages()
+  }
+
+  @MainActor
+  func reconcileLocalEchoMessages() {
+    guard !localEchoMessages.isEmpty else { return }
+    localEchoMessages.removeAll { echo in
+      transcript.contains(where: { envelope in
+        if case .userMessage(let text, _, _, _, _) = envelope.event {
+          return text.trimmingCharacters(in: .whitespacesAndNewlines) == echo.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        return false
+      })
+    }
   }
 
   @MainActor
@@ -317,6 +376,7 @@ struct WorkSessionDestinationView: View {
         await loadTranscript(forceRemote: true)
       }
       if pollCycle % 2 == 1 {
+        await refreshArtifacts(force: false)
         if let refreshedSummary = try? await syncService.fetchChatSummary(sessionId: sessionId) {
           chatSummary = refreshedSummary
         }

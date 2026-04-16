@@ -100,12 +100,12 @@ extension WorkRootScreen {
 
   @MainActor
   func pollRunningChats() async {
-    guard isLive else { return }
+    guard isLive, isWorkRootActive else { return }
     let running = liveChatSessions
     guard !running.isEmpty else { return }
 
     var lastTranscriptFingerprint: [String: String] = [:]
-    while !Task.isCancelled && isLive && !liveChatSessions.isEmpty {
+    while !Task.isCancelled && isLive && isWorkRootActive && !liveChatSessions.isEmpty {
       for session in liveChatSessions {
         try? await syncService.subscribeToChatEvents(sessionId: session.id)
         let streamed = syncService.chatEventHistory(sessionId: session.id)

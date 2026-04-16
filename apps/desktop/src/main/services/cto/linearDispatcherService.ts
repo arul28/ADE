@@ -123,7 +123,7 @@ function toRun(row: RunRow): LinearWorkflowRun {
     retryAfter: row.retry_after,
     closeoutState: row.closeout_state,
     terminalOutcome: row.terminal_outcome,
-    sourceIssueSnapshot: safeJsonParse(row.source_issue_snapshot_json, {}),
+    sourceIssueSnapshot: safeJsonParse<NormalizedLinearIssue | null>(row.source_issue_snapshot_json, null),
     routeContext: safeJsonParse(row.route_context_json, null),
     executionContext: safeJsonParse(row.execution_context_json, null),
     createdAt: row.created_at,

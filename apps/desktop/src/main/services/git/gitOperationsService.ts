@@ -665,7 +665,7 @@ export function createGitOperationsService({
                   path = parts[2] ?? relPath;
                   break;
                 default:
-                  path = parts.last ?? relPath;
+                  path = parts.at(-1) ?? relPath;
                   break;
               }
             }
