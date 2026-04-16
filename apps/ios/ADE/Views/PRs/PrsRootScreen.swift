@@ -285,7 +285,10 @@ struct PRsTabView: View {
           .environmentObject(syncService)
       }
       .sheet(isPresented: $createPresented) {
-        CreatePrWizardView(lanes: lanes) { laneId, title, body, draft, baseBranch, labels, reviewers in
+        CreatePrWizardView(
+          lanes: lanes,
+          createCapabilities: mobileSnapshot?.createCapabilities
+        ) { laneId, title, body, draft, baseBranch, labels, reviewers in
           Task {
             try? await syncService.createPullRequest(
               laneId: laneId,
