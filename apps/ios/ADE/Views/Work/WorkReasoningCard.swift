@@ -11,7 +11,10 @@ struct WorkReasoningCard: View {
   let isLive: Bool
 
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
-  @State private var isExpanded: Bool = true
+  // Default collapsed — reasoning is the model's scratchpad, not the answer.
+  // The live turn still auto-expands via the onChange(of: isLive) handler
+  // below so users can watch thoughts stream in real time.
+  @State private var isExpanded: Bool = false
 
   private var bodyText: String? {
     guard let body = card.body else { return nil }
@@ -76,7 +79,18 @@ struct WorkReasoningCard: View {
           .transition(.opacity.combined(with: .move(edge: .top)))
       }
     }
-    .adeGlassCard(cornerRadius: 14, padding: 12)
+    .padding(.horizontal, 10)
+    .padding(.vertical, 8)
+    .background(ADEColor.surfaceBackground.opacity(0.32), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+    .overlay(
+      RoundedRectangle(cornerRadius: 12, style: .continuous)
+        .stroke(ADEColor.border.opacity(0.12), lineWidth: 0.5)
+    )
+    .onAppear {
+      // Auto-expand while the turn is still thinking so the user can see
+      // tokens land as they arrive.
+      if isLive { isExpanded = true }
+    }
     .onChange(of: isLive) { _, nowLive in
       withAnimation(ADEMotion.standard(reduceMotion: reduceMotion)) {
         isExpanded = nowLive

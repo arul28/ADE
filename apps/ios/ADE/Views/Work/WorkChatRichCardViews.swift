@@ -402,9 +402,64 @@ struct WorkEventCardView: View {
   var body: some View {
     if card.kind == "contextCompact" {
       WorkContextCompactDivider(summary: card.body)
+    } else if isRibbonKind(card.kind) {
+      ribbonBody
     } else {
       defaultBody
     }
+  }
+
+  /// Status/activity/notice/todo/auto-approval events carry almost no content
+  /// but used to render as full cards — that's what made the mobile timeline
+  /// feel like a stack of boxes. Collapse them into a single-line ribbon that
+  /// reads like prose.
+  private func isRibbonKind(_ kind: String) -> Bool {
+    switch kind {
+    case "status", "activity", "notice", "todo", "autoApproval",
+         "pendingInputResolved", "webSearch", "promptSuggestion",
+         "toolUseSummary":
+      return true
+    default:
+      return false
+    }
+  }
+
+  private var ribbonBody: some View {
+    HStack(alignment: .center, spacing: 8) {
+      Image(systemName: card.icon)
+        .font(.caption.weight(.semibold))
+        .foregroundStyle(card.tint.color)
+        .frame(width: 18, height: 18)
+      Text(ribbonText)
+        .font(.caption)
+        .foregroundStyle(ADEColor.textSecondary)
+        .lineLimit(2)
+      Spacer(minLength: 8)
+      Text(relativeTimestamp(card.timestamp))
+        .font(.caption2)
+        .foregroundStyle(ADEColor.textMuted)
+    }
+    .padding(.horizontal, 10)
+    .padding(.vertical, 6)
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .accessibilityElement(children: .combine)
+    .accessibilityLabel([card.title, card.body].compactMap { $0 }.joined(separator: ". "))
+  }
+
+  private var ribbonText: String {
+    // Prefer the actual event text over the generic "Turn status" title so
+    // the ribbon reads "Started" / "Completed" / "Session ready" instead of
+    // leaking our UI kind name into the document.
+    if let body = card.body?.trimmingCharacters(in: .whitespacesAndNewlines), !body.isEmpty {
+      if let first = card.metadata.first, !first.isEmpty {
+        return "\(first) · \(body)"
+      }
+      return body
+    }
+    if let first = card.metadata.first, !first.isEmpty {
+      return "\(card.title) · \(first)"
+    }
+    return card.title
   }
 
   private var defaultBody: some View {
@@ -483,8 +538,12 @@ struct WorkEventCardView: View {
         }
       }
     }
-    .padding(14)
-    .background(ADEColor.surfaceBackground.opacity(0.65), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+    .padding(12)
+    .background(ADEColor.surfaceBackground.opacity(0.35), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+    .overlay(
+      RoundedRectangle(cornerRadius: 14, style: .continuous)
+        .stroke(ADEColor.border.opacity(0.14), lineWidth: 0.5)
+    )
     .accessibilityElement(children: .combine)
     .accessibilityLabel([card.title, card.body, card.bullets.joined(separator: ", ")].compactMap { $0 }.joined(separator: ". "))
     .onAppear {

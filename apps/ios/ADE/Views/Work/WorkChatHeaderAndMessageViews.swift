@@ -38,80 +38,62 @@ struct WorkSessionHeader: View {
   }
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 12) {
-      HStack(alignment: .top, spacing: 12) {
-        WorkProviderLogo(
-          provider: chatSummary?.provider,
-          fallbackSymbol: providerIcon(chatSummary?.provider ?? ""),
-          tint: providerTint(chatSummary?.provider),
-          size: 36
-        )
-
-        VStack(alignment: .leading, spacing: 4) {
-          Text(chatSummary?.title ?? session.title)
-            .font(.headline)
-            .foregroundStyle(ADEColor.textPrimary)
-            .lineLimit(2)
-          Text(metaLine)
-            .font(.caption.monospacedDigit())
-            .foregroundStyle(ADEColor.textMuted)
+    // Document-style intro — no card chrome, just a small meta line with
+    // lane, status, and model. The navigation title already shows the chat
+    // name so we drop the duplicate headline/title block here too.
+    HStack(spacing: 6) {
+      Circle()
+        .fill(workChatStatusTint(status))
+        .frame(width: 6, height: 6)
+      Text(sessionStatusLabel(session, summary: chatSummary))
+        .font(.caption2.weight(.bold))
+        .tracking(0.4)
+        .foregroundStyle(workChatStatusTint(status))
+      Text("·")
+        .font(.caption2)
+        .foregroundStyle(ADEColor.textMuted)
+      Button {
+        onOpenLane?()
+      } label: {
+        HStack(spacing: 3) {
+          Image(systemName: "arrow.triangle.branch")
+            .font(.caption2.weight(.semibold))
+          Text(session.laneName)
+            .font(.caption.weight(.semibold))
+            .lineLimit(1)
         }
-
-        Spacer(minLength: 8)
-
-        HStack(spacing: 8) {
-          if let onOpenLane {
-            Button(action: onOpenLane) {
-              Image(systemName: "arrow.triangle.branch")
-                .font(.system(size: 14, weight: .semibold))
-                .foregroundStyle(ADEColor.accent)
-                .frame(width: 34, height: 34)
-                .background(ADEColor.accent.opacity(0.12), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Open lane")
-          }
-        }
+        .foregroundStyle(ADEColor.accent)
       }
-
-      ScrollView(.horizontal, showsIndicators: false) {
-        HStack(spacing: 6) {
-          WorkTag(
-            text: sessionStatusLabel(session, summary: chatSummary),
-            icon: workChatStatusIcon(status),
-            tint: workChatStatusTint(status)
-          )
-          if let chatSummary {
-            WorkTag(
-              text: providerLabel(chatSummary.provider),
-              icon: providerIcon(chatSummary.provider),
-              tint: providerTint(chatSummary.provider)
-            )
-          }
-          WorkTag(text: session.laneName, icon: "arrow.triangle.branch", tint: ADEColor.textSecondary)
-        }
-      }
-
-      if let summaryLine {
-        Text(summaryLine)
-          .font(.subheadline)
-          .foregroundStyle(ADEColor.textSecondary)
-          .lineLimit(3)
-      }
+      .buttonStyle(.plain)
+      .disabled(onOpenLane == nil)
+      .accessibilityLabel("Lane \(session.laneName). Tap to open.")
+      Text("·")
+        .font(.caption2)
+        .foregroundStyle(ADEColor.textMuted)
+      Text(metaLine)
+        .font(.caption.monospacedDigit())
+        .foregroundStyle(ADEColor.textMuted)
+        .lineLimit(1)
+      Spacer(minLength: 0)
     }
-    .adeListCard()
+    .padding(.vertical, 4)
     .accessibilityElement(children: .combine)
     .accessibilityLabel("\(chatSummary?.title ?? session.title), \(sessionStatusLabel(session, summary: chatSummary)), lane \(session.laneName)")
   }
 }
 
+/// Document-style message row. Desktop renders the transcript like a doc —
+/// no card chrome on the assistant side, just a provider chip + prose — so
+/// mobile follows suit. User messages stay right-aligned with a very
+/// subtle tinted bubble to preserve sender asymmetry, but shed the heavy
+/// box the old implementation used.
 struct WorkChatMessageBubble: View {
   let message: WorkChatMessage
 
-  /// When true, this bubble is the active assistant message in a streaming
-  /// turn. Drives the streaming shimmer + accent glow treatment. Defaults to
-  /// `false` so existing call sites keep working; the session view sets it
-  /// to `true` for the latest assistant message while `sessionStatus == "active"`.
+  /// When true, this row is the active assistant message in a streaming turn.
+  /// Drives the subtle streaming shimmer treatment. Defaults to `false` so
+  /// existing call sites keep working; the session view sets it to `true`
+  /// for the latest assistant message while `sessionStatus == "active"`.
   var isLive: Bool = false
 
   /// Provider string for the current chat session (e.g. "claude", "codex", "cursor").
@@ -123,45 +105,26 @@ struct WorkChatMessageBubble: View {
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
   var body: some View {
-    HStack {
-      if message.role == "assistant" {
-        bubbleContent
-        Spacer(minLength: 32)
-      } else {
-        Spacer(minLength: 32)
-        bubbleContent
-      }
+    if message.role == "assistant" {
+      assistantRow
+    } else {
+      userRow
     }
   }
 
-  var bubbleContent: some View {
-    VStack(alignment: .leading, spacing: 8) {
-      HStack(spacing: 8) {
-        Image(systemName: message.role == "assistant" ? "sparkles" : "person.fill")
-          .font(.caption.weight(.semibold))
-          .foregroundStyle(message.role == "assistant" ? ADEColor.accent : ADEColor.warning)
-        Text(message.role == "assistant" ? "Assistant" : "You")
-          .font(.caption.weight(.semibold))
-          .foregroundStyle(ADEColor.textSecondary)
+  private var assistantRow: some View {
+    VStack(alignment: .leading, spacing: 6) {
+      HStack(spacing: 6) {
         providerChip
-        if let deliveryBadge {
-          WorkDeliveryBadge(state: deliveryBadge)
-        }
-        Spacer(minLength: 8)
         Text(relativeTimestamp(message.timestamp))
           .font(.caption2)
           .foregroundStyle(ADEColor.textMuted)
+        Spacer(minLength: 0)
       }
-
       WorkMarkdownRenderer(markdown: message.markdown)
     }
-    .padding(14)
     .frame(maxWidth: .infinity, alignment: .leading)
-    .background(
-      RoundedRectangle(cornerRadius: 18, style: .continuous)
-        .fill(message.role == "assistant" ? ADEColor.accent.opacity(0.08) : ADEColor.surfaceBackground.opacity(0.7))
-    )
-    .adeStreamingShimmer(isActive: isLive && message.role == "assistant", cornerRadius: 18)
+    .adeStreamingShimmer(isActive: isLive, cornerRadius: 10)
     .contextMenu {
       Button {
         UIPasteboard.general.string = message.markdown
@@ -169,6 +132,41 @@ struct WorkChatMessageBubble: View {
         Label("Copy message", systemImage: "doc.on.doc")
       }
     }
+    .accessibilityElement(children: .combine)
+    .accessibilityLabel("Assistant message. \(message.markdown)")
+  }
+
+  private var userRow: some View {
+    HStack(alignment: .top, spacing: 8) {
+      Spacer(minLength: 32)
+      VStack(alignment: .trailing, spacing: 4) {
+        HStack(spacing: 6) {
+          if let deliveryBadge {
+            WorkDeliveryBadge(state: deliveryBadge)
+          }
+          Text(relativeTimestamp(message.timestamp))
+            .font(.caption2)
+            .foregroundStyle(ADEColor.textMuted)
+        }
+        WorkMarkdownRenderer(markdown: message.markdown)
+          .padding(.horizontal, 12)
+          .padding(.vertical, 8)
+          .background(ADEColor.accent.opacity(0.12), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+          .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+              .stroke(ADEColor.accent.opacity(0.22), lineWidth: 0.5)
+          )
+      }
+    }
+    .contextMenu {
+      Button {
+        UIPasteboard.general.string = message.markdown
+      } label: {
+        Label("Copy message", systemImage: "doc.on.doc")
+      }
+    }
+    .accessibilityElement(children: .combine)
+    .accessibilityLabel("Your message. \(message.markdown)")
   }
 
   var deliveryBadge: WorkDeliveryBadge.State? {
@@ -191,22 +189,20 @@ struct WorkChatMessageBubble: View {
     if message.role == "assistant",
        let provider = sessionProvider?.trimmingCharacters(in: .whitespacesAndNewlines),
        !provider.isEmpty {
-      let tint = providerTint(provider)
-      HStack(spacing: 4) {
-        Image(systemName: providerIcon(provider))
-          .font(.system(size: 8, weight: .bold))
+      HStack(spacing: 5) {
+        WorkProviderLogo(
+          provider: provider,
+          fallbackSymbol: providerIcon(provider),
+          tint: providerTint(provider),
+          size: 14
+        )
         Text(providerLabel(provider))
-          .font(.caption2.weight(.semibold))
-          .tracking(0.3)
+          .font(.caption.weight(.semibold))
+          .foregroundStyle(ADEColor.textSecondary)
       }
-      .foregroundStyle(tint)
-      .padding(.horizontal, 6)
-      .padding(.vertical, 2)
-      .background(tint.opacity(0.12), in: Capsule())
-      .overlay(
-        Capsule().stroke(tint.opacity(0.22), lineWidth: 0.5)
-      )
       .accessibilityLabel("Written by \(providerLabel(provider))")
+    } else if message.role == "user" {
+      EmptyView()
     }
   }
 }
