@@ -3093,6 +3093,276 @@ final class ADETests: XCTestCase {
     XCTAssertNotEqual(workActivityBufferFingerprint(bufferA), workActivityBufferFingerprint(bufferB))
   }
 
+  // MARK: - Mobile PR snapshot (prs sync contracts)
+
+  func testPrMobileSnapshotDecodesStackCapabilitiesAndWorkflowCards() throws {
+    let json = """
+    {
+      "generatedAt": "2026-04-16T00:00:00Z",
+      "prs": [
+        {
+          "id": "pr-root",
+          "laneId": "lane-root",
+          "projectId": "proj-1",
+          "repoOwner": "owner",
+          "repoName": "repo",
+          "githubPrNumber": 1,
+          "githubUrl": "https://github.com/owner/repo/pull/1",
+          "githubNodeId": "PR_1",
+          "title": "root",
+          "state": "open",
+          "baseBranch": "main",
+          "headBranch": "feat/root",
+          "checksStatus": "passing",
+          "reviewStatus": "approved",
+          "additions": 5,
+          "deletions": 1,
+          "lastSyncedAt": "2026-04-16T00:00:00Z",
+          "createdAt": "2026-04-16T00:00:00Z",
+          "updatedAt": "2026-04-16T00:00:00Z"
+        }
+      ],
+      "stacks": [
+        {
+          "stackId": "stack:lane-root",
+          "rootLaneId": "lane-root",
+          "size": 2,
+          "prCount": 2,
+          "members": [
+            {
+              "laneId": "lane-root",
+              "laneName": "root",
+              "parentLaneId": null,
+              "depth": 0,
+              "role": "root",
+              "dirty": false,
+              "prId": "pr-root",
+              "prNumber": 1,
+              "prState": "open",
+              "prTitle": "root",
+              "baseBranch": "main",
+              "headBranch": "feat/root",
+              "checksStatus": "passing",
+              "reviewStatus": "approved"
+            },
+            {
+              "laneId": "lane-child",
+              "laneName": "child",
+              "parentLaneId": "lane-root",
+              "depth": 1,
+              "role": "leaf",
+              "dirty": true,
+              "prId": "pr-child",
+              "prNumber": 2,
+              "prState": "draft",
+              "prTitle": "child",
+              "baseBranch": "feat/root",
+              "headBranch": "feat/child",
+              "checksStatus": "failing",
+              "reviewStatus": "none"
+            }
+          ]
+        }
+      ],
+      "capabilities": {
+        "pr-root": {
+          "prId": "pr-root",
+          "canOpenInGithub": true,
+          "canMerge": true,
+          "canClose": true,
+          "canReopen": false,
+          "canRequestReviewers": true,
+          "canRerunChecks": true,
+          "canComment": true,
+          "canUpdateDescription": true,
+          "canDelete": true,
+          "mergeBlockedReason": null,
+          "requiresLive": true
+        },
+        "pr-child": {
+          "prId": "pr-child",
+          "canOpenInGithub": true,
+          "canMerge": false,
+          "canClose": true,
+          "canReopen": false,
+          "canRequestReviewers": true,
+          "canRerunChecks": true,
+          "canComment": true,
+          "canUpdateDescription": true,
+          "canDelete": true,
+          "mergeBlockedReason": "Draft PRs cannot be merged until marked ready for review.",
+          "requiresLive": true
+        }
+      },
+      "createCapabilities": {
+        "canCreateAny": true,
+        "defaultBaseBranch": "main",
+        "lanes": [
+          {
+            "laneId": "lane-new",
+            "laneName": "new",
+            "parentLaneId": null,
+            "repoOwner": null,
+            "repoName": null,
+            "defaultBaseBranch": "main",
+            "defaultTitle": "new",
+            "dirty": false,
+            "hasExistingPr": false,
+            "canCreate": true,
+            "blockedReason": null
+          },
+          {
+            "laneId": "lane-blocked",
+            "laneName": "blocked",
+            "parentLaneId": null,
+            "repoOwner": null,
+            "repoName": null,
+            "defaultBaseBranch": "main",
+            "defaultTitle": "blocked",
+            "dirty": false,
+            "hasExistingPr": true,
+            "canCreate": false,
+            "blockedReason": "Lane already has an open PR (#7)."
+          }
+        ]
+      },
+      "workflowCards": [
+        {
+          "kind": "queue",
+          "id": "queue:q-1",
+          "groupId": "group-1",
+          "groupName": null,
+          "targetBranch": null,
+          "state": "landing",
+          "activePrId": "pr-root",
+          "currentPosition": 0,
+          "totalEntries": 2,
+          "waitReason": null,
+          "lastError": null,
+          "updatedAt": "2026-04-16T00:00:00Z"
+        },
+        {
+          "kind": "integration",
+          "id": "integration:prop-1",
+          "proposalId": "prop-1",
+          "title": "Integration 1",
+          "baseBranch": "main",
+          "overallOutcome": "clean",
+          "status": "proposed",
+          "laneCount": 2,
+          "conflictLaneCount": 0,
+          "workflowDisplayState": "active",
+          "cleanupState": "none",
+          "linkedPrId": null,
+          "integrationLaneId": null,
+          "createdAt": "2026-04-16T00:00:00Z"
+        },
+        {
+          "kind": "rebase",
+          "id": "rebase:lane-child",
+          "laneId": "lane-child",
+          "laneName": "child",
+          "baseBranch": "main",
+          "behindBy": 3,
+          "conflictPredicted": false,
+          "prId": "pr-child",
+          "prNumber": 2,
+          "dismissedAt": null,
+          "deferredUntil": null
+        }
+      ],
+      "live": true
+    }
+    """
+
+    let data = Data(json.utf8)
+    let decoder = JSONDecoder()
+    let snapshot = try decoder.decode(PrMobileSnapshot.self, from: data)
+
+    XCTAssertEqual(snapshot.generatedAt, "2026-04-16T00:00:00Z")
+    XCTAssertTrue(snapshot.live)
+    XCTAssertEqual(snapshot.prs.count, 1)
+    XCTAssertEqual(snapshot.prs.first?.id, "pr-root")
+
+    // Stacks
+    XCTAssertEqual(snapshot.stacks.count, 1)
+    let stack = snapshot.stacks[0]
+    XCTAssertEqual(stack.rootLaneId, "lane-root")
+    XCTAssertEqual(stack.members.count, 2)
+    XCTAssertEqual(stack.members[0].role, "root")
+    XCTAssertEqual(stack.members[0].depth, 0)
+    XCTAssertEqual(stack.members[0].prNumber, 1)
+    XCTAssertFalse(stack.members[0].dirty)
+    XCTAssertEqual(stack.members[1].role, "leaf")
+    XCTAssertEqual(stack.members[1].parentLaneId, "lane-root")
+    XCTAssertTrue(stack.members[1].dirty)
+    XCTAssertEqual(stack.members[1].checksStatus, "failing")
+
+    // Capabilities
+    XCTAssertNotNil(snapshot.capabilities["pr-root"])
+    XCTAssertTrue(snapshot.capabilities["pr-root"]?.canMerge ?? false)
+    XCTAssertNil(snapshot.capabilities["pr-root"]?.mergeBlockedReason ?? nil)
+    XCTAssertFalse(snapshot.capabilities["pr-child"]?.canMerge ?? true)
+    XCTAssertEqual(
+      snapshot.capabilities["pr-child"]?.mergeBlockedReason,
+      "Draft PRs cannot be merged until marked ready for review."
+    )
+
+    // Create capabilities
+    XCTAssertTrue(snapshot.createCapabilities.canCreateAny)
+    XCTAssertEqual(snapshot.createCapabilities.defaultBaseBranch, "main")
+    XCTAssertEqual(snapshot.createCapabilities.lanes.count, 2)
+    let blocked = snapshot.createCapabilities.lanes.first(where: { $0.laneId == "lane-blocked" })
+    XCTAssertNotNil(blocked)
+    XCTAssertFalse(blocked?.canCreate ?? true)
+    XCTAssertTrue(blocked?.hasExistingPr ?? false)
+    XCTAssertTrue((blocked?.blockedReason ?? "").contains("#7"))
+
+    // Workflow cards — one of each kind, decoded through the discriminated union.
+    XCTAssertEqual(snapshot.workflowCards.count, 3)
+    let queueCard = snapshot.workflowCards.first(where: { $0.kind == "queue" })
+    XCTAssertEqual(queueCard?.groupId, "group-1")
+    XCTAssertEqual(queueCard?.totalEntries, 2)
+    XCTAssertEqual(queueCard?.activePrId, "pr-root")
+
+    let integrationCard = snapshot.workflowCards.first(where: { $0.kind == "integration" })
+    XCTAssertEqual(integrationCard?.proposalId, "prop-1")
+    XCTAssertEqual(integrationCard?.overallOutcome, "clean")
+    XCTAssertEqual(integrationCard?.integrationStatus, "proposed")
+
+    let rebaseCard = snapshot.workflowCards.first(where: { $0.kind == "rebase" })
+    XCTAssertEqual(rebaseCard?.laneId, "lane-child")
+    XCTAssertEqual(rebaseCard?.behindBy, 3)
+    XCTAssertEqual(rebaseCard?.prNumber, 2)
+    XCTAssertNil(rebaseCard?.dismissedAt ?? nil)
+  }
+
+  func testPrMobileSnapshotTolerantOfEmptyHostState() throws {
+    let json = """
+    {
+      "generatedAt": "2026-04-16T00:00:00Z",
+      "prs": [],
+      "stacks": [],
+      "capabilities": {},
+      "createCapabilities": {
+        "canCreateAny": false,
+        "defaultBaseBranch": null,
+        "lanes": []
+      },
+      "workflowCards": [],
+      "live": true
+    }
+    """
+
+    let snapshot = try JSONDecoder().decode(PrMobileSnapshot.self, from: Data(json.utf8))
+    XCTAssertTrue(snapshot.prs.isEmpty)
+    XCTAssertTrue(snapshot.stacks.isEmpty)
+    XCTAssertTrue(snapshot.capabilities.isEmpty)
+    XCTAssertTrue(snapshot.workflowCards.isEmpty)
+    XCTAssertFalse(snapshot.createCapabilities.canCreateAny)
+    XCTAssertNil(snapshot.createCapabilities.defaultBaseBranch)
+  }
+
   private func makeTemporaryDirectory() -> URL {
     let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
     try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)

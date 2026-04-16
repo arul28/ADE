@@ -1327,6 +1327,7 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
     await args.prService.requestReviewers(parseRequestReviewersArgs(payload));
     return { ok: true };
   });
+  register("prs.getMobileSnapshot", { viewerAllowed: true }, async () => args.prService.getMobileSnapshot());
 
   return {
     getSupportedActions(): SyncRemoteCommandAction[] {

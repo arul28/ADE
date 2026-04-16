@@ -53,6 +53,15 @@ function createMockPrService() {
     closePr: vi.fn().mockResolvedValue(undefined),
     reopenPr: vi.fn().mockResolvedValue(undefined),
     requestReviewers: vi.fn().mockResolvedValue(undefined),
+    getMobileSnapshot: vi.fn().mockResolvedValue({
+      generatedAt: "2026-04-01T00:00:00Z",
+      prs: [],
+      stacks: [],
+      capabilities: {},
+      createCapabilities: { canCreateAny: false, defaultBaseBranch: null, lanes: [] },
+      workflowCards: [],
+      live: true,
+    }),
   } as any;
 }
 
@@ -441,6 +450,21 @@ describe("createSyncRemoteCommandService", () => {
         reviewers: ["alice", "bob"],
       });
       expect(result).toEqual({ ok: true });
+    });
+
+    it("prs.getMobileSnapshot is viewer-allowed and returns the aggregated payload", async () => {
+      const policy = service.getPolicy("prs.getMobileSnapshot");
+      expect(policy).not.toBeNull();
+      expect(policy!.viewerAllowed).toBe(true);
+
+      const result = await service.execute(makePayload("prs.getMobileSnapshot")) as Record<string, unknown>;
+      expect(prService.getMobileSnapshot).toHaveBeenCalledTimes(1);
+      expect(result).toHaveProperty("prs");
+      expect(result).toHaveProperty("stacks");
+      expect(result).toHaveProperty("capabilities");
+      expect(result).toHaveProperty("createCapabilities");
+      expect(result).toHaveProperty("workflowCards");
+      expect(result).toHaveProperty("live", true);
     });
   });
 

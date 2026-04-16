@@ -1019,6 +1019,14 @@ final class SyncService: ObservableObject {
     database.fetchPullRequestSnapshot(prId: prId)
   }
 
+  /// Fetches the aggregated mobile PR snapshot from the paired host. This
+  /// payload drives the iOS PRs surface: stack visibility, create-PR
+  /// eligibility, workflow cards, and per-PR capability gates. Live-only;
+  /// callers should fall back to cached list/snapshots when offline.
+  func fetchPrMobileSnapshot() async throws -> PrMobileSnapshot {
+    try await sendDecodableCommand(action: "prs.getMobileSnapshot", as: PrMobileSnapshot.self)
+  }
+
   func status(for domain: SyncDomain) -> SyncDomainStatus {
     domainStatuses[domain] ?? .disconnected
   }

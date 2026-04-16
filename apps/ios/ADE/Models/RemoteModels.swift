@@ -1717,3 +1717,134 @@ struct ApplyRemoteChangesResult: Equatable {
   var touchedTables: [String]
   var rebuiltFts: Bool
 }
+
+// MARK: - Mobile PR snapshot
+//
+// Additive mirror of the desktop `PrMobileSnapshot` contract. Decodes the
+// payload returned by the `prs.getMobileSnapshot` sync command so the iOS
+// PRs surface can render stack visibility, create eligibility, workflow
+// cards, and per-PR capability gates from a single fetch.
+
+struct PrStackMember: Codable, Identifiable, Equatable {
+  var id: String { laneId }
+  var laneId: String
+  var laneName: String
+  var parentLaneId: String?
+  var depth: Int
+  var role: String
+  var dirty: Bool
+  var prId: String?
+  var prNumber: Int?
+  var prState: String?
+  var prTitle: String?
+  var baseBranch: String?
+  var headBranch: String?
+  var checksStatus: String?
+  var reviewStatus: String?
+}
+
+struct PrStackInfo: Codable, Identifiable, Equatable {
+  var id: String { stackId }
+  var stackId: String
+  var rootLaneId: String
+  var members: [PrStackMember]
+  var size: Int
+  var prCount: Int
+}
+
+struct PrActionCapabilities: Codable, Equatable {
+  var prId: String
+  var canOpenInGithub: Bool
+  var canMerge: Bool
+  var canClose: Bool
+  var canReopen: Bool
+  var canRequestReviewers: Bool
+  var canRerunChecks: Bool
+  var canComment: Bool
+  var canUpdateDescription: Bool
+  var canDelete: Bool
+  var mergeBlockedReason: String?
+  var requiresLive: Bool
+}
+
+struct PrCreateLaneEligibility: Codable, Identifiable, Equatable {
+  var id: String { laneId }
+  var laneId: String
+  var laneName: String
+  var parentLaneId: String?
+  var repoOwner: String?
+  var repoName: String?
+  var defaultBaseBranch: String
+  var defaultTitle: String
+  var dirty: Bool
+  var hasExistingPr: Bool
+  var canCreate: Bool
+  var blockedReason: String?
+}
+
+struct PrCreateCapabilities: Codable, Equatable {
+  var canCreateAny: Bool
+  var defaultBaseBranch: String?
+  var lanes: [PrCreateLaneEligibility]
+}
+
+/// Unified mobile workflow card. Exactly one of `queue`, `integration`, or
+/// `rebase` payload fields will be populated, matching the desktop
+/// discriminated union encoded as `kind`.
+struct PrWorkflowCard: Codable, Identifiable, Equatable {
+  var id: String
+  var kind: String
+  // queue
+  var groupId: String?
+  var groupName: String?
+  var targetBranch: String?
+  var state: String?
+  var activePrId: String?
+  var currentPosition: Int?
+  var totalEntries: Int?
+  var waitReason: String?
+  var lastError: String?
+  var updatedAt: String?
+  // integration
+  var proposalId: String?
+  var title: String?
+  var baseBranch: String?
+  var overallOutcome: String?
+  var integrationStatus: String?
+  var laneCount: Int?
+  var conflictLaneCount: Int?
+  var workflowDisplayState: String?
+  var cleanupState: String?
+  var linkedPrId: String?
+  var integrationLaneId: String?
+  var createdAt: String?
+  // rebase
+  var laneId: String?
+  var laneName: String?
+  var behindBy: Int?
+  var conflictPredicted: Bool?
+  var prId: String?
+  var prNumber: Int?
+  var dismissedAt: String?
+  var deferredUntil: String?
+
+  private enum CodingKeys: String, CodingKey {
+    case id
+    case kind
+    case groupId, groupName, targetBranch, state, activePrId, currentPosition, totalEntries, waitReason, lastError, updatedAt
+    case proposalId, title, baseBranch, overallOutcome
+    case integrationStatus = "status"
+    case laneCount, conflictLaneCount, workflowDisplayState, cleanupState, linkedPrId, integrationLaneId, createdAt
+    case laneId, laneName, behindBy, conflictPredicted, prId, prNumber, dismissedAt, deferredUntil
+  }
+}
+
+struct PrMobileSnapshot: Codable, Equatable {
+  var generatedAt: String
+  var prs: [PrSummary]
+  var stacks: [PrStackInfo]
+  var capabilities: [String: PrActionCapabilities]
+  var createCapabilities: PrCreateCapabilities
+  var workflowCards: [PrWorkflowCard]
+  var live: Bool
+}

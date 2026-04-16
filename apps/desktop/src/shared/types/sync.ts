@@ -478,7 +478,8 @@ export type SyncRemoteCommandAction =
   | "prs.land"
   | "prs.close"
   | "prs.reopen"
-  | "prs.requestReviewers";
+  | "prs.requestReviewers"
+  | "prs.getMobileSnapshot";
 
 export type SyncRemoteCommandPolicy = {
   viewerAllowed: boolean;

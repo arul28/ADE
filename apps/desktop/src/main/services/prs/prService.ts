@@ -51,7 +51,17 @@ import type {
   PrStatus,
   PrSummary,
   PrWithConflicts,
+  PrActionCapabilities,
+  PrCreateCapabilities,
+  PrCreateLaneEligibility,
+  PrMobileSnapshot,
+  PrStackInfo,
+  PrStackMember,
+  PrStackMemberRole,
+  PrWorkflowCard,
   QueueLandingState,
+  QueueState,
+  QueueWaitReason,
   ReorderQueuePrsArgs,
   RecheckIntegrationStepArgs,
   RecheckIntegrationStepResult,
@@ -5326,6 +5336,319 @@ export function createPrService({
         recommendations: ["Review the changes manually for a detailed assessment."],
         mergeReadiness: "needs_work"
       };
+    },
+
+    async getMobileSnapshot(): Promise<PrMobileSnapshot> {
+      return await buildMobileSnapshot();
     }
   };
+
+  async function buildMobileSnapshot(): Promise<PrMobileSnapshot> {
+    const prRows = listRows();
+    const prSummaries = prRows.map(rowToSummary);
+    const prByLaneId = new Map(prSummaries.map((pr) => [pr.laneId, pr] as const));
+
+    let lanes: LaneSummary[] = [];
+    try {
+      lanes = await laneService.list({ includeArchived: false, includeStatus: true });
+    } catch (error) {
+      logger.warn("prs.mobile_snapshot.lanes_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+    const laneById = new Map(lanes.map((lane) => [lane.id, lane] as const));
+    const primaryLane = lanes.find((lane) => lane.laneType === "primary") ?? null;
+    const primaryBranch = primaryLane ? branchNameFromRef(primaryLane.branchRef) : null;
+
+    const stacks = buildStackInfos(lanes, prByLaneId);
+    const capabilities = buildCapabilities(prSummaries);
+    const createCapabilities = buildCreateCapabilities(lanes, prByLaneId, primaryLane, primaryBranch);
+    const workflowCards = await buildWorkflowCards();
+
+    return {
+      generatedAt: nowIso(),
+      prs: prSummaries,
+      stacks,
+      capabilities,
+      createCapabilities,
+      workflowCards,
+      live: true,
+    };
+  }
+
+  function buildStackInfos(
+    lanes: LaneSummary[],
+    prByLaneId: Map<string, PrSummary>,
+  ): PrStackInfo[] {
+    if (lanes.length === 0) return [];
+
+    const childrenByParent = new Map<string, LaneSummary[]>();
+    for (const lane of lanes) {
+      if (!lane.parentLaneId) continue;
+      const arr = childrenByParent.get(lane.parentLaneId) ?? [];
+      arr.push(lane);
+      childrenByParent.set(lane.parentLaneId, arr);
+    }
+
+    const stacks: PrStackInfo[] = [];
+    const emitted = new Set<string>();
+
+    for (const lane of lanes) {
+      if (lane.parentLaneId) continue;
+      const member = collectStackMembers(lane, childrenByParent, prByLaneId, 0);
+      const prCount = member.filter((m) => m.prId !== null).length;
+      if (prCount === 0) continue;
+      const stackKey = `stack:${lane.id}`;
+      if (emitted.has(stackKey)) continue;
+      emitted.add(stackKey);
+      stacks.push({
+        stackId: stackKey,
+        rootLaneId: lane.id,
+        members: member,
+        size: member.length,
+        prCount,
+      });
+    }
+
+    return stacks;
+  }
+
+  function collectStackMembers(
+    lane: LaneSummary,
+    childrenByParent: Map<string, LaneSummary[]>,
+    prByLaneId: Map<string, PrSummary>,
+    depth: number,
+  ): PrStackMember[] {
+    const children = childrenByParent.get(lane.id) ?? [];
+    const laneRole: PrStackMemberRole = depth === 0
+      ? "root"
+      : children.length === 0
+        ? "leaf"
+        : "middle";
+    const pr = prByLaneId.get(lane.id) ?? null;
+    const self: PrStackMember = {
+      laneId: lane.id,
+      laneName: lane.name,
+      parentLaneId: lane.parentLaneId,
+      depth,
+      role: laneRole,
+      dirty: lane.status?.dirty === true,
+      prId: pr?.id ?? null,
+      prNumber: pr ? Number(pr.githubPrNumber) : null,
+      prState: pr?.state ?? null,
+      prTitle: pr?.title ?? null,
+      baseBranch: pr?.baseBranch ?? null,
+      headBranch: pr?.headBranch ?? null,
+      checksStatus: pr?.checksStatus ?? null,
+      reviewStatus: pr?.reviewStatus ?? null,
+    };
+    const result: PrStackMember[] = [self];
+    for (const child of children) {
+      result.push(...collectStackMembers(child, childrenByParent, prByLaneId, depth + 1));
+    }
+    return result;
+  }
+
+  function buildCapabilities(prs: PrSummary[]): Record<string, PrActionCapabilities> {
+    const out: Record<string, PrActionCapabilities> = {};
+    for (const pr of prs) {
+      out[pr.id] = capabilitiesForPr(pr);
+    }
+    return out;
+  }
+
+  function capabilitiesForPr(pr: PrSummary): PrActionCapabilities {
+    const state = pr.state;
+    const isOpen = state === "open";
+    const isDraft = state === "draft";
+    const isClosedOrMerged = state === "closed" || state === "merged";
+    const checksFailing = pr.checksStatus === "failing";
+    const mergeBlockedReason = isDraft
+      ? "Draft PRs cannot be merged until marked ready for review."
+      : checksFailing
+        ? "Required checks are failing."
+        : isClosedOrMerged
+          ? `PR is already ${state}.`
+          : null;
+    return {
+      prId: pr.id,
+      canOpenInGithub: true,
+      canMerge: isOpen && !checksFailing,
+      canClose: isOpen || isDraft,
+      canReopen: state === "closed",
+      canRequestReviewers: isOpen || isDraft,
+      canRerunChecks: isOpen || isDraft,
+      canComment: !isClosedOrMerged || state === "closed",
+      canUpdateDescription: !isClosedOrMerged || state === "closed",
+      canDelete: true,
+      mergeBlockedReason,
+      requiresLive: true,
+    };
+  }
+
+  function buildCreateCapabilities(
+    lanes: LaneSummary[],
+    prByLaneId: Map<string, PrSummary>,
+    primaryLane: LaneSummary | null,
+    primaryBranch: string | null,
+  ): PrCreateCapabilities {
+    const eligibleLanes: PrCreateLaneEligibility[] = [];
+    for (const lane of lanes) {
+      if (lane.laneType === "primary") continue;
+      if (lane.archivedAt) continue;
+      const existingPr = prByLaneId.get(lane.id) ?? null;
+      const parent = lane.parentLaneId ? lanes.find((entry) => entry.id === lane.parentLaneId) ?? null : null;
+      const defaultBaseBranch = resolveStableLaneBaseBranch({
+        lane,
+        parent,
+        primaryBranchRef: primaryLane?.branchRef ?? null,
+      });
+      const dirty = lane.status?.dirty === true;
+      const hasExistingPr = existingPr !== null && (existingPr.state === "open" || existingPr.state === "draft");
+      const canCreate = !hasExistingPr;
+      const blockedReason = hasExistingPr
+        ? `Lane already has an ${existingPr?.state ?? "existing"} PR (#${existingPr?.githubPrNumber ?? "?"}).`
+        : null;
+      eligibleLanes.push({
+        laneId: lane.id,
+        laneName: lane.name,
+        parentLaneId: lane.parentLaneId,
+        repoOwner: null,
+        repoName: null,
+        defaultBaseBranch,
+        defaultTitle: lane.name,
+        dirty,
+        hasExistingPr,
+        canCreate,
+        blockedReason,
+      });
+    }
+    return {
+      canCreateAny: eligibleLanes.some((lane) => lane.canCreate),
+      defaultBaseBranch: primaryBranch,
+      lanes: eligibleLanes,
+    };
+  }
+
+  async function buildWorkflowCards(): Promise<PrWorkflowCard[]> {
+    const cards: PrWorkflowCard[] = [];
+
+    const queueRows = db.all<{
+      id: string;
+      group_id: string;
+      state: string;
+      entries_json: string;
+      current_position: number | null;
+      started_at: string;
+      completed_at: string | null;
+      active_pr_id: string | null;
+      wait_reason: string | null;
+      last_error: string | null;
+      updated_at: string | null;
+    }>(
+      `select id, group_id, state, entries_json, current_position,
+              started_at, completed_at, active_pr_id, wait_reason, last_error, updated_at
+       from queue_landing_state
+       where project_id = ?
+       order by started_at desc`,
+      [projectId],
+    );
+    for (const row of queueRows) {
+      if (row.state === "completed" || row.state === "cancelled") continue;
+      let entryCount = 0;
+      try {
+        const parsed = JSON.parse(String(row.entries_json ?? "[]"));
+        if (Array.isArray(parsed)) entryCount = parsed.length;
+      } catch {
+        entryCount = 0;
+      }
+      cards.push({
+        kind: "queue",
+        id: `queue:${row.id}`,
+        groupId: String(row.group_id),
+        groupName: null,
+        targetBranch: null,
+        state: String(row.state) as QueueState,
+        activePrId: row.active_pr_id,
+        currentPosition: Number(row.current_position ?? 0),
+        totalEntries: entryCount,
+        waitReason: (row.wait_reason ?? null) as QueueWaitReason | null,
+        lastError: row.last_error,
+        updatedAt: row.updated_at ?? row.started_at,
+      });
+    }
+
+    try {
+      const proposals = await listIntegrationWorkflows({ view: "active" });
+      for (const proposal of proposals) {
+        const conflictLanes = proposal.laneSummaries.filter((summary) => summary.outcome !== "clean").length;
+        cards.push({
+          kind: "integration",
+          id: `integration:${proposal.proposalId}`,
+          proposalId: proposal.proposalId,
+          title: proposal.title ?? proposal.integrationLaneName ?? null,
+          baseBranch: proposal.baseBranch,
+          overallOutcome: proposal.overallOutcome,
+          status: proposal.status,
+          laneCount: proposal.laneSummaries.length,
+          conflictLaneCount: conflictLanes,
+          workflowDisplayState: proposal.workflowDisplayState ?? "active",
+          cleanupState: proposal.cleanupState ?? "none",
+          linkedPrId: proposal.linkedPrId ?? null,
+          integrationLaneId: proposal.integrationLaneId ?? null,
+          createdAt: proposal.createdAt,
+        });
+      }
+    } catch (error) {
+      logger.warn("prs.mobile_snapshot.integration_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+
+    if (rebaseSuggestionService) {
+      try {
+        const suggestions = await rebaseSuggestionService.listSuggestions();
+        for (const suggestion of suggestions) {
+          if (suggestion.dismissedAt) continue;
+          const parentLaneId = suggestion.parentLaneId;
+          const parentLane = parentLaneId
+            ? db.get<{ name: string }>(
+                `select name from lanes where id = ? and project_id = ? limit 1`,
+                [parentLaneId, projectId],
+              )
+            : null;
+          const parentName = parentLane?.name ?? suggestion.baseLabel ?? null;
+          const laneRow = db.get<{ name: string }>(
+            `select name from lanes where id = ? and project_id = ? limit 1`,
+            [suggestion.laneId, projectId],
+          );
+          const linkedPr = prSummariesForLane(suggestion.laneId);
+          cards.push({
+            kind: "rebase",
+            id: `rebase:${suggestion.laneId}`,
+            laneId: suggestion.laneId,
+            laneName: laneRow?.name ?? suggestion.laneId,
+            baseBranch: parentName ?? "",
+            behindBy: suggestion.behindCount,
+            conflictPredicted: false,
+            prId: linkedPr?.id ?? null,
+            prNumber: linkedPr ? Number(linkedPr.githubPrNumber) : null,
+            dismissedAt: suggestion.dismissedAt,
+            deferredUntil: suggestion.deferredUntil,
+          });
+        }
+      } catch (error) {
+        logger.warn("prs.mobile_snapshot.rebase_suggestions_failed", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+
+    return cards;
+  }
+
+  function prSummariesForLane(laneId: string): PrSummary | null {
+    const row = getRowForLane(laneId);
+    return row ? rowToSummary(row) : null;
+  }
 }
