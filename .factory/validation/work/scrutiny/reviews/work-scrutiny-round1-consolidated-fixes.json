@@ -1,0 +1,21 @@
+{
+  "featureId": "work-scrutiny-round1-consolidated-fixes",
+  "reviewedAt": "2026-04-16T15:25:00Z",
+  "commitId": "2966c3e9bb374f638cfb7741e10f4bd6d533aaa1",
+  "transcriptSkeletonReviewed": true,
+  "diffReviewed": true,
+  "status": "pass",
+  "codeReview": {
+    "summary": "The consolidated fix adequately resolves the four prior blocking findings and the two related non-blocking findings from the first Work scrutiny round. On desktop, `awaitingInput` is now persisted and re-emitted for restored/disconnected summaries, and targeted producer-side coverage now exercises `requestedCwd`, `cursorConfigValues`, and `awaitingInput`. On iOS, the Work Activity section is sourced from the already-filtered session collection, the mixed live-session banner copy now accounts for terminal rows, Work→Lanes requests are consumed by the Lanes tab to open the requested lane detail, and Work→Files navigation now requires a lane-matched workspace with explicit failure messaging instead of silently falling back.",
+    "issues": []
+  },
+  "sharedStateObservations": [
+    {
+      "area": "skills",
+      "observation": "The `sync-parity-worker` skill is still out of date for this mission's validation policy: it tells workers to run a broad desktop Vitest command with unsupported `--maxWorkers=7` plus a full iOS `xcodebuild test`, so workers continue to deviate toward the mission's targeted parity-validation flow.",
+      "evidence": "`.factory/skills/sync-parity-worker/SKILL.md:70-80` still prescribes `npm --prefix apps/desktop run test -- --maxWorkers=7` and full `xcodebuild test`, while `.factory/library/work-sync-validation.md:1-2` records that `--maxWorkers=7` currently fails in this repo and the mission `AGENTS.md` fast-testing policy directs targeted desktop Vitest and `xcodebuild test -only-testing:` slices instead. The fix handoff's `skillFeedback` repeats this mismatch."
+    }
+  ],
+  "addressesFailureFrom": ".factory/validation/work/scrutiny/reviews/work-sync-contract-parity.json; .factory/validation/work/scrutiny/reviews/work-mobile-session-browser-and-creation.json; .factory/validation/work/scrutiny/reviews/work-mobile-session-detail-and-linked-actions.json",
+  "summary": "Pass: the consolidated fix closes all four prior blocking issues and both related non-blocking issues for the Work milestone. The only follow-up I noted is shared-state: `sync-parity-worker` still documents outdated validation commands for this mission."
+}
