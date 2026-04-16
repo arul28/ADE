@@ -40,6 +40,8 @@
 		E10000000000000000000037 /* WorkEventMapping.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000037 /* WorkEventMapping.swift */; };
 		E10000000000000000000038 /* WorkStatusAndFormattingHelpers.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000038 /* WorkStatusAndFormattingHelpers.swift */; };
 		E10000000000000000000039 /* WorkChatSessionView+Timeline.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000039 /* WorkChatSessionView+Timeline.swift */; };
+		E1000000000000000000003A /* WorkReasoningCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1000000000000000000003A /* WorkReasoningCard.swift */; };
+		E1000000000000000000003B /* WorkActivityIndicator.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1000000000000000000003B /* WorkActivityIndicator.swift */; };
 		E20000000000000000000042 /* FilesModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000042 /* FilesModels.swift */; };
 		E20000000000000000000043 /* FilesHelpers.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000043 /* FilesHelpers.swift */; };
 		E20000000000000000000044 /* FilesRootScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000044 /* FilesRootScreen.swift */; };
@@ -147,6 +149,8 @@
 		D10000000000000000000037 /* WorkEventMapping.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkEventMapping.swift; path = ADE/Views/Work/WorkEventMapping.swift; sourceTree = "<group>"; };
 		D10000000000000000000038 /* WorkStatusAndFormattingHelpers.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkStatusAndFormattingHelpers.swift; path = ADE/Views/Work/WorkStatusAndFormattingHelpers.swift; sourceTree = "<group>"; };
 		D10000000000000000000039 /* WorkChatSessionView+Timeline.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = "WorkChatSessionView+Timeline.swift"; path = "ADE/Views/Work/WorkChatSessionView+Timeline.swift"; sourceTree = "<group>"; };
+		D1000000000000000000003A /* WorkReasoningCard.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = "WorkReasoningCard.swift"; path = "ADE/Views/Work/WorkReasoningCard.swift"; sourceTree = "<group>"; };
+		D1000000000000000000003B /* WorkActivityIndicator.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkActivityIndicator.swift; path = ADE/Views/Work/WorkActivityIndicator.swift; sourceTree = "<group>"; };
 		D20000000000000000000042 /* FilesModels.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = FilesModels.swift; path = ADE/Views/Files/FilesModels.swift; sourceTree = "<group>"; };
 		D20000000000000000000043 /* FilesHelpers.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = FilesHelpers.swift; path = ADE/Views/Files/FilesHelpers.swift; sourceTree = "<group>"; };
 		D20000000000000000000044 /* FilesRootScreen.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = FilesRootScreen.swift; path = ADE/Views/Files/FilesRootScreen.swift; sourceTree = "<group>"; };
@@ -360,6 +364,8 @@
 				D1000000000000000000002A /* WorkChatSessionView.swift */,
 				D1000000000000000000002B /* WorkChatSessionView+Actions.swift */,
 				D10000000000000000000039 /* WorkChatSessionView+Timeline.swift */,
+				D1000000000000000000003A /* WorkReasoningCard.swift */,
+				D1000000000000000000003B /* WorkActivityIndicator.swift */,
 				D1000000000000000000002C /* WorkChatHeaderAndMessageViews.swift */,
 				D1000000000000000000002D /* WorkChatRichCardViews.swift */,
 				D1000000000000000000002E /* WorkChatComposerAndInputViews.swift */,
@@ -665,6 +671,8 @@
 				E1000000000000000000002A /* WorkChatSessionView.swift in Sources */,
 				E1000000000000000000002B /* WorkChatSessionView+Actions.swift in Sources */,
 				E10000000000000000000039 /* WorkChatSessionView+Timeline.swift in Sources */,
+				E1000000000000000000003A /* WorkReasoningCard.swift in Sources */,
+				E1000000000000000000003B /* WorkActivityIndicator.swift in Sources */,
 				E1000000000000000000002C /* WorkChatHeaderAndMessageViews.swift in Sources */,
 				E1000000000000000000002D /* WorkChatRichCardViews.swift in Sources */,
 				E1000000000000000000002E /* WorkChatComposerAndInputViews.swift in Sources */,

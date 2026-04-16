@@ -98,6 +98,12 @@ struct WorkSessionHeader: View {
 struct WorkChatMessageBubble: View {
   let message: WorkChatMessage
 
+  /// Provider string for the current chat session (e.g. "claude", "codex", "cursor").
+  /// Injected via `.environment(\.workChatProvider, ...)` by the session view.
+  /// When present and the message is from the assistant, a compact provider chip
+  /// renders next to the role label so users know which model wrote the turn.
+  @Environment(\.workChatProvider) private var sessionProvider
+
   var body: some View {
     HStack {
       if message.role == "assistant" {
@@ -119,6 +125,7 @@ struct WorkChatMessageBubble: View {
         Text(message.role == "assistant" ? "Assistant" : "You")
           .font(.caption.weight(.semibold))
           .foregroundStyle(ADEColor.textSecondary)
+        providerChip
         if let deliveryBadge {
           WorkDeliveryBadge(state: deliveryBadge)
         }
@@ -158,6 +165,45 @@ struct WorkChatMessageBubble: View {
       }
     }
     return nil
+  }
+
+  @ViewBuilder
+  private var providerChip: some View {
+    if message.role == "assistant",
+       let provider = sessionProvider?.trimmingCharacters(in: .whitespacesAndNewlines),
+       !provider.isEmpty {
+      let tint = providerTint(provider)
+      HStack(spacing: 4) {
+        Image(systemName: providerIcon(provider))
+          .font(.system(size: 8, weight: .bold))
+        Text(providerLabel(provider))
+          .font(.caption2.weight(.semibold))
+          .tracking(0.3)
+      }
+      .foregroundStyle(tint)
+      .padding(.horizontal, 6)
+      .padding(.vertical, 2)
+      .background(tint.opacity(0.12), in: Capsule())
+      .overlay(
+        Capsule().stroke(tint.opacity(0.22), lineWidth: 0.5)
+      )
+      .accessibilityLabel("Written by \(providerLabel(provider))")
+    }
+  }
+}
+
+/// Environment injection for the active chat session's provider string.
+/// The session view wraps the transcript in `.environment(\.workChatProvider, provider)`
+/// so every message bubble can render a provider chip without threading the
+/// value through each call site.
+private struct WorkChatProviderEnvironmentKey: EnvironmentKey {
+  static let defaultValue: String? = nil
+}
+
+extension EnvironmentValues {
+  var workChatProvider: String? {
+    get { self[WorkChatProviderEnvironmentKey.self] }
+    set { self[WorkChatProviderEnvironmentKey.self] = newValue }
   }
 }
 
