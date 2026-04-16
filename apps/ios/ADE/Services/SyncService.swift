@@ -52,6 +52,23 @@ func decodeHydrationPayload<T: Decodable>(_ raw: Any, as type: T.Type, domainLab
   }
 }
 
+private func syncFoundationObject(from value: RemoteJSONValue) -> Any {
+  switch value {
+  case .string(let string):
+    return string
+  case .number(let number):
+    return number
+  case .bool(let bool):
+    return bool
+  case .object(let object):
+    return object.mapValues(syncFoundationObject(from:))
+  case .array(let array):
+    return array.map(syncFoundationObject(from:))
+  case .null:
+    return NSNull()
+  }
+}
+
 enum InitialHydrationGate {
   static let defaultTimeoutNanoseconds: UInt64 = 15_000_000_000
   static let defaultPollIntervalNanoseconds: UInt64 = 200_000_000
@@ -1445,7 +1462,24 @@ final class SyncService: ObservableObject {
     try await sendDecodableCommand(action: "chat.listSessions", args: ["laneId": laneId, "includeAutomation": true], as: [AgentChatSessionSummary].self)
   }
 
-  func createChatSession(laneId: String, provider: String, model: String = "", reasoningEffort: String? = nil) async throws -> AgentChatSessionSummary {
+  func createChatSession(
+    laneId: String,
+    provider: String,
+    model: String = "",
+    reasoningEffort: String? = nil,
+    sessionProfile: String? = nil,
+    permissionMode: String? = nil,
+    interactionMode: String? = nil,
+    claudePermissionMode: String? = nil,
+    codexApprovalPolicy: String? = nil,
+    codexSandbox: String? = nil,
+    codexConfigSource: String? = nil,
+    opencodePermissionMode: String? = nil,
+    cursorModeId: String? = nil,
+    cursorConfigValues: [String: RemoteJSONValue]? = nil,
+    computerUse: RemoteJSONValue? = nil,
+    requestedCwd: String? = nil
+  ) async throws -> AgentChatSessionSummary {
     let trimmedModel = model.trimmingCharacters(in: .whitespacesAndNewlines)
     var args: [String: Any] = [
       "laneId": laneId,
@@ -1457,6 +1491,42 @@ final class SyncService: ObservableObject {
     }
     if let reasoningEffort, !reasoningEffort.isEmpty {
       args["reasoningEffort"] = reasoningEffort
+    }
+    if let sessionProfile, !sessionProfile.isEmpty {
+      args["sessionProfile"] = sessionProfile
+    }
+    if let permissionMode, !permissionMode.isEmpty {
+      args["permissionMode"] = permissionMode
+    }
+    if let interactionMode, !interactionMode.isEmpty {
+      args["interactionMode"] = interactionMode
+    }
+    if let claudePermissionMode, !claudePermissionMode.isEmpty {
+      args["claudePermissionMode"] = claudePermissionMode
+    }
+    if let codexApprovalPolicy, !codexApprovalPolicy.isEmpty {
+      args["codexApprovalPolicy"] = codexApprovalPolicy
+    }
+    if let codexSandbox, !codexSandbox.isEmpty {
+      args["codexSandbox"] = codexSandbox
+    }
+    if let codexConfigSource, !codexConfigSource.isEmpty {
+      args["codexConfigSource"] = codexConfigSource
+    }
+    if let opencodePermissionMode, !opencodePermissionMode.isEmpty {
+      args["opencodePermissionMode"] = opencodePermissionMode
+    }
+    if let cursorModeId, !cursorModeId.isEmpty {
+      args["cursorModeId"] = cursorModeId
+    }
+    if let cursorConfigValues, !cursorConfigValues.isEmpty {
+      args["cursorConfigValues"] = cursorConfigValues.mapValues(syncFoundationObject(from:))
+    }
+    if let computerUse {
+      args["computerUse"] = syncFoundationObject(from: computerUse)
+    }
+    if let requestedCwd, !requestedCwd.isEmpty {
+      args["requestedCwd"] = requestedCwd
     }
     return try await sendDecodableCommand(action: "chat.create", args: args, as: AgentChatSessionSummary.self)
   }

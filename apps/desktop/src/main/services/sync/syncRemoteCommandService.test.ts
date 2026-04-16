@@ -674,6 +674,58 @@ describe("createSyncRemoteCommandService", () => {
       );
     });
 
+    it("chat.create forwards runtime, profile, cursor config, and cwd fields", async () => {
+      await service.execute(makePayload("chat.create", {
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "cursor-agent",
+        sessionProfile: "workflow",
+        reasoningEffort: "medium",
+        permissionMode: "edit",
+        interactionMode: "default",
+        claudePermissionMode: "acceptEdits",
+        codexApprovalPolicy: "on-request",
+        codexSandbox: "workspace-write",
+        codexConfigSource: "flags",
+        opencodePermissionMode: "edit",
+        cursorModeId: "ask",
+        cursorConfigValues: {
+          mode: "ask",
+          enabled: true,
+          temperature: 0.5,
+        },
+        computerUse: {
+          enabled: true,
+        },
+        requestedCwd: "apps/ios",
+      }));
+
+      expect(agentChatService.createSession).toHaveBeenCalledWith({
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "cursor-agent",
+        sessionProfile: "workflow",
+        reasoningEffort: "medium",
+        permissionMode: "edit",
+        interactionMode: "default",
+        claudePermissionMode: "acceptEdits",
+        codexApprovalPolicy: "on-request",
+        codexSandbox: "workspace-write",
+        codexConfigSource: "flags",
+        opencodePermissionMode: "edit",
+        cursorModeId: "ask",
+        cursorConfigValues: {
+          mode: "ask",
+          enabled: true,
+          temperature: 0.5,
+        },
+        computerUse: {
+          enabled: true,
+        },
+        requestedCwd: "apps/ios",
+      });
+    });
+
     it("chat.send requires sessionId and text", async () => {
       const result = await service.execute(makePayload("chat.send", {
         sessionId: "sess-1",
@@ -698,7 +750,7 @@ describe("createSyncRemoteCommandService", () => {
         cursorConfigValues: {
           mode: "ask",
           enabled: true,
-          ignored: 42,
+          temperature: 0.5,
         },
       }));
 
@@ -708,6 +760,7 @@ describe("createSyncRemoteCommandService", () => {
         cursorConfigValues: {
           mode: "ask",
           enabled: true,
+          temperature: 0.5,
         },
       });
     });

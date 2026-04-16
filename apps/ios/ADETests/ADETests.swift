@@ -1038,6 +1038,66 @@ final class ADETests: XCTestCase {
     database.close()
   }
 
+  func testDatabaseReplaceTerminalSessionsPreservesRuntimeAndResumeMetadata() throws {
+    let baseURL = makeTemporaryDirectory()
+    let database = makeControllerHydrationDatabase(baseURL: baseURL)
+    XCTAssertNil(database.initializationError)
+
+    try insertHydrationProjectGraph(into: database)
+    try database.replaceTerminalSessions([
+      TerminalSessionSummary(
+        id: "session-1",
+        laneId: "lane-primary",
+        laneName: "Primary",
+        ptyId: nil,
+        tracked: true,
+        pinned: true,
+        manuallyNamed: true,
+        goal: "Resume mobile parity",
+        toolType: "codex-chat",
+        title: "Named chat",
+        status: "running",
+        startedAt: "2026-03-17T00:10:00.000Z",
+        endedAt: nil,
+        exitCode: nil,
+        transcriptPath: "/tmp/session-1.log",
+        headShaStart: nil,
+        headShaEnd: nil,
+        lastOutputPreview: "Waiting for approval",
+        summary: "Follow-up needed",
+        runtimeState: "waiting-input",
+        resumeCommand: "codex resume thread-1",
+        resumeMetadata: TerminalResumeMetadata(
+          provider: "codex",
+          targetKind: "thread",
+          targetId: "thread-1",
+          launch: TerminalResumeLaunchConfig(
+            permissionMode: "edit",
+            claudePermissionMode: nil,
+            codexApprovalPolicy: "on-request",
+            codexSandbox: "workspace-write",
+            codexConfigSource: "flags"
+          ),
+          target: nil,
+          permissionMode: "edit"
+        ),
+        chatIdleSinceAt: "2026-03-17T00:11:00.000Z"
+      ),
+    ])
+
+    let session = try XCTUnwrap(database.fetchSessions().first)
+    XCTAssertEqual(session.runtimeState, "waiting-input")
+    XCTAssertEqual(session.chatIdleSinceAt, "2026-03-17T00:11:00.000Z")
+    XCTAssertEqual(session.resumeMetadata?.provider, "codex")
+    XCTAssertEqual(session.resumeMetadata?.targetKind, "thread")
+    XCTAssertEqual(session.resumeMetadata?.targetId, "thread-1")
+    XCTAssertEqual(session.resumeMetadata?.launch.codexApprovalPolicy, "on-request")
+    XCTAssertEqual(session.resumeMetadata?.launch.codexSandbox, "workspace-write")
+    XCTAssertEqual(session.resumeMetadata?.launch.codexConfigSource, "flags")
+    XCTAssertTrue(session.manuallyNamed ?? false)
+    database.close()
+  }
+
   func testDatabaseMigratesLegacyTerminalSessionsSchemaToStoreLaneName() throws {
     let baseURL = makeTemporaryDirectory()
     let database = DatabaseService(baseURL: baseURL, bootstrapSQL: """
@@ -2180,6 +2240,7 @@ final class ADETests: XCTestCase {
       "summary": "Primary chat session",
       "awaitingInput": true,
       "threadId": "thread-1",
+      "requestedCwd": "apps/ios/ADE",
     ]
 
     let data = try JSONSerialization.data(withJSONObject: payload)
@@ -2196,6 +2257,7 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(summary.cursorConfigValues?["temperature"], .number(0.5))
     XCTAssertEqual(summary.completion?.artifacts?.first?.reference, "docs/transcript.md")
     XCTAssertTrue(summary.awaitingInput ?? false)
+    XCTAssertEqual(summary.requestedCwd, "apps/ios/ADE")
   }
 
   func testMergeWorkChatTranscriptsReplacesDuplicatesAndSortsByTime() {
@@ -2489,6 +2551,16 @@ final class ADETests: XCTestCase {
 
     XCTAssertEqual(targets.filePaths, ["README.md"])
     XCTAssertTrue(targets.pullRequestNumbers.isEmpty)
+  }
+
+  func testNormalizeWorkFileReferenceResolvesRelativePathsFromRequestedCwd() {
+    let resolved = normalizeWorkFileReference(
+      "Helpers/WorkView.swift",
+      workspaceRoot: "/repo/ade",
+      requestedCwd: "apps/ios/ADE"
+    )
+
+    XCTAssertEqual(resolved, "apps/ios/ADE/Helpers/WorkView.swift")
   }
 
   func testADEImageCacheStoresAndRestoresDiskBackedEntries() {
@@ -2904,7 +2976,8 @@ final class ADETests: XCTestCase {
       lastOutputPreview: nil,
       summary: nil,
       awaitingInput: awaitingInput,
-      threadId: nil
+      threadId: nil,
+      requestedCwd: nil
     )
   }
 
@@ -2935,6 +3008,7 @@ final class ADETests: XCTestCase {
       summary: nil,
       runtimeState: runtimeState,
       resumeCommand: nil,
+      resumeMetadata: nil,
       chatIdleSinceAt: nil
     )
   }

@@ -62,6 +62,7 @@ final class DatabaseService {
     let ptyId: String?
     let tracked: Bool
     let pinned: Bool
+    let manuallyNamed: Bool
     let goal: String?
     let toolType: String?
     let title: String
@@ -74,7 +75,10 @@ final class DatabaseService {
     let headShaEnd: String?
     let lastOutputPreview: String?
     let summary: String?
+    let runtimeState: String
     let resumeCommand: String?
+    let resumeMetadata: TerminalResumeMetadata?
+    let chatIdleSinceAt: String?
   }
 
   private struct ComputerUseArtifactRow {
@@ -700,8 +704,8 @@ final class DatabaseService {
           insert into terminal_sessions(
             id, lane_id, lane_name, pty_id, tracked, goal, tool_type, pinned, title, started_at, ended_at,
             exit_code, transcript_path, head_sha_start, head_sha_end, status, last_output_preview,
-            last_output_at, summary, resume_command
-          ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            last_output_at, summary, runtime_state, resume_command, resume_metadata_json, manually_named, chat_idle_since_at
+          ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """) { statement in
           try bindText(session.id, to: statement, index: 1)
           try bindText(session.laneId, to: statement, index: 2)
@@ -758,10 +762,18 @@ final class DatabaseService {
           } else {
             sqlite3_bind_null(statement, 19)
           }
+          try bindText(session.runtimeState, to: statement, index: 20)
           if let resumeCommand = session.resumeCommand {
-            try bindText(resumeCommand, to: statement, index: 20)
+            try bindText(resumeCommand, to: statement, index: 21)
           } else {
-            sqlite3_bind_null(statement, 20)
+            sqlite3_bind_null(statement, 21)
+          }
+          try bindOptionalJson(session.resumeMetadata, to: statement, index: 22)
+          sqlite3_bind_int(statement, 23, session.manuallyNamed == true ? 1 : 0)
+          if let chatIdleSinceAt = session.chatIdleSinceAt {
+            try bindText(chatIdleSinceAt, to: statement, index: 24)
+          } else {
+            sqlite3_bind_null(statement, 24)
           }
         }
       }
@@ -866,9 +878,10 @@ final class DatabaseService {
 
   func fetchSessions() -> [TerminalSessionSummary] {
     let sql = """
-      select s.id, s.lane_id, coalesce(nullif(s.lane_name, ''), l.name, s.lane_id), s.pty_id, s.tracked, s.pinned, s.goal, s.tool_type,
+      select s.id, s.lane_id, coalesce(nullif(s.lane_name, ''), l.name, s.lane_id), s.pty_id, s.tracked, s.pinned, s.manually_named, s.goal, s.tool_type,
              s.title, s.status, s.started_at, s.ended_at, s.exit_code, s.transcript_path,
-             s.head_sha_start, s.head_sha_end, s.last_output_preview, s.summary, s.resume_command
+             s.head_sha_start, s.head_sha_end, s.last_output_preview, s.summary, s.runtime_state,
+             s.resume_command, s.resume_metadata_json, s.chat_idle_since_at
         from terminal_sessions s
         left join lanes l on l.id = s.lane_id
        order by s.started_at desc
@@ -883,19 +896,23 @@ final class DatabaseService {
         ptyId: stringValue(statement, index: 3),
         tracked: sqlite3_column_int(statement, 4) == 1,
         pinned: sqlite3_column_int(statement, 5) == 1,
-        goal: stringValue(statement, index: 6),
-        toolType: stringValue(statement, index: 7),
-        title: stringValue(statement, index: 8) ?? "",
-        status: stringValue(statement, index: 9) ?? "unknown",
-        startedAt: stringValue(statement, index: 10) ?? "",
-        endedAt: stringValue(statement, index: 11),
-        exitCode: columnIsNull(statement, index: 12) ? nil : Int(sqlite3_column_int64(statement, 12)),
-        transcriptPath: stringValue(statement, index: 13) ?? "",
-        headShaStart: stringValue(statement, index: 14),
-        headShaEnd: stringValue(statement, index: 15),
-        lastOutputPreview: stringValue(statement, index: 16),
-        summary: stringValue(statement, index: 17),
-        resumeCommand: stringValue(statement, index: 18)
+        manuallyNamed: sqlite3_column_int(statement, 6) == 1,
+        goal: stringValue(statement, index: 7),
+        toolType: stringValue(statement, index: 8),
+        title: stringValue(statement, index: 9) ?? "",
+        status: stringValue(statement, index: 10) ?? "unknown",
+        startedAt: stringValue(statement, index: 11) ?? "",
+        endedAt: stringValue(statement, index: 12),
+        exitCode: columnIsNull(statement, index: 13) ? nil : Int(sqlite3_column_int64(statement, 13)),
+        transcriptPath: stringValue(statement, index: 14) ?? "",
+        headShaStart: stringValue(statement, index: 15),
+        headShaEnd: stringValue(statement, index: 16),
+        lastOutputPreview: stringValue(statement, index: 17),
+        summary: stringValue(statement, index: 18),
+        runtimeState: stringValue(statement, index: 19) ?? runtimeState(for: stringValue(statement, index: 10) ?? "unknown"),
+        resumeCommand: stringValue(statement, index: 20),
+        resumeMetadata: decodeJson(stringValue(statement, index: 21), as: TerminalResumeMetadata.self),
+        chatIdleSinceAt: stringValue(statement, index: 22)
       )
     }.map { row in
       TerminalSessionSummary(
@@ -905,7 +922,7 @@ final class DatabaseService {
         ptyId: row.ptyId,
         tracked: row.tracked,
         pinned: row.pinned,
-        manuallyNamed: nil,
+        manuallyNamed: row.manuallyNamed,
         goal: row.goal,
         toolType: row.toolType,
         title: row.title,
@@ -918,9 +935,10 @@ final class DatabaseService {
         headShaEnd: row.headShaEnd,
         lastOutputPreview: row.lastOutputPreview,
         summary: row.summary,
-        runtimeState: runtimeState(for: row.status),
+        runtimeState: row.runtimeState,
         resumeCommand: row.resumeCommand,
-        chatIdleSinceAt: nil
+        resumeMetadata: row.resumeMetadata,
+        chatIdleSinceAt: row.chatIdleSinceAt
       )
     }
   }
@@ -1555,6 +1573,16 @@ final class DatabaseService {
       tableName: "terminal_sessions",
       columnName: "manually_named",
       definition: "integer not null default 0"
+    )
+    try ensureColumn(
+      tableName: "terminal_sessions",
+      columnName: "runtime_state",
+      definition: "text not null default 'running'"
+    )
+    try ensureColumn(
+      tableName: "terminal_sessions",
+      columnName: "chat_idle_since_at",
+      definition: "text"
     )
     try exec("""
       create table if not exists lane_list_snapshots (

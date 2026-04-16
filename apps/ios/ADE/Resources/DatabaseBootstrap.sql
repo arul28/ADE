@@ -89,8 +89,10 @@ create table if not exists terminal_sessions (
       last_output_preview text,
       last_output_at text,
       summary text,
+      runtime_state text not null default 'running',
       resume_command text,
       resume_metadata_json text,
+      chat_idle_since_at text,
       foreign key(lane_id) references lanes(id)
     );
 
@@ -107,6 +109,10 @@ alter table terminal_sessions add column resume_command text;
 alter table terminal_sessions add column resume_metadata_json text;
 
 alter table terminal_sessions add column manually_named integer not null default 0;
+
+alter table terminal_sessions add column runtime_state text not null default 'running';
+
+alter table terminal_sessions add column chat_idle_since_at text;
 
 create table if not exists process_definitions (
       id text primary key,

@@ -731,6 +731,7 @@ struct WorkTabView: View {
       summary: summary.summary,
       runtimeState: normalizedRuntimeState(for: summary),
       resumeCommand: nil,
+      resumeMetadata: nil,
       chatIdleSinceAt: summary.idleSinceAt
     )
   }
@@ -2661,7 +2662,11 @@ private struct WorkSessionDestinationView: View {
         return
       }
 
-      let relativePath = normalizeWorkFileReference(path, workspaceRoot: workspace.rootPath)
+      let relativePath = normalizeWorkFileReference(
+        path,
+        workspaceRoot: workspace.rootPath,
+        requestedCwd: chatSummary?.requestedCwd
+      )
       guard !relativePath.isEmpty else {
         errorMessage = "ADE could not resolve that file path into the current workspace."
         return
@@ -5212,9 +5217,22 @@ private func normalizedWorkReferenceFilePath(_ rawPath: String) -> String? {
   return candidate
 }
 
-private func normalizeWorkFileReference(_ rawPath: String, workspaceRoot: String) -> String {
+func normalizeWorkFileReference(_ rawPath: String, workspaceRoot: String, requestedCwd: String? = nil) -> String {
   guard let normalized = normalizedWorkReferenceFilePath(rawPath) else { return "" }
   let root = workspaceRoot.hasSuffix("/") ? String(workspaceRoot.dropLast()) : workspaceRoot
+
+  func normalizedRequestedCwdPath() -> String? {
+    guard let requestedCwd else { return nil }
+    let trimmed = requestedCwd.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else { return nil }
+    if trimmed.hasPrefix(root + "/") {
+      return String(trimmed.dropFirst(root.count + 1))
+    }
+    if trimmed.hasPrefix("/") {
+      return nil
+    }
+    return trimmed.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+  }
 
   if normalized.hasPrefix(root + "/") {
     return String(normalized.dropFirst(root.count + 1))
@@ -5222,6 +5240,16 @@ private func normalizeWorkFileReference(_ rawPath: String, workspaceRoot: String
 
   if normalized.hasPrefix("/") {
     return ""
+  }
+
+  if let requestedCwdPath = normalizedRequestedCwdPath(), !requestedCwdPath.isEmpty {
+    let baseURL = URL(fileURLWithPath: requestedCwdPath, isDirectory: true)
+    let resolvedURL = baseURL.appendingPathComponent(normalized).standardizedFileURL
+    let resolvedPath = resolvedURL.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+    if resolvedPath.isEmpty || resolvedPath.hasPrefix("../") || resolvedPath.contains("/../") {
+      return ""
+    }
+    return resolvedPath
   }
 
   return normalized

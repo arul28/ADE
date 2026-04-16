@@ -381,6 +381,7 @@ struct AgentChatSessionSummary: Codable, Identifiable, Equatable {
   var summary: String?
   var awaitingInput: Bool?
   var threadId: String?
+  var requestedCwd: String?
 }
 
 struct AgentChatSession: Codable, Identifiable, Equatable {
@@ -1186,6 +1187,23 @@ struct ComputerUseArtifactSummary: Codable, Identifiable, Equatable {
   var relation: String
 }
 
+struct TerminalResumeLaunchConfig: Codable, Equatable {
+  var permissionMode: String?
+  var claudePermissionMode: String?
+  var codexApprovalPolicy: String?
+  var codexSandbox: String?
+  var codexConfigSource: String?
+}
+
+struct TerminalResumeMetadata: Codable, Equatable {
+  var provider: String
+  var targetKind: String
+  var targetId: String?
+  var launch: TerminalResumeLaunchConfig
+  var target: String?
+  var permissionMode: String?
+}
+
 struct FilesQuickOpenItem: Codable, Identifiable, Equatable {
   var id: String { path }
   var path: String
@@ -1222,6 +1240,7 @@ struct TerminalSessionSummary: Codable, Identifiable, Equatable {
   var summary: String?
   var runtimeState: String
   var resumeCommand: String?
+  var resumeMetadata: TerminalResumeMetadata?
   var chatIdleSinceAt: String?
 }
 

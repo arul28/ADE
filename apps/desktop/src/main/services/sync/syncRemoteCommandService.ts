@@ -140,6 +140,23 @@ function parseAgentChatFileRefs(value: unknown): AgentChatFileRef[] | undefined 
   return attachments;
 }
 
+function parseCursorConfigValues(
+  value: unknown,
+): AgentChatUpdateSessionArgs["cursorConfigValues"] | AgentChatCreateArgs["cursorConfigValues"] {
+  if (value == null) return null;
+  if (!isRecord(value)) return {};
+  return Object.fromEntries(
+    Object.entries(value)
+      .filter((entry): entry is [string, string | boolean | number] => (
+        typeof entry[1] === "string"
+        || typeof entry[1] === "boolean"
+        || (typeof entry[1] === "number" && Number.isFinite(entry[1]))
+      ))
+      .map(([key, entryValue]): [string, string | boolean | number] => [key.trim(), entryValue])
+      .filter(([key]) => key.length > 0),
+  );
+}
+
 function requireString(value: unknown, message: string): string {
   const parsed = asTrimmedString(value);
   if (!parsed) throw new Error(message);
@@ -387,13 +404,28 @@ function parseAgentChatGetSummaryArgs(value: Record<string, unknown>): AgentChat
 }
 
 function parseAgentChatCreateArgs(value: Record<string, unknown>): AgentChatCreateArgs {
-  return {
+  const parsed: AgentChatCreateArgs = {
     laneId: requireString(value.laneId, "chat.create requires laneId."),
     provider: (asTrimmedString(value.provider) ?? "codex") as AgentChatCreateArgs["provider"],
     model: asTrimmedString(value.model) ?? "",
     ...(asTrimmedString(value.modelId) ? { modelId: asTrimmedString(value.modelId)! } : {}),
     ...(asTrimmedString(value.reasoningEffort) ? { reasoningEffort: asTrimmedString(value.reasoningEffort)! } : {}),
   };
+
+  if ("sessionProfile" in value) parsed.sessionProfile = value.sessionProfile == null ? undefined : asTrimmedString(value.sessionProfile) as AgentChatCreateArgs["sessionProfile"];
+  if ("permissionMode" in value) parsed.permissionMode = value.permissionMode == null ? undefined : asTrimmedString(value.permissionMode) as AgentChatCreateArgs["permissionMode"];
+  if ("interactionMode" in value) parsed.interactionMode = value.interactionMode == null ? null : asTrimmedString(value.interactionMode) as AgentChatCreateArgs["interactionMode"];
+  if ("claudePermissionMode" in value) parsed.claudePermissionMode = value.claudePermissionMode == null ? undefined : asTrimmedString(value.claudePermissionMode) as AgentChatCreateArgs["claudePermissionMode"];
+  if ("codexApprovalPolicy" in value) parsed.codexApprovalPolicy = value.codexApprovalPolicy == null ? undefined : asTrimmedString(value.codexApprovalPolicy) as AgentChatCreateArgs["codexApprovalPolicy"];
+  if ("codexSandbox" in value) parsed.codexSandbox = value.codexSandbox == null ? undefined : asTrimmedString(value.codexSandbox) as AgentChatCreateArgs["codexSandbox"];
+  if ("codexConfigSource" in value) parsed.codexConfigSource = value.codexConfigSource == null ? undefined : asTrimmedString(value.codexConfigSource) as AgentChatCreateArgs["codexConfigSource"];
+  if ("opencodePermissionMode" in value) parsed.opencodePermissionMode = value.opencodePermissionMode == null ? undefined : asTrimmedString(value.opencodePermissionMode) as AgentChatCreateArgs["opencodePermissionMode"];
+  if ("cursorModeId" in value) parsed.cursorModeId = value.cursorModeId == null ? null : asTrimmedString(value.cursorModeId) ?? null;
+  if ("cursorConfigValues" in value) parsed.cursorConfigValues = parseCursorConfigValues(value.cursorConfigValues);
+  if ("computerUse" in value) parsed.computerUse = value.computerUse == null ? null : value.computerUse as AgentChatCreateArgs["computerUse"];
+  if ("requestedCwd" in value) parsed.requestedCwd = value.requestedCwd == null ? undefined : requireString(value.requestedCwd, "chat.create requires a non-empty requestedCwd when provided.");
+
+  return parsed;
 }
 
 function parseAgentChatSendArgs(value: Record<string, unknown>): AgentChatSendArgs {
@@ -496,12 +528,7 @@ function parseAgentChatUpdateSessionArgs(value: Record<string, unknown>): AgentC
   if ("opencodePermissionMode" in value) parsed.opencodePermissionMode = value.opencodePermissionMode == null ? undefined : asTrimmedString(value.opencodePermissionMode) as AgentChatUpdateSessionArgs["opencodePermissionMode"];
   if ("cursorModeId" in value) parsed.cursorModeId = value.cursorModeId == null ? null : asTrimmedString(value.cursorModeId) ?? null;
   if ("cursorConfigValues" in value) {
-    parsed.cursorConfigValues = value.cursorConfigValues == null
-      ? null
-      : Object.fromEntries(
-          Object.entries(isRecord(value.cursorConfigValues) ? value.cursorConfigValues : {})
-            .filter((entry): entry is [string, string | boolean] => typeof entry[1] === "string" || typeof entry[1] === "boolean"),
-        );
+    parsed.cursorConfigValues = parseCursorConfigValues(value.cursorConfigValues);
   }
   if ("computerUse" in value) parsed.computerUse = value.computerUse == null ? null : value.computerUse as AgentChatUpdateSessionArgs["computerUse"];
   if ("manuallyNamed" in value) parsed.manuallyNamed = value.manuallyNamed === true;

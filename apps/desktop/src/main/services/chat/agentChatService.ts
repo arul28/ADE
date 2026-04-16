@@ -2240,6 +2240,10 @@ function normalizeCursorConfigValueRecord(
       normalized[key] = rawValue;
       continue;
     }
+    if (typeof rawValue === "number" && Number.isFinite(rawValue)) {
+      normalized[key] = rawValue;
+      continue;
+    }
     if (typeof rawValue === "string") {
       const trimmed = rawValue.trim();
       if (trimmed.length) normalized[key] = trimmed;
@@ -11265,7 +11269,7 @@ export function createAgentChatService(args: {
           configId: option.id,
           ...(typeof desiredValue === "boolean"
             ? { type: "boolean" as const, value: desiredValue }
-            : { value: desiredValue }),
+            : { value: typeof desiredValue === "number" ? String(desiredValue) : desiredValue }),
         });
         applyCursorConfigSnapshot(managed, runtime, readCursorAcpConfigSnapshot(response.configOptions));
       } catch (error) {
@@ -12641,6 +12645,9 @@ export function createAgentChatService(args: {
       ...(liveSession?.cursorModeId !== undefined || persisted?.cursorModeId !== undefined
         ? { cursorModeId: liveSession?.cursorModeId ?? persisted?.cursorModeId ?? null }
         : {}),
+      ...(liveSession?.cursorConfigValues || persisted?.cursorConfigValues
+        ? { cursorConfigValues: liveSession?.cursorConfigValues ?? persisted?.cursorConfigValues }
+        : {}),
       ...(liveSession?.permissionMode || persisted?.permissionMode
         ? { permissionMode: liveSession?.permissionMode ?? persisted?.permissionMode }
         : {}),
@@ -12665,6 +12672,9 @@ export function createAgentChatService(args: {
       ...(hasLivePendingInput(liveManaged) ? { awaitingInput: true } : {}),
       ...(liveSession?.threadId || persisted?.threadId
         ? { threadId: liveSession?.threadId ?? persisted?.threadId }
+        : {}),
+      ...(liveSession?.requestedCwd != null || persisted?.requestedCwd != null
+        ? { requestedCwd: liveSession?.requestedCwd ?? persisted?.requestedCwd ?? null }
         : {})
     } satisfies AgentChatSessionSummary;
   };
