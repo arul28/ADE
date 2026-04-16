@@ -2,6 +2,12 @@ import SwiftUI
 import UIKit
 import AVKit
 
+/// Tool results longer than this threshold collapse to the first N characters
+/// with a "Show all (N chars)" toggle so the transcript stays scannable.
+/// Matches the desktop `TOOL_RESULT_TRUNCATE_LIMIT` in
+/// apps/desktop/src/renderer/components/chat/AgentChatMessageList.tsx:802.
+let workToolResultTruncateLimit = 500
+
 struct WorkToolCardView: View {
   let toolCard: WorkToolCardModel
   let references: WorkNavigationTargets
@@ -9,6 +15,8 @@ struct WorkToolCardView: View {
   let onToggle: () -> Void
   let onOpenFile: (String) -> Void
   let onOpenPr: (Int) -> Void
+
+  @State private var resultExpanded = false
 
   var body: some View {
     VStack(alignment: .leading, spacing: 10) {
@@ -25,6 +33,13 @@ struct WorkToolCardView: View {
               Text(formattedSessionDuration(startedAt: toolCard.startedAt, endedAt: toolCard.completedAt))
                 .font(.caption2.monospacedDigit())
                 .foregroundStyle(ADEColor.textMuted)
+            }
+            if !isExpanded, let preview = workToolResultPreview(toolCard.resultText) {
+              Text(preview)
+                .font(.caption2.monospaced())
+                .foregroundStyle(ADEColor.textSecondary)
+                .lineLimit(1)
+                .truncationMode(.tail)
             }
           }
           Spacer()
@@ -75,7 +90,21 @@ struct WorkToolCardView: View {
             WorkStructuredOutputBlock(title: "Arguments", text: argsText)
           }
           if let resultText = toolCard.resultText, !resultText.isEmpty {
-            WorkStructuredOutputBlock(title: "Result", text: resultText)
+            let truncated = workToolResultTruncate(resultText, expanded: resultExpanded)
+            WorkStructuredOutputBlock(title: "Result", text: truncated.text)
+            if truncated.didTruncate {
+              Button {
+                resultExpanded.toggle()
+              } label: {
+                Text(resultExpanded
+                  ? "Collapse"
+                  : "Show all (\(workToolResultByteLabel(resultText)))")
+                  .font(.caption2.weight(.semibold))
+                  .foregroundStyle(ADEColor.accent)
+              }
+              .buttonStyle(.plain)
+              .accessibilityLabel(resultExpanded ? "Collapse tool result" : "Show full tool result")
+            }
           }
         }
       }
@@ -101,6 +130,38 @@ struct WorkToolCardView: View {
     case .failed: return "xmark.circle.fill"
     }
   }
+}
+
+/// One-line summary of a tool result for the collapsed-card header. Returns
+/// the first non-empty line (trimmed) or `nil` when the result is empty.
+func workToolResultPreview(_ text: String?) -> String? {
+  guard let text, !text.isEmpty else { return nil }
+  for line in text.split(separator: "\n") {
+    let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+    if !trimmed.isEmpty {
+      return trimmed
+    }
+  }
+  return nil
+}
+
+/// Returns the text to render in the result block, plus whether it was
+/// actually truncated. `expanded == true` always returns the full text.
+func workToolResultTruncate(_ text: String, expanded: Bool) -> (text: String, didTruncate: Bool) {
+  guard !expanded, text.count > workToolResultTruncateLimit else {
+    return (text, didTruncate: !expanded && text.count > workToolResultTruncateLimit)
+  }
+  let end = text.index(text.startIndex, offsetBy: workToolResultTruncateLimit)
+  return (String(text[..<end]) + "…", didTruncate: true)
+}
+
+/// Short "N chars" label used in the "Show all" affordance. Uses the raw
+/// character count — this is display copy, not a byte-precise measurement.
+func workToolResultByteLabel(_ text: String) -> String {
+  let count = text.count
+  if count < 1000 { return "\(count) chars" }
+  let rounded = Double(count) / 1000.0
+  return String(format: "%.1fk chars", rounded)
 }
 
 struct WorkStructuredOutputBlock: View {
@@ -339,6 +400,14 @@ struct WorkEventCardView: View {
   }
 
   var body: some View {
+    if card.kind == "contextCompact" {
+      WorkContextCompactDivider(summary: card.body)
+    } else {
+      defaultBody
+    }
+  }
+
+  private var defaultBody: some View {
     VStack(alignment: .leading, spacing: 10) {
       HStack(alignment: .top, spacing: 10) {
         Image(systemName: card.icon)
@@ -424,3 +493,4 @@ struct WorkEventCardView: View {
     }
   }
 }
+

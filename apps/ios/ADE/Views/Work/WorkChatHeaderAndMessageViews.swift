@@ -98,11 +98,19 @@ struct WorkSessionHeader: View {
 struct WorkChatMessageBubble: View {
   let message: WorkChatMessage
 
+  /// When true, this bubble is the active assistant message in a streaming
+  /// turn. Drives the streaming shimmer + accent glow treatment. Defaults to
+  /// `false` so existing call sites keep working; the session view sets it
+  /// to `true` for the latest assistant message while `sessionStatus == "active"`.
+  var isLive: Bool = false
+
   /// Provider string for the current chat session (e.g. "claude", "codex", "cursor").
   /// Injected via `.environment(\.workChatProvider, ...)` by the session view.
   /// When present and the message is from the assistant, a compact provider chip
   /// renders next to the role label so users know which model wrote the turn.
   @Environment(\.workChatProvider) private var sessionProvider
+
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
   var body: some View {
     HStack {
@@ -143,6 +151,7 @@ struct WorkChatMessageBubble: View {
       RoundedRectangle(cornerRadius: 18, style: .continuous)
         .fill(message.role == "assistant" ? ADEColor.accent.opacity(0.08) : ADEColor.surfaceBackground.opacity(0.7))
     )
+    .adeStreamingShimmer(isActive: isLive && message.role == "assistant", cornerRadius: 18)
     .contextMenu {
       Button {
         UIPasteboard.general.string = message.markdown

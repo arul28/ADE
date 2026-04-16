@@ -3969,6 +3969,60 @@ final class ADETests: XCTestCase {
     }
     return dict
   }
+
+  // MARK: - Chat polish helpers (Task #14)
+
+  func testWorkToolResultPreviewReturnsFirstNonEmptyLine() {
+    XCTAssertNil(workToolResultPreview(nil))
+    XCTAssertNil(workToolResultPreview(""))
+    XCTAssertEqual(workToolResultPreview("   \n\nHello\nWorld"), "Hello")
+    XCTAssertEqual(workToolResultPreview("  padded line  "), "padded line")
+  }
+
+  func testWorkToolResultTruncateShortTextIsUntouched() {
+    let short = String(repeating: "a", count: workToolResultTruncateLimit)
+    let (text, didTruncate) = workToolResultTruncate(short, expanded: false)
+    XCTAssertEqual(text, short)
+    XCTAssertFalse(didTruncate)
+  }
+
+  func testWorkToolResultTruncateLongTextIsTrimmedWithEllipsis() {
+    let long = String(repeating: "a", count: workToolResultTruncateLimit + 100)
+    let (text, didTruncate) = workToolResultTruncate(long, expanded: false)
+    XCTAssertTrue(didTruncate)
+    XCTAssertEqual(text.count, workToolResultTruncateLimit + 1)  // +1 for the ellipsis
+    XCTAssertTrue(text.hasSuffix("…"))
+  }
+
+  func testWorkToolResultTruncateExpandedReturnsFullText() {
+    let long = String(repeating: "a", count: workToolResultTruncateLimit + 100)
+    let (text, didTruncate) = workToolResultTruncate(long, expanded: true)
+    XCTAssertEqual(text, long)
+    XCTAssertFalse(didTruncate)
+  }
+
+  func testWorkToolResultByteLabelFormatsSmallAndLargeCounts() {
+    XCTAssertEqual(workToolResultByteLabel(String(repeating: "a", count: 450)), "450 chars")
+    XCTAssertEqual(workToolResultByteLabel(String(repeating: "a", count: 1800)), "1.8k chars")
+  }
+
+  func testWorkContextCompactSummaryParsesAutoAndTokens() {
+    let parsed = WorkContextCompactSummary.parse("auto compact freed ~12,400 tokens")
+    XCTAssertEqual(parsed.triggerLabel, "AUTO")
+    XCTAssertEqual(parsed.tokensFreedLabel, "~12k tokens freed")
+  }
+
+  func testWorkContextCompactSummaryParsesManualTriggerWithoutTokens() {
+    let parsed = WorkContextCompactSummary.parse("Manual compaction ran")
+    XCTAssertEqual(parsed.triggerLabel, "MANUAL")
+    XCTAssertNil(parsed.tokensFreedLabel)
+  }
+
+  func testWorkContextCompactSummaryEmptyInputReturnsDefaults() {
+    let parsed = WorkContextCompactSummary.parse(nil)
+    XCTAssertNil(parsed.triggerLabel)
+    XCTAssertNil(parsed.tokensFreedLabel)
+  }
 }
 
 private extension Collection {
