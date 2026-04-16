@@ -268,20 +268,10 @@ struct WorkChatSessionView: View {
 
   var streamingStatusSection: AnyView {
     AnyView(
-      Group {
-        if sessionStatus == "active" && isLive {
-          HStack(spacing: 10) {
-            ProgressView()
-              .controlSize(.small)
-            Text("Streaming new output…")
-              .font(.caption)
-              .foregroundStyle(ADEColor.textSecondary)
-          }
-          .padding(.horizontal, 12)
-          .padding(.vertical, 10)
-          .background(ADEColor.surfaceBackground.opacity(0.55), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-        }
-      }
+      WorkActivityIndicator(
+        transcript: transcript,
+        isStreaming: sessionStatus == "active" && isLive
+      )
     )
   }
 
@@ -445,6 +435,7 @@ struct WorkChatSessionView: View {
             }
         }
         .padding(16)
+        .environment(\.workChatProvider, chatSummary?.provider)
       }
       .scrollIndicators(.hidden)
       .adeScreenBackground()
