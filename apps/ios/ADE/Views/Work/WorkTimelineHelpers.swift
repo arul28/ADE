@@ -208,18 +208,12 @@ func buildWorkEventCards(from transcript: [WorkChatEnvelope]) -> [WorkEventCardM
         bullets: detail.map { [$0] } ?? [],
         metadata: [category.replacingOccurrences(of: "_", with: " ").capitalized]
       )
-    case .done(let status, let summary, _, _):
-      return WorkEventCardModel(
-        id: envelope.id,
-        kind: "done",
-        title: "Turn finished",
-        icon: status == "completed" ? "checkmark.circle.fill" : status == "failed" ? "xmark.circle.fill" : "pause.circle.fill",
-        tint: status == "completed" ? .success : status == "failed" ? .danger : .warning,
-        timestamp: envelope.timestamp,
-        body: summary.isEmpty ? nil : summary,
-        bullets: [],
-        metadata: [status.replacingOccurrences(of: "_", with: " ").capitalized]
-      )
+    case .done:
+      // The Turn status card already marks completion and the session usage
+      // summary card at the top of the chat aggregates token spend. Rendering
+      // a "Turn finished" card just dumps the host's raw summary string
+      // (often a JSON usage blob) into the transcript, which reads as noise.
+      return nil
     case .promptSuggestion(let text, _):
       return WorkEventCardModel(
         id: envelope.id,
