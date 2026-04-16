@@ -12,6 +12,7 @@ struct PRsTabView: View {
   @State private var laneSnapshots: [LaneListSnapshot] = []
   @State private var integrationProposals: [IntegrationProposal] = []
   @State private var queueStates: [QueueLandingState] = []
+  @State private var mobileSnapshot: PrMobileSnapshot?
   @State private var errorMessage: String?
   @State private var createPresented = false
   @State private var stackPresentation: PrStackPresentation?
@@ -49,6 +50,32 @@ struct PRsTabView: View {
     filterPullRequestListItems(prs, query: searchText, state: selectedStateFilter.wrappedValue)
   }
 
+  /// Prefer the unified `PrMobileSnapshot.workflowCards` payload when available; fall back to the
+  /// legacy per-kind fetches (integrationProposals / queueStates / laneSnapshots-derived rebase)
+  /// so offline cached state still renders if the mobile snapshot fetch failed.
+  private var workflowCards: [PrWorkflowCard] {
+    if let mobileSnapshot {
+      return mobileSnapshot.workflowCards
+    }
+    return legacyWorkflowCards
+  }
+
+  private var legacyWorkflowCards: [PrWorkflowCard] {
+    var cards: [PrWorkflowCard] = []
+
+    for proposal in integrationProposals {
+      cards.append(legacyIntegrationCard(from: proposal))
+    }
+    for queue in queueStates {
+      cards.append(legacyQueueCard(from: queue))
+    }
+    for item in rebaseWorkflowItems {
+      cards.append(legacyRebaseCard(from: item))
+    }
+
+    return cards
+  }
+
   private var rebaseWorkflowItems: [PrRebaseWorkflowItem] {
     laneSnapshots.compactMap { snapshot in
       guard let suggestion = snapshot.rebaseSuggestion, suggestion.dismissedAt == nil else { return nil }
@@ -82,9 +109,20 @@ struct PRsTabView: View {
     }
   }
 
+  private var canCreatePr: Bool {
+    if let createCaps = mobileSnapshot?.createCapabilities {
+      return createCaps.canCreateAny && isLive
+    }
+    return isLive && !lanes.isEmpty
+  }
+
   var body: some View {
     NavigationStack(path: $path) {
       List {
+        if let statusNotice {
+          statusNotice.prListRow()
+        }
+
         if let notice = laneContextNotice {
           notice.prListRow()
         }
@@ -143,49 +181,18 @@ struct PRsTabView: View {
                   selectedPrTransitionId = pr.id
                 })
                 .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                  Button("Open") {
-                    openGitHub(urlString: pr.githubUrl)
-                  }
-                  .tint(ADEColor.accent)
-
-                  if pr.state == "open" {
-                    Button("Close", role: .destructive) {
-                      Task {
-                        try? await syncService.closePullRequest(prId: pr.id)
-                        await reload(refreshRemote: true)
-                      }
-                    }
-                  } else if pr.state == "closed" {
-                    Button("Reopen") {
-                      Task {
-                        try? await syncService.reopenPullRequest(prId: pr.id)
-                        await reload(refreshRemote: true)
-                      }
-                    }
-                    .tint(ADEColor.success)
-                  }
+                  rowSwipeActions(for: pr)
                 }
                 .prListRow()
               }
             }
           }
 
-          if !integrationProposals.isEmpty {
-            Section("Integration") {
-              ForEach(integrationProposals) { proposal in
-                IntegrationWorkflowCard(proposal: proposal) { prId in
-                  path.append(prId)
-                }
-                .prListRow()
-              }
-            }
-          }
-
-          if !queueStates.isEmpty {
-            Section("Queue") {
-              ForEach(queueStates) { queueState in
-                QueueWorkflowCard(
-                  queueState: queueState,
+          ForEach(Array(groupedWorkflowCards.enumerated()), id: \.offset) { _, group in
+            Section(group.title) {
+              ForEach(group.cards) { card in
+                PrMobileWorkflowCardView(
+                  card: card,
                   isLive: isLive,
                   onOpenPr: { prId in path.append(prId) },
                   onLand: { prId, method in
@@ -199,33 +206,16 @@ struct PRsTabView: View {
                       try? await syncService.startLaneRebase(laneId: laneId)
                       await reload(refreshRemote: true)
                     }
-                  }
-                )
-                .prListRow()
-              }
-            }
-          }
-
-          if !rebaseWorkflowItems.isEmpty {
-            Section("Rebase") {
-              ForEach(rebaseWorkflowItems) { item in
-                RebaseWorkflowCard(
-                  item: item,
-                  onRebase: {
+                  },
+                  onDeferRebase: { laneId in
                     Task {
-                      try? await syncService.startLaneRebase(laneId: item.laneId)
+                      try? await syncService.deferRebaseSuggestion(laneId: laneId)
                       await reload(refreshRemote: true)
                     }
                   },
-                  onDefer: {
+                  onDismissRebase: { laneId in
                     Task {
-                      try? await syncService.deferRebaseSuggestion(laneId: item.laneId)
-                      await reload(refreshRemote: true)
-                    }
-                  },
-                  onDismiss: {
-                    Task {
-                      try? await syncService.dismissRebaseSuggestion(laneId: item.laneId)
+                      try? await syncService.dismissRebaseSuggestion(laneId: laneId)
                       await reload(refreshRemote: true)
                     }
                   }
@@ -262,10 +252,9 @@ struct PRsTabView: View {
             Image(systemName: "plus")
           }
           .accessibilityLabel("Create pull request")
-          .disabled(!isLive || lanes.isEmpty)
+          .disabled(!canCreatePr)
         }
       }
-
       .sensoryFeedback(.success, trigger: refreshFeedbackToken)
       .task {
         await reload()
@@ -321,6 +310,59 @@ struct PRsTabView: View {
     }
   }
 
+  @ViewBuilder
+  private func rowSwipeActions(for pr: PullRequestListItem) -> some View {
+    let caps = mobileSnapshot?.capabilities[pr.id]
+
+    Button("Open") {
+      openGitHub(urlString: pr.githubUrl)
+    }
+    .tint(ADEColor.accent)
+
+    if caps?.canClose ?? (pr.state == "open") {
+      Button("Close", role: .destructive) {
+        Task {
+          try? await syncService.closePullRequest(prId: pr.id)
+          await reload(refreshRemote: true)
+        }
+      }
+    } else if caps?.canReopen ?? (pr.state == "closed") {
+      Button("Reopen") {
+        Task {
+          try? await syncService.reopenPullRequest(prId: pr.id)
+          await reload(refreshRemote: true)
+        }
+      }
+      .tint(ADEColor.success)
+    }
+  }
+
+  private struct WorkflowCardGroup {
+    let title: String
+    let cards: [PrWorkflowCard]
+  }
+
+  private var groupedWorkflowCards: [WorkflowCardGroup] {
+    let cards = workflowCards
+    guard !cards.isEmpty else { return [] }
+
+    let queue = cards.filter { $0.kind == "queue" }
+    let integration = cards.filter { $0.kind == "integration" }
+    let rebase = cards.filter { $0.kind == "rebase" }
+
+    var groups: [WorkflowCardGroup] = []
+    if !queue.isEmpty {
+      groups.append(WorkflowCardGroup(title: "Queue", cards: queue))
+    }
+    if !integration.isEmpty {
+      groups.append(WorkflowCardGroup(title: "Integration", cards: integration))
+    }
+    if !rebase.isEmpty {
+      groups.append(WorkflowCardGroup(title: "Rebase", cards: rebase))
+    }
+    return groups
+  }
+
   private var laneContextNotice: ADENoticeCard? {
     guard let laneContextLaneId else { return nil }
     let laneName = laneSnapshots.first(where: { $0.lane.id == laneContextLaneId })?.lane.name ?? "lane context"
@@ -363,6 +405,12 @@ struct PRsTabView: View {
       laneSnapshots = try await laneSnapshotsTask
       integrationProposals = try await integrationTask
       queueStates = try await queueTask
+
+      // Best-effort: the mobile snapshot consolidates stacks/capabilities/workflow-cards for the
+      // mobile surface. If the host hasn't registered the command (older desktop build) this
+      // throws — swallow it and fall back to the legacy per-kind fetches above.
+      mobileSnapshot = try? await syncService.fetchPrMobileSnapshot()
+
       errorMessage = nil
     } catch {
       errorMessage = error.localizedDescription
@@ -430,5 +478,122 @@ struct PRsTabView: View {
     case .ready:
       return nil
     }
+  }
+
+  // MARK: - Legacy → unified workflow card adapters
+  //
+  // These let the root screen keep rendering queue/integration/rebase state when the mobile
+  // snapshot fetch isn't available (older desktop build, or cold cache). Once every host the
+  // user pairs with supports `prs.getMobileSnapshot` these can be dropped.
+
+  private func legacyQueueCard(from queue: QueueLandingState) -> PrWorkflowCard {
+    PrWorkflowCard(
+      id: "queue:\(queue.id)",
+      kind: "queue",
+      groupId: queue.groupId,
+      groupName: queue.groupName,
+      targetBranch: queue.targetBranch,
+      state: queue.state,
+      activePrId: queue.activePrId,
+      currentPosition: nil,
+      totalEntries: queue.entries.count,
+      waitReason: queue.waitReason,
+      lastError: queue.lastError,
+      updatedAt: nil,
+      proposalId: nil,
+      title: nil,
+      baseBranch: nil,
+      overallOutcome: nil,
+      integrationStatus: nil,
+      laneCount: nil,
+      conflictLaneCount: nil,
+      workflowDisplayState: nil,
+      cleanupState: nil,
+      linkedPrId: nil,
+      integrationLaneId: nil,
+      createdAt: nil,
+      laneId: nil,
+      laneName: nil,
+      behindBy: nil,
+      conflictPredicted: nil,
+      prId: nil,
+      prNumber: nil,
+      dismissedAt: nil,
+      deferredUntil: nil
+    )
+  }
+
+  private func legacyIntegrationCard(from proposal: IntegrationProposal) -> PrWorkflowCard {
+    PrWorkflowCard(
+      id: "integration:\(proposal.id)",
+      kind: "integration",
+      groupId: nil,
+      groupName: nil,
+      targetBranch: nil,
+      state: nil,
+      activePrId: nil,
+      currentPosition: nil,
+      totalEntries: nil,
+      waitReason: nil,
+      lastError: nil,
+      updatedAt: nil,
+      proposalId: proposal.id,
+      title: proposal.title ?? proposal.integrationLaneName,
+      baseBranch: proposal.baseBranch,
+      overallOutcome: proposal.overallOutcome,
+      integrationStatus: proposal.status,
+      laneCount: proposal.laneSummaries.count,
+      conflictLaneCount: proposal.laneSummaries.filter { $0.outcome == "conflict" }.count,
+      workflowDisplayState: proposal.workflowDisplayState,
+      cleanupState: proposal.cleanupState,
+      linkedPrId: proposal.linkedPrId,
+      integrationLaneId: proposal.integrationLaneId,
+      createdAt: nil,
+      laneId: nil,
+      laneName: nil,
+      behindBy: nil,
+      conflictPredicted: nil,
+      prId: nil,
+      prNumber: nil,
+      dismissedAt: nil,
+      deferredUntil: nil
+    )
+  }
+
+  private func legacyRebaseCard(from item: PrRebaseWorkflowItem) -> PrWorkflowCard {
+    PrWorkflowCard(
+      id: "rebase:\(item.laneId)",
+      kind: "rebase",
+      groupId: nil,
+      groupName: nil,
+      targetBranch: nil,
+      state: nil,
+      activePrId: nil,
+      currentPosition: nil,
+      totalEntries: nil,
+      waitReason: nil,
+      lastError: nil,
+      updatedAt: nil,
+      proposalId: nil,
+      title: nil,
+      baseBranch: nil,
+      overallOutcome: nil,
+      integrationStatus: nil,
+      laneCount: nil,
+      conflictLaneCount: nil,
+      workflowDisplayState: nil,
+      cleanupState: nil,
+      linkedPrId: nil,
+      integrationLaneId: nil,
+      createdAt: nil,
+      laneId: item.laneId,
+      laneName: item.laneName,
+      behindBy: item.behindCount,
+      conflictPredicted: item.severity == "critical",
+      prId: nil,
+      prNumber: nil,
+      dismissedAt: nil,
+      deferredUntil: item.deferredUntil
+    )
   }
 }
