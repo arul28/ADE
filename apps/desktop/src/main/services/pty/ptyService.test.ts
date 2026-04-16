@@ -1,5 +1,6 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { EventEmitter } from "node:events";
+import os from "node:os";
 import path from "node:path";
 import type { IPty } from "node-pty";
 
@@ -10,9 +11,18 @@ import type { IPty } from "node-pty";
 const mocks = vi.hoisted(() => {
   const existsSyncResults = new Map<string, boolean>();
   const realpathOverrides = new Map<string, string>();
+  const dirEntries = new Map<string, string[]>();
+  const fileContents = new Map<string, string>();
+  const fileStats = new Map<string, { size?: number; mtimeMs?: number; isDirectory?: boolean }>();
+  const openFiles = new Map<number, string>();
+  let nextFd = 100;
   return {
     existsSyncResults,
     realpathOverrides,
+    dirEntries,
+    fileContents,
+    fileStats,
+    openFiles,
     mkdirSync: vi.fn(),
     existsSync: vi.fn((p: string) => existsSyncResults.get(p) ?? true),
     lstatSync: vi.fn((p: string) => {
@@ -33,7 +43,28 @@ const mocks = vi.hoisted(() => {
         error.code = "ENOENT";
         throw error;
       }
-      return { size: 0, isDirectory: () => true };
+      const stat = fileStats.get(p);
+      return {
+        size: stat?.size ?? fileContents.get(p)?.length ?? 0,
+        mtimeMs: stat?.mtimeMs ?? 0,
+        isDirectory: () => stat?.isDirectory ?? true,
+      };
+    }),
+    readdirSync: vi.fn((p: string) => dirEntries.get(p) ?? []),
+    openSync: vi.fn((p: string) => {
+      const fd = nextFd++;
+      openFiles.set(fd, p);
+      return fd;
+    }),
+    readSync: vi.fn((fd: number, buf: Buffer, offset: number, length: number, position: number) => {
+      const filePath = openFiles.get(fd) ?? "";
+      const content = Buffer.from(fileContents.get(filePath) ?? "", "utf8");
+      const slice = content.subarray(position, position + length);
+      slice.copy(buf, offset);
+      return slice.length;
+    }),
+    closeSync: vi.fn((fd: number) => {
+      openFiles.delete(fd);
     }),
     createWriteStream: vi.fn(() => {
       const listeners = {
@@ -95,6 +126,10 @@ vi.mock("node:fs", () => ({
     realpathSync: mocks.realpathSync,
     mkdirSync: mocks.mkdirSync,
     statSync: mocks.statSync,
+    readdirSync: mocks.readdirSync,
+    openSync: mocks.openSync,
+    readSync: mocks.readSync,
+    closeSync: mocks.closeSync,
     createWriteStream: mocks.createWriteStream,
     unlinkSync: mocks.unlinkSync,
     writeFileSync: mocks.writeFileSync,
@@ -104,6 +139,10 @@ vi.mock("node:fs", () => ({
   realpathSync: mocks.realpathSync,
   mkdirSync: mocks.mkdirSync,
   statSync: mocks.statSync,
+  readdirSync: mocks.readdirSync,
+  openSync: mocks.openSync,
+  readSync: mocks.readSync,
+  closeSync: mocks.closeSync,
   createWriteStream: mocks.createWriteStream,
   unlinkSync: mocks.unlinkSync,
   writeFileSync: mocks.writeFileSync,
@@ -311,6 +350,10 @@ describe("ptyService", () => {
     vi.clearAllMocks();
     mocks.existsSyncResults.clear();
     mocks.realpathOverrides.clear();
+    mocks.dirEntries.clear();
+    mocks.fileContents.clear();
+    mocks.fileStats.clear();
+    mocks.openFiles.clear();
     const resolveRealpath = (p: string) => mocks.realpathOverrides.get(p) ?? path.resolve(p);
     mocks.realpathSync.mockImplementation((p: string) => resolveRealpath(p));
     mocks.realpathSync.native.mockImplementation((p: string) => resolveRealpath(p));
@@ -335,6 +378,26 @@ describe("ptyService", () => {
       expect(result.ptyId).toBe("uuid-1");
       expect(result.sessionId).toBe("uuid-2");
       expect(result.pid).toBe(12345);
+    });
+
+    it("uses a caller-provided sessionId when creating a new tracked session", async () => {
+      const { service, sessionService } = createHarness();
+      const result = await service.create({
+        sessionId: "session-process-start",
+        laneId: "lane-1",
+        title: "Test terminal",
+        cols: 80,
+        rows: 24,
+      });
+
+      expect(result.ptyId).toBe("uuid-1");
+      expect(result.sessionId).toBe("session-process-start");
+      expect(sessionService.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          sessionId: "session-process-start",
+          laneId: "lane-1",
+        }),
+      );
     });
 
     it("can spawn a direct command with merged lane env", async () => {
@@ -613,6 +676,72 @@ describe("ptyService", () => {
       expect(sessionService.create).toHaveBeenCalledTimes(createCallsBeforeResume);
     });
 
+    it("reuses an already-live PTY when resume is requested twice for the same tracked session", async () => {
+      const { service, sessionService, logger } = createHarness();
+      sessionService.create({
+        sessionId: "session-live",
+        laneId: "lane-1",
+        ptyId: null,
+        tracked: true,
+        title: "Codex CLI",
+        startedAt: "2026-04-09T12:00:00.000Z",
+        transcriptPath: "/tmp/transcripts/session-live.log",
+        toolType: "codex",
+        resumeCommand: "codex --no-alt-screen resume thread-live",
+        resumeMetadata: {
+          provider: "codex",
+          targetKind: "thread",
+          targetId: "thread-live",
+          launch: { permissionMode: "config-toml" },
+        },
+      });
+      sessionService.end({
+        sessionId: "session-live",
+        endedAt: "2026-04-09T12:30:00.000Z",
+        exitCode: 0,
+        status: "completed",
+      });
+
+      const first = await service.create({
+        sessionId: "session-live",
+        laneId: "lane-1",
+        title: "Codex CLI",
+        cols: 80,
+        rows: 24,
+        toolType: "codex",
+        startupCommand: "codex --no-alt-screen resume thread-live",
+      });
+      sessionService.end({
+        sessionId: "session-live",
+        endedAt: "2026-04-09T12:31:00.000Z",
+        exitCode: 0,
+        status: "completed",
+      });
+
+      const createCallsBeforeSecondResume = sessionService.create.mock.calls.length;
+      const second = await service.create({
+        sessionId: "session-live",
+        laneId: "lane-1",
+        title: "Codex CLI",
+        cols: 80,
+        rows: 24,
+        toolType: "codex",
+        startupCommand: "codex --no-alt-screen resume thread-live",
+      });
+
+      expect(second).toEqual(first);
+      expect(sessionService.reattach).toHaveBeenCalledTimes(2);
+      expect(sessionService.create).toHaveBeenCalledTimes(createCallsBeforeSecondResume);
+      expect(logger.info).toHaveBeenCalledWith(
+        "pty.resume_reused_live_attachment",
+        expect.objectContaining({
+          sessionId: "session-live",
+          ptyId: first.ptyId,
+          needsSessionResync: true,
+        }),
+      );
+    });
+
     it("rejects reattaching a session into the wrong lane", async () => {
       const { service, sessionService } = createHarness();
       sessionService.create({
@@ -828,6 +957,60 @@ describe("ptyService", () => {
 
       expect(sessionService.readTranscriptTail).toHaveBeenCalledWith(transcriptPath, 220_000);
       expect(sessionService.setResumeCommand).toHaveBeenCalledWith(created.sessionId, "codex resume thread-backfilled");
+    });
+
+    it("backfills a missing Codex resume target from storage when session_meta exceeds 1 KB", async () => {
+      vi.useFakeTimers();
+      try {
+        const fakeNow = new Date("2026-04-15T22:00:00.000Z");
+        vi.setSystemTime(fakeNow);
+        mocks.extractResumeCommandFromOutput.mockReturnValue(null);
+
+        const homedir = os.homedir();
+        const sessionsBase = path.join(homedir, ".codex", "sessions");
+        const dirPath = path.join(sessionsBase, "2026", "04", "15");
+        const filePath = path.join(dirPath, "rollout-2026-04-15T21-30-00-thread-storage.jsonl");
+        const startedAt = "2026-04-15T21:30:00.000Z";
+        const oversizedFirstLine = JSON.stringify({
+          timestamp: startedAt,
+          type: "session_meta",
+          payload: {
+            id: "thread-storage",
+            timestamp: startedAt,
+            cwd: "/tmp/test-worktree",
+            base_instructions: {
+              text: "x".repeat(5000),
+            },
+          },
+        });
+
+        mocks.existsSyncResults.set(sessionsBase, true);
+        mocks.existsSyncResults.set(dirPath, true);
+        mocks.dirEntries.set(dirPath, [path.basename(filePath)]);
+        mocks.fileContents.set(filePath, `${oversizedFirstLine}\n{"timestamp":"2026-04-15T21:31:00.000Z","type":"event_msg","payload":{"type":"task_started"}}\n`);
+        mocks.fileStats.set(filePath, { size: oversizedFirstLine.length + 100, mtimeMs: fakeNow.getTime() - 30_000, isDirectory: false });
+
+        const { service, mockPty, sessionService } = createHarness();
+        const created = await service.create({
+          laneId: "lane-1",
+          title: "Codex CLI",
+          cols: 80,
+          rows: 24,
+          toolType: "codex",
+          startupCommand: "codex --no-alt-screen --full-auto",
+        });
+        const createArgs = sessionService.create.mock.calls.at(-1)?.[0];
+        expect(createArgs?.startedAt).toBeTruthy();
+
+        mockPty._emitter.emit("exit", { exitCode: 0 });
+        await Promise.resolve();
+        await Promise.resolve();
+        await vi.advanceTimersByTimeAsync(0);
+
+        expect(sessionService.setResumeCommand).toHaveBeenCalledWith(created.sessionId, "codex resume thread-storage");
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it("does not overwrite a manually renamed CLI session title", async () => {
@@ -1107,6 +1290,88 @@ describe("ptyService", () => {
       } finally {
         vi.useRealTimers();
       }
+    });
+  });
+
+  describe("ensureResumeTargets", () => {
+    it("calls sessionService.setResumeCommand for each session whose Codex JSONL matches", async () => {
+      vi.useFakeTimers();
+      try {
+        const fakeNow = new Date("2026-04-15T22:00:00.000Z");
+        vi.setSystemTime(fakeNow);
+
+        const homedir = os.homedir();
+        const sessionsBase = path.join(homedir, ".codex", "sessions");
+        const dirPath = path.join(sessionsBase, "2026", "04", "15");
+        const filePath = path.join(dirPath, "rollout-2026-04-15T21-30-00-thread-abc.jsonl");
+        const startedAt = "2026-04-15T21:30:00.000Z";
+        const firstLine = JSON.stringify({
+          timestamp: startedAt,
+          type: "session_meta",
+          payload: {
+            id: "thread-abc",
+            timestamp: startedAt,
+            cwd: "/tmp/worktree",
+          },
+        });
+
+        mocks.existsSyncResults.set(sessionsBase, true);
+        mocks.existsSyncResults.set(dirPath, true);
+        mocks.dirEntries.set(dirPath, [path.basename(filePath)]);
+        mocks.fileContents.set(filePath, `${firstLine}\n`);
+        mocks.fileStats.set(filePath, { size: firstLine.length, mtimeMs: fakeNow.getTime() - 30_000, isDirectory: false });
+
+        const { service, sessionService } = createHarness();
+        sessionService.create({
+          sessionId: "session-1",
+          laneId: "lane-1",
+          ptyId: null,
+          tracked: true,
+          title: "Codex CLI",
+          startedAt,
+          transcriptPath: "/tmp/worktree/.ade/transcripts/session-1.log",
+          toolType: "codex",
+        });
+
+        await service.ensureResumeTargets(["session-1"]);
+        // allow any microtasks to settle
+        await vi.advanceTimersByTimeAsync(0);
+
+        expect(sessionService.setResumeCommand).toHaveBeenCalledWith("session-1", "codex resume thread-abc");
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("dedupes duplicate/empty/whitespace sessionIds", async () => {
+      const { service, sessionService } = createHarness();
+      // No session is seeded, so tryBackfillResumeTarget returns early after calling get();
+      // we just want to confirm only ONE call per unique id reaches sessionService.get.
+      const getSpy = sessionService.get as ReturnType<typeof vi.fn>;
+      getSpy.mockClear();
+
+      await service.ensureResumeTargets(["session-1", "  session-1 ", "", "  ", "session-1"]);
+
+      const uniqueCallsForSession1 = getSpy.mock.calls.filter(([id]) => id === "session-1").length;
+      expect(uniqueCallsForSession1).toBe(1);
+    });
+
+    it("swallows per-session errors and logs a warning", async () => {
+      const { service, sessionService, logger } = createHarness();
+      const getSpy = sessionService.get as ReturnType<typeof vi.fn>;
+      // First invocation for session-a throws; second invocation for session-b returns null cleanly
+      getSpy.mockImplementationOnce(() => {
+        throw new Error("boom");
+      });
+
+      await expect(service.ensureResumeTargets(["session-a", "session-b"])).resolves.toBeUndefined();
+
+      expect(logger.warn).toHaveBeenCalledWith(
+        "pty.resume_target_backfill_failed",
+        expect.objectContaining({ sessionId: "session-a", err: expect.stringContaining("boom") }),
+      );
+      // session-b should still have been attempted
+      expect(getSpy.mock.calls.some(([id]) => id === "session-b")).toBe(true);
     });
   });
 

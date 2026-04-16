@@ -7,10 +7,11 @@ terminal/session system:
 - `apps/desktop/src/main/services/sessions/sessionService.ts`
 - `apps/desktop/src/main/services/processes/processService.ts`
 
-All three were rewritten on the current branch. The branch diff for
-these files is 500+ lines inserted and 440+ removed; expect the wiring
-in `main.ts` and `registerIpc.ts` to need a careful re-read before any
-non-trivial change.
+All three are large and carry a lot of cross-wiring through `main.ts`
+and `registerIpc.ts`. Re-read them before any non-trivial change.
+The most recent structural shift was in `processService`: runtime
+entries are now keyed by `runId` so a single `(laneId, processId)`
+pair can have multiple concurrent and historical runs simultaneously.
 
 ---
 
@@ -124,9 +125,16 @@ Each live PTY has an entry in the `ptys` map keyed by `ptyId` with:
 
 1. Resolve the lane worktree via `resolveLaneLaunchContext` — rejects
    requests that escape the lane root.
-2. Validate the session ID if the caller is resuming an existing row:
-   must exist, same lane, tracked, not already attached to a live PTY.
-3. Generate `ptyId` + `sessionId` (reuses the row's `id` when resuming).
+2. When the caller provides a `sessionId`:
+   - Accept a missing row (caller gets a brand-new session with that ID).
+   - If the row exists, enforce same lane and `tracked = true`.
+   - If the row is already attached to a live, undisposed PTY, reuse
+     that attachment: reattach the session row to the existing PTY,
+     mark runtime state `running`, and return the existing
+     `{ ptyId, sessionId, pid }` without spawning anything. This makes
+     repeated "resume" clicks idempotent.
+3. Generate `ptyId` + `sessionId` (reuses the row's `id` when resuming;
+   a missing row uses the caller-supplied ID if any, otherwise a new UUID).
 4. Resolve transcript path: reuses the existing row's path when
    resuming, otherwise `safeTranscriptPathFor(sessionId)` under the
    transcripts directory.
@@ -188,8 +196,12 @@ never fails the session.
 
 ### Resume metadata backfill
 
-`backfillResumeTargetFromTranscriptBestEffort` runs after the
-transcript stream is finalized at close time. Tries, in order:
+Internal worker `tryBackfillResumeTarget` runs after a transcript is
+finalized at close time, and also on demand via
+`ensureResumeTargets(sessionIds)`. `backfillResumeTargetFromTranscriptBestEffort`
+is the fire-and-forget wrapper used by close/dispose paths; the
+on-demand call path is `async` and returns whether a target was
+resolved. Strategies, in order:
 
 1. Scan the transcript tail with provider-specific regexes
    (`extractResumeCommandFromOutput`).
@@ -197,12 +209,25 @@ transcript stream is finalized at close time. Tries, in order:
    newest file modified in the last 5 minutes, filename is the session
    UUID.
 3. Read Codex's rollout storage:
-   `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`, newest recent file
-   whose `session_meta.payload.cwd` matches.
+   `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`. The scan now covers
+   up to 7 days of dated directories and up to 80 candidate files.
+   Each candidate's first JSONL line is parsed; sessions whose
+   `session_meta.payload.cwd` matches are scored by closeness between
+   `payload.timestamp` (or the file `mtime` when absent) and the ADE
+   session's `startedAt`. The best-scoring match wins, so re-running
+   Codex in the same cwd doesn't clobber the resume target of a
+   concurrent terminal.
 
 Any found ID updates the row's `resumeMetadata.targetId` through
 `sessionService.updateMeta`. A resume command is always written even
 without a target ID so the CLI can prompt interactively.
+
+`ensureResumeTargets(sessionIds)` is exposed publicly so that
+`sessions.list` / `sessions.get` handlers in `registerIpc.ts` can
+lazily hydrate missing resume targets for Claude/Codex sessions when
+the renderer first asks for them. Each call de-dupes IDs and logs a
+single `pty.resume_target_backfill_failed` warn per failing ID; it
+never throws.
 
 ### Dispose and orphan disposal
 
@@ -234,16 +259,34 @@ state signals, and session rows exactly like interactive PTYs.
 
 ### Entry state (`ManagedProcessEntry`)
 
-Keyed by `laneId:processId`:
+Keyed by `runId` (a new UUID per invocation). A single
+`(laneId, processId)` pair can own many entries at once: one per live
+run plus up to `MAX_PROCESS_HISTORY_PER_LANE_PROCESS = 20` of the most
+recent terminated runs. Fields:
 
-- `runtime`: `ProcessRuntime` (status, readiness, pid, ports, timing)
-- `definition`: `ProcessDefinition | null`
-- `runId`: UUID for the current `process_runs` row
-- `stopIntent`: caller-supplied termination reason
+- `runId`, `laneId`, `processId`
+- `definition`: `ProcessDefinition` captured at start
+- `runtime`: `ProcessRuntime` (status, readiness, pid, ports, timing,
+  `runId`, `sessionId`, `ptyId`, `uptimeMs`)
+- `stopIntent`: caller-supplied termination reason (`"stopped" |
+  "killed" | "crashed"`; `"restart"` is no longer an exit reason)
 - `sessionId` / `ptyId` / `transcriptPath`: the live PTY handle
 - readiness: `readinessRegex`, `readinessTimeout`, `readinessInterval`
 - health: `healthFailures`, `healthInterval`
 - restart: `restartAttempts`
+
+Auxiliary maps:
+
+- `sessionToRunId` / `ptyToRunId` — reverse lookups used by the PTY
+  data/exit subscribers.
+- `terminationWaiters` — `runId → Set<() => void>` queue that
+  `waitForEntryStopped` resolves when `handleProcessExit` fires.
+- `restartAttemptsByProcess` — keyed by `"laneId:processId"` so backoff
+  carries across runs even when each run has its own `runId`.
+
+`pruneOldEntriesForLaneProcess` is called after every exit and trims
+the history back down to `MAX_PROCESS_HISTORY_PER_LANE_PROCESS` —
+active runs are skipped so a stop storm never evicts live ones.
 
 ### Readiness checks
 
@@ -269,13 +312,25 @@ nothing becomes ready in time.
 On exit:
 
 1. `handleProcessExit` clears timers, builds the termination `reason`
-   (`stopped`, `killed`, `crashed`, `restart`).
-2. Persists the `process_runs` row and emits runtime.
-3. If the reason is `restart` (from `restart()`), schedules a 20 ms
-   restart.
-4. Otherwise, if the policy says restart, applies exponential backoff:
-   `min(30_000, 400 * 2^(attempt-1))` + up to 250 ms jitter. Resets
-   `restartAttempts` if the process ran longer than 60 s before dying.
+   (`stopped`, `killed`, `crashed`). `"restart"` is no longer a reason
+   — a restart is modeled as a stop of the outgoing run followed by a
+   fresh start that gets its own `runId`.
+2. Finalizes the current `process_runs` row and emits runtime.
+3. Resolves any `terminationWaiters` registered for this `runId`, so
+   `restart()`/`restartStack()` callers can await actual exit.
+4. If there was no `stopIntent` and the policy says to auto-restart on
+   crash or always, applies exponential backoff keyed by
+   `"laneId:processId"` — `min(30_000, 400 * 2^(attempt-1))` plus up
+   to 250 ms jitter — and schedules a new `startById` via `setTimeout`.
+   A stop or kill that originated from the caller clears the attempt
+   counter for that process.
+
+`restart()` and `restartStack()` implement themselves by calling
+`stopEntries(...)` then awaiting `waitForEntriesStopped` (capped at
+`PROCESS_TERMINATION_WAIT_MS = 10 s`) before issuing the new start.
+That's why `stop()` / `kill()` return `ProcessRuntime | null`:
+the caller may be operating on a `(laneId, processId)` with no active
+run, and returning `null` lets the caller no-op without throwing.
 
 ### Dependency ordering
 
@@ -313,9 +368,10 @@ resolution. `startByDefinition` merges overlay `env` over definition
 The service subscribes once each to `ptyService.onData` and
 `ptyService.onExit` at construction:
 
-- on `data`, it looks up the entry via `sessionId`/`ptyId`, emits a
-  `log` event, and tests the log-regex readiness check.
-- on `exit`, it calls `handleProcessExit`.
+- on `data`, it resolves `ptyToRunId.get(event.ptyId) ??
+  sessionToRunId.get(event.sessionId)` into an entry, emits a
+  `log` event carrying `runId`, and tests the log-regex readiness check.
+- on `exit`, it resolves the same way and calls `handleProcessExit`.
 
 It never calls `ptyService.write` — managed processes can't receive
 stdin from the Run UI.
@@ -324,12 +380,18 @@ stdin from the Run UI.
 
 Two tables:
 
-- `process_runtime` — current snapshot per `(project_id, lane_id,
-  process_key)`. On startup, any row left in an active status
-  (`running`, `starting`, `stopping`, `degraded`) is normalized to
-  `exited` with `ended_at = now`.
-- `process_runs` — one row per invocation. `termination_reason` is
-  `stopped`, `killed`, `crashed`, or `restart`.
+- `process_runtime` — one aggregate snapshot per `(project_id, lane_id,
+  process_key)`. `persistAggregateRuntime` writes whichever run is the
+  latest (newest `updatedAt / startedAt / endedAt`) so the persisted
+  row mirrors the card the user sees in the Run page. If every entry
+  for that `(lane, process)` falls out of memory, the row is deleted.
+  On startup, any row left in an active status (`running`, `starting`,
+  `stopping`, `degraded`) is normalized to `exited` with
+  `ended_at = now`.
+- `process_runs` — one row per invocation keyed by `runId`.
+  `termination_reason` is `stopped`, `killed`, or `crashed`. `log_path`
+  is the transcript path of the run's session (empty string if the PTY
+  never opened before `handleStartFailure` wrote the row).
 
 ---
 
@@ -363,27 +425,42 @@ processes.start  →  processService.startByDefinition
 
 ---
 
-## Gotchas specific to the branch rewrite
+## Gotchas
 
 - `ptyService.enrichSessions` (called from `registerIpc.sessionsList`)
   overlays live runtime state onto rows returned from
   `sessionService.list`. Callers that bypass `registerIpc` must either
   run sessions through `enrichSessions` or explicitly derive
   `runtimeState` from `status`.
-- `processService.startByDefinition` locks the runtime to
-  `starting` *before* the PTY is created. A spawn failure path runs
-  `handleProcessStartFailure`, which writes a `process_runs` row with
+- `registerIpc.sessionsList` and `.sessionsGet` both lazily hydrate
+  resume targets via `ptyService.ensureResumeTargets` for tracked,
+  ended Claude/Codex rows whose `resumeMetadata.targetId` is blank.
+  `sessionsList` caps the hydration batch at 10 IDs per call and
+  swallows errors into `sessions.resume_target_hydration_failed`.
+  If you add a new session-surfacing IPC, replicate that hydration
+  or accept that freshly-ended sessions will show "no resume target"
+  briefly.
+- `processService.startByDefinition` creates the `ManagedProcessEntry`
+  and emits `runtime` *before* the PTY is created, so the Run page's
+  card flips to `starting` immediately. If the PTY spawn fails,
+  `handleStartFailure` writes a `process_runs` row with
   `termination_reason = "crashed"` and then rethrows. If you swallow
-  the throw, the UI will still see the crash.
+  the throw, the UI still sees the crash.
+- `listRuntime(laneId)` returns every in-memory entry for the lane —
+  active runs *and* recent history (up to 20 per `(lane, process)`).
+  Callers that only want live runs need to filter by
+  `isProcessActive(status)` themselves.
 - The `toolAutoCloseTimers` on the PTY side and the `healthInterval`
   on the process side both fire after a grace period; they can race on
   teardown. Always call `disposeAll()` last.
 - Transcript paths for resumed sessions come from the existing row. If
   an old row references a deleted transcript file, `create` opens it
   in append mode and creates a new empty file — old history is gone.
-- Handlers in `registerIpc.ts` lines 3913-3983 and 4219-4240 are the
-  canonical surface for renderer calls; add new behavior there rather
-  than in `main.ts`.
+- Resuming a session that is still attached to a live PTY no longer
+  throws. `ptyService.create({ sessionId })` returns the existing
+  attachment and re-syncs the session row when the DB status has
+  drifted (e.g. a failed reconcile). The logged counter is
+  `pty.resume_reused_live_attachment`.
 
 ---
 

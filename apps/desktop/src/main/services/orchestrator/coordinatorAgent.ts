@@ -828,7 +828,9 @@ export class CoordinatorAgent {
       }
       if (this.openCodeHandle) {
         this.releaseOpenCodeCoordinatorSession(
-          reason === "error" || reason === "config_changed" ? "handle_close" : reason,
+          reason === "error" || reason === "config_changed" || reason === "attach_failed"
+            ? "handle_close"
+            : reason,
         );
       }
     });

@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { At, CaretDown, Check, Image, Paperclip, PencilSimple, Square, X, PaperPlaneTilt, Cube, BookOpen } from "@phosphor-icons/react";
+import { BorderBeam } from "border-beam";
 import {
   inferAttachmentType,
   type AgentChatApprovalDecision,
@@ -464,6 +466,8 @@ export function AgentChatComposer({
   const [hoveredCodexPreset, setHoveredCodexPreset] = useState<"plan" | "edit" | "full-auto" | null>(null);
   const [claudeModePickerOpen, setClaudeModePickerOpen] = useState(false);
   const claudeModePickerRef = useRef<HTMLDivElement | null>(null);
+  const [codexPresetPickerOpen, setCodexPresetPickerOpen] = useState(false);
+  const codexPresetPickerRef = useRef<HTMLDivElement | null>(null);
 
   const [dragActive, setDragActive] = useState(false);
   const [commandMenuTrigger, setCommandMenuTrigger] = useState<{ type: "at" | "slash"; query: string; cursorIndex: number } | null>(null);
@@ -662,10 +666,36 @@ export function AgentChatComposer({
   }, [claudeSelectionMode, hoveredClaudeMode, sessionProvider]);
 
   useEffect(() => {
+    if (!codexPresetPickerOpen) return;
+    const handleClick = (event: MouseEvent) => {
+      if (!codexPresetPickerRef.current) return;
+      if (codexPresetPickerRef.current.contains(event.target as Node)) return;
+      const target = event.target as Element | null;
+      if (target?.closest?.("[data-codex-preset-picker-dropdown]")) return;
+      setCodexPresetPickerOpen(false);
+      setHoveredCodexPreset(null);
+    };
+    const handleKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setCodexPresetPickerOpen(false);
+        setHoveredCodexPreset(null);
+      }
+    };
+    window.addEventListener("mousedown", handleClick);
+    window.addEventListener("keydown", handleKey);
+    return () => {
+      window.removeEventListener("mousedown", handleClick);
+      window.removeEventListener("keydown", handleKey);
+    };
+  }, [codexPresetPickerOpen]);
+
+  useEffect(() => {
     if (!claudeModePickerOpen) return;
     const handleClick = (event: MouseEvent) => {
       if (!claudeModePickerRef.current) return;
       if (claudeModePickerRef.current.contains(event.target as Node)) return;
+      const target = event.target as Element | null;
+      if (target?.closest?.("[data-claude-mode-picker-dropdown]")) return;
       setClaudeModePickerOpen(false);
       setHoveredClaudeMode(null);
     };
@@ -796,50 +826,61 @@ export function AgentChatComposer({
               <span className="font-sans text-[11px] leading-none">{selectedOption.label}</span>
               <CaretDown size={10} weight="bold" className="opacity-70" />
             </button>
-            {claudeModePickerOpen ? (
-              <div
-                role="listbox"
-                aria-label="Claude permission mode"
-                className="absolute bottom-full left-0 z-20 mb-2 w-56 overflow-hidden rounded-lg border border-white/[0.08] bg-[#15151c] shadow-lg shadow-black/40"
-              >
-                <div className="border-b border-white/[0.05] px-3 py-1.5 font-mono text-[9px] font-bold uppercase tracking-[0.18em] text-muted-fg/50">
-                  Mode
-                </div>
-                <ul className="py-1">
-                  {CLAUDE_MODE_OPTIONS.map((option) => {
-                    const tone = CLAUDE_MODE_TONE_STYLES[option.tone];
-                    const active = option.value === claudeSelectionMode;
-                    return (
-                      <li key={option.value}>
-                        <button
-                          type="button"
-                          role="option"
-                          aria-selected={active}
-                          onClick={() => {
-                            applyClaudeMode(option.value);
-                            setClaudeModePickerOpen(false);
-                            setHoveredClaudeMode(null);
-                          }}
-                          onMouseEnter={() => setHoveredClaudeMode(option.value)}
-                          onMouseLeave={() => setHoveredClaudeMode(null)}
-                          onFocus={() => setHoveredClaudeMode(option.value)}
-                          onBlur={() => setHoveredClaudeMode(null)}
-                          className={cn(
-                            "flex w-full items-center gap-2 px-3 py-1.5 text-left font-sans text-[11px] transition-colors",
-                            active ? cn(tone.activeBg, tone.activeText) : "text-fg/72",
-                            tone.hoverBg,
-                          )}
-                          title={option.detail}
-                        >
-                          <span className={cn("h-1.5 w-1.5 shrink-0 rounded-full", tone.dot)} aria-hidden />
-                          <span className="flex-1 truncate leading-none">{option.label}</span>
-                          {active ? <Check size={10} weight="bold" className="opacity-80" /> : null}
-                        </button>
-                      </li>
-                    );
-                  })}
-                </ul>
-              </div>
+            {claudeModePickerOpen && claudeModePickerRef.current ? createPortal(
+              (() => {
+                const rect = claudeModePickerRef.current.getBoundingClientRect();
+                return (
+                  <div
+                    role="listbox"
+                    aria-label="Claude permission mode"
+                    data-claude-mode-picker-dropdown
+                    className="fixed z-[80] w-56 overflow-hidden rounded-lg border border-white/[0.08] bg-[#15151c] shadow-lg shadow-black/40"
+                    style={{
+                      left: rect.left,
+                      bottom: window.innerHeight - rect.top + 8,
+                    }}
+                  >
+                    <div className="border-b border-white/[0.05] px-3 py-1.5 font-mono text-[9px] font-bold uppercase tracking-[0.18em] text-muted-fg/50">
+                      Mode
+                    </div>
+                    <ul className="py-1">
+                      {CLAUDE_MODE_OPTIONS.map((option) => {
+                        const tone = CLAUDE_MODE_TONE_STYLES[option.tone];
+                        const active = option.value === claudeSelectionMode;
+                        return (
+                          <li key={option.value}>
+                            <button
+                              type="button"
+                              role="option"
+                              aria-selected={active}
+                              onClick={() => {
+                                applyClaudeMode(option.value);
+                                setClaudeModePickerOpen(false);
+                                setHoveredClaudeMode(null);
+                              }}
+                              onMouseEnter={() => setHoveredClaudeMode(option.value)}
+                              onMouseLeave={() => setHoveredClaudeMode(null)}
+                              onFocus={() => setHoveredClaudeMode(option.value)}
+                              onBlur={() => setHoveredClaudeMode(null)}
+                              className={cn(
+                                "flex w-full items-center gap-2 px-3 py-1.5 text-left font-sans text-[11px] transition-colors",
+                                active ? cn(tone.activeBg, tone.activeText) : "text-fg/72",
+                                tone.hoverBg,
+                              )}
+                              title={option.detail}
+                            >
+                              <span className={cn("h-1.5 w-1.5 shrink-0 rounded-full", tone.dot)} aria-hidden />
+                              <span className="flex-1 truncate leading-none">{option.label}</span>
+                              {active ? <Check size={10} weight="bold" className="opacity-80" /> : null}
+                            </button>
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  </div>
+                );
+              })(),
+              document.body,
             ) : null}
           </div>
         </div>
@@ -847,44 +888,98 @@ export function AgentChatComposer({
     }
 
     if (sessionProvider === "codex") {
+      const activePreset = codexPresetOptions.find((option) => option.value === codexPreset);
+      const presetLabel = codexPreset === "custom"
+        ? "Custom"
+        : activePreset?.label ?? "Plan";
+      const activeColors = activePreset ? safetyColors(activePreset.safety) : null;
       return (
-        <div className="flex flex-wrap items-start gap-2">
-          <div className="flex items-center gap-px rounded-md border border-white/[0.06] bg-[#1a1a22] p-0.5">
-            {codexPresetOptions.map((option) => {
-              const active = codexPreset === option.value;
-              const colors = safetyColors(option.safety);
+        <div ref={codexPresetPickerRef} className="relative">
+          <button
+            type="button"
+            aria-haspopup="listbox"
+            aria-expanded={codexPresetPickerOpen}
+            aria-label="Codex approval preset"
+            disabled={nativeControlsDisabled}
+            onClick={() => {
+              if (nativeControlsDisabled) return;
+              setCodexPresetPickerOpen((open) => !open);
+            }}
+            className={cn(
+              "inline-flex items-center gap-2 rounded-md border px-2.5 py-1.5 font-sans text-[11px] transition-colors",
+              activeColors ? `${activeColors.activeBg} text-fg/88 border-white/[0.08]` : "bg-white/[0.06] text-fg/80 border-white/[0.08]",
+              nativeControlsDisabled ? "cursor-not-allowed opacity-50" : "hover:brightness-110",
+            )}
+            title={activePreset?.detail ?? codexCustomSummary ?? "Codex approval preset"}
+          >
+            <span className="font-sans text-[11px] leading-none">{presetLabel}</span>
+            <CaretDown size={10} weight="bold" className="opacity-70" />
+          </button>
+          {codexPresetPickerOpen && codexPresetPickerRef.current ? createPortal(
+            (() => {
+              const rect = codexPresetPickerRef.current.getBoundingClientRect();
               return (
-                <button
-                  key={option.value}
-                  type="button"
-                  className={cn(
-                    "rounded-[8px] px-2.5 py-1.5 font-mono text-[9px] font-bold uppercase tracking-wider transition-colors",
-                    active ? `${colors.activeBg} text-fg/80` : "text-muted-fg/35 hover:text-muted-fg/60",
-                    nativeControlsDisabled ? "cursor-not-allowed opacity-50" : "",
-                  )}
-                  disabled={nativeControlsDisabled}
-                  onClick={() => applyCodexPreset(option.value as Exclude<CodexPermissionPreset, "custom">)}
-                  onMouseEnter={() => setHoveredCodexPreset(option.value as Exclude<CodexPermissionPreset, "custom">)}
-                  onMouseLeave={() => setHoveredCodexPreset(null)}
-                  onFocus={() => setHoveredCodexPreset(option.value as Exclude<CodexPermissionPreset, "custom">)}
-                  onBlur={() => setHoveredCodexPreset(null)}
-                  title={option.detail}
-                  aria-pressed={active}
+                <div
+                  role="listbox"
+                  aria-label="Codex approval preset"
+                  data-codex-preset-picker-dropdown
+                  className="fixed z-[80] w-56 overflow-hidden rounded-lg border border-white/[0.08] bg-[#15151c] shadow-lg shadow-black/40"
+                  style={{
+                    left: rect.left,
+                    bottom: window.innerHeight - rect.top + 8,
+                  }}
                 >
-                  {option.label}
-                </button>
+                  <div className="border-b border-white/[0.05] px-3 py-1.5 font-mono text-[9px] font-bold uppercase tracking-[0.18em] text-muted-fg/50">
+                    Preset
+                  </div>
+                  <ul className="py-1">
+                    {codexPresetOptions.map((option) => {
+                      const active = codexPreset === option.value;
+                      const colors = safetyColors(option.safety);
+                      return (
+                        <li key={option.value}>
+                          <button
+                            type="button"
+                            role="option"
+                            aria-selected={active}
+                            onClick={() => {
+                              applyCodexPreset(option.value as Exclude<CodexPermissionPreset, "custom">);
+                              setCodexPresetPickerOpen(false);
+                              setHoveredCodexPreset(null);
+                            }}
+                            onMouseEnter={() => setHoveredCodexPreset(option.value as Exclude<CodexPermissionPreset, "custom">)}
+                            onMouseLeave={() => setHoveredCodexPreset(null)}
+                            onFocus={() => setHoveredCodexPreset(option.value as Exclude<CodexPermissionPreset, "custom">)}
+                            onBlur={() => setHoveredCodexPreset(null)}
+                            className={cn(
+                              "flex w-full items-center gap-2 px-3 py-1.5 text-left font-sans text-[11px] transition-colors",
+                              active ? `${colors.activeBg} text-fg/88` : "text-fg/72 hover:bg-white/[0.04]",
+                            )}
+                            title={option.detail}
+                          >
+                            <span className="flex-1 truncate leading-none">{option.label}</span>
+                            {active ? <Check size={10} weight="bold" className="opacity-80" /> : null}
+                          </button>
+                        </li>
+                      );
+                    })}
+                    {codexPreset === "custom" ? (
+                      <li>
+                        <div
+                          className="flex w-full items-center gap-2 px-3 py-1.5 font-sans text-[11px] bg-white/[0.06] text-fg/88"
+                          title={codexCustomSummary ?? "Custom Codex approval/sandbox combination"}
+                        >
+                          <span className="flex-1 truncate leading-none">Custom</span>
+                          <Check size={10} weight="bold" className="opacity-80" />
+                        </div>
+                      </li>
+                    ) : null}
+                  </ul>
+                </div>
               );
-            })}
-            <div
-              className={cn(
-                "rounded-[8px] px-2.5 py-1.5 font-mono text-[9px] font-bold uppercase tracking-wider",
-                codexPreset === "custom" ? "bg-white/[0.06] text-fg/80" : "text-muted-fg/35",
-              )}
-              title={codexCustomSummary ?? "Custom Codex approval/sandbox combination"}
-            >
-              Custom
-            </div>
-          </div>
+            })(),
+            document.body,
+          ) : null}
         </div>
       );
     }
@@ -982,7 +1077,7 @@ export function AgentChatComposer({
       );
     }
 
-    const runtimeLabel = sessionProvider === "cursor" ? "Cursor" : "ADE";
+    const runtimeLabel = sessionProvider === "cursor" ? "Mode" : "Permissions";
     return (
       <label className="flex items-center gap-2 rounded-md border border-white/[0.06] bg-[#1a1a22] px-2.5 py-1.5">
         <span className="font-mono text-[9px] uppercase tracking-[0.16em] text-muted-fg/45">{runtimeLabel}</span>
@@ -1004,6 +1099,7 @@ export function AgentChatComposer({
     claudeSelectionMode,
     claudePermissionMode,
     claudeModePickerOpen,
+    codexPresetPickerOpen,
     applyCodexPreset,
     codexPreset,
     codexPresetOptions,
@@ -1153,23 +1249,31 @@ export function AgentChatComposer({
   const pendingQuestionCount = getPendingInputQuestionCount(pendingInput);
   const showPendingInputOptionsHint = hasPendingInputOptions(pendingInput);
 
-  let composerHintText: string;
-  if (turnActive) {
-    composerHintText = "Steer the active turn, or press Cmd+. to stop it";
-  } else if (sendOnEnter) {
-    composerHintText = "Enter sends. Shift+Enter adds a newline.";
-  } else {
-    composerHintText = "Cmd+Enter sends. Enter keeps a newline.";
-  }
+  const composerBeamActive = layoutVariant !== "grid-tile" && (turnActive || !chatHasMessages);
+  const composerBeamVariant = turnActive ? "ocean" : "colorful";
+  const composerBeamDuration = turnActive ? 20 : 5;
+  const composerBeamStrength = turnActive ? 0.26 : 0.44;
 
   return (
     <>
+      <BorderBeam
+        size="md"
+        colorVariant={composerBeamVariant}
+        duration={composerBeamDuration}
+        strength={composerBeamStrength}
+        active={composerBeamActive}
+        borderRadius={layoutVariant === "grid-tile" ? 0 : 18}
+        className={cn(
+          "m-3 mt-0 rounded-[var(--chat-radius-shell)]",
+          layoutVariant === "grid-tile" ? "m-0 rounded-none" : "",
+        )}
+        style={{ overflow: "visible" }}
+      >
       <ChatComposerShell
       mode={surfaceMode}
       glowColor={composerGlowColor}
       className={cn(
-        "m-3 mt-0 rounded-[var(--chat-radius-shell)]",
-        layoutVariant === "grid-tile" ? "m-0 rounded-none border-0 bg-transparent shadow-none" : "",
+        layoutVariant === "grid-tile" ? "rounded-none border-0 bg-transparent shadow-none" : "",
       )}
       pendingBanner={pendingInput ? (
         pendingInput.kind === "plan_approval" ? (
@@ -1344,9 +1448,9 @@ export function AgentChatComposer({
         </>
       }
       footer={
-        <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 px-3.5 py-2">
+        <div className="flex items-center gap-x-2 px-3.5 py-2">
           {/* Left: permission + model controls */}
-          <div className="ade-liquid-glass-pill flex min-w-0 flex-wrap items-center gap-1.5 px-2 py-1.5">
+          <div className="flex min-w-0 shrink-0 items-center gap-1.5 whitespace-nowrap">
             {nativeControlPanel}
             <ProviderModelSelector
               value={modelId}
@@ -1360,14 +1464,9 @@ export function AgentChatComposer({
             />
           </div>
 
-          <div className="hidden min-w-0 flex-1 items-center justify-center xl:flex">
-            <span className="truncate font-mono text-[10px] uppercase tracking-[0.16em] text-fg/34">
-              {composerHintText}
-            </span>
-          </div>
 
           {/* Right: attachment, commands, proof, context, send */}
-          <div className="ade-liquid-glass-pill ml-auto flex shrink-0 items-center gap-0.5 p-1">
+          <div className="ml-auto flex shrink-0 items-center gap-0.5">
             <button
               type="button"
               className="rounded-md px-1.5 py-1 font-sans text-[10px] font-medium text-muted-fg/35 transition-colors hover:bg-violet-500/[0.06] hover:text-violet-300/60"
@@ -1585,6 +1684,7 @@ export function AgentChatComposer({
         </div>
       </div>
       </ChatComposerShell>
+      </BorderBeam>
     </>
   );
 }

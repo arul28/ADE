@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import type { IPty, IWindowsPtyForkOptions } from "node-pty";
@@ -202,6 +203,14 @@ function buildInitialResumeMetadata(args: {
 
 function isTrackedCliToolType(toolType: TerminalToolType | null): toolType is "claude" | "codex" | "claude-orchestrated" | "codex-orchestrated" {
   return toolType === "claude" || toolType === "codex" || toolType === "claude-orchestrated" || toolType === "codex-orchestrated";
+}
+
+function inferSessionCwdFromTranscriptPath(transcriptPath: string | null | undefined): string | null {
+  if (!transcriptPath) return null;
+  const normalized = transcriptPath.replace(/\\/g, "/");
+  const markerIndex = normalized.indexOf("/.ade/transcripts/");
+  if (markerIndex < 0) return null;
+  return transcriptPath.slice(0, markerIndex) || null;
 }
 
 const MAX_TRANSCRIPT_BYTES = 8 * 1024 * 1024;
@@ -675,23 +684,59 @@ export function createPtyService({
     }
   };
 
+  function readJsonlFirstLine(filePath: string, maxBytes = 256 * 1024): string | null {
+    let fd: number | null = null;
+    try {
+      fd = fs.openSync(filePath, "r");
+      const chunks: Buffer[] = [];
+      let total = 0;
+      let position = 0;
+      while (total < maxBytes) {
+        const nextRead = Math.min(4096, maxBytes - total);
+        const buf = Buffer.alloc(nextRead);
+        const bytesRead = fs.readSync(fd, buf, 0, nextRead, position);
+        if (bytesRead <= 0) break;
+        const slice = buf.subarray(0, bytesRead);
+        const newlineIdx = slice.indexOf(0x0a);
+        if (newlineIdx >= 0) {
+          chunks.push(slice.subarray(0, newlineIdx));
+          break;
+        }
+        chunks.push(slice);
+        total += bytesRead;
+        position += bytesRead;
+      }
+      const firstLine = Buffer.concat(chunks).toString("utf8").trim();
+      return firstLine.length ? firstLine : null;
+    } catch {
+      return null;
+    } finally {
+      if (fd !== null) {
+        try {
+          fs.closeSync(fd);
+        } catch {
+          // Ignore close errors while scanning best-effort session metadata.
+        }
+      }
+    }
+  }
+
   /**
    * Try to find the Codex session ID from Codex's local storage.
    * Codex stores sessions at ~/.codex/sessions/YYYY/MM/DD/rollout-<ts>-<uuid>.jsonl.
    * Each JSONL starts with a session_meta event containing `payload.id` and `payload.cwd`.
-   * We find the most recently modified JSONL whose cwd matches, and return its UUID.
+   * We score recent candidates by cwd match and closeness to ADE's session startedAt.
    */
-  const resolveCodexSessionIdFromStorage = (cwd: string): string | null => {
+  const resolveCodexSessionIdFromStorage = (args: { cwd: string; startedAt?: string | null }): string | null => {
     try {
-      const homedir = require("node:os").homedir();
-      const sessionsBase = path.join(homedir, ".codex", "sessions");
+      const sessionsBase = path.join(os.homedir(), ".codex", "sessions");
       if (!fs.existsSync(sessionsBase)) return null;
 
-      // Walk the date-based directory tree (YYYY/MM/DD) and find recent JSONLs
       const now = new Date();
+      const requestedStartedAtMs = Date.parse(args.startedAt ?? "");
+      const hasStartedAt = Number.isFinite(requestedStartedAtMs);
       const candidates: Array<{ filePath: string; mtimeMs: number }> = [];
-      // Check today and yesterday's directories
-      for (let dayOffset = 0; dayOffset <= 1; dayOffset++) {
+      for (let dayOffset = 0; dayOffset <= 6; dayOffset++) {
         const d = new Date(now.getTime() - dayOffset * 86400_000);
         const dirPath = path.join(
           sessionsBase,
@@ -708,40 +753,86 @@ export function createPtyService({
         }
       }
       if (!candidates.length) return null;
-
-      // Sort by most recently modified
       candidates.sort((a, b) => b.mtimeMs - a.mtimeMs);
 
-      // Find one whose cwd matches (read first line)
-      for (const candidate of candidates.slice(0, 10)) {
-        // Only consider files modified in the last 5 minutes
-        if (now.getTime() - candidate.mtimeMs > 5 * 60 * 1000) break;
-        let fd: number | null = null;
+      let bestMatch: { id: string; score: number; mtimeMs: number } | null = null;
+      for (const candidate of candidates.slice(0, 80)) {
+        const firstLine = readJsonlFirstLine(candidate.filePath);
+        if (!firstLine) continue;
+        let meta: unknown;
         try {
-          fd = fs.openSync(candidate.filePath, "r");
-          const buf = Buffer.alloc(1024);
-          const bytesRead = fs.readSync(fd, buf, 0, 1024, 0);
-          const firstLine = buf.subarray(0, bytesRead).toString("utf8").split("\n")[0] ?? "";
-          const meta = JSON.parse(firstLine);
-          if (meta?.type === "session_meta" && meta?.payload?.cwd === cwd && meta?.payload?.id) {
-            return meta.payload.id;
-          }
+          meta = JSON.parse(firstLine);
         } catch {
           continue;
-        } finally {
-          if (fd !== null) {
-            try {
-              fs.closeSync(fd);
-            } catch {
-              // Ignore close errors while scanning best-effort session metadata.
-            }
-          }
+        }
+        const payload = typeof meta === "object" && meta != null ? (meta as { payload?: Record<string, unknown>; type?: unknown }).payload : null;
+        const type = typeof meta === "object" && meta != null ? (meta as { type?: unknown }).type : null;
+        const id = typeof payload?.id === "string" ? payload.id.trim() : "";
+        const cwd = typeof payload?.cwd === "string" ? payload.cwd.trim() : "";
+        if (type !== "session_meta" || !id || cwd !== args.cwd) continue;
+
+        if (!hasStartedAt) return id;
+
+        const payloadTimestamp = typeof payload?.timestamp === "string" ? payload.timestamp : "";
+        const payloadTimestampMs = Date.parse(payloadTimestamp);
+        const referenceMs = Number.isFinite(payloadTimestampMs) ? payloadTimestampMs : candidate.mtimeMs;
+        const score = Math.abs(referenceMs - requestedStartedAtMs);
+        if (!bestMatch || score < bestMatch.score || (score === bestMatch.score && candidate.mtimeMs > bestMatch.mtimeMs)) {
+          bestMatch = { id, score, mtimeMs: candidate.mtimeMs };
         }
       }
-      return null;
+      return bestMatch?.id ?? null;
     } catch {
       return null;
     }
+  };
+
+  const tryBackfillResumeTarget = async (
+    sessionId: string,
+    preferredToolType: TerminalToolType | null,
+    reason: "close" | "dispose" | "orphan-dispose" | "session-list",
+    sessionCwd?: string | null,
+  ): Promise<boolean> => {
+    const session = sessionService.get(sessionId);
+    if (!session?.tracked) return false;
+    const effectiveToolType = preferredToolType ?? session.toolType ?? null;
+    if (!isTrackedCliToolType(effectiveToolType)) return false;
+    if (session.resumeMetadata?.targetId?.trim()) return true;
+
+    // Strategy 1: Try parsing the transcript for an explicit resume command
+    const transcript = await sessionService.readTranscriptTail(session.transcriptPath, 220_000);
+    const detected = extractResumeCommandFromOutput(transcript, effectiveToolType);
+    if (detected) {
+      sessionService.setResumeCommand(sessionId, detected);
+      logger.info("pty.resume_target_backfilled", { sessionId, toolType: effectiveToolType, reason, source: "transcript" });
+      return true;
+    }
+
+    // Strategy 2: Read the session/thread ID from the CLI's local storage
+    const cwd = sessionCwd ?? inferSessionCwdFromTranscriptPath(session.transcriptPath);
+
+    if ((effectiveToolType === "claude" || effectiveToolType === "claude-orchestrated") && cwd) {
+      const claudeSessionId = resolveClaudeSessionIdFromStorage(cwd);
+      if (claudeSessionId) {
+        const resumeCmd = `claude --resume ${claudeSessionId}`;
+        sessionService.setResumeCommand(sessionId, resumeCmd);
+        logger.info("pty.resume_target_backfilled", { sessionId, toolType: effectiveToolType, reason, source: "claude-storage", claudeSessionId });
+        return true;
+      }
+    }
+
+    if ((effectiveToolType === "codex" || effectiveToolType === "codex-orchestrated") && cwd) {
+      const codexSessionId = resolveCodexSessionIdFromStorage({ cwd, startedAt: session.startedAt });
+      if (codexSessionId) {
+        const resumeCmd = `codex resume ${codexSessionId}`;
+        sessionService.setResumeCommand(sessionId, resumeCmd);
+        logger.info("pty.resume_target_backfilled", { sessionId, toolType: effectiveToolType, reason, source: "codex-storage", codexSessionId });
+        return true;
+      }
+    }
+
+    logger.warn("pty.resume_target_missing", { sessionId, toolType: effectiveToolType, reason });
+    return false;
   };
 
   const backfillResumeTargetFromTranscriptBestEffort = (
@@ -750,56 +841,14 @@ export function createPtyService({
     reason: "close" | "dispose" | "orphan-dispose",
     sessionCwd?: string | null,
   ): void => {
-    Promise.resolve()
-      .then(async () => {
-        const session = sessionService.get(sessionId);
-        if (!session?.tracked) return;
-        const effectiveToolType = preferredToolType ?? session.toolType ?? null;
-        if (!isTrackedCliToolType(effectiveToolType)) return;
-        if (session.resumeMetadata?.targetId?.trim()) return;
-
-        // Strategy 1: Try parsing the transcript for an explicit resume command
-        const transcript = await sessionService.readTranscriptTail(session.transcriptPath, 220_000);
-        const detected = extractResumeCommandFromOutput(transcript, effectiveToolType);
-        if (detected) {
-          sessionService.setResumeCommand(sessionId, detected);
-          logger.info("pty.resume_target_backfilled", { sessionId, toolType: effectiveToolType, reason, source: "transcript" });
-          return;
-        }
-
-        // Strategy 2: Read the session/thread ID from the CLI's local storage
-        const cwd = sessionCwd ?? session.transcriptPath?.split("/.ade/transcripts/")?.[0] ?? null;
-
-        if ((effectiveToolType === "claude" || effectiveToolType === "claude-orchestrated") && cwd) {
-          const claudeSessionId = resolveClaudeSessionIdFromStorage(cwd);
-          if (claudeSessionId) {
-            const resumeCmd = `claude --resume ${claudeSessionId}`;
-            sessionService.setResumeCommand(sessionId, resumeCmd);
-            logger.info("pty.resume_target_backfilled", { sessionId, toolType: effectiveToolType, reason, source: "claude-storage", claudeSessionId });
-            return;
-          }
-        }
-
-        if ((effectiveToolType === "codex" || effectiveToolType === "codex-orchestrated") && cwd) {
-          const codexSessionId = resolveCodexSessionIdFromStorage(cwd);
-          if (codexSessionId) {
-            const resumeCmd = `codex resume ${codexSessionId}`;
-            sessionService.setResumeCommand(sessionId, resumeCmd);
-            logger.info("pty.resume_target_backfilled", { sessionId, toolType: effectiveToolType, reason, source: "codex-storage", codexSessionId });
-            return;
-          }
-        }
-
-        logger.warn("pty.resume_target_missing", { sessionId, toolType: effectiveToolType, reason });
-      })
-      .catch((err) => {
-        logger.warn("pty.resume_target_backfill_failed", {
-          sessionId,
-          toolType: preferredToolType,
-          reason,
-          err: String(err),
-        });
+    void tryBackfillResumeTarget(sessionId, preferredToolType, reason, sessionCwd).catch((err) => {
+      logger.warn("pty.resume_target_backfill_failed", {
+        sessionId,
+        toolType: preferredToolType,
+        reason,
+        err: String(err),
       });
+    });
   };
 
   const closeEntry = (ptyId: string, exitCode: number | null) => {
@@ -964,6 +1013,26 @@ export function createPtyService({
   };
 
   return {
+    async ensureResumeTargets(sessionIds: string[]): Promise<void> {
+      const uniqueSessionIds = Array.from(new Set(
+        sessionIds
+          .map((sessionId) => (typeof sessionId === "string" ? sessionId.trim() : ""))
+          .filter((sessionId) => sessionId.length > 0),
+      ));
+      for (const sessionId of uniqueSessionIds) {
+        try {
+          await tryBackfillResumeTarget(sessionId, null, "session-list");
+        } catch (err) {
+          logger.warn("pty.resume_target_backfill_failed", {
+            sessionId,
+            toolType: null,
+            reason: "session-list",
+            err: String(err),
+          });
+        }
+      }
+    },
+
     async create(args: PtyCreateArgs): Promise<PtyCreateResult> {
       const { laneId, title } = args;
       const launchContext = resolveLaneLaunchContext({
@@ -979,21 +1048,40 @@ export function createPtyService({
       const existingSession = requestedSessionId.length
         ? sessionService.get(requestedSessionId)
         : null;
-      if (requestedSessionId.length && !existingSession) {
-        throw new Error(`Terminal session '${requestedSessionId}' was not found.`);
-      }
       if (existingSession && existingSession.laneId !== laneId) {
         throw new Error(`Terminal session '${requestedSessionId}' belongs to lane '${existingSession.laneId}', not '${laneId}'.`);
       }
       if (existingSession && !existingSession.tracked) {
         throw new Error(`Terminal session '${requestedSessionId}' is not tracked and cannot be resumed.`);
       }
-      if (existingSession && Array.from(ptys.values()).some((entry) => entry.sessionId === existingSession.id && !entry.disposed)) {
-        throw new Error(`Terminal session '${requestedSessionId}' is already attached to a live PTY.`);
+      const liveAttachedEntry = existingSession
+        ? Array.from(ptys.entries()).find(([, entry]) => entry.sessionId === existingSession.id && !entry.disposed)
+        : null;
+      if (existingSession && liveAttachedEntry) {
+        const [attachedPtyId, attachedEntry] = liveAttachedEntry;
+        const needsSessionResync = existingSession.status !== "running" || existingSession.ptyId !== attachedPtyId;
+        if (needsSessionResync) {
+          sessionService.reattach({
+            sessionId: existingSession.id,
+            ptyId: attachedPtyId,
+            startedAt: new Date(attachedEntry.createdAt).toISOString(),
+          });
+          setRuntimeState(existingSession.id, "running");
+        }
+        logger.info("pty.resume_reused_live_attachment", {
+          sessionId: existingSession.id,
+          ptyId: attachedPtyId,
+          needsSessionResync,
+        });
+        return {
+          ptyId: attachedPtyId,
+          sessionId: existingSession.id,
+          pid: attachedEntry.pty.pid ?? null,
+        };
       }
 
       const ptyId = randomUUID();
-      const sessionId = existingSession?.id ?? randomUUID();
+      const sessionId = existingSession?.id ?? (requestedSessionId.length ? requestedSessionId : randomUUID());
       const startedAt = new Date().toISOString();
       const tracked = existingSession?.tracked ?? (args.tracked !== false);
       const toolTypeHint = normalizeToolType(args.toolType ?? existingSession?.toolType ?? null);

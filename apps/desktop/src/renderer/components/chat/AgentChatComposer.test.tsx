@@ -164,10 +164,11 @@ describe("AgentChatComposer", () => {
       codexConfigSource: "flags",
     });
 
-    expect(screen.getByRole("button", { name: "Plan" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Guarded edit" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Full auto" })).toBeTruthy();
-    expect(screen.getByText("Custom")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Codex approval preset" }));
+
+    expect(screen.getByRole("option", { name: "Plan" })).toBeTruthy();
+    expect(screen.getByRole("option", { name: "Guarded edit" })).toBeTruthy();
+    expect(screen.getByRole("option", { name: "Full auto" })).toBeTruthy();
     expect(screen.queryByDisplayValue("ADE flags")).toBeNull();
     expect(screen.queryByDisplayValue("On request")).toBeNull();
     expect(screen.queryByDisplayValue("Workspace write")).toBeNull();
@@ -177,7 +178,8 @@ describe("AgentChatComposer", () => {
     const onCodexPresetChange = vi.fn();
     renderComposer({ onCodexPresetChange });
 
-    fireEvent.click(screen.getByRole("button", { name: "Full auto" }));
+    fireEvent.click(screen.getByRole("button", { name: "Codex approval preset" }));
+    fireEvent.click(screen.getByRole("option", { name: "Full auto" }));
 
     expect(onCodexPresetChange).toHaveBeenCalledWith({
       codexApprovalPolicy: "never",

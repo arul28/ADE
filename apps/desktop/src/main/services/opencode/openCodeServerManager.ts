@@ -13,6 +13,7 @@ export type OpenCodeServerLeaseKind = "shared" | "dedicated";
 export type OpenCodeServerOwnerKind = "inventory" | "oneshot" | "chat" | "coordinator";
 export type OpenCodeServerShutdownReason =
   | "handle_close"
+  | "attach_failed"
   | "idle_ttl"
   | "paused_run"
   | "ended_session"

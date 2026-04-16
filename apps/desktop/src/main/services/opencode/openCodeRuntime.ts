@@ -364,17 +364,6 @@ async function waitForAdeMcpSocketReady(socketPath: string): Promise<void> {
   throw new Error(`ADE MCP socket not ready at ${normalizedPath}${detail}`);
 }
 
-function isUnrecoverableAdeMcpSocketError(error: unknown): boolean {
-  const message = (error instanceof Error ? error.message : String(error)).toLowerCase();
-  return (
-    message.includes("enoent")
-    || message.includes("econnrefused")
-    || message.includes("local mcp startup failed")
-    || message.includes("[ade-mcp-proxy] failed to connect")
-    || (message.includes("mcp.sock") && message.includes("connect"))
-  );
-}
-
 async function callOpenCodeServer<T>(args: {
   baseUrl: string;
   directory: string;
@@ -776,7 +765,10 @@ async function startOpenCodeSessionInternal(
       });
     }
   } catch (error) {
-    lease.close("error");
+    // Dynamic ADE MCP attachment can fail even when the underlying OpenCode
+    // server is healthy. Release the shared lease without tearing the server
+    // down so degraded retries can reuse the same process.
+    lease.close("attach_failed");
     throw error;
   }
 
@@ -843,9 +835,9 @@ export async function startOpenCodeSession(
       });
     } catch (error) {
       const ownerKind = args.ownerKind ?? "oneshot";
-      const fallbackStrategy = isUnrecoverableAdeMcpSocketError(error)
-        ? (ownerKind === "coordinator" ? "abort" : "shared_without_mcp")
-        : "dedicated_static";
+      const fallbackStrategy = ownerKind === "coordinator"
+        ? "abort"
+        : "shared_without_mcp";
       args.logger?.warn("opencode.dynamic_mcp_attach_failed", {
         ownerKind,
         ownerId: args.ownerId ?? null,
@@ -861,18 +853,10 @@ export async function startOpenCodeSession(
       dynamicMcpDiagnostics.lastFallbackOwnerKind = ownerKind;
       dynamicMcpDiagnostics.lastFallbackOwnerId = args.ownerId?.trim() || null;
       dynamicMcpDiagnostics.lastFallbackError = error instanceof Error ? error.message : String(error);
-      if (fallbackStrategy === "shared_without_mcp") {
-        return await startOpenCodeSessionInternal({
-          ...args,
-          dynamicMcpLaunch: undefined,
-          mcpLaunch: undefined,
-        });
-      }
       return await startOpenCodeSessionInternal({
         ...args,
         dynamicMcpLaunch: undefined,
-        mcpLaunch: args.dynamicMcpLaunch,
-        leaseKind: "dedicated",
+        mcpLaunch: undefined,
       });
     }
   }
