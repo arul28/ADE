@@ -39,6 +39,17 @@
 		E10000000000000000000036 /* WorkErrorAndMessageHelpers.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000036 /* WorkErrorAndMessageHelpers.swift */; };
 		E10000000000000000000037 /* WorkEventMapping.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000037 /* WorkEventMapping.swift */; };
 		E10000000000000000000038 /* WorkStatusAndFormattingHelpers.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000038 /* WorkStatusAndFormattingHelpers.swift */; };
+		E20000000000000000000042 /* FilesModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000042 /* FilesModels.swift */; };
+		E20000000000000000000043 /* FilesHelpers.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000043 /* FilesHelpers.swift */; };
+		E20000000000000000000044 /* FilesRootScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000044 /* FilesRootScreen.swift */; };
+		E20000000000000000000045 /* FilesRootScreen+Actions.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000045 /* FilesRootScreen+Actions.swift */; };
+		E20000000000000000000046 /* FilesDirectoryScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000046 /* FilesDirectoryScreen.swift */; };
+		E20000000000000000000047 /* FilesDirectoryContentsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000047 /* FilesDirectoryContentsView.swift */; };
+		E20000000000000000000048 /* FilesDirectoryContentsView+Actions.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000048 /* FilesDirectoryContentsView+Actions.swift */; };
+		E20000000000000000000049 /* FilesRootComponents.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000049 /* FilesRootComponents.swift */; };
+		E2000000000000000000004A /* FilesDetailComponents.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000004A /* FilesDetailComponents.swift */; };
+		E2000000000000000000004B /* FilesDetailScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000004B /* FilesDetailScreen.swift */; };
+		E2000000000000000000004C /* FilesDetailScreen+Actions.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000004C /* FilesDetailScreen+Actions.swift */; };
 		60F4CDDB763C0A9F0E650B40 /* Foundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 31EC445F22FD38F90C16343E /* Foundation.framework */; };
 		63A9C60B0E0F0E2707634B2E /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 8943C47805A871A4E4A4BF68 /* Assets.xcassets */; };
 		6BDC22C6450AF0B3CBDB2650 /* FilesTabView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4EBFB65019F4C3F8A89428CE /* FilesTabView.swift */; };
@@ -114,6 +125,17 @@
 		D10000000000000000000036 /* WorkErrorAndMessageHelpers.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkErrorAndMessageHelpers.swift; path = ADE/Views/Work/WorkErrorAndMessageHelpers.swift; sourceTree = "<group>"; };
 		D10000000000000000000037 /* WorkEventMapping.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkEventMapping.swift; path = ADE/Views/Work/WorkEventMapping.swift; sourceTree = "<group>"; };
 		D10000000000000000000038 /* WorkStatusAndFormattingHelpers.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkStatusAndFormattingHelpers.swift; path = ADE/Views/Work/WorkStatusAndFormattingHelpers.swift; sourceTree = "<group>"; };
+		D20000000000000000000042 /* FilesModels.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = FilesModels.swift; path = ADE/Views/Files/FilesModels.swift; sourceTree = "<group>"; };
+		D20000000000000000000043 /* FilesHelpers.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = FilesHelpers.swift; path = ADE/Views/Files/FilesHelpers.swift; sourceTree = "<group>"; };
+		D20000000000000000000044 /* FilesRootScreen.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = FilesRootScreen.swift; path = ADE/Views/Files/FilesRootScreen.swift; sourceTree = "<group>"; };
+		D20000000000000000000045 /* FilesRootScreen+Actions.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = "FilesRootScreen+Actions.swift"; path = "ADE/Views/Files/FilesRootScreen+Actions.swift"; sourceTree = "<group>"; };
+		D20000000000000000000046 /* FilesDirectoryScreen.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = FilesDirectoryScreen.swift; path = ADE/Views/Files/FilesDirectoryScreen.swift; sourceTree = "<group>"; };
+		D20000000000000000000047 /* FilesDirectoryContentsView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = FilesDirectoryContentsView.swift; path = ADE/Views/Files/FilesDirectoryContentsView.swift; sourceTree = "<group>"; };
+		D20000000000000000000048 /* FilesDirectoryContentsView+Actions.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = "FilesDirectoryContentsView+Actions.swift"; path = "ADE/Views/Files/FilesDirectoryContentsView+Actions.swift"; sourceTree = "<group>"; };
+		D20000000000000000000049 /* FilesRootComponents.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = FilesRootComponents.swift; path = ADE/Views/Files/FilesRootComponents.swift; sourceTree = "<group>"; };
+		D2000000000000000000004A /* FilesDetailComponents.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = FilesDetailComponents.swift; path = ADE/Views/Files/FilesDetailComponents.swift; sourceTree = "<group>"; };
+		D2000000000000000000004B /* FilesDetailScreen.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = FilesDetailScreen.swift; path = ADE/Views/Files/FilesDetailScreen.swift; sourceTree = "<group>"; };
+		D2000000000000000000004C /* FilesDetailScreen+Actions.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = "FilesDetailScreen+Actions.swift"; path = "ADE/Views/Files/FilesDetailScreen+Actions.swift"; sourceTree = "<group>"; };
 		14C0DF7FEB4C2EB854BAC888 /* ADETests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ADETests.swift; path = ADETests/ADETests.swift; sourceTree = "<group>"; };
 		27A125DE2C17BA32F9291513 /* ADE.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = ADE.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		2856F8D2F2D630DD985B870A /* DatabaseBootstrap.sql */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text; name = DatabaseBootstrap.sql; path = ADE/Resources/DatabaseBootstrap.sql; sourceTree = "<group>"; };
@@ -229,14 +251,33 @@
 			isa = PBXGroup;
 			children = (
 				02B9E655310A24835B5CFC3B /* Components */,
+				D20000000000000000000041 /* Files */,
 				A10000000000000000000001 /* Lanes */,
 				D10000000000000000000021 /* Work */,
 				A10000000000000000000015 /* Settings */,
-				4EBFB65019F4C3F8A89428CE /* FilesTabView.swift */,
 				9270CF8A67F3FA79089F39C1 /* LanesTabView.swift */,
 				5EE4D463D21266B62B422D11 /* PRsTabView.swift */,
 			);
 			name = Views;
+			sourceTree = "<group>";
+		};
+		D20000000000000000000041 /* Files */ = {
+			isa = PBXGroup;
+			children = (
+				4EBFB65019F4C3F8A89428CE /* FilesTabView.swift */,
+				D20000000000000000000042 /* FilesModels.swift */,
+				D20000000000000000000043 /* FilesHelpers.swift */,
+				D20000000000000000000044 /* FilesRootScreen.swift */,
+				D20000000000000000000045 /* FilesRootScreen+Actions.swift */,
+				D20000000000000000000046 /* FilesDirectoryScreen.swift */,
+				D20000000000000000000047 /* FilesDirectoryContentsView.swift */,
+				D20000000000000000000048 /* FilesDirectoryContentsView+Actions.swift */,
+				D20000000000000000000049 /* FilesRootComponents.swift */,
+				D2000000000000000000004A /* FilesDetailComponents.swift */,
+				D2000000000000000000004B /* FilesDetailScreen.swift */,
+				D2000000000000000000004C /* FilesDetailScreen+Actions.swift */,
+			);
+			name = Files;
 			sourceTree = "<group>";
 		};
 		D10000000000000000000021 /* Work */ = {
@@ -481,6 +522,17 @@
 				0375D32BA5870617FA1758C6 /* KeychainService.swift in Sources */,
 				28CFE3D489EA1B208D231519 /* SyncService.swift in Sources */,
 				6BDC22C6450AF0B3CBDB2650 /* FilesTabView.swift in Sources */,
+				E20000000000000000000042 /* FilesModels.swift in Sources */,
+				E20000000000000000000043 /* FilesHelpers.swift in Sources */,
+				E20000000000000000000044 /* FilesRootScreen.swift in Sources */,
+				E20000000000000000000045 /* FilesRootScreen+Actions.swift in Sources */,
+				E20000000000000000000046 /* FilesDirectoryScreen.swift in Sources */,
+				E20000000000000000000047 /* FilesDirectoryContentsView.swift in Sources */,
+				E20000000000000000000048 /* FilesDirectoryContentsView+Actions.swift in Sources */,
+				E20000000000000000000049 /* FilesRootComponents.swift in Sources */,
+				E2000000000000000000004A /* FilesDetailComponents.swift in Sources */,
+				E2000000000000000000004B /* FilesDetailScreen.swift in Sources */,
+				E2000000000000000000004C /* FilesDetailScreen+Actions.swift in Sources */,
 				B10000000000000000000002 /* LaneAttachSheet.swift in Sources */,
 				B10000000000000000000003 /* LaneBatchManageSheet.swift in Sources */,
 				B10000000000000000000004 /* LaneChatLaunchSheet.swift in Sources */,

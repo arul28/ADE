@@ -2056,6 +2056,59 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(resolveFilesWorkspace(for: request, in: workspaces)?.id, "workspace-lane-2")
   }
 
+  func testFilesBrowserStatusPresentationKeepsCachedWorkspacesExplicitWhileOffline() {
+    let presentation = filesBrowserStatusPresentation(
+      status: SyncDomainStatus(phase: .disconnected),
+      hasCachedWorkspaces: true,
+      hasActiveHostProfile: true,
+      needsRepairing: false
+    )
+
+    XCTAssertEqual(presentation?.title, "Showing cached workspaces")
+    XCTAssertEqual(presentation?.actionTitle, "Reconnect")
+    XCTAssertEqual(
+      presentation?.message,
+      "Workspace metadata and cached directory snapshots stay visible on iPhone, but quick open, text search, and refresh need the host to reconnect."
+    )
+  }
+
+  func testFilesBrowserStatusPresentationUsesFailureCopyWhenWorkspaceHydrationFails() {
+    let presentation = filesBrowserStatusPresentation(
+      status: SyncDomainStatus(phase: .failed, lastError: "Lane hydration timed out"),
+      hasCachedWorkspaces: false,
+      hasActiveHostProfile: false,
+      needsRepairing: false
+    )
+
+    XCTAssertEqual(presentation?.title, "Workspace hydration failed")
+    XCTAssertEqual(presentation?.message, "Lane hydration timed out")
+    XCTAssertEqual(presentation?.actionTitle, "Retry")
+  }
+
+  func testFilesSearchEmptyMessageReflectsLiveAndQueryState() {
+    XCTAssertEqual(
+      filesSearchEmptyMessage(kind: .quickOpen, isLive: false, needsRepairing: false, query: ""),
+      "Quick open needs a live host connection."
+    )
+    XCTAssertEqual(
+      filesSearchEmptyMessage(kind: .textSearch, isLive: true, needsRepairing: false, query: "needle"),
+      "No matches found."
+    )
+  }
+
+  func testFilesBreadcrumbItemsKeepCurrentFileSeparateFromDirectories() {
+    let items = filesBreadcrumbItems(relativePath: "Sources/Views/Files.swift", includeCurrentFile: true)
+
+    XCTAssertEqual(
+      items,
+      [
+        FilesBreadcrumbItem(label: "Sources", path: "Sources", isDirectory: true),
+        FilesBreadcrumbItem(label: "Views", path: "Sources/Views", isDirectory: true),
+        FilesBreadcrumbItem(label: "Files.swift", path: "Sources/Views/Files.swift", isDirectory: false),
+      ]
+    )
+  }
+
   func testDatabaseCachesFilesWorkspaceDirectoryBlobDiffAndHistorySnapshots() throws {
     let database = DatabaseService(baseURL: makeTemporaryDirectory())
     XCTAssertNil(database.initializationError)
