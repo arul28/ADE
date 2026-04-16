@@ -295,13 +295,25 @@ struct WorkComposerChipStrip: View {
   }
 
   private func prettyModelName(_ model: String) -> String {
-    // Strip marketing prefixes so the pill stays on one compact line —
-    // "claude-opus-4-6" → "Opus 4.6", "gpt-5-codex" → "GPT-5 Codex".
+    // Match the desktop composer's model label: "Claude Sonnet 4.6" /
+    // "GPT-5.4-Codex" instead of a bare short id. Host-reported
+    // `chatSummary.model` is usually just "sonnet" / "opus" / "haiku" for
+    // Claude and the full long form for Codex, so we special-case the
+    // Claude short ids and otherwise beautify the raw string.
     let trimmed = model.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmed.isEmpty else { return "Model" }
-    if trimmed.lowercased().hasPrefix("claude-") {
+    let lower = trimmed.lowercased()
+
+    switch lower {
+    case "opus": return "Claude Opus 4.6"
+    case "opus[1m]", "opus-1m": return "Claude Opus 4.6 1M"
+    case "sonnet": return "Claude Sonnet 4.6"
+    case "haiku": return "Claude Haiku 4.5"
+    default: break
+    }
+    if lower.hasPrefix("claude-") {
       let tail = trimmed.dropFirst("claude-".count)
-      return beautifyModelSegment(String(tail))
+      return "Claude " + beautifyModelSegment(String(tail))
     }
     return beautifyModelSegment(trimmed)
   }

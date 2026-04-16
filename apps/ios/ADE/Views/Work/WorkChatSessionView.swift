@@ -291,7 +291,7 @@ struct WorkChatSessionView: View {
   private func composerCard(proxy: ScrollViewProxy) -> some View {
     let sendEnabled = canSend && !composer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
 
-    VStack(alignment: .leading, spacing: 10) {
+    VStack(alignment: .leading, spacing: 12) {
       TextField("Type to vibecode…", text: $composer, axis: .vertical)
         .textFieldStyle(.plain)
         .lineLimit(1...6)
@@ -299,7 +299,7 @@ struct WorkChatSessionView: View {
         .foregroundStyle(ADEColor.textPrimary)
         .tint(ADEColor.accent)
         .disabled(!canCompose)
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(maxWidth: .infinity, minHeight: 28, alignment: .leading)
 
       HStack(alignment: .center, spacing: 8) {
         WorkComposerChipStrip(
@@ -322,19 +322,30 @@ struct WorkChatSessionView: View {
             }
           }
         } label: {
-          Image(systemName: sending ? "ellipsis" : "paperplane.fill")
-            .font(.system(size: 15, weight: .bold))
-            .foregroundStyle(sendEnabled ? Color.white : ADEColor.textSecondary)
-            .frame(width: 34, height: 34)
-            .background(
-              sendEnabled ? ADEColor.accent : ADEColor.surfaceBackground.opacity(0.9),
-              in: Circle()
-            )
-            .overlay(
-              Circle()
-                .stroke(sendEnabled ? Color.clear : ADEColor.border.opacity(0.35), lineWidth: 0.8)
-            )
-            .shadow(color: sendEnabled ? ADEColor.accent.opacity(0.35) : .clear, radius: 6, y: 1)
+          HStack(spacing: 5) {
+            if sending {
+              ProgressView()
+                .controlSize(.mini)
+                .tint(sendEnabled ? Color.white : ADEColor.textSecondary)
+            } else {
+              Image(systemName: "paperplane.fill")
+                .font(.system(size: 12, weight: .bold))
+            }
+            Text("Send")
+              .font(.caption.weight(.semibold))
+          }
+          .foregroundStyle(sendEnabled ? Color.white : ADEColor.textSecondary)
+          .padding(.horizontal, 12)
+          .padding(.vertical, 8)
+          .background(
+            Capsule(style: .continuous)
+              .fill(sendEnabled ? ADEColor.accent : ADEColor.surfaceBackground.opacity(0.85))
+          )
+          .overlay(
+            Capsule(style: .continuous)
+              .stroke(sendEnabled ? Color.clear : ADEColor.border.opacity(0.35), lineWidth: 0.8)
+          )
+          .shadow(color: sendEnabled ? ADEColor.accent.opacity(0.4) : .clear, radius: 8, y: 2)
         }
         .buttonStyle(.plain)
         .accessibilityLabel(sending ? "Sending message" : "Send message")
@@ -342,16 +353,20 @@ struct WorkChatSessionView: View {
       }
     }
     .padding(.horizontal, 14)
-    .padding(.vertical, 12)
+    .padding(.vertical, 14)
     .background(
-      RoundedRectangle(cornerRadius: 22, style: .continuous)
-        .fill(ADEColor.recessedBackground.opacity(0.92))
+      RoundedRectangle(cornerRadius: 24, style: .continuous)
+        .fill(Color.black.opacity(0.55))
+        .background(
+          RoundedRectangle(cornerRadius: 24, style: .continuous)
+            .fill(.ultraThinMaterial)
+        )
     )
     .overlay(
-      RoundedRectangle(cornerRadius: 22, style: .continuous)
-        .stroke(ADEColor.border.opacity(0.35), lineWidth: 0.8)
+      RoundedRectangle(cornerRadius: 24, style: .continuous)
+        .stroke(ADEColor.border.opacity(0.45), lineWidth: 1)
     )
-    .shadow(color: Color.black.opacity(0.35), radius: 18, y: 6)
+    .shadow(color: Color.black.opacity(0.4), radius: 20, y: 8)
   }
 
   func composerInset(proxy: ScrollViewProxy) -> AnyView {
