@@ -2,73 +2,231 @@ import SwiftUI
 import UIKit
 import AVKit
 
+/// Work sidebar toolbar matching the desktop `SessionListPane` layout: compact search field,
+/// inline "New chat" accent button, and a funnel toggle that reveals the Group-by + Lane filter
+/// panel. Replaces the earlier phone-only filter card stack so mobile and desktop share the same
+/// information architecture.
 struct WorkFiltersSection: View {
   @Binding var searchText: String
   @Binding var selectedLaneId: String
-  @Binding var selectedStatus: WorkSessionStatusFilter
+  @Binding var organization: WorkSessionOrganization
+  @Binding var filterOpen: Bool
   let lanes: [LaneSummary]
   let runningCount: Int
   let needsInputCount: Int
+  let onNewChat: () -> Void
+  let newChatEnabled: Bool
+
+  private var selectedLaneName: String {
+    if selectedLaneId == "all" { return "All lanes" }
+    return lanes.first(where: { $0.id == selectedLaneId })?.name ?? "All lanes"
+  }
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 12) {
-      HStack(spacing: 10) {
-        Image(systemName: "magnifyingglass")
-          .foregroundStyle(ADEColor.textSecondary)
-        TextField("Search sessions", text: $searchText)
-          .textInputAutocapitalization(.never)
-          .autocorrectionDisabled()
-      }
-      .adeInsetField(cornerRadius: 14, padding: 12)
-
-      ScrollView(.horizontal, showsIndicators: false) {
+    VStack(alignment: .leading, spacing: 10) {
+      HStack(spacing: 8) {
         HStack(spacing: 8) {
-          ForEach(WorkSessionStatusFilter.allCases) { status in
-            Button {
-              selectedStatus = status
+          Image(systemName: "magnifyingglass")
+            .font(.system(size: 12, weight: .semibold))
+            .foregroundStyle(ADEColor.textMuted)
+          TextField("Search", text: $searchText)
+            .textInputAutocapitalization(.never)
+            .autocorrectionDisabled()
+            .font(.footnote)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .frame(minHeight: 32)
+        .background(ADEColor.surfaceBackground.opacity(0.6), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay(
+          RoundedRectangle(cornerRadius: 10, style: .continuous)
+            .stroke(ADEColor.border.opacity(0.22), lineWidth: 0.5)
+        )
+
+        Button(action: onNewChat) {
+          HStack(spacing: 5) {
+            Image(systemName: "plus")
+              .font(.system(size: 10, weight: .bold))
+            Text("New Chat")
+              .font(.caption.weight(.semibold))
+          }
+          .foregroundStyle(ADEColor.accent)
+          .padding(.horizontal, 10)
+          .padding(.vertical, 8)
+          .background(ADEColor.accent.opacity(0.1), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+          .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+              .stroke(ADEColor.accent.opacity(0.35), lineWidth: 0.5)
+          )
+        }
+        .buttonStyle(.plain)
+        .disabled(!newChatEnabled)
+        .opacity(newChatEnabled ? 1.0 : 0.5)
+        .accessibilityLabel("Start a new chat")
+
+        Button {
+          withAnimation(.snappy(duration: 0.2)) {
+            filterOpen.toggle()
+          }
+        } label: {
+          Image(systemName: filterOpen ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease.circle")
+            .font(.system(size: 16, weight: .semibold))
+            .foregroundStyle(filterOpen ? ADEColor.accent : ADEColor.textSecondary)
+            .frame(width: 32, height: 32)
+            .background(
+              (filterOpen ? ADEColor.accent.opacity(0.1) : ADEColor.surfaceBackground.opacity(0.55)),
+              in: RoundedRectangle(cornerRadius: 10, style: .continuous)
+            )
+            .overlay(
+              RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .stroke(ADEColor.border.opacity(0.22), lineWidth: 0.5)
+            )
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Toggle filter panel")
+      }
+
+      if filterOpen {
+        VStack(alignment: .leading, spacing: 10) {
+          HStack(alignment: .center, spacing: 10) {
+            Text("GROUP")
+              .font(.caption2.monospaced().weight(.bold))
+              .foregroundStyle(ADEColor.textMuted)
+              .frame(width: 48, alignment: .leading)
+            HStack(spacing: 4) {
+              ForEach(WorkSessionOrganization.allCases) { option in
+                Button {
+                  withAnimation(.snappy) { organization = option }
+                } label: {
+                  Text(option.title)
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(organization == option ? ADEColor.textPrimary : ADEColor.textSecondary)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 6)
+                    .background(
+                      organization == option ? ADEColor.surfaceBackground.opacity(0.7) : Color.clear,
+                      in: RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    )
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Group by \(option.title)")
+              }
+            }
+            .padding(3)
+            .background(ADEColor.recessedBackground.opacity(0.45), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+          }
+
+          HStack(alignment: .center, spacing: 10) {
+            Text("LANE")
+              .font(.caption2.monospaced().weight(.bold))
+              .foregroundStyle(ADEColor.textMuted)
+              .frame(width: 48, alignment: .leading)
+            Menu {
+              Button("All lanes") { selectedLaneId = "all" }
+              ForEach(lanes) { lane in
+                Button(lane.name) { selectedLaneId = lane.id }
+              }
             } label: {
               HStack(spacing: 6) {
-                Text(status.title)
-                if status == .running && runningCount > 0 {
-                  Text("\(runningCount)")
-                    .font(.caption2.weight(.semibold))
-                } else if status == .needsInput && needsInputCount > 0 {
-                  Text("\(needsInputCount)")
-                    .font(.caption2.weight(.semibold))
-                }
+                Image(systemName: "arrow.triangle.branch")
+                  .font(.system(size: 10, weight: .semibold))
+                  .foregroundStyle(ADEColor.textMuted)
+                Text(selectedLaneName)
+                  .font(.caption.weight(.medium))
+                  .foregroundStyle(ADEColor.textPrimary)
+                Spacer(minLength: 0)
+                Image(systemName: "chevron.up.chevron.down")
+                  .font(.system(size: 9, weight: .semibold))
+                  .foregroundStyle(ADEColor.textMuted)
               }
-              .font(.caption.weight(.semibold))
-              .foregroundStyle(selectedStatus == status ? ADEColor.accent : ADEColor.textSecondary)
-              .padding(.horizontal, 12)
+              .padding(.horizontal, 10)
               .padding(.vertical, 8)
-              .background(
-                Capsule(style: .continuous)
-                  .fill(selectedStatus == status ? ADEColor.accent.opacity(0.12) : ADEColor.surfaceBackground.opacity(0.6))
+              .background(ADEColor.surfaceBackground.opacity(0.55), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+              .overlay(
+                RoundedRectangle(cornerRadius: 9, style: .continuous)
+                  .stroke(ADEColor.border.opacity(0.22), lineWidth: 0.5)
               )
             }
             .buttonStyle(.plain)
           }
-        }
-      }
 
-      Picker("Lane", selection: $selectedLaneId) {
-        Text("All lanes").tag("all")
-        ForEach(lanes) { lane in
-          Text(lane.name).tag(lane.id)
+          if runningCount > 0 || needsInputCount > 0 {
+            HStack(spacing: 6) {
+              if runningCount > 0 {
+                WorkFlatCountChip(icon: "circle.fill", text: "\(runningCount) running", tint: ADEColor.success)
+              }
+              if needsInputCount > 0 {
+                WorkFlatCountChip(icon: "exclamationmark.circle.fill", text: "\(needsInputCount) waiting", tint: ADEColor.warning)
+              }
+              Spacer(minLength: 0)
+            }
+          }
         }
-      }
-      .pickerStyle(.menu)
-      .adeInsetField(cornerRadius: 14, padding: 10)
-
-      HStack(spacing: 8) {
-        WorkFlatCountChip(icon: "waveform.path.ecg", text: "\(runningCount) live", tint: ADEColor.success)
-        if needsInputCount > 0 {
-          WorkFlatCountChip(icon: "exclamationmark.bubble.fill", text: "\(needsInputCount) waiting", tint: ADEColor.warning)
-        }
-        Spacer(minLength: 0)
+        .padding(10)
+        .background(ADEColor.recessedBackground.opacity(0.38), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay(
+          RoundedRectangle(cornerRadius: 12, style: .continuous)
+            .stroke(ADEColor.border.opacity(0.15), lineWidth: 0.5)
+        )
+        .transition(.move(edge: .top).combined(with: .opacity))
       }
     }
-    .adeGlassCard(cornerRadius: 18, padding: 14)
+  }
+}
+
+/// Matches desktop `StickyGroupHeader`: chevron + semantic icon + label + count badge. Tap to
+/// collapse or expand the section body in the parent list.
+struct WorkSidebarSectionHeader: View {
+  let group: WorkSessionGroup
+  let collapsed: Bool
+  let onToggle: () -> Void
+
+  var body: some View {
+    Button(action: onToggle) {
+      HStack(spacing: 8) {
+        Image(systemName: collapsed ? "chevron.right" : "chevron.down")
+          .font(.system(size: 9, weight: .bold))
+          .foregroundStyle(ADEColor.textMuted)
+          .frame(width: 10, alignment: .center)
+
+        sectionIcon
+
+        Text(group.label)
+          .font(.caption.weight(.semibold))
+          .foregroundStyle(ADEColor.textPrimary)
+          .lineLimit(1)
+
+        Spacer(minLength: 0)
+
+        Text("\(group.sessions.count)")
+          .font(.caption2.monospacedDigit().weight(.semibold))
+          .foregroundStyle(ADEColor.textMuted)
+          .padding(.horizontal, 6)
+          .padding(.vertical, 2)
+          .background(ADEColor.surfaceBackground.opacity(0.6), in: Capsule())
+      }
+      .padding(.horizontal, 8)
+      .padding(.vertical, 8)
+      .contentShape(Rectangle())
+    }
+    .buttonStyle(.plain)
+    .accessibilityLabel("\(group.label), \(group.sessions.count) session\(group.sessions.count == 1 ? "" : "s"). Tap to \(collapsed ? "expand" : "collapse").")
+  }
+
+  @ViewBuilder
+  private var sectionIcon: some View {
+    switch group.icon {
+    case .statusDot:
+      Circle()
+        .fill(group.tint)
+        .frame(width: 7, height: 7)
+    case .laneBranch:
+      Image(systemName: "arrow.triangle.branch")
+        .font(.system(size: 10, weight: .semibold))
+        .foregroundStyle(group.tint)
+    case .none:
+      Color.clear.frame(width: 0, height: 0)
+    }
   }
 }
 
@@ -142,12 +300,14 @@ struct WorkRunningBanner: View {
   }
 }
 
-struct WorkSessionSection: View {
-  let title: String
-  let sessions: [TerminalSessionSummary]
-  let laneById: [String: LaneSummary]
-  let chatSummaries: [String: AgentChatSessionSummary]
-  let archivedSessionIds: Set<String>
+/// Single-row renderer for the session list that carries the swipe + context-menu action set.
+/// Used inside the sidebar's grouped loop so the Work root screen can drive the section
+/// organization directly (byLane / byStatus / byTime) without a nested Section wrapper.
+struct WorkSessionListRow: View {
+  let session: TerminalSessionSummary
+  let lane: LaneSummary?
+  let chatSummary: AgentChatSessionSummary?
+  let isArchived: Bool
   let transitionNamespace: Namespace.ID?
   @Binding var selectedSessionId: String?
   @Binding var path: NavigationPath
@@ -160,78 +320,69 @@ struct WorkSessionSection: View {
   let onGoToLane: (TerminalSessionSummary) -> Void
 
   var body: some View {
-    Section(title) {
-      ForEach(sessions) { session in
-        Button {
-          selectedSessionId = session.id
-          path.append(WorkSessionRoute(sessionId: session.id))
-        } label: {
-          WorkSessionRow(
-            session: session,
-            lane: laneById[session.laneId],
-            chatSummary: chatSummaries[session.id],
-            isArchived: archivedSessionIds.contains(session.id),
-            transitionNamespace: transitionNamespace,
-            isSelectedTransitionSource: selectedSessionId == session.id
-          )
-        }
-        .buttonStyle(.plain)
-        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-          Button(archivedSessionIds.contains(session.id) ? "Restore" : "Archive") {
-            onArchive(session)
-          }
-          .tint(ADEColor.warning)
+    Button {
+      selectedSessionId = session.id
+      path.append(WorkSessionRoute(sessionId: session.id))
+    } label: {
+      WorkSessionRow(
+        session: session,
+        lane: lane,
+        chatSummary: chatSummary,
+        isArchived: isArchived,
+        transitionNamespace: transitionNamespace,
+        isSelectedTransitionSource: selectedSessionId == session.id
+      )
+    }
+    .buttonStyle(.plain)
+    .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+      Button(isArchived ? "Restore" : "Archive") {
+        onArchive(session)
+      }
+      .tint(ADEColor.warning)
 
-          Button(session.pinned ? "Unpin" : "Pin") {
-            onPin(session)
-          }
-          .tint(ADEColor.accent)
+      Button(session.pinned ? "Unpin" : "Pin") {
+        onPin(session)
+      }
+      .tint(ADEColor.accent)
+    }
+    .contextMenu {
+      Button("Rename") {
+        onRename(session)
+      }
+      Button(session.pinned ? "Unpin" : "Pin") {
+        onPin(session)
+      }
+      Button(isArchived ? "Restore from archive" : "Archive") {
+        onArchive(session)
+      }
+      if shouldShowEndAction {
+        Button(isChatSession(session) ? "End chat" : "Close session", role: .destructive) {
+          onEnd(session)
         }
-        .contextMenu {
-          Button("Rename") {
-            onRename(session)
-          }
-          Button(session.pinned ? "Unpin" : "Pin") {
-            onPin(session)
-          }
-          Button(archivedSessionIds.contains(session.id) ? "Restore from archive" : "Archive") {
-            onArchive(session)
-          }
-          if shouldShowEndAction(for: session) {
-            Button(isChatSession(session) ? "End chat" : "Close session", role: .destructive) {
-              onEnd(session)
-            }
-          } else if shouldShowResumeAction(for: session) {
-            Button("Resume") {
-              onResume(session)
-            }
-          }
-          Button("Copy session ID") {
-            onCopyId(session)
-          }
-          Button("Go to lane") {
-            onGoToLane(session)
-          }
+      } else if shouldShowResumeAction {
+        Button("Resume") {
+          onResume(session)
         }
-        .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0))
-        .listRowBackground(Color.clear)
-        .listRowSeparator(.hidden)
+      }
+      Button("Copy session ID") {
+        onCopyId(session)
+      }
+      Button("Go to lane") {
+        onGoToLane(session)
       }
     }
   }
 
-  func sessionStatus(for session: TerminalSessionSummary) -> String {
-    normalizedWorkChatSessionStatus(session: session, summary: chatSummaries[session.id])
+  private var status: String {
+    normalizedWorkChatSessionStatus(session: session, summary: chatSummary)
   }
 
-  func shouldShowEndAction(for session: TerminalSessionSummary) -> Bool {
-    let status = sessionStatus(for: session)
-    return status == "active" || status == "awaiting-input"
+  private var shouldShowEndAction: Bool {
+    status == "active" || status == "awaiting-input"
   }
 
-  func shouldShowResumeAction(for session: TerminalSessionSummary) -> Bool {
-    let status = sessionStatus(for: session)
-    return status == "idle" || status == "ended"
+  private var shouldShowResumeAction: Bool {
+    status == "idle" || status == "ended"
   }
 }
 

@@ -43,6 +43,9 @@ struct WorkRootScreen: View {
   /// Coalesces expensive per-lane `listChatSessions` refreshes when `localStateRevision` bumps during CRDT sync.
   @State var lastCoalescedChatSummaryRefresh = Date.distantPast
   @AppStorage("ade.work.archivedSessionIds") var archivedSessionIdsStorage = ""
+  @AppStorage("ade.work.sessionOrganization") var sessionOrganizationRaw = WorkSessionOrganization.byStatus.rawValue
+  @AppStorage("ade.work.collapsedSectionIds") var collapsedSectionIdsStorage = ""
+  @State var filterPanelOpen = false
 
   var workStatus: SyncDomainStatus {
     syncService.status(for: .work)
@@ -144,6 +147,37 @@ struct WorkRootScreen: View {
     selectedStatus != .all || selectedLaneId != "all"
   }
 
+  var sessionOrganizationBinding: Binding<WorkSessionOrganization> {
+    Binding(
+      get: { WorkSessionOrganization(rawValue: sessionOrganizationRaw) ?? .byStatus },
+      set: { sessionOrganizationRaw = $0.rawValue }
+    )
+  }
+
+  var collapsedSectionIds: Set<String> {
+    workParseCollapsedSectionIds(collapsedSectionIdsStorage)
+  }
+
+  func toggleCollapsed(_ id: String) {
+    var ids = collapsedSectionIds
+    if ids.contains(id) {
+      ids.remove(id)
+    } else {
+      ids.insert(id)
+    }
+    collapsedSectionIdsStorage = workSerializeCollapsedSectionIds(ids)
+  }
+
+  var sessionGroups: [WorkSessionGroup] {
+    workSessionGroups(
+      organization: WorkSessionOrganization(rawValue: sessionOrganizationRaw) ?? .byStatus,
+      sessions: displaySessions,
+      chatSummaries: chatSummaries,
+      archivedSessionIds: archivedSessionIds,
+      orderedLanes: lanes
+    )
+  }
+
   var activityFeed: [WorkAgentActivity] {
     activityFeedEntries
   }
@@ -183,10 +217,13 @@ struct WorkRootScreen: View {
           WorkFiltersSection(
             searchText: $searchText,
             selectedLaneId: $selectedLaneId,
-            selectedStatus: $selectedStatus,
+            organization: sessionOrganizationBinding,
+            filterOpen: $filterPanelOpen,
             lanes: lanes,
             runningCount: liveSessions.count,
-            needsInputCount: needsInputSessions.count
+            needsInputCount: needsInputSessions.count,
+            onNewChat: { newChatPresented = true },
+            newChatEnabled: isLive
           )
           .listRowBackground(Color.clear)
           .listRowSeparator(.hidden)
@@ -242,104 +279,39 @@ struct WorkRootScreen: View {
             .listRowBackground(Color.clear)
             .listRowSeparator(.hidden)
           } else {
-            if !needsInputSessions.isEmpty {
-              WorkSessionSection(
-                title: "Needs input",
-                sessions: needsInputSessions,
-                laneById: laneById,
-                chatSummaries: chatSummaries,
-                archivedSessionIds: archivedSessionIds,
-                transitionNamespace: ADEMotion.allowsMatchedGeometry(reduceMotion: reduceMotion) ? sessionTransitionNamespace : nil,
-                selectedSessionId: $selectedSessionTransitionId,
-                path: $path,
-                onArchive: toggleArchive,
-                onPin: togglePin,
-                onRename: beginRename,
-                onEnd: { session in endTarget = session },
-                onResume: resumeSession,
-                onCopyId: copySessionId,
-                onGoToLane: goToLane
+            ForEach(sessionGroups) { group in
+              WorkSidebarSectionHeader(
+                group: group,
+                collapsed: collapsedSectionIds.contains(group.id),
+                onToggle: { toggleCollapsed(group.id) }
               )
-            }
+              .listRowBackground(Color.clear)
+              .listRowSeparator(.hidden)
+              .listRowInsets(EdgeInsets(top: 6, leading: 0, bottom: 2, trailing: 0))
 
-            if !pinnedSessions.isEmpty {
-              WorkSessionSection(
-                title: "Pinned",
-                sessions: pinnedSessions,
-                laneById: laneById,
-                chatSummaries: chatSummaries,
-                archivedSessionIds: archivedSessionIds,
-                transitionNamespace: ADEMotion.allowsMatchedGeometry(reduceMotion: reduceMotion) ? sessionTransitionNamespace : nil,
-                selectedSessionId: $selectedSessionTransitionId,
-                path: $path,
-                onArchive: toggleArchive,
-                onPin: togglePin,
-                onRename: beginRename,
-                onEnd: { session in endTarget = session },
-                onResume: resumeSession,
-                onCopyId: copySessionId,
-                onGoToLane: goToLane
-              )
-            }
-
-            if !liveSessions.isEmpty {
-              WorkSessionSection(
-                title: selectedStatus == .running ? "Live" : "Running",
-                sessions: liveSessions,
-                laneById: laneById,
-                chatSummaries: chatSummaries,
-                archivedSessionIds: archivedSessionIds,
-                transitionNamespace: ADEMotion.allowsMatchedGeometry(reduceMotion: reduceMotion) ? sessionTransitionNamespace : nil,
-                selectedSessionId: $selectedSessionTransitionId,
-                path: $path,
-                onArchive: toggleArchive,
-                onPin: togglePin,
-                onRename: beginRename,
-                onEnd: { session in endTarget = session },
-                onResume: resumeSession,
-                onCopyId: copySessionId,
-                onGoToLane: goToLane
-              )
-            }
-
-            if !endedSessions.isEmpty {
-              WorkSessionSection(
-                title: selectedStatus == .ended ? "Ended" : "Recent",
-                sessions: endedSessions,
-                laneById: laneById,
-                chatSummaries: chatSummaries,
-                archivedSessionIds: archivedSessionIds,
-                transitionNamespace: ADEMotion.allowsMatchedGeometry(reduceMotion: reduceMotion) ? sessionTransitionNamespace : nil,
-                selectedSessionId: $selectedSessionTransitionId,
-                path: $path,
-                onArchive: toggleArchive,
-                onPin: togglePin,
-                onRename: beginRename,
-                onEnd: { session in endTarget = session },
-                onResume: resumeSession,
-                onCopyId: copySessionId,
-                onGoToLane: goToLane
-              )
-            }
-
-            if !archivedSessions.isEmpty && selectedStatus != .running && selectedStatus != .ended {
-              WorkSessionSection(
-                title: "Archived",
-                sessions: archivedSessions,
-                laneById: laneById,
-                chatSummaries: chatSummaries,
-                archivedSessionIds: archivedSessionIds,
-                transitionNamespace: ADEMotion.allowsMatchedGeometry(reduceMotion: reduceMotion) ? sessionTransitionNamespace : nil,
-                selectedSessionId: $selectedSessionTransitionId,
-                path: $path,
-                onArchive: toggleArchive,
-                onPin: togglePin,
-                onRename: beginRename,
-                onEnd: { session in endTarget = session },
-                onResume: resumeSession,
-                onCopyId: copySessionId,
-                onGoToLane: goToLane
-              )
+              if !collapsedSectionIds.contains(group.id) {
+                ForEach(group.sessions) { session in
+                  WorkSessionListRow(
+                    session: session,
+                    lane: laneById[session.laneId],
+                    chatSummary: chatSummaries[session.id],
+                    isArchived: archivedSessionIds.contains(session.id),
+                    transitionNamespace: ADEMotion.allowsMatchedGeometry(reduceMotion: reduceMotion) ? sessionTransitionNamespace : nil,
+                    selectedSessionId: $selectedSessionTransitionId,
+                    path: $path,
+                    onArchive: toggleArchive,
+                    onPin: togglePin,
+                    onRename: beginRename,
+                    onEnd: { session in endTarget = session },
+                    onResume: resumeSession,
+                    onCopyId: copySessionId,
+                    onGoToLane: goToLane
+                  )
+                  .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0))
+                  .listRowBackground(Color.clear)
+                  .listRowSeparator(.hidden)
+                }
+              }
             }
           }
         }
