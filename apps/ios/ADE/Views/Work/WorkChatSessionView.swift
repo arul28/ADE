@@ -21,6 +21,7 @@ struct WorkChatSessionView: View {
   @State var inputResponseText = ""
   @State var actionInFlight = false
   @State var isNearBottom = true
+  @State var unreadBelowCount = 0
   let isLive: Bool
   let disconnectedNotice: Bool
   let transitionNamespace: Namespace.ID?
@@ -451,10 +452,36 @@ struct WorkChatSessionView: View {
       .safeAreaInset(edge: .bottom) {
         composerInset(proxy: proxy)
       }
-      .onChange(of: timeline.count) { _, _ in
-        guard isNearBottom else { return }
-        withAnimation(ADEMotion.quick(reduceMotion: transitionNamespace == nil)) {
-          proxy.scrollTo("chat-end", anchor: .bottom)
+      .overlay(alignment: .bottomTrailing) {
+        if unreadBelowCount > 0 {
+          WorkJumpToLatestPill(count: unreadBelowCount) {
+            withAnimation(ADEMotion.quick(reduceMotion: reduceMotion)) {
+              proxy.scrollTo("chat-end", anchor: .bottom)
+            }
+            unreadBelowCount = 0
+          }
+          .padding(.trailing, 16)
+          .padding(.bottom, 14)
+          .transition(.move(edge: .trailing).combined(with: .opacity))
+        }
+      }
+      .onChange(of: timeline.count) { oldCount, newCount in
+        let delta = newCount - oldCount
+        guard delta > 0 else { return }
+        if isNearBottom {
+          withAnimation(ADEMotion.quick(reduceMotion: reduceMotion)) {
+            proxy.scrollTo("chat-end", anchor: .bottom)
+          }
+        } else {
+          withAnimation(ADEMotion.standard(reduceMotion: reduceMotion)) {
+            unreadBelowCount += delta
+          }
+        }
+      }
+      .onChange(of: isNearBottom) { _, nearBottom in
+        guard nearBottom, unreadBelowCount > 0 else { return }
+        withAnimation(ADEMotion.quick(reduceMotion: reduceMotion)) {
+          unreadBelowCount = 0
         }
       }
     }

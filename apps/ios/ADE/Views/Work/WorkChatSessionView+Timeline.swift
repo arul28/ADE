@@ -39,11 +39,26 @@ extension WorkChatSessionView {
 
   @ViewBuilder
   func timelineEventCard(_ card: WorkEventCardModel) -> some View {
-    WorkEventCardView(
-      card: card,
-      onOpenFile: { path in Task { await onOpenFile(path) } },
-      onOpenPr: { number in Task { await onOpenPr(number) } }
-    )
+    if card.kind == "reasoning" {
+      WorkReasoningCard(
+        card: card,
+        isLive: isReasoningLive(card)
+      )
+    } else {
+      WorkEventCardView(
+        card: card,
+        onOpenFile: { path in Task { await onOpenFile(path) } },
+        onOpenPr: { number in Task { await onOpenPr(number) } }
+      )
+    }
+  }
+
+  /// Reasoning is "live" when the session is streaming AND this is the most
+  /// recent reasoning entry in the transcript. Everything older collapses.
+  func isReasoningLive(_ card: WorkEventCardModel) -> Bool {
+    guard isLive, sessionStatus == "active" else { return false }
+    let latestReasoningId = eventCards.last(where: { $0.kind == "reasoning" })?.id
+    return card.id == latestReasoningId
   }
 
   @ViewBuilder
