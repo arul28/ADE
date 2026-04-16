@@ -127,6 +127,65 @@ extension WorkRootScreen {
     }
   }
 
+  /// Rebuilds `activityFeedEntries` from cached transcripts, reusing any prior parse whose buffer
+  /// fingerprint is unchanged. Only sessions without a streamed `transcriptCache` entry fall back to
+  /// parsing the terminal buffer, and that parse is memoized in `activityTranscriptCache`.
+  @MainActor
+  func rebuildActivityFeed() {
+    let sources = activitySessions
+    guard !sources.isEmpty else {
+      if !activityFeedEntries.isEmpty {
+        activityFeedEntries = []
+      }
+      if !activityTranscriptCache.isEmpty {
+        activityTranscriptCache = [:]
+      }
+      return
+    }
+
+    var nextCache: [String: WorkActivityTranscriptCacheEntry] = [:]
+    nextCache.reserveCapacity(sources.count)
+    var activities: [WorkAgentActivity] = []
+
+    for session in sources {
+      let transcript: [WorkChatEnvelope]
+      if let streamed = transcriptCache[session.id] {
+        transcript = streamed
+      } else {
+        let buffer = syncService.terminalBuffers[session.id] ?? ""
+        let fingerprint = workActivityBufferFingerprint(buffer)
+        if let existing = activityTranscriptCache[session.id], existing.fingerprint == fingerprint {
+          transcript = existing.transcript
+          nextCache[session.id] = existing
+        } else {
+          let parsed = parseWorkChatTranscript(buffer)
+          transcript = parsed
+          nextCache[session.id] = WorkActivityTranscriptCacheEntry(fingerprint: fingerprint, transcript: parsed)
+        }
+      }
+      activities.append(contentsOf: deriveWorkAgentActivities(
+        from: transcript,
+        session: WorkAgentActivityContext(
+          sessionId: session.id,
+          title: session.title,
+          laneName: session.laneName,
+          status: normalizedWorkChatSessionStatus(session: session, summary: chatSummaries[session.id]),
+          startedAt: session.startedAt
+        )
+      ))
+    }
+
+    activities.sort { lhs, rhs in
+      if lhs.startedAt == rhs.startedAt {
+        return lhs.agentName < rhs.agentName
+      }
+      return lhs.startedAt > rhs.startedAt
+    }
+
+    activityFeedEntries = activities
+    activityTranscriptCache = nextCache
+  }
+
   func toggleArchive(_ session: TerminalSessionSummary) {
     var archived = archivedSessionIds
     if archived.contains(session.id) {

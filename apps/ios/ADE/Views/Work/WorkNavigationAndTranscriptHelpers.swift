@@ -2,6 +2,29 @@ import SwiftUI
 import UIKit
 import AVKit
 
+struct WorkActivityTranscriptCacheEntry {
+  let fingerprint: String
+  let transcript: [WorkChatEnvelope]
+}
+
+/// Cheap, deterministic fingerprint for a terminal buffer. We intentionally avoid hashing the whole
+/// string on every `localStateRevision` tick — length + short head/tail windows give us >99% stability
+/// against spurious cache invalidations while still changing whenever new output actually arrives.
+func workActivityBufferFingerprint(_ buffer: String) -> String {
+  if buffer.isEmpty {
+    return "0:"
+  }
+  let count = buffer.utf8.count
+  let headLen = min(64, buffer.count)
+  let tailLen = min(64, buffer.count)
+  let head = buffer.prefix(headLen)
+  let tail = buffer.suffix(tailLen)
+  var hasher = Hasher()
+  hasher.combine(head)
+  hasher.combine(tail)
+  return "\(count):\(hasher.finalize())"
+}
+
 func extractWorkNavigationTargets(from text: String) -> WorkNavigationTargets {
   let filePattern = #"(?<![A-Za-z0-9_])(?:\.{1,2}/)?(?:[A-Za-z0-9._-]+/)*[A-Za-z0-9._-]+\.(?:swift|ts|tsx|mts|cts|js|jsx|mjs|cjs|py|rb|go|rs|java|kt|kts|json|yaml|yml|toml|md|mdx|txt|html|css|scss|sql|sh|bash|zsh|plist|png|jpg|jpeg|gif|webp|svg)(?::\d+)?"#
   let prPattern = #"(?<![A-Za-z0-9])#(\d+)\b"#

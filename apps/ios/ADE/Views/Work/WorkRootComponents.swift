@@ -61,14 +61,35 @@ struct WorkFiltersSection: View {
       .adeInsetField(cornerRadius: 14, padding: 10)
 
       HStack(spacing: 8) {
-        LaneMicroChip(icon: "waveform.path.ecg", text: "\(runningCount) live", tint: ADEColor.success)
+        WorkFlatCountChip(icon: "waveform.path.ecg", text: "\(runningCount) live", tint: ADEColor.success)
         if needsInputCount > 0 {
-          LaneMicroChip(icon: "exclamationmark.bubble.fill", text: "\(needsInputCount) waiting", tint: ADEColor.warning)
+          WorkFlatCountChip(icon: "exclamationmark.bubble.fill", text: "\(needsInputCount) waiting", tint: ADEColor.warning)
         }
         Spacer(minLength: 0)
       }
     }
     .adeGlassCard(cornerRadius: 18, padding: 14)
+  }
+}
+
+/// Flat-capsule variant of `ADEGlassChip` used when the chip sits inside a `.adeGlassCard` so we avoid
+/// glass-on-glass stacking. Visual spec matches `ADEGlassChip` minus the inner `.glassEffect()`.
+struct WorkFlatCountChip: View {
+  let icon: String
+  let text: String
+  let tint: Color
+
+  var body: some View {
+    HStack(spacing: 3) {
+      Image(systemName: icon)
+        .font(.system(size: 8, weight: .semibold))
+      Text(text)
+        .font(.system(.caption2).weight(.medium))
+    }
+    .foregroundStyle(tint)
+    .padding(.horizontal, 6)
+    .padding(.vertical, 3)
+    .background(tint.opacity(0.1), in: Capsule())
   }
 }
 

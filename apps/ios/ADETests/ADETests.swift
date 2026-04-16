@@ -3068,6 +3068,31 @@ final class ADETests: XCTestCase {
     XCTAssertTrue(FileManager.default.fileExists(atPath: appURL.appendingPathComponent("ade-ios-local.sqlite.phase6-backup").path))
   }
 
+  func testWorkActivityBufferFingerprintStaysStableForIdenticalBuffers() {
+    let bufferA = "hello\nworld\nrunning tool"
+    let bufferB = "hello\nworld\nrunning tool"
+    XCTAssertEqual(workActivityBufferFingerprint(bufferA), workActivityBufferFingerprint(bufferB))
+  }
+
+  func testWorkActivityBufferFingerprintChangesWhenBufferGrowsOrChanges() {
+    let base = "hello world"
+    let appended = base + " more content appended at the tail"
+    let replaced = "HELLO world"
+
+    XCTAssertNotEqual(workActivityBufferFingerprint(base), workActivityBufferFingerprint(appended))
+    XCTAssertNotEqual(workActivityBufferFingerprint(base), workActivityBufferFingerprint(replaced))
+    XCTAssertEqual(workActivityBufferFingerprint(""), "0:")
+  }
+
+  func testWorkActivityBufferFingerprintDistinguishesLongBuffersWithDifferentTails() {
+    let head = String(repeating: "a", count: 1024)
+    let bufferA = head + "tail-alpha"
+    let bufferB = head + "tail-omega"
+    // Lengths match, so only the fingerprint's tail-window distinguishes them.
+    XCTAssertEqual(bufferA.count, bufferB.count)
+    XCTAssertNotEqual(workActivityBufferFingerprint(bufferA), workActivityBufferFingerprint(bufferB))
+  }
+
   private func makeTemporaryDirectory() -> URL {
     let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
     try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)

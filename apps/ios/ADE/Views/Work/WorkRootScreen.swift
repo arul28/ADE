@@ -24,6 +24,10 @@ struct WorkRootScreen: View {
   @State var chatSummaries: [String: AgentChatSessionSummary] = [:]
   @State var lanes: [LaneSummary] = []
   @State var transcriptCache: [String: [WorkChatEnvelope]] = [:]
+  /// Memoizes parsed transcripts for the Activity feed keyed by session id + cheap buffer fingerprint,
+  /// so `localStateRevision` bumps during CRDT sync do not re-parse every terminal buffer in `body`.
+  @State var activityTranscriptCache: [String: WorkActivityTranscriptCacheEntry] = [:]
+  @State var activityFeedEntries: [WorkAgentActivity] = []
   @State var errorMessage: String?
   @State var path = NavigationPath()
   @State var searchText = ""
@@ -141,25 +145,23 @@ struct WorkRootScreen: View {
   }
 
   var activityFeed: [WorkAgentActivity] {
-    activitySessions.flatMap { session in
-      let transcript = transcriptCache[session.id] ?? parseWorkChatTranscript(syncService.terminalBuffers[session.id] ?? "")
-      return deriveWorkAgentActivities(
-        from: transcript,
-        session: WorkAgentActivityContext(
-          sessionId: session.id,
-          title: session.title,
-          laneName: session.laneName,
-          status: normalizedWorkChatSessionStatus(session: session, summary: chatSummaries[session.id]),
-          startedAt: session.startedAt
-        )
-      )
+    activityFeedEntries
+  }
+
+  /// Composite fingerprint that changes only when the Activity feed actually needs to rebuild.
+  /// Built from the activity session ids, their streamed transcript counts, and a cheap buffer
+  /// fingerprint so typical `localStateRevision` bumps do not trigger a rebuild.
+  var activityFeedFingerprint: String {
+    var parts: [String] = []
+    parts.reserveCapacity(activitySessions.count)
+    for session in activitySessions {
+      let streamedCount = transcriptCache[session.id]?.count ?? -1
+      let buffer = syncService.terminalBuffers[session.id] ?? ""
+      let bufferFingerprint = workActivityBufferFingerprint(buffer)
+      let status = normalizedWorkChatSessionStatus(session: session, summary: chatSummaries[session.id])
+      parts.append("\(session.id):\(streamedCount):\(bufferFingerprint):\(status)")
     }
-    .sorted { lhs, rhs in
-      if lhs.startedAt == rhs.startedAt {
-        return lhs.agentName < rhs.agentName
-      }
-      return lhs.startedAt > rhs.startedAt
-    }
+    return parts.joined(separator: "|")
   }
 
   var body: some View {
@@ -374,6 +376,9 @@ struct WorkRootScreen: View {
       }
       .task(id: pollingKey) {
         await pollRunningChats()
+      }
+      .task(id: activityFeedFingerprint) {
+        rebuildActivityFeed()
       }
       .navigationDestination(for: WorkSessionRoute.self) { route in
         WorkSessionDestinationView(
