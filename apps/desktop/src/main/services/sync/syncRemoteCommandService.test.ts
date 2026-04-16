@@ -89,6 +89,7 @@ function createMockGitService() {
     generateCommitMessage: vi.fn().mockResolvedValue({ message: "feat: auto" }),
     listRecentCommits: vi.fn().mockResolvedValue([]),
     listCommitFiles: vi.fn().mockResolvedValue([]),
+    getFileHistory: vi.fn().mockResolvedValue([]),
     getCommitMessage: vi.fn().mockResolvedValue({ message: "msg" }),
     revertCommit: vi.fn().mockResolvedValue(undefined),
     cherryPickCommit: vi.fn().mockResolvedValue(undefined),
@@ -207,6 +208,7 @@ describe("createSyncRemoteCommandService", () => {
       expect(actions).toContain("prs.createFromLane");
       expect(actions).toContain("git.commit");
       expect(actions).toContain("git.push");
+      expect(actions).toContain("git.getFileHistory");
       expect(actions).toContain("chat.create");
       expect(actions).toContain("chat.send");
       expect(actions).toContain("files.writeTextAtomic");
@@ -1223,6 +1225,27 @@ describe("createSyncRemoteCommandService", () => {
         laneId: "lane-1",
         path: "src/app.ts",
       }))).rejects.toThrow("git.getFile requires mode.");
+    });
+  });
+
+  describe("execute — git.getFileHistory", () => {
+    it("passes laneId, path, and optional limit", async () => {
+      await service.execute(makePayload("git.getFileHistory", {
+        laneId: "lane-1",
+        path: "src/app.ts",
+        limit: 15,
+      }));
+      expect(gitService.getFileHistory).toHaveBeenCalledWith({
+        laneId: "lane-1",
+        path: "src/app.ts",
+        limit: 15,
+      });
+    });
+
+    it("throws when path is missing", async () => {
+      await expect(service.execute(makePayload("git.getFileHistory", {
+        laneId: "lane-1",
+      }))).rejects.toThrow("git.getFileHistory requires path.");
     });
   });
 

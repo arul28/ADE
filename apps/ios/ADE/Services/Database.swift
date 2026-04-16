@@ -864,16 +864,227 @@ final class DatabaseService {
   }
 
   func listWorkspaces() -> [FilesWorkspace] {
-    fetchLanes(includeArchived: false).map { lane in
+    if tableExists("files_workspaces") {
+      let cached = query(
+        """
+        select id, kind, lane_id, name, root_path, is_read_only_by_default, mobile_read_only
+          from files_workspaces
+         order by case when kind = 'primary' then 0 else 1 end, name collate nocase asc
+        """
+      ) { statement in
+        FilesWorkspace(
+          id: stringValue(statement, index: 0) ?? "",
+          kind: stringValue(statement, index: 1) ?? "",
+          laneId: stringValue(statement, index: 2),
+          name: stringValue(statement, index: 3) ?? "",
+          rootPath: stringValue(statement, index: 4) ?? "",
+          isReadOnlyByDefault: sqlite3_column_int(statement, 5) == 1,
+          mobileReadOnly: sqlite3_column_int(statement, 6) != 0
+        )
+      }
+      if !cached.isEmpty {
+        return cached
+      }
+    }
+
+    return fetchLanes(includeArchived: false).map { lane in
       FilesWorkspace(
         id: lane.id,
         kind: lane.laneType,
         laneId: lane.id,
         name: lane.name,
         rootPath: lane.attachedRootPath ?? lane.worktreePath,
-        isReadOnlyByDefault: lane.isEditProtected
+        isReadOnlyByDefault: lane.isEditProtected,
+        mobileReadOnly: true
       )
     }
+  }
+
+  func replaceFilesWorkspaces(_ workspaces: [FilesWorkspace]) throws {
+    guard tableExists("files_workspaces") else { return }
+    try exec("begin immediate")
+    do {
+      try run("delete from files_workspaces")
+      let timestamp = ISO8601DateFormatter().string(from: Date())
+      for workspace in workspaces {
+        _ = try execute(
+          """
+          insert into files_workspaces(
+            id, kind, lane_id, name, root_path, is_read_only_by_default, mobile_read_only, updated_at
+          ) values (?, ?, ?, ?, ?, ?, ?, ?)
+          """
+        ) { statement in
+          try bindText(workspace.id, to: statement, index: 1)
+          try bindText(workspace.kind, to: statement, index: 2)
+          if let laneId = workspace.laneId {
+            try bindText(laneId, to: statement, index: 3)
+          } else {
+            sqlite3_bind_null(statement, 3)
+          }
+          try bindText(workspace.name, to: statement, index: 4)
+          try bindText(workspace.rootPath, to: statement, index: 5)
+          sqlite3_bind_int(statement, 6, workspace.isReadOnlyByDefault ? 1 : 0)
+          sqlite3_bind_int(statement, 7, workspace.mobileReadOnly ? 1 : 0)
+          try bindText(timestamp, to: statement, index: 8)
+        }
+      }
+      try exec("commit")
+    } catch {
+      try? exec("rollback")
+      throw error
+    }
+  }
+
+  func cacheDirectorySnapshot(workspaceId: String, parentPath: String, includeHidden: Bool, nodes: [FileTreeNode]) throws {
+    guard tableExists("file_directory_snapshots") else { return }
+    let json = try encodeJsonString(nodes)
+    _ = try execute(
+      """
+      insert into file_directory_snapshots(workspace_id, parent_path, include_hidden, nodes_json, updated_at)
+      values (?, ?, ?, ?, ?)
+      on conflict(workspace_id, parent_path, include_hidden) do update set
+        nodes_json = excluded.nodes_json,
+        updated_at = excluded.updated_at
+      """
+    ) { statement in
+      try bindText(workspaceId, to: statement, index: 1)
+      try bindText(parentPath, to: statement, index: 2)
+      sqlite3_bind_int(statement, 3, includeHidden ? 1 : 0)
+      try bindText(json, to: statement, index: 4)
+      try bindText(ISO8601DateFormatter().string(from: Date()), to: statement, index: 5)
+    }
+  }
+
+  func fetchDirectorySnapshot(workspaceId: String, parentPath: String, includeHidden: Bool) -> [FileTreeNode]? {
+    guard tableExists("file_directory_snapshots") else { return nil }
+    let sql = """
+      select nodes_json
+        from file_directory_snapshots
+       where workspace_id = ? and parent_path = ? and include_hidden = ?
+       limit 1
+    """
+    let rows = query(sql, bind: { [self] statement in
+      try self.bindText(workspaceId, to: statement, index: 1)
+      try self.bindText(parentPath, to: statement, index: 2)
+      sqlite3_bind_int(statement, 3, includeHidden ? 1 : 0)
+    }) { statement in
+      return stringValue(statement, index: 0)
+    }
+    guard let raw = rows.first else { return nil }
+    return decodeJson(raw, as: [FileTreeNode].self)
+  }
+
+  func cacheFileContentSnapshot(workspaceId: String, path: String, blob: SyncFileBlob) throws {
+    guard tableExists("file_content_snapshots") else { return }
+    let json = try encodeJsonString(blob)
+    _ = try execute(
+      """
+      insert into file_content_snapshots(workspace_id, relative_path, blob_json, updated_at)
+      values (?, ?, ?, ?)
+      on conflict(workspace_id, relative_path) do update set
+        blob_json = excluded.blob_json,
+        updated_at = excluded.updated_at
+      """
+    ) { statement in
+      try bindText(workspaceId, to: statement, index: 1)
+      try bindText(path, to: statement, index: 2)
+      try bindText(json, to: statement, index: 3)
+      try bindText(ISO8601DateFormatter().string(from: Date()), to: statement, index: 4)
+    }
+  }
+
+  func fetchFileContentSnapshot(workspaceId: String, path: String) -> SyncFileBlob? {
+    guard tableExists("file_content_snapshots") else { return nil }
+    let sql = """
+      select blob_json
+        from file_content_snapshots
+       where workspace_id = ? and relative_path = ?
+       limit 1
+    """
+    let rows = query(sql, bind: { [self] statement in
+      try self.bindText(workspaceId, to: statement, index: 1)
+      try self.bindText(path, to: statement, index: 2)
+    }) { statement in
+      return stringValue(statement, index: 0)
+    }
+    guard let raw = rows.first else { return nil }
+    return decodeJson(raw, as: SyncFileBlob.self)
+  }
+
+  func cacheFileDiffSnapshot(workspaceId: String, path: String, mode: String, diff: FileDiff) throws {
+    guard tableExists("file_diff_snapshots") else { return }
+    let json = try encodeJsonString(diff)
+    _ = try execute(
+      """
+      insert into file_diff_snapshots(workspace_id, relative_path, mode, diff_json, updated_at)
+      values (?, ?, ?, ?, ?)
+      on conflict(workspace_id, relative_path, mode) do update set
+        diff_json = excluded.diff_json,
+        updated_at = excluded.updated_at
+      """
+    ) { statement in
+      try bindText(workspaceId, to: statement, index: 1)
+      try bindText(path, to: statement, index: 2)
+      try bindText(mode, to: statement, index: 3)
+      try bindText(json, to: statement, index: 4)
+      try bindText(ISO8601DateFormatter().string(from: Date()), to: statement, index: 5)
+    }
+  }
+
+  func fetchFileDiffSnapshot(workspaceId: String, path: String, mode: String) -> FileDiff? {
+    guard tableExists("file_diff_snapshots") else { return nil }
+    let sql = """
+      select diff_json
+        from file_diff_snapshots
+       where workspace_id = ? and relative_path = ? and mode = ?
+       limit 1
+    """
+    let rows = query(sql, bind: { [self] statement in
+      try self.bindText(workspaceId, to: statement, index: 1)
+      try self.bindText(path, to: statement, index: 2)
+      try self.bindText(mode, to: statement, index: 3)
+    }) { statement in
+      return stringValue(statement, index: 0)
+    }
+    guard let raw = rows.first else { return nil }
+    return decodeJson(raw, as: FileDiff.self)
+  }
+
+  func cacheFileHistorySnapshot(workspaceId: String, path: String, entries: [GitFileHistoryEntry]) throws {
+    guard tableExists("file_history_snapshots") else { return }
+    let json = try encodeJsonString(entries)
+    _ = try execute(
+      """
+      insert into file_history_snapshots(workspace_id, relative_path, entries_json, updated_at)
+      values (?, ?, ?, ?)
+      on conflict(workspace_id, relative_path) do update set
+        entries_json = excluded.entries_json,
+        updated_at = excluded.updated_at
+      """
+    ) { statement in
+      try bindText(workspaceId, to: statement, index: 1)
+      try bindText(path, to: statement, index: 2)
+      try bindText(json, to: statement, index: 3)
+      try bindText(ISO8601DateFormatter().string(from: Date()), to: statement, index: 4)
+    }
+  }
+
+  func fetchFileHistorySnapshot(workspaceId: String, path: String) -> [GitFileHistoryEntry]? {
+    guard tableExists("file_history_snapshots") else { return nil }
+    let sql = """
+      select entries_json
+        from file_history_snapshots
+       where workspace_id = ? and relative_path = ?
+       limit 1
+    """
+    let rows = query(sql, bind: { [self] statement in
+      try self.bindText(workspaceId, to: statement, index: 1)
+      try self.bindText(path, to: statement, index: 2)
+    }) { statement in
+      return stringValue(statement, index: 0)
+    }
+    guard let raw = rows.first else { return nil }
+    return decodeJson(raw, as: [GitFileHistoryEntry].self)
   }
 
   func fetchSessions() -> [TerminalSessionSummary] {
@@ -2143,6 +2354,12 @@ final class DatabaseService {
       return "SQLite operation failed."
     }
     return String(cString: message)
+  }
+
+  private func tableExists(_ name: String) -> Bool {
+    queryInt64("select 1 from sqlite_master where type = 'table' and name = ? limit 1") { [self] statement in
+      try self.bindText(name, to: statement, index: 1)
+    } != nil
   }
 
   private func parseAlterTableTarget(_ sql: String) -> String? {

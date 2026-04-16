@@ -2015,6 +2015,112 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(formattedFileSize(1_572_864), "1.5 MB")
   }
 
+  func testFilesWorkspaceDefaultsToMobileReadOnlyWhenHostOmitsFlag() throws {
+    let data = try JSONSerialization.data(withJSONObject: [
+      "id": "workspace-1",
+      "kind": "primary",
+      "laneId": NSNull(),
+      "name": "Repo",
+      "rootPath": "/repo",
+      "isReadOnlyByDefault": false,
+    ])
+
+    let workspace = try JSONDecoder().decode(FilesWorkspace.self, from: data)
+
+    XCTAssertTrue(workspace.mobileReadOnly)
+    XCTAssertTrue(workspace.readOnlyOnMobile)
+  }
+
+  func testResolveFilesWorkspaceFallsBackToLaneMatchWhenWorkspaceIdIsStale() {
+    let workspaces = [
+      FilesWorkspace(
+        id: "workspace-primary",
+        kind: "primary",
+        laneId: nil,
+        name: "Repo",
+        rootPath: "/repo",
+        isReadOnlyByDefault: true
+      ),
+      FilesWorkspace(
+        id: "workspace-lane-2",
+        kind: "worktree",
+        laneId: "lane-2",
+        name: "Release",
+        rootPath: "/repo/.ade/worktrees/release",
+        isReadOnlyByDefault: true
+      ),
+    ]
+
+    let request = FilesNavigationRequest(workspaceId: "stale-id", laneId: "lane-2", relativePath: "Sources/App.swift")
+
+    XCTAssertEqual(resolveFilesWorkspace(for: request, in: workspaces)?.id, "workspace-lane-2")
+  }
+
+  func testDatabaseCachesFilesWorkspaceDirectoryBlobDiffAndHistorySnapshots() throws {
+    let database = DatabaseService(baseURL: makeTemporaryDirectory())
+    XCTAssertNil(database.initializationError)
+
+    try database.replaceFilesWorkspaces([
+      FilesWorkspace(
+        id: "workspace-lane-1",
+        kind: "worktree",
+        laneId: "lane-1",
+        name: "Feature",
+        rootPath: "/repo/.ade/worktrees/feature",
+        isReadOnlyByDefault: false,
+        mobileReadOnly: true
+      )
+    ])
+    try database.cacheDirectorySnapshot(
+      workspaceId: "workspace-lane-1",
+      parentPath: "Sources",
+      includeHidden: false,
+      nodes: [FileTreeNode(name: "App.swift", path: "Sources/App.swift", type: "file", hasChildren: nil, children: nil, changeStatus: "M", size: 321)]
+    )
+    try database.cacheFileContentSnapshot(
+      workspaceId: "workspace-lane-1",
+      path: "Sources/App.swift",
+      blob: SyncFileBlob(path: "Sources/App.swift", size: 321, mimeType: nil, encoding: "utf-8", isBinary: false, content: "print(\"hi\")", languageId: "swift")
+    )
+    try database.cacheFileDiffSnapshot(
+      workspaceId: "workspace-lane-1",
+      path: "Sources/App.swift",
+      mode: "unstaged",
+      diff: FileDiff(
+        path: "Sources/App.swift",
+        mode: "unstaged",
+        original: DiffSide(exists: true, text: "print(\"old\")"),
+        modified: DiffSide(exists: true, text: "print(\"hi\")"),
+        isBinary: false,
+        language: "swift"
+      )
+    )
+    try database.cacheFileHistorySnapshot(
+      workspaceId: "workspace-lane-1",
+      path: "Sources/App.swift",
+      entries: [
+        GitFileHistoryEntry(
+          commitSha: "abc123",
+          shortSha: "abc123",
+          authorName: "Arul",
+          authoredAt: "2026-04-11T21:00:00.000Z",
+          subject: "Update app",
+          path: "Sources/App.swift",
+          previousPath: nil,
+          changeType: "modified"
+        )
+      ]
+    )
+
+    XCTAssertEqual(database.listWorkspaces().first?.id, "workspace-lane-1")
+    XCTAssertTrue(database.listWorkspaces().first?.mobileReadOnly == true)
+    XCTAssertEqual(database.fetchDirectorySnapshot(workspaceId: "workspace-lane-1", parentPath: "Sources", includeHidden: false)?.first?.path, "Sources/App.swift")
+    XCTAssertEqual(database.fetchFileContentSnapshot(workspaceId: "workspace-lane-1", path: "Sources/App.swift")?.content, "print(\"hi\")")
+    XCTAssertEqual(database.fetchFileDiffSnapshot(workspaceId: "workspace-lane-1", path: "Sources/App.swift", mode: "unstaged")?.modified.text, "print(\"hi\")")
+    XCTAssertEqual(database.fetchFileHistorySnapshot(workspaceId: "workspace-lane-1", path: "Sources/App.swift")?.first?.subject, "Update app")
+    database.close()
+  }
+
   func testAgentChatTranscriptResponseDecodesEntries() throws {
     let payload: [String: Any] = [
       "sessionId": "chat-1",

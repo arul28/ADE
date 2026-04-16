@@ -11,7 +11,9 @@ import type {
   GitGenerateCommitMessageResult,
   GitCommitSummary,
   GitConflictState,
+  GitFileHistoryEntry,
   GitGetCommitMessageArgs,
+  GitGetFileHistoryArgs,
   GitListCommitFilesArgs,
   GitFileActionArgs,
   GitPushArgs,
@@ -596,6 +598,90 @@ export function createGitOperationsService({
           .filter((entry): entry is GitCommitSummary => entry != null);
 
         return rows;
+      });
+    },
+
+    async getFileHistory(args: GitGetFileHistoryArgs): Promise<GitFileHistoryEntry[]> {
+      const laneId = args.laneId.trim();
+      const relPath = ensureRelativeRepoPath(args.path);
+      const limit = typeof args.limit === "number" ? Math.max(1, Math.min(100, Math.floor(args.limit))) : 20;
+      return readLaneCached(`file-history:${laneId}:${relPath}:${limit}`, 2_000, async () => {
+        const lane = laneService.getLaneBaseAndBranch(laneId);
+        const out = await runGitOrThrow(
+          [
+            "log",
+            "--follow",
+            `-n${limit}`,
+            "--date=iso-strict",
+            "--name-status",
+            "--format=%x1e%H%x1f%h%x1f%an%x1f%aI%x1f%s",
+            "--",
+            relPath,
+          ],
+          { cwd: lane.worktreePath, timeoutMs: 15_000 }
+        );
+
+        return out
+          .split("\u001e")
+          .map((block) => block.trim())
+          .filter(Boolean)
+          .map((block): GitFileHistoryEntry | null => {
+            const lines = block.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+            const metadataLine = lines.shift();
+            if (!metadataLine) return null;
+            const [commitSha, shortSha, authorName, authoredAt, subject] = parseDelimited(metadataLine);
+            if (!commitSha || !shortSha) return null;
+
+            let path = relPath;
+            let previousPath: string | null = null;
+            let changeType: GitFileHistoryEntry["changeType"] = "unknown";
+
+            const statusLine = lines[0] ?? "";
+            if (statusLine.length) {
+              const parts = statusLine.split("\t");
+              const status = parts[0]?.trim() ?? "";
+              const code = status[0] ?? "";
+              switch (code) {
+                case "A":
+                  changeType = "added";
+                  path = parts[1] ?? relPath;
+                  break;
+                case "M":
+                  changeType = "modified";
+                  path = parts[1] ?? relPath;
+                  break;
+                case "D":
+                  changeType = "deleted";
+                  path = parts[1] ?? relPath;
+                  break;
+                case "R":
+                  changeType = "renamed";
+                  previousPath = parts[1] ?? null;
+                  path = parts[2] ?? relPath;
+                  break;
+                case "C":
+                  changeType = "copied";
+                  previousPath = parts[1] ?? null;
+                  path = parts[2] ?? relPath;
+                  break;
+                default:
+                  path = parts.last ?? relPath;
+                  break;
+              }
+            }
+
+            return {
+              commitSha,
+              shortSha,
+              authorName: authorName ?? "",
+              authoredAt: authoredAt ?? "",
+              subject: subject ?? "",
+              path,
+              previousPath,
+              changeType,
+            };
+          })
+          .filter((entry): entry is GitFileHistoryEntry => entry != null);
       });
     },
 

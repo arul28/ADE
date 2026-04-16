@@ -288,6 +288,18 @@ struct GitCommitSummary: Codable, Identifiable, Equatable {
   var pushed: Bool
 }
 
+struct GitFileHistoryEntry: Codable, Identifiable, Equatable {
+  var id: String { commitSha }
+  var commitSha: String
+  var shortSha: String
+  var authorName: String
+  var authoredAt: String
+  var subject: String
+  var path: String
+  var previousPath: String?
+  var changeType: String
+}
+
 struct GitStashSummary: Codable, Identifiable, Equatable {
   var id: String { ref }
   var ref: String
@@ -1145,6 +1157,50 @@ struct FilesWorkspace: Codable, Identifiable, Equatable {
   var name: String
   var rootPath: String
   var isReadOnlyByDefault: Bool
+  var mobileReadOnly: Bool
+
+  var readOnlyOnMobile: Bool {
+    mobileReadOnly || isReadOnlyByDefault
+  }
+
+  init(
+    id: String,
+    kind: String,
+    laneId: String?,
+    name: String,
+    rootPath: String,
+    isReadOnlyByDefault: Bool,
+    mobileReadOnly: Bool = true
+  ) {
+    self.id = id
+    self.kind = kind
+    self.laneId = laneId
+    self.name = name
+    self.rootPath = rootPath
+    self.isReadOnlyByDefault = isReadOnlyByDefault
+    self.mobileReadOnly = mobileReadOnly
+  }
+
+  private enum CodingKeys: String, CodingKey {
+    case id
+    case kind
+    case laneId
+    case name
+    case rootPath
+    case isReadOnlyByDefault
+    case mobileReadOnly
+  }
+
+  init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    id = try container.decode(String.self, forKey: .id)
+    kind = try container.decode(String.self, forKey: .kind)
+    laneId = try container.decodeIfPresent(String.self, forKey: .laneId)
+    name = try container.decode(String.self, forKey: .name)
+    rootPath = try container.decode(String.self, forKey: .rootPath)
+    isReadOnlyByDefault = try container.decode(Bool.self, forKey: .isReadOnlyByDefault)
+    mobileReadOnly = try container.decodeIfPresent(Bool.self, forKey: .mobileReadOnly) ?? true
+  }
 }
 
 struct FileTreeNode: Codable, Identifiable, Equatable {

@@ -276,12 +276,16 @@ private final class SyncSocketSessionDelegate: NSObject, URLSessionWebSocketDele
 struct FilesNavigationRequest: Equatable, Identifiable {
   let id: String
   let workspaceId: String
+  let laneId: String?
   let relativePath: String?
+  let focusLine: Int?
 
-  init(workspaceId: String, relativePath: String?) {
+  init(workspaceId: String, laneId: String? = nil, relativePath: String?, focusLine: Int? = nil) {
     self.id = UUID().uuidString
     self.workspaceId = workspaceId
+    self.laneId = laneId
     self.relativePath = relativePath
+    self.focusLine = focusLine
   }
 }
 
@@ -913,7 +917,23 @@ final class SyncService: ObservableObject {
   }
 
   func listWorkspaces() async throws -> [FilesWorkspace] {
-    database.listWorkspaces()
+    if canSendLiveRequests() {
+      do {
+        let live = try decode(
+          try await performFileRequest(action: "listWorkspaces", args: [:]),
+          as: [FilesWorkspace].self
+        )
+        try? database.replaceFilesWorkspaces(live)
+        return database.listWorkspaces()
+      } catch {
+        let cached = database.listWorkspaces()
+        if !cached.isEmpty {
+          return cached
+        }
+        throw error
+      }
+    }
+    return database.listWorkspaces()
   }
 
   func fetchSessions() async throws -> [TerminalSessionSummary] {
@@ -1038,17 +1058,37 @@ final class SyncService: ObservableObject {
     }
   }
 
+  private func ensureMobileFileMutationsAllowed(workspaceId: String) throws {
+    let workspace = database.listWorkspaces().first { $0.id == workspaceId }
+    guard let workspace else {
+      throw NSError(domain: "ADE", code: 18, userInfo: [NSLocalizedDescriptionKey: "The selected Files workspace is no longer available on this phone."])
+    }
+    guard !workspace.readOnlyOnMobile else {
+      throw NSError(domain: "ADE", code: 19, userInfo: [NSLocalizedDescriptionKey: "Files stays read-only on iPhone for this mission."])
+    }
+  }
+
   func readFile(workspaceId: String, path: String) async throws -> SyncFileBlob {
-    try decode(
-      try await performFileRequest(action: "readFile", args: [
-        "workspaceId": workspaceId,
-        "path": path,
-      ]),
-      as: SyncFileBlob.self
-    )
+    do {
+      let blob = try decode(
+        try await performFileRequest(action: "readFile", args: [
+          "workspaceId": workspaceId,
+          "path": path,
+        ]),
+        as: SyncFileBlob.self
+      )
+      try? database.cacheFileContentSnapshot(workspaceId: workspaceId, path: path, blob: blob)
+      return blob
+    } catch {
+      if let cached = database.fetchFileContentSnapshot(workspaceId: workspaceId, path: path) {
+        return cached
+      }
+      throw error
+    }
   }
 
   func writeText(workspaceId: String, path: String, text: String) async throws {
+    try ensureMobileFileMutationsAllowed(workspaceId: workspaceId)
     _ = try await sendFileRequest(action: "writeText", args: [
       "workspaceId": workspaceId,
       "path": path,
@@ -1057,6 +1097,7 @@ final class SyncService: ObservableObject {
   }
 
   func createFile(workspaceId: String, path: String, content: String = "") async throws {
+    try ensureMobileFileMutationsAllowed(workspaceId: workspaceId)
     _ = try await sendFileRequest(action: "createFile", args: [
       "workspaceId": workspaceId,
       "path": path,
@@ -1065,6 +1106,7 @@ final class SyncService: ObservableObject {
   }
 
   func createDirectory(workspaceId: String, path: String) async throws {
+    try ensureMobileFileMutationsAllowed(workspaceId: workspaceId)
     _ = try await sendFileRequest(action: "createDirectory", args: [
       "workspaceId": workspaceId,
       "path": path,
@@ -1072,6 +1114,7 @@ final class SyncService: ObservableObject {
   }
 
   func renamePath(workspaceId: String, oldPath: String, newPath: String) async throws {
+    try ensureMobileFileMutationsAllowed(workspaceId: workspaceId)
     _ = try await sendFileRequest(action: "rename", args: [
       "workspaceId": workspaceId,
       "oldPath": oldPath,
@@ -1080,6 +1123,7 @@ final class SyncService: ObservableObject {
   }
 
   func deletePath(workspaceId: String, path: String) async throws {
+    try ensureMobileFileMutationsAllowed(workspaceId: workspaceId)
     _ = try await sendFileRequest(action: "deletePath", args: [
       "workspaceId": workspaceId,
       "path": path,
@@ -1101,15 +1145,24 @@ final class SyncService: ObservableObject {
   }
 
   func listTree(workspaceId: String, parentPath: String = "", includeIgnored: Bool = false) async throws -> [FileTreeNode] {
-    try decode(
-      try await performFileRequest(action: "listTree", args: [
-        "workspaceId": workspaceId,
-        "parentPath": parentPath,
-        "depth": 1,
-        "includeIgnored": includeIgnored,
-      ]),
-      as: [FileTreeNode].self
-    )
+    do {
+      let nodes = try decode(
+        try await performFileRequest(action: "listTree", args: [
+          "workspaceId": workspaceId,
+          "parentPath": parentPath,
+          "depth": 1,
+          "includeIgnored": includeIgnored,
+        ]),
+        as: [FileTreeNode].self
+      )
+      try? database.cacheDirectorySnapshot(workspaceId: workspaceId, parentPath: parentPath, includeHidden: includeIgnored, nodes: nodes)
+      return nodes
+    } catch {
+      if let cached = database.fetchDirectorySnapshot(workspaceId: workspaceId, parentPath: parentPath, includeHidden: includeIgnored) {
+        return cached
+      }
+      throw error
+    }
   }
 
   func subscribeTerminal(sessionId: String) async throws {
@@ -1378,7 +1431,7 @@ final class SyncService: ObservableObject {
     try await sendDecodableCommand(action: "git.getChanges", args: ["laneId": laneId], as: DiffChanges.self)
   }
 
-  func fetchFileDiff(laneId: String, path: String, mode: String, compareRef: String? = nil, compareTo: String? = nil) async throws -> FileDiff {
+  func fetchFileDiff(workspaceId: String? = nil, laneId: String, path: String, mode: String, compareRef: String? = nil, compareTo: String? = nil) async throws -> FileDiff {
     var args: [String: Any] = [
       "laneId": laneId,
       "path": path,
@@ -1390,7 +1443,35 @@ final class SyncService: ObservableObject {
     if let compareTo, !compareTo.isEmpty {
       args["compareTo"] = compareTo
     }
-    return try await sendDecodableCommand(action: "git.getFile", args: args, as: FileDiff.self)
+    do {
+      let diff = try await sendDecodableCommand(action: "git.getFile", args: args, as: FileDiff.self)
+      if let workspaceId {
+        try? database.cacheFileDiffSnapshot(workspaceId: workspaceId, path: path, mode: mode, diff: diff)
+      }
+      return diff
+    } catch {
+      if let workspaceId, let cached = database.fetchFileDiffSnapshot(workspaceId: workspaceId, path: path, mode: mode) {
+        return cached
+      }
+      throw error
+    }
+  }
+
+  func fetchFileHistory(workspaceId: String, laneId: String, path: String, limit: Int = 20) async throws -> [GitFileHistoryEntry] {
+    do {
+      let entries = try await sendDecodableCommand(
+        action: "git.getFileHistory",
+        args: ["laneId": laneId, "path": path, "limit": limit],
+        as: [GitFileHistoryEntry].self
+      )
+      try? database.cacheFileHistorySnapshot(workspaceId: workspaceId, path: path, entries: entries)
+      return entries
+    } catch {
+      if let cached = database.fetchFileHistorySnapshot(workspaceId: workspaceId, path: path) {
+        return cached
+      }
+      throw error
+    }
   }
 
   func writeLaneFileText(laneId: String, path: String, text: String) async throws {

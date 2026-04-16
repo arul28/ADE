@@ -32,6 +32,7 @@ import type {
   GitFileActionArgs,
   GitGenerateCommitMessageArgs,
   GitGetCommitMessageArgs,
+  GitGetFileHistoryArgs,
   GitListBranchesArgs,
   GitListCommitFilesArgs,
   GitPushArgs,
@@ -611,6 +612,14 @@ function parseGitGetCommitMessageArgs(value: Record<string, unknown>): GitGetCom
   return {
     laneId: requireString(value.laneId, "git.getCommitMessage requires laneId."),
     commitSha: requireString(value.commitSha, "git.getCommitMessage requires commitSha."),
+  };
+}
+
+function parseGitGetFileHistoryArgs(value: Record<string, unknown>): GitGetFileHistoryArgs {
+  return {
+    laneId: requireString(value.laneId, "git.getFileHistory requires laneId."),
+    path: requireString(value.path, "git.getFileHistory requires path."),
+    limit: asOptionalNumber(value.limit),
   };
 }
 
@@ -1240,6 +1249,8 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
     requireService(args.gitService, "Git service not available.").listRecentCommits(parseGitListRecentCommitsArgs(payload)));
   register("git.listCommitFiles", { viewerAllowed: true }, async (payload) =>
     requireService(args.gitService, "Git service not available.").listCommitFiles(parseGitListCommitFilesArgs(payload)));
+  register("git.getFileHistory", { viewerAllowed: true }, async (payload) =>
+    requireService(args.gitService, "Git service not available.").getFileHistory(parseGitGetFileHistoryArgs(payload)));
   register("git.getCommitMessage", { viewerAllowed: true }, async (payload) =>
     requireService(args.gitService, "Git service not available.").getCommitMessage(parseGitGetCommitMessageArgs(payload)));
   register("git.revertCommit", { viewerAllowed: true, queueable: true }, async (payload) =>

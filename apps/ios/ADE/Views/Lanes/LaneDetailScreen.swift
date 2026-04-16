@@ -414,6 +414,7 @@ struct LaneDetailScreen: View {
       }
       syncService.requestedFilesNavigation = FilesNavigationRequest(
         workspaceId: workspaceId,
+        laneId: laneId,
         relativePath: path
       )
     } catch {

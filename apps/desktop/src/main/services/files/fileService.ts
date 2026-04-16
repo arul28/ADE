@@ -274,7 +274,8 @@ export function createFileService({
       laneId: scope.laneId,
       name: scope.name,
       rootPath: scope.rootPath,
-      isReadOnlyByDefault: scope.isReadOnlyByDefault
+      isReadOnlyByDefault: scope.isReadOnlyByDefault,
+      mobileReadOnly: true,
     }));
   };
 

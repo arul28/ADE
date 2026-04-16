@@ -145,6 +145,7 @@ struct LaneDiffScreen: View {
                   }
                   syncService.requestedFilesNavigation = FilesNavigationRequest(
                     workspaceId: workspace.id,
+                    laneId: request.laneId,
                     relativePath: path
                   )
                   dismiss()

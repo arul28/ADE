@@ -189,6 +189,7 @@ describe("fileService", () => {
         "lane-2",
         "lane-1",
       ]);
+      expect(workspaces.every((workspace) => workspace.mobileReadOnly === true)).toBe(true);
     } finally {
       fs.rmSync(rootPath, { recursive: true, force: true });
     }

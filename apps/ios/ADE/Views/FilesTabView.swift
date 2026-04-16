@@ -171,6 +171,16 @@ private struct FilesFileMetadata {
   let lastCommitDateText: String?
 }
 
+func resolveFilesWorkspace(for request: FilesNavigationRequest, in workspaces: [FilesWorkspace]) -> FilesWorkspace? {
+  if let exact = workspaces.first(where: { $0.id == request.workspaceId }) {
+    return exact
+  }
+  if let laneId = request.laneId {
+    return workspaces.first(where: { $0.laneId == laneId })
+  }
+  return nil
+}
+
 struct FilesTabView: View {
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @EnvironmentObject private var syncService: SyncService
@@ -535,7 +545,7 @@ struct FilesTabView: View {
     if workspaces.isEmpty {
       await reload()
     }
-    guard let workspace = workspaces.first(where: { $0.id == request.workspaceId }) else {
+    guard let workspace = resolveFilesWorkspace(for: request, in: workspaces) else {
       errorMessage = "The requested lane workspace is not cached on this phone yet. Refresh Files and try again."
       syncService.requestedFilesNavigation = nil
       return
@@ -543,7 +553,7 @@ struct FilesTabView: View {
     selectedWorkspaceId = workspace.id
     if let relativePath = request.relativePath, !relativePath.isEmpty {
       selectedFileTransitionPath = relativePath
-      openFile(relativePath, in: workspace, focusLine: nil)
+      openFile(relativePath, in: workspace, focusLine: request.focusLine)
     } else {
       selectedFileTransitionPath = nil
       navigationPath = []
@@ -749,11 +759,11 @@ private struct FilesDirectoryContentsView: View {
   @State private var destructiveConfirmation: FilesDestructiveConfirmation?
 
   private var canMutateFiles: Bool {
-    isLive && !workspace.isReadOnlyByDefault
+    isLive && !workspace.readOnlyOnMobile
   }
 
   private var canUseGitActions: Bool {
-    isLive && workspace.laneId != nil
+    isLive && !workspace.readOnlyOnMobile && workspace.laneId != nil
   }
 
   var body: some View {
@@ -874,15 +884,10 @@ private struct FilesDirectoryContentsView: View {
 
   @MainActor
   private func reload() async {
-    guard isLive else {
-      isLoading = false
-      return
-    }
-
     do {
       isLoading = true
       nodes = try await syncService.listTree(workspaceId: workspace.id, parentPath: parentPath, includeIgnored: showHidden)
-      if let laneId = workspace.laneId {
+      if isLive, let laneId = workspace.laneId {
         let changes = try await syncService.fetchLaneChanges(laneId: laneId)
         gitState = FilesGitState(
           staged: Set(changes.staged.map(\.path)),
@@ -1066,8 +1071,8 @@ private struct FilesDirectoryContentsView: View {
   }
 
   private var mutationDisabledReason: String? {
-    if workspace.isReadOnlyByDefault {
-      return "This workspace stays read-only on the host."
+    if workspace.readOnlyOnMobile {
+      return "This workspace stays read-only on iPhone."
     }
     if !isLive {
       return needsRepairing
@@ -1160,7 +1165,7 @@ private struct FileEditorView: View {
   }
 
   private var canEdit: Bool {
-    isFilesLive && !workspace.isReadOnlyByDefault && blob?.isBinary == false
+    isFilesLive && !workspace.readOnlyOnMobile && blob?.isBinary == false
   }
 
   private var isDirty: Bool {
@@ -1171,9 +1176,9 @@ private struct FileEditorView: View {
   private var editorModes: [FilesEditorMode] {
     guard blob?.isBinary == false else { return [.preview] }
     if workspace.laneId != nil {
-      return [.preview, .edit, .diff]
+      return workspace.readOnlyOnMobile ? [.preview, .diff] : [.preview, .edit, .diff]
     }
-    return [.preview, .edit]
+    return workspace.readOnlyOnMobile ? [.preview] : [.preview, .edit]
   }
 
   var body: some View {
@@ -1336,12 +1341,14 @@ private struct FileEditorView: View {
       ScrollView(.horizontal, showsIndicators: false) {
         ADEGlassGroup(spacing: 8) {
           ADEStatusPill(text: language.displayName.uppercased(), tint: ADEColor.accent)
-          if workspace.isReadOnlyByDefault {
+          if workspace.readOnlyOnMobile {
             ADEStatusPill(text: "READ ONLY", tint: ADEColor.warning)
           } else if !isFilesLive {
             ADEStatusPill(text: "DISCONNECTED", tint: ADEColor.warning)
           }
-          if let laneId = workspace.laneId, gitState.isUnstaged(relativePath) || gitState.isStaged(relativePath) {
+          if !workspace.readOnlyOnMobile,
+             let laneId = workspace.laneId,
+             gitState.isUnstaged(relativePath) || gitState.isStaged(relativePath) {
             FilesGitActionGroup(
               laneId: laneId,
               path: relativePath,
@@ -1405,8 +1412,8 @@ private struct FileEditorView: View {
         )
       case .edit:
         VStack(alignment: .leading, spacing: 10) {
-          if workspace.isReadOnlyByDefault {
-            Text("This workspace is edit-protected on the host.")
+          if workspace.readOnlyOnMobile {
+            Text("This workspace is intentionally read-only on iPhone.")
               .font(.caption)
               .foregroundStyle(ADEColor.textSecondary)
           } else if !isFilesLive {
@@ -1527,16 +1534,12 @@ private struct FileEditorView: View {
     var lastCommitTitle: String?
     var lastCommitDateText: String?
 
-    if let laneId = workspace.laneId, isFilesLive {
+    if let laneId = workspace.laneId {
       do {
-        let commits = try await syncService.listRecentCommits(laneId: laneId)
-        for commit in commits.prefix(25) {
-          let files = try await syncService.listCommitFiles(laneId: laneId, commitSha: commit.sha)
-          if files.contains(relativePath) {
-            lastCommitTitle = commit.subject
-            lastCommitDateText = relativeDateDescription(from: commit.authoredAt)
-            break
-          }
+        let entries = try await syncService.fetchFileHistory(workspaceId: workspace.id, laneId: laneId, path: relativePath, limit: 10)
+        if let latest = entries.first {
+          lastCommitTitle = latest.subject
+          lastCommitDateText = relativeDateDescription(from: latest.authoredAt)
         }
       } catch {
         // Best-effort metadata.
@@ -1553,13 +1556,13 @@ private struct FileEditorView: View {
 
   @MainActor
   private func loadDiff() async {
-    guard let laneId = workspace.laneId, isFilesLive else {
+    guard let laneId = workspace.laneId else {
       diff = nil
       diffErrorMessage = nil
       return
     }
     do {
-      diff = try await syncService.fetchFileDiff(laneId: laneId, path: relativePath, mode: diffMode.rawValue)
+      diff = try await syncService.fetchFileDiff(workspaceId: workspace.id, laneId: laneId, path: relativePath, mode: diffMode.rawValue)
       diffErrorMessage = nil
     } catch {
       diffErrorMessage = error.localizedDescription
@@ -1669,7 +1672,7 @@ private struct FilesWorkspaceHeader: View {
         ScrollView(.horizontal, showsIndicators: false) {
           ADEGlassGroup(spacing: 8) {
             ADEStatusPill(text: selectedWorkspace.kind.uppercased(), tint: ADEColor.accent)
-            if selectedWorkspace.isReadOnlyByDefault {
+            if selectedWorkspace.readOnlyOnMobile {
               ADEStatusPill(text: "READ ONLY", tint: ADEColor.warning)
             }
             Button {

@@ -190,6 +190,7 @@ extension WorkSessionDestinationView {
 
       syncService.requestedFilesNavigation = FilesNavigationRequest(
         workspaceId: workspace.id,
+        laneId: session.laneId,
         relativePath: relativePath
       )
     } catch {
