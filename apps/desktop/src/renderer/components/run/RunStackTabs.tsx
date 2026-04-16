@@ -299,10 +299,7 @@ export function RunStackTabs({
               action: () => {
                 const stack = stacks.find((entry) => entry.id === contextMenu.stackId);
                 if (!stack) return;
-                onUpdateStackStartOrder(
-                  stack.id,
-                  stack.startOrder === "dependency" ? "parallel" : "dependency",
-                );
+                onUpdateStackStartOrder(stack.id, stack.startOrder === "dependency" ? "parallel" : "dependency");
               },
             },
             {

@@ -63,7 +63,7 @@ ADE is the control plane. It does not execute browser automation or computer-use
 
 ### Workspace surfaces
 
-- [**Terminals and Sessions**](./features/terminals-and-sessions/README.md) — PTY, session, process services (all rewritten on current branch — fragile). AI-title pipeline, resume backfill, stale reconciliation.
+- [**Terminals and Sessions**](./features/terminals-and-sessions/README.md) — PTY, session, and managed-process services. Multi-run process lifecycle keyed by `runId`, AI-title pipeline, lazy resume-target hydration, stale reconciliation.
 - [**Files and Editor**](./features/files-and-editor/README.md) — Atomic writes, ref-counted chokidar watcher, file search index, Monaco surfaces (edit/diff/conflict), preload trust boundary.
 - [**Project Home**](./features/project-home/README.md) — Combined welcome + per-lane runtime dashboard. Loads lane-independent metadata vs lane runtime separately.
 - [**Onboarding and Settings**](./features/onboarding-and-settings/README.md) — First-run wizard (stack detection, suggested config, import), 8-tab settings, configuration schema with trust model.

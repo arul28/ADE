@@ -36,6 +36,7 @@ describe("isActiveProcessStatus", () => {
 
 function makeRuntime(overrides: Partial<ProcessRuntime> = {}): ProcessRuntime {
   return {
+    runId: "run-1",
     laneId: "lane-1",
     processId: "proc-1",
     status: "stopped",

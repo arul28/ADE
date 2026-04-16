@@ -1359,6 +1359,22 @@ function isChatToolType(toolType: string | null | undefined): boolean {
   return toolType === "codex-chat" || toolType === "claude-chat" || toolType === "opencode-chat" || toolType === "cursor";
 }
 
+function sessionNeedsResumeTargetHydration(session: {
+  tracked: boolean;
+  status: string;
+  toolType: string | null;
+  resumeMetadata?: { targetId?: string | null } | null;
+}): boolean {
+  if (!session.tracked || session.status === "running") return false;
+  if (session.resumeMetadata?.targetId?.trim()) return false;
+  return (
+    session.toolType === "claude"
+    || session.toolType === "codex"
+    || session.toolType === "claude-orchestrated"
+    || session.toolType === "codex-orchestrated"
+  );
+}
+
 function inferPrAiProvider(modelId: string): "codex" | "claude" {
   const descriptor = getModelById(modelId);
   return descriptor?.family === "anthropic" ? "claude" : "codex";
@@ -3970,7 +3986,23 @@ export function registerIpc({
       ctx,
       "sessions.list",
       async () => {
-        let sessions = ctx.ptyService.enrichSessions(ctx.sessionService.list(arg));
+        let listedSessions = ctx.sessionService.list(arg);
+        const missingResumeTargetIds = listedSessions
+          .filter(sessionNeedsResumeTargetHydration)
+          .slice(0, 10)
+          .map((session) => session.id);
+        if (missingResumeTargetIds.length > 0) {
+          try {
+            await ctx.ptyService.ensureResumeTargets(missingResumeTargetIds);
+            listedSessions = ctx.sessionService.list(arg);
+          } catch (err) {
+            ctx.logger.warn("sessions.resume_target_hydration_failed", {
+              sessionIds: missingResumeTargetIds,
+              err: String(err),
+            });
+          }
+        }
+        let sessions = ctx.ptyService.enrichSessions(listedSessions);
         const laneId = typeof arg?.laneId === "string" ? arg.laneId.trim() : "";
         let allChats: AgentChatSessionSummary[] = [];
         try {
@@ -4009,8 +4041,21 @@ export function registerIpc({
 
   ipcMain.handle(IPC.sessionsGet, async (_event, arg: { sessionId: string }): Promise<TerminalSessionDetail | null> => {
     const ctx = getCtx();
-    const session = ctx.sessionService.get(arg.sessionId);
+    let session = ctx.sessionService.get(arg.sessionId);
     if (!session) return null;
+    if (sessionNeedsResumeTargetHydration(session)) {
+      const sessionId = session.id;
+      try {
+        await ctx.ptyService.ensureResumeTargets([sessionId]);
+        const hydratedSession = ctx.sessionService.get(arg.sessionId);
+        if (hydratedSession) session = hydratedSession;
+      } catch (err) {
+        ctx.logger.warn("sessions.resume_target_hydration_failed", {
+          sessionIds: [sessionId],
+          err: String(err),
+        });
+      }
+    }
     return {
       ...session,
       runtimeState: ctx.ptyService.getRuntimeState(session.id, session.status)
@@ -5680,7 +5725,7 @@ export function registerIpc({
     return await ctx.processService.start(arg);
   });
 
-  ipcMain.handle(IPC.processesStop, async (_event, arg: ProcessActionArgs): Promise<ProcessRuntime> => {
+  ipcMain.handle(IPC.processesStop, async (_event, arg: ProcessActionArgs): Promise<ProcessRuntime | null> => {
     const ctx = getCtx();
     return await ctx.processService.stop(arg);
   });
@@ -5690,7 +5735,7 @@ export function registerIpc({
     return await ctx.processService.restart(arg);
   });
 
-  ipcMain.handle(IPC.processesKill, async (_event, arg: ProcessActionArgs): Promise<ProcessRuntime> => {
+  ipcMain.handle(IPC.processesKill, async (_event, arg: ProcessActionArgs): Promise<ProcessRuntime | null> => {
     const ctx = getCtx();
     return await ctx.processService.kill(arg);
   });

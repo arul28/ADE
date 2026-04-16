@@ -2249,11 +2249,11 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.processesListRuntime, { laneId }),
     start: async (args: ProcessActionArgs): Promise<ProcessRuntime> =>
       ipcRenderer.invoke(IPC.processesStart, args),
-    stop: async (args: ProcessActionArgs): Promise<ProcessRuntime> =>
+    stop: async (args: ProcessActionArgs): Promise<ProcessRuntime | null> =>
       ipcRenderer.invoke(IPC.processesStop, args),
     restart: async (args: ProcessActionArgs): Promise<ProcessRuntime> =>
       ipcRenderer.invoke(IPC.processesRestart, args),
-    kill: async (args: ProcessActionArgs): Promise<ProcessRuntime> =>
+    kill: async (args: ProcessActionArgs): Promise<ProcessRuntime | null> =>
       ipcRenderer.invoke(IPC.processesKill, args),
     startStack: async (args: ProcessStackArgs): Promise<void> =>
       ipcRenderer.invoke(IPC.processesStartStack, args),

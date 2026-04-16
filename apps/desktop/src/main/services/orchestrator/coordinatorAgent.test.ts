@@ -382,6 +382,23 @@ describe("CoordinatorAgent", () => {
     }
   });
 
+  it("maps an attach_failed eviction reason to handle_close when releasing the coordinator session", async () => {
+    const agent = createTestCoordinatorAgent() as any;
+
+    try {
+      const handle = await agent.ensureOpenCodeCoordinatorSession();
+      const evictionHandler = (handle.setEvictionHandler as any).mock.calls[0]?.[0] as ((reason: string) => void) | undefined;
+      expect(evictionHandler).toBeTypeOf("function");
+
+      evictionHandler?.("attach_failed");
+
+      expect(handle.close).toHaveBeenCalledWith("handle_close");
+      expect(handle.close).not.toHaveBeenCalledWith("attach_failed");
+    } finally {
+      agent.shutdown();
+    }
+  });
+
   it("keeps OpenCode eviction handlers bound to the handle instance that registered them", async () => {
     const agent = createTestCoordinatorAgent() as any;
 

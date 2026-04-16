@@ -1511,9 +1511,9 @@ declare global {
         listDefinitions: () => Promise<ProcessDefinition[]>;
         listRuntime: (laneId: string) => Promise<ProcessRuntime[]>;
         start: (args: ProcessActionArgs) => Promise<ProcessRuntime>;
-        stop: (args: ProcessActionArgs) => Promise<ProcessRuntime>;
+        stop: (args: ProcessActionArgs) => Promise<ProcessRuntime | null>;
         restart: (args: ProcessActionArgs) => Promise<ProcessRuntime>;
-        kill: (args: ProcessActionArgs) => Promise<ProcessRuntime>;
+        kill: (args: ProcessActionArgs) => Promise<ProcessRuntime | null>;
         startStack: (args: ProcessStackArgs) => Promise<void>;
         stopStack: (args: ProcessStackArgs) => Promise<void>;
         restartStack: (args: ProcessStackArgs) => Promise<void>;

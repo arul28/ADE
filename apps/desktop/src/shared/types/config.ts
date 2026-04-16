@@ -37,6 +37,7 @@ export type ProcessDefinition = {
   command: string[];
   cwd: string;
   env: Record<string, string>;
+  groupIds: string[];
   autostart: boolean;
   restart: ProcessRestartPolicy;
   gracefulShutdownMs: number;
@@ -49,6 +50,11 @@ export type StackButtonDefinition = {
   name: string;
   processIds: string[];
   startOrder: StackStartOrder;
+};
+
+export type ProcessGroupDefinition = {
+  id: string;
+  name: string;
 };
 
 export type TestSuiteDefinition = {
@@ -67,6 +73,7 @@ export type ConfigProcessDefinition = {
   command?: string[];
   cwd?: string;
   env?: Record<string, string>;
+  groupIds?: string[];
   autostart?: boolean;
   restart?: ProcessRestartPolicy;
   gracefulShutdownMs?: number;
@@ -79,6 +86,11 @@ export type ConfigStackButtonDefinition = {
   name?: string;
   processIds?: string[];
   startOrder?: StackStartOrder;
+};
+
+export type ConfigProcessGroupDefinition = {
+  id: string;
+  name?: string;
 };
 
 export type ConfigTestSuiteDefinition = {
@@ -1149,6 +1161,7 @@ export type ProjectConfigFile = {
   version?: number;
   processes?: ConfigProcessDefinition[];
   stackButtons?: ConfigStackButtonDefinition[];
+  processGroups?: ConfigProcessGroupDefinition[];
   testSuites?: ConfigTestSuiteDefinition[];
   laneOverlayPolicies?: ConfigLaneOverlayPolicy[];
   automations?: ConfigAutomationRule[];
@@ -1183,6 +1196,7 @@ export type EffectiveProjectConfig = {
   version: number;
   processes: ProcessDefinition[];
   stackButtons: StackButtonDefinition[];
+  processGroups: ProcessGroupDefinition[];
   testSuites: TestSuiteDefinition[];
   laneOverlayPolicies: LaneOverlayPolicy[];
   automations: AutomationRule[];
@@ -1254,6 +1268,7 @@ export type ProjectConfigDiff = {
 };
 
 export type ProcessRuntime = {
+  runId: string;
   laneId: string;
   processId: string;
   status: ProcessRuntimeStatus;
@@ -1275,6 +1290,7 @@ export type ProcessRuntime = {
 /** Not directly imported by consumers, but used structurally via the ProcessEvent union (ev.type === "log"). */
 export type ProcessLogEvent = {
   type: "log";
+  runId: string;
   laneId: string;
   processId: string;
   stream: "stdout" | "stderr";
@@ -1322,6 +1338,7 @@ export type TestEvent = TestRunEvent | TestLogEvent;
 export type ProcessActionArgs = {
   laneId: string;
   processId: string;
+  runId?: string;
 };
 
 export type ProcessStackArgs = {
@@ -1332,6 +1349,7 @@ export type ProcessStackArgs = {
 export type GetProcessLogTailArgs = {
   laneId: string;
   processId: string;
+  runId?: string;
   maxBytes?: number;
 };
 

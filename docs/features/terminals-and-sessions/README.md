@@ -5,10 +5,15 @@ single `terminal_sessions` row and surfaced in the Work view, lane panels, and
 the Sessions sidebar. The session model is the backbone for transcripts,
 deltas, lane association, and resume flows.
 
-The main-process services for this feature have been heavily rewritten on the
-current branch: `ptyService.ts`, `sessionService.ts`, and `processService.ts`
-all carry large diffs. Treat them as fragile and re-read whenever wiring
-changes.
+The main-process services for this feature are large and have been repeatedly
+rewritten: `ptyService.ts`, `sessionService.ts`, and `processService.ts`.
+Treat them as fragile and re-read whenever wiring changes.
+
+`processService` keeps one runtime record per *invocation*, not per
+(lane, process) pair. A single `ProcessDefinition` can have many concurrent
+or historical `ProcessRuntime` rows in memory, each identified by `runId`. The
+Run page renders those runs on a single card and the aggregate persisted
+snapshot (the most recent run) is what lives in the `process_runtime` table.
 
 ## Source file map
 
@@ -28,8 +33,9 @@ Main process:
   end-of-session git diff + transcript delta computation, reads from
   `session_deltas` table.
 - `apps/desktop/src/main/services/processes/processService.ts` — managed
-  process lifecycle, readiness checks, restart policy, stack buttons.
-  ~860 lines. Branch rewrite (551 lines changed).
+  process lifecycle keyed by `runId` (multi-run history per
+  `(laneId, processId)`), readiness checks, restart policy with
+  exponential backoff, stack buttons, process-group filtering. ~870 lines.
 - `apps/desktop/src/main/services/processes/processService.test.ts` —
   managed process tests.
 - `apps/desktop/src/main/services/lanes/laneLaunchContext.ts` —
@@ -40,9 +46,12 @@ Shared types and IPC:
 - `apps/desktop/src/shared/types/sessions.ts` — `TerminalSessionSummary`,
   `TerminalSessionStatus`, `TerminalToolType`, `TerminalRuntimeState`,
   `TerminalResumeMetadata`, `PtyCreateArgs`, `SessionDeltaSummary`.
-- `apps/desktop/src/shared/types/config.ts` — `ProcessDefinition`,
-  `ProcessRuntime`, `ProcessRuntimeStatus`, `ProcessReadinessConfig`,
-  `StackButtonDefinition`, `ProcessRestartPolicy`.
+- `apps/desktop/src/shared/types/config.ts` — `ProcessDefinition`
+  (now carries `groupIds: string[]`), `ProcessGroupDefinition`,
+  `ProcessRuntime` (now carries `runId`), `ProcessRuntimeStatus`,
+  `ProcessReadinessConfig`, `StackButtonDefinition`,
+  `ProcessRestartPolicy`. `ProcessActionArgs` and
+  `GetProcessLogTailArgs` accept an optional `runId`.
 - `apps/desktop/src/shared/ipc.ts` — channels `ade.sessions.*`,
   `ade.pty.*`, `ade.processes.*`.
 
@@ -242,18 +251,25 @@ Processes (managed):
 | Channel | Purpose |
 |---|---|
 | `ade.processes.listDefinitions` | read from project config |
-| `ade.processes.listRuntime` | current status per lane |
-| `ade.processes.start` / `stop` / `restart` / `kill` | lifecycle |
+| `ade.processes.listRuntime` | every in-memory run for the lane (one entry per `runId`, including recent stopped/crashed ones up to the 20-run history cap) |
+| `ade.processes.start` | lifecycle; always returns the new `ProcessRuntime` |
+| `ade.processes.stop` / `ade.processes.kill` | returns the targeted `ProcessRuntime`, or `null` when no active run exists for the `(laneId, processId[, runId])` tuple |
+| `ade.processes.restart` | stop active runs, wait for exit (up to 10 s), start a new run |
 | `ade.processes.startStack` / `stopStack` / `restartStack` | stack buttons |
 | `ade.processes.startAll` / `stopAll` | bulk ops |
-| `ade.processes.getLogTail` | transcript tail for the focused process |
-| `ade.processes.event` (event) | `runtime` and `log` events |
+| `ade.processes.getLogTail` | transcript tail for the focused run (pass `runId` to target a specific invocation) |
+| `ade.processes.event` (event) | `runtime` events carrying a `ProcessRuntime` with `runId`, and `log` events carrying `runId` + `laneId` + `processId` |
 
 ## Gotchas
 
 - Chat sessions backed by the Claude/Codex SDK still insert a
   `terminal_sessions` row but they are not attached to a PTY. Guard
   UI code with `isChatToolType(toolType)` before calling PTY-only APIs.
+- `processes.stop` / `processes.kill` resolve to `null` when nothing
+  matches the caller's `(laneId, processId[, runId])`. Don't treat a
+  null return as a failure — it just means there was no active run to
+  act on. Callers that need a sync confirmation should subscribe to
+  the `runtime` event instead.
 - `reconcileStaleRunningSessions` accepts `excludeToolTypes` but the
   main-process startup no longer excludes chat tool types — stale
   `running` chat rows are swept to `disposed` like any other orphaned

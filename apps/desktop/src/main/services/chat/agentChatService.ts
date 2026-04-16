@@ -4557,7 +4557,12 @@ export function createAgentChatService(args: {
     };
     handle.setEvictionHandler((reason) => {
       if (managed.runtime?.kind === "opencode" && managed.runtime.handle === handle) {
-        teardownRuntime(managed, reason === "error" || reason === "config_changed" ? "handle_close" : reason);
+        teardownRuntime(
+          managed,
+          reason === "error" || reason === "config_changed" || reason === "attach_failed"
+            ? "handle_close"
+            : reason,
+        );
       }
     });
     handle.setBusy(false);

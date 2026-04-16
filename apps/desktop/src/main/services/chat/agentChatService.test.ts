@@ -3012,6 +3012,49 @@ describe("createAgentChatService", () => {
       const { service } = createService();
       await expect(service.dispose({ sessionId: "no-such-session" })).rejects.toThrow(/not found/i);
     });
+
+    it("maps an attach_failed OpenCode eviction reason to handle_close when tearing down the runtime", async () => {
+      vi.mocked(streamText).mockReturnValue({
+        fullStream: (async function* () {
+          yield { type: "finish", totalUsage: { inputTokens: 1, outputTokens: 1 } };
+        })(),
+      } as any);
+
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "opencode",
+        model: "",
+        modelId: "opencode/anthropic/claude-sonnet-4-6",
+      });
+
+      await service.runSessionTurn({
+        sessionId: session.id,
+        text: "Investigate the flaky login tests",
+      });
+
+      const startMock = vi.mocked(startOpenCodeSession);
+      expect(startMock.mock.results.length).toBeGreaterThan(0);
+      const handle = await startMock.mock.results.at(-1)!.value as {
+        setEvictionHandler: ReturnType<typeof vi.fn>;
+        close: ReturnType<typeof vi.fn>;
+      };
+
+      const evictionCalls = handle.setEvictionHandler.mock.calls;
+      // The most-recent non-null handler registration is the one that wires up teardown.
+      const registrations = evictionCalls
+        .map((args) => args[0])
+        .filter((fn): fn is (reason: string) => void => typeof fn === "function");
+      expect(registrations.length).toBeGreaterThan(0);
+      const evictionHandler = registrations[registrations.length - 1]!;
+
+      const closeCallsBefore = handle.close.mock.calls.length;
+      await evictionHandler("attach_failed");
+
+      const closeReasonsAfter = handle.close.mock.calls.slice(closeCallsBefore).map(([reason]) => reason);
+      expect(closeReasonsAfter).toContain("handle_close");
+      expect(closeReasonsAfter).not.toContain("attach_failed");
+    });
   });
 
   describe("disposeAll", () => {

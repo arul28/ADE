@@ -285,6 +285,26 @@ describe("openCodeServerManager", () => {
     expect(getOpenCodeRuntimeDiagnostics().sharedCount).toBe(0);
   });
 
+  it("keeps a shared server alive through a recoverable attach failure until idle TTL expires", async () => {
+    const config = { share: "disabled", autoupdate: false, snapshot: false } as const;
+    const lease = await acquireSharedOpenCodeServer({
+      config,
+      key: "shared:attach-failed",
+      ownerKind: "chat",
+      idleTtlMs: 1_000,
+    });
+
+    lease.close("attach_failed");
+
+    expect(mockState.created[0]?.close).not.toHaveBeenCalled();
+    expect(getOpenCodeRuntimeDiagnostics().sharedCount).toBe(1);
+
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    expect(mockState.created[0]?.close).toHaveBeenCalledTimes(1);
+    expect(getOpenCodeRuntimeDiagnostics().sharedCount).toBe(0);
+  });
+
   it("refuses to reclaim leased dedicated servers when the budget is exceeded", async () => {
     const baseConfig = { share: "disabled", autoupdate: false, snapshot: false } as const;
 

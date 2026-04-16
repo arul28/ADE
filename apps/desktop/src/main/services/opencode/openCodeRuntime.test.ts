@@ -524,11 +524,11 @@ describe("openCodeRuntime dynamic ADE MCP registration", () => {
     expect(enabledA).toBe(enabledB);
   });
 
-  it("falls back to a dedicated static ADE MCP launch when dynamic registration fails", async () => {
+  it("degrades to a shared session without ADE MCP tools when dynamic registration fails", async () => {
     vi.mocked(global.fetch).mockRejectedValue(new Error("mcp unavailable"));
     const logger = { warn: vi.fn() } as any;
 
-    await startOpenCodeSession({
+    const handle = await startOpenCodeSession({
       directory: "/repo",
       title: "Fallback chat",
       leaseKind: "shared",
@@ -542,27 +542,16 @@ describe("openCodeRuntime dynamic ADE MCP registration", () => {
       logger,
     });
 
-    expect(acquireSharedOpenCodeServer).toHaveBeenCalledTimes(1);
-    expect(mockState.sharedLease.close).toHaveBeenCalledWith("error");
-    expect(acquireDedicatedOpenCodeServer).toHaveBeenCalledTimes(1);
-    expect(acquireDedicatedOpenCodeServer).toHaveBeenCalledWith(expect.objectContaining({
-      config: expect.objectContaining({
-        mcp: expect.objectContaining({
-          ade: expect.objectContaining({
-            type: "local",
-            environment: expect.objectContaining({
-              ADE_CHAT_SESSION_ID: "chat-fallback",
-            }),
-          }),
-        }),
-      }),
-    }));
+    expect(acquireSharedOpenCodeServer).toHaveBeenCalledTimes(2);
+    expect(mockState.sharedLease.close).toHaveBeenCalledWith("attach_failed");
+    expect(acquireDedicatedOpenCodeServer).not.toHaveBeenCalled();
+    expect(handle.toolSelection).toBeNull();
     expect(logger.warn).toHaveBeenCalledWith(
       "opencode.dynamic_mcp_attach_failed",
       expect.objectContaining({
         ownerKind: "chat",
         ownerId: "chat-fallback",
-        fallbackStrategy: "dedicated_static",
+        fallbackStrategy: "shared_without_mcp",
       }),
     );
   });
@@ -588,6 +577,7 @@ describe("openCodeRuntime dynamic ADE MCP registration", () => {
     });
 
     expect(acquireSharedOpenCodeServer).toHaveBeenCalledTimes(2);
+    expect(mockState.sharedLease.close).toHaveBeenCalledWith("attach_failed");
     expect(acquireDedicatedOpenCodeServer).not.toHaveBeenCalled();
     expect(handle.toolSelection).toBeNull();
     expect(logger.warn).toHaveBeenCalledWith(

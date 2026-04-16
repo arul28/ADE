@@ -92,16 +92,30 @@ and a footer that contains the composer.
   (PRD, ARCHITECTURE, mission pack) to the next turn.
 - **Permission controls.** Inline with the composer:
   - Interaction mode selector (`default` / `plan`).
-  - Claude permission mode — a popover picker with four tone-coded
-    options: **Ask permissions** (default, green), **Accept edits**
-    (blue), **Plan mode** (purple, read-only turns), **Bypass
-    permissions** (red). Tone styles live in `CLAUDE_MODE_TONE_STYLES`;
-    clicking outside or pressing Escape closes the popover.
-  - Codex preset modes (Plan / Guarded Edit / Full Auto); custom and
-    `config-toml` state shown as a summary row rather than raw
-    inline dropdowns.
+  - Claude permission mode — a trigger button that opens a popover
+    picker with four tone-coded options: **Ask permissions** (default,
+    green), **Accept edits** (blue), **Plan mode** (purple, read-only
+    turns), **Bypass permissions** (red). Tone styles live in
+    `CLAUDE_MODE_TONE_STYLES`.
+  - Codex preset modes (Plan / Guarded Edit / Full Auto) — trigger
+    button + popover list. Custom and `config-toml` configurations
+    appear as a non-selectable "Custom" row with the active summary
+    tooltip, so the trigger can always show the effective preset.
   - OpenCode permission mode selector.
   - Cursor mode snapshot + config options when on Cursor.
+
+  Both the Claude and Codex popovers render via `createPortal` into
+  `document.body` and are positioned with `getBoundingClientRect` +
+  `window.innerHeight`. That keeps them visible when the composer is
+  inside an overflow-hidden container (grid tiles, shells). Clicking
+  outside or pressing Escape closes them; the outside-click handler
+  checks both the anchor ref and a `data-*-picker-dropdown` attribute
+  on the portalized list so clicks inside the popover don't self-close.
+
+- **Border beam.** On standard (non-grid-tile) layout the composer
+  shell is wrapped in `BorderBeam` (`colorVariant="colorful"` at rest,
+  `"ocean"` with a slower duration while a turn is active). `active`
+  toggles off for quiet, mid-conversation states.
 - **Pending steers.** When steers are queued during an active turn, the
   composer renders a pending-steers section above the input area with
   per-message edit and cancel controls. Each `PendingSteerItem`

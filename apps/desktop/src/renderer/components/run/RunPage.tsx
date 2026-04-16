@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Play, Stop, Plus, X, FolderOpen, Folder, Terminal } from "@phosphor-icons/react";
+import { Folder, FolderOpen, Play, Plus, Stop, Terminal } from "@phosphor-icons/react";
 import { useAppStore } from "../../state/appStore";
-import { COLORS, MONO_FONT, SANS_FONT, LABEL_STYLE, outlineButton, primaryButton } from "../lanes/laneDesignTokens";
+import { COLORS, LABEL_STYLE, MONO_FONT, SANS_FONT, outlineButton, primaryButton } from "../lanes/laneDesignTokens";
 import { CommandCard } from "./CommandCard";
 import { CommandPalette } from "../app/CommandPalette";
 import { ProcessMonitor, type RunShellSession } from "./ProcessMonitor";
@@ -13,39 +13,45 @@ import { commandArrayToLine, parseCommandLine } from "../../lib/shell";
 import { logRendererDebugEvent } from "../../lib/debugLog";
 import { toRelativeTime } from "../graph/graphHelpers";
 import type {
-  ProcessDefinition,
-  ProcessRuntime,
-  ProcessEvent,
-  StackButtonDefinition,
-  ProjectConfigSnapshot,
-  ConfigProcessReadiness,
   ConfigProcessDefinition,
+  ConfigProcessReadiness,
   ConfigStackButtonDefinition,
+  ProcessDefinition,
+  ProcessEvent,
+  ProcessGroupDefinition,
+  ProcessRuntime,
+  ProjectConfigSnapshot,
+  ConfigProcessGroupDefinition,
+  StackButtonDefinition,
 } from "../../../shared/types";
 
 function generateId(): string {
   return Math.random().toString(36).slice(2, 10);
 }
 
-/** Parse "KEY=value" lines into a Record. Ignores blank lines and comments. */
 function parseEnvText(text: string): Record<string, string> | undefined {
   const trimmed = text.trim();
   if (!trimmed) return undefined;
   const env: Record<string, string> = {};
   for (const line of trimmed.split("\n")) {
-    const l = line.trim();
-    if (!l || l.startsWith("#")) continue;
-    const eqIdx = l.indexOf("=");
+    const value = line.trim();
+    if (!value || value.startsWith("#")) continue;
+    const eqIdx = value.indexOf("=");
     if (eqIdx < 1) continue;
-    env[l.slice(0, eqIdx)] = l.slice(eqIdx + 1);
+    env[value.slice(0, eqIdx)] = value.slice(eqIdx + 1);
   }
   return Object.keys(env).length > 0 ? env : undefined;
 }
 
-/** Serialize a Record back to "KEY=value" lines. */
 function envToText(env: Record<string, string> | undefined): string {
   if (!env) return "";
-  return Object.entries(env).map(([k, v]) => `${k}=${v}`).join("\n");
+  return Object.entries(env).map(([key, value]) => `${key}=${value}`).join("\n");
+}
+
+function parseGracefulShutdownMs(value: string): number | undefined {
+  const parsed = Number.parseInt(value.trim(), 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) return undefined;
+  return parsed;
 }
 
 function parseDependsOnCsv(value: string): string[] | undefined {
@@ -56,12 +62,6 @@ function parseDependsOnCsv(value: string): string[] | undefined {
   return ids.length > 0 ? ids : undefined;
 }
 
-function parseGracefulShutdownMs(value: string): number | undefined {
-  const parsed = Number.parseInt(value.trim(), 10);
-  if (!Number.isFinite(parsed) || parsed <= 0) return undefined;
-  return parsed;
-}
-
 function buildReadinessConfig(args: {
   readinessType: "none" | "port" | "logRegex";
   readinessPort: string;
@@ -69,13 +69,67 @@ function buildReadinessConfig(args: {
 }): ConfigProcessReadiness | undefined {
   if (args.readinessType === "port") {
     const port = Number.parseInt(args.readinessPort.trim(), 10);
-    return Number.isFinite(port) && port > 0 ? { type: "port", port } : undefined;
+    return Number.isInteger(port) && port > 0 ? { type: "port", port } : undefined;
   }
   if (args.readinessType === "logRegex") {
     const pattern = args.readinessPattern.trim();
-    return pattern.length > 0 ? { type: "logRegex", pattern } : undefined;
+    return pattern ? { type: "logRegex", pattern } : undefined;
   }
   return undefined;
+}
+
+function normalizeRelativePath(value: string): string {
+  const trimmed = value.trim().replace(/\\/g, "/");
+  if (!trimmed || trimmed === "." || trimmed === "./") return ".";
+  const normalized = trimmed.replace(/\/+$/, "");
+  if (normalized.startsWith("/") || /^[A-Za-z]:\//.test(normalized)) return normalized || ".";
+  return normalized.replace(/^\.\/+/, "") || ".";
+}
+
+const RUN_PAGE_LANE_STORAGE_KEY = "ade.runPageLaneSelections.v1";
+
+type PersistedRunPageLaneState = {
+  lastLaneId: string | null;
+  commandLaneIds: Record<string, string>;
+};
+
+function readRunPageLaneState(projectRoot: string | null): PersistedRunPageLaneState {
+  if (!projectRoot) return { lastLaneId: null, commandLaneIds: {} };
+  try {
+    const raw = window.localStorage.getItem(RUN_PAGE_LANE_STORAGE_KEY);
+    if (!raw) return { lastLaneId: null, commandLaneIds: {} };
+    const parsed = JSON.parse(raw) as Record<string, PersistedRunPageLaneState>;
+    const state = parsed[projectRoot];
+    if (!state || typeof state !== "object") return { lastLaneId: null, commandLaneIds: {} };
+    return {
+      lastLaneId: typeof state.lastLaneId === "string" ? state.lastLaneId : null,
+      commandLaneIds: Object.fromEntries(
+        Object.entries(state.commandLaneIds ?? {}).filter((entry): entry is [string, string] => typeof entry[1] === "string"),
+      ),
+    };
+  } catch {
+    return { lastLaneId: null, commandLaneIds: {} };
+  }
+}
+
+function writeRunPageLaneState(projectRoot: string | null, state: PersistedRunPageLaneState) {
+  if (!projectRoot) return;
+  try {
+    const raw = window.localStorage.getItem(RUN_PAGE_LANE_STORAGE_KEY);
+    const parsed = raw ? JSON.parse(raw) as Record<string, PersistedRunPageLaneState> : {};
+    parsed[projectRoot] = state;
+    window.localStorage.setItem(RUN_PAGE_LANE_STORAGE_KEY, JSON.stringify(parsed));
+  } catch {
+    // ignore persistence failures
+  }
+}
+
+function runPageLaneStateEqual(left: PersistedRunPageLaneState, right: PersistedRunPageLaneState): boolean {
+  if (left.lastLaneId !== right.lastLaneId) return false;
+  const leftEntries = Object.entries(left.commandLaneIds);
+  const rightEntries = Object.entries(right.commandLaneIds);
+  if (leftEntries.length !== rightEntries.length) return false;
+  return leftEntries.every(([processId, laneId]) => right.commandLaneIds[processId] === laneId);
 }
 
 function WelcomeScreen() {
@@ -103,13 +157,15 @@ function WelcomeScreen() {
       }}
     >
       <div style={{ textAlign: "center", maxWidth: 520 }}>
-        <div style={{
-          display: "inline-flex",
-          alignItems: "center",
-          justifyContent: "center",
-          marginBottom: 16,
-          animation: "pulse-glow 3s infinite",
-        }}>
+        <div
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            justifyContent: "center",
+            marginBottom: 16,
+            animation: "pulse-glow 3s infinite",
+          }}
+        >
           <img src="./logo.png" alt="ADE Logo" style={{ width: 280, height: 280, objectFit: "contain" }} />
         </div>
       </div>
@@ -122,22 +178,22 @@ function WelcomeScreen() {
           gap: 12,
           boxShadow: `0 4px 20px ${COLORS.accent}40`,
           transition: "transform 0.2s ease, box-shadow 0.2s ease",
-          marginTop: -16, // pull closer to logo
+          marginTop: -16,
         }}
-        onMouseEnter={(e) => {
-          e.currentTarget.style.transform = "translateY(-2px)";
-          e.currentTarget.style.boxShadow = `0 6px 24px ${COLORS.accent}60`;
+        onMouseEnter={(event) => {
+          event.currentTarget.style.transform = "translateY(-2px)";
+          event.currentTarget.style.boxShadow = `0 6px 24px ${COLORS.accent}60`;
         }}
-        onMouseLeave={(e) => {
-          e.currentTarget.style.transform = "none";
-          e.currentTarget.style.boxShadow = `0 4px 20px ${COLORS.accent}40`;
+        onMouseLeave={(event) => {
+          event.currentTarget.style.transform = "none";
+          event.currentTarget.style.boxShadow = `0 4px 20px ${COLORS.accent}40`;
         }}
       >
         <FolderOpen size={20} weight="regular" />
         OPEN PROJECT
       </button>
 
-      {realProjects.length > 0 && (
+      {realProjects.length > 0 ? (
         <div style={{ width: "100%", maxWidth: 440, marginTop: 8 }}>
           <div style={{ ...LABEL_STYLE, marginBottom: 12, textAlign: "center", color: COLORS.textMuted }}>RECENT PROJECTS</div>
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
@@ -162,28 +218,20 @@ function WelcomeScreen() {
                   transition: "all 0.2s ease",
                   backdropFilter: "blur(10px)",
                 }}
-                onMouseEnter={(e) => {
-                  e.currentTarget.style.borderColor = COLORS.accent + "60";
-                  e.currentTarget.style.background = "rgba(255,255,255,0.05)";
-                  e.currentTarget.style.transform = "scale(1.01)";
-                }}
-                onMouseLeave={(e) => {
-                  e.currentTarget.style.borderColor = COLORS.border;
-                  e.currentTarget.style.background = "rgba(255,255,255,0.02)";
-                  e.currentTarget.style.transform = "none";
-                }}
               >
-                <div style={{
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  width: 32,
-                  height: 32,
-                  borderRadius: 8,
-                  background: `${COLORS.accent}15`,
-                  color: COLORS.accent,
-                  flexShrink: 0,
-                }}>
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    width: 32,
+                    height: 32,
+                    borderRadius: 8,
+                    background: `${COLORS.accent}15`,
+                    color: COLORS.accent,
+                    flexShrink: 0,
+                  }}
+                >
                   <Folder size={16} weight="regular" />
                 </div>
                 <div style={{ overflow: "hidden", flex: 1 }}>
@@ -193,54 +241,53 @@ function WelcomeScreen() {
                   </div>
                 </div>
                 <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 4, flexShrink: 0 }}>
-                  {rp.laneCount !== undefined && (
-                    <span style={{
-                      fontSize: 10,
-                      background: `${COLORS.accent}20`,
-                      color: COLORS.accent,
-                      padding: "2px 6px",
-                      borderRadius: 10,
-                      fontWeight: 600,
-                    }}>
+                  {rp.laneCount !== undefined ? (
+                    <span
+                      style={{
+                        fontSize: 10,
+                        background: `${COLORS.accent}20`,
+                        color: COLORS.accent,
+                        padding: "2px 6px",
+                        borderRadius: 10,
+                        fontWeight: 600,
+                      }}
+                    >
                       {rp.laneCount} lane{rp.laneCount !== 1 ? "s" : ""}
                     </span>
-                  )}
-                  {rp.lastOpenedAt && (
-                    <span style={{ fontSize: 9, color: COLORS.textDim }}>
-                      {toRelativeTime(rp.lastOpenedAt)}
-                    </span>
-                  )}
+                  ) : null}
+                  {rp.lastOpenedAt ? (
+                    <span style={{ fontSize: 9, color: COLORS.textDim }}>{toRelativeTime(rp.lastOpenedAt)}</span>
+                  ) : null}
                 </div>
               </button>
             ))}
           </div>
         </div>
-      )}
+      ) : null}
 
-      <CommandPalette
-        open={projectBrowserOpen}
-        onOpenChange={setProjectBrowserOpen}
-        intent="project-browse"
-      />
+      <CommandPalette open={projectBrowserOpen} onOpenChange={setProjectBrowserOpen} intent="project-browse" />
     </div>
   );
 }
 
 export function RunPage() {
+  const project = useAppStore((s) => s.project);
   const lanes = useAppStore((s) => s.lanes);
   const selectedLaneId = useAppStore((s) => s.selectedLaneId);
   const runLaneId = useAppStore((s) => s.runLaneId);
   const selectRunLane = useAppStore((s) => s.selectRunLane);
   const showWelcome = useAppStore((s) => s.showWelcome);
 
+  const projectRoot = project?.rootPath ?? null;
+  const [persistedLaneState, setPersistedLaneState] = useState<PersistedRunPageLaneState>(() => readRunPageLaneState(projectRoot));
   const [config, setConfig] = useState<ProjectConfigSnapshot | null>(null);
   const [definitions, setDefinitions] = useState<ProcessDefinition[]>([]);
   const [runtime, setRuntime] = useState<ProcessRuntime[]>([]);
   const [selectedStackId, setSelectedStackId] = useState<string | null>(null);
+  const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
   const [addDialogOpen, setAddDialogOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [editingProcess, setEditingProcess] = useState<{ id: string; values: AddCommandInitialValues } | null>(null);
-  const [moveToStackProcessId, setMoveToStackProcessId] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [runShellSessions, setRunShellSessions] = useState<RunShellSession[]>([]);
   const [shellBusy, setShellBusy] = useState(false);
@@ -250,13 +297,69 @@ export function RunPage() {
   const runtimeRefreshTimerRef = useRef<number | null>(null);
   const runShellSessionsRef = useRef<RunShellSession[]>([]);
 
-  const effectiveLaneId = runLaneId ?? selectedLaneId ?? null;
-  const effectiveLaneIdRef = useRef(effectiveLaneId);
-  effectiveLaneIdRef.current = effectiveLaneId;
-  const selectedLane = useMemo(
-    () => lanes.find((lane) => lane.id === effectiveLaneId) ?? null,
-    [effectiveLaneId, lanes]
+  const persistedDefaultLaneId = persistedLaneState.lastLaneId;
+  const defaultLaneId = runLaneId ?? persistedDefaultLaneId ?? selectedLaneId ?? lanes[0]?.id ?? null;
+  const processDefinitions = useMemo(() => Object.fromEntries(definitions.map((definition) => [definition.id, definition])), [definitions]);
+  const processNames = useMemo(() => Object.fromEntries(definitions.map((definition) => [definition.id, definition.name])), [definitions]);
+  const stacks = useMemo<StackButtonDefinition[]>(() => config?.effective.stackButtons ?? [], [config?.effective.stackButtons]);
+  const groups = useMemo<ProcessGroupDefinition[]>(() => config?.effective.processGroups ?? [], [config?.effective.processGroups]);
+
+  const selectedStack = useMemo(
+    () => stacks.find((stack) => stack.id === selectedStackId) ?? null,
+    [selectedStackId, stacks],
   );
+
+  const selectedGroup = useMemo(
+    () => groups.find((group) => group.id === selectedGroupId) ?? null,
+    [groups, selectedGroupId],
+  );
+
+  const commandLaneMap = useMemo(() => {
+    const allowed = new Set(lanes.map((lane) => lane.id));
+    const fallbackLaneId = defaultLaneId ?? lanes[0]?.id ?? null;
+    const map: Record<string, string> = {};
+    for (const definition of definitions) {
+      const persistedLaneId = persistedLaneState.commandLaneIds[definition.id];
+      const laneId = persistedLaneId && allowed.has(persistedLaneId)
+        ? persistedLaneId
+        : fallbackLaneId;
+      if (laneId) map[definition.id] = laneId;
+    }
+    return map;
+  }, [defaultLaneId, definitions, lanes, persistedLaneState.commandLaneIds]);
+
+  const refreshLanePersistence = useCallback((updater: (current: PersistedRunPageLaneState) => PersistedRunPageLaneState) => {
+    setPersistedLaneState((current) => {
+      const next = updater(current);
+      if (runPageLaneStateEqual(current, next)) return current;
+      writeRunPageLaneState(projectRoot, next);
+      return next;
+    });
+  }, [projectRoot]);
+
+  useEffect(() => {
+    setPersistedLaneState(readRunPageLaneState(projectRoot));
+  }, [projectRoot]);
+
+  useEffect(() => {
+    if (!projectRoot) return;
+    const allowed = new Set(lanes.map((lane) => lane.id));
+    refreshLanePersistence((current) => {
+      const nextCommandLaneIds: Record<string, string> = {};
+      for (const definition of definitions) {
+        const laneId = commandLaneMap[definition.id];
+        if (laneId && allowed.has(laneId)) nextCommandLaneIds[definition.id] = laneId;
+      }
+      const nextLastLaneId = current.lastLaneId && allowed.has(current.lastLaneId)
+        ? current.lastLaneId
+        : defaultLaneId;
+      return {
+        lastLaneId: nextLastLaneId ?? null,
+        commandLaneIds: nextCommandLaneIds,
+      };
+    });
+  }, [commandLaneMap, defaultLaneId, definitions, lanes, projectRoot, refreshLanePersistence]);
+
   runShellSessionsRef.current = runShellSessions;
 
   const focusMonitor = useCallback((target: { kind: "process" | "shell"; id: string } | null) => {
@@ -284,13 +387,6 @@ export function RunPage() {
     };
   }, [disposeRunShellSessions]);
 
-  // Sync runLaneId from selectedLaneId
-  useEffect(() => {
-    if (!runLaneId && selectedLaneId) {
-      selectRunLane(selectedLaneId);
-    }
-  }, [runLaneId, selectedLaneId, selectRunLane]);
-
   const refreshDefinitions = useCallback(async () => {
     if (showWelcome) {
       setConfig(null);
@@ -298,62 +394,46 @@ export function RunPage() {
       return;
     }
 
-    const startedAt = performance.now();
-    logRendererDebugEvent("renderer.run.refresh_definitions.begin", {
-      effectiveLaneId: effectiveLaneIdRef.current ?? null,
-    });
     setLoading(true);
     try {
-      const [nextConfig, nextDefs] = await Promise.all([
+      const [nextConfig, nextDefinitions] = await Promise.all([
         window.ade.projectConfig.get(),
         window.ade.processes.listDefinitions(),
       ]);
       setConfig(nextConfig);
-      setDefinitions(nextDefs);
-      logRendererDebugEvent("renderer.run.refresh_definitions.done", {
-        effectiveLaneId: effectiveLaneIdRef.current ?? null,
-        durationMs: Math.round(performance.now() - startedAt),
-        definitionCount: nextDefs.length,
-        processCount: nextConfig.effective.processes.length,
-      });
-    } catch (err) {
-      logRendererDebugEvent("renderer.run.refresh_definitions.failed", {
-        effectiveLaneId: effectiveLaneIdRef.current ?? null,
-        durationMs: Math.round(performance.now() - startedAt),
-        error: err instanceof Error ? err.message : String(err),
-      });
-      console.error("RunPage.refreshDefinitions", err);
+      setDefinitions(nextDefinitions);
+    } catch (error) {
+      console.error("RunPage.refreshDefinitions", error);
     } finally {
       setLoading(false);
     }
   }, [showWelcome]);
 
   const refreshRuntime = useCallback(async () => {
-    if (showWelcome || !effectiveLaneId) {
+    if (showWelcome) {
       setRuntime([]);
       return;
     }
-    const startedAt = performance.now();
-    logRendererDebugEvent("renderer.run.refresh_runtime.begin", {
-      effectiveLaneId,
-    });
-    try {
-      const nextRuntime = await window.ade.processes.listRuntime(effectiveLaneId);
-      setRuntime(nextRuntime);
-      logRendererDebugEvent("renderer.run.refresh_runtime.done", {
-        effectiveLaneId,
-        durationMs: Math.round(performance.now() - startedAt),
-        runtimeCount: nextRuntime.length,
-      });
-    } catch (err) {
-      logRendererDebugEvent("renderer.run.refresh_runtime.failed", {
-        effectiveLaneId,
-        durationMs: Math.round(performance.now() - startedAt),
-        error: err instanceof Error ? err.message : String(err),
-      });
-      console.error("RunPage.refreshRuntime", err);
+    const laneIds = Array.from(
+      new Set([
+        ...Object.values(commandLaneMap),
+        ...runShellSessions.map((session) => session.laneId),
+      ].filter((value): value is string => Boolean(value))),
+    );
+    if (laneIds.length === 0) {
+      setRuntime([]);
+      return;
     }
-  }, [effectiveLaneId, showWelcome]);
+    try {
+      const snapshots = await Promise.all(
+        laneIds.map((laneId) => window.ade.processes.listRuntime(laneId).catch(() => [] as ProcessRuntime[])),
+      );
+      const next = snapshots.flat();
+      setRuntime(next);
+    } catch (error) {
+      console.error("RunPage.refreshRuntime", error);
+    }
+  }, [commandLaneMap, runShellSessions, showWelcome]);
 
   useEffect(() => {
     if (showWelcome) return;
@@ -361,24 +441,33 @@ export function RunPage() {
   }, [refreshDefinitions, showWelcome]);
 
   useEffect(() => {
-    setActionError(null);
-  }, [effectiveLaneId]);
+    if (groups.length === 0) {
+      if (selectedGroupId !== null) setSelectedGroupId(null);
+      return;
+    }
+    if (selectedGroupId && !groups.some((group) => group.id === selectedGroupId)) {
+      setSelectedGroupId(null);
+    }
+  }, [groups, selectedGroupId]);
 
   useEffect(() => {
-    const previousSessions = runShellSessionsRef.current;
-    setRunShellSessions([]);
-    if (previousSessions.length === 0) return;
-    void disposeRunShellSessions(previousSessions);
-  }, [disposeRunShellSessions, effectiveLaneId]);
+    if (stacks.length === 0) {
+      if (selectedStackId !== null) setSelectedStackId(null);
+      return;
+    }
+    if (selectedStackId && !stacks.some((stack) => stack.id === selectedStackId)) {
+      setSelectedStackId(null);
+    }
+  }, [selectedStackId, stacks]);
+
+  useEffect(() => {
+    setActionError(null);
+  }, [defaultLaneId]);
 
   useEffect(() => {
     if (runtimeRefreshTimerRef.current != null) {
       window.clearTimeout(runtimeRefreshTimerRef.current);
       runtimeRefreshTimerRef.current = null;
-    }
-    if (showWelcome) {
-      setRuntime([]);
-      return;
     }
     runtimeRefreshTimerRef.current = window.setTimeout(() => {
       runtimeRefreshTimerRef.current = null;
@@ -390,218 +479,245 @@ export function RunPage() {
         runtimeRefreshTimerRef.current = null;
       }
     };
-  }, [refreshRuntime, showWelcome]);
+  }, [refreshRuntime]);
 
-  // Subscribe to process events (filtered to current effective lane)
   useEffect(() => {
-    const unsub = window.ade.processes.onEvent((ev: ProcessEvent) => {
-      if (ev.type === "runtime") {
-        const currentLaneId = effectiveLaneIdRef.current;
-        if (!currentLaneId || ev.runtime.laneId !== currentLaneId) return;
-        setRuntime((prev) => {
-          const idx = prev.findIndex(
-            (r) => r.processId === ev.runtime.processId && r.laneId === ev.runtime.laneId
-          );
-          if (idx >= 0) {
-            const next = [...prev];
-            next[idx] = ev.runtime;
-            return next;
-          }
-          return [...prev, ev.runtime];
-        });
-      }
+    const unsubscribe = window.ade.processes.onEvent((event: ProcessEvent) => {
+      if (event.type !== "runtime") return;
+      setRuntime((current) => {
+        const next = [...current];
+        const index = next.findIndex((runtimeItem) => runtimeItem.runId === event.runtime.runId);
+        if (index >= 0) {
+          next[index] = event.runtime;
+        } else {
+          next.unshift(event.runtime);
+        }
+        return next;
+      });
     });
-    return unsub;
+    return unsubscribe;
   }, []);
 
-  // Derived
-  const stacks = useMemo<StackButtonDefinition[]>(
-    () => config?.effective.stackButtons ?? [],
-    [config?.effective.stackButtons],
-  );
-  const selectedStack = useMemo(
-    () => stacks.find((stack) => stack.id === selectedStackId) ?? null,
-    [selectedStackId, stacks],
-  );
-  const processNames = useMemo(() => {
-    const map: Record<string, string> = {};
-    for (const d of definitions) map[d.id] = d.name;
-    return map;
-  }, [definitions]);
+  const resolveProcessLaneId = useCallback((processId: string): string | null => {
+    return commandLaneMap[processId] ?? defaultLaneId ?? null;
+  }, [commandLaneMap, defaultLaneId]);
 
-  const processDefinitions = useMemo(() => {
-    const map: Record<string, ProcessDefinition> = {};
-    for (const definition of definitions) map[definition.id] = definition;
-    return map;
-  }, [definitions]);
+  const selectProcessLane = useCallback((processId: string, laneId: string) => {
+    selectRunLane(laneId);
+    refreshLanePersistence((current) => ({
+      lastLaneId: laneId,
+      commandLaneIds: {
+        ...current.commandLaneIds,
+        [processId]: laneId,
+      },
+    }));
+  }, [refreshLanePersistence, selectRunLane]);
 
-  const filteredDefinitions = useMemo(() => {
-    if (!selectedStackId) return definitions;
-    const stack = stacks.find((s) => s.id === selectedStackId);
-    if (!stack) return definitions;
-    const ids = new Set(stack.processIds);
-    return definitions.filter((d) => ids.has(d.id));
-  }, [definitions, selectedStackId, stacks]);
+  const selectDefaultLane = useCallback((laneId: string | null) => {
+    selectRunLane(laneId);
+    refreshLanePersistence((current) => ({
+      ...current,
+      lastLaneId: laneId,
+    }));
+  }, [refreshLanePersistence, selectRunLane]);
 
-  const runtimeMap = useMemo(() => {
-    const map: Record<string, ProcessRuntime> = {};
-    for (const r of runtime) map[r.processId] = r;
-    return map;
-  }, [runtime]);
-
-  // Actions
-  const handleRun = useCallback(
-    async (processId: string) => {
-      try {
-        if (!effectiveLaneId) return;
-        setActionError(null);
-        await window.ade.processes.start({ laneId: effectiveLaneId, processId });
-        focusMonitor({ kind: "process", id: processId });
-      } catch (err) {
-        setActionError(err instanceof Error ? err.message : String(err));
-        console.error("[RunPage] handleRun failed:", err);
-      }
-    },
-    [effectiveLaneId, focusMonitor]
-  );
-
-  const handleStop = useCallback(
-    async (processId: string) => {
-      try {
-        if (!effectiveLaneId) return;
-        setActionError(null);
-        await window.ade.processes.stop({ laneId: effectiveLaneId, processId });
-      } catch (err) {
-        setActionError(err instanceof Error ? err.message : String(err));
-        console.error("[RunPage] handleStop failed:", err);
-      }
-    },
-    [effectiveLaneId]
-  );
-
-  const handleRestart = useCallback(
-    async (processId: string) => {
-      try {
-        if (!effectiveLaneId) return;
-        setActionError(null);
-        await window.ade.processes.restart({ laneId: effectiveLaneId, processId });
-        focusMonitor({ kind: "process", id: processId });
-      } catch (err) {
-        setActionError(err instanceof Error ? err.message : String(err));
-        console.error("[RunPage] handleRestart failed:", err);
-      }
-    },
-    [effectiveLaneId, focusMonitor]
-  );
-
-  const handleKill = useCallback(
-    async (processId: string) => {
-      try {
-        if (!effectiveLaneId) return;
-        setActionError(null);
-        await window.ade.processes.kill({ laneId: effectiveLaneId, processId });
-      } catch (err) {
-        setActionError(err instanceof Error ? err.message : String(err));
-        console.error("[RunPage] handleKill failed:", err);
-      }
-    },
-    [effectiveLaneId]
-  );
-
-  const handleStartAll = useCallback(async () => {
+  const startProcess = useCallback(async (processId: string, laneId: string, allowTrustRetry = true): Promise<ProcessRuntime> => {
     try {
-      if (!effectiveLaneId) return;
-      setActionError(null);
-      if (selectedStackId) {
-        await window.ade.processes.startStack({ laneId: effectiveLaneId, stackId: selectedStackId });
-        const firstProcessId = selectedStack?.processIds[0] ?? null;
-        if (firstProcessId) focusMonitor({ kind: "process", id: firstProcessId });
-      } else {
-        await window.ade.processes.startAll({ laneId: effectiveLaneId });
-        const firstProcessId = filteredDefinitions[0]?.id ?? null;
-        if (firstProcessId) focusMonitor({ kind: "process", id: firstProcessId });
+      return await window.ade.processes.start({ laneId, processId });
+    } catch (error) {
+      if (
+        allowTrustRetry
+        && error instanceof Error
+        && error.message.includes("ADE_TRUST_REQUIRED")
+      ) {
+        await window.ade.projectConfig.confirmTrust();
+        return await window.ade.processes.start({ laneId, processId });
       }
-    } catch (err) {
-      // Auto-confirm trust when the user explicitly starts processes.
-      if (err instanceof Error && err.message.includes("ADE_TRUST_REQUIRED") && effectiveLaneId) {
+      throw error;
+    }
+  }, []);
+
+  const handleRun = useCallback(async (processId: string) => {
+    const laneId = resolveProcessLaneId(processId);
+    if (!laneId) return;
+    try {
+      setActionError(null);
+      const started = await startProcess(processId, laneId);
+      focusMonitor({ kind: "process", id: started.runId });
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : String(error));
+      console.error("[RunPage] handleRun failed:", error);
+    }
+  }, [focusMonitor, resolveProcessLaneId, startProcess]);
+
+  const handleStop = useCallback(async (processId: string) => {
+    const laneId = resolveProcessLaneId(processId);
+    if (!laneId) return;
+    try {
+      setActionError(null);
+      await window.ade.processes.stop({ laneId, processId });
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : String(error));
+      console.error("[RunPage] handleStop failed:", error);
+    }
+  }, [resolveProcessLaneId]);
+
+  const handleKillRuntime = useCallback(async (runtimeItem: ProcessRuntime) => {
+    try {
+      setActionError(null);
+      await window.ade.processes.kill({
+        laneId: runtimeItem.laneId,
+        processId: runtimeItem.processId,
+        runId: runtimeItem.runId,
+      });
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : String(error));
+      console.error("[RunPage] handleKillRuntime failed:", error);
+    }
+  }, []);
+
+  const runDefinitions = useCallback(async (targetDefinitions: ProcessDefinition[]) => {
+    const launchTargets = targetDefinitions
+      .map((definition) => ({
+        definition,
+        laneId: resolveProcessLaneId(definition.id),
+      }))
+      .filter((entry): entry is { definition: ProcessDefinition; laneId: string } => Boolean(entry.laneId));
+    if (launchTargets.length === 0) return;
+
+    try {
+      setActionError(null);
+      const settled = await Promise.allSettled(
+        launchTargets.map((entry) => startProcess(entry.definition.id, entry.laneId, false)),
+      );
+      const successes = settled
+        .filter((result): result is PromiseFulfilledResult<ProcessRuntime> => result.status === "fulfilled")
+        .map((result) => result.value);
+      const failures = launchTargets.flatMap((entry, index) => {
+        const result = settled[index];
+        return result?.status === "rejected" ? [{ entry, reason: result.reason }] : [];
+      });
+      const trustFailures = failures.filter((failure) =>
+        failure.reason instanceof Error && failure.reason.message.includes("ADE_TRUST_REQUIRED")
+      );
+
+      let retrySuccesses: ProcessRuntime[] = [];
+      if (trustFailures.length > 0) {
+        await window.ade.projectConfig.confirmTrust();
+        const retrySettled = await Promise.allSettled(
+          trustFailures.map((failure) => startProcess(failure.entry.definition.id, failure.entry.laneId, false)),
+        );
+        retrySuccesses = retrySettled
+          .filter((result): result is PromiseFulfilledResult<ProcessRuntime> => result.status === "fulfilled")
+          .map((result) => result.value);
+        const retryFailure = retrySettled.find((result) => result.status === "rejected");
+        if (retryFailure?.status === "rejected") {
+          setActionError(retryFailure.reason instanceof Error ? retryFailure.reason.message : String(retryFailure.reason));
+        }
+      }
+
+      const firstFailure = failures.find((failure) =>
+        !(failure.reason instanceof Error && failure.reason.message.includes("ADE_TRUST_REQUIRED"))
+      );
+      if (firstFailure) {
+        setActionError(firstFailure.reason instanceof Error ? firstFailure.reason.message : String(firstFailure.reason));
+      }
+
+      const first = successes[0] ?? retrySuccesses[0] ?? null;
+      if (first) focusMonitor({ kind: "process", id: first.runId });
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : String(error));
+      console.error("[RunPage] runDefinitions failed:", error);
+    }
+  }, [focusMonitor, resolveProcessLaneId, startProcess]);
+
+  const stopDefinitions = useCallback(async (targetDefinitions: ProcessDefinition[]) => {
+    try {
+      setActionError(null);
+      await Promise.all(
+        targetDefinitions.map(async (definition) => {
+          const laneId = resolveProcessLaneId(definition.id);
+          if (!laneId) return;
+          await window.ade.processes.stop({ laneId, processId: definition.id });
+        }),
+      );
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : String(error));
+      console.error("[RunPage] stopDefinitions failed:", error);
+    }
+  }, [resolveProcessLaneId]);
+
+  const startStackById = useCallback(async (stackId: string) => {
+    if (!defaultLaneId) return;
+    try {
+      setActionError(null);
+      await window.ade.processes.startStack({ laneId: defaultLaneId, stackId });
+      const stack = stacks.find((entry) => entry.id === stackId);
+      const firstProcessId = stack?.processIds[0] ?? null;
+      if (firstProcessId) focusMonitor({ kind: "process", id: firstProcessId });
+    } catch (error) {
+      if (error instanceof Error && error.message.includes("ADE_TRUST_REQUIRED")) {
         try {
           await window.ade.projectConfig.confirmTrust();
-          if (selectedStackId) {
-            await window.ade.processes.startStack({ laneId: effectiveLaneId, stackId: selectedStackId });
-            const firstProcessId = selectedStack?.processIds[0] ?? null;
-            if (firstProcessId) focusMonitor({ kind: "process", id: firstProcessId });
-          } else {
-            await window.ade.processes.startAll({ laneId: effectiveLaneId });
-            const firstProcessId = filteredDefinitions[0]?.id ?? null;
-            if (firstProcessId) focusMonitor({ kind: "process", id: firstProcessId });
-          }
+          await window.ade.processes.startStack({ laneId: defaultLaneId, stackId });
           return;
-        } catch (retryErr) {
-          setActionError(retryErr instanceof Error ? retryErr.message : String(retryErr));
+        } catch (retryError) {
+          setActionError(retryError instanceof Error ? retryError.message : String(retryError));
           return;
         }
       }
-      setActionError(err instanceof Error ? err.message : String(err));
-      console.error("[RunPage] handleStartAll failed:", err);
+      setActionError(error instanceof Error ? error.message : String(error));
     }
-  }, [effectiveLaneId, filteredDefinitions, focusMonitor, selectedStack, selectedStackId]);
+  }, [defaultLaneId, focusMonitor, stacks]);
 
-  const handleStopAll = useCallback(async () => {
+  const stopStackById = useCallback(async (stackId: string) => {
+    if (!defaultLaneId) return;
     try {
-      if (!effectiveLaneId) return;
       setActionError(null);
-      if (selectedStackId) {
-        await window.ade.processes.stopStack({ laneId: effectiveLaneId, stackId: selectedStackId });
-      } else {
-        await window.ade.processes.stopAll({ laneId: effectiveLaneId });
-      }
-    } catch (err) {
-      setActionError(err instanceof Error ? err.message : String(err));
-      console.error("[RunPage] handleStopAll failed:", err);
+      await window.ade.processes.stopStack({ laneId: defaultLaneId, stackId });
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : String(error));
     }
-  }, [effectiveLaneId, selectedStackId]);
+  }, [defaultLaneId]);
 
-  const handleRestartStack = useCallback(
-    async (stackId: string) => {
-      try {
-        if (!effectiveLaneId) return;
-        setActionError(null);
-        await window.ade.processes.restartStack({ laneId: effectiveLaneId, stackId });
-        const targetStack = stacks.find((stack) => stack.id === stackId);
-        const firstProcessId = targetStack?.processIds[0] ?? null;
-        if (firstProcessId) focusMonitor({ kind: "process", id: firstProcessId });
-      } catch (err) {
-        setActionError(err instanceof Error ? err.message : String(err));
-        console.error("[RunPage] handleRestartStack failed:", err);
-      }
-    },
-    [effectiveLaneId, focusMonitor, stacks],
-  );
+  const restartStackById = useCallback(async (stackId: string) => {
+    if (!defaultLaneId) return;
+    try {
+      setActionError(null);
+      await window.ade.processes.restartStack({ laneId: defaultLaneId, stackId });
+      const stack = stacks.find((entry) => entry.id === stackId);
+      const firstProcessId = stack?.processIds[0] ?? null;
+      if (firstProcessId) focusMonitor({ kind: "process", id: firstProcessId });
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : String(error));
+    }
+  }, [defaultLaneId, focusMonitor, stacks]);
 
   const handleLaunchShell = useCallback(async () => {
-    if (!effectiveLaneId || shellBusy) return;
+    const laneId = defaultLaneId;
+    if (!laneId || shellBusy) return;
     setShellBusy(true);
     setActionError(null);
     try {
       const existingCount = runShellSessionsRef.current.length;
       const title = existingCount > 0 ? `Shell ${existingCount + 1}` : "Shell";
       const result = await window.ade.pty.create({
-        laneId: effectiveLaneId,
+        laneId,
         cols: 100,
         rows: 30,
         title,
         tracked: false,
         toolType: "shell",
       });
-      const session: RunShellSession = { sessionId: result.sessionId, ptyId: result.ptyId, title };
+      const session: RunShellSession = { sessionId: result.sessionId, ptyId: result.ptyId, title, laneId };
       setRunShellSessions((current) => [...current, session]);
       focusMonitor({ kind: "shell", id: session.sessionId });
-    } catch (err) {
-      setActionError(err instanceof Error ? err.message : String(err));
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : String(error));
     } finally {
       setShellBusy(false);
     }
-  }, [effectiveLaneId, focusMonitor, shellBusy]);
+  }, [defaultLaneId, focusMonitor, shellBusy]);
 
   const handleCloseRunShell = useCallback(async (sessionId: string) => {
     const target = runShellSessionsRef.current.find((session) => session.sessionId === sessionId);
@@ -614,9 +730,74 @@ export function RunPage() {
     }
   }, []);
 
-  // Config mutations
-  const saveProcessToConfig = useCallback(
-    async (cmd: {
+  const saveProcessToConfig = useCallback(async (cmd: {
+    name: string;
+    command: string;
+    stackId: string | null;
+    newStackName: string | null;
+    cwd: string;
+    env: string;
+    autostart: boolean;
+    restart: AddCommandInitialValues["restart"];
+    gracefulShutdownMs: string;
+    dependsOn: string;
+    readinessType: AddCommandInitialValues["readinessType"];
+    readinessPort: string;
+    readinessPattern: string;
+    groupIds: string[];
+    newGroupNames: string[];
+  }) => {
+    if (!config) return;
+    const processId = generateId();
+    const createdGroups: ConfigProcessGroupDefinition[] = cmd.newGroupNames.map((name) => ({
+      id: generateId(),
+      name,
+    }));
+    const allGroupIds = [...cmd.groupIds, ...createdGroups.map((group) => group.id)];
+    const newProcess: ConfigProcessDefinition = {
+      id: processId,
+      name: cmd.name,
+      command: parseCommandLine(cmd.command),
+      cwd: cmd.cwd === "." ? undefined : normalizeRelativePath(cmd.cwd),
+      env: parseEnvText(cmd.env),
+      autostart: cmd.autostart ? true : undefined,
+      restart: cmd.restart === "never" ? undefined : cmd.restart,
+      gracefulShutdownMs: parseGracefulShutdownMs(cmd.gracefulShutdownMs),
+      dependsOn: parseDependsOnCsv(cmd.dependsOn),
+      readiness: buildReadinessConfig(cmd),
+      groupIds: allGroupIds.length > 0 ? allGroupIds : undefined,
+    };
+
+    const shared = { ...config.shared };
+    shared.processes = [...(shared.processes ?? []), newProcess];
+    shared.processGroups = [...(shared.processGroups ?? []), ...createdGroups];
+
+    let stackButtons = [...(shared.stackButtons ?? [])];
+    let targetStackId = cmd.stackId;
+    if (cmd.newStackName) {
+      const newStack: ConfigStackButtonDefinition = {
+        id: generateId(),
+        name: cmd.newStackName,
+        processIds: [processId],
+      };
+      stackButtons = [...stackButtons, newStack];
+      targetStackId = newStack.id;
+    } else if (targetStackId) {
+      stackButtons = stackButtons.map((stack) =>
+        stack.id === targetStackId
+          ? { ...stack, processIds: [...(stack.processIds ?? []), processId] }
+          : stack,
+      );
+    }
+    shared.stackButtons = stackButtons;
+
+    await window.ade.projectConfig.save({ shared, local: config.local });
+    await Promise.all([refreshDefinitions(), refreshRuntime()]);
+  }, [config, refreshDefinitions, refreshRuntime]);
+
+  const updateProcessInConfig = useCallback(async (
+    processId: string,
+    cmd: {
       name: string;
       command: string;
       stackId: string | null;
@@ -630,263 +811,156 @@ export function RunPage() {
       readinessType: AddCommandInitialValues["readinessType"];
       readinessPort: string;
       readinessPattern: string;
-    }) => {
-      if (!config) return;
-      const processId = generateId();
-      const newProcess: ConfigProcessDefinition = {
-        id: processId,
-        name: cmd.name,
-        command: parseCommandLine(cmd.command),
-        cwd: cmd.cwd === "." ? undefined : cmd.cwd,
-        env: parseEnvText(cmd.env),
-        autostart: cmd.autostart ? true : undefined,
-        restart: cmd.restart !== "never" ? cmd.restart : undefined,
-        gracefulShutdownMs: parseGracefulShutdownMs(cmd.gracefulShutdownMs),
-        dependsOn: parseDependsOnCsv(cmd.dependsOn),
-        readiness: buildReadinessConfig(cmd),
-      };
-
-      const shared = { ...config.shared };
-      const processes = [...(shared.processes ?? []), newProcess];
-      shared.processes = processes;
-
-      // Handle stack assignment
-      let stackButtons = [...(shared.stackButtons ?? [])];
-      let targetStackId = cmd.stackId;
-
-      if (cmd.newStackName) {
-        const newStack: ConfigStackButtonDefinition = {
-          id: generateId(),
-          name: cmd.newStackName,
-          processIds: [processId],
-        };
-        stackButtons = [...stackButtons, newStack];
-        targetStackId = newStack.id;
-      } else if (targetStackId) {
-        stackButtons = stackButtons.map((s) =>
-          s.id === targetStackId
-            ? { ...s, processIds: [...(s.processIds ?? []), processId] }
-            : s
-        );
-      }
-      shared.stackButtons = stackButtons;
-
-      await window.ade.projectConfig.save({ shared, local: config.local });
-      await Promise.all([refreshDefinitions(), refreshRuntime()]);
+      groupIds: string[];
+      newGroupNames: string[];
     },
-    [config, refreshDefinitions, refreshRuntime]
-  );
+  ) => {
+    if (!config) return;
+    const shared = { ...config.shared };
+    const createdGroups: ConfigProcessGroupDefinition[] = cmd.newGroupNames.map((name) => ({
+      id: generateId(),
+      name,
+    }));
+    const allGroupIds = [...cmd.groupIds, ...createdGroups.map((group) => group.id)];
 
-  const updateProcessInConfig = useCallback(
-    async (
-      processId: string,
-      cmd: {
-        name: string;
-        command: string;
-        stackId: string | null;
-        newStackName: string | null;
-        cwd: string;
-        env: string;
-        autostart: boolean;
-        restart: AddCommandInitialValues["restart"];
-        gracefulShutdownMs: string;
-        dependsOn: string;
-        readinessType: AddCommandInitialValues["readinessType"];
-        readinessPort: string;
-        readinessPattern: string;
-      }
-    ) => {
-      if (!config) return;
-      const shared = { ...config.shared };
+    shared.processes = (shared.processes ?? []).map((processEntry) =>
+      processEntry.id === processId
+        ? {
+            ...processEntry,
+            name: cmd.name,
+            command: parseCommandLine(cmd.command),
+            cwd: cmd.cwd === "." ? undefined : normalizeRelativePath(cmd.cwd),
+            env: parseEnvText(cmd.env),
+            autostart: cmd.autostart ? true : undefined,
+            restart: cmd.restart === "never" ? undefined : cmd.restart,
+            gracefulShutdownMs: parseGracefulShutdownMs(cmd.gracefulShutdownMs),
+            dependsOn: parseDependsOnCsv(cmd.dependsOn),
+            readiness: buildReadinessConfig(cmd),
+            groupIds: allGroupIds.length > 0 ? allGroupIds : undefined,
+          }
+        : processEntry,
+    );
+    shared.processGroups = [...(shared.processGroups ?? []), ...createdGroups];
 
-      // Update the process definition
-      shared.processes = (shared.processes ?? []).map((p) =>
-        p.id === processId
-          ? {
-              ...p,
-              name: cmd.name,
-              command: parseCommandLine(cmd.command),
-              cwd: cmd.cwd === "." ? undefined : cmd.cwd,
-              env: parseEnvText(cmd.env),
-              autostart: cmd.autostart ? true : undefined,
-              restart: cmd.restart !== "never" ? cmd.restart : undefined,
-              gracefulShutdownMs: parseGracefulShutdownMs(cmd.gracefulShutdownMs),
-              dependsOn: parseDependsOnCsv(cmd.dependsOn),
-              readiness: buildReadinessConfig(cmd),
-            }
-          : p
+    let stackButtons = (shared.stackButtons ?? []).map((stack) => ({
+      ...stack,
+      processIds: (stack.processIds ?? []).filter((id) => id !== processId),
+    }));
+    if (cmd.newStackName) {
+      stackButtons = [...stackButtons, { id: generateId(), name: cmd.newStackName, processIds: [processId] }];
+    } else if (cmd.stackId) {
+      stackButtons = stackButtons.map((stack) =>
+        stack.id === cmd.stackId
+          ? { ...stack, processIds: [...(stack.processIds ?? []), processId] }
+          : stack,
       );
+    }
+    shared.stackButtons = stackButtons;
 
-      // Update stack assignment: remove from all stacks first, then add to target
-      let stackButtons = (shared.stackButtons ?? []).map((s) => ({
-        ...s,
-        processIds: (s.processIds ?? []).filter((id) => id !== processId),
-      }));
+    await window.ade.projectConfig.save({ shared, local: config.local });
+    await Promise.all([refreshDefinitions(), refreshRuntime()]);
+  }, [config, refreshDefinitions, refreshRuntime]);
 
-      let targetStackId = cmd.stackId;
+  const handleDeleteProcess = useCallback(async (processId: string) => {
+    if (!config) return;
+    const shared = { ...config.shared };
+    shared.processes = (shared.processes ?? []).filter((processEntry) => processEntry.id !== processId);
+    shared.stackButtons = (shared.stackButtons ?? []).map((stack) => ({
+      ...stack,
+      processIds: (stack.processIds ?? []).filter((id) => id !== processId),
+    }));
+    await window.ade.projectConfig.save({ shared, local: config.local });
+    await Promise.all([refreshDefinitions(), refreshRuntime()]);
+  }, [config, refreshDefinitions, refreshRuntime]);
 
-      if (cmd.newStackName) {
-        stackButtons = [
-          ...stackButtons,
-          { id: generateId(), name: cmd.newStackName, processIds: [processId] },
-        ];
-      } else if (targetStackId) {
-        stackButtons = stackButtons.map((s) =>
-          s.id === targetStackId
-            ? { ...s, processIds: [...(s.processIds ?? []), processId] }
-            : s
-        );
+  const handleCreateStack = useCallback(async (name: string) => {
+    if (!config) return;
+    const shared = { ...config.shared };
+    const newStack: ConfigStackButtonDefinition = { id: generateId(), name, processIds: [] };
+    shared.stackButtons = [...(shared.stackButtons ?? []), newStack];
+    await window.ade.projectConfig.save({ shared, local: config.local });
+    await refreshDefinitions();
+  }, [config, refreshDefinitions]);
+
+  const handleRenameStack = useCallback(async (stackId: string, name: string) => {
+    if (!config) return;
+    const shared = { ...config.shared };
+    shared.stackButtons = (shared.stackButtons ?? []).map((stack) => (stack.id === stackId ? { ...stack, name } : stack));
+    await window.ade.projectConfig.save({ shared, local: config.local });
+    await refreshDefinitions();
+  }, [config, refreshDefinitions]);
+
+  const handleDeleteStack = useCallback(async (stackId: string) => {
+    if (!config) return;
+    const shared = { ...config.shared };
+    shared.stackButtons = (shared.stackButtons ?? []).filter((stack) => stack.id !== stackId);
+    await window.ade.projectConfig.save({ shared, local: config.local });
+    if (selectedStackId === stackId) setSelectedStackId(null);
+    await refreshDefinitions();
+  }, [config, refreshDefinitions, selectedStackId]);
+
+  const handleUpdateStackStartOrder = useCallback(async (stackId: string, startOrder: "parallel" | "dependency") => {
+    if (!config) return;
+    const shared = { ...config.shared };
+    shared.stackButtons = (shared.stackButtons ?? []).map((stack) =>
+      stack.id === stackId ? { ...stack, startOrder } : stack,
+    );
+    await window.ade.projectConfig.save({ shared, local: config.local });
+    await refreshDefinitions();
+  }, [config, refreshDefinitions]);
+
+  const handleEditProcess = useCallback((processId: string) => {
+    const definition = definitions.find((entry) => entry.id === processId);
+    if (!definition) return;
+    const currentStack = stacks.find((stack) => stack.processIds.includes(processId));
+    setEditingProcess({
+      id: processId,
+      values: {
+        name: definition.name,
+        command: commandArrayToLine(definition.command),
+        stackId: currentStack?.id ?? null,
+        cwd: definition.cwd || ".",
+        env: envToText(definition.env),
+        autostart: definition.autostart,
+        restart: definition.restart,
+        gracefulShutdownMs: String(definition.gracefulShutdownMs ?? 7000),
+        dependsOn: (definition.dependsOn ?? []).join(", "),
+        readinessType: definition.readiness.type,
+        readinessPort: definition.readiness.type === "port" ? String(definition.readiness.port ?? "") : "",
+        readinessPattern: definition.readiness.type === "logRegex" ? definition.readiness.pattern ?? "" : "",
+        groupIds: definition.groupIds ?? [],
+      },
+    });
+  }, [definitions, stacks]);
+
+  const filteredDefinitions = useMemo(() => {
+    let next = definitions;
+    if (selectedStackId) {
+      const ids = new Set(stacks.find((stack) => stack.id === selectedStackId)?.processIds ?? []);
+      next = next.filter((definition) => ids.has(definition.id));
+    }
+    if (selectedGroupId) {
+      next = next.filter((definition) => (definition.groupIds ?? []).includes(selectedGroupId));
+    }
+    return next;
+  }, [definitions, selectedGroupId, selectedStackId, stacks]);
+
+  const groupCounts = useMemo(() => {
+    const counts: Record<string, number> = {};
+    for (const definition of definitions) {
+      for (const groupId of definition.groupIds ?? []) {
+        counts[groupId] = (counts[groupId] ?? 0) + 1;
       }
+    }
+    return counts;
+  }, [definitions]);
 
-      shared.stackButtons = stackButtons;
-      await window.ade.projectConfig.save({ shared, local: config.local });
-      await Promise.all([refreshDefinitions(), refreshRuntime()]);
-    },
-    [config, refreshDefinitions, refreshRuntime]
-  );
-
-  const handleDeleteProcess = useCallback(
-    async (processId: string) => {
-      if (!config) return;
-      const shared = { ...config.shared };
-      shared.processes = (shared.processes ?? []).filter((p) => p.id !== processId);
-      shared.stackButtons = (shared.stackButtons ?? []).map((s) => ({
-        ...s,
-        processIds: (s.processIds ?? []).filter((id) => id !== processId),
-      }));
-      await window.ade.projectConfig.save({ shared, local: config.local });
-      await Promise.all([refreshDefinitions(), refreshRuntime()]);
-    },
-    [config, refreshDefinitions, refreshRuntime]
-  );
-
-  const handleCreateStack = useCallback(
-    async (name: string) => {
-      if (!config) return;
-      const shared = { ...config.shared };
-      const newStack: ConfigStackButtonDefinition = {
-        id: generateId(),
-        name,
-        processIds: [],
-      };
-      shared.stackButtons = [...(shared.stackButtons ?? []), newStack];
-      await window.ade.projectConfig.save({ shared, local: config.local });
-      await Promise.all([refreshDefinitions(), refreshRuntime()]);
-    },
-    [config, refreshDefinitions, refreshRuntime]
-  );
-
-  const handleRenameStack = useCallback(
-    async (stackId: string, name: string) => {
-      if (!config) return;
-      const shared = { ...config.shared };
-      shared.stackButtons = (shared.stackButtons ?? []).map((s) =>
-        s.id === stackId ? { ...s, name } : s
-      );
-      await window.ade.projectConfig.save({ shared, local: config.local });
-      await Promise.all([refreshDefinitions(), refreshRuntime()]);
-    },
-    [config, refreshDefinitions, refreshRuntime]
-  );
-
-  const handleDeleteStack = useCallback(
-    async (stackId: string) => {
-      if (!config) return;
-      const shared = { ...config.shared };
-      shared.stackButtons = (shared.stackButtons ?? []).filter((s) => s.id !== stackId);
-      await window.ade.projectConfig.save({ shared, local: config.local });
-      if (selectedStackId === stackId) setSelectedStackId(null);
-      await Promise.all([refreshDefinitions(), refreshRuntime()]);
-    },
-    [config, refreshDefinitions, refreshRuntime, selectedStackId]
-  );
-
-  const handleUpdateStackStartOrder = useCallback(
-    async (stackId: string, startOrder: "parallel" | "dependency") => {
-      if (!config) return;
-      const shared = { ...config.shared };
-      shared.stackButtons = (shared.stackButtons ?? []).map((stack) =>
-        stack.id === stackId ? { ...stack, startOrder } : stack,
-      );
-      await window.ade.projectConfig.save({ shared, local: config.local });
-      await Promise.all([refreshDefinitions(), refreshRuntime()]);
-    },
-    [config, refreshDefinitions, refreshRuntime],
-  );
-
-  const handleEditProcess = useCallback(
-    (processId: string) => {
-      const def = definitions.find((d) => d.id === processId);
-      if (!def) return;
-      // Find which stack this process belongs to
-      const currentStack = stacks.find((s) => s.processIds.includes(processId));
-      setEditingProcess({
-        id: processId,
-        values: {
-          name: def.name,
-          command: commandArrayToLine(def.command),
-          stackId: currentStack?.id ?? null,
-          cwd: def.cwd || ".",
-          env: envToText(def.env),
-          autostart: def.autostart,
-          restart: def.restart,
-          gracefulShutdownMs: String(def.gracefulShutdownMs ?? 7000),
-          dependsOn: (def.dependsOn ?? []).join(", "),
-          readinessType: def.readiness.type,
-          readinessPort: def.readiness.type === "port" ? String(def.readiness.port ?? "") : "",
-          readinessPattern: def.readiness.type === "logRegex" ? def.readiness.pattern ?? "" : "",
-        },
-      });
-    },
-    [definitions, stacks]
-  );
-
-  const handleMoveToStack = useCallback((processId: string) => {
-    setMoveToStackProcessId(processId);
-  }, []);
-
-  const handleMoveProcessToStack = useCallback(
-    async (processId: string, targetStackId: string | null) => {
-      if (!config) return;
-      const shared = { ...config.shared };
-
-      // Remove from all stacks, then add to target
-      let stackButtons = (shared.stackButtons ?? []).map((s) => ({
-        ...s,
-        processIds: (s.processIds ?? []).filter((id) => id !== processId),
-      }));
-
-      if (targetStackId) {
-        stackButtons = stackButtons.map((s) =>
-          s.id === targetStackId
-            ? { ...s, processIds: [...(s.processIds ?? []), processId] }
-            : s
-        );
-      }
-
-      shared.stackButtons = stackButtons;
-      await window.ade.projectConfig.save({ shared, local: config.local });
-      setMoveToStackProcessId(null);
-      await Promise.all([refreshDefinitions(), refreshRuntime()]);
-    },
-    [config, refreshDefinitions, refreshRuntime]
-  );
-
-  // Show welcome screen when no project is currently selected or user has closed all projects.
   if (showWelcome) {
     return <WelcomeScreen />;
   }
 
   return (
-    <div
-      style={{
-        display: "flex",
-        flexDirection: "column",
-        height: "100%",
-        background: COLORS.pageBg,
-      }}
-    >
-      {/* ── Header ── */}
+    <div style={{ display: "flex", flexDirection: "column", height: "100%", background: COLORS.pageBg }}>
       <div
         style={{
           display: "flex",
@@ -897,7 +971,6 @@ export function RunPage() {
           flexShrink: 0,
         }}
       >
-        {/* Page title */}
         <h1
           style={{
             fontFamily: SANS_FONT,
@@ -910,28 +983,26 @@ export function RunPage() {
           Run
         </h1>
 
-        {/* Lane selector */}
-        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-          <span style={LABEL_STYLE}>Lane</span>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <span style={LABEL_STYLE}>Default lane</span>
           <select
-            value={effectiveLaneId ?? ""}
-            onChange={(e) => selectRunLane(e.target.value.length ? e.target.value : null)}
+            value={defaultLaneId ?? ""}
+            onChange={(event) => selectDefaultLane(event.target.value || null)}
             style={{
               height: 28,
+              minWidth: 140,
               padding: "0 8px",
-              background: COLORS.recessedBg,
-              border: `1px solid ${COLORS.outlineBorder}`,
-              borderRadius: 0,
+              appearance: "none",
               fontFamily: MONO_FONT,
               fontSize: 11,
               color: COLORS.textPrimary,
+              background: COLORS.recessedBg,
+              border: `1px solid ${COLORS.outlineBorder}`,
               outline: "none",
-              minWidth: 120,
+              cursor: "pointer",
             }}
           >
-            <option value="">
-              No lane selected
-            </option>
+            <option value="">No lane</option>
             {lanes.map((lane) => (
               <option key={lane.id} value={lane.id}>
                 {lane.name}
@@ -940,58 +1011,44 @@ export function RunPage() {
           </select>
         </div>
 
-        {/* Selection summary */}
-        {filteredDefinitions.length > 0 && (
+        {filteredDefinitions.length > 0 ? (
           <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-            <span
-              style={{
-                fontFamily: MONO_FONT,
-                fontSize: 12,
-                fontWeight: 700,
-                color: COLORS.textPrimary,
-              }}
-            >
-              {selectedStackId
-                ? selectedStack?.name ?? "Stack"
-                : "All commands"}
+            <span style={{ fontFamily: MONO_FONT, fontSize: 12, fontWeight: 700, color: COLORS.textPrimary }}>
+              {selectedStack?.name ?? selectedGroup?.name ?? "All commands"}
             </span>
-            <span
-              style={{
-                fontFamily: MONO_FONT,
-                fontSize: 10,
-                color: COLORS.textDim,
-              }}
-            >
+            <span style={{ fontFamily: MONO_FONT, fontSize: 10, color: COLORS.textDim }}>
               ({filteredDefinitions.length})
             </span>
-            {selectedStack ? (
-              <span
-                style={{
-                  fontFamily: MONO_FONT,
-                  fontSize: 9,
-                  color: COLORS.textDim,
-                  border: `1px solid ${COLORS.border}`,
-                  padding: "1px 4px",
-                }}
-              >
-                {selectedStack.startOrder === "dependency" ? "dependency order" : "parallel order"}
-              </span>
-            ) : null}
           </div>
-        )}
+        ) : null}
 
         <div style={{ flex: 1 }} />
 
-        {/* Start All / Stop All (only when processes exist) */}
-        {filteredDefinitions.length > 0 && (
+        {filteredDefinitions.length > 0 ? (
           <>
-            <button type="button" onClick={handleStartAll} style={primaryButton({ height: 28, fontSize: 10 })}>
+            <button
+              type="button"
+              onClick={() => {
+                if (selectedStackId) {
+                  void startStackById(selectedStackId);
+                  return;
+                }
+                void runDefinitions(filteredDefinitions);
+              }}
+              style={primaryButton({ height: 28, fontSize: 10 })}
+            >
               <Play size={12} weight="fill" />
-              {selectedStack ? "Start Stack" : "Start All"}
+              {selectedStack ? "Run stack" : "Run view"}
             </button>
             <button
               type="button"
-              onClick={handleStopAll}
+              onClick={() => {
+                if (selectedStackId) {
+                  void stopStackById(selectedStackId);
+                  return;
+                }
+                void stopDefinitions(filteredDefinitions);
+              }}
               style={{
                 display: "inline-flex",
                 alignItems: "center",
@@ -1007,47 +1064,37 @@ export function RunPage() {
                 color: COLORS.danger,
                 background: `${COLORS.danger}18`,
                 border: `1px solid ${COLORS.danger}30`,
-                borderRadius: 0,
                 cursor: "pointer",
               }}
             >
               <Stop size={12} weight="fill" />
-              {selectedStack ? "Stop Stack" : "Stop All"}
+              {selectedStack ? "Stop stack" : "Stop view"}
             </button>
           </>
-        )}
+        ) : null}
 
         <button
           type="button"
           onClick={() => void handleLaunchShell()}
-          disabled={!effectiveLaneId || shellBusy}
+          disabled={!defaultLaneId || shellBusy}
           style={{
             ...outlineButton(),
-            opacity: effectiveLaneId && !shellBusy ? 1 : 0.45,
-            cursor: effectiveLaneId && !shellBusy ? "pointer" : "default",
+            opacity: defaultLaneId && !shellBusy ? 1 : 0.45,
+            cursor: defaultLaneId && !shellBusy ? "pointer" : "default",
           }}
         >
           <Terminal size={14} weight="bold" />
           {shellBusy ? "Opening shell..." : "New shell"}
         </button>
 
-        <button
-          type="button"
-          onClick={() => setAddDialogOpen(true)}
-          style={outlineButton()}
-        >
+        <button type="button" onClick={() => setAddDialogOpen(true)} style={outlineButton()}>
           <Plus size={14} weight="bold" />
           Add command
         </button>
       </div>
 
-      {/* ── Runtime Bar ── */}
-      <LaneRuntimeBar
-        laneId={effectiveLaneId}
-        onOpenPreviewRouting={() => setNetworkDrawerOpen(true)}
-      />
+      <LaneRuntimeBar laneId={defaultLaneId} onOpenPreviewRouting={() => setNetworkDrawerOpen(true)} />
 
-      {/* ── Stack tabs ── */}
       <RunStackTabs
         stacks={stacks}
         selectedStackId={selectedStackId}
@@ -1055,44 +1102,76 @@ export function RunPage() {
         onCreateStack={handleCreateStack}
         onRenameStack={handleRenameStack}
         onDeleteStack={handleDeleteStack}
-        onStartStack={async (stackId) => {
-          if (!effectiveLaneId) return;
-          setActionError(null);
-          try {
-            await window.ade.processes.startStack({ laneId: effectiveLaneId, stackId });
-            const targetStack = stacks.find((stack) => stack.id === stackId);
-            const firstProcessId = targetStack?.processIds[0] ?? null;
-            if (firstProcessId) focusMonitor({ kind: "process", id: firstProcessId });
-          } catch (err) {
-            setActionError(err instanceof Error ? err.message : String(err));
-          }
+        onStartStack={(stackId) => {
+          void startStackById(stackId);
         }}
-        onStopStack={async (stackId) => {
-          if (!effectiveLaneId) return;
-          setActionError(null);
-          try {
-            await window.ade.processes.stopStack({ laneId: effectiveLaneId, stackId });
-          } catch (err) {
-            setActionError(err instanceof Error ? err.message : String(err));
-          }
+        onStopStack={(stackId) => {
+          void stopStackById(stackId);
         }}
         onRestartStack={(stackId) => {
-          void handleRestartStack(stackId);
+          void restartStackById(stackId);
         }}
         onUpdateStackStartOrder={handleUpdateStackStartOrder}
       />
 
-      {/* ── Main content ── */}
       <div
         style={{
-          flex: 1,
-          minWidth: 0,
           display: "flex",
-          flexDirection: "column",
-          overflow: "hidden",
-          position: "relative",
+          alignItems: "center",
+          gap: 8,
+          padding: "10px 20px",
+          borderBottom: `1px solid ${COLORS.border}`,
+          overflowX: "auto",
+          flexShrink: 0,
         }}
       >
+        <button
+          type="button"
+          onClick={() => setSelectedGroupId(null)}
+          style={{
+            height: 28,
+            padding: "0 10px",
+            background: selectedGroupId === null ? COLORS.accentSubtle : COLORS.recessedBg,
+            border: `1px solid ${selectedGroupId === null ? COLORS.accentBorder : COLORS.outlineBorder}`,
+            color: selectedGroupId === null ? COLORS.textPrimary : COLORS.textSecondary,
+            cursor: "pointer",
+            fontFamily: MONO_FONT,
+            fontSize: 10,
+            fontWeight: 700,
+            textTransform: "uppercase",
+            letterSpacing: "0.08em",
+            whiteSpace: "nowrap",
+          }}
+        >
+          All groups
+        </button>
+        {groups.map((group) => (
+          <button
+            key={group.id}
+            type="button"
+            onClick={() => setSelectedGroupId((current) => (current === group.id ? null : group.id))}
+            style={{
+              height: 28,
+              padding: "0 10px",
+              background: selectedGroupId === group.id ? COLORS.accentSubtle : COLORS.recessedBg,
+              border: `1px solid ${selectedGroupId === group.id ? COLORS.accentBorder : COLORS.outlineBorder}`,
+              color: selectedGroupId === group.id ? COLORS.textPrimary : COLORS.textSecondary,
+              cursor: "pointer",
+              fontFamily: MONO_FONT,
+              fontSize: 10,
+              fontWeight: 700,
+              textTransform: "uppercase",
+              letterSpacing: "0.08em",
+              whiteSpace: "nowrap",
+            }}
+          >
+            {group.name}
+            <span style={{ marginLeft: 6, color: COLORS.textDim }}>{groupCounts[group.id] ?? 0}</span>
+          </button>
+        ))}
+      </div>
+
+      <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", overflow: "hidden", position: "relative" }}>
         {actionError ? (
           <div
             style={{
@@ -1111,86 +1190,47 @@ export function RunPage() {
           </div>
         ) : null}
 
-        <div
-          style={{
-            flex: 1,
-            overflowY: "auto",
-            padding: 20,
-          }}
-        >
+        <div style={{ flex: 1, overflowY: "auto", padding: 20 }}>
           {loading && filteredDefinitions.length === 0 ? (
-            <div
-              style={{
-                fontFamily: MONO_FONT,
-                fontSize: 11,
-                color: COLORS.textDim,
-                textAlign: "center",
-                padding: "40px 0",
-              }}
-            >
+            <div style={{ fontFamily: MONO_FONT, fontSize: 11, color: COLORS.textDim, textAlign: "center", padding: "40px 0" }}>
               Loading...
             </div>
           ) : filteredDefinitions.length === 0 ? (
-            <div
-              style={{
-                display: "flex",
-                flexDirection: "column",
-                alignItems: "center",
-                justifyContent: "center",
-                gap: 12,
-                padding: "60px 20px",
-              }}
-            >
-              <div
-                style={{
-                  fontFamily: MONO_FONT,
-                  fontSize: 12,
-                  color: COLORS.textMuted,
-                  textAlign: "center",
-                }}
-              >
+            <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 12, padding: "60px 20px" }}>
+              <div style={{ fontFamily: MONO_FONT, fontSize: 12, color: COLORS.textMuted, textAlign: "center" }}>
                 No commands in this view
               </div>
-              <div
-                style={{
-                  fontFamily: MONO_FONT,
-                  fontSize: 11,
-                  color: COLORS.textDim,
-                  textAlign: "center",
-                  maxWidth: 340,
-                }}
-              >
-                Add a command, pick a stack tab, then run it here. Output opens in the bottom panel automatically.
+              <div style={{ fontFamily: MONO_FONT, fontSize: 11, color: COLORS.textDim, textAlign: "center", maxWidth: 340 }}>
+                Add a command, group it, or switch stacks. Every Run click opens a fresh terminal session.
               </div>
-              <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
-                <button type="button" onClick={() => setAddDialogOpen(true)} style={primaryButton()}>
-                  <Plus size={14} weight="bold" />
-                  Add command
-                </button>
-              </div>
+              <button type="button" onClick={() => setAddDialogOpen(true)} style={primaryButton()}>
+                <Plus size={14} weight="bold" />
+                Add command
+              </button>
             </div>
           ) : (
-            <div
-              style={{
-                display: "grid",
-                gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))",
-                gap: 12,
-              }}
-            >
-              {filteredDefinitions.map((def) => (
-                <CommandCard
-                  key={def.id}
-                  definition={def}
-                  runtime={runtimeMap[def.id] ?? null}
-                  stacks={stacks}
-                  onRun={handleRun}
-                  onStop={handleStop}
-                  onRestart={handleRestart}
-                  onEdit={handleEditProcess}
-                  onDelete={handleDeleteProcess}
-                  onMoveToStack={handleMoveToStack}
-                />
-              ))}
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: 12 }}>
+              {filteredDefinitions.map((definition) => {
+                const laneId = resolveProcessLaneId(definition.id);
+                const laneRuntimes = runtime.filter(
+                  (runtimeItem) => runtimeItem.processId === definition.id && runtimeItem.laneId === laneId,
+                );
+                return (
+                  <CommandCard
+                    key={definition.id}
+                    definition={definition}
+                    lanes={lanes}
+                    groups={groups}
+                    selectedLaneId={laneId}
+                    runtimes={laneRuntimes}
+                    onSelectLane={selectProcessLane}
+                    onRun={handleRun}
+                    onStop={handleStop}
+                    onEdit={handleEditProcess}
+                    onDelete={handleDeleteProcess}
+                  />
+                );
+              })}
             </div>
           )}
         </div>
@@ -1206,48 +1246,42 @@ export function RunPage() {
               }}
               onClick={() => setNetworkDrawerOpen(false)}
             />
-            <div
-              style={{
-                position: "absolute",
-                top: 0,
-                right: 0,
-                bottom: 0,
-                zIndex: 91,
-              }}
-            >
+            <div style={{ position: "absolute", top: 0, right: 0, bottom: 0, zIndex: 91 }}>
               <RunNetworkPanel onClose={() => setNetworkDrawerOpen(false)} />
             </div>
           </>
         ) : null}
       </div>
 
-      {/* ── Process Monitor (bottom bar) ── */}
       <ProcessMonitor
-        laneId={effectiveLaneId}
         runtimes={runtime}
         processDefinitions={processDefinitions}
         processNames={processNames}
+        lanes={lanes}
         shellSessions={runShellSessions}
         focusTarget={monitorFocusTarget}
         focusSequence={monitorFocusSequence}
-        onKill={handleKill}
+        onKill={handleKillRuntime}
         onCloseShell={(sessionId) => {
           void handleCloseRunShell(sessionId);
         }}
       />
 
-      {/* ── Dialogs ── */}
       <AddCommandDialog
         stacks={stacks}
+        groups={groups}
+        lanes={lanes}
+        defaultLaneId={defaultLaneId}
         open={addDialogOpen}
         onClose={() => setAddDialogOpen(false)}
         onSubmit={saveProcessToConfig}
-        laneRootPath={selectedLane?.worktreePath ?? null}
       />
 
-      {/* ── Edit Process Dialog (reuses AddCommandDialog) ── */}
       <AddCommandDialog
         stacks={stacks}
+        groups={groups}
+        lanes={lanes}
+        defaultLaneId={defaultLaneId}
         open={editingProcess !== null}
         onClose={() => setEditingProcess(null)}
         onSubmit={(cmd) => {
@@ -1259,219 +1293,7 @@ export function RunPage() {
         initialValues={editingProcess?.values ?? null}
         title="Edit command"
         submitLabel="Save changes"
-        laneRootPath={selectedLane?.worktreePath ?? null}
       />
-
-      {/* ── Move to Stack Dialog ── */}
-      {moveToStackProcessId !== null && (
-        <MoveToStackDialog
-          processId={moveToStackProcessId}
-          processName={processNames[moveToStackProcessId] ?? moveToStackProcessId}
-          stacks={stacks}
-          currentStackId={stacks.find((s) => s.processIds.includes(moveToStackProcessId))?.id ?? null}
-          onMove={handleMoveProcessToStack}
-          onClose={() => setMoveToStackProcessId(null)}
-        />
-      )}
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Move-to-Stack Dialog
-// ---------------------------------------------------------------------------
-
-type MoveToStackDialogProps = {
-  processId: string;
-  processName: string;
-  stacks: StackButtonDefinition[];
-  currentStackId: string | null;
-  onMove: (processId: string, stackId: string | null) => void;
-  onClose: () => void;
-};
-
-function MoveToStackDialog({
-  processId,
-  processName,
-  stacks,
-  currentStackId,
-  onMove,
-  onClose,
-}: MoveToStackDialogProps) {
-  const [selected, setSelected] = useState<string>(currentStackId ?? "__none__");
-
-  const canSubmit = selected !== (currentStackId ?? "__none__");
-
-  return (
-    <div
-      style={{
-        position: "fixed",
-        inset: 0,
-        zIndex: 200,
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        background: "rgba(0,0,0,0.6)",
-      }}
-      onClick={(e) => {
-        if (e.target === e.currentTarget) onClose();
-      }}
-    >
-      <div
-        style={{
-          background: COLORS.cardBg,
-          border: `1px solid ${COLORS.border}`,
-          borderRadius: 0,
-          width: 360,
-          maxWidth: "90vw",
-        }}
-      >
-        {/* Header */}
-        <div
-          style={{
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "space-between",
-            padding: "14px 16px",
-            borderBottom: `1px solid ${COLORS.border}`,
-          }}
-        >
-          <span
-            style={{
-              fontFamily: MONO_FONT,
-              fontSize: 12,
-              fontWeight: 700,
-              color: COLORS.textPrimary,
-              textTransform: "uppercase",
-              letterSpacing: "1px",
-            }}
-          >
-            Move to Stack
-          </span>
-          <button
-            type="button"
-            onClick={onClose}
-            style={{
-              background: "transparent",
-              border: "none",
-              color: COLORS.textMuted,
-              cursor: "pointer",
-              padding: 2,
-              display: "flex",
-            }}
-          >
-            <X size={16} weight="bold" />
-          </button>
-        </div>
-
-        {/* Body */}
-        <div style={{ padding: 16, display: "flex", flexDirection: "column", gap: 14 }}>
-          <div
-            style={{
-              fontFamily: MONO_FONT,
-              fontSize: 11,
-              color: COLORS.textMuted,
-            }}
-          >
-            Move <strong style={{ color: COLORS.textPrimary }}>{processName}</strong> to:
-          </div>
-
-          <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-            {/* No stack option */}
-            <label
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 8,
-                padding: "8px 10px",
-                cursor: "pointer",
-                background: selected === "__none__" ? COLORS.hoverBg : "transparent",
-                border: `1px solid ${selected === "__none__" ? COLORS.accent : COLORS.border}`,
-                borderRadius: 0,
-              }}
-            >
-              <input
-                type="radio"
-                name="stack"
-                value="__none__"
-                checked={selected === "__none__"}
-                onChange={(e) => setSelected(e.target.value)}
-                style={{ margin: 0 }}
-              />
-              <span
-                style={{
-                  fontFamily: MONO_FONT,
-                  fontSize: 11,
-                  color: COLORS.textSecondary,
-                  fontStyle: "italic",
-                }}
-              >
-                No stack
-              </span>
-            </label>
-
-            {stacks.map((stack) => (
-              <label
-                key={stack.id}
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 8,
-                  padding: "8px 10px",
-                  cursor: "pointer",
-                  background: selected === stack.id ? COLORS.hoverBg : "transparent",
-                  border: `1px solid ${selected === stack.id ? COLORS.accent : COLORS.border}`,
-                  borderRadius: 0,
-                }}
-              >
-                <input
-                  type="radio"
-                  name="stack"
-                  value={stack.id}
-                  checked={selected === stack.id}
-                  onChange={(e) => setSelected(e.target.value)}
-                  style={{ margin: 0 }}
-                />
-                <span
-                  style={{
-                    fontFamily: MONO_FONT,
-                    fontSize: 11,
-                    color: COLORS.textPrimary,
-                    fontWeight: 600,
-                  }}
-                >
-                  {stack.name}
-                </span>
-                <span
-                  style={{
-                    fontFamily: MONO_FONT,
-                    fontSize: 10,
-                    color: COLORS.textDim,
-                    marginLeft: "auto",
-                  }}
-                >
-                  {stack.processIds.length} cmd{stack.processIds.length !== 1 ? "s" : ""}
-                </span>
-              </label>
-            ))}
-          </div>
-
-          {/* Actions */}
-          <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, paddingTop: 4 }}>
-            <button type="button" onClick={onClose} style={outlineButton()}>
-              Cancel
-            </button>
-            <button
-              type="button"
-              disabled={!canSubmit}
-              onClick={() => onMove(processId, selected === "__none__" ? null : selected)}
-              style={primaryButton({ opacity: canSubmit ? 1 : 0.4, cursor: canSubmit ? "pointer" : "default" })}
-            >
-              Move
-            </button>
-          </div>
-        </div>
-      </div>
     </div>
   );
 }

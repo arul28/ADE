@@ -3057,7 +3057,7 @@ export function AgentChatPane({
                   exit={{ opacity: 0, scale: 0.95, transition: { duration: 0.2, ease: "easeIn" } }}
                   className="absolute inset-0 flex flex-col items-center justify-center px-6"
                 >
-                  <div className="flex w-full max-w-2xl flex-col items-center gap-4 text-center">
+                  <div className="flex w-full max-w-[820px] flex-col items-center gap-4 text-center">
                     <motion.div
                       className="relative"
                       exit={{ opacity: 0, scale: 0.8, transition: { duration: 0.3, ease: "easeOut" } }}
@@ -3119,7 +3119,7 @@ export function AgentChatPane({
                     ) : null}
 
                     {/* Inline composer for empty state */}
-                    <div className="w-full max-w-[640px]">
+                    <div className="w-full max-w-[820px]">
                       {composerElement}
                     </div>
                   </div>

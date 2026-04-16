@@ -29,6 +29,7 @@ import type {
   ConfigLaneOverlayPolicy,
   ConfigLaneTemplate,
   ConfigProcessDefinition,
+  ConfigProcessGroupDefinition,
   ConfigProcessReadiness,
   ConfigStackButtonDefinition,
   ConfigTestSuiteDefinition,
@@ -45,6 +46,7 @@ import type {
   LaneTemplate,
   LaneType,
   ProcessDefinition,
+  ProcessGroupDefinition,
   ProcessReadinessConfig,
   ProjectConfigCandidate,
   ProjectConfigDiff,
@@ -694,6 +696,7 @@ function coerceProcessDef(value: unknown): ConfigProcessDefinition | null {
   const command = asStringArray(value.command);
   const cwd = asString(value.cwd);
   const env = asStringMap(value.env);
+  const groupIds = asStringArray(value.groupIds);
   const autostart = asBool(value.autostart);
   const restart = asString(value.restart);
   const gracefulShutdownMs = asNumber(value.gracefulShutdownMs);
@@ -704,12 +707,22 @@ function coerceProcessDef(value: unknown): ConfigProcessDefinition | null {
   if (command != null) out.command = command;
   if (cwd != null) out.cwd = cwd;
   if (env != null) out.env = env;
+  if (groupIds != null) out.groupIds = groupIds;
   if (autostart != null) out.autostart = autostart;
   if (restart === "never" || restart === "on_crash" || restart === "on-failure" || restart === "always") out.restart = restart;
   if (gracefulShutdownMs != null) out.gracefulShutdownMs = gracefulShutdownMs;
   if (dependsOn != null) out.dependsOn = dependsOn;
   if (readiness != null) out.readiness = readiness;
 
+  return out;
+}
+
+function coerceProcessGroup(value: unknown): ConfigProcessGroupDefinition | null {
+  if (!isRecord(value)) return null;
+  const id = asString(value.id)?.trim() ?? "";
+  const out: ConfigProcessGroupDefinition = { id };
+  const name = asString(value.name);
+  if (name != null) out.name = name;
   return out;
 }
 
@@ -1622,12 +1635,23 @@ export function mergeAiConfig(sharedAi?: AiConfig, localAi?: Partial<AiConfig>):
 
 function coerceConfigFile(value: unknown): ProjectConfigFile {
   if (!isRecord(value)) {
-    return { version: VERSION, processes: [], stackButtons: [], testSuites: [], laneOverlayPolicies: [], automations: [] };
+    return {
+      version: VERSION,
+      processes: [],
+      processGroups: [],
+      stackButtons: [],
+      testSuites: [],
+      laneOverlayPolicies: [],
+      automations: [],
+    };
   }
 
   const version = asNumber(value.version) ?? VERSION;
   const processes = Array.isArray(value.processes)
     ? value.processes.map(coerceProcessDef).filter((x): x is ConfigProcessDefinition => x != null)
+    : [];
+  const processGroups = Array.isArray(value.processGroups)
+    ? value.processGroups.map(coerceProcessGroup).filter((x): x is ConfigProcessGroupDefinition => x != null)
     : [];
   const stackButtons = Array.isArray(value.stackButtons)
     ? value.stackButtons.map(coerceStackButton).filter((x): x is ConfigStackButtonDefinition => x != null)
@@ -1674,6 +1698,7 @@ function coerceConfigFile(value: unknown): ProjectConfigFile {
   return {
     version,
     processes,
+    processGroups,
     stackButtons,
     testSuites,
     laneOverlayPolicies,
@@ -1780,9 +1805,16 @@ function resolveEffectiveConfig(shared: ProjectConfigFile, local: ProjectConfigF
     ...base,
     ...over,
     ...(base.env || over.env ? { env: { ...(base.env ?? {}), ...(over.env ?? {}) } } : {}),
+    ...(over.groupIds != null ? { groupIds: over.groupIds } : base.groupIds != null ? { groupIds: base.groupIds } : {}),
     ...(over.readiness != null ? { readiness: over.readiness } : base.readiness != null ? { readiness: base.readiness } : {}),
     ...(over.dependsOn != null ? { dependsOn: over.dependsOn } : base.dependsOn != null ? { dependsOn: base.dependsOn } : {})
   }));
+
+  const mergedProcessGroups = mergeById(
+    shared.processGroups ?? [],
+    local.processGroups ?? [],
+    (base, over) => ({ ...base, ...over }),
+  );
 
   const mergedStackButtons = mergeById(shared.stackButtons ?? [], local.stackButtons ?? [], (base, over) => ({
     ...base,
@@ -1854,11 +1886,17 @@ function resolveEffectiveConfig(shared: ProjectConfigFile, local: ProjectConfigF
     command: (entry.command ?? []).map((c) => c.trim()).filter(Boolean),
     cwd: entry.cwd?.trim() ?? "",
     env: entry.env ?? {},
+    groupIds: (entry.groupIds ?? []).map((id) => id.trim()).filter(Boolean),
     autostart: entry.autostart ?? false,
     restart: entry.restart ?? "never",
     gracefulShutdownMs: entry.gracefulShutdownMs ?? DEFAULT_GRACEFUL_MS,
     dependsOn: (entry.dependsOn ?? []).map((d) => d.trim()).filter(Boolean),
     readiness: resolveReadiness(entry.readiness)
+  }));
+
+  const processGroups: ProcessGroupDefinition[] = mergedProcessGroups.map((entry) => ({
+    id: entry.id.trim(),
+    name: entry.name?.trim() ?? entry.id.trim(),
   }));
 
   const stackButtons: StackButtonDefinition[] = mergedStackButtons.map((entry) => ({
@@ -2021,6 +2059,7 @@ function resolveEffectiveConfig(shared: ProjectConfigFile, local: ProjectConfigF
     version: VERSION,
     processes,
     stackButtons,
+    processGroups,
     testSuites,
     laneOverlayPolicies,
     automations,
@@ -2176,6 +2215,8 @@ function validateEffectiveConfig(
 
   validateDuplicateIds(shared.processes ?? [], "processes", issues, "shared");
   validateDuplicateIds(local.processes ?? [], "processes", issues, "local");
+  validateDuplicateIds(shared.processGroups ?? [], "processGroups", issues, "shared");
+  validateDuplicateIds(local.processGroups ?? [], "processGroups", issues, "local");
   validateDuplicateIds(shared.stackButtons ?? [], "stackButtons", issues, "shared");
   validateDuplicateIds(local.stackButtons ?? [], "stackButtons", issues, "local");
   validateDuplicateIds(shared.testSuites ?? [], "testSuites", issues, "shared");
@@ -2209,6 +2250,22 @@ function validateEffectiveConfig(
   }
 
   const processIds = new Set<string>();
+  const processGroupIds = new Set<string>();
+  for (const [idx, group] of effective.processGroups.entries()) {
+    const p = `effective.processGroups[${idx}]`;
+    if (!group.id) {
+      issues.push({ path: `${p}.id`, message: "Process group id is required" });
+    } else if (processGroupIds.has(group.id)) {
+      issues.push({ path: `${p}.id`, message: `Duplicate process group id '${group.id}'` });
+    } else {
+      processGroupIds.add(group.id);
+    }
+
+    if (!group.name) {
+      issues.push({ path: `${p}.name`, message: "Process group name is required" });
+    }
+  }
+
   for (const [idx, proc] of effective.processes.entries()) {
     const p = `effective.processes[${idx}]`;
 
@@ -2251,6 +2308,12 @@ function validateEffectiveConfig(
         } catch {
           issues.push({ path: `${p}.readiness.pattern`, message: "Invalid readiness regex pattern" });
         }
+      }
+    }
+
+    for (const groupId of proc.groupIds) {
+      if (!processGroupIds.has(groupId)) {
+        issues.push({ path: `${p}.groupIds`, message: `Unknown process group id '${groupId}'` });
       }
     }
   }

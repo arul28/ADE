@@ -13,26 +13,30 @@ Renderer:
 
 - `apps/desktop/src/renderer/components/run/RunPage.tsx` — top-level
   page. Welcome screen + per-lane runtime dashboard in one component.
-  ~1,300 lines.
 - `apps/desktop/src/renderer/components/run/LaneRuntimeBar.tsx` —
   the bar at the top with "Running in: [lane]" selector, Start All /
   Stop All, stack buttons with aggregate status.
 - `apps/desktop/src/renderer/components/run/RunStackTabs.tsx` — tab
   strip for switching between stacks and the "all processes" view.
 - `apps/desktop/src/renderer/components/run/CommandCard.tsx` — the
-  per-process card (name, status dot, readiness, pid, ports, uptime,
-  action buttons).
+  per-process card. Accepts the full `ProcessRuntime[]` for its
+  `(laneId, processId)` (so concurrent/historical runs all show),
+  plus the lane list, group list, selected lane, and an
+  `onSelectLane` callback for the per-card lane picker.
 - `apps/desktop/src/renderer/components/run/ProcessMonitor.tsx` —
   per-process log viewer with search, auto-scroll, and focus target
-  management. Handles both managed processes and run-shell sessions.
+  management. Tracks per-`runId` focus (not per `processId`) so a
+  card with multiple runs can drill into each one independently.
+  Handles both managed processes and run-shell sessions.
 - `apps/desktop/src/renderer/components/run/RunNetworkPanel.tsx` —
   drawer showing port allocations, proxy status, preview URLs.
 - `apps/desktop/src/renderer/components/run/AddCommandDialog.tsx` —
-  add/edit modal for processes and stacks.
+  add/edit modal for processes, stacks, and process groups. The
+  advanced panel exposes existing group chips plus a "new groups,
+  comma separated" input that materializes new `ProcessGroupDefinition`
+  entries on save.
 - `apps/desktop/src/renderer/components/run/QuickRunMenu.tsx` —
   compact quick-launch menu from the command palette.
-- `apps/desktop/src/renderer/components/run/RunSidebar.tsx` — optional
-  side rail for process groupings.
 - `apps/desktop/src/renderer/components/run/processUtils.ts` —
   helpers for status aggregation, restart policy labels, etc.
 
@@ -155,29 +159,45 @@ When a project is open and not in welcome state:
    processes"; subsequent tabs correspond to
    `config.effective.stackButtons`. Each tab shows an aggregate
    status indicator and a process count.
-3. **Processes grid / list** — renders a `CommandCard` per
-   `ProcessDefinition` filtered by the active stack tab. Each card
-   shows:
+3. **Group filter chip row** — a second horizontal row directly under
+   the stack tabs, populated from `config.effective.processGroups`.
+   The first chip is "All groups"; each subsequent chip corresponds
+   to a `ProcessGroupDefinition` and displays the count of processes
+   that list its ID in `groupIds`. Selecting a chip narrows the grid
+   to processes with that group. Groups and stacks compose: the
+   visible cards are the intersection of the active stack tab and the
+   active group chip.
+4. **Commands grid** — renders one `CommandCard` per `ProcessDefinition`
+   matching the active stack + group filter. Each card owns:
    - name + description from config
-   - status dot (gray/stopped, yellow/starting or degraded,
-     green/running, red/crashed)
-   - readiness state (`unknown`, `ready`, `not_ready`)
-   - pid and uptime when running
-   - listening ports (when defined via port readiness)
-   - action buttons (Start, Stop, Restart, Kill)
-   - overflow menu (Edit, Move to stack, Delete)
-4. **ProcessMonitor** — log viewer panel pinned at the bottom or on
-   the side. Shows live stdout/stderr from the focused process and
-   supports in-log search, filter, and auto-scroll. Also handles
-   user-launched "run shell" sessions (one-off commands via the Run
-   tab).
-5. **RunNetworkPanel** (optional drawer) — shows port leases, proxy
+   - a lane picker (bound to `commandLaneMap` persisted per project);
+     switching lanes here rebinds the card's runtime view without
+     changing the global lane selection
+   - aggregate status pulled from the newest `ProcessRuntime` for
+     that `(laneId, processId)` — status dot (gray/stopped,
+     yellow/starting or degraded, green/running, red/crashed),
+     pid, uptime, listening ports, active-run count when multiple
+     runs are live
+   - action buttons (Run / Stop) — Run always starts a fresh run with
+     its own `runId`; Stop targets the most recent active run (or
+     all active runs when the user confirms, via the overflow menu)
+   - overflow menu (Edit, Delete)
+5. **ProcessMonitor** — log viewer panel. Its focus target is a
+   `runId` or a run-shell session ID, not just a `processId`, so the
+   user can drill into a specific historical invocation. Shows live
+   stdout/stderr from the focused run, supports in-log search, auto-
+   scroll, and also handles user-launched run-shell sessions
+   (one-off commands via the Run tab).
+6. **RunNetworkPanel** (optional drawer) — shows port leases, proxy
    routes, and preview URLs for the current lane. Pulls from
    `window.ade.ports.*` and `window.ade.proxy.*`.
-6. **AddCommandDialog** — full modal for adding or editing a process.
+7. **AddCommandDialog** — full modal for adding or editing a process.
    Covers command, args, cwd, env, restart policy, readiness config
    (none / port / logRegex), dependency list, graceful shutdown
-   timeout. Saves back to config via `projectConfig.save`.
+   timeout, stack assignment, and process-group membership (existing
+   groups as chips plus a free-form "new groups, comma separated"
+   field that creates `ProcessGroupDefinition` entries on save).
+   Saves back to config via `projectConfig.save`.
 
 ### Quick run menu
 
@@ -196,12 +216,18 @@ Scoped to the current run lane.
 The dashboard is driven by:
 
 - `ProjectConfigSnapshot.effective.processes: ProcessDefinition[]`
+- `ProjectConfigSnapshot.effective.processGroups: ProcessGroupDefinition[]`
 - `ProjectConfigSnapshot.effective.stackButtons: StackButtonDefinition[]`
 - `ProjectConfigSnapshot.effective.testSuites: TestSuiteDefinition[]`
-- `ProcessRuntime[]` for the selected lane (from
-  `window.ade.processes.listRuntime(laneId)`)
-- live `ProcessEvent` stream (`ade.processes.event`) filtered to
-  runtime-only events with matching lane
+- `ProcessRuntime[]` aggregated across every lane that appears in
+  `commandLaneMap` (because each command card can point at a
+  different lane). `listRuntime(laneId)` includes every in-memory
+  run for that lane — active ones and recent history — so the card
+  sort-picks the newest run for its status.
+- live `ProcessEvent` stream (`ade.processes.event`). Runtime events
+  now carry `runId`; log events carry `runId`, `laneId`, and
+  `processId`, so filters match the specific invocation rather than
+  coalescing history.
 
 Config comes from `projectConfigService`, which merges
 `.ade/ade.yaml` (shared, committed) with `.ade/local.yaml` (local,
@@ -211,18 +237,26 @@ for the schema.
 
 ## Runtime lifecycle (high level)
 
-1. Page mounts. `refreshDefinitions` calls
-   `processes.listDefinitions` once.
-2. The runtime refresh is deferred ~140 ms behind first paint, then
-   calls `processes.listRuntime(laneId)` to populate initial state.
-3. The page subscribes to `processes.onEvent`, filtering runtime
-   events to the current effective lane.
-4. Start/stop/restart calls go through `window.ade.processes.*` and
-   update the runtime map optimistically; the next runtime event
-   confirms or corrects.
+1. Page mounts. `refreshDefinitions` loads config + definitions in
+   parallel.
+2. The runtime refresh fans out across every distinct lane ID in
+   `commandLaneMap` (plus any lanes hosting active run-shell
+   sessions) with `processes.listRuntime(laneId)` calls in parallel,
+   concatenating the results into a single `runtime: ProcessRuntime[]`.
+3. The page subscribes to `processes.onEvent` without filtering out
+   `runId`s — the ProcessMonitor and CommandCard narrow by
+   `(laneId, processId, runId)` as needed.
+4. Start/stop/restart calls go through `window.ade.processes.*`; the
+   next `runtime` event confirms or corrects. Stop/kill resolve to
+   `null` when no active run exists for the card, which is treated
+   as a no-op.
 5. When the user switches lanes, the page disposes any user-launched
-   run-shell sessions (`disposeRunShellSessions`) and calls
-   `refreshRuntime` again.
+   run-shell sessions (`disposeRunShellSessions`) and re-runs
+   `refreshRuntime`.
+6. Per-command lane selection is persisted per project under
+   `localStorage` key `ade.runPageLaneState.v1` (via the
+   `PersistedRunPageLaneState` helpers) so the grid restores its
+   per-card lane assignments on reopen.
 
 ## Loading model notes
 
@@ -250,16 +284,23 @@ lane switch:
   (`runShellSessions` in renderer state) and disposed on lane switch
   / page unmount. They share the `terminal_sessions` table but are
   tagged with `tool_type = "run-shell"`.
-- Process events for other lanes are intentionally ignored by the
-  filter in `onEvent`; do not rely on Run showing state for a
-  non-selected lane.
+- Each command card can point at a different lane. `refreshRuntime`
+  therefore fans out across every lane in `commandLaneMap`;
+  subscribing to `processes.onEvent` without a lane filter is the
+  correct default, because filtering out other lanes would hide the
+  cards that target them.
 - The stack aggregate status is computed in the renderer
   (`processUtils.ts`). It is not authoritative — the ultimate truth
   is the per-process `ProcessRuntime.status`.
-- The ProcessMonitor log viewer reads `processes.getLogTail(...)`
-  for initial hydration and then streams from the event bus. If you
-  truncate a log file out-of-band, the viewer will briefly double-up
-  lines until the next tail fetch.
+- The ProcessMonitor log viewer is focused by `runId` (for managed
+  processes) or session ID (for run-shell sessions). Passing only
+  `processId` picks the newest run; if you need a specific historical
+  run, pass the `runId` explicitly.
+- `processes.getLogTail(...)` also accepts `runId` — without it the
+  main process picks the most recent run for the `(laneId, processId)`.
+- Groups are a UI filter, not a start-order contract. Never assume
+  a process's group membership implies a `dependsOn` or a stack
+  relationship.
 
 ## Cross-links
 
