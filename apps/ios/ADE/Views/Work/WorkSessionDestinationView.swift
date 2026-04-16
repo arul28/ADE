@@ -119,7 +119,8 @@ struct WorkSessionDestinationView: View {
           onOpenPr: openPullRequestReference,
           onLoadArtifact: loadArtifactContent,
           onCancelSteer: cancelSteer,
-          onEditSteer: editSteer
+          onEditSteer: editSteer,
+          onSelectModel: selectModel
         )
       } else {
         WorkTerminalSessionView(

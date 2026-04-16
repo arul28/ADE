@@ -159,30 +159,39 @@ struct WorkComposerChipStrip: View {
   let chatSummary: AgentChatSessionSummary?
   let queuedSteerCount: Int
   let pendingInputCount: Int
+  let onOpenModelPicker: (() -> Void)?
   let onOpenSettings: (() -> Void)?
 
   var body: some View {
     ScrollView(.horizontal, showsIndicators: false) {
       HStack(spacing: 8) {
         if let chatSummary {
-          chip(
-            icon: providerIcon(chatSummary.provider),
-            label: chatSummary.model,
-            tint: providerTint(chatSummary.provider)
-          )
+          modelChip(summary: chatSummary)
           if let runtime = runtimeLabel(for: chatSummary) {
-            chip(icon: "shield.lefthalf.filled", label: runtime, tint: ADEColor.accent)
+            labeledChip(
+              icon: "shield.lefthalf.filled",
+              label: "Access",
+              value: runtime,
+              tint: ADEColor.accent,
+              action: onOpenSettings
+            )
           }
           if let profile = chatSummary.sessionProfile, !profile.isEmpty {
-            chip(icon: "slider.horizontal.3", label: profile, tint: ADEColor.textSecondary)
+            labeledChip(
+              icon: "slider.horizontal.3",
+              label: "Profile",
+              value: profile,
+              tint: ADEColor.textSecondary,
+              action: onOpenSettings
+            )
           }
         }
 
         if queuedSteerCount > 0 {
-          chip(icon: "paperplane.circle", label: "\(queuedSteerCount) queued", tint: ADEColor.accent)
+          statusChip(icon: "paperplane.circle", label: "\(queuedSteerCount) queued", tint: ADEColor.accent)
         }
         if pendingInputCount > 0 {
-          chip(icon: "hand.raised.circle", label: "\(pendingInputCount) waiting", tint: ADEColor.warning)
+          statusChip(icon: "hand.raised.circle", label: "\(pendingInputCount) waiting", tint: ADEColor.warning)
         }
       }
       .padding(.horizontal, 2)
@@ -190,29 +199,95 @@ struct WorkComposerChipStrip: View {
     .frame(maxWidth: .infinity, alignment: .leading)
   }
 
-  func chip(icon: String, label: String, tint: Color) -> some View {
+  @ViewBuilder
+  private func modelChip(summary: AgentChatSessionSummary) -> some View {
     Button {
-      onOpenSettings?()
+      onOpenModelPicker?()
+    } label: {
+      HStack(spacing: 8) {
+        WorkProviderLogo(
+          provider: summary.provider,
+          fallbackSymbol: providerIcon(summary.provider),
+          tint: providerTint(summary.provider),
+          size: 22
+        )
+        VStack(alignment: .leading, spacing: 1) {
+          Text("Model")
+            .font(.caption2.monospaced().weight(.bold))
+            .tracking(0.4)
+            .foregroundStyle(ADEColor.textMuted)
+          Text(summary.model)
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(ADEColor.textPrimary)
+            .lineLimit(1)
+        }
+        Image(systemName: "chevron.up.chevron.down")
+          .font(.caption2.weight(.semibold))
+          .foregroundStyle(ADEColor.textMuted)
+      }
+      .padding(.horizontal, 10)
+      .padding(.vertical, 6)
+      .background(ADEColor.surfaceBackground.opacity(0.7), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+      .overlay(
+        RoundedRectangle(cornerRadius: 12, style: .continuous)
+          .stroke(providerTint(summary.provider).opacity(0.3), lineWidth: 0.6)
+      )
+    }
+    .buttonStyle(.plain)
+    .disabled(onOpenModelPicker == nil)
+    .accessibilityLabel("Model: \(summary.model). Tap to switch.")
+  }
+
+  @ViewBuilder
+  private func labeledChip(icon: String, label: String, value: String, tint: Color, action: (() -> Void)?) -> some View {
+    Button {
+      action?()
     } label: {
       HStack(spacing: 6) {
         Image(systemName: icon)
           .font(.caption2.weight(.semibold))
-        Text(label)
-          .font(.caption2.weight(.semibold))
-          .lineLimit(1)
+          .foregroundStyle(tint)
+        VStack(alignment: .leading, spacing: 1) {
+          Text(label.uppercased())
+            .font(.caption2.monospaced().weight(.bold))
+            .tracking(0.4)
+            .foregroundStyle(ADEColor.textMuted)
+          Text(value)
+            .font(.caption.weight(.medium))
+            .foregroundStyle(ADEColor.textPrimary)
+            .lineLimit(1)
+        }
       }
-      .foregroundStyle(tint)
       .padding(.horizontal, 10)
-      .padding(.vertical, 5)
-      .background(tint.opacity(0.1), in: Capsule(style: .continuous))
+      .padding(.vertical, 6)
+      .background(ADEColor.surfaceBackground.opacity(0.55), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
       .overlay(
-        Capsule(style: .continuous)
-          .stroke(tint.opacity(0.18), lineWidth: 0.6)
+        RoundedRectangle(cornerRadius: 12, style: .continuous)
+          .stroke(ADEColor.border.opacity(0.18), lineWidth: 0.5)
       )
     }
     .buttonStyle(.plain)
-    .disabled(onOpenSettings == nil)
-    .accessibilityLabel("\(label). Open chat settings")
+    .disabled(action == nil)
+    .accessibilityLabel("\(label): \(value). Tap to change.")
+  }
+
+  @ViewBuilder
+  private func statusChip(icon: String, label: String, tint: Color) -> some View {
+    HStack(spacing: 5) {
+      Image(systemName: icon)
+        .font(.caption2.weight(.semibold))
+      Text(label)
+        .font(.caption.weight(.semibold))
+        .lineLimit(1)
+    }
+    .foregroundStyle(tint)
+    .padding(.horizontal, 10)
+    .padding(.vertical, 6)
+    .background(tint.opacity(0.1), in: Capsule(style: .continuous))
+    .overlay(
+      Capsule(style: .continuous)
+        .stroke(tint.opacity(0.22), lineWidth: 0.5)
+    )
   }
 
   func runtimeLabel(for summary: AgentChatSessionSummary) -> String? {

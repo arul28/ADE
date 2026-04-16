@@ -111,6 +111,8 @@
 		C10000000000000000000003 /* ADEStreamingShimmer.swift in Sources */ = {isa = PBXBuildFile; fileRef = C10000000000000000000013 /* ADEStreamingShimmer.swift */; };
 		E1000000000000000000003D /* WorkChatSessionView+MessageLiveness.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1000000000000000000003D /* WorkChatSessionView+MessageLiveness.swift */; };
 		E1000000000000000000003E /* WorkContextCompactDivider.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1000000000000000000003E /* WorkContextCompactDivider.swift */; };
+		E1000000000000000000003F /* WorkModelCatalog.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1000000000000000000003F /* WorkModelCatalog.swift */; };
+		E10000000000000000000040 /* WorkModelPickerSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000040 /* WorkModelPickerSheet.swift */; };
 		E689F42D41A500BB8CA233E4 /* LanesTabView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9270CF8A67F3FA79089F39C1 /* LanesTabView.swift */; };
 		F2A1C9D8456E7B3C1D2E4F90 /* FilesCodeSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = D6F9B21C0E4A6D8F1B3C5A77 /* FilesCodeSupport.swift */; };
 		FBEEF09EFB4911FEAC6A7E87 /* RemoteModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 483C5F1818BAE74B19B84617 /* RemoteModels.swift */; };
@@ -157,6 +159,8 @@
 		D1000000000000000000003B /* WorkActivityIndicator.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkActivityIndicator.swift; path = ADE/Views/Work/WorkActivityIndicator.swift; sourceTree = "<group>"; };
 		D1000000000000000000003D /* WorkChatSessionView+MessageLiveness.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = "WorkChatSessionView+MessageLiveness.swift"; path = "ADE/Views/Work/WorkChatSessionView+MessageLiveness.swift"; sourceTree = "<group>"; };
 		D1000000000000000000003E /* WorkContextCompactDivider.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkContextCompactDivider.swift; path = ADE/Views/Work/WorkContextCompactDivider.swift; sourceTree = "<group>"; };
+		D1000000000000000000003F /* WorkModelCatalog.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkModelCatalog.swift; path = ADE/Views/Work/WorkModelCatalog.swift; sourceTree = "<group>"; };
+		D10000000000000000000040 /* WorkModelPickerSheet.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkModelPickerSheet.swift; path = ADE/Views/Work/WorkModelPickerSheet.swift; sourceTree = "<group>"; };
 		D1000000000000000000003C /* WorkSessionGrouping.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkSessionGrouping.swift; path = ADE/Views/Work/WorkSessionGrouping.swift; sourceTree = "<group>"; };
 		D20000000000000000000042 /* FilesModels.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = FilesModels.swift; path = ADE/Views/Files/FilesModels.swift; sourceTree = "<group>"; };
 		D20000000000000000000043 /* FilesHelpers.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = FilesHelpers.swift; path = ADE/Views/Files/FilesHelpers.swift; sourceTree = "<group>"; };
@@ -377,6 +381,8 @@
 				D1000000000000000000003B /* WorkActivityIndicator.swift */,
 				D1000000000000000000003D /* WorkChatSessionView+MessageLiveness.swift */,
 				D1000000000000000000003E /* WorkContextCompactDivider.swift */,
+				D1000000000000000000003F /* WorkModelCatalog.swift */,
+				D10000000000000000000040 /* WorkModelPickerSheet.swift */,
 				D1000000000000000000003C /* WorkSessionGrouping.swift */,
 				D1000000000000000000002C /* WorkChatHeaderAndMessageViews.swift */,
 				D1000000000000000000002D /* WorkChatRichCardViews.swift */,
@@ -687,6 +693,8 @@
 				E1000000000000000000003B /* WorkActivityIndicator.swift in Sources */,
 				E1000000000000000000003D /* WorkChatSessionView+MessageLiveness.swift in Sources */,
 				E1000000000000000000003E /* WorkContextCompactDivider.swift in Sources */,
+				E1000000000000000000003F /* WorkModelCatalog.swift in Sources */,
+				E10000000000000000000040 /* WorkModelPickerSheet.swift in Sources */,
 				C10000000000000000000003 /* ADEStreamingShimmer.swift in Sources */,
 				E1000000000000000000003C /* WorkSessionGrouping.swift in Sources */,
 				E1000000000000000000002C /* WorkChatHeaderAndMessageViews.swift in Sources */,

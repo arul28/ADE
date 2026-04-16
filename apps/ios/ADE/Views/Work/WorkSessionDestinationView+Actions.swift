@@ -101,6 +101,19 @@ extension WorkSessionDestinationView {
   }
 
   @MainActor
+  func selectModel(_ modelId: String) async {
+    do {
+      _ = try await syncService.updateChatSession(sessionId: sessionId, modelId: modelId)
+      await refreshChatStateAfterAction(forceRemote: true)
+      errorMessage = nil
+      ADEHaptics.light()
+    } catch {
+      ADEHaptics.error()
+      errorMessage = error.localizedDescription
+    }
+  }
+
+  @MainActor
   func respondToQuestion(itemId: String, answer: String?, responseText: String?) async {
     do {
       let answerValue = answer?.trimmingCharacters(in: .whitespacesAndNewlines)

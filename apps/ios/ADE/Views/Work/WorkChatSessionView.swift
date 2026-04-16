@@ -39,8 +39,11 @@ struct WorkChatSessionView: View {
   let onLoadArtifact: @MainActor (ComputerUseArtifactSummary) async -> Void
   let onCancelSteer: @MainActor (String) async -> Void
   let onEditSteer: @MainActor (String, String) async -> Void
+  let onSelectModel: @MainActor (String) async -> Void
 
   @State var steerEditDrafts: [String: String] = [:]
+  @State var modelPickerPresented = false
+  @State var modelUpdateInFlight = false
 
   var sessionStatus: String {
     normalizedWorkChatSessionStatus(session: session, summary: chatSummary)
@@ -323,6 +326,7 @@ struct WorkChatSessionView: View {
           chatSummary: chatSummary,
           queuedSteerCount: pendingSteers.count,
           pendingInputCount: pendingInputs.count,
+          onOpenModelPicker: chatSummary == nil ? nil : { modelPickerPresented = true },
           onOpenSettings: onOpenSettings
         )
 
@@ -474,6 +478,22 @@ struct WorkChatSessionView: View {
         withAnimation(ADEMotion.quick(reduceMotion: reduceMotion)) {
           unreadBelowCount = 0
         }
+      }
+      .sheet(isPresented: $modelPickerPresented) {
+        WorkModelPickerSheet(
+          currentModelId: chatSummary?.model ?? "",
+          currentProvider: chatSummary?.provider ?? "",
+          isBusy: modelUpdateInFlight,
+          onSelect: { option in
+            Task {
+              modelUpdateInFlight = true
+              await onSelectModel(option.id)
+              modelUpdateInFlight = false
+              modelPickerPresented = false
+            }
+          },
+          onOpenSettings: onOpenSettings
+        )
       }
     }
   }
