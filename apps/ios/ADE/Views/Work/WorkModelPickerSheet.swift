@@ -1,11 +1,11 @@
 import SwiftUI
 
-/// Mobile model picker. Mirrors the desktop `ProviderModelSelector` shape on a
-/// phone: "Select Model" title, a live search field, a provider tab strip
-/// (CLAUDE / CODEX / CURSOR / OPENCODE) with count badges, and one compact
-/// row per model with brand logo, name, tagline, tier chip, and a checkmark
-/// on the active model. Users switch models in one tap — no detour through
-/// any "session settings" screen.
+/// Mobile model picker — desktop-shaped 2-level organization. Mirrors
+/// `apps/desktop/src/renderer/components/shared/ModelCatalogPanel.tsx`:
+/// "Select Model" header with search, CLAUDE / CODEX / CURSOR / OPENCODE
+/// group tab strip, provider badge row for the active group (Anthropic for
+/// Claude, or Anthropic/OpenAI/Google/… for OpenCode), then the models in
+/// the selected provider.
 struct WorkModelPickerSheet: View {
   @Environment(\.dismiss) private var dismiss
 
@@ -14,28 +14,62 @@ struct WorkModelPickerSheet: View {
   let isBusy: Bool
   let onSelect: (WorkModelOption) -> Void
 
+  @State private var activeGroup: String = ""
   @State private var activeProvider: String = ""
   @State private var searchText: String = ""
 
-  private var catalog: [WorkModelProviderGroup] {
-    workModelCatalog(currentModelId: currentModelId, currentProvider: currentProvider)
+  private var catalog: [WorkModelCatalogGroup] {
+    workModelCatalogGroups(currentModelId: currentModelId, currentProvider: currentProvider)
   }
 
-  private var visibleGroup: WorkModelProviderGroup? {
-    guard let index = catalog.firstIndex(where: { $0.provider == activeProvider }) else {
-      return catalog.first
-    }
-    return catalog[index]
+  private var isSearching: Bool {
+    !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+  }
+
+  private var activeGroupBlock: WorkModelCatalogGroup? {
+    catalog.first(where: { $0.key == activeGroup }) ?? catalog.first
+  }
+
+  private var activeProviderBlock: WorkModelProvider? {
+    guard let block = activeGroupBlock else { return nil }
+    return block.providers.first(where: { $0.key == activeProvider }) ?? block.providers.first
   }
 
   private var filteredModels: [WorkModelOption] {
-    guard let group = visibleGroup else { return [] }
+    guard let provider = activeProviderBlock else { return [] }
     let needle = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-    if needle.isEmpty { return group.models }
-    return group.models.filter {
+    guard !needle.isEmpty else { return provider.models }
+    return provider.models.filter {
       $0.displayName.lowercased().contains(needle) ||
       $0.id.lowercased().contains(needle) ||
       $0.tagline.lowercased().contains(needle)
+    }
+  }
+
+  /// Flat search result — when a query is active we ignore group/provider
+  /// tabs and show every matching model, grouped by group header like the
+  /// desktop search mode.
+  private var searchTree: [WorkModelCatalogGroup] {
+    let needle = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    guard !needle.isEmpty else { return [] }
+    return catalog.compactMap { group in
+      let filteredProviders = group.providers.compactMap { provider -> WorkModelProvider? in
+        let matches = provider.models.filter {
+          $0.displayName.lowercased().contains(needle) ||
+          $0.id.lowercased().contains(needle) ||
+          $0.tagline.lowercased().contains(needle)
+        }
+        return matches.isEmpty ? nil : WorkModelProvider(
+          key: provider.key,
+          displayName: provider.displayName,
+          models: matches
+        )
+      }
+      return filteredProviders.isEmpty ? nil : WorkModelCatalogGroup(
+        key: group.key,
+        displayName: group.displayName,
+        providers: filteredProviders
+      )
     }
   }
 
@@ -43,10 +77,14 @@ struct WorkModelPickerSheet: View {
     NavigationStack {
       VStack(spacing: 0) {
         searchBar
-        providerTabStrip
-        Divider()
-          .overlay(ADEColor.border.opacity(0.18))
-        modelList
+        if isSearching {
+          searchList
+        } else {
+          groupTabStrip
+          providerBadgeRow
+          Divider().overlay(ADEColor.border.opacity(0.18))
+          modelList
+        }
       }
       .adeScreenBackground()
       .navigationTitle("Select Model")
@@ -66,11 +104,19 @@ struct WorkModelPickerSheet: View {
     .presentationDetents([.medium, .large])
     .presentationDragIndicator(.visible)
     .onAppear {
-      if activeProvider.isEmpty {
+      if activeGroup.isEmpty {
         let lower = currentProvider.lowercased()
-        activeProvider = catalog.first(where: { $0.provider == lower })?.provider
-          ?? catalog.first?.provider
+        activeGroup = catalog.first(where: { $0.key == lower })?.key
+          ?? catalog.first?.key
           ?? ""
+      }
+      if activeProvider.isEmpty, let block = activeGroupBlock {
+        activeProvider = block.providers.first?.key ?? ""
+      }
+    }
+    .onChange(of: activeGroup) { _, newKey in
+      if let first = catalog.first(where: { $0.key == newKey })?.providers.first?.key {
+        activeProvider = first
       }
     }
   }
@@ -112,12 +158,76 @@ struct WorkModelPickerSheet: View {
   }
 
   @ViewBuilder
-  private var providerTabStrip: some View {
-    ScrollView(.horizontal, showsIndicators: false) {
-      HStack(spacing: 6) {
-        ForEach(catalog) { group in
-          tabButton(for: group)
+  private var groupTabStrip: some View {
+    HStack(spacing: 4) {
+      ForEach(catalog) { group in
+        groupTabButton(for: group)
+      }
+    }
+    .padding(.horizontal, 4)
+    .padding(.vertical, 4)
+    .background(
+      RoundedRectangle(cornerRadius: 12, style: .continuous)
+        .fill(ADEColor.surfaceBackground.opacity(0.3))
+    )
+    .overlay(
+      RoundedRectangle(cornerRadius: 12, style: .continuous)
+        .stroke(ADEColor.border.opacity(0.12), lineWidth: 0.5)
+    )
+    .padding(.horizontal, 16)
+    .padding(.bottom, 10)
+  }
+
+  @ViewBuilder
+  private func groupTabButton(for group: WorkModelCatalogGroup) -> some View {
+    let isActive = (activeGroupBlock?.key ?? "") == group.key
+    Button {
+      withAnimation(.easeInOut(duration: 0.18)) {
+        activeGroup = group.key
+      }
+    } label: {
+      HStack(spacing: 4) {
+        Text(group.displayName.uppercased())
+          .font(.caption2.weight(.bold))
+          .tracking(0.4)
+        if group.key == "opencode" && group.modelCount > 0 {
+          Text("(\(group.modelCount))")
+            .font(.system(size: 9, weight: .bold))
+            .opacity(0.6)
         }
+      }
+      .foregroundStyle(isActive ? ADEColor.textPrimary : ADEColor.textSecondary.opacity(0.6))
+      .frame(maxWidth: .infinity)
+      .padding(.vertical, 7)
+      .background(
+        RoundedRectangle(cornerRadius: 9, style: .continuous)
+          .fill(isActive ? ADEColor.accent.opacity(0.18) : Color.clear)
+      )
+      .overlay(
+        RoundedRectangle(cornerRadius: 9, style: .continuous)
+          .stroke(isActive ? ADEColor.accent.opacity(0.35) : Color.clear, lineWidth: 0.6)
+      )
+    }
+    .buttonStyle(.plain)
+    .accessibilityAddTraits(isActive ? .isSelected : [])
+  }
+
+  @ViewBuilder
+  private var providerBadgeRow: some View {
+    if let block = activeGroupBlock, block.providers.count > 1 || block.key == "opencode" {
+      ScrollView(.horizontal, showsIndicators: false) {
+        HStack(spacing: 8) {
+          ForEach(block.providers) { prov in
+            providerBadge(prov)
+          }
+        }
+        .padding(.horizontal, 16)
+        .padding(.bottom, 10)
+      }
+    } else if let block = activeGroupBlock, let only = block.providers.first {
+      HStack(spacing: 8) {
+        providerBadge(only)
+        Spacer(minLength: 0)
       }
       .padding(.horizontal, 16)
       .padding(.bottom, 10)
@@ -125,36 +235,34 @@ struct WorkModelPickerSheet: View {
   }
 
   @ViewBuilder
-  private func tabButton(for group: WorkModelProviderGroup) -> some View {
-    let isActive = activeProvider == group.provider
+  private func providerBadge(_ prov: WorkModelProvider) -> some View {
+    let isActive = activeProviderBlock?.key == prov.key
     Button {
-      withAnimation(.easeInOut(duration: 0.18)) {
-        activeProvider = group.provider
-      }
+      activeProvider = prov.key
     } label: {
       HStack(spacing: 6) {
-        Text(group.displayName.uppercased())
-          .font(.caption.weight(.bold))
-          .tracking(0.4)
-        if group.models.count > 1 {
-          Text("\(group.models.count)")
+        WorkProviderLogo(provider: prov.key, size: 16)
+        Text(prov.displayName)
+          .font(.caption.weight(.semibold))
+          .foregroundStyle(isActive ? ADEColor.textPrimary : ADEColor.textSecondary)
+        if prov.models.count > 1 {
+          Text("\(prov.models.count)")
             .font(.caption2.weight(.bold))
             .foregroundStyle(isActive ? ADEColor.accent : ADEColor.textMuted)
-            .padding(.horizontal, 6)
+            .padding(.horizontal, 5)
             .padding(.vertical, 1)
             .background((isActive ? ADEColor.accent : ADEColor.textMuted).opacity(0.18), in: Capsule())
         }
       }
-      .foregroundStyle(isActive ? ADEColor.textPrimary : ADEColor.textSecondary)
-      .padding(.horizontal, 12)
-      .padding(.vertical, 8)
+      .padding(.horizontal, 10)
+      .padding(.vertical, 7)
       .background(
         Capsule(style: .continuous)
-          .fill(isActive ? ADEColor.accent.opacity(0.18) : Color.clear)
+          .fill(isActive ? ADEColor.accent.opacity(0.14) : ADEColor.surfaceBackground.opacity(0.5))
       )
       .overlay(
         Capsule(style: .continuous)
-          .stroke(isActive ? ADEColor.accent.opacity(0.38) : ADEColor.border.opacity(0.18), lineWidth: 0.6)
+          .stroke(isActive ? ADEColor.accent.opacity(0.32) : ADEColor.border.opacity(0.18), lineWidth: 0.6)
       )
     }
     .buttonStyle(.plain)
@@ -166,6 +274,23 @@ struct WorkModelPickerSheet: View {
     ScrollView {
       LazyVStack(spacing: 10) {
         if filteredModels.isEmpty {
+          emptyState
+        } else {
+          ForEach(filteredModels) { model in
+            modelButton(model: model)
+          }
+        }
+      }
+      .padding(.horizontal, 16)
+      .padding(.vertical, 12)
+    }
+  }
+
+  @ViewBuilder
+  private var searchList: some View {
+    ScrollView {
+      LazyVStack(alignment: .leading, spacing: 14) {
+        if searchTree.isEmpty {
           VStack(spacing: 6) {
             Image(systemName: "magnifyingglass")
               .font(.title3)
@@ -177,24 +302,66 @@ struct WorkModelPickerSheet: View {
           .frame(maxWidth: .infinity)
           .padding(.vertical, 40)
         } else {
-          ForEach(filteredModels) { model in
-            Button {
-              if model.id == currentModelId {
-                dismiss()
-              } else {
-                onSelect(model)
+          ForEach(searchTree) { group in
+            VStack(alignment: .leading, spacing: 8) {
+              Text(group.displayName.uppercased())
+                .font(.caption2.weight(.bold))
+                .tracking(0.4)
+                .foregroundStyle(ADEColor.textMuted)
+                .padding(.horizontal, 6)
+              ForEach(group.providers) { prov in
+                VStack(alignment: .leading, spacing: 6) {
+                  if group.providers.count > 1 {
+                    HStack(spacing: 6) {
+                      WorkProviderLogo(provider: prov.key, size: 14)
+                      Text(prov.displayName)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(ADEColor.textSecondary)
+                    }
+                    .padding(.horizontal, 6)
+                  }
+                  ForEach(prov.models) { model in
+                    modelButton(model: model)
+                  }
+                }
               }
-            } label: {
-              modelRow(model: model)
             }
-            .buttonStyle(.plain)
-            .disabled(isBusy && model.id != currentModelId)
           }
         }
       }
       .padding(.horizontal, 16)
-      .padding(.vertical, 12)
+      .padding(.top, 10)
+      .padding(.bottom, 12)
     }
+  }
+
+  @ViewBuilder
+  private var emptyState: some View {
+    VStack(spacing: 6) {
+      Image(systemName: "cpu")
+        .font(.title3)
+        .foregroundStyle(ADEColor.textMuted)
+      Text("No models in this provider.")
+        .font(.footnote)
+        .foregroundStyle(ADEColor.textSecondary)
+    }
+    .frame(maxWidth: .infinity)
+    .padding(.vertical, 40)
+  }
+
+  @ViewBuilder
+  private func modelButton(model: WorkModelOption) -> some View {
+    Button {
+      if model.id == currentModelId {
+        dismiss()
+      } else {
+        onSelect(model)
+      }
+    } label: {
+      modelRow(model: model)
+    }
+    .buttonStyle(.plain)
+    .disabled(isBusy && model.id != currentModelId)
   }
 
   @ViewBuilder

@@ -174,8 +174,17 @@ struct WorkNewChatScreen: View {
 
   @ViewBuilder
   private var composerBar: some View {
-    VStack(spacing: 10) {
-      HStack(spacing: 8) {
+    VStack(alignment: .leading, spacing: 12) {
+      TextField("Type to vibecode…", text: $draft, axis: .vertical)
+        .textFieldStyle(.plain)
+        .lineLimit(1...6)
+        .font(.body)
+        .foregroundStyle(ADEColor.textPrimary)
+        .tint(ADEColor.accent)
+        .focused($composerFocused)
+        .frame(maxWidth: .infinity, minHeight: 28, alignment: .leading)
+
+      HStack(alignment: .center, spacing: 8) {
         Button {
           modelPickerPresented = true
         } label: {
@@ -184,64 +193,101 @@ struct WorkNewChatScreen: View {
               provider: provider,
               fallbackSymbol: providerIcon(provider),
               tint: providerTint(provider),
-              size: 18
+              size: 16
             )
-            Text(modelId)
+            Text(prettyNewChatModelName(modelId))
               .font(.caption.weight(.semibold))
               .foregroundStyle(ADEColor.textPrimary)
               .lineLimit(1)
-            Image(systemName: "chevron.up.chevron.down")
-              .font(.caption2.weight(.bold))
+            Image(systemName: "chevron.down")
+              .font(.system(size: 9, weight: .bold))
               .foregroundStyle(ADEColor.textMuted)
           }
-          .padding(.horizontal, 10)
+          .padding(.horizontal, 9)
           .padding(.vertical, 6)
-          .background(ADEColor.surfaceBackground.opacity(0.6), in: Capsule(style: .continuous))
+          .background(ADEColor.surfaceBackground.opacity(0.7), in: Capsule(style: .continuous))
           .overlay(
             Capsule(style: .continuous)
-              .stroke(providerTint(provider).opacity(0.3), lineWidth: 0.6)
+              .stroke(ADEColor.border.opacity(0.28), lineWidth: 0.6)
           )
         }
         .buttonStyle(.plain)
 
         Spacer(minLength: 0)
-      }
-
-      HStack(alignment: .bottom, spacing: 10) {
-        TextField("Type to vibecode…", text: $draft, axis: .vertical)
-          .textFieldStyle(.plain)
-          .lineLimit(1...6)
-          .focused($composerFocused)
-          .padding(.horizontal, 14)
-          .padding(.vertical, 12)
-          .background(ADEColor.recessedBackground.opacity(0.55), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-          .overlay(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-              .stroke(ADEColor.border.opacity(0.22), lineWidth: 0.5)
-          )
 
         Button {
           Task { await submit() }
         } label: {
-          Image(systemName: busy ? "ellipsis.circle" : "paperplane.fill")
-            .font(.system(size: 18, weight: .semibold))
-            .foregroundStyle(canSend ? Color.white : ADEColor.textMuted)
-            .frame(width: 48, height: 48)
-            .background(canSend ? ADEColor.accent : ADEColor.surfaceBackground.opacity(0.55), in: Circle())
-            .overlay(
-              Circle().stroke(canSend ? Color.clear : ADEColor.border.opacity(0.25), lineWidth: 0.6)
-            )
+          HStack(spacing: 5) {
+            if busy {
+              ProgressView()
+                .controlSize(.mini)
+                .tint(canSend ? Color.white : ADEColor.textSecondary)
+            } else {
+              Image(systemName: "paperplane.fill")
+                .font(.system(size: 12, weight: .bold))
+            }
+            Text("Send")
+              .font(.caption.weight(.semibold))
+          }
+          .foregroundStyle(canSend ? Color.white : ADEColor.textSecondary)
+          .padding(.horizontal, 12)
+          .padding(.vertical, 8)
+          .background(
+            Capsule(style: .continuous)
+              .fill(canSend ? ADEColor.accent : ADEColor.surfaceBackground.opacity(0.85))
+          )
+          .overlay(
+            Capsule(style: .continuous)
+              .stroke(canSend ? Color.clear : ADEColor.border.opacity(0.35), lineWidth: 0.8)
+          )
+          .shadow(color: canSend ? ADEColor.accent.opacity(0.4) : .clear, radius: 8, y: 2)
         }
         .buttonStyle(.plain)
         .disabled(!canSend)
         .accessibilityLabel(canSend ? "Start chat" : "Enter a message to start")
       }
     }
+    .padding(.horizontal, 14)
+    .padding(.vertical, 14)
+    .background(
+      RoundedRectangle(cornerRadius: 24, style: .continuous)
+        .fill(Color.black.opacity(0.55))
+        .background(
+          RoundedRectangle(cornerRadius: 24, style: .continuous)
+            .fill(.ultraThinMaterial)
+        )
+    )
+    .overlay(
+      RoundedRectangle(cornerRadius: 24, style: .continuous)
+        .stroke(ADEColor.border.opacity(0.45), lineWidth: 1)
+    )
+    .shadow(color: Color.black.opacity(0.4), radius: 20, y: 8)
     .padding(.horizontal, 16)
-    .padding(.top, 12)
-    .padding(.bottom, 18)
-    .background(ADEColor.surfaceBackground.opacity(0.08))
-    .glassEffect()
+    .padding(.bottom, 0)
+  }
+
+  private func prettyNewChatModelName(_ model: String) -> String {
+    let trimmed = model.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else { return "Model" }
+    let lower = trimmed.lowercased()
+    switch lower {
+    case "opus": return "Claude Opus 4.6"
+    case "opus[1m]", "opus-1m": return "Claude Opus 4.6 1M"
+    case "sonnet": return "Claude Sonnet 4.6"
+    case "haiku": return "Claude Haiku 4.5"
+    default: break
+    }
+    if lower.hasPrefix("claude-") {
+      let tail = trimmed.dropFirst("claude-".count)
+      let joined = tail.split(separator: "-").map { part -> String in
+        let s = String(part)
+        if s.range(of: #"^\d+$"#, options: .regularExpression) != nil { return s }
+        return s.prefix(1).uppercased() + s.dropFirst()
+      }.joined(separator: " ")
+      return "Claude " + joined.replacingOccurrences(of: #"(\d+) (\d+)"#, with: "$1.$2", options: .regularExpression)
+    }
+    return trimmed
   }
 
   @MainActor
