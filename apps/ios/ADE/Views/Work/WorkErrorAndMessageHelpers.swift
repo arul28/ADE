@@ -109,15 +109,14 @@ func mergeWorkChatTranscripts(base: [WorkChatEnvelope], live: [WorkChatEnvelope]
   guard !live.isEmpty else { return base }
   guard !base.isEmpty else { return live }
 
-  var merged = base
-  var indexByKey = Dictionary(uniqueKeysWithValues: merged.enumerated().map { (index, envelope) in
-    (workChatEnvelopeMergeKey(envelope), index)
-  })
+  var merged: [WorkChatEnvelope] = []
+  merged.reserveCapacity(base.count + live.count)
+  var indexByKey: [String: Int] = [:]
 
-  for envelope in live {
+  for envelope in base + live {
     let key = workChatEnvelopeMergeKey(envelope)
-    if let index = indexByKey[key] {
-      merged[index] = envelope
+    if let existing = indexByKey[key] {
+      merged[existing] = envelope
     } else {
       indexByKey[key] = merged.count
       merged.append(envelope)

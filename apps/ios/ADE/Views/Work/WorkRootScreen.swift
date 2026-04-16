@@ -61,7 +61,7 @@ struct WorkRootScreen: View {
   }
 
   var laneById: [String: LaneSummary] {
-    Dictionary(uniqueKeysWithValues: lanes.map { ($0.id, $0) })
+    Dictionary(lanes.map { ($0.id, $0) }, uniquingKeysWith: { _, new in new })
   }
 
   var mergedSessions: [TerminalSessionSummary] {
