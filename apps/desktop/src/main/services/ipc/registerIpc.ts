@@ -790,10 +790,7 @@ function decorateLaneSummaryWithPresence(
   devicesOpenByLaneId: Map<string, DeviceMarker[]>,
 ): LaneSummary {
   const devicesOpen = devicesOpenByLaneId.get(lane.id) ?? [];
-  return {
-    ...lane,
-    ...(devicesOpen.length > 0 ? { devicesOpen } : { devicesOpen: undefined }),
-  };
+  return { ...lane, devicesOpen: devicesOpen.length > 0 ? devicesOpen : undefined };
 }
 
 function decorateLaneSummariesWithPresence(

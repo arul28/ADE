@@ -52,8 +52,11 @@ import type { createLaneService } from "../lanes/laneService";
 import type { createLaneTemplateService } from "../lanes/laneTemplateService";
 import type { createPortAllocationService } from "../lanes/portAllocationService";
 import type { createRebaseSuggestionService } from "../lanes/rebaseSuggestionService";
+import type { createProcessService } from "../processes/processService";
 import type { createPtyService } from "../pty/ptyService";
+import type { createIssueInventoryService } from "../prs/issueInventoryService";
 import type { createPrService } from "../prs/prService";
+import type { createQueueLandingService } from "../prs/queueLandingService";
 import type { createSessionService } from "../sessions/sessionService";
 import type { createComputerUseArtifactBrokerService } from "../computerUse/computerUseArtifactBrokerService";
 import type { AdeDb } from "../state/kvDb";
@@ -114,8 +117,11 @@ type SyncHostServiceArgs = {
   diffService?: ReturnType<typeof createDiffService>;
   conflictService?: ReturnType<typeof createConflictService>;
   prService: ReturnType<typeof createPrService>;
+  issueInventoryService?: ReturnType<typeof createIssueInventoryService> | null;
+  queueLandingService?: ReturnType<typeof createQueueLandingService> | null;
   sessionService: ReturnType<typeof createSessionService>;
   ptyService: ReturnType<typeof createPtyService>;
+  processService?: ReturnType<typeof createProcessService>;
   agentChatService?: ReturnType<typeof createAgentChatService>;
   projectConfigService?: ReturnType<typeof createProjectConfigService>;
   portAllocationService?: ReturnType<typeof createPortAllocationService>;
@@ -300,7 +306,10 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     diffService: args.diffService,
     conflictService: args.conflictService,
     agentChatService: args.agentChatService,
+    issueInventoryService: args.issueInventoryService,
+    queueLandingService: args.queueLandingService,
     projectConfigService: args.projectConfigService,
+    processService: args.processService,
     portAllocationService: args.portAllocationService,
     laneEnvironmentService: args.laneEnvironmentService,
     laneTemplateService: args.laneTemplateService,
@@ -952,7 +961,9 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     if (!workspaceId) return;
     const workspace = args.fileService.listWorkspaces({ includeArchived: true })
       .find((entry) => entry.id === workspaceId);
-    if (!workspace) return;
+    if (!workspace) {
+      throw new Error("Mobile file access is read-only for this workspace.");
+    }
     if (workspace.mobileReadOnly === true || workspace.isReadOnlyByDefault) {
       throw new Error("Mobile file access is read-only for this workspace.");
     }
@@ -1206,12 +1217,18 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
           const thrownCode = (error as { code?: string } | null)?.code ?? null;
-          const resultCode =
-            thrownCode === "pin_not_set"
-              ? "pin_not_set"
-              : thrownCode === "invalid_pin"
-                ? "invalid_pin"
-                : "pairing_failed";
+          let resultCode: "pin_not_set" | "invalid_pin" | "pairing_failed";
+          switch (thrownCode) {
+            case "pin_not_set":
+              resultCode = "pin_not_set";
+              break;
+            case "invalid_pin":
+              resultCode = "invalid_pin";
+              break;
+            default:
+              resultCode = "pairing_failed";
+              break;
+          }
           send(peer.ws, "pairing_result", {
             ok: false,
             error: {

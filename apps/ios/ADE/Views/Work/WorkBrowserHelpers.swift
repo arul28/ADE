@@ -57,6 +57,7 @@ func workFilteredSessions(
   searchText: String
 ) -> [TerminalSessionSummary] {
   sessions
+    .filter { !isRunOwnedSession($0) }
     .filter { session in
       let isArchived = archivedSessionIds.contains(session.id)
       let status = normalizedWorkChatSessionStatus(session: session, summary: chatSummaries[session.id])

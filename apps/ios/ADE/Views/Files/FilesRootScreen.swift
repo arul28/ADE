@@ -6,6 +6,7 @@ struct FilesRootScreen: View {
   @EnvironmentObject var syncService: SyncService
   @AppStorage("ade.files.showHidden") private var showHidden = false
   @Namespace var fileTransitionNamespace
+  var isTabActive = true
 
   @State var workspaces: [FilesWorkspace] = []
   @State var selectedWorkspaceId: String?
@@ -149,6 +150,7 @@ struct FilesRootScreen: View {
                 parentPath: "",
                 showHidden: showHidden,
                 isLive: canUseLiveFileActions,
+                isTabActive: isTabActive,
                 needsRepairing: needsRepairing,
                 showDisconnectedNotice: false,
                 openDirectory: { path in
@@ -182,6 +184,7 @@ struct FilesRootScreen: View {
               parentPath: parentPath,
               showHidden: $showHidden,
               isLive: canUseLiveFileActions,
+              isTabActive: isTabActive,
               needsRepairing: needsRepairing,
               openDirectory: { path in
                 openDirectory(path, in: workspace)
@@ -246,25 +249,31 @@ struct FilesRootScreen: View {
       }
       .sensoryFeedback(.selection, trigger: selectedWorkspaceId)
       .sensoryFeedback(.success, trigger: refreshFeedbackToken)
-      .task {
+      .task(id: isTabActive) {
+        guard isTabActive else { return }
         await reload()
       }
-      .task(id: syncService.localStateRevision) {
+      .task(id: "\(syncService.localStateRevision)-\(isTabActive)") {
+        guard isTabActive else { return }
         let now = Date()
         guard now.timeIntervalSince(lastFilesLocalProjectionReload) >= 0.35 else { return }
         lastFilesLocalProjectionReload = now
         await reload()
       }
-      .task(id: FilesSearchKey(workspaceId: selectedWorkspaceId, query: quickOpenQuery, isLive: canUseLiveFileActions)) {
+      .task(id: "\(FilesSearchKey(workspaceId: selectedWorkspaceId, query: quickOpenQuery, isLive: canUseLiveFileActions).hashValue)-\(isTabActive)") {
+        guard isTabActive else { return }
         await runQuickOpenSearch()
       }
-      .task(id: FilesSearchKey(workspaceId: selectedWorkspaceId, query: textSearchQuery, isLive: canUseLiveFileActions)) {
+      .task(id: "\(FilesSearchKey(workspaceId: selectedWorkspaceId, query: textSearchQuery, isLive: canUseLiveFileActions).hashValue)-\(isTabActive)") {
+        guard isTabActive else { return }
         await runTextSearch()
       }
-      .task(id: syncService.requestedFilesNavigation?.id) {
+      .task(id: "\(syncService.requestedFilesNavigation?.id ?? "none")-\(isTabActive)") {
+        guard isTabActive else { return }
         await handleRequestedNavigation()
       }
-      .task(id: selectedWorkspaceId) {
+      .task(id: "\(selectedWorkspaceId ?? "none")-\(isTabActive)") {
+        guard isTabActive else { return }
         await loadProofArtifacts()
       }
       .onChange(of: selectedWorkspaceId) { _, _ in

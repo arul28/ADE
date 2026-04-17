@@ -68,6 +68,7 @@ extension FilesDirectoryContentsView {
     let parentPath: String
     let includeHidden: Bool
     let live: Bool
+    let active: Bool
     let revision: Int
   }
 }

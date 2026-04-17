@@ -7,6 +7,7 @@ struct FilesDirectoryContentsView: View {
   let parentPath: String
   let showHidden: Bool
   let isLive: Bool
+  let isTabActive: Bool
   let needsRepairing: Bool
   let showDisconnectedNotice: Bool
   let openDirectory: (String) -> Void
@@ -63,7 +64,8 @@ struct FilesDirectoryContentsView: View {
         }
       }
     }
-    .task(id: DirectoryReloadKey(workspaceId: workspace.id, parentPath: parentPath, includeHidden: showHidden, live: isLive, revision: syncService.localStateRevision)) {
+    .task(id: DirectoryReloadKey(workspaceId: workspace.id, parentPath: parentPath, includeHidden: showHidden, live: isLive, active: isTabActive, revision: syncService.localStateRevision)) {
+      guard isTabActive else { return }
       await reload()
     }
   }

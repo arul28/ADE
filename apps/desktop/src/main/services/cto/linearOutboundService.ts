@@ -320,21 +320,21 @@ export function createLinearOutboundService(args: {
       if (!stat.isFile()) continue;
 
       if (params.mode === "links") {
-        uploaded.push(`file://${artifactPathReal}`);
+        uploaded.push(`file://${artifactPath}`);
         continue;
       }
 
       try {
         const uploadedAttachment = await args.issueTracker.uploadAttachment({
           issueId: params.issueId,
-          filePath: artifactPathReal,
-          title: path.basename(artifactPathReal),
+          filePath: artifactPath,
+          title: path.basename(artifactPath),
         });
         uploaded.push(uploadedAttachment.url);
       } catch (error) {
         args.logger?.warn("linear_sync.attachment_upload_failed", {
           issueId: params.issueId,
-          artifactPath: artifactPathReal,
+          artifactPath,
           error: getErrorMessage(error),
         });
       }

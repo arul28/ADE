@@ -12,12 +12,20 @@ extension WorkChatSessionView {
       timelineToolCard(toolCard)
     case .eventCard(let card):
       timelineEventCard(card)
+    case .usageSummary(let summary):
+      WorkTurnUsageSummaryBanner(
+        summary: summary,
+        provider: chatSummary?.provider,
+        modelLabel: chatSummary.map { prettyWorkChatModelName($0.model) }
+      )
     case .commandCard(let commandCard):
       WorkCommandCardView(card: commandCard)
     case .fileChangeCard(let fileChangeCard):
       WorkFileChangeCardView(card: fileChangeCard)
     case .artifact(let artifact):
       timelineArtifact(artifact)
+    case .turnSeparator(let separator):
+      WorkTurnSeparatorView(separator: separator)
     }
   }
 
@@ -44,6 +52,8 @@ extension WorkChatSessionView {
         card: card,
         isLive: isReasoningLive(card)
       )
+    } else if card.kind == "plan" {
+      WorkProposedPlanCard(card: card)
     } else {
       WorkEventCardView(
         card: card,

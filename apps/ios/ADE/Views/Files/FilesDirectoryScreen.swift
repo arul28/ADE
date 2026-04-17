@@ -7,6 +7,7 @@ struct FilesDirectoryScreen: View {
   let parentPath: String
   @Binding var showHidden: Bool
   let isLive: Bool
+  let isTabActive: Bool
   let needsRepairing: Bool
   let openDirectory: (String) -> Void
   let openFile: (String, Int?) -> Void
@@ -29,6 +30,7 @@ struct FilesDirectoryScreen: View {
           parentPath: parentPath,
           showHidden: showHidden,
           isLive: isLive,
+          isTabActive: isTabActive,
           needsRepairing: needsRepairing,
           showDisconnectedNotice: true,
           openDirectory: openDirectory,

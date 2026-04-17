@@ -9,7 +9,7 @@ struct PrFilesTab: View {
   var body: some View {
     Group {
       if let files = snapshot?.files, !files.isEmpty {
-        VStack(spacing: 12) {
+        LazyVStack(spacing: 12) {
           ForEach(files) { file in
             PrFileDiffCard(
               file: file,
@@ -35,7 +35,20 @@ struct PrFileDiffCard: View {
   let canOpenFiles: Bool
   let onOpenFile: (PrFile) -> Void
   let onCopyPath: (PrFile) -> Void
-  @State private var expanded = true
+  @State private var expanded: Bool
+
+  init(
+    file: PrFile,
+    canOpenFiles: Bool,
+    onOpenFile: @escaping (PrFile) -> Void,
+    onCopyPath: @escaping (PrFile) -> Void
+  ) {
+    self.file = file
+    self.canOpenFiles = canOpenFiles
+    self.onOpenFile = onOpenFile
+    self.onCopyPath = onCopyPath
+    _expanded = State(initialValue: prFileDiffShouldExpandByDefault(file))
+  }
 
   var body: some View {
     DisclosureGroup(isExpanded: $expanded) {
@@ -105,15 +118,15 @@ struct PrUnifiedDiffView: View {
   }
 
   private var lines: [PrDiffDisplayLine] {
-    parsePullRequestPatch(patch)
+    PrDiffRenderingCache.shared.lines(for: patch)
   }
 
   var body: some View {
     if let limit = prPatchPreviewLimit(for: patch) {
       PrDiffPreviewLimitNotice(limit: limit)
     } else {
-      ScrollView(.horizontal, showsIndicators: false) {
-        VStack(alignment: .leading, spacing: 2) {
+      ScrollView([.horizontal, .vertical], showsIndicators: true) {
+        LazyVStack(alignment: .leading, spacing: 2) {
           ForEach(lines) { line in
             HStack(alignment: .top, spacing: 8) {
               Text(line.oldLineNumber.map(String.init) ?? "")
@@ -144,6 +157,7 @@ struct PrUnifiedDiffView: View {
           }
         }
       }
+      .frame(maxHeight: 420)
       .adeInsetField(cornerRadius: 14, padding: 10)
     }
   }

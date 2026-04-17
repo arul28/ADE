@@ -171,12 +171,18 @@ extension FilesRootScreen {
     }
 
     try? await Task.sleep(nanoseconds: 250_000_000)
+    guard !Task.isCancelled, isTabActive, canUseLiveFileActions else { return }
     guard query == quickOpenQuery.trimmingCharacters(in: .whitespacesAndNewlines), workspaceId == selectedWorkspaceId else { return }
 
     do {
-      quickOpenResults = try await syncService.quickOpen(workspaceId: workspaceId, query: query)
+      let results = try await syncService.quickOpen(workspaceId: workspaceId, query: query)
+      guard !Task.isCancelled, isTabActive, canUseLiveFileActions else { return }
+      guard query == quickOpenQuery.trimmingCharacters(in: .whitespacesAndNewlines), workspaceId == selectedWorkspaceId else { return }
+      quickOpenResults = results
       errorMessage = nil
     } catch {
+      guard !Task.isCancelled, isTabActive else { return }
+      guard query == quickOpenQuery.trimmingCharacters(in: .whitespacesAndNewlines), workspaceId == selectedWorkspaceId else { return }
       errorMessage = error.localizedDescription
       quickOpenResults = []
     }
@@ -199,12 +205,18 @@ extension FilesRootScreen {
     }
 
     try? await Task.sleep(nanoseconds: 250_000_000)
+    guard !Task.isCancelled, isTabActive, canUseLiveFileActions else { return }
     guard query == textSearchQuery.trimmingCharacters(in: .whitespacesAndNewlines), workspaceId == selectedWorkspaceId else { return }
 
     do {
-      textSearchResults = try await syncService.searchText(workspaceId: workspaceId, query: query)
+      let results = try await syncService.searchText(workspaceId: workspaceId, query: query)
+      guard !Task.isCancelled, isTabActive, canUseLiveFileActions else { return }
+      guard query == textSearchQuery.trimmingCharacters(in: .whitespacesAndNewlines), workspaceId == selectedWorkspaceId else { return }
+      textSearchResults = results
       errorMessage = nil
     } catch {
+      guard !Task.isCancelled, isTabActive else { return }
+      guard query == textSearchQuery.trimmingCharacters(in: .whitespacesAndNewlines), workspaceId == selectedWorkspaceId else { return }
       errorMessage = error.localizedDescription
       textSearchResults = []
     }

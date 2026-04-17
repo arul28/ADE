@@ -118,12 +118,23 @@ Host-side service files
   registry (lanes, chat, git, PR, sessions, conflicts). Documented
   separately in `remote-commands.md`.
 
+- `syncPinStore.ts` (67 lines) — on-disk storage for the user-set
+  6-digit pairing PIN at `.ade/secrets/sync-pin.json`, chmodded `0600`.
+  Host never rotates the PIN; the user sets or clears it from Settings
+  > Sync. Used by `syncPairingStore.pairPeer` to validate incoming
+  `pairing_request` envelopes.
+
 Client-side (iOS) service files (`apps/ios/ADE/Services/`):
 
-- `Database.swift` (~2,200 lines) — native SQLite3 + pure-SQL CRR
-  emulation (triggers + custom SQLite functions).
-- `SyncService.swift` — WebSocket client, envelope encoding
-  (zlib via `zlib`), command routing, keychain integration.
+- `Database.swift` (~2,900 lines) — native SQLite3 + pure-SQL CRR
+  emulation (triggers + custom SQLite functions). Adds offline caches
+  for files workspaces, directory listings, and file contents plus
+  session pin/runtime state.
+- `SyncService.swift` (~4,400 lines) — WebSocket client, envelope
+  encoding (zlib), command routing, keychain integration, PIN-based
+  pairing, lane presence announcements, PR mobile snapshot fetch, and
+  a live chat-event push listener backed by the host's
+  `chat_event` broadcast.
 - `KeychainService.swift` — iOS Keychain Services for paired device
   secrets.
 
@@ -173,17 +184,31 @@ is not supported.
 
 ## Device discovery
 
-- **W3**: manual host/port/bootstrap-token entry in Settings > Sync.
-- **W4**: numeric-code pairing and per-device secrets (stored in OS
-  keychain) are implemented.
-- **W5**: QR pairing presentation/scanning shell shipped; needs more
-  live validation.
-- **W6+**: mDNS discovery, Tailscale address selection, and final
-  network hardening remain open work.
-
-The bootstrap token lives at `.ade/secrets/sync-bootstrap-token`. The
-current host displays it under Settings > Sync for manual
-desktop-to-desktop connection.
+- **Desktop-to-desktop**: manual host/port/bootstrap-token entry in
+  Settings > Sync. The bootstrap token lives at
+  `.ade/secrets/sync-bootstrap-token`.
+- **Phone pairing**: user-set **6-digit PIN** stored on the host at
+  `.ade/secrets/sync-pin.json`. The PIN is owned by the human
+  operator — the host does not rotate it, does not time-expire it,
+  and does not mint a one-shot code. The phone enters the same digits
+  the user typed on the host's Settings > Sync > Phone pairing sheet.
+  Failed PIN attempts increment a per-IP counter; after 5 failures
+  the host rejects further attempts from that IP for 10 minutes
+  (`PAIR_FAILURE_THRESHOLD = 5`, `PAIR_COOLDOWN_MS = 10 * 60_000` in
+  `syncHostService.ts`).
+- **QR payload**: `SyncPairingQrPayload` is **version 2**. It carries
+  host identity, port, and address candidates only — it no longer
+  embeds a pairing code or expiry. The phone still needs the PIN
+  manually.
+- **Address candidates**: the host advertises LAN IPs,
+  the saved `lastHost` (when it matches the current set), the
+  Tailscale IP, and `127.0.0.1` (`SyncAddressCandidateKind` now
+  includes `loopback`).
+- **mDNS**: `publishLanDiscovery` builds a TXT record whose
+  `addresses` CSV includes the Tailscale IP alongside LAN IPs. The
+  host keeps a signature of `{ hostName, port, txt }` and re-publishes
+  the announcement only when the signature changes, to avoid churn
+  while IP addresses fluctuate.
 
 ## Sync protocol (summary)
 
@@ -212,8 +237,15 @@ gzipped and base64-encoded. `parseSyncEnvelope` rejects a mismatch
 between `compression` and `payloadEncoding` and rejects unsupported
 protocol versions.
 
-Heartbeat interval is 30 seconds. Reconnection resumes from the
-last-known `db_version` so no changesets are lost.
+`SyncHelloErrorPayload.code` is trimmed to `auth_failed |
+invalid_hello`. `SyncPairingResultPayload.error.code` is one of
+`invalid_pin | pin_not_set | pairing_failed`.
+
+Heartbeat interval is 30 seconds; a peer only gets closed after
+**two** consecutive missed heartbeats (the host increments
+`missedHeartbeatCount` on the first miss rather than disconnecting
+immediately). Reconnection resumes from the last-known `db_version`
+so no changesets are lost.
 
 ### Sub-protocols at a glance
 
@@ -222,9 +254,10 @@ last-known `db_version` so no changesets are lost.
 | Changeset sync | Bidirectional cr-sqlite row exchange | All devices |
 | File access | On-demand file reads, listings, writes | iOS Files, desktop remote viewing |
 | Terminal stream | Subscribe to PTY output from host | iOS Work tab |
-| Chat stream | Agent chat transcript events (snapshot + incremental) | iOS Work tab, controller chat |
-| Command routing | Send named actions (`chat.send`, `lanes.create`, `git.push`, etc.) | All non-host devices |
+| Chat stream | Agent chat transcript events (subscribe snapshot + live `chat_event` push from the host's `agentChatService.subscribeToEvents` fan-out; polling survives as the reconnect-catchup path) | iOS Work tab, controller chat |
+| Command routing | Send named actions (`chat.send`, `lanes.create`, `git.push`, `prs.getMobileSnapshot`, etc.) | All non-host devices |
 | Brain status | Host broadcasts cluster/version status | All devices |
+| Lane presence | Controllers call `lanes.presence.announce` / `lanes.presence.release`; the host decorates `LaneSummary.devicesOpen` for 60 s TTL | iOS Lanes tab; desktop host presence heartbeat |
 
 ## Command routing and execution isolation
 
@@ -263,18 +296,27 @@ current branch modifications to `syncRemoteCommandService.ts`.
 
 ## Security model
 
-- **Pairing**: W3 shared bootstrap token from
-  `.ade/secrets/sync-bootstrap-token`. W4 added numeric-code pairing
-  and per-device secrets.
+- **Pairing**: two independent paths. Desktop-to-desktop uses the
+  shared bootstrap token from `.ade/secrets/sync-bootstrap-token`.
+  Phone pairing uses a **user-set 6-digit PIN** stored in
+  `.ade/secrets/sync-pin.json` on the host. The host never auto-rotates
+  or TTLs the PIN; the user sets it through Settings > Sync and clears
+  it when they want to stop accepting new pairings. The PIN unlocks
+  generation of a durable per-device secret that the phone stores in
+  its Keychain; subsequent connections use that paired secret, not the
+  PIN.
+- **Rate limiting**: the host tracks failed `pairing_request` attempts
+  per remote IP. Five failures put that IP into a 10-minute cooldown
+  during which new pairing requests are rejected without touching the
+  PIN store.
 - **Secrets never sync.** `.ade/local.secret.yaml` (provider API keys,
   external MCP configs) is per-machine. Linear tokens, GitHub tokens,
   and AI provider tokens stay on the host.
-- **Transport**: WebSocket auth via pairing/bootstrap token on every
-  connection. Tailscale WireGuard encryption applies when over
-  tailnet; LAN connections rely on pairing token validation. TLS is
-  not enforced for localhost/LAN. Currently (W3) the host listens on
-  all interfaces — intended for trusted LAN until W4 hardening
-  lands.
+- **Transport**: WebSocket auth via PIN / paired secret / bootstrap
+  token on every connection. Tailscale WireGuard encryption applies
+  when over tailnet; LAN connections rely on pairing token validation.
+  TLS is not enforced for localhost/LAN; the host listens on all
+  interfaces (intended for trusted LAN and tailnets).
 - **Secret isolation**: each device stores its own pairing secret in
   its OS keychain.
 - **Execution isolation**: the host runs agents; controllers do not.
@@ -296,11 +338,14 @@ current branch modifications to `syncRemoteCommandService.ts`.
 | Desktop peer client + manual connect | Implemented |
 | Host election + transfer | Implemented |
 | Shared ADE scaffold portability for desktop clones | Implemented |
-| Numeric-code pairing + per-device secrets | Implemented |
+| PIN-based phone pairing + per-device secrets | Implemented |
+| Live chat-event push from host | Implemented |
+| Lane presence decoration (`devicesOpen`) | Implemented |
+| PR mobile snapshot (`prs.getMobileSnapshot`) | Implemented |
 | iOS local replicated DB | Implemented |
 | iOS Lanes / Files / Work / PRs / Settings tabs | Implemented |
-| QR pairing UX (shell) | Implemented; needs live validation breadth |
-| Tailscale integration | Planned |
+| QR pairing UX | Implemented (payload v2; PIN entered separately) |
+| Tailscale integration | Implemented (address candidate + mDNS TXT) |
 | Lane portability desktop-to-desktop | Planned |
 
 ## Gotchas
@@ -314,9 +359,15 @@ current branch modifications to `syncRemoteCommandService.ts`.
 - **Bootstrap token must match on every connection.** A changed token
   invalidates all existing connections until paired devices are
   re-provisioned.
-- **The host listens on all interfaces in W3.** Treat the current
-  posture as trusted-LAN only. W4 hardening (tighter binding,
-  per-device secrets for revocation) is in progress.
+- **The host listens on all interfaces.** Treat the current posture as
+  trusted-LAN/tailnet only; TLS is not enforced for localhost/LAN.
+  Revocation works per paired device via Settings > Sync > Forget.
+- **The pairing PIN is user-managed, not ADE-managed.** There is no
+  expiry and no rotation. A host that leaves the PIN set is
+  perpetually pairable by anyone on the network who knows the digits
+  (subject to the per-IP rate limiter). Clearing the PIN from
+  Settings > Sync is how you stop accepting new pairings; already-paired
+  devices keep their per-device secret and remain connected.
 - **`brain_*` is legacy naming.** In new code prefer "host" / "cluster
   owner" nomenclature; database column names are kept for
   compatibility.

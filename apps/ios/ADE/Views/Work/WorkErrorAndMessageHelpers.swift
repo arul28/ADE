@@ -275,7 +275,8 @@ func workChatEventMergeKey(_ event: WorkChatEvent) -> String {
   case .activity(let kind, let detail, let turnId):
     return ["activity", turnId ?? "", kind, detail ?? ""].joined(separator: "|")
   case .plan(let steps, let explanation, let turnId):
-    return ["plan", turnId ?? "", explanation ?? "", steps.joined(separator: "\n")].joined(separator: "|")
+    let stepDigest = steps.map { "\($0.status):\($0.text)" }.joined(separator: "\n")
+    return ["plan", turnId ?? "", explanation ?? "", stepDigest].joined(separator: "|")
   case .subagentStarted(let taskId, let description, let background, let turnId):
     return ["subagent_started", turnId ?? "", taskId, description, background ? "1" : "0"].joined(separator: "|")
   case .subagentProgress(let taskId, let description, let summary, let toolName, let turnId):

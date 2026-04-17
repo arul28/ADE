@@ -14,7 +14,7 @@ func buildWorkChatTimelineSnapshot(
   let eventCards = buildWorkEventCards(from: transcript)
   let commandCards = buildWorkCommandCards(from: transcript)
   let fileChangeCards = buildWorkFileChangeCards(from: transcript)
-  let usageSummary = summarizeWorkSessionUsage(from: transcript)
+  let subagentSnapshots = buildWorkSubagentSnapshots(from: transcript)
   let timeline = buildWorkTimeline(
     transcript: transcript,
     fallbackEntries: fallbackEntries,
@@ -33,9 +33,79 @@ func buildWorkChatTimelineSnapshot(
     eventCards: eventCards,
     commandCards: commandCards,
     fileChangeCards: fileChangeCards,
-    sessionUsageSummary: usageSummary,
+    subagentSnapshots: subagentSnapshots,
     timeline: timeline
   )
+}
+
+/// Collapse `subagent_*` events into one snapshot per taskId. Preserves host
+/// order via a first-seen index so completed subagents don't jump around when
+/// a later progress event lands.
+func buildWorkSubagentSnapshots(from transcript: [WorkChatEnvelope]) -> [WorkSubagentSnapshot] {
+  struct Entry {
+    var snapshot: WorkSubagentSnapshot
+    var order: Int
+  }
+  var entries: [String: Entry] = [:]
+  var next = 0
+
+  func place(_ taskId: String, _ snapshot: WorkSubagentSnapshot) {
+    if let existing = entries[taskId] {
+      entries[taskId] = Entry(snapshot: snapshot, order: existing.order)
+    } else {
+      entries[taskId] = Entry(snapshot: snapshot, order: next)
+      next += 1
+    }
+  }
+
+  for envelope in transcript {
+    switch envelope.event {
+    case .subagentStarted(let taskId, let description, let background, let turnId):
+      place(taskId, WorkSubagentSnapshot(
+        taskId: taskId,
+        description: description,
+        background: background,
+        status: .running,
+        lastToolName: entries[taskId]?.snapshot.lastToolName,
+        latestSummary: entries[taskId]?.snapshot.latestSummary,
+        turnId: turnId
+      ))
+    case .subagentProgress(let taskId, let description, let summary, let toolName, let turnId):
+      let existing = entries[taskId]?.snapshot
+      place(taskId, WorkSubagentSnapshot(
+        taskId: taskId,
+        description: description ?? existing?.description ?? "Subagent",
+        background: existing?.background ?? false,
+        status: .running,
+        lastToolName: toolName ?? existing?.lastToolName,
+        latestSummary: summary.isEmpty ? existing?.latestSummary : summary,
+        turnId: turnId ?? existing?.turnId
+      ))
+    case .subagentResult(let taskId, let status, let summary, let turnId):
+      let normalized: WorkSubagentSnapshot.Status = {
+        switch status.lowercased() {
+        case "failed", "error", "cancelled", "canceled": return .failed
+        default: return .succeeded
+        }
+      }()
+      let existing = entries[taskId]?.snapshot
+      place(taskId, WorkSubagentSnapshot(
+        taskId: taskId,
+        description: existing?.description ?? "Subagent",
+        background: existing?.background ?? false,
+        status: normalized,
+        lastToolName: existing?.lastToolName,
+        latestSummary: summary.isEmpty ? existing?.latestSummary : summary,
+        turnId: turnId ?? existing?.turnId
+      ))
+    default:
+      break
+    }
+  }
+
+  return entries.values
+    .sorted { $0.order < $1.order }
+    .map { $0.snapshot }
 }
 
 func buildWorkTimeline(
@@ -64,6 +134,15 @@ func buildWorkTimeline(
   var entries: [WorkTimelineEntry] = messages.enumerated().map { index, message in
     WorkTimelineEntry(id: "message-\(message.id)", timestamp: message.timestamp, rank: index, payload: .message(message))
   }
+  let transcriptUserMessageTexts = Set(
+    messages
+      .filter { $0.role.lowercased() == "user" }
+      .map { normalizedWorkLocalEchoText($0.markdown) }
+      .filter { !$0.isEmpty }
+  )
+  let visibleLocalEchoMessages = localEchoMessages.filter { echo in
+    !transcriptUserMessageTexts.contains(normalizedWorkLocalEchoText(echo.text))
+  }
 
   entries.append(contentsOf: toolCards.enumerated().map { index, card in
     WorkTimelineEntry(id: "tool-\(card.id)", timestamp: card.startedAt, rank: 1_000 + index, payload: .toolCard(card))
@@ -81,11 +160,25 @@ func buildWorkTimeline(
     WorkTimelineEntry(id: "event-\(card.id)", timestamp: card.timestamp, rank: 1_500 + index, payload: .eventCard(card))
   })
 
+  let turnUsageSummaries = transcript.compactMap { envelope -> (id: String, timestamp: String, usage: WorkUsageSummary)? in
+    guard case .done(_, _, let usage, _) = envelope.event, let usage else { return nil }
+    return (envelope.id, envelope.timestamp, usage)
+  }
+
+  entries.append(contentsOf: turnUsageSummaries.enumerated().map { index, item in
+    WorkTimelineEntry(
+      id: "usage-\(item.id)",
+      timestamp: item.timestamp,
+      rank: 1_650 + index,
+      payload: .usageSummary(item.usage)
+    )
+  })
+
   entries.append(contentsOf: artifacts.enumerated().map { index, artifact in
     WorkTimelineEntry(id: "artifact-\(artifact.id)", timestamp: artifact.createdAt, rank: 2_000 + index, payload: .artifact(artifact))
   })
 
-  entries.append(contentsOf: localEchoMessages.enumerated().map { index, echo in
+  entries.append(contentsOf: visibleLocalEchoMessages.enumerated().map { index, echo in
     let message = WorkChatMessage(id: echo.id, role: "user", markdown: echo.text, timestamp: echo.timestamp, turnId: nil, itemId: nil)
     return WorkTimelineEntry(id: "echo-\(echo.id)", timestamp: echo.timestamp, rank: 3_000 + index, payload: .message(message))
   })
@@ -96,6 +189,12 @@ func buildWorkTimeline(
     }
     return lhs.timestamp < rhs.timestamp
   }
+}
+
+func normalizedWorkLocalEchoText(_ text: String) -> String {
+  text
+    .trimmingCharacters(in: .whitespacesAndNewlines)
+    .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
 }
 
 func buildWorkCommandCards(from transcript: [WorkChatEnvelope]) -> [WorkCommandCardModel] {
@@ -136,6 +235,7 @@ func buildWorkEventCards(from transcript: [WorkChatEnvelope]) -> [WorkEventCardM
   transcript.compactMap { envelope in
     switch envelope.event {
     case .activity(let kind, let detail, _):
+      guard !isLowSignalWorkActivity(kind: kind, detail: detail) else { return nil }
       return WorkEventCardModel(
         id: envelope.id,
         kind: "activity",
@@ -156,10 +256,12 @@ func buildWorkEventCards(from transcript: [WorkChatEnvelope]) -> [WorkEventCardM
         tint: .accent,
         timestamp: envelope.timestamp,
         body: explanation,
-        bullets: steps,
-        metadata: []
+        bullets: steps.map { $0.text },
+        metadata: [],
+        planSteps: steps
       )
     case .reasoning(let text, _):
+      guard !isLowSignalWorkReasoning(text) else { return nil }
       return WorkEventCardModel(
         id: envelope.id,
         kind: "reasoning",
@@ -220,6 +322,7 @@ func buildWorkEventCards(from transcript: [WorkChatEnvelope]) -> [WorkEventCardM
         metadata: []
       )
     case .systemNotice(let kind, let message, let detail, _, _):
+      guard !isLowSignalWorkSystemNotice(kind: kind, message: message, detail: detail) else { return nil }
       return WorkEventCardModel(
         id: envelope.id,
         kind: "notice",
@@ -245,10 +348,9 @@ func buildWorkEventCards(from transcript: [WorkChatEnvelope]) -> [WorkEventCardM
         metadata: [category.replacingOccurrences(of: "_", with: " ").capitalized]
       )
     case .done:
-      // The Turn status card already marks completion and the session usage
-      // summary card at the top of the chat aggregates token spend. Rendering
-      // a "Turn finished" card just dumps the host's raw summary string
-      // (often a JSON usage blob) into the transcript, which reads as noise.
+      // Usage is rendered as a compact timeline banner near the completed
+      // turn. Avoid a generic event card here because the host summary often
+      // contains raw JSON.
       return nil
     case .promptSuggestion(let text, _):
       return WorkEventCardModel(
@@ -323,6 +425,7 @@ func buildWorkEventCards(from transcript: [WorkChatEnvelope]) -> [WorkEventCardM
         metadata: []
       )
     case .status(let turnStatus, let message, _):
+      guard !isLowSignalWorkStatus(turnStatus: turnStatus, message: message) else { return nil }
       return WorkEventCardModel(
         id: envelope.id,
         kind: "status",
@@ -361,6 +464,32 @@ func buildWorkEventCards(from transcript: [WorkChatEnvelope]) -> [WorkEventCardM
   }
 }
 
+func isLowSignalWorkReasoning(_ text: String) -> Bool {
+  let normalized = text.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+  return normalized.isEmpty || normalized == "thinking through the answer"
+}
+
+func isLowSignalWorkActivity(kind: String, detail: String?) -> Bool {
+  let normalizedKind = kind.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+  let normalizedDetail = detail?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+  return normalizedKind == "thinking" && (normalizedDetail.isEmpty || normalizedDetail == "thinking through the answer")
+}
+
+func isLowSignalWorkSystemNotice(kind: String, message: String, detail: String?) -> Bool {
+  let normalizedKind = kind.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+  let normalizedMessage = message.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+  let normalizedDetail = detail?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+  return normalizedDetail.isEmpty
+    && (normalizedKind.isEmpty || normalizedKind == "info")
+    && (normalizedMessage == "session ready" || normalizedMessage == "ready")
+}
+
+func isLowSignalWorkStatus(turnStatus: String, message: String?) -> Bool {
+  let normalizedStatus = turnStatus.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+  let normalizedMessage = message?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+  return normalizedMessage.isEmpty && (normalizedStatus == "started" || normalizedStatus == "completed")
+}
+
 let workTimelinePageSize = 80
 
 func visibleWorkTimelineEntries(from entries: [WorkTimelineEntry], visibleCount: Int) -> [WorkTimelineEntry] {
@@ -369,39 +498,87 @@ func visibleWorkTimelineEntries(from entries: [WorkTimelineEntry], visibleCount:
   return Array(entries.suffix(clampedCount))
 }
 
-func summarizeWorkSessionUsage(from transcript: [WorkChatEnvelope]) -> WorkUsageSummary? {
-  let doneEvents = transcript.compactMap { envelope -> WorkUsageSummary? in
-    guard case .done(_, _, let usage, _) = envelope.event else { return nil }
-    return usage
-  }
+/// Walk a sorted timeline and emit a turn-separator pill before each user
+/// message so the transcript reads like the desktop AgentChatPane: a centered
+/// "HH:MM AM · Model" label introduces every new turn.
+///
+/// The separator carries the user-message timestamp and the chat's current
+/// model so the assistant message rendered just below it doesn't need its own
+/// time/name header.
+func injectWorkTurnSeparators(
+  into entries: [WorkTimelineEntry],
+  chatSummary: AgentChatSessionSummary?
+) -> [WorkTimelineEntry] {
+  guard !entries.isEmpty else { return entries }
+  var seenTurnIds = Set<String>()
+  var output: [WorkTimelineEntry] = []
+  output.reserveCapacity(entries.count + 4)
 
-  let turnCount = transcript.reduce(into: 0) { count, envelope in
-    if case .done = envelope.event {
-      count += 1
+  let provider = chatSummary?.provider ?? ""
+  let modelLabel = prettyWorkChatModelName(chatSummary?.model ?? "")
+  let modelId = chatSummary?.modelId ?? chatSummary?.model
+
+  for entry in entries {
+    if case .message(let message) = entry.payload, message.role.lowercased() == "user" {
+      // De-dupe by turnId when present; otherwise allow one separator per
+      // user message (which is how desktop chunks the transcript).
+      let key = message.turnId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "msg-\(message.id)"
+      if !seenTurnIds.contains(key) {
+        seenTurnIds.insert(key)
+        let separator = WorkTurnSeparator(
+          time: message.timestamp,
+          provider: provider,
+          modelLabel: modelLabel,
+          modelId: modelId
+        )
+        // Rank the separator just before the user message at the same
+        // timestamp so the sort below stays stable and the separator hugs
+        // its turn rather than floating alone.
+        output.append(
+          WorkTimelineEntry(
+            id: "turn-sep-\(key)",
+            timestamp: message.timestamp,
+            rank: entry.rank - 1,
+            payload: .turnSeparator(separator)
+          )
+        )
+      }
     }
+    output.append(entry)
   }
+  return output
+}
 
-  guard turnCount > 0 else { return nil }
-
-  return doneEvents.reduce(
-    WorkUsageSummary(
-      turnCount: turnCount,
-      inputTokens: 0,
-      outputTokens: 0,
-      cacheReadTokens: 0,
-      cacheCreationTokens: 0,
-      costUsd: 0
-    )
-  ) { partial, usage in
-    WorkUsageSummary(
-      turnCount: partial.turnCount,
-      inputTokens: partial.inputTokens + usage.inputTokens,
-      outputTokens: partial.outputTokens + usage.outputTokens,
-      cacheReadTokens: partial.cacheReadTokens + usage.cacheReadTokens,
-      cacheCreationTokens: partial.cacheCreationTokens + usage.cacheCreationTokens,
-      costUsd: partial.costUsd + usage.costUsd
-    )
+/// Beautify a host-supplied model id into the label used on chips and turn
+/// separators. Mirrors the desktop composer's display: "Claude Sonnet 4.6",
+/// "GPT-5.4-Codex", etc., so iOS and desktop read the same.
+func prettyWorkChatModelName(_ raw: String) -> String {
+  let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+  guard !trimmed.isEmpty else { return "Model" }
+  switch trimmed.lowercased() {
+  case "opus": return "Claude Opus 4.7"
+  case "opus[1m]", "opus-1m": return "Claude Opus 4.7 1M"
+  case "sonnet": return "Claude Sonnet 4.6"
+  case "haiku": return "Claude Haiku 4.5"
+  default:
+    if trimmed.lowercased().hasPrefix("claude-") {
+      return "Claude " + beautifyWorkModelSegment(String(trimmed.dropFirst("claude-".count)))
+    }
+    return beautifyWorkModelSegment(trimmed)
   }
+}
+
+private func beautifyWorkModelSegment(_ raw: String) -> String {
+  raw
+    .split(separator: "-")
+    .map { part -> String in
+      let s = String(part)
+      if s.range(of: #"^\d+$"#, options: .regularExpression) != nil { return s }
+      if s.lowercased() == "gpt" { return "GPT" }
+      return s.prefix(1).uppercased() + s.dropFirst()
+    }
+    .joined(separator: " ")
+    .replacingOccurrences(of: #"(\d+) (\d+)"#, with: "$1.$2", options: .regularExpression)
 }
 
 func makeWorkUsageSummary(
@@ -423,6 +600,29 @@ func makeWorkUsageSummary(
     cacheCreationTokens: cacheCreationTokens ?? 0,
     costUsd: costUsd ?? 0
   )
+}
+
+func summarizeWorkSessionUsage(from transcript: [WorkChatEnvelope]) -> WorkUsageSummary? {
+  var summary = WorkUsageSummary(
+    turnCount: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheReadTokens: 0,
+    cacheCreationTokens: 0,
+    costUsd: 0
+  )
+
+  for envelope in transcript {
+    guard case .done(_, _, let usage, _) = envelope.event, let usage else { continue }
+    summary.turnCount += usage.turnCount
+    summary.inputTokens += usage.inputTokens
+    summary.outputTokens += usage.outputTokens
+    summary.cacheReadTokens += usage.cacheReadTokens
+    summary.cacheCreationTokens += usage.cacheCreationTokens
+    summary.costUsd += usage.costUsd
+  }
+
+  return summary.turnCount > 0 ? summary : nil
 }
 
 func formattedTokenCount(_ value: Int) -> String {

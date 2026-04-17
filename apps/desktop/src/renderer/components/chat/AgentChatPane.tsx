@@ -30,6 +30,7 @@ import {
   type TerminalToolType,
 } from "../../../shared/types";
 import { parseAgentChatTranscript } from "../../../shared/chatTranscript";
+import { isProviderSlashCommandInput } from "../../../shared/chatSlashCommands";
 import {
   LOCAL_PROVIDER_LABELS,
   MODEL_REGISTRY,
@@ -59,7 +60,7 @@ import {
   shouldRefreshSessionListForChatEvent,
 } from "../../lib/chatSessionEvents";
 import { ChatSurfaceShell } from "./ChatSurfaceShell";
-import { chatChipToneClass } from "./chatSurfaceTheme";
+import { chatChipToneClass, providerChatAccent } from "./chatSurfaceTheme";
 import { ChatComputerUsePanel } from "./ChatComputerUsePanel";
 import { ChatSubagentsPanel } from "./ChatSubagentsPanel";
 import { ChatTasksPanel } from "./ChatTasksPanel";
@@ -2194,7 +2195,7 @@ export function AgentChatPane({
     if (!text.length || !laneId) return;
     const draftSnapshot = draft;
     const attachmentsSnapshot = attachments;
-    const isLiteralSlashCommand = text.startsWith("/");
+    const isLiteralSlashCommand = isProviderSlashCommandInput(text);
 
     submitInFlightRef.current = true;
     setBusy(true);
@@ -2503,7 +2504,14 @@ export function AgentChatPane({
       </ChatSurfaceShell>
     );
   }
-  const draftAccent = selectedModelDesc?.color ?? "#A1A1AA";
+  // Provider-derived accent first so Claude is always amber, Codex always
+  // warm-white, etc. — keeps chat surfaces consistent across model variants
+  // and across desktop/mobile. Falls back to the per-model registry color
+  // when the provider isn't in the unified table.
+  const draftAccent =
+    providerChatAccent(selectedSession?.provider ?? selectedModelDesc?.family ?? null)
+    ?? selectedModelDesc?.color
+    ?? "#A1A1AA";
   const proofSessionId = selectedSessionId ?? "";
   const proofPanelContent = (
     <>

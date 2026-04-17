@@ -219,7 +219,7 @@ struct WorkOutputBlockHeader: View {
       Button {
         UIPasteboard.general.string = copyText
         copied = true
-        Task {
+        Task { @MainActor in
           try? await Task.sleep(nanoseconds: 1_400_000_000)
           copied = false
         }
@@ -496,7 +496,7 @@ struct WorkEventCardView: View {
 
       if !card.bullets.isEmpty {
         VStack(alignment: .leading, spacing: 6) {
-          ForEach(card.bullets, id: \.self) { bullet in
+          ForEach(Array(card.bullets.enumerated()), id: \.offset) { _, bullet in
             HStack(alignment: .top, spacing: 8) {
               Text("•")
                 .foregroundStyle(card.tint.color)
@@ -553,3 +553,343 @@ struct WorkEventCardView: View {
   }
 }
 
+/// Rich proposed-plan card — per-step checklist with status icon/color and a
+/// progress meter. Replaces the generic "Status: text" bullet list so plans
+/// feel like a plan, not a dumped array.
+struct WorkProposedPlanCard: View {
+  let card: WorkEventCardModel
+
+  private var steps: [WorkPlanStep] { card.planSteps }
+
+  private var completed: Int {
+    steps.filter { normalize($0.status) == .completed }.count
+  }
+
+  private var inProgress: Int {
+    steps.filter { normalize($0.status) == .inProgress }.count
+  }
+
+  private var progressFraction: Double {
+    guard !steps.isEmpty else { return 0 }
+    return Double(completed) / Double(steps.count)
+  }
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 12) {
+      header
+
+      if let body = card.body, !body.isEmpty {
+        Text(body)
+          .font(.caption)
+          .foregroundStyle(ADEColor.textSecondary)
+          .frame(maxWidth: .infinity, alignment: .leading)
+      }
+
+      if !steps.isEmpty {
+        progressBar
+
+        VStack(alignment: .leading, spacing: 8) {
+          ForEach(Array(steps.enumerated()), id: \.offset) { index, step in
+            planStepRow(step: step, index: index + 1)
+          }
+        }
+      }
+    }
+    .padding(14)
+    .background(
+      RoundedRectangle(cornerRadius: 16, style: .continuous)
+        .fill(ADEColor.surfaceBackground.opacity(0.08))
+    )
+    .glassEffect(in: .rect(cornerRadius: 16))
+    .overlay(
+      RoundedRectangle(cornerRadius: 16, style: .continuous)
+        .stroke(ADEColor.brandClaude.opacity(0.22), lineWidth: 0.75)
+    )
+    .accessibilityElement(children: .combine)
+    .accessibilityLabel(accessibilitySummary)
+  }
+
+  private var header: some View {
+    HStack(alignment: .center, spacing: 10) {
+      Image(systemName: "list.bullet.clipboard")
+        .font(.system(size: 13, weight: .semibold))
+        .foregroundStyle(ADEColor.brandClaude)
+        .frame(width: 28, height: 28)
+        .background(ADEColor.brandClaude.opacity(0.14), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+
+      VStack(alignment: .leading, spacing: 2) {
+        Text("Plan")
+          .font(.subheadline.weight(.semibold))
+          .foregroundStyle(ADEColor.textPrimary)
+        Text(stepSummary)
+          .font(.caption2)
+          .foregroundStyle(ADEColor.textMuted)
+      }
+
+      Spacer(minLength: 8)
+
+      if !steps.isEmpty {
+        Text("\(completed)/\(steps.count)")
+          .font(.caption.weight(.semibold).monospacedDigit())
+          .foregroundStyle(progressFraction == 1 ? ADEColor.success : ADEColor.brandClaude)
+      }
+    }
+  }
+
+  private var progressBar: some View {
+    GeometryReader { geo in
+      ZStack(alignment: .leading) {
+        Capsule(style: .continuous)
+          .fill(ADEColor.border.opacity(0.2))
+        Capsule(style: .continuous)
+          .fill(
+            LinearGradient(
+              colors: [ADEColor.brandClaude, ADEColor.brandClaude.opacity(0.6)],
+              startPoint: .leading,
+              endPoint: .trailing
+            )
+          )
+          .frame(width: max(6, geo.size.width * progressFraction))
+      }
+    }
+    .frame(height: 4)
+  }
+
+  @ViewBuilder
+  private func planStepRow(step: WorkPlanStep, index: Int) -> some View {
+    let status = normalize(step.status)
+    HStack(alignment: .top, spacing: 10) {
+      statusGlyph(for: status)
+        .font(.system(size: 15, weight: .semibold))
+        .foregroundStyle(tint(for: status))
+        .frame(width: 20, height: 20)
+
+      VStack(alignment: .leading, spacing: 2) {
+        Text(step.text)
+          .font(.caption)
+          .foregroundStyle(status == .completed ? ADEColor.textMuted : ADEColor.textPrimary)
+          .strikethrough(status == .completed, color: ADEColor.textMuted)
+          .frame(maxWidth: .infinity, alignment: .leading)
+        if status != .pending {
+          Text(statusLabel(for: status))
+            .font(.caption2.weight(.medium))
+            .foregroundStyle(tint(for: status))
+        }
+      }
+
+      Spacer(minLength: 0)
+
+      Text("\(index)")
+        .font(.caption2.monospacedDigit())
+        .foregroundStyle(ADEColor.textMuted.opacity(0.6))
+    }
+    .padding(.vertical, 4)
+  }
+
+  private var stepSummary: String {
+    if steps.isEmpty { return "Waiting for steps…" }
+    var parts: [String] = ["\(steps.count) step\(steps.count == 1 ? "" : "s")"]
+    if inProgress > 0 { parts.append("\(inProgress) running") }
+    if completed > 0 && completed < steps.count { parts.append("\(completed) done") }
+    if completed == steps.count { parts.append("complete") }
+    return parts.joined(separator: " · ")
+  }
+
+  private var accessibilitySummary: String {
+    var parts = ["Plan. \(stepSummary)."]
+    if let body = card.body { parts.append(body) }
+    for (idx, step) in steps.enumerated() {
+      parts.append("Step \(idx + 1), \(statusLabel(for: normalize(step.status))). \(step.text)")
+    }
+    return parts.joined(separator: " ")
+  }
+
+  private enum NormalizedStatus {
+    case pending, inProgress, completed, failed
+  }
+
+  private func normalize(_ raw: String) -> NormalizedStatus {
+    switch raw.lowercased().replacingOccurrences(of: "_", with: "-") {
+    case "completed", "done", "complete", "success": return .completed
+    case "in-progress", "running", "active", "started": return .inProgress
+    case "failed", "error", "cancelled", "canceled": return .failed
+    default: return .pending
+    }
+  }
+
+  private func tint(for status: NormalizedStatus) -> Color {
+    switch status {
+    case .pending: return ADEColor.textMuted
+    case .inProgress: return ADEColor.brandClaude
+    case .completed: return ADEColor.success
+    case .failed: return ADEColor.danger
+    }
+  }
+
+  private func statusGlyph(for status: NormalizedStatus) -> Image {
+    switch status {
+    case .pending: return Image(systemName: "circle")
+    case .inProgress: return Image(systemName: "circle.dotted")
+    case .completed: return Image(systemName: "checkmark.circle.fill")
+    case .failed: return Image(systemName: "xmark.circle.fill")
+    }
+  }
+
+  private func statusLabel(for status: NormalizedStatus) -> String {
+    switch status {
+    case .pending: return "Pending"
+    case .inProgress: return "In progress"
+    case .completed: return "Done"
+    case .failed: return "Failed"
+    }
+  }
+}
+
+/// Horizontal chip strip surfacing running/recently-finished subagents above
+/// the transcript, so the user can see at a glance what's in flight without
+/// hunting through the timeline.
+struct WorkSubagentStrip: View {
+  let snapshots: [WorkSubagentSnapshot]
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  @State private var expandedTaskId: String? = nil
+
+  var body: some View {
+    if snapshots.isEmpty {
+      EmptyView()
+    } else {
+      VStack(alignment: .leading, spacing: 8) {
+        ScrollView(.horizontal, showsIndicators: false) {
+          HStack(spacing: 8) {
+            ForEach(snapshots) { snapshot in
+              Button {
+                withAnimation(ADEMotion.quick(reduceMotion: reduceMotion)) {
+                  expandedTaskId = expandedTaskId == snapshot.taskId ? nil : snapshot.taskId
+                }
+              } label: {
+                chipBody(for: snapshot, expanded: expandedTaskId == snapshot.taskId)
+              }
+              .buttonStyle(.plain)
+              .accessibilityLabel(accessibilityLabel(for: snapshot))
+            }
+          }
+          .padding(.horizontal, 2)
+        }
+
+        if let expanded = expandedTaskId,
+           let snapshot = snapshots.first(where: { $0.taskId == expanded }) {
+          expandedCard(for: snapshot)
+        }
+      }
+    }
+  }
+
+  @ViewBuilder
+  private func chipBody(for snapshot: WorkSubagentSnapshot, expanded: Bool) -> some View {
+    let tint = tint(for: snapshot.status)
+    HStack(spacing: 6) {
+      statusDot(for: snapshot.status, tint: tint)
+      Text(truncated(snapshot.description, limit: 28))
+        .font(.caption.weight(.semibold))
+        .foregroundStyle(ADEColor.textPrimary)
+        .lineLimit(1)
+      if snapshot.background {
+        Image(systemName: "moon.zzz.fill")
+          .font(.system(size: 9, weight: .bold))
+          .foregroundStyle(ADEColor.textMuted)
+      }
+    }
+    .padding(.horizontal, 10)
+    .padding(.vertical, 7)
+    .background(tint.opacity(expanded ? 0.22 : 0.12), in: Capsule(style: .continuous))
+    .overlay(
+      Capsule(style: .continuous)
+        .stroke(tint.opacity(expanded ? 0.55 : 0.3), lineWidth: 0.8)
+    )
+  }
+
+  @ViewBuilder
+  private func statusDot(for status: WorkSubagentSnapshot.Status, tint: Color) -> some View {
+    switch status {
+    case .running:
+      Circle()
+        .fill(tint)
+        .frame(width: 7, height: 7)
+        .overlay(Circle().stroke(tint.opacity(0.3), lineWidth: 2).scaleEffect(1.6))
+    case .succeeded:
+      Image(systemName: "checkmark.circle.fill")
+        .font(.system(size: 11, weight: .bold))
+        .foregroundStyle(tint)
+    case .failed:
+      Image(systemName: "xmark.circle.fill")
+        .font(.system(size: 11, weight: .bold))
+        .foregroundStyle(tint)
+    }
+  }
+
+  @ViewBuilder
+  private func expandedCard(for snapshot: WorkSubagentSnapshot) -> some View {
+    let tint = tint(for: snapshot.status)
+    VStack(alignment: .leading, spacing: 6) {
+      HStack(spacing: 8) {
+        statusDot(for: snapshot.status, tint: tint)
+        Text(snapshot.description)
+          .font(.caption.weight(.semibold))
+          .foregroundStyle(ADEColor.textPrimary)
+        Spacer(minLength: 6)
+        Text(statusLabel(for: snapshot.status))
+          .font(.caption2.weight(.semibold))
+          .foregroundStyle(tint)
+      }
+      if let tool = snapshot.lastToolName, !tool.isEmpty {
+        HStack(spacing: 4) {
+          Image(systemName: "wrench.and.screwdriver")
+            .font(.system(size: 9, weight: .semibold))
+          Text(tool)
+            .font(.caption2)
+        }
+        .foregroundStyle(ADEColor.textMuted)
+      }
+      if let summary = snapshot.latestSummary, !summary.isEmpty {
+        Text(summary)
+          .font(.caption)
+          .foregroundStyle(ADEColor.textSecondary)
+          .lineLimit(4)
+      }
+    }
+    .padding(10)
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .background(ADEColor.surfaceBackground.opacity(0.1), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+    .overlay(
+      RoundedRectangle(cornerRadius: 12, style: .continuous)
+        .stroke(tint.opacity(0.28), lineWidth: 0.75)
+    )
+    .transition(.opacity.combined(with: .move(edge: .top)))
+  }
+
+  private func tint(for status: WorkSubagentSnapshot.Status) -> Color {
+    switch status {
+    case .running: return ADEColor.accent
+    case .succeeded: return ADEColor.success
+    case .failed: return ADEColor.danger
+    }
+  }
+
+  private func statusLabel(for status: WorkSubagentSnapshot.Status) -> String {
+    switch status {
+    case .running: return "Running"
+    case .succeeded: return "Done"
+    case .failed: return "Failed"
+    }
+  }
+
+  private func accessibilityLabel(for snapshot: WorkSubagentSnapshot) -> String {
+    let status = statusLabel(for: snapshot.status)
+    return "Subagent \(snapshot.description), \(status). Tap for details."
+  }
+
+  private func truncated(_ value: String, limit: Int) -> String {
+    let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+    if trimmed.count <= limit { return trimmed }
+    return String(trimmed.prefix(limit - 1)) + "…"
+  }
+}

@@ -378,13 +378,22 @@ struct PrMarkdownRenderer: View {
   let markdown: String
 
   private var attributed: AttributedString? {
-    try? AttributedString(
+    if let cached = PrMarkdownRenderingCache.shared.attributedString(for: markdown) {
+      return cached
+    }
+
+    guard let parsed = try? AttributedString(
       markdown: markdown,
       options: AttributedString.MarkdownParsingOptions(
         interpretedSyntax: .full,
         failurePolicy: .returnPartiallyParsedIfPossible
       )
-    )
+    ) else {
+      return nil
+    }
+
+    PrMarkdownRenderingCache.shared.store(parsed, for: markdown)
+    return parsed
   }
 
   var body: some View {

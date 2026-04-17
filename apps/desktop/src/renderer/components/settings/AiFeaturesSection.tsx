@@ -182,40 +182,48 @@ export function AiFeaturesSection() {
   const featureRowHoverCss = `.ai-feature-row:hover { background: ${COLORS.hoverBg}; }`;
 
   const saveChatTitleSettings = useCallback(async (patch: ChatTitleSettingsPatch) => {
-    const nextModelId =
-      patch.modelId !== undefined
-        ? patch.modelId
-        : utilityModel || "";
-    const nextEnabled =
-      patch.enabled !== undefined ? patch.enabled : chatAutoTitleEnabled;
-    const nextRefresh =
-      patch.refreshOnComplete !== undefined
-        ? patch.refreshOnComplete
-        : chatAutoTitleRefresh;
-    const nextReasoning =
-      patch.reasoningEffort !== undefined
-        ? patch.reasoningEffort
-        : chatAutoTitleReasoning;
+    if (saving) return;
+    setSaving(true);
+    try {
+      const nextModelId =
+        patch.modelId !== undefined
+          ? patch.modelId
+          : utilityModel || "";
+      const nextEnabled =
+        patch.enabled !== undefined ? patch.enabled : chatAutoTitleEnabled;
+      const nextRefresh =
+        patch.refreshOnComplete !== undefined
+          ? patch.refreshOnComplete
+          : chatAutoTitleRefresh;
+      const nextReasoning =
+        patch.reasoningEffort !== undefined
+          ? patch.reasoningEffort
+          : chatAutoTitleReasoning;
 
-    await window.ade.ai.updateConfig({
-      sessionIntelligence: {
-        titles: {
-          enabled: nextEnabled,
-          modelId: nextModelId || undefined,
-          refreshOnComplete: nextRefresh,
+      await window.ade.ai.updateConfig({
+        sessionIntelligence: {
+          titles: {
+            enabled: nextEnabled,
+            modelId: nextModelId || undefined,
+            refreshOnComplete: nextRefresh,
+          },
         },
-      } as AiConfig["sessionIntelligence"],
-      chat: {
-        autoTitleReasoningEffort: nextReasoning,
-      } as AiConfig["chat"],
-    });
+        chat: {
+          autoTitleReasoningEffort: nextReasoning,
+        },
+      });
 
-    setChatAutoTitleEnabled(nextEnabled);
-    setChatAutoTitleRefresh(nextRefresh);
-    if (patch.reasoningEffort !== undefined) {
-      setChatAutoTitleReasoning(patch.reasoningEffort);
+      setChatAutoTitleEnabled(nextEnabled);
+      setChatAutoTitleRefresh(nextRefresh);
+      if (patch.reasoningEffort !== undefined) {
+        setChatAutoTitleReasoning(patch.reasoningEffort);
+      }
+    } catch (error) {
+      console.error("[AiFeaturesSection] saveChatTitleSettings failed:", error);
+    } finally {
+      setSaving(false);
     }
-  }, [chatAutoTitleEnabled, chatAutoTitleRefresh, chatAutoTitleReasoning, utilityModel]);
+  }, [chatAutoTitleEnabled, chatAutoTitleRefresh, chatAutoTitleReasoning, saving, utilityModel]);
 
   const handleToggle = useCallback(async (key: AiFeatureKey, enabled: boolean) => {
     if (saving) return;

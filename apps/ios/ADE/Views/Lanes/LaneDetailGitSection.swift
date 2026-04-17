@@ -14,6 +14,10 @@ extension LaneDetailScreen {
           conflictSection(conflictState: conflictState)
         }
 
+        if detail.lane.status.dirty || !(detail.diffChanges?.staged.isEmpty ?? true) {
+          commitCTAButton(detail: detail)
+        }
+
         if let diffChanges = detail.diffChanges, !diffChanges.unstaged.isEmpty {
           unstagedSection(changes: diffChanges.unstaged)
         }
@@ -22,32 +26,242 @@ extension LaneDetailScreen {
           stagedSection(changes: diffChanges.staged)
         }
 
-        DisclosureGroup(isExpanded: $syncExpanded) {
-          syncSectionContent(detail: detail)
+        actionsCard
+
+        NavigationLink {
+          LaneSyncDetailScreen(
+            laneName: detail.lane.name,
+            branchRef: detail.lane.branchRef,
+            syncStatus: detail.syncStatus,
+            canRunLiveActions: canRunLiveActions,
+            onFetch: { Task { await performAction("fetch") { try await syncService.fetchGit(laneId: laneId) } } },
+            onPullMerge: { Task { await performAction("pull merge") { try await syncService.pullGit(laneId: laneId) } } },
+            onPullRebase: { Task { await performAction("pull rebase") { try await syncService.syncGit(laneId: laneId, mode: "rebase") } } },
+            onPush: { Task { await performAction("push") { try await syncService.pushGit(laneId: laneId) } } }
+          )
         } label: {
-          sectionHeader(title: "Sync", symbol: "arrow.triangle.2.circlepath", subtitle: detail.syncStatus.map(syncSummary))
+          summaryRow(
+            symbol: "arrow.triangle.2.circlepath",
+            title: "Sync",
+            detail: detail.syncStatus.map(syncSummary) ?? "No sync status yet"
+          )
         }
-        .disclosureGroupStyle(GlassDisclosureStyle())
+        .buttonStyle(.plain)
 
-        if !detail.stashes.isEmpty || canRunLiveActions {
-          DisclosureGroup(isExpanded: $stashesExpanded) {
-            stashesSectionContent(detail: detail)
-          } label: {
-            sectionHeader(title: "Stashes", symbol: "tray.2", badge: detail.stashes.isEmpty ? nil : "\(detail.stashes.count)")
-          }
-          .disclosureGroupStyle(GlassDisclosureStyle())
+        NavigationLink {
+          LaneStashesScreen(
+            laneName: detail.lane.name,
+            stashes: detail.stashes,
+            canRunLiveActions: canRunLiveActions,
+            onCreateStash: { message in
+              await performAction("stash") {
+                try await syncService.stashPush(laneId: laneId, message: message, includeUntracked: true)
+              }
+              return errorMessage == nil
+            },
+            onApply: { ref in
+              await performAction("stash apply") { try await syncService.stashApply(laneId: laneId, stashRef: ref) }
+            },
+            onPop: { ref in
+              await performAction("stash pop") { try await syncService.stashPop(laneId: laneId, stashRef: ref) }
+            },
+            onDrop: { ref in
+              await performAction("stash drop") { try await syncService.stashDrop(laneId: laneId, stashRef: ref) }
+            },
+            onClearAll: {
+              await performAction("clear stashes") {
+                for stash in detail.stashes.reversed() {
+                  try await syncService.stashDrop(laneId: laneId, stashRef: stash.ref)
+                }
+              }
+            }
+          )
+        } label: {
+          summaryRow(
+            symbol: "tray.2",
+            title: "Stashes",
+            detail: detail.stashes.isEmpty ? "No stashes" : "\(detail.stashes.count) stash\(detail.stashes.count == 1 ? "" : "es")"
+          )
         }
+        .buttonStyle(.plain)
 
-        if !detail.recentCommits.isEmpty {
-          DisclosureGroup(isExpanded: $historyExpanded) {
-            historySectionContent(detail: detail)
-          } label: {
-            sectionHeader(title: "Recent commits", symbol: "clock.arrow.circlepath", badge: "\(detail.recentCommits.count)")
-          }
-          .disclosureGroupStyle(GlassDisclosureStyle())
+        NavigationLink {
+          LaneCommitHistoryScreen(
+            laneName: detail.lane.name,
+            commits: detail.recentCommits,
+            canRunLiveActions: canRunLiveActions,
+            allowsDiffInspection: { commit in
+              let cached = cachedCommitDiffFilesBySha[commit.sha] ?? []
+              return laneAllowsDiffInspection(
+                connectionState: syncService.connectionState,
+                laneStatus: syncService.status(for: .lanes),
+                hasCachedTargets: !cached.isEmpty
+              )
+            },
+            onOpenDiff: { commit in await openCommitDiffs(for: commit) },
+            onCopyMessage: { commit in
+              do {
+                UIPasteboard.general.string = try await syncService.getCommitMessage(laneId: laneId, commitSha: commit.sha)
+              } catch {
+                ADEHaptics.error()
+                errorMessage = error.localizedDescription
+              }
+            },
+            onRevert: { commit in
+              await performAction("revert commit") { try await syncService.revertCommit(laneId: laneId, commitSha: commit.sha) }
+            },
+            onCherryPick: { commit in
+              await performAction("cherry pick") { try await syncService.cherryPickCommit(laneId: laneId, commitSha: commit.sha) }
+            }
+          )
+        } label: {
+          summaryRow(
+            symbol: "clock.arrow.circlepath",
+            title: "Recent commits",
+            detail: detail.recentCommits.isEmpty ? "No commits yet" : "\(detail.recentCommits.count) commit\(detail.recentCommits.count == 1 ? "" : "s")"
+          )
         }
+        .buttonStyle(.plain)
       }
     }
+  }
+
+  // MARK: - Rebase banner
+
+  @ViewBuilder
+  var rebaseBannerSection: some View {
+    if let detail,
+       let suggestion = detail.rebaseSuggestion,
+       !rebaseSuggestionDismissed,
+       suggestion.dismissedAt == nil {
+      LaneDetailRebaseBanner(
+        behindCount: suggestion.behindCount,
+        parentLabel: detail.lane.baseRef,
+        canRunLiveActions: canRunLiveActions,
+        onRebase: {
+          Task { await performAction("rebase lane") { try await syncService.startLaneRebase(laneId: laneId, scope: "lane_only") } }
+        },
+        onDefer: handleRebaseSuggestionDefer,
+        onDismiss: handleRebaseSuggestionDismiss
+      )
+    }
+  }
+
+  // MARK: - Commit CTA
+
+  @ViewBuilder
+  func commitCTAButton(detail: LaneDetailPayload) -> some View {
+    let stagedCount = detail.diffChanges?.staged.count ?? 0
+    let unstagedCount = detail.diffChanges?.unstaged.count ?? 0
+    Button {
+      showCommitSheet = true
+    } label: {
+      HStack(spacing: 8) {
+        Image(systemName: amendCommit ? "arrow.counterclockwise" : "square.and.pencil")
+          .font(.system(size: 14, weight: .semibold))
+        Text(amendCommit ? "Amend last commit" : commitCTALabel(stagedCount: stagedCount, unstagedCount: unstagedCount))
+          .font(.subheadline.weight(.semibold))
+        Spacer()
+        Image(systemName: "chevron.up")
+          .font(.system(size: 11, weight: .bold))
+          .opacity(0.7)
+      }
+      .foregroundStyle(ADEColor.textPrimary)
+      .padding(.horizontal, 16)
+      .padding(.vertical, 14)
+      .background(ADEColor.accent.opacity(0.22), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+      .overlay(
+        RoundedRectangle(cornerRadius: 14, style: .continuous)
+          .stroke(ADEColor.accent.opacity(0.45), lineWidth: 0.6)
+      )
+    }
+    .buttonStyle(.plain)
+    .disabled(!canRunLiveActions)
+  }
+
+  private func commitCTALabel(stagedCount: Int, unstagedCount: Int) -> String {
+    if stagedCount > 0 {
+      return "Commit \(stagedCount) staged file\(stagedCount == 1 ? "" : "s")"
+    }
+    if unstagedCount > 0 {
+      return "Review & commit \(unstagedCount) change\(unstagedCount == 1 ? "" : "s")"
+    }
+    return "Commit changes"
+  }
+
+  // MARK: - Actions card
+
+  @ViewBuilder
+  var actionsCard: some View {
+    if let detail {
+      LaneActionsCard(
+        canRunLiveActions: canRunLiveActions,
+        canPush: (detail.lane.status.ahead) > 0 || detail.syncStatus?.hasUpstream == false,
+        isPublish: detail.syncStatus?.hasUpstream == false,
+        onPullMerge: {
+          Task { await performAction("pull merge") { try await syncService.pullGit(laneId: laneId) } }
+        },
+        onPullRebase: {
+          Task { await performAction("pull rebase") { try await syncService.syncGit(laneId: laneId, mode: "rebase") } }
+        },
+        onPush: {
+          Task { await performAction("push") { try await syncService.pushGit(laneId: laneId) } }
+        },
+        onSync: {
+          Task { await performAction("sync") { try await syncService.syncGit(laneId: laneId, mode: "rebase") } }
+        },
+        onFetch: {
+          Task { await performAction("fetch") { try await syncService.fetchGit(laneId: laneId) } }
+        },
+        onRebaseLane: {
+          Task { await performAction("rebase lane") { try await syncService.startLaneRebase(laneId: laneId, scope: "lane_only") } }
+        },
+        onRebaseDescendants: {
+          Task { await performAction("rebase descendants") { try await syncService.startLaneRebase(laneId: laneId, scope: "lane_and_descendants") } }
+        },
+        onRebaseAndPush: {
+          requestGitConfirmation(.rebaseAndPush)
+        },
+        onForcePush: {
+          requestGitConfirmation(.forcePush)
+        },
+        onStash: {
+          Task {
+            await performAction("stash") {
+              try await syncService.stashPush(laneId: laneId, message: "", includeUntracked: true)
+            }
+          }
+        }
+      )
+    }
+  }
+
+  // MARK: - Summary row
+
+  @ViewBuilder
+  func summaryRow(symbol: String, title: String, detail: String) -> some View {
+    HStack(spacing: 12) {
+      Image(systemName: symbol)
+        .font(.system(size: 13, weight: .semibold))
+        .foregroundStyle(ADEColor.textSecondary)
+        .frame(width: 24)
+      Text(title)
+        .font(.subheadline.weight(.semibold))
+        .foregroundStyle(ADEColor.textPrimary)
+      Spacer(minLength: 8)
+      Text(detail)
+        .font(.caption)
+        .foregroundStyle(ADEColor.textSecondary)
+        .lineLimit(1)
+        .truncationMode(.tail)
+      Image(systemName: "chevron.right")
+        .font(.system(size: 11, weight: .bold))
+        .foregroundStyle(ADEColor.textMuted)
+    }
+    .padding(.horizontal, 14)
+    .padding(.vertical, 14)
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .adeGlassCard(cornerRadius: 14, padding: 0)
   }
 
   // MARK: - Status banner
@@ -257,203 +471,8 @@ extension LaneDetailScreen {
     )
   }
 
-  // MARK: - Sync section content
-
-  @ViewBuilder
-  func syncSectionContent(detail: LaneDetailPayload) -> some View {
-    VStack(alignment: .leading, spacing: 12) {
-      LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
-        LaneQuickAction(title: "Fetch", symbol: "arrow.down.circle", tint: ADEColor.textSecondary) {
-          Task { await performAction("fetch") { try await syncService.fetchGit(laneId: laneId) } }
-        }
-        .disabled(!canRunLiveActions)
-        Menu {
-          Button("Pull (merge)") {
-            Task { await performAction("pull merge") { try await syncService.pullGit(laneId: laneId) } }
-          }
-          Button("Pull (rebase)") {
-            Task { await performAction("pull rebase") { try await syncService.syncGit(laneId: laneId, mode: "rebase") } }
-          }
-        } label: {
-          LaneQuickAction(title: "Pull", symbol: "arrow.down.to.line", tint: ADEColor.textSecondary) {}
-        }
-        .disabled(!canRunLiveActions)
-        LaneQuickAction(
-          title: detail.syncStatus?.hasUpstream == false ? "Publish" : "Push",
-          symbol: "arrow.up.circle",
-          tint: ADEColor.accent
-        ) {
-          Task { await performAction("push") { try await syncService.pushGit(laneId: laneId) } }
-        }
-        .disabled(!canRunLiveActions)
-        Menu {
-          Button("Force push") {
-            requestGitConfirmation(.forcePush)
-          }
-          Button("Rebase lane only") {
-            Task { await performAction("rebase lane") { try await syncService.startLaneRebase(laneId: laneId, scope: "lane_only") } }
-          }
-          Button("Rebase lane + descendants") {
-            Task { await performAction("rebase descendants") { try await syncService.startLaneRebase(laneId: laneId, scope: "lane_and_descendants") } }
-          }
-          Button("Rebase and push") {
-            requestGitConfirmation(.rebaseAndPush)
-          }
-        } label: {
-          LaneQuickAction(title: "More", symbol: "ellipsis.circle", tint: ADEColor.textSecondary) {}
-        }
-        .disabled(!canRunLiveActions)
-      }
-
-      if !canRunLiveActions {
-        Text("Live git actions unlock after reconnect and lane sync finish.")
-          .font(.caption)
-          .foregroundStyle(ADEColor.textSecondary)
-      }
-
-      if let upstreamRef = detail.syncStatus?.upstreamRef {
-        LaneInfoRow(label: "Upstream", value: upstreamRef, isMonospaced: true)
-      }
-    }
-    .padding(.top, 8)
-  }
-
-  // MARK: - Stashes section content
-
-  @ViewBuilder
-  func stashesSectionContent(detail: LaneDetailPayload) -> some View {
-    VStack(alignment: .leading, spacing: 12) {
-      HStack(spacing: 8) {
-        TextField("Stash message", text: $stashMessage)
-          .textFieldStyle(.plain)
-          .adeInsetField(cornerRadius: 10, padding: 10)
-          .disabled(!canRunLiveActions)
-        LaneActionButton(title: "Stash", symbol: "tray.and.arrow.down", tint: ADEColor.accent) {
-          Task {
-            await performAction("stash") {
-              try await syncService.stashPush(laneId: laneId, message: stashMessage, includeUntracked: true)
-            }
-            if errorMessage == nil { stashMessage = "" }
-          }
-        }
-        .disabled(!canRunLiveActions)
-      }
-
-      if detail.stashes.count > 1 {
-        LaneHoldToConfirmButton(title: "Clear all stashes", symbol: "trash", tint: ADEColor.danger) {
-          Task {
-            await performAction("clear stashes") {
-              for stash in detail.stashes.reversed() {
-                try await syncService.stashDrop(laneId: laneId, stashRef: stash.ref)
-              }
-            }
-          }
-        }
-        .disabled(!canRunLiveActions)
-      }
-
-      ForEach(detail.stashes.prefix(20)) { stash in
-        VStack(alignment: .leading, spacing: 8) {
-          HStack {
-            Text(stash.subject)
-              .font(.subheadline.weight(.semibold))
-              .foregroundStyle(ADEColor.textPrimary)
-            Spacer()
-            if let createdAt = stash.createdAt {
-              Text(relativeTimestamp(createdAt))
-                .font(.caption2)
-                .foregroundStyle(ADEColor.textMuted)
-            }
-          }
-          HStack(spacing: 8) {
-            LaneActionButton(title: "Apply", symbol: "tray.and.arrow.up") {
-              Task { await performAction("stash apply") { try await syncService.stashApply(laneId: laneId, stashRef: stash.ref) } }
-            }
-            .disabled(!canRunLiveActions)
-            LaneActionButton(title: "Pop", symbol: "arrow.up.right.square") {
-              Task { await performAction("stash pop") { try await syncService.stashPop(laneId: laneId, stashRef: stash.ref) } }
-            }
-            .disabled(!canRunLiveActions)
-            LaneActionButton(title: "Drop", symbol: "trash", tint: ADEColor.danger) {
-              Task { await performAction("stash drop") { try await syncService.stashDrop(laneId: laneId, stashRef: stash.ref) } }
-            }
-            .disabled(!canRunLiveActions)
-          }
-        }
-        if stash.id != detail.stashes.last?.id { Divider() }
-      }
-    }
-    .padding(.top, 8)
-  }
-
-  // MARK: - Recent commits section content
-
-  @ViewBuilder
-  func historySectionContent(detail: LaneDetailPayload) -> some View {
-    VStack(alignment: .leading, spacing: 12) {
-      ForEach(detail.recentCommits.prefix(20)) { commit in
-        let cachedCommitFiles = cachedCommitDiffFilesBySha[commit.sha] ?? []
-        let allowsCommitDiffInspection = laneAllowsDiffInspection(
-          connectionState: syncService.connectionState,
-          laneStatus: syncService.status(for: .lanes),
-          hasCachedTargets: !cachedCommitFiles.isEmpty
-        )
-        VStack(alignment: .leading, spacing: 6) {
-          HStack {
-            Text(commit.subject)
-              .font(.subheadline.weight(.semibold))
-              .foregroundStyle(ADEColor.textPrimary)
-              .lineLimit(2)
-            if commit == detail.recentCommits.first {
-              LaneTypeBadge(text: "HEAD", tint: ADEColor.accent)
-            }
-            if commit.parents.count > 1 {
-              LaneTypeBadge(text: "MERGE", tint: ADEColor.warning)
-            }
-            Spacer()
-            Text(commit.shortSha)
-              .font(.system(.caption2, design: .monospaced))
-              .foregroundStyle(ADEColor.textMuted)
-          }
-          Text("\(commit.authorName) • \(relativeTimestamp(commit.authoredAt))")
-            .font(.caption2)
-            .foregroundStyle(ADEColor.textSecondary)
-          ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 6) {
-              LaneActionButton(title: "Files", symbol: "doc.text.magnifyingglass") {
-                Task { await openCommitDiffs(for: commit) }
-              }
-              .disabled(!allowsCommitDiffInspection)
-              LaneActionButton(title: "Copy message", symbol: "doc.on.doc") {
-                Task {
-                  do {
-                    UIPasteboard.general.string = try await syncService.getCommitMessage(laneId: laneId, commitSha: commit.sha)
-                  } catch {
-                    ADEHaptics.error()
-                    errorMessage = error.localizedDescription
-                  }
-                }
-              }
-              .disabled(!canRunLiveActions)
-              LaneActionButton(title: "Revert", symbol: "arrow.uturn.backward", tint: ADEColor.warning) {
-                Task { await performAction("revert commit") { try await syncService.revertCommit(laneId: laneId, commitSha: commit.sha) } }
-              }
-              .disabled(!canRunLiveActions)
-              LaneActionButton(title: "Cherry-pick", symbol: "arrow.triangle.merge") {
-                Task { await performAction("cherry pick") { try await syncService.cherryPickCommit(laneId: laneId, commitSha: commit.sha) } }
-              }
-              .disabled(!canRunLiveActions)
-            }
-          }
-        }
-        if commit.id != detail.recentCommits.last?.id { Divider() }
-      }
-    }
-    .padding(.top, 8)
-  }
-
   @MainActor
-  private func openCommitDiffs(for commit: GitCommitSummary) async {
+  func openCommitDiffs(for commit: GitCommitSummary) async {
     do {
       let files: [String]
       if let cached = cachedCommitDiffFilesBySha[commit.sha], !cached.isEmpty {

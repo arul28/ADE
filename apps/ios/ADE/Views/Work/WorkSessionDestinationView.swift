@@ -30,12 +30,43 @@ struct WorkSessionDestinationView: View {
   @State var errorMessage: String?
   @State var announcedLaneId: String?
   @State var lastSessionRowRefreshAt = Date.distantPast
+  @State var lastTranscriptRemoteRefreshAt = Date.distantPast
   @State var lastArtifactRefreshAt = Date.distantPast
   @State var handledOpeningPromptKey: String?
   @State var stagedOpeningPromptKey: String?
 
   var sessionDestinationNavigationTitle: String {
     chatSummary?.title ?? session?.title ?? "Session"
+  }
+
+  /// Trailing nav-bar control: a single "…" overflow menu. The lane chip and
+  /// relative-time row that briefly lived here have been removed at the user's
+  /// request — the menu shows the active lane name and a "Go to lane" entry,
+  /// which is the only top-level action we expose from the chat header today.
+  @ViewBuilder
+  var sessionHeaderTrailingControls: some View {
+    if let session {
+      Menu {
+        Section("Lane") {
+          Text(session.laneName)
+        }
+        Button {
+          openSessionLane()
+        } label: {
+          Label("Go to lane", systemImage: "arrow.triangle.branch")
+        }
+      } label: {
+        Image(systemName: "ellipsis")
+          .font(.system(size: 14, weight: .semibold))
+          .foregroundStyle(ADEColor.textSecondary)
+          .frame(width: 28, height: 28)
+          .contentShape(Rectangle())
+      }
+      .menuStyle(.borderlessButton)
+      .accessibilityLabel("Lane menu")
+    } else {
+      EmptyView()
+    }
   }
 
   var sessionDestinationZoomTransitionId: String? {
@@ -47,6 +78,11 @@ struct WorkSessionDestinationView: View {
       .navigationTitle(sessionDestinationNavigationTitle)
       .navigationBarTitleDisplayMode(.inline)
       .toolbar(.hidden, for: .tabBar)
+      .toolbar {
+        ToolbarItem(placement: .topBarTrailing) {
+          sessionHeaderTrailingControls
+        }
+      }
       .adeNavigationZoomTransition(id: sessionDestinationZoomTransitionId, in: transitionNamespace)
       .sheet(item: $fullscreenImage) { image in
         WorkFullscreenImageView(image: image)
@@ -61,22 +97,12 @@ struct WorkSessionDestinationView: View {
       }
       .task(id: liveChatObservationKey) {
         syncTranscriptFromLiveEvents()
-        let now = Date()
-        if now.timeIntervalSince(lastSessionRowRefreshAt) >= 1.2 {
-          lastSessionRowRefreshAt = now
-          if let refreshedSession = try? await syncService.fetchSessions().first(where: { $0.id == sessionId }) {
-            session = refreshedSession
-          }
-        }
       }
       .task(id: session?.laneId ?? initialSession?.laneId ?? "") {
         await syncLanePresence()
       }
       .task(id: pollingKey) {
         await pollIfNeeded()
-      }
-      .task(id: syncService.localStateRevision) {
-        await refreshArtifacts(force: false)
       }
       .onDisappear {
         if let announcedLaneId {
@@ -113,8 +139,6 @@ struct WorkSessionDestinationView: View {
           onOpenLane: openSessionLane,
           onSend: sendMessage,
           onInterrupt: interruptSession,
-          onDispose: disposeSession,
-          onResume: resumeSession,
           onApproveRequest: approveRequest,
           onRespondToQuestion: respondToQuestion,
           onRetryLoad: load,
@@ -127,7 +151,8 @@ struct WorkSessionDestinationView: View {
           onCancelSteer: cancelSteer,
           onEditSteer: editSteer,
           onSelectModel: selectModel,
-          onSelectRuntimeMode: selectRuntimeMode
+          onSelectRuntimeMode: selectRuntimeMode,
+          onSelectEffort: selectReasoningEffort
         )
       } else {
         WorkTerminalSessionView(
@@ -177,6 +202,7 @@ struct WorkSessionDestinationView: View {
     do {
       if let fetchedSession = try await syncService.fetchSessions().first(where: { $0.id == sessionId }) {
         session = fetchedSession
+        lastSessionRowRefreshAt = Date()
       }
       if let fetchedSummary = try? await syncService.fetchChatSummary(sessionId: sessionId) {
         chatSummary = fetchedSummary
@@ -229,6 +255,9 @@ struct WorkSessionDestinationView: View {
     }
 
     reconcileLocalEchoMessages()
+    if forceRemote {
+      lastTranscriptRemoteRefreshAt = Date()
+    }
   }
 
   @MainActor
@@ -364,25 +393,27 @@ struct WorkSessionDestinationView: View {
     else { return }
     let initialStatus = normalizedWorkChatSessionStatus(session: session, summary: chatSummary)
     guard initialStatus == "active" || initialStatus == "awaiting-input" else { return }
-    var pollCycle = 0
     while !Task.isCancelled, isLive,
       {
         let status = normalizedWorkChatSessionStatus(session: self.session, summary: self.chatSummary)
         return status == "active" || status == "awaiting-input"
       }() {
-      pollCycle += 1
       syncTranscriptFromLiveEvents()
-      if pollCycle % 3 == 1 {
+      let now = Date()
+      if now.timeIntervalSince(lastTranscriptRemoteRefreshAt) >= 8 {
         await loadTranscript(forceRemote: true)
       }
-      if pollCycle % 2 == 1 {
-        await refreshArtifacts(force: false)
+      if now.timeIntervalSince(lastSessionRowRefreshAt) >= 5 {
+        lastSessionRowRefreshAt = now
         if let refreshedSummary = try? await syncService.fetchChatSummary(sessionId: sessionId) {
           chatSummary = refreshedSummary
         }
         if let refreshedSession = try? await syncService.fetchSessions().first(where: { $0.id == sessionId }) {
           self.session = refreshedSession
         }
+      }
+      if now.timeIntervalSince(lastArtifactRefreshAt) >= 12 {
+        await refreshArtifacts(force: false)
       }
       try? await Task.sleep(nanoseconds: 1_700_000_000)
     }

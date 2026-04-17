@@ -2,6 +2,20 @@ import SwiftUI
 import UIKit
 import AVKit
 
+private final class WorkANSIAttributedStringCacheBox: NSObject {
+  let value: AttributedString
+
+  init(_ value: AttributedString) {
+    self.value = value
+  }
+}
+
+private let workANSIAttributedStringCache: NSCache<NSString, WorkANSIAttributedStringCacheBox> = {
+  let cache = NSCache<NSString, WorkANSIAttributedStringCacheBox>()
+  cache.countLimit = 128
+  return cache
+}()
+
 
 func makeWorkChatEvent(from event: AgentChatEvent) -> WorkChatEvent {
   switch event {
@@ -29,11 +43,8 @@ func makeWorkChatEvent(from event: AgentChatEvent) -> WorkChatEvent {
   case .activity(let activity, let detail, let turnId):
     return .activity(kind: activity.rawValue, detail: detail, turnId: turnId)
   case .plan(let steps, let explanation, let turnId):
-    let renderedSteps = steps.map { step in
-      let status = step.status.replacingOccurrences(of: "_", with: " ").capitalized
-      return "\(status): \(step.text)"
-    }
-    return .plan(steps: renderedSteps, explanation: explanation, turnId: turnId)
+    let mapped = steps.map { WorkPlanStep(text: $0.text, status: $0.status) }
+    return .plan(steps: mapped, explanation: explanation, turnId: turnId)
   case .subagentStarted(let taskId, let description, let background, let turnId):
     return .subagentStarted(taskId: taskId, description: description, background: background ?? false, turnId: turnId)
   case .subagentProgress(let taskId, let description, let summary, _, let lastToolName, let turnId):
@@ -135,6 +146,11 @@ func makeWorkChatEvent(from event: AgentChatEvent) -> WorkChatEvent {
 }
 
 func ansiAttributedString(_ text: String) -> AttributedString {
+  let key = text as NSString
+  if let cached = workANSIAttributedStringCache.object(forKey: key) {
+    return cached.value
+  }
+
   var attributed = AttributedString("")
   for segment in parseANSISegments(text) {
     var piece = AttributedString(segment.text)
@@ -142,6 +158,7 @@ func ansiAttributedString(_ text: String) -> AttributedString {
     piece.foregroundColor = ansiColor(segment.foreground)
     attributed.append(piece)
   }
+  workANSIAttributedStringCache.setObject(WorkANSIAttributedStringCacheBox(attributed), forKey: key)
   return attributed
 }
 

@@ -2,10 +2,11 @@ import SwiftUI
 
 /// A dedicated reasoning surface for the Work chat timeline.
 ///
-/// Mirrors the desktop "Thinking…" collapsible: while the turn is live the
-/// header pulses and the body stays open; once the turn settles the card
-/// collapses behind a "Reasoning" label so it stops competing with the final
-/// assistant message for attention. Tap the header to toggle manually.
+/// Collapsed state mirrors desktop's compact "Thought" pill: a single-line
+/// capsule with chevron · brain icon · "Thought" that hugs the assistant
+/// column rather than spanning full width. While the turn is live the header
+/// pulses ("Thinking …") and the body auto-expands so tokens stream in real
+/// time; once the turn settles the card auto-collapses again.
 struct WorkReasoningCard: View {
   let card: WorkEventCardModel
   let isLive: Bool
@@ -23,7 +24,7 @@ struct WorkReasoningCard: View {
   }
 
   private var headerTitle: String {
-    isLive ? "Thinking" : "Reasoning"
+    isLive ? "Thinking" : "Thought"
   }
 
   private var headerTint: Color {
@@ -31,61 +32,27 @@ struct WorkReasoningCard: View {
   }
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 10) {
-      Button {
-        withAnimation(ADEMotion.quick(reduceMotion: reduceMotion)) {
-          isExpanded.toggle()
-        }
-      } label: {
-        HStack(alignment: .center, spacing: 10) {
-          Image(systemName: "brain.head.profile")
-            .font(.system(size: 15, weight: .semibold))
-            .foregroundStyle(headerTint)
-            .symbolEffect(
-              .pulse,
-              options: .repeating,
-              isActive: isLive && !reduceMotion
+    HStack(alignment: .top, spacing: 0) {
+      VStack(alignment: .leading, spacing: 6) {
+        compactPill
+        if isExpanded, let bodyText {
+          Text(bodyText)
+            .font(.caption)
+            .foregroundStyle(ADEColor.textSecondary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .textSelection(.enabled)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            .background(ADEColor.surfaceBackground.opacity(0.32), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .overlay(
+              RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(ADEColor.border.opacity(0.12), lineWidth: 0.5)
             )
-            .frame(width: 22, height: 22)
-
-          HStack(spacing: 6) {
-            Text(headerTitle)
-              .font(.subheadline.weight(.semibold))
-              .foregroundStyle(ADEColor.textPrimary)
-            if isLive {
-              WorkThinkingDots()
-                .frame(height: 6)
-            }
-          }
-
-          Spacer(minLength: 8)
-
-          Image(systemName: "chevron.down")
-            .font(.caption2.weight(.bold))
-            .foregroundStyle(ADEColor.textMuted)
-            .rotationEffect(isExpanded ? .degrees(0) : .degrees(-90))
+            .transition(.opacity.combined(with: .move(edge: .top)))
         }
-        .contentShape(Rectangle())
       }
-      .buttonStyle(.plain)
-      .accessibilityLabel("\(isLive ? "Reasoning in progress." : "Reasoning.") Tap to \(isExpanded ? "collapse" : "expand").")
-
-      if isExpanded, let bodyText {
-        Text(bodyText)
-          .font(.caption)
-          .foregroundStyle(ADEColor.textSecondary)
-          .frame(maxWidth: .infinity, alignment: .leading)
-          .textSelection(.enabled)
-          .transition(.opacity.combined(with: .move(edge: .top)))
-      }
+      Spacer(minLength: 0)
     }
-    .padding(.horizontal, 10)
-    .padding(.vertical, 8)
-    .background(ADEColor.surfaceBackground.opacity(0.32), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-    .overlay(
-      RoundedRectangle(cornerRadius: 12, style: .continuous)
-        .stroke(ADEColor.border.opacity(0.12), lineWidth: 0.5)
-    )
     .onAppear {
       // Auto-expand while the turn is still thinking so the user can see
       // tokens land as they arrive.
@@ -96,6 +63,46 @@ struct WorkReasoningCard: View {
         isExpanded = nowLive
       }
     }
+  }
+
+  private var compactPill: some View {
+    Button {
+      withAnimation(ADEMotion.quick(reduceMotion: reduceMotion)) {
+        isExpanded.toggle()
+      }
+    } label: {
+      HStack(spacing: 6) {
+        Image(systemName: "chevron.right")
+          .font(.system(size: 9, weight: .bold))
+          .foregroundStyle(ADEColor.textMuted)
+          .rotationEffect(isExpanded ? .degrees(90) : .degrees(0))
+        Image(systemName: "brain.head.profile")
+          .font(.system(size: 11, weight: .semibold))
+          .foregroundStyle(headerTint)
+          .symbolEffect(
+            .pulse,
+            options: .repeating,
+            isActive: isLive && !reduceMotion
+          )
+        Text(headerTitle)
+          .font(.caption.weight(.semibold))
+          .foregroundStyle(ADEColor.textSecondary)
+        if isLive {
+          WorkThinkingDots()
+            .frame(height: 6)
+        }
+      }
+      .padding(.horizontal, 9)
+      .padding(.vertical, 5)
+      .background(ADEColor.surfaceBackground.opacity(0.55), in: Capsule(style: .continuous))
+      .overlay(
+        Capsule(style: .continuous)
+          .stroke(ADEColor.border.opacity(0.18), lineWidth: 0.5)
+      )
+      .contentShape(Capsule())
+    }
+    .buttonStyle(.plain)
+    .accessibilityLabel("\(isLive ? "Reasoning in progress." : "Reasoning.") Tap to \(isExpanded ? "collapse" : "expand").")
   }
 }
 

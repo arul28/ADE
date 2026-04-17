@@ -8,7 +8,7 @@ host-side services, and replies with `command_ack` and then
 `command_result`.
 
 Source file: `apps/desktop/src/main/services/sync/syncRemoteCommandService.ts`
-(~1,210 lines).
+(~1,480 lines).
 
 ## Shape
 
@@ -87,8 +87,8 @@ Listed in order of appearance in the registry:
 
 **Lanes** (`lanes.*`)
 - `list`, `refreshSnapshots`, `getDetail`
-- `create`, `createChild`, `createFromUnstaged`, `attach`,
-  `adoptAttached`
+- `create`, `createChild`, `createFromUnstaged`, `importBranch`,
+  `attach`, `adoptAttached`
 - `rename`, `reparent`, `updateAppearance`
 - `archive`, `unarchive`, `delete`
 - `getStackChain`, `getChildren`
@@ -98,13 +98,19 @@ Listed in order of appearance in the registry:
 - `listAutoRebaseStatuses`
 - `listTemplates`, `getDefaultTemplate`
 - `initEnv`, `getEnvStatus`, `applyTemplate`
+- `presence.announce`, `presence.release` — controller marks a lane
+  as currently open / no longer open; the host decorates
+  `LaneSummary.devicesOpen` with a 60 s TTL and fans out updates via
+  `brain_status`.
 
 **Work** (`work.*`)
-- `listSessions`, `runQuickCommand`, `closeSession`
+- `listSessions`, `updateSessionMeta`, `runQuickCommand`,
+  `closeSession`
 
 **Chat** (`chat.*`)
 - `listSessions`, `getSummary`, `getTranscript`
-- `create`, `send`, `interrupt`, `steer`, `approve`, `respondToInput`
+- `create`, `send`, `interrupt`, `steer`, `cancelSteer`, `editSteer`,
+  `approve`, `respondToInput`
 - `resume`, `updateSession`, `dispose`, `models`
 
 **Git** (`git.*`)
@@ -112,7 +118,7 @@ Listed in order of appearance in the registry:
 - `stageFile`, `stageAll`, `unstageFile`, `unstageAll`,
   `discardFile`, `restoreStagedFile`
 - `commit`, `generateCommitMessage`, `listRecentCommits`,
-  `listCommitFiles`, `getCommitMessage`
+  `listCommitFiles`, `getCommitMessage`, `getFileHistory`
 - `revertCommit`, `cherryPickCommit`
 - `stashPush`, `stashList`, `stashApply`, `stashPop`, `stashDrop`
 - `fetch`, `pull`, `sync`, `push`, `getSyncStatus`
@@ -128,7 +134,12 @@ Listed in order of appearance in the registry:
 **PRs** (`prs.*`)
 - `list`, `refresh`, `getDetail`, `getStatus`
 - `getChecks`, `getReviews`, `getComments`, `getFiles`
-- `createFromLane`, `land`, `close`, `reopen`, `requestReviewers`
+- `createFromLane`, `draftDescription`, `land`, `close`, `reopen`,
+  `requestReviewers`, `rerunChecks`, `addComment`
+- `getMobileSnapshot` — aggregate read that returns
+  `PrMobileSnapshot` (summaries, stacks, per-PR capabilities,
+  create-PR eligibility, workflow cards). Consumed by the iOS PRs
+  tab; see `ios-companion.md` for the shape.
 
 The canonical list is typed as `SyncRemoteCommandAction` in
 `apps/desktop/src/shared/types/sync.ts`.
@@ -181,6 +192,25 @@ A handful have more logic:
 - **`prs.refresh`** — delegates to `prService.refresh`, then
   re-lists PRs and returns both the PR list and the snapshots in a
   single response.
+- **`prs.getMobileSnapshot`** — calls `prService.getMobileSnapshot`,
+  which builds stack chains from `laneService.list`, classifies each
+  PR's action capabilities, resolves per-lane create-PR eligibility
+  (using `resolveStableLaneBaseBranch`), and collects queue /
+  integration / rebase workflow cards from the DB and
+  `rebaseSuggestionService`.
+- **`lanes.presence.announce` / `lanes.presence.release`** — handled
+  in `syncHostService` directly (not in the remote command
+  registry); the host upserts a per-lane `DeviceMarker` map and
+  decorates outgoing `LaneSummary` payloads with `devicesOpen`.
+
+### Lane response decoration
+
+`syncHostService` wraps command results for `lanes.list`,
+`lanes.getDetail`, `lanes.refreshSnapshots`, `lanes.getChildren`,
+`lanes.create`, `lanes.createChild`, `lanes.createFromUnstaged`,
+`lanes.importBranch`, `lanes.attach`, and `lanes.adoptAttached` to
+inject `LaneSummary.devicesOpen` from the presence map. Controllers
+therefore see up-to-date presence without a separate query.
 
 ## Service dependencies
 
@@ -299,6 +329,13 @@ see the chat README for the passive/active contract.
   It writes atomically to the lane worktree and that is all.
   Services that care about post-write side effects (lint,
   formatters) watch the filesystem independently.
+- **Mobile file mutations respect `mobileReadOnly`.** The iOS app
+  gates mutating file envelopes locally via
+  `ensureMobileFileMutationsAllowed`, checking
+  `FilesWorkspace.mobileReadOnly` before sending a `writeText`,
+  `createFile`, `createDirectory`, `rename`, or `deletePath` request.
+  The host's `MOBILE_MUTATING_FILE_ACTIONS` set mirrors this list so
+  a hostile controller cannot bypass it.
 - **`requireService` throws lazily.** A host missing a service does
   not cause registration to fail; it causes the first invocation of
   a command that needs that service to fail with a specific message.

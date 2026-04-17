@@ -150,7 +150,7 @@ struct FilesDetailScreen: View {
         includeCurrentFile: true,
         onSelectDirectory: { path in
           if path.isEmpty {
-            dismiss()
+            navigateToDirectory("")
           } else {
             navigateToDirectory(path)
           }

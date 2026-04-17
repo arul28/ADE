@@ -14,8 +14,6 @@ struct WorkFiltersSection: View {
   let lanes: [LaneSummary]
   let runningCount: Int
   let needsInputCount: Int
-  let onNewChat: () -> Void
-  let newChatEnabled: Bool
 
   private var selectedLaneName: String {
     if selectedLaneId == "all" { return "All lanes" }
@@ -37,32 +35,12 @@ struct WorkFiltersSection: View {
         .padding(.horizontal, 10)
         .padding(.vertical, 8)
         .frame(minHeight: 32)
+        .frame(maxWidth: .infinity)
         .background(ADEColor.surfaceBackground.opacity(0.6), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
         .overlay(
           RoundedRectangle(cornerRadius: 10, style: .continuous)
             .stroke(ADEColor.border.opacity(0.22), lineWidth: 0.5)
         )
-
-        Button(action: onNewChat) {
-          HStack(spacing: 5) {
-            Image(systemName: "plus")
-              .font(.system(size: 10, weight: .bold))
-            Text("New Chat")
-              .font(.caption.weight(.semibold))
-          }
-          .foregroundStyle(ADEColor.accent)
-          .padding(.horizontal, 10)
-          .padding(.vertical, 8)
-          .background(ADEColor.accent.opacity(0.1), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-          .overlay(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-              .stroke(ADEColor.accent.opacity(0.35), lineWidth: 0.5)
-          )
-        }
-        .buttonStyle(.plain)
-        .disabled(!newChatEnabled)
-        .opacity(newChatEnabled ? 1.0 : 0.5)
-        .accessibilityLabel("Start a new chat")
 
         Button {
           withAnimation(.snappy(duration: 0.2)) {
@@ -205,7 +183,7 @@ struct WorkSidebarSectionHeader: View {
           .padding(.vertical, 2)
           .background(ADEColor.surfaceBackground.opacity(0.6), in: Capsule())
       }
-      .padding(.horizontal, 8)
+      .padding(.horizontal, 4)
       .padding(.vertical, 8)
       .contentShape(Rectangle())
     }
@@ -248,6 +226,40 @@ struct WorkFlatCountChip: View {
     .padding(.horizontal, 6)
     .padding(.vertical, 3)
     .background(tint.opacity(0.1), in: Capsule())
+  }
+}
+
+/// Compact live-chat count pill for the Work toolbar. Mirrors the desktop's `ade-liquid-glass-pill`
+/// count badge next to the tab title \u2014 a tiny `\u25cf N` capsule that flips to warning tint when any
+/// chat is awaiting input. Tap target delegates to the caller so the list can scroll to the live row.
+struct WorkLiveCountPill: View {
+  let liveCount: Int
+  let attentionCount: Int
+  let onTap: () -> Void
+
+  var tint: Color {
+    attentionCount > 0 ? ADEColor.warning : ADEColor.success
+  }
+
+  var body: some View {
+    Button(action: onTap) {
+      HStack(spacing: 4) {
+        Circle()
+          .fill(tint)
+          .frame(width: 6, height: 6)
+        Text("\(liveCount)")
+          .font(.caption2.monospacedDigit().weight(.semibold))
+          .foregroundStyle(tint)
+      }
+      .padding(.horizontal, 8)
+      .padding(.vertical, 4)
+      .background(tint.opacity(0.12), in: Capsule())
+      .overlay(
+        Capsule().stroke(tint.opacity(0.25), lineWidth: 0.5)
+      )
+    }
+    .buttonStyle(.plain)
+    .accessibilityLabel("\(liveCount) chat\(liveCount == 1 ? "" : "s") live. Tap to jump.")
   }
 }
 
@@ -310,7 +322,7 @@ struct WorkSessionListRow: View {
   let isArchived: Bool
   let transitionNamespace: Namespace.ID?
   @Binding var selectedSessionId: String?
-  @Binding var path: NavigationPath
+  let onOpen: (TerminalSessionSummary) -> Void
   let onArchive: (TerminalSessionSummary) -> Void
   let onPin: (TerminalSessionSummary) -> Void
   let onRename: (TerminalSessionSummary) -> Void
@@ -321,8 +333,7 @@ struct WorkSessionListRow: View {
 
   var body: some View {
     Button {
-      selectedSessionId = session.id
-      path.append(WorkSessionRoute(sessionId: session.id))
+      onOpen(session)
     } label: {
       WorkSessionRow(
         session: session,
@@ -356,7 +367,7 @@ struct WorkSessionListRow: View {
         onArchive(session)
       }
       if shouldShowEndAction {
-        Button(isChatSession(session) ? "End chat" : "Close session", role: .destructive) {
+        Button("Close session", role: .destructive) {
           onEnd(session)
         }
       } else if shouldShowResumeAction {
@@ -378,19 +389,18 @@ struct WorkSessionListRow: View {
   }
 
   private var shouldShowEndAction: Bool {
-    status == "active" || status == "awaiting-input"
+    guard !isChatSession(session) else { return false }
+    return status == "active" || status == "awaiting-input"
   }
 
   private var shouldShowResumeAction: Bool {
-    status == "idle" || status == "ended"
+    guard !isChatSession(session) else { return false }
+    return status == "idle" || status == "ended"
   }
 }
 
-/// Provider mark: renders the branded SVG asset for known families (Claude /
-/// Codex / Cursor / OpenCode) inside a tinted rounded-card container so each
-/// mark reads the way desktop's `Claude.Avatar` / `Codex.Avatar` do — logo
-/// centered on a tinted squircle, not a raw glyph on the page. Falls back to
-/// a tinted SF Symbol for unknown providers.
+/// Provider mark: renders the branded asset for known families inside a tinted
+/// rounded-card container so each mark reads as a logo, not a raw glyph.
 struct WorkProviderLogo: View {
   let provider: String?
   let fallbackSymbol: String
@@ -456,13 +466,13 @@ struct WorkSessionRow: View {
       )
       .adeMatchedGeometry(id: isSelectedTransitionSource ? "work-icon-\(session.id)" : nil, in: transitionNamespace)
 
-      VStack(alignment: .leading, spacing: 5) {
+      VStack(alignment: .leading, spacing: 3) {
         HStack(alignment: .center, spacing: 6) {
           Circle()
             .fill(rowTint)
             .frame(width: 6, height: 6)
           Text(chatSummary?.title ?? session.title)
-            .font(.subheadline.weight(.semibold))
+            .font(.footnote.weight(.semibold))
             .foregroundStyle(ADEColor.textPrimary)
             .lineLimit(1)
             .truncationMode(.tail)
@@ -473,7 +483,7 @@ struct WorkSessionRow: View {
               .foregroundStyle(ADEColor.accent)
           }
           Spacer(minLength: 6)
-          Text(relativeTimestamp(workSessionActivityTimestamp(session: session, summary: chatSummary)))
+          Text(relativeTimestampCompact(workSessionActivityTimestamp(session: session, summary: chatSummary)))
             .font(.caption2.monospacedDigit())
             .foregroundStyle(ADEColor.textMuted)
             .lineLimit(1)
@@ -482,38 +492,65 @@ struct WorkSessionRow: View {
         if let preview = chatSummary?.summary ?? chatSummary?.lastOutputPreview ?? session.summary ?? session.lastOutputPreview,
            !preview.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
           Text(preview)
-            .font(.caption)
-            .foregroundStyle(ADEColor.textSecondary)
+            .font(.caption2)
+            .foregroundStyle(ADEColor.textMuted)
             .lineLimit(1)
             .truncationMode(.tail)
         }
 
-        ScrollView(.horizontal, showsIndicators: false) {
-          HStack(spacing: 6) {
-            // Redundant when the section header already reads "Ended", so only
-            // surface a status pill for sessions whose status differs from
-            // their group (needs input, running, pinned, archived).
-            if shouldSurfaceStatusPill {
-              ADEStatusPill(
-                text: isArchived ? "ARCHIVED" : sessionStatusLabel(session, summary: chatSummary),
-                tint: isArchived ? ADEColor.warning : rowTint
-              )
+        HStack(spacing: 6) {
+          Text(shortProviderLabel(chatSummary?.provider ?? session.toolType))
+            .font(.caption2)
+            .foregroundStyle(ADEColor.textMuted)
+            .lineLimit(1)
+
+          Text("·")
+            .font(.caption2)
+            .foregroundStyle(ADEColor.textMuted.opacity(0.5))
+
+          Image(systemName: "arrow.triangle.branch")
+            .font(.system(size: 10, weight: .semibold))
+            .foregroundStyle(ADEColor.textMuted)
+          Text(session.laneName)
+            .font(.caption2)
+            .foregroundStyle(ADEColor.textMuted)
+            .lineLimit(1)
+            .truncationMode(.middle)
+
+          if lane?.status.dirty == true {
+            Circle()
+              .fill(ADEColor.warning)
+              .frame(width: 6, height: 6)
+              .accessibilityLabel("Uncommitted changes")
+          }
+
+          if let ahead = lane?.status.ahead, ahead > 0 {
+            HStack(spacing: 1) {
+              Image(systemName: "arrow.up")
+                .font(.system(size: 9, weight: .semibold))
+              Text("\(ahead)")
+                .font(.caption2.monospacedDigit())
+            }
+            .foregroundStyle(ADEColor.success)
+          }
+
+          if let behind = lane?.status.behind, behind > 0 {
+            HStack(spacing: 1) {
+              Image(systemName: "arrow.down")
+                .font(.system(size: 9, weight: .semibold))
+              Text("\(behind)")
+                .font(.caption2.monospacedDigit())
+            }
+            .foregroundStyle(ADEColor.warning)
+          }
+
+          Spacer(minLength: 0)
+
+          if isArchived {
+            Text("ARCHIVED")
+              .font(.caption2.monospaced().weight(.semibold))
+              .foregroundStyle(ADEColor.warning)
               .adeMatchedGeometry(id: isSelectedTransitionSource ? "work-status-\(session.id)" : nil, in: transitionNamespace)
-            }
-            WorkTag(text: session.laneName, icon: "arrow.triangle.branch", tint: ADEColor.textSecondary)
-            if lane?.status.dirty == true {
-              WorkTag(text: "Dirty", icon: "circle.fill", tint: ADEColor.warning)
-            }
-            if let chatSummary {
-              WorkTag(text: chatSummary.model, icon: "cpu", tint: ADEColor.textSecondary)
-            }
-            if let devices = lane?.devicesOpen, !devices.isEmpty {
-              WorkTag(
-                text: devices.count == 1 ? "1 device" : "\(devices.count) devices",
-                icon: devicePresenceSymbol(for: devices),
-                tint: ADEColor.accent
-              )
-            }
           }
         }
       }
@@ -527,12 +564,6 @@ struct WorkSessionRow: View {
   var rowTint: Color {
     if isArchived { return ADEColor.warning }
     return workChatStatusTint(normalizedWorkChatSessionStatus(session: session, summary: chatSummary))
-  }
-
-  private var shouldSurfaceStatusPill: Bool {
-    if isArchived { return true }
-    let status = normalizedWorkChatSessionStatus(session: session, summary: chatSummary)
-    return status == "awaiting-input" || status == "active" || status == "idle"
   }
 
   var accessibilityLabel: String {

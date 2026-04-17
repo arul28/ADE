@@ -607,7 +607,7 @@ export function AgentChatComposer({
     setSlashPickerOpen(false);
     setSlashQuery("");
     // Local-only commands handled client-side
-    if (cmd.command === "/clear" && onClearEvents) { onClearEvents(); onDraftChange(""); return; }
+    if (cmd.command === "/clear" && cmd.source === "local" && onClearEvents) { onClearEvents(); onDraftChange(""); return; }
     // SDK and all other commands: set as draft text to be sent to the agent
     const suffix = cmd.argumentHint ? ` ${cmd.argumentHint}` : "";
     onDraftChange(`${cmd.command}${suffix} `);

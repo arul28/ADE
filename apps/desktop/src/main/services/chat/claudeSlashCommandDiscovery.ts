@@ -1,0 +1,160 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { parse as parseYaml } from "yaml";
+
+export type DiscoveredClaudeSlashCommand = {
+  name: string;
+  description: string;
+  argumentHint?: string;
+};
+
+type CommandFrontmatter = {
+  description?: unknown;
+  "argument-hint"?: unknown;
+  argumentHint?: unknown;
+};
+
+type SkillFrontmatter = CommandFrontmatter & {
+  name?: unknown;
+  "user-invocable"?: unknown;
+  userInvocable?: unknown;
+};
+
+function readFrontmatter(markdown: string): Record<string, unknown> {
+  if (!markdown.startsWith("---")) return {};
+  const match = markdown.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/);
+  if (!match) return {};
+  try {
+    const parsed = parseYaml(match[1] ?? "");
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : {};
+  } catch {
+    return {};
+  }
+}
+
+function firstMarkdownParagraph(markdown: string): string {
+  const body = markdown.replace(/^---\r?\n[\s\S]*?\r?\n---(?:\r?\n|$)/, "");
+  const paragraph = body
+    .split(/\r?\n\r?\n/)
+    .map((part) => part.trim())
+    .find((part) => part.length > 0);
+  return paragraph?.split(/\r?\n/)[0]?.trim() ?? "";
+}
+
+function normalizeSlashCommandName(value: string): string | null {
+  const name = value.trim().replace(/\.md$/i, "").replace(/[^A-Za-z0-9_:-]+/g, "-").replace(/^-+|-+$/g, "").toLowerCase();
+  return name.length ? `/${name}` : null;
+}
+
+function maybeString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
+}
+
+function maybeArgumentHint(value: unknown): string | undefined {
+  const stringValue = maybeString(value);
+  if (stringValue) return stringValue;
+  if (!Array.isArray(value) || value.length === 0) return undefined;
+  const parts = value
+    .map((item) => String(item ?? "").trim())
+    .filter((item) => item.length > 0);
+  return parts.length ? `[${parts.join("] [")}]` : undefined;
+}
+
+function discoverLegacyCommands(commandsDir: string): DiscoveredClaudeSlashCommand[] {
+  const commands: DiscoveredClaudeSlashCommand[] = [];
+  if (!fs.existsSync(commandsDir)) return commands;
+
+  const visit = (dir: string): void => {
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      const entryPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        visit(entryPath);
+        continue;
+      }
+      if (!entry.isFile() || !entry.name.endsWith(".md")) continue;
+      const relative = path.relative(commandsDir, entryPath).replace(/\.md$/i, "");
+      const commandPath = relative.split(path.sep).filter(Boolean).join(":");
+      const name = normalizeSlashCommandName(commandPath);
+      if (!name) continue;
+      let content = "";
+      try {
+        content = fs.readFileSync(entryPath, "utf8");
+      } catch {
+        continue;
+      }
+      const frontmatter = readFrontmatter(content) as CommandFrontmatter;
+      commands.push({
+        name,
+        description: maybeString(frontmatter.description) ?? firstMarkdownParagraph(content),
+        argumentHint: maybeArgumentHint(frontmatter["argument-hint"]) ?? maybeArgumentHint(frontmatter.argumentHint),
+      });
+    }
+  };
+
+  visit(commandsDir);
+  return commands;
+}
+
+function discoverSkills(skillsDir: string): DiscoveredClaudeSlashCommand[] {
+  const commands: DiscoveredClaudeSlashCommand[] = [];
+  if (!fs.existsSync(skillsDir)) return commands;
+
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(skillsDir, { withFileTypes: true });
+  } catch {
+    return commands;
+  }
+
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const skillPath = path.join(skillsDir, entry.name, "SKILL.md");
+    if (!fs.existsSync(skillPath)) continue;
+    let content = "";
+    try {
+      content = fs.readFileSync(skillPath, "utf8");
+    } catch {
+      continue;
+    }
+    const frontmatter = readFrontmatter(content) as SkillFrontmatter;
+    if (frontmatter["user-invocable"] === false || frontmatter.userInvocable === false) continue;
+    const name = normalizeSlashCommandName(maybeString(frontmatter.name) ?? entry.name);
+    if (!name) continue;
+    commands.push({
+      name,
+      description: maybeString(frontmatter.description) ?? firstMarkdownParagraph(content),
+      argumentHint: maybeArgumentHint(frontmatter["argument-hint"]) ?? maybeArgumentHint(frontmatter.argumentHint),
+    });
+  }
+
+  return commands;
+}
+
+export function discoverClaudeSlashCommands(cwd: string): DiscoveredClaudeSlashCommand[] {
+  const roots = [
+    path.join(os.homedir(), ".claude"),
+    path.join(cwd, ".claude"),
+  ];
+  const byName = new Map<string, DiscoveredClaudeSlashCommand>();
+
+  for (const root of roots) {
+    const discovered = [
+      ...discoverLegacyCommands(path.join(root, "commands")),
+      ...discoverSkills(path.join(root, "skills")),
+    ];
+    for (const command of discovered) {
+      byName.set(command.name, command);
+    }
+  }
+
+  return [...byName.values()].sort((a, b) => a.name.localeCompare(b.name));
+}

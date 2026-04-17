@@ -57,6 +57,135 @@ enum PrListStateFilter: String, CaseIterable, Identifiable {
   }
 }
 
+enum PrRootSurface: String, CaseIterable, Identifiable {
+  case github
+  case workflows
+
+  var id: String { rawValue }
+
+  var title: String {
+    switch self {
+    case .github: return "GitHub"
+    case .workflows: return "Workflows"
+    }
+  }
+}
+
+enum PrWorkflowKindFilter: String, CaseIterable, Identifiable {
+  case all
+  case queue
+  case integration
+  case rebase
+
+  var id: String { rawValue }
+
+  var title: String {
+    switch self {
+    case .all: return "All"
+    case .queue: return "Queue"
+    case .integration: return "Integration"
+    case .rebase: return "Rebase"
+    }
+  }
+}
+
+enum PrGitHubStatusFilter: String, CaseIterable, Identifiable {
+  case open
+  case merged
+  case closed
+  case all
+
+  var id: String { rawValue }
+
+  var title: String {
+    switch self {
+    case .open: return "Open"
+    case .merged: return "Merged"
+    case .closed: return "Closed"
+    case .all: return "All"
+    }
+  }
+}
+
+enum PrGitHubScopeFilter: String, CaseIterable, Identifiable {
+  case all
+  case ade
+  case external
+
+  var id: String { rawValue }
+
+  var title: String {
+    switch self {
+    case .all: return "All"
+    case .ade: return "ADE"
+    case .external: return "External"
+    }
+  }
+}
+
+enum PrGitHubSortOption: String, CaseIterable, Identifiable {
+  case updated
+  case created
+  case number
+
+  var id: String { rawValue }
+
+  var title: String {
+    switch self {
+    case .updated: return "Updated"
+    case .created: return "Created"
+    case .number: return "Number"
+    }
+  }
+}
+
+struct PrGitHubFilterCounts: Equatable {
+  let open: Int
+  let merged: Int
+  let closed: Int
+  let all: Int
+  let ade: Int
+  let external: Int
+}
+
+struct PrGitHubLaneLinkRequest: Identifiable {
+  let item: GitHubPrListItem
+
+  var id: String { item.id }
+}
+
+enum PrReviewEventOption: String, CaseIterable, Identifiable {
+  case approve = "APPROVE"
+  case requestChanges = "REQUEST_CHANGES"
+  case comment = "COMMENT"
+
+  var id: String { rawValue }
+
+  var title: String {
+    switch self {
+    case .approve: return "Approve"
+    case .requestChanges: return "Request changes"
+    case .comment: return "Comment"
+    }
+  }
+}
+
+enum PrDetailEditorSheet: Identifiable {
+  case title(String)
+  case body(String)
+  case labels(String)
+  case review
+
+  var id: String {
+    switch self {
+    case .title: return "title"
+    case .body: return "body"
+    case .labels: return "labels"
+    case .review: return "review"
+    }
+  }
+}
+
 enum PrDiffDisplayLineKind: Equatable {
   case hunk
   case context
@@ -86,6 +215,12 @@ enum PrTimelineEventKind: Equatable {
   case stateChange
   case review
   case comment
+  case deployment
+  case commit
+  case label
+  case ci
+  case forcePush
+  case reviewRequest
 }
 
 struct PrTimelineEvent: Identifiable, Equatable {
@@ -132,6 +267,7 @@ enum PrMergeMethodOption: String, CaseIterable, Identifiable {
 
 enum PrDetailTab: String, CaseIterable, Identifiable {
   case overview
+  case convergence
   case files
   case checks
   case activity
@@ -141,6 +277,7 @@ enum PrDetailTab: String, CaseIterable, Identifiable {
   var title: String {
     switch self {
     case .overview: return "Overview"
+    case .convergence: return "Path"
     case .files: return "Files"
     case .checks: return "Checks"
     case .activity: return "Activity"

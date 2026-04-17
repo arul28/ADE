@@ -2,120 +2,84 @@ import SwiftUI
 import UIKit
 import AVKit
 
-struct WorkSessionUsageSummaryCard: View {
+struct WorkTurnUsageSummaryBanner: View {
   let summary: WorkUsageSummary
+  /// Retained for call-site compatibility; the inline model chip was removed
+  /// so model labels only appear in the turn separator and composer pickers.
+  /// Kept as optional params in case future rows need provider context.
+  var provider: String? = nil
+  var modelLabel: String? = nil
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 12) {
-      HStack {
-        Text("Session usage")
-          .font(.headline)
-          .foregroundStyle(ADEColor.textPrimary)
-        Spacer()
-        Text(summary.turnCount == 1 ? "1 completed turn" : "\(summary.turnCount) completed turns")
-          .font(.caption)
-          .foregroundStyle(ADEColor.textMuted)
+    HStack(spacing: 8) {
+      Text("USAGE")
+        .font(.caption2.weight(.bold))
+        .tracking(0.6)
+        .foregroundStyle(ADEColor.textMuted)
+
+      Spacer(minLength: 4)
+
+      usagePill("In", workAbbreviateCount(summary.inputTokens))
+      usagePill("Out", workAbbreviateCount(summary.outputTokens))
+
+      if summary.cacheReadTokens > 0 {
+        usagePill("Cache", workAbbreviateCount(summary.cacheReadTokens))
+      }
+      if summary.cacheCreationTokens > 0 {
+        usagePill("New cache", workAbbreviateCount(summary.cacheCreationTokens))
       }
 
-      HStack(spacing: 12) {
-        usageMetric(title: "Input", value: formattedTokenCount(summary.inputTokens))
-        usageMetric(title: "Output", value: formattedTokenCount(summary.outputTokens))
-        usageMetric(title: "Cache read", value: formattedTokenCount(summary.cacheReadTokens))
-        usageMetric(title: "Cache write", value: formattedTokenCount(summary.cacheCreationTokens))
-      }
-
-      HStack {
-        Text("Estimated cost")
-          .font(.caption.weight(.semibold))
+      if summary.costUsd > 0 {
+        Text(formatUsageCost(summary.costUsd))
+          .font(.caption2.monospacedDigit())
           .foregroundStyle(ADEColor.textSecondary)
-        Spacer()
-        Text(summary.costUsd > 0 ? String(format: "$%.4f", summary.costUsd) : "$0.0000")
-          .font(.caption.monospacedDigit())
-          .foregroundStyle(ADEColor.textPrimary)
       }
     }
-    .adeGlassCard(cornerRadius: 18, padding: 14)
+    .padding(.horizontal, 10)
+    .padding(.vertical, 7)
+    .background(ADEColor.surfaceBackground.opacity(0.55), in: Capsule(style: .continuous))
+    .overlay(
+      Capsule(style: .continuous)
+        .stroke(ADEColor.border.opacity(0.28), lineWidth: 0.6)
+    )
   }
 
-  func usageMetric(title: String, value: String) -> some View {
-    VStack(alignment: .leading, spacing: 4) {
-      Text(title)
-        .font(.caption2.weight(.semibold))
-        .foregroundStyle(ADEColor.textMuted)
-      Text(value)
-        .font(.caption.monospacedDigit())
-        .foregroundStyle(ADEColor.textPrimary)
-    }
-    .frame(maxWidth: .infinity, alignment: .leading)
+  private func usagePill(_ label: String, _ value: String) -> some View {
+    Text("\(label) \(value)")
+      .font(.caption2.monospacedDigit())
+      .foregroundStyle(ADEColor.textMuted)
+      .lineLimit(1)
+  }
+
+  private func formatUsageCost(_ cost: Double) -> String {
+    // Mirror desktop: two decimals when above one cent so "$0.06" reads
+    // cleanly; fall back to four decimals for sub-cent costs.
+    if cost >= 0.01 { return String(format: "$%.2f", cost) }
+    return String(format: "$%.4f", cost)
   }
 }
 
-struct WorkSessionControlBar: View {
-  let status: String
-  let actionInFlight: Bool
-  let onInterrupt: @MainActor () async -> Void
-  let onResume: @MainActor () async -> Void
-  let onDispose: @MainActor () async -> Void
-
-  var body: some View {
-    HStack(spacing: 10) {
-      switch status {
-      case "active":
-        // Running turn — primary action is stopping it. End chat is a
-        // secondary escape hatch.
-        Button {
-          Task { await onInterrupt() }
-        } label: {
-          Label("Interrupt", systemImage: "stop.fill")
-            .frame(maxWidth: .infinity)
-        }
-        .buttonStyle(.glassProminent)
-        .tint(ADEColor.warning)
-        .disabled(actionInFlight)
-
-        Button("End") {
-          Task { await onDispose() }
-        }
-        .buttonStyle(.glass)
-        .tint(ADEColor.textSecondary)
-        .disabled(actionInFlight)
-
-      case "idle", "awaiting-input":
-        Button {
-          Task { await onResume() }
-        } label: {
-          Label("Resume", systemImage: "play.fill")
-            .frame(maxWidth: .infinity)
-        }
-        .buttonStyle(.glassProminent)
-        .tint(ADEColor.accent)
-        .disabled(actionInFlight)
-
-        Button("End") {
-          Task { await onDispose() }
-        }
-        .buttonStyle(.glass)
-        .tint(ADEColor.textSecondary)
-        .disabled(actionInFlight)
-
-      default:
-        // Ended — only a single primary CTA matters. "Close session" on an
-        // already-closed session was nonsense.
-        Button {
-          Task { await onResume() }
-        } label: {
-          Label("Resume chat", systemImage: "play.fill")
-            .frame(maxWidth: .infinity)
-        }
-        .buttonStyle(.glassProminent)
-        .tint(ADEColor.accent)
-        .disabled(actionInFlight)
-      }
-    }
-    .controlSize(.large)
-    .padding(12)
-    .background(ADEColor.surfaceBackground.opacity(0.55), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+/// Abbreviate a token count the way the desktop usage row does: 1100 -> "1.1k",
+/// 19,246 -> "19.2k", 1_500_000 -> "1.5M". Counts under 1k stay literal.
+func workAbbreviateCount(_ count: Int) -> String {
+  let n = Double(count)
+  if count < 1_000 { return String(count) }
+  if count < 1_000_000 {
+    return formatWorkAbbreviation(n / 1_000, suffix: "k")
   }
+  if count < 1_000_000_000 {
+    return formatWorkAbbreviation(n / 1_000_000, suffix: "M")
+  }
+  return formatWorkAbbreviation(n / 1_000_000_000, suffix: "B")
+}
+
+private func formatWorkAbbreviation(_ value: Double, suffix: String) -> String {
+  // Drop trailing ".0" so "1.0k" reads as "1k" while keeping "1.1k", "19.2k".
+  let rounded = (value * 10).rounded() / 10
+  if rounded.truncatingRemainder(dividingBy: 1) == 0 {
+    return "\(Int(rounded))\(suffix)"
+  }
+  return String(format: "%.1f%@", rounded, suffix)
 }
 
 struct WorkComposerInputBanner: View {
@@ -165,6 +129,7 @@ struct WorkComposerChipStrip: View {
   let pendingInputCount: Int
   let onOpenModelPicker: (() -> Void)?
   let onSelectRuntimeMode: ((String) -> Void)?
+  let onSelectEffort: ((String) -> Void)?
 
   var body: some View {
     ScrollView(.horizontal, showsIndicators: false) {
@@ -172,6 +137,7 @@ struct WorkComposerChipStrip: View {
         if let chatSummary {
           accessPill(summary: chatSummary)
           modelPill(summary: chatSummary)
+          effortPill(summary: chatSummary)
         }
 
         if queuedSteerCount > 0 {
@@ -186,8 +152,73 @@ struct WorkComposerChipStrip: View {
     .frame(maxWidth: .infinity, alignment: .leading)
   }
 
+  /// Reasoning-effort chip tuned to the active model. Each model advertises
+  /// its own tier set in `ADEColor.reasoningTiers` (mirror of the desktop
+  /// registry) — Opus has low/medium/high/max, Sonnet has low/medium/high,
+  /// Haiku has no tiers at all, GPT-5.x Codex has low/medium/high/xhigh, etc.
+  /// The pill hides entirely when the current model doesn't support tiers so
+  /// we never offer a setting the host will reject.
+  @ViewBuilder
+  private func effortPill(summary: AgentChatSessionSummary) -> some View {
+    if let onSelectEffort,
+       let tiers = ADEColor.reasoningTiers(for: summary.modelId ?? summary.model),
+       !tiers.isEmpty {
+      let current = (summary.reasoningEffort ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+      // Include the current stored value even if it isn't in the model's
+      // advertised set — protects against registry drift so users never get
+      // stuck with an un-selectable tier.
+      let menuTiers: [String] = {
+        if !current.isEmpty && !tiers.contains(where: { $0.lowercased() == current.lowercased() }) {
+          return tiers + [current]
+        }
+        return tiers
+      }()
+      let label = current.isEmpty ? "Effort" : current.capitalized
+      Menu {
+        ForEach(menuTiers, id: \.self) { option in
+          Button {
+            onSelectEffort(option)
+          } label: {
+            if option.lowercased() == current.lowercased() {
+              Label(option.capitalized, systemImage: "checkmark")
+            } else {
+              Text(option.capitalized)
+            }
+          }
+        }
+      } label: {
+        HStack(spacing: 6) {
+          Image(systemName: "gauge.with.dots.needle.50percent")
+            .font(.system(size: 10, weight: .semibold))
+            .foregroundStyle(ADEColor.textMuted)
+          Text(label)
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(current.isEmpty ? ADEColor.textSecondary : ADEColor.textPrimary)
+            .lineLimit(1)
+          Image(systemName: "chevron.down")
+            .font(.system(size: 9, weight: .bold))
+            .foregroundStyle(ADEColor.textMuted)
+        }
+        .padding(.horizontal, 9)
+        .padding(.vertical, 6)
+        .background(ADEColor.raisedBackground.opacity(0.78), in: Capsule(style: .continuous))
+        .overlay(
+          Capsule(style: .continuous)
+            .stroke(ADEColor.glassBorder, lineWidth: 0.6)
+        )
+      }
+      .menuStyle(.borderlessButton)
+      .accessibilityLabel(
+        current.isEmpty
+          ? "Reasoning effort. Tap to choose a tier."
+          : "Reasoning effort: \(current.capitalized). Tap to change."
+      )
+    }
+  }
+
   @ViewBuilder
   private func modelPill(summary: AgentChatSessionSummary) -> some View {
+    let reasoning = (summary.reasoningEffort ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
     Button {
       onOpenModelPicker?()
     } label: {
@@ -202,35 +233,44 @@ struct WorkComposerChipStrip: View {
           .font(.caption.weight(.semibold))
           .foregroundStyle(ADEColor.textPrimary)
           .lineLimit(1)
+        if !reasoning.isEmpty {
+          Text("·")
+            .font(.caption2)
+            .foregroundStyle(ADEColor.textMuted.opacity(0.5))
+          Text(reasoning.capitalized)
+            .font(.system(size: 10, weight: .medium))
+            .foregroundStyle(ADEColor.textMuted)
+            .lineLimit(1)
+        }
         Image(systemName: "chevron.down")
           .font(.system(size: 9, weight: .bold))
           .foregroundStyle(ADEColor.textMuted)
       }
       .padding(.horizontal, 9)
       .padding(.vertical, 6)
-      .background(ADEColor.surfaceBackground.opacity(0.7), in: Capsule(style: .continuous))
+      .background(ADEColor.raisedBackground.opacity(0.78), in: Capsule(style: .continuous))
       .overlay(
         Capsule(style: .continuous)
-          .stroke(ADEColor.border.opacity(0.28), lineWidth: 0.6)
+          .stroke(ADEColor.glassBorder, lineWidth: 0.6)
       )
     }
     .buttonStyle(.plain)
     .disabled(onOpenModelPicker == nil)
-    .accessibilityLabel("Model: \(summary.model). Tap to switch.")
+    .accessibilityLabel("Model: \(summary.model)\(reasoning.isEmpty ? "" : ", reasoning \(reasoning)"). Tap to switch.")
   }
 
   @ViewBuilder
   private func accessPill(summary: AgentChatSessionSummary) -> some View {
-    let options = runtimeMenuOptions(for: summary)
+    let options = workRuntimeModeOptions(provider: summary.provider)
     let currentMode = workInitialRuntimeMode(summary)
-    let label = runtimeDisplayLabel(summary: summary, currentMode: currentMode)
-    let tint = runtimeTint(currentMode)
+    let label = workRuntimeModeLabel(provider: summary.provider, mode: currentMode)
+    let tint = workRuntimeModeTint(currentMode)
 
     if options.isEmpty || onSelectRuntimeMode == nil {
       pillContent(dotColor: tint, label: label, showChevron: false)
     } else {
       Menu {
-        ForEach(options, id: \.id) { option in
+        ForEach(options) { option in
           Button {
             onSelectRuntimeMode?(option.id)
           } label: {
@@ -333,69 +373,6 @@ struct WorkComposerChipStrip: View {
       .replacingOccurrences(of: #"(\d+) (\d+)"#, with: "$1.$2", options: .regularExpression)
   }
 
-  private struct RuntimeMenuOption {
-    let id: String
-    let title: String
-  }
-
-  private func runtimeMenuOptions(for summary: AgentChatSessionSummary) -> [RuntimeMenuOption] {
-    switch summary.provider.lowercased() {
-    case "claude":
-      return [
-        RuntimeMenuOption(id: "default", title: "Default"),
-        RuntimeMenuOption(id: "plan", title: "Plan"),
-        RuntimeMenuOption(id: "edit", title: "Accept edits"),
-        RuntimeMenuOption(id: "full-auto", title: "Bypass permissions"),
-      ]
-    case "codex":
-      return [
-        RuntimeMenuOption(id: "default", title: "Default"),
-        RuntimeMenuOption(id: "plan", title: "Plan"),
-        RuntimeMenuOption(id: "edit", title: "On-failure approvals"),
-        RuntimeMenuOption(id: "full-auto", title: "Full auto"),
-      ]
-    case "opencode":
-      return [
-        RuntimeMenuOption(id: "plan", title: "Plan"),
-        RuntimeMenuOption(id: "edit", title: "Edit"),
-        RuntimeMenuOption(id: "full-auto", title: "Full auto"),
-      ]
-    default:
-      return []
-    }
-  }
-
-  private func runtimeDisplayLabel(summary: AgentChatSessionSummary, currentMode: String) -> String {
-    switch summary.provider.lowercased() {
-    case "claude":
-      switch currentMode {
-      case "plan": return "Plan"
-      case "edit": return "Accept edits"
-      case "full-auto": return "Bypass permissions"
-      default: return "Default"
-      }
-    case "codex":
-      switch currentMode {
-      case "plan": return "Plan"
-      case "edit": return "On-failure"
-      case "full-auto": return "Full auto"
-      default: return "Default"
-      }
-    case "opencode":
-      return currentMode.isEmpty ? "Edit" : currentMode.capitalized
-    default:
-      return summary.permissionMode?.capitalized ?? summary.executionMode?.capitalized ?? "Access"
-    }
-  }
-
-  private func runtimeTint(_ mode: String) -> Color {
-    switch mode {
-    case "full-auto": return ADEColor.danger
-    case "edit": return ADEColor.warning
-    case "plan": return ADEColor.accent
-    default: return ADEColor.textSecondary
-    }
-  }
 }
 
 struct WorkQueuedSteerStrip: View {
@@ -658,7 +635,7 @@ struct WorkStructuredQuestionCard: View {
 
       if !question.options.isEmpty {
         VStack(alignment: .leading, spacing: 8) {
-          ForEach(question.options, id: \.self) { option in
+          ForEach(Array(question.options.enumerated()), id: \.offset) { _, option in
             Button(option) {
               Task { await onSelectOption(option) }
             }

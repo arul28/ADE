@@ -14,6 +14,12 @@ func isChatSession(_ session: TerminalSessionSummary) -> Bool {
   return raw.hasSuffix("-chat")
 }
 
+func isRunOwnedSession(_ session: TerminalSessionSummary) -> Bool {
+  session.toolType?
+    .trimmingCharacters(in: .whitespacesAndNewlines)
+    .lowercased() == "run-shell"
+}
+
 func defaultWorkChatTitle(provider: String) -> String {
   switch provider.lowercased() {
   case "codex":
@@ -37,7 +43,7 @@ func toolTypeForProvider(_ provider: String) -> String {
 }
 
 func providerLabel(_ provider: String) -> String {
-  switch provider.lowercased() {
+  switch providerFamilyKey(provider) {
   case "codex": return "Codex"
   case "claude": return "Claude"
   case "opencode": return "OpenCode"
@@ -46,8 +52,27 @@ func providerLabel(_ provider: String) -> String {
   }
 }
 
+/// Compact sidebar label for a session's tool type: "Claude", "Codex", "Shell", "Run". Mirrors
+/// the desktop `shortToolTypeLabel` helper so iOS rows read the same as the desktop sidebar.
+func shortProviderLabel(_ toolType: String?) -> String {
+  let raw = toolType?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+  if raw.isEmpty { return "Shell" }
+  switch raw {
+  case "shell": return "Shell"
+  case "run-shell": return "Run"
+  case "cursor": return "Cursor"
+  case "aider": return "Aider"
+  case "continue": return "Continue"
+  default: break
+  }
+  if raw.hasPrefix("claude") { return "Claude" }
+  if raw.hasPrefix("codex") { return "Codex" }
+  if raw.hasPrefix("opencode") { return "OpenCode" }
+  return raw.replacingOccurrences(of: "-", with: " ").capitalized
+}
+
 func providerIcon(_ provider: String) -> String {
-  switch provider.lowercased() {
+  switch providerFamilyKey(provider) {
   case "codex":
     return "sparkle"
   case "opencode":
@@ -67,14 +92,14 @@ func providerIcon(_ provider: String) -> String {
 /// `providerIcon(_:)`.
 func providerAssetName(_ provider: String?) -> String? {
   guard let provider, !provider.isEmpty else { return nil }
-  switch provider.lowercased() {
-  case "claude", "claude-chat", "claude-orchestrated", "anthropic":
+  switch providerFamilyKey(provider) {
+  case "claude":
     return "ProviderClaude"
-  case "codex", "codex-chat", "codex-orchestrated", "openai":
+  case "codex":
     return "ProviderCodex"
   case "cursor":
     return "ProviderCursor"
-  case "opencode", "opencode-chat", "opencode-orchestrated":
+  case "opencode":
     return "ProviderOpenCode"
   default:
     return nil
@@ -83,7 +108,7 @@ func providerAssetName(_ provider: String?) -> String? {
 
 func providerTint(_ provider: String?) -> Color {
   guard let provider else { return ADEColor.accent }
-  switch provider.lowercased() {
+  switch providerFamilyKey(provider) {
   case "codex":
     return .blue
   case "opencode":
@@ -93,6 +118,25 @@ func providerTint(_ provider: String?) -> Color {
   default:
     return ADEColor.accent
   }
+}
+
+func providerFamilyKey(_ provider: String) -> String {
+  let raw = provider
+    .trimmingCharacters(in: .whitespacesAndNewlines)
+    .lowercased()
+  if raw == "anthropic" || raw.hasPrefix("claude") {
+    return "claude"
+  }
+  if raw == "openai" || raw.hasPrefix("codex") {
+    return "codex"
+  }
+  if raw.hasPrefix("opencode") {
+    return "opencode"
+  }
+  if raw == "cursor" || raw.hasPrefix("cursor") {
+    return "cursor"
+  }
+  return raw
 }
 
 func sessionSymbol(_ session: TerminalSessionSummary, provider: String?) -> String {
@@ -170,6 +214,161 @@ func workChatStatusIcon(_ status: String) -> String {
   case "active": return "waveform.path.ecg"
   case "idle": return "pause.circle"
   default: return "checkmark.circle"
+  }
+}
+
+/// Shared menu options for the access-mode pill in both the in-session composer and the
+/// New Chat composer. Matches the desktop composer's per-provider set. Empty when the
+/// provider has no runtime mode (e.g. cursor — which uses `cursorModeId` instead).
+struct WorkRuntimeModeOption: Identifiable, Hashable {
+  let id: String
+  let title: String
+}
+
+func workRuntimeModeOptions(provider: String) -> [WorkRuntimeModeOption] {
+  switch provider.lowercased() {
+  case "claude":
+    return [
+      WorkRuntimeModeOption(id: "default", title: "Default"),
+      WorkRuntimeModeOption(id: "plan", title: "Plan"),
+      WorkRuntimeModeOption(id: "edit", title: "Auto edit"),
+      WorkRuntimeModeOption(id: "full-auto", title: "Bypass"),
+    ]
+  case "codex":
+    return [
+      WorkRuntimeModeOption(id: "default", title: "Default"),
+      WorkRuntimeModeOption(id: "plan", title: "Plan"),
+      WorkRuntimeModeOption(id: "edit", title: "On-failure"),
+      WorkRuntimeModeOption(id: "full-auto", title: "Full auto"),
+    ]
+  case "opencode":
+    return [
+      WorkRuntimeModeOption(id: "plan", title: "Plan"),
+      WorkRuntimeModeOption(id: "edit", title: "Edit"),
+      WorkRuntimeModeOption(id: "full-auto", title: "Full auto"),
+    ]
+  default:
+    return []
+  }
+}
+
+func workRuntimeModeLabel(provider: String, mode: String) -> String {
+  switch provider.lowercased() {
+  case "claude":
+    switch mode {
+    case "plan": return "Plan"
+    case "edit": return "Auto edit"
+    case "full-auto": return "Bypass"
+    default: return "Default"
+    }
+  case "codex":
+    switch mode {
+    case "plan": return "Plan"
+    case "edit": return "On-failure"
+    case "full-auto": return "Full auto"
+    default: return "Default"
+    }
+  case "opencode":
+    return mode.isEmpty ? "Edit" : mode.capitalized
+  default:
+    return mode.isEmpty ? "Access" : mode.capitalized
+  }
+}
+
+func workRuntimeModeTint(_ mode: String) -> Color {
+  switch mode {
+  case "full-auto": return ADEColor.danger
+  case "edit": return ADEColor.warning
+  case "plan": return ADEColor.accent
+  default: return ADEColor.textSecondary
+  }
+}
+
+/// Default runtime mode for a fresh chat given the provider. "default" for Claude/Codex,
+/// "edit" for OpenCode (matches desktop's new-session defaults).
+func workDefaultRuntimeMode(provider: String) -> String {
+  switch provider.lowercased() {
+  case "claude", "codex": return "default"
+  case "opencode": return "edit"
+  default: return ""
+  }
+}
+
+/// Fields for a new `createChatSession` call derived from the user-picked runtime mode.
+struct WorkRuntimeWireFields {
+  var permissionMode: String?
+  var interactionMode: String?
+  var claudePermissionMode: String?
+  var codexApprovalPolicy: String?
+  var codexSandbox: String?
+  var codexConfigSource: String?
+  var opencodePermissionMode: String?
+}
+
+func workRuntimeWireFields(provider: String, mode: String) -> WorkRuntimeWireFields {
+  var fields = WorkRuntimeWireFields()
+  switch provider.lowercased() {
+  case "claude":
+    switch mode {
+    case "plan":
+      fields.interactionMode = "plan"
+      fields.claudePermissionMode = "default"
+      fields.permissionMode = "plan"
+    case "edit":
+      fields.interactionMode = "default"
+      fields.claudePermissionMode = "acceptEdits"
+      fields.permissionMode = "edit"
+    case "full-auto":
+      fields.interactionMode = "default"
+      fields.claudePermissionMode = "bypassPermissions"
+      fields.permissionMode = "full-auto"
+    default:
+      fields.interactionMode = "default"
+      fields.claudePermissionMode = "default"
+      fields.permissionMode = "default"
+    }
+  case "codex":
+    fields.codexConfigSource = "flags"
+    switch mode {
+    case "plan":
+      fields.codexApprovalPolicy = "untrusted"
+      fields.codexSandbox = "read-only"
+      fields.permissionMode = "plan"
+    case "edit":
+      fields.codexApprovalPolicy = "on-failure"
+      fields.codexSandbox = "workspace-write"
+      fields.permissionMode = "edit"
+    case "full-auto":
+      fields.codexApprovalPolicy = "never"
+      fields.codexSandbox = "danger-full-access"
+      fields.permissionMode = "full-auto"
+    default:
+      fields.codexApprovalPolicy = "on-request"
+      fields.codexSandbox = "workspace-write"
+      fields.permissionMode = "default"
+    }
+  case "opencode":
+    fields.opencodePermissionMode = mode
+    fields.permissionMode = mode
+  default:
+    break
+  }
+  return fields
+}
+
+/// Does a model accept a `reasoningEffort` knob? Covers Codex GPT-5 and Anthropic
+/// "thinking" / opus / sonnet variants. Used to gate the reasoning pill in the composer.
+func modelSupportsReasoning(modelId: String, provider: String) -> Bool {
+  let lower = modelId.lowercased()
+  if lower.contains("thinking") { return true }
+  if lower.contains("gpt-5") { return true }
+  if lower.contains("opus") || lower.contains("sonnet") { return true }
+  switch provider.lowercased() {
+  case "codex": return true
+  case "claude":
+    return lower.contains("opus") || lower.contains("sonnet")
+  default:
+    return false
   }
 }
 
@@ -297,6 +496,19 @@ func formattedSessionDuration(startedAt: String, endedAt: String?) -> String {
 func relativeTimestamp(_ value: String) -> String {
   guard let date = workParsedDate(value) else { return value }
   return RelativeDateTimeFormatter().localizedString(for: date, relativeTo: Date())
+}
+
+/// Ultra-compact relative-time label for sidebar rows: "now", "12m", "3h", "2d". Mirrors
+/// the desktop `relativeTimeCompact` (`apps/desktop/src/renderer/lib/format.ts`).
+func relativeTimestampCompact(_ value: String) -> String {
+  guard let date = workParsedDate(value) else { return value }
+  let delta = max(0, Date().timeIntervalSince(date))
+  let minutes = Int(delta / 60)
+  if minutes < 1 { return "now" }
+  if minutes < 60 { return "\(minutes)m" }
+  let hours = minutes / 60
+  if hours < 24 { return "\(hours)h" }
+  return "\(hours / 24)d"
 }
 
 func activityTitle(for kind: String) -> String {

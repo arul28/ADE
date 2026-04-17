@@ -201,6 +201,21 @@ enum RemoteJSONValue: Codable, Equatable {
   }
 }
 
+extension RemoteJSONValue {
+  var plainTextValue: String? {
+    switch self {
+    case .string(let value):
+      return value.isEmpty ? nil : value
+    case .number(let value):
+      return value.rounded() == value ? String(Int(value)) : String(value)
+    case .bool(let value):
+      return value ? "true" : "false"
+    case .object, .array, .null:
+      return nil
+    }
+  }
+}
+
 struct LaneRuntimeSummary: Codable, Equatable {
   var bucket: String
   var runningCount: Int
@@ -1418,6 +1433,47 @@ struct TerminalSessionSummary: Codable, Identifiable, Equatable {
   var chatIdleSinceAt: String?
 }
 
+struct ProcessReadinessConfig: Codable, Equatable {
+  var type: String
+  var port: Int?
+  var pattern: String?
+}
+
+struct ProcessDefinition: Codable, Identifiable, Equatable {
+  var id: String
+  var name: String
+  var command: [String]
+  var cwd: String
+  var env: [String: String]
+  var groupIds: [String]
+  var autostart: Bool
+  var restart: String
+  var gracefulShutdownMs: Int
+  var dependsOn: [String]
+  var readiness: ProcessReadinessConfig
+}
+
+struct ProcessRuntime: Codable, Identifiable, Equatable {
+  var id: String { runId }
+  var runId: String
+  var laneId: String
+  var processId: String
+  var status: String
+  var readiness: String
+  var pid: Int?
+  var sessionId: String?
+  var ptyId: String?
+  var startedAt: String?
+  var endedAt: String?
+  var exitCode: Int?
+  var lastExitCode: Int?
+  var lastEndedAt: String?
+  var uptimeMs: Int?
+  var ports: [Int]
+  var logPath: String?
+  var updatedAt: String
+}
+
 struct PrSummary: Codable, Identifiable, Equatable {
   var id: String
   var laneId: String
@@ -1582,6 +1638,136 @@ struct PullRequestSnapshot: Codable, Equatable {
   var reviews: [PrReview]
   var comments: [PrComment]
   var files: [PrFile]
+}
+
+struct GitHubRepoRef: Codable, Equatable {
+  var owner: String
+  var name: String
+  var defaultBranch: String?
+}
+
+struct GitHubPrListItem: Codable, Identifiable, Equatable {
+  var id: String
+  var scope: String
+  var repoOwner: String
+  var repoName: String
+  var githubPrNumber: Int
+  var githubUrl: String
+  var title: String
+  var state: String
+  var isDraft: Bool
+  var baseBranch: String?
+  var headBranch: String?
+  var author: String?
+  var createdAt: String
+  var updatedAt: String
+  var linkedPrId: String?
+  var linkedGroupId: String?
+  var linkedLaneId: String?
+  var linkedLaneName: String?
+  var adeKind: String?
+  var workflowDisplayState: String?
+  var cleanupState: String?
+  var labels: [PrLabel]
+  var isBot: Bool
+  var commentCount: Int
+}
+
+struct GitHubPrSnapshot: Codable, Equatable {
+  var repo: GitHubRepoRef?
+  var viewerLogin: String?
+  var repoPullRequests: [GitHubPrListItem]
+  var externalPullRequests: [GitHubPrListItem]
+  var syncedAt: String
+}
+
+struct PrReviewThreadComment: Codable, Identifiable, Equatable {
+  var id: String
+  var author: String
+  var authorAvatarUrl: String?
+  var body: String?
+  var url: String?
+  var createdAt: String?
+  var updatedAt: String?
+}
+
+struct PrReviewThread: Codable, Identifiable, Equatable {
+  var id: String
+  var isResolved: Bool
+  var isOutdated: Bool
+  var path: String?
+  var line: Int?
+  var originalLine: Int?
+  var startLine: Int?
+  var originalStartLine: Int?
+  var diffSide: String?
+  var url: String?
+  var createdAt: String?
+  var updatedAt: String?
+  var comments: [PrReviewThreadComment]
+}
+
+struct PrActionStep: Codable, Identifiable, Equatable {
+  var id: String { "\(number)-\(name)" }
+  var name: String
+  var status: String
+  var conclusion: String?
+  var number: Int
+  var startedAt: String?
+  var completedAt: String?
+}
+
+struct PrActionJob: Codable, Identifiable, Equatable {
+  var id: Int
+  var name: String
+  var status: String
+  var conclusion: String?
+  var startedAt: String?
+  var completedAt: String?
+  var steps: [PrActionStep]
+}
+
+struct PrActionRun: Codable, Identifiable, Equatable {
+  var id: Int
+  var name: String
+  var status: String
+  var conclusion: String?
+  var headSha: String
+  var htmlUrl: String
+  var createdAt: String
+  var updatedAt: String
+  var jobs: [PrActionJob]
+}
+
+struct PrActivityEvent: Codable, Identifiable, Equatable {
+  var id: String
+  var type: String
+  var author: String?
+  var avatarUrl: String?
+  var body: String?
+  var timestamp: String
+  var metadata: [String: RemoteJSONValue]?
+}
+
+struct PrDeployment: Codable, Identifiable, Equatable {
+  var id: String
+  var environment: String
+  var state: String
+  var description: String?
+  var environmentUrl: String?
+  var logUrl: String?
+  var sha: String
+  var ref: String?
+  var creator: String?
+  var createdAt: String?
+  var updatedAt: String?
+}
+
+struct AiReviewSummary: Codable, Equatable {
+  var summary: String
+  var potentialIssues: [String]
+  var recommendations: [String]
+  var mergeReadiness: String
 }
 
 struct PullRequestSnapshotHydration: Codable, Equatable, Identifiable {
@@ -1906,6 +2092,13 @@ struct PrCreateCapabilities: Codable, Equatable {
   var lanes: [PrCreateLaneEligibility]
 }
 
+struct PrIntegrationWorkflowLane: Codable, Identifiable, Equatable {
+  var id: String { laneId }
+  var laneId: String
+  var laneName: String
+  var outcome: String
+}
+
 /// Unified mobile workflow card. Exactly one of `queue`, `integration`, or
 /// `rebase` payload fields will be populated, matching the desktop
 /// discriminated union encoded as `kind`.
@@ -1913,6 +2106,7 @@ struct PrWorkflowCard: Codable, Identifiable, Equatable {
   var id: String
   var kind: String
   // queue
+  var queueId: String?
   var groupId: String?
   var groupName: String?
   var targetBranch: String?
@@ -1920,6 +2114,7 @@ struct PrWorkflowCard: Codable, Identifiable, Equatable {
   var activePrId: String?
   var currentPosition: Int?
   var totalEntries: Int?
+  var entries: [QueueLandingEntry]?
   var waitReason: String?
   var lastError: String?
   var updatedAt: String?
@@ -1931,6 +2126,7 @@ struct PrWorkflowCard: Codable, Identifiable, Equatable {
   var integrationStatus: String?
   var laneCount: Int?
   var conflictLaneCount: Int?
+  var lanes: [PrIntegrationWorkflowLane]?
   var workflowDisplayState: String?
   var cleanupState: String?
   var linkedPrId: String?
@@ -1949,12 +2145,117 @@ struct PrWorkflowCard: Codable, Identifiable, Equatable {
   private enum CodingKeys: String, CodingKey {
     case id
     case kind
-    case groupId, groupName, targetBranch, state, activePrId, currentPosition, totalEntries, waitReason, lastError, updatedAt
+    case queueId, groupId, groupName, targetBranch, state, activePrId, currentPosition, totalEntries, entries, waitReason, lastError, updatedAt
     case proposalId, title, baseBranch, overallOutcome
     case integrationStatus = "status"
-    case laneCount, conflictLaneCount, workflowDisplayState, cleanupState, linkedPrId, integrationLaneId, createdAt
+    case laneCount, conflictLaneCount, lanes, workflowDisplayState, cleanupState, linkedPrId, integrationLaneId, createdAt
     case laneId, laneName, behindBy, conflictPredicted, prId, prNumber, dismissedAt, deferredUntil
   }
+}
+
+struct PipelineSettings: Codable, Equatable {
+  var autoMerge: Bool
+  var mergeMethod: String
+  var maxRounds: Int
+  var onRebaseNeeded: String
+}
+
+struct ConvergenceRoundStat: Codable, Identifiable, Equatable {
+  var id: Int { round }
+  var round: Int
+  var newCount: Int
+  var fixedCount: Int
+  var dismissedCount: Int
+}
+
+struct ConvergenceStatus: Codable, Equatable {
+  var currentRound: Int
+  var maxRounds: Int
+  var issuesPerRound: [ConvergenceRoundStat]
+  var totalNew: Int
+  var totalFixed: Int
+  var totalDismissed: Int
+  var totalEscalated: Int
+  var totalSentToAgent: Int
+  var isConverging: Bool
+  var canAutoAdvance: Bool
+}
+
+struct ConvergenceRuntimeState: Codable, Equatable {
+  var prId: String
+  var autoConvergeEnabled: Bool
+  var status: String
+  var pollerStatus: String
+  var currentRound: Int
+  var activeSessionId: String?
+  var activeLaneId: String?
+  var activeHref: String?
+  var pauseReason: String?
+  var errorMessage: String?
+  var lastStartedAt: String?
+  var lastPolledAt: String?
+  var lastPausedAt: String?
+  var lastStoppedAt: String?
+  var createdAt: String
+  var updatedAt: String
+}
+
+struct IssueInventoryItem: Codable, Identifiable, Equatable {
+  var id: String
+  var prId: String
+  var source: String
+  var type: String
+  var externalId: String
+  var state: String
+  var round: Int
+  var filePath: String?
+  var line: Int?
+  var severity: String?
+  var headline: String
+  var body: String?
+  var author: String?
+  var url: String?
+  var dismissReason: String?
+  var agentSessionId: String?
+  var threadCommentCount: Int?
+  var threadLatestCommentId: String?
+  var threadLatestCommentAuthor: String?
+  var threadLatestCommentAt: String?
+  var threadLatestCommentSource: String?
+  var createdAt: String
+  var updatedAt: String
+}
+
+struct IssueInventorySnapshot: Codable, Equatable {
+  var prId: String
+  var items: [IssueInventoryItem]
+  var convergence: ConvergenceStatus
+  var runtime: ConvergenceRuntimeState
+}
+
+struct CreateIntegrationLaneForProposalResult: Codable, Equatable {
+  var integrationLaneId: String
+  var mergedCleanLanes: [String]
+  var conflictingLanes: [String]
+}
+
+struct StartIntegrationResolutionResult: Codable, Equatable {
+  var conflictFiles: [String]
+  var mergedClean: Bool
+  var integrationLaneId: String
+}
+
+struct RecheckIntegrationStepResult: Codable, Equatable {
+  var resolution: String
+  var remainingConflictFiles: [String]
+  var allResolved: Bool
+  var message: String?
+}
+
+struct DeleteIntegrationProposalResult: Codable, Equatable {
+  var proposalId: String
+  var integrationLaneId: String?
+  var deletedIntegrationLane: Bool
 }
 
 struct PrMobileSnapshot: Codable, Equatable {

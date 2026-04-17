@@ -11,12 +11,28 @@ struct WorkModelPickerSheet: View {
 
   let currentModelId: String
   let currentProvider: String
+  let currentReasoningEffort: String
   let isBusy: Bool
-  let onSelect: (WorkModelOption) -> Void
+  let onSelect: (WorkModelOption, String?, String) -> Void
+
+  init(
+    currentModelId: String,
+    currentProvider: String,
+    currentReasoningEffort: String = "",
+    isBusy: Bool,
+    onSelect: @escaping (WorkModelOption, String?, String) -> Void
+  ) {
+    self.currentModelId = currentModelId
+    self.currentProvider = currentProvider
+    self.currentReasoningEffort = currentReasoningEffort
+    self.isBusy = isBusy
+    self.onSelect = onSelect
+  }
 
   @State private var activeGroup: String = ""
   @State private var activeProvider: String = ""
   @State private var searchText: String = ""
+  @State private var reasoningEffort: String = ""
 
   private var catalog: [WorkModelCatalogGroup] {
     workModelCatalogGroups(currentModelId: currentModelId, currentProvider: currentProvider)
@@ -80,6 +96,7 @@ struct WorkModelPickerSheet: View {
         if isSearching {
           searchList
         } else {
+          reasoningRow
           groupTabStrip
           providerBadgeRow
           Divider().overlay(ADEColor.border.opacity(0.18))
@@ -105,20 +122,70 @@ struct WorkModelPickerSheet: View {
     .presentationDragIndicator(.visible)
     .onAppear {
       if activeGroup.isEmpty {
-        let lower = currentProvider.lowercased()
-        activeGroup = catalog.first(where: { $0.key == lower })?.key
+        let targetGroupKey = workModelCatalogGroupKey(for: currentModelId, currentProvider: currentProvider)
+        activeGroup = catalog.first(where: { $0.key == targetGroupKey })?.key
           ?? catalog.first?.key
           ?? ""
       }
       if activeProvider.isEmpty, let block = activeGroupBlock {
-        activeProvider = block.providers.first?.key ?? ""
+        activeProvider = preferredProviderKey(in: block)
+      }
+      if reasoningEffort.isEmpty {
+        reasoningEffort = currentReasoningEffort
       }
     }
     .onChange(of: activeGroup) { _, newKey in
-      if let first = catalog.first(where: { $0.key == newKey })?.providers.first?.key {
-        activeProvider = first
+      if let block = catalog.first(where: { $0.key == newKey }) {
+        activeProvider = preferredProviderKey(in: block)
       }
     }
+  }
+
+  private func preferredProviderKey(in block: WorkModelCatalogGroup) -> String {
+    if block.key == "opencode",
+       let providerKey = opencodeProviderKey(from: currentModelId),
+       let provider = block.providers.first(where: { $0.key == providerKey }) {
+      return provider.key
+    }
+
+    if let provider = block.providers.first(where: { provider in
+      provider.models.contains { $0.id == currentModelId }
+    }) {
+      return provider.key
+    }
+
+    let lower = currentProvider.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    if let provider = block.providers.first(where: { $0.key == lower }) {
+      return provider.key
+    }
+
+    return block.providers.first?.key ?? ""
+  }
+
+  private func opencodeProviderKey(from modelId: String) -> String? {
+    let parts = modelId
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+      .lowercased()
+      .split(separator: "/", omittingEmptySubsequences: true)
+    guard parts.count >= 3, parts[0] == "opencode" else { return nil }
+    return String(parts[1])
+  }
+
+  private func runtimeProvider(for model: WorkModelOption) -> String {
+    if let group = catalog.first(where: { group in
+      group.providers.contains { provider in
+        provider.models.contains { $0.id == model.id }
+      }
+    }) {
+      return group.key
+    }
+    return workModelCatalogGroupKey(for: model.id, currentProvider: currentProvider)
+  }
+
+  private func reasoningEffortForSelection(_ model: WorkModelOption) -> String? {
+    if !modelSupportsReasoning(modelId: model.id, provider: model.provider) { return nil }
+    let trimmed = reasoningEffort.trimmingCharacters(in: .whitespacesAndNewlines)
+    return trimmed.isEmpty ? nil : trimmed
   }
 
   @ViewBuilder
@@ -154,6 +221,66 @@ struct WorkModelPickerSheet: View {
     )
     .padding(.horizontal, 16)
     .padding(.top, 12)
+    .padding(.bottom, 10)
+  }
+
+  /// Reasoning-effort segmented control, displayed above the group/provider
+  /// tabs. Users pick the effort level here and it is applied to any
+  /// reasoning-capable model they subsequently tap in the list; for models
+  /// that don't accept a reasoning knob the value is ignored at the call site
+  /// (see `modelSupportsReasoning`).
+  @ViewBuilder
+  private var reasoningRow: some View {
+    let levels: [(String, String)] = [
+      ("", "Off"),
+      ("low", "Low"),
+      ("medium", "Medium"),
+      ("high", "High"),
+    ]
+    HStack(spacing: 8) {
+      Text("REASONING")
+        .font(.caption2.weight(.bold))
+        .tracking(0.4)
+        .foregroundStyle(ADEColor.textMuted)
+      HStack(spacing: 4) {
+        ForEach(levels, id: \.0) { entry in
+          let (id, label) = entry
+          let isActive = id.lowercased() == reasoningEffort.lowercased()
+          Button {
+            withAnimation(.easeInOut(duration: 0.14)) {
+              reasoningEffort = id
+            }
+          } label: {
+            Text(label)
+              .font(.caption.weight(.semibold))
+              .foregroundStyle(isActive ? ADEColor.textPrimary : ADEColor.textSecondary.opacity(0.7))
+              .frame(maxWidth: .infinity)
+              .padding(.vertical, 6)
+              .background(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                  .fill(isActive ? ADEColor.accent.opacity(0.18) : Color.clear)
+              )
+              .overlay(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                  .stroke(isActive ? ADEColor.accent.opacity(0.35) : Color.clear, lineWidth: 0.6)
+              )
+          }
+          .buttonStyle(.plain)
+          .accessibilityAddTraits(isActive ? .isSelected : [])
+          .accessibilityLabel("Reasoning effort \(label)")
+        }
+      }
+      .padding(3)
+      .background(
+        RoundedRectangle(cornerRadius: 11, style: .continuous)
+          .fill(ADEColor.surfaceBackground.opacity(0.3))
+      )
+      .overlay(
+        RoundedRectangle(cornerRadius: 11, style: .continuous)
+          .stroke(ADEColor.border.opacity(0.12), lineWidth: 0.5)
+      )
+    }
+    .padding(.horizontal, 16)
     .padding(.bottom, 10)
   }
 
@@ -352,16 +479,18 @@ struct WorkModelPickerSheet: View {
   @ViewBuilder
   private func modelButton(model: WorkModelOption) -> some View {
     Button {
-      if model.id == currentModelId {
+      let reasoningToSend = reasoningEffortForSelection(model)
+      let reasoningChanged = (reasoningToSend ?? "") != currentReasoningEffort
+      if model.id == currentModelId && !reasoningChanged {
         dismiss()
       } else {
-        onSelect(model)
+        onSelect(model, reasoningToSend, runtimeProvider(for: model))
       }
     } label: {
       modelRow(model: model)
     }
     .buttonStyle(.plain)
-    .disabled(isBusy && model.id != currentModelId)
+    .disabled(isBusy)
   }
 
   @ViewBuilder

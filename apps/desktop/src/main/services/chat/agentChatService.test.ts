@@ -2711,6 +2711,37 @@ describe("createAgentChatService", () => {
       expect(loginCmd!.source).toBe("local");
     });
 
+    it("includes project Claude Code command files before SDK init completes", async () => {
+      const commandsDir = path.join(tmpRoot, ".claude", "commands");
+      fs.mkdirSync(commandsDir, { recursive: true });
+      fs.writeFileSync(path.join(commandsDir, "automate.md"), [
+        "---",
+        "description: Generate test coverage",
+        "argument-hint: [area]",
+        "---",
+        "",
+        "Generate tests for $ARGUMENTS.",
+        "",
+      ].join("\n"));
+
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+
+      const commands = service.getSlashCommands({ sessionId: session.id });
+      expect(commands).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          name: "/automate",
+          description: "Generate test coverage",
+          argumentHint: "[area]",
+          source: "sdk",
+        }),
+      ]));
+    });
+
     it("does not include /login for opencode sessions", async () => {
       const { service } = createService();
       const session = await service.createSession({
@@ -2723,6 +2754,56 @@ describe("createAgentChatService", () => {
       const commands = service.getSlashCommands({ sessionId: session.id });
       const loginCmd = commands.find((c: any) => c.name === "/login");
       expect(loginCmd).toBeUndefined();
+    });
+  });
+
+  it("sends Claude provider slash commands as the raw SDK prompt", async () => {
+    const send = vi.fn().mockResolvedValue(undefined);
+    let streamCall = 0;
+    const stream = vi.fn(() => (async function* () {
+      streamCall += 1;
+      if (streamCall === 1) {
+        yield {
+          type: "system",
+          subtype: "init",
+          session_id: "sdk-session-slash-command",
+          slash_commands: ["/automate"],
+        };
+        yield {
+          type: "result",
+          usage: { input_tokens: 1, output_tokens: 1 },
+        };
+        return;
+      }
+      yield {
+        type: "result",
+        usage: { input_tokens: 1, output_tokens: 1 },
+      };
+    })());
+
+    vi.mocked(unstable_v2_createSession).mockReturnValue({
+      send,
+      stream,
+      close: vi.fn(),
+      sessionId: "sdk-session-slash-command",
+      setPermissionMode: vi.fn().mockResolvedValue(undefined),
+    } as any);
+
+    const { service } = createService();
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "claude",
+      model: "claude-sonnet-4-6",
+      modelId: "anthropic/claude-sonnet-4-6",
+    });
+
+    await service.sendMessage({
+      sessionId: session.id,
+      text: "/automate chat slash commands",
+    });
+
+    await vi.waitFor(() => {
+      expect(send).toHaveBeenLastCalledWith("/automate chat slash commands");
     });
   });
 

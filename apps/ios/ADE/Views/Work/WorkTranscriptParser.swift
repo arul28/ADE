@@ -2,6 +2,16 @@ import SwiftUI
 import UIKit
 import AVKit
 
+func workFallbackItemID(
+  sessionId: String,
+  timestamp: String,
+  sequence: Int?,
+  type: String,
+  seed: String
+) -> String {
+  "fallback-\(workStableDigest([sessionId, timestamp, String(sequence ?? -1), type, seed].joined(separator: "|")))"
+}
+
 func parseWorkChatTranscript(_ raw: String) -> [WorkChatEnvelope] {
   extractLooseJSONObjects(from: raw)
     .compactMap { chunk -> WorkChatEnvelope? in
@@ -37,7 +47,19 @@ func parseWorkChatTranscript(_ raw: String) -> [WorkChatEnvelope] {
         event = .toolCall(
           tool: stringValue(eventDict["tool"]),
           argsText: prettyPrintedJSONString(eventDict["args"]),
-          itemId: itemId ?? UUID().uuidString,
+          itemId: itemId ?? workFallbackItemID(
+            sessionId: sessionId,
+            timestamp: timestamp,
+            sequence: sequence,
+            type: type,
+            seed: [
+              "tool_call",
+              turnId ?? "",
+              parentItemId ?? "",
+              stringValue(eventDict["tool"]),
+              prettyPrintedJSONString(eventDict["args"]),
+            ].joined(separator: "|")
+          ),
           parentItemId: parentItemId,
           turnId: turnId
         )
@@ -45,7 +67,20 @@ func parseWorkChatTranscript(_ raw: String) -> [WorkChatEnvelope] {
         event = .toolResult(
           tool: stringValue(eventDict["tool"]),
           resultText: prettyPrintedJSONString(eventDict["result"]),
-          itemId: itemId ?? UUID().uuidString,
+          itemId: itemId ?? workFallbackItemID(
+            sessionId: sessionId,
+            timestamp: timestamp,
+            sequence: sequence,
+            type: type,
+            seed: [
+              "tool_result",
+              turnId ?? "",
+              parentItemId ?? "",
+              stringValue(eventDict["tool"]),
+              stringValue(eventDict["status"]),
+              prettyPrintedJSONString(eventDict["result"]),
+            ].joined(separator: "|")
+          ),
           parentItemId: parentItemId,
           turnId: turnId,
           status: toolStatus(from: stringValue(eventDict["status"]))
@@ -54,9 +89,10 @@ func parseWorkChatTranscript(_ raw: String) -> [WorkChatEnvelope] {
         event = .activity(kind: stringValue(eventDict["activity"]), detail: optionalString(eventDict["detail"]), turnId: turnId)
       case "plan":
         let steps = (eventDict["steps"] as? [[String: Any]] ?? []).map { step in
-          let status = stringValue(step["status"]).replacingOccurrences(of: "_", with: " ").capitalized
-          let description = stringValue(step["description"])
-          return description.isEmpty ? status : "\(status): \(description)"
+          WorkPlanStep(
+            text: stringValue(step["description"]),
+            status: stringValue(step["status"])
+          )
         }
         event = .plan(steps: steps, explanation: optionalString(eventDict["explanation"]), turnId: turnId)
       case "subagent_started":
@@ -89,12 +125,33 @@ func parseWorkChatTranscript(_ raw: String) -> [WorkChatEnvelope] {
         event = .approvalRequest(
           description: stringValue(eventDict["description"]),
           detail: optionalString(prettyPrintedJSONString(eventDict["detail"])),
-          itemId: itemId ?? UUID().uuidString,
+          itemId: itemId ?? workFallbackItemID(
+            sessionId: sessionId,
+            timestamp: timestamp,
+            sequence: sequence,
+            type: type,
+            seed: [
+              "approval_request",
+              turnId ?? "",
+              stringValue(eventDict["description"]),
+              prettyPrintedJSONString(eventDict["detail"]),
+            ].joined(separator: "|")
+          ),
           turnId: turnId
         )
       case "pending_input_resolved":
         event = .pendingInputResolved(
-          itemId: itemId ?? UUID().uuidString,
+          itemId: itemId ?? workFallbackItemID(
+            sessionId: sessionId,
+            timestamp: timestamp,
+            sequence: sequence,
+            type: type,
+            seed: [
+              "pending_input_resolved",
+              turnId ?? "",
+              stringValue(eventDict["resolution"]),
+            ].joined(separator: "|")
+          ),
           resolution: stringValue(eventDict["resolution"]),
           turnId: turnId
         )
@@ -103,7 +160,18 @@ func parseWorkChatTranscript(_ raw: String) -> [WorkChatEnvelope] {
         event = .structuredQuestion(
           question: stringValue(eventDict["question"]),
           options: options,
-          itemId: itemId ?? UUID().uuidString,
+          itemId: itemId ?? workFallbackItemID(
+            sessionId: sessionId,
+            timestamp: timestamp,
+            sequence: sequence,
+            type: type,
+            seed: [
+              "structured_question",
+              turnId ?? "",
+              stringValue(eventDict["question"]),
+              options.joined(separator: "|"),
+            ].joined(separator: "|")
+          ),
           turnId: turnId
         )
       case "todo_update":
@@ -198,7 +266,19 @@ func parseWorkChatTranscript(_ raw: String) -> [WorkChatEnvelope] {
           query: stringValue(eventDict["query"]),
           action: optionalString(eventDict["action"]),
           status: toolStatus(from: stringValue(eventDict["status"])),
-          itemId: itemId ?? UUID().uuidString,
+          itemId: itemId ?? workFallbackItemID(
+            sessionId: sessionId,
+            timestamp: timestamp,
+            sequence: sequence,
+            type: type,
+            seed: [
+              "web_search",
+              turnId ?? "",
+              stringValue(eventDict["query"]),
+              optionalString(eventDict["action"]) ?? "",
+              stringValue(eventDict["status"]),
+            ].joined(separator: "|")
+          ),
           turnId: turnId
         )
       case "plan_text":
@@ -211,7 +291,20 @@ func parseWorkChatTranscript(_ raw: String) -> [WorkChatEnvelope] {
           cwd: stringValue(eventDict["cwd"]),
           output: stringValue(eventDict["output"]),
           status: toolStatus(from: stringValue(eventDict["status"])),
-          itemId: itemId ?? UUID().uuidString,
+          itemId: itemId ?? workFallbackItemID(
+            sessionId: sessionId,
+            timestamp: timestamp,
+            sequence: sequence,
+            type: type,
+            seed: [
+              "command",
+              turnId ?? "",
+              stringValue(eventDict["command"]),
+              stringValue(eventDict["cwd"]),
+              stringValue(eventDict["output"]),
+              stringValue(eventDict["status"]),
+            ].joined(separator: "|")
+          ),
           exitCode: eventDict["exitCode"] as? Int,
           durationMs: eventDict["durationMs"] as? Int,
           turnId: turnId
@@ -222,7 +315,20 @@ func parseWorkChatTranscript(_ raw: String) -> [WorkChatEnvelope] {
           diff: stringValue(eventDict["diff"]),
           kind: stringValue(eventDict["kind"]),
           status: toolStatus(from: stringValue(eventDict["status"])),
-          itemId: itemId ?? UUID().uuidString,
+          itemId: itemId ?? workFallbackItemID(
+            sessionId: sessionId,
+            timestamp: timestamp,
+            sequence: sequence,
+            type: type,
+            seed: [
+              "file_change",
+              turnId ?? "",
+              stringValue(eventDict["path"]),
+              stringValue(eventDict["kind"]),
+              stringValue(eventDict["diff"]),
+              stringValue(eventDict["status"]),
+            ].joined(separator: "|")
+          ),
           turnId: turnId
         )
       default:

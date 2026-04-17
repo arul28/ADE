@@ -2346,6 +2346,8 @@ app.whenReady().then(async () => {
       diffService,
       conflictService,
       prService,
+      issueInventoryService,
+      queueLandingService,
       sessionService,
       ptyService,
       projectConfigService,

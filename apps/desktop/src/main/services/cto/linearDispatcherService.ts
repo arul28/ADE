@@ -2497,20 +2497,12 @@ export function createLinearDispatcherService(args: {
         });
       }
     } else if (action === "reject") {
-      const loopIndex = reviewContext?.rejectAction === "loop_back"
-        ? Math.max(0, findStepIndex(workflow!, reviewContext.loopToStepId))
-        : null;
-      if (loopIndex != null && workflow) {
-        resetStepsFromIndex(run.id, loopIndex, workflow);
-      }
       updateRun(run.id, {
         reviewState: reviewContext?.rejectAction === "loop_back" ? "changes_requested" : "rejected",
         latestReviewNote: note ?? "Rejected by reviewer.",
         status: reviewContext?.rejectAction === "loop_back" ? "queued" : "in_progress",
         lastError: note ?? "Rejected by reviewer.",
-        ...(reviewContext?.rejectAction === "loop_back" && loopIndex != null && workflow ? {
-          currentStepIndex: loopIndex,
-          currentStepId: workflow.steps[loopIndex]?.id ?? null,
+        ...(reviewContext?.rejectAction === "loop_back" ? {
           linkedMissionId: null,
           linkedSessionId: null,
           linkedWorkerRunId: null,

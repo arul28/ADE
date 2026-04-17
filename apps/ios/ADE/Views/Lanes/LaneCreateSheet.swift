@@ -62,6 +62,14 @@ struct LaneCreateSheet: View {
               LaneTextField("Description", text: $description)
             }
           }
+          .adeBorderBeam(
+            cornerRadius: 16,
+            duration: 14,
+            strength: 0.55,
+            lineWidth: 1.25,
+            variant: .colorful,
+            active: true
+          )
 
           GlassSection(title: showsModePicker ? "Mode" : modeSectionTitle) {
             VStack(alignment: .leading, spacing: 12) {

@@ -16,28 +16,23 @@ struct WorkNewChatScreen: View {
   let onStarted: @MainActor (AgentChatSessionSummary, String) async -> Void
   let onRefreshLanes: @MainActor () async -> Void
 
-  @State private var draft: String = ""
   @State private var selectedLaneId: String = ""
   @State private var provider: String = "claude"
   @State private var modelId: String = "claude-sonnet-4-6"
   @State private var busy: Bool = false
   @State private var errorMessage: String?
   @State private var modelPickerPresented = false
-  @FocusState private var composerFocused: Bool
+  @State private var runtimeMode: String = "default"
+  @State private var reasoningEffort: String = ""
+  @State private var mentionsSheetPresented = false
+  @State private var slashSheetPresented = false
+  @State private var pendingDraftInsert: String?
 
   private var selectedLaneName: String {
     if let match = lanes.first(where: { $0.id == selectedLaneId }) {
       return match.name
     }
     return "Choose lane"
-  }
-
-  private var trimmedDraft: String {
-    draft.trimmingCharacters(in: .whitespacesAndNewlines)
-  }
-
-  private var canSend: Bool {
-    !busy && !trimmedDraft.isEmpty && !selectedLaneId.isEmpty && !modelId.isEmpty
   }
 
   var body: some View {
@@ -64,6 +59,7 @@ struct WorkNewChatScreen: View {
         .padding(.vertical, 16)
       }
       .scrollBounceBehavior(.basedOnSize)
+      .scrollDismissesKeyboard(.interactively)
 
       if let errorMessage {
         Text(errorMessage)
@@ -79,6 +75,7 @@ struct WorkNewChatScreen: View {
     .adeNavigationGlass()
     .navigationTitle("New Chat")
     .navigationBarTitleDisplayMode(.inline)
+    .toolbar(.hidden, for: .tabBar)
     .toolbar {
       ToolbarItem(placement: .topBarTrailing) {
         if busy {
@@ -90,18 +87,46 @@ struct WorkNewChatScreen: View {
       if selectedLaneId.isEmpty {
         selectedLaneId = preferredLaneId ?? lanes.first?.id ?? ""
       }
+      if runtimeMode.isEmpty {
+        runtimeMode = workDefaultRuntimeMode(provider: provider)
+      }
+    }
+    .onChange(of: provider) { _, newProvider in
+      runtimeMode = workDefaultRuntimeMode(provider: newProvider)
+      if !modelSupportsReasoning(modelId: modelId, provider: newProvider) {
+        reasoningEffort = ""
+      }
+    }
+    .onChange(of: modelId) { _, newModel in
+      if !modelSupportsReasoning(modelId: newModel, provider: provider) {
+        reasoningEffort = ""
+      }
     }
     .sheet(isPresented: $modelPickerPresented) {
       WorkModelPickerSheet(
         currentModelId: modelId,
         currentProvider: provider,
+        currentReasoningEffort: reasoningEffort,
         isBusy: false,
-        onSelect: { option in
+        onSelect: { option, pickedReasoning, runtimeProvider in
           modelId = option.id
-          provider = option.provider
+          provider = runtimeProvider
+          reasoningEffort = pickedReasoning ?? ""
           modelPickerPresented = false
         }
       )
+    }
+    .sheet(isPresented: $mentionsSheetPresented) {
+      WorkMentionsPickerSheet(lanes: lanes) { token in
+        pendingDraftInsert = token
+        mentionsSheetPresented = false
+      }
+    }
+    .sheet(isPresented: $slashSheetPresented) {
+      WorkSlashCommandsSheet(provider: provider) { token in
+        pendingDraftInsert = token
+        slashSheetPresented = false
+      }
     }
   }
 
@@ -141,7 +166,9 @@ struct WorkNewChatScreen: View {
         }
       }
       if lanes.isEmpty {
-        Text("No lanes available").disabled(true)
+        Text("No lanes available")
+          .font(.footnote)
+          .foregroundStyle(ADEColor.textMuted)
       }
       Divider()
       Button {
@@ -174,6 +201,117 @@ struct WorkNewChatScreen: View {
 
   @ViewBuilder
   private var composerBar: some View {
+    WorkNewChatComposerBar(
+      provider: provider,
+      modelId: modelId,
+      modelName: prettyNewChatModelName(modelId),
+      busy: busy,
+      canStart: !busy && !selectedLaneId.isEmpty && !modelId.isEmpty,
+      runtimeMode: $runtimeMode,
+      reasoningEffort: $reasoningEffort,
+      pendingInsert: $pendingDraftInsert,
+      onOpenModelPicker: { modelPickerPresented = true },
+      onOpenMentions: { mentionsSheetPresented = true },
+      onOpenSlash: { slashSheetPresented = true },
+      onSubmit: submit(openingMessage:)
+    )
+  }
+
+  private func prettyNewChatModelName(_ model: String) -> String {
+    let trimmed = model.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else { return "Model" }
+    let lower = trimmed.lowercased()
+    switch lower {
+    case "opus": return "Claude Opus 4.7"
+    case "opus[1m]", "opus-1m": return "Claude Opus 4.7 1M"
+    case "sonnet": return "Claude Sonnet 4.6"
+    case "haiku": return "Claude Haiku 4.5"
+    default: break
+    }
+    if lower.hasPrefix("claude-") {
+      let tail = trimmed.dropFirst("claude-".count)
+      let joined = tail.split(separator: "-").map { part -> String in
+        let s = String(part)
+        if s.range(of: #"^\d+$"#, options: .regularExpression) != nil { return s }
+        return s.prefix(1).uppercased() + s.dropFirst()
+      }.joined(separator: " ")
+      return "Claude " + joined.replacingOccurrences(of: #"(\d+) (\d+)"#, with: "$1.$2", options: .regularExpression)
+    }
+    return trimmed
+  }
+
+  @MainActor
+  private func submit(openingMessage: String) async -> Bool {
+    let opener = openingMessage.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !busy && !opener.isEmpty && !selectedLaneId.isEmpty && !modelId.isEmpty else { return false }
+    busy = true
+    errorMessage = nil
+    let wire = workRuntimeWireFields(provider: provider, mode: runtimeMode)
+    let normalizedReasoning = reasoningEffort.trimmingCharacters(in: .whitespacesAndNewlines)
+    do {
+      let summary = try await syncService.createChatSession(
+        laneId: selectedLaneId,
+        provider: provider,
+        model: modelId,
+        reasoningEffort: normalizedReasoning.isEmpty ? nil : normalizedReasoning,
+        permissionMode: wire.permissionMode,
+        interactionMode: wire.interactionMode,
+        claudePermissionMode: wire.claudePermissionMode,
+        codexApprovalPolicy: wire.codexApprovalPolicy,
+        codexSandbox: wire.codexSandbox,
+        codexConfigSource: wire.codexConfigSource,
+        opencodePermissionMode: wire.opencodePermissionMode
+      )
+      await onStarted(summary, opener)
+      busy = false
+      return true
+    } catch {
+      ADEHaptics.error()
+      errorMessage = error.localizedDescription
+      busy = false
+      return false
+    }
+  }
+}
+
+private struct WorkNewChatComposerBar: View {
+  let provider: String
+  let modelId: String
+  let modelName: String
+  let busy: Bool
+  let canStart: Bool
+  @Binding var runtimeMode: String
+  @Binding var reasoningEffort: String
+  @Binding var pendingInsert: String?
+  let onOpenModelPicker: () -> Void
+  let onOpenMentions: () -> Void
+  let onOpenSlash: () -> Void
+  let onSubmit: @MainActor (String) async -> Bool
+
+  @State private var draft: String = ""
+  @FocusState private var composerFocused: Bool
+
+  private var trimmedDraft: String {
+    draft.trimmingCharacters(in: .whitespacesAndNewlines)
+  }
+
+  private var canSend: Bool {
+    canStart && !trimmedDraft.isEmpty
+  }
+
+  private var runtimeOptions: [WorkRuntimeModeOption] {
+    workRuntimeModeOptions(provider: provider)
+  }
+
+  private var runtimeLabel: String {
+    workRuntimeModeLabel(provider: provider, mode: runtimeMode)
+  }
+
+  private var runtimeTint: Color {
+    workRuntimeModeTint(runtimeMode)
+  }
+
+  var body: some View {
     VStack(alignment: .leading, spacing: 12) {
       TextField("Type to vibecode…", text: $draft, axis: .vertical)
         .textFieldStyle(.plain)
@@ -183,10 +321,21 @@ struct WorkNewChatScreen: View {
         .tint(ADEColor.accent)
         .focused($composerFocused)
         .frame(maxWidth: .infinity, minHeight: 28, alignment: .leading)
+        .onChange(of: pendingInsert) { _, newValue in
+          guard let token = newValue, !token.isEmpty else { return }
+          if !draft.isEmpty && !draft.hasSuffix(" ") && !draft.hasSuffix("\n") {
+            draft += " "
+          }
+          draft += token
+          pendingInsert = nil
+          composerFocused = true
+        }
 
       HStack(alignment: .center, spacing: 8) {
+      ScrollView(.horizontal, showsIndicators: false) {
+        HStack(alignment: .center, spacing: 6) {
         Button {
-          modelPickerPresented = true
+          onOpenModelPicker()
         } label: {
           HStack(spacing: 6) {
             WorkProviderLogo(
@@ -195,10 +344,19 @@ struct WorkNewChatScreen: View {
               tint: providerTint(provider),
               size: 16
             )
-            Text(prettyNewChatModelName(modelId))
+            Text(modelName)
               .font(.caption.weight(.semibold))
               .foregroundStyle(ADEColor.textPrimary)
               .lineLimit(1)
+            if !reasoningEffort.isEmpty {
+              Text("·")
+                .font(.caption2)
+                .foregroundStyle(ADEColor.textMuted.opacity(0.5))
+              Text(reasoningEffort.capitalized)
+                .font(.system(size: 10, weight: .medium))
+                .foregroundStyle(ADEColor.textMuted)
+                .lineLimit(1)
+            }
             Image(systemName: "chevron.down")
               .font(.system(size: 9, weight: .bold))
               .foregroundStyle(ADEColor.textMuted)
@@ -213,10 +371,77 @@ struct WorkNewChatScreen: View {
         }
         .buttonStyle(.plain)
 
-        Spacer(minLength: 0)
+        if !runtimeOptions.isEmpty {
+          Menu {
+            ForEach(runtimeOptions) { option in
+              Button {
+                runtimeMode = option.id
+              } label: {
+                if option.id == runtimeMode {
+                  Label(option.title, systemImage: "checkmark")
+                } else {
+                  Text(option.title)
+                }
+              }
+            }
+          } label: {
+            HStack(spacing: 6) {
+              Circle().fill(runtimeTint).frame(width: 6, height: 6)
+              Text(runtimeLabel)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(ADEColor.textPrimary)
+                .lineLimit(1)
+              Image(systemName: "chevron.down")
+                .font(.system(size: 9, weight: .bold))
+                .foregroundStyle(ADEColor.textMuted)
+            }
+            .padding(.horizontal, 9)
+            .padding(.vertical, 6)
+            .background(runtimeTint.opacity(0.12), in: Capsule(style: .continuous))
+            .overlay(
+              Capsule(style: .continuous)
+                .stroke(runtimeTint.opacity(0.35), lineWidth: 0.6)
+            )
+          }
+          .menuStyle(.borderlessButton)
+          .buttonStyle(.plain)
+          .accessibilityLabel("Access mode: \(runtimeLabel). Tap to change.")
+        }
+
+        Button(action: onOpenMentions) {
+          Image(systemName: "at")
+            .font(.system(size: 12, weight: .bold))
+            .foregroundStyle(ADEColor.textSecondary)
+            .frame(width: 28, height: 28)
+            .background(ADEColor.surfaceBackground.opacity(0.7), in: Circle())
+            .overlay(Circle().stroke(ADEColor.border.opacity(0.28), lineWidth: 0.6))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Insert @ mention")
+
+        Button(action: onOpenSlash) {
+          Text("/")
+            .font(.system(size: 14, weight: .bold))
+            .foregroundStyle(ADEColor.textSecondary)
+            .frame(width: 28, height: 28)
+            .background(ADEColor.surfaceBackground.opacity(0.7), in: Circle())
+            .overlay(Circle().stroke(ADEColor.border.opacity(0.28), lineWidth: 0.6))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Insert slash command")
+        }
+        .padding(.trailing, 4)
+      }
 
         Button {
-          Task { await submit() }
+          let text = trimmedDraft
+          draft = ""
+          Task {
+            let started = await onSubmit(text)
+            if !started {
+              draft = text
+            }
+          }
         } label: {
           HStack(spacing: 5) {
             if busy {
@@ -247,70 +472,20 @@ struct WorkNewChatScreen: View {
         .disabled(!canSend)
         .accessibilityLabel(canSend ? "Start chat" : "Enter a message to start")
       }
-    }
+      }
     .padding(.horizontal, 14)
     .padding(.vertical, 14)
     .background(
       RoundedRectangle(cornerRadius: 24, style: .continuous)
-        .fill(Color.black.opacity(0.55))
-        .background(
-          RoundedRectangle(cornerRadius: 24, style: .continuous)
-            .fill(.ultraThinMaterial)
-        )
+        .fill(ADEColor.surfaceBackground.opacity(0.94))
     )
     .overlay(
       RoundedRectangle(cornerRadius: 24, style: .continuous)
         .stroke(ADEColor.border.opacity(0.45), lineWidth: 1)
     )
-    .shadow(color: Color.black.opacity(0.4), radius: 20, y: 8)
+    .shadow(color: Color.black.opacity(0.18), radius: 8, y: 3)
     .padding(.horizontal, 16)
     .padding(.bottom, 0)
-  }
-
-  private func prettyNewChatModelName(_ model: String) -> String {
-    let trimmed = model.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !trimmed.isEmpty else { return "Model" }
-    let lower = trimmed.lowercased()
-    switch lower {
-    case "opus": return "Claude Opus 4.7"
-    case "opus[1m]", "opus-1m": return "Claude Opus 4.7 1M"
-    case "sonnet": return "Claude Sonnet 4.6"
-    case "haiku": return "Claude Haiku 4.5"
-    default: break
-    }
-    if lower.hasPrefix("claude-") {
-      let tail = trimmed.dropFirst("claude-".count)
-      let joined = tail.split(separator: "-").map { part -> String in
-        let s = String(part)
-        if s.range(of: #"^\d+$"#, options: .regularExpression) != nil { return s }
-        return s.prefix(1).uppercased() + s.dropFirst()
-      }.joined(separator: " ")
-      return "Claude " + joined.replacingOccurrences(of: #"(\d+) (\d+)"#, with: "$1.$2", options: .regularExpression)
-    }
-    return trimmed
-  }
-
-  @MainActor
-  private func submit() async {
-    guard canSend else { return }
-    busy = true
-    errorMessage = nil
-    do {
-      let summary = try await syncService.createChatSession(
-        laneId: selectedLaneId,
-        provider: provider,
-        model: modelId,
-        reasoningEffort: nil
-      )
-      let opener = trimmedDraft
-      draft = ""
-      await onStarted(summary, opener)
-      busy = false
-    } catch {
-      ADEHaptics.error()
-      errorMessage = error.localizedDescription
-      busy = false
-    }
   }
 }
 

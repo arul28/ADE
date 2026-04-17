@@ -27,7 +27,9 @@ import type { createPortAllocationService } from "../lanes/portAllocationService
 import type { createRebaseSuggestionService } from "../lanes/rebaseSuggestionService";
 import type { createMissionService } from "../missions/missionService";
 import type { createProcessService } from "../processes/processService";
+import type { createIssueInventoryService } from "../prs/issueInventoryService";
 import type { createPrService } from "../prs/prService";
+import type { createQueueLandingService } from "../prs/queueLandingService";
 import type { createPtyService } from "../pty/ptyService";
 import type { createSessionService } from "../sessions/sessionService";
 import type { AdeDb } from "../state/kvDb";
@@ -48,6 +50,8 @@ type SyncServiceArgs = {
   diffService?: ReturnType<typeof createDiffService>;
   conflictService?: ReturnType<typeof createConflictService>;
   prService: ReturnType<typeof createPrService>;
+  issueInventoryService?: ReturnType<typeof createIssueInventoryService> | null;
+  queueLandingService?: ReturnType<typeof createQueueLandingService> | null;
   sessionService: ReturnType<typeof createSessionService>;
   ptyService: ReturnType<typeof createPtyService>;
   projectConfigService?: ReturnType<typeof createProjectConfigService>;
@@ -343,8 +347,11 @@ export function createSyncService(args: SyncServiceArgs) {
         diffService: args.diffService,
         conflictService: args.conflictService,
         prService: args.prService,
+        issueInventoryService: args.issueInventoryService,
+        queueLandingService: args.queueLandingService,
         sessionService: args.sessionService,
         ptyService: args.ptyService,
+        processService: args.processService,
         agentChatService: args.agentChatService,
         projectConfigService: args.projectConfigService,
         portAllocationService: args.portAllocationService,

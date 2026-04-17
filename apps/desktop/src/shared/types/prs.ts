@@ -1452,6 +1452,7 @@ export type PrWorkflowCardKind = "queue" | "integration" | "rebase";
 export type PrQueueWorkflowCard = {
   kind: "queue";
   id: string;
+  queueId: string;
   groupId: string;
   groupName: string | null;
   targetBranch: string | null;
@@ -1459,6 +1460,7 @@ export type PrQueueWorkflowCard = {
   activePrId: string | null;
   currentPosition: number;
   totalEntries: number;
+  entries: QueueLandingEntry[];
   waitReason: QueueWaitReason | null;
   lastError: string | null;
   updatedAt: string;
@@ -1474,6 +1476,11 @@ export type PrIntegrationWorkflowCard = {
   status: "proposed" | "committed";
   laneCount: number;
   conflictLaneCount: number;
+  lanes: Array<{
+    laneId: string;
+    laneName: string;
+    outcome: "clean" | "conflict" | "blocked";
+  }>;
   workflowDisplayState: IntegrationWorkflowDisplayState;
   cleanupState: IntegrationCleanupState;
   linkedPrId: string | null;

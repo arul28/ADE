@@ -13,6 +13,11 @@ const IOS_REMOTE_COMMAND_ACTIONS = [
   "prs.getMobileSnapshot",
   "work.runQuickCommand",
   "work.closeSession",
+  "processes.listDefinitions",
+  "processes.listRuntime",
+  "processes.start",
+  "processes.stop",
+  "processes.kill",
   "lanes.create",
   "lanes.createFromUnstaged",
   "lanes.importBranch",
@@ -91,6 +96,46 @@ const IOS_REMOTE_COMMAND_ACTIONS = [
   "prs.draftDescription",
   "prs.rerunChecks",
   "prs.addComment",
+  "prs.updateTitle",
+  "prs.updateBody",
+  "prs.setLabels",
+  "prs.submitReview",
+  "prs.replyToReviewThread",
+  "prs.setReviewThreadResolved",
+  "prs.reactToComment",
+  "prs.aiReviewSummary",
+  "prs.listIntegrationWorkflows",
+  "prs.updateIntegrationProposal",
+  "prs.deleteIntegrationProposal",
+  "prs.dismissIntegrationCleanup",
+  "prs.cleanupIntegrationWorkflow",
+  "prs.createIntegrationLaneForProposal",
+  "prs.startIntegrationResolution",
+  "prs.recheckIntegrationStep",
+  "prs.landQueueNext",
+  "prs.pauseQueueAutomation",
+  "prs.resumeQueueAutomation",
+  "prs.cancelQueueAutomation",
+  "prs.reorderQueue",
+  "prs.getGitHubSnapshot",
+  "prs.getReviewThreads",
+  "prs.getActionRuns",
+  "prs.getActivity",
+  "prs.getDeployments",
+  "prs.issueInventory.sync",
+  "prs.issueInventory.get",
+  "prs.issueInventory.getNew",
+  "prs.issueInventory.markFixed",
+  "prs.issueInventory.markDismissed",
+  "prs.issueInventory.markEscalated",
+  "prs.issueInventory.getConvergence",
+  "prs.issueInventory.reset",
+  "prs.convergenceState.get",
+  "prs.convergenceState.save",
+  "prs.convergenceState.delete",
+  "prs.pipelineSettings.get",
+  "prs.pipelineSettings.save",
+  "prs.pipelineSettings.delete",
 ] satisfies SyncRemoteCommandAction[];
 
 const IOS_FILE_REQUEST_ACTIONS = [
@@ -162,6 +207,29 @@ function createMockPrService() {
     requestReviewers: vi.fn().mockResolvedValue(undefined),
     rerunChecks: vi.fn().mockResolvedValue(undefined),
     addComment: vi.fn().mockResolvedValue({ id: "comment-1", body: "Looks good" }),
+    updateTitle: vi.fn().mockResolvedValue(undefined),
+    updateBody: vi.fn().mockResolvedValue(undefined),
+    setLabels: vi.fn().mockResolvedValue(undefined),
+    submitReview: vi.fn().mockResolvedValue(undefined),
+    replyToReviewThread: vi.fn().mockResolvedValue({ id: "comment-2" }),
+    setReviewThreadResolved: vi.fn().mockResolvedValue({ threadId: "thread-1", isResolved: true }),
+    reactToComment: vi.fn().mockResolvedValue(undefined),
+    aiReviewSummary: vi.fn().mockResolvedValue({ summary: "ready" }),
+    listIntegrationWorkflows: vi.fn().mockResolvedValue([]),
+    updateIntegrationProposal: vi.fn().mockResolvedValue(undefined),
+    deleteIntegrationProposal: vi.fn().mockResolvedValue({ proposalId: "proposal-1", integrationLaneId: null, deletedIntegrationLane: false }),
+    dismissIntegrationCleanup: vi.fn().mockResolvedValue({ proposalId: "proposal-1", cleanupState: "declined" }),
+    cleanupIntegrationWorkflow: vi.fn().mockResolvedValue({ proposalId: "proposal-1", archivedLaneIds: [], skippedLaneIds: [], workflowDisplayState: "history", cleanupState: "completed" }),
+    createIntegrationLaneForProposal: vi.fn().mockResolvedValue({ integrationLaneId: "lane-int", mergedCleanLanes: [], conflictingLanes: [] }),
+    startIntegrationResolution: vi.fn().mockResolvedValue({ conflictFiles: [], mergedClean: true, integrationLaneId: "lane-int" }),
+    recheckIntegrationStep: vi.fn().mockResolvedValue({ resolution: "resolved", remainingConflictFiles: [], allResolved: true, message: null }),
+    landQueueNext: vi.fn().mockResolvedValue({ ok: true }),
+    reorderQueuePrs: vi.fn().mockResolvedValue(undefined),
+    getGithubSnapshot: vi.fn().mockResolvedValue({ generatedAt: "2026-04-01T00:00:00Z", repoPullRequests: [], externalPullRequests: [], live: true }),
+    getReviewThreads: vi.fn().mockResolvedValue([]),
+    getActionRuns: vi.fn().mockResolvedValue([]),
+    getActivity: vi.fn().mockResolvedValue([]),
+    getDeployments: vi.fn().mockResolvedValue([]),
     getMobileSnapshot: vi.fn().mockResolvedValue({
       generatedAt: "2026-04-01T00:00:00Z",
       prs: [],
@@ -171,6 +239,67 @@ function createMockPrService() {
       workflowCards: [],
       live: true,
     }),
+  } as any;
+}
+
+function createMockIssueInventoryService() {
+  const snapshot = {
+    prId: "pr-1",
+    items: [],
+    convergence: {
+      currentRound: 0,
+      maxRounds: 5,
+      issuesPerRound: [],
+      totalNew: 0,
+      totalFixed: 0,
+      totalDismissed: 0,
+      totalEscalated: 0,
+      totalSentToAgent: 0,
+      isConverging: false,
+      canAutoAdvance: false,
+    },
+    runtime: {
+      prId: "pr-1",
+      autoConvergeEnabled: false,
+      status: "idle",
+      pollerStatus: "idle",
+      currentRound: 0,
+      activeSessionId: null,
+      activeLaneId: null,
+      activeHref: null,
+      pauseReason: null,
+      errorMessage: null,
+      lastStartedAt: null,
+      lastPolledAt: null,
+      lastPausedAt: null,
+      lastStoppedAt: null,
+      createdAt: "2026-04-01T00:00:00Z",
+      updatedAt: "2026-04-01T00:00:00Z",
+    },
+  };
+  return {
+    syncFromPrData: vi.fn().mockReturnValue(snapshot),
+    getInventory: vi.fn().mockReturnValue(snapshot),
+    getNewItems: vi.fn().mockReturnValue([]),
+    markFixed: vi.fn(),
+    markDismissed: vi.fn(),
+    markEscalated: vi.fn(),
+    getConvergenceStatus: vi.fn().mockReturnValue(snapshot.convergence),
+    resetInventory: vi.fn(),
+    getConvergenceRuntime: vi.fn().mockReturnValue(snapshot.runtime),
+    saveConvergenceRuntime: vi.fn().mockReturnValue(snapshot.runtime),
+    resetConvergenceRuntime: vi.fn(),
+    getPipelineSettings: vi.fn().mockReturnValue({ autoMerge: false, mergeMethod: "repo_default", maxRounds: 5, onRebaseNeeded: "pause" }),
+    savePipelineSettings: vi.fn(),
+    deletePipelineSettings: vi.fn(),
+  } as any;
+}
+
+function createMockQueueLandingService() {
+  return {
+    pauseQueue: vi.fn().mockReturnValue({ queueId: "queue-1", state: "paused" }),
+    resumeQueue: vi.fn().mockReturnValue({ queueId: "queue-1", state: "landing" }),
+    cancelQueue: vi.fn().mockReturnValue({ queueId: "queue-1", state: "cancelled" }),
   } as any;
 }
 
@@ -283,6 +412,30 @@ function createMockConflictService() {
   } as any;
 }
 
+function createMockProcessService() {
+  return {
+    listDefinitions: vi.fn().mockReturnValue([
+      {
+        id: "dev",
+        name: "Dev server",
+        command: ["npm", "run", "dev"],
+        cwd: ".",
+        env: {},
+        groupIds: [],
+        autostart: false,
+        restart: "never",
+        gracefulShutdownMs: 7000,
+        dependsOn: [],
+        readiness: { type: "none" },
+      },
+    ]),
+    listRuntime: vi.fn().mockReturnValue([]),
+    start: vi.fn().mockResolvedValue({ runId: "run-1" }),
+    stop: vi.fn().mockResolvedValue(null),
+    kill: vi.fn().mockResolvedValue(null),
+  } as any;
+}
+
 function makePayload(action: string, args: Record<string, unknown> = {}): SyncCommandPayload {
   return { commandId: `cmd-${Date.now()}`, action: action as any, args };
 }
@@ -297,6 +450,9 @@ describe("createSyncRemoteCommandService", () => {
   let diffService: ReturnType<typeof createMockDiffService>;
   let agentChatService: ReturnType<typeof createMockAgentChatService>;
   let conflictService: ReturnType<typeof createMockConflictService>;
+  let processService: ReturnType<typeof createMockProcessService>;
+  let issueInventoryService: ReturnType<typeof createMockIssueInventoryService>;
+  let queueLandingService: ReturnType<typeof createMockQueueLandingService>;
   let service: ReturnType<typeof createSyncRemoteCommandService>;
 
   beforeEach(() => {
@@ -309,9 +465,14 @@ describe("createSyncRemoteCommandService", () => {
     diffService = createMockDiffService();
     agentChatService = createMockAgentChatService();
     conflictService = createMockConflictService();
+    processService = createMockProcessService();
+    issueInventoryService = createMockIssueInventoryService();
+    queueLandingService = createMockQueueLandingService();
     service = createSyncRemoteCommandService({
       laneService,
       prService,
+      issueInventoryService,
+      queueLandingService,
       ptyService,
       sessionService,
       fileService,
@@ -319,6 +480,7 @@ describe("createSyncRemoteCommandService", () => {
       diffService,
       agentChatService,
       conflictService,
+      processService,
       logger: createLogger() as any,
     });
   });
@@ -354,6 +516,7 @@ describe("createSyncRemoteCommandService", () => {
       expect(actions).toContain("chat.send");
       expect(actions).toContain("files.writeTextAtomic");
       expect(actions).toContain("work.listSessions");
+      expect(actions).toContain("processes.listDefinitions");
       expect(actions).toContain("conflicts.getLaneStatus");
     });
 
@@ -1361,6 +1524,46 @@ describe("createSyncRemoteCommandService", () => {
       expect(sessionService.get).toHaveBeenCalledWith("sess-1");
       expect(ptyService.dispose).not.toHaveBeenCalled();
       expect(result).toEqual({ ok: true });
+    });
+  });
+
+  // ---------------------------------------------------------------
+  // execute: process commands
+  // ---------------------------------------------------------------
+
+  describe("execute — process commands", () => {
+    it("processes.listDefinitions routes to processService.listDefinitions", async () => {
+      const result = await service.execute(makePayload("processes.listDefinitions"));
+      expect(processService.listDefinitions).toHaveBeenCalled();
+      expect(result).toEqual(expect.arrayContaining([expect.objectContaining({ id: "dev" })]));
+    });
+
+    it("processes.listRuntime requires laneId and routes to processService.listRuntime", async () => {
+      await service.execute(makePayload("processes.listRuntime", { laneId: "lane-1" }));
+      expect(processService.listRuntime).toHaveBeenCalledWith("lane-1");
+    });
+
+    it("processes.start parses laneId and processId", async () => {
+      await service.execute(makePayload("processes.start", { laneId: "lane-1", processId: "dev" }));
+      expect(processService.start).toHaveBeenCalledWith({ laneId: "lane-1", processId: "dev" });
+    });
+
+    it("processes.kill preserves the target runId", async () => {
+      await service.execute(makePayload("processes.kill", { laneId: "lane-1", processId: "dev", runId: "run-1" }));
+      expect(processService.kill).toHaveBeenCalledWith({ laneId: "lane-1", processId: "dev", runId: "run-1" });
+    });
+
+    it("process commands throw when processService is not available", async () => {
+      const svcNoProcess = createSyncRemoteCommandService({
+        laneService,
+        prService,
+        ptyService,
+        sessionService,
+        fileService,
+        logger: createLogger() as any,
+      });
+      await expect(svcNoProcess.execute(makePayload("processes.listDefinitions")))
+        .rejects.toThrow("Process service not available.");
     });
   });
 

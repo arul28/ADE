@@ -19,6 +19,7 @@ struct WorkRootScreen: View {
   @Environment(\.accessibilityReduceMotion) var reduceMotion
   @EnvironmentObject var syncService: SyncService
   @Namespace var sessionTransitionNamespace
+  var isTabActive = true
 
   @State var sessions: [TerminalSessionSummary] = []
   @State var chatSummaries: [String: AgentChatSessionSummary] = [:]
@@ -28,6 +29,8 @@ struct WorkRootScreen: View {
   /// so `localStateRevision` bumps during CRDT sync do not re-parse every terminal buffer in `body`.
   @State var activityTranscriptCache: [String: WorkActivityTranscriptCacheEntry] = [:]
   @State var activityFeedEntries: [WorkAgentActivity] = []
+  @State var activityFeedRebuildTask: Task<Void, Never>?
+  @State var activityFeedRebuildGeneration = 0
   @State var errorMessage: String?
   @State var path = NavigationPath()
   @State var searchText = ""
@@ -39,10 +42,11 @@ struct WorkRootScreen: View {
   @State var optimisticSessions: [String: TerminalSessionSummary] = [:]
   @State var refreshFeedbackToken = 0
   @State var selectedSessionTransitionId: String?
+  @State var navigationMutationPending = false
   /// Coalesces expensive per-lane `listChatSessions` refreshes when `localStateRevision` bumps during CRDT sync.
   @State var lastCoalescedChatSummaryRefresh = Date.distantPast
   @AppStorage("ade.work.archivedSessionIds") var archivedSessionIdsStorage = ""
-  @AppStorage("ade.work.sessionOrganization") var sessionOrganizationRaw = WorkSessionOrganization.byStatus.rawValue
+  @AppStorage("ade.work.sessionOrganization") var sessionOrganizationRaw = WorkSessionOrganization.byLane.rawValue
   @AppStorage("ade.work.collapsedSectionIds") var collapsedSectionIdsStorage = ""
   @State var filterPanelOpen = false
 
@@ -168,8 +172,15 @@ struct WorkRootScreen: View {
   }
 
   func pushNewChatRoute() {
+    guard !navigationMutationPending else { return }
     let preferred = selectedLaneId == "all" ? lanes.first?.id : selectedLaneId
-    path.append(WorkNewChatRoute(preferredLaneId: preferred))
+    navigationMutationPending = true
+    selectedSessionTransitionId = nil
+    Task { @MainActor in
+      await Task.yield()
+      path.append(WorkNewChatRoute(preferredLaneId: preferred))
+      navigationMutationPending = false
+    }
   }
 
   var sessionGroups: [WorkSessionGroup] {
@@ -187,7 +198,7 @@ struct WorkRootScreen: View {
   }
 
   var isWorkRootActive: Bool {
-    path.isEmpty
+    isTabActive && path.isEmpty
   }
 
   /// Composite fingerprint that changes only when the Activity feed actually needs to rebuild.
@@ -209,6 +220,7 @@ struct WorkRootScreen: View {
 
   var body: some View {
     NavigationStack(path: $path) {
+      ScrollViewReader { proxy in
       List {
         if let statusNotice {
           statusNotice
@@ -230,18 +242,10 @@ struct WorkRootScreen: View {
             filterOpen: $filterPanelOpen,
             lanes: lanes,
             runningCount: liveSessions.count,
-            needsInputCount: needsInputSessions.count,
-            onNewChat: pushNewChatRoute,
-            newChatEnabled: isLive
+            needsInputCount: needsInputSessions.count
           )
           .listRowBackground(Color.clear)
           .listRowSeparator(.hidden)
-
-          if !liveSessions.isEmpty || !needsInputSessions.isEmpty {
-            WorkRunningBanner(liveSessions: liveSessions, attentionCount: needsInputSessions.count)
-              .listRowBackground(Color.clear)
-              .listRowSeparator(.hidden)
-          }
 
           if !activityFeed.isEmpty {
             Section("Activity") {
@@ -307,7 +311,7 @@ struct WorkRootScreen: View {
                     isArchived: archivedSessionIds.contains(session.id),
                     transitionNamespace: ADEMotion.allowsMatchedGeometry(reduceMotion: reduceMotion) ? sessionTransitionNamespace : nil,
                     selectedSessionId: $selectedSessionTransitionId,
-                    path: $path,
+                    onOpen: openSession,
                     onArchive: toggleArchive,
                     onPin: togglePin,
                     onRename: beginRename,
@@ -316,7 +320,7 @@ struct WorkRootScreen: View {
                     onCopyId: copySessionId,
                     onGoToLane: goToLane
                   )
-                  .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0))
+                  .listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0))
                   .listRowBackground(Color.clear)
                   .listRowSeparator(.hidden)
                 }
@@ -336,22 +340,33 @@ struct WorkRootScreen: View {
           ADEConnectionPill()
         }
         ToolbarItem(placement: .topBarTrailing) {
-          Button {
-            pushNewChatRoute()
-          } label: {
-            Image(systemName: "plus.bubble.fill")
+          HStack(spacing: 8) {
+            if !liveSessions.isEmpty || needsInputSessions.count > 0 {
+              WorkLiveCountPill(
+                liveCount: max(liveSessions.count, needsInputSessions.count),
+                attentionCount: needsInputSessions.count,
+                onTap: {
+                  guard let target = needsInputSessions.first ?? liveSessions.first else { return }
+                  withAnimation(.snappy) {
+                    proxy.scrollTo(target.id, anchor: .top)
+                  }
+                }
+              )
+            }
+            Button {
+              pushNewChatRoute()
+            } label: {
+              Image(systemName: "plus.bubble.fill")
+            }
+            .accessibilityLabel("Create new chat")
+            .disabled(!isLive)
           }
-          .accessibilityLabel("Create new chat")
-          .disabled(!isLive)
         }
       }
       .refreshable {
         await refreshFromPullGesture()
       }
       .sensoryFeedback(.success, trigger: refreshFeedbackToken)
-      .task {
-        await reload()
-      }
       .task(id: "\(syncService.localStateRevision)-\(isWorkRootActive)") {
         guard isWorkRootActive else { return }
         await reloadFromPersistedProjection()
@@ -360,7 +375,10 @@ struct WorkRootScreen: View {
         await pollRunningChats()
       }
       .task(id: activityFeedFingerprint) {
-        guard isWorkRootActive else { return }
+        guard isWorkRootActive else {
+          cancelActivityFeedRebuild()
+          return
+        }
         rebuildActivityFeed()
       }
       .task(id: isWorkRootActive) {
@@ -426,13 +444,14 @@ struct WorkRootScreen: View {
         Button("Cancel", role: .cancel) {
           endTarget = nil
         }
-        Button(isChatSession(session) ? "End chat" : "Close", role: .destructive) {
+        Button("Close", role: .destructive) {
           Task { await endSession(session) }
         }
       } message: { session in
         Text(isChatSession(session)
           ? "ADE will ask the host to stop this chat and keep the transcript available for review."
           : "ADE will stop streaming new terminal output for this session.")
+      }
       }
     }
   }

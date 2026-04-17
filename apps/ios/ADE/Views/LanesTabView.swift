@@ -6,6 +6,7 @@ struct LanesTabView: View {
   @Environment(\.accessibilityReduceMotion) var reduceMotion
   @EnvironmentObject var syncService: SyncService
   @Namespace private var laneTransitionNamespace
+  var isActive = true
 
   @State var laneSnapshots: [LaneListSnapshot] = []
   @State var errorMessage: String?
@@ -106,21 +107,28 @@ struct LanesTabView: View {
       .navigationBarTitleDisplayMode(.inline)
       .toolbar { toolbarContent }
       .sensoryFeedback(.success, trigger: refreshFeedbackToken)
-      .task { await reload() }
-      .task(id: primaryLane?.id) {
+      .task(id: "\(primaryLane?.id ?? "none")-\(canRunLiveActions)-\(isActive)") {
+        guard isActive else { return }
         await refreshPrimaryBranches(force: true)
       }
-      .task(id: syncService.localStateRevision) {
+      .task(id: "\(syncService.localStateRevision)-\(isActive)") {
+        guard isActive else { return }
         guard laneStatus.phase == .ready else { return }
         let now = Date()
         guard now.timeIntervalSince(lastLanesLocalProjectionReload) >= 0.35 else { return }
         lastLanesLocalProjectionReload = now
         await reload(refreshRemote: false)
       }
-      .task(id: syncService.requestedLaneNavigation?.id) {
+      .task(id: "\(syncService.requestedLaneNavigation?.id ?? "none")-\(isActive)") {
+        guard isActive else { return }
         await handleRequestedLaneNavigation()
       }
+      .task(id: isActive) {
+        guard isActive else { return }
+        await reload(refreshRemote: false)
+      }
       .onChange(of: syncService.connectionState) { oldValue, newValue in
+        guard isActive else { return }
         let wasOnline = oldValue == .connected || oldValue == .syncing
         let nowOnline = newValue == .connected || newValue == .syncing
         if wasOnline && !nowOnline {

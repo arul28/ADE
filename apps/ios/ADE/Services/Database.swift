@@ -437,8 +437,17 @@ final class DatabaseService {
     }
 
     // Harden against duplicate ids arriving from sync merges: last writer wins.
-    let rowsById = Dictionary(rows.map { ($0.id, $0) }, uniquingKeysWith: { _, new in new })
-    let childCounts = rows.reduce(into: [String: Int]()) { partial, row in
+    var rowOrder: [String] = []
+    var rowsById: [String: LaneRow] = [:]
+    for row in rows {
+      if rowsById[row.id] == nil {
+        rowOrder.append(row.id)
+      }
+      rowsById[row.id] = row
+    }
+    let dedupedRows = rowOrder.compactMap { rowsById[$0] }
+
+    let childCounts = dedupedRows.reduce(into: [String: Int]()) { partial, row in
       guard let parent = row.parentLaneId, row.archivedAt == nil else { return }
       partial[parent, default: 0] += 1
     }
@@ -450,7 +459,7 @@ final class DatabaseService {
       return 1 + stackDepth(for: parent, visited: &visited)
     }
 
-    return rows
+    return dedupedRows
       .filter { includeArchived || $0.archivedAt == nil }
       .map { row in
         var visited = Set<String>()
@@ -515,6 +524,7 @@ final class DatabaseService {
 
     try exec("begin")
     do {
+      try exec("pragma defer_foreign_keys = on")
       try exec("delete from lane_state_snapshots")
       try exec("delete from lanes")
       try exec("delete from lane_list_snapshots")
@@ -803,8 +813,12 @@ final class DatabaseService {
 
     try exec("begin")
     do {
-      try exec("delete from pull_request_snapshots")
-      try exec("delete from pull_requests")
+      _ = try execute("""
+        delete from pull_request_snapshots
+         where pr_id in (select id from pull_requests where project_id = ?)
+      """) { statement in
+        try bindText(projectId, to: statement, index: 1)
+      }
 
       for pr in payload.prs {
         _ = try execute("""
@@ -813,6 +827,25 @@ final class DatabaseService {
             title, state, base_branch, head_branch, checks_status, review_status, additions, deletions,
             last_synced_at, created_at, updated_at
           ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          on conflict(id) do update set
+            project_id = excluded.project_id,
+            lane_id = excluded.lane_id,
+            repo_owner = excluded.repo_owner,
+            repo_name = excluded.repo_name,
+            github_pr_number = excluded.github_pr_number,
+            github_url = excluded.github_url,
+            github_node_id = excluded.github_node_id,
+            title = excluded.title,
+            state = excluded.state,
+            base_branch = excluded.base_branch,
+            head_branch = excluded.head_branch,
+            checks_status = excluded.checks_status,
+            review_status = excluded.review_status,
+            additions = excluded.additions,
+            deletions = excluded.deletions,
+            last_synced_at = excluded.last_synced_at,
+            created_at = excluded.created_at,
+            updated_at = excluded.updated_at
         """) { statement in
           try bindText(pr.id, to: statement, index: 1)
           try bindText(pr.projectId.isEmpty ? projectId : pr.projectId, to: statement, index: 2)
@@ -849,6 +882,14 @@ final class DatabaseService {
           insert into pull_request_snapshots(
             pr_id, detail_json, status_json, checks_json, reviews_json, comments_json, files_json, updated_at
           ) values (?, ?, ?, ?, ?, ?, ?, ?)
+          on conflict(pr_id) do update set
+            detail_json = excluded.detail_json,
+            status_json = excluded.status_json,
+            checks_json = excluded.checks_json,
+            reviews_json = excluded.reviews_json,
+            comments_json = excluded.comments_json,
+            files_json = excluded.files_json,
+            updated_at = excluded.updated_at
         """) { statement in
           try bindText(snapshot.prId, to: statement, index: 1)
           try bindOptionalJson(snapshot.detail, to: statement, index: 2)
@@ -860,6 +901,8 @@ final class DatabaseService {
           try bindText(snapshot.updatedAt ?? ISO8601DateFormatter().string(from: Date()), to: statement, index: 8)
         }
       }
+
+      try deleteStalePullRequestRows(projectId: projectId, keeping: payload.prs.map(\.id))
 
       try exec("commit")
       notifyDidChange()
@@ -910,7 +953,29 @@ final class DatabaseService {
     guard tableExists("files_workspaces") else { return }
     try exec("begin immediate")
     do {
-      try run("delete from files_workspaces")
+      let incomingIds = Set(workspaces.map(\.id))
+      let existingIds = query("select id from files_workspaces") { statement in
+        stringValue(statement, index: 0) ?? ""
+      }
+      let staleIds = existingIds.filter { !incomingIds.contains($0) }
+      let snapshotTables = [
+        "file_directory_snapshots",
+        "file_content_snapshots",
+        "file_diff_snapshots",
+        "file_history_snapshots",
+      ]
+
+      for staleId in staleIds {
+        for table in snapshotTables where tableExists(table) {
+          _ = try execute("delete from \(table) where workspace_id = ?") { statement in
+            try bindText(staleId, to: statement, index: 1)
+          }
+        }
+        _ = try execute("delete from files_workspaces where id = ?") { statement in
+          try bindText(staleId, to: statement, index: 1)
+        }
+      }
+
       let timestamp = ISO8601DateFormatter().string(from: Date())
       for workspace in workspaces {
         _ = try execute(
@@ -918,6 +983,14 @@ final class DatabaseService {
           insert into files_workspaces(
             id, kind, lane_id, name, root_path, is_read_only_by_default, mobile_read_only, updated_at
           ) values (?, ?, ?, ?, ?, ?, ?, ?)
+          on conflict(id) do update set
+            kind = excluded.kind,
+            lane_id = excluded.lane_id,
+            name = excluded.name,
+            root_path = excluded.root_path,
+            is_read_only_by_default = excluded.is_read_only_by_default,
+            mobile_read_only = excluded.mobile_read_only,
+            updated_at = excluded.updated_at
           """
         ) { statement in
           try bindText(workspace.id, to: statement, index: 1)
@@ -1607,7 +1680,7 @@ final class DatabaseService {
              q.updated_at
         from queue_landing_state q
         left join pr_groups g on g.id = q.group_id
-       order by coalesce(q.updated_at, q.started_at) desc
+       order by q.updated_at desc, q.started_at desc
     """
 
     return query(sql) { statement in
@@ -1701,9 +1774,9 @@ final class DatabaseService {
   }
 
   func hasHydratedControllerData() -> Bool {
-    let laneCount = queryInt64("select count(*) from lanes") ?? 0
-    let sessionCount = queryInt64("select count(*) from terminal_sessions") ?? 0
-    let pullRequestCount = queryInt64("select count(*) from pull_requests") ?? 0
+    let laneCount = hasTable(named: "lanes") ? (queryInt64("select count(*) from lanes") ?? 0) : 0
+    let sessionCount = hasTable(named: "terminal_sessions") ? (queryInt64("select count(*) from terminal_sessions") ?? 0) : 0
+    let pullRequestCount = hasTable(named: "pull_requests") ? (queryInt64("select count(*) from pull_requests") ?? 0) : 0
     return laneCount > 0 || sessionCount > 0 || pullRequestCount > 0
   }
 
@@ -1823,6 +1896,7 @@ final class DatabaseService {
       )
     """)
     try exec("create index if not exists idx_lane_detail_snapshots_updated_at on lane_detail_snapshots(updated_at)")
+    try ensurePullRequestProjectionTables()
 
     for col in [
       "execution_lane_id", "supervisor_identity_key", "review_ready_reason",
@@ -1856,6 +1930,8 @@ final class DatabaseService {
     try ensureColumn(tableName: "queue_landing_state", columnName: "last_error", definition: "text")
     try ensureColumn(tableName: "queue_landing_state", columnName: "wait_reason", definition: "text")
     try ensureColumn(tableName: "queue_landing_state", columnName: "updated_at", definition: "text")
+    try exec("create index if not exists idx_pull_requests_project_updated on pull_requests(project_id, updated_at desc)")
+    try exec("create index if not exists idx_queue_landing_state_project_updated on queue_landing_state(project_id, updated_at desc, started_at desc)")
 
     try ensureColumn(tableName: "missions", columnName: "mission_lane_id", definition: "text")
     try ensureColumn(tableName: "missions", columnName: "result_lane_id", definition: "text")
@@ -1866,6 +1942,133 @@ final class DatabaseService {
     try ensureColumn(tableName: "mission_interventions", columnName: "resolution_kind", definition: "text")
     try ensureColumn(tableName: "unified_memories", columnName: "access_score", definition: "real not null default 0")
     try ensureColumn(tableName: "worker_agents", columnName: "linear_identity_json", definition: "text not null default '{}'")
+  }
+
+  private func ensurePullRequestProjectionTables() throws {
+    try exec("""
+      create table if not exists pull_requests (
+        id text primary key,
+        project_id text not null,
+        lane_id text not null,
+        repo_owner text not null,
+        repo_name text not null,
+        github_pr_number integer not null,
+        github_url text not null,
+        github_node_id text,
+        title text,
+        state text not null,
+        base_branch text not null,
+        head_branch text not null,
+        checks_status text,
+        review_status text,
+        additions integer not null default 0,
+        deletions integer not null default 0,
+        last_synced_at text,
+        created_at text not null,
+        updated_at text not null,
+        last_polled_at text,
+        head_sha text
+      )
+    """)
+    try ensureColumn(tableName: "pull_requests", columnName: "last_polled_at", definition: "text")
+    try ensureColumn(tableName: "pull_requests", columnName: "head_sha", definition: "text")
+    try exec("""
+      create table if not exists pull_request_snapshots (
+        pr_id text primary key,
+        detail_json text,
+        status_json text,
+        checks_json text,
+        reviews_json text,
+        comments_json text,
+        files_json text,
+        updated_at text not null
+      )
+    """)
+    try exec("create index if not exists idx_pull_request_snapshots_updated_at on pull_request_snapshots(updated_at)")
+    try exec("""
+      create table if not exists pull_request_ai_summaries (
+        pr_id text not null,
+        head_sha text not null,
+        summary_json text not null,
+        generated_at text not null,
+        primary key(pr_id, head_sha)
+      )
+    """)
+    try exec("create index if not exists idx_pr_ai_summaries_pr_id on pull_request_ai_summaries(pr_id)")
+    try exec("""
+      create table if not exists pr_groups (
+        id text primary key,
+        project_id text not null,
+        group_type text not null,
+        name text,
+        auto_rebase integer not null default 0,
+        ci_gating integer not null default 0,
+        target_branch text,
+        created_at text not null
+      )
+    """)
+    try exec("create index if not exists idx_pr_groups_project on pr_groups(project_id)")
+    try exec("""
+      create table if not exists pr_group_members (
+        id text primary key,
+        group_id text not null,
+        pr_id text not null,
+        lane_id text not null,
+        position integer not null,
+        role text not null
+      )
+    """)
+    try exec("create index if not exists idx_pr_group_members_group on pr_group_members(group_id)")
+    try exec("create index if not exists idx_pr_group_members_pr on pr_group_members(pr_id)")
+    try exec("""
+      create table if not exists integration_proposals (
+        id text primary key,
+        project_id text not null,
+        source_lane_ids_json text not null default '[]',
+        base_branch text not null default '',
+        steps_json text not null default '[]',
+        title text default '',
+        body text default '',
+        draft integer not null default 0,
+        integration_lane_name text default '',
+        status text not null default 'proposed',
+        integration_lane_id text,
+        resolution_state_json text,
+        pairwise_results_json text not null default '[]',
+        lane_summaries_json text not null default '[]',
+        overall_outcome text not null default 'pending',
+        created_at text not null default '',
+        linked_group_id text,
+        linked_pr_id text,
+        workflow_display_state text not null default 'active',
+        cleanup_state text not null default 'none',
+        closed_at text,
+        merged_at text,
+        completed_at text,
+        cleanup_declined_at text,
+        cleanup_completed_at text
+      )
+    """)
+    try exec("create index if not exists idx_integration_proposals_project on integration_proposals(project_id)")
+    try exec("""
+      create table if not exists queue_landing_state (
+        id text primary key,
+        group_id text not null,
+        project_id text not null,
+        state text not null,
+        entries_json text not null,
+        config_json text not null default '{}',
+        current_position integer not null default 0,
+        active_pr_id text,
+        active_resolver_run_id text,
+        last_error text,
+        wait_reason text,
+        started_at text not null,
+        completed_at text,
+        updated_at text
+      )
+    """)
+    try exec("create index if not exists idx_queue_landing_state_group on queue_landing_state(group_id)")
   }
 
   private func ensureColumn(tableName: String, columnName: String, definition: String) throws {
@@ -1882,8 +2085,56 @@ final class DatabaseService {
       throw sqliteError(message)
     }
     db = opened
+    try exec("pragma foreign_keys = on")
     try registerInternalFunctions()
     localDbVersion = readMaxDbVersion()
+  }
+
+  private func deleteStalePullRequestRows(projectId: String, keeping prIds: [String]) throws {
+    let childTables = [
+      "pull_request_ai_summaries",
+      "pr_group_members",
+      "pr_issue_inventory",
+      "pr_pipeline_settings",
+      "pr_convergence_state",
+    ]
+
+    if prIds.isEmpty {
+      for table in childTables where hasTable(named: table) {
+        _ = try execute("delete from \(table) where pr_id in (select id from pull_requests where project_id = ?)") { statement in
+          try bindText(projectId, to: statement, index: 1)
+        }
+      }
+      _ = try execute("delete from pull_requests where project_id = ?") { statement in
+        try bindText(projectId, to: statement, index: 1)
+      }
+      return
+    }
+
+    let placeholders = Array(repeating: "?", count: prIds.count).joined(separator: ", ")
+    func bindProjectAndPrIds(_ statement: OpaquePointer) throws {
+      try bindText(projectId, to: statement, index: 1)
+      for (index, prId) in prIds.enumerated() {
+        try bindText(prId, to: statement, index: Int32(index + 2))
+      }
+    }
+
+    for table in childTables where hasTable(named: table) {
+      _ = try execute("""
+        delete from \(table)
+         where pr_id in (
+           select id from pull_requests
+            where project_id = ?
+              and id not in (\(placeholders))
+         )
+      """, bind: bindProjectAndPrIds)
+    }
+
+    _ = try execute("""
+      delete from pull_requests
+       where project_id = ?
+         and id not in (\(placeholders))
+    """, bind: bindProjectAndPrIds)
   }
 
   private func loadBootstrapSQL() throws -> String {

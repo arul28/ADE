@@ -17,15 +17,22 @@ import type {
   AgentChatInterruptArgs,
   AgentChatUpdateSessionArgs,
   AddPrCommentArgs,
+  AiReviewSummaryArgs,
   ApplyLaneTemplateArgs,
   ArchiveLaneArgs,
   AttachLaneArgs,
   ClosePrArgs,
+  CancelQueueAutomationArgs,
   CreateChildLaneArgs,
   CreateLaneArgs,
   CreateLaneFromUnstagedArgs,
   CreatePrFromLaneArgs,
+  CreateIntegrationLaneForProposalArgs,
+  ConvergenceRuntimeState,
+  CleanupIntegrationWorkflowArgs,
   DeleteLaneArgs,
+  DeleteIntegrationProposalArgs,
+  DismissIntegrationCleanupArgs,
   DraftPrDescriptionArgs,
   GetDiffChangesArgs,
   GetFileDiffArgs,
@@ -45,6 +52,10 @@ import type {
   GitSyncArgs,
   ImportBranchLaneArgs,
   LandPrArgs,
+  LandQueueNextArgs,
+  PauseQueueAutomationArgs,
+  PipelineSettings,
+  PrConvergenceStatePatch,
   LaneEnvInitConfig,
   LaneEnvInitProgress,
   LaneDetailPayload,
@@ -52,22 +63,36 @@ import type {
   LaneOverlayOverrides,
   LaneStateSnapshotSummary,
   ListLanesArgs,
+  ListIntegrationWorkflowsArgs,
   ListSessionsArgs,
+  LinkPrToLaneArgs,
   RebasePushArgs,
   RebaseStartArgs,
   RenameLaneArgs,
   ReopenPrArgs,
+  RecheckIntegrationStepArgs,
+  ReactToPrCommentArgs,
+  ReplyToPrReviewThreadArgs,
   ReparentLaneArgs,
   RequestPrReviewersArgs,
+  ReorderQueuePrsArgs,
+  ResumeQueueAutomationArgs,
   RerunPrChecksArgs,
+  SetPrLabelsArgs,
+  SetPrReviewThreadResolvedArgs,
+  StartIntegrationResolutionArgs,
+  SubmitPrReviewArgs,
   SyncCommandPayload,
   SyncRemoteCommandAction,
   SyncRemoteCommandDescriptor,
   SyncRemoteCommandPolicy,
   SyncRunQuickCommandArgs,
   UpdateSessionMetaArgs,
+  UpdateIntegrationProposalArgs,
   TerminalToolType,
   UpdateLaneAppearanceArgs,
+  UpdatePrBodyArgs,
+  UpdatePrTitleArgs,
   WriteTextAtomicArgs,
 } from "../../../shared/types";
 import type { createAgentChatService } from "../chat/agentChatService";
@@ -83,14 +108,19 @@ import type { createLaneService } from "../lanes/laneService";
 import type { createLaneTemplateService } from "../lanes/laneTemplateService";
 import type { createPortAllocationService } from "../lanes/portAllocationService";
 import type { createRebaseSuggestionService } from "../lanes/rebaseSuggestionService";
+import type { createProcessService } from "../processes/processService";
 import type { Logger } from "../logging/logger";
 import type { createPrService } from "../prs/prService";
+import type { createIssueInventoryService } from "../prs/issueInventoryService";
+import type { createQueueLandingService } from "../prs/queueLandingService";
 import type { createPtyService } from "../pty/ptyService";
 import type { createSessionService } from "../sessions/sessionService";
 
 type SyncRemoteCommandServiceArgs = {
   laneService: ReturnType<typeof createLaneService>;
   prService: ReturnType<typeof createPrService>;
+  issueInventoryService?: ReturnType<typeof createIssueInventoryService> | null;
+  queueLandingService?: ReturnType<typeof createQueueLandingService> | null;
   ptyService: ReturnType<typeof createPtyService>;
   sessionService: ReturnType<typeof createSessionService>;
   fileService: ReturnType<typeof createFileService>;
@@ -99,6 +129,7 @@ type SyncRemoteCommandServiceArgs = {
   conflictService?: ReturnType<typeof createConflictService>;
   agentChatService?: ReturnType<typeof createAgentChatService>;
   projectConfigService?: ReturnType<typeof createProjectConfigService>;
+  processService?: ReturnType<typeof createProcessService> | null;
   portAllocationService?: ReturnType<typeof createPortAllocationService> | null;
   laneEnvironmentService?: ReturnType<typeof createLaneEnvironmentService> | null;
   laneTemplateService?: ReturnType<typeof createLaneTemplateService> | null;
@@ -178,6 +209,21 @@ function requireStringArray(value: unknown, message: string): string[] {
 function requireService<T>(value: T | null | undefined, message: string): T {
   if (value == null) throw new Error(message);
   return value;
+}
+
+function parseProcessLaneArgs(payload: Record<string, unknown>, action: string): { laneId: string } {
+  return {
+    laneId: requireString(payload.laneId, `${action} requires laneId.`),
+  };
+}
+
+function parseProcessActionArgs(payload: Record<string, unknown>, action: string): { laneId: string; processId: string; runId?: string } {
+  const parsed = {
+    laneId: requireString(payload.laneId, `${action} requires laneId.`),
+    processId: requireString(payload.processId, `${action} requires processId.`),
+  };
+  const runId = asTrimmedString(payload.runId);
+  return runId ? { ...parsed, runId } : parsed;
 }
 
 async function summarizeChatSessionForRemote(
@@ -789,6 +835,13 @@ function parseCreatePrArgs(value: Record<string, unknown>): CreatePrFromLaneArgs
   };
 }
 
+function parseLinkPrToLaneArgs(value: Record<string, unknown>): LinkPrToLaneArgs {
+  return {
+    laneId: requireString(value.laneId, "prs.linkToLane requires laneId."),
+    prUrlOrNumber: requireString(value.prUrlOrNumber, "prs.linkToLane requires prUrlOrNumber."),
+  };
+}
+
 function parseDraftPrDescriptionArgs(value: Record<string, unknown>): DraftPrDescriptionArgs {
   return {
     laneId: requireString(value.laneId, "prs.draftDescription requires laneId."),
@@ -852,6 +905,245 @@ function parseAddPrCommentArgs(value: Record<string, unknown>): AddPrCommentArgs
     prId: requirePrId(value, "prs.addComment"),
     body: requireString(value.body, "prs.addComment requires body."),
     ...(asTrimmedString(value.inReplyToCommentId) ? { inReplyToCommentId: asTrimmedString(value.inReplyToCommentId)! } : {}),
+  };
+}
+
+function parseUpdatePrTitleArgs(value: Record<string, unknown>): UpdatePrTitleArgs {
+  return {
+    prId: requirePrId(value, "prs.updateTitle"),
+    title: requireString(value.title, "prs.updateTitle requires title."),
+  };
+}
+
+function parseUpdatePrBodyArgs(value: Record<string, unknown>): UpdatePrBodyArgs {
+  return {
+    prId: requirePrId(value, "prs.updateBody"),
+    body: typeof value.body === "string" ? value.body : "",
+  };
+}
+
+function parseSetPrLabelsArgs(value: Record<string, unknown>): SetPrLabelsArgs {
+  return {
+    prId: requirePrId(value, "prs.setLabels"),
+    labels: asStringArray(value.labels),
+  };
+}
+
+function parseSubmitPrReviewArgs(value: Record<string, unknown>): SubmitPrReviewArgs {
+  const event = asTrimmedString(value.event);
+  if (event !== "APPROVE" && event !== "REQUEST_CHANGES" && event !== "COMMENT") {
+    throw new Error("prs.submitReview requires event to be APPROVE, REQUEST_CHANGES, or COMMENT.");
+  }
+  return {
+    prId: requirePrId(value, "prs.submitReview"),
+    event,
+    ...(typeof value.body === "string" ? { body: value.body } : {}),
+  };
+}
+
+function parseReplyToReviewThreadArgs(value: Record<string, unknown>): ReplyToPrReviewThreadArgs {
+  return {
+    prId: requirePrId(value, "prs.replyToReviewThread"),
+    threadId: requireString(value.threadId, "prs.replyToReviewThread requires threadId."),
+    body: requireString(value.body, "prs.replyToReviewThread requires body."),
+  };
+}
+
+function parseSetReviewThreadResolvedArgs(value: Record<string, unknown>): SetPrReviewThreadResolvedArgs {
+  return {
+    prId: requirePrId(value, "prs.setReviewThreadResolved"),
+    threadId: requireString(value.threadId, "prs.setReviewThreadResolved requires threadId."),
+    resolved: value.resolved === true,
+  };
+}
+
+function parseReactToCommentArgs(value: Record<string, unknown>): ReactToPrCommentArgs {
+  const content = asTrimmedString(value.content);
+  if (!content) throw new Error("prs.reactToComment requires content.");
+  return {
+    prId: requirePrId(value, "prs.reactToComment"),
+    commentId: requireString(value.commentId, "prs.reactToComment requires commentId."),
+    content: content as ReactToPrCommentArgs["content"],
+  };
+}
+
+function parseAiReviewSummaryArgs(value: Record<string, unknown>): AiReviewSummaryArgs {
+  return {
+    prId: requirePrId(value, "prs.aiReviewSummary"),
+    ...(asTrimmedString(value.model) ? { model: asTrimmedString(value.model)! } : {}),
+  };
+}
+
+function parseListIntegrationWorkflowsArgs(value: Record<string, unknown>): ListIntegrationWorkflowsArgs {
+  const view = asTrimmedString(value.view);
+  return view ? { view: view as ListIntegrationWorkflowsArgs["view"] } : {};
+}
+
+function parseUpdateIntegrationProposalArgs(value: Record<string, unknown>): UpdateIntegrationProposalArgs {
+  return {
+    proposalId: requireString(value.proposalId, "prs.updateIntegrationProposal requires proposalId."),
+    ...(typeof value.title === "string" ? { title: value.title } : {}),
+    ...(typeof value.body === "string" ? { body: value.body } : {}),
+    ...(typeof value.draft === "boolean" ? { draft: value.draft } : {}),
+    ...(typeof value.integrationLaneName === "string" ? { integrationLaneName: value.integrationLaneName } : {}),
+  };
+}
+
+function parseDeleteIntegrationProposalArgs(value: Record<string, unknown>): DeleteIntegrationProposalArgs {
+  return {
+    proposalId: requireString(value.proposalId, "prs.deleteIntegrationProposal requires proposalId."),
+    ...(typeof value.deleteIntegrationLane === "boolean" ? { deleteIntegrationLane: value.deleteIntegrationLane } : {}),
+  };
+}
+
+function parseDismissIntegrationCleanupArgs(value: Record<string, unknown>): DismissIntegrationCleanupArgs {
+  return {
+    proposalId: requireString(value.proposalId, "prs.dismissIntegrationCleanup requires proposalId."),
+  };
+}
+
+function parseCleanupIntegrationWorkflowArgs(value: Record<string, unknown>): CleanupIntegrationWorkflowArgs {
+  const rawLaneIds = Array.isArray(value.archiveSourceLaneIds) ? value.archiveSourceLaneIds : [];
+  const archiveSourceLaneIds = rawLaneIds
+    .map((entry) => (typeof entry === "string" ? entry.trim() : ""))
+    .filter((entry) => entry.length > 0);
+  return {
+    proposalId: requireString(value.proposalId, "prs.cleanupIntegrationWorkflow requires proposalId."),
+    ...(typeof value.archiveIntegrationLane === "boolean" ? { archiveIntegrationLane: value.archiveIntegrationLane } : {}),
+    ...(archiveSourceLaneIds.length > 0 ? { archiveSourceLaneIds } : {}),
+  };
+}
+
+function parseCreateIntegrationLaneForProposalArgs(value: Record<string, unknown>): CreateIntegrationLaneForProposalArgs {
+  return {
+    proposalId: requireString(value.proposalId, "prs.createIntegrationLaneForProposal requires proposalId."),
+  };
+}
+
+function parseStartIntegrationResolutionArgs(value: Record<string, unknown>): StartIntegrationResolutionArgs {
+  return {
+    proposalId: requireString(value.proposalId, "prs.startIntegrationResolution requires proposalId."),
+    laneId: requireString(value.laneId, "prs.startIntegrationResolution requires laneId."),
+  };
+}
+
+function parseRecheckIntegrationStepArgs(value: Record<string, unknown>): RecheckIntegrationStepArgs {
+  return {
+    proposalId: requireString(value.proposalId, "prs.recheckIntegrationStep requires proposalId."),
+    laneId: requireString(value.laneId, "prs.recheckIntegrationStep requires laneId."),
+  };
+}
+
+function parseLandQueueNextArgs(value: Record<string, unknown>): LandQueueNextArgs {
+  const method = asTrimmedString(value.method) as LandQueueNextArgs["method"];
+  if (!method || !["merge", "squash", "rebase"].includes(method)) {
+    throw new Error("prs.landQueueNext requires method to be merge, squash, or rebase.");
+  }
+  return {
+    groupId: requireString(value.groupId, "prs.landQueueNext requires groupId."),
+    method,
+    ...(typeof value.archiveLane === "boolean" ? { archiveLane: value.archiveLane } : {}),
+    ...(typeof value.autoResolve === "boolean" ? { autoResolve: value.autoResolve } : {}),
+    ...(asOptionalNumber(value.confidenceThreshold) != null ? { confidenceThreshold: asOptionalNumber(value.confidenceThreshold)! } : {}),
+  };
+}
+
+function parseReorderQueuePrsArgs(value: Record<string, unknown>): ReorderQueuePrsArgs {
+  return {
+    groupId: requireString(value.groupId, "prs.reorderQueue requires groupId."),
+    prIds: requireStringArray(value.prIds, "prs.reorderQueue requires prIds."),
+  };
+}
+
+function parsePauseQueueAutomationArgs(value: Record<string, unknown>): PauseQueueAutomationArgs {
+  return {
+    queueId: requireString(value.queueId, "prs.pauseQueueAutomation requires queueId."),
+  };
+}
+
+function parseResumeQueueAutomationArgs(value: Record<string, unknown>): ResumeQueueAutomationArgs {
+  const method = asTrimmedString(value.method);
+  if (method && !["merge", "squash", "rebase"].includes(method)) {
+    throw new Error("prs.resumeQueueAutomation requires method to be merge, squash, or rebase when provided.");
+  }
+  return {
+    queueId: requireString(value.queueId, "prs.resumeQueueAutomation requires queueId."),
+    ...(method ? { method: method as ResumeQueueAutomationArgs["method"] } : {}),
+    ...(typeof value.archiveLane === "boolean" ? { archiveLane: value.archiveLane } : {}),
+    ...(typeof value.autoResolve === "boolean" ? { autoResolve: value.autoResolve } : {}),
+    ...(typeof value.ciGating === "boolean" ? { ciGating: value.ciGating } : {}),
+    ...(asOptionalNumber(value.confidenceThreshold) != null ? { confidenceThreshold: asOptionalNumber(value.confidenceThreshold)! } : {}),
+    ...(asTrimmedString(value.originLabel) ? { originLabel: asTrimmedString(value.originLabel)! } : {}),
+  };
+}
+
+function parseCancelQueueAutomationArgs(value: Record<string, unknown>): CancelQueueAutomationArgs {
+  return {
+    queueId: requireString(value.queueId, "prs.cancelQueueAutomation requires queueId."),
+  };
+}
+
+function parseIssueInventoryPrArgs(value: Record<string, unknown>, action: string): { prId: string } {
+  return {
+    prId: requirePrId(value, action),
+  };
+}
+
+function parseIssueInventoryItemsArgs(value: Record<string, unknown>, action: string): { prId: string; itemIds: string[] } {
+  return {
+    prId: requirePrId(value, action),
+    itemIds: requireStringArray(value.itemIds, `${action} requires itemIds.`),
+  };
+}
+
+function parseIssueInventoryDismissArgs(value: Record<string, unknown>): { prId: string; itemIds: string[]; reason: string } {
+  return {
+    ...parseIssueInventoryItemsArgs(value, "prs.issueInventory.markDismissed"),
+    reason: typeof value.reason === "string" ? value.reason : "",
+  };
+}
+
+function parsePipelineSettingsPatch(value: Record<string, unknown>): { prId: string; settings: Partial<PipelineSettings> } {
+  const settings = isRecord(value.settings) ? value.settings : value;
+  const patch: Partial<PipelineSettings> = {};
+  if (typeof settings.autoMerge === "boolean") patch.autoMerge = settings.autoMerge;
+  const mergeMethod = asTrimmedString(settings.mergeMethod);
+  if (mergeMethod && ["merge", "squash", "rebase", "repo_default"].includes(mergeMethod)) {
+    patch.mergeMethod = mergeMethod as PipelineSettings["mergeMethod"];
+  }
+  const maxRounds = asOptionalNumber(settings.maxRounds);
+  if (maxRounds != null && maxRounds >= 1) patch.maxRounds = Math.floor(maxRounds);
+  const onRebaseNeeded = asTrimmedString(settings.onRebaseNeeded);
+  if (onRebaseNeeded === "pause" || onRebaseNeeded === "auto_rebase") {
+    patch.onRebaseNeeded = onRebaseNeeded;
+  }
+  return {
+    prId: requirePrId(value, "prs.pipelineSettings.save"),
+    settings: patch,
+  };
+}
+
+function parseConvergenceStatePatch(value: Record<string, unknown>): { prId: string; state: PrConvergenceStatePatch } {
+  const raw = isRecord(value.state) ? value.state : value;
+  const patch: PrConvergenceStatePatch = {};
+  const statuses = new Set(["idle", "launching", "running", "polling", "paused", "converged", "merged", "failed", "cancelled", "stopped"]);
+  const pollerStatuses = new Set(["idle", "scheduled", "polling", "waiting_for_checks", "waiting_for_comments", "paused", "stopped"]);
+  if (typeof raw.autoConvergeEnabled === "boolean") patch.autoConvergeEnabled = raw.autoConvergeEnabled;
+  const status = asTrimmedString(raw.status);
+  if (status && statuses.has(status)) patch.status = status as ConvergenceRuntimeState["status"];
+  const pollerStatus = asTrimmedString(raw.pollerStatus);
+  if (pollerStatus && pollerStatuses.has(pollerStatus)) patch.pollerStatus = pollerStatus as ConvergenceRuntimeState["pollerStatus"];
+  const currentRound = asOptionalNumber(raw.currentRound);
+  if (currentRound != null && currentRound >= 0) patch.currentRound = Math.floor(currentRound);
+  for (const key of ["activeSessionId", "activeLaneId", "activeHref", "pauseReason", "errorMessage", "lastStartedAt", "lastPolledAt", "lastPausedAt", "lastStoppedAt"] as const) {
+    const next = raw[key];
+    if (next === null || typeof next === "string") {
+      (patch as Record<string, unknown>)[key] = next;
+    }
+  }
+  return {
+    prId: requirePrId(value, "prs.convergenceState.save"),
+    state: patch,
   };
 }
 
@@ -1256,6 +1548,25 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
     return { ok: true };
   });
 
+  register("processes.listDefinitions", { viewerAllowed: true }, async () =>
+    requireService(args.processService, "Process service not available.").listDefinitions());
+  register("processes.listRuntime", { viewerAllowed: true }, async (payload) =>
+    requireService(args.processService, "Process service not available.").listRuntime(
+      parseProcessLaneArgs(payload, "processes.listRuntime").laneId,
+    ));
+  register("processes.start", { viewerAllowed: true, queueable: true }, async (payload) =>
+    requireService(args.processService, "Process service not available.").start(
+      parseProcessActionArgs(payload, "processes.start"),
+    ));
+  register("processes.stop", { viewerAllowed: true, queueable: true }, async (payload) =>
+    requireService(args.processService, "Process service not available.").stop(
+      parseProcessActionArgs(payload, "processes.stop"),
+    ));
+  register("processes.kill", { viewerAllowed: true, queueable: false }, async (payload) =>
+    requireService(args.processService, "Process service not available.").kill(
+      parseProcessActionArgs(payload, "processes.kill"),
+    ));
+
   register("chat.listSessions", { viewerAllowed: true }, async (payload) => {
     const agentChatService = requireService(args.agentChatService, "Agent chat service not available.");
     const parsed = parseAgentChatListArgs(payload);
@@ -1412,7 +1723,14 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
   register("prs.getReviews", { viewerAllowed: true }, async (payload) => args.prService.getReviews(requirePrId(payload, "prs.getReviews")));
   register("prs.getComments", { viewerAllowed: true }, async (payload) => args.prService.getComments(requirePrId(payload, "prs.getComments")));
   register("prs.getFiles", { viewerAllowed: true }, async (payload) => args.prService.getFiles(requirePrId(payload, "prs.getFiles")));
+  register("prs.getGitHubSnapshot", { viewerAllowed: true }, async (payload) =>
+    args.prService.getGithubSnapshot({ force: payload.force === true }));
+  register("prs.getReviewThreads", { viewerAllowed: true }, async (payload) => args.prService.getReviewThreads(requirePrId(payload, "prs.getReviewThreads")));
+  register("prs.getActionRuns", { viewerAllowed: true }, async (payload) => args.prService.getActionRuns(requirePrId(payload, "prs.getActionRuns")));
+  register("prs.getActivity", { viewerAllowed: true }, async (payload) => args.prService.getActivity(requirePrId(payload, "prs.getActivity")));
+  register("prs.getDeployments", { viewerAllowed: true }, async (payload) => args.prService.getDeployments(requirePrId(payload, "prs.getDeployments")));
   register("prs.createFromLane", { viewerAllowed: true, queueable: true }, async (payload) => args.prService.createFromLane(parseCreatePrArgs(payload)));
+  register("prs.linkToLane", { viewerAllowed: true, queueable: true }, async (payload) => args.prService.linkToLane(parseLinkPrToLaneArgs(payload)));
   register("prs.draftDescription", { viewerAllowed: true, queueable: true }, async (payload) =>
     args.prService.draftDescription(parseDraftPrDescriptionArgs(payload)));
   register("prs.land", { viewerAllowed: true, queueable: true }, async (payload) => args.prService.land(parseLandPrArgs(payload)));
@@ -1434,6 +1752,142 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
   });
   register("prs.addComment", { viewerAllowed: true, queueable: true }, async (payload) =>
     args.prService.addComment(parseAddPrCommentArgs(payload)));
+  register("prs.updateTitle", { viewerAllowed: true, queueable: true }, async (payload) => {
+    await args.prService.updateTitle(parseUpdatePrTitleArgs(payload));
+    return { ok: true };
+  });
+  register("prs.updateBody", { viewerAllowed: true, queueable: true }, async (payload) => {
+    await args.prService.updateBody(parseUpdatePrBodyArgs(payload));
+    return { ok: true };
+  });
+  register("prs.setLabels", { viewerAllowed: true, queueable: true }, async (payload) => {
+    await args.prService.setLabels(parseSetPrLabelsArgs(payload));
+    return { ok: true };
+  });
+  register("prs.submitReview", { viewerAllowed: true, queueable: true }, async (payload) => {
+    await args.prService.submitReview(parseSubmitPrReviewArgs(payload));
+    return { ok: true };
+  });
+  register("prs.replyToReviewThread", { viewerAllowed: true, queueable: true }, async (payload) =>
+    args.prService.replyToReviewThread(parseReplyToReviewThreadArgs(payload)));
+  register("prs.setReviewThreadResolved", { viewerAllowed: true, queueable: true }, async (payload) =>
+    args.prService.setReviewThreadResolved(parseSetReviewThreadResolvedArgs(payload)));
+  register("prs.reactToComment", { viewerAllowed: true, queueable: true }, async (payload) => {
+    await args.prService.reactToComment(parseReactToCommentArgs(payload));
+    return { ok: true };
+  });
+  register("prs.aiReviewSummary", { viewerAllowed: true, queueable: true }, async (payload) =>
+    args.prService.aiReviewSummary(parseAiReviewSummaryArgs(payload)));
+  register("prs.listIntegrationWorkflows", { viewerAllowed: true }, async (payload) =>
+    args.prService.listIntegrationWorkflows(parseListIntegrationWorkflowsArgs(payload)));
+  register("prs.updateIntegrationProposal", { viewerAllowed: true, queueable: true }, async (payload) => {
+    args.prService.updateIntegrationProposal(parseUpdateIntegrationProposalArgs(payload));
+    return { ok: true };
+  });
+  register("prs.deleteIntegrationProposal", { viewerAllowed: true, queueable: true }, async (payload) =>
+    args.prService.deleteIntegrationProposal(parseDeleteIntegrationProposalArgs(payload)));
+  register("prs.dismissIntegrationCleanup", { viewerAllowed: true, queueable: true }, async (payload) =>
+    args.prService.dismissIntegrationCleanup(parseDismissIntegrationCleanupArgs(payload)));
+  register("prs.cleanupIntegrationWorkflow", { viewerAllowed: true, queueable: true }, async (payload) =>
+    args.prService.cleanupIntegrationWorkflow(parseCleanupIntegrationWorkflowArgs(payload)));
+  register("prs.createIntegrationLaneForProposal", { viewerAllowed: true, queueable: true }, async (payload) =>
+    args.prService.createIntegrationLaneForProposal(parseCreateIntegrationLaneForProposalArgs(payload)));
+  register("prs.startIntegrationResolution", { viewerAllowed: true, queueable: true }, async (payload) =>
+    args.prService.startIntegrationResolution(parseStartIntegrationResolutionArgs(payload)));
+  register("prs.recheckIntegrationStep", { viewerAllowed: true, queueable: true }, async (payload) =>
+    args.prService.recheckIntegrationStep(parseRecheckIntegrationStepArgs(payload)));
+  register("prs.landQueueNext", { viewerAllowed: true, queueable: true }, async (payload) =>
+    args.prService.landQueueNext(parseLandQueueNextArgs(payload)));
+  register("prs.pauseQueueAutomation", { viewerAllowed: true, queueable: true }, async (payload) => {
+    if (!args.queueLandingService) throw new Error("Queue automation is not available.");
+    return args.queueLandingService.pauseQueue(parsePauseQueueAutomationArgs(payload).queueId);
+  });
+  register("prs.resumeQueueAutomation", { viewerAllowed: true, queueable: true }, async (payload) => {
+    if (!args.queueLandingService) throw new Error("Queue automation is not available.");
+    return args.queueLandingService.resumeQueue(parseResumeQueueAutomationArgs(payload));
+  });
+  register("prs.cancelQueueAutomation", { viewerAllowed: true, queueable: true }, async (payload) => {
+    if (!args.queueLandingService) throw new Error("Queue automation is not available.");
+    return args.queueLandingService.cancelQueue(parseCancelQueueAutomationArgs(payload).queueId);
+  });
+  register("prs.reorderQueue", { viewerAllowed: true, queueable: true }, async (payload) => {
+    await args.prService.reorderQueuePrs(parseReorderQueuePrsArgs(payload));
+    return { ok: true };
+  });
+  register("prs.issueInventory.sync", { viewerAllowed: true, queueable: true }, async (payload) => {
+    if (!args.issueInventoryService) throw new Error("Issue inventory is not available.");
+    const { prId } = parseIssueInventoryPrArgs(payload, "prs.issueInventory.sync");
+    const [checks, reviewThreads, comments] = await Promise.all([
+      args.prService.getChecks(prId),
+      args.prService.getReviewThreads(prId),
+      args.prService.getComments(prId).catch(() => []),
+    ]);
+    return args.issueInventoryService.syncFromPrData(prId, checks, reviewThreads, comments);
+  });
+  register("prs.issueInventory.get", { viewerAllowed: true }, async (payload) => {
+    if (!args.issueInventoryService) throw new Error("Issue inventory is not available.");
+    return args.issueInventoryService.getInventory(parseIssueInventoryPrArgs(payload, "prs.issueInventory.get").prId);
+  });
+  register("prs.issueInventory.getNew", { viewerAllowed: true }, async (payload) => {
+    if (!args.issueInventoryService) throw new Error("Issue inventory is not available.");
+    return args.issueInventoryService.getNewItems(parseIssueInventoryPrArgs(payload, "prs.issueInventory.getNew").prId);
+  });
+  register("prs.issueInventory.markFixed", { viewerAllowed: true, queueable: true }, async (payload) => {
+    if (!args.issueInventoryService) throw new Error("Issue inventory is not available.");
+    const parsed = parseIssueInventoryItemsArgs(payload, "prs.issueInventory.markFixed");
+    args.issueInventoryService.markFixed(parsed.prId, parsed.itemIds);
+    return { ok: true };
+  });
+  register("prs.issueInventory.markDismissed", { viewerAllowed: true, queueable: true }, async (payload) => {
+    if (!args.issueInventoryService) throw new Error("Issue inventory is not available.");
+    const parsed = parseIssueInventoryDismissArgs(payload);
+    args.issueInventoryService.markDismissed(parsed.prId, parsed.itemIds, parsed.reason);
+    return { ok: true };
+  });
+  register("prs.issueInventory.markEscalated", { viewerAllowed: true, queueable: true }, async (payload) => {
+    if (!args.issueInventoryService) throw new Error("Issue inventory is not available.");
+    const parsed = parseIssueInventoryItemsArgs(payload, "prs.issueInventory.markEscalated");
+    args.issueInventoryService.markEscalated(parsed.prId, parsed.itemIds);
+    return { ok: true };
+  });
+  register("prs.issueInventory.getConvergence", { viewerAllowed: true }, async (payload) => {
+    if (!args.issueInventoryService) throw new Error("Issue inventory is not available.");
+    return args.issueInventoryService.getConvergenceStatus(parseIssueInventoryPrArgs(payload, "prs.issueInventory.getConvergence").prId);
+  });
+  register("prs.issueInventory.reset", { viewerAllowed: true, queueable: true }, async (payload) => {
+    if (!args.issueInventoryService) throw new Error("Issue inventory is not available.");
+    args.issueInventoryService.resetInventory(parseIssueInventoryPrArgs(payload, "prs.issueInventory.reset").prId);
+    return { ok: true };
+  });
+  register("prs.convergenceState.get", { viewerAllowed: true }, async (payload) => {
+    if (!args.issueInventoryService) throw new Error("Issue inventory is not available.");
+    return args.issueInventoryService.getConvergenceRuntime(parseIssueInventoryPrArgs(payload, "prs.convergenceState.get").prId);
+  });
+  register("prs.convergenceState.save", { viewerAllowed: true, queueable: true }, async (payload) => {
+    if (!args.issueInventoryService) throw new Error("Issue inventory is not available.");
+    const parsed = parseConvergenceStatePatch(payload);
+    return args.issueInventoryService.saveConvergenceRuntime(parsed.prId, parsed.state);
+  });
+  register("prs.convergenceState.delete", { viewerAllowed: true, queueable: true }, async (payload) => {
+    if (!args.issueInventoryService) throw new Error("Issue inventory is not available.");
+    args.issueInventoryService.resetConvergenceRuntime(parseIssueInventoryPrArgs(payload, "prs.convergenceState.delete").prId);
+    return { ok: true };
+  });
+  register("prs.pipelineSettings.get", { viewerAllowed: true }, async (payload) => {
+    if (!args.issueInventoryService) throw new Error("Issue inventory is not available.");
+    return args.issueInventoryService.getPipelineSettings(parseIssueInventoryPrArgs(payload, "prs.pipelineSettings.get").prId);
+  });
+  register("prs.pipelineSettings.save", { viewerAllowed: true, queueable: true }, async (payload) => {
+    if (!args.issueInventoryService) throw new Error("Issue inventory is not available.");
+    const parsed = parsePipelineSettingsPatch(payload);
+    args.issueInventoryService.savePipelineSettings(parsed.prId, parsed.settings);
+    return { ok: true };
+  });
+  register("prs.pipelineSettings.delete", { viewerAllowed: true, queueable: true }, async (payload) => {
+    if (!args.issueInventoryService) throw new Error("Issue inventory is not available.");
+    args.issueInventoryService.deletePipelineSettings(parseIssueInventoryPrArgs(payload, "prs.pipelineSettings.delete").prId);
+    return { ok: true };
+  });
   register("prs.getMobileSnapshot", { viewerAllowed: true }, async () => args.prService.getMobileSnapshot());
 
   return {

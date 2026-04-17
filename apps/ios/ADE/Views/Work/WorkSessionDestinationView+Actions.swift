@@ -9,18 +9,21 @@ extension WorkSessionDestinationView {
     let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !text.isEmpty else { return false }
 
-    localEchoMessages.append(WorkLocalEchoMessage(text: text, timestamp: workDateFormatter.string(from: Date())))
+    let echo = WorkLocalEchoMessage(text: text, timestamp: workDateFormatter.string(from: Date()))
+    let echoId = echo.id
+    localEchoMessages.append(echo)
     sending = true
     defer { sending = false }
     do {
       try await syncService.sendChatMessage(sessionId: sessionId, text: text)
       await refreshChatStateAfterAction(forceRemote: true)
+      reconcileLocalEchoMessages()
       errorMessage = nil
       return true
     } catch {
       ADEHaptics.error()
       localEchoMessages.removeAll { echo in
-        echo.text.trimmingCharacters(in: .whitespacesAndNewlines) == text
+        echo.id == echoId
       }
       errorMessage = error.localizedDescription
       return false
@@ -32,30 +35,6 @@ extension WorkSessionDestinationView {
     do {
       try await syncService.interruptChatSession(sessionId: sessionId)
       await refreshChatStateAfterAction(forceRemote: true)
-      errorMessage = nil
-    } catch {
-      ADEHaptics.error()
-      errorMessage = error.localizedDescription
-    }
-  }
-
-  @MainActor
-  func disposeSession() async {
-    do {
-      try await syncService.disposeChatSession(sessionId: sessionId)
-      await load()
-      errorMessage = nil
-    } catch {
-      ADEHaptics.error()
-      errorMessage = error.localizedDescription
-    }
-  }
-
-  @MainActor
-  func resumeSession() async {
-    do {
-      _ = try await syncService.resumeChatSession(sessionId: sessionId)
-      await load()
       errorMessage = nil
     } catch {
       ADEHaptics.error()
@@ -105,6 +84,20 @@ extension WorkSessionDestinationView {
   func selectModel(_ modelId: String) async {
     do {
       _ = try await syncService.updateChatSession(sessionId: sessionId, modelId: modelId)
+      await refreshChatStateAfterAction(forceRemote: true)
+      errorMessage = nil
+      ADEHaptics.light()
+    } catch {
+      ADEHaptics.error()
+      errorMessage = error.localizedDescription
+    }
+  }
+
+  @MainActor
+  func selectReasoningEffort(_ effort: String) async {
+    let trimmed = effort.trimmingCharacters(in: .whitespacesAndNewlines)
+    do {
+      _ = try await syncService.updateChatSession(sessionId: sessionId, reasoningEffort: trimmed)
       await refreshChatStateAfterAction(forceRemote: true)
       errorMessage = nil
       ADEHaptics.light()

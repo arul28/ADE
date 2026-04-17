@@ -851,6 +851,39 @@ export function createPtyService({
     });
   };
 
+  const CODEX_LIVE_CAPTURE_DELAYS_MS = [1_500, 3_500, 8_000, 20_000];
+
+  // Codex CLI has no pre-assigned session ID flag (unlike Claude's --session-id), so the
+  // rollout JSONL is the only handle on the session's UUID. Polling once it exists lets resume
+  // survive app crashes, orphaned PTYs, or long-lived sessions that outlast the transcript-scan
+  // window on dispose.
+  const scheduleCodexSessionIdCaptureBestEffort = (
+    sessionId: string,
+    cwd: string,
+    startedAt: string,
+  ): void => {
+    const poll = (attempt: number): void => {
+      const timer = setTimeout(() => {
+        try {
+          const session = sessionService.get(sessionId);
+          if (!session) return;
+          if (session.resumeMetadata?.targetId?.trim()) return;
+          const codexSessionId = resolveCodexSessionIdFromStorage({ cwd, startedAt });
+          if (codexSessionId) {
+            sessionService.setResumeCommand(sessionId, `codex resume ${codexSessionId}`);
+            logger.info("pty.codex_session_id_captured_live", { sessionId, codexSessionId, attempt });
+            return;
+          }
+          if (attempt + 1 < CODEX_LIVE_CAPTURE_DELAYS_MS.length) poll(attempt + 1);
+        } catch (err) {
+          logger.warn("pty.codex_session_id_capture_failed", { sessionId, attempt, err: String(err) });
+        }
+      }, CODEX_LIVE_CAPTURE_DELAYS_MS[attempt]);
+      timer.unref?.();
+    };
+    poll(0);
+  };
+
   const closeEntry = (ptyId: string, exitCode: number | null) => {
     const entry = ptys.get(ptyId);
     if (!entry) return;
@@ -1377,6 +1410,14 @@ export function createPtyService({
             err: String(err),
           });
         }
+      }
+
+      if (
+        !existingSession
+        && (toolTypeHint === "codex" || toolTypeHint === "codex-orchestrated")
+        && cwd
+      ) {
+        scheduleCodexSessionIdCaptureBestEffort(sessionId, cwd, startedAt);
       }
 
       // Fire-and-forget: after 6s, attempt AI title from initial PTY output (not used for interactive Claude/Codex — those title from the first submitted user input via pty.write).

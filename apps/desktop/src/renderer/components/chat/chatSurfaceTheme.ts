@@ -8,6 +8,37 @@ export const CHAT_SURFACE_ACCENTS: Record<ChatSurfaceMode, string> = {
   "mission-feed": "#22C55E",
 };
 
+/// Per-provider chat-surface accent. Keeps Claude/Codex/etc. visually
+/// consistent across desktop and mobile — Claude is always amber, Codex always
+/// warm-white, regardless of which model variant is selected. Falls back to
+/// the model's own registry color when the provider isn't in the table.
+/// Mirror this map in `apps/ios/ADE/Views/Components/ADEDesignSystem.swift`
+/// (`providerChatAccents`).
+export const PROVIDER_CHAT_ACCENTS: Record<string, string> = {
+  claude: "#D97706",
+  anthropic: "#D97706",
+  codex: "#E7E5E4",
+  openai: "#E7E5E4",
+  cursor: "#A78BFA",
+  opencode: "#2563EB",
+  google: "#F59E0B",
+  gemini: "#F59E0B",
+  mistral: "#F97316",
+  deepseek: "#3B82F6",
+  xai: "#DC2626",
+  grok: "#DC2626",
+  groq: "#06B6D4",
+};
+
+/// Look up the unified chat accent for a provider id ("claude", "codex",
+/// "anthropic", …). Returns null when the provider isn't recognized so callers
+/// can fall back to per-model color.
+export function providerChatAccent(provider: string | null | undefined): string | null {
+  if (!provider) return null;
+  const key = provider.trim().toLowerCase();
+  return PROVIDER_CHAT_ACCENTS[key] ?? null;
+}
+
 const CHIP_TONE_STYLES: Record<ChatSurfaceChipTone, string> = {
   accent: "border-[color:color-mix(in_srgb,var(--chat-accent)_20%,transparent)] bg-[color:color-mix(in_srgb,var(--chat-accent)_8%,transparent)] text-[color:color-mix(in_srgb,var(--chat-accent)_88%,white_12%)]",
   success: "border-emerald-400/15 bg-emerald-500/6 text-emerald-300",

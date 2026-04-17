@@ -49,7 +49,7 @@ struct PrRowCard: View {
         PrSignalChip(icon: "circle.fill", text: prChecksLabel(pr.checksStatus), tint: prChecksTint(pr.checksStatus))
         PrSignalChip(icon: reviewSymbol(pr.reviewStatus), text: prReviewLabel(pr.reviewStatus), tint: prReviewTint(pr.reviewStatus))
 
-        if let groupId = pr.linkedGroupId, pr.linkedGroupCount > 1 {
+        if let groupId = pr.linkedGroupId, pr.linkedGroupCount > 0 {
           Button {
             onShowStack(groupId, pr.linkedGroupName)
           } label: {

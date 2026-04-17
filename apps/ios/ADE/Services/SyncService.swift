@@ -974,6 +974,26 @@ final class SyncService: ObservableObject {
     database.fetchSessions()
   }
 
+  func listProcessDefinitions() async throws -> [ProcessDefinition] {
+    try await sendDecodableCommand(action: "processes.listDefinitions", as: [ProcessDefinition].self)
+  }
+
+  func listProcessRuntime(laneId: String) async throws -> [ProcessRuntime] {
+    try await sendDecodableCommand(action: "processes.listRuntime", args: ["laneId": laneId], as: [ProcessRuntime].self)
+  }
+
+  func startProcess(laneId: String, processId: String) async throws -> ProcessRuntime {
+    try await sendDecodableCommand(
+      action: "processes.start",
+      args: ["laneId": laneId, "processId": processId],
+      as: ProcessRuntime.self
+    )
+  }
+
+  func stopProcess(laneId: String, processId: String) async throws {
+    _ = try await sendCommand(action: "processes.stop", args: ["laneId": laneId, "processId": processId])
+  }
+
   var runningChatSessionCount: Int {
     database.fetchSessions().filter { session in
       session.status == "running" && (session.toolType?.contains("chat") == true)
@@ -1061,6 +1081,34 @@ final class SyncService: ObservableObject {
     try await sendDecodableCommand(action: "prs.getMobileSnapshot", as: PrMobileSnapshot.self)
   }
 
+  func fetchGitHubPullRequestSnapshot(force: Bool = false) async throws -> GitHubPrSnapshot {
+    try await sendDecodableCommand(action: "prs.getGitHubSnapshot", args: ["force": force], as: GitHubPrSnapshot.self)
+  }
+
+  func fetchPullRequestReviewThreads(prId: String) async throws -> [PrReviewThread] {
+    try await sendDecodableCommand(action: "prs.getReviewThreads", args: ["prId": prId], as: [PrReviewThread].self)
+  }
+
+  func fetchPullRequestActionRuns(prId: String) async throws -> [PrActionRun] {
+    try await sendDecodableCommand(action: "prs.getActionRuns", args: ["prId": prId], as: [PrActionRun].self)
+  }
+
+  func fetchPullRequestActivity(prId: String) async throws -> [PrActivityEvent] {
+    try await sendDecodableCommand(action: "prs.getActivity", args: ["prId": prId], as: [PrActivityEvent].self)
+  }
+
+  func fetchPullRequestDeployments(prId: String) async throws -> [PrDeployment] {
+    try await sendDecodableCommand(action: "prs.getDeployments", args: ["prId": prId], as: [PrDeployment].self)
+  }
+
+  func fetchPullRequestAiSummary(prId: String, model: String? = nil) async throws -> AiReviewSummary {
+    var args: [String: Any] = ["prId": prId]
+    if let model, !model.isEmpty {
+      args["model"] = model
+    }
+    return try await sendDecodableCommand(action: "prs.aiReviewSummary", args: args, as: AiReviewSummary.self)
+  }
+
   func status(for domain: SyncDomain) -> SyncDomainStatus {
     domainStatuses[domain] ?? .disconnected
   }
@@ -1110,6 +1158,32 @@ final class SyncService: ObservableObject {
     }
   }
 
+  private func shouldUseCachedFileSnapshot(for error: Error) -> Bool {
+    if error is CancellationError {
+      return false
+    }
+
+    let nsError = error as NSError
+    if nsError.domain == "ADE" {
+      return nsError.code == 16
+    }
+
+    if nsError.domain == NSURLErrorDomain {
+      return [
+        NSURLErrorCannotConnectToHost,
+        NSURLErrorCannotFindHost,
+        NSURLErrorDNSLookupFailed,
+        NSURLErrorDataNotAllowed,
+        NSURLErrorInternationalRoamingOff,
+        NSURLErrorNetworkConnectionLost,
+        NSURLErrorNotConnectedToInternet,
+        NSURLErrorTimedOut,
+      ].contains(nsError.code)
+    }
+
+    return false
+  }
+
   func readFile(workspaceId: String, path: String) async throws -> SyncFileBlob {
     do {
       let blob = try decode(
@@ -1122,7 +1196,7 @@ final class SyncService: ObservableObject {
       try? database.cacheFileContentSnapshot(workspaceId: workspaceId, path: path, blob: blob)
       return blob
     } catch {
-      if let cached = database.fetchFileContentSnapshot(workspaceId: workspaceId, path: path) {
+      if shouldUseCachedFileSnapshot(for: error), let cached = database.fetchFileContentSnapshot(workspaceId: workspaceId, path: path) {
         return cached
       }
       throw error
@@ -1200,7 +1274,7 @@ final class SyncService: ObservableObject {
       try? database.cacheDirectorySnapshot(workspaceId: workspaceId, parentPath: parentPath, includeHidden: includeIgnored, nodes: nodes)
       return nodes
     } catch {
-      if let cached = database.fetchDirectorySnapshot(workspaceId: workspaceId, parentPath: parentPath, includeHidden: includeIgnored) {
+      if shouldUseCachedFileSnapshot(for: error), let cached = database.fetchDirectorySnapshot(workspaceId: workspaceId, parentPath: parentPath, includeHidden: includeIgnored) {
         return cached
       }
       throw error
@@ -1865,6 +1939,184 @@ final class SyncService: ObservableObject {
       args["inReplyToCommentId"] = inReplyToCommentId
     }
     _ = try await sendCommand(action: "prs.addComment", args: args)
+  }
+
+  func updatePullRequestTitle(prId: String, title: String) async throws {
+    _ = try await sendCommand(action: "prs.updateTitle", args: [
+      "prId": prId,
+      "title": title,
+    ])
+  }
+
+  func linkPullRequestToLane(laneId: String, prUrlOrNumber: String) async throws {
+    _ = try await sendCommand(action: "prs.linkToLane", args: [
+      "laneId": laneId,
+      "prUrlOrNumber": prUrlOrNumber,
+    ])
+  }
+
+  func updatePullRequestBody(prId: String, body: String) async throws {
+    _ = try await sendCommand(action: "prs.updateBody", args: [
+      "prId": prId,
+      "body": body,
+    ])
+  }
+
+  func setPullRequestLabels(prId: String, labels: [String]) async throws {
+    _ = try await sendCommand(action: "prs.setLabels", args: [
+      "prId": prId,
+      "labels": labels,
+    ])
+  }
+
+  func submitPullRequestReview(prId: String, event: String, body: String? = nil) async throws {
+    var args: [String: Any] = [
+      "prId": prId,
+      "event": event,
+    ]
+    if let body {
+      args["body"] = body
+    }
+    _ = try await sendCommand(action: "prs.submitReview", args: args)
+  }
+
+  func replyToPullRequestReviewThread(prId: String, threadId: String, body: String) async throws {
+    _ = try await sendCommand(action: "prs.replyToReviewThread", args: [
+      "prId": prId,
+      "threadId": threadId,
+      "body": body,
+    ])
+  }
+
+  func setPullRequestReviewThreadResolved(prId: String, threadId: String, resolved: Bool) async throws {
+    _ = try await sendCommand(action: "prs.setReviewThreadResolved", args: [
+      "prId": prId,
+      "threadId": threadId,
+      "resolved": resolved,
+    ])
+  }
+
+  func landQueueNext(groupId: String, method: String, archiveLane: Bool = true, autoResolve: Bool = true) async throws {
+    _ = try await sendCommand(action: "prs.landQueueNext", args: [
+      "groupId": groupId,
+      "method": method,
+      "archiveLane": archiveLane,
+      "autoResolve": autoResolve,
+    ])
+  }
+
+  func pauseQueueAutomation(queueId: String) async throws {
+    _ = try await sendCommand(action: "prs.pauseQueueAutomation", args: ["queueId": queueId])
+  }
+
+  func resumeQueueAutomation(queueId: String, method: String? = nil) async throws {
+    var args: [String: Any] = ["queueId": queueId]
+    if let method, !method.isEmpty {
+      args["method"] = method
+    }
+    _ = try await sendCommand(action: "prs.resumeQueueAutomation", args: args)
+  }
+
+  func cancelQueueAutomation(queueId: String) async throws {
+    _ = try await sendCommand(action: "prs.cancelQueueAutomation", args: ["queueId": queueId])
+  }
+
+  func reorderQueue(groupId: String, prIds: [String]) async throws {
+    _ = try await sendCommand(action: "prs.reorderQueue", args: [
+      "groupId": groupId,
+      "prIds": prIds,
+    ])
+  }
+
+  @discardableResult
+  func createIntegrationLaneForProposal(proposalId: String) async throws -> CreateIntegrationLaneForProposalResult {
+    try await sendDecodableCommand(action: "prs.createIntegrationLaneForProposal", args: ["proposalId": proposalId], as: CreateIntegrationLaneForProposalResult.self)
+  }
+
+  @discardableResult
+  func startIntegrationResolution(proposalId: String, laneId: String) async throws -> StartIntegrationResolutionResult {
+    try await sendDecodableCommand(action: "prs.startIntegrationResolution", args: [
+      "proposalId": proposalId,
+      "laneId": laneId,
+    ], as: StartIntegrationResolutionResult.self)
+  }
+
+  @discardableResult
+  func recheckIntegrationStep(proposalId: String, laneId: String) async throws -> RecheckIntegrationStepResult {
+    try await sendDecodableCommand(action: "prs.recheckIntegrationStep", args: [
+      "proposalId": proposalId,
+      "laneId": laneId,
+    ], as: RecheckIntegrationStepResult.self)
+  }
+
+  @discardableResult
+  func deleteIntegrationProposal(proposalId: String, deleteIntegrationLane: Bool = false) async throws -> DeleteIntegrationProposalResult {
+    try await sendDecodableCommand(action: "prs.deleteIntegrationProposal", args: [
+      "proposalId": proposalId,
+      "deleteIntegrationLane": deleteIntegrationLane,
+    ], as: DeleteIntegrationProposalResult.self)
+  }
+
+  func dismissIntegrationCleanup(proposalId: String) async throws {
+    _ = try await sendCommand(action: "prs.dismissIntegrationCleanup", args: ["proposalId": proposalId])
+  }
+
+  func cleanupIntegrationWorkflow(proposalId: String, archiveIntegrationLane: Bool = true, archiveSourceLaneIds: [String] = []) async throws {
+    _ = try await sendCommand(action: "prs.cleanupIntegrationWorkflow", args: [
+      "proposalId": proposalId,
+      "archiveIntegrationLane": archiveIntegrationLane,
+      "archiveSourceLaneIds": archiveSourceLaneIds,
+    ])
+  }
+
+  func updateIntegrationProposal(proposalId: String, title: String? = nil, body: String? = nil, draft: Bool? = nil, integrationLaneName: String? = nil) async throws {
+    var args: [String: Any] = ["proposalId": proposalId]
+    if let title { args["title"] = title }
+    if let body { args["body"] = body }
+    if let draft { args["draft"] = draft }
+    if let integrationLaneName { args["integrationLaneName"] = integrationLaneName }
+    _ = try await sendCommand(action: "prs.updateIntegrationProposal", args: args)
+  }
+
+  func syncIssueInventory(prId: String) async throws -> IssueInventorySnapshot {
+    try await sendDecodableCommand(action: "prs.issueInventory.sync", args: ["prId": prId], as: IssueInventorySnapshot.self)
+  }
+
+  func fetchIssueInventory(prId: String) async throws -> IssueInventorySnapshot {
+    try await sendDecodableCommand(action: "prs.issueInventory.get", args: ["prId": prId], as: IssueInventorySnapshot.self)
+  }
+
+  func markIssueInventoryFixed(prId: String, itemIds: [String]) async throws {
+    _ = try await sendCommand(action: "prs.issueInventory.markFixed", args: ["prId": prId, "itemIds": itemIds])
+  }
+
+  func markIssueInventoryDismissed(prId: String, itemIds: [String], reason: String) async throws {
+    _ = try await sendCommand(action: "prs.issueInventory.markDismissed", args: [
+      "prId": prId,
+      "itemIds": itemIds,
+      "reason": reason,
+    ])
+  }
+
+  func markIssueInventoryEscalated(prId: String, itemIds: [String]) async throws {
+    _ = try await sendCommand(action: "prs.issueInventory.markEscalated", args: ["prId": prId, "itemIds": itemIds])
+  }
+
+  func resetIssueInventory(prId: String) async throws {
+    _ = try await sendCommand(action: "prs.issueInventory.reset", args: ["prId": prId])
+  }
+
+  func fetchPipelineSettings(prId: String) async throws -> PipelineSettings {
+    try await sendDecodableCommand(action: "prs.pipelineSettings.get", args: ["prId": prId], as: PipelineSettings.self)
+  }
+
+  func savePipelineSettings(prId: String, autoMerge: Bool? = nil, mergeMethod: String? = nil, maxRounds: Int? = nil, onRebaseNeeded: String? = nil) async throws {
+    var settings: [String: Any] = [:]
+    if let autoMerge { settings["autoMerge"] = autoMerge }
+    if let mergeMethod { settings["mergeMethod"] = mergeMethod }
+    if let maxRounds { settings["maxRounds"] = maxRounds }
+    if let onRebaseNeeded { settings["onRebaseNeeded"] = onRebaseNeeded }
+    _ = try await sendCommand(action: "prs.pipelineSettings.save", args: ["prId": prId, "settings": settings])
   }
 
   private func saveProfile(_ profile: HostConnectionProfile?) {

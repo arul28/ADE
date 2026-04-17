@@ -86,6 +86,8 @@ vi.mock("../../state/appStore", () => ({
 // Import the hook under test (after mocks are declared)
 // ---------------------------------------------------------------------------
 import { buildWorkTabGroupModel, useWorkSessions } from "./useWorkSessions";
+import { invalidateSessionListCache } from "../../lib/sessionListCache";
+import { shouldRefreshSessionListForChatEvent } from "../../lib/chatSessionEvents";
 
 // ---------------------------------------------------------------------------
 // window.ade stubs
@@ -442,6 +444,54 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
       await new Promise((r) => setTimeout(r, 120));
     });
 
+    expect(listSessionsCachedMock).toHaveBeenCalledWith({ limit: 500 }, undefined);
+    expect(invalidateSessionListCache).toHaveBeenCalled();
+  });
+
+  it("refetches visible Work when the window regains focus", async () => {
+    renderHook(() => useWorkSessions());
+
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 10));
+    });
+
+    listSessionsCachedMock.mockClear();
+    vi.mocked(invalidateSessionListCache).mockClear();
+
+    await act(async () => {
+      window.dispatchEvent(new Event("focus"));
+      await new Promise((r) => setTimeout(r, 140));
+    });
+
+    expect(invalidateSessionListCache).toHaveBeenCalled();
+    expect(listSessionsCachedMock).toHaveBeenCalledWith({ limit: 500 }, undefined);
+  });
+
+  it("invalidates the session cache before refetching for chat activity", async () => {
+    let chatEventHandler: ((payload: unknown) => void) | null = null;
+    (window as any).ade.agentChat.onEvent.mockImplementation((cb: (payload: unknown) => void) => {
+      chatEventHandler = cb;
+      return () => {
+        chatEventHandler = null;
+      };
+    });
+    vi.mocked(shouldRefreshSessionListForChatEvent).mockReturnValue(true);
+
+    renderHook(() => useWorkSessions());
+
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 10));
+    });
+
+    listSessionsCachedMock.mockClear();
+    vi.mocked(invalidateSessionListCache).mockClear();
+
+    await act(async () => {
+      chatEventHandler?.({ event: { type: "done" } });
+      await new Promise((r) => setTimeout(r, 240));
+    });
+
+    expect(invalidateSessionListCache).toHaveBeenCalled();
     expect(listSessionsCachedMock).toHaveBeenCalledWith({ limit: 500 }, undefined);
   });
 });

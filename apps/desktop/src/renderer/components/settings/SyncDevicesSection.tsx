@@ -285,9 +285,14 @@ export function SyncDevicesSection() {
 
 function StatusBar({ connected, peerCount }: { connected: boolean; peerCount: number }) {
   const dotColor = connected ? COLORS.accent : COLORS.textMuted;
-  const label = connected
-    ? peerCount === 1 ? "Connected" : `Connected - ${peerCount} devices`
-    : "Offline - waiting for phones";
+  let label: string;
+  if (!connected) {
+    label = "Offline - waiting for phones";
+  } else if (peerCount === 1) {
+    label = "Connected";
+  } else {
+    label = `Connected - ${peerCount} devices`;
+  }
   return (
     <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
       <div style={{ color: COLORS.textPrimary, fontFamily: SANS_FONT, fontSize: 22, fontWeight: 700 }}>

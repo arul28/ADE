@@ -3,26 +3,28 @@ import SwiftUI
 extension FilesDetailScreen {
   @MainActor
   func load(refreshDiff: Bool = false) async {
-    do {
-      if isImagePreviewable, let cachedData = ADEImageCache.shared.cachedData(for: imageCacheKey) {
-        let cachedBlob = SyncFileBlob(
-          path: relativePath,
-          size: cachedData.count,
-          mimeType: nil,
-          encoding: "base64",
-          isBinary: true,
-          content: cachedData.base64EncodedString(),
-          languageId: nil
-        )
-        blob = cachedBlob
-        await loadHistoryAndMetadata(from: cachedBlob)
-        if refreshDiff {
-          await loadDiff()
-        }
-        errorMessage = nil
-        return
-      }
+    var cachedImageBlob: SyncFileBlob?
 
+    if isImagePreviewable, let cachedData = ADEImageCache.shared.cachedData(for: imageCacheKey) {
+      let cachedBlob = SyncFileBlob(
+        path: relativePath,
+        size: cachedData.count,
+        mimeType: nil,
+        encoding: "base64",
+        isBinary: true,
+        content: cachedData.base64EncodedString(),
+        languageId: nil
+      )
+      cachedImageBlob = cachedBlob
+      blob = cachedBlob
+      await loadHistoryAndMetadata(from: cachedBlob)
+      if refreshDiff {
+        await loadDiff()
+      }
+      errorMessage = nil
+    }
+
+    do {
       let loaded = try await syncService.readFile(workspaceId: workspace.id, path: relativePath)
       blob = loaded
       if loaded.isBinary, isImagePreviewable, let data = imageData {
@@ -34,6 +36,10 @@ extension FilesDetailScreen {
       }
       errorMessage = nil
     } catch {
+      guard cachedImageBlob == nil else {
+        errorMessage = error.localizedDescription
+        return
+      }
       errorMessage = error.localizedDescription
     }
   }

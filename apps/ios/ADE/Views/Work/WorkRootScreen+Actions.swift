@@ -2,6 +2,56 @@ import SwiftUI
 import UIKit
 import AVKit
 
+func buildWorkActivityFeed(
+  sources: [TerminalSessionSummary],
+  transcriptCache: [String: [WorkChatEnvelope]],
+  terminalBuffers: [String: String],
+  existingCache: [String: WorkActivityTranscriptCacheEntry],
+  chatSummaries: [String: AgentChatSessionSummary]
+) -> (activities: [WorkAgentActivity], cache: [String: WorkActivityTranscriptCacheEntry]) {
+  var nextCache: [String: WorkActivityTranscriptCacheEntry] = [:]
+  nextCache.reserveCapacity(sources.count)
+  var activities: [WorkAgentActivity] = []
+
+  for session in sources {
+    let transcript: [WorkChatEnvelope]
+    if let streamed = transcriptCache[session.id] {
+      transcript = streamed
+    } else {
+      let buffer = terminalBuffers[session.id] ?? ""
+      let fingerprint = workActivityBufferFingerprint(buffer)
+      if let existing = existingCache[session.id], existing.fingerprint == fingerprint {
+        transcript = existing.transcript
+        nextCache[session.id] = existing
+      } else {
+        let parsed = parseWorkChatTranscript(buffer)
+        transcript = parsed
+        nextCache[session.id] = WorkActivityTranscriptCacheEntry(fingerprint: fingerprint, transcript: parsed)
+      }
+    }
+
+    activities.append(contentsOf: deriveWorkAgentActivities(
+      from: transcript,
+      session: WorkAgentActivityContext(
+        sessionId: session.id,
+        title: session.title,
+        laneName: session.laneName,
+        status: normalizedWorkChatSessionStatus(session: session, summary: chatSummaries[session.id]),
+        startedAt: session.startedAt
+      )
+    ))
+  }
+
+  activities.sort { lhs, rhs in
+    if lhs.startedAt == rhs.startedAt {
+      return lhs.agentName < rhs.agentName
+    }
+    return lhs.startedAt > rhs.startedAt
+  }
+
+  return (activities, nextCache)
+}
+
 extension WorkRootScreen {
   @MainActor
   func refreshFromPullGesture() async {
@@ -134,6 +184,8 @@ extension WorkRootScreen {
   func rebuildActivityFeed() {
     let sources = activitySessions
     guard !sources.isEmpty else {
+      activityFeedRebuildTask?.cancel()
+      activityFeedRebuildTask = nil
       if !activityFeedEntries.isEmpty {
         activityFeedEntries = []
       }
@@ -143,47 +195,37 @@ extension WorkRootScreen {
       return
     }
 
-    var nextCache: [String: WorkActivityTranscriptCacheEntry] = [:]
-    nextCache.reserveCapacity(sources.count)
-    var activities: [WorkAgentActivity] = []
+    activityFeedRebuildTask?.cancel()
+    activityFeedRebuildGeneration += 1
+    let generation = activityFeedRebuildGeneration
+    let transcriptSnapshot = transcriptCache
+    let terminalBufferSnapshot = syncService.terminalBuffers
+    let existingCache = activityTranscriptCache
+    let chatSummarySnapshot = chatSummaries
 
-    for session in sources {
-      let transcript: [WorkChatEnvelope]
-      if let streamed = transcriptCache[session.id] {
-        transcript = streamed
-      } else {
-        let buffer = syncService.terminalBuffers[session.id] ?? ""
-        let fingerprint = workActivityBufferFingerprint(buffer)
-        if let existing = activityTranscriptCache[session.id], existing.fingerprint == fingerprint {
-          transcript = existing.transcript
-          nextCache[session.id] = existing
-        } else {
-          let parsed = parseWorkChatTranscript(buffer)
-          transcript = parsed
-          nextCache[session.id] = WorkActivityTranscriptCacheEntry(fingerprint: fingerprint, transcript: parsed)
+    activityFeedRebuildTask = Task(priority: .utility) {
+      let result = buildWorkActivityFeed(
+        sources: sources,
+        transcriptCache: transcriptSnapshot,
+        terminalBuffers: terminalBufferSnapshot,
+        existingCache: existingCache,
+        chatSummaries: chatSummarySnapshot
+      )
+      await MainActor.run {
+        guard generation == activityFeedRebuildGeneration, !Task.isCancelled else { return }
+        if activityFeedEntries != result.activities {
+          activityFeedEntries = result.activities
         }
+        activityTranscriptCache = result.cache
+        activityFeedRebuildTask = nil
       }
-      activities.append(contentsOf: deriveWorkAgentActivities(
-        from: transcript,
-        session: WorkAgentActivityContext(
-          sessionId: session.id,
-          title: session.title,
-          laneName: session.laneName,
-          status: normalizedWorkChatSessionStatus(session: session, summary: chatSummaries[session.id]),
-          startedAt: session.startedAt
-        )
-      ))
     }
+  }
 
-    activities.sort { lhs, rhs in
-      if lhs.startedAt == rhs.startedAt {
-        return lhs.agentName < rhs.agentName
-      }
-      return lhs.startedAt > rhs.startedAt
-    }
-
-    activityFeedEntries = activities
-    activityTranscriptCache = nextCache
+  @MainActor
+  func cancelActivityFeedRebuild() {
+    activityFeedRebuildTask?.cancel()
+    activityFeedRebuildTask = nil
   }
 
   func toggleArchive(_ session: TerminalSessionSummary) {
@@ -258,12 +300,22 @@ extension WorkRootScreen {
     syncService.requestedLaneNavigation = LaneNavigationRequest(laneId: session.laneId)
   }
 
+  func openSession(_ session: TerminalSessionSummary) {
+    guard !navigationMutationPending else { return }
+    navigationMutationPending = true
+    selectedSessionTransitionId = session.id
+    Task { @MainActor in
+      await Task.yield()
+      path.append(WorkSessionRoute(sessionId: session.id))
+      navigationMutationPending = false
+    }
+  }
+
   func resumeSession(_ session: TerminalSessionSummary) {
     if archivedSessionIds.contains(session.id) {
       toggleArchive(session)
     }
-    selectedSessionTransitionId = session.id
-    path.append(WorkSessionRoute(sessionId: session.id))
+    openSession(session)
   }
 
   @MainActor

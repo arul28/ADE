@@ -154,11 +154,26 @@ struct PrMobileWorkflowCardView: View {
   let isLive: Bool
   let onOpenPr: (String) -> Void
   let onLand: (String, PrMergeMethodOption) -> Void
+  let onLandQueueNext: (String, PrMergeMethodOption) -> Void
+  let onPauseQueue: (String) -> Void
+  let onResumeQueue: (String, PrMergeMethodOption) -> Void
+  let onCancelQueue: (String) -> Void
+  let onReorderQueue: (String, [String]) -> Void
+  let onCreateIntegrationLane: (String) -> Void
+  let onDeleteIntegrationProposal: (String) -> Void
+  let onDismissIntegrationCleanup: (String) -> Void
+  let onCleanupIntegrationWorkflow: (String, [String]) -> Void
+  let onResolveIntegrationLane: (String, String) -> Void
+  let onRecheckIntegrationLane: (String, String) -> Void
   let onRebaseLane: (String) -> Void
   let onDeferRebase: (String) -> Void
   let onDismissRebase: (String) -> Void
 
   @State private var mergeMethod: PrMergeMethodOption = .squash
+
+  private var queueId: String? {
+    card.queueId.nonEmpty ?? (card.id.hasPrefix("queue:") ? String(card.id.dropFirst("queue:".count)) : nil)
+  }
 
   var body: some View {
     VStack(alignment: .leading, spacing: 12) {
@@ -233,6 +248,85 @@ struct PrMobileWorkflowCardView: View {
         .buttonStyle(.glass)
       }
     }
+
+    if let entries = card.entries?.sorted(by: { $0.position < $1.position }), !entries.isEmpty {
+      VStack(alignment: .leading, spacing: 8) {
+        ForEach(Array(entries.enumerated()), id: \.element.prId) { index, entry in
+          HStack(spacing: 10) {
+            ADEStatusPill(text: "#\(index + 1)", tint: entry.prId == card.activePrId ? ADEColor.accent : ADEColor.textSecondary)
+            VStack(alignment: .leading, spacing: 2) {
+              Text(entry.laneName)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(ADEColor.textPrimary)
+              Text(entry.state.replacingOccurrences(of: "_", with: " "))
+                .font(.caption2)
+                .foregroundStyle(ADEColor.textMuted)
+            }
+            Spacer(minLength: 0)
+            Button {
+              onOpenPr(entry.prId)
+            } label: {
+              Image(systemName: "arrow.up.right.square")
+                .frame(width: 30, height: 30)
+            }
+            .buttonStyle(.glass)
+            Button {
+              reorder(entries: entries, from: index, to: max(0, index - 1))
+            } label: {
+              Image(systemName: "chevron.up")
+                .frame(width: 30, height: 30)
+            }
+            .buttonStyle(.glass)
+            .disabled(!isLive || index == 0 || card.state == "landing")
+            Button {
+              reorder(entries: entries, from: index, to: min(entries.count - 1, index + 1))
+            } label: {
+              Image(systemName: "chevron.down")
+                .frame(width: 30, height: 30)
+            }
+            .buttonStyle(.glass)
+            .disabled(!isLive || index == entries.count - 1 || card.state == "landing")
+          }
+        }
+      }
+    }
+
+    if let groupId = card.groupId {
+      Button {
+        onLandQueueNext(groupId, mergeMethod)
+      } label: {
+        Label("Land queue next", systemImage: "arrow.forward.to.line")
+          .frame(maxWidth: .infinity)
+      }
+      .buttonStyle(.glass)
+      .disabled(!isLive)
+    }
+
+    if let queueId {
+      HStack(spacing: 10) {
+        if card.state == "paused" {
+          Button("Resume") { onResumeQueue(queueId, mergeMethod) }
+            .buttonStyle(.glass)
+            .disabled(!isLive)
+        } else {
+          Button("Pause") { onPauseQueue(queueId) }
+            .buttonStyle(.glass)
+            .disabled(!isLive)
+        }
+
+        Button("Cancel", role: .destructive) { onCancelQueue(queueId) }
+          .buttonStyle(.glass)
+          .disabled(!isLive)
+      }
+    }
+  }
+
+  private func reorder(entries: [QueueLandingEntry], from sourceIndex: Int, to targetIndex: Int) {
+    guard let groupId = card.groupId, sourceIndex != targetIndex else { return }
+    var ordered = entries.map(\.prId)
+    let moving = ordered.remove(at: sourceIndex)
+    ordered.insert(moving, at: targetIndex)
+    onReorderQueue(groupId, ordered)
   }
 
   @ViewBuilder
@@ -271,6 +365,76 @@ struct PrMobileWorkflowCardView: View {
       Text("\(laneCount) lane\(laneCount == 1 ? "" : "s")\(conflictSegment)")
         .font(.caption)
         .foregroundStyle(ADEColor.textSecondary)
+    }
+
+    if let lanes = card.lanes, !lanes.isEmpty {
+      VStack(alignment: .leading, spacing: 8) {
+        ForEach(lanes.prefix(6)) { lane in
+          HStack(spacing: 10) {
+            ADEStatusPill(
+              text: lane.outcome.replacingOccurrences(of: "_", with: " ").uppercased(),
+              tint: lane.outcome == "clean" ? ADEColor.success : ADEColor.warning
+            )
+            VStack(alignment: .leading, spacing: 2) {
+              Text(lane.laneName)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(ADEColor.textPrimary)
+              Text(lane.laneId)
+                .font(.caption2.monospaced())
+                .foregroundStyle(ADEColor.textMuted)
+                .lineLimit(1)
+            }
+            Spacer(minLength: 0)
+            if lane.outcome != "clean", let proposalId = card.proposalId {
+              Menu {
+                Button("Resolve conflicts") { onResolveIntegrationLane(proposalId, lane.laneId) }
+                Button("Recheck") { onRecheckIntegrationLane(proposalId, lane.laneId) }
+              } label: {
+                Image(systemName: "ellipsis.circle")
+                  .frame(width: 32, height: 32)
+              }
+              .buttonStyle(.glass)
+              .disabled(!isLive)
+            }
+          }
+        }
+      }
+    }
+
+    if let proposalId = card.proposalId {
+      HStack(spacing: 10) {
+        Button(card.integrationLaneId == nil ? "Create lane" : "Refresh lane") {
+          onCreateIntegrationLane(proposalId)
+        }
+        .buttonStyle(.glass)
+        .disabled(!isLive)
+
+        Button("Delete", role: .destructive) {
+          onDeleteIntegrationProposal(proposalId)
+        }
+        .buttonStyle(.glass)
+        .disabled(!isLive)
+      }
+
+      if card.cleanupState == "required" || card.cleanupState == "declined" {
+        HStack(spacing: 10) {
+          Button {
+            onCleanupIntegrationWorkflow(proposalId, card.lanes?.map(\.laneId) ?? [])
+          } label: {
+            Label("Clean up lanes", systemImage: "archivebox")
+          }
+          .buttonStyle(.glass)
+          .disabled(!isLive)
+
+          Button {
+            onDismissIntegrationCleanup(proposalId)
+          } label: {
+            Label("Not now", systemImage: "clock")
+          }
+          .buttonStyle(.glass)
+          .disabled(!isLive)
+        }
+      }
     }
 
     // Larger, prominent tap target so users immediately see the PR escape
@@ -336,8 +500,9 @@ struct PrMobileWorkflowCardView: View {
           .disabled(!isLive)
       }
 
+      Spacer(minLength: 0)
+
       if let prId = card.prId {
-        Spacer(minLength: 0)
         Button("Open PR") { onOpenPr(prId) }
           .buttonStyle(.glass)
       }

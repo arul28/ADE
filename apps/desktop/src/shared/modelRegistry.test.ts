@@ -127,6 +127,51 @@ describe("modelRegistry", () => {
     expect(getRuntimeModelRefForDescriptor(descriptor!, "codex")).toBe("gpt-5.4");
   });
 
+  describe("Claude Opus 4.7 descriptors", () => {
+    it("exposes the standard Opus 4.7 with the expected context window and pricing", () => {
+      const opus = getModelById("anthropic/claude-opus-4-7");
+      expect(opus).toBeTruthy();
+      expect(opus).toMatchObject({
+        displayName: "Claude Opus 4.7",
+        shortId: "opus",
+        family: "anthropic",
+        providerRoute: "claude-cli",
+        providerModelId: "claude-opus-4-7",
+        contextWindow: 1_000_000,
+        maxOutputTokens: 128_000,
+        inputPricePer1M: 5,
+        outputPricePer1M: 25,
+      });
+    });
+
+    it("exposes the 1M Opus 4.7 variant with the xhigh reasoning tier and legacy aliases", () => {
+      const opus1m = getModelById("anthropic/claude-opus-4-7-1m");
+      expect(opus1m).toBeTruthy();
+      expect(opus1m).toMatchObject({
+        shortId: "opus-1m",
+        displayName: "Claude Opus 4.7 1M",
+        contextWindow: 1_000_000,
+        maxOutputTokens: 128_000,
+        providerModelId: "claude-opus-4-7[1m]",
+      });
+      expect(opus1m?.reasoningTiers).toEqual(["low", "medium", "high", "xhigh", "max"]);
+      expect(opus1m?.aliases).toContain("opus[1m]");
+      expect(opus1m?.aliases).toContain("claude-opus-4-7[1m]");
+    });
+
+    it("resolves the legacy opus[1m] alias to the 4.7 1M descriptor", () => {
+      const resolved = resolveModelAlias("opus[1m]");
+      expect(resolved?.id).toBe("anthropic/claude-opus-4-7-1m");
+    });
+
+    it("no longer exposes any claude-opus-4-6 ids in the registry", () => {
+      const legacyIds = MODEL_REGISTRY.filter((m) => m.id.includes("claude-opus-4-6")).map((m) => m.id);
+      expect(legacyIds).toEqual([]);
+      expect(getModelById("anthropic/claude-opus-4-6")).toBeUndefined();
+      expect(getModelById("anthropic/claude-opus-4-6-1m")).toBeUndefined();
+    });
+  });
+
   it("does not contain groq, together, or meta provider families", () => {
     const families = new Set<ProviderFamily>(MODEL_REGISTRY.map((m) => m.family));
     expect(families.has("groq" as ProviderFamily)).toBe(false);

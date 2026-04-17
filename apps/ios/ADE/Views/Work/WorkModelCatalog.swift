@@ -220,35 +220,40 @@ func workModelCatalogGroups(currentModelId: String, currentProvider: String) -> 
       g.providers.contains { p in p.models.contains { $0.id == currentModelId } }
     }
     if !alreadyPresent {
-      let providerLower = currentProvider.lowercased()
+      let providerLower = currentProvider.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+      let targetGroupKey = workModelCatalogGroupKey(for: currentModelId, currentProvider: currentProvider)
+      let providerKey = providerLower.isEmpty ? "other" : providerLower
       let injected = WorkModelOption(
         id: currentModelId,
         displayName: currentModelId,
         tier: .balanced,
         tagline: "In use on the paired host",
-        provider: providerLower.isEmpty ? "other" : providerLower
+        provider: providerKey
       )
-      if let groupIndex = groups.firstIndex(where: { $0.key == providerLower }),
-         var firstProvider = groups[groupIndex].providers.first {
-        firstProvider = WorkModelProvider(
-          key: firstProvider.key,
-          displayName: firstProvider.displayName,
-          models: [injected] + firstProvider.models
-        )
-        var rebuilt = groups[groupIndex].providers
-        rebuilt[0] = firstProvider
-        groups[groupIndex] = WorkModelCatalogGroup(
-          key: groups[groupIndex].key,
-          displayName: groups[groupIndex].displayName,
-          providers: rebuilt
-        )
+      if let groupIndex = groups.firstIndex(where: { $0.key == targetGroupKey }) {
+        let providers = groups[groupIndex].providers
+        let providerIndex = providers.firstIndex(where: { $0.key == providerKey }) ?? providers.startIndex
+        if !providers.isEmpty {
+          var rebuilt = providers
+          let targetProvider = rebuilt[providerIndex]
+          rebuilt[providerIndex] = WorkModelProvider(
+            key: targetProvider.key,
+            displayName: targetProvider.displayName,
+            models: [injected] + targetProvider.models
+          )
+          groups[groupIndex] = WorkModelCatalogGroup(
+            key: groups[groupIndex].key,
+            displayName: groups[groupIndex].displayName,
+            providers: rebuilt
+          )
+        }
       } else {
         groups.append(WorkModelCatalogGroup(
-          key: providerLower.isEmpty ? "other" : providerLower,
+          key: targetGroupKey,
           displayName: currentProvider.isEmpty ? "Other" : providerLabel(currentProvider),
           providers: [
             WorkModelProvider(
-              key: providerLower.isEmpty ? "other" : providerLower,
+              key: providerKey,
               displayName: currentProvider.isEmpty ? "Other" : providerLabel(currentProvider),
               models: [injected]
             )
@@ -259,6 +264,28 @@ func workModelCatalogGroups(currentModelId: String, currentProvider: String) -> 
   }
 
   return groups
+}
+
+func workModelCatalogGroupKey(for currentModelId: String, currentProvider: String) -> String {
+  let provider = currentProvider.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+  let modelId = currentModelId.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+
+  if modelId.hasPrefix("opencode/") || provider == "opencode" {
+    return "opencode"
+  }
+  if provider == "cursor" || modelId.contains("cursor/") || modelId.contains("cursor-") || modelId.contains("composer") {
+    return "cursor"
+  }
+  if provider == "anthropic" || provider == "claude" || modelId.hasPrefix("anthropic/") || modelId.contains("claude") || modelId.contains("sonnet") || modelId.contains("opus") || modelId.contains("haiku") {
+    return "claude"
+  }
+  if provider == "openai" || provider == "codex" || modelId.hasPrefix("openai/") || modelId.contains("gpt") || modelId.contains("codex") {
+    return "codex"
+  }
+  if ["google", "xai", "deepseek", "lmstudio", "ollama"].contains(provider) {
+    return "opencode"
+  }
+  return provider.isEmpty ? "claude" : provider
 }
 
 func workModelTierLabel(_ tier: WorkModelOption.Tier) -> String {

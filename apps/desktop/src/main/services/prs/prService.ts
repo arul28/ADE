@@ -59,6 +59,7 @@ import type {
   PrStackMember,
   PrStackMemberRole,
   PrWorkflowCard,
+  QueueLandingEntry,
   QueueLandingState,
   QueueState,
   QueueWaitReason,
@@ -5356,13 +5357,13 @@ export function createPrService({
         error: error instanceof Error ? error.message : String(error),
       });
     }
-    const laneById = new Map(lanes.map((lane) => [lane.id, lane] as const));
     const primaryLane = lanes.find((lane) => lane.laneType === "primary") ?? null;
     const primaryBranch = primaryLane ? branchNameFromRef(primaryLane.branchRef) : null;
 
     const stacks = buildStackInfos(lanes, prByLaneId);
     const capabilities = buildCapabilities(prSummaries);
-    const createCapabilities = buildCreateCapabilities(lanes, prByLaneId, primaryLane, primaryBranch);
+    const laneById = new Map(lanes.map((lane) => [lane.id, lane] as const));
+    const createCapabilities = buildCreateCapabilities(lanes, prByLaneId, laneById, primaryLane, primaryBranch);
     const workflowCards = await buildWorkflowCards();
 
     return {
@@ -5420,11 +5421,14 @@ export function createPrService({
     depth: number,
   ): PrStackMember[] {
     const children = childrenByParent.get(lane.id) ?? [];
-    const laneRole: PrStackMemberRole = depth === 0
-      ? "root"
-      : children.length === 0
-        ? "leaf"
-        : "middle";
+    let laneRole: PrStackMemberRole;
+    if (depth === 0) {
+      laneRole = "root";
+    } else if (children.length === 0) {
+      laneRole = "leaf";
+    } else {
+      laneRole = "middle";
+    }
     const pr = prByLaneId.get(lane.id) ?? null;
     const self: PrStackMember = {
       laneId: lane.id,
@@ -5463,13 +5467,14 @@ export function createPrService({
     const isDraft = state === "draft";
     const isClosedOrMerged = state === "closed" || state === "merged";
     const checksFailing = pr.checksStatus === "failing";
-    const mergeBlockedReason = isDraft
-      ? "Draft PRs cannot be merged until marked ready for review."
-      : checksFailing
-        ? "Required checks are failing."
-        : isClosedOrMerged
-          ? `PR is already ${state}.`
-          : null;
+    let mergeBlockedReason: string | null = null;
+    if (isDraft) {
+      mergeBlockedReason = "Draft PRs cannot be merged until marked ready for review.";
+    } else if (checksFailing) {
+      mergeBlockedReason = "Required checks are failing.";
+    } else if (isClosedOrMerged) {
+      mergeBlockedReason = `PR is already ${state}.`;
+    }
     return {
       prId: pr.id,
       canOpenInGithub: true,
@@ -5478,8 +5483,8 @@ export function createPrService({
       canReopen: state === "closed",
       canRequestReviewers: isOpen || isDraft,
       canRerunChecks: isOpen || isDraft,
-      canComment: !isClosedOrMerged || state === "closed",
-      canUpdateDescription: !isClosedOrMerged || state === "closed",
+      canComment: state !== "merged",
+      canUpdateDescription: state !== "merged",
       canDelete: true,
       mergeBlockedReason,
       requiresLive: true,
@@ -5489,6 +5494,7 @@ export function createPrService({
   function buildCreateCapabilities(
     lanes: LaneSummary[],
     prByLaneId: Map<string, PrSummary>,
+    laneById: Map<string, LaneSummary>,
     primaryLane: LaneSummary | null,
     primaryBranch: string | null,
   ): PrCreateCapabilities {
@@ -5497,7 +5503,7 @@ export function createPrService({
       if (lane.laneType === "primary") continue;
       if (lane.archivedAt) continue;
       const existingPr = prByLaneId.get(lane.id) ?? null;
-      const parent = lane.parentLaneId ? lanes.find((entry) => entry.id === lane.parentLaneId) ?? null : null;
+      const parent = lane.parentLaneId ? laneById.get(lane.parentLaneId) ?? null : null;
       const defaultBaseBranch = resolveStableLaneBaseBranch({
         lane,
         parent,
@@ -5536,6 +5542,8 @@ export function createPrService({
     const queueRows = db.all<{
       id: string;
       group_id: string;
+      group_name: string | null;
+      target_branch: string | null;
       state: string;
       entries_json: string;
       current_position: number | null;
@@ -5546,32 +5554,35 @@ export function createPrService({
       last_error: string | null;
       updated_at: string | null;
     }>(
-      `select id, group_id, state, entries_json, current_position,
-              started_at, completed_at, active_pr_id, wait_reason, last_error, updated_at
-       from queue_landing_state
-       where project_id = ?
-       order by started_at desc`,
+      `select q.id, q.group_id, g.name as group_name, g.target_branch, q.state, q.entries_json, q.current_position,
+              q.started_at, q.completed_at, q.active_pr_id, q.wait_reason, q.last_error, q.updated_at
+       from queue_landing_state q
+       left join pr_groups g on g.id = q.group_id
+       where q.project_id = ?
+       order by q.updated_at desc, q.started_at desc`,
       [projectId],
     );
     for (const row of queueRows) {
       if (row.state === "completed" || row.state === "cancelled") continue;
-      let entryCount = 0;
+      let entries: QueueLandingEntry[] = [];
       try {
         const parsed = JSON.parse(String(row.entries_json ?? "[]"));
-        if (Array.isArray(parsed)) entryCount = parsed.length;
+        if (Array.isArray(parsed)) entries = parsed as QueueLandingEntry[];
       } catch {
-        entryCount = 0;
+        entries = [];
       }
       cards.push({
         kind: "queue",
         id: `queue:${row.id}`,
+        queueId: String(row.id),
         groupId: String(row.group_id),
-        groupName: null,
-        targetBranch: null,
+        groupName: row.group_name ?? null,
+        targetBranch: row.target_branch ?? null,
         state: String(row.state) as QueueState,
         activePrId: row.active_pr_id,
         currentPosition: Number(row.current_position ?? 0),
-        totalEntries: entryCount,
+        totalEntries: entries.length,
+        entries,
         waitReason: (row.wait_reason ?? null) as QueueWaitReason | null,
         lastError: row.last_error,
         updatedAt: row.updated_at ?? row.started_at,
@@ -5592,6 +5603,11 @@ export function createPrService({
           status: proposal.status,
           laneCount: proposal.laneSummaries.length,
           conflictLaneCount: conflictLanes,
+          lanes: proposal.laneSummaries.map((summary) => ({
+            laneId: summary.laneId,
+            laneName: summary.laneName,
+            outcome: summary.outcome,
+          })),
           workflowDisplayState: proposal.workflowDisplayState ?? "active",
           cleanupState: proposal.cleanupState ?? "none",
           linkedPrId: proposal.linkedPrId ?? null,

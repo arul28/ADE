@@ -167,8 +167,6 @@ struct LaneDetailHeaderCard: View {
     Group {
       if let detail, let conflictStatus = detail.conflictStatus, conflictStatus.status == "conflict-active" {
         LaneTypeBadge(text: "Conflict", tint: ADEColor.danger)
-      } else if let detail, let autoRebaseStatus = detail.autoRebaseStatus, autoRebaseStatus.state != "autoRebased" {
-        LaneTypeBadge(text: "Rebase attention", tint: ADEColor.warning)
       } else if snapshot.lane.archivedAt != nil {
         LaneTypeBadge(text: "Archived", tint: ADEColor.textMuted)
       } else if snapshot.lane.status.dirty {
@@ -223,12 +221,6 @@ struct LaneDetailHeaderCard: View {
     guard let detail else { return nil }
     if let conflictStatus = detail.conflictStatus {
       return conflictSummary(conflictStatus)
-    }
-    if let autoRebaseStatus = detail.autoRebaseStatus, autoRebaseStatus.state != "autoRebased" {
-      return autoRebaseStatus.message ?? "Rebase attention required."
-    }
-    if let rebaseSuggestion = detail.rebaseSuggestion {
-      return "Behind parent by \(rebaseSuggestion.behindCount) commit\(rebaseSuggestion.behindCount == 1 ? "" : "s")."
     }
     return nil
   }

@@ -8,6 +8,13 @@ struct PrDetailView: View {
 
   @State private var pr: PullRequestListItem?
   @State private var snapshot: PullRequestSnapshot?
+  @State private var reviewThreads: [PrReviewThread] = []
+  @State private var actionRuns: [PrActionRun] = []
+  @State private var activityEvents: [PrActivityEvent] = []
+  @State private var deployments: [PrDeployment] = []
+  @State private var aiSummary: AiReviewSummary?
+  @State private var issueInventory: IssueInventorySnapshot?
+  @State private var pipelineSettings: PipelineSettings?
   @State private var groupMembers: [PrGroupMemberSummary] = []
   @State private var capabilities: PrActionCapabilities?
   @State private var selectedTab: PrDetailTab = .overview
@@ -20,6 +27,8 @@ struct PrDetailView: View {
   @State private var cleanupChoice: PrCleanupChoice = .archive
   @State private var cleanupConfirmationPresented = false
   @State private var filesWorkspaceId: String?
+  @State private var stackPresentation: PrStackPresentation?
+  @State private var editorSheet: PrDetailEditorSheet?
 
   private var prsStatus: SyncDomainStatus {
     syncService.status(for: .prs)
@@ -135,6 +144,8 @@ struct PrDetailView: View {
         PrOverviewTab(
           pr: currentPr,
           snapshot: snapshot,
+          deployments: deployments,
+          aiSummary: aiSummary,
           actionAvailability: actionAvailability,
           capabilities: capabilities,
           mergeMethod: $mergeMethod,
@@ -146,6 +157,14 @@ struct PrDetailView: View {
           onReopen: reopenCurrentPr,
           onRequestReviewers: requestReviewers,
           onOpenGitHub: { openGitHub(urlString: currentPr.githubUrl) },
+          onOpenStack: openStack,
+          onEditTitle: { editorSheet = .title(currentPr.title) },
+          onEditBody: { editorSheet = .body(snapshot?.detail?.body ?? "") },
+          onEditLabels: {
+            let labels = snapshot?.detail?.labels.map(\.name).joined(separator: ", ") ?? ""
+            editorSheet = .labels(labels)
+          },
+          onSubmitReview: { editorSheet = .review },
           onArchiveLane: {
             cleanupChoice = .archive
             cleanupConfirmationPresented = true
@@ -154,6 +173,31 @@ struct PrDetailView: View {
             cleanupChoice = .deleteBranch
             cleanupConfirmationPresented = true
           }
+        )
+        .prListRow()
+      case .convergence:
+        PrPathToMergeTab(
+          pr: currentPr,
+          snapshot: snapshot,
+          groupMembers: groupMembers,
+          reviewThreads: reviewThreads,
+          deployments: deployments,
+          aiSummary: aiSummary,
+          issueInventory: issueInventory,
+          pipelineSettings: pipelineSettings,
+          capabilities: capabilities,
+          isLive: canRunPrActions,
+          onRefreshAiSummary: refreshAiSummary,
+          onRerunChecks: rerunChecks,
+          onSyncIssueInventory: syncIssueInventory,
+          onMarkIssueFixed: { itemId in markIssueInventory(itemId: itemId, action: .fixed) },
+          onDismissIssue: { itemId in markIssueInventory(itemId: itemId, action: .dismissed) },
+          onEscalateIssue: { itemId in markIssueInventory(itemId: itemId, action: .escalated) },
+          onResetIssueInventory: resetIssueInventory,
+          onToggleAutoMerge: toggleAutoMerge,
+          onSetPipelineMergeMethod: setPipelineMergeMethod,
+          onSetPipelineMaxRounds: setPipelineMaxRounds,
+          onSetPipelineRebasePolicy: setPipelineRebasePolicy
         )
         .prListRow()
       case .files:
@@ -167,6 +211,7 @@ struct PrDetailView: View {
       case .checks:
         PrChecksTab(
           checks: snapshot?.checks ?? [],
+          actionRuns: actionRuns,
           canRerunChecks: canRerunChecks,
           isLive: canRunPrActions,
           onRerun: rerunChecks
@@ -174,11 +219,18 @@ struct PrDetailView: View {
         .prListRow()
       case .activity:
         PrActivityTab(
-          timeline: buildPullRequestTimeline(pr: currentPr, snapshot: snapshot ?? PullRequestSnapshot(detail: nil, status: nil, checks: [], reviews: [], comments: [], files: [])),
+          timeline: buildPullRequestTimeline(
+            pr: currentPr,
+            snapshot: snapshot ?? PullRequestSnapshot(detail: nil, status: nil, checks: [], reviews: [], comments: [], files: []),
+            activity: activityEvents
+          ),
+          reviewThreads: reviewThreads,
           commentInput: $commentInput,
           canAddComment: canAddComment,
           isLive: canRunPrActions,
-          onSubmitComment: submitComment
+          onSubmitComment: submitComment,
+          onReplyToThread: replyToThread,
+          onSetThreadResolved: setThreadResolved
         )
         .prListRow()
       }
@@ -203,10 +255,79 @@ struct PrDetailView: View {
         ? "This keeps the lane for history but removes it from the active stack."
         : "This removes the lane from ADE and asks the host to delete the branch as part of cleanup.")
     }
+    .sheet(item: $stackPresentation) { presentation in
+      PrStackSheet(groupId: presentation.id, groupName: presentation.groupName)
+        .environmentObject(syncService)
+    }
+    .sheet(item: $editorSheet) { sheet in
+      switch sheet {
+      case .title(let title):
+        PrSingleLineEditSheet(
+          title: "Edit title",
+          fieldTitle: "Title",
+          initialValue: title,
+          submitTitle: "Save"
+        ) { value in
+          runPrAction("Updating PR title") {
+            try await syncService.updatePullRequestTitle(prId: prId, title: value)
+          } onSuccess: {
+            editorSheet = nil
+          }
+        }
+      case .body(let body):
+        PrMultilineEditSheet(
+          title: "Edit description",
+          initialValue: body,
+          submitTitle: "Save"
+        ) { value in
+          runPrAction("Updating PR description") {
+            try await syncService.updatePullRequestBody(prId: prId, body: value)
+          } onSuccess: {
+            editorSheet = nil
+          }
+        }
+      case .labels(let labels):
+        PrSingleLineEditSheet(
+          title: "Set labels",
+          fieldTitle: "Labels",
+          initialValue: labels,
+          submitTitle: "Save"
+        ) { value in
+          let labels = value
+            .split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+          runPrAction("Updating labels") {
+            try await syncService.setPullRequestLabels(prId: prId, labels: labels)
+          } onSuccess: {
+            editorSheet = nil
+          }
+        }
+      case .review:
+        PrSubmitReviewSheet { event, body in
+          runPrAction("Submitting review") {
+            try await syncService.submitPullRequestReview(prId: prId, event: event.rawValue, body: body)
+          } onSuccess: {
+            editorSheet = nil
+          }
+        }
+      }
+    }
   }
 
   @MainActor
   private func reload(refreshRemote: Bool = false) async {
+    let capabilitiesTask: Task<PrActionCapabilities?, Never>? = isLive
+      ? Task {
+          do {
+            let mobileSnapshot = try await syncService.fetchPrMobileSnapshot()
+            return mobileSnapshot.capabilities[prId]
+          } catch {
+            return nil
+          }
+        }
+      : nil
+
     do {
       var refreshError: Error?
       if refreshRemote {
@@ -216,9 +337,32 @@ struct PrDetailView: View {
           refreshError = error
         }
       }
-      let listItems = try await syncService.fetchPullRequestListItems()
+      async let listItemsTask = syncService.fetchPullRequestListItems()
+      async let snapshotTask = syncService.fetchPullRequestSnapshot(prId: prId)
+      let reviewThreadsTask = isLive ? Task { try? await syncService.fetchPullRequestReviewThreads(prId: prId) } : nil
+      let actionRunsTask = isLive ? Task { try? await syncService.fetchPullRequestActionRuns(prId: prId) } : nil
+      let activityTask = isLive ? Task { try? await syncService.fetchPullRequestActivity(prId: prId) } : nil
+      let deploymentsTask = isLive ? Task { try? await syncService.fetchPullRequestDeployments(prId: prId) } : nil
+      let aiSummaryTask = isLive ? Task { try? await syncService.fetchPullRequestAiSummary(prId: prId) } : nil
+      let issueInventoryTask = isLive ? Task { try? await syncService.fetchIssueInventory(prId: prId) } : nil
+      let pipelineSettingsTask = isLive ? Task { try? await syncService.fetchPipelineSettings(prId: prId) } : nil
+
+      let listItems = try await listItemsTask
       pr = listItems.first(where: { $0.id == prId })
-      snapshot = try await syncService.fetchPullRequestSnapshot(prId: prId)
+      snapshot = try await snapshotTask
+      reviewThreads = await reviewThreadsTask?.value ?? []
+      actionRuns = await actionRunsTask?.value ?? []
+      activityEvents = await activityTask?.value ?? []
+      deployments = await deploymentsTask?.value ?? []
+      if let summary = await aiSummaryTask?.value {
+        aiSummary = summary
+      }
+      if let inventory = await issueInventoryTask?.value {
+        issueInventory = inventory
+      }
+      if let settings = await pipelineSettingsTask?.value {
+        pipelineSettings = settings
+      }
       if let groupId = pr?.linkedGroupId {
         groupMembers = try await syncService.fetchPullRequestGroupMembers(groupId: groupId)
       } else {
@@ -229,18 +373,7 @@ struct PrDetailView: View {
       errorMessage = error.localizedDescription
     }
 
-    // Capability fetch is best-effort and live-only: failure leaves
-    // `capabilities` nil so the view falls back to supportsRemoteAction.
-    if isLive {
-      do {
-        let mobileSnapshot = try await syncService.fetchPrMobileSnapshot()
-        capabilities = mobileSnapshot.capabilities[prId]
-      } catch {
-        capabilities = nil
-      }
-    } else {
-      capabilities = nil
-    }
+    capabilities = await capabilitiesTask?.value
   }
 
   @MainActor
@@ -294,6 +427,99 @@ struct PrDetailView: View {
     runPrAction("Re-running checks") { try await syncService.rerunPullRequestChecks(prId: prId) }
   }
 
+  private func refreshAiSummary() {
+    runPrAction("Refreshing AI summary") {
+      let summary = try await syncService.fetchPullRequestAiSummary(prId: prId)
+      await MainActor.run {
+        aiSummary = summary
+      }
+    }
+  }
+
+  private func syncIssueInventory() {
+    runPrAction("Syncing issue inventory") {
+      let inventory = try await syncService.syncIssueInventory(prId: prId)
+      await MainActor.run {
+        issueInventory = inventory
+      }
+    }
+  }
+
+  private enum IssueInventoryAction {
+    case fixed
+    case dismissed
+    case escalated
+  }
+
+  private func markIssueInventory(itemId: String, action: IssueInventoryAction) {
+    let label: String
+    switch action {
+    case .fixed: label = "Marking issue fixed"
+    case .dismissed: label = "Dismissing issue"
+    case .escalated: label = "Escalating issue"
+    }
+    runPrAction(label) {
+      switch action {
+      case .fixed:
+        try await syncService.markIssueInventoryFixed(prId: prId, itemIds: [itemId])
+      case .dismissed:
+        try await syncService.markIssueInventoryDismissed(prId: prId, itemIds: [itemId], reason: "Dismissed from iOS")
+      case .escalated:
+        try await syncService.markIssueInventoryEscalated(prId: prId, itemIds: [itemId])
+      }
+    }
+  }
+
+  private func resetIssueInventory() {
+    runPrAction("Resetting issue inventory") {
+      try await syncService.resetIssueInventory(prId: prId)
+      await MainActor.run {
+        issueInventory = nil
+      }
+    }
+  }
+
+  private func toggleAutoMerge() {
+    let next = !(pipelineSettings?.autoMerge ?? false)
+    runPrAction(next ? "Enabling auto-merge" : "Disabling auto-merge") {
+      try await syncService.savePipelineSettings(prId: prId, autoMerge: next)
+      let settings = try await syncService.fetchPipelineSettings(prId: prId)
+      await MainActor.run {
+        pipelineSettings = settings
+      }
+    }
+  }
+
+  private func setPipelineMergeMethod(_ method: String) {
+    runPrAction("Updating merge method") {
+      try await syncService.savePipelineSettings(prId: prId, mergeMethod: method)
+      let settings = try await syncService.fetchPipelineSettings(prId: prId)
+      await MainActor.run {
+        pipelineSettings = settings
+      }
+    }
+  }
+
+  private func setPipelineMaxRounds(_ maxRounds: Int) {
+    runPrAction("Updating max rounds") {
+      try await syncService.savePipelineSettings(prId: prId, maxRounds: maxRounds)
+      let settings = try await syncService.fetchPipelineSettings(prId: prId)
+      await MainActor.run {
+        pipelineSettings = settings
+      }
+    }
+  }
+
+  private func setPipelineRebasePolicy(_ policy: String) {
+    runPrAction("Updating rebase policy") {
+      try await syncService.savePipelineSettings(prId: prId, onRebaseNeeded: policy)
+      let settings = try await syncService.fetchPipelineSettings(prId: prId)
+      await MainActor.run {
+        pipelineSettings = settings
+      }
+    }
+  }
+
   private func submitComment() {
     let trimmed = commentInput.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmed.isEmpty else { return }
@@ -303,6 +529,20 @@ struct PrDetailView: View {
       action: { try await syncService.addPullRequestComment(prId: prId, body: trimmed) },
       onSuccess: { commentInput = "" }
     )
+  }
+
+  private func replyToThread(threadId: String, body: String) {
+    let trimmed = body.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else { return }
+    runPrAction("Replying to review thread") {
+      try await syncService.replyToPullRequestReviewThread(prId: prId, threadId: threadId, body: trimmed)
+    }
+  }
+
+  private func setThreadResolved(threadId: String, resolved: Bool) {
+    runPrAction(resolved ? "Resolving review thread" : "Reopening review thread") {
+      try await syncService.setPullRequestReviewThreadResolved(prId: prId, threadId: threadId, resolved: resolved)
+    }
   }
 
   private func performCleanup() async {
@@ -328,6 +568,10 @@ struct PrDetailView: View {
   private func openGitHub(urlString: String) {
     guard let url = URL(string: urlString) else { return }
     UIApplication.shared.open(url)
+  }
+
+  private func openStack(groupId: String, groupName: String?) {
+    stackPresentation = PrStackPresentation(id: groupId, groupName: groupName)
   }
 
   @MainActor
@@ -370,5 +614,133 @@ struct PrDetailView: View {
     UIPasteboard.general.string = file.filename
     actionMessage = "Copied \(file.filename)."
     errorMessage = nil
+  }
+}
+
+private struct PrSingleLineEditSheet: View {
+  @Environment(\.dismiss) private var dismiss
+  let title: String
+  let fieldTitle: String
+  let submitTitle: String
+  let onSubmit: (String) -> Void
+  @State private var value: String
+
+  init(
+    title: String,
+    fieldTitle: String,
+    initialValue: String,
+    submitTitle: String,
+    onSubmit: @escaping (String) -> Void
+  ) {
+    self.title = title
+    self.fieldTitle = fieldTitle
+    self.submitTitle = submitTitle
+    self.onSubmit = onSubmit
+    _value = State(initialValue: initialValue)
+  }
+
+  var body: some View {
+    NavigationStack {
+      Form {
+        Section(fieldTitle) {
+          TextField(fieldTitle, text: $value, axis: .vertical)
+            .lineLimit(1...4)
+        }
+      }
+      .navigationTitle(title)
+      .navigationBarTitleDisplayMode(.inline)
+      .toolbar {
+        ToolbarItem(placement: .cancellationAction) {
+          Button("Cancel") { dismiss() }
+        }
+        ToolbarItem(placement: .confirmationAction) {
+          Button(submitTitle) {
+            onSubmit(value.trimmingCharacters(in: .whitespacesAndNewlines))
+          }
+          .disabled(value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        }
+      }
+    }
+  }
+}
+
+private struct PrMultilineEditSheet: View {
+  @Environment(\.dismiss) private var dismiss
+  let title: String
+  let submitTitle: String
+  let onSubmit: (String) -> Void
+  @State private var value: String
+
+  init(title: String, initialValue: String, submitTitle: String, onSubmit: @escaping (String) -> Void) {
+    self.title = title
+    self.submitTitle = submitTitle
+    self.onSubmit = onSubmit
+    _value = State(initialValue: initialValue)
+  }
+
+  var body: some View {
+    NavigationStack {
+      Form {
+        Section("Description") {
+          TextEditor(text: $value)
+            .frame(minHeight: 260)
+        }
+      }
+      .navigationTitle(title)
+      .navigationBarTitleDisplayMode(.inline)
+      .toolbar {
+        ToolbarItem(placement: .cancellationAction) {
+          Button("Cancel") { dismiss() }
+        }
+        ToolbarItem(placement: .confirmationAction) {
+          Button(submitTitle) {
+            onSubmit(value)
+          }
+        }
+      }
+    }
+  }
+}
+
+private struct PrSubmitReviewSheet: View {
+  @Environment(\.dismiss) private var dismiss
+  let onSubmit: (PrReviewEventOption, String?) -> Void
+  @State private var event: PrReviewEventOption = .comment
+  @State private var reviewBody = ""
+
+  var body: some View {
+    NavigationStack {
+      Form {
+        Section("Review") {
+          Picker("Decision", selection: $event) {
+            ForEach(PrReviewEventOption.allCases) { option in
+              Text(option.title).tag(option)
+            }
+          }
+          TextEditor(text: $reviewBody)
+            .frame(minHeight: 180)
+        }
+
+        Section {
+          Text("Approvals can be submitted without a note. Requested changes and comments should include enough context for the author to act.")
+            .font(.caption)
+            .foregroundStyle(ADEColor.textSecondary)
+        }
+      }
+      .navigationTitle("Submit review")
+      .navigationBarTitleDisplayMode(.inline)
+      .toolbar {
+        ToolbarItem(placement: .cancellationAction) {
+          Button("Cancel") { dismiss() }
+        }
+        ToolbarItem(placement: .confirmationAction) {
+          Button("Submit") {
+            let trimmed = reviewBody.trimmingCharacters(in: .whitespacesAndNewlines)
+            onSubmit(event, trimmed.isEmpty ? nil : trimmed)
+          }
+          .disabled(event != .approve && reviewBody.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        }
+      }
+    }
   }
 }

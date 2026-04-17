@@ -96,10 +96,9 @@ func parsePullRequestPatch(_ patch: String) -> [PrDiffDisplayLine] {
 }
 
 func prPatchPreviewLimit(for patch: String) -> PrPatchPreviewLimit? {
-  let lineCount = patch.reduce(1) { count, character in
-    character == "\n" ? count + 1 : count
-  }
-  let byteCount = patch.utf8.count
+  let metrics = prPatchMetrics(for: patch)
+  let lineCount = metrics.lineCount
+  let byteCount = metrics.byteCount
   let maxLines = 1_500
   let maxBytes = 300 * 1024
 
@@ -118,6 +117,54 @@ func prPatchPreviewLimit(for patch: String) -> PrPatchPreviewLimit? {
   }
 
   return nil
+}
+
+func prFileDiffShouldExpandByDefault(_ file: PrFile) -> Bool {
+  guard let patch = file.patch, !patch.isEmpty else {
+    return true
+  }
+
+  let metrics = prPatchMetrics(for: patch)
+  return metrics.lineCount <= 120 && metrics.byteCount <= 48 * 1024
+}
+
+func prPatchMetrics(for patch: String) -> (lineCount: Int, byteCount: Int) {
+  guard !patch.isEmpty else {
+    return (0, 0)
+  }
+
+  let lineCount = patch.reduce(1) { count, character in
+    character == "\n" ? count + 1 : count
+  }
+  return (lineCount, patch.utf8.count)
+}
+
+final class PrDiffRenderingCache {
+  static let shared = PrDiffRenderingCache()
+
+  private let linesCache = NSCache<NSString, PrDiffLinesBox>()
+
+  private init() {
+    linesCache.countLimit = 24
+  }
+
+  func lines(for patch: String) -> [PrDiffDisplayLine] {
+    if let cached = linesCache.object(forKey: patch as NSString)?.value {
+      return cached
+    }
+
+    let parsed = parsePullRequestPatch(patch)
+    linesCache.setObject(PrDiffLinesBox(value: parsed), forKey: patch as NSString)
+    return parsed
+  }
+}
+
+private final class PrDiffLinesBox: NSObject {
+  let value: [PrDiffDisplayLine]
+
+  init(value: [PrDiffDisplayLine]) {
+    self.value = value
+  }
 }
 
 func buildPullRequestTimeline(pr: PullRequestListItem, snapshot: PullRequestSnapshot) -> [PrTimelineEvent] {
@@ -186,6 +233,64 @@ func buildPullRequestTimeline(pr: PullRequestListItem, snapshot: PullRequestSnap
   return events.sorted {
     (prParsedDate($0.timestamp) ?? .distantPast) > (prParsedDate($1.timestamp) ?? .distantPast)
   }
+}
+
+func buildPullRequestTimeline(
+  pr: PullRequestListItem,
+  snapshot: PullRequestSnapshot,
+  activity: [PrActivityEvent]
+) -> [PrTimelineEvent] {
+  var events = buildPullRequestTimeline(pr: pr, snapshot: snapshot)
+  let existingIds = Set(events.map(\.id))
+  for item in activity where !existingIds.contains(item.id) {
+    events.append(
+      PrTimelineEvent(
+        id: item.id,
+        kind: timelineKind(for: item.type),
+        title: prActivityTitle(for: item.type),
+        author: item.author,
+        body: item.body,
+        timestamp: item.timestamp,
+        metadata: activityMetadataText(item.metadata)
+      )
+    )
+  }
+  return events.sorted {
+    (prParsedDate($0.timestamp) ?? .distantPast) > (prParsedDate($1.timestamp) ?? .distantPast)
+  }
+}
+
+private func timelineKind(for type: String) -> PrTimelineEventKind {
+  switch type {
+  case "deployment": return .deployment
+  case "commit": return .commit
+  case "label": return .label
+  case "ci_run": return .ci
+  case "force_push": return .forcePush
+  case "review_request": return .reviewRequest
+  case "review": return .review
+  case "comment": return .comment
+  default: return .stateChange
+  }
+}
+
+private func prActivityTitle(for type: String) -> String {
+  switch type {
+  case "ci_run": return "CI run"
+  case "force_push": return "Force push"
+  case "review_request": return "Review requested"
+  default: return titleCase(type.replacingOccurrences(of: "_", with: " "))
+  }
+}
+
+private func activityMetadataText(_ metadata: [String: RemoteJSONValue]?) -> String? {
+  guard let metadata, !metadata.isEmpty else { return nil }
+  let preferredKeys = ["path", "line", "status", "conclusion", "environment", "shortSha", "label", "reviewer", "url"]
+  let parts = preferredKeys.compactMap { key -> String? in
+    guard let value = metadata[key]?.plainTextValue else { return nil }
+    return "\(key): \(value)"
+  }
+  return parts.isEmpty ? nil : parts.joined(separator: " · ")
 }
 
 func prStateTint(_ state: String) -> Color {
@@ -292,6 +397,12 @@ func timelineSymbol(_ kind: PrTimelineEventKind) -> String {
   case .stateChange: return "arrow.triangle.merge"
   case .review: return "checkmark.seal.fill"
   case .comment: return "text.bubble.fill"
+  case .deployment: return "shippingbox.fill"
+  case .commit: return "number"
+  case .label: return "tag.fill"
+  case .ci: return "checklist.checked"
+  case .forcePush: return "arrow.up.forward.circle.fill"
+  case .reviewRequest: return "person.crop.circle.badge.questionmark"
   }
 }
 
@@ -300,6 +411,12 @@ func timelineTint(_ kind: PrTimelineEventKind) -> Color {
   case .stateChange: return ADEColor.success
   case .review: return ADEColor.accent
   case .comment: return ADEColor.warning
+  case .deployment: return ADEColor.tintFiles
+  case .commit: return ADEColor.textSecondary
+  case .label: return ADEColor.tintPRs
+  case .ci: return ADEColor.success
+  case .forcePush: return ADEColor.danger
+  case .reviewRequest: return ADEColor.warning
   }
 }
 
@@ -384,4 +501,30 @@ func prHeuristicDraft(lane: LaneSummary, detail: LaneDetailPayload?) -> PullRequ
     changedFiles > 0 ? "- Local diff count seen on iPhone: \(changedFiles) files" : nil,
   ].compactMap { $0 }).joined(separator: "\n")
   return PullRequestDraftSuggestion(title: title, body: body)
+}
+
+final class PrMarkdownRenderingCache {
+  static let shared = PrMarkdownRenderingCache()
+
+  private let cache = NSCache<NSString, PrMarkdownAttributedStringBox>()
+
+  private init() {
+    cache.countLimit = 48
+  }
+
+  func attributedString(for markdown: String) -> AttributedString? {
+    cache.object(forKey: markdown as NSString)?.value
+  }
+
+  func store(_ attributed: AttributedString, for markdown: String) {
+    cache.setObject(PrMarkdownAttributedStringBox(value: attributed), forKey: markdown as NSString)
+  }
+}
+
+private final class PrMarkdownAttributedStringBox: NSObject {
+  let value: AttributedString
+
+  init(value: AttributedString) {
+    self.value = value
+  }
 }

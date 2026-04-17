@@ -24,13 +24,13 @@ struct LaneDetailScreen: View {
   @State var stashMessage = ""
   @State var confirmDiscardFile: FileChange?
   @State private var filesWorkspaceId: String?
-  @State var syncExpanded = false
-  @State var stashesExpanded = false
-  @State var historyExpanded = false
+  @State var showCommitSheet = false
+  @State var rebaseSuggestionDismissed = false
   @State var showCommitDiffPicker = false
   @State var commitDiffFiles: [String] = []
   @State var commitDiffSha = ""
   @State var commitDiffSubject = ""
+  @State private var commitMessageGenerationToken = UUID()
   @State var cachedCommitDiffFilesBySha: [String: [String]] = [:]
   @State var pendingGitConfirmation: LaneGitConfirmation?
   @State private var lastLaneDetailLocalReload = Date.distantPast
@@ -96,6 +96,8 @@ struct LaneDetailScreen: View {
         if let detailConnectionNotice {
           connectionNoticeCard(detailConnectionNotice)
         }
+
+        rebaseBannerSection
 
         detailHeader
 
@@ -174,11 +176,52 @@ struct LaneDetailScreen: View {
     .sheet(isPresented: $showCommitDiffPicker) {
       commitDiffPickerSheet
     }
-    .onDisappear {
-      syncService.releaseLaneOpen(laneId: laneId)
+    .sheet(isPresented: $showCommitSheet) {
+      LaneCommitSheet(
+        commitMessage: $commitMessage,
+        amendCommit: $amendCommit,
+        stagedCount: detail?.diffChanges?.staged.count ?? 0,
+        unstagedCount: detail?.diffChanges?.unstaged.count ?? 0,
+        canRunLiveActions: canRunLiveActions,
+        onGenerateMessage: {
+          let requestToken = UUID()
+          let shouldAmend = amendCommit
+          commitMessageGenerationToken = requestToken
+          Task { @MainActor in
+            do {
+              let msg = try await syncService.generateCommitMessage(laneId: laneId, amend: shouldAmend)
+              guard commitMessageGenerationToken == requestToken, showCommitSheet else { return }
+              commitMessage = msg
+            } catch {
+              guard commitMessageGenerationToken == requestToken, showCommitSheet else { return }
+              ADEHaptics.error()
+              errorMessage = error.localizedDescription
+            }
+          }
+        },
+        onCommit: {
+          Task {
+            commitMessageGenerationToken = UUID()
+            await performAction("commit") {
+              try await syncService.commitLane(laneId: laneId, message: commitMessage, amend: amendCommit)
+            }
+            if errorMessage == nil {
+              commitMessage = ""
+              amendCommit = false
+              showCommitSheet = false
+            }
+          }
+        },
+        onDismiss: {
+          commitMessageGenerationToken = UUID()
+          showCommitSheet = false
+        }
+      )
+      .presentationDetents([.medium, .large])
     }
-    .safeAreaInset(edge: .bottom) {
-      if detail != nil { commitBar }
+    .onDisappear {
+      commitMessageGenerationToken = UUID()
+      syncService.releaseLaneOpen(laneId: laneId)
     }
   }
 
@@ -197,75 +240,32 @@ struct LaneDetailScreen: View {
     )
   }
 
-  @ViewBuilder
-  var commitBar: some View {
-    LaneCommitBar(
-      commitMessage: $commitMessage,
-      amendCommit: $amendCommit,
-      hasStaged: !(detail?.diffChanges?.staged.isEmpty ?? true),
-      hasDirty: detail?.lane.status.dirty ?? false,
-      canPush: (detail?.lane.status.ahead ?? 0) > 0 || detail?.syncStatus?.hasUpstream == false,
-      isPublish: detail?.syncStatus?.hasUpstream == false,
-      canRunLiveActions: canRunLiveActions,
-      onCommit: {
-        Task {
-          if commitMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            await performAction("generate message", refreshRoot: false) {
-              let msg = try await syncService.generateCommitMessage(laneId: laneId, amend: amendCommit)
-              commitMessage = msg
-            }
-          } else {
-            await performAction("commit") {
-              try await syncService.commitLane(laneId: laneId, message: commitMessage, amend: amendCommit)
-            }
-            if errorMessage == nil { commitMessage = ""; amendCommit = false }
-          }
-        }
-      },
-      onPush: {
-        Task { await performAction("push") { try await syncService.pushGit(laneId: laneId) } }
-      },
-      onGenerateMessage: {
-        Task {
-          do {
-            let msg = try await syncService.generateCommitMessage(laneId: laneId, amend: amendCommit)
-            commitMessage = msg
-          } catch {
-            ADEHaptics.error()
-            errorMessage = error.localizedDescription
-          }
-        }
-      },
-      onFetch: {
-        Task { await performAction("fetch") { try await syncService.fetchGit(laneId: laneId) } }
-      },
-      onPullMerge: {
-        Task { await performAction("pull merge") { try await syncService.pullGit(laneId: laneId) } }
-      },
-      onPullRebase: {
-        Task { await performAction("pull rebase") { try await syncService.syncGit(laneId: laneId, mode: "rebase") } }
-      },
-      onForcePush: {
-        requestGitConfirmation(.forcePush)
-      },
-      onStash: {
-        Task {
-          await performAction("stash") {
-            try await syncService.stashPush(laneId: laneId, message: stashMessage, includeUntracked: true)
-          }
-          if errorMessage == nil { stashMessage = "" }
-        }
-      },
-      onRebaseLane: {
-        Task { await performAction("rebase lane") { try await syncService.startLaneRebase(laneId: laneId, scope: "lane_only") } }
-      },
-      onRebaseDescendants: {
-        Task { await performAction("rebase descendants") { try await syncService.startLaneRebase(laneId: laneId, scope: "lane_and_descendants") } }
-      },
-      onRebaseAndPush: {
-        requestGitConfirmation(.rebaseAndPush)
+  @MainActor
+  func handleRebaseSuggestionDefer() {
+    Task {
+      do {
+        try await syncService.deferRebaseSuggestion(laneId: laneId)
+        rebaseSuggestionDismissed = true
+        await onRefreshRoot()
+      } catch {
+        ADEHaptics.error()
+        errorMessage = error.localizedDescription
       }
-    )
+    }
+  }
+
+  @MainActor
+  func handleRebaseSuggestionDismiss() {
+    Task {
+      do {
+        try await syncService.dismissRebaseSuggestion(laneId: laneId)
+        rebaseSuggestionDismissed = true
+        await onRefreshRoot()
+      } catch {
+        ADEHaptics.error()
+        errorMessage = error.localizedDescription
+      }
+    }
   }
 
   private var sessions: [TerminalSessionSummary] {

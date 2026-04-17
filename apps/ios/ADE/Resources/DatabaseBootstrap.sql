@@ -89,10 +89,8 @@ create table if not exists terminal_sessions (
       last_output_preview text,
       last_output_at text,
       summary text,
-      runtime_state text not null default 'running',
       resume_command text,
       resume_metadata_json text,
-      chat_idle_since_at text,
       foreign key(lane_id) references lanes(id)
     );
 
@@ -109,10 +107,6 @@ alter table terminal_sessions add column resume_command text;
 alter table terminal_sessions add column resume_metadata_json text;
 
 alter table terminal_sessions add column manually_named integer not null default 0;
-
-alter table terminal_sessions add column runtime_state text not null default 'running';
-
-alter table terminal_sessions add column chat_idle_since_at text;
 
 create table if not exists process_definitions (
       id text primary key,
@@ -426,7 +420,7 @@ create table if not exists file_directory_snapshots (
       nodes_json text not null,
       updated_at text not null,
       primary key(workspace_id, parent_path, include_hidden),
-      foreign key(workspace_id) references files_workspaces(id)
+      foreign key(workspace_id) references files_workspaces(id) on delete cascade
     );
 
 create table if not exists file_content_snapshots (
@@ -435,7 +429,7 @@ create table if not exists file_content_snapshots (
       blob_json text not null,
       updated_at text not null,
       primary key(workspace_id, relative_path),
-      foreign key(workspace_id) references files_workspaces(id)
+      foreign key(workspace_id) references files_workspaces(id) on delete cascade
     );
 
 create table if not exists file_diff_snapshots (
@@ -445,7 +439,7 @@ create table if not exists file_diff_snapshots (
       diff_json text not null,
       updated_at text not null,
       primary key(workspace_id, relative_path, mode),
-      foreign key(workspace_id) references files_workspaces(id)
+      foreign key(workspace_id) references files_workspaces(id) on delete cascade
     );
 
 create table if not exists file_history_snapshots (
@@ -454,7 +448,7 @@ create table if not exists file_history_snapshots (
       entries_json text not null,
       updated_at text not null,
       primary key(workspace_id, relative_path),
-      foreign key(workspace_id) references files_workspaces(id)
+      foreign key(workspace_id) references files_workspaces(id) on delete cascade
     );
 
 create index if not exists idx_file_directory_snapshots_workspace on file_directory_snapshots(workspace_id, updated_at desc);
