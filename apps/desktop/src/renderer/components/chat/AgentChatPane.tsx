@@ -10,6 +10,7 @@ import {
   type AgentChatCodexApprovalPolicy,
   type AgentChatCodexConfigSource,
   type AgentChatCodexSandbox,
+  type AgentChatCursorConfigValue,
   type AgentChatExecutionMode,
   type AgentChatEventEnvelope,
   type AgentChatFileRef,
@@ -29,6 +30,7 @@ import {
   type TerminalToolType,
 } from "../../../shared/types";
 import { parseAgentChatTranscript } from "../../../shared/chatTranscript";
+import { isProviderSlashCommandInput } from "../../../shared/chatSlashCommands";
 import {
   LOCAL_PROVIDER_LABELS,
   MODEL_REGISTRY,
@@ -58,7 +60,7 @@ import {
   shouldRefreshSessionListForChatEvent,
 } from "../../lib/chatSessionEvents";
 import { ChatSurfaceShell } from "./ChatSurfaceShell";
-import { chatChipToneClass } from "./chatSurfaceTheme";
+import { chatChipToneClass, providerChatAccent } from "./chatSurfaceTheme";
 import { ChatComputerUsePanel } from "./ChatComputerUsePanel";
 import { ChatSubagentsPanel } from "./ChatSubagentsPanel";
 import { ChatTasksPanel } from "./ChatTasksPanel";
@@ -255,7 +257,7 @@ type NativeControlState = {
   codexConfigSource: AgentChatCodexConfigSource;
   opencodePermissionMode: AgentChatOpenCodePermissionMode;
   cursorModeId: string | null;
-  cursorConfigValues: Record<string, string | boolean>;
+  cursorConfigValues: Record<string, AgentChatCursorConfigValue>;
 };
 
 function defaultNativeControls(profile: ChatSurfaceProfile): NativeControlState {
@@ -739,7 +741,7 @@ export function AgentChatPane({
   const [opencodePermissionMode, setOpenCodePermissionMode] = useState<AgentChatOpenCodePermissionMode>(initialNativeControls.opencodePermissionMode);
   const prevModelDescRef = useRef<ModelDescriptor | null | undefined>(undefined);
   const [cursorModeId, setCursorModeId] = useState<string | null>(initialNativeControls.cursorModeId);
-  const [cursorConfigValues, setCursorConfigValues] = useState<Record<string, string | boolean>>(initialNativeControls.cursorConfigValues);
+  const [cursorConfigValues, setCursorConfigValues] = useState<Record<string, AgentChatCursorConfigValue>>(initialNativeControls.cursorConfigValues);
   const [computerUsePolicy, setComputerUsePolicy] = useState<ComputerUsePolicy>(createDefaultComputerUsePolicy());
   const [aiStatus, setAiStatus] = useState<AiStatusSnapshot | null>(null);
   const [providerConnections, setProviderConnections] = useState<{
@@ -2193,7 +2195,7 @@ export function AgentChatPane({
     if (!text.length || !laneId) return;
     const draftSnapshot = draft;
     const attachmentsSnapshot = attachments;
-    const isLiteralSlashCommand = text.startsWith("/");
+    const isLiteralSlashCommand = isProviderSlashCommandInput(text);
 
     submitInFlightRef.current = true;
     setBusy(true);
@@ -2502,7 +2504,14 @@ export function AgentChatPane({
       </ChatSurfaceShell>
     );
   }
-  const draftAccent = selectedModelDesc?.color ?? "#A1A1AA";
+  // Provider-derived accent first so Claude is always amber, Codex always
+  // warm-white, etc. — keeps chat surfaces consistent across model variants
+  // and across desktop/mobile. Falls back to the per-model registry color
+  // when the provider isn't in the unified table.
+  const draftAccent =
+    providerChatAccent(selectedSession?.provider ?? selectedModelDesc?.family ?? null)
+    ?? selectedModelDesc?.color
+    ?? "#A1A1AA";
   const proofSessionId = selectedSessionId ?? "";
   const proofPanelContent = (
     <>

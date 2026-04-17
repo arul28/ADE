@@ -288,7 +288,7 @@ export function LinearConnectionPanel({
           <div className="rounded-lg p-3" style={{ background: "rgba(167,139,250,0.03)", border: "1px solid rgba(167,139,250,0.08)" }}>
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-1.5">
-                <Plugs size={11} style={{ color: ACCENT.purple }} />
+                <Plugs size={11} style={{ color: ACCENT.blue }} />
                 <span className="text-[11px] font-medium text-fg/70">OAuth</span>
               </div>
               <Button

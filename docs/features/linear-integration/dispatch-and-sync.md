@@ -58,7 +58,11 @@ returns:
 - `processIssueUpdate(issueId)` — single-issue hot path used by
   ingress. Fetches, merges `previousState*` from the prior snapshot,
   calls `routingService` via `processIssueSnapshot`, then
-  `advanceRuns(policy)`.
+  `advanceRuns(policy)`. When a reconciliation pass is already in
+  flight, the issue id is deferred into `pendingIssueIds` and drained
+  at the end of the current pass by `replayPendingIssues` — so two
+  webhooks arriving during one reconciliation still both apply
+  without overlapping sync runs.
 - `getDashboard()` — returns `LinearSyncDashboard` for the UI.
 - `listQueue({ limit })` — `LinearSyncQueueItem[]` for the queue
   dashboard.

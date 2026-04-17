@@ -18,7 +18,8 @@ Main-process services (`apps/desktop/src/main/services/prs/`):
 
 | File | Responsibility |
 |------|---------------|
-| `prService.ts` | PR CRUD, GitHub sync, merge context, draft descriptions, check/review/comment hydration, integration proposals, merge bypass, post-merge cleanup, deployment listing, review-thread reply/resolve/react mutations for the timeline |
+| `prService.ts` | PR CRUD, GitHub sync, merge context, draft descriptions, check/review/comment hydration, integration proposals, merge bypass, post-merge cleanup, deployment listing, review-thread reply/resolve/react mutations for the timeline, and the aggregate `getMobileSnapshot` that powers the iOS PRs tab |
+| `prService.mobileSnapshot.test.ts` | Coverage for the mobile snapshot builder: stack chaining, capability gates, per-lane create eligibility, workflow-card aggregation |
 | `prPollingService.ts` | 60 s polling loop, fingerprint-based change detection, notification emission. Writes `last_polled_at` per PR so callers can run delta polls on the next tick |
 | `prSummaryService.ts` | AI PR summary generator; caches `PrAiSummary` per `(prId, headSha)` in `pull_request_ai_summaries` so pushes invalidate the cache |
 | `queueLandingService.ts` | Merge queue state machine (`ALLOWED_TRANSITIONS`), landing loop, auto-resolve on conflicts |
@@ -342,6 +343,53 @@ programmatically:
 
 The MCP server also exposes the issue inventory service to external
 tool consumers.
+
+## Mobile snapshot
+
+`prService.getMobileSnapshot()` produces a `PrMobileSnapshot` for the
+iOS PRs tab in one call (exposed over sync as
+`prs.getMobileSnapshot`). Types live in
+`apps/desktop/src/shared/types/prs.ts`.
+
+```ts
+type PrMobileSnapshot = {
+  generatedAt: string;
+  prs: PrSummary[];
+  stacks: PrStackInfo[];                              // lane chains with >=1 PR
+  capabilities: Record<string, PrActionCapabilities>; // per-PR action gates
+  createCapabilities: PrCreateCapabilities;           // which lanes can create
+  workflowCards: PrWorkflowCard[];                    // queue/integration/rebase
+  live: boolean;                                      // false → phone banner
+};
+```
+
+Builder responsibilities:
+
+- **Stacks** (`buildStackInfos` / `collectStackMembers`) — walks
+  `laneService.list` in parent → child order, tagging each member
+  with `role` (`root | middle | leaf`), `depth`, and linked PR fields
+  when a PR exists for the lane. Stacks without any PRs are dropped.
+- **Capabilities** (`capabilitiesForPr`) — gates `canMerge` on
+  `state === "open"` and non-failing checks; blocks merges on drafts
+  and closed/merged PRs with an explicit `mergeBlockedReason`.
+  `requiresLive` is always true today — all listed actions need a
+  live host.
+- **Create eligibility** (`buildCreateCapabilities`) — enumerates
+  non-primary, non-archived lanes, marks lanes as ineligible when an
+  open/draft PR already exists, and resolves the default base branch
+  through `resolveStableLaneBaseBranch`.
+- **Workflow cards** (`buildWorkflowCards`) — pulls non-terminal
+  queue entries from `queue_landing_state` joined with `pr_groups`,
+  active integration proposals via `listIntegrationWorkflows({ view:
+  "active" })`, and undismissed rebase suggestions from
+  `rebaseSuggestionService`. Failures in any source log a warning
+  and skip that card category rather than failing the whole snapshot.
+
+The snapshot is read-only; create/merge/close/comment actions go
+through the existing command surface (`prs.createFromLane`,
+`prs.land`, `prs.close`, `prs.addComment`, `prs.rerunChecks`,
+`prs.draftDescription`). The mobile client calls `getMobileSnapshot`
+on open and re-fetches on focus or after a successful mutation.
 
 ## Gotchas
 

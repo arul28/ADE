@@ -58,7 +58,7 @@ const BASE_PROPS = {
   repoOwner: "acme",
   repoName: "ade",
   viewerLogin: "octocat",
-  modelId: "claude-opus-4-6",
+  modelId: "claude-opus-4-7",
 };
 
 let postReviewComment: ReturnType<typeof vi.fn>;
@@ -174,7 +174,7 @@ describe("PrReviewThreadCard", () => {
         expect.objectContaining({
           prId: "pr-1",
           threadId: "thread-1",
-          modelId: "claude-opus-4-6",
+          modelId: "claude-opus-4-7",
           fileContext: expect.objectContaining({ path: "src/foo.ts", line: 42 }),
         }),
       );

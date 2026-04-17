@@ -1050,11 +1050,16 @@ function GraphInner() {
       reportGraphIssue("Conflict prediction live updates are unavailable in the graph.", error);
     }
     try {
-      unsubPtyData = window.ade.pty.onData(() => {
+      const currentProjectRoot = project?.rootPath ?? null;
+      const isCurrentProjectEvent = (event: { projectRoot?: string | null }) =>
+        !event.projectRoot || event.projectRoot === currentProjectRoot;
+      unsubPtyData = window.ade.pty.onData((event) => {
+        if (!isCurrentProjectEvent(event)) return;
         if (activeGraphSessionsRef.current === 0) return;
         scheduleRefreshActivity(1_200, { includeOperations: false });
       });
-      unsubPtyExit = window.ade.pty.onExit(() => {
+      unsubPtyExit = window.ade.pty.onExit((event) => {
+        if (!isCurrentProjectEvent(event)) return;
         scheduleRefreshActivity(220, { includeOperations: true });
       });
     } catch (error) {
@@ -1119,7 +1124,7 @@ function GraphInner() {
         prRefreshTimerRef.current = null;
       }
     };
-  }, [refreshLaneSyncStatuses, refreshLanes, refreshRiskBatch, refreshAutoRebaseStatuses, reportGraphIssue, scheduleRefreshActivity, scheduleRefreshPrs]);
+  }, [project?.rootPath, refreshLaneSyncStatuses, refreshLanes, refreshRiskBatch, refreshAutoRebaseStatuses, reportGraphIssue, scheduleRefreshActivity, scheduleRefreshPrs]);
 
   const baseGraph = React.useMemo(() => {
     if (!loadedGraphPreferences) {

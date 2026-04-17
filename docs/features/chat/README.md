@@ -13,11 +13,14 @@ machinery layered on top.
 |---|---|
 | `apps/desktop/src/main/services/chat/agentChatService.ts` | Main service: session lifecycle, turn dispatch, event emission, provider adapters, steer queue, handoff. Large orchestrator file. |
 | `apps/desktop/src/main/services/chat/buildClaudeV2Message.ts` | Builds the message payload the Claude Agent SDK V2 session consumes. Handles base64 image content blocks and MIME inference. |
+| `apps/desktop/src/main/services/chat/claudeSlashCommandDiscovery.ts` | Discovers per-project (`.claude/commands/**`) and per-user (`~/.claude/commands/**`) slash commands, including `.md` command files and `.skill` user-invocable skills, parsing YAML frontmatter for description and argument hints. Consumed by `agentChatService` to enrich the `chat.slashCommands` response so the composer's picker lists local Claude commands alongside SDK-provided ones. |
 | `apps/desktop/src/main/services/chat/chatTextBatching.ts` | Batches streaming assistant text fragments (100 ms) before emission to reduce renderer re-renders. |
 | `apps/desktop/src/main/services/chat/sessionRecovery.ts` | Version-2 persisted-state reconstruction when sessions resume from disk. |
 | `apps/desktop/src/shared/chatTranscript.ts` | Pure JSON-lines parser for `AgentChatEventEnvelope` values. Used by both the main process and the renderer. |
 | `apps/desktop/src/shared/types/chat.ts` | All chat types: `AgentChatSession`, `AgentChatEvent` union, permission modes, pending input, completion reports. |
-| `apps/desktop/src/renderer/components/chat/AgentChatPane.tsx` | Top-level renderer surface: state derivation, IPC wiring, composer mount, message-list mount, End/Delete chat controls in the header. Mounts `AgentQuestionModal` when the active pending input is a question/structured-question. |
+| `apps/desktop/src/renderer/components/chat/AgentChatPane.tsx` | Top-level renderer surface: state derivation, IPC wiring, composer mount, message-list mount, End/Delete chat controls in the header. Mounts `AgentQuestionModal` when the active pending input is a question/structured-question. Resolves the surface accent colour through `providerChatAccent(provider)` so Claude/Codex/Cursor stay visually consistent regardless of model variant. |
+| `apps/desktop/src/renderer/components/chat/ChatSurfaceShell.tsx` | Shell that wraps every chat surface (desktop pane, mobile lane, CTO mission) with a unified header/footer slot and `--chat-accent` CSS variable. Supports a `layoutVariant="mobile"` mode that the iOS companion mirrors. |
+| `apps/desktop/src/renderer/components/chat/chatSurfaceTheme.ts` | Chat chrome tokens. Exports `PROVIDER_CHAT_ACCENTS` (claude → amber, codex → warm white, cursor → violet, opencode → blue, etc.) and `providerChatAccent(provider)`. iOS mirrors this table in `ADEDesignSystem.swift`. |
 | `apps/desktop/src/renderer/components/chat/AgentQuestionModal.tsx` | Floating modal surface for question / structured-question pending inputs. Rendered above the transcript so the user can type or pick an option without losing the chat context. |
 | `apps/desktop/src/renderer/components/chat/chatTranscriptRows.ts` | Two-layer event-to-row pipeline (render events + grouped envelopes) that powers the message list. |
 | `apps/desktop/src/main/services/ai/tools/` | Tool tiers consumed by the service when it provisions a Claude/Codex/OpenCode runtime (see [Tool System](tool-system.md)). |
@@ -199,8 +202,8 @@ config service):
 
 - `ai.mode` -- `subscription` vs `guest`; gates auto-title, tool
   availability, and provider selection.
-- `ai.chat.autoTitleEnabled`, `ai.chat.autoTitleReasoningEffort`,
-  `ai.chat.autoTitleRefreshOnComplete` -- AI title generation.
+- `ai.sessionIntelligence.titles.*` and
+  `ai.chat.autoTitleReasoningEffort` -- AI title generation.
 - `ai.permissions.*` -- per-provider permission defaults
   (`claudePermissionMode`, Codex approval/sandbox defaults, OpenCode
   permission).

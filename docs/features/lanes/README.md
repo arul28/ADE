@@ -109,6 +109,15 @@ a lane parented to primary would always show zero behind.
 - `childCount: number`
 - `tags: string[]`, `color`, `icon`, `folder`
 - `missionId`, `laneRole` (nullable; see mission roles)
+- `devicesOpen?: LaneDevicePresence[]` — decoration added by
+  `syncHostService` on response paths (`lanes.list`, `lanes.getDetail`,
+  `lanes.create`, `lanes.attach`, etc.) from the in-memory lane
+  presence map. Each entry carries `{ deviceId, displayName,
+  deviceType }` and expires 60 s after the last
+  `lanes.presence.announce`. Controllers announce on a 30 s
+  heartbeat; the desktop host calls `ade.sync.setActiveLanePresence`
+  from `LanesPage` whenever the visible lane list changes and clears
+  it on unmount.
 
 ## Mission lane roles
 

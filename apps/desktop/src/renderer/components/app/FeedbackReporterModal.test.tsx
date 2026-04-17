@@ -28,7 +28,7 @@ vi.mock("../shared/ProviderModelSelector", () => ({
       onChange={(event) => onChange(event.target.value)}
     >
       <option value="">Select model</option>
-      <option value="anthropic/claude-opus-4-6">Claude Opus</option>
+      <option value="anthropic/claude-opus-4-7">Claude Opus</option>
     </select>
   ),
 }));
@@ -40,7 +40,7 @@ describe("FeedbackReporterModal", () => {
       id: "failed-1",
       category: "bug",
       userDescription: "The report failed and I need to see what I originally submitted.",
-      modelId: "anthropic/claude-opus-4-6",
+      modelId: "anthropic/claude-opus-4-7",
       status: "failed",
       generationMode: "deterministic",
       generationWarning: "ADE used a deterministic draft because AI title and label suggestion failed: GitHub API unavailable",
@@ -57,7 +57,7 @@ describe("FeedbackReporterModal", () => {
       id: "posted-1",
       category: "enhancement",
       userDescription: "Please add a way to expand the previous submissions tab.",
-      modelId: "anthropic/claude-opus-4-6",
+      modelId: "anthropic/claude-opus-4-7",
       status: "posted",
       generationMode: "ai_assisted",
       generationWarning: null,

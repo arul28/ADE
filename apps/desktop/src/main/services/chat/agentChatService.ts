@@ -24,6 +24,7 @@ type ClaudeV2Session = {
   supportedCommands?: () => Promise<Array<{ name?: string; description?: string }>>;
 };
 import { buildClaudeV2Message, inferAttachmentMediaType } from "./buildClaudeV2Message";
+import { discoverClaudeSlashCommands } from "./claudeSlashCommandDiscovery";
 import type {
   RuntimeFilePart as FilePart,
   RuntimeImagePart as ImagePart,
@@ -139,6 +140,7 @@ import { createCtoOperatorTools, type CtoOperatorToolDeps } from "../ai/tools/ct
 import { buildCodingAgentSystemPrompt } from "../ai/tools/systemPrompt";
 import { decideFrontendRepoToolExposure, filterFrontendRepoDiscoveryTools } from "../ai/toolExposurePolicy";
 import { resolveClaudeCliModel } from "../ai/claudeModelUtils";
+import type { createAiIntegrationService } from "../ai/aiIntegrationService";
 import {
   getProviderRuntimeHealth,
   reportProviderRuntimeAuthFailure,
@@ -147,6 +149,7 @@ import {
 } from "../ai/providerRuntimeHealth";
 import { resolveAdeLayout } from "../../../shared/adeLayout";
 import { parseAgentChatTranscript } from "../../../shared/chatTranscript";
+import { extractLeadingSlashCommand, isProviderSlashCommandInput } from "../../../shared/chatSlashCommands";
 import type { createMemoryService, Memory } from "../memory/memoryService";
 import type { createCtoStateService } from "../cto/ctoStateService";
 import type { createWorkerAgentService } from "../cto/workerAgentService";
@@ -167,7 +170,6 @@ import {
   openCodeEventStream,
   refreshOpenCodeSessionToolSelection,
   resolveOpenCodeModelSelection,
-  runOpenCodeTextPrompt,
   startOpenCodeSession,
   type DiscoveredLocalModelEntry,
   type OpenCodeSessionHandle,
@@ -254,6 +256,7 @@ type PersistedChatState = {
   selectedExecutionLaneId?: string | null;
   lastLaneDirectiveKey?: string | null;
   manuallyNamed?: boolean;
+  awaitingInput?: boolean;
   requestedCwd?: string | null;
   idleSinceAt?: string | null;
   /** Persisted "Allow for Session" tool approval overrides (Claude runtime). */
@@ -840,6 +843,8 @@ type PreparedSendMessage = {
   reasoningEffort?: string | null;
   interactionMode?: AgentChatInteractionMode | null;
   laneDirectiveKey?: string | null;
+  providerSlashCommand?: boolean;
+  forceClaudeUserMessage?: boolean;
   onDispatched?: () => void;
   turnId?: string;
   optimisticCursorTurnStart?: boolean;
@@ -856,9 +861,9 @@ type ResolvedChatConfig = {
   claudePermissionMode: AgentChatClaudePermissionMode;
   opencodePermissionMode: AgentChatOpenCodePermissionMode;
   sessionBudgetUsd: number | null;
-  autoTitleEnabled: boolean;
-  autoTitleModelId: string | null;
-  autoTitleRefreshOnComplete: boolean;
+  titleGenerationEnabled: boolean;
+  titleModelId: string | null;
+  titleRefreshOnComplete: boolean;
   summaryEnabled: boolean;
   summaryModelId: string | null;
 };
@@ -1588,17 +1593,6 @@ function composeLaunchDirectives(baseText: string, directives: Array<string | nu
   return `${filtered.join("\n\n")}\n\nUser request:\n${baseText}`;
 }
 
-function extractSlashCommand(text: string): string | null {
-  const trimmed = text.trim();
-  if (!trimmed.startsWith("/")) return null;
-  const [command] = trimmed.split(/\s+/, 1);
-  return command?.trim().toLowerCase() || null;
-}
-
-function isLiteralSlashCommand(text: string): boolean {
-  return extractSlashCommand(text) != null;
-}
-
 export function buildComputerUseDirective(
   policy: ComputerUsePolicy | null | undefined,
   backendStatus: ComputerUseBackendStatus | null,
@@ -2240,6 +2234,10 @@ function normalizeCursorConfigValueRecord(
       normalized[key] = rawValue;
       continue;
     }
+    if (typeof rawValue === "number" && Number.isFinite(rawValue)) {
+      normalized[key] = rawValue;
+      continue;
+    }
     if (typeof rawValue === "string") {
       const trimmed = rawValue.trim();
       if (trimmed.length) normalized[key] = trimmed;
@@ -2486,6 +2484,7 @@ export function createAgentChatService(args: {
   laneService: ReturnType<typeof createLaneService>;
   sessionService: ReturnType<typeof createSessionService>;
   projectConfigService: ReturnType<typeof createProjectConfigService>;
+  aiIntegrationService: ReturnType<typeof createAiIntegrationService>;
   logger: Logger;
   appVersion: string;
   onEvent?: (event: AgentChatEventEnvelope) => void;
@@ -2525,6 +2524,7 @@ export function createAgentChatService(args: {
     laneService,
     sessionService,
     projectConfigService,
+    aiIntegrationService,
     logger,
     appVersion,
     onEvent,
@@ -2543,6 +2543,8 @@ export function createAgentChatService(args: {
     throw new Error("Issue inventory service is required to initialize agent chat.");
   }
 
+  const eventSubscribers = new Set<(event: AgentChatEventEnvelope) => void>();
+
   let computerUseArtifactBrokerRef = computerUseArtifactBrokerService ?? null;
 
   let proofObserver = computerUseArtifactBrokerRef
@@ -2555,6 +2557,24 @@ export function createAgentChatService(args: {
   fs.mkdirSync(chatSessionsDir, { recursive: true });
   fs.mkdirSync(transcriptsDir, { recursive: true });
   fs.mkdirSync(chatTranscriptsDir, { recursive: true });
+
+  const runSessionIntelligencePrompt = async (args: {
+    cwd: string;
+    modelId: string;
+    prompt: string;
+    systemPrompt?: string;
+    timeoutMs?: number;
+    taskType: "session_title" | "session_summary" | "handoff_summary" | "continuity_summary";
+  }) => {
+    return await aiIntegrationService.summarizeTerminal({
+      cwd: args.cwd,
+      model: args.modelId,
+      prompt: args.prompt,
+      systemPrompt: args.systemPrompt,
+      timeoutMs: args.timeoutMs,
+      taskType: args.taskType,
+    });
+  };
 
   const stageAttachmentForCodexInput = (attachment: ResolvedAgentChatFileRef): string => {
     const content = readFileWithinRootSecure(attachment._rootPath, attachment._resolvedPath);
@@ -4002,12 +4022,11 @@ export function createAgentChatService(args: {
 
     managed.continuitySummaryInFlight = true;
     try {
-      const result = await runOpenCodeTextPrompt({
-        directory: managed.laneWorktreePath,
-        title: "ADE continuity summary",
-        modelDescriptor: descriptor,
+      const result = await runSessionIntelligencePrompt({
+        cwd: managed.laneWorktreePath,
+        modelId: descriptor.id,
         prompt,
-        projectConfig: projectConfigService.get().effective,
+        taskType: "continuity_summary",
       });
       const text = result.text.trim();
       if (text.length) {
@@ -4270,12 +4289,11 @@ export function createAgentChatService(args: {
     ].filter(Boolean).join("\n");
 
     try {
-      const result = await runOpenCodeTextPrompt({
-        directory: args.managed.laneWorktreePath,
-        title: "ADE handoff brief",
-        modelDescriptor: descriptor,
+      const result = await runSessionIntelligencePrompt({
+        cwd: args.managed.laneWorktreePath,
+        modelId: descriptor.id,
         prompt,
-        projectConfig: projectConfigService.get().effective,
+        taskType: "handoff_summary",
       });
       const brief = result.text.trim();
       if (!brief.length) {
@@ -4329,12 +4347,12 @@ export function createAgentChatService(args: {
   ): Promise<void> => {
     if (managed.deleted) return;
     const config = resolveChatConfig();
-    if (!config.autoTitleEnabled) return;
+    if (!config.titleGenerationEnabled) return;
     if (managed.manuallyNamed) return;
     if (managed.autoTitleInFlight) return;
     if (args.stage === "initial" && managed.autoTitleStage !== "none") return;
     if (args.stage === "final") {
-      if (!config.autoTitleRefreshOnComplete) return;
+      if (!config.titleRefreshOnComplete) return;
       if (managed.autoTitleStage === "final") return;
     }
 
@@ -4347,7 +4365,7 @@ export function createAgentChatService(args: {
 
     const preferredModelId =
       [
-        config.autoTitleModelId,
+        config.titleModelId,
         DEFAULT_AUTO_TITLE_MODEL_ID,
         "anthropic/claude-haiku-4-5",
         "openai/gpt-5.4-mini",
@@ -4382,18 +4400,17 @@ export function createAgentChatService(args: {
 
     managed.autoTitleInFlight = true;
     try {
-      const result = await runOpenCodeTextPrompt({
-        directory: managed.laneWorktreePath,
-        title: args.stage === "final" ? "ADE final chat title" : "ADE initial chat title",
-        modelDescriptor: descriptor,
-        system: AUTO_TITLE_SYSTEM_PROMPT,
+      const result = await runSessionIntelligencePrompt({
+        cwd: managed.laneWorktreePath,
+        modelId: descriptor.id,
+        systemPrompt: AUTO_TITLE_SYSTEM_PROMPT,
         prompt: [
           args.stage === "final"
             ? "Write a final concise title for this completed coding chat."
             : "Write a concise title for this new coding chat.",
           titleContext.join("\n"),
         ].join("\n\n"),
-        projectConfig: projectConfigService.get().effective,
+        taskType: "session_title",
       });
       // Re-check after async — user may have manually renamed while the request was in flight.
       if (managed.manuallyNamed) return;
@@ -4634,13 +4651,17 @@ export function createAgentChatService(args: {
     const budget = Number(chat.sessionBudgetUsd ?? permissions.cli?.maxBudgetUsd ?? NaN);
     const sessionBudgetUsd = Number.isFinite(budget) && budget > 0 ? budget : null;
 
-    // Session-intelligence titles with chat.autoTitle* fallback
-    const autoTitleEnabled = si?.titles?.enabled ?? chat.autoTitleEnabled ?? true;
-    const autoTitleModelIdRaw = si?.titles?.modelId ?? chat.autoTitleModelId;
-    const autoTitleModelId = typeof autoTitleModelIdRaw === "string" && autoTitleModelIdRaw.trim().length
-      ? autoTitleModelIdRaw.trim()
+    const legacyChat = chat as Record<string, unknown>;
+    const titleGenerationEnabled = si?.titles?.enabled
+      ?? (typeof legacyChat.autoTitleEnabled === "boolean" ? legacyChat.autoTitleEnabled : undefined)
+      ?? true;
+    const titleModelIdRaw = si?.titles?.modelId ?? legacyChat.autoTitleModelId;
+    const titleModelId = typeof titleModelIdRaw === "string" && titleModelIdRaw.trim().length
+      ? titleModelIdRaw.trim()
       : null;
-    const autoTitleRefreshOnComplete = si?.titles?.refreshOnComplete ?? chat.autoTitleRefreshOnComplete ?? true;
+    const titleRefreshOnComplete = si?.titles?.refreshOnComplete
+      ?? (typeof legacyChat.autoTitleRefreshOnComplete === "boolean" ? legacyChat.autoTitleRefreshOnComplete : undefined)
+      ?? true;
 
     // Session-intelligence summaries
     const summaryEnabled = si?.summaries?.enabled ?? true;
@@ -4655,9 +4676,9 @@ export function createAgentChatService(args: {
       claudePermissionMode,
       opencodePermissionMode,
       sessionBudgetUsd,
-      autoTitleEnabled,
-      autoTitleModelId,
-      autoTitleRefreshOnComplete,
+      titleGenerationEnabled,
+      titleModelId,
+      titleRefreshOnComplete,
       summaryEnabled,
       summaryModelId,
     };
@@ -4952,6 +4973,7 @@ export function createAgentChatService(args: {
           const trimmedTitle = String(sessionService.get(managed.session.id)?.title || "").trim();
           return trimmedTitle.length > 0 && !DEFAULT_SESSION_TITLES.has(trimmedTitle);
         })(),
+      ...(hasLivePendingInput(managed) ? { awaitingInput: true } : {}),
       ...(managed.session.requestedCwd != null && String(managed.session.requestedCwd).trim().length
         ? { requestedCwd: String(managed.session.requestedCwd).trim() }
         : {}),
@@ -4985,8 +5007,9 @@ export function createAgentChatService(args: {
       }
       const laneId = String(record.laneId ?? "").trim();
       const model = String(record.model ?? "").trim();
-      const modelId = typeof record.modelId === "string" && record.modelId.trim().length
-        ? (getModelById(record.modelId.trim()) ? record.modelId.trim() : undefined)
+      const storedModelId = typeof record.modelId === "string" ? record.modelId.trim() : "";
+      const modelId = storedModelId.length
+        ? (getModelById(storedModelId) ?? resolveModelAlias(storedModelId))?.id
         : resolveModelIdFromStoredValue(model, provider);
       const sessionProfile = normalizeSessionProfile(record.sessionProfile);
       const reasoningEffort = normalizeReasoningEffort(record.reasoningEffort);
@@ -5088,6 +5111,7 @@ export function createAgentChatService(args: {
           ? { lastLaneDirectiveKey: record.lastLaneDirectiveKey.trim() }
           : {}),
         ...(record.manuallyNamed === true ? { manuallyNamed: true } : {}),
+        ...(record.awaitingInput === true ? { awaitingInput: true } : {}),
         ...(typeof record.requestedCwd === "string" && record.requestedCwd.trim().length
           ? { requestedCwd: record.requestedCwd.trim() }
           : {}),
@@ -5277,6 +5301,16 @@ export function createAgentChatService(args: {
 
     writeTranscript(managed, envelope);
     onEvent?.(envelope);
+    for (const subscriber of eventSubscribers) {
+      try {
+        subscriber(envelope);
+      } catch (error) {
+        logger.warn("agent_chat.event_subscriber_failed", {
+          sessionId: envelope.sessionId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
 
     // Passive proof capture: observe tool results for screenshots/artifacts.
     if (proofObserver && event.type === "tool_result") {
@@ -5484,6 +5518,7 @@ export function createAgentChatService(args: {
       },
       turnId: request.turnId ?? undefined,
     });
+    persistChatState(managed);
   };
 
   const emitPendingInputResolved = (
@@ -5494,17 +5529,18 @@ export function createAgentChatService(args: {
       turnId?: string | null;
     },
   ): void => {
+    const resolution: "cancelled" | "declined" | "accepted" = (() => {
+      if (args.decision === "cancel") return "cancelled";
+      if (args.decision === "decline") return "declined";
+      return "accepted";
+    })();
     emitChatEvent(managed, {
       type: "pending_input_resolved",
       itemId: args.itemId,
-      resolution:
-        args.decision === "cancel"
-          ? "cancelled"
-          : args.decision === "decline"
-            ? "declined"
-            : "accepted",
+      resolution,
       ...(typeof args.turnId === "string" && args.turnId.trim().length ? { turnId: args.turnId.trim() } : {}),
     });
+    persistChatState(managed);
   };
 
   const normalizePendingInputAnswers = (
@@ -5863,12 +5899,11 @@ export function createAgentChatService(args: {
 
     managed.summaryInFlight = true;
     try {
-      const result = await runOpenCodeTextPrompt({
-        directory: managed.laneWorktreePath,
-        title: "ADE session summary",
-        modelDescriptor: descriptor,
+      const result = await runSessionIntelligencePrompt({
+        cwd: managed.laneWorktreePath,
+        modelId: descriptor.id,
         prompt,
-        projectConfig: projectConfigService.get().effective,
+        taskType: "session_summary",
       });
       const text = result.text.trim();
       if (text.length) {
@@ -6147,6 +6182,8 @@ export function createAgentChatService(args: {
       attachments?: AgentChatFileRef[];
       resolvedAttachments?: ResolvedAgentChatFileRef[];
       laneDirectiveKey?: string | null;
+      providerSlashCommand?: boolean;
+      forceClaudeUserMessage?: boolean;
       onDispatched?: () => void;
     },
   ): Promise<void> => {
@@ -6180,8 +6217,11 @@ export function createAgentChatService(args: {
       type: "activity",
       ...initialTurnActivity(managed.session),
     });
-    const autoMemoryPlan = await buildAutoMemoryTurnPlan(managed, displayText, attachments);
-    const autoMemoryNotice = buildAutoMemorySystemNotice(autoMemoryPlan);
+    const providerSlashCommand = args.providerSlashCommand === true;
+    const autoMemoryPlan = providerSlashCommand
+      ? null
+      : await buildAutoMemoryTurnPlan(managed, displayText, attachments);
+    const autoMemoryNotice = autoMemoryPlan ? buildAutoMemorySystemNotice(autoMemoryPlan) : null;
 
     // Intercept /review command — route to review/start RPC instead of turn/start
     if (args.promptText.trim().startsWith("/review")) {
@@ -6199,7 +6239,7 @@ export function createAgentChatService(args: {
 
     const input: Array<Record<string, unknown>> = [];
 
-    const reconstructionContext = managed.pendingReconstructionContext?.trim() ?? "";
+    const reconstructionContext = providerSlashCommand ? "" : managed.pendingReconstructionContext?.trim() ?? "";
     if (reconstructionContext.length) {
       input.push({
         type: "text",
@@ -6211,7 +6251,7 @@ export function createAgentChatService(args: {
       });
       managed.pendingReconstructionContext = null;
     }
-    if (autoMemoryPlan.contextText.length) {
+    if (autoMemoryPlan?.contextText.length) {
       input.push({
         type: "text",
         text: autoMemoryPlan.contextText,
@@ -6381,6 +6421,8 @@ export function createAgentChatService(args: {
       attachments?: AgentChatFileRef[];
       resolvedAttachments?: ResolvedAgentChatFileRef[];
       laneDirectiveKey?: string | null;
+      providerSlashCommand?: boolean;
+      forceClaudeUserMessage?: boolean;
       onDispatched?: () => void;
     },
   ): Promise<void> => {
@@ -6534,12 +6576,15 @@ export function createAgentChatService(args: {
     runtime.resumeIdleWatchdog = () => {};
 
     try {
+      const providerSlashCommand = args.providerSlashCommand === true;
       const autoMemoryPrompt = args.displayText?.trim().length ? args.displayText.trim() : args.promptText;
-      const autoMemoryPlan = await buildAutoMemoryTurnPlan(managed, autoMemoryPrompt, attachments);
-      const autoMemoryNotice = buildAutoMemorySystemNotice(autoMemoryPlan);
+      const autoMemoryPlan = providerSlashCommand
+        ? null
+        : await buildAutoMemoryTurnPlan(managed, autoMemoryPrompt, attachments);
+      const autoMemoryNotice = autoMemoryPlan ? buildAutoMemorySystemNotice(autoMemoryPlan) : null;
       runtime.turnMemoryPolicyState = {
-        classification: autoMemoryPlan.classification,
-        orientationSatisfied: autoMemoryPlan.telemetry.searched,
+        classification: autoMemoryPlan?.classification ?? "none",
+        orientationSatisfied: autoMemoryPlan?.telemetry.searched ?? true,
         explicitSearchPerformed: false,
       };
       if (autoMemoryNotice) {
@@ -6552,17 +6597,19 @@ export function createAgentChatService(args: {
         });
       }
 
-      const reconstructionContext = managed.pendingReconstructionContext?.trim() ?? "";
-      const basePromptText = [
-        reconstructionContext.length
-          ? [
-              "System context (identity reconstruction, do not echo verbatim):",
-              reconstructionContext,
-            ].join("\n")
-          : null,
-        autoMemoryPlan.contextText.length ? autoMemoryPlan.contextText : null,
-        args.promptText,
-      ].filter((section): section is string => Boolean(section)).join("\n\n");
+      const reconstructionContext = providerSlashCommand ? "" : managed.pendingReconstructionContext?.trim() ?? "";
+      const basePromptText = providerSlashCommand
+        ? args.promptText
+        : [
+            reconstructionContext.length
+              ? [
+                  "System context (identity reconstruction, do not echo verbatim):",
+                  reconstructionContext,
+                ].join("\n")
+              : null,
+            autoMemoryPlan?.contextText.length ? autoMemoryPlan.contextText : null,
+            args.promptText,
+          ].filter((section): section is string => Boolean(section)).join("\n\n");
       if (reconstructionContext.length) {
         managed.pendingReconstructionContext = null;
         persistChatState(managed);
@@ -6599,6 +6646,7 @@ export function createAgentChatService(args: {
       const messageToSend = buildClaudeV2Message(basePromptText, resolvedAttachments, {
         baseDir: managed.laneWorktreePath,
         sessionId: runtime.sdkSessionId,
+        forceUserMessage: args.forceClaudeUserMessage,
       });
       const turnPermissionMode = resolveClaudeTurnPermissionMode(managed);
 
@@ -7394,6 +7442,8 @@ export function createAgentChatService(args: {
       attachments?: AgentChatFileRef[];
       resolvedAttachments?: ResolvedAgentChatFileRef[];
       laneDirectiveKey?: string | null;
+      providerSlashCommand?: boolean;
+      forceClaudeUserMessage?: boolean;
       onDispatched?: () => void;
     },
   ): Promise<void> => {
@@ -7461,13 +7511,16 @@ export function createAgentChatService(args: {
     };
 
     try {
+      const providerSlashCommand = args.providerSlashCommand === true;
       const autoMemoryPrompt = args.displayText?.trim().length ? args.displayText.trim() : args.promptText;
-      const autoMemoryPlan = await buildAutoMemoryTurnPlan(managed, autoMemoryPrompt, attachments);
-      const autoMemoryNotice = buildAutoMemorySystemNotice(autoMemoryPlan);
+      const autoMemoryPlan = providerSlashCommand
+        ? null
+        : await buildAutoMemoryTurnPlan(managed, autoMemoryPrompt, attachments);
+      const autoMemoryNotice = autoMemoryPlan ? buildAutoMemorySystemNotice(autoMemoryPlan) : null;
       const turnMemoryPolicyState: TurnMemoryPolicyState | undefined = memoryService && projectId
         ? {
-            classification: autoMemoryPlan.classification,
-            orientationSatisfied: autoMemoryPlan.telemetry.searched,
+            classification: autoMemoryPlan?.classification ?? "none",
+            orientationSatisfied: autoMemoryPlan?.telemetry.searched ?? true,
             explicitSearchPerformed: false,
           }
         : undefined;
@@ -7484,15 +7537,17 @@ export function createAgentChatService(args: {
       const attachmentHint = attachments.length
         ? `\n\nAttached context:\n${attachments.map((file) => `- ${file.type}: ${file.path}`).join("\n")}`
         : "";
-      const userContent = [
-        managed.pendingReconstructionContext?.trim().length
-          ? "System context (ADE continuity, do not echo verbatim):\n" + managed.pendingReconstructionContext.trim()
-          : null,
-        autoMemoryPlan.contextText.length ? autoMemoryPlan.contextText : null,
-        `${args.promptText}${attachmentHint}`,
-      ].filter((section): section is string => Boolean(section)).join("\n\n");
+      const userContent = providerSlashCommand
+        ? args.promptText
+        : [
+            managed.pendingReconstructionContext?.trim().length
+              ? "System context (ADE continuity, do not echo verbatim):\n" + managed.pendingReconstructionContext.trim()
+              : null,
+            autoMemoryPlan?.contextText.length ? autoMemoryPlan.contextText : null,
+            `${args.promptText}${attachmentHint}`,
+          ].filter((section): section is string => Boolean(section)).join("\n\n");
 
-      managed.pendingReconstructionContext = null;
+      if (!providerSlashCommand) managed.pendingReconstructionContext = null;
 
       const abortController = new AbortController();
       runtime.eventAbortController = abortController;
@@ -9854,7 +9909,7 @@ export function createAgentChatService(args: {
         opts.thinking = { type: "adaptive" };
       }
     }
-    const model = opts.model ?? resolveClaudeCliModel(managed.session.model) ?? "claude-sonnet-4-6";
+    const model = opts.model ?? resolveClaudeCliModel(managed.session.model) ?? DEFAULT_CLAUDE_MODEL;
     return { ...opts, model };
   };
 
@@ -9966,7 +10021,8 @@ export function createAgentChatService(args: {
     runtime: ClaudeRuntime,
     commands: Array<string | { name?: string; description?: string; argumentHint?: string }>,
   ): void => {
-    runtime.slashCommands = commands
+    const existing = new Map(runtime.slashCommands.map((command) => [command.name, command]));
+    for (const command of commands
       .map((command) => {
         if (typeof command === "string") {
           const normalized = command.trim();
@@ -9984,7 +10040,13 @@ export function createAgentChatService(args: {
           argumentHint: typeof command.argumentHint === "string" ? command.argumentHint : undefined,
         };
       })
-      .filter((command): command is { name: string; description: string; argumentHint?: string } => Boolean(command));
+      .filter((command): command is { name: string; description: string; argumentHint?: string } => Boolean(command))) {
+      existing.set(command.name, {
+        ...existing.get(command.name),
+        ...command,
+      });
+    }
+    runtime.slashCommands = [...existing.values()].sort((a, b) => a.name.localeCompare(b.name));
   };
 
   const deliverNextQueuedSteer = async (
@@ -10511,9 +10573,9 @@ export function createAgentChatService(args: {
             ? DEFAULT_CURSOR_MODEL
             : "");
     // Resolve modelId from registry if provided
-    const resolvedModelId = modelId && getModelById(modelId)
-      ? modelId
-      : resolveModelIdFromStoredValue(normalizedInputModel, provider);
+    const requestedModelDescriptor = modelId ? getModelById(modelId) ?? resolveModelAlias(modelId) : undefined;
+    const resolvedModelId = requestedModelDescriptor?.id
+      ?? resolveModelIdFromStoredValue(normalizedInputModel, provider);
 
     if (provider === "opencode" && !resolvedModelId && !modelId?.endsWith("/auto")) {
       throw new Error("OpenCode chat requires a known model ID. Select a model from the registry.");
@@ -10523,7 +10585,7 @@ export function createAgentChatService(args: {
       throw new Error("Cursor chat requires a known model. Pick a Cursor model from the model list.");
     }
 
-    const resolvedDescriptor = resolvedModelId ? getModelById(resolvedModelId) : undefined;
+    const resolvedDescriptor = requestedModelDescriptor ?? (resolvedModelId ? getModelById(resolvedModelId) : undefined);
     if (resolvedModelId && !resolvedDescriptor) {
       throw new Error(`Unknown model '${resolvedModelId}'.`);
     }
@@ -10845,7 +10907,8 @@ export function createAgentChatService(args: {
   }: AgentChatSendArgs): PreparedSendMessage | null => {
     const trimmed = text.trim();
     if (!trimmed.length) return null;
-    const slashCommand = extractSlashCommand(trimmed);
+    const slashCommand = extractLeadingSlashCommand(trimmed);
+    const providerSlashCommand = isProviderSlashCommandInput(trimmed);
     const visibleText = displayText?.trim().length ? displayText.trim() : trimmed;
 
     const managed = ensureManagedSession(sessionId);
@@ -10915,7 +10978,7 @@ export function createAgentChatService(args: {
     }
     const laneDirectiveKey = executionContext.laneDirectiveKey;
     const shouldInjectLaneDirective = laneDirectiveKey != null && managed.lastLaneDirectiveKey !== laneDirectiveKey;
-    const promptText = isLiteralSlashCommand(trimmed)
+    const promptText = providerSlashCommand
       ? trimmed
       : composeLaunchDirectives(trimmed, [
           shouldInjectLaneDirective
@@ -10946,7 +11009,9 @@ export function createAgentChatService(args: {
       resolvedAttachments,
       reasoningEffort,
       interactionMode: managed.session.provider === "claude" ? managed.session.interactionMode ?? "default" : null,
-      laneDirectiveKey: isLiteralSlashCommand(trimmed) ? null : shouldInjectLaneDirective ? laneDirectiveKey : null,
+      laneDirectiveKey: providerSlashCommand ? null : shouldInjectLaneDirective ? laneDirectiveKey : null,
+      providerSlashCommand,
+      forceClaudeUserMessage: managed.session.provider === "claude" && !providerSlashCommand && slashCommand != null,
     };
   };
 
@@ -11270,7 +11335,7 @@ export function createAgentChatService(args: {
           configId: option.id,
           ...(typeof desiredValue === "boolean"
             ? { type: "boolean" as const, value: desiredValue }
-            : { value: desiredValue }),
+            : { value: typeof desiredValue === "number" ? String(desiredValue) : desiredValue }),
         });
         applyCursorConfigSnapshot(managed, runtime, readCursorAcpConfigSnapshot(response.configOptions));
       } catch (error) {
@@ -11901,6 +11966,8 @@ export function createAgentChatService(args: {
       resolvedAttachments,
       reasoningEffort,
       laneDirectiveKey,
+      providerSlashCommand,
+      forceClaudeUserMessage,
       onDispatched,
       turnId,
       optimisticCursorTurnStart,
@@ -11935,6 +12002,7 @@ export function createAgentChatService(args: {
         attachments,
         resolvedAttachments,
         laneDirectiveKey,
+        providerSlashCommand,
         onDispatched,
       });
       return;
@@ -12048,6 +12116,7 @@ export function createAgentChatService(args: {
         attachments,
         resolvedAttachments,
         laneDirectiveKey,
+        providerSlashCommand,
         onDispatched,
       });
       return;
@@ -12065,6 +12134,8 @@ export function createAgentChatService(args: {
       attachments,
       resolvedAttachments,
       laneDirectiveKey,
+      providerSlashCommand,
+      forceClaudeUserMessage,
       onDispatched,
     });
   };
@@ -12646,6 +12717,9 @@ export function createAgentChatService(args: {
       ...(liveSession?.cursorModeId !== undefined || persisted?.cursorModeId !== undefined
         ? { cursorModeId: liveSession?.cursorModeId ?? persisted?.cursorModeId ?? null }
         : {}),
+      ...(liveSession?.cursorConfigValues || persisted?.cursorConfigValues
+        ? { cursorConfigValues: liveSession?.cursorConfigValues ?? persisted?.cursorConfigValues }
+        : {}),
       ...(liveSession?.permissionMode || persisted?.permissionMode
         ? { permissionMode: liveSession?.permissionMode ?? persisted?.permissionMode }
         : {}),
@@ -12667,9 +12741,12 @@ export function createAgentChatService(args: {
       lastActivityAt: liveSession?.lastActivityAt ?? persisted?.updatedAt ?? row.endedAt ?? row.startedAt,
       lastOutputPreview: row.lastOutputPreview,
       summary: row.summary ?? null,
-      ...(hasLivePendingInput(liveManaged) ? { awaitingInput: true } : {}),
+      ...((hasLivePendingInput(liveManaged) || persisted?.awaitingInput === true) ? { awaitingInput: true } : {}),
       ...(liveSession?.threadId || persisted?.threadId
         ? { threadId: liveSession?.threadId ?? persisted?.threadId }
+        : {}),
+      ...(liveSession?.requestedCwd != null || persisted?.requestedCwd != null
+        ? { requestedCwd: liveSession?.requestedCwd ?? persisted?.requestedCwd ?? null }
         : {})
     } satisfies AgentChatSessionSummary;
   };
@@ -13809,10 +13886,9 @@ export function createAgentChatService(args: {
     if (!managed) return [];
     const provider = managed.session.provider;
 
-    // Local commands available to all providers
-    const localCommands: AgentChatSlashCommand[] = [
-      { name: "/clear", description: "Clear chat history", source: "local" },
-    ];
+    const localCommands: AgentChatSlashCommand[] = provider === "claude"
+      ? []
+      : [{ name: "/clear", description: "Clear chat history", source: "local" }];
     if (provider === "claude") {
       localCommands.push({
         name: "/login",
@@ -13821,18 +13897,26 @@ export function createAgentChatService(args: {
       });
     }
 
-    // Claude SDK commands
-    if (provider === "claude" && managed.runtime?.kind === "claude") {
-      const rt = managed.runtime;
-      const sdkCmds: AgentChatSlashCommand[] = rt.slashCommands.map((cmd: { name: string; description: string; argumentHint?: string }) => ({
+    // Claude SDK commands plus filesystem-backed Claude Code commands/skills.
+    if (provider === "claude") {
+      const sdkCommands = managed.runtime?.kind === "claude" ? managed.runtime.slashCommands : [];
+      const sdkCmds: AgentChatSlashCommand[] = [
+        ...sdkCommands,
+        ...discoverClaudeSlashCommands(managed.laneWorktreePath),
+      ].map((cmd: { name: string; description: string; argumentHint?: string }) => ({
         name: cmd.name,
         description: cmd.description,
         argumentHint: cmd.argumentHint,
         source: "sdk" as const,
       }));
-      // Merge: SDK commands first, then local commands that don't conflict
-      const sdkNames = new Set(sdkCmds.map((c: AgentChatSlashCommand) => c.name));
-      return [...sdkCmds, ...localCommands.filter((c) => !sdkNames.has(c.name))];
+      const merged = new Map<string, AgentChatSlashCommand>();
+      for (const command of sdkCmds) {
+        merged.set(command.name, command);
+      }
+      for (const command of localCommands) {
+        merged.set(command.name, command);
+      }
+      return [...merged.values()];
     }
 
     // Codex SDK commands
@@ -14176,6 +14260,12 @@ export function createAgentChatService(args: {
     listSubagents,
     getSessionCapabilities,
     previewSessionToolNames,
+    subscribeToEvents(callback: (event: AgentChatEventEnvelope) => void) {
+      eventSubscribers.add(callback);
+      return () => {
+        eventSubscribers.delete(callback);
+      };
+    },
     /** Clean up temp attachment files older than 7 days. Call on app startup. */
     cleanupStaleAttachments() {
       try {

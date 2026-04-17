@@ -97,8 +97,6 @@ export type SyncDesktopConnectionDraft = {
   authKind?: "bootstrap" | "paired";
   pairedDeviceId?: string | null;
   lastRemoteDbVersion?: number;
-  // Legacy draft field name retained to match the desktop/iOS saved contract.
-  lastBrainDeviceId?: string | null;
 };
 
 export type SyncClientStatus = {
@@ -159,7 +157,8 @@ export type SyncRoleSnapshot = {
   currentBrain: SyncDeviceRecord | null;
   clusterState: SyncClusterState | null;
   bootstrapToken: string | null;
-  pairingSession: SyncPairingSession | null;
+  pairingPin: string | null;
+  pairingPinConfigured: boolean;
   pairingConnectInfo: SyncPairingConnectInfo | null;
   connectedPeers: SyncPeerConnectionState[];
   client: SyncClientStatus;
@@ -176,10 +175,13 @@ export type SyncStatusEventPayload = {
 export type SyncFeatureFlags = {
   fileAccess: true;
   terminalStreaming: true;
+  chatStreaming: {
+    enabled: true;
+  };
   bootstrapAuth: true;
   pairingAuth: {
     enabled: true;
-    codeTtlMs: number;
+    pinDigits: 6;
   };
   commandRouting: {
     mode: "allowlisted";
@@ -208,17 +210,11 @@ export type SyncHelloOkPayload = {
 };
 
 export type SyncHelloErrorPayload = {
-  code: "auth_failed" | "invalid_hello" | "already_authenticated" | "unsupported_version";
+  code: "auth_failed" | "invalid_hello";
   message: string;
 };
 
-export type SyncPairingSession = {
-  code: string;
-  issuedAt: string;
-  expiresAt: string;
-};
-
-export type SyncAddressCandidateKind = "lan" | "saved" | "tailscale";
+export type SyncAddressCandidateKind = "lan" | "saved" | "tailscale" | "loopback";
 
 export type SyncAddressCandidate = {
   host: string;
@@ -226,7 +222,7 @@ export type SyncAddressCandidate = {
 };
 
 export type SyncPairingQrPayload = {
-  version: 1;
+  version: 2;
   hostIdentity: {
     deviceId: string;
     siteId: string;
@@ -235,16 +231,12 @@ export type SyncPairingQrPayload = {
     deviceType: SyncPeerDeviceType;
   };
   port: number;
-  pairingCode: string;
-  expiresAt: string;
   addressCandidates: SyncAddressCandidate[];
 };
 
 export type SyncPairingConnectInfo = {
   hostIdentity: SyncPairingQrPayload["hostIdentity"];
   port: number;
-  pairingCode: string;
-  expiresAt: string;
   addressCandidates: SyncAddressCandidate[];
   qrPayload: SyncPairingQrPayload;
   qrPayloadText: string;
@@ -260,7 +252,10 @@ export type SyncPairingResultPayload = {
   deviceId?: string;
   secret?: string;
   error?: {
-    code: "invalid_code" | "expired_code" | "pairing_unavailable" | "pairing_failed";
+    code:
+      | "invalid_pin"
+      | "pin_not_set"
+      | "pairing_failed";
     message: string;
   };
 };
@@ -387,11 +382,14 @@ export type SyncRunQuickCommandArgs = {
 
 export type SyncRemoteCommandAction =
   | "lanes.list"
+  | "lanes.presence.announce"
+  | "lanes.presence.release"
   | "lanes.refreshSnapshots"
   | "lanes.getDetail"
   | "lanes.create"
   | "lanes.createChild"
   | "lanes.createFromUnstaged"
+  | "lanes.importBranch"
   | "lanes.attach"
   | "lanes.adoptAttached"
   | "lanes.rename"
@@ -416,8 +414,14 @@ export type SyncRemoteCommandAction =
   | "lanes.getEnvStatus"
   | "lanes.applyTemplate"
   | "work.listSessions"
+  | "work.updateSessionMeta"
   | "work.runQuickCommand"
   | "work.closeSession"
+  | "processes.listDefinitions"
+  | "processes.listRuntime"
+  | "processes.start"
+  | "processes.stop"
+  | "processes.kill"
   | "chat.listSessions"
   | "chat.getSummary"
   | "chat.getTranscript"
@@ -425,6 +429,8 @@ export type SyncRemoteCommandAction =
   | "chat.send"
   | "chat.interrupt"
   | "chat.steer"
+  | "chat.cancelSteer"
+  | "chat.editSteer"
   | "chat.approve"
   | "chat.respondToInput"
   | "chat.resume"
@@ -444,6 +450,7 @@ export type SyncRemoteCommandAction =
   | "git.generateCommitMessage"
   | "git.listRecentCommits"
   | "git.listCommitFiles"
+  | "git.getFileHistory"
   | "git.getCommitMessage"
   | "git.revertCommit"
   | "git.cherryPickCommit"
@@ -473,11 +480,56 @@ export type SyncRemoteCommandAction =
   | "prs.getReviews"
   | "prs.getComments"
   | "prs.getFiles"
+  | "prs.getGitHubSnapshot"
+  | "prs.getReviewThreads"
+  | "prs.getActionRuns"
+  | "prs.getActivity"
+  | "prs.getDeployments"
   | "prs.createFromLane"
+  | "prs.linkToLane"
+  | "prs.draftDescription"
   | "prs.land"
   | "prs.close"
   | "prs.reopen"
-  | "prs.requestReviewers";
+  | "prs.requestReviewers"
+  | "prs.rerunChecks"
+  | "prs.addComment"
+  | "prs.updateTitle"
+  | "prs.updateBody"
+  | "prs.setLabels"
+  | "prs.submitReview"
+  | "prs.replyToReviewThread"
+  | "prs.setReviewThreadResolved"
+  | "prs.reactToComment"
+  | "prs.aiReviewSummary"
+  | "prs.listIntegrationWorkflows"
+  | "prs.updateIntegrationProposal"
+  | "prs.deleteIntegrationProposal"
+  | "prs.dismissIntegrationCleanup"
+  | "prs.cleanupIntegrationWorkflow"
+  | "prs.createIntegrationLaneForProposal"
+  | "prs.startIntegrationResolution"
+  | "prs.recheckIntegrationStep"
+  | "prs.landQueueNext"
+  | "prs.pauseQueueAutomation"
+  | "prs.resumeQueueAutomation"
+  | "prs.cancelQueueAutomation"
+  | "prs.reorderQueue"
+  | "prs.issueInventory.sync"
+  | "prs.issueInventory.get"
+  | "prs.issueInventory.getNew"
+  | "prs.issueInventory.markFixed"
+  | "prs.issueInventory.markDismissed"
+  | "prs.issueInventory.markEscalated"
+  | "prs.issueInventory.getConvergence"
+  | "prs.issueInventory.reset"
+  | "prs.convergenceState.get"
+  | "prs.convergenceState.save"
+  | "prs.convergenceState.delete"
+  | "prs.pipelineSettings.get"
+  | "prs.pipelineSettings.save"
+  | "prs.pipelineSettings.delete"
+  | "prs.getMobileSnapshot";
 
 export type SyncRemoteCommandPolicy = {
   viewerAllowed: boolean;

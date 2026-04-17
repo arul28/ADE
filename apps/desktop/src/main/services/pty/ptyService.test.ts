@@ -1215,14 +1215,24 @@ describe("ptyService", () => {
       const { service, mockPty, broadcastData } = createHarness();
       const { ptyId, sessionId } = await service.create({ laneId: "lane-1", title: "t", cols: 80, rows: 24 });
       mockPty._emitter.emit("data", "hello world");
-      expect(broadcastData).toHaveBeenCalledWith({ ptyId, sessionId, data: "hello world" });
+      expect(broadcastData).toHaveBeenCalledWith({
+        ptyId,
+        sessionId,
+        projectRoot: "/tmp/test-project",
+        data: "hello world",
+      });
     });
 
     it("closes entry and broadcasts exit when PTY exits", async () => {
       const { service, mockPty, broadcastExit, sessionService } = createHarness();
       const { ptyId, sessionId } = await service.create({ laneId: "lane-1", title: "t", cols: 80, rows: 24 });
       mockPty._emitter.emit("exit", { exitCode: 0 });
-      expect(broadcastExit).toHaveBeenCalledWith({ ptyId, sessionId, exitCode: 0 });
+      expect(broadcastExit).toHaveBeenCalledWith({
+        ptyId,
+        sessionId,
+        projectRoot: "/tmp/test-project",
+        exitCode: 0,
+      });
       expect(sessionService.end).toHaveBeenCalledWith(
         expect.objectContaining({ sessionId, exitCode: 0, status: "completed" }),
       );

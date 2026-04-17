@@ -1362,3 +1362,165 @@ export type LaunchPrIssueResolutionFromThreadArgs = {
 };
 
 export type LaunchPrIssueResolutionFromThreadResult = PrIssueResolutionStartResult;
+
+// ---------------------------------------------------------------------------
+// Mobile PR snapshot (additive — consumed by iOS PRs tab)
+//
+// All mobile-focused fields are collected into a single snapshot so the
+// iOS PRs surface can render stack visibility, create-PR eligibility,
+// workflow cards (queue/integration/rebase), and per-PR action gates
+// from one command. Desktop consumers are not affected; existing PR
+// contracts remain the source of truth.
+// ---------------------------------------------------------------------------
+
+/** Role of a PR member inside a stack (lane chain). */
+export type PrStackMemberRole = "root" | "middle" | "leaf";
+
+/** Single lane/PR inside a PR stack. */
+export type PrStackMember = {
+  laneId: string;
+  laneName: string;
+  parentLaneId: string | null;
+  depth: number;
+  role: PrStackMemberRole;
+  dirty: boolean;
+  /** Null when the lane has no PR yet. */
+  prId: string | null;
+  prNumber: number | null;
+  prState: PrState | null;
+  prTitle: string | null;
+  baseBranch: string | null;
+  headBranch: string | null;
+  checksStatus: PrChecksStatus | null;
+  reviewStatus: PrReviewStatus | null;
+};
+
+/** An ordered lane chain that contains at least one PR. */
+export type PrStackInfo = {
+  stackId: string;
+  rootLaneId: string;
+  members: PrStackMember[];
+  size: number;
+  prCount: number;
+};
+
+/** Per-PR action availability. Actions are live-only unless otherwise noted. */
+export type PrActionCapabilities = {
+  prId: string;
+  canOpenInGithub: boolean;
+  canMerge: boolean;
+  canClose: boolean;
+  canReopen: boolean;
+  canRequestReviewers: boolean;
+  canRerunChecks: boolean;
+  canComment: boolean;
+  canUpdateDescription: boolean;
+  canDelete: boolean;
+  /** Reason the PR cannot be merged right now. Null when merge is allowed. */
+  mergeBlockedReason: string | null;
+  /** True when any live-only action is offered — lets mobile gate in offline mode. */
+  requiresLive: boolean;
+};
+
+/** A single lane eligible for PR creation from the mobile "Create PR" surface. */
+export type PrCreateLaneEligibility = {
+  laneId: string;
+  laneName: string;
+  parentLaneId: string | null;
+  repoOwner: string | null;
+  repoName: string | null;
+  defaultBaseBranch: string;
+  defaultTitle: string;
+  dirty: boolean;
+  hasExistingPr: boolean;
+  canCreate: boolean;
+  /** Why creation is not allowed. Null when canCreate is true. */
+  blockedReason: string | null;
+};
+
+/** Mobile create-PR capabilities for the whole project. */
+export type PrCreateCapabilities = {
+  /** True when at least one lane is eligible right now. */
+  canCreateAny: boolean;
+  defaultBaseBranch: string | null;
+  lanes: PrCreateLaneEligibility[];
+};
+
+/** Workflow card rendered on the mobile PRs surface. */
+export type PrWorkflowCardKind = "queue" | "integration" | "rebase";
+
+export type PrQueueWorkflowCard = {
+  kind: "queue";
+  id: string;
+  queueId: string;
+  groupId: string;
+  groupName: string | null;
+  targetBranch: string | null;
+  state: QueueState;
+  activePrId: string | null;
+  currentPosition: number;
+  totalEntries: number;
+  entries: QueueLandingEntry[];
+  waitReason: QueueWaitReason | null;
+  lastError: string | null;
+  updatedAt: string;
+};
+
+export type PrIntegrationWorkflowCard = {
+  kind: "integration";
+  id: string;
+  proposalId: string;
+  title: string | null;
+  baseBranch: string;
+  overallOutcome: "clean" | "conflict" | "blocked";
+  status: "proposed" | "committed";
+  laneCount: number;
+  conflictLaneCount: number;
+  lanes: Array<{
+    laneId: string;
+    laneName: string;
+    outcome: "clean" | "conflict" | "blocked";
+  }>;
+  workflowDisplayState: IntegrationWorkflowDisplayState;
+  cleanupState: IntegrationCleanupState;
+  linkedPrId: string | null;
+  integrationLaneId: string | null;
+  createdAt: string;
+};
+
+export type PrRebaseWorkflowCard = {
+  kind: "rebase";
+  id: string;
+  laneId: string;
+  laneName: string;
+  baseBranch: string;
+  behindBy: number;
+  conflictPredicted: boolean;
+  prId: string | null;
+  prNumber: number | null;
+  /** Null when the suggestion has not been dismissed. */
+  dismissedAt: string | null;
+  /** Null when the suggestion has not been deferred. */
+  deferredUntil: string | null;
+};
+
+export type PrWorkflowCard =
+  | PrQueueWorkflowCard
+  | PrIntegrationWorkflowCard
+  | PrRebaseWorkflowCard;
+
+/**
+ * One-shot mobile snapshot that aggregates the data the iOS PRs tab
+ * needs to render list, detail, workflow cards, stack visibility, and
+ * per-PR capability gates in a single payload.
+ */
+export type PrMobileSnapshot = {
+  generatedAt: string;
+  prs: PrSummary[];
+  stacks: PrStackInfo[];
+  capabilities: Record<string, PrActionCapabilities>;
+  createCapabilities: PrCreateCapabilities;
+  workflowCards: PrWorkflowCard[];
+  /** Mobile clients should surface a "host offline" banner when this is false. */
+  live: boolean;
+};

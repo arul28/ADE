@@ -78,11 +78,11 @@ function ThemeSwatch({
         border: selected
           ? `1px solid ${COLORS.accent}`
           : `1px solid ${hovered ? COLORS.outlineBorder : COLORS.border}`,
-        borderLeft: selected ? `3px solid ${COLORS.accent}` : undefined,
+        boxShadow: selected ? `inset 3px 0 0 ${COLORS.accent}` : "none",
         borderRadius: 0,
         cursor: "pointer",
         position: "relative",
-        transition: "border-color 150ms, background 150ms",
+        transition: "border-color 150ms, background 150ms, box-shadow 150ms",
       }}
     >
       <div

@@ -1565,12 +1565,14 @@ app.whenReady().then(async () => {
       getLaneRuntimeEnv,
       logger,
       broadcastData: (ev) => {
-        emitProjectEvent(projectRoot, IPC.ptyData, ev);
-        syncServiceRef?.handlePtyData(ev);
+        broadcast(IPC.ptyData, ev);
+        const { projectRoot: _projectRoot, ...syncEvent } = ev;
+        syncServiceRef?.handlePtyData(syncEvent);
       },
       broadcastExit: (ev) => {
-        emitProjectEvent(projectRoot, IPC.ptyExit, ev);
-        syncServiceRef?.handlePtyExit(ev);
+        broadcast(IPC.ptyExit, ev);
+        const { projectRoot: _projectRoot, ...syncEvent } = ev;
+        syncServiceRef?.handlePtyExit(syncEvent);
       },
       onSessionEnded: onTrackedSessionEnded,
       onSessionRuntimeSignal: (signal) => {
@@ -1922,6 +1924,7 @@ app.whenReady().then(async () => {
       laneService,
       sessionService,
       projectConfigService,
+      aiIntegrationService,
       ctoStateService,
       logger,
       appVersion: app.getVersion(),
@@ -2345,6 +2348,8 @@ app.whenReady().then(async () => {
       diffService,
       conflictService,
       prService,
+      issueInventoryService,
+      queueLandingService,
       sessionService,
       ptyService,
       projectConfigService,
@@ -2402,6 +2407,7 @@ app.whenReady().then(async () => {
       orchestratorService,
       prService,
       computerUseArtifactBrokerService,
+      logger,
     });
     logger.info("project.init_stage", {
       projectRoot,
@@ -3235,7 +3241,7 @@ app.whenReady().then(async () => {
       // ignore
     }
     try {
-      ctx.workerHeartbeatService?.dispose();
+      await ctx.workerHeartbeatService?.dispose();
     } catch {
       // ignore
     }

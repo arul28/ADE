@@ -54,6 +54,16 @@
 - Validation commands are documented in the "Validation" section above.
 - The desktop test suite (265 test files) is large; CI shards it. For local iteration, run targeted tests (e.g. `npm --prefix apps/desktop run test:unit`) or a single file rather than the full suite.
 
+### Inspecting the local Electron desktop app with Codex Computer Use on macOS
+
+- To inspect ADE desktop parity locally with Codex Computer Use, launch the dev app from the worktree with `npm run dev` in `apps/desktop`.
+- Treat the Electron process spawned by that command as the source of truth, even if the window title or bundle branding says "ADE". In Codex Computer Use, call `list_apps` / `get_app_state` and prefer the `Electron` app entry (`App=com.github.Electron`) over the installed `ADE` app entry (`App=com.ade.desktop`).
+- Confirm the Codex Computer Use app state shows an ADE window whose HTML content URL contains `localhost:5173`. That is the local dev Electron surface.
+- The first `Electron` window exposed to Codex Computer Use may be DevTools (`Developer Tools - http://localhost:5173/`). Press `Cmd+\`` in the `Electron` app to cycle to the main ADE window before interacting with the app.
+- On first launch, the dev app may open to `localhost:5173/#/project` with no project selected. Open the recent `ADE /Users/admin/Projects/ADE` project inside that dev window before comparing desktop parity.
+- Do not use Safari as the desktop parity reference. ADE desktop parity should be checked against the Electron app surface unless the task explicitly asks for renderer-only Vite behavior.
+- Keep the dev terminal logs visible while inspecting. Useful confirmation lines include `dev launcher using http://localhost:5173`, `DevTools listening on ws://127.0.0.1:9222`, `window.loading_url`, and `renderer.route_change`.
+
 ### Running the Electron desktop app on Linux
 
 - Set `ADE_DISABLE_HARDWARE_ACCEL=1` — the VM has no real GPU, and without this the app crashes on `WebGL1 blocklisted`.

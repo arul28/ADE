@@ -710,7 +710,7 @@ export function createLaneService({
   /** Look up the active (non-archived) primary lane. */
   const getActivePrimaryLane = (): { id: string; branch_ref: string } | undefined => {
     return db.get<{ id: string; branch_ref: string }>(
-      "select id, branch_ref from lanes where project_id = ? and lane_type = 'primary' and status != 'archived' limit 1",
+      "select id, branch_ref from lanes where project_id = ? and lane_type = 'primary' and status != 'archived' order by created_at asc, id asc limit 1",
       [projectId],
     ) ?? undefined;
   };

@@ -283,7 +283,7 @@ describe("resolveCallTypeModel", () => {
 
 describe("modelConfigToServiceModel", () => {
   it("returns the modelId when it is a non-empty string", () => {
-    expect(modelConfigToServiceModel({ modelId: "anthropic/claude-opus-4-6" })).toBe("anthropic/claude-opus-4-6");
+    expect(modelConfigToServiceModel({ modelId: "anthropic/claude-opus-4-7" })).toBe("anthropic/claude-opus-4-7");
   });
 
   it("falls back to default codex model when modelId is empty and provider is codex", () => {

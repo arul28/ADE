@@ -17,10 +17,6 @@ const { createSyncHostServiceMock } = vi.hoisted(() => ({
     getBootstrapToken() {
       return "test-bootstrap-token";
     },
-    getPairingSession() {
-      const expires = new Date(Date.now() + 600_000).toISOString();
-      return { code: "TEST1234", expiresAt: expires, pairedDevices: [] };
-    },
     revokePairedDevice() {},
     getPeerStates() {
       return [];
@@ -386,34 +382,43 @@ describe.skipIf(!isCrsqliteAvailable())("syncService", () => {
 
     const status = await service.getStatus();
     expect(status.mode === "brain" || status.mode === "standalone").toBe(true);
-    expect(status.pairingSession).toBeTruthy();
     expect(status.pairingConnectInfo).toBeTruthy();
     const addressCandidates =
       status.pairingConnectInfo?.addressCandidates ?? [];
-    const savedCandidateIndex = addressCandidates.findIndex(
-      (entry) => entry.kind === "saved" && entry.host === "192.168.0.20",
+    const loopbackCandidateIndex = addressCandidates.findIndex(
+      (entry) => entry.kind === "loopback" && entry.host === "127.0.0.1",
     );
-    const tailscaleCandidateIndex = addressCandidates.findIndex(
-      (entry) => entry.kind === "tailscale" && entry.host === "100.100.12.4",
+    expect(addressCandidates.length).toBeGreaterThan(0);
+    expect(loopbackCandidateIndex).toBe(addressCandidates.length - 1);
+    expect(addressCandidates.slice(0, Math.max(loopbackCandidateIndex, 0)).every((entry) => entry.kind !== "loopback")).toBe(true);
+
+    db.run(
+      `update devices
+         set last_host = ?,
+             updated_at = ?
+       where device_id = ?`,
+      [
+        "192.168.0.8",
+        "2026-03-17T00:05:00.000Z",
+        localDeviceId,
+      ],
     );
-    expect(savedCandidateIndex).toBeGreaterThanOrEqual(0);
-    expect(tailscaleCandidateIndex).toBeGreaterThan(savedCandidateIndex);
-    expect(
-      addressCandidates
-        .slice(0, Math.max(savedCandidateIndex, 0))
-        .every((entry) => entry.kind === "lan"),
-    ).toBe(true);
+
+    const refreshedStatus = await service.getStatus();
+    const refreshedCandidates = refreshedStatus.pairingConnectInfo?.addressCandidates ?? [];
+    expect(refreshedCandidates[0]?.kind).toBe("saved");
+    expect(refreshedCandidates[0]?.host).toBe(refreshedStatus.localDevice.lastHost);
 
     const encodedPayload =
       status.pairingConnectInfo?.qrPayloadText.split("payload=")[1] ?? "";
     const parsedPayload = JSON.parse(decodeURIComponent(encodedPayload)) as {
+      version: number;
       hostIdentity: { deviceId: string };
-      pairingCode: string;
-      expiresAt: string;
+      addressCandidates: Array<{ host: string; kind: string }>;
     };
+    expect(parsedPayload.version).toBe(2);
     expect(parsedPayload.hostIdentity.deviceId).toBe(localDeviceId);
-    expect(parsedPayload.pairingCode).toBe(status.pairingSession?.code);
-    expect(parsedPayload.expiresAt).toBe(status.pairingSession?.expiresAt);
+    expect(parsedPayload.addressCandidates.some((c) => c.kind === "loopback" && c.host === "127.0.0.1")).toBe(true);
   }, 30_000);
 
   it("does not start the sync host or expose pairing details when host startup is disabled", async () => {
@@ -468,8 +473,12 @@ describe.skipIf(!isCrsqliteAvailable())("syncService", () => {
     expect(status.role).toBe("brain");
     expect(status.mode).toBe("standalone");
     expect(status.bootstrapToken).toBeNull();
-    expect(status.pairingSession).toBeNull();
+    expect(status.pairingPin).toBeNull();
     expect(status.pairingConnectInfo).toBeNull();
+    await expect(service.setPin("123456")).rejects.toThrow(
+      "Phone pairing is unavailable because the sync host is disabled for this ADE process.",
+    );
+    expect(service.getPin()).toBeNull();
   }, 30_000);
 
   it("retries the sync host on bind conflicts so another project can still initialize", async () => {
@@ -498,10 +507,6 @@ describe.skipIf(!isCrsqliteAvailable())("syncService", () => {
         },
         getBootstrapToken() {
           return "test-bootstrap-token";
-        },
-        getPairingSession() {
-          const expires = new Date(Date.now() + 600_000).toISOString();
-          return { code: "TEST1234", expiresAt: expires, pairedDevices: [] };
         },
         revokePairedDevice() {},
         getPeerStates() {

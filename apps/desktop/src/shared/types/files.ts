@@ -9,6 +9,7 @@ export type FilesWorkspace = {
   name: string;
   rootPath: string;
   isReadOnlyByDefault: boolean;
+  mobileReadOnly?: boolean;
 };
 
 export type FilesListWorkspacesArgs = {

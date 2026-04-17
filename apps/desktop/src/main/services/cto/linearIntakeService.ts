@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import type { LinearWorkflowConfig, NormalizedLinearIssue } from "../../../shared/types";
 import type { AdeDb } from "../state/kvDb";
 import type { IssueTracker } from "./issueTracker";
+import { safeJsonParse } from "../shared/utils";
 
 function issueHash(issue: NormalizedLinearIssue): string {
   return createHash("sha256")
@@ -65,7 +66,7 @@ export function createLinearIntakeService(args: {
         [args.projectId, issue.id]
       );
       const currentHash = issueHash(issue);
-      const previousState = existing?.payload_json ? JSON.parse(existing.payload_json) as Record<string, unknown> : null;
+      const previousState = existing?.payload_json ? safeJsonParse<Record<string, unknown> | null>(existing.payload_json, null) : null;
       return {
         ...issue,
         previousStateId: typeof previousState?.stateId === "string" ? previousState.stateId : null,

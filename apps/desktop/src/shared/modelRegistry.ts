@@ -106,18 +106,19 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
   // ---- Anthropic (CLI-wrapped via claude) ----
   // Claude chat surfaces in ADE use the native low/medium/high effort ladder.
   {
-    id: "anthropic/claude-opus-4-6",
+    id: "anthropic/claude-opus-4-7",
     shortId: "opus",
-    displayName: "Claude Opus 4.6",
+    aliases: ["claude-opus-4-7", "anthropic/claude-opus-4-6", "claude-opus-4-6"],
+    displayName: "Claude Opus 4.7",
     family: "anthropic",
     authTypes: ["cli-subscription"],
-    contextWindow: 200_000,
-    maxOutputTokens: 32_000,
+    contextWindow: 1_000_000,
+    maxOutputTokens: 128_000,
     capabilities: ALL_CAPS,
     reasoningTiers: ["low", "medium", "high", "max"],
     color: "#D97706",
     providerRoute: "claude-cli",
-    providerModelId: "opus",
+    providerModelId: "claude-opus-4-7",
     cliCommand: "claude",
     isCliWrapped: true,
     inputPricePer1M: 5,
@@ -125,23 +126,29 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     costTier: "very_high",
   },
   {
-    id: "anthropic/claude-opus-4-6-1m",
+    id: "anthropic/claude-opus-4-7-1m",
     shortId: "opus-1m",
-    aliases: ["opus[1m]", "claude-opus-4-6[1m]"],
-    displayName: "Claude Opus 4.6 1M",
+    aliases: [
+      "opus[1m]",
+      "claude-opus-4-7[1m]",
+      "anthropic/claude-opus-4-6-1m",
+      "claude-opus-4-6-1m",
+      "claude-opus-4-6[1m]",
+    ],
+    displayName: "Claude Opus 4.7 1M",
     family: "anthropic",
     authTypes: ["cli-subscription"],
     contextWindow: 1_000_000,
-    maxOutputTokens: 32_000,
+    maxOutputTokens: 128_000,
     capabilities: ALL_CAPS,
-    reasoningTiers: ["low", "medium", "high", "max"],
+    reasoningTiers: ["low", "medium", "high", "xhigh", "max"],
     color: "#B45309",
     providerRoute: "claude-cli",
-    providerModelId: "opus[1m]",
+    providerModelId: "claude-opus-4-7[1m]",
     cliCommand: "claude",
     isCliWrapped: true,
-    inputPricePer1M: 10,
-    outputPricePer1M: 37.5,
+    inputPricePer1M: 5,
+    outputPricePer1M: 25,
     costTier: "very_high",
   },
   {
@@ -773,22 +780,26 @@ export function sortCursorCliDescriptorsForPicker(descriptors: ModelDescriptor[]
 // ---------------------------------------------------------------------------
 
 export function getModelById(id: string): ModelDescriptor | undefined {
-  const cached = byId.get(id);
+  const normalized = id.trim();
+  const normalizedLower = normalized.toLowerCase();
+  const cached = byId.get(normalized) ?? byId.get(normalizedLower);
   if (cached) return cached;
-  const dynamicOpenCode = dynamicOpenCodeById.get(id);
+  const aliased = byAlias.get(normalizedLower) ?? dynamicOpenCodeByAlias.get(normalizedLower);
+  if (aliased) return aliased;
+  const dynamicOpenCode = dynamicOpenCodeById.get(normalized);
   if (dynamicOpenCode) return dynamicOpenCode;
-  const openCodeDecoded = decodeOpenCodeRegistryId(id);
+  const openCodeDecoded = decodeOpenCodeRegistryId(normalized);
   if (openCodeDecoded) {
     return createDynamicOpenCodeModelDescriptor("", {
       openCodeProviderId: openCodeDecoded.openCodeProviderId,
       openCodeModelId: openCodeDecoded.openCodeModelId,
     });
   }
-  const local = parseDynamicLocalModelRef(id);
+  const local = parseDynamicLocalModelRef(normalized);
   if (local) return createDynamicLocalModelDescriptor(local.provider, local.modelId);
-  const openCode = parseDynamicOpenCodeModelRef(id);
+  const openCode = parseDynamicOpenCodeModelRef(normalized);
   if (openCode) return createDynamicOpenCodeModelDescriptor(openCode.modelId);
-  const cursor = parseDynamicCursorModelRef(id);
+  const cursor = parseDynamicCursorModelRef(normalized);
   return cursor ? createDynamicCursorCliModelDescriptor(cursor.providerModelId) : undefined;
 }
 

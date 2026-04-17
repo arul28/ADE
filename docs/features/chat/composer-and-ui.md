@@ -80,8 +80,17 @@ and a footer that contains the composer.
 - **File attach picker** opened with the `@` key. Runs a debounced
   `ade.agentChat.fileSearch` and discards stale results.
 - **Slash commands.** Local commands (`/clear`, `/login`) are always
-  available. Once the provider SDK is ready, its slash commands merge
-  into the picker (`ade.agentChat.slashCommands`).
+  available and resolved renderer-side. SDK commands and project-local
+  Claude commands discovered by `claudeSlashCommandDiscovery` (from
+  `.claude/commands/**` and `~/.claude/commands/**`, including
+  `user-invocable: true` skills) merge in through
+  `ade.agentChat.slashCommands`. Only `/clear` with `source: "local"` is
+  intercepted client-side — every other command is sent to the agent
+  verbatim so provider-native commands still flow. The composer also
+  decides whether a leading-slash draft is a command or just a sentence
+  via `isProviderSlashCommandInput` (heuristics in
+  `shared/chatSlashCommands.ts`): `"/rebase the lane?"` is treated as
+  chat text, `"/plan"` is treated as a command.
 - **Model selection.** `ProviderModelSelector` is embedded and filters
   the registry via `filterChatModelIdsForSession`. Switching within the
   allowed family is a normal update; crossing families triggers a

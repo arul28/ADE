@@ -666,7 +666,9 @@ export function useWorkSessions() {
   }, [focusSession, searchParams, selectLane, sessions, setProjectViewState]);
 
   useEffect(() => {
-    const unsubExit = window.ade.pty.onExit(() => {
+    const unsubExit = window.ade.pty.onExit((event) => {
+      const currentProjectRoot = projectRootRef.current;
+      if (event.projectRoot && event.projectRoot !== currentProjectRoot) return;
       scheduleBackgroundRefresh(120);
     });
     const t = setInterval(() => {
@@ -688,6 +690,7 @@ export function useWorkSessions() {
     const unsubscribe = window.ade.agentChat.onEvent((payload) => {
       if (document.visibilityState !== "visible") return;
       if (!shouldRefreshSessionListForChatEvent(payload)) return;
+      invalidateSessionListCache();
       scheduleBackgroundRefresh(220);
     });
     return unsubscribe;
@@ -709,6 +712,20 @@ export function useWorkSessions() {
       }
     };
   }, []);
+
+  useEffect(() => {
+    const refreshVisibleWork = () => {
+      if (document.visibilityState !== "visible") return;
+      invalidateSessionListCache();
+      scheduleBackgroundRefresh(120);
+    };
+    window.addEventListener("focus", refreshVisibleWork);
+    document.addEventListener("visibilitychange", refreshVisibleWork);
+    return () => {
+      window.removeEventListener("focus", refreshVisibleWork);
+      document.removeEventListener("visibilitychange", refreshVisibleWork);
+    };
+  }, [scheduleBackgroundRefresh]);
 
   const filtered = useMemo(() => {
     const needle = q.trim().toLowerCase();

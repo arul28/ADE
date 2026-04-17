@@ -100,6 +100,17 @@ export type GitCommitSummary = {
   pushed: boolean;
 };
 
+export type GitFileHistoryEntry = {
+  commitSha: string;
+  shortSha: string;
+  authorName: string;
+  authoredAt: string;
+  subject: string;
+  path: string;
+  previousPath?: string | null;
+  changeType: "added" | "modified" | "deleted" | "renamed" | "copied" | "unknown";
+};
+
 export type GitListCommitFilesArgs = {
   laneId: string;
   commitSha: string;
@@ -108,6 +119,12 @@ export type GitListCommitFilesArgs = {
 export type GitGetCommitMessageArgs = {
   laneId: string;
   commitSha: string;
+};
+
+export type GitGetFileHistoryArgs = {
+  laneId: string;
+  path: string;
+  limit?: number;
 };
 
 export type GitStashSummary = {

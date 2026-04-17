@@ -9,7 +9,7 @@ ADE supports four AI provider categories. You can configure any combination — 
 
 <CardGroup cols={2}>
   <Card title="Anthropic (Claude)" icon="robot">
-    Default and recommended. Models: `claude-opus-4-6`, `claude-sonnet-4-6`, `claude-haiku-4-5`. Best for complex reasoning, long-context tasks, and code review.
+    Default and recommended. Models: `claude-opus-4-7`, `claude-sonnet-4-6`, `claude-haiku-4-5`. Best for complex reasoning, long-context tasks, and code review.
   </Card>
   <Card title="OpenAI" icon="circle">
     Supported via the OpenAI API. Models: `gpt-4o`, `gpt-4o-mini`, `o1`, `o3`. Best for structured output, code completion, and tool use.
@@ -28,7 +28,7 @@ ADE supports four AI provider categories. You can configure any combination — 
 
 | Provider | Best For | Context Window | Requires API Key |
 |----------|----------|----------------|-----------------|
-| Anthropic Claude | Complex reasoning, long-context, code review | Up to 200K tokens | Yes |
+| Anthropic Claude | Complex reasoning, long-context, code review | Up to 1M tokens | Yes |
 | OpenAI GPT | Structured output, code completion, tool use | Up to 128K tokens | Yes |
 | OpenRouter | Cost optimization, model comparison | Varies by model | Yes |
 | Ollama / LM Studio | Offline, privacy-sensitive work | Varies by model | No |
@@ -65,9 +65,9 @@ Anthropic is the default provider. Claude models are the recommended choice for 
     ```yaml
     # .ade/ade.yaml
     ai:
-      defaultModel: "claude-opus-4-6"
+      defaultModel: "claude-opus-4-7"
     ```
-    Available models: `claude-opus-4-6`, `claude-sonnet-4-6`, `claude-haiku-4-5`.
+    Available models: `claude-opus-4-7`, `claude-sonnet-4-6`, `claude-haiku-4-5`.
   </Step>
   <Step title="Test the connection">
     In Settings → AI Providers → Anthropic, click **Test Connection**. ADE sends a minimal request to the API and reports success or an error with the HTTP status code.
@@ -109,7 +109,7 @@ OpenRouter provides a single API key that routes to hundreds of upstream models.
 # .ade/local.secret.yaml
 openrouter:
   apiKey: "sk-or-..."
-  defaultModel: "anthropic/claude-opus-4-6"   # OpenRouter model identifier
+  defaultModel: "anthropic/claude-opus-4-7"   # OpenRouter model identifier
 ```
 
 <Tabs>
@@ -117,7 +117,7 @@ openrouter:
     ```yaml
     openrouter:
       apiKey: "sk-or-..."
-      defaultModel: "anthropic/claude-opus-4-6"
+      defaultModel: "anthropic/claude-opus-4-7"
     ```
   </Tab>
   <Tab title="OpenAI via OpenRouter">
@@ -137,7 +137,7 @@ openrouter:
 </Tabs>
 
 <Note>
-OpenRouter model identifiers use the format `<provider>/<model-name>`. Find the full list at [openrouter.ai/models](https://openrouter.ai/models). When using OpenRouter, the model string you set in `ade.yaml` should use the OpenRouter format, prefixed with `openrouter:` — for example: `openrouter:anthropic/claude-opus-4-6`.
+OpenRouter model identifiers use the format `<provider>/<model-name>`. Find the full list at [openrouter.ai/models](https://openrouter.ai/models). When using OpenRouter, the model string you set in `ade.yaml` should use the OpenRouter format, prefixed with `openrouter:` — for example: `openrouter:anthropic/claude-opus-4-7`.
 </Note>
 
 ---
@@ -186,7 +186,7 @@ Local models have significantly smaller context windows than cloud models (typic
 
 | Model | Context Window | Best For |
 |-------|---------------|---------|
-| `claude-opus-4-6` | 200K tokens | Complex reasoning, architecture review, long-context analysis |
+| `claude-opus-4-7` | 1M tokens | Complex reasoning, architecture review, long-context analysis |
 | `claude-sonnet-4-6` | 200K tokens | General coding tasks, balanced speed and quality |
 | `claude-haiku-4-5` | 200K tokens | Fast, lightweight tasks; automation runs; high-volume tool calls |
 
@@ -211,7 +211,7 @@ ai:
   defaultModel: "claude-sonnet-4-6"      # Fallback for all agents
   routingRules:
     - role: "orchestrator"               # Mission planning agent
-      model: "claude-opus-4-6"
+      model: "claude-opus-4-7"
     - role: "worker"                     # Mission execution agents
       model: "claude-sonnet-4-6"
     - role: "automation"                 # Automation runs (cost-sensitive)
@@ -221,7 +221,7 @@ ai:
 ```
 
 <Tip>
-For solo developers running many automations, routing automation runs to `claude-haiku-4-5` and reserving `claude-opus-4-6` for mission planning can reduce monthly spend by 60–80% with minimal quality impact on routine tasks.
+For solo developers running many automations, routing automation runs to `claude-haiku-4-5` and reserving `claude-opus-4-7` for mission planning can reduce monthly spend by 60–80% with minimal quality impact on routine tasks.
 </Tip>
 
 ---

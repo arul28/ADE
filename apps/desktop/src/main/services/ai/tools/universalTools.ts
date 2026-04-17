@@ -172,7 +172,7 @@ function compileSandbox(config: WorkerSandboxConfig): CompiledSandbox {
   return compiled;
 }
 
-const WRITE_COMMAND_RE = /(?:>|>>|tee|cp\s|mv\s|rm\s|write|edit)/;
+const WRITE_COMMAND_RE = /(?:>|>>|\btee\b|\bcp\s|\bmv\s|\brm\s|\bwrite\b|\bedit\b)/;
 const MUTATING_BASH_RE = /\b(?:rm|mv|cp|mkdir|touch|chmod|chown|patch|install|uninstall|add|remove|upgrade|apply|commit|rebase|merge|reset|checkout|switch|restore|sed\s+-i|perl\s+-i)\b|>>?|tee\b/i;
 
 const MEMORY_GUARD_REASON = "Search memory before mutating files or running mutating commands for this turn.";

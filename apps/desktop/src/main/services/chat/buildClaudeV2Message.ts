@@ -83,14 +83,22 @@ export type SDKUserMessagePartial = {
 export function buildClaudeV2Message(
   promptText: string,
   attachments: ResolvedAgentChatFileRef[],
-  options: { baseDir?: string; sessionId?: string | null } = {},
+  options: { baseDir?: string; sessionId?: string | null; forceUserMessage?: boolean } = {},
 ): string | SDKUserMessagePartial {
+  const wrapAsUserMessage = (text: string): SDKUserMessagePartial => ({
+    type: "user",
+    session_id: options.sessionId?.trim() ?? "",
+    parent_tool_use_id: null,
+    message: { role: "user", content: [{ type: "text", text }] },
+  });
+
   const imageAttachments = attachments.filter((a) => a.type === "image");
   if (!imageAttachments.length) {
     // No images -- include file paths as text hints, return plain string
-    if (!attachments.length) return promptText;
-    const hints = attachments.map((a) => `[File attached: ${a.path}]`).join("\n");
-    return `${promptText}\n\n${hints}`;
+    const text = attachments.length
+      ? `${promptText}\n\n${attachments.map((a) => `[File attached: ${a.path}]`).join("\n")}`
+      : promptText;
+    return options.forceUserMessage ? wrapAsUserMessage(text) : text;
   }
 
   // Build content blocks following the Agent SDK streaming input format:

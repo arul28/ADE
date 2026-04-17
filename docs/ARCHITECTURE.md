@@ -252,7 +252,7 @@ Agent tools are split by domain:
 
 `apps/desktop/src/shared/modelRegistry.ts` + `apps/desktop/src/shared/modelProfiles.ts`:
 
-- `MODEL_REGISTRY` — static CLI-wrapped entries + dynamically populated API-key/local entries. Includes the Claude Opus 4.6 1M-context entry (`anthropic/claude-opus-4-6-1m`, aliases `opus[1m]` / `claude-opus-4-6[1m]`, 1,000,000 context / 32,000 max output, `costTier: "very_high"`, full `low|medium|high|max` reasoning tiers).
+- `MODEL_REGISTRY` — static CLI-wrapped entries + dynamically populated API-key/local entries. Includes the Claude Opus 4.7 1M-context entry (`anthropic/claude-opus-4-7-1m`, aliases `opus[1m]` / `claude-opus-4-7[1m]`, 1,000,000 context / 128,000 max output, `costTier: "very_high"`, full `low|medium|high|max` reasoning tiers).
 - `ModelProviderGroup` = `"claude" | "codex" | "opencode" | "cursor"`.
 - Helpers: `getModelById`, `getModelPricing`, `updateModelPricingInRegistry`, `replaceDynamicOpenCodeModelDescriptors`, `resolveProviderGroupForModel`, `resolveModelDescriptorForProvider`, `getRuntimeModelRefForDescriptor`.
 - Reasoning tier passthrough (`providerOptions.ts`) maps tier strings directly to each provider's native config (`thinking.type`, `reasoningEffort`, `thinkingConfig.thinkingLevel`, etc.) — no arbitrary token budgets. The Claude vocabulary is `low | medium | high | max`.
@@ -314,7 +314,7 @@ ade.automations.*
 ade.processes.* / ade.tests.*
 ade.config.*                 # project config get/save/trust
 ade.keybindings.*
-ade.sync.*                   # device registry, pairing, host transfer
+ade.sync.*                   # device registry, PIN pairing (getPin/setPin/clearPin), QR payload, lane presence announce (setActiveLanePresence), host transfer
 ade.usage.*                  # token/cost accounting
 ade.layout.* / ade.graph.*
 ade.computerUse.*
@@ -794,10 +794,11 @@ Full surface: [`docs/architecture/COMPUTER_USE_ARTIFACT_BROKER.md`](../docs/arch
 
 - App launch reads pairing secret from iOS Keychain.
 - Opens WebSocket to host; sends local `db_version`; host sends catch-up changesets.
-- Bidirectional sync continues; on disconnect, exponential-backoff reconnect with version catch-up.
+- Bidirectional sync continues; on disconnect, exponential-backoff reconnect with version catch-up. `reconnectIfPossible` is guarded against overlapping runs.
 - All reads are local — the iOS tab is instant and offline-capable.
 - Writes from user actions: write locally, replicate to host. Execution commands (create PR, run command) are routed to the host via the `command`/`command_ack`/`command_result` message flow.
-- Sub-protocols: changeset sync, file access, terminal stream, chat stream, command routing.
+- Sub-protocols: changeset sync, file access, terminal stream, chat stream (live `chat_event` push from host), command routing, lane presence announce/release.
+- Pairing is a **user-set 6-digit PIN** stored at `.ade/secrets/sync-pin.json` on the host. The phone sends the PIN once; the host returns a durable per-device secret. QR payload is v2 (host identity + port + address candidates, no pairing code).
 
 ### 13.4 Conflict resolution semantics
 

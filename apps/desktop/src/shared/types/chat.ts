@@ -391,7 +391,7 @@ export type AgentChatExecutionMode = "focused" | "parallel" | "subagents" | "tea
 export type AgentChatInteractionMode = "default" | "plan";
 export type AgentChatIdentityKey = "cto" | `agent:${string}`;
 export type AgentChatSurface = "work" | "automation";
-export type AgentChatCursorConfigValue = string | boolean;
+export type AgentChatCursorConfigValue = string | boolean | number;
 export type AgentChatCursorConfigSelectOption = {
   value: string;
   label: string;
@@ -513,6 +513,7 @@ export type AgentChatSessionSummary = {
   opencodePermissionMode?: AgentChatOpenCodePermissionMode;
   cursorModeSnapshot?: AgentChatCursorModeSnapshot;
   cursorModeId?: string | null;
+  cursorConfigValues?: Record<string, AgentChatCursorConfigValue> | null;
   identityKey?: AgentChatIdentityKey;
   surface?: AgentChatSurface;
   automationId?: string | null;
@@ -529,6 +530,7 @@ export type AgentChatSessionSummary = {
   summary: string | null;
   awaitingInput?: boolean;
   threadId?: string;
+  requestedCwd?: string | null;
 };
 
 export type AgentChatTranscriptEntry = {

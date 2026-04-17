@@ -6,6 +6,10 @@ struct LaneSessionTranscriptView: View {
   @EnvironmentObject private var syncService: SyncService
   let session: TerminalSessionSummary
 
+  var terminalDisplay: WorkTerminalDisplay {
+    workTerminalDisplay(raw: syncService.terminalBuffers[session.id], fallback: session.lastOutputPreview)
+  }
+
   var body: some View {
     ScrollView {
       VStack(alignment: .leading, spacing: 14) {
@@ -22,11 +26,16 @@ struct LaneSessionTranscriptView: View {
         }
 
         GlassSection(title: "Transcript") {
-          Text(syncService.terminalBuffers[session.id] ?? session.lastOutputPreview ?? "No output yet.")
+          if terminalDisplay.truncated {
+            Text("Showing recent output. Older terminal output is hidden on iPhone so this view stays responsive.")
+              .font(.caption)
+              .foregroundStyle(ADEColor.textSecondary)
+          }
+
+          Text(terminalDisplay.text)
             .frame(maxWidth: .infinity, alignment: .leading)
             .font(.system(.caption, design: .monospaced))
             .foregroundStyle(ADEColor.textSecondary)
-            .textSelection(.enabled)
             .adeInsetField(cornerRadius: 12, padding: 12)
         }
       }

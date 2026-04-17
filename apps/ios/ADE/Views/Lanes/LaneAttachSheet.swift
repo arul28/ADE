@@ -7,6 +7,7 @@ struct LaneAttachSheet: View {
   @EnvironmentObject private var syncService: SyncService
 
   let onComplete: @MainActor (String) async -> Void
+  var wrapsInNavigationStack: Bool = true
 
   @State private var name = ""
   @State private var attachedPath = ""
@@ -15,7 +16,17 @@ struct LaneAttachSheet: View {
   @State private var errorMessage: String?
 
   var body: some View {
-    NavigationStack {
+    Group {
+      if wrapsInNavigationStack {
+        NavigationStack { content }
+      } else {
+        content
+      }
+    }
+  }
+
+  @ViewBuilder
+  private var content: some View {
       ScrollView {
         VStack(spacing: 14) {
           GlassSection(title: "Attach worktree", subtitle: "Register an existing worktree as a lane.") {
@@ -59,7 +70,6 @@ struct LaneAttachSheet: View {
           .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || attachedPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || busy)
         }
       }
-    }
   }
 
   @MainActor
@@ -74,6 +84,7 @@ struct LaneAttachSheet: View {
       await onComplete(lane.id)
       dismiss()
     } catch {
+      ADEHaptics.error()
       errorMessage = error.localizedDescription
     }
     busy = false

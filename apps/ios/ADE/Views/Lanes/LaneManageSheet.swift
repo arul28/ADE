@@ -222,6 +222,7 @@ struct LaneManageSheet: View {
       dismiss()
       await onComplete()
     } catch {
+      ADEHaptics.error()
       errorMessage = error.localizedDescription
     }
     busyAction = nil

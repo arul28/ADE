@@ -46,10 +46,7 @@ enum LaneRuntimeFilter: String, CaseIterable, Identifiable {
 }
 
 enum LaneDetailSection: String, CaseIterable, Identifiable {
-  case overview
-  case work
   case git
-  case manage
 
   var id: String { rawValue }
 
@@ -59,10 +56,49 @@ enum LaneDetailSection: String, CaseIterable, Identifiable {
 
   var symbol: String {
     switch self {
-    case .overview: return "square.grid.2x2"
     case .git: return "arrow.triangle.branch"
-    case .work: return "terminal"
-    case .manage: return "slider.horizontal.3"
+    }
+  }
+}
+
+enum LaneGitConfirmation: Identifiable {
+  case forcePush
+  case rebaseAndPush
+
+  var id: String {
+    switch self {
+    case .forcePush: return "force-push"
+    case .rebaseAndPush: return "rebase-and-push"
+    }
+  }
+
+  var title: String {
+    switch self {
+    case .forcePush: return "Force push?"
+    case .rebaseAndPush: return "Rebase and push?"
+    }
+  }
+
+  var message: String {
+    switch self {
+    case .forcePush:
+      return "This updates the remote branch with force-with-lease. Review the lane status before continuing."
+    case .rebaseAndPush:
+      return "ADE will rebase this lane, inspect upstream state, then push. If the branch diverged, it may use force-with-lease."
+    }
+  }
+
+  var confirmTitle: String {
+    switch self {
+    case .forcePush: return "Force push"
+    case .rebaseAndPush: return "Rebase and push"
+    }
+  }
+
+  var actionLabel: String {
+    switch self {
+    case .forcePush: return "force push"
+    case .rebaseAndPush: return "rebase and push"
     }
   }
 }

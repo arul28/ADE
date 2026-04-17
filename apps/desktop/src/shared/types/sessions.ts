@@ -109,12 +109,14 @@ export type PtyCreateResult = {
 export type PtyDataEvent = {
   ptyId: string;
   sessionId: string;
+  projectRoot?: string;
   data: string;
 };
 
 export type PtyExitEvent = {
   ptyId: string;
   sessionId: string;
+  projectRoot?: string;
   exitCode: number | null;
 };
 

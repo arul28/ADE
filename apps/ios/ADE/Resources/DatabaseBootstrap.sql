@@ -402,6 +402,63 @@ create table if not exists pull_request_snapshots (
 
 create index if not exists idx_pull_request_snapshots_updated_at on pull_request_snapshots(updated_at);
 
+create table if not exists files_workspaces (
+      id text primary key,
+      kind text not null,
+      lane_id text,
+      name text not null,
+      root_path text not null,
+      is_read_only_by_default integer not null default 1,
+      mobile_read_only integer not null default 1,
+      updated_at text not null
+    );
+
+create table if not exists file_directory_snapshots (
+      workspace_id text not null,
+      parent_path text not null default '',
+      include_hidden integer not null default 0,
+      nodes_json text not null,
+      updated_at text not null,
+      primary key(workspace_id, parent_path, include_hidden),
+      foreign key(workspace_id) references files_workspaces(id) on delete cascade
+    );
+
+create table if not exists file_content_snapshots (
+      workspace_id text not null,
+      relative_path text not null,
+      blob_json text not null,
+      updated_at text not null,
+      primary key(workspace_id, relative_path),
+      foreign key(workspace_id) references files_workspaces(id) on delete cascade
+    );
+
+create table if not exists file_diff_snapshots (
+      workspace_id text not null,
+      relative_path text not null,
+      mode text not null,
+      diff_json text not null,
+      updated_at text not null,
+      primary key(workspace_id, relative_path, mode),
+      foreign key(workspace_id) references files_workspaces(id) on delete cascade
+    );
+
+create table if not exists file_history_snapshots (
+      workspace_id text not null,
+      relative_path text not null,
+      entries_json text not null,
+      updated_at text not null,
+      primary key(workspace_id, relative_path),
+      foreign key(workspace_id) references files_workspaces(id) on delete cascade
+    );
+
+create index if not exists idx_file_directory_snapshots_workspace on file_directory_snapshots(workspace_id, updated_at desc);
+
+create index if not exists idx_file_content_snapshots_workspace on file_content_snapshots(workspace_id, updated_at desc);
+
+create index if not exists idx_file_diff_snapshots_workspace on file_diff_snapshots(workspace_id, updated_at desc);
+
+create index if not exists idx_file_history_snapshots_workspace on file_history_snapshots(workspace_id, updated_at desc);
+
 create table if not exists checkpoints (
       id text primary key,
       project_id text not null,

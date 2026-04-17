@@ -86,7 +86,10 @@ Renderer — settings:
   and `LaneBehaviorSection.tsx` — lane initialization recipes and
   lifecycle policies.
 - `apps/desktop/src/renderer/components/settings/SyncDevicesSection.tsx`
-  — multi-device sync management.
+  — multi-device sync management. Surfaces the phone-pairing PIN (set
+  / clear / reveal), the QR payload (v2) with its address
+  candidates, the bootstrap token for desktop peers, and the
+  per-device connection panel used to forget paired phones.
 - `apps/desktop/src/renderer/components/settings/SettingsUsageSection.tsx`
   and `UsageGuardrailsSection.tsx` — cost and usage.
 - `apps/desktop/src/renderer/components/settings/ProxyAndPreviewSection.tsx`

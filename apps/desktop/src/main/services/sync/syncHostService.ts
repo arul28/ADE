@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { randomBytes } from "node:crypto";
 import { Bonjour, type Service as BonjourService } from "bonjour-service";
 import { WebSocketServer, WebSocket, type RawData } from "ws";
@@ -8,11 +9,15 @@ import { resolveAdeLayout } from "../../../shared/adeLayout";
 import type {
   AgentChatEventEnvelope,
   CrsqlChangeRow,
+  DeviceMarker,
   FileContent,
   FileTreeNode,
   FilesQuickOpenItem,
   FilesSearchTextMatch,
   FilesWorkspace,
+  LaneDetailPayload,
+  LaneListSnapshot,
+  LaneSummary,
   PtyDataEvent,
   PtyExitEvent,
   SyncBrainStatusPayload,
@@ -29,7 +34,7 @@ import type {
   SyncPairingRequestPayload,
   SyncPeerConnectionState,
   SyncPeerMetadata,
-  SyncPairingSession,
+  SyncRemoteCommandDescriptor,
   SyncTerminalSnapshotPayload,
 } from "../../../shared/types";
 import { parseAgentChatTranscript } from "../../../shared/chatTranscript";
@@ -46,21 +51,39 @@ import type { createLaneService } from "../lanes/laneService";
 import type { createLaneTemplateService } from "../lanes/laneTemplateService";
 import type { createPortAllocationService } from "../lanes/portAllocationService";
 import type { createRebaseSuggestionService } from "../lanes/rebaseSuggestionService";
+import type { createProcessService } from "../processes/processService";
 import type { createPtyService } from "../pty/ptyService";
+import type { createIssueInventoryService } from "../prs/issueInventoryService";
 import type { createPrService } from "../prs/prService";
+import type { createQueueLandingService } from "../prs/queueLandingService";
 import type { createSessionService } from "../sessions/sessionService";
 import type { createComputerUseArtifactBrokerService } from "../computerUse/computerUseArtifactBrokerService";
 import type { AdeDb } from "../state/kvDb";
-import { hasNullByte, normalizeRelative, nowIso, resolvePathWithinRoot, toOptionalString } from "../shared/utils";
+import { hasNullByte, normalizeRelative, nowIso, resolvePathWithinRoot, toOptionalString, uniqueStrings } from "../shared/utils";
 import type { DeviceRegistryService } from "./deviceRegistryService";
 import { createSyncPairingStore } from "./syncPairingStore";
+import type { SyncPinStore } from "./syncPinStore";
 import { DEFAULT_SYNC_COMPRESSION_THRESHOLD_BYTES, DEFAULT_SYNC_HOST_PORT, encodeSyncEnvelope, mapPlatform, parseSyncEnvelope, wsDataToText } from "./syncProtocol";
 import { createSyncRemoteCommandService } from "./syncRemoteCommandService";
 const DEFAULT_SYNC_HEARTBEAT_INTERVAL_MS = 30_000;
 const DEFAULT_SYNC_POLL_INTERVAL_MS = 400;
 const DEFAULT_BRAIN_STATUS_INTERVAL_MS = 5_000;
 const DEFAULT_TERMINAL_SNAPSHOT_BYTES = 220_000;
+const LANE_PRESENCE_TTL_MS = 60_000;
 const SYNC_MDNS_SERVICE_TYPE = "ade-sync";
+const MOBILE_MUTATING_FILE_ACTIONS = new Set<SyncFileRequest["action"]>([
+  "writeText",
+  "createFile",
+  "createDirectory",
+  "rename",
+  "deletePath",
+]);
+
+type LanePresenceEntry = {
+  marker: DeviceMarker;
+  lastAnnouncedAtMs: number;
+  source: "local" | "remote";
+};
 
 type PeerState = {
   ws: WebSocket;
@@ -74,11 +97,13 @@ type PeerState = {
   lastKnownServerDbVersion: number;
   latencyMs: number | null;
   awaitingHeartbeatAt: string | null;
+  missedHeartbeatCount: number;
   remoteAddress: string | null;
   remotePort: number | null;
   subscribedSessionIds: Set<string>;
   subscribedChatSessionIds: Set<string>;
   chatTranscriptOffsets: Map<string, number>;
+  chatEventIdsSent: Map<string, Set<string>>;
 };
 
 type SyncHostServiceArgs = {
@@ -91,8 +116,11 @@ type SyncHostServiceArgs = {
   diffService?: ReturnType<typeof createDiffService>;
   conflictService?: ReturnType<typeof createConflictService>;
   prService: ReturnType<typeof createPrService>;
+  issueInventoryService?: ReturnType<typeof createIssueInventoryService> | null;
+  queueLandingService?: ReturnType<typeof createQueueLandingService> | null;
   sessionService: ReturnType<typeof createSessionService>;
   ptyService: ReturnType<typeof createPtyService>;
+  processService?: ReturnType<typeof createProcessService>;
   agentChatService?: ReturnType<typeof createAgentChatService>;
   projectConfigService?: ReturnType<typeof createProjectConfigService>;
   portAllocationService?: ReturnType<typeof createPortAllocationService>;
@@ -101,6 +129,7 @@ type SyncHostServiceArgs = {
   rebaseSuggestionService?: ReturnType<typeof createRebaseSuggestionService>;
   autoRebaseService?: ReturnType<typeof createAutoRebaseService>;
   computerUseArtifactBrokerService: ReturnType<typeof createComputerUseArtifactBrokerService>;
+  pinStore: SyncPinStore;
   bootstrapTokenPath?: string;
   port?: number;
   heartbeatIntervalMs?: number;
@@ -264,6 +293,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
   const bootstrapToken = ensureBootstrapToken(bootstrapTokenPath);
   const pairingStore = createSyncPairingStore({
     filePath: pairingSecretsPath,
+    pinStore: args.pinStore,
   });
   const remoteCommandService = createSyncRemoteCommandService({
     laneService: args.laneService,
@@ -275,7 +305,10 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     diffService: args.diffService,
     conflictService: args.conflictService,
     agentChatService: args.agentChatService,
+    issueInventoryService: args.issueInventoryService,
+    queueLandingService: args.queueLandingService,
     projectConfigService: args.projectConfigService,
+    processService: args.processService,
     portAllocationService: args.portAllocationService,
     laneEnvironmentService: args.laneEnvironmentService,
     laneTemplateService: args.laneTemplateService,
@@ -287,6 +320,16 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
   const pollIntervalMs = Math.max(100, Math.floor(args.pollIntervalMs ?? DEFAULT_SYNC_POLL_INTERVAL_MS));
   const brainStatusIntervalMs = Math.max(1_000, Math.floor(args.brainStatusIntervalMs ?? DEFAULT_BRAIN_STATUS_INTERVAL_MS));
   const compressionThresholdBytes = Math.max(256, Math.floor(args.compressionThresholdBytes ?? DEFAULT_SYNC_COMPRESSION_THRESHOLD_BYTES));
+  const localPresenceCommandDescriptors: SyncRemoteCommandDescriptor[] = [
+    {
+      action: "lanes.presence.announce",
+      policy: { viewerAllowed: true },
+    },
+    {
+      action: "lanes.presence.release",
+      policy: { viewerAllowed: true },
+    },
+  ];
 
   const readBrainMetadata = (): SyncPeerMetadata => {
     const localDevice = args.deviceRegistryService?.ensureLocalDevice();
@@ -301,6 +344,258 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
   };
 
   const peers = new Set<PeerState>();
+  const lanePresenceByLaneId = new Map<string, Map<string, LanePresenceEntry>>();
+  let localActiveLaneIds = new Set<string>();
+  const PAIR_FAILURE_THRESHOLD = 5;
+  const PAIR_COOLDOWN_MS = 10 * 60_000;
+  const PAIR_FAILURE_WINDOW_MS = 10 * 60_000;
+  const pairFailures = new Map<string, { count: number; cooldownUntilMs: number; updatedAtMs: number }>();
+  const pruneExpiredPairFailures = (now = Date.now()): boolean => {
+    let changed = false;
+    for (const [ip, entry] of pairFailures) {
+      const cooldownExpired = entry.cooldownUntilMs > 0 && entry.cooldownUntilMs <= now;
+      const failureWindowExpired = entry.updatedAtMs + PAIR_FAILURE_WINDOW_MS <= now;
+      if (cooldownExpired || failureWindowExpired) {
+        pairFailures.delete(ip);
+        changed = true;
+      }
+    }
+    return changed;
+  };
+  const registerPairFailure = (ip: string | null): void => {
+    if (!ip) return;
+    const now = Date.now();
+    pruneExpiredPairFailures(now);
+    const entry = pairFailures.get(ip) ?? { count: 0, cooldownUntilMs: 0, updatedAtMs: now };
+    entry.count += 1;
+    entry.updatedAtMs = now;
+    if (entry.count >= PAIR_FAILURE_THRESHOLD) {
+      entry.cooldownUntilMs = now + PAIR_COOLDOWN_MS;
+      entry.count = 0;
+    }
+    pairFailures.set(ip, entry);
+  };
+  const pairingCooldownMsRemaining = (ip: string | null): number => {
+    if (!ip) return 0;
+    const entry = pairFailures.get(ip);
+    if (!entry) return 0;
+    const now = Date.now();
+    const remaining = entry.cooldownUntilMs - now;
+    if (remaining > 0) return remaining;
+    if (
+      (entry.cooldownUntilMs > 0 && remaining <= 0)
+      || entry.updatedAtMs + PAIR_FAILURE_WINDOW_MS <= now
+    ) {
+      pairFailures.delete(ip);
+    }
+    return 0;
+  };
+
+  const normalizeLaneId = (laneId: string | null | undefined): string | null => {
+    const normalized = toOptionalString(laneId);
+    return normalized && normalized.length > 0 ? normalized : null;
+  };
+
+  const listLanePresenceMarkers = (laneId: string): DeviceMarker[] => {
+    const entries = lanePresenceByLaneId.get(laneId);
+    if (!entries) return [];
+    return [...entries.values()]
+      .map((entry) => entry.marker)
+      .sort((left, right) => left.displayName.localeCompare(right.displayName));
+  };
+
+  const upsertLanePresence = (argsIn: {
+    laneId: string;
+    marker: DeviceMarker;
+    source: "local" | "remote";
+  }): boolean => {
+    const laneId = normalizeLaneId(argsIn.laneId);
+    if (!laneId) return false;
+    const byDevice = lanePresenceByLaneId.get(laneId) ?? new Map<string, LanePresenceEntry>();
+    const existing = byDevice.get(argsIn.marker.deviceId) ?? null;
+    const nextEntry: LanePresenceEntry = {
+      marker: argsIn.marker,
+      lastAnnouncedAtMs: Date.now(),
+      source: argsIn.source,
+    };
+    byDevice.set(argsIn.marker.deviceId, nextEntry);
+    lanePresenceByLaneId.set(laneId, byDevice);
+    return (
+      existing == null
+      || existing.source !== nextEntry.source
+      || existing.marker.displayName !== nextEntry.marker.displayName
+      || existing.marker.platform !== nextEntry.marker.platform
+    );
+  };
+
+  const removeLanePresence = (laneId: string | null | undefined, deviceId: string | null | undefined): boolean => {
+    const normalizedLaneId = normalizeLaneId(laneId);
+    const normalizedDeviceId = toOptionalString(deviceId);
+    if (!normalizedLaneId || !normalizedDeviceId) return false;
+    const byDevice = lanePresenceByLaneId.get(normalizedLaneId);
+    if (!byDevice?.delete(normalizedDeviceId)) return false;
+    if (byDevice.size === 0) {
+      lanePresenceByLaneId.delete(normalizedLaneId);
+    }
+    return true;
+  };
+
+  const removeAllPresenceForDevice = (
+    deviceId: string | null | undefined,
+    source?: LanePresenceEntry["source"],
+  ): boolean => {
+    const normalizedDeviceId = toOptionalString(deviceId);
+    if (!normalizedDeviceId) return false;
+    let changed = false;
+    for (const [laneId, byDevice] of lanePresenceByLaneId) {
+      const entry = byDevice.get(normalizedDeviceId);
+      if (!entry || (source && entry.source !== source)) continue;
+      byDevice.delete(normalizedDeviceId);
+      changed = true;
+      if (byDevice.size === 0) {
+        lanePresenceByLaneId.delete(laneId);
+      }
+    }
+    return changed;
+  };
+
+  const pruneExpiredLanePresence = (): boolean => {
+    const cutoff = Date.now() - LANE_PRESENCE_TTL_MS;
+    let changed = false;
+    for (const [laneId, byDevice] of lanePresenceByLaneId) {
+      for (const [deviceId, entry] of byDevice) {
+        if (entry.lastAnnouncedAtMs > cutoff) continue;
+        byDevice.delete(deviceId);
+        changed = true;
+      }
+      if (byDevice.size === 0) {
+        lanePresenceByLaneId.delete(laneId);
+      }
+    }
+    return changed;
+  };
+
+  const readLocalPresenceMarker = (): DeviceMarker | null => {
+    const localDevice = args.deviceRegistryService?.ensureLocalDevice() ?? null;
+    if (!localDevice) return null;
+    return {
+      deviceId: localDevice.deviceId,
+      displayName: localDevice.name,
+      platform: localDevice.platform,
+    };
+  };
+
+  const refreshLocalLanePresence = (): boolean => {
+    if (localActiveLaneIds.size === 0) return false;
+    const marker = readLocalPresenceMarker();
+    if (!marker) return false;
+    let changed = false;
+    for (const laneId of localActiveLaneIds) {
+      changed = upsertLanePresence({
+        laneId,
+        marker,
+        source: "local",
+      }) || changed;
+    }
+    return changed;
+  };
+
+  const setLocalActiveLanePresence = (laneIds: string[]): void => {
+    const nextLaneIds = new Set(
+      laneIds
+        .map((laneId) => normalizeLaneId(laneId))
+        .filter((laneId): laneId is string => laneId != null),
+    );
+    const marker = readLocalPresenceMarker();
+    let changed = false;
+    if (marker) {
+      for (const laneId of localActiveLaneIds) {
+        if (!nextLaneIds.has(laneId)) {
+          changed = removeLanePresence(laneId, marker.deviceId) || changed;
+        }
+      }
+    }
+    localActiveLaneIds = nextLaneIds;
+    if (marker) {
+      for (const laneId of localActiveLaneIds) {
+        changed = upsertLanePresence({ laneId, marker, source: "local" }) || changed;
+      }
+    }
+    if (changed) {
+      args.onStateChanged?.();
+      broadcastBrainStatus();
+    }
+  };
+
+  const buildRemotePresenceMarker = (peer: PeerState): DeviceMarker | null => {
+    if (!peer.metadata) return null;
+    return {
+      deviceId: peer.metadata.deviceId,
+      displayName: peer.metadata.deviceName,
+      platform: peer.metadata.platform,
+    };
+  };
+
+  const decorateLaneSummary = (lane: LaneSummary): LaneSummary => {
+    const devicesOpen = listLanePresenceMarkers(lane.id);
+    return devicesOpen.length > 0 ? { ...lane, devicesOpen } : lane;
+  };
+
+  const decorateLaneSummaries = (lanes: LaneSummary[]): LaneSummary[] =>
+    lanes.map((lane) => decorateLaneSummary(lane));
+
+  const decorateLaneListSnapshots = (snapshots: LaneListSnapshot[]): LaneListSnapshot[] =>
+    snapshots.map((snapshot) => ({
+      ...snapshot,
+      lane: decorateLaneSummary(snapshot.lane),
+    }));
+
+  const decorateLaneDetailPayload = (detail: LaneDetailPayload): LaneDetailPayload => ({
+    ...detail,
+    lane: decorateLaneSummary(detail.lane),
+    children: decorateLaneSummaries(detail.children),
+  });
+
+  const decorateCommandResult = (
+    action: SyncCommandPayload["action"],
+    result: unknown,
+  ): unknown => {
+    pruneExpiredLanePresence();
+    switch (action) {
+      case "lanes.list":
+      case "lanes.getChildren":
+        return Array.isArray(result) ? decorateLaneSummaries(result as LaneSummary[]) : result;
+      case "lanes.refreshSnapshots": {
+        const payload = result as
+          | { lanes?: LaneSummary[]; snapshots?: LaneListSnapshot[] }
+          | null
+          | undefined;
+        if (!payload || typeof payload !== "object") return result;
+        return {
+          ...payload,
+          ...(Array.isArray(payload.lanes) ? { lanes: decorateLaneSummaries(payload.lanes) } : {}),
+          ...(Array.isArray(payload.snapshots)
+            ? { snapshots: decorateLaneListSnapshots(payload.snapshots) }
+            : {}),
+        };
+      }
+      case "lanes.getDetail":
+        return result && typeof result === "object"
+          ? decorateLaneDetailPayload(result as LaneDetailPayload)
+          : result;
+      case "lanes.create":
+      case "lanes.createChild":
+      case "lanes.createFromUnstaged":
+      case "lanes.importBranch":
+      case "lanes.attach":
+      case "lanes.adoptAttached":
+        return result && typeof result === "object"
+          ? decorateLaneSummary(result as LaneSummary)
+          : result;
+      default:
+        return result;
+    }
+  };
   const server = new WebSocketServer({
     host: "0.0.0.0",
     port: args.port ?? DEFAULT_SYNC_HOST_PORT,
@@ -312,6 +607,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
   let bonjourInstance: Bonjour | null = null;
   let bonjourAnnouncement: BonjourService | null = null;
   let bonjourPort: number | null = null;
+  let bonjourSignature: string | null = null;
   let lastBroadcastAt: string | null = null;
   const startedAtMs = Date.now();
 
@@ -337,16 +633,27 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     });
   }, pollIntervalMs);
   const heartbeatTimer = setInterval(() => {
+    pruneExpiredPairFailures();
+    const refreshedLocalPresence = refreshLocalLanePresence();
+    if (refreshedLocalPresence || pruneExpiredLanePresence()) {
+      args.onStateChanged?.();
+      broadcastBrainStatus();
+    }
     const sentAt = nowIso();
     for (const peer of peers) {
       if (!peer.authenticated || peer.ws.readyState !== WebSocket.OPEN) continue;
       if (peer.awaitingHeartbeatAt) {
-        try {
-          peer.ws.close(4001, "Heartbeat timed out");
-        } catch {
-          // ignore
+        peer.missedHeartbeatCount += 1;
+        if (peer.missedHeartbeatCount >= 2) {
+          try {
+            peer.ws.close(4001, "Heartbeat timed out");
+          } catch {
+            // ignore
+          }
+          continue;
         }
-        continue;
+      } else {
+        peer.missedHeartbeatCount = 0;
       }
       peer.awaitingHeartbeatAt = sentAt;
       send(peer.ws, "heartbeat", { kind: "ping", sentAt, dbVersion: args.db.sync.getDbVersion() });
@@ -355,8 +662,12 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
   const brainStatusTimer = setInterval(() => {
     broadcastBrainStatus();
   }, brainStatusIntervalMs);
+  const chatEventSubscription = args.agentChatService?.subscribeToEvents(
+    (event) => broadcastChatEvent(event),
+  ) ?? null;
 
   server.on("connection", (ws, request) => {
+    const remoteAddress = sanitizeRemoteAddress(request.socket.remoteAddress);
     const peer: PeerState = {
       ws,
       metadata: null,
@@ -369,11 +680,13 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       lastKnownServerDbVersion: 0,
       latencyMs: null,
       awaitingHeartbeatAt: null,
-      remoteAddress: sanitizeRemoteAddress(request.socket.remoteAddress),
+      missedHeartbeatCount: 0,
+      remoteAddress,
       remotePort: request.socket.remotePort ?? null,
       subscribedSessionIds: new Set(),
       subscribedChatSessionIds: new Set(),
       chatTranscriptOffsets: new Map(),
+      chatEventIdsSent: new Map(),
     };
     peers.add(peer);
     ws.on("message", (raw) => {
@@ -385,6 +698,9 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       });
     });
     ws.on("close", () => {
+      if (removeAllPresenceForDevice(peer.metadata?.deviceId, "remote")) {
+        broadcastBrainStatus();
+      }
       peers.delete(peer);
       args.onStateChanged?.();
       broadcastBrainStatus();
@@ -399,20 +715,26 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
 
   const publishLanDiscovery = (port: number): void => {
     if (disposed) return;
-    if (bonjourAnnouncement && bonjourPort === port) return;
     const localDevice = args.deviceRegistryService?.ensureLocalDevice() ?? null;
     const hostName = localDevice?.name ?? os.hostname();
-    const ipAddresses = (localDevice?.ipAddresses ?? []).filter((value) => value.trim().length > 0);
+    const ipAddresses = uniqueStrings([
+      ...(localDevice?.ipAddresses ?? []),
+      localDevice?.tailscaleIp ?? null,
+    ].filter((value): value is string => typeof value === "string" && value.trim().length > 0));
+    const addressesCsv = ipAddresses.length > 0 ? ipAddresses.join(",") : "127.0.0.1";
+    const preferredHost = ipAddresses[0] ?? localDevice?.lastHost ?? "";
     const txt = {
       version: "1",
       deviceId: localDevice?.deviceId ?? "",
       siteId: localDevice?.siteId ?? "",
       deviceName: hostName,
       port: String(port),
-      host: localDevice?.lastHost ?? "",
-      addresses: ipAddresses.join(","),
+      host: preferredHost,
+      addresses: addressesCsv,
       tailscaleIp: localDevice?.tailscaleIp ?? "",
     };
+    const signature = JSON.stringify({ hostName, port, txt });
+    if (bonjourAnnouncement && bonjourPort === port && bonjourSignature === signature) return;
     if (!bonjourInstance) {
       bonjourInstance = new Bonjour(undefined, (error: unknown) => {
         args.logger.warn("sync_host.discovery_error", {
@@ -429,6 +751,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       bonjourAnnouncement = null;
     }
     bonjourPort = port;
+    bonjourSignature = signature;
     bonjourAnnouncement = bonjourInstance.publish({
       name: `ADE Sync ${hostName} ${port}`,
       type: SYNC_MDNS_SERVICE_TYPE,
@@ -526,6 +849,31 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     }
   }
 
+  function chatEventDeliveryKey(event: AgentChatEventEnvelope): string {
+    return `${event.sessionId}:${event.sequence ?? -1}:${event.timestamp}:${event.event.type}`;
+  }
+
+  function rememberChatEventSent(peer: PeerState, event: AgentChatEventEnvelope): boolean {
+    const key = chatEventDeliveryKey(event);
+    let sent = peer.chatEventIdsSent.get(event.sessionId);
+    if (!sent) {
+      sent = new Set();
+      peer.chatEventIdsSent.set(event.sessionId, sent);
+    }
+    if (sent.has(key)) return false;
+    sent.add(key);
+    if (sent.size > 800) {
+      const overflow = sent.size - 800;
+      let removed = 0;
+      for (const existingKey of sent) {
+        sent.delete(existingKey);
+        removed += 1;
+        if (removed >= overflow) break;
+      }
+    }
+    return true;
+  }
+
   async function pumpChatEvents(): Promise<void> {
     if (disposed) return;
 
@@ -541,9 +889,19 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           peer.chatTranscriptOffsets.set(sessionId, nextOffset);
         }
         for (const event of events) {
+          if (!rememberChatEventSent(peer, event)) continue;
           send(peer.ws, "chat_event", event);
         }
       }
+    }
+  }
+
+  function broadcastChatEvent(event: AgentChatEventEnvelope): void {
+    for (const peer of peers) {
+      if (!peer.authenticated || peer.ws.readyState !== WebSocket.OPEN) continue;
+      if (!peer.subscribedChatSessionIds.has(event.sessionId)) continue;
+      if (!rememberChatEventSent(peer, event)) continue;
+      send(peer.ws, "chat_event", event);
     }
   }
 
@@ -584,6 +942,13 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     if (/^https?:\/\//i.test(candidate)) {
       throw new Error("Remote artifact URLs are not supported by the desktop sync host.");
     }
+    if (/^file:\/\//i.test(candidate)) {
+      try {
+        candidate = fileURLToPath(candidate);
+      } catch {
+        throw new Error("Artifact file URL is invalid.");
+      }
+    }
     const absolute = path.isAbsolute(candidate)
       ? candidate
       : path.resolve(args.projectRoot, candidate);
@@ -599,12 +964,38 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     return resolvedArtifactPath;
   }
 
+  function isMobilePeer(peer: PeerState): boolean {
+    return peer.metadata?.platform === "iOS" || peer.metadata?.deviceType === "phone";
+  }
+
+  function assertMobileFileMutationAllowed(peer: PeerState, payload: SyncFileRequest): void {
+    if (!MOBILE_MUTATING_FILE_ACTIONS.has(payload.action)) return;
+    if (!isMobilePeer(peer)) return;
+
+    const workspaceId = toOptionalString((payload as { args?: { workspaceId?: unknown } }).args?.workspaceId);
+    if (!workspaceId) return;
+    const workspace = args.fileService.listWorkspaces({ includeArchived: true })
+      .find((entry) => entry.id === workspaceId);
+    if (!workspace || workspace.mobileReadOnly === true || workspace.isReadOnlyByDefault) {
+      throw new Error("Mobile file access is read-only for this workspace.");
+    }
+  }
+
+  function isMobileLaneFileMutationBlocked(payload: SyncCommandPayload): boolean {
+    const laneId = toOptionalString((payload.args as Record<string, unknown> | null | undefined)?.laneId);
+    if (!laneId) return false;
+    const workspace = args.fileService.listWorkspaces({ includeArchived: true })
+      .find((entry) => entry.laneId === laneId);
+    return workspace ? workspace.mobileReadOnly === true || workspace.isReadOnlyByDefault : true;
+  }
+
   async function handleFileRequest(peer: PeerState, requestId: string | null, payload: SyncFileRequest): Promise<void> {
     const respond = (response: SyncFileResponsePayload) => {
       send(peer.ws, "file_response", response, requestId);
     };
 
     try {
+      assertMobileFileMutationAllowed(peer, payload);
       let result:
         | FilesWorkspace[]
         | FileTreeNode[]
@@ -697,12 +1088,53 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     };
 
     const policy = remoteCommandService.getPolicy(payload.action);
+    if (payload.action === "lanes.presence.announce" || payload.action === "lanes.presence.release") {
+      const laneId = normalizeLaneId((payload.args as Record<string, unknown> | null | undefined)?.laneId as string | null);
+      if (!laneId) {
+        reject(`${payload.action} requires laneId.`, "invalid_command");
+        return;
+      }
+      const marker = buildRemotePresenceMarker(peer);
+      if (!marker) {
+        reject("Lane presence requires authenticated peer metadata.", "invalid_command");
+        return;
+      }
+      const changed = payload.action === "lanes.presence.announce"
+        ? upsertLanePresence({ laneId, marker, source: "remote" })
+        : removeLanePresence(laneId, marker.deviceId);
+      if (changed) {
+        args.onStateChanged?.();
+        broadcastBrainStatus();
+      }
+      send(peer.ws, "command_ack", {
+        commandId,
+        accepted: true,
+        status: "accepted",
+        message: payload.action === "lanes.presence.announce"
+          ? `Marked ${laneId} as open on ${marker.displayName}.`
+          : `Released ${laneId} on ${marker.displayName}.`,
+      }, requestId);
+      send(peer.ws, "command_result", {
+        commandId,
+        ok: true,
+        result: { ok: true },
+      }, requestId);
+      return;
+    }
     if (!policy) {
       reject(`Unsupported remote command: ${payload.action}.`);
       return;
     }
     if (!policy.viewerAllowed) {
       reject(`Remote command ${payload.action} is not available to paired controller devices.`, "forbidden_command");
+      return;
+    }
+    if (payload.action === "files.writeTextAtomic" && isMobilePeer(peer) && isMobileLaneFileMutationBlocked(payload)) {
+      reject("Mobile file access is read-only for this workspace.", "mobile_read_only");
+      return;
+    }
+    if (policy.localOnly || policy.requiresApproval) {
+      reject(`Remote command ${payload.action} requires approval on the desktop.`, "approval_required");
       return;
     }
 
@@ -718,7 +1150,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       send(peer.ws, "command_result", {
         commandId,
         ok: true,
-        result: created,
+        result: decorateCommandResult(payload.action, created),
       }, requestId);
     } catch (error) {
       send(peer.ws, "command_result", {
@@ -735,7 +1167,10 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
   async function handleMessage(peer: PeerState, raw: RawData): Promise<void> {
     const rawText = wsDataToText(raw);
     const envelope = parseSyncEnvelope(rawText);
+    const heartbeatAwaitedAt = peer.awaitingHeartbeatAt;
     peer.lastSeenAt = nowIso();
+    peer.awaitingHeartbeatAt = null;
+    peer.missedHeartbeatCount = 0;
 
     if (!peer.authenticated) {
       if (envelope.type !== "hello" && envelope.type !== "pairing_request") {
@@ -760,10 +1195,27 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
               message: "Invalid pairing request payload.",
             },
           }, envelope.requestId);
+          try { peer.ws.close(4003, "Pairing failed"); } catch { /* ignore */ }
+          return;
+        }
+        const cooldownMs = pairingCooldownMsRemaining(peer.remoteAddress);
+        if (cooldownMs > 0) {
+          const minutes = Math.ceil(cooldownMs / 60_000);
+          send(peer.ws, "pairing_result", {
+            ok: false,
+            error: {
+              code: "pairing_failed",
+              message: `Too many failed PIN attempts. Try again in ${minutes} minute${minutes === 1 ? "" : "s"}.`,
+            },
+          }, envelope.requestId);
+          try { peer.ws.close(4004, "Pairing cooldown"); } catch { /* ignore */ }
           return;
         }
         try {
           const result = pairingStore.pairPeer(pairing.peer, pairing.code);
+          if (peer.remoteAddress) {
+            pairFailures.delete(peer.remoteAddress);
+          }
           args.deviceRegistryService?.upsertPeerMetadata(pairing.peer, {
             lastSeenAt: nowIso(),
             lastHost: peer.remoteAddress,
@@ -776,13 +1228,25 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           }, envelope.requestId);
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
+          const thrownCode = (error as { code?: string } | null)?.code ?? null;
+          const resultCode: "pin_not_set" | "invalid_pin" | "pairing_failed" =
+            thrownCode === "pin_not_set" || thrownCode === "invalid_pin"
+              ? thrownCode
+              : "pairing_failed";
           send(peer.ws, "pairing_result", {
             ok: false,
             error: {
-              code: /expired/i.test(message) ? "expired_code" : "invalid_code",
+              code: resultCode,
               message,
             },
           }, envelope.requestId);
+          // Drop the socket after any failed pair so brute-forcing the 6-digit
+          // PIN requires a new TCP+WS handshake per attempt, and track per-IP
+          // failures so sustained guessers hit a cooldown.
+          if (resultCode === "invalid_pin" || resultCode === "pairing_failed") {
+            registerPairFailure(peer.remoteAddress);
+          }
+          try { peer.ws.close(4003, "Pairing failed"); } catch { /* ignore */ }
         }
         return;
       }
@@ -842,15 +1306,24 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         features: {
           fileAccess: true,
           terminalStreaming: true,
+          chatStreaming: {
+            enabled: true,
+          },
           bootstrapAuth: true,
           pairingAuth: {
             enabled: true,
-            codeTtlMs: pairingStore.getCodeTtlMs(),
+            pinDigits: 6,
           },
           commandRouting: {
             mode: "allowlisted",
-            supportedActions: remoteCommandService.getSupportedActions(),
-            actions: remoteCommandService.getDescriptors(),
+            supportedActions: [
+              ...remoteCommandService.getSupportedActions(),
+              ...localPresenceCommandDescriptors.map((entry) => entry.action),
+            ],
+            actions: [
+              ...remoteCommandService.getDescriptors(),
+              ...localPresenceCommandDescriptors,
+            ],
           },
         },
       }, envelope.requestId);
@@ -869,9 +1342,9 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
             sentAt: payload.sentAt ?? nowIso(),
             dbVersion: args.db.sync.getDbVersion(),
           }, envelope.requestId);
-        } else if (payload?.kind === "pong" && peer.awaitingHeartbeatAt) {
+        } else if (payload?.kind === "pong" && heartbeatAwaitedAt) {
           const now = Date.now();
-          const sentAtMs = Date.parse(peer.awaitingHeartbeatAt);
+          const sentAtMs = Date.parse(heartbeatAwaitedAt);
           peer.latencyMs = Number.isFinite(sentAtMs) ? Math.max(0, now - sentAtMs) : null;
           peer.awaitingHeartbeatAt = null;
         }
@@ -962,6 +1435,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         if (sessionId) {
           peer.subscribedChatSessionIds.delete(sessionId);
           peer.chatTranscriptOffsets.delete(sessionId);
+          peer.chatEventIdsSent.delete(sessionId);
         }
         break;
       }
@@ -972,6 +1446,16 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         break;
     }
   }
+
+  const getLanePresenceSnapshot = (): Array<{ laneId: string; devicesOpen: DeviceMarker[] }> => {
+    return [...lanePresenceByLaneId.keys()]
+      .sort((left, right) => left.localeCompare(right))
+      .map((laneId) => ({
+        laneId,
+        devicesOpen: listLanePresenceMarkers(laneId),
+      }))
+      .filter((entry) => entry.devicesOpen.length > 0);
+  };
 
   return {
     async waitUntilListening(): Promise<number> {
@@ -1026,8 +1510,15 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       return bootstrapToken;
     },
 
-    getPairingSession(): SyncPairingSession {
-      return pairingStore.getActiveSession();
+    setLocalActiveLanePresence(laneIds: string[]): void {
+      setLocalActiveLanePresence(laneIds);
+    },
+
+    refreshLanDiscovery(): void {
+      const address = server.address();
+      if (typeof address === "object" && address) {
+        publishLanDiscovery(address.port);
+      }
     },
 
     revokePairedDevice(deviceId: string): void {
@@ -1057,6 +1548,22 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       return [...peers]
         .map((peer) => toSyncPeerConnectionState(peer, dbVersion))
         .filter((peer): peer is SyncPeerConnectionState => peer != null);
+    },
+
+    getLanePresenceSnapshot(): Array<{ laneId: string; devicesOpen: DeviceMarker[] }> {
+      return getLanePresenceSnapshot();
+    },
+
+    getChatSubscriptionSnapshot(): Array<{ deviceId: string; subscribedChatSessionIds: string[] }> {
+      return [...peers]
+        .map((peer) => {
+          if (!peer.metadata) return null;
+          return {
+            deviceId: peer.metadata.deviceId,
+            subscribedChatSessionIds: [...peer.subscribedChatSessionIds].sort(),
+          };
+        })
+        .filter((peer): peer is { deviceId: string; subscribedChatSessionIds: string[] } => peer != null);
     },
 
     getBrainStatusSnapshot(): SyncBrainStatusPayload {
@@ -1092,6 +1599,9 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     async dispose(): Promise<void> {
       if (disposed) return;
       disposed = true;
+      localActiveLaneIds = new Set<string>();
+      lanePresenceByLaneId.clear();
+      chatEventSubscription?.();
       clearInterval(pollTimer);
       clearInterval(heartbeatTimer);
       clearInterval(brainStatusTimer);
@@ -1122,6 +1632,8 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         }
         bonjourAnnouncement = null;
       }
+      bonjourPort = null;
+      bonjourSignature = null;
       if (bonjourInstance) {
         try {
           bonjourInstance.destroy();

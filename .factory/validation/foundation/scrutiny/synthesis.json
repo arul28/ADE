@@ -5,36 +5,62 @@
   "validatorsRun": {
     "test": {
       "passed": true,
-      "command": "cd apps/ios && xcodebuild -project ADE.xcodeproj -scheme ADE -destination 'platform=iOS Simulator,id=2107A402-C2A7-4323-AF26-74A0AC406C44' -derivedDataPath /tmp/ade-build test",
+      "command": "xcodebuild test -project /Users/admin/Projects/ADE/.ade/worktrees/mobile-droid-attempt-bbdcd095/apps/ios/ADE.xcodeproj -scheme ADE -destination 'platform=iOS Simulator,name=iPhone 17 Pro,OS=26.3.1' -quiet",
       "exitCode": 0
     },
     "typecheck": {
       "passed": true,
-      "command": "cd apps/ios && xcodebuild -project ADE.xcodeproj -scheme ADE -destination 'platform=iOS Simulator,id=2107A402-C2A7-4323-AF26-74A0AC406C44' -derivedDataPath /tmp/ade-build build",
+      "command": "xcodebuild build -project /Users/admin/Projects/ADE/.ade/worktrees/mobile-droid-attempt-bbdcd095/apps/ios/ADE.xcodeproj -scheme ADE -destination 'platform=iOS Simulator,name=iPhone 17 Pro,OS=26.3.1' -quiet",
       "exitCode": 0
     },
     "lint": {
       "passed": true,
-      "command": "cd apps/ios && xcodebuild -project ADE.xcodeproj -scheme ADE -destination 'platform=iOS Simulator,id=2107A402-C2A7-4323-AF26-74A0AC406C44' -derivedDataPath /tmp/ade-build analyze",
+      "command": "xcodebuild -project /Users/admin/Projects/ADE/.ade/worktrees/mobile-droid-attempt-bbdcd095/apps/ios/ADE.xcodeproj -scheme ADE -destination 'platform=iOS Simulator,name=iPhone 17 Pro,OS=26.3.1' -derivedDataPath /tmp/ade-build analyze",
       "exitCode": 0
     }
   },
   "reviewsSummary": {
-    "total": 1,
-    "passed": 1,
+    "total": 4,
+    "passed": 4,
     "failed": 0,
     "failedFeatures": []
   },
   "blockingIssues": [],
-  "appliedUpdates": [],
-  "suggestedGuidanceUpdates": [
+  "appliedUpdates": [
     {
-      "target": "AGENTS.md",
-      "suggestion": "Clarify the iOS mission boundary so required mission-artifact bookkeeping updates, such as reassigning assertion ownership in mission `features.json`, are either explicitly exempt from the `apps/ios/`-only edit rule or handled by a separate mission-management step.",
-      "evidence": "The `foundation-scrutiny-fixes` review found `/Users/admin/.factory/missions/68540ffe-393c-4cd9-ae06-48bb48e3a3ef/AGENTS.md` still says iOS workers may only modify `apps/ios/`, but this fix feature explicitly needed a `features.json` edit to move `VAL-DS-007` ownership and the worker recorded that as a procedural deviation.",
-      "isSystemic": false
+      "target": "services.yaml",
+      "description": "Updated the mission `build`, `test`, `typecheck`, and `lint` hard-gate commands in `.factory/services.yaml` to the promised iOS-only simulator path so unrelated red desktop suites no longer block foundation scrutiny.",
+      "sourceFeature": "foundation-fix-ios-baseline-tests"
+    },
+    {
+      "target": "library",
+      "description": "Documented the shared `ADEMobilePrimitives.swift` layer in `.factory/library/ios-design-system.md`, including `ADEGlassSection`, `ADEGlassChip`, `ADEGlassActionButton`, and `ADEMatchedTransitionScope` so later iOS workers reuse the shared mobile primitive layer.",
+      "sourceFeature": "foundation-shared-mobile-design-system-and-performance-primitives"
     }
   ],
-  "rejectedObservations": [],
+  "suggestedGuidanceUpdates": [
+    {
+      "target": "skill",
+      "suggestion": "Clarify the `sync-parity-worker` baseline-failure procedure so features whose explicit job is to repair a known-red validation path are not told to abort back to the orchestrator before diagnosing and fixing that baseline.",
+      "evidence": "The `foundation-fix-ios-baseline-tests` handoff recorded a deliberate deviation because the current skill text says to stop when the baseline command fails, but this feature existed specifically to repair the failing iOS baseline.",
+      "isSystemic": false
+    },
+    {
+      "target": "skill",
+      "suggestion": "Tighten `ios-worker` manual-verification guidance for shared UI/polish features so workers either perform a real simulator spot-check when available or explicitly record why only code-path inspection was possible.",
+      "evidence": "The `foundation-shared-mobile-design-system-and-performance-primitives` review found the skill encourages the strongest available manual verification, but the worker's recorded checks stayed at code-inspection level for a feature that claimed visible mobile polish primitives.",
+      "isSystemic": true
+    }
+  ],
+  "rejectedObservations": [
+    {
+      "observation": "Mission guidance and the checked-in service manifest disagree about whether the foundation hard gate is iOS-only.",
+      "reason": "resolved by the applied `.factory/services.yaml` update in this scrutiny round"
+    },
+    {
+      "observation": "`init.sh` generated additional `.factory/library` and skill files during the baseline-repair feature, which caused unrelated factory artifacts to appear in that feature's commit.",
+      "reason": "ambiguous; the review did not establish a durable codebase rule change beyond this one-time bootstrap sequence"
+    }
+  ],
   "previousRound": ".factory/validation/foundation/scrutiny/synthesis.round1.json"
 }

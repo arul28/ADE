@@ -20,6 +20,34 @@ struct LaneBatchManageSheet: View {
     snapshots.map(\.lane.id)
   }
 
+  private var laneIdsDescendantFirst: [String] {
+    let selectedIds = Set(laneIds)
+    let parentById = Dictionary(uniqueKeysWithValues: snapshots.compactMap { snapshot -> (String, String)? in
+      guard let parentLaneId = snapshot.lane.parentLaneId else { return nil }
+      return (snapshot.lane.id, parentLaneId)
+    })
+
+    func selectedAncestorDepth(for laneId: String, visited: Set<String> = []) -> Int {
+      guard !visited.contains(laneId),
+            let parentLaneId = parentById[laneId],
+            selectedIds.contains(parentLaneId)
+      else { return 0 }
+
+      var nextVisited = visited
+      nextVisited.insert(laneId)
+      return 1 + selectedAncestorDepth(for: parentLaneId, visited: nextVisited)
+    }
+
+    return laneIds.sorted { lhs, rhs in
+      let lhsDepth = selectedAncestorDepth(for: lhs)
+      let rhsDepth = selectedAncestorDepth(for: rhs)
+      if lhsDepth == rhsDepth {
+        return lhs < rhs
+      }
+      return lhsDepth > rhsDepth
+    }
+  }
+
   var body: some View {
     NavigationStack {
       ScrollView {
@@ -171,10 +199,7 @@ struct LaneBatchManageSheet: View {
     var deletedLaneIds: [String] = []
     var failures: [String] = []
 
-    // Sort descendant-first so children are deleted before parents.
-    let sortedIds = laneIds.sorted { lhs, rhs in
-      lhs.components(separatedBy: "/").count > rhs.components(separatedBy: "/").count
-    }
+    let sortedIds = laneIdsDescendantFirst
 
     for laneId in sortedIds {
       do {

@@ -54,6 +54,7 @@ import type { AdeDb } from "../state/kvDb";
 import type { createMissionService } from "../missions/missionService";
 import type { createMemoryService } from "../memory/memoryService";
 import type { createProjectConfigService } from "../config/projectConfigService";
+import type { createAiIntegrationService } from "../ai/aiIntegrationService";
 import {
   checkCoordinatorToolPermission,
   createDelegationContract,
@@ -114,6 +115,7 @@ export type CoordinatorAgentDeps = {
   projectRoot: string;
   workspaceRoot: string;
   missionService: ReturnType<typeof createMissionService>;
+  aiIntegrationService: Pick<ReturnType<typeof createAiIntegrationService>, "executeTask"> | null;
   projectConfigService?: ReturnType<typeof createProjectConfigService> | null;
   memoryService?: ReturnType<typeof createMemoryService> | null;
   getMissionBudgetStatus?: () => Promise<MissionBudgetSnapshot | null>;
@@ -1862,6 +1864,14 @@ export class CoordinatorAgent {
 
   private async compactHistory(): Promise<void> {
     try {
+      if (!this.deps.aiIntegrationService) {
+        this.deps.logger.warn("coordinator.compaction_skipped", {
+          runId: this.deps.runId,
+          reason: "missing_ai_integration_service",
+        });
+        return;
+      }
+
       const now = Date.now();
       const count = this.conversationHistory.length;
       const entries: TranscriptEntry[] = this.conversationHistory.map(
@@ -1872,11 +1882,10 @@ export class CoordinatorAgent {
         }),
       );
 
-      const projectConfig = this.deps.projectConfigService?.get().effective ?? { ai: {} };
       const result = await compactConversation({
         messages: entries,
         modelId: this.deps.modelId,
-        projectConfig,
+        aiIntegrationService: this.deps.aiIntegrationService,
       });
 
       const stateDoc = await readMissionStateDocument({

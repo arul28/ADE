@@ -10,7 +10,6 @@ import {
 } from "../opencode/openCodeInventory";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const generateText = vi.fn();
 const streamText = vi.fn();
 
 vi.mock("@opencode-ai/sdk", () => ({
@@ -174,10 +173,6 @@ vi.mock("../opencode/openCodeRuntime", () => ({
     providerID: String(descriptor.family ?? "openai"),
     modelID: String(descriptor.providerModelId ?? descriptor.id ?? "model"),
   })),
-  runOpenCodeTextPrompt: vi.fn(async (args: Record<string, unknown>) => {
-    const result = await generateText(args as any);
-    return { text: String((result as { text?: unknown })?.text ?? "").trim() };
-  }),
   startOpenCodeSession: vi.fn(async (args: { directory: string }) => {
     mockState.openCodeSessionCounter += 1;
     const sessionId = `opencode-session-${mockState.openCodeSessionCounter}`;
@@ -752,6 +747,19 @@ function createService(overrides: Record<string, unknown> = {}) {
   const sessionService = createMockSessionService();
   const projectConfigService = createMockProjectConfigService();
   const issueInventoryService = createMockIssueInventoryService();
+  const aiIntegrationService = {
+    summarizeTerminal: vi.fn(async () => ({
+      text: "Generated session intelligence",
+      structuredOutput: null,
+      provider: "claude",
+      model: "anthropic/claude-haiku-4-5",
+      sessionId: null,
+      inputTokens: null,
+      outputTokens: null,
+      durationMs: 1,
+    })),
+    getMode: vi.fn(() => "subscription"),
+  };
   const transcriptsDir = path.join(tmpRoot, "transcripts");
   fs.mkdirSync(transcriptsDir, { recursive: true });
 
@@ -762,6 +770,7 @@ function createService(overrides: Record<string, unknown> = {}) {
     laneService,
     sessionService,
     projectConfigService,
+    aiIntegrationService: aiIntegrationService as any,
     issueInventoryService,
     logger: logger as any,
     appVersion: "0.0.1-test",
@@ -770,7 +779,7 @@ function createService(overrides: Record<string, unknown> = {}) {
     ...overrides,
   });
 
-  return { service, logger, laneService, sessionService, projectConfigService, issueInventoryService };
+  return { service, logger, laneService, sessionService, projectConfigService, issueInventoryService, aiIntegrationService };
 }
 
 function readPersistedChatState(sessionId: string): Record<string, any> {
@@ -837,7 +846,6 @@ beforeEach(() => {
   mockState.cursorPromptCalls = [];
   vi.mocked(acquireCursorAcpConnection).mockClear();
   vi.mocked(streamText).mockReset();
-  vi.mocked(generateText).mockReset();
   vi.mocked(unstable_v2_createSession).mockReset();
   vi.mocked(detectAllAuth).mockResolvedValue([]);
   vi.mocked(parseAgentChatTranscript).mockReturnValue([]);
@@ -1419,7 +1427,8 @@ describe("createAgentChatService", () => {
         { type: "api-key", provider: "openai" },
         { type: "cli-subscription", cli: "claude", authenticated: true },
       ] as any);
-      vi.mocked(generateText).mockResolvedValue({
+      const { service, sessionService, aiIntegrationService } = createService();
+      vi.mocked(aiIntegrationService.summarizeTerminal).mockResolvedValueOnce({
         text: [
           "## Current goal",
           "- Continue the same ADE work item.",
@@ -1433,9 +1442,14 @@ describe("createAgentChatService", () => {
           "## Next action or open issue",
           "- Finish wiring the handoff flow.",
         ].join("\n"),
+        structuredOutput: null,
+        provider: "codex",
+        model: "opencode/openai/gpt-5.4",
+        sessionId: null,
+        inputTokens: null,
+        outputTokens: null,
+        durationMs: 1,
       } as any);
-
-      const { service, sessionService } = createService();
       const source = await service.createSession({
         laneId: "lane-1",
         provider: "opencode",
@@ -1452,8 +1466,10 @@ describe("createAgentChatService", () => {
         targetModelId: "opencode/openai/gpt-5.4-mini",
       });
 
-      expect(generateText).toHaveBeenCalled();
       expect(result.usedFallbackSummary).toBe(false);
+      expect(aiIntegrationService.summarizeTerminal).toHaveBeenCalledWith(expect.objectContaining({
+        taskType: "handoff_summary",
+      }));
     });
   });
 
@@ -1978,6 +1994,49 @@ describe("createAgentChatService", () => {
 
       const sessions = await service.listSessions();
       expect(sessions[0]?.summary).toBeNull();
+    });
+
+    it("hydrates requestedCwd, cursorConfigValues, and awaitingInput from persisted summaries", async () => {
+      const { service, sessionService } = createService();
+      sessionService.create({
+        sessionId: "restored-cursor-session",
+        laneId: "lane-1",
+        toolType: "cursor",
+        title: "Restored Cursor chat",
+        startedAt: "2026-03-25T00:00:00.000Z",
+      });
+
+      writePersistedChatState("restored-cursor-session", {
+        version: 2,
+        sessionId: "restored-cursor-session",
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "auto",
+        modelId: "cursor/auto",
+        cursorModeId: "ask",
+        cursorConfigValues: {
+          voice: true,
+          temperature: 0.5,
+          notes: "mobile",
+        },
+        awaitingInput: true,
+        requestedCwd: "apps/ios/ADE",
+        updatedAt: "2026-03-25T00:00:05.000Z",
+      });
+
+      await expect(service.listSessions()).resolves.toMatchObject([
+        expect.objectContaining({
+          sessionId: "restored-cursor-session",
+          cursorModeId: "ask",
+          cursorConfigValues: {
+            voice: true,
+            temperature: 0.5,
+            notes: "mobile",
+          },
+          awaitingInput: true,
+          requestedCwd: "apps/ios/ADE",
+        }),
+      ]);
     });
   });
 
@@ -2652,6 +2711,64 @@ describe("createAgentChatService", () => {
       expect(loginCmd!.source).toBe("local");
     });
 
+    it("includes project Claude Code command files before SDK init completes", async () => {
+      const commandsDir = path.join(tmpRoot, ".claude", "commands");
+      fs.mkdirSync(commandsDir, { recursive: true });
+      fs.writeFileSync(path.join(commandsDir, "automate.md"), [
+        "---",
+        "description: Generate test coverage",
+        "argument-hint: [area]",
+        "---",
+        "",
+        "Generate tests for $ARGUMENTS.",
+        "",
+      ].join("\n"));
+
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+
+      const commands = service.getSlashCommands({ sessionId: session.id });
+      expect(commands).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          name: "/automate",
+          description: "Generate test coverage",
+          argumentHint: "[area]",
+          source: "sdk",
+        }),
+      ]));
+    });
+
+    it("keeps reserved local Claude commands ahead of filesystem commands", async () => {
+      const commandsDir = path.join(tmpRoot, ".claude", "commands");
+      fs.mkdirSync(commandsDir, { recursive: true });
+      fs.writeFileSync(path.join(commandsDir, "login.md"), [
+        "---",
+        "description: Project login override",
+        "---",
+        "",
+        "This should not replace ADE's login command.",
+        "",
+      ].join("\n"));
+
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+
+      const commands = service.getSlashCommands({ sessionId: session.id });
+      const loginCmd = commands.find((c: any) => c.name === "/login");
+      expect(loginCmd).toMatchObject({
+        description: "Sign in to Claude Code for this chat runtime",
+        source: "local",
+      });
+    });
+
     it("does not include /login for opencode sessions", async () => {
       const { service } = createService();
       const session = await service.createSession({
@@ -2664,6 +2781,56 @@ describe("createAgentChatService", () => {
       const commands = service.getSlashCommands({ sessionId: session.id });
       const loginCmd = commands.find((c: any) => c.name === "/login");
       expect(loginCmd).toBeUndefined();
+    });
+  });
+
+  it("sends Claude provider slash commands as the raw SDK prompt", async () => {
+    const send = vi.fn().mockResolvedValue(undefined);
+    let streamCall = 0;
+    const stream = vi.fn(() => (async function* () {
+      streamCall += 1;
+      if (streamCall === 1) {
+        yield {
+          type: "system",
+          subtype: "init",
+          session_id: "sdk-session-slash-command",
+          slash_commands: ["/automate"],
+        };
+        yield {
+          type: "result",
+          usage: { input_tokens: 1, output_tokens: 1 },
+        };
+        return;
+      }
+      yield {
+        type: "result",
+        usage: { input_tokens: 1, output_tokens: 1 },
+      };
+    })());
+
+    vi.mocked(unstable_v2_createSession).mockReturnValue({
+      send,
+      stream,
+      close: vi.fn(),
+      sessionId: "sdk-session-slash-command",
+      setPermissionMode: vi.fn().mockResolvedValue(undefined),
+    } as any);
+
+    const { service } = createService();
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "claude",
+      model: "claude-sonnet-4-6",
+      modelId: "anthropic/claude-sonnet-4-6",
+    });
+
+    await service.sendMessage({
+      sessionId: session.id,
+      text: "/automate chat slash commands",
+    });
+
+    await vi.waitFor(() => {
+      expect(send).toHaveBeenLastCalledWith("/automate chat slash commands");
     });
   });
 
@@ -2858,12 +3025,7 @@ describe("createAgentChatService", () => {
         setPermissionMode,
       } as any);
 
-      // Mock generateText so auto-title would produce a different name if called
-      vi.mocked(generateText).mockResolvedValue({
-        text: "Auto Generated Title",
-      } as any);
-
-      const { service, sessionService } = createService({
+      const { service, sessionService, aiIntegrationService } = createService({
         onEvent: (event: AgentChatEventEnvelope) => events.push(event),
       });
 
@@ -2899,9 +3061,7 @@ describe("createAgentChatService", () => {
       // Give auto-title a chance to fire (it's a void promise)
       await new Promise((resolve) => setTimeout(resolve, 50));
 
-      // generateText should NOT have been called for auto-titling because
-      // manuallyNamed suppresses it. (generateText is only used for auto-titling.)
-      expect(generateText).not.toHaveBeenCalled();
+      expect(aiIntegrationService.summarizeTerminal).not.toHaveBeenCalled();
     });
   });
 
@@ -3379,7 +3539,6 @@ describe("createAgentChatService", () => {
       });
       const attachmentDir = path.join(tmpRoot, "attachment-dir");
       fs.mkdirSync(attachmentDir, { recursive: true });
-      vi.mocked(generateText).mockResolvedValue({ text: "Attachment fallback test" } as any);
       let streamArgs: Record<string, unknown> | null = null;
       vi.mocked(streamText).mockImplementation((args: Record<string, unknown>) => {
         streamArgs = args;
@@ -6715,6 +6874,59 @@ describe("createAgentChatService", () => {
     const result = await requestPromise;
     expect(result.decision).toBe("decline");
     expect(events.filter((event) => event.event.type === "tool_result")).toHaveLength(0);
+  });
+
+  it("persists awaitingInput while chat input is pending and clears it after resolution", async () => {
+    const events: AgentChatEventEnvelope[] = [];
+    const { service } = createService({
+      onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+    });
+
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "codex",
+      model: "gpt-5.4",
+    });
+
+    const requestPromise = service.requestChatInput({
+      chatSessionId: session.id,
+      title: "Pending question",
+      body: "Which path should we take?",
+      questions: [{
+        id: "answer",
+        header: "Question 1",
+        question: "Which path should we take?",
+        allowsFreeform: true,
+      }],
+    });
+
+    const approvalEvent = await waitForEvent(
+      events,
+      (event): event is AgentChatEventEnvelope & {
+        event: Extract<AgentChatEventEnvelope["event"], { type: "approval_request" }>;
+      } => {
+        const detail = event.event.type === "approval_request"
+          ? (event.event.detail as { request?: { title?: string } } | undefined)
+          : undefined;
+        return event.event.type === "approval_request" && detail?.request?.title === "Pending question";
+      },
+    );
+
+    expect(readPersistedChatState(session.id).awaitingInput).toBe(true);
+
+    await service.respondToInput({
+      sessionId: session.id,
+      itemId: approvalEvent.event.itemId,
+      decision: "accept",
+      responseText: "Take the safe path.",
+    });
+
+    await expect(requestPromise).resolves.toMatchObject({
+      decision: "accept",
+      answers: { answer: ["Take the safe path."] },
+      responseText: "Take the safe path.",
+    });
+    expect(readPersistedChatState(session.id).awaitingInput).toBeUndefined();
   });
 
   it("maps freeform replies to the single pending question when only one answer is needed", async () => {

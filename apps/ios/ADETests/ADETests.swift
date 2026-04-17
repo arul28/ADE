@@ -123,12 +123,12 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(state.nextDelayNanoseconds(), 1_000_000_000)
   }
 
-  func testSyncReconnectStateReconnectsImmediatelyAfterHeartbeatTimeout() {
+  func testSyncReconnectStateUsesHeartbeatReconnectFloor() {
     var state = SyncReconnectState()
 
-    XCTAssertEqual(state.nextDelayNanoseconds(forCloseCodeRawValue: 4001), 0)
-    XCTAssertEqual(state.attempts, 0)
-    XCTAssertEqual(state.nextDelayNanoseconds(), 1_000_000_000)
+    XCTAssertEqual(state.nextDelayNanoseconds(forCloseCodeRawValue: 4001), 1_500_000_000)
+    XCTAssertEqual(state.attempts, 1)
+    XCTAssertEqual(state.nextDelayNanoseconds(), 2_000_000_000)
   }
 
   func testSyncBonjourTimingMatchesReliabilityRequirements() {
@@ -180,6 +180,247 @@ final class ADETests: XCTestCase {
       userInfo: [NSLocalizedDescriptionKey: "Unable to decode compressed sync payload."]
     )
     XCTAssertEqual(SyncUserFacingError.message(for: compressedPayloadError), "The host sent unreadable sync data. Reconnect and try again.")
+  }
+
+  @MainActor
+  func testSyncServiceMigratesLegacyConnectionDraftProfile() throws {
+    let legacyDraftKey = "ade.sync.connectionDraft"
+    let profileKey = "ade.sync.hostProfile"
+    UserDefaults.standard.removeObject(forKey: legacyDraftKey)
+    UserDefaults.standard.removeObject(forKey: profileKey)
+    defer {
+      UserDefaults.standard.removeObject(forKey: legacyDraftKey)
+      UserDefaults.standard.removeObject(forKey: profileKey)
+    }
+
+    let draft = ConnectionDraft(
+      host: "192.168.1.10",
+      port: 8787,
+      authKind: "paired",
+      pairedDeviceId: "phone-1",
+      lastRemoteDbVersion: 42,
+      lastBrainDeviceId: "host-1"
+    )
+    UserDefaults.standard.set(try JSONEncoder().encode(draft), forKey: legacyDraftKey)
+
+    let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
+    let profile = try XCTUnwrap(service.loadProfile())
+
+    XCTAssertEqual(profile.lastSuccessfulAddress, "192.168.1.10")
+    XCTAssertEqual(profile.savedAddressCandidates, ["192.168.1.10"])
+    XCTAssertEqual(profile.lastHostDeviceId, "host-1")
+    XCTAssertNil(UserDefaults.standard.data(forKey: legacyDraftKey))
+    XCTAssertNotNil(UserDefaults.standard.data(forKey: profileKey))
+  }
+
+  func testAgentChatEventEnvelopeDecodesRichEventPayloads() throws {
+    let completionJSON = """
+    {
+      "sessionId": "session-1",
+      "timestamp": "2026-03-17T00:00:00.000Z",
+      "sequence": 12,
+      "provenance": {
+        "messageId": "msg-1",
+        "threadId": "thread-1",
+        "role": "agent",
+        "laneId": "lane-1"
+      },
+      "event": {
+        "type": "completion_report",
+        "report": {
+          "timestamp": "2026-03-17T00:00:00.000Z",
+          "summary": "Work completed",
+          "status": "completed",
+          "artifacts": [
+            {
+              "type": "file",
+              "description": "Updated the transcript",
+              "reference": "docs/transcript.md"
+            }
+          ]
+        }
+      }
+    }
+    """
+
+    let completionEnvelope = try JSONDecoder().decode(AgentChatEventEnvelope.self, from: Data(completionJSON.utf8))
+    XCTAssertEqual(completionEnvelope.sessionId, "session-1")
+    XCTAssertEqual(completionEnvelope.sequence, 12)
+    XCTAssertEqual(completionEnvelope.provenance?.messageId, "msg-1")
+    guard case .completionReport(let report, _) = completionEnvelope.event else {
+      return XCTFail("Expected completion report event.")
+    }
+    XCTAssertEqual(report.summary, "Work completed")
+    XCTAssertEqual(report.artifacts?.first?.reference, "docs/transcript.md")
+
+    let noticeJSON = """
+    {
+      "sessionId": "session-2",
+      "timestamp": "2026-03-17T00:01:00.000Z",
+      "event": {
+        "type": "system_notice",
+        "noticeKind": "rate_limit",
+        "message": "Slow down",
+        "detail": {
+          "summary": "Retry later",
+          "metrics": [
+            { "label": "Remaining", "value": "2" }
+          ]
+        }
+      }
+    }
+    """
+
+    let noticeEnvelope = try JSONDecoder().decode(AgentChatEventEnvelope.self, from: Data(noticeJSON.utf8))
+    guard case .systemNotice(let noticeKind, let message, let detail, _, _) = noticeEnvelope.event else {
+      return XCTFail("Expected system notice event.")
+    }
+    XCTAssertEqual(noticeKind, .rateLimit)
+    XCTAssertEqual(message, "Slow down")
+    guard case .object(let detailObject) = detail else {
+      return XCTFail("Expected system notice detail object.")
+    }
+    XCTAssertEqual(detailObject["summary"], .string("Retry later"))
+
+    let resolvedJSON = """
+    {
+      "sessionId": "session-3",
+      "timestamp": "2026-03-17T00:02:00.000Z",
+      "event": {
+        "type": "pending_input_resolved",
+        "itemId": "approval-1",
+        "resolution": "accepted",
+        "turnId": "turn-1"
+      }
+    }
+    """
+
+    let resolvedEnvelope = try JSONDecoder().decode(AgentChatEventEnvelope.self, from: Data(resolvedJSON.utf8))
+    guard case .pendingInputResolved(let itemId, let resolution, let turnId) = resolvedEnvelope.event else {
+      return XCTFail("Expected pending input resolution event.")
+    }
+    XCTAssertEqual(itemId, "approval-1")
+    XCTAssertEqual(resolution, "accepted")
+    XCTAssertEqual(turnId, "turn-1")
+  }
+
+  @MainActor
+  func testChatSubscriptionStateSurvivesDisconnectAndReplaysPayloads() async throws {
+    let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
+
+    try await service.subscribeToChatEvents(sessionId: "session-1")
+    try await service.subscribeToChatEvents(sessionId: "session-2")
+    let subscriptionRevision = service.localStateRevision
+
+    try await service.subscribeToChatEvents(sessionId: "session-1")
+    XCTAssertEqual(service.localStateRevision, subscriptionRevision)
+
+    XCTAssertEqual(service.subscribedChatSessionIds, Set(["session-1", "session-2"]))
+    XCTAssertEqual(service.chatSubscriptionPayloads().compactMap { $0["sessionId"] as? String }.sorted(), ["session-1", "session-2"])
+
+    service.disconnect(clearCredentials: false)
+
+    XCTAssertEqual(service.subscribedChatSessionIds, Set(["session-1", "session-2"]))
+    XCTAssertEqual(service.chatSubscriptionPayloads().compactMap { $0["sessionId"] as? String }.sorted(), ["session-1", "session-2"])
+
+    try await service.unsubscribeFromChatEvents(sessionId: "session-1")
+    XCTAssertEqual(service.subscribedChatSessionIds, Set(["session-2"]))
+
+    let unsubscribedRevision = service.localStateRevision
+    try await service.unsubscribeFromChatEvents(sessionId: "session-1")
+    XCTAssertEqual(service.localStateRevision, unsubscribedRevision)
+  }
+
+  @MainActor
+  func testChatEventHistoryStoresDecodedEnvelopes() async throws {
+    let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
+    let globalRevision = service.localStateRevision
+    let envelope = AgentChatEventEnvelope(
+      sessionId: "session-1",
+      timestamp: "2026-03-17T00:00:00.000Z",
+      event: .text(text: "Working...", messageId: "msg-1", turnId: "turn-1", itemId: "item-1"),
+      sequence: 1,
+      provenance: AgentChatEventProvenance(
+        messageId: "msg-1",
+        threadId: "thread-1",
+        role: "agent",
+        targetKind: nil,
+        sourceSessionId: nil,
+        attemptId: nil,
+        stepKey: nil,
+        laneId: "lane-1",
+        runId: nil
+      )
+    )
+
+    service.recordChatEventEnvelope(envelope)
+
+    XCTAssertEqual(service.chatEventHistory(sessionId: "session-1"), [envelope])
+    XCTAssertEqual(service.localStateRevision, globalRevision)
+    XCTAssertEqual(service.chatEventRevision(for: "session-1"), 1)
+  }
+
+  func testChatCommandRequestPayloadsEncodeExpectedShapes() throws {
+    let subscribe = try jsonDictionary(from: AgentChatSubscriptionRequest(sessionId: "session-1"))
+    XCTAssertEqual(subscribe["sessionId"] as? String, "session-1")
+
+    let interrupt = try jsonDictionary(from: AgentChatInterruptRequest(sessionId: "session-1"))
+    XCTAssertEqual(interrupt["sessionId"] as? String, "session-1")
+
+    let steer = try jsonDictionary(from: AgentChatSteerRequest(sessionId: "session-1", text: "Keep going"))
+    XCTAssertEqual(steer["sessionId"] as? String, "session-1")
+    XCTAssertEqual(steer["text"] as? String, "Keep going")
+
+    let resume = try jsonDictionary(from: AgentChatResumeRequest(sessionId: "session-1"))
+    XCTAssertEqual(resume["sessionId"] as? String, "session-1")
+
+    let dispose = try jsonDictionary(from: AgentChatDisposeRequest(sessionId: "session-1"))
+    XCTAssertEqual(dispose["sessionId"] as? String, "session-1")
+
+    let approve = try jsonDictionary(from: AgentChatApproveRequest(
+      sessionId: "session-1",
+      itemId: "approval-1",
+      decision: .acceptForSession,
+      responseText: "Proceed"
+    ))
+    XCTAssertEqual(approve["sessionId"] as? String, "session-1")
+    XCTAssertEqual(approve["itemId"] as? String, "approval-1")
+    XCTAssertEqual(approve["decision"] as? String, "accept_for_session")
+    XCTAssertEqual(approve["responseText"] as? String, "Proceed")
+
+    let respond = try jsonDictionary(from: AgentChatRespondToInputRequest(
+      sessionId: "session-1",
+      itemId: "question-1",
+      decision: .decline,
+      answers: [
+        "choice": .string("later"),
+        "files": .strings(["Sources/App.swift", "Sources/WorkView.swift"])
+      ],
+      responseText: "Not yet"
+    ))
+    XCTAssertEqual(respond["decision"] as? String, "decline")
+    let respondAnswers = respond["answers"] as? [String: Any]
+    XCTAssertEqual(respondAnswers?["choice"] as? String, "later")
+    XCTAssertEqual(respondAnswers?["files"] as? [String], ["Sources/App.swift", "Sources/WorkView.swift"])
+
+    let update = try jsonDictionary(from: AgentChatUpdateSessionRequest(
+      sessionId: "session-1",
+      title: "Review run",
+      modelId: "claude-sonnet-4",
+      reasoningEffort: "high",
+      permissionMode: "edit",
+      interactionMode: "plan",
+      claudePermissionMode: "default",
+      codexApprovalPolicy: "on-request",
+      codexSandbox: "workspace-write",
+      codexConfigSource: "flags",
+      unifiedPermissionMode: "edit",
+      computerUse: .object(["enabled": .bool(true)])
+    ))
+    XCTAssertEqual(update["modelId"] as? String, "claude-sonnet-4")
+    XCTAssertEqual(update["permissionMode"] as? String, "edit")
+    let computerUse = update["computerUse"] as? [String: Any]
+    XCTAssertEqual(computerUse?["enabled"] as? Bool, true)
   }
 
   func testStaleSendCallbackGuardOnlyHandlesActiveSocket() {
@@ -279,24 +520,10 @@ final class ADETests: XCTestCase {
     database.close()
   }
 
-  func testConnectionDraftRoundTrip() throws {
-    let draft = ConnectionDraft(
-      host: "127.0.0.1",
-      port: 8787,
-      authKind: "paired",
-      pairedDeviceId: "phone-1",
-      lastRemoteDbVersion: 42,
-      lastBrainDeviceId: "brain-1"
-    )
-    let data = try JSONEncoder().encode(draft)
-    let decoded = try JSONDecoder().decode(ConnectionDraft.self, from: data)
-    XCTAssertEqual(decoded, draft)
-  }
-
   @MainActor
   func testSyncPairingQrPayloadRoundTripFromDesktopLink() throws {
     let payload = """
-    {"version":1,"hostIdentity":{"deviceId":"host-1","siteId":"site-1","name":"Mac Studio","platform":"macOS","deviceType":"desktop"},"port":8787,"pairingCode":"ABC123","expiresAt":"2026-03-17T12:00:00.000Z","addressCandidates":[{"host":"192.168.1.8","kind":"lan"},{"host":"100.101.102.103","kind":"tailscale"}]}
+    {"version":2,"hostIdentity":{"deviceId":"host-1","siteId":"site-1","name":"Mac Studio","platform":"macOS","deviceType":"desktop"},"port":8787,"addressCandidates":[{"host":"192.168.1.8","kind":"lan"},{"host":"100.101.102.103","kind":"tailscale"}]}
     """
     let url = "ade-sync://pair?payload=\(payload.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? payload)"
 
@@ -305,8 +532,19 @@ final class ADETests: XCTestCase {
 
     XCTAssertEqual(decoded.hostIdentity.deviceId, "host-1")
     XCTAssertEqual(decoded.hostIdentity.name, "Mac Studio")
-    XCTAssertEqual(decoded.pairingCode, "ABC123")
+    XCTAssertEqual(decoded.version, 2)
     XCTAssertEqual(decoded.addressCandidates.map(\.host), ["192.168.1.8", "100.101.102.103"])
+  }
+
+  @MainActor
+  func testSyncPairingQrPayloadRejectsUnsupportedVersion() throws {
+    let payload = """
+    {"version":3,"hostIdentity":{"deviceId":"host-1","siteId":"site-1","name":"Mac Studio","platform":"macOS","deviceType":"desktop"},"port":8787,"addressCandidates":[{"host":"192.168.1.8","kind":"lan"}]}
+    """
+    let url = "ade-sync://pair?payload=\(payload.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? payload)"
+
+    let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
+    XCTAssertThrowsError(try service.decodePairingQrPayload(from: url))
   }
 
   func testDatabasePersistsStableSiteIdAcrossReopen() throws {
@@ -380,6 +618,54 @@ final class ADETests: XCTestCase {
     database.close()
   }
 
+  func testDatabaseIgnoresHydrationOwnedLaneStateSnapshotChanges() throws {
+    let baseURL = makeTemporaryDirectory()
+    let database = makeLaneHydrationDatabase(baseURL: baseURL)
+    XCTAssertNil(database.initializationError)
+
+    let laneSnapshotChanges = [
+      CrsqlChangeRow(
+        table: "lane_state_snapshots",
+        pk: packedDesktopTextPrimaryKey("lane-primary"),
+        cid: "dirty",
+        val: .number(1),
+        colVersion: 1,
+        dbVersion: 2,
+        siteId: "b00e9b92c864a27958669c1595fcb2c3",
+        cl: 1,
+        seq: 0
+      ),
+      CrsqlChangeRow(
+        table: "lane_state_snapshots",
+        pk: packedDesktopTextPrimaryKey("lane-primary"),
+        cid: "ahead",
+        val: .number(3),
+        colVersion: 1,
+        dbVersion: 2,
+        siteId: "b00e9b92c864a27958669c1595fcb2c3",
+        cl: 1,
+        seq: 1
+      ),
+    ]
+
+    let result = try database.applyChanges(laneSnapshotChanges)
+
+    XCTAssertEqual(result.appliedCount, 0)
+    XCTAssertEqual(try countRows(in: baseURL, table: "lane_state_snapshots"), 0)
+    database.close()
+  }
+
+  func testHydrationOwnedSnapshotTablesDoNotRegisterCrrMetadata() throws {
+    let baseURL = makeTemporaryDirectory()
+    let database = makeControllerHydrationDatabase(baseURL: baseURL)
+    XCTAssertNil(database.initializationError)
+
+    XCTAssertTrue(try tableExists(in: baseURL, table: "lanes__crsql_clock"))
+    XCTAssertFalse(try tableExists(in: baseURL, table: "lane_state_snapshots__crsql_clock"))
+    XCTAssertFalse(try tableExists(in: baseURL, table: "pull_request_snapshots__crsql_clock"))
+    database.close()
+  }
+
   func testDatabaseTreatsCrsqlDeleteSentinelAsRowDelete() throws {
     let baseURL = makeTemporaryDirectory()
     let database = makeConflictPredictionsDatabase(baseURL: baseURL)
@@ -408,6 +694,37 @@ final class ADETests: XCTestCase {
     let result = try database.applyChanges([deleteChange])
     XCTAssertEqual(result.appliedCount, 1)
 
+    XCTAssertEqual(try countRows(in: baseURL, table: "conflict_predictions"), 0)
+    database.close()
+  }
+
+  func testDatabaseTreatsLegacyDeleteSentinelAsRowDelete() throws {
+    let baseURL = makeTemporaryDirectory()
+    let database = makeConflictPredictionsDatabase(baseURL: baseURL)
+    XCTAssertNil(database.initializationError)
+
+    try database.executeSqlForTesting("""
+      insert into conflict_predictions (
+        id, project_id, lane_a_id, lane_b_id, status, predicted_at
+      ) values (
+        'prediction-legacy', 'project-1', 'lane-a', null, 'clean', '2026-03-17T00:00:00.000Z'
+      )
+    """)
+
+    let deleteChange = CrsqlChangeRow(
+      table: "conflict_predictions",
+      pk: .bytes(SyncScalarBytes(type: "bytes", base64: packedDesktopTextPrimaryKeyData("prediction-legacy").base64EncodedString())),
+      cid: "__ade_deleted",
+      val: .null,
+      colVersion: 2,
+      dbVersion: 2,
+      siteId: "b00e9b92c864a27958669c1595fcb2c3",
+      cl: 1,
+      seq: 0
+    )
+
+    let result = try database.applyChanges([deleteChange])
+    XCTAssertEqual(result.appliedCount, 1)
     XCTAssertEqual(try countRows(in: baseURL, table: "conflict_predictions"), 0)
     database.close()
   }
@@ -508,6 +825,90 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(mirrored.last?.attachedRootPath, "/tmp/project/.ade/worktrees/linear-test")
     XCTAssertEqual(mirrored.last?.parentStatus?.dirty, true)
     XCTAssertEqual(database.listWorkspaces().first?.isReadOnlyByDefault, true)
+    database.close()
+  }
+
+  func testDatabaseReplaceLaneSnapshotsCanRefreshWithCachedWorkSessions() throws {
+    let baseURL = makeTemporaryDirectory()
+    let database = DatabaseService(baseURL: baseURL)
+    XCTAssertNil(database.initializationError)
+
+    try insertHydrationProjectGraph(into: database)
+    let initialLane = LaneSummary(
+      id: "lane-primary",
+      name: "Primary",
+      description: nil,
+      laneType: "primary",
+      baseRef: "main",
+      branchRef: "main",
+      worktreePath: "/tmp/project",
+      attachedRootPath: nil,
+      parentLaneId: nil,
+      childCount: 0,
+      stackDepth: 0,
+      parentStatus: nil,
+      isEditProtected: true,
+      status: LaneStatus(dirty: false, ahead: 0, behind: 0, remoteBehind: 0, rebaseInProgress: false),
+      color: nil,
+      icon: nil,
+      tags: [],
+      folder: nil,
+      createdAt: "2026-03-17T00:00:00.000Z",
+      archivedAt: nil
+    )
+
+    try database.replaceLaneSnapshots([initialLane])
+    try database.replaceTerminalSessions([
+      TerminalSessionSummary(
+        id: "session-1",
+        laneId: "lane-primary",
+        laneName: "Primary",
+        ptyId: nil,
+        tracked: true,
+        pinned: false,
+        goal: "Keep Work cache",
+        toolType: "claude-chat",
+        title: "Cached chat",
+        status: "running",
+        startedAt: "2026-03-17T00:10:00.000Z",
+        endedAt: nil,
+        exitCode: nil,
+        transcriptPath: "/tmp/session-1.log",
+        headShaStart: nil,
+        headShaEnd: nil,
+        lastOutputPreview: "Still visible",
+        summary: nil,
+        runtimeState: "running"
+      ),
+    ])
+
+    let refreshedLane = LaneSummary(
+      id: "lane-primary",
+      name: "Primary",
+      description: nil,
+      laneType: "primary",
+      baseRef: "main",
+      branchRef: "main",
+      worktreePath: "/tmp/project",
+      attachedRootPath: nil,
+      parentLaneId: nil,
+      childCount: 0,
+      stackDepth: 0,
+      parentStatus: nil,
+      isEditProtected: true,
+      status: LaneStatus(dirty: true, ahead: 2, behind: 0, remoteBehind: 0, rebaseInProgress: false),
+      color: nil,
+      icon: nil,
+      tags: [],
+      folder: nil,
+      createdAt: "2026-03-17T00:00:00.000Z",
+      archivedAt: nil
+    )
+
+    try database.replaceLaneSnapshots([refreshedLane])
+
+    XCTAssertEqual(database.fetchSessions().map(\.id), ["session-1"])
+    XCTAssertEqual(database.fetchLanes(includeArchived: true).first?.status.ahead, 2)
     database.close()
   }
 
@@ -780,6 +1181,66 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(sessions.first?.id, "session-1")
     XCTAssertEqual(sessions.first?.laneName, "Primary")
     XCTAssertEqual(sessions.first?.lastOutputPreview, "Tests starting")
+    database.close()
+  }
+
+  func testDatabaseReplaceTerminalSessionsPreservesRuntimeAndResumeMetadata() throws {
+    let baseURL = makeTemporaryDirectory()
+    let database = makeControllerHydrationDatabase(baseURL: baseURL)
+    XCTAssertNil(database.initializationError)
+
+    try insertHydrationProjectGraph(into: database)
+    try database.replaceTerminalSessions([
+      TerminalSessionSummary(
+        id: "session-1",
+        laneId: "lane-primary",
+        laneName: "Primary",
+        ptyId: nil,
+        tracked: true,
+        pinned: true,
+        manuallyNamed: true,
+        goal: "Resume mobile parity",
+        toolType: "codex-chat",
+        title: "Named chat",
+        status: "running",
+        startedAt: "2026-03-17T00:10:00.000Z",
+        endedAt: nil,
+        exitCode: nil,
+        transcriptPath: "/tmp/session-1.log",
+        headShaStart: nil,
+        headShaEnd: nil,
+        lastOutputPreview: "Waiting for approval",
+        summary: "Follow-up needed",
+        runtimeState: "waiting-input",
+        resumeCommand: "codex resume thread-1",
+        resumeMetadata: TerminalResumeMetadata(
+          provider: "codex",
+          targetKind: "thread",
+          targetId: "thread-1",
+          launch: TerminalResumeLaunchConfig(
+            permissionMode: "edit",
+            claudePermissionMode: nil,
+            codexApprovalPolicy: "on-request",
+            codexSandbox: "workspace-write",
+            codexConfigSource: "flags"
+          ),
+          target: nil,
+          permissionMode: "edit"
+        ),
+        chatIdleSinceAt: "2026-03-17T00:11:00.000Z"
+      ),
+    ])
+
+    let session = try XCTUnwrap(database.fetchSessions().first)
+    XCTAssertEqual(session.runtimeState, "waiting-input")
+    XCTAssertEqual(session.chatIdleSinceAt, "2026-03-17T00:11:00.000Z")
+    XCTAssertEqual(session.resumeMetadata?.provider, "codex")
+    XCTAssertEqual(session.resumeMetadata?.targetKind, "thread")
+    XCTAssertEqual(session.resumeMetadata?.targetId, "thread-1")
+    XCTAssertEqual(session.resumeMetadata?.launch.codexApprovalPolicy, "on-request")
+    XCTAssertEqual(session.resumeMetadata?.launch.codexSandbox, "workspace-write")
+    XCTAssertEqual(session.resumeMetadata?.launch.codexConfigSource, "flags")
+    XCTAssertTrue(session.manuallyNamed ?? false)
     database.close()
   }
 
@@ -1272,6 +1733,120 @@ final class ADETests: XCTestCase {
     )
   }
 
+  func testLaneRootConnectionNoticeKeepsCachedLanesVisibleWhileOffline() {
+    let notice = laneRootConnectionNotice(
+      connectionState: .disconnected,
+      laneStatus: .disconnected,
+      hasCachedLanes: true,
+      hasHostProfile: true,
+      needsRepairing: false
+    )
+
+    XCTAssertEqual(notice?.title, "Showing cached lanes")
+    XCTAssertEqual(notice?.actionTitle, "Reconnect")
+    XCTAssertEqual(notice?.action, .reconnect)
+    XCTAssertFalse(notice?.allowsLiveActions ?? true)
+    XCTAssertEqual(
+      notice?.message,
+      "Cached lane state stays visible. Reconnect to refresh or run live lane actions."
+    )
+  }
+
+  func testLaneRootEmptyStateGuidesUnpairedUsersWhenNoCacheExists() {
+    let emptyState = laneRootEmptyState(
+      connectionState: .disconnected,
+      laneStatus: .disconnected,
+      hasHostProfile: false
+    )
+
+    XCTAssertEqual(emptyState?.title, "Pair to load lanes")
+    XCTAssertEqual(emptyState?.actionTitle, "Pair with host")
+    XCTAssertEqual(emptyState?.action, .openSettings)
+  }
+
+  func testLaneDetailNoticeDisablesLiveActionsWhileSyncing() {
+    let notice = laneDetailConnectionNotice(
+      connectionState: .syncing,
+      laneStatus: SyncDomainStatus(phase: .ready, lastError: nil, lastHydratedAt: nil),
+      hasCachedDetail: true,
+      hasHostProfile: true,
+      needsRepairing: false
+    )
+
+    XCTAssertEqual(notice?.title, "Syncing live lane detail")
+    XCTAssertFalse(notice?.allowsLiveActions ?? true)
+    XCTAssertNil(notice?.action)
+    XCTAssertEqual(
+      notice?.message,
+      "Cached lane detail remains visible while sync catches up. Live git actions unlock when sync finishes."
+    )
+  }
+
+  func testLaneDetailEmptyStateSurfacesRetryWhenHydrationFailsWithoutCache() {
+    let emptyState = laneDetailEmptyState(
+      connectionState: .connected,
+      laneStatus: SyncDomainStatus(phase: .failed, lastError: "The host stopped before lane detail loaded.", lastHydratedAt: nil),
+      hasHostProfile: true
+    )
+
+    XCTAssertEqual(emptyState?.title, "Lane detail unavailable")
+    XCTAssertEqual(emptyState?.message, "The host stopped before lane detail loaded.")
+    XCTAssertEqual(emptyState?.actionTitle, "Retry")
+    XCTAssertEqual(emptyState?.action, .retry)
+  }
+
+  func testLaneAllowsLiveActionsRequiresConnectedAndReadyState() {
+    XCTAssertTrue(
+      laneAllowsLiveActions(
+        connectionState: .connected,
+        laneStatus: SyncDomainStatus(phase: .ready, lastError: nil, lastHydratedAt: nil)
+      )
+    )
+    XCTAssertFalse(
+      laneAllowsLiveActions(
+        connectionState: .syncing,
+        laneStatus: SyncDomainStatus(phase: .ready, lastError: nil, lastHydratedAt: nil)
+      )
+    )
+    XCTAssertFalse(
+      laneAllowsLiveActions(
+        connectionState: .connected,
+        laneStatus: SyncDomainStatus(phase: .hydrating, lastError: nil, lastHydratedAt: nil)
+      )
+    )
+  }
+
+  func testLaneAllowsDiffInspectionKeepsCachedTargetsReadableWhileOfflineOrSyncing() {
+    XCTAssertTrue(
+      laneAllowsDiffInspection(
+        connectionState: .disconnected,
+        laneStatus: .disconnected,
+        hasCachedTargets: true
+      )
+    )
+    XCTAssertTrue(
+      laneAllowsDiffInspection(
+        connectionState: .syncing,
+        laneStatus: SyncDomainStatus(phase: .ready, lastError: nil, lastHydratedAt: nil),
+        hasCachedTargets: true
+      )
+    )
+    XCTAssertFalse(
+      laneAllowsDiffInspection(
+        connectionState: .disconnected,
+        laneStatus: .disconnected,
+        hasCachedTargets: false
+      )
+    )
+    XCTAssertTrue(
+      laneAllowsDiffInspection(
+        connectionState: .connected,
+        laneStatus: SyncDomainStatus(phase: .ready, lastError: nil, lastHydratedAt: nil),
+        hasCachedTargets: false
+      )
+    )
+  }
+
   func testBuildPullRequestTimelineOrdersStateReviewsAndComments() {
     let pr = PullRequestListItem(
       id: "pr-9",
@@ -1377,6 +1952,35 @@ final class ADETests: XCTestCase {
     XCTAssertNil(lines[3].oldLineNumber)
     XCTAssertEqual(lines[3].newLineNumber, 2)
     XCTAssertEqual(lines[4].newLineNumber, 3)
+  }
+
+  func testPrFileDiffDefaultsToCollapsedForLargePatches() {
+    let smallFile = PrFile(
+      filename: "Sources/App.swift",
+      status: "modified",
+      additions: 4,
+      deletions: 1,
+      patch: """
+      @@ -1 +1,2 @@
+      -print("old")
+      +print("new")
+      """,
+      previousFilename: nil
+    )
+    XCTAssertTrue(prFileDiffShouldExpandByDefault(smallFile))
+
+    let largePatch = (0..<180).map { index in
+      "line \(index)"
+    }.joined(separator: "\n")
+    let largeFile = PrFile(
+      filename: "Sources/Huge.swift",
+      status: "modified",
+      additions: 180,
+      deletions: 180,
+      patch: largePatch,
+      previousFilename: nil
+    )
+    XCTAssertFalse(prFileDiffShouldExpandByDefault(largeFile))
   }
 
   func testDatabaseFetchPullRequestListItemsIncludesWorkflowContext() throws {
@@ -1538,6 +2142,27 @@ final class ADETests: XCTestCase {
     XCTAssertTrue(tokens.contains(where: { $0.role == .string && $0.text == "\"/users\"" }))
   }
 
+  func testSyntaxHighlighterRepeatedCallsReturnStableTokensAndHighlights() {
+    let source = "import Foundation\nstruct Demo {\n  let title = \"Hello\"\n  // Greets the workspace\n}"
+
+    let firstTokens = SyntaxHighlighter.tokenize(source, as: .swift)
+    let secondTokens = SyntaxHighlighter.tokenize(source, as: .swift)
+    XCTAssertEqual(secondTokens, firstTokens)
+
+    let firstHighlight = SyntaxHighlighter.highlightedAttributedString(source, as: .swift)
+    let secondHighlight = SyntaxHighlighter.highlightedAttributedString(source, as: .swift)
+    XCTAssertEqual(secondHighlight, firstHighlight)
+  }
+
+  func testMatchedTransitionScopeReturnsNilIdsWithoutNamespace() {
+    let scope = ADEMatchedTransitionScope(namespace: nil, stem: "work-session-1")
+
+    XCTAssertNil(scope.id(.container))
+    XCTAssertNil(scope.id(.icon))
+    XCTAssertNil(scope.id(.title))
+    XCTAssertNil(scope.id(.status))
+  }
+
   func testInlineDiffBuilderMarksAddedAndRemovedLines() {
     let lines = buildInlineDiffLines(
       original: "let value = 1\nprint(value)",
@@ -1563,6 +2188,212 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(formattedFileSize(999), "999 B")
     XCTAssertEqual(formattedFileSize(2_048), "2 KB")
     XCTAssertEqual(formattedFileSize(1_572_864), "1.5 MB")
+  }
+
+  func testFilesWorkspaceDefaultsToMobileReadOnlyWhenHostOmitsFlag() throws {
+    let data = try JSONSerialization.data(withJSONObject: [
+      "id": "workspace-1",
+      "kind": "primary",
+      "laneId": NSNull(),
+      "name": "Repo",
+      "rootPath": "/repo",
+      "isReadOnlyByDefault": false,
+    ])
+
+    let workspace = try JSONDecoder().decode(FilesWorkspace.self, from: data)
+
+    XCTAssertTrue(workspace.mobileReadOnly)
+    XCTAssertTrue(workspace.readOnlyOnMobile)
+  }
+
+  func testResolveFilesWorkspaceFallsBackToLaneMatchWhenWorkspaceIdIsStale() {
+    let workspaces = [
+      FilesWorkspace(
+        id: "workspace-primary",
+        kind: "primary",
+        laneId: nil,
+        name: "Repo",
+        rootPath: "/repo",
+        isReadOnlyByDefault: true
+      ),
+      FilesWorkspace(
+        id: "workspace-lane-2",
+        kind: "worktree",
+        laneId: "lane-2",
+        name: "Release",
+        rootPath: "/repo/.ade/worktrees/release",
+        isReadOnlyByDefault: true
+      ),
+    ]
+
+    let request = FilesNavigationRequest(workspaceId: "stale-id", laneId: "lane-2", relativePath: "Sources/App.swift")
+
+    XCTAssertEqual(resolveFilesWorkspace(for: request, in: workspaces)?.id, "workspace-lane-2")
+  }
+
+  func testFilesBrowserStatusPresentationKeepsCachedWorkspacesExplicitWhileOffline() {
+    let presentation = filesBrowserStatusPresentation(
+      status: SyncDomainStatus(phase: .disconnected),
+      hasCachedWorkspaces: true,
+      hasActiveHostProfile: true,
+      needsRepairing: false
+    )
+
+    XCTAssertEqual(presentation?.title, "Showing cached workspaces")
+    XCTAssertEqual(presentation?.actionTitle, "Reconnect")
+    XCTAssertEqual(
+      presentation?.message,
+      "Workspace metadata and cached directory snapshots stay visible on iPhone, but quick open, text search, and refresh need the host to reconnect."
+    )
+  }
+
+  func testFilesBrowserStatusPresentationUsesFailureCopyWhenWorkspaceHydrationFails() {
+    let presentation = filesBrowserStatusPresentation(
+      status: SyncDomainStatus(phase: .failed, lastError: "Lane hydration timed out"),
+      hasCachedWorkspaces: false,
+      hasActiveHostProfile: false,
+      needsRepairing: false
+    )
+
+    XCTAssertEqual(presentation?.title, "Workspace hydration failed")
+    XCTAssertEqual(presentation?.message, "Lane hydration timed out")
+    XCTAssertEqual(presentation?.actionTitle, "Retry")
+  }
+
+  func testFilesSearchEmptyMessageReflectsLiveAndQueryState() {
+    XCTAssertEqual(
+      filesSearchEmptyMessage(kind: .quickOpen, isLive: false, needsRepairing: false, query: ""),
+      "Quick open needs a live host connection."
+    )
+    XCTAssertEqual(
+      filesSearchEmptyMessage(kind: .textSearch, isLive: true, needsRepairing: false, query: "needle"),
+      "No matches found."
+    )
+  }
+
+  func testFilesBreadcrumbItemsKeepCurrentFileSeparateFromDirectories() {
+    let items = filesBreadcrumbItems(relativePath: "Sources/Views/Files.swift", includeCurrentFile: true)
+
+    XCTAssertEqual(
+      items,
+      [
+        FilesBreadcrumbItem(label: "Sources", path: "Sources", isDirectory: true),
+        FilesBreadcrumbItem(label: "Views", path: "Sources/Views", isDirectory: true),
+        FilesBreadcrumbItem(label: "Files.swift", path: "Sources/Views/Files.swift", isDirectory: false),
+      ]
+    )
+  }
+
+  func testFilesEditorModesKeepDiffAvailableForLaneBackedReadOnlyPreview() {
+    XCTAssertEqual(filesEditorModes(laneId: nil), [.preview])
+    XCTAssertEqual(filesEditorModes(laneId: "lane-1"), [.preview, .diff])
+  }
+
+  func testFilesHistoryFallbackExplainsUnsupportedAndEmptyStates() {
+    XCTAssertEqual(
+      filesHistoryFallback(laneId: nil, entries: [], errorMessage: nil),
+      FilesSectionFallback(
+        title: "History unavailable",
+        message: "This workspace is not lane-backed, so Files can only show the current preview and metadata on iPhone."
+      )
+    )
+
+    XCTAssertEqual(
+      filesHistoryFallback(laneId: "lane-1", entries: [], errorMessage: nil),
+      FilesSectionFallback(
+        title: "No recent history",
+        message: "The host did not return recent commits for this file yet. Reconnect or refresh to try again."
+      )
+    )
+  }
+
+  func testFilesHistoryFallbackPrefersEntriesAndExplicitErrors() {
+    let entries = [
+      GitFileHistoryEntry(
+        commitSha: "abc123",
+        shortSha: "abc123",
+        authorName: "Arul",
+        authoredAt: "2026-04-11T21:00:00.000Z",
+        subject: "Update app",
+        path: "Sources/App.swift",
+        previousPath: nil,
+        changeType: "modified"
+      )
+    ]
+
+    XCTAssertNil(filesHistoryFallback(laneId: "lane-1", entries: entries, errorMessage: nil))
+    XCTAssertEqual(
+      filesHistoryFallback(laneId: "lane-1", entries: [], errorMessage: "Cache missing"),
+      FilesSectionFallback(
+        title: "History unavailable",
+        message: "Cache missing"
+      )
+    )
+  }
+
+  func testDatabaseCachesFilesWorkspaceDirectoryBlobDiffAndHistorySnapshots() throws {
+    let database = DatabaseService(baseURL: makeTemporaryDirectory())
+    XCTAssertNil(database.initializationError)
+
+    try database.replaceFilesWorkspaces([
+      FilesWorkspace(
+        id: "workspace-lane-1",
+        kind: "worktree",
+        laneId: "lane-1",
+        name: "Feature",
+        rootPath: "/repo/.ade/worktrees/feature",
+        isReadOnlyByDefault: false,
+        mobileReadOnly: true
+      )
+    ])
+    try database.cacheDirectorySnapshot(
+      workspaceId: "workspace-lane-1",
+      parentPath: "Sources",
+      includeHidden: false,
+      nodes: [FileTreeNode(name: "App.swift", path: "Sources/App.swift", type: "file", hasChildren: nil, children: nil, changeStatus: "M", size: 321)]
+    )
+    try database.cacheFileContentSnapshot(
+      workspaceId: "workspace-lane-1",
+      path: "Sources/App.swift",
+      blob: SyncFileBlob(path: "Sources/App.swift", size: 321, mimeType: nil, encoding: "utf-8", isBinary: false, content: "print(\"hi\")", languageId: "swift")
+    )
+    try database.cacheFileDiffSnapshot(
+      workspaceId: "workspace-lane-1",
+      path: "Sources/App.swift",
+      mode: "unstaged",
+      diff: FileDiff(
+        path: "Sources/App.swift",
+        mode: "unstaged",
+        original: DiffSide(exists: true, text: "print(\"old\")"),
+        modified: DiffSide(exists: true, text: "print(\"hi\")"),
+        isBinary: false,
+        language: "swift"
+      )
+    )
+    try database.cacheFileHistorySnapshot(
+      workspaceId: "workspace-lane-1",
+      path: "Sources/App.swift",
+      entries: [
+        GitFileHistoryEntry(
+          commitSha: "abc123",
+          shortSha: "abc123",
+          authorName: "Arul",
+          authoredAt: "2026-04-11T21:00:00.000Z",
+          subject: "Update app",
+          path: "Sources/App.swift",
+          previousPath: nil,
+          changeType: "modified"
+        )
+      ]
+    )
+
+    XCTAssertEqual(database.listWorkspaces().first?.id, "workspace-lane-1")
+    XCTAssertTrue(database.listWorkspaces().first?.mobileReadOnly == true)
+    XCTAssertEqual(database.fetchDirectorySnapshot(workspaceId: "workspace-lane-1", parentPath: "Sources", includeHidden: false)?.first?.path, "Sources/App.swift")
+    XCTAssertEqual(database.fetchFileContentSnapshot(workspaceId: "workspace-lane-1", path: "Sources/App.swift")?.content, "print(\"hi\")")
+    XCTAssertEqual(database.fetchFileDiffSnapshot(workspaceId: "workspace-lane-1", path: "Sources/App.swift", mode: "unstaged")?.modified.text, "print(\"hi\")")
+    XCTAssertEqual(database.fetchFileHistorySnapshot(workspaceId: "workspace-lane-1", path: "Sources/App.swift")?.first?.subject, "Update app")
+    database.close()
   }
 
   func testAgentChatTranscriptResponseDecodesEntries() throws {
@@ -1628,6 +2459,455 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(activeAgents.first?.toolName, "functions.Read")
   }
 
+  func testWorkChatTranscriptHelpersDecodeCommandFileChangeCompletionReportAndUsageEvents() {
+    let raw = """
+    {"sessionId":"chat-1","timestamp":"2026-03-25T00:00:00.000Z","sequence":1,"event":{"type":"command","command":"npm test","cwd":"/tmp/work","output":"ok","itemId":"cmd-1","turnId":"turn-1","exitCode":0,"durationMs":1240,"status":"completed"}}
+    {"sessionId":"chat-1","timestamp":"2026-03-25T00:00:01.000Z","sequence":2,"event":{"type":"file_change","path":"Sources/WorkTabView.swift","diff":"@@ -1 +1 @@","kind":"modify","itemId":"file-1","turnId":"turn-1","status":"completed"}}
+    {"sessionId":"chat-1","timestamp":"2026-03-25T00:00:02.000Z","sequence":3,"event":{"type":"completion_report","report":{"timestamp":"2026-03-25T00:00:02.000Z","summary":"Finished","status":"completed","artifacts":[{"type":"file","description":"Updated the transcript","reference":"docs/transcript.md"}]}}}
+    {"sessionId":"chat-1","timestamp":"2026-03-25T00:00:03.000Z","sequence":4,"event":{"type":"done","turnId":"turn-1","status":"completed","model":"claude-sonnet-4","usage":{"inputTokens":120,"outputTokens":45,"cacheReadTokens":12,"cacheCreationTokens":3},"costUsd":1.23}}
+    """
+
+    let transcript = parseWorkChatTranscript(raw)
+
+    XCTAssertEqual(transcript.count, 4)
+
+    guard case .command(let command, let cwd, let output, let status, let itemId, let exitCode, let durationMs, let turnId) = transcript[0].event else {
+      return XCTFail("Expected command event.")
+    }
+    XCTAssertEqual(command, "npm test")
+    XCTAssertEqual(cwd, "/tmp/work")
+    XCTAssertEqual(output, "ok")
+    XCTAssertEqual(status, .completed)
+    XCTAssertEqual(itemId, "cmd-1")
+    XCTAssertEqual(exitCode, 0)
+    XCTAssertEqual(durationMs, 1240)
+    XCTAssertEqual(turnId, "turn-1")
+
+    guard case .fileChange(let path, let diff, let kind, let fileStatus, let fileItemId, let fileTurnId) = transcript[1].event else {
+      return XCTFail("Expected file change event.")
+    }
+    XCTAssertEqual(path, "Sources/WorkTabView.swift")
+    XCTAssertEqual(diff, "@@ -1 +1 @@")
+    XCTAssertEqual(kind, "modify")
+    XCTAssertEqual(fileStatus, .completed)
+    XCTAssertEqual(fileItemId, "file-1")
+    XCTAssertEqual(fileTurnId, "turn-1")
+
+    guard case .completionReport(let summary, let reportStatus, let artifacts, let blockerDescription, let reportTurnId) = transcript[2].event else {
+      return XCTFail("Expected completion report event.")
+    }
+    XCTAssertEqual(summary, "Finished")
+    XCTAssertEqual(reportStatus, "completed")
+    XCTAssertEqual(artifacts.first?.reference, "docs/transcript.md")
+    XCTAssertNil(blockerDescription)
+    XCTAssertEqual(reportTurnId, nil)
+
+    guard case .done(let doneStatus, let doneSummary, let usage, let doneTurnId) = transcript[3].event else {
+      return XCTFail("Expected done event.")
+    }
+    XCTAssertEqual(doneStatus, "completed")
+    XCTAssertTrue(doneSummary.contains("claude-sonnet-4"))
+    XCTAssertTrue(doneSummary.contains("inputTokens"))
+    XCTAssertTrue(doneSummary.contains("$1.2300"))
+    XCTAssertEqual(usage?.inputTokens, 120)
+    XCTAssertEqual(usage?.outputTokens, 45)
+    XCTAssertEqual(usage?.costUsd, 1.23)
+    XCTAssertEqual(doneTurnId, "turn-1")
+
+    let sessionUsage = summarizeWorkSessionUsage(from: transcript)
+    XCTAssertEqual(sessionUsage?.turnCount, 1)
+    XCTAssertEqual(sessionUsage?.inputTokens, 120)
+    XCTAssertEqual(sessionUsage?.outputTokens, 45)
+    XCTAssertEqual(sessionUsage?.cacheReadTokens, 12)
+    XCTAssertEqual(sessionUsage?.cacheCreationTokens, 3)
+    XCTAssertEqual(sessionUsage?.costUsd, 1.23)
+  }
+
+  func testWorkChatStatusNormalizationPrefersAwaitingInputAndIdle() {
+    let waitingSummary = makeAgentChatSessionSummary(status: "active", awaitingInput: true)
+    XCTAssertEqual(normalizedWorkChatSessionStatus(session: nil, summary: waitingSummary), "awaiting-input")
+
+    let idleSummary = makeAgentChatSessionSummary(status: "paused", awaitingInput: false)
+    XCTAssertEqual(normalizedWorkChatSessionStatus(session: nil, summary: idleSummary), "idle")
+
+    let session = makeTerminalSessionSummary(toolType: "codex-chat", runtimeState: "waiting-input", status: "running")
+    XCTAssertEqual(normalizedWorkChatSessionStatus(session: session, summary: nil), "awaiting-input")
+  }
+
+  func testWorkChatStatusNormalizationFallsBackToSessionRuntimeStateAndTerminalState() {
+    let completedSummary = makeAgentChatSessionSummary(status: "completed", awaitingInput: false)
+    XCTAssertEqual(normalizedWorkChatSessionStatus(session: nil, summary: completedSummary), "ended")
+
+    let runningSession = makeTerminalSessionSummary(toolType: "codex-chat", runtimeState: "running", status: "running")
+    XCTAssertEqual(normalizedWorkChatSessionStatus(session: runningSession, summary: nil), "active")
+
+    let idleSession = makeTerminalSessionSummary(toolType: "codex-chat", runtimeState: "idle", status: "running")
+    XCTAssertEqual(normalizedWorkChatSessionStatus(session: idleSession, summary: nil), "idle")
+
+    let endedSession = makeTerminalSessionSummary(toolType: "codex-chat", runtimeState: "stopped", status: "exited")
+    XCTAssertEqual(normalizedWorkChatSessionStatus(session: endedSession, summary: nil), "ended")
+  }
+
+  func testWorkChatSessionClassificationMatchesDesktopChatToolTypes() {
+    XCTAssertTrue(isChatSession(makeTerminalSessionSummary(toolType: "codex-chat")))
+    XCTAssertTrue(isChatSession(makeTerminalSessionSummary(toolType: "cursor")))
+    XCTAssertTrue(isChatSession(makeTerminalSessionSummary(toolType: "custom-chat")))
+    XCTAssertFalse(isChatSession(makeTerminalSessionSummary(toolType: "run-shell")))
+    XCTAssertTrue(isRunOwnedSession(makeTerminalSessionSummary(toolType: "run-shell")))
+    XCTAssertTrue(isRunOwnedSession(makeTerminalSessionSummary(toolType: " RUN-SHELL ")))
+    XCTAssertFalse(isRunOwnedSession(makeTerminalSessionSummary(toolType: "shell")))
+    XCTAssertFalse(isRunOwnedSession(makeTerminalSessionSummary(toolType: "codex-chat")))
+  }
+
+  func testWorkChatSessionClassificationTrimsWhitespaceAndRejectsBlankValues() {
+    XCTAssertTrue(isChatSession(makeTerminalSessionSummary(toolType: "  claude-chat  ")))
+    XCTAssertTrue(isChatSession(makeTerminalSessionSummary(toolType: "\ncustom-chat\t")))
+    XCTAssertFalse(isChatSession(makeTerminalSessionSummary(toolType: "   ")))
+    XCTAssertFalse(isChatSession(makeTerminalSessionSummary(toolType: nil)))
+  }
+
+  func testAgentChatSessionSummaryDecodesCursorAndControlFields() throws {
+    let payload: [String: Any] = [
+      "sessionId": "chat-1",
+      "laneId": "lane-1",
+      "provider": "cursor",
+      "model": "cursor-agent",
+      "modelId": "cursor-agent-1",
+      "sessionProfile": "profile-1",
+      "title": "Cursor chat",
+      "goal": "Land Work tab parity",
+      "reasoningEffort": "medium",
+      "executionMode": "agent",
+      "permissionMode": "edit",
+      "interactionMode": "chat",
+      "claudePermissionMode": "acceptEdits",
+      "codexApprovalPolicy": "on-request",
+      "codexSandbox": "workspace-write",
+      "codexConfigSource": "host",
+      "opencodePermissionMode": "edit",
+      "cursorModeSnapshot": [
+        "currentModeId": "ask",
+        "availableModeIds": ["agent", "ask", "manual"],
+      ],
+      "cursorModeId": "ask",
+      "cursorConfigValues": [
+        "voice": true,
+        "temperature": 0.5,
+        "notes": "mobile",
+      ],
+      "identityKey": "identity-1",
+      "surface": "work",
+      "automationId": "automation-1",
+      "automationRunId": "run-1",
+      "capabilityMode": "full",
+      "computerUse": [
+        "enabled": true,
+      ],
+      "completion": [
+        "timestamp": "2026-03-25T00:00:02.000Z",
+        "summary": "Done",
+        "status": "completed",
+        "artifacts": [
+          [
+            "type": "file",
+            "description": "Updated transcript",
+            "reference": "docs/transcript.md",
+          ],
+        ],
+        "blockerDescription": "None",
+      ],
+      "status": "running",
+      "idleSinceAt": "2026-03-25T00:00:01.000Z",
+      "startedAt": "2026-03-25T00:00:00.000Z",
+      "endedAt": NSNull(),
+      "lastActivityAt": "2026-03-25T00:00:02.000Z",
+      "lastOutputPreview": "Working...",
+      "summary": "Primary chat session",
+      "awaitingInput": true,
+      "threadId": "thread-1",
+      "requestedCwd": "apps/ios/ADE",
+    ]
+
+    let data = try JSONSerialization.data(withJSONObject: payload)
+    let summary = try JSONDecoder().decode(AgentChatSessionSummary.self, from: data)
+
+    XCTAssertEqual(summary.sessionId, "chat-1")
+    XCTAssertEqual(summary.provider, "cursor")
+    XCTAssertEqual(summary.cursorModeId, "ask")
+    XCTAssertEqual(summary.cursorModeSnapshot, .object([
+      "currentModeId": .string("ask"),
+      "availableModeIds": .array([.string("agent"), .string("ask"), .string("manual")]),
+    ]))
+    XCTAssertEqual(summary.cursorConfigValues?["voice"], .bool(true))
+    XCTAssertEqual(summary.cursorConfigValues?["temperature"], .number(0.5))
+    XCTAssertEqual(summary.completion?.artifacts?.first?.reference, "docs/transcript.md")
+    XCTAssertTrue(summary.awaitingInput ?? false)
+    XCTAssertEqual(summary.requestedCwd, "apps/ios/ADE")
+  }
+
+  func testMergeWorkChatTranscriptsReplacesDuplicatesAndSortsByTime() {
+    let base = [
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-03-25T00:00:02.000Z",
+        sequence: 2,
+        event: .assistantText(text: "Second", turnId: "turn-1", itemId: "msg-2")
+      ),
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-03-25T00:00:01.000Z",
+        sequence: 1,
+        event: .userMessage(text: "First", turnId: "turn-1", steerId: nil, deliveryState: nil, processed: nil)
+      ),
+    ]
+    let live = [
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-03-25T00:00:01.000Z",
+        sequence: 1,
+        event: .userMessage(text: "First", turnId: "turn-1", steerId: nil, deliveryState: nil, processed: nil)
+      ),
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-03-25T00:00:03.000Z",
+        sequence: 3,
+        event: .assistantText(text: "Third", turnId: "turn-1", itemId: "msg-3")
+      ),
+    ]
+
+    let merged = mergeWorkChatTranscripts(base: base, live: live)
+
+    XCTAssertEqual(merged.count, 3)
+    XCTAssertEqual(merged.map(\.timestamp), [
+      "2026-03-25T00:00:01.000Z",
+      "2026-03-25T00:00:02.000Z",
+      "2026-03-25T00:00:03.000Z",
+    ])
+  }
+
+  /// Regression: hosts occasionally replay the same activity envelope during resume, so the cached
+  /// `base` can contain two rows with identical merge keys. The old `Dictionary(uniqueKeysWithValues:)`
+  /// crashed on that; the merge must dedupe in place and keep the transcript stable.
+  func testMergeWorkChatTranscriptsToleratesDuplicateMergeKeysInBase() {
+    let duplicate = WorkChatEnvelope(
+      sessionId: "chat-1",
+      timestamp: "2026-04-16T07:34:53.872Z",
+      sequence: 1,
+      event: .activity(kind: "reading", detail: "app", turnId: "turn-1")
+    )
+    let base = [
+      duplicate,
+      duplicate,
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-04-16T07:34:55.000Z",
+        sequence: 2,
+        event: .assistantText(text: "hello", turnId: "turn-1", itemId: "msg-1")
+      ),
+    ]
+    let live = [
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-04-16T07:34:56.000Z",
+        sequence: 3,
+        event: .assistantText(text: "world", turnId: "turn-1", itemId: "msg-2")
+      ),
+    ]
+
+    let merged = mergeWorkChatTranscripts(base: base, live: live)
+
+    XCTAssertEqual(merged.count, 3)
+    XCTAssertEqual(merged.map(\.timestamp), [
+      "2026-04-16T07:34:53.872Z",
+      "2026-04-16T07:34:55.000Z",
+      "2026-04-16T07:34:56.000Z",
+    ])
+  }
+
+  func testPendingWorkInputItemIdsTracksResolvedApprovalAndQuestionEvents() {
+    let transcript = [
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-03-25T00:00:01.000Z",
+        sequence: 1,
+        event: .approvalRequest(description: "Run tests?", detail: nil, itemId: "approval-1", turnId: "turn-1")
+      ),
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-03-25T00:00:02.000Z",
+        sequence: 2,
+        event: .structuredQuestion(question: "Deploy?", options: ["Yes", "No"], itemId: "question-1", turnId: "turn-1")
+      ),
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-03-25T00:00:03.000Z",
+        sequence: 3,
+        event: .pendingInputResolved(itemId: "approval-1", resolution: "accepted", turnId: "turn-1")
+      ),
+    ]
+
+    XCTAssertEqual(pendingWorkInputItemIds(from: transcript), Set(["question-1"]))
+  }
+
+  func testParseWorkChatTranscriptDecodesSteerIdAndDeliveryState() {
+    let raw = """
+    {"sessionId":"chat-1","timestamp":"2026-03-25T00:00:01.000Z","sequence":1,"event":{"type":"user_message","text":"ship it","turnId":"turn-1","steerId":"steer-1","deliveryState":"queued"}}
+    {"sessionId":"chat-1","timestamp":"2026-03-25T00:00:02.000Z","sequence":2,"event":{"type":"system_notice","kind":"steer_cancelled","message":"Cancelled","steerId":"steer-1","turnId":"turn-1"}}
+    """
+
+    let transcript = parseWorkChatTranscript(raw)
+    XCTAssertEqual(transcript.count, 2)
+
+    guard case .userMessage(let text, _, let steerId, let deliveryState, _) = transcript[0].event else {
+      return XCTFail("Expected user_message event.")
+    }
+    XCTAssertEqual(text, "ship it")
+    XCTAssertEqual(steerId, "steer-1")
+    XCTAssertEqual(deliveryState, "queued")
+
+    guard case .systemNotice(_, _, _, _, let noticeSteerId) = transcript[1].event else {
+      return XCTFail("Expected system_notice event.")
+    }
+    XCTAssertEqual(noticeSteerId, "steer-1")
+  }
+
+  func testDerivePendingWorkInputsReturnsApprovalsAndQuestionsInRequestOrder() {
+    let transcript = [
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-03-25T00:00:01.000Z",
+        sequence: 1,
+        event: .approvalRequest(description: "Run tests?", detail: nil, itemId: "approval-1", turnId: "turn-1")
+      ),
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-03-25T00:00:02.000Z",
+        sequence: 2,
+        event: .structuredQuestion(question: "Deploy?", options: ["Yes", "No"], itemId: "question-1", turnId: "turn-1")
+      ),
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-03-25T00:00:03.000Z",
+        sequence: 3,
+        event: .approvalRequest(description: "Push branch?", detail: nil, itemId: "approval-2", turnId: "turn-1")
+      ),
+    ]
+
+    let items = derivePendingWorkInputs(from: transcript)
+    XCTAssertEqual(items.map(\.itemId), ["approval-1", "question-1", "approval-2"])
+  }
+
+  func testDerivePendingWorkInputsRemovesResolvedItems() {
+    let transcript = [
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-03-25T00:00:01.000Z",
+        sequence: 1,
+        event: .approvalRequest(description: "Run tests?", detail: nil, itemId: "approval-1", turnId: "turn-1")
+      ),
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-03-25T00:00:02.000Z",
+        sequence: 2,
+        event: .structuredQuestion(question: "Deploy?", options: [], itemId: "question-1", turnId: "turn-1")
+      ),
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-03-25T00:00:03.000Z",
+        sequence: 3,
+        event: .pendingInputResolved(itemId: "approval-1", resolution: "accepted", turnId: "turn-1")
+      ),
+    ]
+
+    let items = derivePendingWorkInputs(from: transcript)
+    XCTAssertEqual(items.map(\.itemId), ["question-1"])
+  }
+
+  func testDerivePendingWorkSteersTracksQueuedEditsAndCancellations() {
+    let transcript = [
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-03-25T00:00:01.000Z",
+        sequence: 1,
+        event: .userMessage(text: "ship", turnId: "turn-1", steerId: "steer-1", deliveryState: "queued", processed: nil)
+      ),
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-03-25T00:00:02.000Z",
+        sequence: 2,
+        event: .userMessage(text: "ship it fast", turnId: "turn-1", steerId: "steer-1", deliveryState: "queued", processed: nil)
+      ),
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-03-25T00:00:03.000Z",
+        sequence: 3,
+        event: .userMessage(text: "also run tests", turnId: "turn-1", steerId: "steer-2", deliveryState: "queued", processed: nil)
+      ),
+    ]
+
+    let steers = derivePendingWorkSteers(from: transcript)
+    XCTAssertEqual(steers.map(\.id), ["steer-1", "steer-2"])
+    XCTAssertEqual(steers.first?.text, "ship it fast")
+  }
+
+  func testDerivePendingWorkSteersClearsOnSystemNoticeAndDelivery() {
+    let transcript = [
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-03-25T00:00:01.000Z",
+        sequence: 1,
+        event: .userMessage(text: "first", turnId: "turn-1", steerId: "steer-1", deliveryState: "queued", processed: nil)
+      ),
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-03-25T00:00:02.000Z",
+        sequence: 2,
+        event: .userMessage(text: "second", turnId: "turn-1", steerId: "steer-2", deliveryState: "queued", processed: nil)
+      ),
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-03-25T00:00:03.000Z",
+        sequence: 3,
+        event: .systemNotice(kind: "steer_cancelled", message: "Cancelled", detail: nil, turnId: "turn-1", steerId: "steer-1")
+      ),
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-03-25T00:00:04.000Z",
+        sequence: 4,
+        event: .userMessage(text: "second", turnId: "turn-1", steerId: "steer-2", deliveryState: "delivered", processed: nil)
+      ),
+    ]
+
+    let steers = derivePendingWorkSteers(from: transcript)
+    XCTAssertTrue(steers.isEmpty)
+  }
+
+  func testMergeWorkChatTranscriptsReplacesQueuedSteerEditInPlace() {
+    let base = [
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-03-25T00:00:01.000Z",
+        sequence: 1,
+        event: .userMessage(text: "ship", turnId: "turn-1", steerId: "steer-1", deliveryState: "queued", processed: nil)
+      ),
+    ]
+    let live = [
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-03-25T00:00:01.000Z",
+        sequence: 1,
+        event: .userMessage(text: "ship it fast", turnId: "turn-1", steerId: "steer-1", deliveryState: "queued", processed: nil)
+      ),
+    ]
+
+    let merged = mergeWorkChatTranscripts(base: base, live: live)
+    XCTAssertEqual(merged.count, 1)
+    guard case .userMessage(let text, _, _, _, _) = merged[0].event else {
+      return XCTFail("Expected user_message event.")
+    }
+    XCTAssertEqual(text, "ship it fast")
+  }
+
   func testVisibleWorkTimelineEntriesKeepsNewestPage() {
     let entries = (1...6).map { index in
       WorkTimelineEntry(
@@ -1675,6 +2955,87 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(visibleWorkTimelineEntries(from: entries, visibleCount: 10).map(\.id), entries.map(\.id))
   }
 
+  func testParseMarkdownBlocksUsesStableIdsAcrossRepeatedCalls() {
+    let markdown = """
+    # Heading
+
+    - one
+    - one
+
+    ```swift
+    let value = 1
+    ```
+    """
+
+    let first = parseMarkdownBlocks(markdown)
+    let second = parseMarkdownBlocks(markdown)
+
+    XCTAssertEqual(first, second)
+    XCTAssertEqual(first.map(\.id), second.map(\.id))
+  }
+
+  func testParseMarkdownTableRowsPreservesBlankCells() {
+    let blocks = parseMarkdownBlocks("""
+    | Name | Status | Owner |
+    | --- | --- | --- |
+    | Build |  | ADE |
+    | Ship | done |  |
+    """)
+
+    guard case .table(let headers, let rows) = blocks.first?.kind else {
+      return XCTFail("Expected markdown table block.")
+    }
+    XCTAssertEqual(headers, ["Name", "Status", "Owner"])
+    XCTAssertEqual(rows, [
+      ["Build", "", "ADE"],
+      ["Ship", "done", ""],
+    ])
+  }
+
+  func testParseWorkChatTranscriptUsesDeterministicFallbackItemIds() {
+    let raw = """
+    {"sessionId":"chat-1","timestamp":"2026-03-25T00:00:01.000Z","sequence":1,"event":{"type":"tool_call","tool":"functions.Read","args":{"path":"README.md"},"turnId":"turn-1"}}
+    {"sessionId":"chat-1","timestamp":"2026-03-25T00:00:02.000Z","sequence":2,"event":{"type":"tool_result","tool":"functions.Read","result":{"content":"ADE"},"turnId":"turn-1","status":"completed"}}
+    {"sessionId":"chat-1","timestamp":"2026-03-25T00:00:03.000Z","sequence":3,"event":{"type":"structured_question","question":"Deploy?","options":[{"label":"Yes"},{"label":"Yes"}],"turnId":"turn-1"}}
+    """
+
+    let first = parseWorkChatTranscript(raw)
+    let second = parseWorkChatTranscript(raw)
+
+    guard case .toolCall(_, _, let callId, _, _) = first[0].event,
+          case .toolCall(_, _, let secondCallId, _, _) = second[0].event,
+          case .toolResult(_, _, let resultId, _, _, _) = first[1].event,
+          case .toolResult(_, _, let secondResultId, _, _, _) = second[1].event,
+          case .structuredQuestion(_, _, let questionId, _) = first[2].event,
+          case .structuredQuestion(_, _, let secondQuestionId, _) = second[2].event
+    else {
+      return XCTFail("Expected fallback item ids to decode.")
+    }
+
+    XCTAssertFalse(callId.isEmpty)
+    XCTAssertFalse(resultId.isEmpty)
+    XCTAssertFalse(questionId.isEmpty)
+    XCTAssertEqual(callId, secondCallId)
+    XCTAssertEqual(resultId, secondResultId)
+    XCTAssertEqual(questionId, secondQuestionId)
+  }
+
+  func testWorkModelCatalogInjectsMissingModelIntoMatchingProviderGroup() {
+    XCTAssertEqual(
+      workModelCatalogGroupKey(for: "opencode/anthropic/claude-sonnet-4-6", currentProvider: "anthropic"),
+      "opencode"
+    )
+
+    let groups = workModelCatalogGroups(
+      currentModelId: "opencode/anthropic/claude-sonnet-4-6",
+      currentProvider: "anthropic"
+    )
+
+    let opencodeGroup = groups.first(where: { $0.key == "opencode" })
+    let anthropicProvider = opencodeGroup?.providers.first(where: { $0.key == "anthropic" })
+    XCTAssertEqual(anthropicProvider?.models.first?.id, "opencode/anthropic/claude-sonnet-4-6")
+  }
+
   func testExtractWorkNavigationTargetsFindsFilePathsAndPullRequestNumbers() {
     let targets = extractWorkNavigationTargets(
       from: #"Updated apps/ios/ADE/Views/WorkTabView.swift and docs/plan.md before opening PR #145. See src/main.ts too."#
@@ -1695,6 +3056,340 @@ final class ADETests: XCTestCase {
 
     XCTAssertEqual(targets.filePaths, ["README.md"])
     XCTAssertTrue(targets.pullRequestNumbers.isEmpty)
+  }
+
+  func testNormalizeWorkFileReferenceResolvesRelativePathsFromRequestedCwd() {
+    let resolved = normalizeWorkFileReference(
+      "Helpers/WorkView.swift",
+      workspaceRoot: "/repo/ade",
+      requestedCwd: "apps/ios/ADE"
+    )
+
+    XCTAssertEqual(resolved, "apps/ios/ADE/Helpers/WorkView.swift")
+  }
+
+  func testWorkActivitySourceSessionsReuseFilteredWorkCollection() {
+    let lane1Chat = makeTerminalSessionSummary(
+      id: "chat-1",
+      laneId: "lane-1",
+      laneName: "feature/work",
+      toolType: "codex-chat",
+      title: "Fix Work root"
+    )
+    let lane2Chat = makeTerminalSessionSummary(
+      id: "chat-2",
+      laneId: "lane-2",
+      laneName: "release",
+      toolType: "claude-chat",
+      title: "Deploy release"
+    )
+    let lane2Terminal = makeTerminalSessionSummary(
+      id: "terminal-1",
+      laneId: "lane-2",
+      laneName: "release",
+      toolType: "shell",
+      runtimeState: "idle",
+      title: "Deploy logs",
+      lastOutputPreview: "Tail the deploy terminal output"
+    )
+
+    let chatSummaries = [
+      "chat-1": makeAgentChatSessionSummary(
+        sessionId: "chat-1",
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+        title: "Fix Work root",
+        status: "active"
+      ),
+      "chat-2": makeAgentChatSessionSummary(
+        sessionId: "chat-2",
+        laneId: "lane-2",
+        provider: "claude",
+        model: "sonnet",
+        title: "Deploy release",
+        status: "active"
+      ),
+    ]
+
+    let filtered = workFilteredSessions(
+      [lane1Chat, lane2Terminal, lane2Chat],
+      chatSummaries: chatSummaries,
+      archivedSessionIds: [],
+      selectedStatus: .running,
+      selectedLaneId: "lane-2",
+      searchText: "deploy"
+    )
+    let activitySessions = workActivitySourceSessions(
+      filtered,
+      chatSummaries: chatSummaries,
+      archivedSessionIds: []
+    )
+
+    XCTAssertEqual(filtered.map(\.id), ["chat-2", "terminal-1"])
+    XCTAssertEqual(activitySessions.map(\.id), ["chat-2"])
+  }
+
+  func testWorkRunningBannerCopyDescribesMixedLiveSessions() {
+    XCTAssertEqual(
+      workRunningBannerTitle(liveChatCount: 1, liveTerminalCount: 1, attentionCount: 1),
+      "1 chat needs input, 2 other sessions are live"
+    )
+    XCTAssertEqual(
+      workRunningBannerTitle(liveChatCount: 1, liveTerminalCount: 1, attentionCount: 0),
+      "2 live sessions across chat and terminal"
+    )
+    XCTAssertEqual(
+      workRunningBannerMessage(liveTerminalCount: 1, attentionCount: 0),
+      "The Work tab badge stays visible while live chats or terminal sessions continue running."
+    )
+  }
+
+  func testWorkFilesWorkspaceSelectionRequiresMatchingLaneWorkspace() {
+    let workspaces = [
+      FilesWorkspace(
+        id: "workspace-root",
+        kind: "project",
+        laneId: nil,
+        name: "Project",
+        rootPath: "/repo/ade",
+        isReadOnlyByDefault: true
+      ),
+      FilesWorkspace(
+        id: "workspace-lane-2",
+        kind: "lane",
+        laneId: "lane-2",
+        name: "Release",
+        rootPath: "/repo/ade/lane-2",
+        isReadOnlyByDefault: true
+      ),
+    ]
+
+    XCTAssertEqual(workFilesWorkspace(for: "lane-2", in: workspaces)?.id, "workspace-lane-2")
+    XCTAssertNil(workFilesWorkspace(for: "lane-1", in: workspaces))
+  }
+
+  func testWorkFilteredSessionsIncludesTerminalRowsAndMatchesSearchAndLaneFilters() {
+    let chatSession = makeTerminalSessionSummary(
+      id: "chat-1",
+      laneId: "lane-1",
+      laneName: "feature/work",
+      toolType: "codex-chat",
+      title: "Fix Work root"
+    )
+    let terminalSession = makeTerminalSessionSummary(
+      id: "terminal-1",
+      laneId: "lane-2",
+      laneName: "release",
+      toolType: "shell",
+      runtimeState: "idle",
+      title: "Deploy logs",
+      lastOutputPreview: "Tail the deploy terminal output"
+    )
+    let chatSummary = makeAgentChatSessionSummary(
+      sessionId: "chat-1",
+      laneId: "lane-1",
+      provider: "codex",
+      model: "gpt-5.4",
+      title: "Fix Work root",
+      status: "active"
+    )
+
+    let filtered = workFilteredSessions(
+      [chatSession, terminalSession],
+      chatSummaries: ["chat-1": chatSummary],
+      archivedSessionIds: [],
+      selectedStatus: .running,
+      selectedLaneId: "lane-2",
+      searchText: "deploy terminal"
+    )
+
+    XCTAssertEqual(filtered.map(\.id), ["terminal-1"])
+  }
+
+  func testWorkFilteredSessionsHidesRunOwnedRowsLikeDesktop() {
+    let chatSession = makeTerminalSessionSummary(
+      id: "chat-1",
+      laneId: "lane-1",
+      laneName: "feature/work",
+      toolType: "codex-chat",
+      title: "Fix Work root"
+    )
+    let runOwnedSession = makeTerminalSessionSummary(
+      id: "run-1",
+      laneId: "lane-1",
+      laneName: "feature/work",
+      toolType: "run-shell",
+      runtimeState: "running",
+      title: "Run inspector",
+      lastOutputPreview: "npm test"
+    )
+
+    let filtered = workFilteredSessions(
+      [runOwnedSession, chatSession],
+      chatSummaries: [:],
+      archivedSessionIds: [],
+      selectedStatus: .all,
+      selectedLaneId: "all",
+      searchText: ""
+    )
+
+    XCTAssertEqual(filtered.map(\.id), ["chat-1"])
+  }
+
+  func testWorkFilteredSessionsPrioritizesWaitingBeforeActiveAndEnded() {
+    let waitingChat = makeTerminalSessionSummary(
+      id: "chat-waiting",
+      laneId: "lane-1",
+      laneName: "feature/work",
+      toolType: "codex-chat",
+      title: "Needs approval"
+    )
+    let activeTerminal = makeTerminalSessionSummary(
+      id: "terminal-active",
+      laneId: "lane-1",
+      laneName: "feature/work",
+      toolType: "shell",
+      runtimeState: "running",
+      title: "Build logs"
+    )
+    let endedChat = makeTerminalSessionSummary(
+      id: "chat-ended",
+      laneId: "lane-1",
+      laneName: "feature/work",
+      toolType: "claude-chat",
+      runtimeState: "stopped",
+      status: "exited",
+      title: "Wrapped up"
+    )
+    let chatSummaries = [
+      "chat-waiting": makeAgentChatSessionSummary(
+        sessionId: "chat-waiting",
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+        title: "Needs approval",
+        status: "active",
+        awaitingInput: true,
+        lastActivityAt: "2026-03-25T00:00:03.000Z"
+      ),
+      "chat-ended": makeAgentChatSessionSummary(
+        sessionId: "chat-ended",
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+        title: "Wrapped up",
+        status: "completed",
+        lastActivityAt: "2026-03-25T00:00:04.000Z"
+      ),
+    ]
+
+    let filtered = workFilteredSessions(
+      [endedChat, activeTerminal, waitingChat],
+      chatSummaries: chatSummaries,
+      archivedSessionIds: [],
+      selectedStatus: .all,
+      selectedLaneId: "all",
+      searchText: ""
+    )
+
+    XCTAssertEqual(filtered.map(\.id), ["chat-waiting", "terminal-active", "chat-ended"])
+  }
+
+  func testWorkTimelineHidesLocalEchoOnceTranscriptContainsSameUserMessage() {
+    let prompt = "UI smoke test only. Reply exactly: mobile chat parity check."
+    let transcript = [
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-03-25T00:00:02.000Z",
+        sequence: 1,
+        event: .userMessage(text: prompt, turnId: "turn-1", steerId: nil, deliveryState: nil, processed: nil)
+      ),
+    ]
+    let timeline = buildWorkTimeline(
+      transcript: transcript,
+      fallbackEntries: [],
+      toolCards: [],
+      commandCards: [],
+      fileChangeCards: [],
+      eventCards: [],
+      artifacts: [],
+      localEchoMessages: [
+        WorkLocalEchoMessage(text: "\n\(prompt)  ", timestamp: "2026-03-25T00:00:01.000Z"),
+        WorkLocalEchoMessage(text: "Still waiting for host acknowledgement", timestamp: "2026-03-25T00:00:03.000Z"),
+      ]
+    )
+    let userMessages = timeline.compactMap { entry -> String? in
+      guard case .message(let message) = entry.payload, message.role == "user" else { return nil }
+      return message.markdown
+    }
+
+    XCTAssertEqual(userMessages, [prompt, "Still waiting for host acknowledgement"])
+  }
+
+  func testWorkEventCardsHideLowSignalLifecycleNoise() {
+    let transcript = [
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-03-25T00:00:00.000Z",
+        sequence: 0,
+        event: .status(turnStatus: "started", message: nil, turnId: "turn-1")
+      ),
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-03-25T00:00:01.000Z",
+        sequence: 1,
+        event: .reasoning(text: "Thinking through the answer", turnId: "turn-1")
+      ),
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-03-25T00:00:02.000Z",
+        sequence: 2,
+        event: .activity(kind: "thinking", detail: "Thinking through the answer", turnId: "turn-1")
+      ),
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-03-25T00:00:03.000Z",
+        sequence: 3,
+        event: .systemNotice(kind: "info", message: "Session ready", detail: nil, turnId: "turn-1", steerId: nil)
+      ),
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-03-25T00:00:04.000Z",
+        sequence: 4,
+        event: .status(turnStatus: "completed", message: nil, turnId: "turn-1")
+      ),
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-03-25T00:00:05.000Z",
+        sequence: 5,
+        event: .status(turnStatus: "failed", message: "Tool call failed", turnId: "turn-2")
+      ),
+    ]
+
+    let cards = buildWorkEventCards(from: transcript)
+
+    XCTAssertEqual(cards.map(\.kind), ["status"])
+    XCTAssertEqual(cards.first?.body, "Tool call failed")
+  }
+
+  func testWorkSessionEmptyStateMessagingExplainsSearchAndArchiveFallbacks() {
+    XCTAssertEqual(
+      workSessionEmptyStateTitle(status: .all, searchText: "deploy", hasFilters: true),
+      "No sessions match"
+    )
+    XCTAssertEqual(
+      workSessionEmptyStateMessage(status: .all, searchText: "deploy", hasFilters: true, isLive: false),
+      "Try a different search or clear the current filters."
+    )
+    XCTAssertEqual(
+      workSessionEmptyStateTitle(status: .archived, searchText: "", hasFilters: false),
+      "No archived sessions"
+    )
+    XCTAssertEqual(
+      workSessionEmptyStateMessage(status: .archived, searchText: "", hasFilters: false, isLive: true),
+      "Archived sessions stay here until you restore them."
+    )
   }
 
   func testADEImageCacheStoresAndRestoresDiskBackedEntries() {
@@ -1738,6 +3433,508 @@ final class ADETests: XCTestCase {
 
     XCTAssertFalse(FileManager.default.fileExists(atPath: legacyURL.path))
     XCTAssertTrue(FileManager.default.fileExists(atPath: appURL.appendingPathComponent("ade-ios-local.sqlite.phase6-backup").path))
+  }
+
+  func testWorkActivityBufferFingerprintStaysStableForIdenticalBuffers() {
+    let bufferA = "hello\nworld\nrunning tool"
+    let bufferB = "hello\nworld\nrunning tool"
+    XCTAssertEqual(workActivityBufferFingerprint(bufferA), workActivityBufferFingerprint(bufferB))
+  }
+
+  func testWorkActivityBufferFingerprintChangesWhenBufferGrowsOrChanges() {
+    let base = "hello world"
+    let appended = base + " more content appended at the tail"
+    let replaced = "HELLO world"
+
+    XCTAssertNotEqual(workActivityBufferFingerprint(base), workActivityBufferFingerprint(appended))
+    XCTAssertNotEqual(workActivityBufferFingerprint(base), workActivityBufferFingerprint(replaced))
+    XCTAssertEqual(workActivityBufferFingerprint(""), "0:")
+  }
+
+  func testWorkActivityBufferFingerprintDistinguishesLongBuffersWithDifferentTails() {
+    let head = String(repeating: "a", count: 1024)
+    let bufferA = head + "tail-alpha"
+    let bufferB = head + "tail-omega"
+    // Lengths match, so only the fingerprint's tail-window distinguishes them.
+    XCTAssertEqual(bufferA.count, bufferB.count)
+    XCTAssertNotEqual(workActivityBufferFingerprint(bufferA), workActivityBufferFingerprint(bufferB))
+  }
+
+  func testBuildWorkActivityFeedReusesCachedTerminalTranscript() {
+    let session = makeTerminalSessionSummary(toolType: "codex-chat", title: "Main chat")
+    let raw = """
+    {"sessionId":"chat-1","timestamp":"2026-03-25T00:00:01.000Z","sequence":1,"event":{"type":"subagent_started","taskId":"task-1","description":"Parsed helper"}}
+    """
+    let cachedTranscript = [
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-03-25T00:00:01.000Z",
+        sequence: 1,
+        event: .subagentStarted(taskId: "task-1", description: "Cached helper", background: false, turnId: nil)
+      )
+    ]
+    let fingerprint = workActivityBufferFingerprint(raw)
+
+    let result = buildWorkActivityFeed(
+      sources: [session],
+      transcriptCache: [:],
+      terminalBuffers: ["chat-1": raw],
+      existingCache: ["chat-1": WorkActivityTranscriptCacheEntry(fingerprint: fingerprint, transcript: cachedTranscript)],
+      chatSummaries: [:]
+    )
+
+    XCTAssertEqual(result.activities.first?.agentName, "Cached helper")
+    XCTAssertEqual(result.cache["chat-1"]?.fingerprint, fingerprint)
+  }
+
+  // MARK: - Mobile PR snapshot (prs sync contracts)
+
+  func testPrMobileSnapshotDecodesStackCapabilitiesAndWorkflowCards() throws {
+    let json = """
+    {
+      "generatedAt": "2026-04-16T00:00:00Z",
+      "prs": [
+        {
+          "id": "pr-root",
+          "laneId": "lane-root",
+          "projectId": "proj-1",
+          "repoOwner": "owner",
+          "repoName": "repo",
+          "githubPrNumber": 1,
+          "githubUrl": "https://github.com/owner/repo/pull/1",
+          "githubNodeId": "PR_1",
+          "title": "root",
+          "state": "open",
+          "baseBranch": "main",
+          "headBranch": "feat/root",
+          "checksStatus": "passing",
+          "reviewStatus": "approved",
+          "additions": 5,
+          "deletions": 1,
+          "lastSyncedAt": "2026-04-16T00:00:00Z",
+          "createdAt": "2026-04-16T00:00:00Z",
+          "updatedAt": "2026-04-16T00:00:00Z"
+        }
+      ],
+      "stacks": [
+        {
+          "stackId": "stack:lane-root",
+          "rootLaneId": "lane-root",
+          "size": 2,
+          "prCount": 2,
+          "members": [
+            {
+              "laneId": "lane-root",
+              "laneName": "root",
+              "parentLaneId": null,
+              "depth": 0,
+              "role": "root",
+              "dirty": false,
+              "prId": "pr-root",
+              "prNumber": 1,
+              "prState": "open",
+              "prTitle": "root",
+              "baseBranch": "main",
+              "headBranch": "feat/root",
+              "checksStatus": "passing",
+              "reviewStatus": "approved"
+            },
+            {
+              "laneId": "lane-child",
+              "laneName": "child",
+              "parentLaneId": "lane-root",
+              "depth": 1,
+              "role": "leaf",
+              "dirty": true,
+              "prId": "pr-child",
+              "prNumber": 2,
+              "prState": "draft",
+              "prTitle": "child",
+              "baseBranch": "feat/root",
+              "headBranch": "feat/child",
+              "checksStatus": "failing",
+              "reviewStatus": "none"
+            }
+          ]
+        }
+      ],
+      "capabilities": {
+        "pr-root": {
+          "prId": "pr-root",
+          "canOpenInGithub": true,
+          "canMerge": true,
+          "canClose": true,
+          "canReopen": false,
+          "canRequestReviewers": true,
+          "canRerunChecks": true,
+          "canComment": true,
+          "canUpdateDescription": true,
+          "canDelete": true,
+          "mergeBlockedReason": null,
+          "requiresLive": true
+        },
+        "pr-child": {
+          "prId": "pr-child",
+          "canOpenInGithub": true,
+          "canMerge": false,
+          "canClose": true,
+          "canReopen": false,
+          "canRequestReviewers": true,
+          "canRerunChecks": true,
+          "canComment": true,
+          "canUpdateDescription": true,
+          "canDelete": true,
+          "mergeBlockedReason": "Draft PRs cannot be merged until marked ready for review.",
+          "requiresLive": true
+        }
+      },
+      "createCapabilities": {
+        "canCreateAny": true,
+        "defaultBaseBranch": "main",
+        "lanes": [
+          {
+            "laneId": "lane-new",
+            "laneName": "new",
+            "parentLaneId": null,
+            "repoOwner": null,
+            "repoName": null,
+            "defaultBaseBranch": "main",
+            "defaultTitle": "new",
+            "dirty": false,
+            "hasExistingPr": false,
+            "canCreate": true,
+            "blockedReason": null
+          },
+          {
+            "laneId": "lane-blocked",
+            "laneName": "blocked",
+            "parentLaneId": null,
+            "repoOwner": null,
+            "repoName": null,
+            "defaultBaseBranch": "main",
+            "defaultTitle": "blocked",
+            "dirty": false,
+            "hasExistingPr": true,
+            "canCreate": false,
+            "blockedReason": "Lane already has an open PR (#7)."
+          }
+        ]
+      },
+      "workflowCards": [
+        {
+          "kind": "queue",
+          "id": "queue:q-1",
+          "groupId": "group-1",
+          "groupName": null,
+          "targetBranch": null,
+          "state": "landing",
+          "activePrId": "pr-root",
+          "currentPosition": 0,
+          "totalEntries": 2,
+          "waitReason": null,
+          "lastError": null,
+          "updatedAt": "2026-04-16T00:00:00Z"
+        },
+        {
+          "kind": "integration",
+          "id": "integration:prop-1",
+          "proposalId": "prop-1",
+          "title": "Integration 1",
+          "baseBranch": "main",
+          "overallOutcome": "clean",
+          "status": "proposed",
+          "laneCount": 2,
+          "conflictLaneCount": 0,
+          "workflowDisplayState": "active",
+          "cleanupState": "none",
+          "linkedPrId": null,
+          "integrationLaneId": null,
+          "createdAt": "2026-04-16T00:00:00Z"
+        },
+        {
+          "kind": "rebase",
+          "id": "rebase:lane-child",
+          "laneId": "lane-child",
+          "laneName": "child",
+          "baseBranch": "main",
+          "behindBy": 3,
+          "conflictPredicted": false,
+          "prId": "pr-child",
+          "prNumber": 2,
+          "dismissedAt": null,
+          "deferredUntil": null
+        }
+      ],
+      "live": true
+    }
+    """
+
+    let data = Data(json.utf8)
+    let decoder = JSONDecoder()
+    let snapshot = try decoder.decode(PrMobileSnapshot.self, from: data)
+
+    XCTAssertEqual(snapshot.generatedAt, "2026-04-16T00:00:00Z")
+    XCTAssertTrue(snapshot.live)
+    XCTAssertEqual(snapshot.prs.count, 1)
+    XCTAssertEqual(snapshot.prs.first?.id, "pr-root")
+
+    // Stacks
+    XCTAssertEqual(snapshot.stacks.count, 1)
+    let stack = snapshot.stacks[0]
+    XCTAssertEqual(stack.rootLaneId, "lane-root")
+    XCTAssertEqual(stack.members.count, 2)
+    XCTAssertEqual(stack.members[0].role, "root")
+    XCTAssertEqual(stack.members[0].depth, 0)
+    XCTAssertEqual(stack.members[0].prNumber, 1)
+    XCTAssertFalse(stack.members[0].dirty)
+    XCTAssertEqual(stack.members[1].role, "leaf")
+    XCTAssertEqual(stack.members[1].parentLaneId, "lane-root")
+    XCTAssertTrue(stack.members[1].dirty)
+    XCTAssertEqual(stack.members[1].checksStatus, "failing")
+
+    // Capabilities
+    XCTAssertNotNil(snapshot.capabilities["pr-root"])
+    XCTAssertTrue(snapshot.capabilities["pr-root"]?.canMerge ?? false)
+    XCTAssertNil(snapshot.capabilities["pr-root"]?.mergeBlockedReason ?? nil)
+    XCTAssertFalse(snapshot.capabilities["pr-child"]?.canMerge ?? true)
+    XCTAssertEqual(
+      snapshot.capabilities["pr-child"]?.mergeBlockedReason,
+      "Draft PRs cannot be merged until marked ready for review."
+    )
+
+    // Create capabilities
+    XCTAssertTrue(snapshot.createCapabilities.canCreateAny)
+    XCTAssertEqual(snapshot.createCapabilities.defaultBaseBranch, "main")
+    XCTAssertEqual(snapshot.createCapabilities.lanes.count, 2)
+    let blocked = snapshot.createCapabilities.lanes.first(where: { $0.laneId == "lane-blocked" })
+    XCTAssertNotNil(blocked)
+    XCTAssertFalse(blocked?.canCreate ?? true)
+    XCTAssertTrue(blocked?.hasExistingPr ?? false)
+    XCTAssertTrue((blocked?.blockedReason ?? "").contains("#7"))
+
+    // Workflow cards — one of each kind, decoded through the discriminated union.
+    XCTAssertEqual(snapshot.workflowCards.count, 3)
+    let queueCard = snapshot.workflowCards.first(where: { $0.kind == "queue" })
+    XCTAssertEqual(queueCard?.groupId, "group-1")
+    XCTAssertEqual(queueCard?.totalEntries, 2)
+    XCTAssertEqual(queueCard?.activePrId, "pr-root")
+
+    let integrationCard = snapshot.workflowCards.first(where: { $0.kind == "integration" })
+    XCTAssertEqual(integrationCard?.proposalId, "prop-1")
+    XCTAssertEqual(integrationCard?.overallOutcome, "clean")
+    XCTAssertEqual(integrationCard?.integrationStatus, "proposed")
+
+    let rebaseCard = snapshot.workflowCards.first(where: { $0.kind == "rebase" })
+    XCTAssertEqual(rebaseCard?.laneId, "lane-child")
+    XCTAssertEqual(rebaseCard?.behindBy, 3)
+    XCTAssertEqual(rebaseCard?.prNumber, 2)
+    XCTAssertNil(rebaseCard?.dismissedAt ?? nil)
+  }
+
+  func testPrMobileSnapshotTolerantOfEmptyHostState() throws {
+    let json = """
+    {
+      "generatedAt": "2026-04-16T00:00:00Z",
+      "prs": [],
+      "stacks": [],
+      "capabilities": {},
+      "createCapabilities": {
+        "canCreateAny": false,
+        "defaultBaseBranch": null,
+        "lanes": []
+      },
+      "workflowCards": [],
+      "live": true
+    }
+    """
+
+    let snapshot = try JSONDecoder().decode(PrMobileSnapshot.self, from: Data(json.utf8))
+    XCTAssertTrue(snapshot.prs.isEmpty)
+    XCTAssertTrue(snapshot.stacks.isEmpty)
+    XCTAssertTrue(snapshot.capabilities.isEmpty)
+    XCTAssertTrue(snapshot.workflowCards.isEmpty)
+    XCTAssertFalse(snapshot.createCapabilities.canCreateAny)
+    XCTAssertNil(snapshot.createCapabilities.defaultBaseBranch)
+  }
+
+  func testPrActionCapabilitiesGateMergeAndSurfaceBlockedReason() {
+    let capabilitiesAllow = PrActionCapabilities(
+      prId: "pr-1",
+      canOpenInGithub: true,
+      canMerge: true,
+      canClose: true,
+      canReopen: false,
+      canRequestReviewers: true,
+      canRerunChecks: true,
+      canComment: true,
+      canUpdateDescription: true,
+      canDelete: true,
+      mergeBlockedReason: nil,
+      requiresLive: true
+    )
+
+    let capabilitiesBlock = PrActionCapabilities(
+      prId: "pr-1",
+      canOpenInGithub: true,
+      canMerge: false,
+      canClose: true,
+      canReopen: false,
+      canRequestReviewers: true,
+      canRerunChecks: true,
+      canComment: true,
+      canUpdateDescription: true,
+      canDelete: true,
+      mergeBlockedReason: "Required checks are failing.",
+      requiresLive: true
+    )
+
+    XCTAssertTrue(capabilitiesAllow.canMerge)
+    XCTAssertNil(capabilitiesAllow.mergeBlockedReason)
+    XCTAssertFalse(capabilitiesBlock.canMerge)
+    XCTAssertEqual(capabilitiesBlock.mergeBlockedReason, "Required checks are failing.")
+
+    // When capabilities drive the view, canMerge=false must short-circuit
+    // regardless of the legacy PrActionAvailability state.
+    let availabilityForOpen = PrActionAvailability(prState: "open")
+    XCTAssertTrue(availabilityForOpen.showsMerge)
+    XCTAssertTrue(availabilityForOpen.mergeEnabled)
+
+    // Emulate the derivation used in PrOverviewTab.
+    let mergeable = true
+    let effectiveMergeEnabled = capabilitiesBlock.canMerge && mergeable
+    XCTAssertFalse(effectiveMergeEnabled)
+  }
+
+  func testPrCreateCapabilitiesFilterEligibleLanesAndKeepBlockedVisible() {
+    let eligible = PrCreateLaneEligibility(
+      laneId: "lane-new",
+      laneName: "feat/new",
+      parentLaneId: nil,
+      repoOwner: nil,
+      repoName: nil,
+      defaultBaseBranch: "main",
+      defaultTitle: "feat/new",
+      dirty: false,
+      hasExistingPr: false,
+      canCreate: true,
+      blockedReason: nil
+    )
+    let blocked = PrCreateLaneEligibility(
+      laneId: "lane-blocked",
+      laneName: "feat/blocked",
+      parentLaneId: nil,
+      repoOwner: nil,
+      repoName: nil,
+      defaultBaseBranch: "main",
+      defaultTitle: "feat/blocked",
+      dirty: false,
+      hasExistingPr: true,
+      canCreate: false,
+      blockedReason: "Lane already has an open PR (#12)."
+    )
+    let capabilities = PrCreateCapabilities(
+      canCreateAny: true,
+      defaultBaseBranch: "main",
+      lanes: [eligible, blocked]
+    )
+
+    XCTAssertTrue(capabilities.canCreateAny)
+    let eligibleOnly = capabilities.lanes.filter { $0.canCreate }
+    XCTAssertEqual(eligibleOnly.map(\.laneId), ["lane-new"])
+    let blockedOnly = capabilities.lanes.filter { !$0.canCreate }
+    XCTAssertEqual(blockedOnly.first?.blockedReason, "Lane already has an open PR (#12).")
+    XCTAssertEqual(capabilities.defaultBaseBranch, "main")
+  }
+
+  func testBuildStackRowsJoinsGroupMembersAndSnapshotDirtyFlags() {
+    let members: [PrGroupMemberSummary] = [
+      PrGroupMemberSummary(
+        groupId: "g1", groupType: "stack", groupName: nil, targetBranch: "main",
+        prId: "pr-root", laneId: "lane-root", laneName: "root",
+        title: "Root PR", state: "open", githubPrNumber: 1,
+        githubUrl: "https://github.com/o/r/pull/1",
+        baseBranch: "main", headBranch: "feat/root", position: 0
+      ),
+      PrGroupMemberSummary(
+        groupId: "g1", groupType: "stack", groupName: nil, targetBranch: "main",
+        prId: "pr-mid", laneId: "lane-mid", laneName: "middle",
+        title: "Middle PR", state: "draft", githubPrNumber: 2,
+        githubUrl: "https://github.com/o/r/pull/2",
+        baseBranch: "feat/root", headBranch: "feat/mid", position: 1
+      ),
+      PrGroupMemberSummary(
+        groupId: "g1", groupType: "stack", groupName: nil, targetBranch: "main",
+        prId: "pr-leaf", laneId: "lane-leaf", laneName: "leaf",
+        title: "Leaf PR", state: "open", githubPrNumber: 3,
+        githubUrl: "https://github.com/o/r/pull/3",
+        baseBranch: "feat/mid", headBranch: "feat/leaf", position: 2
+      ),
+    ]
+
+    let stack = PrStackInfo(
+      stackId: "stack:lane-root",
+      rootLaneId: "lane-root",
+      members: [
+        PrStackMember(laneId: "lane-root", laneName: "root", parentLaneId: nil,
+                      depth: 0, role: "root", dirty: false,
+                      prId: "pr-root", prNumber: 1, prState: "open",
+                      prTitle: "Root PR", baseBranch: "main", headBranch: "feat/root",
+                      checksStatus: "passing", reviewStatus: "approved"),
+        PrStackMember(laneId: "lane-mid", laneName: "middle", parentLaneId: "lane-root",
+                      depth: 1, role: "middle", dirty: true,
+                      prId: "pr-mid", prNumber: 2, prState: "draft",
+                      prTitle: "Middle PR", baseBranch: "feat/root", headBranch: "feat/mid",
+                      checksStatus: "none", reviewStatus: "none"),
+        PrStackMember(laneId: "lane-leaf", laneName: "leaf", parentLaneId: "lane-mid",
+                      depth: 2, role: "leaf", dirty: false,
+                      prId: "pr-leaf", prNumber: 3, prState: "open",
+                      prTitle: "Leaf PR", baseBranch: "feat/mid", headBranch: "feat/leaf",
+                      checksStatus: "passing", reviewStatus: "none"),
+      ],
+      size: 3,
+      prCount: 3
+    )
+
+    let rows = buildStackRows(members: members, stackInfo: stack)
+    XCTAssertEqual(rows.map(\.laneId), ["lane-root", "lane-mid", "lane-leaf"])
+    XCTAssertEqual(rows[0].role, .base)
+    XCTAssertEqual(rows[1].role, .body)
+    XCTAssertEqual(rows[2].role, .head)
+    XCTAssertEqual(rows[0].depth, 0)
+    XCTAssertEqual(rows[1].depth, 1)
+    XCTAssertEqual(rows[2].depth, 2)
+    XCTAssertFalse(rows[0].dirty)
+    XCTAssertTrue(rows[1].dirty)
+    XCTAssertFalse(rows[2].dirty)
+    XCTAssertEqual(rows[0].prId, "pr-root")
+  }
+
+  func testBuildStackRowsFallsBackToPositionDepthWhenSnapshotMissing() {
+    let members: [PrGroupMemberSummary] = [
+      PrGroupMemberSummary(
+        groupId: "g1", groupType: "stack", groupName: nil, targetBranch: "main",
+        prId: "pr-1", laneId: "lane-1", laneName: "one",
+        title: "One", state: "open", githubPrNumber: 1,
+        githubUrl: "https://github.com/o/r/pull/1",
+        baseBranch: "main", headBranch: "feat/1", position: 0
+      ),
+      PrGroupMemberSummary(
+        groupId: "g1", groupType: "stack", groupName: nil, targetBranch: "main",
+        prId: "pr-2", laneId: "lane-2", laneName: "two",
+        title: "Two", state: "open", githubPrNumber: 2,
+        githubUrl: "https://github.com/o/r/pull/2",
+        baseBranch: "feat/1", headBranch: "feat/2", position: 1
+      ),
+    ]
+
+    let rows = buildStackRows(members: members, stackInfo: nil)
+    XCTAssertEqual(rows.count, 2)
+    XCTAssertEqual(rows[0].role, .base)
+    XCTAssertEqual(rows[1].role, .head)
+    XCTAssertFalse(rows[0].dirty)
+    XCTAssertFalse(rows[1].dirty)
+    XCTAssertEqual(rows[0].depth, 0)
+    XCTAssertEqual(rows[1].depth, 1)
   }
 
   private func makeTemporaryDirectory() -> URL {
@@ -2050,8 +4247,175 @@ final class ADETests: XCTestCase {
     return Int(sqlite3_column_int64(statement, 0))
   }
 
+  private func tableExists(in baseURL: URL, table: String) throws -> Bool {
+    let dbURL = baseURL.appendingPathComponent("ADE", isDirectory: true).appendingPathComponent("ade.db")
+    var handle: OpaquePointer?
+    XCTAssertEqual(sqlite3_open(dbURL.path, &handle), SQLITE_OK)
+    defer { sqlite3_close(handle) }
+
+    var statement: OpaquePointer?
+    XCTAssertEqual(
+      sqlite3_prepare_v2(handle, "select 1 from sqlite_master where type = 'table' and name = ? limit 1", -1, &statement, nil),
+      SQLITE_OK
+    )
+    defer { sqlite3_finalize(statement) }
+    sqlite3_bind_text(statement, 1, (table as NSString).utf8String, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
+    return sqlite3_step(statement) == SQLITE_ROW
+  }
+
   private struct DummyHydrationPayload: Decodable {
     let refreshedCount: Int
+  }
+
+  private func makeAgentChatSessionSummary(
+    sessionId: String = "chat-1",
+    laneId: String = "lane-1",
+    provider: String = "codex",
+    model: String = "gpt-5.4",
+    title: String? = nil,
+    status: String,
+    awaitingInput: Bool? = nil,
+    lastActivityAt: String = "2026-03-25T00:00:00.000Z"
+  ) -> AgentChatSessionSummary {
+    AgentChatSessionSummary(
+      sessionId: sessionId,
+      laneId: laneId,
+      provider: provider,
+      model: model,
+      modelId: nil,
+      sessionProfile: nil,
+      title: title,
+      goal: nil,
+      reasoningEffort: nil,
+      executionMode: nil,
+      permissionMode: nil,
+      interactionMode: nil,
+      claudePermissionMode: nil,
+      codexApprovalPolicy: nil,
+      codexSandbox: nil,
+      codexConfigSource: nil,
+      opencodePermissionMode: nil,
+      cursorModeSnapshot: nil,
+      cursorModeId: nil,
+      cursorConfigValues: nil,
+      identityKey: nil,
+      surface: nil,
+      automationId: nil,
+      automationRunId: nil,
+      capabilityMode: nil,
+      computerUse: nil,
+      completion: nil,
+      status: status,
+      idleSinceAt: nil,
+      startedAt: "2026-03-25T00:00:00.000Z",
+      endedAt: nil,
+      lastActivityAt: lastActivityAt,
+      lastOutputPreview: nil,
+      summary: nil,
+      awaitingInput: awaitingInput,
+      threadId: nil,
+      requestedCwd: nil
+    )
+  }
+
+  private func makeTerminalSessionSummary(
+    id: String = "chat-1",
+    laneId: String = "lane-1",
+    laneName: String = "feature/work",
+    toolType: String?,
+    runtimeState: String = "running",
+    status: String = "running",
+    title: String = "Codex chat",
+    lastOutputPreview: String? = nil
+  ) -> TerminalSessionSummary {
+    TerminalSessionSummary(
+      id: id,
+      laneId: laneId,
+      laneName: laneName,
+      ptyId: nil,
+      tracked: true,
+      pinned: false,
+      manuallyNamed: nil,
+      goal: nil,
+      toolType: toolType,
+      title: title,
+      status: status,
+      startedAt: "2026-03-25T00:00:00.000Z",
+      endedAt: nil,
+      exitCode: nil,
+      transcriptPath: "",
+      headShaStart: nil,
+      headShaEnd: nil,
+      lastOutputPreview: lastOutputPreview,
+      summary: nil,
+      runtimeState: runtimeState,
+      resumeCommand: nil,
+      resumeMetadata: nil,
+      chatIdleSinceAt: nil
+    )
+  }
+
+  private func jsonDictionary<T: Encodable>(from value: T) throws -> [String: Any] {
+    let data = try JSONEncoder().encode(value)
+    let raw = try JSONSerialization.jsonObject(with: data, options: [])
+    guard let dict = raw as? [String: Any] else {
+      throw NSError(domain: "ADETests", code: 1, userInfo: [NSLocalizedDescriptionKey: "Expected dictionary JSON payload."])
+    }
+    return dict
+  }
+
+  // MARK: - Chat polish helpers (Task #14)
+
+  func testWorkToolResultPreviewReturnsFirstNonEmptyLine() {
+    XCTAssertNil(workToolResultPreview(nil))
+    XCTAssertNil(workToolResultPreview(""))
+    XCTAssertEqual(workToolResultPreview("   \n\nHello\nWorld"), "Hello")
+    XCTAssertEqual(workToolResultPreview("  padded line  "), "padded line")
+  }
+
+  func testWorkToolResultTruncateShortTextIsUntouched() {
+    let short = String(repeating: "a", count: workToolResultTruncateLimit)
+    let (text, didTruncate) = workToolResultTruncate(short, expanded: false)
+    XCTAssertEqual(text, short)
+    XCTAssertFalse(didTruncate)
+  }
+
+  func testWorkToolResultTruncateLongTextIsTrimmedWithEllipsis() {
+    let long = String(repeating: "a", count: workToolResultTruncateLimit + 100)
+    let (text, didTruncate) = workToolResultTruncate(long, expanded: false)
+    XCTAssertTrue(didTruncate)
+    XCTAssertEqual(text.count, workToolResultTruncateLimit + 1)  // +1 for the ellipsis
+    XCTAssertTrue(text.hasSuffix("…"))
+  }
+
+  func testWorkToolResultTruncateExpandedReturnsFullText() {
+    let long = String(repeating: "a", count: workToolResultTruncateLimit + 100)
+    let (text, didTruncate) = workToolResultTruncate(long, expanded: true)
+    XCTAssertEqual(text, long)
+    XCTAssertFalse(didTruncate)
+  }
+
+  func testWorkToolResultByteLabelFormatsSmallAndLargeCounts() {
+    XCTAssertEqual(workToolResultByteLabel(String(repeating: "a", count: 450)), "450 chars")
+    XCTAssertEqual(workToolResultByteLabel(String(repeating: "a", count: 1800)), "1.8k chars")
+  }
+
+  func testWorkContextCompactSummaryParsesAutoAndTokens() {
+    let parsed = WorkContextCompactSummary.parse("auto compact freed ~12,400 tokens")
+    XCTAssertEqual(parsed.triggerLabel, "AUTO")
+    XCTAssertEqual(parsed.tokensFreedLabel, "~12k tokens freed")
+  }
+
+  func testWorkContextCompactSummaryParsesManualTriggerWithoutTokens() {
+    let parsed = WorkContextCompactSummary.parse("Manual compaction ran")
+    XCTAssertEqual(parsed.triggerLabel, "MANUAL")
+    XCTAssertNil(parsed.tokensFreedLabel)
+  }
+
+  func testWorkContextCompactSummaryEmptyInputReturnsDefaults() {
+    let parsed = WorkContextCompactSummary.parse(nil)
+    XCTAssertNil(parsed.triggerLabel)
+    XCTAssertNil(parsed.tokensFreedLabel)
   }
 }
 

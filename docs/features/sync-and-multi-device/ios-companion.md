@@ -16,25 +16,53 @@ apps/ios/
 ├── ADE.xcodeproj/
 ├── ADE/
 │   ├── App/
-│   │   ├── ADEApp.swift           # SwiftUI app entry
-│   │   └── ContentView.swift
+│   │   ├── ADEApp.swift             # SwiftUI app entry
+│   │   └── ContentView.swift        # slim 5-tab TabView
 │   ├── Models/
-│   │   └── RemoteModels.swift     # decoding structs
+│   │   └── RemoteModels.swift       # Codable structs mirroring shared types
 │   ├── Resources/
-│   │   └── DatabaseBootstrap.sql  # generated from desktop kvDb.ts
+│   │   └── DatabaseBootstrap.sql    # generated from desktop kvDb.ts
 │   ├── Services/
-│   │   ├── Database.swift         # SQLite + pure-SQL CRR emulation
-│   │   ├── KeychainService.swift  # paired device secret storage
-│   │   └── SyncService.swift      # WebSocket client, command routing
+│   │   ├── Database.swift           # SQLite + pure-SQL CRR + offline caches
+│   │   ├── KeychainService.swift    # paired device secret storage
+│   │   └── SyncService.swift        # WebSocket client, command routing,
+│   │                                # PIN pairing, lane presence, chat push
 │   ├── Views/
+│   │   ├── Components/              # ADEDesignSystem, haptics, shimmer,
+│   │   │                            # mobile primitives, code rendering cache
+│   │   ├── Lanes/                   # AddLaneSheet, LaneDetailScreen,
+│   │   │                            # LaneChat*, LaneCommitBar, LaneDiff*,
+│   │   │                            # LaneListViewParts, LaneTreeView, etc.
+│   │   ├── Files/                   # FilesRootScreen, FilesDirectoryScreen,
+│   │   │                            # FilesDetailScreen, *+Actions helpers
+│   │   ├── Work/                    # WorkRootScreen, WorkChatSessionView,
+│   │   │                            # Work*Helpers, WorkNewChat*,
+│   │   │                            # WorkSessionDestination*, etc.
+│   │   ├── PRs/                     # PrsRootScreen, PrDetailScreen and
+│   │   │                            # per-tab views, PrWorkflowCards,
+│   │   │                            # PrStackSheet, CreatePrWizardView
+│   │   ├── Settings/                # ConnectionSettingsView + modular
+│   │   │                            # SettingsPairingSection,
+│   │   │                            # SettingsAppearanceSection,
+│   │   │                            # SettingsDiagnosticsSection,
+│   │   │                            # SettingsConnectionHeader,
+│   │   │                            # SettingsPinSheet
 │   │   ├── LanesTabView.swift
 │   │   ├── FilesTabView.swift
 │   │   ├── WorkTabView.swift
 │   │   └── PRsTabView.swift
-│   └── Assets.xcassets/
+│   └── Assets.xcassets/             # App icon, brand mark, provider logos
+│                                    # (Anthropic, Claude, Codex, Cursor,
+│                                    # OpenAI, OpenCode)
 └── ADETests/
     └── ADETests.swift
 ```
+
+Each tab is factored into a root screen, one `+Actions` extension for
+side-effecting work, and several helper modules (timeline, markdown
+parsing, model catalog, session grouping) to keep individual files
+under a few hundred lines. This split is the primary reason the Work
+tab grew from one ~3,000-line file to ~30 focused files.
 
 Deployment target: iOS 26+. iPhone and iPad (adaptive layouts planned for
 Phase 7).
@@ -97,12 +125,17 @@ Source: `apps/ios/ADE/Services/SyncService.swift`.
 ### Connection lifecycle
 
 1. App launch: read pairing secret from Keychain. Read the stored
-   connection draft (host, port, last brain device id).
-2. Open WebSocket connection.
-3. Send local `db_version` (from `AdeDb.sync.getDbVersion()`
-   equivalent on iOS), receive catchup changesets.
+   connection draft (host, port, QR payload v2 address candidates).
+2. Open WebSocket connection. `reconnectIfPossible` is guarded so
+   overlapping wake-ups never stack TCP/WebSocket attempts.
+3. Send local `db_version`, receive catchup changesets.
 4. Enter continuous bidirectional sync.
 5. On disconnect: automatic reconnection with exponential backoff.
+6. After pairing completes, the phone announces currently-open lanes
+   via `lanes.presence.announce` so the host decorates
+   `LaneSummary.devicesOpen` for other controllers; the phone calls
+   `lanes.presence.release` when the user leaves a lane surface and
+   re-announces on a 30 s heartbeat (host-side TTL is 60 s).
 
 ### Message types
 
@@ -111,7 +144,7 @@ Implemented envelope types on iOS:
 | Type | Direction | Purpose |
 |---|---|---|
 | `hello` / `hello_ok` / `hello_error` | Bidirectional | Handshake |
-| `pairing_request` / `pairing_result` | Phone → host / host → phone | Numeric-code pairing |
+| `pairing_request` / `pairing_result` | Phone → host / host → phone | 6-digit PIN pairing |
 | `changeset_batch` | Bidirectional | cr-sqlite changeset batch |
 | `command` | Phone → host | Execution request |
 | `command_ack` | Host → phone | Command receipt |
@@ -147,12 +180,34 @@ yet arrived in the catchup batch.
 
 ### KeychainService
 
-- Stores the paired device secret produced during numeric-code
+- Stores the paired device secret produced after a successful PIN
   pairing.
-- Stores connection draft metadata (host, port, last brain device id,
-  last remote db version) so reconnects resume cleanly.
+- Stores connection draft metadata (host, port, last remote db
+  version) so reconnects resume cleanly. The legacy
+  `lastBrainDeviceId` draft field has been removed — connections now
+  resolve an address candidate from the host's device registry.
 - Uses iOS Keychain Services API (`SecItemAdd` / `SecItemCopyMatching`
   / `SecItemUpdate` / `SecItemDelete`).
+
+### PIN pairing flow
+
+1. User opens Settings > Sync on the host desktop and sets a 6-digit
+   PIN. The desktop writes `.ade/secrets/sync-pin.json` (chmod `0600`)
+   and surfaces it on the Settings > Sync sheet for the duration the
+   user wants to accept pairings.
+2. Phone opens Settings > Pairing, either scans the desktop QR (which
+   carries address candidates + port only) or enters host/port
+   manually, then types the same PIN the user set.
+3. Phone sends a `pairing_request` envelope with the PIN. The host's
+   `syncPairingStore.pairPeer` validates against `syncPinStore`; the
+   failure codes are `invalid_pin`, `pin_not_set`, or `pairing_failed`.
+4. On success the host persists a per-device record and returns a
+   secret. The phone stores it in Keychain and subsequent connections
+   authenticate with the paired secret, not the PIN.
+
+`SettingsPinSheet` on iOS mirrors the desktop PIN sheet and handles
+the entry UX. If the user misreads the digits, the host applies
+per-IP rate limiting (5 failures → 10-minute cooldown).
 
 ### Background App Refresh
 
@@ -175,22 +230,25 @@ yet arrived in the catchup batch.
 
 ## Tab structure
 
-### Phase 6 (shipped)
+### Shipped
 
 | Tab | Icon | Desktop equivalent | Capabilities |
 |---|---|---|---|
-| **Lanes** | `rectangle.3.group` | `/lanes` | Full lane surface: search/filter chips, open/create/attach/manage, stack, git/diff/rebase/conflicts, lane-scoped sessions and AI chats |
-| **Files** | `doc.text` | `/files` | Lane-backed workspace picker, live file tree/search/read, protected-workspace read-only parity |
-| **Work** | `terminal` | `/work` | Terminal session list, cached history with persisted lane names, read-only output streaming, quick-launch actions |
-| **PRs** | `arrow.triangle.pull` | `/prs` | PR list/detail, state-gated merge/close/reopen/request-reviewer, diff viewer |
-| **Settings** | `gearshape` | `/settings` (sync subset) | Pairing, reconnect, host identity, per-domain sync state, disconnect/forget |
+| **Lanes** | `square.stack.3d.up` | `/lanes` | Full lane surface: search/filter chips, open/create/attach/manage, stack, git/diff/rebase/conflicts, lane-scoped sessions and AI chats. `devicesOpen` presence chips show which other devices currently have the lane open. |
+| **Files** | `doc.text` | `/files` | Lane-backed workspace picker, live file tree/search/read, protected-workspace read-only parity. `mobileReadOnly` on the workspace payload gates mutating file actions on the phone via `ensureMobileFileMutationsAllowed`. |
+| **Work** | `terminal` | `/work` | Terminal + chat session list, cached history with persisted lane names, read-only output streaming, quick-launch actions, session pinning, live chat-event push from the host (no polling lag once subscribed). |
+| **PRs** | `arrow.triangle.pull` | `/prs` | PR list/detail driven by `prs.getMobileSnapshot`: stack visibility (`PrStackSheet`), create-PR wizard (`CreatePrWizardView`) gated by per-lane eligibility, workflow cards (queue / integration / rebase) rendered from `PrWorkflowCard`, per-PR action capabilities. |
+| **Settings** | `gearshape` | `/settings` (sync subset) | PIN pairing (`SettingsPinSheet`), appearance, diagnostics, connection header with QR payload and address candidates, reconnect, forget. |
 
-### Phase 7 (planned)
+### Planned
 
-Planned tabs: Missions, CTO/Chat, Automations, Graph, History,
-Settings parity expansion.
+- Missions, CTO/Chat, Automations, Graph, History tabs.
+- Full Settings parity with the desktop (beyond the current sync/
+  appearance/diagnostics subset).
+- APNs relay for background/terminated notifications.
+- iPad adaptive layout, widgets, Spotlight.
 
-## Lane data projection (Phase 6 W6)
+## Lane data projection
 
 Rather than reconstructing lane detail surfaces client-side from
 primitive rows, the iOS app persists richer projections the host
@@ -201,11 +259,36 @@ sends:
 - Cached lane-detail payloads (`LaneDetailPayload`) keyed by lane id
   so the Lanes tab can render the desktop stack / git / diff / manage
   / work surfaces without client-side reconstruction.
+- `LaneSummary.devicesOpen` lists the devices currently on a lane,
+  decorated by the host from `lanes.presence.announce` events.
 
 The host produces these via `lanes.refreshSnapshots` and
 `lanes.getDetail` remote commands. The phone calls the command, stores
 the result, and reads from the local store afterward so reconnects and
 offline usage remain fast.
+
+## PR data projection
+
+The iOS PRs tab consumes a single aggregate command,
+`prs.getMobileSnapshot`, which returns `PrMobileSnapshot`:
+
+- `prs` — `PrSummary` rows (same shape as desktop).
+- `stacks` — ordered lane chains with `PrStackMember` entries
+  (`role: root | middle | leaf`, dirty flag, PR linkage, base/head
+  branches, checks/review status).
+- `capabilities` — `PrActionCapabilities` keyed by PR id with
+  per-action gates (`canMerge`, `canClose`, `canReopen`,
+  `canRequestReviewers`, `canRerunChecks`, `canComment`,
+  `canUpdateDescription`, `canDelete`) plus `mergeBlockedReason` and
+  `requiresLive`.
+- `createCapabilities` — `PrCreateLaneEligibility[]` powering the
+  mobile create-PR wizard; each lane carries `canCreate`,
+  `blockedReason`, default base branch, and a default title.
+- `workflowCards` — union of `PrQueueWorkflowCard`,
+  `PrIntegrationWorkflowCard`, `PrRebaseWorkflowCard` rendered by
+  `PrWorkflowCards.swift`.
+- `live: boolean` — false signals the phone should render a
+  "host offline" banner.
 
 ## Command policy from the host
 
@@ -224,20 +307,19 @@ reflected in the phone's UI on the next descriptor read.
 | Xcode project setup | Implemented |
 | Native SQLite3 + pure-SQL CRR | Implemented |
 | WebSocket client | Implemented |
-| Numeric-code pairing flow | Implemented |
-| QR pairing flow | Shell shipped; needs broader live validation |
-| Lanes tab | Implemented to live desktop parity |
-| Files tab | Implemented to W5 baseline |
-| Work tab | Implemented to W5 baseline |
-| PRs tab | Implemented to W5 baseline |
-| Sync Settings tab | Implemented |
-| Missions tab | Planned (Phase 7 W1) |
-| CTO/Chat tab | Planned (Phase 7 W2) |
-| Automations / Graph / History tabs | Planned (Phase 7 W3) |
-| Full Settings parity | Planned (Phase 7 W4) |
-| Push notifications (APNs) | Planned (Phase 7 W5) |
-| iPad adaptive layout | Planned (Phase 7 W10) |
-| Widgets + Spotlight | Planned (Phase 7 W10) |
+| PIN pairing flow | Implemented |
+| QR pairing payload (v2, address candidates + port) | Implemented |
+| Lanes tab | Implemented to live desktop parity (with `devicesOpen`) |
+| Files tab | Implemented with `mobileReadOnly` workspace gate |
+| Work tab | Implemented; live chat-event push from host |
+| PRs tab | Implemented; driven by `prs.getMobileSnapshot` |
+| Settings tab (pairing / appearance / diagnostics) | Implemented |
+| Missions tab | Planned |
+| CTO / Automations / Graph / History tabs | Planned |
+| Full Settings parity | Planned |
+| Push notifications (APNs) | Planned |
+| iPad adaptive layout | Planned |
+| Widgets + Spotlight | Planned |
 
 ## Gotchas
 
@@ -267,8 +349,18 @@ reflected in the phone's UI on the next descriptor read.
   command handlers on the host responsive; bulk operations should
   be batched into a single command with a single reply rather than
   rapid-fire command storms.
-- **Chat streaming is polling-based, not push.** `chat_subscribe`
-  sends a snapshot then begins polling for new entries server-side;
-  the phone receives `chat_event` envelopes as the host finds them.
-  This design choice makes reconnection simple at the cost of some
-  latency.
+- **Chat streaming is push, with polling as fallback.** Once a phone
+  sends `chat_subscribe`, the host fans out `chat_event` envelopes in
+  real time from `agentChatService.subscribeToEvents`. The host still
+  runs its polling path on reconnect / catchup to fill any gap; the
+  phone de-duplicates per-event keys so a push and a catchup poll
+  covering the same event produce one rendered message.
+- **Lane presence is best-effort with a TTL.** The phone
+  re-announces on a 30 s cadence; the host prunes stale entries at
+  60 s. A phone that crashes without sending `lanes.presence.release`
+  will disappear from `devicesOpen` one cycle later, not instantly.
+- **`mobileReadOnly` is an additional gate on top of
+  `isReadOnlyByDefault`.** The iOS app checks both before allowing a
+  `files.*` mutating command. A workspace that is desktop-writable
+  may still be read-only from the phone to avoid accidental edits
+  on a lossy network.

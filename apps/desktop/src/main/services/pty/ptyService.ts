@@ -337,8 +337,7 @@ export function createPtyService({
 
   const isTitleGenerationEnabled = (): boolean => {
     const si = getSessionIntelligence();
-    const ai = projectConfigService?.get().effective.ai;
-    return si?.titles?.enabled ?? (ai?.chat as any)?.autoTitleEnabled ?? true;
+    return si?.titles?.enabled ?? true;
   };
 
   const resolveTitleModelId = (): string | undefined => {
@@ -395,6 +394,7 @@ export function createPtyService({
         .summarizeTerminal({
           cwd: entry.boundCwd || entry.laneWorktreePath,
           prompt,
+          taskType: "session_title",
           timeoutMs: 8_000,
           ...(titleModelId ? { model: titleModelId } : {}),
         })
@@ -560,9 +560,7 @@ export function createPtyService({
 
         // Refresh title on complete — runs independently of AI summaries toggle
         if (hasAi) {
-          const refreshOnComplete = getSessionIntelligence()?.titles?.refreshOnComplete
-            ?? (projectConfigService?.get().effective.ai?.chat as any)?.autoTitleRefreshOnComplete
-            ?? true;
+          const refreshOnComplete = getSessionIntelligence()?.titles?.refreshOnComplete ?? true;
           if (refreshOnComplete && isTitleGenerationEnabled()) {
             try {
               if (isSessionManuallyNamed(sessionService, sessionId)) {
@@ -585,6 +583,7 @@ export function createPtyService({
               const titleResult = await aiIntegrationService!.summarizeTerminal({
                 cwd: summaryCwd || laneService.getLaneBaseAndBranch(session.laneId).worktreePath,
                 prompt: titlePrompt,
+                taskType: "session_title",
                 timeoutMs: 8_000,
                 ...(titleModelId ? { model: titleModelId } : {}),
               });
@@ -852,6 +851,39 @@ export function createPtyService({
     });
   };
 
+  const CODEX_LIVE_CAPTURE_DELAYS_MS = [1_500, 3_500, 8_000, 20_000];
+
+  // Codex CLI has no pre-assigned session ID flag (unlike Claude's --session-id), so the
+  // rollout JSONL is the only handle on the session's UUID. Polling once it exists lets resume
+  // survive app crashes, orphaned PTYs, or long-lived sessions that outlast the transcript-scan
+  // window on dispose.
+  const scheduleCodexSessionIdCaptureBestEffort = (
+    sessionId: string,
+    cwd: string,
+    startedAt: string,
+  ): void => {
+    const poll = (attempt: number): void => {
+      const timer = setTimeout(() => {
+        try {
+          const session = sessionService.get(sessionId);
+          if (!session) return;
+          if (session.resumeMetadata?.targetId?.trim()) return;
+          const codexSessionId = resolveCodexSessionIdFromStorage({ cwd, startedAt });
+          if (codexSessionId) {
+            sessionService.setResumeCommand(sessionId, `codex resume ${codexSessionId}`);
+            logger.info("pty.codex_session_id_captured_live", { sessionId, codexSessionId, attempt });
+            return;
+          }
+          if (attempt + 1 < CODEX_LIVE_CAPTURE_DELAYS_MS.length) poll(attempt + 1);
+        } catch (err) {
+          logger.warn("pty.codex_session_id_capture_failed", { sessionId, attempt, err: String(err) });
+        }
+      }, CODEX_LIVE_CAPTURE_DELAYS_MS[attempt]);
+      timer.unref?.();
+    };
+    poll(0);
+  };
+
   const closeEntry = (ptyId: string, exitCode: number | null) => {
     const entry = ptys.get(ptyId);
     if (!entry) return;
@@ -990,8 +1022,9 @@ export function createPtyService({
   };
 
   const emitPtyData = (entry: PtyEntry, event: PtyDataEvent) => {
-    broadcastData(event);
-    const enriched = { ...event, laneId: entry.laneId };
+    const scopedEvent = { ...event, projectRoot };
+    broadcastData(scopedEvent);
+    const enriched = { ...scopedEvent, laneId: entry.laneId };
     for (const listener of dataListeners) {
       try {
         listener(enriched);
@@ -1002,8 +1035,9 @@ export function createPtyService({
   };
 
   const emitPtyExit = (entry: Pick<PtyEntry, "laneId" | "sessionId">, event: PtyExitEvent) => {
-    broadcastExit(event);
-    const enriched = { ...event, laneId: entry.laneId };
+    const scopedEvent = { ...event, projectRoot };
+    broadcastExit(scopedEvent);
+    const enriched = { ...scopedEvent, laneId: entry.laneId };
     for (const listener of exitListeners) {
       try {
         listener(enriched);
@@ -1231,7 +1265,7 @@ export function createPtyService({
           laneWorktreePath: worktreePath,
           boundCwd: cwd,
         });
-        broadcastExit({ ptyId, sessionId, exitCode: null });
+        broadcastExit({ ptyId, sessionId, projectRoot, exitCode: null });
         throw err;
       }
 
@@ -1380,6 +1414,14 @@ export function createPtyService({
         }
       }
 
+      if (
+        !existingSession
+        && (toolTypeHint === "codex" || toolTypeHint === "codex-orchestrated")
+        && cwd
+      ) {
+        scheduleCodexSessionIdCaptureBestEffort(sessionId, cwd, startedAt);
+      }
+
       // Fire-and-forget: after 6s, attempt AI title from initial PTY output (not used for interactive Claude/Codex — those title from the first submitted user input via pty.write).
       if (
         aiIntegrationService
@@ -1420,6 +1462,7 @@ export function createPtyService({
             .summarizeTerminal({
               cwd: entry.boundCwd || entry.laneWorktreePath,
               prompt,
+              taskType: "session_title",
               timeoutMs: 8_000,
               ...(titleModelId ? { model: titleModelId } : {}),
             })
