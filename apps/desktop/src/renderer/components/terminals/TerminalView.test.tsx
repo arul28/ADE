@@ -11,8 +11,8 @@ const mockState = vi.hoisted(() => ({
   nextFitDims: { cols: 120, rows: 40 },
   shouldThrowWebglAddon: false,
   lastContextLossHandler: null as (() => void) | null,
-  ptyDataListeners: new Set<(event: { ptyId: string; sessionId?: string; data: string }) => void>(),
-  ptyExitListeners: new Set<(event: { ptyId: string; sessionId?: string; exitCode: number | null }) => void>(),
+  ptyDataListeners: new Set<(event: { ptyId: string; sessionId?: string; projectRoot?: string; data: string }) => void>(),
+  ptyExitListeners: new Set<(event: { ptyId: string; sessionId?: string; projectRoot?: string; exitCode: number | null }) => void>(),
   projectRoot: "/project/a",
   projectRevision: 0,
   theme: "dark" as const,
@@ -152,13 +152,13 @@ function installWindowAde() {
     pty: {
       resize: vi.fn().mockResolvedValue(undefined),
       write: vi.fn().mockResolvedValue(undefined),
-      onData: vi.fn((listener: (event: { ptyId: string; sessionId?: string; data: string }) => void) => {
+      onData: vi.fn((listener: (event: { ptyId: string; sessionId?: string; projectRoot?: string; data: string }) => void) => {
         mockState.ptyDataListeners.add(listener);
         return () => {
           mockState.ptyDataListeners.delete(listener);
         };
       }),
-      onExit: vi.fn((listener: (event: { ptyId: string; sessionId?: string; exitCode: number | null }) => void) => {
+      onExit: vi.fn((listener: (event: { ptyId: string; sessionId?: string; projectRoot?: string; exitCode: number | null }) => void) => {
         mockState.ptyExitListeners.add(listener);
         return () => {
           mockState.ptyExitListeners.delete(listener);
@@ -454,13 +454,14 @@ describe("TerminalView", () => {
     expect(terminal?.dispose).not.toHaveBeenCalled();
   });
 
-  it("drops parked runtimes after switching away and back across projects before remounting", async () => {
+  it("keeps live parked runtimes current across project switches", async () => {
     const view = render(<TerminalView ptyId="pty-switch" sessionId="session-switch" isActive />);
     await flushAllTimers();
 
     const readTranscriptTailMock = window.ade.sessions.readTranscriptTail as unknown as { mock: { calls: unknown[][] } };
     const firstTerminal = mockState.terminalInstances.at(-1) as {
       dispose: ReturnType<typeof vi.fn>;
+      write: ReturnType<typeof vi.fn>;
     } | undefined;
     expect(firstTerminal).toBeTruthy();
     expect(getTerminalRuntimeSnapshot("session-switch")).not.toBeNull();
@@ -473,6 +474,23 @@ describe("TerminalView", () => {
 
     mockState.projectRoot = "/project/b";
     mockState.projectRevision += 1;
+    disposeTerminalRuntimesForProjectChange(mockState.projectRoot, mockState.projectRevision);
+
+    firstTerminal?.write.mockClear();
+    for (const listener of mockState.ptyDataListeners) {
+      listener({
+        ptyId: "pty-switch",
+        sessionId: "session-switch",
+        projectRoot: "/project/a",
+        data: "still running in project a\n",
+      });
+    }
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(16);
+    });
+    expect(firstTerminal?.write).toHaveBeenCalledWith("still running in project a\n");
+    expect(firstTerminal?.dispose).not.toHaveBeenCalled();
+
     mockState.projectRoot = "/project/a";
     mockState.projectRevision += 1;
 
@@ -482,14 +500,14 @@ describe("TerminalView", () => {
     const secondTerminal = mockState.terminalInstances.at(-1) as {
       dispose: ReturnType<typeof vi.fn>;
     } | undefined;
-    expect(mockState.terminalInstances).toHaveLength(2);
-    expect(secondTerminal).not.toBe(firstTerminal);
-    expect(firstTerminal?.dispose).toHaveBeenCalledTimes(1);
-    expect(readTranscriptTailMock.mock.calls).toHaveLength(2);
+    expect(mockState.terminalInstances).toHaveLength(1);
+    expect(secondTerminal).toBe(firstTerminal);
+    expect(firstTerminal?.dispose).not.toHaveBeenCalled();
+    expect(readTranscriptTailMock.mock.calls).toHaveLength(1);
     expect(getTerminalRuntimeSnapshot("session-switch")).not.toBeNull();
   });
 
-  it("disposes parked runtimes when the project changes without a mounted terminal view", async () => {
+  it("keeps parked live runtimes when the project changes without a mounted terminal view", async () => {
     const view = render(<TerminalView ptyId="pty-background" sessionId="session-background" isActive />);
     await flushAllTimers();
 
@@ -508,6 +526,21 @@ describe("TerminalView", () => {
     mockState.projectRoot = "/project/b";
     mockState.projectRevision += 1;
     disposeTerminalRuntimesForProjectChange(mockState.projectRoot, mockState.projectRevision);
+
+    expect(terminal?.dispose).not.toHaveBeenCalled();
+    expect(getTerminalRuntimeSnapshot("session-background")).not.toBeNull();
+
+    for (const listener of mockState.ptyExitListeners) {
+      listener({
+        ptyId: "pty-background",
+        sessionId: "session-background",
+        projectRoot: "/project/a",
+        exitCode: 0,
+      });
+    }
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(8_000);
+    });
 
     expect(terminal?.dispose).toHaveBeenCalledTimes(1);
     expect(getTerminalRuntimeSnapshot("session-background")).toBeNull();

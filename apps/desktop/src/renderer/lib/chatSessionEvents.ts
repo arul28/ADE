@@ -62,6 +62,7 @@ export function getChatSessionLocalTouchTimestampForEvent(
 ): string | null {
   switch (envelope.event.type) {
     case "approval_request":
+    case "pending_input_resolved":
     case "done":
     case "error":
     case "user_message":

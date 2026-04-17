@@ -2390,7 +2390,12 @@ final class SyncService: ObservableObject {
       return deduplicatedAddresses(liveLastSuccessful + liveLan + liveTailscale)
     }
 
-    return []
+    return deduplicatedAddresses(
+      (profile.lastSuccessfulAddress.map { [$0] } ?? [])
+        + profile.savedAddressCandidates
+        + profile.discoveredLanAddresses
+        + (profile.tailscaleAddress.map { [$0] } ?? [])
+    )
   }
 
   private func connectUsingProfile(

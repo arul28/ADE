@@ -164,11 +164,13 @@ describe("modelRegistry", () => {
       expect(resolved?.id).toBe("anthropic/claude-opus-4-7-1m");
     });
 
-    it("no longer exposes any claude-opus-4-6 ids in the registry", () => {
+    it("keeps claude-opus-4-6 ids as compatibility aliases", () => {
       const legacyIds = MODEL_REGISTRY.filter((m) => m.id.includes("claude-opus-4-6")).map((m) => m.id);
       expect(legacyIds).toEqual([]);
-      expect(getModelById("anthropic/claude-opus-4-6")).toBeUndefined();
-      expect(getModelById("anthropic/claude-opus-4-6-1m")).toBeUndefined();
+      expect(resolveModelAlias("anthropic/claude-opus-4-6")?.id).toBe("anthropic/claude-opus-4-7");
+      expect(resolveModelAlias("anthropic/claude-opus-4-6-1m")?.id).toBe("anthropic/claude-opus-4-7-1m");
+      expect(getModelById("anthropic/claude-opus-4-6")?.id).toBe("anthropic/claude-opus-4-7");
+      expect(getModelById("anthropic/claude-opus-4-6-1m")?.id).toBe("anthropic/claude-opus-4-7-1m");
     });
   });
 

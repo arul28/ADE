@@ -200,17 +200,23 @@ export function createWorkerHeartbeatService(args: WorkerHeartbeatServiceArgs) {
     }
   };
 
-  const trackDispatchPromise = (promise: Promise<void>, agentId: string): Promise<void> => {
-    const tracked = promise.catch((error) => {
-      logDispatchFailure("dispatch_next_failed", {
-        agentId,
-        error: getErrorMessage(error),
-      });
-    });
+  const trackDispatchPromise = (
+    promise: Promise<void>,
+    agentId: string,
+    options: { swallowErrors?: boolean } = {},
+  ): Promise<void> => {
+    const tracked = options.swallowErrors === false
+      ? promise
+      : promise.catch((error) => {
+          logDispatchFailure("dispatch_next_failed", {
+            agentId,
+            error: getErrorMessage(error),
+          });
+        });
     trackedDispatches.add(tracked);
-    tracked.finally(() => {
+    void tracked.finally(() => {
       trackedDispatches.delete(tracked);
-    });
+    }).catch(() => {});
     return tracked;
   };
 
@@ -772,7 +778,7 @@ export function createWorkerHeartbeatService(args: WorkerHeartbeatServiceArgs) {
 
     const deferredAgentIds = listDeferredAgentIds();
     for (const agentId of deferredAgentIds) {
-      await dispatchNext(agentId);
+      await trackDispatchPromise(dispatchNext(agentId), agentId);
     }
     await drainTrackedDispatches();
   };
@@ -861,7 +867,7 @@ export function createWorkerHeartbeatService(args: WorkerHeartbeatServiceArgs) {
       return { runId: wakeRun.id, status: "deferred" };
     }
 
-    await dispatchNext(agentId);
+    await trackDispatchPromise(dispatchNext(agentId), agentId, { swallowErrors: false });
     const updated = getRunById(wakeRun.id);
     return { runId: wakeRun.id, status: normalizeStatus(updated?.status ?? wakeRun.status) };
   };

@@ -1565,12 +1565,14 @@ app.whenReady().then(async () => {
       getLaneRuntimeEnv,
       logger,
       broadcastData: (ev) => {
-        emitProjectEvent(projectRoot, IPC.ptyData, ev);
-        syncServiceRef?.handlePtyData(ev);
+        broadcast(IPC.ptyData, ev);
+        const { projectRoot: _projectRoot, ...syncEvent } = ev;
+        syncServiceRef?.handlePtyData(syncEvent);
       },
       broadcastExit: (ev) => {
-        emitProjectEvent(projectRoot, IPC.ptyExit, ev);
-        syncServiceRef?.handlePtyExit(ev);
+        broadcast(IPC.ptyExit, ev);
+        const { projectRoot: _projectRoot, ...syncEvent } = ev;
+        syncServiceRef?.handlePtyExit(syncEvent);
       },
       onSessionEnded: onTrackedSessionEnded,
       onSessionRuntimeSignal: (signal) => {

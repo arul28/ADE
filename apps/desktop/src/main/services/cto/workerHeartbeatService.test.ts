@@ -716,6 +716,52 @@ describe("workerHeartbeatService", () => {
     await fixture.dispose();
   });
 
+  it("waits for direct wakeup dispatches during dispose", async () => {
+    let releaseRun: () => void = () => {
+      throw new Error("Expected wakeup runtime to be blocked.");
+    };
+    const runtimeRun = vi.fn(async () => {
+      await new Promise<void>((resolve) => {
+        releaseRun = resolve;
+      });
+      return {
+        ok: true,
+        adapterType: "codex-local",
+        effectiveSurface: "process",
+        statusCode: 200,
+        outputText: "completed wake",
+        provider: "codex",
+        modelId: "openai/gpt-5.3-codex",
+        continuation: null,
+        usage: null,
+      };
+    });
+    const fixture = await createFixture({ runtimeRun });
+    const worker = fixture.createWorker({ name: "Direct Wake Worker" });
+
+    const wake = fixture.heartbeat.triggerWakeup({
+      agentId: worker.id,
+      reason: "manual",
+      prompt: "run slowly",
+    });
+    await waitForCondition(() => {
+      expect(runtimeRun).toHaveBeenCalledTimes(1);
+    });
+
+    let disposeSettled = false;
+    const dispose = fixture.heartbeat.dispose().then(() => {
+      disposeSettled = true;
+    });
+    await Promise.resolve();
+    expect(disposeSettled).toBe(false);
+
+    releaseRun();
+    await wake;
+    await dispose;
+    expect(disposeSettled).toBe(true);
+    fixture.db.close();
+  });
+
   it("reuses persisted worker continuation handles across repeated wakeups on the same delegated task", async () => {
     const runtimeRun = vi.fn()
       .mockResolvedValueOnce({

@@ -148,16 +148,22 @@ export function createLinearSyncService(args: {
       while (pendingIssueIds.size > 0 && !disposed) {
         const issueIds = [...pendingIssueIds];
         pendingIssueIds.clear();
+        const failedIssueIds: string[] = [];
         for (const issueId of issueIds) {
           if (disposed) break;
           try {
             await processIssueUpdateNow(issueId);
           } catch (error) {
+            failedIssueIds.push(issueId);
             args.logger?.warn("linear_workflow.issue_update_replay_failed", {
               issueId,
               error: getErrorMessage(error),
             });
           }
+        }
+        if (failedIssueIds.length > 0) {
+          for (const issueId of failedIssueIds) addPendingIssue(issueId);
+          break;
         }
       }
     } finally {

@@ -5007,8 +5007,9 @@ export function createAgentChatService(args: {
       }
       const laneId = String(record.laneId ?? "").trim();
       const model = String(record.model ?? "").trim();
-      const modelId = typeof record.modelId === "string" && record.modelId.trim().length
-        ? (getModelById(record.modelId.trim()) ? record.modelId.trim() : undefined)
+      const storedModelId = typeof record.modelId === "string" ? record.modelId.trim() : "";
+      const modelId = storedModelId.length
+        ? (getModelById(storedModelId) ?? resolveModelAlias(storedModelId))?.id
         : resolveModelIdFromStoredValue(model, provider);
       const sessionProfile = normalizeSessionProfile(record.sessionProfile);
       const reasoningEffort = normalizeReasoningEffort(record.reasoningEffort);
@@ -10572,9 +10573,9 @@ export function createAgentChatService(args: {
             ? DEFAULT_CURSOR_MODEL
             : "");
     // Resolve modelId from registry if provided
-    const resolvedModelId = modelId && getModelById(modelId)
-      ? modelId
-      : resolveModelIdFromStoredValue(normalizedInputModel, provider);
+    const requestedModelDescriptor = modelId ? getModelById(modelId) ?? resolveModelAlias(modelId) : undefined;
+    const resolvedModelId = requestedModelDescriptor?.id
+      ?? resolveModelIdFromStoredValue(normalizedInputModel, provider);
 
     if (provider === "opencode" && !resolvedModelId && !modelId?.endsWith("/auto")) {
       throw new Error("OpenCode chat requires a known model ID. Select a model from the registry.");
@@ -10584,7 +10585,7 @@ export function createAgentChatService(args: {
       throw new Error("Cursor chat requires a known model. Pick a Cursor model from the model list.");
     }
 
-    const resolvedDescriptor = resolvedModelId ? getModelById(resolvedModelId) : undefined;
+    const resolvedDescriptor = requestedModelDescriptor ?? (resolvedModelId ? getModelById(resolvedModelId) : undefined);
     if (resolvedModelId && !resolvedDescriptor) {
       throw new Error(`Unknown model '${resolvedModelId}'.`);
     }

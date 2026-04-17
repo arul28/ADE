@@ -1022,8 +1022,9 @@ export function createPtyService({
   };
 
   const emitPtyData = (entry: PtyEntry, event: PtyDataEvent) => {
-    broadcastData(event);
-    const enriched = { ...event, laneId: entry.laneId };
+    const scopedEvent = { ...event, projectRoot };
+    broadcastData(scopedEvent);
+    const enriched = { ...scopedEvent, laneId: entry.laneId };
     for (const listener of dataListeners) {
       try {
         listener(enriched);
@@ -1034,8 +1035,9 @@ export function createPtyService({
   };
 
   const emitPtyExit = (entry: Pick<PtyEntry, "laneId" | "sessionId">, event: PtyExitEvent) => {
-    broadcastExit(event);
-    const enriched = { ...event, laneId: entry.laneId };
+    const scopedEvent = { ...event, projectRoot };
+    broadcastExit(scopedEvent);
+    const enriched = { ...scopedEvent, laneId: entry.laneId };
     for (const listener of exitListeners) {
       try {
         listener(enriched);
@@ -1263,7 +1265,7 @@ export function createPtyService({
           laneWorktreePath: worktreePath,
           boundCwd: cwd,
         });
-        broadcastExit({ ptyId, sessionId, exitCode: null });
+        broadcastExit({ ptyId, sessionId, projectRoot, exitCode: null });
         throw err;
       }
 

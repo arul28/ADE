@@ -378,8 +378,17 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
     scheduleRefresh(2_500);
 
-    const unsubData = window.ade.pty.onData(() => scheduleRefresh());
-    const unsubExit = window.ade.pty.onExit(() => scheduleRefresh());
+    const isCurrentProjectEvent = (event: { projectRoot?: string | null }) => {
+      const currentRoot = useAppStore.getState().project?.rootPath ?? null;
+      return !event.projectRoot || event.projectRoot === currentRoot;
+    };
+
+    const unsubData = window.ade.pty.onData((event) => {
+      if (isCurrentProjectEvent(event)) scheduleRefresh();
+    });
+    const unsubExit = window.ade.pty.onExit((event) => {
+      if (isCurrentProjectEvent(event)) scheduleRefresh();
+    });
     const interval = window.setInterval(() => {
       if (document.visibilityState !== "visible") return;
       scheduleRefresh();

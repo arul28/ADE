@@ -219,7 +219,7 @@ export function SyncDevicesSection() {
   }
 
   const peerCount = status.connectedPeers.length;
-  const phones = devices.filter((device) => !device.isLocal);
+  const phones = devices.filter((device) => !device.isLocal && device.deviceType === "phone");
   const phonesConnected = phones.filter((d) => d.connectionState === "connected").length;
   const phonesOffline = phones.length - phonesConnected;
   const isLocalHost = status.role === "brain";

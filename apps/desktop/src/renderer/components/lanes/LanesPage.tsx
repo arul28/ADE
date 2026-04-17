@@ -570,8 +570,15 @@ export function LanesPage() {
         void refreshLanes().catch(() => {});
       }, 300);
     };
-    const unsubPtyData = window.ade.pty.onData(scheduleRefresh);
-    const unsubPtyExit = window.ade.pty.onExit(scheduleRefresh);
+    const currentProjectRoot = project?.rootPath ?? null;
+    const isCurrentProjectEvent = (event: { projectRoot?: string | null }) =>
+      !event.projectRoot || event.projectRoot === currentProjectRoot;
+    const unsubPtyData = window.ade.pty.onData((event) => {
+      if (isCurrentProjectEvent(event)) scheduleRefresh();
+    });
+    const unsubPtyExit = window.ade.pty.onExit((event) => {
+      if (isCurrentProjectEvent(event)) scheduleRefresh();
+    });
     const unsubChat = window.ade.agentChat.onEvent(scheduleRefresh);
     const intervalId = window.setInterval(() => {
       if (document.visibilityState !== "visible") return;
@@ -597,7 +604,7 @@ export function LanesPage() {
       }
       window.clearInterval(intervalId);
     };
-  }, [refreshLanes]);
+  }, [project?.rootPath, refreshLanes]);
 
   useEffect(() => {
     hasActiveLaneRuntimeRef.current = laneSnapshots.some((snapshot) =>

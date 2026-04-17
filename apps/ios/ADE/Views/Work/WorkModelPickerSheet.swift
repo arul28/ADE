@@ -183,9 +183,57 @@ struct WorkModelPickerSheet: View {
   }
 
   private func reasoningEffortForSelection(_ model: WorkModelOption) -> String? {
-    if !modelSupportsReasoning(modelId: model.id, provider: model.provider) { return nil }
+    let supportedTiers = supportedReasoningTiers(for: model)
+    if supportedTiers.isEmpty { return nil }
     let trimmed = reasoningEffort.trimmingCharacters(in: .whitespacesAndNewlines)
-    return trimmed.isEmpty ? nil : trimmed
+    if trimmed.isEmpty { return nil }
+    let normalized = trimmed.lowercased()
+    return supportedTiers.contains(where: { $0.lowercased() == normalized }) ? normalized : nil
+  }
+
+  private func supportedReasoningTiers(for model: WorkModelOption) -> [String] {
+    if let tiers = ADEColor.reasoningTiers(for: model.id), !tiers.isEmpty {
+      return tiers
+    }
+    let lower = model.id.lowercased()
+    if lower.contains("opus") {
+      return lower.contains("1m") || lower.contains("[1m]")
+        ? ["low", "medium", "high", "xhigh", "max"]
+        : ["low", "medium", "high", "max"]
+    }
+    if lower.contains("sonnet") || lower.contains("thinking") {
+      return ["low", "medium", "high"]
+    }
+    if lower.contains("gpt-5") {
+      return ["low", "medium", "high", "xhigh"]
+    }
+    return []
+  }
+
+  private func reasoningLevelsForVisibleContext() -> [(String, String)] {
+    let visibleModels = filteredModels
+    let preferredOrder = ["low", "medium", "high", "xhigh", "max"]
+    var tierSet = Set<String>()
+    for model in visibleModels {
+      for tier in supportedReasoningTiers(for: model) {
+        tierSet.insert(tier.lowercased())
+      }
+    }
+    let current = reasoningEffort.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    if !current.isEmpty {
+      tierSet.insert(current)
+    }
+    let orderedTiers = preferredOrder.filter { tierSet.contains($0) }
+      + tierSet.filter { !preferredOrder.contains($0) }.sorted()
+    return [("", "Off")] + orderedTiers.map { ($0, reasoningLabel(for: $0)) }
+  }
+
+  private func reasoningLabel(for tier: String) -> String {
+    switch tier.lowercased() {
+    case "xhigh": return "XHigh"
+    case "max": return "Max"
+    default: return tier.capitalized
+    }
   }
 
   @ViewBuilder
@@ -227,16 +275,10 @@ struct WorkModelPickerSheet: View {
   /// Reasoning-effort segmented control, displayed above the group/provider
   /// tabs. Users pick the effort level here and it is applied to any
   /// reasoning-capable model they subsequently tap in the list; for models
-  /// that don't accept a reasoning knob the value is ignored at the call site
-  /// (see `modelSupportsReasoning`).
+  /// that don't accept the chosen tier the value is ignored at the call site.
   @ViewBuilder
   private var reasoningRow: some View {
-    let levels: [(String, String)] = [
-      ("", "Off"),
-      ("low", "Low"),
-      ("medium", "Medium"),
-      ("high", "High"),
-    ]
+    let levels = reasoningLevelsForVisibleContext()
     HStack(spacing: 8) {
       Text("REASONING")
         .font(.caption2.weight(.bold))

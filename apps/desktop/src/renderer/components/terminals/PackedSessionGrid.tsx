@@ -3,6 +3,7 @@ import { useDockLayout } from "../ui/DockLayoutState";
 import { cn } from "../ui/cn";
 import {
   GRID_GAP_PX,
+  GRID_BASE_ROW_PX,
   GRID_MAX_ROW_SPAN,
   GRID_COLUMN_SUBDIVISIONS,
   computeDefaultRowSpan,
@@ -358,11 +359,14 @@ export function PackedSessionGrid({
   }, [packed.placements]);
 
   const hasPackedLayout = trackCount > 0 && packed.totalRows > 0;
+  const packedGridMinHeight = hasPackedLayout
+    ? (packed.totalRows * GRID_BASE_ROW_PX) + (Math.max(0, packed.totalRows - 1) * GRID_GAP_PX)
+    : undefined;
 
   return (
     <div
       ref={viewportRef}
-      className={cn("min-h-0 flex-1 overflow-hidden p-2", className)}
+      className={cn("min-h-0 flex-1 overflow-x-hidden overflow-y-auto p-2", className)}
       onMouseLeave={() => onViewportMouseLeave?.()}
     >
       <div
@@ -372,8 +376,9 @@ export function PackedSessionGrid({
             ? `repeat(${trackCount}, minmax(0, 1fr))`
             : "minmax(0, 1fr)",
           gridTemplateRows: hasPackedLayout
-            ? `repeat(${packed.totalRows}, minmax(0, 1fr))`
+            ? `repeat(${packed.totalRows}, minmax(${GRID_BASE_ROW_PX}px, 1fr))`
             : "minmax(0, 1fr)",
+          minHeight: packedGridMinHeight,
           gap: `${GRID_GAP_PX}px`,
         }}
       >

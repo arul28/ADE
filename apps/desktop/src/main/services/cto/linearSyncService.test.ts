@@ -190,6 +190,88 @@ describe("linearSyncService", () => {
     db.close();
   });
 
+  it("retains buffered issue updates that fail during replay for a later retry", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-linear-sync-buffer-retry-"));
+    const db = await openKvDb(path.join(root, "ade.db"), { debug() {}, info() {}, warn() {}, error() {} } as any);
+    let resolveAdvance: (() => void) | null = null;
+    let allowActiveRun = true;
+    let shouldFailReplay = true;
+    const advanceRun = vi.fn(async () => {
+      if (!allowActiveRun) return null;
+      return await new Promise<null>((resolve) => {
+        resolveAdvance = () => {
+          allowActiveRun = false;
+          resolve(null);
+        };
+      });
+    });
+    const fetchIssueById = vi.fn(async (issueId: string) => {
+      if (issueId === "issue-2" && shouldFailReplay) {
+        shouldFailReplay = false;
+        throw new Error("Temporary Linear failure");
+      }
+      return { ...issueFixture, id: issueId, identifier: issueId === "issue-2" ? "ABC-43" : issueFixture.identifier };
+    });
+
+    const service = createLinearSyncService({
+      db,
+      projectId: "project-1",
+      flowPolicyService: { getPolicy: () => policy } as any,
+      routingService: {
+        routeIssue: vi.fn(async () => ({
+          workflowId: null,
+          workflowName: null,
+          workflow: null,
+          target: null,
+          reason: "No match",
+          candidates: [],
+          nextStepsPreview: [],
+        })),
+      } as any,
+      intakeService: {
+        fetchCandidates: vi.fn(async () => []),
+        persistSnapshot: vi.fn(() => {}),
+        issueHash: vi.fn(() => "hash-current"),
+      } as any,
+      issueTracker: { fetchIssueById } as any,
+      dispatcherService: {
+        hasActiveRuns: vi.fn(() => allowActiveRun),
+        findActiveRunForIssue: vi.fn(() => null),
+        createRun: vi.fn(),
+        advanceRun,
+        listActiveRuns: vi.fn(() => (
+          allowActiveRun
+            ? [{
+                id: "run-1",
+                issueId: "issue-1",
+                workflowId: "workflow-1",
+                status: "in_progress",
+                retryAfter: null,
+                reviewState: "approved",
+              }]
+            : []
+        )),
+        listQueue: vi.fn(() => []),
+        resolveRunAction: vi.fn(),
+      } as any,
+      autoStart: false,
+    });
+
+    const cycle = service.runSyncNow();
+    await service.processIssueUpdate("issue-2");
+    if (!resolveAdvance) {
+      throw new Error("Expected the reconciliation cycle to be blocked.");
+    }
+    (resolveAdvance as () => void)();
+    await cycle;
+
+    expect(fetchIssueById).toHaveBeenCalledTimes(1);
+    await service.runSyncNow();
+    expect(fetchIssueById).toHaveBeenCalledTimes(2);
+    expect(fetchIssueById).toHaveBeenNthCalledWith(2, "issue-2");
+    db.close();
+  });
+
   it("serializes concurrent webhook issue updates and coalesces duplicates", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-linear-sync-webhook-buffer-"));
     const db = await openKvDb(path.join(root, "ade.db"), { debug() {}, info() {}, warn() {}, error() {} } as any);

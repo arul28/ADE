@@ -108,6 +108,7 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
   {
     id: "anthropic/claude-opus-4-7",
     shortId: "opus",
+    aliases: ["claude-opus-4-7", "anthropic/claude-opus-4-6", "claude-opus-4-6"],
     displayName: "Claude Opus 4.7",
     family: "anthropic",
     authTypes: ["cli-subscription"],
@@ -127,7 +128,13 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
   {
     id: "anthropic/claude-opus-4-7-1m",
     shortId: "opus-1m",
-    aliases: ["opus[1m]", "claude-opus-4-7[1m]"],
+    aliases: [
+      "opus[1m]",
+      "claude-opus-4-7[1m]",
+      "anthropic/claude-opus-4-6-1m",
+      "claude-opus-4-6-1m",
+      "claude-opus-4-6[1m]",
+    ],
     displayName: "Claude Opus 4.7 1M",
     family: "anthropic",
     authTypes: ["cli-subscription"],
@@ -773,22 +780,26 @@ export function sortCursorCliDescriptorsForPicker(descriptors: ModelDescriptor[]
 // ---------------------------------------------------------------------------
 
 export function getModelById(id: string): ModelDescriptor | undefined {
-  const cached = byId.get(id);
+  const normalized = id.trim();
+  const normalizedLower = normalized.toLowerCase();
+  const cached = byId.get(normalized) ?? byId.get(normalizedLower);
   if (cached) return cached;
-  const dynamicOpenCode = dynamicOpenCodeById.get(id);
+  const aliased = byAlias.get(normalizedLower) ?? dynamicOpenCodeByAlias.get(normalizedLower);
+  if (aliased) return aliased;
+  const dynamicOpenCode = dynamicOpenCodeById.get(normalized);
   if (dynamicOpenCode) return dynamicOpenCode;
-  const openCodeDecoded = decodeOpenCodeRegistryId(id);
+  const openCodeDecoded = decodeOpenCodeRegistryId(normalized);
   if (openCodeDecoded) {
     return createDynamicOpenCodeModelDescriptor("", {
       openCodeProviderId: openCodeDecoded.openCodeProviderId,
       openCodeModelId: openCodeDecoded.openCodeModelId,
     });
   }
-  const local = parseDynamicLocalModelRef(id);
+  const local = parseDynamicLocalModelRef(normalized);
   if (local) return createDynamicLocalModelDescriptor(local.provider, local.modelId);
-  const openCode = parseDynamicOpenCodeModelRef(id);
+  const openCode = parseDynamicOpenCodeModelRef(normalized);
   if (openCode) return createDynamicOpenCodeModelDescriptor(openCode.modelId);
-  const cursor = parseDynamicCursorModelRef(id);
+  const cursor = parseDynamicCursorModelRef(normalized);
   return cursor ? createDynamicCursorCliModelDescriptor(cursor.providerModelId) : undefined;
 }
 

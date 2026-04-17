@@ -372,7 +372,7 @@ struct LaneDetailScreen: View {
 
   func runRebaseAndPush() async throws {
     try await syncService.startLaneRebase(laneId: laneId, scope: "lane_only", pushMode: "none")
-    try await syncService.fetchGit(laneId: laneId)
+    try? await syncService.fetchGit(laneId: laneId)
     let syncStatus = try await syncService.fetchSyncStatus(laneId: laneId)
     if syncStatus.hasUpstream == false {
       try await syncService.pushGit(laneId: laneId)

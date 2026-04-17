@@ -288,14 +288,18 @@ function parkRuntime(runtime: CachedRuntime) {
 
 function disposeStaleRuntimes(activeProjectRoot: string | null, activeProjectRevision: number) {
   for (const runtime of runtimeCache.values()) {
+    const isLiveRuntime = runtime.exitCode == null;
     if (activeProjectRoot == null) {
-      if (runtime.projectRoot != null) {
+      if (runtime.projectRoot != null && !isLiveRuntime) {
         teardownRuntime(runtime);
       }
       continue;
     }
 
-    if (runtime.projectRoot !== activeProjectRoot || runtime.projectRevision !== activeProjectRevision) {
+    if (
+      !isLiveRuntime
+      && (runtime.projectRoot !== activeProjectRoot || runtime.projectRevision !== activeProjectRevision)
+    ) {
       teardownRuntime(runtime);
     }
   }
@@ -874,6 +878,7 @@ function createRuntime(args: {
 
   runtime.ptyDataUnsub = window.ade.pty.onData((ev) => {
     if (runtime.disposed) return;
+    if (ev.projectRoot && runtime.projectRoot && ev.projectRoot !== runtime.projectRoot) return;
     if (ev.ptyId !== runtime.ptyId) return;
 
     if (!runtime.hydrationCompleted) {
@@ -892,6 +897,7 @@ function createRuntime(args: {
 
   runtime.ptyExitUnsub = window.ade.pty.onExit((ev) => {
     if (runtime.disposed) return;
+    if (ev.projectRoot && runtime.projectRoot && ev.projectRoot !== runtime.projectRoot) return;
     if (ev.ptyId !== runtime.ptyId) return;
     runtime.exitCode = ev.exitCode ?? 0;
     notifyRuntime(runtime);
@@ -918,9 +924,9 @@ function ensureRuntime(args: {
     if (
       existing.ptyId === args.ptyId
       && existing.projectRoot === args.projectRoot
-      && existing.projectRevision === args.projectRevision
     ) {
       clearDisposeTimer(existing);
+      existing.projectRevision = args.projectRevision;
       applyRuntimeVisualOptions(existing, {
         theme: args.theme,
         preferences: args.preferences,
