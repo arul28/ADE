@@ -9,7 +9,6 @@ import type {
   GitUpstreamSyncStatus,
   IssueInventoryItem,
   LaneSummary,
-  LandResult,
   PrActivityEvent,
   PrAiResolutionEventPayload,
   PrCheck,
@@ -320,7 +319,6 @@ function renderPane(args: {
     laneArchived: false,
     error: null,
   });
-  const startReviewRun = vi.fn().mockResolvedValue({ runId: "review-run-1" });
   const onRefresh = vi.fn().mockResolvedValue(undefined);
   let currentConvergence: PrConvergenceState | null = args.convergenceState ?? null;
   const loadConvergenceState = vi.fn().mockImplementation(async () => currentConvergence);
@@ -385,9 +383,6 @@ function renderPane(args: {
         land,
         openInGitHub: vi.fn().mockResolvedValue(undefined),
       },
-      review: {
-        startRun: startReviewRun,
-      },
       lanes: {
         list: vi.fn().mockResolvedValue(laneList),
       },
@@ -428,7 +423,6 @@ function renderPane(args: {
     saveConvergenceState,
     resetConvergenceState,
     writeClipboardText,
-    startReviewRun,
     land,
     onRefresh,
     ...render(
@@ -478,53 +472,6 @@ describe("PrDetailPane issue resolver CTA", () => {
     await waitFor(() => {
       expect(screen.getByRole("button", { name: /path to merge/i })).toBeTruthy();
     });
-  });
-
-  it("launches a PR-backed review run and navigates to the saved Review history entry", async () => {
-    const user = userEvent.setup();
-    const onNavigate = vi.fn();
-    const { startReviewRun } = renderPane({
-      checks: [makeCheck()],
-      reviewThreads: [],
-      onNavigate,
-    });
-
-    expect(screen.getByRole("button", { name: /select model/i })).toBeTruthy();
-    await user.click(screen.getByRole("button", { name: /run ade review/i }));
-
-    await waitFor(() => {
-      expect(startReviewRun).toHaveBeenCalledWith({
-        target: { mode: "pr", laneId: "lane-1", prId: "pr-80" },
-        config: {
-          publishBehavior: "auto_publish",
-          modelId: "openai/gpt-5.4-codex",
-          reasoningEffort: "high",
-        },
-      });
-      expect(onNavigate).toHaveBeenCalledWith("/review?runId=review-run-1");
-    });
-  });
-
-  it("keeps the ADE review label stable while another action holds the shared busy state", async () => {
-    const user = userEvent.setup();
-    const mergePromise = new Promise<LandResult>(() => {});
-    const { land } = renderPane({
-      checks: [makeCheck({ conclusion: "success" })],
-      reviewThreads: [],
-      statusOverrides: {
-        checksStatus: "passing",
-        reviewStatus: "approved",
-        isMergeable: true,
-        mergeConflicts: false,
-      },
-    });
-    land.mockReturnValueOnce(mergePromise);
-
-    await user.click(screen.getByRole("button", { name: /merge pull request/i }));
-
-    await waitFor(() => expect(land).toHaveBeenCalled());
-    expect(screen.getByRole("button", { name: /run ade review/i }).hasAttribute("disabled")).toBe(true);
-    expect(screen.queryByText("Launching...")).toBeNull();
   });
 
   it("shows the resolve action in the checks tab when issues are actionable", async () => {

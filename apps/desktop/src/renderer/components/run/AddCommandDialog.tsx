@@ -366,7 +366,7 @@ export function AddCommandDialog({
                     lineHeight: 1.5,
                   }}
                 >
-                  Relative to the lane root. Use `.` to run from the lane root itself.
+                  Relative paths run from the selected lane root. Absolute paths are used as-is.
                 </div>
               </div>
 

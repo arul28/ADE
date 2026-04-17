@@ -34,7 +34,6 @@ import { formatTimeAgo, formatTimestampFull } from "../shared/prFormatters";
 import { describePrTargetDiff } from "../shared/laneBranchTargets";
 import { findMatchingRebaseNeed, rebaseNeedItemKey } from "../shared/rebaseNeedUtils";
 import { usePrs } from "../state/PrsContext";
-import { ReviewLaunchModelControls } from "../../shared/ReviewLaunchModelControls";
 
 // ---- Sub-tab type ----
 type DetailTab = "overview" | "convergence" | "files" | "checks" | "activity";
@@ -519,7 +518,6 @@ export function PrDetailPane({
   }, [prsTimelineRailsEnabled, activeTab]);
   const [aiSummary, setAiSummary] = React.useState<AiReviewSummary | null>(null);
   const [aiSummaryBusy, setAiSummaryBusy] = React.useState(false);
-  const [adeReviewBusy, setAdeReviewBusy] = React.useState(false);
   const [showIssueResolverModal, setShowIssueResolverModal] = React.useState(false);
   const [issueResolverBusy, setIssueResolverBusy] = React.useState(false);
   const [issueResolverCopyBusy, setIssueResolverCopyBusy] = React.useState(false);
@@ -644,8 +642,6 @@ export function PrDetailPane({
   const [actionBusy, setActionBusy] = React.useState(false);
   const [actionError, setActionError] = React.useState<string | null>(null);
   const [actionResult, setActionResult] = React.useState<LandResult | null>(null);
-  const [reviewModelId, setReviewModelId] = React.useState(resolverModel);
-  const [reviewReasoningEffort, setReviewReasoningEffort] = React.useState(resolverReasoningLevel);
   const [commentDraft, setCommentDraft] = React.useState("");
   const [editingTitle, setEditingTitle] = React.useState(false);
   const [titleDraft, setTitleDraft] = React.useState("");
@@ -688,8 +684,6 @@ export function PrDetailPane({
   React.useEffect(() => {
     setActionError(null);
     setActionResult(null);
-    setReviewModelId(resolverModel);
-    setReviewReasoningEffort(resolverReasoningLevel);
     setIssueResolverError(null);
     setIssueResolverBusy(false);
     setIssueResolverCopyBusy(false);
@@ -738,7 +732,7 @@ export function PrDetailPane({
       inventoryLoadSeqRef.current += 1;
       convergenceLoadSeqRef.current += 1;
     };
-  }, [applyConvergenceRuntime, loadConvergenceState, loadDetail, pr.id, resolverModel, resolverReasoningLevel]);
+  }, [applyConvergenceRuntime, loadConvergenceState, loadDetail, pr.id]);
 
   // Poll actionRuns + activity + reviewThreads every 60s so CI data stays fresh.
   // PrsContext polls checks/status/reviews/comments, but action runs are only loaded
@@ -859,41 +853,6 @@ export function PrDetailPane({
     } catch (err: unknown) {
       setActionError(err instanceof Error ? err.message : String(err));
     } finally { setAiSummaryBusy(false); }
-  };
-
-  const handleRunAdeReview = async () => {
-    setAdeReviewBusy(true);
-    try {
-      await runAction(async () => {
-        const reviewBridge = window.ade.review;
-        if (!reviewBridge) {
-          throw new Error("Review bridge is unavailable.");
-        }
-        const result = await reviewBridge.startRun({
-          target: { mode: "pr", laneId: pr.laneId, prId: pr.id },
-          config: {
-            publishBehavior: "auto_publish",
-            modelId: reviewModelId.trim(),
-            reasoningEffort: reviewReasoningEffort.trim() || null,
-          },
-        });
-        const nextRunId = typeof result === "string"
-          ? result
-          : result && typeof result === "object"
-            ? ("runId" in result && typeof result.runId === "string"
-              ? result.runId
-              : "id" in result && typeof result.id === "string"
-                ? result.id
-                : null)
-            : null;
-        if (!nextRunId) {
-          throw new Error("Review launch did not return a run id.");
-        }
-        onNavigate(`/review?runId=${encodeURIComponent(nextRunId)}`);
-      });
-    } finally {
-      setAdeReviewBusy(false);
-    }
   };
 
   const laneForPr = React.useMemo(
@@ -2040,10 +1999,8 @@ export function PrDetailPane({
         {activeTab === "overview" && !prsTimelineRailsEnabled && (
           <OverviewTab
             pr={pr} detail={detail} status={status} checks={checks} actionRuns={actionRuns} reviews={reviews} comments={comments}
-            detailBusy={detailBusy} aiSummary={aiSummary} aiSummaryBusy={aiSummaryBusy} adeReviewBusy={adeReviewBusy}
+            detailBusy={detailBusy} aiSummary={aiSummary} aiSummaryBusy={aiSummaryBusy}
             actionBusy={actionBusy} mergeMethod={mergeMethod}
-            reviewModelId={reviewModelId}
-            reviewReasoningEffort={reviewReasoningEffort}
             commentDraft={commentDraft} setCommentDraft={setCommentDraft}
             editingBody={editingBody} setEditingBody={setEditingBody}
             bodyDraft={bodyDraft} setBodyDraft={setBodyDraft}
@@ -2060,9 +2017,6 @@ export function PrDetailPane({
             onSubmitReview={handleSubmitReview}
             onClose={handleClosePr} onReopen={handleReopenPr}
             onAiSummary={handleAiSummary}
-            onRunAdeReview={handleRunAdeReview}
-            onReviewModelChange={setReviewModelId}
-            onReviewReasoningEffortChange={setReviewReasoningEffort}
             onNavigate={onNavigate}
             onOpenRebaseTab={onOpenRebaseTab}
             matchingRebaseItemId={matchingRebaseItemId}
@@ -2389,11 +2343,8 @@ type OverviewTabProps = {
   detailBusy: boolean;
   aiSummary: AiReviewSummary | null;
   aiSummaryBusy: boolean;
-  adeReviewBusy: boolean;
   actionBusy: boolean;
   mergeMethod: MergeMethod;
-  reviewModelId: string;
-  reviewReasoningEffort: string;
   commentDraft: string;
   setCommentDraft: (v: string) => void;
   editingBody: boolean;
@@ -2423,9 +2374,6 @@ type OverviewTabProps = {
   onClose: () => void;
   onReopen: () => void;
   onAiSummary: () => void;
-  onRunAdeReview: () => void;
-  onReviewModelChange: (value: string) => void;
-  onReviewReasoningEffortChange: (value: string) => void;
   onNavigate: (path: string) => void;
   onOpenRebaseTab?: (laneId?: string) => void;
   matchingRebaseItemId: string | null;
@@ -2435,7 +2383,7 @@ type OverviewTabProps = {
 };
 
 function OverviewTab(props: OverviewTabProps) {
-  const { pr, detail, status, checks, actionRuns, reviews, comments, aiSummary, aiSummaryBusy, adeReviewBusy, actionBusy, mergeMethod, activity, lanes } = props;
+  const { pr, detail, status, checks, actionRuns, reviews, comments, aiSummary, aiSummaryBusy, actionBusy, mergeMethod, activity, lanes } = props;
   const [checksExpanded, setChecksExpanded] = React.useState(false);
   const [localMergeMethod, setLocalMergeMethod] = React.useState<MergeMethod>(mergeMethod);
   const [allowBlockedMerge, setAllowBlockedMerge] = React.useState(false);
@@ -3024,20 +2972,6 @@ function OverviewTab(props: OverviewTabProps) {
       <div style={{ width: 250, borderLeft: `1px solid ${COLORS.border}`, overflow: "auto", padding: 18, flexShrink: 0, display: "flex", flexDirection: "column", gap: 0, background: `linear-gradient(180deg, rgba(167,139,250,0.02) 0%, transparent 40%)` }}>
         {/* Quick actions */}
         <div style={{ display: "flex", flexDirection: "column", gap: 6, paddingBottom: 14, marginBottom: 2, borderBottom: `1px solid ${COLORS.border}` }}>
-          <button type="button" onClick={props.onRunAdeReview} disabled={actionBusy} style={outlineButton({ height: 30, padding: "0 10px", color: COLORS.success, borderColor: `${COLORS.success}40`, width: "100%", justifyContent: "center" })}>
-            <Play size={13} weight="fill" />
-            {adeReviewBusy ? "Launching..." : "Run ADE review"}
-          </button>
-          <div style={{ display: "grid", gap: 6 }}>
-            <span style={{ ...LABEL_STYLE, color: COLORS.textDim }}>Review model</span>
-            <ReviewLaunchModelControls
-              modelId={props.reviewModelId}
-              reasoningEffort={props.reviewReasoningEffort}
-              onModelChange={props.onReviewModelChange}
-              onReasoningEffortChange={props.onReviewReasoningEffortChange}
-              disabled={actionBusy}
-            />
-          </div>
           <button type="button" onClick={props.onAiSummary} disabled={aiSummaryBusy} style={outlineButton({ height: 30, padding: "0 10px", color: COLORS.accent, borderColor: `${COLORS.accent}40`, width: "100%", justifyContent: "center" })}>
             <Sparkle size={13} weight="fill" />
             {aiSummaryBusy ? "Analyzing..." : "AI Review"}

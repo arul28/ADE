@@ -971,16 +971,18 @@ export function createPtyService({
         laneService,
         laneId,
         requestedCwd: args.cwd,
+        allowExternalCwd: args.allowExternalCwd === true,
         purpose: "start a terminal session",
       });
       const { laneWorktreePath: worktreePath, cwd } = launchContext;
       const { cols, rows } = clampDims(args.cols, args.rows);
 
       const requestedSessionId = typeof args.sessionId === "string" ? args.sessionId.trim() : "";
+      const allowNewSessionId = args.allowNewSessionId === true;
       const existingSession = requestedSessionId.length
         ? sessionService.get(requestedSessionId)
         : null;
-      if (requestedSessionId.length && !existingSession) {
+      if (requestedSessionId.length && !existingSession && !allowNewSessionId) {
         throw new Error(`Terminal session '${requestedSessionId}' was not found.`);
       }
       if (existingSession && existingSession.laneId !== laneId) {
@@ -994,7 +996,7 @@ export function createPtyService({
       }
 
       const ptyId = randomUUID();
-      const sessionId = existingSession?.id ?? randomUUID();
+      const sessionId = (existingSession?.id ?? requestedSessionId) || randomUUID();
       const startedAt = new Date().toISOString();
       const tracked = existingSession?.tracked ?? (args.tracked !== false);
       const toolTypeHint = normalizeToolType(args.toolType ?? existingSession?.toolType ?? null);
