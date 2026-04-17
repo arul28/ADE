@@ -19,7 +19,7 @@ import {
   resizePackedGridItem,
 } from "./packedSessionGridMath";
 
-type ResizeDirection = "n" | "s" | "e" | "w" | "ne" | "nw" | "se" | "sw";
+type ResizeDirection = "e" | "w";
 
 type PackedSessionGridTile = {
   id: string;
@@ -37,7 +37,6 @@ type ResizeState = {
   tileId: string;
   direction: ResizeDirection;
   startX: number;
-  startY: number;
   startPlacementsById: Record<string, PackedGridPlacement>;
   currentPlacementsById: Record<string, PackedGridPlacement>;
   pointerId: number;
@@ -48,10 +47,6 @@ const RESIZE_HANDLES: Array<{ direction: ResizeDirection; style: CSSProperties }
   { direction: "e", style: { right: -6, top: 4, bottom: 4, width: 16, cursor: "e-resize" } },
   { direction: "w", style: { left: -6, top: 4, bottom: 4, width: 16, cursor: "w-resize" } },
 ];
-
-function hasHorizontalResize(direction: ResizeDirection): boolean {
-  return direction.includes("e") || direction.includes("w");
-}
 
 export function PackedSessionGrid({
   layoutId,
@@ -151,16 +146,14 @@ export function PackedSessionGrid({
         span: persisted,
         columnCount: trackCount,
         minColSpan: minColSpans[tile.id] ?? 1,
-        minRowSpan: minRowSpans[tile.id] ?? 1,
+        minRowSpan: defaults.rowSpan,
         maxRowSpan: GRID_MAX_ROW_SPAN,
       });
-      next[tile.id] = {
-        colSpan: clamped.colSpan,
-        rowSpan: defaults.rowSpan,
-      };
+      // rowSpan is height-driven (viewport-fit); only colSpan persists.
+      next[tile.id] = { colSpan: clamped.colSpan, rowSpan: defaults.rowSpan };
     }
     return next;
-  }, [defaultRowSpan, defaultSpansById, layout, minColSpans, minRowSpans, tiles, trackCount]);
+  }, [defaultRowSpan, defaultSpansById, layout, minColSpans, tiles, trackCount]);
 
   const effectiveSpansById = useMemo(() => {
     if (!Object.keys(draftSpansById).length) return spansById;
@@ -258,16 +251,13 @@ export function PackedSessionGrid({
       const state = resizeStateRef.current;
       if (!state || trackWidth <= 0) return;
       const colUnit = trackWidth + GRID_GAP_PX;
-      const deltaCols = hasHorizontalResize(state.direction)
-        ? Math.round((event.clientX - state.startX) / colUnit)
-        : 0;
-      const deltaRows = 0;
+      const deltaCols = Math.round((event.clientX - state.startX) / colUnit);
       const nextPlacementsById = resizePackedGridItem({
         placementsById: state.startPlacementsById,
         tileId: state.tileId,
         direction: state.direction,
         deltaCols,
-        deltaRows,
+        deltaRows: 0,
         columnCount: trackCount,
         minColSpans,
         minRowSpans,
@@ -358,7 +348,6 @@ export function PackedSessionGrid({
       tileId,
       direction,
       startX: event.clientX,
-      startY: event.clientY,
       startPlacementsById,
       currentPlacementsById: startPlacementsById,
       pointerId: event.pointerId,

@@ -97,40 +97,45 @@ only when they join the same sync cluster.
 Host-side service files
 (`apps/desktop/src/main/services/sync/`):
 
-- `syncHostService.ts` (1,137 lines) — WebSocket server, connection
+- `syncHostService.ts` (~1,645 lines) — WebSocket server, connection
   acceptance, hello/pairing handling, per-peer state, changeset fan-out,
-  terminal/chat subscription bridging.
-- `syncPeerService.ts` (464 lines) — WebSocket **client**. The host
+  terminal/chat subscription bridging, lane presence decoration,
+  per-IP pairing rate limiter.
+- `syncPeerService.ts` (~460 lines) — WebSocket **client**. The host
   can run this too when it is a peer of a different host during a
   handoff rehearsal or controller-to-host role swap. On iOS, an
   equivalent Swift implementation lives in `apps/ios/ADE/Services/SyncService.swift`.
-- `syncProtocol.ts` (120 lines) — envelope encode/decode with gzip
+- `syncProtocol.ts` (~120 lines) — envelope encode/decode with gzip
   threshold (`DEFAULT_SYNC_COMPRESSION_THRESHOLD_BYTES = 4 * 1024`).
   Protocol version is `1`. Default host port is `8787`.
-- `syncService.ts` (714 lines) — orchestrator that wires host,
-  peer, device registry, draft persistence, and exposes the IPC
-  entry points used by the renderer Settings > Sync surface.
-- `deviceRegistryService.ts` (427 lines) — reads/writes the synced
+- `syncService.ts` (~775 lines) — orchestrator that wires host,
+  peer, device registry, draft persistence, pin store, and exposes
+  the IPC entry points used by the renderer Settings > Sync surface
+  (`ade.sync.getPin` / `setPin` / `clearPin`, `setActiveLanePresence`,
+  QR payload).
+- `deviceRegistryService.ts` (~430 lines) — reads/writes the synced
   `devices` table and `sync_cluster_state` singleton.
-- `syncPairingStore.ts` (128 lines) — local pairing-secret storage
-  per-peer for W4 pairing flow.
-- `syncRemoteCommandService.ts` (~1,210 lines) — command action
-  registry (lanes, chat, git, PR, sessions, conflicts). Documented
-  separately in `remote-commands.md`.
-
-- `syncPinStore.ts` (67 lines) — on-disk storage for the user-set
+- `syncPairingStore.ts` (~90 lines) — thin wrapper that validates
+  incoming `pairing_request` envelopes against `syncPinStore`,
+  mints the durable per-device secret, and persists it into the
+  `paired_devices` row (SQLite).
+- `syncPinStore.ts` (~65 lines) — on-disk storage for the user-set
   6-digit pairing PIN at `.ade/secrets/sync-pin.json`, chmodded `0600`.
   Host never rotates the PIN; the user sets or clears it from Settings
-  > Sync. Used by `syncPairingStore.pairPeer` to validate incoming
-  `pairing_request` envelopes.
+  > Sync.
+- `syncRemoteCommandService.ts` (~1,920 lines) — command action
+  registry (lanes, chat, git, PR, sessions, conflicts, files,
+  `prs.getMobileSnapshot`, `lanes.presence.*`). Documented separately
+  in `remote-commands.md`.
 
 Client-side (iOS) service files (`apps/ios/ADE/Services/`):
 
-- `Database.swift` (~2,900 lines) — native SQLite3 + pure-SQL CRR
+- `Database.swift` (~3,300 lines) — native SQLite3 + pure-SQL CRR
   emulation (triggers + custom SQLite functions). Adds offline caches
   for files workspaces, directory listings, and file contents plus
-  session pin/runtime state.
-- `SyncService.swift` (~4,400 lines) — WebSocket client, envelope
+  session pin/runtime state, chat snapshots, and PR mobile snapshot
+  persistence.
+- `SyncService.swift` (~3,860 lines) — WebSocket client, envelope
   encoding (zlib), command routing, keychain integration, PIN-based
   pairing, lane presence announcements, PR mobile snapshot fetch, and
   a live chat-event push listener backed by the host's

@@ -85,27 +85,20 @@ export function buildClaudeV2Message(
   attachments: ResolvedAgentChatFileRef[],
   options: { baseDir?: string; sessionId?: string | null; forceUserMessage?: boolean } = {},
 ): string | SDKUserMessagePartial {
+  const wrapAsUserMessage = (text: string): SDKUserMessagePartial => ({
+    type: "user",
+    session_id: options.sessionId?.trim() ?? "",
+    parent_tool_use_id: null,
+    message: { role: "user", content: [{ type: "text", text }] },
+  });
+
   const imageAttachments = attachments.filter((a) => a.type === "image");
   if (!imageAttachments.length) {
     // No images -- include file paths as text hints, return plain string
-    if (!attachments.length) {
-      if (!options.forceUserMessage) return promptText;
-      return {
-        type: "user",
-        session_id: options.sessionId?.trim() ?? "",
-        parent_tool_use_id: null,
-        message: { role: "user", content: [{ type: "text", text: promptText }] },
-      };
-    }
-    const hints = attachments.map((a) => `[File attached: ${a.path}]`).join("\n");
-    const text = `${promptText}\n\n${hints}`;
-    if (!options.forceUserMessage) return text;
-    return {
-      type: "user",
-      session_id: options.sessionId?.trim() ?? "",
-      parent_tool_use_id: null,
-      message: { role: "user", content: [{ type: "text", text }] },
-    };
+    const text = attachments.length
+      ? `${promptText}\n\n${attachments.map((a) => `[File attached: ${a.path}]`).join("\n")}`
+      : promptText;
+    return options.forceUserMessage ? wrapAsUserMessage(text) : text;
   }
 
   // Build content blocks following the Agent SDK streaming input format:

@@ -284,6 +284,12 @@ summaries:
 - `titles.modelId`
 - `summaries.enabled` and similar
 
+Legacy `ai.chat.autoTitleEnabled`, `ai.chat.autoTitleModelId`, and
+`ai.chat.autoTitleRefreshOnComplete` are read on load and migrated
+into `sessionIntelligence.titles.*` by `coerceAiConfig`. They are
+no longer written back — once a project is loaded, writes go to the
+`sessionIntelligence` tree only.
+
 ## Automations
 
 Full schema lives in `AutomationRule` (see `config.ts` around line

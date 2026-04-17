@@ -444,43 +444,33 @@ function parseQuickCommandArgs(value: Record<string, unknown>): SyncRunQuickComm
 function isChatToolType(toolType: string | null | undefined): boolean {
   if (!toolType) return false;
   const t = toolType.trim().toLowerCase();
-  return (
-    t === "codex-chat"
-    || t === "claude-chat"
-    || t === "opencode-chat"
-    || t === "cursor"
-    || t.endsWith("-chat")
-  );
+  return t === "cursor" || t.endsWith("-chat");
 }
 
 async function listRemoteWorkSessions(
   args: SyncRemoteCommandServiceArgs,
   filters: ListSessionsArgs,
 ) {
-  let sessions = args.ptyService.enrichSessions(args.sessionService.list(filters));
+  const sessions = args.ptyService.enrichSessions(args.sessionService.list(filters));
   const laneId = typeof filters.laneId === "string" ? filters.laneId.trim() : "";
-  let allChats: AgentChatSessionSummary[] = [];
-  try {
-    allChats = await args.agentChatService?.listSessions(laneId || undefined, { includeIdentity: true }) ?? [];
-  } catch {
-    allChats = [];
-  }
+  const allChats = await args.agentChatService
+    ?.listSessions(laneId || undefined, { includeIdentity: true })
+    .catch(() => [] as AgentChatSessionSummary[]) ?? [];
 
   const identitySessionIds = new Set(
-    allChats
-      .filter((chat) => Boolean(chat.identityKey))
-      .map((chat) => chat.sessionId),
+    allChats.filter((chat) => Boolean(chat.identityKey)).map((chat) => chat.sessionId),
   );
-  if (identitySessionIds.size > 0) {
-    sessions = sessions.filter((session) => !identitySessionIds.has(session.id));
-  }
+  const visibleSessions = identitySessionIds.size > 0
+    ? sessions.filter((session) => !identitySessionIds.has(session.id))
+    : sessions;
 
-  const chats = allChats.filter((chat) => !chat.identityKey);
-  if (chats.length === 0) return sessions;
-  const chatSummaryBySessionId = new Map(chats.map((chat) => [chat.sessionId, chat] as const));
-  return sessions.map((session) => {
-    if (!isChatToolType(session.toolType)) return session;
-    if (session.status !== "running") return session;
+  const chatSummaryBySessionId = new Map(
+    allChats.filter((chat) => !chat.identityKey).map((chat) => [chat.sessionId, chat] as const),
+  );
+  if (chatSummaryBySessionId.size === 0) return visibleSessions;
+
+  return visibleSessions.map((session) => {
+    if (!isChatToolType(session.toolType) || session.status !== "running") return session;
     const chat = chatSummaryBySessionId.get(session.id);
     if (!chat) return session;
     if (chat.awaitingInput) return { ...session, runtimeState: "waiting-input" as const, chatIdleSinceAt: null };

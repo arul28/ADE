@@ -1383,13 +1383,7 @@ function summarizeProjectScan(result: OnboardingDetectionResult | null): Partial
 function isChatToolType(toolType: string | null | undefined): boolean {
   if (!toolType) return false;
   const t = toolType.trim().toLowerCase();
-  return (
-    t === "codex-chat"
-    || t === "claude-chat"
-    || t === "opencode-chat"
-    || t === "cursor"
-    || t.endsWith("-chat")
-  );
+  return t === "cursor" || t.endsWith("-chat");
 }
 
 function sessionNeedsResumeTargetHydration(session: {

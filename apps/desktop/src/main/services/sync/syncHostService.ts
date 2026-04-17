@@ -1,7 +1,6 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import type { ChildProcess } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { randomBytes } from "node:crypto";
 import { Bonjour, type Service as BonjourService } from "bonjour-service";
@@ -516,10 +515,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
 
   const decorateLaneSummary = (lane: LaneSummary): LaneSummary => {
     const devicesOpen = listLanePresenceMarkers(lane.id);
-    return {
-      ...lane,
-      ...(devicesOpen.length > 0 ? { devicesOpen } : { devicesOpen: undefined }),
-    };
+    return devicesOpen.length > 0 ? { ...lane, devicesOpen } : lane;
   };
 
   const decorateLaneSummaries = (lanes: LaneSummary[]): LaneSummary[] =>
@@ -589,7 +585,6 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
   let bonjourAnnouncement: BonjourService | null = null;
   let bonjourPort: number | null = null;
   let bonjourSignature: string | null = null;
-  let nativeDnsSdProcess: ChildProcess | null = null;
   let lastBroadcastAt: string | null = null;
   const startedAtMs = Date.now();
 
@@ -643,13 +638,9 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
   const brainStatusTimer = setInterval(() => {
     broadcastBrainStatus();
   }, brainStatusIntervalMs);
-  const maybeChatEventSubscription = (args.agentChatService as
-    | { subscribeToEvents?: (callback: (event: AgentChatEventEnvelope) => void) => (() => void) | void }
-    | undefined
-  )?.subscribeToEvents?.((event) => broadcastChatEvent(event));
-  const chatEventSubscription = typeof maybeChatEventSubscription === "function"
-    ? maybeChatEventSubscription
-    : null;
+  const chatEventSubscription = args.agentChatService?.subscribeToEvents(
+    (event) => broadcastChatEvent(event),
+  ) ?? null;
 
   server.on("connection", (ws, request) => {
     const remoteAddress = sanitizeRemoteAddress(request.socket.remoteAddress);
@@ -961,10 +952,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     if (!workspaceId) return;
     const workspace = args.fileService.listWorkspaces({ includeArchived: true })
       .find((entry) => entry.id === workspaceId);
-    if (!workspace) {
-      throw new Error("Mobile file access is read-only for this workspace.");
-    }
-    if (workspace.mobileReadOnly === true || workspace.isReadOnlyByDefault) {
+    if (!workspace || workspace.mobileReadOnly === true || workspace.isReadOnlyByDefault) {
       throw new Error("Mobile file access is read-only for this workspace.");
     }
   }
@@ -1217,18 +1205,10 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
           const thrownCode = (error as { code?: string } | null)?.code ?? null;
-          let resultCode: "pin_not_set" | "invalid_pin" | "pairing_failed";
-          switch (thrownCode) {
-            case "pin_not_set":
-              resultCode = "pin_not_set";
-              break;
-            case "invalid_pin":
-              resultCode = "invalid_pin";
-              break;
-            default:
-              resultCode = "pairing_failed";
-              break;
-          }
+          const resultCode: "pin_not_set" | "invalid_pin" | "pairing_failed" =
+            thrownCode === "pin_not_set" || thrownCode === "invalid_pin"
+              ? thrownCode
+              : "pairing_failed";
           send(peer.ws, "pairing_result", {
             ok: false,
             error: {

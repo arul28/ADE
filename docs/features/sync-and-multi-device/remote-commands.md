@@ -8,7 +8,7 @@ host-side services, and replies with `command_ack` and then
 `command_result`.
 
 Source file: `apps/desktop/src/main/services/sync/syncRemoteCommandService.ts`
-(~1,480 lines).
+(~1,920 lines).
 
 ## Shape
 

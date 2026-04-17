@@ -35,26 +35,28 @@ function seedStore(overrides: Record<string, unknown> = {}) {
 describe("CommandPalette", () => {
   const browseDirectories = vi.fn();
   const chooseDirectory = vi.fn();
-  const getDetail = vi.fn();
+  // `mockClear` (not `mockReset`) keeps this default implementation across
+  // tests, so stray setTimeouts that fire after a test completes still get a
+  // Promise back instead of undefined.
+  const getDetail = vi.fn().mockResolvedValue({
+    rootPath: "/Users/admin/Projects/Versic",
+    isGitRepo: true,
+    branchName: "main",
+    dirtyCount: 0,
+    aheadBehind: null,
+    lastCommit: null,
+    readmeExcerpt: null,
+    languages: [],
+    laneCount: null,
+    lastOpenedAt: null,
+    subdirectoryCount: null,
+  });
   const getDroppedPath = vi.fn(() => "");
 
   beforeEach(() => {
     browseDirectories.mockReset();
     chooseDirectory.mockReset();
-    getDetail.mockReset();
-    getDetail.mockResolvedValue({
-      rootPath: "/Users/admin/Projects/Versic",
-      isGitRepo: true,
-      branchName: "main",
-      dirtyCount: 0,
-      aheadBehind: null,
-      lastCommit: null,
-      readmeExcerpt: null,
-      languages: [],
-      laneCount: null,
-      lastOpenedAt: null,
-      subdirectoryCount: null,
-    });
+    getDetail.mockClear();
     seedStore();
     globalThis.window.ade = {
       app: {

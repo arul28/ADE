@@ -452,8 +452,11 @@ create table if not exists file_history_snapshots (
     );
 
 create index if not exists idx_file_directory_snapshots_workspace on file_directory_snapshots(workspace_id, updated_at desc);
+
 create index if not exists idx_file_content_snapshots_workspace on file_content_snapshots(workspace_id, updated_at desc);
+
 create index if not exists idx_file_diff_snapshots_workspace on file_diff_snapshots(workspace_id, updated_at desc);
+
 create index if not exists idx_file_history_snapshots_workspace on file_history_snapshots(workspace_id, updated_at desc);
 
 create table if not exists checkpoints (

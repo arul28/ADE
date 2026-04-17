@@ -5528,15 +5528,15 @@ export function createAgentChatService(args: {
       turnId?: string | null;
     },
   ): void => {
+    const resolution: "cancelled" | "declined" | "accepted" = (() => {
+      if (args.decision === "cancel") return "cancelled";
+      if (args.decision === "decline") return "declined";
+      return "accepted";
+    })();
     emitChatEvent(managed, {
       type: "pending_input_resolved",
       itemId: args.itemId,
-      resolution:
-        args.decision === "cancel"
-          ? "cancelled"
-          : args.decision === "decline"
-            ? "declined"
-            : "accepted",
+      resolution,
       ...(typeof args.turnId === "string" && args.turnId.trim().length ? { turnId: args.turnId.trim() } : {}),
     });
     persistChatState(managed);

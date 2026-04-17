@@ -90,7 +90,10 @@ Renderer surfaces:
 - `apps/desktop/src/renderer/components/terminals/useWorkSessions.ts` —
   hook that owns work view state (open items, active tab, draft kind,
   view mode, filters) and persists it to `localStorage` under
-  `ade.workViewState.v1`.
+  `ade.workViewState.v1`. Invalidates the shared session-list cache
+  and schedules a background refresh on window focus /
+  `visibilitychange` and on chat events, so returning to Work after a
+  tab switch always renders the current session set.
 - `apps/desktop/src/renderer/components/terminals/useSessionDelta.ts` —
   fetches `SessionDeltaSummary` for a given session.
 - `apps/desktop/src/renderer/components/terminals/cliLaunch.ts` —

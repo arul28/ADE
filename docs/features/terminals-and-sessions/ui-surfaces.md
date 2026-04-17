@@ -106,9 +106,9 @@ Constants:
 
 ## Packed grid: `PackedSessionGrid.tsx` + `packedSessionGridMath.ts`
 
-Resizable tile layout. Each tile has an independent `colSpan` and
-`rowSpan`; the math module bin-packs tiles into rows/columns to minimize
-gaps:
+Resizable tile layout. Each tile has an independent `colSpan`; row
+height is determined by the container, not user-dragged. The math
+module bin-packs tiles into rows/columns to minimize gaps:
 
 - `computeGridColumnCount(containerWidth, tileCount, minTileWidth)`
 - `computeMinimumRowSpan()` / `computeMinimumColSpan()`
@@ -117,30 +117,33 @@ gaps:
   slot scanning rows then columns. Accepts optional `placement` hints
   (`{ column, row }`) so resized tiles stay anchored to their
   persisted origin instead of being re-flowed by the packer.
-- `computePackedGridRowHeight(containerHeight, rowCount)` — distributes
-  height evenly, min `GRID_BASE_ROW_PX = 120`
 - `reconcilePackedGridLayout({ layout, tileIds, defaultSpansById,
   columnCount })` — preserves spans and persisted `colStart/rowStart/
   colSpan/rowSpan` quads for tiles that come back later.
 - `resizePackedGridItem({ placementsById, tileId, direction, delta,
-  … })` — directional edge move (n/s/e/w, plus the diagonal
-  compositions). Pushes contiguous neighbors when the edge has zero
-  gap, or consumes free space when there is a gap. `moveEastEdge`,
-  `moveWestEdge`, and the north/south variants enforce per-tile
-  min-span floors and the column-count / `GRID_MAX_ROW_SPAN` ceilings.
+  … })` — directional edge move. The grid currently only exposes the
+  east/west handles, so only the horizontal edge-movers
+  (`moveEastEdge`, `moveWestEdge`) run in practice. They push
+  contiguous neighbors when the edge has zero gap, or consume free
+  space when there is a gap, enforcing per-tile min-span floors and
+  the column-count ceiling.
 
 Persistence now carries both the span and the origin: the persisted
 layout stores `<id>:colStart`, `<id>:rowStart`, `<id>:colSpan`,
 `<id>:rowSpan` per tile and legacy `<id>:col` / `<id>:row` are still
 read for backward compatibility. `readPackedGridPlacement(layout, id)`
 returns the `{ column, row, colSpan, rowSpan }` record when one has been
-written.
+written. Persisted `rowSpan` values are replayed against the current
+`defaultRowSpan` so stored layouts stay comparable across container
+height changes.
 
 West-edge drags keep the dragged edge anchored while the tile grows
 leftward (the covered test in `PackedSessionGrid.test.tsx` asserts
 `colStart` decreases by exactly the drag delta). During a resize, the
 active tile is promoted to the front of the pack order so it "wins"
-any overlap with newly-repositioned neighbors.
+any overlap with newly-repositioned neighbors. Vertical resize is
+intentionally disabled to keep tile rows aligned to the shared row
+height.
 
 `PackedSessionGrid` also accepts an `onViewportMouseLeave` callback
 and an `onHover` per tile, so surrounding layouts can clear keyboard

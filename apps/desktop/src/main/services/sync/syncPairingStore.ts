@@ -25,6 +25,12 @@ function hashSecret(secret: string): string {
   return createHash("sha256").update(secret).digest("hex");
 }
 
+function pairingError(code: "pin_not_set" | "invalid_pin", message: string): Error {
+  const err = new Error(message) as Error & { code?: string };
+  err.code = code;
+  return err;
+}
+
 export function createSyncPairingStore(args: SyncPairingStoreArgs) {
   fs.mkdirSync(path.dirname(args.filePath), { recursive: true });
 
@@ -41,14 +47,10 @@ export function createSyncPairingStore(args: SyncPairingStoreArgs) {
     pairPeer(peer: SyncPeerMetadata, pin: string): { deviceId: string; secret: string } {
       const storedPin = args.pinStore.getPin();
       if (!storedPin) {
-        const err = new Error("No pairing PIN is set on this computer.");
-        (err as Error & { code?: string }).code = "pin_not_set";
-        throw err;
+        throw pairingError("pin_not_set", "No pairing PIN is set on this computer.");
       }
       if (storedPin !== pin.trim()) {
-        const err = new Error("Incorrect pairing PIN.");
-        (err as Error & { code?: string }).code = "invalid_pin";
-        throw err;
+        throw pairingError("invalid_pin", "Incorrect pairing PIN.");
       }
       const secret = randomBytes(24).toString("hex");
       const records = readRecords();
