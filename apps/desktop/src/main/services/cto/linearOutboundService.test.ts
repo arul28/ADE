@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { describe, expect, it, vi } from "vitest";
 import type { NormalizedLinearIssue } from "../../../shared/types";
 import { openKvDb } from "../state/kvDb";
@@ -166,6 +167,10 @@ describe("linearOutboundService", () => {
     fs.writeFileSync(insideArtifact, "log", "utf8");
     const outsideArtifact = path.join(os.tmpdir(), "outside.log");
     fs.writeFileSync(outsideArtifact, "outside", "utf8");
+    const insideCanonicalUri = pathToFileURL(fs.realpathSync(insideArtifact)).href;
+    const outsideCanonicalUri = pathToFileURL(fs.realpathSync(outsideArtifact)).href;
+    const insideUri = pathToFileURL(insideArtifact).href;
+    const outsideUri = pathToFileURL(outsideArtifact).href;
 
     const updateBodies: string[] = [];
     const service = createLinearOutboundService({
@@ -198,13 +203,13 @@ describe("linearOutboundService", () => {
       targetId: "session-1",
       contextLines: ["Workflow target: employee_session"],
       artifactMode: "links",
-      artifactPaths: [insideArtifact, outsideArtifact, "https://example.com/artifact.txt"],
+      artifactPaths: [insideArtifact, insideUri, outsideArtifact, outsideUri, "https://example.com/artifact.txt"],
     });
 
     const latest = updateBodies[updateBodies.length - 1] ?? "";
-    expect(latest).toContain(`file://${insideArtifact}`);
+    expect(latest).toContain(insideCanonicalUri);
     expect(latest).toContain("https://example.com/artifact.txt");
-    expect(latest).not.toContain(`file://${outsideArtifact}`);
+    expect(latest).not.toContain(outsideCanonicalUri);
     db.close();
   });
 

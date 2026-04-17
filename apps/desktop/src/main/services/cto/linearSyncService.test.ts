@@ -190,6 +190,76 @@ describe("linearSyncService", () => {
     db.close();
   });
 
+  it("serializes concurrent webhook issue updates and coalesces duplicates", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-linear-sync-webhook-buffer-"));
+    const db = await openKvDb(path.join(root, "ade.db"), { debug() {}, info() {}, warn() {}, error() {} } as any);
+    let releaseFirstFetch!: () => void;
+    const firstFetchGate = new Promise<void>((resolve) => {
+      releaseFirstFetch = resolve;
+    });
+    const fetchIssueById = vi.fn(async (issueId: string) => {
+      if (issueId === "issue-1") {
+        await firstFetchGate;
+        return {
+          ...issueFixture,
+          id: "issue-1",
+          raw: { _snapshotHash: "hash-issue-1", _previousSnapshotHash: "hash-0" },
+        };
+      }
+      return {
+        ...issueFixture,
+        id: "issue-2",
+        identifier: "ABC-43",
+        raw: { _snapshotHash: "hash-issue-2", _previousSnapshotHash: "hash-0" },
+      };
+    });
+
+    const service = createLinearSyncService({
+      db,
+      projectId: "project-1",
+      flowPolicyService: { getPolicy: () => policy } as any,
+      routingService: {
+        routeIssue: vi.fn(async () => ({
+          workflowId: null,
+          workflowName: null,
+          workflow: null,
+          target: null,
+          reason: "No match",
+          candidates: [],
+          nextStepsPreview: [],
+        })),
+      } as any,
+      intakeService: {
+        fetchCandidates: vi.fn(async () => []),
+        persistSnapshot: vi.fn(() => {}),
+        issueHash: vi.fn((issue: NormalizedLinearIssue) => String(issue.raw?._snapshotHash ?? "hash-current")),
+      } as any,
+      issueTracker: { fetchIssueById } as any,
+      dispatcherService: {
+        hasActiveRuns: vi.fn(() => false),
+        findActiveRunForIssue: vi.fn(() => null),
+        createRun: vi.fn(),
+        advanceRun: vi.fn(async () => null),
+        listActiveRuns: vi.fn(() => []),
+        listQueue: vi.fn(() => []),
+        resolveRunAction: vi.fn(),
+      } as any,
+      autoStart: false,
+    });
+
+    const first = service.processIssueUpdate("issue-1");
+    await Promise.resolve();
+    await service.processIssueUpdate("issue-2");
+    await service.processIssueUpdate("issue-2");
+    releaseFirstFetch();
+    await first;
+
+    expect(fetchIssueById).toHaveBeenCalledTimes(2);
+    expect(fetchIssueById).toHaveBeenNthCalledWith(1, "issue-1");
+    expect(fetchIssueById).toHaveBeenNthCalledWith(2, "issue-2");
+    db.close();
+  });
+
   it("starts immediately and continues on the reconciliation interval", async () => {
     vi.useFakeTimers();
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-linear-sync-"));

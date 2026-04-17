@@ -475,7 +475,13 @@ export function createLinearSyncService(args: {
       addPendingIssue(issueId);
       return;
     }
-    await processIssueUpdateNow(issueId);
+    inFlight = true;
+    try {
+      await processIssueUpdateNow(issueId);
+    } finally {
+      inFlight = false;
+      await replayPendingIssues();
+    }
   };
 
   const processActiveRunsNow = async (): Promise<void> => {

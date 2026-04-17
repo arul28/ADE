@@ -595,6 +595,7 @@ export function createSyncService(args: SyncServiceArgs) {
         ? cluster.brainDeviceId === localDevice.deviceId
         : !savedDraft && !syncPeerService.isConnected();
       const role = isLocalBrain ? "brain" : "viewer";
+      const canHostPhonePairing = role === "brain" && hostStartupEnabled;
       const client = syncPeerService.getStatus();
       const mode =
         role === "viewer"
@@ -609,10 +610,11 @@ export function createSyncService(args: SyncServiceArgs) {
         currentBrain,
         clusterState: cluster,
         bootstrapToken:
-          role === "brain" && hostStartupEnabled ? readToken() : null,
-        pairingPin: role === "brain" && hostStartupEnabled ? pinStore.getPin() : null,
+          canHostPhonePairing ? readToken() : null,
+        pairingPin: canHostPhonePairing ? pinStore.getPin() : null,
+        pairingPinConfigured: canHostPhonePairing ? pinStore.hasPin() : false,
         pairingConnectInfo:
-          role === "brain" && hostStartupEnabled
+          canHostPhonePairing
             ? buildPairingConnectInfo({ localDevice })
             : null,
         connectedPeers: hostService
@@ -681,6 +683,10 @@ export function createSyncService(args: SyncServiceArgs) {
           "Phone pairing is unavailable because the sync host is disabled for this ADE process.",
         );
       }
+      const current = await service.getStatus();
+      if (current.role !== "brain") {
+        throw new Error("Phone pairing PINs can only be managed on the host desktop.");
+      }
       pinStore.setPin(pin);
       const snapshot = await service.getStatus();
       args.onStatusChanged?.(snapshot);
@@ -688,6 +694,10 @@ export function createSyncService(args: SyncServiceArgs) {
     },
 
     async clearPin(): Promise<SyncRoleSnapshot> {
+      const current = await service.getStatus();
+      if (current.role !== "brain") {
+        throw new Error("Phone pairing PINs can only be managed on the host desktop.");
+      }
       pinStore.clearPin();
       const snapshot = await service.getStatus();
       args.onStatusChanged?.(snapshot);

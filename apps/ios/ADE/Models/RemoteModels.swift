@@ -1,5 +1,15 @@
 import Foundation
 
+struct ConnectionDraft: Codable, Equatable {
+  var host: String
+  var port: Int
+  var authKind: String
+  var pairedDeviceId: String?
+  var lastRemoteDbVersion: Int
+  // Legacy saved-field naming kept for compatibility with existing drafts.
+  var lastBrainDeviceId: String?
+}
+
 struct HostConnectionProfile: Codable, Equatable {
   var hostIdentity: String?
   var hostName: String?
@@ -40,6 +50,20 @@ struct HostConnectionProfile: Codable, Equatable {
     self.discoveredLanAddresses = discoveredLanAddresses
     self.tailscaleAddress = tailscaleAddress
     self.updatedAt = updatedAt
+  }
+
+  init(legacy draft: ConnectionDraft) {
+    self.init(
+      port: draft.port,
+      authKind: draft.authKind,
+      pairedDeviceId: draft.pairedDeviceId,
+      lastRemoteDbVersion: draft.lastRemoteDbVersion,
+      lastHostDeviceId: draft.lastBrainDeviceId,
+      lastSuccessfulAddress: draft.host,
+      savedAddressCandidates: [draft.host],
+      discoveredLanAddresses: [],
+      tailscaleAddress: nil
+    )
   }
 }
 

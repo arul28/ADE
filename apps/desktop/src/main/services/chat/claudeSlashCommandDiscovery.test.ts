@@ -62,6 +62,36 @@ describe("discoverClaudeSlashCommands", () => {
     ]);
   });
 
+  it("skips legacy command directories deeper than the traversal cap", () => {
+    const commandsDir = path.join(tmpRoot, ".claude", "commands");
+    const visibleDir = path.join(commandsDir, ...Array.from({ length: 10 }, (_, index) => `level-${index}`));
+    const skippedDir = path.join(visibleDir, "too-deep");
+    fs.mkdirSync(skippedDir, { recursive: true });
+    fs.writeFileSync(path.join(visibleDir, "visible.md"), [
+      "---",
+      "description: Visible nested command",
+      "---",
+      "",
+      "Visible.",
+      "",
+    ].join("\n"));
+    fs.writeFileSync(path.join(skippedDir, "hidden.md"), [
+      "---",
+      "description: Hidden nested command",
+      "---",
+      "",
+      "Hidden.",
+      "",
+    ].join("\n"));
+
+    expect(discoverClaudeSlashCommands(tmpRoot)).toEqual([
+      {
+        name: "/level-0:level-1:level-2:level-3:level-4:level-5:level-6:level-7:level-8:level-9:visible",
+        description: "Visible nested command",
+      },
+    ]);
+  });
+
   it("discovers invocable skills and hides non-user-invocable skills", () => {
     const visibleSkill = path.join(tmpRoot, ".claude", "skills", "fix-issue");
     const hiddenSkill = path.join(tmpRoot, ".claude", "skills", "background-context");

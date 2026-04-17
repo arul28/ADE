@@ -97,8 +97,8 @@ struct WorkMarkdownTable: View {
         ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
           Divider()
           HStack(spacing: 0) {
-            ForEach(row.indices, id: \.self) { index in
-              WorkInlineMarkdownText(text: row[index])
+            ForEach(headers.indices, id: \.self) { index in
+              WorkInlineMarkdownText(text: index < row.count ? row[index] : "")
                 .font(.caption)
                 .padding(10)
                 .frame(minWidth: 120, alignment: .leading)

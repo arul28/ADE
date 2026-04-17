@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import type { LinearArtifactMode, NormalizedLinearIssue } from "../../../shared/types";
 import type { Logger } from "../logging/logger";
 import type { AdeDb } from "../state/kvDb";
@@ -289,12 +290,24 @@ export function createLinearOutboundService(args: {
     }
 
     for (const entry of rawEntries) {
-      if (/^(https?|file):\/\//i.test(entry)) {
+      if (/^https?:\/\//i.test(entry)) {
         uploaded.push(entry);
         continue;
       }
 
-      const artifactPath = path.resolve(args.projectRoot, entry);
+      let artifactPath: string;
+      try {
+        artifactPath = /^file:\/\//i.test(entry)
+          ? fileURLToPath(entry)
+          : path.resolve(args.projectRoot, entry);
+      } catch (error) {
+        args.logger?.warn("linear_outbound.artifact_file_uri_invalid", {
+          issueId: params.issueId,
+          artifactPath: entry,
+          error: getErrorMessage(error),
+        });
+        continue;
+      }
       let artifactPathReal: string;
       try {
         artifactPathReal = fs.realpathSync(artifactPath);
@@ -320,7 +333,7 @@ export function createLinearOutboundService(args: {
       if (!stat.isFile()) continue;
 
       if (params.mode === "links") {
-        uploaded.push(`file://${artifactPath}`);
+        uploaded.push(pathToFileURL(artifactPathReal).href);
         continue;
       }
 

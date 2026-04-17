@@ -194,10 +194,16 @@ func workMarkdownListRegex(ordered: Bool) -> NSRegularExpression? {
 }
 
 func splitMarkdownTableRow(_ row: String) -> [String] {
-  row
+  var cells = row
     .split(separator: "|", omittingEmptySubsequences: false)
     .map { $0.trimmingCharacters(in: .whitespaces) }
-    .filter { !$0.isEmpty }
+  if cells.first == "" {
+    cells.removeFirst()
+  }
+  if cells.last == "" {
+    cells.removeLast()
+  }
+  return cells
 }
 
 /// LRU cache for parsed markdown. Chat messages re-render on every transcript

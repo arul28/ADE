@@ -21,6 +21,8 @@ type SkillFrontmatter = CommandFrontmatter & {
   userInvocable?: unknown;
 };
 
+const MAX_LEGACY_COMMAND_DEPTH = 10;
+
 function readFrontmatter(markdown: string): Record<string, unknown> {
   if (!markdown.startsWith("---")) return {};
   const match = markdown.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/);
@@ -67,7 +69,8 @@ function discoverLegacyCommands(commandsDir: string): DiscoveredClaudeSlashComma
   const commands: DiscoveredClaudeSlashCommand[] = [];
   if (!fs.existsSync(commandsDir)) return commands;
 
-  const visit = (dir: string): void => {
+  const visit = (dir: string, depth = 0): void => {
+    if (depth > MAX_LEGACY_COMMAND_DEPTH) return;
     let entries: fs.Dirent[];
     try {
       entries = fs.readdirSync(dir, { withFileTypes: true });
@@ -77,7 +80,7 @@ function discoverLegacyCommands(commandsDir: string): DiscoveredClaudeSlashComma
     for (const entry of entries) {
       const entryPath = path.join(dir, entry.name);
       if (entry.isDirectory()) {
-        visit(entryPath);
+        visit(entryPath, depth + 1);
         continue;
       }
       if (!entry.isFile() || !entry.name.endsWith(".md")) continue;

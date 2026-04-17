@@ -3,6 +3,7 @@ import SQLite3
 
 private let sqliteTransient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
 private let localDeleteColumnId = "-1"
+private let legacyDeleteColumnId = "__ade_deleted"
 
 extension Notification.Name {
   static let adeDatabaseDidChange = Notification.Name("ADE.DatabaseDidChange")
@@ -3023,7 +3024,7 @@ final class DatabaseService {
   }
 
   private func isDeleteColumnId(_ cid: String) -> Bool {
-    cid == localDeleteColumnId
+    cid == localDeleteColumnId || cid == legacyDeleteColumnId
   }
 
   /// Decode a cr-sqlite packed primary key blob into actual column values.

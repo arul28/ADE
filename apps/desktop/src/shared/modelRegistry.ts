@@ -852,14 +852,9 @@ export function getAvailableModels(
 
 export function resolveModelAlias(alias: string): ModelDescriptor | undefined {
   const normalized = alias.trim().toLowerCase();
-  // `bySdkModelId` covers provider-model-id forms like "claude-sonnet-4-6" or
-  // "gpt-5.4-codex" — this is the form the iOS model picker sends, and without
-  // it mid-turn model updates from mobile failed with "Unknown model" because
-  // none of the other maps had the key.
   return byId.get(normalized)
     ?? byShortId.get(normalized)
     ?? byAlias.get(normalized)
-    ?? bySdkModelId.get(normalized)
     ?? dynamicOpenCodeByAlias.get(normalized)
     ?? undefined;
 }

@@ -15,6 +15,8 @@ function createStubPinStore(initialPin: string | null = null): SyncPinStore {
   let pin = initialPin;
   return {
     getPin: () => pin,
+    hasPin: () => pin != null,
+    verifyPin: (value: string) => pin === value.trim(),
     setPin: (value: string) => {
       if (!/^\d{6}$/.test(value)) throw new Error("PIN must be 6 digits.");
       pin = value;

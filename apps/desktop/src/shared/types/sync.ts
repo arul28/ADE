@@ -158,6 +158,7 @@ export type SyncRoleSnapshot = {
   clusterState: SyncClusterState | null;
   bootstrapToken: string | null;
   pairingPin: string | null;
+  pairingPinConfigured: boolean;
   pairingConnectInfo: SyncPairingConnectInfo | null;
   connectedPeers: SyncPeerConnectionState[];
   client: SyncClientStatus;

@@ -14,6 +14,7 @@ private enum RootTab: Hashable {
 struct ContentView: View {
   @EnvironmentObject private var syncService: SyncService
   @State private var selectedTab: RootTab = .work
+  @State private var morePath: [DesktopMoreDestination] = []
   @AppStorage("ade.colorScheme") private var colorSchemeRaw: String = ADEColorSchemeChoice.system.rawValue
 
   private var colorSchemeChoice: ADEColorSchemeChoice {
@@ -31,6 +32,7 @@ struct ContentView: View {
       .onChange(of: syncService.settingsPresented) { _, presented in
         guard presented else { return }
         selectedTab = .more
+        morePath = [.settings]
         syncService.settingsPresented = false
       }
       .onChange(of: syncService.requestedFilesNavigation?.id) { _, requestId in
@@ -91,7 +93,7 @@ struct ContentView: View {
   }
 
   private var moreTab: some View {
-    DesktopMoreTabScreen()
+    DesktopMoreTabScreen(path: $morePath)
       .tag(RootTab.more)
       .tabItem {
         Label("More", systemImage: "ellipsis")
@@ -180,6 +182,8 @@ private enum DesktopMoreDestination: Hashable {
 }
 
 private struct DesktopMoreTabScreen: View {
+  @Binding var path: [DesktopMoreDestination]
+
   private let rows: [(destination: DesktopMoreDestination, title: String, symbol: String, tint: Color)] = [
     (.project, "Run", "play.circle.fill", ADEColor.purpleAccent),
     (.graph, "Graph", "point.3.connected.trianglepath.dotted", ADEColor.tintGraph),
@@ -191,13 +195,11 @@ private struct DesktopMoreTabScreen: View {
   ]
 
   var body: some View {
-    NavigationStack {
+    NavigationStack(path: $path) {
       ScrollView {
         VStack(alignment: .leading, spacing: 12) {
           ForEach(rows, id: \.destination) { row in
-            NavigationLink {
-              destinationView(for: row.destination)
-            } label: {
+            NavigationLink(value: row.destination) {
               HStack(spacing: 12) {
                 Image(systemName: row.symbol)
                   .font(.system(size: 18, weight: .semibold))
@@ -236,6 +238,9 @@ private struct DesktopMoreTabScreen: View {
         ToolbarItem(placement: .topBarLeading) {
           ADEConnectionDot()
         }
+      }
+      .navigationDestination(for: DesktopMoreDestination.self) { destination in
+        destinationView(for: destination)
       }
     }
   }

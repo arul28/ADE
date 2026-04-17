@@ -45,11 +45,10 @@ export function createSyncPairingStore(args: SyncPairingStoreArgs) {
 
   return {
     pairPeer(peer: SyncPeerMetadata, pin: string): { deviceId: string; secret: string } {
-      const storedPin = args.pinStore.getPin();
-      if (!storedPin) {
+      if (!args.pinStore.hasPin()) {
         throw pairingError("pin_not_set", "No pairing PIN is set on this computer.");
       }
-      if (storedPin !== pin.trim()) {
+      if (!args.pinStore.verifyPin(pin)) {
         throw pairingError("invalid_pin", "Incorrect pairing PIN.");
       }
       const secret = randomBytes(24).toString("hex");

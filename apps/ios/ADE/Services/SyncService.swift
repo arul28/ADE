@@ -372,6 +372,7 @@ final class SyncService: ObservableObject {
   private(set) var chatEventEnvelopesBySession: [String: [AgentChatEventEnvelope]] = [:]
   private(set) var chatEventRevisionsBySession: [String: Int] = [:]
 
+  private let legacyDraftKey = "ade.sync.connectionDraft"
   private let profileKey = "ade.sync.hostProfile"
   private let autoReconnectPausedKey = "ade.sync.autoReconnectPausedByUser"
   private let pendingOperationsKey = "ade.sync.pendingOperations"
@@ -557,7 +558,14 @@ final class SyncService: ObservableObject {
        let profile = try? decoder.decode(HostConnectionProfile.self, from: data) {
       return profile
     }
-    return nil
+    guard let data = UserDefaults.standard.data(forKey: legacyDraftKey),
+          let draft = try? decoder.decode(ConnectionDraft.self, from: data) else {
+      return nil
+    }
+    let migrated = HostConnectionProfile(legacy: draft)
+    saveProfile(migrated)
+    UserDefaults.standard.removeObject(forKey: legacyDraftKey)
+    return migrated
   }
 
   func reconnectIfPossible(userInitiated: Bool = false) async {
@@ -2126,6 +2134,7 @@ final class SyncService: ObservableObject {
       hostName = profile.hostName
     } else {
       UserDefaults.standard.removeObject(forKey: profileKey)
+      UserDefaults.standard.removeObject(forKey: legacyDraftKey)
     }
   }
 

@@ -222,18 +222,24 @@ export function SyncDevicesSection() {
   const phones = devices.filter((device) => !device.isLocal);
   const phonesConnected = phones.filter((d) => d.connectionState === "connected").length;
   const phonesOffline = phones.length - phonesConnected;
+  const isLocalHost = status.role === "brain";
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
       <StatusBar connected={peerCount > 0} peerCount={peerCount} />
 
-      <PairPhoneCard
-        qrPayloadText={status.pairingConnectInfo?.qrPayloadText ?? null}
-        pin={status.pairingPin}
-        busy={busy}
-        onSavePin={handleSetPin}
-        onClearPin={handleClearPin}
-      />
+      {isLocalHost ? (
+        <PairPhoneCard
+          qrPayloadText={status.pairingConnectInfo?.qrPayloadText ?? null}
+          pin={status.pairingPin}
+          pinConfigured={status.pairingPinConfigured}
+          busy={busy}
+          onSavePin={handleSetPin}
+          onClearPin={handleClearPin}
+        />
+      ) : (
+        <ViewerPairingNotice />
+      )}
 
       {notice ? <div style={{ ...helperTextStyle, color: COLORS.success }}>{notice}</div> : null}
       {error ? <div style={{ ...helperTextStyle, color: COLORS.danger }}>{error}</div> : null}
@@ -319,12 +325,14 @@ function StatusBar({ connected, peerCount }: { connected: boolean; peerCount: nu
 function PairPhoneCard({
   qrPayloadText,
   pin,
+  pinConfigured,
   busy,
   onSavePin,
   onClearPin,
 }: {
   qrPayloadText: string | null;
   pin: string | null;
+  pinConfigured: boolean;
   busy: boolean;
   onSavePin: (pin: string) => Promise<void>;
   onClearPin: () => Promise<void>;
@@ -354,7 +362,7 @@ function PairPhoneCard({
     };
   }, [qrPayloadText]);
 
-  const pinMissing = pin == null;
+  const pinMissing = !pinConfigured;
   const qrDimmed = pinMissing;
 
   const handleSave = async (value: string) => {
@@ -428,9 +436,15 @@ function PairPhoneCard({
             />
           ) : pinMissing ? (
             <EmptyPinBlock onSet={() => { setPinError(null); setEditing(true); }} />
-          ) : (
+          ) : pin ? (
             <PinDisplay
-              pin={pin as string}
+              pin={pin}
+              busy={busy}
+              onChange={() => { setPinError(null); setEditing(true); }}
+              onRemove={() => { void onClearPin(); }}
+            />
+          ) : (
+            <SavedPinBlock
               busy={busy}
               onChange={() => { setPinError(null); setEditing(true); }}
               onRemove={() => { void onClearPin(); }}
@@ -442,7 +456,22 @@ function PairPhoneCard({
       <div style={helperTextStyle}>
         {pinMissing
           ? "No PIN set. Phones cannot pair."
-          : "Scan on your phone and enter this PIN to pair."}
+          : pin
+            ? "Scan on your phone and enter this PIN to pair."
+            : "Scan on your phone and enter the saved PIN, or set a new one."}
+      </div>
+    </div>
+  );
+}
+
+function ViewerPairingNotice() {
+  return (
+    <div style={cardStyle({ display: "grid", gap: 10 })}>
+      <div style={{ color: COLORS.textPrimary, fontFamily: SANS_FONT, fontSize: 15, fontWeight: 600 }}>
+        Phone pairing lives on the host
+      </div>
+      <div style={helperTextStyle}>
+        Open Sync settings on the host desktop to set the phone PIN and show the QR code.
       </div>
     </div>
   );
@@ -508,6 +537,33 @@ function EmptyPinBlock({ onSet }: { onSet: () => void }) {
       <div>
         <button type="button" style={primaryButton()} onClick={onSet}>
           Set a 6-digit PIN
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function SavedPinBlock({
+  busy,
+  onChange,
+  onRemove,
+}: {
+  busy: boolean;
+  onChange: () => void;
+  onRemove: () => void;
+}) {
+  return (
+    <div style={{ display: "grid", gap: 12 }}>
+      <div style={LABEL_STYLE}>PIN</div>
+      <div style={{ color: COLORS.textSecondary, fontFamily: SANS_FONT, fontSize: 13 }}>
+        A PIN is saved. Set a new PIN if you need to show it again.
+      </div>
+      <div style={{ display: "flex", gap: 8 }}>
+        <button type="button" style={outlineButton()} disabled={busy} onClick={onChange}>
+          Set new PIN
+        </button>
+        <button type="button" style={dangerButton()} disabled={busy} onClick={onRemove}>
+          Remove
         </button>
       </div>
     </div>

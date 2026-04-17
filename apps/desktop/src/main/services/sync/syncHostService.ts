@@ -348,12 +348,27 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
   let localActiveLaneIds = new Set<string>();
   const PAIR_FAILURE_THRESHOLD = 5;
   const PAIR_COOLDOWN_MS = 10 * 60_000;
-  const pairFailures = new Map<string, { count: number; cooldownUntilMs: number }>();
+  const PAIR_FAILURE_WINDOW_MS = 10 * 60_000;
+  const pairFailures = new Map<string, { count: number; cooldownUntilMs: number; updatedAtMs: number }>();
+  const pruneExpiredPairFailures = (now = Date.now()): boolean => {
+    let changed = false;
+    for (const [ip, entry] of pairFailures) {
+      const cooldownExpired = entry.cooldownUntilMs > 0 && entry.cooldownUntilMs <= now;
+      const failureWindowExpired = entry.updatedAtMs + PAIR_FAILURE_WINDOW_MS <= now;
+      if (cooldownExpired || failureWindowExpired) {
+        pairFailures.delete(ip);
+        changed = true;
+      }
+    }
+    return changed;
+  };
   const registerPairFailure = (ip: string | null): void => {
     if (!ip) return;
     const now = Date.now();
-    const entry = pairFailures.get(ip) ?? { count: 0, cooldownUntilMs: 0 };
+    pruneExpiredPairFailures(now);
+    const entry = pairFailures.get(ip) ?? { count: 0, cooldownUntilMs: 0, updatedAtMs: now };
     entry.count += 1;
+    entry.updatedAtMs = now;
     if (entry.count >= PAIR_FAILURE_THRESHOLD) {
       entry.cooldownUntilMs = now + PAIR_COOLDOWN_MS;
       entry.count = 0;
@@ -364,8 +379,16 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     if (!ip) return 0;
     const entry = pairFailures.get(ip);
     if (!entry) return 0;
-    const remaining = entry.cooldownUntilMs - Date.now();
-    return remaining > 0 ? remaining : 0;
+    const now = Date.now();
+    const remaining = entry.cooldownUntilMs - now;
+    if (remaining > 0) return remaining;
+    if (
+      (entry.cooldownUntilMs > 0 && remaining <= 0)
+      || entry.updatedAtMs + PAIR_FAILURE_WINDOW_MS <= now
+    ) {
+      pairFailures.delete(ip);
+    }
+    return 0;
   };
 
   const normalizeLaneId = (laneId: string | null | undefined): string | null => {
@@ -610,6 +633,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     });
   }, pollIntervalMs);
   const heartbeatTimer = setInterval(() => {
+    pruneExpiredPairFailures();
     const refreshedLocalPresence = refreshLocalLanePresence();
     if (refreshedLocalPresence || pruneExpiredLanePresence()) {
       args.onStateChanged?.();

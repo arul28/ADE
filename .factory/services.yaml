@@ -16,7 +16,7 @@ commands:
 
 services:
   desktop-host:
-    start: ADE_PROJECT_ROOT='/Users/admin/Projects/ADE/.ade/worktrees/mobile-droid-attempt-bbdcd095' npm --prefix apps/desktop run dev
+    start: ADE_PROJECT_ROOT="$PWD" npm --prefix apps/desktop run dev
     stop: lsof -tiTCP:8787 -sTCP:LISTEN | xargs kill
     healthcheck: lsof -iTCP:8787 -sTCP:LISTEN
     port: 8787

@@ -182,6 +182,37 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(SyncUserFacingError.message(for: compressedPayloadError), "The host sent unreadable sync data. Reconnect and try again.")
   }
 
+  @MainActor
+  func testSyncServiceMigratesLegacyConnectionDraftProfile() throws {
+    let legacyDraftKey = "ade.sync.connectionDraft"
+    let profileKey = "ade.sync.hostProfile"
+    UserDefaults.standard.removeObject(forKey: legacyDraftKey)
+    UserDefaults.standard.removeObject(forKey: profileKey)
+    defer {
+      UserDefaults.standard.removeObject(forKey: legacyDraftKey)
+      UserDefaults.standard.removeObject(forKey: profileKey)
+    }
+
+    let draft = ConnectionDraft(
+      host: "192.168.1.10",
+      port: 8787,
+      authKind: "paired",
+      pairedDeviceId: "phone-1",
+      lastRemoteDbVersion: 42,
+      lastBrainDeviceId: "host-1"
+    )
+    UserDefaults.standard.set(try JSONEncoder().encode(draft), forKey: legacyDraftKey)
+
+    let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
+    let profile = try XCTUnwrap(service.loadProfile())
+
+    XCTAssertEqual(profile.lastSuccessfulAddress, "192.168.1.10")
+    XCTAssertEqual(profile.savedAddressCandidates, ["192.168.1.10"])
+    XCTAssertEqual(profile.lastHostDeviceId, "host-1")
+    XCTAssertNil(UserDefaults.standard.data(forKey: legacyDraftKey))
+    XCTAssertNotNil(UserDefaults.standard.data(forKey: profileKey))
+  }
+
   func testAgentChatEventEnvelopeDecodesRichEventPayloads() throws {
     let completionJSON = """
     {
@@ -663,6 +694,37 @@ final class ADETests: XCTestCase {
     let result = try database.applyChanges([deleteChange])
     XCTAssertEqual(result.appliedCount, 1)
 
+    XCTAssertEqual(try countRows(in: baseURL, table: "conflict_predictions"), 0)
+    database.close()
+  }
+
+  func testDatabaseTreatsLegacyDeleteSentinelAsRowDelete() throws {
+    let baseURL = makeTemporaryDirectory()
+    let database = makeConflictPredictionsDatabase(baseURL: baseURL)
+    XCTAssertNil(database.initializationError)
+
+    try database.executeSqlForTesting("""
+      insert into conflict_predictions (
+        id, project_id, lane_a_id, lane_b_id, status, predicted_at
+      ) values (
+        'prediction-legacy', 'project-1', 'lane-a', null, 'clean', '2026-03-17T00:00:00.000Z'
+      )
+    """)
+
+    let deleteChange = CrsqlChangeRow(
+      table: "conflict_predictions",
+      pk: .bytes(SyncScalarBytes(type: "bytes", base64: packedDesktopTextPrimaryKeyData("prediction-legacy").base64EncodedString())),
+      cid: "__ade_deleted",
+      val: .null,
+      colVersion: 2,
+      dbVersion: 2,
+      siteId: "b00e9b92c864a27958669c1595fcb2c3",
+      cl: 1,
+      seq: 0
+    )
+
+    let result = try database.applyChanges([deleteChange])
+    XCTAssertEqual(result.appliedCount, 1)
     XCTAssertEqual(try countRows(in: baseURL, table: "conflict_predictions"), 0)
     database.close()
   }
@@ -2910,6 +2972,24 @@ final class ADETests: XCTestCase {
 
     XCTAssertEqual(first, second)
     XCTAssertEqual(first.map(\.id), second.map(\.id))
+  }
+
+  func testParseMarkdownTableRowsPreservesBlankCells() {
+    let blocks = parseMarkdownBlocks("""
+    | Name | Status | Owner |
+    | --- | --- | --- |
+    | Build |  | ADE |
+    | Ship | done |  |
+    """)
+
+    guard case .table(let headers, let rows) = blocks.first?.kind else {
+      return XCTFail("Expected markdown table block.")
+    }
+    XCTAssertEqual(headers, ["Name", "Status", "Owner"])
+    XCTAssertEqual(rows, [
+      ["Build", "", "ADE"],
+      ["Ship", "done", ""],
+    ])
   }
 
   func testParseWorkChatTranscriptUsesDeterministicFallbackItemIds() {
