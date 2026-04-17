@@ -8,6 +8,7 @@ import type { EffectiveProjectConfig, ProjectConfigFile } from "../../../shared/
 import type { DetectedAuth } from "./authDetector";
 import type { AgentPermissionMode } from "./agentExecutor";
 import { resolveClaudeCodeExecutable } from "./claudeCodeExecutable";
+import { resolveClaudeCliModel } from "./claudeModelUtils";
 import { resolveCodexExecutable } from "./codexExecutable";
 import { resolveCursorAgentExecutable } from "./cursorAgentExecutable";
 import { parseStructuredOutput } from "./utils";
@@ -140,7 +141,7 @@ async function runClaudeTask(args: ProviderTaskRunnerArgs): Promise<ProviderTask
   const cliArgs = [
     "-p",
     "--model",
-    args.descriptor.providerModelId,
+    resolveClaudeCliModel(args.descriptor.providerModelId),
     "--output-format",
     args.jsonSchema ? "json" : "text",
     "--permission-mode",

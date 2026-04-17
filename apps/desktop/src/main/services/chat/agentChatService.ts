@@ -13914,7 +13914,7 @@ export function createAgentChatService(args: {
         merged.set(command.name, command);
       }
       for (const command of localCommands) {
-        if (!merged.has(command.name)) merged.set(command.name, command);
+        merged.set(command.name, command);
       }
       return [...merged.values()];
     }

@@ -337,7 +337,7 @@ describe("compactConversation", () => {
     expect(result.newTokenCount).toBeGreaterThan(0);
     expect(aiIntegrationService.executeTask).toHaveBeenCalledTimes(2);
     expect(aiIntegrationService.executeTask).toHaveBeenCalledWith(expect.objectContaining({
-      feature: "terminal_summaries",
+      feature: "orchestrator",
       taskType: "context_compaction",
       model: "test-model",
       permissionMode: "read-only",

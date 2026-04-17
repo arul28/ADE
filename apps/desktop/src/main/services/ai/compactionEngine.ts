@@ -241,7 +241,7 @@ export async function compactConversation(opts: {
 
   // Summarize
   const summaryResult = await opts.aiIntegrationService.executeTask({
-    feature: "terminal_summaries",
+    feature: "orchestrator",
     taskType: "context_compaction",
     cwd: process.cwd(),
     model: descriptor.id,
@@ -254,7 +254,7 @@ export async function compactConversation(opts: {
 
   // Extract facts
   const factsResult = await opts.aiIntegrationService.executeTask({
-    feature: "terminal_summaries",
+    feature: "orchestrator",
     taskType: "context_compaction",
     cwd: process.cwd(),
     model: descriptor.id,

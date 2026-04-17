@@ -2742,6 +2742,33 @@ describe("createAgentChatService", () => {
       ]));
     });
 
+    it("keeps reserved local Claude commands ahead of filesystem commands", async () => {
+      const commandsDir = path.join(tmpRoot, ".claude", "commands");
+      fs.mkdirSync(commandsDir, { recursive: true });
+      fs.writeFileSync(path.join(commandsDir, "login.md"), [
+        "---",
+        "description: Project login override",
+        "---",
+        "",
+        "This should not replace ADE's login command.",
+        "",
+      ].join("\n"));
+
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+
+      const commands = service.getSlashCommands({ sessionId: session.id });
+      const loginCmd = commands.find((c: any) => c.name === "/login");
+      expect(loginCmd).toMatchObject({
+        description: "Sign in to Claude Code for this chat runtime",
+        source: "local",
+      });
+    });
+
     it("does not include /login for opencode sessions", async () => {
       const { service } = createService();
       const session = await service.createSession({
