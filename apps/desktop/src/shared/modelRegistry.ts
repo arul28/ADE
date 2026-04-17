@@ -62,6 +62,8 @@ export type ModelDescriptor = {
   openCodeProviderId?: string;
   /** OpenCode server routing: model id as reported by OpenCode (may contain `/`). */
   openCodeModelId?: string;
+  /** True when the model was injected via a local proxy (e.g. vibeproxy in ~/.factory/config.json). */
+  customProxy?: boolean;
 };
 
 export type DynamicLocalModelDescriptorOptions = {
@@ -661,7 +663,7 @@ export function cursorCliLineGroupFromSdkId(providerModelId: string): CursorCliL
   if (/claude|sonnet|opus|haiku/.test(s)) return "anthropic";
   if (/gemini/.test(s)) return "google";
   if (/grok/.test(s)) return "grok";
-  if (/^gpt|^o\d|codex/.test(s)) return "openai";
+  if (/gpt|(?:^|[:/])o\d|codex/.test(s)) return "openai";
   return "other";
 }
 
@@ -693,7 +695,7 @@ function colorForCursorSdkId(providerModelId: string): string {
   if (/composer/.test(s)) return "#8B5CF6";
   if (/gemini/.test(s)) return "#4285F4";
   if (/grok/.test(s)) return "#1DA1F2";
-  if (/^gpt|^o\d|codex/.test(s)) return "#10A37F";
+  if (/gpt|(?:^|[:/])o\d|codex/.test(s)) return "#10A37F";
   return "#71717A";
 }
 
@@ -760,7 +762,7 @@ export const DROID_CLI_LINE_ORDER: DroidCliLineGroup[] = ["anthropic", "openai",
 export function droidCliLineGroupFromModelId(providerModelId: string): DroidCliLineGroup {
   const s = providerModelId.trim().toLowerCase();
   if (/claude|sonnet|opus|haiku/.test(s)) return "anthropic";
-  if (/^gpt|^o\d|codex/.test(s)) return "openai";
+  if (/gpt|(?:^|[:/])o\d|codex/.test(s)) return "openai";
   if (/gemini/.test(s)) return "google";
   return "other";
 }
@@ -779,7 +781,7 @@ function colorForDroidModelId(providerModelId: string): string {
   const s = providerModelId.toLowerCase();
   if (/claude|sonnet|opus|haiku/.test(s)) return "#D97706";
   if (/gemini/.test(s)) return "#4285F4";
-  if (/^gpt|^o\d|codex/.test(s)) return "#10A37F";
+  if (/gpt|(?:^|[:/])o\d|codex/.test(s)) return "#10A37F";
   return "#71717A";
 }
 
@@ -912,6 +914,7 @@ export function parseDynamicDroidModelRef(modelId: string): { providerModelId: s
 export function createDynamicDroidCliModelDescriptor(
   providerModelId: string,
   cliDisplayName?: string | null,
+  options?: { customProxy?: boolean },
 ): ModelDescriptor {
   const trimmedProviderModelId = providerModelId.trim();
   const id = `droid/${trimmedProviderModelId}`;
@@ -936,6 +939,7 @@ export function createDynamicDroidCliModelDescriptor(
     providerModelId: trimmedProviderModelId,
     cliCommand: "droid",
     isCliWrapped: true,
+    ...(options?.customProxy ? { customProxy: true } : {}),
   };
 }
 

@@ -119,7 +119,7 @@ export function deriveConfiguredModelIds(
 ): ModelId[] {
   if (!status) return [];
 
-  const { includeCursor = true, includeDroid = false } = options ?? {};
+  const { includeCursor = true, includeDroid = true } = options ?? {};
   const runtimeConnections = (status as { runtimeConnections?: Record<string, AiRuntimeConnectionStatus> } | null | undefined)?.runtimeConnections;
 
   // Derive available models from detectedAuth. For Cursor CLI, merge in

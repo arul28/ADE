@@ -1,14 +1,18 @@
 import {
   CURSOR_CLI_LINE_ORDER,
+  DROID_CLI_LINE_ORDER,
   MODEL_REGISTRY,
   cursorCliLineGroupFromSdkId,
   cursorCliLineGroupLabel,
+  droidCliLineGroupFromModelId,
+  droidCliLineGroupLabel,
   type CursorCliLineGroup,
+  type DroidCliLineGroup,
   type ModelDescriptor,
 } from "../../../shared/modelRegistry";
 
-/** Top-level provider groups — the four first-class ADE runtime providers. */
-export type ProviderGroupKey = "claude" | "codex" | "cursor" | "opencode";
+/** Top-level provider groups — the five first-class ADE runtime providers. */
+export type ProviderGroupKey = "claude" | "codex" | "cursor" | "droid" | "opencode";
 
 /** Category within the OpenCode provider group. */
 export type ProviderCategory = "cloud-api" | "local" | "router";
@@ -132,18 +136,21 @@ const PROVIDER_GROUP_ORDER: Record<ProviderGroupKey, number> = {
   claude: 10,
   codex: 20,
   cursor: 30,
+  droid: 35,
   opencode: 40,
 };
 
-/** Brand colors for the four top-level provider groups. */
+/** Brand colors for the five top-level provider groups. */
 export const PROVIDER_GROUP_COLORS: Record<ProviderGroupKey, string> = {
   claude: "#D97706",
   codex: "#10A37F",
   cursor: "#A78BFA",
+  droid: "#6B7280",
   opencode: "#2563EB",
 };
 
 const CURSOR_SECTION_PREFIX = "__cursor_line__:";
+const DROID_SECTION_PREFIX = "__droid_line__:";
 const OPENCODE_PROVIDER_PREFIX = "__ocprov__:";
 
 export function providerLabel(family: string): string {
@@ -154,12 +161,13 @@ export function providerBadgeColor(provider: string, models: ModelDescriptor[]):
   return PROVIDER_BADGE_COLORS[provider] ?? models[0]?.color ?? "#A78BFA";
 }
 
-/** Classify a model into one of the four top-level provider groups. */
+/** Classify a model into one of the five top-level provider groups. */
 export function classifyProviderGroup(model: ModelDescriptor): ProviderGroupKey {
   if (model.isCliWrapped) {
     if (model.family === "anthropic" || model.cliCommand === "claude") return "claude";
     if (model.family === "openai" || model.cliCommand === "codex") return "codex";
     if (model.family === "cursor" || model.cliCommand === "cursor") return "cursor";
+    if (model.family === "factory" || model.cliCommand === "droid") return "droid";
   }
   return "opencode";
 }
@@ -172,6 +180,8 @@ export function providerGroupLabel(group: ProviderGroupKey): string {
       return "Codex";
     case "cursor":
       return "Cursor";
+    case "droid":
+      return "Droid";
     case "opencode":
       return "OpenCode";
   }
@@ -180,6 +190,9 @@ export function providerGroupLabel(group: ProviderGroupKey): string {
 export function subsectionKeyForModel(model: ModelDescriptor, group: ProviderGroupKey): string {
   if (model.family === "cursor" && group === "cursor") {
     return `${CURSOR_SECTION_PREFIX}${cursorCliLineGroupFromSdkId(model.providerModelId)}`;
+  }
+  if (model.family === "factory" && group === "droid") {
+    return `${DROID_SECTION_PREFIX}${droidCliLineGroupFromModelId(model.providerModelId)}`;
   }
   if (group === "opencode" && model.openCodeProviderId) {
     return `${OPENCODE_PROVIDER_PREFIX}${model.openCodeProviderId}`;
@@ -197,6 +210,10 @@ export function subsectionLabel(family: string, key: string): string {
     const group = key.slice(CURSOR_SECTION_PREFIX.length) as CursorCliLineGroup;
     return cursorCliLineGroupLabel(group);
   }
+  if (family === "factory" && key.startsWith(DROID_SECTION_PREFIX)) {
+    const group = key.slice(DROID_SECTION_PREFIX.length) as DroidCliLineGroup;
+    return droidCliLineGroupLabel(group);
+  }
   return "";
 }
 
@@ -210,6 +227,11 @@ export function subsectionSortOrder(family: string, key: string): number {
     const group = key.slice(CURSOR_SECTION_PREFIX.length) as CursorCliLineGroup;
     const index = CURSOR_CLI_LINE_ORDER.indexOf(group);
     return index === -1 ? CURSOR_CLI_LINE_ORDER.length + 50 : index;
+  }
+  if (family === "factory" && key.startsWith(DROID_SECTION_PREFIX)) {
+    const group = key.slice(DROID_SECTION_PREFIX.length) as DroidCliLineGroup;
+    const index = DROID_CLI_LINE_ORDER.indexOf(group);
+    return index === -1 ? DROID_CLI_LINE_ORDER.length + 50 : index;
   }
   return 0;
 }

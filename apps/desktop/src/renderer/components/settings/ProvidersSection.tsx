@@ -716,6 +716,37 @@ export function ProvidersSection({ forceRefreshOnMount = false }: { forceRefresh
         );
       })()}
 
+      {/* ── Droid ── */}
+      {(() => {
+        const tool = CLI_TOOLS.find((t) => t.cli === "droid")!;
+        const connection = providerConnections?.[tool.cli] ?? null;
+        const credentialSourceDesc = describeCredentialSource(connection);
+        const tone = isInitialCheckInFlight ? { color: COLORS.info, label: "Checking" } : getStatusTone(connection);
+        const message = isInitialCheckInFlight ? "Checking CLI availability and login status." : buildCliMessage(tool, connection);
+        return (
+          <section style={{ ...cardStyle(), borderLeft: `3px solid ${tone.color}` }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <Cpu size={28} className="text-zinc-100" />
+                <div>
+                  <div style={{ fontSize: 13, fontFamily: SANS_FONT, fontWeight: 700, color: COLORS.textPrimary }}>Factory Droid</div>
+                  <div style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textMuted, lineHeight: 1.35 }}>
+                    Factory Droid native runtime via Droid CLI
+                  </div>
+                </div>
+              </div>
+              <div style={{ display: "flex", alignItems: "center", gap: 4, color: tone.color }}>
+                {isInitialCheckInFlight ? <Info size={14} weight="fill" /> : connection?.runtimeAvailable ? <CheckCircle size={14} weight="fill" /> : connection?.authAvailable || connection?.runtimeDetected ? <WarningCircle size={14} weight="fill" /> : <XCircle size={14} weight="fill" />}
+                <span style={{ fontSize: 9, fontFamily: MONO_FONT, textTransform: "uppercase", letterSpacing: "1px" }}>{tone.label}</span>
+              </div>
+            </div>
+            <div style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textMuted, lineHeight: 1.5, marginTop: 10 }}>{message}</div>
+            {credentialSourceDesc && !connection?.runtimeAvailable && !isInitialCheckInFlight ? <div style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.info, marginTop: 4 }}>{credentialSourceDesc}</div> : null}
+            {connection?.path && !isInitialCheckInFlight ? <code style={{ display: "block", marginTop: 6, fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textSecondary, background: `${COLORS.textDim}12`, border: `1px solid ${COLORS.border}`, padding: "6px 8px", overflowWrap: "anywhere", wordBreak: "break-all" }}>{connection.path}</code> : null}
+          </section>
+        );
+      })()}
+
       {/* ── OpenCode Status ── */}
       <section style={{ ...cardStyle(), borderLeft: `3px solid #2563EB` }}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>

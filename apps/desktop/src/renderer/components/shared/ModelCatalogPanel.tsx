@@ -31,7 +31,7 @@ import {
   type ProviderGroupKey,
 } from "./providerModelSelectorGrouping";
 
-const GROUP_KEYS: ProviderGroupKey[] = ["claude", "codex", "cursor", "opencode"];
+const GROUP_KEYS: ProviderGroupKey[] = ["claude", "codex", "cursor", "droid", "opencode"];
 
 function rgbaFromHex(hex: string, alpha: number): string {
   const n = hex.replace("#", "").trim();
@@ -535,6 +535,11 @@ export function ModelCatalogPanel({
                   Unknown
                 </span>
               ) : null}
+              {model.customProxy ? (
+                <span className="inline-flex shrink-0 items-center rounded-full border border-sky-400/20 bg-sky-500/[0.08] px-1.5 py-0.5 font-sans text-[8px] font-semibold uppercase tracking-[0.14em] text-sky-300/70">
+                  Proxy
+                </span>
+              ) : null}
             </div>
             <div className={cn("truncate text-[11px]", isAvailable ? "text-fg/50" : "text-muted-fg/35 italic")}>
               {modelAvailabilityLabel(model, isAvailable)}
@@ -617,7 +622,7 @@ export function ModelCatalogPanel({
         <div key={groupBlock.key} className="border-b border-white/[0.04] last:border-b-0">
           <div className="sticky top-0 z-[1] border-b border-white/[0.06] px-4 py-2.5 backdrop-blur-md" style={{ background: "rgba(19,17,34,0.85)" }}>
             <div className="flex items-center gap-2 font-sans text-[10px] font-bold uppercase tracking-[0.2em] text-fg/55">
-              <ProviderLogo family={groupBlock.key === "claude" ? "anthropic" : groupBlock.key === "codex" ? "openai" : groupBlock.key} size={14} />
+              <ProviderLogo family={groupBlock.key === "claude" ? "anthropic" : groupBlock.key === "codex" ? "openai" : groupBlock.key === "droid" ? "factory" : groupBlock.key} size={14} />
               {groupBlock.label}
             </div>
           </div>

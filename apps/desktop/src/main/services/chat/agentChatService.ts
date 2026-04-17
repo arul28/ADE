@@ -2902,6 +2902,97 @@ export function createAgentChatService(args: {
   const managedSessions = new Map<string, ManagedChatSession>();
   const acpHostSessionOwners = new Map<string, ManagedChatSession>();
   const acpHostBridgeWired = new WeakSet<CursorAcpPooled | DroidAcpPooled>();
+  /**
+   * Dedup guard for Droid ACP session notifications.
+   *
+   * The droid exec binary has two duplicate-emission behaviors:
+   *  1. Duplicate `current_mode_update` notifications per turn.
+   *  2. After streaming `agent_message_chunk` deltas for the current turn, it
+   *     sends a final chunk containing the concatenation of ALL previous turns'
+   *     assistant text (conversation history replay).
+   *
+   * Per ACP session we track:
+   *  - `historyText`: accumulated text from all completed turns (used to detect
+   *    the history-replay chunk in subsequent turns)
+   *  - `currentTurnText`: text streamed so far in the active turn
+   *  - `seenModes`: mode IDs already emitted in the active turn
+   */
+  const droidSessionDedup = new Map<string, {
+    historyText: string;
+    currentTurnText: string;
+    currentTurnId: string;
+    seenModes: Set<string>;
+  }>();
+
+  function isDuplicateDroidNotification(
+    sessionId: string,
+    turnId: string,
+    note: { update: Record<string, unknown> },
+  ): boolean {
+    const u = note.update;
+
+    if (u.sessionUpdate === "agent_message_chunk") {
+      const c = u.content as { type?: string; text?: string } | undefined;
+      const chunkText = c?.text ?? "";
+      if (!chunkText.length) return false;
+
+      let entry = droidSessionDedup.get(sessionId);
+      if (!entry) {
+        entry = { historyText: "", currentTurnText: "", currentTurnId: turnId, seenModes: new Set() };
+        droidSessionDedup.set(sessionId, entry);
+      }
+
+      // New turn — commit previous turn's text to history and reset.
+      if (entry.currentTurnId !== turnId) {
+        entry.historyText += entry.currentTurnText;
+        entry.currentTurnText = "";
+        entry.currentTurnId = turnId;
+        entry.seenModes.clear();
+      }
+
+      // The replay chunk contains text from previous turns. If the chunk's
+      // text is found in the accumulated history, it's a replay — drop it.
+      if (entry.historyText.length > 0 && entry.historyText.includes(chunkText)) {
+        return true;
+      }
+
+      // Also catch the case where this chunk replays the current turn's
+      // own streamed text (the original dedup scenario).
+      if (entry.currentTurnText.length > 0 && entry.currentTurnText.includes(chunkText)) {
+        return true;
+      }
+
+      // Genuine streaming delta — accumulate.
+      entry.currentTurnText += chunkText;
+      return false;
+    }
+
+    if (u.sessionUpdate === "current_mode_update") {
+      const modeId = String(u.currentModeId ?? "");
+      let entry = droidSessionDedup.get(sessionId);
+      if (!entry) {
+        entry = { historyText: "", currentTurnText: "", currentTurnId: turnId, seenModes: new Set() };
+        droidSessionDedup.set(sessionId, entry);
+      }
+      if (entry.currentTurnId !== turnId) {
+        entry.historyText += entry.currentTurnText;
+        entry.currentTurnText = "";
+        entry.currentTurnId = turnId;
+        entry.seenModes.clear();
+      }
+      if (entry.seenModes.has(modeId)) {
+        return true;
+      }
+      entry.seenModes.add(modeId);
+      return false;
+    }
+
+    return false;
+  }
+
+  function clearDroidSessionDedup(sessionId: string): void {
+    droidSessionDedup.delete(sessionId);
+  }
   /** Interrupt arrived while `ensureDroidRuntime` was still acquiring the pooled CLI. */
   const droidRuntimeSetupInterruptRequested = new WeakMap<ManagedChatSession, boolean>();
   const sessionTurnCollectors = new Map<string, SessionTurnCollector>();
@@ -6020,6 +6111,7 @@ export function createAgentChatService(args: {
       const rt = managed.runtime;
       if (rt.acpSessionId) {
         acpHostSessionOwners.delete(rt.acpSessionId);
+        clearDroidSessionDedup(rt.acpSessionId);
         void rt.pooled?.connection.unstable_closeSession?.({ sessionId: rt.acpSessionId }).catch(() => {});
       }
       for (const [, w] of rt.permissionWaiters) {
@@ -11959,6 +12051,13 @@ export function createAgentChatService(args: {
       if (!owner?.runtime) return;
       const rt = owner.runtime;
       if (rt.kind !== "cursor" && rt.kind !== "droid") return;
+
+      // Droid exec sends streaming chunks + a final complete-text replay, and
+      // duplicate current_mode_update notifications.  Suppress the duplicates.
+      if (rt.kind === "droid" && isDuplicateDroidNotification(note.sessionId, rt.activeTurnId ?? "", note as { update: Record<string, unknown> })) {
+        return;
+      }
+
       let previousModeId: string | null = null;
       if (rt.kind === "cursor") {
         previousModeId = rt.currentModeId;

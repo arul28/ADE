@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { homedir } from "node:os";
 import {
   createDynamicDroidCliModelDescriptor,
   sortDroidCliDescriptorsForPicker,
@@ -30,6 +33,8 @@ export const DROID_DEFAULT_MODEL_IDS: string[] = [
 export type DroidExecHelpModelRow = {
   id: string;
   displayName: string;
+  /** True when sourced from ~/.factory/config.json (vibeproxy / custom proxy). */
+  customProxy?: boolean;
 };
 
 let cached: { at: number; models: DroidExecHelpModelRow[] } | null = null;
@@ -166,18 +171,55 @@ export function clearDroidCliModelsCache(): void {
   cached = null;
 }
 
+/**
+ * Read custom models from `~/.factory/config.json`.
+ *
+ * Vibeproxy (and other tools) inject custom models into the Droid CLI by
+ * writing entries to this file.  Each entry carries the raw model ID, a
+ * human-readable display name, and a `custom:` prefixed ID that the CLI
+ * uses internally.
+ */
+function readFactoryConfigCustomModels(): DroidExecHelpModelRow[] {
+  try {
+    const configPath = join(homedir(), ".factory", "config.json");
+    const raw = readFileSync(configPath, "utf-8");
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    const customModels = parsed.custom_models;
+    if (!Array.isArray(customModels)) return [];
+    const rows: DroidExecHelpModelRow[] = [];
+    for (const entry of customModels) {
+      if (!entry || typeof entry !== "object") continue;
+      const e = entry as Record<string, unknown>;
+      const model = typeof e.model === "string" ? e.model.trim() : "";
+      const displayName = typeof e.model_display_name === "string" ? e.model_display_name.trim() : "";
+      if (!model) continue;
+      // The droid CLI wraps custom models with a "custom:" prefix.
+      const id = `custom:${model}`;
+      rows.push({ id, displayName: displayName || id, customProxy: true });
+    }
+    return rows;
+  } catch {
+    return [];
+  }
+}
+
 export async function discoverDroidCliModelDescriptors(droidPath: string): Promise<ModelDescriptor[]> {
   const fromCli = await listDroidModelsFromCli(droidPath);
-  const rows = fromCli.length
+  const baseRows: DroidExecHelpModelRow[] = fromCli.length
     ? fromCli
     : DROID_DEFAULT_MODEL_IDS.map((id) => ({ id, displayName: id }));
+
+  // Merge custom models from ~/.factory/config.json so vibeproxy-injected
+  // models appear even when the CLI help output doesn't list them.
+  const customRows = readFactoryConfigCustomModels();
+
   const seen = new Set<string>();
   const descriptors: ModelDescriptor[] = [];
-  for (const row of rows) {
+  for (const row of [...baseRows, ...customRows]) {
     const trimmed = String(row.id ?? "").trim();
     if (!trimmed || seen.has(trimmed)) continue;
     seen.add(trimmed);
-    descriptors.push(createDynamicDroidCliModelDescriptor(trimmed, row.displayName));
+    descriptors.push(createDynamicDroidCliModelDescriptor(trimmed, row.displayName, { customProxy: row.customProxy }));
   }
   return sortDroidCliDescriptorsForPicker(descriptors);
 }
