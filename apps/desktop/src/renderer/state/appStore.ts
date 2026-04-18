@@ -29,6 +29,23 @@ export const DEFAULT_TERMINAL_PREFERENCES: TerminalPreferences = {
   lineHeight: 1.25,
   scrollback: 10_000,
 };
+
+/** Where the copy control sits on fenced code blocks in chat (touch-friendly when bottom). */
+export type CodeBlockCopyButtonPosition = "top" | "bottom";
+export const CODE_BLOCK_COPY_POSITION_IDS: CodeBlockCopyButtonPosition[] = ["top", "bottom"];
+
+/** Web Audio chime when an agent chat turn finishes (idle session). */
+export type AgentTurnCompletionSound = "off" | "chime" | "ping" | "bell";
+export const AGENT_TURN_COMPLETION_SOUND_IDS: AgentTurnCompletionSound[] = ["off", "chime", "ping", "bell"];
+
+function normalizeCodeBlockCopyButtonPosition(value: unknown): CodeBlockCopyButtonPosition {
+  return value === "bottom" ? "bottom" : "top";
+}
+
+function normalizeAgentTurnCompletionSound(value: unknown): AgentTurnCompletionSound {
+  if (value === "chime" || value === "ping" || value === "bell") return value;
+  return "off";
+}
 export type TerminalAttentionIndicator = "none" | "running-active" | "running-needs-attention";
 export type WorkViewMode = "tabs" | "grid";
 export type WorkStatusFilter = "all" | "running" | "awaiting-input" | "ended";
@@ -225,6 +242,8 @@ type PersistedUserPreferences = {
   theme: ThemeId;
   terminalPreferences: TerminalPreferences;
   smartTooltipsEnabled: boolean;
+  codeBlockCopyButtonPosition: CodeBlockCopyButtonPosition;
+  agentTurnCompletionSound: AgentTurnCompletionSound;
 };
 
 function coerceTheme(value: unknown): ThemeId | null {
@@ -243,6 +262,8 @@ function readUnifiedUserPreferences(): PersistedUserPreferences | null {
       theme: coerceTheme(parsed.theme) ?? "dark",
       terminalPreferences: normalizeTerminalPreferences(parsed.terminalPreferences),
       smartTooltipsEnabled: parsed.smartTooltipsEnabled !== false,
+      codeBlockCopyButtonPosition: normalizeCodeBlockCopyButtonPosition(parsed.codeBlockCopyButtonPosition),
+      agentTurnCompletionSound: normalizeAgentTurnCompletionSound(parsed.agentTurnCompletionSound),
     };
   } catch {
     return null;
@@ -269,7 +290,13 @@ function readLegacyUserPreferences(): PersistedUserPreferences {
   } catch {
     // ignore
   }
-  return { theme, terminalPreferences, smartTooltipsEnabled };
+  return {
+    theme,
+    terminalPreferences,
+    smartTooltipsEnabled,
+    codeBlockCopyButtonPosition: "top",
+    agentTurnCompletionSound: "off",
+  };
 }
 
 function persistUserPreferences(prefs: PersistedUserPreferences) {
@@ -349,6 +376,8 @@ type AppState = {
   projectRevision: number;
   theme: ThemeId;
   terminalPreferences: TerminalPreferences;
+  codeBlockCopyButtonPosition: CodeBlockCopyButtonPosition;
+  agentTurnCompletionSound: AgentTurnCompletionSound;
   providerMode: ProviderMode;
   availableModels: ModelDescriptor[];
   laneInspectorTabs: Record<string, LaneInspectorTab>;
@@ -369,6 +398,8 @@ type AppState = {
   selectRunLane: (laneId: string | null) => void;
   focusSession: (sessionId: string | null) => void;
   setTheme: (theme: ThemeId) => void;
+  setCodeBlockCopyButtonPosition: (position: CodeBlockCopyButtonPosition) => void;
+  setAgentTurnCompletionSound: (sound: AgentTurnCompletionSound) => void;
   setTerminalPreferences: (
     next:
       | Partial<TerminalPreferences>
@@ -473,6 +504,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   projectRevision: 0,
   theme: initialUserPreferences.theme,
   terminalPreferences: initialUserPreferences.terminalPreferences,
+  codeBlockCopyButtonPosition: initialUserPreferences.codeBlockCopyButtonPosition,
+  agentTurnCompletionSound: initialUserPreferences.agentTurnCompletionSound,
   providerMode: "guest",
   availableModels: [...MODEL_REGISTRY].filter((m) => !m.deprecated),
   laneInspectorTabs: {},
@@ -517,8 +550,34 @@ export const useAppStore = create<AppState>((set, get) => ({
         theme,
         terminalPreferences: prev.terminalPreferences,
         smartTooltipsEnabled: prev.smartTooltipsEnabled,
+        codeBlockCopyButtonPosition: prev.codeBlockCopyButtonPosition,
+        agentTurnCompletionSound: prev.agentTurnCompletionSound,
       });
       return { theme };
+    }),
+  setCodeBlockCopyButtonPosition: (position) =>
+    set((prev) => {
+      const next = normalizeCodeBlockCopyButtonPosition(position);
+      persistUserPreferences({
+        theme: prev.theme,
+        terminalPreferences: prev.terminalPreferences,
+        smartTooltipsEnabled: prev.smartTooltipsEnabled,
+        codeBlockCopyButtonPosition: next,
+        agentTurnCompletionSound: prev.agentTurnCompletionSound,
+      });
+      return { codeBlockCopyButtonPosition: next };
+    }),
+  setAgentTurnCompletionSound: (sound) =>
+    set((prev) => {
+      const next = normalizeAgentTurnCompletionSound(sound);
+      persistUserPreferences({
+        theme: prev.theme,
+        terminalPreferences: prev.terminalPreferences,
+        smartTooltipsEnabled: prev.smartTooltipsEnabled,
+        codeBlockCopyButtonPosition: prev.codeBlockCopyButtonPosition,
+        agentTurnCompletionSound: next,
+      });
+      return { agentTurnCompletionSound: next };
     }),
   setTerminalPreferences: (next) =>
     set((prev) => {
@@ -531,6 +590,8 @@ export const useAppStore = create<AppState>((set, get) => ({
         theme: prev.theme,
         terminalPreferences: updated,
         smartTooltipsEnabled: prev.smartTooltipsEnabled,
+        codeBlockCopyButtonPosition: prev.codeBlockCopyButtonPosition,
+        agentTurnCompletionSound: prev.agentTurnCompletionSound,
       });
       return { terminalPreferences: updated };
     }),
@@ -541,6 +602,8 @@ export const useAppStore = create<AppState>((set, get) => ({
         theme: prev.theme,
         terminalPreferences: prev.terminalPreferences,
         smartTooltipsEnabled: enabled,
+        codeBlockCopyButtonPosition: prev.codeBlockCopyButtonPosition,
+        agentTurnCompletionSound: prev.agentTurnCompletionSound,
       });
       return { smartTooltipsEnabled: enabled };
     }),

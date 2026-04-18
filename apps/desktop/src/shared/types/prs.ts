@@ -1432,6 +1432,11 @@ export type PrCreateLaneEligibility = {
   defaultBaseBranch: string;
   defaultTitle: string;
   dirty: boolean;
+  /**
+   * Commits on this lane branch not present on `defaultBaseBranch` (merge-base diff).
+   * Lets mobile show "already pushed, open PR" when the worktree is clean but ahead.
+   */
+  commitsAheadOfBase: number;
   hasExistingPr: boolean;
   canCreate: boolean;
   /** Why creation is not allowed. Null when canCreate is true. */

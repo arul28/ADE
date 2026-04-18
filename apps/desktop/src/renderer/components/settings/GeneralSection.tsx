@@ -1,8 +1,15 @@
 import React, { useEffect, useId, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import type { AppInfo } from "../../../shared/types";
-import { DEFAULT_TERMINAL_FONT_FAMILY, useAppStore, THEME_IDS } from "../../state/appStore";
-import type { ThemeId } from "../../state/appStore";
+import {
+  AGENT_TURN_COMPLETION_SOUND_IDS,
+  CODE_BLOCK_COPY_POSITION_IDS,
+  DEFAULT_TERMINAL_FONT_FAMILY,
+  useAppStore,
+  THEME_IDS,
+} from "../../state/appStore";
+import type { AgentTurnCompletionSound, CodeBlockCopyButtonPosition, ThemeId } from "../../state/appStore";
+import { playAgentTurnCompletionSound } from "../../lib/agentTurnCompletionSound";
 import { EmptyState } from "../ui/EmptyState";
 import { Info } from "@phosphor-icons/react";
 import {
@@ -149,6 +156,10 @@ export function GeneralSection() {
   const providerMode = useAppStore((s) => s.providerMode);
   const theme = useAppStore((s) => s.theme);
   const setTheme = useAppStore((s) => s.setTheme);
+  const codeBlockCopyButtonPosition = useAppStore((s) => s.codeBlockCopyButtonPosition);
+  const setCodeBlockCopyButtonPosition = useAppStore((s) => s.setCodeBlockCopyButtonPosition);
+  const agentTurnCompletionSound = useAppStore((s) => s.agentTurnCompletionSound);
+  const setAgentTurnCompletionSound = useAppStore((s) => s.setAgentTurnCompletionSound);
   const terminalPreferences = useAppStore((s) => s.terminalPreferences);
   const setTerminalPreferences = useAppStore((s) => s.setTerminalPreferences);
 
@@ -236,6 +247,68 @@ export function GeneralSection() {
           {THEME_IDS.map((id) => (
             <ThemeSwatch key={id} themeId={id} selected={theme === id} onClick={() => setTheme(id)} />
           ))}
+        </div>
+      </section>
+
+      <section>
+        <div style={sectionLabelStyle}>CHAT & NOTIFICATIONS</div>
+        <div style={{ ...cardStyle(), display: "flex", flexDirection: "column", gap: 16 }}>
+          <div>
+            <div style={{ ...LABEL_STYLE, marginBottom: 8 }}>CODE BLOCK COPY BUTTON</div>
+            <div style={{ fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textMuted, marginBottom: 10, lineHeight: 1.5 }}>
+              On touch devices the copy control stays visible. Choose top or bottom so long fenced blocks are easier to copy after scrolling.
+            </div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+              {CODE_BLOCK_COPY_POSITION_IDS.map((id) => (
+                <button
+                  key={id}
+                  type="button"
+                  onClick={() => setCodeBlockCopyButtonPosition(id)}
+                  style={{
+                    ...primaryButton({ height: 32, padding: "0 14px", fontSize: 10 }),
+                    opacity: codeBlockCopyButtonPosition === id ? 1 : 0.55,
+                    border: `1px solid ${codeBlockCopyButtonPosition === id ? COLORS.accent : COLORS.border}`,
+                  }}
+                >
+                  {id === "bottom" ? "Bottom" : "Top"}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div>
+            <div style={{ ...LABEL_STYLE, marginBottom: 8 }}>AGENT TURN COMPLETION SOUND</div>
+            <div style={{ fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textMuted, marginBottom: 10, lineHeight: 1.5 }}>
+              Plays when the assistant finishes a turn and the session is idle (not while you still owe a reply or approval).
+            </div>
+            <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8 }}>
+              <select
+                value={agentTurnCompletionSound}
+                onChange={(e) => setAgentTurnCompletionSound(e.target.value as AgentTurnCompletionSound)}
+                style={{ height: 34, minWidth: 160, border: `1px solid ${COLORS.border}`, background: COLORS.recessedBg, color: COLORS.textPrimary, fontSize: 12, fontFamily: MONO_FONT, padding: "0 10px" }}
+              >
+                {AGENT_TURN_COMPLETION_SOUND_IDS.map((id) => (
+                  <option key={id} value={id}>
+                    {id === "off" ? "Off" : id.charAt(0).toUpperCase() + id.slice(1)}
+                  </option>
+                ))}
+              </select>
+              <button
+                type="button"
+                disabled={agentTurnCompletionSound === "off"}
+                onClick={() => {
+                  if (agentTurnCompletionSound !== "off") playAgentTurnCompletionSound(agentTurnCompletionSound);
+                }}
+                style={{
+                  ...primaryButton({ height: 32, padding: "0 12px", fontSize: 10 }),
+                  opacity: agentTurnCompletionSound === "off" ? 0.45 : 1,
+                  cursor: agentTurnCompletionSound === "off" ? "not-allowed" : "pointer",
+                }}
+              >
+                Preview
+              </button>
+            </div>
+          </div>
         </div>
       </section>
 

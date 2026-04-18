@@ -76,6 +76,7 @@ import { ClaudeCacheTtlBadge } from "../shared/ClaudeCacheTtlBadge";
 import { shouldShowClaudeCacheTtl } from "../../lib/claudeCacheTtl";
 import { getAgentChatModelsCached, getAiStatusCached } from "../../lib/aiDiscoveryCache";
 import { invalidateSessionListCache } from "../../lib/sessionListCache";
+import { playAgentTurnCompletionSound } from "../../lib/agentTurnCompletionSound";
 
 const LAST_MODEL_ID_KEY = "ade.chat.lastModelId";
 const LAST_REASONING_KEY_PREFIX = "ade.chat.lastReasoningEffort";
@@ -710,6 +711,7 @@ export function AgentChatPane({
   onLaneChange?: (laneId: string) => void;
 }) {
   const projectRoot = useAppStore((s) => s.project?.rootPath ?? null);
+  const agentTurnCompletionSound = useAppStore((s) => s.agentTurnCompletionSound);
   const navigate = useNavigate();
   const openAiProvidersSettings = useCallback(() => {
     navigate("/settings?tab=ai#ai-providers");
@@ -777,6 +779,8 @@ export function AgentChatPane({
   const shellRef = useRef<HTMLElement | null>(null);
   const composerMaxHeightPx = layoutVariant === "grid-tile" ? 144 : null;
   const sessionsRef = useRef<AgentChatSessionSummary[]>(sessions);
+  const completionSoundPrevTurnActiveRef = useRef(false);
+  const completionSoundArmedRef = useRef(true);
 
   const appliedInitialSessionIdRef = useRef<string | null>(initialSessionId ?? null);
   const loadedHistoryRef = useRef<Set<string>>(new Set());
@@ -824,6 +828,40 @@ export function AgentChatPane({
   const pendingInput = selectedSessionId ? (pendingInputsBySession[selectedSessionId]?.[0] ?? null) : null;
   const selectedSessionAwaitingInput = Boolean(pendingInput) || selectedSession?.awaitingInput === true;
   const turnActive = selectedSessionId ? (turnActiveBySession[selectedSessionId] ?? false) : false;
+
+  useEffect(() => {
+    completionSoundPrevTurnActiveRef.current = false;
+    completionSoundArmedRef.current = true;
+  }, [selectedSessionId]);
+
+  useEffect(() => {
+    if (agentTurnCompletionSound === "off") {
+      completionSoundPrevTurnActiveRef.current = turnActive;
+      return;
+    }
+    if (turnActive) {
+      completionSoundArmedRef.current = true;
+    }
+    const sessionEnded = selectedSession?.status === "ended";
+    const settled =
+      Boolean(selectedSessionId)
+      && !selectedSessionAwaitingInput
+      && !sessionEnded;
+    const prevTurn = completionSoundPrevTurnActiveRef.current;
+    const becameIdle = settled && prevTurn && !turnActive;
+    completionSoundPrevTurnActiveRef.current = turnActive;
+    if (becameIdle && completionSoundArmedRef.current) {
+      completionSoundArmedRef.current = false;
+      playAgentTurnCompletionSound(agentTurnCompletionSound);
+    }
+  }, [
+    agentTurnCompletionSound,
+    selectedSessionId,
+    selectedSession?.status,
+    selectedSessionAwaitingInput,
+    turnActive,
+  ]);
+
   const activeProviderConnection = selectedSession?.provider === "claude"
     ? (providerConnections?.claude ?? null)
     : selectedSession?.provider === "codex"

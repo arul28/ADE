@@ -3601,6 +3601,7 @@ final class ADETests: XCTestCase {
             "defaultBaseBranch": "main",
             "defaultTitle": "new",
             "dirty": false,
+            "commitsAheadOfBase": 0,
             "hasExistingPr": false,
             "canCreate": true,
             "blockedReason": null
@@ -3614,6 +3615,7 @@ final class ADETests: XCTestCase {
             "defaultBaseBranch": "main",
             "defaultTitle": "blocked",
             "dirty": false,
+            "commitsAheadOfBase": 2,
             "hasExistingPr": true,
             "canCreate": false,
             "blockedReason": "Lane already has an open PR (#7)."
@@ -3815,6 +3817,7 @@ final class ADETests: XCTestCase {
       defaultBaseBranch: "main",
       defaultTitle: "feat/new",
       dirty: false,
+      commitsAheadOfBase: 1,
       hasExistingPr: false,
       canCreate: true,
       blockedReason: nil
@@ -3828,6 +3831,7 @@ final class ADETests: XCTestCase {
       defaultBaseBranch: "main",
       defaultTitle: "feat/blocked",
       dirty: false,
+      commitsAheadOfBase: 0,
       hasExistingPr: true,
       canCreate: false,
       blockedReason: "Lane already has an open PR (#12)."

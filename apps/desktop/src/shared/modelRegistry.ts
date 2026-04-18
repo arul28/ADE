@@ -876,6 +876,20 @@ export function resolveModelDescriptor(modelRef: string): ModelDescriptor | unde
   return getModelById(normalized) ?? resolveModelAlias(normalized);
 }
 
+/**
+ * Normalize a free-form model reference to a canonical registry id when possible.
+ * Accepts aliases and mixed casing; returns undefined when unknown or blank.
+ * When `providerHint` is set, ambiguous refs (e.g. bare Codex runtime names) resolve like the chat runtime.
+ */
+export function resolveModelSlug(modelRef: string, providerHint?: ModelProviderGroup): string | undefined {
+  const normalized = modelRef.trim();
+  if (!normalized.length) return undefined;
+  if (providerHint) {
+    return resolveModelDescriptorForProvider(normalized, providerHint)?.id;
+  }
+  return resolveModelDescriptor(normalized)?.id;
+}
+
 function matchesProviderGroup(
   descriptor: ModelDescriptor,
   providerHint?: ModelProviderGroup,

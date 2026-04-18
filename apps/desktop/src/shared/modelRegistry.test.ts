@@ -15,6 +15,7 @@ import {
   resolveModelAlias,
   resolveModelDescriptor,
   resolveModelDescriptorForProvider,
+  resolveModelSlug,
 } from "./modelRegistry";
 import type { ProviderFamily } from "./modelRegistry";
 import { describeModelSource } from "../renderer/lib/modelOptions";
@@ -43,6 +44,16 @@ describe("modelRegistry", () => {
     expect(descriptor?.family).toBe("ollama");
     expect(descriptor?.providerModelId).toBe("qwen2.5-coder:32b");
     expect(descriptor?.displayName).toBe("qwen2.5-coder:32b (Ollama)");
+  });
+
+  it("resolveModelSlug returns canonical id for registry input and codex-hinted refs", () => {
+    const byId = resolveModelSlug("  anthropic/claude-opus-4-7  ");
+    expect(byId).toBe("anthropic/claude-opus-4-7");
+    expect(resolveModelSlug("gpt-5.4")).toBeUndefined();
+    expect(resolveModelSlug("gpt-5.4", "codex")).toBe("openai/gpt-5.4-codex");
+    expect(resolveModelSlug("")).toBeUndefined();
+    expect(resolveModelSlug("   ")).toBeUndefined();
+    expect(resolveModelSlug("not-a-real-model-xyz")).toBeUndefined();
   });
 
   it("returns dynamic local descriptors from getModelById", () => {

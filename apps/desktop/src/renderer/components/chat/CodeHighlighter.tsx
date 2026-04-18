@@ -1,5 +1,6 @@
 import React, { Suspense, useCallback, useEffect, useState, useRef } from "react";
 import { CopySimple, Checks } from "@phosphor-icons/react";
+import { useAppStore, type CodeBlockCopyButtonPosition } from "../../state/appStore";
 
 /* ── LRU cache for highlighted HTML ── */
 
@@ -113,25 +114,47 @@ function DiffCodeBlock({ code }: { code: string }) {
 
 /* ── Copy button ── */
 
-function CodeCopyButton({ code }: { code: string }) {
+function copyTextToClipboard(text: string): Promise<boolean> {
+  if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
+    return navigator.clipboard.writeText(text).then(() => true).catch(() => false);
+  }
+  try {
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.setAttribute("readonly", "");
+    ta.style.position = "fixed";
+    ta.style.left = "-9999px";
+    document.body.appendChild(ta);
+    ta.select();
+    const ok = document.execCommand("copy");
+    document.body.removeChild(ta);
+    return Promise.resolve(ok);
+  } catch {
+    return Promise.resolve(false);
+  }
+}
+
+function CodeCopyButton({ code, position }: { code: string; position: CodeBlockCopyButtonPosition }) {
   const [copied, setCopied] = useState(false);
 
   const handleCopy = useCallback(() => {
-    if (typeof navigator === "undefined" || !navigator.clipboard?.writeText) return;
-    void navigator.clipboard.writeText(code)
-      .then(() => {
+    void copyTextToClipboard(code)
+      .then((ok) => {
+        if (!ok) {
+          setCopied(false);
+          return;
+        }
         setCopied(true);
         window.setTimeout(() => setCopied(false), 1_500);
-      })
-      .catch(() => {
-        setCopied(false);
       });
   }, [code]);
+
+  const posClass = position === "bottom" ? "bottom-2 top-auto" : "top-2";
 
   return (
     <button
       type="button"
-      className="absolute right-2 top-2 z-10 inline-flex items-center gap-1 rounded-md border border-white/[0.08] bg-white/[0.03] px-1.5 py-0.5 font-sans text-[9px] text-fg/45 opacity-0 backdrop-blur-sm transition-all group-hover:opacity-100 hover:border-white/[0.14] hover:bg-white/[0.05] hover:text-fg/72"
+      className={`absolute right-2 z-10 inline-flex items-center gap-1 rounded-md border border-white/[0.08] bg-white/[0.03] px-1.5 py-0.5 font-sans text-[9px] text-fg/45 opacity-0 backdrop-blur-sm transition-all group-hover:opacity-100 [@media(hover:none)]:opacity-100 hover:border-white/[0.14] hover:bg-white/[0.05] hover:text-fg/72 ${posClass}`}
       onClick={handleCopy}
       title={copied ? "Copied" : "Copy code"}
       aria-label={copied ? "Copied" : "Copy code"}
@@ -223,12 +246,13 @@ export const HighlightedCode = React.memo(function HighlightedCode({
   code: string;
   language: string;
 }) {
+  const copyButtonPosition = useAppStore((s) => s.codeBlockCopyButtonPosition);
   const trimmedCode = code.replace(/\n$/, "");
   const isDiff = language === "diff";
 
   return (
     <div className="group relative my-3 overflow-hidden rounded-[10px] border border-[color:var(--chat-code-border)] bg-[var(--chat-code-bg)]">
-      <CodeCopyButton code={trimmedCode} />
+      <CodeCopyButton code={trimmedCode} position={copyButtonPosition} />
       <div className="overflow-x-auto whitespace-pre-wrap break-words px-4 py-3">
         {isDiff ? (
           <DiffCodeBlock code={trimmedCode} />
