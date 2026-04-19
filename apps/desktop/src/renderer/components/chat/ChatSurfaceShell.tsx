@@ -16,7 +16,8 @@ export function ChatSurfaceShell({
   bodyClassName,
   footerClassName,
   containerRef,
-  extraSurfaceStyle,
+  /** Uniform scale for header, transcript, and composer (CSS transform — works in Firefox; `zoom` does not). */
+  contentScale = 1,
 }: {
   mode: ChatSurfaceMode;
   accentColor?: string | null;
@@ -28,25 +29,23 @@ export function ChatSurfaceShell({
   bodyClassName?: string;
   footerClassName?: string;
   containerRef?: Ref<HTMLElement>;
-  /** Merged into the outer section (e.g. chat font size + zoom from settings). */
-  extraSurfaceStyle?: CSSProperties;
+  contentScale?: number;
 }) {
   const mobileChrome = layoutVariant === "mobile";
+  const scale = Number.isFinite(contentScale) && contentScale > 0 ? contentScale : 1;
+  const scaled = Math.abs(scale - 1) > 0.001;
+  const scaleWrapperStyle: CSSProperties | undefined = scaled
+    ? {
+        transform: `scale(${scale})`,
+        transformOrigin: "top left",
+        width: `${100 / scale}%`,
+        height: `${100 / scale}%`,
+        minHeight: 0,
+      }
+    : undefined;
 
-  return (
-    <section
-      ref={containerRef}
-      data-chat-shell-layout={layoutVariant}
-      className={cn(
-        "relative flex h-full min-h-0 flex-col overflow-hidden",
-        className,
-      )}
-      style={{
-        ...chatSurfaceVars(mode, accentColor),
-        background: "var(--color-bg)",
-        ...extraSurfaceStyle,
-      }}
-    >
+  const inner = (
+    <>
       {header ? (
         <div
           className={cn(
@@ -80,6 +79,29 @@ export function ChatSurfaceShell({
           {footer}
         </div>
       ) : null}
+    </>
+  );
+
+  return (
+    <section
+      ref={containerRef}
+      data-chat-shell-layout={layoutVariant}
+      className={cn(
+        "relative flex h-full min-h-0 flex-col overflow-hidden",
+        className,
+      )}
+      style={{
+        ...chatSurfaceVars(mode, accentColor),
+        background: "var(--color-bg)",
+      }}
+    >
+      {scaled ? (
+        <div className="flex min-h-0 flex-1 flex-col overflow-hidden" style={scaleWrapperStyle}>
+          {inner}
+        </div>
+      ) : (
+        inner
+      )}
     </section>
   );
 }

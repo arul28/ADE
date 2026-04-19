@@ -714,7 +714,6 @@ export function AgentChatPane({
   const agentTurnCompletionSound = useAppStore((s) => s.agentTurnCompletionSound);
   const chatFontSizePx = useAppStore((s) => s.chatFontSizePx);
   const chatUiScale = chatFontSizePx / DEFAULT_CHAT_FONT_SIZE_PX;
-  const chatSurfaceZoomStyle = { zoom: chatUiScale } as const;
   const navigate = useNavigate();
   const openAiProvidersSettings = useCallback(() => {
     navigate("/settings?tab=ai#ai-providers");
@@ -2538,7 +2537,7 @@ export function AgentChatPane({
 
   if (!laneId) {
     return (
-      <ChatSurfaceShell mode={surfaceMode} accentColor={presentation?.accentColor} extraSurfaceStyle={chatSurfaceZoomStyle}>
+      <ChatSurfaceShell mode={surfaceMode} accentColor={presentation?.accentColor} contentScale={chatUiScale}>
         <div className="flex h-full items-center justify-center">
           <span className="font-sans text-[12px] text-muted-fg/30">Select a lane to start chatting</span>
         </div>
@@ -2964,7 +2963,7 @@ export function AgentChatPane({
         containerRef={shellRef}
         mode={surfaceMode}
         accentColor={presentation?.accentColor ?? draftAccent}
-        extraSurfaceStyle={chatSurfaceZoomStyle}
+        contentScale={chatUiScale}
         className={compactShell ? cn("border-0 shadow-none rounded-none bg-transparent") : undefined}
         header={compactShell ? undefined : shellHeader}
         footer={isEmptyState ? undefined : composerElement}

@@ -1,5 +1,10 @@
+/**
+ * Short Web Audio notification tones for agent chat (no external assets).
+ * Defers `AudioContext.close()` until after scheduled oscillators finish so playback is audible.
+ */
 import type { AgentTurnCompletionSound } from "../state/appStore";
 
+/** Schedule a short tone on `ctx` (caller must not close `ctx` until after stop + tail). */
 function playChime(ctx: AudioContext, frequency: number, durationSec: number, type: OscillatorType) {
   const osc = ctx.createOscillator();
   const gain = ctx.createGain();
@@ -15,7 +20,7 @@ function playChime(ctx: AudioContext, frequency: number, durationSec: number, ty
 }
 
 /**
- * Short synthesized notification (no asset files). Safe to call from UI after user gesture for preview.
+ * Play one completion tone. Call from a user gesture when possible; resumes a suspended context when needed.
  */
 export function playAgentTurnCompletionSound(kind: Exclude<AgentTurnCompletionSound, "off">): void {
   const Ctor = window.AudioContext ?? (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;

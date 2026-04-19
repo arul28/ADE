@@ -179,11 +179,7 @@ export function AppearanceSection() {
         <div style={sectionLabelStyle}>CHAT FONT SIZE</div>
         <div style={{ ...cardStyle(), display: "flex", flexDirection: "column", gap: 14 }}>
           <div style={{ fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textMuted, lineHeight: 1.5 }}>
-            Scales the work chat timeline and composer together (inspired by{" "}
-            <a href="https://github.com/pingdotgg/t3code/pull/2174" style={{ color: COLORS.accent }} target="_blank" rel="noreferrer">
-              t3code #2174
-            </a>
-            ). Default {DEFAULT_CHAT_FONT_SIZE_PX}px matches the previous layout.
+            Scales the work chat timeline and composer together. Default {DEFAULT_CHAT_FONT_SIZE_PX}px matches the previous layout.
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap" }}>
             <label htmlFor={chatFontSliderId} style={{ ...LABEL_STYLE, marginBottom: 0, minWidth: 120 }}>
