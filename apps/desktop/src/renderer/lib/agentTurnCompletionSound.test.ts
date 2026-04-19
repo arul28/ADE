@@ -14,43 +14,49 @@ describe("playAgentTurnCompletionSound", () => {
     expect(() => playAgentTurnCompletionSound("chime")).not.toThrow();
   });
 
-  it("resumes suspended context then schedules close", async () => {
-    const resume = vi.fn(() => Promise.resolve());
-    const close = vi.fn(() => Promise.resolve());
-    class MockAudioContext {
-      state = "suspended";
-      currentTime = 0;
-      destination = {} as AudioDestinationNode;
-      resume = resume;
-      close = close;
-      createOscillator() {
-        const osc = {
-          type: "sine",
-          frequency: { setValueAtTime: vi.fn(), exponentialRampToValueAtTime: vi.fn() },
-          connect: vi.fn(),
-          start: vi.fn(),
-          stop: vi.fn(),
-        };
-        return osc as unknown as OscillatorNode;
+  it("resumes suspended context then schedules close after the audio tail", async () => {
+    vi.useFakeTimers();
+    try {
+      const resume = vi.fn(() => Promise.resolve());
+      const close = vi.fn(() => Promise.resolve());
+      class MockAudioContext {
+        state = "suspended";
+        currentTime = 0;
+        destination = {} as AudioDestinationNode;
+        resume = resume;
+        close = close;
+        createOscillator() {
+          const osc = {
+            type: "sine",
+            frequency: { setValueAtTime: vi.fn(), exponentialRampToValueAtTime: vi.fn() },
+            connect: vi.fn(),
+            start: vi.fn(),
+            stop: vi.fn(),
+          };
+          return osc as unknown as OscillatorNode;
+        }
+        createGain() {
+          const gain = {
+            gain: { setValueAtTime: vi.fn(), exponentialRampToValueAtTime: vi.fn() },
+            connect: vi.fn(),
+          };
+          return gain as unknown as GainNode;
+        }
       }
-      createGain() {
-        const gain = {
-          gain: { setValueAtTime: vi.fn(), exponentialRampToValueAtTime: vi.fn() },
-          connect: vi.fn(),
-        };
-        return gain as unknown as GainNode;
-      }
-    }
-    vi.stubGlobal("AudioContext", MockAudioContext as unknown as typeof AudioContext);
-    vi.spyOn(globalThis, "setTimeout").mockImplementation((fn: TimerHandler) => {
-      if (typeof fn === "function") fn();
-      return 0 as unknown as ReturnType<typeof setTimeout>;
-    });
+      vi.stubGlobal("AudioContext", MockAudioContext as unknown as typeof AudioContext);
 
-    playAgentTurnCompletionSound("ping");
-    await vi.waitFor(() => {
-      expect(resume).toHaveBeenCalled();
-      expect(close).toHaveBeenCalled();
-    });
+      playAgentTurnCompletionSound("ping");
+      await vi.waitFor(() => {
+        expect(resume).toHaveBeenCalled();
+      });
+      await Promise.resolve();
+      expect(close).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(449);
+      expect(close).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(close).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

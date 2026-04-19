@@ -41,9 +41,10 @@ struct CreatePrWizardView: View {
       return capabilities.lanes
         .filter { $0.canCreate }
         .map { eligibility in
+          let ahead = eligibility.commitsAheadOfBase ?? 0
           let aheadNote: String =
-            eligibility.commitsAheadOfBase > 0
-            ? "\(eligibility.commitsAheadOfBase) commit\(eligibility.commitsAheadOfBase == 1 ? "" : "s") ahead of \(eligibility.defaultBaseBranch)"
+            ahead > 0
+            ? "\(ahead) commit\(ahead == 1 ? "" : "s") ahead of \(eligibility.defaultBaseBranch)"
             : "Aligned with \(eligibility.defaultBaseBranch) (no commits ahead)"
           return CreatePrLaneOption(
             id: eligibility.laneId,
@@ -198,9 +199,16 @@ struct CreatePrWizardView: View {
             .adeInsetField()
 
             if let selectedOption {
-              Text("Source branch: \(selectedOption.branchRef)")
-                .font(.caption)
-                .foregroundStyle(ADEColor.textSecondary)
+              VStack(alignment: .leading, spacing: 4) {
+                Text("Source branch: \(selectedOption.branchRef)")
+                  .font(.caption)
+                  .foregroundStyle(ADEColor.textSecondary)
+                if let subtitle = selectedOption.subtitle, !subtitle.isEmpty {
+                  Text(subtitle)
+                    .font(.caption2)
+                    .foregroundStyle(ADEColor.textMuted)
+                }
+              }
             }
           }
 

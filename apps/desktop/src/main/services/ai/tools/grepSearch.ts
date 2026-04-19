@@ -1,12 +1,35 @@
 import { executableTool as tool } from "./executableTool";
 import { z } from "zod";
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
+import { execFile, type ExecFileOptionsWithStringEncoding } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { getErrorMessage, resolvePathWithinRoot } from "../../shared/utils";
 
-const execFileAsync = promisify(execFile);
+/** Swappable for Vitest — defaults to Node's `execFile`. */
+let execFileForRipgrep: typeof execFile = execFile;
+
+/** @internal Used by grepSearch.test.ts to force the JS fallback path. */
+export function __testSetRipgrepExecFile(fn: typeof execFile): void {
+  execFileForRipgrep = fn;
+}
+
+/** @internal */
+export function __testResetRipgrepExecFile(): void {
+  execFileForRipgrep = execFile;
+}
+
+function execFileAsync(
+  file: string,
+  args: readonly string[] | null | undefined,
+  options: ExecFileOptionsWithStringEncoding,
+): Promise<{ stdout: string; stderr: string }> {
+  return new Promise((resolve, reject) => {
+    execFileForRipgrep(file, args, options, (error, stdout, stderr) => {
+      if (error) reject(error);
+      else resolve({ stdout, stderr });
+    });
+  });
+}
 
 type GrepMatch = {
   path: string;
@@ -173,7 +196,9 @@ function collectFiles(
     for (const entry of entries) {
       if (files.length >= maxFiles) return;
       if (entry.isDirectory()) {
-        if (!SKIP_DIRS.has(entry.name) && !entry.name.startsWith(".")) {
+        // Skip only known bulky/tooling dirs — do not treat every dot-directory as
+        // ignorable so paths like `.github/` remain searchable when targeted.
+        if (!SKIP_DIRS.has(entry.name)) {
           walk(path.join(current, entry.name));
         }
       } else if (entry.isFile()) {

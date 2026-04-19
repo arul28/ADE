@@ -854,7 +854,17 @@ export function AgentChatPane({
     completionSoundPrevTurnActiveRef.current = turnActive;
     if (becameIdle && completionSoundArmedRef.current) {
       completionSoundArmedRef.current = false;
-      playAgentTurnCompletionSound(agentTurnCompletionSound);
+      let lastDoneStatus: "completed" | "interrupted" | "failed" | null = null;
+      for (let i = selectedEventsForDisplay.length - 1; i >= 0; i -= 1) {
+        const ev = selectedEventsForDisplay[i]?.event;
+        if (ev?.type === "done") {
+          lastDoneStatus = ev.status;
+          break;
+        }
+      }
+      if (lastDoneStatus === "completed") {
+        playAgentTurnCompletionSound(agentTurnCompletionSound);
+      }
     }
   }, [
     agentTurnCompletionSound,
@@ -862,6 +872,7 @@ export function AgentChatPane({
     selectedSession?.status,
     selectedSessionAwaitingInput,
     turnActive,
+    selectedEventsForDisplay,
   ]);
 
   const activeProviderConnection = selectedSession?.provider === "claude"

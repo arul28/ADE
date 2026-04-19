@@ -153,6 +153,7 @@ const PREVIEW_MARKDOWN = [
 
 export function AppearanceSection() {
   const chatFontSliderId = useId();
+  const agentSoundSelectId = useId();
   const theme = useAppStore((s) => s.theme);
   const setTheme = useAppStore((s) => s.setTheme);
   const chatFontSizePx = useAppStore((s) => s.chatFontSizePx);
@@ -206,16 +207,21 @@ export function AppearanceSection() {
                 padding: 14,
                 maxHeight: 280,
                 overflow: "auto",
-                transform: `scale(${previewScale})`,
-                transformOrigin: "top left",
-                width: `${100 / previewScale}%`,
-                maxWidth: `${100 / previewScale}%`,
               }}
             >
-              <div style={{ fontFamily: MONO_FONT, fontSize: 9, color: COLORS.textDim, marginBottom: 8, textTransform: "uppercase", letterSpacing: "0.12em" }}>
-                Assistant · preview
+              <div
+                style={{
+                  transform: `scale(${previewScale})`,
+                  transformOrigin: "top left",
+                  width: `${100 / previewScale}%`,
+                  maxWidth: `${100 / previewScale}%`,
+                }}
+              >
+                <div style={{ fontFamily: MONO_FONT, fontSize: 9, color: COLORS.textDim, marginBottom: 8, textTransform: "uppercase", letterSpacing: "0.12em" }}>
+                  Assistant · preview
+                </div>
+                <ChatMarkdown>{PREVIEW_MARKDOWN}</ChatMarkdown>
               </div>
-              <ChatMarkdown>{PREVIEW_MARKDOWN}</ChatMarkdown>
             </div>
           </div>
         </div>
@@ -225,7 +231,9 @@ export function AppearanceSection() {
         <div style={sectionLabelStyle}>CHAT & NOTIFICATIONS</div>
         <div style={{ ...cardStyle(), display: "flex", flexDirection: "column", gap: 16 }}>
           <div>
-            <div style={{ ...LABEL_STYLE, marginBottom: 8 }}>CODE BLOCK COPY BUTTON</div>
+            <div id="code-block-copy-position-label" style={{ ...LABEL_STYLE, marginBottom: 8 }}>
+              CODE BLOCK COPY BUTTON
+            </div>
             <div style={{ fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textMuted, marginBottom: 10, lineHeight: 1.5 }}>
               On touch devices the copy control stays visible. Choose top or bottom so long fenced blocks are easier to copy after scrolling.
             </div>
@@ -234,6 +242,8 @@ export function AppearanceSection() {
                 <button
                   key={id}
                   type="button"
+                  aria-pressed={codeBlockCopyButtonPosition === id}
+                  aria-labelledby="code-block-copy-position-label"
                   onClick={() => setCodeBlockCopyButtonPosition(id)}
                   style={{
                     ...primaryButton({ height: 32, padding: "0 14px", fontSize: 10 }),
@@ -248,12 +258,15 @@ export function AppearanceSection() {
           </div>
 
           <div>
-            <div style={{ ...LABEL_STYLE, marginBottom: 8 }}>AGENT TURN COMPLETION SOUND</div>
+            <label htmlFor={agentSoundSelectId} style={{ ...LABEL_STYLE, marginBottom: 8, display: "block" }}>
+              AGENT TURN COMPLETION SOUND
+            </label>
             <div style={{ fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textMuted, marginBottom: 10, lineHeight: 1.5 }}>
               Plays when the assistant finishes a turn and the session is idle (not while you still owe a reply or approval).
             </div>
             <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8 }}>
               <select
+                id={agentSoundSelectId}
                 value={agentTurnCompletionSound}
                 onChange={(e) => setAgentTurnCompletionSound(e.target.value as AgentTurnCompletionSound)}
                 style={{ height: 34, minWidth: 160, border: `1px solid ${COLORS.border}`, background: COLORS.recessedBg, color: COLORS.textPrimary, fontSize: 12, fontFamily: MONO_FONT, padding: "0 10px" }}

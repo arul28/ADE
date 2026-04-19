@@ -5510,6 +5510,8 @@ export function createPrService({
         primaryBranchRef: primaryLane?.branchRef ?? null,
       });
       const dirty = lane.status?.dirty === true;
+      // Same `ahead` count the lane list already shows vs the lane's configured base
+      // (`resolveStableLaneBaseBranch`); keep wording aligned with that UI signal.
       const commitsAheadOfBase = Math.max(0, Number(lane.status?.ahead ?? 0) || 0);
       const hasExistingPr = existingPr !== null && (existingPr.state === "open" || existingPr.state === "draft");
       const canCreate = !hasExistingPr;

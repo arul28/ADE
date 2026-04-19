@@ -1,8 +1,13 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { execFile } from "node:child_process";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createGrepSearchTool } from "./grepSearch";
+import {
+  __testResetRipgrepExecFile,
+  __testSetRipgrepExecFile,
+  createGrepSearchTool,
+} from "./grepSearch";
 
 const tmpDirs: string[] = [];
 function makeTmpDir(prefix: string): string {
@@ -18,6 +23,7 @@ function writeFixtureFile(root: string, relativePath: string, content: string): 
 }
 
 afterEach(() => {
+  __testResetRipgrepExecFile();
   vi.restoreAllMocks();
   for (const dir of tmpDirs) {
     try {
@@ -29,22 +35,19 @@ afterEach(() => {
   tmpDirs.length = 0;
 });
 
-// Helper to force JS fallback by making execFile reject for rg
+// Force JS fallback by making ripgrep's exec path reject (matches real "rg missing" behavior).
 function forceJsFallback(): void {
-  const cp = require("node:child_process");
-  const originalExecFile = cp.execFile;
-  vi.spyOn(cp, "execFile").mockImplementation(
-    (cmd: unknown, ...rest: unknown[]) => {
+  __testSetRipgrepExecFile(
+    ((cmd: unknown, ...rest: unknown[]) => {
       if (cmd === "rg") {
-        // Make the promisified version reject
         const cb = rest[rest.length - 1];
         if (typeof cb === "function") {
-          process.nextTick(() => cb(new Error("rg not available")));
+          process.nextTick(() => (cb as (err: Error) => void)(new Error("rg not available")));
           return;
         }
       }
-      return originalExecFile(cmd, ...rest);
-    },
+      return (execFile as (typeof import("node:child_process"))["execFile"])(cmd as never, ...rest as never[]);
+    }) as typeof execFile,
   );
 }
 

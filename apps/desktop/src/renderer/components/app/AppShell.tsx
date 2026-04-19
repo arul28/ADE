@@ -487,11 +487,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   }, [project?.rootPath]);
 
   useEffect(() => {
-    setDismissedMissingAiBannerRoots({});
-    setDismissedGithubBannerRoots({});
-  }, [project?.rootPath]);
-
-  useEffect(() => {
     const previousProjectRoot = previousProjectRootRef.current;
     const nextProjectRoot = project?.rootPath ?? null;
     previousProjectRootRef.current = nextProjectRoot;
@@ -829,6 +824,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               }));
             }}
             title="Dismiss for this session"
+            aria-label="Dismiss missing AI provider banner for this session"
           >
             ×
           </button>
@@ -861,6 +857,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               }));
             }}
             title="Dismiss for this session"
+            aria-label="Dismiss GitHub not connected banner for this session"
           >
             ×
           </button>

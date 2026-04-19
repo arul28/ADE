@@ -906,9 +906,17 @@ export function resolveModelDescriptorForProvider(
   modelRef: string | null | undefined,
   providerHint?: ModelProviderGroup,
 ): ModelDescriptor | undefined {
-  const normalized = String(modelRef ?? "").trim().toLowerCase();
-  if (!normalized.length) return undefined;
+  const raw = String(modelRef ?? "").trim();
+  if (!raw.length) return undefined;
 
+  // Dynamic local / OpenCode ids can be case-sensitive; try the raw ref before
+  // lowercasing so paths like `lmstudio/Qwen/...` are not corrupted.
+  const caseSensitive = getModelById(raw);
+  if (caseSensitive && !caseSensitive.deprecated && matchesProviderGroup(caseSensitive, providerHint)) {
+    return caseSensitive;
+  }
+
+  const normalized = raw.toLowerCase();
   const exactId = getModelById(normalized);
   if (exactId && !exactId.deprecated && matchesProviderGroup(exactId, providerHint)) {
     return exactId;

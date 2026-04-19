@@ -118,8 +118,8 @@ function copyTextToClipboard(text: string): Promise<boolean> {
   if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
     return navigator.clipboard.writeText(text).then(() => true).catch(() => false);
   }
+  const ta = document.createElement("textarea");
   try {
-    const ta = document.createElement("textarea");
     ta.value = text;
     ta.setAttribute("readonly", "");
     ta.style.position = "fixed";
@@ -127,10 +127,11 @@ function copyTextToClipboard(text: string): Promise<boolean> {
     document.body.appendChild(ta);
     ta.select();
     const ok = document.execCommand("copy");
-    document.body.removeChild(ta);
     return Promise.resolve(ok);
   } catch {
     return Promise.resolve(false);
+  } finally {
+    if (ta.parentNode) ta.parentNode.removeChild(ta);
   }
 }
 
