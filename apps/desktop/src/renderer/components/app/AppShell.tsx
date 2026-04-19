@@ -182,6 +182,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   );
   const [dismissedContextBannerRoots, setDismissedContextBannerRoots] =
     useState<Record<string, true>>({});
+  /** Session dismiss for the “no AI provider” banner (per project root). */
+  const [dismissedMissingAiBannerRoots, setDismissedMissingAiBannerRoots] =
+    useState<Record<string, true>>({});
+  /** Session dismiss for the “GitHub not connected” banner (per project root). */
+  const [dismissedGithubBannerRoots, setDismissedGithubBannerRoots] =
+    useState<Record<string, true>>({});
   const [projectMissing, setProjectMissing] = useState(false);
   const [feedbackGenerating, setFeedbackGenerating] = useState(false);
   const previousProjectRootRef = useRef<string | null | undefined>(undefined);
@@ -481,6 +487,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   }, [project?.rootPath]);
 
   useEffect(() => {
+    setDismissedMissingAiBannerRoots({});
+    setDismissedGithubBannerRoots({});
+  }, [project?.rootPath]);
+
+  useEffect(() => {
     const previousProjectRoot = previousProjectRootRef.current;
     const nextProjectRoot = project?.rootPath ?? null;
     previousProjectRootRef.current = nextProjectRoot;
@@ -603,6 +614,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     [missingContextDocs],
   );
   const currentProjectRoot = project?.rootPath ?? null;
+  const missingAiBannerDismissed = Boolean(
+    currentProjectRoot && dismissedMissingAiBannerRoots[currentProjectRoot],
+  );
+  const githubBannerDismissed = Boolean(
+    currentProjectRoot && dismissedGithubBannerRoots[currentProjectRoot],
+  );
   const contextBannerDismissed = Boolean(
     currentProjectRoot && dismissedContextBannerRoots[currentProjectRoot],
   );
@@ -791,12 +808,30 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       !showWelcome &&
       aiStatusLoaded &&
       aiStatus !== null &&
-      !hasAnyAiProvider ? (
+      !hasAnyAiProvider &&
+      !missingAiBannerDismissed ? (
         <div className="shrink-0 mx-2 mt-1 rounded bg-amber-500/6 px-3 py-1.5 text-[11px] font-mono text-amber-800">
-          No AI provider is configured yet.{" "}
-          <Link to="/settings?tab=ai" className="underline">
-            Set up AI
-          </Link>
+          <span>
+            No AI provider is configured yet.{" "}
+            <Link to="/settings?tab=ai" className="underline">
+              Set up AI
+            </Link>
+          </span>
+          <button
+            type="button"
+            data-testid="dismiss-missing-ai-banner"
+            className="ml-2 text-amber-900/70 hover:text-amber-900"
+            onClick={() => {
+              if (!currentProjectRoot) return;
+              setDismissedMissingAiBannerRoots((prev) => ({
+                ...prev,
+                [currentProjectRoot]: true,
+              }));
+            }}
+            title="Dismiss for this session"
+          >
+            ×
+          </button>
         </div>
       ) : null}
 
@@ -805,12 +840,30 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       !showWelcome &&
       !isOnboardingRoute &&
       githubStatus !== null &&
-      !githubStatus.tokenStored ? (
+      !githubStatus.tokenStored &&
+      !githubBannerDismissed ? (
         <div className="shrink-0 mx-3 mt-1.5 rounded bg-amber-500/6 px-3 py-1.5 text-[11px] font-mono text-amber-800">
-          GitHub is not connected for this ADE app yet.{" "}
-          <Link to="/settings?tab=integrations" className="underline">
-            Connect GitHub
-          </Link>
+          <span>
+            GitHub is not connected for this ADE app yet.{" "}
+            <Link to="/settings?tab=integrations" className="underline">
+              Connect GitHub
+            </Link>
+          </span>
+          <button
+            type="button"
+            data-testid="dismiss-github-banner"
+            className="ml-2 text-amber-900/70 hover:text-amber-900"
+            onClick={() => {
+              if (!currentProjectRoot) return;
+              setDismissedGithubBannerRoots((prev) => ({
+                ...prev,
+                [currentProjectRoot]: true,
+              }));
+            }}
+            title="Dismiss for this session"
+          >
+            ×
+          </button>
         </div>
       ) : null}
 

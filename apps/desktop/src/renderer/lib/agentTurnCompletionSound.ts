@@ -22,29 +22,46 @@ export function playAgentTurnCompletionSound(kind: Exclude<AgentTurnCompletionSo
   if (!Ctor) return;
   const ctx = new Ctor();
   const now = ctx.currentTime;
+
+  const play = () => {
+    try {
+      if (kind === "chime") {
+        playChime(ctx, 880, 0.22, "sine");
+        playChime(ctx, 1320, 0.18, "sine");
+      } else if (kind === "ping") {
+        playChime(ctx, 1200, 0.12, "triangle");
+      } else {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = "square";
+        osc.frequency.setValueAtTime(520, now);
+        osc.frequency.exponentialRampToValueAtTime(380, now + 0.08);
+        gain.gain.setValueAtTime(0.0001, now);
+        gain.gain.exponentialRampToValueAtTime(0.06, now + 0.01);
+        gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.2);
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.start(now);
+        osc.stop(now + 0.25);
+      }
+    } catch {
+      // ignore — rare graph failures
+    }
+    // Let oscillators finish before closing (immediate close can silence output).
+    globalThis.setTimeout(() => {
+      void ctx.close().catch(() => {});
+    }, 450);
+  };
+
   try {
-    if (kind === "chime") {
-      playChime(ctx, 880, 0.22, "sine");
-      playChime(ctx, 1320, 0.18, "sine");
-    } else if (kind === "ping") {
-      playChime(ctx, 1200, 0.12, "triangle");
+    if (ctx.state === "suspended") {
+      void ctx.resume().then(play).catch(() => {
+        void ctx.close().catch(() => {});
+      });
     } else {
-      const osc = ctx.createOscillator();
-      const gain = ctx.createGain();
-      osc.type = "square";
-      osc.frequency.setValueAtTime(520, now);
-      osc.frequency.exponentialRampToValueAtTime(380, now + 0.08);
-      gain.gain.setValueAtTime(0.0001, now);
-      gain.gain.exponentialRampToValueAtTime(0.06, now + 0.01);
-      gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.2);
-      osc.connect(gain);
-      gain.connect(ctx.destination);
-      osc.start(now);
-      osc.stop(now + 0.25);
+      play();
     }
   } catch {
-    // ignore — autoplay or suspended context
-  } finally {
     void ctx.close().catch(() => {});
   }
 }

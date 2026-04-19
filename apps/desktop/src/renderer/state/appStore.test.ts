@@ -35,7 +35,6 @@ const mockLocalStorage = {
 };
 
 // Import after window is set up
-import type { WorkProjectViewState } from "./appStore";
 import { useAppStore, THEME_IDS, DEFAULT_TERMINAL_PREFERENCES } from "./appStore";
 
 // ---------------------------------------------------------------------------
@@ -153,6 +152,25 @@ describe("appStore", () => {
 
       expect(useAppStore.getState().terminalPreferences.scrollback).toBe(30_000);
     });
+  });
+
+  describe("chat and notification preferences", () => {
+    it("persists code block copy position and agent completion sound", () => {
+      useAppStore.getState().setCodeBlockCopyButtonPosition("bottom");
+      useAppStore.getState().setAgentTurnCompletionSound("chime");
+      expect(useAppStore.getState().codeBlockCopyButtonPosition).toBe("bottom");
+      expect(useAppStore.getState().agentTurnCompletionSound).toBe("chime");
+      const calls = mockLocalStorage.setItem.mock.calls.filter(
+        ([key]) => key === "ade.userPreferences.v1",
+      );
+      const latest = calls[calls.length - 1];
+      expect(latest).toBeTruthy();
+      expect(JSON.parse(latest![1])).toMatchObject({
+        codeBlockCopyButtonPosition: "bottom",
+        agentTurnCompletionSound: "chime",
+      });
+    });
+
   });
 
   // ─────────────────────────────────────────────────────────────
