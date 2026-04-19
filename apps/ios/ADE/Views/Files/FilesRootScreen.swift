@@ -27,11 +27,6 @@ struct FilesRootScreen: View {
     NavigationStack(path: $navigationPath) {
       ScrollView {
         LazyVStack(alignment: .leading, spacing: 14) {
-          if let presentation = statusPresentation {
-            statusNoticeCard(presentation)
-              .transition(.opacity)
-          }
-
           if let errorMessage, filesStatus.phase == .ready {
             ADENoticeCard(
               title: "Files view error",
@@ -151,8 +146,6 @@ struct FilesRootScreen: View {
                 showHidden: showHidden,
                 isLive: canUseLiveFileActions,
                 isTabActive: isTabActive,
-                needsRepairing: needsRepairing,
-                showDisconnectedNotice: false,
                 openDirectory: { path in
                   openDirectory(path, in: workspace)
                 },
@@ -185,7 +178,6 @@ struct FilesRootScreen: View {
               showHidden: $showHidden,
               isLive: canUseLiveFileActions,
               isTabActive: isTabActive,
-              needsRepairing: needsRepairing,
               openDirectory: { path in
                 openDirectory(path, in: workspace)
               },
@@ -212,7 +204,6 @@ struct FilesRootScreen: View {
               relativePath: relativePath,
               focusLine: focusLine,
               isFilesLive: canUseLiveFileActions,
-              needsRepairing: needsRepairing,
               transitionNamespace: transitionNamespace,
               navigateToDirectory: { path in
                 openDirectory(path, in: workspace)
@@ -232,7 +223,7 @@ struct FilesRootScreen: View {
       }
       .toolbar {
         ToolbarItem(placement: .topBarLeading) {
-          ADEConnectionPill()
+          ADEConnectionDot()
         }
         ToolbarItem(placement: .topBarTrailing) {
           Button {

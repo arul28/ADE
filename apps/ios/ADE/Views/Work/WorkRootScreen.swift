@@ -222,12 +222,6 @@ struct WorkRootScreen: View {
     NavigationStack(path: $path) {
       ScrollViewReader { proxy in
       List {
-        if let statusNotice {
-          statusNotice
-            .listRowBackground(Color.clear)
-            .listRowSeparator(.hidden)
-        }
-
         if isLoadingSkeleton {
           ForEach(0..<3, id: \.self) { _ in
             ADECardSkeleton(rows: 3)
@@ -337,7 +331,7 @@ struct WorkRootScreen: View {
       .navigationBarTitleDisplayMode(.inline)
       .toolbar {
         ToolbarItem(placement: .topBarLeading) {
-          ADEConnectionPill()
+          ADEConnectionDot()
         }
         ToolbarItem(placement: .topBarTrailing) {
           HStack(spacing: 8) {
@@ -397,8 +391,7 @@ struct WorkRootScreen: View {
           initialChatSummary: chatSummaries[route.sessionId],
           initialTranscript: transcriptCache[route.sessionId],
           transitionNamespace: routeTransitionNamespace,
-          isLive: isLive,
-          disconnectedNotice: !isLive
+          isLive: isLive
         )
         .environmentObject(syncService)
       }

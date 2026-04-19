@@ -1,16 +1,6 @@
 import SwiftUI
 
 extension LanesTabView {
-  var statusNotice: LaneConnectionNoticePresentation? {
-    laneRootConnectionNotice(
-      connectionState: syncService.connectionState,
-      laneStatus: laneStatus,
-      hasCachedLanes: !laneSnapshots.isEmpty,
-      hasHostProfile: syncService.activeHostProfile != nil,
-      needsRepairing: needsRepairing
-    )
-  }
-
   var emptyStatePresentation: LaneEmptyStatePresentation? {
     laneRootEmptyState(
       connectionState: syncService.connectionState,
@@ -55,22 +45,6 @@ extension LanesTabView {
       ADEHaptics.error()
       primaryBranchError = error.localizedDescription
     }
-  }
-
-  @ViewBuilder
-  func noticeCard(_ presentation: LaneConnectionNoticePresentation) -> some View {
-    ADENoticeCard(
-      title: presentation.title,
-      message: presentation.message,
-      icon: presentation.icon,
-      tint: presentation.tintRole.color,
-      actionTitle: presentation.actionTitle,
-      action: presentation.action.map { action in
-        {
-          handleNoticeAction(action)
-        }
-      }
-    )
   }
 
   @ViewBuilder

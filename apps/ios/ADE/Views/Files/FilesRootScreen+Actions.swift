@@ -32,75 +32,12 @@ extension FilesRootScreen {
     filesStatus.phase == .hydrating || filesStatus.phase == .syncingInitialData
   }
 
-  var statusPresentation: FilesBrowserStatusPresentation? {
-    filesBrowserStatusPresentation(
-      status: filesStatus,
-      hasCachedWorkspaces: !workspaces.isEmpty,
-      hasActiveHostProfile: syncService.activeHostProfile != nil,
-      needsRepairing: needsRepairing
-    )
-  }
-
   var quickOpenEmptyMessage: String {
     filesSearchEmptyMessage(kind: .quickOpen, isLive: canUseLiveFileActions, needsRepairing: needsRepairing, query: quickOpenQuery)
   }
 
   var textSearchEmptyMessage: String {
     filesSearchEmptyMessage(kind: .textSearch, isLive: canUseLiveFileActions, needsRepairing: needsRepairing, query: textSearchQuery)
-  }
-
-  @ViewBuilder
-  func statusNoticeCard(_ presentation: FilesBrowserStatusPresentation) -> some View {
-    ADENoticeCard(
-      title: presentation.title,
-      message: presentation.message,
-      icon: statusNoticeIcon,
-      tint: statusNoticeTint,
-      actionTitle: presentation.actionTitle,
-      action: presentation.actionTitle == nil ? nil : handleStatusNoticeAction
-    )
-  }
-
-  var statusNoticeIcon: String {
-    switch filesStatus.phase {
-    case .disconnected:
-      return "icloud.slash"
-    case .hydrating, .syncingInitialData:
-      return "arrow.trianglehead.2.clockwise.rotate.90"
-    case .failed:
-      return "exclamationmark.triangle.fill"
-    case .ready:
-      return "folder"
-    }
-  }
-
-  var statusNoticeTint: Color {
-    switch filesStatus.phase {
-    case .disconnected, .syncingInitialData:
-      return ADEColor.warning
-    case .hydrating, .ready:
-      return ADEColor.accent
-    case .failed:
-      return ADEColor.danger
-    }
-  }
-
-  func handleStatusNoticeAction() {
-    switch filesStatus.phase {
-    case .disconnected:
-      if syncService.activeHostProfile == nil {
-        syncService.settingsPresented = true
-      } else {
-        Task {
-          await syncService.reconnectIfPossible(userInitiated: true)
-          await reload(refreshRemote: true)
-        }
-      }
-    case .failed:
-      Task { await reload(refreshRemote: true) }
-    case .hydrating, .syncingInitialData, .ready:
-      break
-    }
   }
 
   @MainActor

@@ -87,24 +87,4 @@ extension FilesDetailScreen {
     hasLoadedDiff = true
   }
 
-  var disconnectedNotice: ADENoticeCard {
-    ADENoticeCard(
-      title: "Read-only while disconnected",
-      message: needsRepairing
-        ? "Pair again before trusting cached file previews, metadata, history, or diffs."
-        : "The last-loaded file preview, metadata, history, and diff stay visible, but refresh waits for the host to reconnect.",
-      icon: "icloud.slash",
-      tint: ADEColor.warning,
-      actionTitle: syncService.activeHostProfile == nil ? "Open Settings" : "Reconnect",
-      action: {
-        if syncService.activeHostProfile == nil {
-          syncService.settingsPresented = true
-        } else {
-          Task {
-            await syncService.reconnectIfPossible(userInitiated: true)
-          }
-        }
-      }
-    )
-  }
 }

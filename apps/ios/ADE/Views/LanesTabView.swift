@@ -55,10 +55,6 @@ struct LanesTabView: View {
     NavigationStack {
       ScrollView {
         LazyVStack(spacing: 14) {
-          if let statusNotice {
-            noticeCard(statusNotice)
-              .transition(.opacity)
-          }
           if let errorMessage, laneStatus.phase == .ready {
             ADENoticeCard(
               title: "Lane view error",

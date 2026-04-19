@@ -8,7 +8,6 @@ struct FilesDirectoryScreen: View {
   @Binding var showHidden: Bool
   let isLive: Bool
   let isTabActive: Bool
-  let needsRepairing: Bool
   let openDirectory: (String) -> Void
   let openFile: (String, Int?) -> Void
   let transitionNamespace: Namespace.ID?
@@ -31,8 +30,6 @@ struct FilesDirectoryScreen: View {
           showHidden: showHidden,
           isLive: isLive,
           isTabActive: isTabActive,
-          needsRepairing: needsRepairing,
-          showDisconnectedNotice: true,
           openDirectory: openDirectory,
           openFile: openFile,
           transitionNamespace: transitionNamespace,
@@ -48,6 +45,9 @@ struct FilesDirectoryScreen: View {
     .adeNavigationGlass()
     .navigationTitle(parentPath.isEmpty ? "Root" : lastPathComponent(parentPath))
     .toolbar {
+      ToolbarItem(placement: .topBarLeading) {
+        ADEConnectionDot()
+      }
       ToolbarItemGroup(placement: .topBarTrailing) {
         Button {
           showHidden.toggle()

@@ -125,7 +125,6 @@ struct WorkArtifactView: View {
 struct WorkTerminalSessionView: View {
   @EnvironmentObject var syncService: SyncService
   let session: TerminalSessionSummary
-  let disconnectedNotice: Bool
   let transitionNamespace: Namespace.ID?
   let onOpenLane: (() -> Void)?
 
@@ -142,17 +141,6 @@ struct WorkTerminalSessionView: View {
           transitionNamespace: transitionNamespace,
           onOpenLane: onOpenLane
         )
-
-        if disconnectedNotice {
-          ADENoticeCard(
-            title: "Showing cached terminal output",
-            message: "Reconnect to resume live ANSI rendering for this session.",
-            icon: "wifi.slash",
-            tint: ADEColor.warning,
-            actionTitle: nil,
-            action: nil
-          )
-        }
 
         if terminalDisplay.truncated {
           ADENoticeCard(

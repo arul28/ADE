@@ -466,16 +466,21 @@ struct ADEConnectionDot: View {
     switch syncService.connectionState {
     case .connected, .syncing: return ADEColor.success
     case .connecting: return ADEColor.warning
-    case .error: return ADEColor.danger
-    case .disconnected: return ADEColor.textMuted
+    case .error, .disconnected: return ADEColor.danger
     }
   }
 
-  private var showsHostName: Bool {
+  private var statusText: String {
     switch syncService.connectionState {
-    case .connected, .syncing: return true
-    default: return false
+    case .connected, .syncing: return "Connected"
+    case .connecting: return "Connecting"
+    case .error: return "Error"
+    case .disconnected: return "Disconnected"
     }
+  }
+
+  private var showsConnectedGlow: Bool {
+    syncService.connectionState == .connected || syncService.connectionState == .syncing
   }
 
   private var truncatedHostName: String? {
@@ -498,7 +503,7 @@ struct ADEConnectionDot: View {
       return "Connected. Tap to open settings."
     case .connecting: return "Connecting. Tap to open settings."
     case .error: return "Connection error. Tap to open settings."
-    case .disconnected: return "Not connected. Tap to open settings."
+    case .disconnected: return "Disconnected. Tap to open settings."
     }
   }
 
@@ -510,8 +515,15 @@ struct ADEConnectionDot: View {
         Circle()
           .fill(tint)
           .frame(width: 10, height: 10)
-          .shadow(color: tint.opacity(showsHostName ? 0.5 : 0), radius: showsHostName ? 4 : 0)
-        if showsHostName, let name = truncatedHostName {
+          .shadow(color: tint.opacity(showsConnectedGlow ? 0.5 : 0), radius: showsConnectedGlow ? 4 : 0)
+        Text(statusText)
+          .font(.caption.weight(.semibold))
+          .foregroundStyle(ADEColor.textPrimary)
+          .lineLimit(1)
+        if showsConnectedGlow, let name = truncatedHostName {
+          Text("·")
+            .font(.caption.weight(.medium))
+            .foregroundStyle(ADEColor.textMuted)
           Text(name)
             .font(.caption.weight(.medium))
             .foregroundStyle(ADEColor.textSecondary)

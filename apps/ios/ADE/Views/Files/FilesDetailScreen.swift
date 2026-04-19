@@ -9,7 +9,6 @@ struct FilesDetailScreen: View {
   let relativePath: String
   let focusLine: Int?
   let isFilesLive: Bool
-  let needsRepairing: Bool
   let transitionNamespace: Namespace.ID?
   let navigateToDirectory: (String) -> Void
 
@@ -94,12 +93,15 @@ struct FilesDetailScreen: View {
     .navigationBarBackButtonHidden(true)
     .toolbar {
       ToolbarItem(placement: .topBarLeading) {
-        Button {
-          dismiss()
-        } label: {
-          Image(systemName: "chevron.left")
+        HStack(spacing: 10) {
+          Button {
+            dismiss()
+          } label: {
+            Image(systemName: "chevron.left")
+          }
+          .accessibilityLabel("Back")
+          ADEConnectionDot()
         }
-        .accessibilityLabel("Back")
       }
       ToolbarItem(placement: .topBarTrailing) {
         Button {
@@ -156,22 +158,6 @@ struct FilesDetailScreen: View {
           }
         }
       )
-
-      if !isFilesLive {
-        FilesCompactBanner(
-          symbol: "icloud.slash",
-          tint: ADEColor.warning,
-          title: needsRepairing ? "Pair again to trust this cached view." : "Disconnected — showing last-loaded content.",
-          actionTitle: syncService.activeHostProfile == nil ? "Settings" : "Reconnect",
-          onAction: {
-            if syncService.activeHostProfile == nil {
-              syncService.settingsPresented = true
-            } else {
-              Task { await syncService.reconnectIfPossible(userInitiated: true) }
-            }
-          }
-        )
-      }
 
       if let errorMessage {
         FilesCompactBanner(

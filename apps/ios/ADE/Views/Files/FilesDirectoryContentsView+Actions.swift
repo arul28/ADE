@@ -42,27 +42,6 @@ extension FilesDirectoryContentsView {
     return (workspace.rootPath as NSString).appendingPathComponent(relativePath)
   }
 
-  var disconnectedNotice: ADENoticeCard {
-    ADENoticeCard(
-      title: nodes.isEmpty ? "Reconnect to load this folder" : "Showing cached directory",
-      message: needsRepairing
-        ? "The previous host trust was cleared. Pair again before trusting refreshed file state."
-        : "Cached rows stay browseable, but refresh and search wait for the host to reconnect.",
-      icon: "icloud.slash",
-      tint: ADEColor.warning,
-      actionTitle: syncService.activeHostProfile == nil ? "Open Settings" : "Reconnect",
-      action: {
-        if syncService.activeHostProfile == nil {
-          syncService.settingsPresented = true
-        } else {
-          Task {
-            await syncService.reconnectIfPossible(userInitiated: true)
-          }
-        }
-      }
-    )
-  }
-
   struct DirectoryReloadKey: Hashable {
     let workspaceId: String
     let parentPath: String
