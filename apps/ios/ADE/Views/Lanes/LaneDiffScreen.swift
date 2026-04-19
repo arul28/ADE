@@ -114,6 +114,9 @@ struct LaneDiffScreen: View {
       .navigationTitle(request.title)
       .navigationBarTitleDisplayMode(.inline)
       .toolbar {
+        ToolbarItem(placement: .topBarLeading) {
+          ADEConnectionDot()
+        }
         ToolbarItem(placement: .cancellationAction) {
           Button("Done") { dismiss() }
         }

@@ -464,7 +464,8 @@ struct ADEConnectionDot: View {
 
   private var tint: Color {
     switch syncService.connectionState {
-    case .connected, .syncing: return ADEColor.success
+    case .connected: return ADEColor.success
+    case .syncing: return ADEColor.warning
     case .connecting: return ADEColor.warning
     case .error, .disconnected: return ADEColor.danger
     }
@@ -472,15 +473,20 @@ struct ADEConnectionDot: View {
 
   private var statusText: String {
     switch syncService.connectionState {
-    case .connected, .syncing: return "Connected"
+    case .connected: return "Connected"
+    case .syncing: return "Syncing"
     case .connecting: return "Connecting"
     case .error: return "Error"
     case .disconnected: return "Disconnected"
     }
   }
 
+  private var showsHostSuffix: Bool {
+    syncService.connectionState == .connected
+  }
+
   private var showsConnectedGlow: Bool {
-    syncService.connectionState == .connected || syncService.connectionState == .syncing
+    syncService.connectionState == .connected
   }
 
   private var truncatedHostName: String? {
@@ -495,15 +501,28 @@ struct ADEConnectionDot: View {
   }
 
   private var accessibilityLabel: String {
-    switch syncService.connectionState {
-    case .connected, .syncing:
-      if let name = syncService.hostName, !name.isEmpty {
-        return "Connected to \(name). Tap to open settings."
+    let errorSuffix: String = {
+      guard syncService.connectionState == .error, let err = syncService.lastError?.trimmingCharacters(in: .whitespacesAndNewlines), !err.isEmpty else {
+        return ""
       }
-      return "Connected. Tap to open settings."
-    case .connecting: return "Connecting. Tap to open settings."
-    case .error: return "Connection error. Tap to open settings."
-    case .disconnected: return "Disconnected. Tap to open settings."
+      let clipped = err.count > 120 ? String(err.prefix(117)) + "…" : err
+      return ". \(clipped)"
+    }()
+
+    switch syncService.connectionState {
+    case .connected:
+      if let name = syncService.hostName, !name.isEmpty {
+        return "Connected to \(name)"
+      }
+      return "Connected"
+    case .syncing:
+      return "Syncing with host"
+    case .connecting:
+      return "Connecting to host"
+    case .error:
+      return "Connection error\(errorSuffix)"
+    case .disconnected:
+      return "Disconnected from host"
     }
   }
 
@@ -520,19 +539,26 @@ struct ADEConnectionDot: View {
           .font(.caption.weight(.semibold))
           .foregroundStyle(ADEColor.textPrimary)
           .lineLimit(1)
-        if showsConnectedGlow, let name = truncatedHostName {
+          .minimumScaleFactor(0.75)
+        if showsHostSuffix, let name = truncatedHostName {
           Text("·")
             .font(.caption.weight(.medium))
             .foregroundStyle(ADEColor.textMuted)
+            .minimumScaleFactor(0.75)
           Text(name)
             .font(.caption.weight(.medium))
             .foregroundStyle(ADEColor.textSecondary)
             .lineLimit(1)
+            .minimumScaleFactor(0.75)
         }
       }
+      .frame(minHeight: 44)
+      .contentShape(Rectangle())
     }
     .buttonStyle(.plain)
     .accessibilityLabel(accessibilityLabel)
+    .accessibilityHint("Opens settings to pair or reconnect.")
+    .accessibilityShowsLargeContentViewer()
   }
 }
 

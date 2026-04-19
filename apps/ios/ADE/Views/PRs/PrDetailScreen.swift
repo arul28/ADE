@@ -241,6 +241,11 @@ struct PrDetailView: View {
     .adeNavigationGlass()
     .navigationTitle(currentPr.title)
     .navigationBarTitleDisplayMode(.inline)
+    .toolbar {
+      ToolbarItem(placement: .topBarLeading) {
+        ADEConnectionDot()
+      }
+    }
     .adeNavigationZoomTransition(id: transitionNamespace == nil ? nil : "pr-container-\(prId)", in: transitionNamespace)
     .task(id: syncService.localStateRevision) {
       await reload()

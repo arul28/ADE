@@ -100,6 +100,8 @@ struct FilesDetailScreen: View {
             Image(systemName: "chevron.left")
           }
           .accessibilityLabel("Back")
+          .frame(minWidth: 44, minHeight: 44)
+          .contentShape(Rectangle())
           ADEConnectionDot()
         }
       }
