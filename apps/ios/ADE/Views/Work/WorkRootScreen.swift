@@ -58,10 +58,6 @@ struct WorkRootScreen: View {
     workStatus.phase == .ready && (syncService.connectionState == .connected || syncService.connectionState == .syncing)
   }
 
-  var needsRepairing: Bool {
-    syncService.activeHostProfile == nil && !mergedSessions.isEmpty
-  }
-
   var isLoadingSkeleton: Bool {
     workStatus.phase == .hydrating || workStatus.phase == .syncingInitialData
   }

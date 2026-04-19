@@ -8,7 +8,6 @@ struct FilesDetailScreen: View {
   let workspace: FilesWorkspace
   let relativePath: String
   let focusLine: Int?
-  let isFilesLive: Bool
   let transitionNamespace: Namespace.ID?
   let navigateToDirectory: (String) -> Void
 
@@ -176,7 +175,6 @@ struct FilesDetailScreen: View {
           relativePath: relativePath,
           language: language,
           fileSize: blob.size,
-          isFilesLive: isFilesLive,
           transitionNamespace: transitionNamespace
         )
 

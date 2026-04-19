@@ -228,7 +228,7 @@ struct PRsTabView: View {
               .prListRow()
           }
         } else {
-          if let errorMessage, prsStatus.phase == .ready {
+          if let errorMessage {
             ADENoticeCard(
               title: "PR view error",
               message: errorMessage,

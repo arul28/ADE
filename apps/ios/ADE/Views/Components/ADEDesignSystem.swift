@@ -421,44 +421,6 @@ struct ADEStatusPill: View {
   }
 }
 
-struct ADEConnectionPill: View {
-  @EnvironmentObject private var syncService: SyncService
-
-  private var tint: Color {
-    switch syncService.connectionState {
-    case .connected, .syncing: return ADEColor.success
-    case .connecting: return ADEColor.accent
-    case .disconnected, .error: return ADEColor.danger
-    }
-  }
-
-  private var label: String {
-    switch syncService.connectionState {
-    case .connected, .syncing: return "Connected"
-    case .connecting: return "Connecting"
-    case .disconnected: return "Not connected"
-    case .error: return "Offline"
-    }
-  }
-
-  var body: some View {
-    Button {
-      syncService.settingsPresented = true
-    } label: {
-      HStack(spacing: 6) {
-        Circle()
-          .fill(tint)
-          .frame(width: 8, height: 8)
-        Text(label)
-          .font(.caption.weight(.semibold))
-          .foregroundStyle(ADEColor.textPrimary)
-      }
-    }
-    .buttonStyle(.plain)
-    .accessibilityLabel("Connection: \(label). Tap to open settings.")
-  }
-}
-
 struct ADEConnectionDot: View {
   @EnvironmentObject private var syncService: SyncService
 
@@ -502,10 +464,14 @@ struct ADEConnectionDot: View {
 
   private var accessibilityLabel: String {
     let errorSuffix: String = {
-      guard syncService.connectionState == .error, let err = syncService.lastError?.trimmingCharacters(in: .whitespacesAndNewlines), !err.isEmpty else {
+      guard syncService.connectionState == .error,
+            let raw = syncService.lastError?.trimmingCharacters(in: .whitespacesAndNewlines),
+            !raw.isEmpty
+      else {
         return ""
       }
-      let clipped = err.count > 120 ? String(err.prefix(117)) + "…" : err
+      let normalized = raw.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+      let clipped = normalized.count > 120 ? String(normalized.prefix(117)) + "…" : normalized
       return ". \(clipped)"
     }()
 

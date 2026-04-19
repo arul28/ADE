@@ -91,6 +91,9 @@ function jsonResponse(
 describe("githubService.apiRequest", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    // Tests assume no ambient token; CI/agents often inject GITHUB_TOKEN globally.
+    delete process.env.GITHUB_TOKEN;
+    delete process.env.ADE_GITHUB_TOKEN;
   });
 
   it("returns data and response on success (HTTP 200)", async () => {

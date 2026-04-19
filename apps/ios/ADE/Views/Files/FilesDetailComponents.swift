@@ -2,11 +2,17 @@ import SwiftUI
 import UIKit
 
 struct FilesHeaderStrip: View {
+  @EnvironmentObject private var syncService: SyncService
+
   let relativePath: String
   let language: FilesLanguage
   let fileSize: Int
-  let isFilesLive: Bool
   let transitionNamespace: Namespace.ID?
+
+  private var filesBrowserIsLive: Bool {
+    syncService.status(for: .files).phase == .ready
+      && (syncService.connectionState == .connected || syncService.connectionState == .syncing)
+  }
 
   var body: some View {
     HStack(alignment: .center, spacing: 12) {
@@ -38,7 +44,7 @@ struct FilesHeaderStrip: View {
           Text("Read only")
             .font(.caption2.weight(.medium))
             .foregroundStyle(ADEColor.textSecondary)
-          if !isFilesLive {
+          if !filesBrowserIsLive {
             Text("·").foregroundStyle(ADEColor.textMuted)
             Text("Offline")
               .font(.caption2.weight(.semibold))

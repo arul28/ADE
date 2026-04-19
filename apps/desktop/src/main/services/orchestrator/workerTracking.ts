@@ -219,6 +219,76 @@ function resolvePlannerPlanMissingIntervention(args: {
   };
 }
 
+function resolvePlannerPlanMissingInterventionsAfterPlanningSuccess(args: {
+  ctx: OrchestratorContext;
+  deps: UpdateWorkerStateDeps;
+  missionId: string;
+  attempt: OrchestratorRunGraph["attempts"][number];
+  step: OrchestratorRunGraph["steps"][number];
+}): void {
+  const stepMeta = isRecord(args.step.metadata) ? args.step.metadata : {};
+  const phaseKey = typeof stepMeta.phaseKey === "string" ? stepMeta.phaseKey.trim().toLowerCase() : "";
+  const stepType = typeof stepMeta.stepType === "string" ? stepMeta.stepType.trim().toLowerCase() : "";
+  const readOnlyExecution = stepMeta.readOnlyExecution === true;
+  const planningLike =
+    readOnlyExecution
+    || phaseKey === "planning"
+    || stepType === "planning"
+    || stepType === "analysis";
+  if (!planningLike) return;
+
+  const lastResultReport = isRecord(stepMeta.lastResultReport) ? stepMeta.lastResultReport : null;
+  const reportedPlan = lastResultReport && isRecord(lastResultReport.plan) ? lastResultReport.plan : null;
+  const planMarkdown =
+    reportedPlan && typeof reportedPlan.markdown === "string" ? reportedPlan.markdown.trim() : "";
+  if (!planMarkdown.length) return;
+
+  const mission = args.ctx.missionService.get(args.missionId);
+  if (!mission) return;
+
+  const resolvedAt = nowIso();
+  for (const intervention of mission.interventions) {
+    if (intervention.status !== "open" || intervention.interventionType !== "failed_step") continue;
+    const meta = isRecord(intervention.metadata) ? intervention.metadata : {};
+    const reasonCode = typeof meta.reasonCode === "string" ? meta.reasonCode.trim() : "";
+    if (reasonCode !== "planner_plan_missing") continue;
+    const interventionRunId = typeof meta.runId === "string" ? meta.runId.trim() : "";
+    if (interventionRunId.length > 0 && interventionRunId !== args.attempt.runId) continue;
+
+    try {
+      args.ctx.missionService.resolveIntervention({
+        missionId: args.missionId,
+        interventionId: intervention.id,
+        status: "resolved",
+        note: `Auto-resolved after planner returned report_result.plan for step "${stepTitleForMessage(args.step)}".`,
+      });
+      args.deps.recordRuntimeEvent({
+        runId: args.attempt.runId,
+        stepId: args.step.id,
+        attemptId: args.attempt.id,
+        sessionId: args.attempt.executorSessionId,
+        eventType: "intervention_resolved",
+        eventKey: `intervention_resolved:${intervention.id}:planner_plan_recovered`,
+        payload: {
+          interventionId: intervention.id,
+          reason: "planner_plan_recovered",
+          recoveredByStepId: args.step.id,
+          recoveredByStepKey: args.step.stepKey,
+          resolvedAt,
+        },
+      });
+    } catch (error) {
+      args.ctx.logger.debug("ai_orchestrator.planner_plan_missing_resolve_failed", {
+        missionId: args.missionId,
+        runId: args.attempt.runId,
+        stepId: args.step.id,
+        interventionId: intervention.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+}
+
 function resolveRecoveredFailedStepInterventions(args: {
   ctx: OrchestratorContext;
   deps: UpdateWorkerStateDeps;
@@ -1269,6 +1339,13 @@ export function updateWorkerStateFromEventCtx(
       const step = graph.steps.find((s) => s.id === attempt.stepId);
       if (step) {
         resolveRecoveredFailedStepInterventions({
+          ctx,
+          deps,
+          missionId: graph.run.missionId,
+          attempt,
+          step,
+        });
+        resolvePlannerPlanMissingInterventionsAfterPlanningSuccess({
           ctx,
           deps,
           missionId: graph.run.missionId,

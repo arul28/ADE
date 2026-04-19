@@ -203,7 +203,6 @@ struct FilesRootScreen: View {
               workspace: workspace,
               relativePath: relativePath,
               focusLine: focusLine,
-              isFilesLive: canUseLiveFileActions,
               transitionNamespace: transitionNamespace,
               navigateToDirectory: { path in
                 openDirectory(path, in: workspace)

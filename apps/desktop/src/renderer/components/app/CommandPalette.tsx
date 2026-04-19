@@ -21,6 +21,14 @@ import { fadeScale } from "../../lib/motion";
 import { useAppStore } from "../../state/appStore";
 import { cn } from "../ui/cn";
 
+function schedulePaletteTimeout(handler: () => void, ms: number): ReturnType<typeof setTimeout> {
+  return globalThis.setTimeout(handler, ms);
+}
+
+function cancelPaletteTimeout(id: ReturnType<typeof setTimeout>) {
+  globalThis.clearTimeout(id);
+}
+
 export type CommandPaletteIntent = "default" | "project-browse";
 
 type Command = {
@@ -433,7 +441,7 @@ export function CommandPalette({
     const requestId = ++detailRequestRef.current;
     setDetailLoading(true);
     setDetailPath(detailTarget);
-    const timeout = window.setTimeout(() => {
+    const timeout = schedulePaletteTimeout(() => {
       void window.ade.project
         .getDetail(detailTarget)
         .then((result) => {
@@ -450,7 +458,7 @@ export function CommandPalette({
         });
     }, 140);
     return () => {
-      window.clearTimeout(timeout);
+      cancelPaletteTimeout(timeout);
     };
   }, [detail, detailTarget, mode, open]);
 
