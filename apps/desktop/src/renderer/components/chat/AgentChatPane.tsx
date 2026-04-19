@@ -71,7 +71,7 @@ import { deriveChatSubagentSnapshots, deriveTodoItems, deriveTurnDiffSummaries }
 import { derivePendingInputRequests, type DerivedPendingInput } from "./pendingInput";
 import { ProviderModelSelector } from "../shared/ProviderModelSelector";
 import { useClickOutside } from "../../hooks/useClickOutside";
-import { useAppStore } from "../../state/appStore";
+import { DEFAULT_CHAT_FONT_SIZE_PX, useAppStore } from "../../state/appStore";
 import { ClaudeCacheTtlBadge } from "../shared/ClaudeCacheTtlBadge";
 import { shouldShowClaudeCacheTtl } from "../../lib/claudeCacheTtl";
 import { getAgentChatModelsCached, getAiStatusCached } from "../../lib/aiDiscoveryCache";
@@ -712,6 +712,9 @@ export function AgentChatPane({
 }) {
   const projectRoot = useAppStore((s) => s.project?.rootPath ?? null);
   const agentTurnCompletionSound = useAppStore((s) => s.agentTurnCompletionSound);
+  const chatFontSizePx = useAppStore((s) => s.chatFontSizePx);
+  const chatUiScale = chatFontSizePx / DEFAULT_CHAT_FONT_SIZE_PX;
+  const chatSurfaceZoomStyle = { zoom: chatUiScale } as const;
   const navigate = useNavigate();
   const openAiProvidersSettings = useCallback(() => {
     navigate("/settings?tab=ai#ai-providers");
@@ -2535,7 +2538,7 @@ export function AgentChatPane({
 
   if (!laneId) {
     return (
-      <ChatSurfaceShell mode={surfaceMode} accentColor={presentation?.accentColor}>
+      <ChatSurfaceShell mode={surfaceMode} accentColor={presentation?.accentColor} extraSurfaceStyle={chatSurfaceZoomStyle}>
         <div className="flex h-full items-center justify-center">
           <span className="font-sans text-[12px] text-muted-fg/30">Select a lane to start chatting</span>
         </div>
@@ -2961,6 +2964,7 @@ export function AgentChatPane({
         containerRef={shellRef}
         mode={surfaceMode}
         accentColor={presentation?.accentColor ?? draftAccent}
+        extraSurfaceStyle={chatSurfaceZoomStyle}
         className={compactShell ? cn("border-0 shadow-none rounded-none bg-transparent") : undefined}
         header={compactShell ? undefined : shellHeader}
         footer={isEmptyState ? undefined : composerElement}

@@ -56,6 +56,11 @@ describe("modelRegistry", () => {
     expect(resolveModelSlug("not-a-real-model-xyz")).toBeUndefined();
   });
 
+  it("resolveModelSlug preserves case-sensitive dynamic local ids when hinted", () => {
+    const id = "lmstudio/Qwen/Qwen2.5-Coder";
+    expect(resolveModelSlug(id, "opencode")).toBe(id);
+  });
+
   it("returns dynamic local descriptors from getModelById", () => {
     const descriptor = getModelById("lmstudio/meta-llama-3.1-70b-instruct");
     expect(descriptor).toBeTruthy();

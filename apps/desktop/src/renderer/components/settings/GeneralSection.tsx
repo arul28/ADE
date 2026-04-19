@@ -1,15 +1,7 @@
 import React, { useEffect, useId, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import type { AppInfo } from "../../../shared/types";
-import {
-  AGENT_TURN_COMPLETION_SOUND_IDS,
-  CODE_BLOCK_COPY_POSITION_IDS,
-  DEFAULT_TERMINAL_FONT_FAMILY,
-  useAppStore,
-  THEME_IDS,
-} from "../../state/appStore";
-import type { AgentTurnCompletionSound, CodeBlockCopyButtonPosition, ThemeId } from "../../state/appStore";
-import { playAgentTurnCompletionSound } from "../../lib/agentTurnCompletionSound";
+import { DEFAULT_TERMINAL_FONT_FAMILY, useAppStore } from "../../state/appStore";
 import { EmptyState } from "../ui/EmptyState";
 import { Info } from "@phosphor-icons/react";
 import {
@@ -32,120 +24,11 @@ const TERMINAL_FONT_FAMILY_OPTIONS = [
   { label: "Monaco", value: "Monaco, " + DEFAULT_TERMINAL_FONT_FAMILY },
 ];
 
-const THEME_META: Record<
-  ThemeId,
-  {
-    label: string;
-    description: string;
-    colors: { bg: string; fg: string; accent: string; card: string; border: string };
-  }
-> = {
-  dark: {
-    label: "DARK",
-    description: "After-hours office. Cyan glows against dark surfaces.",
-    colors: { bg: "#0f0f11", fg: "#e4e4e7", accent: "#A78BFA", card: "#18181b", border: "#27272a" },
-  },
-  light: {
-    label: "LIGHT",
-    description: "Morning office. Sunlit, clean, crisp accent.",
-    colors: { bg: "#f5f5f6", fg: "#0f0f11", accent: "#7C3AED", card: "#ffffff", border: "#d4d4d8" },
-  },
-};
-
 const sectionLabelStyle: React.CSSProperties = {
   ...LABEL_STYLE,
   fontSize: 11,
   marginBottom: 16,
 };
-
-function ThemeSwatch({
-  themeId,
-  selected,
-  onClick,
-}: {
-  themeId: ThemeId;
-  selected: boolean;
-  onClick: () => void;
-}) {
-  const { label, description, colors } = THEME_META[themeId];
-  const [hovered, setHovered] = useState(false);
-
-  return (
-    <button
-      onClick={onClick}
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
-      style={{
-        display: "flex",
-        alignItems: "center",
-        gap: 14,
-        padding: 14,
-        flex: 1,
-        background: selected ? `${COLORS.accent}08` : hovered ? COLORS.hoverBg : COLORS.cardBg,
-        border: selected
-          ? `1px solid ${COLORS.accent}`
-          : `1px solid ${hovered ? COLORS.outlineBorder : COLORS.border}`,
-        boxShadow: selected ? `inset 3px 0 0 ${COLORS.accent}` : "none",
-        borderRadius: 0,
-        cursor: "pointer",
-        position: "relative",
-        transition: "border-color 150ms, background 150ms, box-shadow 150ms",
-      }}
-    >
-      <div
-        style={{
-          width: 72,
-          height: 48,
-          flexShrink: 0,
-          background: colors.bg,
-          border: `1px solid ${colors.border}`,
-          borderRadius: 0,
-          overflow: "hidden",
-        }}
-      >
-        <div style={{ height: 8, background: colors.card }} />
-        <div
-          style={{
-            width: 40,
-            height: 4,
-            margin: "6px auto 0",
-            background: colors.accent,
-            borderRadius: 0,
-          }}
-        />
-        <div style={{ margin: "5px 6px 0", display: "flex", flexDirection: "column", gap: 3 }}>
-          <div style={{ height: 2, width: 36, background: colors.fg, opacity: 0.4 }} />
-          <div style={{ height: 2, width: 24, background: colors.fg, opacity: 0.25 }} />
-        </div>
-      </div>
-
-      <div style={{ textAlign: "left" }}>
-        <div
-          style={{
-            fontSize: 11,
-            fontWeight: 700,
-            fontFamily: MONO_FONT,
-            textTransform: "uppercase",
-            letterSpacing: "1px",
-            color: selected ? COLORS.accent : COLORS.textPrimary,
-          }}
-        >
-          {label}
-        </div>
-        <div
-          style={{
-            fontSize: 11,
-            fontFamily: MONO_FONT,
-            color: COLORS.textMuted,
-            marginTop: 4,
-          }}
-        >
-          {description}
-        </div>
-      </div>
-    </button>
-  );
-}
 
 export function GeneralSection() {
   const navigate = useNavigate();
@@ -154,12 +37,6 @@ export function GeneralSection() {
   const [onboardingStatus, setOnboardingStatus] = useState<{ completedAt: string | null; dismissedAt: string | null; freshProject?: boolean } | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const providerMode = useAppStore((s) => s.providerMode);
-  const theme = useAppStore((s) => s.theme);
-  const setTheme = useAppStore((s) => s.setTheme);
-  const codeBlockCopyButtonPosition = useAppStore((s) => s.codeBlockCopyButtonPosition);
-  const setCodeBlockCopyButtonPosition = useAppStore((s) => s.setCodeBlockCopyButtonPosition);
-  const agentTurnCompletionSound = useAppStore((s) => s.agentTurnCompletionSound);
-  const setAgentTurnCompletionSound = useAppStore((s) => s.setAgentTurnCompletionSound);
   const terminalPreferences = useAppStore((s) => s.terminalPreferences);
   const setTerminalPreferences = useAppStore((s) => s.setTerminalPreferences);
 
@@ -237,77 +114,6 @@ export function GeneralSection() {
             <button type="button" style={primaryButton()} onClick={() => navigate("/onboarding")}>
               {setupComplete ? "RUN SETUP AGAIN" : "OPEN PROJECT SETUP"}
             </button>
-          </div>
-        </div>
-      </section>
-
-      <section>
-        <div style={sectionLabelStyle}>THEME</div>
-        <div style={{ display: "flex", gap: 12 }}>
-          {THEME_IDS.map((id) => (
-            <ThemeSwatch key={id} themeId={id} selected={theme === id} onClick={() => setTheme(id)} />
-          ))}
-        </div>
-      </section>
-
-      <section>
-        <div style={sectionLabelStyle}>CHAT & NOTIFICATIONS</div>
-        <div style={{ ...cardStyle(), display: "flex", flexDirection: "column", gap: 16 }}>
-          <div>
-            <div style={{ ...LABEL_STYLE, marginBottom: 8 }}>CODE BLOCK COPY BUTTON</div>
-            <div style={{ fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textMuted, marginBottom: 10, lineHeight: 1.5 }}>
-              On touch devices the copy control stays visible. Choose top or bottom so long fenced blocks are easier to copy after scrolling.
-            </div>
-            <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-              {CODE_BLOCK_COPY_POSITION_IDS.map((id) => (
-                <button
-                  key={id}
-                  type="button"
-                  onClick={() => setCodeBlockCopyButtonPosition(id)}
-                  style={{
-                    ...primaryButton({ height: 32, padding: "0 14px", fontSize: 10 }),
-                    opacity: codeBlockCopyButtonPosition === id ? 1 : 0.55,
-                    border: `1px solid ${codeBlockCopyButtonPosition === id ? COLORS.accent : COLORS.border}`,
-                  }}
-                >
-                  {id === "bottom" ? "Bottom" : "Top"}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          <div>
-            <div style={{ ...LABEL_STYLE, marginBottom: 8 }}>AGENT TURN COMPLETION SOUND</div>
-            <div style={{ fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textMuted, marginBottom: 10, lineHeight: 1.5 }}>
-              Plays when the assistant finishes a turn and the session is idle (not while you still owe a reply or approval).
-            </div>
-            <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8 }}>
-              <select
-                value={agentTurnCompletionSound}
-                onChange={(e) => setAgentTurnCompletionSound(e.target.value as AgentTurnCompletionSound)}
-                style={{ height: 34, minWidth: 160, border: `1px solid ${COLORS.border}`, background: COLORS.recessedBg, color: COLORS.textPrimary, fontSize: 12, fontFamily: MONO_FONT, padding: "0 10px" }}
-              >
-                {AGENT_TURN_COMPLETION_SOUND_IDS.map((id) => (
-                  <option key={id} value={id}>
-                    {id === "off" ? "Off" : id.charAt(0).toUpperCase() + id.slice(1)}
-                  </option>
-                ))}
-              </select>
-              <button
-                type="button"
-                disabled={agentTurnCompletionSound === "off"}
-                onClick={() => {
-                  if (agentTurnCompletionSound !== "off") playAgentTurnCompletionSound(agentTurnCompletionSound);
-                }}
-                style={{
-                  ...primaryButton({ height: 32, padding: "0 12px", fontSize: 10 }),
-                  opacity: agentTurnCompletionSound === "off" ? 0.45 : 1,
-                  cursor: agentTurnCompletionSound === "off" ? "not-allowed" : "pointer",
-                }}
-              >
-                Preview
-              </button>
-            </div>
           </div>
         </div>
       </section>

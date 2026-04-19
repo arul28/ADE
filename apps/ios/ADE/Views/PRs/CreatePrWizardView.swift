@@ -41,10 +41,10 @@ struct CreatePrWizardView: View {
       return capabilities.lanes
         .filter { $0.canCreate }
         .map { eligibility in
-          let aheadNote: String? =
+          let aheadNote: String =
             eligibility.commitsAheadOfBase > 0
             ? "\(eligibility.commitsAheadOfBase) commit\(eligibility.commitsAheadOfBase == 1 ? "" : "s") ahead of \(eligibility.defaultBaseBranch)"
-            : nil
+            : "Aligned with \(eligibility.defaultBaseBranch) (no commits ahead)"
           return CreatePrLaneOption(
             id: eligibility.laneId,
             title: eligibility.laneName,

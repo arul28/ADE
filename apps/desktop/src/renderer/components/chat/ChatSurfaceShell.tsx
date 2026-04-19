@@ -1,4 +1,4 @@
-import type { ReactNode, Ref } from "react";
+import type { CSSProperties, ReactNode, Ref } from "react";
 import type { ChatSurfaceMode } from "../../../shared/types";
 import { cn } from "../ui/cn";
 import { chatSurfaceVars } from "./chatSurfaceTheme";
@@ -16,6 +16,7 @@ export function ChatSurfaceShell({
   bodyClassName,
   footerClassName,
   containerRef,
+  extraSurfaceStyle,
 }: {
   mode: ChatSurfaceMode;
   accentColor?: string | null;
@@ -27,6 +28,8 @@ export function ChatSurfaceShell({
   bodyClassName?: string;
   footerClassName?: string;
   containerRef?: Ref<HTMLElement>;
+  /** Merged into the outer section (e.g. chat font size + zoom from settings). */
+  extraSurfaceStyle?: CSSProperties;
 }) {
   const mobileChrome = layoutVariant === "mobile";
 
@@ -38,7 +41,11 @@ export function ChatSurfaceShell({
         "relative flex h-full min-h-0 flex-col overflow-hidden",
         className,
       )}
-      style={{ ...chatSurfaceVars(mode, accentColor), background: "var(--color-bg)" }}
+      style={{
+        ...chatSurfaceVars(mode, accentColor),
+        background: "var(--color-bg)",
+        ...extraSurfaceStyle,
+      }}
     >
       {header ? (
         <div

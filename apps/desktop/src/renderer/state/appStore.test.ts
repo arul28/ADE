@@ -35,7 +35,7 @@ const mockLocalStorage = {
 };
 
 // Import after window is set up
-import { useAppStore, THEME_IDS, DEFAULT_TERMINAL_PREFERENCES } from "./appStore";
+import { useAppStore, THEME_IDS, DEFAULT_TERMINAL_PREFERENCES, DEFAULT_CHAT_FONT_SIZE_PX } from "./appStore";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -56,6 +56,9 @@ function resetStore() {
     focusedSessionId: null,
     theme: "dark",
     terminalPreferences: { ...DEFAULT_TERMINAL_PREFERENCES },
+    codeBlockCopyButtonPosition: "top" as const,
+    agentTurnCompletionSound: "off" as const,
+    chatFontSizePx: DEFAULT_CHAT_FONT_SIZE_PX,
     laneInspectorTabs: {},
     workViewByProject: {},
     laneWorkViewByScope: {},
@@ -171,6 +174,14 @@ describe("appStore", () => {
       });
     });
 
+    it("persists chat font size and clamps to range", () => {
+      useAppStore.getState().setChatFontSizePx(20);
+      expect(useAppStore.getState().chatFontSizePx).toBe(20);
+      useAppStore.getState().setChatFontSizePx(99);
+      expect(useAppStore.getState().chatFontSizePx).toBe(24);
+      useAppStore.getState().setChatFontSizePx(8);
+      expect(useAppStore.getState().chatFontSizePx).toBe(12);
+    });
   });
 
   // ─────────────────────────────────────────────────────────────

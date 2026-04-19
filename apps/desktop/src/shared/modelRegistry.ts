@@ -885,6 +885,10 @@ export function resolveModelSlug(modelRef: string, providerHint?: ModelProviderG
   const normalized = modelRef.trim();
   if (!normalized.length) return undefined;
   if (providerHint) {
+    const direct = getModelById(normalized);
+    if (direct && !direct.deprecated && matchesProviderGroup(direct, providerHint)) {
+      return direct.id;
+    }
     return resolveModelDescriptorForProvider(normalized, providerHint)?.id;
   }
   return resolveModelDescriptor(normalized)?.id;

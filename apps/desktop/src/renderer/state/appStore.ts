@@ -46,6 +46,17 @@ function normalizeAgentTurnCompletionSound(value: unknown): AgentTurnCompletionS
   if (value === "chime" || value === "ping" || value === "bell") return value;
   return "off";
 }
+
+/** Base chat body font size in px (timeline + composer scale from this). Default matches prior ~14px body. */
+export const DEFAULT_CHAT_FONT_SIZE_PX = 14;
+export const CHAT_FONT_SIZE_MIN_PX = 12;
+export const CHAT_FONT_SIZE_MAX_PX = 24;
+
+function normalizeChatFontSizePx(value: unknown): number {
+  const next = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(next)) return DEFAULT_CHAT_FONT_SIZE_PX;
+  return Math.max(CHAT_FONT_SIZE_MIN_PX, Math.min(CHAT_FONT_SIZE_MAX_PX, Math.round(next)));
+}
 export type TerminalAttentionIndicator = "none" | "running-active" | "running-needs-attention";
 export type WorkViewMode = "tabs" | "grid";
 export type WorkStatusFilter = "all" | "running" | "awaiting-input" | "ended";
@@ -244,6 +255,7 @@ type PersistedUserPreferences = {
   smartTooltipsEnabled: boolean;
   codeBlockCopyButtonPosition: CodeBlockCopyButtonPosition;
   agentTurnCompletionSound: AgentTurnCompletionSound;
+  chatFontSizePx: number;
 };
 
 function coerceTheme(value: unknown): ThemeId | null {
@@ -264,6 +276,7 @@ function readUnifiedUserPreferences(): PersistedUserPreferences | null {
       smartTooltipsEnabled: parsed.smartTooltipsEnabled !== false,
       codeBlockCopyButtonPosition: normalizeCodeBlockCopyButtonPosition(parsed.codeBlockCopyButtonPosition),
       agentTurnCompletionSound: normalizeAgentTurnCompletionSound(parsed.agentTurnCompletionSound),
+      chatFontSizePx: normalizeChatFontSizePx(parsed.chatFontSizePx),
     };
   } catch {
     return null;
@@ -296,6 +309,7 @@ function readLegacyUserPreferences(): PersistedUserPreferences {
     smartTooltipsEnabled,
     codeBlockCopyButtonPosition: "top",
     agentTurnCompletionSound: "off",
+    chatFontSizePx: DEFAULT_CHAT_FONT_SIZE_PX,
   };
 }
 
@@ -378,6 +392,7 @@ type AppState = {
   terminalPreferences: TerminalPreferences;
   codeBlockCopyButtonPosition: CodeBlockCopyButtonPosition;
   agentTurnCompletionSound: AgentTurnCompletionSound;
+  chatFontSizePx: number;
   providerMode: ProviderMode;
   availableModels: ModelDescriptor[];
   laneInspectorTabs: Record<string, LaneInspectorTab>;
@@ -400,6 +415,7 @@ type AppState = {
   setTheme: (theme: ThemeId) => void;
   setCodeBlockCopyButtonPosition: (position: CodeBlockCopyButtonPosition) => void;
   setAgentTurnCompletionSound: (sound: AgentTurnCompletionSound) => void;
+  setChatFontSizePx: (px: number) => void;
   setTerminalPreferences: (
     next:
       | Partial<TerminalPreferences>
@@ -506,6 +522,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   terminalPreferences: initialUserPreferences.terminalPreferences,
   codeBlockCopyButtonPosition: initialUserPreferences.codeBlockCopyButtonPosition,
   agentTurnCompletionSound: initialUserPreferences.agentTurnCompletionSound,
+  chatFontSizePx: initialUserPreferences.chatFontSizePx,
   providerMode: "guest",
   availableModels: [...MODEL_REGISTRY].filter((m) => !m.deprecated),
   laneInspectorTabs: {},
@@ -552,6 +569,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         smartTooltipsEnabled: prev.smartTooltipsEnabled,
         codeBlockCopyButtonPosition: prev.codeBlockCopyButtonPosition,
         agentTurnCompletionSound: prev.agentTurnCompletionSound,
+        chatFontSizePx: prev.chatFontSizePx,
       });
       return { theme };
     }),
@@ -564,6 +582,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         smartTooltipsEnabled: prev.smartTooltipsEnabled,
         codeBlockCopyButtonPosition: next,
         agentTurnCompletionSound: prev.agentTurnCompletionSound,
+        chatFontSizePx: prev.chatFontSizePx,
       });
       return { codeBlockCopyButtonPosition: next };
     }),
@@ -576,8 +595,22 @@ export const useAppStore = create<AppState>((set, get) => ({
         smartTooltipsEnabled: prev.smartTooltipsEnabled,
         codeBlockCopyButtonPosition: prev.codeBlockCopyButtonPosition,
         agentTurnCompletionSound: next,
+        chatFontSizePx: prev.chatFontSizePx,
       });
       return { agentTurnCompletionSound: next };
+    }),
+  setChatFontSizePx: (px) =>
+    set((prev) => {
+      const next = normalizeChatFontSizePx(px);
+      persistUserPreferences({
+        theme: prev.theme,
+        terminalPreferences: prev.terminalPreferences,
+        smartTooltipsEnabled: prev.smartTooltipsEnabled,
+        codeBlockCopyButtonPosition: prev.codeBlockCopyButtonPosition,
+        agentTurnCompletionSound: prev.agentTurnCompletionSound,
+        chatFontSizePx: next,
+      });
+      return { chatFontSizePx: next };
     }),
   setTerminalPreferences: (next) =>
     set((prev) => {
@@ -592,6 +625,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         smartTooltipsEnabled: prev.smartTooltipsEnabled,
         codeBlockCopyButtonPosition: prev.codeBlockCopyButtonPosition,
         agentTurnCompletionSound: prev.agentTurnCompletionSound,
+        chatFontSizePx: prev.chatFontSizePx,
       });
       return { terminalPreferences: updated };
     }),
@@ -604,6 +638,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         smartTooltipsEnabled: enabled,
         codeBlockCopyButtonPosition: prev.codeBlockCopyButtonPosition,
         agentTurnCompletionSound: prev.agentTurnCompletionSound,
+        chatFontSizePx: prev.chatFontSizePx,
       });
       return { smartTooltipsEnabled: enabled };
     }),
