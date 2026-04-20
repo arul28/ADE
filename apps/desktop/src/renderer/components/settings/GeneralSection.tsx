@@ -1,8 +1,7 @@
-import React, { useEffect, useId, useState } from "react";
+import React, { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import type { AppInfo } from "../../../shared/types";
-import { DEFAULT_TERMINAL_FONT_FAMILY, useAppStore, THEME_IDS } from "../../state/appStore";
-import type { ThemeId } from "../../state/appStore";
+import { useAppStore } from "../../state/appStore";
 import { EmptyState } from "../ui/EmptyState";
 import { Info } from "@phosphor-icons/react";
 import {
@@ -13,144 +12,18 @@ import {
   primaryButton,
 } from "../lanes/laneDesignTokens";
 
-const TERMINAL_FONT_SIZE_OPTIONS = [11, 11.5, 12, 12.5, 13, 13.5, 14, 15];
-const TERMINAL_LINE_HEIGHT_OPTIONS = [1.1, 1.15, 1.2, 1.25, 1.3, 1.35];
-const TERMINAL_SCROLLBACK_OPTIONS = [5000, 10000, 20000, 30000];
-const TERMINAL_FONT_FAMILY_OPTIONS = [
-  { label: "ADE default", value: DEFAULT_TERMINAL_FONT_FAMILY },
-  { label: "JetBrains Mono", value: "\"JetBrains Mono\", " + DEFAULT_TERMINAL_FONT_FAMILY },
-  { label: "Geist Mono", value: "\"Geist Mono\", " + DEFAULT_TERMINAL_FONT_FAMILY },
-  { label: "Cascadia Mono", value: "\"Cascadia Mono\", " + DEFAULT_TERMINAL_FONT_FAMILY },
-  { label: "Menlo", value: "Menlo, " + DEFAULT_TERMINAL_FONT_FAMILY },
-  { label: "Monaco", value: "Monaco, " + DEFAULT_TERMINAL_FONT_FAMILY },
-];
-
-const THEME_META: Record<
-  ThemeId,
-  {
-    label: string;
-    description: string;
-    colors: { bg: string; fg: string; accent: string; card: string; border: string };
-  }
-> = {
-  dark: {
-    label: "DARK",
-    description: "After-hours office. Cyan glows against dark surfaces.",
-    colors: { bg: "#0f0f11", fg: "#e4e4e7", accent: "#A78BFA", card: "#18181b", border: "#27272a" },
-  },
-  light: {
-    label: "LIGHT",
-    description: "Morning office. Sunlit, clean, crisp accent.",
-    colors: { bg: "#f5f5f6", fg: "#0f0f11", accent: "#7C3AED", card: "#ffffff", border: "#d4d4d8" },
-  },
-};
-
 const sectionLabelStyle: React.CSSProperties = {
   ...LABEL_STYLE,
   fontSize: 11,
   marginBottom: 16,
 };
 
-function ThemeSwatch({
-  themeId,
-  selected,
-  onClick,
-}: {
-  themeId: ThemeId;
-  selected: boolean;
-  onClick: () => void;
-}) {
-  const { label, description, colors } = THEME_META[themeId];
-  const [hovered, setHovered] = useState(false);
-
-  return (
-    <button
-      onClick={onClick}
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
-      style={{
-        display: "flex",
-        alignItems: "center",
-        gap: 14,
-        padding: 14,
-        flex: 1,
-        background: selected ? `${COLORS.accent}08` : hovered ? COLORS.hoverBg : COLORS.cardBg,
-        border: selected
-          ? `1px solid ${COLORS.accent}`
-          : `1px solid ${hovered ? COLORS.outlineBorder : COLORS.border}`,
-        boxShadow: selected ? `inset 3px 0 0 ${COLORS.accent}` : "none",
-        borderRadius: 0,
-        cursor: "pointer",
-        position: "relative",
-        transition: "border-color 150ms, background 150ms, box-shadow 150ms",
-      }}
-    >
-      <div
-        style={{
-          width: 72,
-          height: 48,
-          flexShrink: 0,
-          background: colors.bg,
-          border: `1px solid ${colors.border}`,
-          borderRadius: 0,
-          overflow: "hidden",
-        }}
-      >
-        <div style={{ height: 8, background: colors.card }} />
-        <div
-          style={{
-            width: 40,
-            height: 4,
-            margin: "6px auto 0",
-            background: colors.accent,
-            borderRadius: 0,
-          }}
-        />
-        <div style={{ margin: "5px 6px 0", display: "flex", flexDirection: "column", gap: 3 }}>
-          <div style={{ height: 2, width: 36, background: colors.fg, opacity: 0.4 }} />
-          <div style={{ height: 2, width: 24, background: colors.fg, opacity: 0.25 }} />
-        </div>
-      </div>
-
-      <div style={{ textAlign: "left" }}>
-        <div
-          style={{
-            fontSize: 11,
-            fontWeight: 700,
-            fontFamily: MONO_FONT,
-            textTransform: "uppercase",
-            letterSpacing: "1px",
-            color: selected ? COLORS.accent : COLORS.textPrimary,
-          }}
-        >
-          {label}
-        </div>
-        <div
-          style={{
-            fontSize: 11,
-            fontFamily: MONO_FONT,
-            color: COLORS.textMuted,
-            marginTop: 4,
-          }}
-        >
-          {description}
-        </div>
-      </div>
-    </button>
-  );
-}
-
 export function GeneralSection() {
   const navigate = useNavigate();
-  const terminalFieldId = useId();
   const [info, setInfo] = useState<AppInfo | null>(null);
   const [onboardingStatus, setOnboardingStatus] = useState<{ completedAt: string | null; dismissedAt: string | null; freshProject?: boolean } | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const providerMode = useAppStore((s) => s.providerMode);
-  const theme = useAppStore((s) => s.theme);
-  const setTheme = useAppStore((s) => s.setTheme);
-  const terminalPreferences = useAppStore((s) => s.terminalPreferences);
-  const setTerminalPreferences = useAppStore((s) => s.setTerminalPreferences);
 
   useEffect(() => {
     let cancelled = false;
@@ -231,15 +104,6 @@ export function GeneralSection() {
       </section>
 
       <section>
-        <div style={sectionLabelStyle}>THEME</div>
-        <div style={{ display: "flex", gap: 12 }}>
-          {THEME_IDS.map((id) => (
-            <ThemeSwatch key={id} themeId={id} selected={theme === id} onClick={() => setTheme(id)} />
-          ))}
-        </div>
-      </section>
-
-      <section>
         <div style={sectionLabelStyle}>AI MODE</div>
         <div style={{ ...cardStyle(), display: "flex", flexDirection: "column", gap: 12 }}>
           <div style={{ ...LABEL_STYLE, marginBottom: 0 }}>CURRENT MODE</div>
@@ -284,105 +148,6 @@ export function GeneralSection() {
             >
               Provider authentication, connection checks, API keys, and worker permissions are managed in the AI tab.
             </span>
-          </div>
-        </div>
-      </section>
-
-      <section>
-        <div style={sectionLabelStyle}>TERMINAL</div>
-        <div style={{ ...cardStyle(), display: "grid", gap: 14 }}>
-          <div style={{ display: "grid", gap: 6 }}>
-            <label htmlFor={`${terminalFieldId}-fontFamily`} style={{ ...LABEL_STYLE, marginBottom: 0 }}>
-              FONT FAMILY
-            </label>
-            <select
-              id={`${terminalFieldId}-fontFamily`}
-              value={
-                TERMINAL_FONT_FAMILY_OPTIONS.some((option) => option.value === terminalPreferences.fontFamily)
-                  ? terminalPreferences.fontFamily
-                  : "__custom__"
-              }
-              onChange={(event) => {
-                const next = event.target.value;
-                if (next === "__custom__") return;
-                setTerminalPreferences({ fontFamily: next });
-              }}
-              style={{ height: 34, border: `1px solid ${COLORS.border}`, background: COLORS.recessedBg, color: COLORS.textPrimary, fontSize: 12, fontFamily: MONO_FONT, padding: "0 10px" }}
-            >
-              {TERMINAL_FONT_FAMILY_OPTIONS.map((option) => (
-                <option key={option.label} value={option.value}>
-                  {option.label}
-                </option>
-              ))}
-              <option value="__custom__">Custom stack</option>
-            </select>
-            <input
-              value={terminalPreferences.fontFamily}
-              onChange={(event) => setTerminalPreferences({ fontFamily: event.target.value })}
-              placeholder={DEFAULT_TERMINAL_FONT_FAMILY}
-              style={{ height: 34, border: `1px solid ${COLORS.border}`, background: COLORS.recessedBg, color: COLORS.textPrimary, fontSize: 12, fontFamily: MONO_FONT, padding: "0 10px" }}
-            />
-            <div style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textDim, lineHeight: 1.5 }}>
-              Use a CSS font-family stack. Example: <code>"JetBrains Mono", monospace</code>
-            </div>
-          </div>
-
-          <div style={{ display: "grid", gap: 6 }}>
-            <label htmlFor={`${terminalFieldId}-fontSize`} style={{ ...LABEL_STYLE, marginBottom: 0 }}>
-              FONT SIZE
-            </label>
-            <select
-              id={`${terminalFieldId}-fontSize`}
-              value={String(terminalPreferences.fontSize)}
-              onChange={(event) => setTerminalPreferences({ fontSize: Number(event.target.value) })}
-              style={{ height: 34, border: `1px solid ${COLORS.border}`, background: COLORS.recessedBg, color: COLORS.textPrimary, fontSize: 12, fontFamily: MONO_FONT, padding: "0 10px" }}
-            >
-              {TERMINAL_FONT_SIZE_OPTIONS.map((value) => (
-                <option key={value} value={value}>
-                  {value.toFixed(1).replace(/\.0$/, "")} px
-                </option>
-              ))}
-            </select>
-          </div>
-
-          <div style={{ display: "grid", gap: 6 }}>
-            <label htmlFor={`${terminalFieldId}-lineHeight`} style={{ ...LABEL_STYLE, marginBottom: 0 }}>
-              LINE HEIGHT
-            </label>
-            <select
-              id={`${terminalFieldId}-lineHeight`}
-              value={String(terminalPreferences.lineHeight)}
-              onChange={(event) => setTerminalPreferences({ lineHeight: Number(event.target.value) })}
-              style={{ height: 34, border: `1px solid ${COLORS.border}`, background: COLORS.recessedBg, color: COLORS.textPrimary, fontSize: 12, fontFamily: MONO_FONT, padding: "0 10px" }}
-            >
-              {TERMINAL_LINE_HEIGHT_OPTIONS.map((value) => (
-                <option key={value} value={value}>
-                  {value.toFixed(2).replace(/0$/, "")}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          <div style={{ display: "grid", gap: 6 }}>
-            <label htmlFor={`${terminalFieldId}-scrollback`} style={{ ...LABEL_STYLE, marginBottom: 0 }}>
-              SCROLLBACK
-            </label>
-            <select
-              id={`${terminalFieldId}-scrollback`}
-              value={String(terminalPreferences.scrollback)}
-              onChange={(event) => setTerminalPreferences({ scrollback: Number(event.target.value) })}
-              style={{ height: 34, border: `1px solid ${COLORS.border}`, background: COLORS.recessedBg, color: COLORS.textPrimary, fontSize: 12, fontFamily: MONO_FONT, padding: "0 10px" }}
-            >
-              {TERMINAL_SCROLLBACK_OPTIONS.map((value) => (
-                <option key={value} value={value}>
-                  {value.toLocaleString()} lines
-                </option>
-              ))}
-            </select>
-          </div>
-
-          <div style={{ fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textMuted, lineHeight: 1.6 }}>
-            These preferences apply across work terminals, lane shells, resolver terminals, and the chat drawer.
           </div>
         </div>
       </section>

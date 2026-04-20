@@ -306,6 +306,7 @@ describe("prService.getMobileSnapshot", () => {
     const eligibleEntry = snapshot.createCapabilities.lanes.find((lane) => lane.laneId === "lane-feat")!;
     expect(eligibleEntry.canCreate).toBe(true);
     expect(eligibleEntry.blockedReason).toBeNull();
+    expect(eligibleEntry.commitsAheadOfBase).toBe(0);
   });
 
   it("includes queue and rebase workflow cards and skips completed queues", async () => {

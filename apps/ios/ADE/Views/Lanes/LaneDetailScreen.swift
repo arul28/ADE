@@ -93,10 +93,6 @@ struct LaneDetailScreen: View {
           .background(ADEColor.danger.opacity(0.08), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
         }
 
-        if let detailConnectionNotice {
-          connectionNoticeCard(detailConnectionNotice)
-        }
-
         rebaseBannerSection
 
         detailHeader
@@ -115,6 +111,11 @@ struct LaneDetailScreen: View {
     .scrollBounceBehavior(.basedOnSize)
     .navigationTitle(detail?.lane.name ?? initialSnapshot.lane.name)
     .navigationBarTitleDisplayMode(.inline)
+    .toolbar {
+      ToolbarItem(placement: .topBarLeading) {
+        ADEConnectionDot()
+      }
+    }
     .adeNavigationZoomTransition(id: transitionNamespace == nil ? nil : "lane-container-\(laneId)", in: transitionNamespace)
     .task {
       syncService.announceLaneOpen(laneId: laneId)
@@ -280,16 +281,6 @@ struct LaneDetailScreen: View {
     laneAllowsLiveActions(connectionState: syncService.connectionState, laneStatus: syncService.status(for: .lanes))
   }
 
-  private var detailConnectionNotice: LaneConnectionNoticePresentation? {
-    laneDetailConnectionNotice(
-      connectionState: syncService.connectionState,
-      laneStatus: syncService.status(for: .lanes),
-      hasCachedDetail: detail != nil,
-      hasHostProfile: syncService.activeHostProfile != nil,
-      needsRepairing: syncService.activeHostProfile == nil && detail != nil
-    )
-  }
-
   private var detailEmptyStatePresentation: LaneEmptyStatePresentation? {
     laneDetailEmptyState(
       connectionState: syncService.connectionState,
@@ -389,22 +380,6 @@ struct LaneDetailScreen: View {
 
   private func openPullRequest(_ pr: PullRequestListItem) {
     syncService.requestedPrNavigation = PrNavigationRequest(prId: pr.id, laneId: pr.laneId)
-  }
-
-  @ViewBuilder
-  private func connectionNoticeCard(_ presentation: LaneConnectionNoticePresentation) -> some View {
-    ADENoticeCard(
-      title: presentation.title,
-      message: presentation.message,
-      icon: presentation.icon,
-      tint: presentation.tintRole.color,
-      actionTitle: presentation.actionTitle,
-      action: presentation.action.map { action in
-        {
-          handleNoticeAction(action)
-        }
-      }
-    )
   }
 
   @ViewBuilder

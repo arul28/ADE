@@ -86,6 +86,138 @@ function normalizeRelativePath(value: string): string {
   return normalized.replace(/^\.\/+/, "") || ".";
 }
 
+function isAbsoluteConfigPath(value: string): boolean {
+  const normalized = value.trim().replace(/\\/g, "/");
+  return normalized.startsWith("/") || /^[A-Za-z]:\//.test(normalized);
+}
+
+function trimTrailingSlash(value: string): string {
+  const normalized = value.trim().replace(/\\/g, "/");
+  if (/^[A-Za-z]:\/?$/.test(normalized)) return normalized.replace(/\/+$/, "/");
+  if (normalized === "/") return normalized;
+  return normalized.replace(/\/+$/, "");
+}
+
+function projectRelativeFromAbsolute(projectRoot: string | null, value: string): string | null {
+  if (!projectRoot || !isAbsoluteConfigPath(value)) return null;
+  const root = trimTrailingSlash(projectRoot);
+  const candidate = trimTrailingSlash(value);
+  const windowsPath = /^[A-Za-z]:\//.test(root) || /^[A-Za-z]:\//.test(candidate);
+  const rootKey = windowsPath ? root.toLowerCase() : root;
+  const candidateKey = windowsPath ? candidate.toLowerCase() : candidate;
+  if (candidateKey === rootKey) return ".";
+  if (!candidateKey.startsWith(`${rootKey}/`)) return null;
+  return candidate.slice(root.length + 1) || ".";
+}
+
+function relativePathFromProjectDir(fromDir: string, toPath: string): string {
+  const fromParts = normalizeRelativePath(fromDir).split("/").filter((part) => part && part !== ".");
+  const toParts = normalizeRelativePath(toPath).split("/").filter((part) => part && part !== ".");
+  let idx = 0;
+  while (idx < fromParts.length && idx < toParts.length && fromParts[idx] === toParts[idx]) idx += 1;
+  const up = fromParts.slice(idx).map(() => "..");
+  const down = toParts.slice(idx);
+  const relative = [...up, ...down].join("/");
+  return relative || ".";
+}
+
+function normalizeCwdForConfig(cwd: string, projectRoot: string | null): string | undefined {
+  const normalized = normalizeRelativePath(cwd);
+  if (normalized === ".") return undefined;
+  return projectRelativeFromAbsolute(projectRoot, normalized) ?? normalized;
+}
+
+function normalizeCommandForConfig(commandLine: string, cwd: string | undefined, projectRoot: string | null): {
+  command: string[];
+  localOnly: boolean;
+} {
+  const command = parseCommandLine(commandLine);
+  const normalizedCwd = cwd ?? ".";
+  const hasOutsideProjectAbsolutePath = command.some((part) =>
+    isAbsoluteConfigPath(part) && projectRelativeFromAbsolute(projectRoot, part) == null
+  );
+  if (!command[0]) return { command, localOnly: hasOutsideProjectAbsolutePath };
+
+  const executableProjectPath = projectRelativeFromAbsolute(projectRoot, command[0]);
+  if (executableProjectPath == null) {
+    return { command, localOnly: hasOutsideProjectAbsolutePath };
+  }
+
+  const executableFromCwd = relativePathFromProjectDir(normalizedCwd, executableProjectPath);
+  const executable = executableFromCwd.includes("/") || executableFromCwd.startsWith(".")
+    ? executableFromCwd
+    : `./${executableFromCwd}`;
+  return {
+    command: [executable, ...command.slice(1)],
+    localOnly: hasOutsideProjectAbsolutePath
+  };
+}
+
+function buildProcessConfigDefinition(
+  processId: string,
+  cmd: {
+    name: string;
+    command: string;
+    cwd: string;
+    env: string;
+    autostart: boolean;
+    restart: AddCommandInitialValues["restart"];
+    gracefulShutdownMs: string;
+    dependsOn: string;
+    readinessType: AddCommandInitialValues["readinessType"];
+    readinessPort: string;
+    readinessPattern: string;
+    groupIds: string[];
+  },
+  allGroupIds: string[],
+  projectRoot: string | null,
+): { process: ConfigProcessDefinition; localOnly: boolean } {
+  const cwd = normalizeCwdForConfig(cmd.cwd, projectRoot);
+  const command = normalizeCommandForConfig(cmd.command, cwd, projectRoot);
+  const cwdLocalOnly = isAbsoluteConfigPath(cmd.cwd) && projectRelativeFromAbsolute(projectRoot, cmd.cwd) == null;
+  return {
+    process: {
+      id: processId,
+      name: cmd.name,
+      command: command.command,
+      cwd,
+      env: parseEnvText(cmd.env),
+      autostart: cmd.autostart ? true : undefined,
+      restart: cmd.restart === "never" ? undefined : cmd.restart,
+      gracefulShutdownMs: parseGracefulShutdownMs(cmd.gracefulShutdownMs),
+      dependsOn: parseDependsOnCsv(cmd.dependsOn),
+      readiness: buildReadinessConfig(cmd),
+      groupIds: allGroupIds.length > 0 ? allGroupIds : undefined,
+    },
+    localOnly: command.localOnly || cwdLocalOnly
+  };
+}
+
+function upsertProcess(processes: ConfigProcessDefinition[] | undefined, processEntry: ConfigProcessDefinition): ConfigProcessDefinition[] {
+  const existing = processes ?? [];
+  return existing.some((entry) => entry.id === processEntry.id)
+    ? existing.map((entry) => (entry.id === processEntry.id ? processEntry : entry))
+    : [...existing, processEntry];
+}
+
+function removeProcess(processes: ConfigProcessDefinition[] | undefined, processId: string): ConfigProcessDefinition[] {
+  return (processes ?? []).filter((entry) => entry.id !== processId);
+}
+
+function upsertStackButton(
+  stackButtons: ConfigStackButtonDefinition[] | undefined,
+  stack: ConfigStackButtonDefinition,
+): ConfigStackButtonDefinition[] {
+  const existing = stackButtons ?? [];
+  return existing.some((entry) => entry.id === stack.id)
+    ? existing.map((entry) => (entry.id === stack.id ? stack : entry))
+    : [...existing, stack];
+}
+
+function uniqueProcessIds(ids: string[]): string[] {
+  return Array.from(new Set(ids.filter(Boolean)));
+}
+
 const RUN_PAGE_LANE_STORAGE_KEY = "ade.runPageLaneSelections.v1";
 
 type PersistedRunPageLaneState = {
@@ -754,25 +886,18 @@ export function RunPage() {
       name,
     }));
     const allGroupIds = [...cmd.groupIds, ...createdGroups.map((group) => group.id)];
-    const newProcess: ConfigProcessDefinition = {
-      id: processId,
-      name: cmd.name,
-      command: parseCommandLine(cmd.command),
-      cwd: cmd.cwd === "." ? undefined : normalizeRelativePath(cmd.cwd),
-      env: parseEnvText(cmd.env),
-      autostart: cmd.autostart ? true : undefined,
-      restart: cmd.restart === "never" ? undefined : cmd.restart,
-      gracefulShutdownMs: parseGracefulShutdownMs(cmd.gracefulShutdownMs),
-      dependsOn: parseDependsOnCsv(cmd.dependsOn),
-      readiness: buildReadinessConfig(cmd),
-      groupIds: allGroupIds.length > 0 ? allGroupIds : undefined,
-    };
+    const { process: newProcess, localOnly } = buildProcessConfigDefinition(processId, cmd, allGroupIds, projectRoot);
 
     const shared = { ...config.shared };
-    shared.processes = [...(shared.processes ?? []), newProcess];
-    shared.processGroups = [...(shared.processGroups ?? []), ...createdGroups];
+    const local = { ...config.local };
+    if (localOnly) {
+      local.processes = upsertProcess(local.processes, newProcess);
+      local.processGroups = [...(local.processGroups ?? []), ...createdGroups];
+    } else {
+      shared.processes = upsertProcess(shared.processes, newProcess);
+      shared.processGroups = [...(shared.processGroups ?? []), ...createdGroups];
+    }
 
-    let stackButtons = [...(shared.stackButtons ?? [])];
     let targetStackId = cmd.stackId;
     if (cmd.newStackName) {
       const newStack: ConfigStackButtonDefinition = {
@@ -780,20 +905,33 @@ export function RunPage() {
         name: cmd.newStackName,
         processIds: [processId],
       };
-      stackButtons = [...stackButtons, newStack];
       targetStackId = newStack.id;
+      if (localOnly) {
+        local.stackButtons = upsertStackButton(local.stackButtons, newStack);
+      } else {
+        shared.stackButtons = upsertStackButton(shared.stackButtons, newStack);
+      }
     } else if (targetStackId) {
-      stackButtons = stackButtons.map((stack) =>
-        stack.id === targetStackId
-          ? { ...stack, processIds: [...(stack.processIds ?? []), processId] }
-          : stack,
-      );
+      if (localOnly) {
+        const effectiveStack = config.effective.stackButtons.find((stack) => stack.id === targetStackId);
+        if (effectiveStack) {
+          local.stackButtons = upsertStackButton(local.stackButtons, {
+            ...effectiveStack,
+            processIds: uniqueProcessIds([...(effectiveStack.processIds ?? []), processId]),
+          });
+        }
+      } else {
+        shared.stackButtons = (shared.stackButtons ?? []).map((stack) =>
+          stack.id === targetStackId
+            ? { ...stack, processIds: uniqueProcessIds([...(stack.processIds ?? []), processId]) }
+            : stack,
+        );
+      }
     }
-    shared.stackButtons = stackButtons;
 
-    await window.ade.projectConfig.save({ shared, local: config.local });
+    await window.ade.projectConfig.save({ shared, local });
     await Promise.all([refreshDefinitions(), refreshRuntime()]);
-  }, [config, refreshDefinitions, refreshRuntime]);
+  }, [config, projectRoot, refreshDefinitions, refreshRuntime]);
 
   const updateProcessInConfig = useCallback(async (
     processId: string,
@@ -817,59 +955,104 @@ export function RunPage() {
   ) => {
     if (!config) return;
     const shared = { ...config.shared };
+    const local = { ...config.local };
     const createdGroups: ConfigProcessGroupDefinition[] = cmd.newGroupNames.map((name) => ({
       id: generateId(),
       name,
     }));
     const allGroupIds = [...cmd.groupIds, ...createdGroups.map((group) => group.id)];
+    const { process: nextProcess, localOnly } = buildProcessConfigDefinition(processId, cmd, allGroupIds, projectRoot);
+    const existingLocal = (config.local.processes ?? []).some((entry) => entry.id === processId);
+    const targetLocal = existingLocal || localOnly;
 
-    shared.processes = (shared.processes ?? []).map((processEntry) =>
-      processEntry.id === processId
-        ? {
-            ...processEntry,
-            name: cmd.name,
-            command: parseCommandLine(cmd.command),
-            cwd: cmd.cwd === "." ? undefined : normalizeRelativePath(cmd.cwd),
-            env: parseEnvText(cmd.env),
-            autostart: cmd.autostart ? true : undefined,
-            restart: cmd.restart === "never" ? undefined : cmd.restart,
-            gracefulShutdownMs: parseGracefulShutdownMs(cmd.gracefulShutdownMs),
-            dependsOn: parseDependsOnCsv(cmd.dependsOn),
-            readiness: buildReadinessConfig(cmd),
-            groupIds: allGroupIds.length > 0 ? allGroupIds : undefined,
-          }
-        : processEntry,
-    );
-    shared.processGroups = [...(shared.processGroups ?? []), ...createdGroups];
-
-    let stackButtons = (shared.stackButtons ?? []).map((stack) => ({
-      ...stack,
-      processIds: (stack.processIds ?? []).filter((id) => id !== processId),
-    }));
-    if (cmd.newStackName) {
-      stackButtons = [...stackButtons, { id: generateId(), name: cmd.newStackName, processIds: [processId] }];
-    } else if (cmd.stackId) {
-      stackButtons = stackButtons.map((stack) =>
-        stack.id === cmd.stackId
-          ? { ...stack, processIds: [...(stack.processIds ?? []), processId] }
-          : stack,
-      );
+    if (targetLocal) {
+      local.processes = upsertProcess(local.processes, nextProcess);
+      local.processGroups = [...(local.processGroups ?? []), ...createdGroups];
+      if (localOnly) {
+        shared.processes = removeProcess(shared.processes, processId);
+        shared.stackButtons = (shared.stackButtons ?? []).map((stack) => ({
+          ...stack,
+          processIds: (stack.processIds ?? []).filter((id) => id !== processId),
+        }));
+      }
+    } else {
+      shared.processes = upsertProcess(shared.processes, nextProcess);
+      shared.processGroups = [...(shared.processGroups ?? []), ...createdGroups];
+      local.processes = removeProcess(local.processes, processId);
     }
-    shared.stackButtons = stackButtons;
 
-    await window.ade.projectConfig.save({ shared, local: config.local });
+    if (cmd.newStackName) {
+      const newStack = { id: generateId(), name: cmd.newStackName, processIds: [processId] };
+      if (targetLocal) {
+        for (const stack of config.effective.stackButtons.filter((entry) => entry.processIds.includes(processId))) {
+          local.stackButtons = upsertStackButton(local.stackButtons, {
+            ...stack,
+            processIds: stack.processIds.filter((id) => id !== processId),
+          });
+        }
+        local.stackButtons = upsertStackButton(local.stackButtons, newStack);
+      } else {
+        shared.stackButtons = [
+          ...(shared.stackButtons ?? []).map((stack) => ({
+            ...stack,
+            processIds: (stack.processIds ?? []).filter((id) => id !== processId),
+          })),
+          newStack,
+        ];
+      }
+    } else if (cmd.stackId) {
+      if (targetLocal) {
+        for (const stack of config.effective.stackButtons.filter((entry) => entry.processIds.includes(processId) || entry.id === cmd.stackId)) {
+          local.stackButtons = upsertStackButton(local.stackButtons, {
+            ...stack,
+            processIds: uniqueProcessIds(
+              stack.id === cmd.stackId
+                ? [...stack.processIds.filter((id) => id !== processId), processId]
+                : stack.processIds.filter((id) => id !== processId),
+            ),
+          });
+        }
+      } else {
+        shared.stackButtons = (shared.stackButtons ?? []).map((stack) => {
+          const withoutProcess = (stack.processIds ?? []).filter((id) => id !== processId);
+          return stack.id === cmd.stackId
+            ? { ...stack, processIds: uniqueProcessIds([...withoutProcess, processId]) }
+            : { ...stack, processIds: withoutProcess };
+        });
+      }
+    } else if (targetLocal) {
+      for (const stack of config.effective.stackButtons.filter((entry) => entry.processIds.includes(processId))) {
+        local.stackButtons = upsertStackButton(local.stackButtons, {
+          ...stack,
+          processIds: stack.processIds.filter((id) => id !== processId),
+        });
+      }
+    } else {
+      shared.stackButtons = (shared.stackButtons ?? []).map((stack) => ({
+        ...stack,
+        processIds: (stack.processIds ?? []).filter((id) => id !== processId),
+      }));
+    }
+
+    await window.ade.projectConfig.save({ shared, local });
     await Promise.all([refreshDefinitions(), refreshRuntime()]);
-  }, [config, refreshDefinitions, refreshRuntime]);
+  }, [config, projectRoot, refreshDefinitions, refreshRuntime]);
 
   const handleDeleteProcess = useCallback(async (processId: string) => {
     if (!config) return;
     const shared = { ...config.shared };
+    const local = { ...config.local };
     shared.processes = (shared.processes ?? []).filter((processEntry) => processEntry.id !== processId);
+    local.processes = (local.processes ?? []).filter((processEntry) => processEntry.id !== processId);
     shared.stackButtons = (shared.stackButtons ?? []).map((stack) => ({
       ...stack,
       processIds: (stack.processIds ?? []).filter((id) => id !== processId),
     }));
-    await window.ade.projectConfig.save({ shared, local: config.local });
+    local.stackButtons = (local.stackButtons ?? []).map((stack) => ({
+      ...stack,
+      processIds: (stack.processIds ?? []).filter((id) => id !== processId),
+    }));
+    await window.ade.projectConfig.save({ shared, local });
     await Promise.all([refreshDefinitions(), refreshRuntime()]);
   }, [config, refreshDefinitions, refreshRuntime]);
 

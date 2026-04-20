@@ -77,6 +77,9 @@ struct WorkNewChatScreen: View {
     .navigationBarTitleDisplayMode(.inline)
     .toolbar(.hidden, for: .tabBar)
     .toolbar {
+      ToolbarItem(placement: .topBarLeading) {
+        ADEConnectionDot()
+      }
       ToolbarItem(placement: .topBarTrailing) {
         if busy {
           ProgressView().controlSize(.small)

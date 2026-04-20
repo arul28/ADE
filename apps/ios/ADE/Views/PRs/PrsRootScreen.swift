@@ -42,10 +42,6 @@ struct PRsTabView: View {
     prsStatus.phase == .ready && (syncService.connectionState == .connected || syncService.connectionState == .syncing)
   }
 
-  private var needsRepairing: Bool {
-    syncService.activeHostProfile == nil && !prs.isEmpty
-  }
-
   private var isLoadingSkeleton: Bool {
     prsStatus.phase == .hydrating || prsStatus.phase == .syncingInitialData
   }
@@ -218,10 +214,6 @@ struct PRsTabView: View {
   var body: some View {
     NavigationStack(path: $path) {
       List {
-        if let statusNotice {
-          statusNotice.prListRow()
-        }
-
         if let notice = laneContextNotice {
           notice.prListRow()
         }
@@ -232,6 +224,17 @@ struct PRsTabView: View {
               .prListRow()
           }
         } else {
+          if let hydrationNotice = prsStatus.inlineHydrationFailureNotice(for: .prs) {
+            ADENoticeCard(
+              title: hydrationNotice.title,
+              message: hydrationNotice.message,
+              icon: "exclamationmark.triangle.fill",
+              tint: ADEColor.danger,
+              actionTitle: "Retry",
+              action: { Task { await reload(refreshRemote: true) } }
+            )
+            .prListRow()
+          }
           if let errorMessage, prsStatus.phase == .ready {
             ADENoticeCard(
               title: "PR view error",
@@ -294,7 +297,7 @@ struct PRsTabView: View {
       .searchable(text: $searchText, prompt: selectedRootSurface.wrappedValue == .github ? "Search PRs, branches, authors" : "Search workflow cards")
       .toolbar {
         ToolbarItem(placement: .topBarLeading) {
-          ADEConnectionPill()
+          ADEConnectionDot()
         }
         ToolbarItemGroup(placement: .topBarTrailing) {
           Button {
@@ -416,18 +419,6 @@ struct PRsTabView: View {
       onRefresh: { Task { await reload(refreshRemote: true) } }
     )
     .prListRow()
-
-    if githubSnapshot == nil && !isLive && !prs.isEmpty {
-      ADENoticeCard(
-        title: "Showing cached ADE PRs",
-        message: "Reconnect to see repository, external, ADE, and status filters from the desktop GitHub tab.",
-        icon: "wifi.slash",
-        tint: ADEColor.warning,
-        actionTitle: nil,
-        action: nil
-      )
-      .prListRow()
-    }
 
     if prsStatus.phase == .ready && filteredPrs.isEmpty && filteredGitHubPrs.isEmpty {
       ADEEmptyStateView(
@@ -828,64 +819,6 @@ struct PRsTabView: View {
   private func openGitHub(urlString: String) {
     guard let url = URL(string: urlString) else { return }
     UIApplication.shared.open(url)
-  }
-
-  private var statusNotice: ADENoticeCard? {
-    switch prsStatus.phase {
-    case .disconnected:
-      return ADENoticeCard(
-        title: prs.isEmpty ? "Host disconnected" : "Showing cached PRs",
-        message: prs.isEmpty
-          ? (syncService.activeHostProfile == nil
-              ? "Pair with a host to hydrate pull requests, stacks, and workflow state."
-              : "Reconnect to hydrate pull requests, stacks, and workflow state.")
-          : (needsRepairing
-              ? "Cached PR state is still visible, but the previous host trust was cleared. Pair again before trusting review or workflow status."
-              : "Cached PR state is visible. Reconnect before trusting live merge, review, or queue readiness."),
-        icon: "arrow.triangle.pull",
-        tint: ADEColor.warning,
-        actionTitle: syncService.activeHostProfile == nil ? (needsRepairing ? "Pair again" : "Pair with host") : "Reconnect",
-        action: {
-          if syncService.activeHostProfile == nil {
-            syncService.settingsPresented = true
-          } else {
-            Task {
-              await syncService.reconnectIfPossible(userInitiated: true)
-              await reload(refreshRemote: true)
-            }
-          }
-        }
-      )
-    case .hydrating:
-      return ADENoticeCard(
-        title: "Hydrating pull requests",
-        message: "Refreshing PR summaries, stack relationships, and cached detail so iPhone does not show partial state.",
-        icon: "arrow.trianglehead.2.clockwise.rotate.90",
-        tint: ADEColor.accent,
-        actionTitle: nil,
-        action: nil
-      )
-    case .syncingInitialData:
-      return ADENoticeCard(
-        title: "Syncing initial data",
-        message: "Waiting for the host to finish syncing project data before PR hydration starts.",
-        icon: "arrow.trianglehead.2.clockwise.rotate.90",
-        tint: ADEColor.warning,
-        actionTitle: nil,
-        action: nil
-      )
-    case .failed:
-      return ADENoticeCard(
-        title: "PR hydration failed",
-        message: prsStatus.lastError ?? "The host PR state did not hydrate cleanly.",
-        icon: "exclamationmark.triangle.fill",
-        tint: ADEColor.danger,
-        actionTitle: "Retry",
-        action: { Task { await reload(refreshRemote: true) } }
-      )
-    case .ready:
-      return nil
-    }
   }
 
   // MARK: - Legacy → unified workflow card adapters

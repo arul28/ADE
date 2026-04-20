@@ -1733,25 +1733,6 @@ final class ADETests: XCTestCase {
     )
   }
 
-  func testLaneRootConnectionNoticeKeepsCachedLanesVisibleWhileOffline() {
-    let notice = laneRootConnectionNotice(
-      connectionState: .disconnected,
-      laneStatus: .disconnected,
-      hasCachedLanes: true,
-      hasHostProfile: true,
-      needsRepairing: false
-    )
-
-    XCTAssertEqual(notice?.title, "Showing cached lanes")
-    XCTAssertEqual(notice?.actionTitle, "Reconnect")
-    XCTAssertEqual(notice?.action, .reconnect)
-    XCTAssertFalse(notice?.allowsLiveActions ?? true)
-    XCTAssertEqual(
-      notice?.message,
-      "Cached lane state stays visible. Reconnect to refresh or run live lane actions."
-    )
-  }
-
   func testLaneRootEmptyStateGuidesUnpairedUsersWhenNoCacheExists() {
     let emptyState = laneRootEmptyState(
       connectionState: .disconnected,
@@ -1762,24 +1743,6 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(emptyState?.title, "Pair to load lanes")
     XCTAssertEqual(emptyState?.actionTitle, "Pair with host")
     XCTAssertEqual(emptyState?.action, .openSettings)
-  }
-
-  func testLaneDetailNoticeDisablesLiveActionsWhileSyncing() {
-    let notice = laneDetailConnectionNotice(
-      connectionState: .syncing,
-      laneStatus: SyncDomainStatus(phase: .ready, lastError: nil, lastHydratedAt: nil),
-      hasCachedDetail: true,
-      hasHostProfile: true,
-      needsRepairing: false
-    )
-
-    XCTAssertEqual(notice?.title, "Syncing live lane detail")
-    XCTAssertFalse(notice?.allowsLiveActions ?? true)
-    XCTAssertNil(notice?.action)
-    XCTAssertEqual(
-      notice?.message,
-      "Cached lane detail remains visible while sync catches up. Live git actions unlock when sync finishes."
-    )
   }
 
   func testLaneDetailEmptyStateSurfacesRetryWhenHydrationFailsWithoutCache() {
@@ -2229,35 +2192,6 @@ final class ADETests: XCTestCase {
     let request = FilesNavigationRequest(workspaceId: "stale-id", laneId: "lane-2", relativePath: "Sources/App.swift")
 
     XCTAssertEqual(resolveFilesWorkspace(for: request, in: workspaces)?.id, "workspace-lane-2")
-  }
-
-  func testFilesBrowserStatusPresentationKeepsCachedWorkspacesExplicitWhileOffline() {
-    let presentation = filesBrowserStatusPresentation(
-      status: SyncDomainStatus(phase: .disconnected),
-      hasCachedWorkspaces: true,
-      hasActiveHostProfile: true,
-      needsRepairing: false
-    )
-
-    XCTAssertEqual(presentation?.title, "Showing cached workspaces")
-    XCTAssertEqual(presentation?.actionTitle, "Reconnect")
-    XCTAssertEqual(
-      presentation?.message,
-      "Workspace metadata and cached directory snapshots stay visible on iPhone, but quick open, text search, and refresh need the host to reconnect."
-    )
-  }
-
-  func testFilesBrowserStatusPresentationUsesFailureCopyWhenWorkspaceHydrationFails() {
-    let presentation = filesBrowserStatusPresentation(
-      status: SyncDomainStatus(phase: .failed, lastError: "Lane hydration timed out"),
-      hasCachedWorkspaces: false,
-      hasActiveHostProfile: false,
-      needsRepairing: false
-    )
-
-    XCTAssertEqual(presentation?.title, "Workspace hydration failed")
-    XCTAssertEqual(presentation?.message, "Lane hydration timed out")
-    XCTAssertEqual(presentation?.actionTitle, "Retry")
   }
 
   func testFilesSearchEmptyMessageReflectsLiveAndQueryState() {
@@ -3601,6 +3535,7 @@ final class ADETests: XCTestCase {
             "defaultBaseBranch": "main",
             "defaultTitle": "new",
             "dirty": false,
+            "commitsAheadOfBase": 0,
             "hasExistingPr": false,
             "canCreate": true,
             "blockedReason": null
@@ -3614,6 +3549,7 @@ final class ADETests: XCTestCase {
             "defaultBaseBranch": "main",
             "defaultTitle": "blocked",
             "dirty": false,
+            "commitsAheadOfBase": 2,
             "hasExistingPr": true,
             "canCreate": false,
             "blockedReason": "Lane already has an open PR (#7)."
@@ -3757,6 +3693,34 @@ final class ADETests: XCTestCase {
     XCTAssertNil(snapshot.createCapabilities.defaultBaseBranch)
   }
 
+  func testPrCreateCapabilitiesPreserveUnknownLegacyAheadCount() throws {
+    let json = """
+    {
+      "canCreateAny": true,
+      "defaultBaseBranch": "main",
+      "lanes": [
+        {
+          "laneId": "lane-legacy",
+          "laneName": "legacy",
+          "parentLaneId": null,
+          "repoOwner": null,
+          "repoName": null,
+          "defaultBaseBranch": "main",
+          "defaultTitle": "legacy",
+          "dirty": false,
+          "hasExistingPr": false,
+          "canCreate": true,
+          "blockedReason": null
+        }
+      ]
+    }
+    """
+
+    let capabilities = try JSONDecoder().decode(PrCreateCapabilities.self, from: Data(json.utf8))
+    XCTAssertEqual(capabilities.lanes.first?.laneId, "lane-legacy")
+    XCTAssertNil(capabilities.lanes.first?.commitsAheadOfBase)
+  }
+
   func testPrActionCapabilitiesGateMergeAndSurfaceBlockedReason() {
     let capabilitiesAllow = PrActionCapabilities(
       prId: "pr-1",
@@ -3815,6 +3779,7 @@ final class ADETests: XCTestCase {
       defaultBaseBranch: "main",
       defaultTitle: "feat/new",
       dirty: false,
+      commitsAheadOfBase: 1,
       hasExistingPr: false,
       canCreate: true,
       blockedReason: nil
@@ -3828,6 +3793,7 @@ final class ADETests: XCTestCase {
       defaultBaseBranch: "main",
       defaultTitle: "feat/blocked",
       dirty: false,
+      commitsAheadOfBase: 0,
       hasExistingPr: true,
       canCreate: false,
       blockedReason: "Lane already has an open PR (#12)."

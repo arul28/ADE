@@ -1,5 +1,6 @@
-import type { ReactNode } from "react";
+import React, { type ReactNode } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
+import { HighlightedCode } from "./CodeHighlighter";
 import rehypeRaw from "rehype-raw";
 import rehypeSanitize, { defaultSchema } from "rehype-sanitize";
 import remarkGfm from "remark-gfm";
@@ -37,6 +38,17 @@ export const SAFE_PREVIEW_SCHEMA = {
 type Tone = "sky" | "amber";
 
 type Overrides = Partial<Components>;
+
+function extractPlainText(node: ReactNode): string {
+  if (typeof node === "string") return node;
+  if (typeof node === "number") return String(node);
+  if (Array.isArray(node)) return node.map(extractPlainText).join("");
+  if (node && typeof node === "object" && "props" in (node as object)) {
+    const props = (node as { props: { children?: ReactNode } }).props;
+    return extractPlainText(props?.children);
+  }
+  return "";
+}
 
 function toneAccents(tone: Tone) {
   return tone === "amber"
@@ -80,16 +92,41 @@ export function buildChatMarkdownComponents(tone: Tone = "sky", overrides: Overr
       </h4>
     ),
     hr: () => <hr className={`my-3 ${accent.hr}`} />,
-    pre: ({ children }) => (
-      <pre className="mb-3 overflow-auto rounded-sm border border-white/[0.06] bg-black/25 p-3 font-mono text-[11px] leading-5 last:mb-0">
-        {children}
-      </pre>
-    ),
-    code: ({ children, className }) => (
-      <code className={className ?? "rounded-sm bg-black/30 px-1 py-0.5 font-mono text-[11px]"}>
-        {children}
-      </code>
-    ),
+    pre: ({ children }) => {
+      const first = Array.isArray(children) ? children[0] : children;
+      if (first && typeof first === "object" && "props" in (first as object)) {
+        const props = (first as { props?: { className?: string; children?: ReactNode } }).props;
+        const className = props?.className ?? "";
+        const match = /language-([\w-]+)/.exec(className);
+        const language = match ? match[1] : "text";
+        const codeText = extractPlainText(props?.children).replace(/\n$/, "");
+        return <HighlightedCode code={codeText} language={language} />;
+      }
+      return (
+        <pre
+          className="mb-3 overflow-auto rounded-sm p-3 font-mono text-[11px] leading-5 last:mb-0"
+          style={{
+            background: "var(--chat-block-bg)",
+            border: "1px solid var(--chat-block-border)",
+          }}
+        >
+          {children}
+        </pre>
+      );
+    },
+    code: ({ children, className }) => {
+      if (className && /language-/.test(className)) {
+        return <code className={className}>{children}</code>;
+      }
+      return (
+        <code
+          className={className ?? "rounded-sm px-1 py-0.5 font-mono text-[11px]"}
+          style={className ? undefined : { background: "var(--chat-inline-code-bg)" }}
+        >
+          {children}
+        </code>
+      );
+    },
     blockquote: ({ children }) => (
       <blockquote className={`mb-3 border-l-2 pl-3 text-muted-fg/72 last:mb-0 ${accent.blockquoteBorder}`}>
         {children}
@@ -108,8 +145,22 @@ export function buildChatMarkdownComponents(tone: Tone = "sky", overrides: Overr
       </a>
     ),
     table: ({ children }) => <table className="mb-3 w-full border-collapse text-left last:mb-0">{children}</table>,
-    th: ({ children }) => <th className="border border-white/[0.08] px-2 py-1 font-semibold">{children}</th>,
-    td: ({ children }) => <td className="border border-white/[0.08] px-2 py-1 align-top">{children}</td>,
+    th: ({ children }) => (
+      <th
+        className="px-2 py-1 font-semibold"
+        style={{ border: "1px solid var(--chat-table-border)" }}
+      >
+        {children}
+      </th>
+    ),
+    td: ({ children }) => (
+      <td
+        className="px-2 py-1 align-top"
+        style={{ border: "1px solid var(--chat-table-border)" }}
+      >
+        {children}
+      </td>
+    ),
     ...overrides,
   } satisfies Components;
 }

@@ -225,7 +225,6 @@ private enum WorkPreviewData {
       sending: .constant(false),
       errorMessage: .constant(nil),
       isLive: true,
-      disconnectedNotice: false,
       transitionNamespace: nil,
       onOpenLane: {},
       onSend: { _ in true },

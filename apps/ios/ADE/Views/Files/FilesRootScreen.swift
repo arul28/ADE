@@ -27,11 +27,17 @@ struct FilesRootScreen: View {
     NavigationStack(path: $navigationPath) {
       ScrollView {
         LazyVStack(alignment: .leading, spacing: 14) {
-          if let presentation = statusPresentation {
-            statusNoticeCard(presentation)
-              .transition(.opacity)
+          if let hydrationNotice = filesStatus.inlineHydrationFailureNotice(for: .files) {
+            ADENoticeCard(
+              title: hydrationNotice.title,
+              message: hydrationNotice.message,
+              icon: "exclamationmark.triangle.fill",
+              tint: ADEColor.danger,
+              actionTitle: "Retry",
+              action: { Task { await reload(refreshRemote: true) } }
+            )
+            .transition(.opacity)
           }
-
           if let errorMessage, filesStatus.phase == .ready {
             ADENoticeCard(
               title: "Files view error",
@@ -49,11 +55,14 @@ struct FilesRootScreen: View {
             ADECardSkeleton(rows: 4)
           }
 
-          if filesStatus.phase == .ready && workspaces.isEmpty {
+          if workspaces.isEmpty && !isLoadingSkeleton {
+            let isDisconnected = filesStatus.phase == .disconnected || syncService.activeHostProfile == nil
             ADEEmptyStateView(
-              symbol: "folder.badge.questionmark",
-              title: "No workspaces available",
-              message: "This host does not currently expose any lane-backed workspaces for the mobile Files browser."
+              symbol: isDisconnected ? "wifi.slash" : "folder.badge.questionmark",
+              title: isDisconnected ? "Files unavailable" : "No workspaces available",
+              message: isDisconnected
+                ? "Files need a connected host. Reconnect or pair a host in Settings to browse workspaces."
+                : "This host does not currently expose any lane-backed workspaces for the mobile Files browser."
             ) {
               Button(syncService.activeHostProfile == nil ? "Open Settings" : "Refresh Files") {
                 if syncService.activeHostProfile == nil {
@@ -151,8 +160,6 @@ struct FilesRootScreen: View {
                 showHidden: showHidden,
                 isLive: canUseLiveFileActions,
                 isTabActive: isTabActive,
-                needsRepairing: needsRepairing,
-                showDisconnectedNotice: false,
                 openDirectory: { path in
                   openDirectory(path, in: workspace)
                 },
@@ -185,7 +192,6 @@ struct FilesRootScreen: View {
               showHidden: $showHidden,
               isLive: canUseLiveFileActions,
               isTabActive: isTabActive,
-              needsRepairing: needsRepairing,
               openDirectory: { path in
                 openDirectory(path, in: workspace)
               },
@@ -211,8 +217,6 @@ struct FilesRootScreen: View {
               workspace: workspace,
               relativePath: relativePath,
               focusLine: focusLine,
-              isFilesLive: canUseLiveFileActions,
-              needsRepairing: needsRepairing,
               transitionNamespace: transitionNamespace,
               navigateToDirectory: { path in
                 openDirectory(path, in: workspace)
@@ -232,7 +236,7 @@ struct FilesRootScreen: View {
       }
       .toolbar {
         ToolbarItem(placement: .topBarLeading) {
-          ADEConnectionPill()
+          ADEConnectionDot()
         }
         ToolbarItem(placement: .topBarTrailing) {
           Button {

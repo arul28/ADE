@@ -8,8 +8,6 @@ struct FilesDirectoryContentsView: View {
   let showHidden: Bool
   let isLive: Bool
   let isTabActive: Bool
-  let needsRepairing: Bool
-  let showDisconnectedNotice: Bool
   let openDirectory: (String) -> Void
   let openFile: (String, Int?) -> Void
   let transitionNamespace: Namespace.ID?
@@ -21,10 +19,6 @@ struct FilesDirectoryContentsView: View {
 
   var body: some View {
     LazyVStack(alignment: .leading, spacing: 12) {
-      if showDisconnectedNotice && !isLive {
-        disconnectedNotice
-      }
-
       if let errorMessage {
         ADENoticeCard(
           title: "Directory load failed",

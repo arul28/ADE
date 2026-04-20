@@ -2,11 +2,27 @@ import SwiftUI
 import UIKit
 
 struct FilesHeaderStrip: View {
+  @EnvironmentObject private var syncService: SyncService
+
   let relativePath: String
   let language: FilesLanguage
   let fileSize: Int
-  let isFilesLive: Bool
   let transitionNamespace: Namespace.ID?
+
+  private var filesBrowserStatusSuffix: String? {
+    let phase = syncService.status(for: .files).phase
+    let connection = syncService.connectionState
+    if phase == .ready && (connection == .connected || connection == .syncing) {
+      return nil
+    }
+    if phase == .hydrating || phase == .syncingInitialData || connection == .syncing {
+      return "Syncing"
+    }
+    if connection == .connecting {
+      return "Connecting"
+    }
+    return "Offline"
+  }
 
   var body: some View {
     HStack(alignment: .center, spacing: 12) {
@@ -38,9 +54,9 @@ struct FilesHeaderStrip: View {
           Text("Read only")
             .font(.caption2.weight(.medium))
             .foregroundStyle(ADEColor.textSecondary)
-          if !isFilesLive {
+          if let filesBrowserStatusSuffix {
             Text("·").foregroundStyle(ADEColor.textMuted)
-            Text("Offline")
+            Text(filesBrowserStatusSuffix)
               .font(.caption2.weight(.semibold))
               .foregroundStyle(ADEColor.warning)
           }

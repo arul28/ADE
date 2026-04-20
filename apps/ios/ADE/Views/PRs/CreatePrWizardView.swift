@@ -41,13 +41,13 @@ struct CreatePrWizardView: View {
       return capabilities.lanes
         .filter { $0.canCreate }
         .map { eligibility in
-          CreatePrLaneOption(
+          return CreatePrLaneOption(
             id: eligibility.laneId,
             title: eligibility.laneName,
             branchRef: lanes.first(where: { $0.id == eligibility.laneId })?.branchRef ?? eligibility.laneName,
             defaultBaseBranch: eligibility.defaultBaseBranch,
             defaultTitle: eligibility.defaultTitle,
-            subtitle: eligibility.blockedReason
+            subtitle: Self.laneProgressSubtitle(for: eligibility)
           )
         }
     }
@@ -75,6 +75,23 @@ struct CreatePrWizardView: View {
   private var selectedLane: LaneSummary? {
     guard let id = selectedOption?.id else { return nil }
     return lanes.first(where: { $0.id == id })
+  }
+
+  private static func laneProgressSubtitle(for eligibility: PrCreateLaneEligibility) -> String? {
+    guard let ahead = eligibility.commitsAheadOfBase else {
+      return eligibility.dirty ? "Uncommitted edits present" : nil
+    }
+
+    let base = eligibility.defaultBaseBranch
+    let commitLabel = ahead == 1 ? "1 commit" : "\(ahead) commits"
+    if ahead > 0 {
+      return eligibility.dirty
+        ? "\(commitLabel) ahead of \(base) · uncommitted edits"
+        : "Ready to open: \(commitLabel) ahead of \(base)"
+    }
+    return eligibility.dirty
+      ? "No commits ahead of \(base) · uncommitted edits"
+      : "No commits ahead of \(base)"
   }
 
   private var canAdvance: Bool {
@@ -194,9 +211,17 @@ struct CreatePrWizardView: View {
             .adeInsetField()
 
             if let selectedOption {
-              Text("Source branch: \(selectedOption.branchRef)")
-                .font(.caption)
-                .foregroundStyle(ADEColor.textSecondary)
+              VStack(alignment: .leading, spacing: 4) {
+                Text("Source branch: \(selectedOption.branchRef)")
+                  .font(.caption)
+                  .foregroundStyle(ADEColor.textSecondary)
+                if let subtitle = selectedOption.subtitle, !subtitle.isEmpty {
+                  Text(subtitle)
+                    .font(.caption)
+                    .foregroundStyle(ADEColor.textMuted)
+                    .lineLimit(2)
+                }
+              }
             }
           }
 

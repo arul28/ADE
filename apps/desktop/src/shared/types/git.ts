@@ -204,6 +204,7 @@ export type GitHubStatus = {
   tokenStored: boolean;
   tokenDecryptionFailed: boolean;
   storageScope: "app";
+  tokenType?: "classic" | "fine-grained" | "unknown";
   repo: GitHubRepoRef | null;
   userLogin: string | null;
   scopes: string[];
