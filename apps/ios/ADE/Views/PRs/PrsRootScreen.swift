@@ -228,7 +228,18 @@ struct PRsTabView: View {
               .prListRow()
           }
         } else {
-          if let errorMessage {
+          if let hydrationNotice = prsStatus.inlineHydrationFailureNotice(for: .prs) {
+            ADENoticeCard(
+              title: hydrationNotice.title,
+              message: hydrationNotice.message,
+              icon: "exclamationmark.triangle.fill",
+              tint: ADEColor.danger,
+              actionTitle: "Retry",
+              action: { Task { await reload(refreshRemote: true) } }
+            )
+            .prListRow()
+          }
+          if let errorMessage, prsStatus.phase == .ready {
             ADENoticeCard(
               title: "PR view error",
               message: errorMessage,

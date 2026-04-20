@@ -27,6 +27,17 @@ struct FilesRootScreen: View {
     NavigationStack(path: $navigationPath) {
       ScrollView {
         LazyVStack(alignment: .leading, spacing: 14) {
+          if let hydrationNotice = filesStatus.inlineHydrationFailureNotice(for: .files) {
+            ADENoticeCard(
+              title: hydrationNotice.title,
+              message: hydrationNotice.message,
+              icon: "exclamationmark.triangle.fill",
+              tint: ADEColor.danger,
+              actionTitle: "Retry",
+              action: { Task { await reload(refreshRemote: true) } }
+            )
+            .transition(.opacity)
+          }
           if let errorMessage, filesStatus.phase == .ready {
             ADENoticeCard(
               title: "Files view error",

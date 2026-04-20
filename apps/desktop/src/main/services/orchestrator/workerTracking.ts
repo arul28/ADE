@@ -229,13 +229,10 @@ function resolvePlannerPlanMissingInterventionsAfterPlanningSuccess(args: {
   const stepMeta = isRecord(args.step.metadata) ? args.step.metadata : {};
   const phaseKey = typeof stepMeta.phaseKey === "string" ? stepMeta.phaseKey.trim().toLowerCase() : "";
   const stepType = typeof stepMeta.stepType === "string" ? stepMeta.stepType.trim().toLowerCase() : "";
-  const readOnlyExecution = stepMeta.readOnlyExecution === true;
-  const planningLike =
-    readOnlyExecution
-    || phaseKey === "planning"
-    || stepType === "planning"
-    || stepType === "analysis";
-  if (!planningLike) return;
+  // Match `extractAndRegisterArtifacts` planning detection: read-only implementation steps must not
+  // auto-resolve `planner_plan_missing` unless ADE would persist the canonical plan artifact.
+  const isPlanningStep = stepType === "planning" || stepType === "analysis" || phaseKey === "planning";
+  if (!isPlanningStep) return;
 
   const lastResultReport = isRecord(stepMeta.lastResultReport) ? stepMeta.lastResultReport : null;
   const reportedPlan = lastResultReport && isRecord(lastResultReport.plan) ? lastResultReport.plan : null;

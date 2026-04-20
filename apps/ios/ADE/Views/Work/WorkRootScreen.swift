@@ -225,6 +225,18 @@ struct WorkRootScreen: View {
               .listRowSeparator(.hidden)
           }
         } else {
+          if let hydrationNotice = workStatus.inlineHydrationFailureNotice(for: .work) {
+            ADENoticeCard(
+              title: hydrationNotice.title,
+              message: hydrationNotice.message,
+              icon: "exclamationmark.triangle.fill",
+              tint: ADEColor.danger,
+              actionTitle: "Retry",
+              action: { Task { await reload(refreshRemote: true) } }
+            )
+            .listRowBackground(Color.clear)
+            .listRowSeparator(.hidden)
+          }
           WorkFiltersSection(
             searchText: $searchText,
             selectedLaneId: $selectedLaneId,

@@ -55,6 +55,17 @@ struct LanesTabView: View {
     NavigationStack {
       ScrollView {
         LazyVStack(spacing: 14) {
+          if let hydrationNotice = laneStatus.inlineHydrationFailureNotice(for: .lanes) {
+            ADENoticeCard(
+              title: hydrationNotice.title,
+              message: hydrationNotice.message,
+              icon: "exclamationmark.triangle.fill",
+              tint: ADEColor.danger,
+              actionTitle: "Retry",
+              action: { Task { await reload(refreshRemote: true) } }
+            )
+            .transition(.opacity)
+          }
           if let errorMessage, laneStatus.phase == .ready {
             ADENoticeCard(
               title: "Lane view error",

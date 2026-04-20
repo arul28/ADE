@@ -128,6 +128,30 @@ struct SyncDomainStatus: Equatable {
   static let disconnected = SyncDomainStatus(phase: .disconnected)
 }
 
+extension SyncDomainStatus {
+  /// Inline notice when the domain is in `.failed` but cached rows may still render (no empty-state card).
+  func inlineHydrationFailureNotice(for domain: SyncDomain) -> (title: String, message: String)? {
+    guard phase == .failed else { return nil }
+    let trimmed = lastError?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    let message =
+      trimmed.isEmpty
+      ? "Fresh data could not be loaded from the host. Cached content may be outdated until you retry or reconnect."
+      : trimmed
+    let title: String
+    switch domain {
+    case .lanes:
+      title = "Lane hydration failed"
+    case .files:
+      title = "Files hydration failed"
+    case .work:
+      title = "Work hydration failed"
+    case .prs:
+      title = "PR hydration failed"
+    }
+    return (title, message)
+  }
+}
+
 struct LaneStatus: Codable, Equatable {
   var dirty: Bool
   var ahead: Int
