@@ -155,6 +155,116 @@ const TOOL_SPECS: ToolSpec[] = [
     }
   },
   {
+    name: "list_ade_actions",
+    description: "List callable ADE action methods across core runtime services (lane/git/pr/tests/chat/mission/orchestrator).",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        domain: {
+          type: "string",
+          enum: [
+            "lane",
+            "git",
+            "diff",
+            "conflicts",
+            "pr",
+            "tests",
+            "chat",
+            "mission",
+            "orchestrator",
+            "orchestrator_core",
+            "memory",
+            "cto_state",
+            "worker_agent",
+            "session",
+            "operation",
+            "project_config",
+            "issue_inventory",
+            "flow_policy",
+            "linear_dispatcher",
+            "linear_issue_tracker",
+            "linear_sync",
+            "linear_ingress",
+            "linear_routing",
+            "file",
+            "process",
+            "external_mcp",
+            "computer_use_artifacts",
+            "all"
+          ],
+          default: "all",
+        },
+      }
+    }
+  },
+  {
+    name: "run_ade_action",
+    description: "Invoke any ADE action by domain and action name. Use args for object-style calls, or arg for scalar-style calls.",
+    inputSchema: {
+      type: "object",
+      required: ["domain", "action"],
+      additionalProperties: false,
+      properties: {
+        domain: {
+          type: "string",
+          enum: [
+            "lane",
+            "git",
+            "diff",
+            "conflicts",
+            "pr",
+            "tests",
+            "chat",
+            "mission",
+            "orchestrator",
+            "orchestrator_core",
+            "memory",
+            "cto_state",
+            "worker_agent",
+            "session",
+            "operation",
+            "project_config",
+            "issue_inventory",
+            "flow_policy",
+            "linear_dispatcher",
+            "linear_issue_tracker",
+            "linear_sync",
+            "linear_ingress",
+            "linear_routing",
+            "file",
+            "process",
+            "external_mcp",
+            "computer_use_artifacts",
+          ],
+        },
+        action: { type: "string", minLength: 1 },
+        args: { type: "object" },
+        argsList: { type: "array" },
+        arg: {},
+      }
+    }
+  },
+  {
+    name: "get_ade_action_status",
+    description: "Check status/progress for long-running ADE actions by operation/test/chat/run/mission identifiers.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        operationId: { type: "string", minLength: 1 },
+        testRunId: { type: "string", minLength: 1 },
+        chatSessionId: { type: "string", minLength: 1 },
+        runId: { type: "string", minLength: 1 },
+        missionId: { type: "string", minLength: 1 },
+        prId: { type: "string", minLength: 1 },
+        previousHash: { type: "string" },
+        waitForMs: { type: "number", minimum: 0, maximum: 120000, default: 0 },
+        pollIntervalMs: { type: "number", minimum: 100, maximum: 5000, default: 800 },
+      }
+    }
+  },
+  {
     name: "check_conflicts",
     description: "Run conflict prediction against one lane or a lane set.",
     inputSchema: {
@@ -530,17 +640,122 @@ const TOOL_SPECS: ToolSpec[] = [
     }
   },
   {
-    name: "commit_changes",
-    description: "Stage and commit lane changes with a provided message.",
+    name: "list_unregistered_lanes",
+    description: "List git worktrees that are not yet registered as ADE lanes.",
     inputSchema: {
       type: "object",
-      required: ["message"],
+      additionalProperties: false,
+      properties: {}
+    }
+  },
+  {
+    name: "import_lane",
+    description: "Import an existing git branch/worktree into ADE lane tracking.",
+    inputSchema: {
+      type: "object",
+      required: ["branchRef"],
+      additionalProperties: false,
+      properties: {
+        branchRef: { type: "string", minLength: 1 },
+        name: { type: "string" },
+        description: { type: "string" },
+        baseBranch: { type: "string" }
+      }
+    }
+  },
+  {
+    name: "git_get_sync_status",
+    description: "Read upstream sync status for a lane branch.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        laneId: { type: "string", minLength: 1 }
+      }
+    }
+  },
+  {
+    name: "git_fetch",
+    description: "Fetch remote refs for a lane.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        laneId: { type: "string", minLength: 1 }
+      }
+    }
+  },
+  {
+    name: "git_pull",
+    description: "Pull remote changes into a lane.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        laneId: { type: "string", minLength: 1 }
+      }
+    }
+  },
+  {
+    name: "git_push",
+    description: "Push lane branch commits to remote.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        laneId: { type: "string", minLength: 1 },
+        force: { type: "boolean", default: false },
+        setUpstream: { type: "boolean", default: true }
+      }
+    }
+  },
+  {
+    name: "git_list_branches",
+    description: "List branches visible from a lane checkout.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        laneId: { type: "string", minLength: 1 }
+      }
+    }
+  },
+  {
+    name: "git_checkout_branch",
+    description: "Checkout an existing branch in a lane checkout.",
+    inputSchema: {
+      type: "object",
+      required: ["branchName"],
+      additionalProperties: false,
+      properties: {
+        laneId: { type: "string", minLength: 1 },
+        branchName: { type: "string", minLength: 1 }
+      }
+    }
+  },
+  {
+    name: "commit_changes",
+    description: "Stage and commit lane changes. If message is omitted, ADE generates one with the configured Commit Messages model.",
+    inputSchema: {
+      type: "object",
       additionalProperties: false,
       properties: {
         laneId: { type: "string", minLength: 1 },
         message: { type: "string", minLength: 1 },
         amend: { type: "boolean", default: false },
         stageAll: { type: "boolean", default: true }
+      }
+    }
+  },
+  {
+    name: "generate_commit_message",
+    description: "Generate a commit message for a lane using ADE's Commit Messages model settings.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        laneId: { type: "string", minLength: 1 },
+        amend: { type: "boolean", default: false }
       }
     }
   },
@@ -710,6 +925,61 @@ const TOOL_SPECS: ToolSpec[] = [
       additionalProperties: false,
       properties: {
         laneId: { type: "string", minLength: 1 }
+      }
+    }
+  },
+  {
+    name: "create_pr_from_lane",
+    description: "Create a PR from a lane branch.",
+    inputSchema: {
+      type: "object",
+      required: ["laneId", "baseBranch", "title"],
+      additionalProperties: false,
+      properties: {
+        laneId: { type: "string", minLength: 1 },
+        baseBranch: { type: "string", minLength: 1 },
+        title: { type: "string", minLength: 1 },
+        body: { type: "string" },
+        draft: { type: "boolean", default: false },
+      }
+    }
+  },
+  {
+    name: "pr_update_title",
+    description: "Update a PR title.",
+    inputSchema: {
+      type: "object",
+      required: ["prId", "title"],
+      additionalProperties: false,
+      properties: {
+        prId: { type: "string", minLength: 1 },
+        title: { type: "string", minLength: 1 },
+      }
+    }
+  },
+  {
+    name: "pr_update_body",
+    description: "Update PR body/description markdown.",
+    inputSchema: {
+      type: "object",
+      required: ["prId", "body"],
+      additionalProperties: false,
+      properties: {
+        prId: { type: "string", minLength: 1 },
+        body: { type: "string" },
+      }
+    }
+  },
+  {
+    name: "pr_add_comment",
+    description: "Add a top-level comment to a PR.",
+    inputSchema: {
+      type: "object",
+      required: ["prId", "body"],
+      additionalProperties: false,
+      properties: {
+        prId: { type: "string", minLength: 1 },
+        body: { type: "string", minLength: 1 },
       }
     }
   },
@@ -1565,9 +1835,15 @@ const COORDINATOR_TOOL_NAMES = new Set(COORDINATOR_TOOL_SPECS.map((tool) => tool
 
 const READ_ONLY_TOOLS = new Set([
   "check_conflicts",
+  "list_ade_actions",
+  "get_ade_action_status",
   "get_lane_status",
   "get_lane_conflict_state",
   "list_lanes",
+  "list_unregistered_lanes",
+  "git_get_sync_status",
+  "git_list_branches",
+  "generate_commit_message",
   "list_stashes",
   "simulate_integration",
   "get_pr_health",
@@ -1595,7 +1871,13 @@ const READ_ONLY_TOOLS = new Set([
 
 const MUTATION_TOOLS = new Set([
   "create_lane",
+  "run_ade_action",
+  "import_lane",
   "merge_lane",
+  "git_fetch",
+  "git_pull",
+  "git_push",
+  "git_checkout_branch",
   "commit_changes",
   "stash_push",
   "stash_apply",
@@ -1605,6 +1887,10 @@ const MUTATION_TOOLS = new Set([
   "run_tests",
   "create_queue",
   "create_integration",
+  "create_pr_from_lane",
+  "pr_update_title",
+  "pr_update_body",
+  "pr_add_comment",
   "rebase_lane",
   "rebase_continue",
   "rebase_abort",
@@ -2748,6 +3034,73 @@ async function waitForTestRunCompletion(args: {
   };
 }
 
+type AdeActionDomain =
+  | "lane"
+  | "git"
+  | "diff"
+  | "conflicts"
+  | "pr"
+  | "tests"
+  | "chat"
+  | "mission"
+  | "orchestrator"
+  | "orchestrator_core"
+  | "memory"
+  | "cto_state"
+  | "worker_agent"
+  | "session"
+  | "operation"
+  | "project_config"
+  | "issue_inventory"
+  | "flow_policy"
+  | "linear_dispatcher"
+  | "linear_issue_tracker"
+  | "linear_sync"
+  | "linear_ingress"
+  | "linear_routing"
+  | "file"
+  | "process"
+  | "external_mcp"
+  | "computer_use_artifacts";
+
+function getAdeActionDomainServices(runtime: AdeMcpRuntime): Partial<Record<AdeActionDomain, Record<string, unknown> | null | undefined>> {
+  return {
+    lane: runtime.laneService as unknown as Record<string, unknown>,
+    git: runtime.gitService as unknown as Record<string, unknown>,
+    diff: runtime.diffService as unknown as Record<string, unknown>,
+    conflicts: runtime.conflictService as unknown as Record<string, unknown>,
+    pr: (runtime.prService ?? null) as unknown as Record<string, unknown> | null,
+    tests: runtime.testService as unknown as Record<string, unknown>,
+    chat: (runtime.agentChatService ?? null) as unknown as Record<string, unknown> | null,
+    mission: runtime.missionService as unknown as Record<string, unknown>,
+    orchestrator: runtime.aiOrchestratorService as unknown as Record<string, unknown>,
+    orchestrator_core: runtime.orchestratorService as unknown as Record<string, unknown>,
+    memory: runtime.memoryService as unknown as Record<string, unknown>,
+    cto_state: runtime.ctoStateService as unknown as Record<string, unknown>,
+    worker_agent: runtime.workerAgentService as unknown as Record<string, unknown>,
+    session: runtime.sessionService as unknown as Record<string, unknown>,
+    operation: runtime.operationService as unknown as Record<string, unknown>,
+    project_config: runtime.projectConfigService as unknown as Record<string, unknown>,
+    issue_inventory: runtime.issueInventoryService as unknown as Record<string, unknown>,
+    flow_policy: (runtime.flowPolicyService ?? null) as unknown as Record<string, unknown> | null,
+    linear_dispatcher: (runtime.linearDispatcherService ?? null) as unknown as Record<string, unknown> | null,
+    linear_issue_tracker: (runtime.linearIssueTracker ?? null) as unknown as Record<string, unknown> | null,
+    linear_sync: (runtime.linearSyncService ?? null) as unknown as Record<string, unknown> | null,
+    linear_ingress: (runtime.linearIngressService ?? null) as unknown as Record<string, unknown> | null,
+    linear_routing: (runtime.linearRoutingService ?? null) as unknown as Record<string, unknown> | null,
+    file: (runtime.fileService ?? null) as unknown as Record<string, unknown> | null,
+    process: (runtime.processService ?? null) as unknown as Record<string, unknown> | null,
+    external_mcp: runtime.externalMcpService as unknown as Record<string, unknown>,
+    computer_use_artifacts: runtime.computerUseArtifactBrokerService as unknown as Record<string, unknown>,
+  };
+}
+
+function listAdeActionNames(service: Record<string, unknown>): string[] {
+  return Object.keys(service)
+    .filter((key) => typeof service[key] === "function" && !key.startsWith("_"))
+    .sort((a, b) => a.localeCompare(b));
+}
+
 async function waitForSessionCompletion(args: {
   runtime: AdeMcpRuntime;
   ptyId: string;
@@ -3851,12 +4204,136 @@ async function runTool(args: {
     return await runCoordinatorTool({ runtime, name, toolArgs, callerCtx });
   }
 
+  if (name === "list_ade_actions") {
+    const domain = asOptionalTrimmedString(toolArgs.domain) ?? "all";
+    const services = getAdeActionDomainServices(runtime);
+    const domains = domain === "all"
+      ? (Object.keys(services) as AdeActionDomain[])
+      : [domain as AdeActionDomain];
+    const actions = domains.flatMap((entry) => {
+      const service = services[entry];
+      if (!service) return [];
+      return listAdeActionNames(service).map((action) => ({
+        domain: entry,
+        action,
+      }));
+    });
+    return {
+      count: actions.length,
+      actions,
+    };
+  }
+
+  if (name === "run_ade_action") {
+    const domain = assertNonEmptyString(toolArgs.domain, "domain") as AdeActionDomain;
+    const action = assertNonEmptyString(toolArgs.action, "action");
+    const services = getAdeActionDomainServices(runtime);
+    const service = services[domain];
+    if (!service) {
+      throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `Domain '${domain}' is unavailable in this runtime.`);
+    }
+    const callable = service[action];
+    if (typeof callable !== "function") {
+      throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `Action '${domain}.${action}' is not callable.`);
+    }
+    const argsList = Array.isArray(toolArgs.argsList) ? toolArgs.argsList : null;
+    const hasScalarArg = Object.prototype.hasOwnProperty.call(toolArgs, "arg");
+    const rawObjectArgs = safeObject(toolArgs.args);
+    const result = argsList
+      ? await (callable as (...params: unknown[]) => Promise<unknown>)(...argsList)
+      : hasScalarArg
+        ? await (callable as (arg: unknown) => Promise<unknown>)(toolArgs.arg)
+        : await (callable as (args?: Record<string, unknown>) => Promise<unknown>)(
+            Object.keys(rawObjectArgs).length > 0 ? rawObjectArgs : undefined
+          );
+    const record = isRecord(result) ? result : null;
+    const statusHints = {
+      operationId: typeof record?.operationId === "string" ? record.operationId : null,
+      testRunId: typeof record?.id === "string" && domain === "tests" ? record.id : null,
+      chatSessionId: typeof record?.sessionId === "string" ? record.sessionId : null,
+      runId: typeof record?.runId === "string" ? record.runId : null,
+      missionId: typeof record?.missionId === "string" ? record.missionId : null,
+    };
+    return {
+      domain,
+      action,
+      result,
+      statusHints,
+    };
+  }
+
+  if (name === "get_ade_action_status") {
+    const operationId = asOptionalTrimmedString(toolArgs.operationId);
+    const testRunId = asOptionalTrimmedString(toolArgs.testRunId);
+    const chatSessionId = asOptionalTrimmedString(toolArgs.chatSessionId);
+    const runId = asOptionalTrimmedString(toolArgs.runId);
+    const missionId = asOptionalTrimmedString(toolArgs.missionId);
+    const prId = asOptionalTrimmedString(toolArgs.prId);
+    const previousHash = asOptionalTrimmedString(toolArgs.previousHash);
+    const waitForMs = Math.max(0, Math.min(120_000, Math.floor(asNumber(toolArgs.waitForMs, 0))));
+    const pollIntervalMs = Math.max(100, Math.min(5_000, Math.floor(asNumber(toolArgs.pollIntervalMs, 800))));
+
+    const collectStatusPayload = async (): Promise<Record<string, unknown>> => {
+      const payload: Record<string, unknown> = {};
+      if (operationId) {
+        const operation = runtime.operationService.list({ limit: 500 }).find((entry) => entry.id === operationId) ?? null;
+        payload.operation = operation;
+      }
+      if (testRunId) {
+        const run = runtime.testService.listRuns({ limit: 200 }).find((entry) => entry.id === testRunId) ?? null;
+        payload.testRun = run;
+        if (run) payload.testRunLogTail = runtime.testService.getLogTail(testRunId, 16_000);
+      }
+      if (chatSessionId && runtime.agentChatService) {
+        payload.chatSession = await runtime.agentChatService.getSessionSummary(chatSessionId);
+      }
+      if (runId) {
+        payload.runGraph = runtime.orchestratorService.getRunGraph({ runId, timelineLimit: 150 });
+      }
+      if (missionId) {
+        payload.mission = runtime.missionService.get(missionId);
+      }
+      if (prId && runtime.prService) {
+        payload.pr = {
+          health: await runtime.prService.getPrHealth(prId),
+          checks: await runtime.prService.getChecks(prId),
+          reviews: await runtime.prService.getReviews(prId),
+        };
+      }
+      return payload;
+    };
+
+    const hashPayload = (payload: Record<string, unknown>): string =>
+      createHash("sha256").update(JSON.stringify(payload)).digest("hex");
+
+    let payload = await collectStatusPayload();
+    let hash = hashPayload(payload);
+    if (previousHash && waitForMs > 0 && hash === previousHash) {
+      const deadline = Date.now() + waitForMs;
+      while (Date.now() < deadline && hash === previousHash) {
+        await sleep(pollIntervalMs);
+        payload = await collectStatusPayload();
+        hash = hashPayload(payload);
+      }
+    }
+    return {
+      ...payload,
+      hash,
+      changed: previousHash ? hash !== previousHash : true,
+    };
+  }
+
   if (name === "list_lanes") {
     const includeArchived = asBoolean(toolArgs.includeArchived, false);
     const lanes = await runtime.laneService.list({ includeArchived });
     return {
       lanes: lanes.map((lane) => mapLaneSummary(lane as unknown as Record<string, unknown>))
     };
+  }
+
+  if (name === "list_unregistered_lanes") {
+    const worktrees = await runtime.laneService.listUnregisteredWorktrees();
+    return { worktrees };
   }
 
   if (name === "get_lane_status") {
@@ -3879,6 +4356,19 @@ async function runTool(args: {
 
     return {
       lane: mapLaneSummary(lane as unknown as Record<string, unknown>)
+    };
+  }
+
+  if (name === "import_lane") {
+    const branchRef = assertNonEmptyString(toolArgs.branchRef, "branchRef");
+    const imported = await runtime.laneService.importBranch({
+      branchRef,
+      ...(asOptionalTrimmedString(toolArgs.name) ? { name: asOptionalTrimmedString(toolArgs.name)! } : {}),
+      ...(asOptionalTrimmedString(toolArgs.description) ? { description: asOptionalTrimmedString(toolArgs.description)! } : {}),
+      ...(asOptionalTrimmedString(toolArgs.baseBranch) ? { baseBranch: asOptionalTrimmedString(toolArgs.baseBranch)! } : {}),
+    });
+    return {
+      lane: mapLaneSummary(imported as unknown as Record<string, unknown>),
     };
   }
 
@@ -4812,11 +5302,47 @@ async function runTool(args: {
     };
   }
 
+  if (name === "git_get_sync_status") {
+    const laneId = requireLaneIdForTool(runtime, session, toolArgs, "git_get_sync_status");
+    const status = await runtime.gitService.getSyncStatus({ laneId });
+    return { laneId, status };
+  }
+
+  if (name === "git_fetch") {
+    const laneId = requireLaneIdForTool(runtime, session, toolArgs, "git_fetch");
+    const action = await runtime.gitService.fetch({ laneId });
+    return { laneId, action };
+  }
+
+  if (name === "git_pull") {
+    const laneId = requireLaneIdForTool(runtime, session, toolArgs, "git_pull");
+    const action = await runtime.gitService.pull({ laneId });
+    return { laneId, action };
+  }
+
+  if (name === "git_push") {
+    const laneId = requireLaneIdForTool(runtime, session, toolArgs, "git_push");
+    const force = asBoolean(toolArgs.force, false);
+    const setUpstream = asBoolean(toolArgs.setUpstream, true);
+    const action = await runtime.gitService.push({ laneId, force, setUpstream });
+    return { laneId, action };
+  }
+
+  if (name === "git_list_branches") {
+    const laneId = requireLaneIdForTool(runtime, session, toolArgs, "git_list_branches");
+    const branches = await runtime.gitService.listBranches({ laneId });
+    return { laneId, branches };
+  }
+
+  if (name === "git_checkout_branch") {
+    const laneId = requireLaneIdForTool(runtime, session, toolArgs, "git_checkout_branch");
+    const branchName = assertNonEmptyString(toolArgs.branchName, "branchName");
+    const action = await runtime.gitService.checkoutBranch({ laneId, branchName });
+    return { laneId, branchName, action };
+  }
+
   if (name === "commit_changes") {
     const laneId = requireLaneIdForTool(runtime, session, toolArgs, "commit_changes");
-
-
-    const message = assertNonEmptyString(toolArgs.message, "message");
     const amend = asBoolean(toolArgs.amend, false);
     const stageAll = asBoolean(toolArgs.stageAll, true);
 
@@ -4824,12 +5350,35 @@ async function runTool(args: {
       await runtime.gitService.stageAll({ laneId, paths: [] });
     }
 
+    const explicitMessage = asOptionalTrimmedString(toolArgs.message);
+    const generated = explicitMessage
+      ? null
+      : await runtime.gitService.generateCommitMessage({ laneId, amend });
+    const message = explicitMessage ?? generated?.message ?? "";
+    if (!message.trim().length) {
+      throw new JsonRpcError(JsonRpcErrorCode.toolFailed, "Commit message is empty after generation.");
+    }
+
     const action = await runtime.gitService.commit({ laneId, message, amend });
     const latest = await runtime.gitService.listRecentCommits({ laneId, limit: 1 });
 
     return {
       action,
-      commit: latest[0] ?? null
+      commit: latest[0] ?? null,
+      message,
+      messageSource: explicitMessage ? "provided" : "generated",
+      ...(generated?.model ? { generatedByModel: generated.model } : {})
+    };
+  }
+
+  if (name === "generate_commit_message") {
+    const laneId = requireLaneIdForTool(runtime, session, toolArgs, "generate_commit_message");
+    const amend = asBoolean(toolArgs.amend, false);
+    const result = await runtime.gitService.generateCommitMessage({ laneId, amend });
+    return {
+      laneId,
+      amend,
+      ...result,
     };
   }
 
@@ -4976,6 +5525,43 @@ async function runTool(args: {
       };
     }
     return result;
+  }
+
+  if (name === "create_pr_from_lane") {
+    const laneId = assertNonEmptyString(toolArgs.laneId, "laneId");
+    const baseBranch = assertNonEmptyString(toolArgs.baseBranch, "baseBranch");
+    const title = assertNonEmptyString(toolArgs.title, "title");
+    const body = asOptionalTrimmedString(toolArgs.body);
+    const draft = asBoolean(toolArgs.draft, false);
+    const pr = await requirePrService(runtime).createFromLane({
+      laneId,
+      baseBranch,
+      title,
+      ...(body ? { body } : {}),
+      draft,
+    });
+    return { pr };
+  }
+
+  if (name === "pr_update_title") {
+    const prId = assertNonEmptyString(toolArgs.prId, "prId");
+    const title = assertNonEmptyString(toolArgs.title, "title");
+    await requirePrService(runtime).updateTitle({ prId, title });
+    return { success: true, prId, title };
+  }
+
+  if (name === "pr_update_body") {
+    const prId = assertNonEmptyString(toolArgs.prId, "prId");
+    const body = typeof toolArgs.body === "string" ? toolArgs.body : "";
+    await requirePrService(runtime).updateBody({ prId, body });
+    return { success: true, prId };
+  }
+
+  if (name === "pr_add_comment") {
+    const prId = assertNonEmptyString(toolArgs.prId, "prId");
+    const body = assertNonEmptyString(toolArgs.body, "body");
+    const comment = await requirePrService(runtime).addComment({ prId, body });
+    return { success: true, comment };
   }
 
   if (name === "get_pr_health") {

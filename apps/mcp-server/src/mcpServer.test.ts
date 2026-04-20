@@ -131,6 +131,7 @@ function createRuntime() {
     },
     laneService: {
       list: vi.fn(async () => laneRows),
+      listUnregisteredWorktrees: vi.fn(async () => [{ path: "/tmp/untracked-worktree", branch: "feature/untracked" }]),
       getLaneWorktreePath: vi.fn((laneId: string) => {
         const lane = laneRows.find((row) => row.id === laneId) ?? laneRows[0]!;
         return lane.worktreePath;
@@ -151,6 +152,12 @@ function createRuntime() {
         branchRef: "feature/lane-new",
         worktreePath: "/tmp/project/.ade/worktrees/lane-new"
       })),
+      importBranch: vi.fn(async ({ branchRef, name }: { branchRef: string; name?: string }) => ({
+        ...laneRows[0],
+        id: "lane-imported",
+        name: name ?? "Imported lane",
+        branchRef,
+      })),
       delete: vi.fn(async () => {})
     },
     sessionService: {
@@ -159,7 +166,8 @@ function createRuntime() {
     },
     operationService: {
       start: operationStart,
-      finish: operationFinish
+      finish: operationFinish,
+      list: vi.fn(() => [{ id: "op-1", kind: "git_push", status: "running" }]),
     },
     projectConfigService: {} as any,
     conflictService: {
@@ -172,7 +180,14 @@ function createRuntime() {
       getConflictState: vi.fn(async () => ({ laneId: "lane-1", kind: null, inProgress: false, conflictedFiles: [], canContinue: false, canAbort: false })),
       stageAll: vi.fn(async () => ({ success: true })),
       commit: vi.fn(async () => ({ success: true })),
+      generateCommitMessage: vi.fn(async () => ({ message: "generated commit message", model: "gpt-5-mini" })),
       listRecentCommits: vi.fn(async () => [{ sha: "abc123", subject: "test" }]),
+      getSyncStatus: vi.fn(async () => ({ ahead: 1, behind: 0, tracking: true })),
+      fetch: vi.fn(async () => ({ success: true })),
+      pull: vi.fn(async () => ({ success: true })),
+      push: vi.fn(async () => ({ success: true })),
+      listBranches: vi.fn(async () => [{ name: "main", current: true, ahead: 0, behind: 0, hasUpstream: true, upstream: "origin/main" }]),
+      checkoutBranch: vi.fn(async () => ({ success: true })),
       stashPush: vi.fn(async () => ({ success: true })),
       listStashes: vi.fn(async () => [{ ref: "stash@{0}", createdAt: "2026-04-06T00:00:00.000Z", subject: "test stash" }]),
       stashApply: vi.fn(async () => ({ success: true })),
@@ -294,6 +309,7 @@ function createRuntime() {
       simulateIntegration: vi.fn(async () => ({ steps: [], conflicts: [], clean: true })),
       createQueuePrs: vi.fn(async () => ({ groupId: "group-1", prs: [] })),
       createIntegrationPr: vi.fn(async () => ({ prId: "pr-int-1", url: "https://github.com/pr/1" })),
+      createFromLane: vi.fn(async () => ({ id: "pr-new", laneId: "lane-1", title: "New PR", status: "open" })),
       getPrHealth: vi.fn(async (prId: string) => ({ prId, healthy: true, checks: "pass", reviews: "approved" })),
       landQueueNext: vi.fn(async () => ({ landed: true, prId: "pr-1", sha: "def456" })),
       getChecks: vi.fn(async () => [
@@ -399,6 +415,9 @@ function createRuntime() {
         updatedAt: "2026-03-17T19:00:00.000Z",
       })),
       resolveReviewThread: vi.fn(async () => undefined),
+      updateTitle: vi.fn(async () => undefined),
+      updateBody: vi.fn(async () => undefined),
+      addComment: vi.fn(async ({ body }: { body: string }) => ({ id: "comment-new", body })),
     },
     agentChatService: {
       listSessions: vi.fn(async () => [
@@ -3019,7 +3038,194 @@ describe("mcpServer", () => {
     expect(response?.isError).toBeUndefined();
     expect(fixture.runtime.gitService.stageAll).toHaveBeenCalledTimes(1);
     expect(fixture.runtime.gitService.commit).toHaveBeenCalledTimes(1);
+    expect(fixture.runtime.gitService.generateCommitMessage).not.toHaveBeenCalled();
     expect(response.structuredContent.commit.sha).toBe("abc123");
+    expect(response.structuredContent.messageSource).toBe("provided");
+  });
+
+  it("generates a commit message when commit_changes message is omitted", async () => {
+    const fixture = createRuntime();
+    const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+    await initialize(handler, { callerId: "agent-1", role: "agent" });
+
+    const response = await callTool(handler, "commit_changes", {
+      laneId: "lane-1",
+    });
+
+    expect(response?.isError).toBeUndefined();
+    expect(fixture.runtime.gitService.generateCommitMessage).toHaveBeenCalledWith({
+      laneId: "lane-1",
+      amend: false,
+    });
+    expect(fixture.runtime.gitService.commit).toHaveBeenCalledWith({
+      laneId: "lane-1",
+      amend: false,
+      message: "generated commit message",
+    });
+    expect(response.structuredContent.messageSource).toBe("generated");
+    expect(response.structuredContent.generatedByModel).toBe("gpt-5-mini");
+  });
+
+  it("returns generated commit text without creating a commit", async () => {
+    const fixture = createRuntime();
+    const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+    await initialize(handler, { callerId: "agent-1", role: "agent" });
+
+    const response = await callTool(handler, "generate_commit_message", {
+      laneId: "lane-1",
+      amend: true,
+    });
+
+    expect(response?.isError).toBeUndefined();
+    expect(fixture.runtime.gitService.generateCommitMessage).toHaveBeenCalledWith({
+      laneId: "lane-1",
+      amend: true,
+    });
+    expect(fixture.runtime.gitService.commit).not.toHaveBeenCalled();
+    expect(response.structuredContent.message).toBe("generated commit message");
+  });
+
+  it("lists and imports unregistered lane worktrees", async () => {
+    const fixture = createRuntime();
+    const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(handler, { callerId: "agent-1", role: "agent" });
+
+    const listResponse = await callTool(handler, "list_unregistered_lanes", {});
+    expect(listResponse?.isError).toBeUndefined();
+    expect(fixture.runtime.laneService.listUnregisteredWorktrees).toHaveBeenCalledTimes(1);
+    expect(listResponse.structuredContent.worktrees[0].branch).toBe("feature/untracked");
+
+    const importResponse = await callTool(handler, "import_lane", {
+      branchRef: "feature/untracked",
+      name: "Imported lane",
+      baseBranch: "main",
+    });
+    expect(importResponse?.isError).toBeUndefined();
+    expect(fixture.runtime.laneService.importBranch).toHaveBeenCalledWith({
+      branchRef: "feature/untracked",
+      name: "Imported lane",
+      baseBranch: "main",
+    });
+    expect(importResponse.structuredContent.lane.id).toBe("lane-imported");
+  });
+
+  it("supports core git sync operations via MCP", async () => {
+    const fixture = createRuntime();
+    const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(handler, { callerId: "agent-1", role: "agent" });
+
+    const syncStatus = await callTool(handler, "git_get_sync_status", { laneId: "lane-1" });
+    expect(syncStatus?.isError).toBeUndefined();
+    expect(fixture.runtime.gitService.getSyncStatus).toHaveBeenCalledWith({ laneId: "lane-1" });
+
+    const push = await callTool(handler, "git_push", { laneId: "lane-1", force: true, setUpstream: false });
+    expect(push?.isError).toBeUndefined();
+    expect(fixture.runtime.gitService.push).toHaveBeenCalledWith({ laneId: "lane-1", force: true, setUpstream: false });
+  });
+
+  it("supports create/update/comment PR actions via MCP", async () => {
+    const fixture = createRuntime();
+    const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(handler, { callerId: "agent-1", role: "agent" });
+
+    const created = await callTool(handler, "create_pr_from_lane", {
+      laneId: "lane-1",
+      baseBranch: "main",
+      title: "My PR",
+      body: "Body text",
+      draft: true,
+    });
+    expect(created?.isError).toBeUndefined();
+    expect(fixture.runtime.prService.createFromLane).toHaveBeenCalledWith({
+      laneId: "lane-1",
+      baseBranch: "main",
+      title: "My PR",
+      body: "Body text",
+      draft: true,
+    });
+
+    const updateTitle = await callTool(handler, "pr_update_title", { prId: "pr-1", title: "Renamed" });
+    expect(updateTitle?.isError).toBeUndefined();
+    expect(fixture.runtime.prService.updateTitle).toHaveBeenCalledWith({ prId: "pr-1", title: "Renamed" });
+
+    const comment = await callTool(handler, "pr_add_comment", { prId: "pr-1", body: "Looks good" });
+    expect(comment?.isError).toBeUndefined();
+    expect(fixture.runtime.prService.addComment).toHaveBeenCalledWith({ prId: "pr-1", body: "Looks good" });
+  });
+
+  it("lists ADE actions across runtime domains", async () => {
+    const fixture = createRuntime();
+    const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(handler, { callerId: "agent-1", role: "agent" });
+
+    const response = await callTool(handler, "list_ade_actions", { domain: "git" });
+    expect(response?.isError).toBeUndefined();
+    expect(response.structuredContent.actions.some((entry: { action: string }) => entry.action === "push")).toBe(true);
+    expect(response.structuredContent.actions.some((entry: { action: string }) => entry.action === "commit")).toBe(true);
+
+    const allDomains = await callTool(handler, "list_ade_actions", { domain: "all" });
+    expect(allDomains?.isError).toBeUndefined();
+    expect(allDomains.structuredContent.actions.some((entry: { domain: string }) => entry.domain === "memory")).toBe(true);
+    expect(allDomains.structuredContent.actions.some((entry: { domain: string }) => entry.domain === "computer_use_artifacts")).toBe(true);
+    expect(allDomains.structuredContent.actions.some((entry: { domain: string }) => entry.domain === "operation")).toBe(true);
+  });
+
+  it("invokes ADE actions dynamically and returns status hints", async () => {
+    const fixture = createRuntime();
+    const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(handler, { callerId: "agent-1", role: "agent" });
+
+    const response = await callTool(handler, "run_ade_action", {
+      domain: "git",
+      action: "push",
+      args: { laneId: "lane-1", force: true, setUpstream: false },
+    });
+    expect(response?.isError).toBeUndefined();
+    expect(fixture.runtime.gitService.push).toHaveBeenCalledWith({ laneId: "lane-1", force: true, setUpstream: false });
+    expect(response.structuredContent.domain).toBe("git");
+    expect(response.structuredContent.action).toBe("push");
+
+    const variadic = await callTool(handler, "run_ade_action", {
+      domain: "operation",
+      action: "list",
+      argsList: [{ limit: 10 }],
+    });
+    expect(variadic?.isError).toBeUndefined();
+    expect(fixture.runtime.operationService.list).toHaveBeenCalledWith({ limit: 10 });
+  });
+
+  it("reads ADE action status snapshots across operation/test/chat/mission/run", async () => {
+    const fixture = createRuntime();
+    const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(handler, { callerId: "agent-1", role: "agent", runId: "run-1", missionId: "mission-1" });
+
+    const response = await callTool(handler, "get_ade_action_status", {
+      operationId: "op-1",
+      testRunId: "test-run-1",
+      chatSessionId: "chat-1",
+      runId: "run-1",
+      missionId: "mission-1",
+      prId: "pr-1",
+    });
+    expect(response?.isError).toBeUndefined();
+    expect(response.structuredContent.operation.id).toBe("op-1");
+    expect(response.structuredContent.testRun.id).toBe("test-run-1");
+    expect(response.structuredContent.chatSession.sessionId).toBe("chat-1");
+    expect(response.structuredContent.runGraph.run.id).toBe("run-1");
+    expect(response.structuredContent.mission.id).toBe("mission-1");
+    expect(response.structuredContent.pr.health.prId).toBe("pr-1");
+    expect(typeof response.structuredContent.hash).toBe("string");
+    expect(response.structuredContent.changed).toBe(true);
+
+    const unchanged = await callTool(handler, "get_ade_action_status", {
+      operationId: "op-1",
+      previousHash: response.structuredContent.hash,
+      waitForMs: 0,
+    });
+    expect(unchanged?.isError).toBeUndefined();
+    expect(unchanged.structuredContent.changed).toBe(false);
   });
 
   it("lets agent callers stash lane changes", async () => {
