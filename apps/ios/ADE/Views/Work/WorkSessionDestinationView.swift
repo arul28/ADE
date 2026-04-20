@@ -12,7 +12,6 @@ struct WorkSessionDestinationView: View {
   let initialTranscript: [WorkChatEnvelope]?
   let transitionNamespace: Namespace.ID?
   let isLive: Bool
-  let disconnectedNotice: Bool
 
   @State var session: TerminalSessionSummary?
   @State var chatSummary: AgentChatSessionSummary?
@@ -79,6 +78,9 @@ struct WorkSessionDestinationView: View {
       .navigationBarTitleDisplayMode(.inline)
       .toolbar(.hidden, for: .tabBar)
       .toolbar {
+        ToolbarItem(placement: .topBarLeading) {
+          ADEConnectionDot()
+        }
         ToolbarItem(placement: .topBarTrailing) {
           sessionHeaderTrailingControls
         }
@@ -134,7 +136,6 @@ struct WorkSessionDestinationView: View {
           sending: $sending,
           errorMessage: $errorMessage,
           isLive: isLive,
-          disconnectedNotice: disconnectedNotice,
           transitionNamespace: transitionNamespace,
           onOpenLane: openSessionLane,
           onSend: sendMessage,
@@ -157,7 +158,6 @@ struct WorkSessionDestinationView: View {
       } else {
         WorkTerminalSessionView(
           session: session,
-          disconnectedNotice: disconnectedNotice,
           transitionNamespace: transitionNamespace,
           onOpenLane: openSessionLane
         )

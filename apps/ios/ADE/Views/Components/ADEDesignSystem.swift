@@ -421,61 +421,34 @@ struct ADEStatusPill: View {
   }
 }
 
-struct ADEConnectionPill: View {
-  @EnvironmentObject private var syncService: SyncService
-
-  private var tint: Color {
-    switch syncService.connectionState {
-    case .connected, .syncing: return ADEColor.success
-    case .connecting: return ADEColor.accent
-    case .disconnected, .error: return ADEColor.danger
-    }
-  }
-
-  private var label: String {
-    switch syncService.connectionState {
-    case .connected, .syncing: return "Connected"
-    case .connecting: return "Connecting"
-    case .disconnected: return "Not connected"
-    case .error: return "Offline"
-    }
-  }
-
-  var body: some View {
-    Button {
-      syncService.settingsPresented = true
-    } label: {
-      HStack(spacing: 6) {
-        Circle()
-          .fill(tint)
-          .frame(width: 8, height: 8)
-        Text(label)
-          .font(.caption.weight(.semibold))
-          .foregroundStyle(ADEColor.textPrimary)
-      }
-    }
-    .buttonStyle(.plain)
-    .accessibilityLabel("Connection: \(label). Tap to open settings.")
-  }
-}
-
 struct ADEConnectionDot: View {
   @EnvironmentObject private var syncService: SyncService
 
   private var tint: Color {
     switch syncService.connectionState {
-    case .connected, .syncing: return ADEColor.success
+    case .connected: return ADEColor.success
+    case .syncing: return ADEColor.warning
     case .connecting: return ADEColor.warning
-    case .error: return ADEColor.danger
-    case .disconnected: return ADEColor.textMuted
+    case .error, .disconnected: return ADEColor.danger
     }
   }
 
-  private var showsHostName: Bool {
+  private var statusText: String {
     switch syncService.connectionState {
-    case .connected, .syncing: return true
-    default: return false
+    case .connected: return "Connected"
+    case .syncing: return "Syncing"
+    case .connecting: return "Connecting"
+    case .error: return "Error"
+    case .disconnected: return "Disconnected"
     }
+  }
+
+  private var showsHostSuffix: Bool {
+    syncService.connectionState == .connected
+  }
+
+  private var showsConnectedGlow: Bool {
+    syncService.connectionState == .connected
   }
 
   private var truncatedHostName: String? {
@@ -490,15 +463,32 @@ struct ADEConnectionDot: View {
   }
 
   private var accessibilityLabel: String {
-    switch syncService.connectionState {
-    case .connected, .syncing:
-      if let name = syncService.hostName, !name.isEmpty {
-        return "Connected to \(name). Tap to open settings."
+    let errorSuffix: String = {
+      guard syncService.connectionState == .error,
+            let raw = syncService.lastError?.trimmingCharacters(in: .whitespacesAndNewlines),
+            !raw.isEmpty
+      else {
+        return ""
       }
-      return "Connected. Tap to open settings."
-    case .connecting: return "Connecting. Tap to open settings."
-    case .error: return "Connection error. Tap to open settings."
-    case .disconnected: return "Not connected. Tap to open settings."
+      let normalized = raw.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+      let clipped = normalized.count > 120 ? String(normalized.prefix(117)) + "…" : normalized
+      return ". \(clipped)"
+    }()
+
+    switch syncService.connectionState {
+    case .connected:
+      if let name = truncatedHostName {
+        return "Connected to \(name)"
+      }
+      return "Connected"
+    case .syncing:
+      return "Syncing with host"
+    case .connecting:
+      return "Connecting to host"
+    case .error:
+      return "Connection error\(errorSuffix)"
+    case .disconnected:
+      return "Disconnected from host"
     }
   }
 
@@ -510,17 +500,31 @@ struct ADEConnectionDot: View {
         Circle()
           .fill(tint)
           .frame(width: 10, height: 10)
-          .shadow(color: tint.opacity(showsHostName ? 0.5 : 0), radius: showsHostName ? 4 : 0)
-        if showsHostName, let name = truncatedHostName {
+          .shadow(color: tint.opacity(showsConnectedGlow ? 0.5 : 0), radius: showsConnectedGlow ? 4 : 0)
+        Text(statusText)
+          .font(.caption.weight(.semibold))
+          .foregroundStyle(ADEColor.textPrimary)
+          .lineLimit(1)
+          .minimumScaleFactor(0.75)
+        if showsHostSuffix, let name = truncatedHostName {
+          Text("·")
+            .font(.caption.weight(.medium))
+            .foregroundStyle(ADEColor.textMuted)
+            .minimumScaleFactor(0.75)
           Text(name)
             .font(.caption.weight(.medium))
             .foregroundStyle(ADEColor.textSecondary)
             .lineLimit(1)
+            .minimumScaleFactor(0.75)
         }
       }
+      .frame(minHeight: 44)
+      .contentShape(Rectangle())
     }
     .buttonStyle(.plain)
     .accessibilityLabel(accessibilityLabel)
+    .accessibilityHint("Opens settings to pair or reconnect.")
+    .accessibilityShowsLargeContentViewer()
   }
 }
 

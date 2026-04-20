@@ -28,7 +28,6 @@ struct WorkChatSessionView: View {
   @State var timelineRebuildTask: Task<Void, Never>?
   @State var timelineRebuildGeneration = 0
   let isLive: Bool
-  let disconnectedNotice: Bool
   let transitionNamespace: Namespace.ID?
   let onOpenLane: (() -> Void)?
   let onSend: @MainActor (String) async -> Bool
@@ -192,17 +191,6 @@ struct WorkChatSessionView: View {
               )
             }
           }
-        }
-
-        if disconnectedNotice {
-          ADENoticeCard(
-            title: "Connection lost",
-            message: "Cached messages stay visible, but sending, streaming, and artifact refresh are paused until the host reconnects.",
-            icon: "wifi.slash",
-            tint: ADEColor.warning,
-            actionTitle: nil,
-            action: nil
-          )
         }
 
         if let errorMessage {

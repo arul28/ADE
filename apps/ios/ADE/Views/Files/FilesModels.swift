@@ -16,12 +16,6 @@ enum FilesSearchKind {
   case textSearch
 }
 
-struct FilesBrowserStatusPresentation: Equatable {
-  let title: String
-  let message: String
-  let actionTitle: String?
-}
-
 struct FilesBreadcrumbItem: Equatable {
   let label: String
   let path: String
@@ -162,56 +156,6 @@ func resolveFilesWorkspace(for request: FilesNavigationRequest, in workspaces: [
     return workspaces.first(where: { $0.laneId == laneId })
   }
   return nil
-}
-
-func filesBrowserStatusPresentation(
-  status: SyncDomainStatus,
-  hasCachedWorkspaces: Bool,
-  hasActiveHostProfile: Bool,
-  needsRepairing: Bool
-) -> FilesBrowserStatusPresentation? {
-  switch status.phase {
-  case .disconnected:
-    if hasCachedWorkspaces {
-      return FilesBrowserStatusPresentation(
-        title: "Showing cached workspaces",
-        message: needsRepairing
-          ? "Workspace metadata and cached directory snapshots are still visible, but you need to pair again before trusting the host or refreshing Files."
-          : "Workspace metadata and cached directory snapshots stay visible on iPhone, but quick open, text search, and refresh need the host to reconnect.",
-        actionTitle: hasActiveHostProfile ? "Reconnect" : "Open Settings"
-      )
-    }
-
-    return FilesBrowserStatusPresentation(
-      title: "Host disconnected",
-      message: hasActiveHostProfile
-        ? "Reconnect to hydrate workspace roots, browse live directories, and run quick open or text search from Files."
-        : (needsRepairing
-            ? "The previous pairing was cleared. Open Settings to pair again before Files can trust or hydrate workspace data."
-            : "Pair with a host from Settings to hydrate workspace roots before browsing files on iPhone."),
-      actionTitle: hasActiveHostProfile ? "Reconnect" : "Open Settings"
-    )
-  case .hydrating:
-    return FilesBrowserStatusPresentation(
-      title: "Hydrating workspaces",
-      message: "Files uses lane hydration for workspace roots. Waiting for the latest host lane data before browsing continues.",
-      actionTitle: nil
-    )
-  case .syncingInitialData:
-    return FilesBrowserStatusPresentation(
-      title: "Syncing initial data",
-      message: "Waiting for the host to finish syncing project and lane metadata before Files loads the workspace browser.",
-      actionTitle: nil
-    )
-  case .failed:
-    return FilesBrowserStatusPresentation(
-      title: "Workspace hydration failed",
-      message: status.lastError ?? "The lane graph did not hydrate, so Files cannot trust its workspace model yet.",
-      actionTitle: "Retry"
-    )
-  case .ready:
-    return nil
-  }
 }
 
 func filesSearchEmptyMessage(kind: FilesSearchKind, isLive: Bool, needsRepairing: Bool, query: String) -> String {

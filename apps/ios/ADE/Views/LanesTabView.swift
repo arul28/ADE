@@ -39,10 +39,6 @@ struct LanesTabView: View {
     syncService.status(for: .lanes)
   }
 
-  var needsRepairing: Bool {
-    syncService.activeHostProfile == nil && !laneSnapshots.isEmpty
-  }
-
   var canRunLiveActions: Bool {
     laneAllowsLiveActions(connectionState: syncService.connectionState, laneStatus: laneStatus)
   }
@@ -55,9 +51,16 @@ struct LanesTabView: View {
     NavigationStack {
       ScrollView {
         LazyVStack(spacing: 14) {
-          if let statusNotice {
-            noticeCard(statusNotice)
-              .transition(.opacity)
+          if let hydrationNotice = laneStatus.inlineHydrationFailureNotice(for: .lanes) {
+            ADENoticeCard(
+              title: hydrationNotice.title,
+              message: hydrationNotice.message,
+              icon: "exclamationmark.triangle.fill",
+              tint: ADEColor.danger,
+              actionTitle: "Retry",
+              action: { Task { await reload(refreshRemote: true) } }
+            )
+            .transition(.opacity)
           }
           if let errorMessage, laneStatus.phase == .ready {
             ADENoticeCard(

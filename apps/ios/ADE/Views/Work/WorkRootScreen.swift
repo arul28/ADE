@@ -58,10 +58,6 @@ struct WorkRootScreen: View {
     workStatus.phase == .ready && (syncService.connectionState == .connected || syncService.connectionState == .syncing)
   }
 
-  var needsRepairing: Bool {
-    syncService.activeHostProfile == nil && !mergedSessions.isEmpty
-  }
-
   var isLoadingSkeleton: Bool {
     workStatus.phase == .hydrating || workStatus.phase == .syncingInitialData
   }
@@ -222,12 +218,6 @@ struct WorkRootScreen: View {
     NavigationStack(path: $path) {
       ScrollViewReader { proxy in
       List {
-        if let statusNotice {
-          statusNotice
-            .listRowBackground(Color.clear)
-            .listRowSeparator(.hidden)
-        }
-
         if isLoadingSkeleton {
           ForEach(0..<3, id: \.self) { _ in
             ADECardSkeleton(rows: 3)
@@ -235,6 +225,18 @@ struct WorkRootScreen: View {
               .listRowSeparator(.hidden)
           }
         } else {
+          if let hydrationNotice = workStatus.inlineHydrationFailureNotice(for: .work) {
+            ADENoticeCard(
+              title: hydrationNotice.title,
+              message: hydrationNotice.message,
+              icon: "exclamationmark.triangle.fill",
+              tint: ADEColor.danger,
+              actionTitle: "Retry",
+              action: { Task { await reload(refreshRemote: true) } }
+            )
+            .listRowBackground(Color.clear)
+            .listRowSeparator(.hidden)
+          }
           WorkFiltersSection(
             searchText: $searchText,
             selectedLaneId: $selectedLaneId,
@@ -337,7 +339,7 @@ struct WorkRootScreen: View {
       .navigationBarTitleDisplayMode(.inline)
       .toolbar {
         ToolbarItem(placement: .topBarLeading) {
-          ADEConnectionPill()
+          ADEConnectionDot()
         }
         ToolbarItem(placement: .topBarTrailing) {
           HStack(spacing: 8) {
@@ -397,8 +399,7 @@ struct WorkRootScreen: View {
           initialChatSummary: chatSummaries[route.sessionId],
           initialTranscript: transcriptCache[route.sessionId],
           transitionNamespace: routeTransitionNamespace,
-          isLive: isLive,
-          disconnectedNotice: !isLive
+          isLive: isLive
         )
         .environmentObject(syncService)
       }

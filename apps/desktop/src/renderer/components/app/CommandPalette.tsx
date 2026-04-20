@@ -434,7 +434,7 @@ export function CommandPalette({
     const requestId = ++detailRequestRef.current;
     setDetailLoading(true);
     setDetailPath(detailTarget);
-    const timeout = window.setTimeout(() => {
+    const timeout = globalThis.setTimeout(() => {
       void window.ade.project
         .getDetail(detailTarget)
         .then((result) => {
@@ -451,7 +451,7 @@ export function CommandPalette({
         });
     }, 140);
     return () => {
-      window.clearTimeout(timeout);
+      globalThis.clearTimeout(timeout);
     };
   }, [detail, detailTarget, mode, open]);
 
