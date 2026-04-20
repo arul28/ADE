@@ -3601,6 +3601,7 @@ final class ADETests: XCTestCase {
             "defaultBaseBranch": "main",
             "defaultTitle": "new",
             "dirty": false,
+            "commitsAheadOfBase": 0,
             "hasExistingPr": false,
             "canCreate": true,
             "blockedReason": null
@@ -3614,6 +3615,7 @@ final class ADETests: XCTestCase {
             "defaultBaseBranch": "main",
             "defaultTitle": "blocked",
             "dirty": false,
+            "commitsAheadOfBase": 2,
             "hasExistingPr": true,
             "canCreate": false,
             "blockedReason": "Lane already has an open PR (#7)."
@@ -3757,6 +3759,34 @@ final class ADETests: XCTestCase {
     XCTAssertNil(snapshot.createCapabilities.defaultBaseBranch)
   }
 
+  func testPrCreateCapabilitiesPreserveUnknownLegacyAheadCount() throws {
+    let json = """
+    {
+      "canCreateAny": true,
+      "defaultBaseBranch": "main",
+      "lanes": [
+        {
+          "laneId": "lane-legacy",
+          "laneName": "legacy",
+          "parentLaneId": null,
+          "repoOwner": null,
+          "repoName": null,
+          "defaultBaseBranch": "main",
+          "defaultTitle": "legacy",
+          "dirty": false,
+          "hasExistingPr": false,
+          "canCreate": true,
+          "blockedReason": null
+        }
+      ]
+    }
+    """
+
+    let capabilities = try JSONDecoder().decode(PrCreateCapabilities.self, from: Data(json.utf8))
+    XCTAssertEqual(capabilities.lanes.first?.laneId, "lane-legacy")
+    XCTAssertNil(capabilities.lanes.first?.commitsAheadOfBase)
+  }
+
   func testPrActionCapabilitiesGateMergeAndSurfaceBlockedReason() {
     let capabilitiesAllow = PrActionCapabilities(
       prId: "pr-1",
@@ -3815,6 +3845,7 @@ final class ADETests: XCTestCase {
       defaultBaseBranch: "main",
       defaultTitle: "feat/new",
       dirty: false,
+      commitsAheadOfBase: 1,
       hasExistingPr: false,
       canCreate: true,
       blockedReason: nil
@@ -3828,6 +3859,7 @@ final class ADETests: XCTestCase {
       defaultBaseBranch: "main",
       defaultTitle: "feat/blocked",
       dirty: false,
+      commitsAheadOfBase: 0,
       hasExistingPr: true,
       canCreate: false,
       blockedReason: "Lane already has an open PR (#12)."

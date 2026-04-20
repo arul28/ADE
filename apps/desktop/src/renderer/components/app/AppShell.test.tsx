@@ -332,6 +332,44 @@ describe("AppShell", () => {
       expect(
         screen.getByText(/No AI provider is configured yet/i),
       ).toBeTruthy();
+
+      fireEvent.click(screen.getByTestId("dismiss-missing-ai-banner"));
+
+      expect(
+        screen.queryByText(/No AI provider is configured yet/i),
+      ).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("dismisses the GitHub not connected banner for the current session", async () => {
+    vi.useFakeTimers();
+    try {
+      globalThis.window.ade.github.getStatus = vi.fn(async () => ({ tokenStored: false })) as any;
+
+      render(
+        <MemoryRouter initialEntries={["/work"]}>
+          <AppShell>
+            <div>child</div>
+          </AppShell>
+        </MemoryRouter>,
+      );
+
+      await act(async () => {
+        vi.advanceTimersByTime(1_000);
+        await Promise.resolve();
+      });
+
+      expect(
+        screen.getByText(/GitHub is not connected for this ADE app yet/i),
+      ).toBeTruthy();
+
+      fireEvent.click(screen.getByTestId("dismiss-github-banner"));
+
+      expect(
+        screen.queryByText(/GitHub is not connected for this ADE app yet/i),
+      ).toBeNull();
     } finally {
       vi.useRealTimers();
     }

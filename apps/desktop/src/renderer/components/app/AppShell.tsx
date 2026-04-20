@@ -180,8 +180,14 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const [contextStatus, setContextStatus] = useState<ContextStatus | null>(
     null,
   );
-  const [dismissedContextBannerRoots, setDismissedContextBannerRoots] =
-    useState<Record<string, true>>({});
+  // Banner dismissals live in the store so they can be pruned when projects close/switch
+  // — AppShell used to own these as local state, which leaked entries across a long session.
+  const dismissedContextBannerRoots = useAppStore((s) => s.dismissedContextBannerRoots);
+  const dismissedMissingAiBannerRoots = useAppStore((s) => s.dismissedMissingAiBannerRoots);
+  const dismissedGithubBannerRoots = useAppStore((s) => s.dismissedGithubBannerRoots);
+  const dismissMissingAiBanner = useAppStore((s) => s.dismissMissingAiBanner);
+  const dismissGithubBanner = useAppStore((s) => s.dismissGithubBanner);
+  const dismissContextBanner = useAppStore((s) => s.dismissContextBanner);
   const [projectMissing, setProjectMissing] = useState(false);
   const [feedbackGenerating, setFeedbackGenerating] = useState(false);
   const previousProjectRootRef = useRef<string | null | undefined>(undefined);
@@ -603,6 +609,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     [missingContextDocs],
   );
   const currentProjectRoot = project?.rootPath ?? null;
+  const missingAiBannerDismissed = Boolean(
+    currentProjectRoot && dismissedMissingAiBannerRoots[currentProjectRoot],
+  );
+  const githubBannerDismissed = Boolean(
+    currentProjectRoot && dismissedGithubBannerRoots[currentProjectRoot],
+  );
   const contextBannerDismissed = Boolean(
     currentProjectRoot && dismissedContextBannerRoots[currentProjectRoot],
   );
@@ -791,12 +803,28 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       !showWelcome &&
       aiStatusLoaded &&
       aiStatus !== null &&
-      !hasAnyAiProvider ? (
+      !hasAnyAiProvider &&
+      !missingAiBannerDismissed ? (
         <div className="shrink-0 mx-2 mt-1 rounded bg-amber-500/6 px-3 py-1.5 text-[11px] font-mono text-amber-800">
-          No AI provider is configured yet.{" "}
-          <Link to="/settings?tab=ai" className="underline">
-            Set up AI
-          </Link>
+          <span>
+            No AI provider is configured yet.{" "}
+            <Link to="/settings?tab=ai" className="underline">
+              Set up AI
+            </Link>
+          </span>
+          <button
+            type="button"
+            data-testid="dismiss-missing-ai-banner"
+            className="ml-2 text-amber-900/70 hover:text-amber-900"
+            onClick={() => {
+              if (!currentProjectRoot) return;
+              dismissMissingAiBanner(currentProjectRoot);
+            }}
+            title="Dismiss for this session"
+            aria-label="Dismiss missing AI provider banner for this session"
+          >
+            ×
+          </button>
         </div>
       ) : null}
 
@@ -805,12 +833,28 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       !showWelcome &&
       !isOnboardingRoute &&
       githubStatus !== null &&
-      !githubStatus.tokenStored ? (
+      !githubStatus.tokenStored &&
+      !githubBannerDismissed ? (
         <div className="shrink-0 mx-3 mt-1.5 rounded bg-amber-500/6 px-3 py-1.5 text-[11px] font-mono text-amber-800">
-          GitHub is not connected for this ADE app yet.{" "}
-          <Link to="/settings?tab=integrations" className="underline">
-            Connect GitHub
-          </Link>
+          <span>
+            GitHub is not connected for this ADE app yet.{" "}
+            <Link to="/settings?tab=integrations" className="underline">
+              Connect GitHub
+            </Link>
+          </span>
+          <button
+            type="button"
+            data-testid="dismiss-github-banner"
+            className="ml-2 text-amber-900/70 hover:text-amber-900"
+            onClick={() => {
+              if (!currentProjectRoot) return;
+              dismissGithubBanner(currentProjectRoot);
+            }}
+            title="Dismiss for this session"
+            aria-label="Dismiss GitHub not connected banner for this session"
+          >
+            ×
+          </button>
         </div>
       ) : null}
 
@@ -906,10 +950,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             className="ml-2 text-amber-900/70 hover:text-amber-900"
             onClick={() => {
               if (!currentProjectRoot) return;
-              setDismissedContextBannerRoots((prev) => ({
-                ...prev,
-                [currentProjectRoot]: true,
-              }));
+              dismissContextBanner(currentProjectRoot);
             }}
             title="Dismiss for this session"
           >
