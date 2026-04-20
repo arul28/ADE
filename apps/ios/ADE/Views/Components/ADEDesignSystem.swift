@@ -477,7 +477,7 @@ struct ADEConnectionDot: View {
 
     switch syncService.connectionState {
     case .connected:
-      if let name = syncService.hostName, !name.isEmpty {
+      if let name = truncatedHostName {
         return "Connected to \(name)"
       }
       return "Connected"

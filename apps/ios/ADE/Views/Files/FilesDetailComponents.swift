@@ -9,9 +9,19 @@ struct FilesHeaderStrip: View {
   let fileSize: Int
   let transitionNamespace: Namespace.ID?
 
-  private var filesBrowserIsLive: Bool {
-    syncService.status(for: .files).phase == .ready
-      && (syncService.connectionState == .connected || syncService.connectionState == .syncing)
+  private var filesBrowserStatusSuffix: String? {
+    let phase = syncService.status(for: .files).phase
+    let connection = syncService.connectionState
+    if phase == .ready && (connection == .connected || connection == .syncing) {
+      return nil
+    }
+    if phase == .hydrating || phase == .syncingInitialData || connection == .syncing {
+      return "Syncing"
+    }
+    if connection == .connecting {
+      return "Connecting"
+    }
+    return "Offline"
   }
 
   var body: some View {
@@ -44,9 +54,9 @@ struct FilesHeaderStrip: View {
           Text("Read only")
             .font(.caption2.weight(.medium))
             .foregroundStyle(ADEColor.textSecondary)
-          if !filesBrowserIsLive {
+          if let filesBrowserStatusSuffix {
             Text("·").foregroundStyle(ADEColor.textMuted)
-            Text("Offline")
+            Text(filesBrowserStatusSuffix)
               .font(.caption2.weight(.semibold))
               .foregroundStyle(ADEColor.warning)
           }

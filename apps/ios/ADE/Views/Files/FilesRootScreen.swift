@@ -55,11 +55,14 @@ struct FilesRootScreen: View {
             ADECardSkeleton(rows: 4)
           }
 
-          if filesStatus.phase == .ready && workspaces.isEmpty {
+          if workspaces.isEmpty && !isLoadingSkeleton {
+            let isDisconnected = filesStatus.phase == .disconnected || syncService.activeHostProfile == nil
             ADEEmptyStateView(
-              symbol: "folder.badge.questionmark",
-              title: "No workspaces available",
-              message: "This host does not currently expose any lane-backed workspaces for the mobile Files browser."
+              symbol: isDisconnected ? "wifi.slash" : "folder.badge.questionmark",
+              title: isDisconnected ? "Files unavailable" : "No workspaces available",
+              message: isDisconnected
+                ? "Files need a connected host. Reconnect or pair a host in Settings to browse workspaces."
+                : "This host does not currently expose any lane-backed workspaces for the mobile Files browser."
             ) {
               Button(syncService.activeHostProfile == nil ? "Open Settings" : "Refresh Files") {
                 if syncService.activeHostProfile == nil {

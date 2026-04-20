@@ -225,6 +225,7 @@ function resolvePlannerPlanMissingInterventionsAfterPlanningSuccess(args: {
   missionId: string;
   attempt: OrchestratorRunGraph["attempts"][number];
   step: OrchestratorRunGraph["steps"][number];
+  planArtifactPersisted: boolean;
 }): void {
   const stepMeta = isRecord(args.step.metadata) ? args.step.metadata : {};
   const phaseKey = typeof stepMeta.phaseKey === "string" ? stepMeta.phaseKey.trim().toLowerCase() : "";
@@ -234,11 +235,10 @@ function resolvePlannerPlanMissingInterventionsAfterPlanningSuccess(args: {
   const isPlanningStep = stepType === "planning" || stepType === "analysis" || phaseKey === "planning";
   if (!isPlanningStep) return;
 
-  const lastResultReport = isRecord(stepMeta.lastResultReport) ? stepMeta.lastResultReport : null;
-  const reportedPlan = lastResultReport && isRecord(lastResultReport.plan) ? lastResultReport.plan : null;
-  const planMarkdown =
-    reportedPlan && typeof reportedPlan.markdown === "string" ? reportedPlan.markdown.trim() : "";
-  if (!planMarkdown.length) return;
+  // Only resolve when the canonical plan artifact was actually written and registered in this attempt.
+  // `report_result.plan.markdown` alone is insufficient: fs.writeFileSync or registerArtifact may have
+  // failed inside extractAndRegisterArtifacts, and we'd otherwise clear the intervention without a plan.
+  if (!args.planArtifactPersisted) return;
 
   const mission = args.ctx.missionService.get(args.missionId);
   if (!mission) return;
@@ -249,8 +249,8 @@ function resolvePlannerPlanMissingInterventionsAfterPlanningSuccess(args: {
     const meta = isRecord(intervention.metadata) ? intervention.metadata : {};
     const reasonCode = typeof meta.reasonCode === "string" ? meta.reasonCode.trim() : "";
     if (reasonCode !== "planner_plan_missing") continue;
-    const interventionRunId = typeof meta.runId === "string" ? meta.runId.trim() : "";
-    if (interventionRunId.length > 0 && interventionRunId !== args.attempt.runId) continue;
+    // Allow cross-run recovery: any successful planning attempt on this mission can clear a
+    // stale planner_plan_missing intervention, regardless of which run originally recorded it.
 
     try {
       args.ctx.missionService.resolveIntervention({
@@ -839,11 +839,12 @@ export function extractAndRegisterArtifacts(
     graph: OrchestratorRunGraph;
     attempt: OrchestratorRunGraph["attempts"][number];
   }
-): void {
+): { planArtifactPersisted: boolean } {
+  let planArtifactPersisted = false;
   try {
     const { graph, attempt } = args;
     const envelope = attempt.resultEnvelope;
-    if (!envelope) return;
+    if (!envelope) return { planArtifactPersisted };
     const outputs = isRecord(envelope.outputs) ? envelope.outputs : {};
 
     const step = graph.steps.find((s) => s.id === attempt.stepId);
@@ -1085,6 +1086,7 @@ export function extractAndRegisterArtifacts(
             absolutePath: absolutePlanPath,
           },
         });
+        planArtifactPersisted = true;
       } else {
         const missingPlanDetail = "Planning worker completed without returning a usable plan payload in report_result.plan.markdown.";
         ctx.logger.warn("ai_orchestrator.plan_artifact_missing", {
@@ -1174,6 +1176,7 @@ export function extractAndRegisterArtifacts(
       error: error instanceof Error ? error.message : String(error)
     });
   }
+  return { planArtifactPersisted };
 }
 
 // ── updateWorkerStateFromEvent ───────────────────────────────────
@@ -1330,7 +1333,7 @@ export function updateWorkerStateFromEventCtx(
       }
 
       // Extract and register artifacts from the worker result envelope.
-      extractAndRegisterArtifacts(ctx, { graph, attempt });
+      const artifactExtraction = extractAndRegisterArtifacts(ctx, { graph, attempt });
 
       // Evaluation loop: evaluate step based on active runtime profile.
       const step = graph.steps.find((s) => s.id === attempt.stepId);
@@ -1348,6 +1351,7 @@ export function updateWorkerStateFromEventCtx(
           missionId: graph.run.missionId,
           attempt,
           step,
+          planArtifactPersisted: artifactExtraction.planArtifactPersisted,
         });
       }
       if (step && ctx.aiIntegrationService) {

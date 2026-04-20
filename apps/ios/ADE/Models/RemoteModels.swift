@@ -132,11 +132,12 @@ extension SyncDomainStatus {
   /// Inline notice when the domain is in `.failed` but cached rows may still render (no empty-state card).
   func inlineHydrationFailureNotice(for domain: SyncDomain) -> (title: String, message: String)? {
     guard phase == .failed else { return nil }
-    let trimmed = lastError?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    let raw = lastError?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    let normalized = raw.split(whereSeparator: \.isWhitespace).joined(separator: " ")
     let message =
-      trimmed.isEmpty
+      normalized.isEmpty
       ? "Fresh data could not be loaded from the host. Cached content may be outdated until you retry or reconnect."
-      : trimmed
+      : normalized
     let title: String
     switch domain {
     case .lanes:
