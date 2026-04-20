@@ -1143,7 +1143,13 @@ function GraphInner() {
       };
     }
 
-    const autoPositions = computeAutoLayout(lanes, viewMode, activityScoreByLaneId, environmentByLaneId);
+    const autoPositions = computeAutoLayout(
+      lanes,
+      viewMode,
+      activityScoreByLaneId,
+      environmentByLaneId,
+      primaryHierarchyMeta.depthByLaneId
+    );
     const savedPositions = activeSnapshot.nodePositions;
     const positions = Object.keys(savedPositions).length > 0 ? { ...autoPositions, ...savedPositions } : autoPositions;
     const nextNodes: Array<Node<GraphNodeData>> = [];

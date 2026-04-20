@@ -110,23 +110,44 @@ export function laneHierarchyFromPrimary(lanes: LaneSummary[]): {
   const depthByLaneId = new Map<string, number>();
   const parentNameByLaneId = new Map<string, string | null>();
 
-  const depthFromPrimary = (laneId: string): number => {
-    if (laneId === primary.id) return 0;
-    const seen = new Set<string>();
-    let hops = 0;
-    let cur: LaneSummary | undefined = byId.get(laneId);
-    while (cur && cur.id !== primary.id) {
-      if (seen.has(cur.id)) return 10_000;
-      seen.add(cur.id);
-      if (!cur.parentLaneId) return 10_000;
-      cur = byId.get(cur.parentLaneId);
-      hops += 1;
+  depthByLaneId.set(primary.id, 0);
+
+  const resolveDepth = (startId: string): number => {
+    const chain: string[] = [];
+    const onChain = new Set<string>();
+    let cursor: LaneSummary | undefined = byId.get(startId);
+    let baseDepth = 10_000;
+    while (cursor) {
+      const cached = depthByLaneId.get(cursor.id);
+      if (cached !== undefined) {
+        baseDepth = cached;
+        break;
+      }
+      if (onChain.has(cursor.id)) {
+        baseDepth = 10_000;
+        break;
+      }
+      chain.push(cursor.id);
+      onChain.add(cursor.id);
+      if (!cursor.parentLaneId) {
+        baseDepth = 10_000;
+        break;
+      }
+      cursor = byId.get(cursor.parentLaneId);
     }
-    return cur?.id === primary.id ? hops : 10_000;
+    if (baseDepth === 10_000) {
+      for (const id of chain) depthByLaneId.set(id, 10_000);
+      return 10_000;
+    }
+    for (let i = chain.length - 1; i >= 0; i -= 1) {
+      baseDepth += 1;
+      depthByLaneId.set(chain[i]!, baseDepth);
+    }
+    return depthByLaneId.get(startId) ?? 10_000;
   };
 
   for (const lane of lanes) {
-    depthByLaneId.set(lane.id, depthFromPrimary(lane.id));
+    if (!depthByLaneId.has(lane.id)) resolveDepth(lane.id);
     const parent = lane.parentLaneId ? byId.get(lane.parentLaneId) : null;
     parentNameByLaneId.set(lane.id, parent?.name ?? null);
   }
@@ -138,12 +159,13 @@ export function laneHierarchyFromPrimary(lanes: LaneSummary[]): {
 function layoutPrimaryCentricRows(
   lanes: LaneSummary[],
   activityScoreByLaneId: Record<string, number>,
-  tieBreak: "stack" | "activity"
+  tieBreak: "stack" | "activity",
+  precomputedDepthByLaneId?: Map<string, number>
 ): Record<string, { x: number; y: number }> {
   const positions: Record<string, { x: number; y: number }> = {};
   if (lanes.length === 0) return positions;
 
-  const { depthByLaneId } = laneHierarchyFromPrimary(lanes);
+  const depthByLaneId = precomputedDepthByLaneId ?? laneHierarchyFromPrimary(lanes).depthByLaneId;
 
   const compareLanes = (a: LaneSummary, b: LaneSummary) => {
     if (tieBreak === "activity") {
@@ -197,8 +219,9 @@ export function computeAutoLayout(
   lanes: LaneSummary[],
   viewMode: GraphViewMode,
   activityScoreByLaneId: Record<string, number>,
-  _environmentByLaneId: Record<string, { env: string; color: string | null }>
+  _environmentByLaneId: Record<string, { env: string; color: string | null }>,
+  precomputedDepthByLaneId?: Map<string, number>
 ): Record<string, { x: number; y: number }> {
   const tieBreak: "stack" | "activity" = viewMode === "activity" ? "activity" : "stack";
-  return layoutPrimaryCentricRows(lanes, activityScoreByLaneId, tieBreak);
+  return layoutPrimaryCentricRows(lanes, activityScoreByLaneId, tieBreak, precomputedDepthByLaneId);
 }
