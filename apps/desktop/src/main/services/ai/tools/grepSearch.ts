@@ -215,7 +215,9 @@ function collectFiles(
   if (stat.isFile()) return [dir];
 
   const files: string[] = [];
-  const globRegex = fileGlob ? globToRegex(fileGlob) : null;
+  const normalizedFileGlob = fileGlob?.replace(/\\/g, "/");
+  const globRegex = normalizedFileGlob ? globToRegex(normalizedFileGlob) : null;
+  const globIncludesDirectory = normalizedFileGlob?.includes("/") ?? false;
   const rootReal = fs.realpathSync(dir);
 
   function walk(current: string): void {
@@ -239,7 +241,9 @@ function collectFiles(
         walk(next);
       } else if (entry.isFile()) {
         const fullPath = path.join(current, entry.name);
-        if (!globRegex || globRegex.test(entry.name)) {
+        const relativeFilePath = path.relative(rootReal, fullPath).replace(/\\/g, "/");
+        const globTarget = globIncludesDirectory ? relativeFilePath : entry.name;
+        if (!globRegex || globRegex.test(globTarget)) {
           files.push(fullPath);
         }
       }
@@ -251,23 +255,47 @@ function collectFiles(
 }
 
 function globToRegex(glob: string): RegExp {
-  // Globs are matched against bare filenames (`entry.name`) in the fallback,
-  // so strip directory components before applying glob rules. Collapse `**`
-  // first so `**/*.ts` → `*/*.ts` → `*.ts`; if any `/` remains, keep only the
-  // last segment (the filename pattern) so `src/*.ts` still matches `foo.ts`.
-  let pattern = glob.replace(/\*\*/g, "*");
-  const lastSlash = pattern.lastIndexOf("/");
-  if (lastSlash !== -1) pattern = pattern.slice(lastSlash + 1);
-  // Escape special regex chars except * and ? first, BEFORE brace expansion.
-  // This avoids escaping the parens/pipe that brace expansion introduces.
-  pattern = pattern.replace(/[.+^$[\]\\]/g, "\\$&");
-  // Replace glob wildcards
-  pattern = pattern.replace(/\*/g, ".*");
-  pattern = pattern.replace(/\?/g, ".");
-  // Handle {a,b} patterns (after escaping, so parens/pipe stay unescaped)
-  pattern = pattern.replace(/\{([^}]+)\}/g, (_m, inner: string) => {
-    return `(${inner.split(",").join("|")})`;
-  });
+  let pattern = "";
+  for (let i = 0; i < glob.length; i += 1) {
+    const char = glob[i];
+    const next = glob[i + 1];
+
+    if (char === "*" && next === "*") {
+      if (glob[i + 2] === "/") {
+        pattern += "(?:.*/)?";
+        i += 2;
+      } else {
+        pattern += ".*";
+        i += 1;
+      }
+      continue;
+    }
+
+    if (char === "*") {
+      pattern += "[^/]*";
+      continue;
+    }
+
+    if (char === "?") {
+      pattern += "[^/]";
+      continue;
+    }
+
+    if (char === "{") {
+      const close = glob.indexOf("}", i + 1);
+      if (close !== -1) {
+        const alternatives = glob
+          .slice(i + 1, close)
+          .split(",")
+          .map((part) => part.replace(/[|\\{}()[\]^$+*?.]/g, "\\$&"));
+        pattern += `(${alternatives.join("|")})`;
+        i = close;
+        continue;
+      }
+    }
+
+    pattern += char.replace(/[|\\{}()[\]^$+*?.]/g, "\\$&");
+  }
   return new RegExp(`^${pattern}$`);
 }
 

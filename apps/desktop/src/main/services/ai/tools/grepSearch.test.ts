@@ -292,8 +292,6 @@ describe("createGrepSearchTool", () => {
 
   describe("glob handling", () => {
     it("matches bare filenames under a **/*.ts glob (JS fallback)", async () => {
-      // Globs are applied to `entry.name` in the fallback, so `**/*.ts`
-      // must collapse to `*.ts` to match bare `foo.ts` — aligning with ripgrep.
       const cwd = makeTmpDir("grep-starstar-");
       writeFixtureFile(cwd, "foo.ts", "const marker = 1;");
       writeFixtureFile(cwd, "src/bar.ts", "const marker = 2;");
@@ -305,6 +303,34 @@ describe("createGrepSearchTool", () => {
 
       const paths = result.matches.map((m) => m.displayPath).sort();
       expect(paths).toEqual(["foo.ts", "src/bar.ts"]);
+    });
+
+    it("preserves directory components in JS fallback globs", async () => {
+      const cwd = makeTmpDir("grep-dir-glob-");
+      writeFixtureFile(cwd, "src/app.ts", "const marker = 1;");
+      writeFixtureFile(cwd, "src/deep/app.ts", "const marker = 2;");
+      writeFixtureFile(cwd, "lib/app.ts", "const marker = 3;");
+      forceJsFallback();
+
+      const tool = createGrepSearchTool(cwd);
+      const result = await tool.execute({ pattern: "marker", glob: "src/*.ts", context: 0 });
+
+      const paths = result.matches.map((m) => m.displayPath).sort();
+      expect(paths).toEqual(["src/app.ts"]);
+    });
+
+    it("matches directory ** globs without escaping the subtree", async () => {
+      const cwd = makeTmpDir("grep-dir-starstar-");
+      writeFixtureFile(cwd, "services/index.ts", "const marker = 1;");
+      writeFixtureFile(cwd, "services/api/handler.ts", "const marker = 2;");
+      writeFixtureFile(cwd, "packages/services/index.ts", "const marker = 3;");
+      forceJsFallback();
+
+      const tool = createGrepSearchTool(cwd);
+      const result = await tool.execute({ pattern: "marker", glob: "services/**/*.ts", context: 0 });
+
+      const paths = result.matches.map((m) => m.displayPath).sort();
+      expect(paths).toEqual(["services/api/handler.ts", "services/index.ts"]);
     });
   });
 

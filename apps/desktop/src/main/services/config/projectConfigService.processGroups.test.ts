@@ -342,4 +342,56 @@ describe("projectConfigService process groups", () => {
     expect(saved.testSuites[0].command[0]).toBe("../../scripts/run-tests.sh");
     expect(saved.laneOverlayPolicies[0].overrides.cwd).toBe("apps/desktop");
   });
+
+  it("normalizes foreign-platform absolute process paths to portable relative paths", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-project-config-cross-platform-"));
+    tempDirs.push(root);
+
+    const projectDirName = path.basename(root);
+    const windowsProjectRoot = `C:\\repo\\${projectDirName}`;
+    const adeDir = path.join(root, ".ade");
+    fs.mkdirSync(path.join(root, "scripts"), { recursive: true });
+    fs.mkdirSync(adeDir, { recursive: true });
+
+    const service = createProjectConfigService({
+      projectRoot: root,
+      adeDir,
+      projectId: "project-cross-platform-paths",
+      db: makeDb(),
+      logger: makeLogger(),
+    });
+
+    const snapshot = service.save({
+      shared: {
+        version: 1,
+        processes: [
+          {
+            id: "dogfood",
+            name: "Dogfood",
+            command: [`${windowsProjectRoot}\\scripts\\dogfood.sh`, "code-review"],
+            cwd: windowsProjectRoot,
+          },
+        ],
+        stackButtons: [],
+        testSuites: [],
+        laneOverlayPolicies: [],
+        automations: [],
+      },
+      local: {
+        version: 1,
+        processes: [],
+        stackButtons: [],
+        testSuites: [],
+        laneOverlayPolicies: [],
+        automations: [],
+      },
+    });
+
+    expect(snapshot.effective.processes[0]?.cwd).toBe(".");
+    expect(snapshot.effective.processes[0]?.command[0]).toBe("scripts/dogfood.sh");
+
+    const saved = YAML.parse(fs.readFileSync(path.join(adeDir, "ade.yaml"), "utf8"));
+    expect(saved.processes[0].cwd).toBe(".");
+    expect(saved.processes[0].command[0]).toBe("scripts/dogfood.sh");
+  });
 });

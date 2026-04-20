@@ -69,6 +69,7 @@ export function ThemeSwatch({
   return (
     <button
       type="button"
+      aria-pressed={selected}
       onClick={onClick}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
@@ -469,6 +470,7 @@ export function AppearanceSection() {
               <option value="__custom__">Custom stack</option>
             </select>
             <input
+              aria-label="Custom terminal font family"
               value={terminalPreferences.fontFamily}
               onChange={(event) => setTerminalPreferences({ fontFamily: event.target.value })}
               placeholder={DEFAULT_TERMINAL_FONT_FAMILY}

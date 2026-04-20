@@ -152,8 +152,56 @@ function normalizeConfigPath(value: string): string {
   return value.trim().replace(/\\/g, "/");
 }
 
+function isAbsoluteOnAnyPlatform(value: string): boolean {
+  return path.isAbsolute(value) || path.win32.isAbsolute(value) || path.posix.isAbsolute(value);
+}
+
+function isLikelyForeignAbsolutePath(value: string): boolean {
+  const normalized = normalizeConfigPath(value);
+  if (path.sep === "/") {
+    return /^[A-Za-z]:\//.test(normalized) || normalized.startsWith("//");
+  }
+  return normalized.startsWith("/") && !/^[A-Za-z]:\//.test(normalized);
+}
+
+function normalizedPathSegments(value: string): string[] {
+  return normalizeConfigPath(value)
+    .replace(/^[A-Za-z]:\/?/, "")
+    .replace(/^\/\/[^/]+\/[^/]+\/?/, "")
+    .split("/")
+    .filter(Boolean);
+}
+
+function inferProjectRelativePath(projectRoot: string, candidate: string): string | null {
+  const rootSegments = normalizedPathSegments(projectRoot);
+  const candidateSegments = normalizedPathSegments(candidate);
+  if (!rootSegments.length || !candidateSegments.length) return null;
+
+  if (candidateSegments.length >= rootSegments.length) {
+    for (let i = 0; i <= candidateSegments.length - rootSegments.length; i += 1) {
+      const matchesRoot = rootSegments.every((segment, offset) => candidateSegments[i + offset] === segment);
+      if (matchesRoot) {
+        return candidateSegments.slice(i + rootSegments.length).join("/") || ".";
+      }
+    }
+  }
+
+  const projectDirName = rootSegments[rootSegments.length - 1];
+  const projectDirIndex = candidateSegments.lastIndexOf(projectDirName);
+  if (projectDirIndex === -1) return null;
+  return candidateSegments.slice(projectDirIndex + 1).join("/") || ".";
+}
+
 function projectRelativePath(projectRoot: string, absolutePath: string, basePath: string): string | null {
-  if (!path.isAbsolute(absolutePath)) return null;
+  if (!isAbsoluteOnAnyPlatform(absolutePath)) return null;
+  const nativeAbsolute = path.isAbsolute(absolutePath);
+  if (!nativeAbsolute || isLikelyForeignAbsolutePath(absolutePath)) {
+    const projectRelative = inferProjectRelativePath(projectRoot, absolutePath);
+    const baseRelative = inferProjectRelativePath(projectRoot, basePath);
+    if (projectRelative == null || baseRelative == null) return null;
+    const relative = path.posix.relative(baseRelative === "." ? "" : baseRelative, projectRelative);
+    return relative || ".";
+  }
   try {
     const resolved = resolvePathWithinRoot(projectRoot, absolutePath, { allowMissing: true });
     const resolvedBase = resolvePathWithinRoot(projectRoot, basePath, { allowMissing: true });

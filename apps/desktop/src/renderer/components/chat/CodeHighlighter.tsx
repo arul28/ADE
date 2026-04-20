@@ -295,10 +295,10 @@ export const HighlightedCode = React.memo(function HighlightedCode({
       {copyButtonPosition !== "auto" && (
         <CodeCopyButton code={trimmedCode} position={copyButtonPosition} />
       )}
+      {copyButtonPosition === "auto" && (
+        <CodeCopyButton code={trimmedCode} position={copyButtonPosition} />
+      )}
       <div className="overflow-x-auto whitespace-pre-wrap break-words px-4 py-3">
-        {copyButtonPosition === "auto" && (
-          <CodeCopyButton code={trimmedCode} position={copyButtonPosition} />
-        )}
         {isDiff ? (
           <DiffCodeBlock code={trimmedCode} />
         ) : (
