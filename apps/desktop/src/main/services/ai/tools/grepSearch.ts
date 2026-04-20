@@ -151,7 +151,8 @@ function jsFallbackGrep(
 ): GrepMatch[] {
   const regex = new RegExp(pattern);
   const results: GrepMatch[] = [];
-  const files = collectFiles(target, fileGlob);
+  const searchWholeRepo = path.resolve(target) === path.resolve(root);
+  const files = collectFiles(target, fileGlob, searchWholeRepo);
 
   for (const filePath of files) {
     if (results.length >= 500) break;
@@ -174,9 +175,30 @@ function jsFallbackGrep(
 
 const SKIP_DIRS = new Set(["node_modules", ".git", "dist", "build", ".next", "coverage"]);
 
+/** Hidden first-segment dirs under the repo root we still want repo-wide search to enter. */
+const ALLOW_HIDDEN_ROOT_DIRS = new Set([".github"]);
+
+function shouldSkipHiddenDirUnderRepoRoot(
+  rootReal: string,
+  parentAbs: string,
+  dirName: string,
+  searchWholeRepo: boolean,
+): boolean {
+  if (!searchWholeRepo) return false;
+  if (!dirName.startsWith(".") || dirName === "." || dirName === "..") return false;
+  if (ALLOW_HIDDEN_ROOT_DIRS.has(dirName)) return false;
+  const childAbs = path.resolve(path.join(parentAbs, dirName));
+  const rel = path.relative(rootReal, childAbs);
+  if (!rel || rel.startsWith("..") || path.isAbsolute(rel)) return false;
+  const first = rel.split(path.sep)[0] ?? "";
+  // Only skip direct children of the repo root (e.g. `.ade`, `.env`) — not `src/.cache`.
+  return first === dirName;
+}
+
 function collectFiles(
   dir: string,
   fileGlob: string | undefined,
+  searchWholeRepo: boolean,
   maxFiles = 5000
 ): string[] {
   const stat = fs.statSync(dir);
@@ -184,6 +206,7 @@ function collectFiles(
 
   const files: string[] = [];
   const globRegex = fileGlob ? globToRegex(fileGlob) : null;
+  const rootReal = fs.realpathSync(dir);
 
   function walk(current: string): void {
     if (files.length >= maxFiles) return;
@@ -196,11 +219,14 @@ function collectFiles(
     for (const entry of entries) {
       if (files.length >= maxFiles) return;
       if (entry.isDirectory()) {
-        // Skip only known bulky/tooling dirs — do not treat every dot-directory as
-        // ignorable so paths like `.github/` remain searchable when targeted.
-        if (!SKIP_DIRS.has(entry.name)) {
-          walk(path.join(current, entry.name));
+        if (SKIP_DIRS.has(entry.name)) continue;
+        const next = path.join(current, entry.name);
+        if (
+          shouldSkipHiddenDirUnderRepoRoot(rootReal, current, entry.name, searchWholeRepo)
+        ) {
+          continue;
         }
+        walk(next);
       } else if (entry.isFile()) {
         const fullPath = path.join(current, entry.name);
         if (!globRegex || globRegex.test(entry.name)) {

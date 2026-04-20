@@ -34,13 +34,13 @@ export const THEME_META: Record<
   }
 > = {
   dark: {
-    label: "DARK",
-    description: "After-hours office. Cyan glows against dark surfaces.",
+    label: "Dark",
+    description: "Dark surfaces with a cool violet accent.",
     colors: { bg: "#0f0f11", fg: "#e4e4e7", accent: "#A78BFA", card: "#18181b", border: "#27272a" },
   },
   light: {
-    label: "LIGHT",
-    description: "Morning office. Sunlit, clean, crisp accent.",
+    label: "Light",
+    description: "Light background with a saturated violet accent.",
     colors: { bg: "#f5f5f6", fg: "#0f0f11", accent: "#7C3AED", card: "#ffffff", border: "#d4d4d8" },
   },
 };
@@ -113,8 +113,7 @@ export function ThemeSwatch({
             fontSize: 11,
             fontWeight: 700,
             fontFamily: MONO_FONT,
-            textTransform: "uppercase",
-            letterSpacing: "1px",
+            letterSpacing: "0.02em",
             color: selected ? COLORS.accent : COLORS.textPrimary,
           }}
         >
@@ -168,7 +167,7 @@ export function AppearanceSection() {
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 32 }}>
       <section>
-        <div style={sectionLabelStyle}>THEME</div>
+        <div style={sectionLabelStyle}>Theme</div>
         <div style={{ display: "flex", gap: 12 }}>
           {THEME_IDS.map((id) => (
             <ThemeSwatch key={id} themeId={id} selected={theme === id} onClick={() => setTheme(id)} />
@@ -177,14 +176,14 @@ export function AppearanceSection() {
       </section>
 
       <section>
-        <div style={sectionLabelStyle}>CHAT FONT SIZE</div>
+        <div style={sectionLabelStyle}>Chat font size</div>
         <div style={{ ...cardStyle(), display: "flex", flexDirection: "column", gap: 14 }}>
           <div style={{ fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textMuted, lineHeight: 1.5 }}>
-            Scales the work chat timeline and composer together. Default {DEFAULT_CHAT_FONT_SIZE_PX}px matches the previous layout.
+            Scales the agent chat transcript and composer together. {DEFAULT_CHAT_FONT_SIZE_PX}px is the default and matches the original sizing.
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap" }}>
             <label htmlFor={chatFontSliderId} style={{ ...LABEL_STYLE, marginBottom: 0, minWidth: 120 }}>
-              SIZE ({chatFontSizePx}px)
+              Size ({chatFontSizePx}px)
             </label>
             <input
               id={chatFontSliderId}
@@ -199,7 +198,7 @@ export function AppearanceSection() {
           </div>
 
           <div>
-            <div style={{ ...LABEL_STYLE, marginBottom: 8 }}>LIVE PREVIEW</div>
+            <div style={{ ...LABEL_STYLE, marginBottom: 8 }}>Live preview</div>
             <div
               style={{
                 border: `1px solid ${COLORS.border}`,
@@ -217,8 +216,8 @@ export function AppearanceSection() {
                   maxWidth: `${100 / previewScale}%`,
                 }}
               >
-                <div style={{ fontFamily: MONO_FONT, fontSize: 9, color: COLORS.textDim, marginBottom: 8, textTransform: "uppercase", letterSpacing: "0.12em" }}>
-                  Assistant · preview
+                <div style={{ fontFamily: MONO_FONT, fontSize: 9, color: COLORS.textDim, marginBottom: 8, letterSpacing: "0.06em" }}>
+                  Sample assistant reply
                 </div>
                 <ChatMarkdown>{PREVIEW_MARKDOWN}</ChatMarkdown>
               </div>
@@ -228,14 +227,14 @@ export function AppearanceSection() {
       </section>
 
       <section>
-        <div style={sectionLabelStyle}>CHAT & NOTIFICATIONS</div>
+        <div style={sectionLabelStyle}>Chat & notifications</div>
         <div style={{ ...cardStyle(), display: "flex", flexDirection: "column", gap: 16 }}>
           <div>
             <div id="code-block-copy-position-label" style={{ ...LABEL_STYLE, marginBottom: 8 }}>
-              CODE BLOCK COPY BUTTON
+              Code block copy button
             </div>
             <div style={{ fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textMuted, marginBottom: 10, lineHeight: 1.5 }}>
-              On touch devices the copy control stays visible. Choose top or bottom so long fenced blocks are easier to copy after scrolling.
+              On devices without hover, the copy control stays visible. Pick top or bottom so long code blocks are easier to copy after you scroll.
             </div>
             <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
               {CODE_BLOCK_COPY_POSITION_IDS.map((id) => (
@@ -259,10 +258,10 @@ export function AppearanceSection() {
 
           <div>
             <label htmlFor={agentSoundSelectId} style={{ ...LABEL_STYLE, marginBottom: 8, display: "block" }}>
-              AGENT TURN COMPLETION SOUND
+              Agent turn completion sound
             </label>
             <div style={{ fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textMuted, marginBottom: 10, lineHeight: 1.5 }}>
-              Plays when the assistant finishes a turn and the session is idle (not while you still owe a reply or approval).
+              Plays when the assistant completes a turn and the chat is idle. It does not play while a reply, approval, or other input is still pending.
             </div>
             <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8 }}>
               <select

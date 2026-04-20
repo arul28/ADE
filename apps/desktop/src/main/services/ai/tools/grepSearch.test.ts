@@ -202,6 +202,19 @@ describe("createGrepSearchTool", () => {
       expect(result.matches[0].displayPath).toBe("src/app.ts");
     });
 
+    it("repo-wide JS fallback skips root .ade but still searches .github", async () => {
+      const cwd = makeTmpDir("grep-hidden-root-");
+      writeFixtureFile(cwd, ".ade/secrets.txt", "SECRET_MARKER");
+      writeFixtureFile(cwd, ".github/workflows/ci.yml", "SECRET_MARKER");
+      writeFixtureFile(cwd, "src/app.ts", "SECRET_MARKER");
+      forceJsFallback();
+
+      const tool = createGrepSearchTool(cwd);
+      const result = await tool.execute({ pattern: "SECRET_MARKER", context: 0 });
+      const paths = result.matches.map((m) => m.displayPath).sort();
+      expect(paths).toEqual([".github/workflows/ci.yml", "src/app.ts"]);
+    });
+
     it("handles brace expansion in file glob: *.{ts,tsx}", async () => {
       const cwd = makeTmpDir("grep-brace-");
       writeFixtureFile(cwd, "app.ts", "const val = 1;");

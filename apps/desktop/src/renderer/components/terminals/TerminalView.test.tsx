@@ -2,7 +2,7 @@
 
 import React from "react";
 import { act, render, cleanup } from "@testing-library/react";
-import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 const MOCK_TERMINAL_FONT_FAMILY = vi.hoisted(() => "monospace");
 
@@ -206,6 +206,22 @@ function terminalHeightFor(element: HTMLElement): number {
 beforeAll(() => {
   vi.stubGlobal("ResizeObserver", MockResizeObserver);
   vi.stubGlobal("IntersectionObserver", MockIntersectionObserver);
+  // xterm WebGL path needs a getContext("webgl") that succeeds in jsdom / headless CI.
+  vi.stubGlobal(
+    "HTMLCanvasElement",
+    class extends (globalThis as any).HTMLCanvasElement {
+      getContext(contextId: string) {
+        if (contextId === "webgl" || contextId === "webgl2") {
+          return {
+            getParameter: () => 0,
+            getExtension: () => null,
+            isContextLost: () => false,
+          };
+        }
+        return super.getContext(contextId as "2d");
+      }
+    },
+  );
   vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) =>
     window.setTimeout(() => callback(performance.now()), 0));
   vi.stubGlobal("cancelAnimationFrame", (id: number) => window.clearTimeout(id));
@@ -270,6 +286,10 @@ beforeAll(() => {
   });
 });
 
+afterAll(() => {
+  vi.unstubAllGlobals();
+});
+
 describe("TerminalView", () => {
   beforeEach(() => {
     vi.useFakeTimers();
@@ -309,8 +329,7 @@ describe("TerminalView", () => {
     await flushAllTimers();
 
     const runtime = getTerminalRuntimeSnapshot("session-valid");
-    // WebGL is unavailable in many CI / headless environments; DOM fallback is expected.
-    expect(runtime?.renderer === "webgl" || runtime?.renderer === "dom").toBe(true);
+    expect(runtime?.renderer).toBe("webgl");
     expect(runtime?.health.fitRecoveries).toBe(0);
     expect((window as any).ade.pty.resize).toHaveBeenCalledWith({
       ptyId: "pty-valid",
