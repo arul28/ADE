@@ -2129,6 +2129,9 @@ struct PrCreateLaneEligibility: Codable, Identifiable, Equatable {
   var defaultBaseBranch: String
   var defaultTitle: String
   var dirty: Bool
+  /// Commits on the lane branch not on `defaultBaseBranch` (same signal as desktop lane status `ahead`).
+  /// Omitted by older desktop hosts — treat as unknown/zero when decoding legacy snapshots.
+  var commitsAheadOfBase: Int?
   var hasExistingPr: Bool
   var canCreate: Bool
   var blockedReason: String?

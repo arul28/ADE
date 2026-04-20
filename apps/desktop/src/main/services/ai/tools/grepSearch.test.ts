@@ -1,8 +1,13 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { execFile } from "node:child_process";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createGrepSearchTool } from "./grepSearch";
+import {
+  __testResetRipgrepExecFile,
+  __testSetRipgrepExecFile,
+  createGrepSearchTool,
+} from "./grepSearch";
 
 const tmpDirs: string[] = [];
 function makeTmpDir(prefix: string): string {
@@ -18,6 +23,7 @@ function writeFixtureFile(root: string, relativePath: string, content: string): 
 }
 
 afterEach(() => {
+  __testResetRipgrepExecFile();
   vi.restoreAllMocks();
   for (const dir of tmpDirs) {
     try {
@@ -29,22 +35,19 @@ afterEach(() => {
   tmpDirs.length = 0;
 });
 
-// Helper to force JS fallback by making execFile reject for rg
+// Force JS fallback by making ripgrep's exec path reject (matches real "rg missing" behavior).
 function forceJsFallback(): void {
-  const cp = require("node:child_process");
-  const originalExecFile = cp.execFile;
-  vi.spyOn(cp, "execFile").mockImplementation(
-    (cmd: unknown, ...rest: unknown[]) => {
+  __testSetRipgrepExecFile(
+    ((cmd: unknown, ...rest: unknown[]) => {
       if (cmd === "rg") {
-        // Make the promisified version reject
         const cb = rest[rest.length - 1];
         if (typeof cb === "function") {
-          process.nextTick(() => cb(new Error("rg not available")));
+          process.nextTick(() => (cb as (err: Error) => void)(new Error("rg not available")));
           return;
         }
       }
-      return originalExecFile(cmd, ...rest);
-    },
+      return (execFile as (typeof import("node:child_process"))["execFile"])(cmd as never, ...rest as never[]);
+    }) as typeof execFile,
   );
 }
 
@@ -199,6 +202,19 @@ describe("createGrepSearchTool", () => {
       expect(result.matches[0].displayPath).toBe("src/app.ts");
     });
 
+    it("repo-wide JS fallback skips root .ade but still searches .github", async () => {
+      const cwd = makeTmpDir("grep-hidden-root-");
+      writeFixtureFile(cwd, ".ade/secrets.txt", "SECRET_MARKER");
+      writeFixtureFile(cwd, ".github/workflows/ci.yml", "SECRET_MARKER");
+      writeFixtureFile(cwd, "src/app.ts", "SECRET_MARKER");
+      forceJsFallback();
+
+      const tool = createGrepSearchTool(cwd);
+      const result = await tool.execute({ pattern: "SECRET_MARKER", context: 0 });
+      const paths = result.matches.map((m) => m.displayPath).sort();
+      expect(paths).toEqual([".github/workflows/ci.yml", "src/app.ts"]);
+    });
+
     it("handles brace expansion in file glob: *.{ts,tsx}", async () => {
       const cwd = makeTmpDir("grep-brace-");
       writeFixtureFile(cwd, "app.ts", "const val = 1;");
@@ -253,6 +269,68 @@ describe("createGrepSearchTool", () => {
 
       expect(result.error).toBeDefined();
       expect(result.matchCount).toBe(0);
+    });
+
+    it("surfaces a descriptive 'Invalid regex pattern' error for malformed patterns (JS fallback)", async () => {
+      const cwd = makeTmpDir("grep-bad-regex-");
+      writeFixtureFile(cwd, "code.ts", "const x = 1;");
+      forceJsFallback();
+
+      const tool = createGrepSearchTool(cwd);
+      // Unmatched `[` — a SyntaxError from `new RegExp`.
+      const result = await tool.execute({ pattern: "[", context: 0 });
+
+      expect(result.matchCount).toBe(0);
+      expect(result.error).toBeDefined();
+      expect(result.error).toContain("Invalid regex pattern");
+    });
+  });
+
+  // --------------------------------------------------------------------------
+  // Glob edge cases
+  // --------------------------------------------------------------------------
+
+  describe("glob handling", () => {
+    it("matches bare filenames under a **/*.ts glob (JS fallback)", async () => {
+      const cwd = makeTmpDir("grep-starstar-");
+      writeFixtureFile(cwd, "foo.ts", "const marker = 1;");
+      writeFixtureFile(cwd, "src/bar.ts", "const marker = 2;");
+      writeFixtureFile(cwd, "readme.md", "marker");
+      forceJsFallback();
+
+      const tool = createGrepSearchTool(cwd);
+      const result = await tool.execute({ pattern: "marker", glob: "**/*.ts", context: 0 });
+
+      const paths = result.matches.map((m) => m.displayPath).sort();
+      expect(paths).toEqual(["foo.ts", "src/bar.ts"]);
+    });
+
+    it("preserves directory components in JS fallback globs", async () => {
+      const cwd = makeTmpDir("grep-dir-glob-");
+      writeFixtureFile(cwd, "src/app.ts", "const marker = 1;");
+      writeFixtureFile(cwd, "src/deep/app.ts", "const marker = 2;");
+      writeFixtureFile(cwd, "lib/app.ts", "const marker = 3;");
+      forceJsFallback();
+
+      const tool = createGrepSearchTool(cwd);
+      const result = await tool.execute({ pattern: "marker", glob: "src/*.ts", context: 0 });
+
+      const paths = result.matches.map((m) => m.displayPath).sort();
+      expect(paths).toEqual(["src/app.ts"]);
+    });
+
+    it("matches directory ** globs without escaping the subtree", async () => {
+      const cwd = makeTmpDir("grep-dir-starstar-");
+      writeFixtureFile(cwd, "services/index.ts", "const marker = 1;");
+      writeFixtureFile(cwd, "services/api/handler.ts", "const marker = 2;");
+      writeFixtureFile(cwd, "packages/services/index.ts", "const marker = 3;");
+      forceJsFallback();
+
+      const tool = createGrepSearchTool(cwd);
+      const result = await tool.execute({ pattern: "marker", glob: "services/**/*.ts", context: 0 });
+
+      const paths = result.matches.map((m) => m.displayPath).sort();
+      expect(paths).toEqual(["services/api/handler.ts", "services/index.ts"]);
     });
   });
 
