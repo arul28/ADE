@@ -3759,6 +3759,34 @@ final class ADETests: XCTestCase {
     XCTAssertNil(snapshot.createCapabilities.defaultBaseBranch)
   }
 
+  func testPrCreateCapabilitiesPreserveUnknownLegacyAheadCount() throws {
+    let json = """
+    {
+      "canCreateAny": true,
+      "defaultBaseBranch": "main",
+      "lanes": [
+        {
+          "laneId": "lane-legacy",
+          "laneName": "legacy",
+          "parentLaneId": null,
+          "repoOwner": null,
+          "repoName": null,
+          "defaultBaseBranch": "main",
+          "defaultTitle": "legacy",
+          "dirty": false,
+          "hasExistingPr": false,
+          "canCreate": true,
+          "blockedReason": null
+        }
+      ]
+    }
+    """
+
+    let capabilities = try JSONDecoder().decode(PrCreateCapabilities.self, from: Data(json.utf8))
+    XCTAssertEqual(capabilities.lanes.first?.laneId, "lane-legacy")
+    XCTAssertNil(capabilities.lanes.first?.commitsAheadOfBase)
+  }
+
   func testPrActionCapabilitiesGateMergeAndSurfaceBlockedReason() {
     let capabilitiesAllow = PrActionCapabilities(
       prId: "pr-1",

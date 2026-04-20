@@ -62,6 +62,9 @@ function resetStore() {
     laneInspectorTabs: {},
     workViewByProject: {},
     laneWorkViewByScope: {},
+    dismissedMissingAiBannerRoots: {},
+    dismissedGithubBannerRoots: {},
+    dismissedContextBannerRoots: {},
   });
 }
 
@@ -493,6 +496,62 @@ describe("appStore", () => {
       expect(useAppStore.getState().projectTransitionError).toBe(
         "Switching projects took longer than 30 seconds, so ADE kept the current project active.",
       );
+    });
+
+    it("prunes banner-dismiss maps to the new project on switch", async () => {
+      // Seed dismissals for three projects, then switch to one of them with a
+      // listRecent that only includes two. The third should be dropped.
+      useAppStore.setState({
+        dismissedMissingAiBannerRoots: { "/p/a": true, "/p/b": true, "/p/c": true },
+        dismissedGithubBannerRoots: { "/p/a": true, "/p/b": true },
+        dismissedContextBannerRoots: { "/p/c": true },
+      } as any);
+
+      const nextProject = { rootPath: "/p/a", displayName: "A", baseRef: "main" } as any;
+      (window.ade.project.switchToPath as any).mockResolvedValueOnce(nextProject);
+      (window.ade.project.listRecent as any).mockResolvedValueOnce([
+        { rootPath: "/p/a" },
+        { rootPath: "/p/b" },
+      ]);
+
+      await useAppStore.getState().switchProjectToPath("/p/a");
+
+      // `/p/c` was neither active nor in recents → pruned from all three maps.
+      expect(useAppStore.getState().dismissedMissingAiBannerRoots).toEqual({
+        "/p/a": true,
+        "/p/b": true,
+      });
+      expect(useAppStore.getState().dismissedGithubBannerRoots).toEqual({
+        "/p/a": true,
+        "/p/b": true,
+      });
+      expect(useAppStore.getState().dismissedContextBannerRoots).toEqual({});
+    });
+
+    it("clears all banner-dismiss maps when the project is closed", async () => {
+      useAppStore.setState({
+        project: { rootPath: "/p/x" } as any,
+        dismissedMissingAiBannerRoots: { "/p/x": true, "/p/y": true },
+        dismissedGithubBannerRoots: { "/p/x": true },
+        dismissedContextBannerRoots: { "/p/y": true },
+      } as any);
+
+      await useAppStore.getState().closeProject();
+
+      expect(useAppStore.getState().dismissedMissingAiBannerRoots).toEqual({});
+      expect(useAppStore.getState().dismissedGithubBannerRoots).toEqual({});
+      expect(useAppStore.getState().dismissedContextBannerRoots).toEqual({});
+    });
+
+    it("dismiss setters append to the session-scoped map without touching other keys", () => {
+      useAppStore.setState({
+        dismissedMissingAiBannerRoots: { "/p/existing": true },
+      } as any);
+      useAppStore.getState().dismissMissingAiBanner("/p/new");
+      expect(useAppStore.getState().dismissedMissingAiBannerRoots).toEqual({
+        "/p/existing": true,
+        "/p/new": true,
+      });
     });
 
     it("tracks project opening progress and clears it when the user cancels", async () => {

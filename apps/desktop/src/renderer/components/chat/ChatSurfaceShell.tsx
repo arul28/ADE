@@ -57,9 +57,9 @@ export function ChatSurfaceShell({
           style={{
             backdropFilter: "blur(30px)",
             WebkitBackdropFilter: "blur(30px)",
-            background: "rgba(20, 18, 32, 0.85)",
-            border: "1px solid rgba(255, 255, 255, 0.06)",
-            boxShadow: "0 8px 32px -8px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(167, 139, 250, 0.04), inset 0 1px 0 rgba(255, 255, 255, 0.04)",
+            background: "var(--chat-panel-bg)",
+            border: "1px solid var(--chat-panel-border)",
+            boxShadow: "var(--chat-shell-shadow)",
           }}
         >
           {header}

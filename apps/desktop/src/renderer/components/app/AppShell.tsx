@@ -180,14 +180,14 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const [contextStatus, setContextStatus] = useState<ContextStatus | null>(
     null,
   );
-  const [dismissedContextBannerRoots, setDismissedContextBannerRoots] =
-    useState<Record<string, true>>({});
-  /** Session dismiss for the “no AI provider” banner (per project root). */
-  const [dismissedMissingAiBannerRoots, setDismissedMissingAiBannerRoots] =
-    useState<Record<string, true>>({});
-  /** Session dismiss for the “GitHub not connected” banner (per project root). */
-  const [dismissedGithubBannerRoots, setDismissedGithubBannerRoots] =
-    useState<Record<string, true>>({});
+  // Banner dismissals live in the store so they can be pruned when projects close/switch
+  // — AppShell used to own these as local state, which leaked entries across a long session.
+  const dismissedContextBannerRoots = useAppStore((s) => s.dismissedContextBannerRoots);
+  const dismissedMissingAiBannerRoots = useAppStore((s) => s.dismissedMissingAiBannerRoots);
+  const dismissedGithubBannerRoots = useAppStore((s) => s.dismissedGithubBannerRoots);
+  const dismissMissingAiBanner = useAppStore((s) => s.dismissMissingAiBanner);
+  const dismissGithubBanner = useAppStore((s) => s.dismissGithubBanner);
+  const dismissContextBanner = useAppStore((s) => s.dismissContextBanner);
   const [projectMissing, setProjectMissing] = useState(false);
   const [feedbackGenerating, setFeedbackGenerating] = useState(false);
   const previousProjectRootRef = useRef<string | null | undefined>(undefined);
@@ -818,10 +818,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             className="ml-2 text-amber-900/70 hover:text-amber-900"
             onClick={() => {
               if (!currentProjectRoot) return;
-              setDismissedMissingAiBannerRoots((prev) => ({
-                ...prev,
-                [currentProjectRoot]: true,
-              }));
+              dismissMissingAiBanner(currentProjectRoot);
             }}
             title="Dismiss for this session"
             aria-label="Dismiss missing AI provider banner for this session"
@@ -851,10 +848,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             className="ml-2 text-amber-900/70 hover:text-amber-900"
             onClick={() => {
               if (!currentProjectRoot) return;
-              setDismissedGithubBannerRoots((prev) => ({
-                ...prev,
-                [currentProjectRoot]: true,
-              }));
+              dismissGithubBanner(currentProjectRoot);
             }}
             title="Dismiss for this session"
             aria-label="Dismiss GitHub not connected banner for this session"
@@ -956,10 +950,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             className="ml-2 text-amber-900/70 hover:text-amber-900"
             onClick={() => {
               if (!currentProjectRoot) return;
-              setDismissedContextBannerRoots((prev) => ({
-                ...prev,
-                [currentProjectRoot]: true,
-              }));
+              dismissContextBanner(currentProjectRoot);
             }}
             title="Dismiss for this session"
           >

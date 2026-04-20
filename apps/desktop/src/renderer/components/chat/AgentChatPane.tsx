@@ -712,6 +712,8 @@ export function AgentChatPane({
 }) {
   const projectRoot = useAppStore((s) => s.project?.rootPath ?? null);
   const agentTurnCompletionSound = useAppStore((s) => s.agentTurnCompletionSound);
+  const agentTurnCompletionSoundVolume = useAppStore((s) => s.agentTurnCompletionSoundVolume);
+  const agentTurnCompletionSoundQuietWhenFocused = useAppStore((s) => s.agentTurnCompletionSoundQuietWhenFocused);
   const chatFontSizePx = useAppStore((s) => s.chatFontSizePx);
   const chatUiScale = chatFontSizePx / DEFAULT_CHAT_FONT_SIZE_PX;
   const navigate = useNavigate();
@@ -863,11 +865,16 @@ export function AgentChatPane({
         }
       }
       if (lastDoneStatus === "completed") {
-        playAgentTurnCompletionSound(agentTurnCompletionSound);
+        playAgentTurnCompletionSound(agentTurnCompletionSound, {
+          volume: agentTurnCompletionSoundVolume,
+          skipWhenFocused: agentTurnCompletionSoundQuietWhenFocused,
+        });
       }
     }
   }, [
     agentTurnCompletionSound,
+    agentTurnCompletionSoundVolume,
+    agentTurnCompletionSoundQuietWhenFocused,
     selectedSessionId,
     selectedSession?.status,
     selectedSessionAwaitingInput,

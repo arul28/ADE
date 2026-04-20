@@ -30,21 +30,31 @@ export const DEFAULT_TERMINAL_PREFERENCES: TerminalPreferences = {
   scrollback: 10_000,
 };
 
-/** Where the copy control sits on fenced code blocks in chat (touch-friendly when bottom). */
-export type CodeBlockCopyButtonPosition = "top" | "bottom";
-export const CODE_BLOCK_COPY_POSITION_IDS: CodeBlockCopyButtonPosition[] = ["top", "bottom"];
+/** Where the copy control sits on fenced code blocks in chat.
+ *  - "top" / "bottom": fixed absolute corner (touch-friendly when bottom).
+ *  - "auto": sticks to the top of the viewport while a long block is being scrolled. */
+export type CodeBlockCopyButtonPosition = "top" | "bottom" | "auto";
+export const CODE_BLOCK_COPY_POSITION_IDS: CodeBlockCopyButtonPosition[] = ["top", "bottom", "auto"];
 
 /** Web Audio chime when an agent chat turn finishes (idle session). */
 export type AgentTurnCompletionSound = "off" | "chime" | "ping" | "bell";
 export const AGENT_TURN_COMPLETION_SOUND_IDS: AgentTurnCompletionSound[] = ["off", "chime", "ping", "bell"];
+export const DEFAULT_AGENT_TURN_COMPLETION_SOUND_VOLUME = 0.7;
 
 function normalizeCodeBlockCopyButtonPosition(value: unknown): CodeBlockCopyButtonPosition {
-  return value === "bottom" ? "bottom" : "top";
+  if (value === "bottom" || value === "auto") return value;
+  return "top";
 }
 
 function normalizeAgentTurnCompletionSound(value: unknown): AgentTurnCompletionSound {
   if (value === "chime" || value === "ping" || value === "bell") return value;
   return "off";
+}
+
+function normalizeAgentTurnCompletionSoundVolume(value: unknown): number {
+  const next = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(next)) return DEFAULT_AGENT_TURN_COMPLETION_SOUND_VOLUME;
+  return Math.max(0, Math.min(1, next));
 }
 
 /** Base chat body font size in px (timeline + composer scale from this). Default matches prior ~14px body. */
@@ -242,6 +252,18 @@ function normalizeProjectKey(projectRoot: string | null | undefined): string {
   return typeof projectRoot === "string" ? projectRoot.trim() : "";
 }
 
+/**
+ * Drops keys from a session-dismiss map that aren't in the allow-list. Used on project
+ * close/switch so banner-dismiss maps don't grow unbounded across a long session.
+ */
+function pickDismissMapForRoots(map: Record<string, true>, roots: readonly (string | null | undefined)[]): Record<string, true> {
+  const allow = new Set(roots.map((r) => normalizeProjectKey(r)).filter((r) => r.length > 0));
+  if (allow.size === 0) return {};
+  const next: Record<string, true> = {};
+  for (const key of Object.keys(map)) if (allow.has(key)) next[key] = true;
+  return next;
+}
+
 function normalizeLaneWorkScopeKey(projectRoot: string | null | undefined, laneId: string | null | undefined): string {
   const projectKey = normalizeProjectKey(projectRoot);
   const normalizedLaneId = typeof laneId === "string" ? laneId.trim() : "";
@@ -255,6 +277,8 @@ type PersistedUserPreferences = {
   smartTooltipsEnabled: boolean;
   codeBlockCopyButtonPosition: CodeBlockCopyButtonPosition;
   agentTurnCompletionSound: AgentTurnCompletionSound;
+  agentTurnCompletionSoundVolume: number;
+  agentTurnCompletionSoundQuietWhenFocused: boolean;
   chatFontSizePx: number;
 };
 
@@ -276,6 +300,8 @@ function readUnifiedUserPreferences(): PersistedUserPreferences | null {
       smartTooltipsEnabled: parsed.smartTooltipsEnabled !== false,
       codeBlockCopyButtonPosition: normalizeCodeBlockCopyButtonPosition(parsed.codeBlockCopyButtonPosition),
       agentTurnCompletionSound: normalizeAgentTurnCompletionSound(parsed.agentTurnCompletionSound),
+      agentTurnCompletionSoundVolume: normalizeAgentTurnCompletionSoundVolume(parsed.agentTurnCompletionSoundVolume),
+      agentTurnCompletionSoundQuietWhenFocused: parsed.agentTurnCompletionSoundQuietWhenFocused !== false,
       chatFontSizePx: normalizeChatFontSizePx(parsed.chatFontSizePx),
     };
   } catch {
@@ -309,6 +335,8 @@ function readLegacyUserPreferences(): PersistedUserPreferences {
     smartTooltipsEnabled,
     codeBlockCopyButtonPosition: "top",
     agentTurnCompletionSound: "off",
+    agentTurnCompletionSoundVolume: DEFAULT_AGENT_TURN_COMPLETION_SOUND_VOLUME,
+    agentTurnCompletionSoundQuietWhenFocused: true,
     chatFontSizePx: DEFAULT_CHAT_FONT_SIZE_PX,
   };
 }
@@ -319,6 +347,29 @@ function persistUserPreferences(prefs: PersistedUserPreferences) {
   } catch {
     // ignore
   }
+}
+
+/** Assemble the persisted-prefs payload from current store state. Keeps setters DRY as we add prefs. */
+function persistUserPreferencesFrom(state: {
+  theme: ThemeId;
+  terminalPreferences: TerminalPreferences;
+  smartTooltipsEnabled: boolean;
+  codeBlockCopyButtonPosition: CodeBlockCopyButtonPosition;
+  agentTurnCompletionSound: AgentTurnCompletionSound;
+  agentTurnCompletionSoundVolume: number;
+  agentTurnCompletionSoundQuietWhenFocused: boolean;
+  chatFontSizePx: number;
+}) {
+  persistUserPreferences({
+    theme: state.theme,
+    terminalPreferences: state.terminalPreferences,
+    smartTooltipsEnabled: state.smartTooltipsEnabled,
+    codeBlockCopyButtonPosition: state.codeBlockCopyButtonPosition,
+    agentTurnCompletionSound: state.agentTurnCompletionSound,
+    agentTurnCompletionSoundVolume: state.agentTurnCompletionSoundVolume,
+    agentTurnCompletionSoundQuietWhenFocused: state.agentTurnCompletionSoundQuietWhenFocused,
+    chatFontSizePx: state.chatFontSizePx,
+  });
 }
 
 function readInitialUserPreferences(): PersistedUserPreferences {
@@ -368,6 +419,9 @@ function normalizeTerminalPreferences(value: unknown): TerminalPreferences {
   };
 }
 
+/** Session-scoped banner dismissals keyed by project root. Not persisted — "dismiss for this session" only. */
+export type SessionDismissMap = Record<string, true>;
+
 type AppState = {
   project: ProjectInfo | null;
   projectHydrated: boolean;
@@ -392,6 +446,8 @@ type AppState = {
   terminalPreferences: TerminalPreferences;
   codeBlockCopyButtonPosition: CodeBlockCopyButtonPosition;
   agentTurnCompletionSound: AgentTurnCompletionSound;
+  agentTurnCompletionSoundVolume: number;
+  agentTurnCompletionSoundQuietWhenFocused: boolean;
   chatFontSizePx: number;
   providerMode: ProviderMode;
   availableModels: ModelDescriptor[];
@@ -401,6 +457,10 @@ type AppState = {
   smartTooltipsEnabled: boolean;
   workViewByProject: Record<string, WorkProjectViewState>;
   laneWorkViewByScope: Record<string, WorkProjectViewState>;
+  /** Session-scoped banner dismissals. Pruned when a project is closed/switched so the maps don't leak. */
+  dismissedMissingAiBannerRoots: SessionDismissMap;
+  dismissedGithubBannerRoots: SessionDismissMap;
+  dismissedContextBannerRoots: SessionDismissMap;
 
   setProject: (project: ProjectInfo | null) => void;
   setProjectHydrated: (hydrated: boolean) => void;
@@ -415,6 +475,8 @@ type AppState = {
   setTheme: (theme: ThemeId) => void;
   setCodeBlockCopyButtonPosition: (position: CodeBlockCopyButtonPosition) => void;
   setAgentTurnCompletionSound: (sound: AgentTurnCompletionSound) => void;
+  setAgentTurnCompletionSoundVolume: (volume: number) => void;
+  setAgentTurnCompletionSoundQuietWhenFocused: (quiet: boolean) => void;
   setChatFontSizePx: (px: number) => void;
   setTerminalPreferences: (
     next:
@@ -440,6 +502,9 @@ type AppState = {
   ) => void;
   refreshProviderMode: () => Promise<void>;
   refreshKeybindings: () => Promise<void>;
+  dismissMissingAiBanner: (projectRoot: string) => void;
+  dismissGithubBanner: (projectRoot: string) => void;
+  dismissContextBanner: (projectRoot: string) => void;
 
   openNewTab: () => void;
   cancelNewTab: () => void;
@@ -522,6 +587,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   terminalPreferences: initialUserPreferences.terminalPreferences,
   codeBlockCopyButtonPosition: initialUserPreferences.codeBlockCopyButtonPosition,
   agentTurnCompletionSound: initialUserPreferences.agentTurnCompletionSound,
+  agentTurnCompletionSoundVolume: initialUserPreferences.agentTurnCompletionSoundVolume,
+  agentTurnCompletionSoundQuietWhenFocused: initialUserPreferences.agentTurnCompletionSoundQuietWhenFocused,
   chatFontSizePx: initialUserPreferences.chatFontSizePx,
   providerMode: "guest",
   availableModels: [...MODEL_REGISTRY].filter((m) => !m.deprecated),
@@ -531,6 +598,9 @@ export const useAppStore = create<AppState>((set, get) => ({
   smartTooltipsEnabled: initialUserPreferences.smartTooltipsEnabled,
   workViewByProject: initialPersistedWorkViews.workViewByProject,
   laneWorkViewByScope: initialPersistedWorkViews.laneWorkViewByScope,
+  dismissedMissingAiBannerRoots: {},
+  dismissedGithubBannerRoots: {},
+  dismissedContextBannerRoots: {},
 
   setProject: (project) =>
     set((prev) => {
@@ -563,54 +633,38 @@ export const useAppStore = create<AppState>((set, get) => ({
   focusSession: (sessionId) => set({ focusedSessionId: sessionId }),
   setTheme: (theme) =>
     set((prev) => {
-      persistUserPreferences({
-        theme,
-        terminalPreferences: prev.terminalPreferences,
-        smartTooltipsEnabled: prev.smartTooltipsEnabled,
-        codeBlockCopyButtonPosition: prev.codeBlockCopyButtonPosition,
-        agentTurnCompletionSound: prev.agentTurnCompletionSound,
-        chatFontSizePx: prev.chatFontSizePx,
-      });
+      const next = { ...prev, theme };
+      persistUserPreferencesFrom(next);
       return { theme };
     }),
   setCodeBlockCopyButtonPosition: (position) =>
     set((prev) => {
-      const next = normalizeCodeBlockCopyButtonPosition(position);
-      persistUserPreferences({
-        theme: prev.theme,
-        terminalPreferences: prev.terminalPreferences,
-        smartTooltipsEnabled: prev.smartTooltipsEnabled,
-        codeBlockCopyButtonPosition: next,
-        agentTurnCompletionSound: prev.agentTurnCompletionSound,
-        chatFontSizePx: prev.chatFontSizePx,
-      });
-      return { codeBlockCopyButtonPosition: next };
+      const value = normalizeCodeBlockCopyButtonPosition(position);
+      persistUserPreferencesFrom({ ...prev, codeBlockCopyButtonPosition: value });
+      return { codeBlockCopyButtonPosition: value };
     }),
   setAgentTurnCompletionSound: (sound) =>
     set((prev) => {
-      const next = normalizeAgentTurnCompletionSound(sound);
-      persistUserPreferences({
-        theme: prev.theme,
-        terminalPreferences: prev.terminalPreferences,
-        smartTooltipsEnabled: prev.smartTooltipsEnabled,
-        codeBlockCopyButtonPosition: prev.codeBlockCopyButtonPosition,
-        agentTurnCompletionSound: next,
-        chatFontSizePx: prev.chatFontSizePx,
-      });
-      return { agentTurnCompletionSound: next };
+      const value = normalizeAgentTurnCompletionSound(sound);
+      persistUserPreferencesFrom({ ...prev, agentTurnCompletionSound: value });
+      return { agentTurnCompletionSound: value };
+    }),
+  setAgentTurnCompletionSoundVolume: (volume) =>
+    set((prev) => {
+      const value = normalizeAgentTurnCompletionSoundVolume(volume);
+      persistUserPreferencesFrom({ ...prev, agentTurnCompletionSoundVolume: value });
+      return { agentTurnCompletionSoundVolume: value };
+    }),
+  setAgentTurnCompletionSoundQuietWhenFocused: (quiet) =>
+    set((prev) => {
+      persistUserPreferencesFrom({ ...prev, agentTurnCompletionSoundQuietWhenFocused: quiet });
+      return { agentTurnCompletionSoundQuietWhenFocused: quiet };
     }),
   setChatFontSizePx: (px) =>
     set((prev) => {
-      const next = normalizeChatFontSizePx(px);
-      persistUserPreferences({
-        theme: prev.theme,
-        terminalPreferences: prev.terminalPreferences,
-        smartTooltipsEnabled: prev.smartTooltipsEnabled,
-        codeBlockCopyButtonPosition: prev.codeBlockCopyButtonPosition,
-        agentTurnCompletionSound: prev.agentTurnCompletionSound,
-        chatFontSizePx: next,
-      });
-      return { chatFontSizePx: next };
+      const value = normalizeChatFontSizePx(px);
+      persistUserPreferencesFrom({ ...prev, chatFontSizePx: value });
+      return { chatFontSizePx: value };
     }),
   setTerminalPreferences: (next) =>
     set((prev) => {
@@ -619,27 +673,13 @@ export const useAppStore = create<AppState>((set, get) => ({
           ? next(prev.terminalPreferences)
           : { ...prev.terminalPreferences, ...next }
       );
-      persistUserPreferences({
-        theme: prev.theme,
-        terminalPreferences: updated,
-        smartTooltipsEnabled: prev.smartTooltipsEnabled,
-        codeBlockCopyButtonPosition: prev.codeBlockCopyButtonPosition,
-        agentTurnCompletionSound: prev.agentTurnCompletionSound,
-        chatFontSizePx: prev.chatFontSizePx,
-      });
+      persistUserPreferencesFrom({ ...prev, terminalPreferences: updated });
       return { terminalPreferences: updated };
     }),
   setTerminalAttention: (terminalAttention) => set({ terminalAttention }),
   setSmartTooltipsEnabled: (enabled) =>
     set((prev) => {
-      persistUserPreferences({
-        theme: prev.theme,
-        terminalPreferences: prev.terminalPreferences,
-        smartTooltipsEnabled: enabled,
-        codeBlockCopyButtonPosition: prev.codeBlockCopyButtonPosition,
-        agentTurnCompletionSound: prev.agentTurnCompletionSound,
-        chatFontSizePx: prev.chatFontSizePx,
-      });
+      persistUserPreferencesFrom({ ...prev, smartTooltipsEnabled: enabled });
       return { smartTooltipsEnabled: enabled };
     }),
   openNewTab: () => set({ isNewTabOpen: true, showWelcome: true }),
@@ -832,6 +872,28 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({ keybindings });
   },
 
+  dismissMissingAiBanner: (projectRoot) => {
+    const key = normalizeProjectKey(projectRoot);
+    if (!key) return;
+    set((prev) => ({
+      dismissedMissingAiBannerRoots: { ...prev.dismissedMissingAiBannerRoots, [key]: true },
+    }));
+  },
+  dismissGithubBanner: (projectRoot) => {
+    const key = normalizeProjectKey(projectRoot);
+    if (!key) return;
+    set((prev) => ({
+      dismissedGithubBannerRoots: { ...prev.dismissedGithubBannerRoots, [key]: true },
+    }));
+  },
+  dismissContextBanner: (projectRoot) => {
+    const key = normalizeProjectKey(projectRoot);
+    if (!key) return;
+    set((prev) => ({
+      dismissedContextBannerRoots: { ...prev.dismissedContextBannerRoots, [key]: true },
+    }));
+  },
+
   openRepo: async () => {
     // Invalidate in-flight lane refreshes before the async open so stale
     // responses from the previous project are discarded immediately.
@@ -851,7 +913,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         return null;
       }
       get().setProject(project);
-      set({
+      set((prev) => ({
         projectHydrated: true,
         showWelcome: false,
         projectTransition: null,
@@ -864,8 +926,11 @@ export const useAppStore = create<AppState>((set, get) => ({
         focusedSessionId: null,
         laneInspectorTabs: {},
         keybindings: null,
-        terminalAttention: EMPTY_TERMINAL_ATTENTION
-      });
+        terminalAttention: EMPTY_TERMINAL_ATTENTION,
+        dismissedMissingAiBannerRoots: pickDismissMapForRoots(prev.dismissedMissingAiBannerRoots, [project.rootPath]),
+        dismissedGithubBannerRoots: pickDismissMapForRoots(prev.dismissedGithubBannerRoots, [project.rootPath]),
+        dismissedContextBannerRoots: pickDismissMapForRoots(prev.dismissedContextBannerRoots, [project.rootPath]),
+      }));
       invalidateAiDiscoveryCache(project.rootPath);
       invalidateProjectConfigCache(project.rootPath);
       void Promise.allSettled([
@@ -898,6 +963,8 @@ export const useAppStore = create<AppState>((set, get) => ({
     try {
       const project = await window.ade.project.switchToPath(rootPath);
       get().setProject(project);
+      // Banner-dismiss pruning happens in the second `set` call below, after recents are fetched,
+      // so we can retain dismissals for the active project + all recent projects in one pass.
       set({
         projectHydrated: true,
         showWelcome: false,
@@ -911,7 +978,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         focusedSessionId: null,
         laneInspectorTabs: {},
         keybindings: null,
-        terminalAttention: EMPTY_TERMINAL_ATTENTION
+        terminalAttention: EMPTY_TERMINAL_ATTENTION,
       });
       invalidateAiDiscoveryCache(rootPath);
       invalidateProjectConfigCache(rootPath);
@@ -926,6 +993,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         (await window.ade.project.listRecent().catch(() => [])).map((r: { rootPath: string }) => r.rootPath)
       );
       const activeRoot = get().project?.rootPath ?? null;
+      const retainedRoots = [activeRoot, ...recentRoots];
       set((prev) => {
         const nextWorkViews: Record<string, WorkProjectViewState> = {};
         const nextLaneWorkViews: Record<string, WorkProjectViewState> = {};
@@ -944,6 +1012,9 @@ export const useAppStore = create<AppState>((set, get) => ({
           projectTransition: null,
           workViewByProject: nextWorkViews,
           laneWorkViewByScope: nextLaneWorkViews,
+          dismissedMissingAiBannerRoots: pickDismissMapForRoots(prev.dismissedMissingAiBannerRoots, retainedRoots),
+          dismissedGithubBannerRoots: pickDismissMapForRoots(prev.dismissedGithubBannerRoots, retainedRoots),
+          dismissedContextBannerRoots: pickDismissMapForRoots(prev.dismissedContextBannerRoots, retainedRoots),
         };
       });
     } catch (error) {
@@ -983,7 +1054,11 @@ export const useAppStore = create<AppState>((set, get) => ({
         focusedSessionId: null,
         laneInspectorTabs: {},
         keybindings: null,
-        terminalAttention: EMPTY_TERMINAL_ATTENTION
+        terminalAttention: EMPTY_TERMINAL_ATTENTION,
+        // No active project: drop every dismiss entry so reopening the same project later starts with a clean slate.
+        dismissedMissingAiBannerRoots: {},
+        dismissedGithubBannerRoots: {},
+        dismissedContextBannerRoots: {},
       });
     } catch (error) {
       set({

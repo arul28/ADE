@@ -3,9 +3,9 @@ processes:
   - id: dbun9idy
     name: dogfood code review
     command:
-      - /Users/admin/Projects/ADE/scripts/dogfood.sh
+      - scripts/dogfood.sh
       - code-review
-    cwd: /Users/admin/Projects/ADE
+    cwd: .
     gracefulShutdownMs: 7000
 stackButtons: []
 testSuites: []

@@ -1,4 +1,4 @@
-import React, { Suspense, useCallback, useEffect, useState, useRef } from "react";
+import React, { Suspense, useCallback, useEffect, useState, useRef, type CSSProperties } from "react";
 import { CopySimple, Checks } from "@phosphor-icons/react";
 import { useAppStore, type CodeBlockCopyButtonPosition } from "../../state/appStore";
 
@@ -91,19 +91,22 @@ function DiffCodeBlock({ code }: { code: string }) {
   return (
     <div className="overflow-x-auto whitespace-pre font-mono text-[11px] leading-[1.6] text-[var(--chat-code-fg)]">
       {lines.map((line, index) => {
-        let tone = "text-[var(--chat-code-fg)]/70";
-        let bg = "";
+        let style: CSSProperties = { color: "color-mix(in srgb, var(--chat-code-fg) 70%, transparent)" };
         if (line.startsWith("+")) {
-          tone = "text-emerald-400/90";
-          bg = "bg-emerald-500/[0.06]";
+          style = {
+            color: "var(--color-diff-add)",
+            background: "color-mix(in srgb, var(--color-diff-add) 8%, transparent)",
+          };
         } else if (line.startsWith("-")) {
-          tone = "text-red-400/90";
-          bg = "bg-rose-500/[0.06]";
+          style = {
+            color: "var(--color-diff-del)",
+            background: "color-mix(in srgb, var(--color-diff-del) 8%, transparent)",
+          };
         } else if (line.startsWith("@@")) {
-          tone = "text-accent/60";
+          style = { color: "color-mix(in srgb, var(--color-accent) 70%, transparent)" };
         }
         return (
-          <div key={`${index}:${line}`} className={`${tone} ${bg} px-1 -mx-1`.trim()}>
+          <div key={`${index}:${line}`} className="px-1 -mx-1" style={style}>
             {line}
           </div>
         );
@@ -150,12 +153,44 @@ function CodeCopyButton({ code, position }: { code: string; position: CodeBlockC
       });
   }, [code]);
 
+  // "auto" wraps the button in a sticky row so it tracks the transcript scroll; top/bottom stay absolute.
+  if (position === "auto") {
+    return (
+      <div
+        className="pointer-events-none sticky top-2 z-10 flex justify-end pr-2"
+        // -mb keeps the sticky row from pushing the code text down on its first line.
+        style={{ marginBottom: -24 }}
+      >
+        <button
+          type="button"
+          className="ade-chat-copy-button pointer-events-auto inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 font-sans text-[9px] opacity-0 backdrop-blur-sm transition-all group-hover:opacity-100 [@media(hover:none)]:opacity-100"
+          style={{
+            border: "1px solid var(--chat-copy-button-border)",
+            background: "var(--chat-copy-button-bg)",
+            color: "var(--chat-copy-button-fg)",
+          }}
+          onClick={handleCopy}
+          title={copied ? "Copied" : "Copy code"}
+          aria-label={copied ? "Copied" : "Copy code"}
+        >
+          {copied ? <Checks size={10} weight="bold" /> : <CopySimple size={10} weight="regular" />}
+          <span>{copied ? "Copied" : "Copy"}</span>
+        </button>
+      </div>
+    );
+  }
+
   const posClass = position === "bottom" ? "bottom-2 top-auto" : "top-2";
 
   return (
     <button
       type="button"
-      className={`absolute right-2 z-10 inline-flex items-center gap-1 rounded-md border border-white/[0.08] bg-white/[0.03] px-1.5 py-0.5 font-sans text-[9px] text-fg/45 opacity-0 backdrop-blur-sm transition-all group-hover:opacity-100 [@media(hover:none)]:opacity-100 hover:border-white/[0.14] hover:bg-white/[0.05] hover:text-fg/72 ${posClass}`}
+      className={`ade-chat-copy-button absolute right-2 z-10 inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 font-sans text-[9px] opacity-0 backdrop-blur-sm transition-all group-hover:opacity-100 [@media(hover:none)]:opacity-100 ${posClass}`}
+      style={{
+        border: "1px solid var(--chat-copy-button-border)",
+        background: "var(--chat-copy-button-bg)",
+        color: "var(--chat-copy-button-fg)",
+      }}
       onClick={handleCopy}
       title={copied ? "Copied" : "Copy code"}
       aria-label={copied ? "Copied" : "Copy code"}
@@ -250,11 +285,20 @@ export const HighlightedCode = React.memo(function HighlightedCode({
   const copyButtonPosition = useAppStore((s) => s.codeBlockCopyButtonPosition);
   const trimmedCode = code.replace(/\n$/, "");
   const isDiff = language === "diff";
+  // `overflow-hidden` traps `position: sticky` inside the block, so drop it when the copy button
+  // needs to track the transcript scroll. The border + border-radius still render the rounded corners;
+  // content naturally pads within the block so nothing visibly bleeds past them.
+  const outerOverflowClass = copyButtonPosition === "auto" ? "" : "overflow-hidden";
 
   return (
-    <div className="group relative my-3 overflow-hidden rounded-[10px] border border-[color:var(--chat-code-border)] bg-[var(--chat-code-bg)]">
-      <CodeCopyButton code={trimmedCode} position={copyButtonPosition} />
+    <div className={`group relative my-3 rounded-[10px] border border-[color:var(--chat-code-border)] bg-[var(--chat-code-bg)] ${outerOverflowClass}`.trim()}>
+      {copyButtonPosition !== "auto" && (
+        <CodeCopyButton code={trimmedCode} position={copyButtonPosition} />
+      )}
       <div className="overflow-x-auto whitespace-pre-wrap break-words px-4 py-3">
+        {copyButtonPosition === "auto" && (
+          <CodeCopyButton code={trimmedCode} position={copyButtonPosition} />
+        )}
         {isDiff ? (
           <DiffCodeBlock code={trimmedCode} />
         ) : (

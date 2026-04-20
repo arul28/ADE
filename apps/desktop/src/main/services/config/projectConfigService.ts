@@ -148,6 +148,77 @@ function asStringMap(value: unknown): Record<string, string> | undefined {
   return out;
 }
 
+function normalizeConfigPath(value: string): string {
+  return value.trim().replace(/\\/g, "/");
+}
+
+function projectRelativePath(projectRoot: string, absolutePath: string, basePath: string): string | null {
+  if (!path.isAbsolute(absolutePath)) return null;
+  try {
+    const resolved = resolvePathWithinRoot(projectRoot, absolutePath, { allowMissing: true });
+    const resolvedBase = resolvePathWithinRoot(projectRoot, basePath, { allowMissing: true });
+    const relative = path.relative(resolvedBase, resolved).replace(/\\/g, "/");
+    return relative || ".";
+  } catch {
+    return null;
+  }
+}
+
+function normalizeProjectCwd(projectRoot: string, cwd: string | undefined): string | undefined {
+  if (cwd == null) return undefined;
+  const normalized = normalizeConfigPath(cwd);
+  if (!normalized) return normalized;
+  return projectRelativePath(projectRoot, normalized, projectRoot) ?? normalized;
+}
+
+function normalizeProjectCommand(projectRoot: string, command: string[] | undefined, cwd: string | undefined): string[] | undefined {
+  if (!command) return undefined;
+  const normalizedCommand = command.map((part) => part.trim()).filter(Boolean);
+  const executable = normalizedCommand[0];
+  if (!executable) return normalizedCommand;
+
+  const normalizedExecutable = normalizeConfigPath(executable);
+  const normalizedCwd = normalizeProjectCwd(projectRoot, cwd) ?? ".";
+  const absoluteCwd = path.isAbsolute(normalizedCwd)
+    ? normalizedCwd
+    : path.join(projectRoot, normalizedCwd);
+  const portableExecutable = projectRelativePath(projectRoot, normalizedExecutable, absoluteCwd);
+  if (portableExecutable == null) return [normalizedExecutable, ...normalizedCommand.slice(1)];
+
+  const executablePath = portableExecutable.includes("/") || portableExecutable.startsWith(".")
+    ? portableExecutable
+    : `./${portableExecutable}`;
+  return [executablePath, ...normalizedCommand.slice(1)];
+}
+
+function normalizeConfigFilePaths(config: ProjectConfigFile, projectRoot: string): ProjectConfigFile {
+  return {
+    ...config,
+    processes: (config.processes ?? []).map((proc) => {
+      const cwd = normalizeProjectCwd(projectRoot, proc.cwd);
+      return {
+        ...proc,
+        ...(proc.command ? { command: normalizeProjectCommand(projectRoot, proc.command, cwd) } : {}),
+        ...(cwd != null ? { cwd } : {})
+      };
+    }),
+    testSuites: (config.testSuites ?? []).map((suite) => {
+      const cwd = normalizeProjectCwd(projectRoot, suite.cwd);
+      return {
+        ...suite,
+        ...(suite.command ? { command: normalizeProjectCommand(projectRoot, suite.command, cwd) } : {}),
+        ...(cwd != null ? { cwd } : {})
+      };
+    }),
+    laneOverlayPolicies: (config.laneOverlayPolicies ?? []).map((policy) => ({
+      ...policy,
+      ...(policy.overrides?.cwd
+        ? { overrides: { ...policy.overrides, cwd: normalizeProjectCwd(projectRoot, policy.overrides.cwd) } }
+        : {})
+    }))
+  };
+}
+
 function coerceWorkerSafetyPolicy(value: unknown): AiConfig["workerSafety"] {
   if (!isRecord(value)) return undefined;
   const permissionLevel = asString(value.permissionLevel)?.trim();
@@ -2876,8 +2947,10 @@ export function createProjectConfigService({
     hashes: { sharedHash: string; localHash: string },
     options: { persistSnapshots: boolean }
   ): ProjectConfigSnapshot => {
-    const effective = resolveEffectiveConfig(shared, local);
-    const validation = validateEffectiveConfig(effective, projectRoot, shared, local);
+    const normalizedShared = normalizeConfigFilePaths(shared, projectRoot);
+    const normalizedLocal = normalizeConfigFilePaths(local, projectRoot);
+    const effective = resolveEffectiveConfig(normalizedShared, normalizedLocal);
+    const validation = validateEffectiveConfig(effective, projectRoot, normalizedShared, normalizedLocal);
     const trust = buildTrust(hashes);
 
     if (options.persistSnapshots && validation.ok) {
@@ -2885,8 +2958,8 @@ export function createProjectConfigService({
     }
 
     return {
-      shared,
-      local,
+      shared: normalizedShared,
+      local: normalizedLocal,
       effective,
       validation,
       trust,
@@ -2922,14 +2995,14 @@ export function createProjectConfigService({
     },
 
     validate(candidate: ProjectConfigCandidate): ProjectConfigValidationResult {
-      const shared = coerceConfigFile(candidate.shared);
-      const local = coerceConfigFile(candidate.local);
+      const shared = normalizeConfigFilePaths(coerceConfigFile(candidate.shared), projectRoot);
+      const local = normalizeConfigFilePaths(coerceConfigFile(candidate.local), projectRoot);
       return validateCandidate(shared, local);
     },
 
     save(candidate: ProjectConfigCandidate): ProjectConfigSnapshot {
-      const shared = coerceConfigFile(candidate.shared);
-      const local = coerceConfigFile(candidate.local);
+      const shared = normalizeConfigFilePaths(coerceConfigFile(candidate.shared), projectRoot);
+      const local = normalizeConfigFilePaths(coerceConfigFile(candidate.local), projectRoot);
       const validation = validateCandidate(shared, local);
       if (!validation.ok) {
         throw invalidConfigError(validation);

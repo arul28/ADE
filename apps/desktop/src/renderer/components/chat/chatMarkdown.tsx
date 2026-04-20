@@ -103,7 +103,13 @@ export function buildChatMarkdownComponents(tone: Tone = "sky", overrides: Overr
         return <HighlightedCode code={codeText} language={language} />;
       }
       return (
-        <pre className="mb-3 overflow-auto rounded-sm border border-white/[0.06] bg-black/25 p-3 font-mono text-[11px] leading-5 last:mb-0">
+        <pre
+          className="mb-3 overflow-auto rounded-sm p-3 font-mono text-[11px] leading-5 last:mb-0"
+          style={{
+            background: "var(--chat-block-bg)",
+            border: "1px solid var(--chat-block-border)",
+          }}
+        >
           {children}
         </pre>
       );
@@ -113,7 +119,10 @@ export function buildChatMarkdownComponents(tone: Tone = "sky", overrides: Overr
         return <code className={className}>{children}</code>;
       }
       return (
-        <code className={className ?? "rounded-sm bg-black/30 px-1 py-0.5 font-mono text-[11px]"}>
+        <code
+          className={className ?? "rounded-sm px-1 py-0.5 font-mono text-[11px]"}
+          style={className ? undefined : { background: "var(--chat-inline-code-bg)" }}
+        >
           {children}
         </code>
       );
@@ -136,8 +145,22 @@ export function buildChatMarkdownComponents(tone: Tone = "sky", overrides: Overr
       </a>
     ),
     table: ({ children }) => <table className="mb-3 w-full border-collapse text-left last:mb-0">{children}</table>,
-    th: ({ children }) => <th className="border border-white/[0.08] px-2 py-1 font-semibold">{children}</th>,
-    td: ({ children }) => <td className="border border-white/[0.08] px-2 py-1 align-top">{children}</td>,
+    th: ({ children }) => (
+      <th
+        className="px-2 py-1 font-semibold"
+        style={{ border: "1px solid var(--chat-table-border)" }}
+      >
+        {children}
+      </th>
+    ),
+    td: ({ children }) => (
+      <td
+        className="px-2 py-1 align-top"
+        style={{ border: "1px solid var(--chat-table-border)" }}
+      >
+        {children}
+      </td>
+    ),
     ...overrides,
   } satisfies Components;
 }

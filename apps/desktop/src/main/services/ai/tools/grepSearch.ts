@@ -100,10 +100,13 @@ export function createGrepSearchTool(cwd: string) {
         const matches = jsFallbackGrep(root, pattern, target, fileGlob);
         return { matches, matchCount: matches.length, root: target };
       } catch (err) {
+        const message = getErrorMessage(err);
         return {
           matches: [],
           matchCount: 0,
-          error: `Search failed: ${getErrorMessage(err)}`,
+          error: message.startsWith("Invalid regex pattern")
+            ? message
+            : `Search failed: ${message}`,
         };
       }
     },
@@ -149,7 +152,14 @@ function jsFallbackGrep(
   target: string,
   fileGlob: string | undefined
 ): GrepMatch[] {
-  const regex = new RegExp(pattern);
+  let regex: RegExp;
+  try {
+    regex = new RegExp(pattern);
+  } catch (error) {
+    // Surface a user-facing message distinct from generic "Search failed".
+    // Ripgrep itself returns a descriptive error for malformed patterns; match that ergonomic on the fallback path.
+    throw new Error(`Invalid regex pattern: ${getErrorMessage(error)}`);
+  }
   const results: GrepMatch[] = [];
   const searchWholeRepo = path.resolve(target) === path.resolve(root);
   const files = collectFiles(target, fileGlob, searchWholeRepo);
@@ -241,9 +251,16 @@ function collectFiles(
 }
 
 function globToRegex(glob: string): RegExp {
+  // Globs are matched against bare filenames (`entry.name`) in the fallback,
+  // so strip directory components before applying glob rules. Collapse `**`
+  // first so `**/*.ts` → `*/*.ts` → `*.ts`; if any `/` remains, keep only the
+  // last segment (the filename pattern) so `src/*.ts` still matches `foo.ts`.
+  let pattern = glob.replace(/\*\*/g, "*");
+  const lastSlash = pattern.lastIndexOf("/");
+  if (lastSlash !== -1) pattern = pattern.slice(lastSlash + 1);
   // Escape special regex chars except * and ? first, BEFORE brace expansion.
   // This avoids escaping the parens/pipe that brace expansion introduces.
-  let pattern = glob.replace(/[.+^$[\]\\]/g, "\\$&");
+  pattern = pattern.replace(/[.+^$[\]\\]/g, "\\$&");
   // Replace glob wildcards
   pattern = pattern.replace(/\*/g, ".*");
   pattern = pattern.replace(/\?/g, ".");

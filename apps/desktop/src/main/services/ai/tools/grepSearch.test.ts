@@ -270,6 +270,42 @@ describe("createGrepSearchTool", () => {
       expect(result.error).toBeDefined();
       expect(result.matchCount).toBe(0);
     });
+
+    it("surfaces a descriptive 'Invalid regex pattern' error for malformed patterns (JS fallback)", async () => {
+      const cwd = makeTmpDir("grep-bad-regex-");
+      writeFixtureFile(cwd, "code.ts", "const x = 1;");
+      forceJsFallback();
+
+      const tool = createGrepSearchTool(cwd);
+      // Unmatched `[` — a SyntaxError from `new RegExp`.
+      const result = await tool.execute({ pattern: "[", context: 0 });
+
+      expect(result.matchCount).toBe(0);
+      expect(result.error).toBeDefined();
+      expect(result.error).toContain("Invalid regex pattern");
+    });
+  });
+
+  // --------------------------------------------------------------------------
+  // Glob edge cases
+  // --------------------------------------------------------------------------
+
+  describe("glob handling", () => {
+    it("matches bare filenames under a **/*.ts glob (JS fallback)", async () => {
+      // Globs are applied to `entry.name` in the fallback, so `**/*.ts`
+      // must collapse to `*.ts` to match bare `foo.ts` — aligning with ripgrep.
+      const cwd = makeTmpDir("grep-starstar-");
+      writeFixtureFile(cwd, "foo.ts", "const marker = 1;");
+      writeFixtureFile(cwd, "src/bar.ts", "const marker = 2;");
+      writeFixtureFile(cwd, "readme.md", "marker");
+      forceJsFallback();
+
+      const tool = createGrepSearchTool(cwd);
+      const result = await tool.execute({ pattern: "marker", glob: "**/*.ts", context: 0 });
+
+      const paths = result.matches.map((m) => m.displayPath).sort();
+      expect(paths).toEqual(["foo.ts", "src/bar.ts"]);
+    });
   });
 
   // --------------------------------------------------------------------------
