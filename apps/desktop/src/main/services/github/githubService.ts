@@ -11,6 +11,12 @@ import { nowIso, asString } from "../shared/utils";
 
 const AUTH_STORE_FILE_NAME = "github-token.v1.bin";
 
+function detectGitHubTokenType(token: string): GitHubStatus["tokenType"] {
+  if (token.startsWith("github_pat_")) return "fine-grained";
+  if (token.startsWith("ghp_")) return "classic";
+  return "unknown";
+}
+
 function parseGitHubRepoFromRemoteUrl(remoteUrlRaw: string): GitHubRepoRef | null {
   const remoteUrl = remoteUrlRaw.trim();
   if (!remoteUrl) return null;
@@ -167,7 +173,7 @@ export function createGithubService({
     return parseGitHubRepoFromRemoteUrl(res.stdout);
   };
 
-  const validateToken = async (token: string): Promise<{ userLogin: string | null; scopes: string[] }> => {
+  const validateToken = async (token: string): Promise<{ userLogin: string | null; scopes: string[]; tokenType: GitHubStatus["tokenType"] }> => {
     const response = await fetch("https://api.github.com/user", {
       method: "GET",
       headers: {
@@ -187,7 +193,8 @@ export function createGithubService({
 
     return {
       userLogin: asString(payload.login) || null,
-      scopes
+      scopes,
+      tokenType: detectGitHubTokenType(token),
     };
   };
 
@@ -306,6 +313,7 @@ export function createGithubService({
         tokenStored: false,
         tokenDecryptionFailed,
         storageScope: "app",
+        tokenType: "unknown",
         repo,
         userLogin: null,
         scopes: [],
@@ -327,6 +335,7 @@ export function createGithubService({
         tokenStored: true,
         tokenDecryptionFailed: false,
         storageScope: "app",
+        tokenType: validated.tokenType,
         repo,
         userLogin: validated.userLogin,
         scopes: validated.scopes,
@@ -340,6 +349,7 @@ export function createGithubService({
         tokenStored: true,
         tokenDecryptionFailed: false,
         storageScope: "app",
+        tokenType: detectGitHubTokenType(token),
         repo,
         userLogin: null,
         scopes: [],

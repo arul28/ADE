@@ -67,16 +67,19 @@ type HeadlessLinearCredentialService = {
   clearToken: () => void;
 };
 
+type HeadlessGitHubStatus = {
+  tokenStored: boolean;
+  tokenDecryptionFailed: boolean;
+  storageScope: "app";
+  tokenType?: "classic" | "fine-grained" | "unknown";
+  repo: { owner: string; name: string } | null;
+  userLogin: string | null;
+  scopes: string[];
+  checkedAt: string | null;
+};
+
 type HeadlessGitHubService = {
-  getStatus: () => Promise<{
-    tokenStored: boolean;
-    tokenDecryptionFailed: boolean;
-    storageScope: "app";
-    repo: { owner: string; name: string } | null;
-    userLogin: string | null;
-    scopes: string[];
-    checkedAt: string | null;
-  }>;
+  getStatus: () => Promise<HeadlessGitHubStatus>;
   getRepoOrThrow: () => Promise<{ owner: string; name: string }>;
   getTokenOrThrow: () => string;
   apiRequest: <T>(args: {
@@ -219,6 +222,11 @@ function createHeadlessGitHubService(projectRoot: string, logger: Logger): Headl
   let cachedAt = 0;
 
   const getToken = (): string => envToken("ADE_GITHUB_TOKEN", "GITHUB_TOKEN", "GH_TOKEN") ?? "";
+  const getTokenType = (token: string): HeadlessGitHubStatus["tokenType"] => {
+    if (token.startsWith("github_pat_")) return "fine-grained";
+    if (token.startsWith("ghp_")) return "classic";
+    return "unknown";
+  };
 
   const apiRequest: HeadlessGitHubService["apiRequest"] = async (args) => {
     const token = (args.token ?? getToken()).trim();
@@ -263,17 +271,19 @@ function createHeadlessGitHubService(projectRoot: string, logger: Logger): Headl
       if (cachedStatus && now - cachedAt < 30_000) return { ...cachedStatus, repo: detectGitHubRepo(projectRoot) };
       const repo = detectGitHubRepo(projectRoot);
       const tokenStored = Boolean(getToken());
-      cachedStatus = {
+      const status: HeadlessGitHubStatus = {
         tokenStored,
         tokenDecryptionFailed: false,
         storageScope: "app",
+        tokenType: tokenStored ? getTokenType(getToken()) : "unknown",
         repo,
         userLogin: null,
         scopes: [],
         checkedAt: tokenStored ? new Date(now).toISOString() : null,
       };
+      cachedStatus = status;
       cachedAt = now;
-      return cachedStatus;
+      return status;
     },
     async getRepoOrThrow() {
       const repo = detectGitHubRepo(projectRoot);

@@ -28,7 +28,6 @@ describe("githubScopes", () => {
     const access = getGitHubTokenAccessState([
       "repo:status",
       "workflow",
-      "read:org",
     ]);
 
     expect(access.hasRequiredAccess).toBe(false);
@@ -40,8 +39,9 @@ describe("githubScopes", () => {
     const access = getGitHubTokenAccessState([
       "Contents=write",
       "PULL_REQUESTS=write",
+      "Metadata=read",
       "Actions=write",
-      "Members=read",
+      "Workflows=write",
     ]);
 
     expect(access.hasRequiredAccess).toBe(true);
@@ -49,18 +49,18 @@ describe("githubScopes", () => {
     expect(access.missingDescriptions).toEqual([]);
     expect(access.requirements.repo.present).toBe(true);
     expect(access.requirements.workflow.present).toBe(true);
-    expect(access.requirements["read:org"].present).toBe(true);
   });
 
   it("reports the missing fine-grained permissions when access is incomplete", () => {
     const access = getGitHubTokenAccessState([
       "contents=write",
       "pull_requests=write",
-      "checks=read",
+      "metadata=read",
+      "actions=write",
     ]);
 
     expect(access.hasRequiredAccess).toBe(false);
-    expect(access.missingDescriptions).toEqual(["Members"]);
-    expect(access.missingClassicScopes).toEqual(["read:org"]);
+    expect(access.missingDescriptions).toEqual(["Actions and Workflows"]);
+    expect(access.missingClassicScopes).toEqual(["workflow"]);
   });
 });
