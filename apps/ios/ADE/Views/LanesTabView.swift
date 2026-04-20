@@ -39,10 +39,6 @@ struct LanesTabView: View {
     syncService.status(for: .lanes)
   }
 
-  var needsRepairing: Bool {
-    syncService.activeHostProfile == nil && !laneSnapshots.isEmpty
-  }
-
   var canRunLiveActions: Bool {
     laneAllowsLiveActions(connectionState: syncService.connectionState, laneStatus: laneStatus)
   }

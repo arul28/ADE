@@ -22,6 +22,7 @@ All in `apps/desktop/src/main/services/orchestrator/`.
 - `metaReasoner.ts` — higher-level reasoning helpers for coordinator decisions.
 - `metricsAndUsage.ts` — token and cost accounting; `estimateTokenCost`.
 - `recoveryService.ts` — tracked session state, recovery iteration policy (`DEFAULT_RECOVERY_LOOP_POLICY`).
+- `workerTracking.ts` — worker session tracking, per-attempt artifact extraction (`extractAndRegisterArtifacts`), planning-phase plan-artifact persistence gate, and `planner_plan_missing` intervention auto-resolution on successful re-planning.
 - `stepPolicyResolver.ts` — `ResolvedOrchestratorRuntimeConfig`, step-level policy merging, autopilot config, file-claim scope (`doFileClaimsOverlap`, `doesFileClaimMatchPath`), repo-relative path normalization.
 - `baseOrchestratorAdapter.ts` — `buildFullPrompt` (the worker prompt builder), shell escaping, inline decoding.
 - `providerOrchestratorAdapter.ts` — provider-specific launchers (Claude CLI, Codex CLI, MCP), `resolveAdeMcpServerLaunch`, `cleanupMcpConfigFile`.
@@ -141,6 +142,36 @@ Every worker spawn creates a `DelegationContract`:
 - Failure policy — retry budget, fallback path.
 
 `extractDelegationContract` / `updateDelegationContract` / `derivePlanningStartupStateFromContract` keep the contract in sync during runtime. `extractActiveDelegationContracts` surfaces the currently active contracts for the coordinator's "what's running" view.
+
+## Planning artifact persistence and intervention recovery
+
+`workerTracking.ts` owns the post-attempt artifact pass for every
+worker completion. `extractAndRegisterArtifacts(ctx, { graph, attempt })`
+walks the attempt's `resultEnvelope`, writes the canonical plan
+markdown under `.ade/missions/<missionId>/plan.md`, registers it via
+`registerArtifact`, and returns `{ planArtifactPersisted }`. The flag
+is `true` only when the plan markdown was actually written **and**
+the artifact row was registered in this attempt — `report_result.plan.markdown`
+alone is insufficient, because the underlying `fs.writeFileSync` or
+`registerArtifact` may have failed silently.
+
+A `planner_plan_missing` intervention (`interventionType: "failed_step"`,
+`reasonCode: "planner_plan_missing"`) is opened when the planner
+completes without a usable plan. `resolvePlannerPlanMissingInterventionsAfterPlanningSuccess`
+is the matching auto-resolver: on any successful planning-phase
+attempt (`stepType === "planning" | "analysis"` or
+`phaseKey === "planning"`), if and only if `planArtifactPersisted` is
+`true`, it resolves every open `planner_plan_missing` intervention on
+the mission and emits a runtime event
+(`eventType: "intervention_resolved"`,
+`eventKey: "intervention_resolved:<id>:planner_plan_recovered"`).
+
+The resolver is intentionally cross-run: any later successful
+planning attempt can clear a stale intervention that was recorded by
+a previous run. Without the `planArtifactPersisted` gate the resolver
+could clear the intervention when the plan was never actually
+written, so the persistence check is load-bearing — do not relax it
+to just checking `report_result.plan`.
 
 ## Runtime event routing
 

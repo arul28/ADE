@@ -67,6 +67,46 @@ tab grew from one ~3,000-line file to ~30 focused files.
 Deployment target: iOS 26+. iPhone and iPad (adaptive layouts planned for
 Phase 7).
 
+### Connection status UI
+
+Host connection status is surfaced through a single shared component,
+`ADEConnectionDot` (in `Views/Components/ADEDesignSystem.swift`). It
+renders a colored dot, a state label (Connected / Syncing / Connecting
+/ Disconnected / Error), and the truncated host name when connected,
+and acts as a 44pt button that opens Settings. Tint mapping:
+
+| Connection state | Color |
+|---|---|
+| `connected` | success (green) |
+| `syncing` | warning (amber) |
+| `connecting` | warning (amber) |
+| `disconnected` | danger (red) |
+| `error` | danger (red) |
+
+The dot is placed in the top-leading `ToolbarItem` of every top-level
+tab (Lanes, Files, Work, PRs) and every deep screen
+(`LaneDetailScreen`, `PrDetailView`, `WorkSessionDestinationView`,
+`WorkNewChatScreen`, `FilesDirectoryScreen`; `FilesDetailScreen`
+hosts it alongside its back-button affordance). It replaces the
+older `ADEConnectionPill` and the per-tab "connection notice" banner
+cards — controllers no longer ship duplicate offline / reconnect /
+hydrating cards inside each screen body.
+
+Accessibility: the dot exposes `accessibilityLabel` that includes the
+host name when connected and trims the last error message for the
+error state, an `accessibilityHint` of "Opens settings to pair or
+reconnect", and `accessibilityShowsLargeContentViewer()` so VoiceOver
+and Large Content can reach it.
+
+The one remaining inline banner per tab is the hydration-failure
+notice built from `SyncDomainStatus.inlineHydrationFailureNotice(for:)`
+on `RemoteModels.swift`. It surfaces only when a domain is in
+`.failed` phase (so cached rows may still render underneath) and
+offers a single "Retry" action that calls `reload(refreshRemote: true)`.
+The read-only header strip in `FilesHeaderStrip` also appends a
+compact "Syncing" / "Connecting" / "Offline" suffix derived directly
+from `SyncService.connectionState` and `status(for: .files).phase`.
+
 ## Architectural pattern
 
 The implementation is deliberately small:

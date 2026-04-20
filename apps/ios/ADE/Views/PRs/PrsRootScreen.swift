@@ -42,10 +42,6 @@ struct PRsTabView: View {
     prsStatus.phase == .ready && (syncService.connectionState == .connected || syncService.connectionState == .syncing)
   }
 
-  private var needsRepairing: Bool {
-    syncService.activeHostProfile == nil && !prs.isEmpty
-  }
-
   private var isLoadingSkeleton: Bool {
     prsStatus.phase == .hydrating || prsStatus.phase == .syncingInitialData
   }
