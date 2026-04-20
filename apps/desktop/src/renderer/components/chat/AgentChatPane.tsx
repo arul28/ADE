@@ -71,11 +71,12 @@ import { deriveChatSubagentSnapshots, deriveTodoItems, deriveTurnDiffSummaries }
 import { derivePendingInputRequests, type DerivedPendingInput } from "./pendingInput";
 import { ProviderModelSelector } from "../shared/ProviderModelSelector";
 import { useClickOutside } from "../../hooks/useClickOutside";
-import { useAppStore } from "../../state/appStore";
+import { DEFAULT_CHAT_FONT_SIZE_PX, useAppStore } from "../../state/appStore";
 import { ClaudeCacheTtlBadge } from "../shared/ClaudeCacheTtlBadge";
 import { shouldShowClaudeCacheTtl } from "../../lib/claudeCacheTtl";
 import { getAgentChatModelsCached, getAiStatusCached } from "../../lib/aiDiscoveryCache";
 import { invalidateSessionListCache } from "../../lib/sessionListCache";
+import { playAgentTurnCompletionSound } from "../../lib/agentTurnCompletionSound";
 
 const LAST_MODEL_ID_KEY = "ade.chat.lastModelId";
 const LAST_REASONING_KEY_PREFIX = "ade.chat.lastReasoningEffort";
@@ -710,6 +711,11 @@ export function AgentChatPane({
   onLaneChange?: (laneId: string) => void;
 }) {
   const projectRoot = useAppStore((s) => s.project?.rootPath ?? null);
+  const agentTurnCompletionSound = useAppStore((s) => s.agentTurnCompletionSound);
+  const agentTurnCompletionSoundVolume = useAppStore((s) => s.agentTurnCompletionSoundVolume);
+  const agentTurnCompletionSoundQuietWhenFocused = useAppStore((s) => s.agentTurnCompletionSoundQuietWhenFocused);
+  const chatFontSizePx = useAppStore((s) => s.chatFontSizePx);
+  const chatUiScale = chatFontSizePx / DEFAULT_CHAT_FONT_SIZE_PX;
   const navigate = useNavigate();
   const openAiProvidersSettings = useCallback(() => {
     navigate("/settings?tab=ai#ai-providers");
@@ -777,6 +783,8 @@ export function AgentChatPane({
   const shellRef = useRef<HTMLElement | null>(null);
   const composerMaxHeightPx = layoutVariant === "grid-tile" ? 144 : null;
   const sessionsRef = useRef<AgentChatSessionSummary[]>(sessions);
+  const completionSoundPrevTurnActiveRef = useRef(false);
+  const completionSoundArmedRef = useRef(true);
 
   const appliedInitialSessionIdRef = useRef<string | null>(initialSessionId ?? null);
   const loadedHistoryRef = useRef<Set<string>>(new Set());
@@ -824,6 +832,56 @@ export function AgentChatPane({
   const pendingInput = selectedSessionId ? (pendingInputsBySession[selectedSessionId]?.[0] ?? null) : null;
   const selectedSessionAwaitingInput = Boolean(pendingInput) || selectedSession?.awaitingInput === true;
   const turnActive = selectedSessionId ? (turnActiveBySession[selectedSessionId] ?? false) : false;
+
+  useEffect(() => {
+    completionSoundPrevTurnActiveRef.current = false;
+    completionSoundArmedRef.current = true;
+  }, [selectedSessionId]);
+
+  useEffect(() => {
+    if (agentTurnCompletionSound === "off") {
+      completionSoundPrevTurnActiveRef.current = turnActive;
+      return;
+    }
+    if (turnActive) {
+      completionSoundArmedRef.current = true;
+    }
+    const sessionEnded = selectedSession?.status === "ended";
+    const settled =
+      Boolean(selectedSessionId)
+      && !selectedSessionAwaitingInput
+      && !sessionEnded;
+    const prevTurn = completionSoundPrevTurnActiveRef.current;
+    const becameIdle = settled && prevTurn && !turnActive;
+    completionSoundPrevTurnActiveRef.current = turnActive;
+    if (becameIdle && completionSoundArmedRef.current) {
+      completionSoundArmedRef.current = false;
+      let lastDoneStatus: "completed" | "interrupted" | "failed" | null = null;
+      for (let i = selectedEventsForDisplay.length - 1; i >= 0; i -= 1) {
+        const ev = selectedEventsForDisplay[i]?.event;
+        if (ev?.type === "done") {
+          lastDoneStatus = ev.status;
+          break;
+        }
+      }
+      if (lastDoneStatus === "completed") {
+        playAgentTurnCompletionSound(agentTurnCompletionSound, {
+          volume: agentTurnCompletionSoundVolume,
+          skipWhenFocused: agentTurnCompletionSoundQuietWhenFocused,
+        });
+      }
+    }
+  }, [
+    agentTurnCompletionSound,
+    agentTurnCompletionSoundVolume,
+    agentTurnCompletionSoundQuietWhenFocused,
+    selectedSessionId,
+    selectedSession?.status,
+    selectedSessionAwaitingInput,
+    turnActive,
+    selectedEventsForDisplay,
+  ]);
+
   const activeProviderConnection = selectedSession?.provider === "claude"
     ? (providerConnections?.claude ?? null)
     : selectedSession?.provider === "codex"
@@ -2497,7 +2555,7 @@ export function AgentChatPane({
 
   if (!laneId) {
     return (
-      <ChatSurfaceShell mode={surfaceMode} accentColor={presentation?.accentColor}>
+      <ChatSurfaceShell mode={surfaceMode} accentColor={presentation?.accentColor} contentScale={chatUiScale}>
         <div className="flex h-full items-center justify-center">
           <span className="font-sans text-[12px] text-muted-fg/30">Select a lane to start chatting</span>
         </div>
@@ -2923,6 +2981,7 @@ export function AgentChatPane({
         containerRef={shellRef}
         mode={surfaceMode}
         accentColor={presentation?.accentColor ?? draftAccent}
+        contentScale={chatUiScale}
         className={compactShell ? cn("border-0 shadow-none rounded-none bg-transparent") : undefined}
         header={compactShell ? undefined : shellHeader}
         footer={isEmptyState ? undefined : composerElement}

@@ -29,7 +29,7 @@ The only outputs are the Phase 4 summary and any error messages for genuinely fa
 
 ```
 Phase 1: Analyze code changes and batch simplification work  (lead)
-Phase 2: Parallel execution (simplify + docs)                (agents)
+Phase 2: Parallel execution (simplify + docs + mobile parity)(agents)
 Phase 3: CI sync + local verification                        (lead)
 Phase 4: Summary                                             (lead)
 ```
@@ -185,6 +185,56 @@ This validator only covers the Mintlify site. For internal docs, self-check:
 Report what docs were updated and what was changed.
 ```
 
+### Mobile parity agent
+
+Spawn a general-purpose agent with this prompt:
+
+```
+You are the mobile parity reviewer for the ADE project.
+
+Analyze all work on the current branch vs main, including changes that are
+already under review and any simplifications made during `/finalize`. Determine
+whether the iOS companion app under `apps/ios/` needs matching updates.
+
+Step 1: Get branch context
+  git diff main --name-only
+  git diff main --stat | tail -30
+  git log main..HEAD --oneline
+
+Step 2: Identify cross-platform changes
+- Shared contracts: apps/desktop/src/shared/**, preload IPC types, sync payloads,
+  PR mobile snapshots, chat/session models, lane summaries, config schemas.
+- Desktop behavior with a mobile surface: PR workflows, lanes, Work chat,
+  files, sync/multi-device, settings exposed on iOS, model/session controls.
+- Renderer-only desktop preferences are only mobile-applicable when the iOS app
+  has the same user-facing concept and a native implementation path.
+
+Step 3: Inspect iOS equivalents
+- Search `apps/ios/ADE` and `apps/ios/ADETests` for the affected model, view,
+  service, or workflow names.
+- If the branch adds or changes a host/mobile contract, update Swift Codable
+  models and iOS tests as needed.
+- If the branch changes user-facing behavior that iOS already exposes, update
+  the SwiftUI view using native iOS controls and existing ADE design patterns.
+- If the change is not applicable to iOS, explain why in the report.
+
+Step 4: Apply required iOS updates
+- Keep edits scoped to `apps/ios/` unless a shared contract fix is required.
+- Prefer existing SwiftUI patterns and native controls.
+- Preserve Dynamic Type, VoiceOver labels, and 44x44 tap targets.
+- Add or update targeted tests in `apps/ios/ADETests` for contract changes.
+
+Step 5: Validate what you touched
+- At minimum: `xcrun swiftc -parse <changed swift files>` when a full Xcode
+  build/test run is unavailable.
+- Prefer an iOS build/test when the local simulator/runtime environment supports it.
+
+Report:
+- iOS files changed, or "No iOS changes required"
+- Why each desktop/shared change was applicable or not applicable to mobile
+- Validation run and any environment limitations
+```
+
 Wait for all agents to complete.
 
 ---
@@ -326,6 +376,11 @@ If Phase 3e fails only inside files the simplifier touched, revert the simplifie
 - Docs checked but unchanged: [list]
 - Doc validation: PASS
 
+### Mobile Parity:
+- iOS changes: [list or "none required"]
+- Applicability notes: [brief list]
+- Validation: PASS / blocked with reason
+
 ### CI Verification:
 - Lock files in sync: PASS
 - Typecheck (desktop): PASS
@@ -347,6 +402,7 @@ If Phase 3e fails only inside files the simplifier touched, revert the simplifie
 Before marking complete:
 - [ ] Code simplification completed on all batches
 - [ ] Documentation updated for all affected areas
+- [ ] Mobile parity reviewed; applicable iOS updates made and validated
 - [ ] CI workflow sync verified (no orphaned test files)
 - [ ] Lock files in sync (no dirty lock files after install)
 - [ ] Typecheck passed (desktop + mcp-server + web)

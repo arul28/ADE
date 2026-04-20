@@ -3545,7 +3545,13 @@ export function registerIpc({
   ipcMain.handle(IPC.lanesDelete, async (_event, arg: DeleteLaneArgs): Promise<void> => {
     const ctx = getCtx();
     const envContext = ctx.laneEnvironmentService
-      ? await resolveLaneOverlayContext(ctx, arg.laneId)
+      ? await resolveLaneOverlayContext(ctx, arg.laneId).catch((error: unknown) => {
+          ctx.logger.warn("lane_env_cleanup.pre_delete_context_failed", {
+            laneId: arg.laneId,
+            error: getErrorMessage(error)
+          });
+          return null;
+        })
       : null;
     await ctx.laneService.delete(arg);
     ctx.portAllocationService?.release(arg.laneId);
