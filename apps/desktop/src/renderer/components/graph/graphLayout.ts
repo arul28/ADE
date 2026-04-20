@@ -98,11 +98,14 @@ export function normalizeGraphPreferences(state: unknown): {
 
 /** Workspace primary lane and hierarchy relative to it (for overview layout and cards). */
 export function laneHierarchyFromPrimary(lanes: LaneSummary[]): {
-  primary: LaneSummary;
+  primary: LaneSummary | null;
   depthByLaneId: Map<string, number>;
   parentNameByLaneId: Map<string, string | null>;
 } {
-  const primary = lanes.find((lane) => lane.laneType === "primary") ?? lanes[0]!;
+  const primary = lanes.find((lane) => lane.laneType === "primary") ?? lanes[0] ?? null;
+  if (!primary) {
+    return { primary: null, depthByLaneId: new Map(), parentNameByLaneId: new Map() };
+  }
   const byId = new Map(lanes.map((lane) => [lane.id, lane] as const));
   const depthByLaneId = new Map<string, number>();
   const parentNameByLaneId = new Map<string, string | null>();

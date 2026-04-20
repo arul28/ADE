@@ -471,10 +471,7 @@ function GraphInner() {
 
   const laneById = React.useMemo(() => new Map(lanes.map((lane) => [lane.id, lane] as const)), [lanes]);
   const primaryHierarchyMeta = React.useMemo(() => laneHierarchyFromPrimary(lanes), [lanes]);
-  const primaryLaneId = React.useMemo(
-    () => primaryHierarchyMeta.primary.id,
-    [primaryHierarchyMeta.primary.id]
-  );
+  const primaryLaneId = primaryHierarchyMeta.primary?.id ?? null;
   const laneIdByBranchRef = React.useMemo(() => {
     const map = new Map<string, string>();
     for (const lane of lanes) {
@@ -525,7 +522,7 @@ function GraphInner() {
     (laneId: string): string | null => {
       const lane = laneById.get(laneId);
       if (!lane) return null;
-      return resolvePrBaseLaneId(lane, lane.baseRef);
+      return resolvePrBaseLaneId(lane, lane.baseRef) ?? null;
     },
     [laneById, resolvePrBaseLaneId]
   );
@@ -1307,7 +1304,7 @@ function GraphInner() {
       );
     };
 
-    if (viewMode === "all" || viewMode === "risk") {
+    if (viewMode === "risk" || (viewMode === "all" && showOverviewRiskEdges)) {
       for (const [key, risk] of riskByPair.entries()) {
         if (risk.riskLevel === "none" && risk.overlapCount === 0) continue;
         const [laneAId, laneBId] = key.split("::");

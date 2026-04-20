@@ -73,15 +73,25 @@ export function GraphLaneNode({ data, selected }: NodeProps<Node<GraphNodeData>>
     return { label: `PR #${pr.number} open`, className: "text-sky-300" };
   })();
 
-  const laneRoleLabel =
-    lane.laneType === "attached"
-      ? "Attached"
-      : lane.laneType === "worktree"
-        ? "Worktree"
-        : "Primary";
+  function resolveLaneRoleLabel(): string {
+    switch (lane.laneType) {
+      case "attached":
+        return "Attached lane";
+      case "worktree":
+        return "Lane";
+      default:
+        return "Primary lane";
+    }
+  }
+  const laneRoleLabel = resolveLaneRoleLabel();
 
-  const accentBorder =
-    data.isIntegration ? "#A78BFA" : (lane.color ?? data.environment?.color ?? undefined);
+  const accentBorder = data.isIntegration ? "#A78BFA" : (lane.color ?? data.environment?.color ?? undefined);
+
+  function renderLaneIcon() {
+    if (lane.icon) return iconGlyph(lane.icon);
+    if (isPrimary) return <House size={15} weight="duotone" />;
+    return null;
+  }
 
   return (
     <div
@@ -109,7 +119,7 @@ export function GraphLaneNode({ data, selected }: NodeProps<Node<GraphNodeData>>
       }}
     >
       <div className="flex items-start gap-2">
-        <div className="mt-0.5 shrink-0 text-muted-fg">{isPrimary ? <House size={15} weight="duotone" /> : iconGlyph(lane.icon)}</div>
+        <div className="mt-0.5 shrink-0 text-muted-fg">{renderLaneIcon()}</div>
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-1">
             <span className="truncate font-semibold tracking-tight text-fg">{lane.name}</span>

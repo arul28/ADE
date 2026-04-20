@@ -143,6 +143,12 @@ stored in the session snapshot and persisted via
 Several derived maps are memoized:
 
 - `laneById` — `Map<string, LaneSummary>` built from `lanes`.
+- `primaryHierarchyMeta` — `laneHierarchyFromPrimary(lanes)`;
+  returns `{ primary, depthByLaneId, parentNameByLaneId }`. Used
+  both by node data (hierarchyDepth / parentLaneName) and by
+  edge derivation (primary spokes, risk edges). Handles the
+  empty-lanes case by returning `primary: null` with empty maps
+  so derivation can short-circuit safely.
 - `overlapFilesByPair` — `Map<pairKey, string[]>` from
   `batch.overlaps`; used by `ConflictPanel`.
 - `integrationSourcesByLaneId` — built via
@@ -167,6 +173,8 @@ lane (from appStore.lanes)
   + environmentByLaneId[laneId] → node.environment
   + prByLaneId[laneId] → node.pr (via buildGraphPrOverlay)
   + integrationSourcesByLaneId[laneId] → node.integrationSources
+  + primaryHierarchyMeta.depthByLaneId[laneId] → node.hierarchyDepth
+  + primaryHierarchyMeta.parentNameByLaneId[laneId] → node.parentLaneName
   + collapsed state (session snapshot) → node.collapsedChildCount
   + current filters → node.dimmed / node.highlight
   + merge/rebase animation refs → rebasePulse, mergeInProgress, etc.
@@ -178,12 +186,23 @@ Topology edges:
 
 - For each lane with `parentLaneId`, emit a `stack` edge
   parent → child. Dimmed if either endpoint is filtered out.
+- In Overview + Dependencies modes, a "primary → lane" spoke is
+  emitted for lanes that have no workspace parent. Lanes that
+  already have a parent inside the workspace skip the spoke
+  (the stack-edge chain already communicates the tree).
 
 Risk edges:
 
 - For each non-zero `RiskMatrixEntry`, emit a `risk` edge between
   the two lanes with `riskLevel`, `overlapCount`, and `stale`
   metadata.
+- Render gating:
+  `viewMode === "risk" || (viewMode === "all" && showOverviewRiskEdges)`.
+  The `riskPairsWithVisibleEdge` set (used to let PR overlays
+  piggyback on an existing risk/stack edge) is populated with the
+  same gate, so PR overlays in Overview consistently stick to
+  the visible topology/stack edge when the overlap web is
+  hidden.
 
 Proposal edges:
 
@@ -219,7 +238,8 @@ rewrites on next save.
 | Create/delete lane | `refreshLanes`, re-run auto-layout for fresh node |
 | Apply AI proposal | `refreshRiskBatch`, `refreshLanes` |
 | Run merge simulation | No refresh (inline panel state only) |
-| Change view mode | Recompute auto-layout if positions missing |
+| Change view mode | Recompute auto-layout if positions missing; resets `showOverviewRiskEdges` to `false` |
+| Toggle "Show overlap web" (Overview only) | No IPC; local boolean drives risk-edge render gate |
 | Change filters | No refresh; local dimmed/highlight recalculation |
 | PR update event | `scheduleRefreshPrs()` |
 

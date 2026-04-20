@@ -86,6 +86,13 @@ describe("laneHierarchyFromPrimary", () => {
     const { depthByLaneId } = laneHierarchyFromPrimary(lanes);
     expect(depthByLaneId.get("o")).toBe(10_000);
   });
+
+  it("returns a null primary and empty maps when given no lanes", () => {
+    const { primary, depthByLaneId, parentNameByLaneId } = laneHierarchyFromPrimary([]);
+    expect(primary).toBeNull();
+    expect(depthByLaneId.size).toBe(0);
+    expect(parentNameByLaneId.size).toBe(0);
+  });
 });
 
 describe("computeAutoLayout overview", () => {
