@@ -1319,7 +1319,7 @@ function GraphInner() {
       for (const lane of lanes) {
         if (!primaryLane || lane.id === primaryLane.id) continue;
         // In Overview, stack edges already show the tree; skip redundant "primary → lane" spokes.
-        if (viewMode === "all" && lane.parentLaneId && laneById.has(lane.parentLaneId)) continue;
+        if (viewMode === "all" && lane.parentLaneId && visibleNodeIds.has(lane.parentLaneId)) continue;
         if (!visibleNodeIds.has(primaryLane.id) || !visibleNodeIds.has(lane.id)) continue;
         const pair = edgePairKey(primaryLane.id, lane.id);
         const pr = prOverlayByPair.get(pair);
