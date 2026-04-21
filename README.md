@@ -43,6 +43,16 @@ ADE is a macOS desktop app for running AI coding agents inside a real software w
 
 The desktop app is the execution host. The iOS companion is a controller for that host: it shows Work sessions, lanes, files, PRs, notifications, widgets, and Live Activities while agents keep running on your own machine.
 
+## Desktop host, iOS companion
+
+<p align="center">
+  <img src="assets/readme/desktop-ios-side-by-side.png" alt="ADE desktop host and iOS companion side by side" width="920" />
+</p>
+
+ADE is designed around a simple split: the Mac does the heavy work, and the phone keeps you close to the run. Desktop owns the local repository, isolated lane worktrees, terminals, provider sessions, PR workflows, and proof artifacts. The iOS app connects to that host so you can inspect active work, scan lanes and files, follow pull requests, receive push updates, and keep background agent sessions visible without staying at your desk.
+
+The iOS screenshot above is captured from the native SwiftUI companion app running in the simulator against the same workspace model as desktop. It is not a separate mobile dashboard or docs surface; it is another controller for the local-first ADE runtime.
+
 ## Why teams use it
 
 | Problem | ADE's answer |
