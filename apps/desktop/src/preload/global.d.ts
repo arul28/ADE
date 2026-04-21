@@ -128,6 +128,8 @@ import type {
   AiApiKeyVerificationResult,
   AiConfig,
   AiSettingsStatus,
+  AdeCliInstallResult,
+  AdeCliStatus,
   OpenCodeRuntimeSnapshot,
   SyncDesktopConnectionDraft,
   SyncDeviceRecord,
@@ -662,6 +664,10 @@ declare global {
       };
       agentTools: {
         detect: () => Promise<AgentTool[]>;
+      };
+      adeCli: {
+        getStatus: () => Promise<AdeCliStatus>;
+        installForUser: () => Promise<AdeCliInstallResult>;
       };
       devTools: {
         detect: (force?: boolean) => Promise<DevToolsCheckResult>;

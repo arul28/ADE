@@ -2421,6 +2421,7 @@ export function createAgentChatService(args: {
   aiIntegrationService: ReturnType<typeof createAiIntegrationService>;
   logger: Logger;
   appVersion: string;
+  getAdeCliAgentEnv?: (baseEnv?: NodeJS.ProcessEnv) => NodeJS.ProcessEnv;
   onEvent?: (event: AgentChatEventEnvelope) => void;
   onSessionEnded?: (args: { laneId: string; sessionId: string; exitCode: number | null }) => void;
   getDirtyFileTextForPath: (absPath: string) => string | undefined | Promise<string | undefined>;
@@ -2460,6 +2461,7 @@ export function createAgentChatService(args: {
     aiIntegrationService,
     logger,
     appVersion,
+    getAdeCliAgentEnv,
     onEvent,
     onSessionEnded,
     getDirtyFileTextForPath,
@@ -8882,6 +8884,7 @@ export function createAgentChatService(args: {
       shellPath: process.env.SHELL ?? "",
       path: process.env.PATH ?? "",
     });
+    const spawnEnv = getAdeCliAgentEnv?.(process.env) ?? process.env;
     let codexExecutable: string;
     try {
       codexExecutable = resolveCodexExecutable().path;
@@ -8898,6 +8901,7 @@ export function createAgentChatService(args: {
     }
     const proc = spawn(codexExecutable, ["app-server"], {
       cwd: managed.laneWorktreePath,
+      env: spawnEnv,
       stdio: ["pipe", "pipe", "pipe"],
       detached: process.platform !== "win32",
     });
@@ -9201,8 +9205,10 @@ export function createAgentChatService(args: {
     managed.session.permissionMode = syncLegacyPermissionMode(managed.session) ?? managed.session.permissionMode;
     const lightweight = isLightweightSession(managed.session);
     const claudeExecutable = resolveClaudeCodeExecutable();
+    const claudeEnv = getAdeCliAgentEnv?.(process.env) ?? process.env;
     const opts: ClaudeSDKOptions = {
       cwd: managed.laneWorktreePath,
+      env: claudeEnv,
       permissionMode: claudePermissionMode as any,
       ...(claudePermissionMode === "bypassPermissions" ? { allowDangerouslySkipPermissions: true } as any : {}),
       includePartialMessages: true,

@@ -573,6 +573,7 @@ import type { createSyncService } from "../sync/syncService";
 import type { createFeedbackReporterService } from "../feedback/feedbackReporterService";
 import type { AdeProjectService } from "../projects/adeProjectService";
 import type { ConfigReloadService } from "../projects/configReloadService";
+import type { createAdeCliService } from "../cli/adeCliService";
 import { getErrorMessage, isRecord, nowIso, resolvePathWithinRoot, toMemoryEntryDto } from "../shared/utils";
 import { resolveAdeLayout } from "../../../shared/adeLayout";
 
@@ -587,6 +588,7 @@ export type AppContext = {
   disposeHeadWatcher: () => void;
   keybindingsService: ReturnType<typeof createKeybindingsService>;
   agentToolsService: ReturnType<typeof createAgentToolsService>;
+  adeCliService: ReturnType<typeof createAdeCliService>;
   devToolsService: ReturnType<typeof createDevToolsService>;
   onboardingService: ReturnType<typeof createOnboardingService>;
   laneService: ReturnType<typeof createLaneService>;
@@ -2381,6 +2383,16 @@ export function registerIpc({
   ipcMain.handle(IPC.agentToolsDetect, async (): Promise<AgentTool[]> => {
     const ctx = getCtx();
     return ctx.agentToolsService.detect();
+  });
+
+  ipcMain.handle(IPC.adeCliGetStatus, async () => {
+    const ctx = getCtx();
+    return ctx.adeCliService.getStatus();
+  });
+
+  ipcMain.handle(IPC.adeCliInstallForUser, async () => {
+    const ctx = getCtx();
+    return ctx.adeCliService.installForUser();
   });
 
   ipcMain.handle(IPC.devToolsDetect, async (_event: unknown, arg?: { force?: boolean }) => {

@@ -271,10 +271,16 @@ function parseAssignment(value: string, label: string): { key: string; value: st
   return { key, value: value.slice(index + 1) };
 }
 
+const UNSAFE_ARG_PATH_SEGMENTS = new Set(["__proto__", "constructor", "prototype"]);
+
 function setPath(target: JsonObject, key: string, value: unknown): void {
   const parts = key.split(".").map((part) => part.trim()).filter(Boolean);
   if (parts.length === 0) {
     throw new CliUsageError("Argument key cannot be empty.");
+  }
+  const unsafePart = parts.find((part) => UNSAFE_ARG_PATH_SEGMENTS.has(part));
+  if (unsafePart) {
+    throw new CliUsageError(`Argument key segment "${unsafePart}" is not allowed.`);
   }
   let cursor: JsonObject = target;
   for (const part of parts.slice(0, -1)) {

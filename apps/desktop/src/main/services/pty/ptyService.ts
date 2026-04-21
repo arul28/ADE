@@ -221,6 +221,7 @@ export function createPtyService({
   aiIntegrationService,
   projectConfigService,
   getLaneRuntimeEnv,
+  getAdeCliAgentEnv,
   logger,
   broadcastData,
   broadcastExit,
@@ -235,6 +236,7 @@ export function createPtyService({
   aiIntegrationService?: ReturnType<typeof createAiIntegrationService>;
   projectConfigService?: ReturnType<typeof createProjectConfigService>;
   getLaneRuntimeEnv?: (laneId: string) => Promise<Record<string, string>> | Record<string, string>;
+  getAdeCliAgentEnv?: (baseEnv?: NodeJS.ProcessEnv) => NodeJS.ProcessEnv;
   logger: Logger;
   broadcastData: (ev: PtyDataEvent) => void;
   broadcastExit: (ev: PtyExitEvent) => void;
@@ -1093,11 +1095,12 @@ export function createPtyService({
           .catch(() => {});
       }
 
-      const launchEnv = {
+      const baseLaunchEnv = {
         ...process.env,
         ...((await getLaneRuntimeEnv?.(laneId)) ?? {}),
         ...(args.env ?? {})
       };
+      const launchEnv = getAdeCliAgentEnv?.(baseLaunchEnv) ?? baseLaunchEnv;
       const shellCandidates = resolveShellCandidates();
       let pty: IPty;
       let selectedShell: ShellSpec | null = null;

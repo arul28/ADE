@@ -65,6 +65,7 @@ import {
 import { startJsonRpcServer, type JsonRpcTransport } from "../../../ade-cli/src/jsonrpc";
 import { createKeybindingsService } from "./services/keybindings/keybindingsService";
 import { createAgentToolsService } from "./services/agentTools/agentToolsService";
+import { createAdeCliService } from "./services/cli/adeCliService";
 import { createDevToolsService } from "./services/devTools/devToolsService";
 import { createOnboardingService } from "./services/onboarding/onboardingService";
 import { createAutomationService } from "./services/automations/automationService";
@@ -1016,6 +1017,14 @@ app.whenReady().then(async () => {
     );
     const keybindingsService = createKeybindingsService({ db });
     const agentToolsService = createAgentToolsService({ logger });
+    const adeCliService = createAdeCliService({
+      isPackaged: app.isPackaged,
+      resourcesPath: process.resourcesPath,
+      userDataPath: app.getPath("userData"),
+      appExecutablePath: process.execPath,
+      logger,
+    });
+    adeCliService.applyToProcessEnv();
     const devToolsService = createDevToolsService({ logger });
 
     const project = toProjectInfo(projectRoot, baseRef);
@@ -1557,6 +1566,7 @@ app.whenReady().then(async () => {
       aiIntegrationService,
       projectConfigService,
       getLaneRuntimeEnv,
+      getAdeCliAgentEnv: adeCliService.agentEnv,
       logger,
       broadcastData: (ev) => {
         broadcast(IPC.ptyData, ev);
@@ -1922,6 +1932,7 @@ app.whenReady().then(async () => {
       ctoStateService,
       logger,
       appVersion: app.getVersion(),
+      getAdeCliAgentEnv: adeCliService.agentEnv,
       onEvent: (event) => {
         aiOrchestratorServiceRef?.onAgentChatEvent(event);
         openclawBridgeServiceRef?.onAgentChatEvent(event);
@@ -2948,6 +2959,7 @@ app.whenReady().then(async () => {
       disposeHeadWatcher,
       keybindingsService,
       agentToolsService,
+      adeCliService,
       devToolsService,
       onboardingService,
       laneService,
@@ -3048,6 +3060,13 @@ app.whenReady().then(async () => {
       disposeHeadWatcher: () => {},
       keybindingsService: null,
       agentToolsService: null,
+      adeCliService: createAdeCliService({
+        isPackaged: app.isPackaged,
+        resourcesPath: process.resourcesPath,
+        userDataPath: app.getPath("userData"),
+        appExecutablePath: process.execPath,
+        logger,
+      }),
       devToolsService: null,
       onboardingService: null,
       laneService: null,

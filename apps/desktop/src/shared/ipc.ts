@@ -298,6 +298,8 @@ export const IPC = {
   syncSetActiveLanePresence: "ade.sync.setActiveLanePresence",
   syncEvent: "ade.sync.event",
   agentToolsDetect: "ade.agentTools.detect",
+  adeCliGetStatus: "ade.adeCli.getStatus",
+  adeCliInstallForUser: "ade.adeCli.installForUser",
   devToolsDetect: "ade.devTools.detect",
   githubGetStatus: "ade.github.getStatus",
   githubSetToken: "ade.github.setToken",

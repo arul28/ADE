@@ -67,6 +67,47 @@ describe("ADE CLI", () => {
     ]);
   });
 
+  it("builds nested generic ADE action args", () => {
+    const plan = buildCliPlan([
+      "actions",
+      "run",
+      "git.status",
+      "--arg",
+      "filters.clean=false",
+      "--arg-json",
+      "metadata.tags=[\"review\"]",
+    ]);
+    expect(plan.kind).toBe("execute");
+    if (plan.kind !== "execute") return;
+
+    expect(plan.steps[0]?.params).toEqual({
+      name: "run_ade_action",
+      arguments: {
+        domain: "git",
+        action: "status",
+        args: {
+          filters: {
+            clean: false,
+          },
+          metadata: {
+            tags: ["review"],
+          },
+        },
+      },
+    });
+  });
+
+  it("rejects prototype-sensitive generic ADE action arg paths", () => {
+    expect(({} as Record<string, unknown>).polluted).toBeUndefined();
+
+    for (const arg of ["__proto__.polluted=true", "safe.__proto__.polluted=true", "constructor.prototype.polluted=true"]) {
+      expect(() => buildCliPlan(["actions", "run", "git.status", "--arg", arg])).toThrow(/not allowed/);
+    }
+
+    expect(() => buildCliPlan(["actions", "run", "git.status", "--arg-json", "prototype.polluted=true"])).toThrow(/not allowed/);
+    expect(({} as Record<string, unknown>).polluted).toBeUndefined();
+  });
+
   it("maps Path to Merge start to pipeline settings plus resolver tool", () => {
     const plan = buildCliPlan([
       "prs",

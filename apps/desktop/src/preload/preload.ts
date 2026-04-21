@@ -35,6 +35,8 @@ import type {
   AutomationSaveDraftResult,
   AutomationSimulateRequest,
   AutomationSimulateResult,
+  AdeCliInstallResult,
+  AdeCliStatus,
   AiApiKeyVerificationResult,
   AiConfig,
   AiSettingsStatus,
@@ -736,6 +738,12 @@ contextBridge.exposeInMainWorld("ade", {
   agentTools: {
     detect: async (): Promise<AgentTool[]> =>
       ipcRenderer.invoke(IPC.agentToolsDetect),
+  },
+  adeCli: {
+    getStatus: async (): Promise<AdeCliStatus> =>
+      ipcRenderer.invoke(IPC.adeCliGetStatus),
+    installForUser: async (): Promise<AdeCliInstallResult> =>
+      ipcRenderer.invoke(IPC.adeCliInstallForUser),
   },
   devTools: {
     detect: async (force?: boolean): Promise<DevToolsCheckResult> =>

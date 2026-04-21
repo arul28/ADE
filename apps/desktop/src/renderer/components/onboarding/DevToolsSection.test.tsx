@@ -28,6 +28,26 @@ describe("DevToolsSection", () => {
 
     globalThis.window.ade = {
       ...originalAde,
+      adeCli: {
+        getStatus: vi.fn().mockResolvedValue({
+          command: "ade",
+          platform: "darwin",
+          isPackaged: true,
+          bundledAvailable: true,
+          bundledBinDir: "/Applications/ADE.app/Contents/Resources/ade-cli/bin",
+          bundledCommandPath: "/Applications/ADE.app/Contents/Resources/ade-cli/bin/ade",
+          installerPath: "/Applications/ADE.app/Contents/Resources/ade-cli/install-path.sh",
+          agentPathReady: true,
+          terminalInstalled: false,
+          terminalCommandPath: null,
+          installAvailable: true,
+          installTargetPath: "/Users/admin/.local/bin/ade",
+          installTargetDirOnPath: true,
+          message: "ADE-launched agents can use ade. Terminal access is not installed yet.",
+          nextAction: "Install the ade command for Terminal access.",
+        }),
+        installForUser: vi.fn(),
+      },
       devTools: {
         detect,
       },
