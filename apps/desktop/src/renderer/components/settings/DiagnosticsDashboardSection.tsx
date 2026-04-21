@@ -327,13 +327,10 @@ export function DiagnosticsDashboardSection({
   const openCodeUnavailable = !loading && openCode === null;
   const openCodeEntries = openCode?.entries;
   const dedicatedOpenCodeCount = openCode?.dedicatedCount;
-  const openCodeFallbackCount = openCode?.dynamicMcp.fallbackCount;
-  const openCodeLastFallbackAt = openCode?.dynamicMcp.lastFallbackAt ?? null;
-  const openCodeRetryCount = openCode?.dynamicMcp.retryCount;
   const showOpenCodeSection = openCodeMode === "full"
     || openCodeUnavailable
     || (openCodeMode === "issues-only"
-      && ((dedicatedOpenCodeCount ?? 0) > 0 || (openCodeFallbackCount ?? 0) > 0 || (openCodeRetryCount ?? 0) > 0));
+      && ((dedicatedOpenCodeCount ?? 0) > 0));
 
   // -------------------------------------------------------------------------
   // Render
@@ -426,40 +423,7 @@ export function DiagnosticsDashboardSection({
                   value={dedicatedOpenCodeCount ?? 0}
                   color={(dedicatedOpenCodeCount ?? 0) > 0 ? COLORS.warning : undefined}
                 />
-                <SummaryMetric
-                  label="MCP fallbacks"
-                  value={openCodeFallbackCount ?? 0}
-                  color={(openCodeFallbackCount ?? 0) > 0 ? COLORS.warning : undefined}
-                />
-                <SummaryMetric label="MCP retries" value={openCodeRetryCount ?? 0} />
-                <SummaryMetric label="MCP attaches" value={openCode?.dynamicMcp.successfulRegistrations ?? 0} />
               </div>
-
-              {openCodeLastFallbackAt && (
-                <div
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 8,
-                    padding: "8px 12px",
-                    background: `${COLORS.warning}12`,
-                    border: `1px solid ${COLORS.warning}30`,
-                  }}
-                >
-                  <span
-                    style={{
-                      fontSize: 11,
-                      fontFamily: MONO_FONT,
-                      color: COLORS.warning,
-                      lineHeight: "16px",
-                    }}
-                  >
-                    Latest OpenCode fallback {formatTimestamp(openCodeLastFallbackAt)}
-                    {openCode?.dynamicMcp.lastFallbackOwnerKind ? ` • ${openCode.dynamicMcp.lastFallbackOwnerKind}` : ""}
-                    {openCode?.dynamicMcp.lastFallbackOwnerId ? `:${openCode.dynamicMcp.lastFallbackOwnerId}` : ""}
-                  </span>
-                </div>
-              )}
 
               {openCodeEntries && openCodeEntries.length > 0 ? (
                 <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>

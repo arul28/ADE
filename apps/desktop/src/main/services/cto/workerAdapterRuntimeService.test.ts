@@ -217,9 +217,11 @@ describe("workerAdapterRuntimeService", () => {
     expect(ensureIdentitySession).not.toHaveBeenCalled();
     expect(runSessionTurn).toHaveBeenCalledWith({
       sessionId: "session-opencode-1",
-      text: "continue the same worker context",
+      text: expect.stringContaining("continue the same worker context"),
       timeoutMs: 300000,
     });
+    const firstCall = runSessionTurn.mock.calls[0] as unknown as [{ text: string }] | undefined;
+    expect(firstCall?.[0]?.text).toContain("ADE CLI:");
     expect(result.effectiveSurface).toBe("unified_chat");
     expect(result.continuation).toMatchObject({
       surface: "unified_chat",

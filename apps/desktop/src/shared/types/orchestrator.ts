@@ -399,7 +399,6 @@ export type TeamRuntimeConfig = {
   allowClaudeAgentTeams?: boolean;
   template?: TeamTemplate;
   toolProfiles?: Record<string, RoleToolProfile>;
-  mcpServerAllowlist?: string[];
   policyOverrides?: MissionPolicyFlags;
 };
 
@@ -415,7 +414,6 @@ export type MissionPolicyFlags = {
 export type RoleToolProfile = {
   allowedTools: string[];
   blockedTools?: string[];
-  mcpServers?: string[];
   notes?: string;
 };
 

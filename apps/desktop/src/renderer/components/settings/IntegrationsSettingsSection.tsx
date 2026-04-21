@@ -1,21 +1,20 @@
 import React, { useCallback, useEffect } from "react";
 import { useSearchParams } from "react-router-dom";
+import { AdeCliSection } from "./AdeCliSection";
 import { ComputerUseSection } from "./ComputerUseSection";
-import { ExternalMcpSection } from "./ExternalMcpSection";
 import { GitHubSection } from "./GitHubSection";
 import { LinearSection } from "./LinearSection";
 
-type IntegrationTab = "github" | "linear" | "managed-mcp" | "computer-use";
+type IntegrationTab = "github" | "linear" | "cli" | "computer-use";
 
 const TABS: { id: IntegrationTab; label: string }[] = [
   { id: "github", label: "GitHub" },
   { id: "linear", label: "Linear" },
-  { id: "managed-mcp", label: "Managed MCP" },
+  { id: "cli", label: "ADE CLI" },
   { id: "computer-use", label: "Computer Use" },
 ];
 
 function resolveIntegrationTab(param: string): IntegrationTab | null {
-  if (param === "mcp" || param === "external-mcp") return "managed-mcp";
   if (TABS.some((tab) => tab.id === param)) return param as IntegrationTab;
   return null;
 }
@@ -86,7 +85,7 @@ export function IntegrationsSettingsSection() {
       <div id={`settings-${activeTab}`}>
         {activeTab === "github" && <GitHubSection />}
         {activeTab === "linear" && <LinearSection />}
-        {activeTab === "managed-mcp" && <ExternalMcpSection />}
+        {activeTab === "cli" && <AdeCliSection />}
         {activeTab === "computer-use" && <ComputerUseSection />}
       </div>
     </div>

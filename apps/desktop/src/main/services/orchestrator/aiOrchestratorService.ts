@@ -517,7 +517,6 @@ export function normalizeCoordinatorUpdateForChat(message: string): string | nul
   if (
     /^\{/.test(compact)
     || /^tool\s+/i.test(compact)
-    || /^mcp__/i.test(compact)
     || /^assistant:/i.test(compact)
     || /^user:/i.test(compact)
   ) {
@@ -1688,7 +1687,7 @@ export function createAiOrchestratorService(args: {
       || /^cp\s+'.+worker-[a-f0-9-]+\.json'\s+'.+\.json'(\s+&&\s+exec\b.*)?$/i.test(compact)
       || /^ade_[a-z0-9_]+=.+/i.test(compact)
       || /(?:^|[\\/])(?:orchestrator[\\/])?worker-prompts[\\/]worker-[a-f0-9-]+(?:\.[A-Za-z0-9._-]+)?/i.test(compact)
-      || /\.ade-worker-mcp-[a-f0-9-]+\.json/i.test(compact)
+      || /\.ade-worker-[a-f0-9-]+\.json/i.test(compact)
       || /(?:^|[-*]\s+)?`?\.ade\/(?:step-output|checkpoints)-worker_[^`\s]+\.md`?/i.test(compact)
       || /[A-Za-z0-9._-]+\.(?:txt|json)['")]+$/i.test(compact)
       || /^"(?:missionId|runId|stepId|stepKey|laneId|attemptId)\b/i.test(compact)
@@ -1774,12 +1773,7 @@ export function createAiOrchestratorService(args: {
   };
 
   const normalizeCoordinatorToolEventName = (toolName: string): string => {
-    const trimmed = toolName.trim();
-    if (trimmed.startsWith("mcp__")) {
-      const parts = trimmed.split("__");
-      return (parts[2] ?? trimmed).trim();
-    }
-    return trimmed;
+    return toolName.trim();
   };
 
   const derivePlannerLifecycleFromDelegation = (contract: DelegationContract): {

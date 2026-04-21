@@ -98,17 +98,6 @@ const mocks = vi.hoisted(() => {
     writeFileSync: vi.fn(),
     randomUUID: vi.fn(() => "uuid-" + Math.random().toString(36).slice(2, 10)),
     runGit: vi.fn(async () => ({ exitCode: 0, stdout: "abc123\n", stderr: "" })),
-    resolveAdeLayout: vi.fn((root: string) => ({
-      mcpConfigsDir: `${root}/.ade/mcp-configs`,
-    })),
-    buildCodexMcpConfigFlags: vi.fn(() => []),
-    resolveAdeMcpServerLaunch: vi.fn(() => ({
-      command: "npx",
-      cmdArgs: ["tsx", "index.ts"],
-      env: {},
-    })),
-    resolveOpenCodeRuntimeRoot: vi.fn(() => "/tmp/ade-runtime"),
-    shellEscapeArg: vi.fn((v: string) => `'${v}'`),
     stripAnsi: vi.fn((t: string) => t),
     summarizeTerminalSession: vi.fn(() => "test summary"),
     derivePreviewFromChunk: vi.fn(() => ({ nextLine: "", preview: "preview" })),
@@ -154,20 +143,6 @@ vi.mock("node:crypto", () => ({
 
 vi.mock("../git/git", () => ({
   runGit: mocks.runGit,
-}));
-
-vi.mock("../../../shared/adeLayout", () => ({
-  resolveAdeLayout: mocks.resolveAdeLayout,
-}));
-
-vi.mock("../orchestrator/providerOrchestratorAdapter", () => ({
-  buildCodexMcpConfigFlags: mocks.buildCodexMcpConfigFlags,
-  resolveAdeMcpServerLaunch: mocks.resolveAdeMcpServerLaunch,
-  resolveOpenCodeRuntimeRoot: mocks.resolveOpenCodeRuntimeRoot,
-}));
-
-vi.mock("../orchestrator/baseOrchestratorAdapter", () => ({
-  shellEscapeArg: mocks.shellEscapeArg,
 }));
 
 vi.mock("../../utils/ansiStrip", () => ({
@@ -315,7 +290,6 @@ function createHarness(overrides: {
   const service = createPtyService({
     projectRoot: "/tmp/test-project",
     transcriptsDir: "/tmp/transcripts",
-    chatSessionsDir: "/tmp/chat-sessions",
     laneService: laneService as any,
     sessionService: sessionService as any,
     ...(overrides.aiIntegrationService ? { aiIntegrationService: overrides.aiIntegrationService as any } : {}),
@@ -409,7 +383,6 @@ describe("ptyService", () => {
       const ptyService = createPtyService({
         projectRoot: "/tmp/test-project",
         transcriptsDir: "/tmp/transcripts",
-        chatSessionsDir: "/tmp/chat-sessions",
         laneService: harness.laneService as any,
         sessionService: harness.sessionService as any,
         getLaneRuntimeEnv,
@@ -1129,9 +1102,9 @@ describe("ptyService", () => {
       expect(() => service.dispose({ ptyId })).not.toThrow();
     });
 
-    it("removes per-session MCP config artifacts when a tool session is manually closed", async () => {
+    it("does not create per-session ADE tool config artifacts for tool sessions", async () => {
       const { service } = createHarness();
-      const { ptyId, sessionId } = await service.create({
+      const { ptyId } = await service.create({
         laneId: "lane-1",
         title: "Claude session",
         cols: 80,
@@ -1142,7 +1115,11 @@ describe("ptyService", () => {
 
       service.dispose({ ptyId });
 
-      expect(mocks.unlinkSync).toHaveBeenCalledWith(`/tmp/test-project/.ade/mcp-configs/terminal-${sessionId}.json`);
+      expect(mocks.writeFileSync).not.toHaveBeenCalledWith(
+        expect.stringContaining("agent-configs"),
+        expect.anything(),
+        expect.anything(),
+      );
     });
 
     it("handles orphaned sessions (PTY not in map but session exists)", async () => {

@@ -1,5 +1,3 @@
-import type { ExternalMcpConnectionState } from "./externalMcp";
-
 export type ComputerUseArtifactKind =
   | "screenshot"
   | "video_recording"
@@ -8,7 +6,6 @@ export type ComputerUseArtifactKind =
   | "console_logs";
 
 export type ComputerUseBackendStyle =
-  | "external_mcp"
   | "external_cli"
   | "manual"
   | "local_fallback";
@@ -151,9 +148,9 @@ export type ComputerUseArtifactReviewArgs = {
 
 export type ComputerUseExternalBackendStatus = {
   name: string;
-  style: Extract<ComputerUseBackendStyle, "external_mcp" | "external_cli">;
+  style: Extract<ComputerUseBackendStyle, "external_cli">;
   available: boolean;
-  state?: ExternalMcpConnectionState | "installed" | "missing";
+  state?: "installed" | "missing";
   detail: string;
   supportedKinds: ComputerUseArtifactKind[];
 };

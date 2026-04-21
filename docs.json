@@ -169,8 +169,7 @@
             "expanded": true,
             "pages": [
               "configuration/settings",
-              "configuration/ai-providers",
-              "configuration/mcp-servers"
+              "configuration/ai-providers"
             ]
           },
           {
@@ -267,7 +266,6 @@
       "claude",
       "chatgpt",
       "perplexity",
-      "mcp",
       "cursor",
       "vscode"
     ]

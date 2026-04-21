@@ -432,7 +432,7 @@ describe("CoordinatorAgent", () => {
     }
   });
 
-  it("uses project-root workspace binding for the OpenCode coordinator MCP launch", async () => {
+  it("starts the OpenCode coordinator through the shared runtime lease", async () => {
     mockState.eventBatches.push([
       { type: "session.idle", properties: { sessionID: "session-1" } },
     ]);
@@ -448,17 +448,7 @@ describe("CoordinatorAgent", () => {
       const startCalls = vi.mocked(startOpenCodeSession).mock.calls;
       expect(startCalls.length).toBeGreaterThan(0);
       expect(startCalls[0]?.[0]?.leaseKind).toBe("shared");
-      const launch = startCalls[0]?.[0]?.dynamicMcpLaunch as {
-        cmdArgs?: string[];
-        env?: Record<string, string>;
-      };
-      expect(Array.isArray(launch?.cmdArgs)).toBe(true);
-      const workspaceFlagIndex = launch.cmdArgs!.indexOf("--workspace-root");
-      expect(workspaceFlagIndex).toBeGreaterThanOrEqual(0);
-      expect(launch.cmdArgs![workspaceFlagIndex + 1]).toBe("/tmp/ade-project");
-      expect(launch.env?.ADE_WORKSPACE_ROOT).toBe("/tmp/ade-project");
-      expect(launch.env?.ADE_RUN_ID).toBe("run-1");
-      expect(launch.env?.ADE_MISSION_ID).toBeFalsy();
+      expect(Object.keys(startCalls[0]?.[0] ?? {}).sort()).toEqual(expect.arrayContaining(["directory", "leaseKind", "ownerId", "ownerKind"]));
     } finally {
       agent.shutdown();
     }

@@ -11,35 +11,20 @@ import { openKvDb } from "../state/kvDb";
 import type { OrchestratorRunGraph } from "../../../shared/types/orchestrator";
 
 // ─────────────────────────────────────────────────────────────────
-// VAL-PLAN-003: mcp__ade__ask_user in the planning worker allowlist
+// VAL-PLAN-003: planning worker read-only native tool allowlist
 // ─────────────────────────────────────────────────────────────────
 
-describe("VAL-PLAN-003: ask_user in planning worker allowlist", () => {
-  it("mcp__ade__ask_user is included in the read-only worker allowed tools", () => {
+describe("VAL-PLAN-003: planning worker read-only allowlist", () => {
+  it("includes only native read-only tools by default", () => {
     const tools = buildClaudeReadOnlyWorkerAllowedTools();
-    expect(tools).toContain("mcp__ade__ask_user");
-    expect(tools).toContain("mcp__ade__memory_search");
-    expect(tools).toContain("mcp__ade__memory_add");
+    expect(tools).toEqual(["Read", "Glob", "Grep"]);
   });
 
-  it("ask_user respects custom server name", () => {
-    const tools = buildClaudeReadOnlyWorkerAllowedTools("custom_server");
-    expect(tools).toContain("mcp__custom_server__ask_user");
-    expect(tools).toContain("mcp__custom_server__memory_search");
-    expect(tools).toContain("mcp__custom_server__memory_add");
+  it("deduplicates caller-provided extra read-only tools", () => {
+    const tools = buildClaudeReadOnlyWorkerAllowedTools(["Read", "NotebookRead"]);
+    expect(tools).toEqual(["Read", "Glob", "Grep", "NotebookRead"]);
   });
 
-  it("memory tools are listed after ask_user (ordering preserved)", () => {
-    const tools = buildClaudeReadOnlyWorkerAllowedTools();
-    const reportResultIndex = tools.indexOf("mcp__ade__report_result");
-    const askUserIndex = tools.indexOf("mcp__ade__ask_user");
-    const memorySearchIndex = tools.indexOf("mcp__ade__memory_search");
-    const memoryAddIndex = tools.indexOf("mcp__ade__memory_add");
-    expect(reportResultIndex).toBeGreaterThanOrEqual(0);
-    expect(askUserIndex).toBeGreaterThan(reportResultIndex);
-    expect(memorySearchIndex).toBeGreaterThan(askUserIndex);
-    expect(memoryAddIndex).toBeGreaterThan(memorySearchIndex);
-  });
 });
 
 // ─────────────────────────────────────────────────────────────────

@@ -8,6 +8,8 @@ import type {
 import { resolveCodexExecutable } from "../ai/codexExecutable";
 import type { createAgentChatService } from "../chat/agentChatService";
 
+const ADE_CLI_WORKER_GUIDANCE = "ADE CLI: In terminal-capable sessions, use the bundled `ade` command for internal ADE actions. Run `ade doctor` for readiness, `ade actions list --text` for discovery, typed commands such as `ade lanes list --text` or `ade prs checks <pr> --text` first, and `ade actions run ...` as the escape hatch. Use `--json` for structured output and `--text` for readable output.";
+
 type WorkerAdapterRuntimeServiceArgs = {
   fetchImpl?: typeof fetch;
   spawnImpl?: typeof spawn;
@@ -199,7 +201,7 @@ export function createWorkerAdapterRuntimeService(args: WorkerAdapterRuntimeServ
         : "";
       const sessionResult = await agentChatService!.runSessionTurn({
         sessionId,
-        text: `${instructions}${prompt}`,
+        text: `${ADE_CLI_WORKER_GUIDANCE}\n\n${instructions}${prompt}`,
         ...(toOptionalString(config.reasoningEffort) ? { reasoningEffort: toOptionalString(config.reasoningEffort) } : {}),
         timeoutMs,
       });
@@ -367,7 +369,7 @@ export function createWorkerAdapterRuntimeService(args: WorkerAdapterRuntimeServ
       const result = await runCommand(spawnImpl, binary, args, {
         cwd: typeof config.cwd === "string" ? config.cwd : undefined,
         timeoutMs,
-        stdinText: `${instructions}${prompt}\n`,
+        stdinText: `${ADE_CLI_WORKER_GUIDANCE}\n\n${instructions}${prompt}\n`,
       });
       return {
         adapterType,

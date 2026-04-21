@@ -1,6 +1,6 @@
 # Computer Use
 
-ADE is the control plane for computer-use proof, not the primary executor. External backends (Ghost OS, agent-browser, MCP servers) perform browser and desktop automation. ADE discovers them, shows their readiness, injects the right guidance into sessions, and ingests the resulting artifacts into a canonical record.
+ADE is the control plane for computer-use proof, not the primary executor. External backends (Ghost OS, agent-browser, ADE CLI) perform browser and desktop automation. ADE discovers them, shows their readiness, injects the right guidance into sessions, and ingests the resulting artifacts into a canonical record.
 
 This boundary is intentional: ADE does not compete with browser-automation runtimes. It stays external-first and owns the normalization / ownership / review / publication path.
 
@@ -51,7 +51,7 @@ Canonical `ComputerUseArtifactKind` values (from `shared/types/computerUseArtifa
 - `browser_verification`
 - `console_logs`
 
-`normalizeComputerUseArtifactKind` (in `shared/proofArtifacts.ts`) maps backend-specific labels into these canonical kinds. `inferSupportedKindsFromExternalTool(name, description)` heuristically matches external MCP tool metadata to kinds.
+`normalizeComputerUseArtifactKind` (in `shared/proofArtifacts.ts`) maps backend-specific labels into these canonical kinds. `inferSupportedKindsFromExternalTool(name, description)` heuristically matches ADE CLI tool metadata to kinds.
 
 ## Backends
 
@@ -59,8 +59,8 @@ Three backend styles:
 
 | Backend | Transport | ADE role |
 | --- | --- | --- |
-| Ghost OS | External MCP server (stdio, command `ghost mcp`) | Discover via External MCP, ingest tool results into the broker. Requires `ghost setup` + `ghost doctor` healthy state. |
-| agent-browser | External CLI (not MCP) | Detect CLI availability; expect external invocation; ingest its output via `agentBrowserArtifactAdapter`. |
+| Ghost OS | ADE CLI (stdio, command `ghost ade-cli`) | Discover via ADE CLI, ingest tool results into the broker. Requires `ghost setup` + `ghost doctor` healthy state. |
+| agent-browser | External CLI (not ADE CLI) | Detect CLI availability; expect external invocation; ingest its output via `agentBrowserArtifactAdapter`. |
 | ADE local | Local compatibility runtime | Fallback-only. Used when no approved external backend satisfies a required proof kind and the scope allows local fallback. |
 
 `buildGhostOsCheck` produces `ComputerUseSettingsSnapshot["ghostOsCheck"]` with `setupState` (`not_installed` | `needs_setup` | `ready` | `unknown`), `cliInstalled`, `adeConfigured`, `adeConnected`, `processHealth` (`healthy` | `stale` | `unknown`), a `summary`, and human-readable `details`. It shells out to `ghost status` to determine readiness and runs `ghost doctor` for process-health detection.
@@ -112,7 +112,7 @@ This list is the trust boundary for external file paths. Other locations are rej
 
 Detection layers:
 
-1. **Known tool names** — `GHOST_ARTIFACT_TOOLS` (set of Ghost OS perception tools: `ghost_screenshot`, `ghost_annotate`, `ghost_ground`, `ghost_parse_screen`, plus MCP-prefixed variants).
+1. **Known tool names** — `GHOST_ARTIFACT_TOOLS` (set of Ghost OS perception tools: `ghost_screenshot`, `ghost_annotate`, `ghost_ground`, `ghost_parse_screen`, plus ADE CLI-prefixed variants).
 2. **Content patterns** — file extensions (`IMAGE_EXTENSIONS`, `VIDEO_EXTENSIONS`, `TRACE_EXTENSIONS`, `LOG_EXTENSIONS`), field-name heuristics (`ARTIFACT_FIELD_NAMES`, `EMBEDDED_ARTIFACT_CONTEXT_FIELDS`, `TEXTUAL_CONTENT_FIELD_NAMES`), base64 data-URIs, and a regex for embedded `file:///`, `http(s)://`, and absolute-path artifact references.
 
 Detections are normalized into `ComputerUseArtifactInput[]` and handed off to the broker. This keeps the chat-surface artifact drawer populated even when the agent didn't explicitly ingest.
@@ -180,7 +180,7 @@ Computer use is first-class in normal chat too:
 - **`secureCopyFromDescriptor` uses `O_NOFOLLOW`.** Don't relax this — symlink-based attacks escape the allowed-roots check otherwise.
 - **Ghost OS status is shelled out via `spawnSync("ghost", ["status"])`.** Timeout is 5 seconds. A hung `ghost` binary throttles the readiness check — make sure the CLI responds quickly.
 - **`ghost doctor` process health detection parses human-readable output.** The regex `GHOST_DOCTOR_PROCESS_REGEX` is the parsing boundary; changes to Ghost OS output format require updating both the regex and the tests.
-- **agent-browser is not an MCP server.** Don't treat its artifacts as coming from an MCP transport — they come through the `agentBrowserArtifactAdapter` payload parser.
+- **agent-browser is not an ADE CLI.** Don't treat its artifacts as coming from an ADE CLI transport — they come through the `agentBrowserArtifactAdapter` payload parser.
 - **`inferSupportedKindsFromExternalTool` is heuristic.** It reads the tool name + description. Backends with ambiguous names may be misclassified — prefer explicit declarations via the broker backend registration.
 
 ## Cross-links

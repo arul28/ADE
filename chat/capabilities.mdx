@@ -1,6 +1,6 @@
 ---
 title: "Chat Capabilities"
-description: "What the chat agent can do — file operations, terminal commands, git, PRs, Linear integration, mission spawning, context pack queries, and external MCP tools."
+description: "What the chat agent can do — file operations, terminal commands, git, PRs, Linear integration, mission spawning, context pack queries, and ADE action tools."
 icon: "toolbox"
 ---
 
@@ -33,8 +33,8 @@ The chat agent has access to a broad tool palette. The exact tools available dep
   <Card title="Image attachments" icon="image">
     Attach images (JPEG, PNG, GIF, WebP) to any message. Images are sent as inline base64 content blocks so the agent can see screenshots, diagrams, or UI mockups natively.
   </Card>
-  <Card title="External MCP tools" icon="plug">
-    If external MCP servers are configured and permitted for the session, the agent can call their tools. Toggle MCP tool groups in the chat header.
+  <Card title="ADE actions" icon="plug">
+    Agents call ADE's typed actions — lane, git, PR, process, chat, test, proof, and memory tools — through the ADE RPC surface. Toggle tool groups for the session from the chat header.
   </Card>
   <Card title="PR issue resolution" icon="wrench">
     Specialized workflow tools for fixing PR issues: read failing check output, read review comments, apply fixes, and verify the fix resolves the issue. In convergence sessions, the agent receives the full issue inventory with source attribution and severity. Available when a lane has an open PR.
@@ -42,7 +42,7 @@ The chat agent has access to a broad tool palette. The exact tools available dep
 </CardGroup>
 
 <Note>
-  Provider-native tools (built into the model's API, like Claude's native file tool) are tracked separately from ADE-owned tools (served via MCP). The chat header MCP badge shows the count of ADE/external MCP tools; provider-native tools are always available based on the model.
+  Provider-native tools (built into the model's API, like Claude's native file tool) are tracked separately from ADE-owned tools (served through the ADE RPC surface). The chat header tools badge shows the count of ADE actions available to the session; provider-native tools are always available based on the model.
 </Note>
 
 ---

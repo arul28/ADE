@@ -269,7 +269,7 @@ describe("ctoStateService", () => {
       endedAt: "2026-03-05T10:05:00.000Z",
       provider: "codex",
       modelId: "openai/gpt-5.3-codex",
-      capabilityMode: "full_mcp",
+      capabilityMode: "full_tooling",
     });
     expect(entry.sessionId).toBe("session-1");
     expect(service.getSessionLogs(10).length).toBe(1);
@@ -289,6 +289,36 @@ describe("ctoStateService", () => {
     const logs = recovered.getSessionLogs(10);
     expect(logs.length).toBe(1);
     expect(logs[0]?.summary).toBe("First CTO session");
+
+    fixture.db.close();
+  });
+
+  it("normalizes legacy full_mcp session logs as full tooling", async () => {
+    const fixture = await createFixture();
+    const ctoDir = path.join(fixture.adeDir, "cto");
+    fs.mkdirSync(ctoDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(ctoDir, "sessions.jsonl"),
+      `${JSON.stringify({
+        sessionId: "legacy-session",
+        summary: "Legacy CTO session",
+        startedAt: "2026-03-05T10:00:00.000Z",
+        endedAt: "2026-03-05T10:05:00.000Z",
+        provider: "codex",
+        modelId: "openai/gpt-5.3-codex",
+        capabilityMode: "full_mcp",
+        createdAt: "2026-03-05T10:06:00.000Z",
+      })}\n`,
+      "utf8"
+    );
+
+    const service = createCtoStateService({
+      db: fixture.db,
+      projectId: fixture.projectId,
+      adeDir: fixture.adeDir,
+    });
+
+    expect(service.getSessionLogs(10)[0]?.capabilityMode).toBe("full_tooling");
 
     fixture.db.close();
   });
@@ -554,7 +584,7 @@ describe("ctoStateService", () => {
     expect(preview.sections[3]?.content).toContain("ADE Architecture");
     expect(preview.sections[3]?.content).toContain("spawnChat");
     expect(preview.sections[3]?.content).toContain("createTerminal");
-    expect(preview.sections[3]?.content).toContain("spawn_agent is an MCP tool");
+    expect(preview.sections[3]?.content).toContain("spawnChat");
     expect(preview.sections[3]?.content).toContain("Model Selection");
     // Capabilities section: organized tool reference with descriptions
     expect(preview.sections[4]?.content).toContain("ADE Operator Tools");

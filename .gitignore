@@ -19,7 +19,7 @@ __pycache__/
 *.db
 
 # Build outputs
-/apps/mcp-server/dist/
+/apps/ade-cli/dist/
 /apps/desktop/release/
 /apps/desktop/dist/
 /apps/desktop/vendor/crsqlite/darwin-x64/

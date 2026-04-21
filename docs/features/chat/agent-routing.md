@@ -26,10 +26,10 @@ for vendored runtimes without changing the union.
 
 | Provider | Runtime | Adapter location |
 |---|---|---|
-| `claude` | `@anthropic-ai/claude-agent-sdk` V2 (`unstable_v2_createSession`). Persistent subprocess + MCP servers stay alive between turns. Resolves `claude` executable via `claudeCodeExecutable.ts`. | `agentChatService.ts` (inline; the file carries the full Claude adapter). |
+| `claude` | `@anthropic-ai/claude-agent-sdk` V2 (`unstable_v2_createSession`). Persistent subprocess + ADE CLI stay alive between turns. Resolves `claude` executable via `claudeCodeExecutable.ts`. | `agentChatService.ts` (inline; the file carries the full Claude adapter). |
 | `codex` | `codex app-server` subprocess, JSON-RPC protocol. Spawn failures surface as error events. | `agentChatService.ts` (Codex adapter); config via `codexAppServerConfig.ts`. |
 | `opencode` | OpenCode server runtime: Anthropic/OpenAI/Google/Mistral/DeepSeek/xAI/Groq/Together AI API keys, OpenRouter, and local (Ollama, LM Studio, vLLM). | `agentChatService.ts` (OpenCode adapter); model discovery in `localModelDiscovery.ts` and `modelsDevService.ts`. |
-| `cursor` | Cursor CLI via ACP (Agent Client Protocol). | `cursorAcpPool.ts`, `cursorAcpEventMapper.ts`, `cursorAcpConfigState.ts`, `cursorAcpMcp.ts`. |
+| `cursor` | Cursor CLI via ACP (Agent Client Protocol). | `cursorAcpPool.ts`, `cursorAcpEventMapper.ts`, `cursorAcpConfigState.ts`. |
 
 ## Model registry
 

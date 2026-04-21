@@ -467,7 +467,7 @@ describe("missionPreflightService", () => {
           backends: [
             {
               name: "Ghost OS",
-              style: "external_mcp",
+              style: "external_cli",
               available: true,
               state: "connected",
               detail: "Connected",

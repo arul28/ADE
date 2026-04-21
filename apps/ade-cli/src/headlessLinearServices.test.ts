@@ -121,7 +121,6 @@ function createDeps() {
     aiOrchestratorService: {} as any,
     workerAgentService: {} as any,
     workerBudgetService: {} as any,
-    externalMcpService: {} as any,
     computerUseArtifactBrokerService: {} as any,
     openExternal: async () => {},
   };

@@ -6,7 +6,6 @@ import type { ProviderMode, ModelId } from "./core";
 import type { AgentChatModelInfo } from "./chat";
 import type { LaneType } from "./lanes";
 import type { MissionExecutionPolicy, MissionPermissionConfig, MissionProviderPermissions } from "./missions";
-import type { ExternalMcpMissionSelection } from "./externalMcp";
 import type { MissionModelConfig, ModelConfig } from "./models";
 import type { LinearSyncConfig } from "./linearSync";
 import type { LocalProviderFamily } from "../modelRegistry";
@@ -540,22 +539,10 @@ export type OpenCodeRuntimeEntry = {
   lastUsedAt: number;
 };
 
-export type OpenCodeDynamicMcpDiagnostics = {
-  registrationAttempts: number;
-  successfulRegistrations: number;
-  retryCount: number;
-  fallbackCount: number;
-  lastFallbackAt: string | null;
-  lastFallbackOwnerKind: OpenCodeRuntimeOwnerKind | null;
-  lastFallbackOwnerId: string | null;
-  lastFallbackError: string | null;
-};
-
 export type OpenCodeRuntimeSnapshot = {
   sharedCount: number;
   dedicatedCount: number;
   entries: OpenCodeRuntimeEntry[];
-  dynamicMcp: OpenCodeDynamicMcpDiagnostics;
 };
 
 export type RuntimeDiagnosticsEvent = {
@@ -619,8 +606,7 @@ export type AutomationToolFamily =
   | "linear"
   | "browser"
   | "memory"
-  | "mission"
-  | "external-mcp";
+  | "mission";
 
 export type AutomationContextSourceType =
   | "project-memory"
@@ -1026,7 +1012,6 @@ export type AiPermissionSettings = {
   inProcess?: AiInProcessPermissionSettings;
   /** Per-provider permission config (preferred over cli/inProcess for missions). */
   providers?: MissionProviderPermissions;
-  externalMcp?: ExternalMcpMissionSelection;
 };
 
 export type WorkerSafetyPolicy = {
@@ -1128,7 +1113,6 @@ export type AiConfig = {
   apiKeys?: Record<string, string>;
   localProviders?: AiLocalProviderConfigs;
   workerSafety?: WorkerSafetyPolicy;
-  mcpServers?: Record<string, unknown>;
   /** Per-feature model overrides, e.g. { mission_planning: "claude-sonnet-4-6" } */
   featureModelOverrides?: Partial<Record<AiFeatureKey, string>>;
   /** Per-feature reasoning effort overrides */

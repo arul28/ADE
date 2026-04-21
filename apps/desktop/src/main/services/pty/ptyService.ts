@@ -11,9 +11,6 @@ import type { createSessionService } from "../sessions/sessionService";
 import type { createAiIntegrationService } from "../ai/aiIntegrationService";
 import type { createProjectConfigService } from "../config/projectConfigService";
 import { runGit } from "../git/git";
-import { resolveAdeLayout } from "../../../shared/adeLayout";
-import { buildCodexMcpConfigFlags, resolveAdeMcpServerLaunch, resolveOpenCodeRuntimeRoot } from "../orchestrator/providerOrchestratorAdapter";
-import { shellEscapeArg } from "../orchestrator/baseOrchestratorAdapter";
 import type {
   PtyDataEvent,
   PtyExitEvent,
@@ -216,85 +213,15 @@ function inferSessionCwdFromTranscriptPath(transcriptPath: string | null | undef
 const MAX_TRANSCRIPT_BYTES = 8 * 1024 * 1024;
 const TRANSCRIPT_LIMIT_NOTICE = "\n[ADE] transcript limit reached (8MB). Further output omitted.\n";
 
-function writeExternalClaudeMcpConfig(args: {
-  projectRoot: string;
-  workspaceRoot: string;
-  sessionId: string;
-}): string {
-  const runtimeRoot = resolveOpenCodeRuntimeRoot();
-  const launch = resolveAdeMcpServerLaunch({
-    projectRoot: args.projectRoot,
-    workspaceRoot: args.workspaceRoot,
-    runtimeRoot,
-    runId: args.sessionId,
-    attemptId: args.sessionId,
-    defaultRole: "external",
-  });
-  const configDir = resolveAdeLayout(args.projectRoot).mcpConfigsDir;
-  fs.mkdirSync(configDir, { recursive: true });
-  const configPath = path.join(configDir, `terminal-${args.sessionId}.json`);
-  fs.writeFileSync(
-    configPath,
-    JSON.stringify({
-      mcpServers: {
-        ade: {
-          command: launch.command,
-          args: launch.cmdArgs,
-          env: launch.env,
-        },
-      },
-    }, null, 2),
-    "utf8",
-  );
-  return configPath;
-}
-
-function enrichStartupCommandForAdeMcp(args: {
-  projectRoot: string;
-  workspaceRoot: string;
-  toolType: TerminalToolType | null;
-  sessionId: string;
-  startupCommand: string;
-}): { startupCommand: string; cleanupPaths: string[] } {
-  const trimmed = args.startupCommand.trim();
-  if (!trimmed.length) return { startupCommand: trimmed, cleanupPaths: [] };
-  if (args.toolType === "claude") {
-    const configPath = writeExternalClaudeMcpConfig({
-      projectRoot: args.projectRoot,
-      workspaceRoot: args.workspaceRoot,
-      sessionId: args.sessionId,
-    });
-    return {
-      startupCommand: `${trimmed} --mcp-config ${shellEscapeArg(configPath)}`,
-      cleanupPaths: [configPath],
-    };
-  }
-  if (args.toolType === "codex") {
-    const flags = buildCodexMcpConfigFlags({
-      projectRoot: args.projectRoot,
-      workspaceRoot: args.workspaceRoot,
-      runtimeRoot: resolveOpenCodeRuntimeRoot(),
-      runId: args.sessionId,
-      attemptId: args.sessionId,
-      defaultRole: "external",
-    });
-    return {
-      startupCommand: `${trimmed} ${flags.join(" ")}`.trim(),
-      cleanupPaths: [],
-    };
-  }
-  return { startupCommand: trimmed, cleanupPaths: [] };
-}
-
 export function createPtyService({
   projectRoot,
   transcriptsDir,
-  chatSessionsDir,
   laneService,
   sessionService,
   aiIntegrationService,
   projectConfigService,
   getLaneRuntimeEnv,
+  getAdeCliAgentEnv,
   logger,
   broadcastData,
   broadcastExit,
@@ -304,12 +231,12 @@ export function createPtyService({
 }: {
   projectRoot: string;
   transcriptsDir: string;
-  chatSessionsDir: string;
   laneService: ReturnType<typeof createLaneService>;
   sessionService: ReturnType<typeof createSessionService>;
   aiIntegrationService?: ReturnType<typeof createAiIntegrationService>;
   projectConfigService?: ReturnType<typeof createProjectConfigService>;
   getLaneRuntimeEnv?: (laneId: string) => Promise<Record<string, string>> | Record<string, string>;
+  getAdeCliAgentEnv?: (baseEnv?: NodeJS.ProcessEnv) => NodeJS.ProcessEnv;
   logger: Logger;
   broadcastData: (ev: PtyDataEvent) => void;
   broadcastExit: (ev: PtyExitEvent) => void;
@@ -1129,14 +1056,8 @@ export function createPtyService({
       const transcriptPath = tracked
         ? (existingSession?.transcriptPath?.trim() || safeTranscriptPathFor(sessionId))
         : "";
-      const enrichedLaunch = enrichStartupCommandForAdeMcp({
-        projectRoot,
-        workspaceRoot: cwd,
-        toolType: toolTypeHint,
-        sessionId,
-        startupCommand: requestedStartupCommand,
-      });
-      const startupCommand = enrichedLaunch.startupCommand;
+      const startupCommand = requestedStartupCommand.trim();
+      const cleanupPaths: string[] = [];
 
       let transcriptStream: fs.WriteStream | null = null;
       let transcriptBytesWritten = 0;
@@ -1174,11 +1095,12 @@ export function createPtyService({
           .catch(() => {});
       }
 
-      const launchEnv = {
+      const baseLaunchEnv = {
         ...process.env,
         ...((await getLaneRuntimeEnv?.(laneId)) ?? {}),
         ...(args.env ?? {})
       };
+      const launchEnv = getAdeCliAgentEnv?.(baseLaunchEnv) ?? baseLaunchEnv;
       const shellCandidates = resolveShellCandidates();
       let pty: IPty;
       let selectedShell: ShellSpec | null = null;
@@ -1244,7 +1166,7 @@ export function createPtyService({
           resourcesPath: process.resourcesPath ?? "",
           err: String(err),
         });
-        for (const cleanupPath of enrichedLaunch.cleanupPaths) {
+        for (const cleanupPath of cleanupPaths) {
           try {
             fs.unlinkSync(cleanupPath);
           } catch {
@@ -1317,7 +1239,7 @@ export function createPtyService({
         lastRuntimeSignalPreview: null,
         disposed: false,
         createdAt: Date.now(),
-        cleanupPaths: enrichedLaunch.cleanupPaths,
+        cleanupPaths,
         aiTitleTimer: null,
         cliUserTitleLineBuffer: "",
         cliUserTitleCommitted: false,

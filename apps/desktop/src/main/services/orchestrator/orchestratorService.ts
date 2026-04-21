@@ -70,7 +70,7 @@ import {
 import { evaluateRunCompletion, evaluateRunCompletionFromPhases, validateRunCompletion, DEFAULT_EXECUTION_POLICY } from "./executionPolicy";
 import {
   createProviderOrchestratorAdapter,
-  cleanupMcpConfigFile,
+  cleanupWorkerRuntimeFiles,
 } from "./providerOrchestratorAdapter";
 import { resolveClaudeCliModel, resolveCodexCliModel } from "../ai/claudeModelUtils";
 import { runGit } from "../git/git";
@@ -81,7 +81,6 @@ import type { createConflictService } from "../conflicts/conflictService";
 import type { createProjectConfigService } from "../config/projectConfigService";
 import type { createPrService } from "../prs/prService";
 import type { createMemoryService } from "../memory/memoryService";
-import type { createExternalMcpService } from "../externalMcp/externalMcpService";
 import type { AiTaskType } from "../ai/aiIntegrationService";
 import type { EpisodicSummaryService } from "../memory/episodicSummaryService";
 import type { KnowledgeCaptureService } from "../memory/knowledgeCaptureService";
@@ -810,7 +809,6 @@ export function createOrchestratorService({
   episodicSummaryService,
   proceduralLearningService,
   knowledgeCaptureService,
-  externalMcpService,
   onEvent
 }: {
   db: AdeDb;
@@ -828,7 +826,6 @@ export function createOrchestratorService({
   episodicSummaryService?: EpisodicSummaryService | null;
   proceduralLearningService?: ProceduralLearningService | null;
   knowledgeCaptureService?: KnowledgeCaptureService | null;
-  externalMcpService?: ReturnType<typeof createExternalMcpService> | null;
   onEvent?: (event: OrchestratorEvent) => void;
 }) {
   const adapters = new Map<OrchestratorExecutorKind, OrchestratorExecutorAdapter>();
@@ -836,7 +833,6 @@ export function createOrchestratorService({
     projectRoot,
     workspaceRoot: projectRoot,
     agentChatService,
-    externalMcpService,
   });
   for (const kind of ["claude", "codex", "cursor", "opencode"] as const) {
     adapters.set(kind, sharedAdapter);
@@ -7818,7 +7814,7 @@ export function createOrchestratorService({
         state: status === "failed" ? "released" : "released"
       });
 
-      // Clean up temporary MCP config files for this worker.
+      // Clean up temporary worker runtime files for this worker.
       const laneWorktreeRow = step.laneId
         ? db.get<{ worktree_path: string | null }>(
             `select worktree_path from lanes where id = ? and project_id = ? limit 1`,
@@ -7828,7 +7824,7 @@ export function createOrchestratorService({
       const laneWorktreePath = typeof laneWorktreeRow?.worktree_path === "string" && laneWorktreeRow.worktree_path.trim().length > 0
         ? laneWorktreeRow.worktree_path.trim()
         : null;
-      cleanupMcpConfigFile(projectRoot, args.attemptId, laneWorktreePath);
+      cleanupWorkerRuntimeFiles(projectRoot, args.attemptId, laneWorktreePath);
 
       // Sync worker checkpoint file to DB for all completion states
       if (step.laneId) {

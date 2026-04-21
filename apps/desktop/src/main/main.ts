@@ -1,6 +1,7 @@
 import { app, BrowserWindow, dialog, nativeImage, protocol, shell } from "electron";
 import path from "node:path";
-type NodePtyType = typeof import("node-pty");
+import type * as NodePty from "node-pty";
+type NodePtyType = typeof NodePty;
 import { registerIpc } from "./services/ipc/registerIpc";
 import { createFileLogger } from "./services/logging/logger";
 import { openKvDb } from "./services/state/kvDb";
@@ -55,16 +56,16 @@ import type { PortLease, ProjectInfo } from "../shared/types";
 import type { AppContext } from "./services/ipc/registerIpc";
 import fs from "node:fs";
 import net from "node:net";
-import { createMcpRequestHandler } from "../../../mcp-server/src/mcpServer";
+import { createAdeRpcRequestHandler } from "../../../ade-cli/src/adeRpcServer";
 import {
   createEventBuffer,
-  type AdeMcpRuntime,
-  type AdeMcpPaths,
-} from "../../../mcp-server/src/bootstrap";
-import { startJsonRpcServer } from "../../../mcp-server/src/jsonrpc";
-import type { JsonRpcTransport } from "../../../mcp-server/src/transport";
+  type AdeRuntime,
+  type AdeRuntimePaths,
+} from "../../../ade-cli/src/bootstrap";
+import { startJsonRpcServer, type JsonRpcTransport } from "../../../ade-cli/src/jsonrpc";
 import { createKeybindingsService } from "./services/keybindings/keybindingsService";
 import { createAgentToolsService } from "./services/agentTools/agentToolsService";
+import { createAdeCliService } from "./services/cli/adeCliService";
 import { createDevToolsService } from "./services/devTools/devToolsService";
 import { createOnboardingService } from "./services/onboarding/onboardingService";
 import { createAutomationService } from "./services/automations/automationService";
@@ -117,8 +118,6 @@ import { createOrchestratorService } from "./services/orchestrator/orchestratorS
 import { createAiOrchestratorService } from "./services/orchestrator/aiOrchestratorService";
 import { createMissionBudgetService } from "./services/orchestrator/missionBudgetService";
 import { transitionMissionStatus } from "./services/orchestrator/missionLifecycle";
-import { createExternalMcpService } from "./services/externalMcp/externalMcpService";
-import { createExternalConnectionAuthService } from "./services/externalMcp/externalConnectionAuthService";
 import { createComputerUseArtifactBrokerService } from "./services/computerUse/computerUseArtifactBrokerService";
 import { createSyncService } from "./services/sync/syncService";
 import { createAutoUpdateService } from "./services/updates/autoUpdateService";
@@ -738,7 +737,7 @@ app.whenReady().then(async () => {
   const projectContexts = new Map<string, AppContext>();
   const projectInitPromises = new Map<string, Promise<AppContext>>();
   const closeContextPromises = new Map<string, Promise<void>>();
-  const mcpSocketCleanupByRoot = new Map<string, () => void>();
+  const rpcSocketCleanupByRoot = new Map<string, () => void>();
   const projectLastActivatedAt = new Map<string, number>();
   const MAX_WARM_IDLE_PROJECT_CONTEXTS = 1;
   let activeProjectRoot: string | null = null;
@@ -865,11 +864,11 @@ app.whenReady().then(async () => {
     }
 
     try {
-      if ((ctx.getActiveMcpConnectionCount?.() ?? 0) > 0) {
+      if ((ctx.getActiveRpcConnectionCount?.() ?? 0) > 0) {
         return true;
       }
     } catch (error) {
-      return keepAliveOnProbeFailure("mcp_connections", error);
+      return keepAliveOnProbeFailure("rpc_connections", error);
     }
 
     try {
@@ -1018,6 +1017,14 @@ app.whenReady().then(async () => {
     );
     const keybindingsService = createKeybindingsService({ db });
     const agentToolsService = createAgentToolsService({ logger });
+    const adeCliService = createAdeCliService({
+      isPackaged: app.isPackaged,
+      resourcesPath: process.resourcesPath,
+      userDataPath: app.getPath("userData"),
+      appExecutablePath: process.execPath,
+      logger,
+    });
+    adeCliService.applyToProcessEnv();
     const devToolsService = createDevToolsService({ logger });
 
     const project = toProjectInfo(projectRoot, baseRef);
@@ -1458,9 +1465,6 @@ app.whenReady().then(async () => {
     > | null = null;
     let agentChatServiceRef: ReturnType<typeof createAgentChatService> | null =
       null;
-    let externalMcpServiceRef: ReturnType<
-      typeof createExternalMcpService
-    > | null = null;
     const queueLandingService = createQueueLandingService({
       db,
       logger,
@@ -1557,12 +1561,12 @@ app.whenReady().then(async () => {
     const ptyService = createPtyService({
       projectRoot,
       transcriptsDir: adePaths.transcriptsDir,
-      chatSessionsDir: adePaths.chatSessionsDir,
       laneService,
       sessionService,
       aiIntegrationService,
       projectConfigService,
       getLaneRuntimeEnv,
+      getAdeCliAgentEnv: adeCliService.agentEnv,
       logger,
       broadcastData: (ev) => {
         broadcast(IPC.ptyData, ev);
@@ -1928,6 +1932,7 @@ app.whenReady().then(async () => {
       ctoStateService,
       logger,
       appVersion: app.getVersion(),
+      getAdeCliAgentEnv: adeCliService.agentEnv,
       onEvent: (event) => {
         aiOrchestratorServiceRef?.onAgentChatEvent(event);
         openclawBridgeServiceRef?.onAgentChatEvent(event);
@@ -1950,7 +1955,6 @@ app.whenReady().then(async () => {
         }
       },
       onSessionEnded: onTrackedSessionEnded,
-      getExternalMcpConfigs: () => externalMcpServiceRef?.getRawConfigs() ?? [],
       getDirtyFileTextForPath: async (absPath: string) => {
         const trimmed = absPath.trim();
         if (!trimmed) return undefined;
@@ -2195,26 +2199,6 @@ app.whenReady().then(async () => {
       "ADE_ENABLE_MEMORY_FILE_SYNC",
     );
 
-    const externalConnectionAuthService = createExternalConnectionAuthService({
-      adeDir: adePaths.adeDir,
-      logger,
-    });
-    const externalMcpService = createExternalMcpService({
-      projectRoot,
-      adeDir: adePaths.adeDir,
-      db,
-      projectId,
-      logger,
-      workerAgentService,
-      ctoStateService,
-      missionService,
-      workerBudgetService,
-      missionBudgetService,
-      authService: externalConnectionAuthService,
-      onEvent: (event) =>
-        emitProjectEvent(projectRoot, IPC.externalMcpEvent, event),
-    });
-    externalMcpServiceRef = externalMcpService;
     scheduleBackgroundProjectTask(
       "lanes.port_allocation_recovery",
       () => recoverPortAllocations(),
@@ -2225,18 +2209,6 @@ app.whenReady().then(async () => {
       },
       8_000,
       "ADE_ENABLE_PORT_ALLOCATION_RECOVERY",
-    );
-
-    scheduleBackgroundProjectTask(
-      "external_mcp.start",
-      () => externalMcpService.start(),
-      (error) => {
-        logger.warn("external_mcp.start_failed", {
-          error: error instanceof Error ? error.message : String(error),
-        });
-      },
-      0,
-      "ADE_ENABLE_EXTERNAL_MCP",
     );
 
     const openclawBridgeService = createOpenclawBridgeService({
@@ -2281,7 +2253,6 @@ app.whenReady().then(async () => {
       episodicSummaryService,
       proceduralLearningService,
       knowledgeCaptureService,
-      externalMcpService,
       onEvent: (event) => {
         aiOrchestratorServiceRef?.onOrchestratorRuntimeEvent(event);
         openclawBridgeServiceRef?.onOrchestratorEvent(event);
@@ -2296,7 +2267,6 @@ app.whenReady().then(async () => {
         projectRoot,
         missionService,
         orchestratorService,
-        externalMcpService,
         logger,
         onEvent: (payload) =>
           emitProjectEvent(projectRoot, IPC.computerUseEvent, payload),
@@ -2615,7 +2585,6 @@ app.whenReady().then(async () => {
       adeProjectService,
       automationService,
       secretService: automationSecretService,
-      externalMcpService,
       logger,
       onEvent: (event) =>
         emitProjectEvent(projectRoot, IPC.projectStateEvent, event),
@@ -2851,14 +2820,14 @@ app.whenReady().then(async () => {
     );
     writeGlobalState(globalStatePath, state);
 
-    // ── MCP Socket Server (embedded mode) ─────────────────────────
-    const mcpEventBuffer = createEventBuffer();
-    const mcpRuntime: AdeMcpRuntime = {
+    // ── ADE RPC Socket Server (embedded mode) ─────────────────────
+    const rpcEventBuffer = createEventBuffer();
+    const rpcRuntime: AdeRuntime = {
       projectRoot,
       workspaceRoot: projectRoot,
       projectId,
       project,
-      paths: adePaths as unknown as AdeMcpPaths,
+      paths: adePaths as unknown as AdeRuntimePaths,
       logger,
       db,
       laneService,
@@ -2884,30 +2853,29 @@ app.whenReady().then(async () => {
       linearIngressService,
       linearRoutingService,
       processService,
-      externalMcpService,
       computerUseArtifactBrokerService,
       orchestratorService,
       aiOrchestratorService,
       issueInventoryService,
-      eventBuffer: mcpEventBuffer,
+      eventBuffer: rpcEventBuffer,
       dispose: () => {}, // desktop manages service lifecycle
     };
 
-    // When ADE_MCP_SOCKET_PATH is set, derive a per-project socket path from
+    // When ADE_RPC_SOCKET_PATH is set, derive a per-project socket path from
     // the override so each project context gets its own socket and avoids
     // EADDRINUSE. The first context uses the env path as-is for compatibility;
     // subsequent contexts append a project-root hash suffix.
-    const envSocketOverride = process.env.ADE_MCP_SOCKET_PATH?.trim();
-    const mcpSocketPath = envSocketOverride
+    const envSocketOverride = process.env.ADE_RPC_SOCKET_PATH?.trim();
+    const rpcSocketPath = envSocketOverride
       ? projectContexts.size === 0
         ? envSocketOverride
         : `${envSocketOverride}.${Buffer.from(normalizeProjectRoot(projectRoot)).toString("base64url").slice(0, 8)}`
       : adePaths.socketPath;
-    const activeMcpConnections = new Set<net.Socket>();
+    const activeRpcConnections = new Set<net.Socket>();
 
-    const destroyActiveMcpConnections = (): void => {
-      for (const conn of activeMcpConnections) {
-        activeMcpConnections.delete(conn);
+    const destroyActiveRpcConnections = (): void => {
+      for (const conn of activeRpcConnections) {
+        activeRpcConnections.delete(conn);
         try {
           conn.destroy();
         } catch {
@@ -2915,18 +2883,18 @@ app.whenReady().then(async () => {
         }
       }
     };
-    mcpSocketCleanupByRoot.set(
+    rpcSocketCleanupByRoot.set(
       normalizeProjectRoot(projectRoot),
-      destroyActiveMcpConnections,
+      destroyActiveRpcConnections,
     );
 
     // Clean stale socket from prior crash
     try {
-      fs.unlinkSync(mcpSocketPath);
+      fs.unlinkSync(rpcSocketPath);
     } catch {}
 
-    const mcpSocketServer = net.createServer((conn) => {
-      activeMcpConnections.add(conn);
+    const rpcSocketServer = net.createServer((conn) => {
+      activeRpcConnections.add(conn);
       let stopped = false;
       const transport: JsonRpcTransport = {
         onData(callback) {
@@ -2940,16 +2908,16 @@ app.whenReady().then(async () => {
         },
       };
       let stop: ReturnType<typeof startJsonRpcServer> | null = null;
-      const mcpHandler = createMcpRequestHandler({
-        runtime: mcpRuntime,
+      const rpcHandler = createAdeRpcRequestHandler({
+        runtime: rpcRuntime,
         serverVersion: app.getVersion(),
-        onToolsListChanged: () => {
-          stop?.notify("notifications/tools/list_changed", {});
+        onActionsListChanged: () => {
+          stop?.notify("ade/actions/list_changed", {});
         },
       });
-      stop = startJsonRpcServer(mcpHandler, transport, { nonFatal: true });
+      stop = startJsonRpcServer(rpcHandler, transport, { nonFatal: true });
       const removeConnection = (): void => {
-        activeMcpConnections.delete(conn);
+        activeRpcConnections.delete(conn);
       };
       conn.once("close", removeConnection);
       conn.once("end", removeConnection);
@@ -2959,26 +2927,26 @@ app.whenReady().then(async () => {
           stopped = true;
           stop?.();
         }
-        mcpHandler.dispose();
+        rpcHandler.dispose();
       });
       conn.on("error", () => {}); // ignore connection errors
     });
-    await measureProjectInitStep("mcp.socket_server_start", () =>
+    await measureProjectInitStep("rpc.socket_server_start", () =>
       new Promise<void>((resolve, reject) => {
         const handleListening = () => {
-          mcpSocketServer.off("error", handleError);
+          rpcSocketServer.off("error", handleError);
           resolve();
         };
         const handleError = (error: Error) => {
-          mcpSocketServer.off("listening", handleListening);
+          rpcSocketServer.off("listening", handleListening);
           reject(error);
         };
-        mcpSocketServer.once("listening", handleListening);
-        mcpSocketServer.once("error", handleError);
-        mcpSocketServer.listen(mcpSocketPath);
+        rpcSocketServer.once("listening", handleListening);
+        rpcSocketServer.once("error", handleError);
+        rpcSocketServer.listen(rpcSocketPath);
       }),
     );
-    logger.info("mcp.socket_server_started", { socketPath: mcpSocketPath });
+    logger.info("rpc.socket_server_started", { socketPath: rpcSocketPath });
 
     return {
       db,
@@ -2987,10 +2955,11 @@ app.whenReady().then(async () => {
       projectId,
       adeDir: adePaths.adeDir,
       hasUserSelectedProject: userSelectedProject,
-      getActiveMcpConnectionCount: () => activeMcpConnections.size,
+      getActiveRpcConnectionCount: () => activeRpcConnections.size,
       disposeHeadWatcher,
       keybindingsService,
       agentToolsService,
+      adeCliService,
       devToolsService,
       onboardingService,
       laneService,
@@ -3062,11 +3031,9 @@ app.whenReady().then(async () => {
       linearRoutingService,
       linearIngressService,
       linearSyncService,
-      externalConnectionAuthService,
-      externalMcpService,
       configReloadService,
-      mcpSocketServer,
-      mcpSocketPath,
+      rpcSocketServer,
+      rpcSocketPath,
     };
   };
 
@@ -3089,10 +3056,17 @@ app.whenReady().then(async () => {
       hasUserSelectedProject: false,
       projectId: "",
       adeDir: "",
-      getActiveMcpConnectionCount: () => 0,
+      getActiveRpcConnectionCount: () => 0,
       disposeHeadWatcher: () => {},
       keybindingsService: null,
       agentToolsService: null,
+      adeCliService: createAdeCliService({
+        isPackaged: app.isPackaged,
+        resourcesPath: process.resourcesPath,
+        userDataPath: app.getPath("userData"),
+        appExecutablePath: process.execPath,
+        logger,
+      }),
       devToolsService: null,
       onboardingService: null,
       laneService: null,
@@ -3160,8 +3134,6 @@ app.whenReady().then(async () => {
       linearRoutingService: null,
       linearIngressService: null,
       linearSyncService: null,
-      externalConnectionAuthService: null,
-      externalMcpService: null,
       configReloadService: null,
     } as unknown as AppContext;
   };
@@ -3172,19 +3144,19 @@ app.whenReady().then(async () => {
       ctx.project.rootPath.trim().length > 0
         ? normalizeProjectRoot(ctx.project.rootPath)
         : null;
-    // Tear down MCP socket BEFORE any service disposal so in-flight MCP requests
+    // Tear down the ADE RPC socket BEFORE service disposal so in-flight requests
     // do not race with services that are being shut down.
     try {
       if (normalizedRoot) {
-        mcpSocketCleanupByRoot.get(normalizedRoot)?.();
-        mcpSocketCleanupByRoot.delete(normalizedRoot);
+        rpcSocketCleanupByRoot.get(normalizedRoot)?.();
+        rpcSocketCleanupByRoot.delete(normalizedRoot);
       }
-      ctx.mcpSocketServer?.close();
+      ctx.rpcSocketServer?.close();
     } catch {
       // ignore
     }
     try {
-      if (ctx.mcpSocketPath) fs.unlinkSync(ctx.mcpSocketPath);
+      if (ctx.rpcSocketPath) fs.unlinkSync(ctx.rpcSocketPath);
     } catch {
       // ignore
     }
@@ -3262,16 +3234,6 @@ app.whenReady().then(async () => {
     }
     try {
       ctx.oauthRedirectService?.dispose?.();
-    } catch {
-      // ignore
-    }
-    try {
-      await ctx.externalMcpService?.dispose?.();
-    } catch {
-      // ignore
-    }
-    try {
-      ctx.externalConnectionAuthService?.dispose?.();
     } catch {
       // ignore
     }

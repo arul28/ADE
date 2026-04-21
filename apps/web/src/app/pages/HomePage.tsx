@@ -75,9 +75,9 @@ const ALSO_BUILT_IN = [
   },
   {
     icon: Layers,
-    label: "35+ MCP tools",
+    label: "35+ ADE actions",
     detail: "Built-in server for file ops, git, search, and more — desktop and headless paths.",
-    docsPath: "/configuration/mcp-servers",
+    docsPath: "/configuration/settings",
   },
 ] as const;
 

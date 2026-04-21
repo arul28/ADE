@@ -143,7 +143,7 @@ handlers live in `apps/desktop/src/main/services/ipc/registerIpc.ts`.
 - **Pending input derivation.** The renderer's `derivePendingInputRequests`
   in `pendingInput.ts` must handle: (a) legacy `askUser` tool calls, (b)
   Claude `AskUserQuestion` SDK events, (c) Codex `permissions` requests,
-  (d) Codex MCP elicitation responses (JSON-schema coercion), (e)
+  (d) Codex ADE CLI elicitation responses (JSON-schema coercion), (e)
   explicit `pending_input_resolved` events, and (f) `done` events which
   clear approvals but preserve plan-approval/question inputs when the
   turn was `completed`.
@@ -155,13 +155,13 @@ handlers live in `apps/desktop/src/main/services/ipc/registerIpc.ts`.
   identity session undergoes context compaction, the service calls
   `refreshReconstructionContext()` to re-inject persona + core memory +
   protocols. Missing this path loses CTO identity mid-session.
-- **MCP approval bypass during auto-compaction.** The Claude runtime
+- **ADE CLI approval bypass during auto-compaction.** The Claude runtime
   sets `compactionInProgress` when the SDK `PreCompact` hook fires and
   keeps it set for 60 s (the SDK emits no `PostCompact` signal). While
-  the flag is true, `canUseTool` auto-approves MCP tools (notably
+  the flag is true, `canUseTool` auto-approves ADE CLI tools (notably
   `memory_add`) so the compaction flush can persist memories without
   blocking on an approval prompt that no user is present to answer.
-  Non-MCP tools still go through the normal approval gate.
+  Non-ADE CLI tools still go through the normal approval gate.
 - **Transcript persistence.** Sessions persist version-2 state under the
   `.ade` layout. Re-derivation goes through `sessionRecovery.ts`;
   changing the on-disk format without bumping the version silently

@@ -31,9 +31,9 @@ ADE ships as four coordinated apps:
 │  │─── spawns ─────────────────────┐      │                          │
 │  │                                ▼      │                          │
 │  │                ┌──────────────────────┐                          │
-│  │                │ apps/mcp-server      │                          │
+│  │                │ apps/ade-cli      │                          │
 │  │                │ (JSON-RPC over stdio │◀──── headless mode ──────┤
-│  │                │  or .ade/mcp.sock)   │                          │
+│  │                │  or .ade/ade.sock)   │                          │
 │  │                └──────────────────────┘                          │
 │  │                                                                   │
 │  └── spawns CLI runtimes:                                             │
@@ -75,19 +75,26 @@ Build outputs (configured in `apps/desktop/tsup.config.ts`):
 | Entry | Source | Purpose |
 |-------|--------|---------|
 | `main/main.cjs` | `src/main/main.ts` | Electron main process |
-| `main/adeMcpProxy.cjs` | `src/main/adeMcpProxy.ts` | Bundled MCP proxy binary (packaged builds). Runs under `ELECTRON_RUN_AS_NODE=1`, relays stdio over `.ade/mcp.sock`, injects worker identity into the MCP `initialize` handshake. |
-| `main/packagedRuntimeSmoke.cjs` | `src/main/packagedRuntimeSmoke.ts` | Post-package smoke test for PTY spawn, Claude SDK init, Codex availability, MCP probe. |
+| `main/packagedRuntimeSmoke.cjs` | `src/main/packagedRuntimeSmoke.ts` | Post-package smoke test for PTY spawn, Claude SDK init, Codex availability, and ADE CLI readiness. |
 | `preload/preload.cjs` | `src/preload/preload.ts` | Renderer bridge. |
 
-### 2.2 MCP server (`apps/mcp-server/`)
+### 2.2 ADE CLI (`apps/ade-cli/`)
 
-A standalone Node process that exposes ADE tool/resource surfaces over the Model Context Protocol (JSON-RPC 2.0).
+A standalone Node CLI that exposes ADE actions over a private JSON-RPC
+bridge.
 
-- **Headless mode** (`src/index.ts`) — agents spawned directly connect via stdio. Used in CI, development, or whenever a worker process needs its own MCP endpoint and no `.ade/mcp.sock` is present.
-- **Embedded (proxy) mode** — packaged desktop builds spawn `adeMcpProxy.cjs` which relays stdio to the desktop's Unix socket (`.ade/mcp.sock`). The proxy injects mission/run/step/attempt/chat-session identity resolved from environment variables (`ADE_MISSION_ID`, `ADE_RUN_ID`, `ADE_STEP_ID`, `ADE_ATTEMPT_ID`, `ADE_CHAT_SESSION_ID`, `ADE_DEFAULT_ROLE`, `ADE_COMPUTER_USE_*`) into the MCP handshake.
-- **Session identity** — every MCP session resolves a role through: env var → `identity.role` in handshake params → `external` default. Role vocabulary: `cto`, `orchestrator`, `agent`, `external`, `evaluator`. External sessions get a restrictive default computer-use policy.
-- **Tool surface** (baseline): `spawn_agent`, `read_context`, `create_lane`, `check_conflicts`, `merge_lane`, `ask_user`, `run_tests`, `get_lane_status`, `list_lanes`, `commit_changes`, plus memory tools and computer-use tools.
-- **Launch resolution** — `resolveDesktopAdeMcpLaunch()` in `apps/desktop/src/main/services/runtime/adeMcpLaunch.ts` picks between three candidate launch modes: `bundled_proxy` (packaged), `headless_built` (dev/CI with pre-built output), `headless_source` (dev, `npx tsx`).
+- **Socket mode** — when ADE desktop is running, `ade` connects to the
+  project socket at `.ade/ade.sock`.
+- **Headless mode** — with `--headless`, the CLI bootstraps the same
+  project services directly from the repository.
+- **Session identity** — the CLI resolves caller role from ADE context
+  environment variables and command flags. Role vocabulary: `cto`,
+  `orchestrator`, `agent`, `external`, `evaluator`.
+- **Action surface** — first-class command families cover lanes, git,
+  diffs, files, PRs, path-to-merge, runs, shells, chats, agents, CTO,
+  Linear, tests, proof, memory, settings, and a generic
+  `ade actions run <domain.action>` escape hatch for every registered
+  ADE service action.
 
 ### 2.3 Web app (`apps/web/`)
 
@@ -171,7 +178,7 @@ Types for these tables are split into domain modules under `apps/desktop/src/sha
 │   ├── templates/               # Lane/mission templates (tracked when human-authored)
 │   ├── skills/                  # Exported skill markdown (tracked when human-authored)
 │   ├── workflows/linear/        # Linear workflow config (tracked when present)
-│   ├── mcp.sock                 # Unix socket for embedded MCP (runtime)
+│   ├── ade.sock                 # Unix socket for ADE RPC (runtime)
 │   └── secrets/                 # Machine-local secret material (ignored)
 │       ├── github/*.bin         # safeStorage-encrypted tokens
 │       ├── sync-site-id
@@ -200,14 +207,14 @@ Types for these tables are split into domain modules under `apps/desktop/src/sha
 
 ## 4. AI Integration Layer
 
-Service entry points live under `apps/desktop/src/main/services/ai/`. The subsystem has four parts: provider-routed execution, permission profiles, MCP-backed tool surfaces, and a deterministic orchestrator on top of those.
+Service entry points live under `apps/desktop/src/main/services/ai/`. The subsystem has four parts: provider-routed execution, permission profiles, ADE CLI-backed tool surfaces, and a deterministic orchestrator on top of those.
 
 ### 4.1 Provider routing
 
 - **Router** — `aiIntegrationService.ts` resolves a task → model → provider class and dispatches.
 - **Model registry** — `apps/desktop/src/shared/modelRegistry.ts` is the single source of truth. Each `ModelDescriptor` carries identity (`id`, `shortId`, `providerRoute`, `providerModelId`), capabilities, pricing, context sizing, auth type (`cli-subscription`, `api-key`, `openrouter`, `local`), and optional `harnessProfile`/`discoverySource` for safety metadata.
 - **Classes**:
-  - **CLI-wrapped** (Claude CLI via `@anthropic-ai/claude-agent-sdk`, Codex CLI via `@openai/codex-sdk`) — spawned as subprocesses; authentication inherits from the user's own CLI login. MCP attached via `--mcp-config` (or the bundled proxy in packaged builds).
+  - **CLI-wrapped** (Claude CLI via `@anthropic-ai/claude-agent-sdk`, Codex CLI via `@openai/codex-sdk`) — spawned as subprocesses; authentication inherits from the user's own CLI login. ADE context is exposed through environment variables, and agents can call back into ADE with the `ade` CLI.
   - **API-key / OpenRouter** (Anthropic, OpenAI, Google, Mistral, DeepSeek, xAI, Groq, Together AI, OpenRouter) — routed through the **OpenCode server** (`opencode` binary, user-installed or bundled). Discovery via `openCodeInventory.ts`; replaces dynamic portion of the registry.
   - **Local** (Ollama, LM Studio, vLLM) — OpenAI-compatible local endpoints through OpenCode. Discovery via `localModelDiscovery.ts`.
 - **Detection pipeline**:
@@ -215,7 +222,7 @@ Service entry points live under `apps/desktop/src/main/services/ai/`. The subsys
   - `providerCredentialSources.ts` — reads Claude OAuth credentials, Codex tokens, macOS Keychain.
   - `providerConnectionStatus.ts` — builds the `AiProviderConnections` snapshot surfaced to the renderer.
   - `providerRuntimeHealth.ts` — per-provider health (`ready`, `auth-failed`, `runtime-failed`).
-  - `claudeRuntimeProbe.ts` — lightweight SDK probe on force-refresh to confirm the Claude CLI + MCP path can actually start.
+  - `claudeRuntimeProbe.ts` — lightweight SDK probe on force-refresh to confirm the Claude CLI + ADE CLI path can actually start.
   - `modelsDevService.ts` — non-blocking 6-hour refresh that enriches pricing and context-window metadata in the registry from `models.dev`.
 - **Fallback**: if no usable provider is present, ADE runs in **guest mode** — deterministic features (packs, diffs, conflicts) continue; AI surfaces are disabled with explanatory UI.
 
@@ -244,7 +251,7 @@ Agent tools are split by domain:
 | `ai/tools/editFile.ts` | Edit-path tool wired to ADE-controlled write flow. |
 | `ai/tools/systemPrompt.ts` | Base system prompt; memory usage instructions baked in. |
 
-**MCP is the cross-process tool surface.** Workers spawned as CLI children connect to the ADE MCP server (embedded or headless) and see an ADE-owned toolset layered on top of their native provider tools.
+**ADE CLI is the cross-process action surface.** Workers spawned as CLI children inherit ADE context env vars and can call the `ade` command to invoke ADE-owned actions layered on top of their native provider tools.
 
 **Turn classification** (`universalTools.ts`): the chat service classifies each user turn as `required` (mentions fix/debug/implement/refactor → memory search mandatory before mutations), `soft` (explain/review/design → memory auto-injected but not gated), or `none` (meta/greeting → no injection/gating).
 
@@ -374,7 +381,6 @@ Every service lives under `apps/desktop/src/main/services/<domain>/`. Summary:
 | `cto/` | `ctoStateService.ts`, `workerAgentService.ts`, `workerBudgetService.ts`, `workerHeartbeatService.ts`, `linearSyncService.ts`, `linearIngressService.ts`, `linearOAuthService.ts`, `linearRoutingService.ts`, `linearDispatcherService.ts`, `linearCloseoutService.ts`, `openclawBridgeService.ts`, `flowPolicyService.ts` | CTO identity + core memory; worker agents; Linear sync/ingress/OAuth/routing/dispatcher/closeout; OpenClaw bridge. |
 | `devTools/` | `devToolsService.ts` | Probe for git + `gh` CLI availability. |
 | `diffs/` | `diffService.ts` | Diff computation for file panes. |
-| `externalMcp/` | `externalMcpService.ts`, `externalConnectionAuthService.ts` | External MCP server connections (opt-in). |
 | `feedback/` | `feedbackReporterService.ts` | In-app feedback reporting. Two-stage: `prepareDraft` generates a structured issue title + labels (AI-assisted when a model is selected, deterministic fallback otherwise) so the user can review before posting; `submitPreparedDraft` files the GitHub issue. Each submission records `generationMode` and a `generationWarning` so the UI can flag deterministic drafts. |
 | `files/` | `fileService.ts`, `fileWatcherService.ts`, `fileSearchIndexService.ts` | Workspace file tree, read/write, watch, index. |
 | `git/` | `git.ts`, `gitOperationsService.ts`, `gitConflictState.ts` | Low-level git runner, high-level lane-scoped ops, conflict state queries. |
@@ -394,7 +400,7 @@ Every service lives under `apps/desktop/src/main/services/<domain>/`. Summary:
 | `projects/` | `adeProjectService.ts`, `configReloadService.ts`, `projectService.ts`, `logIntegrityService.ts`, `recentProjectSummary.ts`, `projectBrowserService.ts`, `projectDetailService.ts` | Project detection + `.ade` repair/bootstrap, reload on config change, recent-project metadata. `projectBrowserService` is the in-app directory autocomplete used by the Command Palette project browser (typed-path completion, `.git` detection, home expansion, system-picker fallback); `projectDetailService` returns repo metadata (branch, dirty count, ahead/behind, last commit, README excerpt, language mix, lane count, last-opened) for the palette's preview pane. |
 | `prs/` | `prService.ts`, `prPollingService.ts`, `prSummaryService.ts`, `queueLandingService.ts`, `issueInventoryService.ts`, `prIssueResolver.ts`, `prRebaseResolver.ts`, `integrationPlanning.ts`, `integrationValidation.ts` | PR CRUD, polling (with per-PR `last_polled_at` cursor), AI summary cache keyed by `(prId, head_sha)`, stacked-queue landing, issue inventory, AI-assisted resolution, integration planning. |
 | `pty/` | `ptyService.ts` | `node-pty` spawn, PTY I/O bridging, transcript writing. |
-| `runtime/` | `adeMcpLaunch.ts`, `tempCleanupService.ts` | MCP launch resolver (bundled proxy/headless/source), temp cleanup. |
+| `runtime/` | `tempCleanupService.ts` | Runtime temp cleanup. |
 | `sessions/` | `sessionService.ts`, `sessionDeltaService.ts` | Terminal session CRUD, post-session delta computation. |
 | `shared/` | `utils.ts`, `queueRebase.ts`, `packLegacyUtils.ts`, `transcriptInsights.ts` | Cross-domain utilities. |
 | `state/` | `kvDb.ts`, `crsqliteExtension.ts`, `globalState.ts`, `projectState.ts`, `onConflictAudit.ts` | SQLite schema + open, CRR extension loader, global state file, per-project state init. |
@@ -405,7 +411,7 @@ Every service lives under `apps/desktop/src/main/services/<domain>/`. Summary:
 
 Startup sequencing: every background service goes through `scheduleBackgroundProjectTask()` in `main.ts`, which provides explicit labels, `ADE_ENABLE_*` env gates, `project.startup_task_begin`/`_done`/`_enabled`/`_skipped` telemetry, and per-task delays. Integrations stay **dormant-until-configured**.
 
-Project-init step timing goes through `measureProjectInitStep(step, task)` — a wrapper that logs `project.init_step { projectRoot, step, durationMs }` around each hot-path operation (`db_open`, `lane.ensure_primary`, `mcp.socket_server_start`, `memory.files.initial_sync`, `sync.initialize`, etc.) so cold-start latency shows up in the logs by phase. The memory-file mirror sync and sync-service initialization are now scheduled through `scheduleBackgroundProjectTask` rather than awaited inline, gated by `ADE_ENABLE_MEMORY_FILE_SYNC` and `ADE_ENABLE_SYNC_INIT` respectively (both default-on).
+Project-init step timing goes through `measureProjectInitStep(step, task)` — a wrapper that logs `project.init_step { projectRoot, step, durationMs }` around each hot-path operation (`db_open`, `lane.ensure_primary`, `ade_rpc.socket_server_start`, `memory.files.initial_sync`, `sync.initialize`, etc.) so cold-start latency shows up in the logs by phase. The memory-file mirror sync and sync-service initialization are now scheduled through `scheduleBackgroundProjectTask` rather than awaited inline, gated by `ADE_ENABLE_MEMORY_FILE_SYNC` and `ADE_ENABLE_SYNC_INIT` respectively (both default-on).
 
 Shutdown pipeline: `main.ts` owns a single `requestAppShutdown({ reason, exitCode, fastKillFirst?, forceAfterMs? })` path driving a central state machine (`shutdownRequested` → `shutdownPromise` → `shutdownFinalized`). Hooks into `before-quit`, `window close`, `SIGINT`, `SIGTERM`, `process.exit`, `will-quit`, and `uncaughtException` all funnel through it. `runImmediateProcessCleanup()` disposes the orchestrator, automations, tests, processes, PTYs, agent chat runtimes, DB flush, and then calls `shutdownOpenCodeServers()`. A `forceAfterMs` timer (default 8 s, 5 s for signals/uncaught) hard-exits if cleanup hangs. User-initiated quit (main window close or `before-quit`) routes through `confirmQuitWarning()` — a modal dialog that explains that closing will stop OpenCode servers, terminal sessions, and test runs.
 
@@ -515,7 +521,7 @@ Full UI rules: [`docs/architecture/UI_FRAMEWORK.md`](../docs/architecture/UI_FRA
 | Sync site ID | `.ade/secrets/sync-site-id` | Plaintext, never syncs |
 | Sync device ID | `.ade/secrets/sync-device-id` | Plaintext, never syncs |
 | Sync bootstrap token | `.ade/secrets/sync-bootstrap-token` | Plaintext, never syncs |
-| External-MCP secrets | `.ade/local.secret.yaml` | Plaintext, never syncs |
+| External-ADE CLI secrets | `.ade/local.secret.yaml` | Plaintext, never syncs |
 
 ### 8.2 Preload as only cross-boundary surface
 
@@ -547,9 +553,9 @@ webPreferences: {
 
 Every IPC handler **validates** its arguments; invalid args return structured errors, never crash. Every handler has a **30s timeout**. Every handler emits structured tracing.
 
-### 8.3 MCP auth + API-key storage
+### 8.3 ADE CLI auth + API-key storage
 
-- MCP server session identity is resolved from env vars and the `initialize` handshake. External sessions receive the restrictive default computer-use policy (`allowLocalFallback: false`).
+- ADE CLI session identity is resolved from env vars and the `initialize` handshake. External sessions receive the restrictive default computer-use policy (`allowLocalFallback: false`).
 - Role validation: only `cto`, `orchestrator`, `agent`, `external`, `evaluator` accepted.
 - API keys for provider-routed (non-CLI) models are stored via `apiKeyStore.ts`.
 
@@ -558,7 +564,7 @@ Every IPC handler **validates** its arguments; invalid args return structured er
 - **Redaction** (`shared/utils.ts` `redactSecrets()`) scrubs Bearer tokens, OpenAI/Anthropic API keys (`sk-`), GitHub tokens (`ghp_`/`gho_`/`ghu_`/`ghs_`/`ghr_`/`github_pat_`), Slack tokens (`xox*`), AWS access keys (`AKIA`/`ASIA`), and JSON-embedded sensitive key-value pairs before any log write or AI-context serialization.
 - **Sanitization** (`sanitizeStructuredData()`) enforces depth limits, redacts sensitive keys, and truncates oversized arrays/strings.
 - **Bounded AI payloads** — narrative/proposal/PR description calls use `LaneExportStandard` or `LaneExportLite` + `ConflictExportStandard` (token-budgeted), not raw pack dumps or transcript slabs.
-- **Path validation** (`resolvePathWithinRoot()`) resolves symlinks via `realpathSync` before containment checks. Applied to lane env init, coordinator tools, process working dirs, sync artifact paths, MCP context file resolution, computer-use artifact ingestion.
+- **Path validation** (`resolvePathWithinRoot()`) resolves symlinks via `realpathSync` before containment checks. Applied to lane env init, coordinator tools, process working dirs, sync artifact paths, ADE CLI context file resolution, computer-use artifact ingestion.
 - **Config trust**: process/test commands from `ade.yaml` require SHA-256 hash approval before execution. Commands in `local.yaml` are always trusted. Trust stored in `kv` with the config hash as key.
 
 Full surface: [`docs/architecture/SECURITY_AND_PRIVACY.md`](../docs/architecture/SECURITY_AND_PRIVACY.md).
@@ -739,13 +745,13 @@ Full spec: [`docs/architecture/CONTEXT_CONTRACT.md`](../docs/architecture/CONTEX
 
 ### 12.1 ADE is control plane, not executor
 
-ADE does **not** force all backends into one fake runtime abstraction. MCP-native backends stay as MCP; CLI-native backends stay as CLIs. The broker at `apps/desktop/src/main/services/computerUse/computerUseArtifactBrokerService.ts` is the normalization boundary — it ingests raw backend output, produces canonical records, and links owners.
+ADE does **not** force all backends into one fake runtime abstraction. ADE CLI-native backends stay as ADE CLI; CLI-native backends stay as CLIs. The broker at `apps/desktop/src/main/services/computerUse/computerUseArtifactBrokerService.ts` is the normalization boundary — it ingests raw backend output, produces canonical records, and links owners.
 
 ### 12.2 Backends
 
 | Backend style | Example | How ADE connects |
 |---------------|---------|------------------|
-| MCP-native | Ghost OS (macOS control) | As an external MCP server |
+| ADE CLI-native | Ghost OS (macOS control) | As an ADE CLI |
 | CLI-native | agent-browser (web) | CLI invocation + `agentBrowserArtifactAdapter.ts` |
 | Local fallback | ADE-owned (compatibility only) | `localComputerUse.ts` |
 
@@ -809,7 +815,7 @@ Full surface: [`docs/architecture/COMPUTER_USE_ARTIFACT_BROKER.md`](../docs/arch
 
 ### 13.5 Secret isolation
 
-- `.ade/local.secret.yaml` (API keys, external MCP configs), sync site ID, sync device ID, sync bootstrap token: **never sync**.
+- `.ade/local.secret.yaml` (API keys, ADE CLI configs), sync site ID, sync device ID, sync bootstrap token: **never sync**.
 - Each device stores its own pairing secret in OS Keychain.
 - Linear creds, GitHub tokens, provider API keys stay on the host.
 - Commands from non-host devices validated and executed by the host only.
@@ -826,7 +832,7 @@ Full detail: [`docs/architecture/MULTI_DEVICE_SYNC.md`](../docs/architecture/MUL
 ADE/
 ├── apps/
 │   ├── desktop/        # Electron main/preload/renderer (primary product)
-│   ├── mcp-server/     # Headless MCP server (Node, JSON-RPC over stdio)
+│   ├── ade-cli/     # Headless ADE CLI (Node, JSON-RPC over stdio)
 │   ├── web/            # Marketing + download landing (Vite + React)
 │   └── ios/            # Native SwiftUI controller
 ├── docs/
@@ -846,14 +852,14 @@ ADE/
 └── .ade/               # Self-hosted ADE project state (ignored subset)
 ```
 
-Root `package.json` is a thin aggregator: `npm test` runs desktop + mcp-server; `npm run test:ci` runs coverage on desktop + mcp-server.
+Root `package.json` is a thin aggregator: `npm test` runs desktop + ade-cli; `npm run test:ci` runs coverage on desktop + ade-cli.
 
 Per-app scripts:
 
 | App | Key scripts |
 |-----|-------------|
-| `apps/desktop` | `dev`, `build` (tsup + vite), `typecheck`, `test` (vitest), `lint` (ESLint), `dist:mac`, `dist:mac:universal:signed:zip`, `notarize:mac:dmg`, `validate:mac:artifacts`, `rebuild:native`, `version:ci`, `version:release`, `mcp:dev`, `mcp:build`, `mcp:test`. |
-| `apps/mcp-server` | `dev`, `build`, `typecheck`, `test`. |
+| `apps/desktop` | `dev`, `build` (tsup + vite), `typecheck`, `test` (vitest), `lint` (ESLint), `dist:mac`, `dist:mac:universal:signed:zip`, `notarize:mac:dmg`, `validate:mac:artifacts`, `rebuild:native`, `version:ci`, `version:release`, `ade:dev`, `ade:build`, `ade:test`. |
+| `apps/ade-cli` | `dev`, `build`, `typecheck`, `test`. |
 | `apps/web` | `dev`, `build`, `preview`, `typecheck`. |
 | `apps/ios` | Xcode project; tests via `xcodebuild test` / Xcode. |
 
@@ -861,15 +867,15 @@ Per-app scripts:
 
 Stages:
 
-1. **Install** (`install` job) — checkout, setup Node 22, parallel `npm ci` across desktop/mcp-server/web with shared cache keyed on all three lockfiles.
+1. **Install** (`install` job) — checkout, setup Node 22, parallel `npm ci` across desktop/ade-cli/web with shared cache keyed on all three lockfiles.
 2. **Parallel checks**:
    - `secret-scan` — gitleaks on full history.
    - `typecheck-desktop` — `cd apps/desktop && npm run typecheck`.
-   - `typecheck-mcp` — `cd apps/mcp-server && npm run typecheck`.
+   - `typecheck-ade-cli` — `cd apps/ade-cli && npm run typecheck`.
    - `typecheck-web` — `cd apps/web && npm run typecheck`.
    - `lint-desktop` — ESLint on `src/**/*.{ts,tsx}`.
    - `test-desktop` — **8-way shard matrix**: `npx vitest run --shard=${{ matrix.shard }}/8` across shards 1–8.
-   - `test-mcp` — full mcp-server vitest.
+   - `test-ade-cli` — full ade-cli vitest.
    - `build` — all three apps built sequentially after install.
    - `validate-docs` — `node scripts/validate-docs.mjs`.
 3. **Gate** (`ci-pass`) — all required jobs must pass (`if: always()` with failure/cancelled detection).

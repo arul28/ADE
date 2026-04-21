@@ -341,8 +341,8 @@ programmatically:
 | `startPullRequestConvergenceRound` | Launch the next convergence round |
 | `stopPullRequestConvergence` | Stop the active run, interrupt chat session, persist stopped state |
 
-The MCP server also exposes the issue inventory service to external
-tool consumers.
+The ADE CLI exposes the issue inventory service to terminal-capable
+agent workflows.
 
 ## Mobile snapshot
 

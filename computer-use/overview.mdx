@@ -33,7 +33,7 @@ ADE does not perform computer use directly. Instead, it acts as the **control pl
 
 <Tabs>
   <Tab title="Ghost OS (Recommended)">
-    Ghost OS is an external MCP server for full macOS desktop automation. It provides complete control over the desktop environment — browsers, native apps, file dialogs, and system UI.
+    Ghost OS is an external CLI for full macOS desktop automation. It provides complete control over the desktop environment — browsers, native apps, file dialogs, and system UI.
 
     **Capabilities:**
     - Full desktop automation (not just browser)
@@ -41,15 +41,7 @@ ADE does not perform computer use directly. Instead, it acts as the **control pl
     - Multi-display support
     - App-level isolation per mission
 
-    **Connection:** HTTP transport via `.ade/local.secret.yaml`
-
-    ```yaml
-    externalMcp:
-      - name: ghost-os
-        transport: http
-        url: https://ghost-os.local/mcp
-        autoStart: true
-    ```
+    **Connection:** detected from the `ghost` CLI on `PATH`.
 
     <Tip>
     Ghost OS is the recommended backend for mission-critical automation where high reliability and proof coverage are required. Its structured trace format integrates most deeply with ADE's artifact system.
@@ -65,16 +57,7 @@ ADE does not perform computer use directly. Instead, it acts as the **control pl
     - Network request interception
     - Console log capture
 
-    **Connection:** stdio subprocess via `.ade/local.secret.yaml`
-
-    ```yaml
-    externalMcp:
-      - name: agent-browser
-        transport: stdio
-        command: npx
-        args: ["-y", "@agent-browser/cli"]
-        autoStart: true
-    ```
+    **Connection:** detected from the `agent-browser` CLI on `PATH`.
 
     <Note>
     `agent-browser` requires Node.js 18+ and a Chromium installation. ADE will attempt to use the system Chromium or download a compatible version on first launch.

@@ -7,7 +7,6 @@
 import React, { useMemo } from "react";
 import {
   Crown,
-  Database,
   UsersThree,
   Wrench,
   Globe,
@@ -23,7 +22,6 @@ import { MissionThreadMessageList } from "./MissionThreadMessageList";
 import type { Channel } from "./ChatChannelList";
 import { getMissionInterventionOwnerLabel } from "./missionHelpers";
 import type { MissionStateNarrative } from "./missionFeedPresentation";
-import type { ChatMcpSummary } from "../chat/useChatMcpSummary";
 
 // ── Design tokens ──
 const MONO = MONO_FONT;
@@ -58,9 +56,7 @@ export type ChatMessageAreaProps = {
   missionNarrative: MissionStateNarrative | null;
   runtimeSummary: { title: string; detail: string } | null;
   agentRuntimeConfig: MissionAgentRuntimeConfig | null;
-  mcpSummary: ChatMcpSummary | null;
   runControls?: React.ReactNode;
-  onOpenMcpSettings: () => void;
   onApproval: (
     sessionId: string,
     itemId: string,
@@ -84,9 +80,7 @@ export const ChatMessageArea = React.memo(function ChatMessageArea({
   missionNarrative,
   runtimeSummary,
   agentRuntimeConfig,
-  mcpSummary,
   runControls,
-  onOpenMcpSettings,
   onApproval,
 }: ChatMessageAreaProps) {
   const threadInterventionOwnerLabel = useMemo(
@@ -186,23 +180,6 @@ export const ChatMessageArea = React.memo(function ChatMessageArea({
           </div>
           <div className="flex flex-wrap gap-1.5">
             {runControls}
-            {mcpSummary ? (
-              <button
-                type="button"
-                className="inline-flex items-center gap-1.5 px-2 py-0.5 text-[9px] font-bold uppercase tracking-[0.12em] transition-opacity hover:opacity-90"
-                style={{
-                  background: "color-mix(in srgb, var(--chat-accent) 10%, transparent)",
-                  color: TEXT_SECONDARY,
-                  border: "1px solid color-mix(in srgb, var(--chat-accent) 18%, rgba(255,255,255,0.08))",
-                  fontFamily: MONO,
-                }}
-                onClick={onOpenMcpSettings}
-                title="Open ADE-managed MCP settings"
-              >
-                <Database size={10} weight="bold" />
-                {formatMcpBadgeLabel(mcpSummary)}
-              </button>
-            ) : null}
             {agentRuntimeConfig && selectedChannel?.kind !== "worker" ? (
               <>
                 <RuntimeFlagPill label="Parallel" enabled={agentRuntimeConfig.allowParallelAgents} />
@@ -327,12 +304,6 @@ export const ChatMessageArea = React.memo(function ChatMessageArea({
 });
 
 // ── Small helper components ──
-
-function formatMcpBadgeLabel(mcp: ChatMcpSummary): string {
-  if (mcp.connectedCount > 0) return `ADE MCP ${mcp.connectedCount}/${mcp.configuredCount}`;
-  if (mcp.configuredCount > 0) return `ADE MCP ${mcp.configuredCount} configured`;
-  return "ADE MCP";
-}
 
 function workerBadgeLabel(status: string, phaseLabel: string | null): string {
   const suffix = status === "active" ? "worker" : "history";

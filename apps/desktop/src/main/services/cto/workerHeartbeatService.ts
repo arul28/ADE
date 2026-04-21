@@ -652,7 +652,7 @@ export function createWorkerHeartbeatService(args: WorkerHeartbeatServiceArgs) {
       capabilityMode:
         runtimeResult.effectiveSurface === "process" || runtimeResult.effectiveSurface === "openclaw_webhook"
           ? "fallback"
-          : "full_mcp",
+          : "full_tooling",
     });
     args.ctoStateService?.appendSubordinateActivity({
       agentId: agent.id,

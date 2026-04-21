@@ -49,25 +49,20 @@ export function buildCodingAgentSystemPrompt(args: {
   const hasTodoTools = toolNames.includes("TodoWrite") || toolNames.includes("TodoRead");
   const hasWorkflowTools = hasCreateLane || hasCreatePr || hasCaptureScreenshot || hasReportCompletion;
   const guardedLocalReadOnly = permissionMode === "plan";
-  const normalizeToolName = (name: string): string => {
-    const match = name.match(/^mcp__(.+)__(.+)$/);
-    return match?.[2] ?? name;
-  };
   const prIssueToolNames = toolNames.filter((name) => {
-    const normalized = normalizeToolName(name);
     return (
-      normalized === "prGetChecks"
-      || normalized === "prGetReviewComments"
-      || normalized === "prRefreshIssueInventory"
-      || normalized === "prRerunFailedChecks"
-      || normalized === "prReplyToReviewThread"
-      || normalized === "prResolveReviewThread"
-      || normalized === "pr_get_checks"
-      || normalized === "pr_get_review_comments"
-      || normalized === "pr_refresh_issue_inventory"
-      || normalized === "pr_rerun_failed_checks"
-      || normalized === "pr_reply_to_review_thread"
-      || normalized === "pr_resolve_review_thread"
+      name === "prGetChecks"
+      || name === "prGetReviewComments"
+      || name === "prRefreshIssueInventory"
+      || name === "prRerunFailedChecks"
+      || name === "prReplyToReviewThread"
+      || name === "prResolveReviewThread"
+      || name === "pr_get_checks"
+      || name === "pr_get_review_comments"
+      || name === "pr_refresh_issue_inventory"
+      || name === "pr_rerun_failed_checks"
+      || name === "pr_reply_to_review_thread"
+      || name === "pr_resolve_review_thread"
     );
   });
   const hasPrIssueTools = prIssueToolNames.length > 0;
@@ -118,6 +113,9 @@ export function buildCodingAgentSystemPrompt(args: {
       ? "If requirements are genuinely unclear and progress would otherwise stall, ask one concise question with concrete options."
       : "If requirements are unclear, make the safest reasonable assumption and continue. State the assumption in the final answer.",
     "If tool results fail or contradict the current plan, synthesize the finding and adapt rather than repeating the same failing action.",
+    "",
+    "## ADE CLI",
+    "In terminal-capable sessions, use the bundled `ade` command for internal ADE actions. Run `ade doctor` for readiness, `ade actions list --text` for discovery, typed commands such as `ade lanes list --text` or `ade prs checks <pr> --text` first, and `ade actions run ...` as the escape hatch. Use `--json` for structured output and `--text` for readable output.",
     ...(hasMemoryTools
       ? [
           "",
@@ -171,9 +169,9 @@ export function buildCodingAgentSystemPrompt(args: {
           "## Pull Request Tools",
           `Key PR tools in this session: ${prIssueToolNames.join(", ")}.`,
           "Use these tools first when the task is to address PR comments, review threads, or CI failures.",
-          "ADE/MCP PR tools are runtime tool calls, not shell commands. Do not probe them with `which`, `command -v`, `.mcp.json`, or local settings files.",
-          "If the runtime exposes both base and namespaced variants, use the exact identifier shown in the live tool list.",
-          "If a required PR tool is missing, report the misconfiguration immediately instead of spelunking through local MCP wiring or bootstrap code.",
+          "ADE PR tools are runtime tool calls, not shell commands. Do not probe them with `which`, `command -v`, or local settings files.",
+          "Use the exact identifier shown in the live tool list.",
+          "If a required PR tool is missing, report the misconfiguration immediately instead of spelunking through local bootstrap code.",
         ]
       : []),
     "",

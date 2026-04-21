@@ -34,16 +34,6 @@ function buildOpenCodeSnapshot(overrides: Partial<OpenCodeRuntimeSnapshot> = {})
     sharedCount: 1,
     dedicatedCount: 0,
     entries: [],
-    dynamicMcp: {
-      registrationAttempts: 1,
-      fallbackCount: 0,
-      retryCount: 0,
-      successfulRegistrations: 1,
-      lastFallbackAt: null,
-      lastFallbackOwnerKind: null,
-      lastFallbackOwnerId: null,
-      lastFallbackError: null,
-    },
     ...overrides,
   };
 }
@@ -88,30 +78,10 @@ describe("DiagnosticsDashboardSection", () => {
     const initialSnapshot = buildOpenCodeSnapshot({
       sharedCount: 1,
       dedicatedCount: 0,
-      dynamicMcp: {
-        registrationAttempts: 1,
-        fallbackCount: 0,
-        retryCount: 0,
-        successfulRegistrations: 1,
-        lastFallbackAt: null,
-        lastFallbackOwnerKind: null,
-        lastFallbackOwnerId: null,
-        lastFallbackError: null,
-      },
     });
     const nextSnapshot = buildOpenCodeSnapshot({
       sharedCount: 7,
       dedicatedCount: 3,
-      dynamicMcp: {
-        registrationAttempts: 3,
-        fallbackCount: 2,
-        retryCount: 1,
-        successfulRegistrations: 4,
-        lastFallbackAt: "2026-04-08T12:05:00.000Z",
-        lastFallbackOwnerKind: "chat",
-        lastFallbackOwnerId: "session-2",
-        lastFallbackError: "Timed out while registering ADE MCP",
-      },
       entries: [
         {
           id: "entry-2",
@@ -164,7 +134,6 @@ describe("DiagnosticsDashboardSection", () => {
     });
 
     expect(within(screen.getByText("OpenCode dedicated").parentElement as HTMLElement).getByText("3")).toBeTruthy();
-    expect(within(screen.getByText("MCP fallbacks").parentElement as HTMLElement).getByText("2")).toBeTruthy();
 
     await act(async () => {
       resolveSlowSnapshot(initialSnapshot);
@@ -172,6 +141,5 @@ describe("DiagnosticsDashboardSection", () => {
     });
 
     expect(within(screen.getByText("OpenCode dedicated").parentElement as HTMLElement).getByText("3")).toBeTruthy();
-    expect(within(screen.getByText("MCP fallbacks").parentElement as HTMLElement).getByText("2")).toBeTruthy();
   });
 });

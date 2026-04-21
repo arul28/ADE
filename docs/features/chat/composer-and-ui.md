@@ -259,7 +259,7 @@ surface's visual treatment:
 | `title`, `subtitle`, `assistantLabel`, `messagePlaceholder` | Text overrides. |
 | `accentColor` | Accent color used in header, chips, and active-turn indicators. |
 | `chips` | List of `{ label, tone }` chips shown in the header. |
-| `showMcpStatus` | Whether to render the MCP status indicator. |
+| `showMcpStatus` | Whether to render the ADE CLI status indicator. |
 
 CTO and resolver surfaces set `profile: "persistent_identity"` and
 override the chips.

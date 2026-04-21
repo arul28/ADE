@@ -176,6 +176,8 @@ function buildWorkerBaseGuidance(step: OrchestratorStep, graph: OrchestratorRunG
   if (planView) sections.push(planView);
   sections.push(
     [
+      "ADE CLI: In terminal-capable sessions, use the bundled `ade` command for internal ADE actions. Run `ade doctor` for readiness, `ade actions list --text` for discovery, typed commands such as `ade lanes list --text` or `ade prs checks <pr> --text` first, and `ade actions run ...` as the escape hatch. Use `--json` for structured output and `--text` for readable output.",
+      "",
       "Work style:",
       "- If you discover information relevant to other steps (API changes, schema updates, config requirements), include it in your output summary.",
       "- If you hit a blocker you can work around safely, work around it and note what you did.",
@@ -209,9 +211,9 @@ function buildWorkerBaseGuidance(step: OrchestratorStep, graph: OrchestratorRunG
   );
   sections.push(
     [
-      "ADE MCP TOOLS: You have access to the ADE MCP server which provides team collaboration tools.",
+      "ADE TOOLING: Use ADE's action surface or the `ade` CLI for team collaboration commands when available.",
       "Your worker identity (mission, run, step, attempt IDs) is automatically resolved — you don't need to pass IDs to observation tools.",
-      "Key tools available:",
+      "Key actions available:",
       "- get_worker_states",
       "- get_run_graph",
       "- get_mission",
@@ -608,7 +610,11 @@ export function buildCoordinatorPromptInspector(args: {
     source: "runtime_context",
     sourceKind: "live_effective_prompt",
     editable: false,
-    text: providersSection,
+    text: [
+      providersSection,
+      "",
+      "ADE CLI: Terminal-capable workers can use the bundled `ade` command for internal ADE actions. Instruct them to run `ade doctor` for readiness, `ade actions list --text` for discovery, typed commands such as `ade lanes list --text` or `ade prs checks <pr> --text` first, and `ade actions run ...` as the escape hatch. Use `--json` for structured output and `--text` for readable output.",
+    ].join("\n"),
     description: "Runtime availability context for worker spawning.",
   });
 

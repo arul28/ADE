@@ -13,8 +13,8 @@ vi.mock("./LinearSection", () => ({
   LinearSection: () => <div>Linear section</div>,
 }));
 
-vi.mock("./ExternalMcpSection", () => ({
-  ExternalMcpSection: () => <div>Managed MCP section</div>,
+vi.mock("./AdeCliSection", () => ({
+  AdeCliSection: () => <div>ADE CLI section</div>,
 }));
 
 vi.mock("./ComputerUseSection", () => ({
@@ -24,14 +24,14 @@ vi.mock("./ComputerUseSection", () => ({
 afterEach(cleanup);
 
 describe("IntegrationsSettingsSection", () => {
-  it("opens the managed MCP tab from the integration search param", () => {
+  it("opens the computer-use tab from the integration search param", () => {
     render(
-      <MemoryRouter initialEntries={["/settings?tab=integrations&integration=managed-mcp"]}>
+      <MemoryRouter initialEntries={["/settings?tab=integrations&integration=computer-use"]}>
         <IntegrationsSettingsSection />
       </MemoryRouter>,
     );
 
-    expect(screen.getByText("Managed MCP section")).toBeTruthy();
+    expect(screen.getByText("Computer Use section")).toBeTruthy();
     expect(screen.queryByText("GitHub section")).toBeNull();
   });
 
@@ -44,10 +44,18 @@ describe("IntegrationsSettingsSection", () => {
 
     expect(screen.getByText("GitHub section")).toBeTruthy();
 
-    fireEvent.click(screen.getByRole("button", { name: "Managed MCP" }));
-    expect(screen.getByText("Managed MCP section")).toBeTruthy();
-
     fireEvent.click(screen.getByRole("button", { name: "Computer Use" }));
     expect(screen.getByText("Computer Use section")).toBeTruthy();
+  });
+
+  it("opens the ADE CLI sub-tab", () => {
+    render(
+      <MemoryRouter initialEntries={["/settings?tab=integrations&integration=cli"]}>
+        <IntegrationsSettingsSection />
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByText("ADE CLI section")).toBeTruthy();
+    expect(screen.queryByText("GitHub section")).toBeNull();
   });
 });

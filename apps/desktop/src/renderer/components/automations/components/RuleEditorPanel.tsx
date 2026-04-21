@@ -98,7 +98,6 @@ const TOOL_OPTIONS: Array<{ value: AutomationRuleDraft["toolPalette"][number]; l
   { value: "browser", label: "Browser" },
   { value: "memory", label: "Memory" },
   { value: "mission", label: "Mission" },
-  { value: "external-mcp", label: "Managed MCP" },
 ];
 
 const CONTEXT_OPTIONS: Array<{ value: AutomationRuleDraft["contextSources"][number]["type"]; label: string }> = [

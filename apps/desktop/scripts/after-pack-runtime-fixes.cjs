@@ -13,9 +13,23 @@ module.exports = async function afterPack(context) {
   }
 
   const runtimeRoot = resolvePackagedRuntimeRoot(appBundlePath);
+  const bundledCliPath = path.join(appBundlePath, "Contents", "Resources", "ade-cli", "cli.cjs");
+  const bundledCliBinPath = path.join(appBundlePath, "Contents", "Resources", "ade-cli", "bin", "ade");
+  const bundledCliInstallerPath = path.join(appBundlePath, "Contents", "Resources", "ade-cli", "install-path.sh");
   if (!fs.existsSync(runtimeRoot)) {
     throw new Error(`[afterPack] Missing unpacked runtime payload: ${runtimeRoot}`);
   }
+  if (!fs.existsSync(bundledCliPath)) {
+    throw new Error(`[afterPack] Missing bundled ADE CLI entry: ${bundledCliPath}`);
+  }
+  if (!fs.existsSync(bundledCliBinPath)) {
+    throw new Error(`[afterPack] Missing bundled ADE CLI wrapper: ${bundledCliBinPath}`);
+  }
+  if (!fs.existsSync(bundledCliInstallerPath)) {
+    throw new Error(`[afterPack] Missing bundled ADE CLI PATH installer: ${bundledCliInstallerPath}`);
+  }
+  fs.chmodSync(bundledCliBinPath, 0o755);
+  fs.chmodSync(bundledCliInstallerPath, 0o755);
 
   const normalized = normalizeDesktopRuntimeBinaries(runtimeRoot);
   for (const entry of normalized) {
@@ -23,7 +37,6 @@ module.exports = async function afterPack(context) {
   }
 
   const requiredScripts = [
-    path.join(runtimeRoot, "dist", "main", "adeMcpProxy.cjs"),
     path.join(runtimeRoot, "dist", "main", "packagedRuntimeSmoke.cjs"),
   ];
 

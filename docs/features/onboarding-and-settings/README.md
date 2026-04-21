@@ -151,7 +151,7 @@ is changing rather than which service backs it:
 | Workspace | `WorkspaceSettingsSection.tsx`, `ProjectSection.tsx`, `ContextSection.tsx` | Project identity, context docs, skill files |
 | AI | `AiSettingsSection.tsx`, `AiFeaturesSection.tsx`, `ProvidersSection.tsx`, `ComputerUseSection.tsx` | Provider CLIs, models, AI feature flags |
 | Sync | `SyncDevicesSection.tsx` | Multi-device sync (Phase 6), host-role transfer, peer status |
-| Integrations | `IntegrationsSettingsSection.tsx`, `GitHubSection.tsx`, `LinearSection.tsx`, `ExternalMcpSection.tsx` | GitHub, Linear, external MCP servers |
+| Integrations | `IntegrationsSettingsSection.tsx`, `GitHubSection.tsx`, `LinearSection.tsx` | GitHub, Linear |
 | Memory | `MemoryHealthTab.tsx` | Memory health, browser, embedding health |
 | Lane Templates | `LaneTemplatesSection.tsx`, `LaneBehaviorSection.tsx` | Lane init recipes and lane lifecycle policy |
 | Usage | `SettingsUsageSection.tsx`, `UsageGuardrailsSection.tsx` | Cost visibility and guardrails |

@@ -21,7 +21,7 @@
   <img src="https://img.shields.io/badge/Electron-app-47848F?logo=electron&logoColor=white" alt="Electron" />
   <img src="https://img.shields.io/badge/React-renderer-61DAFB?logo=react&logoColor=111827" alt="React" />
   <img src="https://img.shields.io/badge/TypeScript-codebase-3178C6?logo=typescript&logoColor=white" alt="TypeScript" />
-  <img src="https://img.shields.io/badge/MCP-built--in-6f42c1" alt="MCP built in" />
+  <img src="https://img.shields.io/badge/ADE CLI-built--in-6f42c1" alt="ADE CLI built in" />
 </p>
 
 <p align="center">
@@ -48,16 +48,29 @@ ADE is built for people who want agents to operate inside a real development wor
 - **Automations** -- Event-driven background execution with triggers and guardrails
 - **PR workflows** -- Stacking, conflict simulation, and queue landing
 - **Context packs** -- Structured, bounded context delivery for agents
-- **ADE MCP server** -- Shared services for both desktop and headless MCP flows
+- **ADE CLI** -- Agent-focused command-line access to ADE actions in desktop-backed and headless modes
 - **Memory system** -- Persistent knowledge across sessions with semantic search
+- **Runtime model support** -- Claude, Codex, OpenAI-compatible providers, and local models
 - **Linear integration** -- Workflow automation triggered by Linear issues
 - **Multi-repo aware workflows** -- Project-local state under `.ade/` plus machine-local secrets, cache, and artifacts
 
 ## Stack
 
 - **Desktop** -- Electron, React, TypeScript, SQLite, node-pty
-- **Protocols** -- Model Context Protocol (MCP), IPC, GitHub and Linear integrations
-- **Runtime model support** -- Claude, Codex, OpenAI-compatible providers, and local models
+- **Protocols** -- ADE CLI, IPC, GitHub and Linear integrations
+
+## ADE CLI
+
+ADE ships a real `ade` command for agents and local automation. The standalone package lives in `apps/ade-cli` and exposes `bin.ade`; after `cd apps/ade-cli && npm run build && npm link`, `ade doctor`, `ade lanes list`, and the rest of the command surface are available on `PATH`.
+
+The macOS desktop app also bundles the same CLI at `/Applications/ADE.app/Contents/Resources/ade-cli/bin/ade`. Symlink that wrapper into a `PATH` directory to use `ade xyz` without installing Node separately:
+
+```bash
+/Applications/ADE.app/Contents/Resources/ade-cli/install-path.sh
+ade doctor --project-root /path/to/project
+```
+
+Agents should use `ade doctor --json` for readiness, `ade actions list --text` for discovery, typed commands first, and `ade actions run <domain.action>` as the escape hatch for any ADE service action that does not yet have a typed command.
 
 ## Install
 

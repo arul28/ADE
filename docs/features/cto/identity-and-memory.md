@@ -93,7 +93,7 @@ Daily logs are operational history, not part of the immutable doctrine. They are
 
 ## Session logs
 
-`appendCtoSessionLog({ sessionId, summary, startedAt, endedAt, provider, modelId, capabilityMode })` writes a compact CTO-session record. `capabilityMode` distinguishes `full_mcp` (ADE MCP server + optional external MCP) from `fallback` (no MCP surface, e.g. when the provider can't reach MCP tools). Session logs drive the Settings > Timeline list.
+`appendCtoSessionLog({ sessionId, summary, startedAt, endedAt, provider, modelId, capabilityMode })` writes a compact CTO-session record. `capabilityMode` distinguishes `full_tooling` (ADE CLI/action bridge available) from `fallback` (the provider cannot reach ADE CLI actions). Session logs drive the Settings > Timeline list.
 
 ## Reconstruction after context compaction
 

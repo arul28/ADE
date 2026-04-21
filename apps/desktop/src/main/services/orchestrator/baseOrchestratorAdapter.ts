@@ -541,13 +541,13 @@ export function buildFullPrompt(
   // ADE self-awareness
   systemParts.push("You are working within ADE (Autonomous Development Environment), an Electron-based multi-agent development tool. ADE manages lanes (git worktrees), missions (task orchestration), PRs, and agent sessions. You have access to the project's full context including PRD and architecture docs when provided.");
 
-  // MCP server collaboration tools
+  // ADE collaboration tools
   if (hasMissionTooling) {
     systemParts.push(
       [
-        "ADE MCP TOOLS: You have access to the ADE MCP server which provides team collaboration tools.",
+        "ADE TOOLING: In terminal-capable sessions, use the bundled `ade` CLI for internal ADE actions. Run `ade doctor` for readiness, `ade actions list --text` for discovery, typed commands such as `ade lanes list --text` or `ade prs checks <pr> --text` first, and `ade actions run ...` as the escape hatch. Use `--json` for structured output and `--text` for readable output.",
         "Your worker identity (mission, run, step, attempt IDs) is automatically resolved — you don't need to pass IDs to observation tools.",
-        "Key tools available:",
+        "Key actions available:",
         "- get_worker_states: See all peer workers in your run and their current status",
         "- get_run_graph: See the full execution plan, step statuses, and dependencies",
         "- get_mission: Get mission details and metadata",

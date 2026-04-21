@@ -83,7 +83,7 @@ For the system-wide picture — apps, processes, data plane, IPC, security, buil
 
 Quick pointers:
 
-- **Apps**: `apps/desktop/` (Electron main + preload + renderer), `apps/mcp-server/` (headless MCP tool server), `apps/web/` (marketing), `apps/ios/` (companion).
+- **Apps**: `apps/desktop/` (Electron main + preload + renderer), `apps/ade-cli/` (headless ADE CLI action server), `apps/web/` (marketing), `apps/ios/` (companion).
 - **Main-process services**: `apps/desktop/src/main/services/<domain>/` — one directory per capability.
 - **Renderer components**: `apps/desktop/src/renderer/components/<feature>/`.
 - **Shared types + IPC contract**: `apps/desktop/src/shared/`.

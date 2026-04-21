@@ -250,11 +250,6 @@ const RECESSED_BLOCK_CLASS =
   "ade-chat-recessed overflow-auto whitespace-pre-wrap break-words rounded-[10px] px-4 py-3 font-mono text-[11px] leading-[1.6] text-fg/78";
 
 function toolSourceChip(toolName: string): { label: string; tone: ChatSurfaceChipTone } | null {
-  if (toolName.startsWith("mcp__")) {
-    const [, namespace] = toolName.split("__");
-    const label = namespace ? `${namespace.replace(/[_-]/g, " ")} MCP` : "MCP";
-    return { label, tone: "info" };
-  }
   if (toolName.startsWith("functions.")) {
     return { label: "Local tool", tone: "muted" };
   }

@@ -186,40 +186,39 @@ type ProjectConfigService = ReturnType<typeof createProjectConfigService>;
 
 const AUTOMATION_SCOPE = "automation-rule";
 const AUTOMATION_TASK_KEY_PREFIX = "automation-rule";
-const AUTOMATION_TOOL_BASELINE = buildClaudeReadOnlyWorkerAllowedTools("ade");
-const PUBLISH_CAPABLE_TOOL_FAMILIES = new Set<AutomationToolFamily>(["github", "linear", "browser", "external-mcp"]);
+const AUTOMATION_TOOL_BASELINE = buildClaudeReadOnlyWorkerAllowedTools();
+const PUBLISH_CAPABLE_TOOL_FAMILIES = new Set<AutomationToolFamily>(["github", "linear", "browser"]);
 const TOOL_FAMILY_ALLOWED_TOOLS: Record<AutomationToolFamily, string[]> = {
   repo: ["Read", "Glob", "Grep", "LS"],
   git: ["Bash", "bash"],
   tests: ["Bash", "bash"],
-  github: ["Bash", "bash", "mcp__github__get_pull_request", "mcp__github__create_pull_request", "mcp__github__add_issue_comment"],
-  linear: ["mcp__linear__get_issue", "mcp__linear__save_comment", "mcp__linear__save_issue"],
+  github: ["Bash", "bash", "gh", "ade"],
+  linear: ["ade", "linear"],
   browser: [
     "agent-browser",
-    "mcp__ade__get_environment_info",
-    "mcp__ade__launch_app",
-    "mcp__ade__interact_gui",
-    "mcp__ade__screenshot_environment",
-    "mcp__ade__record_environment",
-    "mcp__playwright__browser_navigate",
-    "mcp__playwright__browser_snapshot",
-    "mcp__playwright__browser_click",
-    "mcp__playwright__browser_fill_form",
-    "mcp__playwright__browser_type",
-    "mcp__playwright__browser_take_screenshot",
+    "get_environment_info",
+    "launch_app",
+    "interact_gui",
+    "screenshot_environment",
+    "record_environment",
+    "browser_navigate",
+    "browser_snapshot",
+    "browser_click",
+    "browser_fill_form",
+    "browser_type",
+    "browser_take_screenshot",
   ],
-  memory: ["mcp__ade__memory_search", "mcp__ade__memory_add"],
+  memory: ["memory_search", "memory_add"],
   mission: [
-    "mcp__ade__get_mission",
-    "mcp__ade__get_run_graph",
-    "mcp__ade__stream_events",
-    "mcp__ade__get_timeline",
-    "mcp__ade__get_pending_messages",
-    "mcp__ade__report_status",
-    "mcp__ade__report_result",
-    "mcp__ade__ask_user",
+    "get_mission",
+    "get_run_graph",
+    "stream_events",
+    "get_timeline",
+    "get_pending_messages",
+    "report_status",
+    "report_result",
+    "ask_user",
   ],
-  "external-mcp": [],
 };
 
 function safeJsonParseRecord(raw: string | null): Record<string, unknown> | null {
@@ -932,7 +931,6 @@ export function createAutomationService({
             },
           }),
       ...(rule.permissionConfig?.inProcess ? { inProcess: rule.permissionConfig.inProcess } : {}),
-      ...(rule.permissionConfig?.externalMcp ? { externalMcp: rule.permissionConfig.externalMcp } : {}),
       providers: {
         claude: rule.verification.mode === "dry-run" ? "plan" : (providers?.claude ?? "edit"),
         codex: rule.verification.mode === "dry-run" ? "plan" : (providers?.codex ?? "edit"),

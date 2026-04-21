@@ -4145,7 +4145,7 @@ describe("aiOrchestratorService", () => {
         "\"text\": \"{\\n \\\"ok\\\": true }\"",
         "admin@Mac test1-30b1aa3d %",
         "-p \"$(cat '/Users/admin/Projects/ADE/.ade/orchestrator/worker-prompts/worker-123.txt')\"",
-        "cp '/tmp/worker-123.json' '.ade-worker-mcp-123.json' && exec codex --model gpt-5.3-codex",
+        "cp '/tmp/worker-123.json' '.ade-worker-123.json' && exec codex --model gpt-5.3-codex",
         "12f2b.txt')\"",
         "ADE_MISSION_ID='mission-1' exec claude --model 'sonnet' --permission-mode 'default'",
         "orchestrator/worker-prompts/worker-ce33e94c-b964-42c9-9127-dfdeb6853d36",

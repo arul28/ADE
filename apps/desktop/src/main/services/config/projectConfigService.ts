@@ -82,7 +82,6 @@ const AUTOMATION_TOOL_FAMILIES: AutomationToolFamily[] = [
   "browser",
   "memory",
   "mission",
-  "external-mcp",
 ];
 
 function isPathWithinProjectRoot(projectRoot: string, candidate: string, opts: { allowMissing?: boolean } = {}): boolean {
@@ -626,24 +625,15 @@ function coerceMissionPermissionConfig(value: unknown): MissionPermissionConfig 
         ...(asStringArray(value.providers.allowedTools)?.length ? { allowedTools: asStringArray(value.providers.allowedTools) } : {}),
       }
     : undefined;
-  const externalMcp = isRecord(value.externalMcp)
-    ? {
-        ...(asBool(value.externalMcp.enabled) != null ? { enabled: asBool(value.externalMcp.enabled)! } : {}),
-        ...(asStringArray(value.externalMcp.selectedServers)?.length ? { selectedServers: asStringArray(value.externalMcp.selectedServers) } : {}),
-        ...(asStringArray(value.externalMcp.selectedTools)?.length ? { selectedTools: asStringArray(value.externalMcp.selectedTools) } : {}),
-      }
-    : undefined;
   if (
     !(cli && Object.keys(cli).length)
     && !inProcess
     && !(providers && Object.keys(providers).length)
-    && !(externalMcp && Object.keys(externalMcp).length)
   ) return undefined;
   return {
     ...(cli && Object.keys(cli).length ? { cli } : {}),
     ...(inProcess ? { inProcess } : {}),
     ...(providers && Object.keys(providers).length ? { providers } : {}),
-    ...(externalMcp && Object.keys(externalMcp).length ? { externalMcp } : {}),
   };
 }
 
@@ -1459,10 +1449,6 @@ function coerceAiConfig(value: unknown): AiConfig | undefined {
   const workerSafety = coerceWorkerSafetyPolicy(value.workerSafety);
   if (workerSafety) out.workerSafety = workerSafety;
 
-  if (isRecord(value.mcpServers) && Object.keys(value.mcpServers).length) {
-    out.mcpServers = { ...value.mcpServers };
-  }
-
   return Object.keys(out).length ? out : undefined;
 }
 
@@ -1804,10 +1790,6 @@ export function mergeAiConfig(sharedAi?: AiConfig, localAi?: Partial<AiConfig>):
     .filter((entry): entry is readonly ["ollama" | "lmstudio", Record<string, unknown>] => entry != null);
   const localProviders = Object.fromEntries(localProvidersEntries) as AiConfig["localProviders"];
   const workerSafety = mergeWorkerSafetyPolicy(sharedAi?.workerSafety, localAi?.workerSafety);
-  const mcpServers = {
-    ...(sharedAi?.mcpServers ?? {}),
-    ...(localAi?.mcpServers ?? {})
-  };
   const out: AiConfig = {
     mode: localAi?.mode ?? sharedAi?.mode,
     defaultProvider: localAi?.defaultProvider ?? sharedAi?.defaultProvider,
@@ -1824,7 +1806,6 @@ export function mergeAiConfig(sharedAi?: AiConfig, localAi?: Partial<AiConfig>):
     ...(Object.keys(apiKeys).length ? { apiKeys } : {}),
     ...(localProvidersEntries.length ? { localProviders } : {}),
     ...(workerSafety ? { workerSafety } : {}),
-    ...(Object.keys(mcpServers).length ? { mcpServers } : {})
   };
   return Object.keys(out).length ? out : undefined;
 }

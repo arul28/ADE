@@ -172,9 +172,6 @@ function installAdeMocks(options?: {
       getOwnerSnapshot: vi.fn().mockResolvedValue(null),
       onEvent: vi.fn().mockImplementation(() => () => undefined),
     },
-    externalMcp: {
-      onEvent: vi.fn().mockImplementation(() => () => undefined),
-    },
     files: {
       listWorkspaces: vi.fn().mockResolvedValue([]),
     },

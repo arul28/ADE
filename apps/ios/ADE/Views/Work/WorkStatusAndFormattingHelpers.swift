@@ -594,9 +594,6 @@ func toolDisplayName(_ tool: String) -> String {
   if trimmed.hasPrefix("functions.") {
     return String(trimmed.split(separator: ".").last ?? Substring(trimmed))
   }
-  if trimmed.hasPrefix("mcp__") {
-    return trimmed.replacingOccurrences(of: "mcp__", with: "").replacingOccurrences(of: "__", with: " · ")
-  }
   return trimmed
 }
 

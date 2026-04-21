@@ -35,7 +35,7 @@ Each `AutomationRule` carries:
   - `{ kind: "built-in", targetLaneId?, builtIn: { actions: [...] } }` — runs ADE-native deterministic actions (`AutomationAction[]`).
 - `executor` — always `{ mode: "automation-bot" }` (the automation system identifies itself that way in logs and memory).
 - `reviewProfile` — `quick` | `incremental` | `full` | `security` | `release-risk` | `cross-repo-contract`. Drives confidence base and output expectations.
-- `toolPalette` — explicit tool family list (`repo`, `git`, `tests`, `github`, `linear`, `browser`, `memory`, `mission`, `external-mcp`).
+- `toolPalette` — explicit tool family list (`repo`, `git`, `tests`, `github`, `linear`, `browser`, `memory`, `mission`, `external-cli`).
 - `contextSources` — e.g. project memory, procedures, recent PRs.
 - `memory.mode` — how memory scopes apply. `"automation-plus-project"` is the default: rule-scoped memory plus shared project memory.
 - `guardrails` — `confidenceThreshold`, `maxDurationMin`, `requireHuman`, path/lane allowlists (see `guardrails.md`).
@@ -81,7 +81,7 @@ Best for code-affecting or multi-step tasks.
 Best for deterministic ADE operations.
 
 - Runs a sequence of `AutomationAction` steps with typed input/output.
-- Supported action types include: shell commands (via `bash`/`Bash`), file ops (`Read`, `Glob`, `Grep`, `LS`), Linear (`mcp__linear__*`), GitHub (`mcp__github__*`), mission launch (`mcp__ade__get_mission`, `mcp__ade__report_status`), memory (`mcp__ade__memory_search`, `mcp__ade__memory_add`).
+- Supported action types include: shell commands (via `bash`/`Bash`), file ops (`Read`, `Glob`, `Grep`, `LS`), Linear (`ade.linear__*`), GitHub (`ade.github__*`), mission launch (`get_mission`, `report_status`), memory (`memory_search`, `memory_add`).
 - No separate mission thread.
 - Low overhead; sandboxed to the target lane's worktree via `validateAutomationCwd` and `resolvePathWithinRoot`.
 

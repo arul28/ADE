@@ -21,10 +21,6 @@ vi.mock("./shared/TimelineEntry", () => ({
   )),
 }));
 
-vi.mock("../shared/ExternalMcpAccessEditor", () => ({
-  ExternalMcpAccessEditor: vi.fn(() => <div data-testid="mcp-editor" />),
-}));
-
 vi.mock("./OpenclawConnectionPanel", () => ({
   OpenclawConnectionPanel: vi.fn(() => <div data-testid="openclaw-panel" />),
 }));
@@ -93,7 +89,6 @@ describe("CtoSettingsPanel", () => {
         sessionLogs={[]}
         onSaveIdentity={onSaveIdentity}
         onSaveCoreMemory={onSaveCoreMemory}
-        availableExternalMcpServers={[]}
       />,
     );
     expect(screen.getByText("anthropic/claude-sonnet-4-6")).toBeTruthy();
@@ -107,7 +102,6 @@ describe("CtoSettingsPanel", () => {
         sessionLogs={[]}
         onSaveIdentity={onSaveIdentity}
         onSaveCoreMemory={onSaveCoreMemory}
-        availableExternalMcpServers={[]}
       />,
     );
     const loadingElements = screen.getAllByText("Loading...");
@@ -122,7 +116,6 @@ describe("CtoSettingsPanel", () => {
         sessionLogs={[]}
         onSaveIdentity={onSaveIdentity}
         onSaveCoreMemory={onSaveCoreMemory}
-        availableExternalMcpServers={[]}
       />,
     );
     fireEvent.click(screen.getByRole("button", { name: "Brief" }));
@@ -137,7 +130,6 @@ describe("CtoSettingsPanel", () => {
         sessionLogs={[]}
         onSaveIdentity={onSaveIdentity}
         onSaveCoreMemory={onSaveCoreMemory}
-        availableExternalMcpServers={[]}
         onResetOnboarding={onResetOnboarding}
       />,
     );
@@ -152,7 +144,6 @@ describe("CtoSettingsPanel", () => {
         sessionLogs={[]}
         onSaveIdentity={onSaveIdentity}
         onSaveCoreMemory={onSaveCoreMemory}
-        availableExternalMcpServers={[]}
       />,
     );
     expect(screen.queryByText("Re-run setup")).toBeNull();
@@ -166,7 +157,6 @@ describe("CtoSettingsPanel", () => {
         sessionLogs={[]}
         onSaveIdentity={onSaveIdentity}
         onSaveCoreMemory={onSaveCoreMemory}
-        availableExternalMcpServers={[]}
       />,
     );
 
@@ -198,7 +188,6 @@ describe("CtoSettingsPanel", () => {
         sessionLogs={[]}
         onSaveIdentity={onSaveIdentity}
         onSaveCoreMemory={onSaveCoreMemory}
-        availableExternalMcpServers={[]}
       />,
     );
 
@@ -221,7 +210,6 @@ describe("CtoSettingsPanel", () => {
         sessionLogs={[]}
         onSaveIdentity={onSaveIdentity}
         onSaveCoreMemory={onSaveCoreMemory}
-        availableExternalMcpServers={[]}
       />,
     );
 
@@ -251,7 +239,6 @@ describe("CtoSettingsPanel", () => {
         sessionLogs={[]}
         onSaveIdentity={onSaveIdentity}
         onSaveCoreMemory={onSaveCoreMemory}
-        availableExternalMcpServers={[]}
       />,
     );
     expect(screen.getByText("anthropic/claude-sonnet-4-6")).toBeTruthy();
@@ -272,7 +259,6 @@ describe("CtoSettingsPanel", () => {
         sessionLogs={[]}
         onSaveIdentity={onSaveIdentity}
         onSaveCoreMemory={onSaveCoreMemory}
-        availableExternalMcpServers={[]}
       />,
     );
     expect(screen.getByRole("button", { name: "Identity" })).toBeTruthy();
@@ -290,12 +276,11 @@ describe("CtoSettingsPanel", () => {
             id: "s1",
             createdAt: "2026-03-26T00:00:00.000Z",
             summary: "Fixed deployment pipeline",
-            capabilityMode: "full_mcp",
+            capabilityMode: "full_tooling",
           } as CtoSessionLogEntry,
         ]}
         onSaveIdentity={onSaveIdentity}
         onSaveCoreMemory={onSaveCoreMemory}
-        availableExternalMcpServers={[]}
       />,
     );
 

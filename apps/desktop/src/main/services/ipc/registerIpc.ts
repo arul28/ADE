@@ -463,15 +463,6 @@ import type {
   LinearWorkflowRunDetail,
   LinearWorkflowConfig,
   NormalizedLinearIssue,
-  ExternalConnectionAuthRecord,
-  ExternalConnectionAuthRecordInput,
-  ExternalConnectionAuthStatus,
-  ExternalConnectionOAuthSessionResult,
-  ExternalConnectionOAuthSessionStartResult,
-  ExternalMcpManagedAuthConfig,
-  ExternalMcpServerConfig,
-  ExternalMcpServerSnapshot,
-  ExternalMcpUsageEvent,
   UsageSnapshot,
   BudgetCheckResult,
   BudgetCapScope,
@@ -575,8 +566,6 @@ import type { createLinearRoutingService } from "../cto/linearRoutingService";
 import type { createLinearIngressService } from "../cto/linearIngressService";
 import type { createLinearSyncService } from "../cto/linearSyncService";
 import type { createLinearIssueTracker } from "../cto/linearIssueTracker";
-import type { createExternalMcpService } from "../externalMcp/externalMcpService";
-import type { createExternalConnectionAuthService } from "../externalMcp/externalConnectionAuthService";
 import type { createUsageTrackingService } from "../usage/usageTrackingService";
 import type { createBudgetCapService } from "../usage/budgetCapService";
 import type { createSyncHostService } from "../sync/syncHostService";
@@ -584,6 +573,7 @@ import type { createSyncService } from "../sync/syncService";
 import type { createFeedbackReporterService } from "../feedback/feedbackReporterService";
 import type { AdeProjectService } from "../projects/adeProjectService";
 import type { ConfigReloadService } from "../projects/configReloadService";
+import type { createAdeCliService } from "../cli/adeCliService";
 import { getErrorMessage, isRecord, nowIso, resolvePathWithinRoot, toMemoryEntryDto } from "../shared/utils";
 import { resolveAdeLayout } from "../../../shared/adeLayout";
 
@@ -594,10 +584,11 @@ export type AppContext = {
   hasUserSelectedProject: boolean;
   projectId: string;
   adeDir: string;
-  getActiveMcpConnectionCount?: (() => number) | null;
+  getActiveRpcConnectionCount?: (() => number) | null;
   disposeHeadWatcher: () => void;
   keybindingsService: ReturnType<typeof createKeybindingsService>;
   agentToolsService: ReturnType<typeof createAgentToolsService>;
+  adeCliService: ReturnType<typeof createAdeCliService>;
   devToolsService: ReturnType<typeof createDevToolsService>;
   onboardingService: ReturnType<typeof createOnboardingService>;
   laneService: ReturnType<typeof createLaneService>;
@@ -664,15 +655,13 @@ export type AppContext = {
   linearRoutingService?: ReturnType<typeof createLinearRoutingService> | null;
   linearIngressService?: ReturnType<typeof createLinearIngressService> | null;
   linearSyncService?: ReturnType<typeof createLinearSyncService> | null;
-  externalConnectionAuthService?: ReturnType<typeof createExternalConnectionAuthService> | null;
-  externalMcpService?: ReturnType<typeof createExternalMcpService> | null;
   usageTrackingService?: ReturnType<typeof createUsageTrackingService> | null;
   budgetCapService?: ReturnType<typeof createBudgetCapService> | null;
   configReloadService?: ConfigReloadService | null;
   syncHostService?: ReturnType<typeof createSyncHostService> | null;
   syncService?: ReturnType<typeof createSyncService> | null;
-  mcpSocketServer?: NetServer;
-  mcpSocketPath?: string;
+  rpcSocketServer?: NetServer;
+  rpcSocketPath?: string;
   autoUpdateService?: ReturnType<typeof createAutoUpdateService> | null;
   feedbackReporterService?: ReturnType<typeof createFeedbackReporterService> | null;
 };
@@ -693,26 +682,6 @@ function clampLayout(layout: DockLayout): DockLayout {
     out[k] = Math.max(0, Math.min(100, v));
   }
   return out;
-}
-
-function sanitizeExternalMcpSnapshot(
-  snapshot: ExternalMcpServerSnapshot,
-  rawConfig?: ExternalMcpServerConfig,
-): ExternalMcpServerSnapshot {
-  if (!rawConfig) return snapshot;
-  return {
-    ...snapshot,
-    config: {
-      ...snapshot.config,
-      transport: rawConfig.transport === "stdio" ? "stdio" : "http",
-      ...(rawConfig.command ? { command: rawConfig.command } : {}),
-      ...(rawConfig.args ? { args: rawConfig.args } : {}),
-      ...(rawConfig.env ? { env: rawConfig.env } : {}),
-      ...(rawConfig.cwd ? { cwd: rawConfig.cwd } : {}),
-      ...(rawConfig.url ? { url: rawConfig.url } : {}),
-      ...(rawConfig.headers ? { headers: rawConfig.headers } : {}),
-    },
-  };
 }
 
 function escapeCsvCell(value: string | null | undefined): string {
@@ -2411,106 +2380,19 @@ export function registerIpc({
     },
   );
 
-  ipcMain.handle(IPC.externalMcpListServers, async (): Promise<ExternalMcpServerSnapshot[]> => {
-    const service = getCtx().externalMcpService;
-    if (!service) return [];
-    const rawConfigs = service.getRawConfigs();
-    return service.getSnapshots().map((snapshot) =>
-      sanitizeExternalMcpSnapshot(
-        snapshot,
-        rawConfigs.find((entry) => entry.name === snapshot.config.name),
-      )
-    );
-  });
-  ipcMain.handle(IPC.externalMcpListConfigs, async (): Promise<ExternalMcpServerConfig[]> =>
-    getCtx().externalMcpService?.getRawConfigs() ?? []
-  );
-  ipcMain.handle(IPC.externalMcpListAuthRecords, async (): Promise<ExternalConnectionAuthRecord[]> =>
-    getCtx().externalConnectionAuthService?.listRecords() ?? []
-  );
-  ipcMain.handle(IPC.externalMcpGetUsageEvents, async (_event, arg: { limit?: number } = {}): Promise<ExternalMcpUsageEvent[]> =>
-    getCtx().externalMcpService?.getUsageEvents(arg.limit ?? 100) ?? []
-  );
-  ipcMain.handle(IPC.externalMcpConnectServer, async (_event, arg: { serverName: string }): Promise<ExternalMcpServerSnapshot> => {
-    const service = getCtx().externalMcpService;
-    if (!service) throw new Error("External MCP service is unavailable.");
-    const snapshot = await service.connectServer(arg.serverName);
-    return sanitizeExternalMcpSnapshot(
-      snapshot,
-      service.getRawConfigs().find((entry) => entry.name === snapshot.config.name),
-    );
-  });
-  ipcMain.handle(IPC.externalMcpDisconnectServer, async (_event, arg: { serverName: string }): Promise<ExternalMcpServerSnapshot | null> => {
-    const service = getCtx().externalMcpService;
-    if (!service) throw new Error("External MCP service is unavailable.");
-    const snapshot = await service.disconnectServer(arg.serverName);
-    return snapshot
-      ? sanitizeExternalMcpSnapshot(
-          snapshot,
-          service.getRawConfigs().find((entry) => entry.name === snapshot.config.name),
-        )
-      : null;
-  });
-  ipcMain.handle(IPC.externalMcpTestServer, async (_event, arg: { config: ExternalMcpServerConfig }): Promise<ExternalMcpServerSnapshot> => {
-    const service = getCtx().externalMcpService;
-    if (!service) throw new Error("External MCP service is unavailable.");
-    return sanitizeExternalMcpSnapshot(await service.testServer(arg.config), arg.config);
-  });
-  ipcMain.handle(IPC.externalMcpSaveServer, async (_event, arg: { config: ExternalMcpServerConfig }): Promise<ExternalMcpServerConfig[]> => {
-    const service = getCtx().externalMcpService;
-    if (!service) throw new Error("External MCP service is unavailable.");
-    return service.saveServer(arg.config);
-  });
-  ipcMain.handle(IPC.externalMcpRemoveServer, async (_event, arg: { serverName: string }): Promise<ExternalMcpServerConfig[]> => {
-    const service = getCtx().externalMcpService;
-    if (!service) throw new Error("External MCP service is unavailable.");
-    return service.removeServer(arg.serverName);
-  });
-  ipcMain.handle(IPC.externalMcpSaveAuthRecord, async (_event, arg: { record: ExternalConnectionAuthRecordInput }): Promise<ExternalConnectionAuthRecord> => {
-    const service = getCtx().externalConnectionAuthService;
-    if (!service) throw new Error("External auth service is unavailable.");
-    const record = service.saveRecord(arg.record);
-    getCtx().externalMcpService?.reload?.();
-    return record;
-  });
-  ipcMain.handle(IPC.externalMcpRemoveAuthRecord, async (_event, arg: { authId: string }): Promise<ExternalConnectionAuthRecord[]> => {
-    const service = getCtx().externalConnectionAuthService;
-    if (!service) throw new Error("External auth service is unavailable.");
-    const records = service.removeRecord(arg.authId);
-    getCtx().externalMcpService?.reload?.();
-    return records;
-  });
-  ipcMain.handle(IPC.externalMcpGetAuthStatus, async (_event, arg: { binding?: ExternalMcpManagedAuthConfig | null }): Promise<ExternalConnectionAuthStatus> => {
-    const service = getCtx().externalConnectionAuthService;
-    if (!service) {
-      return {
-        mode: arg.binding?.mode ?? "none",
-        state: arg.binding ? "missing" : "ready",
-        summary: arg.binding ? "External auth service is unavailable." : "No managed auth configured.",
-      };
-    }
-    return service.getStatusForBinding(arg.binding ?? null);
-  });
-  ipcMain.handle(IPC.externalMcpStartOAuthSession, async (_event, arg: { authId: string }): Promise<ExternalConnectionOAuthSessionStartResult> => {
-    const service = getCtx().externalConnectionAuthService;
-    if (!service) throw new Error("External auth service is unavailable.");
-    return service.startOAuthSession(arg.authId);
-  });
-  ipcMain.handle(IPC.externalMcpGetOAuthSession, async (_event, arg: { sessionId: string }): Promise<ExternalConnectionOAuthSessionResult> => {
-    const service = getCtx().externalConnectionAuthService;
-    if (!service) {
-      return {
-        authId: "",
-        status: "expired",
-        error: "External auth service is unavailable.",
-      };
-    }
-    return service.getOAuthSession(arg.sessionId);
-  });
-
   ipcMain.handle(IPC.agentToolsDetect, async (): Promise<AgentTool[]> => {
     const ctx = getCtx();
     return ctx.agentToolsService.detect();
+  });
+
+  ipcMain.handle(IPC.adeCliGetStatus, async () => {
+    const ctx = getCtx();
+    return ctx.adeCliService.getStatus();
+  });
+
+  ipcMain.handle(IPC.adeCliInstallForUser, async () => {
+    const ctx = getCtx();
+    return ctx.adeCliService.installForUser();
   });
 
   ipcMain.handle(IPC.devToolsDetect, async (_event: unknown, arg?: { force?: boolean }) => {
@@ -4336,7 +4218,6 @@ export function registerIpc({
     const ctx = ensureComputerUseBroker();
     return buildComputerUseSettingsSnapshot({
       status: ctx.computerUseArtifactBrokerService.getBackendStatus(),
-      snapshots: ctx.externalMcpService?.getSnapshots() ?? [],
     });
   });
 
@@ -4354,7 +4235,6 @@ export function registerIpc({
       policy: resolved.policy,
       requiredKinds: resolved.requiredKinds,
       limit: resolved.limit,
-      usageEvents: ctx.externalMcpService?.getUsageEvents(100) ?? [],
     });
   });
 

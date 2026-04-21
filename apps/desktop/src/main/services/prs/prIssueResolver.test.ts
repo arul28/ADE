@@ -344,7 +344,7 @@ describe("launchPrIssueResolutionChat", () => {
     expect(sendMessage).not.toHaveBeenCalled();
   });
 
-  it("uses ADE MCP PR tools in the prompt for Codex launches", async () => {
+  it("uses ADE CLI PR commands in the prompt for Codex launches", async () => {
     const { deps, pr } = makeDeps();
 
     const result = await previewPrIssueResolutionPrompt(deps as any, {
@@ -356,18 +356,15 @@ describe("launchPrIssueResolutionChat", () => {
       additionalInstructions: null,
     });
 
-    expect(result.prompt).toContain("Runtime: Codex chat via ADE MCP");
-    expect(result.prompt).toContain("mcp__ade__pr_refresh_issue_inventory");
-    expect(result.prompt).toContain("mcp__ade__pr_get_review_comments");
-    expect(result.prompt).toContain("mcp__ade__pr_resolve_review_thread");
-    expect(result.prompt).toContain("ADE PR tools are runtime tool calls, not shell commands.");
-    expect(result.prompt).toContain("Some bridges may also expose the base tool names like `pr_refresh_issue_inventory` and `pr_get_review_comments`.");
-    expect(result.prompt).toContain("Use whichever variant is actually exposed in the live tool list for this chat runtime.");
-    expect(result.prompt).toContain("Immediately after that, call `mcp__ade__pr_get_review_comments`");
+    expect(result.prompt).toContain("Runtime: Codex chat via ADE CLI");
+    expect(result.prompt).toContain("ade prs inventory");
+    expect(result.prompt).toContain("ade prs comments");
+    expect(result.prompt).toContain("ade prs resolve-thread");
+    expect(result.prompt).toContain("This runtime can use the ADE CLI");
+    expect(result.prompt).toContain("Immediately after that, run `ade prs comments");
     expect(result.prompt).toContain("Treat the refreshed inventory as a triage index");
     expect(result.prompt).toContain("Do not spend your first steps reading local skill docs");
-    expect(result.prompt).toContain("Do not probe tool availability with `which`, `command -v`, `.mcp.json`, or project settings files");
-    expect(result.prompt).toContain("Do not conclude the PR tools are missing just because one naming variant is absent.");
+    expect(result.prompt).toContain("instead of reverse-engineering ADE internals");
     expect(result.prompt).not.toContain("prRefreshIssueInventory");
   });
 
@@ -508,7 +505,7 @@ describe("launchPrIssueResolutionChat", () => {
     expect(sendMessage).toHaveBeenCalledWith(expect.objectContaining({
       sessionId: "session-claude",
       executionMode: "subagents",
-      text: expect.stringContaining("Runtime: Claude chat via ADE MCP"),
+      text: expect.stringContaining("Runtime: Claude chat via ADE CLI"),
     }));
     expect(sendMessage).toHaveBeenCalledWith(expect.objectContaining({
       text: expect.stringContaining("Current unresolved review threads (detailed context)"),

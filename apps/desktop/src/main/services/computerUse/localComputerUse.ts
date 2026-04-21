@@ -50,7 +50,7 @@ function blocked(detail: string): LocalComputerUseCapability {
   return { state: "blocked_by_capability", available: false, command: null, detail };
 }
 
-const GHOST_DOCTOR_PROCESS_REGEX = /(\d+)\s+ghost MCP process(?:es)?\s+found/i;
+const GHOST_DOCTOR_PROCESS_REGEX = /(\d+)\s+ghost(?:\s+\w+)?\s+process(?:es)?\s+found/i;
 
 export function parseGhostDoctorProcessHealth(output: string): GhostDoctorProcessHealth {
   const trimmed = output.trim();
@@ -69,13 +69,13 @@ export function parseGhostDoctorProcessHealth(output: string): GhostDoctorProces
       return {
         state: "stale",
         processCount,
-        detail: `Ghost doctor found ${processCount} ghost MCP processes. Stop the stale processes and rerun ghost doctor.`,
+        detail: `Ghost doctor found ${processCount} Ghost OS processes. Stop the stale processes and rerun ghost doctor.`,
       };
     }
     return {
       state: "healthy",
       processCount,
-      detail: `Ghost doctor found ${processCount} ghost MCP process${processCount === 1 ? "" : "es"} running.`,
+      detail: `Ghost doctor found ${processCount} Ghost OS process${processCount === 1 ? "" : "es"} running.`,
     };
   }
 
@@ -83,7 +83,7 @@ export function parseGhostDoctorProcessHealth(output: string): GhostDoctorProces
     return {
       state: "stale",
       processCount: null,
-      detail: "Ghost doctor reported a Ghost MCP process failure, but did not include a parseable count.",
+      detail: "Ghost doctor reported a Ghost OS process failure, but did not include a parseable count.",
     };
   }
 
@@ -91,14 +91,14 @@ export function parseGhostDoctorProcessHealth(output: string): GhostDoctorProces
     return {
       state: "healthy",
       processCount: null,
-      detail: "Ghost doctor reported healthy Ghost MCP process state.",
+      detail: "Ghost doctor reported healthy Ghost OS process state.",
     };
   }
 
   return {
     state: "unknown",
     processCount: null,
-    detail: "Ghost doctor output did not include a parseable Ghost MCP process check.",
+    detail: "Ghost doctor output did not include a parseable Ghost OS process check.",
   };
 }
 

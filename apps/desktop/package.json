@@ -8,7 +8,7 @@
   "license": "AGPL-3.0",
   "scripts": {
     "predev": "node ./scripts/clear-vite-cache.cjs && node ./scripts/normalize-runtime-binaries.cjs",
-    "prebuild": "node ./scripts/normalize-runtime-binaries.cjs",
+    "prebuild": "node ./scripts/normalize-runtime-binaries.cjs && npm run ade:build",
     "dev": "node ./scripts/ensure-electron.cjs && node ./scripts/dev.cjs",
     "build": "tsup && vite build",
     "dist:mac": "npm run build && electron-builder --mac --publish never",
@@ -28,10 +28,10 @@
     "test:coverage": "vitest run --coverage",
     "test:orchestrator-smoke": "vitest run src/main/services/orchestrator/orchestratorSmoke.test.ts --reporter=verbose",
     "test:orchestrator-complex-mock": "vitest run src/main/services/orchestrator/orchestratorSmoke.test.ts -t \"complex mock prompt\" --reporter=verbose",
-    "mcp:dev": "npm --prefix ../mcp-server run dev -- --project-root ../..",
-    "mcp:build": "npm --prefix ../mcp-server run build",
-    "mcp:typecheck": "npm --prefix ../mcp-server run typecheck",
-    "mcp:test": "npm --prefix ../mcp-server run test",
+    "ade:dev": "npm --prefix ../ade-cli run dev -- --project-root ../..",
+    "ade:build": "npm --prefix ../ade-cli run build",
+    "ade:typecheck": "npm --prefix ../ade-cli run typecheck",
+    "ade:test": "npm --prefix ../ade-cli run test",
     "lint": "node ./node_modules/eslint/bin/eslint.js \"src/**/*.{ts,tsx}\"",
     "rebuild:native": "node ./scripts/rebuild-native.mjs",
     "version:ci": "node ./scripts/set-ci-version.mjs",
@@ -47,7 +47,6 @@
     "@lobehub/icons": "^5.2.0",
     "@lobehub/icons-static-svg": "^1.84.0",
     "@lobehub/ui": "^5.6.3",
-    "@modelcontextprotocol/sdk": "1.27.1",
     "@opencode-ai/sdk": "^1.3.17",
     "@phosphor-icons/react": "^2.1.10",
     "@radix-ui/react-dialog": "^1.1.15",
@@ -142,11 +141,28 @@
       "!node_modules/onnxruntime-node/**"
     ],
     "asarUnpack": [
-      "dist/main/adeMcpProxy.cjs",
       "dist/main/packagedRuntimeSmoke.cjs",
       "node_modules/node-pty/**/*",
       "node_modules/@huggingface/transformers/node_modules/onnxruntime-node/**",
       "vendor/crsqlite/**"
+    ],
+    "extraResources": [
+      {
+        "from": "../ade-cli/dist/cli.cjs",
+        "to": "ade-cli/cli.cjs"
+      },
+      {
+        "from": "../ade-cli/dist/cli.cjs.map",
+        "to": "ade-cli/cli.cjs.map"
+      },
+      {
+        "from": "scripts/ade-cli-macos-wrapper.sh",
+        "to": "ade-cli/bin/ade"
+      },
+      {
+        "from": "scripts/ade-cli-install-path.sh",
+        "to": "ade-cli/install-path.sh"
+      }
     ],
     "afterPack": "./scripts/after-pack-runtime-fixes.cjs",
     "publish": {

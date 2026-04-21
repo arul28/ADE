@@ -92,16 +92,16 @@ Label normalization helper `normalizeLabels` accepts either string arrays or obj
 - `repo` -> `Read`, `Glob`, `Grep`, `LS`.
 - `git` -> `Bash`, `bash`.
 - `tests` -> `Bash`, `bash`.
-- `github` -> `Bash`, `bash`, `mcp__github__get_pull_request`, `mcp__github__create_pull_request`, `mcp__github__add_issue_comment`.
-- `linear` -> `mcp__linear__get_issue`, `mcp__linear__save_comment`, `mcp__linear__save_issue`.
-- `browser` -> `agent-browser`, `mcp__ade__get_environment_info`, `mcp__ade__launch_app`, `mcp__ade__interact_gui`, `mcp__ade__screenshot_environment`, `mcp__ade__record_environment`, `mcp__playwright__*`.
-- `memory` -> `mcp__ade__memory_search`, `mcp__ade__memory_add`.
-- `mission` -> `mcp__ade__get_mission`, `mcp__ade__get_run_graph`, `mcp__ade__stream_events`, `mcp__ade__get_timeline`, `mcp__ade__get_pending_messages`, `mcp__ade__report_status`, `mcp__ade__report_result`, `mcp__ade__ask_user`.
-- `external-mcp` -> empty by default; actual tools resolved from the project's external MCP registry at runtime.
+- `github` -> `Bash`, `bash`, `ade.github__get_pull_request`, `ade.github__create_pull_request`, `ade.github__add_issue_comment`.
+- `linear` -> `ade.linear__get_issue`, `ade.linear__save_comment`, `ade.linear__save_issue`.
+- `browser` -> `agent-browser`, `get_environment_info`, `launch_app`, `interact_gui`, `screenshot_environment`, `record_environment`, `ade.playwright__*`.
+- `memory` -> `memory_search`, `memory_add`.
+- `mission` -> `get_mission`, `get_run_graph`, `stream_events`, `get_timeline`, `get_pending_messages`, `report_status`, `report_result`, `ask_user`.
+- `external-cli` -> empty by default; actual tools resolved from the project's ADE CLI registry at runtime.
 
-`PUBLISH_CAPABLE_TOOL_FAMILIES` — `github`, `linear`, `browser`, `external-mcp` are the families that can publish outputs externally. Guardrails apply specifically to these.
+`PUBLISH_CAPABLE_TOOL_FAMILIES` — `github`, `linear`, `browser`, `external-cli` are the families that can publish outputs externally. Guardrails apply specifically to these.
 
-Baseline tools (always available) come from `buildClaudeReadOnlyWorkerAllowedTools("ade")` — the read-only ADE MCP surface.
+Baseline tools (always available) come from `buildClaudeReadOnlyWorkerAllowedTools()` plus ADE CLI actions available to terminal-capable agents.
 
 ## Action catalog (built-in)
 
@@ -115,7 +115,7 @@ Action types:
 
 - `shell` — run a shell command in a validated cwd. Cwd validated via `validateAutomationCwd` + `resolvePathWithinRoot` — must stay inside the lane worktree or project root.
 - `file.read`, `file.glob`, `file.grep`, `file.ls` — read-only file operations.
-- `github.comment`, `github.create_pr` — GitHub actions via `mcp__github__*`.
+- `github.comment`, `github.create_pr` — GitHub actions via `ade.github__*`.
 - `linear.get_issue`, `linear.save_comment`, `linear.save_issue` — Linear actions.
 - `memory.search`, `memory.add` — memory actions.
 - `mission.get`, `mission.report_status`, `mission.report_result`, `mission.ask_user` — mission tools.
@@ -141,7 +141,7 @@ The planner output JSON is extracted with `extractFirstJsonObject` — it handle
 - **Webhook payloads must be normalized before matching.** Rules match `eventKey`, not raw payload shape.
 - **Relay polling needs a cursor.** Without `cursor` on `AutomationIngressEventRecord`, the relay replays the full backlog on every poll.
 - **Built-in shell actions validate cwd.** Don't pass absolute paths that escape the allowed roots — `validateAutomationCwd` rejects them.
-- **`external-mcp` tool list is empty at compile time.** Resolution happens at runtime; rules referencing external MCP tools must check server availability before dispatch.
+- **`external-cli` tool list is empty at compile time.** Resolution happens at runtime; rules referencing ADE CLI actions must check server availability before dispatch.
 - **Planner JSON extraction is lossy on malformed output.** Budget extra validation on fields the planner set; rely on `validateDraft` rather than trusting raw output.
 
 ## Cross-links

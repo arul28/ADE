@@ -36,7 +36,7 @@ You can create a worker from the **Team sub-tab** without going through the CTO 
     - **Name** — a human-readable identifier (e.g., "test-writer", "pr-reviewer")
     - **Specialization prompt** — describes the worker's role, constraints, and focus area
     - **Assigned lane** — the lane this worker operates in (leave blank for cross-lane workers)
-    - **Tool palette** — which MCP tools this worker can use (defaults to a safe read/write subset)
+    - **Tool palette** — which ADE CLI tools this worker can use (defaults to a safe read/write subset)
     - **Budget limit** — maximum token/cost for this worker per activation
     - **Type** — Persistent or Ephemeral
   </Step>
@@ -99,7 +99,7 @@ Project Budget (global cap)
 
 1. Open **CTO > Chat**.
 2. Type: _"Please review PR #142 and give me a summary of the changes, any concerns, and whether it's safe to merge."_
-3. The CTO reads the PR diff (via the GitHub integration MCP tool), cross-references it against its project memory, checks for conflicts with active lanes, and returns a structured review with: summary, concerns, risk level, and a recommendation.
+3. The CTO reads the PR diff (via the GitHub integration ADE CLI tool), cross-references it against its project memory, checks for conflicts with active lanes, and returns a structured review with: summary, concerns, risk level, and a recommendation.
 
 The CTO's review is informed by accumulated project knowledge — it will note if a change contradicts an architectural decision made last month, or if a test is missing for a pattern it has seen cause regressions before.
 
@@ -176,7 +176,7 @@ cto:
 
 <AccordionGroup>
   <Accordion title="CTO shows 'Inactive' status" icon="circle-xmark">
-    The CTO requires at least one AI provider to be configured. Check **Settings > AI Providers** and verify that a provider is active and its credentials are valid. The CTO also needs the MCP server to be running — if you see MCP errors in the main process log, restart ADE.
+    The CTO requires at least one AI provider to be configured. Check **Settings > AI Providers** and verify that a provider is active and its credentials are valid. The CTO also needs the ADE RPC socket to be ready — if you see socket or RPC errors in the main process log, restart ADE.
   </Accordion>
   <Accordion title="Heartbeat runs but the CTO takes no action" icon="clock">
     This is usually expected — the CTO only acts when it detects something actionable. Check the **Recent Actions Log** in the CTO Status panel to confirm the heartbeat ran. If the log shows "No actions needed", the CTO saw no changes worth acting on. You can lower the action threshold in Settings > CTO > Heartbeat Sensitivity.
@@ -219,11 +219,11 @@ cto:
 
 ## OpenClaw Bridge
 
-If you have an OpenClaw account or a compatible external agent platform, you can connect it to ADE's MCP server. The CTO acts as the designated router for inbound requests from OpenClaw:
+If you have an OpenClaw account or a compatible external agent platform, you can connect it to ADE. The CTO acts as the designated router for inbound requests from OpenClaw:
 
 1. In **Settings > CTO > External Connections**, enable **OpenClaw Bridge**
-2. ADE generates a local MCP endpoint URL for OpenClaw to connect to
-3. OpenClaw can then send development requests to ADE by addressing them to the CTO via the MCP `cto_request` tool
+2. ADE generates a local RPC endpoint URL for OpenClaw to connect to
+3. OpenClaw sends development requests to ADE by addressing them to the CTO via the `cto.request` RPC action
 
 The CTO receives these requests in its chat thread (tagged as external), evaluates them, and routes them to the appropriate internal workflow: mission launch, worker delegation, or human escalation.
 

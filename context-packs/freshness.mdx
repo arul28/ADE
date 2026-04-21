@@ -89,7 +89,7 @@ Packs work together with ADE's unified memory system. Understanding the relation
 
 1. At session start, ADE loads Core + Hot memory automatically.
 2. The agent's context stack is assembled from the relevant packs (Cold tier).
-3. During a session, MCP tool calls can fetch additional Cold-tier context on demand.
+3. During a session, ADE CLI tool calls can fetch additional Cold-tier context on demand.
 4. At session end, significant facts from the session are written back into Hot memory (SQLite), and the relevant pack is queued for refresh.
 
 ---

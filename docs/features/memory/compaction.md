@@ -77,7 +77,7 @@ actionable insight per memory, SAVE vs DO-NOT-SAVE lists, the
   of `systemMessage` into the compaction prompt is SDK-internal — the
   primary guarantee of this design is that the prompt never leaks as a
   visible turn. Memory saving still happens opportunistically through
-  the MCP `memory_add` guidance already in the system prompt.
+  the ADE CLI `memory_add` guidance already in the system prompt.
 
 ## Episodic summary
 

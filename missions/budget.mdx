@@ -48,8 +48,8 @@ Each mission has a **permission config** that controls what workers can do. The 
 
     You can configure different modes per provider if your mission uses a mix of Claude and Codex workers.
   </Accordion>
-  <Accordion title="External MCP tools">
-    External MCP server tools are disabled by default for missions. To enable them, select which MCP tool groups are allowed in the **External MCP** section of the mission creation form. Workers will only have access to the tool groups you explicitly permit.
+  <Accordion title="Tool palette">
+    Workers access ADE through the `ade` CLI. The mission creation form exposes a tool palette (repo, git, github, linear, memory, mission, tests) that maps to the ADE RPC action domains workers may invoke. Tool groups not in the palette are rejected at the CLI boundary for that worker.
   </Accordion>
   <Accordion title="Computer use policy">
     Computer use in missions is controlled by the ComputerUsePolicy set on the mission:

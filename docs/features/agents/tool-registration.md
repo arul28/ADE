@@ -1,27 +1,23 @@
 # Tool Registration
 
-Agents get their tool palette through two distinct paths: in-process
-tool objects (for the chat runtime that owns the session) and MCP
-server registration (for CLI-wrapped providers and external clients).
-Both paths converge on a shared tool registry and apply role-based
+Agents get their action palette through two distinct paths: in-process
+tool objects for managed chat runtimes, and the ADE CLI for agents or
+shell sessions that need to invoke ADE actions out of process. Both
+paths converge on the same service registry and apply role-based
 filtering before exposing the final list.
 
 ## Source file map
 
 | Path | Role |
 |---|---|
-| `apps/mcp-server/src/mcpServer.ts` | Main-process MCP server. Defines tool specs, session identity, role-based filtering, and the tool executor. |
-| `apps/mcp-server/src/bootstrap.ts` | Builds `AdeMcpRuntime` from desktop services so the MCP server can call through to them. |
-| `apps/mcp-server/src/jsonrpc.ts` | JSON-RPC server and transport (socket, stdio). |
-| `apps/mcp-server/src/transport.ts` | Stdio framing helpers (JSONL + `Content-Length`). |
-| `apps/desktop/src/main/adeMcpProxy.ts` | Bundled stdio proxy: child process connecting to the ADE socket server with identity injection. |
-| `apps/desktop/src/main/adeMcpProxyUtils.ts` | `ProxyIdentity`, `injectIdentityIntoInitializePayload`, stdio framing helpers. |
-| `apps/desktop/src/main/services/runtime/adeMcpLaunch.ts` | Resolves MCP launch mode + command line + env. |
-| `apps/desktop/src/main/main.ts` | Creates the MCP socket server and binds `createMcpRequestHandler`. |
+| `apps/ade-cli/src/adeRpcServer.ts` | Private ADE action RPC. Defines action specs, session identity, role-based filtering, and the executor. |
+| `apps/ade-cli/src/bootstrap.ts` | Builds `AdeRuntime` from desktop services for headless CLI execution. |
+| `apps/ade-cli/src/cli.ts` | User-facing `ade` command, text/JSON formatters, command plans, and socket/headless client wiring. |
+| `apps/ade-cli/src/jsonrpc.ts` | JSON-RPC server and socket transport helpers. |
+| `apps/desktop/src/main/main.ts` | Creates the per-project ADE RPC socket server and binds `createAdeRpcRequestHandler`. |
 | `apps/desktop/src/main/services/ai/tools/` | In-process tool implementations (universal, workflow, CTO operator, Linear). |
 | `apps/desktop/src/main/services/orchestrator/coordinatorTools.ts` | Coordinator tool set for the mission orchestrator. |
 | `apps/desktop/src/main/services/agentTools/agentToolsService.ts` | External CLI detection (Claude Code, Codex, Cursor, Aider, Continue). |
-| `apps/desktop/src/main/services/externalMcp/` | External MCP server integration (user-configured MCP servers). |
 
 ## Two-path tool dispatch
 
@@ -34,113 +30,81 @@ provider adapter:
 
 - **Claude V2:** the Claude Agent SDK's `unstable_v2_createSession`
   accepts the tools as `Record<string, ExecutableTool>`.
-- **Codex app-server:** tools are exposed via MCP (see below); the
-  Codex subprocess connects to ADE's MCP socket to call them.
+- **Codex app-server:** native provider tools are registered with the
+  Codex app-server. ADE workflow actions are available through the
+  `ade` CLI.
 - **OpenCode:** tools are registered with the OpenCode runtime.
-- **Cursor ACP:** Cursor exposes its own tool model; ADE-specific tools
-  surface via the MCP path.
+- **Cursor ACP:** Cursor exposes its own tool model; ADE workflow
+  actions are available through the `ade` CLI.
 
-### MCP path
+### ADE CLI path
 
-CLI-wrapped providers (Claude Code, Codex, Cursor) spawn as subprocesses
-and need a way to invoke ADE's tools. The MCP server bridges them:
+CLI-wrapped providers and ordinary shell sessions invoke ADE through the
+`ade` command:
 
-1. ADE's main process starts a Unix-domain socket server at the
-   resolved socket path (per-project, under `.ade/`).
-2. When a CLI subprocess spawns, its `mcp.json` points at the bundled
-   proxy (`apps/desktop/src/main/adeMcpProxy.ts`).
-3. The proxy connects to the socket and relays stdio both directions,
-   injecting identity env-vars into the JSON-RPC `initialize` payload.
-4. The MCP server in `apps/mcp-server/src/mcpServer.ts` handles the
-   request, filters tools by role, and dispatches.
+1. If ADE desktop is running, the CLI connects to the per-project
+   `.ade/ade.sock` socket.
+2. If desktop is not running, `--headless` bootstraps the same services
+   from the project directory.
+3. The CLI sends private ADE JSON-RPC methods such as
+   `ade/actions/list` and `ade/actions/call`.
+4. `apps/ade-cli/src/adeRpcServer.ts` filters actions by caller role and
+   dispatches to desktop services.
 
 ## Socket server
 
 In `main.ts`:
 
 ```ts
-const mcpSocketServer = net.createServer((conn) => {
+const rpcSocketServer = net.createServer((conn) => {
   const transport: JsonRpcTransport = {
     onData(callback) { conn.on("data", callback); },
     write(data) { conn.write(data); },
     close() { if (!conn.destroyed) conn.destroy(); },
   };
-  const mcpHandler = createMcpRequestHandler({
-    runtime: mcpRuntime,
+  const rpcHandler = createAdeRpcRequestHandler({
+    runtime: rpcRuntime,
     serverVersion: app.getVersion(),
-    onToolsListChanged: () => stop?.notify("notifications/tools/list_changed", {}),
+    onActionsListChanged: () => stop?.notify("ade/actions/list_changed", {}),
   });
-  const stop = startJsonRpcServer(mcpHandler, transport, { nonFatal: true });
+  const stop = startJsonRpcServer(rpcHandler, transport, { nonFatal: true });
   // ... cleanup wiring
 });
-mcpSocketServer.listen(mcpSocketPath);
+rpcSocketServer.listen(rpcSocketPath);
 ```
 
 Key properties:
 
-- **Per-project sockets.** When `ADE_MCP_SOCKET_PATH` is set, the first
+- **Per-project sockets.** When `ADE_RPC_SOCKET_PATH` is set, the first
   project context uses the env path; subsequent contexts append a
   base64-encoded project-root hash suffix to avoid EADDRINUSE.
 - **Stale socket cleanup.** On startup, the service attempts to
   `unlink` the socket in case a prior crash left it.
-- **Active connection tracking.** Each connection is registered in
-  `activeMcpConnections` so the service can destroy them cleanly on
-  shutdown.
-- **Live tool-list updates.** `onToolsListChanged` notifies clients
-  via `notifications/tools/list_changed` when external MCP servers
-  come online or the computer-use backend changes.
+- **Active connection tracking.** Each connection is registered so the
+  service can destroy it cleanly on shutdown.
+- **Live action-list updates.** `onActionsListChanged` notifies clients
+  via `ade/actions/list_changed` when the action surface changes.
 
-## Bundled proxy
+### Identity propagation
 
-`adeMcpProxy.ts` is the spawnable proxy shipped with each build. CLIs
-reference it in their MCP config, so the ADE environment variables
-flow through the subprocess into the proxy. The proxy's job:
+ADE identity now flows through environment variables and CLI flags:
 
-1. Resolve project root, workspace root, and socket path from
-   env/CLI args.
-2. Read `ADE_CHAT_SESSION_ID`, `ADE_MISSION_ID`, `ADE_RUN_ID`,
-   `ADE_STEP_ID`, `ADE_ATTEMPT_ID`, `ADE_OWNER_ID`, `ADE_DEFAULT_ROLE`,
-   and the `ADE_COMPUTER_USE_*` policy vars.
-3. Connect to the socket server. Connect retries `ENOENT`/`ECONNREFUSED`
-   every 150 ms for up to 5 s so a CLI that spawns the proxy
-   fractionally before the desktop's socket server is listening still
-   succeeds; other socket errors fail fast.
-4. For each incoming JSON-RPC message, if it is an `initialize`
-   request, inject the identity into `params.identity` via
-   `injectIdentityIntoInitializePayload`. Otherwise pass through
-   untouched.
-5. Forward socket output back to stdout.
+- The desktop app sets ADE context env vars when it launches managed
+  shells or agents.
+- The CLI reads `ADE_CHAT_SESSION_ID`, `ADE_MISSION_ID`, `ADE_RUN_ID`,
+  `ADE_STEP_ID`, `ADE_ATTEMPT_ID`, `ADE_OWNER_ID`, and
+  `ADE_DEFAULT_ROLE`.
+- The private RPC handler merges those values into its caller context
+  before action filtering.
 
-### Identity injection
+## ADE CLI: identity and role
 
-`injectIdentityIntoInitializePayload(payloadText, identity)`:
-
-- Parses the payload as JSON.
-- If it is an `initialize` request, merges the proxy identity into
-  `params.identity` (without overwriting fields the caller already
-  provided).
-- Preserves existing `computerUsePolicy` values in the payload; only
-  fills gaps with proxy values.
-- Returns the re-serialised payload.
-
-The `hasProxyIdentity()` gate ensures the proxy only does this work
-when at least one identity field is set; otherwise it relays stdin
-directly.
-
-## MCP server: identity and role
-
-When the server receives an `initialize` request:
+When the CLI connects to ADE RPC, it builds caller context from CLI
+flags and ADE environment variables:
 
 ```ts
-function parseInitializeIdentity(runtime, params): SessionIdentity {
-  const data = safeObject(params);
-  const identity = safeObject(data.identity);
-  const envContext = resolveEnvCallerContext();  // env vars
-  const identityRole = asOptionalTrimmedString(identity.role);
-  // Role from identity.role if valid, else env, else "external"
-  const validRole = envContext.role ?? "external";
-  // ... build SessionIdentity
-}
+const callerCtx = resolveEnvCallerContext();
+await connection.request("ade/initialize", { caller: callerCtx });
 ```
 
 Roles:
@@ -148,7 +112,7 @@ Roles:
 - `cto` -- CTO session. Gets CTO operator + Linear tools.
 - `orchestrator` -- Mission coordinator. Gets coordinator tools.
 - `agent` -- Worker agent. Gets agent-visible coordinator subset.
-- `external` -- External MCP clients. Gets only the base tool set.
+- `external` -- External callers. Gets only the base action set.
 - `evaluator` -- Evaluation runs.
 
 The role is locked to what the env context reports; the
@@ -158,26 +122,16 @@ access by forging `identity.role`.
 
 ## Tool filtering
 
-`listToolSpecsForSession` builds the visible tool list:
+`listAdeActionsForSession` builds the visible action list:
 
 ```ts
-async function listToolSpecsForSession(runtime, session): Promise<ToolSpec[]> {
+async function listAdeActionsForSession(runtime, session): Promise<AdeActionSpec[]> {
   const callerCtx = await resolveEffectiveCallerContext(runtime, session);
-  const externalToolSpecs = await runtime.externalMcpService?.listToolsForIdentity(...) ?? [];
-  const shouldHideLocalComputerUse = !localComputerUseAllowed || externalComputerUseAvailable;
-
-  const visibleBaseTools = shouldHideLocalComputerUse
-    ? TOOL_SPECS.filter((tool) => !LOCAL_COMPUTER_USE_TOOL_NAMES.has(tool.name))
-    : TOOL_SPECS;
-
-  const allVisibleTools = (() => {
-    if (callerCtx.role === "external" || !callerCtx.role) return [...visibleBaseTools, ...externalToolSpecs];
-    if (callerCtx.role === "agent") return [...visibleBaseTools, ...AGENT_VISIBLE_COORDINATOR_TOOL_SPECS, ...externalToolSpecs];
-    if (callerCtx.role === "cto") return [...visibleBaseTools, ...CTO_OPERATOR_TOOL_SPECS, ...CTO_LINEAR_SYNC_TOOL_SPECS, ...externalToolSpecs];
-    return [...visibleBaseTools, ...visibleCoordinatorTools, ...externalToolSpecs];  // orchestrator default
-  })();
-
-  return allVisibleTools.filter((tool) => !isToolHiddenForStandaloneChat(tool.name, callerCtx));
+  const baseActions = listBaseAdeActions(runtime);
+  const coordinatorActions = callerCtx.role === "orchestrator"
+    ? listCoordinatorActions(runtime)
+    : listAgentCoordinatorActions(runtime, callerCtx);
+  return filterActionsForCaller([...baseActions, ...coordinatorActions], callerCtx);
 }
 ```
 
@@ -196,22 +150,6 @@ coordinator tools) are stripped from the list.
 | `orchestrator` | Yes | Full coordinator tool set |
 | `evaluator` | Yes (limited; case-by-case) | No |
 
-## External MCP servers
-
-Users can configure additional MCP servers (e.g., `mcp__linear__*`,
-`mcp__github__*`) via Settings -> Context & Docs -> External MCP. The
-`externalMcpService` manages them:
-
-- `listToolsForIdentity(identity)` returns tools scoped to the
-  identity's `externalMcpAccess` policy.
-- Tool names are namespaced as `mcp__<serverName>__<toolName>`.
-- `systemPrompt.ts`'s `normalizeToolName` unwraps this prefix when
-  deciding which prompt sections to emit.
-
-When an external MCP server is added, removed, or reconnects, the
-`onToolsListChanged` callback fires and clients receive
-`notifications/tools/list_changed`.
-
 ## Rate limits
 
 Per-session rate limits (tracked in `SessionState`):
@@ -225,13 +163,13 @@ calls return a structured error with retry-after guidance.
 
 ## Capability mode
 
-When a session starts, the MCP server records the resolved
+When a session starts, the ADE CLI records the resolved
 `capabilityMode` for the session log:
 
-- `full_mcp` -- the session connected to the ADE MCP server and the
-  tool list resolved successfully.
-- `fallback` -- the MCP connection failed; only the adapter's
-  built-in tools are available.
+- `full_tooling` -- the session connected to the ADE CLI and the
+  action list resolved successfully.
+- `fallback` -- the ADE CLI/action bridge was unavailable; only the
+  provider adapter's built-in tools are available.
 
 `agentChatService` persists this mode on the session log entry so
 history shows which mode the agent actually ran in.
@@ -240,25 +178,24 @@ history shows which mode the agent actually ran in.
 
 For a tool call:
 
-1. Client sends `tools/call` with `{ name, arguments }`.
-2. MCP server validates against the JSON schema in the tool spec.
+1. Client sends `ade/actions/call` with `{ name, arguments }`.
+2. ADE CLI validates against the JSON schema in the action spec.
 3. `canCallerAccessCoordinatorTool(name, callerCtx)` checks whether
-   the caller may invoke the tool.
+   the caller may invoke coordinator actions.
 4. Rate limit check (for rate-limited tools).
 5. Dispatch to the implementation:
-   - `TOOL_SPECS` tools -> inline handlers in `mcpServer.ts`.
+   - Built-in ADE actions -> inline handlers in `adeRpcServer.ts`.
    - `CTO_OPERATOR_TOOL_SPECS` -> `createCtoOperatorTools()` output.
    - `COORDINATOR_TOOL_SPECS` -> `createCoordinatorToolSet()` output.
    - `LINEAR_SYNC_TOOL_SPECS` -> Linear tool implementations.
-   - External MCP tools -> forwarded to the remote server.
 6. Result is returned as structured JSON.
 7. If the tool mutates resources visible to other clients, the
-   server may fire `notifications/resources/list_changed` or
-   `notifications/tools/list_changed`.
+   server may fire `ade/resources/list_changed` or
+   `ade/actions/list_changed`.
 
 ## External CLI detection
 
-`agentToolsService.ts` is unrelated to the MCP registration path --
+`agentToolsService.ts` is unrelated to the ADE CLI registration path --
 it probes the user's PATH for external AI tools:
 
 ```ts
@@ -274,51 +211,37 @@ const TOOL_SPECS: ToolSpec[] = [
 Results are cached for 30 seconds. The UI uses this to show
 "installed" badges for each tool.
 
-## Launch modes
+## CLI modes
 
-`adeMcpLaunch.ts` resolves one of three launch modes:
+The `ade` command has two runtime modes:
 
-| Mode | When | Command |
+| Mode | When | Behavior |
 |---|---|---|
-| `bundled_proxy` | Packaged production build with the proxy script available under `process.resourcesPath`. | Spawns the proxy Node script with `--project-root`, `--workspace-root`. |
-| `headless_built` | Dev or packaged where the compiled headless MCP server binary is present. | Spawns the compiled binary directly. |
-| `headless_source` | Local dev with TypeScript sources only. | Spawns `tsx` against the source entry. |
+| Socket-backed | ADE desktop is running for the project. | Connects to `.ade/ade.sock` and calls desktop-owned services. |
+| Headless | `--headless` is passed or the socket is unavailable. | Bootstraps the project services directly from `apps/ade-cli/src/bootstrap.ts`. |
 
-The launch result includes `command`, `cmdArgs`, `env`, `entryPath`,
-`socketPath`, `packaged`, and `resourcesPath` so callers can diagnose
-packaging or PATH issues.
+Both modes expose the same action protocol and output formatters. Agent
+prompts should prefer documented commands such as `ade lanes list`,
+`ade prs path-to-merge`, or the generic `ade actions run <domain.action>`.
 
 ## Fragile and tricky wiring
 
-- **Identity must come from env, not payload.** `parseInitializeIdentity`
-  treats `identity.role` as advisory and reconciles with
-  `resolveEnvCallerContext()`. A rogue client could otherwise claim to
-  be the orchestrator. Keep this asymmetry when extending.
-- **Socket path collision across projects.** `ADE_MCP_SOCKET_PATH`
+- **Identity must come from env or trusted CLI flags.** A rogue client
+  should not be able to claim elevated role access by inventing caller
+  metadata.
+- **Socket path collision across projects.** `ADE_RPC_SOCKET_PATH`
   only hands out the raw path to the first project; subsequent ones
-  get a hash suffix. Tests and external tooling must use the suffix
-  to find the right socket.
+  get a hash suffix. Agents should use `ade doctor` to inspect the
+  resolved path rather than guessing.
 - **Stale socket after crash.** The service deletes any leftover
   socket before binding. If two instances start simultaneously (rare
   but possible in CI), the second may delete the first's socket and
   EADDRINUSE on re-bind. `packagedRuntimeSmoke.ts` covers this
   sequence.
-- **`notifications/tools/list_changed` storms.** Every external MCP
-  add/remove/reconnect fires the notification; clients that re-fetch
-  aggressively can overload the server. The current code debounces
-  within each client, but large external MCP configs can still cause
-  bursts.
-- **Standalone-chat detection uses env context, not payload.** If the
-  proxy forgets to forward `ADE_CHAT_SESSION_ID`, the session becomes
-  `external` role instead of standalone -- the filter fails open for
-  coordinator tools unless the caller also lacks mission context.
-  Always make sure the proxy sets the env vars.
-- **External MCP tool names may collide with ADE tool names.** The
-  `mcp__<server>__<tool>` prefix keeps the namespace flat; ADE's
-  `normalizeToolName` unwraps it for prompt composition. If an
-  external MCP uses double-underscores in its server name, the
-  regex misidentifies the structure. Validate server names at
-  registration time.
+- **Standalone-chat detection uses env context.** If a managed shell
+  forgets to forward `ADE_CHAT_SESSION_ID`, the session becomes
+  `external` role instead of standalone. Always make sure managed
+  runtime launchers set ADE context env vars.
 - **Rate-limit events array grows unbounded.** `SessionState.askUserEvents`
   etc. are arrays of timestamps; old entries are trimmed at the
   next rate-limit check. Very bursty sessions can transiently carry
@@ -328,11 +251,11 @@ packaging or PATH issues.
   who rely on shell aliases for their CLI install paths see the tool
   as "not installed". Either point `TOOL_SPECS[i].command` at the
   real binary path or have the user add the install dir to PATH.
-- **`spawn_agent` tool vs. universal `spawnChat`.** The MCP
-  `spawn_agent` tool spawns a tracked terminal with Codex/Claude CLI
-  via PTY. The CTO operator tool `spawnChat` creates an in-app chat
-  session. Different use cases, easy to confuse -- watch which one
-  is in scope for the caller role.
+- **`ade agent spawn` vs. universal `spawnChat`.** The CLI command
+  spawns a tracked terminal with Codex/Claude CLI via PTY. The CTO
+  operator tool `spawnChat` creates an in-app chat session. Different
+  use cases, easy to confuse -- watch which one is in scope for the
+  caller role.
 
 ## Related docs
 
@@ -343,5 +266,3 @@ packaging or PATH issues.
   implementations and their tiers.
 - [Chat Agent Routing](../chat/agent-routing.md) -- how providers
   consume the tool set.
-</content>
-</invoke>

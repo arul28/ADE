@@ -5,7 +5,6 @@ import YAML from "yaml";
 import type {
   CtoCoreMemory,
   CtoIdentity,
-  ExternalMcpAccessPolicy,
   OpenclawContextPolicy,
   CtoOnboardingState,
   CtoSessionLogEntry,
@@ -35,7 +34,7 @@ type AppendCtoSessionLogArgs = {
   endedAt: string | null;
   provider: string;
   modelId: string | null;
-  capabilityMode: "full_mcp" | "fallback";
+  capabilityMode: "full_tooling" | "fallback";
 };
 
 type AppendCtoSubordinateActivityArgs = {
@@ -86,6 +85,7 @@ const IMMUTABLE_CTO_DOCTRINE = [
   "- All ADE internals are fair game. The user can request any action: launching chats, opening terminals, running CLI tools, spawning agents, managing lanes, etc. Never refuse an action that ADE supports.",
   "- When the user asks about something you can look up (lane status, PR checks, test results), call the tool first and report facts. Do not guess.",
   "- When you are unsure which tool to use, consult the capability manifest in your system prompt before asking the user.",
+  "- Terminal-capable sessions can use the bundled `ade` CLI for internal ADE actions: `ade doctor` for readiness, `ade actions list --text` for discovery, typed commands first, `ade actions run ...` as the escape hatch, `--json` for structured output, and `--text` for readable output.",
 ].join("\n");
 
 const CTO_MEMORY_OPERATING_MODEL = [
@@ -156,7 +156,7 @@ const CTO_ENVIRONMENT_KNOWLEDGE = [
   "  /graph — Workspace dependency graph visualization showing lane relationships.",
   "  /history — Operation history timeline showing all past actions.",
   "  /automations — Automation rule builder: create rules triggered by events (PR opened, test failed, etc.).",
-  "  /settings — App settings: AI providers, GitHub token, Linear integration, keybindings, usage budgets, MCP servers.",
+  "  /settings — App settings: AI providers, GitHub token, Linear integration, keybindings, usage budgets, and external connectors.",
   "  When an action should be opened in ADE, return a navigation suggestion. Never silently switch tabs.",
   "",
   "## Model Selection",
@@ -173,12 +173,14 @@ const CTO_ENVIRONMENT_KNOWLEDGE = [
   "Chats vs Terminals — both are valid, match the user's intent:",
   "  - spawnChat: Creates a native ADE chat session with AI, streaming, tool approval, and service integration. Use when the user wants an AI agent, a chat, or AI-powered work.",
   "  - createTerminal: Opens a shell (PTY) for raw CLI commands. Use when the user wants a terminal, shell, or to run a specific CLI tool.",
-  "  - spawn_agent is an MCP tool for Claude CLI subprocesses in tracked terminals. It differs from spawnChat — when the user says 'start a chat' or 'launch an agent', prefer spawnChat. But if the user explicitly wants a CLI agent or terminal-based tool, createTerminal or spawn_agent are fine.",
+  "  - spawnChat creates ADE-managed agent chats. createTerminal opens a raw shell for CLI commands. When the user says 'start a chat' or 'launch an agent', prefer spawnChat unless they explicitly ask for a terminal.",
   "  - Example: 'Launch a chat with opus' → spawnChat({ modelId: 'anthropic/claude-opus-4-7', ... }). 'Open a terminal' → createTerminal. 'Run npm test' → createTerminal({ startupCommand: 'npm test' }).",
   "",
   "Tool calling convention:",
-  "  - ADE tools are available as MCP tools. They may be prefixed (e.g., mcp__ade__spawnChat). Call them directly by name.",
-  "  - If a tool from the manifest below is not in your immediate tool list, try calling it directly before concluding it does not exist.",
+  "  - ADE actions are available through ADE's native action surface and the `ade` CLI in terminal-capable sessions.",
+  "  - In terminal-capable sessions, run `ade doctor` for readiness, `ade actions list --text` for discovery, typed commands such as `ade lanes list --text` or `ade prs checks <pr> --text` first, and `ade actions run ...` as the escape hatch.",
+  "  - Use `--json` when another agent or script needs stable fields; use `--text` when a human-readable summary is enough.",
+  "  - If a tool from the manifest below is not in your immediate tool list, use the closest ADE CLI command or report the missing capability clearly.",
   "",
   "## PR Lifecycle in ADE",
   "",
@@ -524,7 +526,6 @@ function normalizeIdentity(input: unknown): CtoIdentity | null {
     source.communicationStyle && typeof source.communicationStyle === "object"
       ? (source.communicationStyle as Record<string, unknown>)
       : {};
-  const externalMcpAccess = normalizeExternalMcpAccess(source.externalMcpAccess);
   const openclawContextPolicy = normalizeOpenclawContextPolicy(source.openclawContextPolicy);
   const onboardingState = normalizeOnboardingState(source.onboardingState);
   const personality = normalizePersonalityPreset(source.personality);
@@ -593,24 +594,9 @@ function normalizeIdentity(input: unknown): CtoIdentity | null {
         ? Math.max(1, Math.floor(Number(memoryPolicyRaw.temporalDecayHalfLifeDays)))
         : 30,
     },
-    ...(externalMcpAccess ? { externalMcpAccess } : {}),
     ...(openclawContextPolicy ? { openclawContextPolicy } : {}),
     ...(onboardingState ? { onboardingState } : {}),
     updatedAt,
-  };
-}
-
-function normalizeExternalMcpAccess(value: unknown): ExternalMcpAccessPolicy | undefined {
-  if (!value || typeof value !== "object") return undefined;
-  const source = value as Record<string, unknown>;
-  const toStringArray = (input: unknown): string[] =>
-    Array.isArray(input)
-      ? [...new Set(input.map((entry) => String(entry ?? "").trim()).filter((entry) => entry.length > 0))]
-      : [];
-  return {
-    allowAll: source.allowAll !== false,
-    allowedServers: toStringArray(source.allowedServers),
-    blockedServers: toStringArray(source.blockedServers),
   };
 }
 
@@ -687,7 +673,9 @@ function normalizeSessionLogEntry(input: unknown): CtoSessionLogEntry | null {
   const provider = typeof source.provider === "string" ? source.provider.trim() : "";
   if (!sessionId || !createdAt || !summary || !startedAt || !provider) return null;
 
-  const capabilityMode = source.capabilityMode === "full_mcp" ? "full_mcp" : "fallback";
+  const capabilityMode = source.capabilityMode === "full_tooling" || source.capabilityMode === "full_mcp"
+    ? "full_tooling"
+    : "fallback";
   return {
     id: typeof source.id === "string" && source.id.trim().length ? source.id.trim() : randomUUID(),
     prevHash: typeof source.prevHash === "string" && source.prevHash.trim().length ? source.prevHash.trim() : null,
@@ -741,11 +729,6 @@ function makeDefaultIdentity(): CtoIdentity {
       compactionThreshold: 0.7,
       preCompactionFlush: true,
       temporalDecayHalfLifeDays: 30,
-    },
-    externalMcpAccess: {
-      allowAll: true,
-      allowedServers: [],
-      blockedServers: [],
     },
     openclawContextPolicy: {
       shareMode: "filtered",
@@ -1380,7 +1363,6 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
       ...patch,
       modelPreferences: { ...current.modelPreferences, ...(patch.modelPreferences ?? {}) },
       memoryPolicy: { ...current.memoryPolicy, ...(patch.memoryPolicy ?? {}) },
-      externalMcpAccess: normalizeExternalMcpAccess(patch.externalMcpAccess) ?? current.externalMcpAccess,
       openclawContextPolicy: normalizeOpenclawContextPolicy(patch.openclawContextPolicy) ?? current.openclawContextPolicy,
       version: current.version + 1,
       updatedAt: timestamp,

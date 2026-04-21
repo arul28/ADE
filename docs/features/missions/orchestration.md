@@ -25,7 +25,7 @@ All in `apps/desktop/src/main/services/orchestrator/`.
 - `workerTracking.ts` — worker session tracking, per-attempt artifact extraction (`extractAndRegisterArtifacts`), planning-phase plan-artifact persistence gate, and `planner_plan_missing` intervention auto-resolution on successful re-planning.
 - `stepPolicyResolver.ts` — `ResolvedOrchestratorRuntimeConfig`, step-level policy merging, autopilot config, file-claim scope (`doFileClaimsOverlap`, `doesFileClaimMatchPath`), repo-relative path normalization.
 - `baseOrchestratorAdapter.ts` — `buildFullPrompt` (the worker prompt builder), shell escaping, inline decoding.
-- `providerOrchestratorAdapter.ts` — provider-specific launchers (Claude CLI, Codex CLI, MCP), `resolveAdeMcpServerLaunch`, `cleanupMcpConfigFile`.
+- `providerOrchestratorAdapter.ts` — provider-specific launchers for Claude CLI, Codex CLI, and managed OpenCode-backed execution.
 - `promptInspector.ts` — coordinator / planning / worker prompt inspectors for the mission UI.
 - `runtimeInterventionsSteeringErrors.test.ts` — runtime intervention behavior tests.
 - `planningFlowAndHandoffs.test.ts`, `planningGapsFixes.test.ts` — planning lifecycle tests.

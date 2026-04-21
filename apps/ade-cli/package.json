@@ -1,11 +1,22 @@
 {
-  "name": "ade-mcp-server",
-  "private": true,
+  "name": "ade-cli",
   "version": "0.0.0",
+  "description": "Agent-focused command-line interface for ADE",
   "type": "module",
+  "bin": {
+    "ade": "dist/cli.cjs"
+  },
+  "files": [
+    "dist/**/*",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=22.0.0"
+  },
   "scripts": {
-    "dev": "tsx src/index.ts",
-    "build": "tsup",
+    "cli:dev": "npm run build --silent && node dist/cli.cjs",
+    "dev": "tsx src/cli.ts",
+    "build": "tsup && node ./scripts/verify-built-cli.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run"
   },

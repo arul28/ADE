@@ -7,8 +7,6 @@ import {
   reportProviderRuntimeReady,
 } from "./providerRuntimeHealth";
 import { resolveClaudeCodeExecutable } from "./claudeCodeExecutable";
-import { normalizeCliMcpServers } from "./cliMcpConfig";
-import { resolveDesktopAdeMcpLaunch, resolveRepoRuntimeRoot } from "../runtime/adeMcpLaunch";
 
 const PROBE_TIMEOUT_MS = 20_000;
 const PROBE_CACHE_TTL_MS = 30_000;
@@ -87,22 +85,6 @@ function cacheResult(projectRoot: string, result: ClaudeRuntimeProbeResult): Cla
   return result;
 }
 
-function resolveProbeMcpServers(projectRoot: string): Record<string, Record<string, unknown>> | undefined {
-  const launch = resolveDesktopAdeMcpLaunch({
-    projectRoot,
-    workspaceRoot: projectRoot,
-    runtimeRoot: resolveRepoRuntimeRoot(),
-    defaultRole: "external",
-  });
-  return normalizeCliMcpServers("claude", {
-    ade: {
-      command: launch.command,
-      args: launch.cmdArgs,
-      env: launch.env,
-    },
-  });
-}
-
 function publishResult(result: ClaudeRuntimeProbeResult): void {
   switch (result.state) {
     case "ready":
@@ -157,7 +139,6 @@ export async function probeClaudeRuntimeHealth(args: {
           permissionMode: "plan",
           tools: [],
           pathToClaudeCodeExecutable: claudeExecutable.path,
-          mcpServers: resolveProbeMcpServers(projectRoot) as any,
           abortController,
         },
       });

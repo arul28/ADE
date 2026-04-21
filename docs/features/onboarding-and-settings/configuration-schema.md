@@ -265,7 +265,6 @@ type AiConfig = {
   apiKeys?: Record<string, string>;       // stored encrypted per provider
   localProviders?: AiLocalProviderConfigs;
   workerSafety?: WorkerSafetyPolicy;
-  mcpServers?: Record<string, unknown>;
   featureModelOverrides?: Partial<Record<AiFeatureKey, string>>;
   featureReasoningOverrides?: Partial<Record<AiFeatureKey, string | null>>;
   sessionIntelligence?: SessionIntelligenceConfig;

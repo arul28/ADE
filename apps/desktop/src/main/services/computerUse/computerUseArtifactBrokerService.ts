@@ -30,7 +30,6 @@ import type { createOrchestratorService } from "../orchestrator/orchestratorServ
 import type { Logger } from "../logging/logger";
 import type { AdeDb } from "../state/kvDb";
 import type { SqlValue } from "../state/kvDb";
-import type { createExternalMcpService } from "../externalMcp/externalMcpService";
 import {
   fileExists,
   isRecord,
@@ -150,17 +149,6 @@ function dedupeOwners(owners: ComputerUseArtifactOwner[]): ComputerUseArtifactOw
   return result;
 }
 
-function inferSupportedKindsFromExternalTool(args: { name: string; description?: string | null }): ComputerUseArtifactKind[] {
-  const haystack = `${args.name} ${args.description ?? ""}`.toLowerCase();
-  const kinds = new Set<ComputerUseArtifactKind>();
-  if (/screenshot|snapshot|annotate|screen/.test(haystack)) kinds.add("screenshot");
-  if (/video|record/.test(haystack)) kinds.add("video_recording");
-  if (/trace/.test(haystack)) kinds.add("browser_trace");
-  if (/verification|verify|annotate|snapshot/.test(haystack)) kinds.add("browser_verification");
-  if (/console|log/.test(haystack)) kinds.add("console_logs");
-  return [...kinds];
-}
-
 function inferArtifactExtension(input: ComputerUseArtifactInput, kind: ComputerUseArtifactKind): string {
   const fromPath = toOptionalString(input.path) ?? toOptionalString(input.uri);
   if (fromPath) {
@@ -191,11 +179,10 @@ export function createComputerUseArtifactBrokerService(args: {
   projectRoot: string;
   missionService: ReturnType<typeof createMissionService>;
   orchestratorService: ReturnType<typeof createOrchestratorService>;
-  externalMcpService?: ReturnType<typeof createExternalMcpService> | null;
   logger?: Logger | null;
   onEvent?: (payload: ComputerUseEventPayload) => void;
 }) {
-  const { db, projectId, projectRoot, missionService, orchestratorService, externalMcpService, onEvent } = args;
+  const { db, projectId, projectRoot, missionService, orchestratorService, onEvent } = args;
   const layout = resolveAdeLayout(projectRoot);
   const allowedImportRoots = Array.from(new Set([
     layout.artifactsDir,
@@ -508,25 +495,21 @@ export function createComputerUseArtifactBrokerService(args: {
     if (local.proofRequirements.console_logs.available) localKinds.push("console_logs");
 
     const backends: ComputerUseExternalBackendStatus[] = [];
-    for (const snapshot of externalMcpService?.getSnapshots() ?? []) {
-      const kinds = new Set<ComputerUseArtifactKind>();
-      for (const tool of snapshot.tools) {
-        for (const kind of inferSupportedKindsFromExternalTool({ name: tool.name, description: tool.description })) {
-          kinds.add(kind);
-        }
-      }
-      if (kinds.size === 0) continue;
-      backends.push({
-        name: snapshot.config.name,
-        style: "external_mcp",
-        available: snapshot.state === "connected",
-        state: snapshot.state,
-        detail: snapshot.state === "connected"
-          ? `Connected MCP backend with ${snapshot.toolCount} tool(s).`
-          : snapshot.lastError ?? `State: ${snapshot.state}`,
-        supportedKinds: [...kinds],
-      });
-    }
+    const ghostInstalled = commandExists("ghost");
+    backends.push({
+      name: "Ghost OS",
+      style: "external_cli",
+      available: ghostInstalled,
+      state: ghostInstalled ? "installed" : "missing",
+      detail: ghostInstalled
+        ? "Ghost OS CLI is installed and can produce artifacts for ADE ingestion."
+        : "Ghost OS CLI is not installed on this machine.",
+      supportedKinds: [
+        "screenshot",
+        "video_recording",
+        "browser_verification",
+      ],
+    });
 
     const agentBrowserInstalled = commandExists("agent-browser");
     backends.push({

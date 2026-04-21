@@ -93,7 +93,7 @@ export const DEFAULT_CODEX_SANDBOX_PERMISSIONS = "workspace-write";
 /**
  * Default sandbox configuration for API-model workers.
  * Based on the Claude sandbox rules in .claude/hooks/sandbox.py,
- * filtered to universal patterns (no project-specific AWS/MCP rules).
+ * filtered to universal patterns (no project-specific integration rules).
  * CLI-wrapped models (Claude, Codex) skip this — they have native sandboxing.
  */
 export const DEFAULT_WORKER_SANDBOX_CONFIG: WorkerSandboxConfig = {

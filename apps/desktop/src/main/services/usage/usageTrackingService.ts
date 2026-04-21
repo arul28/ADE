@@ -326,7 +326,7 @@ async function pollCodexUsage(logger: Logger): Promise<{ windows: UsageWindow[];
     // Fall through to CLI RPC
   }
 
-  // Fallback: Codex CLI RPC
+  // Fallback: Codex CLI JSON-RPC
   try {
     const rpcResult = await pollCodexViaCliRpc(logger);
     windows.push(...rpcResult.windows);
@@ -347,7 +347,7 @@ async function pollCodexViaCliRpc(logger: Logger): Promise<{ windows: UsageWindo
   const errors: string[] = [];
 
   try {
-    // Initialize RPC connection
+    // Initialize the Codex CLI JSON-RPC connection.
     const initPayload = JSON.stringify({
       jsonrpc: "2.0",
       id: 0,
@@ -356,7 +356,7 @@ async function pollCodexViaCliRpc(logger: Logger): Promise<{ windows: UsageWindo
         protocolVersion: "2025-06-18",
         capabilities: { elicitation: {} },
         clientInfo: {
-          name: "codex-mcp-client",
+          name: "ade-codex-rpc-client",
           title: "Codex",
           version: "0.47.0",
         },

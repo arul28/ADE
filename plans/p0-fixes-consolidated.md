@@ -108,7 +108,7 @@ export type WorkerSandboxConfig = {
 ```
 
 **File:** New file or in orchestrator constants — `defaultSandboxConfig`
-- Base list derived from sandbox.py (without personal AWS/MCP stuff):
+- Base list derived from sandbox.py (without personal AWS/ADE CLI stuff):
   - blockedCommands: rm -rf /, sudo, eval, curl|sh, chmod 777, mkfs, dd, shutdown, reboot, fork bomb
   - safeCommands: npm, pnpm, yarn, git status/diff/log, ls, node, vitest, eslint, prettier, tsc
   - protectedFiles: .env, secrets.json, credentials.json, .pem, .key, .git/

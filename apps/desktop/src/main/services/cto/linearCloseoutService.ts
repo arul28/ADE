@@ -136,6 +136,7 @@ export function createLinearCloseoutService(args: {
     }
 
     const owners: ComputerUseArtifactOwner[] = [];
+    owners.push({ kind: "orchestrator_run", id: input.run.id });
     if (input.run.linkedSessionId) {
       owners.push({ kind: "chat_session", id: input.run.linkedSessionId });
     }
