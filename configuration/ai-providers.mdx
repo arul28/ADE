@@ -287,7 +287,7 @@ API keys are handled according to ADE's trust boundary model:
 - **Storage**: Keys live only in `local.secret.yaml` on disk. ADE reads them into main process memory at startup.
 - **In-memory handling**: Once loaded, keys are held in the main process (Electron main) only. They are never passed to the renderer process.
 - **SQLite**: Keys are never written to ADE's SQLite database. The database stores session metadata, costs, and audit records — not credentials.
-- **Log redaction**: Any key value that appears in log output (e.g., from a misconfigured MCP tool) is automatically redacted and replaced with `***`.
+- **Log redaction**: Any key value that appears in log output is automatically redacted and replaced with `***`.
 - **IPC bridge**: The preload bridge does not expose any IPC channel that returns raw API key values to the renderer.
 
 ---
@@ -320,11 +320,11 @@ API keys are handled according to ADE's trust boundary model:
 ## What's Next
 
 <CardGroup cols={2}>
-  <Card title="MCP Servers" icon="server" href="/configuration/mcp-servers">
-    Connect external MCP servers to give agents tools beyond ADE's built-ins.
-  </Card>
   <Card title="Settings" icon="gear" href="/configuration/settings">
     Configure usage graphs, notification thresholds, and per-agent model overrides.
+  </Card>
+  <Card title="Permissions" icon="shield-check" href="/configuration/permissions">
+    Review the trust boundary model and configure per-agent access rules.
   </Card>
   <Card title="Missions" icon="bullseye" href="/missions/overview">
     Learn how model routing rules apply during mission planning and execution phases.

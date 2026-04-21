@@ -112,16 +112,6 @@ import type {
   CtoListLinearIngressEventsArgs,
   LinearWorkflowConfig,
   OpenclawBridgeStatus,
-  ExternalConnectionAuthRecord,
-  ExternalConnectionAuthRecordInput,
-  ExternalConnectionAuthStatus,
-  ExternalConnectionOAuthSessionResult,
-  ExternalConnectionOAuthSessionStartResult,
-  ExternalMcpEventPayload,
-  ExternalMcpManagedAuthConfig,
-  ExternalMcpServerConfig,
-  ExternalMcpServerSnapshot,
-  ExternalMcpUsageEvent,
   AddMissionArtifactArgs,
   AddMissionInterventionArgs,
   AutomationsEventPayload,
@@ -742,68 +732,6 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.on(IPC.syncEvent, listener);
       return () => ipcRenderer.removeListener(IPC.syncEvent, listener);
     },
-  },
-  externalMcp: {
-    listServers: async (): Promise<ExternalMcpServerSnapshot[]> =>
-      ipcRenderer.invoke(IPC.externalMcpListServers),
-    listConfigs: async (): Promise<ExternalMcpServerConfig[]> =>
-      ipcRenderer.invoke(IPC.externalMcpListConfigs),
-    getUsageEvents: async (
-      args: { limit?: number } = {},
-    ): Promise<ExternalMcpUsageEvent[]> =>
-      ipcRenderer.invoke(IPC.externalMcpGetUsageEvents, args),
-    listAuthRecords: async (): Promise<ExternalConnectionAuthRecord[]> =>
-      ipcRenderer.invoke(IPC.externalMcpListAuthRecords),
-    onEvent: (cb: (event: ExternalMcpEventPayload) => void) => {
-      const listener = (
-        _event: Electron.IpcRendererEvent,
-        payload: ExternalMcpEventPayload,
-      ) => cb(payload);
-      ipcRenderer.on(IPC.externalMcpEvent, listener);
-      return () => ipcRenderer.removeListener(IPC.externalMcpEvent, listener);
-    },
-    connectServer: async (
-      serverName: string,
-    ): Promise<ExternalMcpServerSnapshot> =>
-      ipcRenderer.invoke(IPC.externalMcpConnectServer, { serverName }),
-    disconnectServer: async (
-      serverName: string,
-    ): Promise<ExternalMcpServerSnapshot | null> =>
-      ipcRenderer.invoke(IPC.externalMcpDisconnectServer, { serverName }),
-    testServer: async (
-      config: ExternalMcpServerConfig,
-    ): Promise<ExternalMcpServerSnapshot> =>
-      ipcRenderer.invoke(IPC.externalMcpTestServer, { config }),
-    saveServer: async (
-      config: ExternalMcpServerConfig,
-    ): Promise<ExternalMcpServerConfig[]> =>
-      ipcRenderer.invoke(IPC.externalMcpSaveServer, { config }),
-    removeServer: async (
-      serverName: string,
-    ): Promise<ExternalMcpServerConfig[]> =>
-      ipcRenderer.invoke(IPC.externalMcpRemoveServer, { serverName }),
-    saveAuthRecord: async (
-      record: ExternalConnectionAuthRecordInput,
-    ): Promise<ExternalConnectionAuthRecord> =>
-      ipcRenderer.invoke(IPC.externalMcpSaveAuthRecord, { record }),
-    removeAuthRecord: async (
-      authId: string,
-    ): Promise<ExternalConnectionAuthRecord[]> =>
-      ipcRenderer.invoke(IPC.externalMcpRemoveAuthRecord, { authId }),
-    getAuthStatus: async (
-      binding?: ExternalMcpManagedAuthConfig | null,
-    ): Promise<ExternalConnectionAuthStatus> =>
-      ipcRenderer.invoke(IPC.externalMcpGetAuthStatus, {
-        binding: binding ?? null,
-      }),
-    startOAuthSession: async (
-      authId: string,
-    ): Promise<ExternalConnectionOAuthSessionStartResult> =>
-      ipcRenderer.invoke(IPC.externalMcpStartOAuthSession, { authId }),
-    getOAuthSession: async (
-      sessionId: string,
-    ): Promise<ExternalConnectionOAuthSessionResult> =>
-      ipcRenderer.invoke(IPC.externalMcpGetOAuthSession, { sessionId }),
   },
   agentTools: {
     detect: async (): Promise<AgentTool[]> =>

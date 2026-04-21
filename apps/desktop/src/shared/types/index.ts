@@ -14,7 +14,6 @@ export * from "./sessions";
 export * from "./chat";
 export * from "./cto";
 export * from "./openclaw";
-export * from "./externalMcp";
 export * from "./computerUseArtifacts";
 export * from "./missions";
 export * from "./orchestrator";

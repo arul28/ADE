@@ -6,7 +6,7 @@
 #   ./scripts/dogfood.sh <lane-name>      # run code from a lane's worktree
 #
 # Both instances share the same DB (lanes, missions, configs stay in sync).
-# The dogfood instance uses an isolated MCP socket. The sync host stays enabled
+# The dogfood instance uses an isolated ADE CLI socket. The sync host stays enabled
 # by default and will retry alternate ports if your primary ADE window already
 # owns the default port, which keeps mobile pairing usable while dogfooding.
 # Set ADE_DOGFOOD_DISABLE_SYNC_HOST=1 to opt out. When run from a lane
@@ -16,7 +16,7 @@
 set -euo pipefail
 
 MAIN_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-SOCKET_PATH="/tmp/ade-dogfood-mcp.sock"
+SOCKET_PATH="/tmp/ade-dogfood-ade-cli.sock"
 
 if [ -n "${1:-}" ]; then
   # Find the lane worktree by name/slug match
@@ -55,6 +55,6 @@ echo ""
 
 cd "$DEV_DIR"
 ADE_PROJECT_ROOT="$MAIN_ROOT" \
-  ADE_MCP_SOCKET_PATH="$SOCKET_PATH" \
+  ADE_ADE CLI_SOCKET_PATH="$SOCKET_PATH" \
   ADE_DISABLE_SYNC_HOST="${ADE_DOGFOOD_DISABLE_SYNC_HOST:-0}" \
   npm run dev

@@ -316,11 +316,11 @@ describe("proof observer integration with synthetic tool_result", () => {
     });
   });
 
-  it("proof observer handles MCP tool with artifact in args", () => {
+  it("proof observer handles namespaced external CLI tool with artifact in args", () => {
     const { observer, requests } = createHarness();
 
     const synthetic = maybeSyntheticToolResult(
-      "mcp__playwright__browser_take_screenshot",
+      "playwright.browser_take_screenshot",
       { outputPath: "/tmp/playwright-shot.png" },
       "claude-tool:turn3:0",
       "turn3",
@@ -330,7 +330,7 @@ describe("proof observer integration with synthetic tool_result", () => {
 
     expect(requests).toHaveLength(1);
     expect(requests[0]?.backend).toMatchObject({
-      style: "external_mcp",
+      style: "external_cli",
       name: "playwright",
     });
     expect(requests[0]?.inputs).toEqual([

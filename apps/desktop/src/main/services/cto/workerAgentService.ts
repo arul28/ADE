@@ -4,7 +4,6 @@ import { randomUUID } from "node:crypto";
 import YAML from "yaml";
 import type {
   AgentCoreMemory,
-  ExternalMcpAccessPolicy,
   AgentIdentity,
   AgentLinearIdentity,
   AgentRole,
@@ -52,7 +51,7 @@ type AppendWorkerSessionLogArgs = {
   endedAt: string | null;
   provider: string;
   modelId: string | null;
-  capabilityMode: "full_mcp" | "fallback";
+  capabilityMode: "full_tooling" | "fallback";
 };
 
 const ALLOWED_ROLES = new Set<AgentRole>([
@@ -153,7 +152,7 @@ function normalizeWorkerSessionLogEntry(input: unknown): AgentSessionLogEntry | 
   const provider = typeof source.provider === "string" ? source.provider.trim() : "";
   if (!sessionId || !createdAt || !summary || !startedAt || !provider) return null;
 
-  const capabilityMode = source.capabilityMode === "full_mcp" ? "full_mcp" : "fallback";
+  const capabilityMode = source.capabilityMode === "full_tooling" ? "full_tooling" : "fallback";
   return {
     id: typeof source.id === "string" && source.id.trim().length ? source.id.trim() : randomUUID(),
     prevHash: typeof source.prevHash === "string" && source.prevHash.trim().length ? source.prevHash.trim() : null,
@@ -207,9 +206,6 @@ function normalizeIdentity(input: unknown): AgentIdentity | null {
     ...(normalizeLinearIdentity(source.linearIdentity)
       ? { linearIdentity: normalizeLinearIdentity(source.linearIdentity)! }
       : {}),
-    ...(normalizeExternalMcpAccess(source.externalMcpAccess)
-      ? { externalMcpAccess: normalizeExternalMcpAccess(source.externalMcpAccess)! }
-      : {}),
     budgetMonthlyCents: Number.isFinite(Number(source.budgetMonthlyCents))
       ? Math.max(0, Math.floor(Number(source.budgetMonthlyCents)))
       : 0,
@@ -222,18 +218,6 @@ function normalizeIdentity(input: unknown): AgentIdentity | null {
     createdAt,
     updatedAt,
     deletedAt: typeof source.deletedAt === "string" && source.deletedAt.trim().length ? source.deletedAt.trim() : null,
-  };
-}
-
-function normalizeExternalMcpAccess(value: unknown): ExternalMcpAccessPolicy | undefined {
-  if (!value || typeof value !== "object") return undefined;
-  const source = value as Record<string, unknown>;
-  const allowedServers = uniqueStrings(asStringArray(source.allowedServers));
-  const blockedServers = uniqueStrings(asStringArray(source.blockedServers));
-  return {
-    allowAll: source.allowAll === true,
-    allowedServers,
-    blockedServers,
   };
 }
 
@@ -606,10 +590,6 @@ export function createWorkerAgentService(args: WorkerAgentServiceArgs) {
 
     const runtimeConfig = (input.runtimeConfig ?? existing?.runtimeConfig ?? {}) as Record<string, unknown>;
     assertEnvRefSecretPolicy(runtimeConfig, "runtimeConfig");
-    const externalMcpAccess =
-      normalizeExternalMcpAccess(input.externalMcpAccess)
-      ?? existing?.externalMcpAccess
-      ?? { allowAll: false, allowedServers: [], blockedServers: [] };
     const linearIdentity =
       normalizeLinearIdentity(input.linearIdentity)
       ?? existing?.linearIdentity
@@ -628,7 +608,6 @@ export function createWorkerAgentService(args: WorkerAgentServiceArgs) {
       adapterConfig,
       runtimeConfig,
       ...(linearIdentity ? { linearIdentity } : {}),
-      externalMcpAccess,
       budgetMonthlyCents: Math.max(0, Math.floor(Number(input.budgetMonthlyCents ?? existing?.budgetMonthlyCents ?? 0))),
       spentMonthlyCents: existing?.spentMonthlyCents ?? 0,
       ...(existing?.lastHeartbeatAt ? { lastHeartbeatAt: existing.lastHeartbeatAt } : {}),
@@ -653,11 +632,6 @@ export function createWorkerAgentService(args: WorkerAgentServiceArgs) {
       ...(normalizeLinearIdentity(snapshot.linearIdentity)
         ? { linearIdentity: normalizeLinearIdentity(snapshot.linearIdentity)! }
         : {}),
-      externalMcpAccess: normalizeExternalMcpAccess(snapshot.externalMcpAccess) ?? {
-        allowAll: false,
-        allowedServers: [],
-        blockedServers: [],
-      },
       budgetMonthlyCents: Math.max(0, Math.floor(Number(snapshot.budgetMonthlyCents ?? 0))),
       spentMonthlyCents: Math.max(0, Math.floor(Number(snapshot.spentMonthlyCents ?? 0))),
       updatedAt: nowIso(),

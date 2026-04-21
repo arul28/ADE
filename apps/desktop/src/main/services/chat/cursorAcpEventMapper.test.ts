@@ -39,13 +39,13 @@ describe("mapAcpSessionNotificationToChatEvents", () => {
     ]);
   });
 
-  it("emits a memory notice for completed memory_add MCP results", () => {
+  it("emits a memory notice for completed memory_add results", () => {
     const events = mapAcpSessionNotificationToChatEvents({
       sessionId: "cursor-session-1",
       update: {
         sessionUpdate: "tool_call_update",
         toolCallId: "tool-1",
-        title: "mcp__ade__memory_add",
+        title: "memory_add",
         kind: "other",
         status: "completed",
         rawOutput: {
@@ -69,13 +69,13 @@ describe("mapAcpSessionNotificationToChatEvents", () => {
     });
   });
 
-  it("emits a memory notice for rejected memory_add MCP results", () => {
+  it("emits a memory notice for rejected memory_add results", () => {
     const events = mapAcpSessionNotificationToChatEvents({
       sessionId: "cursor-session-1",
       update: {
         sessionUpdate: "tool_call_update",
         toolCallId: "tool-1",
-        title: "mcp__ade__memory_add",
+        title: "memory_add",
         kind: "other",
         status: "completed",
         rawOutput: {
@@ -95,13 +95,13 @@ describe("mapAcpSessionNotificationToChatEvents", () => {
     });
   });
 
-  it("emits a memory notice for memory_pin MCP results", () => {
+  it("emits a memory notice for memory_pin results", () => {
     const events = mapAcpSessionNotificationToChatEvents({
       sessionId: "cursor-session-1",
       update: {
         sessionUpdate: "tool_call_update",
         toolCallId: "tool-1",
-        title: "mcp__ade__memory_pin",
+        title: "memory_pin",
         kind: "other",
         status: "completed",
         rawOutput: {
@@ -121,13 +121,13 @@ describe("mapAcpSessionNotificationToChatEvents", () => {
     });
   });
 
-  it("maps initial tool_call notifications so MCP tools keep their names", () => {
+  it("maps initial tool_call notifications so ADE tools keep their names", () => {
     const events = mapAcpSessionNotificationToChatEvents({
       sessionId: "cursor-session-1",
       update: {
         sessionUpdate: "tool_call",
         toolCallId: "tool-1",
-        title: "mcp__ade__memory_search",
+        title: "memory_search",
         kind: "other",
         rawInput: {
           query: "git stash",
@@ -140,10 +140,10 @@ describe("mapAcpSessionNotificationToChatEvents", () => {
     expect(events).toEqual([
       {
         type: "tool_call",
-        tool: "mcp__ade__memory_search",
+        tool: "memory_search",
         args: {
           query: "git stash",
-          title: "mcp__ade__memory_search",
+          title: "memory_search",
           kind: "other",
         },
         itemId: "tool-1",

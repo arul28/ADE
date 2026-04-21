@@ -7,7 +7,7 @@ description: "Release notes for ADE v1.0.1 — March 14, 2026"
 
 - **Multimodal chat** — Claude agent chat now supports image attachments via base64 content blocks, with file upload picker and clipboard paste support in the composer
 - **CTO daily logs** — CTO persona gains a Memory Protocol and Decision Framework; daily log utilities (append/read/list) auto-inject recent context into CTO sessions
-- **External MCP auth service** — Full OAuth and token-based authentication flows for connecting external MCP servers with PKCE support
+- **ADE CLI auth service** — Full OAuth and token-based authentication flows for connecting ADE CLI with PKCE support
 - **Onboarding rewrite** — Replaced the 1,373-line `OnboardingPage` with a focused 328-line `ProjectSetupPage`
 - **New settings sections** — Lane Behavior, Lane Templates, Integrations, Workspace Settings, and AI Settings panels
 - **Context doc preferences** — Model, effort, and events settings now persist to the backend via new IPC handlers
@@ -24,7 +24,7 @@ description: "Release notes for ADE v1.0.1 — March 14, 2026"
 - **Linear OAuth** — Bundled public PKCE client-ID fallback so CTO Linear sync works without manual credential setup; fixed OAuth server to listen on port 19836 and force `prompt=consent`
 - **Orchestrator tuning** — Lowered dedupe/retention/pruning thresholds, capped `workerProgressChatState`, pruned config cache, reduced session signal retention and health sweep intervals
 - **Main process** — Simplified hardware acceleration logic, narrowed default background task flags in dev stability mode
-- **CI** — Tightened permissions, removed old inline release job, added MCP server dependency install before desktop typecheck
+- **CI** — Tightened permissions, removed old inline release job, added ADE CLI dependency install before desktop typecheck
 - **Homepage & web** — Refreshed landing page layout and styles, updated Tailwind config
 
 ## Removed

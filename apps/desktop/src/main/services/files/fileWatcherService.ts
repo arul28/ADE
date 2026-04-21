@@ -21,13 +21,13 @@ const IDLE_WATCHER_CLOSE_MS = 15_000;
 const VOLATILE_ADE_PREFIXES = [
   ".ade/artifacts/",
   ".ade/cache/",
-  ".ade/mcp-configs/",
+  ".ade/agent-configs/",
   ".ade/secrets/",
   ".ade/transcripts/",
 ] as const;
 const VOLATILE_ADE_EXACT_PATHS = new Set([
   ".ade/ade.db",
-  ".ade/mcp.sock",
+  ".ade/ade.sock",
 ]);
 
 function isVolatileAdePath(relPath: string): boolean {

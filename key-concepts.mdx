@@ -1,6 +1,6 @@
 ---
 title: "Key Concepts"
-description: "A comprehensive reference for every core ADE concept: Lanes, Stacks, Packs, Checkpoints, Sessions, the CTO, Missions, Automations, Workers, MCP, the Job Engine, Conflicts, and Artifacts."
+description: "A comprehensive reference for every core ADE concept: Lanes, Stacks, Packs, Checkpoints, Sessions, the CTO, Missions, Automations, Workers, ADE CLI, the Job Engine, Conflicts, and Artifacts."
 icon: "lightbulb"
 ---
 
@@ -16,7 +16,7 @@ Understanding ADE's vocabulary is the fastest path to using it effectively. This
   <Card title="Mission" icon="bullseye" href="#mission">Structured multi-step AI unit.</Card>
   <Card title="Automation" icon="bolt" href="#automation">Trigger-driven execution rule.</Card>
   <Card title="Worker" icon="user-gear" href="#worker-employee-agent">Scoped sub-agent that writes code.</Card>
-  <Card title="MCP" icon="plug" href="#mcp-model-context-protocol">Tool-exposure protocol for agents.</Card>
+  <Card title="ADE CLI" icon="plug" href="#ade-cli-and-actions">Native action surface for agents.</Card>
   <Card title="Job Engine" icon="gears" href="#job-engine">Background task scheduler.</Card>
   <Card title="PR Convergence" icon="code-pull-request" href="#pr-convergence">Automated PR-to-merge loop.</Card>
   <Card title="Conflict" icon="triangle-exclamation" href="#conflict">Predicted or actual merge conflict.</Card>
@@ -283,11 +283,11 @@ ADE supports parallel workers — multiple workers executing different plan step
 
 ---
 
-## MCP (Model Context Protocol)
+## ADE CLI and Actions
 
-**MCP** is the protocol ADE uses to expose its capabilities to AI agents as callable tools. ADE's built-in MCP server speaks **JSON-RPC 2.0** over a Unix domain socket and implements the Model Context Protocol 2025-06-18 specification.
+**ADE CLI** is the native action surface agents use to operate ADE. The desktop app exposes a private ADE RPC socket at `.ade/ade.sock`, and `ade` falls back to a headless local runtime when the desktop socket is unavailable.
 
-When an AI agent is running inside ADE (whether via Claude CLI, Codex CLI, or the in-process API), it can call ADE's MCP tools to perform operations that go beyond simple text generation:
+When an AI agent is running inside ADE (whether via Claude CLI, Codex CLI, or the in-process API), it can run `ade` commands — which hit the desktop socket when available and fall back to the headless runtime — to perform operations that go beyond simple text generation:
 
 <AccordionGroup>
   <Accordion title="Git operations" icon="git-alt">
@@ -465,7 +465,7 @@ Project
 | **Automation** | A trigger → executor rule that fires an agent in response to an event. |
 | **Automation execution surface** | `agent-session`, `mission`, or `built-in-task`; each determines where results are stored and how much workflow structure is available. |
 | **Intervention** | A mission pause point requiring human input to continue. |
-| **MCP** | Model Context Protocol — the JSON-RPC 2.0 protocol ADE uses to expose tools to agents. |
+| **ADE CLI** | The native action surface for agents — a local `ade` binary plus a JSON-RPC 2.0 server exposed by the desktop app at `.ade/ade.sock`. |
 | **Job Engine** | ADE's background scheduler for pack refresh, conflict prediction, and automation execution. |
 | **PR Convergence** | ADE's automated loop for resolving PR issues (review comments, CI failures) through AI-driven rounds until the PR is ready to merge. |
 | **Path to Merge** | The dedicated convergence workspace tab inside each PR detail view. |
@@ -492,7 +492,7 @@ Project
   <Card title="CTO Agent" icon="robot" href="/cto/overview">
     Configure the CTO with Linear sync, persistent memory, and worker spawning policies.
   </Card>
-  <Card title="MCP Server Reference" icon="server" href="/configuration/mcp-servers">
-    Full reference for every ADE MCP tool, authentication roles, and connecting external clients.
+  <Card title="ADE CLI" icon="terminal" href="/configuration/settings">
+    Review the native ADE CLI action surface and project readiness settings.
   </Card>
 </CardGroup>

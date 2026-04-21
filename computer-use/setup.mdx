@@ -10,21 +10,13 @@ icon: "plug"
 
 <Steps>
   <Step title="Install Ghost OS">
-    Download and install the Ghost OS MCP server for macOS from [ghostos.dev](https://ghostos.dev). Start the server — it listens on `https://ghost-os.local/mcp` by default.
+    Download and install the Ghost OS CLI for macOS from [ghostos.dev](https://ghostos.dev), then run `ghost setup` to grant the required macOS permissions.
   </Step>
-  <Step title="Add to ADE configuration">
-    Open `.ade/local.secret.yaml` in your project root (create it if it does not exist) and add the Ghost OS entry:
-
-    ```yaml
-    externalMcp:
-      - name: ghost-os
-        transport: http
-        url: https://ghost-os.local/mcp
-        autoStart: true
-    ```
+  <Step title="Verify the CLI">
+    Run `ghost status` and `ghost doctor` in Terminal. ADE uses those commands to detect whether Ghost OS is installed, ready, or blocked by stale processes.
   </Step>
   <Step title="Verify connection">
-    Open **Settings → Computer Use**. The Ghost OS card should show a green **Connected** badge with the capability matrix populated. If it shows an error, confirm the Ghost OS server is running and the URL is reachable.
+    Open **Settings → Computer Use**. The Ghost OS card should show a ready state with the capability matrix populated. If it shows an error, rerun `ghost setup` or follow the doctor output.
   </Step>
   <Step title="Set as preferred backend">
     In **Settings → Computer Use → Preferred Backend**, select **Ghost OS**. ADE will use Ghost OS for all computer-use requests until you change this setting.
@@ -38,14 +30,7 @@ icon: "plug"
     Run `node --version` to confirm. If needed, install via [nodejs.org](https://nodejs.org) or `brew install node`.
   </Step>
   <Step title="Add to ADE configuration">
-    ```yaml
-    externalMcp:
-      - name: agent-browser
-        transport: stdio
-        command: npx
-        args: ["-y", "@agent-browser/cli"]
-        autoStart: true
-    ```
+    Install the `agent-browser` CLI so it is available on `PATH`; ADE detects it with `agent-browser` and ingests the artifacts it produces.
   </Step>
   <Step title="Verify connection">
     Open **Settings → Computer Use**. The agent-browser card should show **Ready**. On first use, ADE will download the `@agent-browser/cli` package automatically.

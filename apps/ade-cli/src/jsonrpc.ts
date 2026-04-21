@@ -1,7 +1,12 @@
 import { Buffer } from "node:buffer";
-import type { JsonRpcTransport } from "./transport";
 
 export type JsonRpcId = string | number | null;
+
+export type JsonRpcTransport = {
+  onData(callback: (chunk: Buffer) => void): void;
+  write(data: string): void;
+  close(): void;
+};
 
 export type JsonRpcRequest = {
   jsonrpc?: string;

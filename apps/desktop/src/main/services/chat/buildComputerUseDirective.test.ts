@@ -14,9 +14,9 @@ function makeBackendStatus(
   if (overrides.ghostOs) {
     backends.push({
       name: "Ghost OS",
-      style: "external_mcp",
+      style: "external_cli",
       available: true,
-      state: "connected",
+      state: "installed",
       detail: "Ghost OS connected.",
       supportedKinds: ["screenshot", "video_recording", "browser_trace", "browser_verification", "console_logs"],
     });

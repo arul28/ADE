@@ -69,13 +69,13 @@ When an agent session begins, ADE assembles the context stack in priority order.
   <Step title="Conflict Pack (If Active Conflicts)">
     If the lane has active merge conflicts, the relevant Conflict Pack is included. The agent sees both sides of the conflict and the suggested resolution.
   </Step>
-  <Step title="External MCP Tool Results">
-    Dynamic context fetched from MCP tools during the session (e.g., a Linear issue's current state, a GitHub PR's latest review comments). This is fetched live, not from pack files.
+  <Step title="Live tool results">
+    Dynamic context fetched from ADE tools during the session (e.g., a Linear issue's current state, a GitHub PR's latest review comments). This is fetched live, not from pack files.
   </Step>
 </Steps>
 
 <Tip>
-The context stack is assembled at session start and does not update mid-session (except for MCP tool results, which are fetched on demand). If the lane pack was updated while a session was running, the agent will use the version from session start. Start a new chat session to pick up a refreshed pack.
+The context stack is assembled at session start and does not update mid-session (except for live tool results, which are fetched on demand). If the lane pack was updated while a session was running, the agent will use the version from session start. Start a new chat session to pick up a refreshed pack.
 </Tip>
 
 ---
@@ -101,18 +101,14 @@ Packs are plain Markdown files. You can read them directly from the filesystem, 
     cat ".ade/artifacts/packs/lanes/<lane-id>/current.md"
     ```
   </Tab>
-  <Tab title="Via MCP Tools">
-    If you have an ADE-connected AI agent (via Cursor, Claude Desktop, etc.), you can call the `ade_get_pack` MCP tool:
+  <Tab title="Via the ADE CLI">
+    Agents running inside an ADE session can call the `packs.get` action through the local `ade` CLI:
 
-    ```json
-    {
-      "tool": "ade_get_pack",
-      "params": {
-        "type": "lane",
-        "id": "lane-abc123",
-        "exportLevel": "standard"
-      }
-    }
+    ```bash
+    ade actions run packs.get \
+      --arg type=lane \
+      --arg id=lane-abc123 \
+      --arg exportLevel=standard
     ```
   </Tab>
 </Tabs>

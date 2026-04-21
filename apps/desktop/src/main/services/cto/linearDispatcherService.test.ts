@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { describe, expect, it, vi } from "vitest";
 import type { LinearWorkflowConfig, LinearWorkflowMatchResult, NormalizedLinearIssue } from "../../../shared/types";
 import { openKvDb } from "../state/kvDb";
@@ -1405,7 +1406,7 @@ describe("linearDispatcherService", () => {
     expect(updateBodies[0]).toContain("- PR: pr-55");
     expect(updateBodies[updateBodies.length - 1]).toContain("### Closeout Summary");
     expect(updateBodies[updateBodies.length - 1]).toContain("https://github.com/acme/repo/pull/55");
-    expect(updateBodies[updateBodies.length - 1]).toContain(`file://${artifactPath}`);
+    expect(updateBodies[updateBodies.length - 1]).toContain(pathToFileURL(fs.realpathSync(artifactPath)).href);
     db.close();
   });
 

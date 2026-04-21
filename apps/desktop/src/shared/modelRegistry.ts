@@ -88,7 +88,7 @@ export function isModelProviderGroup(value: string | null | undefined): value is
 const ALL_CAPS: ModelCapabilities = { tools: true, vision: true, reasoning: true, streaming: true };
 const NO_REASONING: ModelCapabilities = { tools: true, vision: true, reasoning: false, streaming: true };
 const BASIC_CAPS: ModelCapabilities = { tools: true, vision: false, reasoning: false, streaming: true };
-/** Human-readable names for Ollama / LM Studio (shared across main, renderer, and MCP). */
+/** Human-readable names for Ollama / LM Studio shared across main and renderer. */
 export const LOCAL_PROVIDER_LABELS: Record<LocalProviderFamily, string> = {
   ollama: "Ollama",
   lmstudio: "LM Studio",

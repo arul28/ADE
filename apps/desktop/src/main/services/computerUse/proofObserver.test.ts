@@ -69,12 +69,12 @@ describe("proofObserver", () => {
     ]);
   });
 
-  it("attributes ADE-proxied external MCP tools to the proxied server", () => {
+  it("attributes namespaced external CLI tools to their backend", () => {
     const { observer, requests } = createHarness();
 
     observer.observe({
       type: "tool_result",
-      tool: "mcp__ade__ext.playwright.browser_take_screenshot",
+      tool: "playwright.browser_take_screenshot",
       result: {
         outputPath: "/tmp/playwright-shot.png",
       },
@@ -84,9 +84,9 @@ describe("proofObserver", () => {
 
     expect(requests).toHaveLength(1);
     expect(requests[0]?.backend).toMatchObject({
-      style: "external_mcp",
+      style: "external_cli",
       name: "playwright",
-      toolName: "mcp__ade__ext.playwright.browser_take_screenshot",
+      toolName: "playwright.browser_take_screenshot",
     });
     expect(requests[0]?.inputs).toEqual([
       expect.objectContaining({
@@ -101,7 +101,7 @@ describe("proofObserver", () => {
 
     observer.observe({
       type: "tool_result",
-      tool: "mcp__ade__pr_get_review_comments",
+      tool: "pr_get_review_comments",
       result: {
         comments: [
           {

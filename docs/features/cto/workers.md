@@ -37,7 +37,7 @@ Workers are named agent identities that ADE can wake for delegated work. The CTO
 
 `AgentConfigRevision` — a historical snapshot of an identity update. Revisions are append-only; `workerRevisionService` writes one per save.
 
-`AgentSessionLogEntry` — per-worker session log with `sessionId`, `summary`, `startedAt`, `endedAt`, `provider`, `modelId`, `capabilityMode` (`full_mcp` or `fallback`). Matches CTO session logs.
+`AgentSessionLogEntry` — per-worker session log with `sessionId`, `summary`, `startedAt`, `endedAt`, `provider`, `modelId`, `capabilityMode` (`full_tooling` or `fallback`). Matches CTO session logs.
 
 `WorkerOrgNode = AgentIdentity & { reports: WorkerOrgNode[] }` — tree representation used by `AgentSidebar`.
 
@@ -64,10 +64,10 @@ On save, `window.ade.cto.saveAgent({ agent })` persists through `workerAgentServ
 `TeamPanel.tsx` renders three surfaces depending on selection:
 
 - **List** — table of workers with status, role, recent activity, spend.
-- **Worker editor** — detailed edit surface. Fields: name, role, title, reports-to, capabilities (chip list), Linear identity (user ids + display names + aliases), adapter type, external MCP access policy, heartbeat policy, runtime config.
+- **Worker editor** — detailed edit surface. Fields: name, role, title, reports-to, capabilities (chip list), Linear identity (user ids + display names + aliases), adapter type, heartbeat policy, runtime config.
 - **Worker detail** — read-only view with core memory, config revisions timeline, recent session logs, recent runs, Linear workflow activity.
 
-The editor uses `ExternalMcpAccessEditor` to manage which external MCP servers the worker can call. The heartbeat policy lets the operator toggle "always running" vs idle-on-demand behavior per worker.
+The heartbeat policy lets the operator toggle "always running" vs idle-on-demand behavior per worker.
 
 ## Adapter types
 

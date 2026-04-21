@@ -365,7 +365,7 @@ async function buildHybridSourceBundle(projectRoot: string, lastGeneratedAt: str
     readSectionExcerpt(projectRoot, "apps/desktop/src/main/services/ipc/registerIpc.ts", /IPC\.contextGetStatus/),
     readSectionExcerpt(projectRoot, "apps/desktop/src/preload/preload.ts", /context:\s*\{/),
     readSectionExcerpt(projectRoot, "apps/desktop/src/shared/types/packs.ts", /export type ContextDocStatus = \{/),
-    readSectionExcerpt(projectRoot, "apps/mcp-server/src/index.ts", /^/),
+    readSectionExcerpt(projectRoot, "apps/ade-cli/src/cli.ts", /^/),
   ].filter((value): value is { relPath: string; excerpt: string } => value != null);
 
   return {
@@ -542,7 +542,7 @@ function buildDeterministicPrdDoc(args: {
     : [
         "- Preserve existing desktop app patterns before introducing new abstractions.",
         "- Keep IPC contracts, preload types, shared types, and renderer usage in sync.",
-        "- Validate the smallest relevant desktop/MCP checks first, then broaden coverage.",
+        "- Validate the smallest relevant desktop/ADE CLI checks first, then broaden coverage.",
       ];
   return clipText([
     CONTEXT_DOC_SPECS.prd_ade.title,
@@ -584,7 +584,7 @@ function buildDeterministicArchitectureDoc(args: {
   ];
   const integrationBullets = [
     "- Desktop UI talks to trusted services over typed IPC via the preload bridge.",
-    "- `apps/mcp-server` exposes ADE tools for headless and desktop-backed MCP flows.",
+    "- `apps/ade-cli` exposes ADE actions for terminal-capable agents in headless and desktop-backed modes.",
     "- AI execution remains provider-flexible across CLI subscriptions, API/OpenRouter, and local endpoints.",
   ];
   const patternBullets = (args.workingNorms.length > 0 ? args.workingNorms.slice(0, 4) : [

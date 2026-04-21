@@ -209,7 +209,7 @@ export function CommandPalette({
       { id: "go-settings-general", title: "Go to General Settings", hint: "Setup reminder, app info", group: "Settings", run: () => navigate("/settings?tab=general") },
       { id: "go-settings-appearance", title: "Go to Appearance", hint: "Theme, chat font size, chat notifications", group: "Settings", run: () => navigate("/settings?tab=appearance") },
       { id: "go-settings-ai", title: "Go to AI Settings", hint: "Providers, models, AI defaults", group: "Settings", run: () => navigate("/settings?tab=ai") },
-      { id: "go-settings-integrations", title: "Go to Integrations", hint: "GitHub, Linear, managed MCP, computer use", group: "Settings", run: () => navigate("/settings?tab=integrations") },
+      { id: "go-settings-integrations", title: "Go to Integrations", hint: "GitHub, Linear, computer use", group: "Settings", run: () => navigate("/settings?tab=integrations") },
       { id: "go-settings-workspace", title: "Go to Workspace Settings", hint: "Project health and docs generation", group: "Settings", run: () => navigate("/settings?tab=workspace") },
       { id: "go-settings-usage", title: "Go to Usage", hint: "Token usage, cost breakdown", group: "Settings", run: () => navigate("/settings?tab=usage") },
       {

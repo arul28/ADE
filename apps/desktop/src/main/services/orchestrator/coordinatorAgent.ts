@@ -12,7 +12,6 @@ import {
   type CoordinatorExecutableTool,
   type CoordinatorSendWorkerMessageFn,
 } from "./coordinatorTools";
-import { resolveAdeMcpServerLaunch, resolveOpenCodeRuntimeRoot } from "./providerOrchestratorAdapter";
 import {
   buildOpenCodePromptParts,
   mapPermissionModeToOpenCodeAgent,
@@ -786,14 +785,6 @@ export class CoordinatorAgent {
       throw new Error("Cursor models are not supported for coordinator execution. Choose Claude, Codex, or OpenCode.");
     }
     const projectConfig = this.deps.projectConfigService?.get().effective ?? { ai: {} };
-    const mcpLaunch = resolveAdeMcpServerLaunch({
-      projectRoot: this.deps.projectRoot,
-      workspaceRoot: this.deps.workspaceRoot,
-      workspaceBinding: "project_root",
-      runtimeRoot: resolveOpenCodeRuntimeRoot(),
-      runId: this.deps.runId,
-      defaultRole: "orchestrator",
-    });
     // Discover loaded local models so OpenCode knows about them.
     const discoveredLocalModels: DiscoveredLocalModelEntry[] = [];
     const aiConfig = projectConfig.ai as { localProviders?: Record<string, { enabled?: boolean; endpoint?: string }> } | undefined;
@@ -813,7 +804,6 @@ export class CoordinatorAgent {
       directory: this.deps.workspaceRoot,
       title: `ADE coordinator: ${this.deps.missionGoal}`,
       projectConfig,
-      dynamicMcpLaunch: mcpLaunch,
       discoveredLocalModels,
       ownerKind: "coordinator",
       ownerId: this.deps.runId,
@@ -2084,6 +2074,10 @@ You are the persistent brain. Workers are disposable hands.
 Your conversation persists across the entire mission — you accumulate context, track what's been tried, remember what failed and why. Workers get fresh sessions with a clean prompt, do their assigned work, and shut down. You are the continuity. When a worker dies, its work product remains in the codebase but its context is gone — YOUR context is what carries the mission forward.
 
 You are NOT a repo-editing worker. You are the mission lead who owns phase state, worker spawning, runtime judgment, and final completion. In normal operation, workers inspect the repo, edit code, and run commands. You keep the mission aligned and delegated. The difference between you and a dumb orchestrator is that you THINK before you act and EVALUATE after each step.
+
+## ADE CLI
+
+Terminal-capable workers can use the bundled \`ade\` command for internal ADE actions. Instruct them to run \`ade doctor\` for readiness, \`ade actions list --text\` for discovery, typed commands such as \`ade lanes list --text\` or \`ade prs checks <pr> --text\` first, and \`ade actions run ...\` as the escape hatch. Tell them to use \`--json\` for structured output and \`--text\` for readable output.
 
 ## Your Mission
 ${this.deps.missionGoal}

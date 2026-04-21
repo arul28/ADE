@@ -32,7 +32,6 @@ import { createOrchestratorService } from "../../desktop/src/main/services/orche
 import { createAiOrchestratorService } from "../../desktop/src/main/services/orchestrator/aiOrchestratorService";
 import { createAiIntegrationService } from "../../desktop/src/main/services/ai/aiIntegrationService";
 import { createMissionBudgetService } from "../../desktop/src/main/services/orchestrator/missionBudgetService";
-import { createExternalMcpService, type ExternalMcpService } from "../../desktop/src/main/services/externalMcp/externalMcpService";
 import {
   createComputerUseArtifactBrokerService,
   type ComputerUseArtifactBrokerService,
@@ -90,7 +89,7 @@ export function createEventBuffer(capacity = 10_000): EventBuffer {
   };
 }
 
-export type AdeMcpPaths = {
+export type AdeRuntimePaths = {
   adeDir: string;
   logsDir: string;
   processLogsDir: string;
@@ -108,12 +107,12 @@ export type AdeMcpPaths = {
   missionStateDir: string;
 };
 
-export type AdeMcpRuntime = {
+export type AdeRuntime = {
   projectRoot: string;
   workspaceRoot: string;
   projectId: string;
   project: { rootPath: string; displayName: string; baseRef: string };
-  paths: AdeMcpPaths;
+  paths: AdeRuntimePaths;
   logger: Logger;
   db: AdeDb;
   laneService: ReturnType<typeof createLaneService>;
@@ -140,7 +139,6 @@ export type AdeMcpRuntime = {
   linearIngressService?: ReturnType<typeof createLinearIngressService> | null;
   linearRoutingService?: ReturnType<typeof createLinearRoutingService> | null;
   processService?: ReturnType<typeof createProcessService> | null;
-  externalMcpService: ExternalMcpService;
   computerUseArtifactBrokerService: ComputerUseArtifactBrokerService;
   orchestratorService: ReturnType<typeof createOrchestratorService>;
   aiOrchestratorService: ReturnType<typeof createAiOrchestratorService>;
@@ -148,7 +146,7 @@ export type AdeMcpRuntime = {
   dispose: () => void;
 };
 
-export function ensureAdePaths(projectRoot: string): AdeMcpPaths {
+export function ensureAdePaths(projectRoot: string): AdeRuntimePaths {
   const { paths } = initializeOrRepairAdeProject(projectRoot);
   return {
     adeDir: paths.adeDir,
@@ -169,7 +167,7 @@ export function ensureAdePaths(projectRoot: string): AdeMcpPaths {
   };
 }
 
-export async function createAdeMcpRuntime(args: { projectRoot: string; workspaceRoot?: string } | string): Promise<AdeMcpRuntime> {
+export async function createAdeRuntime(args: { projectRoot: string; workspaceRoot?: string } | string): Promise<AdeRuntime> {
   const resolvedArgs = typeof args === "string"
     ? { projectRoot: args, workspaceRoot: args }
     : args;
@@ -184,7 +182,7 @@ export async function createAdeMcpRuntime(args: { projectRoot: string; workspace
 
   const baseRef = await detectDefaultBaseRef(projectRoot);
   const paths = ensureAdePaths(projectRoot);
-  const logger = createFileLogger(path.join(paths.logsDir, "mcp-server.jsonl"));
+  const logger = createFileLogger(path.join(paths.logsDir, "ade-cli.jsonl"));
   const db = await openKvDb(paths.dbPath, logger);
 
   const project = toProjectInfo(projectRoot, baseRef);
@@ -226,6 +224,7 @@ export async function createAdeMcpRuntime(args: { projectRoot: string; workspace
     logger,
     projectConfigService,
     projectRoot,
+    enableDynamicModelMetadata: false,
   });
 
   const conflictService = createConflictService({
@@ -259,7 +258,6 @@ export async function createAdeMcpRuntime(args: { projectRoot: string; workspace
   const ptyService = createPtyService({
     projectRoot,
     transcriptsDir: paths.transcriptsDir,
-    chatSessionsDir: paths.chatSessionsDir,
     laneService,
     sessionService,
     logger,
@@ -280,7 +278,7 @@ export async function createAdeMcpRuntime(args: { projectRoot: string; workspace
   });
   const issueInventoryService = createIssueInventoryService({ db });
 
-  // Ensure MCP-specific tables exist (evaluation framework)
+  // Ensure evaluation tables exist for headless runtime checks.
   db.run(`
     CREATE TABLE IF NOT EXISTS orchestrator_evaluations (
       id TEXT PRIMARY KEY,
@@ -337,49 +335,6 @@ export async function createAdeMcpRuntime(args: { projectRoot: string; workspace
     aiIntegrationService,
     projectConfigService,
   });
-  const externalMcpService = createExternalMcpService({
-    projectRoot,
-    adeDir: paths.adeDir,
-    db,
-    projectId,
-    logger,
-    workerAgentService,
-    ctoStateService,
-    missionService,
-    workerBudgetService,
-    missionBudgetService,
-  });
-  try {
-    await externalMcpService.start();
-  } catch (error) {
-    logger.warn("external_mcp.bootstrap_start_failed", {
-      error: error instanceof Error ? error.message : String(error),
-    });
-  }
-  const externalMcpConfigWatcher = (() => {
-    try {
-      const watcher = fs.watch(paths.adeDir, (_eventType, fileName) => {
-        if (String(fileName ?? "").trim() !== "local.secret.yaml") return;
-        externalMcpService.reload();
-      });
-      watcher.on("error", (error) => {
-        logger.warn("external_mcp.bootstrap_watch_runtime_failed", {
-          error: error instanceof Error ? error.message : String(error),
-        });
-        try {
-          watcher.close();
-        } catch {
-          // Ignore watcher shutdown errors during degraded headless startup.
-        }
-      });
-      return watcher;
-    } catch (error) {
-      logger.warn("external_mcp.bootstrap_watch_failed", {
-        error: error instanceof Error ? error.message : String(error),
-      });
-      return null;
-    }
-  })();
 
   const orchestratorService = createOrchestratorService({
     db,
@@ -414,7 +369,6 @@ export async function createAdeMcpRuntime(args: { projectRoot: string; workspace
     projectRoot,
     missionService,
     orchestratorService,
-    externalMcpService,
     logger,
   });
 
@@ -448,7 +402,6 @@ export async function createAdeMcpRuntime(args: { projectRoot: string; workspace
     aiOrchestratorService,
     workerAgentService,
     workerBudgetService,
-    externalMcpService,
     computerUseArtifactBrokerService,
     orchestratorService,
     openExternal: async () => {},
@@ -486,7 +439,6 @@ export async function createAdeMcpRuntime(args: { projectRoot: string; workspace
     linearIngressService: headlessLinearServices.linearIngressService,
     linearRoutingService: headlessLinearServices.linearRoutingService,
     processService: headlessLinearServices.processService,
-    externalMcpService,
     computerUseArtifactBrokerService,
     orchestratorService,
     aiOrchestratorService,
@@ -494,8 +446,6 @@ export async function createAdeMcpRuntime(args: { projectRoot: string; workspace
     dispose: () => {
       const swallow = (fn: () => void) => { try { fn(); } catch { /* ignore */ } };
       swallow(() => headlessLinearServices.dispose());
-      swallow(() => externalMcpConfigWatcher?.close());
-      void externalMcpService.dispose().catch(() => {});
       swallow(() => aiOrchestratorService.dispose());
       swallow(() => testService.disposeAll());
       swallow(() => ptyService.disposeAll());

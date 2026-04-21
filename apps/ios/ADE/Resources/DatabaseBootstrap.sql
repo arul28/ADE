@@ -1,7 +1,7 @@
 create virtual table if not exists unified_memories_fts using fts4(
-        content,
-        content='unified_memories'
-      );
+      content,
+      content='unified_memories'
+    );
 
 create table if not exists kv (key text primary key, value text not null);
 
@@ -2331,37 +2331,6 @@ create table if not exists cto_flow_policy_revisions (
     );
 
 create index if not exists idx_cto_flow_policy_revisions_project_created on cto_flow_policy_revisions(project_id, created_at);
-
-create table if not exists external_mcp_usage_events (
-      id text primary key,
-      project_id text not null,
-      server_name text not null,
-      tool_name text not null,
-      namespaced_tool_name text not null,
-      safety text not null,
-      caller_role text not null,
-      caller_id text not null,
-      chat_session_id text,
-      mission_id text,
-      run_id text,
-      step_id text,
-      attempt_id text,
-      owner_id text,
-      cost_cents integer not null default 0,
-      estimated integer not null default 0,
-      occurred_at text not null,
-      created_at text not null
-    );
-
-alter table external_mcp_usage_events add column chat_session_id text;
-
-create index if not exists idx_external_mcp_usage_events_project_occurred on external_mcp_usage_events(project_id, occurred_at);
-
-create index if not exists idx_external_mcp_usage_events_chat on external_mcp_usage_events(project_id, chat_session_id, occurred_at);
-
-create index if not exists idx_external_mcp_usage_events_mission on external_mcp_usage_events(project_id, mission_id, occurred_at);
-
-create index if not exists idx_external_mcp_usage_events_run on external_mcp_usage_events(project_id, run_id, occurred_at);
 
 create table if not exists budget_usage_records (
       id text primary key,

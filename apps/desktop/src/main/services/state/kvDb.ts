@@ -590,18 +590,110 @@ function rebuildUnifiedMemoriesFts(db: DatabaseSyncType): void {
   }
 }
 
-function ensureUnifiedMemoriesSearchTable(db: { run: (sql: string, params?: SqlValue[]) => void }): void {
+type MigrationDb = {
+  run: (sql: string, params?: SqlValue[]) => void;
+  get: <T extends Record<string, unknown> = Record<string, unknown>>(sql: string, params?: SqlValue[]) => T | null;
+};
+
+function dropUnifiedMemoryFtsTriggers(db: Pick<MigrationDb, "run">): void {
+  db.run("drop trigger if exists unified_memories_fts_ai");
+  db.run("drop trigger if exists unified_memories_fts_bd");
+  db.run("drop trigger if exists unified_memories_fts_bu");
+  db.run("drop trigger if exists unified_memories_fts_au");
+}
+
+function removeUnavailableUnifiedMemoryFtsTable(db: MigrationDb): void {
   try {
-    db.run(`
-      create virtual table if not exists unified_memories_fts using fts4(
-        content,
-        content='unified_memories'
-      )
-    `);
+    db.run("drop table if exists unified_memories_fts");
+    return;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    if (!/no such module: fts4/i.test(message) && !/no such module: fts5/i.test(message)) {
+    if (
+      !/no such module: fts4/i.test(message)
+      && !/no such module: fts5/i.test(message)
+      && !(/malformed database schema/i.test(message) && /unified_memories_fts/i.test(message))
+    ) {
       throw error;
+    }
+  }
+
+  // If this Node SQLite build lacks the FTS module, SQLite cannot even DROP an
+  // existing FTS virtual table. Remove that stale virtual table metadata so the
+  // local-first DB can degrade to the plain fallback search table.
+  db.run("pragma writable_schema = on");
+  try {
+    db.run(`
+      delete from sqlite_master
+      where name = 'unified_memories_fts'
+        or tbl_name = 'unified_memories_fts'
+        or name like 'unified_memories_fts_%'
+        or tbl_name like 'unified_memories_fts_%'
+        or name like 'sqlite_autoindex_unified_memories_fts_%'
+    `);
+    const versionRow = db.get<{ schema_version: number }>("pragma schema_version");
+    const nextVersion = Number(versionRow?.schema_version ?? 0) + 1;
+    db.run(`pragma schema_version = ${Number.isFinite(nextVersion) ? nextVersion : 1}`);
+  } finally {
+    db.run("pragma writable_schema = off");
+  }
+}
+
+function repairUnifiedMemoryFtsSchemaForRuntime(db: MigrationDb): void {
+  if (isFts4Available(db)) return;
+  removeUnavailableUnifiedMemoryFtsTable(db);
+}
+
+function repairMalformedUnifiedMemoryFtsSchema(db: DatabaseSyncType): void {
+  try {
+    getRow(db, "select 1 as ok");
+    return;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (!/malformed database schema/i.test(message) || !/unified_memories_fts/i.test(message)) {
+      throw error;
+    }
+  }
+
+  const repairDb: MigrationDb = {
+    run: (sql: string, params: SqlValue[] = []) => {
+      runStatement(db, sql, params);
+    },
+    get: <T extends Record<string, unknown> = Record<string, unknown>>(sql: string, params: SqlValue[] = []) => {
+      return getRow<T>(db, sql, params);
+    },
+  };
+  removeUnavailableUnifiedMemoryFtsTable(repairDb);
+}
+
+function isFts4Available(db: Pick<MigrationDb, "run">): boolean {
+  try {
+    db.run("create virtual table if not exists temp.__ade_fts4_probe using fts4(content)");
+    db.run("drop table if exists temp.__ade_fts4_probe");
+    return true;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (
+      !/no such module: fts4/i.test(message)
+      && !/no such module: fts5/i.test(message)
+      && !(/malformed database schema/i.test(message) && /unified_memories_fts/i.test(message))
+    ) {
+      throw error;
+    }
+    return false;
+  }
+}
+
+function ensureUnifiedMemoriesSearchTable(db: MigrationDb): void {
+  const ftsAvailable = isFts4Available(db);
+  const existing = db.get<{ sql: string | null }>(
+    "select sql from sqlite_master where type = 'table' and name = 'unified_memories_fts' limit 1",
+  );
+  const existingIsVirtual = /\bcreate\s+virtual\s+table\b/i.test(existing?.sql ?? "");
+
+  if (!ftsAvailable) {
+    if (existingIsVirtual) {
+      dropUnifiedMemoryFtsTriggers(db);
+      removeUnavailableUnifiedMemoryFtsTable(db);
     }
     db.run(`
       create table if not exists unified_memories_fts (
@@ -609,7 +701,18 @@ function ensureUnifiedMemoriesSearchTable(db: { run: (sql: string, params?: SqlV
         content text not null
       )
     `);
+    return;
   }
+
+  if (!existingIsVirtual && db.get("select 1 as present from sqlite_master where type = 'table' and name = 'unified_memories_fts' limit 1")) {
+    db.run("drop table if exists unified_memories_fts");
+  }
+  db.run(`
+    create virtual table if not exists unified_memories_fts using fts4(
+      content,
+      content='unified_memories'
+    )
+  `);
 }
 
 function parseAlterTableTarget(sql: string): string | null {
@@ -618,7 +721,7 @@ function parseAlterTableTarget(sql: string): string | null {
   return match[1].replace(/^["'`[]|["'`\]]$/g, "");
 }
 
-function migrate(db: { run: (sql: string, params?: SqlValue[]) => void }) {
+function migrate(db: MigrationDb) {
   // Keep KV for UI layout persistence.
   db.run("create table if not exists kv (key text primary key, value text not null)");
 
@@ -2101,6 +2204,7 @@ function migrate(db: { run: (sql: string, params?: SqlValue[]) => void }) {
   db.run("create index if not exists idx_unified_memories_project_accessed on unified_memories(project_id, last_accessed_at)");
   db.run("create index if not exists idx_unified_memories_project_dedupe on unified_memories(project_id, scope, scope_owner_id, dedupe_key)");
   try { db.run("alter table unified_memories add column access_score real not null default 0"); } catch {}
+  ensureUnifiedMemoriesSearchTable(db);
   db.run(`
     update unified_memories
     set access_score = case
@@ -2110,7 +2214,6 @@ function migrate(db: { run: (sql: string, params?: SqlValue[]) => void }) {
     end
   `);
 
-  ensureUnifiedMemoriesSearchTable(db);
   db.run(`
     create trigger if not exists unified_memories_fts_ai after insert on unified_memories begin
       insert into unified_memories_fts(rowid, content)
@@ -2978,34 +3081,6 @@ function migrate(db: { run: (sql: string, params?: SqlValue[]) => void }) {
   `);
   db.run("create index if not exists idx_cto_flow_policy_revisions_project_created on cto_flow_policy_revisions(project_id, created_at)");
 
-  db.run(`
-    create table if not exists external_mcp_usage_events (
-      id text primary key,
-      project_id text not null,
-      server_name text not null,
-      tool_name text not null,
-      namespaced_tool_name text not null,
-      safety text not null,
-      caller_role text not null,
-      caller_id text not null,
-      chat_session_id text,
-      mission_id text,
-      run_id text,
-      step_id text,
-      attempt_id text,
-      owner_id text,
-      cost_cents integer not null default 0,
-      estimated integer not null default 0,
-      occurred_at text not null,
-      created_at text not null
-    )
-  `);
-  try { db.run("alter table external_mcp_usage_events add column chat_session_id text"); } catch {}
-  db.run("create index if not exists idx_external_mcp_usage_events_project_occurred on external_mcp_usage_events(project_id, occurred_at)");
-  db.run("create index if not exists idx_external_mcp_usage_events_chat on external_mcp_usage_events(project_id, chat_session_id, occurred_at)");
-  db.run("create index if not exists idx_external_mcp_usage_events_mission on external_mcp_usage_events(project_id, mission_id, occurred_at)");
-  db.run("create index if not exists idx_external_mcp_usage_events_run on external_mcp_usage_events(project_id, run_id, occurred_at)");
-
   // W5 automation budget cap: cumulative usage tracking per scope per week.
   db.run(`
     create table if not exists budget_usage_records (
@@ -3102,6 +3177,16 @@ export async function openKvDb(dbPath: string, logger: Logger): Promise<AdeDb> {
   const desiredSiteId = ensureLocalSiteIdFile(dbPath);
   const existedBeforeOpen = fs.existsSync(dbPath);
   let db = openRawDatabase(dbPath);
+  repairMalformedUnifiedMemoryFtsSchema(db);
+  const makeRawMigrationDb = (): MigrationDb => ({
+    run: (sql: string, params: SqlValue[] = []) => {
+      runStatement(db, sql, params);
+    },
+    get: <T extends Record<string, unknown> = Record<string, unknown>>(sql: string, params: SqlValue[] = []) => {
+      return getRow<T>(db, sql, params);
+    },
+  });
+  repairUnifiedMemoryFtsSchemaForRuntime(makeRawMigrationDb());
 
   try {
     const hadCrsqlMetadata = hasCrsqlMetadata(db);
@@ -3132,9 +3217,14 @@ export async function openKvDb(dbPath: string, logger: Logger): Promise<AdeDb> {
         }
         runStatement(db, sql, params);
       },
+      get: <T extends Record<string, unknown> = Record<string, unknown>>(sql: string, params: SqlValue[] = []) => {
+        return getRow<T>(db, sql, params);
+      },
     });
 
-    migrate(makeMigrateDb());
+    const migrateDb = makeMigrateDb();
+    repairUnifiedMemoryFtsSchemaForRuntime(migrateDb);
+    migrate(migrateDb);
 
     if (existedBeforeOpen && !hasCrsqlMetadata(db)) {
       writeMigrationBackupIfNeeded(dbPath);
@@ -3146,7 +3236,9 @@ export async function openKvDb(dbPath: string, logger: Logger): Promise<AdeDb> {
       if (hadCrsqlMetadata && hasCrsqlite) {
         loadCrsqlite(db, extensionPath);
       }
-      migrate(makeMigrateDb());
+      const remigrateDb = makeMigrateDb();
+      repairUnifiedMemoryFtsSchemaForRuntime(remigrateDb);
+      migrate(remigrateDb);
     }
 
     if (retrofitForeignKeyCascadeActions(db, hasCrsqlite)) {
@@ -3155,7 +3247,9 @@ export async function openKvDb(dbPath: string, logger: Logger): Promise<AdeDb> {
       if (hadCrsqlMetadata && hasCrsqlite) {
         loadCrsqlite(db, extensionPath);
       }
-      migrate(makeMigrateDb());
+      const remigrateDb = makeMigrateDb();
+      repairUnifiedMemoryFtsSchemaForRuntime(remigrateDb);
+      migrate(remigrateDb);
     }
 
     if (hasCrsqlite) {

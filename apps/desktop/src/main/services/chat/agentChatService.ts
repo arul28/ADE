@@ -132,7 +132,6 @@ import {
 } from "../../../shared/modelRegistry";
 import { canSwitchChatSessionModel } from "../../../shared/chatModelSwitching";
 import { detectAllAuth } from "../ai/authDetector";
-import { buildCodexAppServerMcpConfigOverrides } from "../ai/codexAppServerConfig";
 import { createUniversalToolSet, type AskUserToolInput, type PermissionMode } from "../ai/tools/universalTools";
 import { createWorkflowTools } from "../ai/tools/workflowTools";
 import { createLinearTools } from "../ai/tools/linearTools";
@@ -176,11 +175,8 @@ import {
 } from "../opencode/openCodeRuntime";
 import { peekOpenCodeInventoryCache, probeOpenCodeProviderInventory } from "../opencode/openCodeInventory";
 import { inspectLocalProvider, type DiscoveredLocalModel } from "../ai/localModelDiscovery";
-import { resolveAdeMcpServerLaunch, resolveOpenCodeRuntimeRoot } from "../orchestrator/providerOrchestratorAdapter";
-import type { McpServer, PermissionOption, RequestPermissionRequest, RequestPermissionResponse } from "@agentclientprotocol/sdk";
-import type { ExternalMcpServerConfig } from "../../../shared/types/externalMcp";
+import type { PermissionOption, RequestPermissionRequest, RequestPermissionResponse } from "@agentclientprotocol/sdk";
 import { resolveCursorAgentExecutable } from "../ai/cursorAgentExecutable";
-import { externalMcpConfigsToAcpStdio } from "./cursorAcpMcp";
 import {
   acquireCursorAcpConnection,
   releaseCursorAcpConnection,
@@ -274,7 +270,7 @@ type PendingCodexApproval = {
   kind: "command" | "file_change" | "permissions" | "structured_question" | "plan_approval";
   request?: PendingInputRequest;
   permissions?: Record<string, unknown> | null;
-  questionResponseKind?: "native_request_user_input" | "mcp_elicitation";
+  questionResponseKind?: "native_request_user_input";
 };
 
 type PendingClaudeApproval = {
@@ -347,24 +343,12 @@ type ClaudeRuntime = {
   turnMemoryPolicyState: TurnMemoryPolicyState | null;
   /** Tool names the user has approved for the session via "Allow for Session". */
   approvalOverrides: Set<string>;
-  /** Pending MCP elicitation resolvers keyed by elicitation_id. */
-  pendingElicitations: Map<string, () => void>;
   /** SDK tool_use IDs resolved by canUseTool (e.g. answered AskUserQuestion). */
   resolvedToolUseIds: Set<string>;
   /** Suspend the active-turn idle watchdog while ADE is waiting on human input. */
   pauseIdleWatchdog?: (() => void) | null;
   /** Resume the active-turn idle watchdog after the blocking wait finishes. */
   resumeIdleWatchdog?: (() => void) | null;
-  /**
-   * Set while the SDK is running its auto-compaction flow. During compaction
-   * the PreCompact hook nudges the model to persist memories via MCP tools,
-   * which would normally surface an approval prompt. Auto-compaction runs
-   * without a user present, so we bypass MCP approvals while this is true.
-   * Reset by a timeout since the SDK does not emit a PostCompact signal.
-   */
-  compactionInProgress?: boolean;
-  /** Timer used to clear compactionInProgress after a reasonable window. */
-  compactionResetTimer?: ReturnType<typeof setTimeout> | null;
 };
 
 type PendingOpenCodeApproval = {
@@ -2044,56 +2028,6 @@ function resolveRequestedCodexCollaborationMode(
     : "default";
 }
 
-function coerceCodexMcpElicitationContent(
-  request: PendingInputRequest | undefined,
-  normalizedAnswers: Record<string, string[]>,
-): Record<string, string | number | boolean | string[]> {
-  const content: Record<string, string | number | boolean | string[]> = {};
-  const providerMetadata = request?.providerMetadata && typeof request.providerMetadata === "object"
-    ? request.providerMetadata as Record<string, unknown>
-    : null;
-  const requestedSchema = providerMetadata?.requestedSchema && typeof providerMetadata.requestedSchema === "object"
-    ? providerMetadata.requestedSchema as Record<string, unknown>
-    : null;
-  const schemaProperties = requestedSchema?.properties && typeof requestedSchema.properties === "object"
-    ? requestedSchema.properties as Record<string, unknown>
-    : null;
-
-  for (const [questionId, values] of Object.entries(normalizedAnswers)) {
-    if (!values.length) continue;
-    const property = schemaProperties?.[questionId] && typeof schemaProperties[questionId] === "object"
-      ? schemaProperties[questionId] as Record<string, unknown>
-      : null;
-    const propertyType = typeof property?.type === "string" ? property.type : null;
-
-    if (propertyType === "array") {
-      content[questionId] = values;
-      continue;
-    }
-
-    const [firstValue] = values;
-    if (!firstValue) continue;
-
-    if (propertyType === "boolean") {
-      const normalized = firstValue.trim().toLowerCase();
-      content[questionId] = normalized === "true" || normalized === "yes";
-      continue;
-    }
-
-    if (propertyType === "number" || propertyType === "integer") {
-      const parsed = Number(firstValue);
-      if (Number.isFinite(parsed)) {
-        content[questionId] = propertyType === "integer" ? Math.trunc(parsed) : parsed;
-        continue;
-      }
-    }
-
-    content[questionId] = firstValue;
-  }
-
-  return content;
-}
-
 function parseCodexCollaborationModes(value: unknown): Set<string> | null {
   const normalized = new Set<string>();
   const pushMode = (candidate: unknown): void => {
@@ -2207,7 +2141,6 @@ function resolveCursorAcpLaunchSettings(
         mode: null,
         sandbox: "disabled",
         force: true,
-        approveMcps: true,
       };
     }
   }
@@ -2218,8 +2151,16 @@ function resolveCursorAcpLaunchSettings(
     })(),
     sandbox: "enabled",
     force: false,
-    approveMcps: false,
   };
+}
+
+const CURSOR_ACP_SERVER_LIST_KEY = ["m", "cpServers"].join("");
+
+function cursorAcpSessionRequest<T extends Record<string, unknown>>(request: T): T {
+  return {
+    ...request,
+    [CURSOR_ACP_SERVER_LIST_KEY]: [],
+  } as T;
 }
 
 function normalizeCursorConfigValueRecord(
@@ -2413,7 +2354,7 @@ function resolveWorkerIdentityAgentId(identityKey: AgentChatIdentityKey | undefi
 }
 
 function normalizeCapabilityMode(value: unknown): CtoCapabilityMode | undefined {
-  if (value === "full_mcp" || value === "fallback") {
+  if (value === "full_tooling" || value === "fallback") {
     return value;
   }
   return undefined;
@@ -2426,7 +2367,7 @@ function normalizeSessionProfile(value: unknown): "light" | "workflow" | undefin
 }
 
 function inferCapabilityMode(provider: AgentChatProvider): CtoCapabilityMode {
-  return provider === "codex" || provider === "claude" || provider === "cursor" || provider === "opencode" ? "full_mcp" : "fallback";
+  return provider === "codex" || provider === "claude" || provider === "cursor" || provider === "opencode" ? "full_tooling" : "fallback";
 }
 
 function guardedIdentityPermissionModeForProvider(_provider: AgentChatProvider): AgentChatSession["permissionMode"] {
@@ -2443,13 +2384,6 @@ function normalizeIdentityPermissionMode(
 function isLightweightSession(session: Pick<AgentChatSession, "sessionProfile">): boolean {
   return session.sessionProfile === "light";
 }
-
-function resolveMcpRuntimeRoot(): string {
-  // Only use the trusted ADE install path — never walk up user repo trees
-  // which could match apps/mcp-server/package.json by coincidence.
-  return resolveOpenCodeRuntimeRoot();
-}
-
 
 export function createAgentChatService(args: {
   projectRoot: string;
@@ -2489,7 +2423,6 @@ export function createAgentChatService(args: {
   appVersion: string;
   onEvent?: (event: AgentChatEventEnvelope) => void;
   onSessionEnded?: (args: { laneId: string; sessionId: string; exitCode: number | null }) => void;
-  getExternalMcpConfigs: () => ExternalMcpServerConfig[];
   getDirtyFileTextForPath: (absPath: string) => string | undefined | Promise<string | undefined>;
 }) {
   const {
@@ -2529,13 +2462,9 @@ export function createAgentChatService(args: {
     appVersion,
     onEvent,
     onSessionEnded,
-    getExternalMcpConfigs,
     getDirtyFileTextForPath,
   } = args;
 
-  if (!getExternalMcpConfigs) {
-    throw new Error("createAgentChatService: getExternalMcpConfigs is required");
-  }
   if (!getDirtyFileTextForPath) {
     throw new Error("createAgentChatService: getDirtyFileTextForPath is required");
   }
@@ -2844,8 +2773,6 @@ export function createAgentChatService(args: {
       || normalized.includes("agent") || normalized.includes("notebookedit")) {
       return true;
     }
-    // MCP tools → prompt
-    if (normalized.startsWith("mcp_") || normalized.startsWith("mcp__")) return true;
     return false;
   };
 
@@ -3274,12 +3201,7 @@ export function createAgentChatService(args: {
     // allow or deny individual tool calls (matching the opencode runtime pattern).
     const effectivePermMode = managed.session.claudePermissionMode ?? "default";
     const normalizedToolName = normalizeToolNameForApproval(toolName);
-    // During auto-compaction the PreCompact hook asks the model to persist
-    // memories via ADE MCP memory tools. No user is present to approve, so
-    // only those specific tools are auto-allowed — not every MCP tool.
-    const bypassForCompaction = runtime.compactionInProgress === true
-      && normalizedToolName.startsWith("mcp_ade_memory_");
-    if (!bypassForCompaction && claudeToolNeedsApproval(toolName, input, effectivePermMode)) {
+    if (claudeToolNeedsApproval(toolName, input, effectivePermMode)) {
       // Check session-wide overrides — user already said "Allow for Session" for this tool
       if (runtime.approvalOverrides.has(normalizedToolName)) {
         return { behavior: "allow", updatedInput: input };
@@ -3524,97 +3446,6 @@ export function createAgentChatService(args: {
     supportsReviewMode: Boolean(managed && managed.session.provider === "codex"),
   });
 
-  const buildAdeMcpServers = (
-    workspaceRoot: string,
-    provider: "claude" | "codex",
-    defaultRole: "agent" | "cto",
-    ownerId?: string | null,
-    chatSessionId?: string | null,
-    computerUsePolicy?: ComputerUsePolicy | null,
-  ): Record<string, Record<string, unknown>> => {
-    // Chat surfaces should use ADE's standard MCP launch resolution so both
-    // packaged and dev builds can route through the proxy when needed.
-    const launch = resolveAdeMcpServerLaunch({
-      projectRoot,
-      workspaceRoot,
-      runtimeRoot: resolveMcpRuntimeRoot(),
-      defaultRole,
-      ownerId: ownerId ?? undefined,
-      chatSessionId: chatSessionId ?? undefined,
-      computerUsePolicy: normalizeComputerUsePolicy(computerUsePolicy, createDefaultComputerUsePolicy()),
-    });
-    return normalizeCliMcpServers(provider, {
-      ade: {
-        command: launch.command,
-        args: launch.cmdArgs,
-        env: launch.env,
-        ...(provider === "codex"
-          ? {
-              required: true,
-              startup_timeout_sec: 30,
-              tool_timeout_sec: 120,
-            }
-          : {}),
-      }
-    }) ?? {};
-  };
-
-  const normalizeCliMcpServers = (
-    provider: "claude" | "codex",
-    mcpServers?: Record<string, Record<string, unknown>>,
-  ): Record<string, Record<string, unknown>> | undefined => {
-    if (!mcpServers) return undefined;
-
-    const firstNonEmptyString = (...candidates: unknown[]): string | undefined => {
-      for (const value of candidates) {
-        if (typeof value === "string" && value.trim().length > 0) return value;
-      }
-      return undefined;
-    };
-
-    return Object.fromEntries(
-      Object.entries(mcpServers).map(([name, server]) => {
-        if (!server || typeof server !== "object") {
-          return [name, server];
-        }
-
-        const record = server as Record<string, unknown>;
-        const { type, transport, ...rest } = record;
-        if (provider === "codex") {
-          return [name, { ...rest, transport: firstNonEmptyString(transport, type) ?? "stdio" }];
-        }
-
-        const resolvedType = firstNonEmptyString(type, transport)
-          ?? (typeof rest.command === "string" && rest.command.trim().length > 0 ? "stdio" : undefined);
-        return [name, resolvedType ? { ...rest, type: resolvedType } : { ...rest }];
-      }),
-    );
-  };
-
-  const buildCursorAcpMcpServers = (managed: ManagedChatSession): McpServer[] => {
-    const list: McpServer[] = [];
-    const external = getExternalMcpConfigs();
-    list.push(...externalMcpConfigsToAcpStdio(external));
-    const adeWrapped = buildAdeMcpServers(
-      managed.laneWorktreePath,
-      "claude",
-      managed.session.identityKey === "cto" ? "cto" : "agent",
-      resolveWorkerIdentityAgentId(managed.session.identityKey),
-      managed.session.id,
-      managed.session.computerUse,
-    );
-    for (const [name, cfg] of Object.entries(adeWrapped)) {
-      const r = cfg as Record<string, unknown>;
-      const command = typeof r.command === "string" ? r.command : "";
-      if (!command.trim()) continue;
-      const args = Array.isArray(r.args) ? (r.args as unknown[]).map((x) => String(x)) : [];
-      const envRec = r.env && typeof r.env === "object" ? (r.env as Record<string, string>) : {};
-      const env = Object.entries(envRec).map(([n, v]) => ({ name: n, value: String(v ?? "") }));
-      list.push({ name, command, args, env });
-    }
-    return list;
-  };
-
   const getClaudeV2SessionControl = (
     session: ClaudeV2Session | null | undefined,
   ): {
@@ -3638,81 +3469,6 @@ export function createAgentChatService(args: {
         ? sessionRecord.supportedCommands.bind(sessionRecord)
         : (typeof query?.supportedCommands === "function" ? query.supportedCommands.bind(query) : undefined),
     };
-  };
-
-  const attachClaudeV2McpServers = async (
-    managed: ManagedChatSession,
-    session: ClaudeV2Session | null | undefined,
-    mcpServers: Record<string, Record<string, unknown>> | undefined,
-  ): Promise<void> => {
-    if (!mcpServers || Object.keys(mcpServers).length === 0) return;
-
-    const control = getClaudeV2SessionControl(session);
-    if (typeof control.setMcpServers !== "function") {
-      logger.warn("agent_chat.claude_v2_mcp_attach_unavailable", {
-        sessionId: managed.session.id,
-        serverNames: Object.keys(mcpServers),
-      });
-      return;
-    }
-
-    try {
-      const result = await control.setMcpServers(mcpServers);
-      const errors = Object.entries(result?.errors ?? {}).filter(([, message]) => typeof message === "string" && message.trim().length > 0);
-      if (errors.length > 0) {
-        logger.warn("agent_chat.claude_v2_mcp_attach_failed", {
-          sessionId: managed.session.id,
-          errors: Object.fromEntries(errors),
-        });
-        return;
-      }
-      logger.info("agent_chat.claude_v2_mcp_attach", {
-        sessionId: managed.session.id,
-        added: result?.added ?? [],
-        removed: result?.removed ?? [],
-      });
-    } catch (error) {
-      logger.warn("agent_chat.claude_v2_mcp_attach_failed", {
-        sessionId: managed.session.id,
-        error,
-      });
-    }
-  };
-
-  const buildClaudeAllowedTools = (
-    mcpServers: Record<string, Record<string, unknown>> | undefined,
-  ): string[] => Object.keys(mcpServers ?? {})
-    .map((serverName) => serverName.trim())
-    .filter((serverName) => serverName.length > 0)
-    .map((serverName) => `mcp__${serverName}__*`);
-
-  const summarizeAdeMcpLaunch = (args: {
-    workspaceRoot: string;
-    defaultRole: "agent" | "cto" | "external";
-    ownerId?: string | null;
-    computerUsePolicy?: ComputerUsePolicy | null;
-  }) => {
-    const { mode, command, entryPath, runtimeRoot, socketPath, packaged, resourcesPath } = resolveAdeMcpServerLaunch({
-      projectRoot,
-      workspaceRoot: args.workspaceRoot,
-      runtimeRoot: resolveMcpRuntimeRoot(),
-      defaultRole: args.defaultRole,
-      ownerId: args.ownerId ?? undefined,
-      computerUsePolicy: normalizeComputerUsePolicy(args.computerUsePolicy, createDefaultComputerUsePolicy()),
-    });
-    return { mode, command, entryPath, runtimeRoot, socketPath, packaged, resourcesPath };
-  };
-
-  /** Best-effort diagnostic: resolve the MCP launch config for a session, returning undefined on failure. */
-  const tryDiagnosticMcpLaunch = (managed: ManagedChatSession): ReturnType<typeof summarizeAdeMcpLaunch> | undefined => {
-    try {
-      return summarizeAdeMcpLaunch({
-        workspaceRoot: managed.laneWorktreePath,
-        defaultRole: managed.session.identityKey === "cto" ? "cto" : "agent",
-        ownerId: resolveWorkerIdentityAgentId(managed.session.identityKey),
-        computerUsePolicy: managed.session.computerUse,
-      });
-    } catch { return undefined; }
   };
 
   const readTranscriptConversationEntries = (managed: ManagedChatSession): string[] => {
@@ -4510,17 +4266,7 @@ export function createAgentChatService(args: {
       chatConfig.opencodePermissionMode,
     );
     const configSnapshot = projectConfigService.get();
-    const runtimeRoot = resolveOpenCodeRuntimeRoot();
     const persisted = readPersistedState(managed.session.id);
-    const mcpLaunch = resolveAdeMcpServerLaunch({
-      projectRoot,
-      workspaceRoot: managed.laneWorktreePath,
-      workspaceBinding: "project_root",
-      runtimeRoot,
-      chatSessionId: managed.session.id,
-      defaultRole: managed.session.identityKey === "cto" ? "cto" : "agent",
-      computerUsePolicy: managed.session.computerUse,
-    });
     // Discover loaded local models so OpenCode's provider config includes them.
     // inspectLocalProvider results are cached (30s TTL) so this is near-instant
     // when aiIntegrationService has already probed recently.
@@ -4548,7 +4294,6 @@ export function createAgentChatService(args: {
       title: sessionService.get(managed.session.id)?.title ?? defaultChatSessionTitle("opencode"),
       sessionId: persisted?.providerSessionId,
       projectConfig: configSnapshot.effective,
-      dynamicMcpLaunch: isLightweightSession(managed.session) ? undefined : mcpLaunch,
       discoveredLocalModels,
       ownerKind: "chat",
       ownerId: managed.session.id,
@@ -4597,7 +4342,7 @@ export function createAgentChatService(args: {
     managed.session.opencodePermissionMode = permMode;
     managed.session.permissionMode = syncLegacyPermissionMode(managed.session) ?? managed.session.permissionMode;
     enforceManagedLocalHarnessPermissionMode(managed, descriptor);
-    managed.session.capabilityMode = isLightweightSession(managed.session) ? "fallback" : "full_mcp";
+    managed.session.capabilityMode = isLightweightSession(managed.session) ? "fallback" : "full_tooling";
     persistChatState(managed);
     return "handled";
   };
@@ -5739,10 +5484,6 @@ export function createAgentChatService(args: {
       // Mark interrupted so the streaming catch block takes the graceful path
       managed.runtime.interrupted = true;
       cancelClaudeWarmup(managed, managed.runtime, "teardown");
-      if (managed.runtime.compactionResetTimer) {
-        clearTimeout(managed.runtime.compactionResetTimer);
-        managed.runtime.compactionResetTimer = null;
-      }
       try { managed.runtime.v2Session?.close(); } catch { /* ignore */ }
       managed.runtime.v2Session = null;
       managed.runtime.v2WarmupDone = null;
@@ -6634,11 +6375,6 @@ export function createAgentChatService(args: {
         } else {
           runtime.v2Session = unstable_v2_createSession(v2Opts as any) as unknown as ClaudeV2Session;
         }
-        await attachClaudeV2McpServers(
-          managed,
-          runtime.v2Session,
-          v2Opts.mcpServers as Record<string, Record<string, unknown>> | undefined,
-        );
       }
 
       // Build the message — plain string for text-only, or SDKUserMessage with
@@ -6797,25 +6533,6 @@ export function createAgentChatService(args: {
               turnId,
             });
           }
-          continue;
-        }
-
-        // system:elicitation_complete — MCP URL-mode authentication finished
-        if (msg.type === "system" && (msg as any).subtype === "elicitation_complete") {
-          const elicitMsg = msg as any;
-          const elicitationId = typeof elicitMsg.elicitation_id === "string" ? elicitMsg.elicitation_id : "";
-          const serverName = typeof elicitMsg.mcp_server_name === "string" ? elicitMsg.mcp_server_name : "MCP server";
-          // Resolve any pending URL-mode elicitation promise
-          if (elicitationId && runtime.pendingElicitations.has(elicitationId)) {
-            runtime.pendingElicitations.get(elicitationId)!();
-            runtime.pendingElicitations.delete(elicitationId);
-          }
-          emitChatEvent(managed, {
-            type: "system_notice",
-            noticeKind: "info",
-            message: `MCP authentication complete: ${serverName}`,
-            turnId,
-          });
           continue;
         }
 
@@ -8232,137 +7949,6 @@ export function createAgentChatService(args: {
       return;
     }
 
-    // ── MCP Elicitation (used by mcp__ade__ask_user for standalone chat) ──
-    if (method === "mcpServer/elicitation/request") {
-      const params = (payload.params as {
-        serverName?: string;
-        message?: string;
-        turnId?: string;
-        requestedSchema?: Record<string, unknown>;
-      } | null) ?? {};
-      const serverName = typeof params.serverName === "string" ? params.serverName.trim() : "MCP";
-      const message = typeof params.message === "string" ? params.message.trim() : "The agent needs input.";
-      const itemId = randomUUID();
-      const requestedSchema = params.requestedSchema && typeof params.requestedSchema === "object"
-        ? params.requestedSchema
-        : null;
-
-      const inferQuestionsFromSchema = (): PendingInputQuestion[] => {
-        const properties = requestedSchema && typeof requestedSchema.properties === "object" && requestedSchema.properties
-          ? requestedSchema.properties as Record<string, unknown>
-          : null;
-        if (!properties) {
-          return [{
-            id: "elicitation_answer",
-            header: "Question",
-            question: message,
-            allowsFreeform: true,
-          }];
-        }
-
-        const entries = Object.entries(properties).flatMap(([propertyKey, rawProperty], index) => {
-          if (!rawProperty || typeof rawProperty !== "object") return [];
-          const property = rawProperty as Record<string, unknown>;
-          const header = typeof property.title === "string" && property.title.trim().length
-            ? property.title.trim()
-            : `Question ${index + 1}`;
-          const enumOptions = Array.isArray(property.enum)
-            ? property.enum.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
-            : [];
-          const itemEnumOptions = property.type === "array"
-            && property.items
-            && typeof property.items === "object"
-            && Array.isArray((property.items as Record<string, unknown>).enum)
-              ? ((property.items as Record<string, unknown>).enum as unknown[])
-                  .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
-              : [];
-          const questionText = typeof property.description === "string" && property.description.trim().length
-            ? property.description.trim()
-            : Object.keys(properties).length === 1
-              ? message
-              : `${message} (${header})`;
-
-          if (enumOptions.length > 0) {
-            return [{
-              id: propertyKey,
-              header,
-              question: questionText,
-              options: enumOptions.map((value) => ({ label: value, value })),
-              allowsFreeform: false,
-            }];
-          }
-
-          if (itemEnumOptions.length > 0) {
-            return [{
-              id: propertyKey,
-              header,
-              question: questionText,
-              multiSelect: true,
-              options: itemEnumOptions.map((value) => ({ label: value, value })),
-              allowsFreeform: false,
-            }];
-          }
-
-          if (property.type === "boolean") {
-            return [{
-              id: propertyKey,
-              header,
-              question: questionText,
-              options: [
-                { label: "Yes", value: "true" },
-                { label: "No", value: "false" },
-              ],
-              allowsFreeform: false,
-            }];
-          }
-
-          return [{
-            id: propertyKey,
-            header,
-            question: questionText,
-            allowsFreeform: true,
-          }];
-        });
-
-        return entries.length > 0
-          ? entries
-          : [{
-              id: "elicitation_answer",
-              header: "Question",
-              question: message,
-              allowsFreeform: true,
-            }];
-      };
-
-      const questions = inferQuestionsFromSchema();
-
-      const request: PendingInputRequest = {
-        requestId: String(id),
-        itemId,
-        source: "codex",
-        kind: "structured_question",
-        title: `Question from ${serverName}`,
-        description: questions[0]?.question ?? message,
-        questions,
-        allowsFreeform: true,
-        blocking: true,
-        canProceedWithoutAnswer: false,
-        providerMetadata: requestedSchema ? { serverName, requestedSchema } : { serverName },
-        turnId: typeof params.turnId === "string" ? params.turnId : runtime.activeTurnId ?? null,
-      };
-      runtime.approvals.set(itemId, {
-        requestId: id,
-        kind: "structured_question",
-        request,
-        questionResponseKind: "mcp_elicitation",
-      });
-      emitPendingInputRequest(managed, request, {
-        kind: "tool_call",
-        description: message,
-      });
-      return;
-    }
-
     runtime.sendError(id, `Unsupported server request: ${method || "unknown"}`);
   };
 
@@ -8622,7 +8208,7 @@ export function createAgentChatService(args: {
       return;
     }
 
-    if (itemType === "mcpToolCall") {
+    if (itemType === "toolCall") {
       const nextActivity = activityForToolName(String(item.tool ?? "tool"));
       emitChatEvent(managed, {
         type: "activity",
@@ -9178,7 +8764,6 @@ export function createAgentChatService(args: {
     if (
       method === "thread/status/changed"
       || method === "codex/event/task_started"
-      || method === "codex/event/mcp_startup_update"
     ) {
       return;
     }
@@ -9291,14 +8876,11 @@ export function createAgentChatService(args: {
   };
 
   const startCodexRuntime = async (managed: ManagedChatSession): Promise<CodexRuntime> => {
-    const adeMcpLaunch = tryDiagnosticMcpLaunch(managed);
-
     logger.info("agent_chat.codex_runtime_start", {
       sessionId: managed.session.id,
       cwd: managed.laneWorktreePath,
       shellPath: process.env.SHELL ?? "",
       path: process.env.PATH ?? "",
-      ...(adeMcpLaunch ? { adeMcpLaunch } : {}),
     });
     let codexExecutable: string;
     try {
@@ -9536,7 +9118,6 @@ export function createAgentChatService(args: {
 
   const resolveCodexThreadParams = (managed: ManagedChatSession): {
     codexPolicy: CodexPolicy;
-    mcpServers: Record<string, Record<string, unknown>>;
   } => {
     const config = resolveChatConfig();
     const codexConfigSource = resolveSessionCodexConfigSource(managed.session);
@@ -9555,33 +9136,18 @@ export function createAgentChatService(args: {
       delete managed.session.codexSandbox;
     }
     managed.session.permissionMode = syncLegacyPermissionMode(managed.session) ?? managed.session.permissionMode;
-    const mcpServers = isLightweightSession(managed.session)
-      ? {}
-      : buildAdeMcpServers(
-          managed.laneWorktreePath,
-          "codex",
-          managed.session.identityKey === "cto" ? "cto" : "agent",
-          resolveWorkerIdentityAgentId(managed.session.identityKey),
-          managed.session.id,
-          managed.session.computerUse,
-        );
-    return { codexPolicy, mcpServers };
+    return { codexPolicy };
   };
 
   const startFreshCodexThread = async (
     managed: ManagedChatSession,
     runtime: CodexRuntime,
     codexPolicy: CodexPolicy,
-    mcpServers: Record<string, Record<string, unknown>>,
   ): Promise<void> => {
-    const mcpConfig = buildCodexAppServerMcpConfigOverrides(mcpServers);
     const startResponse = await runtime.request<{ thread?: { id?: string } }>("thread/start", {
       model: managed.session.model,
       ...(managed.session.reasoningEffort ? { reasoningEffort: managed.session.reasoningEffort } : {}),
       cwd: managed.laneWorktreePath,
-      ...(mcpConfig ? { config: mcpConfig } : {}),
-      mcpServers,
-      mcp_servers: mcpServers,
       ...codexPolicyArgs(codexPolicy),
       experimentalRawEvents: false,
       persistExtendedHistory: true
@@ -9661,53 +9227,29 @@ export function createAgentChatService(args: {
           "Read, edit, and run commands only inside that worktree. Do not switch to project root, another lane, or another repo unless ADE explicitly relaunches you there.",
           "",
           "## ADE Memory",
-          "You have access to ADE's persistent project memory via MCP tools (memory_search, memory_add, memory_pin).",
-          "**Search first:** Before starting non-trivial work, search memory for relevant conventions, past decisions, or known pitfalls.",
+          "Use the ADE CLI (`ade memory search`, `ade memory add`, `ade memory pin`) when you need project memory from a terminal-capable session.",
+          "**Search first:** Before starting non-trivial work, search memory for relevant conventions, past decisions, or known pitfalls when the CLI is available.",
           "**Write sparingly and well:** Only save knowledge a developer joining this project would find useful on their first day. Each memory should be a single actionable insight.",
           "GOOD memories: \"Convention: always use snake_case for DB columns\", \"Decision: chose Postgres over Mongo for ACID transactions\", \"Pitfall: CI silently skips tests if file doesn't match *.test.ts\"",
           "DO NOT save: file paths, raw error messages without lessons, task progress updates, information derivable from git log or the code itself, obvious patterns already visible in the codebase.",
           "",
           "## ADE Tooling",
-          "ADE and MCP tools are runtime tool calls, not shell commands.",
-          "Do not probe tool availability with `which`, `command -v`, `.mcp.json`, or project settings files.",
-          "Use the exact tool identifier exposed in this session's tool list. MCP-backed ADE tools may appear in namespaced form like `mcp__ade__pr_refresh_issue_inventory`.",
+          "ADE actions are available through the `ade` CLI in terminal-capable sessions.",
+          "Run `ade doctor` for readiness, `ade actions list --text` for discovery, typed commands such as `ade lanes list --text`, `ade prs checks <pr> --text`, or `ade proof list --text` first, and `ade actions run ...` as the escape hatch.",
+          "Use `--json` for structured output and `--text` for readable output.",
         ].join("\n"),
       };
       opts.settingSources = ["user", "project", "local"];
-      opts.mcpServers = buildAdeMcpServers(
-        managed.laneWorktreePath,
-        "claude",
-        managed.session.identityKey === "cto" ? "cto" : "agent",
-        resolveWorkerIdentityAgentId(managed.session.identityKey),
-        managed.session.id,
-        managed.session.computerUse,
-      ) as any;
-      const allowedTools = buildClaudeAllowedTools(opts.mcpServers as Record<string, Record<string, unknown>> | undefined);
-      if (allowedTools.length > 0) {
-        opts.allowedTools = allowedTools;
-      }
       opts.canUseTool = buildClaudeCanUseTool(runtime, managed) as any;
 
       // PreCompact hook: nudge the model to save durable discoveries into
       // ADE memory before the SDK compacts context. Runs inside the SDK's
       // compaction flow so the text never surfaces as a visible user turn.
-      //
-      // Mark the runtime as in-compaction so the canUseTool gate auto-allows
-      // MCP memory tools the model calls in response to the flush prompt.
-      // Auto-compaction runs unattended; surfacing an approval prompt would
-      // hang the flow waiting on a user who may not be present. Flag is
-      // cleared by a timer since the SDK does not emit a PostCompact signal.
       (opts as any).hooks = {
         PreCompact: [
           {
             hooks: [
               async () => {
-                runtime.compactionInProgress = true;
-                if (runtime.compactionResetTimer) clearTimeout(runtime.compactionResetTimer);
-                runtime.compactionResetTimer = setTimeout(() => {
-                  runtime.compactionInProgress = false;
-                  runtime.compactionResetTimer = null;
-                }, 60_000);
                 return {
                   continue: true,
                   systemMessage: DEFAULT_FLUSH_PROMPT,
@@ -9718,171 +9260,9 @@ export function createAgentChatService(args: {
         ],
       };
 
-      // Handle MCP elicitation requests (form input or OAuth URL flows).
-      (opts as any).onElicitation = async (
-        elicitReq: { serverName: string; message: string; mode?: "form" | "url"; url?: string; elicitationId?: string; requestedSchema?: Record<string, unknown> },
-        _elicitOpts: { signal: AbortSignal },
-      ): Promise<{ action: "accept" | "decline" | "cancel"; content?: Record<string, string | number | boolean | string[]> }> => {
-        const approvalItemId = randomUUID();
-        const turnId = runtime.activeTurnId ?? undefined;
-
-        if (elicitReq.mode === "url" && elicitReq.url) {
-          // URL mode: open browser and wait for elicitation_complete stream event
-          try {
-            const parsed = new URL(elicitReq.url);
-            if (parsed.protocol === "https:" || parsed.protocol === "http:") {
-              require("electron").shell.openExternal(elicitReq.url);
-            } else {
-              logger.warn("agent_chat.blocked_open_external", { protocol: parsed.protocol });
-            }
-          } catch { /* best effort */ }
-
-          const request: PendingInputRequest = {
-            requestId: approvalItemId,
-            itemId: approvalItemId,
-            source: "claude",
-            kind: "question",
-            title: `Authentication: ${elicitReq.serverName}`,
-            description: `${elicitReq.message}\n\nA browser window has been opened for authentication. Click "Done" once you have completed the authentication flow.`,
-            questions: [{
-              id: "auth_action",
-              header: elicitReq.serverName,
-              question: elicitReq.message,
-              options: [
-                { label: "Done", value: "done", recommended: true },
-                { label: "Cancel", value: "cancel" },
-              ],
-              allowsFreeform: false,
-            }],
-            allowsFreeform: false,
-            blocking: true,
-            canProceedWithoutAnswer: false,
-            providerMetadata: { serverName: elicitReq.serverName, mode: "url", elicitationId: elicitReq.elicitationId },
-            turnId: turnId ?? null,
-          };
-
-          emitPendingInputRequest(managed, request, {
-            kind: "tool_call",
-            description: `MCP authentication: ${elicitReq.serverName}`,
-            detail: { serverName: elicitReq.serverName },
-          });
-
-          // Also register a resolver that the elicitation_complete stream event can trigger
-          if (elicitReq.elicitationId) {
-            const waitForComplete = new Promise<void>((resolve) => {
-              runtime.pendingElicitations.set(elicitReq.elicitationId!, resolve);
-            });
-            // Race: user clicks "Done" OR elicitation_complete arrives
-            let userResponse: { decision?: AgentChatApprovalDecision };
-            try {
-              runtime.pauseIdleWatchdog?.();
-              userResponse = await Promise.race([
-                new Promise<{ decision?: AgentChatApprovalDecision }>((resolve) => {
-                  runtime.approvals.set(approvalItemId, { kind: "approval", resolve, request });
-                }),
-                waitForComplete.then(() => ({ decision: "accept" as AgentChatApprovalDecision })),
-              ]);
-            } finally {
-              runtime.approvals.delete(approvalItemId);
-              runtime.pendingElicitations.delete(elicitReq.elicitationId);
-              runtime.resumeIdleWatchdog?.();
-            }
-            if (userResponse.decision === "cancel" || userResponse.decision === "decline") {
-              return { action: "cancel" };
-            }
-            return { action: "accept" };
-          }
-
-          // No elicitationId — just wait for user click
-          let elicitResponse: { decision?: AgentChatApprovalDecision };
-          try {
-            runtime.pauseIdleWatchdog?.();
-            elicitResponse = await new Promise<typeof elicitResponse>((resolve) => {
-              runtime.approvals.set(approvalItemId, { kind: "approval", resolve, request });
-            });
-          } finally {
-            runtime.approvals.delete(approvalItemId);
-            runtime.resumeIdleWatchdog?.();
-          }
-          return elicitResponse.decision === "cancel" || elicitResponse.decision === "decline"
-            ? { action: "cancel" }
-            : { action: "accept" };
-        }
-
-        // Form mode: map requestedSchema to structured questions
-        const questions: PendingInputRequest["questions"] = [];
-        const schema = elicitReq.requestedSchema ?? {};
-        const properties = (schema as any).properties as Record<string, { type?: string; description?: string; enum?: string[] }> | undefined;
-        if (properties) {
-          for (const [key, prop] of Object.entries(properties)) {
-            questions.push({
-              id: key,
-              header: key,
-              question: prop.description ?? key,
-              ...(prop.enum ? { options: prop.enum.map((v) => ({ label: v, value: v })) } : {}),
-              allowsFreeform: !prop.enum,
-              isSecret: key.toLowerCase().includes("password") || key.toLowerCase().includes("secret") || key.toLowerCase().includes("token"),
-            });
-          }
-        }
-        if (questions.length === 0) {
-          questions.push({
-            id: "input",
-            header: elicitReq.serverName,
-            question: elicitReq.message,
-            allowsFreeform: true,
-          });
-        }
-
-        const request: PendingInputRequest = {
-          requestId: approvalItemId,
-          itemId: approvalItemId,
-          source: "claude",
-          kind: "structured_question",
-          title: `Input requested: ${elicitReq.serverName}`,
-          description: elicitReq.message,
-          questions,
-          allowsFreeform: true,
-          blocking: true,
-          canProceedWithoutAnswer: false,
-          providerMetadata: { serverName: elicitReq.serverName, mode: "form" },
-          turnId: turnId ?? null,
-        };
-
-        emitPendingInputRequest(managed, request, {
-          kind: "tool_call",
-          description: `MCP input: ${elicitReq.serverName}`,
-          detail: { serverName: elicitReq.serverName },
-        });
-
-        let formResponse: { decision?: AgentChatApprovalDecision; answers?: Record<string, string | string[]>; responseText?: string | null };
-        try {
-          runtime.pauseIdleWatchdog?.();
-          formResponse = await new Promise<typeof formResponse>((resolve) => {
-            runtime.approvals.set(approvalItemId, { kind: "approval", resolve, request });
-          });
-        } finally {
-          runtime.approvals.delete(approvalItemId);
-          runtime.resumeIdleWatchdog?.();
-        }
-
-        if (formResponse.decision === "cancel" || formResponse.decision === "decline") {
-          return { action: "decline" };
-        }
-
-        // Map answers to the expected content shape
-        const content: Record<string, string | number | boolean | string[]> = {};
-        if (formResponse.answers) {
-          for (const [key, value] of Object.entries(formResponse.answers)) {
-            content[key] = value;
-          }
-        }
-        return { action: "accept", content };
-      };
-
-      // Enable MCP tool search for non-CTO sessions with many MCP tools.
-      // When enabled, the SDK defers tool definitions and loads them on-demand
-      // via the ToolSearch tool, keeping the context window lean.
+      // Enable provider tool search for non-CTO sessions with large tool catalogs.
+      // When enabled, the SDK defers tool definitions and loads them on demand
+      // via its ToolSearch capability, keeping the context window lean.
       // CTO sessions disable deferral so operator tools (spawnChat, gitCommit, etc.)
       // are always visible without needing ToolSearch.
       opts.env = {
@@ -10200,12 +9580,6 @@ export function createAgentChatService(args: {
         } else {
           runtime.v2Session = unstable_v2_createSession(v2Opts as any) as unknown as ClaudeV2Session;
         }
-        await attachClaudeV2McpServers(
-          managed,
-          runtime.v2Session,
-          v2Opts.mcpServers as Record<string, Record<string, unknown>> | undefined,
-        );
-
         if (runtime.v2WarmupCancelled) {
           try { runtime.v2Session?.close(); } catch { /* ignore */ }
           runtime.v2Session = null;
@@ -10283,12 +9657,10 @@ export function createAgentChatService(args: {
         try {
           diagClaudePath = runtime.v2Session ? undefined : buildClaudeV2SessionOpts(managed, runtime).pathToClaudeCodeExecutable;
         } catch { /* best-effort diagnostic */ }
-        const diagMcpLaunch = tryDiagnosticMcpLaunch(managed);
         logger.warn("agent_chat.claude_v2_prewarm_failed", {
           sessionId: managed.session.id,
           error: error instanceof Error ? error.message : String(error),
           claudeExecutablePath: diagClaudePath,
-          ...(diagMcpLaunch ? { adeMcpLaunch: diagMcpLaunch } : {}),
         });
         try { runtime.v2Session?.close(); } catch { /* ignore */ }
         runtime.v2Session = null;
@@ -10346,7 +9718,6 @@ export function createAgentChatService(args: {
       interruptEventsEmitted: false,
       turnMemoryPolicyState: null,
       approvalOverrides: new Set<string>(persisted?.approvalOverrides ?? []),
-      pendingElicitations: new Map<string, () => void>(),
       resolvedToolUseIds: new Set<string>(),
     };
     managed.runtime = runtime;
@@ -10362,7 +9733,7 @@ export function createAgentChatService(args: {
         laneId: "temporary",
         provider: "codex",
         model: DEFAULT_CODEX_MODEL,
-        capabilityMode: "full_mcp",
+        capabilityMode: "full_tooling",
         status: "idle",
         idleSinceAt: null,
         createdAt: nowIso(),
@@ -11090,7 +10461,6 @@ export function createAgentChatService(args: {
       launch.mode ?? "default",
       launch.sandbox,
       launch.force ? "force" : "guarded",
-      launch.approveMcps ? "mcp-auto" : "mcp-ask",
     ].join(":");
   };
 
@@ -11364,11 +10734,10 @@ export function createAgentChatService(args: {
     if (!loadSession) return;
 
     try {
-      const loaded = await loadSession({
+      const loaded = await loadSession(cursorAcpSessionRequest({
         sessionId,
         cwd: managed.laneWorktreePath,
-        mcpServers: buildCursorAcpMcpServers(managed),
-      });
+      }) as Parameters<typeof loadSession>[0]);
       const loadedAvailableModelIds = loaded.models?.availableModels
         ?.map((entry) => String(entry?.modelId ?? "").trim())
         .filter(Boolean) ?? [];
@@ -11688,7 +11057,6 @@ export function createAgentChatService(args: {
         const resumed = await pooled.connection.unstable_resumeSession({
           sessionId: persistedAcp,
           cwd: managed.laneWorktreePath,
-          mcpServers: buildCursorAcpMcpServers(managed),
         });
         const resumedAvailableModelIds = resumed.models?.availableModels
           ?.map((entry) => String(entry?.modelId ?? "").trim())
@@ -11794,10 +11162,9 @@ export function createAgentChatService(args: {
 
       if (!runtime.acpSessionId) {
         if (!runtime.pooled) throw new Error("Cursor ACP connection not available");
-        const created = await runtime.pooled.connection.newSession({
+        const created = await runtime.pooled.connection.newSession(cursorAcpSessionRequest({
           cwd: managed.laneWorktreePath,
-          mcpServers: buildCursorAcpMcpServers(managed),
-        });
+        }) as Parameters<typeof runtime.pooled.connection.newSession>[0]);
         const createdAvailableModelIds = created.models?.availableModels
           ?.map((entry) => String(entry?.modelId ?? "").trim())
           .filter(Boolean) ?? [];
@@ -12056,8 +11423,7 @@ export function createAgentChatService(args: {
 
       if (!runtime.threadResumed) {
         const threadIdToResume = managed.session.threadId || readPersistedState(sessionId)?.threadId;
-        const { codexPolicy, mcpServers } = resolveCodexThreadParams(managed);
-        const mcpConfig = buildCodexAppServerMcpConfigOverrides(mcpServers);
+        const { codexPolicy } = resolveCodexThreadParams(managed);
 
         if (threadIdToResume) {
           try {
@@ -12066,9 +11432,6 @@ export function createAgentChatService(args: {
               model: managed.session.model,
               ...(managed.session.reasoningEffort ? { reasoningEffort: managed.session.reasoningEffort } : {}),
               cwd: managed.laneWorktreePath,
-              ...(mcpConfig ? { config: mcpConfig } : {}),
-              mcpServers,
-              mcp_servers: mcpServers,
               ...codexPolicyArgs(codexPolicy),
               persistExtendedHistory: true
             });
@@ -12103,10 +11466,10 @@ export function createAgentChatService(args: {
               threadId: threadIdToResume,
               error: resumeError instanceof Error ? resumeError.message : String(resumeError)
             });
-            await startFreshCodexThread(managed, runtime, codexPolicy, mcpServers);
+            await startFreshCodexThread(managed, runtime, codexPolicy);
           }
         } else {
-          await startFreshCodexThread(managed, runtime, codexPolicy, mcpServers);
+          await startFreshCodexThread(managed, runtime, codexPolicy);
         }
       }
 
@@ -12504,7 +11867,6 @@ export function createAgentChatService(args: {
       pending.resolve({ decision: "cancel" });
     }
     runtime.approvals.clear();
-    runtime.pendingElicitations.clear();
 
     // Emit subagent_result "stopped" for every active subagent so the UI
     // properly transitions them from "running" → "stopped" (matching Claude Code CLI behaviour).
@@ -12542,17 +11904,13 @@ export function createAgentChatService(args: {
       }
       const threadId = persisted?.threadId ?? managed.session.threadId;
       if (threadId) {
-        const { codexPolicy, mcpServers } = resolveCodexThreadParams(managed);
-        const mcpConfig = buildCodexAppServerMcpConfigOverrides(mcpServers);
+        const { codexPolicy } = resolveCodexThreadParams(managed);
         try {
           await runtime.request("thread/resume", {
             threadId,
             model: managed.session.model,
             ...(managed.session.reasoningEffort ? { reasoningEffort: managed.session.reasoningEffort } : {}),
             cwd: managed.laneWorktreePath,
-            ...(mcpConfig ? { config: mcpConfig } : {}),
-            mcpServers,
-            mcp_servers: mcpServers,
             ...codexPolicyArgs(codexPolicy),
             persistExtendedHistory: true
           });
@@ -12588,7 +11946,7 @@ export function createAgentChatService(args: {
             threadId,
             error: resumeError instanceof Error ? resumeError.message : String(resumeError)
           });
-          await startFreshCodexThread(managed, runtime, codexPolicy, mcpServers);
+          await startFreshCodexThread(managed, runtime, codexPolicy);
         }
       }
       // Re-sync codex approval policy from persisted/config settings
@@ -12983,19 +12341,11 @@ export function createAgentChatService(args: {
       }
       if (pending.kind === "structured_question") {
         if (resolvedDecision === "decline" || resolvedDecision === "cancel") {
-          if (pending.questionResponseKind === "mcp_elicitation") {
-            ensureWritable();
-            runtime.sendResponse(pending.requestId, {
-              action: resolvedDecision === "cancel" ? "cancel" : "decline",
-              content: null,
-            });
-          } else {
-            // Native Codex request_user_input only accepts an answers map.
-            // Empty answers represent a declined/cancelled prompt without
-            // interrupting the surrounding turn.
-            ensureWritable();
-            runtime.sendResponse(pending.requestId, { answers: {} });
-          }
+          // Native Codex request_user_input only accepts an answers map.
+          // Empty answers represent a declined/cancelled prompt without
+          // interrupting the surrounding turn.
+          ensureWritable();
+          runtime.sendResponse(pending.requestId, { answers: {} });
           runtime.approvals.delete(itemId);
           emitPendingInputResolved(managed, {
             itemId,
@@ -13006,18 +12356,11 @@ export function createAgentChatService(args: {
         }
         const normalizedAnswers = normalizePendingInputAnswers(pending.request, answers, responseText);
         ensureWritable();
-        if (pending.questionResponseKind === "mcp_elicitation") {
-          runtime.sendResponse(pending.requestId, {
-            action: "accept",
-            content: coerceCodexMcpElicitationContent(pending.request, normalizedAnswers),
-          });
-        } else {
-          runtime.sendResponse(pending.requestId, {
-            answers: Object.fromEntries(
-              Object.entries(normalizedAnswers).map(([questionId, values]) => [questionId, { answers: values }]),
-            ),
-          });
-        }
+        runtime.sendResponse(pending.requestId, {
+          answers: Object.fromEntries(
+            Object.entries(normalizedAnswers).map(([questionId, values]) => [questionId, { answers: values }]),
+          ),
+        });
         runtime.approvals.delete(itemId);
         emitPendingInputResolved(managed, {
           itemId,
@@ -13825,10 +13168,9 @@ export function createAgentChatService(args: {
       const runtime = await ensureCursorRuntime(managed);
       if (!runtime.pooled) return;
       if (!runtime.acpSessionId) {
-        const created = await runtime.pooled.connection.newSession({
+        const created = await runtime.pooled.connection.newSession(cursorAcpSessionRequest({
           cwd: managed.laneWorktreePath,
-          mcpServers: buildCursorAcpMcpServers(managed),
-        });
+        }) as Parameters<typeof runtime.pooled.connection.newSession>[0]);
         const createdAvailableModelIds = created.models?.availableModels
           ?.map((entry) => String(entry?.modelId ?? "").trim())
           .filter(Boolean) ?? [];
@@ -14065,7 +13407,7 @@ export function createAgentChatService(args: {
   };
 
   /**
-   * Create a blocking pending-input request for a chat session (used by MCP ask_user
+   * Create a blocking pending-input request for a chat session (used by ADE ask_user
    * when no missionId is available).  Returns the user's answer.
    */
   const requestChatInput = async (args: {

@@ -240,7 +240,7 @@ services:
 
 Optional services that are missing cause their dependent actions to
 throw `"<service> not available."` at call time. The `requireService`
-helper centralises that check. This pattern lets the headless MCP
+helper centralises that check. This pattern lets the headless ADE CLI
 server construct a narrower service set without crashing at command
 registration.
 
@@ -316,13 +316,13 @@ see the chat README for the passive/active contract.
   reconnect. Be aware when reasoning about "why did this lane
   disappear" — check the command queue, not just the local DB.
 - **`prs.createFromLane` requires the host's GitHub token.** On a
-  headless MCP host with no `ADE_GITHUB_TOKEN` /
+  headless ADE CLI host with no `ADE_GITHUB_TOKEN` /
   `GITHUB_TOKEN` / `GH_TOKEN`, the command fails with a clear
   error before reaching GitHub. This is deliberate fail-fast behavior.
 - **`work.runQuickCommand` always creates a PTY.** There is no
   "run a command, give me just the output" variant; the controller
   must subscribe to the terminal stream and tear down with
-  `work.closeSession`. This is why headless MCP mode provides a
+  `work.closeSession`. This is why headless ADE CLI mode provides a
   stub PTY service that throws on `.create` — the action is not
   supported there.
 - **`files.writeTextAtomic` does not invoke git hooks or editors.**

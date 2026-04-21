@@ -13,10 +13,6 @@ vi.mock("./LinearSection", () => ({
   LinearSection: () => <div>Linear section</div>,
 }));
 
-vi.mock("./ExternalMcpSection", () => ({
-  ExternalMcpSection: () => <div>Managed MCP section</div>,
-}));
-
 vi.mock("./ComputerUseSection", () => ({
   ComputerUseSection: () => <div>Computer Use section</div>,
 }));
@@ -24,14 +20,14 @@ vi.mock("./ComputerUseSection", () => ({
 afterEach(cleanup);
 
 describe("IntegrationsSettingsSection", () => {
-  it("opens the managed MCP tab from the integration search param", () => {
+  it("opens the computer-use tab from the integration search param", () => {
     render(
-      <MemoryRouter initialEntries={["/settings?tab=integrations&integration=managed-mcp"]}>
+      <MemoryRouter initialEntries={["/settings?tab=integrations&integration=computer-use"]}>
         <IntegrationsSettingsSection />
       </MemoryRouter>,
     );
 
-    expect(screen.getByText("Managed MCP section")).toBeTruthy();
+    expect(screen.getByText("Computer Use section")).toBeTruthy();
     expect(screen.queryByText("GitHub section")).toBeNull();
   });
 
@@ -43,9 +39,6 @@ describe("IntegrationsSettingsSection", () => {
     );
 
     expect(screen.getByText("GitHub section")).toBeTruthy();
-
-    fireEvent.click(screen.getByRole("button", { name: "Managed MCP" }));
-    expect(screen.getByText("Managed MCP section")).toBeTruthy();
 
     fireEvent.click(screen.getByRole("button", { name: "Computer Use" }));
     expect(screen.getByText("Computer Use section")).toBeTruthy();

@@ -466,9 +466,6 @@ export const useMissionsStore = create<MissionsStore>((set, get) => ({
     const effectiveInProcess = isRecord(effectivePermissions.inProcess) ? effectivePermissions.inProcess : {};
     const localProviders = isRecord(localPermissions.providers) ? localPermissions.providers : {};
     const effectiveProviders = isRecord(effectivePermissions.providers) ? effectivePermissions.providers : {};
-    const localExternalMcp = isRecord(localPermissions.externalMcp) ? localPermissions.externalMcp : {};
-    const effectiveExternalMcp = isRecord(effectivePermissions.externalMcp) ? effectivePermissions.externalMcp : {};
-
     const localOrcModel = isRecord(localOrchestrator.defaultOrchestratorModel) ? localOrchestrator.defaultOrchestratorModel : null;
     const effectiveOrcModel = isRecord(effectiveOrchestrator.defaultOrchestratorModel) ? effectiveOrchestrator.defaultOrchestratorModel : null;
 
@@ -502,11 +499,6 @@ export const useMissionsStore = create<MissionsStore>((set, get) => ({
         codex: readString(localProviders.codex, effectiveProviders.codex, "full-auto") as import("../../../shared/types").AgentChatPermissionMode,
         opencode: readString(localProviders.opencode, effectiveProviders.opencode, "full-auto") as import("../../../shared/types").AgentChatPermissionMode,
         codexSandbox: readString(localProviders.codexSandbox, effectiveProviders.codexSandbox, "workspace-write") as "read-only" | "workspace-write" | "danger-full-access",
-      },
-      externalMcp: {
-        enabled: readBoolean(localExternalMcp.enabled, effectiveExternalMcp.enabled, false),
-        selectedServers: readStringArray(localExternalMcp.selectedServers, effectiveExternalMcp.selectedServers),
-        selectedTools: readStringArray(localExternalMcp.selectedTools, effectiveExternalMcp.selectedTools),
       },
     };
 
@@ -586,7 +578,6 @@ export const useMissionsStore = create<MissionsStore>((set, get) => ({
               cli: nextCli,
               inProcess: nextInProcess,
               providers: draft.permissionConfig?.providers ?? DEFAULT_PERMISSION_CONFIG.providers,
-              externalMcp: draft.permissionConfig?.externalMcp,
             },
           },
         },

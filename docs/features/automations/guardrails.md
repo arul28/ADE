@@ -101,7 +101,7 @@ Publish is only allowed when:
 3. `guardrails.requireHuman` is not set, or a reviewer has approved.
 4. The disposition-specific path is available (e.g. Linear credentials exist for `linear-comment`).
 
-`PUBLISH_CAPABLE_TOOL_FAMILIES` (`github`, `linear`, `browser`, `external-mcp`) is the set of families that can publish — built-in palettes like `repo`, `git`, `tests`, `memory`, `mission` cannot publish externally regardless of disposition.
+`PUBLISH_CAPABLE_TOOL_FAMILIES` (`github`, `linear`, `browser`, `external-cli`) is the set of families that can publish — built-in palettes like `repo`, `git`, `tests`, `memory`, `mission` cannot publish externally regardless of disposition.
 
 ## Human review
 

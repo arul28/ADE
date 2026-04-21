@@ -124,8 +124,8 @@ describe("classifyErrorSource", () => {
     expect(classifyErrorSource("startup_failure: could not init")).toBe("Executor");
   });
 
-  it("classifies MCP/sandbox errors as Runtime", () => {
-    expect(classifyErrorSource("MCP tool failed")).toBe("Runtime");
+  it("classifies environment/sandbox errors as Runtime", () => {
+    expect(classifyErrorSource("External CLI backend missing from environment")).toBe("Runtime");
     expect(classifyErrorSource("Sandbox violation")).toBe("Runtime");
     expect(classifyErrorSource("Permission denied")).toBe("Runtime");
   });

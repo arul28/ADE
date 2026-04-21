@@ -364,7 +364,7 @@ describe("openCodeServerManager", () => {
     process.env.OPENCODE_API_KEY = "ambient-api-key";
     process.env.OPENCODE_BIN_PATH = "/tmp/rogue-opencode";
     process.env.OPENCODE_CONFIG_DIR = "/Users/tester/.config/opencode";
-    process.env.OPENCODE_CONFIG_CONTENT = "{\"mcp\":{\"pencil\":true}}";
+    process.env.OPENCODE_CONFIG_CONTENT = "{\"experimental\":{\"pencil\":true}}";
 
     const config = {
       share: "disabled",

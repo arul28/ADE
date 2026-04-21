@@ -1907,8 +1907,6 @@ final class DatabaseService {
       try ensureColumn(tableName: "linear_workflow_runs", columnName: col, definition: "text")
     }
 
-    try ensureColumn(tableName: "external_mcp_usage_events", columnName: "chat_session_id", definition: "text")
-
     try ensureColumn(tableName: "pr_issue_inventory", columnName: "thread_comment_count", definition: "integer")
     try ensureColumn(tableName: "pr_issue_inventory", columnName: "thread_latest_comment_id", definition: "text")
     try ensureColumn(tableName: "pr_issue_inventory", columnName: "thread_latest_comment_author", definition: "text")

@@ -2,9 +2,9 @@ import { describe, expect, it } from "vitest";
 import { parseGhostDoctorProcessHealth } from "./localComputerUse";
 
 describe("parseGhostDoctorProcessHealth", () => {
-  it("treats stale ghost MCP processes as a health problem", () => {
+  it("treats stale Ghost OS processes as a health problem", () => {
     const health = parseGhostDoctorProcessHealth(
-      "[FAIL] Processes: 34 ghost MCP processes found (expect 0 or 1)",
+      "[FAIL] Processes: 34 Ghost OS processes found (expect 0 or 1)",
     );
 
     expect(health.state).toBe("stale");
@@ -14,7 +14,7 @@ describe("parseGhostDoctorProcessHealth", () => {
 
   it("accepts the healthy 0-or-1 process case", () => {
     const health = parseGhostDoctorProcessHealth(
-      "[ok] Processes: 1 ghost MCP process found",
+      "[ok] Processes: 1 Ghost OS process found",
     );
 
     expect(health.state).toBe("healthy");

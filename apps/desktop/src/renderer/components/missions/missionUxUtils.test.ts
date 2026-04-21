@@ -50,9 +50,9 @@ describe("classifyErrorSource", () => {
   });
 
   it("classifies env/config errors as Runtime", () => {
-    expect(classifyErrorSource("MCP server connection failed")).toBe("Runtime");
+    expect(classifyErrorSource("External CLI backend missing from environment")).toBe("Runtime");
     expect(classifyErrorSource("Sandbox permission denied")).toBe("Runtime");
-    expect(classifyErrorSource("Gmail MCP probe failed")).toBe("Runtime");
+    expect(classifyErrorSource("Runtime config probe failed")).toBe("Runtime");
     expect(classifyErrorSource("Lane worktree not found")).toBe("Runtime");
   });
 

@@ -59,25 +59,25 @@ describe("prepareMissionFeedItems", () => {
         at: "2026-03-11T14:00:00.000Z",
         kind: "system",
         title: "Tool call",
-        detail: "mcp__linear__get_issue",
+        detail: "linear.get_issue",
       }),
       makeProgressItem({
         id: "meaningful-1",
         at: "2026-03-11T14:01:00.000Z",
         title: "Worker result",
-        detail: "Coordinator used mcp__posthog__query-run to inspect the conversion drop.",
+        detail: "Coordinator used posthog.query-run to inspect the conversion drop.",
       }),
       makeProgressItem({
         id: "meaningful-2",
         at: "2026-03-11T14:02:00.000Z",
         title: "Worker result",
-        detail: "Coordinator used mcp__posthog__query-run to inspect the conversion drop.",
+        detail: "Coordinator used posthog.query-run to inspect the conversion drop.",
       }),
     ]);
 
     expect(items).toHaveLength(1);
     expect(items[0]?.detail).toContain("PostHog Query Run");
-    expect(items[0]?.detail).not.toContain("mcp__posthog__query-run");
+    expect(items[0]?.detail).not.toContain("posthog.query-run");
   });
 
   it("drops internal lifecycle noise and non-feed items", () => {

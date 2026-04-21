@@ -61,7 +61,7 @@ type IssueResolutionPromptArgs = {
   detailedIssueContext?: boolean;
 };
 
-type PrIssueResolutionToolSurface = "workflow_tools" | "ade_mcp" | "prompt_only";
+type PrIssueResolutionToolSurface = "workflow_tools" | "ade_cli" | "prompt_only";
 
 type PrIssueResolutionRuntimeCapabilities = {
   runtimeLabel: string;
@@ -342,29 +342,18 @@ function defaultPrIssueResolutionRuntimeCapabilities(): PrIssueResolutionRuntime
   };
 }
 
-const ADE_MCP_SERVER_NAME = "ade";
-
-function qualifyAdeMcpToolName(toolName: string): string {
-  return `mcp__${ADE_MCP_SERVER_NAME}__${toolName}`;
-}
-
-function unqualifyAdeMcpToolName(toolName: string | null): string | null {
-  if (!toolName) return null;
-  return toolName.replace(/^mcp__[^_]+__/, "");
-}
-
-function buildMcpToolCapabilities(
+function buildCliToolCapabilities(
   runtimeLabel: string,
   executionMode: PrIssueResolutionRuntimeCapabilities["executionMode"],
 ): PrIssueResolutionRuntimeCapabilities {
   return {
-    refreshInventoryTool: qualifyAdeMcpToolName("pr_refresh_issue_inventory"),
-    getReviewCommentsTool: qualifyAdeMcpToolName("pr_get_review_comments"),
-    rerunChecksTool: qualifyAdeMcpToolName("pr_rerun_failed_checks"),
-    replyThreadTool: qualifyAdeMcpToolName("pr_reply_to_review_thread"),
-    resolveThreadTool: qualifyAdeMcpToolName("pr_resolve_review_thread"),
+    refreshInventoryTool: "ade prs inventory",
+    getReviewCommentsTool: "ade prs comments",
+    rerunChecksTool: "ade prs rerun",
+    replyThreadTool: "ade prs reply",
+    resolveThreadTool: "ade prs resolve-thread",
     runtimeLabel,
-    toolSurface: "ade_mcp",
+    toolSurface: "ade_cli",
     executionMode,
   };
 }
@@ -376,11 +365,11 @@ function resolvePrIssueResolutionRuntimeCapabilities(modelId: string | null | un
   }
 
   if (descriptor.isCliWrapped && descriptor.family === "openai") {
-    return buildMcpToolCapabilities("Codex chat via ADE MCP", "parallel");
+    return buildCliToolCapabilities("Codex chat via ADE CLI", "parallel");
   }
 
   if (descriptor.isCliWrapped && descriptor.family === "anthropic") {
-    return buildMcpToolCapabilities("Claude chat via ADE MCP", "subagents");
+    return buildCliToolCapabilities("Claude chat via ADE CLI", "subagents");
   }
 
   return defaultPrIssueResolutionRuntimeCapabilities();
@@ -535,21 +524,17 @@ export function buildPrIssueResolutionPrompt(args: IssueResolutionPromptArgs): s
       "- No live ADE PR tools are available in this session. Use the detailed issue context in this prompt plus the linked GitHub thread/check URLs.",
       "- If you need fresher PR state than this prompt provides, fetch it manually before making changes.",
     );
-  } else if (runtimeCapabilities.toolSurface === "ade_mcp") {
-    const toolList = listRequiredRuntimeTools(runtimeCapabilities).map((toolName) => `\`${toolName}\``).join(", ");
-    const refreshToolFallback = unqualifyAdeMcpToolName(runtimeCapabilities.refreshInventoryTool);
-    const commentsToolFallback = unqualifyAdeMcpToolName(runtimeCapabilities.getReviewCommentsTool);
+  } else if (runtimeCapabilities.toolSurface === "ade_cli") {
     promptSections.push(
-      `- This runtime uses ADE via MCP. ADE PR tools are runtime tool calls, not shell commands.`,
-      `- Primary PR tools for this run: ${toolList}. In many sessions they appear namespaced with the MCP server prefix, for example \`${runtimeCapabilities.refreshInventoryTool}\`. Some bridges may also expose the base tool names like \`${refreshToolFallback}\` and \`${commentsToolFallback}\`.`,
-      "- Use whichever variant is actually exposed in the live tool list for this chat runtime.",
-      `- Start by refreshing the PR issue inventory with \`${runtimeCapabilities.refreshInventoryTool}\`.`,
-      `- Immediately after that, call \`${runtimeCapabilities.getReviewCommentsTool}\` to load the full review-thread bodies and line context before deciding which comments are stale, valid, or already addressed.`,
+      "- This runtime can use the ADE CLI from the terminal for live PR state.",
+      "- Run `ade doctor` if readiness is unclear. Use `--json` for structured output and `--text` for readable summaries.",
+      "- Discover additional ADE actions with `ade actions list --text`; prefer typed PR commands first and `ade actions run ...` only as an escape hatch.",
+      `- Start by refreshing the PR issue inventory with \`${runtimeCapabilities.refreshInventoryTool} ${args.pr.id}\`.`,
+      `- Immediately after that, run \`${runtimeCapabilities.getReviewCommentsTool} ${args.pr.id}\` to load the full review-thread bodies and line context before deciding which comments are stale, valid, or already addressed.`,
+      `- Reply to review threads with \`${runtimeCapabilities.replyThreadTool} ${args.pr.id} --thread <thread-id> --body <text>\` and resolve completed threads with \`${runtimeCapabilities.resolveThreadTool} ${args.pr.id} --thread <thread-id>\`.`,
       "- Treat the refreshed inventory as a triage index, not as the full source of truth for long comment bodies. If a summary looks compact or truncated, fetch the detailed review comments instead of guessing.",
       "- Do not spend your first steps reading local skill docs, repo docs, or unrelated files before those PR context calls succeed.",
-      "- Do not probe tool availability with `which`, `command -v`, `.mcp.json`, or project settings files from inside the task session.",
-      "- If one of those MCP tools is unavailable in-session, continue with the prompt's issue context and the linked GitHub thread/check URLs instead of reverse-engineering local MCP wiring.",
-      "- Do not conclude the PR tools are missing just because one naming variant is absent.",
+      "- If the ADE CLI is unavailable in-session, continue with the prompt's issue context and linked GitHub thread/check URLs instead of reverse-engineering ADE internals.",
     );
   } else {
     const toolList = listRequiredRuntimeTools(runtimeCapabilities).map((toolName) => `\`${toolName}\``).join(", ");
@@ -559,7 +544,7 @@ export function buildPrIssueResolutionPrompt(args: IssueResolutionPromptArgs): s
       "- Treat the refreshed inventory as a triage index, not as the full source of truth for long comment bodies. If a summary looks compact or truncated, fetch the detailed review comments instead of guessing.",
       "- Do not spend your first steps reading local skill docs, repo docs, or unrelated files before those PR context calls succeed.",
       `- Required PR tools for this run: ${toolList}. If any of them are unavailable, stop and report that the chat was launched without the required ADE PR tools.`,
-      "- Do not waste time reverse-engineering local MCP wiring or local server bootstraps from inside the task session.",
+      "- Do not waste time reverse-engineering ADE runtime wiring from inside the task session.",
     );
   }
 

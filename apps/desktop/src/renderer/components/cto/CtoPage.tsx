@@ -102,7 +102,6 @@ export function CtoPage() {
   const [workerWakeStatus, setWorkerWakeStatus] = useState<string | null>(null);
   const [workerWakeError, setWorkerWakeError] = useState<string | null>(null);
   const [wakingWorker, setWakingWorker] = useState(false);
-  const [externalMcpServerNames, setExternalMcpServerNames] = useState<string[]>([]);
   const [budgetLoading, setBudgetLoading] = useState(false);
 
   // Worker creation wizard
@@ -200,16 +199,6 @@ export function CtoPage() {
     }
   }, [budgetLoading, budgetSnapshot]);
 
-  const loadExternalMcpRegistry = useCallback(async () => {
-    if (!window.ade?.externalMcp) return;
-    try {
-      const configs = await window.ade.externalMcp.listConfigs();
-      setExternalMcpServerNames(configs.map((entry) => entry.name).sort((a, b) => a.localeCompare(b)));
-    } catch {
-      setExternalMcpServerNames([]);
-    }
-  }, []);
-
   useEffect(() => {
     void loadCtoSummary();
   }, [loadCtoSummary]);
@@ -238,12 +227,6 @@ export function CtoPage() {
     if ((activeTab !== "team" && activeTab !== "settings") || ctoHistoryLoadedRef.current) return;
     void loadCtoHistory();
   }, [activeTab, loadCtoHistory]);
-
-  useEffect(() => {
-    if (activeTab !== "settings" && !editorOpen) return;
-    if (externalMcpServerNames.length > 0) return;
-    void loadExternalMcpRegistry();
-  }, [activeTab, editorOpen, externalMcpServerNames.length, loadExternalMcpRegistry]);
 
   useEffect(() => {
     const unsubscribe = window.ade?.cto?.onOpenclawConnectionStatus?.((status) => {
@@ -418,11 +401,6 @@ export function CtoPage() {
                 }
               : {}
           ),
-          externalMcpAccess: {
-            allowAll: workerDraft.externalMcpAllowAll,
-            allowedServers: workerDraft.externalMcpAllowedServers,
-            blockedServers: workerDraft.externalMcpBlockedServers,
-          },
           budgetMonthlyCents: Math.max(0, Math.round(workerDraft.budgetDollars * 100)),
         },
       });
@@ -757,7 +735,6 @@ export function CtoPage() {
                     draft={workerDraft}
                     setDraft={setWorkerDraft}
                     agents={agents}
-                    availableExternalMcpServers={externalMcpServerNames}
                     saving={savingWorker}
                     error={workerError}
                     onSave={() => void saveWorker()}
@@ -875,14 +852,13 @@ export function CtoPage() {
 
           {/* Settings tab */}
           {activeTab === "settings" && (
-                <CtoSettingsPanel
-                  identity={ctoIdentity}
-                  coreMemory={coreMemory}
-                  sessionLogs={sessionLogs}
-                  availableExternalMcpServers={externalMcpServerNames}
-                  onSaveIdentity={handleSaveCtoIdentity}
-                  onSaveCoreMemory={handleSaveCoreMemory}
-                  onResetOnboarding={handleResetOnboarding}
+            <CtoSettingsPanel
+              identity={ctoIdentity}
+              coreMemory={coreMemory}
+              sessionLogs={sessionLogs}
+              onSaveIdentity={handleSaveCtoIdentity}
+              onSaveCoreMemory={handleSaveCoreMemory}
+              onResetOnboarding={handleResetOnboarding}
             />
           )}
         </div>

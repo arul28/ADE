@@ -25,15 +25,15 @@ jobs:
         with:
           path: |
             apps/desktop/node_modules
-            apps/mcp-server/node_modules
+            apps/ade-cli/node_modules
             apps/web/node_modules
-          key: nm-${{ hashFiles('apps/desktop/package-lock.json','apps/mcp-server/package-lock.json','apps/web/package-lock.json') }}
+          key: nm-${{ hashFiles('apps/desktop/package-lock.json','apps/ade-cli/package-lock.json','apps/web/package-lock.json') }}
 
       - name: Install all dependencies (parallel)
         if: steps.cache.outputs.cache-hit != 'true'
         run: |
           cd apps/desktop   && npm ci &
-          cd apps/mcp-server && npm ci &
+          cd apps/ade-cli && npm ci &
           cd apps/web        && npm ci &
           wait
 
@@ -61,12 +61,12 @@ jobs:
         with:
           path: |
             apps/desktop/node_modules
-            apps/mcp-server/node_modules
+            apps/ade-cli/node_modules
             apps/web/node_modules
-          key: nm-${{ hashFiles('apps/desktop/package-lock.json','apps/mcp-server/package-lock.json','apps/web/package-lock.json') }}
+          key: nm-${{ hashFiles('apps/desktop/package-lock.json','apps/ade-cli/package-lock.json','apps/web/package-lock.json') }}
       - run: cd apps/desktop && npm run typecheck
 
-  typecheck-mcp:
+  typecheck-ade-cli:
     needs: install
     runs-on: ubuntu-latest
     steps:
@@ -78,10 +78,10 @@ jobs:
         with:
           path: |
             apps/desktop/node_modules
-            apps/mcp-server/node_modules
+            apps/ade-cli/node_modules
             apps/web/node_modules
-          key: nm-${{ hashFiles('apps/desktop/package-lock.json','apps/mcp-server/package-lock.json','apps/web/package-lock.json') }}
-      - run: cd apps/mcp-server && npm run typecheck
+          key: nm-${{ hashFiles('apps/desktop/package-lock.json','apps/ade-cli/package-lock.json','apps/web/package-lock.json') }}
+      - run: cd apps/ade-cli && npm run typecheck
 
   typecheck-web:
     needs: install
@@ -95,9 +95,9 @@ jobs:
         with:
           path: |
             apps/desktop/node_modules
-            apps/mcp-server/node_modules
+            apps/ade-cli/node_modules
             apps/web/node_modules
-          key: nm-${{ hashFiles('apps/desktop/package-lock.json','apps/mcp-server/package-lock.json','apps/web/package-lock.json') }}
+          key: nm-${{ hashFiles('apps/desktop/package-lock.json','apps/ade-cli/package-lock.json','apps/web/package-lock.json') }}
       - run: cd apps/web && npm run typecheck
 
   lint-desktop:
@@ -112,9 +112,9 @@ jobs:
         with:
           path: |
             apps/desktop/node_modules
-            apps/mcp-server/node_modules
+            apps/ade-cli/node_modules
             apps/web/node_modules
-          key: nm-${{ hashFiles('apps/desktop/package-lock.json','apps/mcp-server/package-lock.json','apps/web/package-lock.json') }}
+          key: nm-${{ hashFiles('apps/desktop/package-lock.json','apps/ade-cli/package-lock.json','apps/web/package-lock.json') }}
       - run: cd apps/desktop && npm run lint
 
   test-desktop:
@@ -133,12 +133,12 @@ jobs:
         with:
           path: |
             apps/desktop/node_modules
-            apps/mcp-server/node_modules
+            apps/ade-cli/node_modules
             apps/web/node_modules
-          key: nm-${{ hashFiles('apps/desktop/package-lock.json','apps/mcp-server/package-lock.json','apps/web/package-lock.json') }}
+          key: nm-${{ hashFiles('apps/desktop/package-lock.json','apps/ade-cli/package-lock.json','apps/web/package-lock.json') }}
       - run: cd apps/desktop && npx vitest run --shard=${{ matrix.shard }}/8
 
-  test-mcp:
+  test-ade-cli:
     needs: install
     runs-on: ubuntu-latest
     steps:
@@ -150,10 +150,10 @@ jobs:
         with:
           path: |
             apps/desktop/node_modules
-            apps/mcp-server/node_modules
+            apps/ade-cli/node_modules
             apps/web/node_modules
-          key: nm-${{ hashFiles('apps/desktop/package-lock.json','apps/mcp-server/package-lock.json','apps/web/package-lock.json') }}
-      - run: cd apps/mcp-server && npm test
+          key: nm-${{ hashFiles('apps/desktop/package-lock.json','apps/ade-cli/package-lock.json','apps/web/package-lock.json') }}
+      - run: cd apps/ade-cli && npm test
 
   build:
     needs: install
@@ -167,11 +167,11 @@ jobs:
         with:
           path: |
             apps/desktop/node_modules
-            apps/mcp-server/node_modules
+            apps/ade-cli/node_modules
             apps/web/node_modules
-          key: nm-${{ hashFiles('apps/desktop/package-lock.json','apps/mcp-server/package-lock.json','apps/web/package-lock.json') }}
+          key: nm-${{ hashFiles('apps/desktop/package-lock.json','apps/ade-cli/package-lock.json','apps/web/package-lock.json') }}
       - run: cd apps/desktop && npm run build
-      - run: cd apps/mcp-server && npm run build
+      - run: cd apps/ade-cli && npm run build
       - run: cd apps/web && npm run build
 
   validate-docs:
@@ -186,9 +186,9 @@ jobs:
         with:
           path: |
             apps/desktop/node_modules
-            apps/mcp-server/node_modules
+            apps/ade-cli/node_modules
             apps/web/node_modules
-          key: nm-${{ hashFiles('apps/desktop/package-lock.json','apps/mcp-server/package-lock.json','apps/web/package-lock.json') }}
+          key: nm-${{ hashFiles('apps/desktop/package-lock.json','apps/ade-cli/package-lock.json','apps/web/package-lock.json') }}
       - run: node scripts/validate-docs.mjs
 
   # ── Gate: all jobs must pass ──────────────────────────────────────────
@@ -197,11 +197,11 @@ jobs:
     needs:
       - secret-scan
       - typecheck-desktop
-      - typecheck-mcp
+      - typecheck-ade-cli
       - typecheck-web
       - lint-desktop
       - test-desktop
-      - test-mcp
+      - test-ade-cli
       - build
       - validate-docs
     runs-on: ubuntu-latest

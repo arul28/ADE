@@ -1952,17 +1952,6 @@ export function AgentChatPane({
   }, [refreshComputerUseSnapshot, selectedSessionId]);
 
   useEffect(() => {
-    const unsubscribe = window.ade.externalMcp.onEvent((event) => {
-      if (event.type !== "usage-recorded" || !selectedSessionId) return;
-      const usageEvent = event.usageEvent;
-      const usageChatSessionId = usageEvent?.chatSessionId ?? usageEvent?.callerId ?? null;
-      if (usageChatSessionId !== selectedSessionId) return;
-      void refreshComputerUseSnapshot(selectedSessionId, { force: true });
-    });
-    return unsubscribe;
-  }, [refreshComputerUseSnapshot, selectedSessionId]);
-
-  useEffect(() => {
     if (!selectedSessionId) {
       setProofDrawerOpen(false);
     }
@@ -2231,8 +2220,8 @@ export function AgentChatPane({
   }, [refreshSessions, selectedSession, selectedSessionId]);
 
   // ── Eager session creation ──
-  // Create a session as soon as we have a model + lane, so slash commands,
-  // MCP status, and other pre-chat metadata are available immediately.
+  // Create a session as soon as we have a model + lane, so slash commands
+  // and other pre-chat metadata are available immediately.
   // Computer-use-capable chats start as workflow sessions so ADE can wire the
   // Ghost/proof harness before the first turn.
   // Skip when the pane is locked to an existing session or in forced-draft mode.

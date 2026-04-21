@@ -140,13 +140,6 @@ export function ComputerUseSection() {
 
   useEffect(() => refresh(), [refresh]);
 
-  useEffect(() => {
-    if (!window.ade?.externalMcp?.onEvent) return undefined;
-    return window.ade.externalMcp.onEvent(() => {
-      refresh();
-    });
-  }, [refresh]);
-
   const backends = snapshot?.backendStatus.backends ?? [];
 
   /* ---- loading / error states ---- */
@@ -197,9 +190,8 @@ export function ComputerUseSection() {
           }}
         >
           ADE automatically captures proof from any screenshot, recording, trace, or log tool
-          visible in ADE chat. Use Managed MCP only when missions, workers, or CTO need ADE to
-          broker the same server directly; provider-native chat tools can still feed the proof
-          drawer without being re-added there.
+          visible in ADE chat. CLI-native tools can also register proof through the ADE CLI so
+          missions, workers, and chats share the same proof drawer.
         </p>
       </div>
 

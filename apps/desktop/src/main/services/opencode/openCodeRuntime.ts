@@ -1,6 +1,5 @@
-import fs from "node:fs";
-import { createHash, randomUUID } from "node:crypto";
-import { createConnection, createServer } from "node:net";
+import { randomUUID } from "node:crypto";
+import { createServer } from "node:net";
 import { pathToFileURL } from "node:url";
 import {
   createOpencodeClient,
@@ -20,14 +19,12 @@ import {
 import type {
   AiLocalProviderConfigs,
   EffectiveProjectConfig,
-  OpenCodeDynamicMcpDiagnostics,
   OpenCodeRuntimeSnapshot,
   ProjectConfigFile,
 } from "../../../shared/types";
 import { stableStringify } from "../shared/utils";
 import { resolveOpenCodeBinaryPath } from "./openCodeBinaryManager";
 import type { PermissionMode } from "../ai/tools/universalTools";
-import type { AdeMcpLaunch } from "../runtime/adeMcpLaunch";
 import type { Logger } from "../logging/logger";
 import {
   acquireDedicatedOpenCodeServer,
@@ -70,7 +67,6 @@ export type DiscoveredLocalModelEntry = {
 };
 
 type BuildOpenCodeConfigArgs = {
-  mcpLaunch?: AdeMcpLaunch;
   projectConfig: ProjectConfigFile | EffectiveProjectConfig;
   /** Dynamically discovered models from local provider endpoints (e.g. LM Studio /v1/models). */
   discoveredLocalModels?: DiscoveredLocalModelEntry[];
@@ -84,7 +80,6 @@ type StartOpenCodeSessionArgs = BuildOpenCodeConfigArgs & {
   ownerId?: string | null;
   ownerKey?: string | null;
   leaseKind?: "shared" | "dedicated";
-  dynamicMcpLaunch?: AdeMcpLaunch;
   logger?: Logger | null;
 };
 
@@ -179,298 +174,6 @@ function fingerprintOpenCodeConfig(config: OpenCodeConfig): string {
 
 export function buildSharedOpenCodeServerKey(config: OpenCodeConfig): string {
   return `shared:${fingerprintOpenCodeConfig(config)}`;
-}
-
-function sanitizeDynamicMcpNamePart(value: string | null | undefined, fallback: string): string {
-  const normalized = (value?.trim() ?? "")
-    .replace(/[^a-zA-Z0-9_-]+/g, "_")
-    .replace(/^_+|_+$/g, "");
-  return normalized.length > 0 ? normalized.slice(0, 48) : fallback;
-}
-
-function fingerprintAdeMcpLaunch(launch: AdeMcpLaunch): string {
-  return createHash("sha1")
-    .update(stableStringify({
-      command: launch.command,
-      cmdArgs: launch.cmdArgs,
-      env: launch.env,
-    }))
-    .digest("hex")
-    .slice(0, 10);
-}
-
-function buildDynamicAdeMcpServerName(args: {
-  ownerKind: OpenCodeServerOwnerKind;
-  ownerId?: string | null;
-  ownerKey?: string | null;
-  sessionId?: string;
-  launch: AdeMcpLaunch;
-}): string {
-  const identity = sanitizeDynamicMcpNamePart(
-    args.ownerId ?? args.ownerKey ?? args.sessionId,
-    "session",
-  );
-  return `ade_session_${sanitizeDynamicMcpNamePart(args.ownerKind, "owner")}_${identity}_${fingerprintAdeMcpLaunch(args.launch)}`;
-}
-
-type OpenCodeMcpStatus = {
-  status?: string;
-  error?: string;
-};
-
-type OpenCodeMcpStatusMap = Record<string, OpenCodeMcpStatus>;
-
-function readDynamicMcpStatus(
-  payload: Record<string, unknown> | null,
-  serverName: string,
-): OpenCodeMcpStatus | null {
-  if (!payload || typeof payload !== "object") return null;
-  const entry = payload[serverName];
-  if (!entry || typeof entry !== "object") return null;
-  return entry as OpenCodeMcpStatus;
-}
-
-function buildFallbackToolSelection(allowedServerNames: Iterable<string>): Record<string, boolean> | null {
-  const toolSelection: Record<string, boolean> = {};
-  let hasSelection = false;
-
-  for (const serverNameRaw of allowedServerNames) {
-    const serverName = serverNameRaw.trim();
-    if (!serverName) continue;
-    if (serverName.startsWith("ade_session_")) {
-      toolSelection["ade_session_*"] = false;
-      hasSelection = true;
-    }
-    toolSelection[`${serverName}_*`] = true;
-    hasSelection = true;
-  }
-
-  return hasSelection ? toolSelection : null;
-}
-
-function extractAllowedServerNamesFromToolSelection(
-  toolSelection: Record<string, boolean> | null,
-): string[] {
-  if (!toolSelection) return [];
-  return Object.entries(toolSelection)
-    .filter(([, enabled]) => enabled)
-    .map(([pattern]) => pattern.trim())
-    .filter((pattern) => pattern.endsWith("_*"))
-    .map((pattern) => pattern.slice(0, -2))
-    .filter((serverName) => serverName.length > 0);
-}
-
-function buildScopedMcpToolSelection(args: {
-  statuses: OpenCodeMcpStatusMap;
-  allowedServerNames: Iterable<string>;
-}): Record<string, boolean> | null {
-  const allowed = new Set(
-    Array.from(args.allowedServerNames)
-      .map((entry) => entry.trim())
-      .filter((entry) => entry.length > 0),
-  );
-  const toolSelection = buildFallbackToolSelection(allowed) ?? {};
-  let hasSelection = Object.keys(toolSelection).length > 0;
-
-  for (const serverNameRaw of Object.keys(args.statuses)) {
-    const serverName = serverNameRaw.trim();
-    if (!serverName) continue;
-    toolSelection[`${serverName}_*`] = allowed.has(serverName);
-    hasSelection = true;
-  }
-
-  return hasSelection ? toolSelection : null;
-}
-
-async function resolveScopedMcpToolSelection(args: {
-  baseUrl: string;
-  directory: string;
-  allowedServerNames: Iterable<string>;
-}): Promise<Record<string, boolean> | null> {
-  const fallback = buildFallbackToolSelection(args.allowedServerNames);
-  try {
-    const payload = await callOpenCodeServer<OpenCodeMcpStatusMap>({
-      baseUrl: args.baseUrl,
-      directory: args.directory,
-      path: "/mcp",
-    });
-    if (!payload || typeof payload !== "object") return fallback;
-    return buildScopedMcpToolSelection({
-      statuses: payload,
-      allowedServerNames: args.allowedServerNames,
-    }) ?? fallback;
-  } catch {
-    return fallback;
-  }
-}
-
-const DYNAMIC_ADE_MCP_REGISTRATION_ATTEMPTS = 3;
-const DYNAMIC_ADE_MCP_REGISTRATION_RETRY_DELAY_MS = 150;
-const DYNAMIC_ADE_MCP_SOCKET_READY_TIMEOUT_MS = 1_500;
-const DYNAMIC_ADE_MCP_SOCKET_READY_RETRY_DELAY_MS = 75;
-const dynamicMcpDiagnostics: OpenCodeDynamicMcpDiagnostics = {
-  registrationAttempts: 0,
-  successfulRegistrations: 0,
-  retryCount: 0,
-  fallbackCount: 0,
-  lastFallbackAt: null,
-  lastFallbackOwnerKind: null,
-  lastFallbackOwnerId: null,
-  lastFallbackError: null,
-};
-
-async function wait(ms: number): Promise<void> {
-  await new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-async function waitForAdeMcpSocketReady(socketPath: string): Promise<void> {
-  const normalizedPath = socketPath.trim();
-  if (!normalizedPath.length) return;
-  const deadline = Date.now() + DYNAMIC_ADE_MCP_SOCKET_READY_TIMEOUT_MS;
-  let lastError: unknown = null;
-
-  while (Date.now() < deadline) {
-    if (fs.existsSync(normalizedPath)) {
-      try {
-        await new Promise<void>((resolve, reject) => {
-          const socket = createConnection(normalizedPath);
-          const cleanup = (): void => {
-            socket.off("connect", handleConnect);
-            socket.off("error", handleError);
-          };
-          const handleConnect = () => {
-            cleanup();
-            socket.end();
-            socket.destroy();
-            resolve();
-          };
-          const handleError = (error: Error) => {
-            cleanup();
-            socket.destroy();
-            reject(error);
-          };
-          socket.once("connect", handleConnect);
-          socket.once("error", handleError);
-        });
-        return;
-      } catch (error) {
-        lastError = error;
-      }
-    }
-    await wait(DYNAMIC_ADE_MCP_SOCKET_READY_RETRY_DELAY_MS);
-  }
-
-  const detail = lastError instanceof Error ? `: ${lastError.message}` : "";
-  throw new Error(`ADE MCP socket not ready at ${normalizedPath}${detail}`);
-}
-
-async function callOpenCodeServer<T>(args: {
-  baseUrl: string;
-  directory: string;
-  path: string;
-  method?: "GET" | "POST";
-  body?: unknown;
-}): Promise<T | null> {
-  const url = new URL(args.path, args.baseUrl);
-  if (args.directory.trim().length > 0) {
-    url.searchParams.set("directory", args.directory);
-  }
-  const response = await fetch(url, {
-    method: args.method ?? "GET",
-    headers: args.body === undefined ? undefined : {
-      "content-type": "application/json",
-    },
-    body: args.body === undefined ? undefined : JSON.stringify(args.body),
-  });
-  if (!response.ok) {
-    const detail = (await response.text()).trim();
-    throw new Error(
-      `OpenCode server request ${args.method ?? "GET"} ${args.path} failed (${response.status})${detail ? `: ${detail}` : ""}.`,
-    );
-  }
-  if (response.status === 204) return null;
-  const text = (await response.text()).trim();
-  if (!text.length) return null;
-  return JSON.parse(text) as T;
-}
-
-async function ensureDynamicAdeMcpRegistration(args: {
-  baseUrl: string;
-  directory: string;
-  ownerKind: OpenCodeServerOwnerKind;
-  ownerId?: string | null;
-  ownerKey?: string | null;
-  sessionId?: string;
-  launch: AdeMcpLaunch;
-}): Promise<{
-  serverName: string;
-  disconnect(): Promise<void>;
-}> {
-  const serverName = buildDynamicAdeMcpServerName(args);
-  dynamicMcpDiagnostics.registrationAttempts += 1;
-  let lastError: unknown = null;
-  for (let attempt = 0; attempt < DYNAMIC_ADE_MCP_REGISTRATION_ATTEMPTS; attempt += 1) {
-    try {
-      await waitForAdeMcpSocketReady(args.launch.socketPath);
-      let status = readDynamicMcpStatus(await callOpenCodeServer<Record<string, unknown>>({
-        baseUrl: args.baseUrl,
-        directory: args.directory,
-        path: "/mcp",
-      }), serverName);
-      if (!status) {
-        status = readDynamicMcpStatus(await callOpenCodeServer<Record<string, unknown>>({
-          baseUrl: args.baseUrl,
-          directory: args.directory,
-          path: "/mcp",
-          method: "POST",
-          body: {
-            name: serverName,
-            config: {
-              type: "local",
-              command: [args.launch.command, ...args.launch.cmdArgs],
-              environment: args.launch.env,
-            },
-          },
-        }), serverName);
-      }
-      if (status?.status !== "connected") {
-        await callOpenCodeServer({
-          baseUrl: args.baseUrl,
-          directory: args.directory,
-          path: `/mcp/${encodeURIComponent(serverName)}/connect`,
-          method: "POST",
-        });
-      }
-      lastError = null;
-      dynamicMcpDiagnostics.successfulRegistrations += 1;
-      break;
-    } catch (error) {
-      lastError = error;
-      if (attempt >= DYNAMIC_ADE_MCP_REGISTRATION_ATTEMPTS - 1) {
-        throw error;
-      }
-      dynamicMcpDiagnostics.retryCount += 1;
-      await wait(DYNAMIC_ADE_MCP_REGISTRATION_RETRY_DELAY_MS);
-    }
-  }
-  if (lastError) {
-    throw lastError instanceof Error ? lastError : new Error(String(lastError));
-  }
-
-  let disconnected = false;
-  return {
-    serverName,
-    async disconnect(): Promise<void> {
-      if (disconnected) return;
-      disconnected = true;
-      await callOpenCodeServer({
-        baseUrl: args.baseUrl,
-        directory: args.directory,
-        path: `/mcp/${encodeURIComponent(serverName)}/disconnect`,
-        method: "POST",
-      }).catch(() => {});
-    },
-  };
 }
 
 export function buildOpenCodeMergedConfig(args: BuildOpenCodeConfigArgs): OpenCodeConfig {
@@ -588,17 +291,6 @@ export function buildOpenCodeConfig(args: BuildOpenCodeConfigArgs): OpenCodeConf
         maxSteps: 1,
       },
     },
-    ...(args.mcpLaunch
-      ? {
-          mcp: {
-            ade: {
-              type: "local",
-              command: [args.mcpLaunch.command, ...args.mcpLaunch.cmdArgs],
-              environment: args.mcpLaunch.env,
-            },
-          },
-        }
-      : {}),
   };
 }
 
@@ -683,18 +375,12 @@ function createOpenCodeSessionHandle(args: {
   sessionId: string;
   directory: string;
   toolSelection: Record<string, boolean> | null;
-  dynamicMcp?: Awaited<ReturnType<typeof ensureDynamicAdeMcpRegistration>> | null;
 }): OpenCodeSessionHandle {
   return {
     client: args.client,
     server: {
       url: args.lease.url,
       async close() {
-        try {
-          await args.dynamicMcp?.disconnect();
-        } catch {
-          // best-effort — don't block lease release
-        }
         args.lease.close("handle_close");
       },
     },
@@ -703,11 +389,6 @@ function createOpenCodeSessionHandle(args: {
     directory: args.directory,
     toolSelection: args.toolSelection,
     async close(reason = "handle_close") {
-      try {
-        await args.dynamicMcp?.disconnect();
-      } catch {
-        // best-effort — don't block lease release
-      }
       args.lease.close(reason);
     },
     touch() {
@@ -751,37 +432,7 @@ async function startOpenCodeSessionInternal(
     baseUrl: lease.url,
     directory: args.directory,
   });
-  let dynamicMcp: Awaited<ReturnType<typeof ensureDynamicAdeMcpRegistration>> | null = null;
-  try {
-    if (args.dynamicMcpLaunch) {
-      dynamicMcp = await ensureDynamicAdeMcpRegistration({
-        baseUrl: lease.url,
-        directory: args.directory,
-        ownerKind,
-        ownerId: args.ownerId,
-        ownerKey,
-        sessionId: args.sessionId,
-        launch: args.dynamicMcpLaunch,
-      });
-    }
-  } catch (error) {
-    // Dynamic ADE MCP attachment can fail even when the underlying OpenCode
-    // server is healthy. Release the shared lease without tearing the server
-    // down so degraded retries can reuse the same process.
-    lease.close("attach_failed");
-    throw error;
-  }
-
   const resolvedSessionId = trimToUndefined(args.sessionId);
-  const scopedToolSelection = await resolveScopedMcpToolSelection({
-    baseUrl: lease.url,
-    directory: args.directory,
-    allowedServerNames: dynamicMcp
-      ? [dynamicMcp.serverName]
-      : args.mcpLaunch
-        ? ["ade"]
-        : [],
-  });
 
   if (resolvedSessionId) {
     try {
@@ -794,8 +445,7 @@ async function startOpenCodeSessionInternal(
         lease,
         sessionId: resolvedSessionId,
         directory: args.directory,
-        toolSelection: scopedToolSelection,
-        dynamicMcp,
+        toolSelection: null,
       });
     } catch {
       // Fall through to session creation when the persisted session no longer exists.
@@ -808,7 +458,6 @@ async function startOpenCodeSessionInternal(
   });
 
   if (!created.data) {
-    dynamicMcp?.disconnect().catch(() => {});
     lease.close("error");
     throw new Error("OpenCode session.create returned no session payload.");
   }
@@ -818,8 +467,7 @@ async function startOpenCodeSessionInternal(
     lease,
     sessionId: created.data.id,
     directory: args.directory,
-    toolSelection: scopedToolSelection,
-    dynamicMcp,
+    toolSelection: null,
   });
 }
 
@@ -827,58 +475,17 @@ export async function startOpenCodeSession(
   args: StartOpenCodeSessionArgs,
 ): Promise<OpenCodeSessionHandle> {
   ensureOpenCodeAvailable();
-  if (args.dynamicMcpLaunch) {
-    try {
-      return await startOpenCodeSessionInternal({
-        ...args,
-        mcpLaunch: undefined,
-      });
-    } catch (error) {
-      const ownerKind = args.ownerKind ?? "oneshot";
-      const fallbackStrategy = ownerKind === "coordinator"
-        ? "abort"
-        : "shared_without_mcp";
-      args.logger?.warn("opencode.dynamic_mcp_attach_failed", {
-        ownerKind,
-        ownerId: args.ownerId ?? null,
-        sessionId: args.sessionId ?? null,
-        error: error instanceof Error ? error.message : String(error),
-        fallbackStrategy,
-      });
-      if (fallbackStrategy === "abort") {
-        throw error;
-      }
-      dynamicMcpDiagnostics.fallbackCount += 1;
-      dynamicMcpDiagnostics.lastFallbackAt = new Date().toISOString();
-      dynamicMcpDiagnostics.lastFallbackOwnerKind = ownerKind;
-      dynamicMcpDiagnostics.lastFallbackOwnerId = args.ownerId?.trim() || null;
-      dynamicMcpDiagnostics.lastFallbackError = error instanceof Error ? error.message : String(error);
-      return await startOpenCodeSessionInternal({
-        ...args,
-        dynamicMcpLaunch: undefined,
-        mcpLaunch: undefined,
-      });
-    }
-  }
   return await startOpenCodeSessionInternal(args);
 }
 
 export function getOpenCodeRuntimeSnapshot(): OpenCodeRuntimeSnapshot {
   return {
     ...getOpenCodeRuntimeDiagnostics(),
-    dynamicMcp: { ...dynamicMcpDiagnostics },
   };
 }
 
 export function __resetOpenCodeRuntimeDiagnosticsForTests(): void {
-  dynamicMcpDiagnostics.registrationAttempts = 0;
-  dynamicMcpDiagnostics.successfulRegistrations = 0;
-  dynamicMcpDiagnostics.retryCount = 0;
-  dynamicMcpDiagnostics.fallbackCount = 0;
-  dynamicMcpDiagnostics.lastFallbackAt = null;
-  dynamicMcpDiagnostics.lastFallbackOwnerKind = null;
-  dynamicMcpDiagnostics.lastFallbackOwnerId = null;
-  dynamicMcpDiagnostics.lastFallbackError = null;
+  // Preserved for older tests; OpenCode no longer tracks per-session ADE tool registration.
 }
 
 export async function openCodeEventStream(args: {
@@ -896,13 +503,8 @@ export async function openCodeEventStream(args: {
 export async function refreshOpenCodeSessionToolSelection(
   handle: OpenCodeSessionHandle,
 ): Promise<Record<string, boolean> | null> {
-  const refreshed = await resolveScopedMcpToolSelection({
-    baseUrl: handle.lease.url,
-    directory: handle.directory,
-    allowedServerNames: extractAllowedServerNamesFromToolSelection(handle.toolSelection),
-  });
-  handle.toolSelection = refreshed;
-  return refreshed;
+  handle.toolSelection = null;
+  return null;
 }
 
 export async function runOpenCodeTextPrompt(
@@ -911,9 +513,8 @@ export async function runOpenCodeTextPrompt(
   const handle = await startOpenCodeSession({
     directory: args.directory,
     title: args.title,
-    mcpLaunch: args.mcpLaunch,
     projectConfig: args.projectConfig,
-    leaseKind: args.mcpLaunch ? "dedicated" : "shared",
+    leaseKind: "shared",
     ownerKind: "oneshot",
   });
 

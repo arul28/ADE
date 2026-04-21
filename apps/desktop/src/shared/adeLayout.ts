@@ -43,8 +43,8 @@ export type AdeLayoutPaths = {
   chatTranscriptsDir: string;
   orchestratorCacheDir: string;
   orchestratorContextsDir: string;
-  mcpContextDir: string;
-  mcpConfigsDir: string;
+  agentContextDir: string;
+  agentConfigsDir: string;
   workerPromptsDir: string;
   missionStateDir: string;
   githubSecretsDir: string;
@@ -67,7 +67,7 @@ export const ADE_LAYOUT_DEFINITIONS: AdePathEntryDefinition[] = [
   { relativePath: "local.secret.yaml", kind: "ignored", pathType: "file" },
   { relativePath: "ade.db", kind: "ignored", pathType: "file" },
   { relativePath: "embeddings.db", kind: "ignored", pathType: "file" },
-  { relativePath: "mcp.sock", kind: "ignored", pathType: "file" },
+  { relativePath: "ade.sock", kind: "ignored", pathType: "file" },
   { relativePath: "artifacts", kind: "ignored", pathType: "directory" },
   { relativePath: "transcripts", kind: "ignored", pathType: "directory" },
   { relativePath: "cache", kind: "ignored", pathType: "directory" },
@@ -113,7 +113,7 @@ export function resolveAdeLayout(projectRoot: string): AdeLayoutPaths {
     secretsDir,
     dbPath: path.join(adeDir, "ade.db"),
     embeddingsPath: path.join(adeDir, "embeddings.db"),
-    socketPath: path.join(adeDir, "mcp.sock"),
+    socketPath: path.join(adeDir, "ade.sock"),
     apiKeysPath: path.join(secretsDir, "api-keys.v1.bin"),
     legacyApiKeysPath: path.join(secretsDir, "api-keys.json"),
     logsDir,
@@ -125,8 +125,8 @@ export function resolveAdeLayout(projectRoot: string): AdeLayoutPaths {
     chatTranscriptsDir: path.join(transcriptsDir, "chat"),
     orchestratorCacheDir,
     orchestratorContextsDir: path.join(orchestratorCacheDir, "contexts"),
-    mcpContextDir: path.join(orchestratorCacheDir, "mcp-context"),
-    mcpConfigsDir: path.join(orchestratorCacheDir, "mcp-configs"),
+    agentContextDir: path.join(orchestratorCacheDir, "agent-context"),
+    agentConfigsDir: path.join(orchestratorCacheDir, "agent-configs"),
     workerPromptsDir: path.join(orchestratorCacheDir, "worker-prompts"),
     missionStateDir: path.join(cacheDir, "mission-state"),
     githubSecretsDir: path.join(secretsDir, "github"),
@@ -144,7 +144,7 @@ export function buildAdeGitignore(): string {
     "ade.db-*",
     "ade.db-wal",
     "embeddings.db",
-    "mcp.sock",
+    "ade.sock",
     "artifacts/",
     "transcripts/",
     "cache/",

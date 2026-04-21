@@ -135,7 +135,7 @@ describe("classifyBlockingWarnings", () => {
 
   it("detects tool startup failures as blocking", () => {
     const result = classifyBlockingWarnings({
-      warnings: ["tool startup failed for MCP server"],
+      warnings: ["tool startup failed for external connector"],
       summary: null,
     });
     expect(result.hasBlockingFailure).toBe(true);
@@ -169,7 +169,7 @@ describe("classifyBlockingWarnings", () => {
     expect(result.category).toBe("sandbox_block");
   });
 
-  it("excludes external MCP auth warnings (claude.ai Gmail:needs-auth)", () => {
+  it("excludes provider connector auth warnings (claude.ai Gmail:needs-auth)", () => {
     const result = classifyBlockingWarnings({
       warnings: ["claude.ai Gmail:needs-auth", "claude.ai Google Calendar:needs-auth"],
       summary: null,
@@ -178,7 +178,7 @@ describe("classifyBlockingWarnings", () => {
     expect(result.category).toBeNull();
   });
 
-  it("excludes external MCP Slack auth noise", () => {
+  it("excludes provider connector Slack auth noise", () => {
     const result = classifyBlockingWarnings({
       warnings: ["claude.ai Slack:needs-auth"],
       summary: null,
@@ -194,7 +194,7 @@ describe("classifyBlockingWarnings", () => {
     expect(result.hasBlockingFailure).toBe(false);
   });
 
-  it("detects blocking when mixed with external MCP noise", () => {
+  it("detects blocking when mixed with provider connector noise", () => {
     const result = classifyBlockingWarnings({
       warnings: [
         "claude.ai Gmail:needs-auth",
@@ -290,7 +290,7 @@ describe("soft-failure override in completeAttempt", () => {
     }
   });
 
-  it("does not override succeeded attempt when warnings are only external MCP noise", async () => {
+  it("does not override succeeded attempt when warnings are only provider connector noise", async () => {
     const fixture = await createFixture();
     try {
       const run = fixture.service.startRun({
@@ -322,7 +322,7 @@ describe("soft-failure override in completeAttempt", () => {
         },
       });
 
-      // Should remain succeeded — external MCP noise should be ignored
+      // Should remain succeeded because provider connector noise should be ignored.
       expect(completed.status).toBe("succeeded");
     } finally {
       fixture.dispose();
@@ -511,10 +511,10 @@ describe("MissionRunPanel attention states", () => {
 });
 
 // ---------------------------------------------------------------------------
-// External MCP noise vs real failures
+// Provider connector noise vs real failures
 // ---------------------------------------------------------------------------
 
-describe("external MCP noise filtering", () => {
+describe("provider connector noise filtering", () => {
   it("gmail auth noise does not trigger blocking classification", () => {
     const result = classifyBlockingWarnings({
       warnings: ["claude.ai Gmail:needs-auth"],
@@ -541,7 +541,7 @@ describe("external MCP noise filtering", () => {
 
   it("ADE-internal needs-auth without claude.ai prefix IS blocking", () => {
     const result = classifyBlockingWarnings({
-      warnings: ["MCP server myserver:needs-auth — cannot continue"],
+      warnings: ["external connector myserver:needs-auth - cannot continue"],
       summary: null,
     });
     expect(result.hasBlockingFailure).toBe(true);

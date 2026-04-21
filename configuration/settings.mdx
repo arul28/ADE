@@ -20,7 +20,7 @@ Settings are organized into twelve sections in the left navigation panel. Change
   <Card title="Context" icon="book" href="#context">Context doc generation and auto-refresh.</Card>
   <Card title="Budget & Usage" icon="dollar-sign" href="#budget-usage">Caps, alerts, and spend graphs.</Card>
   <Card title="AI Providers" icon="key" href="#ai-providers">API keys and default models per provider.</Card>
-  <Card title="Integrations" icon="plug" href="#integrations">GitHub, Linear, and external MCP.</Card>
+  <Card title="Integrations" icon="plug" href="#integrations">GitHub and Linear.</Card>
   <Card title="Computer Use" icon="desktop" href="#computer-use">Backend selection and proof requirements.</Card>
   <Card title="CTO" icon="robot" href="#cto">Heartbeat, delegation, memory retention.</Card>
   <Card title="Automations" icon="bolt" href="#automations">Global automation master switch.</Card>
@@ -206,7 +206,7 @@ For full provider setup instructions, see [AI Providers](/configuration/ai-provi
 
 ### GitHub
 
-ADE uses GitHub OAuth for PR management. This is distinct from the GitHub MCP server (which uses a token).
+ADE uses GitHub OAuth for PR management. A GitHub token can also be supplied in `local.secret.yaml` for automation workflows that run without an interactive login.
 
 | Setting | Description |
 |---------|-------------|
@@ -227,10 +227,6 @@ ADE connects to Linear for bidirectional issue sync. Configure in Settings → I
 | Default team | Linear team for issue creation |
 | Label mappings | Map ADE mission states to Linear issue labels |
 | Issue → Lane auto-create | Automatically create a lane when a Linear issue is assigned to you |
-
-### External MCP
-
-Shortcut to the External MCP server management panel. For full documentation, see [MCP Servers](/configuration/mcp-servers).
 
 ---
 
@@ -347,12 +343,12 @@ Settings for debugging, diagnostics, and low-level access.
 | Log level | `error`, `warn`, `info`, `debug`, `verbose` | `info` |
 | Log file location | Where ADE writes its log files | `~/Library/Logs/ADE/` |
 | Open DevTools | Opens Electron DevTools for the renderer process | — |
-| MCP debug mode | Enables verbose JSON-RPC logging for all MCP calls | Off |
+| RPC debug mode | Enables verbose JSON-RPC logging for all ADE RPC calls | Off |
 | Database inspector | Opens a read-only browser of ADE's SQLite database | — |
 | Reset to defaults | Resets all settings to factory defaults (does not affect `local.secret.yaml`) | — |
 
 <Warning>
-`verbose` log level logs every MCP tool call including parameters. Do not use verbose logging in production environments — it may produce large log files and can expose non-secret parameters in plaintext. API keys are always redacted regardless of log level.
+`verbose` log level logs every ADE RPC tool call including parameters. Do not use verbose logging in production environments — it may produce large log files and can expose non-secret parameters in plaintext. API keys are always redacted regardless of log level.
 </Warning>
 
 ---
@@ -376,7 +372,6 @@ Settings for debugging, diagnostics, and low-level access.
 
     - Commit `ade.yaml` with agreed model defaults and budget caps
     - Each developer maintains their own `local.yaml` with personal model preferences
-    - Set conservative `blockedTools` on external MCP servers (block destructive operations)
     - Enable **PR auto-link** in GitHub integration
     - Enable bidirectional Linear sync
     - Turn on **Ask-first mode** for terminal commands in Permissions
@@ -387,10 +382,8 @@ Settings for debugging, diagnostics, and low-level access.
 
     - Configure per-role model routing (Opus for planning, Sonnet for execution, Haiku for automation)
     - Set a high monthly cap and use per-mission caps to control individual runs
-    - Enable multiple external MCP servers (GitHub, filesystem, Ghost OS)
     - Set compaction threshold to 60% for earlier and more frequent compaction
-    - Enable verbose MCP debug logging only when diagnosing specific issues
-    - `autoStart: true` on all frequently-used MCP servers
+    - Enable verbose RPC debug logging only when diagnosing specific issues
   </Tab>
 </Tabs>
 
@@ -419,9 +412,6 @@ Settings for debugging, diagnostics, and low-level access.
 <CardGroup cols={2}>
   <Card title="AI Providers" icon="robot" href="/configuration/ai-providers">
     Deep dive into configuring Anthropic, OpenAI, OpenRouter, and local models.
-  </Card>
-  <Card title="MCP Servers" icon="server" href="/configuration/mcp-servers">
-    Connect and manage external MCP servers for GitHub, Slack, filesystem, and more.
   </Card>
   <Card title="Permissions" icon="shield-check" href="/configuration/permissions">
     Understand the full trust boundary model and configure per-agent access rules.

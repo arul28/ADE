@@ -677,11 +677,14 @@ export function createAiIntegrationService(args: {
   logger: Logger;
   projectConfigService: ReturnType<typeof createProjectConfigService>;
   projectRoot: string;
+  enableDynamicModelMetadata?: boolean;
 }) {
   const { db, logger, projectConfigService, projectRoot } = args;
 
-  // Non-blocking: fetch models.dev data and enrich pricing + registry
-  initModelsDevService().then((modelData) => {
+  // Non-blocking: fetch models.dev data and enrich pricing + registry.
+  // Headless CLI readiness commands disable this so default doctor/auth runs
+  // remain local-only and do not touch provider/model networks.
+  if (args.enableDynamicModelMetadata !== false) initModelsDevService().then((modelData) => {
     if (modelData.size === 0) return;
 
     // Update MODEL_PRICING with fresh cost data

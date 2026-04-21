@@ -269,7 +269,7 @@ describe("ctoStateService", () => {
       endedAt: "2026-03-05T10:05:00.000Z",
       provider: "codex",
       modelId: "openai/gpt-5.3-codex",
-      capabilityMode: "full_mcp",
+      capabilityMode: "full_tooling",
     });
     expect(entry.sessionId).toBe("session-1");
     expect(service.getSessionLogs(10).length).toBe(1);
@@ -554,7 +554,7 @@ describe("ctoStateService", () => {
     expect(preview.sections[3]?.content).toContain("ADE Architecture");
     expect(preview.sections[3]?.content).toContain("spawnChat");
     expect(preview.sections[3]?.content).toContain("createTerminal");
-    expect(preview.sections[3]?.content).toContain("spawn_agent is an MCP tool");
+    expect(preview.sections[3]?.content).toContain("spawnChat");
     expect(preview.sections[3]?.content).toContain("Model Selection");
     // Capabilities section: organized tool reference with descriptions
     expect(preview.sections[4]?.content).toContain("ADE Operator Tools");

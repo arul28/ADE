@@ -10,7 +10,7 @@ type TestTempTrackerState = {
   originalPromisesMkdtemp?: typeof fs.promises.mkdtemp;
 };
 
-const TEST_TEMP_TRACKER_KEY = Symbol.for("ade.mcp.testTempTracker");
+const TEST_TEMP_TRACKER_KEY = Symbol.for("ade.cli.testTempTracker");
 const testTempRoot = path.resolve(os.tmpdir());
 
 function getTestTempTrackerState(): TestTempTrackerState {

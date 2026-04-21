@@ -368,7 +368,6 @@ describe("Agent-browser integration", () => {
     const profile: RoleToolProfile = {
       allowedTools: ["agent-browser", "bash", "read_file"],
       blockedTools: [],
-      mcpServers: [],
       notes: "Browser-enabled worker",
     };
     expect(profile.allowedTools).toContain("agent-browser");
@@ -541,7 +540,7 @@ describe("CTO integration", () => {
       endedAt: "2026-03-01T10:30:00.000Z",
       provider: "claude",
       modelId: "claude-sonnet-4-6",
-      capabilityMode: "full_mcp",
+      capabilityMode: "full_tooling",
     });
 
     expect(entry.sessionId).toBe("session-abc");

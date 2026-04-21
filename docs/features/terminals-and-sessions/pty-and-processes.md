@@ -138,10 +138,9 @@ Each live PTY has an entry in the `ptys` map keyed by `ptyId` with:
 4. Resolve transcript path: reuses the existing row's path when
    resuming, otherwise `safeTranscriptPathFor(sessionId)` under the
    transcripts directory.
-5. For Claude/Codex tool types, write a per-session ADE MCP config file
-   under `.ade/mcp-configs/terminal-<sessionId>.json` and append
-   `--mcp-config <path>` (Claude) or codex config flags to the startup
-   command. The config file path goes into `cleanupPaths` for unlink on
+5. For Claude/Codex tool types, launch the provider with ADE identity
+   environment variables and rely on the bundled `ade` CLI for ADE actions.
+   Any temporary startup context path goes into `cleanupPaths` for unlink on
    disposal.
 6. Build initial `resumeMetadata` via `buildInitialResumeMetadata` —
    extracts a pre-assigned `--session-id <uuid>` from the Claude
@@ -239,7 +238,7 @@ Two forms of cleanup:
 
 - `scheduleTranscriptDependentWork` — flush transcript stream, then
   backfill + summarize.
-- `cleanupEntryPaths` — unlink `cleanupPaths` (per-session MCP config
+- `cleanupEntryPaths` — unlink `cleanupPaths` (per-session ADE CLI config
   files).
 
 `toolAutoCloseTimers` close a tool-typed PTY that has returned to the
@@ -403,8 +402,8 @@ renderer pty.create  →  ade.pty.create (registerIpc)
                       ptyService.create
                       ├─→ resolveLaneLaunchContext (lane gate)
                       ├─→ sessionService.create (new row)
-                      ├─→ writeExternalClaudeMcpConfig (Claude/Codex)
-                      ├─→ loadPty().spawn
+                      ├─→ loadPty().spawn (with ADE identity env for
+                      │                     Claude/Codex tool types)
                       └─→ transcript stream, preview, title timers
 
 PTY data events  →  broadcastData (ade.pty.data)

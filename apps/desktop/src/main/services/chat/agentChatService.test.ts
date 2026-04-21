@@ -139,21 +139,6 @@ vi.mock("@anthropic-ai/claude-agent-sdk", () => ({
   unstable_v2_resumeSession: vi.fn(),
 }));
 
-vi.mock("@modelcontextprotocol/sdk/client/index.js", () => {
-  const Client = vi.fn().mockImplementation(() => ({
-    connect: vi.fn(async () => {}),
-    listTools: vi.fn(async () => ({ tools: [] })),
-    callTool: vi.fn(async () => ({ content: [{ type: "text", text: "" }] })),
-    close: vi.fn(),
-  }));
-  return { Client };
-});
-
-vi.mock("@modelcontextprotocol/sdk/client/stdio.js", () => {
-  const StdioClientTransport = vi.fn().mockImplementation(() => ({}));
-  return { StdioClientTransport };
-});
-
 vi.mock("../ai/codexExecutable", () => ({
   resolveCodexExecutable: vi.fn(() => ({ path: "codex", source: "fallback-command" })),
 }));
@@ -408,11 +393,6 @@ vi.mock("../git/git", () => ({
 }));
 
 vi.mock("../orchestrator/providerOrchestratorAdapter", () => ({
-  resolveAdeMcpServerLaunch: vi.fn(() => ({
-    command: "node",
-    cmdArgs: [],
-    env: {},
-  })),
   resolveOpenCodeRuntimeRoot: vi.fn(() => process.cwd()),
 }));
 
@@ -492,7 +472,6 @@ import { createUniversalToolSet } from "../ai/tools/universalTools";
 import { createWorkflowTools } from "../ai/tools/workflowTools";
 import { buildCodingAgentSystemPrompt } from "../ai/tools/systemPrompt";
 import { runGit } from "../git/git";
-import { resolveAdeMcpServerLaunch } from "../orchestrator/providerOrchestratorAdapter";
 import { parseAgentChatTranscript } from "../../../shared/chatTranscript";
 import { createDefaultComputerUsePolicy } from "../../../shared/types";
 import { mapPermissionToClaude, mapPermissionToCodex } from "../orchestrator/permissionMapping";
@@ -774,7 +753,6 @@ function createService(overrides: Record<string, unknown> = {}) {
     issueInventoryService,
     logger: logger as any,
     appVersion: "0.0.1-test",
-    getExternalMcpConfigs: () => [],
     getDirtyFileTextForPath: () => undefined,
     ...overrides,
   });
@@ -808,18 +786,6 @@ async function waitForEvent<T extends AgentChatEventEnvelope>(
     await new Promise((resolve) => setTimeout(resolve, 0));
   }
   throw new Error("Timed out waiting for agent chat event.");
-}
-
-function expectResolvedMcpLaunchesToUseStandardProxyFlow(): void {
-  const calls = vi.mocked(resolveAdeMcpServerLaunch).mock.calls;
-  expect(calls.length).toBeGreaterThan(0);
-  for (const [args] of calls) {
-    // Regression guard: packaged chat surfaces must not force the direct
-    // headless MCP path. A previous refactor set preferBundledProxy=false,
-    // which bypassed the working ADE proxy path and broke Claude/Codex chat
-    // MCP initialization before the first turn could start.
-    expect((args as { preferBundledProxy?: boolean }).preferBundledProxy).toBeUndefined();
-  }
 }
 
 // ---------------------------------------------------------------------------
@@ -881,9 +847,9 @@ describe("buildComputerUseDirective", () => {
     if (overrides.ghostOs) {
       backends.push({
         name: "Ghost OS",
-        style: "external_mcp",
+        style: "external_cli",
         available: true,
-        state: "connected",
+        state: "installed",
         detail: "Ghost OS connected.",
         supportedKinds: ["screenshot"],
       });
@@ -993,7 +959,7 @@ describe("createAgentChatService", () => {
     expect(service.setComputerUseArtifactBrokerService).toBeTypeOf("function");
   });
 
-  it("previews native git MCP tools for regular workflow chats", () => {
+  it("previews native git ADE tools for regular workflow chats", () => {
     const { service } = createService();
     const toolNames = service.previewSessionToolNames({
       laneId: "lane-1",
@@ -1071,19 +1037,18 @@ describe("createAgentChatService", () => {
       });
 
       const opts = vi.mocked(unstable_v2_createSession).mock.calls[0]?.[0] as { systemPrompt?: { append?: string } } | undefined;
-      expect(opts?.systemPrompt?.append).toContain("ADE and MCP tools are runtime tool calls, not shell commands.");
-      expect(opts?.systemPrompt?.append).toContain(".mcp.json");
+      expect(opts?.systemPrompt?.append).toContain("ADE actions are available through the `ade` CLI");
+      expect(opts?.systemPrompt?.append).toContain("ade lanes list");
     });
 
-    it("pre-approves ADE MCP tools for Claude SDK sessions", async () => {
-      vi.mocked(resolveAdeMcpServerLaunch).mockClear();
+    it("does not attach ADE-owned tool definitions to Claude SDK sessions", async () => {
       vi.mocked(unstable_v2_createSession).mockReturnValue({
         send: vi.fn(),
         stream: vi.fn(async function* () {
           return;
         }),
         close: vi.fn(),
-        sessionId: "sdk-session-mcp-allow",
+        sessionId: "sdk-session-tool-allow",
       } as any);
 
       const { service } = createService();
@@ -1099,13 +1064,8 @@ describe("createAgentChatService", () => {
 
       const opts = vi.mocked(unstable_v2_createSession).mock.calls[0]?.[0] as {
         allowedTools?: string[];
-        mcpServers?: Record<string, Record<string, unknown>>;
       } | undefined;
-      expect(opts?.mcpServers).toHaveProperty("ade");
-      expect(opts?.allowedTools).toContain("mcp__ade__*");
-      // This explicitly protects the Claude chat surface, which shares the
-      // same MCP launch helper as the other chat providers.
-      expectResolvedMcpLaunchesToUseStandardProxyFlow();
+      expect(opts?.allowedTools).toBeUndefined();
     });
 
     it("requests markdown previews for Claude AskUserQuestion by default", async () => {
@@ -1133,40 +1093,6 @@ describe("createAgentChatService", () => {
         toolConfig?: { askUserQuestion?: { previewFormat?: string } };
       } | undefined;
       expect(opts?.toolConfig?.askUserQuestion?.previewFormat).toBe("markdown");
-    });
-
-    it("attaches ADE MCP servers through the Claude V2 query controls", async () => {
-      const setMcpServers = vi.fn().mockResolvedValue({
-        added: ["ade"],
-        removed: [],
-        errors: {},
-      });
-      vi.mocked(unstable_v2_createSession).mockReturnValue({
-        send: vi.fn(),
-        stream: vi.fn(async function* () {
-          return;
-        }),
-        close: vi.fn(),
-        sessionId: "sdk-session-mcp-query",
-        query: {
-          setMcpServers,
-        },
-      } as any);
-
-      const { service } = createService();
-      await service.createSession({
-        laneId: "lane-1",
-        provider: "claude",
-        model: "sonnet",
-      });
-
-      await vi.waitFor(() => {
-        expect(setMcpServers).toHaveBeenCalledWith(expect.objectContaining({
-          ade: expect.objectContaining({
-            command: "node",
-          }),
-        }));
-      });
     });
 
     it("migrates legacy Claude plan mode into interaction mode", async () => {
@@ -1661,19 +1587,11 @@ describe("createAgentChatService", () => {
       const promptCalls = vi.mocked(buildOpenCodePromptParts).mock.calls;
       const firstUserContent = String(promptCalls[0]?.[0]?.prompt ?? "");
       const secondUserContent = String(promptCalls[1]?.[0]?.prompt ?? "");
-      const resolvedTmpRoot = fs.realpathSync(tmpRoot);
       const openCodeStartCalls = vi.mocked(startOpenCodeSession).mock.calls;
 
-      expect(vi.mocked(resolveAdeMcpServerLaunch)).toHaveBeenCalledWith(expect.objectContaining({
-        projectRoot: tmpRoot,
-        workspaceRoot: resolvedTmpRoot,
-        workspaceBinding: "project_root",
-        chatSessionId: session.id,
-      }));
       expect(openCodeStartCalls.length).toBeGreaterThan(0);
       expect(openCodeStartCalls[0]?.[0]).toEqual(expect.objectContaining({
         leaseKind: "shared",
-        dynamicMcpLaunch: expect.any(Object),
       }));
       expect(firstUserContent).toContain("[ADE launch directive]");
       expect(firstUserContent).toContain(tmpRoot);
@@ -1681,14 +1599,9 @@ describe("createAgentChatService", () => {
       expect(secondUserContent).not.toContain("[ADE launch directive]");
     });
 
-    it("roots Codex MCP launches in the selected lane worktree while keeping the desktop project root", async () => {
+    it("starts Codex sessions without ADE-owned tool server injection", async () => {
       const laneRootPath = path.join(tmpRoot, "lane-2");
       fs.mkdirSync(laneRootPath, { recursive: true });
-      const laneRoot = fs.realpathSync(laneRootPath);
-      // runtimeRoot should always come from the trusted ADE install path
-      // (resolveOpenCodeRuntimeRoot), never from walking up user repo trees.
-      const runtimeRoot = fs.realpathSync(process.cwd());
-      vi.mocked(resolveAdeMcpServerLaunch).mockClear();
 
       const { service } = createService();
       const session = await service.createSession({
@@ -1703,29 +1616,11 @@ describe("createAgentChatService", () => {
       });
 
       await vi.waitFor(() => {
-        expect(vi.mocked(resolveAdeMcpServerLaunch)).toHaveBeenCalled();
+        expect(mockState.codexRequestPayloads.some((payload) => payload.method === "thread/start")).toBe(true);
       });
 
-      // Codex app-server was the first place this surfaced in production, so
-      // keep a dedicated assertion on the actual Codex chat path too.
-      expectResolvedMcpLaunchesToUseStandardProxyFlow();
-
-      const workspaceRoots = vi.mocked(resolveAdeMcpServerLaunch).mock.calls
-        .map(([args]) => (args as { workspaceRoot?: string }).workspaceRoot)
-        .filter((value): value is string => typeof value === "string");
-      const projectRoots = vi.mocked(resolveAdeMcpServerLaunch).mock.calls
-        .map(([args]) => (args as { projectRoot?: string }).projectRoot)
-        .filter((value): value is string => typeof value === "string");
-      const runtimeRoots = vi.mocked(resolveAdeMcpServerLaunch).mock.calls
-        .map(([args]) => (args as { runtimeRoot?: string }).runtimeRoot)
-        .filter((value): value is string => typeof value === "string");
-
-      expect(workspaceRoots.length).toBeGreaterThan(0);
-      expect(new Set(workspaceRoots)).toEqual(new Set([laneRoot]));
-      expect(projectRoots.length).toBeGreaterThan(0);
-      expect(new Set(projectRoots)).toEqual(new Set([tmpRoot]));
-      expect(runtimeRoots.length).toBeGreaterThan(0);
-      expect(new Set(runtimeRoots.map((value) => fs.realpathSync(value)))).toEqual(new Set([runtimeRoot]));
+      const startPayload = mockState.codexRequestPayloads.find((payload) => payload.method === "thread/start");
+      expect(startPayload?.params).toMatchObject({ cwd: expect.stringContaining("lane-2") });
     });
 
     it.skip("executes identity-hosted opencode turns from the selected execution lane", async () => {
@@ -1741,7 +1636,6 @@ describe("createAgentChatService", () => {
       vi.mocked(createUniversalToolSet).mockClear();
       vi.mocked(createWorkflowTools).mockClear();
       vi.mocked(buildCodingAgentSystemPrompt).mockClear();
-      vi.mocked(resolveAdeMcpServerLaunch).mockClear();
 
       const selectedLaneRootPath = path.join(tmpRoot, "lane-2");
       fs.mkdirSync(selectedLaneRootPath, { recursive: true });
@@ -1767,13 +1661,6 @@ describe("createAgentChatService", () => {
       expect(vi.mocked(buildCodingAgentSystemPrompt)).toHaveBeenCalledWith(
         expect.objectContaining({ cwd: selectedLaneRoot }),
       );
-      await vi.waitFor(() => {
-        expect(vi.mocked(resolveAdeMcpServerLaunch)).toHaveBeenCalled();
-      });
-      // OpenCode/API-backed chats also inject ADE MCP through the same launch
-      // resolver, so guard them here as well.
-      expectResolvedMcpLaunchesToUseStandardProxyFlow();
-
       const firstMessages = Array.isArray(streamCalls[0]?.messages)
         ? (streamCalls[0]!.messages as Array<{ role: string; content: unknown }>)
         : [];
@@ -7109,75 +6996,8 @@ describe("createAgentChatService", () => {
     });
   });
 
-  it("responds to Codex MCP elicitations with action/content payloads", async () => {
-    const events: AgentChatEventEnvelope[] = [];
-    const { service } = createService({
-      onEvent: (event: AgentChatEventEnvelope) => events.push(event),
-    });
-
-    const session = await service.createSession({
-      laneId: "lane-1",
-      provider: "codex",
-      model: "gpt-5.4",
-    });
-
-    await service.sendMessage({
-      sessionId: session.id,
-      text: "Wait for a structured MCP question.",
-    }, { awaitDispatch: true });
-
-    mockState.emitCodexPayload({
-      jsonrpc: "2.0",
-      id: "elicitation-1",
-      method: "mcpServer/elicitation/request",
-      params: {
-        serverName: "ade",
-        message: "Confirm whether we should continue.",
-        turnId: "turn-1",
-        requestedSchema: {
-          type: "object",
-          properties: {
-            confirmed: {
-              type: "boolean",
-              description: "Should ADE continue?",
-            },
-          },
-        },
-      },
-    });
-
-    const approvalEvent = await waitForEvent(
-      events,
-      (event): event is AgentChatEventEnvelope & {
-        event: Extract<AgentChatEventEnvelope["event"], { type: "approval_request" }>;
-      } =>
-        event.event.type === "approval_request"
-        && (
-          (event.event.detail as { request?: { title?: string } } | undefined)?.request?.title === "Question from ade"
-        ),
-    );
-
-    await service.respondToInput({
-      sessionId: session.id,
-      itemId: approvalEvent.event.itemId,
-      decision: "accept",
-      answers: {
-        confirmed: "true",
-      },
-    });
-
-    const elicitationResponse = mockState.codexRequestPayloads.find((payload) => payload.id === "elicitation-1");
-    expect(elicitationResponse?.result).toEqual({
-      action: "accept",
-      content: {
-        confirmed: true,
-      },
-    });
-  });
-
   it("initializes the Cursor runtime before validating the first turn", async () => {
     const events: AgentChatEventEnvelope[] = [];
-    vi.mocked(resolveAdeMcpServerLaunch).mockClear();
 
     const { service } = createService({
       onEvent: (event: AgentChatEventEnvelope) => events.push(event),
@@ -7206,13 +7026,6 @@ describe("createAgentChatService", () => {
     expect(vi.mocked(acquireCursorAcpConnection)).toHaveBeenCalledTimes(1);
     expect(mockState.cursorNewSessionCalls).toHaveLength(1);
     expect(mockState.cursorPromptCalls).toHaveLength(1);
-    await vi.waitFor(() => {
-      expect(vi.mocked(resolveAdeMcpServerLaunch)).toHaveBeenCalled();
-    });
-    // Cursor chat used the same shared MCP launch path, so we keep a separate
-    // assertion to ensure future chat refactors do not regress just one
-    // surface while leaving the others green.
-    expectResolvedMcpLaunchesToUseStandardProxyFlow();
     expect(
       events.some((event) => event.event.type === "error" && event.event.message.includes("No runtime initialized")),
     ).toBe(false);
@@ -7657,7 +7470,6 @@ describe("createAgentChatService", () => {
       mode: "ask",
       sandbox: "enabled",
       force: false,
-      approveMcps: false,
     });
   });
 });

@@ -1,7 +1,6 @@
 const ANSI_PATTERN = /\u001b\[[0-9;]*[A-Za-z]/g;
 const SHELL_PROMPT_PATTERN = /^[A-Za-z0-9._-]+@[A-Za-z0-9._-]+\s+.+\s[%#$]$/;
 const WORKER_PROMPT_PATH_PATTERN = /(?:^|[\\/])(?:orchestrator[\\/])?worker-prompts[\\/]worker-[a-f0-9-]+(?:\.[A-Za-z0-9._-]+)?/i;
-const MCP_CONFIG_PATH_PATTERN = /(?:^|[\\/])\.ade-worker-mcp-[a-f0-9-]+\.json/i;
 
 export function stripWorkerRuntimeAnsi(text: string): string {
   return text.replace(ANSI_PATTERN, "");
@@ -15,9 +14,7 @@ export function isWorkerBootstrapNoiseLine(line: string): boolean {
   return (
     lower.startsWith("ade_mission_id=")
     || lower.startsWith("-p \"$(cat ")
-    || /^cp\s+'.+worker-[a-f0-9-]+\.json'\s+'.+\.json'(\s+&&\s+exec\b.*)?$/i.test(normalized)
     || WORKER_PROMPT_PATH_PATTERN.test(normalized)
-    || MCP_CONFIG_PATH_PATTERN.test(normalized)
     || lower.includes("exec claude --model")
     || /\bexec codex\b/i.test(normalized)
     || /^\/users\/.+\.zshrc:\d+:/i.test(lower)

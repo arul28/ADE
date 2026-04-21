@@ -8,7 +8,7 @@ CTO owns Linear intake, routing, dispatch, sync, and closeout. Automations never
 
 - `linearCredentialService.ts` — token store (personal API key). Exposes `getStatus`, `getTokenOrThrow`, `setToken`, `clearToken`.
 - `linearOAuthService.ts` — PKCE loopback OAuth on port 19836. `SESSION_TTL_MS = 10 min`. Authorize at `linear.app/oauth/authorize`, exchange at `api.linear.app/oauth/token`.
-- `linearClient.ts` — GraphQL client; used by both desktop and headless MCP.
+- `linearClient.ts` — GraphQL client; used by both desktop and headless ADE CLI.
 - `linearIssueTracker.ts` + `issueTracker.ts` — issue cache, snapshot hashes, change detection.
 - `flowPolicyService.ts` — canonical `LinearWorkflowConfig` aggregate: intake rules, workflows, files, migration info, legacy config. File-backed via `linearWorkflowFileService`.
 - `linearWorkflowFileService.ts` — persists workflows as YAML under the project's ADE config area.
@@ -34,7 +34,7 @@ CTO owns Linear intake, routing, dispatch, sync, and closeout. Automations never
 
 ### Headless
 
-- `apps/mcp-server/src/headlessLinearServices.ts` — wires the same set of Linear services into the MCP server so `ade mcp` is first-class for Linear, not a read-only stub.
+- `apps/ade-cli/src/headlessLinearServices.ts` — wires the same set of Linear services into the ADE CLI so `ADE CLI` is first-class for Linear, not a read-only stub.
 
 ## Connection model
 
@@ -133,7 +133,7 @@ Short-circuit rules:
 
 `linearIngressService` is the optional realtime path. It only auto-starts when realtime config is present (relay endpoint or webhook secret). Otherwise it stays dormant. Events it receives are normalized to `LinearIngressEventRecord` and forwarded into the sync queue via the same issue-update processing path as the poll loop — there is no separate dispatch code for realtime vs polled events.
 
-Headless mode supports the same ingress: `headlessLinearServices.ts` wires `linearIngressService` into the MCP server so external systems can push events into the headless runtime.
+Headless mode supports the same ingress: `headlessLinearServices.ts` wires `linearIngressService` into the ADE CLI so external systems can push events into the headless runtime.
 
 ## Run observability
 
@@ -159,7 +159,7 @@ The LinearSyncPanel debounces follow-up refreshes so active sync stays observabl
 
 ## Headless parity
 
-`headlessLinearServices.ts` instantiates the same services in the MCP server:
+`headlessLinearServices.ts` instantiates the same services in the ADE CLI:
 
 - `linearClient`, `linearIssueTracker`, `linearTemplateService`, `linearWorkflowFileService`.
 - `flowPolicyService`, `linearRoutingService`, `linearIntakeService`, `linearOutboundService`, `linearCloseoutService`.

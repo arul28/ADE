@@ -267,7 +267,7 @@
 
 **Title:** ADE platform errors are visually distinct from AI provider noise
 
-**Description:** When a mission fails, the user sees error messages from multiple sources: ADE orchestrator errors, AI provider API errors (rate limits, context length), executor runtime errors (CLI crashes), and low-signal noise (MCP metadata, streaming status). These must be visually categorized so the user can immediately identify: (a) is this an ADE bug? (b) is this a provider issue? (c) is this expected retry behavior?
+**Description:** When a mission fails, the user sees error messages from multiple sources: ADE orchestrator errors, AI provider API errors (rate limits, context length), executor runtime errors (CLI crashes), and low-signal noise (ADE CLI metadata, streaming status). These must be visually categorized so the user can immediately identify: (a) is this an ADE bug? (b) is this a provider issue? (c) is this expected retry behavior?
 
 **Pass/Fail Condition:**
 - Error messages in the activity feed / halt banner include a source badge: `ADE`, `Provider`, `Executor`, or `Runtime`

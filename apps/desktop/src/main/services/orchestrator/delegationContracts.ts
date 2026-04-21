@@ -42,12 +42,7 @@ const COORDINATOR_TOOL_CAPABILITIES: Array<{
 ];
 
 export function normalizeCoordinatorToolName(toolName: string): string {
-  const trimmed = toolName.trim();
-  if (trimmed.startsWith("mcp__")) {
-    const parts = trimmed.split("__");
-    return (parts[2] ?? trimmed).trim();
-  }
-  return trimmed;
+  return toolName.trim();
 }
 
 export function createDelegationScope(args: {

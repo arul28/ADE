@@ -29,10 +29,9 @@ import type { createLinearIngressService } from "../../desktop/src/main/services
 import type { createWorkerTaskSessionService } from "../../desktop/src/main/services/cto/workerTaskSessionService";
 import type { createWorkerHeartbeatService } from "../../desktop/src/main/services/cto/workerHeartbeatService";
 import type { createAutomationSecretService } from "../../desktop/src/main/services/automations/automationSecretService";
-import type { ExternalMcpService } from "../../desktop/src/main/services/externalMcp/externalMcpService";
 import type { ComputerUseArtifactBrokerService } from "../../desktop/src/main/services/computerUse/computerUseArtifactBrokerService";
 import { getModelById, resolveModelAlias } from "../../desktop/src/shared/modelRegistry";
-import type { AdeMcpPaths } from "./bootstrap";
+import type { AdeRuntimePaths } from "./bootstrap";
 import { createLinearClient as createLinearClientImpl } from "../../desktop/src/main/services/cto/linearClient";
 import { createLinearIssueTracker as createLinearIssueTrackerImpl } from "../../desktop/src/main/services/cto/linearIssueTracker";
 import { createLinearTemplateService as createLinearTemplateServiceImpl } from "../../desktop/src/main/services/cto/linearTemplateService";
@@ -120,7 +119,7 @@ type HeadlessTranscriptEntry = {
 type HeadlessLinearDeps = {
   projectRoot: string;
   adeDir: string;
-  paths: AdeMcpPaths;
+  paths: AdeRuntimePaths;
   projectId: string;
   db: AdeDb;
   logger: Logger;
@@ -133,7 +132,6 @@ type HeadlessLinearDeps = {
   aiOrchestratorService: ReturnType<typeof createAiOrchestratorService>;
   workerAgentService: ReturnType<typeof createWorkerAgentService>;
   workerBudgetService: ReturnType<typeof createWorkerBudgetService>;
-  externalMcpService: ExternalMcpService;
   computerUseArtifactBrokerService: ComputerUseArtifactBrokerService;
   openExternal?: (url: string) => Promise<void>;
 };
@@ -243,7 +241,7 @@ function createHeadlessGitHubService(projectRoot: string, logger: Logger): Headl
       headers: {
         accept: "application/vnd.github+json",
         authorization: `Bearer ${token}`,
-        "user-agent": "ade-mcp-server",
+        "user-agent": "ade-cli",
         ...(args.body == null ? {} : { "content-type": "application/json" }),
       },
       body: args.body == null ? undefined : JSON.stringify(args.body),
@@ -350,8 +348,8 @@ function createHeadlessAgentChatService(projectRoot: string): HeadlessLinearServ
 
   const defaultSummary = (identityKey?: string): string =>
     identityKey
-      ? `Headless MCP session for ${identityKey}. Automatic agent execution is not available in this runtime.`
-      : "Headless MCP chat session. Automatic agent execution is not available in this runtime.";
+      ? `Headless ADE session for ${identityKey}. Automatic agent execution is not available in this runtime.`
+      : "Headless ADE chat session. Automatic agent execution is not available in this runtime.";
 
   const resolveHeadlessModel = (modelId?: string | null): { modelId: string; model: string } => {
     const requested = modelId?.trim() || HEADLESS_MODEL_ID;
@@ -535,7 +533,7 @@ function createHeadlessAgentChatService(projectRoot: string): HeadlessLinearServ
       });
     },
     setComputerUseArtifactBrokerService() {
-      // no-op in headless MCP mode
+      // no-op in headless mode
       void projectRoot;
     },
   };
@@ -578,7 +576,7 @@ function createHeadlessWorkerHeartbeatService(): ReturnType<typeof createWorkerH
         taskKey: args.taskKey ?? null,
         issueKey: args.issueKey ?? null,
         context: args.context ?? {},
-        errorMessage: "Headless MCP mode does not support worker-backed Linear targets yet.",
+        errorMessage: "Headless ADE mode does not support worker-backed Linear targets yet.",
         startedAt: now,
         finishedAt: now,
         createdAt: now,

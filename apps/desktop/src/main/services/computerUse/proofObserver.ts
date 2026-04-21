@@ -26,11 +26,6 @@ const GHOST_ARTIFACT_TOOLS = new Set([
   "ghost_annotate",
   "ghost_ground",
   "ghost_parse_screen",
-  // MCP-prefixed versions
-  "mcp__ghost-os__ghost_screenshot",
-  "mcp__ghost-os__ghost_annotate",
-  "mcp__ghost-os__ghost_ground",
-  "mcp__ghost-os__ghost_parse_screen",
 ]);
 
 // ---------------------------------------------------------------------------
@@ -112,30 +107,22 @@ function inferMimeType(value: string): string | null {
 }
 
 function inferBackendName(toolName: string): string {
-  const stripped = toolName.replace(/^mcp__[^_]+__/, "");
-  const proxiedExternalMatch = /^ext\.([^.]+)\./.exec(stripped);
+  const proxiedExternalMatch = /^ext\.([^.]+)\./.exec(toolName);
   if (proxiedExternalMatch?.[1]) return proxiedExternalMatch[1];
-  if (toolName.startsWith("mcp__ghost-os__") || toolName.startsWith("ghost_")) {
+  if (toolName.startsWith("ghost_")) {
     return "ghost-os";
-  }
-  if (toolName.startsWith("mcp__")) {
-    // e.g. "mcp__my-server__my_tool" -> "my-server"
-    const parts = toolName.split("__");
-    if (parts.length >= 2) return parts[1];
   }
   if (toolName.startsWith("functions.")) return "functions";
   if (toolName.startsWith("multi_tool_use.")) return "multi_tool_use";
   if (toolName.startsWith("web.")) return "web";
+  const dottedNamespace = /^([A-Za-z0-9_-]+)\./.exec(toolName);
+  if (dottedNamespace?.[1]) return dottedNamespace[1];
   return "chat-tool";
 }
 
 function inferBackendDescriptor(toolName: string): ComputerUseBackendDescriptor {
-  const stripped = toolName.replace(/^mcp__[^_]+__/, "");
-  const style = toolName.startsWith("mcp__") || toolName.startsWith("ghost_") || stripped.startsWith("ext.")
-    ? "external_mcp"
-    : "external_cli";
   return {
-    style,
+    style: "external_cli",
     name: inferBackendName(toolName),
     toolName,
   };
@@ -143,7 +130,7 @@ function inferBackendDescriptor(toolName: string): ComputerUseBackendDescriptor 
 
 function buildTitle(toolName: string, kind: ComputerUseArtifactKind): string {
   const kindLabel = kind.replace(/_/g, " ");
-  const shortTool = toolName.replace(/^mcp__[^_]+__/, "").replace(/^ext\./, "");
+  const shortTool = toolName.replace(/^ext\./, "");
   return `${kindLabel[0].toUpperCase()}${kindLabel.slice(1)} from ${shortTool}`;
 }
 

@@ -16,6 +16,7 @@ import { loadAgentBrowserArtifactPayloadFromFile, parseAgentBrowserArtifactPaylo
 import { resolveAgentMemoryWritePolicy } from "../../desktop/src/main/services/memory/memoryService";
 import { ReflectionValidationError } from "../../desktop/src/main/services/orchestrator/orchestratorService";
 import { getTeamMembersForRun, registerTeamMember, updateTeamMemberStatus } from "../../desktop/src/main/services/orchestrator/teamRuntimeState";
+import { launchPrIssueResolutionChat, previewPrIssueResolutionPrompt } from "../../desktop/src/main/services/prs/prIssueResolver";
 import { runGit } from "../../desktop/src/main/services/git/git";
 import { resolvePathWithinRoot } from "../../desktop/src/main/services/shared/utils";
 import { getDefaultModelDescriptor } from "../../desktop/src/shared/modelRegistry";
@@ -31,7 +32,7 @@ import {
 } from "../../desktop/src/shared/types";
 import type { PrActionRun, PrCheck, PrComment, PrReviewThread } from "../../desktop/src/shared/types/prs";
 import { resolveAdeLayout } from "../../desktop/src/shared/adeLayout";
-import type { AdeMcpRuntime } from "./bootstrap";
+import type { AdeRuntime } from "./bootstrap";
 import { JsonRpcError, JsonRpcErrorCode, type JsonRpcHandler, type JsonRpcRequest } from "./jsonrpc";
 
 type ToolSpec = {
@@ -189,7 +190,7 @@ const TOOL_SPECS: ToolSpec[] = [
             "linear_routing",
             "file",
             "process",
-            "external_mcp",
+            "pty",
             "computer_use_artifacts",
             "all"
           ],
@@ -234,7 +235,7 @@ const TOOL_SPECS: ToolSpec[] = [
             "linear_routing",
             "file",
             "process",
-            "external_mcp",
+            "pty",
             "computer_use_artifacts",
           ],
         },
@@ -493,7 +494,7 @@ const TOOL_SPECS: ToolSpec[] = [
       additionalProperties: false,
       required: ["backendStyle", "backendName"],
       properties: {
-        backendStyle: { type: "string", enum: ["external_mcp", "external_cli", "manual", "local_fallback"] },
+        backendStyle: { type: "string", enum: ["external_cli", "manual", "local_fallback"] },
         backendName: { type: "string", minLength: 1 },
         toolName: { type: "string" },
         command: { type: "string" },
@@ -1028,6 +1029,40 @@ const TOOL_SPECS: ToolSpec[] = [
       additionalProperties: false,
       properties: {
         prId: { type: "string", minLength: 1 }
+      }
+    }
+  },
+  {
+    name: "pr_preview_issue_resolution_prompt",
+    description: "Preview the ADE Path to Merge issue-resolution prompt for a PR without launching an agent.",
+    inputSchema: {
+      type: "object",
+      required: ["prId", "scope", "modelId"],
+      additionalProperties: false,
+      properties: {
+        prId: { type: "string", minLength: 1 },
+        scope: { type: "string", enum: ["checks", "comments", "both"] },
+        modelId: { type: "string", minLength: 1 },
+        reasoning: { type: "string" },
+        permissionMode: { type: "string", enum: ["read_only", "guarded_edit", "full_edit"] },
+        additionalInstructions: { type: "string" }
+      }
+    }
+  },
+  {
+    name: "pr_start_issue_resolution",
+    description: "Start a Path to Merge issue-resolution agent session for failing checks and/or review comments on a PR.",
+    inputSchema: {
+      type: "object",
+      required: ["prId", "scope", "modelId"],
+      additionalProperties: false,
+      properties: {
+        prId: { type: "string", minLength: 1 },
+        scope: { type: "string", enum: ["checks", "comments", "both"] },
+        modelId: { type: "string", minLength: 1 },
+        reasoning: { type: "string" },
+        permissionMode: { type: "string", enum: ["read_only", "guarded_edit", "full_edit"] },
+        additionalInstructions: { type: "string" }
       }
     }
   },
@@ -1850,6 +1885,7 @@ const READ_ONLY_TOOLS = new Set([
   "pr_get_checks",
   "pr_get_review_comments",
   "pr_refresh_issue_inventory",
+  "pr_preview_issue_resolution_prompt",
   "memory_search",
   "get_cto_state",
   "listChats",
@@ -1896,6 +1932,7 @@ const MUTATION_TOOLS = new Set([
   "rebase_abort",
   "land_queue_next",
   "pr_rerun_failed_checks",
+  "pr_start_issue_resolution",
   "pr_reply_to_review_thread",
   "pr_resolve_review_thread",
   "memory_add",
@@ -2181,23 +2218,6 @@ function jsonText(value: unknown): string {
   return JSON.stringify(value, null, 2);
 }
 
-function mcpTextResult(value: unknown, isError = false): Record<string, unknown> {
-  const text = typeof value === "string" ? value : jsonText(value);
-  return {
-    content: [{ type: "text", text }],
-    structuredContent: value,
-    ...(isError ? { isError: true } : {})
-  };
-}
-
-function isMcpToolResult(value: unknown): value is {
-  content: unknown[];
-  structuredContent?: unknown;
-  isError?: boolean;
-} {
-  return isRecord(value) && Array.isArray(value.content);
-}
-
 function sanitizeForAudit(value: unknown, depth = 0): unknown {
   if (depth > 4) return "[depth-clipped]";
   if (value == null) return value;
@@ -2224,9 +2244,9 @@ function sanitizeForAudit(value: unknown, depth = 0): unknown {
   return String(value);
 }
 
-function requirePrService(runtime: AdeMcpRuntime): NonNullable<AdeMcpRuntime["prService"]> {
+function requirePrService(runtime: AdeRuntime): NonNullable<AdeRuntime["prService"]> {
   if (!runtime.prService) {
-    throw new JsonRpcError(JsonRpcErrorCode.internalError, "prService is not available in this MCP runtime configuration");
+    throw new JsonRpcError(JsonRpcErrorCode.internalError, "prService is not available in this ADE runtime configuration");
   }
   return runtime.prService;
 }
@@ -2343,45 +2363,45 @@ function summarizePrIssueInventory(args: {
   };
 }
 
-function requireAgentChatService(runtime: AdeMcpRuntime): NonNullable<AdeMcpRuntime["agentChatService"]> {
+function requireAgentChatService(runtime: AdeRuntime): NonNullable<AdeRuntime["agentChatService"]> {
   if (!runtime.agentChatService) {
     throw new JsonRpcError(
       JsonRpcErrorCode.internalError,
-      "agentChatService is not available in this MCP runtime configuration",
+      "agentChatService is not available in this ADE runtime configuration",
     );
   }
   return runtime.agentChatService;
 }
 
-function requireLinearSyncService(runtime: AdeMcpRuntime): NonNullable<AdeMcpRuntime["linearSyncService"]> {
+function requireLinearSyncService(runtime: AdeRuntime): NonNullable<AdeRuntime["linearSyncService"]> {
   if (!runtime.linearSyncService) {
-    throw new JsonRpcError(JsonRpcErrorCode.internalError, "linearSyncService is not available in this MCP runtime configuration");
+    throw new JsonRpcError(JsonRpcErrorCode.internalError, "linearSyncService is not available in this ADE runtime configuration");
   }
   return runtime.linearSyncService;
 }
 
-function requireLinearIngressService(runtime: AdeMcpRuntime): NonNullable<AdeMcpRuntime["linearIngressService"]> {
+function requireLinearIngressService(runtime: AdeRuntime): NonNullable<AdeRuntime["linearIngressService"]> {
   if (!runtime.linearIngressService) {
-    throw new JsonRpcError(JsonRpcErrorCode.internalError, "linearIngressService is not available in this MCP runtime configuration");
+    throw new JsonRpcError(JsonRpcErrorCode.internalError, "linearIngressService is not available in this ADE runtime configuration");
   }
   return runtime.linearIngressService;
 }
 
-function requireFlowPolicyService(runtime: AdeMcpRuntime): NonNullable<AdeMcpRuntime["flowPolicyService"]> {
+function requireFlowPolicyService(runtime: AdeRuntime): NonNullable<AdeRuntime["flowPolicyService"]> {
   if (!runtime.flowPolicyService) {
-    throw new JsonRpcError(JsonRpcErrorCode.internalError, "flowPolicyService is not available in this MCP runtime configuration");
+    throw new JsonRpcError(JsonRpcErrorCode.internalError, "flowPolicyService is not available in this ADE runtime configuration");
   }
   return runtime.flowPolicyService;
 }
 
-function requireLinearRoutingService(runtime: AdeMcpRuntime): NonNullable<AdeMcpRuntime["linearRoutingService"]> {
+function requireLinearRoutingService(runtime: AdeRuntime): NonNullable<AdeRuntime["linearRoutingService"]> {
   if (!runtime.linearRoutingService) {
-    throw new JsonRpcError(JsonRpcErrorCode.internalError, "linearRoutingService is not available in this MCP runtime configuration");
+    throw new JsonRpcError(JsonRpcErrorCode.internalError, "linearRoutingService is not available in this ADE runtime configuration");
   }
   return runtime.linearRoutingService;
 }
 
-async function resolveDefaultLaneId(runtime: AdeMcpRuntime): Promise<string> {
+async function resolveDefaultLaneId(runtime: AdeRuntime): Promise<string> {
   await runtime.laneService.ensurePrimaryLane().catch(() => {});
   const lanes = await runtime.laneService.list({ includeArchived: false, includeStatus: false });
   const laneId = (lanes.find((lane) => lane.laneType === "primary") ?? lanes[0])?.id?.trim?.() || "";
@@ -2391,7 +2411,7 @@ async function resolveDefaultLaneId(runtime: AdeMcpRuntime): Promise<string> {
   return laneId;
 }
 
-function resolveChatSessionLaneId(runtime: AdeMcpRuntime, session: SessionState): string | null {
+function resolveChatSessionLaneId(runtime: AdeRuntime, session: SessionState): string | null {
   const chatSessionId = asOptionalTrimmedString(session.identity.chatSessionId);
   if (!chatSessionId) return null;
   const chatSession = runtime.sessionService.get(chatSessionId);
@@ -2399,7 +2419,7 @@ function resolveChatSessionLaneId(runtime: AdeMcpRuntime, session: SessionState)
   return laneId.length ? laneId : null;
 }
 
-function resolveLaneWorktreePath(runtime: AdeMcpRuntime, laneId: string | null | undefined): string | null {
+function resolveLaneWorktreePath(runtime: AdeRuntime, laneId: string | null | undefined): string | null {
   const normalizedLaneId = asOptionalTrimmedString(laneId);
   if (!normalizedLaneId) return null;
   try {
@@ -2423,7 +2443,7 @@ function resolveLaneWorktreePath(runtime: AdeMcpRuntime, laneId: string | null |
   return null;
 }
 
-function resolveRunContextLaneId(runtime: AdeMcpRuntime, callerCtx: CallerContext): string | null {
+function resolveRunContextLaneId(runtime: AdeRuntime, callerCtx: CallerContext): string | null {
   const runId = asOptionalTrimmedString(callerCtx.runId);
   if (!runId) return null;
 
@@ -2442,7 +2462,7 @@ function resolveRunContextLaneId(runtime: AdeMcpRuntime, callerCtx: CallerContex
 }
 
 function resolveAuthorizedWorkspaceRoot(
-  runtime: AdeMcpRuntime,
+  runtime: AdeRuntime,
   session: SessionState,
   toolArgs?: Record<string, unknown>,
 ): string {
@@ -2488,7 +2508,7 @@ function resolveAuthorizedWorkspaceRoot(
 }
 
 function resolveRequestedOrSessionLaneId(
-  runtime: AdeMcpRuntime,
+  runtime: AdeRuntime,
   session: SessionState,
   toolArgs: Record<string, unknown>,
 ): string | null {
@@ -2496,7 +2516,7 @@ function resolveRequestedOrSessionLaneId(
 }
 
 function requireLaneIdForTool(
-  runtime: AdeMcpRuntime,
+  runtime: AdeRuntime,
   session: SessionState,
   toolArgs: Record<string, unknown>,
   toolName: string,
@@ -2512,7 +2532,7 @@ function requireLaneIdForTool(
 }
 
 async function runCtoOperatorBridgeTool(
-  runtime: AdeMcpRuntime,
+  runtime: AdeRuntime,
   session: SessionState,
   name: string,
   toolArgs: Record<string, unknown>,
@@ -2530,7 +2550,7 @@ async function runCtoOperatorBridgeTool(
       : null)
     ?? fallbackModelId;
   const tools = createCtoOperatorTools({
-    currentSessionId: session.identity.callerId || "mcp-cto",
+    currentSessionId: session.identity.callerId || "ade-cli-cto",
     defaultLaneId,
     defaultModelId,
     sessionService: runtime.sessionService,
@@ -2615,7 +2635,7 @@ function normalizeToolWhitelist(value: unknown): string[] {
 }
 
 function resolveSpawnContextFile(args: {
-  runtime: AdeMcpRuntime;
+  runtime: AdeRuntime;
   laneId: string;
   provider: "codex" | "claude";
   permissionMode: SpawnPermissionMode;
@@ -2657,7 +2677,7 @@ function resolveSpawnContextFile(args: {
     };
   }
 
-  const baseDir = resolveAdeLayout(args.runtime.projectRoot).mcpContextDir;
+  const baseDir = resolveAdeLayout(args.runtime.projectRoot).agentContextDir;
   const runSegment = args.runId ?? "standalone";
   const dir = path.join(baseDir, runSegment);
   fs.mkdirSync(dir, { recursive: true });
@@ -2665,7 +2685,7 @@ function resolveSpawnContextFile(args: {
   const filename = `${Date.now()}-${randomUUID()}.json`;
   const contextFilePath = path.join(dir, filename);
   const payload = {
-    schema: "ade.mcp.spawnAgentContext.v1",
+    schema: "ade.agent.spawnContext.v1",
     generatedAt: nowIso(),
     mission: {
       runId: args.runId,
@@ -2806,7 +2826,7 @@ function resolveWorkerAgentOwnerId(identityKey: unknown): string | null {
 }
 
 async function resolveEffectiveCallerContext(
-  runtime: AdeMcpRuntime,
+  runtime: AdeRuntime,
   session?: SessionState,
 ): Promise<CallerContext> {
   const callerCtx = { ...resolveCallerContext(session) };
@@ -2825,28 +2845,6 @@ async function resolveEffectiveCallerContext(
   }
 
   return callerCtx;
-}
-
-function toExternalMcpIdentity(callerCtx: CallerContext): {
-  callerId: string;
-  role: "cto" | "orchestrator" | "agent" | "external" | "evaluator";
-  chatSessionId: string | null;
-  missionId: string | null;
-  runId: string | null;
-  stepId: string | null;
-  attemptId: string | null;
-  ownerId: string | null;
-} {
-  return {
-    callerId: callerCtx.callerId ?? callerCtx.chatSessionId ?? callerCtx.attemptId ?? "unknown",
-    role: callerCtx.role ?? "external",
-    chatSessionId: callerCtx.chatSessionId,
-    missionId: callerCtx.missionId,
-    runId: callerCtx.runId,
-    stepId: callerCtx.stepId,
-    attemptId: callerCtx.attemptId,
-    ownerId: callerCtx.ownerId,
-  };
 }
 
 function isStandaloneChatCaller(callerCtx: CallerContext): boolean {
@@ -2876,15 +2874,8 @@ function isLocalComputerUseAllowed(policy: ComputerUsePolicy | null | undefined)
   return isComputerUseModeEnabled(effective.mode) && effective.allowLocalFallback;
 }
 
-async function listToolSpecsForSession(runtime: AdeMcpRuntime, session: SessionState): Promise<ToolSpec[]> {
+async function listToolSpecsForSession(runtime: AdeRuntime, session: SessionState): Promise<ToolSpec[]> {
   const callerCtx = await resolveEffectiveCallerContext(runtime, session);
-  const externalToolSpecs = runtime.externalMcpService
-    ? (await runtime.externalMcpService.listToolsForIdentity(toExternalMcpIdentity(callerCtx))).map((tool) => ({
-        name: tool.namespacedName,
-        description: tool.description ?? `${tool.serverName}: ${tool.name}`,
-      inputSchema: tool.inputSchema,
-    }))
-    : [];
   const externalComputerUseAvailable = runtime.computerUseArtifactBrokerService
     ?.getBackendStatus()
     ?.backends.some((backend) => backend.available) ?? false;
@@ -2898,21 +2889,21 @@ async function listToolSpecsForSession(runtime: AdeMcpRuntime, session: SessionS
     : COORDINATOR_TOOL_SPECS;
   const allVisibleTools = (() => {
     if (callerCtx.role === "external" || !callerCtx.role) {
-      return [...visibleBaseTools, ...externalToolSpecs];
+      return visibleBaseTools;
     }
     if (callerCtx.role === "agent") {
-      return [...visibleBaseTools, ...AGENT_VISIBLE_COORDINATOR_TOOL_SPECS, ...externalToolSpecs];
+      return [...visibleBaseTools, ...AGENT_VISIBLE_COORDINATOR_TOOL_SPECS];
     }
     if (callerCtx.role === "cto") {
-      return [...visibleBaseTools, ...CTO_OPERATOR_TOOL_SPECS, ...CTO_LINEAR_SYNC_TOOL_SPECS, ...externalToolSpecs];
+      return [...visibleBaseTools, ...CTO_OPERATOR_TOOL_SPECS, ...CTO_LINEAR_SYNC_TOOL_SPECS];
     }
-    return [...visibleBaseTools, ...visibleCoordinatorTools, ...externalToolSpecs];
+    return [...visibleBaseTools, ...visibleCoordinatorTools];
   })();
 
   return allVisibleTools.filter((tool) => !isToolHiddenForStandaloneChat(tool.name, callerCtx));
 }
 
-function parseInitializeIdentity(runtime: AdeMcpRuntime, params: unknown): SessionIdentity {
+function parseInitializeIdentity(runtime: AdeRuntime, params: unknown): SessionIdentity {
   const data = safeObject(params);
   const identity = safeObject(data.identity);
   const envContext = resolveEnvCallerContext();
@@ -2961,7 +2952,7 @@ function parseInitializeIdentity(runtime: AdeMcpRuntime, params: unknown): Sessi
   };
 }
 
-function parseMcpUri(uriRaw: string): { path: string[] } {
+function parseAdeResourceUri(uriRaw: string): { path: string[] } {
   const trimmed = uriRaw.trim();
   if (!trimmed.startsWith("ade://")) {
     throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `Unsupported resource URI: ${uriRaw}`);
@@ -3004,7 +2995,7 @@ function buildResourceList(args: {
 }
 
 async function waitForTestRunCompletion(args: {
-  runtime: AdeMcpRuntime;
+  runtime: AdeRuntime;
   runId: string;
   laneId: string;
   timeoutMs: number;
@@ -3060,10 +3051,10 @@ type AdeActionDomain =
   | "linear_routing"
   | "file"
   | "process"
-  | "external_mcp"
+  | "pty"
   | "computer_use_artifacts";
 
-function getAdeActionDomainServices(runtime: AdeMcpRuntime): Partial<Record<AdeActionDomain, Record<string, unknown> | null | undefined>> {
+function getAdeActionDomainServices(runtime: AdeRuntime): Partial<Record<AdeActionDomain, Record<string, unknown> | null | undefined>> {
   return {
     lane: runtime.laneService as unknown as Record<string, unknown>,
     git: runtime.gitService as unknown as Record<string, unknown>,
@@ -3090,7 +3081,7 @@ function getAdeActionDomainServices(runtime: AdeMcpRuntime): Partial<Record<AdeA
     linear_routing: (runtime.linearRoutingService ?? null) as unknown as Record<string, unknown> | null,
     file: (runtime.fileService ?? null) as unknown as Record<string, unknown> | null,
     process: (runtime.processService ?? null) as unknown as Record<string, unknown> | null,
-    external_mcp: runtime.externalMcpService as unknown as Record<string, unknown>,
+    pty: runtime.ptyService as unknown as Record<string, unknown>,
     computer_use_artifacts: runtime.computerUseArtifactBrokerService as unknown as Record<string, unknown>,
   };
 }
@@ -3102,7 +3093,7 @@ function listAdeActionNames(service: Record<string, unknown>): string[] {
 }
 
 async function waitForSessionCompletion(args: {
-  runtime: AdeMcpRuntime;
+  runtime: AdeRuntime;
   ptyId: string;
   sessionId: string;
   timeoutMs: number;
@@ -3140,7 +3131,7 @@ async function waitForSessionCompletion(args: {
   };
 }
 
-async function buildLaneStatus(runtime: AdeMcpRuntime, laneId: string): Promise<Record<string, unknown>> {
+async function buildLaneStatus(runtime: AdeRuntime, laneId: string): Promise<Record<string, unknown>> {
   const lanes = await runtime.laneService.list({ includeArchived: true });
   const lane = lanes.find((entry) => entry.id === laneId);
   if (!lane) {
@@ -3224,9 +3215,9 @@ type CoordinatorToolCacheEntry = {
   tools: Record<string, ExecutableTool>;
 };
 
-const coordinatorToolCacheByRuntime = new WeakMap<AdeMcpRuntime, Map<string, CoordinatorToolCacheEntry>>();
+const coordinatorToolCacheByRuntime = new WeakMap<AdeRuntime, Map<string, CoordinatorToolCacheEntry>>();
 
-function resolveMissionIdForRun(runtime: AdeMcpRuntime, runId: string): string | null {
+function resolveMissionIdForRun(runtime: AdeRuntime, runId: string): string | null {
   const graphMissionId = (() => {
     try {
       const graph = runtime.orchestratorService.getRunGraph({ runId, timelineLimit: 0 });
@@ -3249,7 +3240,7 @@ function resolveMissionIdForRun(runtime: AdeMcpRuntime, runId: string): string |
   return asOptionalTrimmedString(row?.mission_id);
 }
 
-function resolveRunIdForMission(runtime: AdeMcpRuntime, missionId: string): string | null {
+function resolveRunIdForMission(runtime: AdeRuntime, missionId: string): string | null {
   const row = runtime.db.get<{ id: string | null }>(
     `
       select id
@@ -3273,7 +3264,7 @@ function resolveRunIdForMission(runtime: AdeMcpRuntime, missionId: string): stri
 }
 
 function getCoordinatorToolSet(args: {
-  runtime: AdeMcpRuntime;
+  runtime: AdeRuntime;
   runId: string;
   missionId: string;
 }): Record<string, ExecutableTool> {
@@ -3337,14 +3328,14 @@ type NativeCallerRegistration = {
   sourceAttemptId: string;
 };
 
-function getTeamRuntimeContext(runtime: AdeMcpRuntime): import("../../desktop/src/main/services/orchestrator/orchestratorContext").OrchestratorContext {
+function getTeamRuntimeContext(runtime: AdeRuntime): import("../../desktop/src/main/services/orchestrator/orchestratorContext").OrchestratorContext {
   return {
     db: runtime.db,
     logger: runtime.logger,
   } as import("../../desktop/src/main/services/orchestrator/orchestratorContext").OrchestratorContext;
 }
 
-function getRunGraphSafe(runtime: AdeMcpRuntime, runId: string): Record<string, unknown> | null {
+function getRunGraphSafe(runtime: AdeRuntime, runId: string): Record<string, unknown> | null {
   try {
     return runtime.orchestratorService.getRunGraph({ runId, timelineLimit: 0 }) as unknown as Record<string, unknown>;
   } catch {
@@ -3352,7 +3343,7 @@ function getRunGraphSafe(runtime: AdeMcpRuntime, runId: string): Record<string, 
   }
 }
 
-function getTeamMembersForRunSafe(runtime: AdeMcpRuntime, runId: string): Array<Record<string, unknown>> {
+function getTeamMembersForRunSafe(runtime: AdeRuntime, runId: string): Array<Record<string, unknown>> {
   const aiService = runtime.aiOrchestratorService as unknown as { getTeamMembers?: (args: { runId: string }) => unknown };
   if (typeof aiService.getTeamMembers === "function") {
     try {
@@ -3416,7 +3407,7 @@ function deriveQuestionOwnerFromPhase(args: {
 }
 
 function getAgentAskUserPolicy(args: {
-  runtime: AdeMcpRuntime;
+  runtime: AdeRuntime;
   callerCtx: CallerContext;
 }): {
   stepId: string | null;
@@ -3657,7 +3648,7 @@ function inferParallelismCap(graph: Record<string, unknown>): number {
 }
 
 function ensureNativeTeammateRegistration(args: {
-  runtime: AdeMcpRuntime;
+  runtime: AdeRuntime;
   runId: string;
   missionId: string;
   callerCtx: CallerContext;
@@ -3782,7 +3773,7 @@ function ensureNativeTeammateRegistration(args: {
 }
 
 async function maybeSendInterAgentMessage(args: {
-  runtime: AdeMcpRuntime;
+  runtime: AdeRuntime;
   missionId: string;
   fromAttemptId: string;
   toAttemptId: string;
@@ -3809,7 +3800,7 @@ async function maybeSendInterAgentMessage(args: {
 }
 
 async function postProcessCoordinatorToolResult(args: {
-  runtime: AdeMcpRuntime;
+  runtime: AdeRuntime;
   toolName: string;
   runId: string;
   missionId: string;
@@ -3902,7 +3893,7 @@ async function postProcessCoordinatorToolResult(args: {
 }
 
 async function runCoordinatorTool(args: {
-  runtime: AdeMcpRuntime;
+  runtime: AdeRuntime;
   name: string;
   toolArgs: Record<string, unknown>;
   callerCtx: CallerContext;
@@ -3986,7 +3977,7 @@ async function runCoordinatorTool(args: {
 
 
 async function runTool(args: {
-  runtime: AdeMcpRuntime;
+  runtime: AdeRuntime;
   session: SessionState;
   name: string;
   toolArgs: Record<string, unknown>;
@@ -4040,13 +4031,13 @@ async function runTool(args: {
     if (!isComputerUseModeEnabled(effectivePolicy.mode)) {
       throw new JsonRpcError(
         JsonRpcErrorCode.policyDenied,
-        `${toolName} is disabled because computer use is off for this ADE MCP session.`,
+        `${toolName} is disabled because computer use is off for this ADE ADE RPC session.`,
       );
     }
     if (!effectivePolicy.allowLocalFallback) {
       throw new JsonRpcError(
         JsonRpcErrorCode.policyDenied,
-        `${toolName} is disabled because local computer-use fallback is not allowed for this ADE MCP session.`,
+        `${toolName} is disabled because local computer-use fallback is not allowed for this ADE ADE RPC session.`,
       );
     }
     const capabilities = getLocalComputerUseCapabilities();
@@ -4108,13 +4099,6 @@ async function runTool(args: {
     }
     await sleep(250);
   };
-
-  if (name.startsWith("ext.")) {
-    if (!runtime.externalMcpService) {
-      throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, `Unsupported tool: ${name}`);
-    }
-    return await runtime.externalMcpService.callTool(toExternalMcpIdentity(callerCtx), name, toolArgs);
-  }
 
   if (CTO_OPERATOR_TOOL_NAMES.has(name)) {
     if (callerCtx.role !== "cto") {
@@ -4282,7 +4266,7 @@ async function runTool(args: {
       if (testRunId) {
         const run = runtime.testService.listRuns({ limit: 200 }).find((entry) => entry.id === testRunId) ?? null;
         payload.testRun = run;
-        if (run) payload.testRunLogTail = runtime.testService.getLogTail(testRunId, 16_000);
+        if (run) payload.testRunLogTail = runtime.testService.getLogTail({ runId: testRunId, maxBytes: 16_000 });
       }
       if (chatSessionId && runtime.agentChatService) {
         payload.chatSession = await runtime.agentChatService.getSessionSummary(chatSessionId);
@@ -4711,13 +4695,13 @@ async function runTool(args: {
     if (!isComputerUseModeEnabled(effectivePolicy.mode)) {
       throw new JsonRpcError(
         JsonRpcErrorCode.policyDenied,
-        `${name} is disabled because computer use is off for this ADE MCP session.`,
+        `${name} is disabled because computer use is off for this ADE ADE RPC session.`,
       );
     }
     if (!effectivePolicy.allowLocalFallback) {
       throw new JsonRpcError(
         JsonRpcErrorCode.policyDenied,
-        `${name} is disabled because local computer-use fallback is not allowed for this ADE MCP session.`,
+        `${name} is disabled because local computer-use fallback is not allowed for this ADE ADE RPC session.`,
       );
     }
     const capabilities = getLocalComputerUseCapabilities();
@@ -4884,7 +4868,7 @@ async function runTool(args: {
   }
 
   if (name === "ingest_computer_use_artifacts") {
-    const backendStyle = assertNonEmptyString(toolArgs.backendStyle, "backendStyle") as "external_mcp" | "external_cli" | "manual" | "local_fallback";
+    const backendStyle = assertNonEmptyString(toolArgs.backendStyle, "backendStyle") as "external_cli" | "manual" | "local_fallback";
     const backendName = assertNonEmptyString(toolArgs.backendName, "backendName");
     const manifestPath = asOptionalTrimmedString(toolArgs.manifestPath);
     let inputs = Array.isArray(toolArgs.inputs) ? toolArgs.inputs.map((entry) => safeObject(entry)) : [];
@@ -5268,7 +5252,7 @@ async function runTool(args: {
       laneId,
       cols: DEFAULT_PTY_COLS,
       rows: DEFAULT_PTY_ROWS,
-      title: `MCP Test: ${commandText}`,
+      title: `ADE Test: ${commandText}`,
       tracked: true,
       toolType: "shell",
       startupCommand: commandText
@@ -5322,9 +5306,8 @@ async function runTool(args: {
 
   if (name === "git_push") {
     const laneId = requireLaneIdForTool(runtime, session, toolArgs, "git_push");
-    const force = asBoolean(toolArgs.force, false);
-    const setUpstream = asBoolean(toolArgs.setUpstream, true);
-    const action = await runtime.gitService.push({ laneId, force, setUpstream });
+    const force = asBoolean(toolArgs.forceWithLease, asBoolean(toolArgs.force, false));
+    const action = await runtime.gitService.push({ laneId, forceWithLease: force });
     return { laneId, action };
   }
 
@@ -5537,7 +5520,7 @@ async function runTool(args: {
       laneId,
       baseBranch,
       title,
-      ...(body ? { body } : {}),
+      body: body ?? "",
       draft,
     });
     return { pr };
@@ -5608,6 +5591,72 @@ async function runTool(args: {
       reviewThreads,
       comments,
     });
+  }
+
+  if (name === "pr_preview_issue_resolution_prompt" || name === "pr_start_issue_resolution") {
+    const prId = assertNonEmptyString(toolArgs.prId, "prId");
+    const scope = assertNonEmptyString(toolArgs.scope, "scope");
+    if (scope !== "checks" && scope !== "comments" && scope !== "both") {
+      throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "scope must be one of checks, comments, or both.");
+    }
+    const modelId = assertNonEmptyString(toolArgs.modelId, "modelId");
+    const permissionMode = asOptionalTrimmedString(toolArgs.permissionMode);
+    if (
+      permissionMode
+      && permissionMode !== "read_only"
+      && permissionMode !== "guarded_edit"
+      && permissionMode !== "full_edit"
+    ) {
+      throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "permissionMode must be one of read_only, guarded_edit, or full_edit.");
+    }
+    const issueResolutionArgs = {
+      prId,
+      scope,
+      modelId,
+      reasoning: asOptionalTrimmedString(toolArgs.reasoning),
+      ...(permissionMode ? { permissionMode } : {}),
+      additionalInstructions: asOptionalTrimmedString(toolArgs.additionalInstructions),
+    };
+    const deps = {
+      prService: requirePrService(runtime),
+      laneService: runtime.laneService,
+      agentChatService: requireAgentChatService(runtime),
+      sessionService: runtime.sessionService,
+      issueInventoryService: runtime.issueInventoryService,
+    };
+
+    if (name === "pr_preview_issue_resolution_prompt") {
+      return await previewPrIssueResolutionPrompt(deps, issueResolutionArgs as any);
+    }
+
+    const result = await launchPrIssueResolutionChat(deps, issueResolutionArgs as any);
+    let convergenceRuntime: unknown = null;
+    try {
+      const status = runtime.issueInventoryService.getConvergenceStatus(prId);
+      convergenceRuntime = runtime.issueInventoryService.saveConvergenceRuntime(prId, {
+        currentRound: status.currentRound,
+        status: "running",
+        pollerStatus: "idle",
+        activeSessionId: result.sessionId,
+        activeLaneId: result.laneId,
+        activeHref: result.href,
+        lastStartedAt: nowIso(),
+        errorMessage: null,
+        pauseReason: null,
+      });
+    } catch (error) {
+      runtime.logger.warn("rpc.pr_issue_resolution_convergence_persist_failed", {
+        prId,
+        sessionId: result.sessionId,
+        laneId: result.laneId,
+        href: result.href,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+    return {
+      ...result,
+      convergenceRuntime,
+    };
   }
 
   if (name === "pr_rerun_failed_checks") {
@@ -5685,6 +5734,13 @@ async function runTool(args: {
 
 
     const laneId = assertNonEmptyString(toolArgs.laneId, "laneId");
+    const laneWorktreePath = resolveLaneWorktreePath(runtime, laneId);
+    if (!laneWorktreePath) {
+      throw new JsonRpcError(
+        JsonRpcErrorCode.invalidParams,
+        `Requested lane '${laneId}' does not have an available worktree.`,
+      );
+    }
     const provider = asTrimmedString(toolArgs.provider) === "claude" ? "claude" : "codex";
     const model = asOptionalTrimmedString(toolArgs.model);
     const permissionMode = parseSpawnPermissionMode(toolArgs.permissionMode);
@@ -5695,7 +5751,7 @@ async function runTool(args: {
     const attemptId = asOptionalTrimmedString(toolArgs.attemptId);
     const toolWhitelist = normalizeToolWhitelist(toolArgs.toolWhitelist);
     const title = stripInjectionChars(
-      asOptionalTrimmedString(toolArgs.title) ?? `MCP Agent (${provider}${permissionMode === "plan" ? " · plan" : ""})`
+      asOptionalTrimmedString(toolArgs.title) ?? `ADE Agent (${provider}${permissionMode === "plan" ? " · plan" : ""})`
     );
     const context = safeObject(toolArgs.context);
 
@@ -5745,39 +5801,8 @@ async function runTool(args: {
         permissionMode === "plan" ? "plan" : permissionMode === "full-auto" ? "bypassPermissions" : "acceptEdits";
       commandParts.push("--permission-mode", claudePermission);
 
-      // Bind ADE MCP server to Claude workers via --mcp-config
-      if (runId && attemptId) {
-        const mcpConfigDir = resolveAdeLayout(runtime.projectRoot).mcpConfigsDir;
-        fs.mkdirSync(mcpConfigDir, { recursive: true });
-        const mcpConfigPath = path.join(mcpConfigDir, `spawn-${attemptId ?? Date.now()}.json`);
-        const builtEntry = path.join(runtime.projectRoot, "apps", "mcp-server", "dist", "index.cjs");
-        const srcEntry = path.join(runtime.projectRoot, "apps", "mcp-server", "src", "index.ts");
-        const workerWorkspaceRoot = resolveAuthorizedWorkspaceRoot(runtime, session, toolArgs);
-        const mcpCmd = fs.existsSync(builtEntry) ? "node" : "npx";
-        const mcpArgs = fs.existsSync(builtEntry)
-          ? [builtEntry, "--project-root", runtime.projectRoot, "--workspace-root", workerWorkspaceRoot]
-          : ["tsx", srcEntry, "--project-root", runtime.projectRoot, "--workspace-root", workerWorkspaceRoot];
-        const mcpConfig = {
-          mcpServers: {
-            ade: {
-              command: mcpCmd,
-              args: mcpArgs,
-              env: {
-                ADE_PROJECT_ROOT: runtime.projectRoot,
-                ADE_WORKSPACE_ROOT: workerWorkspaceRoot,
-                ADE_MISSION_ID: callerCtx.missionId ?? "",
-                ADE_RUN_ID: runId,
-                ADE_STEP_ID: stepId ?? "",
-                ADE_ATTEMPT_ID: attemptId,
-                ADE_DEFAULT_ROLE: "agent",
-                ADE_OWNER_ID: callerCtx.ownerId ?? "",
-              }
-            }
-          }
-        };
-        fs.writeFileSync(mcpConfigPath, JSON.stringify(mcpConfig, null, 2), "utf8");
-        commandParts.push("--mcp-config", shellEscapeArg(mcpConfigPath));
-      }
+      // ADE-owned actions are exposed through the `ade` CLI. Child agent
+      // sessions receive identity env vars below instead of an attached server.
     }
     if (finalPrompt) {
       commandParts.push(shellEscapeArg(finalPrompt));
@@ -6307,11 +6332,11 @@ async function runTool(args: {
     };
   }
 
-  throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, `Unknown MCP tool: ${name}`);
+  throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, `Unknown ADE action: ${name}`);
 }
 
-async function readResource(runtime: AdeMcpRuntime, uri: string): Promise<Record<string, unknown>> {
-  const parsed = parseMcpUri(uri);
+async function readResource(runtime: AdeRuntime, uri: string): Promise<Record<string, unknown>> {
+  const parsed = parseAdeResourceUri(uri);
   const [head, ...tail] = parsed.path;
 
   if (head === "lane") {
@@ -6347,12 +6372,12 @@ async function readResource(runtime: AdeMcpRuntime, uri: string): Promise<Record
   throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `Unsupported resource URI: ${uri}`);
 }
 
-export function createMcpRequestHandler(args: {
-  runtime: AdeMcpRuntime;
+export function createAdeRpcRequestHandler(args: {
+  runtime: AdeRuntime;
   serverVersion: string;
-  onToolsListChanged?: (() => void) | null;
+  onActionsListChanged?: (() => void) | null;
 }): JsonRpcHandler & { dispose: () => void } {
-  const { runtime, serverVersion, onToolsListChanged } = args;
+  const { runtime, serverVersion, onActionsListChanged } = args;
 
   const session: SessionState = {
     initialized: false,
@@ -6386,31 +6411,18 @@ export function createMcpRequestHandler(args: {
     }
   };
 
-  const disposeExternalMcpSubscription = typeof runtime.externalMcpService.onEvent === "function"
-    ? runtime.externalMcpService.onEvent((event) => {
-        if (!session.initialized) return;
-        if (
-          event.type === "configs-changed"
-          || event.type === "server-state-changed"
-          || event.type === "tools-refreshed"
-        ) {
-          onToolsListChanged?.();
-        }
-      })
-    : () => {};
-
-  const auditToolCall = async (
-    toolName: string,
-    toolArgs: Record<string, unknown>,
+  const auditActionCall = async (
+    actionName: string,
+    actionArgs: Record<string, unknown>,
     runner: () => Promise<unknown>
   ): Promise<unknown> => {
     const startedAt = Date.now();
-    const laneId = resolveRequestedOrSessionLaneId(runtime, session, toolArgs);
+    const laneId = resolveRequestedOrSessionLaneId(runtime, session, actionArgs);
     const operation = runtime.operationService.start({
       laneId,
-      kind: "mcp_tool_call",
+      kind: "ade_action_call",
       metadata: {
-        tool: toolName,
+        action: actionName,
         callerId: session.identity.callerId,
         role: session.identity.role,
         chatSessionId: session.identity.chatSessionId,
@@ -6419,7 +6431,7 @@ export function createMcpRequestHandler(args: {
         stepId: session.identity.stepId,
         attemptId: session.identity.attemptId,
         ownerId: session.identity.ownerId,
-        args: sanitizeForAudit(toolArgs)
+        args: sanitizeForAudit(actionArgs)
       }
     });
 
@@ -6449,23 +6461,51 @@ export function createMcpRequestHandler(args: {
     }
   };
 
+  const listActions = async (): Promise<Record<string, unknown>> => ({
+    actions: (await listToolSpecsForSession(runtime, session)).map((tool) => ({
+      name: tool.name,
+      description: tool.description,
+      inputSchema: sanitizeToolSchema(tool.inputSchema),
+    })),
+  });
+
+  const callAction = async (actionName: string, actionArgs: Record<string, unknown>): Promise<unknown> => {
+    return await auditActionCall(actionName, actionArgs, async () => {
+      if (
+        READ_ONLY_TOOLS.has(actionName) ||
+        MUTATION_TOOLS.has(actionName) ||
+        ORCHESTRATION_TOOLS.has(actionName) ||
+        OBSERVATION_TOOLS.has(actionName) ||
+        EVALUATOR_TOOLS.has(actionName) ||
+        EVALUATION_READ_TOOLS.has(actionName) ||
+        COORDINATOR_TOOL_NAMES.has(actionName) ||
+        actionName === "spawn_agent" ||
+        actionName === "ask_user"
+      ) {
+        return await runTool({ runtime, session, name: actionName, toolArgs: actionArgs });
+      }
+
+      throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, `Unsupported ADE action: ${actionName}`);
+    });
+  };
+
   const handler = (async (request: JsonRpcRequest): Promise<unknown | null> => {
     const method = typeof request.method === "string" ? request.method : "";
     const params = safeObject(request.params);
 
-    if (method === "initialize") {
+    if (method === "ade/initialize") {
       session.initialized = true;
       session.protocolVersion = asOptionalTrimmedString(params.protocolVersion) ?? DEFAULT_PROTOCOL_VERSION;
       session.identity = parseInitializeIdentity(runtime, params);
       const resourcesEnabled = session.identity.role !== "orchestrator";
       return {
         protocolVersion: session.protocolVersion,
-        serverInfo: {
-          name: "ade-mcp-server",
+        runtimeInfo: {
+          name: "ade-rpc",
           version: serverVersion
         },
         capabilities: {
-          tools: {
+          actions: {
             listChanged: true
           },
           ...(resourcesEnabled
@@ -6480,7 +6520,7 @@ export function createMcpRequestHandler(args: {
       };
     }
 
-    if (method === "notifications/initialized") {
+    if (method === "ade/initialized") {
       return null;
     }
 
@@ -6492,63 +6532,28 @@ export function createMcpRequestHandler(args: {
       return { pong: true, at: nowIso() };
     }
 
-    if (method === "tools/list") {
-      return {
-        tools: (await listToolSpecsForSession(runtime, session)).map((tool) => ({
-          name: tool.name,
-          description: tool.description,
-          inputSchema: sanitizeToolSchema(tool.inputSchema)
-        }))
-      };
+    if (method === "ade/actions/list") {
+      return await listActions();
     }
 
-    if (method === "tools/call") {
-      const toolName = assertNonEmptyString(params.name, "name");
-      const toolArgs = safeObject(params.arguments);
-
+    if (method === "ade/actions/call") {
+      const actionName = assertNonEmptyString(params.name, "name");
+      const actionArgs = safeObject(params.arguments);
       try {
-        const result = await auditToolCall(toolName, toolArgs, async () => {
-          if (toolName.startsWith("ext.")) {
-            return await runTool({ runtime, session, name: toolName, toolArgs });
-          }
-
-          if (
-            READ_ONLY_TOOLS.has(toolName) ||
-            MUTATION_TOOLS.has(toolName) ||
-            ORCHESTRATION_TOOLS.has(toolName) ||
-            OBSERVATION_TOOLS.has(toolName) ||
-            EVALUATOR_TOOLS.has(toolName) ||
-            EVALUATION_READ_TOOLS.has(toolName) ||
-            COORDINATOR_TOOL_NAMES.has(toolName) ||
-            toolName === "spawn_agent" ||
-            toolName === "ask_user"
-          ) {
-            return await runTool({ runtime, session, name: toolName, toolArgs });
-          }
-
-          throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, `Unsupported tool: ${toolName}`);
-        });
-
-        if (toolName.startsWith("ext.") && isRecord(result) && isMcpToolResult(result.result)) {
-          return result.result;
-        }
-        return mcpTextResult(result);
+        return await callAction(actionName, actionArgs);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        return mcpTextResult(
-          {
-            ok: false,
-            error: {
-              code: error instanceof JsonRpcError ? error.code : JsonRpcErrorCode.toolFailed,
-              message
-            }
+        return {
+          ok: false,
+          error: {
+            code: error instanceof JsonRpcError ? error.code : JsonRpcErrorCode.toolFailed,
+            message,
           },
-          true
-        );
+        };
       }
     }
 
-    if (method === "resources/list") {
+    if (method === "ade/resources/list") {
       const lanes = await runtime.laneService.list({ includeArchived: false });
       const laneRecords = lanes as unknown as Array<Record<string, unknown>>;
       return {
@@ -6558,7 +6563,7 @@ export function createMcpRequestHandler(args: {
       };
     }
 
-    if (method === "resources/read") {
+    if (method === "ade/resources/read") {
       const uri = assertNonEmptyString(params.uri, "uri");
       return await readResource(runtime, uri);
     }
@@ -6575,9 +6580,7 @@ export function createMcpRequestHandler(args: {
     throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, `Method not found: ${method}`);
   }) as JsonRpcHandler & { dispose: () => void };
 
-  handler.dispose = () => {
-    disposeExternalMcpSubscription();
-  };
+  handler.dispose = () => {};
 
   return handler;
 }

@@ -201,16 +201,6 @@ import type {
   CtoListLinearIngressEventsArgs,
   LinearWorkflowConfig,
   OpenclawBridgeStatus,
-  ExternalConnectionAuthRecord,
-  ExternalConnectionAuthRecordInput,
-  ExternalConnectionAuthStatus,
-  ExternalConnectionOAuthSessionResult,
-  ExternalConnectionOAuthSessionStartResult,
-  ExternalMcpManagedAuthConfig,
-  ExternalMcpServerConfig,
-  ExternalMcpServerSnapshot,
-  ExternalMcpEventPayload,
-  ExternalMcpUsageEvent,
   AddMissionArtifactArgs,
   AddMissionInterventionArgs,
   KeybindingOverride,
@@ -669,45 +659,6 @@ declare global {
           laneIds: string[];
         }) => Promise<void>;
         onEvent: (cb: (event: SyncStatusEventPayload) => void) => () => void;
-      };
-      externalMcp: {
-        listServers: () => Promise<ExternalMcpServerSnapshot[]>;
-        listConfigs: () => Promise<ExternalMcpServerConfig[]>;
-        getUsageEvents: (args?: {
-          limit?: number;
-        }) => Promise<ExternalMcpUsageEvent[]>;
-        listAuthRecords: () => Promise<ExternalConnectionAuthRecord[]>;
-        onEvent: (cb: (event: ExternalMcpEventPayload) => void) => () => void;
-        connectServer: (
-          serverName: string,
-        ) => Promise<ExternalMcpServerSnapshot>;
-        disconnectServer: (
-          serverName: string,
-        ) => Promise<ExternalMcpServerSnapshot | null>;
-        testServer: (
-          config: ExternalMcpServerConfig,
-        ) => Promise<ExternalMcpServerSnapshot>;
-        saveServer: (
-          config: ExternalMcpServerConfig,
-        ) => Promise<ExternalMcpServerConfig[]>;
-        removeServer: (
-          serverName: string,
-        ) => Promise<ExternalMcpServerConfig[]>;
-        saveAuthRecord: (
-          record: ExternalConnectionAuthRecordInput,
-        ) => Promise<ExternalConnectionAuthRecord>;
-        removeAuthRecord: (
-          authId: string,
-        ) => Promise<ExternalConnectionAuthRecord[]>;
-        getAuthStatus: (
-          binding?: ExternalMcpManagedAuthConfig | null,
-        ) => Promise<ExternalConnectionAuthStatus>;
-        startOAuthSession: (
-          authId: string,
-        ) => Promise<ExternalConnectionOAuthSessionStartResult>;
-        getOAuthSession: (
-          sessionId: string,
-        ) => Promise<ExternalConnectionOAuthSessionResult>;
       };
       agentTools: {
         detect: () => Promise<AgentTool[]>;

@@ -177,7 +177,6 @@ function createDefaultPermissionConfig(defaults: CreateMissionDefaults | null | 
     return {
       ...defaults.permissionConfig,
       ...(defaults.permissionConfig.providers ? { providers: { ...defaults.permissionConfig.providers } } : {}),
-      ...(defaults.permissionConfig.externalMcp ? { externalMcp: { ...defaults.permissionConfig.externalMcp } } : {}),
     };
   }
   return {
