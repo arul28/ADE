@@ -96,6 +96,7 @@ import type {
   WriteTextAtomicArgs,
 } from "../../../shared/types";
 import type { createAgentChatService } from "../chat/agentChatService";
+import type { createWorkerAgentService } from "../cto/workerAgentService";
 import { matchLaneOverlayPolicies } from "../config/laneOverlayMatcher";
 import type { createProjectConfigService } from "../config/projectConfigService";
 import type { createConflictService } from "../conflicts/conflictService";
@@ -128,6 +129,7 @@ type SyncRemoteCommandServiceArgs = {
   diffService?: ReturnType<typeof createDiffService>;
   conflictService?: ReturnType<typeof createConflictService>;
   agentChatService?: ReturnType<typeof createAgentChatService>;
+  workerAgentService?: ReturnType<typeof createWorkerAgentService> | null;
   projectConfigService?: ReturnType<typeof createProjectConfigService>;
   processService?: ReturnType<typeof createProcessService> | null;
   portAllocationService?: ReturnType<typeof createPortAllocationService> | null;
@@ -1213,6 +1215,17 @@ function applyLeaseToOverrides(
   };
 }
 
+async function resolveFirstAvailableLaneIdForSync(
+  args: SyncRemoteCommandServiceArgs,
+  requestedLaneId: string | null,
+): Promise<string> {
+  const laneId = typeof requestedLaneId === "string" ? requestedLaneId.trim() : "";
+  if (laneId) return laneId;
+  await args.laneService.ensurePrimaryLane?.().catch(() => {});
+  const lanes = await args.laneService.list({ includeArchived: false, includeStatus: false });
+  return (lanes.find((lane) => lane.laneType === "primary") ?? lanes[0])?.id ?? "";
+}
+
 async function resolveLaneOverlayContext(args: SyncRemoteCommandServiceArgs, laneId: string) {
   const projectConfigService = requireService(args.projectConfigService, "Project config service not available.");
   const lanes = await args.laneService.list({ includeStatus: false });
@@ -1610,6 +1623,104 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
   });
   register("chat.models", { viewerAllowed: true }, async (payload) =>
     requireService(args.agentChatService, "Agent chat service not available.").getAvailableModels(parseChatModelsArgs(payload)));
+
+  register("cto.getRoster", { viewerAllowed: true }, async () => {
+    const agentChatService = requireService(args.agentChatService, "Agent chat service not available.");
+    const workerAgentService = requireService(args.workerAgentService, "Worker agent service not available.");
+    const sessions = await agentChatService.listSessions(undefined, { includeIdentity: true });
+    const activityTimestamp = (value: string | null | undefined): number => {
+      if (!value) return 0;
+      const parsed = Date.parse(value);
+      return Number.isFinite(parsed) ? parsed : 0;
+    };
+    const sortedByRecency = [...sessions].sort(
+      (a, b) => activityTimestamp(b.lastActivityAt) - activityTimestamp(a.lastActivityAt),
+    );
+    const ctoSummary = sortedByRecency.find((entry) => entry.identityKey === "cto") ?? null;
+    const agents = workerAgentService.listAgents();
+    const knownAgentIds = new Set(agents.map((agent) => agent.id));
+    const liveWorkers = agents.map((agent) => {
+      const sessionSummary = sortedByRecency.find(
+        (entry) => entry.identityKey === `agent:${agent.id}`,
+      ) ?? null;
+      return {
+        agentId: agent.id,
+        name: agent.name,
+        avatarSeed: agent.slug || null,
+        status: agent.status as string,
+        sessionSummary,
+      };
+    });
+    // Include agent:<id> sessions whose identity is no longer in the roster
+    // so mobile users can still see / resume orphan chats. These are marked
+    // with a synthetic "orphaned" status and no avatar seed.
+    const orphanPrefix = "agent:";
+    const orphanWorkers: typeof liveWorkers = [];
+    const seenOrphanIds = new Set<string>();
+    for (const entry of sortedByRecency) {
+      const key = entry.identityKey ?? "";
+      if (!key.startsWith(orphanPrefix)) continue;
+      const agentId = key.slice(orphanPrefix.length);
+      if (!agentId.length) continue;
+      if (knownAgentIds.has(agentId)) continue;
+      if (seenOrphanIds.has(agentId)) continue;
+      seenOrphanIds.add(agentId);
+      orphanWorkers.push({
+        agentId,
+        name: agentId,
+        avatarSeed: null,
+        status: "orphaned",
+        sessionSummary: entry,
+      });
+    }
+    liveWorkers.sort((a, b) => a.name.localeCompare(b.name));
+    orphanWorkers.sort((a, b) => a.name.localeCompare(b.name));
+    const workers = [...liveWorkers, ...orphanWorkers];
+    return { cto: ctoSummary, workers };
+  });
+  register("cto.ensureSession", { viewerAllowed: true }, async (payload) => {
+    const agentChatService = requireService(args.agentChatService, "Agent chat service not available.");
+    // When no override is given, resolve the primary lane the same way
+    // agentChatService.ensureIdentitySession does internally (it reuses a
+    // session only when session.laneId === canonicalLaneId). Passing the
+    // canonical lane guarantees the same session is returned on repeat calls.
+    const laneId = await resolveFirstAvailableLaneIdForSync(args, asTrimmedString(payload.laneId));
+    if (!laneId) throw new Error("No active lane is available to host the CTO chat session.");
+    const modelId = asTrimmedString(payload.modelId);
+    const reasoningEffort = asTrimmedString(payload.reasoningEffort);
+    const session = await agentChatService.ensureIdentitySession({
+      identityKey: "cto",
+      laneId,
+      modelId: modelId ?? null,
+      reasoningEffort: reasoningEffort ?? null,
+    });
+    return summarizeChatSessionForRemote(agentChatService, session);
+  });
+  register("cto.ensureAgentSession", { viewerAllowed: true }, async (payload) => {
+    const agentChatService = requireService(args.agentChatService, "Agent chat service not available.");
+    const workerAgentService = requireService(args.workerAgentService, "Worker agent service not available.");
+    const agentId = requireString(payload.agentId, "cto.ensureAgentSession requires agentId.");
+    // Reject unknown agentIds before we spin up an identity-bound session —
+    // otherwise clients could spawn orphan `agent:<id>` sessions for agents
+    // that don't exist.
+    const agent = typeof workerAgentService.getAgent === "function"
+      ? workerAgentService.getAgent(agentId)
+      : workerAgentService.listAgents().find((entry) => entry.id === agentId) ?? null;
+    if (!agent) {
+      throw new Error(`cto.ensureAgentSession: unknown agentId '${agentId}'`);
+    }
+    const laneId = await resolveFirstAvailableLaneIdForSync(args, asTrimmedString(payload.laneId));
+    if (!laneId) throw new Error("No active lane is available to host the agent chat session.");
+    const modelId = asTrimmedString(payload.modelId);
+    const reasoningEffort = asTrimmedString(payload.reasoningEffort);
+    const session = await agentChatService.ensureIdentitySession({
+      identityKey: `agent:${agentId}`,
+      laneId,
+      modelId: modelId ?? null,
+      reasoningEffort: reasoningEffort ?? null,
+    });
+    return summarizeChatSessionForRemote(agentChatService, session);
+  });
 
   register("git.getChanges", { viewerAllowed: true }, async (payload) =>
     requireService(args.diffService, "Diff service not available.").getChanges(parseGetDiffChangesArgs(payload).laneId));

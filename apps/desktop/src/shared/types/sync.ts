@@ -437,6 +437,9 @@ export type SyncRemoteCommandAction =
   | "chat.updateSession"
   | "chat.dispose"
   | "chat.models"
+  | "cto.getRoster"
+  | "cto.ensureSession"
+  | "cto.ensureAgentSession"
   | "git.getChanges"
   | "git.getFile"
   | "files.writeTextAtomic"
@@ -566,6 +569,161 @@ export type SyncCommandResultPayload = {
   };
 };
 
+// ---------------------------------------------------------------------------
+// Mobile push notification types (WS2)
+// ---------------------------------------------------------------------------
+
+export type ApnsEnvironment = "sandbox" | "production";
+
+export type ApnsPushTokenKind = "alert" | "activity-start" | "activity-update";
+
+/**
+ * Shape of the Mobile Push settings panel's read of the main-process APNs state.
+ * `keyStored` reflects whether a `.p8` is persisted via `safeStorage`; the bytes
+ * themselves never round-trip to the renderer.
+ */
+export type ApnsBridgeStatus = {
+  enabled: boolean;
+  configured: boolean;
+  keyStored: boolean;
+  keyId: string | null;
+  teamId: string | null;
+  bundleId: string | null;
+  env: ApnsEnvironment;
+};
+
+export type ApnsBridgeSaveConfigArgs = {
+  enabled: boolean;
+  keyId: string;
+  teamId: string;
+  bundleId: string;
+  env: ApnsEnvironment;
+};
+
+export type ApnsBridgeUploadKeyArgs = {
+  /** PEM-formatted `.p8` body. The main process encrypts before writing to disk. */
+  p8Pem: string;
+};
+
+/**
+ * Named category of the fake notification the Mobile Push panel sends.
+ * Each maps to a distinct APNs payload template so the user can exercise
+ * every iOS code path (awaiting-input banner, CI-failing retry, etc.)
+ * without having to trigger a real domain event.
+ */
+export type ApnsTestPushKind =
+  | "awaiting_input"
+  | "chat_failed"
+  | "chat_turn_completed"
+  | "ci_failing"
+  | "review_requested"
+  | "merge_ready"
+  | "cto_subagent_finished"
+  | "generic"
+  // Live Activity tests — drive the workspace-pill UI on the device.
+  | "la_update_running"
+  | "la_update_attention"
+  | "la_update_multi"
+  | "la_start"
+  | "la_end";
+
+export type ApnsBridgeSendTestPushArgs = {
+  /** Specific device to target. Null/undefined picks the first iOS peer with an alert token. */
+  deviceId?: string | null;
+  /** Which fake payload to fire. Defaults to `"generic"` for back-compat. */
+  kind?: ApnsTestPushKind;
+};
+
+export type ApnsBridgeSendTestPushResult = {
+  ok: boolean;
+  reason?: string;
+};
+
+/**
+ * Sent from an iOS peer to the desktop host whenever it registers or rotates
+ * an APNs token. Stored in the device registry metadata so subsequent pushes
+ * can target the correct device + token kind.
+ */
+export type SyncRegisterPushTokenPayload = {
+  token: string;
+  kind: ApnsPushTokenKind;
+  env: ApnsEnvironment;
+  bundleId: string;
+  /** Optional extra context that we may route on; kept open-ended. */
+  activityId?: string;
+  /** `true` once the peer has confirmed it actually received a previous test push. */
+  verified?: boolean;
+};
+
+/**
+ * 14 user-tunable toggles mirroring the iOS Notifications Center screen.
+ * The host uses these as a filter at send-time so toggles take effect live.
+ */
+export type NotificationPreferences = {
+  /** Master switch; if false, all of the below are short-circuited. */
+  enabled: boolean;
+  chat: {
+    awaitingInput: boolean;
+    chatFailed: boolean;
+    turnCompleted: boolean;
+  };
+  cto: {
+    subagentStarted: boolean;
+    subagentFinished: boolean;
+    missionPhaseChanged: boolean;
+  };
+  prs: {
+    ciFailing: boolean;
+    reviewRequested: boolean;
+    changesRequested: boolean;
+    mergeReady: boolean;
+  };
+  system: {
+    providerOutage: boolean;
+    authRateLimit: boolean;
+    hookFailure: boolean;
+  };
+  /** Optional quiet-hours gate in 24h `HH:MM` format, inclusive start / exclusive end. */
+  quietHours?: {
+    enabled: boolean;
+    start: string;
+    end: string;
+    timezone: string;
+  };
+  /** Global mute applied by the Control Widget ("snooze for N minutes"). */
+  muteUntil?: string | null;
+};
+
+export type SyncNotificationPrefsPayload = {
+  prefs: NotificationPreferences;
+};
+
+export type SyncSendTestPushPayload = {
+  kind: "alert" | "activity";
+  /** Optional override body for the test push; otherwise a canned message is used. */
+  title?: string;
+  body?: string;
+};
+
+/**
+ * Payload pushed to an iOS peer over the existing sync WebSocket when the
+ * desktop decides an event is foreground-only (no APNs fan-out needed) or
+ * when APNs is disabled.
+ */
+export type SyncInAppNotificationPayload = {
+  category: "chat" | "cto" | "pr" | "system";
+  title: string;
+  body: string;
+  /** Used by the client for de-duplication with any parallel APNs delivery. */
+  collapseId?: string;
+  /** Deep link target: `ade://session/<id>` / `ade://pr/<number>` / etc. */
+  deepLink?: string;
+  /** Optional routing hints used by the iOS notification formatter. */
+  metadata?: Record<string, string | number | boolean | null>;
+  /** ISO8601. Helps the client reason about stale notifications. */
+  generatedAt: string;
+};
+
 type SyncEnvelopeBase<TType extends string> = {
   version: SyncProtocolVersion;
   type: TType;
@@ -606,6 +764,10 @@ export type SyncBrainStatusEnvelope = SyncEnvelopeWithPayload<"brain_status", Sy
 export type SyncCommandEnvelope = SyncEnvelopeWithPayload<"command", SyncCommandPayload>;
 export type SyncCommandAckEnvelope = SyncEnvelopeWithPayload<"command_ack", SyncCommandAckPayload>;
 export type SyncCommandResultEnvelope = SyncEnvelopeWithPayload<"command_result", SyncCommandResultPayload>;
+export type SyncRegisterPushTokenEnvelope = SyncEnvelopeWithPayload<"register_push_token", SyncRegisterPushTokenPayload>;
+export type SyncNotificationPrefsEnvelope = SyncEnvelopeWithPayload<"notification_prefs", SyncNotificationPrefsPayload>;
+export type SyncSendTestPushEnvelope = SyncEnvelopeWithPayload<"send_test_push", SyncSendTestPushPayload>;
+export type SyncInAppNotificationEnvelope = SyncEnvelopeWithPayload<"in_app_notification", SyncInAppNotificationPayload>;
 
 export type SyncEnvelope =
   | SyncHelloEnvelope
@@ -628,4 +790,34 @@ export type SyncEnvelope =
   | SyncBrainStatusEnvelope
   | SyncCommandEnvelope
   | SyncCommandAckEnvelope
-  | SyncCommandResultEnvelope;
+  | SyncCommandResultEnvelope
+  | SyncRegisterPushTokenEnvelope
+  | SyncNotificationPrefsEnvelope
+  | SyncSendTestPushEnvelope
+  | SyncInAppNotificationEnvelope;
+
+export const DEFAULT_NOTIFICATION_PREFERENCES: NotificationPreferences = {
+  enabled: true,
+  chat: {
+    awaitingInput: true,
+    chatFailed: true,
+    turnCompleted: false,
+  },
+  cto: {
+    subagentStarted: false,
+    subagentFinished: true,
+    missionPhaseChanged: true,
+  },
+  prs: {
+    ciFailing: true,
+    reviewRequested: true,
+    changesRequested: true,
+    mergeReady: true,
+  },
+  system: {
+    providerOutage: true,
+    authRateLimit: true,
+    hookFailure: false,
+  },
+  muteUntil: null,
+};

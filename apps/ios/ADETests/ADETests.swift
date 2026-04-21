@@ -131,6 +131,13 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(state.nextDelayNanoseconds(), 2_000_000_000)
   }
 
+  func testSyncInsecureWebSocketSkipsTailscaleIpsForATS() {
+    XCTAssertFalse(syncCanAttemptInsecureWebSocket(to: "100.117.237.95"))
+    XCTAssertFalse(syncCanAttemptInsecureWebSocket(to: "[100.64.0.1]"))
+    XCTAssertTrue(syncCanAttemptInsecureWebSocket(to: "192.168.68.102"))
+    XCTAssertTrue(syncCanAttemptInsecureWebSocket(to: "127.0.0.1"))
+  }
+
   func testSyncBonjourTimingMatchesReliabilityRequirements() {
     XCTAssertEqual(SyncBonjourTiming.searchRetryNanoseconds, 2_000_000_000)
     XCTAssertEqual(SyncBonjourTiming.resolveRetryNanoseconds, 2_000_000_000)
@@ -618,6 +625,290 @@ final class ADETests: XCTestCase {
     database.close()
   }
 
+  func testDatabaseSuspendsForeignKeysWhileApplyingRemoteChanges() throws {
+    let baseURL = makeTemporaryDirectory()
+    let database = makeProjectLaneForeignKeyDatabase(baseURL: baseURL)
+    XCTAssertNil(database.initializationError)
+
+    let siteId = "b00e9b92c864a27958669c1595fcb2c3"
+    let projectId = "project-1"
+    let laneId = "lane-1"
+    let changes: [CrsqlChangeRow] = [
+      CrsqlChangeRow(table: "lanes", pk: .string(laneId), cid: "project_id", val: .string(projectId), colVersion: 1, dbVersion: 2, siteId: siteId, cl: 1, seq: 0),
+      CrsqlChangeRow(table: "lanes", pk: .string(laneId), cid: "name", val: .string("Primary"), colVersion: 1, dbVersion: 2, siteId: siteId, cl: 1, seq: 1),
+      CrsqlChangeRow(table: "lanes", pk: .string(laneId), cid: "lane_type", val: .string("primary"), colVersion: 1, dbVersion: 2, siteId: siteId, cl: 1, seq: 2),
+      CrsqlChangeRow(table: "lanes", pk: .string(laneId), cid: "base_ref", val: .string("main"), colVersion: 1, dbVersion: 2, siteId: siteId, cl: 1, seq: 3),
+      CrsqlChangeRow(table: "lanes", pk: .string(laneId), cid: "branch_ref", val: .string("main"), colVersion: 1, dbVersion: 2, siteId: siteId, cl: 1, seq: 4),
+      CrsqlChangeRow(table: "lanes", pk: .string(laneId), cid: "worktree_path", val: .string("/tmp/project"), colVersion: 1, dbVersion: 2, siteId: siteId, cl: 1, seq: 5),
+      CrsqlChangeRow(table: "lanes", pk: .string(laneId), cid: "status", val: .string("active"), colVersion: 1, dbVersion: 2, siteId: siteId, cl: 1, seq: 6),
+      CrsqlChangeRow(table: "lanes", pk: .string(laneId), cid: "created_at", val: .string("2026-03-15T00:00:00.000Z"), colVersion: 1, dbVersion: 2, siteId: siteId, cl: 1, seq: 7),
+      CrsqlChangeRow(table: "projects", pk: .string(projectId), cid: "root_path", val: .string("/tmp/project"), colVersion: 1, dbVersion: 3, siteId: siteId, cl: 1, seq: 8),
+      CrsqlChangeRow(table: "projects", pk: .string(projectId), cid: "display_name", val: .string("ADE"), colVersion: 1, dbVersion: 3, siteId: siteId, cl: 1, seq: 9),
+      CrsqlChangeRow(table: "projects", pk: .string(projectId), cid: "default_base_ref", val: .string("main"), colVersion: 1, dbVersion: 3, siteId: siteId, cl: 1, seq: 10),
+      CrsqlChangeRow(table: "projects", pk: .string(projectId), cid: "created_at", val: .string("2026-03-15T00:00:00.000Z"), colVersion: 1, dbVersion: 3, siteId: siteId, cl: 1, seq: 11),
+      CrsqlChangeRow(table: "projects", pk: .string(projectId), cid: "last_opened_at", val: .string("2026-03-15T00:00:00.000Z"), colVersion: 1, dbVersion: 3, siteId: siteId, cl: 1, seq: 12),
+    ]
+
+    let result = try database.applyChanges(changes)
+
+    XCTAssertEqual(result.appliedCount, changes.count)
+    XCTAssertEqual(try countRows(in: baseURL, table: "projects"), 1)
+    XCTAssertEqual(try countRows(in: baseURL, table: "lanes"), 1)
+    database.close()
+  }
+
+  func testDatabaseDefersRemoteSessionInsertUntilRequiredColumnsArrive() throws {
+    let baseURL = makeTemporaryDirectory()
+    let database = makeTerminalSessionSyncDatabase(baseURL: baseURL)
+    XCTAssertNil(database.initializationError)
+
+    try database.executeSqlForTesting("""
+      insert into projects (
+        id, root_path, display_name, default_base_ref, created_at, last_opened_at
+      ) values (
+        'project-1', '/tmp/project', 'ADE', 'main', '2026-04-20T00:00:00.000Z', '2026-04-20T00:00:00.000Z'
+      );
+      insert into lanes (
+        id, project_id, name, lane_type, base_ref, branch_ref, worktree_path, status, created_at
+      ) values (
+        'lane-1', 'project-1', 'Primary', 'primary', 'main', 'main', '/tmp/project', 'active', '2026-04-20T00:00:00.000Z'
+      );
+    """)
+
+    let siteId = "b00e9b92c864a27958669c1595fcb2c3"
+    let sessionPk = packedDesktopTextPrimaryKey("session-1")
+    let firstBatch: [CrsqlChangeRow] = [
+      CrsqlChangeRow(table: "terminal_sessions", pk: sessionPk, cid: "title", val: .string("Mobile sync test"), colVersion: 1, dbVersion: 2, siteId: siteId, cl: 1, seq: 0),
+      CrsqlChangeRow(table: "terminal_sessions", pk: sessionPk, cid: "tool_type", val: .string("codex-chat"), colVersion: 1, dbVersion: 2, siteId: siteId, cl: 1, seq: 1),
+      CrsqlChangeRow(table: "terminal_sessions", pk: sessionPk, cid: "started_at", val: .string("2026-04-20T00:01:00.000Z"), colVersion: 1, dbVersion: 2, siteId: siteId, cl: 1, seq: 2),
+      CrsqlChangeRow(table: "terminal_sessions", pk: sessionPk, cid: "transcript_path", val: .string(""), colVersion: 1, dbVersion: 2, siteId: siteId, cl: 1, seq: 3),
+      CrsqlChangeRow(table: "terminal_sessions", pk: sessionPk, cid: "status", val: .string("running"), colVersion: 1, dbVersion: 2, siteId: siteId, cl: 1, seq: 4),
+    ]
+    let secondBatch = [
+      CrsqlChangeRow(table: "terminal_sessions", pk: sessionPk, cid: "lane_id", val: .string("lane-1"), colVersion: 1, dbVersion: 3, siteId: siteId, cl: 1, seq: 0),
+    ]
+
+    XCTAssertNoThrow(try database.applyChanges(firstBatch))
+    XCTAssertEqual(try countRows(in: baseURL, table: "terminal_sessions"), 0)
+
+    XCTAssertNoThrow(try database.applyChanges(secondBatch))
+    let sessions = database.fetchSessions()
+    XCTAssertEqual(sessions.count, 1)
+    XCTAssertEqual(sessions.first?.id, "session-1")
+    XCTAssertEqual(sessions.first?.laneId, "lane-1")
+    XCTAssertEqual(sessions.first?.title, "Mobile sync test")
+    database.close()
+  }
+
+  func testDatabaseRecreatesDeferredRowAfterStoredDeleteMarker() throws {
+    let baseURL = makeTemporaryDirectory()
+    let database = makeTerminalSessionSyncDatabase(baseURL: baseURL)
+    XCTAssertNil(database.initializationError)
+
+    try database.executeSqlForTesting("""
+      insert into projects (
+        id, root_path, display_name, default_base_ref, created_at, last_opened_at
+      ) values (
+        'project-1', '/tmp/project', 'ADE', 'main', '2026-04-20T00:00:00.000Z', '2026-04-20T00:00:00.000Z'
+      );
+      insert into lanes (
+        id, project_id, name, lane_type, base_ref, branch_ref, worktree_path, status, created_at
+      ) values (
+        'lane-1', 'project-1', 'Primary', 'primary', 'main', 'main', '/tmp/project', 'active', '2026-04-20T00:00:00.000Z'
+      );
+    """)
+
+    let siteId = "b00e9b92c864a27958669c1595fcb2c3"
+    let sessionPk = packedDesktopTextPrimaryKey("session-recreated")
+    let staleDelete = CrsqlChangeRow(
+      table: "terminal_sessions",
+      pk: sessionPk,
+      cid: "-1",
+      val: .null,
+      colVersion: 2,
+      dbVersion: 2,
+      siteId: siteId,
+      cl: 1,
+      seq: 0
+    )
+    let recreate: [CrsqlChangeRow] = [
+      CrsqlChangeRow(table: "terminal_sessions", pk: sessionPk, cid: "title", val: .string("Recreated"), colVersion: 3, dbVersion: 3, siteId: siteId, cl: 1, seq: 0),
+      CrsqlChangeRow(table: "terminal_sessions", pk: sessionPk, cid: "started_at", val: .string("2026-04-20T00:01:00.000Z"), colVersion: 3, dbVersion: 3, siteId: siteId, cl: 1, seq: 1),
+      CrsqlChangeRow(table: "terminal_sessions", pk: sessionPk, cid: "transcript_path", val: .string(""), colVersion: 3, dbVersion: 3, siteId: siteId, cl: 1, seq: 2),
+      CrsqlChangeRow(table: "terminal_sessions", pk: sessionPk, cid: "status", val: .string("running"), colVersion: 3, dbVersion: 3, siteId: siteId, cl: 1, seq: 3),
+      CrsqlChangeRow(table: "terminal_sessions", pk: sessionPk, cid: "lane_id", val: .string("lane-1"), colVersion: 3, dbVersion: 3, siteId: siteId, cl: 1, seq: 4),
+    ]
+
+    XCTAssertNoThrow(try database.applyChanges([staleDelete]))
+    XCTAssertEqual(try countRows(in: baseURL, table: "terminal_sessions"), 0)
+    XCTAssertNoThrow(try database.applyChanges(recreate))
+
+    let sessions = database.fetchSessions()
+    XCTAssertEqual(sessions.count, 1)
+    XCTAssertEqual(sessions.first?.id, "session-recreated")
+    XCTAssertEqual(sessions.first?.title, "Recreated")
+    database.close()
+  }
+
+  func testReplaceTerminalSessionsDoesNotBreakCheckpointSessionReferences() throws {
+    let baseURL = makeTemporaryDirectory()
+    let database = makeTerminalSessionSyncDatabase(baseURL: baseURL)
+    XCTAssertNil(database.initializationError)
+
+    try database.executeSqlForTesting("""
+      insert into projects (
+        id, root_path, display_name, default_base_ref, created_at, last_opened_at
+      ) values (
+        'project-1', '/tmp/project', 'ADE', 'main', '2026-04-20T00:00:00.000Z', '2026-04-20T00:00:00.000Z'
+      );
+      insert into lanes (
+        id, project_id, name, lane_type, base_ref, branch_ref, worktree_path, status, created_at
+      ) values (
+        'lane-1', 'project-1', 'Primary', 'primary', 'main', 'main', '/tmp/project', 'active', '2026-04-20T00:00:00.000Z'
+      );
+      create table if not exists checkpoints (
+        id text primary key,
+        project_id text not null,
+        lane_id text not null,
+        session_id text,
+        sha text not null,
+        created_at text not null,
+        foreign key(project_id) references projects(id),
+        foreign key(lane_id) references lanes(id),
+        foreign key(session_id) references terminal_sessions(id)
+      );
+    """)
+
+    let session = makeTerminalSessionSummary(
+      id: "session-with-checkpoint",
+      laneId: "lane-1",
+      laneName: "Primary",
+      toolType: "codex-chat",
+      title: "Before refresh"
+    )
+    try database.replaceTerminalSessions([session])
+    try database.executeSqlForTesting("""
+      insert into checkpoints (
+        id, project_id, lane_id, session_id, sha, created_at
+      ) values (
+        'checkpoint-1', 'project-1', 'lane-1', 'session-with-checkpoint', 'abc123', '2026-04-20T00:01:00.000Z'
+      );
+    """)
+
+    let updatedSession = makeTerminalSessionSummary(
+      id: "session-with-checkpoint",
+      laneId: "lane-1",
+      laneName: "Primary",
+      toolType: "codex-chat",
+      title: "After refresh"
+    )
+
+    XCTAssertNoThrow(try database.replaceTerminalSessions([updatedSession]))
+    XCTAssertEqual(database.fetchSessions().first?.title, "After refresh")
+    XCTAssertEqual(try countRows(in: baseURL, table: "checkpoints"), 1)
+    XCTAssertEqual(try countRows(in: baseURL, table: "terminal_sessions"), 1)
+    database.close()
+  }
+
+  func testReplaceTerminalSessionsDetachesCheckpointsBeforeDeletingStaleSessions() throws {
+    let baseURL = makeTemporaryDirectory()
+    let database = makeTerminalSessionSyncDatabase(baseURL: baseURL)
+    XCTAssertNil(database.initializationError)
+
+    try database.executeSqlForTesting("""
+      insert into projects (
+        id, root_path, display_name, default_base_ref, created_at, last_opened_at
+      ) values (
+        'project-1', '/tmp/project', 'ADE', 'main', '2026-04-20T00:00:00.000Z', '2026-04-20T00:00:00.000Z'
+      );
+      insert into lanes (
+        id, project_id, name, lane_type, base_ref, branch_ref, worktree_path, status, created_at
+      ) values (
+        'lane-1', 'project-1', 'Primary', 'primary', 'main', 'main', '/tmp/project', 'active', '2026-04-20T00:00:00.000Z'
+      );
+      create table if not exists checkpoints (
+        id text primary key,
+        project_id text not null,
+        lane_id text not null,
+        session_id text,
+        sha text not null,
+        created_at text not null,
+        foreign key(project_id) references projects(id),
+        foreign key(lane_id) references lanes(id),
+        foreign key(session_id) references terminal_sessions(id)
+      );
+    """)
+
+    let staleSession = makeTerminalSessionSummary(
+      id: "stale-session",
+      laneId: "lane-1",
+      laneName: "Primary",
+      toolType: "codex-chat",
+      title: "Stale"
+    )
+    let keptSession = makeTerminalSessionSummary(
+      id: "kept-session",
+      laneId: "lane-1",
+      laneName: "Primary",
+      toolType: "codex-chat",
+      title: "Kept"
+    )
+    try database.replaceTerminalSessions([staleSession, keptSession])
+    try database.executeSqlForTesting("""
+      insert into checkpoints (
+        id, project_id, lane_id, session_id, sha, created_at
+      ) values (
+        'checkpoint-1', 'project-1', 'lane-1', 'stale-session', 'abc123', '2026-04-20T00:01:00.000Z'
+      );
+    """)
+
+    XCTAssertNoThrow(try database.replaceTerminalSessions([keptSession]))
+    XCTAssertEqual(try countRows(in: baseURL, table: "terminal_sessions"), 1)
+    XCTAssertEqual(try countRows(in: baseURL, table: "checkpoints"), 1)
+    XCTAssertEqual(try countRows(in: baseURL, table: "checkpoints where session_id is null"), 1)
+    database.close()
+  }
+
+  func testReplaceTerminalSessionsSkipsSessionsForMissingLanes() throws {
+    let baseURL = makeTemporaryDirectory()
+    let database = makeTerminalSessionSyncDatabase(baseURL: baseURL)
+    XCTAssertNil(database.initializationError)
+
+    try database.executeSqlForTesting("""
+      insert into projects (
+        id, root_path, display_name, default_base_ref, created_at, last_opened_at
+      ) values (
+        'project-1', '/tmp/project', 'ADE', 'main', '2026-04-20T00:00:00.000Z', '2026-04-20T00:00:00.000Z'
+      );
+      insert into lanes (
+        id, project_id, name, lane_type, base_ref, branch_ref, worktree_path, status, created_at
+      ) values (
+        'lane-1', 'project-1', 'Primary', 'primary', 'main', 'main', '/tmp/project', 'active', '2026-04-20T00:00:00.000Z'
+      );
+    """)
+
+    let validSession = makeTerminalSessionSummary(
+      id: "valid-session",
+      laneId: "lane-1",
+      laneName: "Primary",
+      toolType: "codex-chat",
+      title: "Valid"
+    )
+    let missingLaneSession = makeTerminalSessionSummary(
+      id: "missing-lane-session",
+      laneId: "missing-lane",
+      laneName: "Missing",
+      toolType: "codex-chat",
+      title: "Missing lane"
+    )
+
+    XCTAssertNoThrow(try database.replaceTerminalSessions([validSession, missingLaneSession]))
+    let sessions = database.fetchSessions()
+    XCTAssertEqual(sessions.map(\.id), ["valid-session"])
+    XCTAssertEqual(try countRows(in: baseURL, table: "terminal_sessions"), 1)
+    database.close()
+  }
+
   func testDatabaseIgnoresHydrationOwnedLaneStateSnapshotChanges() throws {
     let baseURL = makeTemporaryDirectory()
     let database = makeLaneHydrationDatabase(baseURL: baseURL)
@@ -909,6 +1200,92 @@ final class ADETests: XCTestCase {
 
     XCTAssertEqual(database.fetchSessions().map(\.id), ["session-1"])
     XCTAssertEqual(database.fetchLanes(includeArchived: true).first?.status.ahead, 2)
+    database.close()
+  }
+
+  func testDatabaseReplaceLaneSnapshotsArchivesMissingLanesWithCachedWorkSessions() throws {
+    let baseURL = makeTemporaryDirectory()
+    let database = DatabaseService(baseURL: baseURL)
+    XCTAssertNil(database.initializationError)
+
+    try insertHydrationProjectGraph(into: database)
+    let primaryLane = makeLaneListSnapshot(
+      id: "lane-primary",
+      name: "Primary",
+      laneType: "primary",
+      baseRef: "main",
+      branchRef: "main",
+      worktreePath: "/tmp/project",
+      description: nil,
+      status: LaneStatus(dirty: false, ahead: 0, behind: 0, remoteBehind: 0, rebaseInProgress: false),
+      runtime: LaneRuntimeSummary(bucket: "none", runningCount: 0, awaitingInputCount: 0, endedCount: 0, sessionCount: 0),
+      createdAt: "2026-03-17T00:00:00.000Z",
+      archivedAt: nil
+    ).lane
+    let staleLane = makeLaneListSnapshot(
+      id: "lane-stale",
+      name: "Deleted lane",
+      laneType: "worktree",
+      baseRef: "main",
+      branchRef: "ade/deleted-lane",
+      worktreePath: "/tmp/project/.ade/worktrees/deleted-lane",
+      description: nil,
+      status: LaneStatus(dirty: false, ahead: 0, behind: 0, remoteBehind: 0, rebaseInProgress: false),
+      runtime: LaneRuntimeSummary(bucket: "running", runningCount: 1, awaitingInputCount: 0, endedCount: 0, sessionCount: 1),
+      createdAt: "2026-03-17T00:05:00.000Z",
+      archivedAt: nil
+    ).lane
+
+    try database.replaceLaneSnapshots([primaryLane, staleLane])
+    try database.replaceTerminalSessions([
+      makeTerminalSessionSummary(
+        id: "stale-session",
+        laneId: "lane-stale",
+        laneName: "Deleted lane",
+        toolType: "codex-chat",
+        title: "Cached deleted-lane chat"
+      ),
+    ])
+
+    XCTAssertNoThrow(try database.replaceLaneSnapshots([primaryLane]))
+
+    XCTAssertEqual(database.fetchLaneListSnapshots(includeArchived: true).map(\.lane.id), ["lane-primary"])
+    XCTAssertEqual(database.fetchLanes(includeArchived: false).map(\.id), ["lane-primary"])
+    XCTAssertNotNil(database.fetchLanes(includeArchived: true).first(where: { $0.id == "lane-stale" })?.archivedAt)
+    XCTAssertEqual(database.fetchSessions().map(\.id), ["stale-session"])
+    database.close()
+  }
+
+  func testDatabaseReplaceLaneSnapshotsHandlesLargeLaneSets() throws {
+    let baseURL = makeTemporaryDirectory()
+    let database = DatabaseService(baseURL: baseURL)
+    XCTAssertNil(database.initializationError)
+
+    try insertHydrationProjectGraph(into: database)
+    let lanes = (0..<925).map { index in
+      makeLaneListSnapshot(
+        id: "lane-\(index)",
+        name: "Lane \(index)",
+        laneType: index == 0 ? "primary" : "worktree",
+        baseRef: "main",
+        branchRef: index == 0 ? "main" : "ade/lane-\(index)",
+        worktreePath: index == 0 ? "/tmp/project" : "/tmp/project/.ade/worktrees/lane-\(index)",
+        description: nil,
+        status: LaneStatus(dirty: false, ahead: 0, behind: 0, remoteBehind: 0, rebaseInProgress: false),
+        runtime: LaneRuntimeSummary(bucket: "none", runningCount: 0, awaitingInputCount: 0, endedCount: 0, sessionCount: 0),
+        createdAt: String(format: "2026-03-17T00:%02d:00.000Z", index % 60),
+        archivedAt: nil
+      ).lane
+    }
+
+    XCTAssertNoThrow(try database.replaceLaneSnapshots(lanes))
+    XCTAssertEqual(database.fetchLaneListSnapshots(includeArchived: true).count, lanes.count)
+
+    let refreshed = Array(lanes.prefix(900))
+    XCTAssertNoThrow(try database.replaceLaneSnapshots(refreshed))
+    XCTAssertEqual(database.fetchLaneListSnapshots(includeArchived: true).count, refreshed.count)
+    XCTAssertEqual(database.fetchLanes(includeArchived: false).count, refreshed.count)
+    XCTAssertNotNil(database.fetchLanes(includeArchived: true).first(where: { $0.id == "lane-924" })?.archivedAt)
     database.close()
   }
 
@@ -2436,11 +2813,13 @@ final class ADETests: XCTestCase {
     XCTAssertNil(blockerDescription)
     XCTAssertEqual(reportTurnId, nil)
 
-    guard case .done(let doneStatus, let doneSummary, let usage, let doneTurnId) = transcript[3].event else {
+    guard case .done(let doneStatus, let doneSummary, let usage, let doneTurnId, let doneModel, let doneModelId) = transcript[3].event else {
       return XCTFail("Expected done event.")
     }
     XCTAssertEqual(doneStatus, "completed")
     XCTAssertTrue(doneSummary.contains("claude-sonnet-4"))
+    XCTAssertEqual(doneModel, "claude-sonnet-4")
+    XCTAssertEqual(doneModelId, nil)
     XCTAssertTrue(doneSummary.contains("inputTokens"))
     XCTAssertTrue(doneSummary.contains("$1.2300"))
     XCTAssertEqual(usage?.inputTokens, 120)
@@ -2579,6 +2958,117 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(summary.requestedCwd, "apps/ios/ADE")
   }
 
+  func testCtoRosterDecodesCtoSummaryAndWorkerEntries() throws {
+    let ctoSummary: [String: Any] = [
+      "sessionId": "cto-session-1",
+      "laneId": "lane-cto",
+      "provider": "claude",
+      "model": "claude-opus-4-6",
+      "identityKey": "cto",
+      "status": "active",
+      "startedAt": "2026-03-25T00:00:00.000Z",
+      "lastActivityAt": "2026-03-25T00:00:05.000Z",
+    ]
+
+    let workerOneSummary: [String: Any] = [
+      "sessionId": "worker-session-1",
+      "laneId": "lane-cto",
+      "provider": "claude",
+      "model": "claude-sonnet-4-6",
+      "identityKey": "agent:worker-1",
+      "status": "running",
+      "startedAt": "2026-03-25T00:01:00.000Z",
+      "lastActivityAt": "2026-03-25T00:01:10.000Z",
+      "awaitingInput": false,
+    ]
+
+    let payload: [String: Any] = [
+      "cto": ctoSummary,
+      "workers": [
+        [
+          "agentId": "worker-1",
+          "name": "Build Bot",
+          "avatarSeed": "build-bot",
+          "status": "running",
+          "sessionSummary": workerOneSummary,
+        ],
+        [
+          "agentId": "worker-2",
+          "name": "Research Bot",
+          "avatarSeed": NSNull(),
+          "status": "idle",
+          "sessionSummary": NSNull(),
+        ],
+      ],
+    ]
+
+    let data = try JSONSerialization.data(withJSONObject: payload)
+    let roster = try JSONDecoder().decode(CtoRoster.self, from: data)
+
+    XCTAssertEqual(roster.cto?.sessionId, "cto-session-1")
+    XCTAssertEqual(roster.cto?.identityKey, "cto")
+    XCTAssertEqual(roster.workers.count, 2)
+
+    let first = roster.workers[0]
+    XCTAssertEqual(first.id, "worker-1")
+    XCTAssertEqual(first.agentId, "worker-1")
+    XCTAssertEqual(first.name, "Build Bot")
+    XCTAssertEqual(first.avatarSeed, "build-bot")
+    XCTAssertEqual(first.status, "running")
+    XCTAssertEqual(first.sessionSummary?.sessionId, "worker-session-1")
+    XCTAssertEqual(first.sessionSummary?.identityKey, "agent:worker-1")
+
+    let second = roster.workers[1]
+    XCTAssertEqual(second.agentId, "worker-2")
+    XCTAssertEqual(second.name, "Research Bot")
+    XCTAssertNil(second.avatarSeed)
+    XCTAssertEqual(second.status, "idle")
+    XCTAssertNil(second.sessionSummary)
+
+    // Round-trip encode + decode to confirm Codable key parity.
+    let encoded = try JSONEncoder().encode(roster)
+    let roundTripped = try JSONDecoder().decode(CtoRoster.self, from: encoded)
+    XCTAssertEqual(roundTripped, roster)
+    XCTAssertEqual(roundTripped.workers.map(\.agentId), ["worker-1", "worker-2"])
+  }
+
+  func testCtoRosterDecodesNullCtoAndEmptyWorkers() throws {
+    let payload: [String: Any] = [
+      "cto": NSNull(),
+      "workers": [] as [Any],
+    ]
+    let data = try JSONSerialization.data(withJSONObject: payload)
+    let roster = try JSONDecoder().decode(CtoRoster.self, from: data)
+
+    XCTAssertNil(roster.cto)
+    XCTAssertTrue(roster.workers.isEmpty)
+  }
+
+  func testCtoRosterDecodesMissingCtoKey() throws {
+    let payload: [String: Any] = [
+      "workers": [] as [Any],
+    ]
+    let data = try JSONSerialization.data(withJSONObject: payload)
+    let roster = try JSONDecoder().decode(CtoRoster.self, from: data)
+
+    XCTAssertNil(roster.cto)
+    XCTAssertTrue(roster.workers.isEmpty)
+  }
+
+  func testCtoAvatarPaletteIndexIsDeterministic() {
+    let inputs = ["build-bot", "Research Bot", "worker-42"]
+    let paletteSize = 7
+    for input in inputs {
+      let first = ctoAvatarPaletteIndex(for: input, paletteSize: paletteSize)
+      let second = ctoAvatarPaletteIndex(for: input, paletteSize: paletteSize)
+      XCTAssertEqual(first, second, "hash drifted for input '\(input)'")
+      XCTAssertGreaterThanOrEqual(first, 0)
+      XCTAssertLessThan(first, paletteSize)
+    }
+    // Zero-size palette degrades to 0 rather than crashing on modulo.
+    XCTAssertEqual(ctoAvatarPaletteIndex(for: "anything", paletteSize: 0), 0)
+  }
+
   func testMergeWorkChatTranscriptsReplacesDuplicatesAndSortsByTime() {
     let base = [
       WorkChatEnvelope(
@@ -2658,6 +3148,48 @@ final class ADETests: XCTestCase {
     ])
   }
 
+  func testPreferredWorkTranscriptReplacesFallbackWhenEventStreamArrives() {
+    let fallback = [
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-04-20T00:00:01.000Z",
+        sequence: nil,
+        event: .userMessage(text: "What model are you?", turnId: "turn-1", steerId: nil, deliveryState: nil, processed: nil)
+      ),
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-04-20T00:00:02.000Z",
+        sequence: nil,
+        event: .assistantText(text: "I'm Codex, based on GPT-5.", turnId: "turn-1", itemId: nil)
+      ),
+    ]
+    let eventTranscript = [
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-04-20T00:00:01.000Z",
+        sequence: 1,
+        event: .userMessage(text: "What model are you?", turnId: "turn-1", steerId: nil, deliveryState: nil, processed: nil)
+      ),
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-04-20T00:00:02.000Z",
+        sequence: 2,
+        event: .assistantText(text: "I'm Codex, based on GPT-5.", turnId: "turn-1", itemId: "msg-1")
+      ),
+    ]
+
+    let preferred = preferredWorkTranscript(
+      current: fallback,
+      fallback: fallback,
+      eventTranscript: eventTranscript
+    )
+    let messages = buildWorkChatMessages(from: preferred)
+
+    XCTAssertEqual(preferred.count, 2)
+    XCTAssertEqual(preferred.compactMap(\.sequence), [1, 2])
+    XCTAssertEqual(messages.filter { $0.role == "assistant" }.map(\.markdown), ["I'm Codex, based on GPT-5."])
+  }
+
   func testPendingWorkInputItemIdsTracksResolvedApprovalAndQuestionEvents() {
     let transcript = [
       WorkChatEnvelope(
@@ -2670,7 +3202,15 @@ final class ADETests: XCTestCase {
         sessionId: "chat-1",
         timestamp: "2026-03-25T00:00:02.000Z",
         sequence: 2,
-        event: .structuredQuestion(question: "Deploy?", options: ["Yes", "No"], itemId: "question-1", turnId: "turn-1")
+        event: .structuredQuestion(
+          question: "Deploy?",
+          options: [
+            WorkPendingQuestionOption(label: "Yes", value: "Yes", description: nil),
+            WorkPendingQuestionOption(label: "No", value: "No", description: nil),
+          ],
+          itemId: "question-1",
+          turnId: "turn-1"
+        )
       ),
       WorkChatEnvelope(
         sessionId: "chat-1",
@@ -2717,7 +3257,15 @@ final class ADETests: XCTestCase {
         sessionId: "chat-1",
         timestamp: "2026-03-25T00:00:02.000Z",
         sequence: 2,
-        event: .structuredQuestion(question: "Deploy?", options: ["Yes", "No"], itemId: "question-1", turnId: "turn-1")
+        event: .structuredQuestion(
+          question: "Deploy?",
+          options: [
+            WorkPendingQuestionOption(label: "Yes", value: "Yes", description: nil),
+            WorkPendingQuestionOption(label: "No", value: "No", description: nil),
+          ],
+          itemId: "question-1",
+          turnId: "turn-1"
+        )
       ),
       WorkChatEnvelope(
         sessionId: "chat-1",
@@ -2755,6 +3303,77 @@ final class ADETests: XCTestCase {
 
     let items = derivePendingWorkInputs(from: transcript)
     XCTAssertEqual(items.map(\.itemId), ["question-1"])
+  }
+
+  func testDerivePendingWorkInputsParsesStructuredQuestionApprovalDetail() {
+    let detail = """
+    {
+      "request": {
+        "requestId": "0",
+        "itemId": "approval-structured",
+        "source": "codex",
+        "kind": "structured_question",
+        "title": "Input requested",
+        "description": "Which surface should I inspect first?",
+        "questions": [
+          {
+            "id": "focus_area",
+            "header": "Focus",
+            "question": "Which surface should I inspect first?",
+            "allowsFreeform": true,
+            "options": [
+              {
+                "label": "Mobile Work tab",
+                "value": "mobile_work",
+                "description": "Inspect the phone chat first."
+              },
+              {
+                "label": "Desktop Work tab",
+                "value": "desktop_work"
+              }
+            ]
+          }
+        ],
+        "allowsFreeform": true,
+        "blocking": true,
+        "canProceedWithoutAnswer": false,
+        "turnId": "turn-1"
+      }
+    }
+    """
+    let transcript = [
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-04-20T00:00:01.000Z",
+        sequence: 1,
+        event: .approvalRequest(
+          description: "Which surface should I inspect first?",
+          detail: detail,
+          itemId: "approval-structured",
+          turnId: "turn-1"
+        )
+      ),
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-04-20T00:00:02.000Z",
+        sequence: 2,
+        event: .done(status: "completed", summary: "", usage: nil, turnId: "turn-1", model: nil, modelId: nil)
+      ),
+    ]
+
+    XCTAssertEqual(pendingWorkInputItemIds(from: transcript), Set(["approval-structured"]))
+
+    let inputs = derivePendingWorkInputs(from: transcript)
+    XCTAssertEqual(inputs.map(\.itemId), ["approval-structured"])
+    guard case .question(let question) = inputs.first else {
+      return XCTFail("Expected structured question approval to render as a question.")
+    }
+    XCTAssertEqual(question.questionId, "focus_area")
+    XCTAssertEqual(question.question, "Which surface should I inspect first?")
+    XCTAssertEqual(question.options.first?.label, "Mobile Work tab")
+    XCTAssertEqual(question.options.first?.value, "mobile_work")
+    XCTAssertEqual(question.options.first?.description, "Inspect the phone chat first.")
+    XCTAssertTrue(question.allowsFreeform)
   }
 
   func testDerivePendingWorkSteersTracksQueuedEditsAndCancellations() {
@@ -3259,6 +3878,76 @@ final class ADETests: XCTestCase {
     }
 
     XCTAssertEqual(userMessages, [prompt, "Still waiting for host acknowledgement"])
+  }
+
+  func testWorkTurnSeparatorsUsePerTurnModelAfterModelSwitch() {
+    let transcript = [
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-03-25T00:00:01.000Z",
+        sequence: 1,
+        event: .userMessage(text: "say hi", turnId: "turn-1", steerId: nil, deliveryState: nil, processed: nil)
+      ),
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-03-25T00:00:02.000Z",
+        sequence: 2,
+        event: .assistantText(text: "Hi", turnId: "turn-1", itemId: "msg-1")
+      ),
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-03-25T00:00:03.000Z",
+        sequence: 3,
+        event: .done(status: "completed", summary: "Completed\nclaude-sonnet-4-6", usage: nil, turnId: "turn-1", model: "claude-sonnet-4-6", modelId: "anthropic/claude-sonnet-4-6")
+      ),
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-03-25T00:01:01.000Z",
+        sequence: 4,
+        event: .userMessage(text: "say hi again", turnId: "turn-2", steerId: nil, deliveryState: nil, processed: nil)
+      ),
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-03-25T00:01:02.000Z",
+        sequence: 5,
+        event: .assistantText(text: "Hi", turnId: "turn-2", itemId: "msg-2")
+      ),
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-03-25T00:01:03.000Z",
+        sequence: 6,
+        event: .done(status: "completed", summary: "Completed\ngpt-5.4-mini", usage: nil, turnId: "turn-2", model: "gpt-5.4-mini", modelId: "openai/gpt-5.4-mini-codex")
+      ),
+    ]
+    let timeline = buildWorkTimeline(
+      transcript: transcript,
+      fallbackEntries: [],
+      toolCards: [],
+      commandCards: [],
+      fileChangeCards: [],
+      eventCards: [],
+      artifacts: [],
+      localEchoMessages: []
+    )
+    let assistantMessages = timeline.compactMap { entry -> WorkChatMessage? in
+      guard case .message(let message) = entry.payload, message.role == "assistant" else { return nil }
+      return message
+    }
+    XCTAssertEqual(assistantMessages.map(\.turnProvider), ["claude", "codex"])
+    XCTAssertEqual(assistantMessages.map(\.turnModelId), ["anthropic/claude-sonnet-4-6", "openai/gpt-5.4-mini-codex"])
+
+    let separated = injectWorkTurnSeparators(
+      into: timeline,
+      chatSummary: makeAgentChatSessionSummary(provider: "codex", model: "gpt-5.4-mini", status: "active"),
+      transcript: transcript
+    )
+    let separators = separated.compactMap { entry -> WorkTurnSeparator? in
+      guard case .turnSeparator(let separator) = entry.payload else { return nil }
+      return separator
+    }
+
+    XCTAssertEqual(separators.map(\.modelLabel), ["Claude Sonnet 4.6", "GPT 5.4 Mini"])
+    XCTAssertEqual(separators.map(\.provider), ["claude", "codex"])
   }
 
   func testWorkEventCardsHideLowSignalLifecycleNoise() {
@@ -3945,6 +4634,99 @@ final class ADETests: XCTestCase {
     """)
   }
 
+  private func makeProjectLaneForeignKeyDatabase(baseURL: URL) -> DatabaseService {
+    DatabaseService(baseURL: baseURL, bootstrapSQL: """
+      create table if not exists projects (
+        id text primary key,
+        root_path text not null,
+        display_name text not null,
+        default_base_ref text not null,
+        created_at text not null,
+        last_opened_at text not null
+      );
+      create table if not exists lanes (
+        id text primary key,
+        project_id text not null,
+        name text not null,
+        description text,
+        lane_type text not null,
+        base_ref text not null,
+        branch_ref text not null,
+        worktree_path text not null,
+        attached_root_path text,
+        is_edit_protected integer not null default 0,
+        parent_lane_id text,
+        color text,
+        icon text,
+        tags_json text,
+        folder text,
+        status text not null,
+        created_at text not null,
+        archived_at text,
+        foreign key(project_id) references projects(id)
+      );
+    """)
+  }
+
+  private func makeTerminalSessionSyncDatabase(baseURL: URL) -> DatabaseService {
+    DatabaseService(baseURL: baseURL, bootstrapSQL: """
+      create table if not exists projects (
+        id text primary key,
+        root_path text not null,
+        display_name text not null,
+        default_base_ref text not null,
+        created_at text not null,
+        last_opened_at text not null
+      );
+      create table if not exists lanes (
+        id text primary key,
+        project_id text not null,
+        name text not null,
+        description text,
+        lane_type text not null,
+        base_ref text not null,
+        branch_ref text not null,
+        worktree_path text not null,
+        attached_root_path text,
+        is_edit_protected integer not null default 0,
+        parent_lane_id text,
+        color text,
+        icon text,
+        tags_json text,
+        folder text,
+        status text not null,
+        created_at text not null,
+        archived_at text,
+        foreign key(project_id) references projects(id)
+      );
+      create table if not exists terminal_sessions (
+        id text primary key,
+        lane_id text not null,
+        lane_name text not null default '',
+        pty_id text,
+        tracked integer not null default 1,
+        goal text,
+        tool_type text,
+        pinned integer not null default 0,
+        title text not null,
+        started_at text not null,
+        ended_at text,
+        exit_code integer,
+        transcript_path text not null,
+        head_sha_start text,
+        head_sha_end text,
+        status text not null,
+        last_output_preview text,
+        last_output_at text,
+        summary text,
+        resume_command text,
+        resume_metadata_json text,
+        manually_named integer not null default 0,
+        foreign key(lane_id) references lanes(id)
+      );
+    """)
+  }
+
   private func makeConflictPredictionsDatabase(baseURL: URL) -> DatabaseService {
     DatabaseService(baseURL: baseURL, bootstrapSQL: """
       create table if not exists conflict_predictions (
@@ -4382,6 +5164,404 @@ final class ADETests: XCTestCase {
     let parsed = WorkContextCompactSummary.parse(nil)
     XCTAssertNil(parsed.triggerLabel)
     XCTAssertNil(parsed.tokensFreedLabel)
+  }
+
+  // MARK: - Timeline dedup + ask_user regression tests
+
+  func testBuildWorkToolCardsDedupesDuplicateToolCallsByItemId() {
+    let transcript: [WorkChatEnvelope] = [
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-04-20T00:00:01.000Z",
+        sequence: 1,
+        event: .toolCall(tool: "Read", argsText: "{}", itemId: "call-dup", parentItemId: nil, turnId: "turn-1")
+      ),
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-04-20T00:00:02.000Z",
+        sequence: 2,
+        event: .toolCall(tool: "Read", argsText: "{\"path\":\"README.md\"}", itemId: "call-dup", parentItemId: nil, turnId: "turn-1")
+      ),
+    ]
+
+    let cards = buildWorkToolCards(from: transcript)
+    XCTAssertEqual(cards.count, 1)
+    XCTAssertEqual(cards.first?.id, "call-dup")
+
+    let snapshot = buildWorkChatTimelineSnapshot(
+      transcript: transcript,
+      fallbackEntries: [],
+      artifacts: [],
+      localEchoMessages: []
+    )
+    let toolEntries = snapshot.timeline.filter { $0.id.hasPrefix("tool-") }
+    XCTAssertEqual(toolEntries.count, 1)
+    XCTAssertEqual(toolEntries.first?.id, "tool-call-dup")
+  }
+
+  func testBuildWorkCommandCardsDedupesDuplicateCommandEventsByItemId() {
+    let transcript: [WorkChatEnvelope] = [
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-04-20T00:00:01.000Z",
+        sequence: 1,
+        event: .command(
+          command: "ls",
+          cwd: "/tmp",
+          output: "",
+          status: .running,
+          itemId: "cmd-dup",
+          exitCode: nil,
+          durationMs: nil,
+          turnId: "turn-1"
+        )
+      ),
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-04-20T00:00:02.000Z",
+        sequence: 2,
+        event: .command(
+          command: "ls",
+          cwd: "/tmp",
+          output: "README.md",
+          status: .completed,
+          itemId: "cmd-dup",
+          exitCode: 0,
+          durationMs: 12,
+          turnId: "turn-1"
+        )
+      ),
+    ]
+
+    let cards = buildWorkCommandCards(from: transcript)
+    XCTAssertEqual(cards.count, 1)
+    XCTAssertEqual(cards.first?.status, .completed)
+  }
+
+  func testPendingWorkQuestionFromApprovalPopulatesNestedStructuredQuestionFields() {
+    let detail = """
+    {
+      "request": {
+        "itemId": "approval-rich",
+        "kind": "structured_question",
+        "title": "Which surface should I inspect?",
+        "description": "The transcript has multiple affected surfaces.",
+        "impact": "Only the chosen surface is rebuilt.",
+        "defaultAssumption": "Desktop",
+        "questions": [
+          {
+            "id": "surface",
+            "question": "Pick a surface",
+            "allowsFreeform": false,
+            "multiSelect": false,
+            "isSecret": false,
+            "impact": "Rebuild scope",
+            "options": [
+              {
+                "label": "Mobile",
+                "value": "mobile",
+                "description": "iOS and Android cards.",
+                "recommended": true,
+                "preview": "## Mobile plan\\n- iOS\\n- Android",
+                "previewFormat": "markdown"
+              },
+              {
+                "label": "Desktop",
+                "value": "desktop"
+              }
+            ]
+          }
+        ]
+      }
+    }
+    """
+
+    let model = pendingWorkQuestionFromApproval(
+      description: "Which surface should I inspect?",
+      detail: detail,
+      itemId: "approval-rich"
+    )
+
+    guard let model else {
+      return XCTFail("Expected a populated pending question model.")
+    }
+    XCTAssertEqual(model.id, "approval-rich")
+    XCTAssertEqual(model.questionId, "surface")
+    XCTAssertEqual(model.title, "Which surface should I inspect?")
+    XCTAssertEqual(model.impact, "Rebuild scope")
+    XCTAssertEqual(model.defaultAssumption, "Desktop")
+    XCTAssertFalse(model.multiSelect)
+    XCTAssertFalse(model.isSecret)
+    XCTAssertFalse(model.allowsFreeform)
+    XCTAssertEqual(model.options.count, 2)
+
+    let first = model.options[0]
+    XCTAssertEqual(first.label, "Mobile")
+    XCTAssertEqual(first.value, "mobile")
+    XCTAssertEqual(first.description, "iOS and Android cards.")
+    XCTAssertTrue(first.recommended)
+    XCTAssertEqual(first.previewFormat, "markdown")
+    XCTAssertEqual(first.preview, "## Mobile plan\n- iOS\n- Android")
+
+    let second = model.options[1]
+    XCTAssertEqual(second.label, "Desktop")
+    XCTAssertEqual(second.value, "desktop")
+    XCTAssertFalse(second.recommended)
+    XCTAssertNil(second.preview)
+  }
+
+  func testPendingWorkPermissionFromApprovalReturnsCardForGenericTools() {
+    let detail = """
+    {
+      "request": {
+        "itemId": "perm-1",
+        "kind": "permissions",
+        "tool": "functions.GitHub",
+        "description": "Allow GitHub MCP to list repos?"
+      }
+    }
+    """
+    let permission = pendingWorkPermissionFromApproval(
+      description: "Allow GitHub MCP",
+      detail: detail,
+      itemId: "perm-1"
+    )
+    XCTAssertEqual(permission?.id, "perm-1")
+    XCTAssertEqual(permission?.tool, "functions.GitHub")
+  }
+
+  func testPendingWorkPermissionFromApprovalSkipsAskUser() {
+    let detail = """
+    {
+      "request": {
+        "itemId": "perm-ask",
+        "kind": "permissions",
+        "tool": "ask_user",
+        "description": "Allow ask_user"
+      }
+    }
+    """
+    let permission = pendingWorkPermissionFromApproval(
+      description: "Allow ask_user",
+      detail: detail,
+      itemId: "perm-ask"
+    )
+    XCTAssertNil(permission)
+  }
+
+  func testPendingWorkQuestionFromAskUserToolCallParsesArgsPayload() {
+    let argsText = """
+    {
+      "questions": [
+        {
+          "id": "focus",
+          "question": "Which lane first?",
+          "allowsFreeform": false,
+          "options": [
+            { "label": "Mobile", "value": "mobile", "recommended": true },
+            { "label": "Desktop", "value": "desktop" }
+          ]
+        }
+      ]
+    }
+    """
+    let model = pendingWorkQuestionFromAskUserToolCall(argsText: argsText, itemId: "call-1")
+    XCTAssertEqual(model?.questionId, "focus")
+    XCTAssertEqual(model?.options.count, 2)
+    XCTAssertEqual(model?.options.first?.recommended, true)
+  }
+
+  func testDerivePendingWorkInputsSurfacesAskUserRawToolCallAsQuestion() {
+    let argsText = """
+    {"questions":[{"id":"focus","question":"Pick one","options":[{"label":"A","value":"a"}]}]}
+    """
+    let transcript: [WorkChatEnvelope] = [
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-04-20T00:00:01.000Z",
+        sequence: 1,
+        event: .toolCall(tool: "ask_user", argsText: argsText, itemId: "call-ask", parentItemId: nil, turnId: "turn-1")
+      ),
+    ]
+    let inputs = derivePendingWorkInputs(from: transcript)
+    guard case .question(let model) = inputs.first else {
+      return XCTFail("Expected ask_user raw tool_call to surface as a pending question.")
+    }
+    XCTAssertEqual(model.id, "call-ask")
+    XCTAssertEqual(model.questionId, "focus")
+    XCTAssertEqual(model.options.map(\.value), ["a"])
+
+    // The generic tool card should be suppressed while the question is pending.
+    let cards = buildWorkToolCards(from: transcript)
+    XCTAssertTrue(cards.isEmpty)
+  }
+
+  func testPendingWorkQuestionFromApprovalPreservesAllQuestions() {
+    let detail = """
+    {
+      "request": {
+        "itemId": "approval-multi",
+        "kind": "structured_question",
+        "title": "Mobile App Testing Plan",
+        "body": "Claude needs a few answers before it can continue.",
+        "questions": [
+          {
+            "id": "test_focus",
+            "header": "Test focus",
+            "question": "What are you testing on the mobile app right now?",
+            "allowsFreeform": true,
+            "options": [
+              {"label":"Chat / Messaging","value":"chat","description":"Testing the chat composer, message sending, or conversation flow"},
+              {"label":"Lanes / Missions","value":"lanes","description":"Testing lane creation, mission management, or task flow"},
+              {"label":"Sync / Connectivity","value":"sync","description":"Testing device sync, WebSocket connection, or host pairing"},
+              {"label":"Something else","value":"other","description":"A different part of the app not listed above"}
+            ]
+          },
+          {
+            "id": "help_type",
+            "header": "Help type",
+            "question": "What kind of help do you need from me?",
+            "allowsFreeform": true,
+            "options": [
+              {"label":"Fix a bug I found","value":"fix_bug","description":"I found an issue and want you to diagnose and fix it"},
+              {"label":"Review the code","value":"review","description":"Walk me through how a specific feature is implemented"},
+              {"label":"Add a feature","value":"add_feature","description":"I want to extend or improve something in the mobile app"},
+              {"label":"Just exploring","value":"explore","description":"No specific task yet — I'll share more as I test"}
+            ]
+          }
+        ]
+      }
+    }
+    """
+
+    guard let model = pendingWorkQuestionFromApproval(
+      description: "Mobile App Testing Plan",
+      detail: detail,
+      itemId: "approval-multi"
+    ) else {
+      return XCTFail("Expected a populated pending question model for a 2-question payload.")
+    }
+    XCTAssertEqual(model.id, "approval-multi")
+    XCTAssertEqual(model.title, "Mobile App Testing Plan")
+    XCTAssertEqual(model.questions.count, 2)
+    XCTAssertEqual(model.questions[0].questionId, "test_focus")
+    XCTAssertEqual(model.questions[0].header, "Test focus")
+    XCTAssertEqual(model.questions[0].options.count, 4)
+    XCTAssertEqual(model.questions[0].options.map(\.value), ["chat", "lanes", "sync", "other"])
+    XCTAssertEqual(model.questions[1].questionId, "help_type")
+    XCTAssertEqual(model.questions[1].header, "Help type")
+    XCTAssertEqual(model.questions[1].options.count, 4)
+    XCTAssertEqual(model.questions[1].options.map(\.value), ["fix_bug", "review", "add_feature", "explore"])
+  }
+
+  func testPendingWorkQuestionFromAskUserToolCallPreservesAllQuestions() {
+    let argsText = """
+    {
+      "questions": [
+        {"id": "a", "question": "First?", "options": [{"label":"Yes","value":"yes"}]},
+        {"id": "b", "question": "Second?", "options": [{"label":"No","value":"no"}]}
+      ]
+    }
+    """
+    guard let model = pendingWorkQuestionFromAskUserToolCall(argsText: argsText, itemId: "call-two") else {
+      return XCTFail("Expected a populated pending question model for multi-question args.")
+    }
+    XCTAssertEqual(model.questions.count, 2)
+    XCTAssertEqual(model.questions[0].questionId, "a")
+    XCTAssertEqual(model.questions[1].questionId, "b")
+  }
+
+  func testBuildWorkTimelineEmitsInlinePendingQuestionAndSuppressesGenericApprovalCard() {
+    let detail = """
+    {"request":{"itemId":"ap-1","kind":"structured_question","title":"T","questions":[{"id":"q","question":"Q","options":[{"label":"A","value":"a"}]}]}}
+    """
+    let transcript: [WorkChatEnvelope] = [
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-04-20T00:00:01.000Z",
+        sequence: 1,
+        event: .assistantText(text: "Before", turnId: "t-1", itemId: "msg-1")
+      ),
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-04-20T00:00:02.000Z",
+        sequence: 2,
+        event: .approvalRequest(description: "Choose", detail: detail, itemId: "ap-1", turnId: "t-1")
+      ),
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-04-20T00:00:03.000Z",
+        sequence: 3,
+        event: .assistantText(text: "After", turnId: "t-1", itemId: "msg-2")
+      ),
+    ]
+    let snapshot = buildWorkChatTimelineSnapshot(
+      transcript: transcript,
+      fallbackEntries: [],
+      artifacts: [],
+      localEchoMessages: []
+    )
+
+    XCTAssertTrue(snapshot.eventCards.allSatisfy { $0.kind != "approval" }, "Generic approval event card must be suppressed when a pending rich question exists for the same itemId.")
+
+    let pendingEntry = snapshot.timeline.first { entry in
+      if case .pendingQuestion(let model) = entry.payload, model.id == "ap-1" { return true }
+      return false
+    }
+    guard let pendingEntry else {
+      return XCTFail("Expected a .pendingQuestion timeline entry for itemId ap-1.")
+    }
+    XCTAssertEqual(pendingEntry.timestamp, "2026-04-20T00:00:02.000Z")
+
+    // Chronological: Before (t=01) → pendingQuestion (t=02) → After (t=03).
+    let indices = snapshot.timeline.compactMap { entry -> (String, String)? in
+      switch entry.payload {
+      case .message(let msg): return (msg.id, entry.timestamp)
+      case .pendingQuestion(let m): return ("pending-\(m.id)", entry.timestamp)
+      default: return nil
+      }
+    }
+    let timestamps = indices.map(\.1)
+    XCTAssertEqual(timestamps, timestamps.sorted(), "Timeline must sort chronologically.")
+  }
+
+  func testBuildWorkTimelineEmitsInlinePermissionAndSuppressesGenericEventCard() {
+    let detail = """
+    {"request":{"itemId":"perm-1","kind":"permissions","tool":"functions.GitHub","description":"Allow GitHub MCP"}}
+    """
+    let transcript: [WorkChatEnvelope] = [
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-04-20T00:00:01.000Z",
+        sequence: 1,
+        event: .approvalRequest(description: "Allow", detail: detail, itemId: "perm-1", turnId: "t-1")
+      ),
+    ]
+    let snapshot = buildWorkChatTimelineSnapshot(
+      transcript: transcript,
+      fallbackEntries: [],
+      artifacts: [],
+      localEchoMessages: []
+    )
+    XCTAssertTrue(snapshot.eventCards.allSatisfy { $0.kind != "approval" })
+    let hasPendingPermission = snapshot.timeline.contains { entry in
+      if case .pendingPermission(let m) = entry.payload, m.id == "perm-1" { return true }
+      return false
+    }
+    XCTAssertTrue(hasPendingPermission, "Expected an inline .pendingPermission timeline entry.")
+  }
+
+  func testSingleQuestionModelStillExposesLegacyFieldsForUnpagedRender() {
+    let detail = """
+    {"request":{"itemId":"one","kind":"structured_question","title":"T","questions":[{"id":"only","question":"Q","options":[{"label":"A","value":"a"}]}]}}
+    """
+    guard let model = pendingWorkQuestionFromApproval(description: "T", detail: detail, itemId: "one") else {
+      return XCTFail("Expected a single-question model.")
+    }
+    XCTAssertEqual(model.questions.count, 1)
+    // Legacy single-question consumers still work via computed shims.
+    XCTAssertEqual(model.questionId, "only")
+    XCTAssertEqual(model.options.count, 1)
   }
 }
 

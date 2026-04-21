@@ -156,7 +156,8 @@ func parseWorkChatTranscript(_ raw: String) -> [WorkChatEnvelope] {
           turnId: turnId
         )
       case "structured_question":
-        let options = (eventDict["options"] as? [[String: Any]] ?? []).compactMap { optionalString($0["label"]) ?? optionalString($0["value"]) }
+        let rawOptions = eventDict["options"] as? [[String: Any]] ?? []
+        let options = rawOptions.compactMap { workPendingQuestionOption(from: $0) }
         event = .structuredQuestion(
           question: stringValue(eventDict["question"]),
           options: options,
@@ -169,7 +170,7 @@ func parseWorkChatTranscript(_ raw: String) -> [WorkChatEnvelope] {
               "structured_question",
               turnId ?? "",
               stringValue(eventDict["question"]),
-              options.joined(separator: "|"),
+              options.map(\.label).joined(separator: "|"),
             ].joined(separator: "|")
           ),
           turnId: turnId
@@ -232,7 +233,9 @@ func parseWorkChatTranscript(_ raw: String) -> [WorkChatEnvelope] {
           status: stringValue(eventDict["status"]),
           summary: summaryParts.joined(separator: "\n"),
           usage: usageSummary,
-          turnId: stringValue(eventDict["turnId"])
+          turnId: stringValue(eventDict["turnId"]),
+          model: optionalString(eventDict["model"]),
+          modelId: optionalString(eventDict["modelId"])
         )
       case "completion_report":
         let report = eventDict["report"] as? [String: Any] ?? [:]

@@ -1314,8 +1314,8 @@ export function AgentChatComposer({
               <div className="flex items-center gap-1.5">
                 <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-amber-200/60">
                   {showPendingInputOptionsHint
-                    ? "Answer in the question window above, or pick an option there."
-                    : "Answer in the question window above, or type below."}
+                    ? "Answer in the inline question card, or pick an option there."
+                    : "Answer in the inline question card, or type below."}
                 </span>
                 <button
                   type="button"

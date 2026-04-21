@@ -64,6 +64,14 @@
 - Do not use Safari as the desktop parity reference. ADE desktop parity should be checked against the Electron app surface unless the task explicitly asks for renderer-only Vite behavior.
 - Keep the dev terminal logs visible while inspecting. Useful confirmation lines include `dev launcher using http://localhost:5173`, `DevTools listening on ws://127.0.0.1:9222`, `window.loading_url`, and `renderer.route_change`.
 
+### Pairing the iOS simulator with the desktop dev app on macOS
+
+- When the user wants the ADE iOS app paired to desktop, run the desktop dev app from the active lane's `apps/desktop`, but set `ADE_PROJECT_ROOT` to the ADE project root the phone should sync with. For this local setup, that is commonly `ADE_PROJECT_ROOT=/Users/arul/ADE npm run dev`, even when the code under test is in `/Users/arul/ADE/.ade/worktrees/...`.
+- Do not interact with an already-open Xcode GUI window unless the user explicitly says it is the ADE iOS project. Other projects may be open. Prefer `xcodebuild` and `xcrun simctl` for building, installing, launching, and inspecting the simulator.
+- The desktop sync PIN can be read or configured through the dev Electron preload once the `localhost:5173` page is running. Use the CDP endpoint printed by the dev app (`http://127.0.0.1:9222/json/list`) and evaluate `window.ade.sync.getStatus()` to verify `pairingPinConfigured`, `pairingPin`, the sync port, and `connectedPeers`.
+- A successful simulator pairing is not just the Settings screen showing "Connected". Also verify desktop `connectedPeers > 0`, inspect the simulator database under `xcrun simctl get_app_container <UDID> com.ade.ios data`, and check recent simulator logs for `incoming message failed`, `FOREIGN KEY`, or changeset errors.
+- If pairing reaches WebSocket but the phone reports `FOREIGN KEY constraint failed` while applying `changeset_batch`, treat it as an iOS sync/materialization bug until disproven. Desktop CRR tables may not enforce the same foreign keys as the iOS SQLite schema, so valid remote CRDT batches can arrive in an order that local foreign-key checks reject.
+
 ### Running the Electron desktop app on Linux
 
 - Set `ADE_DISABLE_HARDWARE_ACCEL=1` — the VM has no real GPU, and without this the app crashes on `WebGL1 blocklisted`.

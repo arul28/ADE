@@ -60,6 +60,8 @@ import type {
   LinearSyncConfig,
   MissionModelConfig,
   MissionPermissionConfig,
+  NotificationsConfig,
+  NotificationApnsConfig,
   StackButtonDefinition,
   TestSuiteDefinition,
   TestSuiteTag
@@ -1486,6 +1488,28 @@ function normalizeIssueStateKey(value: unknown):
   return null;
 }
 
+function coerceNotificationsConfig(value: unknown): NotificationsConfig | undefined {
+  if (!isRecord(value)) return undefined;
+  const out: NotificationsConfig = {};
+  if (isRecord(value.apns)) {
+    const raw = value.apns;
+    const apns: NotificationApnsConfig = {
+      enabled: asBool(raw.enabled) ?? false,
+      env: raw.env === "production" ? "production" : "sandbox",
+    };
+    const keyId = asString(raw.keyId)?.trim();
+    if (keyId) apns.keyId = keyId;
+    const teamId = asString(raw.teamId)?.trim();
+    if (teamId) apns.teamId = teamId;
+    const bundleId = asString(raw.bundleId)?.trim();
+    if (bundleId) apns.bundleId = bundleId;
+    const keyStored = asBool(raw.keyStored);
+    if (keyStored != null) apns.keyStored = keyStored;
+    out.apns = apns;
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
 function coerceLinearSync(value: unknown): LinearSyncConfig | undefined {
   if (!isRecord(value)) return undefined;
   const out: LinearSyncConfig = {};
@@ -1872,6 +1896,8 @@ function coerceConfigFile(value: unknown): ProjectConfigFile {
     delete providersRaw.ai;
   }
 
+  const notifications = coerceNotificationsConfig(value.notifications);
+
   return {
     version,
     processes,
@@ -1888,7 +1914,8 @@ function coerceConfigFile(value: unknown): ProjectConfigFile {
     ...(git ? { git } : {}),
     ...(ai ? { ai } : {}),
     ...(providersRaw && Object.keys(providersRaw).length ? { providers: providersRaw } : {}),
-    ...(linearSync ? { linearSync } : {})
+    ...(linearSync ? { linearSync } : {}),
+    ...(notifications ? { notifications } : {})
   };
 }
 
@@ -1930,7 +1957,8 @@ function toCanonicalYaml(config: ProjectConfigFile): string {
     ...(config.git ? { git: config.git } : {}),
     ...(config.ai ? { ai: config.ai } : {}),
     ...(config.providers ? { providers: config.providers } : {}),
-    ...(config.linearSync ? { linearSync: config.linearSync } : {})
+    ...(config.linearSync ? { linearSync: config.linearSync } : {}),
+    ...(config.notifications ? { notifications: config.notifications } : {})
   };
   return YAML.stringify(normalized, { indent: 2 });
 }
@@ -2265,7 +2293,10 @@ function resolveEffectiveConfig(shared: ProjectConfigFile, local: ProjectConfigF
     },
     ...(effectiveAi ? { ai: effectiveAi } : {}),
     ...(mergedProviders ? { providers: mergedProviders } : {}),
-    ...(mergedLinearSync ? { linearSync: mergedLinearSync } : {})
+    ...(mergedLinearSync ? { linearSync: mergedLinearSync } : {}),
+    ...(local.notifications || shared.notifications
+      ? { notifications: { ...shared.notifications, ...local.notifications } }
+      : {})
   };
 }
 

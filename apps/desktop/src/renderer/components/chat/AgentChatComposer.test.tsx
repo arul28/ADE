@@ -210,8 +210,8 @@ describe("AgentChatComposer", () => {
       },
     });
 
-    expect(screen.getByText("Answer in the question window above, or type below.")).toBeTruthy();
-    expect(screen.queryByText("Answer in the question window above, or pick an option there.")).toBeNull();
+    expect(screen.getByText("Answer in the inline question card, or type below.")).toBeTruthy();
+    expect(screen.queryByText("Answer in the inline question card, or pick an option there.")).toBeNull();
   });
 
   it("keeps the option hint when a pending question includes selectable options", () => {
@@ -240,7 +240,7 @@ describe("AgentChatComposer", () => {
       },
     });
 
-    expect(screen.getByText("Answer in the question window above, or pick an option there.")).toBeTruthy();
+    expect(screen.getByText("Answer in the inline question card, or pick an option there.")).toBeTruthy();
   });
 
   it("keeps the option hint when any pending question includes selectable options", () => {
@@ -277,7 +277,7 @@ describe("AgentChatComposer", () => {
       },
     });
 
-    expect(screen.getByText("Answer in the question window above, or pick an option there.")).toBeTruthy();
+    expect(screen.getByText("Answer in the inline question card, or pick an option there.")).toBeTruthy();
   });
 
   it("uses decline wording for native Codex structured questions", () => {

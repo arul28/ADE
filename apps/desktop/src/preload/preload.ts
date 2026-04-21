@@ -48,6 +48,12 @@ import type {
   SyncRoleSnapshot,
   SyncStatusEventPayload,
   SyncTransferReadiness,
+  ApnsBridgeStatus,
+  ApnsBridgeSaveConfigArgs,
+  ApnsBridgeUploadKeyArgs,
+  ApnsBridgeSendTestPushArgs,
+  ApnsBridgeSendTestPushResult,
+  ApnsTestPushKind,
   DraftPrDescriptionArgs,
   CtoGetStateArgs,
   CtoEnsureSessionArgs,
@@ -733,6 +739,22 @@ contextBridge.exposeInMainWorld("ade", {
       ) => cb(payload);
       ipcRenderer.on(IPC.syncEvent, listener);
       return () => ipcRenderer.removeListener(IPC.syncEvent, listener);
+    },
+  },
+  notifications: {
+    apns: {
+      getStatus: async (): Promise<ApnsBridgeStatus> =>
+        ipcRenderer.invoke(IPC.notificationsApnsGetStatus),
+      saveConfig: async (args: ApnsBridgeSaveConfigArgs): Promise<ApnsBridgeStatus> =>
+        ipcRenderer.invoke(IPC.notificationsApnsSaveConfig, args),
+      uploadKey: async (args: ApnsBridgeUploadKeyArgs): Promise<ApnsBridgeStatus> =>
+        ipcRenderer.invoke(IPC.notificationsApnsUploadKey, args),
+      clearKey: async (): Promise<ApnsBridgeStatus> =>
+        ipcRenderer.invoke(IPC.notificationsApnsClearKey),
+      sendTestPush: async (
+        args: ApnsBridgeSendTestPushArgs,
+      ): Promise<ApnsBridgeSendTestPushResult> =>
+        ipcRenderer.invoke(IPC.notificationsApnsSendTestPush, args),
     },
   },
   agentTools: {

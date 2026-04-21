@@ -33,7 +33,10 @@ struct WorkChatSessionView: View {
   let onSend: @MainActor (String) async -> Bool
   let onInterrupt: @MainActor () async -> Void
   let onApproveRequest: @MainActor (String, AgentChatApprovalDecision) async -> Void
-  let onRespondToQuestion: @MainActor (String, String?, String?) async -> Void
+  let onRespondToQuestion: @MainActor (String, String, AgentChatInputAnswerValue?, String?) async -> Void
+  let onSubmitQuestionAnswers: @MainActor (String, [String: AgentChatInputAnswerValue], String?) async -> Void
+  let onDeclineQuestion: @MainActor (String) async -> Void
+  let onRespondToPermission: @MainActor (String, AgentChatApprovalDecision) async -> Void
   let onRetryLoad: @MainActor () async -> Void
   let onOpenFile: @MainActor (String) async -> Void
   let onOpenPr: @MainActor (Int) async -> Void
@@ -87,10 +90,11 @@ struct WorkChatSessionView: View {
 
   /// Timeline with synthetic turn-separator pills inserted before each new
   /// user-message turn. Computed view-side so the async snapshot stays focused
-  /// on raw transcript shaping; the separators carry the chat's current model
-  /// label so we don't need to re-derive it per cell.
+  /// on raw transcript shaping; separators prefer the model recorded on that
+  /// turn's terminal event so older turns do not relabel when the session model
+  /// changes.
   var timelineWithSeparators: [WorkTimelineEntry] {
-    injectWorkTurnSeparators(into: timeline, chatSummary: chatSummary)
+    injectWorkTurnSeparators(into: timeline, chatSummary: chatSummary, transcript: transcript)
   }
 
   var visibleTimeline: [WorkTimelineEntry] {
@@ -132,44 +136,11 @@ struct WorkChatSessionView: View {
   var sessionOverviewSection: AnyView {
     AnyView(
       Group {
-        // The lane chip / relative time / overflow menu now live in the nav
-        // toolbar (set by WorkSessionDestinationView). The full-width yellow
-        // "Interrupt turn" slab has been folded into the composer Send button,
-        // which swaps to a warning-tinted Stop while the assistant streams.
-
-        ForEach(pendingInputs) { item in
-          if isLive {
-            switch item {
-            case .approval(let approval):
-              WorkApprovalRequestCard(
-                approval: approval,
-                busy: actionInFlight,
-                onDecision: { decision in
-                  await runSessionAction {
-                    await onApproveRequest(approval.id, decision)
-                  }
-                }
-              )
-            case .question(let question):
-              WorkStructuredQuestionCard(
-                question: question,
-                responseText: $inputResponseText,
-                busy: actionInFlight,
-                onSelectOption: { option in
-                  await runSessionAction {
-                    await onRespondToQuestion(question.id, option, inputResponseText)
-                    inputResponseText = ""
-                  }
-                },
-                onSubmitFreeform: {
-                  await runSessionAction {
-                    await onRespondToQuestion(question.id, nil, inputResponseText)
-                    inputResponseText = ""
-                  }
-                }
-              )
-            }
-          } else {
+        // Pending-input cards now render inline at their chronological position
+        // in the timeline via `timelineEntryView`. The overview section only
+        // surfaces offline banners and chat-level errors.
+        if !isLive {
+          ForEach(pendingInputs) { item in
             switch item {
             case .approval:
               ADENoticeCard(
@@ -188,6 +159,34 @@ struct WorkChatSessionView: View {
                 tint: ADEColor.warning,
                 actionTitle: nil,
                 action: nil
+              )
+            case .permission:
+              ADENoticeCard(
+                title: "Permission request waiting",
+                message: "Reconnect to allow or decline this tool's permission gate.",
+                icon: "lock.shield",
+                tint: ADEColor.warning,
+                actionTitle: nil,
+                action: nil
+              )
+            }
+          }
+        }
+
+        // When live, approval_request cards (tool approval gates) still render
+        // at the top — they are not suppressed from the pendingInputs set, only
+        // structured questions and permission gates get their inline treatment.
+        if isLive {
+          ForEach(pendingInputs) { item in
+            if case .approval(let approval) = item {
+              WorkApprovalRequestCard(
+                approval: approval,
+                busy: actionInFlight,
+                onDecision: { decision in
+                  await runSessionAction {
+                    await onApproveRequest(approval.id, decision)
+                  }
+                }
               )
             }
           }
@@ -276,6 +275,13 @@ struct WorkChatSessionView: View {
               title: overflow > 0 ? "Question waiting (+\(overflow) more)" : "Question waiting",
               message: question.question,
               icon: "questionmark.circle",
+              tint: ADEColor.warning
+            )
+          case .permission(let permission):
+            WorkComposerInputBanner(
+              title: overflow > 0 ? "Permission waiting (+\(overflow) more)" : "Permission waiting",
+              message: permission.description,
+              icon: "lock.shield",
               tint: ADEColor.warning
             )
           }
@@ -523,9 +529,9 @@ private struct WorkChatComposerCard: View {
     canSend && !trimmedDraft.isEmpty
   }
 
-  /// Brand color for the active chat surface, used on the Send pill so each
-  /// model's accent (Claude orange for Opus, purple for Sonnet, Codex green,
-  /// etc.) flows through. Falls back to provider brand, then accent default.
+  /// Brand color for the active chat surface, used on the Send pill. Mirrors
+  /// desktop's provider-level chat accents: Claude amber, Codex warm white,
+  /// with model color only as a fallback for providers outside that map.
   private var sendAccent: Color {
     ADEColor.chatSurfaceAccent(
       modelId: chatSummary?.modelId ?? chatSummary?.model,

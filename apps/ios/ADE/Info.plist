@@ -16,6 +16,19 @@
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>
   <string>1.0</string>
+  <key>CFBundleURLTypes</key>
+  <array>
+    <dict>
+      <key>CFBundleTypeRole</key>
+      <string>Editor</string>
+      <key>CFBundleURLName</key>
+      <string>com.ade.ios.deeplink</string>
+      <key>CFBundleURLSchemes</key>
+      <array>
+        <string>ade</string>
+      </array>
+    </dict>
+  </array>
   <key>CFBundleVersion</key>
   <string>1</string>
   <key>LSRequiresIPhoneOS</key>
@@ -33,8 +46,16 @@
   <string>Scan the ADE host QR code to pair this iPhone with your project host.</string>
   <key>NSLocalNetworkUsageDescription</key>
   <string>Discover ADE hosts on your local network and reconnect without rescanning.</string>
+  <key>NSSupportsLiveActivities</key>
+  <true/>
+  <key>NSSupportsLiveActivitiesFrequentUpdates</key>
+  <true/>
   <key>UIApplicationSceneManifest</key>
   <dict/>
+  <key>UIBackgroundModes</key>
+  <array>
+    <string>remote-notification</string>
+  </array>
   <key>UILaunchScreen</key>
   <dict/>
   <key>UIRequiredDeviceCapabilities</key>

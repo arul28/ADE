@@ -2,6 +2,7 @@ import SwiftUI
 
 @main
 struct ADEApp: App {
+  @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
   @Environment(\.scenePhase) private var scenePhase
   @StateObject private var syncService = SyncService()
   @State private var didBootstrapSync = false
@@ -26,6 +27,9 @@ struct ADEApp: App {
           Task {
             await syncService.handleForegroundTransition()
           }
+        }
+        .onOpenURL { url in
+          DeepLinkRouter.shared.handle(url)
         }
     }
   }

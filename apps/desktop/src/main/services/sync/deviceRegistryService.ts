@@ -355,6 +355,7 @@ export function createDeviceRegistryService(args: DeviceRegistryServiceArgs) {
       lastSeenAt?: string | null;
       lastHost?: string | null;
       lastPort?: number | null;
+      metadata?: Record<string, unknown>;
     } = {},
   ): SyncDeviceRecord => {
     return upsertDeviceRecord({
@@ -368,8 +369,105 @@ export function createDeviceRegistryService(args: DeviceRegistryServiceArgs) {
       lastPort: extras.lastPort ?? ("remotePort" in peer ? peer.remotePort : null),
       metadata: {
         dbVersion: peer.dbVersion,
+        ...(extras.metadata ?? {}),
       },
     });
+  };
+
+  type ApnsTokenKind = "alert" | "activity-start" | "activity-update";
+
+  const apnsMetaKey = (kind: ApnsTokenKind): string => {
+    if (kind === "alert") return "apnsAlertToken";
+    if (kind === "activity-start") return "apnsActivityStartToken";
+    return "apnsActivityUpdateTokens";
+  };
+
+  const setApnsToken = (
+    deviceId: string,
+    token: string,
+    kind: ApnsTokenKind,
+    env: "sandbox" | "production",
+    extras: { bundleId?: string; activityId?: string } = {},
+  ): SyncDeviceRecord | null => {
+    const device = getDevice(deviceId);
+    if (!device) return null;
+    const nextMetadata: Record<string, unknown> = {
+      ...device.metadata,
+      apnsEnv: env,
+      apnsTokenUpdatedAt: nowIso(),
+    };
+    if (extras.bundleId) nextMetadata.apnsBundleId = extras.bundleId;
+    if (kind === "activity-update" && extras.activityId) {
+      const existing = (device.metadata.apnsActivityUpdateTokens as Record<string, string> | undefined) ?? {};
+      nextMetadata.apnsActivityUpdateTokens = { ...existing, [extras.activityId]: token };
+    } else {
+      nextMetadata[apnsMetaKey(kind)] = token;
+    }
+    return upsertDeviceRecord({
+      deviceId: device.deviceId,
+      siteId: device.siteId,
+      name: device.name,
+      platform: device.platform,
+      deviceType: device.deviceType,
+      lastSeenAt: device.lastSeenAt,
+      lastHost: device.lastHost,
+      lastPort: device.lastPort,
+      tailscaleIp: device.tailscaleIp,
+      ipAddresses: device.ipAddresses,
+      metadata: nextMetadata,
+    });
+  };
+
+  const getApnsTokenForDevice = (
+    deviceId: string,
+    kind: ApnsTokenKind,
+    activityId?: string,
+  ): string | null => {
+    const device = getDevice(deviceId);
+    if (!device) return null;
+    if (kind === "activity-update") {
+      const map = (device.metadata.apnsActivityUpdateTokens as Record<string, string> | undefined) ?? {};
+      return activityId ? map[activityId] ?? null : null;
+    }
+    const raw = device.metadata[apnsMetaKey(kind)];
+    return typeof raw === "string" && raw.trim().length > 0 ? raw : null;
+  };
+
+  const invalidateApnsTokensForDevice = (deviceId: string): void => {
+    const device = getDevice(deviceId);
+    if (!device) return;
+    const nextMetadata = { ...device.metadata };
+    delete nextMetadata.apnsAlertToken;
+    delete nextMetadata.apnsActivityStartToken;
+    delete nextMetadata.apnsActivityUpdateTokens;
+    upsertDeviceRecord({
+      deviceId: device.deviceId,
+      siteId: device.siteId,
+      name: device.name,
+      platform: device.platform,
+      deviceType: device.deviceType,
+      lastSeenAt: device.lastSeenAt,
+      lastHost: device.lastHost,
+      lastPort: device.lastPort,
+      tailscaleIp: device.tailscaleIp,
+      ipAddresses: device.ipAddresses,
+      metadata: nextMetadata,
+    });
+  };
+
+  const findDeviceByApnsToken = (token: string): SyncDeviceRecord | null => {
+    for (const device of listDevices()) {
+      const alert = device.metadata.apnsAlertToken;
+      const activity = device.metadata.apnsActivityStartToken;
+      if (alert === token || activity === token) return device;
+      const updates = device.metadata.apnsActivityUpdateTokens;
+      if (updates && typeof updates === "object") {
+        for (const value of Object.values(updates as Record<string, unknown>)) {
+          if (value === token) return device;
+        }
+      }
+    }
+    return null;
   };
 
   const applyBrainStatus = (payload: SyncBrainStatusPayload): void => {
@@ -421,6 +519,10 @@ export function createDeviceRegistryService(args: DeviceRegistryServiceArgs) {
     applyBrainStatus,
     clearClusterRegistryForViewerJoin,
     forgetDevice,
+    setApnsToken,
+    getApnsTokenForDevice,
+    invalidateApnsTokensForDevice,
+    findDeviceByApnsToken,
   };
 }
 

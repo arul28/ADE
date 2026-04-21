@@ -143,7 +143,10 @@ struct WorkChatMessageBubble: View {
   }
 
   private var accent: Color {
-    ADEColor.chatSurfaceAccent(modelId: sessionModelId, provider: sessionProvider)
+    ADEColor.chatSurfaceAccent(
+      modelId: message.turnModelId ?? sessionModelId,
+      provider: message.turnProvider ?? sessionProvider
+    )
   }
 
   private var assistantRow: some View {

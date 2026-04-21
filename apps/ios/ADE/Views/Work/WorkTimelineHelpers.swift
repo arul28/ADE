@@ -10,8 +10,15 @@ func buildWorkChatTimelineSnapshot(
 ) -> WorkChatTimelineSnapshot {
   let pendingInputs = derivePendingWorkInputs(from: transcript)
   let pendingSteers = derivePendingWorkSteers(from: transcript)
+  let suppressedItemIds: Set<String> = Set(pendingInputs.compactMap { input -> String? in
+    switch input {
+    case .question(let model): return model.id
+    case .permission(let model): return model.id
+    case .approval: return nil
+    }
+  })
   let toolCards = buildWorkToolCards(from: transcript)
-  let eventCards = buildWorkEventCards(from: transcript)
+  let eventCards = buildWorkEventCards(from: transcript, suppressedItemIds: suppressedItemIds)
   let commandCards = buildWorkCommandCards(from: transcript)
   let fileChangeCards = buildWorkFileChangeCards(from: transcript)
   let subagentSnapshots = buildWorkSubagentSnapshots(from: transcript)
@@ -22,6 +29,7 @@ func buildWorkChatTimelineSnapshot(
     commandCards: commandCards,
     fileChangeCards: fileChangeCards,
     eventCards: eventCards,
+    pendingInputs: pendingInputs,
     artifacts: artifacts,
     localEchoMessages: localEchoMessages
   )
@@ -115,6 +123,7 @@ func buildWorkTimeline(
   commandCards: [WorkCommandCardModel],
   fileChangeCards: [WorkFileChangeCardModel],
   eventCards: [WorkEventCardModel],
+  pendingInputs: [WorkPendingInputItem] = [],
   artifacts: [ComputerUseArtifactSummary],
   localEchoMessages: [WorkLocalEchoMessage]
 ) -> [WorkTimelineEntry] {
@@ -160,8 +169,37 @@ func buildWorkTimeline(
     WorkTimelineEntry(id: "event-\(card.id)", timestamp: card.timestamp, rank: 1_500 + index, payload: .eventCard(card))
   })
 
+  // Resolve a chronological timestamp for each pending-input itemId by looking
+  // up its originating approval_request / structured_question / ask_user
+  // tool_call envelope. Falling back to the latest transcript timestamp keeps
+  // the pending card in place when the source envelope was dropped upstream.
+  let pendingTimestamps = workPendingInputTimestamps(from: transcript)
+  let fallbackPendingTimestamp = transcript.last?.timestamp ?? ""
+  entries.append(contentsOf: pendingInputs.enumerated().compactMap { index, input -> WorkTimelineEntry? in
+    switch input {
+    case .question(let model):
+      let ts = pendingTimestamps[model.id] ?? fallbackPendingTimestamp
+      return WorkTimelineEntry(
+        id: "pending-question-\(model.id)",
+        timestamp: ts,
+        rank: 1_600 + index,
+        payload: .pendingQuestion(model)
+      )
+    case .permission(let model):
+      let ts = pendingTimestamps[model.id] ?? fallbackPendingTimestamp
+      return WorkTimelineEntry(
+        id: "pending-permission-\(model.id)",
+        timestamp: ts,
+        rank: 1_600 + index,
+        payload: .pendingPermission(model)
+      )
+    case .approval:
+      return nil
+    }
+  })
+
   let turnUsageSummaries = transcript.compactMap { envelope -> (id: String, timestamp: String, usage: WorkUsageSummary)? in
-    guard case .done(_, _, let usage, _) = envelope.event, let usage else { return nil }
+    guard case .done(_, _, let usage, _, _, _) = envelope.event, let usage else { return nil }
     return (envelope.id, envelope.timestamp, usage)
   }
 
@@ -183,11 +221,124 @@ func buildWorkTimeline(
     return WorkTimelineEntry(id: "echo-\(echo.id)", timestamp: echo.timestamp, rank: 3_000 + index, payload: .message(message))
   })
 
-  return entries.sorted { lhs, rhs in
+  let sorted = entries.sorted { lhs, rhs in
     if lhs.timestamp == rhs.timestamp {
       return lhs.rank < rhs.rank
     }
     return lhs.timestamp < rhs.timestamp
+  }
+  // Defensive guard: `ForEach(visibleTimeline)` relies on unique entry ids, and SwiftUI
+  // emits a runtime warning and undefined behavior if two rows share one. Dedup by id,
+  // keeping the higher-ranked (i.e. later-bucket) entry on collision so completed tool
+  // results win over a duplicate running card.
+  var seen: [String: Int] = [:]
+  var deduped: [WorkTimelineEntry] = []
+  deduped.reserveCapacity(sorted.count)
+  for entry in sorted {
+    if let existing = seen[entry.id] {
+      if entry.rank > deduped[existing].rank {
+        deduped[existing] = entry
+      }
+    } else {
+      seen[entry.id] = deduped.count
+      deduped.append(entry)
+    }
+  }
+  return collapseConsecutiveWorkToolEntries(deduped)
+}
+
+/// Fold tool-like timeline entries (tool cards, commands, file changes) into
+/// a single `.toolGroup` entry so the iOS chat mirrors the desktop
+/// `work_log_group` behavior — one summary row per cluster instead of N
+/// stacked cards that eat the phone viewport.
+///
+/// Low-signal event cards (reasoning, status, activity, todo, etc.) do NOT
+/// break a cluster — Claude typically emits a reasoning entry between every
+/// two tool calls, and a naive "consecutive" check would prevent any grouping
+/// at all. They are buffered and re-emitted after the cluster so the
+/// narrative order (tools first, then reasoning) stays readable. Hard
+/// boundaries (messages, turn separators, approvals, pending inputs, usage
+/// summaries, artifacts) flush the cluster so the group never swallows a
+/// different turn's work. Runs of size 1 stay ungrouped.
+func collapseConsecutiveWorkToolEntries(_ entries: [WorkTimelineEntry]) -> [WorkTimelineEntry] {
+  var result: [WorkTimelineEntry] = []
+  result.reserveCapacity(entries.count)
+  var cluster: [WorkTimelineEntry] = []
+  var buffered: [WorkTimelineEntry] = []
+
+  func flushCluster() {
+    if cluster.count >= 2 {
+      let members = cluster.compactMap(workToolGroupMember(from:))
+      if members.count == cluster.count {
+        let anchor = cluster[0]
+        let groupId = "tool-group:\(anchor.id)"
+        result.append(WorkTimelineEntry(
+          id: groupId,
+          timestamp: anchor.timestamp,
+          rank: anchor.rank,
+          payload: .toolGroup(WorkToolGroupModel(id: groupId, members: members))
+        ))
+      } else {
+        result.append(contentsOf: cluster)
+      }
+    } else {
+      result.append(contentsOf: cluster)
+    }
+    result.append(contentsOf: buffered)
+    cluster.removeAll(keepingCapacity: true)
+    buffered.removeAll(keepingCapacity: true)
+  }
+
+  for entry in entries {
+    if workToolGroupMember(from: entry) != nil {
+      // If we had buffered soft-break events between the previous cluster and
+      // this new tool entry, flush them now so they land before the new group
+      // rather than being absorbed into it.
+      if cluster.isEmpty, !buffered.isEmpty {
+        result.append(contentsOf: buffered)
+        buffered.removeAll(keepingCapacity: true)
+      }
+      cluster.append(entry)
+    } else if workToolGroupSoftBreak(entry) {
+      if cluster.isEmpty {
+        result.append(entry)
+      } else {
+        buffered.append(entry)
+      }
+    } else {
+      flushCluster()
+      result.append(entry)
+    }
+  }
+  flushCluster()
+  return result
+}
+
+private func workToolGroupMember(from entry: WorkTimelineEntry) -> WorkToolGroupMember? {
+  switch entry.payload {
+  case .toolCard(let card): return .tool(card)
+  case .commandCard(let card): return .command(card)
+  case .fileChangeCard(let card): return .fileChange(card)
+  default: return nil
+  }
+}
+
+/// Soft-break entries don't end a tool cluster — they get buffered and
+/// re-emitted after the cluster so micro-events (status pings, todo updates,
+/// activity beacons) don't stop grouping. Reasoning is explicitly a HARD
+/// break: it's the narrative beat between tool uses and should visually
+/// separate clusters the same way it does on desktop. All transcript-level
+/// boundaries (messages, turn separators, usage, pending inputs, artifacts,
+/// completion reports, plans) are hard breaks too.
+private func workToolGroupSoftBreak(_ entry: WorkTimelineEntry) -> Bool {
+  guard case .eventCard(let card) = entry.payload else { return false }
+  switch card.kind {
+  case "status", "activity", "todo", "notice",
+       "autoApproval", "pendingInputResolved",
+       "promptSuggestion", "toolUseSummary":
+    return true
+  default:
+    return false
   }
 }
 
@@ -198,11 +349,14 @@ func normalizedWorkLocalEchoText(_ text: String) -> String {
 }
 
 func buildWorkCommandCards(from transcript: [WorkChatEnvelope]) -> [WorkCommandCardModel] {
-  transcript.compactMap { envelope in
+  var byId: [String: WorkCommandCardModel] = [:]
+  var order: [String] = []
+  for envelope in transcript {
     guard case .command(let command, let cwd, let output, let status, let itemId, let exitCode, let durationMs, _) = envelope.event else {
-      return nil
+      continue
     }
-    return WorkCommandCardModel(
+    if byId[itemId] == nil { order.append(itemId) }
+    byId[itemId] = WorkCommandCardModel(
       id: itemId,
       command: command,
       cwd: cwd,
@@ -213,14 +367,18 @@ func buildWorkCommandCards(from transcript: [WorkChatEnvelope]) -> [WorkCommandC
       durationMs: durationMs
     )
   }
+  return order.compactMap { byId[$0] }
 }
 
 func buildWorkFileChangeCards(from transcript: [WorkChatEnvelope]) -> [WorkFileChangeCardModel] {
-  transcript.compactMap { envelope in
+  var byId: [String: WorkFileChangeCardModel] = [:]
+  var order: [String] = []
+  for envelope in transcript {
     guard case .fileChange(let path, let diff, let kind, let status, let itemId, _) = envelope.event else {
-      return nil
+      continue
     }
-    return WorkFileChangeCardModel(
+    if byId[itemId] == nil { order.append(itemId) }
+    byId[itemId] = WorkFileChangeCardModel(
       id: itemId,
       path: path,
       diff: diff,
@@ -229,11 +387,56 @@ func buildWorkFileChangeCards(from transcript: [WorkChatEnvelope]) -> [WorkFileC
       timestamp: envelope.timestamp
     )
   }
+  return order.compactMap { byId[$0] }
 }
 
-func buildWorkEventCards(from transcript: [WorkChatEnvelope]) -> [WorkEventCardModel] {
-  transcript.compactMap { envelope in
+func buildWorkEventCards(
+  from transcript: [WorkChatEnvelope],
+  suppressedItemIds: Set<String> = []
+) -> [WorkEventCardModel] {
+  var byId: [String: WorkEventCardModel] = [:]
+  var order: [String] = []
+  for envelope in transcript {
+    if !suppressedItemIds.isEmpty {
+      switch envelope.event {
+      case .approvalRequest(_, _, let itemId, _) where suppressedItemIds.contains(itemId):
+        continue
+      case .structuredQuestion(_, _, let itemId, _) where suppressedItemIds.contains(itemId):
+        continue
+      default:
+        break
+      }
+    }
+    guard let card = eventCard(for: envelope) else { continue }
+    if byId[card.id] == nil { order.append(card.id) }
+    byId[card.id] = card
+  }
+  return order.compactMap { byId[$0] }
+}
+
+/// Map pending-input itemIds to the timestamp of their originating envelope so
+/// inline timeline entries sort into the chronological slot where the host
+/// first requested input, not the current "now".
+func workPendingInputTimestamps(from transcript: [WorkChatEnvelope]) -> [String: String] {
+  var result: [String: String] = [:]
+  for envelope in transcript {
     switch envelope.event {
+    case .approvalRequest(_, _, let itemId, _),
+         .structuredQuestion(_, _, let itemId, _):
+      if result[itemId] == nil { result[itemId] = envelope.timestamp }
+    case .toolCall(let tool, _, let itemId, _, _):
+      if isAskUserToolName(tool), result[itemId] == nil {
+        result[itemId] = envelope.timestamp
+      }
+    default:
+      continue
+    }
+  }
+  return result
+}
+
+private func eventCard(for envelope: WorkChatEnvelope) -> WorkEventCardModel? {
+  switch envelope.event {
     case .activity(let kind, let detail, _):
       guard !isLowSignalWorkActivity(kind: kind, detail: detail) else { return nil }
       return WorkEventCardModel(
@@ -306,7 +509,7 @@ func buildWorkEventCards(from transcript: [WorkChatEnvelope]) -> [WorkEventCardM
         tint: .warning,
         timestamp: envelope.timestamp,
         body: question,
-        bullets: options,
+        bullets: options.map { $0.label },
         metadata: []
       )
     case .todoUpdate(let items, _):
@@ -461,7 +664,6 @@ func buildWorkEventCards(from transcript: [WorkChatEnvelope]) -> [WorkEventCardM
     default:
       return nil
     }
-  }
 }
 
 func isLowSignalWorkReasoning(_ text: String) -> Bool {
@@ -502,21 +704,27 @@ func visibleWorkTimelineEntries(from entries: [WorkTimelineEntry], visibleCount:
 /// message so the transcript reads like the desktop AgentChatPane: a centered
 /// "HH:MM AM · Model" label introduces every new turn.
 ///
-/// The separator carries the user-message timestamp and the chat's current
-/// model so the assistant message rendered just below it doesn't need its own
-/// time/name header.
+/// The separator carries the user-message timestamp and the model recorded for
+/// that turn when the host emitted a terminal `done` event. Falling back to the
+/// chat's current model keeps in-progress turns labeled while avoiding relabels
+/// of older turns after a model switch.
 func injectWorkTurnSeparators(
   into entries: [WorkTimelineEntry],
-  chatSummary: AgentChatSessionSummary?
+  chatSummary: AgentChatSessionSummary?,
+  transcript: [WorkChatEnvelope] = []
 ) -> [WorkTimelineEntry] {
   guard !entries.isEmpty else { return entries }
   var seenTurnIds = Set<String>()
   var output: [WorkTimelineEntry] = []
   output.reserveCapacity(entries.count + 4)
 
-  let provider = chatSummary?.provider ?? ""
-  let modelLabel = prettyWorkChatModelName(chatSummary?.model ?? "")
-  let modelId = chatSummary?.modelId ?? chatSummary?.model
+  let fallbackModelId = chatSummary?.modelId ?? chatSummary?.model
+  let fallbackMetadata = WorkTurnModelMetadata(
+    provider: chatSummary?.provider ?? "",
+    modelLabel: prettyWorkChatModelName(chatSummary?.model ?? ""),
+    modelId: fallbackModelId
+  )
+  let metadataByTurn = workTurnModelMetadataByTurn(from: transcript, fallback: fallbackMetadata)
 
   for entry in entries {
     if case .message(let message) = entry.payload, message.role.lowercased() == "user" {
@@ -525,11 +733,15 @@ func injectWorkTurnSeparators(
       let key = message.turnId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "msg-\(message.id)"
       if !seenTurnIds.contains(key) {
         seenTurnIds.insert(key)
+        let metadata = message.turnId
+          .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+          .flatMap { metadataByTurn[$0] }
+          ?? fallbackMetadata
         let separator = WorkTurnSeparator(
           time: message.timestamp,
-          provider: provider,
-          modelLabel: modelLabel,
-          modelId: modelId
+          provider: metadata.provider,
+          modelLabel: metadata.modelLabel,
+          modelId: metadata.modelId
         )
         // Rank the separator just before the user message at the same
         // timestamp so the sort below stays stable and the separator hugs
@@ -547,6 +759,37 @@ func injectWorkTurnSeparators(
     output.append(entry)
   }
   return output
+}
+
+struct WorkTurnModelMetadata {
+  let provider: String
+  let modelLabel: String
+  let modelId: String?
+}
+
+func workTurnModelMetadataByTurn(
+  from transcript: [WorkChatEnvelope],
+  fallback: WorkTurnModelMetadata? = nil
+) -> [String: WorkTurnModelMetadata] {
+  var metadataByTurn: [String: WorkTurnModelMetadata] = [:]
+  for envelope in transcript {
+    guard case .done(_, _, _, let turnId, let model, let modelId) = envelope.event else { continue }
+    let normalizedTurnId = turnId.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !normalizedTurnId.isEmpty else { continue }
+    let rawModel = [model, modelId]
+      .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+      .first { !$0.isEmpty }
+      ?? ""
+    let rawModelId = [modelId, model]
+      .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+      .first { !$0.isEmpty }
+    metadataByTurn[normalizedTurnId] = WorkTurnModelMetadata(
+      provider: workModelCatalogGroupKey(for: rawModelId ?? rawModel, currentProvider: fallback?.provider ?? ""),
+      modelLabel: rawModel.isEmpty ? fallback?.modelLabel ?? "Model" : prettyWorkChatModelName(rawModel),
+      modelId: rawModelId ?? fallback?.modelId
+    )
+  }
+  return metadataByTurn
 }
 
 /// Beautify a host-supplied model id into the label used on chips and turn
@@ -613,7 +856,7 @@ func summarizeWorkSessionUsage(from transcript: [WorkChatEnvelope]) -> WorkUsage
   )
 
   for envelope in transcript {
-    guard case .done(_, _, let usage, _) = envelope.event, let usage else { continue }
+    guard case .done(_, _, let usage, _, _, _) = envelope.event, let usage else { continue }
     summary.turnCount += usage.turnCount
     summary.inputTokens += usage.inputTokens
     summary.outputTokens += usage.outputTokens

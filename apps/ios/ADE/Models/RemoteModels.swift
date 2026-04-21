@@ -460,6 +460,55 @@ struct AgentChatSessionSummary: Codable, Identifiable, Equatable {
   var requestedCwd: String?
 }
 
+struct CtoWorkerEntry: Codable, Identifiable, Hashable {
+  let agentId: String
+  let name: String
+  let avatarSeed: String?
+  let status: String
+  let sessionSummary: AgentChatSessionSummary?
+  var id: String { agentId }
+
+  func hash(into hasher: inout Hasher) {
+    hasher.combine(agentId)
+    hasher.combine(name)
+    hasher.combine(avatarSeed)
+    hasher.combine(status)
+    hasher.combine(sessionSummary?.sessionId)
+    hasher.combine(sessionSummary?.status)
+    hasher.combine(sessionSummary?.lastActivityAt)
+  }
+
+  static func == (lhs: CtoWorkerEntry, rhs: CtoWorkerEntry) -> Bool {
+    lhs.agentId == rhs.agentId
+      && lhs.name == rhs.name
+      && lhs.avatarSeed == rhs.avatarSeed
+      && lhs.status == rhs.status
+      && lhs.sessionSummary == rhs.sessionSummary
+  }
+}
+
+struct CtoRoster: Codable, Hashable {
+  let cto: AgentChatSessionSummary?
+  let workers: [CtoWorkerEntry]
+
+  func hash(into hasher: inout Hasher) {
+    hasher.combine(cto?.sessionSummary())
+    hasher.combine(workers)
+  }
+
+  static func == (lhs: CtoRoster, rhs: CtoRoster) -> Bool {
+    lhs.cto == rhs.cto && lhs.workers == rhs.workers
+  }
+}
+
+private extension AgentChatSessionSummary {
+  /// Stable identity tuple for hashing contexts where full Hashable is unavailable
+  /// (e.g. nested `RemoteJSONValue` fields only conform to Equatable).
+  func sessionSummary() -> String {
+    "\(sessionId)|\(status)|\(lastActivityAt)"
+  }
+}
+
 struct AgentChatSession: Codable, Identifiable, Equatable {
   var id: String { sessionId }
   var sessionId: String
@@ -731,6 +780,10 @@ struct AgentChatPlanStep: Codable, Equatable {
 struct AgentChatStructuredQuestionOption: Codable, Equatable {
   var label: String
   var value: String
+  var description: String?
+  var recommended: Bool?
+  var preview: String?
+  var previewFormat: String?
 }
 
 struct AgentChatTodoItem: Codable, Equatable {

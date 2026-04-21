@@ -22,11 +22,89 @@ extension WorkChatSessionView {
       WorkCommandCardView(card: commandCard)
     case .fileChangeCard(let fileChangeCard):
       WorkFileChangeCardView(card: fileChangeCard)
+    case .toolGroup(let group):
+      timelineToolGroup(group)
     case .artifact(let artifact):
       timelineArtifact(artifact)
     case .turnSeparator(let separator):
       WorkTurnSeparatorView(separator: separator)
+    case .pendingQuestion(let question):
+      if isLive {
+        WorkStructuredQuestionCard(
+          question: question,
+          responseText: $inputResponseText,
+          busy: actionInFlight,
+          onSelectOption: { option in
+            await runSessionAction {
+              await onRespondToQuestion(
+                question.id,
+                question.questionId,
+                .string(option.value),
+                inputResponseText
+              )
+              inputResponseText = ""
+            }
+          },
+          onSubmitAll: { answers, freeform in
+            await runSessionAction {
+              await onSubmitQuestionAnswers(question.id, answers, freeform)
+              inputResponseText = ""
+            }
+          },
+          onDecline: {
+            await runSessionAction {
+              await onDeclineQuestion(question.id)
+              inputResponseText = ""
+            }
+          }
+        )
+      } else {
+        ADENoticeCard(
+          title: "Host needs your answer",
+          message: "Reconnect to respond to this question. The host keeps the session paused until input arrives.",
+          icon: "questionmark.circle",
+          tint: ADEColor.warning,
+          actionTitle: nil,
+          action: nil
+        )
+      }
+    case .pendingPermission(let permission):
+      if isLive {
+        WorkPermissionCard(
+          permission: permission,
+          busy: actionInFlight,
+          onDecision: { decision in
+            await runSessionAction {
+              await onRespondToPermission(permission.id, decision)
+            }
+          }
+        )
+      } else {
+        ADENoticeCard(
+          title: "Permission request waiting",
+          message: "Reconnect to allow or decline this tool's permission gate.",
+          icon: "lock.shield",
+          tint: ADEColor.warning,
+          actionTitle: nil,
+          action: nil
+        )
+      }
     }
+  }
+
+  @ViewBuilder
+  func timelineToolGroup(_ group: WorkToolGroupModel) -> some View {
+    WorkToolGroupCardView(
+      group: group,
+      isExpanded: expandedToolCardIds.contains(group.id),
+      onToggle: { toggleToolCard(group.id) },
+      onOpenFile: { path in
+        Task { await onOpenFile(path) }
+      },
+      onOpenPr: { prNumber in
+        Task { await onOpenPr(prNumber) }
+      }
+    )
   }
 
   @ViewBuilder

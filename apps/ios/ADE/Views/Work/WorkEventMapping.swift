@@ -52,7 +52,17 @@ func makeWorkChatEvent(from event: AgentChatEvent) -> WorkChatEvent {
   case .subagentResult(let taskId, let status, let summary, _, let turnId):
     return .subagentResult(taskId: taskId, status: status.rawValue, summary: summary, turnId: turnId)
   case .structuredQuestion(let question, let options, let itemId, let turnId):
-    return .structuredQuestion(question: question, options: options?.map(\.label) ?? [], itemId: itemId, turnId: turnId)
+    let mapped = (options ?? []).map { opt in
+      WorkPendingQuestionOption(
+        label: opt.label,
+        value: opt.value.isEmpty ? opt.label : opt.value,
+        description: opt.description,
+        recommended: opt.recommended ?? false,
+        preview: opt.preview,
+        previewFormat: opt.previewFormat
+      )
+    }
+    return .structuredQuestion(question: question, options: mapped, itemId: itemId, turnId: turnId)
   case .approvalRequest(let itemId, _, _, let description, let turnId, let detail):
     return .approvalRequest(description: description, detail: prettyPrintedRemoteJSONValue(detail), itemId: itemId, turnId: turnId)
   case .pendingInputResolved(let itemId, let resolution, let turnId):
@@ -67,7 +77,7 @@ func makeWorkChatEvent(from event: AgentChatEvent) -> WorkChatEvent {
   case .error(let message, let turnId, _, let errorInfo):
     let detailText = prettyPrintedRemoteJSONValue(errorInfo)
     return .error(message: message, detail: detailText, category: workErrorCategory(message: message, detail: detailText), turnId: turnId)
-  case .done(let turnId, let status, let model, _, let usage, let costUsd):
+  case .done(let turnId, let status, let model, let modelId, let usage, let costUsd):
     var parts = [status.rawValue.replacingOccurrences(of: "_", with: " ").capitalized]
     if let model, !model.isEmpty {
       parts.append(model)
@@ -93,7 +103,9 @@ func makeWorkChatEvent(from event: AgentChatEvent) -> WorkChatEvent {
         cacheCreationTokens: usage?.cacheCreationTokens,
         costUsd: costUsd
       ),
-      turnId: turnId
+      turnId: turnId,
+      model: model,
+      modelId: modelId
     )
   case .promptSuggestion(let suggestion, let turnId):
     return .promptSuggestion(text: suggestion, turnId: turnId)

@@ -2,7 +2,6 @@ import React, { useCallback, useEffect, useMemo, useState } from "react";
 import type { AgentChatApprovalDecision, AgentChatEvent, AgentChatEventEnvelope, OrchestratorChatMessage } from "../../../shared/types";
 import { parseAgentChatTranscript } from "../../../shared/chatTranscript";
 import { AgentChatMessageList } from "../chat/AgentChatMessageList";
-import { AgentQuestionModal } from "../chat/AgentQuestionModal";
 import { ChatSubagentsPanel } from "../chat/ChatSubagentsPanel";
 import { deriveChatSubagentSnapshots } from "../chat/chatExecutionSummary";
 import { eventHasPayload } from "../chat/chatTranscriptRows";
@@ -344,12 +343,12 @@ export const MissionThreadMessageList = React.memo(function MissionThreadMessage
           className={className}
           surfaceMode={sessionId ? "mission-thread" : "mission-feed"}
           onApproval={onApproval
-            ? (itemId, decision, responseText) => {
+            ? (itemId, decision, responseText, answers) => {
                 const request = pendingInput?.itemId === itemId
                   ? pendingInput
                   : derivePendingInputRequests(events).find((entry) => entry.itemId === itemId) ?? null;
                 if (!request) return;
-                onApproval(request.sessionId, itemId, decision, responseText);
+                onApproval(request.sessionId, itemId, decision, responseText, answers);
               }
             : undefined}
         />
@@ -360,14 +359,6 @@ export const MissionThreadMessageList = React.memo(function MissionThreadMessage
           />
         ) : null}
       </div>
-      {pendingInput && onApproval && (pendingInput.request.kind === "question" || pendingInput.request.kind === "structured_question") ? (
-        <AgentQuestionModal
-          request={pendingInput.request}
-          onClose={() => onApproval(pendingInput.sessionId, pendingInput.itemId, "cancel")}
-          onSubmit={({ answers, responseText }) => onApproval(pendingInput.sessionId, pendingInput.itemId, "accept", responseText, answers)}
-          onDecline={() => onApproval(pendingInput.sessionId, pendingInput.itemId, "decline")}
-        />
-      ) : null}
     </>
   );
 });

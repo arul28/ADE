@@ -142,6 +142,9 @@ struct WorkSessionDestinationView: View {
           onInterrupt: interruptSession,
           onApproveRequest: approveRequest,
           onRespondToQuestion: respondToQuestion,
+          onSubmitQuestionAnswers: submitQuestionAnswers,
+          onDeclineQuestion: declineQuestion,
+          onRespondToPermission: respondToPermission,
           onRetryLoad: load,
           onOpenFile: openFileReference,
           onOpenPr: openPullRequestReference,
@@ -202,8 +205,8 @@ struct WorkSessionDestinationView: View {
     do {
       if let fetchedSession = try await syncService.fetchSessions().first(where: { $0.id == sessionId }) {
         session = fetchedSession
-        lastSessionRowRefreshAt = Date()
       }
+      lastSessionRowRefreshAt = Date()
       if let fetchedSummary = try? await syncService.fetchChatSummary(sessionId: sessionId) {
         chatSummary = fetchedSummary
       }
@@ -225,12 +228,13 @@ struct WorkSessionDestinationView: View {
     }
 
     let liveTranscript = makeWorkChatTranscript(from: syncService.chatEventHistory(sessionId: sessionId))
-    var baseTranscript: [WorkChatEnvelope] = []
+    var fallbackTranscript: [WorkChatEnvelope] = []
+    var eventTranscript: [WorkChatEnvelope] = []
     var fetchedFallbackEntries: [AgentChatTranscriptEntry] = []
 
     if let response = try? await syncService.fetchChatTranscriptResponse(sessionId: sessionId) {
       fetchedFallbackEntries = response.entries
-      baseTranscript = makeWorkChatTranscript(from: response.entries, sessionId: sessionId)
+      fallbackTranscript = makeWorkChatTranscript(from: response.entries, sessionId: sessionId)
     }
 
     if forceRemote {
@@ -238,15 +242,19 @@ struct WorkSessionDestinationView: View {
       let raw = syncService.terminalBuffers[sessionId] ?? ""
       let parsed = parseWorkChatTranscript(raw)
       if !parsed.isEmpty {
-        baseTranscript = mergeWorkChatTranscripts(base: baseTranscript, live: parsed)
+        eventTranscript = mergeWorkChatTranscripts(base: eventTranscript, live: parsed)
       }
     }
 
-    if baseTranscript.isEmpty {
-      baseTranscript = transcript
+    if !liveTranscript.isEmpty {
+      eventTranscript = mergeWorkChatTranscripts(base: eventTranscript, live: liveTranscript)
     }
 
-    let mergedTranscript = mergeWorkChatTranscripts(base: baseTranscript, live: liveTranscript)
+    let mergedTranscript = preferredWorkTranscript(
+      current: transcript,
+      fallback: fallbackTranscript,
+      eventTranscript: eventTranscript
+    )
     if !mergedTranscript.isEmpty, mergedTranscript != transcript {
       transcript = mergedTranscript
     }
@@ -362,10 +370,11 @@ struct WorkSessionDestinationView: View {
   func syncTranscriptFromLiveEvents() {
     let liveTranscript = makeWorkChatTranscript(from: syncService.chatEventHistory(sessionId: sessionId))
     guard !liveTranscript.isEmpty else { return }
-    let baseTranscript = transcript.isEmpty && !fallbackEntries.isEmpty
-      ? makeWorkChatTranscript(from: fallbackEntries, sessionId: sessionId)
-      : transcript
-    let mergedTranscript = mergeWorkChatTranscripts(base: baseTranscript, live: liveTranscript)
+    let mergedTranscript = preferredWorkTranscript(
+      current: transcript,
+      fallback: makeWorkChatTranscript(from: fallbackEntries, sessionId: sessionId),
+      eventTranscript: liveTranscript
+    )
     if mergedTranscript != transcript {
       transcript = mergedTranscript
     }

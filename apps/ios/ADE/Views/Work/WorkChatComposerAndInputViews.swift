@@ -620,44 +620,444 @@ struct WorkStructuredQuestionCard: View {
   let question: WorkPendingQuestionModel
   @Binding var responseText: String
   let busy: Bool
-  let onSelectOption: @MainActor (String) async -> Void
-  let onSubmitFreeform: @MainActor () async -> Void
+  /// Tap-to-submit is only used for single-question single-select with options
+  /// (the card invokes this directly from `optionRow`). Multi-question cards
+  /// never call this — taps only update local state and submit via Send.
+  let onSelectOption: @MainActor (WorkPendingQuestionOption) async -> Void
+  /// Aggregate submit: one map from questionId -> answer value, plus the
+  /// shared freeform response (single-question only). The session action
+  /// forwards this as one `chat.respondToInput` call.
+  let onSubmitAll: @MainActor ([String: AgentChatInputAnswerValue], String?) async -> Void
+  let onDecline: @MainActor () async -> Void
+
+  @State private var currentPage: Int = 0
+  @State private var selections: [String: Set<String>] = [:]
+  @State private var freeformByQuestion: [String: String] = [:]
+  @State private var expandedPreviews: Set<String> = []
+
+  private var isPaged: Bool { question.questions.count > 1 }
+  private var activeQuestion: WorkPendingQuestion {
+    guard !question.questions.isEmpty else { return question.primary }
+    let index = min(max(currentPage, 0), question.questions.count - 1)
+    return question.questions[index]
+  }
 
   var body: some View {
     VStack(alignment: .leading, spacing: 12) {
-      Text("Question")
-        .font(.headline)
+      headerRow
+
+      if isPaged {
+        TabView(selection: $currentPage) {
+          ForEach(Array(question.questions.enumerated()), id: \.offset) { index, q in
+            questionPage(q)
+              .tag(index)
+              .padding(.bottom, 24)
+          }
+        }
+        .tabViewStyle(.page(indexDisplayMode: .always))
+        .indexViewStyle(.page(backgroundDisplayMode: .always))
+        .frame(minHeight: 280)
+      } else {
+        questionPage(activeQuestion)
+      }
+
+      if !isPaged, activeQuestion.allowsFreeform {
+        freeformRow(for: activeQuestion)
+      }
+
+      footerRow
+    }
+    .adeGlassCard(cornerRadius: 18, padding: 14)
+  }
+
+  @ViewBuilder
+  private var headerRow: some View {
+    VStack(alignment: .leading, spacing: 6) {
+      if isPaged {
+        Text("Question \(currentPage + 1) of \(question.questions.count)")
+          .font(.caption.weight(.bold))
+          .tracking(0.6)
+          .foregroundStyle(ADEColor.textMuted)
+      } else if let title = question.title, !title.isEmpty {
+        Text(title)
+          .font(.headline)
+          .foregroundStyle(ADEColor.textPrimary)
+      }
+      if !isPaged, let body = question.body, !body.isEmpty,
+         normalizedText(body) != normalizedText(activeQuestion.question) {
+        Text(body)
+          .font(.caption)
+          .foregroundStyle(ADEColor.textSecondary)
+          .frame(maxWidth: .infinity, alignment: .leading)
+      }
+      if let header = activeQuestion.header, !header.isEmpty {
+        Text(header.uppercased())
+          .font(.caption2.weight(.bold))
+          .tracking(0.6)
+          .foregroundStyle(ADEColor.textMuted)
+      }
+      Text(activeQuestion.question)
+        .font(.subheadline.weight(.semibold))
         .foregroundStyle(ADEColor.textPrimary)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+  }
 
-      Text(question.question)
-        .font(.subheadline)
-        .foregroundStyle(ADEColor.textSecondary)
+  private func normalizedText(_ value: String) -> String {
+    value
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+      .lowercased()
+  }
 
-      if !question.options.isEmpty {
+  @ViewBuilder
+  private func questionPage(_ q: WorkPendingQuestion) -> some View {
+    VStack(alignment: .leading, spacing: 10) {
+      if let impact = q.impact, !impact.isEmpty {
+        WorkStructuredQuestionMetaRow(
+          icon: "exclamationmark.triangle",
+          label: "Impact",
+          value: impact,
+          tint: ADEColor.warning
+        )
+      }
+
+      if let assumption = q.defaultAssumption, !assumption.isEmpty {
+        WorkStructuredQuestionMetaRow(
+          icon: "wand.and.stars",
+          label: "Default",
+          value: assumption,
+          tint: ADEColor.accent
+        )
+      }
+
+      if !q.options.isEmpty {
         VStack(alignment: .leading, spacing: 8) {
-          ForEach(Array(question.options.enumerated()), id: \.offset) { _, option in
-            Button(option) {
-              Task { await onSelectOption(option) }
-            }
-            .buttonStyle(.glass)
-            .tint(ADEColor.accent)
-            .disabled(busy)
+          ForEach(Array(q.options.enumerated()), id: \.offset) { _, option in
+            optionRow(for: option, in: q)
           }
         }
       }
 
-      HStack(alignment: .bottom, spacing: 10) {
-        TextField("Optional response", text: $responseText, axis: .vertical)
-          .lineLimit(1...4)
-          .adeInsetField(cornerRadius: 14, padding: 12)
-          .disabled(busy)
+      if isPaged, q.allowsFreeform {
+        freeformRow(for: q)
+      }
+    }
+  }
 
-        Button("Send") {
-          Task { await onSubmitFreeform() }
+  @ViewBuilder
+  private func freeformRow(for q: WorkPendingQuestion) -> some View {
+    let binding = freeformBinding(for: q)
+    if q.isSecret {
+      SecureField(q.options.isEmpty ? "Response" : "Optional response", text: binding)
+        .adeInsetField(cornerRadius: 14, padding: 12)
+        .disabled(busy)
+    } else {
+      TextField(q.options.isEmpty ? "Response" : "Optional response", text: binding, axis: .vertical)
+        .lineLimit(1...4)
+        .adeInsetField(cornerRadius: 14, padding: 12)
+        .disabled(busy)
+    }
+  }
+
+  @ViewBuilder
+  private var footerRow: some View {
+    HStack(spacing: 10) {
+      Button(submitLabel) {
+        Task { await submitAll() }
+      }
+      .buttonStyle(.glassProminent)
+      .tint(ADEColor.accent)
+      .disabled(busy || !canSubmit)
+
+      Spacer(minLength: 0)
+
+      Button("Decline") {
+        Task { await onDecline() }
+      }
+      .buttonStyle(.glass)
+      .tint(ADEColor.danger)
+      .disabled(busy)
+    }
+  }
+
+  private var submitLabel: String {
+    if isPaged { return "Send answers" }
+    if activeQuestion.options.isEmpty { return "Send answer" }
+    return "Send"
+  }
+
+  private var canSubmit: Bool {
+    // Multi-question card: require at least one answer (selection OR freeform)
+    // per question that has options. Questions that are freeform-only need
+    // non-empty text before Send unlocks.
+    for q in question.questions {
+      let selected = selections[q.questionId] ?? []
+      let freeform = (freeformByQuestion[q.questionId] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+      if q.options.isEmpty {
+        if freeform.isEmpty { return false }
+      } else if q.multiSelect {
+        if selected.isEmpty && (!q.allowsFreeform || freeform.isEmpty) { return false }
+      } else {
+        if selected.isEmpty && (!q.allowsFreeform || freeform.isEmpty) { return false }
+      }
+    }
+    if !isPaged {
+      // Single-question card: also allow the shared responseText binding.
+      let shared = responseText.trimmingCharacters(in: .whitespacesAndNewlines)
+      if activeQuestion.options.isEmpty {
+        let freeform = (freeformByQuestion[activeQuestion.questionId] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        return !freeform.isEmpty || !shared.isEmpty
+      }
+    }
+    return true
+  }
+
+  @MainActor
+  private func submitAll() async {
+    var answers: [String: AgentChatInputAnswerValue] = [:]
+    for q in question.questions {
+      let selected = selections[q.questionId] ?? []
+      let ordered = q.options.map(\.value).filter { selected.contains($0) }
+      if !ordered.isEmpty {
+        if q.multiSelect {
+          answers[q.questionId] = .strings(ordered)
+        } else if let first = ordered.first {
+          answers[q.questionId] = .string(first)
+        }
+        continue
+      }
+      let freeform = (freeformByQuestion[q.questionId] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+      if !freeform.isEmpty {
+        answers[q.questionId] = .string(freeform)
+      }
+    }
+    let sharedFreeform: String? = {
+      if isPaged { return nil }
+      let shared = responseText.trimmingCharacters(in: .whitespacesAndNewlines)
+      return shared.isEmpty ? nil : shared
+    }()
+    await onSubmitAll(answers, sharedFreeform)
+  }
+
+  private func freeformBinding(for q: WorkPendingQuestion) -> Binding<String> {
+    if !isPaged {
+      // Single-question cards keep the legacy shared binding so composer
+      // callers can drive the text externally if needed.
+      return $responseText
+    }
+    return Binding(
+      get: { freeformByQuestion[q.questionId] ?? "" },
+      set: { freeformByQuestion[q.questionId] = $0 }
+    )
+  }
+
+  @ViewBuilder
+  private func optionRow(for option: WorkPendingQuestionOption, in q: WorkPendingQuestion) -> some View {
+    let selectedSet = selections[q.questionId] ?? []
+    let selected = selectedSet.contains(option.value)
+    let expanded = expandedPreviews.contains(previewKey(for: q, option: option))
+    let showsCheckbox = q.multiSelect
+    VStack(alignment: .leading, spacing: 6) {
+      HStack(alignment: .top, spacing: 10) {
+        Button {
+          tapOption(option, in: q)
+        } label: {
+          VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 6) {
+              if showsCheckbox {
+                Image(systemName: selected ? "checkmark.square.fill" : "square")
+                  .foregroundStyle(selected ? ADEColor.warning : ADEColor.textSecondary)
+              } else if selected {
+                Image(systemName: "largecircle.fill.circle")
+                  .foregroundStyle(ADEColor.warning)
+              }
+              Text(option.label)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(ADEColor.textPrimary)
+              if option.recommended {
+                Text("★ Recommended")
+                  .font(.caption2.weight(.bold))
+                  .foregroundStyle(ADEColor.success)
+                  .padding(.horizontal, 6)
+                  .padding(.vertical, 2)
+                  .background(ADEColor.success.opacity(0.14), in: Capsule())
+              }
+              Spacer(minLength: 0)
+            }
+            if let description = option.description, !description.isEmpty {
+              Text(description)
+                .font(.caption)
+                .foregroundStyle(ADEColor.textSecondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+          }
+          .frame(maxWidth: .infinity, alignment: .leading)
+          .padding(10)
+          .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+              .fill(selected ? ADEColor.warning.opacity(0.18) : ADEColor.surfaceBackground.opacity(0.6))
+          )
+          .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+              .stroke(selected ? ADEColor.warning.opacity(0.6) : ADEColor.border.opacity(0.25), lineWidth: 0.8)
+          )
+        }
+        .buttonStyle(.plain)
+        .disabled(busy)
+
+        if let preview = option.preview, !preview.isEmpty {
+          Button {
+            let key = previewKey(for: q, option: option)
+            if expandedPreviews.contains(key) {
+              expandedPreviews.remove(key)
+            } else {
+              expandedPreviews.insert(key)
+            }
+          } label: {
+            Image(systemName: expanded ? "chevron.up" : "chevron.down")
+              .font(.caption.weight(.semibold))
+              .foregroundStyle(ADEColor.textSecondary)
+              .padding(8)
+              .background(ADEColor.surfaceBackground.opacity(0.5), in: Circle())
+          }
+          .buttonStyle(.plain)
+          .accessibilityLabel(expanded ? "Hide preview" : "Show preview")
+          .disabled(busy)
+        }
+      }
+
+      if expanded, let preview = option.preview, !preview.isEmpty {
+        previewPanel(text: preview, format: option.previewFormat)
+      }
+    }
+  }
+
+  @ViewBuilder
+  private func previewPanel(text: String, format: String?) -> some View {
+    Group {
+      if (format?.lowercased() ?? "markdown") == "markdown" {
+        WorkMarkdownRenderer(markdown: text)
+      } else {
+        Text(text)
+          .font(.caption)
+          .foregroundStyle(ADEColor.textPrimary)
+          .frame(maxWidth: .infinity, alignment: .leading)
+      }
+    }
+    .padding(10)
+    .background(ADEColor.surfaceBackground.opacity(0.4), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+  }
+
+  private func previewKey(for q: WorkPendingQuestion, option: WorkPendingQuestionOption) -> String {
+    "\(q.questionId)::\(option.value)"
+  }
+
+  private func tapOption(_ option: WorkPendingQuestionOption, in q: WorkPendingQuestion) {
+    // Tap-to-submit is intentional ONLY for single-question, single-select
+    // cards with concrete options. Multi-question cards collect selections
+    // and require an explicit Send so users can answer every page first.
+    let singleQuestionSingleSelect = !isPaged && !q.multiSelect && !q.options.isEmpty
+    var current = selections[q.questionId] ?? []
+    if q.multiSelect {
+      if current.contains(option.value) {
+        current.remove(option.value)
+      } else {
+        current.insert(option.value)
+      }
+      selections[q.questionId] = current
+    } else {
+      selections[q.questionId] = [option.value]
+    }
+    if singleQuestionSingleSelect {
+      Task { await onSelectOption(option) }
+    }
+  }
+}
+
+private struct WorkStructuredQuestionMetaRow: View {
+  let icon: String
+  let label: String
+  let value: String
+  let tint: Color
+
+  var body: some View {
+    HStack(alignment: .top, spacing: 8) {
+      Image(systemName: icon)
+        .font(.caption2.weight(.semibold))
+        .foregroundStyle(tint)
+        .frame(width: 18, height: 18)
+      VStack(alignment: .leading, spacing: 2) {
+        Text(label.uppercased())
+          .font(.caption2.weight(.bold))
+          .tracking(0.6)
+          .foregroundStyle(ADEColor.textMuted)
+        Text(value)
+          .font(.caption)
+          .foregroundStyle(ADEColor.textSecondary)
+      }
+      Spacer(minLength: 0)
+    }
+  }
+}
+
+struct WorkPermissionCard: View {
+  let permission: WorkPendingPermissionModel
+  let busy: Bool
+  let onDecision: @MainActor (AgentChatApprovalDecision) async -> Void
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 12) {
+      HStack(spacing: 8) {
+        Image(systemName: "lock.shield")
+          .font(.system(size: 15, weight: .semibold))
+          .foregroundStyle(ADEColor.warning)
+        Text("Permission requested")
+          .font(.headline)
+          .foregroundStyle(ADEColor.textPrimary)
+      }
+
+      Text(permission.description)
+        .font(.subheadline)
+        .foregroundStyle(ADEColor.textSecondary)
+        .frame(maxWidth: .infinity, alignment: .leading)
+
+      if !permission.tool.isEmpty && permission.tool != "tool" {
+        HStack(spacing: 6) {
+          Text("Tool")
+            .font(.caption2.weight(.bold))
+            .tracking(0.6)
+            .foregroundStyle(ADEColor.textMuted)
+          Text(permission.tool)
+            .font(.caption.monospaced())
+            .foregroundStyle(ADEColor.textPrimary)
+        }
+      }
+
+      if let detail = permission.detail, !detail.isEmpty {
+        WorkStructuredOutputBlock(title: "Details", text: detail)
+      }
+
+      HStack(spacing: 10) {
+        Button("Allow") {
+          Task { await onDecision(.accept) }
         }
         .buttonStyle(.glassProminent)
+        .tint(ADEColor.success)
+        .disabled(busy)
+
+        Button("Allow for session") {
+          Task { await onDecision(.acceptForSession) }
+        }
+        .buttonStyle(.glass)
         .tint(ADEColor.accent)
-        .disabled(busy || responseText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        .disabled(busy)
+
+        Button("Decline") {
+          Task { await onDecision(.decline) }
+        }
+        .buttonStyle(.glass)
+        .tint(ADEColor.danger)
+        .disabled(busy)
       }
     }
     .adeGlassCard(cornerRadius: 18, padding: 14)

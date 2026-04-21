@@ -13,6 +13,7 @@ import type {
 } from "../../../shared/types";
 import type { Logger } from "../logging/logger";
 import type { createAgentChatService } from "../chat/agentChatService";
+import type { createWorkerAgentService } from "../cto/workerAgentService";
 import type { createComputerUseArtifactBrokerService } from "../computerUse/computerUseArtifactBrokerService";
 import type { createProjectConfigService } from "../config/projectConfigService";
 import type { createFileService } from "../files/fileService";
@@ -32,6 +33,7 @@ import type { createPrService } from "../prs/prService";
 import type { createQueueLandingService } from "../prs/queueLandingService";
 import type { createPtyService } from "../pty/ptyService";
 import type { createSessionService } from "../sessions/sessionService";
+import type { NotificationEventBus } from "../notifications/notificationEventBus";
 import type { AdeDb } from "../state/kvDb";
 import { nowIso, safeJsonParse, sleep, writeTextAtomic } from "../shared/utils";
 import { createDeviceRegistryService } from "./deviceRegistryService";
@@ -67,9 +69,16 @@ type SyncServiceArgs = {
   >;
   missionService: ReturnType<typeof createMissionService>;
   agentChatService: ReturnType<typeof createAgentChatService>;
+  workerAgentService?: ReturnType<typeof createWorkerAgentService> | null;
   processService: ReturnType<typeof createProcessService>;
   hostStartupEnabled?: boolean;
   onStatusChanged?: (snapshot: SyncRoleSnapshot) => void;
+  /**
+   * Optional notification bus forwarded to the sync host. The host publishes
+   * chat/PR/mission/system events and invokes `sendInAppNotification` for
+   * connected iOS peers.
+   */
+  notificationEventBus?: NotificationEventBus | null;
 };
 
 const DRAFT_FILE = "sync-peer-draft.json";
@@ -353,6 +362,7 @@ export function createSyncService(args: SyncServiceArgs) {
         ptyService: args.ptyService,
         processService: args.processService,
         agentChatService: args.agentChatService,
+        workerAgentService: args.workerAgentService,
         projectConfigService: args.projectConfigService,
         portAllocationService: args.portAllocationService,
         laneEnvironmentService: args.laneEnvironmentService,
@@ -364,6 +374,7 @@ export function createSyncService(args: SyncServiceArgs) {
         bootstrapTokenPath: tokenPath,
         port: attemptedPort,
         deviceRegistryService,
+        notificationEventBus: args.notificationEventBus ?? null,
         onStateChanged: () => {
           void refreshRoleState();
         },
@@ -767,6 +778,10 @@ export function createSyncService(args: SyncServiceArgs) {
 
     getHostService(): SyncHostService | null {
       return hostService;
+    },
+
+    getDeviceRegistryService() {
+      return deviceRegistryService;
     },
 
     async dispose(): Promise<void> {

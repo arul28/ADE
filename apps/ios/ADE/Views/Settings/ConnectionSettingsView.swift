@@ -19,6 +19,16 @@ struct ConnectionSettingsView: View {
             .environmentObject(syncService)
             .padding(.horizontal, 16)
 
+          SettingsNotificationsSection(
+            onPreferencesChanged: { prefs in
+              SyncService.shared?.uploadNotificationPrefs(prefs)
+            },
+            onSendTestPush: {
+              SyncService.shared?.sendTestPush()
+            }
+          )
+          .padding(.horizontal, 16)
+
           SettingsAppearanceSection()
             .padding(.horizontal, 16)
 

@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, nativeImage, protocol, shell } from "electron";
+import { app, BrowserWindow, dialog, nativeImage, protocol, safeStorage, shell } from "electron";
 import path from "node:path";
 import type * as NodePty from "node-pty";
 type NodePtyType = typeof NodePty;
@@ -120,6 +120,14 @@ import { createMissionBudgetService } from "./services/orchestrator/missionBudge
 import { transitionMissionStatus } from "./services/orchestrator/missionLifecycle";
 import { createComputerUseArtifactBrokerService } from "./services/computerUse/computerUseArtifactBrokerService";
 import { createSyncService } from "./services/sync/syncService";
+import { ApnsService, ApnsKeyStore } from "./services/notifications/apnsService";
+import {
+  createNotificationEventBus,
+  type DevicePushTarget,
+  type NotificationEventBus,
+} from "./services/notifications/notificationEventBus";
+import type { SyncService } from "./services/sync/syncService";
+import type { DeviceRegistryService } from "./services/sync/deviceRegistryService";
 import { createAutoUpdateService } from "./services/updates/autoUpdateService";
 import { cleanupStaleTempArtifacts } from "./services/runtime/tempCleanupService";
 import type { Logger } from "./services/logging/logger";
@@ -1409,11 +1417,111 @@ app.whenReady().then(async () => {
     let knowledgeCaptureServiceRef: ReturnType<
       typeof createKnowledgeCaptureService
     > | null = null;
+
+    // --- Mobile push notifications (APNs + event bus) -----------------------
+    // ApnsService is instantiated but left unconfigured here; the Mobile Push
+    // settings panel calls into it once the user uploads a `.p8` key. The
+    // notification event bus is always wired so in-app WebSocket delivery
+    // works even when APNs is disabled.
+    let syncServiceForNotifications: SyncService | null = null;
+    const apnsService = new ApnsService({ logger });
+    const apnsKeyStore = new ApnsKeyStore({
+      encryptedKeyPath: path.join(app.getPath("userData"), "apns.key.enc"),
+      safeStorage,
+    });
+    // Attempt to restore a previously-stored key + config on project load so
+    // push delivery survives restarts without user intervention.
+    try {
+      const effective = projectConfigService.get().effective;
+      const apnsConfig = effective.notifications?.apns ?? null;
+      logger.info("apns.configure_on_startup_attempt", {
+        hasConfig: apnsConfig != null,
+        enabled: apnsConfig?.enabled === true,
+        keyStored: apnsKeyStore.has(),
+        hasKeyId: Boolean(apnsConfig?.keyId),
+        hasTeamId: Boolean(apnsConfig?.teamId),
+        hasBundleId: Boolean(apnsConfig?.bundleId),
+        env: apnsConfig?.env ?? null,
+      });
+      if (apnsConfig?.enabled && apnsKeyStore.has() && apnsConfig.keyId && apnsConfig.teamId && apnsConfig.bundleId) {
+        const pem = apnsKeyStore.load();
+        if (pem) {
+          apnsService.configure({
+            keyP8Pem: pem,
+            keyId: apnsConfig.keyId,
+            teamId: apnsConfig.teamId,
+            bundleId: apnsConfig.bundleId,
+            env: apnsConfig.env ?? "sandbox",
+          });
+          logger.info("apns.configure_on_startup_ok", { keyId: apnsConfig.keyId });
+        }
+      }
+    } catch (error) {
+      logger.warn("apns.configure_on_startup_failed", {
+        error: error instanceof Error ? error.message : String(error),
+        stack: error instanceof Error ? error.stack : undefined,
+      });
+    }
+    const listPushTargets = (): DevicePushTarget[] => {
+      const registry: DeviceRegistryService | null =
+        syncServiceForNotifications?.getDeviceRegistryService?.() ?? null;
+      if (!registry) return [];
+      const effective = projectConfigService.get().effective;
+      const apnsConfig = effective.notifications?.apns ?? null;
+      const bundleId = apnsConfig?.bundleId?.trim() ?? "";
+      const env = apnsConfig?.env === "production" ? "production" : "sandbox";
+      return registry
+        .listDevices()
+        .filter((device) => device.deviceType === "phone" && device.platform === "iOS")
+        .map((device) => {
+          const meta = device.metadata ?? {};
+          const alertToken = typeof meta.apnsAlertToken === "string" ? meta.apnsAlertToken : null;
+          const activityStartToken = typeof meta.apnsActivityStartToken === "string" ? meta.apnsActivityStartToken : null;
+          const activityUpdateTokens =
+            meta.apnsActivityUpdateTokens && typeof meta.apnsActivityUpdateTokens === "object"
+              ? (meta.apnsActivityUpdateTokens as Record<string, string>)
+              : null;
+          const perDeviceBundleId =
+            typeof meta.apnsBundleId === "string" && meta.apnsBundleId.trim().length > 0
+              ? meta.apnsBundleId
+              : bundleId;
+          return {
+            deviceId: device.deviceId,
+            bundleId: perDeviceBundleId,
+            env: (meta.apnsEnv === "production" ? "production" : env) as "sandbox" | "production",
+            alertToken,
+            activityStartToken,
+            activityUpdateTokens,
+          } satisfies DevicePushTarget;
+        })
+        .filter((target) => target.bundleId.trim().length > 0);
+    };
+    const notificationEventBus: NotificationEventBus = createNotificationEventBus({
+      logger,
+      apnsService,
+      listPushTargets,
+      getPrefsForDevice: (deviceId) =>
+        syncServiceForNotifications?.getHostService()?.getNotificationPrefsForDevice(deviceId) ?? null,
+      sendInAppNotification: (deviceId, payload) => {
+        syncServiceForNotifications?.getHostService()?.sendInAppNotification(deviceId, payload);
+      },
+      isDeviceConnected: (deviceId) =>
+        syncServiceForNotifications?.getHostService()?.isIosPeerConnected(deviceId) ?? false,
+    });
+    // When APNs reports an invalid token, drop it from the registry so we
+    // stop fanning out to a dead device.
+    apnsService.onTokenInvalidated(({ deviceToken }) => {
+      const registry = syncServiceForNotifications?.getDeviceRegistryService?.() ?? null;
+      const device = registry?.findDeviceByApnsToken?.(deviceToken) ?? null;
+      if (device) registry?.invalidateApnsTokensForDevice?.(device.deviceId);
+    });
+
     const prPollingService = createPrPollingService({
       logger,
       prService,
       projectConfigService,
       db,
+      notificationEventBus,
       onEvent: (event) => emitProjectEvent(projectRoot, IPC.prsEvent, event),
       onPullRequestsChanged: async ({ changedPrs, changes }) => {
         if (changedPrs.length > 0) {
@@ -2331,8 +2439,10 @@ app.whenReady().then(async () => {
       computerUseArtifactBrokerService,
       missionService,
       agentChatService,
+      workerAgentService,
       processService,
       hostStartupEnabled: process.env.ADE_DISABLE_SYNC_HOST !== "1",
+      notificationEventBus,
       onStatusChanged: (snapshot) =>
         emitProjectEvent(projectRoot, IPC.syncEvent, {
           type: "sync-status",
@@ -2340,6 +2450,9 @@ app.whenReady().then(async () => {
         }),
     });
     syncServiceRef = syncService;
+    // Late-bind the sync service into the notification bus dependencies so
+    // push targets / prefs / in-app delivery are resolved at send time.
+    syncServiceForNotifications = syncService;
     scheduleBackgroundProjectTask(
       "sync.initialize",
       () => measureProjectInitStep("sync.initialize", () => syncService.initialize()),
@@ -2995,6 +3108,9 @@ app.whenReady().then(async () => {
       budgetCapService,
       syncHostService: syncService.getHostService(),
       syncService,
+      apnsService,
+      apnsKeyStore,
+      notificationEventBus,
       missionService,
       missionPreflightService,
       orchestratorService,
@@ -3099,6 +3215,9 @@ app.whenReady().then(async () => {
       budgetCapService: null,
       syncHostService: null,
       syncService: null,
+      apnsService: null,
+      apnsKeyStore: null,
+      notificationEventBus: null,
       missionService: null,
       missionPreflightService: null,
       orchestratorService: null,
@@ -3289,6 +3408,11 @@ app.whenReady().then(async () => {
     }
     try {
       await ctx.syncHostService?.dispose?.();
+    } catch {
+      // ignore
+    }
+    try {
+      await ctx.apnsService?.dispose?.();
     } catch {
       // ignore
     }

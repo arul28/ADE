@@ -1097,6 +1097,12 @@ export type AiChatConfig = {
   sessionBudgetUsd?: number;
   /** Default permission mode for new OpenCode/API-model chat sessions */
   opencodePermissionMode?: AiInProcessPermissionMode;
+  /**
+   * Auto-allow the MCP permission gate for the ADE `ask_user` tool so the
+   * inline question card surfaces immediately instead of being shadowed by an
+   * "Allow the ade MCP server to run tool ask_user?" prompt. Defaults to true.
+   */
+  autoAllowAskUser?: boolean;
 };
 export type AiConfig = {
   mode?: ProviderMode;
@@ -1119,6 +1125,32 @@ export type AiConfig = {
   featureReasoningOverrides?: Partial<Record<AiFeatureKey, string | null>>;
   /** Unified title + summary intelligence config for all session types */
   sessionIntelligence?: SessionIntelligenceConfig;
+};
+
+/**
+ * Mobile push notification configuration. The `.p8` key itself is never
+ * stored in config — it lives in an Electron `safeStorage`-encrypted blob
+ * under `userData/apns.key.enc`. Only metadata needed to reconstruct the
+ * APNs JWT sits here.
+ */
+export type NotificationApnsConfig = {
+  enabled: boolean;
+  /** Apple Developer Key ID (10-char). */
+  keyId?: string;
+  /** Apple Developer Team ID (10-char). */
+  teamId?: string;
+  /** iOS app bundle id, e.g. `com.ade.ios`. */
+  bundleId?: string;
+  env: "sandbox" | "production";
+  /**
+   * Set to `true` once a `.p8` has been saved to the encrypted blob.
+   * The config does NOT carry the key bytes themselves.
+   */
+  keyStored?: boolean;
+};
+
+export type NotificationsConfig = {
+  apns?: NotificationApnsConfig;
 };
 
 export type AiIntegrationStatus = {
@@ -1168,6 +1200,8 @@ export type ProjectConfigFile = {
   linearSync?: LinearSyncConfig;
   /** Event-based checklist for context doc auto-regeneration */
   contextRefreshEvents?: import("./packs").ContextRefreshEvents;
+  /** Mobile push notification configuration (APNs). */
+  notifications?: NotificationsConfig;
 };
 
 export type ProjectConfigCandidate = {
@@ -1210,6 +1244,7 @@ export type EffectiveProjectConfig = {
       claudeProjectsRoot?: string;
     };
   };
+  notifications?: NotificationsConfig;
 };
 
 export type ProjectConfigValidationIssue = {

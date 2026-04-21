@@ -71,6 +71,7 @@ enum ADEColor {
   static let info = adaptiveColor(light: hex(0x2563eb), dark: hex(0x3b82f6))
   static let purpleAccent = Color(red: 167.0 / 255.0, green: 139.0 / 255.0, blue: 250.0 / 255.0)  // #A78BFA
   static let purpleGlow = purpleAccent.opacity(0.35)
+  static let ctoAccent = Color(red: 0xA7 / 255.0, green: 0x8B / 255.0, blue: 0xFA / 255.0)  // #A78BFA
 
   static let tintProject = purpleAccent
   static let tintLanes = Color(red: 0xf5 / 255.0, green: 0x9e / 255.0, blue: 0x0b / 255.0)
@@ -496,33 +497,25 @@ struct ADEConnectionDot: View {
     Button {
       syncService.settingsPresented = true
     } label: {
-      HStack(spacing: 6) {
+      ZStack {
         Circle()
-          .fill(tint)
-          .frame(width: 10, height: 10)
-          .shadow(color: tint.opacity(showsConnectedGlow ? 0.5 : 0), radius: showsConnectedGlow ? 4 : 0)
-        Text(statusText)
-          .font(.caption.weight(.semibold))
-          .foregroundStyle(ADEColor.textPrimary)
-          .lineLimit(1)
-          .minimumScaleFactor(0.75)
-        if showsHostSuffix, let name = truncatedHostName {
-          Text("·")
-            .font(.caption.weight(.medium))
-            .foregroundStyle(ADEColor.textMuted)
-            .minimumScaleFactor(0.75)
-          Text(name)
-            .font(.caption.weight(.medium))
-            .foregroundStyle(ADEColor.textSecondary)
-            .lineLimit(1)
-            .minimumScaleFactor(0.75)
-        }
+          .fill(tint.opacity(0.14))
+          .frame(width: 30, height: 30)
+          .overlay(
+            Circle()
+              .stroke(tint.opacity(0.55), lineWidth: 1)
+          )
+          .shadow(color: tint.opacity(showsConnectedGlow ? 0.55 : 0.35), radius: showsConnectedGlow ? 6 : 3)
+
+        Image(systemName: "gearshape.fill")
+          .font(.system(size: 14, weight: .semibold))
+          .foregroundStyle(tint)
       }
-      .frame(minHeight: 44)
+      .frame(minWidth: 44, minHeight: 44)
       .contentShape(Rectangle())
     }
     .buttonStyle(.plain)
-    .accessibilityLabel(accessibilityLabel)
+    .accessibilityLabel("Settings · \(accessibilityLabel)")
     .accessibilityHint("Opens settings to pair or reconnect.")
     .accessibilityShowsLargeContentViewer()
   }

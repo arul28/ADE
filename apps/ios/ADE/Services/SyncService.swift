@@ -1,8 +1,19 @@
 import Foundation
 import SwiftUI
 import UIKit
+import WidgetKit
 import os
 import zlib
+
+/// Small indirection so tests can stub widget reloads without linking WidgetKit.
+enum WidgetReloadBridge {
+  static var reloadAction: () -> Void = {
+    WidgetCenter.shared.reloadAllTimelines()
+  }
+  static func reloadAllTimelines() {
+    reloadAction()
+  }
+}
 
 private let syncConnectLog = Logger(subsystem: "com.ade.sync", category: "connect")
 
@@ -156,6 +167,23 @@ enum SyncBonjourTiming {
 enum SyncSocketTiming {
   static let openTimeoutNanoseconds: UInt64 = 5_000_000_000
   static let lanePresenceHeartbeatNanoseconds: UInt64 = 30_000_000_000
+}
+
+func syncIsTailscaleIPv4Address(_ host: String) -> Bool {
+  let normalized = host
+    .trimmingCharacters(in: .whitespacesAndNewlines)
+    .trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
+  let octets = normalized.split(separator: ".")
+  guard octets.count == 4,
+        let first = octets.first.flatMap({ Int($0) }),
+        let second = octets.dropFirst().first.flatMap({ Int($0) }) else {
+    return false
+  }
+  return first == 100 && (64...127).contains(second)
+}
+
+func syncCanAttemptInsecureWebSocket(to host: String) -> Bool {
+  !syncIsTailscaleIPv4Address(host)
 }
 
 struct SyncReconnectState {
@@ -422,6 +450,27 @@ final class SyncService: ObservableObject {
   private var remoteCommandDescriptors: [SyncRemoteCommandDescriptor] = []
   private var supportsChatStreaming = false
 
+  /// Process-wide singleton populated by the first `init` and consumed by
+  /// `AppDelegate`, Live Activity intents, and the `@EnvironmentObject`
+  /// propagated by `ADEApp`. Optional so tests / previews that spin up a
+  /// secondary instance do not clobber the primary one.
+  static var shared: SyncService?
+
+  /// Sessions currently eligible for a Live Activity. Rebuilt from
+  /// `localStateRevision` changes and consumed by `LiveActivityCoordinator`.
+  @Published private(set) var activeSessions: [AgentSnapshot] = []
+
+  /// Owns the iOS 16.2+ Live Activity lifecycle; wired with `self` as host.
+  private var liveActivityCoordinator: Any?
+
+  /// 2s debounce task shared by all writers of the App Group workspace
+  /// snapshot. Coalesces bursty state changes into a single widget reload.
+  private var snapshotDebouncerTask: Task<Void, Never>?
+
+  /// Tracks `activeSessions` derivation so we do not rebuild on every
+  /// unrelated `localStateRevision` bump.
+  private var activeSessionsObservationTask: Task<Void, Never>?
+
   var hasCachedHostData: Bool {
     database.hasHydratedControllerData()
   }
@@ -491,6 +540,16 @@ final class SyncService: ObservableObject {
       }
     }
     socketSessionDelegate.service = self
+
+    // Publish this instance as the singleton consumed by AppDelegate and the
+    // LiveActivityIntentsForward entry points. Tests that need an isolated
+    // instance may overwrite it after init.
+    Self.shared = self
+
+    if #available(iOS 16.2, *) {
+      liveActivityCoordinator = LiveActivityCoordinator(host: self)
+    }
+    refreshActiveSessionsAndSnapshot()
   }
 
   deinit {
@@ -501,6 +560,8 @@ final class SyncService: ObservableObject {
     lanePresenceHeartbeatTask?.cancel()
     terminalBufferRevisionTask?.cancel()
     chatEventRevisionTask?.cancel()
+    snapshotDebouncerTask?.cancel()
+    activeSessionsObservationTask?.cancel()
     discoveryBrowser.stop()
     socketSession.invalidateAndCancel()
     if let databaseObserver {
@@ -515,6 +576,7 @@ final class SyncService: ObservableObject {
       try? await Task.sleep(nanoseconds: 280_000_000)
       guard !Task.isCancelled else { return }
       localStateRevision += 1
+      self.refreshActiveSessionsAndSnapshot()
     }
   }
 
@@ -688,25 +750,29 @@ final class SyncService: ObservableObject {
           + explicitTailscaleAddresses
           + candidateAddresses
       )
-      let addressCandidates = deduplicatedAddresses(
+      let addressCandidates = connectableAddresses(from: deduplicatedAddresses(
         lastSuccessfulAddress +
         [host] +
         discoveryAddresses +
         discoveryTailscaleAddresses +
         explicitTailscaleAddresses +
         candidateAddresses
-      )
+      ))
       // If we have multiple candidates (e.g. discovered LAN + loopback + tailscale),
       // walk them in order and only fail if every one fails to open a socket.
       // A single-address manual entry retains short-circuit behavior since the
       // loop will still surface that sole failure.
       var openedAddress: String?
       var lastOpenError: Error?
+      guard !addressCandidates.isEmpty else {
+        throw noConnectableAddressError()
+      }
       for candidate in addressCandidates {
         guard isCurrentConnectAttempt(connectAttemptGeneration) else {
           throw CancellationError()
         }
-        syncConnectLog.info("attempt host=\(candidate, privacy: .public) port=\(port) kind=pair")
+        let kind = addressCandidateKind(candidate, profile: nil, explicitTailscaleAddress: tailscaleAddress)
+        syncConnectLog.info("attempt host=\(candidate, privacy: .public) port=\(port) kind=\(kind, privacy: .public)")
         do {
           try await openSocket(
             host: candidate,
@@ -904,6 +970,22 @@ final class SyncService: ObservableObject {
       }
       throw error
     }
+  }
+
+  func fetchCtoRoster() async throws -> CtoRoster {
+    try await sendDecodableCommand(action: "cto.getRoster", as: CtoRoster.self)
+  }
+
+  func ensureCtoSession() async throws -> AgentChatSessionSummary {
+    try await sendDecodableCommand(action: "cto.ensureSession", as: AgentChatSessionSummary.self)
+  }
+
+  func ensureCtoAgentSession(agentId: String) async throws -> AgentChatSessionSummary {
+    try await sendDecodableCommand(
+      action: "cto.ensureAgentSession",
+      args: ["agentId": agentId],
+      as: AgentChatSessionSummary.self
+    )
   }
 
   func refreshPullRequestSnapshots(prId: String? = nil) async throws {
@@ -2275,6 +2357,57 @@ final class SyncService: ObservableObject {
       .filter { seen.insert($0).inserted }
   }
 
+  private func connectableAddresses(from addresses: [String]) -> [String] {
+    addresses.filter { address in
+      let canAttempt = syncCanAttemptInsecureWebSocket(to: address)
+      if !canAttempt {
+        syncConnectLog.info("skip host=\(address, privacy: .public) reason=ats_insecure_tailscale")
+      }
+      return canAttempt
+    }
+  }
+
+  private func noConnectableAddressError() -> NSError {
+    NSError(
+      domain: "ADE",
+      code: 24,
+      userInfo: [
+        NSLocalizedDescriptionKey: "iOS blocks insecure ADE sync over Tailscale IPs. Connect on the same local network or pair with a LAN address.",
+      ]
+    )
+  }
+
+  private func addressCandidateKind(
+    _ address: String,
+    profile: HostConnectionProfile?,
+    explicitTailscaleAddress: String?
+  ) -> String {
+    let normalized = address.trimmingCharacters(in: .whitespacesAndNewlines)
+    if normalized == "127.0.0.1" || normalized == "::1" {
+      return "loopback"
+    }
+    if syncIsTailscaleIPv4Address(normalized) ||
+        explicitTailscaleAddress == normalized ||
+        profile?.tailscaleAddress == normalized {
+      return "tailscale"
+    }
+    if profile?.lastSuccessfulAddress == normalized ||
+        profile?.savedAddressCandidates.contains(normalized) == true {
+      return "saved"
+    }
+    if profile?.discoveredLanAddresses.contains(normalized) == true {
+      return "lan"
+    }
+    let octets = normalized.split(separator: ".")
+    if octets.count == 4,
+       let first = octets.first.flatMap({ Int($0) }),
+       let second = octets.dropFirst().first.flatMap({ Int($0) }),
+       first == 10 || (first == 192 && second == 168) || (first == 172 && (16...31).contains(second)) {
+      return "lan"
+    }
+    return "manual"
+  }
+
   private func preferredPairedAddress(
     host: String,
     hostIdentity: String?,
@@ -2405,18 +2538,23 @@ final class SyncService: ObservableObject {
     preferLiveCandidatesOnly: Bool
   ) async throws -> String {
     var lastFailure: Error?
-    let addresses = preferLiveCandidatesOnly
+    let rawAddresses = preferLiveCandidatesOnly
       ? automaticReconnectAddresses(for: profile)
       : prioritizedAddresses(for: profile)
+    let addresses = connectableAddresses(from: rawAddresses)
     guard !addresses.isEmpty else {
-      throw NSError(domain: "ADE", code: 18, userInfo: [NSLocalizedDescriptionKey: "No saved address is available for this host."])
+      if rawAddresses.isEmpty {
+        throw NSError(domain: "ADE", code: 18, userInfo: [NSLocalizedDescriptionKey: "No saved address is available for this host."])
+      }
+      throw noConnectableAddressError()
     }
 
     for address in addresses {
       guard isCurrentConnectAttempt(connectAttemptGeneration) else {
         throw CancellationError()
       }
-      syncConnectLog.info("attempt host=\(address, privacy: .public) port=\(profile.port) kind=unknown")
+      let kind = addressCandidateKind(address, profile: profile, explicitTailscaleAddress: nil)
+      syncConnectLog.info("attempt host=\(address, privacy: .public) port=\(profile.port) kind=\(kind, privacy: .public)")
       do {
         try await openSocket(
           host: address,
@@ -2593,6 +2731,9 @@ final class SyncService: ObservableObject {
     port: Int,
     connectAttemptGeneration: UInt64
   ) async throws {
+    guard syncCanAttemptInsecureWebSocket(to: host) else {
+      throw noConnectableAddressError()
+    }
     teardownSocket(closeCode: .goingAway)
     connectionState = .connecting
     hostName = activeHostProfile?.hostName
@@ -3511,6 +3652,353 @@ final class SyncService: ObservableObject {
     }
     try enqueueOperation(kind: "file", action: action, args: args)
     return ["queued": true]
+  }
+}
+
+// MARK: - Push notifications, Live Activities, and remote commands (WS6)
+
+/// Kinds of remote commands the iOS client sends to the desktop host.
+///
+/// Each case maps to a verb on the desktop `syncRemoteCommandService` and the
+/// notification-bus router. Keep this enum in sync with the action switch
+/// inside `SyncService.sendRemoteCommand(_:payload:)`.
+enum RemoteCommandKind: String, Sendable {
+  case approveSession
+  case denySession
+  case pauseSession
+  case replyToSession
+  case restartSession
+  case retryPrChecks
+  case openPr
+  case setMutePush
+}
+
+extension SyncService: LiveActivityHost {
+  /// `LiveActivityHost` conformance — called by `LiveActivityCoordinator` when
+  /// the OS hands us a new push-to-start or per-activity update token.
+  func sendPushToken(_ token: String, kind: PushTokenKind, sessionId: String?) async {
+    await registerPushToken(token, kind: kind, sessionId: sessionId)
+  }
+}
+
+extension SyncService {
+  /// Send the `register_push_token` sync message to the currently connected
+  /// host. No-ops when offline — APNs tokens are stable for the app install,
+  /// so we simply re-upload on the next successful reconnect.
+  func registerPushToken(_ hex: String, kind: PushTokenKind, sessionId: String?) async {
+    let trimmed = hex.trimmingCharacters(in: .whitespaces).lowercased()
+    guard !trimmed.isEmpty else { return }
+
+    let wireKind: String
+    switch kind {
+    case .alert: wireKind = "alert"
+    case .activityStart: wireKind = "activity-start"
+    case .activityUpdate: wireKind = "activity-update"
+    }
+
+    let bundleId = Bundle.main.bundleIdentifier ?? "com.ade.ios"
+    #if DEBUG
+    let env = "sandbox"
+    #else
+    let env = "production"
+    #endif
+
+    var payload: [String: Any] = [
+      "token": trimmed,
+      "kind": wireKind,
+      "env": env,
+      "bundleId": bundleId,
+    ]
+    if let sessionId, !sessionId.isEmpty {
+      payload["activityId"] = sessionId
+    }
+
+    sendEnvelope(type: "register_push_token", requestId: nil, payload: payload)
+  }
+
+  /// Upload the current notification preferences as a `notification_prefs`
+  /// message. Serializes the flat iOS struct into the nested shape the desktop
+  /// `NotificationPreferences` TypeScript type expects.
+  func uploadNotificationPrefs(_ prefs: NotificationPreferences) {
+    let nested = Self.encodeNotificationPrefsForDesktop(prefs)
+    sendEnvelope(type: "notification_prefs", requestId: nil, payload: ["prefs": nested])
+  }
+
+  /// Ask the host to deliver a test push to this device. The desktop decides
+  /// which token kind (alert vs activity) to target based on what it last saw
+  /// from us.
+  func sendTestPush() {
+    sendEnvelope(type: "send_test_push", requestId: nil, payload: ["kind": "alert"])
+  }
+
+  /// Dispatch a remote command over the existing sync WebSocket. Used by:
+  ///   • Notification action handlers in `AppDelegate`
+  ///   • Live Activity `LiveActivityIntent` perform handlers (WS7)
+  ///   • Control Widget intents (WS7)
+  ///
+  /// The caller supplies a loosely-typed payload so action-specific fields
+  /// (sessionId, prNumber, text, ...) can be forwarded without defining one
+  /// envelope per variant. Never logs the payload in plaintext because `text`
+  /// for `.replyToSession` is user-authored content.
+  func sendRemoteCommand(_ kind: RemoteCommandKind, payload: [String: Any]) async {
+    let action: String
+    switch kind {
+    case .approveSession: action = "chat.approve"
+    case .denySession: action = "chat.approve"
+    case .pauseSession: action = "chat.interrupt"
+    case .replyToSession: action = "chat.respondToInput"
+    case .restartSession: action = "chat.resume"
+    case .retryPrChecks: action = "prs.rerunChecks"
+    case .openPr: action = "prs.getDetail"
+    case .setMutePush: action = "notification_prefs"
+    }
+
+    var args: [String: Any] = [:]
+    switch kind {
+    case .approveSession:
+      if let sessionId = payload["sessionId"] as? String { args["sessionId"] = sessionId }
+      if let itemId = payload["itemId"] as? String { args["itemId"] = itemId }
+      // Matches `AgentChatApprovalDecision` = "accept" | "accept_for_session" | "decline" | "cancel".
+      args["decision"] = "accept"
+    case .denySession:
+      if let sessionId = payload["sessionId"] as? String { args["sessionId"] = sessionId }
+      if let itemId = payload["itemId"] as? String { args["itemId"] = itemId }
+      args["decision"] = "decline"
+    case .pauseSession:
+      if let sessionId = payload["sessionId"] as? String { args["sessionId"] = sessionId }
+    case .replyToSession:
+      // Desktop `chat.respondToInput` requires both sessionId AND itemId; the
+      // itemId is the pending input marker the agent is waiting on.
+      if let sessionId = payload["sessionId"] as? String { args["sessionId"] = sessionId }
+      if let itemId = payload["itemId"] as? String { args["itemId"] = itemId }
+      if let text = payload["text"] as? String { args["responseText"] = text }
+    case .restartSession:
+      if let sessionId = payload["sessionId"] as? String { args["sessionId"] = sessionId }
+    case .retryPrChecks:
+      // The desktop `prs.rerunChecks` handler requires a `prId` string (the
+      // internal ADE PR id). We also forward `prNumber` for logs/telemetry.
+      if let prId = payload["prId"] as? String, !prId.isEmpty {
+        args["prId"] = prId
+      }
+      if let prNumber = payload["prNumber"] as? Int {
+        args["prNumber"] = prNumber
+      } else if let prString = payload["prNumber"] as? String, let pr = Int(prString) {
+        args["prNumber"] = pr
+      }
+    case .openPr:
+      if let prNumber = payload["prNumber"] {
+        args["prNumber"] = prNumber
+      }
+    case .setMutePush:
+      // Route through the preferences updater — we overload the same envelope
+      // rather than add yet another message type. The desktop honours the
+      // `muteUntil` field it finds on the preferences payload.
+      if let until = payload["muteUntil"] as? String {
+        args["muteUntil"] = until
+      } else {
+        args["muteUntil"] = NSNull()
+      }
+    }
+
+    // For now we send via the opaque command envelope — the desktop's
+    // `syncRemoteCommandService` dispatches on `action`. Failures are
+    // swallowed: notification actions are fire-and-forget and do not report
+    // errors back to the user through this surface.
+    do {
+      _ = try await performCommandRequestSafe(action: action, args: args)
+    } catch {
+      // Intentionally silent — the host will retry once the user re-opens
+      // the affected surface.
+    }
+  }
+
+  private func performCommandRequestSafe(action: String, args: [String: Any]) async throws -> Any {
+    if canSendLiveRequests() {
+      return try await performCommandRequest(action: action, args: args)
+    }
+    guard let policy = commandPolicy(for: action), policy.queueable == true else {
+      throw NSError(domain: "ADE", code: 15, userInfo: [NSLocalizedDescriptionKey: "Offline — command dropped."])
+    }
+    try enqueueOperation(kind: "command", action: action, args: args)
+    return ["queued": true]
+  }
+
+  // MARK: - Workspace snapshot debounce
+
+  /// Recompute `activeSessions` from the local `TerminalSessionSummary` roster
+  /// and schedule a debounced snapshot write so widgets + live activities pick
+  /// up the delta.
+  func refreshActiveSessionsAndSnapshot() {
+    let sessions = database.fetchSessions()
+    let now = Date()
+    // Staleness guard: dev iteration leaves many zombie sessions in the DB
+    // with status="running" that were never cleanly terminated. Without a
+    // recency filter the Live Activity / widget fills up with multi-hour-old
+    // garbage. 2 hours covers long-running legitimate missions while
+    // excluding overnight zombies. Awaiting-input always passes because the
+    // user explicitly needs to see it even if it's old.
+    let staleCutoffSeconds: TimeInterval = 2 * 60 * 60
+    let agents: [AgentSnapshot] = sessions.compactMap { session in
+      let isChat = (session.toolType?.contains("chat") == true)
+      guard isChat else { return nil }
+      let status = session.status.lowercased()
+      guard status != "completed" && status != "failed" else { return nil }
+
+      let awaiting = status == "awaiting_input"
+      let started = Self.parseIso8601(session.startedAt) ?? now
+      let lastActivity = Self.parseIso8601(session.endedAt ?? "") ?? now
+      let elapsed = Int(max(0, lastActivity.timeIntervalSince(started)))
+
+      if !awaiting && now.timeIntervalSince(started) > staleCutoffSeconds {
+        return nil
+      }
+
+      return AgentSnapshot(
+        sessionId: session.id,
+        provider: session.toolType ?? "claude",
+        title: session.title.isEmpty ? session.goal : session.title,
+        status: status,
+        awaitingInput: awaiting,
+        lastActivityAt: lastActivity,
+        elapsedSeconds: elapsed,
+        preview: session.lastOutputPreview,
+        progress: nil,
+        phase: nil,
+        toolCalls: 0
+      )
+    }
+
+    activeSessions = agents
+
+    if #available(iOS 16.2, *),
+       let coord = liveActivityCoordinator as? LiveActivityCoordinator {
+      let currentPrs: [PrSnapshot] = database
+        .fetchPullRequestListItems()
+        .prefix(12)
+        .map { item in
+          PrSnapshot(
+            id: item.id,
+            number: item.githubPrNumber,
+            title: item.title,
+            checks: item.checksStatus,
+            review: item.reviewStatus,
+            state: item.state,
+            mergeReady: (item.reviewStatus == "approved")
+              && (item.checksStatus == "passing")
+              && item.state == "open"
+          )
+        }
+      coord.reconcile(with: agents, prs: currentPrs)
+    }
+
+    scheduleWorkspaceSnapshotWrite()
+  }
+
+  /// Debounced writer for the App Group `WorkspaceSnapshot`. Bounces for 2s
+  /// so bursty sync traffic collapses into a single widget-timeline reload.
+  private func scheduleWorkspaceSnapshotWrite() {
+    snapshotDebouncerTask?.cancel()
+    snapshotDebouncerTask = Task { @MainActor [weak self] in
+      try? await Task.sleep(nanoseconds: 2_000_000_000)
+      guard let self, !Task.isCancelled else { return }
+      self.writeWorkspaceSnapshotNow()
+    }
+  }
+
+  private func writeWorkspaceSnapshotNow() {
+    let prs: [PrSnapshot] = database.fetchPullRequestListItems().prefix(12).map { item in
+      PrSnapshot(
+        id: item.id,
+        number: item.githubPrNumber,
+        title: item.title,
+        checks: item.checksStatus,
+        review: item.reviewStatus,
+        state: item.state,
+        mergeReady: (item.reviewStatus == "approved") && (item.checksStatus == "passing") && item.state == "open"
+      )
+    }
+
+    let connection: String
+    switch connectionState {
+    case .connected: connection = "connected"
+    case .syncing, .connecting: connection = "syncing"
+    default: connection = "disconnected"
+    }
+
+    let snapshot = WorkspaceSnapshot(
+      generatedAt: Date(),
+      agents: activeSessions,
+      prs: prs,
+      connection: connection
+    )
+
+    if ADESharedContainer.writeWorkspaceSnapshot(snapshot) {
+      WidgetReloadBridge.reloadAllTimelines()
+    }
+  }
+
+  // MARK: - NotificationPreferences shape translation
+
+  /// Translate the flat iOS `NotificationPreferences` into the nested shape
+  /// the desktop `SyncNotificationPrefsPayload` expects. Keeping the mapping
+  /// local (rather than rewriting the iOS struct) avoids touching the
+  /// persistence format that `NotificationsCenterView` already reads/writes.
+  static func encodeNotificationPrefsForDesktop(
+    _ prefs: NotificationPreferences
+  ) -> [String: Any] {
+    let anyEnabled = prefs.enabledCategoryCount > 0
+    var dict: [String: Any] = [
+      "enabled": anyEnabled,
+      "chat": [
+        "awaitingInput": prefs.chatAwaitingInput,
+        "chatFailed": prefs.chatFailed,
+        "turnCompleted": prefs.chatTurnCompleted,
+      ],
+      "cto": [
+        "subagentStarted": prefs.ctoSubagentStarted,
+        "subagentFinished": prefs.ctoSubagentFinished,
+        "missionPhaseChanged": prefs.ctoMissionPhase,
+      ],
+      "prs": [
+        "ciFailing": prefs.prCiFailing,
+        "reviewRequested": prefs.prReviewRequested,
+        "changesRequested": prefs.prChangesRequested,
+        "mergeReady": prefs.prMergeReady,
+      ],
+      "system": [
+        "providerOutage": prefs.systemProviderOutage,
+        "authRateLimit": prefs.systemAuthRateLimit,
+        "hookFailure": prefs.systemHookFailure,
+      ],
+    ]
+
+    if let start = prefs.quietHoursStart, let end = prefs.quietHoursEnd {
+      dict["quietHours"] = [
+        "enabled": true,
+        "start": Self.formatTimeOfDay(start),
+        "end": Self.formatTimeOfDay(end),
+        "timezone": TimeZone.current.identifier,
+      ]
+    }
+
+    return dict
+  }
+
+  private static func formatTimeOfDay(_ date: Date) -> String {
+    let formatter = DateFormatter()
+    formatter.locale = Locale(identifier: "en_US_POSIX")
+    formatter.timeZone = .current
+    formatter.dateFormat = "HH:mm"
+    return formatter.string(from: date)
+  }
+
+  private static func parseIso8601(_ raw: String) -> Date? {
+    guard !raw.isEmpty else { return nil }
+    let iso = ISO8601DateFormatter()
+    iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    if let date = iso.date(from: raw) { return date }
+    iso.formatOptions = [.withInternetDateTime]
+    return iso.date(from: raw)
   }
 }
 

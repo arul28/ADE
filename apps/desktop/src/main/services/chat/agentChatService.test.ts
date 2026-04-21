@@ -3563,7 +3563,7 @@ describe("createAgentChatService", () => {
       ]);
     });
 
-    it("ignores stale Codex lifecycle notifications from a foreign turn", async () => {
+    it("ignores unsolicited Codex turn notifications when no turn is active", async () => {
       const events: Array<{ type: string; turnId?: string; text?: string }> = [];
       const { service } = createService({
         onEvent: (event: AgentChatEventEnvelope) => {
@@ -3587,9 +3587,56 @@ describe("createAgentChatService", () => {
         method: "turn/started",
         params: {
           turn: {
-            id: "turn-1",
+            id: "foreign-turn",
           },
         },
+      });
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "item/agentMessage/delta",
+        params: {
+          turnId: "foreign-turn",
+          delta: "This belongs to a different thread",
+        },
+      });
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "turn/completed",
+        params: {
+          turn: {
+            id: "foreign-turn",
+            status: "completed",
+          },
+        },
+      });
+
+      expect(events.filter((event) => event.turnId === "foreign-turn")).toHaveLength(0);
+    });
+
+    it("ignores stale Codex lifecycle notifications from a foreign turn", async () => {
+      const events: Array<{ type: string; turnId?: string; text?: string }> = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => {
+          events.push({
+            type: event.event.type,
+            turnId: "turnId" in event.event ? event.event.turnId ?? undefined : undefined,
+            text: "text" in event.event ? event.event.text : undefined,
+          });
+        },
+      });
+
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Start working",
+      }, { awaitDispatch: true });
+      await vi.waitFor(() => {
+        expect(events.some((event) => event.type === "status" && event.turnId === "turn-1")).toBe(true);
       });
 
       mockState.emitCodexPayload({
