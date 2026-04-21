@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import type { AdeCliInstallResult, AdeCliStatus } from "../../../shared/types/adeCli";
 import type { Logger } from "../logging/logger";
-import { spawnAsync, whichCommand } from "../shared/utils";
+import { spawnAsync } from "../shared/utils";
 
 type CreateAdeCliServiceArgs = {
   isPackaged: boolean;
@@ -60,6 +60,19 @@ function prependPathDir(pathValue: string | null | undefined, dir: string | null
   if (pathContainsDir(pathValue, dir)) return pathValue ?? undefined;
   const current = pathValue?.trim();
   return current ? `${dir}${PATH_DELIMITER}${current}` : dir;
+}
+
+function resolveCommandOnPath(command: string, pathValue: string | null | undefined): string | null {
+  const extensions = process.platform === "win32"
+    ? (process.env.PATHEXT ?? ".EXE;.CMD;.BAT;.COM").split(";").filter(Boolean)
+    : [""];
+  for (const entry of splitPathEntries(pathValue)) {
+    for (const ext of extensions) {
+      const candidate = path.join(entry, `${command}${ext}`);
+      if (isExecutable(candidate)) return candidate;
+    }
+  }
+  return null;
 }
 
 function findRepoRoot(startDir: string): string | null {
@@ -231,6 +244,7 @@ function statusMessage(args: {
 
 export function createAdeCliService(args: CreateAdeCliServiceArgs) {
   const resolved = resolveCliPaths(args);
+  const hostPathSnapshot = args.env?.PATH ?? process.env.PATH;
 
   const agentEnv = (baseEnv: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv => {
     const next: NodeJS.ProcessEnv = { ...baseEnv };
@@ -249,7 +263,7 @@ export function createAdeCliService(args: CreateAdeCliServiceArgs) {
   };
 
   const getStatus = async (): Promise<AdeCliStatus> => {
-    const terminalCommandPath = await whichCommand("ade");
+    const terminalCommandPath = resolveCommandOnPath("ade", hostPathSnapshot);
     const targetPath = installTargetPath();
     const targetDir = path.dirname(targetPath);
     const terminalInstalled = Boolean(terminalCommandPath);
@@ -277,7 +291,7 @@ export function createAdeCliService(args: CreateAdeCliServiceArgs) {
       terminalCommandPath,
       installAvailable,
       installTargetPath: targetPath,
-      installTargetDirOnPath: pathContainsDir(args.env?.PATH ?? process.env.PATH, targetDir),
+      installTargetDirOnPath: pathContainsDir(hostPathSnapshot, targetDir),
       message: message.message,
       nextAction: message.nextAction,
     };

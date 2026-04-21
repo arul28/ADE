@@ -293,6 +293,36 @@ describe("ctoStateService", () => {
     fixture.db.close();
   });
 
+  it("normalizes legacy full_mcp session logs as full tooling", async () => {
+    const fixture = await createFixture();
+    const ctoDir = path.join(fixture.adeDir, "cto");
+    fs.mkdirSync(ctoDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(ctoDir, "sessions.jsonl"),
+      `${JSON.stringify({
+        sessionId: "legacy-session",
+        summary: "Legacy CTO session",
+        startedAt: "2026-03-05T10:00:00.000Z",
+        endedAt: "2026-03-05T10:05:00.000Z",
+        provider: "codex",
+        modelId: "openai/gpt-5.3-codex",
+        capabilityMode: "full_mcp",
+        createdAt: "2026-03-05T10:06:00.000Z",
+      })}\n`,
+      "utf8"
+    );
+
+    const service = createCtoStateService({
+      db: fixture.db,
+      projectId: fixture.projectId,
+      adeDir: fixture.adeDir,
+    });
+
+    expect(service.getSessionLogs(10)[0]?.capabilityMode).toBe("full_tooling");
+
+    fixture.db.close();
+  });
+
   it("tracks subordinate activity and exposes it in CTO reconstruction context", async () => {
     const fixture = await createFixture();
     const service = createCtoStateService({

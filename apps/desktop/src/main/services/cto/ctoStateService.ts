@@ -673,7 +673,9 @@ function normalizeSessionLogEntry(input: unknown): CtoSessionLogEntry | null {
   const provider = typeof source.provider === "string" ? source.provider.trim() : "";
   if (!sessionId || !createdAt || !summary || !startedAt || !provider) return null;
 
-  const capabilityMode = source.capabilityMode === "full_tooling" ? "full_tooling" : "fallback";
+  const capabilityMode = source.capabilityMode === "full_tooling" || source.capabilityMode === "full_mcp"
+    ? "full_tooling"
+    : "fallback";
   return {
     id: typeof source.id === "string" && source.id.trim().length ? source.id.trim() : randomUUID(),
     prevHash: typeof source.prevHash === "string" && source.prevHash.trim().length ? source.prevHash.trim() : null,

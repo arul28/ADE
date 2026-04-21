@@ -435,8 +435,8 @@ export function CommandPalette({
     setDetailLoading(true);
     setDetailPath(detailTarget);
     const timeout = globalThis.setTimeout(() => {
-      void window.ade.project
-        .getDetail(detailTarget)
+      void Promise.resolve()
+        .then(() => window.ade.project.getDetail(detailTarget))
         .then((result) => {
           if (detailRequestRef.current !== requestId) return;
           setDetail(result);

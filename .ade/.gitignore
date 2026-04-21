@@ -5,7 +5,7 @@ ade.db
 ade.db-*
 ade.db-wal
 embeddings.db
-ade.sock
+mcp.sock
 artifacts/
 transcripts/
 cache/

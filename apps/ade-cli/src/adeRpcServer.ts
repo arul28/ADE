@@ -3054,6 +3054,145 @@ type AdeActionDomain =
   | "pty"
   | "computer_use_artifacts";
 
+const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly string[]>> = {
+  lane: [
+    "adoptAttached",
+    "attach",
+    "create",
+    "createFromUnstaged",
+    "delete",
+    "getChildren",
+    "getStackChain",
+    "importBranch",
+    "list",
+    "listUnregisteredWorktrees",
+    "refreshSnapshots",
+    "rename",
+    "reparent",
+    "updateAppearance",
+  ],
+  git: [
+    "abortRebase",
+    "cherryPickCommit",
+    "commit",
+    "continueRebase",
+    "fetch",
+    "getCommitMessage",
+    "getConflictState",
+    "getFileHistory",
+    "getSyncStatus",
+    "listCommitFiles",
+    "mergeAbort",
+    "mergeContinue",
+    "pull",
+    "push",
+    "rebaseAbort",
+    "rebaseContinue",
+    "revertCommit",
+    "stash",
+    "stagePaths",
+    "unstagePaths",
+  ],
+  diff: ["getChanges", "getFileDiff"],
+  conflicts: ["getLaneStatus", "listOverlaps", "rebaseLane", "runPrediction"],
+  pr: [
+    "addComment",
+    "aiReviewSummary",
+    "cleanupIntegrationWorkflow",
+    "createFromLane",
+    "createIntegrationLane",
+    "createIntegrationPr",
+    "createQueuePrs",
+    "dismissIntegrationCleanup",
+    "draftDescription",
+    "getActionRuns",
+    "getChecks",
+    "getComments",
+    "getDetail",
+    "getGithubSnapshot",
+    "getIntegrationResolutionState",
+    "getMobileSnapshot",
+    "getPrHealth",
+    "getQueueState",
+    "getReviewThreads",
+    "getReviews",
+    "landQueueNext",
+    "landStack",
+    "landStackEnhanced",
+    "linkToLane",
+    "listAll",
+    "listGroupPrs",
+    "listIntegrationProposals",
+    "listIntegrationWorkflows",
+    "listWithConflicts",
+    "postReviewComment",
+    "reactToComment",
+    "recheckIntegrationStep",
+    "refresh",
+    "reorderQueuePrs",
+    "requestReviewers",
+    "setLabels",
+    "setReviewThreadResolved",
+    "simulateIntegration",
+    "startIntegrationResolution",
+    "submitReview",
+    "updateDescription",
+    "updateIntegrationProposal",
+    "updateTitle",
+  ],
+  tests: ["getLogTail", "listRuns", "listSuites", "run", "stop"],
+  chat: [
+    "createSession",
+    "deleteSession",
+    "getAvailableModels",
+    "getSessionSummary",
+    "getSlashCommands",
+    "interrupt",
+    "listSessions",
+    "resumeSession",
+    "sendMessage",
+  ],
+  memory: ["addSharedFact", "pinMemory", "searchMemories", "writeMemory"],
+  session: ["get", "readTranscriptTail"],
+  operation: ["finish", "list", "start"],
+  project_config: ["get", "save"],
+  issue_inventory: [
+    "getConvergenceRuntime",
+    "getConvergenceStatus",
+    "getInventory",
+    "getNewItems",
+    "getPipelineSettings",
+    "markDismissed",
+    "markEscalated",
+    "markFixed",
+    "markSentToAgent",
+    "reconcileConvergenceSessionExit",
+    "savePipelineSettings",
+    "syncFromPrData",
+  ],
+  flow_policy: ["getPolicy", "savePolicy"],
+  linear_dispatcher: ["dispatchIssue", "getDashboard", "listEmployees", "listQueue"],
+  linear_issue_tracker: ["getStatus", "listIssues"],
+  linear_sync: ["getDashboard", "getRunDetail", "listQueue", "resolveQueueItem", "runSyncNow"],
+  linear_ingress: ["ensureRelayWebhook", "getStatus", "listRecentEvents"],
+  linear_routing: ["simulateRoute"],
+  file: [
+    "createDirectory",
+    "createFile",
+    "deletePath",
+    "listTree",
+    "listWorkspaces",
+    "quickOpen",
+    "readFile",
+    "rename",
+    "searchText",
+    "writeWorkspaceText",
+  ],
+  process: ["getLogTail", "listDefinitions", "listRuntime", "startAll", "stopAll"],
+  pty: ["create", "dispose", "resize", "write"],
+  computer_use_artifacts: ["ingest", "listArtifacts"],
+};
+
 function getAdeActionDomainServices(runtime: AdeRuntime): Partial<Record<AdeActionDomain, Record<string, unknown> | null | undefined>> {
   return {
     lane: runtime.laneService as unknown as Record<string, unknown>,
@@ -3086,10 +3225,15 @@ function getAdeActionDomainServices(runtime: AdeRuntime): Partial<Record<AdeActi
   };
 }
 
-function listAdeActionNames(service: Record<string, unknown>): string[] {
-  return Object.keys(service)
-    .filter((key) => typeof service[key] === "function" && !key.startsWith("_"))
+function listAllowedAdeActionNames(domain: AdeActionDomain, service: Record<string, unknown>): string[] {
+  const allowed = ADE_ACTION_ALLOWLIST[domain] ?? [];
+  return allowed
+    .filter((key) => typeof service[key] === "function")
     .sort((a, b) => a.localeCompare(b));
+}
+
+function isAllowedAdeAction(domain: AdeActionDomain, action: string): boolean {
+  return (ADE_ACTION_ALLOWLIST[domain] ?? []).includes(action);
 }
 
 async function waitForSessionCompletion(args: {
@@ -4197,7 +4341,7 @@ async function runTool(args: {
     const actions = domains.flatMap((entry) => {
       const service = services[entry];
       if (!service) return [];
-      return listAdeActionNames(service).map((action) => ({
+      return listAllowedAdeActionNames(entry, service).map((action) => ({
         domain: entry,
         action,
       }));
@@ -4219,6 +4363,9 @@ async function runTool(args: {
     const callable = service[action];
     if (typeof callable !== "function") {
       throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `Action '${domain}.${action}' is not callable.`);
+    }
+    if (!isAllowedAdeAction(domain, action)) {
+      throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `Action '${domain}.${action}' is not exposed through ADE actions.`);
     }
     const argsList = Array.isArray(toolArgs.argsList) ? toolArgs.argsList : null;
     const hasScalarArg = Object.prototype.hasOwnProperty.call(toolArgs, "arg");
@@ -5749,6 +5896,9 @@ async function runTool(args: {
     const runId = asOptionalTrimmedString(toolArgs.runId);
     const stepId = asOptionalTrimmedString(toolArgs.stepId);
     const attemptId = asOptionalTrimmedString(toolArgs.attemptId);
+    const promptRunId = runId ? stripInjectionChars(runId) : null;
+    const promptStepId = stepId ? stripInjectionChars(stepId) : null;
+    const promptAttemptId = attemptId ? stripInjectionChars(attemptId) : null;
     const toolWhitelist = normalizeToolWhitelist(toolArgs.toolWhitelist);
     const title = stripInjectionChars(
       asOptionalTrimmedString(toolArgs.title) ?? `ADE Agent (${provider}${permissionMode === "plan" ? " · plan" : ""})`
@@ -5769,9 +5919,9 @@ async function runTool(args: {
     });
 
     const promptSegments: string[] = [];
-    if (runId || stepId || attemptId) {
+    if (promptRunId || promptStepId || promptAttemptId) {
       promptSegments.push(
-        `Mission context: run=${runId ?? "n/a"} step=${stepId ?? "n/a"} attempt=${attemptId ?? "n/a"}.`
+        `Mission context: run=${promptRunId ?? "n/a"} step=${promptStepId ?? "n/a"} attempt=${promptAttemptId ?? "n/a"}.`
       );
     }
     if (contextRef.contextFilePath) {

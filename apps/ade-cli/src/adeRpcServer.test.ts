@@ -293,12 +293,14 @@ function createRuntime() {
         })),
         getNewItems: vi.fn((_prId: string) => []),
         markSentToAgent: vi.fn(),
+        resetInventory: vi.fn(),
         saveConvergenceRuntime: vi.fn((prId: string, state: Record<string, unknown>) => {
           const existing = runtimeByPr.get(prId) ?? {};
           const merged = { ...defaultRuntime(prId), ...existing, ...state };
           runtimeByPr.set(prId, merged);
           return merged;
         }),
+        deletePipelineSettings: vi.fn(),
         savePipelineSettings: vi.fn((prId: string, settings: Record<string, unknown>) => {
           const existing = pipelineByPr.get(prId) ?? {};
           pipelineByPr.set(prId, { ...existing, ...settings });
@@ -3122,6 +3124,32 @@ describe("adeRpcServer", () => {
     });
     expect(variadic?.isError).toBeUndefined();
     expect(fixture.runtime.operationService.list).toHaveBeenCalledWith({ limit: 10 });
+  });
+
+  it("does not expose internal service mutators through dynamic ADE actions", async () => {
+    const fixture = createRuntime();
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(handler, { callerId: "agent-1", role: "agent" });
+
+    const listed = await callTool(handler, "list_ade_actions", { domain: "issue_inventory" });
+    expect(listed?.isError).toBeUndefined();
+    const actions = listed.structuredContent.actions.map((entry: { action: string }) => entry.action);
+    expect(actions).toContain("getPipelineSettings");
+    expect(actions).not.toContain("resetInventory");
+    expect(actions).not.toContain("saveConvergenceRuntime");
+    expect(actions).not.toContain("deletePipelineSettings");
+
+    const response = await callTool(handler, "run_ade_action", {
+      domain: "issue_inventory",
+      action: "resetInventory",
+      argsList: ["pr-1"],
+    });
+
+    expect(response.isError).toBe(true);
+    expect(JSON.stringify(response.error ?? response.structuredContent ?? {})).toContain(
+      "Action 'issue_inventory.resetInventory' is not exposed through ADE actions.",
+    );
+    expect(fixture.runtime.issueInventoryService.resetInventory).not.toHaveBeenCalled();
   });
 
   it("rejects run_ade_action when the action is not a callable on the domain service", async () => {
