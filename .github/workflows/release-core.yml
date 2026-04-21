@@ -31,7 +31,7 @@ jobs:
 
       - name: Ensure release commit points to main
         run: |
-          git fetch --depth=1 origin main:refs/remotes/origin/main
+          git fetch origin main:refs/remotes/origin/main
           git merge-base --is-ancestor HEAD refs/remotes/origin/main
 
   build-mac-release:
