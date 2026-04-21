@@ -1905,13 +1905,10 @@ export function createPrService({
   const getCommitsSnapshot = async (prId: string): Promise<PrCommit[]> => {
     const row = requireRow(prId);
     const repo = repoFromRow(row);
-    const { data } = await githubService.apiRequest<any>({
-      method: "GET",
+    const list = await fetchAllPages<any>({
       path: `/repos/${repo.owner}/${repo.name}/pulls/${Number(row.github_pr_number)}/commits`,
-      query: { per_page: 30, page: 1 },
     });
-    const list: any[] = Array.isArray(data) ? data : [];
-    const capped = list.slice(0, 30);
+    const capped = list.slice(-30);
     const baseCommits: PrCommit[] = capped.map((entry) => {
       const sha = asString(entry?.sha) || "";
       const commit = entry?.commit ?? {};

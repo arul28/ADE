@@ -189,6 +189,37 @@ describe("createAdeCliService", () => {
     expect(shimScript).not.toContain("--import tsx \"$CLI_JS\" \"$@\"");
   });
 
+  it("uses source CLI when the dev dist artifact is older than source", () => {
+    const root = makeTempRoot();
+    const repoRoot = path.join(root, "repo");
+    const userDataPath = path.join(root, "user-data");
+    const builtCliPath = path.join(repoRoot, "apps", "ade-cli", "dist", "cli.cjs");
+    const sourceCliPath = path.join(repoRoot, "apps", "ade-cli", "src", "cli.ts");
+    fs.mkdirSync(path.dirname(builtCliPath), { recursive: true });
+    fs.mkdirSync(path.dirname(sourceCliPath), { recursive: true });
+    fs.writeFileSync(builtCliPath, "console.log('old dist')\n");
+    fs.writeFileSync(sourceCliPath, "console.log('new source')\n");
+    fs.mkdirSync(path.join(repoRoot, "apps", "desktop"), { recursive: true });
+    fs.writeFileSync(path.join(repoRoot, "apps", "ade-cli", "package.json"), "{}\n");
+    fs.writeFileSync(path.join(repoRoot, "apps", "desktop", "package.json"), "{}\n");
+    const oldTime = new Date("2026-04-20T00:00:00.000Z");
+    const newTime = new Date("2026-04-21T00:00:00.000Z");
+    fs.utimesSync(builtCliPath, oldTime, oldTime);
+    fs.utimesSync(sourceCliPath, newTime, newTime);
+    vi.spyOn(process, "cwd").mockReturnValue(repoRoot);
+
+    const service = createAdeCliService({
+      isPackaged: false,
+      resourcesPath: path.join(root, "missing-resources"),
+      userDataPath,
+      appExecutablePath: "/Applications/ADE.app/Contents/MacOS/ADE",
+      logger: logger() as any,
+    });
+
+    expect(service.resolved.source).toBe("dev");
+    expect(service.resolved.cliJsPath).toBe(sourceCliPath);
+  });
+
   it("does not run a global installer from dev builds", async () => {
     const root = makeTempRoot();
     vi.spyOn(process, "cwd").mockReturnValue(root);

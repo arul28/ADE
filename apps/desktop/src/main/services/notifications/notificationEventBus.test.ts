@@ -287,4 +287,27 @@ describe("notificationEventBus", () => {
 
     expect(calls.map((call) => call.deviceToken)).toEqual(["alert-token-A", "live-session-1"]);
   });
+
+  it("uses the workspace Live Activity update token when no per-entity token is registered", async () => {
+    const { service, calls } = makeApnsService();
+    const bus = createNotificationEventBus({
+      logger: createLogger(),
+      apnsService: service as any,
+      listPushTargets: () => [
+        makeTarget({
+          activityUpdateTokens: {
+            workspace: "live-workspace",
+          },
+        }),
+      ],
+      getPrefsForDevice: () => prefsOn,
+      sendInAppNotification: vi.fn(),
+      isDeviceConnected: () => false,
+    });
+
+    bus.publishChatEvent(sampleEnvelope);
+    await deferredFlush();
+
+    expect(calls.map((call) => call.deviceToken)).toEqual(["alert-token-A", "live-workspace"]);
+  });
 });

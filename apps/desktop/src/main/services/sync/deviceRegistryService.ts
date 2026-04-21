@@ -50,6 +50,7 @@ type ClusterStateRow = {
 
 const DEVICE_ID_FILE = "sync-device-id";
 export const DEFAULT_SYNC_CLUSTER_ID = "default";
+const WORKSPACE_ACTIVITY_ID = "workspace";
 
 function normalizeDeviceType(value: unknown): SyncPeerDeviceType {
   const raw = typeof value === "string" ? value.trim() : "";
@@ -398,13 +399,12 @@ export function createDeviceRegistryService(args: DeviceRegistryServiceArgs) {
       apnsTokenUpdatedAt: nowIso(),
     };
     if (extras.bundleId) nextMetadata.apnsBundleId = extras.bundleId;
-    if (kind === "activity-update" && extras.activityId) {
+    if (kind === "activity-update") {
       const existing = (device.metadata.apnsActivityUpdateTokens as Record<string, string> | undefined) ?? {};
-      nextMetadata.apnsActivityUpdateTokens = { ...existing, [extras.activityId]: token };
-    } else if (kind !== "activity-update") {
-      nextMetadata[apnsMetaKey(kind)] = token;
+      const activityId = extras.activityId?.trim() || WORKSPACE_ACTIVITY_ID;
+      nextMetadata.apnsActivityUpdateTokens = { ...existing, [activityId]: token };
     } else {
-      return null;
+      nextMetadata[apnsMetaKey(kind)] = token;
     }
     return upsertDeviceRecord({
       deviceId: device.deviceId,
@@ -430,7 +430,7 @@ export function createDeviceRegistryService(args: DeviceRegistryServiceArgs) {
     if (!device) return null;
     if (kind === "activity-update") {
       const map = (device.metadata.apnsActivityUpdateTokens as Record<string, string> | undefined) ?? {};
-      return activityId ? map[activityId] ?? null : null;
+      return map[activityId?.trim() || WORKSPACE_ACTIVITY_ID] ?? null;
     }
     const raw = device.metadata[apnsMetaKey(kind)];
     return typeof raw === "string" && raw.trim().length > 0 ? raw : null;
@@ -466,6 +466,45 @@ export function createDeviceRegistryService(args: DeviceRegistryServiceArgs) {
     const prefs = getDevice(deviceId)?.metadata.notificationPreferences;
     if (!prefs || typeof prefs !== "object" || Array.isArray(prefs)) return null;
     return normalizeNotificationPreferences(prefs);
+  };
+
+  const invalidateApnsToken = (deviceToken: string): void => {
+    const token = deviceToken.trim();
+    if (!token) return;
+    const device = findDeviceByApnsToken(token);
+    if (!device) return;
+    const nextMetadata = { ...device.metadata };
+    if (nextMetadata.apnsAlertToken === token) {
+      delete nextMetadata.apnsAlertToken;
+    }
+    if (nextMetadata.apnsActivityStartToken === token) {
+      delete nextMetadata.apnsActivityStartToken;
+    }
+    const updates = nextMetadata.apnsActivityUpdateTokens;
+    if (updates && typeof updates === "object" && !Array.isArray(updates)) {
+      const nextUpdates = { ...(updates as Record<string, string>) };
+      for (const [activityId, value] of Object.entries(nextUpdates)) {
+        if (value === token) delete nextUpdates[activityId];
+      }
+      if (Object.keys(nextUpdates).length > 0) {
+        nextMetadata.apnsActivityUpdateTokens = nextUpdates;
+      } else {
+        delete nextMetadata.apnsActivityUpdateTokens;
+      }
+    }
+    upsertDeviceRecord({
+      deviceId: device.deviceId,
+      siteId: device.siteId,
+      name: device.name,
+      platform: device.platform,
+      deviceType: device.deviceType,
+      lastSeenAt: device.lastSeenAt,
+      lastHost: device.lastHost,
+      lastPort: device.lastPort,
+      tailscaleIp: device.tailscaleIp,
+      ipAddresses: device.ipAddresses,
+      metadata: nextMetadata,
+    });
   };
 
   const invalidateApnsTokensForDevice = (deviceId: string): void => {
@@ -558,6 +597,7 @@ export function createDeviceRegistryService(args: DeviceRegistryServiceArgs) {
     getApnsTokenForDevice,
     setNotificationPreferences,
     getNotificationPreferences,
+    invalidateApnsToken,
     invalidateApnsTokensForDevice,
     findDeviceByApnsToken,
   };

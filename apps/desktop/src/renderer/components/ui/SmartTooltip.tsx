@@ -106,6 +106,19 @@ export function SmartTooltip({
     setVisible(false);
   }, [clearShowTimer, clearHideTimer, content.docUrl]);
 
+  const isTooltipFocusTarget = useCallback((target: EventTarget | null): boolean => {
+    if (!content.docUrl || !(target instanceof Node)) return false;
+    return Boolean(triggerRef.current?.contains(target) || tooltipRef.current?.contains(target));
+  }, [content.docUrl]);
+
+  const handleBlur = useCallback((event: React.FocusEvent) => {
+    if (isTooltipFocusTarget(event.relatedTarget)) {
+      clearHideTimer();
+      return;
+    }
+    hide();
+  }, [clearHideTimer, hide, isTooltipFocusTarget]);
+
   useEffect(
     () => () => {
       if (showTimerRef.current) clearTimeout(showTimerRef.current);
@@ -143,7 +156,7 @@ export function SmartTooltip({
         onMouseEnter={show}
         onMouseLeave={hide}
         onFocus={show}
-        onBlur={hide}
+        onBlur={handleBlur}
         style={{ display: "inline-flex" }}
       >
         {trigger}
@@ -169,6 +182,15 @@ export function SmartTooltip({
                   : undefined
               }
               onMouseLeave={content.docUrl ? hide : undefined}
+              onFocus={
+                content.docUrl
+                  ? () => {
+                      clearShowTimer();
+                      clearHideTimer();
+                    }
+                  : undefined
+              }
+              onBlur={content.docUrl ? handleBlur : undefined}
               style={{
                 position: "fixed",
                 zIndex: 9999,

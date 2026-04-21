@@ -177,6 +177,7 @@ describe("projectConfigService AI mode normalization", () => {
             autoTitleEnabled: true,
             autoTitleModelId: "openai/gpt-5.3-codex-spark",
             autoTitleRefreshOnComplete: false,
+            autoAllowAskUser: false,
             codexSandbox: "workspace-write",
           },
         },
@@ -198,6 +199,7 @@ describe("projectConfigService AI mode normalization", () => {
     expect(snapshot.effective.ai?.sessionIntelligence?.titles?.enabled).toBe(true);
     expect(snapshot.effective.ai?.sessionIntelligence?.titles?.modelId).toBe("openai/gpt-5.3-codex-spark");
     expect(snapshot.effective.ai?.sessionIntelligence?.titles?.refreshOnComplete).toBe(false);
+    expect(snapshot.effective.ai?.chat?.autoAllowAskUser).toBe(false);
     expect(snapshot.effective.ai?.chat?.codexSandbox).toBe("workspace-write");
 
     service.save({
@@ -214,6 +216,7 @@ describe("projectConfigService AI mode normalization", () => {
     expect(persisted.ai?.sessionIntelligence?.titles?.enabled).toBe(true);
     expect(persisted.ai?.sessionIntelligence?.titles?.modelId).toBe("openai/gpt-5.3-codex-spark");
     expect(persisted.ai?.sessionIntelligence?.titles?.refreshOnComplete).toBe(false);
+    expect(persisted.ai?.chat?.autoAllowAskUser).toBe(false);
     expect(persisted.ai?.chat?.codexSandbox).toBe("workspace-write");
   });
 });

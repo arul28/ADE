@@ -1150,6 +1150,45 @@ describe("autoRebaseService", () => {
       });
     });
 
+    it("describes descendant blocks behind a lane_base PR as fixed-base manual work", async () => {
+      const service = createService();
+      const root = makeLane("root");
+      const child = makeLane("child-lane-base", {
+        parentLaneId: "root",
+        status: { dirty: false, ahead: 0, behind: 2, remoteBehind: 0, rebaseInProgress: false },
+        createdAt: "2026-03-10T01:00:00.000Z",
+      });
+      const grandchild = makeLane("grandchild", {
+        parentLaneId: "child-lane-base",
+        status: { dirty: false, ahead: 0, behind: 1, remoteBehind: 0, rebaseInProgress: false },
+        createdAt: "2026-03-10T02:00:00.000Z",
+      });
+      laneList = [root, child, grandchild];
+      rebaseNeedOverrides.set("child-lane-base", {
+        behindBy: 2,
+        conflictPredicted: false,
+        conflictingFiles: [],
+      });
+      rebaseNeedOverrides.set("grandchild", {
+        behindBy: 1,
+        conflictPredicted: false,
+        conflictingFiles: [],
+      });
+      db._prByLaneId.set("child-lane-base", { creation_strategy: "lane_base" });
+
+      await service.onHeadChanged({
+        laneId: "root",
+        preHeadSha: "aaa",
+        postHeadSha: "bbb",
+        reason: "user_commit",
+      });
+      await vi.advanceTimersByTimeAsync(1500);
+
+      const grandchildStatus = db.getJson("auto_rebase:status:grandchild") as AutoRebaseLaneStatus;
+      expect(grandchildStatus.message).toContain("fixed PR base");
+      expect(grandchildStatus.message).not.toContain("unresolved rebase conflicts");
+    });
+
     it("proceeds with auto-rebase for lanes whose linked PR has strategy 'pr_target'", async () => {
       const service = createService();
       const root = makeLane("root");

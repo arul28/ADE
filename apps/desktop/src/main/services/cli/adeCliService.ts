@@ -96,6 +96,40 @@ function findRepoRoot(startDir: string): string | null {
   }
 }
 
+function latestMtimeMs(root: string): number {
+  let latest = 0;
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(root, { withFileTypes: true });
+  } catch {
+    return latest;
+  }
+  for (const entry of entries) {
+    const fullPath = path.join(root, entry.name);
+    if (entry.isDirectory()) {
+      latest = Math.max(latest, latestMtimeMs(fullPath));
+      continue;
+    }
+    if (!entry.isFile()) continue;
+    try {
+      latest = Math.max(latest, fs.statSync(fullPath).mtimeMs);
+    } catch {
+      // Ignore files that disappear during freshness checks.
+    }
+  }
+  return latest;
+}
+
+function isBuiltCliFresh(builtCli: string, sourceCli: string): boolean {
+  try {
+    const builtMtime = fs.statSync(builtCli).mtimeMs;
+    const sourceRoot = path.dirname(sourceCli);
+    return builtMtime >= latestMtimeMs(sourceRoot);
+  } catch {
+    return false;
+  }
+}
+
 function resolveDevCliEntry(devRepoRoot?: string | null): DevCliEntry | null {
   const repoCandidates: string[] = [];
   if (devRepoRoot) repoCandidates.push(path.resolve(devRepoRoot));
@@ -112,6 +146,14 @@ function resolveDevCliEntry(devRepoRoot?: string | null): DevCliEntry | null {
   }
   for (const repoRoot of [...new Set(repoCandidates)]) {
     const builtCli = path.join(repoRoot, "apps", "ade-cli", "dist", "cli.cjs");
+    const sourceCli = path.join(repoRoot, "apps", "ade-cli", "src", "cli.ts");
+    if (fs.existsSync(sourceCli) && (!fs.existsSync(builtCli) || !isBuiltCliFresh(builtCli, sourceCli))) {
+      return {
+        repoRoot,
+        cliPath: sourceCli,
+        entryKind: "source",
+      };
+    }
     if (fs.existsSync(builtCli)) {
       return {
         repoRoot,
@@ -119,7 +161,6 @@ function resolveDevCliEntry(devRepoRoot?: string | null): DevCliEntry | null {
         entryKind: "built",
       };
     }
-    const sourceCli = path.join(repoRoot, "apps", "ade-cli", "src", "cli.ts");
     if (fs.existsSync(sourceCli)) {
       return {
         repoRoot,

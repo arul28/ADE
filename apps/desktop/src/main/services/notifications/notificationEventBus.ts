@@ -32,6 +32,7 @@ import {
 import type { ApnsEnvelope, ApnsService } from "./apnsService";
 
 const APPLE_REFERENCE_DATE_MS = Date.UTC(2001, 0, 1);
+const WORKSPACE_ACTIVITY_ID = "workspace";
 
 function activityDateValue(ms: number): number {
   return Math.floor((ms - APPLE_REFERENCE_DATE_MS) / 1000);
@@ -130,6 +131,7 @@ function matchingActivityUpdateTokens(
   const prId = stringMetadata(metadata.prId);
   if (sessionId) activityIds.add(sessionId);
   if (prId) activityIds.add(prId);
+  activityIds.add(WORKSPACE_ACTIVITY_ID);
   if (activityIds.size === 0) return [];
   return [...activityIds]
     .map((activityId) => updateTokens[activityId])

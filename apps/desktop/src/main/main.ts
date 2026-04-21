@@ -1512,8 +1512,7 @@ app.whenReady().then(async () => {
     // stop fanning out to a dead device.
     apnsService.onTokenInvalidated(({ deviceToken }) => {
       const registry = syncServiceForNotifications?.getDeviceRegistryService?.() ?? null;
-      const device = registry?.findDeviceByApnsToken?.(deviceToken) ?? null;
-      if (device) registry?.invalidateApnsTokensForDevice?.(device.deviceId);
+      registry?.invalidateApnsToken?.(deviceToken);
     });
 
     const prPollingService = createPrPollingService({

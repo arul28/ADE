@@ -60,6 +60,30 @@ describe("SmartTooltip", () => {
     expect(openExternal).toHaveBeenCalledWith("https://example.test/docs/lanes/overview");
   });
 
+  it("keeps a docs tooltip open when keyboard focus moves into the portal link", () => {
+    vi.useFakeTimers();
+    renderTooltip({
+      label: "Push",
+      description: "Upload commits",
+      docUrl: "https://example.test/docs/lanes/overview",
+    });
+
+    const triggerWrapper = screen.getByText("target").parentElement as HTMLElement;
+    fireEvent.focus(triggerWrapper);
+    act(() => {
+      vi.runOnlyPendingTimers();
+    });
+
+    const link = screen.getByRole("link", { name: /Learn more/ });
+    fireEvent.blur(triggerWrapper, { relatedTarget: link });
+    fireEvent.focus(link, { relatedTarget: triggerWrapper });
+    act(() => {
+      vi.advanceTimersByTime(200);
+    });
+
+    expect(screen.getByRole("link", { name: /Learn more/ })).toBeTruthy();
+  });
+
   it("enables pointer-events only when docUrl is provided", () => {
     vi.useFakeTimers();
     const { rerender } = render(
