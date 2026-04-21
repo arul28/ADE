@@ -13,9 +13,23 @@ struct FilesDirectoryScreen: View {
   let transitionNamespace: Namespace.ID?
   let selectedFilePath: String?
 
+  @State private var refreshErrorMessage: String?
+  @State private var manualReloadToken = 0
+
   var body: some View {
     ScrollView {
       LazyVStack(alignment: .leading, spacing: 14) {
+        if let refreshErrorMessage {
+          ADENoticeCard(
+            title: "Refresh failed",
+            message: refreshErrorMessage,
+            icon: "exclamationmark.triangle.fill",
+            tint: ADEColor.danger,
+            actionTitle: "Retry",
+            action: { Task { await refreshDirectory() } }
+          )
+        }
+
         FilesBreadcrumbBar(
           relativePath: parentPath,
           includeCurrentFile: false,
@@ -33,7 +47,8 @@ struct FilesDirectoryScreen: View {
           openDirectory: openDirectory,
           openFile: openFile,
           transitionNamespace: transitionNamespace,
-          selectedFilePath: selectedFilePath
+          selectedFilePath: selectedFilePath,
+          manualReloadToken: manualReloadToken
         )
         .environmentObject(syncService)
       }
@@ -45,9 +60,7 @@ struct FilesDirectoryScreen: View {
     .adeNavigationGlass()
     .navigationTitle(parentPath.isEmpty ? "Root" : lastPathComponent(parentPath))
     .toolbar {
-      ToolbarItem(placement: .topBarLeading) {
-        ADEConnectionDot()
-      }
+      ADERootToolbarLeadingItems()
       ToolbarItemGroup(placement: .topBarTrailing) {
         Button {
           showHidden.toggle()
@@ -57,14 +70,23 @@ struct FilesDirectoryScreen: View {
         .accessibilityLabel(showHidden ? "Hide hidden files" : "Show hidden files")
 
         Button {
-          Task {
-            try? await syncService.refreshLaneSnapshots()
-          }
+          Task { await refreshDirectory() }
         } label: {
           Image(systemName: "arrow.clockwise")
         }
         .accessibilityLabel("Refresh files for this lane")
       }
     }
+  }
+
+  @MainActor
+  private func refreshDirectory() async {
+    do {
+      try await syncService.refreshLaneSnapshots()
+      refreshErrorMessage = nil
+    } catch {
+      refreshErrorMessage = error.localizedDescription
+    }
+    manualReloadToken += 1
   }
 }

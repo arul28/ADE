@@ -30,6 +30,14 @@ export const IPC = {
   onboardingDetectExistingLanes: "ade.onboarding.detectExistingLanes",
   onboardingSetDismissed: "ade.onboarding.setDismissed",
   onboardingComplete: "ade.onboarding.complete",
+  onboardingGetTourProgress: "ade.onboarding.getTourProgress",
+  onboardingMarkWizardCompleted: "ade.onboarding.markWizardCompleted",
+  onboardingMarkWizardDismissed: "ade.onboarding.markWizardDismissed",
+  onboardingMarkTourCompleted: "ade.onboarding.markTourCompleted",
+  onboardingMarkTourDismissed: "ade.onboarding.markTourDismissed",
+  onboardingUpdateTourStep: "ade.onboarding.updateTourStep",
+  onboardingMarkGlossaryTermSeen: "ade.onboarding.markGlossaryTermSeen",
+  onboardingResetTourProgress: "ade.onboarding.resetTourProgress",
   lanesList: "ade.lanes.list",
   lanesListSnapshots: "ade.lanes.listSnapshots",
   lanesCreate: "ade.lanes.create",
@@ -566,6 +574,11 @@ export const IPC = {
   updateQuitAndInstall: "ade.update.quitAndInstall",
   updateDismissInstalledNotice: "ade.update.dismissInstalledNotice",
   updateEvent: "ade.update.event",
+  notificationsApnsGetStatus: "ade.notifications.apns.getStatus",
+  notificationsApnsSaveConfig: "ade.notifications.apns.saveConfig",
+  notificationsApnsUploadKey: "ade.notifications.apns.uploadKey",
+  notificationsApnsClearKey: "ade.notifications.apns.clearKey",
+  notificationsApnsSendTestPush: "ade.notifications.apns.sendTestPush",
 } as const;
 
 export type IpcChannel = (typeof IPC)[keyof typeof IPC];

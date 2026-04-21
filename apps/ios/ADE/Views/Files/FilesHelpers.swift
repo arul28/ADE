@@ -1,4 +1,8 @@
+import Foundation
 import SwiftUI
+
+private let filesRelativeIsoFormatter = ISO8601DateFormatter()
+private let filesRelativeTimeFormatter = RelativeDateTimeFormatter()
 
 func filesSortedNodes(_ nodes: [FileTreeNode]) -> [FileTreeNode] {
   nodes.sorted { lhs, rhs in
@@ -80,10 +84,10 @@ func changeStatusDescription(_ changeStatus: String) -> String {
 }
 
 func relativeDateDescription(from isoTimestamp: String?) -> String? {
-  guard let isoTimestamp, let date = ISO8601DateFormatter().date(from: isoTimestamp) else {
+  guard let isoTimestamp, let date = filesRelativeIsoFormatter.date(from: isoTimestamp) else {
     return nil
   }
-  return RelativeDateTimeFormatter().localizedString(for: date, relativeTo: Date())
+  return filesRelativeTimeFormatter.localizedString(for: date, relativeTo: Date())
 }
 
 extension View {

@@ -21,6 +21,9 @@ function bundledBinaryPath(): string {
     return join(resourcesPath, `opencode${ext}`);
   }
   // Dev fallback: check node_modules
+  if (typeof __dirname !== "string") {
+    return join(process.cwd(), "apps", "desktop", "node_modules", ".bin", `opencode${ext}`);
+  }
   return join(__dirname, "..", "..", "..", "..", "node_modules", ".bin", `opencode${ext}`);
 }
 

@@ -25,6 +25,10 @@ function createLogger() {
 
 function createDb() {
   const store = new Map<string, unknown>();
+  // The pull_requests lookup for creation_strategy can be driven by individual
+  // tests via `db._prByLaneId.set(laneId, { creation_strategy: "lane_base" })`.
+  // When unset, resolveLaneRebaseMode falls back to "auto".
+  const prByLaneId = new Map<string, { creation_strategy: string | null }>();
   return {
     getJson: vi.fn((key: string) => store.get(key) ?? null),
     setJson: vi.fn((key: string, value: unknown) => {
@@ -34,7 +38,17 @@ function createDb() {
         store.set(key, value);
       }
     }),
+    get: vi.fn((sql: string, params: unknown[] = []) => {
+      if (typeof sql === "string" && sql.includes("from pull_requests") && sql.includes("creation_strategy")) {
+        const laneId = String(params[0] ?? "");
+        return prByLaneId.get(laneId) ?? null;
+      }
+      return null;
+    }),
+    all: vi.fn(() => []),
+    run: vi.fn(),
     _store: store,
+    _prByLaneId: prByLaneId,
   } as any;
 }
 
@@ -1083,6 +1097,154 @@ describe("autoRebaseService", () => {
 
       expect(events.length).toBeGreaterThanOrEqual(1);
       expect(events[events.length - 1].type).toBe("auto-rebase-updated");
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // PR creation_strategy gating
+  //
+  // Lanes linked to open PRs with `creation_strategy = "lane_base"` must NOT
+  // auto-rebase — the PR carries an immutable base and drift must surface as
+  // manual attention only. `creation_strategy = "pr_target"` and unset (null)
+  // both keep the existing auto-rebase behavior.
+  // ---------------------------------------------------------------------------
+
+  describe("processRoot — PR creation_strategy gating", () => {
+    beforeEach(() => {
+      vi.useFakeTimers();
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it("skips auto-rebase for lanes whose linked PR has strategy 'lane_base' and records rebasePending", async () => {
+      const service = createService();
+      const root = makeLane("root");
+      const child = makeLane("child-lane-base", {
+        parentLaneId: "root",
+        status: { dirty: false, ahead: 0, behind: 2, remoteBehind: 0, rebaseInProgress: false },
+        createdAt: "2026-03-10T01:00:00.000Z",
+      });
+      laneList = [root, child];
+      rebaseNeedOverrides.set("child-lane-base", {
+        behindBy: 2,
+        conflictPredicted: false,
+        conflictingFiles: [],
+      });
+      db._prByLaneId.set("child-lane-base", { creation_strategy: "lane_base" });
+
+      await service.onHeadChanged({
+        laneId: "root",
+        preHeadSha: "aaa",
+        postHeadSha: "bbb",
+        reason: "user_commit",
+      });
+      await vi.advanceTimersByTimeAsync(1500);
+
+      expect(laneService.rebaseStart).not.toHaveBeenCalled();
+      expect(db.getJson("auto_rebase:status:child-lane-base")).toMatchObject({
+        laneId: "child-lane-base",
+        state: "rebasePending",
+        message: expect.stringContaining("immutable base"),
+      });
+    });
+
+    it("describes descendant blocks behind a lane_base PR as fixed-base manual work", async () => {
+      const service = createService();
+      const root = makeLane("root");
+      const child = makeLane("child-lane-base", {
+        parentLaneId: "root",
+        status: { dirty: false, ahead: 0, behind: 2, remoteBehind: 0, rebaseInProgress: false },
+        createdAt: "2026-03-10T01:00:00.000Z",
+      });
+      const grandchild = makeLane("grandchild", {
+        parentLaneId: "child-lane-base",
+        status: { dirty: false, ahead: 0, behind: 1, remoteBehind: 0, rebaseInProgress: false },
+        createdAt: "2026-03-10T02:00:00.000Z",
+      });
+      laneList = [root, child, grandchild];
+      rebaseNeedOverrides.set("child-lane-base", {
+        behindBy: 2,
+        conflictPredicted: false,
+        conflictingFiles: [],
+      });
+      rebaseNeedOverrides.set("grandchild", {
+        behindBy: 1,
+        conflictPredicted: false,
+        conflictingFiles: [],
+      });
+      db._prByLaneId.set("child-lane-base", { creation_strategy: "lane_base" });
+
+      await service.onHeadChanged({
+        laneId: "root",
+        preHeadSha: "aaa",
+        postHeadSha: "bbb",
+        reason: "user_commit",
+      });
+      await vi.advanceTimersByTimeAsync(1500);
+
+      const grandchildStatus = db.getJson("auto_rebase:status:grandchild") as AutoRebaseLaneStatus;
+      expect(grandchildStatus.message).toContain("fixed PR base");
+      expect(grandchildStatus.message).not.toContain("unresolved rebase conflicts");
+    });
+
+    it("proceeds with auto-rebase for lanes whose linked PR has strategy 'pr_target'", async () => {
+      const service = createService();
+      const root = makeLane("root");
+      const child = makeLane("child-pr-target", {
+        parentLaneId: "root",
+        status: { dirty: false, ahead: 0, behind: 1, remoteBehind: 0, rebaseInProgress: false },
+        createdAt: "2026-03-10T01:00:00.000Z",
+      });
+      laneList = [root, child];
+      rebaseNeedOverrides.set("child-pr-target", {
+        behindBy: 1,
+        conflictPredicted: false,
+        conflictingFiles: [],
+      });
+      db._prByLaneId.set("child-pr-target", { creation_strategy: "pr_target" });
+
+      await service.onHeadChanged({
+        laneId: "root",
+        preHeadSha: "aaa",
+        postHeadSha: "bbb",
+        reason: "user_commit",
+      });
+      await vi.advanceTimersByTimeAsync(1500);
+
+      expect(laneService.rebaseStart).toHaveBeenCalledWith(
+        expect.objectContaining({ laneId: "child-pr-target", reason: "auto_rebase" }),
+      );
+    });
+
+    it("proceeds with auto-rebase when no PR is linked (creation_strategy unset)", async () => {
+      const service = createService();
+      const root = makeLane("root");
+      const child = makeLane("child-no-pr", {
+        parentLaneId: "root",
+        status: { dirty: false, ahead: 0, behind: 1, remoteBehind: 0, rebaseInProgress: false },
+        createdAt: "2026-03-10T01:00:00.000Z",
+      });
+      laneList = [root, child];
+      rebaseNeedOverrides.set("child-no-pr", {
+        behindBy: 1,
+        conflictPredicted: false,
+        conflictingFiles: [],
+      });
+      // No entry in db._prByLaneId → resolveLaneRebaseMode returns "auto".
+
+      await service.onHeadChanged({
+        laneId: "root",
+        preHeadSha: "aaa",
+        postHeadSha: "bbb",
+        reason: "user_commit",
+      });
+      await vi.advanceTimersByTimeAsync(1500);
+
+      expect(laneService.rebaseStart).toHaveBeenCalledWith(
+        expect.objectContaining({ laneId: "child-no-pr", reason: "auto_rebase" }),
+      );
     });
   });
 });

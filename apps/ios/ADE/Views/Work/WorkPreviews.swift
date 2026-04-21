@@ -165,7 +165,9 @@ private enum WorkPreviewData {
           cacheCreationTokens: 430,
           costUsd: 0.0842
         ),
-        turnId: "turn-1"
+        turnId: "turn-1",
+        model: "claude-sonnet-4-6",
+        modelId: "anthropic/claude-sonnet-4-6"
       )
     ),
   ]
@@ -230,7 +232,10 @@ private enum WorkPreviewData {
       onSend: { _ in true },
       onInterrupt: {},
       onApproveRequest: { _, _ in },
-      onRespondToQuestion: { _, _, _ in },
+      onRespondToQuestion: { _, _, _, _ in },
+      onSubmitQuestionAnswers: { _, _, _ in },
+      onDeclineQuestion: { _ in },
+      onRespondToPermission: { _, _ in },
       onRetryLoad: {},
       onOpenFile: { _ in },
       onOpenPr: { _ in },

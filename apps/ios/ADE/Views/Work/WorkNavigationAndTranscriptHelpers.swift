@@ -193,13 +193,22 @@ func workReferenceLabel(for path: String) -> String {
   return lastComponent.isEmpty ? normalized : lastComponent
 }
 
-func buildWorkToolCards(from transcript: [WorkChatEnvelope]) -> [WorkToolCardModel] {
+func buildWorkToolCards(
+  from transcript: [WorkChatEnvelope],
+  suppressedPendingItemIds: Set<String> = []
+) -> [WorkToolCardModel] {
   var cards: [String: WorkToolCardModel] = [:]
   var orderedIds: [String] = []
-
   for envelope in transcript {
     switch envelope.event {
     case .toolCall(let tool, let argsText, let itemId, _, _):
+      if suppressedPendingItemIds.contains(itemId) {
+        continue
+      }
+      if isQuestionInputToolName(tool),
+         pendingWorkQuestionFromAskUserToolCall(argsText: argsText, itemId: itemId) != nil {
+        continue
+      }
       if cards[itemId] == nil {
         orderedIds.append(itemId)
       }

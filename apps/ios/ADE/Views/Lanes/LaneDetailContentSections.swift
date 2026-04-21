@@ -58,7 +58,7 @@ struct LaneDetailHeaderCard: View {
         Image(systemName: "gearshape.fill")
           .font(.system(size: 13, weight: .semibold))
           .foregroundStyle(ADEColor.textSecondary)
-          .padding(8)
+          .frame(width: 44, height: 44)
           .background(ADEColor.surfaceBackground.opacity(0.45), in: Circle())
       }
       .buttonStyle(.plain)

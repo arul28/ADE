@@ -14,7 +14,7 @@ extension WorkChatSessionView {
     let echoSnapshot = localEchoMessages
 
     timelineRebuildTask = Task.detached(priority: .utility) {
-      try? await Task.sleep(nanoseconds: 80_000_000)
+      try? await Task.sleep(for: .milliseconds(80))
       guard !Task.isCancelled else { return }
       let nextSnapshot = buildWorkChatTimelineSnapshot(
         transcript: transcriptSnapshot,
@@ -27,6 +27,7 @@ extension WorkChatSessionView {
         if nextSnapshot != timelineSnapshot {
           timelineSnapshot = nextSnapshot
         }
+        refreshTimelinePresentation(sourceTimeline: nextSnapshot.timeline)
         timelineRebuildTask = nil
       }
     }
@@ -48,6 +49,7 @@ extension WorkChatSessionView {
     )
     guard nextSnapshot != timelineSnapshot else { return }
     timelineSnapshot = nextSnapshot
+    refreshTimelinePresentation(sourceTimeline: nextSnapshot.timeline)
   }
 
   @MainActor
@@ -63,6 +65,7 @@ extension WorkChatSessionView {
   func loadEarlierTimelineEntries() {
     withAnimation(ADEMotion.quick(reduceMotion: reduceMotion)) {
       visibleTimelineCount += workTimelinePageSize
+      refreshTimelinePresentation()
     }
   }
 

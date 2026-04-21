@@ -22,6 +22,8 @@ import { MultiAttachWorktreeDialog } from "./MultiAttachWorktreeDialog";
 import { ManageLaneDialog } from "./ManageLaneDialog";
 import { LaneContextMenu } from "./LaneContextMenu";
 import { LaneRebaseBanner } from "./LaneRebaseBanner";
+import { HelpChip } from "../onboarding/HelpChip";
+import { useOnboardingStore } from "../../state/onboardingStore";
 import {
   sortLanesForTabs,
   sortLanesForStackGraph,
@@ -1358,6 +1360,8 @@ export function LanesPage() {
         title: "Stack",
         icon: Stack,
         bodyClassName: "overflow-hidden",
+        dataTour: "lanes.stackPane",
+        headerActions: <HelpChip termId="stack" />,
         children: (
           <DeferredLanePane cacheKey={`stack:${laneId ?? "none"}`} label="stack">
             <LaneStackPane
@@ -1373,23 +1377,29 @@ export function LanesPage() {
       "git-actions": {
         title: "Git Actions",
         icon: FileCode,
-        headerActions: laneId ? (
-          <SmartTooltip content={{ label: expandedGitActionsLaneId === laneId ? "Minimize" : "Expand", description: expandedGitActionsLaneId === laneId ? "Minimize the Git Actions pane back to its default size." : "Expand the Git Actions pane to fill the available space." }}>
-            <Button
-              size="sm"
-              variant="ghost"
-              className="h-5 w-5 p-0"
-              title={expandedGitActionsLaneId === laneId ? "Minimize Git Actions pane" : "Expand Git Actions pane"}
-              onClick={(event) => {
-                event.stopPropagation();
-                setExpandedLaneId(null);
-                setExpandedGitActionsLaneId((prev) => (prev === laneId ? null : laneId));
-              }}
-            >
-              {expandedGitActionsLaneId === laneId ? <ArrowsInSimple size={12} /> : <ArrowsOutSimple size={12} />}
-            </Button>
-          </SmartTooltip>
-        ) : null,
+        dataTour: "lanes.gitActionsPane",
+        headerActions: (
+          <>
+            <HelpChip termId="rebase" />
+            {laneId ? (
+              <SmartTooltip content={{ label: expandedGitActionsLaneId === laneId ? "Minimize" : "Expand", description: expandedGitActionsLaneId === laneId ? "Minimize the Git Actions pane back to its default size." : "Expand the Git Actions pane to fill the available space." }}>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="h-5 w-5 p-0"
+                  title={expandedGitActionsLaneId === laneId ? "Minimize Git Actions pane" : "Expand Git Actions pane"}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    setExpandedLaneId(null);
+                    setExpandedGitActionsLaneId((prev) => (prev === laneId ? null : laneId));
+                  }}
+                >
+                  {expandedGitActionsLaneId === laneId ? <ArrowsInSimple size={12} /> : <ArrowsOutSimple size={12} />}
+                </Button>
+              </SmartTooltip>
+            ) : null}
+          </>
+        ),
         bodyClassName: "overflow-hidden",
         children: (
           <DeferredLanePane cacheKey={`git:${laneId ?? "none"}`} label="git actions">
@@ -1414,6 +1424,7 @@ export function LanesPage() {
         title: "Diff",
         icon: FileCode,
         bodyClassName: "overflow-hidden",
+        dataTour: "lanes.diffPane",
         children: (
           <DeferredLanePane cacheKey={`diff:${laneId ?? "none"}`} label="diff">
             <LaneDiffPane
@@ -1429,6 +1440,8 @@ export function LanesPage() {
         title: "Work",
         icon: Terminal as any,
         bodyClassName: "overflow-hidden",
+        dataTour: "lanes.workPane",
+        headerActions: <HelpChip termId="worker" />,
         children: (
           <DeferredLanePane cacheKey={`work:${laneId ?? "none"}`} label="work">
             <LaneWorkPane laneId={laneId} />
@@ -1454,10 +1467,11 @@ export function LanesPage() {
 
         {/* Branch selector */}
         {primaryLane && selectedLaneId === primaryLane.id ? (
-          <div className="relative shrink-0" ref={branchDropdownRef}>
-            <SmartTooltip content={{ label: "Branch Selector", description: "Switch the primary lane to a different local or remote branch." }} side="bottom">
+          <div className="relative shrink-0 flex items-center" ref={branchDropdownRef}>
+            <SmartTooltip content={{ label: "Branch Selector", description: "Switch the primary lane to a different local or remote branch.", docUrl: "https://www.ade-app.dev/docs/lanes/overview" }} side="bottom">
               <button
                 type="button"
+                data-tour="lanes.branchSelector"
                 style={{
                   display: "inline-flex", alignItems: "center", gap: 8,
                   padding: "0 12px", height: 32, fontSize: 12, fontFamily: MONO_FONT, fontWeight: 600,
@@ -1472,6 +1486,7 @@ export function LanesPage() {
                 <CaretDown size={12} style={{ opacity: 0.6 }} />
               </button>
             </SmartTooltip>
+            <HelpChip termId="primary-lane" />
             {branchDropdownOpen ? (
               <div className="ade-liquid-glass-menu absolute left-0 top-full z-[200] mt-1 max-h-80 overflow-hidden flex flex-col" style={{ width: 288, padding: "4px 0" }}>
                 <div className="relative shrink-0" style={{ padding: "4px 8px" }}>
@@ -1572,6 +1587,7 @@ export function LanesPage() {
           <MagnifyingGlass size={14} className="pointer-events-none absolute" style={{ left: 8, color: COLORS.textDim }} />
           <input
             id="lanes-filter-input"
+            data-tour="lanes.filter"
             value={laneFilter}
             onChange={(event) => setLaneFilter(event.target.value)}
             placeholder="FILTER LANES"
@@ -1596,7 +1612,7 @@ export function LanesPage() {
           ) : null}
         </div>
 
-        <div className="flex shrink-0 items-center gap-1 overflow-x-auto pb-0.5">
+        <div data-tour="lanes.statusChips" className="flex shrink-0 items-center gap-1 overflow-x-auto pb-0.5">
           {([
             { key: "all", label: "ALL", color: COLORS.accent, count: laneStatusCounts.all },
             { key: "running", label: "RUNNING", color: COLORS.success, count: laneStatusCounts.running },
@@ -1638,8 +1654,14 @@ export function LanesPage() {
 
         {/* NEW LANE button + dropdown */}
         <div className="relative shrink-0" ref={addLaneDropdownRef}>
-          <SmartTooltip content={{ label: "New Lane", description: "Create a new lane from the primary branch, an existing branch, or as a child of another lane." }}>
-            <button type="button" style={primaryButton({ height: 32, padding: "0 12px", fontSize: 10 })} disabled={!canCreateLane} onClick={() => setAddLaneDropdownOpen((prev) => !prev)}>
+          <SmartTooltip content={{ label: "New Lane", description: "Create a new lane from the primary branch, an existing branch, or as a child of another lane.", docUrl: "https://www.ade-app.dev/docs/lanes/creating" }}>
+            <button
+              type="button"
+              data-tour="lanes.newLane"
+              style={primaryButton({ height: 32, padding: "0 12px", fontSize: 10 })}
+              disabled={!canCreateLane}
+              onClick={() => setAddLaneDropdownOpen((prev) => !prev)}
+            >
               <Plus size={12} /> NEW LANE
             </button>
           </SmartTooltip>
@@ -1663,6 +1685,7 @@ export function LanesPage() {
               </button>
               <button
                 type="button"
+                data-tour="lanes.addWorktrees"
                 className="flex w-full items-center gap-3 rounded-lg px-3 py-2 text-left text-sm text-muted-fg transition-colors hover:bg-white/[0.04] hover:text-fg"
                 onClick={() => {
                   setAddLaneDropdownOpen(false);
@@ -1686,9 +1709,10 @@ export function LanesPage() {
             className="shrink-0 flex items-center gap-2 rounded-lg border px-2 py-1"
             style={{ borderColor: `${COLORS.info}55`, background: `${COLORS.info}15` }}
           >
-            <SmartTooltip content={{ label: "Move to .ade", description: "Move this attached worktree into .ade/worktrees for full ADE management. Uses git worktree move — branch and history stay the same." }}>
+            <SmartTooltip content={{ label: "Move to .ade", description: "Move this attached worktree into .ade/worktrees for full ADE management. Uses git worktree move — branch and history stay the same.", docUrl: "https://www.ade-app.dev/docs/lanes/creating" }}>
               <button
                 type="button"
+                data-tour="lanes.moveToAde"
                 className="inline-flex items-center gap-1"
                 style={{
                   fontFamily: MONO_FONT,
@@ -1739,6 +1763,7 @@ export function LanesPage() {
           <SmartTooltip content={{ label: "Reset Grid", description: "Reset all lane column widths and panel arrangements back to their default layout." }}>
             <button
               type="button"
+              data-tour="lanes.resetGrid"
               title="Reset grid to default layout"
               onClick={resetGridLayout}
               className="inline-flex items-center gap-1 shrink-0"
@@ -1761,7 +1786,12 @@ export function LanesPage() {
       </div>
 
       {/* Lane tabs -- horizontal numbered tab bar */}
-      <div className="flex select-none overflow-x-auto" style={{ background: "rgba(255,255,255,0.01)", borderBottom: `1px solid ${COLORS.border}` }}>
+      <div className="flex items-center select-none overflow-x-auto" style={{ background: "rgba(255,255,255,0.01)", borderBottom: `1px solid ${COLORS.border}` }}>
+        {filteredLanes.length > 0 ? (
+          <div className="flex items-center shrink-0 pl-2">
+            <HelpChip termId="lane" side="bottom" />
+          </div>
+        ) : null}
         {filteredLanes.map((lane, index) => {
           const isVisible = visibleLaneIds.includes(lane.id);
           const isSelected = selectedLaneId === lane.id;
@@ -1787,6 +1817,7 @@ export function LanesPage() {
           return (
             <div
               key={lane.id}
+              data-tour="lanes.laneTab"
               role="button"
               tabIndex={0}
               className="group flex items-center gap-2 cursor-pointer shrink-0"
@@ -2021,17 +2052,27 @@ export function LanesPage() {
               title="No lanes created yet"
               description="Lanes let you work on multiple features in parallel."
             >
-              <Button
-                size="sm"
-                variant="primary"
-                className="mt-3"
-                disabled={!canCreateLane}
-                onClick={() => {
-                  prepareCreateDialog();
-                }}
-              >
-                Create Lane
-              </Button>
+              <div className="mt-3 flex flex-wrap items-center justify-center gap-2">
+                <Button
+                  size="sm"
+                  variant="primary"
+                  disabled={!canCreateLane}
+                  onClick={() => {
+                    prepareCreateDialog();
+                  }}
+                >
+                  Create Lane
+                </Button>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => {
+                    void useOnboardingStore.getState().startTour("lanes");
+                  }}
+                >
+                  Take the Lanes tour
+                </Button>
+              </div>
             </EmptyState>
           ) : (
             <EmptyState

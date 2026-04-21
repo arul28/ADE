@@ -21,31 +21,10 @@ struct WorkToolCardView: View {
   var body: some View {
     VStack(alignment: .leading, spacing: 10) {
       Button(action: onToggle) {
-        HStack(spacing: 10) {
-          Image(systemName: "hammer.fill")
-            .foregroundStyle(statusTint)
-          VStack(alignment: .leading, spacing: 4) {
-            Text(toolDisplayName(toolCard.toolName))
-              .font(.subheadline.weight(.semibold))
-              .foregroundStyle(ADEColor.textPrimary)
-            HStack(spacing: 8) {
-              WorkTag(text: toolCard.status.rawValue.capitalized, icon: statusIcon, tint: statusTint)
-              Text(formattedSessionDuration(startedAt: toolCard.startedAt, endedAt: toolCard.completedAt))
-                .font(.caption2.monospacedDigit())
-                .foregroundStyle(ADEColor.textMuted)
-            }
-            if !isExpanded, let preview = workToolResultPreview(toolCard.resultText) {
-              Text(preview)
-                .font(.caption2.monospaced())
-                .foregroundStyle(ADEColor.textSecondary)
-                .lineLimit(1)
-                .truncationMode(.tail)
-            }
-          }
-          Spacer()
-          Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
-            .font(.caption.weight(.semibold))
-            .foregroundStyle(ADEColor.textMuted)
+        if isExpanded {
+          expandedHeader
+        } else {
+          collapsedHeader
         }
       }
       .buttonStyle(.plain)
@@ -109,10 +88,78 @@ struct WorkToolCardView: View {
         }
       }
     }
-    .padding(14)
-    .background(ADEColor.surfaceBackground.opacity(0.7), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+    .padding(.horizontal, 12)
+    .padding(.vertical, isExpanded ? 12 : 8)
+    .background(ADEColor.surfaceBackground.opacity(0.55), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+    .overlay(
+      RoundedRectangle(cornerRadius: 14, style: .continuous)
+        .stroke(ADEColor.border.opacity(0.12), lineWidth: 0.5)
+    )
     .accessibilityElement(children: .combine)
     .accessibilityLabel("\(toolDisplayName(toolCard.toolName)), \(toolCard.status.rawValue)")
+  }
+
+  /// Single-line compact row used once the tool completes — matches the
+  /// desktop's collapsed work-log entry. No preview line, no status pill,
+  /// no duration chip — just a status dot, the tool name, and the chevron.
+  private var collapsedHeader: some View {
+    HStack(spacing: 10) {
+      Circle()
+        .fill(statusTint)
+        .frame(width: 7, height: 7)
+      Image(systemName: "hammer.fill")
+        .font(.system(size: 11, weight: .semibold))
+        .foregroundStyle(ADEColor.textMuted)
+      Text(toolDisplayName(toolCard.toolName))
+        .font(.caption.weight(.semibold))
+        .foregroundStyle(ADEColor.textPrimary)
+        .lineLimit(1)
+        .truncationMode(.middle)
+      if let preview = workToolResultPreview(toolCard.resultText) {
+        Text("·")
+          .font(.caption2)
+          .foregroundStyle(ADEColor.textMuted)
+        Text(preview)
+          .font(.caption2.monospaced())
+          .foregroundStyle(ADEColor.textMuted)
+          .lineLimit(1)
+          .truncationMode(.tail)
+      }
+      if toolCard.status == .running {
+        Text("Running")
+          .font(.caption2.weight(.semibold))
+          .foregroundStyle(ADEColor.warning)
+      }
+      Spacer(minLength: 4)
+      Image(systemName: "chevron.down")
+        .font(.system(size: 10, weight: .semibold))
+        .foregroundStyle(ADEColor.textMuted)
+    }
+  }
+
+  /// Richer header shown only while the card is expanded — the
+  /// extra status pill / duration chip / preview are welcome once the user
+  /// has opted into the detail view, but would be noise at rest.
+  private var expandedHeader: some View {
+    HStack(spacing: 10) {
+      Image(systemName: "hammer.fill")
+        .foregroundStyle(statusTint)
+      VStack(alignment: .leading, spacing: 4) {
+        Text(toolDisplayName(toolCard.toolName))
+          .font(.subheadline.weight(.semibold))
+          .foregroundStyle(ADEColor.textPrimary)
+        HStack(spacing: 8) {
+          WorkTag(text: toolCard.status.rawValue.capitalized, icon: statusIcon, tint: statusTint)
+          Text(formattedSessionDuration(startedAt: toolCard.startedAt, endedAt: toolCard.completedAt))
+            .font(.caption2.monospacedDigit())
+            .foregroundStyle(ADEColor.textMuted)
+        }
+      }
+      Spacer()
+      Image(systemName: "chevron.up")
+        .font(.caption.weight(.semibold))
+        .foregroundStyle(ADEColor.textMuted)
+    }
   }
 
   var statusTint: Color {
@@ -128,6 +175,210 @@ struct WorkToolCardView: View {
     case .running: return "ellipsis.circle"
     case .completed: return "checkmark.circle.fill"
     case .failed: return "xmark.circle.fill"
+    }
+  }
+}
+
+/// Cluster of consecutive tool/command/file-change entries shown as one row
+/// to preserve space in the iOS chat. Collapsed: icon + latest-call title +
+/// "N calls" pill + 2-row mini preview of the older calls. Expanded: each
+/// member renders as its full card inline, matching the desktop
+/// `ChatWorkLogBlock` behavior.
+struct WorkToolGroupCardView: View {
+  let group: WorkToolGroupModel
+  let isExpanded: Bool
+  let onToggle: () -> Void
+  let onOpenFile: (String) -> Void
+  let onOpenPr: (Int) -> Void
+
+  private var effectiveExpanded: Bool { isExpanded }
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 10) {
+      header
+      if effectiveExpanded {
+        expandedMembers
+      } else {
+        collapsedPreview
+      }
+    }
+    .padding(12)
+    .background(ADEColor.surfaceBackground.opacity(0.35), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+    .overlay(
+      RoundedRectangle(cornerRadius: 16, style: .continuous)
+        .stroke(ADEColor.border.opacity(0.14), lineWidth: 0.5)
+    )
+    .accessibilityElement(children: .contain)
+    .accessibilityLabel("Tool call cluster, \(group.count) calls, \(effectiveExpanded ? "expanded" : "collapsed")")
+  }
+
+  private var header: some View {
+    Button(action: onToggle) {
+      HStack(alignment: .center, spacing: 10) {
+        Image(systemName: latestIcon)
+          .font(.system(size: 13, weight: .semibold))
+          .foregroundStyle(latestTint)
+          .frame(width: 28, height: 28)
+          .background(latestTint.opacity(0.14), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        VStack(alignment: .leading, spacing: 3) {
+          HStack(spacing: 6) {
+            Text(latestTitle)
+              .font(.subheadline.weight(.semibold))
+              .foregroundStyle(ADEColor.textPrimary)
+              .lineLimit(1)
+              .truncationMode(.middle)
+            Text("\(group.count) calls")
+              .font(.caption2.weight(.semibold))
+              .foregroundStyle(ADEColor.textMuted)
+              .padding(.horizontal, 7)
+              .padding(.vertical, 2)
+              .background(ADEColor.recessedBackground.opacity(0.8), in: Capsule(style: .continuous))
+          }
+          if !headerSubtitle.isEmpty {
+            Text(headerSubtitle)
+              .font(.caption2)
+              .foregroundStyle(ADEColor.textMuted)
+              .lineLimit(1)
+          }
+        }
+        Spacer(minLength: 8)
+        Image(systemName: effectiveExpanded ? "chevron.up" : "chevron.down")
+          .font(.caption.weight(.semibold))
+          .foregroundStyle(ADEColor.textMuted)
+      }
+    }
+    .buttonStyle(.plain)
+  }
+
+  /// Compact stack of the older members below the header — matches the
+  /// desktop collapsed cluster where the latest call sits on top and a few
+  /// previous calls peek underneath as hint rows.
+  private var collapsedPreview: some View {
+    let older = Array(group.members.dropLast().suffix(3).reversed())
+    return VStack(alignment: .leading, spacing: 4) {
+      ForEach(older) { member in
+        HStack(spacing: 8) {
+          Image(systemName: memberIcon(member))
+            .font(.system(size: 10, weight: .semibold))
+            .foregroundStyle(color(for: member.status))
+            .frame(width: 14, height: 14)
+          Text(memberTitle(member))
+            .font(.caption2)
+            .foregroundStyle(ADEColor.textSecondary)
+            .lineLimit(1)
+            .truncationMode(.middle)
+          Spacer(minLength: 4)
+        }
+        .padding(.leading, 38)
+      }
+      if group.members.count > older.count + 1 {
+        Text("+\(group.members.count - older.count - 1) earlier")
+          .font(.caption2.weight(.medium))
+          .foregroundStyle(ADEColor.textMuted)
+          .padding(.leading, 38)
+      }
+    }
+  }
+
+  private var expandedMembers: some View {
+    VStack(alignment: .leading, spacing: 10) {
+      ForEach(group.members) { member in
+        WorkToolGroupMemberRow(
+          member: member,
+          onOpenFile: onOpenFile,
+          onOpenPr: onOpenPr
+        )
+      }
+    }
+  }
+
+  private var latest: WorkToolGroupMember? { group.latest }
+
+  private var latestTitle: String {
+    guard let latest else { return "Tool calls" }
+    return memberTitle(latest)
+  }
+
+  private var latestIcon: String {
+    guard let latest else { return "hammer.fill" }
+    return memberIcon(latest)
+  }
+
+  private var latestTint: Color {
+    color(for: latest?.status ?? .completed)
+  }
+
+  private var headerSubtitle: String {
+    var tools = 0, commands = 0, files = 0, running = 0
+    for m in group.members {
+      switch m {
+      case .tool: tools += 1
+      case .command: commands += 1
+      case .fileChange: files += 1
+      }
+      if m.status == .running {
+        running += 1
+      }
+    }
+    var parts: [String] = []
+    if running > 0 { parts.append("\(running) running") }
+    if tools > 0 { parts.append("\(tools) tool\(tools == 1 ? "" : "s")") }
+    if commands > 0 { parts.append("\(commands) cmd\(commands == 1 ? "" : "s")") }
+    if files > 0 { parts.append("\(files) file\(files == 1 ? "" : "s")") }
+    if let latest {
+      parts.append(relativeTimestamp(latest.timestamp))
+    }
+    return parts.joined(separator: " · ")
+  }
+
+  private func memberTitle(_ member: WorkToolGroupMember) -> String {
+    switch member {
+    case .tool(let card): return toolDisplayName(card.toolName)
+    case .command(let card): return card.command.isEmpty ? "Command" : card.command
+    case .fileChange(let card): return workReferenceLabel(for: card.path)
+    }
+  }
+
+  private func memberIcon(_ member: WorkToolGroupMember) -> String {
+    switch member {
+    case .tool: return "hammer.fill"
+    case .command: return "terminal"
+    case .fileChange(let card):
+      switch card.kind.lowercased() {
+      case "create": return "doc.badge.plus"
+      case "delete": return "trash"
+      default: return "pencil.line"
+      }
+    }
+  }
+}
+
+/// One expanded member of a tool group. Keeps its own expansion state so the
+/// group container only toggles cluster-level collapse — individual cards can
+/// still drill into args/output without leaking state up to the parent.
+private struct WorkToolGroupMemberRow: View {
+  let member: WorkToolGroupMember
+  let onOpenFile: (String) -> Void
+  let onOpenPr: (Int) -> Void
+  @State private var localExpanded = false
+
+  var body: some View {
+    switch member {
+    case .tool(let card):
+      WorkToolCardView(
+        toolCard: card,
+        references: extractWorkNavigationTargets(
+          from: [card.argsText, card.resultText].compactMap { $0 }.joined(separator: "\n")
+        ),
+        isExpanded: card.status == .running || localExpanded,
+        onToggle: { localExpanded.toggle() },
+        onOpenFile: onOpenFile,
+        onOpenPr: onOpenPr
+      )
+    case .command(let card):
+      WorkCommandCardView(card: card)
+    case .fileChange(let card):
+      WorkFileChangeCardView(card: card)
     }
   }
 }
@@ -239,30 +490,48 @@ struct WorkOutputBlockHeader: View {
 
 struct WorkCommandCardView: View {
   let card: WorkCommandCardModel
+  @State private var isExpanded = false
 
   var body: some View {
     VStack(alignment: .leading, spacing: 12) {
-      HStack(alignment: .top, spacing: 10) {
-        Image(systemName: statusIcon)
-          .foregroundStyle(statusTint)
-          .frame(width: 28, height: 28)
-          .background(statusTint.opacity(0.14), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+      Button {
+        isExpanded.toggle()
+      } label: {
+        HStack(alignment: .top, spacing: 10) {
+          Image(systemName: statusIcon)
+            .foregroundStyle(statusTint)
+            .frame(width: 28, height: 28)
+            .background(statusTint.opacity(0.14), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
 
-        VStack(alignment: .leading, spacing: 4) {
-          Text("Command")
-            .font(.subheadline.weight(.semibold))
-            .foregroundStyle(ADEColor.textPrimary)
-          Text(card.command)
-            .font(.caption.monospaced())
-            .foregroundStyle(ADEColor.textSecondary)
-            .textSelection(.enabled)
+          VStack(alignment: .leading, spacing: 4) {
+            Text("Command")
+              .font(.subheadline.weight(.semibold))
+              .foregroundStyle(ADEColor.textPrimary)
+            Text(card.command)
+              .font(.caption.monospaced())
+              .foregroundStyle(ADEColor.textSecondary)
+              .textSelection(.enabled)
+            if !isExpanded, let preview = workToolResultPreview(card.output) {
+              Text(preview)
+                .font(.caption2.monospaced())
+                .foregroundStyle(ADEColor.textMuted)
+                .lineLimit(1)
+                .truncationMode(.tail)
+            }
+          }
+
+          Spacer(minLength: 8)
+          VStack(alignment: .trailing, spacing: 6) {
+            Text(relativeTimestamp(card.timestamp))
+              .font(.caption2)
+              .foregroundStyle(ADEColor.textMuted)
+            Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
+              .font(.caption.weight(.semibold))
+              .foregroundStyle(ADEColor.textMuted)
+          }
         }
-
-        Spacer(minLength: 8)
-        Text(relativeTimestamp(card.timestamp))
-          .font(.caption2)
-          .foregroundStyle(ADEColor.textMuted)
       }
+      .buttonStyle(.plain)
 
       HStack(spacing: 8) {
         WorkTag(text: card.status.rawValue.capitalized, icon: statusIcon, tint: statusTint)
@@ -277,12 +546,14 @@ struct WorkCommandCardView: View {
         }
       }
 
-      if !card.output.isEmpty {
+      if isExpanded && !card.output.isEmpty {
         WorkANSIOutputBlock(title: "Output", text: card.output)
       }
     }
     .padding(14)
     .background(ADEColor.surfaceBackground.opacity(0.7), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+    .accessibilityElement(children: .combine)
+    .accessibilityLabel("Command, \(card.status.rawValue). Tap to \(isExpanded ? "collapse" : "expand") output.")
   }
 
   var statusTint: Color {
@@ -742,6 +1013,315 @@ struct WorkProposedPlanCard: View {
     case .completed: return "Done"
     case .failed: return "Failed"
     }
+  }
+}
+
+/// Plan-review card — shown when the agent enters plan mode and is waiting for
+/// the user to approve or reject the implementation plan. Mirrors the desktop
+/// `ChatProposedPlanCard` with amber/gold accent to separate it visually from
+/// regular chat messages and draw the user's attention.
+///
+/// Collapsed state: header + truncated plan preview.
+/// Expanded state: full scrollable plan text in a monospace block.
+/// Actions: "Approve & Implement" (primary, success tint) and a "Reject & Revise"
+/// flow that reveals an optional feedback text field before sending decline.
+struct WorkPlanReviewCard: View {
+  let plan: WorkPendingPlanApprovalModel
+  let busy: Bool
+  let onDecision: @MainActor (AgentChatApprovalDecision, String?) async -> Void
+
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+  /// Whether the full plan body is expanded in the scrollable block.
+  @State private var planExpanded = false
+  /// True while the "Reject & Revise" flow is open.
+  @State private var rejectFlowVisible = false
+  /// Optional feedback text the user can supply when rejecting.
+  @State private var feedbackText = ""
+
+  private let collapseThreshold = 400
+
+  private var shouldOfferExpand: Bool {
+    plan.planText.count > collapseThreshold
+  }
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 0) {
+      // Amber accent gradient line at the top — matches desktop's `border-b` gradient.
+      LinearGradient(
+        colors: [Color.clear, Color(red: 0.95, green: 0.72, blue: 0.15).opacity(0.55), Color.clear],
+        startPoint: .leading,
+        endPoint: .trailing
+      )
+      .frame(height: 1)
+
+      VStack(alignment: .leading, spacing: 14) {
+        planHeader
+        planBody
+        if rejectFlowVisible {
+          feedbackSection
+        }
+        actionRow
+      }
+      .padding(16)
+    }
+    .background(
+      RoundedRectangle(cornerRadius: 18, style: .continuous)
+        .fill(Color(red: 0.08, green: 0.06, blue: 0.04).opacity(0.92))
+    )
+    .overlay(
+      RoundedRectangle(cornerRadius: 18, style: .continuous)
+        .stroke(Color(red: 0.95, green: 0.72, blue: 0.15).opacity(0.18), lineWidth: 0.8)
+    )
+    .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+    .accessibilityElement(children: .contain)
+    .accessibilityLabel("Plan approval required. \(plan.title). \(plan.planText.prefix(120))")
+  }
+
+  // MARK: - Header
+
+  private var planHeader: some View {
+    HStack(alignment: .center, spacing: 8) {
+      // Amber waiting glyph — mirrors desktop's `ChatStatusGlyph status="waiting"`.
+      Image(systemName: "clock.badge.exclamationmark")
+        .font(.system(size: 13, weight: .semibold))
+        .foregroundStyle(Color(red: 0.95, green: 0.72, blue: 0.15).opacity(0.85))
+        .frame(width: 26, height: 26)
+        .background(
+          Color(red: 0.95, green: 0.72, blue: 0.15).opacity(0.12),
+          in: RoundedRectangle(cornerRadius: 9, style: .continuous)
+        )
+
+      VStack(alignment: .leading, spacing: 2) {
+        Text("PLAN APPROVAL")
+          .font(.system(size: 9, weight: .bold, design: .monospaced))
+          .tracking(1.4)
+          .foregroundStyle(Color(red: 0.95, green: 0.72, blue: 0.15).opacity(0.60))
+        if !plan.source.isEmpty {
+          Text(plan.source.capitalized)
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(ADEColor.textMuted)
+        }
+      }
+
+      Spacer(minLength: 8)
+
+      Image(systemName: "list.bullet.clipboard")
+        .font(.system(size: 12, weight: .semibold))
+        .foregroundStyle(Color(red: 0.95, green: 0.72, blue: 0.15).opacity(0.45))
+    }
+  }
+
+  // MARK: - Plan body
+
+  @ViewBuilder
+  private var planBody: some View {
+    let displayText = (shouldOfferExpand && !planExpanded)
+      ? String(plan.planText.prefix(collapseThreshold)) + "…"
+      : plan.planText
+
+    VStack(alignment: .leading, spacing: 8) {
+      ScrollView {
+        Text(displayText)
+          .font(.system(.caption, design: .monospaced))
+          .foregroundStyle(ADEColor.textPrimary.opacity(0.88))
+          .frame(maxWidth: .infinity, alignment: .leading)
+          .textSelection(.enabled)
+      }
+      .frame(maxHeight: planExpanded ? 420 : 220)
+      .padding(12)
+      .background(
+        ADEColor.recessedBackground.opacity(0.75),
+        in: RoundedRectangle(cornerRadius: 12, style: .continuous)
+      )
+      .overlay(
+        RoundedRectangle(cornerRadius: 12, style: .continuous)
+          .stroke(Color(red: 0.95, green: 0.72, blue: 0.15).opacity(0.10), lineWidth: 0.5)
+      )
+      .animation(.spring(duration: 0.28), value: planExpanded)
+
+      if shouldOfferExpand {
+        HStack(spacing: 0) {
+          Button {
+            withAnimation(.spring(duration: 0.25)) {
+              planExpanded.toggle()
+            }
+          } label: {
+            HStack(spacing: 4) {
+              Image(systemName: planExpanded ? "arrow.up.left.and.arrow.down.right" : "arrow.down.left.and.arrow.up.right")
+                .font(.system(size: 9, weight: .bold))
+              Text(planExpanded ? "Collapse" : "View full plan")
+                .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                .tracking(0.6)
+            }
+            .foregroundStyle(Color(red: 0.95, green: 0.72, blue: 0.15).opacity(0.60))
+          }
+          .buttonStyle(.plain)
+          .accessibilityLabel(planExpanded ? "Collapse plan" : "View full plan")
+
+          Spacer(minLength: 8)
+
+          // Copy plan button
+          WorkPlanCopyButton(text: plan.planText)
+        }
+      } else {
+        HStack {
+          Spacer(minLength: 0)
+          WorkPlanCopyButton(text: plan.planText)
+        }
+      }
+    }
+  }
+
+  // MARK: - Reject feedback section
+
+  @ViewBuilder
+  private var feedbackSection: some View {
+    VStack(alignment: .leading, spacing: 8) {
+      Text("Feedback (optional)")
+        .font(.caption2.weight(.semibold))
+        .foregroundStyle(ADEColor.textMuted)
+      TextField("Describe what to change…", text: $feedbackText, axis: .vertical)
+        .lineLimit(2...5)
+        .adeInsetField(cornerRadius: 12, padding: 10)
+        .disabled(busy)
+    }
+    .transition(.opacity.combined(with: .move(edge: .top)))
+  }
+
+  // MARK: - Action row
+
+  private var actionRow: some View {
+    HStack(spacing: 10) {
+      if !rejectFlowVisible {
+        // Primary: Approve & Implement
+        Button {
+          Task { await onDecision(.accept, nil) }
+        } label: {
+          HStack(spacing: 6) {
+            Image(systemName: "checkmark")
+              .font(.system(size: 11, weight: .bold))
+            Text("Approve & Implement")
+              .font(.caption.weight(.semibold))
+          }
+          .foregroundStyle(.white)
+          .padding(.horizontal, 14)
+          .padding(.vertical, 9)
+          .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+              .fill(ADEColor.success.opacity(0.82))
+          )
+          .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+              .stroke(ADEColor.success.opacity(0.40), lineWidth: 0.8)
+          )
+        }
+        .buttonStyle(.plain)
+        .disabled(busy)
+        .accessibilityLabel("Approve plan and begin implementation")
+
+        // Secondary: Reject & Revise
+        Button {
+          withAnimation(.spring(duration: 0.22)) {
+            rejectFlowVisible = true
+          }
+        } label: {
+          Text("Reject & Revise")
+            .font(.caption.weight(.medium))
+            .foregroundStyle(ADEColor.textSecondary)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 9)
+            .background(
+              RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(ADEColor.surfaceBackground.opacity(0.70))
+            )
+            .overlay(
+              RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(ADEColor.border.opacity(0.22), lineWidth: 0.8)
+            )
+        }
+        .buttonStyle(.plain)
+        .disabled(busy)
+        .accessibilityLabel("Reject plan and request revisions")
+      } else {
+        // Confirm rejection
+        Button {
+          let feedback = feedbackText.trimmingCharacters(in: .whitespacesAndNewlines)
+          Task { await onDecision(.decline, feedback.isEmpty ? nil : feedback) }
+        } label: {
+          Text("Send Rejection")
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(.white)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 9)
+            .background(
+              RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(ADEColor.danger.opacity(0.82))
+            )
+        }
+        .buttonStyle(.plain)
+        .disabled(busy)
+        .accessibilityLabel("Confirm plan rejection")
+
+        // Cancel rejection flow
+        Button {
+          withAnimation(.spring(duration: 0.22)) {
+            rejectFlowVisible = false
+            feedbackText = ""
+          }
+        } label: {
+          Text("Cancel")
+            .font(.caption.weight(.medium))
+            .foregroundStyle(ADEColor.textSecondary)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 9)
+            .background(
+              RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(ADEColor.surfaceBackground.opacity(0.70))
+            )
+            .overlay(
+              RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(ADEColor.border.opacity(0.22), lineWidth: 0.8)
+            )
+        }
+        .buttonStyle(.plain)
+        .disabled(busy)
+        .accessibilityLabel("Cancel rejection")
+      }
+    }
+    .animation(.spring(duration: 0.22), value: rejectFlowVisible)
+  }
+}
+
+/// Compact copy-to-clipboard button used in the plan body footer.
+private struct WorkPlanCopyButton: View {
+  let text: String
+  @State private var copied = false
+
+  var body: some View {
+    Button {
+      UIPasteboard.general.string = text
+      copied = true
+      Task { @MainActor in
+        try? await Task.sleep(nanoseconds: 1_400_000_000)
+        copied = false
+      }
+    } label: {
+      HStack(spacing: 4) {
+        Image(systemName: copied ? "checkmark" : "doc.on.doc")
+          .font(.system(size: 9, weight: .bold))
+        Text(copied ? "Copied" : "Copy plan")
+          .font(.system(size: 10, weight: .semibold, design: .monospaced))
+          .tracking(0.6)
+      }
+      .foregroundStyle(
+        copied
+          ? ADEColor.success
+          : Color(red: 0.95, green: 0.72, blue: 0.15).opacity(0.45)
+      )
+    }
+    .buttonStyle(.plain)
+    .accessibilityLabel(copied ? "Copied to clipboard" : "Copy plan to clipboard")
   }
 }
 

@@ -15,7 +15,7 @@ struct LaneEmptyStatePresentation: Equatable {
 }
 
 func laneAllowsLiveActions(connectionState: RemoteConnectionState, laneStatus: SyncDomainStatus) -> Bool {
-  connectionState == .connected && laneStatus.phase == .ready
+  (connectionState == .connected || connectionState == .syncing) && laneStatus.phase == .ready
 }
 
 func laneAllowsDiffInspection(
@@ -82,6 +82,45 @@ func laneDetailEmptyState(
         : "Pair with a host from Settings to load lane detail on iPhone.",
       actionTitle: offlineAction?.title,
       action: offlineAction?.action
+    )
+  }
+
+  return nil
+}
+
+func laneLiveActionNotice(
+  connectionState: RemoteConnectionState,
+  laneStatus: SyncDomainStatus,
+  hasHostProfile: Bool
+) -> LaneEmptyStatePresentation? {
+  if laneStatus.phase == .failed {
+    return nil
+  }
+
+  if laneAllowsLiveActions(connectionState: connectionState, laneStatus: laneStatus) {
+    return nil
+  }
+
+  if connectionState == .disconnected || connectionState == .error || laneStatus.phase == .disconnected {
+    let offlineAction = laneOfflineAction(hasHostProfile: hasHostProfile, needsRepairing: false)
+    return LaneEmptyStatePresentation(
+      symbol: hasHostProfile ? "wifi.slash" : "link.badge.plus",
+      title: hasHostProfile ? "Cached lanes shown" : "Pair to run lane actions",
+      message: hasHostProfile
+        ? "Reconnect to desktop before creating, editing, rebasing, pushing, or archiving lanes from iPhone."
+        : "Pair with a desktop host before creating, editing, rebasing, pushing, or archiving lanes from iPhone.",
+      actionTitle: offlineAction?.title,
+      action: offlineAction?.action
+    )
+  }
+
+  if connectionState == .connecting || laneStatus.phase != .ready {
+    return LaneEmptyStatePresentation(
+      symbol: "arrow.triangle.2.circlepath",
+      title: "Waiting for live lane actions",
+      message: "Cached lanes are visible now. Lane actions unlock after desktop connection and lane sync are ready.",
+      actionTitle: "Retry",
+      action: .retry
     )
   }
 

@@ -23,6 +23,12 @@ type ResolvedCliPaths = {
   source: "packaged" | "dev" | "missing";
 };
 
+type DevCliEntry = {
+  repoRoot: string;
+  cliPath: string;
+  entryKind: "built" | "source";
+};
+
 const PATH_DELIMITER = path.delimiter;
 
 function shellQuote(value: string): string {
@@ -90,27 +96,87 @@ function findRepoRoot(startDir: string): string | null {
   }
 }
 
-function resolveDevCliJsPath(devRepoRoot?: string | null): string | null {
-  if (devRepoRoot) {
-    const builtCli = path.join(devRepoRoot, "apps", "ade-cli", "dist", "cli.cjs");
-    if (fs.existsSync(builtCli)) return builtCli;
+function latestMtimeMs(root: string): number {
+  let latest = 0;
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(root, { withFileTypes: true });
+  } catch {
+    return latest;
   }
+  for (const entry of entries) {
+    const fullPath = path.join(root, entry.name);
+    if (entry.isDirectory()) {
+      latest = Math.max(latest, latestMtimeMs(fullPath));
+      continue;
+    }
+    if (!entry.isFile()) continue;
+    try {
+      latest = Math.max(latest, fs.statSync(fullPath).mtimeMs);
+    } catch {
+      // Ignore files that disappear during freshness checks.
+    }
+  }
+  return latest;
+}
+
+function isBuiltCliFresh(builtCli: string, sourceCli: string): boolean {
+  try {
+    const builtMtime = fs.statSync(builtCli).mtimeMs;
+    const sourceRoot = path.dirname(sourceCli);
+    return builtMtime >= latestMtimeMs(sourceRoot);
+  } catch {
+    return false;
+  }
+}
+
+function resolveDevCliEntry(devRepoRoot?: string | null): DevCliEntry | null {
+  const repoCandidates: string[] = [];
+  if (devRepoRoot) repoCandidates.push(path.resolve(devRepoRoot));
   const candidates = [
     process.cwd(),
-    __dirname,
-    path.resolve(__dirname, "..", "..", "..", ".."),
+    typeof __dirname === "string" ? __dirname : null,
+    typeof __dirname === "string" ? path.resolve(__dirname, "..", "..", "..", "..") : null,
   ];
   for (const candidate of candidates) {
+    if (!candidate) continue;
     const repoRoot = findRepoRoot(candidate);
     if (!repoRoot) continue;
+    repoCandidates.push(repoRoot);
+  }
+  for (const repoRoot of [...new Set(repoCandidates)]) {
     const builtCli = path.join(repoRoot, "apps", "ade-cli", "dist", "cli.cjs");
-    if (fs.existsSync(builtCli)) return builtCli;
+    const sourceCli = path.join(repoRoot, "apps", "ade-cli", "src", "cli.ts");
+    if (fs.existsSync(sourceCli) && (!fs.existsSync(builtCli) || !isBuiltCliFresh(builtCli, sourceCli))) {
+      return {
+        repoRoot,
+        cliPath: sourceCli,
+        entryKind: "source",
+      };
+    }
+    if (fs.existsSync(builtCli)) {
+      return {
+        repoRoot,
+        cliPath: builtCli,
+        entryKind: "built",
+      };
+    }
+    if (fs.existsSync(sourceCli)) {
+      return {
+        repoRoot,
+        cliPath: sourceCli,
+        entryKind: "source",
+      };
+    }
   }
   return null;
 }
 
 function writeDevShim(args: {
   cliJsPath: string;
+  entryKind: "built" | "source";
+  tsxBinPath: string | null;
+  tsxImportPath: string | null;
   userDataPath: string;
   appExecutablePath: string;
   logger: Logger;
@@ -121,7 +187,36 @@ function writeDevShim(args: {
     "#!/bin/sh",
     "set -eu",
     `CLI_JS=${shellQuote(args.cliJsPath)}`,
+    `CLI_ENTRY_KIND=${shellQuote(args.entryKind)}`,
+    `TSX_BIN=${shellQuote(args.tsxBinPath ?? "")}`,
+    `TSX_IMPORT=${shellQuote(args.tsxImportPath ?? "")}`,
     `APP_EXE=${shellQuote(args.appExecutablePath)}`,
+    "if [ \"$CLI_ENTRY_KIND\" = \"source\" ]; then",
+    "  if [ -x \"$TSX_BIN\" ]; then",
+    "    exec \"$TSX_BIN\" \"$CLI_JS\" \"$@\"",
+    "  fi",
+    "  if [ ! -f \"$TSX_IMPORT\" ]; then",
+    "    echo \"ade: Local source CLI fallback requires repo-local tsx. Run npm --prefix apps/ade-cli install or npm --prefix apps/ade-cli run build.\" >&2",
+    "    exit 127",
+    "  fi",
+    "  if [ -n \"${ADE_CLI_NODE:-}\" ]; then",
+    "    exec \"$ADE_CLI_NODE\" --import \"$TSX_IMPORT\" \"$CLI_JS\" \"$@\"",
+    "  fi",
+    "  if [ -x \"$APP_EXE\" ]; then",
+    "    ELECTRON_RUN_AS_NODE=1 exec \"$APP_EXE\" --import \"$TSX_IMPORT\" \"$CLI_JS\" \"$@\"",
+    "  fi",
+    "  if command -v node >/dev/null 2>&1; then",
+    "    NODE_MAJOR=$(node -p \"Number(process.versions.node.split('.')[0])\" 2>/dev/null || echo 0)",
+    "    if [ \"$NODE_MAJOR\" -ge 22 ]; then",
+    "      exec node --import \"$TSX_IMPORT\" \"$CLI_JS\" \"$@\"",
+    "    fi",
+    "  fi",
+    "  if command -v asdf >/dev/null 2>&1; then",
+    "    exec asdf exec node --import \"$TSX_IMPORT\" \"$CLI_JS\" \"$@\"",
+    "  fi",
+    "  echo \"ade: Node.js 22+ or the ADE Electron runtime is required to run this source CLI.\" >&2",
+    "  exit 127",
+    "fi",
     "if [ -n \"${ADE_CLI_NODE:-}\" ]; then",
     "  exec \"$ADE_CLI_NODE\" \"$CLI_JS\" \"$@\"",
     "fi",
@@ -173,10 +268,13 @@ function resolveCliPaths(args: CreateAdeCliServiceArgs): ResolvedCliPaths {
     };
   }
 
-  const devCliJsPath = resolveDevCliJsPath(args.devRepoRoot);
-  if (devCliJsPath) {
+  const devCli = resolveDevCliEntry(args.devRepoRoot);
+  if (devCli) {
     const shim = writeDevShim({
-      cliJsPath: devCliJsPath,
+      cliJsPath: devCli.cliPath,
+      entryKind: devCli.entryKind,
+      tsxBinPath: path.join(devCli.repoRoot, "apps", "ade-cli", "node_modules", ".bin", "tsx"),
+      tsxImportPath: path.join(devCli.repoRoot, "apps", "ade-cli", "node_modules", "tsx", "dist", "loader.mjs"),
       userDataPath: args.userDataPath,
       appExecutablePath: args.appExecutablePath,
       logger: args.logger,
@@ -186,7 +284,7 @@ function resolveCliPaths(args: CreateAdeCliServiceArgs): ResolvedCliPaths {
         commandPath: shim.commandPath,
         binDir: shim.binDir,
         installerPath: null,
-        cliJsPath: devCliJsPath,
+        cliJsPath: devCli.cliPath,
         source: "dev",
       };
     }

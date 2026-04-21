@@ -3,6 +3,7 @@ import type { createProjectConfigService } from "../config/projectConfigService"
 import type { createPrService } from "./prService";
 import type { AdeDb } from "../state/kvDb";
 import type { PrEventPayload, PrNotificationKind, PrSummary } from "../../../shared/types";
+import type { NotificationEventBus } from "../notifications/notificationEventBus";
 import { nowIso } from "../shared/utils";
 
 function clampMs(value: number, min: number, max: number): number {
@@ -60,6 +61,7 @@ export function createPrPollingService({
   onEvent,
   onPullRequestsChanged,
   db,
+  notificationEventBus,
 }: {
   logger: Logger;
   prService: ReturnType<typeof createPrService>;
@@ -78,6 +80,12 @@ export function createPrPollingService({
   }) => void | Promise<void>;
   /** Optional database handle used to persist `last_polled_at` per PR for delta polling. */
   db?: AdeDb;
+  /**
+   * Optional notification bus. When provided, transition events (checks_failing,
+   * review_requested, changes_requested, merge_ready) are forwarded for mobile
+   * push fan-out in addition to the legacy `onEvent("pr-notification")` path.
+   */
+  notificationEventBus?: NotificationEventBus | null;
 }) {
   const DEFAULT_INTERVAL_MS = 60_000;
   const MIN_INTERVAL_MS = 5_000;
@@ -273,6 +281,23 @@ export function createPrPollingService({
             headBranch: pr.headBranch ?? null,
             baseBranch: pr.baseBranch ?? null
           });
+          // Also forward to the notification bus so the mobile push fan-out
+          // can route this event through APNs / in-app. Any failure here must
+          // not break the legacy event path.
+          try {
+            notificationEventBus?.publishPrEvent({
+              kind,
+              pr,
+              titleOverride: summary.title,
+              messageOverride: summary.message,
+            });
+          } catch (error) {
+            logger.warn("prs.notification_publish_failed", {
+              prId: pr.id,
+              kind,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
         }
 
         lastByPrId.set(pr.id, {

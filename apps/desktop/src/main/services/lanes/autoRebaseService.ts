@@ -7,6 +7,7 @@ import type { createLaneService } from "./laneService";
 import type { AutoRebaseEventPayload, AutoRebaseLaneState, AutoRebaseLaneStatus, LaneSummary, RebaseNeed } from "../../../shared/types";
 import { isRecord, nowIso } from "../shared/utils";
 import { shouldLaneTrackParent } from "../../../shared/laneBaseResolution";
+import { normalizePrCreationStrategy, resolvePrRebaseMode } from "../../../shared/prStrategy";
 
 type StoredStatus = AutoRebaseLaneStatus & {
   source?: "auto" | "manual";
@@ -81,6 +82,23 @@ function byCreatedAtAsc(a: LaneSummary, b: LaneSummary): number {
   const bTs = Date.parse(b.createdAt);
   if (Number.isFinite(aTs) && Number.isFinite(bTs) && aTs !== bTs) return aTs - bTs;
   return a.name.localeCompare(b.name);
+}
+
+function blockedMessage(
+  laneId: string | null,
+  reason: "conflict" | "manual" | "lookup" | "failed" | "unavailable" | null,
+): string {
+  if (!laneId) return "Pending: auto-rebase stopped at an earlier lane. Open the Rebase tab to continue.";
+  if (reason === "manual") {
+    return `Pending: ancestor lane '${laneId}' has a fixed PR base. Rebase that lane manually from the Rebase tab before descendants can continue.`;
+  }
+  if (reason === "lookup" || reason === "unavailable") {
+    return `Pending: ancestor lane '${laneId}' needs review before descendants can continue. Open the Rebase tab to inspect it.`;
+  }
+  if (reason === "failed") {
+    return `Pending: ancestor lane '${laneId}' failed automatic rebase. Open the Rebase tab to retry.`;
+  }
+  return `Pending: ancestor lane '${laneId}' has unresolved rebase conflicts. Open the Rebase tab to continue.`;
 }
 
 function resolveAffectedChainLaneId(
@@ -179,6 +197,37 @@ export function createAutoRebaseService(args: {
   ): LaneSummary | null => {
     const parent = lane.parentLaneId ? laneById.get(lane.parentLaneId) ?? null : null;
     return shouldLaneTrackParent({ lane, parent }) ? parent : null;
+  };
+
+  /**
+   * Look up the open PR linked to a lane and classify its rebase mode based
+   * on the stored `creation_strategy`. "manual" means "do not auto-rebase,
+   * surface drift as attention only" — see `resolvePrRebaseMode`.
+   *
+   * Returns `"auto"` when no open PR is linked (the auto-rebase behavior for
+   * lanes without PRs is unchanged).
+   */
+  const resolveLaneRebaseMode = (laneId: string): "auto" | "manual" => {
+    try {
+      const row = db.get<{ creation_strategy: string | null }>(
+        `
+          select creation_strategy
+          from pull_requests
+          where lane_id = ?
+            and state in ('open', 'draft')
+          order by updated_at desc, created_at desc
+          limit 1
+        `,
+        [laneId],
+      );
+      return resolvePrRebaseMode(normalizePrCreationStrategy(row?.creation_strategy));
+    } catch (error) {
+      logger.warn("autoRebase.lane_rebase_mode_lookup_failed", {
+        laneId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return "auto";
+    }
   };
 
   const listStatuses = async (options?: ListStatusesOptions): Promise<AutoRebaseLaneStatus[]> => {
@@ -337,6 +386,7 @@ export function createAutoRebaseService(args: {
 
     let blocked = false;
     let blockedLaneId: string | null = null;
+    let blockedReason: "conflict" | "manual" | "lookup" | "failed" | "unavailable" | null = null;
     let blockedByLookupFailure = false;
     for (const laneId of cascadeOrder) {
       lanes = await laneService.list({ includeArchived: false });
@@ -365,6 +415,7 @@ export function createAutoRebaseService(args: {
           });
           blocked = true;
           blockedLaneId = lane.id;
+          blockedReason = "unavailable";
           continue;
         }
         if (shouldLaneTrackParent({ lane, parent: rawParent })) {
@@ -385,9 +436,7 @@ export function createAutoRebaseService(args: {
           parentHeadSha: null,
           state: "rebasePending",
           conflictCount: 0,
-          message: blockedLaneId
-            ? `Pending: ancestor lane '${blockedLaneId}' has unresolved rebase conflicts. Open the Rebase tab to continue.`
-            : "Pending: auto-rebase stopped at an earlier lane. Open the Rebase tab to continue."
+          message: blockedMessage(blockedLaneId, blockedReason)
         });
         continue;
       }
@@ -405,6 +454,7 @@ export function createAutoRebaseService(args: {
           blocked = true;
           blockedByLookupFailure = true;
           blockedLaneId = lane.id;
+          blockedReason = "lookup";
           continue;
         }
         const existing = loadStatus(lane.id);
@@ -417,6 +467,7 @@ export function createAutoRebaseService(args: {
       if (need.conflictPredicted) {
         blocked = true;
         blockedLaneId = lane.id;
+        blockedReason = "conflict";
         setStatus({
           laneId: lane.id,
           parentLaneId: parent?.id ?? null,
@@ -424,6 +475,25 @@ export function createAutoRebaseService(args: {
           state: "rebaseConflict",
           conflictCount: Math.max(1, need.conflictingFiles.length),
           message: `Auto-rebase blocked: ${Math.max(1, need.conflictingFiles.length)} conflict(s) expected. Open the Rebase tab to resolve and publish.`
+        });
+        continue;
+      }
+
+      // Gate on creation_strategy: PRs with `lane_base` strategy carry an
+      // immutable base — drift surfaces as attention only, auto-rebase is
+      // never allowed to fire. The user must rebase manually.
+      const rebaseMode = resolveLaneRebaseMode(lane.id);
+      if (rebaseMode === "manual") {
+        blocked = true;
+        blockedLaneId = lane.id;
+        blockedReason = "manual";
+        setStatus({
+          laneId: lane.id,
+          parentLaneId: parent?.id ?? null,
+          parentHeadSha,
+          state: "rebasePending",
+          conflictCount: 0,
+          message: "PR carries an immutable base — drift detected. Rebase manually from the Rebase tab when ready."
         });
         continue;
       }
@@ -446,6 +516,7 @@ export function createAutoRebaseService(args: {
         blocked = true;
         blockedLaneId = lane.id;
         const conflictHint = /conflict|could not apply|resolve/i.test(rebaseRun.run.error);
+        blockedReason = conflictHint ? "conflict" : "failed";
         setStatus({
           laneId: lane.id,
           parentLaneId: parent?.id ?? null,
@@ -497,6 +568,7 @@ export function createAutoRebaseService(args: {
 
         blocked = true;
         blockedLaneId = lane.id;
+        blockedReason = "failed";
         const pushError = error instanceof Error ? error.message : String(error);
         setStatus({
           laneId: lane.id,

@@ -56,54 +56,93 @@ extension FilesRootScreen {
       if refreshRemote {
         try? await syncService.refreshLaneSnapshots()
       }
-      workspaces = try await syncService.listWorkspaces()
-      selectedWorkspaceId = selectedWorkspaceId.flatMap { candidate in
-        workspaces.contains(where: { $0.id == candidate }) ? candidate : nil
-      } ?? workspaces.first?.id
-      if !canUseLiveFileActions {
-        quickOpenResults = []
-        textSearchResults = []
+      let previousSelectedWorkspaceId = selectedWorkspaceId
+      let loadedWorkspaces = try await syncService.listWorkspaces()
+      if workspaces != loadedWorkspaces {
+        workspaces = loadedWorkspaces
       }
-      await loadProofArtifacts()
-      errorMessage = nil
+      let nextSelectedWorkspaceId = selectedWorkspaceId.flatMap { candidate in
+        loadedWorkspaces.contains(where: { $0.id == candidate }) ? candidate : nil
+      } ?? loadedWorkspaces.first?.id
+      if selectedWorkspaceId != nextSelectedWorkspaceId {
+        selectedWorkspaceId = nextSelectedWorkspaceId
+      }
+      if !canUseLiveFileActions {
+        if !quickOpenResults.isEmpty {
+          quickOpenResults = []
+        }
+        if !textSearchResults.isEmpty {
+          textSearchResults = []
+        }
+      }
+      if previousSelectedWorkspaceId == nextSelectedWorkspaceId {
+        await loadProofArtifacts()
+        lastHandledProofArtifactsReloadKey = proofArtifactsReloadKey
+      }
+      if errorMessage != nil {
+        errorMessage = nil
+      }
     } catch {
-      errorMessage = error.localizedDescription
+      let message = error.localizedDescription
+      if errorMessage != message {
+        errorMessage = message
+      }
     }
   }
 
   @MainActor
   func loadProofArtifacts() async {
     guard let laneId = selectedWorkspace?.laneId else {
-      proofArtifacts = []
-      proofErrorMessage = nil
+      if !proofArtifacts.isEmpty {
+        proofArtifacts = []
+      }
+      if proofErrorMessage != nil {
+        proofErrorMessage = nil
+      }
       return
     }
 
     do {
       let artifacts = try await syncService.fetchComputerUseArtifacts(ownerKind: "lane", ownerId: laneId)
-      proofArtifacts = Array(artifacts.sorted { lhs, rhs in
+      let nextArtifacts = Array(artifacts.sorted { lhs, rhs in
         lhs.createdAt > rhs.createdAt
       }.prefix(6))
-      proofErrorMessage = nil
+      if proofArtifacts != nextArtifacts {
+        proofArtifacts = nextArtifacts
+      }
+      if proofErrorMessage != nil {
+        proofErrorMessage = nil
+      }
     } catch {
-      proofArtifacts = []
-      proofErrorMessage = error.localizedDescription
+      if !proofArtifacts.isEmpty {
+        proofArtifacts = []
+      }
+      let message = error.localizedDescription
+      if proofErrorMessage != message {
+        proofErrorMessage = message
+      }
     }
   }
 
   @MainActor
   func runQuickOpenSearch() async {
     guard canUseLiveFileActions else {
-      quickOpenResults = []
+      if !quickOpenResults.isEmpty {
+        quickOpenResults = []
+      }
       return
     }
     guard let workspaceId = selectedWorkspaceId else {
-      quickOpenResults = []
+      if !quickOpenResults.isEmpty {
+        quickOpenResults = []
+      }
       return
     }
     let query = quickOpenQuery.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !query.isEmpty else {
-      quickOpenResults = []
+      if !quickOpenResults.isEmpty {
+        quickOpenResults = []
+      }
       return
     }
 
@@ -115,29 +154,44 @@ extension FilesRootScreen {
       let results = try await syncService.quickOpen(workspaceId: workspaceId, query: query)
       guard !Task.isCancelled, isTabActive, canUseLiveFileActions else { return }
       guard query == quickOpenQuery.trimmingCharacters(in: .whitespacesAndNewlines), workspaceId == selectedWorkspaceId else { return }
-      quickOpenResults = results
-      errorMessage = nil
+      if quickOpenResults != results {
+        quickOpenResults = results
+      }
+      if errorMessage != nil {
+        errorMessage = nil
+      }
     } catch {
       guard !Task.isCancelled, isTabActive else { return }
       guard query == quickOpenQuery.trimmingCharacters(in: .whitespacesAndNewlines), workspaceId == selectedWorkspaceId else { return }
-      errorMessage = error.localizedDescription
-      quickOpenResults = []
+      let message = error.localizedDescription
+      if errorMessage != message {
+        errorMessage = message
+      }
+      if !quickOpenResults.isEmpty {
+        quickOpenResults = []
+      }
     }
   }
 
   @MainActor
   func runTextSearch() async {
     guard canUseLiveFileActions else {
-      textSearchResults = []
+      if !textSearchResults.isEmpty {
+        textSearchResults = []
+      }
       return
     }
     guard let workspaceId = selectedWorkspaceId else {
-      textSearchResults = []
+      if !textSearchResults.isEmpty {
+        textSearchResults = []
+      }
       return
     }
     let query = textSearchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !query.isEmpty else {
-      textSearchResults = []
+      if !textSearchResults.isEmpty {
+        textSearchResults = []
+      }
       return
     }
 
@@ -149,13 +203,22 @@ extension FilesRootScreen {
       let results = try await syncService.searchText(workspaceId: workspaceId, query: query)
       guard !Task.isCancelled, isTabActive, canUseLiveFileActions else { return }
       guard query == textSearchQuery.trimmingCharacters(in: .whitespacesAndNewlines), workspaceId == selectedWorkspaceId else { return }
-      textSearchResults = results
-      errorMessage = nil
+      if textSearchResults != results {
+        textSearchResults = results
+      }
+      if errorMessage != nil {
+        errorMessage = nil
+      }
     } catch {
       guard !Task.isCancelled, isTabActive else { return }
       guard query == textSearchQuery.trimmingCharacters(in: .whitespacesAndNewlines), workspaceId == selectedWorkspaceId else { return }
-      errorMessage = error.localizedDescription
-      textSearchResults = []
+      let message = error.localizedDescription
+      if errorMessage != message {
+        errorMessage = message
+      }
+      if !textSearchResults.isEmpty {
+        textSearchResults = []
+      }
     }
   }
 
@@ -166,7 +229,10 @@ extension FilesRootScreen {
       await reload()
     }
     guard let workspace = resolveFilesWorkspace(for: request, in: workspaces) else {
-      errorMessage = "The requested lane workspace is not cached on this phone yet. Refresh Files and try again."
+      let message = "The requested lane workspace is not cached on this phone yet. Refresh Files and try again."
+      if errorMessage != message {
+        errorMessage = message
+      }
       syncService.requestedFilesNavigation = nil
       return
     }

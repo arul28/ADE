@@ -20,8 +20,11 @@ the app is interactive.
 Main process:
 
 - `apps/desktop/src/main/services/onboarding/onboardingService.ts` —
-  status, stack detection, suggested config, existing lane detection.
-  ~340 lines.
+  status, stack detection, suggested config, existing lane detection,
+  and tour progress tracking (`OnboardingTourProgress` with per-tour
+  `OnboardingTourEntry`, wizard completed/dismissed timestamps, and
+  glossary terms seen; persisted to `kvDb` under
+  `onboarding:tourProgress`).
 - `apps/desktop/src/main/services/config/projectConfigService.ts` —
   YAML config read/merge/save, AI mode migration, lane env init,
   Linear sync resolver. ~2,870 lines, the largest service.

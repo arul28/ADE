@@ -88,6 +88,9 @@ const IOS_REMOTE_COMMAND_ACTIONS = [
   "chat.resume",
   "chat.updateSession",
   "chat.dispose",
+  "cto.getRoster",
+  "cto.ensureSession",
+  "cto.ensureAgentSession",
   "prs.createFromLane",
   "prs.land",
   "prs.close",
@@ -401,6 +404,15 @@ function createMockAgentChatService() {
     updateSession: vi.fn().mockResolvedValue(undefined),
     dispose: vi.fn().mockResolvedValue(undefined),
     getAvailableModels: vi.fn().mockResolvedValue([{ id: "model-1", modelId: "m1" }]),
+    ensureIdentitySession: vi.fn().mockResolvedValue({
+      id: "chat-identity-1",
+      laneId: "lane-1",
+      provider: "codex",
+      model: "gpt-4",
+      status: "idle",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      lastActivityAt: "2026-01-01T00:00:00.000Z",
+    }),
   } as any;
 }
 
@@ -409,6 +421,26 @@ function createMockConflictService() {
     getLaneStatus: vi.fn().mockResolvedValue(null),
     listOverlaps: vi.fn().mockResolvedValue([]),
     getBatchAssessment: vi.fn().mockResolvedValue({ lanes: [] }),
+  } as any;
+}
+
+function createMockWorkerAgentService() {
+  return {
+    listAgents: vi.fn().mockReturnValue([]),
+    getAgent: vi.fn().mockReturnValue(null),
+    saveAgent: vi.fn(),
+    replaceAgentSnapshot: vi.fn(),
+    removeAgent: vi.fn(),
+    listOrgTree: vi.fn().mockReturnValue([]),
+    getChainOfCommand: vi.fn().mockReturnValue([]),
+    getCoreMemory: vi.fn(),
+    updateCoreMemory: vi.fn(),
+    listSessionLogs: vi.fn().mockReturnValue([]),
+    appendSessionLog: vi.fn(),
+    buildReconstructionContext: vi.fn().mockReturnValue(""),
+    setAgentStatus: vi.fn(),
+    updateAgentSpentMonthlyCents: vi.fn(),
+    setAgentHeartbeatAt: vi.fn(),
   } as any;
 }
 
@@ -449,6 +481,7 @@ describe("createSyncRemoteCommandService", () => {
   let gitService: ReturnType<typeof createMockGitService>;
   let diffService: ReturnType<typeof createMockDiffService>;
   let agentChatService: ReturnType<typeof createMockAgentChatService>;
+  let workerAgentService: ReturnType<typeof createMockWorkerAgentService>;
   let conflictService: ReturnType<typeof createMockConflictService>;
   let processService: ReturnType<typeof createMockProcessService>;
   let issueInventoryService: ReturnType<typeof createMockIssueInventoryService>;
@@ -464,6 +497,7 @@ describe("createSyncRemoteCommandService", () => {
     gitService = createMockGitService();
     diffService = createMockDiffService();
     agentChatService = createMockAgentChatService();
+    workerAgentService = createMockWorkerAgentService();
     conflictService = createMockConflictService();
     processService = createMockProcessService();
     issueInventoryService = createMockIssueInventoryService();
@@ -479,6 +513,7 @@ describe("createSyncRemoteCommandService", () => {
       gitService,
       diffService,
       agentChatService,
+      workerAgentService,
       conflictService,
       processService,
       logger: createLogger() as any,
@@ -1647,6 +1682,284 @@ describe("createSyncRemoteCommandService", () => {
       expect(prService.requestReviewers).toHaveBeenCalledWith({
         prId: "pr-1",
         reviewers: ["alice", "bob"],
+      });
+    });
+  });
+
+  // ---------------------------------------------------------------
+  // execute: cto commands
+  // ---------------------------------------------------------------
+
+  describe("execute — cto commands", () => {
+    it("cto.getRoster returns null cto and empty workers when nothing registered", async () => {
+      agentChatService.listSessions.mockResolvedValueOnce([]);
+      workerAgentService.listAgents.mockReturnValueOnce([]);
+      const result = await service.execute(makePayload("cto.getRoster", {}));
+      expect(result).toEqual({ cto: null, workers: [] });
+    });
+
+    it("cto.getRoster pairs CTO session + worker sessions by identityKey", async () => {
+      const ctoSummary = {
+        sessionId: "sess-cto",
+        laneId: "lane-1",
+        provider: "claude",
+        model: "claude-sonnet",
+        status: "idle",
+        identityKey: "cto",
+        startedAt: "2026-04-01T00:00:00.000Z",
+        endedAt: null,
+        lastActivityAt: "2026-04-01T00:10:00.000Z",
+        lastOutputPreview: null,
+        summary: null,
+      };
+      const workerSummary = {
+        sessionId: "sess-agent-42",
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-4",
+        status: "running",
+        identityKey: "agent:worker-42",
+        startedAt: "2026-04-01T00:05:00.000Z",
+        endedAt: null,
+        lastActivityAt: "2026-04-01T00:06:00.000Z",
+        lastOutputPreview: null,
+        summary: null,
+      };
+      agentChatService.listSessions.mockResolvedValueOnce([ctoSummary, workerSummary]);
+      workerAgentService.listAgents.mockReturnValueOnce([
+        {
+          id: "worker-42",
+          name: "Mobile Droid",
+          slug: "mobile-droid",
+          role: "engineer",
+          status: "running",
+          reportsTo: null,
+          capabilities: [],
+          adapterType: "claude-local",
+          adapterConfig: {},
+          runtimeConfig: {},
+          budgetMonthlyCents: 0,
+          spentMonthlyCents: 0,
+          createdAt: "2026-03-01T00:00:00.000Z",
+          updatedAt: "2026-04-01T00:00:00.000Z",
+          deletedAt: null,
+        },
+      ]);
+      const result = await service.execute(makePayload("cto.getRoster", {})) as {
+        cto: unknown;
+        workers: Array<Record<string, unknown>>;
+      };
+      expect(agentChatService.listSessions).toHaveBeenCalledWith(undefined, { includeIdentity: true });
+      expect(result.cto).toEqual(ctoSummary);
+      expect(result.workers).toHaveLength(1);
+      expect(result.workers[0]).toEqual({
+        agentId: "worker-42",
+        name: "Mobile Droid",
+        avatarSeed: "mobile-droid",
+        status: "running",
+        sessionSummary: workerSummary,
+      });
+    });
+
+    it("cto.ensureSession delegates to agentChatService with identityKey=cto", async () => {
+      laneService.list.mockResolvedValueOnce([
+        { id: "lane-primary", laneType: "primary" },
+      ]);
+      const result = await service.execute(makePayload("cto.ensureSession", {
+        modelId: "claude-opus-4",
+        reasoningEffort: "high",
+      })) as Record<string, unknown>;
+      expect(agentChatService.ensureIdentitySession).toHaveBeenCalledWith({
+        identityKey: "cto",
+        laneId: "lane-primary",
+        modelId: "claude-opus-4",
+        reasoningEffort: "high",
+      });
+      expect(agentChatService.getSessionSummary).toHaveBeenCalledWith("chat-identity-1");
+      expect(result).toEqual(expect.objectContaining({ sessionId: "chat-1" }));
+    });
+
+    it("cto.ensureSession uses the requested laneId when provided", async () => {
+      await service.execute(makePayload("cto.ensureSession", { laneId: "lane-explicit" }));
+      expect(agentChatService.ensureIdentitySession).toHaveBeenCalledWith({
+        identityKey: "cto",
+        laneId: "lane-explicit",
+        modelId: null,
+        reasoningEffort: null,
+      });
+    });
+
+    it("cto.ensureSession throws when no lane is available", async () => {
+      laneService.list.mockResolvedValueOnce([]);
+      await expect(service.execute(makePayload("cto.ensureSession", {})))
+        .rejects.toThrow("No active lane is available to host the CTO chat session.");
+    });
+
+    it("cto.ensureAgentSession requires agentId", async () => {
+      await expect(service.execute(makePayload("cto.ensureAgentSession", {})))
+        .rejects.toThrow("cto.ensureAgentSession requires agentId.");
+    });
+
+    it("cto.ensureAgentSession delegates to agentChatService with agent:<id> identityKey", async () => {
+      laneService.list.mockResolvedValueOnce([
+        { id: "lane-primary", laneType: "primary" },
+      ]);
+      workerAgentService.getAgent.mockReturnValueOnce({
+        id: "worker-42",
+        name: "Mobile Droid",
+        slug: "mobile-droid",
+        status: "running",
+      });
+      const result = await service.execute(makePayload("cto.ensureAgentSession", {
+        agentId: "worker-42",
+      })) as Record<string, unknown>;
+      expect(agentChatService.ensureIdentitySession).toHaveBeenCalledWith({
+        identityKey: "agent:worker-42",
+        laneId: "lane-primary",
+        modelId: null,
+        reasoningEffort: null,
+      });
+      expect(result).toEqual(expect.objectContaining({ sessionId: "chat-1" }));
+    });
+
+    it("cto.ensureAgentSession rejects unknown agentIds without creating a session", async () => {
+      workerAgentService.getAgent.mockReturnValueOnce(null);
+      workerAgentService.listAgents.mockReturnValueOnce([]);
+      await expect(service.execute(makePayload("cto.ensureAgentSession", {
+        agentId: "ghost-agent",
+      }))).rejects.toThrow("cto.ensureAgentSession: unknown agentId 'ghost-agent'");
+      expect(agentChatService.ensureIdentitySession).not.toHaveBeenCalled();
+    });
+
+    it("cto.ensureSession returns the same session on repeat calls (canonical lane reuse)", async () => {
+      // Both calls resolve the same primary lane; ensureIdentitySession is a
+      // mock that always returns the same session id, so the handler must
+      // forward that id without duplicate creation.
+      laneService.list.mockResolvedValue([
+        { id: "lane-primary", laneType: "primary" },
+      ]);
+      const first = await service.execute(makePayload("cto.ensureSession", {})) as Record<string, unknown>;
+      const second = await service.execute(makePayload("cto.ensureSession", {})) as Record<string, unknown>;
+      expect(first.sessionId).toBe(second.sessionId);
+      expect(agentChatService.ensureIdentitySession).toHaveBeenCalledTimes(2);
+      // Every call passes the canonical (primary) lane so ensureIdentitySession
+      // matches the existing session instead of creating a new one.
+      for (const call of agentChatService.ensureIdentitySession.mock.calls) {
+        expect(call[0]).toMatchObject({ identityKey: "cto", laneId: "lane-primary" });
+      }
+    });
+
+    it("cto.getRoster surfaces orphan agent sessions at the bottom of the roster", async () => {
+      const livingAgentSession = {
+        sessionId: "sess-agent-live",
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-4",
+        status: "running",
+        identityKey: "agent:worker-live",
+        startedAt: "2026-04-01T00:05:00.000Z",
+        endedAt: null,
+        lastActivityAt: "2026-04-01T00:06:00.000Z",
+        lastOutputPreview: null,
+        summary: null,
+      };
+      const orphanSession = {
+        sessionId: "sess-agent-orphan",
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-4",
+        status: "idle",
+        identityKey: "agent:worker-gone",
+        startedAt: "2026-03-01T00:00:00.000Z",
+        endedAt: null,
+        lastActivityAt: "2026-03-01T00:00:00.000Z",
+        lastOutputPreview: null,
+        summary: null,
+      };
+      agentChatService.listSessions.mockResolvedValueOnce([livingAgentSession, orphanSession]);
+      workerAgentService.listAgents.mockReturnValueOnce([
+        {
+          id: "worker-live",
+          name: "Active Droid",
+          slug: "active-droid",
+          role: "engineer",
+          status: "running",
+          reportsTo: null,
+          capabilities: [],
+          adapterType: "claude-local",
+          adapterConfig: {},
+          runtimeConfig: {},
+          budgetMonthlyCents: 0,
+          spentMonthlyCents: 0,
+          createdAt: "2026-03-01T00:00:00.000Z",
+          updatedAt: "2026-04-01T00:00:00.000Z",
+          deletedAt: null,
+        },
+      ]);
+      const result = await service.execute(makePayload("cto.getRoster", {})) as {
+        cto: unknown;
+        workers: Array<Record<string, unknown>>;
+      };
+      // Live worker first (sorted alphabetically), orphan at the bottom.
+      expect(result.workers).toHaveLength(2);
+      expect(result.workers[0]).toEqual({
+        agentId: "worker-live",
+        name: "Active Droid",
+        avatarSeed: "active-droid",
+        status: "running",
+        sessionSummary: livingAgentSession,
+      });
+      expect(result.workers[1]).toEqual({
+        agentId: "worker-gone",
+        name: "worker-gone",
+        avatarSeed: null,
+        status: "orphaned",
+        sessionSummary: orphanSession,
+      });
+    });
+
+    it("cto.getRoster does NOT surface orphan entries for agents still in the roster", async () => {
+      const agentSession = {
+        sessionId: "sess-agent-live",
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-4",
+        status: "running",
+        identityKey: "agent:worker-live",
+        startedAt: "2026-04-01T00:05:00.000Z",
+        endedAt: null,
+        lastActivityAt: "2026-04-01T00:06:00.000Z",
+        lastOutputPreview: null,
+        summary: null,
+      };
+      agentChatService.listSessions.mockResolvedValueOnce([agentSession]);
+      workerAgentService.listAgents.mockReturnValueOnce([
+        {
+          id: "worker-live",
+          name: "Active Droid",
+          slug: "active-droid",
+          role: "engineer",
+          status: "running",
+          reportsTo: null,
+          capabilities: [],
+          adapterType: "claude-local",
+          adapterConfig: {},
+          runtimeConfig: {},
+          budgetMonthlyCents: 0,
+          spentMonthlyCents: 0,
+          createdAt: "2026-03-01T00:00:00.000Z",
+          updatedAt: "2026-04-01T00:00:00.000Z",
+          deletedAt: null,
+        },
+      ]);
+      const result = await service.execute(makePayload("cto.getRoster", {})) as {
+        cto: unknown;
+        workers: Array<Record<string, unknown>>;
+      };
+      expect(result.workers).toHaveLength(1);
+      expect(result.workers[0]).toMatchObject({
+        agentId: "worker-live",
+        status: "running",
       });
     });
   });

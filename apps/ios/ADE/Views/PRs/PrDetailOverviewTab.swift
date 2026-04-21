@@ -1,294 +1,419 @@
 import SwiftUI
 
+// MARK: - Overview tab (rebuilt)
+//
+// The Overview tab renders four stacked sections wrapped in `adeListCard`s:
+// AI summary, Checks summary, Commits rail, Files summary. Merge/rebase
+// actions live on the sticky bar in `PrDetailScreen` so the tab body stays
+// focused on *signal*, not controls.
+
+/// Destinations used by the Checks / Files "see all" affordances. The parent
+/// screen maps these onto its sub-tab selection state.
+enum PrOverviewNavTarget: Equatable {
+  case checks
+  case files
+}
+
 struct PrOverviewTab: View {
   let pr: PullRequestListItem
   let snapshot: PullRequestSnapshot?
-  let deployments: [PrDeployment]
   let aiSummary: AiReviewSummary?
-  let actionAvailability: PrActionAvailability
-  /// Host-provided capability gates. Nil when the mobile snapshot is
-  /// unavailable (offline, pre-contract host); the view falls back to
-  /// `actionAvailability` in that case so cached behavior is preserved.
-  let capabilities: PrActionCapabilities?
-  @Binding var mergeMethod: PrMergeMethodOption
-  @Binding var reviewerInput: String
   let isLive: Bool
+  let isAiSummaryLoading: Bool
   let groupMembers: [PrGroupMemberSummary]
-  let onMerge: () -> Void
-  let onClose: () -> Void
-  let onReopen: () -> Void
-  let onRequestReviewers: () -> Void
-  let onOpenGitHub: () -> Void
+  let onNavigate: (PrOverviewNavTarget) -> Void
+  let onRegenerateAiSummary: () -> Void
   let onOpenStack: (String, String?) -> Void
-  let onEditTitle: () -> Void
-  let onEditBody: () -> Void
-  let onEditLabels: () -> Void
-  let onSubmitReview: () -> Void
   let onArchiveLane: () -> Void
   let onDeleteBranch: () -> Void
 
-  // Merge derivation: host capability wins when present. It already folds in
-  // draft/failing-checks/closed state via mergeBlockedReason, so we don't
-  // also need to AND with actionAvailability.mergeEnabled there.
-  private var showsMerge: Bool {
-    capabilities?.canMerge ?? actionAvailability.showsMerge
-  }
-  private var mergeEnabled: Bool {
-    if let capabilities {
-      return capabilities.canMerge && mergeable
-    }
-    return actionAvailability.mergeEnabled && mergeable
-  }
-  private var showsClose: Bool {
-    capabilities?.canClose ?? actionAvailability.showsClose
-  }
-  private var showsReopen: Bool {
-    capabilities?.canReopen ?? actionAvailability.showsReopen
-  }
-  private var showsRequestReviewers: Bool {
-    capabilities?.canRequestReviewers ?? actionAvailability.showsRequestReviewers
+  private var checks: [PrCheck] { snapshot?.checks ?? [] }
+  private var files: [PrFile] { snapshot?.files ?? [] }
+  private var commits: [PrCommit] { snapshot?.commits ?? [] }
+
+  private var additions: Int {
+    files.reduce(0) { $0 + $1.additions }
   }
 
-  private var mergeable: Bool {
-    (snapshot?.status?.isMergeable ?? true) && !(snapshot?.status?.mergeConflicts ?? false)
+  private var deletions: Int {
+    files.reduce(0) { $0 + $1.deletions }
   }
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 14) {
-      PrDetailSectionCard("Description") {
-        if let body = snapshot?.detail?.body, !body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-          PrMarkdownRenderer(markdown: body)
-        } else {
-          Text("No description was synced for this PR yet.")
-            .font(.subheadline)
-            .foregroundStyle(ADEColor.textSecondary)
-        }
+    VStack(alignment: .leading, spacing: 16) {
+      aiSummarySection
+      checksSummarySection
+      if !commits.isEmpty {
+        commitsSummarySection
       }
+      filesSummarySection
 
-      PrDetailSectionCard("Overview") {
-        VStack(alignment: .leading, spacing: 10) {
-          HStack(spacing: 8) {
-            ADEStatusPill(text: prChecksLabel(snapshot?.status?.checksStatus ?? pr.checksStatus), tint: prChecksTint(snapshot?.status?.checksStatus ?? pr.checksStatus))
-            ADEStatusPill(text: prReviewLabel(snapshot?.status?.reviewStatus ?? pr.reviewStatus), tint: prReviewTint(snapshot?.status?.reviewStatus ?? pr.reviewStatus))
-            if let cleanupState = pr.cleanupState, !cleanupState.isEmpty {
-              ADEStatusPill(text: cleanupState.uppercased(), tint: ADEColor.warning)
-            }
-          }
-
-          Text("Author: \(snapshot?.detail?.author.login ?? "Unknown")")
-            .font(.subheadline)
-            .foregroundStyle(ADEColor.textSecondary)
-
-          if let detail = snapshot?.detail {
-            if !detail.requestedReviewers.isEmpty {
-              PrChipWrap(users: detail.requestedReviewers.map(\.login), tint: ADEColor.warning)
-            }
-            if !detail.labels.isEmpty {
-              PrChipWrap(users: detail.labels.map(\.name), tint: ADEColor.accent)
-            }
-            if !detail.linkedIssues.isEmpty {
-              Text(detail.linkedIssues.map { "#\($0.number) \($0.title)" }.joined(separator: " · "))
-                .font(.caption)
-                .foregroundStyle(ADEColor.textSecondary)
-            }
-          }
-
-          if !groupMembers.isEmpty {
-            VStack(alignment: .leading, spacing: 6) {
-              Text("Stack")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(ADEColor.textPrimary)
-              ForEach(groupMembers) { member in
-                Text("\(member.position + 1). #\(member.githubPrNumber) · \(member.title)")
-                  .font(.caption)
-                  .foregroundStyle(ADEColor.textSecondary)
-              }
-            }
-          }
-
-          if let groupId = pr.linkedGroupId {
-            Button("Open stack") {
-              onOpenStack(groupId, pr.laneName)
-            }
-            .buttonStyle(.glass)
-            .disabled(!isLive)
-          }
-        }
-      }
-
-      if let aiSummary {
-        PrDetailSectionCard("AI summary") {
-          VStack(alignment: .leading, spacing: 10) {
-            ADEStatusPill(text: aiSummary.mergeReadiness.replacingOccurrences(of: "_", with: " ").uppercased(), tint: aiSummary.mergeReadiness == "ready" ? ADEColor.success : ADEColor.warning)
-            Text(aiSummary.summary)
-              .font(.subheadline)
-              .foregroundStyle(ADEColor.textPrimary)
-            if !aiSummary.potentialIssues.isEmpty {
-              VStack(alignment: .leading, spacing: 6) {
-                Text("Potential issues")
-                  .font(.caption.weight(.semibold))
-                  .foregroundStyle(ADEColor.textPrimary)
-                ForEach(aiSummary.potentialIssues.prefix(4), id: \.self) { issue in
-                  Label(issue, systemImage: "exclamationmark.triangle")
-                    .font(.caption)
-                    .foregroundStyle(ADEColor.warning)
-                }
-              }
-            }
-          }
-        }
-      }
-
-      if !deployments.isEmpty {
-        PrDetailSectionCard("Deployments") {
-          VStack(alignment: .leading, spacing: 10) {
-            ForEach(deployments.prefix(4)) { deployment in
-              HStack(spacing: 10) {
-                Image(systemName: "shippingbox.fill")
-                  .foregroundStyle(deployment.state == "success" ? ADEColor.success : ADEColor.warning)
-                VStack(alignment: .leading, spacing: 2) {
-                  Text(deployment.environment)
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(ADEColor.textPrimary)
-                  Text(deployment.state.uppercased())
-                    .font(.caption)
-                    .foregroundStyle(ADEColor.textSecondary)
-                }
-                Spacer(minLength: 0)
-                if let urlString = deployment.environmentUrl, let url = URL(string: urlString) {
-                  Link(destination: url) {
-                    Image(systemName: "arrow.up.right.square")
-                  }
-                  .foregroundStyle(ADEColor.accent)
-                }
-              }
-              .adeInsetField(cornerRadius: 12, padding: 10)
-            }
-          }
-        }
-      }
-
-      PrDetailSectionCard("Merge readiness") {
-        VStack(alignment: .leading, spacing: 10) {
-          Label(
-            mergeable ? "Ready to merge" : "Needs attention before merge",
-            systemImage: mergeable ? "checkmark.circle.fill" : "exclamationmark.triangle.fill"
-          )
-          .foregroundStyle(mergeable ? ADEColor.success : ADEColor.warning)
-
-          if let status = snapshot?.status {
-            if status.mergeConflicts {
-              Text("The host reported merge conflicts for this branch.")
-                .font(.caption)
-                .foregroundStyle(ADEColor.danger)
-            }
-            if status.behindBaseBy > 0 {
-              Text("This branch is \(status.behindBaseBy) commit\(status.behindBaseBy == 1 ? "" : "s") behind the base branch.")
-                .font(.caption)
-                .foregroundStyle(ADEColor.textSecondary)
-            }
-          }
-        }
-      }
-
-      PrDetailSectionCard("Actions") {
-        VStack(alignment: .leading, spacing: 12) {
-          LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
-            Button("Edit title") {
-              onEditTitle()
-            }
-            .buttonStyle(.glass)
-            .disabled(!isLive)
-
-            Button("Edit description") {
-              onEditBody()
-            }
-            .buttonStyle(.glass)
-            .disabled(!isLive)
-
-            Button("Set labels") {
-              onEditLabels()
-            }
-            .buttonStyle(.glass)
-            .disabled(!isLive)
-
-            Button("Submit review") {
-              onSubmitReview()
-            }
-            .buttonStyle(.glass)
-            .disabled(!isLive)
-          }
-
-          Divider()
-            .opacity(0.35)
-
-          Picker("Merge strategy", selection: $mergeMethod) {
-            ForEach(PrMergeMethodOption.allCases) { option in
-              Text(option.shortTitle).tag(option)
-            }
-          }
-          .pickerStyle(.menu)
-          .adeInsetField()
-
-          Text(mergeMethod.description)
-            .font(.caption)
-            .foregroundStyle(ADEColor.textSecondary)
-
-          if showsMerge {
-            Button(mergeMethod.title) {
-              onMerge()
-            }
-            .buttonStyle(.glassProminent)
-            .tint(ADEColor.accent)
-            .disabled(!isLive || !mergeEnabled)
-
-            if let reason = capabilities?.mergeBlockedReason, !reason.isEmpty {
-              Text("Merge blocked: \(reason)")
-                .font(.caption)
-                .foregroundStyle(ADEColor.warning)
-            }
-          }
-
-          if showsClose {
-            Button("Close PR", role: .destructive) {
-              onClose()
-            }
-            .buttonStyle(.glass)
-            .disabled(!isLive)
-          }
-
-          if showsReopen {
-            Button("Reopen PR") {
-              onReopen()
-            }
-            .buttonStyle(.glass)
-            .disabled(!isLive)
-          }
-
-          if showsRequestReviewers {
-            TextField("Request reviewers (comma-separated)", text: $reviewerInput)
-              .adeInsetField()
-            Button("Request reviewers") {
-              onRequestReviewers()
-            }
-            .buttonStyle(.glass)
-            .disabled(!isLive || reviewerInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-          }
-
-          Button("Open in GitHub") {
-            onOpenGitHub()
-          }
-          .buttonStyle(.glass)
-          .tint(ADEColor.textSecondary)
-        }
+      if !groupMembers.isEmpty, let groupId = pr.linkedGroupId {
+        stackSection(groupId: groupId)
       }
 
       if pr.state == "merged" {
-        PrLaneCleanupBanner(laneName: pr.laneName, isLive: isLive, onArchive: onArchiveLane, onDeleteBranch: onDeleteBranch)
+        PrLaneCleanupBanner(
+          laneName: pr.laneName,
+          isLive: isLive,
+          onArchive: onArchiveLane,
+          onDeleteBranch: onDeleteBranch
+        )
       }
     }
   }
+
+  // MARK: AI summary
+  private var aiSummarySection: some View {
+    let summary = aiSummary
+    let trailingText: String = {
+      if let readiness = summary?.mergeReadiness.replacingOccurrences(of: "_", with: " "), !readiness.isEmpty {
+        return readiness
+      }
+      return isAiSummaryLoading ? "generating" : "not generated"
+    }()
+
+    return VStack(alignment: .leading, spacing: 10) {
+      PrSectionHdr(title: "AI summary") {
+        Text(trailingText)
+      }
+      PrAiSummaryCard(
+        summary: summary,
+        additions: additions,
+        deletions: deletions,
+        fileCount: files.count,
+        isLoading: isAiSummaryLoading,
+        isLive: isLive,
+        onRegenerate: onRegenerateAiSummary
+      )
+      .adeListCard()
+    }
+  }
+
+  // MARK: Checks summary
+  private var checksSummarySection: some View {
+    let groups = prGroupChecks(checks)
+    let trailing = checks.isEmpty ? "no checks" : "\(checks.count) check\(checks.count == 1 ? "" : "s")"
+
+    return VStack(alignment: .leading, spacing: 10) {
+      PrSectionHdr(title: "Checks") {
+        Text(trailing)
+      }
+
+      VStack(spacing: 0) {
+        if groups.isEmpty {
+          HStack(spacing: 10) {
+            Circle()
+              .fill(ADEColor.textMuted.opacity(0.4))
+              .frame(width: 8, height: 8)
+            Text("No check signals synced yet")
+              .font(.system(size: 12.5))
+              .foregroundStyle(ADEColor.textSecondary)
+            Spacer(minLength: 0)
+          }
+          .padding(.horizontal, 14)
+          .padding(.vertical, 11)
+        } else {
+          ForEach(Array(groups.enumerated()), id: \.element.id) { index, group in
+            PrOverviewCheckRow(group: group) {
+              onNavigate(.checks)
+            }
+            if index < groups.count - 1 {
+              Divider()
+                .background(ADEColor.textMuted.opacity(0.15))
+            }
+          }
+        }
+      }
+      .adeListCard()
+    }
+  }
+
+  // MARK: Commits summary
+  private var commitsSummarySection: some View {
+    let total = commits.count
+    let top = Array(commits.prefix(8))
+    let entries: [PrCommitRailEntry] = top.map { commit in
+      PrCommitRailEntry(
+        id: commit.id,
+        sha: commit.sha,
+        message: commit.message,
+        author: commit.authorLogin ?? commit.authorName,
+        timestampIso: commit.committedDate,
+        checksState: commit.checkStatus ?? "none"
+      )
+    }
+
+    return VStack(alignment: .leading, spacing: 10) {
+      PrSectionHdr(title: "Commits") {
+        Text(total == 1 ? "1 commit" : "\(total) commits")
+      }
+      PrCommitRailView(commits: entries)
+        .adeListCard()
+    }
+  }
+
+  // MARK: Files summary
+  private var filesSummarySection: some View {
+    VStack(alignment: .leading, spacing: 10) {
+      PrSectionHdr(title: "Files") {
+        Text(files.isEmpty ? "—" : "+\(additions) / −\(deletions)")
+      }
+
+      VStack(spacing: 0) {
+        if files.isEmpty {
+          HStack(spacing: 10) {
+            Image(systemName: "doc")
+              .font(.system(size: 12))
+              .foregroundStyle(ADEColor.textMuted)
+            Text("No file changes synced yet")
+              .font(.system(size: 12.5))
+              .foregroundStyle(ADEColor.textSecondary)
+            Spacer(minLength: 0)
+          }
+          .padding(.horizontal, 14)
+          .padding(.vertical, 11)
+        } else {
+          let top = Array(files.prefix(4))
+          ForEach(Array(top.enumerated()), id: \.element.id) { index, file in
+            PrOverviewFileRow(file: file)
+            if index < top.count - 1 || files.count > top.count {
+              Divider()
+                .background(ADEColor.textMuted.opacity(0.15))
+            }
+          }
+
+          if files.count > 4 {
+            Button {
+              onNavigate(.files)
+            } label: {
+              Text("+ \(files.count - 4) more files")
+                .font(.system(size: 11, design: .monospaced))
+                .foregroundStyle(ADEColor.tintPRs)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 11)
+            }
+            .buttonStyle(.plain)
+          }
+        }
+      }
+      .adeListCard()
+    }
+  }
+
+  private func stackSection(groupId: String) -> some View {
+    VStack(alignment: .leading, spacing: 10) {
+      PrSectionHdr(title: "Stack") {
+        Text("\(groupMembers.count) PRs")
+      }
+
+      VStack(alignment: .leading, spacing: 8) {
+        ForEach(groupMembers) { member in
+          HStack(spacing: 10) {
+            Text("\(member.position + 1)")
+              .font(.caption.weight(.bold))
+              .foregroundStyle(ADEColor.accent)
+              .frame(width: 22, height: 22)
+              .background(ADEColor.accent.opacity(0.12), in: Circle())
+            VStack(alignment: .leading, spacing: 2) {
+              Text(member.title)
+                .font(.system(size: 12.5, weight: .semibold))
+                .foregroundStyle(ADEColor.textPrimary)
+                .lineLimit(1)
+              Text("#\(member.githubPrNumber) · \(member.headBranch) → \(member.baseBranch)")
+                .font(.system(size: 10.5, design: .monospaced))
+                .foregroundStyle(ADEColor.textSecondary)
+                .lineLimit(1)
+            }
+          }
+        }
+
+        Button("Open stack") {
+          onOpenStack(groupId, pr.laneName)
+        }
+        .buttonStyle(.glass)
+        .disabled(!isLive)
+      }
+      .adeListCard()
+    }
+  }
 }
+
+// MARK: - Check group summary
+
+struct PrOverviewCheckGroup: Identifiable, Equatable {
+  let id: String
+  let name: String
+  let pass: Int
+  let fail: Int
+  let pending: Int
+
+  var total: Int { pass + fail + pending }
+
+  var dotColor: Color {
+    if fail > 0 { return ADEColor.danger }
+    if pending > 0 { return ADEColor.warning }
+    return ADEColor.success
+  }
+}
+
+private struct PrOverviewCheckRow: View {
+  let group: PrOverviewCheckGroup
+  let onTap: () -> Void
+
+  var body: some View {
+    Button(action: onTap) {
+      HStack(spacing: 10) {
+        Circle()
+          .fill(group.dotColor)
+          .frame(width: 8, height: 8)
+          .shadow(color: group.dotColor.opacity(0.5), radius: 3)
+        Text(group.name)
+          .font(.system(size: 12.5, weight: .semibold))
+          .foregroundStyle(ADEColor.textPrimary)
+        Spacer(minLength: 0)
+        Text("\(group.pass)/\(group.total) passing")
+          .font(.system(size: 11, design: .monospaced))
+          .foregroundStyle(ADEColor.textSecondary)
+        Image(systemName: "chevron.right")
+          .font(.system(size: 11, weight: .semibold))
+          .foregroundStyle(ADEColor.textMuted)
+      }
+      .padding(.horizontal, 14)
+      .padding(.vertical, 11)
+      .contentShape(Rectangle())
+    }
+    .buttonStyle(.plain)
+  }
+}
+
+/// Buckets individual `PrCheck`s into the four visual groups used on Overview.
+/// Heuristics: name prefix `bot`/`[bot]` or bot-like suffix → Bots; names
+/// containing `security`/`codeql`/`snyk`/`trivy` → Security; otherwise → CI.
+func prGroupChecks(_ checks: [PrCheck]) -> [PrOverviewCheckGroup] {
+  guard !checks.isEmpty else { return [] }
+
+  var ci: (p: Int, f: Int, pnd: Int) = (0, 0, 0)
+  var bots: (p: Int, f: Int, pnd: Int) = (0, 0, 0)
+  var security: (p: Int, f: Int, pnd: Int) = (0, 0, 0)
+  var other: (p: Int, f: Int, pnd: Int) = (0, 0, 0)
+
+  for check in checks {
+    let bucket = prCheckBucket(check.name)
+    let outcome = prCheckOutcome(check)
+    switch bucket {
+    case .ci:
+      if outcome == .pass { ci.p += 1 } else if outcome == .fail { ci.f += 1 } else { ci.pnd += 1 }
+    case .bots:
+      if outcome == .pass { bots.p += 1 } else if outcome == .fail { bots.f += 1 } else { bots.pnd += 1 }
+    case .security:
+      if outcome == .pass { security.p += 1 } else if outcome == .fail { security.f += 1 } else { security.pnd += 1 }
+    case .other:
+      if outcome == .pass { other.p += 1 } else if outcome == .fail { other.f += 1 } else { other.pnd += 1 }
+    }
+  }
+
+  var groups: [PrOverviewCheckGroup] = []
+  if ci.p + ci.f + ci.pnd > 0 { groups.append(PrOverviewCheckGroup(id: "CI", name: "CI", pass: ci.p, fail: ci.f, pending: ci.pnd)) }
+  if bots.p + bots.f + bots.pnd > 0 { groups.append(PrOverviewCheckGroup(id: "Bots", name: "Bots", pass: bots.p, fail: bots.f, pending: bots.pnd)) }
+  if security.p + security.f + security.pnd > 0 { groups.append(PrOverviewCheckGroup(id: "Security", name: "Security", pass: security.p, fail: security.f, pending: security.pnd)) }
+  if other.p + other.f + other.pnd > 0 { groups.append(PrOverviewCheckGroup(id: "Other", name: "Other", pass: other.p, fail: other.f, pending: other.pnd)) }
+  return groups
+}
+
+private enum PrCheckBucket { case ci, bots, security, other }
+private enum PrCheckOutcome { case pass, fail, pending }
+
+private func prCheckBucket(_ name: String) -> PrCheckBucket {
+  let lowered = name.lowercased()
+  if lowered.contains("[bot]") || lowered.contains("bot:") || lowered.contains("coderabbit") || lowered.contains("greptile") || lowered.contains("codecov") || lowered.contains("sourcery") {
+    return .bots
+  }
+  if lowered.contains("security") || lowered.contains("codeql") || lowered.contains("snyk") || lowered.contains("trivy") || lowered.contains("dependabot") {
+    return .security
+  }
+  if lowered.contains("ci") || lowered.contains("test") || lowered.contains("lint") || lowered.contains("build") || lowered.contains("typecheck") {
+    return .ci
+  }
+  return .other
+}
+
+private func prCheckOutcome(_ check: PrCheck) -> PrCheckOutcome {
+  if check.status != "completed" {
+    return .pending
+  }
+  switch check.conclusion {
+  case "success", "neutral", "skipped":
+    return .pass
+  case nil:
+    return .pending
+  default:
+    return .fail
+  }
+}
+
+// MARK: - File row
+
+private struct PrOverviewFileRow: View {
+  let file: PrFile
+
+  var body: some View {
+    HStack(spacing: 10) {
+      Image(systemName: "doc")
+        .font(.system(size: 13))
+        .foregroundStyle(ADEColor.textMuted)
+      Text(file.filename)
+        .font(.system(size: 11, design: .monospaced))
+        .foregroundStyle(ADEColor.textPrimary)
+        .lineLimit(1)
+        .truncationMode(.middle)
+      Spacer(minLength: 0)
+      if file.status == "added" {
+        PrOverviewInlineChip(text: "new", tint: ADEColor.success)
+      } else if file.status == "removed" {
+        PrOverviewInlineChip(text: "del", tint: ADEColor.danger)
+      } else if file.status == "renamed" {
+        PrOverviewInlineChip(text: "ren", tint: ADEColor.accent)
+      }
+      Text("+\(file.additions)")
+        .font(.system(size: 10, design: .monospaced))
+        .foregroundStyle(ADEColor.success)
+      Text("−\(file.deletions)")
+        .font(.system(size: 10, design: .monospaced))
+        .foregroundStyle(ADEColor.danger)
+    }
+    .padding(.horizontal, 14)
+    .padding(.vertical, 10)
+  }
+}
+
+private struct PrOverviewInlineChip: View {
+  let text: String
+  let tint: Color
+
+  var body: some View {
+    Text(text)
+      .font(.system(size: 9, weight: .bold))
+      .tracking(0.5)
+      .foregroundStyle(tint)
+      .padding(.horizontal, 5)
+      .padding(.vertical, 2)
+      .background(
+        Capsule(style: .continuous)
+          .fill(tint.opacity(0.14))
+      )
+      .overlay(
+        Capsule(style: .continuous)
+          .strokeBorder(tint.opacity(0.35), lineWidth: 0.5)
+      )
+  }
+}
+
+// MARK: - Legacy helpers retained
+//
+// These types are shared with other screens (PrDetailChecksTab / Activity /
+// CreatePrWizard / PrsRootScreen) and the Path-to-merge tab. They are kept
+// intact to avoid churn across other agents' files.
 
 struct PrHeaderCard: View {
   let pr: PullRequestListItem

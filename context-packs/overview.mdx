@@ -6,11 +6,9 @@ icon: "cubes"
 
 ## Overview
 
-When an AI agent starts working on your codebase, it has no idea what it is looking at. Packs solve this.
+A **Pack** is a durable, structured context bundle capturing project or lane knowledge in machine-readable format. Packs give agents instant orientation — architecture conventions, intent, touched files, recent checkpoints, and risk signals — without the agent re-deriving context from scratch each session.
 
-A **Pack** is a durable, structured context bundle that captures project or lane knowledge in a machine-readable format. Packs give agents instant orientation — architecture conventions, current intent, touched files, recent checkpoints, and risk signals — without requiring the agent to re-derive this context from scratch every session.
-
-Packs are always **synthesized exports**, never primary storage. The authoritative source of truth is ADE's SQLite database and your live filesystem. If a pack seems stale or incorrect, a force-refresh will derive a fresh one from the live state.
+Packs are **synthesized exports**, not primary storage. The source of truth is ADE's SQLite database and the live filesystem. Force-refresh derives a fresh pack from live state.
 
 <CardGroup cols={2}>
   <Card title="Auto-Generated" icon="wand-magic-sparkles">

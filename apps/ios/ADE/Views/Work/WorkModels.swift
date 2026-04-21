@@ -49,6 +49,8 @@ struct WorkChatMessage: Identifiable, Equatable {
   let timestamp: String
   let turnId: String?
   let itemId: String?
+  var turnProvider: String? = nil
+  var turnModelId: String? = nil
   var steerId: String? = nil
   var deliveryState: String? = nil
   var processed: Bool? = nil
@@ -66,10 +68,62 @@ struct WorkPendingApprovalModel: Identifiable, Equatable {
   let detail: String?
 }
 
+struct WorkPendingQuestionOption: Equatable {
+  let label: String
+  let value: String
+  let description: String?
+  var recommended: Bool = false
+  var preview: String? = nil
+  var previewFormat: String? = nil
+}
+
+struct WorkPendingQuestion: Identifiable, Equatable {
+  let questionId: String
+  let question: String
+  let options: [WorkPendingQuestionOption]
+  let allowsFreeform: Bool
+  var header: String? = nil
+  var defaultAssumption: String? = nil
+  var impact: String? = nil
+  var multiSelect: Bool = false
+  var isSecret: Bool = false
+
+  var id: String { questionId }
+}
+
 struct WorkPendingQuestionModel: Identifiable, Equatable {
   let id: String
-  let question: String
-  let options: [String]
+  let questions: [WorkPendingQuestion]
+  var title: String? = nil
+  var body: String? = nil
+
+  var primary: WorkPendingQuestion { questions.first ?? WorkPendingQuestion(questionId: "response", question: "", options: [], allowsFreeform: true) }
+  var questionId: String { primary.questionId }
+  var question: String { primary.question }
+  var options: [WorkPendingQuestionOption] { primary.options }
+  var allowsFreeform: Bool { primary.allowsFreeform }
+  var defaultAssumption: String? { primary.defaultAssumption }
+  var impact: String? { primary.impact }
+  var multiSelect: Bool { primary.multiSelect }
+  var isSecret: Bool { primary.isSecret }
+}
+
+struct WorkPendingPermissionModel: Identifiable, Equatable {
+  let id: String
+  let tool: String
+  let description: String
+  let detail: String?
+}
+
+/// Plan-approval pending input. The agent has emitted an `approval_request`
+/// with `request.kind == "plan_approval"` — desktop's `ChatProposedPlanCard`
+/// equivalent on iOS. Carries the full plan text so the card can render a
+/// scrollable formatted block, plus the source label (e.g. "claude", "codex").
+struct WorkPendingPlanApprovalModel: Identifiable, Equatable {
+  let id: String
+  let source: String
+  let planText: String
+  let title: String
 }
 
 struct WorkUsageSummary: Equatable {
@@ -112,12 +166,64 @@ enum WorkTimelinePayload: Equatable {
   case toolCard(WorkToolCardModel)
   case commandCard(WorkCommandCardModel)
   case fileChangeCard(WorkFileChangeCardModel)
+  /// Cluster of consecutive tool-like entries (tool cards, commands, file
+  /// changes) collapsed into a single row. Matches the desktop `work_log_group`
+  /// pattern: only the latest call is shown, older calls stack underneath, and
+  /// expanding reveals the full list with per-entry detail.
+  case toolGroup(WorkToolGroupModel)
   case eventCard(WorkEventCardModel)
   case usageSummary(WorkUsageSummary)
   case artifact(ComputerUseArtifactSummary)
   /// Centered time + model pill rendered between turns, matching the desktop
   /// transcript's turn separators.
   case turnSeparator(WorkTurnSeparator)
+  case pendingQuestion(WorkPendingQuestionModel)
+  case pendingPermission(WorkPendingPermissionModel)
+  /// Plan-approval gate: agent has finished planning and is waiting for the
+  /// user to Approve & Implement or Reject & Revise before it acts.
+  case pendingPlanApproval(WorkPendingPlanApprovalModel)
+}
+
+/// One member of a `WorkToolGroupModel`. Carries enough context for the
+/// collapsed mini-row (icon, title, status) and hands the full payload back
+/// when the group expands into per-entry cards.
+enum WorkToolGroupMember: Equatable, Identifiable {
+  case tool(WorkToolCardModel)
+  case command(WorkCommandCardModel)
+  case fileChange(WorkFileChangeCardModel)
+
+  var id: String {
+    switch self {
+    case .tool(let card): return "tool:\(card.id)"
+    case .command(let card): return "command:\(card.id)"
+    case .fileChange(let card): return "file:\(card.id)"
+    }
+  }
+
+  var timestamp: String {
+    switch self {
+    case .tool(let card): return card.startedAt
+    case .command(let card): return card.timestamp
+    case .fileChange(let card): return card.timestamp
+    }
+  }
+
+  var status: WorkToolCardStatus {
+    switch self {
+    case .tool(let card): return card.status
+    case .command(let card): return card.status
+    case .fileChange(let card): return card.status
+    }
+  }
+}
+
+struct WorkToolGroupModel: Identifiable, Equatable {
+  let id: String
+  let members: [WorkToolGroupMember]
+
+  var hasRunning: Bool { members.contains { $0.status == .running } }
+  var latest: WorkToolGroupMember? { members.last }
+  var count: Int { members.count }
 }
 
 struct WorkTurnSeparator: Equatable {
@@ -282,13 +388,13 @@ enum WorkChatEvent: Equatable {
   case subagentStarted(taskId: String, description: String, background: Bool, turnId: String?)
   case subagentProgress(taskId: String, description: String?, summary: String, toolName: String?, turnId: String?)
   case subagentResult(taskId: String, status: String, summary: String, turnId: String?)
-  case structuredQuestion(question: String, options: [String], itemId: String, turnId: String?)
+  case structuredQuestion(question: String, options: [WorkPendingQuestionOption], itemId: String, turnId: String?)
   case approvalRequest(description: String, detail: String?, itemId: String, turnId: String?)
   case pendingInputResolved(itemId: String, resolution: String, turnId: String?)
   case todoUpdate(items: [String], turnId: String?)
   case systemNotice(kind: String, message: String, detail: String?, turnId: String?, steerId: String?)
   case error(message: String, detail: String?, category: String, turnId: String?)
-  case done(status: String, summary: String, usage: WorkUsageSummary?, turnId: String)
+  case done(status: String, summary: String, usage: WorkUsageSummary?, turnId: String, model: String?, modelId: String?)
   case promptSuggestion(text: String, turnId: String?)
   case contextCompact(summary: String, turnId: String?)
   case autoApprovalReview(summary: String, turnId: String?)

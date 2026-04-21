@@ -7,6 +7,46 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		AA1100000000000000000001 /* ADESharedContainer.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA1000000000000000000001 /* ADESharedContainer.swift */; };
+		AA1100000000000000000002 /* ADESharedModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA1000000000000000000002 /* ADESharedModels.swift */; };
+		AA1100000000000000000003 /* ADESharedTheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA1000000000000000000003 /* ADESharedTheme.swift */; };
+		AA1100000000000000000011 /* ADESharedContainer.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA1000000000000000000001 /* ADESharedContainer.swift */; };
+		AA1100000000000000000012 /* ADESharedModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA1000000000000000000002 /* ADESharedModels.swift */; };
+		AA1100000000000000000013 /* ADESharedTheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA1000000000000000000003 /* ADESharedTheme.swift */; };
+		AA1100000000000000000021 /* ADESharedContainer.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA1000000000000000000001 /* ADESharedContainer.swift */; };
+		AA1100000000000000000022 /* ADESharedModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA1000000000000000000002 /* ADESharedModels.swift */; };
+		AA1100000000000000000023 /* ADESharedTheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA1000000000000000000003 /* ADESharedTheme.swift */; };
+		AA5100000000000000000011 /* ADELiveActivity.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA5100000000000000000001 /* ADELiveActivity.swift */; };
+		AA5100000000000000000012 /* ADELiveActivityViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA5100000000000000000002 /* ADELiveActivityViews.swift */; };
+		AA5100000000000000000013 /* LiveActivityCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA5100000000000000000003 /* LiveActivityCoordinator.swift */; };
+		AA5100000000000000000014 /* LiveActivityIntentsForward.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA5100000000000000000004 /* LiveActivityIntentsForward.swift */; };
+		AA5100000000000000000015 /* LiveActivityIntentsForward.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA5100000000000000000004 /* LiveActivityIntentsForward.swift */; };
+		AA5100000000000000000016 /* LiveActivityIntentsForward.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA5100000000000000000004 /* LiveActivityIntentsForward.swift */; };
+		AA5500000000000000000014 /* WidgetAppIntents.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA5500000000000000000004 /* WidgetAppIntents.swift */; };
+		AA5500000000000000000015 /* WidgetAppIntents.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA5500000000000000000004 /* WidgetAppIntents.swift */; };
+		AA5500000000000000000016 /* WidgetAppIntents.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA5500000000000000000004 /* WidgetAppIntents.swift */; };
+		AA5400000000000000000016 /* NotificationService.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA5400000000000000000004 /* NotificationService.swift */; };
+		AA5100000000000000000017 /* ADELiveActivity.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA5100000000000000000001 /* ADELiveActivity.swift */; };
+		AA5100000000000000000018 /* ADELiveActivityViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA5100000000000000000002 /* ADELiveActivityViews.swift */; };
+		AA5600000000000000000011 /* ADELiveActivityPrimitives.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA5600000000000000000001 /* ADELiveActivityPrimitives.swift */; };
+		AA5600000000000000000012 /* ADELiveActivityPrimitives.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA5600000000000000000001 /* ADELiveActivityPrimitives.swift */; };
+		F300000000000000000000F0 /* NotificationPreferences.swift in Sources */ = {isa = PBXBuildFile; fileRef = F300000000000000000000E0 /* NotificationPreferences.swift */; };
+		F300000000000000000000F1 /* NotificationsCenterView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F300000000000000000000E1 /* NotificationsCenterView.swift */; };
+		F300000000000000000000F2 /* SettingsNotificationsSection.swift in Sources */ = {isa = PBXBuildFile; fileRef = F300000000000000000000E2 /* SettingsNotificationsSection.swift */; };
+		F300000000000000000000F3 /* QuietHoursEditorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F300000000000000000000E3 /* QuietHoursEditorView.swift */; };
+		F300000000000000000000F4 /* PerSessionOverrideView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F300000000000000000000E4 /* PerSessionOverrideView.swift */; };
+		AA5300000000000000000001 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA5300000000000000000011 /* AppDelegate.swift */; };
+		AA5300000000000000000002 /* DeepLinkRouter.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA5300000000000000000012 /* DeepLinkRouter.swift */; };
+		AA5300000000000000000003 /* NotificationCategories.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA5300000000000000000013 /* NotificationCategories.swift */; };
+		AA5200000000000000000011 /* ADEWidgetBundle.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA5200000000000000000001 /* ADEWidgetBundle.swift */; };
+		AA5200000000000000000012 /* ADEWorkspaceWidget.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA5200000000000000000002 /* ADEWorkspaceWidget.swift */; };
+		AA5200000000000000000013 /* ADEWorkspaceWidgetViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA5200000000000000000003 /* ADEWorkspaceWidgetViews.swift */; };
+		AA5200000000000000000014 /* ADELockScreenWidget.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA5200000000000000000004 /* ADELockScreenWidget.swift */; };
+		AA5200000000000000000015 /* ADEControlWidget.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA5200000000000000000005 /* ADEControlWidget.swift */; };
+		AA5200000000000000000016 /* ADEWidgetPreviewData.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA5200000000000000000006 /* ADEWidgetPreviewData.swift */; };
+		AA5700000000000000000012 /* ADELiveActivityPreviews.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA5700000000000000000002 /* ADELiveActivityPreviews.swift */; };
+		AA2200000000000000000001 /* ADEWidgets.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000002 /* ADEWidgets.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		BB2200000000000000000001 /* ADENotificationService.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000002 /* ADENotificationService.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		0375D32BA5870617FA1758C6 /* KeychainService.swift in Sources */ = {isa = PBXBuildFile; fileRef = B5D5B5B87564C73F2FF34B0D /* KeychainService.swift */; };
 		0A1E077A24A5367ED58900F9 /* ADEDesignSystem.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4A9E6135ED52117E41DE95F7 /* ADEDesignSystem.swift */; };
 		1558E44876BBE931C02D5640 /* ADEApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = C9411193AF56B236BA32EFF5 /* ADEApp.swift */; };
@@ -43,6 +83,17 @@
 		E1000000000000000000003A /* WorkReasoningCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1000000000000000000003A /* WorkReasoningCard.swift */; };
 		E1000000000000000000003B /* WorkActivityIndicator.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1000000000000000000003B /* WorkActivityIndicator.swift */; };
 		E1000000000000000000003C /* WorkSessionGrouping.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1000000000000000000003C /* WorkSessionGrouping.swift */; };
+		H10000000000000000000001 /* CtoRootScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = H10000000000000000000010 /* CtoRootScreen.swift */; };
+		H10000000000000000000002 /* CtoSessionDestinationView.swift in Sources */ = {isa = PBXBuildFile; fileRef = H10000000000000000000011 /* CtoSessionDestinationView.swift */; };
+		H10000000000000000000003 /* CtoBriefEditor.swift in Sources */ = {isa = PBXBuildFile; fileRef = H10000000000000000000012 /* CtoBriefEditor.swift */; };
+		H10000000000000000000004 /* CtoChatScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = H10000000000000000000013 /* CtoChatScreen.swift */; };
+		H10000000000000000000005 /* CtoIdentityEditor.swift in Sources */ = {isa = PBXBuildFile; fileRef = H10000000000000000000014 /* CtoIdentityEditor.swift */; };
+		H10000000000000000000006 /* CtoSettingsScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = H10000000000000000000015 /* CtoSettingsScreen.swift */; };
+		H10000000000000000000007 /* CtoSharedHelpers.swift in Sources */ = {isa = PBXBuildFile; fileRef = H10000000000000000000016 /* CtoSharedHelpers.swift */; };
+		H10000000000000000000008 /* CtoTabShell.swift in Sources */ = {isa = PBXBuildFile; fileRef = H10000000000000000000017 /* CtoTabShell.swift */; };
+		H10000000000000000000009 /* CtoTeamScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = H10000000000000000000018 /* CtoTeamScreen.swift */; };
+		H1000000000000000000000A /* CtoWorkerDetailScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = H10000000000000000000019 /* CtoWorkerDetailScreen.swift */; };
+		H1000000000000000000000B /* CtoWorkflowsScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = H1000000000000000000001A /* CtoWorkflowsScreen.swift */; };
 		E20000000000000000000042 /* FilesModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000042 /* FilesModels.swift */; };
 		E20000000000000000000043 /* FilesHelpers.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000043 /* FilesHelpers.swift */; };
 		E20000000000000000000044 /* FilesRootScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000044 /* FilesRootScreen.swift */; };
@@ -59,6 +110,10 @@
 		6BDC22C6450AF0B3CBDB2650 /* FilesTabView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4EBFB65019F4C3F8A89428CE /* FilesTabView.swift */; };
 		6E32ED1BF961DFEFCA12EF52 /* DatabaseBootstrap.sql in Resources */ = {isa = PBXBuildFile; fileRef = 2856F8D2F2D630DD985B870A /* DatabaseBootstrap.sql */; };
 		7B70BE6839672E5D2D006B28 /* ADETests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 14C0DF7FEB4C2EB854BAC888 /* ADETests.swift */; };
+		D30000000000000000000011 /* AttentionDrawerModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = D30000000000000000000001 /* AttentionDrawerModel.swift */; };
+		D30000000000000000000012 /* AttentionDrawerButton.swift in Sources */ = {isa = PBXBuildFile; fileRef = D30000000000000000000002 /* AttentionDrawerButton.swift */; };
+		D30000000000000000000013 /* AttentionDrawerSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = D30000000000000000000003 /* AttentionDrawerSheet.swift */; };
+		D30000000000000000000015 /* AttentionDrawerModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D30000000000000000000005 /* AttentionDrawerModelTests.swift */; };
 		889573D8A5ED468D3BD12894 /* PRsTabView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5EE4D463D21266B62B422D11 /* PRsTabView.swift */; };
 		B10000000000000000000002 /* LaneAttachSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000002 /* LaneAttachSheet.swift */; };
 		B10000000000000000000003 /* LaneBatchManageSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000003 /* LaneBatchManageSheet.swift */; };
@@ -103,6 +158,12 @@
 		G1000000000000000000000C /* PrWorkflowCards.swift in Sources */ = {isa = PBXBuildFile; fileRef = G2000000000000000000000C /* PrWorkflowCards.swift */; };
 		G1000000000000000000000D /* PrStackSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = G2000000000000000000000D /* PrStackSheet.swift */; };
 		G1000000000000000000000E /* CreatePrWizardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = G2000000000000000000000E /* CreatePrWizardView.swift */; };
+		G1000000000000000000000F /* PrMergeGateCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = G2000000000000000000000F /* PrMergeGateCard.swift */; };
+		G10000000000000000000020 /* PrAiSummaryCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = G20000000000000000000020 /* PrAiSummaryCard.swift */; };
+		G10000000000000000000021 /* PrCommitRailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = G20000000000000000000021 /* PrCommitRailView.swift */; };
+		G10000000000000000000022 /* PrAiResolverCtaCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = G20000000000000000000022 /* PrAiResolverCtaCard.swift */; };
+		G10000000000000000000023 /* PrStackDiagramView.swift in Sources */ = {isa = PBXBuildFile; fileRef = G20000000000000000000023 /* PrStackDiagramView.swift */; };
+		G10000000000000000000024 /* PrRebaseScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = G20000000000000000000024 /* PrRebaseScreen.swift */; };
 		B10000000000000000000017 /* LaneTreeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000017 /* LaneTreeView.swift */; };
 		B10000000000000000000018 /* AddLaneSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000018 /* AddLaneSheet.swift */; };
 		B10000000000000000000019 /* LanesOfflineEmptyState.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000019 /* LanesOfflineEmptyState.swift */; };
@@ -135,9 +196,55 @@
 			remoteGlobalIDString = 928432ECB10B6E8870725B02;
 			remoteInfo = ADE;
 		};
+		AA4400000000000000000001 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 9CBC925352322D208431EFAA /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = AA0000000000000000000001;
+			remoteInfo = ADEWidgets;
+		};
+		BB4400000000000000000001 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 9CBC925352322D208431EFAA /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = BB0000000000000000000001;
+			remoteInfo = ADENotificationService;
+		};
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		AA1000000000000000000001 /* ADESharedContainer.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ADESharedContainer.swift; path = ADE/Shared/ADESharedContainer.swift; sourceTree = "<group>"; };
+		AA1000000000000000000002 /* ADESharedModels.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ADESharedModels.swift; path = ADE/Shared/ADESharedModels.swift; sourceTree = "<group>"; };
+		AA1000000000000000000003 /* ADESharedTheme.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ADESharedTheme.swift; path = ADE/Shared/ADESharedTheme.swift; sourceTree = "<group>"; };
+		AA0000000000000000000002 /* ADEWidgets.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = ADEWidgets.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		BB0000000000000000000002 /* ADENotificationService.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = ADENotificationService.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		AA5000000000000000000001 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; name = Info.plist; path = ADEWidgets/Info.plist; sourceTree = "<group>"; };
+		AA5000000000000000000002 /* ADEWidgets.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; name = ADEWidgets.entitlements; path = ADEWidgets/ADEWidgets.entitlements; sourceTree = "<group>"; };
+		AA5100000000000000000001 /* ADELiveActivity.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ADELiveActivity.swift; path = ADEWidgets/ADELiveActivity.swift; sourceTree = "<group>"; };
+		AA5100000000000000000002 /* ADELiveActivityViews.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ADELiveActivityViews.swift; path = ADEWidgets/ADELiveActivityViews.swift; sourceTree = "<group>"; };
+		AA5100000000000000000003 /* LiveActivityCoordinator.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LiveActivityCoordinator.swift; path = ADE/Services/LiveActivityCoordinator.swift; sourceTree = "<group>"; };
+		AA5100000000000000000004 /* LiveActivityIntentsForward.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LiveActivityIntentsForward.swift; path = ADE/Shared/LiveActivityIntentsForward.swift; sourceTree = "<group>"; };
+		AA5500000000000000000004 /* WidgetAppIntents.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WidgetAppIntents.swift; path = ADE/Shared/WidgetAppIntents.swift; sourceTree = "<group>"; };
+		AA5400000000000000000004 /* NotificationService.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = NotificationService.swift; path = ADENotificationService/NotificationService.swift; sourceTree = "<group>"; };
+		F300000000000000000000E0 /* NotificationPreferences.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = NotificationPreferences.swift; path = ADE/Models/NotificationPreferences.swift; sourceTree = "<group>"; };
+		F300000000000000000000E1 /* NotificationsCenterView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = NotificationsCenterView.swift; path = ADE/Views/Settings/NotificationsCenterView.swift; sourceTree = "<group>"; };
+		F300000000000000000000E2 /* SettingsNotificationsSection.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SettingsNotificationsSection.swift; path = ADE/Views/Settings/SettingsNotificationsSection.swift; sourceTree = "<group>"; };
+		F300000000000000000000E3 /* QuietHoursEditorView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = QuietHoursEditorView.swift; path = ADE/Views/Settings/QuietHoursEditorView.swift; sourceTree = "<group>"; };
+		F300000000000000000000E4 /* PerSessionOverrideView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PerSessionOverrideView.swift; path = ADE/Views/Settings/PerSessionOverrideView.swift; sourceTree = "<group>"; };
+		AA5300000000000000000011 /* AppDelegate.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = AppDelegate.swift; path = ADE/App/AppDelegate.swift; sourceTree = "<group>"; };
+		AA5300000000000000000012 /* DeepLinkRouter.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = DeepLinkRouter.swift; path = ADE/App/DeepLinkRouter.swift; sourceTree = "<group>"; };
+		AA5300000000000000000013 /* NotificationCategories.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = NotificationCategories.swift; path = ADE/App/NotificationCategories.swift; sourceTree = "<group>"; };
+		AA5200000000000000000001 /* ADEWidgetBundle.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ADEWidgetBundle.swift; path = ADEWidgets/ADEWidgetBundle.swift; sourceTree = "<group>"; };
+		AA5200000000000000000002 /* ADEWorkspaceWidget.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ADEWorkspaceWidget.swift; path = ADEWidgets/ADEWorkspaceWidget.swift; sourceTree = "<group>"; };
+		AA5200000000000000000003 /* ADEWorkspaceWidgetViews.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ADEWorkspaceWidgetViews.swift; path = ADEWidgets/ADEWorkspaceWidgetViews.swift; sourceTree = "<group>"; };
+		AA5200000000000000000004 /* ADELockScreenWidget.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ADELockScreenWidget.swift; path = ADEWidgets/ADELockScreenWidget.swift; sourceTree = "<group>"; };
+		AA5200000000000000000005 /* ADEControlWidget.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ADEControlWidget.swift; path = ADEWidgets/ADEControlWidget.swift; sourceTree = "<group>"; };
+		AA5200000000000000000006 /* ADEWidgetPreviewData.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ADEWidgetPreviewData.swift; path = ADEWidgets/ADEWidgetPreviewData.swift; sourceTree = "<group>"; };
+		AA5600000000000000000001 /* ADELiveActivityPrimitives.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ADELiveActivityPrimitives.swift; path = ADEWidgets/ADELiveActivityPrimitives.swift; sourceTree = "<group>"; };
+		AA5700000000000000000002 /* ADELiveActivityPreviews.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ADELiveActivityPreviews.swift; path = ADEWidgets/ADELiveActivityPreviews.swift; sourceTree = "<group>"; };
+		BB5000000000000000000001 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; name = Info.plist; path = ADENotificationService/Info.plist; sourceTree = "<group>"; };
+		BB5000000000000000000002 /* ADENotificationService.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; name = ADENotificationService.entitlements; path = ADENotificationService/ADENotificationService.entitlements; sourceTree = "<group>"; };
+		CC5000000000000000000001 /* ADE.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; name = ADE.entitlements; path = ADE/ADE.entitlements; sourceTree = "<group>"; };
 		0C6ECFA9D57E70E57A60E8AB /* WorkTabView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkTabView.swift; path = ADE/Views/WorkTabView.swift; sourceTree = "<group>"; };
 		A10000000000000000000020 /* WorkBrowserHelpers.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkBrowserHelpers.swift; path = ADE/Views/Work/WorkBrowserHelpers.swift; sourceTree = "<group>"; };
 		D10000000000000000000022 /* WorkRootScreen.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkRootScreen.swift; path = ADE/Views/Work/WorkRootScreen.swift; sourceTree = "<group>"; };
@@ -175,6 +282,17 @@
 		D10000000000000000000043 /* WorkMentionsPickerSheet.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkMentionsPickerSheet.swift; path = ADE/Views/Work/WorkMentionsPickerSheet.swift; sourceTree = "<group>"; };
 		D10000000000000000000044 /* WorkSlashCommandsSheet.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkSlashCommandsSheet.swift; path = ADE/Views/Work/WorkSlashCommandsSheet.swift; sourceTree = "<group>"; };
 		D1000000000000000000003C /* WorkSessionGrouping.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkSessionGrouping.swift; path = ADE/Views/Work/WorkSessionGrouping.swift; sourceTree = "<group>"; };
+		H10000000000000000000010 /* CtoRootScreen.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CtoRootScreen.swift; path = ADE/Views/Cto/CtoRootScreen.swift; sourceTree = "<group>"; };
+		H10000000000000000000011 /* CtoSessionDestinationView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CtoSessionDestinationView.swift; path = ADE/Views/Cto/CtoSessionDestinationView.swift; sourceTree = "<group>"; };
+		H10000000000000000000012 /* CtoBriefEditor.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CtoBriefEditor.swift; path = ADE/Views/Cto/CtoBriefEditor.swift; sourceTree = "<group>"; };
+		H10000000000000000000013 /* CtoChatScreen.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CtoChatScreen.swift; path = ADE/Views/Cto/CtoChatScreen.swift; sourceTree = "<group>"; };
+		H10000000000000000000014 /* CtoIdentityEditor.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CtoIdentityEditor.swift; path = ADE/Views/Cto/CtoIdentityEditor.swift; sourceTree = "<group>"; };
+		H10000000000000000000015 /* CtoSettingsScreen.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CtoSettingsScreen.swift; path = ADE/Views/Cto/CtoSettingsScreen.swift; sourceTree = "<group>"; };
+		H10000000000000000000016 /* CtoSharedHelpers.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CtoSharedHelpers.swift; path = ADE/Views/Cto/CtoSharedHelpers.swift; sourceTree = "<group>"; };
+		H10000000000000000000017 /* CtoTabShell.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CtoTabShell.swift; path = ADE/Views/Cto/CtoTabShell.swift; sourceTree = "<group>"; };
+		H10000000000000000000018 /* CtoTeamScreen.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CtoTeamScreen.swift; path = ADE/Views/Cto/CtoTeamScreen.swift; sourceTree = "<group>"; };
+		H10000000000000000000019 /* CtoWorkerDetailScreen.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CtoWorkerDetailScreen.swift; path = ADE/Views/Cto/CtoWorkerDetailScreen.swift; sourceTree = "<group>"; };
+		H1000000000000000000001A /* CtoWorkflowsScreen.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CtoWorkflowsScreen.swift; path = ADE/Views/Cto/CtoWorkflowsScreen.swift; sourceTree = "<group>"; };
 		D20000000000000000000042 /* FilesModels.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = FilesModels.swift; path = ADE/Views/Files/FilesModels.swift; sourceTree = "<group>"; };
 		D20000000000000000000043 /* FilesHelpers.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = FilesHelpers.swift; path = ADE/Views/Files/FilesHelpers.swift; sourceTree = "<group>"; };
 		D20000000000000000000044 /* FilesRootScreen.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = FilesRootScreen.swift; path = ADE/Views/Files/FilesRootScreen.swift; sourceTree = "<group>"; };
@@ -187,6 +305,10 @@
 		D2000000000000000000004B /* FilesDetailScreen.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = FilesDetailScreen.swift; path = ADE/Views/Files/FilesDetailScreen.swift; sourceTree = "<group>"; };
 		D2000000000000000000004C /* FilesDetailScreen+Actions.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = "FilesDetailScreen+Actions.swift"; path = "ADE/Views/Files/FilesDetailScreen+Actions.swift"; sourceTree = "<group>"; };
 		14C0DF7FEB4C2EB854BAC888 /* ADETests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ADETests.swift; path = ADETests/ADETests.swift; sourceTree = "<group>"; };
+		D30000000000000000000001 /* AttentionDrawerModel.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = AttentionDrawerModel.swift; path = ADE/Views/AttentionDrawer/AttentionDrawerModel.swift; sourceTree = "<group>"; };
+		D30000000000000000000002 /* AttentionDrawerButton.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = AttentionDrawerButton.swift; path = ADE/Views/AttentionDrawer/AttentionDrawerButton.swift; sourceTree = "<group>"; };
+		D30000000000000000000003 /* AttentionDrawerSheet.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = AttentionDrawerSheet.swift; path = ADE/Views/AttentionDrawer/AttentionDrawerSheet.swift; sourceTree = "<group>"; };
+		D30000000000000000000005 /* AttentionDrawerModelTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = AttentionDrawerModelTests.swift; path = ADETests/AttentionDrawerModelTests.swift; sourceTree = "<group>"; };
 		27A125DE2C17BA32F9291513 /* ADE.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = ADE.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		2856F8D2F2D630DD985B870A /* DatabaseBootstrap.sql */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text; name = DatabaseBootstrap.sql; path = ADE/Resources/DatabaseBootstrap.sql; sourceTree = "<group>"; };
 		31EC445F22FD38F90C16343E /* Foundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Foundation.framework; path = Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS18.0.sdk/System/Library/Frameworks/Foundation.framework; sourceTree = DEVELOPER_DIR; };
@@ -242,6 +364,12 @@
 		G2000000000000000000000C /* PrWorkflowCards.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrWorkflowCards.swift; path = ADE/Views/PRs/PrWorkflowCards.swift; sourceTree = "<group>"; };
 		G2000000000000000000000D /* PrStackSheet.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrStackSheet.swift; path = ADE/Views/PRs/PrStackSheet.swift; sourceTree = "<group>"; };
 		G2000000000000000000000E /* CreatePrWizardView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CreatePrWizardView.swift; path = ADE/Views/PRs/CreatePrWizardView.swift; sourceTree = "<group>"; };
+		G2000000000000000000000F /* PrMergeGateCard.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrMergeGateCard.swift; path = ADE/Views/PRs/PrMergeGateCard.swift; sourceTree = "<group>"; };
+		G20000000000000000000020 /* PrAiSummaryCard.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrAiSummaryCard.swift; path = ADE/Views/PRs/PrAiSummaryCard.swift; sourceTree = "<group>"; };
+		G20000000000000000000021 /* PrCommitRailView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrCommitRailView.swift; path = ADE/Views/PRs/PrCommitRailView.swift; sourceTree = "<group>"; };
+		G20000000000000000000022 /* PrAiResolverCtaCard.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrAiResolverCtaCard.swift; path = ADE/Views/PRs/PrAiResolverCtaCard.swift; sourceTree = "<group>"; };
+		G20000000000000000000023 /* PrStackDiagramView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrStackDiagramView.swift; path = ADE/Views/PRs/PrStackDiagramView.swift; sourceTree = "<group>"; };
+		G20000000000000000000024 /* PrRebaseScreen.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrRebaseScreen.swift; path = ADE/Views/PRs/PrRebaseScreen.swift; sourceTree = "<group>"; };
 		A10000000000000000000017 /* LaneTreeView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LaneTreeView.swift; path = ADE/Views/Lanes/LaneTreeView.swift; sourceTree = "<group>"; };
 		A10000000000000000000018 /* AddLaneSheet.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = AddLaneSheet.swift; path = ADE/Views/Lanes/AddLaneSheet.swift; sourceTree = "<group>"; };
 		A10000000000000000000019 /* LanesOfflineEmptyState.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LanesOfflineEmptyState.swift; path = ADE/Views/Lanes/LanesOfflineEmptyState.swift; sourceTree = "<group>"; };
@@ -274,6 +402,20 @@
 			buildActionMask = 2147483647;
 			files = (
 				1A0D93D06509796A389A4CAA /* Foundation.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		AA0000000000000000000011 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		BB0000000000000000000011 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -336,12 +478,24 @@
 				D20000000000000000000041 /* Files */,
 				A10000000000000000000001 /* Lanes */,
 				D10000000000000000000021 /* Work */,
+				H10000000000000000000020 /* Cto */,
 				G20000000000000000000000 /* PRs */,
 				A10000000000000000000015 /* Settings */,
+				D30000000000000000000004 /* AttentionDrawer */,
 				9270CF8A67F3FA79089F39C1 /* LanesTabView.swift */,
 				5EE4D463D21266B62B422D11 /* PRsTabView.swift */,
 			);
 			name = Views;
+			sourceTree = "<group>";
+		};
+		D30000000000000000000004 /* AttentionDrawer */ = {
+			isa = PBXGroup;
+			children = (
+				D30000000000000000000001 /* AttentionDrawerModel.swift */,
+				D30000000000000000000002 /* AttentionDrawerButton.swift */,
+				D30000000000000000000003 /* AttentionDrawerSheet.swift */,
+			);
+			name = AttentionDrawer;
 			sourceTree = "<group>";
 		};
 		G20000000000000000000000 /* PRs */ = {
@@ -361,6 +515,12 @@
 				G2000000000000000000000C /* PrWorkflowCards.swift */,
 				G2000000000000000000000D /* PrStackSheet.swift */,
 				G2000000000000000000000E /* CreatePrWizardView.swift */,
+				G2000000000000000000000F /* PrMergeGateCard.swift */,
+				G20000000000000000000020 /* PrAiSummaryCard.swift */,
+				G20000000000000000000021 /* PrCommitRailView.swift */,
+				G20000000000000000000022 /* PrAiResolverCtaCard.swift */,
+				G20000000000000000000023 /* PrStackDiagramView.swift */,
+				G20000000000000000000024 /* PrRebaseScreen.swift */,
 			);
 			name = PRs;
 			sourceTree = "<group>";
@@ -382,6 +542,24 @@
 				D2000000000000000000004C /* FilesDetailScreen+Actions.swift */,
 			);
 			name = Files;
+			sourceTree = "<group>";
+		};
+		H10000000000000000000020 /* Cto */ = {
+			isa = PBXGroup;
+			children = (
+				H10000000000000000000012 /* CtoBriefEditor.swift */,
+				H10000000000000000000013 /* CtoChatScreen.swift */,
+				H10000000000000000000014 /* CtoIdentityEditor.swift */,
+				H10000000000000000000010 /* CtoRootScreen.swift */,
+				H10000000000000000000011 /* CtoSessionDestinationView.swift */,
+				H10000000000000000000015 /* CtoSettingsScreen.swift */,
+				H10000000000000000000016 /* CtoSharedHelpers.swift */,
+				H10000000000000000000017 /* CtoTabShell.swift */,
+				H10000000000000000000018 /* CtoTeamScreen.swift */,
+				H10000000000000000000019 /* CtoWorkerDetailScreen.swift */,
+				H1000000000000000000001A /* CtoWorkflowsScreen.swift */,
+			);
+			name = Cto;
 			sourceTree = "<group>";
 		};
 		D10000000000000000000021 /* Work */ = {
@@ -438,6 +616,10 @@
 				F20000000000000000000004 /* SettingsPinSheet.swift */,
 				F20000000000000000000005 /* SettingsAppearanceSection.swift */,
 				F20000000000000000000006 /* SettingsDiagnosticsSection.swift */,
+				F300000000000000000000E1 /* NotificationsCenterView.swift */,
+				F300000000000000000000E2 /* SettingsNotificationsSection.swift */,
+				F300000000000000000000E3 /* QuietHoursEditorView.swift */,
+				F300000000000000000000E4 /* PerSessionOverrideView.swift */,
 			);
 			name = Settings;
 			sourceTree = "<group>";
@@ -448,6 +630,7 @@
 				51942BAC0965C7D0CCE6E8B8 /* Database.swift */,
 				B5D5B5B87564C73F2FF34B0D /* KeychainService.swift */,
 				66B5024B0A05F3D9754101F1 /* SyncService.swift */,
+				AA5100000000000000000003 /* LiveActivityCoordinator.swift */,
 			);
 			name = Services;
 			sourceTree = "<group>";
@@ -465,6 +648,9 @@
 			children = (
 				C9411193AF56B236BA32EFF5 /* ADEApp.swift */,
 				73B17472FAC08845853BC6B4 /* ContentView.swift */,
+				AA5300000000000000000011 /* AppDelegate.swift */,
+				AA5300000000000000000012 /* DeepLinkRouter.swift */,
+				AA5300000000000000000013 /* NotificationCategories.swift */,
 			);
 			name = App;
 			sourceTree = "<group>";
@@ -475,8 +661,51 @@
 				7FAD2BF35AA6A286BCF68D49 /* Products */,
 				6AC81F4E8475EA47F592B212 /* Frameworks */,
 				7A6120AF79287BB301D63A58 /* ADE */,
+				AA3000000000000000000001 /* ADEWidgets */,
+				BB3000000000000000000001 /* ADENotificationService */,
 				C77DE76E58CC8D681F4D4619 /* ADETests */,
 			);
+			sourceTree = "<group>";
+		};
+		AA2000000000000000000001 /* Shared */ = {
+			isa = PBXGroup;
+			children = (
+				AA1000000000000000000001 /* ADESharedContainer.swift */,
+				AA1000000000000000000002 /* ADESharedModels.swift */,
+				AA1000000000000000000003 /* ADESharedTheme.swift */,
+				AA5100000000000000000004 /* LiveActivityIntentsForward.swift */,
+				AA5500000000000000000004 /* WidgetAppIntents.swift */,
+			);
+			name = Shared;
+			sourceTree = "<group>";
+		};
+		AA3000000000000000000001 /* ADEWidgets */ = {
+			isa = PBXGroup;
+			children = (
+				AA5000000000000000000001 /* Info.plist */,
+				AA5000000000000000000002 /* ADEWidgets.entitlements */,
+				AA5100000000000000000001 /* ADELiveActivity.swift */,
+				AA5100000000000000000002 /* ADELiveActivityViews.swift */,
+				AA5200000000000000000001 /* ADEWidgetBundle.swift */,
+				AA5200000000000000000002 /* ADEWorkspaceWidget.swift */,
+				AA5200000000000000000003 /* ADEWorkspaceWidgetViews.swift */,
+				AA5200000000000000000004 /* ADELockScreenWidget.swift */,
+				AA5200000000000000000005 /* ADEControlWidget.swift */,
+				AA5200000000000000000006 /* ADEWidgetPreviewData.swift */,
+				AA5600000000000000000001 /* ADELiveActivityPrimitives.swift */,
+				AA5700000000000000000002 /* ADELiveActivityPreviews.swift */,
+			);
+			name = ADEWidgets;
+			sourceTree = "<group>";
+		};
+		BB3000000000000000000001 /* ADENotificationService */ = {
+			isa = PBXGroup;
+			children = (
+				BB5000000000000000000001 /* Info.plist */,
+				BB5000000000000000000002 /* ADENotificationService.entitlements */,
+				AA5400000000000000000004 /* NotificationService.swift */,
+			);
+			name = ADENotificationService;
 			sourceTree = "<group>";
 		};
 		6AC81F4E8475EA47F592B212 /* Frameworks */ = {
@@ -494,8 +723,10 @@
 				B6658D243715FBE2E04D6A2E /* Resources */,
 				10899CEEC539910EA438B7D9 /* Services */,
 				24C11B8BD88358C23A340927 /* App */,
+				AA2000000000000000000001 /* Shared */,
 				0379509A19E782882C2D84BB /* Views */,
 				8943C47805A871A4E4A4BF68 /* Assets.xcassets */,
+				CC5000000000000000000001 /* ADE.entitlements */,
 			);
 			name = ADE;
 			sourceTree = "<group>";
@@ -506,6 +737,8 @@
 				27A125DE2C17BA32F9291513 /* ADE.app */,
 				E3A5721EB84321D201716BC3 /* ADETests.xctest */,
 				CCAB2414C359E971B780BF99 /* PreviewHost.app */,
+				AA0000000000000000000002 /* ADEWidgets.appex */,
+				BB0000000000000000000002 /* ADENotificationService.appex */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -514,6 +747,7 @@
 			isa = PBXGroup;
 			children = (
 				483C5F1818BAE74B19B84617 /* RemoteModels.swift */,
+				F300000000000000000000E0 /* NotificationPreferences.swift */,
 			);
 			name = Models;
 			sourceTree = "<group>";
@@ -530,6 +764,7 @@
 			isa = PBXGroup;
 			children = (
 				14C0DF7FEB4C2EB854BAC888 /* ADETests.swift */,
+				D30000000000000000000005 /* AttentionDrawerModelTests.swift */,
 			);
 			name = ADETests;
 			sourceTree = "<group>";
@@ -562,17 +797,69 @@
 				73ED0BCB9618AA29B41D84DA /* Sources */,
 				DE00988229EE6003DBF8D8FA /* Frameworks */,
 				7A00A99FE2965CB60C5BE5BF /* Resources */,
+				CC0000000000000000000001 /* Embed Foundation Extensions */,
 			);
 			buildRules = (
 			);
 			dependencies = (
+				AA4400000000000000000002 /* PBXTargetDependency */,
+				BB4400000000000000000002 /* PBXTargetDependency */,
 			);
 			name = ADE;
 			productName = ADE;
 			productReference = 27A125DE2C17BA32F9291513 /* ADE.app */;
 			productType = "com.apple.product-type.application";
 		};
+		AA0000000000000000000001 /* ADEWidgets */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = AA6000000000000000000001 /* Build configuration list for PBXNativeTarget "ADEWidgets" */;
+			buildPhases = (
+				AA0000000000000000000010 /* Sources */,
+				AA0000000000000000000011 /* Frameworks */,
+				AA0000000000000000000012 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = ADEWidgets;
+			productName = ADEWidgets;
+			productReference = AA0000000000000000000002 /* ADEWidgets.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
+		BB0000000000000000000001 /* ADENotificationService */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = BB6000000000000000000001 /* Build configuration list for PBXNativeTarget "ADENotificationService" */;
+			buildPhases = (
+				BB0000000000000000000010 /* Sources */,
+				BB0000000000000000000011 /* Frameworks */,
+				BB0000000000000000000012 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = ADENotificationService;
+			productName = ADENotificationService;
+			productReference = BB0000000000000000000002 /* ADENotificationService.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
 /* End PBXNativeTarget section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		CC0000000000000000000001 /* Embed Foundation Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				AA2200000000000000000001 /* ADEWidgets.appex in Embed Foundation Extensions */,
+				BB2200000000000000000001 /* ADENotificationService.appex in Embed Foundation Extensions */,
+			);
+			name = "Embed Foundation Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXProject section */
 		9CBC925352322D208431EFAA /* Project object */ = {
@@ -587,6 +874,37 @@
 					928432ECB10B6E8870725B02 = {
 						DevelopmentTeam = VQ372F39G6;
 						ProvisioningStyle = Automatic;
+						SystemCapabilities = {
+							com.apple.ApplicationGroups.iOS = {
+								enabled = 1;
+							};
+							com.apple.BackgroundModes = {
+								enabled = 1;
+							};
+							com.apple.Push = {
+								enabled = 1;
+							};
+						};
+					};
+					AA0000000000000000000001 = {
+						CreatedOnToolsVersion = 16.0;
+						DevelopmentTeam = VQ372F39G6;
+						ProvisioningStyle = Automatic;
+						SystemCapabilities = {
+							com.apple.ApplicationGroups.iOS = {
+								enabled = 1;
+							};
+						};
+					};
+					BB0000000000000000000001 = {
+						CreatedOnToolsVersion = 16.0;
+						DevelopmentTeam = VQ372F39G6;
+						ProvisioningStyle = Automatic;
+						SystemCapabilities = {
+							com.apple.ApplicationGroups.iOS = {
+								enabled = 1;
+							};
+						};
 					};
 				};
 			};
@@ -604,6 +922,8 @@
 			projectRoot = "";
 			targets = (
 				928432ECB10B6E8870725B02 /* ADE */,
+				AA0000000000000000000001 /* ADEWidgets */,
+				BB0000000000000000000001 /* ADENotificationService */,
 				62C217CE2C1C31B3127D1ACF /* ADETests */,
 			);
 		};
@@ -626,6 +946,20 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		AA0000000000000000000012 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		BB0000000000000000000012 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
@@ -633,8 +967,14 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				AA1100000000000000000001 /* ADESharedContainer.swift in Sources */,
+				AA1100000000000000000002 /* ADESharedModels.swift in Sources */,
+				AA1100000000000000000003 /* ADESharedTheme.swift in Sources */,
 				C10000000000000000000002 /* ADECodeRenderingCache.swift in Sources */,
 				0A1E077A24A5367ED58900F9 /* ADEDesignSystem.swift in Sources */,
+				D30000000000000000000011 /* AttentionDrawerModel.swift in Sources */,
+				D30000000000000000000012 /* AttentionDrawerButton.swift in Sources */,
+				D30000000000000000000013 /* AttentionDrawerSheet.swift in Sources */,
 				C10000000000000000000001 /* ADEMobilePrimitives.swift in Sources */,
 				F2A1C9D8456E7B3C1D2E4F90 /* FilesCodeSupport.swift in Sources */,
 				1558E44876BBE931C02D5640 /* ADEApp.swift in Sources */,
@@ -701,6 +1041,12 @@
 				G1000000000000000000000C /* PrWorkflowCards.swift in Sources */,
 				G1000000000000000000000D /* PrStackSheet.swift in Sources */,
 				G1000000000000000000000E /* CreatePrWizardView.swift in Sources */,
+				G1000000000000000000000F /* PrMergeGateCard.swift in Sources */,
+				G10000000000000000000020 /* PrAiSummaryCard.swift in Sources */,
+				G10000000000000000000021 /* PrCommitRailView.swift in Sources */,
+				G10000000000000000000022 /* PrAiResolverCtaCard.swift in Sources */,
+				G10000000000000000000023 /* PrStackDiagramView.swift in Sources */,
+				G10000000000000000000024 /* PrRebaseScreen.swift in Sources */,
 				B10000000000000000000017 /* LaneTreeView.swift in Sources */,
 				B10000000000000000000018 /* AddLaneSheet.swift in Sources */,
 				B10000000000000000000019 /* LanesOfflineEmptyState.swift in Sources */,
@@ -746,6 +1092,31 @@
 				E10000000000000000000036 /* WorkErrorAndMessageHelpers.swift in Sources */,
 				E10000000000000000000037 /* WorkEventMapping.swift in Sources */,
 				E10000000000000000000038 /* WorkStatusAndFormattingHelpers.swift in Sources */,
+				H10000000000000000000001 /* CtoRootScreen.swift in Sources */,
+				H10000000000000000000002 /* CtoSessionDestinationView.swift in Sources */,
+				H10000000000000000000003 /* CtoBriefEditor.swift in Sources */,
+				H10000000000000000000004 /* CtoChatScreen.swift in Sources */,
+				H10000000000000000000005 /* CtoIdentityEditor.swift in Sources */,
+				H10000000000000000000006 /* CtoSettingsScreen.swift in Sources */,
+				H10000000000000000000007 /* CtoSharedHelpers.swift in Sources */,
+				H10000000000000000000008 /* CtoTabShell.swift in Sources */,
+				H10000000000000000000009 /* CtoTeamScreen.swift in Sources */,
+				H1000000000000000000000A /* CtoWorkerDetailScreen.swift in Sources */,
+				H1000000000000000000000B /* CtoWorkflowsScreen.swift in Sources */,
+				AA5100000000000000000013 /* LiveActivityCoordinator.swift in Sources */,
+				AA5100000000000000000014 /* LiveActivityIntentsForward.swift in Sources */,
+				AA5500000000000000000014 /* WidgetAppIntents.swift in Sources */,
+				AA5100000000000000000017 /* ADELiveActivity.swift in Sources */,
+				AA5100000000000000000018 /* ADELiveActivityViews.swift in Sources */,
+				AA5600000000000000000011 /* ADELiveActivityPrimitives.swift in Sources */,
+				F300000000000000000000F0 /* NotificationPreferences.swift in Sources */,
+				F300000000000000000000F1 /* NotificationsCenterView.swift in Sources */,
+				F300000000000000000000F2 /* SettingsNotificationsSection.swift in Sources */,
+				F300000000000000000000F3 /* QuietHoursEditorView.swift in Sources */,
+				F300000000000000000000F4 /* PerSessionOverrideView.swift in Sources */,
+				AA5300000000000000000001 /* AppDelegate.swift in Sources */,
+				AA5300000000000000000002 /* DeepLinkRouter.swift in Sources */,
+				AA5300000000000000000003 /* NotificationCategories.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -754,6 +1125,42 @@
 			buildActionMask = 2147483647;
 			files = (
 				7B70BE6839672E5D2D006B28 /* ADETests.swift in Sources */,
+				D30000000000000000000015 /* AttentionDrawerModelTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		AA0000000000000000000010 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				AA1100000000000000000011 /* ADESharedContainer.swift in Sources */,
+				AA1100000000000000000012 /* ADESharedModels.swift in Sources */,
+				AA1100000000000000000013 /* ADESharedTheme.swift in Sources */,
+				AA5100000000000000000011 /* ADELiveActivity.swift in Sources */,
+				AA5100000000000000000012 /* ADELiveActivityViews.swift in Sources */,
+				AA5600000000000000000012 /* ADELiveActivityPrimitives.swift in Sources */,
+				AA5100000000000000000015 /* LiveActivityIntentsForward.swift in Sources */,
+				AA5500000000000000000015 /* WidgetAppIntents.swift in Sources */,
+				AA5200000000000000000011 /* ADEWidgetBundle.swift in Sources */,
+				AA5200000000000000000012 /* ADEWorkspaceWidget.swift in Sources */,
+				AA5200000000000000000013 /* ADEWorkspaceWidgetViews.swift in Sources */,
+				AA5200000000000000000014 /* ADELockScreenWidget.swift in Sources */,
+				AA5200000000000000000015 /* ADEControlWidget.swift in Sources */,
+				AA5200000000000000000016 /* ADEWidgetPreviewData.swift in Sources */,
+				AA5700000000000000000012 /* ADELiveActivityPreviews.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		BB0000000000000000000010 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				AA1100000000000000000021 /* ADESharedContainer.swift in Sources */,
+				AA1100000000000000000022 /* ADESharedModels.swift in Sources */,
+				AA1100000000000000000023 /* ADESharedTheme.swift in Sources */,
+				AA5100000000000000000016 /* LiveActivityIntentsForward.swift in Sources */,
+				AA5500000000000000000016 /* WidgetAppIntents.swift in Sources */,
+				AA5400000000000000000016 /* NotificationService.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -765,6 +1172,18 @@
 			name = ADE;
 			target = 928432ECB10B6E8870725B02 /* ADE */;
 			targetProxy = A17C7B6209E54B4FAE0D11A1 /* PBXContainerItemProxy */;
+		};
+		AA4400000000000000000002 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			name = ADEWidgets;
+			target = AA0000000000000000000001 /* ADEWidgets */;
+			targetProxy = AA4400000000000000000001 /* PBXContainerItemProxy */;
+		};
+		BB4400000000000000000002 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			name = ADENotificationService;
+			target = BB0000000000000000000001 /* ADENotificationService */;
+			targetProxy = BB4400000000000000000001 /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 
@@ -791,8 +1210,10 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				APS_ENVIRONMENT = development;
 				CLANG_ENABLE_OBJC_WEAK = NO;
 				CODE_SIGNING_ALLOWED = YES;
+				CODE_SIGN_ENTITLEMENTS = ADE/ADE.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				DEVELOPMENT_TEAM = VQ372F39G6;
@@ -841,6 +1262,7 @@
 				CLANG_WARN_UNREACHABLE_CODE = YES;
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				COPY_PHASE_STRIP = NO;
+				CURRENT_PROJECT_VERSION = 2;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				ENABLE_NS_ASSERTIONS = NO;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
@@ -854,6 +1276,7 @@
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
+				MARKETING_VERSION = 1.0;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_OPTIMIZATION_LEVEL = "-Owholemodule";
 				SWIFT_VERSION = 5.0;
@@ -865,8 +1288,10 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				APS_ENVIRONMENT = production;
 				CLANG_ENABLE_OBJC_WEAK = NO;
 				CODE_SIGNING_ALLOWED = YES;
+				CODE_SIGN_ENTITLEMENTS = ADE/ADE.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				DEVELOPMENT_TEAM = VQ372F39G6;
@@ -916,6 +1341,7 @@
 				CLANG_WARN_UNREACHABLE_CODE = YES;
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				COPY_PHASE_STRIP = NO;
+				CURRENT_PROJECT_VERSION = 2;
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_TESTABILITY = YES;
@@ -936,6 +1362,7 @@
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
 				MTL_FAST_MATH = YES;
 				ONLY_ACTIVE_ARCH = YES;
+				MARKETING_VERSION = 1.0;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
@@ -957,6 +1384,124 @@
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
 				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/ADE.app/ADE";
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
+		AA6000000000000000000010 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CLANG_ENABLE_OBJC_WEAK = NO;
+				CODE_SIGNING_ALLOWED = YES;
+				CODE_SIGN_ENTITLEMENTS = ADEWidgets/ADEWidgets.entitlements;
+				CODE_SIGN_IDENTITY = "Apple Development";
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = VQ372F39G6;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = ADEWidgets/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = "ADE Widgets";
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.ade.ios.widgets;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		AA6000000000000000000011 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CLANG_ENABLE_OBJC_WEAK = NO;
+				CODE_SIGNING_ALLOWED = YES;
+				CODE_SIGN_ENTITLEMENTS = ADEWidgets/ADEWidgets.entitlements;
+				CODE_SIGN_IDENTITY = "Apple Development";
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = VQ372F39G6;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = ADEWidgets/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = "ADE Widgets";
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.ade.ios.widgets;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
+		BB6000000000000000000010 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CLANG_ENABLE_OBJC_WEAK = NO;
+				CODE_SIGNING_ALLOWED = YES;
+				CODE_SIGN_ENTITLEMENTS = ADENotificationService/ADENotificationService.entitlements;
+				CODE_SIGN_IDENTITY = "Apple Development";
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = VQ372F39G6;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = ADENotificationService/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = "ADE Notifications";
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.ade.ios.notificationservice;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		BB6000000000000000000011 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CLANG_ENABLE_OBJC_WEAK = NO;
+				CODE_SIGNING_ALLOWED = YES;
+				CODE_SIGN_ENTITLEMENTS = ADENotificationService/ADENotificationService.entitlements;
+				CODE_SIGN_IDENTITY = "Apple Development";
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = VQ372F39G6;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = ADENotificationService/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = "ADE Notifications";
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.ade.ios.notificationservice;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
 				VALIDATE_PRODUCT = YES;
 			};
 			name = Release;
@@ -987,6 +1532,24 @@
 			buildConfigurations = (
 				6B022E2FBBEEACDE98A6318A /* Release */,
 				4D1F82E3A56C0E19BB85CF13 /* Debug */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		AA6000000000000000000001 /* Build configuration list for PBXNativeTarget "ADEWidgets" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				AA6000000000000000000010 /* Debug */,
+				AA6000000000000000000011 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		BB6000000000000000000001 /* Build configuration list for PBXNativeTarget "ADENotificationService" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				BB6000000000000000000010 /* Debug */,
+				BB6000000000000000000011 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

@@ -48,6 +48,12 @@ import type {
   SyncRoleSnapshot,
   SyncStatusEventPayload,
   SyncTransferReadiness,
+  ApnsBridgeStatus,
+  ApnsBridgeSaveConfigArgs,
+  ApnsBridgeUploadKeyArgs,
+  ApnsBridgeSendTestPushArgs,
+  ApnsBridgeSendTestPushResult,
+  ApnsTestPushKind,
   DraftPrDescriptionArgs,
   CtoGetStateArgs,
   CtoEnsureSessionArgs,
@@ -270,6 +276,7 @@ import type {
   OnboardingDetectionResult,
   OnboardingExistingLaneCandidate,
   OnboardingStatus,
+  OnboardingTourProgress,
   LaneListSnapshot,
   LaneSummary,
   ListOverlapsArgs,
@@ -735,6 +742,22 @@ contextBridge.exposeInMainWorld("ade", {
       return () => ipcRenderer.removeListener(IPC.syncEvent, listener);
     },
   },
+  notifications: {
+    apns: {
+      getStatus: async (): Promise<ApnsBridgeStatus> =>
+        ipcRenderer.invoke(IPC.notificationsApnsGetStatus),
+      saveConfig: async (args: ApnsBridgeSaveConfigArgs): Promise<ApnsBridgeStatus> =>
+        ipcRenderer.invoke(IPC.notificationsApnsSaveConfig, args),
+      uploadKey: async (args: ApnsBridgeUploadKeyArgs): Promise<ApnsBridgeStatus> =>
+        ipcRenderer.invoke(IPC.notificationsApnsUploadKey, args),
+      clearKey: async (): Promise<ApnsBridgeStatus> =>
+        ipcRenderer.invoke(IPC.notificationsApnsClearKey),
+      sendTestPush: async (
+        args: ApnsBridgeSendTestPushArgs,
+      ): Promise<ApnsBridgeSendTestPushResult> =>
+        ipcRenderer.invoke(IPC.notificationsApnsSendTestPush, args),
+    },
+  },
   agentTools: {
     detect: async (): Promise<AgentTool[]> =>
       ipcRenderer.invoke(IPC.agentToolsDetect),
@@ -760,6 +783,22 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.onboardingSetDismissed, { dismissed }),
     complete: async (): Promise<OnboardingStatus> =>
       ipcRenderer.invoke(IPC.onboardingComplete),
+    getTourProgress: async (): Promise<OnboardingTourProgress> =>
+      ipcRenderer.invoke(IPC.onboardingGetTourProgress),
+    markWizardCompleted: async (): Promise<OnboardingTourProgress> =>
+      ipcRenderer.invoke(IPC.onboardingMarkWizardCompleted),
+    markWizardDismissed: async (): Promise<OnboardingTourProgress> =>
+      ipcRenderer.invoke(IPC.onboardingMarkWizardDismissed),
+    markTourCompleted: async (tourId: string): Promise<OnboardingTourProgress> =>
+      ipcRenderer.invoke(IPC.onboardingMarkTourCompleted, { tourId }),
+    markTourDismissed: async (tourId: string): Promise<OnboardingTourProgress> =>
+      ipcRenderer.invoke(IPC.onboardingMarkTourDismissed, { tourId }),
+    updateTourStep: async (tourId: string, index: number): Promise<OnboardingTourProgress> =>
+      ipcRenderer.invoke(IPC.onboardingUpdateTourStep, { tourId, index }),
+    markGlossaryTermSeen: async (termId: string): Promise<OnboardingTourProgress> =>
+      ipcRenderer.invoke(IPC.onboardingMarkGlossaryTermSeen, { termId }),
+    resetTourProgress: async (tourId?: string): Promise<OnboardingTourProgress> =>
+      ipcRenderer.invoke(IPC.onboardingResetTourProgress, { tourId }),
   },
   automations: {
     list: async (): Promise<AutomationRuleSummary[]> =>

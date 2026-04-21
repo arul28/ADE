@@ -2,6 +2,7 @@ import SwiftUI
 
 struct LaneActionsCard: View {
   let canRunLiveActions: Bool
+  let disabledSubtitle: String?
   let canPush: Bool
   let isPublish: Bool
   let onPullMerge: () -> Void
@@ -18,7 +19,7 @@ struct LaneActionsCard: View {
   @State private var moreExpanded = false
 
   var body: some View {
-    ADEGlassSection(title: "Actions", subtitle: canRunLiveActions ? nil : "Reconnect to run git actions.") {
+    ADEGlassSection(title: "Actions", subtitle: canRunLiveActions ? nil : disabledSubtitle) {
       VStack(alignment: .leading, spacing: 12) {
         primaryRow
         secondaryRow
@@ -122,6 +123,8 @@ struct LaneActionsCard: View {
         .symbolRenderingMode(.hierarchical)
       Text(title)
         .font(.caption2.weight(.semibold))
+        .lineLimit(1)
+        .minimumScaleFactor(0.85)
     }
     .foregroundStyle(tint)
     .frame(maxWidth: .infinity)
@@ -143,6 +146,7 @@ struct LaneActionsCard: View {
         Text(title)
           .font(.subheadline)
           .foregroundStyle(tint)
+          .lineLimit(2)
         Spacer()
         Image(systemName: "chevron.right")
           .font(.system(size: 10, weight: .bold))

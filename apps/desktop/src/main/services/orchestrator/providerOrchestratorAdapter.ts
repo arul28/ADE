@@ -108,12 +108,13 @@ function writeWorkerPromptFile(args: {
 export function resolveOpenCodeRuntimeRoot(): string {
   const startPoints = [
     process.cwd(),
-    __dirname,
+    typeof __dirname === "string" ? __dirname : null,
     path.resolve(process.cwd(), ".."),
     path.resolve(process.cwd(), "..", ".."),
   ];
 
   for (const start of startPoints) {
+    if (!start) continue;
     let dir = path.resolve(start);
     for (let i = 0; i < 12; i += 1) {
       if (fs.existsSync(path.join(dir, "apps", "ade-cli", "package.json"))) {

@@ -22,11 +22,113 @@ extension WorkChatSessionView {
       WorkCommandCardView(card: commandCard)
     case .fileChangeCard(let fileChangeCard):
       WorkFileChangeCardView(card: fileChangeCard)
+    case .toolGroup(let group):
+      timelineToolGroup(group)
     case .artifact(let artifact):
       timelineArtifact(artifact)
     case .turnSeparator(let separator):
       WorkTurnSeparatorView(separator: separator)
+    case .pendingQuestion(let question):
+      if isLive {
+        WorkStructuredQuestionCard(
+          question: question,
+          busy: actionInFlight,
+          onSelectOption: { option, freeform in
+            await runSessionAction {
+              await onRespondToQuestion(
+                question.id,
+                question.questionId,
+                .string(option.value),
+                freeform
+              )
+            }
+          },
+          onSubmitAll: { answers, freeform in
+            await runSessionAction {
+              await onSubmitQuestionAnswers(question.id, answers, freeform)
+            }
+          },
+          onDecline: {
+            await runSessionAction {
+              await onDeclineQuestion(question.id)
+            }
+          }
+        )
+      } else {
+        ADENoticeCard(
+          title: "Host needs your answer",
+          message: "Reconnect to respond to this question. The host keeps the session paused until input arrives.",
+          icon: "questionmark.circle",
+          tint: ADEColor.warning,
+          actionTitle: nil,
+          action: nil
+        )
+      }
+    case .pendingPermission(let permission):
+      if isLive {
+        WorkPermissionCard(
+          permission: permission,
+          busy: actionInFlight,
+          onDecision: { decision in
+            await runSessionAction {
+              await onRespondToPermission(permission.id, decision)
+            }
+          }
+        )
+      } else {
+        ADENoticeCard(
+          title: "Permission request waiting",
+          message: "Reconnect to allow or decline this tool's permission gate.",
+          icon: "lock.shield",
+          tint: ADEColor.warning,
+          actionTitle: nil,
+          action: nil
+        )
+      }
+    case .pendingPlanApproval(let plan):
+      if isLive {
+        WorkPlanReviewCard(
+          plan: plan,
+          busy: actionInFlight,
+          onDecision: { decision, feedback in
+            await runSessionAction {
+              // Approve: send "accept" decision directly.
+              // Reject: send "decline"; if the user typed feedback, also
+              // queue it as a follow-up steer message so the agent sees the
+              // revision notes in the next turn.
+              await onApproveRequest(plan.id, decision)
+              if decision == .decline, let feedback, !feedback.isEmpty {
+                _ = await onSend(feedback)
+              }
+            }
+          }
+        )
+      } else {
+        ADENoticeCard(
+          title: "Plan approval waiting",
+          message: "Reconnect to approve or reject the agent's plan.",
+          icon: "list.bullet.clipboard",
+          tint: ADEColor.warning,
+          actionTitle: nil,
+          action: nil
+        )
+      }
     }
+  }
+
+  @ViewBuilder
+  func timelineToolGroup(_ group: WorkToolGroupModel) -> some View {
+    WorkToolGroupCardView(
+      group: group,
+      isExpanded: expandedToolCardIds.contains(group.id),
+      onToggle: { toggleToolCard(group.id) },
+      onOpenFile: { path in
+        Task { await onOpenFile(path) }
+      },
+      onOpenPr: { prNumber in
+        Task { await onOpenPr(prNumber) }
+      }
+    )
   }
 
   @ViewBuilder
@@ -34,7 +136,7 @@ extension WorkChatSessionView {
     WorkToolCardView(
       toolCard: toolCard,
       references: extractWorkNavigationTargets(from: [toolCard.argsText, toolCard.resultText].compactMap { $0 }.joined(separator: "\n")),
-      isExpanded: toolCard.status == .running || expandedToolCardIds.contains(toolCard.id),
+      isExpanded: expandedToolCardIds.contains(toolCard.id),
       onToggle: { toggleToolCard(toolCard.id) },
       onOpenFile: { path in
         Task { await onOpenFile(path) }

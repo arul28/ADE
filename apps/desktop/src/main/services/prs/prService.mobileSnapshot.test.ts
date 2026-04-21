@@ -95,6 +95,7 @@ function makePrRow(overrides: Partial<Record<string, unknown>>) {
     last_synced_at: "2026-04-01T00:00:00Z",
     created_at: "2026-04-01T00:00:00Z",
     updated_at: "2026-04-01T00:00:00Z",
+    creation_strategy: null as string | null,
     ...overrides,
   };
 }
@@ -112,11 +113,21 @@ function buildService(opts: {
 
   const db = {
     get: vi.fn((sql: string, params?: unknown[]) => {
-      const sqlLower = sql.toLowerCase();
+      // Collapse whitespace so multi-line SQL still matches substring checks.
+      const sqlLower = sql.toLowerCase().replace(/\s+/g, " ").trim();
       if (sqlLower.includes("from lanes where id =")) {
         const laneId = (params?.[0] ?? "") as string;
         const lane = lanes.find((l) => l.id === laneId);
         return lane ? { name: lane.name } : null;
+      }
+      if (
+        sqlLower.includes("select creation_strategy from pull_requests where lane_id =")
+      ) {
+        const laneId = (params?.[0] ?? "") as string;
+        const row = prRows.find(
+          (r) => r.lane_id === laneId && (r.state === "open" || r.state === "draft"),
+        );
+        return row ? { creation_strategy: row.creation_strategy ?? null } : null;
       }
       if (sqlLower.includes("from pull_requests where lane_id =")) {
         const laneId = (params?.[0] ?? "") as string;
@@ -378,6 +389,77 @@ describe("prService.getMobileSnapshot", () => {
       behindBy: 3,
       baseBranch: "release",
     });
+    // No linked PR → default rebaseMode is "auto" and creationStrategy is null.
+    expect((rebaseCards[0] as any).rebaseMode).toBe("auto");
+    expect((rebaseCards[0] as any).creationStrategy).toBeNull();
+  });
+
+  it("marks rebase card rebaseMode as auto when the linked PR uses pr_target strategy", async () => {
+    const lane = makeLane({ id: "lane-1", name: "my-feature" });
+    const parent = makeLane({ id: "lane-parent", name: "release", laneType: "primary" });
+    const pr = makePrRow({
+      id: "pr-target",
+      lane_id: "lane-1",
+      state: "open",
+      creation_strategy: "pr_target",
+    });
+    const rebaseSuggestion = {
+      laneId: "lane-1",
+      parentLaneId: "lane-parent",
+      parentHeadSha: "abc",
+      behindCount: 2,
+      baseLabel: "release",
+      lastSuggestedAt: "2026-04-01T00:00:00Z",
+      deferredUntil: null,
+      dismissedAt: null,
+      hasPr: true,
+    };
+
+    const { service } = buildService({
+      lanes: [lane, parent],
+      prRows: [pr],
+      rebaseSuggestions: [rebaseSuggestion],
+    });
+
+    const snapshot = await service.getMobileSnapshot();
+    const rebaseCards = snapshot.workflowCards.filter((card) => card.kind === "rebase");
+    expect(rebaseCards).toHaveLength(1);
+    expect((rebaseCards[0] as any).rebaseMode).toBe("auto");
+    expect((rebaseCards[0] as any).creationStrategy).toBe("pr_target");
+  });
+
+  it("marks rebase card rebaseMode as manual when the linked PR uses lane_base strategy", async () => {
+    const lane = makeLane({ id: "lane-1", name: "my-feature" });
+    const parent = makeLane({ id: "lane-parent", name: "release", laneType: "primary" });
+    const pr = makePrRow({
+      id: "pr-lane-base",
+      lane_id: "lane-1",
+      state: "open",
+      creation_strategy: "lane_base",
+    });
+    const rebaseSuggestion = {
+      laneId: "lane-1",
+      parentLaneId: "lane-parent",
+      parentHeadSha: "abc",
+      behindCount: 4,
+      baseLabel: "release",
+      lastSuggestedAt: "2026-04-01T00:00:00Z",
+      deferredUntil: null,
+      dismissedAt: null,
+      hasPr: true,
+    };
+
+    const { service } = buildService({
+      lanes: [lane, parent],
+      prRows: [pr],
+      rebaseSuggestions: [rebaseSuggestion],
+    });
+
+    const snapshot = await service.getMobileSnapshot();
+    const rebaseCards = snapshot.workflowCards.filter((card) => card.kind === "rebase");
+    expect(rebaseCards).toHaveLength(1);
+    expect((rebaseCards[0] as any).rebaseMode).toBe("manual");
+    expect((rebaseCards[0] as any).creationStrategy).toBe("lane_base");
   });
 
   it("skips dismissed rebase suggestions", async () => {

@@ -188,15 +188,104 @@ extension WorkSessionDestinationView {
   }
 
   @MainActor
-  func respondToQuestion(itemId: String, answer: String?, responseText: String?) async {
+  func submitQuestionAnswers(
+    itemId: String,
+    answers: [String: AgentChatInputAnswerValue],
+    responseText: String?
+  ) async {
     do {
-      let answerValue = answer?.trimmingCharacters(in: .whitespacesAndNewlines)
       let responseValue = responseText?.trimmingCharacters(in: .whitespacesAndNewlines)
+      let filtered: [String: AgentChatInputAnswerValue] = answers.reduce(into: [:]) { acc, pair in
+        switch pair.value {
+        case .string(let raw):
+          let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+          if !trimmed.isEmpty { acc[pair.key] = .string(trimmed) }
+        case .strings(let values):
+          let cleaned = values
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+          if !cleaned.isEmpty { acc[pair.key] = .strings(cleaned) }
+        }
+      }
       try await syncService.respondToChatInput(
         sessionId: sessionId,
         itemId: itemId,
-        answers: answerValue.flatMap { $0.isEmpty ? nil : ["response": .string($0)] },
+        decision: .accept,
+        answers: filtered.isEmpty ? nil : filtered,
+        responseText: (responseValue?.isEmpty ?? true) ? nil : responseValue
+      )
+      await refreshChatStateAfterAction(forceRemote: true)
+      errorMessage = nil
+    } catch {
+      ADEHaptics.error()
+      errorMessage = error.localizedDescription
+    }
+  }
+
+  @MainActor
+  func respondToQuestion(
+    itemId: String,
+    questionId: String,
+    answer: AgentChatInputAnswerValue?,
+    responseText: String?
+  ) async {
+    do {
+      let responseValue = responseText?.trimmingCharacters(in: .whitespacesAndNewlines)
+      let answers: [String: AgentChatInputAnswerValue]? = {
+        guard let answer else { return nil }
+        switch answer {
+        case .string(let raw):
+          let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+          return trimmed.isEmpty ? nil : [questionId: .string(trimmed)]
+        case .strings(let values):
+          let filtered = values
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+          return filtered.isEmpty ? nil : [questionId: .strings(filtered)]
+        }
+      }()
+      try await syncService.respondToChatInput(
+        sessionId: sessionId,
+        itemId: itemId,
+        decision: .accept,
+        answers: answers,
         responseText: responseValue?.isEmpty == true ? nil : responseValue
+      )
+      await refreshChatStateAfterAction(forceRemote: true)
+      errorMessage = nil
+    } catch {
+      ADEHaptics.error()
+      errorMessage = error.localizedDescription
+    }
+  }
+
+  @MainActor
+  func declineQuestion(itemId: String) async {
+    do {
+      try await syncService.respondToChatInput(
+        sessionId: sessionId,
+        itemId: itemId,
+        decision: .decline,
+        answers: nil,
+        responseText: nil
+      )
+      await refreshChatStateAfterAction(forceRemote: true)
+      errorMessage = nil
+    } catch {
+      ADEHaptics.error()
+      errorMessage = error.localizedDescription
+    }
+  }
+
+  @MainActor
+  func respondToPermission(itemId: String, decision: AgentChatApprovalDecision) async {
+    do {
+      try await syncService.respondToChatInput(
+        sessionId: sessionId,
+        itemId: itemId,
+        decision: decision,
+        answers: nil,
+        responseText: nil
       )
       await refreshChatStateAfterAction(forceRemote: true)
       errorMessage = nil

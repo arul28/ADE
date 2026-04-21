@@ -49,5 +49,6 @@ extension FilesDirectoryContentsView {
     let live: Bool
     let active: Bool
     let revision: Int
+    let manualReloadToken: Int
   }
 }

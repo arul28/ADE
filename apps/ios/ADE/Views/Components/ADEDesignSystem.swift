@@ -71,6 +71,7 @@ enum ADEColor {
   static let info = adaptiveColor(light: hex(0x2563eb), dark: hex(0x3b82f6))
   static let purpleAccent = Color(red: 167.0 / 255.0, green: 139.0 / 255.0, blue: 250.0 / 255.0)  // #A78BFA
   static let purpleGlow = purpleAccent.opacity(0.35)
+  static let ctoAccent = Color(red: 0xA7 / 255.0, green: 0x8B / 255.0, blue: 0xFA / 255.0)  // #A78BFA
 
   static let tintProject = purpleAccent
   static let tintLanes = Color(red: 0xf5 / 255.0, green: 0x9e / 255.0, blue: 0x0b / 255.0)
@@ -493,38 +494,63 @@ struct ADEConnectionDot: View {
   }
 
   var body: some View {
-    Button {
-      syncService.settingsPresented = true
-    } label: {
-      HStack(spacing: 6) {
-        Circle()
-          .fill(tint)
-          .frame(width: 10, height: 10)
-          .shadow(color: tint.opacity(showsConnectedGlow ? 0.5 : 0), radius: showsConnectedGlow ? 4 : 0)
-        Text(statusText)
-          .font(.caption.weight(.semibold))
-          .foregroundStyle(ADEColor.textPrimary)
-          .lineLimit(1)
-          .minimumScaleFactor(0.75)
-        if showsHostSuffix, let name = truncatedHostName {
-          Text("·")
-            .font(.caption.weight(.medium))
-            .foregroundStyle(ADEColor.textMuted)
-            .minimumScaleFactor(0.75)
-          Text(name)
-            .font(.caption.weight(.medium))
-            .foregroundStyle(ADEColor.textSecondary)
-            .lineLimit(1)
-            .minimumScaleFactor(0.75)
-        }
-      }
-      .frame(minHeight: 44)
-      .contentShape(Rectangle())
+    ZStack {
+      Circle()
+        .fill(tint.opacity(0.14))
+        .frame(width: 30, height: 30)
+        .overlay(
+          Circle()
+            .stroke(tint.opacity(0.55), lineWidth: 1)
+        )
+        .shadow(color: tint.opacity(showsConnectedGlow ? 0.24 : 0.16), radius: showsConnectedGlow ? 2 : 1)
+
+      Image(systemName: "gearshape.fill")
+        .font(.system(size: 14, weight: .semibold))
+        .foregroundStyle(tint)
     }
-    .buttonStyle(.plain)
-    .accessibilityLabel(accessibilityLabel)
+    .frame(minWidth: 44, minHeight: 44)
+    .contentShape(Rectangle())
+    .onTapGesture {
+      syncService.settingsPresented = true
+    }
+    .accessibilityAddTraits(.isButton)
+    .accessibilityLabel("Settings · \(accessibilityLabel)")
     .accessibilityHint("Opens settings to pair or reconnect.")
+    .accessibilityAction {
+      syncService.settingsPresented = true
+    }
     .accessibilityShowsLargeContentViewer()
+  }
+}
+
+/// Toolbar leading cluster shown on every root screen: settings stays
+/// leftmost, with attention immediately after it as a separate control.
+@available(iOS 17.0, *)
+struct ADERootToolbarLeading: View {
+  var body: some View {
+    HStack(spacing: 12) {
+      ADEConnectionDot()
+      AttentionDrawerButton()
+    }
+    .fixedSize(horizontal: true, vertical: false)
+  }
+}
+
+/// Toolbar content variant for screens that need the root controls in the
+/// navigation bar. The explicit shared background opt-out keeps iOS 26's
+/// toolbar glass from joining settings and attention into one capsule.
+@available(iOS 17.0, *)
+struct ADERootToolbarLeadingItems: ToolbarContent {
+  var body: some ToolbarContent {
+    ToolbarItem(placement: .topBarLeading) {
+      ADEConnectionDot()
+    }
+    .sharedBackgroundVisibility(.hidden)
+
+    ToolbarItem(placement: .topBarLeading) {
+      AttentionDrawerButton()
+    }
+    .sharedBackgroundVisibility(.hidden)
   }
 }
 

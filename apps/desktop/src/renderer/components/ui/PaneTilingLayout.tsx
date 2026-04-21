@@ -29,6 +29,7 @@ export type PaneConfig = {
   minimizable?: boolean;
   headerActions?: React.ReactNode;
   bodyClassName?: string;
+  dataTour?: string;
   children: React.ReactNode;
 };
 
@@ -349,6 +350,7 @@ export function PaneTilingLayout({
           minimizable={config.minimizable ?? true}
           headerActions={config.headerActions}
           bodyClassName={config.bodyClassName}
+          dataTour={config.dataTour}
           draggable
           isDragging={dragSourceId === paneId}
           isDropTarget={dropTargetId === paneId}

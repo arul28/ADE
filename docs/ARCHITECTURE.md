@@ -106,8 +106,14 @@ Native SwiftUI app acting as a controller for an ADE host. It reads live desktop
 
 - Stack: native SwiftUI + `SQLite3` C API + iOS system SQLite.
 - CRDT: pure-SQL CRR emulation layer (trigger-based change tracking) since iOS blocks `sqlite3_load_extension()`/`sqlite3_auto_extension()`. Changesets are wire-compatible with desktop cr-sqlite.
-- Core services: `Database.swift`, `SyncService.swift`, `KeychainService.swift`.
-- Shipped tabs (Phase 6): Lanes, Files, Work, PRs, Settings. Phase 7 adds Missions, CTO/Chat, Automations, Graph, History, full Settings parity, APNs, iPad layout.
+- Core services: `Database.swift`, `SyncService.swift`, `KeychainService.swift`,
+  `LiveActivityCoordinator.swift`.
+- Shipped tabs: Lanes, Files, Work, PRs, CTO, Settings.
+- Shipped: APNs push pipeline (desktop `apnsService` + `notificationEventBus` →
+  iOS `AppDelegate` + `NotificationCategories` + Notification Service Extension),
+  workspace Live Activity (Lock Screen + Dynamic Island), Home Screen / Lock
+  Screen / Control Center widgets.
+- Planned: Missions, Automations, Graph, History tabs; iPad layout; Spotlight.
 - Target: iOS 26+, iPhone + iPad.
 
 ---
@@ -405,6 +411,7 @@ Every service lives under `apps/desktop/src/main/services/<domain>/`. Summary:
 | `shared/` | `utils.ts`, `queueRebase.ts`, `packLegacyUtils.ts`, `transcriptInsights.ts` | Cross-domain utilities. |
 | `state/` | `kvDb.ts`, `crsqliteExtension.ts`, `globalState.ts`, `projectState.ts`, `onConflictAudit.ts` | SQLite schema + open, CRR extension loader, global state file, per-project state init. |
 | `sync/` | `syncService.ts`, `syncHostService.ts`, `syncPeerService.ts`, `syncRemoteCommandService.ts`, `syncProtocol.ts`, `deviceRegistryService.ts`, `syncPairingStore.ts` | WebSocket host, peer client, remote command routing, protocol framing, device registry, pairing secrets. |
+| `notifications/` | `apnsService.ts`, `notificationMapper.ts`, `notificationEventBus.ts` | APNs HTTP/2 client (ES256 JWT, encrypted `.p8`), pure domain-event → `MappedNotification` mapping (13 categories / 4 families), event bus routing to APNs alert pushes + Live Activity update pushes + in-app WS delivery, filtered by per-device `NotificationPreferences`. |
 | `tests/` | `testService.ts` | Test-suite execution + run history. |
 | `updates/` | `autoUpdateService.ts` | Electron auto-update. |
 | `usage/` | `usageTrackingService.ts`, `budgetCapService.ts` | Token/cost accounting, budget enforcement. |
@@ -805,6 +812,9 @@ Full surface: [`docs/architecture/COMPUTER_USE_ARTIFACT_BROKER.md`](../docs/arch
 - Writes from user actions: write locally, replicate to host. Execution commands (create PR, run command) are routed to the host via the `command`/`command_ack`/`command_result` message flow.
 - Sub-protocols: changeset sync, file access, terminal stream, chat stream (live `chat_event` push from host), command routing, lane presence announce/release.
 - Pairing is a **user-set 6-digit PIN** stored at `.ade/secrets/sync-pin.json` on the host. The phone sends the PIN once; the host returns a durable per-device secret. QR payload is v2 (host identity + port + address candidates, no pairing code).
+- APNs pipeline: iOS registers device tokens (alert + push-to-start + per-activity update) via `SyncService.registerPushToken`. The host's `notificationEventBus` routes domain events (chat, PR, CTO, system) to `apnsService` for alert pushes and Live Activity update pushes, filtered by per-device `NotificationPreferences` stored in the iOS App Group `UserDefaults`.
+- Widgets: `ADEWorkspaceWidget` (Home Screen), `ADELockScreenWidget`, `ADEControlWidget` (Control Center, iOS 18+) read from a shared `WorkspaceSnapshot` in the App Group container. `LiveActivityCoordinator` manages the single workspace Live Activity.
+- Tabs: Lanes, Files, Work, PRs, CTO, Settings.
 
 ### 13.4 Conflict resolution semantics
 

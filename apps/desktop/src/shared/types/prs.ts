@@ -10,6 +10,7 @@ import type {
   ExternalConflictResolverProvider,
 } from "./conflicts";
 import type { GitHubRepoRef } from "./git";
+import type { RebaseTargetCommit } from "./lanes";
 
 export type PrState = "draft" | "open" | "merged" | "closed";
 export type PrChecksStatus = "pending" | "passing" | "failing" | "none";
@@ -37,6 +38,8 @@ export type PrSummary = {
   lastSyncedAt: string | null;
   createdAt: string;
   updatedAt: string;
+  /** "pr_target" (default): PR tracks upstream base; "lane_base": PR carries immutable lane base. */
+  creationStrategy?: PrCreationStrategy | null;
 };
 
 export type PrStatus = {
@@ -227,6 +230,8 @@ export type LandResult = {
   error: string | null;
 };
 
+export type PrCreationStrategy = "pr_target" | "lane_base";
+
 export type CreatePrFromLaneArgs = {
   laneId: string;
   title: string;
@@ -236,6 +241,7 @@ export type CreatePrFromLaneArgs = {
   labels?: string[];
   reviewers?: string[];
   allowDirtyWorktree?: boolean;
+  strategy?: PrCreationStrategy;
 };
 
 export type LinkPrToLaneArgs = {
@@ -941,6 +947,20 @@ export type PrFile = {
   previousFilename: string | null;
 };
 
+/** A commit on the PR head branch. `checkStatus` aggregates per-commit check runs when available. */
+export type PrCommit = {
+  sha: string;
+  shortSha: string;
+  message: string;
+  author: {
+    login: string | null;
+    name: string;
+    email: string | null;
+  };
+  committedDate: string;
+  checkStatus?: "success" | "failure" | "pending" | "none";
+};
+
 /** GitHub Actions workflow run. */
 export type PrActionRun = {
   id: number;
@@ -1507,6 +1527,22 @@ export type PrRebaseWorkflowCard = {
   dismissedAt: string | null;
   /** Null when the suggestion has not been deferred. */
   deferredUntil: string | null;
+  /** Commits the rebase would pull in. Undefined when unavailable or computed by an older host. */
+  targetCommits?: RebaseTargetCommit[];
+  /**
+   * Rebase mode for the lane's most-recent open/draft PR. "auto" means drift
+   * can be fixed by auto-rebase (`pr_target` strategy or no linked PR);
+   * "manual" means the PR carries an immutable base (`lane_base` strategy) so
+   * drift must be surfaced and rebased manually. Undefined on older hosts
+   * (treat as "auto").
+   */
+  rebaseMode?: "auto" | "manual";
+  /**
+   * The stored `creation_strategy` for the lane's most-recent open/draft PR,
+   * or null when no PR is linked. Lets the client render strategy-specific
+   * copy without re-deriving the mode.
+   */
+  creationStrategy?: PrCreationStrategy | null;
 };
 
 export type PrWorkflowCard =

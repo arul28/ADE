@@ -6,9 +6,7 @@ icon: "eye"
 
 ## What is a Lane?
 
-A **Lane** wraps a git branch inside an isolated development environment. Every lane gets its own git worktree, terminal sessions, agent execution context, port allocation, and environment variables. You can run AI agents in dozens of lanes simultaneously — they will never write to each other's files, conflict over ports, or bleed context into each other's prompts.
-
-Lanes are what make parallel agentic development practical. Instead of a chaotic pile of branches, ADE gives you a structured, observable workspace where every stream of work is named, tracked, and contextually aware.
+A **Lane** wraps a git branch inside an isolated development environment. Every lane gets its own git worktree, terminal sessions, agent context, port allocation, and environment variables. Agents in separate lanes never write to each other's files, conflict over ports, or bleed context into each other's prompts.
 
 <CardGroup cols={3}>
   <Card title="Isolated by Default" icon="shield">

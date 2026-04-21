@@ -212,6 +212,7 @@ import type {
   OnboardingDetectionResult,
   OnboardingExistingLaneCandidate,
   OnboardingStatus,
+  OnboardingTourProgress,
   LaneListSnapshot,
   LaneRuntimeSummary,
   LaneSummary,
@@ -348,6 +349,12 @@ import type {
   SyncPeerDeviceType,
   SyncRoleSnapshot,
   SyncTransferReadiness,
+  ApnsBridgeStatus,
+  ApnsBridgeSaveConfigArgs,
+  ApnsBridgeUploadKeyArgs,
+  ApnsBridgeSendTestPushArgs,
+  ApnsBridgeSendTestPushResult,
+  ApnsTestPushKind,
   CtoGetStateArgs,
   CtoEnsureSessionArgs,
   CtoUpdateIdentityArgs,
@@ -662,6 +669,9 @@ export type AppContext = {
   syncService?: ReturnType<typeof createSyncService> | null;
   rpcSocketServer?: NetServer;
   rpcSocketPath?: string;
+  apnsService?: import("../notifications/apnsService").ApnsService | null;
+  apnsKeyStore?: import("../notifications/apnsService").ApnsKeyStore | null;
+  notificationEventBus?: import("../notifications/notificationEventBus").NotificationEventBus | null;
   autoUpdateService?: ReturnType<typeof createAutoUpdateService> | null;
   feedbackReporterService?: ReturnType<typeof createFeedbackReporterService> | null;
 };
@@ -2449,6 +2459,77 @@ export function registerIpc({
     }
     return ctx.onboardingService.complete();
   });
+
+  const emptyTourProgress = (): OnboardingTourProgress => ({
+    wizardCompletedAt: null,
+    wizardDismissedAt: null,
+    tours: {},
+    glossaryTermsSeen: [],
+  });
+
+  ipcMain.handle(IPC.onboardingGetTourProgress, async (): Promise<OnboardingTourProgress> => {
+    const ctx = getCtx();
+    if (!ctx.onboardingService) return emptyTourProgress();
+    return ctx.onboardingService.getTourProgress();
+  });
+
+  ipcMain.handle(IPC.onboardingMarkWizardCompleted, async (): Promise<OnboardingTourProgress> => {
+    const ctx = getCtx();
+    if (!ctx.onboardingService) return emptyTourProgress();
+    return ctx.onboardingService.markWizardCompleted();
+  });
+
+  ipcMain.handle(IPC.onboardingMarkWizardDismissed, async (): Promise<OnboardingTourProgress> => {
+    const ctx = getCtx();
+    if (!ctx.onboardingService) return emptyTourProgress();
+    return ctx.onboardingService.markWizardDismissed();
+  });
+
+  ipcMain.handle(
+    IPC.onboardingMarkTourCompleted,
+    async (_event, arg: { tourId: string }): Promise<OnboardingTourProgress> => {
+      const ctx = getCtx();
+      if (!ctx.onboardingService) return emptyTourProgress();
+      return ctx.onboardingService.markTourCompleted(arg?.tourId ?? "");
+    },
+  );
+
+  ipcMain.handle(
+    IPC.onboardingMarkTourDismissed,
+    async (_event, arg: { tourId: string }): Promise<OnboardingTourProgress> => {
+      const ctx = getCtx();
+      if (!ctx.onboardingService) return emptyTourProgress();
+      return ctx.onboardingService.markTourDismissed(arg?.tourId ?? "");
+    },
+  );
+
+  ipcMain.handle(
+    IPC.onboardingUpdateTourStep,
+    async (_event, arg: { tourId: string; index: number }): Promise<OnboardingTourProgress> => {
+      const ctx = getCtx();
+      if (!ctx.onboardingService) return emptyTourProgress();
+      const index = typeof arg?.index === "number" ? arg.index : 0;
+      return ctx.onboardingService.updateTourStep(arg?.tourId ?? "", index);
+    },
+  );
+
+  ipcMain.handle(
+    IPC.onboardingMarkGlossaryTermSeen,
+    async (_event, arg: { termId: string }): Promise<OnboardingTourProgress> => {
+      const ctx = getCtx();
+      if (!ctx.onboardingService) return emptyTourProgress();
+      return ctx.onboardingService.markGlossaryTermSeen(arg?.termId ?? "");
+    },
+  );
+
+  ipcMain.handle(
+    IPC.onboardingResetTourProgress,
+    async (_event, arg?: { tourId?: string }): Promise<OnboardingTourProgress> => {
+      const ctx = getCtx();
+      if (!ctx.onboardingService) return emptyTourProgress();
+      return ctx.onboardingService.resetTourProgress(arg?.tourId);
+    },
+  );
 
   ipcMain.handle(IPC.automationsList, async (): Promise<AutomationRuleSummary[]> => {
     const ctx = getCtx();
@@ -6549,4 +6630,579 @@ export function registerIpc({
   ipcMain.handle(IPC.updateDismissInstalledNotice, () => {
     getCtx().autoUpdateService?.dismissInstalledNotice();
   });
+
+  // --------------------------------------------------------------------
+  // Mobile Push (APNs) — bridge for the MobilePushPanel settings UI
+  // --------------------------------------------------------------------
+  const readApnsStatus = (): ApnsBridgeStatus => {
+    const ctx = getCtx();
+    const effective = ctx.projectConfigService?.get?.()?.effective;
+    const apnsConfig = effective?.notifications?.apns ?? null;
+    return {
+      enabled: apnsConfig?.enabled === true,
+      configured: ctx.apnsService?.isConfigured?.() === true,
+      keyStored: ctx.apnsKeyStore?.has?.() === true,
+      keyId: apnsConfig?.keyId ?? null,
+      teamId: apnsConfig?.teamId ?? null,
+      bundleId: apnsConfig?.bundleId ?? null,
+      env: apnsConfig?.env === "production" ? "production" : "sandbox",
+    };
+  };
+
+  const saveApnsConfigToProject = (next: ApnsBridgeSaveConfigArgs): void => {
+    const ctx = getCtx();
+    if (!ctx.projectConfigService) return;
+    const snapshot = ctx.projectConfigService.get();
+    const shared = snapshot.shared ?? {};
+    const sharedNotifications =
+      (shared as Record<string, unknown>).notifications &&
+      typeof (shared as Record<string, unknown>).notifications === "object"
+        ? ((shared as Record<string, unknown>).notifications as Record<string, unknown>)
+        : {};
+    ctx.projectConfigService.save({
+      shared: {
+        ...shared,
+        notifications: {
+          ...sharedNotifications,
+          apns: {
+            enabled: next.enabled,
+            keyId: next.keyId,
+            teamId: next.teamId,
+            bundleId: next.bundleId,
+            env: next.env,
+          },
+        },
+      },
+      local: snapshot.local ?? {},
+    });
+  };
+
+  // Re-run ApnsService.configure when we have both a stored key and valid config.
+  const reconfigureApnsIfReady = (): void => {
+    const ctx = getCtx();
+    const effective = ctx.projectConfigService?.get?.()?.effective;
+    const apnsConfig = effective?.notifications?.apns ?? null;
+    if (!ctx.apnsService || !ctx.apnsKeyStore) return;
+    if (!apnsConfig?.enabled) return;
+    if (!apnsConfig.keyId || !apnsConfig.teamId || !apnsConfig.bundleId) return;
+    if (!ctx.apnsKeyStore.has()) return;
+    try {
+      const pem = ctx.apnsKeyStore.load();
+      if (!pem) return;
+      ctx.apnsService.configure({
+        keyP8Pem: pem,
+        keyId: apnsConfig.keyId,
+        teamId: apnsConfig.teamId,
+        bundleId: apnsConfig.bundleId,
+        env: apnsConfig.env === "production" ? "production" : "sandbox",
+      });
+    } catch (error) {
+      // Surface to the caller via status; don't crash the handler.
+      console.warn("apns.reconfigure_failed", error);
+    }
+  };
+
+  ipcMain.handle(IPC.notificationsApnsGetStatus, async (): Promise<ApnsBridgeStatus> => {
+    return readApnsStatus();
+  });
+
+  ipcMain.handle(
+    IPC.notificationsApnsSaveConfig,
+    async (_event, args: ApnsBridgeSaveConfigArgs): Promise<ApnsBridgeStatus> => {
+      const ctx = getCtx();
+      if (!args.enabled) {
+        saveApnsConfigToProject(args);
+        await ctx.apnsService?.reset?.();
+        return readApnsStatus();
+      }
+      // Validate against any stored key before committing the new metadata so
+      // a failed save cannot replace a previously working APNs configuration.
+      if (args.enabled && ctx.apnsService && ctx.apnsKeyStore?.has()) {
+        const pem = ctx.apnsKeyStore.load();
+        if (pem) {
+          try {
+            ctx.apnsService.configure({
+              keyP8Pem: pem,
+              keyId: args.keyId,
+              teamId: args.teamId,
+              bundleId: args.bundleId,
+              env: args.env,
+            });
+          } catch (error) {
+            throw new Error(
+              `APNs configure failed: ${error instanceof Error ? error.message : String(error)}`,
+            );
+          }
+        }
+      } else {
+        await ctx.apnsService?.reset?.();
+      }
+      saveApnsConfigToProject(args);
+      return readApnsStatus();
+    },
+  );
+
+  ipcMain.handle(
+    IPC.notificationsApnsUploadKey,
+    async (_event, args: ApnsBridgeUploadKeyArgs): Promise<ApnsBridgeStatus> => {
+      const ctx = getCtx();
+      if (!ctx.apnsKeyStore) throw new Error("ApnsKeyStore unavailable.");
+      const trimmed = (args.p8Pem ?? "").trim();
+      if (!trimmed) throw new Error("Empty .p8 payload.");
+      // If complete config is already persisted (second upload / rotation),
+      // configure first so an invalid key never replaces a working one on disk.
+      const effective = ctx.projectConfigService?.get?.()?.effective;
+      const apnsConfig = effective?.notifications?.apns ?? null;
+      if (
+        apnsConfig?.enabled &&
+        apnsConfig.keyId &&
+        apnsConfig.teamId &&
+        apnsConfig.bundleId &&
+        ctx.apnsService
+      ) {
+        try {
+          ctx.apnsService.configure({
+            keyP8Pem: trimmed,
+            keyId: apnsConfig.keyId,
+            teamId: apnsConfig.teamId,
+            bundleId: apnsConfig.bundleId,
+            env: apnsConfig.env === "production" ? "production" : "sandbox",
+          });
+        } catch (error) {
+          throw new Error(
+            `APNs configure failed: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        }
+      }
+      ctx.apnsKeyStore.save(trimmed);
+      return readApnsStatus();
+    },
+  );
+
+  ipcMain.handle(IPC.notificationsApnsClearKey, async (): Promise<ApnsBridgeStatus> => {
+    const ctx = getCtx();
+    ctx.apnsKeyStore?.clear?.();
+    await ctx.apnsService?.reset?.();
+    return readApnsStatus();
+  });
+
+  ipcMain.handle(
+    IPC.notificationsApnsSendTestPush,
+    async (_event, args: ApnsBridgeSendTestPushArgs): Promise<ApnsBridgeSendTestPushResult> => {
+      const ctx = getCtx();
+      if (!ctx.apnsService || !ctx.apnsService.isConfigured?.()) {
+        return { ok: false, reason: "APNs not configured. Upload a .p8 and save the config." };
+      }
+      const registry = ctx.syncService?.getDeviceRegistryService?.() ?? null;
+      if (!registry) return { ok: false, reason: "Device registry unavailable." };
+      const effective = ctx.projectConfigService?.get?.()?.effective;
+      const apnsConfig = effective?.notifications?.apns ?? null;
+      const configuredBundleId = apnsConfig?.bundleId?.trim() ?? "";
+      const devices = registry
+        .listDevices()
+        .filter((d) => d.platform === "iOS" && d.deviceType === "phone");
+      const kind = args.kind ?? "generic";
+
+      const target = args.deviceId
+        ? devices.find((d) => d.deviceId === args.deviceId) ?? null
+        : devices[0] ?? null;
+      if (!target) return { ok: false, reason: "No paired iOS device in the registry." };
+      const meta = target.metadata ?? {};
+      const deviceBundleId =
+        typeof meta.apnsBundleId === "string" && meta.apnsBundleId.trim().length > 0
+          ? meta.apnsBundleId.trim()
+          : configuredBundleId;
+      if (!deviceBundleId) return { ok: false, reason: "No APNs bundle id found for this device or project." };
+      const deviceEnv =
+        meta.apnsEnv === "production"
+          ? "production"
+          : meta.apnsEnv === "sandbox"
+            ? "sandbox"
+            : apnsConfig?.env === "production"
+              ? "production"
+              : "sandbox";
+
+      // Pick the right (token, topic, pushType, payload) quadruple based on kind.
+      let deviceToken: string | null;
+      let topic: string;
+      let pushType: "alert" | "liveactivity";
+      let payload: Record<string, unknown>;
+
+      if (kind === "la_start") {
+        deviceToken = typeof meta.apnsActivityStartToken === "string" ? meta.apnsActivityStartToken : null;
+        if (!deviceToken) {
+          return {
+            ok: false,
+            reason: "Device has no Live Activity push-to-start token yet (iOS 17.2+ registers this shortly after launch).",
+          };
+        }
+        topic = `${deviceBundleId}.push-type.liveactivity`;
+        pushType = "liveactivity";
+        payload = buildLiveActivityStartPayload();
+      } else if (kind === "la_update_running" || kind === "la_update_attention" || kind === "la_update_multi") {
+        const tokenMap = (meta.apnsActivityUpdateTokens ?? null) as Record<string, string> | null;
+        const tokens = tokenMap ? Object.values(tokenMap).filter((t): t is string => typeof t === "string" && t.length > 0) : [];
+        deviceToken = tokens[0] ?? null;
+        if (!deviceToken) {
+          return {
+            ok: false,
+            reason: "No active Live Activity on device to update. Start one first (or fire 'Live Activity · start').",
+          };
+        }
+        topic = `${deviceBundleId}.push-type.liveactivity`;
+        pushType = "liveactivity";
+        payload = buildLiveActivityUpdatePayload(kind);
+      } else if (kind === "la_end") {
+        const tokenMap = (meta.apnsActivityUpdateTokens ?? null) as Record<string, string> | null;
+        const tokens = tokenMap ? Object.values(tokenMap).filter((t): t is string => typeof t === "string" && t.length > 0) : [];
+        deviceToken = tokens[0] ?? null;
+        if (!deviceToken) {
+          return { ok: false, reason: "No active Live Activity on device to end." };
+        }
+        topic = `${deviceBundleId}.push-type.liveactivity`;
+        pushType = "liveactivity";
+        payload = buildLiveActivityEndPayload();
+      } else {
+        deviceToken = typeof meta.apnsAlertToken === "string" ? meta.apnsAlertToken : null;
+        if (!deviceToken) {
+          return {
+            ok: false,
+            reason:
+              "Device has no APNs alert token yet. Make sure you accepted the notification permission prompt on the iOS app (Settings → Notifications → ADE → Allow).",
+          };
+        }
+        topic = deviceBundleId;
+        pushType = "alert";
+        payload = buildTestPushPayload(kind);
+      }
+
+      try {
+        const result = await ctx.apnsService.send({
+          deviceToken,
+          env: deviceEnv,
+          pushType,
+          topic,
+          priority: 10,
+          payload,
+        });
+        if (result.ok) return { ok: true };
+        return { ok: false, reason: result.reason ?? "APNs rejected the push." };
+      } catch (error) {
+        return {
+          ok: false,
+          reason: error instanceof Error ? error.message : "Unknown send error.",
+        };
+      }
+    },
+  );
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Live Activity payload helpers
+// ════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Swift Codable default for `Date` is seconds since 2001-01-01 00:00:00 UTC
+ * (NSDate reference date). Convert Unix seconds so the ContentState
+ * decoder on-device parses our dates correctly.
+ */
+const NSDATE_REFERENCE_OFFSET_SECONDS = 978_307_200;
+function toNSDateSeconds(unixSeconds: number): number {
+  return unixSeconds - NSDATE_REFERENCE_OFFSET_SECONDS;
+}
+
+/**
+ * Build a minimal valid `ContentState` matching `ADESessionAttributes.ContentState`
+ * on-device. `variant` selects which UI state to drive the island into.
+ */
+function buildContentState(
+  variant: "running" | "attention" | "multi",
+): Record<string, unknown> {
+  const nowUnix = Math.floor(Date.now() / 1000);
+  const nowRef = toNSDateSeconds(nowUnix);
+
+  const sessionRunning = {
+    id: "test-la-claude",
+    providerSlug: "claude",
+    title: "Push test · Claude",
+    isAwaitingInput: false,
+    isFailed: false,
+    startedAt: nowRef - 60,
+    toolCalls: 4,
+    preview: "Reading src/auth/oauth.ts",
+    progress: 0.32,
+  };
+  const sessionAwaiting = {
+    id: "test-la-claude",
+    providerSlug: "claude",
+    title: "Push test · Claude",
+    isAwaitingInput: true,
+    isFailed: false,
+    startedAt: nowRef - 120,
+    toolCalls: 7,
+    preview: "Approve 3 file writes to continue",
+  };
+  const sessionCodex = {
+    id: "test-la-codex",
+    providerSlug: "codex",
+    title: "tests-fix",
+    isAwaitingInput: false,
+    isFailed: false,
+    startedAt: nowRef - 30,
+    toolCalls: 2,
+  };
+  const sessionCto = {
+    id: "test-la-cto",
+    providerSlug: "cto",
+    title: "daily-review",
+    isAwaitingInput: false,
+    isFailed: false,
+    startedAt: nowRef - 240,
+    toolCalls: 11,
+  };
+
+  if (variant === "attention") {
+    return {
+      sessions: [sessionAwaiting],
+      attention: {
+        kind: "awaitingInput",
+        title: "Claude · Push test",
+        subtitle: "3 file writes need approval",
+        providerSlug: "claude",
+        sessionId: sessionAwaiting.id,
+        itemId: "test-item-1",
+      },
+      failingCheckCount: 0,
+      awaitingReviewCount: 0,
+      mergeReadyCount: 0,
+      generatedAt: nowRef,
+    };
+  }
+  if (variant === "multi") {
+    return {
+      sessions: [sessionRunning, sessionCodex, sessionCto],
+      attention: null,
+      failingCheckCount: 1,
+      awaitingReviewCount: 2,
+      mergeReadyCount: 0,
+      generatedAt: nowRef,
+    };
+  }
+  // variant === "running"
+  return {
+    sessions: [sessionRunning],
+    attention: null,
+    failingCheckCount: 0,
+    awaitingReviewCount: 0,
+    mergeReadyCount: 0,
+    generatedAt: nowRef,
+  };
+}
+
+function buildLiveActivityStartPayload(): Record<string, unknown> {
+  const nowUnix = Math.floor(Date.now() / 1000);
+  return {
+    aps: {
+      timestamp: nowUnix,
+      event: "start",
+      "attributes-type": "ADESessionAttributes",
+      attributes: { workspaceId: "default", workspaceName: "Test Workspace" },
+      "content-state": buildContentState("running"),
+      "stale-date": nowUnix + 300,
+      "relevance-score": 100,
+      alert: {
+        title: "ADE · Live Activity started",
+        body: "Tap to open.",
+      },
+    },
+  };
+}
+
+function buildLiveActivityUpdatePayload(
+  kind: "la_update_running" | "la_update_attention" | "la_update_multi",
+): Record<string, unknown> {
+  const nowUnix = Math.floor(Date.now() / 1000);
+  const variant =
+    kind === "la_update_attention" ? "attention" : kind === "la_update_multi" ? "multi" : "running";
+  return {
+    aps: {
+      timestamp: nowUnix,
+      event: "update",
+      "content-state": buildContentState(variant),
+      "stale-date": nowUnix + 300,
+      "relevance-score": variant === "attention" ? 100 : variant === "multi" ? 60 : 40,
+      alert:
+        variant === "attention"
+          ? {
+              title: "Claude · Push test",
+              body: "Approval needed — tap Approve/Deny in the island.",
+            }
+          : variant === "multi"
+            ? { title: "ADE", body: "3 chats running · 1 CI failing · 2 reviews pending" }
+            : { title: "Claude · Push test", body: "Reading src/auth/oauth.ts" },
+    },
+  };
+}
+
+function buildLiveActivityEndPayload(): Record<string, unknown> {
+  const nowUnix = Math.floor(Date.now() / 1000);
+  return {
+    aps: {
+      timestamp: nowUnix,
+      event: "end",
+      "content-state": buildContentState("running"),
+      "dismissal-date": nowUnix + 30,
+      alert: { title: "ADE", body: "Live Activity ended." },
+    },
+  };
+}
+
+/**
+ * Build a self-contained APNs payload for each test-push category. Each
+ * payload is shaped to exercise the exact code path a real notification
+ * of that kind would go through on iOS: category identifier, mutable-content
+ * for the NotificationServiceExtension, thread-id for grouping,
+ * interruption-level, and any custom metadata the action handlers need
+ * (sessionId, itemId, prId, prNumber).
+ */
+function buildTestPushPayload(kind: ApnsTestPushKind): Record<string, unknown> {
+  switch (kind) {
+    case "awaiting_input":
+      return {
+        aps: {
+          alert: {
+            title: "Claude · ADE mobile",
+            body: "3 file writes need approval before I continue.",
+          },
+          sound: "default",
+          "mutable-content": 1,
+          "interruption-level": "time-sensitive",
+          "relevance-score": 1.0,
+          "thread-id": "chat:test-approval-session:approval",
+          category: "CHAT_AWAITING_INPUT",
+        },
+        providerSlug: "claude",
+        sessionId: "test-approval-session",
+        itemId: "test-item-001",
+        kind: "approval",
+      };
+    case "chat_failed":
+      return {
+        aps: {
+          alert: {
+            title: "Codex · tests-fix",
+            body: "Session failed: rate limit exceeded after 24 tool calls.",
+          },
+          sound: "default",
+          "mutable-content": 1,
+          "interruption-level": "active",
+          "relevance-score": 0.7,
+          "thread-id": "chat:test-failed-session",
+          category: "CHAT_FAILED",
+        },
+        providerSlug: "codex",
+        sessionId: "test-failed-session",
+      };
+    case "chat_turn_completed":
+      return {
+        aps: {
+          alert: {
+            title: "Claude · auth-refactor",
+            body: "Finished replying. 14 file edits, 3 new tests added.",
+          },
+          sound: "default",
+          "mutable-content": 1,
+          "interruption-level": "active",
+          "relevance-score": 0.4,
+          "thread-id": "chat:test-completed-session",
+          category: "CHAT_TURN_COMPLETED",
+        },
+        providerSlug: "claude",
+        sessionId: "test-completed-session",
+      };
+    case "ci_failing":
+      return {
+        aps: {
+          alert: {
+            title: "PR #412 · auth-refactor",
+            body: "3 checks failing: lint, tsc, integration-tests.",
+          },
+          sound: "default",
+          "mutable-content": 1,
+          "interruption-level": "active",
+          "relevance-score": 0.8,
+          "thread-id": "pr:412",
+          category: "PR_CI_FAILING",
+        },
+        prId: "test-pr-412",
+        prNumber: 412,
+      };
+    case "review_requested":
+      return {
+        aps: {
+          alert: {
+            title: "PR #408 · new-widget",
+            body: "alice requested your review.",
+          },
+          sound: "default",
+          "mutable-content": 1,
+          "interruption-level": "active",
+          "relevance-score": 0.7,
+          "thread-id": "pr:408",
+          category: "PR_REVIEW_REQUESTED",
+        },
+        prId: "test-pr-408",
+        prNumber: 408,
+      };
+    case "merge_ready":
+      return {
+        aps: {
+          alert: {
+            title: "PR #401 · refactor-auth",
+            body: "All checks passed and approved. Ready to merge.",
+          },
+          sound: "default",
+          "mutable-content": 1,
+          "interruption-level": "active",
+          "relevance-score": 0.6,
+          "thread-id": "pr:401",
+          category: "PR_MERGE_READY",
+        },
+        prId: "test-pr-401",
+        prNumber: 401,
+      };
+    case "cto_subagent_finished":
+      return {
+        aps: {
+          alert: {
+            title: "CTO · daily-review",
+            body: "Sub-agent 'Lint cleanup' finished (3 PRs opened).",
+          },
+          sound: "default",
+          "mutable-content": 1,
+          "interruption-level": "active",
+          "relevance-score": 0.5,
+          "thread-id": "cto:test-subagent",
+          category: "CTO_SUBAGENT_FINISHED",
+        },
+        providerSlug: "cto",
+      };
+    case "generic":
+    default:
+      return {
+        aps: {
+          alert: {
+            title: "ADE",
+            body: "Mobile push is working. Tap to open ADE.",
+          },
+          sound: "default",
+          "mutable-content": 1,
+          "interruption-level": "active",
+          "relevance-score": 0.5,
+          category: "SYSTEM_ALERT",
+        },
+        providerSlug: "ade",
+        testPush: true,
+      };
+  }
 }

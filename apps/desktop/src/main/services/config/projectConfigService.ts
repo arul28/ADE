@@ -60,6 +60,8 @@ import type {
   LinearSyncConfig,
   MissionModelConfig,
   MissionPermissionConfig,
+  NotificationsConfig,
+  NotificationApnsConfig,
   StackButtonDefinition,
   TestSuiteDefinition,
   TestSuiteTag
@@ -307,6 +309,8 @@ function coerceAiChatConfig(value: unknown): AiConfig["chat"] {
   }
   const sendOnEnter = asBool(value.sendOnEnter);
   if (sendOnEnter != null) chat.sendOnEnter = sendOnEnter;
+  const autoAllowAskUser = asBool(value.autoAllowAskUser);
+  if (autoAllowAskUser != null) chat.autoAllowAskUser = autoAllowAskUser;
   const codexSandbox = asString(value.codexSandbox)?.trim();
   if (codexSandbox === "read-only" || codexSandbox === "workspace-write" || codexSandbox === "danger-full-access") {
     chat.codexSandbox = codexSandbox;
@@ -1486,6 +1490,28 @@ function normalizeIssueStateKey(value: unknown):
   return null;
 }
 
+function coerceNotificationsConfig(value: unknown): NotificationsConfig | undefined {
+  if (!isRecord(value)) return undefined;
+  const out: NotificationsConfig = {};
+  if (isRecord(value.apns)) {
+    const raw = value.apns;
+    const apns = {} as NotificationApnsConfig;
+    const enabled = asBool(raw.enabled);
+    if (enabled != null) apns.enabled = enabled;
+    if (raw.env === "production" || raw.env === "sandbox") apns.env = raw.env;
+    const keyId = asString(raw.keyId)?.trim();
+    if (keyId) apns.keyId = keyId;
+    const teamId = asString(raw.teamId)?.trim();
+    if (teamId) apns.teamId = teamId;
+    const bundleId = asString(raw.bundleId)?.trim();
+    if (bundleId) apns.bundleId = bundleId;
+    const keyStored = asBool(raw.keyStored);
+    if (keyStored != null) apns.keyStored = keyStored;
+    out.apns = apns;
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
 function coerceLinearSync(value: unknown): LinearSyncConfig | undefined {
   if (!isRecord(value)) return undefined;
   const out: LinearSyncConfig = {};
@@ -1872,6 +1898,8 @@ function coerceConfigFile(value: unknown): ProjectConfigFile {
     delete providersRaw.ai;
   }
 
+  const notifications = coerceNotificationsConfig(value.notifications);
+
   return {
     version,
     processes,
@@ -1888,7 +1916,8 @@ function coerceConfigFile(value: unknown): ProjectConfigFile {
     ...(git ? { git } : {}),
     ...(ai ? { ai } : {}),
     ...(providersRaw && Object.keys(providersRaw).length ? { providers: providersRaw } : {}),
-    ...(linearSync ? { linearSync } : {})
+    ...(linearSync ? { linearSync } : {}),
+    ...(notifications ? { notifications } : {})
   };
 }
 
@@ -1914,6 +1943,32 @@ function readConfigFile(filePath: string): { config: ProjectConfigFile; raw: str
   }
 }
 
+function mergeNotificationsConfig(
+  shared: NotificationsConfig | undefined,
+  local: NotificationsConfig | undefined
+): NotificationsConfig | undefined {
+  if (!shared && !local) return undefined;
+  const keyId = local?.apns?.keyId ?? shared?.apns?.keyId;
+  const teamId = local?.apns?.teamId ?? shared?.apns?.teamId;
+  const bundleId = local?.apns?.bundleId ?? shared?.apns?.bundleId;
+  const keyStored = local?.apns?.keyStored ?? shared?.apns?.keyStored;
+  const apns: NotificationApnsConfig | undefined = shared?.apns || local?.apns
+    ? {
+        enabled: local?.apns?.enabled ?? shared?.apns?.enabled ?? false,
+        env: local?.apns?.env ?? shared?.apns?.env ?? "sandbox",
+        ...(keyId ? { keyId } : {}),
+        ...(teamId ? { teamId } : {}),
+        ...(bundleId ? { bundleId } : {}),
+        ...(keyStored != null ? { keyStored } : {})
+      }
+    : undefined;
+  return {
+    ...(shared ?? {}),
+    ...(local ?? {}),
+    ...(apns ? { apns } : {})
+  };
+}
+
 function toCanonicalYaml(config: ProjectConfigFile): string {
   const normalized: ProjectConfigFile = {
     version: VERSION,
@@ -1930,7 +1985,8 @@ function toCanonicalYaml(config: ProjectConfigFile): string {
     ...(config.git ? { git: config.git } : {}),
     ...(config.ai ? { ai: config.ai } : {}),
     ...(config.providers ? { providers: config.providers } : {}),
-    ...(config.linearSync ? { linearSync: config.linearSync } : {})
+    ...(config.linearSync ? { linearSync: config.linearSync } : {}),
+    ...(config.notifications ? { notifications: config.notifications } : {})
   };
   return YAML.stringify(normalized, { indent: 2 });
 }
@@ -2216,6 +2272,7 @@ function resolveEffectiveConfig(shared: ProjectConfigFile, local: ProjectConfigF
 
   const mergedAi = mergeAiConfig(shared.ai, local.ai);
   const mergedLinearSync = mergeLinearSync(shared.linearSync, local.linearSync);
+  const mergedNotifications = mergeNotificationsConfig(shared.notifications, local.notifications);
 
   const environments = [...(shared.environments ?? []), ...(local.environments ?? [])];
 
@@ -2265,7 +2322,8 @@ function resolveEffectiveConfig(shared: ProjectConfigFile, local: ProjectConfigF
     },
     ...(effectiveAi ? { ai: effectiveAi } : {}),
     ...(mergedProviders ? { providers: mergedProviders } : {}),
-    ...(mergedLinearSync ? { linearSync: mergedLinearSync } : {})
+    ...(mergedLinearSync ? { linearSync: mergedLinearSync } : {}),
+    ...(mergedNotifications ? { notifications: mergedNotifications } : {})
   };
 }
 

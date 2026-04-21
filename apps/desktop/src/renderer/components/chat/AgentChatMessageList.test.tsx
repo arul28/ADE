@@ -557,6 +557,56 @@ describe("AgentChatMessageList transcript rendering", () => {
   // "renders structured question blocks" tests removed: tested specific
   // CSS classes and rendering details that change with UI iterations.
 
+  it("renders structured ask-user requests inline and submits option answers", () => {
+    const onApproval = vi.fn();
+    renderMessageList([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: {
+          type: "approval_request",
+          itemId: "approval-structured",
+          kind: "tool_call",
+          description: "Choose how to proceed",
+          turnId: "turn-1",
+          detail: {
+            request: {
+              requestId: "request-structured",
+              itemId: "approval-structured",
+              source: "codex",
+              kind: "structured_question",
+              title: "Input needed",
+              description: "Choose how to proceed",
+              questions: [
+                {
+                  id: "focus_area",
+                  header: "Focus",
+                  question: "Which area should we test first?",
+                  options: [
+                    { label: "Question flow", value: "question_flow", description: "Check plan-mode input." },
+                    { label: "Plan updates", value: "plan_updates" },
+                  ],
+                  allowsFreeform: true,
+                },
+              ],
+              allowsFreeform: true,
+              blocking: true,
+              canProceedWithoutAnswer: false,
+            },
+          },
+        },
+      },
+    ], { onApproval });
+
+    expect(screen.getByText("Which area should we test first?")).toBeTruthy();
+
+    fireEvent.click(findButtonByTextContent(/^Question flow/));
+
+    expect(onApproval).toHaveBeenCalledWith("approval-structured", "accept", null, {
+      focus_area: "question_flow",
+    });
+  });
+
   it("shows structured questions as declined once the first resolution arrives and disables stale option chips", () => {
     const onApproval = vi.fn();
     renderMessageList([
@@ -792,5 +842,152 @@ describe("deriveTurnModelState", () => {
 
     expect(nextState.map.get("turn-2")?.label).toContain("Codex");
     expect(getModelByIdSpy).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("AgentChatMessageList inline ask-user card", () => {
+  const buildStructuredApprovalEvent = (overrides: {
+    questions: Array<Record<string, unknown>>;
+  }): AgentChatEventEnvelope => ({
+    sessionId: "session-ask",
+    timestamp: "2026-04-20T10:00:00.000Z",
+    event: {
+      type: "approval_request",
+      itemId: "approval-ask",
+      kind: "tool_call",
+      description: "Select plan for branch",
+      turnId: "turn-ask",
+      detail: {
+        request: {
+          requestId: "req-ask",
+          itemId: "approval-ask",
+          source: "ade",
+          kind: "structured_question",
+          title: "Choose plan",
+          description: "Which plan should we follow?",
+          questions: overrides.questions,
+          allowsFreeform: true,
+          blocking: true,
+          canProceedWithoutAnswer: false,
+        },
+      },
+    },
+  });
+
+  it("renders option chips with recommended marker and full question metadata", () => {
+    renderMessageList([
+      buildStructuredApprovalEvent({
+        questions: [
+          {
+            id: "plan_choice",
+            header: "Plan",
+            question: "Which plan should we follow?",
+            options: [
+              { label: "Rebase", value: "rebase", description: "Fast-forward replay.", recommended: true },
+              { label: "Merge", value: "merge", description: "Preserve history." },
+            ],
+            allowsFreeform: true,
+            defaultAssumption: "Rebase keeps history linear",
+            impact: "Tests must re-run after rebase",
+          },
+        ],
+      }),
+    ]);
+
+    expect(screen.getAllByText("Which plan should we follow?").length).toBeGreaterThan(0);
+    const rebaseButton = findButtonByTextContent(/^Rebase\s*\(Recommended\)/);
+    expect(rebaseButton).toBeTruthy();
+    expect(rebaseButton.textContent ?? "").toContain("Fast-forward replay.");
+    expect(findButtonByTextContent(/^Merge/)).toBeTruthy();
+    expect(screen.getByText(/Default: Rebase keeps history linear/)).toBeTruthy();
+    expect(screen.getByText(/Tests must re-run after rebase/)).toBeTruthy();
+  });
+
+  it("tap-submits single-select answers through onApproval", () => {
+    const onApproval = vi.fn();
+    renderMessageList([
+      buildStructuredApprovalEvent({
+        questions: [
+          {
+            id: "plan_choice",
+            header: "Plan",
+            question: "Which plan should we follow?",
+            options: [
+              { label: "Rebase", value: "rebase" },
+              { label: "Merge", value: "merge" },
+            ],
+            allowsFreeform: false,
+          },
+        ],
+      }),
+    ], { onApproval });
+
+    fireEvent.click(findButtonByTextContent(/^Rebase/));
+    expect(onApproval).toHaveBeenCalledWith("approval-ask", "accept", null, { plan_choice: "rebase" });
+  });
+
+  it("accumulates multi-select values and submits as an array when Send is clicked", () => {
+    const onApproval = vi.fn();
+    renderMessageList([
+      buildStructuredApprovalEvent({
+        questions: [
+          {
+            id: "areas",
+            header: "Areas",
+            question: "Which surfaces should regression tests cover?",
+            multiSelect: true,
+            options: [
+              { label: "Desktop", value: "desktop" },
+              { label: "iOS", value: "ios" },
+              { label: "Sync", value: "sync" },
+            ],
+            allowsFreeform: false,
+          },
+        ],
+      }),
+    ], { onApproval });
+
+    fireEvent.click(findButtonByTextContent(/^Desktop/));
+    fireEvent.click(findButtonByTextContent(/^Sync/));
+    expect(onApproval).not.toHaveBeenCalled();
+
+    fireEvent.click(findButtonByTextContent(/^Send answer/i));
+    expect(onApproval).toHaveBeenCalledTimes(1);
+    const call = onApproval.mock.calls[0]!;
+    expect(call[0]).toBe("approval-ask");
+    expect(call[1]).toBe("accept");
+    expect(call[2]).toBeNull();
+    expect(call[3]).toEqual({ areas: ["desktop", "sync"] });
+  });
+
+  it("renders the option preview panel when an option with preview is selected", () => {
+    renderMessageList([
+      buildStructuredApprovalEvent({
+        questions: [
+          {
+            id: "strategy",
+            header: "Strategy",
+            question: "Pick a merge strategy",
+            multiSelect: true,
+            options: [
+              {
+                label: "Squash",
+                value: "squash",
+                preview: "**Squash merge**\n\nCollapses to one commit.",
+                previewFormat: "markdown",
+              },
+              { label: "Rebase", value: "rebase" },
+            ],
+          },
+        ],
+      }),
+    ]);
+
+    expect(screen.queryByTestId("inline-question-preview-strategy")).toBeNull();
+    fireEvent.click(findButtonByTextContent(/^Squash/));
+    const preview = screen.getByTestId("inline-question-preview-strategy");
+    expect(preview).toBeTruthy();
+    expect(preview.textContent ?? "").toContain("Squash merge");
+    expect(preview.textContent ?? "").toContain("Collapses to one commit.");
   });
 });

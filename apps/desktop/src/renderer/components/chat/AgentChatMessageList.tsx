@@ -61,6 +61,8 @@ import {
   type ChatTranscriptGroupedEnvelope as TranscriptGroupedEnvelope,
   type ChatTranscriptRenderEnvelope as TranscriptRenderEnvelope,
 } from "./chatTranscriptRows";
+import { readPendingInputRequest, buildLegacyPendingInputFromApprovalEvent } from "./pendingInput";
+import type { PendingInputQuestion, PendingInputRequest } from "../../../shared/types";
 
 const NAVIGATION_SURFACES = new Set(["work", "missions", "lanes", "cto"]);
 type PendingInputResolution = Extract<AgentChatEvent, { type: "pending_input_resolved" }>["resolution"];
@@ -1127,6 +1129,265 @@ function FileChangeEventCard({
   );
 }
 
+type InlineQuestionOption = {
+  label: string;
+  value: string;
+  description?: string;
+  recommended?: boolean;
+  preview?: string;
+  previewFormat?: "markdown" | "html";
+};
+
+type InlineQuestion = {
+  id: string;
+  header: string;
+  questionText: string;
+  options: InlineQuestionOption[];
+  allowsFreeform: boolean;
+  multiSelect: boolean;
+  isSecret: boolean;
+  defaultAssumption: string;
+  impact: string;
+};
+
+function buildInlineQuestionsFromPendingRequest(request: PendingInputRequest): InlineQuestion[] {
+  const hydrateOptions = (options: PendingInputQuestion["options"] | undefined): InlineQuestionOption[] => {
+    if (!Array.isArray(options)) return [];
+    return options.flatMap((option) => {
+      if (!option) return [];
+      const label = typeof option.label === "string" ? option.label.trim() : "";
+      const value = typeof option.value === "string" && option.value.trim().length
+        ? option.value.trim()
+        : label;
+      if (!label.length || !value.length) return [];
+      const entry: InlineQuestionOption = { label, value };
+      if (typeof option.description === "string" && option.description.trim().length) {
+        entry.description = option.description.trim();
+      }
+      if (option.recommended === true) entry.recommended = true;
+      if (typeof option.preview === "string" && option.preview.trim().length) {
+        entry.preview = option.preview;
+      }
+      if (option.previewFormat === "markdown" || option.previewFormat === "html") {
+        entry.previewFormat = option.previewFormat;
+      }
+      return [entry];
+    });
+  };
+
+  const questions = Array.isArray(request.questions) ? request.questions : [];
+  if (questions.length > 0) {
+    return questions.map((question, index) => ({
+      id: typeof question.id === "string" && question.id.trim().length ? question.id.trim() : `question_${index + 1}`,
+      header: typeof question.header === "string" && question.header.trim().length
+        ? question.header.trim()
+        : `Question ${index + 1}`,
+      questionText: typeof question.question === "string" ? question.question.trim() : "",
+      options: hydrateOptions(question.options ?? null),
+      allowsFreeform: question.allowsFreeform !== false,
+      multiSelect: question.multiSelect === true,
+      isSecret: question.isSecret === true,
+      defaultAssumption: typeof question.defaultAssumption === "string" && question.defaultAssumption.trim().length
+        ? question.defaultAssumption.trim()
+        : "",
+      impact: typeof question.impact === "string" && question.impact.trim().length
+        ? question.impact.trim()
+        : "",
+    }));
+  }
+
+  const topLevelOptions = hydrateOptions(request.options ?? null);
+  if (!topLevelOptions.length && !request.allowsFreeform) return [];
+  return [{
+    id: "response",
+    header: "Question",
+    questionText: typeof request.description === "string" ? request.description : "",
+    options: topLevelOptions,
+    allowsFreeform: request.allowsFreeform !== false,
+    multiSelect: false,
+    isSecret: false,
+    defaultAssumption: "",
+    impact: "",
+  }];
+}
+
+function InlineQuestionRequestCard({
+  itemId,
+  source,
+  title,
+  description,
+  questions,
+  isResponding,
+  onApproval,
+}: {
+  itemId: string;
+  source: string;
+  title: string;
+  description: string;
+  questions: InlineQuestion[];
+  isResponding: boolean;
+  onApproval?: (itemId: string, decision: AgentChatApprovalDecision, responseText?: string | null, answers?: Record<string, string | string[]>) => void;
+}) {
+  const [selected, setSelected] = useState<Record<string, string[]>>({});
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const [focusedOption, setFocusedOption] = useState<Record<string, string>>({});
+
+  const submit = useCallback((extraAnswers?: Record<string, string | string[]>) => {
+    const answers: Record<string, string | string[]> = {};
+    for (const question of questions) {
+      const selectedValues = selected[question.id]?.filter(Boolean) ?? [];
+      const draft = drafts[question.id]?.trim() ?? "";
+      const values = [...selectedValues];
+      if (draft.length) values.push(draft);
+      if (values.length === 1) answers[question.id] = values[0]!;
+      if (values.length > 1) answers[question.id] = values;
+    }
+    onApproval?.(itemId, "accept", null, { ...answers, ...(extraAnswers ?? {}) });
+  }, [drafts, itemId, onApproval, questions, selected]);
+
+  const handleOption = useCallback((question: InlineQuestion, option: InlineQuestionOption) => {
+    if (!question.multiSelect && questions.length === 1) {
+      onApproval?.(itemId, "accept", null, { [question.id]: option.value });
+      return;
+    }
+    setFocusedOption((prev) => ({ ...prev, [question.id]: option.value }));
+    setSelected((prev) => {
+      const current = prev[question.id] ?? [];
+      let next: string[];
+      if (current.includes(option.value)) {
+        next = current.filter((value) => value !== option.value);
+      } else if (question.multiSelect) {
+        next = [...current, option.value];
+      } else {
+        next = [option.value];
+      }
+      return { ...prev, [question.id]: next };
+    });
+  }, [itemId, onApproval, questions.length]);
+
+  const hasAnswer = questions.some((question) => {
+    if ((selected[question.id]?.length ?? 0) > 0) return true;
+    return (drafts[question.id]?.trim().length ?? 0) > 0;
+  });
+
+  return (
+    <div className={cn(GLASS_CARD_CLASS, "p-4")} style={MESSAGE_CARD_STYLE}>
+      <div className="mb-3 flex items-center gap-2">
+        <span className="inline-flex h-6 w-6 items-center justify-center rounded-[var(--chat-radius-pill)] border border-amber-400/20 bg-amber-500/10">
+          <ChatStatusGlyph status="waiting" size={11} />
+        </span>
+        <span className="font-mono text-[10px] font-bold uppercase tracking-widest text-amber-200">
+          Input needed{source ? ` · ${source}` : ""}
+        </span>
+      </div>
+      <div className="mb-3">
+        <div className="text-[13px] font-semibold text-fg/90">{title || "Question"}</div>
+        {description ? <div className="mt-1 text-[12px] leading-relaxed text-fg/62">{description}</div> : null}
+      </div>
+      <div className="space-y-3">
+        {questions.map((question) => (
+          <div key={question.id} className="rounded-[calc(var(--chat-radius-card)-6px)] border border-amber-400/14 bg-amber-400/[0.045] p-3">
+            <div className="mb-1 font-mono text-[9px] font-bold uppercase tracking-widest text-amber-200/70">{question.header}</div>
+            <div className="text-[12.5px] leading-[1.6] text-fg/85">{question.questionText}</div>
+            {question.impact ? <div className="mt-1 text-[11px] leading-relaxed text-fg/45">{question.impact}</div> : null}
+            {question.options.length ? (
+              <div className="mt-3 flex flex-wrap items-stretch gap-2" data-testid={`inline-question-options-${question.id}`}>
+                {question.options.map((option) => {
+                  const active = selected[question.id]?.includes(option.value) ?? false;
+                  return (
+                    <button
+                      key={option.value}
+                      type="button"
+                      disabled={isResponding}
+                      data-testid={`inline-question-option-${question.id}-${option.value}`}
+                      className={cn(
+                        "max-w-[280px] rounded-[var(--chat-radius-pill)] border px-3 py-1.5 text-left font-mono text-[10px] font-bold uppercase tracking-wider transition-colors disabled:pointer-events-none disabled:opacity-45",
+                        active
+                          ? "border-amber-300/45 bg-amber-300/16 text-amber-100"
+                          : "border-amber-300/24 bg-transparent text-fg/70 hover:bg-amber-300/10",
+                      )}
+                      onClick={() => handleOption(question, option)}
+                      onFocus={() => setFocusedOption((prev) => ({ ...prev, [question.id]: option.value }))}
+                      onMouseEnter={() => setFocusedOption((prev) => prev[question.id] ? prev : { ...prev, [question.id]: option.value })}
+                    >
+                      <span>{option.label}{option.recommended ? " (Recommended)" : ""}</span>
+                      {option.description ? <span className="mt-0.5 block text-[9px] font-medium normal-case tracking-normal text-fg/45">{option.description}</span> : null}
+                    </button>
+                  );
+                })}
+              </div>
+            ) : null}
+            {(() => {
+              const selectedForQuestion = selected[question.id];
+              const focusValue = focusedOption[question.id]
+                ?? selectedForQuestion?.[selectedForQuestion.length - 1]
+                ?? null;
+              const focused = focusValue
+                ? question.options.find((option) => option.value === focusValue)
+                : null;
+              if (!focused || !focused.preview) return null;
+              return (
+                <div
+                  className="mt-3 rounded-[calc(var(--chat-radius-card)-8px)] border border-amber-300/14 bg-black/20 p-3 text-[11.5px] leading-relaxed text-fg/75"
+                  data-testid={`inline-question-preview-${question.id}`}
+                >
+                  <div className="mb-1 font-mono text-[9px] font-bold uppercase tracking-widest text-amber-200/60">
+                    Preview · {focused.label}
+                  </div>
+                  {focused.previewFormat === "html" ? (
+                    <div className="whitespace-pre-wrap break-words font-mono text-[11px] text-fg/70">{focused.preview}</div>
+                  ) : (
+                    <div className="prose prose-invert max-w-none text-[11.5px] [&_p]:my-1">
+                      <ReactMarkdown remarkPlugins={[remarkGfm]}>{focused.preview}</ReactMarkdown>
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
+            {question.allowsFreeform ? (
+              <input
+                type={question.isSecret ? "password" : "text"}
+                value={drafts[question.id] ?? ""}
+                disabled={isResponding}
+                placeholder={question.options.length ? "Optional response" : "Response"}
+                className="mt-3 w-full rounded-[var(--chat-radius-card)] border border-white/10 bg-black/20 px-3 py-2 text-[12px] text-fg/82 outline-none placeholder:text-fg/30 focus:border-amber-300/35"
+                onChange={(event) => setDrafts((prev) => ({ ...prev, [question.id]: event.target.value }))}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    event.preventDefault();
+                    if (hasAnswer) submit();
+                  }
+                }}
+              />
+            ) : null}
+            {question.defaultAssumption ? (
+              <div className="mt-2 text-[10px] text-fg/38">Default: {question.defaultAssumption}</div>
+            ) : null}
+          </div>
+        ))}
+      </div>
+      <div className="mt-3 flex items-center gap-2">
+        <button
+          type="button"
+          disabled={isResponding || !hasAnswer}
+          className="rounded-[var(--chat-radius-pill)] border border-amber-300/30 bg-amber-300/12 px-3 py-1.5 font-mono text-[10px] font-bold uppercase tracking-wider text-amber-100 transition-colors hover:bg-amber-300/18 disabled:pointer-events-none disabled:opacity-40"
+          onClick={() => submit()}
+        >
+          {isResponding ? "Sending..." : "Send answer"}
+        </button>
+        <button
+          type="button"
+          disabled={isResponding}
+          className="rounded-[var(--chat-radius-pill)] border border-border/20 px-3 py-1.5 font-mono text-[10px] font-bold uppercase tracking-wider text-fg/45 transition-colors hover:bg-border/10 disabled:pointer-events-none disabled:opacity-40"
+          onClick={() => onApproval?.(itemId, "decline")}
+        >
+          Decline
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function renderEvent(
   envelope: RenderEnvelope,
   options?: {
@@ -1888,49 +2149,19 @@ function renderEvent(
     const detail = readRecord(event.detail);
     const request = readRecord(detail?.request);
     const requestKind = typeof request?.kind === "string" ? request.kind.trim() : "";
-    const requestSource = typeof request?.source === "string" ? request.source.trim() : "";
     const requestDescription = typeof request?.description === "string" ? request.description.trim() : "";
-    const requestQuestions = Array.isArray(request?.questions)
-      ? request.questions.map((question) => readRecord(question)).filter((question): question is Record<string, unknown> => question != null)
+    // Source of truth: reuse the canonical parser so questions, options, preview, recommended,
+    // defaultAssumption, impact, and multiSelect all survive the render path. Falls back to the
+    // legacy flat-detail shape when the modern PendingInputRequest envelope isn't present.
+    const pendingRequest = readPendingInputRequest(detail?.request)
+      ?? buildLegacyPendingInputFromApprovalEvent({ event });
+    const requestSource = typeof pendingRequest?.source === "string"
+      ? pendingRequest.source
+      : typeof request?.source === "string" ? request.source.trim() : "";
+    const inlineQuestions: InlineQuestion[] = pendingRequest
+      ? buildInlineQuestionsFromPendingRequest(pendingRequest)
       : [];
-    const questionCards = requestQuestions.map((question, index) => {
-      const header = typeof question.header === "string" && question.header.trim().length
-        ? question.header.trim()
-        : `Question ${index + 1}`;
-      const questionText = typeof question.question === "string" ? question.question.trim() : "";
-      const options = Array.isArray(question.options)
-        ? question.options
-            .map((option) => readRecord(option))
-            .filter((option): option is Record<string, unknown> => option != null)
-            .map((option) => {
-              const label = typeof option.label === "string" ? option.label.trim() : "";
-              const value = typeof option.value === "string" ? option.value.trim() : label;
-              if (!label.length || !value.length) return null;
-              return {
-                label,
-                value,
-                ...(typeof option.description === "string" && option.description.trim().length ? { description: option.description.trim() } : {}),
-                ...(option.recommended === true ? { recommended: true } : {}),
-              };
-            })
-            .filter((option): option is { label: string; value: string; description?: string; recommended?: boolean } => option != null)
-        : [];
-      return {
-        id: typeof question.id === "string" && question.id.trim().length ? question.id.trim() : `question_${index + 1}`,
-        header,
-        questionText,
-        options,
-        allowsFreeform: question.allowsFreeform !== false,
-        isSecret: question.isSecret === true,
-        defaultAssumption: typeof question.defaultAssumption === "string" && question.defaultAssumption.trim().length
-          ? question.defaultAssumption.trim()
-          : "",
-        impact: typeof question.impact === "string" && question.impact.trim().length
-          ? question.impact.trim()
-          : "",
-      };
-    });
-    const primaryQuestion = questionCards[0] ?? null;
+    const primaryQuestion = inlineQuestions[0] ?? null;
     const primaryQuestionText = primaryQuestion?.questionText ?? "";
     const detailTool = typeof detail?.tool === "string" ? detail.tool.trim() : "";
     const question = typeof detail?.question === "string" ? detail.question.trim() : "";
@@ -1956,13 +2187,27 @@ function renderEvent(
     } else {
       bodyText = event.description;
     }
-    /* Compact inline indicator — the full interactive UI lives in the composer banner.
-       This avoids duplicate approval buttons in the chat vs. above the prompt box. */
-    const resolvedLabel = isPlanApproval
-      ? (resolvedState === "accepted" ? "Plan Approved" : resolvedState === "declined" ? "Plan Rejected" : "Closed")
-      : isAskUser
-        ? (resolvedState === "accepted" ? "Answered" : resolvedState === "declined" ? "Declined" : "Closed")
-        : (resolvedState === "accepted" ? "Accepted" : resolvedState === "declined" ? "Declined" : "Closed");
+    /* Generic approvals stay compact; ask-user requests render as inline chat controls. */
+    const resolvedLabel = (() => {
+      if (resolvedState !== "accepted" && resolvedState !== "declined") return "Closed";
+      if (isPlanApproval) return resolvedState === "accepted" ? "Plan Approved" : "Plan Rejected";
+      if (isAskUser) return resolvedState === "accepted" ? "Answered" : "Declined";
+      return resolvedState === "accepted" ? "Accepted" : "Declined";
+    })();
+
+    if (isAskUser && !isResolved && inlineQuestions.length > 0) {
+      return (
+        <InlineQuestionRequestCard
+          itemId={event.itemId}
+          source={requestSource || "agent"}
+          title={typeof request?.title === "string" ? request.title : "Question"}
+          description={bodyText}
+          questions={inlineQuestions}
+          isResponding={isResponding}
+          onApproval={options?.onApproval}
+        />
+      );
+    }
 
     return (
       <div className={cn(GLASS_CARD_CLASS, "px-4 py-2.5")} style={SURFACE_INLINE_CARD_STYLE}>

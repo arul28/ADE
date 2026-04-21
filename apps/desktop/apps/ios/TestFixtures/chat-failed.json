@@ -1,0 +1,16 @@
+{
+  "aps": {
+    "alert": {
+      "title": "Codex · tests-fix",
+      "body": "Session failed: rate limit exceeded."
+    },
+    "sound": "default",
+    "mutable-content": 1,
+    "interruption-level": "active",
+    "relevance-score": 0.7,
+    "thread-id": "chat:session-xyz",
+    "category": "CHAT_FAILED"
+  },
+  "providerSlug": "codex",
+  "sessionId": "session-xyz"
+}

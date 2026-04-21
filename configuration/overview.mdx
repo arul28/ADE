@@ -5,7 +5,7 @@ icon: "folder-tree"
 ---
 ## The `.ade/` Directory
 
-When you open a repository in ADE for the first time, ADE initializes a `.ade/` directory at the project root. This directory is the single source of truth for all ADE configuration, runtime artifacts, and worktree management for that project.
+ADE initializes a `.ade/` directory at the project root on first open. It is the single source of truth for all ADE configuration, runtime artifacts, and worktree management.
 
 ```
 .ade/
@@ -24,7 +24,7 @@ When you open a repository in ADE for the first time, ADE initializes a `.ade/` 
 Never commit `local.yaml` or `local.secret.yaml` to git. ADE automatically adds both to `.gitignore` on initialization, but verify this if you manage `.gitignore` manually. Committing secrets is irreversible once pushed to a remote.
 </Warning>
 
-The `worktrees/` and `artifacts/` subdirectories are fully managed by ADE. Do not edit files inside them directly — use ADE's UI or the `ade` CLI instead.
+The `worktrees/` and `artifacts/` subdirectories are ADE-managed. Do not edit them directly.
 
 ---
 
@@ -44,11 +44,7 @@ ADE resolves configuration through three layers applied in order. Lower layers o
   </Card>
 </CardGroup>
 
-When ADE resolves a config value, it checks `local.secret.yaml` first, then `local.yaml`, then `ade.yaml`. If a value exists in `local.yaml`, it shadows the same key in `ade.yaml` for that machine.
-
-<Note>
-The layering order means a developer can override the team's default AI model (set in `ade.yaml`) by specifying `ai.preferredModel` in their own `local.yaml` — without touching the shared config.
-</Note>
+When resolving a value, ADE checks `local.secret.yaml` first, then `local.yaml`, then `ade.yaml`. A value in `local.yaml` shadows the same key in `ade.yaml` for that machine only.
 
 ---
 
@@ -80,7 +76,7 @@ To re-approve the currently loaded config (e.g., after a manual edit): **Setting
 
 ## `ade.yaml` — Full Schema Reference
 
-This file is shared with your team. Commit it. Every field is optional except `name`.
+Shared team config — commit this file. Every field is optional except `name`.
 
 ```yaml
 # .ade/ade.yaml
@@ -172,7 +168,7 @@ trust:
 
 ## `local.yaml` — Full Schema Reference
 
-This file is yours alone. It is gitignored and never shared. Use it to override team defaults for your own machine.
+Personal preferences — gitignored, never shared. Overrides `ade.yaml` values for your machine only.
 
 ```yaml
 # .ade/local.yaml
@@ -205,7 +201,7 @@ trust:
 
 ## `local.secret.yaml` — Full Schema Reference
 
-This file holds your API keys and service credentials. It is always gitignored. Only the Electron main process reads it — the renderer (React UI) never has access to its raw contents.
+API keys and service credentials. Always gitignored. Only the Electron main process reads it — the renderer never has access to its raw contents.
 
 ```yaml
 # .ade/local.secret.yaml

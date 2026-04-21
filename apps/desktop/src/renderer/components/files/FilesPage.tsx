@@ -38,6 +38,7 @@ import { revealLabel } from "../../lib/platform";
 import { logRendererDebugEvent } from "../../lib/debugLog";
 import { COLORS, MONO_FONT, SANS_FONT, LABEL_STYLE, inlineBadge, outlineButton, primaryButton, dangerButton, cardStyle } from "../lanes/laneDesignTokens";
 import { cn } from "../ui/cn";
+import { HelpChip } from "../onboarding/HelpChip";
 import { SmartTooltip } from "../ui/SmartTooltip";
 type OpenTab = {
   path: string;
@@ -1672,7 +1673,7 @@ export function FilesPage() {
       children: (
         <div className="flex h-full min-h-0 flex-col" style={{ background: COLORS.cardBg, backdropFilter: "blur(20px)", WebkitBackdropFilter: "blur(20px)", borderRadius: 12 }}>
           {/* Search bar */}
-          <div style={{ padding: "8px 10px", borderBottom: `1px solid ${COLORS.border}` }}>
+          <div style={{ padding: "8px 10px", borderBottom: `1px solid ${COLORS.border}` }} data-tour="files.searchBar">
             <div className="relative flex items-center">
               <Search size={14} weight="regular" className="pointer-events-none absolute" style={{ left: 8, color: COLORS.textDim }} />
               <input
@@ -1743,7 +1744,7 @@ export function FilesPage() {
             </div>
           ) : null}
           {/* File tree */}
-          <div className="min-h-0 flex-1 overflow-auto" style={{ paddingTop: 4, paddingBottom: 4 }}>{renderTree(tree)}</div>
+          <div className="min-h-0 flex-1 overflow-auto" style={{ paddingTop: 4, paddingBottom: 4 }} data-tour="files.fileTree">{renderTree(tree)}</div>
         </div>
       )
     },
@@ -1754,7 +1755,7 @@ export function FilesPage() {
       headerActions: (
         <div className="flex items-center gap-1.5">
           {/* Mode toggle group */}
-          <div className="inline-flex items-center" style={{ border: `1px solid ${COLORS.outlineBorder}`, borderRadius: 8, overflow: "hidden" }}>
+          <div className="inline-flex items-center" style={{ border: `1px solid ${COLORS.outlineBorder}`, borderRadius: 8, overflow: "hidden" }} data-tour="files.modeToggle">
             {(["edit", "diff", "conflict"] as const).map((m) => {
               const label = m === "edit" ? "CODE" : m === "diff" ? "CHANGES" : "MERGE";
               const description = m === "edit" ? "View and edit the file content." : m === "diff" ? "View the diff between working changes and the last commit." : "View and resolve merge conflicts.";
@@ -1869,7 +1870,7 @@ export function FilesPage() {
           </div>
 
           {/* Breadcrumb + git actions */}
-          <div className="flex items-center justify-between shrink-0" style={{ borderBottom: `1px solid ${COLORS.border}`, padding: "4px 12px" }}>
+          <div className="flex items-center justify-between shrink-0" data-tour="files.breadcrumb" style={{ borderBottom: `1px solid ${COLORS.border}`, padding: "4px 12px" }}>
             <div className="truncate flex items-center gap-1" style={{ fontFamily: MONO_FONT, fontSize: 11, color: COLORS.textMuted }}>
               {breadcrumbs.length ? breadcrumbs.map((part, i) => (
                 <React.Fragment key={i}>
@@ -1906,8 +1907,9 @@ export function FilesPage() {
             </div>
           </div>
           {/* Mode hint */}
-          <div className="shrink-0" style={{ borderBottom: `1px solid ${COLORS.border}`, padding: "3px 12px", ...LABEL_STYLE, fontSize: 9, color: COLORS.textDim }}>
-            {editorModeHint.toUpperCase()}
+          <div className="flex items-center gap-1 shrink-0" style={{ borderBottom: `1px solid ${COLORS.border}`, padding: "3px 12px" }}>
+            <span style={{ ...LABEL_STYLE, fontSize: 9, color: COLORS.textDim }}>{editorModeHint.toUpperCase()}</span>
+            <HelpChip termId="dirty" side="top" />
           </div>
 
           {/* Editor content */}
@@ -2153,7 +2155,7 @@ export function FilesPage() {
   return (
     <div className="relative flex h-full min-h-0 flex-col" style={{ background: COLORS.pageBg }}>
       {/* Header bar */}
-      <div style={{ padding: "0 24px", height: 64, display: "flex", alignItems: "center", gap: 20, background: "transparent", borderBottom: `1px solid ${COLORS.border}` }}>
+      <div style={{ padding: "0 24px", height: 64, display: "flex", alignItems: "center", gap: 20, background: "transparent", borderBottom: `1px solid ${COLORS.border}` }} data-tour="files.header">
         {/* Numbered title group */}
         <div className="flex items-center gap-2 shrink-0">
           <span style={{ fontFamily: MONO_FONT, fontSize: 10, fontWeight: 700, letterSpacing: "1px", color: COLORS.accent }}>03</span>
@@ -2163,23 +2165,26 @@ export function FilesPage() {
         </div>
 
         {/* Workspace selector */}
-        <select
-          value={workspaceId}
-          onChange={(e) => switchWorkspace(e.target.value)}
-          style={{
-            height: 32, padding: "0 12px", fontSize: 12, fontFamily: MONO_FONT, fontWeight: 600,
-            color: COLORS.success, background: COLORS.recessedBg, borderRadius: 8,
-            border: `1px solid ${COLORS.outlineBorder}`, cursor: "pointer", outline: "none",
-          }}
-          onFocus={(e) => { e.currentTarget.style.borderColor = COLORS.accent; }}
-          onBlur={(e) => { e.currentTarget.style.borderColor = COLORS.outlineBorder; }}
-        >
-          {workspaces.map((ws) => (
-            <option key={ws.id} value={ws.id}>
-              {ws.name} ({ws.kind})
-            </option>
-          ))}
-        </select>
+        <div className="flex items-center gap-1" data-tour="files.workspaceSelector">
+          <select
+            value={workspaceId}
+            onChange={(e) => switchWorkspace(e.target.value)}
+            style={{
+              height: 32, padding: "0 12px", fontSize: 12, fontFamily: MONO_FONT, fontWeight: 600,
+              color: COLORS.success, background: COLORS.recessedBg, borderRadius: 8,
+              border: `1px solid ${COLORS.outlineBorder}`, cursor: "pointer", outline: "none",
+            }}
+            onFocus={(e) => { e.currentTarget.style.borderColor = COLORS.accent; }}
+            onBlur={(e) => { e.currentTarget.style.borderColor = COLORS.outlineBorder; }}
+          >
+            {workspaces.map((ws) => (
+              <option key={ws.id} value={ws.id}>
+                {ws.name} ({ws.kind})
+              </option>
+            ))}
+          </select>
+          <HelpChip termId="worktree" side="bottom" />
+        </div>
 
         {/* Read-only badge */}
         {activeWorkspace?.isReadOnlyByDefault && !allowPrimaryEdit ? (
@@ -2207,7 +2212,7 @@ export function FilesPage() {
         <div style={{ flex: 1, height: 1 }} />
 
         {/* Open in external editor */}
-        <div className="relative shrink-0" ref={openInMenuRef}>
+        <div className="relative shrink-0" ref={openInMenuRef} data-tour="files.openIn">
           <SmartTooltip content={{ label: "Open In", description: "Open the current file in an external editor or Finder." }}>
             <button
               type="button"
@@ -2324,14 +2329,14 @@ export function FilesPage() {
           tiling shell while Files-route crashes are under investigation. */}
       <div className="flex-1 min-h-0 p-3">
         <div className="flex h-full min-h-0 min-w-0 gap-3">
-          <div className="min-h-0 min-w-0 shrink-0" style={{ width: 320, maxWidth: "28vw" }}>
+          <div className="min-h-0 min-w-0 shrink-0" style={{ width: 320, maxWidth: "28vw" }} data-tour="files.explorerPane">
             {renderPane("explorer")}
           </div>
           <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-3">
-            <div className="min-h-0 min-w-0" style={{ flex: "1 1 0%", minHeight: 0 }}>
+            <div className="min-h-0 min-w-0" style={{ flex: "1 1 0%", minHeight: 0 }} data-tour="files.editorPane">
               {renderPane("editor")}
             </div>
-            <div className="min-h-0 min-w-0" style={{ flex: "0 0 34%", minHeight: 180 }}>
+            <div className="min-h-0 min-w-0" style={{ flex: "0 0 34%", minHeight: 180 }} data-tour="files.terminalsPane">
               {renderPane("terminals")}
             </div>
           </div>

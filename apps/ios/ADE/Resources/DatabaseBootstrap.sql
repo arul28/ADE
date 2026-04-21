@@ -377,6 +377,8 @@ alter table pull_requests add column last_polled_at text;
 
 alter table pull_requests add column head_sha text;
 
+alter table pull_requests add column creation_strategy text;
+
 create table if not exists pull_request_ai_summaries (
       pr_id text not null,
       head_sha text not null,
@@ -401,6 +403,8 @@ create table if not exists pull_request_snapshots (
     );
 
 create index if not exists idx_pull_request_snapshots_updated_at on pull_request_snapshots(updated_at);
+
+alter table pull_request_snapshots add column commits_json text;
 
 create table if not exists files_workspaces (
       id text primary key,

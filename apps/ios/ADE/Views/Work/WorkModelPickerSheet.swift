@@ -294,8 +294,10 @@ struct WorkModelPickerSheet: View {
             }
           } label: {
             Text(label)
-              .font(.caption.weight(.semibold))
+              .font(.caption2.weight(.semibold))
               .foregroundStyle(isActive ? ADEColor.textPrimary : ADEColor.textSecondary.opacity(0.7))
+              .lineLimit(1)
+              .minimumScaleFactor(0.75)
               .frame(maxWidth: .infinity)
               .padding(.vertical, 6)
               .background(
@@ -356,9 +358,11 @@ struct WorkModelPickerSheet: View {
       }
     } label: {
       HStack(spacing: 4) {
-        Text(group.displayName.uppercased())
+        Text(groupTabTitle(for: group))
           .font(.caption2.weight(.bold))
           .tracking(0.4)
+          .lineLimit(1)
+          .minimumScaleFactor(0.7)
         if group.key == "opencode" && group.modelCount > 0 {
           Text("(\(group.modelCount))")
             .font(.system(size: 9, weight: .bold))
@@ -379,6 +383,10 @@ struct WorkModelPickerSheet: View {
     }
     .buttonStyle(.plain)
     .accessibilityAddTraits(isActive ? .isSelected : [])
+  }
+
+  private func groupTabTitle(for group: WorkModelCatalogGroup) -> String {
+    group.key == "opencode" ? "OPEN" : group.displayName.uppercased()
   }
 
   @ViewBuilder

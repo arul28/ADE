@@ -49,32 +49,38 @@ struct WorkSessionHeader: View {
 
   @ViewBuilder
   private var laneChip: some View {
-    Button {
-      onOpenLane?()
-    } label: {
-      HStack(spacing: 6) {
-        Circle()
-          .fill(statusTint)
-          .frame(width: 6, height: 6)
-        Image(systemName: "arrow.triangle.branch")
-          .font(.caption2.weight(.semibold))
-          .foregroundStyle(ADEColor.accent)
-        Text(session.laneName)
-          .font(.caption.weight(.semibold))
-          .foregroundStyle(ADEColor.textPrimary)
-          .lineLimit(1)
+    if let onOpenLane {
+      Button(action: onOpenLane) {
+        laneChipContent
       }
-      .padding(.horizontal, 9)
-      .padding(.vertical, 5)
-      .background(ADEColor.surfaceBackground.opacity(0.55), in: Capsule(style: .continuous))
-      .overlay(
-        Capsule(style: .continuous)
-          .stroke(ADEColor.border.opacity(0.22), lineWidth: 0.6)
-      )
+      .buttonStyle(.plain)
+      .accessibilityLabel("Open lane \(session.laneName)")
+    } else {
+      laneChipContent
+        .accessibilityLabel("Context \(session.laneName)")
     }
-    .buttonStyle(.plain)
-    .disabled(onOpenLane == nil)
-    .accessibilityLabel("Lane \(session.laneName). Tap to open.")
+  }
+
+  private var laneChipContent: some View {
+    HStack(spacing: 6) {
+      Circle()
+        .fill(statusTint)
+        .frame(width: 6, height: 6)
+      Image(systemName: "arrow.triangle.branch")
+        .font(.caption2.weight(.semibold))
+        .foregroundStyle(ADEColor.accent)
+      Text(session.laneName)
+        .font(.caption.weight(.semibold))
+        .foregroundStyle(ADEColor.textPrimary)
+        .lineLimit(1)
+    }
+    .padding(.horizontal, 9)
+    .padding(.vertical, 5)
+    .background(ADEColor.surfaceBackground.opacity(0.55), in: Capsule(style: .continuous))
+    .overlay(
+      Capsule(style: .continuous)
+        .stroke(ADEColor.border.opacity(0.22), lineWidth: 0.6)
+    )
   }
 
   @ViewBuilder
@@ -143,7 +149,10 @@ struct WorkChatMessageBubble: View {
   }
 
   private var accent: Color {
-    ADEColor.chatSurfaceAccent(modelId: sessionModelId, provider: sessionProvider)
+    ADEColor.chatSurfaceAccent(
+      modelId: message.turnModelId ?? sessionModelId,
+      provider: message.turnProvider ?? sessionProvider
+    )
   }
 
   private var assistantRow: some View {
@@ -292,17 +301,26 @@ struct WorkTurnSeparatorView: View {
 private func workTurnSeparatorTimeLabel(_ iso: String) -> String {
   // Matches desktop's "01:34 AM" turn separator format. Falls back to the raw
   // string when the input isn't an ISO date so we never crash on host quirks.
-  let formatter = ISO8601DateFormatter()
-  formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-  if let date = formatter.date(from: iso) {
+  if let date = turnSeparatorIsoFormatter.date(from: iso) {
     return shortClockFormatter.string(from: date)
   }
-  formatter.formatOptions = [.withInternetDateTime]
-  if let date = formatter.date(from: iso) {
+  if let date = turnSeparatorIsoFallbackFormatter.date(from: iso) {
     return shortClockFormatter.string(from: date)
   }
   return iso
 }
+
+private let turnSeparatorIsoFormatter: ISO8601DateFormatter = {
+  let formatter = ISO8601DateFormatter()
+  formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+  return formatter
+}()
+
+private let turnSeparatorIsoFallbackFormatter: ISO8601DateFormatter = {
+  let formatter = ISO8601DateFormatter()
+  formatter.formatOptions = [.withInternetDateTime]
+  return formatter
+}()
 
 private let shortClockFormatter: DateFormatter = {
   let f = DateFormatter()

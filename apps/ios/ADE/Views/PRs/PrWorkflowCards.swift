@@ -1,5 +1,7 @@
 import SwiftUI
 
+// MARK: - Legacy cards (unchanged surface, lightly restyled)
+
 struct IntegrationWorkflowCard: View {
   let proposal: IntegrationProposal
   let onOpenPr: (String) -> Void
@@ -146,9 +148,14 @@ struct QueueWorkflowCard: View {
   }
 }
 
+// MARK: - Unified workflow card
+
 /// Unified workflow card driven by the `PrMobileSnapshot.workflowCards` payload. Dispatches on
 /// `card.kind` ("queue" | "integration" | "rebase") so a single ForEach over the snapshot's cards
 /// can render all three surfaces without separate legacy fetch fan-out.
+///
+/// NOTE: Init signature must be preserved — callers in `PrsRootScreen` pass every callback
+/// positionally by name.
 struct PrMobileWorkflowCardView: View {
   let card: PrWorkflowCard
   let isLive: Bool
@@ -176,7 +183,7 @@ struct PrMobileWorkflowCardView: View {
   }
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 12) {
+    VStack(alignment: .leading, spacing: 14) {
       switch card.kind {
       case "queue": queueSection
       case "integration": integrationSection
@@ -187,29 +194,42 @@ struct PrMobileWorkflowCardView: View {
     .adeGlassCard(cornerRadius: 18)
   }
 
+  // MARK: Queue
+
   @ViewBuilder
   private var queueSection: some View {
+    // Violet banner for running / healthy queues.
+    let isRunning = (card.state == "landing" || card.state == "running" || card.state == "active" || card.state == "in_progress")
+
+    if isRunning {
+      WkQueueBanner(
+        title: card.groupName.nonEmpty ?? "Merge queue",
+        target: card.targetBranch,
+        waitReason: card.waitReason,
+        state: card.state ?? "running"
+      )
+    }
+
     HStack(alignment: .top, spacing: 10) {
       VStack(alignment: .leading, spacing: 4) {
+        PrEyebrow(text: "QUEUE WORKFLOW")
         HStack(spacing: 6) {
           Text(card.groupName.nonEmpty ?? "Queue workflow")
             .font(.headline)
             .foregroundStyle(ADEColor.textPrimary)
-          // Inline position chip next to the title so users see progress
-          // at a glance instead of after the action buttons.
           if let position = card.currentPosition, let total = card.totalEntries, total > 0 {
             ADEStatusPill(text: "\(position + 1)/\(total)", tint: ADEColor.textMuted)
           }
         }
         if let targetBranch = card.targetBranch {
-          Text("Target: \(targetBranch)")
+          Text(targetBranch)
             .font(.caption.monospaced())
             .foregroundStyle(ADEColor.textSecondary)
         }
       }
       Spacer(minLength: 8)
       if let state = card.state {
-        ADEStatusPill(text: state.uppercased(), tint: state == "completed" ? ADEColor.success : ADEColor.warning)
+        ADEStatusPill(text: state.uppercased(), tint: state == "completed" ? ADEColor.success : (state == "paused" ? ADEColor.warning : ADEColor.accent))
       }
     }
 
@@ -249,46 +269,32 @@ struct PrMobileWorkflowCardView: View {
       }
     }
 
+    // Queue order list — restyled to mirror the mock's position tile + state pill rows.
     if let entries = card.entries?.sorted(by: { $0.position < $1.position }), !entries.isEmpty {
-      VStack(alignment: .leading, spacing: 8) {
+      PrSectionHdr(title: "Queue order") {
+        Text("\(entries.count) in queue")
+      }
+      VStack(spacing: 0) {
         ForEach(Array(entries.enumerated()), id: \.element.prId) { index, entry in
-          HStack(spacing: 10) {
-            ADEStatusPill(text: "#\(index + 1)", tint: entry.prId == card.activePrId ? ADEColor.accent : ADEColor.textSecondary)
-            VStack(alignment: .leading, spacing: 2) {
-              Text(entry.laneName)
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(ADEColor.textPrimary)
-              Text(entry.state.replacingOccurrences(of: "_", with: " "))
-                .font(.caption2)
-                .foregroundStyle(ADEColor.textMuted)
-            }
-            Spacer(minLength: 0)
-            Button {
-              onOpenPr(entry.prId)
-            } label: {
-              Image(systemName: "arrow.up.right.square")
-                .frame(width: 30, height: 30)
-            }
-            .buttonStyle(.glass)
-            Button {
-              reorder(entries: entries, from: index, to: max(0, index - 1))
-            } label: {
-              Image(systemName: "chevron.up")
-                .frame(width: 30, height: 30)
-            }
-            .buttonStyle(.glass)
-            .disabled(!isLive || index == 0 || card.state == "landing")
-            Button {
-              reorder(entries: entries, from: index, to: min(entries.count - 1, index + 1))
-            } label: {
-              Image(systemName: "chevron.down")
-                .frame(width: 30, height: 30)
-            }
-            .buttonStyle(.glass)
-            .disabled(!isLive || index == entries.count - 1 || card.state == "landing")
+          WkQueueRow(
+            index: index,
+            entry: entry,
+            isActive: entry.prId == card.activePrId,
+            isLive: isLive,
+            isFirst: index == 0,
+            isLast: index == entries.count - 1,
+            onOpenPr: { onOpenPr(entry.prId) },
+            onMoveUp: { reorder(entries: entries, from: index, to: max(0, index - 1)) },
+            onMoveDown: { reorder(entries: entries, from: index, to: min(entries.count - 1, index + 1)) },
+            freezeOrder: card.state == "landing"
+          )
+          if index < entries.count - 1 {
+            Divider().overlay(ADEColor.textMuted.opacity(0.15))
           }
         }
       }
+      .padding(.vertical, 2)
+      .background(ADEColor.textPrimary.opacity(0.02), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 
     if let groupId = card.groupId {
@@ -319,6 +325,23 @@ struct PrMobileWorkflowCardView: View {
           .disabled(!isLive)
       }
     }
+
+    // Recently merged — derived from entries in "landed" state. Hides when none.
+    if let entries = card.entries?.filter({ $0.state == "landed" }), !entries.isEmpty {
+      PrSectionHdr(title: "Recently merged") {
+        Text("last 24h")
+      }
+      VStack(spacing: 0) {
+        ForEach(Array(entries.enumerated()), id: \.element.prId) { index, entry in
+          WkMergedRow(entry: entry)
+          if index < entries.count - 1 {
+            Divider().overlay(ADEColor.textMuted.opacity(0.15))
+          }
+        }
+      }
+      .padding(.vertical, 2)
+      .background(ADEColor.textPrimary.opacity(0.02), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
   }
 
   private func reorder(entries: [QueueLandingEntry], from sourceIndex: Int, to targetIndex: Int) {
@@ -329,23 +352,33 @@ struct PrMobileWorkflowCardView: View {
     onReorderQueue(groupId, ordered)
   }
 
+  // MARK: Integration
+
   @ViewBuilder
   private var integrationSection: some View {
-    HStack(alignment: .top, spacing: 10) {
-      VStack(alignment: .leading, spacing: 4) {
-        Text(card.title.nonEmpty ?? "Integration workflow")
-          .font(.headline)
-          .foregroundStyle(ADEColor.textPrimary)
-        if let baseBranch = card.baseBranch {
-          Text("Base: \(baseBranch)")
-            .font(.caption.monospaced())
-            .foregroundStyle(ADEColor.textSecondary)
+    let readyCount = (card.laneCount ?? 0) - (card.conflictLaneCount ?? 0)
+    let totalCount = card.laneCount ?? 0
+
+    VStack(alignment: .leading, spacing: 6) {
+      HStack(spacing: 6) {
+        PrTagChip(label: "integration", color: ADEColor.warning)
+        if totalCount > 0 {
+          ADEStatusPill(text: "\(readyCount) of \(totalCount) ready", tint: readyCount == totalCount ? ADEColor.success : ADEColor.warning)
         }
       }
-      Spacer(minLength: 8)
-      if let outcome = card.overallOutcome {
-        ADEStatusPill(text: outcome.uppercased(), tint: outcome == "clean" ? ADEColor.success : ADEColor.warning)
-      }
+      Text(card.title.nonEmpty ?? "Integration workflow")
+        .font(.title3.weight(.bold))
+        .foregroundStyle(ADEColor.textPrimary)
+        .lineLimit(2)
+
+      // Mono subtitle: integration-lane → base · N children · M commits-ish summary.
+      let childrenPart = totalCount > 0 ? " · \(totalCount) child\(totalCount == 1 ? "" : "ren")" : ""
+      let conflictPart = (card.conflictLaneCount ?? 0) > 0 ? " · \(card.conflictLaneCount!) conflict\((card.conflictLaneCount ?? 0) == 1 ? "" : "s")" : ""
+      let base = card.baseBranch ?? "main"
+      let head = card.title.nonEmpty ?? "integration"
+      Text("\(head) → \(base)\(childrenPart)\(conflictPart)")
+        .font(.caption.monospaced())
+        .foregroundStyle(ADEColor.textSecondary)
     }
 
     HStack(spacing: 6) {
@@ -358,13 +391,10 @@ struct PrMobileWorkflowCardView: View {
       if let cleanupState = card.cleanupState {
         ADEStatusPill(text: cleanupState.uppercased(), tint: ADEColor.warning)
       }
-    }
-
-    if let laneCount = card.laneCount {
-      let conflictSegment = card.conflictLaneCount.map { " · \($0) conflict\($0 == 1 ? "" : "s")" } ?? ""
-      Text("\(laneCount) lane\(laneCount == 1 ? "" : "s")\(conflictSegment)")
-        .font(.caption)
-        .foregroundStyle(ADEColor.textSecondary)
+      Spacer(minLength: 0)
+      if let outcome = card.overallOutcome {
+        ADEStatusPill(text: outcome.uppercased(), tint: outcome == "clean" ? ADEColor.success : ADEColor.warning)
+      }
     }
 
     if let lanes = card.lanes, !lanes.isEmpty {
@@ -399,6 +429,26 @@ struct PrMobileWorkflowCardView: View {
           }
         }
       }
+    }
+
+    // Big tappable "Open stack" CTA that jumps to the linked PR (parent wires
+    // stackPresentation off the PR row; this is the closest proxy without
+    // widening the view's public callback list).
+    if let linkedPrId = card.linkedPrId {
+      Button {
+        onOpenPr(linkedPrId)
+      } label: {
+        HStack(spacing: 8) {
+          Image(systemName: "rectangle.stack.fill")
+          Text("Open stack")
+          Spacer(minLength: 0)
+          Image(systemName: "chevron.right")
+            .font(.caption.weight(.semibold))
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+      }
+      .buttonStyle(.glassProminent)
+      .tint(ADEColor.accent)
     }
 
     if let proposalId = card.proposalId {
@@ -437,44 +487,67 @@ struct PrMobileWorkflowCardView: View {
       }
     }
 
-    // Larger, prominent tap target so users immediately see the PR escape
-    // hatch. Uses the prominent glass button style to separate it from the
-    // passive status pills above.
-    if let linkedPrId = card.linkedPrId {
-      Button {
-        onOpenPr(linkedPrId)
-      } label: {
-        HStack(spacing: 6) {
-          Image(systemName: "arrow.up.right.square.fill")
-          Text("Open linked PR")
+    // Queue config row-list. Rendered opportunistically from whatever surrogate
+    // fields are present on the card; hidden entirely when empty.
+    let cfg = wkIntegrationConfigRows(card: card)
+    if !cfg.isEmpty {
+      PrSectionHdr(title: "Queue config")
+      VStack(spacing: 0) {
+        ForEach(Array(cfg.enumerated()), id: \.element.label) { index, row in
+          WkConfigRow(label: row.label, value: row.value)
+          if index < cfg.count - 1 {
+            Divider().overlay(ADEColor.textMuted.opacity(0.15))
+          }
         }
-        .frame(maxWidth: .infinity)
       }
-      .buttonStyle(.glassProminent)
-      .tint(ADEColor.accent)
+      .padding(.vertical, 2)
+      .background(ADEColor.textPrimary.opacity(0.02), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
   }
 
+  // MARK: Rebase
+
   @ViewBuilder
   private var rebaseSection: some View {
-    HStack(alignment: .top, spacing: 10) {
-      VStack(alignment: .leading, spacing: 4) {
-        Text(card.laneName.nonEmpty ?? "Rebase suggestion")
-          .font(.headline)
-          .foregroundStyle(ADEColor.textPrimary)
-        if let behindBy = card.behindBy {
-          Text("Behind parent by \(behindBy) commit\(behindBy == 1 ? "" : "s")")
-            .font(.caption)
-            .foregroundStyle(ADEColor.textSecondary)
+    // Default to "auto" when older hosts omit the field. `manual` → PR was
+    // opened with lane_base strategy so auto-rebase is suppressed and the
+    // user has to trigger it by hand.
+    let isManual = (card.rebaseMode == "manual")
+    let tintForMode: Color = isManual ? ADEColor.tintPRs : ADEColor.warning
+    let pillLabel = isManual ? "manual rebase" : "rebase needed"
+    let rebaseButtonLabel = isManual ? "Rebase now" : "Rebase"
+
+    VStack(alignment: .leading, spacing: 6) {
+      HStack(spacing: 6) {
+        if let prNumber = card.prNumber {
+          Text("#\(prNumber)")
+            .font(.system(.caption, design: .monospaced).weight(.bold))
+            .foregroundStyle(tintForMode)
+        }
+        ADEStatusPill(text: pillLabel, tint: tintForMode)
+        PrTagChip(label: "lane", color: ADEColor.tintFiles)
+        Spacer(minLength: 0)
+        if card.conflictPredicted == true {
+          PrConflictBadge()
         }
       }
-      Spacer(minLength: 8)
-      if card.conflictPredicted == true {
-        // Solid red badge — a predicted conflict is a blocker the user
-        // must see before they tap Rebase, so it gets stronger contrast
-        // than the other tinted pills on this card.
-        PrConflictBadge()
+      Text(card.laneName.nonEmpty ?? "Rebase suggestion")
+        .font(.title3.weight(.bold))
+        .foregroundStyle(ADEColor.textPrimary)
+        .lineLimit(2)
+      if let behindBy = card.behindBy {
+        Text("\(behindBy) commit\(behindBy == 1 ? "" : "s") behind target")
+          .font(.caption.monospaced())
+          .foregroundStyle(ADEColor.textSecondary)
       }
+      // Mode-specific explainer copy.
+      Text(
+        isManual
+          ? "PR carries immutable base — drift detected. Rebase manually."
+          : "Auto-rebase pending — target has moved."
+      )
+      .font(.caption)
+      .foregroundStyle(ADEColor.textSecondary)
     }
 
     if let deferredUntil = card.deferredUntil {
@@ -483,11 +556,39 @@ struct PrMobileWorkflowCardView: View {
         .foregroundStyle(ADEColor.textMuted)
     }
 
+    // Tappable link to the new rebase screen.
+    if let laneId = card.laneId {
+      NavigationLink {
+        PrRebaseScreen(
+          laneId: laneId,
+          laneName: card.laneName.nonEmpty,
+          prNumber: card.prNumber,
+          prId: card.prId,
+          behindCount: card.behindBy ?? 0,
+          conflictPredicted: card.conflictPredicted ?? false,
+          branchRef: nil,
+          baseBranch: nil,
+          targetCommits: card.targetCommits,
+          rebaseMode: card.rebaseMode,
+          creationStrategy: card.creationStrategy
+        )
+      } label: {
+        HStack(spacing: 8) {
+          Image(systemName: "chart.bar.doc.horizontal")
+          Text("Inspect drift")
+          Spacer(minLength: 0)
+          Image(systemName: "chevron.right").font(.caption.weight(.semibold))
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+      }
+      .buttonStyle(.glassProminent)
+      .tint(ADEColor.accent)
+    }
+
     HStack(spacing: 10) {
       if let laneId = card.laneId {
-        Button("Rebase") { onRebaseLane(laneId) }
-          .buttonStyle(.glassProminent)
-          .tint(ADEColor.accent)
+        Button(rebaseButtonLabel) { onRebaseLane(laneId) }
+          .buttonStyle(.glass)
           .disabled(!isLive)
 
         Button("Defer") { onDeferRebase(laneId) }
@@ -598,4 +699,259 @@ struct RebaseWorkflowCard: View {
     }
     .adeGlassCard(cornerRadius: 18)
   }
+}
+
+// MARK: - Private styling helpers
+// Scoped to this file — shared public helpers (PrSectionHdr, PrTagChip, ...)
+// are being introduced by the foundation workstream; this file stays
+// self-contained so it compiles independently.
+
+private struct WkPulseDot: View {
+  let color: Color
+  @State private var pulse = false
+  var body: some View {
+    Circle()
+      .fill(color)
+      .frame(width: 6, height: 6)
+      .opacity(pulse ? 0.4 : 1.0)
+      .animation(.easeInOut(duration: 0.8).repeatForever(autoreverses: true), value: pulse)
+      .onAppear { pulse = true }
+  }
+}
+
+private struct WkStatePill: View {
+  let state: String
+  var body: some View {
+    let (color, pulse, label) = wkStateInfo(for: state)
+    HStack(spacing: 4) {
+      if pulse {
+        WkPulseDot(color: color)
+      }
+      Text(label.uppercased())
+        .font(.system(.caption2, design: .monospaced).weight(.bold))
+        .tracking(0.8)
+    }
+    .padding(.horizontal, 7)
+    .padding(.vertical, 3)
+    .foregroundStyle(color)
+    .background(color.opacity(0.14), in: Capsule())
+  }
+}
+
+private func wkStateInfo(for state: String) -> (Color, Bool, String) {
+  switch state {
+  case "running", "landing", "in_progress", "active":
+    return (ADEColor.accent, true, "running")
+  case "queued", "waiting":
+    return (ADEColor.warning, false, "queued")
+  case "landed", "merged", "completed":
+    return (ADEColor.success, false, "landed")
+  case "skipped", "cancelled":
+    return (ADEColor.textSecondary, false, "skipped")
+  case "paused":
+    return (ADEColor.warning, false, "paused")
+  default:
+    return (ADEColor.textSecondary, false, state)
+  }
+}
+
+private struct WkQueueBanner: View {
+  let title: String
+  let target: String?
+  let waitReason: String?
+  let state: String
+
+  var body: some View {
+    HStack(spacing: 10) {
+      ZStack {
+        RoundedRectangle(cornerRadius: 10, style: .continuous)
+          .fill(ADEColor.accent.opacity(0.18))
+        RoundedRectangle(cornerRadius: 10, style: .continuous)
+          .strokeBorder(ADEColor.accent.opacity(0.4), lineWidth: 0.5)
+        Image(systemName: "arrow.triangle.swap")
+          .font(.system(size: 14, weight: .semibold))
+          .foregroundStyle(ADEColor.accent)
+      }
+      .frame(width: 36, height: 36)
+
+      VStack(alignment: .leading, spacing: 2) {
+        Text("\(title) · \(target ?? "main")")
+          .font(.system(.caption, design: .default).weight(.bold))
+          .foregroundStyle(ADEColor.textPrimary)
+        Text(waitReason ?? "processing · auto-rebase on")
+          .font(.system(.caption2, design: .monospaced))
+          .foregroundStyle(ADEColor.textSecondary)
+          .lineLimit(1)
+      }
+
+      Spacer(minLength: 8)
+
+      ADEStatusPill(text: "healthy", tint: ADEColor.success)
+    }
+    .padding(10)
+    .background(
+      RoundedRectangle(cornerRadius: 12, style: .continuous)
+        .fill(ADEColor.accent.opacity(0.08))
+    )
+    .overlay(
+      RoundedRectangle(cornerRadius: 12, style: .continuous)
+        .strokeBorder(ADEColor.accent.opacity(0.25), lineWidth: 0.5)
+    )
+  }
+}
+
+private struct WkQueueRow: View {
+  let index: Int
+  let entry: QueueLandingEntry
+  let isActive: Bool
+  let isLive: Bool
+  let isFirst: Bool
+  let isLast: Bool
+  let onOpenPr: () -> Void
+  let onMoveUp: () -> Void
+  let onMoveDown: () -> Void
+  let freezeOrder: Bool
+
+  var body: some View {
+    HStack(alignment: .top, spacing: 10) {
+      // Position tile
+      Text("\(index + 1)")
+        .font(.system(.callout, design: .default).weight(.heavy))
+        .foregroundStyle(isActive ? ADEColor.accent : ADEColor.textSecondary)
+        .frame(width: 30, height: 30)
+        .background(
+          RoundedRectangle(cornerRadius: 8, style: .continuous)
+            .fill(ADEColor.textPrimary.opacity(0.04))
+        )
+        .overlay(
+          RoundedRectangle(cornerRadius: 8, style: .continuous)
+            .strokeBorder(isActive ? ADEColor.accent.opacity(0.4) : ADEColor.textMuted.opacity(0.15), lineWidth: 0.5)
+        )
+
+      VStack(alignment: .leading, spacing: 3) {
+        HStack(spacing: 6) {
+          if let prNumber = entry.prNumber {
+            Text("#\(prNumber)")
+              .font(.system(.caption2, design: .monospaced).weight(.bold))
+              .foregroundStyle(ADEColor.accent)
+          }
+          PrTagChip(label: "lane", color: ADEColor.tintFiles)
+          Spacer(minLength: 4)
+          WkStatePill(state: entry.state)
+        }
+
+        Text(entry.laneName)
+          .font(.system(.subheadline, design: .default).weight(.semibold))
+          .foregroundStyle(ADEColor.textPrimary)
+          .lineLimit(1)
+
+        Text(entry.waitingOn ?? entry.state.replacingOccurrences(of: "_", with: " "))
+          .font(.system(.caption2, design: .monospaced))
+          .foregroundStyle(wkStateInfo(for: entry.state).0)
+          .lineLimit(1)
+      }
+
+      VStack(spacing: 4) {
+        Button(action: onOpenPr) {
+          Image(systemName: "arrow.up.right.square")
+        }
+        .buttonStyle(.glass)
+        .disabled(entry.prId.isEmpty)
+
+        HStack(spacing: 4) {
+          Button(action: onMoveUp) {
+            Image(systemName: "chevron.up")
+          }
+          .buttonStyle(.glass)
+          .disabled(!isLive || isFirst || freezeOrder)
+
+          Button(action: onMoveDown) {
+            Image(systemName: "chevron.down")
+          }
+          .buttonStyle(.glass)
+          .disabled(!isLive || isLast || freezeOrder)
+        }
+      }
+    }
+    .padding(.horizontal, 12)
+    .padding(.vertical, 10)
+  }
+}
+
+private struct WkMergedRow: View {
+  let entry: QueueLandingEntry
+  var body: some View {
+    HStack(spacing: 10) {
+      ZStack {
+        RoundedRectangle(cornerRadius: 6, style: .continuous)
+          .fill(ADEColor.accent.opacity(0.16))
+        Image(systemName: "arrow.triangle.merge")
+          .font(.system(size: 11, weight: .semibold))
+          .foregroundStyle(ADEColor.accent)
+      }
+      .frame(width: 22, height: 22)
+
+      if let prNumber = entry.prNumber {
+        Text("#\(prNumber)")
+          .font(.system(.caption, design: .monospaced).weight(.bold))
+          .foregroundStyle(ADEColor.accent)
+      }
+
+      Text(entry.laneName)
+        .font(.subheadline)
+        .foregroundStyle(ADEColor.textPrimary)
+        .lineLimit(1)
+
+      Spacer(minLength: 0)
+
+      Text(prRelativeTime(entry.updatedAt))
+        .font(.system(.caption2, design: .monospaced))
+        .foregroundStyle(ADEColor.textMuted)
+    }
+    .padding(.horizontal, 12)
+    .padding(.vertical, 10)
+  }
+}
+
+private struct WkConfigRow: View {
+  let label: String
+  let value: String
+  var body: some View {
+    HStack(spacing: 10) {
+      Text(label)
+        .font(.subheadline)
+        .foregroundStyle(ADEColor.textSecondary)
+      Spacer(minLength: 0)
+      Text(value)
+        .font(.system(.caption, design: .monospaced))
+        .foregroundStyle(ADEColor.textPrimary)
+    }
+    .padding(.horizontal, 12)
+    .padding(.vertical, 10)
+  }
+}
+
+private struct WkConfigRowData {
+  let label: String
+  let value: String
+}
+
+private func wkIntegrationConfigRows(card: PrWorkflowCard) -> [WkConfigRowData] {
+  var rows: [WkConfigRowData] = []
+  if let base = card.baseBranch {
+    rows.append(.init(label: "Base branch", value: base))
+  }
+  if let state = card.workflowDisplayState {
+    rows.append(.init(label: "Workflow state", value: state))
+  }
+  if let cleanup = card.cleanupState {
+    rows.append(.init(label: "Cleanup", value: cleanup))
+  }
+  if let laneCount = card.laneCount {
+    rows.append(.init(label: "Lanes", value: "\(laneCount)"))
+  }
+  if let conflicts = card.conflictLaneCount, conflicts > 0 {
+    rows.append(.init(label: "Conflicts", value: "\(conflicts)"))
+  }
+  return rows
 }

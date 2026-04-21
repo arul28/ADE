@@ -13,6 +13,16 @@ import type {
 } from "../../../shared/types";
 import type { Logger } from "../logging/logger";
 import type { createAgentChatService } from "../chat/agentChatService";
+import type { createCtoStateService } from "../cto/ctoStateService";
+import type { createFlowPolicyService } from "../cto/flowPolicyService";
+import type { createLinearCredentialService } from "../cto/linearCredentialService";
+import type { createLinearIngressService } from "../cto/linearIngressService";
+import type { createLinearIssueTracker } from "../cto/linearIssueTracker";
+import type { createLinearSyncService } from "../cto/linearSyncService";
+import type { createWorkerAgentService } from "../cto/workerAgentService";
+import type { createWorkerBudgetService } from "../cto/workerBudgetService";
+import type { createWorkerHeartbeatService } from "../cto/workerHeartbeatService";
+import type { createWorkerRevisionService } from "../cto/workerRevisionService";
 import type { createComputerUseArtifactBrokerService } from "../computerUse/computerUseArtifactBrokerService";
 import type { createProjectConfigService } from "../config/projectConfigService";
 import type { createFileService } from "../files/fileService";
@@ -32,6 +42,7 @@ import type { createPrService } from "../prs/prService";
 import type { createQueueLandingService } from "../prs/queueLandingService";
 import type { createPtyService } from "../pty/ptyService";
 import type { createSessionService } from "../sessions/sessionService";
+import type { NotificationEventBus } from "../notifications/notificationEventBus";
 import type { AdeDb } from "../state/kvDb";
 import { nowIso, safeJsonParse, sleep, writeTextAtomic } from "../shared/utils";
 import { createDeviceRegistryService } from "./deviceRegistryService";
@@ -67,9 +78,30 @@ type SyncServiceArgs = {
   >;
   missionService: ReturnType<typeof createMissionService>;
   agentChatService: ReturnType<typeof createAgentChatService>;
+  workerAgentService?: ReturnType<typeof createWorkerAgentService> | null;
+  workerBudgetService?: ReturnType<typeof createWorkerBudgetService> | null;
+  workerHeartbeatService?: ReturnType<typeof createWorkerHeartbeatService> | null;
+  workerRevisionService?: ReturnType<typeof createWorkerRevisionService> | null;
+  ctoStateService?: ReturnType<typeof createCtoStateService> | null;
+  flowPolicyService?: ReturnType<typeof createFlowPolicyService> | null;
+  linearCredentialService?: ReturnType<typeof createLinearCredentialService> | null;
+  /**
+   * Resolvers for services that are constructed AFTER createSyncService in
+   * main.ts. Using lazy getters lets the sync router forward remote commands
+   * to them without requiring a specific init order.
+   */
+  getLinearIngressService?: () => ReturnType<typeof createLinearIngressService> | null;
+  getLinearIssueTracker?: () => ReturnType<typeof createLinearIssueTracker> | null;
+  getLinearSyncService?: () => ReturnType<typeof createLinearSyncService> | null;
   processService: ReturnType<typeof createProcessService>;
   hostStartupEnabled?: boolean;
   onStatusChanged?: (snapshot: SyncRoleSnapshot) => void;
+  /**
+   * Optional notification bus forwarded to the sync host. The host publishes
+   * chat/PR/mission/system events and invokes `sendInAppNotification` for
+   * connected iOS peers.
+   */
+  notificationEventBus?: NotificationEventBus | null;
 };
 
 const DRAFT_FILE = "sync-peer-draft.json";
@@ -353,6 +385,16 @@ export function createSyncService(args: SyncServiceArgs) {
         ptyService: args.ptyService,
         processService: args.processService,
         agentChatService: args.agentChatService,
+        workerAgentService: args.workerAgentService,
+        workerBudgetService: args.workerBudgetService,
+        workerHeartbeatService: args.workerHeartbeatService,
+        workerRevisionService: args.workerRevisionService,
+        ctoStateService: args.ctoStateService,
+        flowPolicyService: args.flowPolicyService,
+        linearCredentialService: args.linearCredentialService,
+        getLinearIngressService: args.getLinearIngressService,
+        getLinearIssueTracker: args.getLinearIssueTracker,
+        getLinearSyncService: args.getLinearSyncService,
         projectConfigService: args.projectConfigService,
         portAllocationService: args.portAllocationService,
         laneEnvironmentService: args.laneEnvironmentService,
@@ -364,6 +406,7 @@ export function createSyncService(args: SyncServiceArgs) {
         bootstrapTokenPath: tokenPath,
         port: attemptedPort,
         deviceRegistryService,
+        notificationEventBus: args.notificationEventBus ?? null,
         onStateChanged: () => {
           void refreshRoleState();
         },
@@ -767,6 +810,10 @@ export function createSyncService(args: SyncServiceArgs) {
 
     getHostService(): SyncHostService | null {
       return hostService;
+    },
+
+    getDeviceRegistryService() {
+      return deviceRegistryService;
     },
 
     async dispose(): Promise<void> {

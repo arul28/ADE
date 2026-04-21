@@ -130,18 +130,56 @@ Host-side service files
 
 Client-side (iOS) service files (`apps/ios/ADE/Services/`):
 
-- `Database.swift` (~3,300 lines) — native SQLite3 + pure-SQL CRR
-  emulation (triggers + custom SQLite functions). Adds offline caches
-  for files workspaces, directory listings, and file contents plus
-  session pin/runtime state, chat snapshots, and PR mobile snapshot
-  persistence.
-- `SyncService.swift` (~3,860 lines) — WebSocket client, envelope
-  encoding (zlib), command routing, keychain integration, PIN-based
-  pairing, lane presence announcements, PR mobile snapshot fetch, and
-  a live chat-event push listener backed by the host's
-  `chat_event` broadcast.
+- `Database.swift` — native SQLite3 + pure-SQL CRR emulation (triggers
+  + custom SQLite functions). Offline caches for files workspaces,
+  directory listings, file contents, session pin/runtime state, chat
+  snapshots, and PR mobile snapshot persistence.
+- `SyncService.swift` — WebSocket client, envelope encoding (zlib),
+  command routing, keychain integration, PIN-based pairing, lane
+  presence announcements, PR mobile snapshot fetch, live chat-event
+  push listener, and APNs push-token registration to the host.
 - `KeychainService.swift` — iOS Keychain Services for paired device
   secrets.
+- `LiveActivityCoordinator.swift` — owns the single workspace
+  `Activity<ADESessionAttributes>` lifecycle; collects push-to-start
+  and per-activity update tokens and forwards them to the host.
+
+Notification services (`apps/desktop/src/main/services/notifications/`):
+
+- `apnsService.ts` — HTTP/2 APNs client, ES256 JWT signing,
+  `ApnsKeyStore` (encrypted `.p8` via Electron `safeStorage`),
+  `Http2ApnsTransport` (injectable via `ApnsTransport` for tests).
+- `notificationMapper.ts` — pure domain-event → `MappedNotification`
+  mapping across 13 categories in 4 families (chat, cto, pr, system).
+- `notificationEventBus.ts` — `publishChatEvent`, `publishPrEvent`,
+  `publishMissionEvent`, `publishSystemEvent`, `sendTestPush`.
+  Routes to APNs (alert + Live Activity update pushes) and/or in-app
+  WS delivery, filtered by per-device `NotificationPreferences`.
+
+iOS notification files:
+
+- `apps/ios/ADE/App/AppDelegate.swift` — APNs registration, category
+  setup, notification-action response routing, deep-link dispatch.
+- `apps/ios/ADE/App/NotificationCategories.swift` — ten
+  `UNNotificationCategory` / `UNNotificationAction` constants matching
+  the desktop `NotificationCategory` identifiers.
+- `apps/ios/ADE/App/DeepLinkRouter.swift` — `ade://session/<id>` and
+  `ade://pr/<n>` URL routing via `NotificationCenter`.
+- `apps/ios/ADE/Models/NotificationPreferences.swift` — 13-toggle
+  prefs, quiet hours, per-session overrides (`SessionNotificationOverride`).
+- `apps/ios/ADENotificationService/NotificationService.swift` —
+  `UNNotificationServiceExtension` (brand prefix, `threadIdentifier`,
+  `interruptionLevel` / `relevanceScore`).
+- `apps/ios/ADEWidgets/ADELiveActivity.swift` — `ADESessionAttributes`
+  (ActivityKit attributes + `ContentState`) + `ADELiveActivity` widget.
+- `apps/ios/ADEWidgets/ADEWorkspaceWidget.swift` — Home Screen widget
+  (small / medium / large).
+- `apps/ios/ADEWidgets/ADELockScreenWidget.swift` — Lock Screen
+  accessory widget.
+- `apps/ios/ADEWidgets/ADEControlWidget.swift` — Control Center
+  "Open ADE" + "Mute ADE" widgets (iOS 18+).
+- `apps/ios/ADE/Shared/ADESharedModels.swift` — `AgentSnapshot`,
+  `PrSnapshot` shared with widget and notification service extensions.
 
 ## Device registry and cluster state
 

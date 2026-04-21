@@ -138,6 +138,12 @@ import type {
   SyncRoleSnapshot,
   SyncStatusEventPayload,
   SyncTransferReadiness,
+  ApnsBridgeStatus,
+  ApnsBridgeSaveConfigArgs,
+  ApnsBridgeUploadKeyArgs,
+  ApnsBridgeSendTestPushArgs,
+  ApnsBridgeSendTestPushResult,
+  ApnsTestPushKind,
   CtoGetStateArgs,
   CtoEnsureSessionArgs,
   CtoUpdateCoreMemoryArgs,
@@ -210,6 +216,7 @@ import type {
   OnboardingDetectionResult,
   OnboardingExistingLaneCandidate,
   OnboardingStatus,
+  OnboardingTourProgress,
   GitActionResult,
   GitBranchSummary,
   GitCheckoutBranchArgs,
@@ -662,6 +669,17 @@ declare global {
         }) => Promise<void>;
         onEvent: (cb: (event: SyncStatusEventPayload) => void) => () => void;
       };
+      notifications: {
+        apns: {
+          getStatus: () => Promise<ApnsBridgeStatus>;
+          saveConfig: (args: ApnsBridgeSaveConfigArgs) => Promise<ApnsBridgeStatus>;
+          uploadKey: (args: ApnsBridgeUploadKeyArgs) => Promise<ApnsBridgeStatus>;
+          clearKey: () => Promise<ApnsBridgeStatus>;
+          sendTestPush: (
+            args: ApnsBridgeSendTestPushArgs,
+          ) => Promise<ApnsBridgeSendTestPushResult>;
+        };
+      };
       agentTools: {
         detect: () => Promise<AgentTool[]>;
       };
@@ -678,6 +696,14 @@ declare global {
         detectExistingLanes: () => Promise<OnboardingExistingLaneCandidate[]>;
         setDismissed: (dismissed: boolean) => Promise<OnboardingStatus>;
         complete: () => Promise<OnboardingStatus>;
+        getTourProgress: () => Promise<OnboardingTourProgress>;
+        markWizardCompleted: () => Promise<OnboardingTourProgress>;
+        markWizardDismissed: () => Promise<OnboardingTourProgress>;
+        markTourCompleted: (tourId: string) => Promise<OnboardingTourProgress>;
+        markTourDismissed: (tourId: string) => Promise<OnboardingTourProgress>;
+        updateTourStep: (tourId: string, index: number) => Promise<OnboardingTourProgress>;
+        markGlossaryTermSeen: (termId: string) => Promise<OnboardingTourProgress>;
+        resetTourProgress: (tourId?: string) => Promise<OnboardingTourProgress>;
       };
       automations: {
         list: () => Promise<AutomationRuleSummary[]>;

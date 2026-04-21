@@ -196,6 +196,7 @@ extension LaneDetailScreen {
     if let detail {
       LaneActionsCard(
         canRunLiveActions: canRunLiveActions,
+        disabledSubtitle: liveActionDisabledSubtitle,
         canPush: (detail.lane.status.ahead) > 0 || detail.syncStatus?.hasUpstream == false,
         isPublish: detail.syncStatus?.hasUpstream == false,
         onPullMerge: {

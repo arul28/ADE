@@ -23,6 +23,11 @@ if (!contents.startsWith("#!/usr/bin/env node")) {
   throw new Error("[ade-cli:build] dist/cli.cjs is missing the node shebang");
 }
 
+const normalized = contents.replace(/require\((["'])sqlite\1\)/g, 'require("node:sqlite")');
+if (normalized !== contents) {
+  await fs.writeFile(cliPath, normalized, "utf8");
+}
+
 const stat = await fs.stat(cliPath);
 if (process.platform !== "win32" && (stat.mode & 0o111) === 0) {
   throw new Error("[ade-cli:build] dist/cli.cjs is not executable");

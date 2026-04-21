@@ -54,8 +54,12 @@ function getHighlighter(): Promise<ShikiHighlighter> {
       shiki.createHighlighter({
         themes: [THEME],
         langs: SUPPORTED_LANGUAGES,
+        engine: shiki.createJavaScriptRegexEngine(),
       }),
-    );
+    ).catch((error) => {
+      highlighterPromise = null;
+      throw error;
+    });
   }
   return highlighterPromise;
 }
@@ -67,7 +71,13 @@ async function highlightCode(code: string, language: string): Promise<string> {
   const cached = highlightCache.get(cacheKey);
   if (cached !== undefined) return cached;
 
-  const highlighter = await getHighlighter();
+  let highlighter: ShikiHighlighter;
+  try {
+    highlighter = await getHighlighter();
+  } catch {
+    highlightCache.set(cacheKey, "");
+    return "";
+  }
   const lang = SUPPORTED_LANGUAGES.includes(language) ? language : "text";
 
   let html: string;

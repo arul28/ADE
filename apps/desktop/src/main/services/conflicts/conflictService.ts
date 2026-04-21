@@ -64,6 +64,7 @@ import type {
 import { buildPrAiResolutionContextKey } from "../../../shared/types";
 import { resolveAdeLayout } from "../../../shared/adeLayout";
 import { branchNameFromLaneRef, shouldLaneTrackParent } from "../../../shared/laneBaseResolution";
+import { normalizePrCreationStrategy } from "../../../shared/prStrategy";
 import type { Logger } from "../logging/logger";
 import type { AdeDb } from "../state/kvDb";
 import type { createLaneService } from "../lanes/laneService";
@@ -4285,9 +4286,10 @@ export function createConflictService({
       id: string;
       lane_id: string;
       base_branch: string | null;
+      creation_strategy: string | null;
     }>(
       `
-        select id, lane_id, base_branch
+        select id, lane_id, base_branch, creation_strategy
         from pull_requests
         where project_id = ?
           and state in ('open', 'draft')
@@ -4300,6 +4302,11 @@ export function createConflictService({
     for (const row of openPrRows) {
       const lane = lanesById.get(String(row.lane_id ?? "").trim());
       if (!lane || lane.laneType === "primary") continue;
+      // Gate pr_target drift to PRs whose creation_strategy is "pr_target".
+      // PRs marked "lane_base" carry an immutable base — drift should stay a
+      // lane_base need (surfaced as warning, never auto-rebased). Null rows
+      // predate the column and keep the legacy pr_target behavior.
+      if ((normalizePrCreationStrategy(row.creation_strategy) ?? "pr_target") !== "pr_target") continue;
       const prBaseBranch = normalizeBranchName(String(row.base_branch ?? "").trim());
       const parent = lane.parentLaneId ? lanesById.get(lane.parentLaneId) ?? null : null;
       const laneBaseBranch = normalizeBranchName(branchNameFromLaneRef(

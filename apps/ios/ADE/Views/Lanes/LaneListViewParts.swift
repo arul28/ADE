@@ -30,7 +30,7 @@ extension LanesTabView {
   var manageableVisibleLaneIds: [String] {
     filteredSnapshots
       .map(\.lane)
-      .filter { $0.laneType != "primary" }
+      .filter { $0.laneType != "primary" && $0.archivedAt == nil }
       .map(\.id)
   }
 
@@ -313,11 +313,13 @@ extension LanesTabView {
     Button("Close others") {
       openLaneIds = [snapshot.lane.id]
     }
-    Button("Select all visible") {
-      batchManageLaneIds = manageableVisibleLaneIds
-      batchManagePresented = !manageableVisibleLaneIds.isEmpty
+    if !manageableVisibleLaneIds.isEmpty {
+      Button("Select all active visible lanes") {
+        batchManageLaneIds = manageableVisibleLaneIds
+        batchManagePresented = true
+      }
+      .disabled(!canRunLiveActions)
     }
-    .disabled(!canRunLiveActions)
     if manageableVisibleLaneIds.count > 1 {
       Button("Manage \(manageableVisibleLaneIds.count) visible lanes") {
         batchManageLaneIds = manageableVisibleLaneIds
@@ -390,10 +392,15 @@ extension LanesTabView {
       if nextPinnedLaneIds != pinnedLaneIds {
         pinnedLaneIds = nextPinnedLaneIds
       }
-      errorMessage = nil
+      if errorMessage != nil {
+        errorMessage = nil
+      }
     } catch {
       ADEHaptics.error()
-      errorMessage = error.localizedDescription
+      let message = error.localizedDescription
+      if errorMessage != message {
+        errorMessage = message
+      }
     }
   }
 

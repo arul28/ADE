@@ -2,6 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
+import { DEFAULT_NOTIFICATION_PREFERENCES } from "../../../shared/types/sync";
 import { openKvDb } from "../state/kvDb";
 import { createDeviceRegistryService } from "./deviceRegistryService";
 
@@ -59,5 +60,65 @@ describe("deviceRegistryService", () => {
     expect(registry2.listDevices()).toHaveLength(1);
 
     db2.close();
+  });
+
+  it("persists notification preferences in device metadata across registry restarts", async () => {
+    const projectRoot = makeProjectRoot("ade-device-registry-prefs-");
+    const dbPath = path.join(projectRoot, ".ade", "ade.db");
+
+    const db1 = await openKvDb(dbPath, createLogger() as any);
+    const registry1 = createDeviceRegistryService({
+      db: db1,
+      logger: createLogger() as any,
+      projectRoot,
+    });
+    const local = registry1.ensureLocalDevice();
+    const prefs = {
+      ...DEFAULT_NOTIFICATION_PREFERENCES,
+      chat: {
+        ...DEFAULT_NOTIFICATION_PREFERENCES.chat,
+        awaitingInput: false,
+      },
+    };
+
+    registry1.setNotificationPreferences(local.deviceId, prefs);
+    db1.close();
+
+    const db2 = await openKvDb(dbPath, createLogger() as any);
+    const registry2 = createDeviceRegistryService({
+      db: db2,
+      logger: createLogger() as any,
+      projectRoot,
+    });
+
+    expect(registry2.getNotificationPreferences(local.deviceId)?.chat.awaitingInput).toBe(false);
+    db2.close();
+  });
+
+  it("stores workspace Live Activity update tokens and invalidates only the rejected token", async () => {
+    const projectRoot = makeProjectRoot("ade-device-registry-apns-");
+    const dbPath = path.join(projectRoot, ".ade", "ade.db");
+    const db = await openKvDb(dbPath, createLogger() as any);
+    const registry = createDeviceRegistryService({
+      db,
+      logger: createLogger() as any,
+      projectRoot,
+    });
+    const local = registry.ensureLocalDevice();
+
+    registry.setApnsToken(local.deviceId, "alert-token", "alert", "sandbox", { bundleId: "com.ade.ios" });
+    registry.setApnsToken(local.deviceId, "start-token", "activity-start", "sandbox");
+    registry.setApnsToken(local.deviceId, "workspace-token", "activity-update", "sandbox");
+    registry.setApnsToken(local.deviceId, "session-token", "activity-update", "sandbox", { activityId: "session-1" });
+
+    expect(registry.getApnsTokenForDevice(local.deviceId, "activity-update")).toBe("workspace-token");
+    registry.invalidateApnsToken("session-token");
+
+    const metadata = registry.getDevice(local.deviceId)?.metadata ?? {};
+    expect(metadata.apnsAlertToken).toBe("alert-token");
+    expect(metadata.apnsActivityStartToken).toBe("start-token");
+    expect(metadata.apnsActivityUpdateTokens).toEqual({ workspace: "workspace-token" });
+
+    db.close();
   });
 });

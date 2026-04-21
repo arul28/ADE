@@ -291,6 +291,7 @@ type CodexRuntime = {
   approvals: Map<string, PendingCodexApproval>;
   activeTurnId: string | null;
   startedTurnId: string | null;
+  awaitingTurnStart: boolean;
   threadResumed: boolean;
   itemTurnIdByItemId: Map<string, string>;
   commandOutputByItemId: Map<string, string>;
@@ -298,6 +299,7 @@ type CodexRuntime = {
   fileChangesByItemId: Map<string, Array<{ path: string; kind: "create" | "modify" | "delete" }>>;
   activeSubagents: Map<string, { taskId: string; description: string; background: boolean }>;
   interruptedTurnIds: Set<string>;
+  ignoredTurnIds: Set<string>;
   agentMessageScopeByTurn: Map<string, "item" | "turn">;
   agentMessageTextByTurn: Map<string, string>;
   recentNotificationKeys: Set<string>;
@@ -423,6 +425,13 @@ function extractCodexTurnId(value: unknown): string | undefined {
   return pickCodexTurnId(record.turnId, record.turn_id, nestedTurn?.id);
 }
 
+function extractCodexThreadId(value: unknown): string | undefined {
+  const record = asRecord(value);
+  if (!record) return undefined;
+  const nestedThread = asRecord(record.thread);
+  return pickCodexTurnId(record.threadId, record.thread_id, nestedThread?.id);
+}
+
 function readCodexNotificationItemId(params: Record<string, unknown>): string | null {
   const nestedItem = asRecord(params.item);
   return pickCodexTurnId(params.itemId, nestedItem?.id) ?? null;
@@ -510,6 +519,9 @@ function isCurrentCodexLifecycleTurn(
   turnId: string | null | undefined,
 ): boolean {
   const activeTurnId = runtime.activeTurnId ?? runtime.startedTurnId;
+  if (runtime.awaitingTurnStart && turnId) {
+    return activeTurnId ? activeTurnId === turnId : false;
+  }
   if (!activeTurnId || !turnId) return true;
   return activeTurnId === turnId;
 }
@@ -1982,9 +1994,32 @@ type CodexCollaborationModePayload = {
   settings: {
     model: string;
     reasoning_effort: string | null;
-    developer_instructions: null;
+    developer_instructions: string | null;
   };
 };
+
+function toHarnessPermissionMode(
+  mode: AgentChatSession["permissionMode"] | undefined,
+): "plan" | "edit" | "full-auto" {
+  if (mode === "plan" || mode === "full-auto") return mode;
+  return "edit";
+}
+
+function buildCodexDeveloperInstructions(args: {
+  laneWorktreePath: string;
+  session: Pick<AgentChatSession, "permissionMode" | "interactionMode">;
+  collaborationMode: "default" | "plan";
+}): string {
+  const promptMode = args.collaborationMode === "plan" || args.session.interactionMode === "plan"
+    ? "planning"
+    : "coding";
+  return buildCodingAgentSystemPrompt({
+    cwd: args.laneWorktreePath,
+    mode: promptMode,
+    permissionMode: toHarnessPermissionMode(args.session.permissionMode),
+    interactive: true,
+  });
+}
 
 function buildCodexCollaborationMode(
   session: Pick<
@@ -1992,6 +2027,7 @@ function buildCodexCollaborationMode(
     "provider" | "permissionMode" | "interactionMode" | "model" | "reasoningEffort" | "codexConfigSource"
   >,
   supportedModes: Set<string> | null,
+  laneWorktreePath: string,
 ): CodexCollaborationModePayload | null {
   if (session.provider !== "codex") return null;
   if (resolveSessionCodexConfigSource(session) === "config-toml") return null;
@@ -2010,7 +2046,11 @@ function buildCodexCollaborationMode(
     settings: {
       model: session.model,
       reasoning_effort: session.reasoningEffort ?? DEFAULT_REASONING_EFFORT,
-      developer_instructions: null,
+      developer_instructions: buildCodexDeveloperInstructions({
+        laneWorktreePath,
+        session,
+        collaborationMode: mode,
+      }),
     },
   };
 }
@@ -3203,6 +3243,13 @@ export function createAgentChatService(args: {
     // allow or deny individual tool calls (matching the opencode runtime pattern).
     const effectivePermMode = managed.session.claudePermissionMode ?? "default";
     const normalizedToolName = normalizeToolNameForApproval(toolName);
+    // Auto-allow ADE `ask_user`: the inline question card carries its
+    // own dedicated answer UI, so surfacing a generic "Allow this tool?" permission
+    // prompt just hides the real question behind an extra click. Gated by
+    // `ai.chat.autoAllowAskUser` (default: true) so policy can flip it off.
+    if (isAskUserToolName(toolName) && isAutoAllowAskUserEnabled()) {
+      return { behavior: "allow", updatedInput: input };
+    }
     if (claudeToolNeedsApproval(toolName, input, effectivePermMode)) {
       // Check session-wide overrides — user already said "Allow for Session" for this tool
       if (runtime.approvalOverrides.has(normalizedToolName)) {
@@ -4351,6 +4398,17 @@ export function createAgentChatService(args: {
 
   const isCliWrappedModelId = (modelId: string): boolean =>
     (getModelById(modelId) ?? resolveModelAlias(modelId))?.isCliWrapped ?? false;
+
+  const isAutoAllowAskUserEnabled = (): boolean => {
+    const chat = projectConfigService.get().effective.ai?.chat;
+    return chat?.autoAllowAskUser !== false;
+  };
+
+  const isAskUserToolName = (toolName: string | null | undefined): boolean => {
+    if (!toolName) return false;
+    const normalized = normalizeToolNameForApproval(toolName);
+    return normalized === "mcp_ade_ask_user";
+  };
 
   const resolveChatConfig = (): ResolvedChatConfig => {
     const snapshot = projectConfigService.get();
@@ -5968,13 +6026,21 @@ export function createAgentChatService(args: {
 
     // Intercept /review command — route to review/start RPC instead of turn/start
     if (args.promptText.trim().startsWith("/review")) {
-      const reviewResult = await runtime.request<{ turn?: { id?: string } }>("review/start", {
-        threadId: managed.session.threadId,
-        target: "uncommittedChanges",
-      });
+      runtime.awaitingTurnStart = true;
+      let reviewResult: { turn?: { id?: string } };
+      try {
+        reviewResult = await runtime.request<{ turn?: { id?: string } }>("review/start", {
+          threadId: managed.session.threadId,
+          target: "uncommittedChanges",
+        });
+      } catch (error) {
+        runtime.awaitingTurnStart = false;
+        throw error;
+      }
       persistDeliveredLaneDirectiveKey(managed, args.laneDirectiveKey);
       const reviewTurnId = typeof reviewResult.turn?.id === "string" ? reviewResult.turn.id : null;
       if (reviewTurnId) {
+        runtime.awaitingTurnStart = false;
         runtime.activeTurnId = reviewTurnId;
       }
       return;
@@ -6028,7 +6094,11 @@ export function createAgentChatService(args: {
 
     await runtime.collaborationModesReady?.catch(() => {});
     const requestedCollaborationMode = resolveRequestedCodexCollaborationMode(managed.session);
-    const collaborationMode = buildCodexCollaborationMode(managed.session, runtime.collaborationModes);
+    const collaborationMode = buildCodexCollaborationMode(
+      managed.session,
+      runtime.collaborationModes,
+      managed.laneWorktreePath,
+    );
     if (
       requestedCollaborationMode === "plan"
       && collaborationMode?.mode !== "plan"
@@ -6043,16 +6113,24 @@ export function createAgentChatService(args: {
     } else if (collaborationMode?.mode === "plan") {
       runtime.planModeFallbackNotified = false;
     }
-    const result = await managed.runtime.request<{ turn?: { id?: string } }>("turn/start", {
-      threadId: managed.session.threadId,
-      input,
-      ...(managed.session.reasoningEffort ? { reasoningEffort: managed.session.reasoningEffort } : {}),
-      ...(collaborationMode ? { collaborationMode } : {}),
-    });
+    managed.runtime.awaitingTurnStart = true;
+    let result: { turn?: { id?: string } };
+    try {
+      result = await managed.runtime.request<{ turn?: { id?: string } }>("turn/start", {
+        threadId: managed.session.threadId,
+        input,
+        ...(managed.session.reasoningEffort ? { reasoningEffort: managed.session.reasoningEffort } : {}),
+        ...(collaborationMode ? { collaborationMode } : {}),
+      });
+    } catch (error) {
+      managed.runtime.awaitingTurnStart = false;
+      throw error;
+    }
     persistDeliveredLaneDirectiveKey(managed, args.laneDirectiveKey);
 
     const turnId = typeof result?.turn?.id === "string" ? result.turn.id : null;
     if (turnId) {
+      managed.runtime.awaitingTurnStart = false;
       managed.runtime.activeTurnId = turnId;
       if (managed.runtime.startedTurnId !== turnId) {
         managed.runtime.startedTurnId = turnId;
@@ -7841,6 +7919,23 @@ export function createAgentChatService(args: {
       const description = typeof params.reason === "string" && params.reason.trim().length
         ? params.reason.trim()
         : "Codex requested additional permissions";
+      // Auto-allow the ADE MCP `ask_user` tool so the inline question card surfaces
+      // immediately instead of being shadowed by a generic "Allow additional
+      // permissions?" prompt. Gated by `ai.chat.autoAllowAskUser` (default: true).
+      if (isAutoAllowAskUserEnabled()) {
+        const permRecord = params.permissions && typeof params.permissions === "object"
+          ? params.permissions as Record<string, unknown>
+          : null;
+        const rawTool = permRecord?.tool ?? permRecord?.toolName;
+        const permTool = typeof rawTool === "string" ? rawTool : null;
+        if (isAskUserToolName(permTool) || isAskUserToolName(description)) {
+          runtime.sendResponse(id, {
+            permissions: params.permissions ?? {},
+            scope: "turn",
+          });
+          return;
+        }
+      }
       const request: PendingInputRequest = {
         requestId: String(id),
         itemId,
@@ -8443,6 +8538,47 @@ export function createAgentChatService(args: {
     const method = typeof payload.method === "string" ? payload.method : "";
     const params = (payload.params as Record<string, unknown> | null) ?? {};
     const turnIdFromParams = extractCodexTurnId(params);
+    const threadIdFromParams = extractCodexThreadId(params);
+
+    if (
+      threadIdFromParams
+      && managed.session.threadId
+      && threadIdFromParams !== managed.session.threadId
+    ) {
+      logger.debug("agent_chat.codex_ignored_foreign_thread_notification", {
+        sessionId: managed.session.id,
+        method,
+        threadId: threadIdFromParams,
+        expectedThreadId: managed.session.threadId,
+      });
+      return;
+    }
+
+    const isIgnoredTurn = turnIdFromParams ? runtime.ignoredTurnIds.has(turnIdFromParams) : false;
+    const isTerminalTurnNotification =
+      method === "turn/completed"
+      || method === "turn/aborted"
+      || method === "codex/event/turn_aborted";
+    if (isIgnoredTurn) {
+      if (isTerminalTurnNotification && turnIdFromParams) {
+        runtime.ignoredTurnIds.delete(turnIdFromParams);
+      }
+      return;
+    }
+
+    const isExpectedTurnStart =
+      method === "turn/started"
+      && runtime.awaitingTurnStart
+      && !runtime.activeTurnId
+      && !runtime.startedTurnId;
+    if (
+      turnIdFromParams
+      && !isExpectedTurnStart
+      && !isCurrentCodexLifecycleTurn(runtime, turnIdFromParams)
+    ) {
+      logger.warn(`[codex] ignoring ${method} for inactive turn ${turnIdFromParams} in session ${managed.session.id}`);
+      return;
+    }
 
     if (shouldSkipDuplicateCodexNotification(runtime, payload)) {
       return;
@@ -8451,6 +8587,18 @@ export function createAgentChatService(args: {
     if (method === "turn/started") {
       const turn = (params.turn as { id?: unknown } | null) ?? null;
       const turnId = typeof turn?.id === "string" ? turn.id : null;
+      if (!runtime.awaitingTurnStart && !runtime.activeTurnId && !runtime.startedTurnId) {
+        logger.warn(`[codex] ignoring unsolicited turn/started for session ${managed.session.id}`);
+        if (turnId) {
+          runtime.ignoredTurnIds.add(turnId);
+          if (runtime.ignoredTurnIds.size > 64) {
+            const [first] = runtime.ignoredTurnIds;
+            if (first) runtime.ignoredTurnIds.delete(first);
+          }
+        }
+        return;
+      }
+      runtime.awaitingTurnStart = false;
       runtime.activeTurnId = turnId;
       resetAssistantMessageStream(managed);
       runtime.agentMessageScopeByTurn.clear();
@@ -8491,8 +8639,10 @@ export function createAgentChatService(args: {
         return;
       }
       const turnId = resolvedTurnId ?? randomUUID();
+      runtime.awaitingTurnStart = false;
       runtime.activeTurnId = null;
       runtime.startedTurnId = null;
+      runtime.ignoredTurnIds.delete(turnId);
       resetAssistantMessageStream(managed);
       runtime.itemTurnIdByItemId.clear();
       runtime.agentMessageScopeByTurn.clear();
@@ -8715,8 +8865,10 @@ export function createAgentChatService(args: {
       }
       const turnId = resolvedAbortTurnId ?? randomUUID();
       rememberInterruptedCodexTurn(runtime, turnId);
+      runtime.awaitingTurnStart = false;
       runtime.activeTurnId = null;
       runtime.startedTurnId = null;
+      runtime.ignoredTurnIds.delete(turnId);
       resetAssistantMessageStream(managed);
       runtime.itemTurnIdByItemId.clear();
       runtime.commandOutputByItemId.clear();
@@ -8920,6 +9072,7 @@ export function createAgentChatService(args: {
       approvals: new Map<string, PendingCodexApproval>(),
       activeTurnId: null,
       startedTurnId: null,
+      awaitingTurnStart: false,
       threadResumed: false,
       itemTurnIdByItemId: new Map<string, string>(),
       commandOutputByItemId: new Map<string, string>(),
@@ -8927,6 +9080,7 @@ export function createAgentChatService(args: {
       fileChangesByItemId: new Map<string, Array<{ path: string; kind: "create" | "modify" | "delete" }>>(),
       activeSubagents: new Map<string, { taskId: string; description: string; background: boolean }>(),
       interruptedTurnIds: new Set<string>(),
+      ignoredTurnIds: new Set<string>(),
       agentMessageScopeByTurn: new Map<string, "item" | "turn">(),
       agentMessageTextByTurn: new Map<string, string>(),
       recentNotificationKeys: new Set<string>(),
@@ -10958,6 +11112,18 @@ export function createAgentChatService(args: {
         return { outcome: { outcome: "cancelled" } };
       }
       const cursorRt = owner.runtime;
+      // Auto-allow the ADE MCP `ask_user` tool — the inline question card
+      // provides its own answer UI, and the permission prompt just hides it.
+      const rawInput = req.toolCall.rawInput as Record<string, unknown> | null | undefined;
+      const rawToolCandidate = rawInput?.name ?? rawInput?.tool ?? rawInput?.toolName;
+      const rawToolName = typeof rawToolCandidate === "string" ? rawToolCandidate : null;
+      const toolCallTitle = typeof req.toolCall.title === "string" ? req.toolCall.title : "";
+      if (isAutoAllowAskUserEnabled() && (isAskUserToolName(rawToolName) || isAskUserToolName(toolCallTitle))) {
+        const allow = req.options.find((option) => option.kind === "allow_once" || option.kind === "allow_always");
+        if (allow) {
+          return { outcome: { outcome: "selected", optionId: allow.optionId } };
+        }
+      }
       const itemId = randomUUID();
       return new Promise<RequestPermissionResponse>((outerResolve) => {
         cursorRt.permissionWaiters.set(itemId, {

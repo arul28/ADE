@@ -49,7 +49,6 @@ import { CURSOR_AVAILABLE_MODE_IDS } from "../../../shared/cursorModes";
 import { cn } from "../ui/cn";
 import { AgentChatComposer } from "./AgentChatComposer";
 import { AgentChatMessageList } from "./AgentChatMessageList";
-import { AgentQuestionModal } from "./AgentQuestionModal";
 import { ChatStatusGlyph } from "./chatStatusVisuals";
 import { isChatToolType } from "../../lib/sessions";
 import { ToolLogo } from "../terminals/ToolLogos";
@@ -3186,16 +3185,6 @@ export function AgentChatPane({
           )}
         </div>
       </ChatSurfaceShell>
-      {pendingInput
-        && (pendingInput.request.kind === "question" || pendingInput.request.kind === "structured_question")
-        && selectedSessionId ? (
-        <AgentQuestionModal
-          request={pendingInput.request}
-          onClose={() => { void approve("cancel"); }}
-          onSubmit={({ answers, responseText }) => { void approve("accept", responseText ?? null, answers); }}
-          onDecline={() => { void approve("decline"); }}
-        />
-      ) : null}
     </>
   );
 }

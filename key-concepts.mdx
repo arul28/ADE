@@ -4,8 +4,6 @@ description: "A comprehensive reference for every core ADE concept: Lanes, Stack
 icon: "lightbulb"
 ---
 
-Understanding ADE's vocabulary is the fastest path to using it effectively. This page defines every core concept, explains how they relate to each other, and points to the deeper feature documentation for each.
-
 <CardGroup cols={3}>
   <Card title="Lane" icon="code-branch" href="#lane">Isolated worktree + environment.</Card>
   <Card title="Stack" icon="layer-group" href="#stack">Chained lanes for stacked PRs.</Card>
@@ -27,7 +25,7 @@ Understanding ADE's vocabulary is the fastest path to using it effectively. This
 
 ## Lane
 
-A **Lane** is the fundamental unit of parallel work in ADE. Every lane is an isolated execution environment: it has its own git branch, its own working directory, its own terminal sessions, its own agent context, and its own process environment variables.
+A **Lane** is ADE's unit of parallel work — an isolated execution environment with its own git branch, working directory, terminal sessions, agent context, and environment variables.
 
 <CardGroup cols={3}>
   <Card title="Primary Lane" icon="house">
@@ -41,22 +39,17 @@ A **Lane** is the fundamental unit of parallel work in ADE. Every lane is an iso
   </Card>
 </CardGroup>
 
-Each lane stores:
-- **Branch name** and base branch reference
-- **Appearance** (color, icon) for identification in the UI
-- **Environment status** — whether the lane's dev server, ports, and dependencies are initialized
-- **Active sessions** — current terminal and agent sessions running in this lane's directory
-- **Pack reference** — the context pack currently associated with this lane
+Each lane stores its branch name, appearance (color/icon), environment status, active sessions, and pack reference.
 
 <Tip>
-Think of lanes the way you think of browser tabs — each is an isolated context, and switching between them does not disrupt the others. Unlike browser tabs, lanes persist their state even when you are not looking at them.
+Think of lanes like browser tabs — each is an isolated context that persists even when you are not looking at it.
 </Tip>
 
 ---
 
 ## Stack
 
-A **Stack** is a layered arrangement of lanes for **stacked PR workflows**. Each lane in a stack targets the lane directly above it as its base branch, forming a dependency chain.
+A **Stack** is a chain of lanes for stacked PR workflows — each lane targets the lane directly above it as its base branch.
 
 ```
   main
@@ -65,12 +58,9 @@ A **Stack** is a layered arrangement of lanes for **stacked PR workflows**. Each
              └── feature/auth-tests  ← Lane 3 (targets feature/auth-ui)
 ```
 
-Stacks are visualized as a connected chain in the Workspace Graph. ADE understands the stack topology and can:
-- Automatically rebase downstream lanes when an upstream lane is updated
-- Suggest rebase operations when the upstream branch moves
-- Show the full stack chain in the lane inspector
+ADE tracks the stack topology and automatically rebases downstream lanes when an upstream lane is updated, surfaces rebase suggestions, and shows the full chain in the inspector.
 
-To create a stacked lane, use **Lanes → New Child Lane** and select the parent lane. ADE sets the child's base branch to the parent's current branch automatically.
+To create a stacked lane, use **Lanes → New Child Lane**. ADE sets the child's base branch to the parent's current branch automatically.
 
 <Note>
 ADE tracks rebase suggestions per-lane. When an upstream branch changes, ADE surfaces a rebase suggestion with a preview of the affected commits. You can accept, defer, or dismiss it.
@@ -80,7 +70,7 @@ ADE tracks rebase suggestions per-lane. When an upstream branch changes, ADE sur
 
 ## Pack
 
-A **Pack** is a durable context bundle that carries project or lane knowledge to AI agents. Packs are structured documents stored in `.ade/artifacts/packs/` and injected into agent system prompts to give agents meaningful project awareness before they write a single line of code.
+A **Pack** is a durable context bundle injected into agent system prompts, stored in `.ade/artifacts/packs/`. Packs give agents project awareness before they write any code.
 
 ADE defines several pack types:
 
@@ -123,34 +113,13 @@ ADE defines several pack types:
 
 ## Checkpoint
 
-A **Checkpoint** is an immutable execution snapshot created at session or commit boundaries. Checkpoints are the mechanism ADE uses to make work replayable and auditable.
-
-Each checkpoint contains:
-- **SHA anchors** — the git commit SHAs for every lane at the time of the checkpoint
-- **Deltas** — the set of changes since the previous checkpoint
-- **Metadata** — timing, actor (human or agent), session ID, and trigger reason
-- **Validation context** — whether the checkpoint passed any validation gate
-
-Checkpoints appear in the **History** view as a timeline you can navigate. You can replay any checkpoint to restore a lane's state to that exact moment.
-
-<Note>
-Checkpoints are append-only. ADE never deletes them (unless you explicitly clear project data). This makes the History view a complete audit trail of all work done in a project.
-</Note>
+A **Checkpoint** is an immutable snapshot created at session or commit boundaries, containing the git SHA, file deltas, timing, and actor metadata. Checkpoints appear in the **History** view and can be replayed to restore any lane's state. They are append-only — ADE never deletes them unless you explicitly clear project data.
 
 ---
 
 ## Session
 
-A **Session** is a terminal session with rich metadata attached. In ADE, every terminal window — whether you opened it manually or an agent spawned it — is recorded as a session.
-
-Session metadata includes:
-- **Transcript** — the full input/output stream, stored to disk
-- **Timing** — start time, end time, duration
-- **Agent attribution** — whether this session was opened by a human, the CTO, a Mission worker, or an Automation
-- **Delta computation** — which files changed during this session, derived from git status snapshots at open/close
-- **Mission and step linkage** — if the session was opened by a Mission worker, it is linked to the specific step and attempt
-
-Sessions are the atomic unit of terminal work. The History view groups sessions by lane, by mission, and by date.
+A **Session** is a terminal session with metadata attached — full transcript, timing, agent attribution, file delta computation, and mission/step linkage. Every terminal window ADE opens is recorded. The History view groups sessions by lane, mission, and date.
 
 ---
 

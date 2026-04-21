@@ -125,6 +125,7 @@ final class DatabaseService {
     let reviewsJson: String?
     let commentsJson: String?
     let filesJson: String?
+    let commitsJson: String?
   }
 
   private struct PullRequestListItemRow {
@@ -325,6 +326,15 @@ final class DatabaseService {
     var appliedCount = 0
     var touchedTables = Set<String>()
     var acceptedChanges: [CrsqlChangeRow] = []
+    let shouldRestoreForeignKeys = (queryInt64("pragma foreign_keys") ?? 0) != 0
+    if shouldRestoreForeignKeys {
+      try exec("pragma foreign_keys = off")
+    }
+    defer {
+      if shouldRestoreForeignKeys {
+        try? exec("pragma foreign_keys = on")
+      }
+    }
     try exec("begin")
     do {
       let sql = """
@@ -510,8 +520,9 @@ final class DatabaseService {
       }
       return $0.createdAt < $1.createdAt
     }
+    let orderedLaneIds = Set(orderedLanes.map(\.id))
     let snapshotUpdatedAt = ISO8601DateFormatter().string(from: Date())
-    let hydratedSnapshots = snapshots ?? orderedLanes.map { lane in
+    let hydratedSnapshots = (snapshots ?? orderedLanes.map { lane in
       LaneListSnapshot(
         lane: lane,
         runtime: LaneRuntimeSummary(bucket: "none", runningCount: 0, awaitingInputCount: 0, endedCount: 0, sessionCount: 0),
@@ -521,14 +532,32 @@ final class DatabaseService {
         stateSnapshot: nil,
         adoptableAttached: lane.laneType == "attached" && lane.archivedAt == nil
       )
-    }
+    }).filter { orderedLaneIds.contains($0.lane.id) }
 
     try exec("begin")
     do {
       try exec("pragma defer_foreign_keys = on")
       try exec("delete from lane_state_snapshots")
-      try exec("delete from lanes")
       try exec("delete from lane_list_snapshots")
+      if orderedLaneIds.isEmpty {
+        _ = try execute("update lanes set status = 'archived', archived_at = coalesce(archived_at, ?)") { statement in
+          try bindText(snapshotUpdatedAt, to: statement, index: 1)
+        }
+      } else {
+        try prepareTemporaryIdTable(named: "temp_hydrated_lane_ids", ids: orderedLaneIds.sorted())
+        _ = try execute("""
+          update lanes
+             set status = 'archived',
+                 archived_at = coalesce(archived_at, ?)
+           where not exists (
+             select 1
+               from temp_hydrated_lane_ids hydrated
+              where hydrated.id = lanes.id
+           )
+        """) { statement in
+          try bindText(snapshotUpdatedAt, to: statement, index: 1)
+        }
+      }
 
       for lane in orderedLanes {
         _ = try execute("""
@@ -537,6 +566,26 @@ final class DatabaseService {
             attached_root_path, is_edit_protected, parent_lane_id, color, icon, tags_json, folder,
             status, created_at, archived_at
           ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          on conflict(id) do update set
+            project_id = excluded.project_id,
+            name = excluded.name,
+            description = excluded.description,
+            lane_type = excluded.lane_type,
+            base_ref = excluded.base_ref,
+            branch_ref = excluded.branch_ref,
+            worktree_path = excluded.worktree_path,
+            attached_root_path = excluded.attached_root_path,
+            is_edit_protected = excluded.is_edit_protected,
+            parent_lane_id = excluded.parent_lane_id,
+            color = excluded.color,
+            icon = excluded.icon,
+            tags_json = excluded.tags_json,
+            folder = excluded.folder,
+            mission_id = null,
+            lane_role = null,
+            status = excluded.status,
+            created_at = excluded.created_at,
+            archived_at = excluded.archived_at
         """) { statement in
           try bindText(lane.id, to: statement, index: 1)
           try bindText(projectId, to: statement, index: 2)
@@ -626,18 +675,22 @@ final class DatabaseService {
       if laneIds.isEmpty {
         try exec("delete from lane_detail_snapshots")
       } else {
-        let placeholders = Array(repeating: "?", count: laneIds.count).joined(separator: ", ")
-        _ = try execute("delete from lane_detail_snapshots where lane_id not in (\(placeholders))") { statement in
-          for (index, laneId) in laneIds.enumerated() {
-            try bindText(laneId, to: statement, index: Int32(index + 1))
-          }
-        }
+        try exec("""
+          delete from lane_detail_snapshots
+           where not exists (
+             select 1
+               from temp_hydrated_lane_ids hydrated
+              where hydrated.id = lane_detail_snapshots.lane_id
+           )
+        """)
       }
+      try exec("drop table if exists temp_hydrated_lane_ids")
 
       try exec("commit")
       notifyDidChange()
     } catch {
       try? exec("rollback")
+      try? exec("drop table if exists temp_hydrated_lane_ids")
       throw error
     }
   }
@@ -709,20 +762,68 @@ final class DatabaseService {
     shouldCaptureLocalChanges = false
     defer { shouldCaptureLocalChanges = true }
 
+    let laneIds = Set(query("select id from lanes") { statement in
+      stringValue(statement, index: 0) ?? ""
+    })
+    let hydratableSessions = sessions.filter { laneIds.contains($0.laneId) }
+    let sessionIds = hydratableSessions.map(\.id)
+
     try exec("begin")
     do {
+      if !sessionIds.isEmpty {
+        try prepareTemporaryIdTable(named: "temp_hydrated_session_ids", ids: sessionIds)
+      }
       if hasTable(named: "session_deltas") {
         try exec("delete from session_deltas")
       }
-      try exec("delete from terminal_sessions")
+      if hasTable(named: "checkpoints") {
+        if sessionIds.isEmpty {
+          try exec("update checkpoints set session_id = null where session_id is not null")
+        } else {
+          try exec("""
+            update checkpoints
+               set session_id = null
+             where session_id is not null
+               and not exists (
+                 select 1
+                   from temp_hydrated_session_ids hydrated
+                  where hydrated.id = checkpoints.session_id
+               )
+          """)
+        }
+      }
 
-      for session in sessions {
+      for session in hydratableSessions {
         _ = try execute("""
           insert into terminal_sessions(
             id, lane_id, lane_name, pty_id, tracked, goal, tool_type, pinned, title, started_at, ended_at,
             exit_code, transcript_path, head_sha_start, head_sha_end, status, last_output_preview,
             last_output_at, summary, runtime_state, resume_command, resume_metadata_json, manually_named, chat_idle_since_at
           ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          on conflict(id) do update set
+            lane_id = excluded.lane_id,
+            lane_name = excluded.lane_name,
+            pty_id = excluded.pty_id,
+            tracked = excluded.tracked,
+            goal = excluded.goal,
+            tool_type = excluded.tool_type,
+            pinned = excluded.pinned,
+            title = excluded.title,
+            started_at = excluded.started_at,
+            ended_at = excluded.ended_at,
+            exit_code = excluded.exit_code,
+            transcript_path = excluded.transcript_path,
+            head_sha_start = excluded.head_sha_start,
+            head_sha_end = excluded.head_sha_end,
+            status = excluded.status,
+            last_output_preview = excluded.last_output_preview,
+            last_output_at = excluded.last_output_at,
+            summary = excluded.summary,
+            runtime_state = excluded.runtime_state,
+            resume_command = excluded.resume_command,
+            resume_metadata_json = excluded.resume_metadata_json,
+            manually_named = excluded.manually_named,
+            chat_idle_since_at = excluded.chat_idle_since_at
         """) { statement in
           try bindText(session.id, to: statement, index: 1)
           try bindText(session.laneId, to: statement, index: 2)
@@ -795,10 +896,25 @@ final class DatabaseService {
         }
       }
 
+      if sessionIds.isEmpty {
+        try exec("delete from terminal_sessions")
+      } else {
+        try exec("""
+          delete from terminal_sessions
+           where not exists (
+             select 1
+               from temp_hydrated_session_ids hydrated
+              where hydrated.id = terminal_sessions.id
+           )
+        """)
+      }
+      try exec("drop table if exists temp_hydrated_session_ids")
+
       try exec("commit")
       notifyDidChange()
     } catch {
       try? exec("rollback")
+      try? exec("drop table if exists temp_hydrated_session_ids")
       throw error
     }
   }
@@ -881,8 +997,8 @@ final class DatabaseService {
       for snapshot in payload.snapshots {
         _ = try execute("""
           insert into pull_request_snapshots(
-            pr_id, detail_json, status_json, checks_json, reviews_json, comments_json, files_json, updated_at
-          ) values (?, ?, ?, ?, ?, ?, ?, ?)
+            pr_id, detail_json, status_json, checks_json, reviews_json, comments_json, files_json, commits_json, updated_at
+          ) values (?, ?, ?, ?, ?, ?, ?, ?, ?)
           on conflict(pr_id) do update set
             detail_json = excluded.detail_json,
             status_json = excluded.status_json,
@@ -890,6 +1006,7 @@ final class DatabaseService {
             reviews_json = excluded.reviews_json,
             comments_json = excluded.comments_json,
             files_json = excluded.files_json,
+            commits_json = excluded.commits_json,
             updated_at = excluded.updated_at
         """) { statement in
           try bindText(snapshot.prId, to: statement, index: 1)
@@ -899,7 +1016,8 @@ final class DatabaseService {
           try bindOptionalJson(snapshot.reviews, to: statement, index: 5)
           try bindOptionalJson(snapshot.comments, to: statement, index: 6)
           try bindOptionalJson(snapshot.files, to: statement, index: 7)
-          try bindText(snapshot.updatedAt ?? ISO8601DateFormatter().string(from: Date()), to: statement, index: 8)
+          try bindOptionalJson(snapshot.commits, to: statement, index: 8)
+          try bindText(snapshot.updatedAt ?? ISO8601DateFormatter().string(from: Date()), to: statement, index: 9)
         }
       }
 
@@ -1739,7 +1857,7 @@ final class DatabaseService {
 
   func fetchPullRequestSnapshot(prId: String) -> PullRequestSnapshot? {
     let sql = """
-      select detail_json, status_json, checks_json, reviews_json, comments_json, files_json
+      select detail_json, status_json, checks_json, reviews_json, comments_json, files_json, commits_json
         from pull_request_snapshots
        where pr_id = ?
        limit 1
@@ -1753,7 +1871,8 @@ final class DatabaseService {
         checksJson: stringValue(statement, index: 2),
         reviewsJson: stringValue(statement, index: 3),
         commentsJson: stringValue(statement, index: 4),
-        filesJson: stringValue(statement, index: 5)
+        filesJson: stringValue(statement, index: 5),
+        commitsJson: stringValue(statement, index: 6)
       )
     }) else {
       return nil
@@ -1765,7 +1884,8 @@ final class DatabaseService {
       checks: decodeJson(row.checksJson, as: [PrCheck].self) ?? [],
       reviews: decodeJson(row.reviewsJson, as: [PrReview].self) ?? [],
       comments: decodeJson(row.commentsJson, as: [PrComment].self) ?? [],
-      files: decodeJson(row.filesJson, as: [PrFile].self) ?? []
+      files: decodeJson(row.filesJson, as: [PrFile].self) ?? [],
+      commits: decodeJson(row.commitsJson, as: [PrCommit].self)
     )
   }
 
@@ -1971,6 +2091,7 @@ final class DatabaseService {
     """)
     try ensureColumn(tableName: "pull_requests", columnName: "last_polled_at", definition: "text")
     try ensureColumn(tableName: "pull_requests", columnName: "head_sha", definition: "text")
+    try ensureColumn(tableName: "pull_requests", columnName: "creation_strategy", definition: "text")
     try exec("""
       create table if not exists pull_request_snapshots (
         pr_id text primary key,
@@ -1984,6 +2105,7 @@ final class DatabaseService {
       )
     """)
     try exec("create index if not exists idx_pull_request_snapshots_updated_at on pull_request_snapshots(updated_at)")
+    try ensureColumn(tableName: "pull_request_snapshots", columnName: "commits_json", definition: "text")
     try exec("""
       create table if not exists pull_request_ai_summaries (
         pr_id text not null,
@@ -2422,6 +2544,17 @@ final class DatabaseService {
       },
       map: { _ in true }
     ) ?? false
+  }
+
+  private func prepareTemporaryIdTable(named tableName: String, ids: [String]) throws {
+    let quotedName = quoteIdentifier(tableName)
+    try exec("create temporary table if not exists \(quotedName) (id text primary key)")
+    try exec("delete from \(quotedName)")
+    for id in ids {
+      _ = try execute("insert or ignore into \(quotedName)(id) values (?)") { statement in
+        try bindText(id, to: statement, index: 1)
+      }
+    }
   }
 
   private func notifyDidChange() {
@@ -2963,7 +3096,12 @@ final class DatabaseService {
       let pkPairs = Array(zip(pkColumns, decodedPkValues))
 
       let existingRow = try fetchRow(in: tableInfo, pkPairs: pkPairs)
-      if rowChangesRepresentDeletedRow(rowChanges, in: tableInfo, primaryKeyColumn: primaryKeyColumn) {
+      let materializationChanges = existingRow == nil
+        ? persistedChangesForRow(table: first.table, pk: first.pk)
+        : rowChanges
+      let effectiveRowChanges = materializationChanges.isEmpty ? rowChanges : materializationChanges
+
+      if rowChangesRepresentDeletedRow(effectiveRowChanges, in: tableInfo, primaryKeyColumn: primaryKeyColumn) {
         if existingRow != nil {
           try deleteRow(in: tableInfo, pkPairs: pkPairs)
         }
@@ -2973,7 +3111,7 @@ final class DatabaseService {
       var finalRow = existingRow
       var sawDelete = false
 
-      for change in rowChanges.sorted(by: sortChanges) {
+      for change in effectiveRowChanges.sorted(by: sortChanges) {
         if isDeleteColumnId(change.cid) {
           finalRow = nil
           sawDelete = true
@@ -3000,6 +3138,9 @@ final class DatabaseService {
         if existingRow != nil {
           try deleteRow(in: tableInfo, pkPairs: pkPairs)
         }
+        guard rowHasRequiredInsertColumns(finalRow!, in: tableInfo) else {
+          continue
+        }
         try insertRow(finalRow!, in: tableInfo)
       } else {
         try updateRow(finalRow!, in: tableInfo)
@@ -3019,6 +3160,43 @@ final class DatabaseService {
 
   private func groupedChangeKey(table: String, pk: SyncScalarValue) -> String {
     "\(table)|\(scalarStorageKey(pk))"
+  }
+
+  private func persistedChangesForRow(table: String, pk: SyncScalarValue) -> [CrsqlChangeRow] {
+    query("""
+      select [table], pk, cid, val, col_version, db_version, site_id, cl, seq
+        from crsql_changes
+       where [table] = ? and pk = ?
+       order by db_version asc, cl asc, seq asc
+    """, bind: { [self] statement in
+      try self.bindText(table, to: statement, index: 1)
+      try self.bindScalar(pk, to: statement, index: 2)
+    }) { statement in
+      CrsqlChangeRow(
+        table: stringValue(statement, index: 0) ?? table,
+        pk: scalarValue(statement, index: 1),
+        cid: stringValue(statement, index: 2) ?? "",
+        val: scalarValue(statement, index: 3),
+        colVersion: Int(sqlite3_column_int64(statement, 4)),
+        dbVersion: Int(sqlite3_column_int64(statement, 5)),
+        siteId: blobHexValue(statement, index: 6) ?? "",
+        cl: Int(sqlite3_column_int64(statement, 7)),
+        seq: Int(sqlite3_column_int64(statement, 8))
+      )
+    }
+  }
+
+  private func rowHasRequiredInsertColumns(_ row: [String: SyncScalarValue], in tableInfo: SyncTableInfo) -> Bool {
+    let pkColumns = Set(tableInfo.primaryKeyColumns)
+    for column in tableInfo.columns {
+      guard column.notNull, column.defaultValue == nil, !pkColumns.contains(column.name) else {
+        continue
+      }
+      guard let value = row[column.name], value != .null else {
+        return false
+      }
+    }
+    return true
   }
 
   private func isDeleteColumnId(_ cid: String) -> Bool {
@@ -3106,7 +3284,7 @@ final class DatabaseService {
     in tableInfo: SyncTableInfo,
     primaryKeyColumn: String
   ) -> Bool {
-    if rowChanges.contains(where: { isDeleteColumnId($0.cid) }) {
+    if let latestChange = rowChanges.sorted(by: sortChanges).last, isDeleteColumnId(latestChange.cid) {
       return true
     }
 

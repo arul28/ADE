@@ -9,6 +9,15 @@ extension LanesTabView {
     )
   }
 
+  var liveActionNoticePresentation: LaneEmptyStatePresentation? {
+    guard !laneSnapshots.isEmpty else { return nil }
+    return laneLiveActionNotice(
+      connectionState: syncService.connectionState,
+      laneStatus: laneStatus,
+      hasHostProfile: syncService.activeHostProfile != nil
+    )
+  }
+
   var showsLaneLoadingSkeletons: Bool {
     laneSnapshots.isEmpty && (
       syncService.connectionState == .connecting
@@ -21,29 +30,55 @@ extension LanesTabView {
   @MainActor
   func refreshPrimaryBranches(force: Bool = false) async {
     guard let primaryLane else {
-      primaryBranches = []
-      primaryBranchLaneId = nil
-      primaryBranchError = nil
+      if !primaryBranches.isEmpty {
+        primaryBranches = []
+      }
+      if primaryBranchLaneId != nil {
+        primaryBranchLaneId = nil
+      }
+      if primaryBranchError != nil {
+        primaryBranchError = nil
+      }
       return
     }
-    if !force, primaryBranchLaneId == primaryLane.id, !primaryBranches.isEmpty {
+    if !force, primaryBranchLaneId == primaryLane.id, primaryBranchError == nil {
       return
     }
     guard canRunLiveActions else {
-      primaryBranches = []
-      primaryBranchLaneId = primaryLane.id
-      primaryBranchError = nil
+      if !primaryBranches.isEmpty {
+        primaryBranches = []
+      }
+      if primaryBranchLaneId != primaryLane.id {
+        primaryBranchLaneId = primaryLane.id
+      }
+      if primaryBranchError != nil {
+        primaryBranchError = nil
+      }
       return
     }
     do {
-      primaryBranches = try await syncService.listBranches(laneId: primaryLane.id)
-      primaryBranchLaneId = primaryLane.id
-      primaryBranchError = nil
+      let branches = try await syncService.listBranches(laneId: primaryLane.id)
+      if primaryBranches != branches {
+        primaryBranches = branches
+      }
+      if primaryBranchLaneId != primaryLane.id {
+        primaryBranchLaneId = primaryLane.id
+      }
+      if primaryBranchError != nil {
+        primaryBranchError = nil
+      }
     } catch {
-      primaryBranches = []
-      primaryBranchLaneId = primaryLane.id
+      if !primaryBranches.isEmpty {
+        primaryBranches = []
+      }
+      if primaryBranchLaneId != primaryLane.id {
+        primaryBranchLaneId = primaryLane.id
+      }
       ADEHaptics.error()
-      primaryBranchError = error.localizedDescription
+      let message = error.localizedDescription
+      if primaryBranchError != message {
+        primaryBranchError = message
+      }
     }
   }
 
@@ -71,6 +106,13 @@ extension LanesTabView {
       }
     case .retry:
       Task { await reload(refreshRemote: true) }
+    }
+  }
+
+  func handleBlockedLiveAction() {
+    ADEHaptics.warning()
+    if let action = liveActionNoticePresentation?.action {
+      handleNoticeAction(action)
     }
   }
 }
