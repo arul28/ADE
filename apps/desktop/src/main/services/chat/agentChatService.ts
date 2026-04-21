@@ -1991,9 +1991,32 @@ type CodexCollaborationModePayload = {
   settings: {
     model: string;
     reasoning_effort: string | null;
-    developer_instructions: null;
+    developer_instructions: string | null;
   };
 };
+
+function toHarnessPermissionMode(
+  mode: AgentChatSession["permissionMode"] | undefined,
+): "plan" | "edit" | "full-auto" {
+  if (mode === "plan" || mode === "full-auto") return mode;
+  return "edit";
+}
+
+function buildCodexDeveloperInstructions(args: {
+  laneWorktreePath: string;
+  session: Pick<AgentChatSession, "permissionMode" | "interactionMode">;
+  collaborationMode: "default" | "plan";
+}): string {
+  const promptMode = args.collaborationMode === "plan" || args.session.interactionMode === "plan"
+    ? "planning"
+    : "coding";
+  return buildCodingAgentSystemPrompt({
+    cwd: args.laneWorktreePath,
+    mode: promptMode,
+    permissionMode: toHarnessPermissionMode(args.session.permissionMode),
+    interactive: true,
+  });
+}
 
 function buildCodexCollaborationMode(
   session: Pick<
@@ -2001,6 +2024,7 @@ function buildCodexCollaborationMode(
     "provider" | "permissionMode" | "interactionMode" | "model" | "reasoningEffort" | "codexConfigSource"
   >,
   supportedModes: Set<string> | null,
+  laneWorktreePath: string,
 ): CodexCollaborationModePayload | null {
   if (session.provider !== "codex") return null;
   if (resolveSessionCodexConfigSource(session) === "config-toml") return null;
@@ -2019,7 +2043,11 @@ function buildCodexCollaborationMode(
     settings: {
       model: session.model,
       reasoning_effort: session.reasoningEffort ?? DEFAULT_REASONING_EFFORT,
-      developer_instructions: null,
+      developer_instructions: buildCodexDeveloperInstructions({
+        laneWorktreePath,
+        session,
+        collaborationMode: mode,
+      }),
     },
   };
 }
@@ -6063,7 +6091,11 @@ export function createAgentChatService(args: {
 
     await runtime.collaborationModesReady?.catch(() => {});
     const requestedCollaborationMode = resolveRequestedCodexCollaborationMode(managed.session);
-    const collaborationMode = buildCodexCollaborationMode(managed.session, runtime.collaborationModes);
+    const collaborationMode = buildCodexCollaborationMode(
+      managed.session,
+      runtime.collaborationModes,
+      managed.laneWorktreePath,
+    );
     if (
       requestedCollaborationMode === "plan"
       && collaborationMode?.mode !== "plan"
@@ -7888,14 +7920,11 @@ export function createAgentChatService(args: {
       // immediately instead of being shadowed by a generic "Allow additional
       // permissions?" prompt. Gated by `ai.chat.autoAllowAskUser` (default: true).
       if (isAutoAllowAskUserEnabled()) {
-        const permRecord = params.permissions && typeof params.permissions === "object" ? params.permissions : null;
-        const permTool = permRecord
-          ? (typeof (permRecord as Record<string, unknown>).tool === "string"
-              ? (permRecord as Record<string, unknown>).tool as string
-              : typeof (permRecord as Record<string, unknown>).toolName === "string"
-                ? (permRecord as Record<string, unknown>).toolName as string
-                : null)
+        const permRecord = params.permissions && typeof params.permissions === "object"
+          ? params.permissions as Record<string, unknown>
           : null;
+        const rawTool = permRecord?.tool ?? permRecord?.toolName;
+        const permTool = typeof rawTool === "string" ? rawTool : null;
         if (isAskUserToolName(permTool) || isAskUserToolName(description)) {
           runtime.sendResponse(id, {
             permissions: params.permissions ?? {},
@@ -8522,7 +8551,15 @@ export function createAgentChatService(args: {
       return;
     }
 
-    if (turnIdFromParams && runtime.ignoredTurnIds.has(turnIdFromParams)) {
+    const isIgnoredTurn = turnIdFromParams ? runtime.ignoredTurnIds.has(turnIdFromParams) : false;
+    const isTerminalTurnNotification =
+      method === "turn/completed"
+      || method === "turn/aborted"
+      || method === "codex/event/turn_aborted";
+    if (isIgnoredTurn) {
+      if (isTerminalTurnNotification && turnIdFromParams) {
+        runtime.ignoredTurnIds.delete(turnIdFromParams);
+      }
       return;
     }
 
@@ -11069,10 +11106,8 @@ export function createAgentChatService(args: {
       // Auto-allow the ADE MCP `ask_user` tool — the inline question card
       // provides its own answer UI, and the permission prompt just hides it.
       const rawInput = req.toolCall.rawInput as Record<string, unknown> | null | undefined;
-      const rawToolName = typeof rawInput?.name === "string" ? rawInput.name
-        : typeof rawInput?.tool === "string" ? rawInput.tool
-        : typeof rawInput?.toolName === "string" ? rawInput.toolName
-        : null;
+      const rawToolCandidate = rawInput?.name ?? rawInput?.tool ?? rawInput?.toolName;
+      const rawToolName = typeof rawToolCandidate === "string" ? rawToolCandidate : null;
       const toolCallTitle = typeof req.toolCall.title === "string" ? req.toolCall.title : "";
       if (isAutoAllowAskUserEnabled() && (isAskUserToolName(rawToolName) || isAskUserToolName(toolCallTitle))) {
         const allow = req.options.find((option) => option.kind === "allow_once" || option.kind === "allow_always");

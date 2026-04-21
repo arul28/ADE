@@ -2,6 +2,7 @@ import SwiftUI
 
 struct ConnectionSettingsView: View {
   @EnvironmentObject private var syncService: SyncService
+  @Environment(\.dismiss) private var dismiss
 
   @State private var presentedSheet: SettingsPairSheetRoute?
   @State private var pinPreset: PinPreset?
@@ -21,10 +22,10 @@ struct ConnectionSettingsView: View {
 
           SettingsNotificationsSection(
             onPreferencesChanged: { prefs in
-              SyncService.shared?.uploadNotificationPrefs(prefs)
+              syncService.uploadNotificationPrefs(prefs)
             },
             onSendTestPush: {
-              SyncService.shared?.sendTestPush()
+              syncService.sendTestPush()
             }
           )
           .padding(.horizontal, 16)
@@ -43,6 +44,17 @@ struct ConnectionSettingsView: View {
       .background(SettingsAuroraBackground().ignoresSafeArea())
       .adeNavigationGlass()
       .navigationTitle("Settings")
+      .toolbar {
+        ToolbarItem(placement: .topBarTrailing) {
+          Button {
+            dismiss()
+          } label: {
+            Image(systemName: "xmark")
+              .font(.system(size: 13, weight: .semibold))
+          }
+          .accessibilityLabel("Close settings")
+        }
+      }
       .sheet(item: $presentedSheet) { route in
         presentedPairingSheet(route)
       }
@@ -83,9 +95,6 @@ struct ConnectionSettingsView: View {
 }
 
 private struct SettingsAuroraBackground: View {
-  @Environment(\.accessibilityReduceMotion) private var reduceMotion
-  @State private var driftPhase: CGFloat = 0
-
   var body: some View {
     ZStack {
       ADEColor.pageBackground
@@ -106,7 +115,7 @@ private struct SettingsAuroraBackground: View {
           .clear,
         ],
         center: UnitPoint(
-          x: 0.92 + (reduceMotion ? 0 : sin(driftPhase) * 0.06),
+          x: 0.92,
           y: 0.18
         ),
         startRadius: 8,
@@ -119,18 +128,12 @@ private struct SettingsAuroraBackground: View {
           .clear,
         ],
         center: UnitPoint(
-          x: 0.05 + (reduceMotion ? 0 : cos(driftPhase) * 0.05),
+          x: 0.05,
           y: 0.32
         ),
         startRadius: 6,
         endRadius: 240
       )
-    }
-    .onAppear {
-      guard !reduceMotion else { return }
-      withAnimation(.linear(duration: 18).repeatForever(autoreverses: true)) {
-        driftPhase = .pi
-      }
     }
   }
 }

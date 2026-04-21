@@ -67,6 +67,9 @@ public struct PrSnapshot: Codable, Hashable, Identifiable, Sendable {
     /// "open" | "merged" | "closed".
     public let state: String
     public let mergeReady: Bool
+    /// Source branch (headRef), e.g. "feat/auth-refactor". Optional so older
+    /// snapshots written before the field was added still decode cleanly.
+    public let branch: String?
 
     public init(
         id: String,
@@ -75,7 +78,8 @@ public struct PrSnapshot: Codable, Hashable, Identifiable, Sendable {
         checks: String,
         review: String,
         state: String,
-        mergeReady: Bool
+        mergeReady: Bool,
+        branch: String? = nil
     ) {
         self.id = id
         self.number = number
@@ -84,6 +88,7 @@ public struct PrSnapshot: Codable, Hashable, Identifiable, Sendable {
         self.review = review
         self.state = state
         self.mergeReady = mergeReady
+        self.branch = branch
     }
 }
 

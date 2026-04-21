@@ -276,6 +276,7 @@ import type {
   OnboardingDetectionResult,
   OnboardingExistingLaneCandidate,
   OnboardingStatus,
+  OnboardingTourProgress,
   LaneListSnapshot,
   LaneSummary,
   ListOverlapsArgs,
@@ -782,6 +783,22 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.onboardingSetDismissed, { dismissed }),
     complete: async (): Promise<OnboardingStatus> =>
       ipcRenderer.invoke(IPC.onboardingComplete),
+    getTourProgress: async (): Promise<OnboardingTourProgress> =>
+      ipcRenderer.invoke(IPC.onboardingGetTourProgress),
+    markWizardCompleted: async (): Promise<OnboardingTourProgress> =>
+      ipcRenderer.invoke(IPC.onboardingMarkWizardCompleted),
+    markWizardDismissed: async (): Promise<OnboardingTourProgress> =>
+      ipcRenderer.invoke(IPC.onboardingMarkWizardDismissed),
+    markTourCompleted: async (tourId: string): Promise<OnboardingTourProgress> =>
+      ipcRenderer.invoke(IPC.onboardingMarkTourCompleted, { tourId }),
+    markTourDismissed: async (tourId: string): Promise<OnboardingTourProgress> =>
+      ipcRenderer.invoke(IPC.onboardingMarkTourDismissed, { tourId }),
+    updateTourStep: async (tourId: string, index: number): Promise<OnboardingTourProgress> =>
+      ipcRenderer.invoke(IPC.onboardingUpdateTourStep, { tourId, index }),
+    markGlossaryTermSeen: async (termId: string): Promise<OnboardingTourProgress> =>
+      ipcRenderer.invoke(IPC.onboardingMarkGlossaryTermSeen, { termId }),
+    resetTourProgress: async (tourId?: string): Promise<OnboardingTourProgress> =>
+      ipcRenderer.invoke(IPC.onboardingResetTourProgress, { tourId }),
   },
   automations: {
     list: async (): Promise<AutomationRuleSummary[]> =>

@@ -13,6 +13,7 @@ struct PrDetailView: View {
   @State private var activityEvents: [PrActivityEvent] = []
   @State private var deployments: [PrDeployment] = []
   @State private var aiSummary: AiReviewSummary?
+  @State private var isAiSummaryLoading: Bool = false
   @State private var issueInventory: IssueInventorySnapshot?
   @State private var pipelineSettings: PipelineSettings?
   @State private var groupMembers: [PrGroupMemberSummary] = []
@@ -29,6 +30,10 @@ struct PrDetailView: View {
   @State private var filesWorkspaceId: String?
   @State private var stackPresentation: PrStackPresentation?
   @State private var editorSheet: PrDetailEditorSheet?
+  @State private var mergeMethodSheetPresented: Bool = false
+  @State private var aiResolution: AiResolutionState?
+  @State private var isAiResolverBusy: Bool = false
+  @State private var aiResolverSheetPresented: Bool = false
 
   private var prsStatus: SyncDomainStatus {
     syncService.status(for: .prs)
@@ -40,6 +45,38 @@ struct PrDetailView: View {
 
   private var canRunPrActions: Bool {
     isLive && busyAction == nil
+  }
+
+  private var canOpenCurrentPrInGitHub: Bool {
+    !currentPr.githubUrl.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+      && (capabilities?.canOpenInGithub ?? true)
+  }
+
+  private var canUpdateCurrentPrMetadata: Bool {
+    canRunPrActions && (capabilities?.canUpdateDescription ?? true)
+  }
+
+  private var shouldShowCloseAction: Bool {
+    capabilities?.canClose ?? actionAvailability.showsClose
+  }
+
+  private var shouldShowReopenAction: Bool {
+    capabilities?.canReopen ?? actionAvailability.showsReopen
+  }
+
+  private var canCloseCurrentPr: Bool {
+    canRunPrActions && shouldShowCloseAction
+  }
+
+  private var canReopenCurrentPr: Bool {
+    canRunPrActions && shouldShowReopenAction
+  }
+
+  private var canAttemptBlockedMerge: Bool {
+    guard canRunPrActions else { return false }
+    guard let status = snapshot?.status else { return false }
+    let state = status.state.isEmpty ? currentPr.state : status.state
+    return state == "open" && !status.isMergeable && !status.mergeConflicts
   }
 
   private var currentPr: PullRequestListItem {
@@ -78,15 +115,56 @@ struct PrDetailView: View {
     PrActionAvailability(prState: snapshot?.status?.state ?? currentPr.state)
   }
 
-  // Snapshot-driven capability gate. Falls back to the legacy
-  // supportsRemoteAction probe when the host hasn't sent capabilities yet
-  // (cached-only / offline), so we never regress below the current gating.
   private var canRerunChecks: Bool {
     capabilities?.canRerunChecks ?? syncService.supportsRemoteAction("prs.rerunChecks")
   }
 
   private var canAddComment: Bool {
     capabilities?.canComment ?? syncService.supportsRemoteAction("prs.addComment")
+  }
+
+  private var unresolvedThreadCount: Int {
+    reviewThreads.filter { !$0.isResolved }.count
+  }
+
+  private var reviewsHave: Int {
+    (snapshot?.reviews ?? []).filter { $0.state == "approved" }.count
+  }
+
+  /// `PrDetail.requestedReviewers` is the current open review-request list;
+  /// treat that count as "needed" approvals. Falls back to 0 otherwise.
+  private var reviewsNeeded: Int {
+    snapshot?.detail?.requestedReviewers.count ?? 0
+  }
+
+  private var mergeGateInfo: PrMergeGateInfo {
+    prComputeMergeGate(
+      status: snapshot?.status,
+      checks: snapshot?.checks ?? [],
+      reviewThreadsUnresolved: unresolvedThreadCount,
+      reviewsNeeded: reviewsNeeded,
+      reviewsHave: reviewsHave,
+      capabilities: capabilities
+    )
+  }
+
+  private var behindBaseBy: Int {
+    snapshot?.status?.behindBaseBy ?? 0
+  }
+
+  /// Set of sub-tabs shown in the detail picker.
+  private var visibleTabs: [PrDetailTab] {
+    [.overview, .checks, .activity, .files, .convergence]
+  }
+
+  private func tabTitle(_ tab: PrDetailTab) -> String {
+    switch tab {
+    case .overview: return "Overview"
+    case .checks: return "Checks"
+    case .activity: return "Reviews"
+    case .files: return "Files"
+    case .convergence: return "Path"
+    }
   }
 
   var body: some View {
@@ -128,43 +206,38 @@ struct PrDetailView: View {
         .prListRow()
       }
 
-      PrHeaderCard(pr: currentPr, transitionNamespace: transitionNamespace)
+      heroCard
         .prListRow()
 
-      Picker("Detail tab", selection: $selectedTab) {
-        ForEach(PrDetailTab.allCases) { tab in
-          Text(tab.title).tag(tab)
+      PrMergeGateCard(info: mergeGateInfo) {
+        switch mergeGateInfo.target {
+        case .checks: selectedTab = .checks
+        case .reviews: selectedTab = .activity
+        case .overview: selectedTab = .overview
         }
       }
-      .pickerStyle(.segmented)
       .prListRow()
+
+      subTabPicker
+        .prListRow()
 
       switch selectedTab {
       case .overview:
         PrOverviewTab(
           pr: currentPr,
           snapshot: snapshot,
-          deployments: deployments,
           aiSummary: aiSummary,
-          actionAvailability: actionAvailability,
-          capabilities: capabilities,
-          mergeMethod: $mergeMethod,
-          reviewerInput: $reviewerInput,
           isLive: canRunPrActions,
+          isAiSummaryLoading: isAiSummaryLoading,
           groupMembers: groupMembers,
-          onMerge: mergeCurrentPr,
-          onClose: closeCurrentPr,
-          onReopen: reopenCurrentPr,
-          onRequestReviewers: requestReviewers,
-          onOpenGitHub: { openGitHub(urlString: currentPr.githubUrl) },
-          onOpenStack: openStack,
-          onEditTitle: { editorSheet = .title(currentPr.title) },
-          onEditBody: { editorSheet = .body(snapshot?.detail?.body ?? "") },
-          onEditLabels: {
-            let labels = snapshot?.detail?.labels.map(\.name).joined(separator: ", ") ?? ""
-            editorSheet = .labels(labels)
+          onNavigate: { target in
+            switch target {
+            case .checks: selectedTab = .checks
+            case .files: selectedTab = .files
+            }
           },
-          onSubmitReview: { editorSheet = .review },
+          onRegenerateAiSummary: refreshAiSummary,
+          onOpenStack: openStack,
           onArchiveLane: {
             cleanupChoice = .archive
             cleanupConfirmationPresented = true
@@ -212,9 +285,14 @@ struct PrDetailView: View {
         PrChecksTab(
           checks: snapshot?.checks ?? [],
           actionRuns: actionRuns,
+          deployments: deployments,
           canRerunChecks: canRerunChecks,
           isLive: canRunPrActions,
-          onRerun: rerunChecks
+          aiResolution: aiResolution,
+          isAiResolverBusy: isAiResolverBusy,
+          onRerun: rerunChecks,
+          onLaunchAiResolver: { aiResolverSheetPresented = true },
+          onStopAiResolver: stopAiResolver
         )
         .prListRow()
       case .activity:
@@ -225,12 +303,20 @@ struct PrDetailView: View {
             activity: activityEvents
           ),
           reviewThreads: reviewThreads,
+          reviews: snapshot?.reviews ?? [],
+          requestedReviewers: snapshot?.detail?.requestedReviewers ?? [],
+          authorLogin: snapshot?.detail?.author.login,
+          requiredApprovals: max(reviewsNeeded, 1),
           commentInput: $commentInput,
           canAddComment: canAddComment,
           isLive: canRunPrActions,
+          aiResolution: aiResolution,
+          isAiResolverBusy: isAiResolverBusy,
           onSubmitComment: submitComment,
           onReplyToThread: replyToThread,
-          onSetThreadResolved: setThreadResolved
+          onSetThreadResolved: setThreadResolved,
+          onLaunchAiResolver: { aiResolverSheetPresented = true },
+          onStopAiResolver: stopAiResolver
         )
         .prListRow()
       }
@@ -241,10 +327,75 @@ struct PrDetailView: View {
     .adeNavigationGlass()
     .navigationTitle(currentPr.title)
     .navigationBarTitleDisplayMode(.inline)
+    .safeAreaInset(edge: .bottom) {
+      stickyActionBar
+    }
     .toolbar {
-      ToolbarItem(placement: .topBarLeading) {
-        ADEConnectionDot()
+      ADERootToolbarLeadingItems()
+      ToolbarItem(placement: .topBarTrailing) {
+        Menu {
+          Button {
+            editorSheet = .title(currentPr.title)
+          } label: {
+            Label("Edit title", systemImage: "pencil")
+          }
+          .disabled(!canUpdateCurrentPrMetadata)
+          Button {
+            editorSheet = .body(snapshot?.detail?.body ?? "")
+          } label: {
+            Label("Edit description", systemImage: "text.alignleft")
+          }
+          .disabled(!canUpdateCurrentPrMetadata)
+          Button {
+            let labels = snapshot?.detail?.labels.map(\.name).joined(separator: ", ") ?? ""
+            editorSheet = .labels(labels)
+          } label: {
+            Label("Set labels", systemImage: "tag")
+          }
+          .disabled(!canUpdateCurrentPrMetadata)
+          Button {
+            editorSheet = .review
+          } label: {
+            Label("Submit review", systemImage: "checkmark.seal")
+          }
+          .disabled(!canRunPrActions)
+          if shouldShowCloseAction {
+            Button(role: .destructive, action: closeCurrentPr) {
+              Label("Close PR", systemImage: "xmark.circle")
+            }
+            .disabled(!canCloseCurrentPr)
+          }
+          if shouldShowReopenAction {
+            Button(action: reopenCurrentPr) {
+              Label("Reopen PR", systemImage: "arrow.counterclockwise")
+            }
+            .disabled(!canReopenCurrentPr)
+          }
+          Button(action: { openGitHub(urlString: currentPr.githubUrl) }) {
+            Label("Open in GitHub", systemImage: "arrow.up.right.square")
+          }
+          .disabled(!canOpenCurrentPrInGitHub)
+          Button {
+            UIPasteboard.general.string = currentPr.githubUrl
+            ADEHaptics.success()
+            actionMessage = "URL copied."
+          } label: {
+            Label("Copy URL", systemImage: "doc.on.doc")
+          }
+          .disabled(currentPr.githubUrl.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+          Button {
+            Task { await reload(refreshRemote: true) }
+          } label: {
+            Label("Refresh", systemImage: "arrow.clockwise")
+          }
+        } label: {
+          Label("Pull request actions", systemImage: "ellipsis.circle")
+            .labelStyle(.iconOnly)
+        }
       }
+    }
+    .refreshable {
+      await reload(refreshRemote: true)
     }
     .adeNavigationZoomTransition(id: transitionNamespace == nil ? nil : "pr-container-\(prId)", in: transitionNamespace)
     .task(id: syncService.localStateRevision) {
@@ -260,9 +411,38 @@ struct PrDetailView: View {
         ? "This keeps the lane for history but removes it from the active stack."
         : "This removes the lane from ADE and asks the host to delete the branch as part of cleanup.")
     }
+    .confirmationDialog(
+      "Merge strategy",
+      isPresented: $mergeMethodSheetPresented,
+      titleVisibility: .visible
+    ) {
+      ForEach(PrMergeMethodOption.allCases) { option in
+        Button(option.title) {
+          mergeMethod = option
+          mergeCurrentPr()
+        }
+      }
+      Button("Cancel", role: .cancel) {}
+    } message: {
+      Text(canAttemptBlockedMerge
+        ? "ADE sees merge blockers, but this will still ask GitHub to merge. GitHub may reject the request unless your account can bypass the current requirements."
+        : "Pick how this PR should be merged. Host rules may override your choice.")
+    }
     .sheet(item: $stackPresentation) { presentation in
       PrStackSheet(groupId: presentation.id, groupName: presentation.groupName)
         .environmentObject(syncService)
+    }
+    .sheet(isPresented: $aiResolverSheetPresented) {
+      PrAiResolverSheet(
+        prNumber: currentPr.githubPrNumber,
+        isBusy: isAiResolverBusy,
+        isRunning: aiResolverRunning,
+        lastError: aiResolution?.lastError
+      ) { model, reasoningEffort in
+        startAiResolver(model: model, reasoningEffort: reasoningEffort)
+      } onStop: {
+        stopAiResolver()
+      }
     }
     .sheet(item: $editorSheet) { sheet in
       switch sheet {
@@ -319,6 +499,177 @@ struct PrDetailView: View {
       }
     }
   }
+
+  // MARK: - Hero
+
+  private var heroCard: some View {
+    let state = snapshot?.status?.state ?? currentPr.state
+    let stateTint = prStateTint(state)
+    let author = snapshot?.detail?.author.login ?? "unknown"
+    let metaPrefix = currentPr.headBranch.isEmpty
+      ? "unknown"
+      : "\(currentPr.headBranch) → \(currentPr.baseBranch.isEmpty ? "base" : currentPr.baseBranch)"
+
+    return VStack(alignment: .leading, spacing: 8) {
+      HStack(spacing: 6) {
+        Text("#\(currentPr.githubPrNumber)")
+          .font(.system(size: 12, weight: .bold, design: .monospaced))
+          .foregroundStyle(stateTint)
+          .adeMatchedGeometry(id: transitionNamespace == nil ? nil : "pr-status-\(currentPr.id)", in: transitionNamespace)
+        PrTagChip(label: state, color: stateTint)
+        if let kindLabel = prAdeKindLabel(currentPr.adeKind) {
+          PrTagChip(label: kindLabel, color: ADEColor.tintPRs)
+        }
+        Spacer(minLength: 0)
+      }
+
+      Text(currentPr.title)
+        .font(.system(size: 22, weight: .semibold))
+        .tracking(-0.5)
+        .foregroundStyle(ADEColor.textPrimary)
+        .lineSpacing(1)
+        .fixedSize(horizontal: false, vertical: true)
+        .adeMatchedGeometry(id: transitionNamespace == nil ? nil : "pr-title-\(currentPr.id)", in: transitionNamespace)
+
+      Text("\(metaPrefix) · opened \(prRelativeTime(currentPr.createdAt)) by \(author)")
+        .font(.system(size: 11, design: .monospaced))
+        .foregroundStyle(ADEColor.textMuted)
+        .lineLimit(2)
+    }
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .padding(.horizontal, 18)
+    .padding(.vertical, 10)
+  }
+
+  // MARK: - Sub-tab picker
+
+  private var subTabPicker: some View {
+    HStack(spacing: 2) {
+      ForEach(visibleTabs) { tab in
+        let active = selectedTab == tab
+        Button {
+          selectedTab = tab
+        } label: {
+          Text(tabTitle(tab))
+            .font(.system(size: 12.5, weight: active ? .semibold : .medium))
+            .foregroundStyle(active ? ADEColor.tintPRs : ADEColor.textSecondary)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 8)
+            .background(
+              RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .fill(active ? ADEColor.tintPRs.opacity(0.14) : Color.clear)
+            )
+            .overlay(
+              RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .strokeBorder(active ? ADEColor.tintPRs.opacity(0.3) : Color.clear, lineWidth: 0.5)
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+      }
+    }
+    .padding(3)
+    .background(
+      RoundedRectangle(cornerRadius: 11, style: .continuous)
+        .fill(ADEColor.recessedBackground.opacity(0.7))
+    )
+    .overlay(
+      RoundedRectangle(cornerRadius: 11, style: .continuous)
+        .strokeBorder(ADEColor.glassBorder, lineWidth: 0.5)
+    )
+    .padding(.horizontal, 16)
+    .padding(.top, 2)
+  }
+
+  // MARK: - Sticky action bar
+
+  private var stickyActionBar: some View {
+    let gate = mergeGateInfo
+    let needsRebase = gate.tone == .amber || behindBaseBy > 0
+    let rebaseLabel = behindBaseBy > 0 ? "Rebase · \(behindBaseBy) behind" : "Rebase"
+
+    let mergeLabel: String
+    let mergeTint: Color
+    let mergeEnabled: Bool
+    switch gate.tone {
+    case .green:
+      mergeLabel = "Merge"
+      mergeTint = ADEColor.success
+      mergeEnabled = canRunPrActions && (capabilities?.canMerge ?? actionAvailability.mergeEnabled)
+    case .red where canAttemptBlockedMerge:
+      mergeLabel = "Attempt merge"
+      mergeTint = ADEColor.warning
+      mergeEnabled = true
+    case .amber:
+      mergeLabel = "Needs rebase"
+      mergeTint = ADEColor.warning
+      mergeEnabled = false
+    case .red:
+      mergeLabel = "Merge blocked"
+      mergeTint = ADEColor.danger
+      mergeEnabled = false
+    }
+
+    return PrStickyActionBar {
+      Button(action: triggerRebase) {
+        Text(rebaseLabel)
+          .font(.system(size: 12.5, weight: .semibold))
+          .foregroundStyle(needsRebase ? ADEColor.textPrimary : ADEColor.textSecondary)
+          .frame(maxWidth: .infinity)
+          .padding(.vertical, 12)
+          .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+              .fill(Color.white.opacity(needsRebase ? 0.06 : 0.03))
+          )
+          .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+              .strokeBorder(Color.white.opacity(needsRebase ? 0.12 : 0.05), lineWidth: 0.5)
+          )
+      }
+      .buttonStyle(.plain)
+      .disabled(!needsRebase || !canRunPrActions || currentPr.laneId.isEmpty)
+
+      Button {
+        if mergeEnabled {
+          ADEHaptics.success()
+          presentMergeMethodPicker()
+        }
+      } label: {
+        Text(mergeLabel)
+          .font(.system(size: 12.5, weight: .bold))
+          .foregroundStyle(mergeTint)
+          .frame(maxWidth: .infinity)
+          .padding(.vertical, 12)
+          .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+              .fill(mergeTint.opacity(0.14))
+          )
+          .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+              .strokeBorder(mergeTint.opacity(0.32), lineWidth: 0.5)
+          )
+      }
+      .buttonStyle(.plain)
+      .disabled(!mergeEnabled)
+    }
+  }
+
+  private func presentMergeMethodPicker() {
+    mergeMethodSheetPresented = true
+  }
+
+  @MainActor
+  private func triggerRebase() {
+    guard !currentPr.laneId.isEmpty else {
+      errorMessage = "This PR has no linked lane — rebase is unavailable."
+      return
+    }
+    runPrAction("Starting rebase") {
+      try await syncService.startLaneRebase(laneId: currentPr.laneId)
+    }
+  }
+
+  // MARK: - Data loading (unchanged)
 
   @MainActor
   private func reload(refreshRemote: Bool = false) async {
@@ -432,11 +783,65 @@ struct PrDetailView: View {
     runPrAction("Re-running checks") { try await syncService.rerunPullRequestChecks(prId: prId) }
   }
 
+  private var aiResolverRunning: Bool {
+    let status = aiResolution?.status?.lowercased() ?? ""
+    return status == "running" || status == "starting" || status == "pending"
+  }
+
+  private func startAiResolver(model: String?, reasoningEffort: String?) {
+    guard !isAiResolverBusy else { return }
+    Task { @MainActor in
+      isAiResolverBusy = true
+      defer { isAiResolverBusy = false }
+      do {
+        let state = try await syncService.startPrAiResolution(
+          prId: prId,
+          model: model,
+          reasoningEffort: reasoningEffort
+        )
+        aiResolution = state
+        aiResolverSheetPresented = false
+      } catch {
+        errorMessage = error.localizedDescription
+      }
+    }
+  }
+
+  private func stopAiResolver() {
+    guard !isAiResolverBusy else { return }
+    Task { @MainActor in
+      isAiResolverBusy = true
+      defer { isAiResolverBusy = false }
+      do {
+        try await syncService.stopPrAiResolution(prId: prId)
+        if let current = aiResolution {
+          aiResolution = AiResolutionState(
+            prId: current.prId,
+            status: "stopped",
+            sessionId: current.sessionId,
+            model: current.model,
+            reasoningEffort: current.reasoningEffort,
+            startedAt: current.startedAt,
+            updatedAt: current.updatedAt,
+            lastError: current.lastError
+          )
+        }
+      } catch {
+        errorMessage = error.localizedDescription
+      }
+    }
+  }
+
   private func refreshAiSummary() {
-    runPrAction("Refreshing AI summary") {
-      let summary = try await syncService.fetchPullRequestAiSummary(prId: prId)
-      await MainActor.run {
+    Task { @MainActor in
+      guard canRunPrActions else { return }
+      isAiSummaryLoading = true
+      defer { isAiSummaryLoading = false }
+      do {
+        let summary = try await syncService.fetchPullRequestAiSummary(prId: prId)
         aiSummary = summary
+      } catch {
+        errorMessage = error.localizedDescription
       }
     }
   }

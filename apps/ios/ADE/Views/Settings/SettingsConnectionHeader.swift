@@ -85,17 +85,28 @@ struct SettingsConnectionHeader: View {
       radius: 22,
       y: 8
     )
-    .animation(.spring(response: 0.4, dampingFraction: 0.8), value: syncService.connectionState)
-    .onAppear { pulsing = isActiveState }
-    .onChange(of: syncService.connectionState) { _, _ in
-      withAnimation(ADEMotion.standard(reduceMotion: reduceMotion)) {
-        pulsing = isActiveState
-      }
+    .task(id: pulseTaskKey) {
+      await updatePulsingState()
     }
   }
 
   private var isActiveState: Bool {
     syncService.connectionState == .connecting || syncService.connectionState == .syncing
+  }
+
+  private var pulseTaskKey: Bool {
+    isActiveState && !reduceMotion
+  }
+
+  private func updatePulsingState() async {
+    let shouldPulse = pulseTaskKey
+    if shouldPulse {
+      await Task.yield()
+    }
+    guard pulsing != shouldPulse else { return }
+    withAnimation(ADEMotion.standard(reduceMotion: reduceMotion)) {
+      pulsing = shouldPulse
+    }
   }
 
   private var errorMessage: String? {

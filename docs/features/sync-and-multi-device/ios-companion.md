@@ -17,22 +17,36 @@ apps/ios/
 ├── ADE/
 │   ├── App/
 │   │   ├── ADEApp.swift             # SwiftUI app entry
-│   │   └── ContentView.swift        # slim 5-tab TabView
+│   │   ├── AppDelegate.swift        # APNs registration, notification-category
+│   │   │                            # setup, response/action routing, deep-link dispatch
+│   │   ├── ContentView.swift        # slim 6-tab TabView
+│   │   ├── DeepLinkRouter.swift     # ade://session/<id> + ade://pr/<n> URL handler
+│   │   └── NotificationCategories.swift # UNNotificationCategory / UNNotificationAction set
 │   ├── Models/
-│   │   └── RemoteModels.swift       # Codable structs mirroring shared types
+│   │   ├── RemoteModels.swift       # Codable structs mirroring shared types
+│   │   └── NotificationPreferences.swift # 13-toggle prefs + quiet hours + per-session overrides
 │   ├── Resources/
 │   │   └── DatabaseBootstrap.sql    # generated from desktop kvDb.ts
 │   ├── Services/
 │   │   ├── Database.swift           # SQLite + pure-SQL CRR + offline caches
 │   │   ├── KeychainService.swift    # paired device secret storage
+│   │   ├── LiveActivityCoordinator.swift # workspace Live Activity lifecycle +
+│   │   │                                  # push-token collection
 │   │   └── SyncService.swift        # WebSocket client, command routing,
-│   │                                # PIN pairing, lane presence, chat push
+│   │                                # PIN pairing, lane presence, chat push,
+│   │                                # push-token registration
+│   ├── Shared/
+│   │   ├── ADESharedContainer.swift # App Group UserDefaults + WorkspaceSnapshot helpers
+│   │   ├── ADESharedModels.swift    # AgentSnapshot, PrSnapshot — shared with widgets
+│   │   ├── ADESharedTheme.swift     # Provider color/icon table mirrored from desktop
+│   │   ├── LiveActivityIntentsForward.swift # ADEIntentCommandKind, ADEIntentCommandRegistry
+│   │   └── WidgetAppIntents.swift   # OpenADEIntent, ToggleMutePushIntent (iOS 18+)
 │   ├── Views/
-│   │   ├── Components/              # ADEDesignSystem, haptics, shimmer,
-│   │   │                            # mobile primitives, code rendering cache
-│   │   ├── Lanes/                   # AddLaneSheet, LaneDetailScreen,
-│   │   │                            # LaneChat*, LaneCommitBar, LaneDiff*,
-│   │   │                            # LaneListViewParts, LaneTreeView, etc.
+│   │   ├── Components/              # ADEDesignSystem (incl. ADEConnectionDot),
+│   │   │                            # haptics, shimmer, mobile primitives
+│   │   ├── Cto/                     # CtoRootScreen, CtoSessionDestinationView
+│   │   ├── Lanes/                   # LaneDetailScreen, LaneActionsCard,
+│   │   │                            # LaneBatchManageSheet, LaneManageSheet, etc.
 │   │   ├── Files/                   # FilesRootScreen, FilesDirectoryScreen,
 │   │   │                            # FilesDetailScreen, *+Actions helpers
 │   │   ├── Work/                    # WorkRootScreen, WorkChatSessionView,
@@ -41,19 +55,26 @@ apps/ios/
 │   │   ├── PRs/                     # PrsRootScreen, PrDetailScreen and
 │   │   │                            # per-tab views, PrWorkflowCards,
 │   │   │                            # PrStackSheet, CreatePrWizardView
-│   │   ├── Settings/                # ConnectionSettingsView + modular
-│   │   │                            # SettingsPairingSection,
-│   │   │                            # SettingsAppearanceSection,
-│   │   │                            # SettingsDiagnosticsSection,
-│   │   │                            # SettingsConnectionHeader,
-│   │   │                            # SettingsPinSheet
-│   │   ├── LanesTabView.swift
-│   │   ├── FilesTabView.swift
-│   │   ├── WorkTabView.swift
-│   │   └── PRsTabView.swift
+│   │   ├── Settings/                # ConnectionSettingsView, NotificationsCenterView,
+│   │   │                            # QuietHoursEditorView, PerSessionOverrideView,
+│   │   │                            # SettingsPairingSection, SettingsConnectionHeader,
+│   │   │                            # SettingsPinSheet, SettingsNotificationsSection
+│   │   └── LanesTabView.swift
 │   └── Assets.xcassets/             # App icon, brand mark, provider logos
 │                                    # (Anthropic, Claude, Codex, Cursor,
 │                                    # OpenAI, OpenCode)
+├── ADENotificationService/
+│   └── NotificationService.swift    # UNNotificationServiceExtension: brand-prefix
+│                                    # title, set threadIdentifier, raise interruption level
+├── ADEWidgets/
+│   ├── ADEWidgetBundle.swift        # WidgetBundle registering all three widget surfaces
+│   ├── ADELiveActivity.swift        # ADESessionAttributes (ActivityKit), ADELiveActivity widget
+│   ├── ADELiveActivityViews.swift   # Lock Screen / banner + Dynamic Island view hierarchy
+│   ├── ADEWorkspaceWidget.swift     # Home Screen widget (small/medium/large)
+│   ├── ADEWorkspaceWidgetViews.swift# Widget entry views
+│   ├── ADELockScreenWidget.swift    # Lock Screen accessory widget
+│   ├── ADEControlWidget.swift       # Control Center widgets (iOS 18+): Open ADE + Mute
+│   └── ADEWidgetPreviewData.swift   # Xcode preview fixtures
 └── ADETests/
     └── ADETests.swift
 ```
@@ -256,12 +277,173 @@ per-IP rate limiting (5 failures → 10-minute cooldown).
 - iOS grants ~30 seconds per fetch window.
 - Priority order: sync cr-sqlite changesets, update notification badges.
 
-### Push Notifications
+### Push Notifications (APNs)
 
-- Phase 6: local notifications when foregrounded.
-- Phase 7 (planned): APNs relay for background/terminated delivery.
-- Deep links from notification tap navigate to relevant screen
-  (mission detail, intervention, chat).
+ADE delivers push notifications from the desktop host to the iOS app
+over Apple Push Notification service. The full stack is implemented:
+
+**Desktop host side** (`apps/desktop/src/main/services/notifications/`):
+
+- `apnsService.ts` — HTTP/2 APNs client using `node:http2` + JWT
+  signed with `node:crypto` (ES256). No native binary dependency.
+  The `.p8` private key is encrypted at rest via Electron
+  `safeStorage.encryptString` and stored at
+  `<userData>/apns.key.enc`; decrypted in-memory only during signing.
+  Key configured via `ApnsConfigureOptions` (keyP8Pem, keyId, teamId,
+  bundleId, env). JWTs are refreshed every 50 minutes to stay within
+  Apple's 60-minute limit. `ApnsKeyStore` manages encrypted
+  persistence; `signApnsJwt` is the pure signing function.
+  `APNS_INVALID_TOKEN_REASONS` lists token-dead reasons
+  (`BadDeviceToken`, `Unregistered`, `DeviceTokenNotForTopic`).
+  `Http2ApnsTransport` is the default transport; tests inject a mock
+  via the `ApnsTransport` interface seam.
+
+- `notificationMapper.ts` — side-effect-free mapping from ADE domain
+  events to `MappedNotification` values. Thirteen `NotificationCategory`
+  values across four families:
+
+  | Category | Family | Push type | Priority |
+  |---|---|---|---|
+  | `CHAT_AWAITING_INPUT` | chat | alert | 10 (time-sensitive) |
+  | `CHAT_FAILED` | chat | alert | 10 |
+  | `CHAT_COMPLETED` | chat | alert | 5 |
+  | `CTO_SUBAGENT_STARTED` | cto | alert | 5 |
+  | `CTO_SUBAGENT_FINISHED` | cto | alert | 5 |
+  | `CTO_MISSION_PHASE` | cto | alert | 5 |
+  | `PR_CI_FAILING` | pr | alert | 10 |
+  | `PR_REVIEW_REQUESTED` | pr | alert | 10 |
+  | `PR_CHANGES_REQUESTED` | pr | alert | 10 |
+  | `PR_MERGE_READY` | pr | alert | 5 |
+  | `SYSTEM_PROVIDER_OUTAGE` | system | alert | 10 |
+  | `SYSTEM_AUTH_RATE_LIMIT` | system | alert | 10 |
+  | `SYSTEM_HOOK_FAILURE` | system | alert | 5 |
+
+  Each notification carries a `deepLink` (`ade://session/<id>` or
+  `ade://pr/<n>`), a `collapseId` for de-duplication, and a
+  `metadata` bag that lets the iOS side set `threadIdentifier`.
+
+- `notificationEventBus.ts` — routes domain events to APNs and/or
+  in-app WebSocket delivery. Call surface: `publishChatEvent`,
+  `publishPrEvent`, `publishMissionEvent`, `publishSystemEvent`,
+  `sendTestPush`. The bus asks `listPushTargets()` and
+  `getPrefsForDevice()` at send time so preference toggles take effect
+  immediately. If the device is currently connected over WebSocket,
+  the bus also delivers an in-app notification via
+  `sendInAppNotification` even when APNs is disabled. `apns-expiration`
+  is set to `+1h` for priority-10 pushes and `+10m` for priority-5
+  pushes; stale banners are not queued after the window.
+  Also sends Live Activity `liveactivity` pushes to per-activity
+  update tokens when the notification maps to an attention value (chat
+  awaiting input / failed, PR CI failing / review requested / merge
+  ready).
+
+**iOS client side**:
+
+- `AppDelegate.swift` — owns APNs registration
+  (`registerForRemoteNotifications`), notification-category setup
+  (`NotificationCategories.register()`), and response routing:
+  `Approve`/`Deny`/`Reply` actions forward to
+  `SyncService.sendRemoteCommand(approveSession/denySession/replyToSession)`;
+  `Restart` calls `restartSession`; `RetryChecks` calls
+  `retryPrChecks`; tapping the banner body dispatches to
+  `DeepLinkRouter`.
+  Requests `.alert`, `.badge`, `.sound`, `.providesAppNotificationSettings`,
+  and `.timeSensitive` (iOS 15+) at first launch.
+  Token registration calls
+  `SyncService.shared?.registerPushToken(hex, kind: .alert, ...)` which
+  transmits the token to the desktop host via the sync command surface.
+
+- `NotificationCategories.swift` — declares ten
+  `UNNotificationCategory` / `UNNotificationAction` values matching
+  the desktop `NotificationCategory` identifiers 1:1.
+  `CHAT_AWAITING_INPUT` gets Approve + Deny + Reply (text input);
+  `CHAT_FAILED` gets Open agent + Restart; `PR_CI_FAILING` gets
+  Open PR + Retry checks; `PR_MERGE_READY` gets View PR; CTO
+  and system categories get generic Open / Open mission actions.
+
+- `ADENotificationService/NotificationService.swift` — Notification
+  Service Extension that decorates inbound APNs payloads before
+  display: prefixes the title with the provider brand slug (e.g.
+  `Claude · Awaiting approval`), sets `threadIdentifier` from
+  `sessionId` or `prNumber` so the OS groups banners per session/PR,
+  and raises `interruptionLevel` / `relevanceScore` based on category.
+
+- `DeepLinkRouter.swift` — `ade://` URL handler. Parses
+  `ade://session/<id>` and `ade://pr/<n>` and posts
+  `.adeDeepLinkRequested` to `NotificationCenter` so individual tab
+  views can flip their selection.
+
+**Notification preferences** (`apps/ios/ADE/Models/NotificationPreferences.swift`):
+
+- `NotificationPreferences` — 13 per-category toggles (chat 3,
+  CTO 3, PR 4, system 3), a quiet-hours window (start/end time-of-day
+  `Date`), and `perSessionOverrides` keyed by `sessionId`
+  (`muted`, `awaitingInputOnly`). Persisted as JSON in the App Group
+  `UserDefaults` at key `ade.notifications.prefs`.
+- Synced to the desktop host so the host can gate APNs sends by
+  device preferences without requiring an extra round-trip.
+- `NotificationsCenterView.swift` — unified notifications settings
+  screen with category toggles, quiet-hours picker
+  (`QuietHoursEditorView`), per-session overrides
+  (`PerSessionOverrideView`), authorization status banner, and "Send
+  test push" action.
+
+### Live Activities
+
+Source: `apps/ios/ADE/Services/LiveActivityCoordinator.swift`,
+`apps/ios/ADEWidgets/ADELiveActivity.swift`.
+
+A single workspace Live Activity (`ADESessionAttributes`) shows the
+current agent roster + the single most important pending action on the
+Lock Screen and in the Dynamic Island. Apple enforces one active
+activity per app at a time; the coordinator ends stale per-session
+activities from older builds on launch.
+
+`ADESessionAttributes.ContentState` carries:
+- `sessions: [ActiveSession]` — sorted by awaiting-input → failed →
+  newest running.
+- `attention: Attention?` — one of `awaitingInput`, `failed`,
+  `ciFailing`, `reviewRequested`, `mergeReady`. Nil when nothing
+  requires immediate action.
+- `failingCheckCount`, `awaitingReviewCount`, `mergeReadyCount` — PR
+  aggregate counts.
+
+`LiveActivityCoordinator` exposes a single `reconcile(with:prs:)`
+call wired from `SyncService`. Push-to-start (iOS 17.2+) and
+per-activity update tokens are collected via `pushTokenUpdates` and
+forwarded to the host through `LiveActivityHost.sendPushToken`.
+The host sends `liveactivity` APNs pushes to the update tokens via
+`notificationEventBus` whenever an attention-eligible event fires.
+
+The `ADELiveActivity` widget registers the `ActivityConfiguration`
+for the lock-screen / banner presentation and the Dynamic Island
+expanded/leading/trailing/minimal regions.
+
+### Widgets
+
+Source: `apps/ios/ADEWidgets/`.
+
+Three widget / control surfaces are registered by `ADEWidgetBundle`:
+
+- `ADEWorkspaceWidget` (Home Screen) — `systemSmall`, `systemMedium`,
+  `systemLarge`. Reads `WorkspaceSnapshot` from the App Group
+  (`ADESharedContainer.readWorkspaceSnapshot()`). Shows running
+  agents and PR attention counts. Main app triggers
+  `WidgetCenter.shared.reloadAllTimelines()` after each snapshot write.
+
+- `ADELockScreenWidget` — accessory rectangular/circular sizes
+  for the iOS Lock Screen; reads from the same shared snapshot.
+
+- `ADEControlWidget` (iOS 18+) — Control Center "Open ADE" button
+  and "Mute ADE" toggle. The mute toggle persists a window via
+  `ADEMutePreferences.setMute(until:)` and forwards the ISO timestamp
+  to the desktop host via the intent command bridge
+  (`ADEIntentCommandRegistry` / `ADESyncIntentBridge`).
+
+Shared DTOs live in `apps/ios/ADE/Shared/ADESharedModels.swift`:
+`AgentSnapshot` and `PrSnapshot` — lightweight Codable structs
+readable by the widget extension and the notification service
+extension without importing the main app's heavier renderer code.
 
 ### Haptic Feedback
 
@@ -278,15 +460,14 @@ per-IP rate limiting (5 failures → 10-minute cooldown).
 | **Files** | `doc.text` | `/files` | Lane-backed workspace picker, live file tree/search/read, protected-workspace read-only parity. `mobileReadOnly` on the workspace payload gates mutating file actions on the phone via `ensureMobileFileMutationsAllowed`. |
 | **Work** | `terminal` | `/work` | Terminal + chat session list, cached history with persisted lane names, read-only output streaming, quick-launch actions, session pinning, live chat-event push from the host (no polling lag once subscribed). |
 | **PRs** | `arrow.triangle.pull` | `/prs` | PR list/detail driven by `prs.getMobileSnapshot`: stack visibility (`PrStackSheet`), create-PR wizard (`CreatePrWizardView`) gated by per-lane eligibility, workflow cards (queue / integration / rebase) rendered from `PrWorkflowCard`, per-PR action capabilities. |
-| **Settings** | `gearshape` | `/settings` (sync subset) | PIN pairing (`SettingsPinSheet`), appearance, diagnostics, connection header with QR payload and address candidates, reconnect, forget. |
+| **CTO** | `sparkles` | `/cto` | CTO snapshot: Chat / Team / Workflows segments. Drills into per-worker chat sessions via `CtoSessionDestinationView`. |
+| **Settings** | `gearshape` | `/settings` (sync subset) | PIN pairing (`SettingsPinSheet`), notification preferences (`NotificationsCenterView`), quiet hours, per-session overrides, appearance, diagnostics, connection header with QR payload and address candidates, reconnect, forget. |
 
 ### Planned
 
-- Missions, CTO/Chat, Automations, Graph, History tabs.
-- Full Settings parity with the desktop (beyond the current sync/
-  appearance/diagnostics subset).
-- APNs relay for background/terminated notifications.
-- iPad adaptive layout, widgets, Spotlight.
+- Missions, Automations, Graph, History tabs.
+- Full Settings parity with the desktop.
+- iPad adaptive layout, Spotlight.
 
 ## Lane data projection
 

@@ -49,22 +49,21 @@ export function buildCodingAgentSystemPrompt(args: {
   const hasTodoTools = toolNames.includes("TodoWrite") || toolNames.includes("TodoRead");
   const hasWorkflowTools = hasCreateLane || hasCreatePr || hasCaptureScreenshot || hasReportCompletion;
   const guardedLocalReadOnly = permissionMode === "plan";
-  const prIssueToolNames = toolNames.filter((name) => {
-    return (
-      name === "prGetChecks"
-      || name === "prGetReviewComments"
-      || name === "prRefreshIssueInventory"
-      || name === "prRerunFailedChecks"
-      || name === "prReplyToReviewThread"
-      || name === "prResolveReviewThread"
-      || name === "pr_get_checks"
-      || name === "pr_get_review_comments"
-      || name === "pr_refresh_issue_inventory"
-      || name === "pr_rerun_failed_checks"
-      || name === "pr_reply_to_review_thread"
-      || name === "pr_resolve_review_thread"
-    );
-  });
+  const PR_ISSUE_TOOL_NAMES = new Set([
+    "prGetChecks",
+    "prGetReviewComments",
+    "prRefreshIssueInventory",
+    "prRerunFailedChecks",
+    "prReplyToReviewThread",
+    "prResolveReviewThread",
+    "pr_get_checks",
+    "pr_get_review_comments",
+    "pr_refresh_issue_inventory",
+    "pr_rerun_failed_checks",
+    "pr_reply_to_review_thread",
+    "pr_resolve_review_thread",
+  ]);
+  const prIssueToolNames = toolNames.filter((name) => PR_ISSUE_TOOL_NAMES.has(name));
   const hasPrIssueTools = prIssueToolNames.length > 0;
 
   return [

@@ -1,12 +1,14 @@
-import { createRequire } from "node:module";
 import fs from "node:fs";
 import path from "node:path";
+import { createRequire } from "node:module";
 import type { DatabaseSync as DatabaseSyncType } from "node:sqlite";
 import { resolveAdeLayout } from "../../../shared/adeLayout";
 import type { RecentProjectSummary } from "../../../shared/types";
 
-const require = createRequire(__filename);
-const { DatabaseSync } = require("node:sqlite") as { DatabaseSync: typeof DatabaseSyncType };
+type DatabaseSyncConstructor = new (dbPath: string, options?: { allowExtension?: boolean }) => DatabaseSyncType;
+
+const require = createRequire(path.join(process.cwd(), "ade-runtime.cjs"));
+const { DatabaseSync } = require("node:sqlite") as { DatabaseSync: DatabaseSyncConstructor };
 
 type RecentProjectEntry = {
   rootPath: string;

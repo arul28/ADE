@@ -42,6 +42,7 @@ export function FloatingPane({
   minimizeBehavior = "css",
   className,
   bodyClassName,
+  dataTour,
   children
 }: {
   id: string;
@@ -64,6 +65,7 @@ export function FloatingPane({
   minimizeBehavior?: "css" | "native";
   className?: string;
   bodyClassName?: string;
+  dataTour?: string;
   children: React.ReactNode;
 }) {
   const handleDragStart = (e: React.DragEvent) => {
@@ -100,6 +102,7 @@ export function FloatingPane({
   return (
     <div
       data-pane-id={id}
+      data-tour={dataTour}
       className={cn(
         "ade-floating-pane relative",
         usesCssMinimize && minimized && "minimized",

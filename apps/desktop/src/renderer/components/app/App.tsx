@@ -16,6 +16,8 @@ const Router = (window as any).__adeBrowserMock ? BrowserRouter : HashRouter;
 import { AppShell } from "./AppShell";
 import { RunPage } from "../run/RunPage";
 import { ProjectSetupPage } from "../onboarding/ProjectSetupPage";
+import { OnboardingBootstrap } from "../onboarding/OnboardingBootstrap";
+import { GlossaryPage } from "../onboarding/GlossaryPage";
 import { logRendererDebugEvent } from "../../lib/debugLog";
 
 const LanesPage = React.lazy(() =>
@@ -202,12 +204,14 @@ export function App() {
   return (
     <Router>
       <div data-theme={theme} className="h-full bg-bg text-fg font-sans antialiased selection:bg-accent/30">
+        <OnboardingBootstrap />
         <Routes>
           <Route path="/startup" element={<Navigate to="/work" replace />} />
           <Route element={<ShellLayout />}>
             <Route path="/" element={<Navigate to="/work" replace />} />
             <Route path="/project" element={guarded(<RunPage />)} />
             <Route path="/onboarding" element={guarded(<ProjectSetupPage />)} />
+            <Route path="/glossary" element={<PageErrorBoundary><GlossaryPage /></PageErrorBoundary>} />
             <Route path="/lanes" element={guardedLazy(<LanesPage />)} />
             <Route path="/files" element={guardedLazy(<FilesPage />)} />
             <Route path="/work" element={guardedLazy(<TerminalsPage />)} />

@@ -101,7 +101,7 @@ struct FilesDetailScreen: View {
           .accessibilityLabel("Back")
           .frame(minWidth: 44, minHeight: 44)
           .contentShape(Rectangle())
-          ADEConnectionDot()
+          ADERootToolbarLeading()
         }
       }
       ToolbarItem(placement: .topBarTrailing) {

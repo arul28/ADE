@@ -17,6 +17,7 @@ import { cn } from "../ui/cn";
 import { useAppStore } from "../../state/appStore";
 import { revealLabel } from "../../lib/platform";
 import { logRendererDebugEvent } from "../../lib/debugLog";
+import type { GitHubStatus } from "../../../shared/types";
 
 const mainItems = [
   { to: "/work", label: "Work", icon: Terminal },
@@ -32,14 +33,22 @@ const mainItems = [
 ] as const;
 
 const settingsItem = { to: "/settings", label: "Settings", icon: GearSix } as const;
+const SIDEBAR_ICON_SIZE = 20;
+const SIDEBAR_AVATAR_SIZE_CLASS = "h-5 w-5";
 
-export function TabNav() {
+export function TabNav({ githubStatus }: { githubStatus?: GitHubStatus | null }) {
   const project = useAppStore((s) => s.project);
   const showWelcome = useAppStore((s) => s.showWelcome);
   const terminalAttention = useAppStore((s) => s.terminalAttention);
   const location = useLocation();
   const hasActiveProject = Boolean(project?.rootPath);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
+  const [avatarBroken, setAvatarBroken] = useState(false);
+  const githubLogin = githubStatus?.userLogin || null;
+
+  useEffect(() => {
+    setAvatarBroken(false);
+  }, [githubLogin]);
 
   useEffect(() => {
     if (!contextMenu) return;
@@ -70,7 +79,7 @@ export function TabNav() {
           <span className="ade-shell-sidebar-icon-slot flex items-center justify-center shrink-0">
             <span className="relative inline-flex items-center">
               <it.icon
-                size={18}
+                size={SIDEBAR_ICON_SIZE}
                 weight="regular"
                 className={cn("ade-shell-sidebar-icon shrink-0 transition-colors duration-150")}
               />
@@ -109,7 +118,7 @@ export function TabNav() {
         <span className="ade-shell-sidebar-icon-slot flex items-center justify-center shrink-0">
           <span className="relative inline-flex items-center">
             <it.icon
-              size={18}
+              size={SIDEBAR_ICON_SIZE}
               weight="regular"
               className={cn(
                 "ade-shell-sidebar-icon shrink-0 transition-colors duration-150",
@@ -167,6 +176,23 @@ export function TabNav() {
 
         {/* Spacer pushes settings to bottom */}
         <div className="mt-auto" />
+
+        {/* GitHub profile avatar — only shows when token is stored, a login is known, and the image loads */}
+        {githubLogin && !avatarBroken ? (
+          <div className="ade-shell-sidebar-item group relative flex w-full items-center">
+            <span className="ade-shell-sidebar-icon-slot flex items-center justify-center shrink-0">
+              <img
+                src={`https://github.com/${encodeURIComponent(githubLogin)}.png?size=64`}
+                alt=""
+                title={githubLogin}
+                onError={() => setAvatarBroken(true)}
+                className={cn(SIDEBAR_AVATAR_SIZE_CLASS, "rounded-full object-cover")}
+                draggable={false}
+              />
+            </span>
+            <span className="ade-tab-label whitespace-nowrap">{githubLogin}</span>
+          </div>
+        ) : null}
 
         {/* Divider line before settings */}
         <div className="ade-shell-sidebar-separator mx-2 mb-1 border-t" />

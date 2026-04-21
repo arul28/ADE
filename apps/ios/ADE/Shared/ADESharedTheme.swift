@@ -15,6 +15,7 @@ public enum ADESharedTheme {
     public static let brandDeepSeek = Color(red: 0x3B / 255.0, green: 0x82 / 255.0, blue: 0xF6 / 255.0) // #3B82F6
     public static let brandXAI      = Color(red: 0xDC / 255.0, green: 0x26 / 255.0, blue: 0x26 / 255.0) // #DC2626
     public static let brandGroq     = Color(red: 0x06 / 255.0, green: 0xB6 / 255.0, blue: 0xD4 / 255.0) // #06B6D4
+    public static let brandCTO      = Color(red: 0xC4 / 255.0, green: 0xB5 / 255.0, blue: 0xFD / 255.0) // #C4B5FD
 
     /// Neutral fallback when the provider slug is unknown. Keeps parity with
     /// `ADEColor.purpleAccent` in the main design system.
@@ -33,6 +34,7 @@ public enum ADESharedTheme {
         case "deepseek":            return brandDeepSeek
         case "xai", "grok":         return brandXAI
         case "groq":                return brandGroq
+        case "cto":                 return brandCTO
         default:                    return neutralAccent
         }
     }
@@ -47,6 +49,10 @@ public enum ADESharedTheme {
     public static let statusSuccess = brandCodex
     /// Amber used for awaiting-input / warnings.
     public static let statusAttention = Color(red: 0xF5 / 255.0, green: 0x9E / 255.0, blue: 0x0B / 255.0)
+    /// Brighter amber used in the mockup palette for attention pulses, review
+    /// states, and inline warning chips. Matches `STATUS.attention` /
+    /// `STATUS.review` from `surfaces.jsx`.
+    public static let warningAmber = Color(red: 0xFB / 255.0, green: 0xBF / 255.0, blue: 0x24 / 255.0) // #FBBF24
     /// Neutral gray used for idle / pending.
     public static let statusIdle = Color(red: 0x71 / 255.0, green: 0x71 / 255.0, blue: 0x7A / 255.0)
 

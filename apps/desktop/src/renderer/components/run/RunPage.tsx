@@ -1153,6 +1153,7 @@ export function RunPage() {
           borderBottom: `1px solid ${COLORS.border}`,
           flexShrink: 0,
         }}
+        data-tour="run.header"
       >
         <h1
           style={{
@@ -1166,7 +1167,7 @@ export function RunPage() {
           Run
         </h1>
 
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }} data-tour="run.laneSelector">
           <span style={LABEL_STYLE}>Default lane</span>
           <select
             value={defaultLaneId ?? ""}
@@ -1211,6 +1212,7 @@ export function RunPage() {
           <>
             <button
               type="button"
+              data-tour="run.runButton"
               onClick={() => {
                 if (selectedStackId) {
                   void startStackById(selectedStackId);
@@ -1225,6 +1227,7 @@ export function RunPage() {
             </button>
             <button
               type="button"
+              data-tour="run.stopButton"
               onClick={() => {
                 if (selectedStackId) {
                   void stopStackById(selectedStackId);
@@ -1258,6 +1261,7 @@ export function RunPage() {
 
         <button
           type="button"
+          data-tour="run.newShell"
           onClick={() => void handleLaunchShell()}
           disabled={!defaultLaneId || shellBusy}
           style={{
@@ -1270,34 +1274,39 @@ export function RunPage() {
           {shellBusy ? "Opening shell..." : "New shell"}
         </button>
 
-        <button type="button" onClick={() => setAddDialogOpen(true)} style={outlineButton()}>
+        <button type="button" data-tour="run.addCommand" onClick={() => setAddDialogOpen(true)} style={outlineButton()}>
           <Plus size={14} weight="bold" />
           Add command
         </button>
       </div>
 
-      <LaneRuntimeBar laneId={defaultLaneId} onOpenPreviewRouting={() => setNetworkDrawerOpen(true)} />
+      <div data-tour="run.runtimeBar">
+        <LaneRuntimeBar laneId={defaultLaneId} onOpenPreviewRouting={() => setNetworkDrawerOpen(true)} />
+      </div>
 
-      <RunStackTabs
-        stacks={stacks}
-        selectedStackId={selectedStackId}
-        onSelectStack={setSelectedStackId}
-        onCreateStack={handleCreateStack}
-        onRenameStack={handleRenameStack}
-        onDeleteStack={handleDeleteStack}
-        onStartStack={(stackId) => {
-          void startStackById(stackId);
-        }}
-        onStopStack={(stackId) => {
-          void stopStackById(stackId);
-        }}
-        onRestartStack={(stackId) => {
-          void restartStackById(stackId);
-        }}
-        onUpdateStackStartOrder={handleUpdateStackStartOrder}
-      />
+      <div data-tour="run.stackTabs">
+        <RunStackTabs
+          stacks={stacks}
+          selectedStackId={selectedStackId}
+          onSelectStack={setSelectedStackId}
+          onCreateStack={handleCreateStack}
+          onRenameStack={handleRenameStack}
+          onDeleteStack={handleDeleteStack}
+          onStartStack={(stackId) => {
+            void startStackById(stackId);
+          }}
+          onStopStack={(stackId) => {
+            void stopStackById(stackId);
+          }}
+          onRestartStack={(stackId) => {
+            void restartStackById(stackId);
+          }}
+          onUpdateStackStartOrder={handleUpdateStackStartOrder}
+        />
+      </div>
 
       <div
+        data-tour="run.groupFilter"
         style={{
           display: "flex",
           alignItems: "center",
@@ -1392,7 +1401,7 @@ export function RunPage() {
               </button>
             </div>
           ) : (
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: 12 }}>
+            <div data-tour="run.commandCards" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: 12 }}>
               {filteredDefinitions.map((definition) => {
                 const laneId = resolveProcessLaneId(definition.id);
                 const laneRuntimes = runtime.filter(
@@ -1436,19 +1445,21 @@ export function RunPage() {
         ) : null}
       </div>
 
-      <ProcessMonitor
-        runtimes={runtime}
-        processDefinitions={processDefinitions}
-        processNames={processNames}
-        lanes={lanes}
-        shellSessions={runShellSessions}
-        focusTarget={monitorFocusTarget}
-        focusSequence={monitorFocusSequence}
-        onKill={handleKillRuntime}
-        onCloseShell={(sessionId) => {
-          void handleCloseRunShell(sessionId);
-        }}
-      />
+      <div data-tour="run.processMonitor">
+        <ProcessMonitor
+          runtimes={runtime}
+          processDefinitions={processDefinitions}
+          processNames={processNames}
+          lanes={lanes}
+          shellSessions={runShellSessions}
+          focusTarget={monitorFocusTarget}
+          focusSequence={monitorFocusSequence}
+          onKill={handleKillRuntime}
+          onCloseShell={(sessionId) => {
+            void handleCloseRunShell(sessionId);
+          }}
+        />
+      </div>
 
       <AddCommandDialog
         stacks={stacks}

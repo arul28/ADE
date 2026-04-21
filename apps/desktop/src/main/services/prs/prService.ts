@@ -41,7 +41,9 @@ import type {
   PrCheck,
   PrComment,
   PrChecksStatus,
+  PrCommit,
   PrConflictAnalysis,
+  PrCreationStrategy,
   PrGroupMemberRole,
   PrHealth,
   PrMergeContext,
@@ -122,6 +124,7 @@ import { hasMergeConflictMarkers, parseGitStatusPorcelain } from "./integrationV
 import { fetchRemoteTrackingBranch } from "../shared/queueRebase";
 import { asNumber, asString, getErrorMessage, normalizeBranchName, nowIso, resolvePathWithinRoot } from "../shared/utils";
 import { branchNameFromLaneRef, resolveStableLaneBaseBranch } from "../../../shared/laneBaseResolution";
+import { normalizePrCreationStrategy, resolvePrRebaseMode } from "../../../shared/prStrategy";
 
 type PullRequestRow = {
   id: string;
@@ -143,6 +146,7 @@ type PullRequestRow = {
   last_synced_at: string | null;
   created_at: string;
   updated_at: string;
+  creation_strategy: string | null;
 };
 
 type PullRequestSnapshotHydration = {
@@ -153,6 +157,7 @@ type PullRequestSnapshotHydration = {
   reviews: PrReview[];
   comments: PrComment[];
   files: PrFile[];
+  commits: PrCommit[];
   updatedAt: string | null;
 };
 
@@ -395,6 +400,7 @@ function computeReviewStatus(args: { requestedReviewers: string[]; reviewStatesB
 }
 
 function rowToSummary(row: PullRequestRow): PrSummary {
+  const creationStrategy = normalizePrCreationStrategy(row.creation_strategy);
   return {
     id: row.id,
     laneId: row.lane_id,
@@ -414,7 +420,8 @@ function rowToSummary(row: PullRequestRow): PrSummary {
     deletions: Number(row.deletions ?? 0),
     lastSyncedAt: row.last_synced_at ?? null,
     createdAt: row.created_at,
-    updatedAt: row.updated_at
+    updatedAt: row.updated_at,
+    creationStrategy
   };
 }
 
@@ -965,6 +972,7 @@ export function createPrService({
     reviews?: PrReview[] | null;
     comments?: PrComment[] | null;
     files?: PrFile[] | null;
+    commits?: PrCommit[] | null;
     updatedAt?: string;
   }): void => {
     const existing = db.get<{
@@ -974,8 +982,9 @@ export function createPrService({
       reviews_json: string | null;
       comments_json: string | null;
       files_json: string | null;
+      commits_json: string | null;
     }>(
-      `select detail_json, status_json, checks_json, reviews_json, comments_json, files_json
+      `select detail_json, status_json, checks_json, reviews_json, comments_json, files_json, commits_json
          from pull_request_snapshots
         where pr_id = ?
         limit 1`,
@@ -993,8 +1002,8 @@ export function createPrService({
     db.run(
       `
         insert into pull_request_snapshots(
-          pr_id, detail_json, status_json, checks_json, reviews_json, comments_json, files_json, updated_at
-        ) values (?, ?, ?, ?, ?, ?, ?, ?)
+          pr_id, detail_json, status_json, checks_json, reviews_json, comments_json, files_json, commits_json, updated_at
+        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?)
         on conflict(pr_id) do update set
           detail_json = excluded.detail_json,
           status_json = excluded.status_json,
@@ -1002,6 +1011,7 @@ export function createPrService({
           reviews_json = excluded.reviews_json,
           comments_json = excluded.comments_json,
           files_json = excluded.files_json,
+          commits_json = excluded.commits_json,
           updated_at = excluded.updated_at
       `,
       [
@@ -1012,6 +1022,7 @@ export function createPrService({
         jsonOrFallback(args.reviews, existing?.reviews_json),
         jsonOrFallback(args.comments, existing?.comments_json),
         jsonOrFallback(args.files, existing?.files_json),
+        jsonOrFallback(args.commits, existing?.commits_json),
         args.updatedAt ?? nowIso(),
       ],
     );
@@ -1035,10 +1046,11 @@ export function createPrService({
       reviews_json: string | null;
       comments_json: string | null;
       files_json: string | null;
+      commits_json: string | null;
       updated_at: string | null;
     }>(
       `
-        select s.pr_id, s.detail_json, s.status_json, s.checks_json, s.reviews_json, s.comments_json, s.files_json, s.updated_at
+        select s.pr_id, s.detail_json, s.status_json, s.checks_json, s.reviews_json, s.comments_json, s.files_json, s.commits_json, s.updated_at
           from pull_request_snapshots s
           join pull_requests p on p.id = s.pr_id and p.project_id = ?
          ${args.prId ? "where s.pr_id = ?" : ""}
@@ -1055,6 +1067,7 @@ export function createPrService({
       reviews: decodeSnapshotJson<PrReview[]>(row.reviews_json) ?? [],
       comments: decodeSnapshotJson<PrComment[]>(row.comments_json) ?? [],
       files: decodeSnapshotJson<PrFile[]>(row.files_json) ?? [],
+      commits: decodeSnapshotJson<PrCommit[]>(row.commits_json) ?? [],
       updatedAt: row.updated_at,
     }));
   };
@@ -1080,7 +1093,8 @@ export function createPrService({
                  additions = ?,
                  deletions = ?,
                  last_synced_at = ?,
-                 updated_at = ?
+                 updated_at = ?,
+                 creation_strategy = coalesce(?, creation_strategy)
            where id = ? and project_id = ?
         `,
         [
@@ -1099,6 +1113,7 @@ export function createPrService({
           summary.deletions,
           summary.lastSyncedAt,
           summary.updatedAt ?? now,
+          summary.creationStrategy ?? null,
           existing.id,
           projectId,
         ]
@@ -1127,8 +1142,9 @@ export function createPrService({
           deletions,
           last_synced_at,
           created_at,
-          updated_at
-        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          updated_at,
+          creation_strategy
+        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `,
       [
         summary.id,
@@ -1149,7 +1165,8 @@ export function createPrService({
         summary.deletions,
         summary.lastSyncedAt,
         summary.createdAt ?? now,
-        summary.updatedAt ?? now
+        summary.updatedAt ?? now,
+        summary.creationStrategy ?? null
       ]
     );
   };
@@ -1799,16 +1816,161 @@ export function createPrService({
     }));
   };
 
+  /**
+   * Aggregate per-commit check runs into the compact `PrCommit.checkStatus`
+   * discriminator ("success" | "failure" | "pending" | "none"). Mirrors
+   * `toChecksStatusFromCheckRuns` but maps into the narrower commit-dot
+   * vocabulary:
+   *   - any terminal failure (failure/cancelled/timed_out) → "failure"
+   *   - else any non-terminal run → "pending"
+   *   - else any success → "success"
+   *   - else "none" (empty list, or only neutral/skipped/etc.)
+   */
+  const aggregateCommitCheckStatus = (runs: any[]): "success" | "failure" | "pending" | "none" => {
+    if (!Array.isArray(runs) || runs.length === 0) return "none";
+    let hasPending = false;
+    let hasSuccess = false;
+    for (const run of runs) {
+      const status = asString(run?.status).toLowerCase();
+      const conclusion = asString(run?.conclusion).toLowerCase();
+      if (
+        conclusion === "failure" ||
+        conclusion === "cancelled" ||
+        conclusion === "timed_out"
+      ) {
+        return "failure";
+      }
+      if (status && status !== "completed") {
+        hasPending = true;
+        continue;
+      }
+      if (conclusion === "success") {
+        hasSuccess = true;
+      }
+    }
+    if (hasPending) return "pending";
+    if (hasSuccess) return "success";
+    return "none";
+  };
+
+  /**
+   * Run `mapper(items[i])` with at most `concurrency` in-flight promises.
+   * Preserves input order. A failed element resolves to `null` instead of
+   * rejecting the whole batch — callers handle null as "fall back to default".
+   */
+  const mapConcurrent = async <T, U>(
+    items: T[],
+    concurrency: number,
+    mapper: (item: T, index: number) => Promise<U>,
+  ): Promise<Array<U | null>> => {
+    const out: Array<U | null> = new Array(items.length).fill(null);
+    const limit = Math.max(1, Math.floor(concurrency));
+    let nextIndex = 0;
+    const workers: Promise<void>[] = [];
+    const run = async (): Promise<void> => {
+      while (true) {
+        const i = nextIndex++;
+        if (i >= items.length) return;
+        try {
+          out[i] = await mapper(items[i], i);
+        } catch {
+          out[i] = null;
+        }
+      }
+    };
+    for (let i = 0; i < Math.min(limit, items.length); i++) {
+      workers.push(run());
+    }
+    await Promise.all(workers);
+    return out;
+  };
+
+  /**
+   * Fetch up to 30 commits on the PR head branch from GitHub's REST
+   * `pulls/{n}/commits` endpoint. For each commit we also fetch
+   * `/repos/{owner}/{repo}/commits/{sha}/check-runs` (throttled to 5 parallel
+   * requests) and aggregate into `PrCommit.checkStatus`. 404/403 per commit
+   * (private org, rate limits) degrade gracefully to `"none"` so a single
+   * failure doesn't poison the whole snapshot.
+   *
+   * If the aggregate fetch would push total runtime past ~8s we bail on the
+   * check-status pass and return `"none"` for the remaining commits; the
+   * background snapshot refresh will pick them up on the next tick.
+   */
+  const COMMIT_CHECK_STATUS_BUDGET_MS = 8_000;
+  const COMMIT_CHECK_STATUS_CONCURRENCY = 5;
+  const getCommitsSnapshot = async (prId: string): Promise<PrCommit[]> => {
+    const row = requireRow(prId);
+    const repo = repoFromRow(row);
+    const { data } = await githubService.apiRequest<any>({
+      method: "GET",
+      path: `/repos/${repo.owner}/${repo.name}/pulls/${Number(row.github_pr_number)}/commits`,
+      query: { per_page: 30, page: 1 },
+    });
+    const list: any[] = Array.isArray(data) ? data : [];
+    const capped = list.slice(0, 30);
+    const baseCommits: PrCommit[] = capped.map((entry) => {
+      const sha = asString(entry?.sha) || "";
+      const commit = entry?.commit ?? {};
+      const commitAuthor = commit?.author ?? {};
+      const topAuthor = entry?.author ?? {};
+      const message = asString(commit?.message) || "";
+      const firstLine = message.split("\n")[0] ?? message;
+      const committedDate = asString(commitAuthor?.date) || asString(commit?.committer?.date) || "";
+      return {
+        sha,
+        shortSha: sha ? sha.slice(0, 7) : "",
+        message: firstLine,
+        author: {
+          login: asString(topAuthor?.login) || null,
+          name: asString(commitAuthor?.name) || asString(topAuthor?.login) || "",
+          email: asString(commitAuthor?.email) || null,
+        },
+        committedDate,
+        checkStatus: "none" as const,
+      };
+    });
+
+    // Fetch per-commit check-runs in parallel (capped to 5 concurrent).
+    // Each 404/403 is caught and downgraded to "none" for that commit.
+    const started = Date.now();
+    const results = await mapConcurrent(
+      baseCommits,
+      COMMIT_CHECK_STATUS_CONCURRENCY,
+      async (commit): Promise<"success" | "failure" | "pending" | "none"> => {
+        if (!commit.sha) return "none";
+        if (Date.now() - started > COMMIT_CHECK_STATUS_BUDGET_MS) return "none";
+        try {
+          const runs = await fetchCheckRuns(repo, commit.sha);
+          return aggregateCommitCheckStatus(runs);
+        } catch (err) {
+          logger.warn("prs.commit_check_runs_failed", {
+            prId,
+            sha: commit.sha,
+            error: err instanceof Error ? err.message : String(err),
+          });
+          return "none";
+        }
+      },
+    );
+
+    return baseCommits.map((commit, i) => ({
+      ...commit,
+      checkStatus: results[i] ?? "none",
+    }));
+  };
+
   const refreshSnapshotData = async (prId: string): Promise<void> => {
-    const [detail, status, checks, reviews, comments, files] = await Promise.all([
+    const [detail, status, checks, reviews, comments, files, commits] = await Promise.all([
       getDetailSnapshot(prId).catch(() => null),
       computeStatus(rowToSummary(requireRow(prId))).catch(() => null),
       getChecks(prId).catch(() => null),
       getReviews(prId).catch(() => null),
       getComments(prId).catch(() => null),
       getFilesSnapshot(prId).catch(() => null),
+      getCommitsSnapshot(prId).catch(() => null),
     ]);
-    upsertSnapshotRow({ prId, detail, status, checks, reviews, comments, files });
+    upsertSnapshotRow({ prId, detail, status, checks, reviews, comments, files, commits });
   };
 
   const updateDescription = async (args: UpdatePrDescriptionArgs): Promise<void> => {
@@ -2085,6 +2247,8 @@ export function createPrService({
       });
     }
 
+    const strategy: PrCreationStrategy = args.strategy ?? "pr_target";
+
     const summary: PrSummary = {
       id: randomUUID(),
       laneId: lane.id,
@@ -2104,7 +2268,8 @@ export function createPrService({
       deletions: Number(pr?.deletions ?? 0),
       lastSyncedAt: null,
       createdAt,
-      updatedAt: createdAt
+      updatedAt: createdAt,
+      creationStrategy: strategy
     };
 
     upsertRow(summary);
@@ -2125,6 +2290,26 @@ export function createPrService({
     const headBranch = asString(pr?.head?.ref) || branchNameFromRef(lane.branchRef);
     const baseBranch = asString(pr?.base?.ref) || branchNameFromRef(lane.baseRef);
 
+    // Backfill creation_strategy for imported PRs that don't have one stored yet.
+    // The wizard defaults to "pr_target" when users create via the UI; mirror
+    // that default here so linked PRs participate in strategy-aware rebase
+    // behavior (follow-up 3) instead of being treated as "unset". The
+    // upsertRow path uses COALESCE so we never clobber an existing value.
+    const existingRow = db.get<{ id: string; creation_strategy: string | null }>(
+      `
+        select id, creation_strategy
+        from pull_requests
+        where project_id = ?
+          and repo_owner = ?
+          and repo_name = ?
+          and github_pr_number = ?
+        limit 1
+      `,
+      [projectId, repo.owner, repo.name, locator.number],
+    );
+    const creationStrategy: PrCreationStrategy =
+      normalizePrCreationStrategy(existingRow?.creation_strategy) ?? "pr_target";
+
     const summary: PrSummary = {
       id: randomUUID(),
       laneId: lane.id,
@@ -2144,7 +2329,8 @@ export function createPrService({
       deletions: Number(pr?.deletions ?? 0),
       lastSyncedAt: null,
       createdAt,
-      updatedAt: createdAt
+      updatedAt: createdAt,
+      creationStrategy
     };
 
     upsertRow(summary);
@@ -5643,6 +5829,30 @@ export function createPrService({
             [suggestion.laneId, projectId],
           );
           const linkedPr = prSummariesForLane(suggestion.laneId);
+          // Resolve rebase mode from the lane's most-recent open/draft PR. Mirrors
+          // `autoRebaseService.resolveLaneRebaseMode` so desktop drift classification,
+          // auto-rebase gating, and mobile copy all agree on the same source of truth.
+          let creationStrategy: PrCreationStrategy | null = null;
+          try {
+            const strategyRow = db.get<{ creation_strategy: string | null }>(
+              `
+                select creation_strategy
+                from pull_requests
+                where lane_id = ?
+                  and state in ('open', 'draft')
+                order by updated_at desc, created_at desc
+                limit 1
+              `,
+              [suggestion.laneId],
+            );
+            creationStrategy = normalizePrCreationStrategy(strategyRow?.creation_strategy);
+          } catch (error) {
+            logger.warn("prs.mobile_snapshot.rebase_strategy_lookup_failed", {
+              laneId: suggestion.laneId,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
+          const rebaseMode = resolvePrRebaseMode(creationStrategy);
           cards.push({
             kind: "rebase",
             id: `rebase:${suggestion.laneId}`,
@@ -5655,6 +5865,11 @@ export function createPrService({
             prNumber: linkedPr ? Number(linkedPr.githubPrNumber) : null,
             dismissedAt: suggestion.dismissedAt,
             deferredUntil: suggestion.deferredUntil,
+            rebaseMode,
+            creationStrategy,
+            ...(suggestion.targetCommits && suggestion.targetCommits.length > 0
+              ? { targetCommits: suggestion.targetCommits }
+              : {}),
           });
         }
       } catch (error) {

@@ -21,6 +21,7 @@ function deferredFlush() {
 
 type ApnsSendCall = {
   deviceToken: string;
+  env?: "sandbox" | "production";
   topic: string;
   priority: number;
   pushType: string;
@@ -34,6 +35,7 @@ function makeApnsService() {
     send: vi.fn(async (envelope: any) => {
       calls.push({
         deviceToken: envelope.deviceToken,
+        env: envelope.env,
         topic: envelope.topic,
         priority: envelope.priority,
         pushType: envelope.pushType,
@@ -130,7 +132,7 @@ describe("notificationEventBus", () => {
     bus.publishChatEvent(sampleEnvelope);
     await deferredFlush();
     expect(service.send).not.toHaveBeenCalled();
-    expect(inAppSpy).not.toHaveBeenCalled();
+    expect(inAppSpy).toHaveBeenCalledTimes(1);
   });
 
   it("fans out to multiple devices independently", async () => {
@@ -233,5 +235,32 @@ describe("notificationEventBus", () => {
     expect(result.ok).toBe(true);
     expect(calls[0].topic).toBe("com.ade.ios.push-type.liveactivity");
     expect(calls[0].pushType).toBe("liveactivity");
+  });
+
+  it("passes each device APNs environment through to alert and Live Activity sends", async () => {
+    const { service, calls } = makeApnsService();
+    const bus = createNotificationEventBus({
+      logger: createLogger(),
+      apnsService: service as any,
+      listPushTargets: () => [
+        makeTarget({
+          env: "production",
+          alertToken: "alert-prod",
+          activityUpdateTokens: { activityA: "live-prod" },
+        }),
+      ],
+      getPrefsForDevice: () => prefsOn,
+      sendInAppNotification: vi.fn(),
+      isDeviceConnected: () => false,
+      now: () => 1_777_777_777_000,
+    });
+
+    bus.publishChatEvent(sampleEnvelope);
+    await deferredFlush();
+
+    expect(calls).toHaveLength(2);
+    expect(calls.map((call) => call.env)).toEqual(["production", "production"]);
+    expect(calls.map((call) => call.pushType)).toEqual(["alert", "liveactivity"]);
+    expect(calls[1].topic).toBe("com.ade.ios.push-type.liveactivity");
   });
 });

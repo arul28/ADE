@@ -1623,6 +1623,45 @@ describe("createAgentChatService", () => {
       expect(startPayload?.params).toMatchObject({ cwd: expect.stringContaining("lane-2") });
     });
 
+    it("spawns Codex with ADE CLI agent env injected", async () => {
+      const laneRootPath = path.join(tmpRoot, "lane-2");
+      fs.mkdirSync(laneRootPath, { recursive: true });
+      const getAdeCliAgentEnv = vi.fn(() => ({
+        PATH: "/tmp/ade-cli/bin",
+        ADE_CLI_PATH: "/tmp/ade-cli/bin/ade",
+        ADE_CLI_BIN_DIR: "/tmp/ade-cli/bin",
+      }));
+
+      const { service } = createService({ getAdeCliAgentEnv });
+      const session = await service.createSession({
+        laneId: "lane-2",
+        provider: "codex",
+        model: "gpt-5.4",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Run doctor and inspect lane status.",
+      });
+
+      await vi.waitFor(() => {
+        expect(mockState.codexRequestPayloads.some((payload) => payload.method === "thread/start")).toBe(true);
+      });
+
+      expect(getAdeCliAgentEnv).toHaveBeenCalled();
+      expect(spawn).toHaveBeenCalledWith(
+        "codex",
+        ["app-server"],
+        expect.objectContaining({
+          env: expect.objectContaining({
+            PATH: "/tmp/ade-cli/bin",
+            ADE_CLI_PATH: "/tmp/ade-cli/bin/ade",
+            ADE_CLI_BIN_DIR: "/tmp/ade-cli/bin",
+          }),
+        }),
+      );
+    });
+
     it.skip("executes identity-hosted opencode turns from the selected execution lane", async () => {
       const streamCalls: Array<Record<string, unknown>> = [];
       vi.mocked(streamText).mockImplementation((args: Record<string, unknown>) => {
@@ -4544,7 +4583,15 @@ describe("createAgentChatService", () => {
       expect(collaborationMode?.mode).toBe("plan");
       expect(collaborationMode?.settings?.model).toBe("gpt-5.4");
       expect(collaborationMode?.settings?.reasoning_effort).toBe("medium");
-      expect(collaborationMode?.settings?.developer_instructions).toBeNull();
+      expect(collaborationMode?.settings?.developer_instructions).toBe("system prompt");
+      expect(vi.mocked(buildCodingAgentSystemPrompt)).toHaveBeenCalledWith(
+        expect.objectContaining({
+          cwd: expect.stringContaining(path.basename(tmpRoot)),
+          mode: "planning",
+          permissionMode: "plan",
+          interactive: true,
+        }),
+      );
     });
 
     it("sends Codex default collaboration mode on turn start outside plan mode", async () => {

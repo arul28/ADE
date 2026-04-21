@@ -883,8 +883,8 @@ describe("conflictService conflict context integrity", () => {
         insert into pull_requests(
           id, lane_id, project_id, repo_owner, repo_name, github_pr_number, github_url, github_node_id,
           title, state, base_branch, head_branch, checks_status, review_status, additions, deletions,
-          last_synced_at, created_at, updated_at
-        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          last_synced_at, created_at, updated_at, creation_strategy
+        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `,
       [
         "pr-2",
@@ -905,7 +905,8 @@ describe("conflictService conflict context integrity", () => {
         0,
         now,
         now,
-        now
+        now,
+        "pr_target"
       ]
     );
     db.run(

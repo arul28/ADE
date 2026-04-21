@@ -1571,6 +1571,9 @@ app.whenReady().then(async () => {
     let linearSyncServiceRef: ReturnType<
       typeof createLinearSyncService
     > | null = null;
+    let linearIngressServiceRef: ReturnType<
+      typeof createLinearIngressService
+    > | null = null;
     let agentChatServiceRef: ReturnType<typeof createAgentChatService> | null =
       null;
     const queueLandingService = createQueueLandingService({
@@ -2440,6 +2443,15 @@ app.whenReady().then(async () => {
       missionService,
       agentChatService,
       workerAgentService,
+      workerBudgetService,
+      workerHeartbeatService,
+      workerRevisionService,
+      ctoStateService,
+      flowPolicyService,
+      linearCredentialService,
+      getLinearIngressService: () => linearIngressServiceRef,
+      getLinearIssueTracker: () => linearIssueTracker,
+      getLinearSyncService: () => linearSyncServiceRef,
       processService,
       hostStartupEnabled: process.env.ADE_DISABLE_SYNC_HOST !== "1",
       notificationEventBus,
@@ -2599,6 +2611,7 @@ app.whenReady().then(async () => {
         }
       },
     });
+    linearIngressServiceRef = linearIngressService;
     scheduleBackgroundProjectTask(
       "linear.ingress_start",
       () => {

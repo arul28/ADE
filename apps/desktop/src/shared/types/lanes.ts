@@ -280,6 +280,14 @@ export type RebaseRunEventPayload =
   | { type: "rebase-run-updated"; run: RebaseRun; timestamp: string }
   | { type: "rebase-run-log"; runId: string; laneId: string | null; message: string; timestamp: string };
 
+export type RebaseTargetCommit = {
+  sha: string;
+  shortSha: string;
+  subject: string;
+  author: string;
+  committedAt: string;
+};
+
 export type RebaseSuggestion = {
   laneId: string;
   parentLaneId: string;
@@ -291,6 +299,8 @@ export type RebaseSuggestion = {
   deferredUntil: string | null;
   dismissedAt: string | null;
   hasPr: boolean;
+  /** Commits that would be pulled in by a rebase against this target head. Capped at 20 entries; may be undefined for legacy suggestions. */
+  targetCommits?: RebaseTargetCommit[];
 };
 
 export type RebaseSuggestionsEventPayload = {

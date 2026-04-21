@@ -1,3 +1,4 @@
+import Combine
 import Foundation
 import SwiftUI
 import UIKit
@@ -392,6 +393,7 @@ final class SyncService: ObservableObject {
   @Published private(set) var pendingOperationCount = 0
   @Published private(set) var localStateRevision = 0
   @Published var settingsPresented = false
+  @Published var attentionDrawerPresented = false
   @Published var requestedFilesNavigation: FilesNavigationRequest?
   @Published var requestedLaneNavigation: LaneNavigationRequest?
   @Published var requestedPrNavigation: PrNavigationRequest?
@@ -470,6 +472,25 @@ final class SyncService: ObservableObject {
   /// Tracks `activeSessions` derivation so we do not rebuild on every
   /// unrelated `localStateRevision` bump.
   private var activeSessionsObservationTask: Task<Void, Never>?
+
+  /// Backing storage for `attentionDrawer` + the Combine subscriptions it
+  /// uses to observe `activeSessions` / `localStateRevision`. Lazily
+  /// initialised on first access so tests + previews that never touch the
+  /// drawer don't allocate an extra `ObservableObject`.
+  private var attentionDrawerStorage: AttentionDrawerModel?
+  private var attentionDrawerCancellables: Set<AnyCancellable> = []
+
+  /// Drawer surface injected into the root view via `.environmentObject`.
+  /// Rebuilt from the App Group `WorkspaceSnapshot` each time the host
+  /// state changes — no independent transport.
+  @available(iOS 17.0, *)
+  var attentionDrawer: AttentionDrawerModel {
+    if let existing = attentionDrawerStorage { return existing }
+    let fresh = AttentionDrawerModel()
+    attentionDrawerCancellables = fresh.bind(to: self)
+    attentionDrawerStorage = fresh
+    return fresh
+  }
 
   var hasCachedHostData: Bool {
     database.hasHydratedControllerData()
@@ -672,7 +693,8 @@ final class SyncService: ObservableObject {
         profile,
         token: token,
         connectAttemptGeneration: connectAttemptGeneration,
-        preferLiveCandidatesOnly: !userInitiated
+        preferLiveCandidatesOnly: !userInitiated,
+        publishConnecting: userInitiated
       )
       guard isCurrentConnectAttempt(connectAttemptGeneration) else { return }
       currentAddress = connectedAddress
@@ -985,6 +1007,136 @@ final class SyncService: ObservableObject {
       action: "cto.ensureAgentSession",
       args: ["agentId": agentId],
       as: AgentChatSessionSummary.self
+    )
+  }
+
+  // MARK: - CTO org / worker management
+
+  func fetchCtoState(recentLimit: Int? = nil) async throws -> CtoSnapshot {
+    var args: [String: Any] = [:]
+    if let recentLimit { args["recentLimit"] = recentLimit }
+    return try await sendDecodableCommand(action: "cto.getState", args: args, as: CtoSnapshot.self)
+  }
+
+  func fetchCtoAgents(includeDeleted: Bool = false) async throws -> [AgentIdentity] {
+    try await sendDecodableCommand(
+      action: "cto.listAgents",
+      args: ["includeDeleted": includeDeleted],
+      as: [AgentIdentity].self
+    )
+  }
+
+  func fetchCtoBudget() async throws -> AgentBudgetSnapshot {
+    try await sendDecodableCommand(action: "cto.getBudgetSnapshot", as: AgentBudgetSnapshot.self)
+  }
+
+  func fetchAgentCoreMemory(agentId: String) async throws -> AgentCoreMemory {
+    try await sendDecodableCommand(
+      action: "cto.getAgentCoreMemory",
+      args: ["agentId": agentId],
+      as: AgentCoreMemory.self
+    )
+  }
+
+  func listAgentRuns(agentId: String, limit: Int? = nil) async throws -> [WorkerAgentRun] {
+    var args: [String: Any] = ["agentId": agentId]
+    if let limit { args["limit"] = limit }
+    return try await sendDecodableCommand(action: "cto.listAgentRuns", args: args, as: [WorkerAgentRun].self)
+  }
+
+  func listAgentSessionLogs(agentId: String, limit: Int? = nil) async throws -> [AgentSessionLogEntry] {
+    var args: [String: Any] = ["agentId": agentId]
+    if let limit { args["limit"] = limit }
+    return try await sendDecodableCommand(
+      action: "cto.listAgentSessionLogs",
+      args: args,
+      as: [AgentSessionLogEntry].self
+    )
+  }
+
+  func listAgentRevisions(agentId: String, limit: Int? = nil) async throws -> [AgentConfigRevision] {
+    var args: [String: Any] = ["agentId": agentId]
+    if let limit { args["limit"] = limit }
+    return try await sendDecodableCommand(
+      action: "cto.listAgentRevisions",
+      args: args,
+      as: [AgentConfigRevision].self
+    )
+  }
+
+  func fetchFlowPolicy() async throws -> LinearWorkflowConfig {
+    try await sendDecodableCommand(action: "cto.getFlowPolicy", as: LinearWorkflowConfig.self)
+  }
+
+  func fetchLinearConnectionStatus() async throws -> LinearConnectionStatus {
+    try await sendDecodableCommand(action: "cto.getLinearConnectionStatus", as: LinearConnectionStatus.self)
+  }
+
+  func fetchLinearSyncDashboard() async throws -> LinearSyncDashboard {
+    try await sendDecodableCommand(action: "cto.getLinearSyncDashboard", as: LinearSyncDashboard.self)
+  }
+
+  func runLinearSyncNow() async throws -> LinearSyncDashboard {
+    try await sendDecodableCommand(action: "cto.runLinearSyncNow", as: LinearSyncDashboard.self)
+  }
+
+  func removeAgent(agentId: String) async throws {
+    _ = try await sendCommand(action: "cto.removeAgent", args: ["agentId": agentId])
+  }
+
+  func listLinearSyncQueue() async throws -> [LinearSyncQueueItem] {
+    try await sendDecodableCommand(action: "cto.listLinearSyncQueue", as: [LinearSyncQueueItem].self)
+  }
+
+  func listLinearIngressEvents(limit: Int? = nil) async throws -> [LinearIngressEventRecord] {
+    var args: [String: Any] = [:]
+    if let limit { args["limit"] = limit }
+    return try await sendDecodableCommand(
+      action: "cto.listLinearIngressEvents",
+      args: args,
+      as: [LinearIngressEventRecord].self
+    )
+  }
+
+  func updateCtoIdentity(patch: CtoIdentityPatch) async throws -> CtoSnapshot {
+    let patchArgs = try encodedCommandArgs(from: patch)
+    return try await sendDecodableCommand(
+      action: "cto.updateIdentity",
+      args: ["patch": patchArgs],
+      as: CtoSnapshot.self
+    )
+  }
+
+  func updateCtoCoreMemory(patch: CtoCoreMemoryPatch) async throws -> CtoSnapshot {
+    let patchArgs = try encodedCommandArgs(from: patch)
+    return try await sendDecodableCommand(
+      action: "cto.updateCoreMemory",
+      args: ["patch": patchArgs],
+      as: CtoSnapshot.self
+    )
+  }
+
+  func setAgentStatus(agentId: String, status: String) async throws {
+    _ = try await sendCommand(
+      action: "cto.setAgentStatus",
+      args: ["agentId": agentId, "status": status]
+    )
+  }
+
+  func triggerAgentWakeup(agentId: String, reason: String? = nil) async throws -> CtoTriggerAgentWakeupResult {
+    var args: [String: Any] = ["agentId": agentId]
+    if let reason { args["reason"] = reason }
+    return try await sendDecodableCommand(
+      action: "cto.triggerAgentWakeup",
+      args: args,
+      as: CtoTriggerAgentWakeupResult.self
+    )
+  }
+
+  func rollbackAgentRevision(agentId: String, revisionId: String) async throws {
+    _ = try await sendCommand(
+      action: "cto.rollbackAgentRevision",
+      args: ["agentId": agentId, "revisionId": revisionId]
     )
   }
 
@@ -1598,11 +1750,17 @@ final class SyncService: ObservableObject {
     )
   }
 
-  func startLaneRebase(laneId: String, scope: String = "lane_only", pushMode: String = "none") async throws {
+  func startLaneRebase(
+    laneId: String,
+    scope: String = "lane_only",
+    pushMode: String = "none",
+    aiAssisted: Bool = false
+  ) async throws {
     _ = try await sendCommand(action: "lanes.rebaseStart", args: [
       "laneId": laneId,
       "scope": scope,
       "pushMode": pushMode,
+      "aiAssisted": aiAssisted,
     ])
   }
 
@@ -1968,20 +2126,26 @@ final class SyncService: ObservableObject {
     draft: Bool = false,
     baseBranch: String? = nil,
     labels: [String] = [],
-    reviewers: [String]
+    reviewers: [String],
+    strategy: String? = nil
   ) async throws {
     var args: [String: Any] = [
       "laneId": laneId,
       "title": title,
       "body": body,
       "draft": draft,
-      "reviewers": reviewers,
     ]
+    if !reviewers.isEmpty {
+      args["reviewers"] = reviewers
+    }
     if let baseBranch, !baseBranch.isEmpty {
       args["baseBranch"] = baseBranch
     }
     if !labels.isEmpty {
       args["labels"] = labels
+    }
+    if let strategy, !strategy.isEmpty {
+      args["strategy"] = strategy
     }
     _ = try await sendCommand(action: "prs.createFromLane", args: args)
   }
@@ -2080,6 +2244,30 @@ final class SyncService: ObservableObject {
 
   func setPullRequestReviewThreadResolved(prId: String, threadId: String, resolved: Bool) async throws {
     _ = try await sendCommand(action: "prs.setReviewThreadResolved", args: [
+      "prId": prId,
+      "threadId": threadId,
+      "resolved": resolved,
+    ])
+  }
+
+  @discardableResult
+  func startPrAiResolution(prId: String, model: String? = nil, reasoningEffort: String? = nil) async throws -> AiResolutionState {
+    var args: [String: Any] = ["prId": prId]
+    if let model, !model.isEmpty {
+      args["model"] = model
+    }
+    if let reasoningEffort, !reasoningEffort.isEmpty {
+      args["reasoningEffort"] = reasoningEffort
+    }
+    return try await sendDecodableCommand(action: "prs.aiResolutionStart", args: args, as: AiResolutionState.self)
+  }
+
+  func stopPrAiResolution(prId: String) async throws {
+    _ = try await sendCommand(action: "prs.aiResolutionStop", args: ["prId": prId])
+  }
+
+  func resolveReviewThread(prId: String, threadId: String, resolved: Bool) async throws {
+    _ = try await sendCommand(action: "prs.resolveReviewThread", args: [
       "prId": prId,
       "threadId": threadId,
       "resolved": resolved,
@@ -2361,7 +2549,7 @@ final class SyncService: ObservableObject {
     addresses.filter { address in
       let canAttempt = syncCanAttemptInsecureWebSocket(to: address)
       if !canAttempt {
-        syncConnectLog.info("skip host=\(address, privacy: .public) reason=ats_insecure_tailscale")
+        syncConnectLog.debug("skip host=\(address, privacy: .public) reason=ats_insecure_tailscale")
       }
       return canAttempt
     }
@@ -2511,6 +2699,7 @@ final class SyncService: ObservableObject {
     let matchingDiscovery = discoveredHosts.filter { host in
       matchesDiscoveredHost(host, profile: profile)
     }
+    guard !matchingDiscovery.isEmpty else { return [] }
 
     let liveLan = matchingDiscovery.flatMap(\.addresses)
     let liveTailscale = matchingDiscovery.compactMap(\.tailscaleAddress)
@@ -2519,23 +2708,15 @@ final class SyncService: ObservableObject {
       liveSet.contains(address) ? [address] : nil
     } ?? []
 
-    if !matchingDiscovery.isEmpty {
-      return deduplicatedAddresses(liveLastSuccessful + liveLan + liveTailscale)
-    }
-
-    return deduplicatedAddresses(
-      (profile.lastSuccessfulAddress.map { [$0] } ?? [])
-        + profile.savedAddressCandidates
-        + profile.discoveredLanAddresses
-        + (profile.tailscaleAddress.map { [$0] } ?? [])
-    )
+    return deduplicatedAddresses(liveLastSuccessful + liveLan + liveTailscale)
   }
 
   private func connectUsingProfile(
     _ profile: HostConnectionProfile,
     token: String,
     connectAttemptGeneration: UInt64,
-    preferLiveCandidatesOnly: Bool
+    preferLiveCandidatesOnly: Bool,
+    publishConnecting: Bool
   ) async throws -> String {
     var lastFailure: Error?
     let rawAddresses = preferLiveCandidatesOnly
@@ -2559,7 +2740,8 @@ final class SyncService: ObservableObject {
         try await openSocket(
           host: address,
           port: profile.port,
-          connectAttemptGeneration: connectAttemptGeneration
+          connectAttemptGeneration: connectAttemptGeneration,
+          publishConnecting: publishConnecting
         )
         try await hello(
           host: address,
@@ -2729,15 +2911,18 @@ final class SyncService: ObservableObject {
   private func openSocket(
     host: String,
     port: Int,
-    connectAttemptGeneration: UInt64
+    connectAttemptGeneration: UInt64,
+    publishConnecting: Bool = true
   ) async throws {
     guard syncCanAttemptInsecureWebSocket(to: host) else {
       throw noConnectableAddressError()
     }
     teardownSocket(closeCode: .goingAway)
-    connectionState = .connecting
-    hostName = activeHostProfile?.hostName
-    currentAddress = host
+    if publishConnecting {
+      connectionState = .connecting
+      hostName = activeHostProfile?.hostName
+      currentAddress = host
+    }
 
     let urlString: String
     if host.contains(":") && !host.hasPrefix("[") {
@@ -3747,7 +3932,7 @@ extension SyncService {
     case .denySession: action = "chat.approve"
     case .pauseSession: action = "chat.interrupt"
     case .replyToSession: action = "chat.respondToInput"
-    case .restartSession: action = "chat.resume"
+    case .restartSession: action = "chat.restart"
     case .retryPrChecks: action = "prs.rerunChecks"
     case .openPr: action = "prs.getDetail"
     case .setMutePush: action = "notification_prefs"
@@ -3885,7 +4070,8 @@ extension SyncService {
             state: item.state,
             mergeReady: (item.reviewStatus == "approved")
               && (item.checksStatus == "passing")
-              && item.state == "open"
+              && item.state == "open",
+            branch: item.headBranch.isEmpty ? nil : item.headBranch
           )
         }
       coord.reconcile(with: agents, prs: currentPrs)
@@ -3914,7 +4100,8 @@ extension SyncService {
         checks: item.checksStatus,
         review: item.reviewStatus,
         state: item.state,
-        mergeReady: (item.reviewStatus == "approved") && (item.checksStatus == "passing") && item.state == "open"
+        mergeReady: (item.reviewStatus == "approved") && (item.checksStatus == "passing") && item.state == "open",
+        branch: item.headBranch.isEmpty ? nil : item.headBranch
       )
     }
 

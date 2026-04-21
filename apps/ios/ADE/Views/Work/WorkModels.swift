@@ -115,6 +115,17 @@ struct WorkPendingPermissionModel: Identifiable, Equatable {
   let detail: String?
 }
 
+/// Plan-approval pending input. The agent has emitted an `approval_request`
+/// with `request.kind == "plan_approval"` — desktop's `ChatProposedPlanCard`
+/// equivalent on iOS. Carries the full plan text so the card can render a
+/// scrollable formatted block, plus the source label (e.g. "claude", "codex").
+struct WorkPendingPlanApprovalModel: Identifiable, Equatable {
+  let id: String
+  let source: String
+  let planText: String
+  let title: String
+}
+
 struct WorkUsageSummary: Equatable {
   var turnCount: Int
   var inputTokens: Int
@@ -168,6 +179,9 @@ enum WorkTimelinePayload: Equatable {
   case turnSeparator(WorkTurnSeparator)
   case pendingQuestion(WorkPendingQuestionModel)
   case pendingPermission(WorkPendingPermissionModel)
+  /// Plan-approval gate: agent has finished planning and is waiting for the
+  /// user to Approve & Implement or Reject & Revise before it acts.
+  case pendingPlanApproval(WorkPendingPlanApprovalModel)
 }
 
 /// One member of a `WorkToolGroupModel`. Carries enough context for the

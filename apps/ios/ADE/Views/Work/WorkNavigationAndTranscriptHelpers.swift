@@ -193,19 +193,20 @@ func workReferenceLabel(for path: String) -> String {
   return lastComponent.isEmpty ? normalized : lastComponent
 }
 
-func buildWorkToolCards(from transcript: [WorkChatEnvelope]) -> [WorkToolCardModel] {
+func buildWorkToolCards(
+  from transcript: [WorkChatEnvelope],
+  suppressedPendingItemIds: Set<String> = []
+) -> [WorkToolCardModel] {
   var cards: [String: WorkToolCardModel] = [:]
   var orderedIds: [String] = []
-  // While ask_user is still pending (no tool_result yet) the UI surfaces the rich
-  // question card via derivePendingWorkInputs instead; suppress the generic tool
-  // card so users do not see two entries for the same itemId.
-  var askUserPendingIds: Set<String> = []
-
   for envelope in transcript {
     switch envelope.event {
     case .toolCall(let tool, let argsText, let itemId, _, _):
-      if isAskUserToolName(tool), pendingWorkQuestionFromAskUserToolCall(argsText: argsText, itemId: itemId) != nil {
-        askUserPendingIds.insert(itemId)
+      if suppressedPendingItemIds.contains(itemId) {
+        continue
+      }
+      if isQuestionInputToolName(tool),
+         pendingWorkQuestionFromAskUserToolCall(argsText: argsText, itemId: itemId) != nil {
         continue
       }
       if cards[itemId] == nil {
@@ -221,9 +222,6 @@ func buildWorkToolCards(from transcript: [WorkChatEnvelope]) -> [WorkToolCardMod
         resultText: cards[itemId]?.resultText
       )
     case .toolResult(let tool, let resultText, let itemId, _, _, let status):
-      // Once the tool_result arrives, ask_user is no longer "pending input" — show
-      // the completed tool card as normal.
-      askUserPendingIds.remove(itemId)
       let existing = cards[itemId]
       if existing == nil {
         orderedIds.append(itemId)

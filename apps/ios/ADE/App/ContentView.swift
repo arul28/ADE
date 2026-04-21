@@ -28,21 +28,33 @@ struct ContentView: View {
       .adeNavigationGlass()
       .preferredColorScheme(colorSchemeChoice.preferredColorScheme)
       .sensoryFeedback(.selection, trigger: selectedTab)
+      .environmentObject(syncService.attentionDrawer)
       .sheet(isPresented: $syncService.settingsPresented) {
         ConnectionSettingsView()
           .environmentObject(syncService)
       }
+      .sheet(isPresented: $syncService.attentionDrawerPresented) {
+        AttentionDrawerSheet()
+          .environmentObject(syncService)
+          .environmentObject(syncService.attentionDrawer)
+      }
       .onChange(of: syncService.requestedFilesNavigation?.id) { _, requestId in
         guard requestId != nil else { return }
-        selectedTab = .files
+        if selectedTab != .files {
+          selectedTab = .files
+        }
       }
       .onChange(of: syncService.requestedLaneNavigation?.id) { _, requestId in
         guard requestId != nil else { return }
-        selectedTab = .lanes
+        if selectedTab != .lanes {
+          selectedTab = .lanes
+        }
       }
       .onChange(of: syncService.requestedPrNavigation?.id) { _, requestId in
         guard requestId != nil else { return }
-        selectedTab = .prs
+        if selectedTab != .prs {
+          selectedTab = .prs
+        }
       }
   }
 
@@ -90,7 +102,7 @@ struct ContentView: View {
   }
 
   private var ctoTab: some View {
-    CtoRootScreen()
+    CtoRootScreen(isTabActive: selectedTab == .cto)
       .tag(RootTab.cto)
       .tabItem {
         Label("CTO", systemImage: "brain.head.profile")

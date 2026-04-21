@@ -9,9 +9,7 @@ struct SettingsNotificationsSection: View {
   var onPreferencesChanged: (NotificationPreferences) -> Void
   var onSendTestPush: () -> Void
 
-  @State private var prefs: NotificationPreferences = NotificationPreferences.load(
-    from: ADESharedContainer.defaults
-  )
+  @State private var prefs = NotificationPreferences()
 
   var body: some View {
     VStack(alignment: .leading, spacing: 10) {
@@ -22,6 +20,7 @@ struct SettingsNotificationsSection: View {
 
       NavigationLink {
         NotificationsCenterView(
+          initialPreferences: prefs,
           onPreferencesChanged: { updated in
             prefs = updated
             onPreferencesChanged(updated)
@@ -35,9 +34,16 @@ struct SettingsNotificationsSection: View {
       .accessibilityLabel(accessibilityLabel)
       .accessibilityHint("Open the Notifications Center to configure alerts")
     }
-    .onAppear {
-      prefs = NotificationPreferences.load(from: ADESharedContainer.defaults)
+    .task {
+      await refreshPreferencesAfterFirstPaint()
     }
+  }
+
+  private func refreshPreferencesAfterFirstPaint() async {
+    await Task.yield()
+    let loaded = NotificationPreferences.load(from: ADESharedContainer.defaults)
+    guard loaded != prefs else { return }
+    prefs = loaded
   }
 
   private var rowContent: some View {

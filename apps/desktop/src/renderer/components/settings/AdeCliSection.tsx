@@ -59,8 +59,18 @@ export function AdeCliSection({ compact = false }: Props) {
   const terminalReady = status?.terminalInstalled === true;
   const agentReady = status?.agentPathReady === true;
   const bundledReady = status?.bundledAvailable === true;
-  const statusColor = terminalReady ? COLORS.success : bundledReady ? COLORS.warning : status ? COLORS.danger : COLORS.textMuted;
-  const statusLabel = terminalReady ? "On PATH" : bundledReady ? "Bundled" : status ? "Unavailable" : "Manual action";
+  let statusColor: string = COLORS.textMuted;
+  let statusLabel = "Manual action";
+  if (terminalReady) {
+    statusColor = COLORS.success;
+    statusLabel = "On PATH";
+  } else if (bundledReady) {
+    statusColor = COLORS.warning;
+    statusLabel = "Bundled";
+  } else if (status) {
+    statusColor = COLORS.danger;
+    statusLabel = "Unavailable";
+  }
   const installDisabled = loading || installing || terminalReady || !status?.installAvailable || !window.ade?.adeCli;
 
   return (

@@ -1253,11 +1253,14 @@ function InlineQuestionRequestCard({
     setFocusedOption((prev) => ({ ...prev, [question.id]: option.value }));
     setSelected((prev) => {
       const current = prev[question.id] ?? [];
-      const next = current.includes(option.value)
-        ? current.filter((value) => value !== option.value)
-        : question.multiSelect
-          ? [...current, option.value]
-          : [option.value];
+      let next: string[];
+      if (current.includes(option.value)) {
+        next = current.filter((value) => value !== option.value);
+      } else if (question.multiSelect) {
+        next = [...current, option.value];
+      } else {
+        next = [option.value];
+      }
       return { ...prev, [question.id]: next };
     });
   }, [itemId, onApproval, questions.length]);
@@ -2185,11 +2188,12 @@ function renderEvent(
       bodyText = event.description;
     }
     /* Generic approvals stay compact; ask-user requests render as inline chat controls. */
-    const resolvedLabel = isPlanApproval
-      ? (resolvedState === "accepted" ? "Plan Approved" : resolvedState === "declined" ? "Plan Rejected" : "Closed")
-      : isAskUser
-        ? (resolvedState === "accepted" ? "Answered" : resolvedState === "declined" ? "Declined" : "Closed")
-        : (resolvedState === "accepted" ? "Accepted" : resolvedState === "declined" ? "Declined" : "Closed");
+    const resolvedLabel = (() => {
+      if (resolvedState !== "accepted" && resolvedState !== "declined") return "Closed";
+      if (isPlanApproval) return resolvedState === "accepted" ? "Plan Approved" : "Plan Rejected";
+      if (isAskUser) return resolvedState === "accepted" ? "Answered" : "Declined";
+      return resolvedState === "accepted" ? "Accepted" : "Declined";
+    })();
 
     if (isAskUser && !isResolved && inlineQuestions.length > 0) {
       return (

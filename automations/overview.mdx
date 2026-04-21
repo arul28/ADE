@@ -5,17 +5,11 @@ icon: "bolt"
 ---
 ## Overview
 
-Automations is ADE's background execution layer. Each automation is a simple rule:
-
-> **Trigger** → **Execution**
-
-When a trigger fires (time-based or action-based), ADE executes it through one of three surfaces:
+Automations is ADE's background execution layer. Each automation is a **Trigger → Execution** rule. When a trigger fires, ADE executes through one of three surfaces:
 
 - **agent-session**: an automation-only AI chat thread with scoped tools.
 - **mission**: a full mission runtime with phases, workers, and intervention support.
-- **built-in-task**: an ADE-native operation (tests, scans, status sync, and similar jobs) with no separate chat session.
-
-These execution types are configured per rule so you can choose the right level of cost, visibility, and reliability for each scenario.
+- **built-in-task**: an ADE-native operation (tests, scans, status sync) with no separate chat session.
 
 The trigger can come from a schedule (`schedule`) or an action event (`webhook`, `github.webhook`, `git.push`, `git.commit`, manual run).
 

@@ -156,6 +156,37 @@ describe("createAdeCliService", () => {
     expect(service.agentEnv({ PATH: "/usr/bin:/bin" }).PATH?.split(path.delimiter)[0]).toBe(path.dirname(shimPath));
   });
 
+  it("falls back to source CLI when dist/cli.cjs is missing in a dev repo", () => {
+    const root = makeTempRoot();
+    const repoRoot = path.join(root, "repo");
+    const userDataPath = path.join(root, "user-data");
+    const sourceCliPath = path.join(repoRoot, "apps", "ade-cli", "src", "cli.ts");
+    fs.mkdirSync(path.dirname(sourceCliPath), { recursive: true });
+    fs.writeFileSync(sourceCliPath, "console.log('ade source')\n");
+    fs.mkdirSync(path.join(repoRoot, "apps", "desktop"), { recursive: true });
+    fs.writeFileSync(path.join(repoRoot, "apps", "ade-cli", "package.json"), "{}\n");
+    fs.writeFileSync(path.join(repoRoot, "apps", "desktop", "package.json"), "{}\n");
+    vi.spyOn(process, "cwd").mockReturnValue(repoRoot);
+
+    const service = createAdeCliService({
+      isPackaged: false,
+      resourcesPath: path.join(root, "missing-resources"),
+      userDataPath,
+      appExecutablePath: "/Applications/ADE.app/Contents/MacOS/ADE",
+      logger: logger() as any,
+    });
+
+    const shimPath = path.join(userDataPath, "ade-cli", "bin", "ade");
+    const shimScript = fs.readFileSync(shimPath, "utf8");
+
+    expect(service.resolved.source).toBe("dev");
+    expect(service.resolved.cliJsPath).toBe(sourceCliPath);
+    expect(shimScript).toContain("CLI_ENTRY_KIND='source'");
+    expect(shimScript).toContain("exec \"$TSX_BIN\" \"$CLI_JS\" \"$@\"");
+    expect(shimScript).toContain("exec tsx \"$CLI_JS\" \"$@\"");
+    expect(shimScript).toContain("node --import tsx \"$CLI_JS\" \"$@\"");
+  });
+
   it("does not run a global installer from dev builds", async () => {
     const root = makeTempRoot();
     vi.spyOn(process, "cwd").mockReturnValue(root);

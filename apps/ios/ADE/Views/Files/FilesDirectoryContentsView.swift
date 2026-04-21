@@ -12,6 +12,7 @@ struct FilesDirectoryContentsView: View {
   let openFile: (String, Int?) -> Void
   let transitionNamespace: Namespace.ID?
   let selectedFilePath: String?
+  let manualReloadToken: Int
 
   @State var nodes: [FileTreeNode] = []
   @State var errorMessage: String?
@@ -58,7 +59,15 @@ struct FilesDirectoryContentsView: View {
         }
       }
     }
-    .task(id: DirectoryReloadKey(workspaceId: workspace.id, parentPath: parentPath, includeHidden: showHidden, live: isLive, active: isTabActive, revision: syncService.localStateRevision)) {
+    .task(id: DirectoryReloadKey(
+      workspaceId: workspace.id,
+      parentPath: parentPath,
+      includeHidden: showHidden,
+      live: isLive,
+      active: isTabActive,
+      revision: syncService.localStateRevision,
+      manualReloadToken: manualReloadToken
+    )) {
       guard isTabActive else { return }
       await reload()
     }

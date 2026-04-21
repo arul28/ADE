@@ -32,6 +32,9 @@ struct FilesWorkspaceHeader: View {
       Text(selectedWorkspace.rootPath)
         .font(.caption.monospaced())
         .foregroundStyle(ADEColor.textSecondary)
+        .lineLimit(1)
+        .truncationMode(.middle)
+        .accessibilityLabel("Workspace path \(selectedWorkspace.rootPath)")
         .textSelection(.enabled)
 
       ScrollView(.horizontal, showsIndicators: false) {
@@ -46,8 +49,10 @@ struct FilesWorkspaceHeader: View {
           Button {
             showHidden.toggle()
           } label: {
-            Label(showHidden ? "Hide dotfiles" : "Show dotfiles", systemImage: showHidden ? "eye.slash" : "eye")
+            Label(showHidden ? "Hide" : "Show", systemImage: showHidden ? "eye.slash" : "eye")
               .font(.caption.weight(.semibold))
+              .lineLimit(1)
+              .fixedSize(horizontal: true, vertical: false)
           }
           .buttonStyle(.glass)
           .accessibilityLabel(showHidden ? "Hide hidden files" : "Show hidden files")
@@ -278,11 +283,14 @@ struct FilesResultRow: View {
         Text(lastPathComponent(path))
           .font(.subheadline.weight(.semibold))
           .foregroundStyle(ADEColor.textPrimary)
+          .lineLimit(1)
+          .truncationMode(.tail)
           .adeMatchedGeometry(id: isSelectedTransitionSource ? "files-title-\(path)" : nil, in: transitionNamespace)
         Text(path)
           .font(.caption.monospaced())
           .foregroundStyle(ADEColor.textSecondary)
           .lineLimit(1)
+          .truncationMode(.middle)
       }
       Spacer()
       Image(systemName: "chevron.right")
@@ -311,12 +319,16 @@ struct FilesSearchResultRow: View {
           .font(.subheadline.weight(.semibold))
           .foregroundStyle(ADEColor.textPrimary)
           .adeMatchedGeometry(id: isSelectedTransitionSource ? "files-title-\(result.path)" : nil, in: transitionNamespace)
+          .lineLimit(1)
+          .truncationMode(.tail)
         Spacer()
         ADEStatusPill(text: "L\(result.line)", tint: ADEColor.accent)
       }
       Text(result.path)
         .font(.caption.monospaced())
         .foregroundStyle(ADEColor.textSecondary)
+        .lineLimit(1)
+        .truncationMode(.middle)
       Text(result.preview)
         .font(.caption)
         .foregroundStyle(ADEColor.textPrimary)
@@ -325,7 +337,7 @@ struct FilesSearchResultRow: View {
     .adeListCard(cornerRadius: 16)
     .adeMatchedTransitionSource(id: isSelectedTransitionSource ? "files-container-\(result.path)" : nil, in: transitionNamespace)
     .accessibilityElement(children: .combine)
-    .accessibilityLabel("\(lastPathComponent(result.path)), line \(result.line)")
+    .accessibilityLabel("\(lastPathComponent(result.path)), line \(result.line), \(result.path)")
   }
 }
 

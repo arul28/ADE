@@ -10,12 +10,68 @@ import type {
   OnboardingDetectionResult,
   OnboardingExistingLaneCandidate,
   OnboardingStatus,
+  OnboardingTourEntry,
+  OnboardingTourProgress,
   ProjectConfigFile
 } from "../../../shared/types";
 import { runGit, runGitOrThrow } from "../git/git";
 import { dirExists, fileExists, nowIso, safeReadText } from "../shared/utils";
 
 const STATUS_KEY = "onboarding:status";
+const TOUR_PROGRESS_KEY = "onboarding:tourProgress";
+
+const EMPTY_TOUR_ENTRY: OnboardingTourEntry = {
+  completedAt: null,
+  dismissedAt: null,
+  lastStepIndex: 0,
+};
+
+function emptyTourProgress(): OnboardingTourProgress {
+  return {
+    wizardCompletedAt: null,
+    wizardDismissedAt: null,
+    tours: {},
+    glossaryTermsSeen: [],
+  };
+}
+
+function normalizeTourEntry(raw: unknown): OnboardingTourEntry {
+  if (!raw || typeof raw !== "object") return { ...EMPTY_TOUR_ENTRY };
+  const r = raw as Partial<OnboardingTourEntry>;
+  return {
+    completedAt: typeof r.completedAt === "string" ? r.completedAt : null,
+    dismissedAt: typeof r.dismissedAt === "string" ? r.dismissedAt : null,
+    lastStepIndex:
+      typeof r.lastStepIndex === "number" && Number.isFinite(r.lastStepIndex) && r.lastStepIndex >= 0
+        ? Math.floor(r.lastStepIndex)
+        : 0,
+  };
+}
+
+function normalizeTourProgress(raw: unknown): OnboardingTourProgress {
+  if (!raw || typeof raw !== "object") return emptyTourProgress();
+  const r = raw as Partial<OnboardingTourProgress>;
+  const tours: Record<string, OnboardingTourEntry> = {};
+  if (r.tours && typeof r.tours === "object") {
+    for (const [id, value] of Object.entries(r.tours)) {
+      if (!id) continue;
+      tours[id] = normalizeTourEntry(value);
+    }
+  }
+  const seen = Array.isArray(r.glossaryTermsSeen)
+    ? Array.from(
+        new Set(
+          r.glossaryTermsSeen.filter((v): v is string => typeof v === "string" && v.length > 0),
+        ),
+      )
+    : [];
+  return {
+    wizardCompletedAt: typeof r.wizardCompletedAt === "string" ? r.wizardCompletedAt : null,
+    wizardDismissedAt: typeof r.wizardDismissedAt === "string" ? r.wizardDismissedAt : null,
+    tours,
+    glossaryTermsSeen: seen,
+  };
+}
 
 function uniqueById<T extends { id: string }>(items: T[]): T[] {
   const out: T[] = [];
@@ -219,6 +275,89 @@ export function createOnboardingService(args: {
     return status;
   };
 
+  const getTourProgress = (): OnboardingTourProgress => {
+    const stored = db.getJson<OnboardingTourProgress>(TOUR_PROGRESS_KEY);
+    return normalizeTourProgress(stored);
+  };
+
+  const writeTourProgress = (next: OnboardingTourProgress): OnboardingTourProgress => {
+    db.setJson(TOUR_PROGRESS_KEY, next);
+    return next;
+  };
+
+  const markWizardCompleted = (): OnboardingTourProgress => {
+    const current = getTourProgress();
+    return writeTourProgress({
+      ...current,
+      wizardCompletedAt: nowIso(),
+      wizardDismissedAt: null,
+    });
+  };
+
+  const markWizardDismissed = (): OnboardingTourProgress => {
+    const current = getTourProgress();
+    return writeTourProgress({
+      ...current,
+      wizardDismissedAt: nowIso(),
+    });
+  };
+
+  const updateTourEntry = (
+    tourId: string,
+    patch: Partial<OnboardingTourEntry>,
+  ): OnboardingTourProgress => {
+    const id = tourId.trim();
+    if (!id) return getTourProgress();
+    const current = getTourProgress();
+    const entry = current.tours[id] ?? { ...EMPTY_TOUR_ENTRY };
+    return writeTourProgress({
+      ...current,
+      tours: {
+        ...current.tours,
+        [id]: { ...entry, ...patch },
+      },
+    });
+  };
+
+  const markTourCompleted = (tourId: string): OnboardingTourProgress =>
+    updateTourEntry(tourId, { completedAt: nowIso(), dismissedAt: null });
+
+  const markTourDismissed = (tourId: string): OnboardingTourProgress =>
+    updateTourEntry(tourId, { dismissedAt: nowIso() });
+
+  const updateTourStep = (tourId: string, index: number): OnboardingTourProgress => {
+    const safeIndex =
+      typeof index === "number" && Number.isFinite(index) && index >= 0 ? Math.floor(index) : 0;
+    return updateTourEntry(tourId, { lastStepIndex: safeIndex });
+  };
+
+  const markGlossaryTermSeen = (termId: string): OnboardingTourProgress => {
+    const id = termId.trim();
+    if (!id) return getTourProgress();
+    const current = getTourProgress();
+    if (current.glossaryTermsSeen.includes(id)) return current;
+    return writeTourProgress({
+      ...current,
+      glossaryTermsSeen: [...current.glossaryTermsSeen, id],
+    });
+  };
+
+  const resetTourProgress = (tourId?: string): OnboardingTourProgress => {
+    if (tourId === undefined) {
+      return writeTourProgress(emptyTourProgress());
+    }
+    const id = tourId.trim();
+    if (!id) return getTourProgress();
+    const current = getTourProgress();
+    if (!(id in current.tours)) return current;
+    const nextTours = { ...current.tours };
+    delete nextTours[id];
+    return writeTourProgress({
+      ...current,
+      tours: nextTours,
+    });
+  };
+
   const detectDefaults = async (): Promise<OnboardingDetectionResult> => {
     const indicators: OnboardingDetectionIndicator[] = [];
     const projectTypes: string[] = [];
@@ -329,6 +468,14 @@ export function createOnboardingService(args: {
     setDismissed,
     detectDefaults,
     detectExistingLanes,
+    getTourProgress,
+    markWizardCompleted,
+    markWizardDismissed,
+    markTourCompleted,
+    markTourDismissed,
+    updateTourStep,
+    markGlossaryTermSeen,
+    resetTourProgress,
 
     // Convenience hook for UI flows: apply suggested config as local draft.
     applySuggestedConfig: async (suggestedConfig: ProjectConfigFile): Promise<void> => {

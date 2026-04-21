@@ -32,29 +32,25 @@ extension WorkChatSessionView {
       if isLive {
         WorkStructuredQuestionCard(
           question: question,
-          responseText: $inputResponseText,
           busy: actionInFlight,
-          onSelectOption: { option in
+          onSelectOption: { option, freeform in
             await runSessionAction {
               await onRespondToQuestion(
                 question.id,
                 question.questionId,
                 .string(option.value),
-                inputResponseText
+                freeform
               )
-              inputResponseText = ""
             }
           },
           onSubmitAll: { answers, freeform in
             await runSessionAction {
               await onSubmitQuestionAnswers(question.id, answers, freeform)
-              inputResponseText = ""
             }
           },
           onDecline: {
             await runSessionAction {
               await onDeclineQuestion(question.id)
-              inputResponseText = ""
             }
           }
         )
@@ -89,6 +85,34 @@ extension WorkChatSessionView {
           action: nil
         )
       }
+    case .pendingPlanApproval(let plan):
+      if isLive {
+        WorkPlanReviewCard(
+          plan: plan,
+          busy: actionInFlight,
+          onDecision: { decision, feedback in
+            await runSessionAction {
+              // Approve: send "accept" decision directly.
+              // Reject: send "decline"; if the user typed feedback, also
+              // queue it as a follow-up steer message so the agent sees the
+              // revision notes in the next turn.
+              await onApproveRequest(plan.id, decision)
+              if decision == .decline, let feedback, !feedback.isEmpty {
+                _ = await onSend(feedback)
+              }
+            }
+          }
+        )
+      } else {
+        ADENoticeCard(
+          title: "Plan approval waiting",
+          message: "Reconnect to approve or reject the agent's plan.",
+          icon: "list.bullet.clipboard",
+          tint: ADEColor.warning,
+          actionTitle: nil,
+          action: nil
+        )
+      }
     }
   }
 
@@ -112,7 +136,7 @@ extension WorkChatSessionView {
     WorkToolCardView(
       toolCard: toolCard,
       references: extractWorkNavigationTargets(from: [toolCard.argsText, toolCard.resultText].compactMap { $0 }.joined(separator: "\n")),
-      isExpanded: toolCard.status == .running || expandedToolCardIds.contains(toolCard.id),
+      isExpanded: expandedToolCardIds.contains(toolCard.id),
       onToggle: { toggleToolCard(toolCard.id) },
       onOpenFile: { path in
         Task { await onOpenFile(path) }

@@ -112,9 +112,7 @@ struct LaneDetailScreen: View {
     .navigationTitle(detail?.lane.name ?? initialSnapshot.lane.name)
     .navigationBarTitleDisplayMode(.inline)
     .toolbar {
-      ToolbarItem(placement: .topBarLeading) {
-        ADEConnectionDot()
-      }
+      ADERootToolbarLeadingItems()
     }
     .adeNavigationZoomTransition(id: transitionNamespace == nil ? nil : "lane-container-\(laneId)", in: transitionNamespace)
     .task {
@@ -279,6 +277,14 @@ struct LaneDetailScreen: View {
 
   var canRunLiveActions: Bool {
     laneAllowsLiveActions(connectionState: syncService.connectionState, laneStatus: syncService.status(for: .lanes))
+  }
+
+  var liveActionDisabledSubtitle: String {
+    let laneStatus = syncService.status(for: .lanes)
+    if syncService.connectionState == .connected || syncService.connectionState == .syncing {
+      return laneStatus.phase == .ready ? "Waiting for live lane actions." : "Waiting for lane sync."
+    }
+    return "Reconnect to run git actions."
   }
 
   private var detailEmptyStatePresentation: LaneEmptyStatePresentation? {

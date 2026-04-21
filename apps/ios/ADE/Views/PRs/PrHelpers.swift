@@ -13,6 +13,15 @@ private let prIsoFallbackFormatter: ISO8601DateFormatter = {
   return formatter
 }()
 
+private let prRelativeFormatter = RelativeDateTimeFormatter()
+
+private let prAbsoluteFormatter: DateFormatter = {
+  let formatter = DateFormatter()
+  formatter.dateStyle = .medium
+  formatter.timeStyle = .short
+  return formatter
+}()
+
 func filterPullRequestListItems(
   _ items: [PullRequestListItem],
   query: String,
@@ -464,15 +473,12 @@ func prParsedDate(_ iso: String?) -> Date? {
 
 func prRelativeTime(_ iso: String?) -> String {
   guard let date = prParsedDate(iso) else { return "unknown" }
-  return RelativeDateTimeFormatter().localizedString(for: date, relativeTo: Date())
+  return prRelativeFormatter.localizedString(for: date, relativeTo: Date())
 }
 
 func prAbsoluteTime(_ iso: String?) -> String {
   guard let date = prParsedDate(iso) else { return "unknown" }
-  let formatter = DateFormatter()
-  formatter.dateStyle = .medium
-  formatter.timeStyle = .short
-  return formatter.string(from: date)
+  return prAbsoluteFormatter.string(from: date)
 }
 
 func prDurationText(startedAt: String?, completedAt: String?) -> String? {
@@ -527,4 +533,510 @@ private final class PrMarkdownAttributedStringBox: NSObject {
   init(value: AttributedString) {
     self.value = value
   }
+}
+
+// MARK: - Shared PRs tab view helpers
+
+struct PrSectionHdr<Trailing: View>: View {
+  let title: String
+  @ViewBuilder let trailing: () -> Trailing
+
+  init(title: String, @ViewBuilder trailing: @escaping () -> Trailing) {
+    self.title = title
+    self.trailing = trailing
+  }
+
+  var body: some View {
+    HStack(alignment: .firstTextBaseline, spacing: 8) {
+      Text(title.uppercased())
+        .font(.system(size: 11, weight: .semibold, design: .monospaced))
+        .tracking(1.2)
+        .foregroundColor(ADEColor.textSecondary)
+      Spacer(minLength: 12)
+      trailing()
+        .font(.system(size: 11, weight: .semibold, design: .monospaced))
+        .foregroundColor(ADEColor.tintPRs)
+    }
+    .padding(.horizontal, 16)
+    .padding(.top, 12)
+    .padding(.bottom, 8)
+  }
+}
+
+extension PrSectionHdr where Trailing == EmptyView {
+  init(title: String) {
+    self.init(title: title, trailing: { EmptyView() })
+  }
+}
+
+#Preview("PrSectionHdr") {
+  VStack(alignment: .leading, spacing: 0) {
+    PrSectionHdr(title: "Open")
+    PrSectionHdr(title: "Checks") {
+      Text("3 failing")
+    }
+  }
+  .frame(maxWidth: .infinity)
+  .background(ADEColor.pageBackground)
+}
+
+struct PrEyebrow: View {
+  let text: String
+
+  var body: some View {
+    Text(text.uppercased())
+      .font(.system(size: 10, weight: .semibold, design: .monospaced))
+      .tracking(1.4)
+      .foregroundColor(ADEColor.tintPRs)
+  }
+}
+
+#Preview("PrEyebrow") {
+  VStack(alignment: .leading, spacing: 10) {
+    PrEyebrow(text: "Ready to merge")
+    PrEyebrow(text: "Blocked · reviews")
+  }
+  .padding()
+  .background(ADEColor.pageBackground)
+}
+
+struct PrScopeChip: View {
+  let label: String
+  let count: Int?
+  let isActive: Bool
+  var action: () -> Void
+
+  var body: some View {
+    Button(action: action) {
+      HStack(spacing: 6) {
+        Text(label)
+          .font(.system(size: 13, weight: isActive ? .semibold : .medium))
+          .foregroundColor(isActive ? ADEColor.tintPRs : ADEColor.textPrimary)
+        if let count {
+          Text("\(count)")
+            .font(.system(size: 11, weight: .semibold, design: .monospaced))
+            .foregroundColor(isActive ? ADEColor.tintPRs : ADEColor.textSecondary)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(
+              Capsule()
+                .fill((isActive ? ADEColor.tintPRs : ADEColor.textSecondary).opacity(0.15))
+            )
+        }
+      }
+      .padding(.horizontal, 12)
+      .padding(.vertical, 7)
+      .background(
+        Capsule()
+          .fill(isActive ? ADEColor.tintPRs.opacity(0.14) : ADEColor.recessedBackground)
+      )
+      .overlay(
+        Capsule()
+          .strokeBorder(isActive ? ADEColor.tintPRs.opacity(0.45) : Color.clear, lineWidth: 1)
+      )
+    }
+    .buttonStyle(.plain)
+  }
+}
+
+#Preview("PrScopeChip") {
+  HStack(spacing: 8) {
+    PrScopeChip(label: "Mine", count: 3, isActive: true, action: {})
+    PrScopeChip(label: "Team", count: 12, isActive: false, action: {})
+    PrScopeChip(label: "All", count: nil, isActive: false, action: {})
+  }
+  .padding()
+  .background(ADEColor.pageBackground)
+}
+
+struct PrTagChip: View {
+  let label: String
+  let color: Color
+  var filled: Bool = false
+
+  var body: some View {
+    Text(label.uppercased())
+      .font(.system(size: 10, weight: .semibold, design: .monospaced))
+      .tracking(1.2)
+      .foregroundColor(filled ? Color.white : color)
+      .padding(.horizontal, 7)
+      .padding(.vertical, 3)
+      .background(
+        RoundedRectangle(cornerRadius: 5, style: .continuous)
+          .fill(filled ? color : color.opacity(0.16))
+      )
+      .overlay(
+        RoundedRectangle(cornerRadius: 5, style: .continuous)
+          .strokeBorder(filled ? Color.clear : color.opacity(0.35), lineWidth: 0.5)
+      )
+  }
+}
+
+#Preview("PrTagChip") {
+  HStack(spacing: 6) {
+    PrTagChip(label: "ADE", color: ADEColor.tintPRs, filled: true)
+    PrTagChip(label: "Queue", color: ADEColor.warning)
+    PrTagChip(label: "Draft", color: ADEColor.textSecondary)
+  }
+  .padding()
+  .background(ADEColor.pageBackground)
+}
+
+struct PrStateTile: View {
+  let state: String
+  var size: CGFloat = 28
+
+  private var tint: Color {
+    switch state {
+    case "open": return ADEColor.success
+    case "draft": return ADEColor.warning
+    case "merged": return ADEColor.tintPRs
+    case "closed": return ADEColor.danger
+    case "blocked": return ADEColor.danger
+    default: return ADEColor.textSecondary
+    }
+  }
+
+  private var symbol: String {
+    switch state {
+    case "open": return "arrow.triangle.pull"
+    case "draft": return "pencil.line"
+    case "merged": return "arrow.triangle.merge"
+    case "closed": return "xmark"
+    case "blocked": return "exclamationmark.octagon.fill"
+    default: return "arrow.triangle.branch"
+    }
+  }
+
+  var body: some View {
+    RoundedRectangle(cornerRadius: 7, style: .continuous)
+      .fill(tint.opacity(0.16))
+      .overlay(
+        Image(systemName: symbol)
+          .font(.system(size: size * 0.46, weight: .semibold))
+          .foregroundColor(tint)
+      )
+      .frame(width: size, height: size)
+  }
+}
+
+#Preview("PrStateTile") {
+  HStack(spacing: 10) {
+    PrStateTile(state: "open")
+    PrStateTile(state: "draft")
+    PrStateTile(state: "merged")
+    PrStateTile(state: "closed")
+    PrStateTile(state: "blocked")
+  }
+  .padding()
+  .background(ADEColor.pageBackground)
+}
+
+struct PrCheckStatPill: View {
+  let count: Int
+  let label: String
+  let color: Color?
+
+  private var tint: Color { color ?? ADEColor.textSecondary }
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 2) {
+      Text("\(count)")
+        .font(.system(size: 20, weight: .semibold, design: .rounded))
+        .foregroundColor(tint)
+      Text(label.uppercased())
+        .font(.system(size: 10, weight: .semibold, design: .monospaced))
+        .tracking(1.1)
+        .foregroundColor(ADEColor.textSecondary)
+    }
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .padding(.horizontal, 12)
+    .padding(.vertical, 10)
+    .background(
+      RoundedRectangle(cornerRadius: 12, style: .continuous)
+        .fill(ADEColor.recessedBackground)
+    )
+  }
+}
+
+#Preview("PrCheckStatPill") {
+  HStack(spacing: 8) {
+    PrCheckStatPill(count: 14, label: "Passing", color: ADEColor.success)
+    PrCheckStatPill(count: 3, label: "Failing", color: ADEColor.danger)
+    PrCheckStatPill(count: 1, label: "Pending", color: ADEColor.warning)
+  }
+  .padding()
+  .background(ADEColor.pageBackground)
+}
+
+struct PrWarnBanner: View {
+  let text: String
+  var tint: Color = ADEColor.warning
+
+  var body: some View {
+    HStack(alignment: .top, spacing: 8) {
+      Image(systemName: "exclamationmark.triangle.fill")
+        .font(.system(size: 11, weight: .semibold))
+        .foregroundColor(tint)
+      Text(text)
+        .font(.footnote)
+        .foregroundColor(ADEColor.textPrimary)
+        .fixedSize(horizontal: false, vertical: true)
+      Spacer(minLength: 0)
+    }
+    .padding(.horizontal, 10)
+    .padding(.vertical, 7)
+    .background(
+      RoundedRectangle(cornerRadius: 10, style: .continuous)
+        .fill(tint.opacity(0.14))
+    )
+    .overlay(
+      RoundedRectangle(cornerRadius: 10, style: .continuous)
+        .strokeBorder(tint.opacity(0.35), lineWidth: 0.5)
+    )
+  }
+}
+
+#Preview("PrWarnBanner") {
+  VStack(spacing: 10) {
+    PrWarnBanner(text: "Merge conflicts detected against main.")
+    PrWarnBanner(text: "Changes requested by 2 reviewers.", tint: ADEColor.danger)
+  }
+  .padding()
+  .background(ADEColor.pageBackground)
+}
+
+enum PrDiffKind {
+  case context
+  case added
+  case removed
+  case conflictMarker
+}
+
+struct PrDiffLine: Identifiable {
+  let id = UUID()
+  let lineNumber: String?
+  let text: String
+  let kind: PrDiffKind
+}
+
+struct PrDiffPreview: View {
+  let lines: [PrDiffLine]
+
+  private func bg(for kind: PrDiffKind) -> Color {
+    switch kind {
+    case .context: return Color.clear
+    case .added: return Color(red: 0.13, green: 0.55, blue: 0.35).opacity(0.18)
+    case .removed: return Color(red: 0.78, green: 0.22, blue: 0.35).opacity(0.18)
+    case .conflictMarker: return ADEColor.warning.opacity(0.22)
+    }
+  }
+
+  private func fg(for kind: PrDiffKind) -> Color {
+    switch kind {
+    case .context: return ADEColor.textSecondary
+    case .added: return ADEColor.success
+    case .removed: return ADEColor.danger
+    case .conflictMarker: return ADEColor.warning
+    }
+  }
+
+  private func prefix(for kind: PrDiffKind) -> String {
+    switch kind {
+    case .context: return " "
+    case .added: return "+"
+    case .removed: return "-"
+    case .conflictMarker: return "!"
+    }
+  }
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 0) {
+      ForEach(lines) { line in
+        HStack(alignment: .top, spacing: 10) {
+          Text(line.lineNumber ?? "")
+            .font(.system(size: 10, weight: .regular, design: .monospaced))
+            .foregroundColor(ADEColor.textSecondary.opacity(0.6))
+            .frame(width: 32, alignment: .trailing)
+          Text(prefix(for: line.kind))
+            .font(.system(size: 11, weight: .semibold, design: .monospaced))
+            .foregroundColor(fg(for: line.kind))
+            .frame(width: 10, alignment: .leading)
+          Text(line.text)
+            .font(.system(size: 11, design: .monospaced))
+            .foregroundColor(line.kind == .context ? ADEColor.textPrimary : fg(for: line.kind))
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 2)
+        .background(bg(for: line.kind))
+      }
+    }
+    .padding(.vertical, 6)
+    .background(
+      RoundedRectangle(cornerRadius: 10, style: .continuous)
+        .fill(ADEColor.recessedBackground)
+    )
+  }
+}
+
+#Preview("PrDiffPreview") {
+  PrDiffPreview(lines: [
+    PrDiffLine(lineNumber: "12", text: "const user = fetchUser()", kind: .context),
+    PrDiffLine(lineNumber: "13", text: "return user.name", kind: .removed),
+    PrDiffLine(lineNumber: "13", text: "return user?.name ?? \"guest\"", kind: .added),
+    PrDiffLine(lineNumber: "14", text: "<<<<<<< HEAD", kind: .conflictMarker),
+  ])
+  .padding()
+  .background(ADEColor.pageBackground)
+}
+
+struct PrCommitDot: View {
+  let status: String
+  var size: CGFloat = 6
+
+  private var tint: Color {
+    switch status {
+    case "pass": return ADEColor.success
+    case "fail": return ADEColor.danger
+    case "pending": return ADEColor.warning
+    default: return ADEColor.textSecondary.opacity(0.5)
+    }
+  }
+
+  var body: some View {
+    Circle()
+      .fill(tint)
+      .frame(width: size, height: size)
+      .shadow(color: tint.opacity(status == "none" ? 0 : 0.55), radius: size * 0.6)
+  }
+}
+
+#Preview("PrCommitDot") {
+  HStack(spacing: 10) {
+    PrCommitDot(status: "pass")
+    PrCommitDot(status: "fail")
+    PrCommitDot(status: "pending")
+    PrCommitDot(status: "none")
+  }
+  .padding()
+  .background(ADEColor.pageBackground)
+}
+
+enum PrBotProvider: String {
+  case coderabbit
+  case greptile
+  case codecov
+  case sourcery
+  case seer
+  case claude
+  case copilot
+}
+
+func prBotProvider(from author: String?) -> PrBotProvider? {
+  guard let author else { return nil }
+  let normalized = author.lowercased()
+  if normalized.contains("coderabbit") { return .coderabbit }
+  if normalized.contains("greptileai") || normalized.contains("greptile") { return .greptile }
+  if normalized.contains("codecov") { return .codecov }
+  if normalized.contains("sourcery-ai") || normalized.contains("sourcery") { return .sourcery }
+  if normalized.contains("seer-by-sentry") || normalized.contains("sentry") { return .seer }
+  if normalized.contains("claude-ai[bot]") || normalized.contains("claude[bot]") { return .claude }
+  if normalized.contains("github-copilot") || normalized.contains("copilot[bot]") { return .copilot }
+  return nil
+}
+
+func prBotDisplayName(_ provider: PrBotProvider) -> String {
+  switch provider {
+  case .coderabbit: return "CodeRabbit"
+  case .greptile: return "Greptile"
+  case .codecov: return "Codecov"
+  case .sourcery: return "Sourcery"
+  case .seer: return "Seer"
+  case .claude: return "Claude"
+  case .copilot: return "Copilot"
+  }
+}
+
+func prBotLetter(_ provider: PrBotProvider) -> String {
+  switch provider {
+  case .coderabbit: return "R"
+  case .greptile: return "G"
+  case .codecov: return "V"
+  case .sourcery: return "Y"
+  case .seer: return "S"
+  case .claude: return "C"
+  case .copilot: return "P"
+  }
+}
+
+#Preview("PrBotProvider") {
+  VStack(alignment: .leading, spacing: 6) {
+    ForEach(["coderabbit", "greptileai", "codecov", "sourcery-ai", "seer-by-sentry", "claude[bot]", "github-copilot"], id: \.self) { login in
+      if let provider = prBotProvider(from: login) {
+        Text("\(login) → \(prBotDisplayName(provider)) (\(prBotLetter(provider)))")
+          .font(.footnote.monospaced())
+          .foregroundColor(ADEColor.textPrimary)
+      }
+    }
+  }
+  .padding()
+  .background(ADEColor.pageBackground)
+}
+
+struct PrMonoText: View {
+  let text: String
+  var color: Color = ADEColor.textSecondary
+  var size: CGFloat = 11
+
+  var body: some View {
+    Text(text)
+      .font(.system(size: size, design: .monospaced))
+      .foregroundColor(color)
+  }
+}
+
+#Preview("PrMonoText") {
+  VStack(alignment: .leading, spacing: 4) {
+    PrMonoText(text: "feat/prs-overhaul → main")
+    PrMonoText(text: "a1b2c3d · 12 commits", color: ADEColor.tintPRs)
+  }
+  .padding()
+  .background(ADEColor.pageBackground)
+}
+
+struct PrStickyActionBar<Content: View>: View {
+  @ViewBuilder let content: () -> Content
+
+  init(@ViewBuilder content: @escaping () -> Content) {
+    self.content = content
+  }
+
+  var body: some View {
+    HStack(spacing: 8) {
+      content()
+    }
+    .padding(12)
+    .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+    .overlay(
+      RoundedRectangle(cornerRadius: 18, style: .continuous)
+        .strokeBorder(ADEColor.glassBorder, lineWidth: 0.5)
+    )
+    .padding(.horizontal, 12)
+    .padding(.bottom, 8)
+  }
+}
+
+#Preview("PrStickyActionBar") {
+  VStack {
+    Spacer()
+    PrStickyActionBar {
+      Button("Merge") {}
+        .buttonStyle(.borderedProminent)
+      Button("Close") {}
+        .buttonStyle(.bordered)
+    }
+  }
+  .frame(maxWidth: .infinity, maxHeight: .infinity)
+  .background(ADEColor.pageBackground)
 }

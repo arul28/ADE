@@ -6,14 +6,7 @@ icon: "users"
 
 ## Workers in Missions
 
-Each worker spawned by a mission is **ephemeral** — it exists only for the duration of its assigned tasks and is cleaned up when the mission completes or is canceled.
-
-Every worker receives:
-
-- A dedicated **lane** (its own git worktree and terminal session)
-- A **tool palette** scoped to the mission's permission config
-- A **budget allocation** drawn from the mission's total budget cap
-- A **context window** seeded from the Mission Pack
+Each worker spawned by a mission is **ephemeral** — it exists only for its assigned tasks and is cleaned up when the mission completes or is canceled. Every worker receives a dedicated lane, a scoped tool palette, a budget allocation, and a context window seeded from the Mission Pack.
 
 ### Context Compaction
 

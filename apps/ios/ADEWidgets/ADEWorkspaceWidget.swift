@@ -13,26 +13,38 @@ struct ADEWorkspaceWidget: Widget {
     static let kind = "ADEWorkspaceWidget"
 
     var body: some WidgetConfiguration {
-        StaticConfiguration(
+        AppIntentConfiguration(
             kind: Self.kind,
-            provider: ADEWorkspaceTimelineProvider()
+            intent: WorkspaceWidgetVariantIntent.self,
+            provider: ADEWorkspaceIntentTimelineProvider()
         ) { entry in
             WorkspaceWidgetEntryView(entry: entry)
-                .containerBackground(.fill.tertiary, for: .widget)
+                .containerBackground(for: .widget) {
+                    WorkspaceWidgetBackground()
+                }
         }
         .configurationDisplayName("ADE Workspace")
-        .description("See running sessions and PRs at a glance.")
+        .description("See running agents and PRs at a glance.")
         .supportedFamilies([.systemSmall, .systemMedium, .systemLarge])
     }
 }
 
-// MARK: - Timeline provider
+// MARK: - Timeline entry + provider
 
 struct ADEWorkspaceEntry: TimelineEntry {
     let date: Date
     let snapshot: WorkspaceSnapshot
+    let variant: WidgetVariantOption
+
+    init(date: Date, snapshot: WorkspaceSnapshot, variant: WidgetVariantOption = .agents) {
+        self.date = date
+        self.snapshot = snapshot
+        self.variant = variant
+    }
 }
 
+/// Legacy `TimelineProvider` kept for the lock-screen widget (which still uses
+/// `StaticConfiguration`). The home widget uses the `AppIntent` variant below.
 struct ADEWorkspaceTimelineProvider: TimelineProvider {
     func placeholder(in context: Context) -> ADEWorkspaceEntry {
         ADEWorkspaceEntry(date: Date(), snapshot: .empty)
@@ -52,6 +64,28 @@ struct ADEWorkspaceTimelineProvider: TimelineProvider {
     }
 }
 
+/// AppIntent-driven provider used by the home-screen workspace widget so the
+/// user can flip between the "agents" and "pull requests" medium faces via the
+/// widget-edit sheet.
+@available(iOS 17.0, *)
+struct ADEWorkspaceIntentTimelineProvider: AppIntentTimelineProvider {
+    func placeholder(in context: Context) -> ADEWorkspaceEntry {
+        ADEWorkspaceEntry(date: Date(), snapshot: .empty, variant: .agents)
+    }
+
+    func snapshot(for configuration: WorkspaceWidgetVariantIntent, in context: Context) async -> ADEWorkspaceEntry {
+        let snap = ADESharedContainer.readWorkspaceSnapshot() ?? .empty
+        return ADEWorkspaceEntry(date: Date(), snapshot: snap, variant: configuration.variant)
+    }
+
+    func timeline(for configuration: WorkspaceWidgetVariantIntent, in context: Context) async -> Timeline<ADEWorkspaceEntry> {
+        let now = Date()
+        let snap = ADESharedContainer.readWorkspaceSnapshot() ?? .empty
+        let entry = ADEWorkspaceEntry(date: now, snapshot: snap, variant: configuration.variant)
+        return Timeline(entries: [entry], policy: .after(now.addingTimeInterval(60)))
+    }
+}
+
 // MARK: - Entry view dispatch
 
 struct WorkspaceWidgetEntryView: View {
@@ -63,7 +97,7 @@ struct WorkspaceWidgetEntryView: View {
         case .systemSmall:
             WorkspaceSmallView(snapshot: entry.snapshot)
         case .systemMedium:
-            WorkspaceMediumView(snapshot: entry.snapshot)
+            WorkspaceMediumView(snapshot: entry.snapshot, variant: entry.variant)
         case .systemLarge:
             WorkspaceLargeView(snapshot: entry.snapshot)
         default:

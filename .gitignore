@@ -46,6 +46,8 @@ release-stable/
 xcuserdata/
 *.xcuserstate
 apps/ios/.dry-run-derived-data/
+apps/ios/build/
+ios-signing/
 
 # Tool configs (personal)
 .codex/

@@ -30,6 +30,11 @@ public enum ADEIntentCommandKind: String, Sendable {
     case retryPrChecks
     case openPr
     case setMutePush
+    /// Restart a failed session from the Live Activity "Failed" action row.
+    /// TODO: wire chat.restart remote command — the desktop-side handler
+    /// does not exist yet (only chat.approve/deny/reply/pause today). Until
+    /// then the bridge receives this but no remote command is dispatched.
+    case restartSession
 }
 
 /// Main-app adapter installed by `SyncService` at launch. The widget /
@@ -226,6 +231,36 @@ public struct RetryCheckIntent: LiveActivityIntent {
         await ADEIntentCommandRegistry.dispatch(
             .retryPrChecks,
             payload: ["prNumber": prNumber, "prId": prId]
+        )
+        return .result()
+    }
+}
+
+/// Restart a failed session from the Live Activity "Failed" attention state.
+/// Dispatches `chat.restart` on the desktop, which aliases `resumeSession`
+/// under the hood (see syncRemoteCommandService.ts).
+@available(iOS 17.0, *)
+public struct RestartSessionIntent: LiveActivityIntent {
+    public static var title: LocalizedStringResource = "Restart"
+    public static var description = IntentDescription(
+        "Restart the failed ADE session."
+    )
+    public static var openAppWhenRun: Bool = false
+
+    @Parameter(title: "Session ID")
+    public var sessionId: String
+
+    public init() {}
+
+    public init(sessionId: String) {
+        self.sessionId = sessionId
+    }
+
+    @MainActor
+    public func perform() async throws -> some IntentResult {
+        await ADEIntentCommandRegistry.dispatch(
+            .restartSession,
+            payload: ["sessionId": sessionId]
         )
         return .result()
     }

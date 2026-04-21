@@ -2,7 +2,6 @@ import {
   useCallback,
   useEffect,
   useMemo,
-  useRef,
   useState,
   type CSSProperties,
   type DragEvent,
@@ -11,20 +10,17 @@ import {
 import {
   DeviceMobile,
   Key,
-  CheckCircle,
   CircleNotch,
   UploadSimple,
   XCircle,
   Bell,
   WarningCircle,
   ChatTeardrop,
-  GitPullRequest,
   Warning,
   Eye,
   SealCheck,
   Robot,
   PaperPlaneTilt,
-  Broadcast,
   Waveform,
   StackSimple,
   Play,
@@ -239,7 +235,6 @@ export function MobilePushPanel() {
   const [notice, setNotice] = useState<string | null>(null);
   const [sendingKind, setSendingKind] = useState<TestPushKind | null>(null);
   const [showAdvanced, setShowAdvanced] = useState(false);
-  const autoSavedRef = useRef(false);
 
   const refresh = useCallback(async () => {
     if (!bridge) return;
@@ -309,7 +304,6 @@ export function MobilePushPanel() {
         const nextKeyId = detected ?? keyId.trim();
         if (nextKeyId && teamId.trim()) {
           const nextStatus = await saveConfig({ keyId: nextKeyId });
-          autoSavedRef.current = true;
           if (nextStatus?.configured) {
             setNotice(".p8 stored + config auto-saved. Ready to send test pushes.");
           } else {
@@ -343,18 +337,28 @@ export function MobilePushPanel() {
 
   const handleTeamIdBlur = useCallback(async () => {
     if (!bridge || busy) return;
-    if (!teamId.trim() || !keyId.trim()) return;
+    const normalizedTeamId = teamId.trim().toUpperCase();
+    const normalizedKeyId = keyId.trim().toUpperCase();
+    const normalizedBundleId = bundleId.trim() || DEFAULT_BUNDLE_ID;
+    if (teamId !== normalizedTeamId) setTeamId(normalizedTeamId);
+    if (keyId !== normalizedKeyId) setKeyId(normalizedKeyId);
+    if (bundleId !== normalizedBundleId) setBundleId(normalizedBundleId);
+    if (!normalizedTeamId || !normalizedKeyId) return;
     // Only auto-save if something meaningful changed vs stored config.
     const changed =
-      (status.teamId ?? "") !== teamId.trim() ||
-      (status.keyId ?? "") !== keyId.trim() ||
-      (status.bundleId ?? DEFAULT_BUNDLE_ID) !== (bundleId.trim() || DEFAULT_BUNDLE_ID) ||
+      (status.teamId ?? "") !== normalizedTeamId ||
+      (status.keyId ?? "") !== normalizedKeyId ||
+      (status.bundleId ?? DEFAULT_BUNDLE_ID) !== normalizedBundleId ||
       status.env !== env;
     if (!changed) return;
     setBusy(true);
     setError(null);
     try {
-      const next = await saveConfig();
+      const next = await saveConfig({
+        bundleId: normalizedBundleId,
+        keyId: normalizedKeyId,
+        teamId: normalizedTeamId,
+      });
       if (next) {
         setNotice("Config auto-saved.");
       }
@@ -512,13 +516,13 @@ export function MobilePushPanel() {
         <div style={{ display: "grid", gridTemplateColumns: "1fr 160px", gap: 10, alignItems: "end" }}>
           <label style={{ display: "flex", flexDirection: "column", gap: 6 }}>
             <span style={LABEL_STYLE}>APPLE TEAM ID</span>
-            <input
-              style={inputStyle}
-              value={teamId}
-              onChange={(event) => setTeamId(event.target.value.trim().toUpperCase())}
-              onBlur={() => void handleTeamIdBlur()}
-              placeholder="VQ372F39G6"
-              maxLength={10}
+              <input
+                style={inputStyle}
+                value={teamId}
+                onChange={(event) => setTeamId(event.target.value)}
+                onBlur={() => void handleTeamIdBlur()}
+                placeholder="VQ372F39G6"
+                maxLength={10}
               spellCheck={false}
               autoComplete="off"
               autoCapitalize="characters"
@@ -635,7 +639,7 @@ export function MobilePushPanel() {
               <input
                 style={inputStyle}
                 value={keyId}
-                onChange={(event) => setKeyId(event.target.value.trim().toUpperCase())}
+                onChange={(event) => setKeyId(event.target.value)}
                 onBlur={() => void handleTeamIdBlur()}
                 placeholder="ABCDE12345"
                 maxLength={12}

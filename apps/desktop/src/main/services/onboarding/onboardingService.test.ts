@@ -89,3 +89,98 @@ describe("onboardingService integration", () => {
     }
   });
 });
+
+describe("onboardingService tour progress", () => {
+  function buildService() {
+    const db = createInMemoryAdeDb();
+    const service = createOnboardingService({
+      db,
+      logger: createLogger(),
+      projectRoot: "/tmp/ade-onboarding-tour",
+      projectId: "proj",
+      baseRef: "main",
+      freshProject: false,
+      laneService: { list: async () => [] } as any,
+      projectConfigService: createInMemoryProjectConfigService()
+    });
+    return { service, db };
+  }
+
+  it("returns an empty progress snapshot by default", () => {
+    const { service } = buildService();
+    const progress = service.getTourProgress();
+    expect(progress).toEqual({
+      wizardCompletedAt: null,
+      wizardDismissedAt: null,
+      tours: {},
+      glossaryTermsSeen: [],
+    });
+  });
+
+  it("round-trips wizard completed and dismissed timestamps", () => {
+    const { service } = buildService();
+    const completed = service.markWizardCompleted();
+    expect(completed.wizardCompletedAt).toBeTruthy();
+    expect(completed.wizardDismissedAt).toBeNull();
+
+    const dismissed = service.markWizardDismissed();
+    expect(dismissed.wizardCompletedAt).toBe(completed.wizardCompletedAt);
+    expect(dismissed.wizardDismissedAt).toBeTruthy();
+
+    // Re-reading persists.
+    const refetched = service.getTourProgress();
+    expect(refetched.wizardCompletedAt).toBe(completed.wizardCompletedAt);
+    expect(refetched.wizardDismissedAt).toBe(dismissed.wizardDismissedAt);
+  });
+
+  it("tracks per-tour completion, dismissal, and step index", () => {
+    const { service } = buildService();
+    service.updateTourStep("lanes", 3);
+    service.markTourCompleted("lanes");
+    const progress = service.getTourProgress();
+    expect(progress.tours.lanes.lastStepIndex).toBe(3);
+    expect(progress.tours.lanes.completedAt).toBeTruthy();
+    expect(progress.tours.lanes.dismissedAt).toBeNull();
+
+    service.markTourDismissed("work");
+    const afterDismiss = service.getTourProgress();
+    expect(afterDismiss.tours.work.dismissedAt).toBeTruthy();
+    expect(afterDismiss.tours.work.completedAt).toBeNull();
+  });
+
+  it("records seen glossary terms without duplicates", () => {
+    const { service } = buildService();
+    service.markGlossaryTermSeen("Lane");
+    service.markGlossaryTermSeen("Worktree");
+    service.markGlossaryTermSeen("Lane");
+    const progress = service.getTourProgress();
+    expect(progress.glossaryTermsSeen).toEqual(["Lane", "Worktree"]);
+  });
+
+  it("resetTourProgress(tourId) clears only that tour", () => {
+    const { service } = buildService();
+    service.markWizardCompleted();
+    service.markTourCompleted("lanes");
+    service.markTourCompleted("work");
+
+    const reset = service.resetTourProgress("lanes");
+    expect(reset.tours.lanes).toBeUndefined();
+    expect(reset.tours.work?.completedAt).toBeTruthy();
+    expect(reset.wizardCompletedAt).toBeTruthy();
+  });
+
+  it("resetTourProgress() with no arg clears wizard + all tours", () => {
+    const { service } = buildService();
+    service.markWizardCompleted();
+    service.markTourCompleted("lanes");
+    service.markGlossaryTermSeen("Lane");
+
+    const reset = service.resetTourProgress();
+    expect(reset).toEqual({
+      wizardCompletedAt: null,
+      wizardDismissedAt: null,
+      tours: {},
+      glossaryTermsSeen: [],
+    });
+  });
+});

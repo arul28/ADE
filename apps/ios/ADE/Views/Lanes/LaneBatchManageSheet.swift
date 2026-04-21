@@ -20,6 +20,13 @@ struct LaneBatchManageSheet: View {
     snapshots.map(\.lane.id)
   }
 
+  private var archivableLaneIds: [String] {
+    snapshots
+      .map(\.lane)
+      .filter { $0.archivedAt == nil && $0.laneType != "primary" }
+      .map(\.id)
+  }
+
   private var laneIdsDescendantFirst: [String] {
     let selectedIds = Set(laneIds)
     let parentById = Dictionary(uniqueKeysWithValues: snapshots.compactMap { snapshot -> (String, String)? in
@@ -69,6 +76,9 @@ struct LaneBatchManageSheet: View {
                   if snapshot.lane.status.dirty {
                     LaneTypeBadge(text: "Dirty", tint: ADEColor.warning)
                   }
+                  if snapshot.lane.archivedAt != nil {
+                    LaneTypeBadge(text: "Archived", tint: ADEColor.textMuted)
+                  }
                 }
               }
             }
@@ -80,7 +90,7 @@ struct LaneBatchManageSheet: View {
             } label: {
               HStack {
                 Image(systemName: "archivebox.fill")
-                Text("Archive selected lanes")
+                Text("Archive active lanes")
                   .font(.subheadline.weight(.semibold))
                 Spacer()
               }
@@ -89,7 +99,7 @@ struct LaneBatchManageSheet: View {
               .background(ADEColor.warning.opacity(0.1), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
             }
             .buttonStyle(.plain)
-            .disabled(busy || laneIds.isEmpty)
+            .disabled(busy || archivableLaneIds.isEmpty)
           }
 
           GlassSection(title: "Delete") {
@@ -169,7 +179,7 @@ struct LaneBatchManageSheet: View {
     var archivedLaneIds: [String] = []
     var failures: [String] = []
 
-    for laneId in laneIds {
+    for laneId in archivableLaneIds {
       do {
         try await syncService.archiveLane(laneId)
         archivedLaneIds.append(laneId)
@@ -187,7 +197,7 @@ struct LaneBatchManageSheet: View {
       return
     }
 
-    errorMessage = "Archived \(archivedLaneIds.count)/\(laneIds.count) lanes. Failed: \(failures.joined(separator: "; "))"
+    errorMessage = "Archived \(archivedLaneIds.count)/\(archivableLaneIds.count) active lanes. Failed: \(failures.joined(separator: "; "))"
   }
 
   @MainActor

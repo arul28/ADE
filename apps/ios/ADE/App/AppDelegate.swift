@@ -60,7 +60,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
   ) {
     let hex = deviceToken.map { String(format: "%02x", $0) }.joined()
     // Never log the hex token — it is effectively a per-install credential.
-    appDelegateLog.info("Registered APNs alert token (\(deviceToken.count, privacy: .public) bytes)")
+    appDelegateLog.debug("Registered APNs alert token (\(deviceToken.count, privacy: .public) bytes)")
     Task { @MainActor in
       await SyncService.shared?.registerPushToken(hex, kind: .alert, sessionId: nil)
     }
@@ -171,6 +171,7 @@ final class ADESyncIntentBridge: ADEIntentCommandBridge {
     case .denySession: mapped = .denySession
     case .pauseSession: mapped = .pauseSession
     case .replyToSession: mapped = .replyToSession
+    case .restartSession: mapped = .restartSession
     case .retryPrChecks: mapped = .retryPrChecks
     case .openPr: mapped = .openPr
     case .setMutePush: mapped = .setMutePush

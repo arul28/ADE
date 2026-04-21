@@ -10,14 +10,9 @@ func buildWorkChatTimelineSnapshot(
 ) -> WorkChatTimelineSnapshot {
   let pendingInputs = derivePendingWorkInputs(from: transcript)
   let pendingSteers = derivePendingWorkSteers(from: transcript)
-  let suppressedItemIds: Set<String> = Set(pendingInputs.compactMap { input -> String? in
-    switch input {
-    case .question(let model): return model.id
-    case .permission(let model): return model.id
-    case .approval: return nil
-    }
-  })
-  let toolCards = buildWorkToolCards(from: transcript)
+  let suppressedItemIds = Set(pendingInputs.map(\.itemId))
+  let suppressedToolItemIds = Set(pendingInputs.map(\.itemId))
+  let toolCards = buildWorkToolCards(from: transcript, suppressedPendingItemIds: suppressedToolItemIds)
   let eventCards = buildWorkEventCards(from: transcript, suppressedItemIds: suppressedItemIds)
   let commandCards = buildWorkCommandCards(from: transcript)
   let fileChangeCards = buildWorkFileChangeCards(from: transcript)
@@ -170,7 +165,7 @@ func buildWorkTimeline(
   })
 
   // Resolve a chronological timestamp for each pending-input itemId by looking
-  // up its originating approval_request / structured_question / ask_user
+  // up its originating approval_request / structured_question / question-tool
   // tool_call envelope. Falling back to the latest transcript timestamp keeps
   // the pending card in place when the source envelope was dropped upstream.
   let pendingTimestamps = workPendingInputTimestamps(from: transcript)
@@ -192,6 +187,14 @@ func buildWorkTimeline(
         timestamp: ts,
         rank: 1_600 + index,
         payload: .pendingPermission(model)
+      )
+    case .planApproval(let model):
+      let ts = pendingTimestamps[model.id] ?? fallbackPendingTimestamp
+      return WorkTimelineEntry(
+        id: "pending-plan-approval-\(model.id)",
+        timestamp: ts,
+        rank: 1_600 + index,
+        payload: .pendingPlanApproval(model)
       )
     case .approval:
       return nil
@@ -425,7 +428,7 @@ func workPendingInputTimestamps(from transcript: [WorkChatEnvelope]) -> [String:
          .structuredQuestion(_, _, let itemId, _):
       if result[itemId] == nil { result[itemId] = envelope.timestamp }
     case .toolCall(let tool, _, let itemId, _, _):
-      if isAskUserToolName(tool), result[itemId] == nil {
+      if isQuestionInputToolName(tool), result[itemId] == nil {
         result[itemId] = envelope.timestamp
       }
     default:
@@ -697,7 +700,21 @@ let workTimelinePageSize = 80
 func visibleWorkTimelineEntries(from entries: [WorkTimelineEntry], visibleCount: Int) -> [WorkTimelineEntry] {
   let clampedCount = max(visibleCount, 0)
   guard clampedCount < entries.count else { return entries }
-  return Array(entries.suffix(clampedCount))
+  let suffixStart = entries.count - clampedCount
+  let visibleSuffix = Array(entries.suffix(clampedCount))
+  let hiddenPendingInputs = entries.prefix(suffixStart).filter(\.isPendingInput)
+  return hiddenPendingInputs + visibleSuffix
+}
+
+private extension WorkTimelineEntry {
+  var isPendingInput: Bool {
+    switch payload {
+    case .pendingQuestion, .pendingPermission, .pendingPlanApproval:
+      return true
+    default:
+      return false
+    }
+  }
 }
 
 /// Walk a sorted timeline and emit a turn-separator pill before each user

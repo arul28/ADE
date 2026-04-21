@@ -216,6 +216,7 @@ import type {
   OnboardingDetectionResult,
   OnboardingExistingLaneCandidate,
   OnboardingStatus,
+  OnboardingTourProgress,
   GitActionResult,
   GitBranchSummary,
   GitCheckoutBranchArgs,
@@ -695,6 +696,14 @@ declare global {
         detectExistingLanes: () => Promise<OnboardingExistingLaneCandidate[]>;
         setDismissed: (dismissed: boolean) => Promise<OnboardingStatus>;
         complete: () => Promise<OnboardingStatus>;
+        getTourProgress: () => Promise<OnboardingTourProgress>;
+        markWizardCompleted: () => Promise<OnboardingTourProgress>;
+        markWizardDismissed: () => Promise<OnboardingTourProgress>;
+        markTourCompleted: (tourId: string) => Promise<OnboardingTourProgress>;
+        markTourDismissed: (tourId: string) => Promise<OnboardingTourProgress>;
+        updateTourStep: (tourId: string, index: number) => Promise<OnboardingTourProgress>;
+        markGlossaryTermSeen: (termId: string) => Promise<OnboardingTourProgress>;
+        resetTourProgress: (tourId?: string) => Promise<OnboardingTourProgress>;
       };
       automations: {
         list: () => Promise<AutomationRuleSummary[]>;

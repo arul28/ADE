@@ -233,12 +233,16 @@ enum WorkPendingInputItem: Identifiable, Equatable {
   case approval(WorkPendingApprovalModel)
   case question(WorkPendingQuestionModel)
   case permission(WorkPendingPermissionModel)
+  /// Plan-approval gate — agent finished planning and is waiting for
+  /// Approve & Implement or Reject & Revise before acting.
+  case planApproval(WorkPendingPlanApprovalModel)
 
   var id: String {
     switch self {
     case .approval(let model): return "approval:\(model.id)"
     case .question(let model): return "question:\(model.id)"
     case .permission(let model): return "permission:\(model.id)"
+    case .planApproval(let model): return "plan-approval:\(model.id)"
     }
   }
 
@@ -247,6 +251,7 @@ enum WorkPendingInputItem: Identifiable, Equatable {
     case .approval(let model): return model.id
     case .question(let model): return model.id
     case .permission(let model): return model.id
+    case .planApproval(let model): return model.id
     }
   }
 }
@@ -376,9 +381,13 @@ func pendingWorkQuestionFromApproval(
     )
   }
 
-  let tool = optionalString(detailObject["tool"])?.lowercased() ?? ""
+  let request = detailObject["request"] as? [String: Any] ?? [:]
+  let tool = optionalString(detailObject["tool"])
+    ?? optionalString(request["tool"])
+    ?? optionalString(request["toolName"])
+    ?? ""
   let questionText = optionalString(detailObject["question"]) ?? description
-  guard (tool == "askuser" || tool == "ask_user"), !questionText.isEmpty else {
+  guard isQuestionInputToolName(tool), !questionText.isEmpty else {
     return nil
   }
   let options = (detailObject["options"] as? [Any] ?? [])
@@ -409,15 +418,24 @@ func pendingWorkQuestionFromAskUserToolCall(
   itemId: String
 ) -> WorkPendingQuestionModel? {
   guard let object = workJSONObject(from: argsText) else { return nil }
-  let rawQuestions = object["questions"] as? [[String: Any]] ?? []
-  let source: [[String: Any]] = rawQuestions.isEmpty ? [object] : rawQuestions
-  let fallbackQuestionText = optionalString(object["question"]) ?? optionalString(object["title"])
+  // Modern protocol payloads can wrap ask input under a `request` object
+  // (same shape as desktop approval detail), so read both legacy flat shape
+  // and the nested shape used by current request handlers.
+  let request = object["request"] as? [String: Any] ?? [:]
+  let sourceObject = !request.isEmpty ? request : object
+  let rawQuestions = sourceObject["questions"] as? [[String: Any]] ?? []
+  let source: [[String: Any]] = rawQuestions.isEmpty ? [sourceObject] : rawQuestions
+  let fallbackQuestionText =
+    optionalString(sourceObject["question"])
+    ?? optionalString(object["question"])
+    ?? optionalString(object["title"])
+    ?? optionalString(request["description"])
   // The raw-args legacy shape needs a question string to be valid at all.
   if rawQuestions.isEmpty, fallbackQuestionText == nil { return nil }
   let questions = source.enumerated().map { index, raw in
     workPendingQuestionEntry(
       from: raw,
-      fallback: object,
+      fallback: request.isEmpty ? object : sourceObject,
       index: index,
       fallbackQuestionText: fallbackQuestionText
     )
@@ -426,8 +444,8 @@ func pendingWorkQuestionFromAskUserToolCall(
   return WorkPendingQuestionModel(
     id: itemId,
     questions: questions,
-    title: optionalString(object["title"]),
-    body: optionalString(object["body"])
+    title: optionalString(sourceObject["title"]) ?? optionalString(object["title"]),
+    body: optionalString(sourceObject["body"]) ?? optionalString(request["description"]) ?? optionalString(object["body"])
   )
 }
 
@@ -447,9 +465,9 @@ func pendingWorkPermissionFromApproval(
     ?? optionalString(request["toolName"])
     ?? optionalString(detailObject["tool"])
     ?? ""
-  // ask_user is auto-allowed host-side; if one still slips through, leave it for
-  // the question path and do not double-render a redundant permission card.
-  if tool.lowercased() == "ask_user" || tool.lowercased() == "askuser" {
+  // Question tools should be routed through the structured-question path. If one
+  // slips through this branch, avoid double-rendering a redundant permission card.
+  if isQuestionInputToolName(tool) {
     return nil
   }
   return WorkPendingPermissionModel(
@@ -457,6 +475,56 @@ func pendingWorkPermissionFromApproval(
     tool: tool.isEmpty ? "tool" : tool,
     description: description,
     detail: optionalString(request["description"]) ?? optionalString(detailObject["description"])
+  )
+}
+
+/// Parse an `approval_request` detail blob whose `request.kind == "plan_approval"` into the
+/// dedicated plan-approval model. Returns nil for anything that isn't a plan-approval gate.
+func pendingWorkPlanApprovalFromApproval(
+  description: String,
+  detail: String?,
+  itemId: String
+) -> WorkPendingPlanApprovalModel? {
+  // The plan text lives in one of several places depending on the provider:
+  //   detail.request.kind == "plan_approval"
+  //   detail.request.description or detail.request.questions[0].question (plan body)
+  //   detail.planContent (raw plan text emitted by the codex path)
+  guard let detailObject = workJSONObject(from: detail) else {
+    return nil
+  }
+  let request = detailObject["request"] as? [String: Any] ?? [:]
+  let kind = (optionalString(request["kind"]) ?? "").lowercased()
+  guard kind == "plan_approval" else { return nil }
+  let source = optionalString(request["source"])
+    ?? optionalString(detailObject["tool"])?.lowercased() ?? ""
+  let planText: String = {
+    // Prefer the plan text from providerMetadata.planContent, then the
+    // question text, then the description field, then fall back to the
+    // outer approval_request description so the card always has something
+    // to show.
+    if let meta = request["providerMetadata"] as? [String: Any],
+       let content = optionalString(meta["planContent"] ?? meta["plan"]) {
+      return content
+    }
+    if let questions = request["questions"] as? [[String: Any]],
+       let firstQuestion = questions.first,
+       let q = optionalString(firstQuestion["question"]) {
+      return q
+    }
+    if let reqDesc = optionalString(request["description"]) {
+      return reqDesc
+    }
+    if let planContent = optionalString(detailObject["planContent"]) {
+      return planContent
+    }
+    return description
+  }()
+  let title = optionalString(request["title"]) ?? "Plan Ready for Review"
+  return WorkPendingPlanApprovalModel(
+    id: itemId,
+    source: source,
+    planText: planText,
+    title: title
   )
 }
 
@@ -472,7 +540,9 @@ func derivePendingWorkInputs(from transcript: [WorkChatEnvelope]) -> [WorkPendin
     case .approvalRequest(let description, let detail, let itemId, _):
       guard openIds.contains(itemId), !seen.contains(itemId) else { continue }
       seen.insert(itemId)
-      if let question = pendingWorkQuestionFromApproval(description: description, detail: detail, itemId: itemId) {
+      if let planApproval = pendingWorkPlanApprovalFromApproval(description: description, detail: detail, itemId: itemId) {
+        results.append(.planApproval(planApproval))
+      } else if let question = pendingWorkQuestionFromApproval(description: description, detail: detail, itemId: itemId) {
         results.append(.question(question))
       } else if let permission = pendingWorkPermissionFromApproval(description: description, detail: detail, itemId: itemId) {
         results.append(.permission(permission))
@@ -491,7 +561,7 @@ func derivePendingWorkInputs(from transcript: [WorkChatEnvelope]) -> [WorkPendin
       results.append(.question(WorkPendingQuestionModel(id: itemId, questions: [entry])))
     case .toolCall(let tool, let argsText, let itemId, _, _):
       guard openIds.contains(itemId), !seen.contains(itemId) else { continue }
-      guard isAskUserToolName(tool) else { continue }
+      guard isQuestionInputToolName(tool) else { continue }
       guard let question = pendingWorkQuestionFromAskUserToolCall(argsText: argsText, itemId: itemId) else { continue }
       seen.insert(itemId)
       results.append(.question(question))
@@ -503,11 +573,27 @@ func derivePendingWorkInputs(from transcript: [WorkChatEnvelope]) -> [WorkPendin
 }
 
 func isAskUserToolName(_ tool: String) -> Bool {
-  let normalized = tool.lowercased()
+  let normalized = normalizedWorkToolIdentity(tool)
+  return normalized == "ask_user" || normalized == "askuser" || normalized == "mcp_ade_ask_user"
+}
+
+func isRequestUserInputToolName(_ tool: String) -> Bool {
+  let normalized = normalizedWorkToolIdentity(tool)
+  return normalized == "request_user_input"
+    || normalized == "requestuserinput"
+    || normalized == "mcp_ade_request_user_input"
+}
+
+func isQuestionInputToolName(_ tool: String) -> Bool {
+  isAskUserToolName(tool) || isRequestUserInputToolName(tool)
+}
+
+private func normalizedWorkToolIdentity(_ tool: String) -> String {
+  tool
+    .trimmingCharacters(in: .whitespacesAndNewlines)
+    .lowercased()
     .replacingOccurrences(of: "-", with: "_")
-  if normalized == "ask_user" || normalized == "askuser" { return true }
-  // MCP-prefixed invocations like "mcp__ade__ask_user".
-  return normalized.hasSuffix("ask_user") || normalized.hasSuffix("askuser")
+    .replacingOccurrences(of: #"_+"#, with: "_", options: .regularExpression)
 }
 
 /// Ordered list of queued steer messages (user messages with `deliveryState == "queued"` and a
@@ -555,7 +641,7 @@ func pendingWorkInputItemIds(from transcript: [WorkChatEnvelope]) -> Set<String>
     case .structuredQuestion(_, _, let itemId, let turnId):
       questions.updateValue(turnId, forKey: itemId)
     case .toolCall(let tool, let argsText, let itemId, _, let turnId):
-      if isAskUserToolName(tool),
+      if isQuestionInputToolName(tool),
          pendingWorkQuestionFromAskUserToolCall(argsText: argsText, itemId: itemId) != nil {
         questions.updateValue(turnId, forKey: itemId)
       }

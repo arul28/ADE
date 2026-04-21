@@ -58,12 +58,28 @@ enum NotificationCategories {
       title: "Reply",
       options: [],
       textInputButtonTitle: "Send",
-      textInputPlaceholder: "Message"
+      textInputPlaceholder: "Reply\u{2026}"
     )
 
+    // Generic "Open" — used by CHAT_TURN_COMPLETED, CTO_MISSION_PHASE, and
+    // SYSTEM_ALERT. Per-category titles (e.g. "Open agent", "Open mission") are
+    // built inline below so the same action identifier can carry different
+    // labels; AppDelegate routes on identifier, not title.
     let open = UNNotificationAction(
       identifier: Action.open,
       title: "Open",
+      options: [.foreground]
+    )
+
+    let openAgent = UNNotificationAction(
+      identifier: Action.open,
+      title: "Open agent",
+      options: [.foreground]
+    )
+
+    let openMission = UNNotificationAction(
+      identifier: Action.open,
+      title: "Open mission",
       options: [.foreground]
     )
 
@@ -76,6 +92,12 @@ enum NotificationCategories {
     let openPr = UNNotificationAction(
       identifier: Action.openPr,
       title: "Open PR",
+      options: [.foreground]
+    )
+
+    let viewPr = UNNotificationAction(
+      identifier: Action.openPr,
+      title: "View PR",
       options: [.foreground]
     )
 
@@ -94,7 +116,7 @@ enum NotificationCategories {
 
     let chatFailed = UNNotificationCategory(
       identifier: Identifier.chatFailed,
-      actions: [open, restart],
+      actions: [openAgent, restart],
       intentIdentifiers: [],
       options: []
     )
@@ -129,14 +151,14 @@ enum NotificationCategories {
 
     let prMergeReady = UNNotificationCategory(
       identifier: Identifier.prMergeReady,
-      actions: [openPr],
+      actions: [viewPr],
       intentIdentifiers: [],
       options: []
     )
 
     let ctoSubagentFinished = UNNotificationCategory(
       identifier: Identifier.ctoSubagentFinished,
-      actions: [open],
+      actions: [openMission],
       intentIdentifiers: [],
       options: []
     )

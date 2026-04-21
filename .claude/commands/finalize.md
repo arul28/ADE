@@ -157,7 +157,7 @@ Step 2: Map changed source to internal docs
 | apps/desktop/src/shared/                           | docs/ARCHITECTURE.md + touching feature's doc      |
 | apps/desktop/src/renderer/components/<area>/       | docs/features/<same-area>/                         |
 | apps/desktop/src/renderer/state/                   | docs/ARCHITECTURE.md (UI framework)                |
-| apps/mcp-server/                                   | docs/ARCHITECTURE.md + features/linear-integration/|
+| apps/ade-cli/                                      | docs/ARCHITECTURE.md (ADE CLI / Build/Test/Deploy) + docs/features/agents/ |
 | .github/workflows/                                 | docs/ARCHITECTURE.md (Build/Test/Deploy)           |
 | apps/ios/                                          | docs/features/sync-and-multi-device/ios-companion.md |
 | apps/web/                                          | docs/ARCHITECTURE.md (Apps & Processes)            |
@@ -254,9 +254,12 @@ Run in parallel — ensures lock files are in sync with package.json (mirrors CI
 
 ```bash
 cd apps/desktop && npm install
-cd apps/mcp-server && npm install
+cd apps/ade-cli && npm install
 cd apps/web && npm install
 ```
+
+Do not run `apps/mcp-server` checks. The MCP server was removed; ADE's
+agent-facing command surface now lives in `apps/ade-cli`.
 
 After install, check for uncommitted lock file changes — if any lock file is dirty, it means package.json was modified without regenerating the lock file, which will break CI's `npm ci`:
 
@@ -268,11 +271,11 @@ If lock files changed, warn and include them in the commit.
 
 ### 3c. Typecheck all apps
 
-Run in parallel to match CI jobs (`typecheck-desktop`, `typecheck-mcp`, `typecheck-web`):
+Run in parallel to match CI jobs (`typecheck-desktop`, `typecheck-ade-cli`, `typecheck-web`):
 
 ```bash
 cd apps/desktop && npm run typecheck
-cd apps/mcp-server && npm run typecheck
+cd apps/ade-cli && npm run typecheck
 cd apps/web && npm run typecheck
 ```
 
@@ -305,17 +308,17 @@ cd apps/desktop && npx vitest run --project unit-renderer    # ~85+ renderer tes
 cd apps/desktop && npx vitest run --project unit-shared      # ~7 shared/preload tests
 ```
 
-### 3f. MCP server tests
+### 3f. ADE CLI tests
 
 ```bash
-cd apps/mcp-server && npm test
+cd apps/ade-cli && npm test
 ```
 
 ### 3g. Build all apps
 
 ```bash
 cd apps/desktop && npm run build
-cd apps/mcp-server && npm run build
+cd apps/ade-cli && npm run build
 cd apps/web && npm run build
 ```
 
@@ -384,11 +387,11 @@ If Phase 3e fails only inside files the simplifier touched, revert the simplifie
 ### CI Verification:
 - Lock files in sync: PASS
 - Typecheck (desktop): PASS
-- Typecheck (mcp-server): PASS
+- Typecheck (ade-cli): PASS
 - Typecheck (web): PASS
 - Lint (desktop): PASS
 - Tests (desktop): PASS (X tests across 8 shards)
-- Tests (mcp-server): PASS (X tests)
+- Tests (ade-cli): PASS (X tests)
 - Build (all apps): PASS
 - Doc validation: PASS
 
@@ -405,8 +408,8 @@ Before marking complete:
 - [ ] Mobile parity reviewed; applicable iOS updates made and validated
 - [ ] CI workflow sync verified (no orphaned test files)
 - [ ] Lock files in sync (no dirty lock files after install)
-- [ ] Typecheck passed (desktop + mcp-server + web)
+- [ ] Typecheck passed (desktop + ade-cli + web)
 - [ ] Lint passed (desktop)
-- [ ] All tests passed (desktop sharded 8-way + mcp-server)
+- [ ] All tests passed (desktop sharded 8-way + ade-cli)
 - [ ] All apps build successfully
 - [ ] Doc validation passed

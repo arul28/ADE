@@ -24,7 +24,7 @@ struct SettingsPinSheet: View {
             .lineLimit(1)
         }
 
-        HStack(spacing: 10) {
+        HStack(spacing: 8) {
           ForEach(0..<6, id: \.self) { index in
             PinDigitBox(
               digit: digit(at: index),
@@ -32,6 +32,7 @@ struct SettingsPinSheet: View {
             )
           }
         }
+        .frame(maxWidth: .infinity)
         .accessibilityLabel("Pairing PIN")
         .accessibilityValue(pin.isEmpty ? "No digits entered" : "\(pin.count) of 6 digits entered")
 
@@ -195,7 +196,7 @@ private struct PinDigitBox: View {
         .font(.system(size: 28, weight: .semibold, design: .rounded))
         .foregroundStyle(ADEColor.textPrimary)
     }
-    .frame(width: 44, height: 54)
+    .frame(maxWidth: .infinity, minHeight: 54, maxHeight: 54)
   }
 }
 
@@ -276,5 +277,6 @@ private struct PinKeyButton: View {
       RoundedRectangle(cornerRadius: 14, style: .continuous)
         .stroke(ADEColor.border.opacity(0.18), lineWidth: 0.75)
     )
+    .accessibilityLabel("Digit \(title)")
   }
 }

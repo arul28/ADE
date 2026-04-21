@@ -2,6 +2,11 @@ import SwiftUI
 import UIKit
 import AVKit
 
+enum WorkSessionNavigationChrome {
+  case pushedDetail
+  case embedded
+}
+
 struct WorkSessionDestinationView: View {
   @EnvironmentObject var syncService: SyncService
 
@@ -12,6 +17,11 @@ struct WorkSessionDestinationView: View {
   let initialTranscript: [WorkChatEnvelope]?
   let transitionNamespace: Namespace.ID?
   let isLive: Bool
+  let navigationChrome: WorkSessionNavigationChrome
+  var showsLaneActions = true
+  var navigationTitleOverride: String?
+  /// Lanes forwarded to the chat composer for `@`-mention autocomplete.
+  var lanes: [LaneSummary] = []
 
   @State var session: TerminalSessionSummary?
   @State var chatSummary: AgentChatSessionSummary?
@@ -35,7 +45,10 @@ struct WorkSessionDestinationView: View {
   @State var stagedOpeningPromptKey: String?
 
   var sessionDestinationNavigationTitle: String {
-    chatSummary?.title ?? session?.title ?? "Session"
+    if let navigationTitleOverride {
+      return navigationTitleOverride
+    }
+    return chatSummary?.title ?? session?.title ?? "Session"
   }
 
   /// Trailing nav-bar control: a single "…" overflow menu. The lane chip and
@@ -44,7 +57,7 @@ struct WorkSessionDestinationView: View {
   /// which is the only top-level action we expose from the chat header today.
   @ViewBuilder
   var sessionHeaderTrailingControls: some View {
-    if let session {
+    if let session, showsLaneActions {
       Menu {
         Section("Lane") {
           Text(session.laneName)
@@ -74,17 +87,11 @@ struct WorkSessionDestinationView: View {
 
   var body: some View {
     sessionDestinationRoot
-      .navigationTitle(sessionDestinationNavigationTitle)
-      .navigationBarTitleDisplayMode(.inline)
-      .toolbar(.hidden, for: .tabBar)
-      .toolbar {
-        ToolbarItem(placement: .topBarLeading) {
-          ADEConnectionDot()
-        }
-        ToolbarItem(placement: .topBarTrailing) {
-          sessionHeaderTrailingControls
-        }
-      }
+      .workSessionNavigationChrome(
+        mode: navigationChrome,
+        title: sessionDestinationNavigationTitle,
+        trailingControls: { sessionHeaderTrailingControls }
+      )
       .adeNavigationZoomTransition(id: sessionDestinationZoomTransitionId, in: transitionNamespace)
       .sheet(item: $fullscreenImage) { image in
         WorkFullscreenImageView(image: image)
@@ -137,7 +144,7 @@ struct WorkSessionDestinationView: View {
           errorMessage: $errorMessage,
           isLive: isLive,
           transitionNamespace: transitionNamespace,
-          onOpenLane: openSessionLane,
+          onOpenLane: showsLaneActions ? openSessionLane : nil,
           onSend: sendMessage,
           onInterrupt: interruptSession,
           onApproveRequest: approveRequest,
@@ -156,13 +163,14 @@ struct WorkSessionDestinationView: View {
           onEditSteer: editSteer,
           onSelectModel: selectModel,
           onSelectRuntimeMode: selectRuntimeMode,
-          onSelectEffort: selectReasoningEffort
+          onSelectEffort: selectReasoningEffort,
+          lanes: lanes
         )
       } else {
         WorkTerminalSessionView(
           session: session,
           transitionNamespace: transitionNamespace,
-          onOpenLane: openSessionLane
+          onOpenLane: showsLaneActions ? openSessionLane : nil
         )
         .environmentObject(syncService)
       }
@@ -191,6 +199,7 @@ struct WorkSessionDestinationView: View {
 
   @MainActor
   func syncLanePresence() async {
+    guard showsLaneActions else { return }
     guard let laneId = session?.laneId ?? initialSession?.laneId else { return }
     guard announcedLaneId != laneId else { return }
     if let announcedLaneId {
@@ -426,5 +435,45 @@ struct WorkSessionDestinationView: View {
       }
       try? await Task.sleep(nanoseconds: 1_700_000_000)
     }
+  }
+}
+
+private struct WorkSessionNavigationChromeModifier<TrailingControls: View>: ViewModifier {
+  let mode: WorkSessionNavigationChrome
+  let title: String
+  let trailingControls: () -> TrailingControls
+
+  @ViewBuilder
+  func body(content: Content) -> some View {
+    switch mode {
+    case .pushedDetail:
+      content
+        .navigationTitle(title)
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar(.hidden, for: .tabBar)
+        .toolbar {
+          ToolbarItem(placement: .topBarTrailing) {
+            trailingControls()
+          }
+        }
+    case .embedded:
+      content
+    }
+  }
+}
+
+private extension View {
+  func workSessionNavigationChrome<TrailingControls: View>(
+    mode: WorkSessionNavigationChrome,
+    title: String,
+    @ViewBuilder trailingControls: @escaping () -> TrailingControls
+  ) -> some View {
+    modifier(
+      WorkSessionNavigationChromeModifier(
+        mode: mode,
+        title: title,
+        trailingControls: trailingControls
+      )
+    )
   }
 }

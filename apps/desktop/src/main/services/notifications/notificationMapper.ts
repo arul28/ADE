@@ -359,6 +359,8 @@ export function mapPrEvent(args: {
           metadata: { prId: pr.id, prNumber: pr.githubPrNumber, laneId: pr.laneId, githubUrl: pr.githubUrl },
         },
       ];
+    default:
+      return [];
   }
 }
 
@@ -514,5 +516,7 @@ export function isAllowedByPrefs(
       return prefs.system.authRateLimit;
     case "SYSTEM_HOOK_FAILURE":
       return prefs.system.hookFailure;
+    default:
+      return false;
   }
 }

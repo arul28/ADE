@@ -6,15 +6,7 @@ icon: "bullseye"
 
 ## What is a Mission?
 
-A **Mission** is ADE's formal execution unit for complex, multi-step work that goes beyond what a single chat session can reliably handle. Where a chat is conversational and exploratory, a Mission is deliberate and audited: it proceeds through defined phases, requires your explicit approval before work begins, tracks every decision and tool call, and produces a full artifact record at the end.
-
-Key properties of every Mission:
-
-- **Phased execution** — Planning → Approval Gate → Execution → Validation, with defined entry and exit conditions at each boundary
-- **Multi-worker orchestration** — the mission spawns ephemeral workers that run in parallel, sequentially, or in waves depending on task complexity
-- **Full audit trail** — every tool call, model decision, file change, and worker message is recorded in the mission's History tab
-- **Cost and token tracking** — real-time per-worker and per-mission totals, with configurable budget caps
-- **Mission Pack** — a deterministic context snapshot regenerated at each phase boundary, enabling pause, resume, and replay
+A **Mission** is ADE's formal execution unit for complex, multi-step work. It proceeds through defined phases (Planning → Approval Gate → Execution → Validation), spawns ephemeral workers, records every tool call and decision, tracks cost in real time, and produces a full artifact record. A Mission Pack snapshot at each phase boundary enables pause, resume, and replay.
 
 <CardGroup cols={2}>
   <Card title="When to use a Mission" icon="target">

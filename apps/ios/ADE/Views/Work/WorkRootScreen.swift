@@ -45,6 +45,8 @@ struct WorkRootScreen: View {
   @State var navigationMutationPending = false
   /// Coalesces expensive per-lane `listChatSessions` refreshes when `localStateRevision` bumps during CRDT sync.
   @State var lastCoalescedChatSummaryRefresh = Date.distantPast
+  @State var lastWorkLocalProjectionReload = Date.distantPast
+  @State var lastWorkProjectionReloadRevision: Int?
   @AppStorage("ade.work.archivedSessionIds") var archivedSessionIdsStorage = ""
   @AppStorage("ade.work.sessionOrganization") var sessionOrganizationRaw = WorkSessionOrganization.byLane.rawValue
   @AppStorage("ade.work.collapsedSectionIds") var collapsedSectionIdsStorage = ""
@@ -197,6 +199,10 @@ struct WorkRootScreen: View {
     isTabActive && path.isEmpty
   }
 
+  var workProjectionReloadKey: Int? {
+    isWorkRootActive ? syncService.localStateRevision : nil
+  }
+
   /// Composite fingerprint that changes only when the Activity feed actually needs to rebuild.
   /// Built from the activity session ids, their streamed transcript counts, and a cheap buffer
   /// fingerprint so typical `localStateRevision` bumps do not trigger a rebuild.
@@ -338,9 +344,7 @@ struct WorkRootScreen: View {
       .navigationTitle("Work")
       .navigationBarTitleDisplayMode(.inline)
       .toolbar {
-        ToolbarItem(placement: .topBarLeading) {
-          ADEConnectionDot()
-        }
+        ADERootToolbarLeadingItems()
         ToolbarItem(placement: .topBarTrailing) {
           HStack(spacing: 8) {
             if !liveSessions.isEmpty || needsInputSessions.count > 0 {
@@ -369,9 +373,21 @@ struct WorkRootScreen: View {
         await refreshFromPullGesture()
       }
       .sensoryFeedback(.success, trigger: refreshFeedbackToken)
-      .task(id: "\(syncService.localStateRevision)-\(isWorkRootActive)") {
-        guard isWorkRootActive else { return }
+      .task(id: workProjectionReloadKey) {
+        guard let revision = workProjectionReloadKey else { return }
+        guard lastWorkProjectionReloadRevision != revision || sessions.isEmpty else { return }
+        let now = Date()
+        if !sessions.isEmpty {
+          let elapsed = now.timeIntervalSince(lastWorkLocalProjectionReload)
+          if elapsed < 0.35 {
+            try? await Task.sleep(for: .milliseconds(max(1, Int((0.35 - elapsed) * 1_000))))
+            guard !Task.isCancelled, workProjectionReloadKey == revision else { return }
+          }
+        }
+        lastWorkLocalProjectionReload = Date()
         await reloadFromPersistedProjection()
+        guard !Task.isCancelled, workProjectionReloadKey == revision else { return }
+        lastWorkProjectionReloadRevision = revision
       }
       .task(id: pollingKey) {
         await pollRunningChats()
@@ -382,11 +398,6 @@ struct WorkRootScreen: View {
           return
         }
         rebuildActivityFeed()
-      }
-      .task(id: isWorkRootActive) {
-        if isWorkRootActive {
-          await reload()
-        }
       }
       .navigationDestination(for: WorkSessionRoute.self) { route in
         let routeTransitionNamespace = route.openingPrompt == nil && selectedSessionTransitionId == route.sessionId
@@ -399,7 +410,9 @@ struct WorkRootScreen: View {
           initialChatSummary: chatSummaries[route.sessionId],
           initialTranscript: transcriptCache[route.sessionId],
           transitionNamespace: routeTransitionNamespace,
-          isLive: isLive
+          isLive: isLive,
+          navigationChrome: .pushedDetail,
+          lanes: lanes
         )
         .environmentObject(syncService)
       }

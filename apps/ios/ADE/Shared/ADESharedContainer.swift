@@ -66,4 +66,38 @@ public enum ADESharedContainer {
         defaults.set(data, forKey: workspaceSnapshotKey)
         return true
     }
+
+    /// One-line summary used by the lock-screen inline accessory and the
+    /// accessory-rectangular mono line. Picks the "most interesting" open PR
+    /// (CI failing > review requested > merge ready > first open) and pairs it
+    /// with the active agent count.
+    ///
+    /// Format: `"ADE · N agents · #NNN ✗"` / `"ADE · N agents"` / `"ADE · idle"`.
+    public static func inlineSummary(for snapshot: WorkspaceSnapshot? = nil) -> String {
+        let s = snapshot ?? readWorkspaceSnapshot() ?? .empty
+        let activeAgents = s.agents.filter { $0.status == "running" || $0.awaitingInput }.count
+        let openPrs = s.prs.filter { $0.state == "open" }
+        let focusedPr: PrSnapshot? = openPrs.first(where: { $0.checks == "failing" })
+            ?? openPrs.first(where: { $0.review == "changes_requested" || $0.review == "pending" })
+            ?? openPrs.first(where: { $0.mergeReady })
+            ?? openPrs.first
+
+        if activeAgents == 0 && focusedPr == nil {
+            return "ADE · idle"
+        }
+        var pieces: [String] = ["ADE"]
+        if activeAgents > 0 {
+            pieces.append("\(activeAgents) \(activeAgents == 1 ? "agent" : "agents")")
+        }
+        if let pr = focusedPr {
+            let mark: String
+            switch pr.checks {
+            case "failing": mark = "✗"
+            case "passing": mark = pr.mergeReady ? "✓" : "·"
+            default:        mark = "·"
+            }
+            pieces.append("#\(pr.number) \(mark)")
+        }
+        return pieces.joined(separator: " · ")
+    }
 }

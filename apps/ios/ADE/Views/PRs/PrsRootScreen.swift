@@ -22,6 +22,8 @@ struct PRsTabView: View {
   @State private var stackPresentation: PrStackPresentation?
   @State private var refreshFeedbackToken = 0
   @State private var lastPrsLocalProjectionReload = Date.distantPast
+  @State private var lastHandledPrsProjectionRevision: Int?
+  @State private var lastPrsLiveSnapshotAttempt = Date.distantPast
   @State private var selectedPrTransitionId: String?
   @State private var laneContextLaneId: String?
   @State private var rootActionTask: Task<Void, Never>?
@@ -89,7 +91,14 @@ struct PRsTabView: View {
   }
 
   private var filteredPrs: [PullRequestListItem] {
-    filterPullRequestListItems(prs, query: searchText, state: selectedStateFilter.wrappedValue)
+    let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    let status = selectedGitHubStatusFilter.wrappedValue
+    let scope = selectedGitHubScopeFilter.wrappedValue
+    return prs.filter { item in
+      matchesCachedPrStatus(item, status: status)
+        && matchesCachedPrScope(item, scope: scope)
+        && matchesCachedPrSearch(item, query: query)
+    }
   }
 
   private var allGitHubPrs: [GitHubPrListItem] {
@@ -211,9 +220,37 @@ struct PRsTabView: View {
     isLive && busyAction == nil
   }
 
+  private var prsProjectionReloadKey: Int? {
+    isActive ? syncService.localStateRevision : nil
+  }
+
+  private var prNavigationRequestKey: String? {
+    guard isActive else { return nil }
+    return syncService.requestedPrNavigation?.id
+  }
+
+  private var syncEyebrow: String {
+    if isLoadingSkeleton {
+      return "HYDRATING…"
+    }
+    if !isLive {
+      return "CACHED"
+    }
+    if let syncedAt = githubSnapshot?.syncedAt, !syncedAt.isEmpty {
+      return "UP TO DATE · \(prRelativeTime(syncedAt).uppercased())"
+    }
+    return "UP TO DATE"
+  }
+
+  private var linkedPrCount: Int {
+    allGitHubPrs.filter { $0.linkedPrId != nil || $0.linkedLaneId != nil || $0.adeKind != nil }.count
+  }
+
   var body: some View {
     NavigationStack(path: $path) {
       List {
+        compactStatusHeader
+
         if let notice = laneContextNotice {
           notice.prListRow()
         }
@@ -296,9 +333,7 @@ struct PRsTabView: View {
       .navigationBarTitleDisplayMode(.inline)
       .searchable(text: $searchText, prompt: selectedRootSurface.wrappedValue == .github ? "Search PRs, branches, authors" : "Search workflow cards")
       .toolbar {
-        ToolbarItem(placement: .topBarLeading) {
-          ADEConnectionDot()
-        }
+        ADERootToolbarLeadingItems()
         ToolbarItemGroup(placement: .topBarTrailing) {
           Button {
             Task { await reload(refreshRemote: true) }
@@ -318,16 +353,25 @@ struct PRsTabView: View {
         }
       }
       .sensoryFeedback(.success, trigger: refreshFeedbackToken)
-      .task(id: isActive) {
-        guard isActive else { return }
-        await reload()
-      }
-      .task(id: "\(syncService.localStateRevision)-\(isActive)") {
-        guard isActive else { return }
+      .task(id: prsProjectionReloadKey) {
+        guard let revision = prsProjectionReloadKey else { return }
+        guard lastHandledPrsProjectionRevision != revision || prs.isEmpty else { return }
         let now = Date()
-        guard now.timeIntervalSince(lastPrsLocalProjectionReload) >= 0.35 else { return }
-        lastPrsLocalProjectionReload = now
+        if !prs.isEmpty || githubSnapshot != nil || mobileSnapshot != nil {
+          let elapsed = now.timeIntervalSince(lastPrsLocalProjectionReload)
+          if elapsed < 0.35 {
+            try? await Task.sleep(for: .milliseconds(max(1, Int((0.35 - elapsed) * 1_000))))
+            guard !Task.isCancelled, prsProjectionReloadKey == revision else { return }
+          }
+        }
+        lastPrsLocalProjectionReload = Date()
         await reload()
+        guard !Task.isCancelled, prsProjectionReloadKey == revision else { return }
+        lastHandledPrsProjectionRevision = revision
+      }
+      .task(id: prNavigationRequestKey) {
+        guard prNavigationRequestKey != nil else { return }
+        await handleRequestedPrNavigation()
       }
       .refreshable {
         await refreshFromPullGesture()
@@ -335,16 +379,6 @@ struct PRsTabView: View {
       .onDisappear {
         rootActionTask?.cancel()
         rootActionTask = nil
-      }
-      .onChange(of: syncService.requestedPrNavigation?.id) { _, requestId in
-        guard requestId != nil, let prId = syncService.requestedPrNavigation?.prId else { return }
-        rootSurfaceRawValue = PrRootSurface.github.rawValue
-        stateFilterRawValue = PrListStateFilter.all.rawValue
-        selectedPrTransitionId = prId
-        laneContextLaneId = syncService.requestedPrNavigation?.laneId
-        path = NavigationPath()
-        path.append(prId)
-        syncService.requestedPrNavigation = nil
       }
       .navigationDestination(for: String.self) { prId in
         PrDetailView(
@@ -357,7 +391,7 @@ struct PRsTabView: View {
         CreatePrWizardView(
           lanes: lanes,
           createCapabilities: mobileSnapshot?.createCapabilities
-        ) { laneId, title, body, draft, baseBranch, labels, reviewers in
+        ) { laneId, title, body, draft, baseBranch, labels, reviewers, strategy in
           runPrRootAction("Creating pull request") {
             try await syncService.createPullRequest(
               laneId: laneId,
@@ -366,7 +400,8 @@ struct PRsTabView: View {
               draft: draft,
               baseBranch: baseBranch,
               labels: labels,
-              reviewers: reviewers
+              reviewers: reviewers,
+              strategy: strategy
             )
           } onSuccess: {
             createPresented = false
@@ -401,6 +436,33 @@ struct PRsTabView: View {
         }
       }
     }
+  }
+
+  @ViewBuilder
+  private var compactStatusHeader: some View {
+    HStack(alignment: .firstTextBaseline, spacing: 10) {
+      Text(syncEyebrow)
+        .font(.caption.weight(.semibold))
+        .textCase(.uppercase)
+        .foregroundStyle(ADEColor.tintPRs)
+        .lineLimit(1)
+        .minimumScaleFactor(0.85)
+        .accessibilityLabel("Pull request sync status: \(syncEyebrow)")
+
+      Spacer(minLength: 0)
+
+      if linkedPrCount > 0 {
+        Text("\(linkedPrCount) linked")
+          .font(.caption)
+          .foregroundStyle(ADEColor.textMuted)
+          .lineLimit(1)
+      }
+    }
+    .padding(.horizontal, 4)
+    .padding(.vertical, 2)
+    .listRowBackground(Color.clear)
+    .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0))
+    .listRowSeparator(.hidden)
   }
 
   @ViewBuilder
@@ -460,30 +522,54 @@ struct PRsTabView: View {
       if !repoItems.isEmpty {
         Section(githubSnapshot.repo.map { "\($0.owner)/\($0.name)" } ?? "Repository PRs") {
           ForEach(repoItems) { item in
-            GitHubPullRequestRow(item: item) { prId in
-              path.append(prId)
-            } onOpenGitHub: {
-              openGitHub(urlString: item.githubUrl)
-            } onLinkToLane: {
-              laneLinkRequest = PrGitHubLaneLinkRequest(item: item)
-            }
-            .prListRow()
+            githubRowNavigation(for: item)
+              .prListRow()
           }
         }
       }
       if !externalItems.isEmpty {
         Section("External PRs") {
           ForEach(externalItems) { item in
-            GitHubPullRequestRow(item: item) { prId in
-              path.append(prId)
-            } onOpenGitHub: {
-              openGitHub(urlString: item.githubUrl)
-            } onLinkToLane: {
-              laneLinkRequest = PrGitHubLaneLinkRequest(item: item)
-            }
-            .prListRow()
+            githubRowNavigation(for: item)
+              .prListRow()
           }
         }
+      }
+    }
+  }
+
+  @ViewBuilder
+  private func githubRowNavigation(for item: GitHubPrListItem) -> some View {
+    if let prId = item.linkedPrId {
+      Button {
+        path.append(prId)
+      } label: {
+        PrRowCard(
+          item: item,
+          transitionNamespace: ADEMotion.allowsMatchedGeometry(reduceMotion: reduceMotion) ? prTransitionNamespace : nil,
+          isSelectedTransitionSource: selectedPrTransitionId == prId
+        )
+      }
+      .buttonStyle(.plain)
+      .simultaneousGesture(TapGesture().onEnded { selectedPrTransitionId = prId })
+      .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+        Button("Open in GitHub") { openGitHub(urlString: item.githubUrl) }
+          .tint(ADEColor.accent)
+      }
+    } else {
+      Button {
+        laneLinkRequest = PrGitHubLaneLinkRequest(item: item)
+      } label: {
+        PrRowCard(item: item)
+      }
+      .buttonStyle(.plain)
+      .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+        Button("Link lane") {
+          laneLinkRequest = PrGitHubLaneLinkRequest(item: item)
+        }
+        .tint(ADEColor.warning)
+        Button("Open in GitHub") { openGitHub(urlString: item.githubUrl) }
+          .tint(ADEColor.accent)
       }
     }
   }
@@ -604,10 +690,16 @@ struct PRsTabView: View {
   private func rowSwipeActions(for pr: PullRequestListItem) -> some View {
     let caps = mobileSnapshot?.capabilities[pr.id]
 
-    Button("Open") {
+    Button("Open in GitHub") {
       openGitHub(urlString: pr.githubUrl)
     }
     .tint(ADEColor.accent)
+
+    Button("Copy URL") {
+      UIPasteboard.general.string = pr.githubUrl
+      ADEHaptics.success()
+    }
+    .tint(ADEColor.textSecondary)
 
     if caps?.canClose ?? (pr.state == "open") {
       Button("Close", role: .destructive) {
@@ -679,6 +771,47 @@ struct PRsTabView: View {
     }
   }
 
+  private func matchesCachedPrStatus(_ item: PullRequestListItem, status: PrGitHubStatusFilter) -> Bool {
+    switch status {
+    case .all:
+      return true
+    case .open:
+      return item.state == "open" || item.state == "draft"
+    case .merged:
+      return item.state == "merged"
+    case .closed:
+      return item.state == "closed"
+    }
+  }
+
+  private func matchesCachedPrScope(_ item: PullRequestListItem, scope: PrGitHubScopeFilter) -> Bool {
+    switch scope {
+    case .all, .ade:
+      return true
+    case .external:
+      return false
+    }
+  }
+
+  private func matchesCachedPrSearch(_ item: PullRequestListItem, query: String) -> Bool {
+    guard !query.isEmpty else { return true }
+    let haystack = [
+      item.title,
+      item.headBranch,
+      item.baseBranch,
+      item.laneName,
+      item.repoOwner,
+      item.repoName,
+      item.adeKind,
+      item.workflowDisplayState,
+      "#\(item.githubPrNumber)",
+      "\(item.githubPrNumber)",
+    ]
+    .compactMap { $0?.lowercased() }
+    .joined(separator: " ")
+    return haystack.contains(query)
+  }
+
   private func matchesGitHubSearch(_ item: GitHubPrListItem, query: String) -> Bool {
     guard !query.isEmpty else { return true }
     let haystack = [
@@ -737,37 +870,94 @@ struct PRsTabView: View {
 
       async let prsTask = syncService.fetchPullRequestListItems()
       async let lanesTask = syncService.fetchLanes()
-      let mobileSnapshotTask = isLive
-        ? Task { try? await syncService.fetchPrMobileSnapshot() }
-        : nil
-      let githubSnapshotTask = isLive
-        ? Task { try? await syncService.fetchGitHubPullRequestSnapshot(force: refreshRemote) }
-        : nil
 
-      prs = try await prsTask
-      lanes = try await lanesTask
-      githubSnapshot = await githubSnapshotTask?.value
+      let loadedPrs = try await prsTask
+      let loadedLanes = try await lanesTask
+      if prs != loadedPrs {
+        prs = loadedPrs
+      }
+      if lanes != loadedLanes {
+        lanes = loadedLanes
+      }
 
-      if let mobileSnapshot = await mobileSnapshotTask?.value {
-        self.mobileSnapshot = mobileSnapshot
-        laneSnapshots = []
-        integrationProposals = []
-        queueStates = []
-      } else {
+      let now = Date()
+      let missingLiveSnapshot = mobileSnapshot == nil || githubSnapshot == nil
+      let shouldAttemptLiveSnapshots = isLive
+        && (refreshRemote || missingLiveSnapshot || now.timeIntervalSince(lastPrsLiveSnapshotAttempt) >= 10)
+
+      var nextMobileSnapshot: PrMobileSnapshot?
+      if shouldAttemptLiveSnapshots {
+        lastPrsLiveSnapshotAttempt = now
+        let mobileSnapshotTask = Task { try? await syncService.fetchPrMobileSnapshot() }
+        let githubSnapshotTask = Task { try? await syncService.fetchGitHubPullRequestSnapshot(force: refreshRemote) }
+        nextMobileSnapshot = await mobileSnapshotTask.value
+        if let nextGithubSnapshot = await githubSnapshotTask.value, githubSnapshot != nextGithubSnapshot {
+          githubSnapshot = nextGithubSnapshot
+        }
+      }
+
+      if !isLive {
+        if mobileSnapshot != nil {
+          mobileSnapshot = nil
+        }
+        if githubSnapshot != nil {
+          githubSnapshot = nil
+        }
+      }
+      if let nextMobileSnapshot {
+        if mobileSnapshot != nextMobileSnapshot {
+          mobileSnapshot = nextMobileSnapshot
+        }
+        if !laneSnapshots.isEmpty {
+          laneSnapshots = []
+        }
+        if !integrationProposals.isEmpty {
+          integrationProposals = []
+        }
+        if !queueStates.isEmpty {
+          queueStates = []
+        }
+      } else if mobileSnapshot == nil {
         async let laneSnapshotsTask = syncService.fetchLaneListSnapshots()
         async let integrationTask = syncService.fetchIntegrationProposals()
         async let queueTask = syncService.fetchQueueStates()
 
-        laneSnapshots = try await laneSnapshotsTask
-        integrationProposals = try await integrationTask
-        queueStates = try await queueTask
-        mobileSnapshot = nil
+        let loadedLaneSnapshots = try await laneSnapshotsTask
+        let loadedIntegrationProposals = try await integrationTask
+        let loadedQueueStates = try await queueTask
+        if laneSnapshots != loadedLaneSnapshots {
+          laneSnapshots = loadedLaneSnapshots
+        }
+        if integrationProposals != loadedIntegrationProposals {
+          integrationProposals = loadedIntegrationProposals
+        }
+        if queueStates != loadedQueueStates {
+          queueStates = loadedQueueStates
+        }
       }
 
-      errorMessage = refreshError?.localizedDescription
+      let message = refreshError?.localizedDescription
+      if errorMessage != message {
+        errorMessage = message
+      }
     } catch {
-      errorMessage = error.localizedDescription
+      let message = error.localizedDescription
+      if errorMessage != message {
+        errorMessage = message
+      }
     }
+  }
+
+  @MainActor
+  private func handleRequestedPrNavigation() async {
+    guard let request = syncService.requestedPrNavigation else { return }
+    rootSurfaceRawValue = PrRootSurface.github.rawValue
+    stateFilterRawValue = PrListStateFilter.all.rawValue
+    selectedPrTransitionId = request.prId
+    laneContextLaneId = request.laneId
+    path = NavigationPath()
+    path.append(request.prId)
+    syncService.requestedPrNavigation = nil
   }
 
   @MainActor
@@ -950,134 +1140,6 @@ struct PRsTabView: View {
   }
 }
 
-private struct PrGitHubFiltersCard: View {
-  let repo: GitHubRepoRef?
-  let viewerLogin: String?
-  let syncedAt: String?
-  @Binding var statusFilter: PrGitHubStatusFilter
-  @Binding var scopeFilter: PrGitHubScopeFilter
-  @Binding var sortOption: PrGitHubSortOption
-  let counts: PrGitHubFilterCounts
-  let visibleCount: Int
-  let totalCount: Int
-  let isLive: Bool
-  let onRefresh: () -> Void
-
-  var body: some View {
-    VStack(alignment: .leading, spacing: 14) {
-      HStack(alignment: .top, spacing: 12) {
-        VStack(alignment: .leading, spacing: 4) {
-          Text(repo.map { "\($0.owner)/\($0.name)" } ?? "GitHub pull requests")
-            .font(.headline)
-            .foregroundStyle(ADEColor.textPrimary)
-          Text(subtitle)
-            .font(.caption)
-            .foregroundStyle(ADEColor.textSecondary)
-        }
-        Spacer(minLength: 0)
-        Button(action: onRefresh) {
-          Image(systemName: "arrow.clockwise")
-        }
-        .buttonStyle(.glass)
-        .accessibilityLabel("Refresh GitHub pull requests")
-      }
-
-      HStack(spacing: 8) {
-        ADEStatusPill(text: isLive ? "LIVE" : "CACHED", tint: isLive ? ADEColor.success : ADEColor.warning)
-        ADEStatusPill(text: "\(visibleCount)/\(totalCount)", tint: ADEColor.accent)
-        if let viewerLogin, !viewerLogin.isEmpty {
-          ADEStatusPill(text: "@\(viewerLogin)", tint: ADEColor.textSecondary)
-        }
-        Spacer(minLength: 0)
-      }
-
-      VStack(alignment: .leading, spacing: 8) {
-        Text("Status")
-          .font(.caption.weight(.semibold))
-          .foregroundStyle(ADEColor.textSecondary)
-        PrGitHubFilterChipRow(selection: $statusFilter) { filter in
-          switch filter {
-          case .open: return counts.open
-          case .merged: return counts.merged
-          case .closed: return counts.closed
-          case .all: return counts.all
-          }
-        }
-      }
-
-      VStack(alignment: .leading, spacing: 8) {
-        Text("Scope")
-          .font(.caption.weight(.semibold))
-          .foregroundStyle(ADEColor.textSecondary)
-        PrGitHubFilterChipRow(selection: $scopeFilter) { filter in
-          switch filter {
-          case .all: return counts.all
-          case .ade: return counts.ade
-          case .external: return counts.external
-          }
-        }
-      }
-
-      Picker("Sort", selection: $sortOption) {
-        ForEach(PrGitHubSortOption.allCases) { option in
-          Text(option.title).tag(option)
-        }
-      }
-      .pickerStyle(.segmented)
-    }
-    .adeListCard()
-  }
-
-  private var subtitle: String {
-    let synced = syncedAt.map { "Synced \(prRelativeTime($0))" } ?? "No GitHub snapshot yet"
-    if let defaultBranch = repo?.defaultBranch, !defaultBranch.isEmpty {
-      return "\(synced) · default \(defaultBranch)"
-    }
-    return synced
-  }
-}
-
-private struct PrGitHubFilterChipRow<Selection: CaseIterable & Identifiable & Hashable>: View where Selection.AllCases: RandomAccessCollection, Selection: RawRepresentable, Selection.RawValue == String {
-  @Binding var selection: Selection
-  let count: (Selection) -> Int
-
-  var body: some View {
-    ScrollView(.horizontal, showsIndicators: false) {
-      HStack(spacing: 8) {
-        ForEach(Array(Selection.allCases), id: \.id) { item in
-          Button {
-            selection = item
-          } label: {
-            HStack(spacing: 6) {
-              Text(title(for: item))
-              Text("\(count(item))")
-                .font(.caption2.weight(.bold))
-                .padding(.horizontal, 6)
-                .padding(.vertical, 2)
-                .background(Capsule().fill(selection == item ? ADEColor.accent.opacity(0.22) : ADEColor.recessedBackground.opacity(0.85)))
-            }
-            .font(.caption.weight(.semibold))
-          }
-          .buttonStyle(.glass)
-          .tint(selection == item ? ADEColor.accent : ADEColor.textSecondary)
-        }
-      }
-    }
-  }
-
-  private func title(for item: Selection) -> String {
-    switch item.rawValue {
-    case "open": return "Open"
-    case "merged": return "Merged"
-    case "closed": return "Closed"
-    case "all": return "All"
-    case "ade": return "ADE"
-    case "external": return "External"
-    default: return titleCase(item.rawValue)
-    }
-  }
-}
-
 private struct PrLaneLinkSheet: View {
   @Environment(\.dismiss) private var dismiss
   let item: GitHubPrListItem
@@ -1088,7 +1150,9 @@ private struct PrLaneLinkSheet: View {
   @State private var selectedLaneId = ""
 
   private var availableLanes: [LaneSummary] {
-    lanes.sorted { lhs, rhs in lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending }
+    lanes
+      .filter { $0.archivedAt == nil && $0.laneType != "primary" }
+      .sorted { lhs, rhs in lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending }
   }
 
   var body: some View {
@@ -1121,7 +1185,7 @@ private struct PrLaneLinkSheet: View {
 
         Section("Lane") {
           if availableLanes.isEmpty {
-            Text("No lanes are available to link.")
+            Text("No eligible lanes are available to link.")
               .font(.subheadline)
               .foregroundStyle(ADEColor.textSecondary)
           } else {
@@ -1158,91 +1222,5 @@ private struct PrLaneLinkSheet: View {
         selectedLaneId = item.linkedLaneId ?? availableLanes.first?.id ?? ""
       }
     }
-  }
-}
-
-private struct GitHubPullRequestRow: View {
-  let item: GitHubPrListItem
-  let onOpenLinkedPr: (String) -> Void
-  let onOpenGitHub: () -> Void
-  let onLinkToLane: () -> Void
-
-  var body: some View {
-    VStack(alignment: .leading, spacing: 12) {
-      HStack(alignment: .top, spacing: 10) {
-        VStack(alignment: .leading, spacing: 5) {
-          Text(item.title)
-            .font(.headline)
-            .foregroundStyle(ADEColor.textPrimary)
-            .lineLimit(2)
-          Text("#\(item.githubPrNumber) · \(item.repoOwner)/\(item.repoName) · updated \(prRelativeTime(item.updatedAt))")
-            .font(.system(.caption, design: .monospaced))
-            .foregroundStyle(ADEColor.textSecondary)
-        }
-        Spacer(minLength: 8)
-        ADEStatusPill(text: item.isDraft ? "DRAFT" : item.state.uppercased(), tint: prStateTint(item.isDraft ? "draft" : item.state))
-      }
-
-      HStack(spacing: 8) {
-        if let author = item.author, !author.isEmpty {
-          ADEStatusPill(text: item.isBot ? "\(author) BOT" : author, tint: item.isBot ? ADEColor.warning : ADEColor.textSecondary)
-        }
-        if let laneName = item.linkedLaneName, !laneName.isEmpty {
-          ADEStatusPill(text: laneName.uppercased(), tint: ADEColor.accent)
-        } else {
-          ADEStatusPill(text: "UNLINKED", tint: ADEColor.warning)
-        }
-        if item.scope == "external" {
-          ADEStatusPill(text: "EXTERNAL", tint: ADEColor.tintFiles)
-        }
-        if let adeKind = prAdeKindLabel(item.adeKind) {
-          ADEStatusPill(text: adeKind, tint: ADEColor.tintPRs)
-        }
-      }
-
-      HStack(spacing: 8) {
-        if let head = item.headBranch, let base = item.baseBranch {
-          Label("\(head) → \(base)", systemImage: "arrow.triangle.branch")
-            .lineLimit(1)
-        }
-        if item.commentCount > 0 {
-          Label("\(item.commentCount)", systemImage: "bubble.left.and.bubble.right")
-        }
-        if let workflowDisplayState = item.workflowDisplayState, !workflowDisplayState.isEmpty {
-          Label(titleCase(workflowDisplayState), systemImage: "point.3.connected.trianglepath.dotted")
-            .lineLimit(1)
-        }
-        Spacer(minLength: 0)
-      }
-      .font(.caption.weight(.semibold))
-      .foregroundStyle(ADEColor.textSecondary)
-
-      if !item.labels.isEmpty {
-        PrChipWrap(users: item.labels.prefix(6).map(\.name), tint: ADEColor.tintPRs)
-      }
-
-      HStack(spacing: 10) {
-        if let linkedPrId = item.linkedPrId {
-          Button("Open detail") {
-            onOpenLinkedPr(linkedPrId)
-          }
-          .buttonStyle(.glassProminent)
-          .tint(ADEColor.accent)
-        } else {
-          Button("Link lane") {
-            onLinkToLane()
-          }
-          .buttonStyle(.glassProminent)
-          .tint(ADEColor.warning)
-        }
-
-        Button("Open GitHub") {
-          onOpenGitHub()
-        }
-        .buttonStyle(.glass)
-      }
-      .font(.caption.weight(.semibold))
-    }
-    .adeListCard()
   }
 }

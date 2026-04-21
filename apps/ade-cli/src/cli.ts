@@ -98,6 +98,103 @@ type ReadinessCheck = {
 
 const VERSION = "0.0.0";
 const PROTOCOL_VERSION = "2025-06-18";
+const SOURCE_FALLBACK_ENV = "ADE_CLI_SOURCE_FALLBACK_ACTIVE";
+const CLI_ENTRY_PATH = typeof process.argv[1] === "string" ? path.resolve(process.argv[1]) : "";
+const CLI_PACKAGE_ROOT = resolveCliPackageRoot(CLI_ENTRY_PATH);
+const CLI_DIST_PATH = path.join(CLI_PACKAGE_ROOT, "dist", "cli.cjs");
+
+function resolveCliPackageRoot(entryPath: string): string {
+  const seen = new Set<string>();
+  const starts = [
+    entryPath ? path.dirname(entryPath) : null,
+    process.cwd(),
+  ];
+  for (const start of starts) {
+    if (!start) continue;
+    let cursor = path.resolve(start);
+    while (!seen.has(cursor)) {
+      seen.add(cursor);
+      const packageJson = path.join(cursor, "package.json");
+      const srcCli = path.join(cursor, "src", "cli.ts");
+      if (fs.existsSync(packageJson) && fs.existsSync(srcCli)) {
+        return cursor;
+      }
+      const parent = path.dirname(cursor);
+      if (parent === cursor) break;
+      cursor = parent;
+    }
+  }
+  return path.resolve(process.cwd(), "apps", "ade-cli");
+}
+
+function isSourceCliEntryPath(modulePath: string): boolean {
+  return /[/\\]src[/\\]cli\.ts$/i.test(modulePath);
+}
+
+function isSourceRuntimeInteropError(value: unknown): boolean {
+  const message = typeof value === "string"
+    ? value
+    : value instanceof Error
+      ? value.message
+      : "";
+  if (!message.length) return false;
+  const lower = message.toLowerCase();
+  return lower.includes("__filename is not defined in es module scope")
+    || lower.includes("__filename is not defined")
+    || lower.includes("__dirname is not defined");
+}
+
+function formatSpawnFailure(result: ReturnType<typeof spawnSync>, fallbackCommand: string): string {
+  if (result.error) {
+    return result.error.message;
+  }
+  const status = typeof result.status === "number" ? result.status : "unknown";
+  const stderr = typeof result.stderr === "string" ? result.stderr.trim() : "";
+  const stdout = typeof result.stdout === "string" ? result.stdout.trim() : "";
+  const detail = stderr || stdout || "No output captured.";
+  return `${fallbackCommand} exited with status ${status}: ${detail}`;
+}
+
+function maybeRunBuiltCliFallback(error: unknown, argv: string[]): { stdout: string; stderr: string; exitCode: number } | null {
+  if (!(error instanceof CliExecutionError)) return null;
+  if (process.env[SOURCE_FALLBACK_ENV] === "1") return null;
+  if (!isSourceCliEntryPath(CLI_ENTRY_PATH)) return null;
+  if (!isSourceRuntimeInteropError(asString(error.details.cause) ?? error.message)) return null;
+
+  if (!fs.existsSync(CLI_DIST_PATH)) {
+    const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
+    const buildResult = spawnSync(npmCommand, ["run", "build", "--silent"], {
+      cwd: CLI_PACKAGE_ROOT,
+      env: process.env,
+      encoding: "utf8",
+    });
+    if (buildResult.error || buildResult.status !== 0 || !fs.existsSync(CLI_DIST_PATH)) {
+      error.details.nextAction = "Run `npm --prefix apps/ade-cli run build` and retry the command.";
+      error.details.fallback = formatSpawnFailure(buildResult, "npm run build --silent");
+      return null;
+    }
+  }
+
+  const rerun = spawnSync(process.execPath, [CLI_DIST_PATH, ...argv], {
+    cwd: process.cwd(),
+    env: {
+      ...process.env,
+      [SOURCE_FALLBACK_ENV]: "1",
+    },
+    encoding: "utf8",
+  });
+  if (rerun.error) {
+    error.details.nextAction = "Run `node apps/ade-cli/dist/cli.cjs ...` directly to inspect the runtime failure.";
+    error.details.fallback = rerun.error.message;
+    return null;
+  }
+
+  return {
+    stdout: typeof rerun.stdout === "string" ? rerun.stdout : "",
+    stderr: typeof rerun.stderr === "string" ? rerun.stderr : "",
+    exitCode: rerun.status ?? 1,
+  };
+}
 
 const ADE_BANNER = String.raw`
      _    ____  _____
@@ -2536,15 +2633,19 @@ async function executePlan(plan: CliPlan & { kind: "execute" }, options: GlobalO
     const roots = resolveRoots(options);
     const socketPath = path.join(roots.projectRoot, ".ade", "ade.sock");
     const requestedMode = options.requireSocket ? "desktop-socket" : options.headless ? "headless" : "auto";
+    const cause = error instanceof Error ? error.message : String(error);
+    const sourceRuntimeInterop = isSourceRuntimeInteropError(cause);
     throw new CliExecutionError(`Failed to initialize ADE CLI connection for ${plan.label}.`, {
-      cause: error instanceof Error ? error.message : String(error),
+      cause,
       requestedMode,
       projectRoot: roots.projectRoot,
       workspaceRoot: roots.workspaceRoot,
       socketPath,
       nextAction: options.requireSocket
         ? "Start ADE desktop for this project or remove --socket to allow headless mode."
-        : "Verify --project-root points at an ADE project and run ade doctor --json.",
+        : sourceRuntimeInterop
+          ? "Run `npm --prefix apps/ade-cli run build` and retry, or use `npm --prefix apps/ade-cli run cli:dev -- ...`."
+          : "Verify --project-root points at an ADE project and run ade doctor --json.",
     });
   }
   try {
@@ -2624,6 +2725,13 @@ async function main(): Promise<void> {
     process.stdout.write(result.output);
     process.exitCode = result.exitCode;
   } catch (error) {
+    const fallback = maybeRunBuiltCliFallback(error, process.argv.slice(2));
+    if (fallback) {
+      if (fallback.stderr.length) process.stderr.write(fallback.stderr);
+      if (fallback.stdout.length) process.stdout.write(fallback.stdout);
+      process.exitCode = fallback.exitCode;
+      return;
+    }
     if (error instanceof CliUsageError) {
       process.stderr.write(`ade: ${error.message}\nRun 'ade help'.\n`);
       process.exitCode = 2;

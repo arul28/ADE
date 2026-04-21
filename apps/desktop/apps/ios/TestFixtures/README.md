@@ -11,5 +11,7 @@ Sequence that exercises the full surface:
   xcrun simctl push booted com.ade.ios chat-awaiting-input.json
   xcrun simctl push booted com.ade.ios pr-ci-failing.json
   xcrun simctl push booted com.ade.ios chat-failed.json
+  xcrun simctl push booted com.ade.ios pr-review-requested.json
+  xcrun simctl push booted com.ade.ios pr-merge-ready.json
 
 Real device testing requires a configured APNs .p8 in ADE desktop → Settings → Mobile Push.

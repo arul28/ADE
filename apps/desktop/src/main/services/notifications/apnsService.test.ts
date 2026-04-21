@@ -173,26 +173,32 @@ describe("ApnsService", () => {
     expect(requests[0].host).toBe("api.push.apple.com");
   });
 
+  it("uses per-envelope env when it differs from configured default", async () => {
+    const { service, requests } = build();
+    await service.send({
+      deviceToken: "t",
+      env: "production",
+      pushType: "alert",
+      topic: "com.ade.ios",
+      priority: 10,
+      payload: {},
+    });
+    expect(requests[0].host).toBe("api.push.apple.com");
+  });
+
   it("forces JWT re-mint after ExpiredProviderToken", async () => {
-    const { transport, requests } = createTransport();
+    const { transport, requests, queue } = createTransport();
     const service = new ApnsService({ logger: createLogger(), transport, now: () => 1 });
     service.configure({ ...configureArgs, keyP8Pem: makeP8Pem() });
     await service.send({ deviceToken: "t1", pushType: "alert", topic: "com.ade.ios", priority: 10, payload: {} });
     const jwtA = String(requests[0].headers.authorization);
 
-    // Simulate APNs replying that our current JWT is too old.
-    const queued = (transport as any);
-    // We don't have direct access to queue here; use private re-configure to flip.
-    // The second call below should still produce the SAME jwt because same `now`.
-    await service.send({ deviceToken: "t2", pushType: "alert", topic: "com.ade.ios", priority: 10, payload: {} });
-    const jwtB = String(requests[1].headers.authorization);
-    expect(jwtB).toBe(jwtA);
-    // Direct re-config invalidates the cached JWT.
-    service.configure({ ...configureArgs, keyP8Pem: makeP8Pem() });
-    await service.send({ deviceToken: "t3", pushType: "alert", topic: "com.ade.ios", priority: 10, payload: {} });
-    // New key material → new signature even if the iat second is identical.
+    queue.push({ status: 403, body: JSON.stringify({ reason: "ExpiredProviderToken" }) });
+    const result = await service.send({ deviceToken: "t2", pushType: "alert", topic: "com.ade.ios", priority: 10, payload: {} });
+
+    expect(result.ok).toBe(true);
+    expect(requests).toHaveLength(3);
+    expect(String(requests[1].headers.authorization)).toBe(jwtA);
     expect(String(requests[2].headers.authorization)).not.toBe(jwtA);
-    // Silence unused-var lint for the transport handle.
-    expect(queued).toBeDefined();
   });
 });

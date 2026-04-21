@@ -23,6 +23,7 @@ const APNS_HOST_SANDBOX = "api.sandbox.push.apple.com";
 const APNS_PORT = 443;
 /** APNs JWTs must be refreshed ~every hour (Apple enforces ≤60 min). */
 const APNS_JWT_MAX_AGE_MS = 50 * 60 * 1000;
+const APNS_REQUEST_TIMEOUT_MS = 30_000;
 
 export type ApnsEnvironment = "sandbox" | "production";
 
@@ -32,6 +33,8 @@ export type ApnsPriority = 5 | 10;
 
 export type ApnsEnvelope = {
   deviceToken: string;
+  /** Per-device routing environment; falls back to service config when absent. */
+  env?: ApnsEnvironment;
   pushType: ApnsPushType;
   /** `bundleId`, or `bundleId + .push-type.liveactivity` for Live Activities. */
   topic: string;
@@ -123,15 +126,32 @@ export class Http2ApnsTransport implements ApnsTransport {
       let status = 0;
       let responseHeaders: Record<string, string | string[] | undefined> = {};
       const chunks: string[] = [];
+      let settled = false;
+      const resolveOnce = (value: { status: number; headers: Record<string, string | string[] | undefined>; body: string }) => {
+        if (settled) return;
+        settled = true;
+        req.setTimeout(0);
+        resolve(value);
+      };
+      const rejectOnce = (error: Error) => {
+        if (settled) return;
+        settled = true;
+        req.setTimeout(0);
+        reject(error);
+      };
+      req.setTimeout(APNS_REQUEST_TIMEOUT_MS, () => {
+        rejectOnce(new Error(`APNs request timed out after ${APNS_REQUEST_TIMEOUT_MS}ms`));
+        req.close(http2.constants.NGHTTP2_CANCEL);
+      });
       req.on("response", (headers) => {
         status = Number(headers[":status"]) || 0;
         responseHeaders = headers as Record<string, string | string[] | undefined>;
       });
       req.on("data", (chunk: string) => chunks.push(chunk));
       req.on("end", () => {
-        resolve({ status, headers: responseHeaders, body: chunks.join("") });
+        resolveOnce({ status, headers: responseHeaders, body: chunks.join("") });
       });
-      req.on("error", (error) => reject(error));
+      req.on("error", (error) => rejectOnce(error));
       req.end(args.body);
     });
   }
@@ -278,6 +298,12 @@ export class ApnsService extends EventEmitter {
     return this.config != null;
   }
 
+  async reset(): Promise<void> {
+    this.config = null;
+    this.jwt = null;
+    await this.transport.close().catch(() => {});
+  }
+
   onTokenInvalidated(listener: (event: ApnsTokenInvalidatedEvent) => void): () => void {
     this.on("tokenInvalidated", listener);
     return () => this.off("tokenInvalidated", listener);
@@ -288,32 +314,42 @@ export class ApnsService extends EventEmitter {
     if (!this.config) {
       throw new Error("ApnsService is not configured. Call configure() first.");
     }
-    const jwt = this.mintJwtIfStale();
-    const host = this.config.env === "production" ? APNS_HOST_PRODUCTION : APNS_HOST_SANDBOX;
-    const headers: Record<string, string | number> = {
-      authorization: `bearer ${jwt}`,
-      "apns-topic": envelope.topic,
-      "apns-push-type": envelope.pushType,
-      "apns-priority": envelope.priority,
-    };
-    if (envelope.collapseId) headers["apns-collapse-id"] = envelope.collapseId;
-    if (typeof envelope.expirationEpochSeconds === "number") {
-      headers["apns-expiration"] = envelope.expirationEpochSeconds;
-    }
+    const env = envelope.env ?? this.config.env;
+    const host = env === "production" ? APNS_HOST_PRODUCTION : APNS_HOST_SANDBOX;
     const body = Buffer.from(JSON.stringify(envelope.payload), "utf8");
-    let status = 0;
-    let rawBody = "";
-    let responseHeaders: Record<string, string | string[] | undefined> = {};
-    try {
-      const response = await this.transport.send({
+    const sendOnce = async (jwt: string) => {
+      const headers: Record<string, string | number> = {
+        authorization: `bearer ${jwt}`,
+        "apns-topic": envelope.topic,
+        "apns-push-type": envelope.pushType,
+        "apns-priority": envelope.priority,
+      };
+      if (envelope.collapseId) headers["apns-collapse-id"] = envelope.collapseId;
+      if (typeof envelope.expirationEpochSeconds === "number") {
+        headers["apns-expiration"] = envelope.expirationEpochSeconds;
+      }
+      return await this.transport.send({
         host,
         headers,
         path: `/3/device/${envelope.deviceToken}`,
         body,
       });
+    };
+    let status = 0;
+    let rawBody = "";
+    let responseHeaders: Record<string, string | string[] | undefined> = {};
+    try {
+      let response = await sendOnce(this.mintJwtIfStale());
       status = response.status;
       rawBody = response.body;
       responseHeaders = response.headers;
+      if (status !== 200 && parseApnsReason(rawBody) === "ExpiredProviderToken") {
+        this.jwt = null;
+        response = await sendOnce(this.mintJwtIfStale());
+        status = response.status;
+        rawBody = response.body;
+        responseHeaders = response.headers;
+      }
     } catch (error) {
       this.logger.warn("apns.transport_error", {
         error: error instanceof Error ? error.message : String(error),
@@ -340,7 +376,7 @@ export class ApnsService extends EventEmitter {
       } satisfies ApnsTokenInvalidatedEvent);
     }
     if (reason === "ExpiredProviderToken") {
-      // Force a re-mint on next send.
+      // The retry above still failed; force a re-mint on the next send too.
       this.jwt = null;
     }
     this.logger.warn("apns.push_rejected", {
@@ -354,9 +390,7 @@ export class ApnsService extends EventEmitter {
 
   /** Explicit teardown; called from main.ts on quit. */
   async dispose(): Promise<void> {
-    this.config = null;
-    this.jwt = null;
-    await this.transport.close().catch(() => {});
+    await this.reset();
     this.removeAllListeners();
   }
 

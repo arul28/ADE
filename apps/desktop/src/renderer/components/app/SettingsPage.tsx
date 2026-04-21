@@ -1,8 +1,9 @@
 import React, { useState, useCallback, useEffect } from "react";
 import { useSearchParams, useLocation } from "react-router-dom";
-import { Brain, GearSix, Lightning, Stack, Database, FolderSimple, Plus, X, Plugs, DesktopTower, Palette, DeviceMobile } from "@phosphor-icons/react";
+import { Brain, GearSix, GraduationCap, Lightning, Stack, Database, FolderSimple, Plus, X, Plugs, DesktopTower, Palette, DeviceMobile } from "@phosphor-icons/react";
 import { GeneralSection } from "../settings/GeneralSection";
 import { AppearanceSection } from "../settings/AppearanceSection";
+import { OnboardingSection } from "../settings/OnboardingSection";
 import { LaneTemplatesSection } from "../settings/LaneTemplatesSection";
 import { LaneBehaviorSection } from "../settings/LaneBehaviorSection";
 import { MemoryHealthTab } from "../settings/MemoryHealthTab";
@@ -19,6 +20,7 @@ import { PhaseCardEditor } from "../missions/PhaseCardEditor";
 
 const SECTIONS = [
   { id: "general", label: "General", icon: GearSix },
+  { id: "onboarding", label: "Onboarding & Help", icon: GraduationCap },
   { id: "appearance", label: "Appearance", icon: Palette },
   { id: "workspace", label: "Workspace", icon: FolderSimple },
   { id: "ai", label: "AI", icon: Brain },
@@ -560,6 +562,7 @@ export function SettingsPage() {
         }}
       >
         {section === "general" && <GeneralSection />}
+        {section === "onboarding" && <OnboardingSection />}
         {section === "appearance" && <AppearanceSection />}
         {section === "workspace" && <WorkspaceSettingsSection />}
         {section === "ai" && <AiSettingsSection />}

@@ -125,6 +125,7 @@ final class DatabaseService {
     let reviewsJson: String?
     let commentsJson: String?
     let filesJson: String?
+    let commitsJson: String?
   }
 
   private struct PullRequestListItemRow {
@@ -996,8 +997,8 @@ final class DatabaseService {
       for snapshot in payload.snapshots {
         _ = try execute("""
           insert into pull_request_snapshots(
-            pr_id, detail_json, status_json, checks_json, reviews_json, comments_json, files_json, updated_at
-          ) values (?, ?, ?, ?, ?, ?, ?, ?)
+            pr_id, detail_json, status_json, checks_json, reviews_json, comments_json, files_json, commits_json, updated_at
+          ) values (?, ?, ?, ?, ?, ?, ?, ?, ?)
           on conflict(pr_id) do update set
             detail_json = excluded.detail_json,
             status_json = excluded.status_json,
@@ -1005,6 +1006,7 @@ final class DatabaseService {
             reviews_json = excluded.reviews_json,
             comments_json = excluded.comments_json,
             files_json = excluded.files_json,
+            commits_json = excluded.commits_json,
             updated_at = excluded.updated_at
         """) { statement in
           try bindText(snapshot.prId, to: statement, index: 1)
@@ -1014,7 +1016,8 @@ final class DatabaseService {
           try bindOptionalJson(snapshot.reviews, to: statement, index: 5)
           try bindOptionalJson(snapshot.comments, to: statement, index: 6)
           try bindOptionalJson(snapshot.files, to: statement, index: 7)
-          try bindText(snapshot.updatedAt ?? ISO8601DateFormatter().string(from: Date()), to: statement, index: 8)
+          try bindOptionalJson(snapshot.commits, to: statement, index: 8)
+          try bindText(snapshot.updatedAt ?? ISO8601DateFormatter().string(from: Date()), to: statement, index: 9)
         }
       }
 
@@ -1854,7 +1857,7 @@ final class DatabaseService {
 
   func fetchPullRequestSnapshot(prId: String) -> PullRequestSnapshot? {
     let sql = """
-      select detail_json, status_json, checks_json, reviews_json, comments_json, files_json
+      select detail_json, status_json, checks_json, reviews_json, comments_json, files_json, commits_json
         from pull_request_snapshots
        where pr_id = ?
        limit 1
@@ -1868,7 +1871,8 @@ final class DatabaseService {
         checksJson: stringValue(statement, index: 2),
         reviewsJson: stringValue(statement, index: 3),
         commentsJson: stringValue(statement, index: 4),
-        filesJson: stringValue(statement, index: 5)
+        filesJson: stringValue(statement, index: 5),
+        commitsJson: stringValue(statement, index: 6)
       )
     }) else {
       return nil
@@ -1880,7 +1884,8 @@ final class DatabaseService {
       checks: decodeJson(row.checksJson, as: [PrCheck].self) ?? [],
       reviews: decodeJson(row.reviewsJson, as: [PrReview].self) ?? [],
       comments: decodeJson(row.commentsJson, as: [PrComment].self) ?? [],
-      files: decodeJson(row.filesJson, as: [PrFile].self) ?? []
+      files: decodeJson(row.filesJson, as: [PrFile].self) ?? [],
+      commits: decodeJson(row.commitsJson, as: [PrCommit].self)
     )
   }
 
@@ -2086,6 +2091,7 @@ final class DatabaseService {
     """)
     try ensureColumn(tableName: "pull_requests", columnName: "last_polled_at", definition: "text")
     try ensureColumn(tableName: "pull_requests", columnName: "head_sha", definition: "text")
+    try ensureColumn(tableName: "pull_requests", columnName: "creation_strategy", definition: "text")
     try exec("""
       create table if not exists pull_request_snapshots (
         pr_id text primary key,
@@ -2099,6 +2105,7 @@ final class DatabaseService {
       )
     """)
     try exec("create index if not exists idx_pull_request_snapshots_updated_at on pull_request_snapshots(updated_at)")
+    try ensureColumn(tableName: "pull_request_snapshots", columnName: "commits_json", definition: "text")
     try exec("""
       create table if not exists pull_request_ai_summaries (
         pr_id text not null,

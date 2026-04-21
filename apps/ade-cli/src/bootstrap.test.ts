@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createEventBuffer, type BufferedEvent } from "./bootstrap";
+import { createEventBuffer, type BufferedEvent } from "./eventBuffer";
 
 describe("createEventBuffer", () => {
   it("pushes events and assigns monotonically increasing IDs", () => {

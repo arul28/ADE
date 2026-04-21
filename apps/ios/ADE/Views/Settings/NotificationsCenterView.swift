@@ -1,340 +1,546 @@
 import SwiftUI
+import UserNotifications
 
 /// Notifications Center — the single entry point for all push-related toggles.
 ///
-/// State is persisted as a JSON-encoded `NotificationPreferences` blob in the
-/// App Group `UserDefaults` suite (`ade.notifications.prefs`). The parent
-/// settings list wires callbacks: the real sync-service writer (re-announces
-/// prefs to the desktop host) and the "send test push" button are both owned
-/// by `ios-app-wiring` and are passed in as closures so this view can be
-/// unit-previewed without `SyncService` / network dependencies.
+/// Persists state as a JSON-encoded `NotificationPreferences` blob in the
+/// App Group `UserDefaults` (`ade.notifications.prefs`). The parent settings
+/// list wires the sync-service writer and the "send test push" action as
+/// closures so this view stays preview-able without `SyncService` / network
+/// dependencies.
 struct NotificationsCenterView: View {
-  /// Invoked every time a user-visible toggle changes. Parent persists + pushes.
   var onPreferencesChanged: (NotificationPreferences) -> Void
-  /// Invoked when the user taps "Send test push".
   var onSendTestPush: () -> Void
 
-  @State private var prefs: NotificationPreferences = NotificationPreferences.load(
-    from: ADESharedContainer.defaults
-  )
-  @State private var permissionGranted: Bool? = nil
+  @State private var prefs: NotificationPreferences
+  @State private var authStatus: UNAuthorizationStatus = .notDetermined
+  @State private var hasDeviceToken: Bool = false
+  @State private var isRequestingAuthorization: Bool = false
+
+  init(
+    initialPreferences: NotificationPreferences = NotificationPreferences(),
+    onPreferencesChanged: @escaping (NotificationPreferences) -> Void,
+    onSendTestPush: @escaping () -> Void
+  ) {
+    self.onPreferencesChanged = onPreferencesChanged
+    self.onSendTestPush = onSendTestPush
+    _prefs = State(initialValue: initialPreferences)
+  }
 
   var body: some View {
-    Form {
-      if permissionGranted == false {
-        Section {
-          permissionBanner
-        }
-      }
+    ScrollView {
+      VStack(spacing: 0) {
+        statusBanner
+          .padding(.horizontal, 16)
+          .padding(.top, 8)
+          .padding(.bottom, 14)
 
-      Section("Chat") {
-        toggleRow(
-          title: "Awaiting input",
-          subtitle: "Agent paused for your reply",
-          symbol: "hand.raised.fill",
-          isOn: Binding(
-            get: { prefs.chatAwaitingInput },
-            set: { prefs.chatAwaitingInput = $0; commit() }
-          ),
-          hint: "Alert when a chat session asks you a question"
-        )
-        toggleRow(
-          title: "Run failed",
-          subtitle: "A turn ended with an error",
-          symbol: "exclamationmark.triangle.fill",
-          isOn: Binding(
-            get: { prefs.chatFailed },
-            set: { prefs.chatFailed = $0; commit() }
-          ),
-          hint: "Alert when a chat run fails"
-        )
-        toggleRow(
-          title: "Turn completed",
-          subtitle: "Quiet by default",
-          symbol: "checkmark.seal",
-          isOn: Binding(
-            get: { prefs.chatTurnCompleted },
-            set: { prefs.chatTurnCompleted = $0; commit() }
-          ),
-          hint: "Alert when any chat turn finishes"
-        )
-      }
-
-      Section("CTO") {
-        toggleRow(
-          title: "Sub-agent started",
-          subtitle: "Quiet by default",
-          symbol: "play.circle",
-          isOn: Binding(
-            get: { prefs.ctoSubagentStarted },
-            set: { prefs.ctoSubagentStarted = $0; commit() }
-          ),
-          hint: "Alert when the CTO spawns a new sub-agent"
-        )
-        toggleRow(
-          title: "Sub-agent finished",
-          subtitle: "Worker reported a result",
-          symbol: "flag.checkered",
-          isOn: Binding(
-            get: { prefs.ctoSubagentFinished },
-            set: { prefs.ctoSubagentFinished = $0; commit() }
-          ),
-          hint: "Alert when a CTO sub-agent finishes its work"
-        )
-        toggleRow(
-          title: "Mission phase changes",
-          subtitle: "Planning, testing, PR, etc.",
-          symbol: "square.stack.3d.up",
-          isOn: Binding(
-            get: { prefs.ctoMissionPhase },
-            set: { prefs.ctoMissionPhase = $0; commit() }
-          ),
-          hint: "Alert when a mission enters a new phase"
-        )
-      }
-
-      Section("Pull requests") {
-        toggleRow(
-          title: "CI failing",
-          subtitle: "A required check turned red",
-          symbol: "xmark.octagon.fill",
-          isOn: Binding(
-            get: { prefs.prCiFailing },
-            set: { prefs.prCiFailing = $0; commit() }
-          ),
-          hint: "Alert when CI fails on one of your PRs"
-        )
-        toggleRow(
-          title: "Review requested",
-          subtitle: "Someone asked you to review",
-          symbol: "person.crop.circle.badge.questionmark",
-          isOn: Binding(
-            get: { prefs.prReviewRequested },
-            set: { prefs.prReviewRequested = $0; commit() }
-          ),
-          hint: "Alert when a pull request review is requested from you"
-        )
-        toggleRow(
-          title: "Changes requested",
-          subtitle: "A reviewer left blocking feedback",
-          symbol: "arrow.uturn.backward.circle",
-          isOn: Binding(
-            get: { prefs.prChangesRequested },
-            set: { prefs.prChangesRequested = $0; commit() }
-          ),
-          hint: "Alert when a reviewer requests changes on your PR"
-        )
-        toggleRow(
-          title: "Merge ready",
-          subtitle: "Approvals and checks are green",
-          symbol: "checkmark.circle.fill",
-          isOn: Binding(
-            get: { prefs.prMergeReady },
-            set: { prefs.prMergeReady = $0; commit() }
-          ),
-          hint: "Alert when a pull request is ready to merge"
-        )
-      }
-
-      Section("System") {
-        toggleRow(
-          title: "Provider outage",
-          subtitle: "Claude, OpenAI, etc.",
-          symbol: "bolt.slash.fill",
-          isOn: Binding(
-            get: { prefs.systemProviderOutage },
-            set: { prefs.systemProviderOutage = $0; commit() }
-          ),
-          hint: "Alert when a model provider reports an outage"
-        )
-        toggleRow(
-          title: "Auth or rate-limit",
-          subtitle: "Session needs attention",
-          symbol: "key.horizontal",
-          isOn: Binding(
-            get: { prefs.systemAuthRateLimit },
-            set: { prefs.systemAuthRateLimit = $0; commit() }
-          ),
-          hint: "Alert when an agent hits rate limits or auth errors"
-        )
-        toggleRow(
-          title: "Hook failure",
-          subtitle: "Quiet by default",
-          symbol: "link.badge.plus",
-          isOn: Binding(
-            get: { prefs.systemHookFailure },
-            set: { prefs.systemHookFailure = $0; commit() }
-          ),
-          hint: "Alert when a hook script fails"
-        )
-      }
-
-      Section("Quiet hours") {
-        NavigationLink {
-          QuietHoursEditorView(
-            start: Binding(
-              get: { prefs.quietHoursStart },
-              set: { prefs.quietHoursStart = $0; commit() }
-            ),
-            end: Binding(
-              get: { prefs.quietHoursEnd },
-              set: { prefs.quietHoursEnd = $0; commit() }
-            )
+        section(title: "Chat") {
+          settingsRow(
+            title: "Awaiting input",
+            subtitle: "time-sensitive · bypasses focus",
+            toggle: binding(\.chatAwaitingInput)
           )
-        } label: {
-          HStack {
-            Image(systemName: "moon.fill")
-              .foregroundStyle(ADEColor.purpleAccent)
-            Text("Do-not-disturb window")
-              .font(.body)
-            Spacer()
-            Text(quietHoursSummary)
+          rowSeparator()
+          settingsRow(
+            title: "Failed",
+            subtitle: "agent stopped on error",
+            toggle: binding(\.chatFailed)
+          )
+          rowSeparator()
+          settingsRow(
+            title: "Turn completed",
+            subtitle: "agent finished its turn",
+            toggle: binding(\.chatTurnCompleted)
+          )
+        }
+
+        section(title: "CTO & sub-agents") {
+          settingsRow(
+            title: "Sub-agent started",
+            subtitle: nil,
+            toggle: binding(\.ctoSubagentStarted)
+          )
+          rowSeparator()
+          settingsRow(
+            title: "Sub-agent finished",
+            subtitle: nil,
+            toggle: binding(\.ctoSubagentFinished)
+          )
+          rowSeparator()
+          settingsRow(
+            title: "Mission phase change",
+            subtitle: nil,
+            toggle: binding(\.ctoMissionPhase)
+          )
+        }
+
+        section(title: "Pull requests") {
+          settingsRow(
+            title: "CI failing",
+            subtitle: "required check turned red",
+            toggle: binding(\.prCiFailing)
+          )
+          rowSeparator()
+          settingsRow(
+            title: "Review requested",
+            subtitle: "someone asked you to review",
+            toggle: binding(\.prReviewRequested)
+          )
+          rowSeparator()
+          settingsRow(
+            title: "Changes requested",
+            subtitle: "reviewer left blocking feedback",
+            toggle: binding(\.prChangesRequested)
+          )
+          rowSeparator()
+          settingsRow(
+            title: "Merge ready",
+            subtitle: "approvals and checks are green",
+            toggle: binding(\.prMergeReady)
+          )
+        }
+
+        section(title: "System & health") {
+          settingsRow(
+            title: "Provider outage",
+            subtitle: "Claude, OpenAI, etc.",
+            toggle: binding(\.systemProviderOutage)
+          )
+          rowSeparator()
+          settingsRow(
+            title: "Auth / rate limit",
+            subtitle: "session needs attention",
+            toggle: binding(\.systemAuthRateLimit)
+          )
+          rowSeparator()
+          settingsRow(
+            title: "Hook failure",
+            subtitle: "quiet by default",
+            toggle: binding(\.systemHookFailure)
+          )
+        }
+
+        section(title: "Quiet hours") {
+          quietHoursRow
+          rowSeparator()
+          perSessionOverridesRow
+        }
+
+        VStack(alignment: .leading, spacing: 8) {
+          sendTestPushButton
+          if !canSendTestPush {
+            Text("Enable notifications and register this device before sending a test push.")
               .font(.caption)
               .foregroundStyle(ADEColor.textSecondary)
+              .frame(maxWidth: .infinity, alignment: .leading)
+              .padding(.horizontal, 2)
           }
         }
-        .accessibilityHint("Configure a daily window during which push alerts are suppressed")
-      }
+          .padding(.horizontal, 16)
+          .padding(.top, 20)
+          .padding(.bottom, 24)
 
-      Section("Per-session overrides") {
-        NavigationLink {
-          PerSessionOverrideView(
-            overrides: Binding(
-              get: { prefs.perSessionOverrides },
-              set: { prefs.perSessionOverrides = $0; commit() }
-            )
-          )
-        } label: {
-          HStack {
-            Image(systemName: "person.2.badge.gearshape")
-              .foregroundStyle(ADEColor.purpleAccent)
-            Text("Manage overrides")
-              .font(.body)
-            Spacer()
-            Text(overridesSummary)
-              .font(.caption)
-              .foregroundStyle(ADEColor.textSecondary)
-          }
-        }
-        .accessibilityHint("Mute specific sessions or restrict them to awaiting-input alerts only")
-      }
-
-      Section {
-        Button {
-          onSendTestPush()
-        } label: {
-          HStack {
-            Image(systemName: "paperplane.fill")
-              .foregroundStyle(ADEColor.purpleAccent)
-            Text("Send test push")
-              .font(.body.weight(.medium))
-              .foregroundStyle(ADEColor.textPrimary)
-            Spacer()
-          }
-        }
-        .accessibilityHint("Ask the paired host to send a test notification to this device")
-      } footer: {
         Text("Preferences are stored in the shared container and mirrored to your paired Mac.")
           .font(.caption)
           .foregroundStyle(ADEColor.textSecondary)
+          .frame(maxWidth: .infinity, alignment: .leading)
+          .padding(.horizontal, 20)
+          .padding(.bottom, 40)
       }
     }
+    .background(ADEColor.pageBackground.ignoresSafeArea())
     .navigationTitle("Notifications")
     .navigationBarTitleDisplayMode(.inline)
-    .onAppear {
-      refreshPermissionStatus()
+    .task {
+      await refreshPreferencesAfterFirstPaint()
+      await refreshAuthorizationStatus()
     }
   }
 
-  // MARK: - Permission banner
+  // MARK: - Banner
 
-  private var permissionBanner: some View {
-    HStack(alignment: .top, spacing: 12) {
-      Image(systemName: "bell.slash.fill")
-        .font(.title3)
-        .foregroundStyle(.orange)
-      VStack(alignment: .leading, spacing: 4) {
-        Text("Notifications are disabled")
-          .font(.subheadline.weight(.semibold))
-          .foregroundStyle(ADEColor.textPrimary)
-        Text("Enable notifications in Settings to receive alerts from ADE.")
-          .font(.caption)
-          .foregroundStyle(ADEColor.textSecondary)
-        Button("Open Settings") {
-          if let url = URL(string: UIApplication.openSettingsURLString) {
-            UIApplication.shared.open(url)
-          }
-        }
-        .font(.caption.weight(.semibold))
-        .buttonStyle(.borderless)
-        .padding(.top, 2)
+  @ViewBuilder
+  private var statusBanner: some View {
+    switch authStatus {
+    case .authorized, .ephemeral:
+      ADEBanner(
+        tint: ADEColor.success,
+        dotTint: ADEColor.success,
+        title: "Push notifications are enabled",
+        subtitle: hasDeviceToken ? "device registered · APNs prod" : "awaiting device registration",
+        trailing: hasDeviceToken ? nil : .init(label: "Register", action: registerDeviceForRemoteNotifications)
+      )
+    case .provisional:
+      ADEBanner(
+        tint: ADESharedTheme.warningAmber,
+        dotTint: ADESharedTheme.warningAmber,
+        title: "Push is provisional",
+        subtitle: "tap to enable full banners",
+        trailing: .init(label: "Enable", action: openSystemSettings)
+      )
+    case .denied:
+      ADEBanner(
+        tint: ADEColor.danger,
+        dotTint: ADEColor.danger,
+        title: "Push notifications are off",
+        subtitle: "re-enable in iOS Settings",
+        trailing: .init(label: "Open iOS Settings", action: openSystemSettings)
+      )
+    case .notDetermined:
+      ADEBanner(
+        tint: ADESharedTheme.warningAmber,
+        dotTint: ADESharedTheme.warningAmber,
+        title: "Push notifications are not enabled yet",
+        subtitle: "allow notifications to receive agent updates",
+        trailing: .init(
+          label: isRequestingAuthorization ? "Requesting..." : "Enable",
+          action: requestAuthorizationIfNeeded
+        ),
+        trailingDisabled: isRequestingAuthorization
+      )
+    @unknown default:
+      EmptyView()
+    }
+  }
+
+  // MARK: - Sections
+
+  @ViewBuilder
+  private func section<Content: View>(
+    title: String,
+    @ViewBuilder content: () -> Content
+  ) -> some View {
+    VStack(alignment: .leading, spacing: 0) {
+      Text(title.uppercased())
+        .font(.system(size: 13, design: .monospaced))
+        .kerning(0)
+        .foregroundStyle(Color(red: 0x8E / 255.0, green: 0x8E / 255.0, blue: 0x93 / 255.0))
+        .padding(EdgeInsets(top: 20, leading: 20, bottom: 7, trailing: 20))
+        .accessibilityAddTraits(.isHeader)
+
+      groupContainer {
+        content()
       }
     }
-    .padding(.vertical, 4)
-    .accessibilityElement(children: .combine)
-    .accessibilityLabel("Notifications are disabled. Open Settings to enable them.")
   }
 
-  private func refreshPermissionStatus() {
-    // Best-effort: use UNUserNotificationCenter without importing it in tests.
-    // The actual wiring is done by ios-app-wiring later; here we default to
-    // `nil` which hides the banner until the wiring task hooks us up.
-    permissionGranted = nil
+  @ViewBuilder
+  private func groupContainer<Content: View>(
+    @ViewBuilder content: () -> Content
+  ) -> some View {
+    VStack(spacing: 0) { content() }
+      .padding(.horizontal, 0)
+      .background(
+        RoundedRectangle(cornerRadius: 12, style: .continuous)
+          .fill(Color(red: 28.0 / 255.0, green: 25.0 / 255.0, blue: 42.0 / 255.0).opacity(0.75))
+          .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+              .fill(.ultraThinMaterial)
+          )
+      )
+      .overlay(
+        RoundedRectangle(cornerRadius: 12, style: .continuous)
+          .strokeBorder(Color.white.opacity(0.05), lineWidth: 0.5)
+      )
+      .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+      .padding(.horizontal, 16)
+  }
+
+  // MARK: - Rows
+
+  @ViewBuilder
+  private func settingsRow(
+    title: String,
+    subtitle: String?,
+    toggle: Binding<Bool>
+  ) -> some View {
+    HStack(alignment: .center, spacing: 14) {
+      VStack(alignment: .leading, spacing: 1) {
+        Text(title)
+          .font(.system(size: 16, weight: .regular))
+          .kerning(-0.2)
+          .foregroundStyle(ADEColor.textPrimary)
+        if let subtitle {
+          Text(subtitle)
+            .font(.system(size: 12.5, design: .monospaced))
+            .foregroundStyle(Color(red: 0x8E / 255.0, green: 0x8E / 255.0, blue: 0x93 / 255.0))
+            .fixedSize(horizontal: false, vertical: true)
+        }
+      }
+      Spacer(minLength: 12)
+      Toggle("", isOn: toggle)
+        .labelsHidden()
+        .tint(ADEColor.success)
+    }
+    .padding(.horizontal, 16)
+    .padding(.vertical, 11)
+    .frame(minHeight: 44)
+    .contentShape(Rectangle())
+    .accessibilityElement(children: .combine)
+  }
+
+  @ViewBuilder
+  private func rowSeparator() -> some View {
+    Rectangle()
+      .fill(Color(red: 0x54 / 255.0, green: 0x54 / 255.0, blue: 0x58 / 255.0).opacity(0.4))
+      .frame(height: 0.33)
+      .padding(.leading, 16)
+  }
+
+  private var quietHoursRow: some View {
+    NavigationLink {
+      QuietHoursEditorView(
+        start: Binding(
+          get: { prefs.quietHoursStart },
+          set: { prefs.quietHoursStart = $0; commit() }
+        ),
+        end: Binding(
+          get: { prefs.quietHoursEnd },
+          set: { prefs.quietHoursEnd = $0; commit() }
+        )
+      )
+    } label: {
+      HStack(alignment: .center, spacing: 14) {
+        VStack(alignment: .leading, spacing: 1) {
+          Text("Do not disturb")
+            .font(.system(size: 16, weight: .regular))
+            .kerning(-0.2)
+            .foregroundStyle(ADEColor.textPrimary)
+          Text(quietHoursSubtitle)
+            .font(.system(size: 12.5, design: .monospaced))
+            .foregroundStyle(Color(red: 0x8E / 255.0, green: 0x8E / 255.0, blue: 0x93 / 255.0))
+        }
+        Spacer(minLength: 12)
+        Image(systemName: "chevron.right")
+          .font(.system(size: 13, weight: .semibold))
+          .foregroundStyle(ADEColor.purpleAccent)
+      }
+      .padding(.horizontal, 16)
+      .padding(.vertical, 11)
+      .frame(minHeight: 44)
+      .contentShape(Rectangle())
+    }
+    .buttonStyle(.plain)
+    .accessibilityHint("Configure a daily window during which push alerts are suppressed")
+  }
+
+  private var perSessionOverridesRow: some View {
+    NavigationLink {
+      PerSessionOverrideView(
+        overrides: Binding(
+          get: { prefs.perSessionOverrides },
+          set: { prefs.perSessionOverrides = $0; commit() }
+        )
+      )
+    } label: {
+      HStack(alignment: .center, spacing: 14) {
+        VStack(alignment: .leading, spacing: 1) {
+          Text("Per-agent overrides")
+            .font(.system(size: 16, weight: .regular))
+            .kerning(-0.2)
+            .foregroundStyle(ADEColor.textPrimary)
+          Text(overridesSubtitle)
+            .font(.system(size: 12.5, design: .monospaced))
+            .foregroundStyle(Color(red: 0x8E / 255.0, green: 0x8E / 255.0, blue: 0x93 / 255.0))
+        }
+        Spacer(minLength: 12)
+        Image(systemName: "chevron.right")
+          .font(.system(size: 13, weight: .semibold))
+          .foregroundStyle(ADEColor.purpleAccent)
+      }
+      .padding(.horizontal, 16)
+      .padding(.vertical, 11)
+      .frame(minHeight: 44)
+      .contentShape(Rectangle())
+    }
+    .buttonStyle(.plain)
+    .accessibilityHint("Mute specific agents or restrict them to awaiting-input alerts only")
+  }
+
+  // MARK: - Send test push
+
+  private var sendTestPushButton: some View {
+    Button(action: onSendTestPush) {
+      Text("Send test push")
+        .font(.system(size: 15, weight: .semibold))
+        .foregroundStyle(ADEColor.purpleAccent)
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 13)
+        .background(
+          RoundedRectangle(cornerRadius: 12, style: .continuous)
+            .fill(ADEColor.purpleAccent.opacity(0.15))
+        )
+    }
+    .buttonStyle(.plain)
+    .disabled(!canSendTestPush)
+    .opacity(canSendTestPush ? 1 : 0.45)
+    .accessibilityHint(
+      canSendTestPush
+        ? "Ask the paired host to send a test notification to this device"
+        : "Enable notifications and register this device first"
+    )
   }
 
   // MARK: - Helpers
+
+  private func binding(_ keyPath: WritableKeyPath<NotificationPreferences, Bool>) -> Binding<Bool> {
+    Binding(
+      get: { prefs[keyPath: keyPath] },
+      set: { newValue in
+        prefs[keyPath: keyPath] = newValue
+        commit()
+      }
+    )
+  }
+
+  private func refreshPreferencesAfterFirstPaint() async {
+    await Task.yield()
+    let loaded = NotificationPreferences.load(from: ADESharedContainer.defaults)
+    guard loaded != prefs else { return }
+    prefs = loaded
+  }
+
+  private func refreshAuthorizationStatus() async {
+    let settings = await UNUserNotificationCenter.current().notificationSettings()
+    await MainActor.run {
+      authStatus = settings.authorizationStatus
+      hasDeviceToken = UIApplication.shared.isRegisteredForRemoteNotifications
+    }
+  }
+
+  private func requestAuthorizationIfNeeded() {
+    guard !isRequestingAuthorization else { return }
+    isRequestingAuthorization = true
+    Task {
+      _ = try? await UNUserNotificationCenter.current().requestAuthorization(
+        options: [.alert, .badge, .sound]
+      )
+      await MainActor.run {
+        UIApplication.shared.registerForRemoteNotifications()
+      }
+      await refreshAuthorizationStatus()
+      await MainActor.run {
+        isRequestingAuthorization = false
+      }
+    }
+  }
+
+  private func registerDeviceForRemoteNotifications() {
+    UIApplication.shared.registerForRemoteNotifications()
+    Task { await refreshAuthorizationStatus() }
+  }
+
+  private func openSystemSettings() {
+    if let url = URL(string: UIApplication.openSettingsURLString) {
+      UIApplication.shared.open(url)
+    }
+  }
 
   private func commit() {
     prefs.save(to: ADESharedContainer.defaults)
     onPreferencesChanged(prefs)
   }
 
-  @ViewBuilder
-  private func toggleRow(
+  private var quietHoursSubtitle: String {
+    guard let start = prefs.quietHoursStart, let end = prefs.quietHoursEnd else {
+      return "off"
+    }
+    let startStr = start.formatted(date: .omitted, time: .shortened)
+    let endStr = end.formatted(date: .omitted, time: .shortened)
+    return "\(startStr) \u{2192} \(endStr)"
+  }
+
+  private var overridesSubtitle: String {
+    let count = prefs.perSessionOverrides.values.filter { $0.muted || $0.awaitingInputOnly }.count
+    if count == 0 { return "none" }
+    return "\(count) active"
+  }
+
+  private var canSendTestPush: Bool {
+    switch authStatus {
+    case .authorized, .provisional, .ephemeral:
+      return hasDeviceToken
+    default:
+      return false
+    }
+  }
+}
+
+// MARK: - Banner primitive
+
+private struct ADEBanner: View {
+  struct Trailing {
+    let label: String
+    let action: () -> Void
+  }
+
+  let tint: Color
+  let dotTint: Color
+  let title: String
+  let subtitle: String
+  let trailing: Trailing?
+  let trailingDisabled: Bool
+
+  init(
+    tint: Color,
+    dotTint: Color,
     title: String,
-    subtitle: String?,
-    symbol: String,
-    isOn: Binding<Bool>,
-    hint: String
-  ) -> some View {
-    Toggle(isOn: isOn) {
-      HStack(spacing: 10) {
-        Image(systemName: symbol)
-          .font(.system(size: 16, weight: .semibold))
-          .foregroundStyle(ADEColor.purpleAccent)
-          .frame(width: 26, height: 26)
-          .background(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-              .fill(ADEColor.purpleAccent.opacity(0.14))
-          )
-        VStack(alignment: .leading, spacing: 2) {
-          Text(title)
-            .font(.body)
-            .foregroundStyle(ADEColor.textPrimary)
-          if let subtitle {
-            Text(subtitle)
-              .font(.caption)
-              .foregroundStyle(ADEColor.textSecondary)
-          }
+    subtitle: String,
+    trailing: Trailing?,
+    trailingDisabled: Bool = false
+  ) {
+    self.tint = tint
+    self.dotTint = dotTint
+    self.title = title
+    self.subtitle = subtitle
+    self.trailing = trailing
+    self.trailingDisabled = trailingDisabled
+  }
+
+  var body: some View {
+    HStack(alignment: .center, spacing: 10) {
+      Circle()
+        .fill(dotTint)
+        .frame(width: 8, height: 8)
+        .accessibilityHidden(true)
+      VStack(alignment: .leading, spacing: 2) {
+        Text(title)
+          .font(.system(size: 13, weight: .semibold))
+          .foregroundStyle(ADEColor.textPrimary)
+        Text(subtitle)
+          .font(.system(size: 12, design: .monospaced))
+          .foregroundStyle(Color(red: 0x8E / 255.0, green: 0x8E / 255.0, blue: 0x93 / 255.0))
+          .fixedSize(horizontal: false, vertical: true)
+      }
+      Spacer(minLength: 10)
+      if let trailing {
+        Button(action: trailing.action) {
+          Text(trailing.label)
+            .font(.system(size: 13, weight: .semibold))
+            .foregroundStyle(tint)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(
+              RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(tint.opacity(0.18))
+            )
         }
+        .buttonStyle(.plain)
+        .disabled(trailingDisabled)
+        .opacity(trailingDisabled ? 0.55 : 1)
       }
     }
-    .tint(ADEColor.purpleAccent)
-    .accessibilityHint(hint)
-  }
-
-  private var quietHoursSummary: String {
-    guard let start = prefs.quietHoursStart, let end = prefs.quietHoursEnd else {
-      return "Off"
-    }
-    let formatter = DateFormatter()
-    formatter.dateFormat = "h:mm a"
-    return "\(formatter.string(from: start)) – \(formatter.string(from: end))"
-  }
-
-  private var overridesSummary: String {
-    let count = prefs.perSessionOverrides.values.filter { $0.muted || $0.awaitingInputOnly }.count
-    if count == 0 { return "None" }
-    return count == 1 ? "1 session" : "\(count) sessions"
+    .padding(12)
+    .background(
+      RoundedRectangle(cornerRadius: 12, style: .continuous)
+        .fill(tint.opacity(0.12))
+    )
+    .overlay(
+      RoundedRectangle(cornerRadius: 12, style: .continuous)
+        .strokeBorder(tint.opacity(0.25), lineWidth: 0.5)
+    )
+    .accessibilityElement(children: .combine)
+    .accessibilityLabel("\(title). \(subtitle).")
   }
 }

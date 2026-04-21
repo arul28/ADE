@@ -40,7 +40,16 @@ import type {
 import { parseAgentChatTranscript } from "../../../shared/chatTranscript";
 import type { Logger } from "../logging/logger";
 import type { createAgentChatService } from "../chat/agentChatService";
+import type { createCtoStateService } from "../cto/ctoStateService";
+import type { createFlowPolicyService } from "../cto/flowPolicyService";
+import type { createLinearCredentialService } from "../cto/linearCredentialService";
+import type { createLinearIngressService } from "../cto/linearIngressService";
+import type { createLinearIssueTracker } from "../cto/linearIssueTracker";
+import type { createLinearSyncService } from "../cto/linearSyncService";
 import type { createWorkerAgentService } from "../cto/workerAgentService";
+import type { createWorkerBudgetService } from "../cto/workerBudgetService";
+import type { createWorkerHeartbeatService } from "../cto/workerHeartbeatService";
+import type { createWorkerRevisionService } from "../cto/workerRevisionService";
 import type { createProjectConfigService } from "../config/projectConfigService";
 import type { createConflictService } from "../conflicts/conflictService";
 import type { createFileService } from "../files/fileService";
@@ -135,6 +144,15 @@ type SyncHostServiceArgs = {
   processService?: ReturnType<typeof createProcessService>;
   agentChatService?: ReturnType<typeof createAgentChatService>;
   workerAgentService?: ReturnType<typeof createWorkerAgentService> | null;
+  workerBudgetService?: ReturnType<typeof createWorkerBudgetService> | null;
+  workerHeartbeatService?: ReturnType<typeof createWorkerHeartbeatService> | null;
+  workerRevisionService?: ReturnType<typeof createWorkerRevisionService> | null;
+  ctoStateService?: ReturnType<typeof createCtoStateService> | null;
+  flowPolicyService?: ReturnType<typeof createFlowPolicyService> | null;
+  linearCredentialService?: ReturnType<typeof createLinearCredentialService> | null;
+  getLinearIngressService?: () => ReturnType<typeof createLinearIngressService> | null;
+  getLinearIssueTracker?: () => ReturnType<typeof createLinearIssueTracker> | null;
+  getLinearSyncService?: () => ReturnType<typeof createLinearSyncService> | null;
   projectConfigService?: ReturnType<typeof createProjectConfigService>;
   portAllocationService?: ReturnType<typeof createPortAllocationService>;
   laneEnvironmentService?: ReturnType<typeof createLaneEnvironmentService>;
@@ -320,6 +338,15 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     conflictService: args.conflictService,
     agentChatService: args.agentChatService,
     workerAgentService: args.workerAgentService,
+    workerBudgetService: args.workerBudgetService,
+    workerHeartbeatService: args.workerHeartbeatService,
+    workerRevisionService: args.workerRevisionService,
+    ctoStateService: args.ctoStateService,
+    flowPolicyService: args.flowPolicyService,
+    linearCredentialService: args.linearCredentialService,
+    getLinearIngressService: args.getLinearIngressService,
+    getLinearIssueTracker: args.getLinearIssueTracker,
+    getLinearSyncService: args.getLinearSyncService,
     issueInventoryService: args.issueInventoryService,
     queueLandingService: args.queueLandingService,
     projectConfigService: args.projectConfigService,
@@ -359,10 +386,18 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
   };
 
   const peers = new Set<PeerState>();
-  /** In-memory notification preferences keyed by deviceId; authoritative copy
-   * is held by the client — we just cache the latest announcement so the
-   * bus can filter at send-time without another round-trip. */
+  /** Notification preferences keyed by deviceId. The map is a hot cache;
+   * device metadata is the restart-safe source for offline push fan-out. */
   const notificationPrefsByDeviceId = new Map<string, NotificationPreferences>();
+  const storeNotificationPrefsForDevice = (deviceId: string, prefs: NotificationPreferences): void => {
+    notificationPrefsByDeviceId.set(deviceId, prefs);
+    args.deviceRegistryService?.setNotificationPreferences?.(deviceId, prefs);
+  };
+  const readNotificationPrefsForDevice = (deviceId: string): NotificationPreferences => {
+    return notificationPrefsByDeviceId.get(deviceId)
+      ?? args.deviceRegistryService?.getNotificationPreferences?.(deviceId)
+      ?? DEFAULT_NOTIFICATION_PREFERENCES;
+  };
   const lanePresenceByLaneId = new Map<string, Map<string, LanePresenceEntry>>();
   let localActiveLaneIds = new Set<string>();
   const PAIR_FAILURE_THRESHOLD = 5;
@@ -1133,8 +1168,8 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       const rawArgs = (payload.args as Record<string, unknown> | null | undefined) ?? {};
       const rawMute = rawArgs.muteUntil;
       const muteUntil = typeof rawMute === "string" && rawMute.length > 0 ? rawMute : null;
-      const existing = notificationPrefsByDeviceId.get(deviceId) ?? DEFAULT_NOTIFICATION_PREFERENCES;
-      notificationPrefsByDeviceId.set(deviceId, { ...existing, muteUntil });
+      const existing = readNotificationPrefsForDevice(deviceId);
+      storeNotificationPrefsForDevice(deviceId, { ...existing, muteUntil });
       send(peer.ws, "command_ack", {
         commandId,
         accepted: true,
@@ -1528,20 +1563,54 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     payload: SyncRegisterPushTokenPayload | null,
   ): void {
     const deviceId = peer.metadata?.deviceId;
-    if (!deviceId) return;
+    if (!deviceId) {
+      args.logger.warn("sync_host.push_token_missing_device", {});
+      send(peer.ws, "command_ack", {
+        commandId: "push-token:unknown",
+        accepted: false,
+        status: "missing_device_id",
+        message: "Cannot store push token before device registration completes.",
+      }, requestId ?? null);
+      return;
+    }
     if (!payload || typeof payload.token !== "string" || payload.token.trim().length === 0) {
       args.logger.warn("sync_host.push_token_missing", { deviceId });
+      send(peer.ws, "command_ack", {
+        commandId: `push-token:${deviceId}:unknown`,
+        accepted: false,
+        status: "invalid_payload",
+        message: "Push token registration did not include a token.",
+      }, requestId ?? null);
       return;
     }
     const kind: ApnsPushTokenKind =
       payload.kind === "alert" || payload.kind === "activity-start" || payload.kind === "activity-update"
         ? payload.kind
         : "alert";
+    if (kind === "activity-update" && !payload.activityId?.trim()) {
+      args.logger.warn("sync_host.push_token_missing_activity_id", { deviceId });
+      send(peer.ws, "command_ack", {
+        commandId: `push-token:${deviceId}:${kind}`,
+        accepted: false,
+        status: "missing_activity_id",
+        message: "Live Activity update tokens require an activity id.",
+      }, requestId ?? null);
+      return;
+    }
     const env: ApnsEnvironment = payload.env === "production" ? "production" : "sandbox";
-    args.deviceRegistryService?.setApnsToken?.(deviceId, payload.token.trim(), kind, env, {
+    const stored = args.deviceRegistryService?.setApnsToken?.(deviceId, payload.token.trim(), kind, env, {
       bundleId: payload.bundleId,
       activityId: payload.activityId,
     });
+    if (!stored) {
+      send(peer.ws, "command_ack", {
+        commandId: `push-token:${deviceId}:${kind}`,
+        accepted: false,
+        status: "device_not_found",
+        message: `Could not store ${kind} push token for ${deviceId}.`,
+      }, requestId ?? null);
+      return;
+    }
     // Optional ack so the client can retry on failure.
     send(peer.ws, "command_ack", {
       commandId: `push-token:${deviceId}:${kind}`,
@@ -1554,7 +1623,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
   function handleNotificationPrefs(peer: PeerState, payload: SyncNotificationPrefsPayload | null): void {
     const deviceId = peer.metadata?.deviceId;
     if (!deviceId || !payload || !payload.prefs) return;
-    notificationPrefsByDeviceId.set(deviceId, payload.prefs);
+    storeNotificationPrefsForDevice(deviceId, payload.prefs);
   }
 
   async function handleSendTestPush(
@@ -1596,7 +1665,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
   }
 
   function getNotificationPrefsForDevice(deviceId: string): NotificationPreferences | null {
-    return notificationPrefsByDeviceId.get(deviceId) ?? null;
+    return readNotificationPrefsForDevice(deviceId);
   }
 
   function isIosPeerConnected(deviceId: string): boolean {

@@ -25,7 +25,9 @@ Settings are organized into twelve sections in the left navigation panel. Change
   <Card title="CTO" icon="robot" href="#cto">Heartbeat, delegation, memory retention.</Card>
   <Card title="Automations" icon="bolt" href="#automations">Global automation master switch.</Card>
   <Card title="Permissions" icon="shield-check" href="#permissions">File, command, git, and network policy.</Card>
-  <Card title="Notifications" icon="bell" href="#notifications">Native and in-app event delivery.</Card>
+  <Card title="Notifications" icon="bell" href="#notifications">Native, in-app, and mobile push delivery.</Card>
+  <Card title="Mobile Push" icon="mobile" href="#mobile-push">iOS push notifications for agents.</Card>
+  <Card title="Diagnostics" icon="stethoscope" href="#diagnostics">Runtime health and diagnostics dashboard.</Card>
   <Card title="Developer" icon="code" href="#developer">Logs, DevTools, and database inspector.</Card>
 </CardGroup>
 
@@ -90,7 +92,7 @@ Control which model each agent role uses, and how ADE manages context windows.
 
 ### Per-Role Model Overrides
 
-ADE's default model applies to all agents unless you set role-specific overrides. Role overrides let you optimize cost and quality by matching model capability to task complexity.
+ADE's default model applies to all agents unless you set role-specific overrides here.
 
 | Role | Description | Recommended Model |
 |------|-------------|-----------------|
@@ -320,17 +322,56 @@ Configure which filesystem paths agents can read and write:
 
 Control how and when ADE notifies you of important events.
 
-| Event | macOS notification | In-app banner |
-|-------|-------------------|---------------|
-| Mission complete | Configurable | Always |
-| Mission failed | Configurable | Always |
-| Budget warning (80%) | Configurable | Always |
-| Budget cap reached | Always on | Always |
-| Conflict detected | Configurable | Configurable |
-| PR status change | Configurable | Configurable |
-| Automation triggered | Off | Configurable |
-| Automation completed | Configurable | Off |
-| CTO delegation request | Always on | Always on |
+| Event | macOS notification | In-app banner | Mobile push |
+|-------|-------------------|---------------|-------------|
+| Mission complete | Configurable | Always | Configurable |
+| Mission failed | Configurable | Always | Configurable |
+| Budget warning (80%) | Configurable | Always | Off |
+| Budget cap reached | Always on | Always | Configurable |
+| Conflict detected | Configurable | Configurable | Off |
+| PR status change | Configurable | Configurable | Configurable |
+| Automation triggered | Off | Configurable | Off |
+| Automation completed | Configurable | Off | Configurable |
+| CTO delegation request | Always on | Always on | Configurable |
+| Intervention required | Configurable | Always | Always on |
+
+---
+
+## Mobile Push
+
+ADE can send push notifications to your iPhone when agents need input or complete tasks, so you do not have to keep the desktop app in the foreground to stay aware of progress.
+
+### Setup
+
+<Steps>
+  <Step title="Open Settings → Mobile Push">
+    Navigate to **Settings → Notifications → Mobile Push**.
+  </Step>
+  <Step title="Scan the QR code on your iPhone">
+    Open the ADE iOS app and scan the registration QR code shown in the panel. The device is registered to your ADE install within a few seconds.
+  </Step>
+  <Step title="Choose which events trigger a push">
+    Toggle individual event types. The most useful defaults: mission complete, mission failed, and intervention required (agent needs your input).
+  </Step>
+</Steps>
+
+You can register multiple iOS devices. Each device receives the same notifications. Devices are listed in the Mobile Push panel with their registration date and last-received timestamp. Tap **Remove** next to any device to deregister it.
+
+---
+
+## Diagnostics
+
+The diagnostics dashboard (**Settings → Diagnostics**) gives a live view of ADE's internal runtime health.
+
+| Panel | What it shows |
+|-------|--------------|
+| **Provider status** | Connection state and last response time for each configured AI provider |
+| **Lane runtime** | Process state, port lease status, and env overlay summary for each active lane |
+| **IPC health** | Recent IPC error counts and last-seen timestamps per channel |
+| **ADE CLI probe** | Whether the CLI readiness probe last passed or failed, with the error message if it failed |
+| **Sync status** | Device registry, last sync timestamp, and any pending sync operations |
+
+Use the diagnostics panel before filing a bug report — the summary output can be copied directly from the panel.
 
 ---
 

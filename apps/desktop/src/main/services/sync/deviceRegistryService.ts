@@ -12,6 +12,7 @@ import type {
   SyncPeerMetadata,
   SyncPeerPlatform,
 } from "../../../shared/types";
+import type { NotificationPreferences } from "../../../shared/types/sync";
 import type { Logger } from "../logging/logger";
 import { mapPlatform } from "./syncProtocol";
 import type { AdeDb } from "../state/kvDb";
@@ -400,8 +401,10 @@ export function createDeviceRegistryService(args: DeviceRegistryServiceArgs) {
     if (kind === "activity-update" && extras.activityId) {
       const existing = (device.metadata.apnsActivityUpdateTokens as Record<string, string> | undefined) ?? {};
       nextMetadata.apnsActivityUpdateTokens = { ...existing, [extras.activityId]: token };
-    } else {
+    } else if (kind !== "activity-update") {
       nextMetadata[apnsMetaKey(kind)] = token;
+    } else {
+      return null;
     }
     return upsertDeviceRecord({
       deviceId: device.deviceId,
@@ -431,6 +434,37 @@ export function createDeviceRegistryService(args: DeviceRegistryServiceArgs) {
     }
     const raw = device.metadata[apnsMetaKey(kind)];
     return typeof raw === "string" && raw.trim().length > 0 ? raw : null;
+  };
+
+  const setNotificationPreferences = (
+    deviceId: string,
+    prefs: NotificationPreferences,
+  ): SyncDeviceRecord | null => {
+    const device = getDevice(deviceId);
+    if (!device) return null;
+    return upsertDeviceRecord({
+      deviceId: device.deviceId,
+      siteId: device.siteId,
+      name: device.name,
+      platform: device.platform,
+      deviceType: device.deviceType,
+      lastSeenAt: device.lastSeenAt,
+      lastHost: device.lastHost,
+      lastPort: device.lastPort,
+      tailscaleIp: device.tailscaleIp,
+      ipAddresses: device.ipAddresses,
+      metadata: {
+        ...device.metadata,
+        notificationPreferences: prefs,
+        notificationPreferencesUpdatedAt: nowIso(),
+      },
+    });
+  };
+
+  const getNotificationPreferences = (deviceId: string): NotificationPreferences | null => {
+    const prefs = getDevice(deviceId)?.metadata.notificationPreferences;
+    if (!prefs || typeof prefs !== "object" || Array.isArray(prefs)) return null;
+    return prefs as NotificationPreferences;
   };
 
   const invalidateApnsTokensForDevice = (deviceId: string): void => {
@@ -521,6 +555,8 @@ export function createDeviceRegistryService(args: DeviceRegistryServiceArgs) {
     forgetDevice,
     setApnsToken,
     getApnsTokenForDevice,
+    setNotificationPreferences,
+    getNotificationPreferences,
     invalidateApnsTokensForDevice,
     findDeviceByApnsToken,
   };

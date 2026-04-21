@@ -19,9 +19,11 @@ struct CtoSessionDestinationView: View {
   @EnvironmentObject private var syncService: SyncService
 
   let kind: Kind
+  var navigationChrome: WorkSessionNavigationChrome = .pushedDetail
 
   @State private var state: LoadState = .loading
   @State private var ensureTask: Task<Void, Never>?
+  @State private var ensuredKind: Kind?
 
   var body: some View {
     content
@@ -52,7 +54,10 @@ struct CtoSessionDestinationView: View {
         initialChatSummary: summary,
         initialTranscript: nil,
         transitionNamespace: nil,
-        isLive: true
+        isLive: isLive,
+        navigationChrome: navigationChrome,
+        showsLaneActions: false,
+        navigationTitleOverride: navigationTitle
       )
       .environmentObject(syncService)
     }
@@ -68,8 +73,7 @@ struct CtoSessionDestinationView: View {
         .foregroundStyle(ADEColor.textSecondary)
     }
     .frame(maxWidth: .infinity, maxHeight: .infinity)
-    .navigationTitle(navigationTitle)
-    .navigationBarTitleDisplayMode(.inline)
+    .ctoSessionNavigationChrome(mode: navigationChrome, title: navigationTitle)
   }
 
   private func failureView(message: String) -> some View {
@@ -87,8 +91,7 @@ struct CtoSessionDestinationView: View {
     }
     .padding(16)
     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-    .navigationTitle(navigationTitle)
-    .navigationBarTitleDisplayMode(.inline)
+    .ctoSessionNavigationChrome(mode: navigationChrome, title: navigationTitle)
   }
 
   private var navigationTitle: String {
@@ -107,6 +110,12 @@ struct CtoSessionDestinationView: View {
     }
   }
 
+  private var isLive: Bool {
+    let workStatus = syncService.status(for: .work)
+    return workStatus.phase == .ready
+      && (syncService.connectionState == .connected || syncService.connectionState == .syncing)
+  }
+
   private var kindKey: String {
     switch kind {
     case .cto: return "cto"
@@ -119,13 +128,14 @@ struct CtoSessionDestinationView: View {
   /// ensure calls and race to overwrite `state`.
   @MainActor
   private func startEnsureSession(force: Bool) {
+    if !force, ensuredKind == kind { return }
     ensureTask?.cancel()
+    let requestedKind = kind
     let task = Task { @MainActor in
-      if case .ready = state, !force { return }
       state = .loading
       do {
         let summary: AgentChatSessionSummary
-        switch kind {
+        switch requestedKind {
         case .cto:
           summary = try await syncService.ensureCtoSession()
         case .worker(let agentId, _):
@@ -133,6 +143,7 @@ struct CtoSessionDestinationView: View {
         }
         guard !Task.isCancelled else { return }
         state = .ready(summary)
+        ensuredKind = requestedKind
       } catch {
         guard !Task.isCancelled else { return }
         state = .failed(error.localizedDescription)
@@ -147,14 +158,9 @@ struct CtoSessionDestinationView: View {
   /// later refreshes this via `syncService.fetchSessions()` once the session
   /// lands in the shared session list.
   private func makeCtoSession(from summary: AgentChatSessionSummary) -> TerminalSessionSummary {
-    // NOTE: We pass a human-readable `laneName` so the Work overflow menu shows
-    // "Lane: CTO control room" / "Lane: Worker: Build Bot" rather than the raw
-    // lane id (e.g. "cto:root"). The "Go to lane" entry in that menu still
-    // points at `summary.laneId`, which is not a real lane — tapping it lands
-    // on the Lanes tab and shows a "not cached" error. Benign dead-end UX;
-    // fixing it cleanly needs a flag on WorkSessionDestinationView which is
-    // out of scope for this pass. TODO: thread an `isCtoSession` flag through
-    // and hide the menu item for CTO chats.
+    // Use a human-readable lane label for the shared Work header. CTO chats pass
+    // `showsLaneActions: false`, because their synthetic lane ids are not real
+    // Lanes tab destinations.
     TerminalSessionSummary(
       id: summary.sessionId,
       laneId: summary.laneId,
@@ -180,6 +186,21 @@ struct CtoSessionDestinationView: View {
       resumeMetadata: nil,
       chatIdleSinceAt: summary.idleSinceAt
     )
+  }
+}
+
+private extension View {
+  @ViewBuilder
+  func ctoSessionNavigationChrome(mode: WorkSessionNavigationChrome, title: String) -> some View {
+    switch mode {
+    case .pushedDetail:
+      self
+        .navigationTitle(title)
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar(.hidden, for: .tabBar)
+    case .embedded:
+      self
+    }
   }
 }
 

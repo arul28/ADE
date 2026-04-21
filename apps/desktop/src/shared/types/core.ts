@@ -146,6 +146,19 @@ export type OnboardingExistingLaneCandidate = {
   behind: number;
 };
 
+export type OnboardingTourEntry = {
+  completedAt: string | null;
+  dismissedAt: string | null;
+  lastStepIndex: number;
+};
+
+export type OnboardingTourProgress = {
+  wizardCompletedAt: string | null;
+  wizardDismissedAt: string | null;
+  tours: Record<string, OnboardingTourEntry>;
+  glossaryTermsSeen: string[];
+};
+
 export type KeybindingOverride = {
   id: string;
   binding: string;

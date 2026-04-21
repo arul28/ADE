@@ -3,8 +3,8 @@ import SwiftUI
 /// Lists every session we know about from the shared workspace snapshot and
 /// lets the user mute a session or restrict it to awaiting-input alerts only.
 ///
-/// Snapshot reads are cheap (JSON from the App Group `UserDefaults`), so we
-/// refresh on appear rather than subscribing to a publisher.
+/// Snapshot reads are cheap (JSON from the App Group `UserDefaults`), so this
+/// refreshes when shown rather than subscribing to a publisher.
 struct PerSessionOverrideView: View {
   @Binding var overrides: [String: SessionNotificationOverride]
 
@@ -30,8 +30,8 @@ struct PerSessionOverrideView: View {
     }
     .navigationTitle("Per-session overrides")
     .navigationBarTitleDisplayMode(.inline)
-    .onAppear(perform: reload)
-    .refreshable { reload() }
+    .task { reloadIfChanged() }
+    .refreshable { reloadIfChanged() }
   }
 
   // MARK: - Rows
@@ -99,8 +99,10 @@ struct PerSessionOverrideView: View {
 
   // MARK: - Helpers
 
-  private func reload() {
-    agents = ADESharedContainer.readWorkspaceSnapshot()?.agents ?? []
+  private func reloadIfChanged() {
+    let nextAgents = ADESharedContainer.readWorkspaceSnapshot()?.agents ?? []
+    guard nextAgents != agents else { return }
+    agents = nextAgents
   }
 
   private func mutedBinding(_ sessionId: String, fallback: SessionNotificationOverride) -> Binding<Bool> {

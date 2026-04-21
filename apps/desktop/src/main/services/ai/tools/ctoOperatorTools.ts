@@ -81,7 +81,7 @@ export interface CtoOperatorToolDeps {
     getLogTail: (args: { runId: string; maxBytes?: number }) => string;
   } | null;
   ptyService?: {
-    create: (args: { laneId: string; title?: string; cols?: number; rows?: number; tracked?: boolean; startupCommand?: string }) => Promise<{ ptyId: string; sessionId: string }>;
+    create: (args: { laneId: string; title?: string; cols?: number; rows?: number; tracked?: boolean; toolType?: "shell"; startupCommand?: string }) => Promise<{ ptyId: string; sessionId: string }>;
   } | null;
   automationService?: {
     list: () => AutomationRuleSummary[];
@@ -2439,6 +2439,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
           laneId,
           ...(title?.trim() ? { title: title.trim() } : {}),
           ...(startupCommand?.trim() ? { startupCommand: startupCommand.trim() } : {}),
+          toolType: "shell",
           tracked: true,
         });
         return { success: true, ...result };
@@ -3462,7 +3463,9 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
     execute: async ({ pattern, fileGlob, maxResults, contextLines }) => {
       try {
         const { execFileSync } = await import("node:child_process");
-        const adeRoot = path.resolve(__dirname, "../../../../..");
+        const adeRoot = typeof __dirname === "string"
+          ? path.resolve(__dirname, "../../../../..")
+          : path.resolve(process.cwd());
         const searchPattern = pattern.trim().slice(0, 500);
         const globArg = (fileGlob?.trim() || "*.ts").slice(0, 200);
         const args = [

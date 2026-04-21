@@ -618,12 +618,11 @@ struct WorkApprovalRequestCard: View {
 
 struct WorkStructuredQuestionCard: View {
   let question: WorkPendingQuestionModel
-  @Binding var responseText: String
   let busy: Bool
   /// Tap-to-submit is only used for single-question single-select with options
   /// (the card invokes this directly from `optionRow`). Multi-question cards
   /// never call this — taps only update local state and submit via Send.
-  let onSelectOption: @MainActor (WorkPendingQuestionOption) async -> Void
+  let onSelectOption: @MainActor (WorkPendingQuestionOption, String?) async -> Void
   /// Aggregate submit: one map from questionId -> answer value, plus the
   /// shared freeform response (single-question only). The session action
   /// forwards this as one `chat.respondToInput` call.
@@ -631,6 +630,7 @@ struct WorkStructuredQuestionCard: View {
   let onDecline: @MainActor () async -> Void
 
   @State private var currentPage: Int = 0
+  @State private var singleQuestionFreeformText: String = ""
   @State private var selections: [String: Set<String>] = [:]
   @State private var freeformByQuestion: [String: String] = [:]
   @State private var expandedPreviews: Set<String> = []
@@ -772,7 +772,7 @@ struct WorkStructuredQuestionCard: View {
       Spacer(minLength: 0)
 
       Button("Decline") {
-        Task { await onDecline() }
+        Task { await declineQuestion() }
       }
       .buttonStyle(.glass)
       .tint(ADEColor.danger)
@@ -787,6 +787,15 @@ struct WorkStructuredQuestionCard: View {
   }
 
   private var canSubmit: Bool {
+    if !isPaged {
+      let selected = selections[activeQuestion.questionId] ?? []
+      let freeform = singleQuestionFreeformText.trimmingCharacters(in: .whitespacesAndNewlines)
+      if activeQuestion.options.isEmpty {
+        return !freeform.isEmpty
+      }
+      return !selected.isEmpty || (activeQuestion.allowsFreeform && !freeform.isEmpty)
+    }
+
     // Multi-question card: require at least one answer (selection OR freeform)
     // per question that has options. Questions that are freeform-only need
     // non-empty text before Send unlocks.
@@ -799,14 +808,6 @@ struct WorkStructuredQuestionCard: View {
         if selected.isEmpty && (!q.allowsFreeform || freeform.isEmpty) { return false }
       } else {
         if selected.isEmpty && (!q.allowsFreeform || freeform.isEmpty) { return false }
-      }
-    }
-    if !isPaged {
-      // Single-question card: also allow the shared responseText binding.
-      let shared = responseText.trimmingCharacters(in: .whitespacesAndNewlines)
-      if activeQuestion.options.isEmpty {
-        let freeform = (freeformByQuestion[activeQuestion.questionId] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        return !freeform.isEmpty || !shared.isEmpty
       }
     }
     return true
@@ -833,21 +834,48 @@ struct WorkStructuredQuestionCard: View {
     }
     let sharedFreeform: String? = {
       if isPaged { return nil }
-      let shared = responseText.trimmingCharacters(in: .whitespacesAndNewlines)
+      let shared = singleQuestionFreeformText.trimmingCharacters(in: .whitespacesAndNewlines)
       return shared.isEmpty ? nil : shared
     }()
     await onSubmitAll(answers, sharedFreeform)
+    clearQuestionDrafts()
+  }
+
+  @MainActor
+  private func declineQuestion() async {
+    await onDecline()
+    clearQuestionDrafts()
+  }
+
+  @MainActor
+  private func clearQuestionDrafts() {
+    if !singleQuestionFreeformText.isEmpty {
+      singleQuestionFreeformText = ""
+    }
+    if !selections.isEmpty {
+      selections.removeAll()
+    }
+    if !freeformByQuestion.isEmpty {
+      freeformByQuestion.removeAll()
+    }
+    if !expandedPreviews.isEmpty {
+      expandedPreviews.removeAll()
+    }
+    if currentPage != 0 {
+      currentPage = 0
+    }
   }
 
   private func freeformBinding(for q: WorkPendingQuestion) -> Binding<String> {
     if !isPaged {
-      // Single-question cards keep the legacy shared binding so composer
-      // callers can drive the text externally if needed.
-      return $responseText
+      return $singleQuestionFreeformText
     }
     return Binding(
       get: { freeformByQuestion[q.questionId] ?? "" },
-      set: { freeformByQuestion[q.questionId] = $0 }
+      set: { newValue in
+        guard freeformByQuestion[q.questionId] != newValue else { return }
+        freeformByQuestion[q.questionId] = newValue
+      }
     )
   }
 
@@ -969,7 +997,11 @@ struct WorkStructuredQuestionCard: View {
       selections[q.questionId] = [option.value]
     }
     if singleQuestionSingleSelect {
-      Task { await onSelectOption(option) }
+      let freeform = singleQuestionFreeformText.trimmingCharacters(in: .whitespacesAndNewlines)
+      Task { @MainActor in
+        await onSelectOption(option, freeform.isEmpty ? nil : freeform)
+        clearQuestionDrafts()
+      }
     }
   }
 }

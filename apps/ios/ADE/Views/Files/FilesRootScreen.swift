@@ -1,6 +1,11 @@
 import SwiftUI
 import UIKit
 
+struct FilesProofArtifactsReloadKey: Hashable {
+  let workspaceId: String?
+  let revision: Int
+}
+
 struct FilesRootScreen: View {
   @Environment(\.accessibilityReduceMotion) var reduceMotion
   @EnvironmentObject var syncService: SyncService
@@ -22,6 +27,35 @@ struct FilesRootScreen: View {
   @State var refreshFeedbackToken = 0
   @State var selectedFileTransitionPath: String?
   @State var lastFilesLocalProjectionReload = Date.distantPast
+  @State var lastHandledFilesProjectionRevision: Int?
+  @State var lastHandledQuickOpenSearchKey: FilesSearchKey?
+  @State var lastHandledTextSearchKey: FilesSearchKey?
+  @State var lastHandledProofArtifactsReloadKey: FilesProofArtifactsReloadKey?
+
+  var filesProjectionReloadKey: Int? {
+    isTabActive ? syncService.localStateRevision : nil
+  }
+
+  var quickOpenSearchKey: FilesSearchKey? {
+    guard isTabActive else { return nil }
+    return FilesSearchKey(workspaceId: selectedWorkspaceId, query: quickOpenQuery, isLive: canUseLiveFileActions)
+  }
+
+  var textSearchKey: FilesSearchKey? {
+    guard isTabActive else { return nil }
+    return FilesSearchKey(workspaceId: selectedWorkspaceId, query: textSearchQuery, isLive: canUseLiveFileActions)
+  }
+
+  var filesNavigationRequestKey: String? {
+    guard isTabActive else { return nil }
+    return syncService.requestedFilesNavigation?.id
+  }
+
+  var proofArtifactsReloadKey: FilesProofArtifactsReloadKey? {
+    isTabActive
+      ? FilesProofArtifactsReloadKey(workspaceId: selectedWorkspaceId, revision: syncService.localStateRevision)
+      : nil
+  }
 
   var body: some View {
     NavigationStack(path: $navigationPath) {
@@ -167,7 +201,8 @@ struct FilesRootScreen: View {
                   openFile(path, in: workspace, focusLine: line)
                 },
                 transitionNamespace: transitionNamespace,
-                selectedFilePath: selectedFileTransitionPath
+                selectedFilePath: selectedFileTransitionPath,
+                manualReloadToken: 0
               )
               .environmentObject(syncService)
             }
@@ -235,9 +270,7 @@ struct FilesRootScreen: View {
         }
       }
       .toolbar {
-        ToolbarItem(placement: .topBarLeading) {
-          ADEConnectionDot()
-        }
+        ADERootToolbarLeadingItems()
         ToolbarItem(placement: .topBarTrailing) {
           Button {
             Task { await reload(refreshRemote: true) }
@@ -253,37 +286,57 @@ struct FilesRootScreen: View {
       }
       .sensoryFeedback(.selection, trigger: selectedWorkspaceId)
       .sensoryFeedback(.success, trigger: refreshFeedbackToken)
-      .task(id: isTabActive) {
-        guard isTabActive else { return }
-        await reload()
-      }
-      .task(id: "\(syncService.localStateRevision)-\(isTabActive)") {
-        guard isTabActive else { return }
+      .task(id: filesProjectionReloadKey) {
+        guard let revision = filesProjectionReloadKey else { return }
+        guard lastHandledFilesProjectionRevision != revision || workspaces.isEmpty else { return }
         let now = Date()
-        guard now.timeIntervalSince(lastFilesLocalProjectionReload) >= 0.35 else { return }
-        lastFilesLocalProjectionReload = now
+        if !workspaces.isEmpty {
+          let elapsed = now.timeIntervalSince(lastFilesLocalProjectionReload)
+          if elapsed < 0.35 {
+            try? await Task.sleep(for: .milliseconds(max(1, Int((0.35 - elapsed) * 1_000))))
+            guard !Task.isCancelled, filesProjectionReloadKey == revision else { return }
+          }
+        }
+        lastFilesLocalProjectionReload = Date()
         await reload()
+        guard !Task.isCancelled, filesProjectionReloadKey == revision else { return }
+        lastHandledFilesProjectionRevision = revision
       }
-      .task(id: "\(FilesSearchKey(workspaceId: selectedWorkspaceId, query: quickOpenQuery, isLive: canUseLiveFileActions).hashValue)-\(isTabActive)") {
-        guard isTabActive else { return }
+      .task(id: quickOpenSearchKey) {
+        guard let key = quickOpenSearchKey else { return }
+        guard lastHandledQuickOpenSearchKey != key else { return }
         await runQuickOpenSearch()
+        guard !Task.isCancelled else { return }
+        lastHandledQuickOpenSearchKey = key
       }
-      .task(id: "\(FilesSearchKey(workspaceId: selectedWorkspaceId, query: textSearchQuery, isLive: canUseLiveFileActions).hashValue)-\(isTabActive)") {
-        guard isTabActive else { return }
+      .task(id: textSearchKey) {
+        guard let key = textSearchKey else { return }
+        guard lastHandledTextSearchKey != key else { return }
         await runTextSearch()
+        guard !Task.isCancelled else { return }
+        lastHandledTextSearchKey = key
       }
-      .task(id: "\(syncService.requestedFilesNavigation?.id ?? "none")-\(isTabActive)") {
-        guard isTabActive else { return }
+      .task(id: filesNavigationRequestKey) {
+        guard filesNavigationRequestKey != nil else { return }
         await handleRequestedNavigation()
       }
-      .task(id: "\(selectedWorkspaceId ?? "none")-\(isTabActive)") {
-        guard isTabActive else { return }
+      .task(id: proofArtifactsReloadKey) {
+        guard let key = proofArtifactsReloadKey else { return }
+        guard lastHandledProofArtifactsReloadKey != key else { return }
         await loadProofArtifacts()
+        guard !Task.isCancelled else { return }
+        lastHandledProofArtifactsReloadKey = key
       }
       .onChange(of: selectedWorkspaceId) { _, _ in
-        navigationPath = []
-        quickOpenResults = []
-        textSearchResults = []
+        if !navigationPath.isEmpty {
+          navigationPath = []
+        }
+        if !quickOpenResults.isEmpty {
+          quickOpenResults = []
+        }
+        if !textSearchResults.isEmpty {
+          textSearchResults = []
+        }
       }
       .sheet(item: $selectedProofArtifact) { artifact in
         FilesProofArtifactSheet(artifact: artifact)

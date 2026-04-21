@@ -31,6 +31,94 @@ import {
 } from "./notificationMapper";
 import type { ApnsEnvelope, ApnsService } from "./apnsService";
 
+const APPLE_REFERENCE_DATE_MS = Date.UTC(2001, 0, 1);
+
+function activityDateValue(ms: number): number {
+  return Math.floor((ms - APPLE_REFERENCE_DATE_MS) / 1000);
+}
+
+function numberMetadata(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function stringMetadata(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
+}
+
+function attentionForLiveActivity(mapped: MappedNotification): Record<string, unknown> | null {
+  const metadata = mapped.metadata ?? {};
+  switch (mapped.category) {
+    case "CHAT_AWAITING_INPUT":
+      return {
+        kind: "awaitingInput",
+        title: mapped.title,
+        subtitle: mapped.body,
+        sessionId: stringMetadata(metadata.sessionId),
+        itemId: stringMetadata(metadata.itemId),
+      };
+    case "CHAT_FAILED":
+      return {
+        kind: "failed",
+        title: mapped.title,
+        subtitle: mapped.body,
+        sessionId: stringMetadata(metadata.sessionId),
+      };
+    case "PR_CI_FAILING":
+      return {
+        kind: "ciFailing",
+        title: mapped.title,
+        subtitle: mapped.body,
+        prId: stringMetadata(metadata.prId),
+        prNumber: numberMetadata(metadata.prNumber),
+      };
+    case "PR_REVIEW_REQUESTED":
+      return {
+        kind: "reviewRequested",
+        title: mapped.title,
+        subtitle: mapped.body,
+        prId: stringMetadata(metadata.prId),
+        prNumber: numberMetadata(metadata.prNumber),
+      };
+    case "PR_CHANGES_REQUESTED":
+      return {
+        kind: "reviewRequested",
+        title: mapped.title,
+        subtitle: mapped.body,
+        prId: stringMetadata(metadata.prId),
+        prNumber: numberMetadata(metadata.prNumber),
+      };
+    case "PR_MERGE_READY":
+      return {
+        kind: "mergeReady",
+        title: mapped.title,
+        subtitle: mapped.body,
+        prId: stringMetadata(metadata.prId),
+        prNumber: numberMetadata(metadata.prNumber),
+      };
+    default:
+      return null;
+  }
+}
+
+function buildLiveActivityUpdatePayload(mapped: MappedNotification, nowMs: number): Record<string, unknown> | null {
+  const attention = attentionForLiveActivity(mapped);
+  if (!attention) return null;
+  return {
+    aps: {
+      timestamp: Math.floor(nowMs / 1000),
+      event: "update",
+      "content-state": {
+        sessions: [],
+        attention,
+        failingCheckCount: mapped.category === "PR_CI_FAILING" ? 1 : 0,
+        awaitingReviewCount: mapped.category === "PR_REVIEW_REQUESTED" || mapped.category === "PR_CHANGES_REQUESTED" ? 1 : 0,
+        mergeReadyCount: mapped.category === "PR_MERGE_READY" ? 1 : 0,
+        generatedAt: activityDateValue(nowMs),
+      },
+    },
+  };
+}
+
 export type DevicePushTarget = {
   deviceId: string;
   bundleId: string;
@@ -49,7 +137,7 @@ export type NotificationEventBusArgs = {
    * The bus filters further based on prefs + token availability.
    */
   listPushTargets: () => DevicePushTarget[];
-  /** Returns the prefs for a specific device, or null if none stored. */
+  /** Returns the prefs for a specific device, falling back to defaults when none are stored. */
   getPrefsForDevice: (deviceId: string) => NotificationPreferences | null;
   /** Send an in-app notification over an already-connected WebSocket. */
   sendInAppNotification: (
@@ -79,7 +167,8 @@ export function createNotificationEventBus(args: NotificationEventBusArgs) {
     if (targets.length === 0) return;
     for (const target of targets) {
       const prefs = args.getPrefsForDevice(target.deviceId);
-      if (!isAllowedByPrefs(mapped, prefs, now())) continue;
+      const nowMs = now();
+      const prefsAllowed = isAllowedByPrefs(mapped, prefs, nowMs);
 
       const connectedInApp = args.isDeviceConnected(target.deviceId);
       if (connectedInApp) {
@@ -93,7 +182,8 @@ export function createNotificationEventBus(args: NotificationEventBusArgs) {
         });
       }
 
-      if (!target.alertToken || !args.apnsService || !args.apnsService.isConfigured()) continue;
+      if (!prefsAllowed) continue;
+      if (!args.apnsService || !args.apnsService.isConfigured()) continue;
 
       // `apns-expiration` drops the push if it can't be delivered within the
       // window. For priority-5 / passive pushes (turn completed, mission phase,
@@ -101,27 +191,56 @@ export function createNotificationEventBus(args: NotificationEventBusArgs) {
       // device is offline for hours — 10 minutes is plenty for them to still
       // feel "live". For priority-10 attention pushes (awaiting input, CI
       // failing) we give APNs 1 hour so it can deliver on the next reconnect.
-      const nowSeconds = Math.floor(now() / 1000);
+      const nowSeconds = Math.floor(nowMs / 1000);
       const expirationEpochSeconds =
         mapped.priority === 10 ? nowSeconds + 60 * 60 : nowSeconds + 10 * 60;
 
-      const envelope: ApnsEnvelope = {
-        deviceToken: target.alertToken,
-        pushType: mapped.pushType,
-        topic: target.bundleId,
-        priority: mapped.priority,
-        payload: buildApnsPayload(mapped),
-        collapseId: mapped.collapseId,
-        expirationEpochSeconds,
-      };
-      try {
-        await args.apnsService.send(envelope);
-      } catch (error) {
-        args.logger.warn("notification_bus.apns_send_failed", {
-          deviceId: target.deviceId,
-          category: mapped.category,
-          error: error instanceof Error ? error.message : String(error),
-        });
+      if (target.alertToken) {
+        const envelope: ApnsEnvelope = {
+          deviceToken: target.alertToken,
+          env: target.env,
+          pushType: mapped.pushType,
+          topic: target.bundleId,
+          priority: mapped.priority,
+          payload: buildApnsPayload(mapped),
+          collapseId: mapped.collapseId,
+          expirationEpochSeconds,
+        };
+        try {
+          await args.apnsService.send(envelope);
+        } catch (error) {
+          args.logger.warn("notification_bus.apns_send_failed", {
+            deviceId: target.deviceId,
+            category: mapped.category,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+
+      const livePayload = buildLiveActivityUpdatePayload(mapped, nowMs);
+      const updateTokens = target.activityUpdateTokens ? Object.values(target.activityUpdateTokens) : [];
+      if (livePayload && updateTokens.length > 0) {
+        for (const token of updateTokens) {
+          const liveEnvelope: ApnsEnvelope = {
+            deviceToken: token,
+            env: target.env,
+            pushType: "liveactivity",
+            topic: `${target.bundleId}.push-type.liveactivity`,
+            priority: 10,
+            payload: livePayload,
+            collapseId: mapped.collapseId ? `${mapped.collapseId}:activity` : undefined,
+            expirationEpochSeconds,
+          };
+          try {
+            await args.apnsService.send(liveEnvelope);
+          } catch (error) {
+            args.logger.warn("notification_bus.live_activity_send_failed", {
+              deviceId: target.deviceId,
+              category: mapped.category,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
+        }
       }
     }
   }
@@ -162,13 +281,28 @@ export function createNotificationEventBus(args: NotificationEventBusArgs) {
     async sendTestPush(deviceId: string, kind: "alert" | "activity" = "alert"): Promise<{ ok: boolean; reason?: string }> {
       const target = args.listPushTargets().find((t) => t.deviceId === deviceId);
       if (!target) return { ok: false, reason: "device_not_registered" };
-      const token = kind === "alert" ? target.alertToken : target.activityStartToken;
+      const activityUpdateToken = target.activityUpdateTokens ? Object.values(target.activityUpdateTokens)[0] : null;
+      const token = kind === "alert" ? target.alertToken : activityUpdateToken ?? target.activityStartToken;
       if (!token) return { ok: false, reason: "no_token" };
       if (!args.apnsService || !args.apnsService.isConfigured()) return { ok: false, reason: "apns_not_configured" };
 
       const topic = kind === "activity" ? `${target.bundleId}.push-type.liveactivity` : target.bundleId;
+      const activityEvent = activityUpdateToken ? "update" : "start";
+      const liveContentState = {
+        sessions: [],
+        attention: {
+          kind: "awaitingInput",
+          title: "ADE test push",
+          subtitle: "Live Activity delivery is wired.",
+        },
+        failingCheckCount: 0,
+        awaitingReviewCount: 0,
+        mergeReadyCount: 0,
+        generatedAt: activityDateValue(now()),
+      };
       const envelope: ApnsEnvelope = {
         deviceToken: token,
+        env: target.env,
         pushType: kind === "activity" ? "liveactivity" : "alert",
         topic,
         priority: 10,
@@ -176,9 +310,15 @@ export function createNotificationEventBus(args: NotificationEventBusArgs) {
           kind === "activity"
             ? {
                 aps: {
-                  event: "update",
-                  "content-state": { kind: "running", title: "Test push", statusLine: "verified", startedAt: new Date(now()).toISOString() },
+                  event: activityEvent,
                   timestamp: Math.floor(now() / 1000),
+                  ...(activityEvent === "start"
+                    ? {
+                        "attributes-type": "ADESessionAttributes",
+                        attributes: { workspaceId: "default", workspaceName: "ADE" },
+                      }
+                    : {}),
+                  "content-state": liveContentState,
                 },
               }
             : buildApnsPayload({

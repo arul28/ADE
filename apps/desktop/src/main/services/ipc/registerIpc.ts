@@ -212,6 +212,7 @@ import type {
   OnboardingDetectionResult,
   OnboardingExistingLaneCandidate,
   OnboardingStatus,
+  OnboardingTourProgress,
   LaneListSnapshot,
   LaneRuntimeSummary,
   LaneSummary,
@@ -2458,6 +2459,77 @@ export function registerIpc({
     }
     return ctx.onboardingService.complete();
   });
+
+  const emptyTourProgress = (): OnboardingTourProgress => ({
+    wizardCompletedAt: null,
+    wizardDismissedAt: null,
+    tours: {},
+    glossaryTermsSeen: [],
+  });
+
+  ipcMain.handle(IPC.onboardingGetTourProgress, async (): Promise<OnboardingTourProgress> => {
+    const ctx = getCtx();
+    if (!ctx.onboardingService) return emptyTourProgress();
+    return ctx.onboardingService.getTourProgress();
+  });
+
+  ipcMain.handle(IPC.onboardingMarkWizardCompleted, async (): Promise<OnboardingTourProgress> => {
+    const ctx = getCtx();
+    if (!ctx.onboardingService) return emptyTourProgress();
+    return ctx.onboardingService.markWizardCompleted();
+  });
+
+  ipcMain.handle(IPC.onboardingMarkWizardDismissed, async (): Promise<OnboardingTourProgress> => {
+    const ctx = getCtx();
+    if (!ctx.onboardingService) return emptyTourProgress();
+    return ctx.onboardingService.markWizardDismissed();
+  });
+
+  ipcMain.handle(
+    IPC.onboardingMarkTourCompleted,
+    async (_event, arg: { tourId: string }): Promise<OnboardingTourProgress> => {
+      const ctx = getCtx();
+      if (!ctx.onboardingService) return emptyTourProgress();
+      return ctx.onboardingService.markTourCompleted(arg?.tourId ?? "");
+    },
+  );
+
+  ipcMain.handle(
+    IPC.onboardingMarkTourDismissed,
+    async (_event, arg: { tourId: string }): Promise<OnboardingTourProgress> => {
+      const ctx = getCtx();
+      if (!ctx.onboardingService) return emptyTourProgress();
+      return ctx.onboardingService.markTourDismissed(arg?.tourId ?? "");
+    },
+  );
+
+  ipcMain.handle(
+    IPC.onboardingUpdateTourStep,
+    async (_event, arg: { tourId: string; index: number }): Promise<OnboardingTourProgress> => {
+      const ctx = getCtx();
+      if (!ctx.onboardingService) return emptyTourProgress();
+      const index = typeof arg?.index === "number" ? arg.index : 0;
+      return ctx.onboardingService.updateTourStep(arg?.tourId ?? "", index);
+    },
+  );
+
+  ipcMain.handle(
+    IPC.onboardingMarkGlossaryTermSeen,
+    async (_event, arg: { termId: string }): Promise<OnboardingTourProgress> => {
+      const ctx = getCtx();
+      if (!ctx.onboardingService) return emptyTourProgress();
+      return ctx.onboardingService.markGlossaryTermSeen(arg?.termId ?? "");
+    },
+  );
+
+  ipcMain.handle(
+    IPC.onboardingResetTourProgress,
+    async (_event, arg?: { tourId?: string }): Promise<OnboardingTourProgress> => {
+      const ctx = getCtx();
+      if (!ctx.onboardingService) return emptyTourProgress();
+      return ctx.onboardingService.resetTourProgress(arg?.tourId);
+    },
+  );
 
   ipcMain.handle(IPC.automationsList, async (): Promise<AutomationRuleSummary[]> => {
     const ctx = getCtx();
@@ -6639,6 +6711,10 @@ export function registerIpc({
     async (_event, args: ApnsBridgeSaveConfigArgs): Promise<ApnsBridgeStatus> => {
       const ctx = getCtx();
       saveApnsConfigToProject(args);
+      if (!args.enabled) {
+        await ctx.apnsService?.reset?.();
+        return readApnsStatus();
+      }
       // Configure the live ApnsService directly from the args we just saved —
       // avoids a race where `projectConfigService.get()` returns a stale view
       // and `reconfigureApnsIfReady()` no-ops. If configure throws (invalid
@@ -6661,6 +6737,8 @@ export function registerIpc({
             );
           }
         }
+      } else {
+        await ctx.apnsService?.reset?.();
       }
       return readApnsStatus();
     },
@@ -6706,6 +6784,7 @@ export function registerIpc({
   ipcMain.handle(IPC.notificationsApnsClearKey, async (): Promise<ApnsBridgeStatus> => {
     const ctx = getCtx();
     ctx.apnsKeyStore?.clear?.();
+    await ctx.apnsService?.reset?.();
     return readApnsStatus();
   });
 
@@ -6720,8 +6799,7 @@ export function registerIpc({
       if (!registry) return { ok: false, reason: "Device registry unavailable." };
       const effective = ctx.projectConfigService?.get?.()?.effective;
       const apnsConfig = effective?.notifications?.apns ?? null;
-      const bundleId = apnsConfig?.bundleId?.trim() ?? "";
-      if (!bundleId) return { ok: false, reason: "No bundle id configured." };
+      const configuredBundleId = apnsConfig?.bundleId?.trim() ?? "";
       const devices = registry
         .listDevices()
         .filter((d) => d.platform === "iOS" && d.deviceType === "phone");
@@ -6732,6 +6810,19 @@ export function registerIpc({
         : devices[0] ?? null;
       if (!target) return { ok: false, reason: "No paired iOS device in the registry." };
       const meta = target.metadata ?? {};
+      const deviceBundleId =
+        typeof meta.apnsBundleId === "string" && meta.apnsBundleId.trim().length > 0
+          ? meta.apnsBundleId.trim()
+          : configuredBundleId;
+      if (!deviceBundleId) return { ok: false, reason: "No APNs bundle id found for this device or project." };
+      const deviceEnv =
+        meta.apnsEnv === "production"
+          ? "production"
+          : meta.apnsEnv === "sandbox"
+            ? "sandbox"
+            : apnsConfig?.env === "production"
+              ? "production"
+              : "sandbox";
 
       // Pick the right (token, topic, pushType, payload) quadruple based on kind.
       let deviceToken: string | null;
@@ -6747,7 +6838,7 @@ export function registerIpc({
             reason: "Device has no Live Activity push-to-start token yet (iOS 17.2+ registers this shortly after launch).",
           };
         }
-        topic = `${bundleId}.push-type.liveactivity`;
+        topic = `${deviceBundleId}.push-type.liveactivity`;
         pushType = "liveactivity";
         payload = buildLiveActivityStartPayload();
       } else if (kind === "la_update_running" || kind === "la_update_attention" || kind === "la_update_multi") {
@@ -6760,7 +6851,7 @@ export function registerIpc({
             reason: "No active Live Activity on device to update. Start one first (or fire 'Live Activity · start').",
           };
         }
-        topic = `${bundleId}.push-type.liveactivity`;
+        topic = `${deviceBundleId}.push-type.liveactivity`;
         pushType = "liveactivity";
         payload = buildLiveActivityUpdatePayload(kind);
       } else if (kind === "la_end") {
@@ -6770,7 +6861,7 @@ export function registerIpc({
         if (!deviceToken) {
           return { ok: false, reason: "No active Live Activity on device to end." };
         }
-        topic = `${bundleId}.push-type.liveactivity`;
+        topic = `${deviceBundleId}.push-type.liveactivity`;
         pushType = "liveactivity";
         payload = buildLiveActivityEndPayload();
       } else {
@@ -6782,7 +6873,7 @@ export function registerIpc({
               "Device has no APNs alert token yet. Make sure you accepted the notification permission prompt on the iOS app (Settings → Notifications → ADE → Allow).",
           };
         }
-        topic = bundleId;
+        topic = deviceBundleId;
         pushType = "alert";
         payload = buildTestPushPayload(kind);
       }
@@ -6790,6 +6881,7 @@ export function registerIpc({
       try {
         const result = await ctx.apnsService.send({
           deviceToken,
+          env: deviceEnv,
           pushType,
           topic,
           priority: 10,

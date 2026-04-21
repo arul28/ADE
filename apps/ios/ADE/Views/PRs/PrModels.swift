@@ -18,7 +18,7 @@ struct PrActionAvailability: Equatable {
     case "draft":
       showsMerge = true
       mergeEnabled = false
-      showsClose = false
+      showsClose = true
       showsReopen = false
       showsRequestReviewers = true
     case "closed":

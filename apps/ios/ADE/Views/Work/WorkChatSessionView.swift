@@ -19,12 +19,12 @@ struct WorkChatSessionView: View {
   @Binding var sending: Bool
   @Binding var errorMessage: String?
   @State var visibleTimelineCount = workTimelinePageSize
-  @State var inputResponseText = ""
   @State var actionInFlight = false
   @State var isNearBottom = true
   @State var unreadBelowCount = 0
   @State var artifactDrawerPresented = false
   @State var timelineSnapshot = WorkChatTimelineSnapshot.empty
+  @State var timelinePresentation = WorkTimelinePresentation.empty
   @State var timelineRebuildTask: Task<Void, Never>?
   @State var timelineRebuildGeneration = 0
   let isLive: Bool
@@ -48,9 +48,16 @@ struct WorkChatSessionView: View {
   let onSelectRuntimeMode: @MainActor (String) async -> Void
   let onSelectEffort: @MainActor (String) async -> Void
 
+  /// Optional lane list forwarded from the parent so the `@`-mention picker can offer lane names.
+  /// When nil the `@` button is still shown but the sheet will display an empty list.
+  var lanes: [LaneSummary] = []
+
   @State var steerEditDrafts: [String: String] = [:]
   @State var modelPickerPresented = false
   @State var modelUpdateInFlight = false
+  @State var mentionsSheetPresented = false
+  @State var slashSheetPresented = false
+  @State var pendingComposerInsert: String?
 
   var sessionStatus: String {
     normalizedWorkChatSessionStatus(session: session, summary: chatSummary)
@@ -89,20 +96,30 @@ struct WorkChatSessionView: View {
   }
 
   /// Timeline with synthetic turn-separator pills inserted before each new
-  /// user-message turn. Computed view-side so the async snapshot stays focused
-  /// on raw transcript shaping; separators prefer the model recorded on that
-  /// turn's terminal event so older turns do not relabel when the session model
-  /// changes.
+  /// user-message turn. Cached alongside the visible slice so focus and
+  /// keyboard layout changes do not rebuild transcript arrays.
   var timelineWithSeparators: [WorkTimelineEntry] {
-    injectWorkTurnSeparators(into: timeline, chatSummary: chatSummary, transcript: transcript)
+    timelinePresentation.entries
   }
 
   var visibleTimeline: [WorkTimelineEntry] {
-    visibleWorkTimelineEntries(from: timelineWithSeparators, visibleCount: visibleTimelineCount)
+    timelinePresentation.visibleEntries
   }
 
   var hiddenTimelineCount: Int {
-    max(timelineWithSeparators.count - visibleTimeline.count, 0)
+    timelinePresentation.hiddenCount
+  }
+
+  @MainActor
+  func refreshTimelinePresentation(sourceTimeline: [WorkTimelineEntry]? = nil) {
+    let nextPresentation = makeWorkTimelinePresentation(
+      timeline: sourceTimeline ?? timelineSnapshot.timeline,
+      visibleCount: visibleTimelineCount,
+      chatSummary: chatSummary,
+      transcript: transcript
+    )
+    guard nextPresentation != timelinePresentation else { return }
+    timelinePresentation = nextPresentation
   }
 
   var canCompose: Bool {
@@ -133,238 +150,251 @@ struct WorkChatSessionView: View {
     return nil
   }
 
-  var sessionOverviewSection: AnyView {
-    AnyView(
-      Group {
-        // Pending-input cards now render inline at their chronological position
-        // in the timeline via `timelineEntryView`. The overview section only
-        // surfaces offline banners and chat-level errors.
-        if !isLive {
-          ForEach(pendingInputs) { item in
-            switch item {
-            case .approval:
-              ADENoticeCard(
-                title: "Approval waiting on host",
-                message: "Reconnect to approve or deny this tool request. Cached transcript data may be slightly behind the desktop.",
-                icon: "lock.shield",
-                tint: ADEColor.warning,
-                actionTitle: nil,
-                action: nil
-              )
-            case .question:
-              ADENoticeCard(
-                title: "Host needs your answer",
-                message: "Reconnect to respond to this question. The host keeps the session paused until input arrives.",
-                icon: "questionmark.circle",
-                tint: ADEColor.warning,
-                actionTitle: nil,
-                action: nil
-              )
-            case .permission:
-              ADENoticeCard(
-                title: "Permission request waiting",
-                message: "Reconnect to allow or decline this tool's permission gate.",
-                icon: "lock.shield",
-                tint: ADEColor.warning,
-                actionTitle: nil,
-                action: nil
-              )
-            }
-          }
-        }
-
-        // When live, approval_request cards (tool approval gates) still render
-        // at the top — they are not suppressed from the pendingInputs set, only
-        // structured questions and permission gates get their inline treatment.
-        if isLive {
-          ForEach(pendingInputs) { item in
-            if case .approval(let approval) = item {
-              WorkApprovalRequestCard(
-                approval: approval,
-                busy: actionInFlight,
-                onDecision: { decision in
-                  await runSessionAction {
-                    await onApproveRequest(approval.id, decision)
-                  }
-                }
-              )
-            }
-          }
-        }
-
-        if let errorMessage {
+  @ViewBuilder
+  var sessionOverviewSection: some View {
+    // Pending-input cards now render inline at their chronological position
+    // in the timeline via `timelineEntryView`. The overview section only
+    // surfaces offline banners and chat-level errors.
+    if !isLive {
+      ForEach(pendingInputs) { item in
+        switch item {
+        case .approval:
           ADENoticeCard(
-            title: "Chat error",
-            message: errorMessage,
-            icon: "exclamationmark.triangle.fill",
-            tint: ADEColor.danger,
-            actionTitle: "Retry",
-            action: { Task { await onRetryLoad() } }
+            title: "Approval waiting on host",
+            message: "Reconnect to approve or deny this tool request. Cached transcript data may be slightly behind the desktop.",
+            icon: "lock.shield",
+            tint: ADEColor.warning,
+            actionTitle: nil,
+            action: nil
+          )
+        case .question:
+          ADENoticeCard(
+            title: "Host needs your answer",
+            message: "Reconnect to respond to this question. The host keeps the session paused until input arrives.",
+            icon: "questionmark.circle",
+            tint: ADEColor.warning,
+            actionTitle: nil,
+            action: nil
+          )
+        case .permission:
+          ADENoticeCard(
+            title: "Permission request waiting",
+            message: "Reconnect to allow or decline this tool's permission gate.",
+            icon: "lock.shield",
+            tint: ADEColor.warning,
+            actionTitle: nil,
+            action: nil
+          )
+        case .planApproval:
+          ADENoticeCard(
+            title: "Plan approval waiting",
+            message: "Reconnect to approve or reject the agent's plan.",
+            icon: "list.bullet.clipboard",
+            tint: ADEColor.warning,
+            actionTitle: nil,
+            action: nil
           )
         }
       }
-    )
-  }
+    }
 
-  var timelineSection: AnyView {
-    AnyView(
-      Group {
-        if timeline.isEmpty {
-          ADEEmptyStateView(
-            symbol: "bubble.left.and.bubble.right",
-            title: "No chat messages yet",
-            message: isLive ? "Send a message to start streaming the transcript." : "Reconnect to load the latest chat history from the host."
-          )
-        } else {
-          if hiddenTimelineCount > 0 {
-            Button {
-              loadEarlierTimelineEntries()
-            } label: {
-              Label(
-                "Load \(min(hiddenTimelineCount, workTimelinePageSize)) earlier message\(min(hiddenTimelineCount, workTimelinePageSize) == 1 ? "" : "s")",
-                systemImage: "chevron.up.circle"
-              )
-              .font(.footnote.weight(.semibold))
-              .frame(maxWidth: .infinity)
+    // When live, approval_request cards (tool approval gates) still render
+    // at the top — they are not suppressed from the pendingInputs set, only
+    // structured questions, permission gates, and plan approvals get their
+    // inline treatment in the timeline.
+    if isLive {
+      ForEach(pendingInputs) { item in
+        if case .approval(let approval) = item {
+          WorkApprovalRequestCard(
+            approval: approval,
+            busy: actionInFlight,
+            onDecision: { decision in
+              await runSessionAction {
+                await onApproveRequest(approval.id, decision)
+              }
             }
-            .buttonStyle(.glass)
-            .tint(ADEColor.accent)
-            .controlSize(.small)
-            .accessibilityLabel("Load earlier messages")
-          }
-
-          ForEach(visibleTimeline) { entry in
-            timelineEntryView(for: entry)
-          }
+          )
         }
       }
-    )
+    }
+
+    if let errorMessage {
+      ADENoticeCard(
+        title: "Chat error",
+        message: errorMessage,
+        icon: "exclamationmark.triangle.fill",
+        tint: ADEColor.danger,
+        actionTitle: "Retry",
+        action: { Task { await onRetryLoad() } }
+      )
+    }
   }
 
-  var streamingStatusSection: AnyView {
-    AnyView(
-      WorkActivityIndicator(
-        transcript: transcript,
-        isStreaming: sessionStatus == "active" && isLive
+  @ViewBuilder
+  var timelineSection: some View {
+    if timeline.isEmpty {
+      ADEEmptyStateView(
+        symbol: "bubble.left.and.bubble.right",
+        title: "No chat messages yet",
+        message: isLive ? "Send a message to start streaming the transcript." : "Reconnect to load the latest chat history from the host."
       )
+    } else {
+      if hiddenTimelineCount > 0 {
+        Button {
+          loadEarlierTimelineEntries()
+        } label: {
+          Label(
+            "Load \(min(hiddenTimelineCount, workTimelinePageSize)) earlier message\(min(hiddenTimelineCount, workTimelinePageSize) == 1 ? "" : "s")",
+            systemImage: "chevron.up.circle"
+          )
+          .font(.footnote.weight(.semibold))
+          .frame(maxWidth: .infinity)
+        }
+        .buttonStyle(.glass)
+        .tint(ADEColor.accent)
+        .controlSize(.small)
+        .accessibilityLabel("Load earlier messages")
+      }
+
+      ForEach(visibleTimeline) { entry in
+        timelineEntryView(for: entry)
+      }
+    }
+  }
+
+  var streamingStatusSection: some View {
+    WorkActivityIndicator(
+      transcript: transcript,
+      isStreaming: sessionStatus == "active" && isLive
     )
   }
 
   /// Single desktop-shaped composer card: text field on top, chip strip and
   /// send button on the bottom, everything wrapped in one rounded container
   /// with clear contrast against the chat background.
-  func composerInset(proxy: ScrollViewProxy) -> AnyView {
-    AnyView(
-      VStack(spacing: 10) {
-        // The redundant ENDED/RUNNING status pill row has been retired. Chat
-        // lifecycle controls live outside the composer; this space is reserved
-        // for pending input and send feedback.
+  func composerInset(proxy: ScrollViewProxy) -> some View {
+    VStack(spacing: 10) {
+      // The redundant ENDED/RUNNING status pill row has been retired. Chat
+      // lifecycle controls live outside the composer; this space is reserved
+      // for pending input and send feedback.
 
-        if let primary = primaryPendingInput {
-          let overflow = max(pendingInputs.count - 1, 0)
-          switch primary {
-          case .approval(let approval):
-            WorkComposerInputBanner(
-              title: overflow > 0 ? "Approval waiting (+\(overflow) more)" : "Approval waiting",
-              message: approval.description,
-              icon: "checkmark.shield",
-              tint: ADEColor.warning
-            )
-          case .question(let question):
-            WorkComposerInputBanner(
-              title: overflow > 0 ? "Question waiting (+\(overflow) more)" : "Question waiting",
-              message: question.question,
-              icon: "questionmark.circle",
-              tint: ADEColor.warning
-            )
-          case .permission(let permission):
-            WorkComposerInputBanner(
-              title: overflow > 0 ? "Permission waiting (+\(overflow) more)" : "Permission waiting",
-              message: permission.description,
-              icon: "lock.shield",
-              tint: ADEColor.warning
-            )
-          }
-        }
-
-        if !pendingSteers.isEmpty {
-          WorkQueuedSteerStrip(
-            steers: pendingSteers,
-            drafts: $steerEditDrafts,
-            busy: actionInFlight,
-            isLive: isLive,
-            onCancel: { steerId in
-              await runSessionAction {
-                await onCancelSteer(steerId)
-                steerEditDrafts.removeValue(forKey: steerId)
-              }
-            },
-            onSaveEdit: { steerId, text in
-              await runSessionAction {
-                await onEditSteer(steerId, text)
-                steerEditDrafts.removeValue(forKey: steerId)
-              }
-            }
+      if let primary = primaryPendingInput {
+        let overflow = max(pendingInputs.count - 1, 0)
+        switch primary {
+        case .approval(let approval):
+          WorkComposerInputBanner(
+            title: overflow > 0 ? "Approval waiting (+\(overflow) more)" : "Approval waiting",
+            message: approval.description,
+            icon: "checkmark.shield",
+            tint: ADEColor.warning
+          )
+        case .question(let question):
+          WorkComposerInputBanner(
+            title: overflow > 0 ? "Question waiting (+\(overflow) more)" : "Question waiting",
+            message: question.question,
+            icon: "questionmark.circle",
+            tint: ADEColor.warning
+          )
+        case .permission(let permission):
+          WorkComposerInputBanner(
+            title: overflow > 0 ? "Permission waiting (+\(overflow) more)" : "Permission waiting",
+            message: permission.description,
+            icon: "lock.shield",
+            tint: ADEColor.warning
+          )
+        case .planApproval(let plan):
+          // Plan-approval cards render inline in the timeline. The composer
+          // banner just gives a lightweight heads-up so the user knows there's
+          // a decision waiting even if they haven't scrolled to it yet.
+          WorkComposerInputBanner(
+            title: overflow > 0 ? "Plan approval waiting (+\(overflow) more)" : "Plan approval waiting",
+            message: plan.title,
+            icon: "list.bullet.clipboard",
+            tint: Color(red: 0.95, green: 0.72, blue: 0.15)
           )
         }
+      }
 
-        if let composerFeedback {
-          Text(composerFeedback)
-            .font(.caption2)
-            .foregroundStyle(sessionStatus == "awaiting-input" ? ADEColor.warning : ADEColor.textMuted)
-            .frame(maxWidth: .infinity, alignment: .center)
-            .padding(.horizontal, sessionStatus == "awaiting-input" ? 10 : 0)
-            .padding(.vertical, sessionStatus == "awaiting-input" ? 7 : 0)
-            .background(
-              Group {
-                if sessionStatus == "awaiting-input" {
-                  RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(ADEColor.warning.opacity(0.08))
-                }
-              }
-            )
-        }
-
-        WorkChatComposerCard(
-          chatSummary: chatSummary,
-          queuedSteerCount: pendingSteers.count,
-          pendingInputCount: pendingInputs.count,
-          canCompose: canCompose,
-          canSend: canSend,
-          sending: sending,
-          // Show a Stop affordance on the Send button while the assistant is
-          // generating. The chip strip stays usable so users can switch
-          // access/model mid-turn; interruption replaces "Send" with a
-          // warning-tinted button.
-          showInterrupt: isLive && sessionStatus == "active",
-          interruptInFlight: actionInFlight,
-          onInterrupt: {
-            await runSessionAction(onInterrupt)
+      if !pendingSteers.isEmpty {
+        WorkQueuedSteerStrip(
+          steers: pendingSteers,
+          drafts: $steerEditDrafts,
+          busy: actionInFlight,
+          isLive: isLive,
+          onCancel: { steerId in
+            await runSessionAction {
+              await onCancelSteer(steerId)
+              steerEditDrafts.removeValue(forKey: steerId)
+            }
           },
-          onOpenModelPicker: chatSummary == nil ? nil : { modelPickerPresented = true },
-          onSelectRuntimeMode: chatSummary == nil ? nil : { mode in
-            Task { await onSelectRuntimeMode(mode) }
-          },
-          onSelectEffort: chatSummary == nil ? nil : { effort in
-            Task { await onSelectEffort(effort) }
-          },
-          artifactCount: artifacts.count,
-          latestArtifact: artifacts.last,
-          artifactRefreshInFlight: artifactRefreshInFlight,
-          artifactRefreshError: artifactRefreshError,
-          onOpenProof: { artifactDrawerPresented = true },
-          onSend: onSend,
-          onSent: {
-            withAnimation(ADEMotion.quick(reduceMotion: reduceMotion)) {
-              proxy.scrollTo("chat-end", anchor: .bottom)
+          onSaveEdit: { steerId, text in
+            await runSessionAction {
+              await onEditSteer(steerId, text)
+              steerEditDrafts.removeValue(forKey: steerId)
             }
           }
         )
       }
-      .padding(.horizontal, 16)
-      .padding(.top, 8)
-      .padding(.bottom, 0)
-    )
+
+      if let composerFeedback {
+        Text(composerFeedback)
+          .font(.caption2)
+          .foregroundStyle(sessionStatus == "awaiting-input" ? ADEColor.warning : ADEColor.textMuted)
+          .frame(maxWidth: .infinity, alignment: .center)
+          .padding(.horizontal, sessionStatus == "awaiting-input" ? 10 : 0)
+          .padding(.vertical, sessionStatus == "awaiting-input" ? 7 : 0)
+          .background(
+            Group {
+              if sessionStatus == "awaiting-input" {
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                  .fill(ADEColor.warning.opacity(0.08))
+              }
+            }
+          )
+      }
+
+      WorkChatComposerCard(
+        chatSummary: chatSummary,
+        queuedSteerCount: pendingSteers.count,
+        pendingInputCount: pendingInputs.count,
+        canCompose: canCompose,
+        canSend: canSend,
+        sending: sending,
+        // Show a Stop affordance on the Send button while the assistant is
+        // generating. The chip strip stays usable so users can switch
+        // access/model mid-turn; interruption replaces "Send" with a
+        // warning-tinted button.
+        showInterrupt: isLive && sessionStatus == "active",
+        interruptInFlight: actionInFlight,
+        onInterrupt: {
+          await runSessionAction(onInterrupt)
+        },
+        onOpenModelPicker: chatSummary == nil ? nil : { modelPickerPresented = true },
+        onSelectRuntimeMode: chatSummary == nil ? nil : { mode in
+          Task { await onSelectRuntimeMode(mode) }
+        },
+        onSelectEffort: chatSummary == nil ? nil : { effort in
+          Task { await onSelectEffort(effort) }
+        },
+        artifactCount: artifacts.count,
+        latestArtifact: artifacts.last,
+        artifactRefreshInFlight: artifactRefreshInFlight,
+        artifactRefreshError: artifactRefreshError,
+        onOpenProof: { artifactDrawerPresented = true },
+        pendingInsert: $pendingComposerInsert,
+        onOpenMentions: { mentionsSheetPresented = true },
+        onOpenSlash: { slashSheetPresented = true },
+        onSend: onSend,
+        onSent: {
+          withAnimation(ADEMotion.quick(reduceMotion: reduceMotion)) {
+            proxy.scrollTo("chat-end", anchor: .bottom)
+          }
+        }
+      )
+    }
+    .padding(.horizontal, 16)
+    .padding(.top, 8)
+    .padding(.bottom, 0)
   }
 
   var body: some View {
@@ -433,10 +463,14 @@ struct WorkChatSessionView: View {
         }
       }
       .onAppear {
+        refreshTimelinePresentation()
         scheduleTimelineSnapshotRebuild()
       }
       .onDisappear {
         cancelScheduledTimelineSnapshotRebuild()
+      }
+      .onChange(of: chatSummary) { _, _ in
+        refreshTimelinePresentation()
       }
       .onChange(of: transcript) { _, _ in
         scheduleTimelineSnapshotRebuild()
@@ -489,13 +523,66 @@ struct WorkChatSessionView: View {
           }
         )
       }
+      .sheet(isPresented: $mentionsSheetPresented) {
+        WorkMentionsPickerSheet(lanes: lanes) { token in
+          pendingComposerInsert = token
+          mentionsSheetPresented = false
+        }
+      }
+      .sheet(isPresented: $slashSheetPresented) {
+        WorkSlashCommandsSheet(provider: chatSummary?.provider ?? session.toolType ?? "") { token in
+          pendingComposerInsert = token
+          slashSheetPresented = false
+        }
+      }
     }
   }
 }
 
-private struct WorkChatComposerCard: View {
-  @Environment(\.accessibilityReduceMotion) var reduceMotion
+struct WorkTimelinePresentation: Equatable {
+  let entries: [WorkTimelineEntry]
+  let visibleEntries: [WorkTimelineEntry]
+  let hiddenCount: Int
+  let latestVisibleAssistantMessageId: String?
 
+  static let empty = WorkTimelinePresentation(
+    entries: [],
+    visibleEntries: [],
+    hiddenCount: 0,
+    latestVisibleAssistantMessageId: nil
+  )
+}
+
+private func makeWorkTimelinePresentation(
+  timeline: [WorkTimelineEntry],
+  visibleCount: Int,
+  chatSummary: AgentChatSessionSummary?,
+  transcript: [WorkChatEnvelope]
+) -> WorkTimelinePresentation {
+  let entries = injectWorkTurnSeparators(
+    into: timeline,
+    chatSummary: chatSummary,
+    transcript: transcript
+  )
+  let visibleEntries = visibleWorkTimelineEntries(from: entries, visibleCount: visibleCount)
+  return WorkTimelinePresentation(
+    entries: entries,
+    visibleEntries: visibleEntries,
+    hiddenCount: max(entries.count - visibleEntries.count, 0),
+    latestVisibleAssistantMessageId: latestVisibleAssistantMessageId(in: visibleEntries)
+  )
+}
+
+private func latestVisibleAssistantMessageId(in entries: [WorkTimelineEntry]) -> String? {
+  for entry in entries.reversed() {
+    if case .message(let message) = entry.payload, message.role.lowercased() == "assistant" {
+      return message.id
+    }
+  }
+  return nil
+}
+
+private struct WorkChatComposerCard: View {
   let chatSummary: AgentChatSessionSummary?
   let queuedSteerCount: Int
   let pendingInputCount: Int
@@ -516,10 +603,79 @@ private struct WorkChatComposerCard: View {
   let artifactRefreshInFlight: Bool
   let artifactRefreshError: String?
   let onOpenProof: () -> Void
+  @Binding var pendingInsert: String?
+  let onOpenMentions: () -> Void
+  let onOpenSlash: () -> Void
+  let onSend: @MainActor (String) async -> Bool
+  let onSent: () -> Void
+
+  var body: some View {
+    WorkChatComposerDraftInput(
+      chatSummary: chatSummary,
+      queuedSteerCount: queuedSteerCount,
+      pendingInputCount: pendingInputCount,
+      canCompose: canCompose,
+      canSend: canSend,
+      sending: sending,
+      showInterrupt: showInterrupt,
+      interruptInFlight: interruptInFlight,
+      onInterrupt: onInterrupt,
+      onOpenModelPicker: onOpenModelPicker,
+      onSelectRuntimeMode: onSelectRuntimeMode,
+      onSelectEffort: onSelectEffort,
+      artifactCount: artifactCount,
+      latestArtifact: latestArtifact,
+      artifactRefreshInFlight: artifactRefreshInFlight,
+      artifactRefreshError: artifactRefreshError,
+      onOpenProof: onOpenProof,
+      pendingInsert: $pendingInsert,
+      onOpenMentions: onOpenMentions,
+      onOpenSlash: onOpenSlash,
+      onSend: onSend,
+      onSent: onSent
+    )
+    .padding(.horizontal, 14)
+    .padding(.vertical, 14)
+    .background(composerSurface)
+  }
+
+  private var composerSurface: some View {
+    RoundedRectangle(cornerRadius: 24, style: .continuous)
+      .fill(ADEColor.composerBackground)
+      .overlay(
+        RoundedRectangle(cornerRadius: 24, style: .continuous)
+          .stroke(ADEColor.glassBorder, lineWidth: 1)
+      )
+      .shadow(color: Color.black.opacity(0.42), radius: 18, y: 8)
+  }
+}
+
+private struct WorkChatComposerDraftInput: View {
+  let chatSummary: AgentChatSessionSummary?
+  let queuedSteerCount: Int
+  let pendingInputCount: Int
+  let canCompose: Bool
+  let canSend: Bool
+  let sending: Bool
+  let showInterrupt: Bool
+  let interruptInFlight: Bool
+  let onInterrupt: @MainActor () async -> Void
+  let onOpenModelPicker: (() -> Void)?
+  let onSelectRuntimeMode: ((String) -> Void)?
+  let onSelectEffort: ((String) -> Void)?
+  let artifactCount: Int
+  let latestArtifact: ComputerUseArtifactSummary?
+  let artifactRefreshInFlight: Bool
+  let artifactRefreshError: String?
+  let onOpenProof: () -> Void
+  @Binding var pendingInsert: String?
+  let onOpenMentions: () -> Void
+  let onOpenSlash: () -> Void
   let onSend: @MainActor (String) async -> Bool
   let onSent: () -> Void
 
   @State private var draft = ""
+  @FocusState private var composerFocused: Bool
 
   private var trimmedDraft: String {
     draft.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -548,7 +704,19 @@ private struct WorkChatComposerCard: View {
         .foregroundStyle(ADEColor.textPrimary)
         .tint(ADEColor.accent)
         .disabled(!canCompose)
+        .autocorrectionDisabled()
+        .textInputAutocapitalization(.never)
+        .focused($composerFocused)
         .frame(maxWidth: .infinity, minHeight: 28, alignment: .leading)
+        .onChange(of: pendingInsert) { _, token in
+          guard let token, !token.isEmpty else { return }
+          if !draft.isEmpty && !draft.hasSuffix(" ") && !draft.hasSuffix("\n") {
+            draft += " "
+          }
+          draft += token
+          pendingInsert = nil
+          composerFocused = true
+        }
 
       HStack(alignment: .center, spacing: 8) {
         WorkComposerChipStrip(
@@ -561,6 +729,32 @@ private struct WorkChatComposerCard: View {
         )
 
         Spacer(minLength: 0)
+
+        // @ mentions button
+        Button(action: onOpenMentions) {
+          Image(systemName: "at")
+            .font(.system(size: 12, weight: .bold))
+            .foregroundStyle(ADEColor.textSecondary)
+            .frame(width: 28, height: 28)
+            .background(ADEColor.raisedBackground.opacity(0.7), in: Circle())
+            .overlay(Circle().stroke(ADEColor.glassBorder, lineWidth: 0.6))
+        }
+        .buttonStyle(.plain)
+        .disabled(!canCompose)
+        .accessibilityLabel("Insert @ mention")
+
+        // / slash-command button
+        Button(action: onOpenSlash) {
+          Text("/")
+            .font(.system(size: 14, weight: .bold))
+            .foregroundStyle(ADEColor.textSecondary)
+            .frame(width: 28, height: 28)
+            .background(ADEColor.raisedBackground.opacity(0.7), in: Circle())
+            .overlay(Circle().stroke(ADEColor.glassBorder, lineWidth: 0.6))
+        }
+        .buttonStyle(.plain)
+        .disabled(!canCompose)
+        .accessibilityLabel("Insert slash command")
 
         WorkProofComposerButton(
           count: artifactCount,
@@ -577,22 +771,21 @@ private struct WorkChatComposerCard: View {
         }
       }
     }
-    .padding(.horizontal, 14)
-    .padding(.vertical, 14)
-    .background(composerSurface)
   }
 
   @ViewBuilder
   private var sendButton: some View {
+    let isSendEnabled = sendEnabled
+    let accent = sendAccent
     Button {
       let text = trimmedDraft
       draft = ""
-      Task {
+      Task { @MainActor in
         let sent = await onSend(text)
         if sent {
           onSent()
         } else {
-          draft = text
+          restoreUnsentDraft(text)
         }
       }
     } label: {
@@ -600,7 +793,7 @@ private struct WorkChatComposerCard: View {
         if sending {
           ProgressView()
             .controlSize(.mini)
-            .tint(sendEnabled ? Color.white : ADEColor.textSecondary)
+            .tint(isSendEnabled ? Color.white : ADEColor.textSecondary)
         } else {
           Image(systemName: "paperplane.fill")
             .font(.system(size: 12, weight: .bold))
@@ -608,22 +801,32 @@ private struct WorkChatComposerCard: View {
         Text("Send")
           .font(.caption.weight(.semibold))
       }
-      .foregroundStyle(sendEnabled ? Color.white : ADEColor.textSecondary)
+      .foregroundStyle(isSendEnabled ? Color.white : ADEColor.textSecondary)
       .padding(.horizontal, 12)
       .padding(.vertical, 8)
       .background(
         Capsule(style: .continuous)
-          .fill(sendEnabled ? sendAccent : ADEColor.surfaceBackground.opacity(0.85))
+          .fill(isSendEnabled ? accent : ADEColor.surfaceBackground.opacity(0.85))
       )
       .overlay(
         Capsule(style: .continuous)
-          .stroke(sendEnabled ? Color.clear : ADEColor.border.opacity(0.35), lineWidth: 0.8)
+          .stroke(isSendEnabled ? Color.clear : ADEColor.border.opacity(0.35), lineWidth: 0.8)
       )
-      .shadow(color: sendEnabled ? sendAccent.opacity(0.4) : .clear, radius: 8, y: 2)
+      .shadow(color: isSendEnabled ? accent.opacity(0.4) : .clear, radius: 8, y: 2)
     }
     .buttonStyle(.plain)
     .accessibilityLabel(sending ? "Sending message" : "Send message")
-    .disabled(!sendEnabled)
+    .disabled(!isSendEnabled)
+  }
+
+  private func restoreUnsentDraft(_ text: String) {
+    let currentDraft = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard currentDraft != text else { return }
+    if currentDraft.isEmpty {
+      draft = text
+    } else {
+      draft = "\(text)\n\(draft)"
+    }
   }
 
   @ViewBuilder
@@ -655,16 +858,6 @@ private struct WorkChatComposerCard: View {
     .buttonStyle(.plain)
     .accessibilityLabel(interruptInFlight ? "Interrupting turn" : "Stop turn")
     .disabled(interruptInFlight)
-  }
-
-  private var composerSurface: some View {
-    RoundedRectangle(cornerRadius: 24, style: .continuous)
-      .fill(ADEColor.composerBackground)
-      .overlay(
-        RoundedRectangle(cornerRadius: 24, style: .continuous)
-          .stroke(ADEColor.glassBorder, lineWidth: 1)
-      )
-      .shadow(color: Color.black.opacity(0.42), radius: 18, y: 8)
   }
 }
 

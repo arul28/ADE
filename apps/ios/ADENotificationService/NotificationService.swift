@@ -38,7 +38,11 @@ final class NotificationService: UNNotificationServiceExtension {
         // 2) Thread identifier for grouping by session / PR.
         if let sessionId = userInfo["sessionId"] as? String, !sessionId.isEmpty {
             content.threadIdentifier = "session-\(sessionId)"
-        } else if let prNumber = userInfo["prNumber"] {
+        } else if let prNumber = userInfo["prNumber"] as? Int {
+            content.threadIdentifier = "pr-\(prNumber)"
+        } else if let prNumber = userInfo["prNumber"] as? NSNumber {
+            content.threadIdentifier = "pr-\(prNumber.intValue)"
+        } else if let prNumber = userInfo["prNumber"] as? String, !prNumber.isEmpty {
             content.threadIdentifier = "pr-\(prNumber)"
         }
 

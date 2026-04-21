@@ -43,7 +43,9 @@ final class DeepLinkRouter {
       return
     }
     if let pr = userInfo["prNumber"] {
-      post(kind: "pr", identifier: "\(pr)")
+      let identifier = "\(pr)"
+      guard !identifier.isEmpty else { return }
+      post(kind: "pr", identifier: identifier)
     }
   }
 

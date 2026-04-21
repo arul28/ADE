@@ -28,6 +28,8 @@
 		AA5400000000000000000016 /* NotificationService.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA5400000000000000000004 /* NotificationService.swift */; };
 		AA5100000000000000000017 /* ADELiveActivity.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA5100000000000000000001 /* ADELiveActivity.swift */; };
 		AA5100000000000000000018 /* ADELiveActivityViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA5100000000000000000002 /* ADELiveActivityViews.swift */; };
+		AA5600000000000000000011 /* ADELiveActivityPrimitives.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA5600000000000000000001 /* ADELiveActivityPrimitives.swift */; };
+		AA5600000000000000000012 /* ADELiveActivityPrimitives.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA5600000000000000000001 /* ADELiveActivityPrimitives.swift */; };
 		F300000000000000000000F0 /* NotificationPreferences.swift in Sources */ = {isa = PBXBuildFile; fileRef = F300000000000000000000E0 /* NotificationPreferences.swift */; };
 		F300000000000000000000F1 /* NotificationsCenterView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F300000000000000000000E1 /* NotificationsCenterView.swift */; };
 		F300000000000000000000F2 /* SettingsNotificationsSection.swift in Sources */ = {isa = PBXBuildFile; fileRef = F300000000000000000000E2 /* SettingsNotificationsSection.swift */; };
@@ -42,6 +44,7 @@
 		AA5200000000000000000014 /* ADELockScreenWidget.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA5200000000000000000004 /* ADELockScreenWidget.swift */; };
 		AA5200000000000000000015 /* ADEControlWidget.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA5200000000000000000005 /* ADEControlWidget.swift */; };
 		AA5200000000000000000016 /* ADEWidgetPreviewData.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA5200000000000000000006 /* ADEWidgetPreviewData.swift */; };
+		AA5700000000000000000012 /* ADELiveActivityPreviews.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA5700000000000000000002 /* ADELiveActivityPreviews.swift */; };
 		AA2200000000000000000001 /* ADEWidgets.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000002 /* ADEWidgets.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		BB2200000000000000000001 /* ADENotificationService.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000002 /* ADENotificationService.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		0375D32BA5870617FA1758C6 /* KeychainService.swift in Sources */ = {isa = PBXBuildFile; fileRef = B5D5B5B87564C73F2FF34B0D /* KeychainService.swift */; };
@@ -82,6 +85,15 @@
 		E1000000000000000000003C /* WorkSessionGrouping.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1000000000000000000003C /* WorkSessionGrouping.swift */; };
 		H10000000000000000000001 /* CtoRootScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = H10000000000000000000010 /* CtoRootScreen.swift */; };
 		H10000000000000000000002 /* CtoSessionDestinationView.swift in Sources */ = {isa = PBXBuildFile; fileRef = H10000000000000000000011 /* CtoSessionDestinationView.swift */; };
+		H10000000000000000000003 /* CtoBriefEditor.swift in Sources */ = {isa = PBXBuildFile; fileRef = H10000000000000000000012 /* CtoBriefEditor.swift */; };
+		H10000000000000000000004 /* CtoChatScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = H10000000000000000000013 /* CtoChatScreen.swift */; };
+		H10000000000000000000005 /* CtoIdentityEditor.swift in Sources */ = {isa = PBXBuildFile; fileRef = H10000000000000000000014 /* CtoIdentityEditor.swift */; };
+		H10000000000000000000006 /* CtoSettingsScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = H10000000000000000000015 /* CtoSettingsScreen.swift */; };
+		H10000000000000000000007 /* CtoSharedHelpers.swift in Sources */ = {isa = PBXBuildFile; fileRef = H10000000000000000000016 /* CtoSharedHelpers.swift */; };
+		H10000000000000000000008 /* CtoTabShell.swift in Sources */ = {isa = PBXBuildFile; fileRef = H10000000000000000000017 /* CtoTabShell.swift */; };
+		H10000000000000000000009 /* CtoTeamScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = H10000000000000000000018 /* CtoTeamScreen.swift */; };
+		H1000000000000000000000A /* CtoWorkerDetailScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = H10000000000000000000019 /* CtoWorkerDetailScreen.swift */; };
+		H1000000000000000000000B /* CtoWorkflowsScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = H1000000000000000000001A /* CtoWorkflowsScreen.swift */; };
 		E20000000000000000000042 /* FilesModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000042 /* FilesModels.swift */; };
 		E20000000000000000000043 /* FilesHelpers.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000043 /* FilesHelpers.swift */; };
 		E20000000000000000000044 /* FilesRootScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000044 /* FilesRootScreen.swift */; };
@@ -98,6 +110,10 @@
 		6BDC22C6450AF0B3CBDB2650 /* FilesTabView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4EBFB65019F4C3F8A89428CE /* FilesTabView.swift */; };
 		6E32ED1BF961DFEFCA12EF52 /* DatabaseBootstrap.sql in Resources */ = {isa = PBXBuildFile; fileRef = 2856F8D2F2D630DD985B870A /* DatabaseBootstrap.sql */; };
 		7B70BE6839672E5D2D006B28 /* ADETests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 14C0DF7FEB4C2EB854BAC888 /* ADETests.swift */; };
+		D30000000000000000000011 /* AttentionDrawerModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = D30000000000000000000001 /* AttentionDrawerModel.swift */; };
+		D30000000000000000000012 /* AttentionDrawerButton.swift in Sources */ = {isa = PBXBuildFile; fileRef = D30000000000000000000002 /* AttentionDrawerButton.swift */; };
+		D30000000000000000000013 /* AttentionDrawerSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = D30000000000000000000003 /* AttentionDrawerSheet.swift */; };
+		D30000000000000000000015 /* AttentionDrawerModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D30000000000000000000005 /* AttentionDrawerModelTests.swift */; };
 		889573D8A5ED468D3BD12894 /* PRsTabView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5EE4D463D21266B62B422D11 /* PRsTabView.swift */; };
 		B10000000000000000000002 /* LaneAttachSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000002 /* LaneAttachSheet.swift */; };
 		B10000000000000000000003 /* LaneBatchManageSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000003 /* LaneBatchManageSheet.swift */; };
@@ -142,6 +158,12 @@
 		G1000000000000000000000C /* PrWorkflowCards.swift in Sources */ = {isa = PBXBuildFile; fileRef = G2000000000000000000000C /* PrWorkflowCards.swift */; };
 		G1000000000000000000000D /* PrStackSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = G2000000000000000000000D /* PrStackSheet.swift */; };
 		G1000000000000000000000E /* CreatePrWizardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = G2000000000000000000000E /* CreatePrWizardView.swift */; };
+		G1000000000000000000000F /* PrMergeGateCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = G2000000000000000000000F /* PrMergeGateCard.swift */; };
+		G10000000000000000000020 /* PrAiSummaryCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = G20000000000000000000020 /* PrAiSummaryCard.swift */; };
+		G10000000000000000000021 /* PrCommitRailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = G20000000000000000000021 /* PrCommitRailView.swift */; };
+		G10000000000000000000022 /* PrAiResolverCtaCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = G20000000000000000000022 /* PrAiResolverCtaCard.swift */; };
+		G10000000000000000000023 /* PrStackDiagramView.swift in Sources */ = {isa = PBXBuildFile; fileRef = G20000000000000000000023 /* PrStackDiagramView.swift */; };
+		G10000000000000000000024 /* PrRebaseScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = G20000000000000000000024 /* PrRebaseScreen.swift */; };
 		B10000000000000000000017 /* LaneTreeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000017 /* LaneTreeView.swift */; };
 		B10000000000000000000018 /* AddLaneSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000018 /* AddLaneSheet.swift */; };
 		B10000000000000000000019 /* LanesOfflineEmptyState.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000019 /* LanesOfflineEmptyState.swift */; };
@@ -218,6 +240,8 @@
 		AA5200000000000000000004 /* ADELockScreenWidget.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ADELockScreenWidget.swift; path = ADEWidgets/ADELockScreenWidget.swift; sourceTree = "<group>"; };
 		AA5200000000000000000005 /* ADEControlWidget.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ADEControlWidget.swift; path = ADEWidgets/ADEControlWidget.swift; sourceTree = "<group>"; };
 		AA5200000000000000000006 /* ADEWidgetPreviewData.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ADEWidgetPreviewData.swift; path = ADEWidgets/ADEWidgetPreviewData.swift; sourceTree = "<group>"; };
+		AA5600000000000000000001 /* ADELiveActivityPrimitives.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ADELiveActivityPrimitives.swift; path = ADEWidgets/ADELiveActivityPrimitives.swift; sourceTree = "<group>"; };
+		AA5700000000000000000002 /* ADELiveActivityPreviews.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ADELiveActivityPreviews.swift; path = ADEWidgets/ADELiveActivityPreviews.swift; sourceTree = "<group>"; };
 		BB5000000000000000000001 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; name = Info.plist; path = ADENotificationService/Info.plist; sourceTree = "<group>"; };
 		BB5000000000000000000002 /* ADENotificationService.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; name = ADENotificationService.entitlements; path = ADENotificationService/ADENotificationService.entitlements; sourceTree = "<group>"; };
 		CC5000000000000000000001 /* ADE.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; name = ADE.entitlements; path = ADE/ADE.entitlements; sourceTree = "<group>"; };
@@ -260,6 +284,15 @@
 		D1000000000000000000003C /* WorkSessionGrouping.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkSessionGrouping.swift; path = ADE/Views/Work/WorkSessionGrouping.swift; sourceTree = "<group>"; };
 		H10000000000000000000010 /* CtoRootScreen.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CtoRootScreen.swift; path = ADE/Views/Cto/CtoRootScreen.swift; sourceTree = "<group>"; };
 		H10000000000000000000011 /* CtoSessionDestinationView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CtoSessionDestinationView.swift; path = ADE/Views/Cto/CtoSessionDestinationView.swift; sourceTree = "<group>"; };
+		H10000000000000000000012 /* CtoBriefEditor.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CtoBriefEditor.swift; path = ADE/Views/Cto/CtoBriefEditor.swift; sourceTree = "<group>"; };
+		H10000000000000000000013 /* CtoChatScreen.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CtoChatScreen.swift; path = ADE/Views/Cto/CtoChatScreen.swift; sourceTree = "<group>"; };
+		H10000000000000000000014 /* CtoIdentityEditor.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CtoIdentityEditor.swift; path = ADE/Views/Cto/CtoIdentityEditor.swift; sourceTree = "<group>"; };
+		H10000000000000000000015 /* CtoSettingsScreen.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CtoSettingsScreen.swift; path = ADE/Views/Cto/CtoSettingsScreen.swift; sourceTree = "<group>"; };
+		H10000000000000000000016 /* CtoSharedHelpers.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CtoSharedHelpers.swift; path = ADE/Views/Cto/CtoSharedHelpers.swift; sourceTree = "<group>"; };
+		H10000000000000000000017 /* CtoTabShell.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CtoTabShell.swift; path = ADE/Views/Cto/CtoTabShell.swift; sourceTree = "<group>"; };
+		H10000000000000000000018 /* CtoTeamScreen.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CtoTeamScreen.swift; path = ADE/Views/Cto/CtoTeamScreen.swift; sourceTree = "<group>"; };
+		H10000000000000000000019 /* CtoWorkerDetailScreen.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CtoWorkerDetailScreen.swift; path = ADE/Views/Cto/CtoWorkerDetailScreen.swift; sourceTree = "<group>"; };
+		H1000000000000000000001A /* CtoWorkflowsScreen.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CtoWorkflowsScreen.swift; path = ADE/Views/Cto/CtoWorkflowsScreen.swift; sourceTree = "<group>"; };
 		D20000000000000000000042 /* FilesModels.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = FilesModels.swift; path = ADE/Views/Files/FilesModels.swift; sourceTree = "<group>"; };
 		D20000000000000000000043 /* FilesHelpers.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = FilesHelpers.swift; path = ADE/Views/Files/FilesHelpers.swift; sourceTree = "<group>"; };
 		D20000000000000000000044 /* FilesRootScreen.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = FilesRootScreen.swift; path = ADE/Views/Files/FilesRootScreen.swift; sourceTree = "<group>"; };
@@ -272,6 +305,10 @@
 		D2000000000000000000004B /* FilesDetailScreen.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = FilesDetailScreen.swift; path = ADE/Views/Files/FilesDetailScreen.swift; sourceTree = "<group>"; };
 		D2000000000000000000004C /* FilesDetailScreen+Actions.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = "FilesDetailScreen+Actions.swift"; path = "ADE/Views/Files/FilesDetailScreen+Actions.swift"; sourceTree = "<group>"; };
 		14C0DF7FEB4C2EB854BAC888 /* ADETests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ADETests.swift; path = ADETests/ADETests.swift; sourceTree = "<group>"; };
+		D30000000000000000000001 /* AttentionDrawerModel.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = AttentionDrawerModel.swift; path = ADE/Views/AttentionDrawer/AttentionDrawerModel.swift; sourceTree = "<group>"; };
+		D30000000000000000000002 /* AttentionDrawerButton.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = AttentionDrawerButton.swift; path = ADE/Views/AttentionDrawer/AttentionDrawerButton.swift; sourceTree = "<group>"; };
+		D30000000000000000000003 /* AttentionDrawerSheet.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = AttentionDrawerSheet.swift; path = ADE/Views/AttentionDrawer/AttentionDrawerSheet.swift; sourceTree = "<group>"; };
+		D30000000000000000000005 /* AttentionDrawerModelTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = AttentionDrawerModelTests.swift; path = ADETests/AttentionDrawerModelTests.swift; sourceTree = "<group>"; };
 		27A125DE2C17BA32F9291513 /* ADE.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = ADE.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		2856F8D2F2D630DD985B870A /* DatabaseBootstrap.sql */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text; name = DatabaseBootstrap.sql; path = ADE/Resources/DatabaseBootstrap.sql; sourceTree = "<group>"; };
 		31EC445F22FD38F90C16343E /* Foundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Foundation.framework; path = Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS18.0.sdk/System/Library/Frameworks/Foundation.framework; sourceTree = DEVELOPER_DIR; };
@@ -327,6 +364,12 @@
 		G2000000000000000000000C /* PrWorkflowCards.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrWorkflowCards.swift; path = ADE/Views/PRs/PrWorkflowCards.swift; sourceTree = "<group>"; };
 		G2000000000000000000000D /* PrStackSheet.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrStackSheet.swift; path = ADE/Views/PRs/PrStackSheet.swift; sourceTree = "<group>"; };
 		G2000000000000000000000E /* CreatePrWizardView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CreatePrWizardView.swift; path = ADE/Views/PRs/CreatePrWizardView.swift; sourceTree = "<group>"; };
+		G2000000000000000000000F /* PrMergeGateCard.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrMergeGateCard.swift; path = ADE/Views/PRs/PrMergeGateCard.swift; sourceTree = "<group>"; };
+		G20000000000000000000020 /* PrAiSummaryCard.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrAiSummaryCard.swift; path = ADE/Views/PRs/PrAiSummaryCard.swift; sourceTree = "<group>"; };
+		G20000000000000000000021 /* PrCommitRailView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrCommitRailView.swift; path = ADE/Views/PRs/PrCommitRailView.swift; sourceTree = "<group>"; };
+		G20000000000000000000022 /* PrAiResolverCtaCard.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrAiResolverCtaCard.swift; path = ADE/Views/PRs/PrAiResolverCtaCard.swift; sourceTree = "<group>"; };
+		G20000000000000000000023 /* PrStackDiagramView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrStackDiagramView.swift; path = ADE/Views/PRs/PrStackDiagramView.swift; sourceTree = "<group>"; };
+		G20000000000000000000024 /* PrRebaseScreen.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrRebaseScreen.swift; path = ADE/Views/PRs/PrRebaseScreen.swift; sourceTree = "<group>"; };
 		A10000000000000000000017 /* LaneTreeView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LaneTreeView.swift; path = ADE/Views/Lanes/LaneTreeView.swift; sourceTree = "<group>"; };
 		A10000000000000000000018 /* AddLaneSheet.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = AddLaneSheet.swift; path = ADE/Views/Lanes/AddLaneSheet.swift; sourceTree = "<group>"; };
 		A10000000000000000000019 /* LanesOfflineEmptyState.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LanesOfflineEmptyState.swift; path = ADE/Views/Lanes/LanesOfflineEmptyState.swift; sourceTree = "<group>"; };
@@ -438,10 +481,21 @@
 				H10000000000000000000020 /* Cto */,
 				G20000000000000000000000 /* PRs */,
 				A10000000000000000000015 /* Settings */,
+				D30000000000000000000004 /* AttentionDrawer */,
 				9270CF8A67F3FA79089F39C1 /* LanesTabView.swift */,
 				5EE4D463D21266B62B422D11 /* PRsTabView.swift */,
 			);
 			name = Views;
+			sourceTree = "<group>";
+		};
+		D30000000000000000000004 /* AttentionDrawer */ = {
+			isa = PBXGroup;
+			children = (
+				D30000000000000000000001 /* AttentionDrawerModel.swift */,
+				D30000000000000000000002 /* AttentionDrawerButton.swift */,
+				D30000000000000000000003 /* AttentionDrawerSheet.swift */,
+			);
+			name = AttentionDrawer;
 			sourceTree = "<group>";
 		};
 		G20000000000000000000000 /* PRs */ = {
@@ -461,6 +515,12 @@
 				G2000000000000000000000C /* PrWorkflowCards.swift */,
 				G2000000000000000000000D /* PrStackSheet.swift */,
 				G2000000000000000000000E /* CreatePrWizardView.swift */,
+				G2000000000000000000000F /* PrMergeGateCard.swift */,
+				G20000000000000000000020 /* PrAiSummaryCard.swift */,
+				G20000000000000000000021 /* PrCommitRailView.swift */,
+				G20000000000000000000022 /* PrAiResolverCtaCard.swift */,
+				G20000000000000000000023 /* PrStackDiagramView.swift */,
+				G20000000000000000000024 /* PrRebaseScreen.swift */,
 			);
 			name = PRs;
 			sourceTree = "<group>";
@@ -487,8 +547,17 @@
 		H10000000000000000000020 /* Cto */ = {
 			isa = PBXGroup;
 			children = (
+				H10000000000000000000012 /* CtoBriefEditor.swift */,
+				H10000000000000000000013 /* CtoChatScreen.swift */,
+				H10000000000000000000014 /* CtoIdentityEditor.swift */,
 				H10000000000000000000010 /* CtoRootScreen.swift */,
 				H10000000000000000000011 /* CtoSessionDestinationView.swift */,
+				H10000000000000000000015 /* CtoSettingsScreen.swift */,
+				H10000000000000000000016 /* CtoSharedHelpers.swift */,
+				H10000000000000000000017 /* CtoTabShell.swift */,
+				H10000000000000000000018 /* CtoTeamScreen.swift */,
+				H10000000000000000000019 /* CtoWorkerDetailScreen.swift */,
+				H1000000000000000000001A /* CtoWorkflowsScreen.swift */,
 			);
 			name = Cto;
 			sourceTree = "<group>";
@@ -623,6 +692,8 @@
 				AA5200000000000000000004 /* ADELockScreenWidget.swift */,
 				AA5200000000000000000005 /* ADEControlWidget.swift */,
 				AA5200000000000000000006 /* ADEWidgetPreviewData.swift */,
+				AA5600000000000000000001 /* ADELiveActivityPrimitives.swift */,
+				AA5700000000000000000002 /* ADELiveActivityPreviews.swift */,
 			);
 			name = ADEWidgets;
 			sourceTree = "<group>";
@@ -693,6 +764,7 @@
 			isa = PBXGroup;
 			children = (
 				14C0DF7FEB4C2EB854BAC888 /* ADETests.swift */,
+				D30000000000000000000005 /* AttentionDrawerModelTests.swift */,
 			);
 			name = ADETests;
 			sourceTree = "<group>";
@@ -900,6 +972,9 @@
 				AA1100000000000000000003 /* ADESharedTheme.swift in Sources */,
 				C10000000000000000000002 /* ADECodeRenderingCache.swift in Sources */,
 				0A1E077A24A5367ED58900F9 /* ADEDesignSystem.swift in Sources */,
+				D30000000000000000000011 /* AttentionDrawerModel.swift in Sources */,
+				D30000000000000000000012 /* AttentionDrawerButton.swift in Sources */,
+				D30000000000000000000013 /* AttentionDrawerSheet.swift in Sources */,
 				C10000000000000000000001 /* ADEMobilePrimitives.swift in Sources */,
 				F2A1C9D8456E7B3C1D2E4F90 /* FilesCodeSupport.swift in Sources */,
 				1558E44876BBE931C02D5640 /* ADEApp.swift in Sources */,
@@ -966,6 +1041,12 @@
 				G1000000000000000000000C /* PrWorkflowCards.swift in Sources */,
 				G1000000000000000000000D /* PrStackSheet.swift in Sources */,
 				G1000000000000000000000E /* CreatePrWizardView.swift in Sources */,
+				G1000000000000000000000F /* PrMergeGateCard.swift in Sources */,
+				G10000000000000000000020 /* PrAiSummaryCard.swift in Sources */,
+				G10000000000000000000021 /* PrCommitRailView.swift in Sources */,
+				G10000000000000000000022 /* PrAiResolverCtaCard.swift in Sources */,
+				G10000000000000000000023 /* PrStackDiagramView.swift in Sources */,
+				G10000000000000000000024 /* PrRebaseScreen.swift in Sources */,
 				B10000000000000000000017 /* LaneTreeView.swift in Sources */,
 				B10000000000000000000018 /* AddLaneSheet.swift in Sources */,
 				B10000000000000000000019 /* LanesOfflineEmptyState.swift in Sources */,
@@ -1013,11 +1094,21 @@
 				E10000000000000000000038 /* WorkStatusAndFormattingHelpers.swift in Sources */,
 				H10000000000000000000001 /* CtoRootScreen.swift in Sources */,
 				H10000000000000000000002 /* CtoSessionDestinationView.swift in Sources */,
+				H10000000000000000000003 /* CtoBriefEditor.swift in Sources */,
+				H10000000000000000000004 /* CtoChatScreen.swift in Sources */,
+				H10000000000000000000005 /* CtoIdentityEditor.swift in Sources */,
+				H10000000000000000000006 /* CtoSettingsScreen.swift in Sources */,
+				H10000000000000000000007 /* CtoSharedHelpers.swift in Sources */,
+				H10000000000000000000008 /* CtoTabShell.swift in Sources */,
+				H10000000000000000000009 /* CtoTeamScreen.swift in Sources */,
+				H1000000000000000000000A /* CtoWorkerDetailScreen.swift in Sources */,
+				H1000000000000000000000B /* CtoWorkflowsScreen.swift in Sources */,
 				AA5100000000000000000013 /* LiveActivityCoordinator.swift in Sources */,
 				AA5100000000000000000014 /* LiveActivityIntentsForward.swift in Sources */,
 				AA5500000000000000000014 /* WidgetAppIntents.swift in Sources */,
 				AA5100000000000000000017 /* ADELiveActivity.swift in Sources */,
 				AA5100000000000000000018 /* ADELiveActivityViews.swift in Sources */,
+				AA5600000000000000000011 /* ADELiveActivityPrimitives.swift in Sources */,
 				F300000000000000000000F0 /* NotificationPreferences.swift in Sources */,
 				F300000000000000000000F1 /* NotificationsCenterView.swift in Sources */,
 				F300000000000000000000F2 /* SettingsNotificationsSection.swift in Sources */,
@@ -1034,6 +1125,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				7B70BE6839672E5D2D006B28 /* ADETests.swift in Sources */,
+				D30000000000000000000015 /* AttentionDrawerModelTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -1046,6 +1138,7 @@
 				AA1100000000000000000013 /* ADESharedTheme.swift in Sources */,
 				AA5100000000000000000011 /* ADELiveActivity.swift in Sources */,
 				AA5100000000000000000012 /* ADELiveActivityViews.swift in Sources */,
+				AA5600000000000000000012 /* ADELiveActivityPrimitives.swift in Sources */,
 				AA5100000000000000000015 /* LiveActivityIntentsForward.swift in Sources */,
 				AA5500000000000000000015 /* WidgetAppIntents.swift in Sources */,
 				AA5200000000000000000011 /* ADEWidgetBundle.swift in Sources */,
@@ -1054,6 +1147,7 @@
 				AA5200000000000000000014 /* ADELockScreenWidget.swift in Sources */,
 				AA5200000000000000000015 /* ADEControlWidget.swift in Sources */,
 				AA5200000000000000000016 /* ADEWidgetPreviewData.swift in Sources */,
+				AA5700000000000000000012 /* ADELiveActivityPreviews.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -1116,6 +1210,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				APS_ENVIRONMENT = development;
 				CLANG_ENABLE_OBJC_WEAK = NO;
 				CODE_SIGNING_ALLOWED = YES;
 				CODE_SIGN_ENTITLEMENTS = ADE/ADE.entitlements;
@@ -1167,6 +1262,7 @@
 				CLANG_WARN_UNREACHABLE_CODE = YES;
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				COPY_PHASE_STRIP = NO;
+				CURRENT_PROJECT_VERSION = 2;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				ENABLE_NS_ASSERTIONS = NO;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
@@ -1180,6 +1276,7 @@
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
+				MARKETING_VERSION = 1.0;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_OPTIMIZATION_LEVEL = "-Owholemodule";
 				SWIFT_VERSION = 5.0;
@@ -1191,6 +1288,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				APS_ENVIRONMENT = production;
 				CLANG_ENABLE_OBJC_WEAK = NO;
 				CODE_SIGNING_ALLOWED = YES;
 				CODE_SIGN_ENTITLEMENTS = ADE/ADE.entitlements;
@@ -1243,6 +1341,7 @@
 				CLANG_WARN_UNREACHABLE_CODE = YES;
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				COPY_PHASE_STRIP = NO;
+				CURRENT_PROJECT_VERSION = 2;
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_TESTABILITY = YES;
@@ -1263,6 +1362,7 @@
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
 				MTL_FAST_MATH = YES;
 				ONLY_ACTIVE_ARCH = YES;
+				MARKETING_VERSION = 1.0;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";

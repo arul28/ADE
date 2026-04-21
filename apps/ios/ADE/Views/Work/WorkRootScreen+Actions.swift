@@ -52,6 +52,22 @@ func buildWorkActivityFeed(
   return (activities, nextCache)
 }
 
+func workActivityTranscriptCachesEqual(
+  _ lhs: [String: WorkActivityTranscriptCacheEntry],
+  _ rhs: [String: WorkActivityTranscriptCacheEntry]
+) -> Bool {
+  guard lhs.count == rhs.count else { return false }
+  for (key, value) in lhs {
+    guard let other = rhs[key],
+      value.fingerprint == other.fingerprint,
+      value.transcript == other.transcript
+    else {
+      return false
+    }
+  }
+  return true
+}
+
 extension WorkRootScreen {
   @MainActor
   func refreshFromPullGesture() async {
@@ -78,18 +94,32 @@ extension WorkRootScreen {
         loadedSessions = try await syncService.fetchSessions()
         loadedLanes = try await syncService.fetchLanes()
       }
-      sessions = loadedSessions
-      lanes = loadedLanes.filter { $0.archivedAt == nil }
-      for session in loadedSessions where optimisticSessions[session.id] != nil {
-        optimisticSessions[session.id] = nil
+      if sessions != loadedSessions {
+        sessions = loadedSessions
+      }
+      let activeLanes = loadedLanes.filter { $0.archivedAt == nil }
+      if lanes != activeLanes {
+        lanes = activeLanes
+      }
+      var nextOptimisticSessions = optimisticSessions
+      for session in loadedSessions where nextOptimisticSessions[session.id] != nil {
+        nextOptimisticSessions[session.id] = nil
+      }
+      if optimisticSessions != nextOptimisticSessions {
+        optimisticSessions = nextOptimisticSessions
       }
       if isLive {
         lastCoalescedChatSummaryRefresh = Date()
         await refreshChatSummaries(for: loadedLanes)
       }
-      errorMessage = nil
+      if errorMessage != nil {
+        errorMessage = nil
+      }
     } catch {
-      errorMessage = error.localizedDescription
+      let message = error.localizedDescription
+      if errorMessage != message {
+        errorMessage = message
+      }
     }
   }
 
@@ -101,10 +131,19 @@ extension WorkRootScreen {
       async let lanesTask = syncService.fetchLanes()
       let loadedSessions = try await sessionsTask
       let loadedLanes = try await lanesTask
-      sessions = loadedSessions
-      lanes = loadedLanes.filter { $0.archivedAt == nil }
-      for session in loadedSessions where optimisticSessions[session.id] != nil {
-        optimisticSessions[session.id] = nil
+      if sessions != loadedSessions {
+        sessions = loadedSessions
+      }
+      let activeLanes = loadedLanes.filter { $0.archivedAt == nil }
+      if lanes != activeLanes {
+        lanes = activeLanes
+      }
+      var nextOptimisticSessions = optimisticSessions
+      for session in loadedSessions where nextOptimisticSessions[session.id] != nil {
+        nextOptimisticSessions[session.id] = nil
+      }
+      if optimisticSessions != nextOptimisticSessions {
+        optimisticSessions = nextOptimisticSessions
       }
       if isLive {
         let now = Date()
@@ -113,9 +152,14 @@ extension WorkRootScreen {
           await refreshChatSummaries(for: loadedLanes)
         }
       }
-      errorMessage = nil
+      if errorMessage != nil {
+        errorMessage = nil
+      }
     } catch {
-      errorMessage = error.localizedDescription
+      let message = error.localizedDescription
+      if errorMessage != message {
+        errorMessage = message
+      }
     }
   }
 
@@ -145,7 +189,9 @@ extension WorkRootScreen {
     for (sessionId, summary) in updated {
       nextSummaries[sessionId] = summary
     }
-    chatSummaries = nextSummaries
+    if chatSummaries != nextSummaries {
+      chatSummaries = nextSummaries
+    }
   }
 
   @MainActor
@@ -171,7 +217,9 @@ extension WorkRootScreen {
         let nextTranscript: [WorkChatEnvelope] = streamed.isEmpty
           ? parseWorkChatTranscript(syncService.terminalBuffers[session.id] ?? "")
           : makeWorkChatTranscript(from: streamed)
-        transcriptCache[session.id] = nextTranscript
+        if transcriptCache[session.id] != nextTranscript {
+          transcriptCache[session.id] = nextTranscript
+        }
       }
       try? await Task.sleep(nanoseconds: 900_000_000)
     }
@@ -216,7 +264,9 @@ extension WorkRootScreen {
         if activityFeedEntries != result.activities {
           activityFeedEntries = result.activities
         }
-        activityTranscriptCache = result.cache
+        if !workActivityTranscriptCachesEqual(activityTranscriptCache, result.cache) {
+          activityTranscriptCache = result.cache
+        }
         activityFeedRebuildTask = nil
       }
     }

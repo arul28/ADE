@@ -275,6 +275,8 @@ type PersistedUserPreferences = {
   theme: ThemeId;
   terminalPreferences: TerminalPreferences;
   smartTooltipsEnabled: boolean;
+  onboardingEnabled: boolean;
+  didYouKnowEnabled: boolean;
   codeBlockCopyButtonPosition: CodeBlockCopyButtonPosition;
   agentTurnCompletionSound: AgentTurnCompletionSound;
   agentTurnCompletionSoundVolume: number;
@@ -298,6 +300,8 @@ function readUnifiedUserPreferences(): PersistedUserPreferences | null {
       theme: coerceTheme(parsed.theme) ?? "dark",
       terminalPreferences: normalizeTerminalPreferences(parsed.terminalPreferences),
       smartTooltipsEnabled: parsed.smartTooltipsEnabled !== false,
+      onboardingEnabled: parsed.onboardingEnabled !== false,
+      didYouKnowEnabled: parsed.didYouKnowEnabled !== false,
       codeBlockCopyButtonPosition: normalizeCodeBlockCopyButtonPosition(parsed.codeBlockCopyButtonPosition),
       agentTurnCompletionSound: normalizeAgentTurnCompletionSound(parsed.agentTurnCompletionSound),
       agentTurnCompletionSoundVolume: normalizeAgentTurnCompletionSoundVolume(parsed.agentTurnCompletionSoundVolume),
@@ -333,6 +337,8 @@ function readLegacyUserPreferences(): PersistedUserPreferences {
     theme,
     terminalPreferences,
     smartTooltipsEnabled,
+    onboardingEnabled: true,
+    didYouKnowEnabled: true,
     codeBlockCopyButtonPosition: "top",
     agentTurnCompletionSound: "off",
     agentTurnCompletionSoundVolume: DEFAULT_AGENT_TURN_COMPLETION_SOUND_VOLUME,
@@ -354,6 +360,8 @@ function persistUserPreferencesFrom(state: {
   theme: ThemeId;
   terminalPreferences: TerminalPreferences;
   smartTooltipsEnabled: boolean;
+  onboardingEnabled: boolean;
+  didYouKnowEnabled: boolean;
   codeBlockCopyButtonPosition: CodeBlockCopyButtonPosition;
   agentTurnCompletionSound: AgentTurnCompletionSound;
   agentTurnCompletionSoundVolume: number;
@@ -364,6 +372,8 @@ function persistUserPreferencesFrom(state: {
     theme: state.theme,
     terminalPreferences: state.terminalPreferences,
     smartTooltipsEnabled: state.smartTooltipsEnabled,
+    onboardingEnabled: state.onboardingEnabled,
+    didYouKnowEnabled: state.didYouKnowEnabled,
     codeBlockCopyButtonPosition: state.codeBlockCopyButtonPosition,
     agentTurnCompletionSound: state.agentTurnCompletionSound,
     agentTurnCompletionSoundVolume: state.agentTurnCompletionSoundVolume,
@@ -455,6 +465,8 @@ type AppState = {
   keybindings: KeybindingsSnapshot | null;
   terminalAttention: TerminalAttentionSnapshot;
   smartTooltipsEnabled: boolean;
+  onboardingEnabled: boolean;
+  didYouKnowEnabled: boolean;
   workViewByProject: Record<string, WorkProjectViewState>;
   laneWorkViewByScope: Record<string, WorkProjectViewState>;
   /** Session-scoped banner dismissals. Pruned when a project is closed/switched so the maps don't leak. */
@@ -485,6 +497,8 @@ type AppState = {
   ) => void;
   setTerminalAttention: (snapshot: TerminalAttentionSnapshot) => void;
   setSmartTooltipsEnabled: (enabled: boolean) => void;
+  setOnboardingEnabled: (enabled: boolean) => void;
+  setDidYouKnowEnabled: (enabled: boolean) => void;
   getWorkViewState: (projectRoot: string | null | undefined) => WorkProjectViewState;
   setWorkViewState: (
     projectRoot: string | null | undefined,
@@ -596,6 +610,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   keybindings: null,
   terminalAttention: EMPTY_TERMINAL_ATTENTION,
   smartTooltipsEnabled: initialUserPreferences.smartTooltipsEnabled,
+  onboardingEnabled: initialUserPreferences.onboardingEnabled,
+  didYouKnowEnabled: initialUserPreferences.didYouKnowEnabled,
   workViewByProject: initialPersistedWorkViews.workViewByProject,
   laneWorkViewByScope: initialPersistedWorkViews.laneWorkViewByScope,
   dismissedMissingAiBannerRoots: {},
@@ -681,6 +697,16 @@ export const useAppStore = create<AppState>((set, get) => ({
     set((prev) => {
       persistUserPreferencesFrom({ ...prev, smartTooltipsEnabled: enabled });
       return { smartTooltipsEnabled: enabled };
+    }),
+  setOnboardingEnabled: (enabled) =>
+    set((prev) => {
+      persistUserPreferencesFrom({ ...prev, onboardingEnabled: enabled });
+      return { onboardingEnabled: enabled };
+    }),
+  setDidYouKnowEnabled: (enabled) =>
+    set((prev) => {
+      persistUserPreferencesFrom({ ...prev, didYouKnowEnabled: enabled });
+      return { didYouKnowEnabled: enabled };
     }),
   openNewTab: () => set({ isNewTabOpen: true, showWelcome: true }),
   cancelNewTab: () => {

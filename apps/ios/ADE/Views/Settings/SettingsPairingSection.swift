@@ -18,8 +18,7 @@ struct SettingsPairingSection: View {
           SettingsPairActionRow(
             icon: "dot.radiowaves.left.and.right",
             title: "Discover on network",
-            subtitle: discoverSubtitle,
-            shimmerSubtitle: syncService.discoveredHosts.isEmpty
+            subtitle: discoverSubtitle
           ) {
             presentedSheet = .discover
           }

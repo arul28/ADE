@@ -59,6 +59,9 @@ function resetStore() {
     codeBlockCopyButtonPosition: "top" as const,
     agentTurnCompletionSound: "off" as const,
     chatFontSizePx: DEFAULT_CHAT_FONT_SIZE_PX,
+    smartTooltipsEnabled: true,
+    onboardingEnabled: true,
+    didYouKnowEnabled: true,
     laneInspectorTabs: {},
     workViewByProject: {},
     laneWorkViewByScope: {},
@@ -459,6 +462,49 @@ describe("appStore", () => {
       useAppStore.getState().setLaneWorkViewState("", "lane-1", { viewMode: "grid" });
       useAppStore.getState().setLaneWorkViewState("/proj", "", { viewMode: "grid" });
       expect(useAppStore.getState().laneWorkViewByScope).toEqual({});
+    });
+  });
+
+  describe("onboarding preferences", () => {
+    it("defaults onboardingEnabled and didYouKnowEnabled to true", () => {
+      expect(useAppStore.getState().onboardingEnabled).toBe(true);
+      expect(useAppStore.getState().didYouKnowEnabled).toBe(true);
+    });
+
+    it("persists onboardingEnabled independently of smartTooltipsEnabled", () => {
+      useAppStore.getState().setOnboardingEnabled(false);
+      expect(useAppStore.getState().onboardingEnabled).toBe(false);
+      expect(useAppStore.getState().smartTooltipsEnabled).toBe(true);
+
+      const calls = mockLocalStorage.setItem.mock.calls.filter(
+        ([key]) => key === "ade.userPreferences.v1",
+      );
+      const latest = calls[calls.length - 1];
+      expect(latest).toBeTruthy();
+      const parsed = JSON.parse(latest![1]);
+      expect(parsed.onboardingEnabled).toBe(false);
+      expect(parsed.smartTooltipsEnabled).toBe(true);
+    });
+
+    it("persists didYouKnowEnabled independently of onboardingEnabled", () => {
+      useAppStore.getState().setDidYouKnowEnabled(false);
+      expect(useAppStore.getState().didYouKnowEnabled).toBe(false);
+      expect(useAppStore.getState().onboardingEnabled).toBe(true);
+
+      const calls = mockLocalStorage.setItem.mock.calls.filter(
+        ([key]) => key === "ade.userPreferences.v1",
+      );
+      const latest = calls[calls.length - 1];
+      expect(latest).toBeTruthy();
+      const parsed = JSON.parse(latest![1]);
+      expect(parsed.didYouKnowEnabled).toBe(false);
+      expect(parsed.onboardingEnabled).toBe(true);
+    });
+
+    it("toggling smartTooltipsEnabled leaves onboardingEnabled alone", () => {
+      useAppStore.getState().setSmartTooltipsEnabled(false);
+      expect(useAppStore.getState().smartTooltipsEnabled).toBe(false);
+      expect(useAppStore.getState().onboardingEnabled).toBe(true);
     });
   });
 

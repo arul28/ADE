@@ -219,6 +219,7 @@
             "icon": "tag",
             "expanded": true,
             "pages": [
+              "changelog/v1.0.19",
               "changelog/v1.0.18",
               "changelog/v1.0.17",
               "changelog/v1.0.16",
@@ -281,7 +282,7 @@
         "items": [
           { "label": "Features", "href": "/lanes/overview" },
           { "label": "Download", "href": "https://github.com/arul28/ADE/releases" },
-          { "label": "Changelog", "href": "/changelog/v1.0.18" }
+          { "label": "Changelog", "href": "/changelog/v1.0.19" }
         ]
       },
       {

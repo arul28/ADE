@@ -7,6 +7,7 @@ import type { createLaneService } from "./laneService";
 import type { AutoRebaseEventPayload, AutoRebaseLaneState, AutoRebaseLaneStatus, LaneSummary, RebaseNeed } from "../../../shared/types";
 import { isRecord, nowIso } from "../shared/utils";
 import { shouldLaneTrackParent } from "../../../shared/laneBaseResolution";
+import { normalizePrCreationStrategy, resolvePrRebaseMode } from "../../../shared/prStrategy";
 
 type StoredStatus = AutoRebaseLaneStatus & {
   source?: "auto" | "manual";
@@ -179,6 +180,37 @@ export function createAutoRebaseService(args: {
   ): LaneSummary | null => {
     const parent = lane.parentLaneId ? laneById.get(lane.parentLaneId) ?? null : null;
     return shouldLaneTrackParent({ lane, parent }) ? parent : null;
+  };
+
+  /**
+   * Look up the open PR linked to a lane and classify its rebase mode based
+   * on the stored `creation_strategy`. "manual" means "do not auto-rebase,
+   * surface drift as attention only" — see `resolvePrRebaseMode`.
+   *
+   * Returns `"auto"` when no open PR is linked (the auto-rebase behavior for
+   * lanes without PRs is unchanged).
+   */
+  const resolveLaneRebaseMode = (laneId: string): "auto" | "manual" => {
+    try {
+      const row = db.get<{ creation_strategy: string | null }>(
+        `
+          select creation_strategy
+          from pull_requests
+          where lane_id = ?
+            and state in ('open', 'draft')
+          order by updated_at desc, created_at desc
+          limit 1
+        `,
+        [laneId],
+      );
+      return resolvePrRebaseMode(normalizePrCreationStrategy(row?.creation_strategy));
+    } catch (error) {
+      logger.warn("autoRebase.lane_rebase_mode_lookup_failed", {
+        laneId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return "auto";
+    }
   };
 
   const listStatuses = async (options?: ListStatusesOptions): Promise<AutoRebaseLaneStatus[]> => {
@@ -424,6 +456,24 @@ export function createAutoRebaseService(args: {
           state: "rebaseConflict",
           conflictCount: Math.max(1, need.conflictingFiles.length),
           message: `Auto-rebase blocked: ${Math.max(1, need.conflictingFiles.length)} conflict(s) expected. Open the Rebase tab to resolve and publish.`
+        });
+        continue;
+      }
+
+      // Gate on creation_strategy: PRs with `lane_base` strategy carry an
+      // immutable base — drift surfaces as attention only, auto-rebase is
+      // never allowed to fire. The user must rebase manually.
+      const rebaseMode = resolveLaneRebaseMode(lane.id);
+      if (rebaseMode === "manual") {
+        blocked = true;
+        blockedLaneId = lane.id;
+        setStatus({
+          laneId: lane.id,
+          parentLaneId: parent?.id ?? null,
+          parentHeadSha,
+          state: "rebasePending",
+          conflictCount: 0,
+          message: "PR carries an immutable base — drift detected. Rebase manually from the Rebase tab when ready."
         });
         continue;
       }

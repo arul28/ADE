@@ -1,11 +1,11 @@
 ---
 title: "AI Providers"
-description: "Configure Anthropic, OpenAI, OpenRouter, and local models in ADE. Manage API keys, set budget caps, and control which model each agent uses."
+description: "Configure Anthropic, OpenAI, OpenRouter, OpenCode, and local models in ADE. Manage API keys, set budget caps, and control which model each agent uses."
 icon: "microchip"
 ---
 ## Supported Providers
 
-ADE supports four AI provider categories. You can configure any combination — agents can use different providers depending on the task.
+ADE supports multiple AI provider categories, configurable in any combination.
 
 <CardGroup cols={2}>
   <Card title="Anthropic (Claude)" icon="robot">
@@ -16,6 +16,9 @@ ADE supports four AI provider categories. You can configure any combination — 
   </Card>
   <Card title="OpenRouter" icon="shuffle">
     Route to hundreds of models through a single API key. Useful for cost optimization, model comparison, and accessing open-source models (Llama, Mistral, Gemini).
+  </Card>
+  <Card title="OpenCode" icon="code">
+    OpenCode runs as a local server process and exposes an OpenAI-compatible endpoint. Supports API key, OpenRouter, and fully local model configurations. See [Windsurf / OpenCode](/ai-tools/windsurf) for setup.
   </Card>
   <Card title="Local Models" icon="computer">
     Via Ollama or LM Studio. Point ADE to a local OpenAI-compatible endpoint — no API key required. Best for offline use or privacy-sensitive codebases.
@@ -31,6 +34,7 @@ ADE supports four AI provider categories. You can configure any combination — 
 | Anthropic Claude | Complex reasoning, long-context, code review | Up to 1M tokens | Yes |
 | OpenAI GPT | Structured output, code completion, tool use | Up to 128K tokens | Yes |
 | OpenRouter | Cost optimization, model comparison | Varies by model | Yes |
+| OpenCode | Local server runtime, flexible model backends | Varies by model | Optional |
 | Ollama / LM Studio | Offline, privacy-sensitive work | Varies by model | No |
 
 ---
@@ -46,8 +50,6 @@ Provider configuration lives in three places:
 ---
 
 ## Setting Up Anthropic (Claude)
-
-Anthropic is the default provider. Claude models are the recommended choice for most ADE workflows due to their strong code understanding and large context windows.
 
 <Steps>
   <Step title="Get an API key">

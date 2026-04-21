@@ -963,7 +963,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         {hideSidebar ? null : (
           <aside className="ade-sidebar-clip shrink-0 z-10 border-r">
             <div className="ade-sidebar flex flex-col py-2 h-full">
-              <TabNav />
+              <TabNav githubStatus={githubStatus} />
             </div>
           </aside>
         )}

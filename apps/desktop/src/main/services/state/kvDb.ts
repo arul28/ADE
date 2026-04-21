@@ -9,6 +9,11 @@ import { safeJsonParse } from "../shared/utils";
 import { resolveCrsqliteExtensionPath } from "./crsqliteExtension";
 import type { ApplyRemoteChangesResult, CrsqlChangeRow, SyncScalar } from "../../../shared/types/sync";
 
+type DatabaseSyncConstructor = new (dbPath: string, options?: { allowExtension?: boolean }) => DatabaseSyncType;
+
+const require = createRequire(path.join(process.cwd(), "ade-runtime.cjs"));
+const { DatabaseSync } = require("node:sqlite") as { DatabaseSync: DatabaseSyncConstructor };
+
 export type SqlValue = string | number | null | Uint8Array;
 
 export type AdeDbSyncApi = {
@@ -58,9 +63,6 @@ export type AdeDb = {
   flushNow: () => void;
   close: () => void;
 };
-
-const require = createRequire(__filename);
-const { DatabaseSync } = require("node:sqlite") as { DatabaseSync: typeof DatabaseSyncType };
 
 function ensureParentDir(filePath: string) {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
@@ -602,19 +604,34 @@ function dropUnifiedMemoryFtsTriggers(db: Pick<MigrationDb, "run">): void {
   db.run("drop trigger if exists unified_memories_fts_au");
 }
 
+/**
+ * True when an error indicates the SQLite build lacks FTS4/FTS5 or the
+ * FTS virtual table metadata is corrupted — both recoverable states.
+ */
+function isRecoverableFtsSchemaError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  if (/no such module: fts4/i.test(message)) return true;
+  if (/no such module: fts5/i.test(message)) return true;
+  return /malformed database schema/i.test(message) && /unified_memories_fts/i.test(message);
+}
+
+function wrapRawDb(db: DatabaseSyncType): MigrationDb {
+  return {
+    run: (sql: string, params: SqlValue[] = []) => {
+      runStatement(db, sql, params);
+    },
+    get: <T extends Record<string, unknown> = Record<string, unknown>>(sql: string, params: SqlValue[] = []) => {
+      return getRow<T>(db, sql, params);
+    },
+  };
+}
+
 function removeUnavailableUnifiedMemoryFtsTable(db: MigrationDb): void {
   try {
     db.run("drop table if exists unified_memories_fts");
     return;
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    if (
-      !/no such module: fts4/i.test(message)
-      && !/no such module: fts5/i.test(message)
-      && !(/malformed database schema/i.test(message) && /unified_memories_fts/i.test(message))
-    ) {
-      throw error;
-    }
+    if (!isRecoverableFtsSchemaError(error)) throw error;
   }
 
   // If this Node SQLite build lacks the FTS module, SQLite cannot even DROP an
@@ -653,16 +670,7 @@ function repairMalformedUnifiedMemoryFtsSchema(db: DatabaseSyncType): void {
       throw error;
     }
   }
-
-  const repairDb: MigrationDb = {
-    run: (sql: string, params: SqlValue[] = []) => {
-      runStatement(db, sql, params);
-    },
-    get: <T extends Record<string, unknown> = Record<string, unknown>>(sql: string, params: SqlValue[] = []) => {
-      return getRow<T>(db, sql, params);
-    },
-  };
-  removeUnavailableUnifiedMemoryFtsTable(repairDb);
+  removeUnavailableUnifiedMemoryFtsTable(wrapRawDb(db));
 }
 
 function isFts4Available(db: Pick<MigrationDb, "run">): boolean {
@@ -671,14 +679,7 @@ function isFts4Available(db: Pick<MigrationDb, "run">): boolean {
     db.run("drop table if exists temp.__ade_fts4_probe");
     return true;
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    if (
-      !/no such module: fts4/i.test(message)
-      && !/no such module: fts5/i.test(message)
-      && !(/malformed database schema/i.test(message) && /unified_memories_fts/i.test(message))
-    ) {
-      throw error;
-    }
+    if (!isRecoverableFtsSchemaError(error)) throw error;
     return false;
   }
 }
@@ -1094,6 +1095,7 @@ function migrate(db: MigrationDb) {
   db.run("create index if not exists idx_pull_requests_project_id on pull_requests(project_id)");
   try { db.run("alter table pull_requests add column last_polled_at text"); } catch {}
   try { db.run("alter table pull_requests add column head_sha text"); } catch {}
+  try { db.run("alter table pull_requests add column creation_strategy text"); } catch {}
 
   // Phase 21: AI PR summary cache (keyed by PR + headSha so pushes invalidate).
   db.run(`
@@ -1122,6 +1124,7 @@ function migrate(db: MigrationDb) {
     )
   `);
   db.run("create index if not exists idx_pull_request_snapshots_updated_at on pull_request_snapshots(updated_at)");
+  try { db.run("alter table pull_request_snapshots add column commits_json text"); } catch {}
 
   db.run(`
     create table if not exists files_workspaces (
@@ -3177,27 +3180,26 @@ export async function openKvDb(dbPath: string, logger: Logger): Promise<AdeDb> {
   const desiredSiteId = ensureLocalSiteIdFile(dbPath);
   const existedBeforeOpen = fs.existsSync(dbPath);
   let db = openRawDatabase(dbPath);
+  let crsqliteLoaded = false;
+  const loadCrsqliteIfAvailable = (): void => {
+    if (!extensionPath || crsqliteLoaded) return;
+    loadCrsqlite(db, extensionPath);
+    crsqliteLoaded = true;
+  };
+
   repairMalformedUnifiedMemoryFtsSchema(db);
-  const makeRawMigrationDb = (): MigrationDb => ({
-    run: (sql: string, params: SqlValue[] = []) => {
-      runStatement(db, sql, params);
-    },
-    get: <T extends Record<string, unknown> = Record<string, unknown>>(sql: string, params: SqlValue[] = []) => {
-      return getRow<T>(db, sql, params);
-    },
-  });
-  repairUnifiedMemoryFtsSchemaForRuntime(makeRawMigrationDb());
+  repairUnifiedMemoryFtsSchemaForRuntime(wrapRawDb(db));
 
   try {
+    // Existing CRR tables install triggers that call cr-sqlite functions on
+    // ordinary writes. Load the extension before any migrations or repair
+    // updates can touch those tables in source-mode CLI and desktop startup.
+    loadCrsqliteIfAvailable();
     const hadCrsqlMetadata = hasCrsqlMetadata(db);
-    if (hadCrsqlMetadata && hasCrsqlite) {
-      loadCrsqlite(db, extensionPath);
-    }
 
     // Build a CRR-aware run wrapper: when crsqlite is loaded and a table has
     // been converted to a CRR, ALTER TABLE statements must be wrapped with
     // crsql_begin_alter / crsql_commit_alter so the clock tables stay in sync.
-    let crsqliteLoaded = hadCrsqlMetadata && hasCrsqlite;
     const makeMigrateDb = () => ({
       run: (sql: string, params: SqlValue[] = []) => {
         const alterTable = parseAlterTableTarget(sql);
@@ -3233,9 +3235,8 @@ export async function openKvDb(dbPath: string, logger: Logger): Promise<AdeDb> {
     if (retrofitLegacyPrimaryKeyNotNullSchema(db)) {
       db.close();
       db = openRawDatabase(dbPath);
-      if (hadCrsqlMetadata && hasCrsqlite) {
-        loadCrsqlite(db, extensionPath);
-      }
+      crsqliteLoaded = false;
+      loadCrsqliteIfAvailable();
       const remigrateDb = makeMigrateDb();
       repairUnifiedMemoryFtsSchemaForRuntime(remigrateDb);
       migrate(remigrateDb);
@@ -3244,25 +3245,23 @@ export async function openKvDb(dbPath: string, logger: Logger): Promise<AdeDb> {
     if (retrofitForeignKeyCascadeActions(db, hasCrsqlite)) {
       db.close();
       db = openRawDatabase(dbPath);
-      if (hadCrsqlMetadata && hasCrsqlite) {
-        loadCrsqlite(db, extensionPath);
-      }
+      crsqliteLoaded = false;
+      loadCrsqliteIfAvailable();
       const remigrateDb = makeMigrateDb();
       repairUnifiedMemoryFtsSchemaForRuntime(remigrateDb);
       migrate(remigrateDb);
     }
 
     if (hasCrsqlite) {
-      if (!hadCrsqlMetadata) {
-        loadCrsqlite(db, extensionPath);
-      }
+      loadCrsqliteIfAvailable();
       ensureCrrTables(db, logger);
       forceSiteId(db, desiredSiteId);
 
       if (readCurrentSiteId(db) !== desiredSiteId) {
         db.close();
         db = openRawDatabase(dbPath);
-        loadCrsqlite(db, extensionPath);
+        crsqliteLoaded = false;
+        loadCrsqliteIfAvailable();
         forceSiteId(db, desiredSiteId);
       }
     } else {

@@ -1,10 +1,50 @@
 ---
-title: "Windsurf"
-description: "Launch Windsurf from ADE to edit code in a lane's worktree with session tracking and environment inheritance."
+title: "Windsurf & OpenCode"
+description: "Launch Windsurf from ADE for editor sessions, or run OpenCode as a local AI backend directly inside ADE."
 icon: "water"
 ---
 
-## Overview
+## OpenCode Integration
+
+[OpenCode](https://opencode.ai) runs as a local server process and exposes an OpenAI-compatible endpoint. ADE manages the OpenCode process lifecycle — starting, stopping, and monitoring it — and routes chat and mission requests through it like any other provider.
+
+### How it works
+
+ADE's OpenCode integration has three layers:
+- **Binary manager** — downloads and verifies the OpenCode binary, checks for updates
+- **Server manager** — starts and monitors the OpenCode process, detects crashes, and restarts automatically
+- **Runtime** — handles session lifecycle, model discovery, and event routing
+
+### Setup
+
+<Steps>
+  <Step title="Open Settings → AI Providers">
+    Navigate to **Settings → AI Providers → OpenCode**.
+  </Step>
+  <Step title="Enable OpenCode">
+    Toggle OpenCode on. ADE downloads the binary if it is not already present and starts the local server.
+  </Step>
+  <Step title="Configure the backend">
+    OpenCode supports three backend modes:
+
+    | Mode | Config |
+    |------|--------|
+    | **API key** | Provide an Anthropic or OpenAI key — OpenCode calls the provider directly |
+    | **OpenRouter** | Provide an OpenRouter key for access to any model |
+    | **Local** | No key — use Ollama or another local OpenAI-compatible endpoint |
+  </Step>
+  <Step title="Select OpenCode in chat">
+    OpenCode models appear in the model selector alongside Claude, Codex, and Cursor. Choose any discovered model to route that session through OpenCode.
+  </Step>
+</Steps>
+
+<Note>
+OpenCode and Windsurf use different approaches: OpenCode integrates as a managed backend inside ADE, while Windsurf is an external editor you launch from ADE. You can use both independently.
+</Note>
+
+---
+
+## Windsurf Editor Integration
 
 ADE can launch [Windsurf](https://codeium.com/windsurf) (by Codeium) as an external editor for any lane. When you open Windsurf through ADE, the session is tracked in the lane's history, the correct worktree directory is opened, and any file changes you make in Windsurf appear in the lane's diff view as soon as they are saved.
 

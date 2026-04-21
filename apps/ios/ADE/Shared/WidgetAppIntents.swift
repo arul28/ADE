@@ -59,7 +59,7 @@ public struct SessionEntityQuery: EntityQuery {
 
     public func entities(for ids: [SessionEntity.ID]) async throws -> [SessionEntity] {
         let agents = ADESharedContainer.readWorkspaceSnapshot()?.agents ?? []
-        let byId = Dictionary(uniqueKeysWithValues: agents.map { ($0.sessionId, $0) })
+        let byId = Dictionary(agents.map { ($0.sessionId, $0) }, uniquingKeysWith: { first, _ in first })
         return ids.compactMap { id in
             guard let snap = byId[id] else { return nil }
             return SessionEntity.from(snap)
@@ -91,6 +91,47 @@ public struct SelectSessionIntent: AppIntent, WidgetConfigurationIntent {
 
     public init(session: SessionEntity?) {
         self.session = session
+    }
+
+    public func perform() async throws -> some IntentResult {
+        return .result()
+    }
+}
+
+// MARK: - WorkspaceWidgetVariantIntent
+
+/// Picks which face the medium workspace widget shows: the agents roster or
+/// the pull-request list. The user configures this from the iOS widget-edit
+/// sheet; the value is read by `ADEWorkspaceWidget` at timeline time.
+@available(iOS 17.0, *)
+public enum WidgetVariantOption: String, AppEnum {
+    case agents
+    case prs
+
+    public static var typeDisplayRepresentation: TypeDisplayRepresentation {
+        TypeDisplayRepresentation(name: "Widget display")
+    }
+
+    public static var caseDisplayRepresentations: [WidgetVariantOption: DisplayRepresentation] = [
+        .agents: DisplayRepresentation(title: "Agents"),
+        .prs:    DisplayRepresentation(title: "Pull requests"),
+    ]
+}
+
+@available(iOS 17.0, *)
+public struct WorkspaceWidgetVariantIntent: AppIntent, WidgetConfigurationIntent {
+    public static var title: LocalizedStringResource = "Display"
+    public static var description = IntentDescription(
+        "Choose whether the workspace widget shows the agents roster or open pull requests."
+    )
+
+    @Parameter(title: "Display", default: .agents)
+    public var variant: WidgetVariantOption
+
+    public init() {}
+
+    public init(variant: WidgetVariantOption = .agents) {
+        self.variant = variant
     }
 
     public func perform() async throws -> some IntentResult {

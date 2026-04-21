@@ -13,7 +13,16 @@ import type {
 } from "../../../shared/types";
 import type { Logger } from "../logging/logger";
 import type { createAgentChatService } from "../chat/agentChatService";
+import type { createCtoStateService } from "../cto/ctoStateService";
+import type { createFlowPolicyService } from "../cto/flowPolicyService";
+import type { createLinearCredentialService } from "../cto/linearCredentialService";
+import type { createLinearIngressService } from "../cto/linearIngressService";
+import type { createLinearIssueTracker } from "../cto/linearIssueTracker";
+import type { createLinearSyncService } from "../cto/linearSyncService";
 import type { createWorkerAgentService } from "../cto/workerAgentService";
+import type { createWorkerBudgetService } from "../cto/workerBudgetService";
+import type { createWorkerHeartbeatService } from "../cto/workerHeartbeatService";
+import type { createWorkerRevisionService } from "../cto/workerRevisionService";
 import type { createComputerUseArtifactBrokerService } from "../computerUse/computerUseArtifactBrokerService";
 import type { createProjectConfigService } from "../config/projectConfigService";
 import type { createFileService } from "../files/fileService";
@@ -70,6 +79,20 @@ type SyncServiceArgs = {
   missionService: ReturnType<typeof createMissionService>;
   agentChatService: ReturnType<typeof createAgentChatService>;
   workerAgentService?: ReturnType<typeof createWorkerAgentService> | null;
+  workerBudgetService?: ReturnType<typeof createWorkerBudgetService> | null;
+  workerHeartbeatService?: ReturnType<typeof createWorkerHeartbeatService> | null;
+  workerRevisionService?: ReturnType<typeof createWorkerRevisionService> | null;
+  ctoStateService?: ReturnType<typeof createCtoStateService> | null;
+  flowPolicyService?: ReturnType<typeof createFlowPolicyService> | null;
+  linearCredentialService?: ReturnType<typeof createLinearCredentialService> | null;
+  /**
+   * Resolvers for services that are constructed AFTER createSyncService in
+   * main.ts. Using lazy getters lets the sync router forward remote commands
+   * to them without requiring a specific init order.
+   */
+  getLinearIngressService?: () => ReturnType<typeof createLinearIngressService> | null;
+  getLinearIssueTracker?: () => ReturnType<typeof createLinearIssueTracker> | null;
+  getLinearSyncService?: () => ReturnType<typeof createLinearSyncService> | null;
   processService: ReturnType<typeof createProcessService>;
   hostStartupEnabled?: boolean;
   onStatusChanged?: (snapshot: SyncRoleSnapshot) => void;
@@ -363,6 +386,15 @@ export function createSyncService(args: SyncServiceArgs) {
         processService: args.processService,
         agentChatService: args.agentChatService,
         workerAgentService: args.workerAgentService,
+        workerBudgetService: args.workerBudgetService,
+        workerHeartbeatService: args.workerHeartbeatService,
+        workerRevisionService: args.workerRevisionService,
+        ctoStateService: args.ctoStateService,
+        flowPolicyService: args.flowPolicyService,
+        linearCredentialService: args.linearCredentialService,
+        getLinearIngressService: args.getLinearIngressService,
+        getLinearIssueTracker: args.getLinearIssueTracker,
+        getLinearSyncService: args.getLinearSyncService,
         projectConfigService: args.projectConfigService,
         portAllocationService: args.portAllocationService,
         laneEnvironmentService: args.laneEnvironmentService,

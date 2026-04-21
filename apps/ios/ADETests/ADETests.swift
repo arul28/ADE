@@ -1676,6 +1676,13 @@ final class ADETests: XCTestCase {
         'project-1', '/tmp/project', 'ADE', 'main', '2026-03-17T00:00:00.000Z', '2026-03-17T00:00:00.000Z'
       )
     """)
+    try database.executeSqlForTesting("""
+      insert into lanes (
+        id, project_id, name, description, lane_type, base_ref, branch_ref, worktree_path, status, created_at, archived_at
+      ) values (
+        'lane-primary', 'project-1', 'Primary', null, 'primary', 'main', 'main', '/tmp/project', 'active', '2026-03-17T00:00:00.000Z', null
+      )
+    """)
     try database.replaceTerminalSessions([
       TerminalSessionSummary(
         id: "session-1",
@@ -5396,6 +5403,30 @@ final class ADETests: XCTestCase {
     XCTAssertTrue(cards.isEmpty)
   }
 
+  func testDerivePendingWorkInputsSurfacesRequestUserInputRawToolCallAsQuestion() {
+    let argsText = """
+    {"questions":[{"id":"scope","question":"Pick scope","options":[{"label":"iOS","value":"ios"}]}]}
+    """
+    let transcript: [WorkChatEnvelope] = [
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-04-20T00:00:01.000Z",
+        sequence: 1,
+        event: .toolCall(tool: "mcp_ade_request_user_input", argsText: argsText, itemId: "call-request-input", parentItemId: nil, turnId: "turn-1")
+      ),
+    ]
+    let inputs = derivePendingWorkInputs(from: transcript)
+    guard case .question(let model) = inputs.first else {
+      return XCTFail("Expected request_user_input tool_call to surface as a pending question.")
+    }
+    XCTAssertEqual(model.id, "call-request-input")
+    XCTAssertEqual(model.questionId, "scope")
+    XCTAssertEqual(model.options.map(\.value), ["ios"])
+
+    let cards = buildWorkToolCards(from: transcript)
+    XCTAssertTrue(cards.isEmpty)
+  }
+
   func testPendingWorkQuestionFromApprovalPreservesAllQuestions() {
     let detail = """
     {
@@ -5549,6 +5580,64 @@ final class ADETests: XCTestCase {
       return false
     }
     XCTAssertTrue(hasPendingPermission, "Expected an inline .pendingPermission timeline entry.")
+  }
+
+  func testBuildWorkTimelineSuppressesRawToolCardWhenPermissionRequestIsPending() {
+    let detail = """
+    {"request":{"itemId":"perm-1","kind":"permissions","tool":"functions.GitHub","description":"Allow GitHub MCP"}}
+    """
+    let transcript: [WorkChatEnvelope] = [
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-04-20T00:00:01.000Z",
+        sequence: 1,
+        event: .toolCall(tool: "functions.GitHub", argsText: "{\"repo\":\"ade\"}", itemId: "perm-1", parentItemId: nil, turnId: "t-1")
+      ),
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-04-20T00:00:02.000Z",
+        sequence: 2,
+        event: .approvalRequest(description: "Allow", detail: detail, itemId: "perm-1", turnId: "t-1")
+      ),
+    ]
+    let snapshot = buildWorkChatTimelineSnapshot(
+      transcript: transcript,
+      fallbackEntries: [],
+      artifacts: [],
+      localEchoMessages: []
+    )
+
+    XCTAssertTrue(snapshot.toolCards.isEmpty, "Pending permission should suppress duplicate raw tool cards.")
+    let hasPendingPermission = snapshot.timeline.contains { entry in
+      if case .pendingPermission(let model) = entry.payload, model.id == "perm-1" { return true }
+      return false
+    }
+    XCTAssertTrue(hasPendingPermission)
+  }
+
+  func testBuildWorkTimelineSuppressesGenericApprovalEventWhilePending() {
+    let transcript: [WorkChatEnvelope] = [
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-04-20T00:00:01.000Z",
+        sequence: 1,
+        event: .approvalRequest(description: "Approve shell command?", detail: nil, itemId: "approval-1", turnId: "t-1")
+      ),
+    ]
+
+    let snapshot = buildWorkChatTimelineSnapshot(
+      transcript: transcript,
+      fallbackEntries: [],
+      artifacts: [],
+      localEchoMessages: []
+    )
+
+    XCTAssertEqual(snapshot.pendingInputs.count, 1)
+    guard case .approval(let approval) = snapshot.pendingInputs[0] else {
+      return XCTFail("Expected generic approval to remain in pendingInputs.")
+    }
+    XCTAssertEqual(approval.id, "approval-1")
+    XCTAssertTrue(snapshot.eventCards.allSatisfy { $0.kind != "approval" })
   }
 
   func testSingleQuestionModelStillExposesLegacyFieldsForUnpagedRender() {

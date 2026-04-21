@@ -494,30 +494,63 @@ struct ADEConnectionDot: View {
   }
 
   var body: some View {
-    Button {
-      syncService.settingsPresented = true
-    } label: {
-      ZStack {
-        Circle()
-          .fill(tint.opacity(0.14))
-          .frame(width: 30, height: 30)
-          .overlay(
-            Circle()
-              .stroke(tint.opacity(0.55), lineWidth: 1)
-          )
-          .shadow(color: tint.opacity(showsConnectedGlow ? 0.55 : 0.35), radius: showsConnectedGlow ? 6 : 3)
+    ZStack {
+      Circle()
+        .fill(tint.opacity(0.14))
+        .frame(width: 30, height: 30)
+        .overlay(
+          Circle()
+            .stroke(tint.opacity(0.55), lineWidth: 1)
+        )
+        .shadow(color: tint.opacity(showsConnectedGlow ? 0.24 : 0.16), radius: showsConnectedGlow ? 2 : 1)
 
-        Image(systemName: "gearshape.fill")
-          .font(.system(size: 14, weight: .semibold))
-          .foregroundStyle(tint)
-      }
-      .frame(minWidth: 44, minHeight: 44)
-      .contentShape(Rectangle())
+      Image(systemName: "gearshape.fill")
+        .font(.system(size: 14, weight: .semibold))
+        .foregroundStyle(tint)
     }
-    .buttonStyle(.plain)
+    .frame(minWidth: 44, minHeight: 44)
+    .contentShape(Rectangle())
+    .onTapGesture {
+      syncService.settingsPresented = true
+    }
+    .accessibilityAddTraits(.isButton)
     .accessibilityLabel("Settings · \(accessibilityLabel)")
     .accessibilityHint("Opens settings to pair or reconnect.")
+    .accessibilityAction {
+      syncService.settingsPresented = true
+    }
     .accessibilityShowsLargeContentViewer()
+  }
+}
+
+/// Toolbar leading cluster shown on every root screen: settings stays
+/// leftmost, with attention immediately after it as a separate control.
+@available(iOS 17.0, *)
+struct ADERootToolbarLeading: View {
+  var body: some View {
+    HStack(spacing: 12) {
+      ADEConnectionDot()
+      AttentionDrawerButton()
+    }
+    .fixedSize(horizontal: true, vertical: false)
+  }
+}
+
+/// Toolbar content variant for screens that need the root controls in the
+/// navigation bar. The explicit shared background opt-out keeps iOS 26's
+/// toolbar glass from joining settings and attention into one capsule.
+@available(iOS 17.0, *)
+struct ADERootToolbarLeadingItems: ToolbarContent {
+  var body: some ToolbarContent {
+    ToolbarItem(placement: .topBarLeading) {
+      ADEConnectionDot()
+    }
+    .sharedBackgroundVisibility(.hidden)
+
+    ToolbarItem(placement: .topBarLeading) {
+      AttentionDrawerButton()
+    }
+    .sharedBackgroundVisibility(.hidden)
   }
 }
 

@@ -76,6 +76,8 @@ public final class LiveActivityCoordinator: ObservableObject {
     private var pushTokenTask: Task<Void, Never>?
     /// Push-to-start listener (iOS 17.2+).
     private var pushToStartTask: Task<Void, Never>?
+    /// Serializes ActivityKit mutations so updates/end/start calls do not race.
+    private var reconcileTask: Task<Void, Never>?
 
     // MARK: - Init
 
@@ -99,8 +101,11 @@ public final class LiveActivityCoordinator: ObservableObject {
     }
 
     deinit {
-        pushTokenTask?.cancel()
-        pushToStartTask?.cancel()
+        MainActor.assumeIsolated {
+            pushTokenTask?.cancel()
+            pushToStartTask?.cancel()
+            reconcileTask?.cancel()
+        }
     }
 
     // MARK: - Public entry point
@@ -115,8 +120,20 @@ public final class LiveActivityCoordinator: ObservableObject {
         with sessions: [AgentSnapshot],
         prs: [PrSnapshot] = []
     ) {
+        let previousTask = reconcileTask
+        reconcileTask = Task { @MainActor [weak self] in
+            await previousTask?.value
+            guard let self else { return }
+            await self.reconcileNow(with: sessions, prs: prs)
+        }
+    }
+
+    private func reconcileNow(
+        with sessions: [AgentSnapshot],
+        prs: [PrSnapshot]
+    ) async {
         guard ActivityAuthorizationInfo().areActivitiesEnabled else {
-            Task { await endAllActivities(dismissalPolicy: .immediate) }
+            await endAllActivities(dismissalPolicy: .immediate)
             return
         }
 
@@ -125,7 +142,7 @@ public final class LiveActivityCoordinator: ObservableObject {
         // If there's literally nothing to show, make sure no activity is
         // visible and return.
         if sessions.isEmpty && desiredState.attention == nil && desiredState.pendingPrCount == 0 {
-            Task { await endAllActivities(dismissalPolicy: .after(Date().addingTimeInterval(configuration.terminalDismissalDelay))) }
+            await endAllActivities(dismissalPolicy: .after(Date().addingTimeInterval(configuration.terminalDismissalDelay)))
             return
         }
 
@@ -133,11 +150,11 @@ public final class LiveActivityCoordinator: ObservableObject {
         if let canonical = canonicalActivity(from: existing) {
             // End everything except the canonical; update it.
             for stray in existing where stray.id != canonical.id {
-                Task { await stray.end(nil, dismissalPolicy: .immediate) }
+                await stray.end(nil, dismissalPolicy: .immediate)
             }
-            Task { await update(canonical, to: desiredState) }
+            await update(canonical, to: desiredState)
         } else {
-            Task { await startActivity(with: desiredState) }
+            await startActivity(with: desiredState)
         }
     }
 

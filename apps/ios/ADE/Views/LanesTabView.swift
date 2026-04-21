@@ -25,6 +25,7 @@ struct LanesTabView: View {
   @State var refreshFeedbackToken = 0
   @State var selectedLaneTransitionId: String?
   @State private var lastLanesLocalProjectionReload = Date.distantPast
+  @State private var lastHandledLanesProjectionRevision: Int?
 
   var pinnedLaneIds: Set<String> {
     get {
@@ -45,6 +46,20 @@ struct LanesTabView: View {
 
   var transitionNamespace: Namespace.ID? {
     ADEMotion.allowsMatchedGeometry(reduceMotion: reduceMotion) ? laneTransitionNamespace : nil
+  }
+
+  var lanesProjectionReloadKey: Int? {
+    isActive ? syncService.localStateRevision : nil
+  }
+
+  var primaryBranchReloadKey: String? {
+    guard isActive else { return nil }
+    return "\(primaryLane?.id ?? "none")-\(canRunLiveActions)"
+  }
+
+  var laneNavigationRequestKey: String? {
+    guard isActive else { return nil }
+    return syncService.requestedLaneNavigation?.id
   }
 
   var body: some View {
@@ -84,6 +99,19 @@ struct LanesTabView: View {
             )
             .transition(.opacity)
           }
+          if let liveActionNoticePresentation {
+            ADENoticeCard(
+              title: liveActionNoticePresentation.title,
+              message: liveActionNoticePresentation.message,
+              icon: liveActionNoticePresentation.symbol,
+              tint: ADEColor.warning,
+              actionTitle: liveActionNoticePresentation.actionTitle,
+              action: liveActionNoticePresentation.action.map { action in
+                { handleNoticeAction(action) }
+              }
+            )
+            .transition(.opacity)
+          }
           if showsLaneLoadingSkeletons {
             ADECardSkeleton(rows: 4)
             ADECardSkeleton(rows: 3)
@@ -110,25 +138,29 @@ struct LanesTabView: View {
       .navigationBarTitleDisplayMode(.inline)
       .toolbar { toolbarContent }
       .sensoryFeedback(.success, trigger: refreshFeedbackToken)
-      .task(id: "\(primaryLane?.id ?? "none")-\(canRunLiveActions)-\(isActive)") {
-        guard isActive else { return }
-        await refreshPrimaryBranches(force: true)
+      .task(id: primaryBranchReloadKey) {
+        guard primaryBranchReloadKey != nil else { return }
+        await refreshPrimaryBranches(force: false)
       }
-      .task(id: "\(syncService.localStateRevision)-\(isActive)") {
-        guard isActive else { return }
-        guard laneStatus.phase == .ready else { return }
+      .task(id: lanesProjectionReloadKey) {
+        guard let revision = lanesProjectionReloadKey else { return }
+        guard lastHandledLanesProjectionRevision != revision || laneSnapshots.isEmpty else { return }
         let now = Date()
-        guard now.timeIntervalSince(lastLanesLocalProjectionReload) >= 0.35 else { return }
-        lastLanesLocalProjectionReload = now
+        if !laneSnapshots.isEmpty {
+          let elapsed = now.timeIntervalSince(lastLanesLocalProjectionReload)
+          if elapsed < 0.35 {
+            try? await Task.sleep(for: .milliseconds(max(1, Int((0.35 - elapsed) * 1_000))))
+            guard !Task.isCancelled, lanesProjectionReloadKey == revision else { return }
+          }
+        }
+        lastLanesLocalProjectionReload = Date()
         await reload(refreshRemote: false)
+        guard !Task.isCancelled, lanesProjectionReloadKey == revision else { return }
+        lastHandledLanesProjectionRevision = revision
       }
-      .task(id: "\(syncService.requestedLaneNavigation?.id ?? "none")-\(isActive)") {
-        guard isActive else { return }
+      .task(id: laneNavigationRequestKey) {
+        guard laneNavigationRequestKey != nil else { return }
         await handleRequestedLaneNavigation()
-      }
-      .task(id: isActive) {
-        guard isActive else { return }
-        await reload(refreshRemote: false)
       }
       .onChange(of: syncService.connectionState) { oldValue, newValue in
         guard isActive else { return }
@@ -176,9 +208,7 @@ struct LanesTabView: View {
 
   @ToolbarContentBuilder
   private var toolbarContent: some ToolbarContent {
-    ToolbarItem(placement: .topBarLeading) {
-      ADEConnectionDot()
-    }
+    ADERootToolbarLeadingItems()
     ToolbarItemGroup(placement: .topBarTrailing) {
       Menu {
         Section("Scope") {
@@ -243,14 +273,18 @@ struct LanesTabView: View {
       .accessibilityLabel("Lane filters")
 
       Button {
-        addLaneSheetPresented = true
+        if canRunLiveActions {
+          addLaneSheetPresented = true
+        } else {
+          handleBlockedLiveAction()
+        }
       } label: {
         Image(systemName: "plus")
           .font(.body.weight(.semibold))
-          .foregroundStyle(ADEColor.accent)
+          .foregroundStyle(canRunLiveActions ? ADEColor.accent : ADEColor.warning)
       }
-      .disabled(!canRunLiveActions)
       .accessibilityLabel("Add lane")
+      .accessibilityHint(canRunLiveActions ? "Opens lane creation options" : "Reconnect to desktop before creating lanes")
     }
   }
 }
