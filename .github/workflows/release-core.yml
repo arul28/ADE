@@ -50,10 +50,15 @@ jobs:
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: apps/desktop/package-lock.json
+          cache-dependency-path: |
+            apps/desktop/package-lock.json
+            apps/ade-cli/package-lock.json
 
       - name: Install desktop dependencies
         run: cd apps/desktop && npm ci
+
+      - name: Install ADE CLI dependencies
+        run: cd apps/ade-cli && npm ci
 
       - name: Stamp release version
         env:
