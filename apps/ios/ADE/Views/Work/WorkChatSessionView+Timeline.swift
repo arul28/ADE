@@ -29,90 +29,61 @@ extension WorkChatSessionView {
     case .turnSeparator(let separator):
       WorkTurnSeparatorView(separator: separator)
     case .pendingQuestion(let question):
-      if isLive {
-        WorkStructuredQuestionCard(
-          question: question,
-          busy: actionInFlight,
-          onSelectOption: { option, freeform in
-            await runSessionAction {
-              await onRespondToQuestion(
-                question.id,
-                question.questionId,
-                .string(option.value),
-                freeform
-              )
-            }
-          },
-          onSubmitAll: { answers, freeform in
-            await runSessionAction {
-              await onSubmitQuestionAnswers(question.id, answers, freeform)
-            }
-          },
-          onDecline: {
-            await runSessionAction {
-              await onDeclineQuestion(question.id)
-            }
+      // When offline, still render the card in a disabled (busy) state so the
+      // transcript keeps its full context; the top-right gear icon already
+      // communicates that the host is unreachable, so an extra "Reconnect to
+      // respond" banner here would be redundant noise.
+      WorkStructuredQuestionCard(
+        question: question,
+        busy: actionInFlight || !isLive,
+        onSelectOption: { option, freeform in
+          await runSessionAction {
+            await onRespondToQuestion(
+              question.id,
+              question.questionId,
+              .string(option.value),
+              freeform
+            )
           }
-        )
-      } else {
-        ADENoticeCard(
-          title: "Host needs your answer",
-          message: "Reconnect to respond to this question. The host keeps the session paused until input arrives.",
-          icon: "questionmark.circle",
-          tint: ADEColor.warning,
-          actionTitle: nil,
-          action: nil
-        )
-      }
+        },
+        onSubmitAll: { answers, freeform in
+          await runSessionAction {
+            await onSubmitQuestionAnswers(question.id, answers, freeform)
+          }
+        },
+        onDecline: {
+          await runSessionAction {
+            await onDeclineQuestion(question.id)
+          }
+        }
+      )
     case .pendingPermission(let permission):
-      if isLive {
-        WorkPermissionCard(
-          permission: permission,
-          busy: actionInFlight,
-          onDecision: { decision in
-            await runSessionAction {
-              await onRespondToPermission(permission.id, decision)
-            }
+      WorkPermissionCard(
+        permission: permission,
+        busy: actionInFlight || !isLive,
+        onDecision: { decision in
+          await runSessionAction {
+            await onRespondToPermission(permission.id, decision)
           }
-        )
-      } else {
-        ADENoticeCard(
-          title: "Permission request waiting",
-          message: "Reconnect to allow or decline this tool's permission gate.",
-          icon: "lock.shield",
-          tint: ADEColor.warning,
-          actionTitle: nil,
-          action: nil
-        )
-      }
+        }
+      )
     case .pendingPlanApproval(let plan):
-      if isLive {
-        WorkPlanReviewCard(
-          plan: plan,
-          busy: actionInFlight,
-          onDecision: { decision, feedback in
-            await runSessionAction {
-              // Approve: send "accept" decision directly.
-              // Reject: send "decline"; if the user typed feedback, also
-              // queue it as a follow-up steer message so the agent sees the
-              // revision notes in the next turn.
-              await onApproveRequest(plan.id, decision)
-              if decision == .decline, let feedback, !feedback.isEmpty {
-                _ = await onSend(feedback)
-              }
+      WorkPlanReviewCard(
+        plan: plan,
+        busy: actionInFlight || !isLive,
+        onDecision: { decision, feedback in
+          await runSessionAction {
+            // Approve: send "accept" decision directly.
+            // Reject: send "decline"; if the user typed feedback, also
+            // queue it as a follow-up steer message so the agent sees the
+            // revision notes in the next turn.
+            await onApproveRequest(plan.id, decision)
+            if decision == .decline, let feedback, !feedback.isEmpty {
+              _ = await onSend(feedback)
             }
           }
-        )
-      } else {
-        ADENoticeCard(
-          title: "Plan approval waiting",
-          message: "Reconnect to approve or reject the agent's plan.",
-          icon: "list.bullet.clipboard",
-          tint: ADEColor.warning,
-          actionTitle: nil,
-          action: nil
-        )
-      }
+        }
+      )
     }
   }
 

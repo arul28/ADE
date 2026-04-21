@@ -28,7 +28,7 @@ struct CtoWorkerDetailScreen: View {
   var body: some View {
     ScrollView {
       VStack(alignment: .leading, spacing: 14) {
-        if let errorMessage {
+        if let errorMessage, !syncService.connectionState.isHostUnreachable {
           ADENoticeCard(
             title: "Worker failed to load",
             message: errorMessage,

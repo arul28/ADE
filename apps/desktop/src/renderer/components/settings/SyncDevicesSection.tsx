@@ -5,6 +5,7 @@ import type {
   SyncDeviceRecord,
   SyncDeviceRuntimeState,
   SyncRoleSnapshot,
+  SyncTailnetDiscoveryStatus,
 } from "../../../shared/types";
 import {
   COLORS,
@@ -208,6 +209,12 @@ export function SyncDevicesSection() {
     setNotice(device.connectionState === "connected" ? "Device revoked." : "Device removed.");
   }), [runAction]);
 
+  const handleRetryDiscovery = useCallback(() => runAction(async () => {
+    const nextStatus = await window.ade.sync.refreshDiscovery();
+    setStatus(nextStatus);
+    setNotice("Tailnet discovery retry started.");
+  }), [runAction]);
+
   if (loading) {
     return <div style={helperTextStyle}>Loading sync status...</div>;
   }
@@ -240,6 +247,13 @@ export function SyncDevicesSection() {
       ) : (
         <ViewerPairingNotice />
       )}
+
+      <TailnetDiscoveryPanel
+        status={status.tailnetDiscovery}
+        busy={busy}
+        isLocalHost={isLocalHost}
+        onRetry={handleRetryDiscovery}
+      />
 
       {notice ? <div style={{ ...helperTextStyle, color: COLORS.success }}>{notice}</div> : null}
       {error ? <div style={{ ...helperTextStyle, color: COLORS.danger }}>{error}</div> : null}
@@ -318,6 +332,118 @@ function StatusBar({ connected, peerCount }: { connected: boolean; peerCount: nu
           {label}
         </span>
       </div>
+    </div>
+  );
+}
+
+function displayTailnetHost(status: SyncTailnetDiscoveryStatus): string {
+  return `${status.serviceName.replace(/^svc:/, "")}:${status.servicePort}`;
+}
+
+function tailnetStatusCopy(status: SyncTailnetDiscoveryStatus, isLocalHost: boolean): {
+  label: string;
+  color: string;
+  title: string;
+  detail: string;
+  canRetry: boolean;
+} {
+  const host = displayTailnetHost(status);
+  switch (status.state) {
+    case "published":
+      return {
+        label: "Published",
+        color: COLORS.success,
+        title: `Published as ${host}`,
+        detail: "Phones on this tailnet can find this host automatically.",
+        canRetry: true,
+      };
+    case "pending_approval":
+      return {
+        label: "Pending approval",
+        color: COLORS.warning,
+        title: `Waiting on ${host}`,
+        detail: status.stderr || status.error || "Tailscale accepted the service, but tailnet policy may need admin approval.",
+        canRetry: true,
+      };
+    case "publishing":
+      return {
+        label: "Publishing",
+        color: COLORS.accent,
+        title: `Publishing ${host}`,
+        detail: status.target ? `Forwarding to ${status.target}.` : "Publishing tailnet discovery.",
+        canRetry: false,
+      };
+    case "unavailable":
+      return {
+        label: "Tailscale not available",
+        color: COLORS.warning,
+        title: `Cannot publish ${host}`,
+        detail: status.stderr || status.error || "Install or open Tailscale on this desktop, then retry.",
+        canRetry: true,
+      };
+    case "failed":
+      return {
+        label: "Failed",
+        color: COLORS.danger,
+        title: `Could not publish ${host}`,
+        detail: status.stderr || status.error || "Tailscale Serve returned an error.",
+        canRetry: true,
+      };
+    default:
+      return {
+        label: "Not active",
+        color: COLORS.textMuted,
+        title: isLocalHost ? `Not published as ${host}` : "Only the host desktop publishes tailnet discovery",
+        detail: status.error || "Start phone sync hosting to publish tailnet discovery.",
+        canRetry: isLocalHost,
+      };
+  }
+}
+
+function TailnetDiscoveryPanel({
+  status,
+  busy,
+  isLocalHost,
+  onRetry,
+}: {
+  status: SyncTailnetDiscoveryStatus;
+  busy: boolean;
+  isLocalHost: boolean;
+  onRetry: () => void;
+}) {
+  const copy = tailnetStatusCopy(status, isLocalHost);
+  const disabled = busy || !copy.canRetry;
+  return (
+    <div style={panelStyle}>
+      <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12 }}>
+        <div style={{ minWidth: 0 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+            <span style={{ color: COLORS.textPrimary, fontFamily: SANS_FONT, fontSize: 14, fontWeight: 600 }}>
+              Tailnet discovery
+            </span>
+            <span style={tagStyle(copy.color)}>{copy.label}</span>
+          </div>
+          <div style={{ ...codeValueStyle, marginTop: 4 }}>{copy.title}</div>
+        </div>
+        <button
+          type="button"
+          disabled={disabled}
+          onClick={onRetry}
+          style={outlineButton({
+            height: 30,
+            opacity: disabled ? 0.55 : 1,
+            cursor: disabled ? "not-allowed" : "pointer",
+          })}
+        >
+          Retry
+        </button>
+      </div>
+      <div style={{ ...helperTextStyle, overflowWrap: "anywhere" }}>
+        {copy.detail}
+      </div>
+      {status.updatedAt ? (
+        <div style={helperTextStyle}>Updated {formatTimestamp(status.updatedAt)}</div>
+      ) : null}
     </div>
   );
 }

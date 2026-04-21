@@ -66,7 +66,11 @@ struct LanesTabView: View {
     NavigationStack {
       ScrollView {
         LazyVStack(spacing: 14) {
-          if let hydrationNotice = laneStatus.inlineHydrationFailureNotice(for: .lanes) {
+          // Suppress connection-caused banners; the top-right gear dot is the
+          // single source of truth for host reachability.
+          if !syncService.connectionState.isHostUnreachable,
+            let hydrationNotice = laneStatus.inlineHydrationFailureNotice(for: .lanes)
+          {
             ADENoticeCard(
               title: hydrationNotice.title,
               message: hydrationNotice.message,
@@ -77,7 +81,10 @@ struct LanesTabView: View {
             )
             .transition(.opacity)
           }
-          if let errorMessage, laneStatus.phase == .ready {
+          if let errorMessage,
+            laneStatus.phase == .ready,
+            !syncService.connectionState.isHostUnreachable
+          {
             ADENoticeCard(
               title: "Lane view error",
               message: errorMessage,
@@ -88,7 +95,10 @@ struct LanesTabView: View {
             )
             .transition(.opacity)
           }
-          if let primaryBranchError, laneStatus.phase == .ready {
+          if let primaryBranchError,
+            laneStatus.phase == .ready,
+            !syncService.connectionState.isHostUnreachable
+          {
             ADENoticeCard(
               title: "Primary branch error",
               message: primaryBranchError,
@@ -99,7 +109,14 @@ struct LanesTabView: View {
             )
             .transition(.opacity)
           }
-          if let liveActionNoticePresentation {
+          // The live-action notice is entirely connection-oriented ("Pair to
+          // run lane actions" / "Reconnect before creating lanes"), which
+          // duplicates the gear-dot signal. Only surface it when something
+          // other than raw disconnection is the cause (e.g. still connecting
+          // but sync not ready yet) so the user still gets hinted.
+          if !syncService.connectionState.isHostUnreachable,
+            let liveActionNoticePresentation
+          {
             ADENoticeCard(
               title: liveActionNoticePresentation.title,
               message: liveActionNoticePresentation.message,

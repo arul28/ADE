@@ -2,35 +2,21 @@ import SwiftUI
 import UIKit
 
 /// Top-level CTO tab screen. Hosts a persistent NavigationStack and segmented
-/// picker (Team / Workflows / Settings). The stack drives
-/// drill-down into per-worker chat (CtoSessionDestinationView) and per-worker
-/// detail (CtoWorkerDetailScreen).
+/// picker (Team / Workflows / Settings). The stack drives drill-down into
+/// per-worker chat (CtoSessionDestinationView) and per-worker detail
+/// (CtoWorkerDetailScreen).
 struct CtoRootScreen: View {
   @EnvironmentObject private var syncService: SyncService
   var isTabActive = true
 
-  @State private var selectedTab: CtoTab = .chat
+  @State private var selectedTab: CtoTab = .team
   @State private var path = NavigationPath()
   @State private var snapshot: CtoSnapshot?
-  @State private var snapshotError: String?
   @State private var isLoadingSnapshot = false
 
   var body: some View {
     NavigationStack(path: $path) {
       VStack(spacing: 0) {
-        if let snapshotError {
-          ADENoticeCard(
-            title: "CTO failed to load",
-            message: snapshotError,
-            icon: "exclamationmark.triangle.fill",
-            tint: ADEColor.danger,
-            actionTitle: "Retry",
-            action: { Task { await loadSnapshot() } }
-          )
-          .padding(.horizontal, 12)
-          .padding(.top, 8)
-        }
-
         CtoTabShell(active: $selectedTab)
 
         tabBody
@@ -71,9 +57,6 @@ struct CtoRootScreen: View {
   @ViewBuilder
   private var tabBody: some View {
     switch selectedTab {
-    case .chat:
-      CtoChatScreen(path: $path)
-        .environmentObject(syncService)
     case .team:
       CtoTeamScreen(path: $path)
         .environmentObject(syncService)
@@ -91,12 +74,9 @@ struct CtoRootScreen: View {
     if isLoadingSnapshot { return }
     isLoadingSnapshot = true
     defer { isLoadingSnapshot = false }
-    do {
-      snapshot = try await syncService.fetchCtoState()
-      snapshotError = nil
-    } catch {
-      snapshotError = error.localizedDescription
-    }
+    // Non-connection errors here are silently ignored — the global connection
+    // banner (top-right gear) owns user-facing failure messaging.
+    snapshot = (try? await syncService.fetchCtoState()) ?? snapshot
   }
 
   private var ctoLiveReloadKey: String? {

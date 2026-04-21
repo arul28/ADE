@@ -76,22 +76,37 @@ struct CtoSessionDestinationView: View {
     .ctoSessionNavigationChrome(mode: navigationChrome, title: navigationTitle)
   }
 
+  @ViewBuilder
   private func failureView(message: String) -> some View {
-    VStack(spacing: 16) {
-      ADENoticeCard(
-        title: "Could not open CTO chat",
-        message: message,
-        icon: "exclamationmark.triangle.fill",
-        tint: ADEColor.danger,
-        actionTitle: "Retry",
-        action: {
-          Task { @MainActor in startEnsureSession(force: true) }
-        }
+    // When the host isn't reachable, don't flash a big red "Could not open
+    // CTO chat" card — the top-right gear dot already signals offline. Show
+    // a subtle empty state instead so the user knows to reconnect.
+    if syncService.connectionState.isHostUnreachable {
+      ADEEmptyStateView(
+        symbol: "wifi.slash",
+        title: "Connect your Mac to open this chat",
+        message: "Tap the settings gear in the top right to reconnect to your desktop host."
       )
+      .padding(16)
+      .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+      .ctoSessionNavigationChrome(mode: navigationChrome, title: navigationTitle)
+    } else {
+      VStack(spacing: 16) {
+        ADENoticeCard(
+          title: "Could not open CTO chat",
+          message: message,
+          icon: "exclamationmark.triangle.fill",
+          tint: ADEColor.danger,
+          actionTitle: "Retry",
+          action: {
+            Task { @MainActor in startEnsureSession(force: true) }
+          }
+        )
+      }
+      .padding(16)
+      .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+      .ctoSessionNavigationChrome(mode: navigationChrome, title: navigationTitle)
     }
-    .padding(16)
-    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-    .ctoSessionNavigationChrome(mode: navigationChrome, title: navigationTitle)
   }
 
   private var navigationTitle: String {

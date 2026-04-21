@@ -82,7 +82,11 @@ struct LaneManageSheet: View {
     NavigationStack {
       ScrollView {
         VStack(spacing: 14) {
-          if let liveActionNoticePresentation {
+          // Connection-caused live-action notices are suppressed — the gear
+          // dot in the toolbar already communicates offline state.
+          if !syncService.connectionState.isHostUnreachable,
+            let liveActionNoticePresentation
+          {
             ADENoticeCard(
               title: liveActionNoticePresentation.title,
               message: liveActionNoticePresentation.message,

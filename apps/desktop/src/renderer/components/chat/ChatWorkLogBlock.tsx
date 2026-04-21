@@ -134,15 +134,16 @@ function workToneIcon(entry: ChatWorkLogEntry): { icon: Icon; className: string 
   return { icon: Warning, className: "text-fg/34" };
 }
 
-function workStatusState(status: ChatWorkLogEntry["status"]): ChatStatusVisualState {
+function workStatusState(status: ChatWorkLogEntry["status"], animate = true): ChatStatusVisualState {
   if (status === "completed" || status === "failed") return status;
-  if (status === "interrupted") return "waiting";
-  return "working";
+  if (status === "interrupted") return animate ? "waiting" : "completed";
+  return animate ? "working" : "completed";
 }
 
-function workStatusLabel(status: ChatWorkLogEntry["status"]): string {
-  if (status === "completed" || status === "failed" || status === "interrupted") return status;
-  return "running";
+function workStatusLabel(status: ChatWorkLogEntry["status"], animate = true): string {
+  if (status === "completed" || status === "failed") return status;
+  if (status === "interrupted") return animate ? "interrupted" : "completed";
+  return animate ? "running" : "completed";
 }
 
 function workEntryHeading(entry: ChatWorkLogEntry): string {
@@ -452,11 +453,13 @@ export function ChatWorkLogBlock({
   summary,
   className,
   onNavigateSuggestion,
+  animate = true,
 }: {
   entries: ChatWorkLogEntry[];
   summary?: ChatWorkLogGroupEvent["summary"];
   className?: string;
   onNavigateSuggestion?: (suggestion: OperatorNavigationSuggestion) => void;
+  animate?: boolean;
 }) {
   const hasNavigationSuggestions = useMemo(
     () => entries.some((e) => readNavigationSuggestions(e.result).length > 0),
@@ -475,10 +478,11 @@ export function ChatWorkLogBlock({
 
   const groupStatus: ChatStatusVisualState = useMemo(() => {
     if (entries.some((e) => e.status === "failed")) return "failed";
+    if (!animate) return "completed";
     if (entries.some((e) => e.status === "running")) return "working";
     if (entries.some((e) => e.status === "interrupted")) return "waiting";
     return "completed";
-  }, [entries]);
+  }, [entries, animate]);
 
   const groupStatusLabel = useMemo(() => {
     if (groupStatus === "failed") return "failed";
@@ -506,7 +510,7 @@ export function ChatWorkLogBlock({
 
   return (
     <div className={cn(
-      "ade-chat-work-card rounded-[16px] px-3 py-2.5 transition-all",
+      "ade-chat-work-card max-w-full rounded-[16px] px-3 py-2.5 transition-all",
       groupStatus === "failed" && "border-red-400/14 bg-red-500/[0.05] shadow-[0_16px_32px_-28px_rgba(239,68,68,0.45)]",
       className,
     )}>
@@ -561,7 +565,8 @@ export function ChatWorkLogBlock({
             const isEntryExpanded = expandedEntries[entry.id] ?? (hasSuggestions || entry.status === "failed");
             const heading = replaceInternalToolNames(workEntryHeading(entry));
             const preview = workEntryPreview(entry);
-            const statusLabel = workStatusLabel(entry.status);
+            const statusLabel = workStatusLabel(entry.status, animate);
+            const entryStatusState = workStatusState(entry.status, animate);
 
             return (
               <div key={entry.id}>
@@ -576,7 +581,7 @@ export function ChatWorkLogBlock({
                     <CaretRight size={9} weight="bold" className="shrink-0 text-fg/25" />
                   )}
                   <span className="inline-flex h-2.5 w-2.5 shrink-0 items-center justify-center">
-                    <ChatStatusGlyph status={workStatusState(entry.status)} size={10} />
+                    <ChatStatusGlyph status={entryStatusState} size={10} />
                   </span>
                   {entryIsMemory ? (
                     <span className="ade-memory-chip inline-flex h-5 w-5 shrink-0 items-center justify-center">
@@ -595,7 +600,7 @@ export function ChatWorkLogBlock({
                   ) : null}
                   <span className={cn(
                     "ml-auto shrink-0 font-mono text-[9px] uppercase tracking-[0.12em]",
-                    chatStatusTextClass(workStatusState(entry.status)),
+                    chatStatusTextClass(entryStatusState),
                   )}>
                     {statusLabel}
                   </span>

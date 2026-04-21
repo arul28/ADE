@@ -443,6 +443,45 @@ describe("AgentChatMessageList transcript rendering", () => {
     expect(transcriptOnly.container.textContent).not.toContain("Running command: npm test");
   });
 
+  it("keeps thinking activity visible after a duplicate started status", () => {
+    const rendered = renderMessageList(
+      [
+        {
+          sessionId: "session-1",
+          timestamp: "2026-03-17T10:00:00.000Z",
+          event: {
+            type: "status",
+            turnStatus: "started",
+            turnId: "turn-1",
+          },
+        },
+        {
+          sessionId: "session-1",
+          timestamp: "2026-03-17T10:00:01.000Z",
+          event: {
+            type: "activity",
+            activity: "thinking",
+            detail: "Thinking through the answer",
+            turnId: "turn-1",
+          },
+        },
+        {
+          sessionId: "session-1",
+          timestamp: "2026-03-17T10:00:02.000Z",
+          event: {
+            type: "status",
+            turnStatus: "started",
+            turnId: "turn-1",
+          },
+        },
+      ],
+      { showStreamingIndicator: true },
+    );
+
+    expect(rendered.container.textContent).toContain("Thinking: Thinking through the answer");
+    expect(rendered.container.innerHTML).toContain("bg-violet-400");
+  });
+
   it("keeps the live assistant bubble stable until the turn finishes", () => {
     const live = renderMessageList(
       [
@@ -460,7 +499,7 @@ describe("AgentChatMessageList transcript rendering", () => {
       { showStreamingIndicator: true },
     );
 
-    expect(live.container.innerHTML).toContain("min-h-[5.5rem]");
+    expect(live.container.innerHTML).toContain("ade-glow-pulse");
 
     cleanup();
 
@@ -490,7 +529,83 @@ describe("AgentChatMessageList transcript rendering", () => {
       { showStreamingIndicator: false },
     );
 
-    expect(settled.container.innerHTML).not.toContain("min-h-[5.5rem]");
+    expect(settled.container.innerHTML).not.toContain("ade-glow-pulse");
+  });
+
+  it("shows streamed live reasoning text instead of only a thinking placeholder", () => {
+    const rendered = renderMessageList(
+      [
+        {
+          sessionId: "session-1",
+          timestamp: "2026-03-17T10:00:00.000Z",
+          event: {
+            type: "status",
+            turnStatus: "started",
+            turnId: "turn-live",
+          },
+        },
+        {
+          sessionId: "session-1",
+          timestamp: "2026-03-17T10:00:01.000Z",
+          event: {
+            type: "reasoning",
+            text: "Checking both imports before editing.",
+            itemId: "reasoning-live",
+            turnId: "turn-live",
+          },
+        },
+      ],
+      { showStreamingIndicator: true },
+    );
+
+    expect(rendered.container.textContent).toContain("Checking both imports before editing.");
+    expect(rendered.container.textContent).not.toContain("Thinking...");
+  });
+
+  it("does not show a fake one-second duration for un-timed completed reasoning", () => {
+    const rendered = renderMessageList([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: {
+          type: "reasoning",
+          text: "Checked the import graph.",
+          itemId: "reasoning-complete",
+          turnId: "turn-complete",
+        },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:01.000Z",
+        event: {
+          type: "done",
+          turnId: "turn-complete",
+          status: "completed",
+        },
+      },
+    ]);
+
+    expect(rendered.container.textContent).toContain("Thought");
+    expect(rendered.container.textContent).not.toContain("1s");
+  });
+
+  it("keeps work-log cards bounded to content width", () => {
+    const rendered = renderMessageList([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: {
+          type: "tool_call",
+          tool: "functions.exec_command",
+          args: { cmd: "pwd" },
+          itemId: "tool-1",
+          turnId: "turn-1",
+        },
+      },
+    ]);
+
+    expect(rendered.container.textContent).toContain("Run pwd");
+    expect(rendered.container.innerHTML).toContain("max-w-[min(100%,70ch)]");
   });
 
   it("renders a bottom turn summary card with task, file, and background-agent totals", () => {

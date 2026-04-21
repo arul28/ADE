@@ -188,8 +188,12 @@ export function buildMissionThreadEventMergeKey(envelope: AgentChatEventEnvelope
     : null;
 
   switch (event.type) {
-    case "text":
     case "reasoning":
+      if (itemId) return [...baseParts, "item", itemId].join("::");
+      if (turnId) return [...baseParts, "turn", turnId].join("::");
+      if (messageId) return [...baseParts, "message", messageId].join("::");
+      return [...baseParts, normalizeInlineText(event.text)].join("::");
+    case "text":
       if (turnId) return [...baseParts, "turn", turnId].join("::");
       if (itemId) return [...baseParts, "item", itemId].join("::");
       if (messageId) return [...baseParts, "message", messageId].join("::");

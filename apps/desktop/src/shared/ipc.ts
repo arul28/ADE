@@ -293,6 +293,7 @@ export const IPC = {
   aiVerifyApiKey: "ade.ai.verifyApiKey",
   aiUpdateConfig: "ade.ai.updateConfig",
   syncGetStatus: "ade.sync.getStatus",
+  syncRefreshDiscovery: "ade.sync.refreshDiscovery",
   syncListDevices: "ade.sync.listDevices",
   syncUpdateLocalDevice: "ade.sync.updateLocalDevice",
   syncConnectToBrain: "ade.sync.connectToBrain",

@@ -2285,6 +2285,14 @@ export function registerIpc({
     return await ctx.syncService.getStatus();
   });
 
+  ipcMain.handle(IPC.syncRefreshDiscovery, async (): Promise<SyncRoleSnapshot> => {
+    const ctx = getCtx();
+    if (!ctx.syncService) {
+      throw new Error("Sync service is not available.");
+    }
+    return await ctx.syncService.refreshDiscovery();
+  });
+
   ipcMain.handle(IPC.syncListDevices, async (): Promise<SyncDeviceRuntimeState[]> => {
     const ctx = getCtx();
     if (!ctx.syncService) {

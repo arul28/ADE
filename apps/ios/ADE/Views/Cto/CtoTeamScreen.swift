@@ -1,7 +1,8 @@
 import SwiftUI
 
-/// CTO Team tab — budget card + 2-column grid of WorkerCards.
-/// Mirrors screen-team.jsx.
+/// CTO Team tab — hero CTO card pinned at the top, followed by budget card and
+/// the full roster of hired workers. Primary tap opens chat; a secondary
+/// "Details" chip drills into the worker dashboard.
 struct CtoTeamScreen: View {
   @EnvironmentObject private var syncService: SyncService
   @Binding var path: NavigationPath
@@ -9,16 +10,10 @@ struct CtoTeamScreen: View {
   @State private var agents: [AgentIdentity] = []
   @State private var budget: AgentBudgetSnapshot?
   @State private var isLoading = false
-  @State private var errorMessage: String?
 
   @State private var showHireSheet = false
   @State private var pendingWakeup: Set<String> = []
   @State private var wakeupNotice: String?
-
-  private let columns: [GridItem] = [
-    GridItem(.flexible(), spacing: 8),
-    GridItem(.flexible(), spacing: 8),
-  ]
 
   var body: some View {
     ScrollView {
@@ -26,31 +21,22 @@ struct CtoTeamScreen: View {
         headerRow
           .padding(.horizontal, 20)
 
-        if let errorMessage {
-          ADENoticeCard(
-            title: "Team failed to load",
-            message: errorMessage,
-            icon: "exclamationmark.triangle.fill",
-            tint: ADEColor.danger,
-            actionTitle: "Retry",
-            action: { Task { await load() } }
-          )
+        ctoHeroCard
           .padding(.horizontal, 16)
-        }
 
         budgetCard
           .padding(.horizontal, 16)
 
-        ctoCard
-          .padding(.horizontal, 16)
+        rosterSectionHeader
+          .padding(.horizontal, 20)
 
         if isLoading && agents.isEmpty {
-          LazyVGrid(columns: columns, spacing: 8) {
+          VStack(spacing: 8) {
             ForEach(0..<4, id: \.self) { _ in
               ADECardSkeleton(rows: 2)
             }
           }
-          .padding(.horizontal, 14)
+          .padding(.horizontal, 16)
         } else if agents.isEmpty {
           ADEEmptyStateView(
             symbol: "person.crop.circle.badge.questionmark",
@@ -59,19 +45,23 @@ struct CtoTeamScreen: View {
           )
           .padding(.horizontal, 16)
         } else {
-          LazyVGrid(columns: columns, spacing: 8) {
+          VStack(spacing: 8) {
             ForEach(agents) { agent in
-              WorkerCard(
+              WorkerRowCard(
                 agent: agent,
                 spentOverride: spentOverride(for: agent),
                 isWaking: pendingWakeup.contains(agent.id),
-                onTap: { path.append(CtoSessionRoute.workerDetail(agentId: agent.id, displayName: agent.name)) },
+                onOpenChat: {
+                  path.append(CtoSessionRoute.worker(agentId: agent.id, displayName: agent.name))
+                },
                 onWake: { Task { await wakeUp(agent: agent) } },
-                onEdit: { path.append(CtoSessionRoute.workerDetail(agentId: agent.id, displayName: agent.name)) }
+                onDetails: {
+                  path.append(CtoSessionRoute.workerDetail(agentId: agent.id, displayName: agent.name))
+                }
               )
             }
           }
-          .padding(.horizontal, 14)
+          .padding(.horizontal, 16)
         }
 
         if let wakeupNotice {
@@ -137,44 +127,63 @@ struct CtoTeamScreen: View {
     return "\(count) \(workerWord) · \(spent) this month"
   }
 
-  private var ctoCard: some View {
+  // MARK: - Hero CTO card
+
+  private var ctoHeroCard: some View {
     Button {
       path.append(CtoSessionRoute.cto)
     } label: {
-      HStack(alignment: .center, spacing: 12) {
+      HStack(alignment: .center, spacing: 14) {
         ZStack {
-          Circle()
-            .fill(ADEColor.ctoAccent.opacity(0.18))
+          RoundedRectangle(cornerRadius: 16, style: .continuous)
+            .fill(
+              LinearGradient(
+                colors: [ADEColor.ctoAccent.opacity(0.32), ADEColor.ctoAccent.opacity(0.14)],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+              )
+            )
+          RoundedRectangle(cornerRadius: 16, style: .continuous)
+            .stroke(ADEColor.ctoAccent.opacity(0.4), lineWidth: 0.8)
           Text("C")
-            .font(.subheadline.weight(.bold))
+            .font(.system(size: 22, weight: .heavy))
             .foregroundStyle(ADEColor.ctoAccent)
         }
-        .frame(width: 38, height: 38)
+        .frame(width: 52, height: 52)
         .accessibilityHidden(true)
 
-        VStack(alignment: .leading, spacing: 3) {
+        VStack(alignment: .leading, spacing: 4) {
           HStack(spacing: 6) {
             Text("CTO")
-              .font(.subheadline.weight(.bold))
+              .font(.system(size: 16, weight: .bold))
               .foregroundStyle(ADEColor.textPrimary)
             ADEStatusPill(text: "Persistent", tint: ADEColor.ctoAccent)
           }
-          Text("Technical lead chat")
-            .font(.caption)
+          Text("Technical lead · tap to chat")
+            .font(.system(size: 12))
             .foregroundStyle(ADEColor.textSecondary)
         }
 
         Spacer(minLength: 8)
 
-        Image(systemName: "chevron.right")
-          .font(.system(size: 11, weight: .bold))
-          .foregroundStyle(ADEColor.textMuted)
+        Image(systemName: "message.fill")
+          .font(.system(size: 13, weight: .semibold))
+          .foregroundStyle(ADEColor.ctoAccent)
+          .padding(8)
+          .background(
+            Circle().fill(ADEColor.ctoAccent.opacity(0.14))
+          )
+          .overlay(
+            Circle().stroke(ADEColor.ctoAccent.opacity(0.32), lineWidth: 0.5)
+          )
+          .accessibilityHidden(true)
       }
+      .padding(.vertical, 4)
       .contentShape(Rectangle())
     }
     .buttonStyle(.plain)
     .adeListCard()
-    .accessibilityLabel("CTO, persistent technical lead chat")
+    .accessibilityLabel("CTO, persistent technical lead")
     .accessibilityHint("Opens the CTO chat.")
   }
 
@@ -242,16 +251,34 @@ struct CtoTeamScreen: View {
     budget?.workers.first(where: { $0.agentId == agent.id })?.spentMonthlyCents
   }
 
+  // MARK: - Roster section header
+
+  private var rosterSectionHeader: some View {
+    HStack(alignment: .firstTextBaseline, spacing: 8) {
+      Text("Workers")
+        .font(.caption.weight(.semibold))
+        .foregroundStyle(ADEColor.textMuted)
+        .textCase(.uppercase)
+        .tracking(0.4)
+      Spacer(minLength: 0)
+      if !agents.isEmpty {
+        Text("\(agents.count)")
+          .font(.caption.monospaced())
+          .foregroundStyle(ADEColor.textMuted)
+      }
+    }
+  }
+
   // MARK: - Actions
 
   /// Loads agents and budget in parallel but tolerates partial failure — a
-  /// missing budget snapshot shouldn't hide the worker grid, and a listAgents
-  /// failure shouldn't hide the budget card.
+  /// missing budget snapshot shouldn't hide the worker list, and a listAgents
+  /// failure shouldn't hide the budget card. Connection-level errors are
+  /// surfaced globally by the top-right gear, not inline here.
   @MainActor
   private func load() async {
     if isLoading { return }
     isLoading = true
-    errorMessage = nil
     defer { isLoading = false }
 
     async let agentsR = CtoTeamAsyncResult { try await syncService.fetchCtoAgents() }
@@ -260,8 +287,6 @@ struct CtoTeamScreen: View {
 
     if case .success(let fetched) = agentsResult {
       agents = fetched
-    } else if case .failure(let err) = agentsResult, agents.isEmpty {
-      errorMessage = err.localizedDescription
     }
     if case .success(let snap) = budgetResult {
       budget = snap
@@ -282,15 +307,18 @@ struct CtoTeamScreen: View {
   }
 }
 
-// MARK: - WorkerCard
+// MARK: - WorkerRowCard
 
-private struct WorkerCard: View {
+/// Full-width worker row. Primary tap opens chat; the Details chip on the
+/// right opens the worker dashboard. A context menu (long-press) mirrors both
+/// actions plus Wake.
+private struct WorkerRowCard: View {
   let agent: AgentIdentity
   let spentOverride: Int?
   let isWaking: Bool
-  let onTap: () -> Void
+  let onOpenChat: () -> Void
   let onWake: () -> Void
-  let onEdit: () -> Void
+  let onDetails: () -> Void
 
   private var spentCents: Int { spentOverride ?? agent.spentMonthlyCents ?? 0 }
   private var budgetCents: Int? { agent.budgetMonthlyCents }
@@ -304,72 +332,69 @@ private struct WorkerCard: View {
   private var isRunning: Bool { agent.status.lowercased() == "running" }
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 5) {
-      Button(action: onTap) {
-        VStack(alignment: .leading, spacing: 5) {
-          HStack(spacing: 6) {
-            Circle()
-              .fill(statusDot)
-              .frame(width: 7, height: 7)
-              .shadow(color: isRunning ? statusDot.opacity(0.8) : .clear, radius: 3)
-            Text(agent.name)
-              .font(.system(size: 12, weight: .bold))
-              .foregroundStyle(ADEColor.textPrimary)
-              .lineLimit(1)
-              .truncationMode(.tail)
-            Spacer(minLength: 0)
-          }
+    HStack(alignment: .center, spacing: 12) {
+      Button(action: onOpenChat) {
+        HStack(alignment: .center, spacing: 12) {
+          avatar
 
-          HStack(spacing: 5) {
-            Text(agent.role)
-              .font(.system(size: 9.5, design: .monospaced))
-              .foregroundStyle(ADEColor.textMuted)
-              .lineLimit(1)
-            Text("·")
-              .font(.system(size: 9.5))
-              .foregroundStyle(ADEColor.textMuted.opacity(0.5))
-            Text(agent.model ?? "—")
-              .font(.system(size: 9.5, design: .monospaced))
-              .foregroundStyle(ADEColor.textSecondary)
-              .lineLimit(1)
+          VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 6) {
+              Circle()
+                .fill(statusDot)
+                .frame(width: 7, height: 7)
+                .shadow(color: isRunning ? statusDot.opacity(0.8) : .clear, radius: 3)
+              Text(agent.name)
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(ADEColor.textPrimary)
+                .lineLimit(1)
+                .truncationMode(.tail)
+              Spacer(minLength: 0)
+            }
+
+            HStack(spacing: 5) {
+              Text(agent.role)
+                .font(.system(size: 10.5, design: .monospaced))
+                .foregroundStyle(ADEColor.textMuted)
+                .lineLimit(1)
+              Text("·")
+                .font(.system(size: 10.5))
+                .foregroundStyle(ADEColor.textMuted.opacity(0.5))
+              Text(agent.model ?? "—")
+                .font(.system(size: 10.5, design: .monospaced))
+                .foregroundStyle(ADEColor.textSecondary)
+                .lineLimit(1)
+            }
+
+            HStack(spacing: 6) {
+              Text(ctoFormatCents(spentCents) + "/mo")
+                .font(.system(size: 10, design: .monospaced))
+                .foregroundStyle(ADEColor.textMuted)
+              if let pct = progressPct {
+                GeometryReader { proxy in
+                  let width = proxy.size.width * CGFloat(pct) / 100.0
+                  ZStack(alignment: .leading) {
+                    RoundedRectangle(cornerRadius: 1, style: .continuous)
+                      .fill(ADEColor.recessedBackground.opacity(0.5))
+                    RoundedRectangle(cornerRadius: 1, style: .continuous)
+                      .fill(pct > 80 ? ADEColor.warning : ADEColor.ctoAccent)
+                      .frame(width: max(0, width))
+                  }
+                }
+                .frame(height: 2)
+              }
+            }
+            .padding(.top, 1)
           }
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
         .contentShape(Rectangle())
       }
       .buttonStyle(.plain)
       .accessibilityLabel("\(agent.name), \(agent.role), status \(agent.status)")
-      .accessibilityHint("Opens worker detail.")
+      .accessibilityHint("Opens chat with \(agent.name).")
 
-      HStack(alignment: .center, spacing: 4) {
-        Text(ctoFormatCents(spentCents) + "/mo")
-          .font(.system(size: 10, design: .monospaced))
-          .foregroundStyle(ADEColor.textMuted)
-        Spacer(minLength: 4)
-        MiniActionButton(label: isWaking ? "…" : "Wake", action: onWake)
-          .disabled(isWaking)
-          .accessibilityLabel("Wake \(agent.name)")
-        MiniActionButton(label: "Edit", action: onEdit)
-          .accessibilityLabel("Edit \(agent.name)")
-      }
-      .padding(.top, 1)
-
-      if let pct = progressPct {
-        GeometryReader { proxy in
-          let width = proxy.size.width * CGFloat(pct) / 100.0
-          ZStack(alignment: .leading) {
-            RoundedRectangle(cornerRadius: 1, style: .continuous)
-              .fill(ADEColor.recessedBackground.opacity(0.5))
-            RoundedRectangle(cornerRadius: 1, style: .continuous)
-              .fill(pct > 80 ? ADEColor.warning : ADEColor.ctoAccent)
-              .frame(width: max(0, width))
-          }
-        }
-        .frame(height: 2)
-        .padding(.top, 2)
-      }
+      actionsStack
     }
-    .padding(11)
+    .padding(12)
     .frame(maxWidth: .infinity, alignment: .leading)
     .background(
       RoundedRectangle(cornerRadius: 14, style: .continuous)
@@ -385,6 +410,49 @@ private struct WorkerCard: View {
       RoundedRectangle(cornerRadius: 14, style: .continuous)
         .stroke(ADEColor.glassBorder, lineWidth: 0.5)
     )
+    .contextMenu {
+      Button {
+        onOpenChat()
+      } label: {
+        Label("Chat", systemImage: "message")
+      }
+      Button {
+        onDetails()
+      } label: {
+        Label("Details", systemImage: "info.circle")
+      }
+      Button {
+        onWake()
+      } label: {
+        Label(isWaking ? "Waking…" : "Wake", systemImage: "bolt")
+      }
+      .disabled(isWaking)
+    }
+  }
+
+  private var avatar: some View {
+    let tint = ctoAvatarTint(name: agent.name, seed: agent.id)
+    return ZStack {
+      RoundedRectangle(cornerRadius: 11, style: .continuous)
+        .fill(tint.opacity(0.18))
+      RoundedRectangle(cornerRadius: 11, style: .continuous)
+        .stroke(tint.opacity(0.35), lineWidth: 0.6)
+      Text(ctoAvatarInitial(for: agent.name))
+        .font(.system(size: 14, weight: .heavy))
+        .foregroundStyle(tint)
+    }
+    .frame(width: 38, height: 38)
+    .accessibilityHidden(true)
+  }
+
+  private var actionsStack: some View {
+    VStack(spacing: 4) {
+      MiniActionButton(label: isWaking ? "…" : "Wake", action: onWake)
+        .disabled(isWaking)
+        .accessibilityLabel("Wake \(agent.name)")
+      MiniActionButton(label: "Details", action: onDetails)
+        .accessibilityLabel("Details for \(agent.name)")
+    }
   }
 }
 
@@ -397,8 +465,9 @@ private struct MiniActionButton: View {
       Text(label)
         .font(.system(size: 10, weight: .semibold))
         .foregroundStyle(ADEColor.textSecondary)
-        .padding(.horizontal, 7)
-        .padding(.vertical, 2)
+        .frame(minWidth: 52)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
         .background(ADEColor.recessedBackground.opacity(0.55), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
         .overlay(
           RoundedRectangle(cornerRadius: 6, style: .continuous)

@@ -779,15 +779,38 @@ function ThinkingDots({ toneClass = "bg-emerald-300/70" }: { toneClass?: string 
 }
 
 
-function ActivityIndicator({ activity, detail }: { activity: string; detail?: string; animate?: boolean }) {
+function ActivityIndicator({ activity, detail, animate = true }: { activity: string; detail?: string; animate?: boolean }) {
   const label = ACTIVITY_LABELS[activity] ?? activity;
   const displayText = detail ? `${label}: ${replaceInternalToolNames(detail)}` : `${label}...`;
+  const thinking = activity === "thinking";
+  const activeTextClass = thinking ? "text-violet-200/78" : "text-emerald-200/80";
+  const activeDotClass = thinking ? "bg-violet-400/70" : "bg-emerald-400/80";
+  const activePingClass = thinking ? "bg-violet-400/12" : "bg-emerald-400/10";
 
   return (
-    <div className="flex items-center gap-2.5 py-1.5 font-sans text-[12px] text-emerald-200/80">
+    <div className={cn(
+      "flex items-center gap-2.5 py-1.5 font-sans text-[12px]",
+      animate ? activeTextClass : "text-fg/35",
+    )}>
       <span className="relative flex items-center justify-center">
-        <span className="absolute h-5 w-5 animate-ping rounded-full bg-emerald-400/10" style={{ animationDuration: '2s' }} />
-        <ThinkingDots toneClass="bg-emerald-400/80" />
+        {animate ? (
+          thinking ? (
+            <span className="inline-flex items-center gap-2">
+              <span className="relative inline-flex h-7 w-7 items-center justify-center">
+                <span className={cn("absolute h-6 w-6 animate-ping rounded-full", activePingClass)} style={{ animationDuration: '2s' }} />
+                <BrainLottie loop size={28} />
+              </span>
+              <ThinkingDots toneClass={activeDotClass} />
+            </span>
+          ) : (
+            <>
+              <span className={cn("absolute h-5 w-5 animate-ping rounded-full", activePingClass)} style={{ animationDuration: '2s' }} />
+              <ThinkingDots toneClass={activeDotClass} />
+            </>
+          )
+        ) : (
+          <span className="h-1.5 w-1.5 rounded-full bg-fg/25" />
+        )}
       </span>
       <span className="truncate font-medium">{displayText}</span>
     </div>
@@ -990,49 +1013,6 @@ function ModelGlyph({
     return <CodexLogo size={size} className={className} />;
   }
   return <Robot size={size} weight="bold" className={className} />;
-}
-
-type AssistantPresentation = {
-  label: string;
-  glyph: React.ReactNode;
-};
-
-const KNOWN_PROVIDER_LABELS = new Set(["Claude", "Codex", "Cursor"]);
-const GENERIC_ASSISTANT_LABELS = new Set(["Agent", "Assistant", ...KNOWN_PROVIDER_LABELS]);
-
-function inferProviderLabel(meta: { family: string | null; cliCommand: string | null }): string | null {
-  if (meta.family === "anthropic" || meta.cliCommand === "claude") return "Claude";
-  if (meta.cliCommand === "codex") return "Codex";
-  if (meta.family === "cursor" || meta.cliCommand === "cursor") return "Cursor";
-  return null;
-}
-
-function providerGlyph(provider: string | null): React.ReactNode {
-  switch (provider) {
-    case "Claude": return <ClaudeLogo size={10} className="text-fg/70" />;
-    case "Codex": return <CodexLogo size={10} className="text-fg/70" />;
-    case "Cursor": return <CursorAgentLogo size={10} className="text-fg/70" />;
-    default: return <Robot size={10} weight="bold" className="text-fg/70" />;
-  }
-}
-
-function resolveAssistantPresentation({
-  assistantLabel,
-  turnModel,
-}: {
-  assistantLabel?: string;
-  turnModel?: { label: string; modelId?: string; model?: string } | null;
-}): AssistantPresentation {
-  const customLabel = assistantLabel?.trim() ?? "";
-  const modelMeta = turnModel ? resolveModelMeta(turnModel.modelId, turnModel.model) : { family: null, cliCommand: null };
-  const resolvedProviderLabel = inferProviderLabel(modelMeta)
-    ?? (KNOWN_PROVIDER_LABELS.has(customLabel) ? customLabel : null);
-  const hardOverrideLabel =
-    customLabel.length > 0 && !GENERIC_ASSISTANT_LABELS.has(customLabel)
-      ? customLabel
-      : null;
-  const label = hardOverrideLabel ?? resolvedProviderLabel ?? "Assistant";
-  return { label, glyph: providerGlyph(resolvedProviderLabel) };
 }
 
 function commandTimelineVerb(status: Extract<AgentChatEvent, { type: "command" }>["status"]): string {
@@ -1397,6 +1377,7 @@ function renderEvent(
     surfaceProfile?: ChatSurfaceProfile;
     assistantLabel?: string;
     turnActive?: boolean;
+    sessionEnded?: boolean;
     onOpenWorkspacePath?: (path: string) => void;
     respondingApprovalIds?: Set<string>;
     pendingApprovalIds?: Set<string>;
@@ -1461,10 +1442,6 @@ function renderEvent(
 
   /* ── Agent text ── */
   if (event.type === "text") {
-    const assistant = resolveAssistantPresentation({
-      assistantLabel: options?.assistantLabel,
-      turnModel: options?.turnModel,
-    });
     return (
       <motion.div
         className="flex justify-start"
@@ -1476,7 +1453,7 @@ function renderEvent(
           className={cn(
             GLASS_CARD_CLASS,
             "ade-chat-message-card-assistant group relative max-w-[min(104ch,78%)] px-5 py-4",
-            options?.turnActive && "min-h-[5.5rem] ade-glow-pulse",
+            options?.turnActive && "ade-glow-pulse",
           )}
           style={ASSISTANT_MESSAGE_CARD_STYLE}
         >
@@ -1486,18 +1463,8 @@ function renderEvent(
               <div className="absolute inset-0 ade-streaming-shimmer" />
             </div>
           )}
-          <div className="mb-2.5 flex items-center gap-2">
-            <span className="inline-flex h-6 w-6 items-center justify-center rounded-lg border border-violet-400/15 bg-gradient-to-br from-violet-500/[0.12] to-violet-500/[0.04] shadow-[0_0_10px_rgba(167,139,250,0.08)]">
-              {assistant.glyph}
-            </span>
-            {options?.turnModel?.label ? (
-              <span className="inline-flex items-center rounded-full border border-violet-400/10 bg-violet-500/[0.04] px-2 py-0.5 font-sans text-[9px] font-medium text-violet-300/50">
-                {options.turnModel.label}
-              </span>
-            ) : null}
-            <div className="ml-auto flex items-center gap-2">
-              <MessageCopyButton value={event.text} className="opacity-0 transition-opacity duration-200 group-hover:opacity-100 focus-within:opacity-100" />
-            </div>
+          <div className="absolute right-2 top-1.5 opacity-0 transition-opacity duration-200 group-hover:opacity-100 focus-within:opacity-100">
+            <MessageCopyButton value={event.text} />
           </div>
           <div>
             <MarkdownBlock markdown={event.text} onOpenWorkspacePath={options?.onOpenWorkspacePath} />
@@ -1963,11 +1930,13 @@ function renderEvent(
     const isLive = Boolean(options?.turnActive);
     const reasoningPreview = summarizeInlineText(reasoningText, 108);
 
-    // Compute duration if we have timestamps
-    const startTs = (event as any).startTimestamp ?? envelope.timestamp;
-    const endTs = envelope.timestamp;
-    const durationSec = Math.max(1, Math.round((new Date(endTs).getTime() - new Date(startTs).getTime()) / 1000));
-    const durationLabel = isLive ? null : `${durationSec}s`;
+    const startTimestamp = typeof (event as any).startTimestamp === "string" ? (event as any).startTimestamp : null;
+    const durationMs = startTimestamp
+      ? new Date(envelope.timestamp).getTime() - new Date(startTimestamp).getTime()
+      : null;
+    const durationLabel = !isLive && durationMs != null && Number.isFinite(durationMs) && durationMs > 0
+      ? `${Math.max(1, Math.round(durationMs / 1000))}s`
+      : null;
 
     return (
       <motion.div
@@ -1985,9 +1954,11 @@ function renderEvent(
                 <BrainLottie loop={isLive} size={32} />
               </span>
               {isLive ? (
-                <span className="flex items-center gap-2 text-violet-200/70">
+                <span className="flex min-w-0 items-center gap-2 text-violet-200/70">
                   <ThinkingDots toneClass="bg-violet-400/60" />
-                  <span className="font-medium">Thinking...</span>
+                  <span className="min-w-0 truncate font-medium">
+                    {reasoningPreview.length ? reasoningPreview : "Thinking..."}
+                  </span>
                 </span>
               ) : (
                 <>
@@ -2284,7 +2255,7 @@ function renderEvent(
 
   /* ── Activity ── */
   if (event.type === "activity") {
-    return <ActivityIndicator activity={event.activity} detail={event.detail} animate={options?.turnActive !== false} />;
+    return <ActivityIndicator activity={event.activity} detail={event.detail} animate={Boolean(options?.turnActive) && !options?.sessionEnded} />;
   }
 
   /* ── Status ── */
@@ -2743,7 +2714,8 @@ function deriveLatestActivity(events: AgentChatEventEnvelope[]): { activity: str
     if (evt.type === "activity") {
       return { activity: evt.activity, detail: evt.detail };
     }
-    if (evt.type === "done" || evt.type === "status") return null;
+    if (evt.type === "done") return null;
+    if (evt.type === "status" && evt.turnStatus !== "started") return null;
   }
   return null;
 }
@@ -2783,6 +2755,8 @@ type EventRowProps = {
   surfaceProfile?: ChatSurfaceProfile;
   assistantLabel?: string;
   turnActive?: boolean;
+  sessionEnded?: boolean;
+  isLatestWorkLog?: boolean;
   onOpenWorkspacePath?: (path: string) => void;
   onNavigateSuggestion?: (suggestion: OperatorNavigationSuggestion) => void;
   respondingApprovalIds?: Set<string>;
@@ -2801,6 +2775,8 @@ const EventRow = React.memo(function EventRow({
   surfaceProfile = "standard",
   assistantLabel,
   turnActive,
+  sessionEnded,
+  isLatestWorkLog,
   onOpenWorkspacePath,
   onNavigateSuggestion,
   respondingApprovalIds,
@@ -2808,6 +2784,7 @@ const EventRow = React.memo(function EventRow({
   resolvedInputStates,
   sessionId,
 }: EventRowProps) {
+  const workLogAnimate = Boolean(turnActive) && !sessionEnded && Boolean(isLatestWorkLog);
   return (
     <div className="space-y-3">
       {showTurnDivider ? (
@@ -2827,11 +2804,14 @@ const EventRow = React.memo(function EventRow({
       ) : null}
       {envelope.event.type === "work_log_group"
         ? (
-          <ChatWorkLogBlock
-            entries={envelope.event.entries}
-            summary={envelope.event.summary}
-            onNavigateSuggestion={onNavigateSuggestion}
-          />
+          <div className="w-fit max-w-[min(100%,70ch)]">
+            <ChatWorkLogBlock
+              entries={envelope.event.entries}
+              summary={envelope.event.summary}
+              onNavigateSuggestion={onNavigateSuggestion}
+              animate={workLogAnimate}
+            />
+          </div>
         )
         : renderEvent(envelope as RenderEnvelope, {
             onApproval,
@@ -2840,6 +2820,7 @@ const EventRow = React.memo(function EventRow({
             surfaceProfile,
             assistantLabel,
             turnActive,
+            sessionEnded,
             onOpenWorkspacePath,
             respondingApprovalIds,
             pendingApprovalIds,
@@ -2997,6 +2978,7 @@ export function AgentChatMessageList({
   respondingApprovalIds,
   pendingApprovalIds,
   sessionId,
+  sessionEnded = false,
   }: {
   events: AgentChatEventEnvelope[];
   showStreamingIndicator?: boolean;
@@ -3009,6 +2991,7 @@ export function AgentChatMessageList({
   respondingApprovalIds?: Set<string>;
   pendingApprovalIds?: Set<string>;
   sessionId?: string | null;
+  sessionEnded?: boolean;
 }) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const location = useLocation();
@@ -3265,6 +3248,13 @@ export function AgentChatMessageList({
     }
   }, [shouldVirtualize]);
 
+  const latestWorkLogIndex = useMemo(() => {
+    for (let i = groupedRows.length - 1; i >= 0; i -= 1) {
+      if (groupedRows[i]?.event.type === "work_log_group") return i;
+    }
+    return -1;
+  }, [groupedRows]);
+
   /** Renders a single row with turn-divider logic. Used by both paths. */
   const renderRow = useCallback((envelope: TranscriptGroupedEnvelope, index: number, virtualized: boolean) => {
     const currentTurn = getGroupedTurnId(envelope);
@@ -3276,6 +3266,7 @@ export function AgentChatMessageList({
     const turnModel = currentTurn
       ? (turnModelState.map.get(currentTurn) ?? null)
       : turnModelState.lastModel;
+    const isLatestWorkLog = index === latestWorkLogIndex;
 
     if (virtualized) {
       return (
@@ -3292,6 +3283,8 @@ export function AgentChatMessageList({
           surfaceProfile={surfaceProfile}
           assistantLabel={assistantLabel}
           turnActive={Boolean(currentTurn && activeTurnId && currentTurn === activeTurnId)}
+          sessionEnded={sessionEnded}
+          isLatestWorkLog={isLatestWorkLog}
           onOpenWorkspacePath={openWorkspacePath}
           onNavigateSuggestion={handleNavigateSuggestion}
           respondingApprovalIds={respondingApprovalIds}
@@ -3314,6 +3307,8 @@ export function AgentChatMessageList({
         surfaceProfile={surfaceProfile}
         assistantLabel={assistantLabel}
         turnActive={Boolean(currentTurn && activeTurnId && currentTurn === activeTurnId)}
+        sessionEnded={sessionEnded}
+        isLatestWorkLog={isLatestWorkLog}
         onOpenWorkspacePath={openWorkspacePath}
         onNavigateSuggestion={handleNavigateSuggestion}
         respondingApprovalIds={respondingApprovalIds}
@@ -3322,7 +3317,7 @@ export function AgentChatMessageList({
         sessionId={sessionId}
       />
     );
-  }, [activeTurnId, assistantLabel, surfaceMode, surfaceProfile, groupedRows, turnModelState, handleApproval, handleMeasure, openWorkspacePath, handleNavigateSuggestion, respondingApprovalIds, pendingApprovalIds, resolvedInputStates, sessionId]);
+  }, [activeTurnId, assistantLabel, surfaceMode, surfaceProfile, groupedRows, latestWorkLogIndex, turnModelState, handleApproval, handleMeasure, openWorkspacePath, handleNavigateSuggestion, respondingApprovalIds, pendingApprovalIds, resolvedInputStates, sessionId, sessionEnded]);
 
   // Compute the bottom spacer height for virtualized mode.
   const bottomSpacerHeight = useMemo(() => {
@@ -3340,7 +3335,7 @@ export function AgentChatMessageList({
 
   const streamingIndicator = showStreamingIndicator ? (
     <motion.div
-      className="pt-3 pb-2"
+      className="w-fit max-w-[min(100%,70ch)] pt-3 pb-2"
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       transition={{ duration: 0.12, ease: "easeOut" }}

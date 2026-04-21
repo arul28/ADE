@@ -1,7 +1,6 @@
 import SwiftUI
 
 enum CtoTab: String, CaseIterable, Identifiable {
-  case chat
   case team
   case workflows
   case settings
@@ -10,7 +9,6 @@ enum CtoTab: String, CaseIterable, Identifiable {
 
   var label: String {
     switch self {
-    case .chat: return "Chat"
     case .team: return "Team"
     case .workflows: return "Workflows"
     case .settings: return "Settings"

@@ -53,9 +53,10 @@ export function createSyncPairingStore(args: SyncPairingStoreArgs) {
       }
       const secret = randomBytes(24).toString("hex");
       const records = readRecords();
+      const existing = records[peer.deviceId] ?? null;
       records[peer.deviceId] = {
         secretHash: hashSecret(secret),
-        createdAt: nowIso(),
+        createdAt: existing?.createdAt ?? nowIso(),
         lastUsedAt: null,
         peerName: peer.deviceName,
         peerPlatform: peer.platform,

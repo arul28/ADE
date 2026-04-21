@@ -1,5 +1,6 @@
 import Combine
 import Foundation
+import Network
 import SwiftUI
 import UIKit
 import WidgetKit
@@ -24,6 +25,15 @@ enum RemoteConnectionState: String {
   case connected
   case syncing
   case error
+
+  /// True when the host is not reachable — either we never connected
+  /// (or gave up) or the last socket turned over into an error state.
+  /// UI uses this to suppress per-screen "failed to load" banners whose
+  /// underlying cause is simply "not connected"; the top-right gear dot
+  /// (ADEConnectionDot) is the single source of truth for this state.
+  var isHostUnreachable: Bool {
+    self == .disconnected || self == .error
+  }
 }
 
 func unwrapSyncCommandResponse(_ raw: Any) throws -> Any {
@@ -170,6 +180,22 @@ enum SyncSocketTiming {
   static let lanePresenceHeartbeatNanoseconds: UInt64 = 30_000_000_000
 }
 
+enum SyncTailnetDiscoveryTiming {
+  static let probeIntervalNanoseconds: UInt64 = 45_000_000_000
+  static let probeTimeoutNanoseconds: UInt64 = 2_000_000_000
+}
+
+enum SyncTailnetDiscovery {
+  static let hostCandidates = [
+    "ade-sync",
+    "ade-desktop",
+  ]
+  static let portCandidates = [
+    8787,
+    8788,
+  ]
+}
+
 func syncIsTailscaleIPv4Address(_ host: String) -> Bool {
   let normalized = host
     .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -181,10 +207,6 @@ func syncIsTailscaleIPv4Address(_ host: String) -> Bool {
     return false
   }
   return first == 100 && (64...127).contains(second)
-}
-
-func syncCanAttemptInsecureWebSocket(to host: String) -> Bool {
-  !syncIsTailscaleIPv4Address(host)
 }
 
 struct SyncReconnectState {
@@ -210,6 +232,14 @@ struct SyncReconnectState {
   mutating func reset() {
     attempts = 0
   }
+}
+
+private struct SyncNetworkPathSnapshot: Equatable, Sendable {
+  let isSatisfied: Bool
+  let usesWiFi: Bool
+  let usesCellular: Bool
+  let usesWiredEthernet: Bool
+  let isExpensive: Bool
 }
 
 enum SyncUserFacingError {
@@ -404,6 +434,7 @@ final class SyncService: ObservableObject {
 
   private let legacyDraftKey = "ade.sync.connectionDraft"
   private let profileKey = "ade.sync.hostProfile"
+  private let legacyDeviceIdKey = "ade.sync.deviceId"
   private let autoReconnectPausedKey = "ade.sync.autoReconnectPausedByUser"
   private let pendingOperationsKey = "ade.sync.pendingOperations"
   private let remoteCommandDescriptorsKey = "ade.sync.remoteCommandDescriptors"
@@ -411,6 +442,9 @@ final class SyncService: ObservableObject {
   private let database: DatabaseService
   private let socketSessionDelegate: SyncSocketSessionDelegate
   private let socketSession: URLSession
+  private let pathMonitor = NWPathMonitor()
+  private let pathMonitorQueue = DispatchQueue(label: "com.ade.sync.network-path")
+  private let tailnetDiscovery = SyncTailnetProbe()
   private var socket: URLSessionWebSocketTask?
   private struct PendingRequest {
     let completion: (Result<Any, Error>) -> Void
@@ -426,6 +460,7 @@ final class SyncService: ObservableObject {
   private var relayTask: Task<Void, Never>?
   private var hydrationTask: Task<Void, Never>?
   private var reconnectTask: Task<Void, Never>?
+  private var networkPathReconnectTask: Task<Void, Never>?
   private var lanePresenceHeartbeatTask: Task<Void, Never>?
   private var openLaneReferenceCounts: [String: Int] = [:]
   private var terminalBufferRevisionTask: Task<Void, Never>?
@@ -448,6 +483,10 @@ final class SyncService: ObservableObject {
   private var autoReconnectAwaitingLiveDiscovery = false
   /// Prevents overlapping `reconnectIfPossible` runs from stacking TCP/WebSocket attempts.
   private var reconnectConnectInFlight = false
+  private var bonjourDiscoveredHosts: [DiscoveredSyncHost] = []
+  private var tailnetDiscoveredHosts: [DiscoveredSyncHost] = []
+  private var lastNetworkPathSnapshot: SyncNetworkPathSnapshot?
+  private var preferTailnetReconnectUntil: Date?
   private(set) var deviceId: String
   private var remoteCommandDescriptors: [SyncRemoteCommandDescriptor] = []
   private var supportsChatStreaming = false
@@ -525,11 +564,15 @@ final class SyncService: ObservableObject {
     self.socketSession = socketSession
     self.database = database
     self.autoReconnectPausedByUser = UserDefaults.standard.bool(forKey: autoReconnectPausedKey)
-    if let existing = UserDefaults.standard.string(forKey: "ade.sync.deviceId") {
+    if let existing = keychain.loadDeviceId() {
       deviceId = existing
+    } else if let existing = UserDefaults.standard.string(forKey: legacyDeviceIdKey) {
+      deviceId = existing
+      keychain.saveDeviceId(existing)
     } else {
       let fresh = UUID().uuidString.lowercased()
-      UserDefaults.standard.set(fresh, forKey: "ade.sync.deviceId")
+      UserDefaults.standard.set(fresh, forKey: legacyDeviceIdKey)
+      keychain.saveDeviceId(fresh)
       deviceId = fresh
     }
     pendingOperationCount = loadPendingOperations().count
@@ -545,10 +588,31 @@ final class SyncService: ObservableObject {
 
     discoveryBrowser.onHostsChanged = { [weak self] hosts in
       Task { @MainActor in
-        self?.applyDiscoveredHosts(hosts)
+        self?.bonjourDiscoveredHosts = hosts
+        self?.publishMergedDiscoveredHosts()
       }
     }
     discoveryBrowser.start()
+    tailnetDiscovery.onHostsChanged = { [weak self] hosts in
+      Task { @MainActor in
+        self?.tailnetDiscoveredHosts = hosts
+        self?.publishMergedDiscoveredHosts()
+      }
+    }
+    tailnetDiscovery.start()
+    pathMonitor.pathUpdateHandler = { [weak self] path in
+      let snapshot = SyncNetworkPathSnapshot(
+        isSatisfied: path.status == .satisfied,
+        usesWiFi: path.usesInterfaceType(.wifi),
+        usesCellular: path.usesInterfaceType(.cellular),
+        usesWiredEthernet: path.usesInterfaceType(.wiredEthernet),
+        isExpensive: path.isExpensive
+      )
+      Task { @MainActor in
+        self?.handleNetworkPathChange(snapshot)
+      }
+    }
+    pathMonitor.start(queue: pathMonitorQueue)
 
     databaseObserver = NotificationCenter.default.addObserver(
       forName: .adeDatabaseDidChange,
@@ -578,12 +642,15 @@ final class SyncService: ObservableObject {
     relayTask?.cancel()
     hydrationTask?.cancel()
     reconnectTask?.cancel()
+    networkPathReconnectTask?.cancel()
     lanePresenceHeartbeatTask?.cancel()
     terminalBufferRevisionTask?.cancel()
     chatEventRevisionTask?.cancel()
     snapshotDebouncerTask?.cancel()
     activeSessionsObservationTask?.cancel()
     discoveryBrowser.stop()
+    tailnetDiscovery.stop()
+    pathMonitor.cancel()
     socketSession.invalidateAndCancel()
     if let databaseObserver {
       NotificationCenter.default.removeObserver(databaseObserver)
@@ -651,6 +718,46 @@ final class SyncService: ObservableObject {
     return migrated
   }
 
+  private func publishMergedDiscoveredHosts() {
+    applyDiscoveredHosts(bonjourDiscoveredHosts + tailnetDiscoveredHosts)
+  }
+
+  var canReconnectToSavedHost: Bool {
+    activeHostProfile != nil && keychain.loadToken() != nil
+  }
+
+  var savedReconnectHost: DiscoveredSyncHost? {
+    guard canReconnectToSavedHost,
+          let profile = activeHostProfile ?? loadProfile() else {
+      return nil
+    }
+    let tailscaleAddress =
+      profile.tailscaleAddress
+      ?? profile.savedAddressCandidates.first(where: syncIsTailscaleIPv4Address)
+      ?? profile.lastSuccessfulAddress.flatMap { syncIsTailscaleIPv4Address($0) ? $0 : nil }
+    let lanAddresses = profile.discoveredLanAddresses.filter { !syncIsTailscaleIPv4Address($0) }
+    let savedLanAddresses = profile.savedAddressCandidates.filter { !syncIsTailscaleIPv4Address($0) }
+    let addresses = deduplicatedAddresses(
+      lanAddresses
+      + savedLanAddresses
+      + (profile.lastSuccessfulAddress.flatMap { syncIsTailscaleIPv4Address($0) ? nil : $0 }.map { [$0] } ?? [])
+    )
+    guard tailscaleAddress != nil || !addresses.isEmpty else { return nil }
+    let identity = profile.hostIdentity?.trimmingCharacters(in: .whitespacesAndNewlines)
+    let displayName = profile.hostName?.trimmingCharacters(in: .whitespacesAndNewlines)
+    let routeId = tailscaleAddress ?? addresses.first ?? "saved"
+    return DiscoveredSyncHost(
+      id: "saved-\(identity?.isEmpty == false ? identity! : routeId)",
+      serviceName: "Saved ADE host",
+      hostName: displayName?.isEmpty == false ? displayName! : routeId,
+      hostIdentity: identity?.isEmpty == false ? identity : nil,
+      port: profile.port,
+      addresses: addresses,
+      tailscaleAddress: tailscaleAddress,
+      lastResolvedAt: profile.updatedAt
+    )
+  }
+
   func reconnectIfPossible(userInitiated: Bool = false) async {
     do {
       try ensureDatabaseReady()
@@ -675,7 +782,7 @@ final class SyncService: ObservableObject {
     guard let profile = loadProfile(), let token = keychain.loadToken() else { return }
     if !userInitiated && automaticReconnectAddresses(for: profile).isEmpty {
       if !autoReconnectAwaitingLiveDiscovery {
-        syncConnectLog.info("reconnect skipped: waiting for live discovery")
+        syncConnectLog.info("reconnect skipped: waiting for a saved or live route")
       }
       autoReconnectAwaitingLiveDiscovery = true
       return
@@ -702,10 +809,51 @@ final class SyncService: ObservableObject {
       guard isCurrentConnectAttempt(connectAttemptGeneration) else { return }
       handleReconnectFailure(
         error,
-        shouldScheduleRetry: false,
+        shouldScheduleRetry: !userInitiated,
         phase: userInitiated ? .failed : .disconnected,
         connectionState: userInitiated ? .error : .disconnected
       )
+    }
+  }
+
+  private func handleNetworkPathChange(_ snapshot: SyncNetworkPathSnapshot) {
+    let previous = lastNetworkPathSnapshot
+    lastNetworkPathSnapshot = snapshot
+    guard previous != nil else { return }
+    guard snapshot.isSatisfied else { return }
+    guard canReconnectToSavedHost,
+          allowAutoReconnect,
+          !autoReconnectPausedByUser,
+          let profile = activeHostProfile ?? loadProfile() else {
+      return
+    }
+
+    let connectedOverTailnet = currentAddress.map(syncIsTailscaleIPv4Address) ?? false
+    let shouldRoamToTailnet =
+      !connectedOverTailnet
+      && profileHasTailnetRoute(profile)
+      && (snapshot.usesCellular || (!snapshot.usesWiFi && !snapshot.usesWiredEthernet))
+
+    if shouldRoamToTailnet {
+      preferTailnetForUpcomingReconnect()
+      scheduleNetworkPathReconnect(forceSocketReset: true)
+      return
+    }
+
+    if !canSendLiveRequests() {
+      scheduleNetworkPathReconnect(forceSocketReset: false)
+    }
+  }
+
+  private func scheduleNetworkPathReconnect(forceSocketReset: Bool) {
+    networkPathReconnectTask?.cancel()
+    networkPathReconnectTask = Task { @MainActor [weak self] in
+      try? await Task.sleep(nanoseconds: 250_000_000)
+      guard let self, !Task.isCancelled else { return }
+      if forceSocketReset {
+        self.teardownSocket(reason: "Network route changed.")
+      }
+      await self.reconnectIfPossible()
     }
   }
 
@@ -2546,13 +2694,7 @@ final class SyncService: ObservableObject {
   }
 
   private func connectableAddresses(from addresses: [String]) -> [String] {
-    addresses.filter { address in
-      let canAttempt = syncCanAttemptInsecureWebSocket(to: address)
-      if !canAttempt {
-        syncConnectLog.debug("skip host=\(address, privacy: .public) reason=ats_insecure_tailscale")
-      }
-      return canAttempt
-    }
+    addresses
   }
 
   private func noConnectableAddressError() -> NSError {
@@ -2560,7 +2702,7 @@ final class SyncService: ObservableObject {
       domain: "ADE",
       code: 24,
       userInfo: [
-        NSLocalizedDescriptionKey: "iOS blocks insecure ADE sync over Tailscale IPs. Connect on the same local network or pair with a LAN address.",
+        NSLocalizedDescriptionKey: "No ADE host address is available. Scan the pairing QR again or enter the host address manually.",
       ]
     )
   }
@@ -2669,7 +2811,25 @@ final class SyncService: ObservableObject {
     return false
   }
 
+  private func profileHasTailnetRoute(_ profile: HostConnectionProfile) -> Bool {
+    if profile.tailscaleAddress.map(syncIsTailscaleIPv4Address) == true { return true }
+    if profile.lastSuccessfulAddress.map(syncIsTailscaleIPv4Address) == true { return true }
+    return profile.savedAddressCandidates.contains(where: syncIsTailscaleIPv4Address)
+  }
+
+  private func preferTailnetForUpcomingReconnect() {
+    preferTailnetReconnectUntil = Date().addingTimeInterval(20)
+  }
+
+  private func shouldPreferTailnetReconnect() -> Bool {
+    guard let until = preferTailnetReconnectUntil else { return false }
+    if until > Date() { return true }
+    preferTailnetReconnectUntil = nil
+    return false
+  }
+
   private func prioritizedAddresses(for profile: HostConnectionProfile) -> [String] {
+    let preferTailnet = shouldPreferTailnetReconnect()
     let matchingDiscovery = discoveredHosts.filter { host in
       matchesDiscoveredHost(host, profile: profile)
     }
@@ -2686,20 +2846,46 @@ final class SyncService: ObservableObject {
     // own timeout) before we finally try the correct current IP. Only fall
     // back to cached saved candidates if no live discovery is available.
     let prioritizedLive = liveLastSuccessful
-      + liveLan
-      + liveTailscale
-    let fallbackSaved = (liveLastSuccessful.isEmpty ? (profile.lastSuccessfulAddress.map { [$0] } ?? []) : [])
-      + profile.savedAddressCandidates
-      + profile.discoveredLanAddresses
-      + (profile.tailscaleAddress.map { [$0] } ?? [])
+      + (preferTailnet ? liveTailscale : liveLan)
+      + (preferTailnet ? liveLan : liveTailscale)
+    let savedTailnet = profile.savedAddressCandidates.filter(syncIsTailscaleIPv4Address)
+    let savedLan = profile.savedAddressCandidates.filter { !syncIsTailscaleIPv4Address($0) }
+    let fallbackLastSuccessful = liveLastSuccessful.isEmpty ? (profile.lastSuccessfulAddress.map { [$0] } ?? []) : []
+    let savedProfileTailnet = profile.tailscaleAddress.map { [$0] } ?? []
+    let fallbackSaved: [String]
+    if preferTailnet {
+      fallbackSaved = savedProfileTailnet
+        + savedTailnet
+        + fallbackLastSuccessful
+        + savedLan
+        + profile.discoveredLanAddresses
+    } else {
+      fallbackSaved = fallbackLastSuccessful
+        + savedLan
+        + profile.discoveredLanAddresses
+        + savedProfileTailnet
+        + savedTailnet
+    }
     return deduplicatedAddresses(prioritizedLive + fallbackSaved)
   }
 
   private func automaticReconnectAddresses(for profile: HostConnectionProfile) -> [String] {
+    let preferTailnet = shouldPreferTailnetReconnect()
     let matchingDiscovery = discoveredHosts.filter { host in
       matchesDiscoveredHost(host, profile: profile)
     }
-    guard !matchingDiscovery.isEmpty else { return [] }
+    guard !matchingDiscovery.isEmpty else {
+      let savedTailnet = profile.savedAddressCandidates.filter(syncIsTailscaleIPv4Address)
+      let lastSuccessfulTailnet = profile.lastSuccessfulAddress.flatMap { address in
+        syncIsTailscaleIPv4Address(address) ? [address] : nil
+      } ?? []
+      return deduplicatedAddresses(
+        (preferTailnet ? [] : lastSuccessfulTailnet)
+        + (profile.tailscaleAddress.map { [$0] } ?? [])
+        + savedTailnet
+        + (preferTailnet ? lastSuccessfulTailnet : [])
+      )
+    }
 
     let liveLan = matchingDiscovery.flatMap(\.addresses)
     let liveTailscale = matchingDiscovery.compactMap(\.tailscaleAddress)
@@ -2708,7 +2894,11 @@ final class SyncService: ObservableObject {
       liveSet.contains(address) ? [address] : nil
     } ?? []
 
-    return deduplicatedAddresses(liveLastSuccessful + liveLan + liveTailscale)
+    return deduplicatedAddresses(
+      liveLastSuccessful
+      + (preferTailnet ? liveTailscale : liveLan)
+      + (preferTailnet ? liveLan : liveTailscale)
+    )
   }
 
   private func connectUsingProfile(
@@ -2914,9 +3104,6 @@ final class SyncService: ObservableObject {
     connectAttemptGeneration: UInt64,
     publishConnecting: Bool = true
   ) async throws {
-    guard syncCanAttemptInsecureWebSocket(to: host) else {
-      throw noConnectableAddressError()
-    }
     teardownSocket(closeCode: .goingAway)
     if publishConnecting {
       connectionState = .connecting
@@ -4195,6 +4382,87 @@ extension SyncService {
     if let date = iso.date(from: raw) { return date }
     iso.formatOptions = [.withInternetDateTime]
     return iso.date(from: raw)
+  }
+}
+
+private final class SyncTailnetProbe {
+  var onHostsChanged: (([DiscoveredSyncHost]) -> Void)?
+
+  private let connectionQueue = DispatchQueue(label: "com.ade.sync.tailnet-probe")
+  private var probeTask: Task<Void, Never>?
+
+  func start() {
+    guard probeTask == nil else { return }
+    probeTask = Task { [weak self] in
+      while !Task.isCancelled {
+        await self?.refresh()
+        try? await Task.sleep(nanoseconds: SyncTailnetDiscoveryTiming.probeIntervalNanoseconds)
+      }
+    }
+  }
+
+  func stop() {
+    probeTask?.cancel()
+    probeTask = nil
+    onHostsChanged?([])
+  }
+
+  private func refresh() async {
+    var nextHosts: [String: DiscoveredSyncHost] = [:]
+    for host in SyncTailnetDiscovery.hostCandidates {
+      for port in SyncTailnetDiscovery.portCandidates {
+        guard !Task.isCancelled else { return }
+        let canConnect = await probe(host: host, port: port)
+        guard canConnect else { continue }
+        let key = "\(host):\(port)"
+        nextHosts[key] = DiscoveredSyncHost(
+          id: "tailnet-\(key)",
+          serviceName: "ADE Tailnet \(host)",
+          hostName: host,
+          hostIdentity: nil,
+          port: port,
+          addresses: [host],
+          tailscaleAddress: nil,
+          lastResolvedAt: ISO8601DateFormatter().string(from: Date())
+        )
+        break
+      }
+    }
+    onHostsChanged?(Array(nextHosts.values))
+  }
+
+  private func probe(host: String, port: Int) async -> Bool {
+    guard let endpointPort = NWEndpoint.Port(rawValue: UInt16(port)) else { return false }
+    return await withCheckedContinuation { continuation in
+      let connection = NWConnection(
+        host: NWEndpoint.Host(host),
+        port: endpointPort,
+        using: .tcp
+      )
+      var completed = false
+      let complete: (Bool) -> Void = { result in
+        guard !completed else { return }
+        completed = true
+        connection.cancel()
+        continuation.resume(returning: result)
+      }
+      connection.stateUpdateHandler = { state in
+        switch state {
+        case .ready:
+          complete(true)
+        case .failed, .cancelled:
+          complete(false)
+        default:
+          break
+        }
+      }
+      connection.start(queue: connectionQueue)
+      connectionQueue.asyncAfter(
+        deadline: .now() + .nanoseconds(Int(SyncTailnetDiscoveryTiming.probeTimeoutNanoseconds))
+      ) {
+        complete(false)
+      }
+    }
   }
 }
 

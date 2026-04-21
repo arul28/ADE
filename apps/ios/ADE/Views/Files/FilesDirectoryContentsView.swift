@@ -20,7 +20,7 @@ struct FilesDirectoryContentsView: View {
 
   var body: some View {
     LazyVStack(alignment: .leading, spacing: 12) {
-      if let errorMessage {
+      if let errorMessage, !syncService.connectionState.isHostUnreachable {
         ADENoticeCard(
           title: "Directory load failed",
           message: errorMessage,

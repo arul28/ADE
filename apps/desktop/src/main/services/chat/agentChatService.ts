@@ -938,6 +938,11 @@ const CLAUDE_EFFORT_TO_TOKENS: Record<string, number> = {
   high: 16384,
 };
 
+const CLAUDE_THINKING_SETTINGS = {
+  showThinkingSummaries: true,
+  alwaysThinkingEnabled: true,
+};
+
 const KNOWN_CLAUDE_EFFORTS = new Set(CLAUDE_REASONING_EFFORTS.map((e) => e.effort));
 
 const CODEX_FALLBACK_MODELS: AgentChatModelInfo[] = listModelDescriptorsForProvider("codex").map((descriptor) => ({
@@ -1070,6 +1075,27 @@ function validateReasoningEffort(provider: "codex" | "claude", effort: string | 
   const known = provider === "codex" ? KNOWN_CODEX_EFFORTS : KNOWN_CLAUDE_EFFORTS;
   const fallback = provider === "codex" ? DEFAULT_REASONING_EFFORT : "medium";
   return known.has(aliased) ? aliased : fallback;
+}
+
+function buildClaudeV2ExecutableArgs(args: {
+  supportsReasoning: boolean;
+  effort?: string | null;
+}): string[] {
+  const executableArgs = [
+    "--include-partial-messages",
+    "--settings",
+    JSON.stringify(CLAUDE_THINKING_SETTINGS),
+  ];
+
+  if (args.supportsReasoning) {
+    executableArgs.push("--thinking", "adaptive", "--thinking-display", "summarized");
+    const effort = args.effort;
+    if (effort === "low" || effort === "medium" || effort === "high" || effort === "max") {
+      executableArgs.push("--effort", effort);
+    }
+  }
+
+  return executableArgs;
 }
 
 function describeClaudeModel(value: string): string | null {
@@ -6298,6 +6324,8 @@ export function createAgentChatService(args: {
     let firstStreamEventLogged = false;
     const emittedClaudeToolIds = new Set<string>();
     const emittedSyntheticItemIds = new Set<string>();
+    const streamedClaudeTextContentIndexes = new Set<number>();
+    const streamedClaudeThinkingContentIndexes = new Set<number>();
     const openClaudeToolUses = new Map<string, { toolName: string }>();
     const toolInputJsonByContentIndex = new Map<number, string>();
     const toolUseMetaByContentIndex = new Map<number, { toolName: string; itemId: string }>();
@@ -6719,27 +6747,31 @@ export function createAgentChatService(args: {
           if (betaMessage?.content && Array.isArray(betaMessage.content)) {
             for (const [blockIndex, block] of betaMessage.content.entries()) {
               if (block.type === "text") {
-                assistantText += block.text ?? "";
-                emitChatEvent(managed, {
-                  type: "text",
-                  text: block.text ?? "",
-                  turnId,
-                });
+                if (!streamedClaudeTextContentIndexes.has(blockIndex)) {
+                  assistantText += block.text ?? "";
+                  emitChatEvent(managed, {
+                    type: "text",
+                    text: block.text ?? "",
+                    turnId,
+                  });
+                }
               } else if (block.type === "thinking") {
                 const thinkingText = block.thinking ?? block.text ?? "";
                 const reasoningItemId = buildClaudeContentItemId("thinking", blockIndex);
-                emitChatEvent(managed, {
-                  type: "activity",
-                  activity: "thinking",
-                  detail: REASONING_ACTIVITY_DETAIL,
-                  turnId,
-                });
-                emitChatEvent(managed, {
-                  type: "reasoning",
-                  text: thinkingText,
-                  ...(reasoningItemId ? { itemId: reasoningItemId } : {}),
-                  turnId,
-                });
+                if (thinkingText.trim().length > 0 && !streamedClaudeThinkingContentIndexes.has(blockIndex)) {
+                  emitChatEvent(managed, {
+                    type: "activity",
+                    activity: "thinking",
+                    detail: REASONING_ACTIVITY_DETAIL,
+                    turnId,
+                  });
+                  emitChatEvent(managed, {
+                    type: "reasoning",
+                    text: thinkingText,
+                    ...(reasoningItemId ? { itemId: reasoningItemId } : {}),
+                    turnId,
+                  });
+                }
               } else if (block.type === "tool_use") {
                 const toolName = String(block.name ?? "tool");
                 const itemId = buildClaudeContentItemId(
@@ -6798,12 +6830,18 @@ export function createAgentChatService(args: {
             if (delta?.type === "text_delta") {
               const text = delta.text ?? "";
               if (text.length) {
+                if (typeof contentIndex === "number") {
+                  streamedClaudeTextContentIndexes.add(contentIndex);
+                }
                 assistantText += text;
                 emitChatEvent(managed, { type: "text", text, turnId });
               }
             } else if (delta?.type === "thinking_delta") {
               const text = delta.thinking ?? delta.text ?? "";
               if (text.length) {
+                if (typeof contentIndex === "number") {
+                  streamedClaudeThinkingContentIndexes.add(contentIndex);
+                }
                 const reasoningItemId = buildClaudeContentItemId("thinking", contentIndex);
                 emitChatEvent(managed, {
                   type: "activity",
@@ -6850,6 +6888,9 @@ export function createAgentChatService(args: {
               // Some SDK versions include initial thinking text on block start
               const startText = block.thinking ?? block.text ?? "";
               if (startText.length) {
+                if (typeof contentIndex === "number") {
+                  streamedClaudeThinkingContentIndexes.add(contentIndex);
+                }
                 emitChatEvent(managed, {
                   type: "reasoning",
                   text: startText,
@@ -8740,10 +8781,19 @@ export function createAgentChatService(args: {
     if (method === "item/reasoning/summaryTextDelta" || method === "item/reasoning/textDelta") {
       const delta = String((params.delta as string | undefined) ?? "");
       if (!delta.length) return;
+      const turnId = typeof params.turnId === "string"
+        ? params.turnId
+        : turnIdFromParams ?? runtime.activeTurnId ?? undefined;
+      emitChatEvent(managed, {
+        type: "activity",
+        activity: "thinking",
+        detail: REASONING_ACTIVITY_DETAIL,
+        turnId,
+      });
       emitChatEvent(managed, {
         type: "reasoning",
         text: delta,
-        turnId: typeof params.turnId === "string" ? params.turnId : undefined,
+        turnId,
         itemId: typeof params.itemId === "string" ? params.itemId : undefined,
         summaryIndex: typeof params.summaryIndex === "number" ? params.summaryIndex : undefined
       });
@@ -9368,6 +9418,7 @@ export function createAgentChatService(args: {
       includePartialMessages: true,
       agentProgressSummaries: true,
       promptSuggestions: true,
+      settings: CLAUDE_THINKING_SETTINGS,
       maxBudgetUsd: chatConfig.sessionBudgetUsd ?? undefined,
       model: resolveClaudeCliModel(managed.session.model),
       pathToClaudeCodeExecutable: claudeExecutable.path,
@@ -9433,6 +9484,10 @@ export function createAgentChatService(args: {
     }
     const claudeDescriptor = resolveSessionModelDescriptor(managed.session);
     const claudeSupportsReasoning = claudeDescriptor?.capabilities.reasoning ?? true;
+    opts.executableArgs = buildClaudeV2ExecutableArgs({
+      supportsReasoning: claudeSupportsReasoning,
+      effort: managed.session.reasoningEffort,
+    });
     if (claudeSupportsReasoning) {
       const effort = managed.session.reasoningEffort;
       if (effort === "low" || effort === "medium" || effort === "high" || effort === "max") {
@@ -9440,13 +9495,13 @@ export function createAgentChatService(args: {
       }
       const tokens = effort ? CLAUDE_EFFORT_TO_TOKENS[effort] : undefined;
       if (tokens) {
-        opts.thinking = { type: "enabled", budgetTokens: tokens };
+        opts.thinking = { type: "enabled", budgetTokens: tokens, display: "summarized" } as any;
       } else {
         // Use adaptive thinking when no specific budget applies (e.g. "max",
         // "xhigh", or no effort set). The SDK defaults to adaptive for models
         // that support it, but being explicit ensures thinking is always active
         // for reasoning-capable models.
-        opts.thinking = { type: "adaptive" };
+        opts.thinking = { type: "adaptive", display: "summarized" } as any;
       }
     }
     const model = opts.model ?? resolveClaudeCliModel(managed.session.model) ?? DEFAULT_CLAUDE_MODEL;
@@ -11712,6 +11767,11 @@ export function createAgentChatService(args: {
       });
       emitChatEvent(prepared.managed, { type: "status", turnStatus: "started", turnId });
       captureTurnBeforeSha(prepared.managed);
+      emitChatEvent(prepared.managed, {
+        type: "activity",
+        ...initialTurnActivity(prepared.managed.session),
+        turnId,
+      });
       setSessionActive(prepared.managed);
       persistChatState(prepared.managed);
       // NOTE: onDispatched is NOT called here. It will be called inside

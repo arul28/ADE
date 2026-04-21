@@ -1,4 +1,4 @@
-import { ArrowSquareOut, GitBranch, WarningCircle, Archive, Trash } from "@phosphor-icons/react";
+import { ArrowSquareOut, GitBranch, WarningCircle, Archive, Trash, CircleNotch } from "@phosphor-icons/react";
 import { Button } from "../ui/Button";
 import type { LaneSummary } from "../../../shared/types";
 import { LaneDialogShell } from "./LaneDialogShell";
@@ -19,6 +19,7 @@ export function ManageLaneDialog({
   setDeleteConfirmText,
   deletePhrase,
   laneActionBusy,
+  laneActionStatus,
   laneActionError,
   onAdoptAttached,
   onArchive,
@@ -38,6 +39,7 @@ export function ManageLaneDialog({
   setDeleteConfirmText: (v: string) => void;
   deletePhrase: string;
   laneActionBusy: boolean;
+  laneActionStatus: string | null;
   laneActionError: string | null;
   onAdoptAttached: () => void;
   onArchive: () => void;
@@ -179,6 +181,7 @@ export function ManageLaneDialog({
                 <button
                   key={opt.value}
                   type="button"
+                  disabled={laneActionBusy}
                   onClick={() => setDeleteMode(opt.value)}
                   className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
                     deleteMode === opt.value
@@ -198,6 +201,7 @@ export function ManageLaneDialog({
                 <input
                   value={deleteRemoteName}
                   onChange={(event) => setDeleteRemoteName(event.target.value)}
+                  disabled={laneActionBusy}
                   className={INPUT_CLASS_NAME}
                   placeholder="origin"
                 />
@@ -206,7 +210,7 @@ export function ManageLaneDialog({
 
             {/* Force delete */}
             <label className="mb-3 flex items-center gap-2 text-xs text-muted-fg cursor-pointer select-none">
-              <input type="checkbox" checked={deleteForce} onChange={(event) => setDeleteForce(event.target.checked)} className="rounded" />
+              <input type="checkbox" checked={deleteForce} onChange={(event) => setDeleteForce(event.target.checked)} disabled={laneActionBusy} className="rounded" />
               Force delete (skip safety checks)
             </label>
 
@@ -218,9 +222,17 @@ export function ManageLaneDialog({
               <input
                 value={deleteConfirmText}
                 onChange={(event) => setDeleteConfirmText(event.target.value)}
+                disabled={laneActionBusy}
                 className={`${INPUT_CLASS_NAME} ${confirmMatch ? "!border-red-500/30" : ""}`}
               />
             </div>
+
+            {laneActionBusy && (
+              <div className="mb-3 flex items-center gap-2 rounded-lg border border-white/[0.08] bg-white/[0.04] px-3 py-2 text-xs text-muted-fg" role="status" aria-live="polite">
+                <CircleNotch size={14} className="shrink-0 animate-spin text-red-300" />
+                <span>{laneActionStatus ?? "Working..."}</span>
+              </div>
+            )}
 
             {/* Error */}
             {laneActionError && (
@@ -237,9 +249,9 @@ export function ManageLaneDialog({
               disabled={laneActionBusy || !confirmMatch}
               onClick={onDelete}
             >
-              <Trash size={13} />
+              {laneActionBusy ? <CircleNotch size={13} className="animate-spin" /> : <Trash size={13} />}
               {laneActionBusy
-                ? "Working..."
+                ? "Deleting..."
                 : isBatch
                   ? `Delete ${lanes.length} lanes`
                   : "Delete lane"}

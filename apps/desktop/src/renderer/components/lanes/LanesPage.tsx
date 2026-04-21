@@ -220,6 +220,7 @@ export function LanesPage() {
   const [deleteForce, setDeleteForce] = useState(false);
   const [deleteConfirmText, setDeleteConfirmText] = useState("");
   const [laneActionBusy, setLaneActionBusy] = useState(false);
+  const [laneActionStatus, setLaneActionStatus] = useState<string | null>(null);
   const [laneActionError, setLaneActionError] = useState<string | null>(null);
   const [managedLaneIds, setManagedLaneIds] = useState<string[]>([]);
   const [conflictChipsByLane, setConflictChipsByLane] = useState<Record<string, ConflictChip[]>>({});
@@ -780,8 +781,9 @@ export function LanesPage() {
     return primaryBranches.filter((branch) => branch.isRemote && (!q || branch.name.toLowerCase().includes(q)));
   }, [primaryBranches, branchSearchQuery]);
 
-  const runLaneAction = async (fn: () => Promise<void>) => {
+  const runLaneAction = async (fn: () => Promise<void>, status: string) => {
     setLaneActionBusy(true);
+    setLaneActionStatus(status);
     setLaneActionError(null);
     try {
       await fn();
@@ -791,6 +793,7 @@ export function LanesPage() {
       setLaneActionError(err instanceof Error ? err.message : String(err));
     } finally {
       setLaneActionBusy(false);
+      setLaneActionStatus(null);
     }
   };
 
@@ -868,7 +871,7 @@ export function LanesPage() {
       for (const lane of actionable) {
         await window.ade.lanes.archive({ laneId: lane.id });
       }
-    });
+    }, actionable.length > 1 ? `Archiving ${actionable.length} lanes...` : "Archiving lane...");
   };
 
   const deleteManagedLanes = async () => {
@@ -876,6 +879,18 @@ export function LanesPage() {
     const actionable = targets.filter((l) => l.laneType !== "primary");
     if (actionable.length === 0) return;
     if (deleteConfirmText.trim().toLowerCase() !== deletePhrase.toLowerCase()) return;
+    const deleteStatus =
+      deleteMode === "remote_branch"
+        ? actionable.length > 1
+          ? `Deleting ${actionable.length} lane worktrees, local branches, and remote branches...`
+          : "Deleting lane worktree, local branch, and remote branch..."
+        : deleteMode === "local_branch"
+          ? actionable.length > 1
+            ? `Deleting ${actionable.length} lane worktrees and local branches...`
+            : "Deleting lane worktree and local branch..."
+          : actionable.length > 1
+            ? `Deleting ${actionable.length} lane worktrees...`
+            : "Deleting lane worktree...";
     await runLaneAction(async () => {
       const errors: string[] = [];
       for (const lane of actionable) {
@@ -905,7 +920,7 @@ export function LanesPage() {
       for (const id of deletedIds) {
         clearLaneInspectorTab(id);
       }
-    });
+    }, deleteStatus);
   };
 
   const openBatchManage = useCallback((laneIds: string[]) => {
@@ -2225,6 +2240,7 @@ export function LanesPage() {
         setDeleteConfirmText={setDeleteConfirmText}
         deletePhrase={deletePhrase}
         laneActionBusy={laneActionBusy}
+        laneActionStatus={laneActionStatus}
         laneActionError={laneActionError}
         onAdoptAttached={() => {
           if (!managedLane || managedLane.laneType !== "attached") return;

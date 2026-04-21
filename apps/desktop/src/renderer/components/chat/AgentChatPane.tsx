@@ -3052,7 +3052,8 @@ export function AgentChatPane({
                     <AgentChatMessageList
                       key={selectedSessionId ?? "chat-draft"}
                       events={selectedEventsForDisplay}
-                      showStreamingIndicator={turnActive}
+                      showStreamingIndicator={turnActive && selectedSession?.status !== "ended"}
+                      sessionEnded={selectedSession?.status === "ended"}
                       className="min-h-0 border-0"
                       surfaceMode={surfaceMode}
                       surfaceProfile={surfaceProfile}

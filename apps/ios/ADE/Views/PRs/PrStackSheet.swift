@@ -29,7 +29,7 @@ struct PrStackSheet: View {
               .padding(.vertical, 32)
           }
           .frame(maxWidth: .infinity)
-        } else if let errorMessage {
+        } else if let errorMessage, !syncService.connectionState.isHostUnreachable {
           ScrollView {
             ADENoticeCard(
               title: "Stack failed to load",

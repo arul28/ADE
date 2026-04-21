@@ -90,6 +90,22 @@ describe("syncPairingStore", () => {
       const second = store.pairPeer(samplePeer, "424242");
       expect(first.secret).not.toBe(second.secret);
     });
+
+    it("updates an existing device pairing without resetting createdAt", () => {
+      const { store, pinStore, pairingFile } = makeHarness("ade-pairing-existing-");
+      pinStore.setPin("424242");
+
+      store.pairPeer(samplePeer, "424242");
+      const before = JSON.parse(fs.readFileSync(pairingFile, "utf8"));
+      const createdAt = before[samplePeer.deviceId].createdAt;
+
+      store.pairPeer({ ...samplePeer, deviceName: "Arul's iPhone" }, "424242");
+
+      const after = JSON.parse(fs.readFileSync(pairingFile, "utf8"));
+      expect(Object.keys(after)).toEqual([samplePeer.deviceId]);
+      expect(after[samplePeer.deviceId].createdAt).toBe(createdAt);
+      expect(after[samplePeer.deviceId].peerName).toBe("Arul's iPhone");
+    });
   });
 
   describe("authenticate", () => {

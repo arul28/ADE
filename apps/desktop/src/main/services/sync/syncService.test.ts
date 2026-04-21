@@ -21,6 +21,17 @@ const { createSyncHostServiceMock } = vi.hoisted(() => ({
     getPeerStates() {
       return [];
     },
+    getTailnetDiscoveryStatus() {
+      return {
+        state: "disabled",
+        serviceName: "svc:ade-sync",
+        servicePort: 8787,
+        target: null,
+        updatedAt: null,
+        error: null,
+        stderr: null,
+      };
+    },
     getBrainStatusSnapshot() {
       return {};
     },
@@ -34,6 +45,8 @@ const { createSyncHostServiceMock } = vi.hoisted(() => ({
 // Tests only exercise role/transfer/pairing logic, not the sync transport.
 vi.mock("./syncHostService", () => ({
   createSyncHostService: createSyncHostServiceMock,
+  SYNC_TAILNET_DISCOVERY_SERVICE_NAME: "svc:ade-sync",
+  SYNC_TAILNET_DISCOVERY_SERVICE_PORT: 8787,
 }));
 
 function createLogger() {
@@ -511,6 +524,17 @@ describe.skipIf(!isCrsqliteAvailable())("syncService", () => {
         revokePairedDevice() {},
         getPeerStates() {
           return [];
+        },
+        getTailnetDiscoveryStatus() {
+          return {
+            state: "disabled",
+            serviceName: "svc:ade-sync",
+            servicePort: 8787,
+            target: null,
+            updatedAt: null,
+            error: null,
+            stderr: null,
+          };
         },
         getBrainStatusSnapshot() {
           return {};

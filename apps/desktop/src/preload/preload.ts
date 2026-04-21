@@ -704,6 +704,8 @@ contextBridge.exposeInMainWorld("ade", {
   sync: {
     getStatus: async (): Promise<SyncRoleSnapshot> =>
       ipcRenderer.invoke(IPC.syncGetStatus),
+    refreshDiscovery: async (): Promise<SyncRoleSnapshot> =>
+      ipcRenderer.invoke(IPC.syncRefreshDiscovery),
     listDevices: async (): Promise<SyncDeviceRuntimeState[]> =>
       ipcRenderer.invoke(IPC.syncListDevices),
     updateLocalDevice: async (args: {

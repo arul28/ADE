@@ -194,7 +194,7 @@ struct PrDetailView: View {
         .prListRow()
       }
 
-      if let errorMessage {
+      if let errorMessage, !syncService.connectionState.isHostUnreachable {
         ADENoticeCard(
           title: "PR detail failed",
           message: errorMessage,

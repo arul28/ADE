@@ -16,52 +16,42 @@ struct CtoSettingsScreen: View {
   @State private var desktopOnlyTitle: String = ""
 
   var body: some View {
-    List {
-      if let errorMessage {
-        ADENoticeCard(
-          title: "Settings failed to load",
-          message: errorMessage,
-          icon: "exclamationmark.triangle.fill",
-          tint: ADEColor.danger,
-          actionTitle: "Retry",
-          action: { Task { await reload() } }
-        )
-        .listRowBackground(Color.clear)
-        .listRowSeparator(.hidden)
-        .listRowInsets(EdgeInsets(top: 8, leading: 0, bottom: 6, trailing: 0))
-      }
+    ScrollView {
+      VStack(alignment: .leading, spacing: 12) {
+        if let errorMessage, !syncService.connectionState.isHostUnreachable {
+          ADENoticeCard(
+            title: "Settings failed to load",
+            message: errorMessage,
+            icon: "exclamationmark.triangle.fill",
+            tint: ADEColor.danger,
+            actionTitle: "Retry",
+            action: { Task { await reload() } }
+          )
+        }
 
-      if isLoading && snapshot == nil {
-        Section {
+        if isLoading && snapshot == nil {
           VStack(spacing: 12) {
             ADECardSkeleton(rows: 3)
             ADECardSkeleton(rows: 4)
             ADECardSkeleton(rows: 3)
           }
-          .listRowBackground(Color.clear)
-          .listRowSeparator(.hidden)
-          .listRowInsets(EdgeInsets(top: 6, leading: 0, bottom: 6, trailing: 0))
         }
-      }
 
-      if let snapshot {
-        identitySection(snapshot)
-        coreMemorySection(snapshot)
-      }
+        if let snapshot {
+          identitySection(snapshot)
+          coreMemorySection(snapshot)
+        }
 
-      heartbeatSection
-      budgetSection
-      integrationsSection
-      advancedSection
+        heartbeatSection
+        budgetSection
+        integrationsSection
+        advancedSection
 
-      Section {
-        Color.clear.frame(height: 40)
-          .listRowBackground(Color.clear)
-          .listRowSeparator(.hidden)
-          .listRowInsets(EdgeInsets())
+        Color.clear.frame(height: 32)
       }
+      .padding(.horizontal, 16)
+      .padding(.top, 8)
     }
-    .listStyle(.plain)
     .scrollContentBackground(.hidden)
     .adeScreenBackground()
     .refreshable { await reload() }
@@ -89,19 +79,12 @@ struct CtoSettingsScreen: View {
 
   @ViewBuilder
   private func identitySection(_ snapshot: CtoSnapshot) -> some View {
-    Section {
+    VStack(alignment: .leading, spacing: 6) {
       SectionHeader(title: "Identity")
-        .listRowBackground(Color.clear)
-        .listRowSeparator(.hidden)
-        .listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 6, trailing: 0))
-
       IdentityCard(
         identity: snapshot.identity,
         onEdit: { showingIdentityEditor = true }
       )
-      .listRowBackground(Color.clear)
-      .listRowSeparator(.hidden)
-      .listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0))
     }
   }
 
@@ -109,12 +92,8 @@ struct CtoSettingsScreen: View {
 
   @ViewBuilder
   private func coreMemorySection(_ snapshot: CtoSnapshot) -> some View {
-    Section {
+    VStack(alignment: .leading, spacing: 6) {
       SectionHeader(title: "Core memory")
-        .listRowBackground(Color.clear)
-        .listRowSeparator(.hidden)
-        .listRowInsets(EdgeInsets(top: 12, leading: 0, bottom: 6, trailing: 0))
-
       VStack(spacing: 0) {
         MemoryRow(
           label: "Project summary",
@@ -137,9 +116,6 @@ struct CtoSettingsScreen: View {
         ) { showingBriefEditor = true }
       }
       .adeListCard(padding: 0)
-      .listRowBackground(Color.clear)
-      .listRowSeparator(.hidden)
-      .listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0))
     }
   }
 
@@ -150,12 +126,8 @@ struct CtoSettingsScreen: View {
   // MARK: - Heartbeat (read-only placeholders)
 
   private var heartbeatSection: some View {
-    Section {
+    VStack(alignment: .leading, spacing: 6) {
       SectionHeader(title: "Heartbeat")
-        .listRowBackground(Color.clear)
-        .listRowSeparator(.hidden)
-        .listRowInsets(EdgeInsets(top: 12, leading: 0, bottom: 6, trailing: 0))
-
       VStack(spacing: 0) {
         RowItem(label: "Mode", value: "Combined", disabled: true)
         Sep()
@@ -164,21 +136,14 @@ struct CtoSettingsScreen: View {
         RowItem(label: "Event triggers", value: "—", disabled: true)
       }
       .adeListCard(padding: 0)
-      .listRowBackground(Color.clear)
-      .listRowSeparator(.hidden)
-      .listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0))
     }
   }
 
   // MARK: - Budget
 
   private var budgetSection: some View {
-    Section {
+    VStack(alignment: .leading, spacing: 6) {
       SectionHeader(title: "Budget")
-        .listRowBackground(Color.clear)
-        .listRowSeparator(.hidden)
-        .listRowInsets(EdgeInsets(top: 12, leading: 0, bottom: 6, trailing: 0))
-
       VStack(alignment: .leading, spacing: 8) {
         HStack(alignment: .firstTextBaseline) {
           HStack(alignment: .firstTextBaseline, spacing: 6) {
@@ -205,25 +170,7 @@ struct CtoSettingsScreen: View {
           Text("\(pct)% this month")
             .font(.system(size: 10, design: .monospaced))
             .foregroundStyle(ADEColor.textMuted)
-          GeometryReader { proxy in
-            let width = proxy.size.width * CGFloat(pct) / 100.0
-            ZStack(alignment: .leading) {
-              RoundedRectangle(cornerRadius: 3, style: .continuous)
-                .fill(ADEColor.recessedBackground.opacity(0.5))
-              RoundedRectangle(cornerRadius: 3, style: .continuous)
-                .fill(
-                  LinearGradient(
-                    colors: pct > 80
-                      ? [ADEColor.warning, ADEColor.warning.opacity(0.7)]
-                      : [ADEColor.accentDeep, ADEColor.ctoAccent],
-                    startPoint: .leading,
-                    endPoint: .trailing
-                  )
-                )
-                .frame(width: max(0, width))
-            }
-          }
-          .frame(height: 5)
+          CtoBudgetBar(percent: pct)
         }
 
         Divider().opacity(0.08)
@@ -239,9 +186,6 @@ struct CtoSettingsScreen: View {
         }
       }
       .adeListCard()
-      .listRowBackground(Color.clear)
-      .listRowSeparator(.hidden)
-      .listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0))
     }
   }
 
@@ -268,20 +212,14 @@ struct CtoSettingsScreen: View {
   // MARK: - Integrations
 
   private var integrationsSection: some View {
-    Section {
+    VStack(alignment: .leading, spacing: 6) {
       SectionHeader(title: "Integrations")
-        .listRowBackground(Color.clear)
-        .listRowSeparator(.hidden)
-        .listRowInsets(EdgeInsets(top: 12, leading: 0, bottom: 6, trailing: 0))
-
       if let syncNotice {
         Text(syncNotice)
           .font(.system(size: 11.5, design: .monospaced))
           .foregroundStyle(ADEColor.success)
           .frame(maxWidth: .infinity, alignment: .leading)
-          .listRowBackground(Color.clear)
-          .listRowSeparator(.hidden)
-          .listRowInsets(EdgeInsets(top: 0, leading: 16, bottom: 4, trailing: 16))
+          .padding(.horizontal, 16)
       }
 
       VStack(spacing: 0) {
@@ -338,9 +276,6 @@ struct CtoSettingsScreen: View {
         IntegrationRow(name: "External MCP", subtitle: "off", connected: false)
       }
       .adeListCard(padding: 0)
-      .listRowBackground(Color.clear)
-      .listRowSeparator(.hidden)
-      .listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0))
     }
   }
 
@@ -364,12 +299,8 @@ struct CtoSettingsScreen: View {
   // MARK: - Advanced
 
   private var advancedSection: some View {
-    Section {
+    VStack(alignment: .leading, spacing: 6) {
       SectionHeader(title: "Advanced")
-        .listRowBackground(Color.clear)
-        .listRowSeparator(.hidden)
-        .listRowInsets(EdgeInsets(top: 12, leading: 0, bottom: 6, trailing: 0))
-
       VStack(spacing: 0) {
         RowItem(label: "Re-run onboarding", value: "") {
           desktopOnlyTitle = "Re-run onboarding"
@@ -387,9 +318,6 @@ struct CtoSettingsScreen: View {
         }
       }
       .adeListCard(padding: 0)
-      .listRowBackground(Color.clear)
-      .listRowSeparator(.hidden)
-      .listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0))
     }
   }
 
@@ -413,30 +341,48 @@ struct CtoSettingsScreen: View {
     errorMessage = nil
     defer { isLoading = false }
 
-    async let stateResult = Result { try await syncService.fetchCtoState() }
-    async let budgetResult = Result { try await syncService.fetchCtoBudget() }
-    async let linearResult = Result { try await syncService.fetchLinearConnectionStatus() }
+    do {
+      self.snapshot = try await syncService.fetchCtoState()
+    } catch {
+      if self.snapshot == nil {
+        self.errorMessage = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
+      }
+    }
 
-    let (state, budgetValue, linear) = await (stateResult, budgetResult, linearResult)
-
-    if case .success(let value) = state { self.snapshot = value }
-    if case .success(let value) = budgetValue { self.budget = value }
-    if case .success(let value) = linear { self.linearStatus = value }
-
-    // Only surface an error if the primary read (state) failed — budget and
-    // linear are supplemental and degrade gracefully.
-    if case .failure(let err) = state, self.snapshot == nil {
-      self.errorMessage = (err as? LocalizedError)?.errorDescription ?? String(describing: err)
+    if let value = try? await syncService.fetchCtoBudget() {
+      self.budget = value
+    }
+    if let value = try? await syncService.fetchLinearConnectionStatus() {
+      self.linearStatus = value
     }
   }
 }
 
-// MARK: - Result-bridging helper for concurrent loads
+// MARK: - Budget bar (GeometryReader-free to avoid iOS 26 glass-layer pool churn)
 
-private extension Result where Failure == Error {
-  init(_ body: () async throws -> Success) async {
-    do { self = .success(try await body()) }
-    catch { self = .failure(error) }
+private struct CtoBudgetBar: View {
+  let percent: Int
+
+  var body: some View {
+    let clamped = max(0, min(100, percent))
+    let fill = CGFloat(clamped) / 100.0
+    ZStack(alignment: .leading) {
+      RoundedRectangle(cornerRadius: 3, style: .continuous)
+        .fill(ADEColor.recessedBackground.opacity(0.5))
+      RoundedRectangle(cornerRadius: 3, style: .continuous)
+        .fill(
+          LinearGradient(
+            colors: clamped > 80
+              ? [ADEColor.warning, ADEColor.warning.opacity(0.7)]
+              : [ADEColor.accentDeep, ADEColor.ctoAccent],
+            startPoint: .leading,
+            endPoint: .trailing
+          )
+        )
+        .scaleEffect(x: fill, y: 1, anchor: .leading)
+    }
+    .frame(height: 5)
+    .frame(maxWidth: .infinity)
   }
 }
 
@@ -459,7 +405,7 @@ private struct SectionHeader: View {
           .foregroundStyle(ADEColor.textMuted)
       }
     }
-    .padding(.horizontal, 16)
+    .padding(.top, 6)
   }
 }
 

@@ -3,10 +3,11 @@ import Security
 
 final class KeychainService {
   private let service = "com.ade.ios.sync"
-  private let account = "connection-token"
+  private let tokenAccount = "connection-token"
+  private let deviceIdAccount = "device-id"
 
-  func saveToken(_ token: String) {
-    let data = Data(token.utf8)
+  private func saveString(_ value: String, account: String) {
+    let data = Data(value.utf8)
     let query: [String: Any] = [
       kSecClass as String: kSecClassGenericPassword,
       kSecAttrService as String: service,
@@ -23,7 +24,7 @@ final class KeychainService {
     SecItemAdd(addQuery as CFDictionary, nil)
   }
 
-  func loadToken() -> String? {
+  private func loadString(account: String) -> String? {
     let query: [String: Any] = [
       kSecClass as String: kSecClassGenericPassword,
       kSecAttrService as String: service,
@@ -37,12 +38,32 @@ final class KeychainService {
     return String(data: data, encoding: .utf8)
   }
 
-  func clearToken() {
+  private func clearString(account: String) {
     let query: [String: Any] = [
       kSecClass as String: kSecClassGenericPassword,
       kSecAttrService as String: service,
       kSecAttrAccount as String: account,
     ]
     SecItemDelete(query as CFDictionary)
+  }
+
+  func saveToken(_ token: String) {
+    saveString(token, account: tokenAccount)
+  }
+
+  func loadToken() -> String? {
+    loadString(account: tokenAccount)
+  }
+
+  func clearToken() {
+    clearString(account: tokenAccount)
+  }
+
+  func saveDeviceId(_ deviceId: String) {
+    saveString(deviceId, account: deviceIdAccount)
+  }
+
+  func loadDeviceId() -> String? {
+    loadString(account: deviceIdAccount)
   }
 }

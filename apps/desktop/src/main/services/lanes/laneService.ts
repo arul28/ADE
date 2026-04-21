@@ -2437,6 +2437,12 @@ export function createLaneService({
       remoteName = "origin",
       force = false
     }: DeleteLaneArgs): Promise<void> {
+      const deleteStartedAt = Date.now();
+      const logSlowDeleteStep = (step: string, stepStartedAt: number): void => {
+        const durationMs = Date.now() - stepStartedAt;
+        if (durationMs < 500) return;
+        logger.info("lane.delete.step", { laneId, step, durationMs });
+      };
       const row = getLaneRow(laneId);
       if (!row) throw new Error(`Lane not found: ${laneId}`);
       if (row.lane_type === "primary") {
@@ -2449,7 +2455,9 @@ export function createLaneService({
       }
 
       if (row.lane_type === "worktree" && row.worktree_path && fs.existsSync(row.worktree_path)) {
+        let stepStartedAt = Date.now();
         const dirtyRes = await runGit(["status", "--porcelain=v1"], { cwd: row.worktree_path, timeoutMs: 8_000 });
+        logSlowDeleteStep("git_status", stepStartedAt);
         const dirty = dirtyRes.exitCode === 0 && dirtyRes.stdout.trim().length > 0;
         if (dirty && !force) {
           throw new Error("Lane has uncommitted changes. Enable force delete after confirming warnings.");
@@ -2458,41 +2466,56 @@ export function createLaneService({
         const removeArgs = ["worktree", "remove"];
         if (force) removeArgs.push("--force");
         removeArgs.push(row.worktree_path);
+        stepStartedAt = Date.now();
         await runGitOrThrow(removeArgs, { cwd: projectRoot, timeoutMs: 60_000 });
+        logSlowDeleteStep("git_worktree_remove", stepStartedAt);
       }
 
       if (deleteBranch && row.branch_ref) {
+        let stepStartedAt = Date.now();
         const refCheck = await runGit(["show-ref", "--verify", "--quiet", `refs/heads/${row.branch_ref}`], {
           cwd: projectRoot,
           timeoutMs: 8_000
         });
+        logSlowDeleteStep("git_branch_ref_check", stepStartedAt);
         if (refCheck.exitCode === 0) {
+          stepStartedAt = Date.now();
           await runGitOrThrow(["branch", "-D", row.branch_ref], { cwd: projectRoot, timeoutMs: 30_000 });
+          logSlowDeleteStep("git_branch_delete", stepStartedAt);
         }
       }
 
       if (deleteRemoteBranch && row.branch_ref) {
         const remote = remoteName.trim() || "origin";
+        let stepStartedAt = Date.now();
         const remoteCheck = await runGit(["remote", "get-url", remote], { cwd: projectRoot, timeoutMs: 8_000 });
+        logSlowDeleteStep("git_remote_check", stepStartedAt);
         if (remoteCheck.exitCode !== 0) {
           throw new Error(`Remote '${remote}' is not configured for this repository`);
         }
+        stepStartedAt = Date.now();
         const remoteRefCheck = await runGit(["ls-remote", "--heads", remote, row.branch_ref], {
           cwd: projectRoot,
           timeoutMs: 12_000
         });
+        logSlowDeleteStep("git_remote_ref_check", stepStartedAt);
         if (remoteRefCheck.exitCode === 0 && remoteRefCheck.stdout.trim().length > 0) {
+          stepStartedAt = Date.now();
           await runGitOrThrow(["push", remote, "--delete", row.branch_ref], { cwd: projectRoot, timeoutMs: 45_000 });
+          logSlowDeleteStep("git_remote_branch_delete", stepStartedAt);
         }
       }
 
       const lanePackDir = path.join(resolveAdeLayout(projectRoot).packsDir, "lanes", laneId);
       try {
+        const stepStartedAt = Date.now();
         fs.rmSync(lanePackDir, { recursive: true, force: true });
+        logSlowDeleteStep("lane_pack_dir_remove", stepStartedAt);
       } catch {
         // ignore pack folder cleanup failures
       }
 
+      const dbCleanupStartedAt = Date.now();
       db.run("update lanes set parent_lane_id = null where parent_lane_id = ? and project_id = ?", [laneId, projectId]);
       db.run("delete from pr_group_members where lane_id = ?", [laneId]);
       // Explicitly delete child rows that rely on FK cascade — CRR conversion can
@@ -2509,7 +2532,19 @@ export function createLaneService({
       db.run("delete from process_runs where lane_id = ?", [laneId]);
       db.run("delete from test_runs where lane_id = ?", [laneId]);
       db.run("delete from lanes where id = ? and project_id = ?", [laneId, projectId]);
+      logSlowDeleteStep("database_cleanup", dbCleanupStartedAt);
       invalidateLaneListCache();
+      const durationMs = Date.now() - deleteStartedAt;
+      if (durationMs >= 1_000) {
+        logger.info("lane.delete.completed", {
+          laneId,
+          laneType: row.lane_type,
+          deleteBranch,
+          deleteRemoteBranch,
+          force,
+          durationMs
+        });
+      }
     },
 
     getLaneWorktreePath(laneId: string): string {

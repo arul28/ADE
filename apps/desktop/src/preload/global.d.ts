@@ -649,6 +649,7 @@ declare global {
       };
       sync: {
         getStatus: () => Promise<SyncRoleSnapshot>;
+        refreshDiscovery: () => Promise<SyncRoleSnapshot>;
         listDevices: () => Promise<SyncDeviceRuntimeState[]>;
         updateLocalDevice: (args: {
           name?: string;

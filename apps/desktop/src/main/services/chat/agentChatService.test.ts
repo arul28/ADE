@@ -3617,6 +3617,69 @@ describe("createAgentChatService", () => {
       ]);
     });
 
+    it("keeps Codex reasoning deltas tied to the active turn and thinking activity", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => {
+          events.push(event);
+        },
+      });
+
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Think through the options.",
+      }, { awaitDispatch: true });
+
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope =>
+          event.event.type === "status"
+          && event.event.turnStatus === "started"
+          && event.event.turnId === "turn-1",
+      );
+
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "item/reasoning/summaryTextDelta",
+        params: {
+          itemId: "reasoning-1",
+          delta: "Checking the relevant paths.",
+        },
+      });
+
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope =>
+          event.event.type === "reasoning"
+          && event.event.turnId === "turn-1"
+          && event.event.itemId === "reasoning-1",
+      );
+
+      expect(events).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          event: expect.objectContaining({
+            type: "activity",
+            activity: "thinking",
+            turnId: "turn-1",
+          }),
+        }),
+        expect.objectContaining({
+          event: expect.objectContaining({
+            type: "reasoning",
+            text: "Checking the relevant paths.",
+            itemId: "reasoning-1",
+            turnId: "turn-1",
+          }),
+        }),
+      ]));
+    });
+
     it("ignores unsolicited Codex turn notifications when no turn is active", async () => {
       const events: Array<{ type: string; turnId?: string; text?: string }> = [];
       const { service } = createService({
@@ -6581,6 +6644,109 @@ describe("createAgentChatService", () => {
     await sendPromise;
   });
 
+  it("does not duplicate Claude thinking when the final assistant message repeats streamed content", async () => {
+    const events: AgentChatEventEnvelope[] = [];
+    const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+    const send = vi.fn().mockResolvedValue(undefined);
+    let streamCall = 0;
+
+    const stream = vi.fn(() => (async function* () {
+      streamCall += 1;
+      if (streamCall === 1) {
+        yield {
+          type: "system",
+          subtype: "init",
+          session_id: "sdk-session-thinking",
+          slash_commands: [],
+        };
+        return;
+      }
+
+      yield {
+        type: "stream_event",
+        event: {
+          type: "content_block_start",
+          index: 0,
+          content_block: { type: "thinking", thinking: "" },
+        },
+      };
+      yield {
+        type: "stream_event",
+        event: {
+          type: "content_block_delta",
+          index: 0,
+          delta: {
+            type: "thinking_delta",
+            thinking: "Checking both imports before editing.",
+          },
+        },
+      };
+      yield {
+        type: "assistant",
+        message: {
+          content: [{ type: "thinking", thinking: "Checking both imports before editing." }],
+          usage: { input_tokens: 1, output_tokens: 1 },
+        },
+      };
+      yield {
+        type: "result",
+        usage: { input_tokens: 1, output_tokens: 1 },
+      };
+    })());
+
+    vi.mocked(unstable_v2_createSession).mockReturnValue({
+      send,
+      stream,
+      close: vi.fn(),
+      sessionId: "sdk-session-thinking",
+      setPermissionMode,
+    } as any);
+
+    const { service } = createService({
+      onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+    });
+
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "claude",
+      model: "claude-sonnet-4-6",
+      modelId: "anthropic/claude-sonnet-4-6",
+    });
+
+    await service.runSessionTurn({
+      sessionId: session.id,
+      text: "Resolve the PR comments.",
+    });
+
+    const reasoningEvents = events
+      .map((event) => event.event)
+      .filter((event): event is Extract<AgentChatEventEnvelope["event"], { type: "reasoning" }> => event.type === "reasoning");
+    expect(reasoningEvents.map((event) => event.text)).toEqual(["Checking both imports before editing."]);
+    expect(events.some((event) => event.event.type === "activity" && event.event.activity === "thinking")).toBe(true);
+    const sessionOpts = vi.mocked(unstable_v2_createSession).mock.calls[0]?.[0] as {
+      executableArgs?: string[];
+      settings?: Record<string, unknown>;
+    } | undefined;
+    expect(sessionOpts?.settings).toEqual(expect.objectContaining({
+      showThinkingSummaries: true,
+      alwaysThinkingEnabled: true,
+    }));
+    expect(sessionOpts?.executableArgs).toEqual(expect.arrayContaining([
+      "--include-partial-messages",
+      "--thinking",
+      "adaptive",
+      "--thinking-display",
+      "summarized",
+    ]));
+    const settingsArgIndex = sessionOpts?.executableArgs?.indexOf("--settings") ?? -1;
+    expect(settingsArgIndex).toBeGreaterThanOrEqual(0);
+    const settingsJson = sessionOpts?.executableArgs?.[settingsArgIndex + 1];
+    expect(JSON.parse(String(settingsJson))).toEqual(expect.objectContaining({
+      showThinkingSummaries: true,
+      alwaysThinkingEnabled: true,
+    }));
+  });
+
   it("emits completed Claude tool_result rows when tool_use_summary arrives", async () => {
     const events: AgentChatEventEnvelope[] = [];
     const setPermissionMode = vi.fn().mockResolvedValue(undefined);
@@ -7295,6 +7461,11 @@ describe("createAgentChatService", () => {
     expect(
       events.some(
         (event) => event.event.type === "status" && event.event.turnStatus === "started",
+      ),
+    ).toBe(true);
+    expect(
+      events.some(
+        (event) => event.event.type === "activity" && event.event.activity === "thinking",
       ),
     ).toBe(true);
 
