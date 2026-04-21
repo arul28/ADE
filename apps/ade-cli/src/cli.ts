@@ -514,6 +514,12 @@ function parseRole(value: string): GlobalOptions["role"] {
   throw new CliUsageError("--role must be one of cto, orchestrator, agent, external, or evaluator.");
 }
 
+function shellEscapeToken(value: string): string {
+  if (!value.length) return "''";
+  if (/^[a-zA-Z0-9_./:=@%+-]+$/.test(value)) return value;
+  return `'${value.replace(/'/g, `'"'"'`)}'`;
+}
+
 function actionCallStep(key: string, name: string, args: JsonObject = {}): InvocationStep {
   return {
     key,
@@ -1116,7 +1122,9 @@ function buildShellPlan(args: string[]): CliPlan {
   if (sub === "start" || sub === "create") {
     const laneId = readLaneId(args);
     const startupCommandIndex = args.indexOf("--");
-    const startupCommand = startupCommandIndex >= 0 ? args.splice(startupCommandIndex + 1).join(" ") : readValue(args, ["--command", "-c"]);
+    const startupCommand = startupCommandIndex >= 0
+      ? args.splice(startupCommandIndex + 1).map(shellEscapeToken).join(" ")
+      : readValue(args, ["--command", "-c"]);
     if (startupCommandIndex >= 0) args.splice(startupCommandIndex, 1);
     const input = collectGenericObjectArgs(args, {
       ...(laneId ? { laneId } : {}),

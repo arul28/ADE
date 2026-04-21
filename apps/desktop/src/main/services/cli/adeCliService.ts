@@ -268,7 +268,7 @@ export function createAdeCliService(args: CreateAdeCliServiceArgs) {
     const targetDir = path.dirname(targetPath);
     const terminalInstalled = Boolean(terminalCommandPath);
     const bundledAvailable = Boolean(resolved.commandPath && isExecutable(resolved.commandPath));
-    const agentPathReady = bundledAvailable && pathContainsDir(process.env.PATH, resolved.binDir);
+    const agentPathReady = bundledAvailable && pathContainsDir(agentEnv({ PATH: hostPathSnapshot }).PATH, resolved.binDir);
     const installAvailable = resolved.source === "packaged" && isExecutable(resolved.installerPath);
     const message = statusMessage({
       terminalInstalled,

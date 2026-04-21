@@ -291,6 +291,27 @@ describe("ADE CLI", () => {
     });
   });
 
+  it("shell-escapes argv tokens after -- when building shell start commands", () => {
+    const plan = buildCliPlan(["shell", "start", "--lane", "lane-1", "--", "cat", "file with spaces.txt", "literal&name"]);
+    expect(plan.kind).toBe("execute");
+    if (plan.kind !== "execute") return;
+    expect(plan.steps[0]?.params).toEqual({
+      name: "run_ade_action",
+      arguments: {
+        domain: "pty",
+        action: "create",
+        args: expect.objectContaining({
+          laneId: "lane-1",
+          startupCommand: "cat 'file with spaces.txt' 'literal&name'",
+          toolType: "shell",
+          cols: 120,
+          rows: 36,
+          tracked: true,
+        }),
+      },
+    });
+  });
+
   it("renders an empty lane graph placeholder when no lanes are returned", () => {
     expect(renderLaneGraph({ lanes: [] })).toBe("ADE lanes\n(no lanes)");
     expect(renderLaneGraph(null)).toBe("ADE lanes\n(no lanes)");

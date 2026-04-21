@@ -96,6 +96,38 @@ describe("createAdeCliService", () => {
     }
   });
 
+  it("reports agent readiness from the ADE agent environment before global PATH is mutated", async () => {
+    const root = makeTempRoot();
+    const resourcesPath = path.join(root, "Resources");
+    const packagedBinDir = path.join(resourcesPath, "ade-cli", "bin");
+    const packagedCommandPath = path.join(packagedBinDir, "ade");
+    writeExecutable(packagedCommandPath);
+    writeExecutable(path.join(resourcesPath, "ade-cli", "install-path.sh"));
+    fs.writeFileSync(path.join(resourcesPath, "ade-cli", "cli.cjs"), "console.log('ade')\n");
+
+    const previousPath = process.env.PATH;
+    process.env.PATH = "/usr/bin:/bin";
+    try {
+      const service = createAdeCliService({
+        isPackaged: true,
+        resourcesPath,
+        userDataPath: path.join(root, "user-data"),
+        appExecutablePath: path.join(root, "ADE.app", "Contents", "MacOS", "ADE"),
+        env: { PATH: "/usr/bin:/bin" },
+        logger: logger() as any,
+      });
+
+      const status = await service.getStatus();
+      expect(process.env.PATH).toBe("/usr/bin:/bin");
+      expect(status.agentPathReady).toBe(true);
+      expect(status.terminalInstalled).toBe(false);
+      expect(status.nextAction).toBe("Install the ade command for Terminal access.");
+      expect(service.agentEnv({ PATH: "/usr/bin:/bin" }).PATH?.split(path.delimiter)[0]).toBe(packagedBinDir);
+    } finally {
+      process.env.PATH = previousPath;
+    }
+  });
+
   it("creates a dev shim under userData without changing global PATH", () => {
     const root = makeTempRoot();
     const repoRoot = path.join(root, "repo");
