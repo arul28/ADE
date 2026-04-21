@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildCliPlan, formatOutput, parseCliArgs, renderLaneGraph, summarizeExecution } from "./cli";
+import { buildCliPlan, formatOutput, parseCliArgs, renderLaneGraph, summarizeExecution, unwrapToolResult } from "./cli";
 
 describe("ADE CLI", () => {
   it("parses global options without stealing command flags", () => {
@@ -18,6 +18,28 @@ describe("ADE CLI", () => {
     expect(parsed.options.projectRoot).toBe("/tmp/project");
     expect(parsed.options.role).toBe("cto");
     expect(parsed.command).toEqual(["actions", "run", "git.stageFile", "--arg", "laneId=lane-1"]);
+  });
+
+  it("preserves command-local value flags that overlap global flags", () => {
+    const parsed = parseCliArgs(["files", "write", "src/index.ts", "--text", "hello"]);
+    expect(parsed.options.text).toBe(false);
+    expect(parsed.command).toEqual(["files", "write", "src/index.ts", "--text", "hello"]);
+
+    const plan = buildCliPlan(parsed.command);
+    expect(plan.kind).toBe("execute");
+    if (plan.kind !== "execute") return;
+
+    expect(plan.steps[0]?.params).toEqual({
+      name: "run_ade_action",
+      arguments: {
+        domain: "file",
+        action: "writeWorkspaceText",
+        args: {
+          path: "src/index.ts",
+          text: "hello",
+        },
+      },
+    });
   });
 
   it("builds a generic ADE action invocation", () => {
@@ -127,6 +149,16 @@ describe("ADE CLI", () => {
     expect(escapeHatch).toMatchObject({ domain: "git", action: "getStatus", result: { clean: true } });
   });
 
+  it("turns ADE action failure envelopes into CLI tool errors", () => {
+    expect(() => unwrapToolResult({
+      ok: false,
+      error: {
+        code: -32011,
+        message: "Action 'git.nonexistent_action' is not callable.",
+      },
+    })).toThrow(/not callable/);
+  });
+
   it("renders richer doctor text", () => {
     const output = formatOutput({
       ok: true,
@@ -167,12 +199,14 @@ describe("ADE CLI", () => {
       lanes: [
         { id: "main", name: "main", branchRef: "main" },
         { id: "child", name: "child", branchRef: "feature", parentLaneId: "main" },
+        { id: "sibling", name: "sibling", branchRef: "feature-2", parentLaneId: "main" },
       ],
     });
 
     expect(graph).toContain("ADE lanes");
-    expect(graph).toContain("+- main [main]");
-    expect(graph).toContain("+- child [feature]");
+    expect(graph).toContain("\\- main [main]");
+    expect(graph).toContain("|- child [feature]");
+    expect(graph).toContain("\\- sibling [feature-2]");
   });
 
   it("accepts --option=value syntax equivalently to --option value", () => {
@@ -245,7 +279,7 @@ describe("ADE CLI", () => {
     expect(summarized).toMatchObject({
       lanes: expect.any(Array),
     });
-    expect((summarized as any).visual).toContain("+- main [main]");
-    expect((summarized as any).visual).toContain("+- child [feature]");
+    expect((summarized as any).visual).toContain("\\- main [main]");
+    expect((summarized as any).visual).toContain("\\- child [feature]");
   });
 });

@@ -387,6 +387,15 @@ function requireValue(value: string | null, label: string): string {
   throw new CliUsageError(`${label} is required.`);
 }
 
+function isCommandTextValue(argv: string[], index: number, command: string[]): boolean {
+  if (command.length === 0) return false;
+  const token = argv[index];
+  if (token?.startsWith("--text=")) return true;
+  if (token !== "--text") return false;
+  const next = argv[index + 1];
+  return Boolean(next && next !== "--" && !next.startsWith("-"));
+}
+
 function maybePut(target: JsonObject, key: string, value: unknown): void {
   if (value !== undefined && value !== null && value !== "") {
     target[key] = value;
@@ -408,42 +417,43 @@ function parseCliArgs(argv: string[]): ParsedCli {
 
   for (let index = 0; index < argv.length; index += 1) {
     const token = argv[index]!;
+    const inGlobalPrefix = command.length === 0;
     if (token === "--") {
       command.push(token, ...argv.slice(index + 1));
       break;
     }
-    if (token === "--project-root") {
+    if (inGlobalPrefix && token === "--project-root") {
       options.projectRoot = path.resolve(requireValue(argv[index + 1] ?? null, "--project-root"));
       index += 1;
       continue;
     }
-    if (token.startsWith("--project-root=")) {
+    if (inGlobalPrefix && token.startsWith("--project-root=")) {
       options.projectRoot = path.resolve(requireValue(token.slice("--project-root=".length), "--project-root"));
       continue;
     }
-    if (token === "--workspace-root") {
+    if (inGlobalPrefix && token === "--workspace-root") {
       options.workspaceRoot = path.resolve(requireValue(argv[index + 1] ?? null, "--workspace-root"));
       index += 1;
       continue;
     }
-    if (token.startsWith("--workspace-root=")) {
+    if (inGlobalPrefix && token.startsWith("--workspace-root=")) {
       options.workspaceRoot = path.resolve(requireValue(token.slice("--workspace-root=".length), "--workspace-root"));
       continue;
     }
-    if (token === "--role") {
+    if (inGlobalPrefix && token === "--role") {
       options.role = parseRole(requireValue(argv[index + 1] ?? null, "--role"));
       index += 1;
       continue;
     }
-    if (token.startsWith("--role=")) {
+    if (inGlobalPrefix && token.startsWith("--role=")) {
       options.role = parseRole(requireValue(token.slice("--role=".length), "--role"));
       continue;
     }
-    if (token === "--headless" || token === "--no-socket") {
+    if (inGlobalPrefix && (token === "--headless" || token === "--no-socket")) {
       options.headless = true;
       continue;
     }
-    if (token === "--socket") {
+    if (inGlobalPrefix && token === "--socket") {
       options.requireSocket = true;
       options.headless = false;
       continue;
@@ -456,6 +466,10 @@ function parseCliArgs(argv: string[]): ParsedCli {
       options.pretty = true;
       continue;
     }
+    if (isCommandTextValue(argv, index, command)) {
+      command.push(token);
+      continue;
+    }
     if (token === "--text") {
       options.text = true;
       continue;
@@ -464,13 +478,21 @@ function parseCliArgs(argv: string[]): ParsedCli {
       options.text = false;
       continue;
     }
-    if (token === "--timeout-ms") {
+    if (inGlobalPrefix && token === "--timeout-ms") {
       const parsed = Number.parseInt(requireValue(argv[index + 1] ?? null, "--timeout-ms"), 10);
       if (!Number.isFinite(parsed) || parsed <= 0) {
         throw new CliUsageError("--timeout-ms must be a positive integer.");
       }
       options.timeoutMs = parsed;
       index += 1;
+      continue;
+    }
+    if (inGlobalPrefix && token.startsWith("--timeout-ms=")) {
+      const parsed = Number.parseInt(requireValue(token.slice("--timeout-ms=".length), "--timeout-ms"), 10);
+      if (!Number.isFinite(parsed) || parsed <= 0) {
+        throw new CliUsageError("--timeout-ms must be a positive integer.");
+      }
+      options.timeoutMs = parsed;
       continue;
     }
     command.push(token);
@@ -1993,6 +2015,10 @@ function unwrapToolResult(result: unknown): unknown {
       : "ADE tool call failed.";
     throw new CliToolError(message, structured ?? result);
   }
+  if (result.ok === false && isRecord(result.error)) {
+    const message = asString(result.error.message) ?? "ADE action call failed.";
+    throw new CliToolError(message, result.error);
+  }
   if (Object.prototype.hasOwnProperty.call(result, "structuredContent")) {
     return result.structuredContent;
   }
@@ -2033,7 +2059,7 @@ function renderLaneGraph(result: unknown): string {
     const branch = asString(lane.branchRef) ?? "";
     const status = asString(lane.status) ?? "";
     const archived = asString(lane.archivedAt) ? " archived" : "";
-    lines.push(`${prefix}${isLast ? "+- " : "+- "}${name}${branch ? ` [${branch}]` : ""}${status ? ` ${status}` : ""}${archived}`);
+    lines.push(`${prefix}${isLast ? "\\- " : "|- "}${name}${branch ? ` [${branch}]` : ""}${status ? ` ${status}` : ""}${archived}`);
     const id = asString(lane.id);
     const children = id ? byParent.get(id) ?? [] : [];
     children.forEach((child, index) => visit(child, `${prefix}${isLast ? "   " : "|  "}`, index === children.length - 1));
@@ -2619,4 +2645,5 @@ export {
   renderLaneGraph,
   runCli,
   summarizeExecution,
+  unwrapToolResult,
 };
