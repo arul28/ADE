@@ -155,20 +155,54 @@ function formatSpawnFailure(result: ReturnType<typeof spawnSync>, fallbackComman
   return `${fallbackCommand} exited with status ${status}: ${detail}`;
 }
 
+function latestMtimeMs(root: string): number {
+  let latest = 0;
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(root, { withFileTypes: true });
+  } catch {
+    return latest;
+  }
+  for (const entry of entries) {
+    const fullPath = path.join(root, entry.name);
+    if (entry.isDirectory()) {
+      latest = Math.max(latest, latestMtimeMs(fullPath));
+      continue;
+    }
+    if (!entry.isFile()) continue;
+    try {
+      latest = Math.max(latest, fs.statSync(fullPath).mtimeMs);
+    } catch {
+      // Ignore files that disappear while checking freshness.
+    }
+  }
+  return latest;
+}
+
+function isBuiltCliFresh(): boolean {
+  try {
+    const distMtime = fs.statSync(CLI_DIST_PATH).mtimeMs;
+    const sourceMtime = latestMtimeMs(path.join(CLI_PACKAGE_ROOT, "src"));
+    return distMtime >= sourceMtime;
+  } catch {
+    return false;
+  }
+}
+
 function maybeRunBuiltCliFallback(error: unknown, argv: string[]): { stdout: string; stderr: string; exitCode: number } | null {
   if (!(error instanceof CliExecutionError)) return null;
   if (process.env[SOURCE_FALLBACK_ENV] === "1") return null;
   if (!isSourceCliEntryPath(CLI_ENTRY_PATH)) return null;
   if (!isSourceRuntimeInteropError(asString(error.details.cause) ?? error.message)) return null;
 
-  if (!fs.existsSync(CLI_DIST_PATH)) {
+  if (!isBuiltCliFresh()) {
     const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
     const buildResult = spawnSync(npmCommand, ["run", "build", "--silent"], {
       cwd: CLI_PACKAGE_ROOT,
       env: process.env,
       encoding: "utf8",
     });
-    if (buildResult.error || buildResult.status !== 0 || !fs.existsSync(CLI_DIST_PATH)) {
+    if (buildResult.error || buildResult.status !== 0 || !isBuiltCliFresh()) {
       error.details.nextAction = "Run `npm --prefix apps/ade-cli run build` and retry the command.";
       error.details.fallback = formatSpawnFailure(buildResult, "npm run build --silent");
       return null;

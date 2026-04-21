@@ -18,6 +18,7 @@ enum NotificationCategories {
     static let prReviewRequested = "PR_REVIEW_REQUESTED"
     static let prChangesRequested = "PR_CHANGES_REQUESTED"
     static let prMergeReady = "PR_MERGE_READY"
+    static let ctoSubagentStarted = "CTO_SUBAGENT_STARTED"
     static let ctoSubagentFinished = "CTO_SUBAGENT_FINISHED"
     static let ctoMissionPhase = "CTO_MISSION_PHASE"
     static let systemAlert = "SYSTEM_ALERT"
@@ -163,6 +164,13 @@ enum NotificationCategories {
       options: []
     )
 
+    let ctoSubagentStarted = UNNotificationCategory(
+      identifier: Identifier.ctoSubagentStarted,
+      actions: [openMission],
+      intentIdentifiers: [],
+      options: []
+    )
+
     let ctoMissionPhase = UNNotificationCategory(
       identifier: Identifier.ctoMissionPhase,
       actions: [open],
@@ -185,6 +193,7 @@ enum NotificationCategories {
       prReviewRequested,
       prChangesRequested,
       prMergeReady,
+      ctoSubagentStarted,
       ctoSubagentFinished,
       ctoMissionPhase,
       systemAlert,

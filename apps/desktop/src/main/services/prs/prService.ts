@@ -667,7 +667,7 @@ export function createPrService({
   const PR_COLUMNS = `id, lane_id, project_id, repo_owner, repo_name, github_pr_number,
     github_url, github_node_id, title, state, base_branch, head_branch,
     checks_status, review_status, additions, deletions, last_synced_at,
-    created_at, updated_at`;
+    created_at, updated_at, creation_strategy`;
 
   const getRow = (prId: string): PullRequestRow | null =>
     db.get<PullRequestRow>(
@@ -1625,7 +1625,8 @@ export function createPrService({
       deletions,
       lastSyncedAt: nowIso(),
       createdAt: row.created_at,
-      updatedAt: asString(pr?.updated_at) || row.updated_at || nowIso()
+      updatedAt: asString(pr?.updated_at) || row.updated_at || nowIso(),
+      creationStrategy: normalizePrCreationStrategy(row.creation_strategy)
     };
 
     if (hasMaterialSummaryChange(row, updated)) {
@@ -1826,7 +1827,9 @@ export function createPrService({
    *   - else any success → "success"
    *   - else "none" (empty list, or only neutral/skipped/etc.)
    */
-  const aggregateCommitCheckStatus = (runs: any[]): "success" | "failure" | "pending" | "none" => {
+  const aggregateCommitCheckStatus = (
+    runs: Array<{ status?: string | null; conclusion?: string | null }>
+  ): "success" | "failure" | "pending" | "none" => {
     if (!Array.isArray(runs) || runs.length === 0) return "none";
     let hasPending = false;
     let hasSuccess = false;

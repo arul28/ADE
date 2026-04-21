@@ -7,7 +7,7 @@
  * the `transport` option; the unit tests exercise that seam with a mock.
  *
  * Key material is never written in plaintext: the `.p8` bytes are persisted
- * to `<userData>/apns.key.enc` via Electron `safeStorage.encryptString`.
+ * to a per-project encrypted path via Electron `safeStorage.encryptString`.
  * Decrypted key lives in memory only while a notification is being signed.
  */
 
@@ -175,8 +175,7 @@ type JwtCacheEntry = {
 
 type KeyStoreArgs = {
   /**
-   * Absolute path where the encrypted `.p8` lives, e.g.
-   * `app.getPath("userData")/apns.key.enc`.
+   * Absolute path where the encrypted `.p8` lives.
    */
   encryptedKeyPath: string;
   /**

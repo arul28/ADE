@@ -119,6 +119,23 @@ function buildLiveActivityUpdatePayload(mapped: MappedNotification, nowMs: numbe
   };
 }
 
+function matchingActivityUpdateTokens(
+  mapped: MappedNotification,
+  updateTokens: Record<string, string> | null | undefined,
+): string[] {
+  if (!updateTokens) return [];
+  const metadata = mapped.metadata ?? {};
+  const activityIds = new Set<string>();
+  const sessionId = stringMetadata(metadata.sessionId);
+  const prId = stringMetadata(metadata.prId);
+  if (sessionId) activityIds.add(sessionId);
+  if (prId) activityIds.add(prId);
+  if (activityIds.size === 0) return [];
+  return [...activityIds]
+    .map((activityId) => updateTokens[activityId])
+    .filter((token): token is string => typeof token === "string" && token.trim().length > 0);
+}
+
 export type DevicePushTarget = {
   deviceId: string;
   bundleId: string;
@@ -218,7 +235,7 @@ export function createNotificationEventBus(args: NotificationEventBusArgs) {
       }
 
       const livePayload = buildLiveActivityUpdatePayload(mapped, nowMs);
-      const updateTokens = target.activityUpdateTokens ? Object.values(target.activityUpdateTokens) : [];
+      const updateTokens = matchingActivityUpdateTokens(mapped, target.activityUpdateTokens);
       if (livePayload && updateTokens.length > 0) {
         for (const token of updateTokens) {
           const liveEnvelope: ApnsEnvelope = {

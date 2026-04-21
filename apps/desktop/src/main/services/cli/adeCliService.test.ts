@@ -183,8 +183,10 @@ describe("createAdeCliService", () => {
     expect(service.resolved.cliJsPath).toBe(sourceCliPath);
     expect(shimScript).toContain("CLI_ENTRY_KIND='source'");
     expect(shimScript).toContain("exec \"$TSX_BIN\" \"$CLI_JS\" \"$@\"");
-    expect(shimScript).toContain("exec tsx \"$CLI_JS\" \"$@\"");
-    expect(shimScript).toContain("node --import tsx \"$CLI_JS\" \"$@\"");
+    expect(shimScript).toContain("TSX_IMPORT=");
+    expect(shimScript).toContain("--import \"$TSX_IMPORT\" \"$CLI_JS\" \"$@\"");
+    expect(shimScript).not.toContain("exec tsx \"$CLI_JS\" \"$@\"");
+    expect(shimScript).not.toContain("--import tsx \"$CLI_JS\" \"$@\"");
   });
 
   it("does not run a global installer from dev builds", async () => {

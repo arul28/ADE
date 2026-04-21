@@ -10,6 +10,8 @@ import {
 } from "./illustrations/WelcomeIllustrations";
 
 const DOCS_BASE = "https://www.ade-app.dev/docs";
+const INTERACTIVE_SHORTCUT_SELECTOR =
+  'button, a[href], input, select, textarea, [contenteditable]:not([contenteditable="false"])';
 
 type Screen = {
   eyebrow: string;
@@ -52,6 +54,11 @@ export const WELCOME_SCREENS: Screen[] = [
     Illustration: HelpIllustration,
   },
 ];
+
+function shouldLetEnterActivateTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof Element)) return false;
+  return target.closest(INTERACTIVE_SHORTCUT_SELECTOR) != null;
+}
 
 export function WelcomeWizard() {
   const wizardOpen = useOnboardingStore((s) => s.wizardOpen);
@@ -129,6 +136,8 @@ export function WelcomeWizard() {
         return;
       }
       if (e.key === "ArrowRight" || e.key === "Enter") {
+        if (e.key === "Enter" && shouldLetEnterActivateTarget(e.target)) return;
+        e.preventDefault();
         const isLast = index === WELCOME_SCREENS.length - 1;
         if (isLast) void closeAsCompleted();
         else {

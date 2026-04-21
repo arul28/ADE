@@ -519,6 +519,9 @@ function isCurrentCodexLifecycleTurn(
   turnId: string | null | undefined,
 ): boolean {
   const activeTurnId = runtime.activeTurnId ?? runtime.startedTurnId;
+  if (runtime.awaitingTurnStart && turnId) {
+    return activeTurnId ? activeTurnId === turnId : false;
+  }
   if (!activeTurnId || !turnId) return true;
   return activeTurnId === turnId;
 }
@@ -8563,8 +8566,14 @@ export function createAgentChatService(args: {
       return;
     }
 
+    const isExpectedTurnStart =
+      method === "turn/started"
+      && runtime.awaitingTurnStart
+      && !runtime.activeTurnId
+      && !runtime.startedTurnId;
     if (
       turnIdFromParams
+      && !isExpectedTurnStart
       && !isCurrentCodexLifecycleTurn(runtime, turnIdFromParams)
     ) {
       logger.warn(`[codex] ignoring ${method} for inactive turn ${turnIdFromParams} in session ${managed.session.id}`);

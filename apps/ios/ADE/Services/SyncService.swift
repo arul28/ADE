@@ -4168,6 +4168,15 @@ extension SyncService {
       ]
     }
 
+    if !prefs.perSessionOverrides.isEmpty {
+      dict["perSessionOverrides"] = prefs.perSessionOverrides.mapValues { override in
+        [
+          "muted": override.muted,
+          "awaitingInputOnly": override.awaitingInputOnly,
+        ]
+      }
+    }
+
     return dict
   }
 

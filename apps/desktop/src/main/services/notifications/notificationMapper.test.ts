@@ -72,6 +72,7 @@ describe("mapChatEvent", () => {
       chatEnvelope({ type: "done", turnId: "turn-1", status: "completed" }),
     );
     expect(mapped.category).toBe("CHAT_COMPLETED");
+    expect(mapped.iosCategory).toBe("CHAT_TURN_COMPLETED");
     expect(mapped.priority).toBe(5);
     expect(mapped.interruptionLevel).toBe("passive");
   });
@@ -166,7 +167,22 @@ describe("buildApnsPayload", () => {
       "interruption-level": "time-sensitive",
       sound: "default",
       "thread-id": "cid",
+      category: "CHAT_AWAITING_INPUT",
     });
+  });
+
+  it("uses the registered iOS category when it differs from the internal prefs category", () => {
+    const payload = buildApnsPayload({
+      category: "SYSTEM_PROVIDER_OUTAGE",
+      iosCategory: "SYSTEM_ALERT",
+      family: "system",
+      title: "Provider issue",
+      body: "OpenAI is down",
+      pushType: "alert",
+      priority: 5,
+      interruptionLevel: "active",
+    });
+    expect((payload.aps as Record<string, unknown>).category).toBe("SYSTEM_ALERT");
   });
 
   it("silent payloads set content-available and omit alert", () => {
@@ -229,5 +245,59 @@ describe("isAllowedByPrefs", () => {
         { ...prefs, muteUntil: past },
       ),
     ).toBe(true);
+  });
+
+  it("blocks during quiet hours in the configured timezone", () => {
+    expect(
+      isAllowedByPrefs(
+        { ...mapped, category: "CHAT_AWAITING_INPUT" },
+        {
+          ...prefs,
+          quietHours: {
+            enabled: true,
+            start: "22:00",
+            end: "07:00",
+            timezone: "America/New_York",
+          },
+        },
+        Date.parse("2026-04-21T03:30:00.000Z"),
+      ),
+    ).toBe(false);
+  });
+
+  it("honors per-session muted and awaiting-input-only overrides", () => {
+    const sessionMapped: MappedNotification = {
+      ...mapped,
+      category: "CHAT_COMPLETED",
+      metadata: { sessionId: "session-123" },
+    };
+    expect(
+      isAllowedByPrefs(
+        sessionMapped,
+        {
+          ...prefs,
+          chat: { ...prefs.chat, turnCompleted: true },
+          perSessionOverrides: { "session-123": { awaitingInputOnly: true } },
+        },
+      ),
+    ).toBe(false);
+    expect(
+      isAllowedByPrefs(
+        { ...sessionMapped, category: "CHAT_AWAITING_INPUT" },
+        {
+          ...prefs,
+          perSessionOverrides: { "session-123": { awaitingInputOnly: true } },
+        },
+      ),
+    ).toBe(true);
+    expect(
+      isAllowedByPrefs(
+        { ...sessionMapped, category: "CHAT_AWAITING_INPUT" },
+        {
+          ...prefs,
+          perSessionOverrides: { "session-123": { muted: true } },
+        },
+      ),
+    ).toBe(false);
   });
 });

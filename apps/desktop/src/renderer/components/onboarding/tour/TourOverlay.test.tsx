@@ -78,6 +78,30 @@ describe("TourOverlay", () => {
     expect(completeSpy).not.toHaveBeenCalled();
   });
 
+  it("Enter from a focused button falls through instead of advancing the tour", () => {
+    const nextSpy = vi.fn().mockResolvedValue(undefined);
+    const dismissSpy = vi.fn().mockResolvedValue(undefined);
+    useOnboardingStore.setState({
+      nextStep: nextSpy as any,
+      dismissCurrentTour: dismissSpy as any,
+    });
+
+    render(
+      <TourOverlay
+        step={{ target: "#missing", title: "Hi", body: "Body" }}
+        stepIndex={0}
+        totalSteps={3}
+      />,
+    );
+
+    const skip = screen.getByRole("button", { name: /^Skip$/i });
+    skip.focus();
+    fireEvent.keyDown(skip, { key: "Enter" });
+
+    expect(nextSpy).not.toHaveBeenCalled();
+    expect(dismissSpy).not.toHaveBeenCalled();
+  });
+
   it("ArrowRight on the last step calls completeCurrentTour", () => {
     const nextSpy = vi.fn().mockResolvedValue(undefined);
     const completeSpy = vi.fn().mockResolvedValue(undefined);
@@ -114,5 +138,31 @@ describe("TourOverlay", () => {
       vi.advanceTimersByTime(600);
     });
     expect(screen.getByText(/isn't on screen right now/i)).toBeTruthy();
+  });
+
+  it("keeps observing and attaches to a target that appears after the initial retry window", async () => {
+    vi.useFakeTimers();
+    render(
+      <TourOverlay
+        step={{ target: "#late-target", title: "Late", body: "Body" }}
+        stepIndex={0}
+        totalSteps={1}
+      />,
+    );
+
+    await act(async () => {
+      vi.advanceTimersByTime(600);
+    });
+    expect(screen.getByText(/isn't on screen right now/i)).toBeTruthy();
+
+    const target = document.createElement("button");
+    target.id = "late-target";
+    document.body.appendChild(target);
+
+    await act(async () => {
+      vi.advanceTimersByTime(50);
+    });
+
+    expect(screen.queryByText(/isn't on screen right now/i)).toBeNull();
   });
 });

@@ -708,6 +708,11 @@ export type NotificationPreferences = {
     end: string;
     timezone: string;
   };
+  /** Per-session APNs routing overrides keyed by chat/session id. */
+  perSessionOverrides?: Record<string, {
+    muted?: boolean;
+    awaitingInputOnly?: boolean;
+  }>;
   /** Global mute applied by the Control Widget ("snooze for N minutes"). */
   muteUntil?: string | null;
 };
@@ -839,3 +844,63 @@ export const DEFAULT_NOTIFICATION_PREFERENCES: NotificationPreferences = {
   },
   muteUntil: null,
 };
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function booleanOrDefault(value: unknown, fallback: boolean): boolean {
+  return typeof value === "boolean" ? value : fallback;
+}
+
+function stringOrDefault(value: unknown, fallback: string): string {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : fallback;
+}
+
+function normalizePrefsGroup<T extends Record<string, boolean>>(
+  input: unknown,
+  defaults: T,
+): T {
+  const raw = isRecord(input) ? input : {};
+  const next = { ...defaults };
+  for (const key of Object.keys(defaults) as Array<keyof T>) {
+    next[key] = booleanOrDefault(raw[key as string], defaults[key]) as T[keyof T];
+  }
+  return next;
+}
+
+export function normalizeNotificationPreferences(input: unknown): NotificationPreferences {
+  const raw = isRecord(input) ? input : {};
+  const quietHoursRaw = isRecord(raw.quietHours) ? raw.quietHours : null;
+  const perSessionRaw = isRecord(raw.perSessionOverrides) ? raw.perSessionOverrides : {};
+  const perSessionOverrides: NonNullable<NotificationPreferences["perSessionOverrides"]> = {};
+  for (const [sessionId, override] of Object.entries(perSessionRaw)) {
+    if (!isRecord(override) || !sessionId.trim()) continue;
+    perSessionOverrides[sessionId] = {
+      muted: booleanOrDefault(override.muted, false),
+      awaitingInputOnly: booleanOrDefault(override.awaitingInputOnly, false),
+    };
+  }
+  return {
+    enabled: booleanOrDefault(raw.enabled, DEFAULT_NOTIFICATION_PREFERENCES.enabled),
+    chat: normalizePrefsGroup(raw.chat, DEFAULT_NOTIFICATION_PREFERENCES.chat),
+    cto: normalizePrefsGroup(raw.cto, DEFAULT_NOTIFICATION_PREFERENCES.cto),
+    prs: normalizePrefsGroup(raw.prs, DEFAULT_NOTIFICATION_PREFERENCES.prs),
+    system: normalizePrefsGroup(raw.system, DEFAULT_NOTIFICATION_PREFERENCES.system),
+    ...(quietHoursRaw
+      ? {
+          quietHours: {
+            enabled: booleanOrDefault(quietHoursRaw.enabled, false),
+            start: stringOrDefault(quietHoursRaw.start, "22:00"),
+            end: stringOrDefault(quietHoursRaw.end, "07:00"),
+            timezone: stringOrDefault(
+              quietHoursRaw.timezone,
+              Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",
+            ),
+          },
+        }
+      : {}),
+    ...(Object.keys(perSessionOverrides).length > 0 ? { perSessionOverrides } : {}),
+    muteUntil: typeof raw.muteUntil === "string" || raw.muteUntil === null ? raw.muteUntil : DEFAULT_NOTIFICATION_PREFERENCES.muteUntil,
+  };
+}

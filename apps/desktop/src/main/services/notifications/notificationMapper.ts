@@ -29,12 +29,27 @@ export type NotificationCategory =
   | "SYSTEM_AUTH_RATE_LIMIT"
   | "SYSTEM_HOOK_FAILURE";
 
+export type IosNotificationCategory =
+  | "CHAT_AWAITING_INPUT"
+  | "CHAT_FAILED"
+  | "CHAT_TURN_COMPLETED"
+  | "CTO_SUBAGENT_STARTED"
+  | "CTO_SUBAGENT_FINISHED"
+  | "CTO_MISSION_PHASE"
+  | "PR_CI_FAILING"
+  | "PR_REVIEW_REQUESTED"
+  | "PR_CHANGES_REQUESTED"
+  | "PR_MERGE_READY"
+  | "SYSTEM_ALERT";
+
 /**
  * The user-facing copy + APNs-shape hints. The bus completes this into a
  * full `ApnsEnvelope` by attaching a device token and topic.
  */
 export type MappedNotification = {
   category: NotificationCategory;
+  /** Category id registered by the iOS app. Defaults to `category` when omitted. */
+  iosCategory?: IosNotificationCategory;
   /** Buckets above map to one of four high-level families in prefs. */
   family: "chat" | "cto" | "pr" | "system";
   title: string;
@@ -139,6 +154,7 @@ export function mapChatEvent(envelope: AgentChatEventEnvelope): MappedNotificati
         return [
           {
             category: "CHAT_COMPLETED",
+            iosCategory: "CHAT_TURN_COMPLETED",
             family: "chat",
             title: "Chat completed",
             body: truncate("The assistant finished replying.", 178),
@@ -158,6 +174,7 @@ export function mapChatEvent(envelope: AgentChatEventEnvelope): MappedNotificati
         return [
           {
             category: "CHAT_COMPLETED",
+            iosCategory: "CHAT_TURN_COMPLETED",
             family: "chat",
             title: "Chat completed",
             body: truncate(event.message ?? "The assistant finished replying.", 178),
@@ -201,13 +218,13 @@ export function mapChatEvent(envelope: AgentChatEventEnvelope): MappedNotificati
         metadata: sessionMeta,
       };
       if (event.noticeKind === "provider_health") {
-        return [{ ...base, category: "SYSTEM_PROVIDER_OUTAGE", title: "Provider issue" }];
+        return [{ ...base, category: "SYSTEM_PROVIDER_OUTAGE", iosCategory: "SYSTEM_ALERT", title: "Provider issue" }];
       }
       if (event.noticeKind === "auth" || event.noticeKind === "rate_limit") {
-        return [{ ...base, category: "SYSTEM_AUTH_RATE_LIMIT", title: "Authentication required" }];
+        return [{ ...base, category: "SYSTEM_AUTH_RATE_LIMIT", iosCategory: "SYSTEM_ALERT", title: "Authentication required" }];
       }
       if (event.noticeKind === "hook") {
-        return [{ ...base, category: "SYSTEM_HOOK_FAILURE", title: "Hook failed" }];
+        return [{ ...base, category: "SYSTEM_HOOK_FAILURE", iosCategory: "SYSTEM_ALERT", title: "Hook failed" }];
       }
       return [];
     }
@@ -215,6 +232,7 @@ export function mapChatEvent(envelope: AgentChatEventEnvelope): MappedNotificati
       return [
         {
           category: "CTO_SUBAGENT_STARTED",
+          iosCategory: "CTO_SUBAGENT_STARTED",
           family: "cto",
           title: "Sub-agent started",
           body: truncate(event.description || `Sub-agent ${event.taskId} started.`, 178),
@@ -400,6 +418,7 @@ export function mapSystemEvent(event: SystemEvent): MappedNotification[] {
     return [
       {
         category: "SYSTEM_PROVIDER_OUTAGE",
+        iosCategory: "SYSTEM_ALERT",
         family: "system",
         title: event.title,
         body: commonBody,
@@ -415,6 +434,7 @@ export function mapSystemEvent(event: SystemEvent): MappedNotification[] {
     return [
       {
         category: "SYSTEM_AUTH_RATE_LIMIT",
+        iosCategory: "SYSTEM_ALERT",
         family: "system",
         title: event.title,
         body: commonBody,
@@ -429,6 +449,7 @@ export function mapSystemEvent(event: SystemEvent): MappedNotification[] {
   return [
     {
       category: "SYSTEM_HOOK_FAILURE",
+      iosCategory: "SYSTEM_ALERT",
       family: "system",
       title: event.title,
       body: commonBody,
@@ -458,7 +479,7 @@ export function buildApnsPayload(mapped: MappedNotification): Record<string, unk
     "thread-id": mapped.collapseId,
     "content-available": mapped.silent ? 1 : undefined,
     "mutable-content": 1,
-    category: mapped.category,
+    category: mapped.iosCategory ?? mapped.category,
   };
   // APNs rejects explicit `undefined` values; strip them here.
   for (const key of Object.keys(aps)) {
@@ -471,6 +492,51 @@ export function buildApnsPayload(mapped: MappedNotification): Record<string, unk
   };
 }
 
+function parseTimeOfDayMinutes(value: string): number | null {
+  const match = /^(\d{1,2}):(\d{2})$/.exec(value.trim());
+  if (!match) return null;
+  const hours = Number(match[1]);
+  const minutes = Number(match[2]);
+  if (!Number.isInteger(hours) || !Number.isInteger(minutes)) return null;
+  if (hours < 0 || hours > 23 || minutes < 0 || minutes > 59) return null;
+  return hours * 60 + minutes;
+}
+
+function zonedMinutes(nowMs: number, timezone: string): number | null {
+  try {
+    const parts = new Intl.DateTimeFormat("en-US", {
+      hour: "2-digit",
+      minute: "2-digit",
+      hourCycle: "h23",
+      timeZone: timezone,
+    }).formatToParts(new Date(nowMs));
+    const hour = Number(parts.find((part) => part.type === "hour")?.value);
+    const minute = Number(parts.find((part) => part.type === "minute")?.value);
+    if (!Number.isInteger(hour) || !Number.isInteger(minute)) return null;
+    return hour * 60 + minute;
+  } catch {
+    return null;
+  }
+}
+
+function isWithinQuietHours(
+  quietHours: {
+    enabled: boolean;
+    start: string;
+    end: string;
+    timezone: string;
+  } | null | undefined,
+  nowMs: number,
+): boolean {
+  if (!quietHours?.enabled) return false;
+  const start = parseTimeOfDayMinutes(quietHours.start);
+  const end = parseTimeOfDayMinutes(quietHours.end);
+  const current = zonedMinutes(nowMs, quietHours.timezone);
+  if (start == null || end == null || current == null || start === end) return false;
+  if (start < end) return current >= start && current < end;
+  return current >= start || current < end;
+}
+
 /** Decide whether a mapped notification is allowed by the supplied prefs. */
 export function isAllowedByPrefs(
   mapped: MappedNotification,
@@ -481,6 +547,13 @@ export function isAllowedByPrefs(
     prs: { ciFailing: boolean; reviewRequested: boolean; changesRequested: boolean; mergeReady: boolean };
     system: { providerOutage: boolean; authRateLimit: boolean; hookFailure: boolean };
     muteUntil?: string | null;
+    quietHours?: {
+      enabled: boolean;
+      start: string;
+      end: string;
+      timezone: string;
+    };
+    perSessionOverrides?: Record<string, { muted?: boolean; awaitingInputOnly?: boolean }>;
   } | null | undefined,
   nowMs: number = Date.now(),
 ): boolean {
@@ -489,6 +562,11 @@ export function isAllowedByPrefs(
     const muteMs = Date.parse(prefs.muteUntil);
     if (Number.isFinite(muteMs) && muteMs > nowMs) return false;
   }
+  if (isWithinQuietHours(prefs.quietHours, nowMs)) return false;
+  const sessionId = typeof mapped.metadata?.sessionId === "string" ? mapped.metadata.sessionId : null;
+  const sessionOverride = sessionId ? prefs.perSessionOverrides?.[sessionId] : null;
+  if (sessionOverride?.muted) return false;
+  if (sessionOverride?.awaitingInputOnly && mapped.category !== "CHAT_AWAITING_INPUT") return false;
   switch (mapped.category) {
     case "CHAT_AWAITING_INPUT":
       return prefs.chat.awaitingInput;

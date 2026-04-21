@@ -4304,9 +4304,9 @@ export function createConflictService({
       if (!lane || lane.laneType === "primary") continue;
       // Gate pr_target drift to PRs whose creation_strategy is "pr_target".
       // PRs marked "lane_base" carry an immutable base — drift should stay a
-      // lane_base need (surfaced as warning, never auto-rebased). Unset
-      // strategy falls through to the legacy lane_base behavior.
-      if (normalizePrCreationStrategy(row.creation_strategy) !== "pr_target") continue;
+      // lane_base need (surfaced as warning, never auto-rebased). Null rows
+      // predate the column and keep the legacy pr_target behavior.
+      if ((normalizePrCreationStrategy(row.creation_strategy) ?? "pr_target") !== "pr_target") continue;
       const prBaseBranch = normalizeBranchName(String(row.base_branch ?? "").trim());
       const parent = lane.parentLaneId ? lanesById.get(lane.parentLaneId) ?? null : null;
       const laneBaseBranch = normalizeBranchName(branchNameFromLaneRef(

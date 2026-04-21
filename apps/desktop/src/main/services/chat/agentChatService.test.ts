@@ -36,6 +36,8 @@ const mockState = vi.hoisted(() => ({
     aborted: boolean;
   }>(),
   codexRequestPayloads: [] as Array<Record<string, unknown>>,
+  delayedCodexMethods: new Set<string>(),
+  pendingCodexResponses: [] as Array<() => void>,
   codexCollaborationModes: [{ mode: "default" }, { mode: "plan" }] as Array<Record<string, unknown> | string>,
   codexLineHandler: null as ((line: string) => void) | null,
   cursorAcquireCalls: [] as Array<Record<string, unknown>>,
@@ -47,6 +49,12 @@ const mockState = vi.hoisted(() => ({
   nextUuid: () => {
     mockState.uuidCounter += 1;
     return `test-uuid-${mockState.uuidCounter}`;
+  },
+  flushCodexResponses: () => {
+    const pending = mockState.pendingCodexResponses.splice(0);
+    for (const emitResponse of pending) {
+      queueMicrotask(emitResponse);
+    }
   },
 }));
 
@@ -89,13 +97,18 @@ vi.mock("node:child_process", () => ({
             result = { rateLimits: { remaining: 10, limit: 100, resetAt: null } };
           }
 
-          queueMicrotask(() => {
+          const emitResponse = () => {
             mockState.emitCodexPayload({
               jsonrpc: "2.0",
               id: payload.id,
               result,
             });
-          });
+          };
+          if (mockState.delayedCodexMethods.has(payload.method)) {
+            mockState.pendingCodexResponses.push(emitResponse);
+          } else {
+            queueMicrotask(emitResponse);
+          }
           return true;
         }),
         end: vi.fn(),
@@ -805,6 +818,8 @@ beforeEach(() => {
   mockState.openCodeSessionCounter = 0;
   mockState.openCodeSessions.clear();
   mockState.codexRequestPayloads = [];
+  mockState.delayedCodexMethods.clear();
+  mockState.pendingCodexResponses = [];
   mockState.codexCollaborationModes = [{ mode: "default" }, { mode: "plan" }];
   mockState.codexLineHandler = null;
   mockState.cursorAcquireCalls = [];
@@ -3719,6 +3734,76 @@ describe("createAgentChatService", () => {
       expect(events).toEqual(expect.arrayContaining([
         expect.objectContaining({ type: "text", turnId: "turn-1", text: "Still streaming" }),
       ]));
+    });
+
+    it("suppresses stale Codex turn notifications while waiting for turn/started", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => {
+          events.push(event);
+        },
+      });
+
+      mockState.delayedCodexMethods.add("turn/start");
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+      });
+
+      const sendPromise = service.sendMessage({
+        sessionId: session.id,
+        text: "Start working",
+      }, { awaitDispatch: true });
+
+      await vi.waitFor(() => {
+        expect(mockState.codexRequestPayloads.some((payload) => payload.method === "turn/start")).toBe(true);
+      });
+
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "item/agentMessage/delta",
+        params: {
+          turnId: "turn-stale",
+          delta: "This belongs to the previous turn",
+        },
+      });
+
+      mockState.flushCodexResponses();
+      await sendPromise;
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope =>
+          event.event.type === "status" && event.event.turnId === "turn-1",
+      );
+
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "item/agentMessage/delta",
+        params: {
+          turnId: "turn-1",
+          delta: "Fresh text",
+        },
+      });
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope =>
+          event.event.type === "text" && event.event.turnId === "turn-1" && event.event.text === "Fresh text",
+      );
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "turn/completed",
+        params: {
+          turn: {
+            id: "turn-1",
+            status: "completed",
+          },
+        },
+      });
+
+      expect(
+        events.filter((event) => "turnId" in event.event && event.event.turnId === "turn-stale"),
+      ).toHaveLength(0);
     });
 
     it("returns an explicit steer result and emits a delivered steer bubble for Codex", async () => {

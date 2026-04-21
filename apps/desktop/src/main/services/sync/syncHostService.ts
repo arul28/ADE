@@ -82,7 +82,7 @@ import type {
   SyncRegisterPushTokenPayload,
   SyncSendTestPushPayload,
 } from "../../../shared/types/sync";
-import { DEFAULT_NOTIFICATION_PREFERENCES } from "../../../shared/types/sync";
+import { DEFAULT_NOTIFICATION_PREFERENCES, normalizeNotificationPreferences } from "../../../shared/types/sync";
 import type { SyncPinStore } from "./syncPinStore";
 import { DEFAULT_SYNC_COMPRESSION_THRESHOLD_BYTES, DEFAULT_SYNC_HOST_PORT, encodeSyncEnvelope, mapPlatform, parseSyncEnvelope, wsDataToText } from "./syncProtocol";
 import { createSyncRemoteCommandService } from "./syncRemoteCommandService";
@@ -390,8 +390,9 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
    * device metadata is the restart-safe source for offline push fan-out. */
   const notificationPrefsByDeviceId = new Map<string, NotificationPreferences>();
   const storeNotificationPrefsForDevice = (deviceId: string, prefs: NotificationPreferences): void => {
-    notificationPrefsByDeviceId.set(deviceId, prefs);
-    args.deviceRegistryService?.setNotificationPreferences?.(deviceId, prefs);
+    const normalizedPrefs = normalizeNotificationPreferences(prefs);
+    notificationPrefsByDeviceId.set(deviceId, normalizedPrefs);
+    args.deviceRegistryService?.setNotificationPreferences?.(deviceId, normalizedPrefs);
   };
   const readNotificationPrefsForDevice = (deviceId: string): NotificationPreferences => {
     return notificationPrefsByDeviceId.get(deviceId)
@@ -1623,7 +1624,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
   function handleNotificationPrefs(peer: PeerState, payload: SyncNotificationPrefsPayload | null): void {
     const deviceId = peer.metadata?.deviceId;
     if (!deviceId || !payload || !payload.prefs) return;
-    storeNotificationPrefsForDevice(deviceId, payload.prefs);
+    storeNotificationPrefsForDevice(deviceId, normalizeNotificationPreferences(payload.prefs));
   }
 
   async function handleSendTestPush(

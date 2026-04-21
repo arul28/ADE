@@ -1493,10 +1493,10 @@ function coerceNotificationsConfig(value: unknown): NotificationsConfig | undefi
   const out: NotificationsConfig = {};
   if (isRecord(value.apns)) {
     const raw = value.apns;
-    const apns: NotificationApnsConfig = {
-      enabled: asBool(raw.enabled) ?? false,
-      env: raw.env === "production" ? "production" : "sandbox",
-    };
+    const apns = {} as NotificationApnsConfig;
+    const enabled = asBool(raw.enabled);
+    if (enabled != null) apns.enabled = enabled;
+    if (raw.env === "production" || raw.env === "sandbox") apns.env = raw.env;
     const keyId = asString(raw.keyId)?.trim();
     if (keyId) apns.keyId = keyId;
     const teamId = asString(raw.teamId)?.trim();
@@ -1941,6 +1941,32 @@ function readConfigFile(filePath: string): { config: ProjectConfigFile; raw: str
   }
 }
 
+function mergeNotificationsConfig(
+  shared: NotificationsConfig | undefined,
+  local: NotificationsConfig | undefined
+): NotificationsConfig | undefined {
+  if (!shared && !local) return undefined;
+  const keyId = local?.apns?.keyId ?? shared?.apns?.keyId;
+  const teamId = local?.apns?.teamId ?? shared?.apns?.teamId;
+  const bundleId = local?.apns?.bundleId ?? shared?.apns?.bundleId;
+  const keyStored = local?.apns?.keyStored ?? shared?.apns?.keyStored;
+  const apns: NotificationApnsConfig | undefined = shared?.apns || local?.apns
+    ? {
+        enabled: local?.apns?.enabled ?? shared?.apns?.enabled ?? false,
+        env: local?.apns?.env ?? shared?.apns?.env ?? "sandbox",
+        ...(keyId ? { keyId } : {}),
+        ...(teamId ? { teamId } : {}),
+        ...(bundleId ? { bundleId } : {}),
+        ...(keyStored != null ? { keyStored } : {})
+      }
+    : undefined;
+  return {
+    ...(shared ?? {}),
+    ...(local ?? {}),
+    ...(apns ? { apns } : {})
+  };
+}
+
 function toCanonicalYaml(config: ProjectConfigFile): string {
   const normalized: ProjectConfigFile = {
     version: VERSION,
@@ -2244,6 +2270,7 @@ function resolveEffectiveConfig(shared: ProjectConfigFile, local: ProjectConfigF
 
   const mergedAi = mergeAiConfig(shared.ai, local.ai);
   const mergedLinearSync = mergeLinearSync(shared.linearSync, local.linearSync);
+  const mergedNotifications = mergeNotificationsConfig(shared.notifications, local.notifications);
 
   const environments = [...(shared.environments ?? []), ...(local.environments ?? [])];
 
@@ -2294,9 +2321,7 @@ function resolveEffectiveConfig(shared: ProjectConfigFile, local: ProjectConfigF
     ...(effectiveAi ? { ai: effectiveAi } : {}),
     ...(mergedProviders ? { providers: mergedProviders } : {}),
     ...(mergedLinearSync ? { linearSync: mergedLinearSync } : {}),
-    ...(local.notifications || shared.notifications
-      ? { notifications: { ...shared.notifications, ...local.notifications } }
-      : {})
+    ...(mergedNotifications ? { notifications: mergedNotifications } : {})
   };
 }
 

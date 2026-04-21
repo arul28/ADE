@@ -246,7 +246,7 @@ describe("notificationEventBus", () => {
         makeTarget({
           env: "production",
           alertToken: "alert-prod",
-          activityUpdateTokens: { activityA: "live-prod" },
+          activityUpdateTokens: { "session-1": "live-prod" },
         }),
       ],
       getPrefsForDevice: () => prefsOn,
@@ -262,5 +262,29 @@ describe("notificationEventBus", () => {
     expect(calls.map((call) => call.env)).toEqual(["production", "production"]);
     expect(calls.map((call) => call.pushType)).toEqual(["alert", "liveactivity"]);
     expect(calls[1].topic).toBe("com.ade.ios.push-type.liveactivity");
+  });
+
+  it("sends Live Activity updates only to the matching activity id", async () => {
+    const { service, calls } = makeApnsService();
+    const bus = createNotificationEventBus({
+      logger: createLogger(),
+      apnsService: service as any,
+      listPushTargets: () => [
+        makeTarget({
+          activityUpdateTokens: {
+            "session-1": "live-session-1",
+            "session-2": "live-session-2",
+          },
+        }),
+      ],
+      getPrefsForDevice: () => prefsOn,
+      sendInAppNotification: vi.fn(),
+      isDeviceConnected: () => false,
+    });
+
+    bus.publishChatEvent(sampleEnvelope);
+    await deferredFlush();
+
+    expect(calls.map((call) => call.deviceToken)).toEqual(["alert-token-A", "live-session-1"]);
   });
 });

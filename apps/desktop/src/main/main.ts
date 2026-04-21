@@ -1426,7 +1426,7 @@ app.whenReady().then(async () => {
     let syncServiceForNotifications: SyncService | null = null;
     const apnsService = new ApnsService({ logger });
     const apnsKeyStore = new ApnsKeyStore({
-      encryptedKeyPath: path.join(app.getPath("userData"), "apns.key.enc"),
+      encryptedKeyPath: path.join(projectRoot, ".ade", "secrets", "apns.key.enc"),
       safeStorage,
     });
     // Attempt to restore a previously-stored key + config on project load so

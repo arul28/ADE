@@ -4,11 +4,13 @@ import { Question, ArrowSquareOut, Check } from "@phosphor-icons/react";
 import { useNavigate } from "react-router-dom";
 import { useAppStore } from "../../state/appStore";
 import { useOnboardingStore } from "../../state/onboardingStore";
-import { listTours } from "../../onboarding/registry";
+import { getTour, listTours } from "../../onboarding/registry";
 import { openExternalUrl } from "../../lib/openExternal";
 import { cn } from "../ui/cn";
 
 const DOCS_URL = "https://www.ade-app.dev/docs";
+const TOUR_TARGET_WAIT_TIMEOUT_MS = 10_000;
+const TOUR_TARGET_POLL_MS = 50;
 
 type MenuPosition = { top: number; right: number } | null;
 
@@ -28,8 +30,9 @@ export function HelpMenu() {
   const [position, setPosition] = useState<MenuPosition>(null);
   const buttonRef = useRef<HTMLButtonElement | null>(null);
   const menuRef = useRef<HTMLDivElement | null>(null);
+  const pendingTourAbortRef = useRef<AbortController | null>(null);
 
-  const tours = useMemo(() => listTours(), [open]);
+  const tours = useMemo(() => listTours(), []);
 
   const close = useCallback(() => {
     setOpen(false);
@@ -67,6 +70,12 @@ export function HelpMenu() {
     };
   }, [open, close]);
 
+  useEffect(() => {
+    return () => {
+      pendingTourAbortRef.current?.abort();
+    };
+  }, []);
+
   const handleReplayWizard = useCallback(() => {
     close();
     openWizard();
@@ -75,8 +84,17 @@ export function HelpMenu() {
   const handleStartTour = useCallback(
     (tourId: string, route: string) => {
       close();
+      pendingTourAbortRef.current?.abort();
+      const controller = new AbortController();
+      pendingTourAbortRef.current = controller;
       navigate(route);
-      void startTour(tourId);
+      void waitForTourFirstTarget(tourId, controller.signal).then((ready) => {
+        if (!ready || controller.signal.aborted) return;
+        if (pendingTourAbortRef.current === controller) {
+          pendingTourAbortRef.current = null;
+        }
+        void startTour(tourId);
+      });
     },
     [close, navigate, startTour],
   );
@@ -209,6 +227,53 @@ export function HelpMenu() {
         : null}
     </>
   );
+}
+
+function waitForTourFirstTarget(tourId: string, signal: AbortSignal): Promise<boolean> {
+  const tour = getTour(tourId);
+  const selector = tour?.steps[0]?.waitForSelector ?? tour?.steps[0]?.target;
+  if (!selector) return Promise.resolve(false);
+
+  const hasTarget = () => {
+    if (signal.aborted) return false;
+    try {
+      return document.querySelector(selector) != null;
+    } catch {
+      return false;
+    }
+  };
+
+  if (hasTarget()) return Promise.resolve(true);
+
+  return new Promise((resolve) => {
+    let settled = false;
+    let interval: number | undefined;
+    let timeout: number | undefined;
+    const observer =
+      typeof MutationObserver !== "undefined"
+        ? new MutationObserver(() => {
+            if (hasTarget()) settle(true);
+          })
+        : null;
+
+    const settle = (ready: boolean) => {
+      if (settled) return;
+      settled = true;
+      if (interval != null) window.clearInterval(interval);
+      if (timeout != null) window.clearTimeout(timeout);
+      observer?.disconnect();
+      signal.removeEventListener("abort", onAbort);
+      resolve(ready);
+    };
+
+    const onAbort = () => settle(false);
+    signal.addEventListener("abort", onAbort, { once: true });
+    observer?.observe(document.body, { childList: true, subtree: true });
+    interval = window.setInterval(() => {
+      if (hasTarget()) settle(true);
+    }, TOUR_TARGET_POLL_MS);
+    timeout = window.setTimeout(() => settle(hasTarget()), TOUR_TARGET_WAIT_TIMEOUT_MS);
+  });
 }
 
 function SectionLabel({ children }: { children: React.ReactNode }) {

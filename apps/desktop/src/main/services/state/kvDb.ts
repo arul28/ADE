@@ -11,6 +11,7 @@ import type { ApplyRemoteChangesResult, CrsqlChangeRow, SyncScalar } from "../..
 
 type DatabaseSyncConstructor = new (dbPath: string, options?: { allowExtension?: boolean }) => DatabaseSyncType;
 
+// Anchor createRequire to a synthetic CJS file so builtin resolution follows the active runtime.
 const require = createRequire(path.join(process.cwd(), "ade-runtime.cjs"));
 const { DatabaseSync } = require("node:sqlite") as { DatabaseSync: DatabaseSyncConstructor };
 

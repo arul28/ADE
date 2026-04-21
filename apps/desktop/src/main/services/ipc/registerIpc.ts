@@ -6710,16 +6710,13 @@ export function registerIpc({
     IPC.notificationsApnsSaveConfig,
     async (_event, args: ApnsBridgeSaveConfigArgs): Promise<ApnsBridgeStatus> => {
       const ctx = getCtx();
-      saveApnsConfigToProject(args);
       if (!args.enabled) {
+        saveApnsConfigToProject(args);
         await ctx.apnsService?.reset?.();
         return readApnsStatus();
       }
-      // Configure the live ApnsService directly from the args we just saved —
-      // avoids a race where `projectConfigService.get()` returns a stale view
-      // and `reconfigureApnsIfReady()` no-ops. If configure throws (invalid
-      // .p8 bytes, unparseable EC key), surface the real reason instead of
-      // leaving the UI stuck in PENDING.
+      // Validate against any stored key before committing the new metadata so
+      // a failed save cannot replace a previously working APNs configuration.
       if (args.enabled && ctx.apnsService && ctx.apnsKeyStore?.has()) {
         const pem = ctx.apnsKeyStore.load();
         if (pem) {
@@ -6740,6 +6737,7 @@ export function registerIpc({
       } else {
         await ctx.apnsService?.reset?.();
       }
+      saveApnsConfigToProject(args);
       return readApnsStatus();
     },
   );
@@ -6751,9 +6749,8 @@ export function registerIpc({
       if (!ctx.apnsKeyStore) throw new Error("ApnsKeyStore unavailable.");
       const trimmed = (args.p8Pem ?? "").trim();
       if (!trimmed) throw new Error("Empty .p8 payload.");
-      ctx.apnsKeyStore.save(trimmed);
       // If complete config is already persisted (second upload / rotation),
-      // configure right now using the freshly-stored PEM.
+      // configure first so an invalid key never replaces a working one on disk.
       const effective = ctx.projectConfigService?.get?.()?.effective;
       const apnsConfig = effective?.notifications?.apns ?? null;
       if (
@@ -6777,6 +6774,7 @@ export function registerIpc({
           );
         }
       }
+      ctx.apnsKeyStore.save(trimmed);
       return readApnsStatus();
     },
   );

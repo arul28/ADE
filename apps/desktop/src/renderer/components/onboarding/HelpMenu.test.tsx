@@ -1,7 +1,7 @@
 /* @vitest-environment jsdom */
 
 import React from "react";
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -111,6 +111,33 @@ describe("HelpMenu", () => {
     });
     const item = screen.getByRole("menuitem", { name: /lanes tour/i });
     expect(item.querySelector('[aria-label="Completed"]')).toBeTruthy();
+  });
+
+  it("waits for a tour's first target after navigation before starting", async () => {
+    const startTour = vi.fn().mockResolvedValue(undefined);
+    useOnboardingStore.setState({ startTour: startTour as any });
+    registerTour({
+      id: "lanes",
+      title: "Lanes tour",
+      route: "/lanes",
+      steps: [{ target: "#late-lanes-target", title: "s", body: "b" }],
+    });
+    renderMenu();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /help menu/i }));
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("menuitem", { name: /lanes tour/i }));
+    });
+
+    expect(startTour).not.toHaveBeenCalled();
+
+    const target = document.createElement("div");
+    target.id = "late-lanes-target";
+    document.body.appendChild(target);
+
+    await waitFor(() => expect(startTour).toHaveBeenCalledWith("lanes"));
   });
 
   it("Replay Welcome Wizard calls openWizard and closes the menu", async () => {

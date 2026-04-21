@@ -6,6 +6,8 @@ import { TourStep } from "./TourStep";
 
 const SELECTOR_RETRY_MS = 500;
 const RETRY_INTERVAL_MS = 50;
+const INTERACTIVE_SHORTCUT_SELECTOR =
+  'button, a[href], input, select, textarea, [contenteditable]:not([contenteditable="false"])';
 
 type TourOverlayProps = {
   step: TourStepType;
@@ -24,6 +26,11 @@ function prefersReducedMotion(): boolean {
   } catch {
     return false;
   }
+}
+
+function shouldLetEnterActivateTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof Element)) return false;
+  return target.closest(INTERACTIVE_SHORTCUT_SELECTOR) != null;
 }
 
 export function TourOverlay({ step, stepIndex, totalSteps }: TourOverlayProps) {
@@ -47,7 +54,9 @@ export function TourOverlay({ step, stepIndex, totalSteps }: TourOverlayProps) {
     return false;
   }, [step.target]);
 
-  // Retry locating the selector for up to 500ms when the step changes.
+  // Retry locating the selector when the step changes. The first 500ms controls
+  // the missing fallback, but observation continues so lazy route content can
+  // still attach to the active step once it appears.
   useEffect(() => {
     setTarget({ kind: "missing" });
     if (measure()) return;
@@ -56,14 +65,31 @@ export function TourOverlay({ step, stepIndex, totalSteps }: TourOverlayProps) {
     const start = Date.now();
     const interval = window.setInterval(() => {
       if (cancelled) return;
-      if (measure() || Date.now() - start >= SELECTOR_RETRY_MS) {
+      const found = measure();
+      if (found) {
         window.clearInterval(interval);
+        return;
+      }
+      if (Date.now() - start >= SELECTOR_RETRY_MS) {
+        setTarget((current) => (current.kind === "found" ? current : { kind: "missing" }));
       }
     }, RETRY_INTERVAL_MS);
+    const observer =
+      typeof MutationObserver !== "undefined"
+        ? new MutationObserver(() => {
+            if (cancelled) return;
+            if (measure()) {
+              window.clearInterval(interval);
+              observer?.disconnect();
+            }
+          })
+        : null;
+    observer?.observe(document.body, { childList: true, subtree: true });
 
     return () => {
       cancelled = true;
       window.clearInterval(interval);
+      observer?.disconnect();
     };
   }, [measure]);
 
@@ -120,11 +146,7 @@ export function TourOverlay({ step, stepIndex, totalSteps }: TourOverlayProps) {
         return;
       }
       if (e.key === "ArrowRight" || e.key === "Enter") {
-        // Don't hijack Enter from form-like elements outside our card.
-        if (e.key === "Enter") {
-          const tag = (e.target as HTMLElement | null)?.tagName?.toLowerCase();
-          if (tag === "input" || tag === "textarea") return;
-        }
+        if (e.key === "Enter" && shouldLetEnterActivateTarget(e.target)) return;
         e.preventDefault();
         handleNext();
         return;

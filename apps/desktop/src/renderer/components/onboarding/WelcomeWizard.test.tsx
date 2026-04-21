@@ -92,6 +92,30 @@ describe("WelcomeWizard", () => {
     expect(useOnboardingStore.getState().wizardOpen).toBe(false);
   });
 
+  it("Enter from a focused wizard button falls through instead of advancing", () => {
+    render(<WelcomeWizard />);
+
+    const skip = screen.getByRole("button", { name: /^Skip$/i });
+    skip.focus();
+    fireEvent.keyDown(skip, { key: "Enter" });
+
+    expect(screen.getByText(WELCOME_SCREENS[0].title)).toBeTruthy();
+    expect(markWizardDismissed).not.toHaveBeenCalled();
+    expect(markWizardCompleted).not.toHaveBeenCalled();
+  });
+
+  it("Enter from the Learn more link falls through instead of advancing", () => {
+    render(<WelcomeWizard />);
+
+    const learnMore = screen.getByRole("link", { name: /learn more/i });
+    learnMore.focus();
+    fireEvent.keyDown(learnMore, { key: "Enter" });
+
+    expect(screen.getByText(WELCOME_SCREENS[0].title)).toBeTruthy();
+    expect(markWizardDismissed).not.toHaveBeenCalled();
+    expect(markWizardCompleted).not.toHaveBeenCalled();
+  });
+
   it("Clicking through to last screen then the primary CTA writes wizardCompletedAt", async () => {
     render(<WelcomeWizard />);
 

@@ -12,7 +12,7 @@ import type {
   SyncPeerMetadata,
   SyncPeerPlatform,
 } from "../../../shared/types";
-import type { NotificationPreferences } from "../../../shared/types/sync";
+import { normalizeNotificationPreferences, type NotificationPreferences } from "../../../shared/types/sync";
 import type { Logger } from "../logging/logger";
 import { mapPlatform } from "./syncProtocol";
 import type { AdeDb } from "../state/kvDb";
@@ -442,6 +442,7 @@ export function createDeviceRegistryService(args: DeviceRegistryServiceArgs) {
   ): SyncDeviceRecord | null => {
     const device = getDevice(deviceId);
     if (!device) return null;
+    const normalizedPrefs = normalizeNotificationPreferences(prefs);
     return upsertDeviceRecord({
       deviceId: device.deviceId,
       siteId: device.siteId,
@@ -455,7 +456,7 @@ export function createDeviceRegistryService(args: DeviceRegistryServiceArgs) {
       ipAddresses: device.ipAddresses,
       metadata: {
         ...device.metadata,
-        notificationPreferences: prefs,
+        notificationPreferences: normalizedPrefs,
         notificationPreferencesUpdatedAt: nowIso(),
       },
     });
@@ -464,7 +465,7 @@ export function createDeviceRegistryService(args: DeviceRegistryServiceArgs) {
   const getNotificationPreferences = (deviceId: string): NotificationPreferences | null => {
     const prefs = getDevice(deviceId)?.metadata.notificationPreferences;
     if (!prefs || typeof prefs !== "object" || Array.isArray(prefs)) return null;
-    return prefs as NotificationPreferences;
+    return normalizeNotificationPreferences(prefs);
   };
 
   const invalidateApnsTokensForDevice = (deviceId: string): void => {
