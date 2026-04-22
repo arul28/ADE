@@ -349,7 +349,6 @@ export function createRebaseSuggestionService(args: {
     if (existing) {
       saveState({
         ...existing,
-        deferredUntil: existing.deferredUntil ?? null,
         dismissedAt: nowIso()
       });
       void emit();

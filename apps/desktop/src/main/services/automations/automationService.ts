@@ -1397,9 +1397,11 @@ export function createAutomationService({
       if (!testService) throw new Error("Test service unavailable");
       const activeLanes = await laneService.list({ includeArchived: false });
       const configuredLaneId = getConfiguredTargetLaneId(rule);
-      const laneId = trigger.laneId
-        ? trigger.laneId
-        : configuredLaneId ?? activeLanes.find((lane) => lane.laneType === "primary")?.id ?? activeLanes[0]?.id ?? null;
+      const laneId = configuredLaneId
+        ?? trigger.laneId
+        ?? activeLanes.find((lane) => lane.laneType === "primary")?.id
+        ?? activeLanes[0]?.id
+        ?? null;
       if (!laneId) throw new Error("No lane available to run tests");
       await testService.run({ laneId, suiteId });
       return { status: "succeeded" };
@@ -1407,7 +1409,7 @@ export function createAutomationService({
     if (action.type === "run-command") {
       const command = (action.command ?? "").trim();
       if (!command) throw new Error("run-command requires command");
-      const laneId = trigger.laneId ?? getConfiguredTargetLaneId(rule);
+      const laneId = getConfiguredTargetLaneId(rule) ?? trigger.laneId;
       const baseCwd = laneId ? laneService.getLaneWorktreePath(laneId) : projectRoot;
       const configuredCwd = (action.cwd ?? "").trim();
       const cwdCandidate = configuredCwd.length
@@ -1552,15 +1554,15 @@ export function createAutomationService({
   };
 
   const resolveExecutionLaneId = async (rule: AutomationRule, trigger: TriggerContext): Promise<string | null> => {
-    const triggerLaneId = typeof trigger.laneId === "string" && trigger.laneId.trim().length
-      ? trigger.laneId.trim()
-      : null;
-    if (triggerLaneId) return triggerLaneId;
-
     const configuredLaneId = typeof rule.execution?.targetLaneId === "string" && rule.execution.targetLaneId.trim().length
       ? rule.execution.targetLaneId.trim()
       : null;
     if (configuredLaneId) return configuredLaneId;
+
+    const triggerLaneId = typeof trigger.laneId === "string" && trigger.laneId.trim().length
+      ? trigger.laneId.trim()
+      : null;
+    if (triggerLaneId) return triggerLaneId;
 
     try {
       const lanes = await laneService.list({ includeArchived: false });

@@ -570,6 +570,7 @@ describe("missionPreflightService", () => {
               permissions: {
                 cli: { mode: "edit" },
                 inProcess: { mode: "plan" },
+                providers: { claude: "full-auto", codex: "full-auto", opencode: "full-auto" },
               }
             }
           }
@@ -585,6 +586,22 @@ describe("missionPreflightService", () => {
         })
       } as any
     });
+
+    const projectResult = await service.runPreflight({
+      launch: {
+        prompt: "Implement feature.",
+        phaseProfileId: profiles[0]!.id,
+        phaseOverride: profiles[0]!.phases,
+        modelConfig: {
+          orchestratorModel: {
+            provider: "claude",
+            modelId: "claude-sonnet-4-6"
+          }
+        },
+      }
+    });
+
+    expect(projectResult.checklist.find((item) => item.id === "permissions")?.severity).toBe("pass");
 
     // Mission-level providers field overrides all old cli/inProcess modes
     const result = await service.runPreflight({

@@ -247,7 +247,7 @@ describe("automationService integration", () => {
     });
 
     try {
-      const run = await service.triggerManually({ id: "lane-command" });
+      const run = await service.triggerManually({ id: "lane-command", laneId: "lane-primary" });
       expect(run.status).toBe("succeeded");
       const mapped = mapExecRows(raw.exec("select output from automation_action_results"));
       expect(String(mapped[0]?.output ?? "")).toContain(laneRoot);
@@ -325,7 +325,7 @@ describe("automationService integration", () => {
     });
 
     try {
-      const run = await service.triggerManually({ id: "mission-lane" });
+      const run = await service.triggerManually({ id: "mission-lane", laneId: "lane-primary" });
       expect(run.status).toBe("running");
       expect(createMission).toHaveBeenCalledWith(expect.objectContaining({
         laneId: "lane-target",

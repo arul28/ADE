@@ -5836,6 +5836,12 @@ async function runTool(args: {
     const provider = asTrimmedString(toolArgs.provider) === "claude" ? "claude" : "codex";
     const model = asOptionalTrimmedString(toolArgs.model);
     const permissionMode = parseSpawnPermissionMode(toolArgs.permissionMode);
+    if (provider === "claude" && permissionMode === "config-toml") {
+      throw new JsonRpcError(
+        JsonRpcErrorCode.invalidParams,
+        "permissionMode config-toml is only supported for Codex spawn_agent sessions.",
+      );
+    }
     const maxPromptChars = Math.max(256, Math.min(12000, Math.floor(asNumber(toolArgs.maxPromptChars, 2800))));
     const prompt = asOptionalTrimmedString(toolArgs.prompt);
     const runId = asOptionalTrimmedString(toolArgs.runId);

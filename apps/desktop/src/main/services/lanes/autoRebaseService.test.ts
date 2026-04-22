@@ -322,6 +322,33 @@ describe("autoRebaseService", () => {
       expect(statuses).toHaveLength(1);
       expect(statuses[0]).toMatchObject({ laneId: "lane-a", parentHeadSha: "parent-2" });
     });
+
+    it("does not permanently suppress statuses without a parent head sha", async () => {
+      const service = createService();
+      laneList = [
+        makeLane("root", { parentLaneId: null }),
+        makeLane("lane-a", {
+          parentLaneId: "root",
+          status: { dirty: false, ahead: 0, behind: 2, remoteBehind: 0, rebaseInProgress: false },
+        }),
+      ];
+
+      db.setJson("auto_rebase:status:lane-a", {
+        laneId: "lane-a",
+        parentLaneId: "root",
+        parentHeadSha: null,
+        state: "rebasePending",
+        updatedAt: "2026-03-25T11:00:00.000Z",
+        conflictCount: 0,
+        message: null,
+      });
+
+      await service.dismissStatus({ laneId: "lane-a" });
+
+      const statuses = await service.listStatuses();
+      expect(statuses).toHaveLength(1);
+      expect(statuses[0]).toMatchObject({ laneId: "lane-a", parentHeadSha: null });
+    });
   });
 
   // ---------------------------------------------------------------------------

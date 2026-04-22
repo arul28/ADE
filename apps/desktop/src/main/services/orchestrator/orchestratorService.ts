@@ -173,6 +173,67 @@ type ManagedWorkerLaunch = {
   permissionMode?: AgentChatPermissionMode | null;
 };
 
+const VALID_PROJECT_PROVIDER_PERMISSION_MODES = new Set<AgentChatPermissionMode>([
+  "default",
+  "plan",
+  "edit",
+  "full-auto",
+  "config-toml",
+]);
+
+function projectPermissionConfigFromRecord(permissions: Record<string, unknown> | null | undefined): MissionPermissionConfig {
+  const projectPerms: MissionPermissionConfig = {};
+  if (!permissions) return projectPerms;
+
+  const cli = asRecord(permissions.cli);
+  if (cli) {
+    projectPerms.cli = {
+      ...(typeof cli.mode === "string" ? { mode: cli.mode as MissionPermissionConfig["cli"] extends { mode?: infer M } ? M : never } : {}),
+      ...(typeof cli.sandboxPermissions === "string" ? { sandboxPermissions: cli.sandboxPermissions as "read-only" | "workspace-write" | "danger-full-access" } : {}),
+      ...(Array.isArray(cli.writablePaths) ? { writablePaths: cli.writablePaths.filter((e): e is string => typeof e === "string").map(e => e.trim()).filter(e => e.length > 0) } : {}),
+      ...(Array.isArray(cli.allowedTools) ? { allowedTools: cli.allowedTools.filter((e): e is string => typeof e === "string").map(e => e.trim()).filter(e => e.length > 0) } : {}),
+    };
+  }
+
+  const inProc = asRecord(permissions.inProcess);
+  if (inProc) {
+    const mode = typeof inProc.mode === "string" ? inProc.mode : "";
+    if (mode === "plan" || mode === "edit" || mode === "full-auto") {
+      projectPerms.inProcess = { mode };
+    }
+  }
+
+  const providers = asRecord(permissions.providers);
+  if (providers) {
+    const providerPerms: NonNullable<MissionPermissionConfig["providers"]> = {};
+    const maybeMode = (key: "claude" | "codex" | "cursor" | "opencode") => {
+      const value = typeof providers[key] === "string" ? providers[key].trim() : "";
+      if (VALID_PROJECT_PROVIDER_PERMISSION_MODES.has(value as AgentChatPermissionMode)) {
+        providerPerms[key] = value as AgentChatPermissionMode;
+      }
+    };
+    maybeMode("claude");
+    maybeMode("codex");
+    maybeMode("cursor");
+    maybeMode("opencode");
+    const codexSandbox = typeof providers.codexSandbox === "string" ? providers.codexSandbox.trim() : "";
+    if (codexSandbox === "read-only" || codexSandbox === "workspace-write" || codexSandbox === "danger-full-access") {
+      providerPerms.codexSandbox = codexSandbox;
+    }
+    const writablePaths = Array.isArray(providers.writablePaths)
+      ? providers.writablePaths.filter((e): e is string => typeof e === "string").map(e => e.trim()).filter(e => e.length > 0)
+      : [];
+    if (writablePaths.length) providerPerms.writablePaths = writablePaths;
+    const allowedTools = Array.isArray(providers.allowedTools)
+      ? providers.allowedTools.filter((e): e is string => typeof e === "string").map(e => e.trim()).filter(e => e.length > 0)
+      : [];
+    if (allowedTools.length) providerPerms.allowedTools = allowedTools;
+    if (Object.keys(providerPerms).length) projectPerms.providers = providerPerms;
+  }
+
+  return projectPerms;
+}
+
 export type OrchestratorExecutorStartResult =
   | {
       status: "accepted";
@@ -6882,16 +6943,9 @@ export function createOrchestratorService({
           const inProcessPermissionMode: "read-only" | "edit" | "full-auto" = (() => {
             if (readOnlyExecution) return "read-only" as const;
             // Build provider-specific permissions for this mission
-            const projPerms: MissionPermissionConfig = {};
             const aiCfg = asRecord(projectConfigService?.get()?.effective?.ai);
             const perms = asRecord(aiCfg?.permissions);
-            if (perms) {
-              const ip = asRecord(perms.inProcess);
-              if (ip) {
-                const m = typeof ip.mode === "string" ? ip.mode : "";
-                if (m === "plan" || m === "edit" || m === "full-auto") projPerms.inProcess = { mode: m };
-              }
-            }
+            const projPerms = projectPermissionConfigFromRecord(perms);
             let providers = normalizeMissionPermissions(projPerms);
             if (run.missionId) {
               try {
@@ -7010,28 +7064,10 @@ export function createOrchestratorService({
         // the same `normalizeMissionPermissions` pipeline.
         const permissionConfig = (() => {
           // 1. Start with project-level permission config (old shape from config file)
-          const projectPerms: MissionPermissionConfig = {};
           const snapshot = projectConfigService?.get();
           const ai = asRecord(snapshot?.effective?.ai);
           const permissions = asRecord(ai?.permissions);
-          if (permissions) {
-            const cli = asRecord(permissions.cli);
-            const inProc = asRecord(permissions.inProcess);
-            if (cli) {
-              projectPerms.cli = {
-                ...(typeof cli.mode === "string" ? { mode: cli.mode as MissionPermissionConfig["cli"] extends { mode?: infer M } ? M : never } : {}),
-                ...(typeof cli.sandboxPermissions === "string" ? { sandboxPermissions: cli.sandboxPermissions as "read-only" | "workspace-write" | "danger-full-access" } : {}),
-                ...(Array.isArray(cli.writablePaths) ? { writablePaths: cli.writablePaths.filter((e): e is string => typeof e === "string").map(e => e.trim()).filter(e => e.length > 0) } : {}),
-                ...(Array.isArray(cli.allowedTools) ? { allowedTools: cli.allowedTools.filter((e): e is string => typeof e === "string").map(e => e.trim()).filter(e => e.length > 0) } : {}),
-              };
-            }
-            if (inProc) {
-              const mode = typeof inProc.mode === "string" ? inProc.mode : "";
-              if (mode === "plan" || mode === "edit" || mode === "full-auto") {
-                projectPerms.inProcess = { mode };
-              }
-            }
-          }
+          const projectPerms = projectPermissionConfigFromRecord(permissions);
 
           // Normalize project-level to provider shape
           let providers = normalizeMissionPermissions(projectPerms);

@@ -289,7 +289,7 @@ export function createAutoRebaseService(args: {
       }
 
       const dismissal = loadDismissal(lane.id);
-      if (dismissal?.parentHeadSha === status.parentHeadSha) {
+      if (dismissal?.parentHeadSha && status.parentHeadSha && dismissal.parentHeadSha === status.parentHeadSha) {
         continue;
       }
 

@@ -461,6 +461,9 @@ export function createMissionPreflightService(args: {
       const m = projectPermissions.inProcess.mode;
       if (m === "plan" || m === "edit" || m === "full-auto") projectPermConfig.inProcess = { mode: m };
     }
+    if (projectPermissions?.providers) {
+      projectPermConfig.providers = projectPermissions.providers;
+    }
     let providers = normalizeMissionPermissions(projectPermConfig);
     if (launch.permissionConfig) {
       const missionProviders = normalizeMissionPermissions(launch.permissionConfig);

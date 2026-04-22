@@ -1868,8 +1868,9 @@ function syncLegacyPermissionMode(session: Pick<
   if (session.provider === "codex") {
     if (session.codexConfigSource === "config-toml") return "config-toml";
     if (session.codexApprovalPolicy === "never" && session.codexSandbox === "danger-full-access") return "full-auto";
+    if (session.codexApprovalPolicy === "untrusted" && session.codexSandbox === "workspace-write") return "edit";
     if (
-      (session.codexApprovalPolicy === "on-request" || session.codexApprovalPolicy === "on-failure" || session.codexApprovalPolicy === "untrusted")
+      (session.codexApprovalPolicy === "on-request" || session.codexApprovalPolicy === "on-failure")
       && session.codexSandbox === "workspace-write"
     ) return "default";
     if (
@@ -4424,6 +4425,7 @@ export function createAgentChatService(args: {
       if (chat.defaultApprovalPolicy === "approve_mutations") return "on-request" as const;
       if (cliMode === "full-auto") return "never" as const;
       if (cliMode === "read-only") return "on-request" as const;
+      if (cliMode === "edit") return "untrusted" as const;
       return "on-request" as const;
     })();
 

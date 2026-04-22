@@ -3507,6 +3507,86 @@ describe("orchestratorService", () => {
     }
   });
 
+  it("threads project provider permissions into executor launch config", async () => {
+    const fixture = await createFixture({
+      projectConfigService: {
+        get: () => ({
+          effective: {
+            ai: {
+              permissions: {
+                cli: { mode: "full-auto", sandboxPermissions: "danger-full-access" },
+                inProcess: { mode: "full-auto" },
+                providers: {
+                  claude: "edit",
+                  codex: "config-toml",
+                  opencode: "plan",
+                  codexSandbox: "read-only",
+                  allowedTools: ["Bash"],
+                },
+              },
+            },
+          },
+        }),
+      },
+    });
+    try {
+      let capturedPermissionConfig: Record<string, unknown> | undefined;
+      fixture.service.registerExecutorAdapter({
+        kind: "opencode",
+        start: async (args) => {
+          capturedPermissionConfig = args.permissionConfig as Record<string, unknown> | undefined;
+          return {
+            status: "completed",
+            result: {
+              schema: "ade.orchestratorAttempt.v1",
+              success: true,
+              summary: "ok",
+              outputs: null,
+              warnings: [],
+              sessionId: null,
+              trackedSession: false
+            }
+          };
+        }
+      });
+
+      const started = fixture.service.startRun({
+        missionId: fixture.missionId,
+        steps: [
+          {
+            stepKey: "project-provider-permissions",
+            title: "Project provider permissions",
+            stepIndex: 0,
+            executorKind: "opencode",
+            metadata: {
+              modelId: "anthropic/claude-sonnet-4-6"
+            }
+          }
+        ]
+      });
+      const step = fixture.service.listSteps(started.run.id)[0];
+      if (!step) throw new Error("Missing step");
+      const attempt = await fixture.service.startAttempt({
+        runId: started.run.id,
+        stepId: step.id,
+        ownerId: "owner"
+      });
+
+      expect(attempt.status).toBe("succeeded");
+      const cli = capturedPermissionConfig?.cli as Record<string, unknown> | undefined;
+      const inProcess = capturedPermissionConfig?.inProcess as Record<string, unknown> | undefined;
+      const providers = capturedPermissionConfig?._providers as Record<string, unknown> | undefined;
+      expect(cli?.mode).toBe("edit");
+      expect(cli?.sandboxPermissions).toBe("read-only");
+      expect(inProcess?.mode).toBe("plan");
+      expect(providers?.codex).toBe("config-toml");
+      expect(providers?.opencode).toBe("plan");
+      expect(providers?.allowedTools).toEqual(["Bash"]);
+    } finally {
+      fixture.dispose();
+    }
+  });
+
   it("uses safe permission defaults when project and mission permission settings are missing", async () => {
     const fixture = await createFixture();
     try {

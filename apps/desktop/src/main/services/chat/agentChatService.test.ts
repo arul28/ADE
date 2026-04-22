@@ -4710,6 +4710,25 @@ describe("createAgentChatService", () => {
       expect(collaborationMode?.mode).toBe("default");
     });
 
+    it("preserves Codex edit sessions as untrusted workspace-write", async () => {
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+        codexApprovalPolicy: "untrusted",
+        codexSandbox: "workspace-write",
+        codexConfigSource: "flags",
+      });
+
+      expect(session.permissionMode).toBe("edit");
+      expect(session.codexApprovalPolicy).toBe("untrusted");
+      expect(session.codexSandbox).toBe("workspace-write");
+
+      const summary = await service.getSessionSummary(session.id);
+      expect(summary?.permissionMode).toBe("edit");
+    });
+
     it("starts Codex full-auto sessions with danger-full-access and never approval", async () => {
       vi.mocked(mapPermissionToCodex).mockImplementation((mode) => {
         if (mode === "full-auto") {
