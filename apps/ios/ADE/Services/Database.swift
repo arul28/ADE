@@ -233,6 +233,7 @@ final class DatabaseService {
   private var cachedSiteIdBlob = Data()
   private var shouldCaptureLocalChanges = true
   private var syncTableInfoCache: [String: SyncTableInfo] = [:]
+  private var activeProjectIdOverride: String?
   private(set) var initializationError: NSError?
 
   var isReady: Bool {
@@ -392,6 +393,7 @@ final class DatabaseService {
   }
 
   func fetchLanes(includeArchived: Bool) -> [LaneSummary] {
+    guard let projectId = currentProjectId() else { return [] }
     let sql = """
       select l.id, l.name, l.description, l.lane_type, l.base_ref, l.branch_ref, l.worktree_path,
              l.attached_root_path, l.parent_lane_id, l.is_edit_protected, l.color, l.icon, l.tags_json, l.folder,
@@ -409,11 +411,13 @@ final class DatabaseService {
         from lanes l
         left join lane_state_snapshots s on s.lane_id = l.id
         left join lane_state_snapshots ps on ps.lane_id = l.parent_lane_id
-       where (? = 1 or l.archived_at is null)
+       where l.project_id = ?
+         and (? = 1 or l.archived_at is null)
        order by l.created_at asc
     """
-    let rows = query(sql, bind: { statement in
-      sqlite3_bind_int(statement, 1, includeArchived ? 1 : 0)
+    let rows = query(sql, bind: { [self] statement in
+      try self.bindText(projectId, to: statement, index: 1)
+      sqlite3_bind_int(statement, 2, includeArchived ? 1 : 0)
     }) { statement in
       LaneRow(
         id: stringValue(statement, index: 0) ?? "",
@@ -537,11 +541,27 @@ final class DatabaseService {
     try exec("begin")
     do {
       try exec("pragma defer_foreign_keys = on")
-      try exec("delete from lane_state_snapshots")
-      try exec("delete from lane_list_snapshots")
+      _ = try execute("""
+        delete from lane_state_snapshots
+         where lane_id in (select id from lanes where project_id = ?)
+      """) { statement in
+        try bindText(projectId, to: statement, index: 1)
+      }
+      _ = try execute("""
+        delete from lane_list_snapshots
+         where lane_id in (select id from lanes where project_id = ?)
+      """) { statement in
+        try bindText(projectId, to: statement, index: 1)
+      }
       if orderedLaneIds.isEmpty {
-        _ = try execute("update lanes set status = 'archived', archived_at = coalesce(archived_at, ?)") { statement in
+        _ = try execute("""
+          update lanes
+             set status = 'archived',
+                 archived_at = coalesce(archived_at, ?)
+           where project_id = ?
+        """) { statement in
           try bindText(snapshotUpdatedAt, to: statement, index: 1)
+          try bindText(projectId, to: statement, index: 2)
         }
       } else {
         try prepareTemporaryIdTable(named: "temp_hydrated_lane_ids", ids: orderedLaneIds.sorted())
@@ -554,8 +574,10 @@ final class DatabaseService {
                from temp_hydrated_lane_ids hydrated
               where hydrated.id = lanes.id
            )
+             and project_id = ?
         """) { statement in
           try bindText(snapshotUpdatedAt, to: statement, index: 1)
+          try bindText(projectId, to: statement, index: 2)
         }
       }
 
@@ -758,11 +780,16 @@ final class DatabaseService {
 
   func replaceTerminalSessions(_ sessions: [TerminalSessionSummary]) throws {
     guard db != nil else { return }
+    guard let projectId = currentProjectId() else {
+      throw sqliteError(SyncHydrationMessaging.waitingForProjectData)
+    }
 
     shouldCaptureLocalChanges = false
     defer { shouldCaptureLocalChanges = true }
 
-    let laneIds = Set(query("select id from lanes") { statement in
+    let laneIds = Set(query("select id from lanes where project_id = ?", bind: { [self] statement in
+      try self.bindText(projectId, to: statement, index: 1)
+    }) { statement in
       stringValue(statement, index: 0) ?? ""
     })
     let hydratableSessions = sessions.filter { laneIds.contains($0.laneId) }
@@ -770,20 +797,44 @@ final class DatabaseService {
 
     try exec("begin")
     do {
+      try prepareTemporaryIdTable(named: "temp_project_lane_ids", ids: laneIds.sorted())
       if !sessionIds.isEmpty {
         try prepareTemporaryIdTable(named: "temp_hydrated_session_ids", ids: sessionIds)
       }
       if hasTable(named: "session_deltas") {
-        try exec("delete from session_deltas")
+        _ = try execute("delete from session_deltas where project_id = ?") { statement in
+          try bindText(projectId, to: statement, index: 1)
+        }
       }
       if hasTable(named: "checkpoints") {
         if sessionIds.isEmpty {
-          try exec("update checkpoints set session_id = null where session_id is not null")
+          try exec("""
+            update checkpoints
+               set session_id = null
+             where session_id in (
+               select terminal_sessions.id
+                 from terminal_sessions
+                where exists (
+                  select 1
+                    from temp_project_lane_ids project_lanes
+                   where project_lanes.id = terminal_sessions.lane_id
+                )
+             )
+          """)
         } else {
           try exec("""
             update checkpoints
                set session_id = null
              where session_id is not null
+               and session_id in (
+                 select terminal_sessions.id
+                   from terminal_sessions
+                  where exists (
+                    select 1
+                      from temp_project_lane_ids project_lanes
+                     where project_lanes.id = terminal_sessions.lane_id
+                  )
+               )
                and not exists (
                  select 1
                    from temp_hydrated_session_ids hydrated
@@ -897,11 +948,23 @@ final class DatabaseService {
       }
 
       if sessionIds.isEmpty {
-        try exec("delete from terminal_sessions")
+        try exec("""
+          delete from terminal_sessions
+           where exists (
+             select 1
+               from temp_project_lane_ids project_lanes
+              where project_lanes.id = terminal_sessions.lane_id
+           )
+        """)
       } else {
         try exec("""
           delete from terminal_sessions
-           where not exists (
+           where exists (
+             select 1
+               from temp_project_lane_ids project_lanes
+              where project_lanes.id = terminal_sessions.lane_id
+           )
+             and not exists (
              select 1
                from temp_hydrated_session_ids hydrated
               where hydrated.id = terminal_sessions.id
@@ -909,12 +972,14 @@ final class DatabaseService {
         """)
       }
       try exec("drop table if exists temp_hydrated_session_ids")
+      try exec("drop table if exists temp_project_lane_ids")
 
       try exec("commit")
       notifyDidChange()
     } catch {
       try? exec("rollback")
       try? exec("drop table if exists temp_hydrated_session_ids")
+      try? exec("drop table if exists temp_project_lane_ids")
       throw error
     }
   }
@@ -1032,6 +1097,21 @@ final class DatabaseService {
   }
 
   func listWorkspaces() -> [FilesWorkspace] {
+    let projectId = currentProjectId()
+    let projectRoot = projectId.flatMap { id in
+      queryString("select root_path from projects where id = ? limit 1", bind: { [self] statement in
+        try self.bindText(id, to: statement, index: 1)
+      })
+    }
+    let activeLaneIds = Set(query("select id from lanes where project_id = ?", bind: { [self] statement in
+      if let projectId {
+        try self.bindText(projectId, to: statement, index: 1)
+      } else {
+        sqlite3_bind_null(statement, 1)
+      }
+    }) { statement in
+      stringValue(statement, index: 0) ?? ""
+    })
     if tableExists("files_workspaces") {
       let cached = query(
         """
@@ -1050,8 +1130,15 @@ final class DatabaseService {
           mobileReadOnly: sqlite3_column_int(statement, 6) != 0
         )
       }
-      if !cached.isEmpty {
-        return cached
+      let scoped = cached.filter { workspace in
+        if let laneId = workspace.laneId {
+          return activeLaneIds.contains(laneId)
+        }
+        guard workspace.kind == "primary", let projectRoot else { return false }
+        return workspace.rootPath == projectRoot
+      }
+      if !scoped.isEmpty {
+        return scoped
       }
     }
 
@@ -1070,13 +1157,40 @@ final class DatabaseService {
 
   func replaceFilesWorkspaces(_ workspaces: [FilesWorkspace]) throws {
     guard tableExists("files_workspaces") else { return }
+    let projectId = currentProjectId()
+    let projectRoot = projectId.flatMap { id in
+      queryString("select root_path from projects where id = ? limit 1", bind: { [self] statement in
+        try self.bindText(id, to: statement, index: 1)
+      })
+    }
+    let activeLaneIds = Set(query("select id from lanes where project_id = ?", bind: { [self] statement in
+      if let projectId {
+        try self.bindText(projectId, to: statement, index: 1)
+      } else {
+        sqlite3_bind_null(statement, 1)
+      }
+    }) { statement in
+      stringValue(statement, index: 0) ?? ""
+    })
     try exec("begin immediate")
     do {
       let incomingIds = Set(workspaces.map(\.id))
-      let existingIds = query("select id from files_workspaces") { statement in
-        stringValue(statement, index: 0) ?? ""
+      let existingIds = query("select id, kind, lane_id, root_path from files_workspaces") { statement in
+        (
+          id: stringValue(statement, index: 0) ?? "",
+          kind: stringValue(statement, index: 1) ?? "",
+          laneId: stringValue(statement, index: 2),
+          rootPath: stringValue(statement, index: 3) ?? ""
+        )
       }
-      let staleIds = existingIds.filter { !incomingIds.contains($0) }
+      let scopedExistingIds = existingIds.filter { row in
+        if let laneId = row.laneId {
+          return activeLaneIds.contains(laneId)
+        }
+        guard row.kind == "primary", let projectRoot else { return false }
+        return row.rootPath == projectRoot
+      }.map(\.id)
+      let staleIds = scopedExistingIds.filter { !incomingIds.contains($0) }
       let snapshotTables = [
         "file_directory_snapshots",
         "file_content_snapshots",
@@ -1286,6 +1400,7 @@ final class DatabaseService {
   }
 
   func fetchSessions() -> [TerminalSessionSummary] {
+    guard let projectId = currentProjectId() else { return [] }
     let sql = """
       select s.id, s.lane_id, coalesce(nullif(s.lane_name, ''), l.name, s.lane_id), s.pty_id, s.tracked, s.pinned, s.manually_named, s.goal, s.tool_type,
              s.title, s.status, s.started_at, s.ended_at, s.exit_code, s.transcript_path,
@@ -1293,11 +1408,14 @@ final class DatabaseService {
              s.resume_command, s.resume_metadata_json, s.chat_idle_since_at
         from terminal_sessions s
         left join lanes l on l.id = s.lane_id
+       where l.project_id = ?
        order by s.started_at desc
        limit 200
     """
 
-    return query(sql) { statement in
+    return query(sql, bind: { [self] statement in
+      try self.bindText(projectId, to: statement, index: 1)
+    }) { statement in
       SessionRow(
         id: stringValue(statement, index: 0) ?? "",
         laneId: stringValue(statement, index: 1) ?? "",
@@ -1911,6 +2029,7 @@ final class DatabaseService {
     try ensureHydrationProjectionColumns()
     try ensureSyncMetadataTables()
     try ensureCrrTables()
+    try repairPullRequestProjectionIntegrity()
 
     let desiredSiteId = localSiteId()
     cachedSiteIdHex = desiredSiteId
@@ -1926,6 +2045,33 @@ final class DatabaseService {
       try forceSiteId(desiredSiteId)
     }
     localDbVersion = readMaxDbVersion()
+  }
+
+  private func repairPullRequestProjectionIntegrity() throws {
+    guard hasTable(named: "pull_requests") else { return }
+
+    let previousCaptureState = shouldCaptureLocalChanges
+    shouldCaptureLocalChanges = false
+    defer { shouldCaptureLocalChanges = previousCaptureState }
+
+    for tableName in [
+      "pull_request_snapshots",
+      "pull_request_ai_summaries",
+      "pr_group_members",
+      "pr_issue_inventory",
+      "pr_pipeline_settings",
+      "pr_convergence_state",
+    ] where hasTable(named: tableName) && tableHasColumn(tableName: tableName, columnName: "pr_id") {
+      try exec("""
+        delete from \(tableName)
+         where pr_id is not null
+           and not exists (
+             select 1
+               from pull_requests
+              where pull_requests.id = \(tableName).pr_id
+           )
+      """)
+    }
   }
 
   private func ensureHydrationProjectionColumns() throws {
@@ -2532,8 +2678,64 @@ final class DatabaseService {
     }
   }
 
+  func setActiveProjectId(_ projectId: String?) {
+    activeProjectIdOverride = projectId
+  }
+
+  func hasProject(id: String) -> Bool {
+    guard hasTable(named: "projects") else { return false }
+    return querySingle(
+      "select 1 from projects where id = ? limit 1",
+      bind: { [self] statement in
+        try self.bindText(id, to: statement, index: 1)
+      },
+      map: { _ in true }
+    ) ?? false
+  }
+
+  func listMobileProjects() -> [MobileProjectSummary] {
+    guard hasTable(named: "projects") else { return [] }
+
+    return query("""
+      select
+        p.id,
+        p.display_name,
+        p.root_path,
+        p.default_base_ref,
+        p.last_opened_at,
+        coalesce((
+          select count(*)
+            from lanes l
+           where l.project_id = p.id
+             and l.archived_at is null
+        ), 0) as lane_count
+        from projects p
+       order by p.last_opened_at desc, p.display_name collate nocase asc
+    """) { statement in
+      let id = stringValue(statement, index: 0) ?? ""
+      let rootPath = stringValue(statement, index: 2)
+      let fallbackName = rootPath?
+        .split(separator: "/")
+        .last
+        .map(String.init)
+      return MobileProjectSummary(
+        id: id,
+        displayName: stringValue(statement, index: 1) ?? fallbackName ?? "Project",
+        rootPath: rootPath,
+        defaultBaseRef: stringValue(statement, index: 3),
+        lastOpenedAt: stringValue(statement, index: 4),
+        laneCount: Int(sqlite3_column_int64(statement, 5)),
+        isAvailable: true,
+        isCached: true
+      )
+    }
+  }
+
   func currentProjectId() -> String? {
-    queryString("select id from projects order by created_at asc limit 1")
+    if let activeProjectIdOverride {
+      return activeProjectIdOverride
+    }
+    return queryString("select id from projects order by created_at asc limit 1")
   }
 
   private func hasTable(named tableName: String) -> Bool {

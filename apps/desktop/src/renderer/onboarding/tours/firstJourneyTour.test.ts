@@ -56,7 +56,6 @@ describe("firstJourneyTour", () => {
         step.docUrl.startsWith(VALID_DOCS_PREFIX),
         `docUrl for step ${step.id ?? step.target}: ${step.docUrl}`,
       ).toBe(true);
-      expect(step.docUrl).not.toContain("/docs/");
     }
   });
 

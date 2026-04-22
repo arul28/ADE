@@ -2843,8 +2843,10 @@ function canCallerAccessCoordinatorTool(name: string, callerCtx: CallerContext):
   return false;
 }
 
-function isLocalComputerUseAllowed(): boolean {
-  return true;
+function isLocalComputerUseAllowed(callerCtx: CallerContext): boolean {
+  return callerCtx.role === "cto"
+    || callerCtx.role === "orchestrator"
+    || callerCtx.role === "agent";
 }
 
 async function listToolSpecsForSession(runtime: AdeRuntime, session: SessionState): Promise<ToolSpec[]> {
@@ -2852,7 +2854,7 @@ async function listToolSpecsForSession(runtime: AdeRuntime, session: SessionStat
   const externalComputerUseAvailable = runtime.computerUseArtifactBrokerService
     ?.getBackendStatus()
     ?.backends.some((backend) => backend.available) ?? false;
-  const localComputerUseAllowed = isLocalComputerUseAllowed();
+  const localComputerUseAllowed = isLocalComputerUseAllowed(callerCtx);
   const shouldHideLocalComputerUse = !localComputerUseAllowed || externalComputerUseAvailable;
   const visibleBaseTools = shouldHideLocalComputerUse
     ? TOOL_SPECS.filter((tool) => !LOCAL_COMPUTER_USE_TOOL_NAMES.has(tool.name))
@@ -4135,6 +4137,12 @@ async function runTool(args: {
     toolName: string,
     capabilityKey: "screenshot" | "browser_verification" | "browser_trace" | "video_recording" | "console_logs" | "appLaunch" | "guiInteraction" | "environmentInfo",
   ) => {
+    if (!isLocalComputerUseAllowed(callerCtx)) {
+      throw new JsonRpcError(
+        JsonRpcErrorCode.policyDenied,
+        `${toolName} is disabled because local computer use is not allowed for this ADE RPC session.`,
+      );
+    }
     const capabilities = getLocalComputerUseCapabilities();
     const capability =
       capabilityKey === "appLaunch" || capabilityKey === "guiInteraction" || capabilityKey === "environmentInfo"

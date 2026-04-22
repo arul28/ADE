@@ -197,6 +197,9 @@ export type SyncFeatureFlags = {
   chatStreaming: {
     enabled: true;
   };
+  projectCatalog: {
+    enabled: true;
+  };
   bootstrapAuth: true;
   pairingAuth: {
     enabled: true;
@@ -215,6 +218,41 @@ export type SyncHelloPayload = {
   auth?: SyncHelloAuth;
 };
 
+export type SyncMobileProjectSummary = {
+  id: string;
+  displayName: string;
+  rootPath: string | null;
+  defaultBaseRef: string | null;
+  lastOpenedAt: string | null;
+  laneCount: number;
+  isAvailable: boolean;
+  isCached: boolean;
+};
+
+export type SyncProjectCatalogPayload = {
+  projects: SyncMobileProjectSummary[];
+};
+
+export type SyncProjectSwitchRequestPayload = {
+  projectId?: string | null;
+  rootPath?: string | null;
+};
+
+export type SyncProjectConnectionPayload = {
+  authKind: "bootstrap";
+  token: string;
+  hostIdentity: SyncPairingQrPayload["hostIdentity"];
+  port: number;
+  addressCandidates: SyncAddressCandidate[];
+};
+
+export type SyncProjectSwitchResultPayload = {
+  ok: boolean;
+  message?: string | null;
+  project?: SyncMobileProjectSummary | null;
+  connection?: SyncProjectConnectionPayload | null;
+};
+
 export type SyncHelloAuth =
   | { kind: "bootstrap"; token: string }
   | { kind: "paired"; deviceId: string; secret: string };
@@ -225,6 +263,7 @@ export type SyncHelloOkPayload = {
   serverDbVersion: number;
   heartbeatIntervalMs: number;
   pollIntervalMs: number;
+  projects?: SyncMobileProjectSummary[];
   features: SyncFeatureFlags;
 };
 
@@ -788,6 +827,10 @@ type SyncEnvelopeWithPayload<TType extends string, TPayload> =
 export type SyncHelloEnvelope = SyncEnvelopeWithPayload<"hello", SyncHelloPayload>;
 export type SyncHelloOkEnvelope = SyncEnvelopeWithPayload<"hello_ok", SyncHelloOkPayload>;
 export type SyncHelloErrorEnvelope = SyncEnvelopeWithPayload<"hello_error", SyncHelloErrorPayload>;
+export type SyncProjectCatalogRequestEnvelope = SyncEnvelopeWithPayload<"project_catalog_request", Record<string, never>>;
+export type SyncProjectCatalogEnvelope = SyncEnvelopeWithPayload<"project_catalog", SyncProjectCatalogPayload>;
+export type SyncProjectSwitchRequestEnvelope = SyncEnvelopeWithPayload<"project_switch_request", SyncProjectSwitchRequestPayload>;
+export type SyncProjectSwitchResultEnvelope = SyncEnvelopeWithPayload<"project_switch_result", SyncProjectSwitchResultPayload>;
 export type SyncPairingRequestEnvelope = SyncEnvelopeWithPayload<"pairing_request", SyncPairingRequestPayload>;
 export type SyncPairingResultEnvelope = SyncEnvelopeWithPayload<"pairing_result", SyncPairingResultPayload>;
 export type SyncChangesetBatchEnvelope = SyncEnvelopeWithPayload<"changeset_batch", SyncChangesetBatchPayload>;
@@ -815,6 +858,10 @@ export type SyncEnvelope =
   | SyncHelloEnvelope
   | SyncHelloOkEnvelope
   | SyncHelloErrorEnvelope
+  | SyncProjectCatalogRequestEnvelope
+  | SyncProjectCatalogEnvelope
+  | SyncProjectSwitchRequestEnvelope
+  | SyncProjectSwitchResultEnvelope
   | SyncPairingRequestEnvelope
   | SyncPairingResultEnvelope
   | SyncChangesetBatchEnvelope

@@ -416,6 +416,10 @@ final class SyncService: ObservableObject {
   @Published private(set) var connectionState: RemoteConnectionState = .disconnected
   @Published private(set) var hostName: String?
   @Published private(set) var activeHostProfile: HostConnectionProfile?
+  @Published private(set) var projects: [MobileProjectSummary] = []
+  @Published private(set) var activeProjectId: String?
+  @Published private(set) var activeProjectRootPath: String?
+  @Published private(set) var projectSwitchInFlightRootPath: String?
   @Published private(set) var discoveredHosts: [DiscoveredSyncHost] = []
   @Published private(set) var domainStatuses: [SyncDomain: SyncDomainStatus] = Dictionary(
     uniqueKeysWithValues: SyncDomain.allCases.map { ($0, .disconnected) }
@@ -429,6 +433,7 @@ final class SyncService: ObservableObject {
   @Published private(set) var pendingOperationCount = 0
   @Published private(set) var localStateRevision = 0
   @Published var settingsPresented = false
+  @Published var projectHomePresented = false
   @Published var attentionDrawerPresented = false
   @Published var requestedFilesNavigation: FilesNavigationRequest?
   @Published var requestedLaneNavigation: LaneNavigationRequest?
@@ -442,6 +447,8 @@ final class SyncService: ObservableObject {
   private let profileKey = "ade.sync.hostProfile"
   private let legacyDeviceIdKey = "ade.sync.deviceId"
   private let autoReconnectPausedKey = "ade.sync.autoReconnectPausedByUser"
+  private let activeProjectIdKey = "ade.sync.activeProjectId"
+  private let activeProjectRootPathKey = "ade.sync.activeProjectRootPath"
   private let pendingOperationsKey = "ade.sync.pendingOperations"
   private let remoteCommandDescriptorsKey = "ade.sync.remoteCommandDescriptors"
   private let keychain = KeychainService()
@@ -495,7 +502,11 @@ final class SyncService: ObservableObject {
   private var preferTailnetReconnectUntil: Date?
   private(set) var deviceId: String
   private var remoteCommandDescriptors: [SyncRemoteCommandDescriptor] = []
+  private var remoteProjectCatalog: [MobileProjectSummary] = []
+  private var supportsProjectCatalog = false
   private var supportsChatStreaming = false
+  private var projectSelectionTask: Task<Void, Never>?
+  private var projectSelectionGeneration: UInt64 = 0
 
   /// Process-wide singleton populated by the first `init` and consumed by
   /// `AppDelegate`, Live Activity intents, and the `@EnvironmentObject`
@@ -541,6 +552,331 @@ final class SyncService: ObservableObject {
     database.hasHydratedControllerData()
   }
 
+  var shouldShowProjectHome: Bool {
+    projectHomePresented || activeProjectId == nil
+  }
+
+  var activeProject: MobileProjectSummary? {
+    guard activeProjectId != nil else { return nil }
+    return projects.first { isActiveProject($0) }
+  }
+
+  func isActiveProject(_ project: MobileProjectSummary) -> Bool {
+    if let activeProjectId, project.id == activeProjectId {
+      return true
+    }
+    guard let activeProjectRootPath,
+          let projectRoot = normalizedProjectRoot(project.rootPath)
+    else { return false }
+    return projectRoot == activeProjectRootPath
+  }
+
+  func showProjectHome() {
+    refreshProjectCatalog()
+    projectHomePresented = true
+    if supportsProjectCatalog, canSendLiveRequests() {
+      Task { @MainActor [weak self] in
+        await self?.refreshRemoteProjectCatalog()
+      }
+    }
+  }
+
+  func closeProjectHome() {
+    guard activeProjectId != nil else { return }
+    projectHomePresented = false
+  }
+
+  func selectProject(_ project: MobileProjectSummary) {
+    let selectionGeneration = beginProjectSelection()
+
+    if isActiveProject(project) {
+      projectHomePresented = false
+      return
+    }
+
+    if supportsProjectCatalog,
+       canSendLiveRequests(),
+       let rootPath = project.rootPath?.trimmingCharacters(in: .whitespacesAndNewlines),
+       !rootPath.isEmpty {
+      projectSwitchInFlightRootPath = rootPath
+      projectSelectionTask = Task { @MainActor [weak self] in
+        guard let self else { return }
+        do {
+          try await self.switchToDesktopProject(project, rootPath: rootPath, selectionGeneration: selectionGeneration)
+        } catch {
+          guard self.isCurrentProjectSelection(selectionGeneration) else { return }
+          self.lastError = SyncUserFacingError.message(for: error)
+          self.setDomainStatus(SyncDomain.allCases, phase: .failed, error: self.lastError)
+        }
+        guard self.isCurrentProjectSelection(selectionGeneration) else { return }
+        self.projectSwitchInFlightRootPath = nil
+        self.projectSelectionTask = nil
+      }
+      return
+    }
+
+    setActiveProjectId(project.id, rootPath: project.rootPath)
+    projectHomePresented = false
+    localStateRevision += 1
+    refreshActiveSessionsAndSnapshot()
+    scheduleWorkspaceSnapshotWrite()
+    if connectionState == .connected || connectionState == .syncing {
+      startInitialHydrationTask(for: connectionGeneration)
+    }
+  }
+
+  func refreshProjectCatalog() {
+    let cachedProjects = database.listMobileProjects()
+    var mergedById = Dictionary(uniqueKeysWithValues: remoteProjectCatalog.map { ($0.id, $0) })
+    for cachedProject in cachedProjects {
+      if var existing = mergedById[cachedProject.id] {
+        existing.displayName = cachedProject.displayName
+        existing.rootPath = cachedProject.rootPath ?? existing.rootPath
+        existing.defaultBaseRef = cachedProject.defaultBaseRef ?? existing.defaultBaseRef
+        existing.lastOpenedAt = cachedProject.lastOpenedAt ?? existing.lastOpenedAt
+        existing.laneCount = cachedProject.laneCount
+        existing.isCached = true
+        existing.isAvailable = existing.isAvailable || cachedProject.isAvailable
+        mergedById[cachedProject.id] = existing
+      } else if let match = mergedById.first(where: { entry in
+        let remote = entry.value
+        guard let left = remote.rootPath, let right = cachedProject.rootPath else { return false }
+        return left == right
+      }) {
+        var existing = match.value
+        mergedById.removeValue(forKey: match.key)
+        existing.id = cachedProject.id
+        existing.displayName = cachedProject.displayName
+        existing.defaultBaseRef = cachedProject.defaultBaseRef ?? existing.defaultBaseRef
+        existing.lastOpenedAt = cachedProject.lastOpenedAt ?? existing.lastOpenedAt
+        existing.laneCount = cachedProject.laneCount
+        existing.isCached = true
+        existing.isAvailable = existing.isAvailable || cachedProject.isAvailable
+        mergedById[cachedProject.id] = existing
+      } else {
+        mergedById[cachedProject.id] = cachedProject
+      }
+    }
+    if let activeProjectId,
+       mergedById[activeProjectId] == nil,
+       let activeProjectRootPath,
+       let match = mergedById.first(where: { entry in
+         normalizedProjectRoot(entry.value.rootPath) == activeProjectRootPath
+       }) {
+      if match.value.isCached {
+        setActiveProjectId(match.value.id, rootPath: match.value.rootPath)
+      } else {
+        var existing = match.value
+        mergedById.removeValue(forKey: match.key)
+        existing.id = activeProjectId
+        mergedById[activeProjectId] = existing
+      }
+    }
+    projects = mergedById.values.sorted { left, right in
+      if isActiveProject(left) { return true }
+      if isActiveProject(right) { return false }
+      return (left.lastOpenedAt ?? "") > (right.lastOpenedAt ?? "")
+    }
+    normalizeActiveProjectSelection(allowSingleProjectFallback: false)
+  }
+
+  private func applyRemoteProjectCatalog(_ catalog: MobileProjectCatalogPayload) {
+    remoteProjectCatalog = catalog.projects
+    refreshProjectCatalog()
+  }
+
+  private func refreshRemoteProjectCatalog() async {
+    guard supportsProjectCatalog, canSendLiveRequests() else { return }
+    let requestId = makeRequestId()
+    do {
+      let raw = try await awaitResponse(
+        requestId: requestId,
+        disconnectOnTimeout: false,
+        timeoutMessage: "Timed out waiting for the desktop project list."
+      ) {
+        self.sendEnvelope(type: "project_catalog_request", requestId: requestId, payload: [:])
+      }
+      let catalog = try decode(raw, as: MobileProjectCatalogPayload.self)
+      applyRemoteProjectCatalog(catalog)
+    } catch {
+      syncConnectLog.info("project catalog refresh failed error=\(String(describing: error), privacy: .public)")
+    }
+  }
+
+  private func switchToDesktopProject(
+    _ project: MobileProjectSummary,
+    rootPath: String,
+    selectionGeneration: UInt64
+  ) async throws {
+    let requestId = makeRequestId()
+    let raw = try await awaitResponse(requestId: requestId) {
+      self.sendEnvelope(type: "project_switch_request", requestId: requestId, payload: [
+        "projectId": project.id,
+        "rootPath": rootPath,
+      ])
+    }
+    let result = try decode(raw, as: MobileProjectSwitchResultPayload.self)
+    guard result.ok, let connection = result.connection else {
+      throw NSError(domain: "ADE", code: 24, userInfo: [
+        NSLocalizedDescriptionKey: result.message ?? "The desktop could not open that project for phone sync."
+      ])
+    }
+    guard isCurrentProjectSelection(selectionGeneration) else {
+      throw CancellationError()
+    }
+
+    let targetProject = result.project ?? project
+    let addressCandidates = deduplicatedAddresses(
+      connection.addressCandidates.map(\.host)
+        + (currentAddress.map { [$0] } ?? [])
+        + (activeHostProfile?.savedAddressCandidates ?? [])
+    )
+    guard !addressCandidates.isEmpty else {
+      throw NSError(domain: "ADE", code: 25, userInfo: [
+        NSLocalizedDescriptionKey: "The desktop did not provide an address for that project."
+      ])
+    }
+
+    let profile = HostConnectionProfile(
+      hostIdentity: connection.hostIdentity.deviceId,
+      hostName: connection.hostIdentity.name,
+      port: connection.port,
+      authKind: connection.authKind,
+      pairedDeviceId: nil,
+      lastRemoteDbVersion: 0,
+      lastHostDeviceId: connection.hostIdentity.deviceId,
+      lastSuccessfulAddress: addressCandidates.first,
+      savedAddressCandidates: addressCandidates,
+      discoveredLanAddresses: addressCandidates.filter { host in
+        guard !host.contains(":") else { return false }
+        guard host != "127.0.0.1" else { return false }
+        return !syncIsTailscaleIPv4Address(host)
+      },
+      tailscaleAddress: addressCandidates.first(where: syncIsTailscaleIPv4Address)
+    )
+
+    let previousActiveProjectId = activeProjectId
+    let previousActiveProjectRootPath = activeProjectRootPath
+    let previousProfile = loadProfile()
+    let previousToken = keychain.loadToken()
+    let previousLatestRemoteDbVersion = latestRemoteDbVersion
+    let previousRemoteProjectCatalog = remoteProjectCatalog
+    remoteProjectCatalog.removeAll { existing in
+      existing.id == targetProject.id || (existing.rootPath != nil && existing.rootPath == targetProject.rootPath)
+    }
+    remoteProjectCatalog.append(targetProject)
+    setActiveProjectId(targetProject.id, rootPath: targetProject.rootPath ?? project.rootPath)
+    refreshProjectCatalog()
+    latestRemoteDbVersion = 0
+
+    let connectAttemptGeneration = beginConnectAttempt()
+    do {
+      keychain.saveToken(connection.token)
+      saveProfile(profile)
+      teardownSocket(reason: "Switching desktop project.")
+      let connectedAddress = try await connectUsingProfile(
+        profile,
+        token: connection.token,
+        connectAttemptGeneration: connectAttemptGeneration,
+        preferLiveCandidatesOnly: false,
+        publishConnecting: true
+      )
+      guard isCurrentConnectAttempt(connectAttemptGeneration), isCurrentProjectSelection(selectionGeneration) else { return }
+      currentAddress = connectedAddress
+      projectHomePresented = false
+    } catch {
+      setActiveProjectId(previousActiveProjectId, rootPath: previousActiveProjectRootPath)
+      latestRemoteDbVersion = previousLatestRemoteDbVersion
+      remoteProjectCatalog = previousRemoteProjectCatalog
+      if let previousToken {
+        keychain.saveToken(previousToken)
+      } else {
+        keychain.clearToken()
+      }
+      saveProfile(previousProfile)
+      refreshProjectCatalog()
+      connectionState = .disconnected
+      currentAddress = nil
+      if previousProfile != nil, previousToken != nil {
+        Task { @MainActor [weak self] in
+          await self?.reconnectIfPossible(userInitiated: true)
+        }
+      }
+      throw error
+    }
+  }
+
+  private func beginProjectSelection() -> UInt64 {
+    projectSelectionTask?.cancel()
+    projectSelectionTask = nil
+    projectSwitchInFlightRootPath = nil
+    projectSelectionGeneration &+= 1
+    return projectSelectionGeneration
+  }
+
+  private func isCurrentProjectSelection(_ generation: UInt64) -> Bool {
+    !Task.isCancelled && projectSelectionGeneration == generation
+  }
+
+  private func setActiveProjectId(_ projectId: String?, rootPath: String? = nil) {
+    activeProjectId = projectId
+    activeProjectRootPath = projectId == nil
+      ? nil
+      : normalizedProjectRoot(rootPath)
+        ?? projectId.flatMap { id in
+          projects.first { $0.id == id }.flatMap { normalizedProjectRoot($0.rootPath) }
+        }
+    database.setActiveProjectId(projectId)
+    if let projectId {
+      UserDefaults.standard.set(projectId, forKey: activeProjectIdKey)
+    } else {
+      UserDefaults.standard.removeObject(forKey: activeProjectIdKey)
+    }
+    if let activeProjectRootPath {
+      UserDefaults.standard.set(activeProjectRootPath, forKey: activeProjectRootPathKey)
+    } else {
+      UserDefaults.standard.removeObject(forKey: activeProjectRootPathKey)
+    }
+  }
+
+  private func normalizeActiveProjectSelection(allowSingleProjectFallback: Bool) {
+    let projectIds = Set(projects.map(\.id))
+    if let activeProjectId, projectIds.contains(activeProjectId) {
+      database.setActiveProjectId(activeProjectId)
+      return
+    }
+
+    if let activeProjectId,
+       let activeProjectRootPath,
+       let matchingProject = projects.first(where: { normalizedProjectRoot($0.rootPath) == activeProjectRootPath }) {
+      if matchingProject.isCached || database.hasProject(id: matchingProject.id) {
+        setActiveProjectId(matchingProject.id, rootPath: matchingProject.rootPath)
+      } else {
+        database.setActiveProjectId(activeProjectId)
+      }
+      return
+    }
+
+    if activeProjectId != nil {
+      setActiveProjectId(nil)
+    }
+
+    if allowSingleProjectFallback, projects.count == 1, let onlyProject = projects.first {
+      setActiveProjectId(onlyProject.id, rootPath: onlyProject.rootPath)
+      projectHomePresented = false
+    }
+  }
+
+  private func normalizedProjectRoot(_ rootPath: String?) -> String? {
+    guard var root = rootPath?.trimmingCharacters(in: .whitespacesAndNewlines),
+          !root.isEmpty
+    else { return nil }
+    while root.count > 1, root.hasSuffix("/") {
+      root.removeLast()
+    }
+    return root
+  }
+
   private let queueableFileActions: Set<String> = [
     "writeText",
     "createFile",
@@ -581,6 +917,11 @@ final class SyncService: ObservableObject {
       keychain.saveDeviceId(fresh)
       deviceId = fresh
     }
+    activeProjectId = UserDefaults.standard.string(forKey: activeProjectIdKey)
+    activeProjectRootPath = normalizedProjectRoot(UserDefaults.standard.string(forKey: activeProjectRootPathKey))
+    database.setActiveProjectId(activeProjectId)
+    projects = database.listMobileProjects()
+    normalizeActiveProjectSelection(allowSingleProjectFallback: true)
     pendingOperationCount = loadPendingOperations().count
     outboundLocalDbVersion = database.currentDbVersion()
     activeHostProfile = loadProfile()
@@ -647,6 +988,7 @@ final class SyncService: ObservableObject {
     databaseRevisionDebounceTask?.cancel()
     relayTask?.cancel()
     hydrationTask?.cancel()
+    projectSelectionTask?.cancel()
     reconnectTask?.cancel()
     networkPathReconnectTask?.cancel()
     lanePresenceHeartbeatTask?.cancel()
@@ -669,6 +1011,7 @@ final class SyncService: ObservableObject {
       guard let self else { return }
       try? await Task.sleep(nanoseconds: 280_000_000)
       guard !Task.isCancelled else { return }
+      self.refreshProjectCatalog()
       localStateRevision += 1
       self.refreshActiveSessionsAndSnapshot()
     }
@@ -2559,6 +2902,8 @@ final class SyncService: ObservableObject {
     } else {
       UserDefaults.standard.removeObject(forKey: profileKey)
       UserDefaults.standard.removeObject(forKey: legacyDraftKey)
+      activeHostProfile = nil
+      hostName = nil
     }
   }
 
@@ -3253,6 +3598,7 @@ final class SyncService: ObservableObject {
       connectAttemptGeneration: connectAttemptGeneration
     )
     await restoreTrackedOpenLanesAfterReconnect()
+    await refreshRemoteProjectCatalog()
   }
 
   private func applyHelloPayload(
@@ -3288,6 +3634,23 @@ final class SyncService: ObservableObject {
       }
       return false
     }()
+    supportsProjectCatalog = {
+      if let projectCatalog = features?["projectCatalog"] as? [String: Any],
+         let enabled = projectCatalog["enabled"] as? Bool {
+        return enabled
+      }
+      if let value = features?["projectCatalog"] as? Bool {
+        return value
+      }
+      if let projectCatalog = features?["project_catalog"] as? [String: Any],
+         let enabled = projectCatalog["enabled"] as? Bool {
+        return enabled
+      }
+      if let value = features?["project_catalog"] as? Bool {
+        return value
+      }
+      return false
+    }()
     let commandDescriptors: [SyncRemoteCommandDescriptor] = {
       guard
         let commandRouting = features?["commandRouting"],
@@ -3297,6 +3660,10 @@ final class SyncService: ObservableObject {
       }
       return (try? decode(actions, as: [SyncRemoteCommandDescriptor].self)) ?? []
     }()
+    if let projects = payload["projects"],
+       let catalog = try? decode(["projects": projects], as: MobileProjectCatalogPayload.self) {
+      applyRemoteProjectCatalog(catalog)
+    }
 
     if let expectedHostIdentity, let remoteHostIdentity, expectedHostIdentity != remoteHostIdentity {
       forgetHost()
@@ -3453,6 +3820,12 @@ final class SyncService: ObservableObject {
     switch type {
     case "hello_ok":
       reconnectState.reset()
+      resolve(requestId: requestId, result: .success(payload))
+    case "project_catalog":
+      let catalog = try decode(payload, as: MobileProjectCatalogPayload.self)
+      applyRemoteProjectCatalog(catalog)
+      resolve(requestId: requestId, result: .success(payload))
+    case "project_switch_result":
       resolve(requestId: requestId, result: .success(payload))
     case "hello_error":
       let code = ((payload as? [String: Any])?["code"] as? String) ?? "auth_failed"
@@ -4011,11 +4384,19 @@ final class SyncService: ObservableObject {
           connectionState == .connected || connectionState == .syncing
     else { return }
 
+    guard activeProjectId != nil else {
+      refreshProjectCatalog()
+      return
+    }
+
     setDomainStatus(SyncDomain.allCases, phase: .syncingInitialData)
 
     do {
       try await InitialHydrationGate.waitForProjectRow(
-        currentProjectId: { self.database.currentProjectId() },
+        currentProjectId: {
+          guard let activeProjectId = self.activeProjectId else { return self.database.currentProjectId() }
+          return self.database.hasProject(id: activeProjectId) ? activeProjectId : nil
+        },
         shouldContinue: { self.isCurrentConnectionGeneration(connectionGeneration) }
       )
     } catch is CancellationError {
@@ -4033,6 +4414,7 @@ final class SyncService: ObservableObject {
     }
 
     guard isCurrentConnectionGeneration(connectionGeneration) else { return }
+    refreshProjectCatalog()
     do {
       try await refreshLaneSnapshots()
     } catch {

@@ -13,7 +13,10 @@ vi.mock("node:child_process", () => ({
   })),
 }));
 
-import { buildComputerUseOwnerSnapshot } from "./controlPlane";
+import {
+  buildComputerUseOwnerSnapshot,
+  collectRequiredComputerUseKindsFromPhases,
+} from "./controlPlane";
 
 function createBackendStatus(): ComputerUseBackendStatus {
   return {
@@ -46,5 +49,34 @@ describe("computer use control plane", () => {
 
     expect(snapshot.summary).toContain("Ghost OS is available and ready to capture proof");
     expect(snapshot.activity.some((item) => item.kind === "backend_available")).toBe(true);
+  });
+
+  it("collects only supported proof kinds from required phases", () => {
+    const phases = [
+      {
+        validationGate: {
+          required: true,
+          evidenceRequirements: ["screenshot", "browser_verification", "unsupported-evidence"],
+        },
+      },
+      {
+        validationGate: {
+          required: false,
+          evidenceRequirements: ["video_recording"],
+        },
+      },
+      {
+        validationGate: {
+          required: true,
+          evidenceRequirements: ["screenshot", "console_logs"],
+        },
+      },
+    ] as any;
+
+    expect(collectRequiredComputerUseKindsFromPhases(phases)).toEqual([
+      "screenshot",
+      "browser_verification",
+      "console_logs",
+    ]);
   });
 });

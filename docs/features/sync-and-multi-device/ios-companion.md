@@ -189,10 +189,16 @@ Source: `apps/ios/ADE/Services/SyncService.swift`.
    connection draft (host, port, QR payload v2 address candidates).
 2. Open WebSocket connection. `reconnectIfPossible` is guarded so
    overlapping wake-ups never stack TCP/WebSocket attempts.
-3. Send local `db_version`, receive catchup changesets.
-4. Enter continuous bidirectional sync.
-5. On disconnect: automatic reconnection with exponential backoff.
-6. After pairing completes, the phone announces currently-open lanes
+3. Send local `db_version`; `hello_ok` includes the host's current
+   project catalog when the host supports project switching.
+4. If no active project is selected, show the native project home
+   instead of hydrating lane/file/PR surfaces against the wrong row.
+5. After the active project row exists locally, receive catchup
+   changesets and hydrate lane, file, Work, and PR projections scoped
+   to that project.
+6. Enter continuous bidirectional sync.
+7. On disconnect: automatic reconnection with exponential backoff.
+8. After pairing completes, the phone announces currently-open lanes
    via `lanes.presence.announce` so the host decorates
    `LaneSummary.devicesOpen` for other controllers; the phone calls
    `lanes.presence.release` when the user leaves a lane surface and
@@ -206,6 +212,8 @@ Implemented envelope types on iOS:
 |---|---|---|
 | `hello` / `hello_ok` / `hello_error` | Bidirectional | Handshake |
 | `pairing_request` / `pairing_result` | Phone → host / host → phone | 6-digit PIN pairing |
+| `project_catalog_request` / `project_catalog` | Phone → host / host → phone | Refresh recent/available desktop projects |
+| `project_switch_request` / `project_switch_result` | Phone → host / host → phone | Prepare a sync connection for a selected desktop project |
 | `changeset_batch` | Bidirectional | cr-sqlite changeset batch |
 | `command` | Phone → host | Execution request |
 | `command_ack` | Host → phone | Command receipt |
@@ -452,6 +460,13 @@ extension without importing the main app's heavier renderer code.
 
 ## Tab structure
 
+Before the tabs render, `ProjectHomeView` can take over the root screen
+when no active project is selected or the user taps the Projects toolbar
+button. It merges the host-provided catalog with projects already present
+in the local replicated DB, marks cached/unavailable rows, and requests a
+fresh bootstrap connection for the selected desktop project through
+`project_switch_request`.
+
 ### Shipped
 
 | Tab | Icon | Desktop equivalent | Capabilities |
@@ -470,6 +485,13 @@ extension without importing the main app's heavier renderer code.
 - iPad adaptive layout, Spotlight.
 
 ## Lane data projection
+
+All lane, file, Work, and PR projections are scoped through
+`Database.currentProjectId()`. The iOS app stores the active project id
+in `UserDefaults`, mirrors it into `DatabaseService`, and falls back to
+the project home if no selected project row has arrived yet. Project
+switches reset the remote DB version and reconnect with a project-specific
+bootstrap token returned by the host.
 
 Rather than reconstructing lane detail surfaces client-side from
 primitive rows, the iOS app persists richer projections the host
@@ -530,6 +552,7 @@ reflected in the phone's UI on the next descriptor read.
 | WebSocket client | Implemented |
 | PIN pairing flow | Implemented |
 | QR pairing payload (v2, address candidates + port) | Implemented |
+| Project home + desktop project switching | Implemented |
 | Lanes tab | Implemented to live desktop parity (with `devicesOpen`) |
 | Files tab | Implemented with `mobileReadOnly` workspace gate |
 | Work tab | Implemented; live chat-event push from host |
@@ -553,6 +576,10 @@ reflected in the phone's UI on the next descriptor read.
   is a CRR, make sure writes land in a table the phone reads), not
   on the phone. Avoid adding host-only caches that the phone has no
   way to observe.
+- **Project selection gates hydration.** A phone paired to a host can
+  know about multiple desktop projects, but lane/file/Work/PR reads must
+  stay scoped to the active project id. If a switch fails, roll back the
+  active project id, host profile, token, and remote DB version together.
 - **Keychain items survive app uninstall on some iOS builds.**
   Pairing forget should both clear Keychain and clear the draft row;
   the Settings tab's "Forget host" does both.

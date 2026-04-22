@@ -60,6 +60,7 @@ function resetStore() {
   useOnboardingStore.setState({
     activeTourId: null,
     activeStepIndex: 0,
+    activeTourCtx: null,
     wizardOpen: false,
     hydrated: false,
     progress: null,

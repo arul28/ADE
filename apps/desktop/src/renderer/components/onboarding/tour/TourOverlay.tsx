@@ -1,7 +1,8 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import type { TourStep as TourStepType } from "../../../onboarding/registry";
+import type { TourCtx, TourStep as TourStepType } from "../../../onboarding/registry";
 import { useOnboardingStore } from "../../../state/onboardingStore";
+import { ActIntro } from "../fx/ActIntro";
 import { TourStep } from "./TourStep";
 
 const SELECTOR_RETRY_MS = 500;
@@ -13,6 +14,7 @@ type TourOverlayProps = {
   step: TourStepType;
   stepIndex: number;
   totalSteps: number;
+  ctx?: TourCtx | null;
 };
 
 type TargetState =
@@ -33,7 +35,11 @@ function shouldLetEnterActivateTarget(target: EventTarget | null): boolean {
   return target.closest(INTERACTIVE_SHORTCUT_SELECTOR) != null;
 }
 
-export function TourOverlay({ step, stepIndex, totalSteps }: TourOverlayProps) {
+function hasTargetSelector(step: TourStepType): boolean {
+  return step.target.trim().length > 0;
+}
+
+export function TourOverlay({ step, stepIndex, totalSteps, ctx }: TourOverlayProps) {
   const nextStep = useOnboardingStore((s) => s.nextStep);
   const prevStep = useOnboardingStore((s) => s.prevStep);
   const dismissCurrentTour = useOnboardingStore((s) => s.dismissCurrentTour);
@@ -46,7 +52,18 @@ export function TourOverlay({ step, stepIndex, totalSteps }: TourOverlayProps) {
   const isLast = stepIndex >= totalSteps - 1;
 
   const measure = useCallback(() => {
-    const el = document.querySelector(step.target) as HTMLElement | null;
+    const selector = step.target.trim();
+    if (!selector) {
+      setTarget({ kind: "missing" });
+      return true;
+    }
+    let el: HTMLElement | null = null;
+    try {
+      el = document.querySelector(selector) as HTMLElement | null;
+    } catch {
+      setTarget({ kind: "missing" });
+      return true;
+    }
     if (el) {
       setTarget({ kind: "found", rect: el.getBoundingClientRect() });
       return true;
@@ -163,7 +180,20 @@ export function TourOverlay({ step, stepIndex, totalSteps }: TourOverlayProps) {
   if (typeof document === "undefined") return null;
 
   const targetRect = target.kind === "found" ? target.rect : null;
-  const missing = target.kind !== "found";
+  const missing = hasTargetSelector(step) && target.kind !== "found";
+
+  if (step.actIntro) {
+    return createPortal(
+      <ActIntro
+        title={step.actIntro.title}
+        subtitle={step.actIntro.subtitle}
+        variant={step.actIntro.variant}
+        onComplete={handleNext}
+        onSkip={handleNext}
+      />,
+      document.body,
+    );
+  }
 
   return createPortal(
     <div
@@ -183,6 +213,7 @@ export function TourOverlay({ step, stepIndex, totalSteps }: TourOverlayProps) {
       {targetRect ? <TourSpotlight rect={targetRect} /> : null}
       <TourStep
         step={step}
+        ctx={ctx}
         stepIndex={stepIndex}
         totalSteps={totalSteps}
         targetRect={targetRect}

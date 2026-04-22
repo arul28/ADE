@@ -193,6 +193,98 @@ describe("missionPreflightService", () => {
     expect(result.checklist.find((item) => item.id === "budget")?.severity).toBe("fail");
   });
 
+  it("blocks launch when required computer-use proof has no backend coverage", async () => {
+    const profiles = createProfiles();
+    const proofPhases = profiles[0]!.phases.map((phase, index) =>
+      index === 0
+        ? {
+            ...phase,
+            validationGate: {
+              ...phase.validationGate,
+              required: true,
+              evidenceRequirements: ["screenshot" as const],
+              capabilityFallback: "block" as const,
+            },
+          }
+        : phase,
+    );
+    const service = createMissionPreflightService({
+      logger: createLogger(),
+      projectRoot: "/tmp/ade-preflight",
+      missionService: {
+        listPhaseProfiles: () => profiles
+      } as any,
+      laneService: {
+        list: async () => [
+          { id: "lane-1", archivedAt: null },
+          { id: "lane-2", archivedAt: null },
+          { id: "lane-3", archivedAt: null },
+        ]
+      } as any,
+      aiIntegrationService: {
+        getAvailabilityAsync: async () => ({
+          availableModels: [
+            { id: "anthropic/claude-sonnet-4-6", shortId: "claude-sonnet-4-6", family: "anthropic", displayName: "Claude Sonnet 4.6" },
+            { id: "claude-sonnet-4-6", shortId: "claude-sonnet-4-6", family: "claude", displayName: "Claude Sonnet 4.6" },
+            { id: "openai/gpt-5.3-codex", shortId: "gpt-5.3-codex", family: "openai", displayName: "GPT-5.3 Codex" },
+            { id: "gpt-5.3-codex", shortId: "gpt-5.3-codex", family: "codex", displayName: "GPT-5.3 Codex" },
+          ]
+        }),
+        executeTask: async () => ({ structuredOutput: { clear: true, feedback: [] } })
+      } as any,
+      projectConfigService: {
+        get: () => ({
+          effective: {
+            ai: {
+              permissions: {
+                cli: { mode: "full-auto", sandboxPermissions: "workspace-write" },
+                inProcess: { mode: "full-auto" },
+              }
+            }
+          }
+        })
+      } as any,
+      missionBudgetService: {
+        estimateLaunchBudget: async () => ({
+          estimate: createBudgetEstimate("subscription"),
+          hardLimitExceeded: false,
+          windowUsageCostUsd: 0.6,
+          remainingWindowCostUsd: 10.4,
+          budgetLimitCostUsd: 11
+        })
+      } as any,
+      computerUseArtifactBrokerService: {
+        getBackendStatus: () => ({
+          backends: [],
+          localFallback: {
+            available: false,
+            detail: "No local fallback in test.",
+            supportedKinds: [],
+          },
+        }),
+      } as any,
+    });
+
+    const result = await service.runPreflight({
+      launch: {
+        prompt: "Capture required proof.",
+        phaseProfileId: profiles[0]!.id,
+        phaseOverride: proofPhases,
+        modelConfig: {
+          orchestratorModel: {
+            provider: "claude",
+            modelId: "claude-sonnet-4-6"
+          }
+        },
+      }
+    });
+
+    expect(result.canLaunch).toBe(false);
+    expect(result.computerUse?.blocked).toBe(true);
+    expect(result.computerUse?.missingKinds).toEqual(["screenshot"]);
+    expect(result.checklist.find((item) => item.id === "computer_use")?.severity).toBe("fail");
+  });
+
   it("shows warning (not fail) for non-full-auto permissions and still allows launch", async () => {
     const profiles = createProfiles();
     const service = createMissionPreflightService({

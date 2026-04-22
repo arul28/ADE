@@ -7,6 +7,9 @@ import type {
   SyncDeviceRuntimeState,
   SyncPairingConnectInfo,
   SyncPairingQrPayload,
+  SyncProjectCatalogPayload,
+  SyncProjectSwitchRequestPayload,
+  SyncProjectSwitchResultPayload,
   SyncRoleSnapshot,
   SyncTailnetDiscoveryStatus,
   SyncTransferBlocker,
@@ -108,6 +111,10 @@ type SyncServiceArgs = {
    * connected iOS peers.
    */
   notificationEventBus?: NotificationEventBus | null;
+  projectCatalogProvider?: {
+    listProjects: () => Promise<SyncProjectCatalogPayload>;
+    prepareProjectConnection: (args: SyncProjectSwitchRequestPayload) => Promise<SyncProjectSwitchResultPayload>;
+  };
 };
 
 const DRAFT_FILE = "sync-peer-draft.json";
@@ -427,6 +434,7 @@ export function createSyncService(args: SyncServiceArgs) {
         port: attemptedPort,
         deviceRegistryService,
         notificationEventBus: args.notificationEventBus ?? null,
+        projectCatalogProvider: args.projectCatalogProvider,
         onStateChanged: () => {
           void refreshRoleState();
         },

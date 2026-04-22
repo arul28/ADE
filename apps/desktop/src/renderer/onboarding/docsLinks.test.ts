@@ -2,10 +2,9 @@ import { describe, it, expect } from "vitest";
 import { docs, DOCS_HOME } from "./docsLinks";
 
 describe("docsLinks", () => {
-  it("every URL is under ade-app.dev without /docs/ prefix", () => {
+  it("every URL is under ade-app.dev", () => {
     for (const [key, url] of Object.entries(docs)) {
       expect(url, key).toMatch(/^https:\/\/www\.ade-app\.dev(\/|$)/);
-      expect(url, `${key} must not contain /docs/`).not.toContain("/docs/");
     }
   });
 

@@ -231,8 +231,9 @@ export function HelpMenu() {
 
 function waitForTourFirstTarget(tourId: string, signal: AbortSignal): Promise<boolean> {
   const tour = getTour(tourId);
-  const selector = tour?.steps[0]?.waitForSelector ?? tour?.steps[0]?.target;
-  if (!selector) return Promise.resolve(false);
+  const firstStep = tour?.steps[0];
+  const selector = firstStep?.waitForSelector ?? firstStep?.target?.trim();
+  if (!selector) return Promise.resolve(Boolean(firstStep));
 
   const hasTarget = () => {
     if (signal.aborted) return false;

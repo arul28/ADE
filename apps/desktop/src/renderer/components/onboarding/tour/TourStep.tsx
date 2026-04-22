@@ -1,9 +1,10 @@
 import React, { useEffect, useRef } from "react";
-import type { TourStep as TourStepType } from "../../../onboarding/registry";
+import type { TourCtx, TourStep as TourStepType } from "../../../onboarding/registry";
 import { openExternalUrl } from "../../../lib/openExternal";
 
 type TourStepProps = {
   step: TourStepType;
+  ctx?: TourCtx | null;
   stepIndex: number;
   totalSteps: number;
   targetRect: DOMRect | null;
@@ -79,6 +80,7 @@ function computePosition(
 
 export function TourStep({
   step,
+  ctx,
   stepIndex,
   totalSteps,
   targetRect,
@@ -91,6 +93,7 @@ export function TourStep({
   const cardRef = useRef<HTMLDivElement>(null);
   const estHeight = 180;
   const pos = computePosition(targetRect, step.placement, CARD_WIDTH, estHeight);
+  const body = step.bodyTemplate && ctx ? step.bodyTemplate(ctx) : step.body;
 
   // Focus-trap: intercept Tab inside the card. Also focus the primary action on mount.
   useEffect(() => {
@@ -186,7 +189,7 @@ export function TourStep({
           color: "var(--color-muted-fg, #B7B6C3)",
         }}
       >
-        {step.body}
+        {body}
         {missing ? (
           <>
             {" "}

@@ -18,7 +18,18 @@
   --color-accent-2: var(--color-accent-2);
   --color-accent-fg: var(--color-accent-fg);
 
-  --font-sans: "Plus Jakarta Sans", -apple-system, BlinkMacSystemFont, sans-serif;
+  /* Editorial palette */
+  --color-paper: var(--color-paper);
+  --color-paper-deep: var(--color-paper-deep);
+  --color-ink: var(--color-ink);
+  --color-ink-muted: var(--color-ink-muted);
+  --color-cream: var(--color-cream);
+  --color-cream-muted: var(--color-cream-muted);
+  --color-cream-faint: var(--color-cream-faint);
+  --color-violet-bright: var(--color-violet-bright);
+
+  --font-sans: "Inter Tight", -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-serif: "Instrument Serif", Georgia, "Times New Roman", serif;
   --font-mono: "JetBrains Mono", ui-monospace, monospace;
 }
 
@@ -39,9 +50,29 @@
   --color-accent-fg: #ffffff;
   --color-separator: #27273a;
 
+  /* Editorial palette — cream article pages */
+  --color-paper: #f1ebd6;
+  --color-paper-deep: #e8e0c6;
+  --color-ink: #18150f;
+  --color-ink-muted: #5b5646;
+  --color-ink-hairline: rgba(24, 21, 15, 0.15);
+  --color-ink-hairline-strong: rgba(24, 21, 15, 0.3);
+
+  /* Editorial palette — cream type on dark cover */
+  --color-cream: #efe6d0;
+  --color-cream-muted: #b8ae94;
+  --color-cream-faint: rgba(239, 230, 208, 0.45);
+  --color-hairline: rgba(239, 230, 208, 0.14);
+  --color-hairline-strong: rgba(239, 230, 208, 0.28);
+
+  --color-violet-bright: #a78bfa;
+
   --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
   --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
 }
+
+.font-serif { font-family: var(--font-serif); font-feature-settings: "ss01"; }
+.font-sans { font-family: var(--font-sans); }
 
 html, body {
   height: 100%;

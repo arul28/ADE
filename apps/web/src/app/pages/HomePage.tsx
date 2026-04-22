@@ -1,460 +1,317 @@
-import {
-  ArrowUpRight,
-  BookOpen,
-  Download,
-  Github,
-  GitMerge,
-  Layers,
-  MonitorCheck,
-  Package,
-  Workflow,
-  Zap,
-} from "lucide-react";
-import { Fragment } from "react";
-import { motion, useReducedMotion } from "framer-motion";
-import { Container } from "../../components/Container";
-import { Card } from "../../components/Card";
-import { LinkButton } from "../../components/LinkButton";
-import { Reveal } from "../../components/Reveal";
-import { Page } from "../../components/Page";
-import { LINKS } from "../../lib/links";
 import { useDocumentTitle } from "../../lib/useDocumentTitle";
+import { Page } from "../../components/Page";
 
-import { ImageAutoSlider } from "../../components/ui/ImageAutoSlider";
-import { ProductShowcase } from "../../components/ProductShowcase";
-import { ProviderOrbit } from "../../components/ProviderOrbit";
-import { MultiDeviceShowcase } from "../../components/MultiDeviceShowcase";
+import { Masthead } from "../../components/editorial/Masthead";
+import { CompetitorEquation } from "../../components/editorial/CompetitorEquation";
+import { Lede } from "../../components/editorial/Lede";
+import { DeviceComposition } from "../../components/editorial/DeviceComposition";
+import { FadeBand } from "../../components/editorial/FadeBand";
+import {
+  Chapter,
+  ChapterBody,
+  Byline,
+} from "../../components/editorial/Chapter";
+import { ChapterHeadline } from "../../components/editorial/ChapterHeadline";
+import { Cutout } from "../../components/editorial/Cutout";
+import { PullQuote } from "../../components/editorial/PullQuote";
+import { IPhoneFrame } from "../../components/editorial/IPhoneFrame";
+import { FeatureGrid } from "../../components/editorial/FeatureGrid";
+import { IndexPage } from "../../components/editorial/IndexPage";
+import { BackCover } from "../../components/editorial/BackCover";
 
-/* ──────────────────────────────────────────────
-   Competitor apps that ADE replaces
-   ────────────────────────────────────────────── */
-
-// Logos: apps/web/public/images/competitors/*.png (or change paths below).
-const COMPETITORS = [
-  { name: "Claude Code", logo: "/images/competitors/claude-code.png" },
-  { name: "Codex", logo: "/images/competitors/codex.png" },
-  { name: "OpenCode", logo: "/images/competitors/opencode.png" },
-  { name: "T3 Code", logo: "/images/competitors/t3-code.png" },
-  { name: "Cursor", logo: "/images/competitors/cursor.png" },
-  { name: "Superset", logo: "/images/competitors/superset.png" },
-  { name: "Conductor", logo: "/images/competitors/conductor.png" },
-  { name: "Factory", logo: "/images/competitors/factory.png" },
-  { name: "Paperclip", logo: "/images/competitors/paperclip.png" },
-  { name: "OpenClaw", logo: "/images/competitors/openclaw.png" },
-  { name: "GitHub", logo: "/images/competitors/github.png" },
-] as const;
-
-const ALSO_BUILT_IN = [
-  {
-    icon: Workflow,
-    label: "Missions",
-    detail: "Coordinated multi-step runs with visibility across phases — planning, testing, and PRs.",
-    docsPath: "/missions/overview",
-  },
-  {
-    icon: Package,
-    label: "Unified memory",
-    detail: "Vector-indexed memory across projects and agents so work compounds instead of resetting.",
-    docsPath: "/cto/memory",
-  },
-  {
-    icon: Zap,
-    label: "Automations",
-    detail: "Event-driven agents on git events, PR activity, or schedules — with guardrails while you are away.",
-    docsPath: "/automations/overview",
-  },
-  {
-    icon: GitMerge,
-    label: "Merge conflicts",
-    detail: "Resolve conflicts with side-by-side diffs and a focused flow so you can land merges in one place.",
-    docsPath: "/tools/conflicts",
-  },
-  {
-    icon: MonitorCheck,
-    label: "Computer use",
-    detail: "Screenshot-based verification of agent output when you need proof, not just prose.",
-    docsPath: "/computer-use/overview",
-  },
-  {
-    icon: Layers,
-    label: "35+ ADE actions",
-    detail: "Built-in server for file ops, git, search, and more — desktop and headless paths.",
-    docsPath: "/configuration/settings",
-  },
-] as const;
-
-/* ──────────────────────────────────────────────
-   Quickstart copy command
-   ────────────────────────────────────────────── */
-
-function QuickstartBlock() {
-  return (
-    <div className="space-y-6">
-      <div className="space-y-3">
-        <div className="flex items-center gap-2 text-sm font-medium text-fg">
-          <span className="flex h-6 w-6 items-center justify-center rounded-md bg-accent/15 text-xs font-bold text-accent">
-            1
-          </span>
-          Download the latest release
-        </div>
-        <LinkButton to={LINKS.releases} variant="secondary" size="md" target="_blank" rel="noreferrer">
-          <Download className="h-4 w-4" /> Download DMG from GitHub{" "}
-          <ArrowUpRight className="h-3.5 w-3.5 text-muted-fg" />
-        </LinkButton>
-      </div>
-
-      <div className="space-y-3">
-        <div className="flex items-center gap-2 text-sm font-medium text-fg">
-          <span className="flex h-6 w-6 items-center justify-center rounded-md bg-accent/15 text-xs font-bold text-accent">
-            2
-          </span>
-          Move ADE into Applications
-        </div>
-        <p className="text-sm text-muted-fg">
-          Drag <strong>ADE</strong> into your Applications folder before first launch so macOS can
-          keep it on the normal update path.
-        </p>
-      </div>
-
-      <div className="space-y-3">
-        <div className="flex items-center gap-2 text-sm font-medium text-fg">
-          <span className="flex h-6 w-6 items-center justify-center rounded-md bg-accent/15 text-xs font-bold text-accent">
-            3
-          </span>
-          Open ADE and point it at your project
-        </div>
-        <p className="text-sm text-muted-fg">
-          No account needed. Add your own API keys for Claude, Codex, or other providers in settings.
-        </p>
-      </div>
-    </div>
-  );
-}
-
-/* ──────────────────────────────────────────────
-   Page
-   ────────────────────────────────────────────── */
+const MOBILE_BYLINE_DATE = "April 2026 · iOS 17+";
 
 export function HomePage() {
   useDocumentTitle("ADE — Agentic Development Environment");
-  const reduceMotion = useReducedMotion();
-
-  const equationContainer = {
-    hidden: {},
-    show: {
-      transition: {
-        staggerChildren: reduceMotion ? 0 : 0.07,
-        delayChildren: reduceMotion ? 0 : 0.1,
-      },
-    },
-  };
-  const equationItem = {
-    hidden: reduceMotion ? {} : { opacity: 0, y: 14, scale: 0.85 },
-    show: {
-      opacity: 1,
-      y: 0,
-      scale: 1,
-      transition: { duration: 0.45, ease: [0.22, 1, 0.36, 1] as const },
-    },
-  };
-  const equalsItem = {
-    hidden: reduceMotion ? {} : { opacity: 0, scale: 0.6 },
-    show: {
-      opacity: 1,
-      scale: 1,
-      transition: { duration: 0.5, delay: 0.05, ease: [0.22, 1, 0.36, 1] as const },
-    },
-  };
-  const adeItem = {
-    hidden: reduceMotion ? {} : { opacity: 0, scale: 0.7, filter: "blur(8px)" },
-    show: {
-      opacity: 1,
-      scale: 1,
-      filter: "blur(0px)",
-      transition: { duration: 0.7, delay: 0.15, ease: [0.22, 1, 0.36, 1] as const },
-    },
-  };
 
   return (
     <Page>
-      {/* ── HERO — Logo Equation + ADE ─────────── */}
-      <section className="relative overflow-x-hidden">
-        {/* Background: gradient mesh + dot texture */}
+      {/* ═══════ DARK COVER ═══════ */}
+      <section className="relative overflow-hidden bg-[color:var(--color-bg)] text-[color:var(--color-cream)]">
         <div
+          aria-hidden
           className="pointer-events-none absolute inset-0"
           style={{
             background: [
-              "radial-gradient(ellipse 80% 50% at 50% -5%, rgba(124,58,237,0.18) 0%, transparent 100%)",
-              "radial-gradient(ellipse 40% 40% at 0% 0%, rgba(59,130,246,0.10) 0%, transparent 100%)",
-              "radial-gradient(ellipse 40% 40% at 100% 5%, rgba(236,72,153,0.07) 0%, transparent 100%)",
-              "radial-gradient(ellipse 50% 30% at 50% 60%, rgba(124,58,237,0.08) 0%, transparent 100%)",
-              "radial-gradient(ellipse 30% 30% at 80% 80%, rgba(16,185,129,0.05) 0%, transparent 100%)",
+              "radial-gradient(ellipse 70% 50% at 70% 45%, rgba(124,58,237,0.3) 0%, transparent 70%)",
+              "radial-gradient(ellipse 45% 55% at 10% 0%, rgba(167,139,250,0.08) 0%, transparent 70%)",
+              "radial-gradient(ellipse 40% 30% at 40% 90%, rgba(124,58,237,0.08) 0%, transparent 70%)",
             ].join(", "),
           }}
         />
         <div
+          aria-hidden
           className="pointer-events-none absolute inset-0 opacity-[0.035]"
           style={{
-            backgroundImage: "radial-gradient(circle, rgba(255,255,255,0.7) 1px, transparent 1px)",
-            backgroundSize: "20px 20px",
+            backgroundImage:
+              "radial-gradient(circle, rgba(255,255,255,0.7) 1px, transparent 1px)",
+            backgroundSize: "22px 22px",
           }}
         />
 
-        <Container className="relative pt-5 pb-10 sm:pt-8 sm:pb-16 text-center">
-          {/* Logo Equation — single row, no wrap */}
-          <motion.div
-            variants={equationContainer}
-            initial="hidden"
-            animate="show"
-            className="flex items-center justify-center gap-1 sm:gap-1.5 overflow-x-auto pb-1 scrollbar-none"
-          >
-            {COMPETITORS.map((app, i) => (
-              <Fragment key={app.name}>
-                {i > 0 && (
-                  <motion.span
-                    variants={equationItem}
-                    className="text-base sm:text-lg font-bold text-accent/40 shrink-0"
-                  >
-                    +
-                  </motion.span>
-                )}
-                <motion.div
-                  variants={equationItem}
-                  className="flex flex-col items-center gap-0.5 shrink-0"
-                >
-                  <div className="group/logo h-11 w-11 sm:h-14 sm:w-14 rounded-xl border border-border/50 bg-white/[0.05] p-1 sm:p-1.5 flex items-center justify-center overflow-hidden transition-all duration-300 hover:scale-110 hover:border-accent/50 hover:bg-white/[0.1] hover:shadow-[0_0_20px_rgba(124,58,237,0.2)]">
-                    <img
-                      src={app.logo}
-                      alt={app.name}
-                      className="h-full w-full object-contain rounded-lg"
-                    />
-                  </div>
-                  <span className="text-[9px] sm:text-[10px] font-medium text-muted-fg text-center leading-tight max-w-[52px] sm:max-w-[60px] mt-1">
-                    {app.name}
-                  </span>
-                </motion.div>
-              </Fragment>
-            ))}
-          </motion.div>
+        <Masthead />
 
-          {/* = ADE app icon — lands last with a violet pulse */}
-          <motion.div
-            initial="hidden"
-            animate="show"
-            transition={{ staggerChildren: reduceMotion ? 0 : 0.05, delayChildren: reduceMotion ? 0 : 0.1 + COMPETITORS.length * 0.07 }}
-          >
-            <div className="mt-3 flex flex-col items-center">
-              <motion.span
-                variants={equalsItem}
-                className="text-2xl sm:text-3xl font-black text-accent/70 mb-2"
-              >
-                =
-              </motion.span>
-              <motion.div variants={adeItem} className="relative">
-                {!reduceMotion && (
-                  <motion.div
-                    aria-hidden
-                    className="absolute inset-0 rounded-[22%]"
-                    initial={{ opacity: 0, scale: 0.9 }}
-                    animate={{
-                      opacity: [0, 0.6, 0],
-                      scale: [0.9, 1.25, 1.5],
-                    }}
-                    transition={{
-                      duration: 1.4,
-                      delay: 0.1 + COMPETITORS.length * 0.07 + 0.2,
-                      ease: "easeOut",
-                    }}
-                    style={{
-                      boxShadow: "0 0 80px 20px rgba(124,58,237,0.55)",
-                    }}
-                  />
-                )}
-                <img
-                  src="/images/ade-dock-icon.png"
-                  alt="ADE"
-                  className="relative h-32 w-32 sm:h-40 sm:w-40 rounded-[22%] object-contain drop-shadow-[0_8px_40px_rgba(124,58,237,0.45)]"
-                />
-              </motion.div>
-            </div>
-          </motion.div>
-
-          {/* Headline */}
-          <Reveal delay={0.14}>
-            <h1 className="mt-4 mx-auto max-w-4xl text-4xl font-bold tracking-tight text-fg sm:text-5xl lg:text-6xl leading-[1.15]">
-              Every AI coding tool.{" "}
-              <span className="bg-gradient-to-r from-violet-400 via-accent to-indigo-400 bg-clip-text text-transparent animate-gradient-text">
-                One app.
-              </span>
-            </h1>
-          </Reveal>
-
-          {/* Subtitle */}
-          <Reveal delay={0.18}>
-            <p className="mx-auto mt-3 max-w-2xl text-base leading-relaxed text-muted-fg sm:text-lg">
-              ADE replaces all your AI tools with a single Agentic Development Environment.
-              Use your existing subscriptions, API keys, or even local models. Fully Open Source!
-            </p>
-          </Reveal>
-
-          {/* CTAs */}
-          <Reveal delay={0.22}>
-            <div className="mt-4 flex flex-wrap justify-center gap-2.5">
-              <LinkButton to={LINKS.releases} variant="primary" size="lg" target="_blank" rel="noreferrer">
-                <Download className="h-5 w-5" /> Download from GitHub <ArrowUpRight className="h-4 w-4" />
-              </LinkButton>
-              <LinkButton to={LINKS.github} variant="secondary" size="lg" target="_blank" rel="noreferrer">
-                <Github className="h-5 w-5" /> View on GitHub
-              </LinkButton>
-              <LinkButton to={LINKS.docs} variant="secondary" size="lg" target="_blank" rel="noreferrer">
-                <BookOpen className="h-4 w-4" /> Docs <ArrowUpRight className="h-3.5 w-3.5 text-muted-fg" />
-              </LinkButton>
-            </div>
-            <div className="mt-2 inline-flex items-center gap-1.5 text-[11px] text-muted-fg/40">
-              <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 animate-pulse" />
-              Open source &middot; Local-first &middot; macOS &middot; No account required
-            </div>
-          </Reveal>
-
-          {/* Hero app visual */}
-          <Reveal delay={0.26} className="overflow-visible">
-            <div className="relative left-1/2 mt-5 w-screen max-w-[100vw] -translate-x-1/2 sm:mt-6 lg:mt-7">
-              <ImageAutoSlider />
-            </div>
-          </Reveal>
-        </Container>
-      </section>
-
-      <MultiDeviceShowcase />
-
-      <ProductShowcase />
-
-      <ProviderOrbit />
-
-      {/* ── MORE CAPABILITIES ─────────────────── */}
-      <section className="border-y border-border/70 bg-card/20 py-16 sm:py-20">
-        <Container>
-          <Reveal>
-            <h2 className="text-2xl font-bold tracking-tight text-fg sm:text-3xl">Also built in</h2>
-            <p className="mt-2 max-w-2xl text-sm text-muted-fg sm:text-base">
-              More capabilities that ship in the same app — no plugins or extensions required.
-            </p>
-          </Reveal>
-
-          <div className="mt-10 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-            {ALSO_BUILT_IN.map((cap, idx) => (
-              <Reveal key={cap.label} delay={idx * 0.03}>
-                <a
-                  href={`https://www.ade-app.dev/docs${cap.docsPath}`}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="group flex flex-col rounded-xl border border-border/70 bg-card/40 p-5 transition-all duration-200 hover:bg-card/60 hover:border-accent/30 hover:shadow-[0_0_30px_rgba(124,58,237,0.08)]"
-                >
-                  <div className="flex items-center gap-3">
-                    <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-accent/10 text-accent">
-                      <cap.icon className="h-4.5 w-4.5" />
-                    </div>
-                    <div className="text-sm font-semibold text-fg">{cap.label}</div>
-                  </div>
-                  <div className="mt-3 flex-1 text-sm leading-relaxed text-muted-fg">{cap.detail}</div>
-                  <div className="mt-3 inline-flex items-center gap-1 text-xs font-medium text-accent/70 transition-colors group-hover:text-accent">
-                    Read docs <ArrowUpRight className="h-3 w-3" />
-                  </div>
-                </a>
-              </Reveal>
-            ))}
+        <div className="relative mx-auto max-w-[1240px] px-[clamp(20px,3vw,40px)]">
+          <div className="border-b border-[color:var(--color-hairline)]">
+            <CompetitorEquation />
           </div>
-        </Container>
-      </section>
 
-      {/* ── QUICKSTART ────────────────────────── */}
-      <section id="quickstart" className="scroll-mt-20 py-16 sm:py-24">
-        <Container>
-          <div className="grid gap-12 lg:grid-cols-2 lg:items-start">
-            <div>
-              <Reveal>
-                <h2 className="text-3xl font-bold tracking-tight text-fg sm:text-4xl">
-                  Get started in 30 seconds
-                </h2>
-                <p className="mt-3 max-w-lg text-base text-muted-fg">
-                  Download the latest macOS release, move ADE into Applications, and open. No account required.
-                </p>
-              </Reveal>
-
-              <Reveal delay={0.05}>
-                <div className="mt-8">
-                  <QuickstartBlock />
-                </div>
-              </Reveal>
-            </div>
-
-            <Reveal delay={0.08}>
-              <Card className="p-6">
-                <h3 className="text-base font-semibold text-fg">Or build from source</h3>
-                <p className="mt-2 text-sm text-muted-fg">
-                  Clone the repo and run with Vite + Electron. Also the fastest way to contribute.
-                </p>
-                <div className="mt-4 rounded-xl border border-border/70 bg-[#0c0a10] p-4 font-mono text-sm leading-relaxed text-muted-fg">
-                  <div>
-                    <span className="text-accent/70">$</span> git clone https://github.com/
-                    {LINKS.repo}.git
-                  </div>
-                  <div>
-                    <span className="text-accent/70">$</span> cd ADE/apps/desktop
-                  </div>
-                  <div>
-                    <span className="text-accent/70">$</span> npm install
-                  </div>
-                  <div>
-                    <span className="text-accent/70">$</span> npm run dev
-                  </div>
-                </div>
-
-                <div className="mt-6 flex flex-wrap gap-3">
-                  <LinkButton to={LINKS.docs} variant="secondary" size="sm" target="_blank" rel="noreferrer">
-                    <BookOpen className="h-4 w-4" /> Docs{" "}
-                    <ArrowUpRight className="h-3.5 w-3.5 text-muted-fg" />
-                  </LinkButton>
-                  <LinkButton to={LINKS.github} variant="secondary" size="sm" target="_blank" rel="noreferrer">
-                    <Github className="h-4 w-4" /> Repo{" "}
-                    <ArrowUpRight className="h-3.5 w-3.5 text-muted-fg" />
-                  </LinkButton>
-                </div>
-              </Card>
-            </Reveal>
+          <div className="grid grid-cols-1 items-center gap-[clamp(24px,3vw,48px)] py-[clamp(20px,3vw,40px)] lg:grid-cols-[minmax(0,5fr)_minmax(0,7fr)]">
+            <Lede />
+            <DeviceComposition />
           </div>
-        </Container>
+
+          <div className="flex items-center justify-center gap-3 border-t border-[color:var(--color-hairline)] py-[clamp(18px,2vw,26px)] text-[11px] uppercase tracking-[0.34em] text-[color:var(--color-cream-faint)]">
+            Turn the page
+            <span
+              className="font-serif italic text-[color:var(--color-violet-bright)]"
+              style={{
+                fontSize: "15px",
+                animation: "nudge 2.4s ease-in-out infinite",
+              }}
+            >
+              ↓
+            </span>
+            Chapter I · Lanes
+            <style>{`
+              @keyframes nudge {
+                0%, 100% { transform: translateY(0); }
+                50% { transform: translateY(4px); }
+              }
+            `}</style>
+          </div>
+        </div>
       </section>
 
-      {/* ── CTA ───────────────────────────────── */}
-      <section className="py-16 sm:py-24">
-        <Container>
-          <Reveal>
-            <Card className="relative overflow-hidden p-10 sm:p-14 text-center">
-              {/* Subtle radial gradient */}
-              <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_at_center,_var(--color-accent)_0%,_transparent_70%)] opacity-[0.06]" />
+      {/* ═══════ FADE dark → cream ═══════ */}
+      <FadeBand direction="to-cream" />
 
-              <div className="relative">
-                <h2 className="text-3xl font-bold tracking-tight text-fg sm:text-4xl">
-                  The last AI coding app you'll download.
-                </h2>
-                <p className="mt-3 mx-auto max-w-lg text-base text-muted-fg">
-                  Free. Open source. Your code never leaves your machine.
-                </p>
+      {/* ═══════ CHAPTER I — LANES ═══════ */}
+      <Chapter
+        chapterNumber="Chapter I"
+        chapterTitle="Lanes"
+        pageNumber="04"
+        id="chapter-lanes"
+      >
+        <div className="grid grid-cols-1 gap-[clamp(32px,4vw,56px)] lg:grid-cols-[minmax(0,7fr)_minmax(0,5fr)] lg:items-start">
+          <Cutout
+            src="/images/screenshots/lanes.png"
+            alt="ADE lanes — three parallel git worktrees on macOS"
+            figNumber="Fig. 2"
+            caption="Three lanes in parallel — each is its own git worktree. Switch in a click."
+            rotate={0.4}
+            tone="ink"
+          />
 
-                <div className="mt-8 flex flex-wrap justify-center gap-3">
-                  <LinkButton to={LINKS.releases} variant="primary" size="lg" target="_blank" rel="noreferrer">
-                    <Download className="h-5 w-5" /> Download from GitHub <ArrowUpRight className="h-4 w-4" />
-                  </LinkButton>
-                  <LinkButton to={LINKS.github} variant="secondary" size="lg" target="_blank" rel="noreferrer">
-                    <Github className="h-5 w-5" /> Star on GitHub
-                  </LinkButton>
-                </div>
-              </div>
-            </Card>
-          </Reveal>
-        </Container>
-      </section>
+          <div>
+            <ChapterHeadline
+              line1="Parallel work."
+              line2="Isolated git."
+              deck="Every lane is its own worktree. Edit, run, commit — many tasks at once, no collisions."
+              tone="ink"
+            />
+            <div className="mt-8">
+              <ChapterBody dropCap>
+                Each lane is a fresh branch you can flip between in a click.
+                Running tests in one doesn&rsquo;t block code in another. When
+                a lane ships, commit it and move on.
+              </ChapterBody>
+              <PullQuote tone="ink">
+                &ldquo;Three tasks at once. One git history. Zero
+                collisions.&rdquo;
+              </PullQuote>
+              <Byline tone="ink" />
+            </div>
+          </div>
+        </div>
+      </Chapter>
+
+      {/* ═══════ CHAPTER II — WORK ═══════ */}
+      <Chapter
+        chapterNumber="Chapter II"
+        chapterTitle="Work"
+        pageNumber="10"
+        id="chapter-work"
+      >
+        <div className="grid grid-cols-1 gap-[clamp(32px,4vw,56px)] lg:grid-cols-[minmax(0,5fr)_minmax(0,7fr)] lg:items-start">
+          <div>
+            <ChapterHeadline
+              line1="Agents that code."
+              line2="While you watch."
+              deck="Attach a prompt to a lane. Pick a model. Step through every edit as it happens."
+              tone="ink"
+            />
+            <div className="mt-8">
+              <ChapterBody dropCap>
+                Work is where agents execute. You see every file change, every
+                test run, every tool call &mdash; live. Approve the diff before
+                it commits, or step in and steer.
+              </ChapterBody>
+              <PullQuote tone="ink">
+                &ldquo;The diff is yours before it commits.&rdquo;
+              </PullQuote>
+              <Byline tone="ink" />
+            </div>
+          </div>
+
+          <Cutout
+            src="/images/screenshots/run.png"
+            alt="ADE run view — an agent executing a task live"
+            figNumber="Fig. 3"
+            caption="An agent executing — tool calls, test output, and a diff ready for review."
+            rotate={-0.5}
+            tone="ink"
+          />
+        </div>
+      </Chapter>
+
+      {/* ═══════ CHAPTER III — PULL REQUESTS ═══════ */}
+      <Chapter
+        chapterNumber="Chapter III"
+        chapterTitle="Pull Requests"
+        pageNumber="16"
+        id="chapter-prs"
+      >
+        <div className="grid grid-cols-1 gap-[clamp(32px,4vw,56px)] lg:grid-cols-[minmax(0,7fr)_minmax(0,5fr)] lg:items-start">
+          <Cutout
+            src="/images/screenshots/prs.png"
+            alt="ADE pull request review"
+            figNumber="Fig. 4"
+            caption="Pull requests — diff, CI status, and review comments on the same page as the lane."
+            rotate={0.5}
+            tone="ink"
+          />
+
+          <div>
+            <ChapterHeadline
+              line1="Review."
+              line2="Without leaving the app."
+              deck="Every PR an agent opens lands here — diff, tests, comments — attached to the lane it came from."
+              tone="ink"
+            />
+            <div className="mt-8">
+              <ChapterBody dropCap>
+                No tab-hopping to GitHub. Read the diff, check CI, comment,
+                approve, merge &mdash; all inside ADE, connected to the lane,
+                the branch, and the model that wrote the code.
+              </ChapterBody>
+              <Byline tone="ink" />
+            </div>
+          </div>
+        </div>
+      </Chapter>
+
+      {/* ═══════ CHAPTER IV — CTO ═══════ */}
+      <Chapter
+        chapterNumber="Chapter IV"
+        chapterTitle="CTO"
+        pageNumber="22"
+        id="chapter-cto"
+      >
+        <div className="grid grid-cols-1 gap-[clamp(32px,4vw,56px)] lg:grid-cols-[minmax(0,5fr)_minmax(0,7fr)] lg:items-start">
+          <div>
+            <ChapterHeadline
+              line1="Your team of agents."
+              line2="Organized."
+              deck="A persistent org chart of worker agents — each with their own memory, budget, and Linear-synced responsibilities."
+              tone="ink"
+            />
+            <div className="mt-8">
+              <ChapterBody dropCap>
+                The CTO dispatches work to the right agent, tracks what&rsquo;s
+                in flight, pulls issues from Linear, and posts results back.
+                It&rsquo;s the conductor that turns a pile of prompts into a
+                shipping team.
+              </ChapterBody>
+              <PullQuote tone="ink">
+                &ldquo;A team of agents, on payroll, on call.&rdquo;
+              </PullQuote>
+              <Byline tone="ink" />
+            </div>
+          </div>
+
+          <Cutout
+            src="/images/screenshots/cto.png"
+            alt="ADE CTO — org chart of worker agents"
+            figNumber="Fig. 5"
+            caption="The CTO — an org chart of worker agents, each with its own memory and budget."
+            rotate={-0.4}
+            tone="ink"
+          />
+        </div>
+      </Chapter>
+
+      {/* ═══════ CHAPTER V — IN YOUR POCKET ═══════ */}
+      <Chapter
+        chapterNumber="Chapter V"
+        chapterTitle="In Your Pocket"
+        pageNumber="28"
+        id="chapter-mobile"
+      >
+        <div className="grid grid-cols-1 items-center gap-[clamp(32px,4vw,56px)] lg:grid-cols-[minmax(0,6fr)_minmax(0,6fr)]">
+          <div>
+            <ChapterHeadline
+              line1="The first AI coding tool"
+              line2="that lives in your pocket."
+              deck="Resume a lane from the train. Approve a PR from a café. Chat with your agents from bed."
+              tone="ink"
+            />
+            <div className="mt-8">
+              <ChapterBody dropCap>
+                The desktop is where code gets written. The pocket is where
+                decisions get made. ADE syncs both over cr-sqlite so a lane
+                you started on macOS continues on iOS without a refresh.
+              </ChapterBody>
+              <PullQuote tone="ink">
+                &ldquo;None of the eleven apps we replace have a mobile client.
+                We built the one that does.&rdquo;
+              </PullQuote>
+              <Byline tone="ink" date={MOBILE_BYLINE_DATE} />
+            </div>
+          </div>
+
+          <div className="relative flex justify-center lg:justify-end">
+            <div
+              aria-hidden
+              className="pointer-events-none absolute inset-0 -m-10"
+              style={{
+                background:
+                  "radial-gradient(ellipse 55% 55% at 50% 50%, rgba(124,58,237,0.35) 0%, rgba(124,58,237,0.08) 45%, transparent 75%)",
+                filter: "blur(14px)",
+              }}
+            />
+            <div className="relative">
+              <IPhoneFrame
+                src="/images/screenshots/agent-chat.png"
+                alt="ADE on iPhone"
+                rotate={-2}
+                width="w-[240px] sm:w-[260px]"
+                figCaption={{
+                  figNumber: "Fig. 6",
+                  caption:
+                    "A lane, synced from desktop — edit, approve, comment from anywhere.",
+                  tone: "ink",
+                }}
+              />
+            </div>
+          </div>
+        </div>
+      </Chapter>
+
+      {/* ═══════ CATALOG — the rest of the IDE ═══════ */}
+      <FeatureGrid />
+
+      {/* ═══════ FADE cream → dark ═══════ */}
+      <FadeBand direction="to-dark" />
+
+      {/* ═══════ BACK COVER ═══════ */}
+      <BackCover />
+
+      {/* ═══════ FADE dark → cream ═══════ */}
+      <FadeBand direction="to-cream" />
+
+      {/* ═══════ INDEX ═══════ */}
+      <IndexPage />
     </Page>
   );
 }

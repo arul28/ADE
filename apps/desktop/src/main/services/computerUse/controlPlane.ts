@@ -5,6 +5,7 @@ import type {
   ComputerUseArtifactView,
   ComputerUseBackendStatus,
   ComputerUseOwnerSnapshot,
+  PhaseCard,
 } from "../../../shared/types";
 import type { ComputerUseArtifactBrokerService } from "./computerUseArtifactBrokerService";
 
@@ -18,6 +19,22 @@ const COMPUTER_USE_KINDS: ComputerUseArtifactKind[] = [
 
 export function getComputerUseArtifactKinds(): ComputerUseArtifactKind[] {
   return [...COMPUTER_USE_KINDS];
+}
+
+export function collectRequiredComputerUseKindsFromPhases(
+  phases: PhaseCard[],
+): ComputerUseArtifactKind[] {
+  const required = new Set<ComputerUseArtifactKind>();
+  const supported = new Set<ComputerUseArtifactKind>(COMPUTER_USE_KINDS);
+  for (const phase of phases) {
+    if (!phase.validationGate.required) continue;
+    for (const requirement of phase.validationGate.evidenceRequirements ?? []) {
+      if (supported.has(requirement as ComputerUseArtifactKind)) {
+        required.add(requirement as ComputerUseArtifactKind);
+      }
+    }
+  }
+  return Array.from(required);
 }
 
 function buildActivity(

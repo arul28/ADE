@@ -11,6 +11,7 @@ export function TourHost() {
   const onboardingEnabled = useAppStore((s) => s.onboardingEnabled);
   const activeTourId = useOnboardingStore((s) => s.activeTourId);
   const activeStepIndex = useOnboardingStore((s) => s.activeStepIndex);
+  const activeTourCtx = useOnboardingStore((s) => s.activeTourCtx);
 
   if (!onboardingEnabled) return null;
   if (!activeTourId) return null;
@@ -23,5 +24,12 @@ export function TourHost() {
   const step = tour.steps[clampedIndex];
   if (!step) return null;
 
-  return <TourOverlay step={step} stepIndex={clampedIndex} totalSteps={tour.steps.length} />;
+  return (
+    <TourOverlay
+      step={step}
+      stepIndex={clampedIndex}
+      totalSteps={tour.steps.length}
+      ctx={activeTourCtx}
+    />
+  );
 }

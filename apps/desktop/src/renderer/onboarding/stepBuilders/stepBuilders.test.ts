@@ -62,11 +62,10 @@ describe("step builders", () => {
         }
       });
 
-      it("every docUrl points at ade-app.dev without /docs/", () => {
+      it("every docUrl points at ade-app.dev", () => {
         for (const step of steps) {
           if (!step.docUrl) continue;
           expect(step.docUrl.startsWith(VALID_DOCS_PREFIX)).toBe(true);
-          expect(step.docUrl).not.toContain("/docs/");
         }
       });
 

@@ -19,7 +19,11 @@ import type { MissionPermissionConfig } from "../../../shared/types/missions";
 import { isRecord, nowIso, toOptionalString } from "../shared/utils";
 import type { HumanWorkDigestService } from "../memory/humanWorkDigestService";
 import type { ComputerUseArtifactBrokerService } from "../computerUse/computerUseArtifactBrokerService";
-import { getComputerUseArtifactKinds } from "../computerUse/controlPlane";
+import {
+  collectRequiredComputerUseKindsFromPhases,
+  getComputerUseArtifactKinds,
+} from "../computerUse/controlPlane";
+import { getCapabilityForRequirement } from "../computerUse/localComputerUse";
 
 
 function normalizePhaseCards(phases: PhaseCard[]): PhaseCard[] {
@@ -112,15 +116,36 @@ export function createMissionPreflightService(args: {
 
     const checklist: MissionPreflightChecklistItem[] = [];
     const backendStatus = computerUseArtifactBrokerService?.getBackendStatus() ?? null;
-    // Computer-use policy/proof gating has been removed; treat preflight as permissive.
-    const requiredComputerUseKinds: ComputerUseArtifactKind[] = [];
+    const supportedComputerUseKinds = new Set(getComputerUseArtifactKinds());
+    const requiredComputerUseKinds = collectRequiredComputerUseKindsFromPhases(selected.phases);
+    const hasExternalComputerUseCoverage = (kind: ComputerUseArtifactKind): boolean =>
+      backendStatus?.backends.some((backend) =>
+        backend.available && backend.supportedKinds.includes(kind)
+      ) ?? false;
+    const hasLocalComputerUseCoverage = (kind: ComputerUseArtifactKind): boolean =>
+      backendStatus
+        ? (backendStatus.localFallback?.supportedKinds.includes(kind) ?? false)
+        : (getCapabilityForRequirement(kind)?.available ?? false);
     const availableExternalBackends = (backendStatus?.backends ?? [])
-      .filter((backend) => backend.available)
+      .filter((backend) =>
+        backend.available
+        && (
+          requiredComputerUseKinds.length === 0
+          || requiredComputerUseKinds.some((kind) => backend.supportedKinds.includes(kind))
+        )
+      )
       .map((backend) => backend.name);
-    const missingComputerUseKinds: ComputerUseArtifactKind[] = [];
-    const computerUseBlocked = false;
-    // Retain module side-effect reference so unused-import lint stays green.
-    void getComputerUseArtifactKinds;
+    const fallbackCoverageKinds = requiredComputerUseKinds.filter((kind) =>
+      hasLocalComputerUseCoverage(kind)
+    );
+    const missingComputerUseKinds = requiredComputerUseKinds.filter((kind) => {
+      return !hasExternalComputerUseCoverage(kind) && !hasLocalComputerUseCoverage(kind);
+    });
+    const fallbackOnlyKinds = requiredComputerUseKinds.filter((kind) => {
+      return !hasExternalComputerUseCoverage(kind) && hasLocalComputerUseCoverage(kind);
+    });
+    const computerUseBlocked = requiredComputerUseKinds.length > 0
+      && missingComputerUseKinds.length > 0;
 
     const structuralIssues: string[] = [];
     for (const [index, phase] of selected.phases.entries()) {
@@ -278,25 +303,99 @@ export function createMissionPreflightService(args: {
     const activeLanes = await laneService.list({ includeArchived: false }).catch(() => []);
 
     checklist.push(
-      toChecklistItem({
-        id: "computer_use",
-        severity: "pass",
-        title: "Computer use readiness",
-        summary: "Computer-use policy gating has been retired; proof capture is best-effort only.",
-        details: [
-          `External backends detected: ${availableExternalBackends.length > 0 ? availableExternalBackends.join(", ") : "none"}`,
-        ],
-      }),
+      requiredComputerUseKinds.length === 0
+        ? toChecklistItem({
+            id: "computer_use",
+            severity: "pass",
+            title: "Computer use readiness",
+            summary: "The selected phases do not require computer-use proof artifacts.",
+            details: [
+              `External backends detected: ${availableExternalBackends.length > 0 ? availableExternalBackends.join(", ") : "none"}`,
+            ],
+          })
+        : toChecklistItem({
+            id: "computer_use",
+            severity: computerUseBlocked ? "fail" : fallbackOnlyKinds.length > 0 ? "warning" : "pass",
+            title: "Computer use readiness",
+            summary: computerUseBlocked
+              ? "Required computer-use proof is not fully covered in the current environment."
+              : fallbackOnlyKinds.length > 0
+                ? "Required proof is covered, but some evidence depends on ADE-local fallback support."
+                : "Required proof is covered by an available external computer-use backend.",
+            details: [
+              `Required proof kinds: ${requiredComputerUseKinds.join(", ")}`,
+              `External backends detected: ${availableExternalBackends.length > 0 ? availableExternalBackends.join(", ") : "none"}`,
+              ...(fallbackCoverageKinds.length > 0 ? [`Local fallback can cover: ${fallbackCoverageKinds.join(", ")}`] : []),
+              ...(missingComputerUseKinds.length > 0 ? [`Missing coverage: ${missingComputerUseKinds.join(", ")}`] : []),
+            ],
+            ...(computerUseBlocked
+              ? {
+                  fixHint: "Install or enable an approved external backend such as Ghost OS or agent-browser, run on a platform with ADE-local proof support, or relax the mission proof contract before launch.",
+                }
+              : {}),
+          }),
     );
 
+    const capabilityIssues: string[] = [];
+    const capabilityWarnings: string[] = [];
+    for (const phase of selected.phases) {
+      const evidenceRequirements = phase.validationGate.evidenceRequirements ?? [];
+      if (!phase.validationGate.required || evidenceRequirements.length === 0) continue;
+      const descriptor = getModelById(phase.model.modelId) ?? resolveModelAlias(phase.model.modelId);
+      const requiresBrowserEvidence = evidenceRequirements.some((requirement) =>
+        requirement === "screenshot"
+        || requirement === "browser_verification"
+        || requirement === "browser_trace"
+        || requirement === "video_recording"
+      );
+      if (requiresBrowserEvidence && descriptor) {
+        const likelyBrowserCapable = descriptor.capabilities.tools && descriptor.capabilities.vision;
+        if (!likelyBrowserCapable) {
+          const message = `${phase.name}: requires browser/screenshot evidence, but ${descriptor.displayName} does not advertise both tools and vision support.`;
+          if ((phase.validationGate.capabilityFallback ?? "block") === "block") capabilityIssues.push(message);
+          else capabilityWarnings.push(message);
+        }
+      }
+      if (requiresBrowserEvidence && !descriptor) {
+        const message = `${phase.name}: requires browser/screenshot evidence, but model ${phase.model.modelId} could not be resolved for capability checks.`;
+        if ((phase.validationGate.capabilityFallback ?? "block") === "block") capabilityIssues.push(message);
+        else capabilityWarnings.push(message);
+      }
+      for (const requirement of evidenceRequirements) {
+        const requirementKind = requirement as ComputerUseArtifactKind;
+        if (!supportedComputerUseKinds.has(requirementKind)) continue;
+        if (hasExternalComputerUseCoverage(requirementKind)) continue;
+        if (hasLocalComputerUseCoverage(requirementKind)) continue;
+        const localCapability = backendStatus ? null : getCapabilityForRequirement(requirementKind);
+        const localDetail = backendStatus?.localFallback?.detail ?? localCapability?.detail;
+        const localStateReason = localCapability?.state === "blocked_by_capability"
+          ? "blocked by platform support"
+          : "missing required tooling";
+        const message = `${phase.name}: ${requirement.replace(/_/g, " ")} is required, but no external backend is available and the local runtime is ${localStateReason}${localDetail ? ` (${localDetail})` : ""}.`;
+        if ((phase.validationGate.capabilityFallback ?? "block") === "block") capabilityIssues.push(message);
+        else capabilityWarnings.push(message);
+      }
+    }
+
     checklist.push(
-      toChecklistItem({
-        id: "capabilities",
-        severity: "pass",
-        title: "Capability contracts",
-        summary: "Capability pre-flight is a no-op; runtime will determine coverage on demand.",
-        details: ["No blocking capability gaps detected in the selected phase configuration."],
-      }),
+      capabilityIssues.length === 0 && capabilityWarnings.length === 0
+        ? toChecklistItem({
+            id: "capabilities",
+            severity: "pass",
+            title: "Capability contracts",
+            summary: "Configured evidence contracts have matching runtime capabilities.",
+            details: ["No blocking capability gaps detected in the selected phase configuration."],
+          })
+        : toChecklistItem({
+            id: "capabilities",
+            severity: capabilityIssues.length > 0 ? "fail" : "warning",
+            title: "Capability contracts",
+            summary: capabilityIssues.length > 0
+              ? "One or more required capabilities are missing for the selected mission contract."
+              : "Some optional capability-backed evidence may require fallback or operator review.",
+            details: [...capabilityIssues, ...capabilityWarnings],
+            fixHint: "Switch to models that support the required evidence flow, install an approved computer-use backend, or relax the phase contract before launch.",
+          }),
     );
 
     const requestedDescriptors = new Map<string, ReturnType<typeof getModelById>>();
@@ -635,7 +734,13 @@ export function createMissionPreflightService(args: {
         missingKinds: missingComputerUseKinds,
         availableExternalBackends,
         blocked: computerUseBlocked,
-        summary: "Computer-use policy gating has been retired; missions always proceed.",
+        summary: requiredComputerUseKinds.length === 0
+          ? "This mission does not require computer-use proof."
+          : computerUseBlocked
+            ? `Required proof coverage is missing for ${missingComputerUseKinds.join(", ") || requiredComputerUseKinds.join(", ")}.`
+            : fallbackOnlyKinds.length > 0
+              ? `Required proof is covered, but ${fallbackOnlyKinds.join(", ")} still rely on ADE-local fallback support.`
+              : `Required proof can be satisfied through approved external backends: ${availableExternalBackends.join(", ")}.`,
       },
     };
   };

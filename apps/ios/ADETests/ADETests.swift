@@ -527,6 +527,143 @@ final class ADETests: XCTestCase {
     database.close()
   }
 
+  func testDatabaseListsMobileProjectsAndScopesCachedRuntimeByActiveProject() throws {
+    let baseURL = makeTemporaryDirectory()
+    let database = makeControllerHydrationDatabase(baseURL: baseURL)
+    XCTAssertNil(database.initializationError)
+
+    try database.executeSqlForTesting("""
+      insert into projects (
+        id, root_path, display_name, default_base_ref, created_at, last_opened_at
+      ) values
+        ('project-1', '/tmp/project-one', 'Project One', 'main', '2026-04-22T00:00:00.000Z', '2026-04-22T01:00:00.000Z'),
+        ('project-2', '/tmp/project-two', 'Project Two', 'develop', '2026-04-22T00:00:00.000Z', '2026-04-22T02:00:00.000Z');
+      insert into lanes (
+        id, project_id, name, description, lane_type, base_ref, branch_ref, worktree_path,
+        attached_root_path, is_edit_protected, parent_lane_id, color, icon, tags_json, folder,
+        status, created_at, archived_at
+      ) values
+        ('lane-one', 'project-1', 'One', null, 'worktree', 'main', 'feature/one', '/tmp/project-one/.ade/worktrees/one',
+         null, 0, null, null, null, null, null, 'active', '2026-04-22T00:10:00.000Z', null),
+        ('lane-two', 'project-2', 'Two', null, 'worktree', 'develop', 'feature/two', '/tmp/project-two/.ade/worktrees/two',
+         null, 0, null, null, null, null, null, 'active', '2026-04-22T00:20:00.000Z', null);
+      create table if not exists files_workspaces (
+        id text primary key,
+        kind text not null,
+        lane_id text,
+        name text not null,
+        root_path text not null,
+        is_read_only_by_default integer not null default 1,
+        mobile_read_only integer not null default 1,
+        updated_at text not null
+      );
+    """)
+
+    let projects = database.listMobileProjects()
+    XCTAssertEqual(projects.map(\.id), ["project-2", "project-1"])
+    XCTAssertEqual(projects.first(where: { $0.id == "project-1" })?.laneCount, 1)
+    XCTAssertEqual(projects.first(where: { $0.id == "project-2" })?.defaultBaseRef, "develop")
+    XCTAssertTrue(projects.allSatisfy(\.isCached))
+
+    database.setActiveProjectId("project-1")
+    try database.replaceTerminalSessions([
+      makeTerminalSessionSummary(
+        id: "session-one",
+        laneId: "lane-one",
+        laneName: "One",
+        toolType: "codex-chat",
+        title: "Project one chat"
+      ),
+    ])
+    try database.replaceFilesWorkspaces([
+      FilesWorkspace(
+        id: "workspace-one",
+        kind: "worktree",
+        laneId: "lane-one",
+        name: "One",
+        rootPath: "/tmp/project-one/.ade/worktrees/one",
+        isReadOnlyByDefault: false,
+        mobileReadOnly: true
+      ),
+    ])
+
+    database.setActiveProjectId("project-2")
+    try database.replaceTerminalSessions([
+      makeTerminalSessionSummary(
+        id: "session-two",
+        laneId: "lane-two",
+        laneName: "Two",
+        toolType: "claude-chat",
+        title: "Project two chat"
+      ),
+    ])
+    try database.replaceFilesWorkspaces([
+      FilesWorkspace(
+        id: "workspace-two",
+        kind: "worktree",
+        laneId: "lane-two",
+        name: "Two",
+        rootPath: "/tmp/project-two/.ade/worktrees/two",
+        isReadOnlyByDefault: false,
+        mobileReadOnly: true
+      ),
+    ])
+
+    XCTAssertEqual(database.fetchLanes(includeArchived: true).map(\.id), ["lane-two"])
+    XCTAssertEqual(database.fetchSessions().map(\.id), ["session-two"])
+    XCTAssertEqual(database.listWorkspaces().map(\.id), ["workspace-two"])
+
+    database.setActiveProjectId("project-1")
+    XCTAssertEqual(database.fetchLanes(includeArchived: true).map(\.id), ["lane-one"])
+    XCTAssertEqual(database.fetchSessions().map(\.id), ["session-one"])
+    XCTAssertEqual(database.listWorkspaces().map(\.id), ["workspace-one"])
+
+    database.close()
+  }
+
+  @MainActor
+  func testSyncServiceProjectHomeUsesCachedProjectsAndLocalSelection() throws {
+    let activeProjectIdKey = "ade.sync.activeProjectId"
+    let activeProjectRootPathKey = "ade.sync.activeProjectRootPath"
+    UserDefaults.standard.removeObject(forKey: activeProjectIdKey)
+    UserDefaults.standard.removeObject(forKey: activeProjectRootPathKey)
+    defer {
+      UserDefaults.standard.removeObject(forKey: activeProjectIdKey)
+      UserDefaults.standard.removeObject(forKey: activeProjectRootPathKey)
+    }
+
+    let baseURL = makeTemporaryDirectory()
+    let database = makeControllerHydrationDatabase(baseURL: baseURL)
+    XCTAssertNil(database.initializationError)
+    try database.executeSqlForTesting("""
+      insert into projects (
+        id, root_path, display_name, default_base_ref, created_at, last_opened_at
+      ) values
+        ('project-1', '/tmp/project-one', 'Project One', 'main', '2026-04-22T00:00:00.000Z', '2026-04-22T01:00:00.000Z'),
+        ('project-2', '/tmp/project-two/', 'Project Two', 'main', '2026-04-22T00:00:00.000Z', '2026-04-22T02:00:00.000Z');
+    """)
+
+    let service = SyncService(database: database)
+    XCTAssertTrue(service.shouldShowProjectHome)
+    XCTAssertEqual(service.projects.map(\.id), ["project-2", "project-1"])
+
+    let projectTwo = try XCTUnwrap(service.projects.first(where: { $0.id == "project-2" }))
+    service.selectProject(projectTwo)
+
+    XCTAssertEqual(service.activeProjectId, "project-2")
+    XCTAssertEqual(service.activeProjectRootPath, "/tmp/project-two")
+    XCTAssertEqual(database.currentProjectId(), "project-2")
+    XCTAssertFalse(service.shouldShowProjectHome)
+    XCTAssertTrue(service.isActiveProject(projectTwo))
+
+    service.showProjectHome()
+    XCTAssertTrue(service.shouldShowProjectHome)
+    service.closeProjectHome()
+    XCTAssertFalse(service.shouldShowProjectHome)
+
+    database.close()
+  }
+
   @MainActor
   func testSyncPairingQrPayloadRoundTripFromDesktopLink() throws {
     let payload = """
@@ -1712,7 +1849,7 @@ final class ADETests: XCTestCase {
     database.close()
   }
 
-  func testDatabaseFetchSessionsFallsBackToStoredLaneNameWhenLaneRowIsMissing() throws {
+  func testDatabaseFetchSessionsHidesSessionsWhenLaneRowIsMissing() throws {
     let baseURL = makeTemporaryDirectory()
     let database = makeControllerHydrationDatabase(baseURL: baseURL)
     XCTAssertNil(database.initializationError)
@@ -1745,8 +1882,7 @@ final class ADETests: XCTestCase {
     try database.executeSqlForTesting("delete from lanes where id = 'lane-primary';")
 
     let sessions = database.fetchSessions()
-    XCTAssertEqual(sessions.count, 1)
-    XCTAssertEqual(sessions.first?.laneName, "Primary")
+    XCTAssertEqual(sessions.count, 0)
     database.close()
   }
 
