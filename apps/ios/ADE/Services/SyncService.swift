@@ -624,6 +624,18 @@ final class SyncService: ObservableObject {
       return
     }
 
+    guard project.isCached || database.hasProject(id: project.id) else {
+      lastError = "That project has not been cached on this phone yet. Connect to the ADE desktop app before opening it."
+      setDomainStatus(SyncDomain.allCases, phase: .failed, error: lastError)
+      return
+    }
+
+    guard connectionState != .connected && connectionState != .syncing else {
+      lastError = "This computer connection does not support project switching. Reconnect to a current ADE desktop app before opening another project."
+      setDomainStatus(SyncDomain.allCases, phase: .failed, error: lastError)
+      return
+    }
+
     setActiveProjectId(project.id, rootPath: project.rootPath)
     projectHomePresented = false
     localStateRevision += 1

@@ -156,11 +156,12 @@ export function TourOverlay({ step, stepIndex, totalSteps, ctx }: TourOverlayPro
 
   // Keyboard handling at the document level.
   useEffect(() => {
+    if (step.actIntro) return;
+
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         e.preventDefault();
-        if (step.actIntro) handleNext();
-        else handleDismiss();
+        handleDismiss();
         return;
       }
       if (e.key === "ArrowRight" || e.key === "Enter") {

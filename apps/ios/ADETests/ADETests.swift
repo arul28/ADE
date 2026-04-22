@@ -753,6 +753,55 @@ final class ADETests: XCTestCase {
   }
 
   @MainActor
+  func testSyncServiceRejectsUncachedProjectSelectionWithoutCatalogSwitch() throws {
+    let activeProjectIdKey = "ade.sync.activeProjectId"
+    let activeProjectRootPathKey = "ade.sync.activeProjectRootPath"
+    UserDefaults.standard.removeObject(forKey: activeProjectIdKey)
+    UserDefaults.standard.removeObject(forKey: activeProjectRootPathKey)
+    defer {
+      UserDefaults.standard.removeObject(forKey: activeProjectIdKey)
+      UserDefaults.standard.removeObject(forKey: activeProjectRootPathKey)
+    }
+
+    let baseURL = makeTemporaryDirectory()
+    let database = makeControllerHydrationDatabase(baseURL: baseURL)
+    XCTAssertNil(database.initializationError)
+    try database.executeSqlForTesting("""
+      insert into projects (
+        id, root_path, display_name, default_base_ref, created_at, last_opened_at
+      ) values
+        ('project-1', '/tmp/project-one', 'Project One', 'main', '2026-04-22T00:00:00.000Z', '2026-04-22T01:00:00.000Z');
+    """)
+
+    let service = SyncService(database: database)
+    let projectOne = try XCTUnwrap(service.projects.first(where: { $0.id == "project-1" }))
+    service.selectProject(projectOne)
+    service.showProjectHome()
+
+    let uncachedProject = MobileProjectSummary(
+      id: "project-2",
+      displayName: "Project Two",
+      rootPath: "/tmp/project-two",
+      defaultBaseRef: "main",
+      lastOpenedAt: "2026-04-22T02:00:00.000Z",
+      laneCount: 0,
+      isAvailable: true,
+      isCached: false
+    )
+    service.selectProject(uncachedProject)
+
+    XCTAssertEqual(service.activeProjectId, "project-1")
+    XCTAssertEqual(database.currentProjectId(), "project-1")
+    XCTAssertTrue(service.shouldShowProjectHome)
+    XCTAssertEqual(
+      service.lastError,
+      "That project has not been cached on this phone yet. Connect to the ADE desktop app before opening it."
+    )
+
+    database.close()
+  }
+
+  @MainActor
   func testSyncPairingQrPayloadRoundTripFromDesktopLink() throws {
     let payload = """
     {"version":2,"hostIdentity":{"deviceId":"host-1","siteId":"site-1","name":"Mac Studio","platform":"macOS","deviceType":"desktop"},"port":8787,"addressCandidates":[{"host":"192.168.1.8","kind":"lan"},{"host":"100.101.102.103","kind":"tailscale"}]}
