@@ -948,6 +948,9 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         });
       })
       .catch((error: unknown) => {
+        if (tailnetServeSignature === signature) {
+          tailnetServeSignature = null;
+        }
         const errorMessage = error instanceof Error ? error.message : String(error);
         const code = (error as NodeJS.ErrnoException | null | undefined)?.code ?? null;
         const stderr = typeof (error as { stderr?: unknown })?.stderr === "string"
