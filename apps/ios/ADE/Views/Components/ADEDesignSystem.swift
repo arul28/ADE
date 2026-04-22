@@ -551,8 +551,25 @@ struct ADEProjectHomeButton: View {
   }
 }
 
-/// Toolbar leading cluster shown on every root screen: computer connection stays
-/// leftmost, followed by project switching and attention as separate controls.
+private let adeRootToolbarControlWidth: CGFloat = 140
+
+/// Root toolbar control cluster: computer connection, project switching, then
+/// attention, kept together so the tab title can stay centered.
+@available(iOS 17.0, *)
+struct ADERootToolbarControls: View {
+  var body: some View {
+    HStack(spacing: 2) {
+      ADEConnectionDot()
+      ADEProjectHomeButton()
+      AttentionDrawerButton()
+    }
+    .frame(width: adeRootToolbarControlWidth, alignment: .trailing)
+    .fixedSize(horizontal: true, vertical: false)
+  }
+}
+
+/// Compact leading cluster for detail screens that still need the controls
+/// beside the back affordance instead of the title-balancing root layout.
 @available(iOS 17.0, *)
 struct ADERootToolbarLeading: View {
   var body: some View {
@@ -562,6 +579,44 @@ struct ADERootToolbarLeading: View {
       AttentionDrawerButton()
     }
     .fixedSize(horizontal: true, vertical: false)
+  }
+}
+
+@available(iOS 17.0, *)
+struct ADERootTopBar<Actions: View>: View {
+  let title: String
+  let actions: Actions
+
+  init(title: String, @ViewBuilder actions: () -> Actions) {
+    self.title = title
+    self.actions = actions()
+  }
+
+  var body: some View {
+    ZStack {
+      Text(title)
+        .font(.headline.weight(.semibold))
+        .foregroundStyle(ADEColor.textPrimary)
+        .lineLimit(1)
+        .frame(maxWidth: 160)
+        .accessibilityAddTraits(.isHeader)
+
+      HStack(spacing: 8) {
+        actions
+        Spacer(minLength: 0)
+        ADERootToolbarControls()
+      }
+    }
+    .padding(.horizontal, 16)
+    .frame(height: 52)
+  }
+}
+
+@available(iOS 17.0, *)
+extension ADERootTopBar where Actions == EmptyView {
+  init(title: String) {
+    self.title = title
+    self.actions = EmptyView()
   }
 }
 

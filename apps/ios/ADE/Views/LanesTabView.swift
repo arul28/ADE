@@ -151,9 +151,14 @@ struct LanesTabView: View {
       .refreshable { await refreshFromPullGesture() }
       .adeScreenBackground()
       .adeNavigationGlass()
-      .navigationTitle("Lanes")
+      .navigationTitle("")
       .navigationBarTitleDisplayMode(.inline)
-      .toolbar { toolbarContent }
+      .toolbar(.hidden, for: .navigationBar)
+      .safeAreaInset(edge: .top, spacing: 0) {
+        ADERootTopBar(title: "Lanes") {
+          topBarActions
+        }
+      }
       .sensoryFeedback(.success, trigger: refreshFeedbackToken)
       .task(id: primaryBranchReloadKey) {
         guard primaryBranchReloadKey != nil else { return }
@@ -221,87 +226,84 @@ struct LanesTabView: View {
     }
   }
 
-  // MARK: - Toolbar
+  // MARK: - Top bar
 
-  @ToolbarContentBuilder
-  private var toolbarContent: some ToolbarContent {
-    ADERootToolbarLeadingItems()
-    ToolbarItemGroup(placement: .topBarTrailing) {
-      Menu {
-        Section("Scope") {
-          ForEach(LaneListScope.allCases) { option in
-            Button {
-              scope = option
-            } label: {
-              Label(
-                "\(option.title) (\(laneScopeCount(laneSnapshots, scope: option)))",
-                systemImage: scope == option ? "checkmark.circle.fill" : "circle"
-              )
-            }
+  @ViewBuilder
+  private var topBarActions: some View {
+    Menu {
+      Section("Scope") {
+        ForEach(LaneListScope.allCases) { option in
+          Button {
+            scope = option
+          } label: {
+            Label(
+              "\(option.title) (\(laneScopeCount(laneSnapshots, scope: option)))",
+              systemImage: scope == option ? "checkmark.circle.fill" : "circle"
+            )
           }
         }
-        Section("Runtime") {
-          ForEach(LaneRuntimeFilter.allCases) { filter in
-            Button {
-              runtimeFilter = filter
-            } label: {
-              Label(
-                "\(filter.title) (\(laneRuntimeCount(laneSnapshots, filter: filter)))",
-                systemImage: runtimeFilter == filter ? "checkmark.circle.fill" : "circle"
-              )
-            }
+      }
+      Section("Runtime") {
+        ForEach(LaneRuntimeFilter.allCases) { filter in
+          Button {
+            runtimeFilter = filter
+          } label: {
+            Label(
+              "\(filter.title) (\(laneRuntimeCount(laneSnapshots, filter: filter)))",
+              systemImage: runtimeFilter == filter ? "checkmark.circle.fill" : "circle"
+            )
           }
         }
-        if manageableVisibleLaneIds.count > 1 {
-          Section {
-            Button {
-              batchManageLaneIds = manageableVisibleLaneIds
-              batchManagePresented = true
-            } label: {
-              Label("Manage visible lanes", systemImage: "slider.horizontal.3")
+      }
+      if manageableVisibleLaneIds.count > 1 {
+        Section {
+          Button {
+            batchManageLaneIds = manageableVisibleLaneIds
+            batchManagePresented = true
+          } label: {
+            Label("Manage visible lanes", systemImage: "slider.horizontal.3")
+          }
+          .disabled(!canRunLiveActions)
+        }
+      }
+      if let primaryLane {
+        Section("Primary branch") {
+          ForEach(primaryBranches) { branch in
+            Button(branch.name) {
+              Task {
+                do {
+                  try await syncService.checkoutPrimaryBranch(laneId: primaryLane.id, branchName: branch.name)
+                  await reload(refreshRemote: true)
+                  await refreshPrimaryBranches(force: true)
+                } catch {
+                  ADEHaptics.error()
+                  primaryBranchError = error.localizedDescription
+                }
+              }
             }
             .disabled(!canRunLiveActions)
           }
         }
-        if let primaryLane {
-          Section("Primary branch") {
-            ForEach(primaryBranches) { branch in
-              Button(branch.name) {
-                Task {
-                  do {
-                    try await syncService.checkoutPrimaryBranch(laneId: primaryLane.id, branchName: branch.name)
-                    await reload(refreshRemote: true)
-                    await refreshPrimaryBranches(force: true)
-                  } catch {
-                    ADEHaptics.error()
-                    primaryBranchError = error.localizedDescription
-                  }
-                }
-              }
-              .disabled(!canRunLiveActions)
-            }
-          }
-        }
-      } label: {
-        Image(systemName: "line.3.horizontal.decrease.circle")
-          .symbolVariant(scope != .active || runtimeFilter != .all ? .fill : .none)
-          .foregroundStyle(scope != .active || runtimeFilter != .all ? ADEColor.accent : ADEColor.textSecondary)
       }
-      .accessibilityLabel("Lane filters")
-
-      Button {
-        if canRunLiveActions {
-          addLaneSheetPresented = true
-        } else {
-          handleBlockedLiveAction()
-        }
-      } label: {
-        Image(systemName: "plus")
-          .font(.body.weight(.semibold))
-          .foregroundStyle(canRunLiveActions ? ADEColor.accent : ADEColor.warning)
-      }
-      .accessibilityLabel("Add lane")
-      .accessibilityHint(canRunLiveActions ? "Opens lane creation options" : "Reconnect to desktop before creating lanes")
+    } label: {
+      Image(systemName: "line.3.horizontal.decrease.circle")
+        .symbolVariant(scope != .active || runtimeFilter != .all ? .fill : .none)
+        .foregroundStyle(scope != .active || runtimeFilter != .all ? ADEColor.accent : ADEColor.textSecondary)
     }
+    .accessibilityLabel("Lane filters")
+
+    Button {
+      if canRunLiveActions {
+        addLaneSheetPresented = true
+      } else {
+        handleBlockedLiveAction()
+      }
+    } label: {
+      Image(systemName: "plus")
+        .font(.body.weight(.semibold))
+        .foregroundStyle(canRunLiveActions ? ADEColor.accent : ADEColor.warning)
+    }
+    .accessibilityLabel("Add lane")
+    .accessibilityHint(canRunLiveActions ? "Opens lane creation options" : "Reconnect to desktop before creating lanes")
   }
 }

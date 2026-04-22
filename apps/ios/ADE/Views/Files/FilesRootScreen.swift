@@ -222,7 +222,7 @@ struct FilesRootScreen: View {
       .scrollBounceBehavior(.basedOnSize)
       .adeScreenBackground()
       .adeNavigationGlass()
-      .navigationTitle("Files")
+      .navigationTitle("")
       .navigationBarTitleDisplayMode(.inline)
       .navigationDestination(for: FilesRoute.self) { route in
         switch route {
@@ -276,9 +276,9 @@ struct FilesRootScreen: View {
           }
         }
       }
-      .toolbar {
-        ADERootToolbarLeadingItems()
-        ToolbarItem(placement: .topBarTrailing) {
+      .toolbar(.hidden, for: .navigationBar)
+      .safeAreaInset(edge: .top, spacing: 0) {
+        ADERootTopBar(title: "Files") {
           Button {
             Task { await reload(refreshRemote: true) }
           } label: {

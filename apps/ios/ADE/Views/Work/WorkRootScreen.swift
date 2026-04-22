@@ -350,32 +350,30 @@ struct WorkRootScreen: View {
       .scrollContentBackground(.hidden)
       .adeScreenBackground()
       .adeNavigationGlass()
-      .navigationTitle("Work")
+      .navigationTitle("")
       .navigationBarTitleDisplayMode(.inline)
-      .toolbar {
-        ADERootToolbarLeadingItems()
-        ToolbarItem(placement: .topBarTrailing) {
-          HStack(spacing: 8) {
-            if !liveSessions.isEmpty || needsInputSessions.count > 0 {
-              WorkLiveCountPill(
-                liveCount: max(liveSessions.count, needsInputSessions.count),
-                attentionCount: needsInputSessions.count,
-                onTap: {
-                  guard let target = needsInputSessions.first ?? liveSessions.first else { return }
-                  withAnimation(.snappy) {
-                    proxy.scrollTo(target.id, anchor: .top)
-                  }
+      .toolbar(.hidden, for: .navigationBar)
+      .safeAreaInset(edge: .top, spacing: 0) {
+        ADERootTopBar(title: "Work") {
+          if !liveSessions.isEmpty || needsInputSessions.count > 0 {
+            WorkLiveCountPill(
+              liveCount: max(liveSessions.count, needsInputSessions.count),
+              attentionCount: needsInputSessions.count,
+              onTap: {
+                guard let target = needsInputSessions.first ?? liveSessions.first else { return }
+                withAnimation(.snappy) {
+                  proxy.scrollTo(target.id, anchor: .top)
                 }
-              )
-            }
-            Button {
-              pushNewChatRoute()
-            } label: {
-              Image(systemName: "plus.bubble.fill")
-            }
-            .accessibilityLabel("Create new chat")
-            .disabled(!isLive)
+              }
+            )
           }
+          Button {
+            pushNewChatRoute()
+          } label: {
+            Image(systemName: "plus.bubble.fill")
+          }
+          .accessibilityLabel("Create new chat")
+          .disabled(!isLive)
         }
       }
       .refreshable {

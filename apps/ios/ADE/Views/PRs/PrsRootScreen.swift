@@ -337,12 +337,12 @@ struct PRsTabView: View {
       .scrollContentBackground(.hidden)
       .adeScreenBackground()
       .adeNavigationGlass()
-      .navigationTitle("PRs")
+      .navigationTitle("")
       .navigationBarTitleDisplayMode(.inline)
       .searchable(text: $searchText, prompt: selectedRootSurface.wrappedValue == .github ? "Search PRs, branches, authors" : "Search workflow cards")
-      .toolbar {
-        ADERootToolbarLeadingItems()
-        ToolbarItemGroup(placement: .topBarTrailing) {
+      .toolbar(.hidden, for: .navigationBar)
+      .safeAreaInset(edge: .top, spacing: 0) {
+        ADERootTopBar(title: "PRs") {
           Button {
             Task { await reload(refreshRemote: true) }
           } label: {

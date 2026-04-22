@@ -469,7 +469,7 @@ final class SyncService: ObservableObject {
   @Published private(set) var pendingOperationCount = 0
   @Published private(set) var localStateRevision = 0
   @Published var settingsPresented = false
-  @Published var projectHomePresented = false
+  @Published var projectHomePresented = true
   @Published var attentionDrawerPresented = false
   @Published var requestedFilesNavigation: FilesNavigationRequest?
   @Published var requestedLaneNavigation: LaneNavigationRequest?
@@ -1053,7 +1053,7 @@ final class SyncService: ObservableObject {
     activeProjectRootPath = normalizedProjectRoot(UserDefaults.standard.string(forKey: activeProjectRootPathKey))
     database.setActiveProjectId(activeProjectId)
     projects = database.listMobileProjects()
-    normalizeActiveProjectSelection(allowSingleProjectFallback: true)
+    normalizeActiveProjectSelection(allowSingleProjectFallback: false)
     pendingOperationCount = loadPendingOperations().count
     outboundLocalDbVersion = database.currentDbVersion()
     activeHostProfile = loadProfile()

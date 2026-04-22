@@ -39,10 +39,11 @@ struct CtoRootScreen: View {
       .tint(ADEColor.ctoAccent)
       .adeScreenBackground()
       .adeNavigationGlass()
-      .navigationTitle("CTO")
+      .navigationTitle("")
       .navigationBarTitleDisplayMode(.inline)
-      .toolbar {
-        ADERootToolbarLeadingItems()
+      .toolbar(.hidden, for: .navigationBar)
+      .safeAreaInset(edge: .top, spacing: 0) {
+        ADERootTopBar(title: "CTO")
       }
       .task(id: isTabActive) {
         guard isTabActive, snapshot == nil else { return }
