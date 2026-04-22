@@ -12,7 +12,6 @@ const ENTRIES: Entry[] = [
   { name: "CTO (chief technical officer)", page: "15", href: "/cto/overview" },
   { name: "CLI · ade", page: "12", href: "/tools/project-home" },
   { name: "Dispatch", page: "17", href: "/missions/creating" },
-  { name: "Figma integration", page: "32", href: "/ai-tools/cursor" },
   { name: "File viewer", page: "05", href: "/tools/files-editor" },
   { name: "Git history", page: "07", href: "/tools/history" },
   { name: "iOS app", page: "28", href: "/getting-started/install" },

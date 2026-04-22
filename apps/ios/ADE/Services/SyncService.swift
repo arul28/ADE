@@ -3669,6 +3669,28 @@ final class SyncService: ObservableObject {
     await refreshRemoteProjectCatalog()
   }
 
+  #if DEBUG
+  func seedRemoteProjectCatalogForTesting(_ catalog: [MobileProjectSummary]) {
+    remoteProjectCatalog = catalog
+    refreshProjectCatalog()
+  }
+
+  func applyHelloPayloadForTesting(
+    _ payload: [String: Any],
+    expectedHostIdentity: String? = nil
+  ) throws {
+    try applyHelloPayload(
+      payload,
+      connectedHost: "127.0.0.1",
+      port: 8787,
+      authKind: "paired",
+      pairedDeviceId: nil,
+      expectedHostIdentity: expectedHostIdentity,
+      connectAttemptGeneration: connectAttemptGeneration
+    )
+  }
+  #endif
+
   private func applyHelloPayload(
     _ payload: [String: Any],
     connectedHost: String,
@@ -3684,6 +3706,17 @@ final class SyncService: ObservableObject {
     let brain = payload["brain"] as? [String: Any]
     let remoteHostIdentity = brain?["deviceId"] as? String
     let remoteHostName = brain?["deviceName"] as? String
+    if let expectedHostIdentity, let remoteHostIdentity, expectedHostIdentity != remoteHostIdentity {
+      forgetHost()
+      remoteProjectCatalog = []
+      refreshProjectCatalog()
+      throw NSError(
+        domain: "ADE",
+        code: 20,
+        userInfo: [NSLocalizedDescriptionKey: "The saved pairing belongs to a different ADE host. Pair again with the current host."]
+      )
+    }
+
     let features = payload["features"] as? [String: Any]
     supportsChatStreaming = {
       if let chatStreaming = features?["chatStreaming"] as? [String: Any],
@@ -3719,6 +3752,7 @@ final class SyncService: ObservableObject {
       }
       return false
     }()
+    remoteProjectCatalog = []
     let commandDescriptors: [SyncRemoteCommandDescriptor] = {
       guard
         let commandRouting = features?["commandRouting"],
@@ -3728,18 +3762,12 @@ final class SyncService: ObservableObject {
       }
       return (try? decode(actions, as: [SyncRemoteCommandDescriptor].self)) ?? []
     }()
-    if let projects = payload["projects"],
+    if supportsProjectCatalog,
+       let projects = payload["projects"],
        let catalog = try? decode(["projects": projects], as: MobileProjectCatalogPayload.self) {
       applyRemoteProjectCatalog(catalog)
-    }
-
-    if let expectedHostIdentity, let remoteHostIdentity, expectedHostIdentity != remoteHostIdentity {
-      forgetHost()
-      throw NSError(
-        domain: "ADE",
-        code: 20,
-        userInfo: [NSLocalizedDescriptionKey: "The saved pairing belongs to a different ADE host. Pair again with the current host."]
-      )
+    } else {
+      refreshProjectCatalog()
     }
 
     reconnectState.reset()

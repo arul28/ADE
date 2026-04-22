@@ -802,6 +802,88 @@ final class ADETests: XCTestCase {
   }
 
   @MainActor
+  func testSyncServiceClearsRemoteProjectCatalogWhenHelloOmitsCatalog() throws {
+    let activeProjectIdKey = "ade.sync.activeProjectId"
+    let activeProjectRootPathKey = "ade.sync.activeProjectRootPath"
+    UserDefaults.standard.removeObject(forKey: activeProjectIdKey)
+    UserDefaults.standard.removeObject(forKey: activeProjectRootPathKey)
+    defer {
+      UserDefaults.standard.removeObject(forKey: activeProjectIdKey)
+      UserDefaults.standard.removeObject(forKey: activeProjectRootPathKey)
+    }
+
+    let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
+    service.seedRemoteProjectCatalogForTesting([
+      MobileProjectSummary(
+        id: "remote-only",
+        displayName: "Remote Only",
+        rootPath: "/tmp/remote-only",
+        defaultBaseRef: "main",
+        lastOpenedAt: "2026-04-22T02:00:00.000Z",
+        laneCount: 1,
+        isAvailable: true,
+        isCached: false
+      ),
+    ])
+    XCTAssertEqual(service.projects.map(\.id), ["remote-only"])
+
+    try service.applyHelloPayloadForTesting([
+      "brain": [
+        "deviceId": "host-1",
+        "deviceName": "Mac Studio",
+      ],
+      "features": [
+        "projectCatalog": false,
+      ],
+    ])
+
+    XCTAssertFalse(service.projects.contains { $0.id == "remote-only" })
+  }
+
+  @MainActor
+  func testSyncServiceRejectsMismatchedHelloBeforeApplyingProjectCatalog() throws {
+    let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
+    service.seedRemoteProjectCatalogForTesting([
+      MobileProjectSummary(
+        id: "old-host-project",
+        displayName: "Old Host",
+        rootPath: "/tmp/old-host",
+        defaultBaseRef: "main",
+        lastOpenedAt: "2026-04-22T01:00:00.000Z",
+        laneCount: 1,
+        isAvailable: true,
+        isCached: false
+      ),
+    ])
+    XCTAssertThrowsError(
+      try service.applyHelloPayloadForTesting(
+        [
+          "brain": [
+            "deviceId": "host-b",
+            "deviceName": "Other Mac",
+          ],
+          "features": [
+            "projectCatalog": true,
+          ],
+          "projects": [[
+            "id": "wrong-host-project",
+            "displayName": "Wrong Host",
+            "rootPath": "/tmp/wrong-host",
+            "defaultBaseRef": "main",
+            "lastOpenedAt": "2026-04-22T02:00:00.000Z",
+            "laneCount": 1,
+            "isAvailable": true,
+            "isCached": false,
+          ]],
+        ],
+        expectedHostIdentity: "host-a"
+      )
+    )
+    XCTAssertFalse(service.projects.contains { $0.id == "wrong-host-project" })
+    XCTAssertFalse(service.projects.contains { $0.id == "old-host-project" })
+  }
+
+  @MainActor
   func testSyncPairingQrPayloadRoundTripFromDesktopLink() throws {
     let payload = """
     {"version":2,"hostIdentity":{"deviceId":"host-1","siteId":"site-1","name":"Mac Studio","platform":"macOS","deviceType":"desktop"},"port":8787,"addressCandidates":[{"host":"192.168.1.8","kind":"lan"},{"host":"100.101.102.103","kind":"tailscale"}]}

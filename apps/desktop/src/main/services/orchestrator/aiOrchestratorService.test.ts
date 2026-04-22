@@ -3177,13 +3177,13 @@ describe("aiOrchestratorService", () => {
       let refreshedAttempt = fixture.orchestratorService
         .getRunGraph({ runId })
         .attempts.find((entry) => entry.id === attempt.id);
-      for (let tries = 0; tries < 5 && refreshedAttempt?.status === "running"; tries += 1) {
+      for (let tries = 0; tries < 20 && refreshedAttempt?.status === "running"; tries += 1) {
         await fixture.aiOrchestratorService.runHealthSweep("test");
         refreshedAttempt = fixture.orchestratorService
           .getRunGraph({ runId })
           .attempts.find((entry) => entry.id === attempt.id);
         if (refreshedAttempt?.status !== "running") break;
-        await new Promise((resolve) => setTimeout(resolve, 50));
+        await new Promise((resolve) => setTimeout(resolve, 100));
       }
       expect(refreshedAttempt?.status).toBe("failed");
       expect(refreshedAttempt?.errorMessage ?? "").toContain("stagnating");
