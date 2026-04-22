@@ -57,6 +57,7 @@ import type {
 } from "../../../shared/types";
 import { eventMatchesBinding, getEffectiveBinding } from "../../lib/keybindings";
 import { SmartTooltip } from "../ui/SmartTooltip";
+import { docs } from "../../onboarding/docsLinks";
 
 type RebaseScopePromptState = {
   laneId: string;
@@ -1506,7 +1507,7 @@ export function LanesPage() {
         {/* Branch selector */}
         {primaryLane && selectedLaneId === primaryLane.id ? (
           <div className="relative shrink-0 flex items-center" ref={branchDropdownRef}>
-            <SmartTooltip content={{ label: "Branch Selector", description: "Switch the primary lane to a different local or remote branch.", docUrl: "https://www.ade-app.dev/docs/lanes/overview" }} side="bottom">
+            <SmartTooltip content={{ label: "Branch Selector", description: "Switch the primary lane to a different local or remote branch.", docUrl: docs.lanesOverview }} side="bottom">
               <button
                 type="button"
                 data-tour="lanes.branchSelector"
@@ -1692,7 +1693,7 @@ export function LanesPage() {
 
         {/* NEW LANE button + dropdown */}
         <div className="relative shrink-0" ref={addLaneDropdownRef}>
-          <SmartTooltip content={{ label: "New Lane", description: "Create a new lane from the primary branch, an existing branch, or as a child of another lane.", docUrl: "https://www.ade-app.dev/docs/lanes/creating" }}>
+          <SmartTooltip content={{ label: "New Lane", description: "Create a new lane from the primary branch, an existing branch, or as a child of another lane.", docUrl: docs.lanesCreating }}>
             <button
               type="button"
               data-tour="lanes.newLane"
@@ -1747,7 +1748,7 @@ export function LanesPage() {
             className="shrink-0 flex items-center gap-2 rounded-lg border px-2 py-1"
             style={{ borderColor: `${COLORS.info}55`, background: `${COLORS.info}15` }}
           >
-            <SmartTooltip content={{ label: "Move to .ade", description: "Move this attached worktree into .ade/worktrees for full ADE management. Uses git worktree move — branch and history stay the same.", docUrl: "https://www.ade-app.dev/docs/lanes/creating" }}>
+            <SmartTooltip content={{ label: "Move to .ade", description: "Move this attached worktree into .ade/worktrees for full ADE management. Uses git worktree move — branch and history stay the same.", docUrl: docs.lanesCreating }}>
               <button
                 type="button"
                 data-tour="lanes.moveToAde"

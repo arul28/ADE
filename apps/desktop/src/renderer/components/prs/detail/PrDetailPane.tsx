@@ -1928,6 +1928,7 @@ export function PrDetailPane({
             {queueContext && onOpenQueueView ? (
               <button
                 type="button"
+                data-tour="prs.stackingIndicator"
                 onClick={() => onOpenQueueView(queueContext.groupId)}
                 style={outlineButton({ height: 30, padding: "0 10px", color: COLORS.accent, borderColor: `${COLORS.accent}40` })}
                 title={queueContext.label ?? "Open queue"}
@@ -2026,6 +2027,8 @@ export function PrDetailPane({
           />
         )}
         {activeTab === "convergence" && (
+          // tour anchor — closest viable: PrConvergencePanel surfaces the rebase/conflict simulation UI.
+          <div data-tour="prs.conflictSim" style={{ display: "contents" }}>
           <PrConvergencePanel
             prNumber={pr.githubPrNumber}
             prTitle={pr.title}
@@ -2106,11 +2109,13 @@ export function PrDetailPane({
               });
             }}
           />
+          </div>
         )}
         {activeTab === "files" && (
           <FilesTab files={files} expandedFile={expandedFile} setExpandedFile={setExpandedFile} />
         )}
         {activeTab === "checks" && (
+          <div data-tour="prs.checksPanel" style={{ display: "contents" }}>
           <ChecksTab
             checks={checks} actionRuns={actionRuns}
             actionBusy={actionBusy}
@@ -2118,6 +2123,7 @@ export function PrDetailPane({
             showIssueResolverAction={issueResolutionAvailability.hasAnyActionableIssues}
             onOpenIssueResolver={handleOpenIssueResolver}
           />
+          </div>
         )}
         {activeTab === "activity" && (
           <ActivityTab
@@ -2943,7 +2949,7 @@ function OverviewTab(props: OverviewTabProps) {
                 </button>
 
                 {pr.state === "open" && (
-                  <button type="button" disabled={actionBusy} onClick={() => void props.onClose()} style={dangerButton({ height: 40, opacity: actionBusy ? 0.4 : 1, padding: "0 16px" })}>
+                  <button type="button" data-tour="prs.closeBtn" disabled={actionBusy} onClick={() => void props.onClose()} style={dangerButton({ height: 40, opacity: actionBusy ? 0.4 : 1, padding: "0 16px" })}>
                     <XCircle size={14} /> Close
                   </button>
                 )}

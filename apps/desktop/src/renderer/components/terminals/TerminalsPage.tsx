@@ -209,7 +209,7 @@ export function TerminalsPage() {
 
   const sessionsHeaderActions = useMemo(
     () => (
-      <>
+      <span data-tour="work.sessionsHeader" className="inline-flex items-center gap-1.5">
         {runningCount > 0 ? (
           <span
             className="inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[10px] font-medium"
@@ -229,7 +229,7 @@ export function TerminalsPage() {
         >
           <SidebarSimple size={13} weight="regular" />
         </button>
-      </>
+      </span>
     ),
     [runningCount, setFocusHidden],
   );
@@ -239,7 +239,10 @@ export function TerminalsPage() {
       sessions: {
         title: "Work",
         headerActions: sessionsHeaderActions,
+        // tour anchor: wraps the sessions panel so the Work tour anchors
+        // at the whole pane, not just an inner element.
         children: (
+          <div className="h-full min-h-0 flex flex-col" data-tour="work.sessionsPane">
           <SessionListPane
             lanes={sortedLanes}
             runningFiltered={work.runningFiltered}
@@ -269,13 +272,19 @@ export function TerminalsPage() {
             toggleWorkSectionCollapsed={work.toggleWorkSectionCollapsed}
             sessionsGroupedByLane={work.sessionsGroupedByLane}
           />
+          </div>
         ),
       },
 
       view: {
         title: "",
         bodyClassName: "overflow-hidden",
-        children: workViewArea,
+        // tour anchor: wraps the view area so the Work tour can target it.
+        children: (
+          <div className="h-full min-h-0" data-tour="work.viewArea">
+            {workViewArea}
+          </div>
+        ),
       },
     }),
     [
@@ -308,6 +317,7 @@ export function TerminalsPage() {
               borderBottom: "1px solid var(--work-pane-border)",
               background: "var(--color-bg)",
             }}
+            data-tour="work.focusToolbar"
           >
             <button
               type="button"
@@ -331,7 +341,7 @@ export function TerminalsPage() {
               </span>
             ) : null}
           </div>
-          <div className="min-h-0 flex-1 overflow-hidden">{workViewArea}</div>
+          <div className="min-h-0 flex-1 overflow-hidden" data-tour="work.viewArea">{workViewArea}</div>
         </div>
       ) : (
         <PaneTilingLayout

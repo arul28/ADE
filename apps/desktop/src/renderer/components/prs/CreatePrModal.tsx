@@ -1154,6 +1154,7 @@ export function CreatePrModal({
                           onChange={(e) => setNormalBaseBranch(e.target.value)}
                           aria-label="Target branch"
                           placeholder="Type or select a branch"
+                          data-tour="prs.createModal.base"
                           style={selectStyle}
                           onFocus={(e) => { e.currentTarget.style.borderColor = C.accent; }}
                           onBlur={(e) => { e.currentTarget.style.borderColor = C.borderSubtle; }}
@@ -1749,6 +1750,7 @@ export function CreatePrModal({
                         onChange={(e) => setNormalTitle(e.target.value)}
                         style={inputStyle}
                         placeholder="Auto-generated from lane name"
+                        data-tour="prs.createModal.title"
                         onFocus={(e) => { e.currentTarget.style.borderColor = C.accent; }}
                         onBlur={(e) => { e.currentTarget.style.borderColor = C.borderSubtle; }}
                       />
@@ -1797,6 +1799,7 @@ export function CreatePrModal({
                         rows={6}
                         style={textareaStyle}
                         placeholder="PR description (markdown)..."
+                        data-tour="prs.createModal.body"
                         onFocus={(e) => { e.currentTarget.style.borderColor = C.accent; }}
                         onBlur={(e) => { e.currentTarget.style.borderColor = C.borderSubtle; }}
                       />
@@ -2281,6 +2284,7 @@ export function CreatePrModal({
               )}
               {numericStep === 2 && (
                 <button
+                  data-tour="prs.createModal.submit"
                   disabled={busy || !canProceed}
                   onClick={() => void handleCreate()}
                   style={{

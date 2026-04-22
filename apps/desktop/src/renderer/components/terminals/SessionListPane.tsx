@@ -152,23 +152,38 @@ export const SessionListPane = React.memo(function SessionListPane({
     return map;
   }, [lanes]);
 
+  // First-rendered card carries `data-tour="work.sessionItem"` so the Work
+  // tab tour can anchor at a real session. We track whether we've already
+  // emitted the anchor across the whole list (not per-section).
+  let sessionItemAnchorEmitted = false;
   const renderCards = (list: TerminalSessionSummary[]) =>
-    list.map((session) => (
-      <SessionCard
-        key={session.id}
-        session={session}
-        lane={laneById.get(session.laneId) ?? null}
-        isSelected={selectedSessionId === session.id}
-        onSelect={onSelectSession}
-        onResume={() => onResume(session)}
-        onInfoClick={(e) => onInfoClick(session, e)}
-        onContextMenu={(e) => {
-          e.preventDefault();
-          onContextMenu(session, e);
-        }}
-        resumingSessionId={resumingSessionId}
-      />
-    ));
+    list.map((session) => {
+      const isFirst = !sessionItemAnchorEmitted;
+      if (isFirst) sessionItemAnchorEmitted = true;
+      const card = (
+        <SessionCard
+          key={session.id}
+          session={session}
+          lane={laneById.get(session.laneId) ?? null}
+          isSelected={selectedSessionId === session.id}
+          onSelect={onSelectSession}
+          onResume={() => onResume(session)}
+          onInfoClick={(e) => onInfoClick(session, e)}
+          onContextMenu={(e) => {
+            e.preventDefault();
+            onContextMenu(session, e);
+          }}
+          resumingSessionId={resumingSessionId}
+        />
+      );
+      if (!isFirst) return card;
+      // tour anchor: wraps the first rendered SessionCard.
+      return (
+        <div key={session.id} data-tour="work.sessionItem">
+          {card}
+        </div>
+      );
+    });
 
   const groupedByStatusList = (
     <div className="px-1.5 pb-2">
@@ -269,7 +284,11 @@ export const SessionListPane = React.memo(function SessionListPane({
   );
 
   return (
-    <div className="flex h-full flex-col overflow-hidden" style={{ background: "var(--work-sidebar-bg)" }}>
+    <div
+      className="flex h-full flex-col overflow-hidden"
+      style={{ background: "var(--work-sidebar-bg)" }}
+      data-tour="work.sessionsPane"
+    >
       {/* Compact toolbar */}
       <div className="shrink-0 px-2 pt-2 pb-1.5 space-y-1.5">
         {/* Search + filter row */}
@@ -300,6 +319,7 @@ export const SessionListPane = React.memo(function SessionListPane({
               }}
               onClick={() => onShowDraftKind("chat")}
               aria-label="Start a new chat"
+              data-tour="work.newSession"
             >
               <Plus size={10} weight="bold" />
               New Chat
@@ -316,6 +336,7 @@ export const SessionListPane = React.memo(function SessionListPane({
               }}
               onClick={() => setFilterOpen(!filterOpen)}
               aria-label="Filters"
+              data-tour="work.laneFilter"
             >
               <Funnel size={12} weight={filterOpen ? "fill" : "regular"} />
             </button>
@@ -379,7 +400,10 @@ export const SessionListPane = React.memo(function SessionListPane({
       <div className="shrink-0 h-px" style={{ background: "var(--work-pane-border)" }} />
 
       {/* Session list */}
-      <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden pt-1">
+      <div
+        className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden pt-1"
+        data-tour="work.crossLaneSwitch"
+      >
         {!hasAnySessions ? (
           <div className="flex flex-col items-center justify-center h-full px-3 py-10 text-center">
             <Terminal size={16} weight="regular" className="text-muted-fg/15 mb-2" />

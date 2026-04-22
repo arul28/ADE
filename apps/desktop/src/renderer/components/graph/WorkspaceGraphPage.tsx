@@ -2704,7 +2704,7 @@ function GraphInner() {
   const allNodesHidden = baseGraph.nodes.length > 0 && baseGraph.visibleNodeIds.size === 0;
 
   return (
-    <div className="relative h-full w-full">
+    <div className="relative h-full w-full" data-tour="graph.canvas">
       <ConfirmDialog state={graphConfirm.state} onClose={graphConfirm.close} />
       <div className="absolute inset-0 h-full w-full bg-bg [background-image:radial-gradient(var(--color-border)_1px,transparent_1px)] [background-size:16px_16px] [opacity:0.3]" />
 
@@ -3205,9 +3205,10 @@ function GraphInner() {
               borderRadius: 14,
               boxShadow: "var(--shadow-card)"
             }}
+            data-tour="graph.pan"
           />
           <Panel position="bottom-left">
-            <div className="flex flex-col gap-2">
+            <div className="flex flex-col gap-2" data-tour="graph.zoom">
               <div className="rounded-xl border border-white/[0.06] bg-white/[0.03] backdrop-blur-xl p-1 shadow-card">
                 <div className="flex flex-col gap-1">
                   <button
@@ -3278,7 +3279,7 @@ function GraphInner() {
             </Panel>
           ) : null}
           <Panel position="top-right">
-            <div className="flex w-[280px] flex-col gap-2 text-[11px]">
+            <div className="flex w-[280px] flex-col gap-2 text-[11px]" data-tour="graph.legend">
               <div className="rounded-xl bg-white/[0.03] backdrop-blur-xl p-3 shadow-card">
                 <div className="mb-2 font-sans font-semibold text-fg">Environments</div>
                 {environmentLegendEntries.length === 0 ? (

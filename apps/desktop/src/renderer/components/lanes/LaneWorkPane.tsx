@@ -6,6 +6,7 @@ import { COLORS, SANS_FONT, SPACING } from "./laneDesignTokens";
 import { WorkViewArea } from "../terminals/WorkViewArea";
 import { useLaneWorkSessions } from "./useLaneWorkSessions";
 import { HelpChip } from "../onboarding/HelpChip";
+import { docs } from "../../onboarding/docsLinks";
 
 const ENTRY_OPTIONS: Array<{
   kind: WorkDraftKind;
@@ -22,7 +23,7 @@ const ENTRY_OPTIONS: Array<{
     icon: ChatCircleText,
     color: COLORS.entryChat,
     description: "Start a new AI chat session in this lane's context.",
-    docUrl: "https://www.ade-app.dev/docs/chat/overview",
+    docUrl: docs.chatOverview,
     dataTour: "lanes.workNewChat",
   },
   {
@@ -31,7 +32,7 @@ const ENTRY_OPTIONS: Array<{
     icon: Command,
     color: COLORS.entryCli,
     description: "Open the CLI tool for running commands with AI assistance.",
-    docUrl: "https://www.ade-app.dev/docs/tools/terminals",
+    docUrl: docs.terminals,
     dataTour: "lanes.workCliTool",
   },
   {
@@ -40,7 +41,7 @@ const ENTRY_OPTIONS: Array<{
     icon: Terminal,
     color: COLORS.entryShell,
     description: "Open a new shell terminal in this lane's worktree.",
-    docUrl: "https://www.ade-app.dev/docs/tools/terminals",
+    docUrl: docs.terminals,
     dataTour: "lanes.workNewShell",
   },
 ];

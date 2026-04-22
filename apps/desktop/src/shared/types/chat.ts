@@ -4,7 +4,6 @@
 
 import type { ModelId } from "./core";
 import type { CtoCapabilityMode } from "./cto";
-import type { ComputerUsePolicy } from "./computerUseArtifacts";
 import type { FileDiff } from "./git";
 import type { DelegationContract } from "./orchestrator";
 

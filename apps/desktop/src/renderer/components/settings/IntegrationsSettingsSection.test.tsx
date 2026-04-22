@@ -17,21 +17,17 @@ vi.mock("./AdeCliSection", () => ({
   AdeCliSection: () => <div>ADE CLI section</div>,
 }));
 
-vi.mock("./ComputerUseSection", () => ({
-  ComputerUseSection: () => <div>Computer Use section</div>,
-}));
-
 afterEach(cleanup);
 
 describe("IntegrationsSettingsSection", () => {
-  it("opens the computer-use tab from the integration search param", () => {
+  it("opens the Linear tab from the integration search param", () => {
     render(
-      <MemoryRouter initialEntries={["/settings?tab=integrations&integration=computer-use"]}>
+      <MemoryRouter initialEntries={["/settings?tab=integrations&integration=linear"]}>
         <IntegrationsSettingsSection />
       </MemoryRouter>,
     );
 
-    expect(screen.getByText("Computer Use section")).toBeTruthy();
+    expect(screen.getByText("Linear section")).toBeTruthy();
     expect(screen.queryByText("GitHub section")).toBeNull();
   });
 
@@ -44,8 +40,8 @@ describe("IntegrationsSettingsSection", () => {
 
     expect(screen.getByText("GitHub section")).toBeTruthy();
 
-    fireEvent.click(screen.getByRole("button", { name: "Computer Use" }));
-    expect(screen.getByText("Computer Use section")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Linear" }));
+    expect(screen.getByText("Linear section")).toBeTruthy();
   });
 
   it("opens the ADE CLI sub-tab", () => {

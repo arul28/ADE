@@ -2,6 +2,7 @@ import React, { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { useAppStore } from "../../state/appStore";
 import { openExternalUrl } from "../../lib/openExternal";
+import { docs } from "../../onboarding/docsLinks";
 
 type Hint = {
   id: string;
@@ -15,17 +16,17 @@ const DEFAULT_HINTS: Hint[] = [
   {
     id: "lanes-parallel",
     body: "Did you know? Each Lane is its own folder on disk, so changes in one Lane can't mess up another.",
-    docUrl: "https://www.ade-app.dev/docs/lanes/overview",
+    docUrl: docs.lanesOverview,
   },
   {
     id: "help-menu",
     body: "Did you know? You can replay any tour anytime from the Help menu in the top-right.",
-    docUrl: "https://www.ade-app.dev/docs/welcome",
+    docUrl: docs.welcome,
   },
   {
     id: "help-chip",
     body: "Did you know? The small \"?\" next to a word opens a quick plain-English definition.",
-    docUrl: "https://www.ade-app.dev/docs/key-concepts",
+    docUrl: docs.keyConcepts,
   },
 ];
 

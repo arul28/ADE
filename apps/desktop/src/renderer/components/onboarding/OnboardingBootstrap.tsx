@@ -23,8 +23,11 @@ export function OnboardingBootstrap() {
   const wizardOpen = useOnboardingStore((s) => s.wizardOpen);
   const activeTourId = useOnboardingStore((s) => s.activeTourId);
 
+  const selectedLaneId = useAppStore((s) => s.selectedLaneId);
+
   const wizardAutoFiredRef = useRef(false);
   const laneTourAutoFiredRef = useRef(false);
+  const laneWorkPaneTourAutoFiredRef = useRef(false);
   const workTourAutoFiredRef = useRef(false);
   const filesTourAutoFiredRef = useRef(false);
   const runTourAutoFiredRef = useRef(false);
@@ -97,7 +100,56 @@ export function OnboardingBootstrap() {
     location.pathname,
   ]);
 
-  // Auto-start Work tour on first /lanes visit (work pane is nested inside lanes), after wizard resolves.
+  // Auto-start Lane Work Pane tour on first /lanes visit once a lane is selected
+  // and the Lanes tour has been seen. This fires inside the embedded work pane.
+  useEffect(() => {
+    if (!hydrated || !progress) return;
+    if (!onboardingEnabled) return;
+    if (laneWorkPaneTourAutoFiredRef.current) return;
+    if (wizardOpen) return;
+    if (activeTourId) return;
+    if (onProjectSetup) return;
+
+    const wizardResolved =
+      progress.wizardCompletedAt !== null || progress.wizardDismissedAt !== null;
+    if (!wizardResolved) return;
+
+    const tour = getTour("lane-work-pane");
+    if (!tour || tour.steps.length === 0) return;
+
+    const onLanesRoute =
+      location.pathname === tour.route || location.pathname.startsWith(`${tour.route}/`);
+    if (!onLanesRoute) return;
+
+    // Only fire after a lane is actually selected so the pane anchors exist.
+    if (!selectedLaneId) return;
+
+    // Only auto-fire once the lanes tour has been seen.
+    const laneEntry = progress.tours["lanes"];
+    const lanesSeen =
+      (laneEntry?.completedAt ?? null) !== null || (laneEntry?.dismissedAt ?? null) !== null;
+    if (!lanesSeen) return;
+
+    const entry = progress.tours[tour.id];
+    const tourTouched =
+      (entry?.completedAt ?? null) !== null || (entry?.dismissedAt ?? null) !== null;
+    if (tourTouched) return;
+
+    laneWorkPaneTourAutoFiredRef.current = true;
+    void useOnboardingStore.getState().startTour(tour.id);
+  }, [
+    hydrated,
+    progress,
+    onboardingEnabled,
+    wizardOpen,
+    activeTourId,
+    onProjectSetup,
+    location.pathname,
+    selectedLaneId,
+  ]);
+
+  // Auto-start Work tour on first /work visit, after the wizard and Lanes tour
+  // are resolved. The /work route is the standalone Work tab (TerminalsPage).
   useEffect(() => {
     if (!hydrated || !progress) return;
     if (!onboardingEnabled) return;
@@ -116,12 +168,6 @@ export function OnboardingBootstrap() {
     const onWorkRoute =
       location.pathname === tour.route || location.pathname.startsWith(`${tour.route}/`);
     if (!onWorkRoute) return;
-
-    // Only auto-fire once the lanes tour has been seen.
-    const laneEntry = progress.tours["lanes"];
-    const lanesSeen =
-      (laneEntry?.completedAt ?? null) !== null || (laneEntry?.dismissedAt ?? null) !== null;
-    if (!lanesSeen) return;
 
     const entry = progress.tours[tour.id];
     const tourTouched =

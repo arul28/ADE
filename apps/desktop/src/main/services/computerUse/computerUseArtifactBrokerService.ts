@@ -16,7 +16,6 @@ import type {
   ComputerUseArtifactRouteArgs,
   ComputerUseArtifactView,
   ComputerUseBackendStatus,
-  ComputerUseExternalBackendStatus,
   ComputerUseArtifactWorkflowState,
   ComputerUseEventPayload,
 } from "../../../shared/types";
@@ -39,7 +38,6 @@ import {
   toOptionalString,
   writeTextAtomic,
 } from "../shared/utils";
-import { commandExists } from "../ai/utils";
 import { createComputerUseArtifactPath, getLocalComputerUseCapabilities, toProjectArtifactUri } from "./localComputerUse";
 
 type StoredArtifactRow = {
@@ -275,7 +273,7 @@ export function createComputerUseArtifactBrokerService(args: {
         next.id,
         projectId,
         next.kind,
-        next.backendStyle,
+        "external_cli",
         next.backendName,
         next.sourceToolName,
         next.originalType,
@@ -407,7 +405,6 @@ export function createComputerUseArtifactBrokerService(args: {
         laneId,
         metadata: {
           brokerArtifactId: record.id,
-          backendStyle: record.backendStyle,
           backendName: record.backendName,
           sourceToolName: record.sourceToolName,
           originalType: record.originalType,
@@ -435,7 +432,6 @@ export function createComputerUseArtifactBrokerService(args: {
           brokerArtifactId: record.id,
           title: record.title,
           description: record.description,
-          backendStyle: record.backendStyle,
           backendName: record.backendName,
           sourceToolName: record.sourceToolName,
           uri: record.uri,
@@ -450,7 +446,6 @@ export function createComputerUseArtifactBrokerService(args: {
     db.all<StoredArtifactRow>(query, params).map((row) => ({
       id: row.id,
       kind: row.artifact_kind as ComputerUseArtifactKind,
-      backendStyle: row.backend_style as ComputerUseArtifactRecord["backendStyle"],
       backendName: row.backend_name,
       sourceToolName: row.source_tool_name,
       originalType: row.original_type,
@@ -494,43 +489,8 @@ export function createComputerUseArtifactBrokerService(args: {
     if (local.proofRequirements.browser_verification.available) localKinds.push("browser_verification");
     if (local.proofRequirements.console_logs.available) localKinds.push("console_logs");
 
-    const backends: ComputerUseExternalBackendStatus[] = [];
-    const ghostInstalled = commandExists("ghost");
-    backends.push({
-      name: "Ghost OS",
-      style: "external_cli",
-      available: ghostInstalled,
-      state: ghostInstalled ? "installed" : "missing",
-      detail: ghostInstalled
-        ? "Ghost OS CLI is installed and can produce artifacts for ADE ingestion."
-        : "Ghost OS CLI is not installed on this machine.",
-      supportedKinds: [
-        "screenshot",
-        "video_recording",
-        "browser_verification",
-      ],
-    });
-
-    const agentBrowserInstalled = commandExists("agent-browser");
-    backends.push({
-      name: "agent-browser",
-      style: "external_cli",
-      available: agentBrowserInstalled,
-      state: agentBrowserInstalled ? "installed" : "missing",
-      detail: agentBrowserInstalled
-        ? "agent-browser CLI is installed and can produce artifacts for ADE ingestion."
-        : "agent-browser CLI is not installed on this machine.",
-      supportedKinds: [
-        "screenshot",
-        "video_recording",
-        "browser_trace",
-        "browser_verification",
-        "console_logs",
-      ],
-    });
-
     return {
-      backends,
+      backends: [],
       localFallback: {
         available: local.overallState === "present",
         detail: local.overallState === "present"
@@ -556,7 +516,6 @@ export function createComputerUseArtifactBrokerService(args: {
         };
         const record = insertArtifactRecord({
           kind,
-          backendStyle: request.backend.style,
           backendName: request.backend.name,
           sourceToolName: toOptionalString(request.backend.toolName) ?? toOptionalString(request.backend.command),
           originalType: toOptionalString(input.rawType) ?? toOptionalString(input.kind),

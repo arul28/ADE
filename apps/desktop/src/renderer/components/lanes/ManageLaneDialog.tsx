@@ -89,7 +89,8 @@ export function ManageLaneDialog({
       ) : (
         <div className="max-h-[65vh] space-y-3 overflow-auto">
           {/* Lane info */}
-          <section className={SECTION_CLASS_NAME}>
+          {/* tour anchor — closest viable: no in-dialog rename control, so the lane info block stands in. */}
+          <section data-tour="lanes.manageDialog.rename" className={SECTION_CLASS_NAME}>
             <span className={LABEL_CLASS_NAME}>{isBatch ? "Selected lanes" : "Lane"}</span>
             {isBatch ? (
               <div className="mt-2 max-h-[120px] space-y-1.5 overflow-auto">
@@ -131,7 +132,7 @@ export function ManageLaneDialog({
                     Move this attached worktree into <span className="font-mono text-blue-200/80">.ade/worktrees</span> for full lifecycle management.
                   </div>
                 </div>
-                <Button size="sm" variant="outline" disabled={laneActionBusy} onClick={onAdoptAttached}>
+                <Button size="sm" variant="outline" data-tour="lanes.manageDialog.adopt" disabled={laneActionBusy} onClick={onAdoptAttached}>
                   Move
                 </Button>
               </div>
@@ -152,7 +153,7 @@ export function ManageLaneDialog({
                     : "Hide from ADE without deleting worktree or branches."}
                 </div>
               </div>
-              <Button size="sm" variant="outline" disabled={laneActionBusy} onClick={onArchive}>
+              <Button size="sm" variant="outline" data-tour="lanes.manageDialog.archive" disabled={laneActionBusy} onClick={onArchive}>
                 {isBatch ? `Archive ${lanes.length}` : "Archive"}
               </Button>
             </div>
@@ -174,7 +175,8 @@ export function ManageLaneDialog({
 
             {/* Delete mode selector */}
             <span className={LABEL_CLASS_NAME}>Scope</span>
-            <div className="mt-2 mb-3 inline-flex rounded-lg border border-white/[0.06] bg-white/[0.02] p-0.5">
+            {/* tour anchor — closest viable: scope picker serves as the in-dialog tab switch. */}
+            <div data-tour="lanes.manageDialog.tabs" className="mt-2 mb-3 inline-flex rounded-lg border border-white/[0.06] bg-white/[0.02] p-0.5">
               {([
                 { value: "worktree" as const, label: worktreeDeleteLabel },
                 { value: "local_branch" as const, label: localDeleteLabel },
@@ -250,6 +252,7 @@ export function ManageLaneDialog({
             <Button
               size="sm"
               variant="primary"
+              data-tour="lanes.manageDialog.delete"
               className="bg-red-600 hover:bg-red-500"
               disabled={laneActionBusy || !confirmMatch}
               onClick={onDelete}

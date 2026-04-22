@@ -13,7 +13,7 @@ const TERM: Term = {
   shortDefinition: "A separate workspace for one task.",
   longDefinition:
     "A Lane is like its own desk — it has its own folder on disk, so changes in one Lane don't mix with another.",
-  docUrl: "https://www.ade-app.dev/docs/lanes/overview",
+  docUrl: "https://www.ade-app.dev/lanes/overview",
 };
 
 (globalThis as any).window = (globalThis as any).window ?? {};
@@ -41,7 +41,7 @@ describe("GlossaryPopover", () => {
     expect(screen.getByText(TERM.longDefinition)).toBeTruthy();
 
     const link = screen.getByRole("link", { name: /Read more/ }) as HTMLAnchorElement;
-    expect(link.href).toContain("/docs/lanes/overview");
+    expect(link.href).toContain("/lanes/overview");
 
     // Electron: clicking should route to openExternal, not the browser's default navigation.
     const ade = (globalThis.window as any).ade as {

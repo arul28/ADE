@@ -540,6 +540,7 @@ export function SettingsPage() {
             <button
               key={s.id}
               type="button"
+              data-tour={`settings.${s.id === "lane-templates" ? "laneTemplates" : s.id === "mobile-push" ? "mobilePush" : s.id}`}
               onClick={() => navigateToSection(s.id)}
               onMouseEnter={() => setHoveredId(s.id)}
               onMouseLeave={() => setHoveredId(null)}

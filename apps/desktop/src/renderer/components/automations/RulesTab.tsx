@@ -445,7 +445,7 @@ export function RulesTab({
           </div>
 
           <div className="mt-4 flex gap-2">
-            <Button size="sm" variant="primary" onClick={createRule}>
+            <Button size="sm" variant="primary" data-tour="automations.createTrigger" onClick={createRule}>
               <Plus size={12} weight="regular" />
               New rule
             </Button>

@@ -26,7 +26,7 @@ const termFixture = {
   term: "Lane",
   shortDefinition: "A separate workspace for one task.",
   longDefinition: "A Lane is like its own desk for one task.",
-  docUrl: "https://www.ade-app.dev/docs/lanes/overview",
+  docUrl: "https://www.ade-app.dev/lanes/overview",
 };
 
 beforeEach(() => {

@@ -1,4 +1,3 @@
-import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { resolveAdeLayout } from "../../../shared/adeLayout";
@@ -28,14 +27,6 @@ export type LocalComputerUseCapabilities = {
   >;
 };
 
-export type GhostDoctorProcessHealthState = "healthy" | "stale" | "unknown";
-
-export type GhostDoctorProcessHealth = {
-  state: GhostDoctorProcessHealthState;
-  processCount: number | null;
-  detail: string;
-};
-
 const DARWIN_BLOCKED_DETAIL = "Local computer-use runtime is currently implemented for macOS only.";
 
 function present(command: string, detail: string): LocalComputerUseCapability {
@@ -48,81 +39,6 @@ function missing(command: string, detail: string): LocalComputerUseCapability {
 
 function blocked(detail: string): LocalComputerUseCapability {
   return { state: "blocked_by_capability", available: false, command: null, detail };
-}
-
-const GHOST_DOCTOR_PROCESS_REGEX = /(\d+)\s+ghost(?:\s+\w+)?\s+process(?:es)?\s+found/i;
-
-export function parseGhostDoctorProcessHealth(output: string): GhostDoctorProcessHealth {
-  const trimmed = output.trim();
-  if (!trimmed.length) {
-    return {
-      state: "unknown",
-      processCount: null,
-      detail: "Ghost doctor did not return any process-health output.",
-    };
-  }
-
-  const match = trimmed.match(GHOST_DOCTOR_PROCESS_REGEX);
-  const processCount = match ? Number(match[1]) : null;
-  if (typeof processCount === "number" && Number.isFinite(processCount)) {
-    if (processCount > 1) {
-      return {
-        state: "stale",
-        processCount,
-        detail: `Ghost doctor found ${processCount} Ghost OS processes. Stop the stale processes and rerun ghost doctor.`,
-      };
-    }
-    return {
-      state: "healthy",
-      processCount,
-      detail: `Ghost doctor found ${processCount} Ghost OS process${processCount === 1 ? "" : "es"} running.`,
-    };
-  }
-
-  if (/\[FAIL\]\s+Processes:/i.test(trimmed)) {
-    return {
-      state: "stale",
-      processCount: null,
-      detail: "Ghost doctor reported a Ghost OS process failure, but did not include a parseable count.",
-    };
-  }
-
-  if (/\[ok\]\s+Processes:/i.test(trimmed)) {
-    return {
-      state: "healthy",
-      processCount: null,
-      detail: "Ghost doctor reported healthy Ghost OS process state.",
-    };
-  }
-
-  return {
-    state: "unknown",
-    processCount: null,
-    detail: "Ghost doctor output did not include a parseable Ghost OS process check.",
-  };
-}
-
-export function getGhostDoctorProcessHealth(): GhostDoctorProcessHealth {
-  if (process.platform !== "darwin" || !commandExists("ghost")) {
-    return {
-      state: "unknown",
-      processCount: null,
-      detail: "Ghost doctor is unavailable on this platform.",
-    };
-  }
-
-  const result = spawnSync("ghost", ["doctor"], { encoding: "utf8", timeout: 10_000 });
-  const combinedOutput = `${result.stdout ?? ""}\n${result.stderr ?? ""}`;
-  const parsed = parseGhostDoctorProcessHealth(combinedOutput);
-
-  if (result.error && parsed.state === "unknown") {
-    return {
-      ...parsed,
-      detail: `${parsed.detail} (${result.error.message})`,
-    };
-  }
-
-  return parsed;
 }
 
 export function getLocalComputerUseCapabilities(): LocalComputerUseCapabilities {

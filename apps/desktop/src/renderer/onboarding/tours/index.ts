@@ -4,6 +4,7 @@
 
 import "./lanesTour";
 import "./workTour";
+import "./laneWorkPaneTour";
 import "./filesTour";
 import "./runTour";
 import "./graphTour";

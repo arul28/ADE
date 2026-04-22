@@ -161,7 +161,6 @@ import type { LinearCredentialService } from "../cto/linearCredentialService";
 import type { createPrService } from "../prs/prService";
 import type { createIssueInventoryService } from "../prs/issueInventoryService";
 import type { ComputerUseArtifactBrokerService } from "../computerUse/computerUseArtifactBrokerService";
-import { createProofObserver } from "../computerUse/proofObserver";
 import { maybeSyntheticToolResult } from "../computerUse/syntheticToolResult";
 import {
   buildOpenCodePromptParts,
@@ -2544,10 +2543,6 @@ export function createAgentChatService(args: {
 
   let computerUseArtifactBrokerRef = computerUseArtifactBrokerService ?? null;
 
-  let proofObserver = computerUseArtifactBrokerRef
-    ? createProofObserver({ broker: computerUseArtifactBrokerRef })
-    : null;
-
   const layout = resolveAdeLayout(projectRoot);
   const chatSessionsDir = layout.chatSessionsDir;
   const chatTranscriptsDir = layout.chatTranscriptsDir;
@@ -4433,7 +4428,7 @@ export function createAgentChatService(args: {
   const isAskUserToolName = (toolName: string | null | undefined): boolean => {
     if (!toolName) return false;
     const normalized = normalizeToolNameForApproval(toolName);
-    return normalized === "mcp_ade_ask_user";
+    return normalized === "ask_user";
   };
 
   const resolveChatConfig = (): ResolvedChatConfig => {
@@ -5141,11 +5136,6 @@ export function createAgentChatService(args: {
           error: error instanceof Error ? error.message : String(error),
         });
       }
-    }
-
-    // Passive proof capture: observe tool results for screenshots/artifacts.
-    if (proofObserver && event.type === "tool_result") {
-      proofObserver.observe(event, managed.session.id);
     }
 
     const collector = sessionTurnCollectors.get(managed.session.id);
@@ -7994,7 +7984,7 @@ export function createAgentChatService(args: {
       const description = typeof params.reason === "string" && params.reason.trim().length
         ? params.reason.trim()
         : "Codex requested additional permissions";
-      // Auto-allow the ADE MCP `ask_user` tool so the inline question card surfaces
+      // Auto-allow the ADE `ask_user` tool so the inline question card surfaces
       // immediately instead of being shadowed by a generic "Allow additional
       // permissions?" prompt. Gated by `ai.chat.autoAllowAskUser` (default: true).
       if (isAutoAllowAskUserEnabled()) {
@@ -11201,7 +11191,7 @@ export function createAgentChatService(args: {
         return { outcome: { outcome: "cancelled" } };
       }
       const cursorRt = owner.runtime;
-      // Auto-allow the ADE MCP `ask_user` tool — the inline question card
+      // Auto-allow the ADE `ask_user` tool — the inline question card
       // provides its own answer UI, and the permission prompt just hides it.
       const rawInput = req.toolCall.rawInput as Record<string, unknown> | null | undefined;
       const rawToolCandidate = rawInput?.name ?? rawInput?.tool ?? rawInput?.toolName;
@@ -13901,7 +13891,6 @@ export function createAgentChatService(args: {
     },
     setComputerUseArtifactBrokerService(svc: ComputerUseArtifactBrokerService) {
       computerUseArtifactBrokerRef = svc;
-      proofObserver = createProofObserver({ broker: svc });
     },
   };
 }

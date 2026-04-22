@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { GLOSSARY, findTerm } from "./glossary";
 
-const DOCS_PREFIX = "https://www.ade-app.dev/docs/";
+const DOCS_PREFIX = "https://www.ade-app.dev/";
 
 describe("glossary", () => {
   it("ships definitions for every v1 term listed in plan §7", () => {
@@ -46,7 +46,7 @@ describe("glossary", () => {
     }
   });
 
-  it("every docUrl is a well-formed https ade-app.dev/docs URL", () => {
+  it("every docUrl is a well-formed https ade-app.dev URL", () => {
     for (const term of GLOSSARY) {
       expect(term.docUrl.startsWith(DOCS_PREFIX), `docUrl for ${term.id}: ${term.docUrl}`).toBe(true);
       expect(() => new URL(term.docUrl)).not.toThrow();

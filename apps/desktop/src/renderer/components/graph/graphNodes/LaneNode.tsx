@@ -95,6 +95,7 @@ export function GraphLaneNode({ data, selected }: NodeProps<Node<GraphNodeData>>
 
   return (
     <div
+      data-tour="graph.node"
       className={cn(
         "group relative overflow-hidden rounded-xl border bg-white/[0.03] px-3 py-2.5 text-[11px] shadow-card backdrop-blur-sm transition-all duration-150",
         "border-white/[0.08]",
