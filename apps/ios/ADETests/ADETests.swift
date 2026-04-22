@@ -3180,6 +3180,58 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(activeAgents.first?.toolName, "functions.Read")
   }
 
+  func testWorkChatTranscriptPreservesReasoningIdentity() {
+    let raw = """
+    {"sessionId":"chat-1","timestamp":"2026-04-22T21:11:58.154Z","sequence":6,"event":{"type":"reasoning","text":"The user wants","turnId":"turn-1","itemId":"claude-thinking:turn-1:0","summaryIndex":0}}
+    """
+
+    let transcript = parseWorkChatTranscript(raw)
+
+    guard case .reasoning(let text, let turnId, let itemId, let summaryIndex) = transcript.first?.event else {
+      return XCTFail("Expected reasoning event.")
+    }
+    XCTAssertEqual(text, "The user wants")
+    XCTAssertEqual(turnId, "turn-1")
+    XCTAssertEqual(itemId, "claude-thinking:turn-1:0")
+    XCTAssertEqual(summaryIndex, 0)
+  }
+
+  func testWorkEventCardsMergeReasoningFragmentsByItemId() {
+    let transcript = [
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-04-22T21:11:58.154Z",
+        sequence: 6,
+        event: .reasoning(text: "The user wants", turnId: "turn-1", itemId: "claude-thinking:turn-1:0", summaryIndex: nil)
+      ),
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-04-22T21:11:58.509Z",
+        sequence: 7,
+        event: .reasoning(text: "to test computer use", turnId: "turn-1", itemId: "claude-thinking:turn-1:0", summaryIndex: nil)
+      ),
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-04-22T21:11:58.843Z",
+        sequence: 8,
+        event: .reasoning(text: "and proof capture.", turnId: "turn-1", itemId: "claude-thinking:turn-1:0", summaryIndex: nil)
+      ),
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-04-22T21:12:00.000Z",
+        sequence: 9,
+        event: .reasoning(text: "Second thought.", turnId: "turn-1", itemId: "claude-thinking:turn-1:1", summaryIndex: nil)
+      ),
+    ]
+
+    let cards = buildWorkEventCards(from: transcript).filter { $0.kind == "reasoning" }
+
+    XCTAssertEqual(cards.count, 2)
+    XCTAssertEqual(cards.first?.body, "The user wants to test computer use and proof capture.")
+    XCTAssertEqual(cards.first?.timestamp, "2026-04-22T21:11:58.843Z")
+    XCTAssertEqual(cards.last?.body, "Second thought.")
+  }
+
   func testWorkChatTranscriptHelpersDecodeCommandFileChangeCompletionReportAndUsageEvents() {
     let raw = """
     {"sessionId":"chat-1","timestamp":"2026-03-25T00:00:00.000Z","sequence":1,"event":{"type":"command","command":"npm test","cwd":"/tmp/work","output":"ok","itemId":"cmd-1","turnId":"turn-1","exitCode":0,"durationMs":1240,"status":"completed"}}
@@ -4372,7 +4424,7 @@ final class ADETests: XCTestCase {
         sessionId: "chat-1",
         timestamp: "2026-03-25T00:00:01.000Z",
         sequence: 1,
-        event: .reasoning(text: "Thinking through the answer", turnId: "turn-1")
+        event: .reasoning(text: "Thinking through the answer", turnId: "turn-1", itemId: "reasoning-1", summaryIndex: nil)
       ),
       WorkChatEnvelope(
         sessionId: "chat-1",

@@ -402,7 +402,7 @@ enum WorkChatEvent: Equatable {
   case planText(text: String, turnId: String?)
   case toolUseSummary(text: String, turnId: String?)
   case status(turnStatus: String, message: String?, turnId: String?)
-  case reasoning(text: String, turnId: String?)
+  case reasoning(text: String, turnId: String?, itemId: String?, summaryIndex: Int?)
   case completionReport(summary: String, status: String, artifacts: [WorkCompletionArtifactModel], blockerDescription: String?, turnId: String?)
   case command(command: String, cwd: String, output: String, status: WorkToolCardStatus, itemId: String, exitCode: Int?, durationMs: Int?, turnId: String?)
   case fileChange(path: String, diff: String, kind: String, status: WorkToolCardStatus, itemId: String, turnId: String?)

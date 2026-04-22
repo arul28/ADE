@@ -120,7 +120,12 @@ func parseWorkChatTranscript(_ raw: String) -> [WorkChatEnvelope] {
       case "status":
         event = .status(turnStatus: stringValue(eventDict["turnStatus"]), message: optionalString(eventDict["message"]), turnId: turnId)
       case "reasoning":
-        event = .reasoning(text: stringValue(eventDict["text"]), turnId: turnId)
+        event = .reasoning(
+          text: stringValue(eventDict["text"]),
+          turnId: turnId,
+          itemId: itemId,
+          summaryIndex: eventDict["summaryIndex"] as? Int
+        )
       case "approval_request":
         event = .approvalRequest(
           description: stringValue(eventDict["description"]),

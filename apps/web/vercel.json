@@ -7,6 +7,10 @@
     {
       "source": "/docs/:match*",
       "destination": "https://ade-ac1c6011.mintlify.dev/docs/:match*"
+    },
+    {
+      "source": "/((?!.*\\.).*)",
+      "destination": "/index.html"
     }
   ]
 }

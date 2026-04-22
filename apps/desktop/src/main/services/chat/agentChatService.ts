@@ -7162,8 +7162,9 @@ export function createAgentChatService(args: {
           : "failed";
       flushOpenClaudeToolUses(finalToolStatus);
 
-      // Only close V2 session on genuine errors. Interrupted turns keep the
-      // session alive for the next send()+stream() cycle.
+      // Only close V2 session on genuine errors. User interrupts close and
+      // clear the session immediately in interrupt() so the next turn cannot
+      // consume buffered events from the abandoned stream.
       if (!runtime.interrupted) {
         try { runtime.v2Session?.close(); } catch { /* ignore */ }
         runtime.v2Session = null;
@@ -12075,7 +12076,7 @@ export function createAgentChatService(args: {
       warmupInFlight: Boolean(runtime.v2WarmupDone),
     });
     // Set interrupted before touching the runtime so the streaming loop can
-    // break cleanly without tearing the session down.
+    // break cleanly while the underlying SDK stream is aborted below.
     runtime.interrupted = true;
     const interruptedTurnId = runtime.activeTurnId;
     if (runtime.busy && interruptedTurnId) {
@@ -12090,6 +12091,13 @@ export function createAgentChatService(args: {
       });
     }
     cancelClaudeWarmup(managed, runtime, "interrupt");
+    const interruptedSession = runtime.v2Session;
+    if (interruptedSession) {
+      runtime.sdkSessionId = runtime.sdkSessionId ?? interruptedSession.sessionId ?? null;
+      try { interruptedSession.close(); } catch { /* ignore */ }
+      runtime.v2Session = null;
+      runtime.v2WarmupDone = null;
+    }
     cancelQueuedSteers(managed, runtime, "interrupted");
     // Drain pending approvals so their promises settle instead of hanging forever
     for (const pending of runtime.approvals.values()) {

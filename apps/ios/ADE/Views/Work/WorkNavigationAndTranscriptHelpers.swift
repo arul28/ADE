@@ -287,7 +287,7 @@ func deriveWorkAgentActivities(from transcript: [WorkChatEnvelope], session: Wor
   let latestActivityDetail = transcript.reversed().compactMap { envelope -> String? in
     switch envelope.event {
     case .activity(_, let detail, _): return detail
-    case .reasoning(let text, _): return text
+    case .reasoning(let text, _, _, _): return text
     case .status(_, let message, _): return message
     default: return nil
     }

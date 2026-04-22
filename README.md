@@ -28,7 +28,9 @@
 </p>
 
 <p align="center">
-  <img src="assets/readme/hero.png" alt="ADE on desk and in hand" width="900" />
+  <img src="assets/readme/hero-desktop.png" alt="ADE on macOS" width="720" />
+  &nbsp;
+  <img src="assets/readme/hero-iphone.png" alt="ADE on iOS" width="180" />
 </p>
 
 ADE runs **Claude Code, Codex, Cursor, opencode** — every major AI coding agent — inside one native workspace. Every task is its own git worktree, so agents ship features in parallel. Review and merge PRs in-app. Approve a diff from your phone while another agent tests on your Mac.

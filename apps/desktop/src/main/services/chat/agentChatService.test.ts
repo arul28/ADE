@@ -5027,6 +5027,7 @@ describe("createAgentChatService", () => {
         };
 
         vi.mocked(unstable_v2_createSession).mockReturnValue(primarySession as any);
+        vi.mocked(unstable_v2_resumeSession).mockReturnValue(primarySession as any);
 
         const { service } = createService({
           onEvent: (event: AgentChatEventEnvelope) => events.push(event),
@@ -5069,7 +5070,8 @@ describe("createAgentChatService", () => {
           timeoutMs: 15_000,
         });
 
-        expect(unstable_v2_resumeSession).not.toHaveBeenCalled();
+        expect(primarySession.close).toHaveBeenCalledTimes(1);
+        expect(unstable_v2_resumeSession).toHaveBeenCalledWith("sdk-session-1", expect.any(Object));
         expect(primarySend).toHaveBeenCalledTimes(3);
         expect(followUp.outputText).toContain("new chat buttons");
       } finally {
@@ -5490,7 +5492,7 @@ describe("createAgentChatService", () => {
       await expect(sendPromise).resolves.toBeUndefined();
     });
 
-    it("emits a single interrupted status and done event without closing the Claude session", async () => {
+    it("emits a single interrupted status and done event and closes the Claude session", async () => {
       const events: AgentChatEventEnvelope[] = [];
       let streamCall = 0;
       let warmupComplete = false;
@@ -5561,7 +5563,7 @@ describe("createAgentChatService", () => {
       );
       expect(interruptedStatuses).toHaveLength(1);
       expect(interruptedDone).toHaveLength(1);
-      expect(close).not.toHaveBeenCalled();
+      expect(close).toHaveBeenCalledTimes(1);
 
       hangResolve!();
       await expect(sendPromise).resolves.toBeUndefined();
@@ -5572,6 +5574,113 @@ describe("createAgentChatService", () => {
       expect(events.filter(
         (event) => event.event.type === "done" && event.event.status === "interrupted",
       )).toHaveLength(1);
+    });
+
+    it("resumes through a fresh SDK session after interrupt so stale stream text is not replayed", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      let primaryStreamCall = 0;
+      let releaseInterruptedStream = false;
+      const primaryClose = vi.fn();
+      const primarySend = vi.fn().mockResolvedValue(undefined);
+      const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+
+      const primarySession = {
+        send: primarySend,
+        stream: vi.fn(() => (async function* () {
+          primaryStreamCall += 1;
+          if (primaryStreamCall === 1) {
+            yield { type: "system", subtype: "init", session_id: "sdk-stale-replay", slash_commands: [] };
+            yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+            return;
+          }
+
+          if (primaryStreamCall === 2) {
+            yield {
+              type: "assistant",
+              session_id: "sdk-stale-replay",
+              message: {
+                content: [{ type: "text", text: "partial first answer" }],
+                usage: { input_tokens: 1, output_tokens: 1 },
+              },
+            };
+            while (!releaseInterruptedStream) {
+              await new Promise((resolve) => setTimeout(resolve, 0));
+            }
+            return;
+          }
+
+          yield {
+            type: "assistant",
+            session_id: "sdk-stale-replay",
+            message: {
+              content: [{ type: "text", text: "stale tail from interrupted turn" }],
+              usage: { input_tokens: 1, output_tokens: 1 },
+            },
+          };
+          yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+        })()),
+        close: primaryClose,
+        sessionId: "sdk-stale-replay",
+        setPermissionMode,
+      };
+      const resumedSession = {
+        send: vi.fn().mockResolvedValue(undefined),
+        stream: vi.fn(() => (async function* () {
+          yield {
+            type: "assistant",
+            session_id: "sdk-stale-replay",
+            message: {
+              content: [{ type: "text", text: "fresh follow-up answer" }],
+              usage: { input_tokens: 1, output_tokens: 1 },
+            },
+          };
+          yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+        })()),
+        close: vi.fn(),
+        sessionId: "sdk-stale-replay",
+        setPermissionMode,
+      };
+
+      vi.mocked(unstable_v2_createSession).mockReturnValue(primarySession as any);
+      vi.mocked(unstable_v2_resumeSession).mockReturnValue(resumedSession as any);
+
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+
+      await vi.waitFor(() => {
+        expect(primaryStreamCall).toBeGreaterThanOrEqual(1);
+      });
+
+      const firstTurn = service.sendMessage({
+        sessionId: session.id,
+        text: "answer the first question",
+      });
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope =>
+          event.event.type === "text" && event.event.text.includes("partial first answer"),
+      );
+
+      await service.interrupt({ sessionId: session.id });
+      releaseInterruptedStream = true;
+      await firstTurn;
+
+      const followUp = await service.runSessionTurn({
+        sessionId: session.id,
+        text: "answer the follow up",
+        timeoutMs: 15_000,
+      });
+
+      expect(primaryClose).toHaveBeenCalledTimes(1);
+      expect(unstable_v2_resumeSession).toHaveBeenCalledWith("sdk-stale-replay", expect.any(Object));
+      expect(followUp.outputText).toContain("fresh follow-up answer");
+      expect(followUp.outputText).not.toContain("stale tail");
     });
 
   });

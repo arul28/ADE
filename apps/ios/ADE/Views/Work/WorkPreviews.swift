@@ -117,7 +117,9 @@ private enum WorkPreviewData {
       sequence: 2,
       event: .reasoning(
         text: "The root TabView is mounting every tab and several inactive tabs are doing reload work on local database revisions.",
-        turnId: "turn-1"
+        turnId: "turn-1",
+        itemId: "reasoning-1",
+        summaryIndex: nil
       )
     ),
     envelope(

@@ -123,8 +123,8 @@ func makeWorkChatEvent(from event: AgentChatEvent) -> WorkChatEvent {
     return .toolUseSummary(text: summary, turnId: turnId)
   case .status(let turnStatus, let turnId, let message):
     return .status(turnStatus: turnStatus.rawValue, message: message, turnId: turnId)
-  case .reasoning(let text, let turnId, _, _):
-    return .reasoning(text: text, turnId: turnId)
+  case .reasoning(let text, let turnId, let itemId, let summaryIndex):
+    return .reasoning(text: text, turnId: turnId, itemId: itemId, summaryIndex: summaryIndex)
   case .completionReport(let report, let turnId):
     return .completionReport(
       summary: report.summary,

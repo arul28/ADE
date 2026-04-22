@@ -411,10 +411,80 @@ func buildWorkEventCards(
       }
     }
     guard let card = eventCard(for: envelope) else { continue }
-    if byId[card.id] == nil { order.append(card.id) }
-    byId[card.id] = card
+    if let existing = byId[card.id], let merged = mergedWorkEventCard(existing, with: card) {
+      byId[card.id] = merged
+    } else {
+      if byId[card.id] == nil { order.append(card.id) }
+      byId[card.id] = card
+    }
   }
   return order.compactMap { byId[$0] }
+}
+
+private func workReasoningCardId(
+  sessionId: String,
+  turnId: String?,
+  itemId: String?,
+  summaryIndex: Int?,
+  fallback: String
+) -> String {
+  if let itemId, !itemId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+    return ["reasoning", sessionId, "item", itemId].joined(separator: ":")
+  }
+  if let turnId, !turnId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+    if let summaryIndex {
+      return ["reasoning", sessionId, "turn", turnId, "summary", String(summaryIndex)].joined(separator: ":")
+    }
+    return ["reasoning", sessionId, "turn", turnId].joined(separator: ":")
+  }
+  return fallback
+}
+
+private func mergeWorkInlineText(_ existing: String, _ incoming: String) -> String {
+  if existing.isEmpty { return incoming }
+  if incoming.isEmpty { return existing }
+  if existing == incoming { return existing }
+  if incoming.hasPrefix(existing) { return incoming }
+  if existing.hasPrefix(incoming) { return existing }
+  if existing.contains(incoming) { return existing }
+  if incoming.contains(existing) { return incoming }
+  let separator = existing.last?.isWhitespace == false && incoming.first?.isWhitespace == false ? " " : ""
+  return "\(existing)\(separator)\(incoming)"
+}
+
+private func laterWorkTimestamp(_ lhs: String, _ rhs: String) -> String {
+  let formatter = ISO8601DateFormatter()
+  formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+  let fallbackFormatter = ISO8601DateFormatter()
+  fallbackFormatter.formatOptions = [.withInternetDateTime]
+
+  let lhsDate = formatter.date(from: lhs) ?? fallbackFormatter.date(from: lhs)
+  let rhsDate = formatter.date(from: rhs) ?? fallbackFormatter.date(from: rhs)
+
+  if let lhsDate, let rhsDate {
+    return rhsDate >= lhsDate ? rhs : lhs
+  }
+  if rhsDate != nil { return rhs }
+  return lhs
+}
+
+private func mergedWorkEventCard(_ existing: WorkEventCardModel, with incoming: WorkEventCardModel) -> WorkEventCardModel? {
+  guard existing.kind == incoming.kind else { return nil }
+  if existing.kind == "reasoning" {
+    return WorkEventCardModel(
+      id: incoming.id,
+      kind: incoming.kind,
+      title: incoming.title,
+      icon: incoming.icon,
+      tint: incoming.tint,
+      timestamp: laterWorkTimestamp(existing.timestamp, incoming.timestamp),
+      body: mergeWorkInlineText(existing.body ?? "", incoming.body ?? ""),
+      bullets: incoming.bullets.isEmpty ? existing.bullets : incoming.bullets,
+      metadata: incoming.metadata.isEmpty ? existing.metadata : incoming.metadata,
+      planSteps: incoming.planSteps.isEmpty ? existing.planSteps : incoming.planSteps
+    )
+  }
+  return incoming
 }
 
 /// Map pending-input itemIds to the timestamp of their originating envelope so
@@ -466,10 +536,10 @@ private func eventCard(for envelope: WorkChatEnvelope) -> WorkEventCardModel? {
         metadata: [],
         planSteps: steps
       )
-    case .reasoning(let text, _):
+    case .reasoning(let text, let turnId, let itemId, let summaryIndex):
       guard !isLowSignalWorkReasoning(text) else { return nil }
       return WorkEventCardModel(
-        id: envelope.id,
+        id: workReasoningCardId(sessionId: envelope.sessionId, turnId: turnId, itemId: itemId, summaryIndex: summaryIndex, fallback: envelope.id),
         kind: "reasoning",
         title: "Reasoning",
         icon: "brain.head.profile",

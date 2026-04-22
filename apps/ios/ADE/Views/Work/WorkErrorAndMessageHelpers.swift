@@ -736,8 +736,8 @@ func workChatEventMergeKey(_ event: WorkChatEvent) -> String {
     return ["tool_use_summary", turnId ?? "", text].joined(separator: "|")
   case .status(let turnStatus, let message, let turnId):
     return ["status", turnId ?? "", turnStatus, message ?? ""].joined(separator: "|")
-  case .reasoning(let text, let turnId):
-    return ["reasoning", turnId ?? "", text].joined(separator: "|")
+  case .reasoning(let text, let turnId, let itemId, let summaryIndex):
+    return ["reasoning", turnId ?? "", itemId ?? "", summaryIndex.map(String.init) ?? "", text].joined(separator: "|")
   case .completionReport(let summary, let status, let artifacts, let blockerDescription, let turnId):
     return ["completion_report", turnId ?? "", status, summary, blockerDescription ?? "", workCompletionArtifactsMergeKey(artifacts)].joined(separator: "|")
   case .command(let command, let cwd, let output, let status, let itemId, let exitCode, let durationMs, let turnId):
