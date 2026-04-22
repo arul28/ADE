@@ -163,8 +163,7 @@ struct SettingsPinSheet: View {
 
       guard isSubmitting else { return }
       if syncService.connectionState == .connected {
-        let generator = UIImpactFeedbackGenerator(style: .medium)
-        generator.impactOccurred()
+        ADEHaptics.medium()
         isSubmitting = false
         dismiss()
       } else {

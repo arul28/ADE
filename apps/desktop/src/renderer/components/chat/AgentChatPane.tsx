@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { AnimatePresence, motion } from "motion/react";
-import { GitBranch, Plus } from "@phosphor-icons/react";
+import { Plus } from "@phosphor-icons/react";
 import {
   inferAttachmentType,
   type AgentChatApprovalDecision,
@@ -327,9 +327,15 @@ function summarizeNativeControls(
       permissionMode = "config-toml";
     } else if (controls.codexApprovalPolicy === "never" && controls.codexSandbox === "danger-full-access") {
       permissionMode = "full-auto";
-    } else if (controls.codexApprovalPolicy === "on-failure" && controls.codexSandbox === "workspace-write") {
-      permissionMode = "edit";
-    } else if (controls.codexApprovalPolicy === "untrusted" && controls.codexSandbox === "read-only") {
+    } else if (
+      (controls.codexApprovalPolicy === "on-request" || controls.codexApprovalPolicy === "on-failure" || controls.codexApprovalPolicy === "untrusted")
+      && controls.codexSandbox === "workspace-write"
+    ) {
+      permissionMode = "default";
+    } else if (
+      (controls.codexApprovalPolicy === "on-request" || controls.codexApprovalPolicy === "untrusted")
+      && controls.codexSandbox === "read-only"
+    ) {
       permissionMode = "plan";
     }
     return {
@@ -460,10 +466,6 @@ function sortSessionSummariesByRecency(
   localTouchBySession: ReadonlyMap<string, string>,
 ): AgentChatSessionSummary[] {
   return [...rows].sort((left, right) => compareChatSessionsByEffectiveRecency(left, right, localTouchBySession));
-}
-
-function byStartedDesc(a: AgentChatSessionSummary, b: AgentChatSessionSummary): number {
-  return compareChatSessionsByEffectiveRecency(a, b, new Map());
 }
 
 export function resolveNextSelectedSessionId(args: {
@@ -716,7 +718,6 @@ export function AgentChatPane({
   const openAiProvidersSettings = useCallback(() => {
     navigate("/settings?tab=ai#ai-providers");
   }, [navigate]);
-  const selectLane = useAppStore((s) => s.selectLane);
   const lockedSingleSessionMode = Boolean(lockSessionId && hideSessionTabs);
   const forceDraft = forceDraftMode || forceNewSession;
   const preferDraftStart = !lockSessionId && !initialSessionId && !forceNewSession;
@@ -3085,13 +3086,13 @@ export function AgentChatPane({
                       exit={{ opacity: 0, scale: 0.8, transition: { duration: 0.3, ease: "easeOut" } }}
                     >
                       <div
-                        className="pointer-events-none absolute top-1/2 left-1/2 h-[360px] w-[360px] -translate-x-1/2 -translate-y-1/2 rounded-full"
-                        style={{ background: "var(--color-accent)", opacity: 0.08, filter: "blur(110px)" }}
+                        className="pointer-events-none absolute top-1/2 left-1/2 h-[560px] w-[560px] -translate-x-1/2 -translate-y-1/2 rounded-full"
+                        style={{ background: "var(--color-accent)", opacity: 0.08, filter: "blur(140px)" }}
                       />
                       <img
                         src="./logo.png"
                         alt="ADE"
-                        className="relative z-10 h-96 w-96 object-contain"
+                        className="relative z-10 h-[300px] w-[560px] max-w-[78vw] object-contain"
                         style={{ filter: "drop-shadow(0 0 40px rgba(168,130,255,0.15))" }}
                       />
                     </motion.div>

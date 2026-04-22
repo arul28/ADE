@@ -65,10 +65,10 @@ struct WorkSessionSettingsSheet: View {
       ]
     case "codex":
       return [
-        WorkRuntimeOption(id: "default", title: "Default", subtitle: "Ask on request with workspace write."),
-        WorkRuntimeOption(id: "plan", title: "Plan", subtitle: "Untrusted approvals with read-only sandbox."),
-        WorkRuntimeOption(id: "edit", title: "Edit", subtitle: "Approve on failure with workspace write."),
-        WorkRuntimeOption(id: "full-auto", title: "Full auto", subtitle: "Never ask, full sandbox access."),
+        WorkRuntimeOption(id: "default", title: "Default permissions", subtitle: "Workspace-write with approval on request."),
+        WorkRuntimeOption(id: "plan", title: "Plan mode", subtitle: "Read-only browsing with approval on request."),
+        WorkRuntimeOption(id: "full-auto", title: "Full access", subtitle: "No sandbox and no approval prompts."),
+        WorkRuntimeOption(id: "config-toml", title: "Custom (config.toml)", subtitle: "Use the Codex config on the host."),
       ]
     case "opencode":
       return [

@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { ArrowsClockwise, Funnel } from "@phosphor-icons/react";
+import { useNavigate } from "react-router-dom";
 import type { AutomationRun, AutomationRunDetail, AutomationRuleSummary } from "../../../shared/types";
 import { Button } from "../ui/Button";
 import { EmptyState } from "../ui/EmptyState";
 import { cn } from "../ui/cn";
 import { RunHistoryRow } from "./components/RunHistoryRow";
 import { RunDetailPanel } from "./components/RunDetailPanel";
+import { extractError } from "./shared";
 
 export function HistoryTab({
   focusAutomationId,
@@ -14,6 +16,7 @@ export function HistoryTab({
   focusAutomationId?: string | null;
   focusRunId?: string | null;
 }) {
+  const navigate = useNavigate();
   const [rules, setRules] = useState<AutomationRuleSummary[]>([]);
   const [runs, setRuns] = useState<Array<AutomationRun & { ruleName?: string }>>([]);
   const [loading, setLoading] = useState(false);
@@ -22,9 +25,11 @@ export function HistoryTab({
   const [detailLoading, setDetailLoading] = useState(false);
   const [filterRuleId, setFilterRuleId] = useState<string>("");
   const [filterStatus, setFilterStatus] = useState<string>("");
+  const [error, setError] = useState<string | null>(null);
 
   const loadAll = useCallback(async () => {
     setLoading(true);
+    setError(null);
     try {
       const [ruleList, runList] = await Promise.all([
         window.ade.automations.list(),
@@ -33,6 +38,8 @@ export function HistoryTab({
       const byRule = new Map(ruleList.map((rule) => [rule.id, rule.name]));
       setRules(ruleList);
       setRuns(runList.map((run) => ({ ...run, ruleName: byRule.get(run.automationId) ?? run.automationId })));
+    } catch (err) {
+      setError(extractError(err));
     } finally {
       setLoading(false);
     }
@@ -41,9 +48,12 @@ export function HistoryTab({
   const loadDetail = useCallback(async (runId: string) => {
     setSelectedRunId(runId);
     setDetailLoading(true);
+    setError(null);
     try {
       const next = await window.ade.automations.getRunDetail(runId);
       setDetail(next);
+    } catch (err) {
+      setError(extractError(err));
     } finally {
       setDetailLoading(false);
     }
@@ -124,6 +134,11 @@ export function HistoryTab({
               <option value="cancelled">cancelled</option>
             </select>
           </div>
+          {error ? (
+            <div className="mt-3 rounded-lg border border-red-500/20 bg-red-500/10 px-3 py-2 text-xs text-red-200">
+              {error}
+            </div>
+          ) : null}
         </div>
 
         <div className="flex-1 overflow-y-auto px-3 py-3">
@@ -149,7 +164,11 @@ export function HistoryTab({
       </div>
 
       <div className="flex-1 min-w-0 overflow-y-auto">
-        <RunDetailPanel detail={detail} loading={detailLoading} />
+        <RunDetailPanel
+          detail={detail}
+          loading={detailLoading}
+          onOpenMission={(missionId) => navigate(`/missions?missionId=${encodeURIComponent(missionId)}`)}
+        />
       </div>
     </div>
   );

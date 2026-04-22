@@ -248,6 +248,37 @@ private struct SyncNetworkPathSnapshot: Equatable, Sendable {
   let isExpensive: Bool
 }
 
+private func syncLogAddressList(_ addresses: [String]) -> String {
+  addresses.isEmpty ? "[]" : addresses.joined(separator: ",")
+}
+
+private func syncLogErrorSummary(_ error: Error) -> String {
+  let nsError = error as NSError
+  let message = nsError.localizedDescription.trimmingCharacters(in: .whitespacesAndNewlines)
+  return "\(nsError.domain)#\(nsError.code):\(message)"
+}
+
+private func syncLogPathSummary(_ snapshot: SyncNetworkPathSnapshot?) -> String {
+  guard let snapshot else { return "unknown" }
+  let interfaces = [
+    snapshot.usesWiFi ? "wifi" : nil,
+    snapshot.usesCellular ? "cellular" : nil,
+    snapshot.usesWiredEthernet ? "wired" : nil,
+  ].compactMap { $0 }
+  return "satisfied=\(snapshot.isSatisfied) interfaces=\(interfaces.isEmpty ? "none" : interfaces.joined(separator: "+")) expensive=\(snapshot.isExpensive)"
+}
+
+private func syncLogProfileSummary(_ profile: HostConnectionProfile) -> String {
+  [
+    "host=\(profile.hostName ?? "unknown")",
+    "port=\(profile.port)",
+    "last=\(profile.lastSuccessfulAddress ?? "none")",
+    "tailscale=\(profile.tailscaleAddress ?? "none")",
+    "saved=[\(syncLogAddressList(profile.savedAddressCandidates))]",
+    "lan=[\(syncLogAddressList(profile.discoveredLanAddresses))]",
+  ].joined(separator: " ")
+}
+
 enum SyncUserFacingError {
   static func message(for error: Error) -> String {
     let nsError = error as NSError
@@ -272,6 +303,11 @@ enum SyncUserFacingError {
     }
     if lowered.contains("heartbeat") && lowered.contains("reconnect") {
       return "The host stopped responding. Reconnecting now."
+    }
+    if nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorAppTransportSecurityRequiresSecureConnection ||
+        lowered.contains("app transport security") ||
+        lowered.contains("requires the use of a secure connection") {
+      return "iOS blocked this route before ADE could connect. Try the LAN route, or use a current ADE build with Tailscale sync enabled."
     }
     if lowered == "connection closed." ||
         lowered.contains("socket is not connected") ||
@@ -1225,7 +1261,11 @@ final class SyncService: ObservableObject {
     }
     allowAutoReconnect = true
     guard let profile = loadProfile(), let token = keychain.loadToken() else { return }
-    if !userInitiated && automaticReconnectAddresses(for: profile).isEmpty {
+    let automaticAddresses = automaticReconnectAddresses(for: profile)
+    syncConnectLog.info(
+      "ADE_SYNC_TRACE reconnect start userInitiated=\(userInitiated) state=\(self.connectionState.rawValue, privacy: .public) path=\(syncLogPathSummary(self.lastNetworkPathSnapshot), privacy: .public) profile=\(syncLogProfileSummary(profile), privacy: .public) automatic=[\(syncLogAddressList(automaticAddresses), privacy: .public)]"
+    )
+    if !userInitiated && automaticAddresses.isEmpty {
       if !autoReconnectAwaitingLiveDiscovery {
         syncConnectLog.info("reconnect skipped: waiting for a saved or live route")
       }
@@ -1278,6 +1318,10 @@ final class SyncService: ObservableObject {
       !connectedOverTailnet
       && profileHasTailnetRoute(profile)
       && (snapshot.usesCellular || (!snapshot.usesWiFi && !snapshot.usesWiredEthernet))
+
+    syncConnectLog.info(
+      "ADE_SYNC_TRACE path changed path=\(syncLogPathSummary(snapshot), privacy: .public) connectedOverTailnet=\(connectedOverTailnet) hasTailnet=\(self.profileHasTailnetRoute(profile)) shouldRoamToTailnet=\(shouldRoamToTailnet) current=\(self.currentAddress ?? "none", privacy: .public)"
+    )
 
     if shouldRoamToTailnet {
       preferTailnetForUpcomingReconnect()
@@ -1373,6 +1417,9 @@ final class SyncService: ObservableObject {
         explicitTailscaleAddresses +
         candidateAddresses
       ))
+      syncConnectLog.info(
+        "ADE_SYNC_TRACE pair candidates host=\(host, privacy: .public) port=\(port) discoveryLan=[\(syncLogAddressList(discoveryAddresses), privacy: .public)] discoveryTailnet=[\(syncLogAddressList(discoveryTailscaleAddresses), privacy: .public)] explicitTailnet=[\(syncLogAddressList(explicitTailscaleAddresses), privacy: .public)] provided=[\(syncLogAddressList(candidateAddresses), privacy: .public)] connectable=[\(syncLogAddressList(addressCandidates), privacy: .public)]"
+      )
       // If we have multiple candidates (e.g. discovered LAN + loopback + tailscale),
       // walk them in order and only fail if every one fails to open a socket.
       // A single-address manual entry retains short-circuit behavior since the
@@ -1387,18 +1434,18 @@ final class SyncService: ObservableObject {
           throw CancellationError()
         }
         let kind = addressCandidateKind(candidate, profile: nil, explicitTailscaleAddress: tailscaleAddress)
-        syncConnectLog.info("attempt host=\(candidate, privacy: .public) port=\(port) kind=\(kind, privacy: .public)")
+        syncConnectLog.info("ADE_SYNC_TRACE pair attempt host=\(candidate, privacy: .public) port=\(port) kind=\(kind, privacy: .public)")
         do {
           try await openSocket(
             host: candidate,
             port: port,
             connectAttemptGeneration: connectAttemptGeneration
           )
-          syncConnectLog.info("success host=\(candidate, privacy: .public)")
+          syncConnectLog.info("ADE_SYNC_TRACE pair success host=\(candidate, privacy: .public)")
           openedAddress = candidate
           break
         } catch {
-          syncConnectLog.info("failure host=\(candidate, privacy: .public) error=\(String(describing: error), privacy: .public)")
+          syncConnectLog.info("ADE_SYNC_TRACE pair failure host=\(candidate, privacy: .public) error=\(syncLogErrorSummary(error), privacy: .public)")
           lastOpenError = error
           teardownSocket()
           continue
@@ -3359,14 +3406,16 @@ final class SyncService: ObservableObject {
     let liveLastSuccessful = profile.lastSuccessfulAddress.flatMap { address in
       liveSet.contains(address) ? [address] : nil
     } ?? []
+    let liveLastSuccessfulTailnet = liveLastSuccessful.filter(syncIsTailscaleIPv4Address)
+    let liveLastSuccessfulLan = liveLastSuccessful.filter { !syncIsTailscaleIPv4Address($0) }
     // Prefer addresses we see RIGHT NOW on the network over anything we have
     // cached from previous sessions. If the user changed subnets, stale
     // entries would otherwise consume the first few attempts (each with its
     // own timeout) before we finally try the correct current IP. Only fall
     // back to cached saved candidates if no live discovery is available.
-    let prioritizedLive = liveLastSuccessful
-      + (preferTailnet ? liveTailscale : liveLan)
-      + (preferTailnet ? liveLan : liveTailscale)
+    let prioritizedLive = preferTailnet
+      ? liveLastSuccessfulTailnet + liveTailscale + liveLastSuccessfulLan + liveLan
+      : liveLastSuccessful + liveLan + liveTailscale
     let savedTailnet = profile.savedAddressCandidates.filter(syncIsTailscaleIPv4Address)
     let savedLan = profile.savedAddressCandidates.filter { !syncIsTailscaleIPv4Address($0) }
     let fallbackLastSuccessful = liveLastSuccessful.isEmpty ? (profile.lastSuccessfulAddress.map { [$0] } ?? []) : []
@@ -3412,12 +3461,13 @@ final class SyncService: ObservableObject {
     let liveLastSuccessful = profile.lastSuccessfulAddress.flatMap { address in
       liveSet.contains(address) ? [address] : nil
     } ?? []
+    let liveLastSuccessfulTailnet = liveLastSuccessful.filter(syncIsTailscaleIPv4Address)
+    let liveLastSuccessfulLan = liveLastSuccessful.filter { !syncIsTailscaleIPv4Address($0) }
 
-    return deduplicatedAddresses(
-      liveLastSuccessful
-      + (preferTailnet ? liveTailscale : liveLan)
-      + (preferTailnet ? liveLan : liveTailscale)
-    )
+    let prioritizedLive = preferTailnet
+      ? liveLastSuccessfulTailnet + liveTailscale + liveLastSuccessfulLan + liveLan
+      : liveLastSuccessful + liveLan + liveTailscale
+    return deduplicatedAddresses(prioritizedLive)
   }
 
   private func connectUsingProfile(
@@ -3432,6 +3482,9 @@ final class SyncService: ObservableObject {
       ? automaticReconnectAddresses(for: profile)
       : prioritizedAddresses(for: profile)
     let addresses = connectableAddresses(from: rawAddresses)
+    syncConnectLog.info(
+      "ADE_SYNC_TRACE reconnect candidates preferLiveOnly=\(preferLiveCandidatesOnly) path=\(syncLogPathSummary(self.lastNetworkPathSnapshot), privacy: .public) profile=\(syncLogProfileSummary(profile), privacy: .public) raw=[\(syncLogAddressList(rawAddresses), privacy: .public)] connectable=[\(syncLogAddressList(addresses), privacy: .public)]"
+    )
     guard !addresses.isEmpty else {
       if rawAddresses.isEmpty {
         throw NSError(domain: "ADE", code: 18, userInfo: [NSLocalizedDescriptionKey: "No saved address is available for this host."])
@@ -3444,7 +3497,7 @@ final class SyncService: ObservableObject {
         throw CancellationError()
       }
       let kind = addressCandidateKind(address, profile: profile, explicitTailscaleAddress: nil)
-      syncConnectLog.info("attempt host=\(address, privacy: .public) port=\(profile.port) kind=\(kind, privacy: .public)")
+      syncConnectLog.info("ADE_SYNC_TRACE reconnect attempt host=\(address, privacy: .public) port=\(profile.port) kind=\(kind, privacy: .public)")
       do {
         try await openSocket(
           host: address,
@@ -3464,10 +3517,10 @@ final class SyncService: ObservableObject {
         guard isCurrentConnectAttempt(connectAttemptGeneration) else {
           throw CancellationError()
         }
-        syncConnectLog.info("success host=\(address, privacy: .public)")
+        syncConnectLog.info("ADE_SYNC_TRACE reconnect success host=\(address, privacy: .public)")
         return address
       } catch {
-        syncConnectLog.info("failure host=\(address, privacy: .public) error=\(String(describing: error), privacy: .public)")
+        syncConnectLog.info("ADE_SYNC_TRACE reconnect failure host=\(address, privacy: .public) error=\(syncLogErrorSummary(error), privacy: .public)")
         lastFailure = error
         if shouldInvalidateSavedPairing(for: error) {
           forgetHost()

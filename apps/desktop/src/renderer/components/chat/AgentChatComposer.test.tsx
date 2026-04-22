@@ -164,9 +164,10 @@ describe("AgentChatComposer", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Codex approval preset" }));
 
-    expect(screen.getByRole("option", { name: "Plan" })).toBeTruthy();
-    expect(screen.getByRole("option", { name: "Guarded edit" })).toBeTruthy();
-    expect(screen.getByRole("option", { name: "Full auto" })).toBeTruthy();
+    expect(screen.getByRole("option", { name: "Default permissions" })).toBeTruthy();
+    expect(screen.getByRole("option", { name: "Plan mode" })).toBeTruthy();
+    expect(screen.getByRole("option", { name: "Full access" })).toBeTruthy();
+    expect(screen.getByRole("option", { name: "Custom (config.toml)" })).toBeTruthy();
     expect(screen.queryByDisplayValue("ADE flags")).toBeNull();
     expect(screen.queryByDisplayValue("On request")).toBeNull();
     expect(screen.queryByDisplayValue("Workspace write")).toBeNull();
@@ -177,7 +178,7 @@ describe("AgentChatComposer", () => {
     renderComposer({ onCodexPresetChange });
 
     fireEvent.click(screen.getByRole("button", { name: "Codex approval preset" }));
-    fireEvent.click(screen.getByRole("option", { name: "Full auto" }));
+    fireEvent.click(screen.getByRole("option", { name: "Full access" }));
 
     expect(onCodexPresetChange).toHaveBeenCalledWith({
       codexApprovalPolicy: "never",

@@ -60,7 +60,7 @@ const StartupSplashScreen = (
     <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[60vw] h-[60vw] max-w-[600px] max-h-[600px] rounded-full opacity-20 blur-[100px] pointer-events-none" style={{ background: "var(--color-accent)" }} />
     <div className="relative z-10 flex flex-col items-center animate-fade-in-up">
       <div className="flex items-center justify-center mb-6" style={{ animation: "pulse-glow 2.5s infinite ease-in-out" }}>
-        <img src="./logo.png" alt="ADE Logo" className="w-64 h-64 object-contain" />
+        <img src="./logo.png" alt="ADE Logo" className="h-[240px] w-[420px] max-w-[72vw] object-contain" />
       </div>
       <div className="flex flex-col items-center gap-2">
         <div className="text-xl font-bold tracking-tight text-fg">Starting ADE</div>

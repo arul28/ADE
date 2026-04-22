@@ -45,11 +45,13 @@ export function buildTrackedCliStartupCommand(args: {
 
   const parts = [withCodexNoAltScreen("codex")];
   if (args.permissionMode === "full-auto") {
+    parts.push("--dangerously-bypass-approvals-and-sandbox");
+  } else if (args.permissionMode === "default") {
     parts.push("--full-auto");
   } else if (args.permissionMode !== "config-toml") {
-    const approvalPolicy = args.permissionMode === "edit" ? "on-failure" : "untrusted";
+    const approvalPolicy = args.permissionMode === "edit" ? "untrusted" : "on-request";
     const sandboxMode = args.permissionMode === "edit" ? "workspace-write" : "read-only";
-    parts.push("-c", `approval_policy=${approvalPolicy}`, "-c", `sandbox_mode=${sandboxMode}`);
+    parts.push("--sandbox", sandboxMode, "--ask-for-approval", approvalPolicy);
   }
   return parts.join(" ");
 }
@@ -62,11 +64,10 @@ function permissionModeToClaudeFlag(permissionMode: AgentChatPermissionMode | nu
 }
 
 function permissionModeToCodexFlags(permissionMode: AgentChatPermissionMode | null | undefined): string[] {
-  if (permissionMode === "full-auto") return ["--full-auto"];
-  if (permissionMode === "edit") return ["-c", "approval_policy=on-failure", "-c", "sandbox_mode=workspace-write"];
-  if (permissionMode === "default" || permissionMode === "plan") {
-    return ["-c", "approval_policy=untrusted", "-c", "sandbox_mode=read-only"];
-  }
+  if (permissionMode === "full-auto") return ["--dangerously-bypass-approvals-and-sandbox"];
+  if (permissionMode === "default") return ["--full-auto"];
+  if (permissionMode === "edit") return ["--sandbox", "workspace-write", "--ask-for-approval", "untrusted"];
+  if (permissionMode === "plan") return ["--sandbox", "read-only", "--ask-for-approval", "on-request"];
   return [];
 }
 

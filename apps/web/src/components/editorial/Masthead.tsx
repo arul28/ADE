@@ -7,10 +7,10 @@ import { LINKS } from "../../lib/links";
 export function Masthead() {
   return (
     <header className="relative z-10 border-b border-[color:var(--color-hairline)]">
-      <div className="mx-auto flex max-w-[1240px] items-center gap-4 px-[clamp(20px,3vw,40px)] py-[11px] sm:gap-6">
+      <div className="mx-auto flex max-w-[1520px] items-center gap-4 px-[clamp(20px,3vw,48px)] py-[11px] sm:gap-6">
         <a href="/" className="flex items-center gap-2" aria-label="ADE home">
           <img
-            src="/images/ade-wordmark.png"
+            src="/logo.png"
             alt="ADE"
             className="h-[22px] w-auto"
             style={{ filter: "brightness(1.05)" }}

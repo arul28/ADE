@@ -100,7 +100,7 @@ const TOOL_SPECS: ToolSpec[] = [
         runId: { type: "string" },
         stepId: { type: "string" },
         attemptId: { type: "string" },
-        permissionMode: { type: "string", enum: ["plan", "edit", "full-auto"], default: "edit" },
+        permissionMode: { type: "string", enum: ["default", "plan", "edit", "full-auto", "config-toml"], default: "default" },
         toolWhitelist: { type: "array", items: { type: "string" }, maxItems: 24 },
         maxPromptChars: { type: "number", minimum: 256, maximum: 12000 },
         contextFilePath: { type: "string" },
@@ -1473,7 +1473,7 @@ const CTO_OPERATOR_TOOL_SPECS: ToolSpec[] = [
         laneId: { type: "string" },
         modelId: { type: "string" },
         reasoningEffort: { type: "string" },
-        permissionMode: { type: "string", enum: ["default", "plan", "edit", "full-auto"] },
+        permissionMode: { type: "string", enum: ["default", "plan", "edit", "full-auto", "config-toml"] },
         title: { type: "string" },
         initialPrompt: { type: "string" },
         openInUi: { type: "boolean" }
@@ -2616,12 +2616,12 @@ function sha256Text(value: string): string {
   return createHash("sha256").update(value).digest("hex");
 }
 
-type SpawnPermissionMode = "plan" | "edit" | "full-auto";
+type SpawnPermissionMode = "default" | "plan" | "edit" | "full-auto" | "config-toml";
 
 function parseSpawnPermissionMode(value: unknown): SpawnPermissionMode {
   const normalized = asTrimmedString(value).toLowerCase();
-  if (normalized === "plan" || normalized === "full-auto") return normalized;
-  return "edit";
+  if (normalized === "plan" || normalized === "edit" || normalized === "full-auto" || normalized === "config-toml") return normalized;
+  return "default";
 }
 
 function normalizeToolWhitelist(value: unknown): string[] {
@@ -5836,6 +5836,12 @@ async function runTool(args: {
     const provider = asTrimmedString(toolArgs.provider) === "claude" ? "claude" : "codex";
     const model = asOptionalTrimmedString(toolArgs.model);
     const permissionMode = parseSpawnPermissionMode(toolArgs.permissionMode);
+    if (provider === "claude" && permissionMode === "config-toml") {
+      throw new JsonRpcError(
+        JsonRpcErrorCode.invalidParams,
+        "permissionMode config-toml is only supported for Codex spawn_agent sessions.",
+      );
+    }
     const maxPromptChars = Math.max(256, Math.min(12000, Math.floor(asNumber(toolArgs.maxPromptChars, 2800))));
     const prompt = asOptionalTrimmedString(toolArgs.prompt);
     const runId = asOptionalTrimmedString(toolArgs.runId);
@@ -5885,15 +5891,20 @@ async function runTool(args: {
       commandParts.push("--model", shellEscapeArg(model));
     }
     if (provider === "codex") {
-      const codexSandbox =
-        permissionMode === "plan" ? "read-only" : permissionMode === "full-auto" ? "danger-full-access" : "workspace-write";
-      commandParts.push("--sandbox", codexSandbox);
       if (permissionMode === "full-auto") {
+        commandParts.push("--dangerously-bypass-approvals-and-sandbox");
+      } else if (permissionMode === "default") {
         commandParts.push("--full-auto");
+      } else if (permissionMode === "config-toml") {
+        // No explicit Codex permission flags; let the host config.toml decide.
+      } else if (permissionMode === "plan") {
+        commandParts.push("--sandbox", "read-only", "--ask-for-approval", "on-request");
+      } else {
+        commandParts.push("--sandbox", "workspace-write", "--ask-for-approval", "untrusted");
       }
     } else {
       const claudePermission =
-        permissionMode === "plan" ? "plan" : permissionMode === "full-auto" ? "bypassPermissions" : "acceptEdits";
+        permissionMode === "plan" ? "plan" : permissionMode === "full-auto" ? "bypassPermissions" : permissionMode === "edit" ? "acceptEdits" : "default";
       commandParts.push("--permission-mode", claudePermission);
 
       // ADE-owned actions are exposed through the `ade` CLI. Child agent

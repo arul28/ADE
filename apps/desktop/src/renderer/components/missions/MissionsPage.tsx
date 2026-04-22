@@ -1,7 +1,16 @@
 import { useCallback, useMemo, useEffect, useRef, useState } from "react";
 import { LazyMotion, domAnimation } from "motion/react";
+import {
+  ArrowRight,
+  CalendarBlank,
+  CheckCircle,
+  Compass,
+  FlagBanner,
+  GitBranch,
+  ListChecks,
+} from "@phosphor-icons/react";
 import { Group, Panel, Separator } from "react-resizable-panels";
-import { useSearchParams } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { useShallow } from "zustand/react/shallow";
 import { useAppStore } from "../../state/appStore";
 import { MONO_FONT } from "../lanes/laneDesignTokens";
@@ -28,6 +37,125 @@ import {
 export { collapsePlannerStreamMessages, resolveStepHeartbeatAt } from "./missionHelpers";
 
 const TERMINAL_RUN_STATUSES = new Set(["succeeded", "failed", "canceled"]);
+
+type AppPackagingState = "checking" | "packaged" | "dev";
+
+function ProductionMissionsComingSoon() {
+  const navigate = useNavigate();
+  const previewItems = [
+    {
+      icon: Compass,
+      title: "Mission planning",
+      body: "Turn a larger goal into phases, worker lanes, checkpoints, and proof requirements before agents start.",
+    },
+    {
+      icon: GitBranch,
+      title: "Lane orchestration",
+      body: "Coordinate multi-agent work across isolated lanes, then bring results back with reviewable handoffs.",
+    },
+    {
+      icon: ListChecks,
+      title: "Human checkpoints",
+      body: "Pause when ADE needs operator input, budget approval, or a decision before external side effects happen.",
+    },
+    {
+      icon: CheckCircle,
+      title: "Artifacts and closeout",
+      body: "Collect logs, summaries, screenshots, and implementation proof into one mission record.",
+    },
+  ];
+
+  return (
+    <div className="h-full overflow-y-auto bg-bg text-fg">
+      <div className="mx-auto flex min-h-full max-w-6xl flex-col justify-center px-6 py-10">
+        <div className="grid gap-8 lg:grid-cols-[0.9fr_1.1fr] lg:items-center">
+          <section className="space-y-6">
+            <div className="inline-flex items-center gap-2 rounded border border-emerald-400/30 bg-emerald-400/10 px-3 py-1 font-mono text-[10px] font-bold uppercase tracking-[1px] text-emerald-200">
+              <FlagBanner size={14} weight="regular" />
+              Coming soon
+            </div>
+
+            <div>
+              <h1 className="text-4xl font-semibold tracking-normal text-[#F5FAFF]">Missions are almost ready</h1>
+              <p className="mt-4 max-w-xl text-sm leading-6 text-muted-fg">
+                Missions are ADE's multi-step orchestration layer for work that is bigger than one chat thread:
+                planning, delegation, lane execution, intervention, and proof captured as one run.
+              </p>
+            </div>
+
+            <div className="rounded-lg border border-white/[0.08] bg-white/[0.03] p-4">
+              <div className="flex items-start gap-3">
+                <CalendarBlank size={18} weight="regular" className="mt-0.5 shrink-0 text-[#7DD3FC]" />
+                <div>
+                  <div className="text-sm font-semibold text-[#F5FAFF]">Production access is paused</div>
+                  <p className="mt-1 text-sm leading-6 text-muted-fg">
+                    The tab is visible so teams can see where missions fit, but creation and live runs stay disabled
+                    in packaged builds until the orchestration flow is production-ready.
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => navigate("/automations")}
+              className="inline-flex h-9 items-center gap-2 rounded border border-white/[0.12] bg-white/[0.04] px-4 font-mono text-[10px] font-bold uppercase tracking-[1px] text-[#D8E3F2] transition-colors hover:border-[#7DD3FC]/40 hover:text-[#F5FAFF]"
+            >
+              Review automations
+              <ArrowRight size={13} weight="regular" />
+            </button>
+          </section>
+
+          <section className="grid gap-3 sm:grid-cols-2">
+            {previewItems.map(({ icon: Icon, title, body }) => (
+              <article key={title} className="rounded-lg border border-white/[0.08] bg-black/15 p-4">
+                <Icon size={18} weight="regular" className="text-[#A78BFA]" />
+                <div className="mt-3 text-sm font-semibold text-[#F5FAFF]">{title}</div>
+                <p className="mt-2 text-xs leading-5 text-muted-fg">{body}</p>
+              </article>
+            ))}
+          </section>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function MissionsProductionGate({ children }: { children: React.ReactElement }) {
+  const [state, setState] = useState<AppPackagingState>("checking");
+
+  useEffect(() => {
+    let cancelled = false;
+    window.ade.app.getInfo().then(
+      (info) => {
+        if (!cancelled) setState(info.isPackaged ? "packaged" : "dev");
+      },
+      () => {
+        if (!cancelled) setState("dev");
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  if (state === "checking") {
+    return (
+      <div className="flex h-full min-w-0 flex-col bg-bg">
+        <div className="flex flex-1 flex-col items-center justify-center gap-3">
+          <div className="h-4 w-48 animate-pulse rounded-md bg-white/[0.06]" />
+          <div className="font-mono text-[10px] font-bold uppercase tracking-widest text-muted-fg">
+            Checking mission availability...
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (state === "packaged") return <ProductionMissionsComingSoon />;
+
+  return children;
+}
 
 /* ── Sidebar width persistence (VAL-UX-010) ── */
 const SIDEBAR_WIDTH_KEY = "ade.missions.sidebarWidth";
@@ -67,7 +195,7 @@ const selectPageData = (s: MissionsStore) => ({
 
 /* ════════════════════ MAIN COMPONENT ════════════════════ */
 
-export default function MissionsPage() {
+function MissionsWorkspace() {
   const [searchParams] = useSearchParams();
   const lanes = useAppStore((s) => s.lanes);
   const mappedLanes = useMemo(() => lanes.map((l) => ({ id: l.id, name: l.name })), [lanes]);
@@ -389,4 +517,12 @@ export default function MissionsPage() {
 }
 
 /* Re-export for compatibility: the page was previously a named export */
+export default function MissionsPage() {
+  return (
+    <MissionsProductionGate>
+      <MissionsWorkspace />
+    </MissionsProductionGate>
+  );
+}
+
 export { MissionsPage };

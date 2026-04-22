@@ -1,3 +1,4 @@
+import { motion, useReducedMotion } from "framer-motion";
 import { useDocumentTitle } from "../../lib/useDocumentTitle";
 import { Page } from "../../components/Page";
 
@@ -20,6 +21,46 @@ import { IndexPage } from "../../components/editorial/IndexPage";
 import { BackCover } from "../../components/editorial/BackCover";
 
 const MOBILE_BYLINE_DATE = "April 2026 · iOS 17+";
+
+function AgentBadge({
+  src,
+  name,
+  className = "",
+  rotate = 0,
+  variant = "light",
+}: {
+  src: string;
+  name: string;
+  className?: string;
+  rotate?: number;
+  variant?: "light" | "dark";
+}) {
+  const reduceMotion = useReducedMotion() ?? true;
+  const bg =
+    variant === "dark"
+      ? "bg-[#0f0d0a] border-[color:var(--color-ink)]"
+      : "bg-[color:var(--color-paper)] border-[color:var(--color-ink-hairline-strong)]";
+  return (
+    <motion.div
+      initial={reduceMotion ? false : { opacity: 0, scale: 0.6, rotate: 0 }}
+      whileInView={reduceMotion ? undefined : { opacity: 1, scale: 1, rotate }}
+      viewport={{ once: true, amount: 0.3 }}
+      transition={{ duration: 0.6, delay: 0.15, ease: [0.22, 1, 0.36, 1] }}
+      style={{ transform: `rotate(${rotate}deg)` }}
+      className={`absolute z-10 flex h-[54px] w-[54px] items-center justify-center rounded-full border shadow-[0_10px_24px_-12px_rgba(24,21,15,0.5)] ${bg} ${className}`}
+      aria-label={name}
+      title={name}
+    >
+      <img
+        src={src}
+        alt={name}
+        loading="lazy"
+        decoding="async"
+        className="h-[34px] w-[34px] object-contain"
+      />
+    </motion.div>
+  );
+}
 
 export function HomePage() {
   useDocumentTitle("ADE — Agentic Development Environment");
@@ -51,7 +92,7 @@ export function HomePage() {
 
         <Masthead />
 
-        <div className="relative mx-auto max-w-[1240px] px-[clamp(20px,3vw,40px)]">
+        <div className="relative mx-auto max-w-[1520px] px-[clamp(20px,3vw,48px)]">
           <div className="border-b border-[color:var(--color-hairline)]">
             <CompetitorEquation />
           </div>
@@ -72,7 +113,7 @@ export function HomePage() {
             >
               ↓
             </span>
-            Chapter I · Lanes
+            Chapter I · Worktrees
             <style>{`
               @keyframes nudge {
                 0%, 100% { transform: translateY(0); }
@@ -89,39 +130,38 @@ export function HomePage() {
       {/* ═══════ FADE dark → cream ═══════ */}
       <FadeBand direction="to-cream" />
 
-      {/* ═══════ CHAPTER I — LANES ═══════ */}
+      {/* ═══════ CHAPTER I — WORKTREES ═══════ */}
       <Chapter
         chapterNumber="Chapter I"
-        chapterTitle="Lanes"
+        chapterTitle="Worktrees"
         pageNumber="04"
         id="chapter-lanes"
       >
-        <div className="grid grid-cols-1 gap-[clamp(32px,4vw,56px)] lg:grid-cols-[minmax(0,7fr)_minmax(0,5fr)] lg:items-start">
+        <div className="grid grid-cols-1 gap-[clamp(32px,4vw,56px)] lg:grid-cols-[minmax(0,8fr)_minmax(0,4fr)] lg:items-center">
           <Cutout
             src="/images/screenshots/lanes.png"
-            alt="ADE lanes — three parallel git worktrees on macOS"
+            alt="ADE worktrees — parallel git branches on macOS"
             figNumber="Fig. 2"
-            caption="Three lanes in parallel — each is its own git worktree. Switch in a click."
+            caption="Worktrees in parallel — each its own git branch. Switch in a click."
             rotate={0.4}
             tone="ink"
           />
 
           <div>
             <ChapterHeadline
-              line1="Parallel work."
-              line2="Isolated git."
-              deck="Every lane is its own worktree. Edit, run, commit — many tasks at once, no collisions."
+              line1="Manage worktrees."
+              line2="In parallel."
+              deck="Every task gets its own git worktree. Branch, edit, test, and commit side by side — no stashing, no rebasing, no context switch."
               tone="ink"
             />
             <div className="mt-8">
               <ChapterBody dropCap>
-                Each lane is a fresh branch you can flip between in a click.
-                Running tests in one doesn&rsquo;t block code in another. When
-                a lane ships, commit it and move on.
+                Each worktree is a fresh branch you flip between in a click.
+                Tests running in one don&rsquo;t block code in another. When a
+                worktree ships, commit it and move on.
               </ChapterBody>
               <PullQuote tone="ink">
-                &ldquo;Three tasks at once. One git history. Zero
-                collisions.&rdquo;
+                &ldquo;Parallel branches. One repo. No stash, no rebase.&rdquo;
               </PullQuote>
               <Byline tone="ink" />
             </div>
@@ -136,35 +176,109 @@ export function HomePage() {
         pageNumber="10"
         id="chapter-work"
       >
-        <div className="grid grid-cols-1 gap-[clamp(32px,4vw,56px)] lg:grid-cols-[minmax(0,5fr)_minmax(0,7fr)] lg:items-start">
+        <div className="grid grid-cols-1 gap-[clamp(32px,4vw,56px)] lg:grid-cols-[minmax(0,4fr)_minmax(0,8fr)] lg:items-center">
           <div>
             <ChapterHeadline
-              line1="Agents that code."
-              line2="While you watch."
-              deck="Attach a prompt to a lane. Pick a model. Step through every edit as it happens."
+              line1="Every coding agent."
+              line2="One workspace."
+              deck="Claude Code, Codex, Cursor, opencode — pick whichever model fits the task. All of them run against the same worktree, with live diffs and approval gates."
               tone="ink"
             />
             <div className="mt-8">
               <ChapterBody dropCap>
-                Work is where agents execute. You see every file change, every
-                test run, every tool call &mdash; live. Approve the diff before
-                it commits, or step in and steer.
+                Attach a prompt to a worktree, pick your agent, and step through
+                every file change, test run, and tool call as it happens.
+                Approve the diff before it commits, or step in and steer.
               </ChapterBody>
               <PullQuote tone="ink">
-                &ldquo;The diff is yours before it commits.&rdquo;
+                &ldquo;Every agent worth using. On one surface.&rdquo;
               </PullQuote>
               <Byline tone="ink" />
             </div>
           </div>
 
-          <Cutout
-            src="/images/screenshots/run.png"
-            alt="ADE run view — an agent executing a task live"
-            figNumber="Fig. 3"
-            caption="An agent executing — tool calls, test output, and a diff ready for review."
-            rotate={-0.5}
-            tone="ink"
-          />
+          <div className="relative">
+            <Cutout
+              src="/images/screenshots/run.png"
+              alt="ADE run view — an agent executing a task live"
+              figNumber="Fig. 3"
+              caption="An agent executing — tool calls, test output, and a diff ready for review."
+              rotate={-0.5}
+              tone="ink"
+            />
+            <AgentBadge
+              src="/images/models/claude-color.svg"
+              name="Claude"
+              className="-top-6 -left-5"
+              rotate={-8}
+            />
+            <AgentBadge
+              src="/images/models/openai.svg"
+              name="OpenAI"
+              className="-top-7 left-[28%]"
+              rotate={5}
+            />
+            <AgentBadge
+              src="/images/models/gemini-color.svg"
+              name="Gemini"
+              className="-top-5 -right-6"
+              rotate={10}
+            />
+            <AgentBadge
+              src="/images/models/grok.svg"
+              name="Grok"
+              className="top-[18%] -left-8"
+              rotate={-5}
+            />
+            <AgentBadge
+              src="/images/models/deepseek-color.svg"
+              name="DeepSeek"
+              className="top-[22%] -right-8"
+              rotate={7}
+            />
+            <AgentBadge
+              src="/images/models/mistral-color.svg"
+              name="Mistral"
+              className="top-[46%] -left-10"
+              rotate={4}
+            />
+            <AgentBadge
+              src="/images/models/meta-color.svg"
+              name="Meta Llama"
+              className="top-[50%] -right-9"
+              rotate={-6}
+            />
+            <AgentBadge
+              src="/images/models/cohere-color.svg"
+              name="Cohere"
+              className="top-[72%] -left-7"
+              rotate={-4}
+            />
+            <AgentBadge
+              src="/images/models/qwen-color.svg"
+              name="Qwen"
+              className="top-[74%] -right-6"
+              rotate={8}
+            />
+            <AgentBadge
+              src="/images/models/perplexity-color.svg"
+              name="Perplexity"
+              className="bottom-[18%] left-[22%]"
+              rotate={-7}
+            />
+            <AgentBadge
+              src="/images/models/ollama.svg"
+              name="Ollama"
+              className="bottom-[14%] right-[22%]"
+              rotate={6}
+            />
+            <AgentBadge
+              src="/images/models/anthropic.svg"
+              name="Anthropic"
+              className="top-[40%] left-[8%]"
+              rotate={-3}
+            />
+          </div>
         </div>
       </Chapter>
 
@@ -175,29 +289,32 @@ export function HomePage() {
         pageNumber="16"
         id="chapter-prs"
       >
-        <div className="grid grid-cols-1 gap-[clamp(32px,4vw,56px)] lg:grid-cols-[minmax(0,7fr)_minmax(0,5fr)] lg:items-start">
+        <div className="grid grid-cols-1 gap-[clamp(32px,4vw,56px)] lg:grid-cols-[minmax(0,8fr)_minmax(0,4fr)] lg:items-center">
           <Cutout
             src="/images/screenshots/prs.png"
             alt="ADE pull request review"
             figNumber="Fig. 4"
-            caption="Pull requests — diff, CI status, and review comments on the same page as the lane."
+            caption="Pull requests — diff, CI status, and review comments on the same page as the worktree."
             rotate={0.5}
             tone="ink"
           />
 
           <div>
             <ChapterHeadline
-              line1="Review."
-              line2="Without leaving the app."
-              deck="Every PR an agent opens lands here — diff, tests, comments — attached to the lane it came from."
+              line1="Open, review,"
+              line2="and merge PRs."
+              deck="Every PR your agents open lands in ADE — diff, CI, comments, merge button. No GitHub tab. Auto-merge when green."
               tone="ink"
             />
             <div className="mt-8">
               <ChapterBody dropCap>
-                No tab-hopping to GitHub. Read the diff, check CI, comment,
-                approve, merge &mdash; all inside ADE, connected to the lane,
-                the branch, and the model that wrote the code.
+                Read the diff, check CI, comment, approve, merge &mdash; all
+                inside ADE, connected to the worktree, the branch, and the
+                agent that wrote the code.
               </ChapterBody>
+              <PullQuote tone="ink">
+                &ldquo;Green build. One click. Merged.&rdquo;
+              </PullQuote>
               <Byline tone="ink" />
             </div>
           </div>
@@ -211,23 +328,23 @@ export function HomePage() {
         pageNumber="22"
         id="chapter-cto"
       >
-        <div className="grid grid-cols-1 gap-[clamp(32px,4vw,56px)] lg:grid-cols-[minmax(0,5fr)_minmax(0,7fr)] lg:items-start">
+        <div className="grid grid-cols-1 gap-[clamp(32px,4vw,56px)] lg:grid-cols-[minmax(0,4fr)_minmax(0,8fr)] lg:items-center">
           <div>
             <ChapterHeadline
-              line1="Your team of agents."
-              line2="Organized."
-              deck="A persistent org chart of worker agents — each with their own memory, budget, and Linear-synced responsibilities."
+              line1="The conductor"
+              line2="for your agents."
+              deck="One CTO, always on, with context across every worktree. Pulls work from Linear, dispatches to the right worker, reports back when it's done."
               tone="ink"
             />
             <div className="mt-8">
               <ChapterBody dropCap>
-                The CTO dispatches work to the right agent, tracks what&rsquo;s
-                in flight, pulls issues from Linear, and posts results back.
-                It&rsquo;s the conductor that turns a pile of prompts into a
-                shipping team.
+                The CTO knows what each worker is good at, what&rsquo;s in
+                flight, and what Linear wants next. It dispatches, tracks, and
+                posts results &mdash; turning a pile of prompts into a shipping
+                team.
               </ChapterBody>
               <PullQuote tone="ink">
-                &ldquo;A team of agents, on payroll, on call.&rdquo;
+                &ldquo;A team of agents. On payroll. On call.&rdquo;
               </PullQuote>
               <Byline tone="ink" />
             </div>
@@ -251,19 +368,19 @@ export function HomePage() {
         pageNumber="28"
         id="chapter-mobile"
       >
-        <div className="grid grid-cols-1 items-center gap-[clamp(32px,4vw,56px)] lg:grid-cols-[minmax(0,6fr)_minmax(0,6fr)]">
+        <div className="grid grid-cols-1 items-center gap-[clamp(32px,4vw,56px)] lg:grid-cols-[minmax(0,5fr)_minmax(0,7fr)]">
           <div>
             <ChapterHeadline
-              line1="The first AI coding tool"
-              line2="that lives in your pocket."
-              deck="Resume a lane from the train. Approve a PR from a café. Chat with your agents from bed."
+              line1="Everything above."
+              line2="On your phone."
+              deck="Every worktree, every agent, every PR — synced to iOS over cr-sqlite. Start a task on macOS, approve the diff from the train."
               tone="ink"
             />
             <div className="mt-8">
               <ChapterBody dropCap>
                 The desktop is where code gets written. The pocket is where
-                decisions get made. ADE syncs both over cr-sqlite so a lane
-                you started on macOS continues on iOS without a refresh.
+                decisions get made. ADE syncs both so a worktree you started on
+                macOS continues on iOS without a refresh.
               </ChapterBody>
               <PullQuote tone="ink">
                 &ldquo;None of the eleven apps we replace have a mobile client.
@@ -273,26 +390,48 @@ export function HomePage() {
             </div>
           </div>
 
-          <div className="relative flex justify-center lg:justify-end">
+          <div className="relative mx-auto w-full max-w-[560px]">
             <div
               aria-hidden
               className="pointer-events-none absolute inset-0 -m-10"
               style={{
                 background:
-                  "radial-gradient(ellipse 55% 55% at 50% 50%, rgba(124,58,237,0.35) 0%, rgba(124,58,237,0.08) 45%, transparent 75%)",
+                  "radial-gradient(ellipse 65% 55% at 50% 45%, rgba(124,58,237,0.38) 0%, rgba(124,58,237,0.08) 48%, transparent 78%)",
                 filter: "blur(14px)",
               }}
             />
-            <div className="relative">
+
+            {/* Left phone (behind) */}
+            <div className="absolute left-[-4%] top-[48px] z-[1] hidden md:block">
+              <IPhoneFrame
+                src="/images/screenshots/mobile-worktrees.png"
+                alt="ADE on iPhone — worktrees"
+                rotate={-13}
+                width="w-[180px] lg:w-[200px]"
+              />
+            </div>
+
+            {/* Right phone (behind) */}
+            <div className="absolute right-[-4%] top-[72px] z-[1] hidden md:block">
+              <IPhoneFrame
+                src="/images/screenshots/mobile-pr.png"
+                alt="ADE on iPhone — pull requests"
+                rotate={11}
+                width="w-[180px] lg:w-[200px]"
+              />
+            </div>
+
+            {/* Center phone (front, with caption) */}
+            <div className="relative z-[3] flex justify-center">
               <IPhoneFrame
                 src="/images/screenshots/agent-chat.png"
-                alt="ADE on iPhone"
+                alt="ADE on iPhone — agent chat"
                 rotate={-2}
-                width="w-[240px] sm:w-[260px]"
+                width="w-[260px] sm:w-[280px]"
                 figCaption={{
                   figNumber: "Fig. 6",
                   caption:
-                    "A lane, synced from desktop — edit, approve, comment from anywhere.",
+                    "A worktree, synced from desktop — edit, approve, comment from anywhere.",
                   tone: "ink",
                 }}
               />

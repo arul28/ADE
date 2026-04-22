@@ -127,12 +127,11 @@ import {
 } from "../../../shared/modelRegistry";
 import { canSwitchChatSessionModel } from "../../../shared/chatModelSwitching";
 import { detectAllAuth } from "../ai/authDetector";
-import { createUniversalToolSet, type AskUserToolInput, type PermissionMode } from "../ai/tools/universalTools";
+import type { PermissionMode } from "../ai/tools/universalTools";
 import { createWorkflowTools } from "../ai/tools/workflowTools";
 import { createLinearTools } from "../ai/tools/linearTools";
 import { createCtoOperatorTools, type CtoOperatorToolDeps } from "../ai/tools/ctoOperatorTools";
 import { buildCodingAgentSystemPrompt } from "../ai/tools/systemPrompt";
-import { decideFrontendRepoToolExposure, filterFrontendRepoDiscoveryTools } from "../ai/toolExposurePolicy";
 import { resolveClaudeCliModel } from "../ai/claudeModelUtils";
 import type { createAiIntegrationService } from "../ai/aiIntegrationService";
 import {
@@ -168,7 +167,7 @@ import {
   type OpenCodeSessionHandle,
 } from "../opencode/openCodeRuntime";
 import { peekOpenCodeInventoryCache, probeOpenCodeProviderInventory } from "../opencode/openCodeInventory";
-import { inspectLocalProvider, type DiscoveredLocalModel } from "../ai/localModelDiscovery";
+import { inspectLocalProvider } from "../ai/localModelDiscovery";
 import type { PermissionOption, RequestPermissionRequest, RequestPermissionResponse } from "@agentclientprotocol/sdk";
 import { resolveCursorAgentExecutable } from "../ai/cursorAgentExecutable";
 import {
@@ -1043,18 +1042,6 @@ function normalizeUsagePayload(
   return { inputTokens, outputTokens };
 }
 
-function mergeUsagePayloads(
-  left: { inputTokens?: number | null; outputTokens?: number | null } | undefined,
-  right: { inputTokens?: number | null; outputTokens?: number | null } | undefined,
-): { inputTokens?: number | null; outputTokens?: number | null } | undefined {
-  if (!left) return right;
-  if (!right) return left;
-  const inputTokens = (left.inputTokens ?? 0) + (right.inputTokens ?? 0);
-  const outputTokens = (left.outputTokens ?? 0) + (right.outputTokens ?? 0);
-  if (!inputTokens && !outputTokens) return undefined;
-  return { inputTokens, outputTokens };
-}
-
 const KNOWN_CODEX_EFFORTS = new Set(CODEX_REASONING_EFFORTS.map((e) => e.effort));
 
 const EFFORT_ALIASES: Record<string, Record<string, string>> = {
@@ -1881,8 +1868,15 @@ function syncLegacyPermissionMode(session: Pick<
   if (session.provider === "codex") {
     if (session.codexConfigSource === "config-toml") return "config-toml";
     if (session.codexApprovalPolicy === "never" && session.codexSandbox === "danger-full-access") return "full-auto";
-    if (session.codexApprovalPolicy === "on-failure" && session.codexSandbox === "workspace-write") return "edit";
-    if (session.codexApprovalPolicy === "untrusted" && session.codexSandbox === "read-only") return "plan";
+    if (session.codexApprovalPolicy === "untrusted" && session.codexSandbox === "workspace-write") return "edit";
+    if (
+      (session.codexApprovalPolicy === "on-request" || session.codexApprovalPolicy === "on-failure")
+      && session.codexSandbox === "workspace-write"
+    ) return "default";
+    if (
+      (session.codexApprovalPolicy === "on-request" || session.codexApprovalPolicy === "untrusted")
+      && session.codexSandbox === "read-only"
+    ) return "plan";
     return undefined;
   }
 
@@ -4430,13 +4424,16 @@ export function createAgentChatService(args: {
       if (chat.defaultApprovalPolicy === "approve_all") return "untrusted" as const;
       if (chat.defaultApprovalPolicy === "approve_mutations") return "on-request" as const;
       if (cliMode === "full-auto") return "never" as const;
-      if (cliMode === "read-only") return "untrusted" as const;
+      if (cliMode === "read-only") return "on-request" as const;
+      if (cliMode === "edit") return "untrusted" as const;
       return "on-request" as const;
     })();
 
     const sandboxMode = (() => {
       if (chat.codexSandbox) return chat.codexSandbox;
       if (permissions.cli?.sandboxPermissions) return permissions.cli.sandboxPermissions;
+      if (cliMode === "full-auto") return "danger-full-access" as const;
+      if (cliMode === "read-only") return "read-only" as const;
       return "workspace-write" as const;
     })();
 

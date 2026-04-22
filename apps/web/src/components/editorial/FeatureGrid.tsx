@@ -12,7 +12,7 @@ type Feature = {
 const FEATURES: Feature[] = [
   {
     label: "Files",
-    blurb: "Every file in your project, in context with the lane you're working on.",
+    blurb: "Every file in your project, in context with the worktree you're working on.",
     src: "/images/features/files.png",
     docs: "/tools/files-editor",
   },
@@ -24,13 +24,13 @@ const FEATURES: Feature[] = [
   },
   {
     label: "Terminals",
-    blurb: "Built-in shells, one per lane. Keep a REPL alongside the code.",
+    blurb: "Built-in shells, one per worktree. Keep a REPL alongside the code.",
     src: "/images/features/terminals.png",
     docs: "/tools/terminals",
   },
   {
     label: "Workspace graph",
-    blurb: "See the shape of your repo — files, imports, and open lanes.",
+    blurb: "See the shape of your repo — files, imports, and open worktrees.",
     src: "/images/features/workspacegraph.png",
     docs: "/tools/workspace-graph",
   },
@@ -42,7 +42,7 @@ const FEATURES: Feature[] = [
   },
   {
     label: "Multi-tasking",
-    blurb: "Switch between lanes and tasks without losing an ounce of state.",
+    blurb: "Switch between worktrees and tasks without losing an ounce of state.",
     src: "/images/features/multi-tasking.png",
     docs: "/lanes/overview",
   },
@@ -51,6 +51,18 @@ const FEATURES: Feature[] = [
     blurb: "Pull issues from Linear into the CTO. Post results back automatically.",
     src: "/images/features/linear-sync.png",
     docs: "/cto/linear",
+  },
+  {
+    label: "Missions",
+    blurb: "Long-running agent workflows — plan, build, test, ship. Spans multiple worktrees.",
+    src: "/images/features/missions.png",
+    docs: "/missions/overview",
+  },
+  {
+    label: "Automations",
+    blurb: "Run agents on a schedule or a trigger. They ship the PR and ping you when it's done.",
+    src: "/images/features/automations.png",
+    docs: "/automations/overview",
   },
 ];
 
@@ -67,7 +79,7 @@ export function FeatureGrid() {
       className="relative bg-[color:var(--color-paper)] text-[color:var(--color-ink)]"
     >
       <span id="catalog" className="sr-only" aria-hidden="true" />
-      <div className="mx-auto max-w-[1240px] px-[clamp(20px,3vw,40px)] py-[clamp(44px,5.5vw,84px)]">
+      <div className="mx-auto max-w-[1520px] px-[clamp(20px,3vw,48px)] py-[clamp(44px,5.5vw,84px)]">
         {/* running head */}
         <div className="mb-10 flex items-baseline justify-between border-b border-[color:var(--color-ink-hairline)] pb-4 text-[11px] uppercase tracking-[0.24em] text-[color:var(--color-ink-muted)]">
           <span>ADE &middot; April &rsquo;26</span>

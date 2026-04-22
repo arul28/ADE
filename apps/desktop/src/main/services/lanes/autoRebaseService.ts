@@ -12,6 +12,11 @@ import { normalizePrCreationStrategy, resolvePrRebaseMode } from "../../../share
 type StoredStatus = AutoRebaseLaneStatus & {
   source?: "auto" | "manual";
 };
+type StoredDismissal = {
+  laneId: string;
+  parentHeadSha: string | null;
+  dismissedAt: string;
+};
 type ListStatusesOptions = {
   includeAll?: boolean;
 };
@@ -36,16 +41,22 @@ export type AutoRebaseService = {
   emit: (options?: ListStatusesOptions) => Promise<void>;
   refreshActiveRebaseNeeds: (reason?: string) => Promise<void>;
   recordAttentionStatus: (status: AttentionStatusInput) => Promise<void>;
+  dismissStatus: (args: { laneId: string }) => Promise<void>;
   dispose: () => void;
 };
 
 const KEY_PREFIX = "auto_rebase:status:";
+const DISMISSAL_KEY_PREFIX = "auto_rebase:dismissed:";
 const AUTO_REBASED_TTL_MS = 15 * 60_000;
 const RUN_DEBOUNCE_MS = 1_200;
 const SWEEP_DEBOUNCE_MS = 30_000;
 
 function keyForLane(laneId: string): string {
   return `${KEY_PREFIX}${laneId}`;
+}
+
+function dismissalKeyForLane(laneId: string): string {
+  return `${DISMISSAL_KEY_PREFIX}${laneId}`;
 }
 
 function sanitizeStoredStatus(value: unknown): StoredStatus | null {
@@ -74,6 +85,19 @@ function sanitizeStoredStatus(value: unknown): StoredStatus | null {
     conflictCount,
     message: messageRaw,
     source: value.source === "manual" ? "manual" : "auto"
+  };
+}
+
+function sanitizeDismissal(value: unknown): StoredDismissal | null {
+  if (!isRecord(value)) return null;
+  const laneId = typeof value.laneId === "string" ? value.laneId.trim() : "";
+  const parentHeadShaRaw = typeof value.parentHeadSha === "string" ? value.parentHeadSha.trim() : "";
+  const dismissedAt = typeof value.dismissedAt === "string" ? value.dismissedAt : "";
+  if (!laneId || !dismissedAt) return null;
+  return {
+    laneId,
+    parentHeadSha: parentHeadShaRaw || null,
+    dismissedAt,
   };
 }
 
@@ -157,9 +181,14 @@ export function createAutoRebaseService(args: {
   };
 
   const loadStatus = (laneId: string): StoredStatus | null => sanitizeStoredStatus(db.getJson(keyForLane(laneId)));
+  const loadDismissal = (laneId: string): StoredDismissal | null => sanitizeDismissal(db.getJson(dismissalKeyForLane(laneId)));
 
   const saveStatus = (status: StoredStatus): void => {
     db.setJson(keyForLane(status.laneId), status);
+  };
+
+  const saveDismissal = (dismissal: StoredDismissal): void => {
+    db.setJson(dismissalKeyForLane(dismissal.laneId), dismissal);
   };
 
   const clearStatus = (laneId: string): void => {
@@ -259,6 +288,11 @@ export function createAutoRebaseService(args: {
         continue;
       }
 
+      const dismissal = loadDismissal(lane.id);
+      if (dismissal?.parentHeadSha && status.parentHeadSha && dismissal.parentHeadSha === status.parentHeadSha) {
+        continue;
+      }
+
       out.push(status);
     }
 
@@ -347,6 +381,20 @@ export function createAutoRebaseService(args: {
     setStatus(status);
     if (disposed) return;
     await emit({ includeAll: true });
+  };
+
+  const dismissStatus = async (args: { laneId: string }): Promise<void> => {
+    const laneId = args.laneId.trim();
+    if (!laneId) throw new Error("laneId is required");
+    const status = loadStatus(laneId);
+    if (!status) return;
+    saveDismissal({
+      laneId,
+      parentHeadSha: status.parentHeadSha,
+      dismissedAt: nowIso(),
+    });
+    if (disposed) return;
+    void emit({ includeAll: true });
   };
 
   const collectDescendantsDepthFirst = (rootLaneId: string, lanes: LaneSummary[]): string[] => {
@@ -662,6 +710,7 @@ export function createAutoRebaseService(args: {
     emit,
     refreshActiveRebaseNeeds,
     recordAttentionStatus,
+    dismissStatus,
     dispose
   };
 }

@@ -345,6 +345,16 @@ export function createRebaseSuggestionService(args: {
     const laneId = args.laneId.trim();
     if (!laneId) throw new Error("laneId is required");
 
+    const existing = loadState(laneId);
+    if (existing) {
+      saveState({
+        ...existing,
+        dismissedAt: nowIso()
+      });
+      void emit();
+      return;
+    }
+
     const lanes = await laneService.list({ includeArchived: false });
     const lane = lanes.find((l) => l.id === laneId);
     if (!lane) throw new Error(`Lane not found: ${laneId}`);
@@ -353,7 +363,6 @@ export function createRebaseSuggestionService(args: {
     const base = await resolveSuggestionBase(lane, laneById, primaryParentHeadByBranch);
     if (!base) throw new Error("Lane has no rebase suggestion to dismiss.");
 
-    const existing = loadState(laneId);
     const behindCount = await readBehindCount({
       laneWorktreePath: lane.worktreePath,
       baseHeadSha: base.parentHeadSha,
@@ -363,12 +372,12 @@ export function createRebaseSuggestionService(args: {
       parentLaneId: base.parentLaneId,
       parentHeadSha: base.parentHeadSha,
       behindCount,
-      lastSuggestedAt: existing?.lastSuggestedAt ?? nowIso(),
-      deferredUntil: existing?.deferredUntil ?? null,
+      lastSuggestedAt: nowIso(),
+      deferredUntil: null,
       dismissedAt: nowIso()
     };
     saveState(next);
-    await emit();
+    void emit();
   };
 
   const defer = async (args: { laneId: string; minutes: number }): Promise<void> => {
@@ -378,6 +387,17 @@ export function createRebaseSuggestionService(args: {
     const minutes = Math.max(5, Math.min(7 * 24 * 60, Math.floor(args.minutes)));
     const until = new Date(Date.now() + minutes * 60_000).toISOString();
 
+    const existing = loadState(laneId);
+    if (existing) {
+      saveState({
+        ...existing,
+        deferredUntil: until,
+        dismissedAt: null
+      });
+      void emit();
+      return;
+    }
+
     const lanes = await laneService.list({ includeArchived: false });
     const lane = lanes.find((l) => l.id === laneId);
     if (!lane) throw new Error(`Lane not found: ${laneId}`);
@@ -386,7 +406,6 @@ export function createRebaseSuggestionService(args: {
     const base = await resolveSuggestionBase(lane, laneById, primaryParentHeadByBranch);
     if (!base) throw new Error("Lane has no rebase suggestion to defer.");
 
-    const existing = loadState(laneId);
     const behindCount = await readBehindCount({
       laneWorktreePath: lane.worktreePath,
       baseHeadSha: base.parentHeadSha,
@@ -396,12 +415,12 @@ export function createRebaseSuggestionService(args: {
       parentLaneId: base.parentLaneId,
       parentHeadSha: base.parentHeadSha,
       behindCount,
-      lastSuggestedAt: existing?.lastSuggestedAt ?? nowIso(),
+      lastSuggestedAt: nowIso(),
       deferredUntil: until,
       dismissedAt: null
     };
     saveState(next);
-    await emit();
+    void emit();
   };
 
   const onParentHeadChanged = async (args: {

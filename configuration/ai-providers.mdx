@@ -203,6 +203,38 @@ Local models have significantly smaller context windows than cloud models (typic
 
 ---
 
+## Permission modes
+
+Chat and Missions share the same permission picker. Each provider exposes a small set of presets that map directly to provider flags.
+
+### Claude
+
+| Mode | Allows | Gates |
+|---|---|---|
+| `plan` | Read, search, plan | All writes and shell |
+| `edit` | Read, edit inside the worktree | Network and out-of-worktree paths |
+| `full-auto` | Full tool access | Nothing — use only where appropriate |
+| `default` | Standard Claude CLI defaults | Per Claude's CLI config |
+
+### Codex (via the Codex CLI)
+
+Codex presets combine `--approval-policy` and `--sandbox`.
+
+| Mode | Approval policy | Sandbox | Use when |
+|---|---|---|---|
+| `default` | `on-request` | `workspace-write` | You want Codex to edit inside the workspace and ask before touching network or paths outside it. Standard middle ground. |
+| `plan` | `on-request` | `read-only` | You want exploration only — reads and answers, approvals required for anything else. |
+| `full-auto` (Full access) | `never` | `danger-full-access` | You are running inside a stronger external sandbox. Skips every approval prompt. |
+| `config-toml` (Custom) | — | — | ADE passes no `--approval-policy` or `--sandbox`. Codex honors its own config (`~/.codex/config.toml`). |
+
+There is no separate "Guarded edit" preset anymore. The previous Guarded edit preset is replaced by **Default permissions**, which is the same workspace-write sandbox but with the `on-request` approval policy rather than `on-failure`. The Codex sandbox in Missions is derived from the chosen mode — the separate sandbox dropdown has been removed from the Worker Permissions editor.
+
+### OpenCode
+
+OpenCode follows its own internal permission scheme. Set it to `full-auto` for the standard preset; override in OpenCode's config when the project needs a different boundary.
+
+---
+
 ## Model Selection by Context
 
 ADE lets you assign different models to different agent roles. This is the recommended approach for cost efficiency: use Opus for planning and architecture, Sonnet for execution, and Haiku for automation runs.

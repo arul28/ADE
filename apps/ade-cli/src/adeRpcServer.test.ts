@@ -1829,7 +1829,7 @@ describe("adeRpcServer", () => {
     expect(response.structuredContent.startupCommand).toContain("claude");
     expect(response.structuredContent.startupCommand).toContain("--model");
     expect(response.structuredContent.startupCommand).toContain("--permission-mode");
-    expect(response.structuredContent.permissionMode).toBe("edit");
+    expect(response.structuredContent.permissionMode).toBe("default");
     expect(response.structuredContent.contextRef?.path).toBeNull();
   });
 
@@ -1853,6 +1853,26 @@ describe("adeRpcServer", () => {
     expect(response.structuredContent.startupCommand).toContain("claude");
     expect(response.structuredContent.startupCommand).toContain("ADE_RUN_ID=run-1");
     expect(response.structuredContent.startupCommand).toContain("ADE_ATTEMPT_ID=attempt-workspace-roots");
+  });
+
+  it("rejects config-toml permission mode for Claude spawn_agent sessions", async () => {
+    const fixture = createRuntime();
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+    await initialize(handler, { role: "orchestrator" });
+    const response = await callTool(handler, "spawn_agent", {
+      laneId: "lane-1",
+      provider: "claude",
+      model: "claude-sonnet-4-6",
+      permissionMode: "config-toml",
+      prompt: "Implement API wiring",
+    });
+
+    expect(response.isError).toBe(true);
+    expect(JSON.stringify(response.error ?? response.structuredContent ?? {})).toContain(
+      "config-toml is only supported for Codex",
+    );
+    expect(fixture.runtime.ptyService.create).not.toHaveBeenCalled();
   });
 
   it("fails closed when a requested lane does not have an available worktree", async () => {

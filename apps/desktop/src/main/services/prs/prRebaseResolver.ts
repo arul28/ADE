@@ -9,7 +9,7 @@ import type { createLaneService } from "../lanes/laneService";
 import type { createAgentChatService } from "../chat/agentChatService";
 import type { createSessionService } from "../sessions/sessionService";
 import type { createConflictService } from "../conflicts/conflictService";
-import { mapPermissionMode, readRecentCommits } from "./resolverUtils";
+import { mapPermissionModeForModelFamily, readRecentCommits } from "./resolverUtils";
 
 export type RebaseResolutionLaunchDeps = {
   laneService: Pick<ReturnType<typeof createLaneService>, "list" | "getLaneBaseAndBranch">;
@@ -147,7 +147,7 @@ export async function launchRebaseResolutionChat(
     model,
     modelId: descriptor.id,
     ...(reasoningEffort ? { reasoningEffort } : {}),
-    permissionMode: mapPermissionMode(args.permissionMode),
+    permissionMode: mapPermissionModeForModelFamily(args.permissionMode, descriptor.family),
     surface: "work",
     sessionProfile: "workflow",
     requestedCwd: lane.worktreePath,

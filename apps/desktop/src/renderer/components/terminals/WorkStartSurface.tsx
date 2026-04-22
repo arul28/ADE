@@ -80,7 +80,7 @@ export function WorkStartSurface({
   );
 
   useEffect(() => {
-    const defaultPermission = cliProvider === "claude" ? "default" : "plan";
+    const defaultPermission = "default";
     if (!cliPermissionOptions.some((option) => option.value === cliPermissionMode)) {
       setCliPermissionMode(defaultPermission);
     }
@@ -313,8 +313,8 @@ export function WorkStartSurface({
 }
 
 const LOGO_SIZES = {
-  lg: { glow: "h-[500px] w-[500px]", blur: "blur(140px)", img: "w-96 h-96" },
-  sm: { glow: "h-[200px] w-[200px]", blur: "blur(80px)", img: "h-[140px] w-[140px]" },
+  lg: { glow: "h-[680px] w-[680px]", blur: "blur(160px)", img: "h-[300px] w-[560px] max-w-[78vw]" },
+  sm: { glow: "h-[280px] w-[280px]", blur: "blur(90px)", img: "h-[180px] w-[320px] max-w-[72vw]" },
 } as const;
 
 function LogoGlow({ size }: { size: "lg" | "sm" }) {

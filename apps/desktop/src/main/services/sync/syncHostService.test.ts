@@ -11,6 +11,14 @@ import type { SyncPinStore } from "./syncPinStore";
 import { encodeSyncEnvelope, parseSyncEnvelope } from "./syncProtocol";
 import type { ParsedSyncEnvelope } from "./syncProtocol";
 
+const { execFileMock } = vi.hoisted(() => ({
+  execFileMock: vi.fn(),
+}));
+
+vi.mock("node:child_process", () => ({
+  execFile: execFileMock,
+}));
+
 function createStubPinStore(initialPin: string | null = null): SyncPinStore {
   let pin = initialPin;
   return {
@@ -275,9 +283,196 @@ afterEach(async () => {
     const dispose = activeDisposers.pop();
     if (dispose) await dispose();
   }
+  execFileMock.mockReset();
 });
 
 describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
+  it("retries tailnet discovery after a serve failure", async () => {
+    const previousEnv = {
+      ADE_TAILSCALE_CLI: process.env.ADE_TAILSCALE_CLI,
+      ADE_TAILSCALE_SERVE: process.env.ADE_TAILSCALE_SERVE,
+      NODE_ENV: process.env.NODE_ENV,
+      VITEST: process.env.VITEST,
+    };
+    process.env.ADE_TAILSCALE_CLI = "tailscale-test";
+    process.env.ADE_TAILSCALE_SERVE = "1";
+    process.env.NODE_ENV = "development";
+    delete process.env.VITEST;
+    execFileMock.mockImplementation((_file: string, _args: string[], _options: unknown, callback: (error: Error | null, stdout: string, stderr: string) => void) => {
+      const error = Object.assign(new Error("tailscale serve failed"), { stderr: "pending approval" });
+      queueMicrotask(() => callback(error, "", "pending approval"));
+      return {} as never;
+    });
+
+    const projectRoot = makeProjectRoot("ade-sync-host-tailnet-retry-");
+    const workspaceRoot = path.join(projectRoot, "workspace");
+    fs.mkdirSync(workspaceRoot, { recursive: true });
+    const db = await openKvDb(makeDbPath("ade-sync-host-tailnet-retry-db-"), createLogger() as any);
+    const host = createSyncHostService({
+      db,
+      logger: createLogger() as any,
+      projectRoot,
+      port: 0,
+      pinStore: createStubPinStore(),
+      fileService: createStubFileService(workspaceRoot) as any,
+      laneService: {
+        list: vi.fn().mockResolvedValue([]),
+        create: vi.fn(),
+        archive: vi.fn(),
+      } as any,
+      prService: {
+        listAll: async () => [],
+        getDetail: async () => null,
+        getStatus: async () => null,
+        getChecks: async () => [],
+        getReviews: async () => [],
+        getComments: async () => [],
+        getFiles: async () => [],
+        createFromLane: async () => ({}),
+        land: async () => ({}),
+        closePr: async () => {},
+        requestReviewers: async () => {},
+      } as any,
+      sessionService: { list: () => [] } as any,
+      ptyService: {
+        enrichSessions: (rows: any[]) => rows,
+      } as any,
+      computerUseArtifactBrokerService: {} as any,
+    });
+    activeDisposers.push(async () => {
+      await host.dispose();
+      db.close();
+      if (previousEnv.ADE_TAILSCALE_CLI === undefined) {
+        delete process.env.ADE_TAILSCALE_CLI;
+      } else {
+        process.env.ADE_TAILSCALE_CLI = previousEnv.ADE_TAILSCALE_CLI;
+      }
+      if (previousEnv.ADE_TAILSCALE_SERVE === undefined) {
+        delete process.env.ADE_TAILSCALE_SERVE;
+      } else {
+        process.env.ADE_TAILSCALE_SERVE = previousEnv.ADE_TAILSCALE_SERVE;
+      }
+      if (previousEnv.NODE_ENV === undefined) {
+        delete process.env.NODE_ENV;
+      } else {
+        process.env.NODE_ENV = previousEnv.NODE_ENV;
+      }
+      if (previousEnv.VITEST === undefined) {
+        delete process.env.VITEST;
+      } else {
+        process.env.VITEST = previousEnv.VITEST;
+      }
+    });
+
+    await host.waitUntilListening();
+    await waitFor(() => execFileMock.mock.calls.length === 1);
+    await waitFor(() => host.getTailnetDiscoveryStatus().state === "pending_approval");
+
+    host.refreshLanDiscovery();
+
+    await waitFor(() => execFileMock.mock.calls.length === 2);
+  });
+
+  it("keeps newer forced tailnet publishes when an older serve attempt fails", async () => {
+    const previousEnv = {
+      ADE_TAILSCALE_CLI: process.env.ADE_TAILSCALE_CLI,
+      ADE_TAILSCALE_SERVE: process.env.ADE_TAILSCALE_SERVE,
+      NODE_ENV: process.env.NODE_ENV,
+      VITEST: process.env.VITEST,
+    };
+    process.env.ADE_TAILSCALE_CLI = "tailscale-test";
+    process.env.ADE_TAILSCALE_SERVE = "1";
+    process.env.NODE_ENV = "development";
+    delete process.env.VITEST;
+    const callbacks: Array<(error: Error | null, stdout: string, stderr: string) => void> = [];
+    execFileMock.mockImplementation((_file: string, _args: string[], _options: unknown, callback: (error: Error | null, stdout: string, stderr: string) => void) => {
+      if (_args.includes("off")) {
+        queueMicrotask(() => callback(null, { stdout: "", stderr: "" } as any, ""));
+        return {} as never;
+      }
+      callbacks.push(callback);
+      return {} as never;
+    });
+
+    const projectRoot = makeProjectRoot("ade-sync-host-tailnet-overlap-");
+    const workspaceRoot = path.join(projectRoot, "workspace");
+    fs.mkdirSync(workspaceRoot, { recursive: true });
+    const db = await openKvDb(makeDbPath("ade-sync-host-tailnet-overlap-db-"), createLogger() as any);
+    const host = createSyncHostService({
+      db,
+      logger: createLogger() as any,
+      projectRoot,
+      port: 0,
+      pinStore: createStubPinStore(),
+      fileService: createStubFileService(workspaceRoot) as any,
+      laneService: {
+        list: vi.fn().mockResolvedValue([]),
+        create: vi.fn(),
+        archive: vi.fn(),
+      } as any,
+      prService: {
+        listAll: async () => [],
+        getDetail: async () => null,
+        getStatus: async () => null,
+        getChecks: async () => [],
+        getReviews: async () => [],
+        getComments: async () => [],
+        getFiles: async () => [],
+        createFromLane: async () => ({}),
+        land: async () => ({}),
+        closePr: async () => {},
+        requestReviewers: async () => {},
+      } as any,
+      sessionService: { list: () => [] } as any,
+      ptyService: {
+        enrichSessions: (rows: any[]) => rows,
+      } as any,
+      computerUseArtifactBrokerService: {} as any,
+    });
+    activeDisposers.push(async () => {
+      await host.dispose();
+      db.close();
+      if (previousEnv.ADE_TAILSCALE_CLI === undefined) {
+        delete process.env.ADE_TAILSCALE_CLI;
+      } else {
+        process.env.ADE_TAILSCALE_CLI = previousEnv.ADE_TAILSCALE_CLI;
+      }
+      if (previousEnv.ADE_TAILSCALE_SERVE === undefined) {
+        delete process.env.ADE_TAILSCALE_SERVE;
+      } else {
+        process.env.ADE_TAILSCALE_SERVE = previousEnv.ADE_TAILSCALE_SERVE;
+      }
+      if (previousEnv.NODE_ENV === undefined) {
+        delete process.env.NODE_ENV;
+      } else {
+        process.env.NODE_ENV = previousEnv.NODE_ENV;
+      }
+      if (previousEnv.VITEST === undefined) {
+        delete process.env.VITEST;
+      } else {
+        process.env.VITEST = previousEnv.VITEST;
+      }
+    });
+
+    await host.waitUntilListening();
+    await waitFor(() => execFileMock.mock.calls.length === 1);
+
+    host.refreshLanDiscovery({ forceTailnet: true });
+    await waitFor(() => execFileMock.mock.calls.length === 2);
+
+    callbacks[1]?.(null, { stdout: "", stderr: "" } as any, "");
+    await waitFor(() => host.getTailnetDiscoveryStatus().state === "published");
+
+    const staleError = Object.assign(new Error("older tailscale serve failed"), { stderr: "temporary failure" });
+    callbacks[0]?.(staleError, "", "temporary failure");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(host.getTailnetDiscoveryStatus().state).toBe("published");
+    host.refreshLanDiscovery();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(execFileMock).toHaveBeenCalledTimes(2);
+  });
+
   it("rejects host startup quickly when the requested port is already taken", async () => {
     const projectRoot = makeProjectRoot("ade-sync-host-port-conflict-");
     const workspaceRoot = path.join(projectRoot, "workspace");

@@ -207,6 +207,137 @@ describe("automationService integration", () => {
     expect(String(mapped[0]?.output ?? "")).toContain("hello");
   });
 
+  it("runs built-in commands from the configured target lane", async () => {
+    const { db, raw } = createInMemoryAdeDb();
+    const logger = createLogger();
+    const projectId = "proj";
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-automation-project-root-"));
+    const laneRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-automation-target-lane-"));
+
+    const rule = {
+      id: "lane-command",
+      name: "Lane command",
+      trigger: { type: "manual" as const },
+      triggers: [{ type: "manual" as const }],
+      execution: { kind: "built-in" as const, targetLaneId: "lane-target", builtIn: { actions: [{ type: "run-command" as const, command: "pwd", timeoutMs: 10_000 }] } },
+      actions: [{ type: "run-command" as const, command: "pwd", timeoutMs: 10_000 }],
+      enabled: true
+    };
+
+    const projectConfigService = {
+      get: () => ({
+        trust: { requiresSharedTrust: false },
+        effective: { automations: [rule], providerMode: "guest" }
+      })
+    } as any;
+
+    const laneService = {
+      list: async () => [{ id: "lane-primary", laneType: "primary" }, { id: "lane-target", laneType: "child" }],
+      getLaneWorktreePath: (laneId: string) => laneId === "lane-target" ? laneRoot : projectRoot,
+      getLaneBaseAndBranch: () => ({ baseRef: "main", branchRef: "main", worktreePath: projectRoot })
+    } as any;
+
+    const service = createAutomationService({
+      db: db as any,
+      logger,
+      projectId,
+      projectRoot,
+      laneService,
+      projectConfigService
+    });
+
+    try {
+      const run = await service.triggerManually({ id: "lane-command", laneId: "lane-primary" });
+      expect(run.status).toBe("succeeded");
+      const mapped = mapExecRows(raw.exec("select output from automation_action_results"));
+      expect(String(mapped[0]?.output ?? "")).toContain(laneRoot);
+    } finally {
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+      fs.rmSync(laneRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("launches mission automations on the configured target lane", async () => {
+    const { db } = createInMemoryAdeDb();
+    const logger = createLogger();
+    const projectId = "proj";
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-automation-mission-lane-"));
+    const createMission = vi.fn(() => ({
+      id: "mission-1",
+      status: "in_progress",
+      outcomeSummary: null,
+      completedAt: null,
+      lastError: null,
+    }));
+    const patchMetadata = vi.fn();
+    const startMissionRun = vi.fn(async () => undefined);
+
+    const rule = {
+      id: "mission-lane",
+      name: "Mission lane",
+      enabled: true,
+      mode: "review",
+      reviewProfile: "quick",
+      trigger: { type: "manual" as const },
+      triggers: [{ type: "manual" as const }],
+      executor: { mode: "automation-bot", targetId: null },
+      toolPalette: [] as const,
+      contextSources: [],
+      memory: { mode: "project" as const },
+      guardrails: { maxDurationMin: 5 },
+      outputs: { disposition: "comment-only" as const, createArtifact: true },
+      verification: { verifyBeforePublish: false, mode: "intervention" as const },
+      billingCode: "auto:test",
+      execution: {
+        kind: "mission" as const,
+        targetLaneId: "lane-target",
+      },
+      prompt: "Run a mission on the target lane.",
+    };
+
+    const projectConfigService = {
+      get: () => ({
+        trust: { requiresSharedTrust: false },
+        effective: { automations: [rule], providerMode: "guest" }
+      })
+    } as any;
+
+    const laneService = {
+      list: async () => [{ id: "lane-primary", laneType: "primary" }, { id: "lane-target", laneType: "child" }],
+      getLaneWorktreePath: () => projectRoot,
+      getLaneBaseAndBranch: () => ({ baseRef: "main", branchRef: "main", worktreePath: projectRoot })
+    } as any;
+
+    const service = createAutomationService({
+      db: db as any,
+      logger,
+      projectId,
+      projectRoot,
+      laneService,
+      projectConfigService,
+      missionService: {
+        create: createMission,
+        patchMetadata,
+      } as any,
+      aiOrchestratorService: {
+        startMissionRun,
+      } as any,
+    });
+
+    try {
+      const run = await service.triggerManually({ id: "mission-lane", laneId: "lane-primary" });
+      expect(run.status).toBe("running");
+      expect(createMission).toHaveBeenCalledWith(expect.objectContaining({
+        laneId: "lane-target",
+      }));
+      const missionArgs = (createMission as any).mock.calls[0]?.[0] as { prompt?: string } | undefined;
+      expect(missionArgs?.prompt).toContain("Lane ID: lane-target");
+      expect(missionArgs?.prompt).not.toContain("Lane ID: lane-primary");
+    } finally {
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+    }
+  });
+
   it("rejects run-command cwd values that escape through symlinks", async () => {
     const { db } = createInMemoryAdeDb();
     const logger = createLogger();
@@ -439,6 +570,7 @@ describe("automationService integration", () => {
       billingCode: "auto:test",
       execution: {
         kind: "agent-session" as const,
+        targetLaneId: "lane-target",
         session: { title: "Review output" },
       },
       modelConfig: {
@@ -458,7 +590,7 @@ describe("automationService integration", () => {
     } as any;
 
     const laneService = {
-      list: async () => [{ id: "lane-1", laneType: "primary" }],
+      list: async () => [{ id: "lane-primary", laneType: "primary" }, { id: "lane-target", laneType: "child" }],
       getLaneWorktreePath: () => projectRoot,
       getLaneBaseAndBranch: () => ({ baseRef: "main", branchRef: "main", worktreePath: projectRoot })
     } as any;
@@ -477,11 +609,15 @@ describe("automationService integration", () => {
     });
 
     try {
-      const run = await service.triggerManually({ id: "agent-review" });
+      const run = await service.triggerManually({ id: "agent-review", laneId: "lane-primary" });
       expect(run.status).toBe("succeeded");
       expect(createSession).toHaveBeenCalledWith(expect.objectContaining({
+        laneId: "lane-target",
         permissionMode: "plan",
       }));
+      const turnArgs = (runSessionTurn as any).mock.calls[0]?.[0] as { text?: string } | undefined;
+      expect(turnArgs?.text).toContain("Lane ID: lane-target");
+      expect(turnArgs?.text).not.toContain("Lane ID: lane-primary");
       const row = mapExecRows(raw.exec("select queue_status from automation_runs where automation_id = 'agent-review'"))[0];
       expect(String(row?.queue_status)).toBe("verification-required");
     } finally {

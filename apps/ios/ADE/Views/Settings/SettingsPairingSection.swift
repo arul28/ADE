@@ -259,7 +259,7 @@ struct DiscoverHostsSheet: View {
               Button {
                 onPick(host)
               } label: {
-                DiscoveredHostRow(host: host, detailPrefix: host.tailscaleAddress == nil && !host.id.hasPrefix("tailnet-") ? nil : "Tailscale")
+                DiscoveredHostRow(host: host)
               }
               .buttonStyle(ADEScaleButtonStyle())
             }
@@ -335,9 +335,27 @@ private struct DiscoveredHostRow: View {
   }
 
   private var routeText: String {
-    let route = host.tailscaleAddress ?? host.addresses.first ?? "No route"
-    guard let detailPrefix else { return route }
-    return "\(detailPrefix): \(route)"
+    let route = primaryRoute
+    let prefix = detailPrefix ?? inferredRoutePrefix(for: route)
+    guard let prefix else { return route }
+    return "\(prefix): \(route)"
+  }
+
+  private var primaryRoute: String {
+    host.addresses.first { address in
+      !isLoopback(address) && !syncIsTailscaleIPv4Address(address)
+    } ?? host.tailscaleAddress ?? host.addresses.first ?? "No route"
+  }
+
+  private func inferredRoutePrefix(for route: String) -> String? {
+    if syncIsTailscaleIPv4Address(route) {
+      return "Tailscale"
+    }
+    return nil
+  }
+
+  private func isLoopback(_ address: String) -> Bool {
+    address == "127.0.0.1" || address == "::1"
   }
 }
 

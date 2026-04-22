@@ -133,7 +133,7 @@ import {
   readDocPaths,
 } from "./stepPolicyResolver";
 import { normalizeAgentRuntimeFlags } from "./teamRuntimeConfig";
-import { normalizeMissionPermissions, providerPermissionsToLegacyConfig, mapPermissionToInProcess } from "./permissionMapping";
+import { mapPermissionToCodex, mergeMissionPermissionConfig, normalizeMissionPermissions, providerPermissionsToLegacyConfig, mapPermissionToInProcess } from "./permissionMapping";
 import type { MissionPermissionConfig, MissionProviderPermissions } from "../../../shared/types/missions";
 import { resolveAdeLayout } from "../../../shared/adeLayout";
 
@@ -172,6 +172,67 @@ type ManagedWorkerLaunch = {
   executionMode?: AgentChatExecutionMode | null;
   permissionMode?: AgentChatPermissionMode | null;
 };
+
+const VALID_PROJECT_PROVIDER_PERMISSION_MODES = new Set<AgentChatPermissionMode>([
+  "default",
+  "plan",
+  "edit",
+  "full-auto",
+  "config-toml",
+]);
+
+function projectPermissionConfigFromRecord(permissions: Record<string, unknown> | null | undefined): MissionPermissionConfig {
+  const projectPerms: MissionPermissionConfig = {};
+  if (!permissions) return projectPerms;
+
+  const cli = asRecord(permissions.cli);
+  if (cli) {
+    projectPerms.cli = {
+      ...(typeof cli.mode === "string" ? { mode: cli.mode as MissionPermissionConfig["cli"] extends { mode?: infer M } ? M : never } : {}),
+      ...(typeof cli.sandboxPermissions === "string" ? { sandboxPermissions: cli.sandboxPermissions as "read-only" | "workspace-write" | "danger-full-access" } : {}),
+      ...(Array.isArray(cli.writablePaths) ? { writablePaths: cli.writablePaths.filter((e): e is string => typeof e === "string").map(e => e.trim()).filter(e => e.length > 0) } : {}),
+      ...(Array.isArray(cli.allowedTools) ? { allowedTools: cli.allowedTools.filter((e): e is string => typeof e === "string").map(e => e.trim()).filter(e => e.length > 0) } : {}),
+    };
+  }
+
+  const inProc = asRecord(permissions.inProcess);
+  if (inProc) {
+    const mode = typeof inProc.mode === "string" ? inProc.mode : "";
+    if (mode === "plan" || mode === "edit" || mode === "full-auto") {
+      projectPerms.inProcess = { mode };
+    }
+  }
+
+  const providers = asRecord(permissions.providers);
+  if (providers) {
+    const providerPerms: NonNullable<MissionPermissionConfig["providers"]> = {};
+    const maybeMode = (key: "claude" | "codex" | "cursor" | "opencode") => {
+      const value = typeof providers[key] === "string" ? providers[key].trim() : "";
+      if (VALID_PROJECT_PROVIDER_PERMISSION_MODES.has(value as AgentChatPermissionMode)) {
+        providerPerms[key] = value as AgentChatPermissionMode;
+      }
+    };
+    maybeMode("claude");
+    maybeMode("codex");
+    maybeMode("cursor");
+    maybeMode("opencode");
+    const codexSandbox = typeof providers.codexSandbox === "string" ? providers.codexSandbox.trim() : "";
+    if (codexSandbox === "read-only" || codexSandbox === "workspace-write" || codexSandbox === "danger-full-access") {
+      providerPerms.codexSandbox = codexSandbox;
+    }
+    const writablePaths = Array.isArray(providers.writablePaths)
+      ? providers.writablePaths.filter((e): e is string => typeof e === "string").map(e => e.trim()).filter(e => e.length > 0)
+      : [];
+    if (writablePaths.length) providerPerms.writablePaths = writablePaths;
+    const allowedTools = Array.isArray(providers.allowedTools)
+      ? providers.allowedTools.filter((e): e is string => typeof e === "string").map(e => e.trim()).filter(e => e.length > 0)
+      : [];
+    if (allowedTools.length) providerPerms.allowedTools = allowedTools;
+    if (Object.keys(providerPerms).length) projectPerms.providers = providerPerms;
+  }
+
+  return projectPerms;
+}
 
 export type OrchestratorExecutorStartResult =
   | {
@@ -3905,7 +3966,20 @@ export function createOrchestratorService({
           }
           const cliMode = args.permissionConfig?.cli?.mode ?? "full-auto";
           if (cliCommand === "codex") {
-            commandParts.push("--sandbox", readOnlyExecution ? "read-only" : args.permissionConfig?.cli?.sandboxPermissions ?? "workspace-write");
+            const codexProviderMode = args.permissionConfig?._providers?.codex;
+            const mappedCodex = codexProviderMode === "config-toml" ? null : mapPermissionToCodex(codexProviderMode);
+            if (!readOnlyExecution && codexProviderMode === "config-toml") {
+              // Let Codex read its own repository/user config without forcing flags.
+            } else {
+              commandParts.push(
+                "--sandbox",
+                readOnlyExecution || cliMode === "read-only"
+                  ? "read-only"
+                  : mappedCodex?.sandbox ?? args.permissionConfig?.cli?.sandboxPermissions ?? "workspace-write",
+                "--ask-for-approval",
+                readOnlyExecution || cliMode === "read-only" ? "on-request" : mappedCodex?.approvalPolicy ?? "untrusted",
+              );
+            }
           } else {
             if (!readOnlyExecution && cliMode === "full-auto") {
               commandParts.push("--dangerously-skip-permissions");
@@ -6871,17 +6945,10 @@ export function createOrchestratorService({
           const inProcessPermissionMode: "read-only" | "edit" | "full-auto" = (() => {
             if (readOnlyExecution) return "read-only" as const;
             // Build provider-specific permissions for this mission
-            const projPerms: MissionPermissionConfig = {};
             const aiCfg = asRecord(projectConfigService?.get()?.effective?.ai);
             const perms = asRecord(aiCfg?.permissions);
-            if (perms) {
-              const ip = asRecord(perms.inProcess);
-              if (ip) {
-                const m = typeof ip.mode === "string" ? ip.mode : "";
-                if (m === "plan" || m === "edit" || m === "full-auto") projPerms.inProcess = { mode: m };
-              }
-            }
-            let providers = normalizeMissionPermissions(projPerms);
+            const projPerms = projectPermissionConfigFromRecord(perms);
+            let permissionConfig = projPerms;
             if (run.missionId) {
               try {
                 const mRow = db.get<{ metadata_json: string | null }>(
@@ -6892,12 +6959,12 @@ export function createOrchestratorService({
                   const meta = asRecord(JSON.parse(mRow.metadata_json));
                   const mpc = asRecord(asRecord(meta?.launch)?.permissionConfig) as MissionPermissionConfig | undefined;
                   if (mpc) {
-                    const mp = normalizeMissionPermissions(mpc);
-                    providers = { ...providers, ...mp };
+                    permissionConfig = mergeMissionPermissionConfig(permissionConfig, mpc);
                   }
                 }
               } catch { /* non-critical */ }
             }
+            const providers = normalizeMissionPermissions(permissionConfig);
             return mapPermissionToInProcess(providers.opencode);
           })();
 
@@ -6999,31 +7066,12 @@ export function createOrchestratorService({
         // the same `normalizeMissionPermissions` pipeline.
         const permissionConfig = (() => {
           // 1. Start with project-level permission config (old shape from config file)
-          const projectPerms: MissionPermissionConfig = {};
           const snapshot = projectConfigService?.get();
           const ai = asRecord(snapshot?.effective?.ai);
           const permissions = asRecord(ai?.permissions);
-          if (permissions) {
-            const cli = asRecord(permissions.cli);
-            const inProc = asRecord(permissions.inProcess);
-            if (cli) {
-              projectPerms.cli = {
-                ...(typeof cli.mode === "string" ? { mode: cli.mode as MissionPermissionConfig["cli"] extends { mode?: infer M } ? M : never } : {}),
-                ...(typeof cli.sandboxPermissions === "string" ? { sandboxPermissions: cli.sandboxPermissions as "read-only" | "workspace-write" | "danger-full-access" } : {}),
-                ...(Array.isArray(cli.writablePaths) ? { writablePaths: cli.writablePaths.filter((e): e is string => typeof e === "string").map(e => e.trim()).filter(e => e.length > 0) } : {}),
-                ...(Array.isArray(cli.allowedTools) ? { allowedTools: cli.allowedTools.filter((e): e is string => typeof e === "string").map(e => e.trim()).filter(e => e.length > 0) } : {}),
-              };
-            }
-            if (inProc) {
-              const mode = typeof inProc.mode === "string" ? inProc.mode : "";
-              if (mode === "plan" || mode === "edit" || mode === "full-auto") {
-                projectPerms.inProcess = { mode };
-              }
-            }
-          }
+          const projectPerms = projectPermissionConfigFromRecord(permissions);
 
-          // Normalize project-level to provider shape
-          let providers = normalizeMissionPermissions(projectPerms);
+          let mergedPerms = projectPerms;
 
           // 2. Layer mission-level overrides if present
           if (run.missionId) {
@@ -7036,17 +7084,15 @@ export function createOrchestratorService({
                 const meta = asRecord(JSON.parse(missionRow.metadata_json));
                 const missionPermConfig = asRecord(asRecord(meta?.launch)?.permissionConfig) as MissionPermissionConfig | undefined;
                 if (missionPermConfig) {
-                  // Re-normalize with mission overrides applied on top.
-                  // normalizeMissionPermissions handles both old (cli/inProcess) and new (providers) shapes.
-                  const missionProviders = normalizeMissionPermissions(missionPermConfig);
-                  // Merge: mission-level overrides take precedence
-                  providers = { ...providers, ...missionProviders };
+                  mergedPerms = mergeMissionPermissionConfig(mergedPerms, missionPermConfig);
                 }
               }
             } catch {
               // Non-critical: fall back to project-level permissions
             }
           }
+
+          const providers = normalizeMissionPermissions(mergedPerms);
 
           // 3. Convert back to legacy shape for adapter compatibility, carrying _providers through
           return providerPermissionsToLegacyConfig(providers);

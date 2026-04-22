@@ -23,7 +23,7 @@ import type { createPrService } from "./prService";
 import type { createAgentChatService } from "../chat/agentChatService";
 import type { createSessionService } from "../sessions/sessionService";
 import { computeConvergenceStatus, type createIssueInventoryService } from "./issueInventoryService";
-import { isNoisyIssueComment, mapPermissionMode, readRecentCommits } from "./resolverUtils";
+import { isNoisyIssueComment, mapPermissionModeForModelFamily, readRecentCommits } from "./resolverUtils";
 
 type PreviouslyHandledSummary = {
   fixedCount: number;
@@ -717,7 +717,7 @@ export async function launchPrIssueResolutionChat(
     model,
     modelId: descriptor.id,
     ...(reasoningEffort ? { reasoningEffort } : {}),
-    permissionMode: mapPermissionMode(args.permissionMode),
+    permissionMode: mapPermissionModeForModelFamily(args.permissionMode, descriptor.family),
     surface: "work",
     sessionProfile: "workflow",
   });

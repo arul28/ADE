@@ -4,13 +4,18 @@ import { Question, ArrowSquareOut, Check } from "@phosphor-icons/react";
 import { useNavigate } from "react-router-dom";
 import { useAppStore } from "../../state/appStore";
 import { useOnboardingStore } from "../../state/onboardingStore";
-import { getTour, listTours } from "../../onboarding/registry";
+import {
+  getTour,
+  listTours,
+  type TourVariant,
+} from "../../onboarding/registry";
 import { openExternalUrl } from "../../lib/openExternal";
 import { docs } from "../../onboarding/docsLinks";
 import { cn } from "../ui/cn";
 
 const TOUR_TARGET_WAIT_TIMEOUT_MS = 10_000;
 const TOUR_TARGET_POLL_MS = 50;
+const FULL_TUTORIAL_ID = "first-journey";
 
 type MenuPosition = { top: number; right: number } | null;
 
@@ -32,7 +37,18 @@ export function HelpMenu() {
   const menuRef = useRef<HTMLDivElement | null>(null);
   const pendingTourAbortRef = useRef<AbortController | null>(null);
 
-  const tours = useMemo(() => listTours(), []);
+  const tours = useMemo(() => {
+    const byId = new Map<string, ReturnType<typeof listTours>[number]>();
+    for (const tour of listTours()) {
+      const existing = byId.get(tour.id);
+      if (!existing || (existing.steps.length === 0 && tour.steps.length > 0)) {
+        byId.set(tour.id, tour);
+      }
+    }
+    return [...byId.values()];
+  }, []);
+  const fullTutorial = tours.find((tour) => tour.id === FULL_TUTORIAL_ID && tour.steps.length > 0);
+  const menuTours = tours.filter((tour) => tour.id !== FULL_TUTORIAL_ID);
 
   const close = useCallback(() => {
     setOpen(false);
@@ -82,18 +98,18 @@ export function HelpMenu() {
   }, [close, openWizard]);
 
   const handleStartTour = useCallback(
-    (tourId: string, route: string) => {
+    (tourId: string, variant: TourVariant | undefined, route: string) => {
       close();
       pendingTourAbortRef.current?.abort();
       const controller = new AbortController();
       pendingTourAbortRef.current = controller;
       navigate(route);
-      void waitForTourFirstTarget(tourId, controller.signal).then((ready) => {
+      void waitForTourFirstTarget(tourId, variant, controller.signal).then((ready) => {
         if (!ready || controller.signal.aborted) return;
         if (pendingTourAbortRef.current === controller) {
           pendingTourAbortRef.current = null;
         }
-        void startTour(tourId);
+        void startTour(tourId, variant);
       });
     },
     [close, navigate, startTour],
@@ -154,21 +170,36 @@ export function HelpMenu() {
                 fontSize: 12.5,
               }}
             >
+              <MenuItem
+                onClick={
+                  fullTutorial
+                    ? () => handleStartTour(fullTutorial.id, fullTutorial.variant, fullTutorial.route)
+                    : undefined
+                }
+                disabled={!fullTutorial}
+                weight="strong"
+              >
+                Start Full Tutorial
+              </MenuItem>
               <MenuItem onClick={handleReplayWizard}>Replay Welcome Wizard</MenuItem>
 
               <MenuDivider />
 
               <SectionLabel>Tours</SectionLabel>
-              {tours.length === 0 ? (
+              {menuTours.length === 0 ? (
                 <div style={{ padding: "6px 10px", opacity: 0.6 }}>No tours registered yet.</div>
               ) : (
-                tours.map((tour) => {
+                menuTours.map((tour) => {
                   const isStub = tour.steps.length === 0;
                   const completed = progress?.tours[tour.id]?.completedAt != null;
                   return (
                     <MenuItem
-                      key={tour.id}
-                      onClick={isStub ? undefined : () => handleStartTour(tour.id, tour.route)}
+                      key={`${tour.id}:${tour.variant ?? "full"}`}
+                      onClick={
+                        isStub
+                          ? undefined
+                          : () => handleStartTour(tour.id, tour.variant, tour.route)
+                      }
                       disabled={isStub}
                     >
                       <span style={{ flex: 1, textAlign: "left" }}>{tour.title}</span>
@@ -229,8 +260,12 @@ export function HelpMenu() {
   );
 }
 
-function waitForTourFirstTarget(tourId: string, signal: AbortSignal): Promise<boolean> {
-  const tour = getTour(tourId);
+function waitForTourFirstTarget(
+  tourId: string,
+  variant: TourVariant | undefined,
+  signal: AbortSignal,
+): Promise<boolean> {
+  const tour = getTour(tourId, variant);
   const firstStep = tour?.steps[0];
   const selector = firstStep?.waitForSelector?.trim() || firstStep?.target?.trim();
   if (!selector) return Promise.resolve(Boolean(firstStep));
@@ -297,11 +332,12 @@ type MenuItemProps = {
   children: React.ReactNode;
   onClick?: () => void;
   disabled?: boolean;
+  weight?: "normal" | "strong";
   /** When true, clicking does not bubble a close to the menu (for checkbox-style items). */
   keepOpen?: boolean;
 };
 
-function MenuItem({ children, onClick, disabled, keepOpen }: MenuItemProps) {
+function MenuItem({ children, onClick, disabled, weight = "normal", keepOpen }: MenuItemProps) {
   return (
     <button
       type="button"
@@ -324,6 +360,7 @@ function MenuItem({ children, onClick, disabled, keepOpen }: MenuItemProps) {
         borderRadius: 6,
         textAlign: "left",
         font: "inherit",
+        fontWeight: weight === "strong" ? 700 : undefined,
         cursor: disabled ? "not-allowed" : "pointer",
         opacity: disabled ? 0.6 : 1,
         gap: 6,

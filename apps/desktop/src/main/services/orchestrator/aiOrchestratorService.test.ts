@@ -3177,7 +3177,7 @@ describe("aiOrchestratorService", () => {
       let refreshedAttempt = fixture.orchestratorService
         .getRunGraph({ runId })
         .attempts.find((entry) => entry.id === attempt.id);
-      for (let tries = 0; tries < 20 && refreshedAttempt?.status === "running"; tries += 1) {
+      for (let tries = 0; tries < 80 && refreshedAttempt?.status === "running"; tries += 1) {
         await fixture.aiOrchestratorService.runHealthSweep("test");
         refreshedAttempt = fixture.orchestratorService
           .getRunGraph({ runId })

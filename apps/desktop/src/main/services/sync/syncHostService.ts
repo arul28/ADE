@@ -697,6 +697,8 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
   let bonjourPort: number | null = null;
   let bonjourSignature: string | null = null;
   let tailnetServeSignature: string | null = null;
+  let tailnetServePublishSequence = 0;
+  let tailnetServeActivePublishToken = 0;
   let tailnetDiscoveryStatus: SyncTailnetDiscoveryStatus = {
     state: shouldAttemptTailnetServiceAdvertise() ? "disabled" : "unavailable",
     serviceName: SYNC_TAILNET_DISCOVERY_SERVICE_NAME,
@@ -907,6 +909,8 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     const cli = resolveTailscaleCli();
     const signature = `${SYNC_TAILNET_DISCOVERY_SERVICE_NAME}:${SYNC_TAILNET_DISCOVERY_SERVICE_PORT}->${port}`;
     if (tailnetServeSignature === signature && !options?.force) return;
+    const publishToken = ++tailnetServePublishSequence;
+    tailnetServeActivePublishToken = publishToken;
     tailnetServeSignature = signature;
     const target = `tcp://127.0.0.1:${port}`;
     updateTailnetDiscoveryStatus({
@@ -927,6 +931,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     ];
     void execFileAsync(cli, cliArgs, { timeout: 10_000 })
       .then(({ stdout, stderr }) => {
+        if (tailnetServeActivePublishToken !== publishToken) return;
         const stdoutText = stdout.trim();
         const stderrText = stderr.trim();
         const outputText = [stdoutText, stderrText].filter(Boolean).join("\n");
@@ -948,7 +953,10 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         });
       })
       .catch((error: unknown) => {
-        tailnetServeSignature = null;
+        if (tailnetServeActivePublishToken !== publishToken) return;
+        if (tailnetServeSignature === signature) {
+          tailnetServeSignature = null;
+        }
         const errorMessage = error instanceof Error ? error.message : String(error);
         const code = (error as NodeJS.ErrnoException | null | undefined)?.code ?? null;
         const stderr = typeof (error as { stderr?: unknown })?.stderr === "string"
@@ -981,6 +989,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
 
   const unpublishTailnetDiscovery = async (): Promise<void> => {
     if (!tailnetServeSignature) return;
+    tailnetServeActivePublishToken = ++tailnetServePublishSequence;
     tailnetServeSignature = null;
     if (!shouldAttemptTailnetServiceAdvertise()) {
       updateTailnetDiscoveryStatus({

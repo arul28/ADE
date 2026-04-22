@@ -135,7 +135,7 @@ describe("sessionService resume metadata", () => {
         targetId: null,
         launch: {
           permissionMode: "edit",
-          codexApprovalPolicy: "on-failure",
+          codexApprovalPolicy: "untrusted",
           codexSandbox: "workspace-write",
           codexConfigSource: "flags",
         },
@@ -144,7 +144,7 @@ describe("sessionService resume metadata", () => {
 
     const created = service.get("session-2");
     expect(created?.resumeCommand).toBe(
-      "codex --no-alt-screen -c approval_policy=on-failure -c sandbox_mode=workspace-write resume",
+      "codex --no-alt-screen --sandbox workspace-write --ask-for-approval untrusted resume",
     );
 
     service.setResumeCommand("session-2", "codex resume thread-1");
@@ -156,13 +156,13 @@ describe("sessionService resume metadata", () => {
       permissionMode: "edit",
       launch: {
         permissionMode: "edit",
-        codexApprovalPolicy: "on-failure",
+        codexApprovalPolicy: "untrusted",
         codexSandbox: "workspace-write",
         codexConfigSource: "flags",
       },
     });
     expect(resumed?.resumeCommand).toBe(
-      "codex --no-alt-screen -c approval_policy=on-failure -c sandbox_mode=workspace-write resume thread-1",
+      "codex --no-alt-screen --sandbox workspace-write --ask-for-approval untrusted resume thread-1",
     );
 
     activeDisposers.push(async () => db.close());
@@ -197,7 +197,7 @@ describe("sessionService resume metadata", () => {
       },
     });
 
-    service.setResumeCommand("session-2b", "codex --no-alt-screen --full-auto resume thread-full-auto");
+    service.setResumeCommand("session-2b", "codex --no-alt-screen --dangerously-bypass-approvals-and-sandbox resume thread-full-auto");
     const resumed = service.get("session-2b");
     expect(resumed?.resumeMetadata).toEqual({
       provider: "codex",
@@ -211,7 +211,7 @@ describe("sessionService resume metadata", () => {
         codexConfigSource: "flags",
       },
     });
-    expect(resumed?.resumeCommand).toBe("codex --no-alt-screen --full-auto resume thread-full-auto");
+    expect(resumed?.resumeCommand).toBe("codex --no-alt-screen --dangerously-bypass-approvals-and-sandbox resume thread-full-auto");
 
     activeDisposers.push(async () => db.close());
   });

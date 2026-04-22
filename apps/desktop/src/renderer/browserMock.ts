@@ -2289,6 +2289,7 @@ if (typeof window !== "undefined" && !(window as any).ade) {
       deferRebaseSuggestion: resolvedArg(undefined),
       onRebaseSuggestionsEvent: noop,
       listAutoRebaseStatuses: resolved([]),
+      dismissAutoRebaseStatus: resolvedArg(undefined),
       onAutoRebaseEvent: noop,
       openFolder: resolvedArg(undefined),
       initEnv: resolvedArg({

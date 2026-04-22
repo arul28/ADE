@@ -81,13 +81,19 @@ Chat in ADE is always scoped — it operates within a defined context boundary t
   <Step title="Choose a model (optional)">
     The model selector in the chat header defaults to your configured preferred model. Click it to switch models for this session. ADE remembers your last-used model per lane.
   </Step>
-  <Step title="Set execution mode (optional)">
-    For CLI-wrapped models (Claude, Codex), an **execution mode** selector appears in the header:
+  <Step title="Pick a permission preset (optional)">
+    For CLI-wrapped models, the composer surfaces a permission picker in the header. The presets vary per provider:
 
-    - **Focused** — single-threaded; the agent works through the task in one thread
-    - **Parallel** — the agent can spawn parallel sub-agents for independent parts of the task
+    **Claude** — standard Claude CLI permission modes (plan / edit / full-auto / default), each with its own allowlist.
 
-    Use Parallel mode for tasks the model can naturally decompose (e.g., "add tests for all these functions").
+    **Codex** — four presets map directly to Codex's `--approval-policy` and `--sandbox` flags:
+
+    - **Default permissions** — workspace-write sandbox, approval policy `on-request`. Edits and shell commands in the workspace run without asking; anything outside the workspace prompts for approval.
+    - **Plan mode** — read-only sandbox, approval policy `on-request`. Agent can explore and answer questions; it needs approval to edit or run commands.
+    - **Full access** — `danger-full-access` sandbox, approval policy `never`. No sandbox, no approvals — safe only in an externally sandboxed environment.
+    - **Custom (config.toml)** — no ADE flags are passed. Codex honors `~/.codex/config.toml`.
+
+    There is no "Guarded edit" preset anymore; **Default permissions** is the standard middle ground.
   </Step>
   <Step title="Type your first message">
     The agent receives your message along with the injected context. Tool calls begin immediately if the task requires them.

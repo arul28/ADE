@@ -31,11 +31,33 @@ export function Lede() {
     <motion.div variants={container} initial="hidden" animate="show">
       <motion.p
         variants={item}
-        className="mb-4 flex items-center gap-3 text-[11px] font-medium uppercase tracking-[0.34em] text-[color:var(--color-violet-bright)]"
+        className="mb-3 flex items-center gap-3 text-[11px] font-medium uppercase tracking-[0.34em] text-[color:var(--color-violet-bright)]"
       >
         <span className="inline-block h-1.5 w-1.5 rounded-full bg-[color:var(--color-violet-bright)]" />
         A Demonstration
       </motion.p>
+
+      <motion.div
+        variants={item}
+        className="mb-6 inline-flex items-center gap-2.5 rounded-full border border-[color:var(--color-violet-bright)]/40 bg-[color:var(--color-violet-bright)]/10 px-3.5 py-1.5 text-[12px] font-medium uppercase tracking-[0.22em] text-[color:var(--color-cream)] shadow-[0_0_24px_-8px_rgba(167,139,250,0.5)]"
+      >
+        <span className="relative flex h-2 w-2">
+          <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-[color:var(--color-violet-bright)] opacity-60" />
+          <span className="relative inline-flex h-2 w-2 rounded-full bg-[color:var(--color-violet-bright)]" />
+        </span>
+        100% Free
+        <span className="text-[color:var(--color-cream-faint)]">·</span>
+        Open source
+        <span className="text-[color:var(--color-cream-faint)]">·</span>
+        <a
+          href={LINKS.github}
+          target="_blank"
+          rel="noreferrer"
+          className="text-[color:var(--color-violet-bright)] underline-offset-4 transition-colors hover:text-[color:var(--color-cream)] hover:underline"
+        >
+          AGPL-3.0
+        </a>
+      </motion.div>
 
       <motion.h1
         variants={item}
@@ -60,17 +82,9 @@ export function Lede() {
       >
         A single native workspace for{" "}
         <strong className="font-medium text-[color:var(--color-cream)]">
-          Claude
+          every AI coding agent
         </strong>
-        ,{" "}
-        <strong className="font-medium text-[color:var(--color-cream)]">
-          GPT
-        </strong>
-        ,{" "}
-        <strong className="font-medium text-[color:var(--color-cream)]">
-          Gemini
-        </strong>
-        , and every agent on your dock.{" "}
+        .{" "}
         <strong className="font-medium text-[color:var(--color-cream)]">
           macOS
         </strong>

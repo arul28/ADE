@@ -6,12 +6,14 @@ import { cn } from "../ui/cn";
 import { PrsProvider, usePrs } from "./state/PrsContext";
 import { CreatePrModal } from "./CreatePrModal";
 import { useAppStore } from "../../state/appStore";
+import { useDialogBus } from "../../lib/useDialogBus";
 import { GitHubTab } from "./tabs/GitHubTab";
 import { WorkflowsTab, type WorkflowCategory } from "./tabs/WorkflowsTab";
 import { SANS_FONT } from "../lanes/laneDesignTokens";
 import { isMissionLaneHiddenByDefault } from "../lanes/laneUtils";
 import { buildPrsRouteSearch, parsePrsRouteState } from "./prsRouteState";
 import { resolveRouteRebaseSelection } from "./shared/rebaseNeedUtils";
+import type { PrSummary } from "../../../shared/types";
 
 type SurfaceMode = "github" | "workflows";
 
@@ -58,6 +60,22 @@ function PRsPageInner() {
     ]);
     setIntegrationRefreshNonce((prev) => prev + 1);
   }, [refresh, refreshLanes]);
+
+  const openCreatePr = React.useCallback(() => setCreatePrOpen(true), []);
+  const closeCreatePr = React.useCallback(() => setCreatePrOpen(false), []);
+
+  useDialogBus("prs.create", {
+    onOpen: openCreatePr,
+    onClose: closeCreatePr,
+  });
+
+  const handlePrCreated = React.useCallback(async (created: PrSummary[]) => {
+    await handleRefresh();
+    const first = created[0];
+    if (!first) return;
+    setActiveTab("normal");
+    setSelectedPrId(first.id);
+  }, [handleRefresh, setActiveTab, setSelectedPrId]);
 
   React.useEffect(() => {
     const syncFromLocation = () => {
@@ -342,7 +360,11 @@ function PRsPageInner() {
         )}
       </div>
 
-      <CreatePrModal open={createPrOpen} onOpenChange={setCreatePrOpen} />
+      <CreatePrModal
+        open={createPrOpen}
+        onOpenChange={setCreatePrOpen}
+        onCreated={handlePrCreated}
+      />
     </div>
   );
 }

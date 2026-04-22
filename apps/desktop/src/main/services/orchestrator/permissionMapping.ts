@@ -35,13 +35,16 @@ export function mapPermissionToCodex(mode: AgentChatPermissionMode | undefined):
     return { approvalPolicy: "never", sandbox: "danger-full-access" };
   }
   if (mode === "edit") {
-    return { approvalPolicy: "on-failure", sandbox: "workspace-write" };
+    return { approvalPolicy: "untrusted", sandbox: "workspace-write" };
   }
   if (mode === "config-toml") {
     return null;
   }
-  // "default" / "plan" / undefined → read-only suggest mode
-  return { approvalPolicy: "untrusted", sandbox: "read-only" };
+  if (mode === "default") {
+    return { approvalPolicy: "on-request", sandbox: "workspace-write" };
+  }
+  // "plan" / undefined → read-only browsing mode
+  return { approvalPolicy: "on-request", sandbox: "read-only" };
 }
 
 /**
@@ -99,7 +102,7 @@ function oldInProcessModeToProvider(mode: string | undefined): AgentChatPermissi
 export function normalizeMissionPermissions(config: MissionPermissionConfig | undefined): MissionProviderPermissions {
   const result: MissionProviderPermissions = {
     claude: "full-auto",
-    codex: "full-auto",
+    codex: "default",
     opencode: "full-auto",
     codexSandbox: "workspace-write",
   };
@@ -144,6 +147,74 @@ export function normalizeMissionPermissions(config: MissionPermissionConfig | un
   }
 
   return result;
+}
+
+export function mergeMissionPermissionConfig(
+  base: MissionPermissionConfig | undefined,
+  override: MissionPermissionConfig | undefined,
+): MissionPermissionConfig {
+  if (!base) return override ?? {};
+  if (!override) return base;
+  const merged: MissionPermissionConfig = {
+    ...(base.cli || override.cli
+      ? {
+          cli: {
+            ...(base.cli ?? {}),
+            ...(override.cli ?? {}),
+          },
+        }
+      : {}),
+    ...(base.inProcess || override.inProcess
+      ? {
+          inProcess: {
+            ...(base.inProcess ?? {}),
+            ...(override.inProcess ?? {}),
+          },
+        }
+      : {}),
+    ...(base.providers || override.providers
+      ? {
+          providers: {
+            ...(base.providers ?? {}),
+            ...(override.providers ?? {}),
+          },
+        }
+      : {}),
+  };
+  const providerOverrides: Partial<MissionProviderPermissions> = {};
+  const overrideCliMode = VALID_CLI_MODES.has(override.cli?.mode ?? "") ? override.cli?.mode : undefined;
+  if (overrideCliMode) {
+    const providerMode = oldCliModeToProvider(overrideCliMode);
+    providerOverrides.claude = providerMode;
+    providerOverrides.codex = providerMode;
+  }
+  const overrideInProcessMode = VALID_IN_PROCESS_MODES.has(override.inProcess?.mode ?? "") ? override.inProcess?.mode : undefined;
+  if (overrideInProcessMode) {
+    providerOverrides.opencode = oldInProcessModeToProvider(overrideInProcessMode);
+  }
+  if (
+    override.cli?.sandboxPermissions === "read-only"
+    || override.cli?.sandboxPermissions === "workspace-write"
+    || override.cli?.sandboxPermissions === "danger-full-access"
+  ) {
+    providerOverrides.codexSandbox = override.cli.sandboxPermissions;
+  }
+  if (Array.isArray(override.cli?.writablePaths)) {
+    providerOverrides.writablePaths = override.cli.writablePaths;
+  }
+  if (Array.isArray(override.cli?.allowedTools)) {
+    providerOverrides.allowedTools = override.cli.allowedTools;
+  }
+  if (override.providers) {
+    Object.assign(providerOverrides, override.providers);
+  }
+  if (Object.keys(providerOverrides).length > 0) {
+    merged.providers = {
+      ...(base.providers ?? {}),
+      ...providerOverrides,
+    };
+  }
+  return merged;
 }
 
 // ─────────────────────────────────────────────────────

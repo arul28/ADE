@@ -23,10 +23,26 @@ export function AutomationsPage() {
   const [activeTab, setActiveTab] = useState<TabId>("rules");
   const [pendingDraft, setPendingDraft] = useState<AutomationRuleDraft | null>(null);
   const [historySelection, setHistorySelection] = useState<{ automationId?: string | null; runId?: string | null }>({});
+  const [missionsEnabled, setMissionsEnabled] = useState(true);
 
   useEffect(() => {
     console.info(`renderer.tab_change ${JSON.stringify({ page: "automations", tab: activeTab })}`);
   }, [activeTab]);
+
+  useEffect(() => {
+    let cancelled = false;
+    window.ade.app.getInfo().then(
+      (info) => {
+        if (!cancelled) setMissionsEnabled(!info.isPackaged);
+      },
+      () => {
+        if (!cancelled) setMissionsEnabled(true);
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   return (
     <div className="flex h-full w-full flex-col overflow-hidden bg-bg text-fg" data-testid="automations-page">
@@ -59,6 +75,7 @@ export function AutomationsPage() {
           <RulesTab
             pendingDraft={pendingDraft}
             onDraftConsumed={() => setPendingDraft(null)}
+            missionsEnabled={missionsEnabled}
             onOpenHistory={(selection) => {
               setHistorySelection(selection);
               setActiveTab("history");
@@ -68,6 +85,7 @@ export function AutomationsPage() {
 
         {activeTab === "templates" ? (
           <TemplatesTab
+            missionsEnabled={missionsEnabled}
             onUseTemplate={(draft) => {
               setPendingDraft(draft as AutomationRuleDraft);
               setActiveTab("rules");

@@ -23,7 +23,7 @@ export function BackCover() {
         }}
       />
 
-      <div className="relative mx-auto grid max-w-[1240px] grid-cols-1 items-center gap-[clamp(32px,4vw,64px)] px-[clamp(20px,3vw,40px)] py-[clamp(56px,6vw,88px)] lg:grid-cols-[minmax(0,7fr)_minmax(0,5fr)]">
+      <div className="relative mx-auto grid max-w-[1520px] grid-cols-1 items-center gap-[clamp(32px,4vw,64px)] px-[clamp(20px,3vw,48px)] py-[clamp(56px,6vw,88px)] lg:grid-cols-[minmax(0,7fr)_minmax(0,5fr)]">
         <div>
           <motion.p
             initial={reduceMotion ? false : { opacity: 0, y: 10 }}
@@ -63,7 +63,7 @@ export function BackCover() {
             className="mt-6 max-w-[40ch] font-serif italic text-[color:var(--color-cream-muted)]"
             style={{ fontSize: "20px", lineHeight: 1.4 }}
           >
-            Free. Open source. Local-first. Bring your own keys.
+            Free. Open source. Local-first. Bring your own keys or subs.
           </motion.p>
 
           <motion.div
@@ -116,7 +116,7 @@ export function BackCover() {
         </div>
 
         {/* Right column — MacBook + iPhone composition */}
-        <div className="relative flex justify-center lg:justify-end">
+        <div className="relative flex justify-center">
           <div
             aria-hidden
             className="pointer-events-none absolute inset-0 -m-6"
@@ -126,16 +126,16 @@ export function BackCover() {
               filter: "blur(14px)",
             }}
           />
-          <div className="relative aspect-[1/0.85] w-full max-w-[420px]">
+          <div className="relative aspect-[1/0.85] w-full max-w-[720px]">
             {/* small MacBook */}
             <div
               className="absolute left-0 top-[8%] w-[78%]"
-              style={{
-                transform: "rotate(-2deg)",
-                filter: "drop-shadow(0 20px 40px rgba(0,0,0,0.5))",
-              }}
+              style={{ transform: "rotate(-2deg)" }}
             >
-              <div className="relative aspect-[16/10] overflow-hidden rounded-t-[9px] border border-[color:var(--color-hairline-strong)] bg-[#07070b]">
+              <div
+                className="relative aspect-[16/10] overflow-hidden rounded-t-[9px] border border-[color:var(--color-hairline-strong)] bg-[#07070b]"
+                style={{ boxShadow: "0 20px 40px rgba(0,0,0,0.5)" }}
+              >
                 <div className="absolute left-[8px] top-[7px] z-[2] flex gap-1">
                   <span className="h-2 w-2 rounded-full bg-[#ff5f57]" />
                   <span className="h-2 w-2 rounded-full bg-[#febc2e]" />
@@ -159,12 +159,12 @@ export function BackCover() {
             {/* small iPhone */}
             <div
               className="absolute right-0 bottom-0 w-[32%]"
-              style={{
-                transform: "rotate(4deg)",
-                filter: "drop-shadow(0 20px 40px rgba(124,58,237,0.55))",
-              }}
+              style={{ transform: "rotate(4deg)" }}
             >
-              <div className="relative aspect-[9/19.5] overflow-hidden rounded-[28px] border-[5px] border-[#0c0c12] bg-black ring-1 ring-[color:var(--color-hairline-strong)]">
+              <div
+                className="relative aspect-[9/19.5] overflow-hidden rounded-[28px] border-[5px] border-[#0c0c12] bg-black ring-1 ring-[color:var(--color-hairline-strong)]"
+                style={{ boxShadow: "0 20px 40px rgba(124,58,237,0.55)" }}
+              >
                 <div className="absolute left-1/2 top-[6px] z-[2] h-[17px] w-[42%] -translate-x-1/2 rounded-full bg-black" />
                 <img
                   src="/images/screenshots/agent-chat.png"
@@ -172,11 +172,6 @@ export function BackCover() {
                   loading="lazy"
                   decoding="async"
                   className="h-full w-full object-cover object-left-top"
-                />
-                <div
-                  aria-hidden
-                  className="pointer-events-none absolute inset-0 rounded-[23px]"
-                  style={{ boxShadow: "inset 0 0 32px rgba(124,58,237,0.35)" }}
                 />
               </div>
             </div>

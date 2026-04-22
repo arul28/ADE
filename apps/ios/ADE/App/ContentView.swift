@@ -122,6 +122,10 @@ struct ContentView: View {
 private struct ProjectHomeView: View {
   @EnvironmentObject private var syncService: SyncService
 
+  private var primaryProject: MobileProjectSummary? {
+    syncService.activeProject ?? syncService.projects.first
+  }
+
   private var connectionLabel: String {
     switch syncService.connectionState {
     case .connected: return "Connected"
@@ -142,17 +146,22 @@ private struct ProjectHomeView: View {
 
   var body: some View {
     NavigationStack {
-      ScrollView {
-        VStack(alignment: .leading, spacing: 22) {
-          header
-          projectSection
+      ZStack(alignment: .top) {
+        welcomeBackground
+        ScrollView {
+          VStack(spacing: 30) {
+            welcomeHero
+            openProjectButton
+            projectSection
+          }
+          .frame(maxWidth: 520)
+          .frame(maxWidth: .infinity)
+          .padding(.horizontal, 22)
+          .padding(.top, 88)
+          .padding(.bottom, 38)
         }
-        .padding(.horizontal, 20)
-        .padding(.top, 18)
-        .padding(.bottom, 32)
+        .scrollIndicators(.hidden)
       }
-      .scrollIndicators(.hidden)
-      .background(ADEColor.pageBackground.ignoresSafeArea())
       .navigationTitle("ADE")
       .navigationBarTitleDisplayMode(.inline)
       .toolbar {
@@ -163,47 +172,64 @@ private struct ProjectHomeView: View {
     }
   }
 
-  private var header: some View {
-    VStack(alignment: .leading, spacing: 14) {
-      HStack(alignment: .center, spacing: 12) {
-        ZStack {
-          RoundedRectangle(cornerRadius: 8, style: .continuous)
-            .fill(ADEColor.raisedBackground)
-            .frame(width: 64, height: 48)
-            .overlay(
-              RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .stroke(ADEColor.border, lineWidth: 1)
-            )
-          Image("BrandMark")
-            .resizable()
-            .scaledToFit()
-            .frame(width: 44, height: 24)
-            .accessibilityHidden(true)
-        }
-
-        VStack(alignment: .leading, spacing: 3) {
-          Text("Projects")
-            .font(.system(.largeTitle, design: .rounded).weight(.bold))
-            .foregroundStyle(ADEColor.textPrimary)
-          Text(syncService.hostName ?? "Choose a desktop project to open on this phone.")
-            .font(.callout)
-            .foregroundStyle(ADEColor.textSecondary)
-            .lineLimit(2)
-        }
-      }
-
-      if let activeProject = syncService.activeProject {
-        Button {
-          syncService.selectProject(activeProject)
-        } label: {
-          Label("Return to \(activeProject.displayName)", systemImage: "arrow.forward.circle.fill")
-            .font(.system(.subheadline, design: .rounded).weight(.semibold))
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
-        .buttonStyle(.borderedProminent)
-        .tint(ADEColor.accent)
-      }
+  private var welcomeBackground: some View {
+    ZStack {
+      ADEColor.pageBackground
+      RadialGradient(
+        colors: [
+          ADEColor.purpleAccent.opacity(0.28),
+          ADEColor.purpleAccent.opacity(0.10),
+          Color.clear
+        ],
+        center: .center,
+        startRadius: 20,
+        endRadius: 210
+      )
+      .frame(width: 420, height: 420)
+      .offset(y: 66)
+      .blur(radius: 6)
     }
+    .ignoresSafeArea()
+  }
+
+  private var welcomeHero: some View {
+    ZStack {
+      Text("ADE")
+        .font(.system(size: 78, weight: .heavy, design: .rounded))
+        .foregroundStyle(ADEColor.purpleAccent.opacity(0.58))
+        .offset(x: 9, y: 10)
+      Text("ADE")
+        .font(.system(size: 78, weight: .heavy, design: .rounded))
+        .foregroundStyle(ADEColor.textPrimary)
+        .shadow(color: ADEColor.purpleAccent.opacity(0.80), radius: 28, x: 0, y: 0)
+        .shadow(color: ADEColor.purpleAccent.opacity(0.55), radius: 2, x: 7, y: 8)
+    }
+    .frame(height: 142)
+    .frame(maxWidth: .infinity)
+    .accessibilityLabel("ADE")
+  }
+
+  private var openProjectButton: some View {
+    Button {
+      if let primaryProject {
+        syncService.selectProject(primaryProject)
+      } else {
+        syncService.settingsPresented = true
+      }
+    } label: {
+      Label("OPEN PROJECT", systemImage: "folder")
+        .font(.system(.subheadline, design: .rounded).weight(.semibold))
+        .foregroundStyle(Color(red: 0.08, green: 0.08, blue: 0.10))
+        .frame(width: 220, height: 52)
+        .background(Color.white.opacity(0.94), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay(
+          RoundedRectangle(cornerRadius: 8, style: .continuous)
+            .stroke(Color.white.opacity(0.10), lineWidth: 1)
+        )
+        .shadow(color: Color.black.opacity(0.16), radius: 18, x: 0, y: 12)
+    }
+    .buttonStyle(.plain)
+    .accessibilityHint(primaryProject == nil ? "Opens computer connection settings." : "Opens the most recent project.")
   }
 
   private var connectionButton: some View {
@@ -236,16 +262,11 @@ private struct ProjectHomeView: View {
   }
 
   private var projectSection: some View {
-    VStack(alignment: .leading, spacing: 10) {
-      HStack {
-        Text("Desktop projects")
-          .font(.system(.headline, design: .rounded).weight(.semibold))
-          .foregroundStyle(ADEColor.textPrimary)
-        Spacer()
-        Text("\(syncService.projects.count)")
-          .font(.system(.caption, design: .monospaced).weight(.semibold))
-          .foregroundStyle(ADEColor.textMuted)
-      }
+    VStack(spacing: 14) {
+      Text("RECENT PROJECTS")
+        .font(.system(.caption, design: .rounded).weight(.semibold))
+        .foregroundStyle(ADEColor.textMuted)
+        .tracking(0.8)
 
       if syncService.projects.isEmpty {
         emptyProjects
@@ -267,32 +288,49 @@ private struct ProjectHomeView: View {
   }
 
   private var emptyProjects: some View {
-    VStack(alignment: .leading, spacing: 12) {
-      Image(systemName: "desktopcomputer")
-        .font(.system(size: 28, weight: .semibold))
-        .foregroundStyle(ADEColor.textMuted)
-      Text("No desktop projects cached yet.")
-        .font(.system(.headline, design: .rounded).weight(.semibold))
-        .foregroundStyle(ADEColor.textPrimary)
-      Text("Connect to the ADE desktop app, then projects from that computer will appear here.")
-        .font(.callout)
-        .foregroundStyle(ADEColor.textSecondary)
-      Button {
-        syncService.settingsPresented = true
-      } label: {
-        Label("Connect to computer", systemImage: "desktopcomputer")
-          .font(.system(.subheadline, design: .rounded).weight(.semibold))
+    Button {
+      syncService.settingsPresented = true
+    } label: {
+      HStack(spacing: 12) {
+        ProjectHomeIcon(isActive: false)
+        VStack(alignment: .leading, spacing: 4) {
+          Text("Connect ADE desktop")
+            .font(.system(.subheadline, design: .rounded).weight(.semibold))
+            .foregroundStyle(ADEColor.textPrimary)
+          Text(syncService.hostName ?? "No recent projects yet")
+            .font(.system(.caption, design: .monospaced))
+            .foregroundStyle(ADEColor.textMuted)
+            .lineLimit(1)
+        }
+        Spacer(minLength: 8)
+        Image(systemName: "desktopcomputer")
+          .font(.system(size: 14, weight: .semibold))
+          .foregroundStyle(ADEColor.textSecondary)
       }
-      .buttonStyle(.borderedProminent)
-      .tint(ADEColor.accent)
+      .padding(12)
+      .frame(maxWidth: .infinity, alignment: .leading)
+      .background(ADEColor.cardBackground.opacity(0.62), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+      .overlay(
+        RoundedRectangle(cornerRadius: 8, style: .continuous)
+          .stroke(ADEColor.border.opacity(0.80), lineWidth: 1)
+      )
     }
-    .frame(maxWidth: .infinity, alignment: .leading)
-    .padding(18)
-    .background(ADEColor.cardBackground, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-    .overlay(
-      RoundedRectangle(cornerRadius: 8, style: .continuous)
-        .stroke(ADEColor.border, lineWidth: 1)
-    )
+    .buttonStyle(.plain)
+  }
+}
+
+private struct ProjectHomeIcon: View {
+  let isActive: Bool
+
+  var body: some View {
+    ZStack {
+      RoundedRectangle(cornerRadius: 7, style: .continuous)
+        .fill(isActive ? ADEColor.accent.opacity(0.16) : ADEColor.recessedBackground)
+        .frame(width: 38, height: 38)
+      Image(systemName: "folder")
+        .font(.system(size: 16, weight: .semibold))
+        .foregroundStyle(isActive ? ADEColor.accent : ADEColor.textSecondary)
+    }
   }
 }
 
@@ -306,30 +344,13 @@ private struct ProjectHomeRow: View {
   var body: some View {
     Button(action: action) {
       HStack(alignment: .center, spacing: 12) {
-        ZStack {
-          RoundedRectangle(cornerRadius: 7, style: .continuous)
-            .fill(isActive ? ADEColor.accent.opacity(0.16) : ADEColor.recessedBackground)
-            .frame(width: 40, height: 40)
-          Image(systemName: "folder")
-            .font(.system(size: 17, weight: .semibold))
-            .foregroundStyle(isActive ? ADEColor.accent : ADEColor.textSecondary)
-        }
+        ProjectHomeIcon(isActive: isActive)
 
         VStack(alignment: .leading, spacing: 4) {
-          HStack(spacing: 6) {
-            Text(project.displayName)
-              .font(.system(.headline, design: .rounded).weight(.semibold))
-              .foregroundStyle(ADEColor.textPrimary)
-              .lineLimit(1)
-            if isActive {
-              Text("Selected")
-                .font(.system(.caption2, design: .rounded).weight(.semibold))
-                .foregroundStyle(ADEColor.accent)
-                .padding(.horizontal, 6)
-                .padding(.vertical, 2)
-                .background(ADEColor.accent.opacity(0.12), in: Capsule())
-            }
-          }
+          Text(project.displayName)
+            .font(.system(.subheadline, design: .rounded).weight(.semibold))
+            .foregroundStyle(ADEColor.textPrimary)
+            .lineLimit(1)
 
           if let rootPath = project.rootPath, !rootPath.isEmpty {
             Text(rootPath)
@@ -337,15 +358,6 @@ private struct ProjectHomeRow: View {
               .foregroundStyle(ADEColor.textMuted)
               .lineLimit(1)
           }
-
-          HStack(spacing: 8) {
-            Label("\(project.laneCount) lane\(project.laneCount == 1 ? "" : "s")", systemImage: "square.stack.3d.up")
-            if project.isCached {
-              Label(project.isAvailable ? "Cached" : "Unavailable", systemImage: project.isAvailable ? "checkmark.circle" : "exclamationmark.triangle")
-            }
-          }
-          .font(.system(.caption2, design: .rounded).weight(.semibold))
-          .foregroundStyle(ADEColor.textSecondary)
         }
 
         Spacer(minLength: 8)
@@ -354,20 +366,39 @@ private struct ProjectHomeRow: View {
           ProgressView()
             .controlSize(.small)
         } else {
-          Image(systemName: "chevron.right")
-            .font(.system(size: 12, weight: .semibold))
-            .foregroundStyle(ADEColor.textMuted)
+          VStack(alignment: .trailing, spacing: 6) {
+            Text("\(project.laneCount) lane\(project.laneCount == 1 ? "" : "s")")
+              .font(.system(.caption2, design: .rounded).weight(.semibold))
+              .foregroundStyle(ADEColor.accent)
+              .padding(.horizontal, 8)
+              .padding(.vertical, 4)
+              .background(ADEColor.accent.opacity(0.16), in: Capsule())
+            if let lastOpened = projectHomeRelativeTimestamp(project.lastOpenedAt) {
+              Text(lastOpened)
+                .font(.system(.caption2, design: .monospaced))
+                .foregroundStyle(ADEColor.textMuted)
+            }
+          }
         }
       }
       .padding(12)
       .frame(maxWidth: .infinity, alignment: .leading)
-      .background(ADEColor.cardBackground, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+      .background(ADEColor.cardBackground.opacity(0.62), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
       .overlay(
         RoundedRectangle(cornerRadius: 8, style: .continuous)
-          .stroke(isActive ? ADEColor.accent.opacity(0.55) : ADEColor.border, lineWidth: 1)
+          .stroke(isActive ? ADEColor.accent.opacity(0.55) : ADEColor.border.opacity(0.80), lineWidth: 1)
       )
     }
     .buttonStyle(.plain)
     .disabled(isDisabled)
   }
+}
+
+private func projectHomeRelativeTimestamp(_ value: String?) -> String? {
+  guard let value, !value.isEmpty else { return nil }
+  let fractional = ISO8601DateFormatter()
+  fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+  let plain = ISO8601DateFormatter()
+  guard let date = fractional.date(from: value) ?? plain.date(from: value) else { return nil }
+  return RelativeDateTimeFormatter().localizedString(for: date, relativeTo: Date())
 }

@@ -45,7 +45,7 @@ function createBlankDraft(): AutomationRuleDraft {
     permissionConfig: {
       providers: {
         claude: "full-auto",
-        codex: "full-auto",
+        codex: "default",
         opencode: "full-auto",
         codexSandbox: "workspace-write",
       },
@@ -67,7 +67,7 @@ function createBlankDraft(): AutomationRuleDraft {
 function toDraftFromRule(rule: AutomationRuleSummary): AutomationRuleDraft {
   const builtInActions = rule.execution?.kind === "built-in"
     ? rule.execution.builtIn?.actions ?? []
-    : (rule.legacy?.actions ?? rule.actions ?? []);
+    : [];
   const draftActions = builtInActions.map((action) => {
     if (action.type === "run-tests") {
       return { type: action.type, suite: action.suiteId ?? "" } as any;
@@ -143,11 +143,18 @@ function RuleListRow({
   onDelete: () => void;
 }) {
   return (
-    <button
-      type="button"
+    <div
+      role="button"
+      tabIndex={0}
       onClick={onSelect}
+      onKeyDown={(event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          onSelect();
+        }
+      }}
       className={cn(
-        "group w-full rounded-xl border px-3 py-3 text-left transition-colors",
+        "group w-full cursor-pointer rounded-xl border px-3 py-3 text-left transition-colors focus:outline-none focus:ring-1 focus:ring-[#7DD3FC]/45",
         selected
           ? "border-[#7DD3FC]/35 bg-[#13263A]"
           : "border-white/[0.08] bg-black/15 hover:border-white/[0.14]",
@@ -222,7 +229,7 @@ function RuleListRow({
           </div>
         </div>
       </div>
-    </button>
+    </div>
   );
 }
 
@@ -235,10 +242,12 @@ export function RulesTab({
   pendingDraft,
   onDraftConsumed,
   onOpenHistory,
+  missionsEnabled,
 }: {
   pendingDraft: AutomationRuleDraft | null;
   onDraftConsumed: () => void;
   onOpenHistory: (selection: RulesTabHistorySelection) => void;
+  missionsEnabled: boolean;
 }) {
   const [rules, setRules] = useState<AutomationRuleSummary[]>([]);
   const [lanes, setLanes] = useState<LaneSummary[]>([]);
@@ -506,6 +515,7 @@ export function RulesTab({
             setDraft={setDraft}
             lanes={lanes.map((lane) => ({ id: lane.id, name: lane.name }))}
             suites={suites}
+            missionsEnabled={missionsEnabled}
             issues={issues}
             requiredConfirmations={requiredConfirmations}
             acceptedConfirmations={acceptedConfirmations}

@@ -206,8 +206,9 @@ function mapPermissionModeToNativeFields(
   }
   if (provider === "codex") {
     if (mode === "full-auto") return { codexApprovalPolicy: "never", codexSandbox: "danger-full-access" };
-    if (mode === "edit") return { codexApprovalPolicy: "on-failure", codexSandbox: "workspace-write" };
-    return { codexApprovalPolicy: "untrusted", codexSandbox: "read-only" };
+    if (mode === "edit") return { codexApprovalPolicy: "untrusted", codexSandbox: "workspace-write" };
+    if (mode === "default") return { codexApprovalPolicy: "on-request", codexSandbox: "workspace-write" };
+    return { codexApprovalPolicy: "on-request", codexSandbox: "read-only" };
   }
   const umap: Record<string, import("../../../shared/types").AgentChatOpenCodePermissionMode> = {
     "full-auto": "full-auto",
@@ -368,17 +369,21 @@ export function createProviderOrchestratorAdapter(options?: {
         // Codex CLI path — use per-provider permission when available
         const codexProviderMode = effectivePermissionConfig?._providers?.codex;
         const mappedCodex = mapPermissionToCodex(codexProviderMode);
-        const approvalPolicy = mappedCodex?.approvalPolicy ?? "untrusted";
+        const useCodexConfig = codexProviderMode === "config-toml" || mappedCodex == null;
+        const approvalPolicy = mappedCodex?.approvalPolicy ?? "on-request";
         const sandboxMode = readOnlyExecution
           ? "read-only"
-          : effectivePermissionConfig?._providers?.codexSandbox ?? effectivePermissionConfig?.cli?.sandboxPermissions ?? "workspace-write";
+          : codexProviderMode === "full-auto"
+            ? mappedCodex?.sandbox ?? "danger-full-access"
+            : mappedCodex?.sandbox ?? effectivePermissionConfig?._providers?.codexSandbox ?? effectivePermissionConfig?.cli?.sandboxPermissions ?? "workspace-write";
         const writablePaths = effectivePermissionConfig?._providers?.writablePaths ?? effectivePermissionConfig?.cli?.writablePaths ?? [];
 
         const parts: string[] = [
           "codex", "--model", shellEscapeArg(resolveCodexCliModel(descriptor.providerModelId)),
-          "-a", shellEscapeArg(approvalPolicy),
-          "-s", shellEscapeArg(sandboxMode)
         ];
+        if (!useCodexConfig) {
+          parts.push("-a", shellEscapeArg(approvalPolicy), "-s", shellEscapeArg(sandboxMode));
+        }
 
         parts.push("exec");
 
@@ -498,6 +503,9 @@ export function createProviderOrchestratorAdapter(options?: {
       const workerOwnerId = resolveWorkerOwnerId(args.run.metadata);
 
       try {
+        const configTomlFields = provider === "codex" && permissionMode === "config-toml"
+          ? { permissionMode, codexConfigSource: "config-toml" as const }
+          : {};
         const session = await agentChatService.createSession({
           laneId: args.step.laneId,
           provider,
@@ -505,6 +513,7 @@ export function createProviderOrchestratorAdapter(options?: {
           modelId: descriptor.id,
           reasoningEffort: reasoningEffort ?? null,
           ...mapPermissionModeToNativeFields(provider, permissionMode),
+          ...configTomlFields,
           ...(workerOwnerId ? { identityKey: `agent:${workerOwnerId}` as const } : {}),
         });
         return {

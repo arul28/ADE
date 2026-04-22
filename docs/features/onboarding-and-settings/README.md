@@ -92,6 +92,13 @@ Renderer — onboarding:
 - `apps/desktop/src/renderer/onboarding/docsLinks.ts` — typed registry
   of internal/public doc URLs that tour steps and `HelpMenu` link to.
 - `apps/desktop/src/renderer/onboarding/registry.ts` — tour registry.
+- `apps/desktop/src/renderer/onboarding/tourGuards.ts` — per-step guard
+  predicates (route, selection, and element-presence checks) that decide
+  whether a step can advance, skip, or must pause for the user.
+- `apps/desktop/src/renderer/onboarding/stepBuilders/*.ts` — factories
+  for per-dialog tour steps (`createLaneDialog`, `manageLaneDialog`,
+  `prCreateModal`); kept separate from the per-surface tour files so
+  dialog-scoped steps can be composed from multiple tours.
 - `apps/desktop/src/renderer/onboarding/tours/*.ts` — per-surface tours:
   `lanesTour`, `laneWorkPaneTour` (new), `workTour`, `filesTour`,
   `runTour`, `missionsTour`, `prsTour`, `graphTour`, `historyTour`,

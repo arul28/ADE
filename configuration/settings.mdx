@@ -1,6 +1,6 @@
 ---
 title: "Settings"
-description: "Complete reference for every section in ADE Settings — General, Appearance, Workspace, AI, Sync, Mobile Push, Integrations, Memory, Lane Templates, and Usage."
+description: "Reference for every section in ADE Settings — General, Appearance, Workspace, AI, Mobile Push, Integrations, Memory, Lane Templates, and Usage."
 icon: "sliders"
 ---
 
@@ -12,15 +12,14 @@ Access Settings from anywhere in ADE:
 - **Sidebar**: Click the gear icon (⚙) at the bottom of the left sidebar
 - **Menu bar**: ADE → Preferences
 
-Settings are organized into ten sections in the left navigation panel. Changes take effect immediately in most sections — no restart required. Exceptions are noted in the relevant section below.
+Settings are organized into nine sections in the left navigation panel. Changes take effect immediately in most sections — no restart required. Exceptions are noted in the relevant section below.
 
 <CardGroup cols={3}>
   <Card title="General" icon="sliders" href="#general">App-wide preferences, keybindings, onboarding, help.</Card>
   <Card title="Appearance" icon="palette" href="#appearance">Theme, density, and visual options.</Card>
   <Card title="Workspace" icon="folder-tree" href="#workspace">Project identity, paths, and context docs.</Card>
   <Card title="AI" icon="brain" href="#ai">Providers, per-role models, context management.</Card>
-  <Card title="Sync" icon="desktop" href="#sync">Multi-device sync, device registry, pairing.</Card>
-  <Card title="Mobile Push" icon="mobile" href="#mobile-push">iOS push notifications for agent events.</Card>
+  <Card title="Mobile Push" icon="mobile" href="#mobile-push">iPhone pairing, tailnet discovery, and push notifications.</Card>
   <Card title="Integrations" icon="plug" href="#integrations">GitHub, Linear, and proof backends.</Card>
   <Card title="Memory" icon="database" href="#memory">Unified memory scopes, retention, consolidation.</Card>
   <Card title="Lane Templates" icon="layer-group" href="#lane-templates">Reusable lane profiles and defaults.</Card>
@@ -28,7 +27,11 @@ Settings are organized into ten sections in the left navigation panel. Changes t
 </CardGroup>
 
 <Note>
-Mobile Push is a local-only section that only appears in the desktop app (it manages device registration on this machine). All other sections sync across paired devices when multi-device sync is enabled.
+The former standalone **Sync** section has been folded into **Mobile Push**. Multi-device pairing, tailnet discovery, device registry, and push notification preferences now live in one place. Old links that pointed to `/settings/sync` automatically land on Mobile Push.
+</Note>
+
+<Note>
+Mobile Push is a local-only section that only appears in the desktop app (it manages device registration on this machine). Other sections sync across paired devices when multi-device sync is enabled.
 </Note>
 
 ---
@@ -172,48 +175,55 @@ Routing automation runs to `claude-haiku-4-5` while keeping `claude-opus-4-7` fo
 
 ---
 
-## Sync
-
-Control ADE's multi-device sync. Pair additional machines or an iPhone so state replicates between them.
-
-| Setting | Description | Default |
-|---------|-------------|---------|
-| Sync enabled | Master switch for multi-device sync | Off until first pair |
-| Device name | Friendly name for this device in the registry | Hostname |
-| Paired devices | List of devices paired with this install | — |
-| Pair new device | Generate a QR code or a short pairing code for another machine | — |
-| Sync transport | How changes are exchanged (local WebSocket, relay) | Local |
-| Sync history | Per-domain last-synced timestamps | — |
-
-<Note>
-Sync uses cr-sqlite for CRDT-based replication. Missions, lanes, memory, and session history all replicate. `.ade/artifacts/` blobs are fetched on demand by the requesting device.
-</Note>
-
----
-
 ## Mobile Push
 
-ADE can send push notifications to your iPhone when agents need input or complete tasks, so you do not have to keep the desktop app in the foreground to stay aware of progress.
+One consolidated section for everything that talks to your phone and other devices — pairing, tailnet discovery, and push notifications. The former standalone Sync section has been folded into this panel.
 
 <Note>
-This section is local to the desktop install (it manages device registration on this machine). It is hidden on builds that do not ship the iOS companion.
+Mobile Push is local to the desktop install (it manages device registration on this machine). It is hidden on builds that do not ship the iOS companion.
 </Note>
 
-### Setup
+### Pair a device
 
 <Steps>
   <Step title="Open Settings → Mobile Push">
     Navigate to **Settings → Mobile Push**.
   </Step>
   <Step title="Scan the QR code on your iPhone">
-    Open the ADE iOS app and scan the registration QR code shown in the panel. The device is registered to your ADE install within a few seconds.
+    Open the ADE iOS app and scan the registration QR code. The device is registered to your ADE install within a few seconds.
   </Step>
   <Step title="Choose which events trigger a push">
-    Toggle individual event types. The most useful defaults: mission complete, mission failed, and intervention required (agent needs your input).
+    Toggle individual event types. The most useful defaults: mission complete, mission failed, and intervention required.
   </Step>
 </Steps>
 
-You can register multiple iOS devices. Each device receives the same notifications. Devices are listed in the Mobile Push panel with their registration date and last-received timestamp. Tap **Remove** next to any device to deregister it.
+Multiple iOS devices can be registered and each receives the same notifications. Devices are listed with their registration date and last-received timestamp. Tap **Remove** next to any device to deregister it.
+
+### Tailnet discovery
+
+If your Mac is on a Tailscale tailnet, ADE tries to publish a stable service name so phones can reconnect without a fresh QR scan each time. The panel surfaces one of three states:
+
+- **Direct Tailscale ready** — your Mac has a normal Tailscale address, so the QR code includes it. Phones can connect through Tailscale without any extra setup. Only the optional stable service shortcut is blocked.
+- **Published** — ADE has registered a stable service name on the tailnet and phones can discover it automatically.
+- **Tailscale setup needed** — automatic discovery is blocked because Tailscale policy requires a tagged node for service hosting. Local pairing still works; retry after a tailnet admin enables service hosting for this Mac.
+
+The panel hides itself entirely when Tailscale is not configured, so there is no noise on single-device installs.
+
+### Sync settings
+
+The pairing panel also surfaces everything the old Sync section managed:
+
+| Setting | Description | Default |
+|---|---|---|
+| Sync enabled | Master switch for multi-device sync | Off until first pair |
+| Device name | Friendly name for this device in the registry | Hostname |
+| Paired devices | List of devices paired with this install | — |
+| Sync transport | How changes are exchanged (local WebSocket, relay) | Local |
+| Sync history | Per-domain last-synced timestamps | — |
+
+<Note>
+Sync uses cr-sqlite for CRDT replication. Missions, lanes, memory, and session history all replicate. `.ade/artifacts/` blobs are fetched on demand by the requesting device.
+</Note>
 
 ---
 
@@ -335,7 +345,7 @@ The monthly cap is a hard stop. Once reached, all agent activity (chat, missions
     - Configure per-role model routing (Opus for planning, Sonnet for execution, Haiku for automation)
     - Set a high monthly cap and lean on the Usage panel to spot runaway spend
     - Set compaction threshold to 60% for earlier and more frequent compaction
-    - Pair multiple devices and an iPhone for always-on status awareness
+    - Pair an iPhone from **Mobile Push** so pages land on your phone when a mission needs intervention
   </Tab>
 </Tabs>
 

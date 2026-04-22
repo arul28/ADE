@@ -18,6 +18,7 @@ import { useNavigate } from "react-router-dom";
 import type { ProjectBrowseResult, ProjectDetail } from "../../../shared/types";
 import { extractError } from "../../lib/format";
 import { fadeScale } from "../../lib/motion";
+import { PROJECT_BROWSER_CLOSE_EVENT } from "../../lib/projectBrowserEvents";
 import { useAppStore } from "../../state/appStore";
 import { cn } from "../ui/cn";
 
@@ -110,6 +111,10 @@ function defaultBrowseInput(projectRoot: string | null | undefined): string {
   return projectRoot ? "../" : "~/";
 }
 
+function isTourStepTarget(target: EventTarget | null): boolean {
+  return target instanceof Element && target.closest(".ade-tour-step") !== null;
+}
+
 function pathLabel(input: string | null | undefined): string {
   if (!input) return "";
   const segments = input.split(/[\\/]/).filter(Boolean);
@@ -185,6 +190,15 @@ export function CommandPalette({
     setSelectedIdx(0);
     setBrowseError(null);
   }, [intent, open, startProjectBrowse]);
+
+  useEffect(() => {
+    if (!open || mode !== "project-browse") return;
+    const closeBrowser = () => {
+      onOpenChange(false);
+    };
+    window.addEventListener(PROJECT_BROWSER_CLOSE_EVENT, closeBrowser);
+    return () => window.removeEventListener(PROJECT_BROWSER_CLOSE_EVENT, closeBrowser);
+  }, [mode, onOpenChange, open]);
 
   const commands: Command[] = useMemo(() => {
     const next: Command[] = [
@@ -699,8 +713,22 @@ export function CommandPalette({
                 transition={{ duration: 0.15 }}
               />
             </Dialog.Overlay>
-            <Dialog.Content asChild onOpenAutoFocus={(event) => event.preventDefault()}>
+            <Dialog.Content
+              asChild
+              onOpenAutoFocus={(event) => event.preventDefault()}
+              onPointerDownOutside={(event) => {
+                if (isTourStepTarget(event.target)) {
+                  event.preventDefault();
+                }
+              }}
+              onInteractOutside={(event) => {
+                if (isTourStepTarget(event.target)) {
+                  event.preventDefault();
+                }
+              }}
+            >
               <motion.div
+                data-tour={isBrowsing ? "project.browser" : undefined}
                 className={cn(
                   positionClass,
                   widthClass,
@@ -763,6 +791,7 @@ export function CommandPalette({
                 >
                   <MagnifyingGlass size={18} weight="regular" className="shrink-0 text-[var(--color-muted-fg)]" />
                   <input
+                    data-tour={isBrowsing ? "project.browserInput" : undefined}
                     value={isBrowsing ? browseInput : q}
                     onChange={(event) => {
                       if (isBrowsing) {
@@ -931,6 +960,7 @@ export function CommandPalette({
                       <div className="flex shrink-0 items-center gap-2">
                         <button
                           type="button"
+                          data-tour="project.browserSystemPicker"
                           className="inline-flex h-9 items-center justify-center gap-2 rounded-lg border border-[var(--color-border)] bg-transparent px-3 text-xs font-medium text-[var(--color-muted-fg)] transition-colors hover:bg-[var(--color-muted)] hover:text-[var(--color-fg)] disabled:cursor-not-allowed disabled:opacity-50"
                           disabled={systemPickerPending || openProjectPending}
                           onClick={() => {
@@ -946,6 +976,7 @@ export function CommandPalette({
                         </button>
                         <button
                           type="button"
+                          data-tour="project.browserOpenButton"
                           className="inline-flex h-9 items-center justify-center gap-2 rounded-lg border border-transparent bg-[var(--color-accent)] px-4 text-xs font-semibold text-[var(--color-accent-fg)] transition-all hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-50"
                           style={{
                             boxShadow:

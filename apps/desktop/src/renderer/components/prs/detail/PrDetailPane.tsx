@@ -436,6 +436,18 @@ export function PrDetailPane({
   const [activity, setActivity] = React.useState<PrActivityEvent[]>([]);
   const [reviewThreads, setReviewThreads] = React.useState<PrReviewThread[]>([]);
   const timelineRailsRef = React.useRef<PrDetailTimelineRailsRef | null>(null);
+
+  React.useEffect(() => {
+    const onTourTab = (event: Event) => {
+      const tab = (event as CustomEvent<DetailTab>).detail;
+      if (tab === "overview" || tab === "convergence" || tab === "files" || tab === "checks" || tab === "activity") {
+        setActiveTab(tab);
+      }
+    };
+    window.addEventListener("ade:tour-pr-detail-tab", onTourTab);
+    return () => window.removeEventListener("ade:tour-pr-detail-tab", onTourTab);
+  }, []);
+
   const deepLinkState = React.useMemo(() => {
     try {
       const parsed = parsePrsRouteState({ search: window.location.search, hash: window.location.hash });

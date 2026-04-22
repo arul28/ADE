@@ -6,6 +6,7 @@ import {
   type StepAction,
   type TourCtx,
   type TourStep,
+  type TourVariant,
 } from "../onboarding/registry";
 import { waitForSelector } from "../onboarding/waitForTarget";
 
@@ -20,7 +21,9 @@ const EMPTY_PROGRESS: OnboardingTourProgress = {
 
 type OnboardingState = {
   activeTourId: string | null;
+  activeTourVariant: TourVariant | null;
   activeStepIndex: number;
+  activeStepHistory: number[];
   activeTourCtx: TourCtx | null;
   wizardOpen: boolean;
   hydrated: boolean;
@@ -29,7 +32,7 @@ type OnboardingState = {
   hydrate: () => Promise<void>;
   openWizard: () => void;
   closeWizard: () => Promise<void>;
-  startTour: (tourId: string) => Promise<void>;
+  startTour: (tourId: string, variant?: TourVariant) => Promise<void>;
   nextStep: () => Promise<void>;
   prevStep: () => Promise<void>;
   completeCurrentTour: (skipAfterLeave?: boolean) => Promise<void>;
@@ -57,10 +60,21 @@ function createTourCtx(initial: Record<string, unknown> = {}): TourCtx {
 }
 
 let activeWaitAbortController: AbortController | null = null;
+let stepTransitionInFlight = false;
 
 function abortActiveWait(): void {
   activeWaitAbortController?.abort();
   activeWaitAbortController = null;
+}
+
+async function withStepTransition(fn: () => Promise<void>): Promise<void> {
+  if (stepTransitionInFlight) return;
+  stepTransitionInFlight = true;
+  try {
+    await fn();
+  } finally {
+    stepTransitionInFlight = false;
+  }
 }
 
 function navigateToRoute(route: string): void {
@@ -149,7 +163,9 @@ async function refreshProgress(): Promise<OnboardingTourProgress> {
 
 export const useOnboardingStore = create<OnboardingState>((set, get) => ({
   activeTourId: null,
+  activeTourVariant: null,
   activeStepIndex: 0,
+  activeStepHistory: [],
   activeTourCtx: null,
   wizardOpen: false,
   hydrated: false,
@@ -172,14 +188,21 @@ export const useOnboardingStore = create<OnboardingState>((set, get) => ({
     set({ progress });
   },
 
-  startTour: async (tourId: string) => {
+  startTour: async (tourId: string, variant?: TourVariant) => {
     const id = tourId.trim();
     if (!id) return;
-    const tour = getTour(id);
+    const tour = getTour(id, variant);
     if (!tour) return;
     abortActiveWait();
     const ctx = createTourCtx(tour.ctxInit?.() ?? {});
-    set({ activeTourId: id, activeStepIndex: 0, activeTourCtx: ctx });
+    set({
+      activeTourId: id,
+      activeTourVariant: tour.variant ?? "full",
+      activeStepIndex: 0,
+      activeStepHistory: [],
+      activeTourCtx: ctx,
+      wizardOpen: false,
+    });
     const onboarding = api();
     if (onboarding) {
       const progress = await onboarding.updateTourStep(id, 0);
@@ -188,11 +211,11 @@ export const useOnboardingStore = create<OnboardingState>((set, get) => ({
     await runBeforeEnter(tour.steps[0], ctx);
   },
 
-  nextStep: async () => {
-    const { activeTourId, activeStepIndex } = get();
+  nextStep: async () => withStepTransition(async () => {
+    const { activeTourId, activeTourVariant, activeStepIndex, activeStepHistory } = get();
     if (!activeTourId) return;
     abortActiveWait();
-    const tour = getTour(activeTourId);
+    const tour = getTour(activeTourId, activeTourVariant ?? undefined);
     const ctx = get().activeTourCtx ?? createTourCtx(tour?.ctxInit?.() ?? {});
     const currentStep = tour?.steps[activeStepIndex];
     await runAfterLeave(currentStep, ctx);
@@ -206,43 +229,63 @@ export const useOnboardingStore = create<OnboardingState>((set, get) => ({
       await get().completeCurrentTour(true);
       return;
     }
-    set({ activeStepIndex: nextIndex, activeTourCtx: ctx });
+    const history = activeStepHistory ?? [];
+    set({
+      activeStepIndex: nextIndex,
+      activeStepHistory: [...history, activeStepIndex],
+      activeTourCtx: ctx,
+    });
     const onboarding = api();
     if (onboarding) {
       const progress = await onboarding.updateTourStep(activeTourId, nextIndex);
       set({ progress });
     }
     await runBeforeEnter(tour?.steps[nextIndex], ctx);
-  },
+  }),
 
-  prevStep: async () => {
-    const { activeTourId, activeStepIndex } = get();
+  prevStep: async () => withStepTransition(async () => {
+    const { activeTourId, activeTourVariant, activeStepIndex, activeStepHistory } = get();
     if (!activeTourId) return;
     if (activeStepIndex <= 0) return;
     abortActiveWait();
-    const tour = getTour(activeTourId);
+    const tour = getTour(activeTourId, activeTourVariant ?? undefined);
     const ctx = get().activeTourCtx ?? createTourCtx(tour?.ctxInit?.() ?? {});
-    await runAfterLeave(tour?.steps[activeStepIndex], ctx);
-    const nextIndex = activeStepIndex - 1;
-    set({ activeStepIndex: nextIndex, activeTourCtx: ctx });
+    const currentStep = tour?.steps[activeStepIndex];
+    if (currentStep?.disableBack) return;
+    await currentStep?.beforeBack?.(ctx);
+    await runAfterLeave(currentStep, ctx);
+    const previousHistory = activeStepHistory ?? [];
+    const history = previousHistory.length > 0 ? previousHistory : [activeStepIndex - 1];
+    const nextIndex = history[history.length - 1] ?? activeStepIndex - 1;
+    set({
+      activeStepIndex: nextIndex,
+      activeStepHistory: history.slice(0, -1),
+      activeTourCtx: ctx,
+    });
     const onboarding = api();
     if (onboarding) {
       const progress = await onboarding.updateTourStep(activeTourId, nextIndex);
       set({ progress });
     }
     await runBeforeEnter(tour?.steps[nextIndex], ctx);
-  },
+  }),
 
   completeCurrentTour: async (skipAfterLeave = false) => {
-    const { activeTourId, activeStepIndex } = get();
+    const { activeTourId, activeTourVariant, activeStepIndex } = get();
     if (!activeTourId) return;
     abortActiveWait();
-    const tour = getTour(activeTourId);
+    const tour = getTour(activeTourId, activeTourVariant ?? undefined);
     const ctx = get().activeTourCtx ?? createTourCtx(tour?.ctxInit?.() ?? {});
     if (!skipAfterLeave) {
       await runAfterLeave(tour?.steps[activeStepIndex], ctx);
     }
-    set({ activeTourId: null, activeStepIndex: 0, activeTourCtx: null });
+    set({
+      activeTourId: null,
+      activeTourVariant: null,
+      activeStepIndex: 0,
+      activeStepHistory: [],
+      activeTourCtx: null,
+    });
     const onboarding = api();
     if (!onboarding) return;
     const progress = await onboarding.markTourCompleted(activeTourId);
@@ -250,13 +293,19 @@ export const useOnboardingStore = create<OnboardingState>((set, get) => ({
   },
 
   dismissCurrentTour: async () => {
-    const { activeTourId, activeStepIndex } = get();
+    const { activeTourId, activeTourVariant, activeStepIndex } = get();
     if (!activeTourId) return;
     abortActiveWait();
-    const tour = getTour(activeTourId);
+    const tour = getTour(activeTourId, activeTourVariant ?? undefined);
     const ctx = get().activeTourCtx ?? createTourCtx(tour?.ctxInit?.() ?? {});
     await runAfterLeave(tour?.steps[activeStepIndex], ctx);
-    set({ activeTourId: null, activeStepIndex: 0, activeTourCtx: null });
+    set({
+      activeTourId: null,
+      activeTourVariant: null,
+      activeStepIndex: 0,
+      activeStepHistory: [],
+      activeTourCtx: null,
+    });
     const onboarding = api();
     if (!onboarding) return;
     const progress = await onboarding.markTourDismissed(activeTourId);

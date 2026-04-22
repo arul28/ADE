@@ -266,6 +266,8 @@ function runPageLaneStateEqual(left: PersistedRunPageLaneState, right: Persisted
 
 function WelcomeScreen() {
   const switchProjectToPath = useAppStore((s) => s.switchProjectToPath);
+  const project = useAppStore((s) => s.project);
+  const cancelNewTab = useAppStore((s) => s.cancelNewTab);
   const [recentProjects, setRecentProjects] = useState<Array<{ rootPath: string; displayName: string; exists: boolean; lastOpenedAt?: string; laneCount?: number }>>([]);
   const [projectBrowserOpen, setProjectBrowserOpen] = useState(false);
 
@@ -298,12 +300,13 @@ function WelcomeScreen() {
             animation: "pulse-glow 3s infinite",
           }}
         >
-          <img src="./logo.png" alt="ADE Logo" style={{ width: 280, height: 280, objectFit: "contain" }} />
+          <img src="./logo.png" alt="ADE Logo" style={{ width: 420, height: 240, objectFit: "contain", maxWidth: "72vw" }} />
         </div>
       </div>
 
       <button
         type="button"
+        data-tour="project.welcomeOpenButton"
         onClick={() => setProjectBrowserOpen(true)}
         style={{
           ...primaryButton({ height: 48, padding: "0 32px", fontSize: 14 }),
@@ -333,7 +336,14 @@ function WelcomeScreen() {
               <button
                 key={rp.rootPath}
                 type="button"
-                onClick={() => void switchProjectToPath(rp.rootPath)}
+                data-tour="project.recentProject"
+                onClick={() => {
+                  if (project?.rootPath === rp.rootPath) {
+                    cancelNewTab();
+                    return;
+                  }
+                  void switchProjectToPath(rp.rootPath);
+                }}
                 style={{
                   display: "flex",
                   alignItems: "center",

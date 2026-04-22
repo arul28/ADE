@@ -259,7 +259,7 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
       lastOutputPreview: null,
       summary: null,
       runtimeState: "exited" as const,
-      resumeCommand: "codex --no-alt-screen --full-auto resume thread-1",
+      resumeCommand: "codex --no-alt-screen --dangerously-bypass-approvals-and-sandbox resume thread-1",
       resumeMetadata: {
         provider: "codex" as const,
         targetKind: "thread" as const,
@@ -301,7 +301,7 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
 
     expect((window as any).ade.pty.create).toHaveBeenCalledWith(expect.objectContaining({
       sessionId: "session-1",
-      startupCommand: "codex --no-alt-screen --full-auto resume thread-1",
+      startupCommand: "codex --no-alt-screen --dangerously-bypass-approvals-and-sandbox resume thread-1",
     }));
     expect(focusSessionSpy).toHaveBeenCalledWith("session-1");
     expect(workState.activeItemId).toBe("session-1");

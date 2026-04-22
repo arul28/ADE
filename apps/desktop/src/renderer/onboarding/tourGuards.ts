@@ -1,11 +1,13 @@
 export const TOUR_ADVANCE_REQUIREMENTS = [
   "projectOpen",
   "laneExists",
+  "laneCountIncreased",
   "chatStarted",
   "commitExists",
   "prCreated",
   "createLaneDialogOpen",
   "managelaneDialogOpen",
+  "manageLaneDialogOpen",
   "prCreateModalOpen",
 ] as const;
 
@@ -24,6 +26,7 @@ export type TourGuardAppState = {
 
   laneExists?: boolean;
   laneCount?: number | null;
+  laneCountIncreased?: boolean;
 
   chatStarted?: boolean;
   chatSessionCount?: number | null;
@@ -70,6 +73,8 @@ function requirementMet(
       return appState.projectOpen === true || hasText(appState.projectRootPath);
     case "laneExists":
       return appState.laneExists === true || hasPositiveCount(appState.laneCount);
+    case "laneCountIncreased":
+      return appState.laneCountIncreased === true;
     case "chatStarted":
       return (
         appState.chatStarted === true ||
@@ -87,6 +92,7 @@ function requirementMet(
         isDialogOpen(appState, "lanes.create")
       );
     case "managelaneDialogOpen":
+    case "manageLaneDialogOpen":
       return (
         appState.managelaneDialogOpen === true ||
         appState.manageLaneDialogOpen === true ||

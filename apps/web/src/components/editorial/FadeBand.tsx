@@ -19,7 +19,7 @@ export function FadeBand({
   return (
     <div
       aria-hidden
-      className={cn("h-[18vh] min-h-[110px] w-full", className)}
+      className={cn("h-[7vh] min-h-[48px] w-full", className)}
       style={{ background: bg }}
     />
   );

@@ -145,6 +145,16 @@ describe("TopBar", () => {
     }
   });
 
+  it("does not poll phone sync before a project is open", async () => {
+    useAppStore.setState({ project: null } as any);
+
+    render(<TopBar />);
+
+    await waitFor(() => {
+      expect(globalThis.window.ade.sync.getStatus).not.toHaveBeenCalled();
+    });
+  });
+
   it("opens the phone sync drawer from the host status control", async () => {
     render(<TopBar />);
 
