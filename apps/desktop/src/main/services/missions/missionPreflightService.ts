@@ -364,7 +364,13 @@ export function createMissionPreflightService(args: {
         || requirement === "browser_trace"
         || requirement === "video_recording"
       );
-      const browserEvidenceCoveredByBackend = evidenceRequirements.some((requirement) => {
+      const browserEvidenceRequirements = evidenceRequirements.filter((requirement) =>
+        requirement === "screenshot"
+        || requirement === "browser_verification"
+        || requirement === "browser_trace"
+        || requirement === "video_recording"
+      );
+      const browserEvidenceCoveredByBackend = browserEvidenceRequirements.length > 0 && browserEvidenceRequirements.every((requirement) => {
         const requirementKind = requirement as ComputerUseArtifactKind;
         return supportedComputerUseKinds.has(requirementKind)
           && (hasExternalComputerUseCoverage(requirementKind) || hasLocalComputerUseCoverage(requirementKind));

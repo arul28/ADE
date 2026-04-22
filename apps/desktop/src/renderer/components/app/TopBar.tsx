@@ -18,6 +18,23 @@ import { HelpMenu } from "../onboarding/HelpMenu";
 import { SyncDevicesSection } from "../settings/SyncDevicesSection";
 
 const RUNNING_LANE_PROCESS_STATES: ProcessRuntime["status"][] = ["starting", "running", "degraded"];
+const PHONE_SYNC_FOCUSABLE_SELECTOR = [
+  "a[href]",
+  "button:not([disabled])",
+  "textarea:not([disabled])",
+  "input:not([disabled])",
+  "select:not([disabled])",
+  "[tabindex]:not([tabindex=\"-1\"])",
+].join(",");
+
+function getFocusableElements(root: HTMLElement): HTMLElement[] {
+  return Array.from(root.querySelectorAll<HTMLElement>(PHONE_SYNC_FOCUSABLE_SELECTOR))
+    .filter((element) =>
+      element.getAttribute("aria-hidden") !== "true"
+      && !element.hasAttribute("disabled")
+      && element.tabIndex >= 0
+    );
+}
 
 function syncDotClass(snapshot: SyncRoleSnapshot): string {
   if (snapshot.client.state === "error") return "ade-status-dot-error";
@@ -27,6 +44,7 @@ function syncDotClass(snapshot: SyncRoleSnapshot): string {
 
 function deriveSyncLabel(snapshot: SyncRoleSnapshot | null): string | null {
   if (!snapshot) return null;
+  if (snapshot.client.state === "error") return "Phone sync error";
   if (snapshot.role === "brain") {
     const count = snapshot.connectedPeers.length;
     if (count > 0) {
@@ -40,8 +58,6 @@ function deriveSyncLabel(snapshot: SyncRoleSnapshot | null): string | null {
       return `Linked to ${snapshot.currentBrain?.name ?? "host"}`;
     case "connecting":
       return "Connecting…";
-    case "error":
-      return "Phone sync error";
     default:
       return "Phone sync offline";
   }
@@ -268,6 +284,37 @@ export function TopBar() {
   const handleDragEnd = useCallback(() => {
     setDragIdx(null);
     setDropIdx(null);
+  }, []);
+
+  const handlePhoneSyncDialogKeyDown = useCallback((event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      setPhoneSyncOpen(false);
+      return;
+    }
+    if (event.key !== "Tab") return;
+
+    const panel = phoneSyncPanelRef.current;
+    if (!panel) return;
+    const focusable = getFocusableElements(panel);
+    if (focusable.length === 0) {
+      event.preventDefault();
+      panel.focus();
+      return;
+    }
+
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (document.activeElement === panel) {
+      event.preventDefault();
+      (event.shiftKey ? last : first).focus();
+    } else if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
   }, []);
 
   const syncLabel = deriveSyncLabel(syncSnapshot);
@@ -596,9 +643,7 @@ export function TopBar() {
             aria-labelledby="phone-sync-title"
             tabIndex={-1}
             onClick={(event) => event.stopPropagation()}
-            onKeyDown={(event) => {
-              if (event.key === "Escape") setPhoneSyncOpen(false);
-            }}
+            onKeyDown={handlePhoneSyncDialogKeyDown}
           >
             <div className="sticky top-0 z-10 flex items-center justify-between border-b border-white/10 bg-[color:var(--ade-shell-surface,#121019)] px-4 py-3">
               <div className="flex min-w-0 items-center gap-2">

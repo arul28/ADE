@@ -607,7 +607,8 @@ final class SyncService: ObservableObject {
        canSendLiveRequests(),
        let rootPath = project.rootPath?.trimmingCharacters(in: .whitespacesAndNewlines),
        !rootPath.isEmpty {
-      projectSwitchInFlightRootPath = rootPath
+      let normalizedSwitchRoot = normalizedProjectRoot(rootPath) ?? rootPath
+      projectSwitchInFlightRootPath = normalizedSwitchRoot
       projectSelectionTask = Task { @MainActor [weak self] in
         guard let self else { return }
         do {
@@ -870,6 +871,9 @@ final class SyncService: ObservableObject {
       guard isCurrentConnectAttempt(connectAttemptGeneration), isCurrentProjectSelection(selectionGeneration) else { return }
       currentAddress = connectedAddress
       projectHomePresented = false
+      localStateRevision += 1
+      refreshActiveSessionsAndSnapshot()
+      scheduleWorkspaceSnapshotWrite()
     } catch {
       guard isCurrentProjectSelection(selectionGeneration) else {
         throw error
@@ -1539,6 +1543,8 @@ final class SyncService: ObservableObject {
 
   func forgetHost() {
     disconnect(clearCredentials: true)
+    remoteProjectCatalog = []
+    refreshProjectCatalog()
     lastError = nil
     setDomainStatus(SyncDomain.allCases, phase: .disconnected)
     settingsPresented = true
@@ -4513,7 +4519,10 @@ final class SyncService: ObservableObject {
     do {
       try await InitialHydrationGate.waitForProjectRow(
         currentProjectId: {
-          guard let activeProjectId = self.activeProjectId else { return self.database.currentProjectId() }
+          guard let activeProjectId = self.activeProjectId else {
+            let cachedProjects = self.database.listMobileProjects()
+            return cachedProjects.count == 1 ? cachedProjects[0].id : nil
+          }
           return self.database.hasProject(id: activeProjectId) ? activeProjectId : nil
         },
         shouldContinue: { self.isCurrentConnectionGeneration(connectionGeneration) }
@@ -4533,8 +4542,14 @@ final class SyncService: ObservableObject {
     }
 
     guard isCurrentConnectionGeneration(connectionGeneration) else { return }
-    if activeProjectId == nil, let currentProjectId = database.currentProjectId() {
-      setActiveProjectId(currentProjectId)
+    if activeProjectId == nil {
+      let cachedProjects = database.listMobileProjects()
+      if cachedProjects.count == 1, let onlyProject = cachedProjects.first {
+        setActiveProjectId(onlyProject.id, rootPath: onlyProject.rootPath)
+      } else {
+        refreshProjectCatalog()
+        return
+      }
     }
     refreshProjectCatalog()
     do {

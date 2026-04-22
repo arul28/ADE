@@ -1,5 +1,6 @@
 import { motion, useReducedMotion } from "framer-motion";
 import { Download, Github } from "lucide-react";
+import { Link } from "react-router-dom";
 import { LINKS } from "../../lib/links";
 import { IPhoneFrame } from "./IPhoneFrame";
 
@@ -103,6 +104,14 @@ export function BackCover() {
               Printed to the web from a single <code className="not-italic">git push</code>.
               &copy; ADE, 2026. Free forever. Source on GitHub.
             </p>
+            <div className="mt-4 flex gap-4 text-[12px] text-[color:var(--color-cream-faint)]">
+              <Link className="underline-offset-4 hover:text-[color:var(--color-cream)] hover:underline" to="/privacy">
+                Privacy
+              </Link>
+              <Link className="underline-offset-4 hover:text-[color:var(--color-cream)] hover:underline" to="/terms">
+                Terms
+              </Link>
+            </div>
           </div>
         </div>
 

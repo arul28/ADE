@@ -56,6 +56,13 @@ function createTourCtx(initial: Record<string, unknown> = {}): TourCtx {
   };
 }
 
+let activeWaitAbortController: AbortController | null = null;
+
+function abortActiveWait(): void {
+  activeWaitAbortController?.abort();
+  activeWaitAbortController = null;
+}
+
 function navigateToRoute(route: string): void {
   if (typeof window === "undefined") return;
   const target = route.trim();
@@ -110,9 +117,16 @@ async function runBeforeEnter(step: TourStep | undefined, ctx: TourCtx): Promise
     await runActions(result);
   }
   if (step.waitForSelector) {
+    abortActiveWait();
+    const controller = new AbortController();
+    activeWaitAbortController = controller;
     await waitForSelector(step.waitForSelector, {
       timeoutMs: step.fallbackAfterMs,
+      signal: controller.signal,
     });
+    if (activeWaitAbortController === controller) {
+      activeWaitAbortController = null;
+    }
   }
 }
 
@@ -156,6 +170,7 @@ export const useOnboardingStore = create<OnboardingState>((set, get) => ({
     if (!id) return;
     const tour = getTour(id);
     if (!tour) return;
+    abortActiveWait();
     const ctx = createTourCtx(tour.ctxInit?.() ?? {});
     set({ activeTourId: id, activeStepIndex: 0, activeTourCtx: ctx });
     const onboarding = api();
@@ -169,6 +184,7 @@ export const useOnboardingStore = create<OnboardingState>((set, get) => ({
   nextStep: async () => {
     const { activeTourId, activeStepIndex } = get();
     if (!activeTourId) return;
+    abortActiveWait();
     const tour = getTour(activeTourId);
     const ctx = get().activeTourCtx ?? createTourCtx(tour?.ctxInit?.() ?? {});
     const currentStep = tour?.steps[activeStepIndex];
@@ -196,6 +212,7 @@ export const useOnboardingStore = create<OnboardingState>((set, get) => ({
     const { activeTourId, activeStepIndex } = get();
     if (!activeTourId) return;
     if (activeStepIndex <= 0) return;
+    abortActiveWait();
     const tour = getTour(activeTourId);
     const ctx = get().activeTourCtx ?? createTourCtx(tour?.ctxInit?.() ?? {});
     await runAfterLeave(tour?.steps[activeStepIndex], ctx);
@@ -212,6 +229,7 @@ export const useOnboardingStore = create<OnboardingState>((set, get) => ({
   completeCurrentTour: async (skipAfterLeave = false) => {
     const { activeTourId, activeStepIndex } = get();
     if (!activeTourId) return;
+    abortActiveWait();
     const tour = getTour(activeTourId);
     const ctx = get().activeTourCtx ?? createTourCtx(tour?.ctxInit?.() ?? {});
     if (!skipAfterLeave) {
@@ -227,6 +245,7 @@ export const useOnboardingStore = create<OnboardingState>((set, get) => ({
   dismissCurrentTour: async () => {
     const { activeTourId, activeStepIndex } = get();
     if (!activeTourId) return;
+    abortActiveWait();
     const tour = getTour(activeTourId);
     const ctx = get().activeTourCtx ?? createTourCtx(tour?.ctxInit?.() ?? {});
     await runAfterLeave(tour?.steps[activeStepIndex], ctx);
