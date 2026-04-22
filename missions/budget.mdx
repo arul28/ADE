@@ -1,6 +1,6 @@
 ---
 title: "Budget & Permissions"
-description: "Configure budget caps, tool permissions, computer use policies, mission persistence, templates, and troubleshoot common mission issues."
+description: "Configure budget caps, tool permissions, proof capture, mission persistence, templates, and troubleshoot common mission issues."
 icon: "coins"
 ---
 
@@ -51,15 +51,10 @@ Each mission has a **permission config** that controls what workers can do. The 
   <Accordion title="Tool palette">
     Workers access ADE through the `ade` CLI. The mission creation form exposes a tool palette (repo, git, github, linear, memory, mission, tests) that maps to the ADE RPC action domains workers may invoke. Tool groups not in the palette are rejected at the CLI boundary for that worker.
   </Accordion>
-  <Accordion title="Computer use policy">
-    Computer use in missions is controlled by the ComputerUsePolicy set on the mission:
+  <Accordion title="Proof capture">
+    Workers can capture intentional evidence during a mission by calling the `ade proof` CLI — screenshots, short recordings, or ingested browser traces. There is no mission-wide policy chip anymore: each worker decides when a step deserves a proof and runs the CLI directly.
 
-    - `off` — no computer use for any worker
-    - `auto` — workers can invoke computer use when needed
-    - `on` — computer use always available
-    - `proof` — computer use is available but every action must produce a proof artifact (screenshot or browser trace)
-
-    The `proof` mode is recommended for missions that will be linked to a PR or Linear issue.
+    Captured proofs are linked to the mission automatically and appear in the mission's **Artifacts tab**. See [Proof Overview](/computer-use/overview) for the full workflow.
   </Accordion>
   <Accordion title="Writable paths">
     By default, workers can only write within their assigned lane's worktree. You can expand this with explicit `writablePaths` entries in the mission permission config — for example, to allow a worker to write shared fixture files outside its primary lane.
@@ -142,7 +137,7 @@ To create a custom profile: open **Settings → Missions → Phase Profiles**, c
 
     - **Lane unavailable** — the selected lane is in use by another active mission. Wait for it to complete or select a different lane.
     - **Model unreachable** — the configured AI provider is not authenticated or is rate-limited. Check **Settings → AI Providers**.
-    - **Computer use unavailable** — the mission requires computer-use capabilities that are not configured. Check **Settings → Computer Use**.
+    - **Proof capture unavailable** — the host is missing a prerequisite for `ade proof` (for example, macOS Screen Recording permission has not been granted). Run `ade proof status --text` in a terminal to see the specific gap.
     - **Phase sequence invalid** — the selected phase profile has a configuration error. Open **Settings → Missions → Phase Profiles** to inspect and repair it.
   </Accordion>
 </AccordionGroup>

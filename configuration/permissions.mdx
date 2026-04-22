@@ -360,7 +360,7 @@ Every agent action that touches sensitive resources is logged to `.ade/artifacts
 ### Properties
 
 - **Append-only**: Log entries are never modified or deleted (only rolled over at the configured retention limit)
-- **Retention**: 30 days by default; configurable in Settings → Developer → Audit Log Retention
+- **Retention**: 30 days by default
 - **Location**: `.ade/artifacts/audit.log` in the project directory
 - **Rotation**: Logs rotate at 50MB. Up to 10 rotated files are retained before the oldest is deleted.
 ---
