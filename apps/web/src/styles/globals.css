@@ -28,8 +28,8 @@
   --color-cream-faint: var(--color-cream-faint);
   --color-violet-bright: var(--color-violet-bright);
 
-  --font-sans: "Inter Tight", -apple-system, BlinkMacSystemFont, sans-serif;
-  --font-serif: "Instrument Serif", Georgia, "Times New Roman", serif;
+  --font-sans: "Inter Tight", -apple-system, "BlinkMacSystemFont", sans-serif;
+  --font-serif: "Instrument Serif", "Georgia", "Times New Roman", serif;
   --font-mono: "JetBrains Mono", ui-monospace, monospace;
 }
 

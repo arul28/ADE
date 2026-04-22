@@ -76,7 +76,7 @@ export function BackCover() {
               href={LINKS.releases}
               target="_blank"
               rel="noreferrer"
-              className="inline-flex items-center gap-2 rounded-[2px] bg-[color:var(--color-cream)] px-[22px] py-[14px] text-[15px] font-medium text-[color:var(--color-bg)] transition-all duration-200 hover:-translate-y-[1px] hover:bg-white"
+              className="inline-flex items-center gap-2 rounded-[2px] bg-[color:var(--color-cream)] px-[22px] py-[14px] text-[15px] font-medium text-[color:var(--color-bg)] transition-colors duration-200 hover:bg-white"
             >
               <Download className="h-4 w-4" /> Download DMG{" "}
               <span className="font-serif italic">→</span>

@@ -7,7 +7,7 @@ import { LINKS } from "../../lib/links";
 export function Masthead() {
   return (
     <header className="relative z-10 border-b border-[color:var(--color-hairline)]">
-      <div className="mx-auto flex max-w-[1240px] items-center gap-6 px-[clamp(20px,3vw,40px)] py-[11px]">
+      <div className="mx-auto flex max-w-[1240px] items-center gap-4 px-[clamp(20px,3vw,40px)] py-[11px] sm:gap-6">
         <a href="/" className="flex items-center gap-2" aria-label="ADE home">
           <img
             src="/images/ade-wordmark.png"
@@ -17,13 +17,13 @@ export function Masthead() {
           />
         </a>
 
-        <div className="flex-1 text-center">
+        <div className="hidden flex-1 text-center md:block">
           <span className="text-[11px] uppercase tracking-[0.22em] text-[color:var(--color-cream-muted)]">
             Vol. 1 &middot; v1.1.0 &middot; Apr 2026
           </span>
         </div>
 
-        <nav className="flex items-center gap-5 text-[12px] uppercase tracking-[0.14em]">
+        <nav className="ml-auto flex shrink-0 items-center gap-3 text-[11px] uppercase tracking-[0.12em] sm:gap-5 sm:text-[12px] sm:tracking-[0.14em]">
           <a
             href={LINKS.docs}
             target="_blank"

@@ -10,35 +10,35 @@ const ENTRIES: Entry[] = [
   { name: "Computer Use", page: "30", href: "/computer-use/overview" },
   { name: "Context packs", page: "26", href: "/context-packs/overview" },
   { name: "CTO (chief technical officer)", page: "15", href: "/cto/overview" },
-  { name: "CLI · ade", page: "12", href: "/tools/cli" },
-  { name: "Dispatch", page: "17", href: "/missions/dispatch" },
-  { name: "Figma integration", page: "32", href: "/tools/figma" },
-  { name: "File viewer", page: "05", href: "/tools/files" },
-  { name: "Git history", page: "07", href: "/tools/git" },
-  { name: "iOS app", page: "28", href: "/getting-started/ios" },
+  { name: "CLI · ade", page: "12", href: "/tools/project-home" },
+  { name: "Dispatch", page: "17", href: "/missions/creating" },
+  { name: "Figma integration", page: "32", href: "/ai-tools/cursor" },
+  { name: "File viewer", page: "05", href: "/tools/files-editor" },
+  { name: "Git history", page: "07", href: "/tools/history" },
+  { name: "iOS app", page: "28", href: "/getting-started/install" },
   { name: "Lanes", page: "04", href: "/lanes/overview" },
-  { name: "Linear sync", page: "18", href: "/cto/linear-sync" },
-  { name: "Local models", page: "23", href: "/configuration/local-models" },
+  { name: "Linear sync", page: "18", href: "/cto/linear" },
+  { name: "Local models", page: "23", href: "/configuration/ai-providers" },
   { name: "Memory (unified)", page: "16", href: "/cto/memory" },
   { name: "Merge conflicts", page: "26", href: "/tools/conflicts" },
   { name: "Missions", page: "14", href: "/missions/overview" },
-  { name: "Mobile sync", page: "28", href: "/ios-signing/overview" },
-  { name: "Model configuration", page: "22", href: "/configuration/models" },
-  { name: "Multi-provider chat", page: "08", href: "/chat/providers" },
-  { name: "Orchestrator", page: "14", href: "/missions/orchestrator" },
-  { name: "PR review", page: "20", href: "/tools/prs" },
-  { name: "Planning phase", page: "14", href: "/missions/planning" },
-  { name: "Play runtime", page: "25", href: "/tools/play" },
-  { name: "Providers", page: "22", href: "/chat/providers" },
-  { name: "Proof drawer", page: "21", href: "/tools/proof" },
+  { name: "Mobile sync", page: "28", href: "/tools/project-home" },
+  { name: "Model configuration", page: "22", href: "/configuration/ai-providers" },
+  { name: "Multi-provider chat", page: "08", href: "/chat/capabilities" },
+  { name: "Orchestrator", page: "14", href: "/missions/overview" },
+  { name: "PR review", page: "20", href: "/tools/pull-requests" },
+  { name: "Planning phase", page: "14", href: "/missions/creating" },
+  { name: "Play runtime", page: "25", href: "/automations/executors" },
+  { name: "Providers", page: "22", href: "/configuration/ai-providers" },
+  { name: "Proof drawer", page: "21", href: "/computer-use/proofs" },
   { name: "Screenshots (computer use)", page: "30", href: "/computer-use/overview" },
   { name: "Settings", page: "22", href: "/configuration/settings" },
   { name: "Sub-agents", page: "17", href: "/missions/workers" },
   { name: "Team (CTO org)", page: "15", href: "/cto/team" },
   { name: "Terminals", page: "10", href: "/tools/terminals" },
-  { name: "Testing phase", page: "14", href: "/missions/testing" },
+  { name: "Testing phase", page: "14", href: "/missions/overview" },
   { name: "Worktrees (lanes)", page: "04", href: "/lanes/overview" },
-  { name: "Workspace graph", page: "06", href: "/tools/workspace" },
+  { name: "Workspace graph", page: "06", href: "/tools/workspace-graph" },
 ];
 
 /**
@@ -46,7 +46,7 @@ const ENTRIES: Entry[] = [
  * Every entry anchors to the relevant doc section.
  */
 export function IndexPage() {
-  const reduceMotion = useReducedMotion();
+  const reduceMotion = useReducedMotion() ?? true;
 
   const sorted = [...ENTRIES].sort((a, b) => a.name.localeCompare(b.name));
   const mid = Math.ceil(sorted.length / 2);
@@ -102,7 +102,7 @@ export function IndexPage() {
 }
 
 function IndexColumn({ entries }: { entries: Entry[] }) {
-  const reduceMotion = useReducedMotion();
+  const reduceMotion = useReducedMotion() ?? true;
   return (
     <ul className="list-none p-0">
       {entries.map((entry, i) => (

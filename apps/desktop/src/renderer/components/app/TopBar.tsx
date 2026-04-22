@@ -67,6 +67,7 @@ export function TopBar() {
   const [feedbackOpen, setFeedbackOpen] = useState(false);
   const [dragIdx, setDragIdx] = useState<number | null>(null);
   const [dropIdx, setDropIdx] = useState<number | null>(null);
+  const phoneSyncPanelRef = useRef<HTMLDivElement | null>(null);
   const dragCounterRef = useRef(0);
   const isProjectBusy = projectTransition != null || relocatingPath != null;
 
@@ -90,6 +91,14 @@ export function TopBar() {
   useEffect(() => {
     fetchRecent();
   }, [project?.rootPath, fetchRecent]);
+
+  useEffect(() => {
+    if (!phoneSyncOpen) return;
+    const frame = window.requestAnimationFrame(() => {
+      phoneSyncPanelRef.current?.focus();
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [phoneSyncOpen]);
 
   // Re-fetch when app regains focus (catches external deletions).
   useEffect(() => {
@@ -572,20 +581,28 @@ export function TopBar() {
         <div
           className="fixed inset-0 z-[80]"
           style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
-          onMouseDown={() => setPhoneSyncOpen(false)}
+          onClick={() => setPhoneSyncOpen(false)}
         >
           <div
+            ref={phoneSyncPanelRef}
             className={cn(
               "absolute right-3 top-10 max-h-[calc(100vh-72px)] w-[min(620px,calc(100vw-24px))] overflow-y-auto",
               "rounded-xl border border-white/10 bg-[color:var(--ade-shell-surface,#121019)] shadow-2xl shadow-black/45"
             )}
-            onMouseDown={(event) => event.stopPropagation()}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="phone-sync-title"
+            tabIndex={-1}
+            onClick={(event) => event.stopPropagation()}
+            onKeyDown={(event) => {
+              if (event.key === "Escape") setPhoneSyncOpen(false);
+            }}
           >
             <div className="sticky top-0 z-10 flex items-center justify-between border-b border-white/10 bg-[color:var(--ade-shell-surface,#121019)] px-4 py-3">
               <div className="flex min-w-0 items-center gap-2">
                 <DeviceMobile size={16} weight="regular" className="shrink-0 opacity-85" />
                 <div className="min-w-0">
-                  <div className="truncate text-[13px] font-semibold">Phone sync</div>
+                  <div id="phone-sync-title" className="truncate text-[13px] font-semibold">Phone sync</div>
                   <div className="truncate text-[11px] text-white/55">{syncLabel}</div>
                 </div>
               </div>

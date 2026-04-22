@@ -3172,12 +3172,19 @@ describe("aiOrchestratorService", () => {
         ["2000-01-01T00:00:00.000Z", "2000-01-01T00:00:00.000Z", attempt.id]
       );
 
-      // The explicit sweep may do the recovery itself, or a background startup/interval
-      // sweep may have already reconciled the stale attempt before this call returns.
-      await fixture.aiOrchestratorService.runHealthSweep("test");
-
-      const refreshedGraph = fixture.orchestratorService.getRunGraph({ runId });
-      const refreshedAttempt = refreshedGraph.attempts.find((entry) => entry.id === attempt.id);
+      // A startup/interval sweep can be in flight on slower CI runners. Retry the
+      // explicit sweep until this attempt is reconciled instead of racing it.
+      let refreshedAttempt = fixture.orchestratorService
+        .getRunGraph({ runId })
+        .attempts.find((entry) => entry.id === attempt.id);
+      for (let tries = 0; tries < 5 && refreshedAttempt?.status === "running"; tries += 1) {
+        await fixture.aiOrchestratorService.runHealthSweep("test");
+        refreshedAttempt = fixture.orchestratorService
+          .getRunGraph({ runId })
+          .attempts.find((entry) => entry.id === attempt.id);
+        if (refreshedAttempt?.status !== "running") break;
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
       expect(refreshedAttempt?.status).toBe("failed");
       expect(refreshedAttempt?.errorMessage ?? "").toContain("stagnating");
     } finally {

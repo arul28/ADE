@@ -3597,11 +3597,21 @@ app.whenReady().then(async () => {
     const requestedProjectId = typeof args.projectId === "string" && args.projectId.trim()
       ? args.projectId.trim()
       : null;
-    const catalogEntry = catalog.projects.find((entry) => {
+    let catalogEntry = catalog.projects.find((entry) => {
       const entryRoot = entry.rootPath ? normalizeProjectRoot(entry.rootPath) : null;
       return (requestedRoot != null && entryRoot === requestedRoot)
         || (requestedProjectId != null && entry.id === requestedProjectId);
     });
+    if (!catalogEntry && requestedProjectId) {
+      for (const [root, ctx] of projectContexts) {
+        if (ctx.projectId === requestedProjectId) {
+          catalogEntry = catalog.projects.find((entry) =>
+            entry.rootPath != null && normalizeProjectRoot(entry.rootPath) === root
+          ) ?? await mobileProjectSummaryForContext(ctx, null);
+          break;
+        }
+      }
+    }
     if (!catalogEntry || !catalogEntry.isAvailable) {
       return {
         ok: false,

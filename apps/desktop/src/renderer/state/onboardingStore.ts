@@ -196,6 +196,7 @@ export const useOnboardingStore = create<OnboardingState>((set, get) => ({
     if (!activeTourId) return;
     const tour = getTour(activeTourId);
     const ctx = get().activeTourCtx ?? createTourCtx(tour?.ctxInit?.() ?? {});
+    await runAfterLeave(tour?.steps[activeStepIndex], ctx);
     const nextIndex = Math.max(0, activeStepIndex - 1);
     set({ activeStepIndex: nextIndex, activeTourCtx: ctx });
     const onboarding = api();

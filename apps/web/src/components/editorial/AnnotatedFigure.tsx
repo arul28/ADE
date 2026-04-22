@@ -100,6 +100,7 @@ export function AnnotatedFigure({
           return (
             <motion.div
               key={`label-${i}`}
+              aria-hidden="true"
               initial={reduceMotion ? false : { opacity: 0, y: 6 }}
               whileInView={reduceMotion ? undefined : { opacity: 1, y: 0 }}
               viewport={{ once: true, amount: 0.4 }}

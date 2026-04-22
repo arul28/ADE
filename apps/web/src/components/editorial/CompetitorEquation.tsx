@@ -58,6 +58,7 @@ export function CompetitorEquation() {
           <Fragment key={app.name}>
             {i > 0 && (
               <motion.span
+                aria-hidden="true"
                 variants={item}
                 className="shrink-0 font-serif text-[16px] text-[color:var(--color-cream-faint)] sm:text-[18px]"
               >
@@ -65,14 +66,14 @@ export function CompetitorEquation() {
               </motion.span>
             )}
             <motion.div variants={item} className="flex shrink-0 flex-col items-center gap-[3px]">
-              <div className="group/logo flex h-8 w-8 items-center justify-center overflow-hidden rounded-[8px] border border-[color:var(--color-hairline-strong)] bg-white/[0.045] p-[3px] transition-all duration-300 hover:-translate-y-[2px] hover:border-[color:var(--color-violet-bright)]/55 sm:h-9 sm:w-9">
+              <div className="group/logo flex h-8 w-8 items-center justify-center overflow-hidden rounded-[8px] border border-[color:var(--color-hairline-strong)] bg-white/[0.045] p-[3px] transition-all duration-300 motion-safe:hover:-translate-y-[2px] hover:border-[color:var(--color-violet-bright)]/55 sm:h-9 sm:w-9">
                 <img
                   src={app.logo}
                   alt={app.name}
                   className="h-full w-full object-contain"
                 />
               </div>
-              <span className="text-[8px] uppercase tracking-[0.08em] text-[color:var(--color-cream-muted)]">
+              <span aria-hidden="true" className="text-[8px] uppercase tracking-[0.08em] text-[color:var(--color-cream-muted)]">
                 {app.short}
               </span>
             </motion.div>

@@ -232,7 +232,7 @@ export function HelpMenu() {
 function waitForTourFirstTarget(tourId: string, signal: AbortSignal): Promise<boolean> {
   const tour = getTour(tourId);
   const firstStep = tour?.steps[0];
-  const selector = firstStep?.waitForSelector ?? firstStep?.target?.trim();
+  const selector = firstStep?.waitForSelector?.trim() || firstStep?.target?.trim();
   if (!selector) return Promise.resolve(Boolean(firstStep));
 
   const hasTarget = () => {

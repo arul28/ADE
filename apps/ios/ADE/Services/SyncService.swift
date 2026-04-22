@@ -571,6 +571,15 @@ final class SyncService: ObservableObject {
     return projectRoot == activeProjectRootPath
   }
 
+  var isProjectSwitching: Bool {
+    projectSwitchInFlightRootPath != nil
+  }
+
+  func isSwitchingProject(_ project: MobileProjectSummary) -> Bool {
+    guard let switchingRoot = projectSwitchInFlightRootPath else { return false }
+    return normalizedProjectRoot(project.rootPath) == switchingRoot
+  }
+
   func showProjectHome() {
     refreshProjectCatalog()
     projectHomePresented = true
@@ -641,7 +650,7 @@ final class SyncService: ObservableObject {
       } else if let match = mergedById.first(where: { entry in
         let remote = entry.value
         guard let left = remote.rootPath, let right = cachedProject.rootPath else { return false }
-        return left == right
+        return normalizedProjectRoot(left) == normalizedProjectRoot(right)
       }) {
         var existing = match.value
         mergedById.removeValue(forKey: match.key)
@@ -801,7 +810,9 @@ final class SyncService: ObservableObject {
     let previousLatestRemoteDbVersion = latestRemoteDbVersion
     let previousRemoteProjectCatalog = remoteProjectCatalog
     remoteProjectCatalog.removeAll { existing in
-      existing.id == targetProject.id || (existing.rootPath != nil && existing.rootPath == targetProject.rootPath)
+      existing.id == targetProject.id
+        || (normalizedProjectRoot(existing.rootPath) != nil
+          && normalizedProjectRoot(existing.rootPath) == normalizedProjectRoot(targetProject.rootPath))
     }
     remoteProjectCatalog.append(targetProject)
     setActiveProjectId(targetProject.id, rootPath: targetProject.rootPath ?? project.rootPath)

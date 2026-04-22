@@ -364,10 +364,16 @@ export function createMissionPreflightService(args: {
         || requirement === "browser_trace"
         || requirement === "video_recording"
       );
+      const browserEvidenceCoveredByBackend = evidenceRequirements.some((requirement) => {
+        const requirementKind = requirement as ComputerUseArtifactKind;
+        return supportedComputerUseKinds.has(requirementKind)
+          && (hasExternalComputerUseCoverage(requirementKind) || hasLocalComputerUseCoverage(requirementKind));
+      });
       if (requiresBrowserEvidence && descriptor) {
-        const likelyBrowserCapable = descriptor.capabilities.tools && descriptor.capabilities.vision;
+        const likelyBrowserCapable = descriptor.capabilities.tools
+          && (descriptor.capabilities.vision || browserEvidenceCoveredByBackend);
         if (!likelyBrowserCapable) {
-          const message = `${phase.name}: requires browser/screenshot evidence, but ${descriptor.displayName} does not advertise both tools and vision support.`;
+          const message = `${phase.name}: requires browser/screenshot evidence, but ${descriptor.displayName} does not advertise the tool/vision support needed without an available proof backend.`;
           if ((phase.validationGate.capabilityFallback ?? "block") === "block") capabilityIssues.push(message);
           else capabilityWarnings.push(message);
         }

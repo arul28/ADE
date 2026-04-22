@@ -14,13 +14,13 @@ const FEATURES: Feature[] = [
     label: "Files",
     blurb: "Every file in your project, in context with the lane you're working on.",
     src: "/images/features/files.png",
-    docs: "/tools/files",
+    docs: "/tools/files-editor",
   },
   {
     label: "Git history",
     blurb: "A timeline of every commit, right beside the code it touched.",
     src: "/images/features/git-history.png",
-    docs: "/tools/git",
+    docs: "/tools/history",
   },
   {
     label: "Terminals",
@@ -32,13 +32,13 @@ const FEATURES: Feature[] = [
     label: "Workspace graph",
     blurb: "See the shape of your repo — files, imports, and open lanes.",
     src: "/images/features/workspacegraph.png",
-    docs: "/tools/workspace",
+    docs: "/tools/workspace-graph",
   },
   {
     label: "Model config",
     blurb: "Providers, keys, and per-task model routing in a single pane.",
     src: "/images/features/modelconfig.png",
-    docs: "/configuration/models",
+    docs: "/configuration/ai-providers",
   },
   {
     label: "Multi-tasking",
@@ -50,7 +50,7 @@ const FEATURES: Feature[] = [
     label: "Linear sync",
     blurb: "Pull issues from Linear into the CTO. Post results back automatically.",
     src: "/images/features/linear-sync.png",
-    docs: "/cto/linear-sync",
+    docs: "/cto/linear",
   },
 ];
 
@@ -132,13 +132,13 @@ export function FeatureGrid() {
               }}
               className="group block no-underline"
             >
-              <div className="relative aspect-[4/3] overflow-hidden border border-[color:var(--color-ink-hairline)] bg-[#0a0a0f] shadow-[0_20px_40px_-24px_rgba(24,21,15,0.45)] transition-transform duration-300 group-hover:-translate-y-[3px]">
+              <div className="relative aspect-[4/3] overflow-hidden border border-[color:var(--color-ink-hairline)] bg-[#0a0a0f] shadow-[0_20px_40px_-24px_rgba(24,21,15,0.45)] transition-transform duration-300 motion-safe:group-hover:-translate-y-[3px]">
                 <img
                   src={feature.src}
                   alt={feature.label}
                   loading="lazy"
                   decoding="async"
-                  className="h-full w-full object-cover object-top transition-transform duration-500 group-hover:scale-[1.04]"
+                  className="h-full w-full object-cover object-top transition-transform duration-500 motion-safe:group-hover:scale-[1.04]"
                 />
               </div>
 

@@ -1649,7 +1649,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
             enabled: true,
           },
           projectCatalog: {
-            enabled: true,
+            enabled: Boolean(args.projectCatalogProvider),
           },
           bootstrapAuth: true,
           pairingAuth: {

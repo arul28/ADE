@@ -64,7 +64,7 @@ export function HomePage() {
           <div className="flex items-center justify-center gap-3 border-t border-[color:var(--color-hairline)] py-[clamp(18px,2vw,26px)] text-[11px] uppercase tracking-[0.34em] text-[color:var(--color-cream-faint)]">
             Turn the page
             <span
-              className="font-serif italic text-[color:var(--color-violet-bright)]"
+              className="ade-turn-page-arrow font-serif italic text-[color:var(--color-violet-bright)]"
               style={{
                 fontSize: "15px",
                 animation: "nudge 2.4s ease-in-out infinite",
@@ -77,6 +77,9 @@ export function HomePage() {
               @keyframes nudge {
                 0%, 100% { transform: translateY(0); }
                 50% { transform: translateY(4px); }
+              }
+              @media (prefers-reduced-motion: reduce) {
+                .ade-turn-page-arrow { animation: none !important; }
               }
             `}</style>
           </div>

@@ -249,7 +249,8 @@ private struct ProjectHomeView: View {
             ProjectHomeRow(
               project: project,
               isActive: syncService.isActiveProject(project),
-              isSwitching: project.rootPath != nil && project.rootPath == syncService.projectSwitchInFlightRootPath
+              isSwitching: syncService.isSwitchingProject(project),
+              isDisabled: syncService.isProjectSwitching
             ) {
               syncService.selectProject(project)
             }
@@ -293,6 +294,7 @@ private struct ProjectHomeRow: View {
   let project: MobileProjectSummary
   let isActive: Bool
   let isSwitching: Bool
+  let isDisabled: Bool
   let action: () -> Void
 
   var body: some View {
@@ -360,6 +362,6 @@ private struct ProjectHomeRow: View {
       )
     }
     .buttonStyle(.plain)
-    .disabled(isSwitching)
+    .disabled(isDisabled)
   }
 }

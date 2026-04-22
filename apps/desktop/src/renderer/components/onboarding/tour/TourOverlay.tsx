@@ -159,7 +159,8 @@ export function TourOverlay({ step, stepIndex, totalSteps, ctx }: TourOverlayPro
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         e.preventDefault();
-        handleDismiss();
+        if (step.actIntro) handleNext();
+        else handleDismiss();
         return;
       }
       if (e.key === "ArrowRight" || e.key === "Enter") {
@@ -175,7 +176,7 @@ export function TourOverlay({ step, stepIndex, totalSteps, ctx }: TourOverlayPro
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [handleNext, handlePrev, handleDismiss]);
+  }, [handleNext, handlePrev, handleDismiss, step.actIntro]);
 
   if (typeof document === "undefined") return null;
 

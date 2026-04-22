@@ -718,15 +718,18 @@ final class DatabaseService {
   }
 
   func fetchLaneListSnapshots(includeArchived: Bool) -> [LaneListSnapshot] {
+    guard let projectId = currentProjectId() else { return [] }
     let sql = """
       select s.lane_id, s.snapshot_json, s.updated_at
         from lane_list_snapshots s
         join lanes l on l.id = s.lane_id
-       where (? = 1 or l.archived_at is null)
+       where l.project_id = ?
+         and (? = 1 or l.archived_at is null)
        order by l.created_at desc
     """
-    return query(sql, bind: { statement in
-      sqlite3_bind_int(statement, 1, includeArchived ? 1 : 0)
+    return query(sql, bind: { [self] statement in
+      try self.bindText(projectId, to: statement, index: 1)
+      sqlite3_bind_int(statement, 2, includeArchived ? 1 : 0)
     }) { statement in
       LaneListSnapshotRow(
         laneId: stringValue(statement, index: 0) ?? "",

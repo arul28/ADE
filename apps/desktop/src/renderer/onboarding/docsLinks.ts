@@ -8,23 +8,23 @@ const DOCS_BASE = `${SITE_BASE}/docs`;
 
 export const docs = {
   // Root / welcome
-  home: SITE_BASE,
+  home: DOCS_BASE,
   welcome: `${DOCS_BASE}/welcome`,
   keyConcepts: `${DOCS_BASE}/key-concepts`,
 
   // Lanes
   lanesOverview: `${DOCS_BASE}/lanes/overview`,
-  lanesCreating: `${DOCS_BASE}/lanes/overview`,
-  lanesStacks: `${DOCS_BASE}/lanes/overview`,
-  lanesPacks: `${DOCS_BASE}/lanes/overview`,
-  lanesEnvironment: `${DOCS_BASE}/lanes/overview`,
+  lanesCreating: `${DOCS_BASE}/lanes/creating`,
+  lanesStacks: `${DOCS_BASE}/lanes/stacks`,
+  lanesPacks: `${DOCS_BASE}/lanes/packs`,
+  lanesEnvironment: `${DOCS_BASE}/lanes/environment`,
 
   // Chat / work / terminals
-  chatOverview: `${DOCS_BASE}/missions/overview`,
-  chatContext: `${DOCS_BASE}/missions/overview`,
-  chatCapabilities: `${DOCS_BASE}/missions/overview`,
-  terminals: `${DOCS_BASE}/tools/project-home`,
-  filesEditor: `${DOCS_BASE}/tools/project-home`,
+  chatOverview: `${DOCS_BASE}/chat/overview`,
+  chatContext: `${DOCS_BASE}/chat/context`,
+  chatCapabilities: `${DOCS_BASE}/chat/capabilities`,
+  terminals: `${DOCS_BASE}/tools/terminals`,
+  filesEditor: `${DOCS_BASE}/tools/files-editor`,
 
   // First-run / getting-started
   gettingStartedFirstLane: `${DOCS_BASE}/getting-started/first-lane`,
@@ -42,7 +42,7 @@ export const docs = {
   historyOverview: `${DOCS_BASE}/tools/history`,
 
   // Guides
-  multiAgentSetup: `${DOCS_BASE}/missions/overview`,
+  multiAgentSetup: `${DOCS_BASE}/guides/multi-agent-setup`,
 } as const;
 
 export type DocsKey = keyof typeof docs;

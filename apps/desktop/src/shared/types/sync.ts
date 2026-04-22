@@ -198,7 +198,7 @@ export type SyncFeatureFlags = {
     enabled: true;
   };
   projectCatalog: {
-    enabled: true;
+    enabled: boolean;
   };
   bootstrapAuth: true;
   pairingAuth: {

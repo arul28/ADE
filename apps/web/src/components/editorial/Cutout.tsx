@@ -22,7 +22,7 @@ export function Cutout({
   className?: string;
   tone?: "ink" | "cream";
 }) {
-  const reduceMotion = useReducedMotion();
+  const reduceMotion = useReducedMotion() ?? true;
 
   return (
     <figure
