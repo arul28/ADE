@@ -388,9 +388,10 @@ export function createMissionPreflightService(args: {
         if (!supportedComputerUseKinds.has(requirementKind)) continue;
         if (hasExternalComputerUseCoverage(requirementKind)) continue;
         if (hasLocalComputerUseCoverage(requirementKind)) continue;
-        const localCapability = backendStatus ? null : getCapabilityForRequirement(requirementKind);
+        const localCapability = getCapabilityForRequirement(requirementKind);
         const localDetail = backendStatus?.localFallback?.detail ?? localCapability?.detail;
-        const localStateReason = localCapability?.state === "blocked_by_capability"
+        const localFallbackBlocked = backendStatus?.localFallback?.detail.includes("blocked_by_capability") ?? false;
+        const localStateReason = localCapability?.state === "blocked_by_capability" || localFallbackBlocked
           ? "blocked by platform support"
           : "missing required tooling";
         const message = `${phase.name}: ${requirement.replace(/_/g, " ")} is required, but no external backend is available and the local runtime is ${localStateReason}${localDetail ? ` (${localDetail})` : ""}.`;

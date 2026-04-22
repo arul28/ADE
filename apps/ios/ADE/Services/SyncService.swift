@@ -646,7 +646,7 @@ final class SyncService: ObservableObject {
     }
   }
 
-  func refreshProjectCatalog() {
+  func refreshProjectCatalog(preferRemoteSelection: Bool = false) {
     let cachedProjects = database.listMobileProjects()
     var mergedById = Dictionary(uniqueKeysWithValues: deduplicatedRemoteProjectCatalog().map { ($0.id, $0) })
     for cachedProject in cachedProjects {
@@ -698,7 +698,31 @@ final class SyncService: ObservableObject {
       if isActiveProject(right) { return false }
       return (left.lastOpenedAt ?? "") > (right.lastOpenedAt ?? "")
     }
+    if preferRemoteSelection {
+      preferActiveProjectFromRemoteCatalogIfNeeded()
+    }
     normalizeActiveProjectSelection(allowSingleProjectFallback: false)
+  }
+
+  private func preferActiveProjectFromRemoteCatalogIfNeeded() {
+    let remoteProjects = deduplicatedRemoteProjectCatalog()
+    guard !remoteProjects.isEmpty else { return }
+    if let activeProjectId,
+       remoteProjects.contains(where: { $0.id == activeProjectId }) {
+      return
+    }
+    if let activeProjectRootPath,
+       let matchingProject = remoteProjects.first(where: { normalizedProjectRoot($0.rootPath) == activeProjectRootPath }) {
+      setActiveProjectId(matchingProject.id, rootPath: matchingProject.rootPath)
+      return
+    }
+    let preferred = remoteProjects.sorted { left, right in
+      if left.isAvailable != right.isAvailable { return left.isAvailable }
+      return (left.lastOpenedAt ?? "") > (right.lastOpenedAt ?? "")
+    }.first
+    if let preferred {
+      setActiveProjectId(preferred.id, rootPath: preferred.rootPath)
+    }
   }
 
   private func deduplicatedRemoteProjectCatalog() -> [MobileProjectSummary] {
@@ -742,7 +766,7 @@ final class SyncService: ObservableObject {
 
   private func applyRemoteProjectCatalog(_ catalog: MobileProjectCatalogPayload) {
     remoteProjectCatalog = catalog.projects
-    refreshProjectCatalog()
+    refreshProjectCatalog(preferRemoteSelection: true)
   }
 
   private func refreshRemoteProjectCatalog() async {
@@ -4480,9 +4504,8 @@ final class SyncService: ObservableObject {
           connectionState == .connected || connectionState == .syncing
     else { return }
 
-    guard activeProjectId != nil else {
+    if activeProjectId == nil {
       refreshProjectCatalog()
-      return
     }
 
     setDomainStatus(SyncDomain.allCases, phase: .syncingInitialData)
@@ -4510,6 +4533,9 @@ final class SyncService: ObservableObject {
     }
 
     guard isCurrentConnectionGeneration(connectionGeneration) else { return }
+    if activeProjectId == nil, let currentProjectId = database.currentProjectId() {
+      setActiveProjectId(currentProjectId)
+    }
     refreshProjectCatalog()
     do {
       try await refreshLaneSnapshots()

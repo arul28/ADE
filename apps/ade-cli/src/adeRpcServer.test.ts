@@ -979,12 +979,12 @@ describe("adeRpcServer", () => {
       const denied = await callTool(handler, "screenshot_environment", {});
       expect(denied.isError).toBe(true);
       expect(JSON.stringify(denied.error ?? denied.structuredContent ?? {})).toContain(
-        "local computer use is not allowed",
+        "Unsupported tool: screenshot_environment",
       );
       const environmentDenied = await callTool(handler, "get_environment_info", {});
       expect(environmentDenied.isError).toBe(true);
       expect(JSON.stringify(environmentDenied.error ?? environmentDenied.structuredContent ?? {})).toContain(
-        "local computer use is not allowed",
+        "Unsupported tool: get_environment_info",
       );
     } finally {
       if (previousRole == null) delete process.env.ADE_DEFAULT_ROLE;

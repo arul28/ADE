@@ -4139,8 +4139,8 @@ async function runTool(args: {
   ) => {
     if (!isLocalComputerUseAllowed(callerCtx)) {
       throw new JsonRpcError(
-        JsonRpcErrorCode.policyDenied,
-        `${toolName} is disabled because local computer use is not allowed for this ADE RPC session.`,
+        JsonRpcErrorCode.methodNotFound,
+        `Unsupported tool: ${toolName}`,
       );
     }
     const capabilities = getLocalComputerUseCapabilities();

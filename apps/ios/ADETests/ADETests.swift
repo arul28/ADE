@@ -884,6 +884,54 @@ final class ADETests: XCTestCase {
   }
 
   @MainActor
+  func testSyncServicePrefersRemoteCatalogProjectOverStaleCachedSelection() throws {
+    let activeProjectIdKey = "ade.sync.activeProjectId"
+    let activeProjectRootPathKey = "ade.sync.activeProjectRootPath"
+    UserDefaults.standard.set("old-project", forKey: activeProjectIdKey)
+    UserDefaults.standard.set("/tmp/old-project", forKey: activeProjectRootPathKey)
+    defer {
+      UserDefaults.standard.removeObject(forKey: activeProjectIdKey)
+      UserDefaults.standard.removeObject(forKey: activeProjectRootPathKey)
+    }
+
+    let database = makeControllerHydrationDatabase(baseURL: makeTemporaryDirectory())
+    try database.executeSqlForTesting("""
+      insert into projects (
+        id, root_path, display_name, default_base_ref, created_at, last_opened_at
+      ) values
+        ('old-project', '/tmp/old-project', 'Old Project', 'main', '2026-04-22T00:00:00.000Z', '2026-04-22T01:00:00.000Z');
+    """)
+    let service = SyncService(database: database)
+    XCTAssertEqual(service.activeProjectId, "old-project")
+
+    try service.applyHelloPayloadForTesting([
+      "brain": [
+        "deviceId": "host-new",
+        "deviceName": "New Mac",
+      ],
+      "features": [
+        "projectCatalog": true,
+      ],
+      "projects": [[
+        "id": "new-project",
+        "displayName": "New Project",
+        "rootPath": "/tmp/new-project",
+        "defaultBaseRef": "main",
+        "lastOpenedAt": "2026-04-22T02:00:00.000Z",
+        "laneCount": 2,
+        "isAvailable": true,
+        "isCached": false,
+      ]],
+    ])
+
+    XCTAssertEqual(service.activeProjectId, "new-project")
+    XCTAssertEqual(service.activeProjectRootPath, "/tmp/new-project")
+    XCTAssertEqual(database.currentProjectId(), "new-project")
+
+    database.close()
+  }
+
+  @MainActor
   func testSyncPairingQrPayloadRoundTripFromDesktopLink() throws {
     let payload = """
     {"version":2,"hostIdentity":{"deviceId":"host-1","siteId":"site-1","name":"Mac Studio","platform":"macOS","deviceType":"desktop"},"port":8787,"addressCandidates":[{"host":"192.168.1.8","kind":"lan"},{"host":"100.101.102.103","kind":"tailscale"}]}

@@ -388,6 +388,81 @@ describe("missionPreflightService", () => {
     expect(result.checklist.find((item) => item.id === "capabilities")?.severity).toBe("pass");
   });
 
+  it("reports local computer-use platform blockers when backend status is wired", async () => {
+    const profiles = createProfiles();
+    const proofPhases = profiles[0]!.phases.map((phase, index) => ({
+      ...phase,
+      validationGate: index === 0
+        ? {
+            ...phase.validationGate,
+            required: true,
+            evidenceRequirements: ["video_recording" as const],
+            capabilityFallback: "block" as const,
+          }
+        : phase.validationGate,
+    }));
+    const service = createMissionPreflightService({
+      logger: createLogger(),
+      projectRoot: "/tmp/ade-preflight",
+      missionService: {
+        listPhaseProfiles: () => profiles
+      } as any,
+      laneService: {
+        list: async () => [{ id: "lane-1", archivedAt: null }]
+      } as any,
+      aiIntegrationService: {
+        getAvailabilityAsync: async () => ({
+          availableModels: [
+            { id: "claude-sonnet-4-6", shortId: "claude-sonnet-4-6", family: "claude", displayName: "Claude Sonnet 4.6" },
+          ]
+        }),
+        executeTask: async () => ({ structuredOutput: { clear: true, feedback: [] } })
+      } as any,
+      projectConfigService: {
+        get: () => ({
+          effective: {
+            ai: {
+              permissions: {
+                cli: { mode: "full-auto", sandboxPermissions: "workspace-write" },
+                inProcess: { mode: "full-auto" },
+              }
+            }
+          }
+        })
+      } as any,
+      missionBudgetService: {
+        estimateLaunchBudget: async () => ({
+          estimate: createBudgetEstimate("subscription"),
+          hardLimitExceeded: false,
+          windowUsageCostUsd: 0,
+          remainingWindowCostUsd: 1,
+          budgetLimitCostUsd: 1
+        })
+      } as any,
+      computerUseArtifactBrokerService: {
+        getBackendStatus: () => ({
+          backends: [],
+          localFallback: {
+            available: false,
+            detail: "ADE local computer-use tools are fallback-only and currently blocked_by_capability.",
+            supportedKinds: [],
+          },
+        }),
+      } as any,
+    });
+
+    const result = await service.runPreflight({
+      launch: {
+        prompt: "Capture required proof.",
+        phaseProfileId: profiles[0]!.id,
+        phaseOverride: proofPhases,
+      }
+    });
+
+    expect(result.canLaunch).toBe(false);
+    expect(result.checklist.find((item) => item.id === "capabilities")?.details.join("\n")).toContain("blocked by platform support");
+  });
+
   it("shows warning (not fail) for non-full-auto permissions and still allows launch", async () => {
     const profiles = createProfiles();
     const service = createMissionPreflightService({

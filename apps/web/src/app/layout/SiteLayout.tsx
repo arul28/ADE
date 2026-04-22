@@ -15,7 +15,7 @@ export function SiteLayout({ children }: { children: ReactNode }) {
       <main id="main" className="flex-1">
         {children}
       </main>
-      <SiteFooter />
+      {!isHome && <SiteFooter />}
     </div>
   );
 }
