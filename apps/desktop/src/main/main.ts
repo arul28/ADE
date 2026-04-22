@@ -3600,7 +3600,8 @@ app.whenReady().then(async () => {
     let catalogEntry = catalog.projects.find((entry) => {
       const entryRoot = entry.rootPath ? normalizeProjectRoot(entry.rootPath) : null;
       if (requestedRoot != null && requestedProjectId != null) {
-        return entryRoot === requestedRoot && entry.id === requestedProjectId;
+        if (entryRoot !== requestedRoot) return false;
+        return entry.id === requestedProjectId || !requestedProjectId.startsWith("root:");
       }
       return (requestedRoot != null && entryRoot === requestedRoot)
         || (requestedProjectId != null && entry.id === requestedProjectId);
