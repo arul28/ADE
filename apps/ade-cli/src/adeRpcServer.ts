@@ -12,7 +12,7 @@ import {
   getLocalComputerUseCapabilities,
   toProjectArtifactUri,
 } from "../../desktop/src/main/services/computerUse/localComputerUse";
-import { loadAgentBrowserArtifactPayloadFromFile, parseAgentBrowserArtifactPayload } from "../../desktop/src/main/services/computerUse/agentBrowserArtifactAdapter";
+import { loadAgentBrowserArtifactPayloadFromFile, parseAgentBrowserArtifactPayload } from "../../desktop/src/main/services/proof/agentBrowserArtifactAdapter";
 import { resolveAgentMemoryWritePolicy } from "../../desktop/src/main/services/memory/memoryService";
 import { ReflectionValidationError } from "../../desktop/src/main/services/orchestrator/orchestratorService";
 import { getTeamMembersForRun, registerTeamMember, updateTeamMemberStatus } from "../../desktop/src/main/services/orchestrator/teamRuntimeState";
@@ -22,12 +22,8 @@ import { resolvePathWithinRoot } from "../../desktop/src/main/services/shared/ut
 import { getDefaultModelDescriptor } from "../../desktop/src/shared/modelRegistry";
 import { getPrIssueResolutionAvailability } from "../../desktop/src/shared/prIssueResolution";
 import {
-  createDefaultComputerUsePolicy,
-  isComputerUseModeEnabled,
-  normalizeComputerUsePolicy,
   type LinearWorkflowConfig,
   type ComputerUseArtifactOwner,
-  type ComputerUsePolicy,
   type MergeMethod,
 } from "../../desktop/src/shared/types";
 import type { PrActionRun, PrCheck, PrComment, PrReviewThread } from "../../desktop/src/shared/types/prs";
@@ -58,7 +54,6 @@ type SessionIdentity = {
   stepId: string | null;
   attemptId: string | null;
   ownerId: string | null;
-  computerUsePolicy: ComputerUsePolicy;
 };
 
 type SessionState = {
@@ -2751,7 +2746,6 @@ type CallerContext = {
   stepId: string | null;
   attemptId: string | null;
   ownerId: string | null;
-  computerUsePolicy: ComputerUsePolicy | null;
 };
 
 function resolveEnvCallerContext(): CallerContext {
@@ -2764,17 +2758,6 @@ function resolveEnvCallerContext(): CallerContext {
     || envRoleRaw === "evaluator"
       ? envRoleRaw
       : null;
-  const envComputerUseMode = process.env.ADE_COMPUTER_USE_MODE?.trim();
-  const envAllowLocalFallback = parseEnvBoolean(process.env.ADE_COMPUTER_USE_ALLOW_LOCAL_FALLBACK);
-  const envRetainArtifacts = parseEnvBoolean(process.env.ADE_COMPUTER_USE_RETAIN_ARTIFACTS);
-  const envPreferredBackend = asOptionalTrimmedString(process.env.ADE_COMPUTER_USE_PREFERRED_BACKEND);
-  const hasEnvComputerUsePolicy =
-    envComputerUseMode === "off"
-    || envComputerUseMode === "auto"
-    || envComputerUseMode === "enabled"
-    || envAllowLocalFallback != null
-    || envRetainArtifacts != null
-    || envPreferredBackend != null;
   const envChatSessionId = process.env.ADE_CHAT_SESSION_ID?.trim() || null;
   const envMissionId = process.env.ADE_MISSION_ID?.trim() || null;
   const envRunId = process.env.ADE_RUN_ID?.trim() || null;
@@ -2790,14 +2773,6 @@ function resolveEnvCallerContext(): CallerContext {
     stepId: envStepId,
     attemptId: envAttemptId,
     ownerId: process.env.ADE_OWNER_ID?.trim() || null,
-    computerUsePolicy: hasEnvComputerUsePolicy
-      ? normalizeComputerUsePolicy({
-          mode: envComputerUseMode,
-          allowLocalFallback: envAllowLocalFallback ?? undefined,
-          retainArtifacts: envRetainArtifacts ?? undefined,
-          preferredBackend: envPreferredBackend,
-        }, createDefaultComputerUsePolicy())
-      : null,
   };
 }
 
@@ -2814,7 +2789,6 @@ function resolveCallerContext(session?: SessionState): CallerContext {
     stepId: session.identity.stepId ?? envContext.stepId,
     attemptId: session.identity.attemptId ?? envContext.attemptId,
     ownerId: session.identity.ownerId ?? envContext.ownerId,
-    computerUsePolicy: session.identity.computerUsePolicy ?? envContext.computerUsePolicy,
   };
 }
 
@@ -2869,9 +2843,8 @@ function canCallerAccessCoordinatorTool(name: string, callerCtx: CallerContext):
   return false;
 }
 
-function isLocalComputerUseAllowed(policy: ComputerUsePolicy | null | undefined): boolean {
-  const effective = normalizeComputerUsePolicy(policy, createDefaultComputerUsePolicy());
-  return isComputerUseModeEnabled(effective.mode) && effective.allowLocalFallback;
+function isLocalComputerUseAllowed(): boolean {
+  return true;
 }
 
 async function listToolSpecsForSession(runtime: AdeRuntime, session: SessionState): Promise<ToolSpec[]> {
@@ -2879,7 +2852,7 @@ async function listToolSpecsForSession(runtime: AdeRuntime, session: SessionStat
   const externalComputerUseAvailable = runtime.computerUseArtifactBrokerService
     ?.getBackendStatus()
     ?.backends.some((backend) => backend.available) ?? false;
-  const localComputerUseAllowed = isLocalComputerUseAllowed(callerCtx.computerUsePolicy);
+  const localComputerUseAllowed = isLocalComputerUseAllowed();
   const shouldHideLocalComputerUse = !localComputerUseAllowed || externalComputerUseAvailable;
   const visibleBaseTools = shouldHideLocalComputerUse
     ? TOOL_SPECS.filter((tool) => !LOCAL_COMPUTER_USE_TOOL_NAMES.has(tool.name))
@@ -2913,13 +2886,6 @@ function parseInitializeIdentity(runtime: AdeRuntime, params: unknown): SessionI
       ? identityRole
       : null;
   const validRole: SessionIdentity["role"] = envContext.role ?? "external";
-  const requestedComputerUsePolicy = normalizeComputerUsePolicy(
-    identity.computerUsePolicy ?? envContext.computerUsePolicy,
-    createDefaultComputerUsePolicy(),
-  );
-  const effectiveComputerUsePolicy = validRole === "external"
-    ? createDefaultComputerUsePolicy({ allowLocalFallback: false })
-    : requestedComputerUsePolicy;
   const resolvedRunId = envContext.runId;
   const requestedMissionId = asOptionalTrimmedString(identity.missionId);
   const resolvedMissionId =
@@ -2948,7 +2914,6 @@ function parseInitializeIdentity(runtime: AdeRuntime, params: unknown): SessionI
     stepId: asOptionalTrimmedString(identity.stepId) ?? envContext.stepId,
     attemptId: asOptionalTrimmedString(identity.attemptId) ?? envContext.attemptId,
     ownerId: asOptionalTrimmedString(identity.ownerId) ?? envContext.ownerId,
-    computerUsePolicy: effectiveComputerUsePolicy,
   };
 }
 
@@ -4170,20 +4135,6 @@ async function runTool(args: {
     toolName: string,
     capabilityKey: "screenshot" | "browser_verification" | "browser_trace" | "video_recording" | "console_logs" | "appLaunch" | "guiInteraction" | "environmentInfo",
   ) => {
-    const policy = callerCtx.computerUsePolicy;
-    const effectivePolicy = normalizeComputerUsePolicy(policy, createDefaultComputerUsePolicy());
-    if (!isComputerUseModeEnabled(effectivePolicy.mode)) {
-      throw new JsonRpcError(
-        JsonRpcErrorCode.policyDenied,
-        `${toolName} is disabled because computer use is off for this ADE ADE RPC session.`,
-      );
-    }
-    if (!effectivePolicy.allowLocalFallback) {
-      throw new JsonRpcError(
-        JsonRpcErrorCode.policyDenied,
-        `${toolName} is disabled because local computer-use fallback is not allowed for this ADE ADE RPC session.`,
-      );
-    }
     const capabilities = getLocalComputerUseCapabilities();
     const capability =
       capabilityKey === "appLaunch" || capabilityKey === "guiInteraction" || capabilityKey === "environmentInfo"
@@ -4206,7 +4157,6 @@ async function runTool(args: {
   }) => {
     const result = runtime.computerUseArtifactBrokerService.ingest({
       backend: {
-        style: "local_fallback",
         name: "screencapture",
         toolName: args.toolName,
       },
@@ -4218,7 +4168,6 @@ async function runTool(args: {
           mimeType: args.mimeType,
           metadata: {
             ...args.metadata,
-            retentionIntent: args.sessionState.identity.computerUsePolicy.retainArtifacts ? "retain" : "minimal",
           },
         },
       ],
@@ -4837,20 +4786,6 @@ async function runTool(args: {
 
   if (name === "get_environment_info") {
     const includeDisplays = asBoolean(toolArgs.includeDisplays, false);
-    const policy = resolveCallerContext(session).computerUsePolicy;
-    const effectivePolicy = normalizeComputerUsePolicy(policy, createDefaultComputerUsePolicy());
-    if (!isComputerUseModeEnabled(effectivePolicy.mode)) {
-      throw new JsonRpcError(
-        JsonRpcErrorCode.policyDenied,
-        `${name} is disabled because computer use is off for this ADE ADE RPC session.`,
-      );
-    }
-    if (!effectivePolicy.allowLocalFallback) {
-      throw new JsonRpcError(
-        JsonRpcErrorCode.policyDenied,
-        `${name} is disabled because local computer-use fallback is not allowed for this ADE ADE RPC session.`,
-      );
-    }
     const capabilities = getLocalComputerUseCapabilities();
     const frontmostApp = capabilities.environmentInfo.available
       ? tryLocalCommand("osascript", [

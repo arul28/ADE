@@ -1,0 +1,163 @@
+---
+title: "v1.1.0"
+description: "Release notes for ADE v1.1.0 — April 22, 2026"
+---
+
+The biggest release since launch. v1.1.0 rewires multi-device sync on top of Tailscale so your iPhone finds your desktop no matter where you are, rebuilds the onboarding experience from scratch with a choreographed tutorial and a first-class Help menu, strips the old computer-use control plane down to a single CLI-driven proof flow, ships a dedicated Manage Lane dialog, and lands a near-total redesign of the iOS companion app.
+
+---
+
+## Tailscale-based multi-device sync
+
+Pairing used to lean entirely on mDNS, which meant your phone and desktop had to share the same Wi-Fi subnet. In v1.1.0 ADE publishes itself as a service on your tailnet in addition to mDNS, so sync Just Works from a coffee shop, an LTE connection, or any network Tailscale can reach.
+
+What changed under the hood:
+
+- **Tailscale Serve discovery.** The desktop host now detects the Tailscale CLI (bundled macOS location, `$PATH`, or `ADE_TAILSCALE_CLI`), publishes `svc:ade-sync` on your tailnet, and unpublishes cleanly on shutdown so stale entries don't linger.
+- **Discovery status surface.** Settings → Sync now includes a **Tailnet discovery** panel showing the live service name, port, Tailscale IP, and a "retry" button. Pending-approval and disabled states have dedicated copy so you can tell whether the service needs admin approval vs. a local network problem.
+- **Dual-path pairing on iOS.** The iPhone app probes candidate tailnet hosts (`ade-sync`, `ade-desktop`, your MagicDNS name) in parallel with its Bonjour sweep, and the Discover Hosts sheet labels results accordingly ("Looking on Wi-Fi and Tailscale", "Saved Tailscale route").
+- **Saved hosts are smarter.** Reconnect entries remember whether the host was reached over LAN or Tailscale. The UI says "Saved" for LAN-only hosts and "Saved Tailscale" only when a Tailscale address is really on file.
+- **Plaintext WebSocket trust boundary.** Pairing secrets continue to ride only over loopback, LAN, or Tailscale routes; the iOS trust checks were restored to lock that invariant.
+
+End result: your first-time pairing still works over Wi-Fi like before, but once you've paired a device ADE can reconnect from anywhere on your tailnet without any extra configuration.
+
+---
+
+## Onboarding overhaul
+
+The old `WelcomeWizard` / `OnboardingSection` / pop-up tour trio has been replaced by a coherent, opinionated tutorial system.
+
+<CardGroup cols={2}>
+  <Card title="Motion effects library" icon="wand-magic-sparkles">
+    A new `components/onboarding/fx/` toolkit — `ActIntro`, `MorphingTree`, `Spotlight`, `Confetti`, `GhostCursor`, `StaggeredText`, `AnimatedField`, `TourIllustration` — provides the animated beats used throughout the tutorial and per-tab tours.
+  </Card>
+  <Card title="Tour engine rewrite" icon="route">
+    `TourController` is now a proper state machine with dependency injection (router, dialog bus, selector waiter). Tour steps declare `beforeEnter` actions declaratively, and `waitForTarget` resolves DOM targets via a MutationObserver + interval fallback instead of busy-polling.
+  </Card>
+  <Card title="Per-tab Walkthroughs and Highlights" icon="list-check">
+    Every workspace tab — Lanes, Work, Files, Run, PRs, Automations, Settings, Graph, History, CTO — now has a registered tour pair. A new Lane Work Pane tour covers the chat-plus-terminals surface specifically.
+  </Card>
+  <Card title="Help menu refresh" icon="circle-question">
+    The `?` button in the top bar now opens a full Help menu with the eight-act flagship tutorial, per-tab tours, a glossary, the release notes, and a single `docsLinks` registry keeping every external link pointed at the live docs site.
+  </Card>
+</CardGroup>
+
+Reduced motion is honored everywhere — every FX component consults `useReducedMotion` and falls back to a static layout when the user has the OS preference set. The tour engine also talks to UI dialogs through a new pub/sub (`dialogBus`) so a step can deterministically open, for example, the Create Lane dialog and advance only after the dialog has mounted.
+
+---
+
+## Computer use simplified
+
+The old computer-use subsystem — backend abstraction, control plane, passive proof observer, per-phase coverage requirements, missing-kind heuristics — is gone. In its place: a thin CLI and a single proof surface.
+
+<Note>
+If you were previously on "CU Auto" or using the local ghost fallback, those policies are retired. Let your agent decide when to capture; when it's worth showing a reviewer, it runs `ade proof capture --caption "…"`.
+</Note>
+
+What was removed:
+
+- **Passive `proofObserver`** (~460 lines) and its tests — no more background screenshotting.
+- **`controlPlane.ts`, `localComputerUse.ts` backend-style arbitration** — Ghost OS, agent-browser, and ADE Local are no longer separate backends the app manages.
+- **Per-phase coverage math** — missions don't block on "you need one screenshot and one browser trace".
+- **`CU Off` / `CU Auto` / `CU On` / `Fallback` / `Proof` chips**, the `ComputerUseSection` of Settings, and the `buildComputerUseDirective` chat prompt preamble.
+
+What stays — renamed and shrunk:
+
+- **`proofArtifactBrokerService`** (formerly `computerUseArtifactBrokerService`) still persists screenshots, owner snapshots, and review state to SQLite.
+- **`MissionProofPanel`** and **`ChatProofPanel`** (formerly the computer-use panels) render the artifact drawer in missions and chat.
+- **`proofControlPlane.ts`** is a tiny helper that lists artifact kinds and feeds the review surface — no backend arbitration, no fallback logic.
+- **Agent chat directive**: a single sentence telling the agent to run `ade proof capture` when it reaches a checkpoint worth showing. That replaces the multi-paragraph policy prompt.
+
+Docs have been rewritten to match — see [Proof Overview](/computer-use/overview), [Setup](/computer-use/setup), [Proofs](/computer-use/proofs), and [Configuration](/computer-use/config).
+
+---
+
+## Lane management
+
+A new dedicated **Manage Lane** dialog replaces the inline delete/archive flow scattered across `LanesPage`. The dialog supports single-lane and batch management with distinct busy states for each action kind (delete, archive, adopt) so the UI no longer reuses the delete affordance during an archive.
+
+Related polish:
+
+- **Attached-lane copy** — deleting an attached lane is now labelled "Unlink" in `LanesPage` status text, since no worktree or branch is destroyed.
+- **Mixed batches** — selecting attached *and* regular lanes surfaces a clear "Unlink attached lanes & remove worktree files" option.
+- **CreateLaneDialog** and **LaneWorkPane** received a refresh to share the new `LaneDialogShell` and token system, keeping spacing/typography consistent across both flows.
+- **Lane Work Pane tour** walks new users through the chat, terminals, and file panels in context; the tour wires into the new dialog bus so Create Lane opens and closes deterministically.
+- **Lane service timing** now wraps slow-step git timing in `try/finally` so failing steps still get logged to runtime diagnostics.
+
+---
+
+## Chat refinements
+
+- **Thinking stream restored.** Claude's streamed thinking now passes through the V2 pipeline correctly. The agent-chat service wires `--include-partial-messages` plus `showThinkingSummaries: true` and `alwaysThinkingEnabled: true` on every Claude V2 session, and scopes streaming dedupe keys by message identity so sequential assistants at the same content index no longer drop.
+- **Work log statuses.** `ChatWorkLogBlock` now preserves `interrupted` status across static and ended transcripts — `animate=false` no longer masks non-success terminal outcomes.
+- **Live-only rendering gating.** Streaming indicators and the `turnActive` affordance are now gated on `!sessionEnded`, so completed sessions don't keep shimmering in the background.
+- **AgentChatMessageList overhaul.** ~165 lines reworked around the new status visuals and dedupe model, with expanded test coverage.
+- **Chat config renamed.** `.ade/ade.yaml`'s old top-level `chat` key is now `sessionIntelligence` — the same `titles` and `summaries` sub-sections moved unchanged, so existing installs get migrated on read.
+
+---
+
+## iOS companion app
+
+The iOS app got a major pass — the largest single change in the release. Highlights:
+
+### CTO tab rewrite
+
+`CtoTeamScreen` has been rebuilt around a hero CTO card, budget row, and a full-roster list with chat-as-primary-tap and a "Details" chip for the dashboard. `CtoChatScreen.swift` (~370 lines) was deleted because CTO conversations now live inside the shared work-chat session view; the tab shell shed the dedicated chat route entirely.
+
+Non-connection CTO errors surface with retries in `CtoRootScreen` and `CtoTeamScreen`, and "Sync now" is gated on host reachability so the buttons stop pretending to work when the desktop isn't reachable. Supplemental reads in `CtoSettingsScreen` now parallelize with `async let` for a much snappier settings load.
+
+### SyncService rewrite
+
+The iOS `SyncService` grew from ~300 lines of logic to ~900 to support tailnet discovery, saved-host re-hydration, host-reachability signals (`isHostUnreachable`), and unified connection state in the navigation bar. A new `ADEConnectionDot` in the nav bar is the single source of truth for connection state; per-screen "failed to load" banners are suppressed when the underlying cause is simply "not connected".
+
+### PR workflow parity
+
+`PrWorkflowCards` now:
+
+- guards landing confirmations against stale `prId` / `groupId` values
+- asserts the `queueNext` group when a user confirms "Land queue next"
+- blocks draft PRs from the "Attempt merge" bypass
+- always shows rebase errors even when the parent screen is offline
+- shows an offline-specific empty state in `PrStackSheet` instead of an error card
+
+`CreatePrWizardView`, `PrMergeGateCard`, and `PrStackSheet` got supporting polish, and the detail screen's activity/checks/files/overview tabs align with the desktop rewrite.
+
+### Work + Settings polish
+
+- **`WorkChatSessionView+Timeline`** consolidates the live/static branches so pending structured questions, mission briefings, and action rows render consistently once a session ends.
+- **`SettingsPairingSection`** surfaces "Saved Tailscale route" when no live hosts are discovered but a Tailscale-addressed host is on file, and rewrites the discover sheet to show the saved host alongside new ones instead of substituting them.
+- **`SettingsConnectionHeader`** now meets the 44pt minimum hit target on the connected chip, and the connection status hovers around the gear dot in the nav bar on every root screen.
+
+---
+
+## PR tooling
+
+- **CreatePrModal**: every major field (`base`, `title`, `body`, submit) now has a `data-tour` anchor so the PRs tour lands on the right thing instead of the nearest neighbour.
+- **PrDetailPane**: the issue-resolver availability calculation now folds in PR comments alongside checks and review threads, so "Send to agent" actually appears when the relevant signals come from review comments rather than formal review threads.
+- **PRsPage + GitHubTab**: small wiring tweaks to align with the updated issue inventory service and the new `data-tour` anchors.
+- **PrIssueResolverModal**: shared `isActionableIssueComment`, `isPrCheckActionableFailure`, and `isPrCheckPassing` helpers landed in `shared/prIssueResolution.ts` so the issue resolver, convergence service, and workflow tools all agree on what counts as actionable.
+
+---
+
+## Platform plumbing
+
+- **`dialogBus`** — a new tiny pub/sub with stable dialog ids (`lanes.create`, `missions.create`, …). Dialogs subscribe by id; the tour engine drives them open/close without prop drilling. Full test coverage.
+- **`waitForTarget`** — MutationObserver-based selector waiter with a polling fallback, aborts via `AbortSignal`, and a 10 s default timeout.
+- **Workflow tools** — the `ade_complete_mission`, `ade_complete_pr_convergence_round`, and related tools now consume `proofArtifactBrokerService` directly and share issue-resolution helpers with the renderer.
+- **CTO operator tools** — the `listComputerUseArtifacts` / `getArtifactPreview` tools are renamed to `listProofArtifacts` / `getProofArtifactPreview` with the same schema.
+- **IPC cleanup** — `registerIpc.ts` grew handlers for `sync.refreshDiscovery`, `onboarding.tutorial.*` (start, advance, complete, prompt state), and the proof artifact APIs; legacy computer-use IPC routes are gone. The `preload` surface was updated accordingly.
+- **ade-cli RPC rewrite** — `adeRpcServer.ts` shed ~400 lines as redundant legacy endpoints fell off; `cli.ts` grew to match the new proof command set.
+- **Onboarding service** — new backend test suite (+207 lines) covering the tutorial state machine, with matching store refinements (`onboardingStore` +170 lines).
+
+---
+
+## Other changes
+
+- Chat reasoning removed a dead `startTimestamp`/`durationLabel` path that no longer fed the renderer.
+- `LanesPage` action status copy now says "Unlink" (not "Delete") for attached lanes so it reads correctly in the status toast.
+- `SyncDevicesSection` disables the retry button when tailnet discovery is in the `inactive` state — retrying wouldn't do anything useful.
+- `syncPairingStore.createdAt` regression test now seeds an explicit timestamp so it stops flaking on fast clocks.
+- iOS `CtoSettingsScreen` parallelises settings reads with `async let`.
+- README and `docs/ARCHITECTURE.md` were refreshed with the new sync story and new on-disk layout.
+- Logo assets (`logo/light.svg`, `logo/dark.svg`) were refreshed; no brand change, just cleaner vector paths.
+- The obsolete `docs/features/computer-use/` tree (backends, artifact-broker, settings-and-readiness) was removed — the `/computer-use/*` Mintlify pages are now the single source of truth.

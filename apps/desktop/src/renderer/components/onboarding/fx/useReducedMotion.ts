@@ -32,24 +32,22 @@ export function useReducedMotion(): boolean {
       return;
     }
     const handler = (e: MediaQueryListEvent | MediaQueryList) => {
-      setReduced(Boolean((e as MediaQueryListEvent).matches ?? (e as MediaQueryList).matches));
+      setReduced(Boolean(e.matches));
     };
     // Update once in case SSR-rendered default differed from hydrated value.
     handler(mql);
     if (typeof mql.addEventListener === "function") {
-      mql.addEventListener("change", handler as (e: MediaQueryListEvent) => void);
-      return () => mql.removeEventListener("change", handler as (e: MediaQueryListEvent) => void);
+      mql.addEventListener("change", handler);
+      return () => mql.removeEventListener("change", handler);
     }
     // Legacy Safari.
-    if (typeof (mql as MediaQueryList & { addListener?: unknown }).addListener === "function") {
-      (mql as unknown as { addListener: (fn: (e: MediaQueryListEvent) => void) => void }).addListener(
-        handler as (e: MediaQueryListEvent) => void,
-      );
-      return () => {
-        (mql as unknown as { removeListener: (fn: (e: MediaQueryListEvent) => void) => void }).removeListener(
-          handler as (e: MediaQueryListEvent) => void,
-        );
-      };
+    const legacy = mql as MediaQueryList & {
+      addListener?: (fn: (e: MediaQueryListEvent) => void) => void;
+      removeListener?: (fn: (e: MediaQueryListEvent) => void) => void;
+    };
+    if (typeof legacy.addListener === "function") {
+      legacy.addListener(handler);
+      return () => legacy.removeListener?.(handler);
     }
     return;
   }, []);

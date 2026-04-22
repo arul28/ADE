@@ -1,56 +1,86 @@
 ---
-title: "Connecting Backends"
-description: "Step-by-step setup guides for connecting Ghost OS and agent-browser backends to ADE, plus computer use policy reference."
-icon: "plug"
+title: "Setup & CLI"
+description: "Install local capture prerequisites and learn the `ade proof` commands agents use to record intentional evidence."
+icon: "terminal"
 ---
 
-## Connecting a Backend
+## Prerequisites
 
-### Ghost OS Setup
+On macOS, `ade proof` reuses a handful of built-in command-line tools to capture screenshots and short recordings:
 
-<Steps>
-  <Step title="Install Ghost OS">
-    Download and install the Ghost OS CLI for macOS from [ghostos.dev](https://ghostos.dev), then run `ghost setup` to grant the required macOS permissions.
-  </Step>
-  <Step title="Verify the CLI">
-    Run `ghost status` and `ghost doctor` in Terminal. ADE uses those commands to detect whether Ghost OS is installed, ready, or blocked by stale processes.
-  </Step>
-  <Step title="Verify connection">
-    Open **Settings → Computer Use**. The Ghost OS card should show a ready state with the capability matrix populated. If it shows an error, rerun `ghost setup` or follow the doctor output.
-  </Step>
-  <Step title="Set as preferred backend">
-    In **Settings → Computer Use → Preferred Backend**, select **Ghost OS**. ADE will use Ghost OS for all computer-use requests until you change this setting.
-  </Step>
-</Steps>
+- `screencapture` — bundled with macOS; takes PNG/JPEG screenshots
+- `osascript` — used to coordinate permission prompts
+- `open` — used to surface captures in Finder
 
-### agent-browser Setup
+No extra install is required on a standard Mac. Agents that need richer browser-level evidence (DOM traces, console logs) should use a browser automation tool of their choice and pipe the results into ADE via `ade proof ingest` — ADE does not bundle its own browser.
 
-<Steps>
-  <Step title="Ensure Node.js 18+ is installed">
-    Run `node --version` to confirm. If needed, install via [nodejs.org](https://nodejs.org) or `brew install node`.
-  </Step>
-  <Step title="Add to ADE configuration">
-    Install the `agent-browser` CLI so it is available on `PATH`; ADE detects it with `agent-browser` and ingests the artifacts it produces.
-  </Step>
-  <Step title="Verify connection">
-    Open **Settings → Computer Use**. The agent-browser card should show **Ready**. On first use, ADE will download the `@agent-browser/cli` package automatically.
-  </Step>
-</Steps>
+<Note>
+The first time `ade proof capture` runs, macOS asks for **Screen Recording** permission. Grant it in **System Settings → Privacy & Security → Screen Recording**, then restart ADE. macOS requires the process to restart after granting screen recording permission.
+</Note>
 
 ---
 
-## Computer Use Policies
+## The `ade proof` CLI
 
-Each chat session and mission has a computer-use policy header that controls when the agent is allowed to invoke computer-use tools. Set the policy at session start or change it mid-session from the chat header bar.
+All proof flow happens through the `ade` CLI. Agents call these commands from terminal sessions inside a lane, and the results are stored in `.ade/artifacts/computer-use/` and linked to the lane, mission, chat session, PR, or Linear issue they originated from.
 
-| Policy | Behavior |
+| Command | What it does |
 |---|---|
-| `CU Off` | Computer use tools are never available in this session. Agents cannot invoke them even if they try. |
-| `CU Auto` | ADE decides when computer use is appropriate based on the task. The agent does not choose directly. |
-| `CU On` | Computer use tools are always available. The agent decides when to invoke them. |
-| `Fallback` | The agent attempts the task without computer use. If it cannot complete the task, it falls back to CU. |
-| `Proof` | Computer use is available, but every action must produce a proof artifact. The session blocks if proof is missing. |
+| `ade proof status --text` | Show which local backends are available and their capability matrix |
+| `ade proof list --text` | List captured proofs for the current scope |
+| `ade proof screenshot` | Capture a screenshot artifact |
+| `ade proof record --seconds 20` | Capture a short screen recording |
+| `ade proof ingest --input-json '{...}'` | Ingest proofs produced by external tools (browser traces, verifications, console logs) |
 
-<Tip>
-Use `Proof` mode for any automation that will be shared with stakeholders or linked to a Linear issue. The collected artifacts provide an auditable record of exactly what the agent did.
-</Tip>
+`ade proof` accepts the same `--lane`, `--mission`, `--chat-session`, `--pr`, and `--linear-issue` owner flags as the rest of the ADE CLI, so agents can attach the captured proof to one or more owners in a single call.
+
+### Typical Flow
+
+<Steps>
+  <Step title="Agent decides to capture evidence">
+    Mid-task, the agent determines the step deserves a proof — for example, after finishing a UI change that is ready for review.
+  </Step>
+  <Step title="Call the CLI">
+    The agent runs `ade proof screenshot --lane <laneId>` (or `record --seconds 20`) from its terminal.
+  </Step>
+  <Step title="ADE stores and links">
+    ADE stores the file under `.ade/artifacts/computer-use/` and records a `ComputerUseArtifact` row with kind, owner, and metadata. A link is created to the lane, and any additional owners passed via flags.
+  </Step>
+  <Step title="Review in the UI">
+    The proof shows up in the Mission Artifacts tab (if the agent was in a mission), the chat artifact panel (if in chat), or the PR attachments panel (if linked to a PR).
+  </Step>
+</Steps>
+
+### Ingesting External Evidence
+
+For proofs that come from outside ADE — a Playwright trace, a browser verification script, a console log bundle — the agent uses `ade proof ingest`:
+
+```bash
+ade proof ingest --input-json '{
+  "backend": { "name": "my-external-runner" },
+  "inputs": [
+    { "kind": "browser_trace", "title": "checkout flow", "path": "/tmp/trace.zip" },
+    { "kind": "console_logs", "title": "checkout console", "text": "..." }
+  ],
+  "owners": [
+    { "kind": "mission", "id": "mission_abc" }
+  ]
+}'
+```
+
+ADE normalizes each entry into a proof record of the declared kind and links it to the declared owners.
+
+---
+
+## Storage Layout
+
+```
+.ade/artifacts/computer-use/
+  <artifact-id>.png         # screenshot
+  <artifact-id>.mp4         # video recording
+  <artifact-id>.zip         # trace or log bundle
+```
+
+Each artifact has a row in ADE's SQLite database with pointers to the file, the owners, the review state, and the workflow state. See [Configuration](/computer-use/config) for retention settings.
+</content>
+</invoke>

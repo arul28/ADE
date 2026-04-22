@@ -380,7 +380,7 @@ Every service lives under `apps/desktop/src/main/services/<domain>/`. Summary:
 | `agentTools/` | `agentToolsService.ts` | Agent tool registry metadata surfaced to the renderer. |
 | `automations/` | `automationService.ts`, `automationPlannerService.ts`, `automationIngressService.ts`, `automationSecretService.ts` | Rule lifecycle, NL → rule planner, inbound triggers, per-rule secrets. |
 | `chat/` | `agentChatService.ts`, `buildClaudeV2Message.ts`, `cursorAcp*`, `sessionRecovery.ts` | Agent chat sessions (lane-scoped + mission worker/coordinator). Builds Claude messages, manages Cursor ACP pool, recovers sessions on restart. |
-| `computerUse/` | `computerUseArtifactBrokerService.ts`, `controlPlane.ts`, `localComputerUse.ts`, `proofObserver.ts`, `agentBrowserArtifactAdapter.ts` | Proof normalization broker, backend readiness, local-fallback, proof observation. |
+| `computerUse/` | `computerUseArtifactBrokerService.ts`, `controlPlane.ts`, `localComputerUse.ts`, `agentBrowserArtifactAdapter.ts`, `syntheticToolResult.ts` | Proof-artifact broker (ingests, owner links, review state, routing), control-plane snapshot helpers, macOS capture capability descriptor, agent-browser payload parser, and the synthetic-tool-result helper used by the Claude compaction path. `proofObserver.ts` was removed in the rebuild — there is no passive auto-ingest. |
 | `config/` | `projectConfigService.ts`, `laneOverlayMatcher.ts` | Load/save `.ade/ade.yaml` + `local.yaml`; trust enforcement; lane overlays. |
 | `conflicts/` | `conflictService.ts` | Pairwise dry-merge simulation, risk matrix, proposal generation. |
 | `context/` | `contextDocService.ts`, `contextDocBuilder.ts` | Generate `.ade/context/PRD.ade.md` + `ARCHITECTURE.ade.md` with budgets and quality gates. |
@@ -510,6 +510,14 @@ Enforced rules (from the stability overhaul):
 
 Themes: six shipped themes (`e-paper`, `bloomberg`, `github`, `rainbow`, `sky`, `pats`), persisted in `localStorage.ade.theme`, applied via `data-theme` on root. Token-based palettes in `apps/desktop/src/renderer/index.css`.
 
+### 7.6 Renderer primitives
+
+- `renderer/lib/dialogBus.ts` — tiny pub/sub that lets the onboarding tour engine (and anyone else) open/close dialogs by a stable id (`lanes.create`, `missions.create`, etc.) without prop-drilling. Dialogs subscribe by id; a `subscribeAll` channel exists for devtools. Default singleton export `dialogBus`.
+- `renderer/onboarding/waitForTarget.ts` — polls for a DOM target (ref or `data-onboarding-target`) with a visibility check so tour steps anchor reliably to async-mounted UI.
+- `renderer/onboarding/TourController.ts` — imperative driver for the onboarding tour state machine.
+- `renderer/onboarding/docsLinks.ts` — typed registry of internal/public doc URLs (`docs.lanes`, `docs.missions`, …) that tour steps and the `HelpMenu` link to.
+- `renderer/components/onboarding/fx/*` — shared motion-FX primitives (`ActIntro`, `AnimatedField`, `Confetti`, `GhostCursor`, `MorphingTree`, `Spotlight`, `StaggeredText`, `TourIllustration`) with a `useReducedMotion` hook. Used by the 13-act first-session tutorial and per-tab tours.
+
 Full UI rules: [`docs/architecture/UI_FRAMEWORK.md`](../docs/architecture/UI_FRAMEWORK.md).
 
 ---
@@ -562,7 +570,7 @@ Every IPC handler **validates** its arguments; invalid args return structured er
 
 ### 8.3 ADE CLI auth + API-key storage
 
-- ADE CLI session identity is resolved from env vars and the `initialize` handshake. External sessions receive the restrictive default computer-use policy (`allowLocalFallback: false`).
+- ADE CLI session identity is resolved from env vars and the `initialize` handshake.
 - Role validation: only `cto`, `orchestrator`, `agent`, `external`, `evaluator` accepted.
 - API keys for provider-routed (non-CLI) models are stored via `apiKeyStore.ts`.
 
@@ -748,42 +756,48 @@ Full spec: [`docs/architecture/CONTEXT_CONTRACT.md`](../docs/architecture/CONTEX
 
 ---
 
-## 12. Computer-Use Control Plane
+## 12. Proof (Computer-Use Artifacts)
 
-### 12.1 ADE is control plane, not executor
+### 12.1 Principle
 
-ADE does **not** force all backends into one fake runtime abstraction. ADE CLI-native backends stay as ADE CLI; CLI-native backends stay as CLIs. The broker at `apps/desktop/src/main/services/computerUse/computerUseArtifactBrokerService.ts` is the normalization boundary — it ingests raw backend output, produces canonical records, and links owners.
+Proof is **intentional**. Agents run computer use through whatever tool they already have — Claude's `computer_use`, Codex shell, a scripted browser, a headless Playwright run, a local screenshot. ADE stays out of that loop. When the agent reaches a checkpoint worth showing, it files an artifact through the broker (directly or via `ade proof capture` / `attach`), optionally with a caption. That record is what the drawer UI renders and what reviewers see.
 
-### 12.2 Backends
+The previous control-plane model — `ComputerUsePolicy` (`off`/`auto`/`enabled`, `allowLocalFallback`, `retainProof`, `preferredBackend`), per-phase `evidenceRequirements`, mission-preflight coverage gates, the passive `proofObserver` that auto-ingested from chat `tool_result` events, and the Settings > Computer Use panel — was removed. There is **one path** now: intentional ingest via the broker.
 
-| Backend style | Example | How ADE connects |
-|---------------|---------|------------------|
-| ADE CLI-native | Ghost OS (macOS control) | As an ADE CLI |
-| CLI-native | agent-browser (web) | CLI invocation + `agentBrowserArtifactAdapter.ts` |
-| Local fallback | ADE-owned (compatibility only) | `localComputerUse.ts` |
+### 12.2 Broker and backends
 
-The broker **prefers external backends** when they satisfy the required proof kind. Local fallback is used only when no approved external backend is available and policy allows it. Either way, canonical records are produced identically.
+`apps/desktop/src/main/services/computerUse/computerUseArtifactBrokerService.ts` is the ingest boundary. It accepts `ComputerUseArtifactInput[]` (path, remote URI, inline text, inline JSON), materializes on-disk sources into the project artifacts dir via `secureCopyFromDescriptor` (uses `O_NOFOLLOW` + atomic rename to resist symlink tricks), writes the canonical `computer_use_artifacts` row, and links to one or more owners (`lane`, `mission`, `orchestrator_run/_step/_attempt`, `chat_session`, `automation_run`, `github_pr`, `linear_issue`).
 
-### 12.3 Artifact broker (proof normalization)
+Allowed import roots (trust boundary): `.ade/artifacts`, `.ade/tmp`, `os.tmpdir()`, `~/.agent-browser`. Other paths are rejected.
+
+Supporting files in the same directory:
+
+- `controlPlane.ts` — builds `ComputerUseOwnerSnapshot` (recent artifacts + activity) and `ComputerUseSettingsSnapshot` (backend readiness, capabilities) over the broker.
+- `localComputerUse.ts` — exports `getLocalProofCaptureCapabilities()`, a macOS-only descriptor reporting whether `screencapture`, app launch, and GUI-interaction commands are available.
+- `agentBrowserArtifactAdapter.ts` — parses agent-browser payloads into `ComputerUseArtifactInput[]`.
+- `syntheticToolResult.ts` — produces tool-result stubs during Claude compaction so a previously-executed tool response can be re-surfaced without re-running the tool.
+
+### 12.3 Artifact record
 
 Canonical proof kinds: `screenshot`, `video_recording`, `browser_trace`, `browser_verification`, `console_logs`.
 
 Canonical tables:
 
-- `computer_use_artifacts` — proof kind, backend style/name, source tool metadata, title/description, URI, storage kind, MIME type, review/workflow metadata, timestamps.
-- `computer_use_artifact_links` — cross-domain ownership: lane, mission, orchestrator run/step/attempt, chat session, automation run, GitHub PR, Linear issue.
+- `computer_use_artifacts` — proof kind, backend name/style, source tool metadata, title/description, URI, storage kind, MIME type, review/workflow state, timestamps.
+- `computer_use_artifact_links` — cross-domain ownership, so the same artifact can graduate from exploratory chat evidence to a mission artifact to a PR comment without losing provenance.
 
-Same proof can move from exploratory chat evidence to a formal workflow publication without losing provenance. Policy is scope-level (`ComputerUsePolicy`): mode `off`/`auto`/`enabled`, `allowLocalFallback`, `retainProof`, optional preferred backend.
+### 12.4 IPC + UI
 
-Surfaces:
+Channels (under `ade.proof.*`, renamed from `ade.computerUse.*`):
 
-- `Settings > Computer Use` — readiness + setup guidance.
-- Mission launch/preflight/run view/artifact review.
-- Chat header/composer + thread monitor + artifact review.
+- `ade.proof.listArtifacts`, `ade.proof.getOwnerSnapshot`, `ade.proof.routeArtifact`, `ade.proof.updateArtifactReview`, `ade.proof.readArtifactPreview`, plus a `ade.proof.event` push channel.
+- `ade proof capture` / `attach` / `list` in the ADE CLI are the cross-process surface; they call into the broker.
 
-Publication paths: mission closeout, lane history, chat history, GitHub PR workflow, Linear closeout, Automations history.
+Renderer surfaces:
 
-Full surface: [`docs/architecture/COMPUTER_USE_ARTIFACT_BROKER.md`](../docs/architecture/COMPUTER_USE_ARTIFACT_BROKER.md).
+- `ChatComputerUsePanel` (drawer under the chat composer) and `MissionComputerUsePanel` / `MissionProofPanel` (mission detail Proof tab).
+- Review actions (`accepted` / `needs_more` / `dismissed` / `published`) remain as first-class per-artifact actions.
+- Computer-use readiness moved into `IntegrationsSettingsSection` — the standalone `ComputerUseSection.tsx` is gone.
 
 ---
 

@@ -3,8 +3,6 @@ import fs from "node:fs";
 import path from "node:path";
 import {
   isValidResolutionKind,
-  createDefaultComputerUsePolicy,
-  normalizeComputerUsePolicy,
   TERMINAL_MISSION_STATUSES,
 } from "../../../shared/types";
 import type {
@@ -665,12 +663,6 @@ function coerceNullableString(value: unknown): string | null {
   const trimmed = value.trim();
   return trimmed.length ? trimmed : null;
 }
-
-function normalizeMissionComputerUse(value: unknown) {
-  return normalizeComputerUsePolicy(value, createDefaultComputerUsePolicy());
-}
-
-
 
 function toMissionSummary(row: MissionRow): MissionSummary {
   return {
@@ -2289,7 +2281,6 @@ export function createMissionService({
         warnings,
         plannerPlan,
         phaseConfiguration: resolveMissionPhaseConfiguration(id),
-        computerUse: launchMetadata ? normalizeMissionComputerUse(launchMetadata.computerUse) : null,
       };
     },
 
@@ -2885,7 +2876,6 @@ export function createMissionService({
       const launchMode = args.launchMode === "manual" ? "manual" : "autopilot";
       const autostart = args.autostart !== false;
       const autopilotExecutor = args.autopilotExecutor ?? "opencode";
-      const computerUse = normalizeMissionComputerUse(args.computerUse);
       const launchAgentRuntime = normalizeAgentRuntimeFlags(
         isRecord(args.agentRuntime) ? (args.agentRuntime as Record<string, unknown>) : {}
       );
@@ -2998,7 +2988,6 @@ export function createMissionService({
           ...(args.modelConfig && typeof args.modelConfig === "object" ? { intelligenceConfig: args.modelConfig.intelligenceConfig } : {}),
           ...(launchTeamRuntime ? { teamRuntime: launchTeamRuntime } : {}),
           ...(args.permissionConfig ? { permissionConfig: args.permissionConfig } : {}),
-          computerUse,
           phaseProfileId: selectedProfile?.id ?? null,
           hasPhaseOverride: hasExplicitOverride
         },

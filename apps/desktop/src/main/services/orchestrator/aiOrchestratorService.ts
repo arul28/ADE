@@ -122,7 +122,6 @@ import type { MissionMemoryLifecycleService } from "../memory/missionMemoryLifec
 import type { MissionBudgetService } from "./missionBudgetService";
 import {
   buildComputerUseOwnerSnapshot,
-  collectRequiredComputerUseKindsFromPhases,
   getComputerUseArtifactKinds,
 } from "../computerUse/controlPlane";
 import { createMemoryService } from "../memory/memoryService";
@@ -8968,8 +8967,6 @@ Check all worker statuses and continue managing the mission from here. Read work
       ? buildComputerUseOwnerSnapshot({
           broker: computerUseArtifactBrokerService,
           owner: { kind: "mission", id: missionId },
-          policy: mission.computerUse,
-          requiredKinds: collectRequiredComputerUseKindsFromPhases(mission.phaseConfiguration?.selectedPhases ?? []),
           limit: 50,
         })
       : null;

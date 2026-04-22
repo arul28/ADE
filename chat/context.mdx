@@ -52,8 +52,8 @@ At the end of a session (or mid-session when the agent produces notable outputs)
 | Artifact | When it appears |
 |---|---|
 | File changes | After any file write tool call |
-| Screenshots | After any computer-use visual capture |
-| Browser traces | After browser automation sequences |
+| Proofs | When the agent calls `ade proof capture` or `ade proof record` (screenshots and short recordings) |
+| Ingested evidence | When the agent calls `ade proof ingest` with external traces or logs |
 | PR links | After a PR is created |
 | Test reports | After test runner tool calls |
 | Notes | When the agent explicitly attaches a note |
@@ -109,12 +109,14 @@ Click any session to open its transcript in read-only view. Click **Resume** to 
     - Ask the agent to summarize key decisions and start fresh with that summary
     - Switch to a model with a larger context window in the model selector
   </Accordion>
-  <Accordion title="Computer use panel is not appearing">
-    The computer-use monitoring panel only appears when a computer-use tool is actively being invoked. If the panel is not showing:
+  <Accordion title="Proofs captured by the agent are not showing up">
+    Proofs appear in the session artifact panel the moment `ade proof` finishes. If a proof is missing:
 
-    - Confirm the session's computer-use policy is not `CU Off`
-    - Check **Settings → Computer Use** to confirm a backend (Ghost OS, agent-browser) is connected
-    - Verify the agent's task actually requires visual interaction — the agent will not invoke computer use for purely code-based tasks even in `CU On` mode unless a visual task is present
+    - Run `ade proof list --text` in the same lane — if the artifact is listed there, the capture worked and the UI just needs a refresh.
+    - Run `ade proof status --text` to confirm the local capture pipeline is available (on macOS, `screencapture` must be on `PATH` and Screen Recording permission granted).
+    - Check the chat transcript for the `ade proof` invocation — the CLI returns an error if the capture failed, and the agent usually surfaces it inline.
+
+    See [Proof Overview](/computer-use/overview) for the full capture workflow.
   </Accordion>
   <Accordion title="ADE tool calls are failing">
     If ADE tool calls fail consistently:

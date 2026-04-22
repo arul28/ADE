@@ -417,13 +417,6 @@ vi.mock("../orchestrator/permissionMapping", () => ({
   })),
 }));
 
-vi.mock("../computerUse/proofObserver", () => ({
-  createProofObserver: vi.fn(() => ({
-    observe: vi.fn(),
-    flush: vi.fn(),
-  })),
-}));
-
 vi.mock("../../../shared/chatTranscript", () => ({
   parseAgentChatTranscript: vi.fn(() => []),
 }));
@@ -486,7 +479,6 @@ import { createWorkflowTools } from "../ai/tools/workflowTools";
 import { buildCodingAgentSystemPrompt } from "../ai/tools/systemPrompt";
 import { runGit } from "../git/git";
 import { parseAgentChatTranscript } from "../../../shared/chatTranscript";
-import { createDefaultComputerUsePolicy } from "../../../shared/types";
 import { mapPermissionToClaude, mapPermissionToCodex } from "../orchestrator/permissionMapping";
 import { acquireCursorAcpConnection } from "./cursorAcpPool";
 import type { AgentChatEvent, AgentChatEventEnvelope, ComputerUseBackendStatus } from "../../../shared/types";
@@ -862,7 +854,6 @@ describe("buildComputerUseDirective", () => {
     if (overrides.ghostOs) {
       backends.push({
         name: "Ghost OS",
-        style: "external_cli",
         available: true,
         state: "installed",
         detail: "Ghost OS connected.",
@@ -872,7 +863,6 @@ describe("buildComputerUseDirective", () => {
     if (overrides.agentBrowser) {
       backends.push({
         name: "agent-browser",
-        style: "external_cli",
         available: true,
         state: "installed",
         detail: "agent-browser CLI installed.",
@@ -893,13 +883,12 @@ describe("buildComputerUseDirective", () => {
 
   it("returns null when no backends, no local fallback, and status is non-null", () => {
     const status = makeBackendStatus({});
-    const policy = createDefaultComputerUsePolicy({ allowLocalFallback: false });
-    const result = buildComputerUseDirective(policy, status);
+    const result = buildComputerUseDirective(status);
     expect(result).toBeNull();
   });
 
   it("returns a directive when backendStatus is null (unknown status)", () => {
-    const result = buildComputerUseDirective(createDefaultComputerUsePolicy(), null);
+    const result = buildComputerUseDirective(null);
     expect(result).not.toBeNull();
     expect(result).toContain("Computer Use");
     expect(result).toContain("get_computer_use_backend_status");
@@ -907,7 +896,7 @@ describe("buildComputerUseDirective", () => {
 
   it("includes Ghost OS section when Ghost OS backend is available", () => {
     const status = makeBackendStatus({ ghostOs: true });
-    const result = buildComputerUseDirective(createDefaultComputerUsePolicy(), status);
+    const result = buildComputerUseDirective(status);
     expect(result).toContain("Ghost OS (Desktop Automation)");
     expect(result).toContain("ghost_context");
     expect(result).toContain("ghost_annotate");
@@ -915,31 +904,23 @@ describe("buildComputerUseDirective", () => {
 
   it("includes agent-browser section when agent-browser is available", () => {
     const status = makeBackendStatus({ agentBrowser: true });
-    const result = buildComputerUseDirective(createDefaultComputerUsePolicy(), status);
+    const result = buildComputerUseDirective(status);
     expect(result).toContain("agent-browser (Browser Automation)");
     expect(result).not.toContain("Ghost OS (Desktop Automation)");
   });
 
   it("includes ADE Local fallback section when local fallback is enabled", () => {
     const status = makeBackendStatus({ localFallback: true });
-    const policy = createDefaultComputerUsePolicy({ allowLocalFallback: true });
-    const result = buildComputerUseDirective(policy, status);
+    const result = buildComputerUseDirective(status);
     expect(result).toContain("ADE Local (Fallback)");
     expect(result).toContain("Proof Capture");
   });
 
   it("always includes Proof Capture section when directive is non-null", () => {
     const status = makeBackendStatus({ ghostOs: true });
-    const result = buildComputerUseDirective(createDefaultComputerUsePolicy(), status);
+    const result = buildComputerUseDirective(status);
     expect(result).toContain("Proof Capture");
     expect(result).toContain("ingest_computer_use_artifacts");
-  });
-
-  it("handles null/undefined policy gracefully", () => {
-    const status = makeBackendStatus({ ghostOs: true });
-    const result = buildComputerUseDirective(null, status);
-    expect(result).not.toBeNull();
-    expect(result).toContain("Computer Use");
   });
 });
 
@@ -980,7 +961,6 @@ describe("createAgentChatService", () => {
       laneId: "lane-1",
       sessionProfile: "workflow",
       identityKey: undefined,
-      computerUse: undefined,
     });
 
     expect(toolNames).toEqual(expect.arrayContaining([
@@ -1212,20 +1192,6 @@ describe("createAgentChatService", () => {
       expect(session.identityKey).toBe("cto");
     });
 
-    it("sets computerUse policy", async () => {
-      const { service } = createService();
-      const session = await service.createSession({
-        laneId: "lane-1",
-        provider: "opencode",
-        model: "",
-        modelId: "opencode/anthropic/claude-sonnet-4-6",
-        computerUse: { mode: "enabled", allowLocalFallback: false, retainArtifacts: true, preferredBackend: null },
-      });
-
-      expect(session.computerUse).toBeDefined();
-      expect(session.computerUse!.mode).toBe("enabled");
-    });
-
     it("persists chat state to disk after creation", async () => {
       const { service } = createService();
       await service.createSession({
@@ -1317,12 +1283,6 @@ describe("createAgentChatService", () => {
         sessionProfile: "light",
         reasoningEffort: "high",
         opencodePermissionMode: "full-auto",
-        computerUse: {
-          mode: "enabled",
-          allowLocalFallback: false,
-          retainArtifacts: true,
-          preferredBackend: null,
-        },
       });
       source.executionMode = "parallel";
       sessionService.updateMeta({
@@ -1345,7 +1305,6 @@ describe("createAgentChatService", () => {
       expect(result.session.sessionProfile).toBe("light");
       expect(result.session.reasoningEffort).toBe("high");
       expect(result.session.opencodePermissionMode).toBe("full-auto");
-      expect(result.session.computerUse?.mode).toBe("enabled");
       expect(result.session.executionMode).toBe("parallel");
       expect(mockState.sessions.get(result.session.id)?.goal).toBe("Fix the work-tab handoff UI.");
 
@@ -2902,28 +2861,6 @@ describe("createAgentChatService", () => {
       });
 
       expect(updated.permissionMode).toBe("full-auto");
-    });
-
-    it("updates computer use policy", async () => {
-      const { service } = createService();
-      const session = await service.createSession({
-        laneId: "lane-1",
-        provider: "opencode",
-        model: "",
-        modelId: "opencode/anthropic/claude-sonnet-4-6",
-      });
-
-      const updated = await service.updateSession({
-        sessionId: session.id,
-        computerUse: {
-          mode: "enabled",
-          allowLocalFallback: true,
-          retainArtifacts: true,
-          preferredBackend: null,
-        },
-      });
-
-      expect(updated.computerUse!.mode).toBe("enabled");
     });
 
     it("manuallyNamed suppresses auto-titling after sendMessage", async () => {

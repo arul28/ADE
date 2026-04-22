@@ -1,75 +1,48 @@
 # Computer Use
 
-ADE is the control plane for computer-use proof, not the primary executor. External backends (Ghost OS, agent-browser, ADE CLI) perform browser and desktop automation. ADE discovers them, shows their readiness, injects the right guidance into sessions, and ingests the resulting artifacts into a canonical record.
+ADE does not run computer-use itself. Agents drive computer use through whatever tool they already have — Claude's `computer_use`, Codex shell, a scripted browser, a headless Playwright run. ADE's only job is to **ingest** the resulting artifact (screenshot, video, trace, verification output, console log), link it to an owner (chat, mission, lane, PR, Linear issue), and render it in the review drawer.
 
-This boundary is intentional: ADE does not compete with browser-automation runtimes. It stays external-first and owns the normalization / ownership / review / publication path.
+The previous control-plane model — policy modes (`off`/`auto`/`enabled`), readiness gates, per-phase evidence requirements, a passive proof observer — is gone. What remains is a thin broker backed by a single table.
+
+See [`../proof.md`](../proof.md) for the user-facing CLI surface (`ade proof capture` / `attach` / `list`) and the drawer UI contract.
 
 ## Source file map
 
 ### Services (apps/desktop/src/main/services/computerUse/)
 
-- `controlPlane.ts` — the control-plane surface. `getComputerUseArtifactKinds`, `collectRequiredComputerUseKindsFromPhases`, `buildComputerUseOwnerSnapshot`, `buildComputerUseSettingsSnapshot`, `buildGhostOsCheck`, `buildCapabilityMatrix`, `selectPreferredBackend`, `summarizePolicy`, activity builder.
-- `computerUseArtifactBrokerService.ts` — the broker. Canonical storage for `computer_use_artifacts` + `computer_use_artifact_links`. Ingestion, normalization, review-state management, routing, publication. Exposes `ingestArtifacts`, `listArtifacts`, `reviewArtifact`, `routeArtifact`, `getBackendStatus`.
-- `localComputerUse.ts` — fallback-only ADE-local capability detection (`LocalComputerUseCapabilities`, `getGhostDoctorProcessHealth`, `parseGhostDoctorProcessHealth`, `createComputerUseArtifactPath`, `toProjectArtifactUri`).
-- `agentBrowserArtifactAdapter.ts` — parses agent-browser payload shapes (screenshots, videos, traces, console logs, verification) into `ComputerUseArtifactInput[]`.
-- `proofObserver.ts` — passive observer that watches chat `tool_result` events and auto-ingests screenshot/image/video/trace artifacts so they appear in the proof drawer without the agent explicitly calling `ingest_computer_use_artifacts`. Knows Ghost OS perception tools and recognizes embedded file URIs via regex.
-- `syntheticToolResult.ts` — builds synthetic tool-result stubs when a backend's output needs to be re-surfaced as a tool response.
+- `computerUseArtifactBrokerService.ts` — the broker. Canonical storage for `computer_use_artifacts` + `computer_use_artifact_links`. Ingestion (`ingestArtifacts`), listing (`listArtifacts`), review-state management (`reviewArtifact`), routing (`routeArtifact`), backend status (`getBackendStatus`). Uses `secureCopyFromDescriptor` (O_NOFOLLOW + atomic rename) for on-disk ingests and materializes inline text/JSON content via `createComputerUseArtifactPath` + `writeTextAtomic`.
+- `controlPlane.ts` — builds `ComputerUseOwnerSnapshot` (recent artifacts + activity) and `ComputerUseSettingsSnapshot` (backend readiness, capabilities). Pure assembly layer over the broker.
+- `localComputerUse.ts` — macOS-only capability descriptor (`LocalComputerUseCapabilities`). Reports whether `screencapture`, app launch, and GUI-interaction commands are available. `createComputerUseArtifactPath` + `toProjectArtifactUri` round out the storage helpers.
+- `agentBrowserArtifactAdapter.ts` — parses agent-browser payload shapes (screenshots, videos, traces, verification, console logs) into `ComputerUseArtifactInput[]`.
+- `syntheticToolResult.ts` — produces tool-result stubs during Claude compaction so a previously-executed tool response can be re-surfaced without re-running the tool.
+
+Computer-use services that used to exist and were deleted on this branch:
+
+- `proofObserver.ts` — the passive observer that auto-ingested screenshots from `tool_result` events. Captures are always intentional now.
+- Ghost OS status shelling (`ghost status` / `ghost doctor` probes). The broker no longer shells out to external backend binaries.
+
+### IPC
+
+Channel constants live under `ade.proof.*` (renamed from the old `ade.computerUse.*`):
+
+- `ade.proof.listArtifacts`
+- `ade.proof.getOwnerSnapshot`
+- `ade.proof.routeArtifact`
+- `ade.proof.updateArtifactReview`
+- `ade.proof.readArtifactPreview`
+- `ade.proof.event` (push)
 
 ### Renderer
 
-- `apps/desktop/src/renderer/components/settings/ComputerUsePanel.tsx` (or similar) — the Settings > Computer Use surface.
-- `apps/desktop/src/renderer/components/missions/ComputerUseMonitor.tsx` — live monitor embedded in mission detail.
-- `apps/desktop/src/renderer/components/chat/ComputerUseDrawer.tsx` — chat-side drawer for proof review.
+- `apps/desktop/src/renderer/components/chat/ChatComputerUsePanel.tsx` — proof drawer mounted under the chat composer. Shows the `ComputerUseOwnerSnapshot` scoped to the active chat session.
+- `apps/desktop/src/renderer/components/missions/MissionComputerUsePanel.tsx` and `MissionProofPanel.tsx` — mission-detail Proof tab.
+- `apps/desktop/src/renderer/lib/computerUse.ts`, `renderer/lib/proof.ts` — renderer helpers that call `window.ade.proof.*`.
 
-### Related architecture docs
+`ComputerUseSection.tsx` (Settings > Computer Use) was removed in this rebuild; its readiness display was folded into `IntegrationsSettingsSection`.
 
-- `docs/architecture/COMPUTER_USE_ARTIFACT_BROKER.md` — the broker boundary and proof model (reference material; this docs set synthesizes it).
-- `docs/computer-use.md` — higher-level product description.
+## Canonical record
 
-## Core model
-
-ADE's role split:
-
-| External tools own | ADE owns |
-| --- | --- |
-| Browser and desktop interaction | Backend discovery and readiness |
-| Click, type, focus, wait, navigate | Policy and fallback messaging |
-| Native runtime details | Session and mission guidance |
-| | Artifact ingestion and normalization |
-| | Canonical storage and ownership links |
-| | Monitoring surfaces |
-| | Review state and routing actions |
-| | Publication into mission, lane, chat, PR, Linear, automation surfaces |
-
-## Proof kinds
-
-Canonical `ComputerUseArtifactKind` values (from `shared/types/computerUseArtifacts.ts`):
-
-- `screenshot`
-- `video_recording`
-- `browser_trace`
-- `browser_verification`
-- `console_logs`
-
-`normalizeComputerUseArtifactKind` (in `shared/proofArtifacts.ts`) maps backend-specific labels into these canonical kinds. `inferSupportedKindsFromExternalTool(name, description)` heuristically matches ADE CLI tool metadata to kinds.
-
-## Backends
-
-Three backend styles:
-
-| Backend | Transport | ADE role |
-| --- | --- | --- |
-| Ghost OS | ADE CLI (stdio, command `ghost ade-cli`) | Discover via ADE CLI, ingest tool results into the broker. Requires `ghost setup` + `ghost doctor` healthy state. |
-| agent-browser | External CLI (not ADE CLI) | Detect CLI availability; expect external invocation; ingest its output via `agentBrowserArtifactAdapter`. |
-| ADE local | Local compatibility runtime | Fallback-only. Used when no approved external backend satisfies a required proof kind and the scope allows local fallback. |
-
-`buildGhostOsCheck` produces `ComputerUseSettingsSnapshot["ghostOsCheck"]` with `setupState` (`not_installed` | `needs_setup` | `ready` | `unknown`), `cliInstalled`, `adeConfigured`, `adeConnected`, `processHealth` (`healthy` | `stale` | `unknown`), a `summary`, and human-readable `details`. It shells out to `ghost status` to determine readiness and runs `ghost doctor` for process-health detection.
-
-`selectPreferredBackend(status)` returns the first available backend. Policy can override via `ComputerUsePolicy.preferredBackend`.
-
-## Artifact record model
-
-`ComputerUseArtifactRecord` shape in `computer_use_artifacts`:
+`ComputerUseArtifactRecord` in `computer_use_artifacts`:
 
 - `id`, `artifact_kind`, `backend_style`, `backend_name`, `source_tool_name`, `original_type`, `title`, `description`, `uri`, `storage_kind`, `mime_type`, `metadata_json`, `created_at`.
 
@@ -77,25 +50,34 @@ Three backend styles:
 
 - `id`, `artifact_id`, `owner_kind`, `owner_id`, `relation`, `metadata_json`, `created_at`.
 
-Owner kinds (`ComputerUseArtifactOwner["kind"]`): `lane`, `mission`, `orchestrator_run`, `orchestrator_step`, `orchestrator_attempt`, `chat_session`, `automation_run`, `github_pr`, `linear_issue`.
+Owner kinds: `lane`, `mission`, `orchestrator_run`, `orchestrator_step`, `orchestrator_attempt`, `chat_session`, `automation_run`, `github_pr`, `linear_issue`.
 
-A single artifact can link to multiple owners over time — evidence flows from an exploratory chat to a formal mission artifact to a PR comment without losing provenance.
+One artifact can link to multiple owners — evidence flows from an exploratory chat to a mission artifact to a PR comment without losing provenance.
+
+## Proof kinds
+
+Canonical `ComputerUseArtifactKind` values:
+
+- `screenshot`
+- `video_recording`
+- `browser_trace`
+- `browser_verification`
+- `console_logs`
+
+`normalizeComputerUseArtifactKind` (in `shared/proofArtifacts.ts`) maps backend-specific labels into these canonical kinds.
 
 ## Ingestion pipeline
 
 `computerUseArtifactBrokerService.ingestArtifacts({ inputs, owners, backend, sourceToolName? })`:
 
-1. Dedupe owners via `dedupeOwners` (unique by `kind:id:relation`).
-2. For each input:
-   - Normalize the kind via `normalizeInputKind`.
-   - Resolve storage: path (validated via `isAllowedExternalArtifactSource` + `resolvePathWithinRoot` against allowed roots), remote URI (http(s)), inline text, inline JSON.
-   - Materialize inline content to a file via `materializeInlineContent` (`createComputerUseArtifactPath` + `writeTextAtomic`).
-   - For on-disk sources, copy to the project artifacts dir via `secureCopyFromDescriptor` (uses `O_NOFOLLOW` to prevent symlink tricks; atomic rename).
-3. Insert the canonical record.
-4. Insert links to all owners.
-5. Emit a `ComputerUseEventPayload` so renderer surfaces refresh.
+1. Dedupe owners by `kind:id:relation`.
+2. For each input, resolve storage: path (validated against the allowed-roots list), remote URI (http(s)), inline text, inline JSON.
+3. Materialize inline content via `createComputerUseArtifactPath` + `writeTextAtomic`.
+4. For on-disk sources, copy into the project artifacts dir via `secureCopyFromDescriptor` (O_NOFOLLOW + atomic rename to resist symlink tricks).
+5. Insert the canonical record + all owner links.
+6. Emit a `ComputerUseEventPayload` on `ade.proof.event`.
 
-Allowed import roots:
+Allowed import roots (the trust boundary for external file paths):
 
 ```
 layout.artifactsDir      // .ade/artifacts
@@ -104,90 +86,28 @@ os.tmpdir()              // OS temp
 ~/.agent-browser         // agent-browser's output dir
 ```
 
-This list is the trust boundary for external file paths. Other locations are rejected.
+Other paths are rejected.
 
-## Passive proof observer
+## What the rebuild removed
 
-`proofObserver.ts` watches chat `tool_result` events and opportunistically ingests artifacts without requiring the agent to call `ingest_computer_use_artifacts` explicitly.
-
-Detection layers:
-
-1. **Known tool names** — `GHOST_ARTIFACT_TOOLS` (set of Ghost OS perception tools: `ghost_screenshot`, `ghost_annotate`, `ghost_ground`, `ghost_parse_screen`, plus ADE CLI-prefixed variants).
-2. **Content patterns** — file extensions (`IMAGE_EXTENSIONS`, `VIDEO_EXTENSIONS`, `TRACE_EXTENSIONS`, `LOG_EXTENSIONS`), field-name heuristics (`ARTIFACT_FIELD_NAMES`, `EMBEDDED_ARTIFACT_CONTEXT_FIELDS`, `TEXTUAL_CONTENT_FIELD_NAMES`), base64 data-URIs, and a regex for embedded `file:///`, `http(s)://`, and absolute-path artifact references.
-
-Detections are normalized into `ComputerUseArtifactInput[]` and handed off to the broker. This keeps the chat-surface artifact drawer populated even when the agent didn't explicitly ingest.
-
-## Policy
-
-`ComputerUsePolicy` (from `shared/types`):
-
-- `mode` — `off` | `auto` | `enabled`.
-- `allowLocalFallback: boolean` — whether ADE-local fallback is permitted for this scope.
-- `retainProof: boolean` — whether to retain proof artifacts after the run.
-- `preferredBackend: string | null` — optional pinned backend.
-
-Policy applies per scope: mission-wide, chat-session-wide, or lane-wide. `summarizePolicy(policy)` produces the human-readable policy statement surfaced in the chat header and mission preflight.
-
-`createDefaultComputerUsePolicy(partial)` is the factory — missing fields default to `auto` mode with local fallback allowed and proof retention on.
-
-## Mission flow
-
-### Launch + preflight
-
-Mission preflight surfaces computer-use readiness:
-
-- Required proof kinds for the selected phase profile (from `collectRequiredComputerUseKindsFromPhases`, which reads `phase.validationGate.evidenceRequirements`).
-- Current `ComputerUsePolicy`.
-- Approved external backends currently available.
-- Whether ADE can satisfy the proof contract externally, only through fallback, or not at all (hard block).
-
-If proof is required but not satisfiable, preflight blocks launch.
-
-### Run monitoring
-
-Mission run detail includes a Computer Use section rendering a `ComputerUseOwnerSnapshot` via `buildComputerUseOwnerSnapshot`. It shows:
-
-- Active or inferred backend (from latest artifact, policy preference, or first available).
-- External-first vs fallback mode.
-- Recent activity (backend state, tool usage, artifact ingestion, missing proof kinds).
-- Recent retained artifacts.
-- Proof coverage summary (present kinds vs required kinds).
-
-### Artifact review + closeout
-
-Artifact review UI:
-
-- Inspect screenshots, traces, logs, videos, verification outputs.
-- See backend provenance and linked owners.
-- Mark review state: `accepted`, `needs_more`, `dismissed`, `published`.
-- Route to related owners: lane, GitHub PR, Linear issue, automation run.
-
-Mission closeout can use broker-managed artifacts regardless of whether they came from Ghost OS, agent-browser, or fallback.
-
-## Chat flow
-
-Computer use is first-class in normal chat too:
-
-- Session policy toggle in the chat header (`CU Off`, `CU Auto`, `CU On`, `Fallback`, `Proof`).
-- Inline monitor in the thread with current proof summary, active backend, fallback mode, recent activity.
-- Artifact review surface with the same accept / dismiss / more-proof / publish actions.
-- Promotion path: attach a chat-session artifact to a mission, lane, PR, or Linear issue without losing provenance.
-
-## Gotchas
-
-- **ADE local is fallback-only.** Do not expand it into a general-purpose automation engine. If an approved external backend covers the required kind, prefer the external backend.
-- **Allowed import roots are a hard trust boundary.** Adding a new root (e.g. a new backend's cache dir) requires a code change in `computerUseArtifactBrokerService.ts`.
-- **`secureCopyFromDescriptor` uses `O_NOFOLLOW`.** Don't relax this — symlink-based attacks escape the allowed-roots check otherwise.
-- **Ghost OS status is shelled out via `spawnSync("ghost", ["status"])`.** Timeout is 5 seconds. A hung `ghost` binary throttles the readiness check — make sure the CLI responds quickly.
-- **`ghost doctor` process health detection parses human-readable output.** The regex `GHOST_DOCTOR_PROCESS_REGEX` is the parsing boundary; changes to Ghost OS output format require updating both the regex and the tests.
-- **agent-browser is not an ADE CLI.** Don't treat its artifacts as coming from an ADE CLI transport — they come through the `agentBrowserArtifactAdapter` payload parser.
-- **`inferSupportedKindsFromExternalTool` is heuristic.** It reads the tool name + description. Backends with ambiguous names may be misclassified — prefer explicit declarations via the broker backend registration.
+- `proofObserver.ts` and its test.
+- `ComputerUsePolicy` (`off`/`auto`/`enabled`, `allowLocalFallback`, `retainProof`, `preferredBackend`) — and the helpers `createDefaultComputerUsePolicy`, `normalizeComputerUsePolicy`, `isComputerUseModeEnabled`, `summarizePolicy`.
+- Per-phase `evidenceRequirements` math and the mission preflight coverage/readiness gate.
+- Settings > Computer Use panel.
+- Ghost OS-specific readiness probes (`ghost status` / `ghost doctor` shelling and regex parsing).
+- MCP tool delivery for computer use.
 
 ## Cross-links
 
-- `backends.md` — Ghost OS, agent-browser, ADE local fallback in detail.
-- `artifact-broker.md` — the broker's ingestion, ownership, review, and publication model.
-- `settings-and-readiness.md` — the Settings > Computer Use surface and readiness checks.
-- `../missions/README.md` — mission preflight and run monitoring read from the broker.
-- `../cto/linear-integration.md` — Linear closeout can attach broker-managed artifacts as proof.
-- `../automations/README.md` — automations request computer-use proof via the mission surface.
+- [`../proof.md`](../proof.md) — `ade proof` CLI and the drawer UI contract.
+- [`../missions/README.md`](../missions/README.md) — mission detail renders the Proof tab from the same broker.
+- [`../cto/linear-integration.md`](../cto/linear-integration.md) — Linear closeout can attach broker-managed artifacts as proof.
+- [`../automations/README.md`](../automations/README.md) — automations that dispatch agent work rely on the agent's own `ade proof` calls; no automation-level proof policy exists.
+
+## Detail docs
+
+The three detail docs in this folder describe the pre-rebuild control plane (Ghost OS readiness probe, policy matrix, phase-based coverage). They are retained for historical context but do not reflect the current shipping system.
+
+- [`backends.md`](./backends.md) — pre-rebuild backend catalog.
+- [`artifact-broker.md`](./artifact-broker.md) — pre-rebuild broker model, including the passive observer.
+- [`settings-and-readiness.md`](./settings-and-readiness.md) — pre-rebuild Settings > Computer Use panel.

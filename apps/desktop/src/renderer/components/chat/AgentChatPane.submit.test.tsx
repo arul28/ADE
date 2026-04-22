@@ -4,11 +4,10 @@ import React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
-import {
-  createDefaultComputerUsePolicy,
-  type AgentChatEventEnvelope,
-  type AgentChatSession,
-  type AgentChatSessionSummary,
+import type {
+  AgentChatEventEnvelope,
+  AgentChatSession,
+  AgentChatSessionSummary,
 } from "../../../shared/types";
 import { getModelById } from "../../../shared/modelRegistry";
 import { invalidateAiDiscoveryCache } from "../../lib/aiDiscoveryCache";
@@ -36,7 +35,6 @@ function buildSession(sessionId: string, overrides: Partial<AgentChatSessionSumm
     goal: null,
     completion: null,
     reasoningEffort: "xhigh",
-    computerUse: createDefaultComputerUsePolicy(),
     executionMode: "focused",
     interactionMode: null,
     ...overrides,
@@ -54,7 +52,6 @@ function buildCreatedSession(sessionId: string, overrides: Partial<AgentChatSess
     sessionProfile: "workflow",
     reasoningEffort: "xhigh",
     executionMode: "focused",
-    computerUse: createDefaultComputerUsePolicy(),
     createdAt: "2026-03-24T05:57:45.700Z",
     lastActivityAt: "2026-03-24T05:57:45.700Z",
     ...overrides,
@@ -603,7 +600,6 @@ describe("AgentChatPane submit recovery", () => {
       permissionMode: "default",
       interactionMode: "default",
       claudePermissionMode: "default",
-      computerUse: session.computerUse,
     };
     sessions[0] = updatedSession;
     resolveUpdateSession(updatedSession);

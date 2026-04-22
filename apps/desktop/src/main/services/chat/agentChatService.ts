@@ -58,10 +58,6 @@ import {
 } from "../shared/utils";
 import type { EpisodicSummaryService } from "../memory/episodicSummaryService";
 import { DEFAULT_FLUSH_PROMPT } from "../memory/compactionFlushPrompt";
-import {
-  createDefaultComputerUsePolicy,
-  normalizeComputerUsePolicy,
-} from "../../../shared/types";
 import type {
   AgentChatApprovalDecision,
   AgentChatCancelSteerArgs,
@@ -108,7 +104,6 @@ import type {
   PendingInputSource,
   AgentChatUpdateSessionArgs,
   ComputerUseBackendStatus,
-  ComputerUsePolicy,
   ThinkingLevel,
   TerminalSessionStatus,
   TerminalToolType,
@@ -237,7 +232,6 @@ type PersistedChatState = {
   automationId?: string | null;
   automationRunId?: string | null;
   capabilityMode?: CtoCapabilityMode;
-  computerUse?: ComputerUsePolicy;
   completion?: AgentChatCompletionReport | null;
   threadId?: string;
   /** Cursor ACP session id for resume across app restarts (best-effort). */
@@ -1615,15 +1609,12 @@ function composeLaunchDirectives(baseText: string, directives: Array<string | nu
 }
 
 export function buildComputerUseDirective(
-  policy: ComputerUsePolicy | null | undefined,
   backendStatus: ComputerUseBackendStatus | null,
 ): string | null {
-  const effective = createDefaultComputerUsePolicy(policy ?? undefined);
-
   const hasExternalBackends = backendStatus
     ? backendStatus.backends.some((b) => b.available)
     : false;
-  const hasLocalFallback = effective.allowLocalFallback;
+  const hasLocalFallback = backendStatus?.localFallback.available ?? true;
 
   // No backends and no local fallback → skip the directive entirely.
   if (!hasExternalBackends && !hasLocalFallback && backendStatus != null) {
@@ -2359,10 +2350,6 @@ function normalizePersistedExecutionMode(value: unknown): AgentChatExecutionMode
 
 function normalizePersistedInteractionMode(value: unknown): AgentChatInteractionMode | undefined {
   return normalizePersistedEnum(value, VALID_INTERACTION_MODES);
-}
-
-function normalizePersistedComputerUse(value: unknown): ComputerUsePolicy {
-  return normalizeComputerUsePolicy(value, createDefaultComputerUsePolicy());
 }
 
 function normalizePersistedCompletion(value: unknown): AgentChatCompletionReport | undefined {
@@ -3413,8 +3400,7 @@ export function createAgentChatService(args: {
     laneId,
     sessionProfile,
     identityKey,
-    computerUse,
-  }: Pick<AgentChatCreateArgs, "laneId" | "sessionProfile" | "identityKey" | "computerUse">): string[] => {
+  }: Pick<AgentChatCreateArgs, "laneId" | "sessionProfile" | "identityKey">): string[] => {
     const effectiveSessionProfile = sessionProfile ?? "workflow";
     if (effectiveSessionProfile === "light") return [];
 
@@ -3424,7 +3410,6 @@ export function createAgentChatService(args: {
       laneService,
       prService: prService ?? undefined,
       computerUseArtifactBrokerService: computerUseArtifactBrokerRef ?? undefined,
-      computerUsePolicy: computerUse,
       onReportCompletion: null,
       sessionId,
       laneId,
@@ -4763,7 +4748,6 @@ export function createAgentChatService(args: {
       ...(managed.session.automationId ? { automationId: managed.session.automationId } : {}),
       ...(managed.session.automationRunId ? { automationRunId: managed.session.automationRunId } : {}),
       ...(managed.session.capabilityMode ? { capabilityMode: managed.session.capabilityMode } : {}),
-      ...(managed.session.computerUse ? { computerUse: managed.session.computerUse } : {}),
       ...(managed.session.completion ? { completion: managed.session.completion } : {}),
       ...(managed.session.threadId ? { threadId: managed.session.threadId } : {}),
       ...(managed.runtime?.kind === "cursor" && managed.runtime.acpSessionId
@@ -4860,7 +4844,6 @@ export function createAgentChatService(args: {
       const identityKey = normalizeIdentityKey(record.identityKey);
       const surface = record.surface === "automation" ? "automation" : "work";
       const capabilityMode = normalizeCapabilityMode(record.capabilityMode);
-      const computerUse = normalizePersistedComputerUse(record.computerUse);
       const completion = normalizePersistedCompletion(record.completion);
       if (!laneId || !model) return null;
       const recentConversationEntries = Array.isArray(record.recentConversationEntries)
@@ -4909,7 +4892,6 @@ export function createAgentChatService(args: {
           ? { automationRunId: record.automationRunId.trim() }
           : {}),
         ...(capabilityMode ? { capabilityMode } : {}),
-        ...(computerUse ? { computerUse } : {}),
         ...(completion ? { completion } : {}),
         ...(typeof record.threadId === "string" && record.threadId.trim().length
           ? { threadId: record.threadId.trim() }
@@ -5894,7 +5876,6 @@ export function createAgentChatService(args: {
         ...(persisted?.permissionMode ? { permissionMode: persisted.permissionMode } : {}),
         ...(persisted?.identityKey ? { identityKey: persisted.identityKey } : {}),
         capabilityMode: persisted?.capabilityMode ?? inferCapabilityMode(provider),
-        computerUse: normalizePersistedComputerUse(persisted?.computerUse),
         completion: persisted?.completion ?? null,
         status: mapTerminalStatusToChatStatus(row.status),
         idleSinceAt: persisted?.idleSinceAt ?? null,
@@ -10158,7 +10139,6 @@ export function createAgentChatService(args: {
     surface,
     automationId,
     automationRunId,
-    computerUse,
     requestedCwd,
   }: AgentChatCreateArgs): Promise<AgentChatSession> => {
     const launchContext = resolveLaneLaunchContext({
@@ -10229,7 +10209,6 @@ export function createAgentChatService(args: {
         : undefined;
     const normalizedCursorConfigValues = normalizeCursorConfigValueRecord(requestedCursorConfigValues);
     const capabilityMode = inferCapabilityMode(effectiveProvider);
-    const computerUsePolicy = normalizeComputerUsePolicy(computerUse, createDefaultComputerUsePolicy());
     let effectivePermissionMode = identityKey
       ? normalizeIdentityPermissionMode(requestedPermMode, effectiveProvider)
       : requestedPermMode;
@@ -10324,7 +10303,6 @@ export function createAgentChatService(args: {
         automationId: automationId?.trim() ? automationId.trim() : null,
         automationRunId: automationRunId?.trim() ? automationRunId.trim() : null,
         capabilityMode,
-        computerUse: computerUsePolicy,
         completion: null,
         status: "idle",
         idleSinceAt: null,
@@ -10472,7 +10450,6 @@ export function createAgentChatService(args: {
       opencodePermissionMode: managed.session.opencodePermissionMode,
       permissionMode: managed.session.permissionMode,
       surface: managed.session.surface,
-      computerUse: managed.session.computerUse,
     });
 
     const createdManaged = ensureManagedSession(created.id);
@@ -10600,7 +10577,6 @@ export function createAgentChatService(args: {
           buildExecutionModeDirective(executionMode, managed.session.provider),
           buildClaudeInteractionModeDirective(managed.session.interactionMode, managed.session.provider),
           buildComputerUseDirective(
-            managed.session.computerUse,
             computerUseArtifactBrokerRef?.getBackendStatus() ?? null,
           ),
         ]);
@@ -12344,7 +12320,6 @@ export function createAgentChatService(args: {
       automationId: liveSession?.automationId ?? persisted?.automationId ?? null,
       automationRunId: liveSession?.automationRunId ?? persisted?.automationRunId ?? null,
       capabilityMode: liveSession?.capabilityMode ?? persisted?.capabilityMode ?? inferCapabilityMode(provider),
-      computerUse: liveSession?.computerUse ?? normalizePersistedComputerUse(persisted?.computerUse),
       completion: liveSession?.completion ?? persisted?.completion ?? null,
       status: liveSession?.status ?? (row.status === "running" ? "idle" : "ended"),
       idleSinceAt: (liveSession?.status ?? (row.status === "running" ? "idle" : "ended")) === "idle"
@@ -13113,7 +13088,6 @@ export function createAgentChatService(args: {
     cursorModeId,
     cursorConfigValues,
     permissionMode,
-    computerUse,
   }: AgentChatUpdateSessionArgs): Promise<AgentChatSession> => {
     const managed = ensureManagedSession(sessionId);
     const chatConfig = resolveChatConfig();
@@ -13122,7 +13096,6 @@ export function createAgentChatService(args: {
     const prevCodexApprovalPolicy = managed.session.codexApprovalPolicy;
     const prevCodexSandbox = managed.session.codexSandbox;
     const prevCodexConfigSource = managed.session.codexConfigSource;
-    let resetRuntimeForComputerUse = false;
 
     if (modelId !== undefined) {
       const nextModelId = String(modelId ?? "").trim();
@@ -13344,25 +13317,6 @@ export function createAgentChatService(args: {
       if (managed.runtime?.kind === "cursor" && !managed.runtime.busy) {
         await ensureCursorSessionState(managed, managed.runtime);
       }
-    }
-
-    if (computerUse !== undefined) {
-      const nextComputerUse = normalizeComputerUsePolicy(computerUse, createDefaultComputerUsePolicy());
-      const prevComputerUse = managed.session.computerUse;
-      managed.session.computerUse = nextComputerUse;
-      const nextSessionProfile = "workflow" as const;
-      if (managed.session.sessionProfile !== nextSessionProfile) {
-        managed.session.sessionProfile = nextSessionProfile;
-        resetRuntimeForComputerUse = true;
-      }
-      if (JSON.stringify(prevComputerUse) !== JSON.stringify(nextComputerUse)) {
-        resetRuntimeForComputerUse = true;
-      }
-    }
-
-    if (resetRuntimeForComputerUse && managed.runtime) {
-      teardownRuntime(managed, "model_switch");
-      refreshReconstructionContext(managed);
     }
 
     if (title !== undefined) {

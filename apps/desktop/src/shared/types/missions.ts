@@ -19,7 +19,6 @@ import type { AgentChatPermissionMode } from "./chat";
 import type {
   ComputerUseArtifactKind,
   ComputerUseOwnerSnapshot,
-  ComputerUsePolicy,
 } from "./computerUseArtifacts";
 
 /** @deprecated Use MissionProviderPermissions instead. Kept for backward compat with stored missions. */
@@ -633,7 +632,6 @@ export type MissionDetail = MissionSummary & {
   warnings?: MissionDetailWarning[];
   plannerPlan?: PlannerPlan | null;
   phaseConfiguration?: MissionPhaseConfiguration | null;
-  computerUse?: ComputerUsePolicy | null;
 };
 
 export type MissionAgentRuntimeConfig = {
@@ -680,8 +678,6 @@ export type CreateMissionArgs = {
   phaseOverride?: PhaseCard[];
   /** Per-provider worker permission overrides for this mission */
   permissionConfig?: MissionPermissionConfig;
-  /** Mission-scoped computer-use policy for external backends and fallback handling. */
-  computerUse?: ComputerUsePolicy | null;
 };
 
 export type MissionPreflightCheckId =
@@ -740,7 +736,6 @@ export type MissionPreflightResult = {
   budgetEstimate: MissionPreflightBudgetEstimate | null;
   approvalSummary?: MissionPreflightApprovalSummary | null;
   computerUse?: {
-    policy: ComputerUsePolicy;
     requiredKinds: ComputerUseArtifactKind[];
     missingKinds: ComputerUseArtifactKind[];
     availableExternalBackends: string[];

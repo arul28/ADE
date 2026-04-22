@@ -88,21 +88,21 @@ export function registerTour(tour: Tour): void {
 
 export function getTour(id: string, variant?: TourVariant): Tour | undefined {
   // Prefer the exact variant match. If none provided, try "full" first, then
-  // fall back to whichever variant is registered if only one exists.
+  // fall back to the first registered variant (by insertion order) for
+  // deterministic behaviour when only highlights exist.
   if (variant) {
     return tours.get(storageKey(id, variant));
   }
   const full = tours.get(storageKey(id, "full"));
   if (full) return full;
-  // Look for any single registered variant.
-  const matches = insertionOrder
-    .filter((k) => k.startsWith(`${id}::`))
-    .map((k) => tours.get(k))
-    .filter((t): t is Tour => Boolean(t));
-  if (matches.length === 1) return matches[0];
-  // If multiple variants exist but "full" isn't among them, return the first by
-  // registration order for a deterministic fallback.
-  return matches[0];
+  const prefix = `${id}::`;
+  for (const key of insertionOrder) {
+    if (key.startsWith(prefix)) {
+      const tour = tours.get(key);
+      if (tour) return tour;
+    }
+  }
+  return undefined;
 }
 
 export function listTours(variant?: TourVariant): Tour[] {
@@ -110,11 +110,8 @@ export function listTours(variant?: TourVariant): Tour[] {
   for (const key of insertionOrder) {
     const tour = tours.get(key);
     if (!tour) continue;
-    if (variant === undefined) {
-      out.push(tour);
-    } else if ((tour.variant ?? "full") === variant) {
-      out.push(tour);
-    }
+    if (variant !== undefined && (tour.variant ?? "full") !== variant) continue;
+    out.push(tour);
   }
   return out;
 }

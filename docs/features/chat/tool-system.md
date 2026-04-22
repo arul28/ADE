@@ -115,7 +115,7 @@ in `workflowTools.ts`.
 |---|---|
 | `createLane({ name, description?, parentLaneId? })` | Creates a new lane (git worktree + branch). Returns lane id, branch ref, worktree path. |
 | `createPrFromLane({ laneId, title?, body? })` | Creates a pull request from the lane's changes. |
-| `captureScreenshot()` | Screenshots the current environment. Gated by `ComputerUsePolicy` (must be enabled + allow local fallback, unless a remote backend is wired). |
+| `captureScreenshot()` | Screenshots the current environment and files the result through the proof broker. macOS-only (backed by `screencapture`); returns `blocked_by_capability` on other platforms. No policy gate. |
 | `reportCompletion({ status, summary, artifacts, blockerDescription? })` | Persists an `AgentChatCompletionReport` on the session. Renders a closeout card in the transcript. |
 | `prRefreshIssueInventory({ prNumber })` | Refreshes checks, review threads, and comments for a PR. |
 | `prRerunFailedChecks({ prNumber })` | Re-triggers failed GitHub Actions check runs. |
@@ -134,14 +134,15 @@ When a CTO spawns a chat via `launchPrIssueResolutionChat` (see
 `apps/desktop/src/main/services/prs/prIssueResolver.ts`), the spawned
 chat gets these four tools in its palette.
 
-### Computer-use gate
+### Proof capture
 
-`captureScreenshot` consults `WorkflowToolDeps.computerUsePolicy`:
-
-- `isComputerUseModeEnabled(policy.mode)` must be true.
-- `policy.allowLocalFallback` controls whether the local screenshot
-  path is allowed; otherwise the tool errors and defers to the remote
-  artifact broker.
+`captureScreenshot` files the resulting image through
+`computerUseArtifactBrokerService.ingestArtifacts()`. It is not gated by
+a policy — the proof-observer model (and `ComputerUsePolicy`) was
+removed. The tool still reports `blocked_by_capability` when it runs on
+a platform without a supported capture backend (Linux/Windows); the
+agent can fall back to `ade proof attach <path>` with a headless-browser
+or Playwright-produced PNG in that case.
 
 ## Tier 3: coordinator tools
 

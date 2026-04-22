@@ -481,7 +481,6 @@ export type AgentChatSession = {
   automationId?: string | null;
   automationRunId?: string | null;
   capabilityMode?: CtoCapabilityMode;
-  computerUse?: ComputerUsePolicy;
   completion?: AgentChatCompletionReport | null;
   status: AgentChatSessionStatus;
   idleSinceAt?: string | null;
@@ -518,7 +517,6 @@ export type AgentChatSessionSummary = {
   automationId?: string | null;
   automationRunId?: string | null;
   capabilityMode?: CtoCapabilityMode;
-  computerUse?: ComputerUsePolicy;
   completion?: AgentChatCompletionReport | null;
   status: AgentChatSessionStatus;
   idleSinceAt?: string | null;
@@ -604,7 +602,6 @@ export type AgentChatCreateArgs = {
   surface?: AgentChatSurface;
   automationId?: string | null;
   automationRunId?: string | null;
-  computerUse?: ComputerUsePolicy | null;
   requestedCwd?: string;
 };
 
@@ -710,7 +707,6 @@ export type AgentChatUpdateSessionArgs = {
   opencodePermissionMode?: AgentChatOpenCodePermissionMode;
   cursorModeId?: string | null;
   cursorConfigValues?: Record<string, AgentChatCursorConfigValue> | null;
-  computerUse?: ComputerUsePolicy | null;
 };
 
 export type AgentChatSlashCommand = {

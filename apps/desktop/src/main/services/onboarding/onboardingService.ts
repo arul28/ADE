@@ -511,19 +511,10 @@ export function createOnboardingService(args: {
   ): OnboardingTourProgress => {
     // Backward-compat overload: (tourId, index) — legacy signature, writes to "full".
     // New overload: (tourId, variant, index) — variant-aware.
-    let variant: OnboardingTourVariant;
-    let rawIndex: number;
-    if (typeof indexOrVariant === "number") {
-      variant = DEFAULT_VARIANT;
-      rawIndex = indexOrVariant;
-    } else {
-      variant = coerceVariant(indexOrVariant);
-      rawIndex = typeof maybeIndex === "number" ? maybeIndex : 0;
-    }
-    const safeIndex =
-      typeof rawIndex === "number" && Number.isFinite(rawIndex) && rawIndex >= 0
-        ? Math.floor(rawIndex)
-        : 0;
+    const usingLegacySignature = typeof indexOrVariant === "number";
+    const variant = usingLegacySignature ? DEFAULT_VARIANT : coerceVariant(indexOrVariant);
+    const rawIndex = usingLegacySignature ? indexOrVariant : (maybeIndex ?? 0);
+    const safeIndex = Number.isFinite(rawIndex) && rawIndex >= 0 ? Math.floor(rawIndex) : 0;
     return updateTourVariantEntry(tourId, variant, { lastStepIndex: safeIndex });
   };
 
@@ -554,8 +545,8 @@ export function createOnboardingService(args: {
   const markTutorialDismissed = (permanent: boolean): OnboardingTourProgress =>
     writeTutorial({
       dismissedAt: nowIso(),
-      silenced: permanent ? true : getTourProgress().tutorial.silenced,
       inProgress: false,
+      ...(permanent ? { silenced: true } : {}),
     });
 
   const markTutorialCompleted = (): OnboardingTourProgress =>

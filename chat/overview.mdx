@@ -102,34 +102,11 @@ Chat in ADE is always scoped — it operates within a defined context boundary t
 
 ---
 
-## Computer Use Policy
-The chat header displays the current **computer-use policy** for the session. This controls whether and how the agent can invoke computer-use capabilities (browser automation, screenshot capture, desktop interaction).
+## Proof Capture
 
-Click the policy chip to change it for the current session.
+Chat agents can leave **intentional evidence** of their work by calling the `ade proof` CLI — screenshots, short recordings, or ingested browser traces. There is no per-session policy chip anymore; the agent decides when a step deserves a proof, runs the CLI, and the captured artifact is linked to the chat session automatically.
 
-<AccordionGroup>
-  <Accordion title="CU Off — computer use disabled">
-    The agent cannot invoke any computer-use tools. Use this for sessions focused purely on code changes where you do not want any visual verification steps.
-  </Accordion>
-  <Accordion title="CU Auto — ADE decides">
-    ADE enables computer use when the agent's task naturally calls for it — e.g., verifying a UI change, testing a web flow, or checking a rendered output. The agent will not use computer use for tasks that can be completed via file and terminal tools alone.
-  </Accordion>
-  <Accordion title="CU On — always available">
-    Computer use tools are always in the agent's tool palette. The agent may invoke them freely. Use this when you are explicitly working on UI-heavy tasks.
-  </Accordion>
-  <Accordion title="Fallback — try without, then use if needed">
-    The agent first attempts to complete the task without computer use. If it cannot (e.g., a required verification only works via a browser), it falls back to computer use automatically.
-  </Accordion>
-  <Accordion title="Proof — require proof artifacts">
-    Computer use is available, but every action must produce a proof artifact (a screenshot or browser trace). All proof artifacts are collected and can be attached to a PR or Linear issue. Recommended when the session will feed into a code review.
-  </Accordion>
-</AccordionGroup>
-
-When computer use is active, a **monitoring panel** expands below the chat. It shows:
-
-- Recent screenshots captured during the session
-- Browser action log (clickable to expand each action)
-- A proof summary for the current session
+Captured proofs appear in the session artifact panel and can be promoted to the lane's durable context, attached to a mission, or published to a PR or Linear issue. See [Proof Overview](/computer-use/overview) for the full workflow.
 
 ---
 

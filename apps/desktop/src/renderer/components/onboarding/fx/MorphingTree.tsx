@@ -136,31 +136,24 @@ export const MorphingTree = forwardRef<MorphingTreeHandle, MorphingTreeProps>(fu
       <AnimatePresence>
         {visibleBranches.map((branch) => {
           const isPruning = pruning.has(branch.name);
-          const rad = (branch.angle * Math.PI) / 180;
-          // Direction: alternate left/right by sign of angle.
-          const side = branch.angle < 0 ? -1 : branch.angle === 0 ? 1 : 1;
-          // Endpoint offset from trunk midpoint.
-          const endX = cx + Math.sin(rad) * branchLen * Math.sign(side || 1) + (branch.angle === 0 ? 0 : 0);
-          // Simpler: compute endpoint using angle directly from trunk mid to the right.
           const dirX = Math.sign(branch.angle || 1);
           const absAngle = Math.abs(branch.angle);
           const dx = Math.sin((absAngle * Math.PI) / 180) * branchLen;
           const dy = -Math.cos((absAngle * Math.PI) / 180) * branchLen * 0.4;
           const ex = cx + dx * dirX;
           const ey = trunkMidY + dy;
-          // Control point for quadratic bezier: slight curve.
           const ctrlX = cx + dx * dirX * 0.4;
           const ctrlY = trunkMidY + dy * 0.2;
           const d = `M ${cx} ${trunkMidY} Q ${ctrlX} ${ctrlY} ${ex} ${ey}`;
           const isHighlighted = highlight === branch.name;
-          const anyHighlighted = highlight !== null;
-          const dim = anyHighlighted && !isHighlighted;
+          const dim = highlight !== null && !isHighlighted;
           const stroke = isHighlighted ? "var(--color-accent)" : "var(--color-fg)";
-          const strokeOpacity = dim ? 0.25 : isHighlighted ? 1 : 0.8;
-          // Avoid unused var warnings from exploratory calc:
-          void endX;
+          let strokeOpacity: number;
+          if (dim) strokeOpacity = 0.25;
+          else if (isHighlighted) strokeOpacity = 1;
+          else strokeOpacity = 0.8;
 
-          const pathLength = reduced ? 1 : isPruning ? 0 : 1;
+          const pathLength = reduced || !isPruning ? 1 : 0;
 
           return (
             <motion.g key={branch.name}>
