@@ -1828,6 +1828,7 @@ final class DatabaseService {
   }
 
   func fetchIntegrationProposals() -> [IntegrationProposal] {
+    guard let projectId = currentProjectId() else { return [] }
     let sql = """
       select id,
              source_lane_ids_json,
@@ -1854,10 +1855,13 @@ final class DatabaseService {
              cleanup_completed_at,
              resolution_state_json
         from integration_proposals
+       where project_id = ?
        order by created_at desc
     """
 
-    return query(sql) { statement in
+    return query(sql, bind: { [self] statement in
+      try self.bindText(projectId, to: statement, index: 1)
+    }, map: { statement in
       IntegrationProposalRow(
         proposalId: stringValue(statement, index: 0) ?? "",
         sourceLaneIdsJson: stringValue(statement, index: 1) ?? "[]",
@@ -1884,7 +1888,7 @@ final class DatabaseService {
         cleanupCompletedAt: stringValue(statement, index: 22),
         resolutionStateJson: stringValue(statement, index: 23)
       )
-    }.map { row in
+    }).map { row in
       IntegrationProposal(
         proposalId: row.proposalId,
         sourceLaneIds: decodeJson(row.sourceLaneIdsJson, as: [String].self) ?? [],
@@ -2755,7 +2759,7 @@ final class DatabaseService {
     if let activeProjectIdOverride {
       return activeProjectIdOverride
     }
-    return queryString("select id from projects order by created_at asc limit 1")
+    return queryString("select id from projects order by last_opened_at desc, created_at desc limit 1")
   }
 
   private func hasTable(named tableName: String) -> Bool {

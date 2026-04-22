@@ -2,6 +2,7 @@
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { OnboardingTourProgress } from "../../shared/types";
+import { _resetRegistryForTests, registerTour } from "../onboarding/registry";
 
 function emptyProgress(): OnboardingTourProgress {
   return {
@@ -57,6 +58,17 @@ import { useOnboardingStore } from "./onboardingStore";
 
 function resetStore() {
   progress = emptyProgress();
+  _resetRegistryForTests();
+  registerTour({
+    id: "lanes",
+    title: "Lanes",
+    route: "/lanes",
+    steps: [
+      { id: "one", target: "", title: "One", body: "First step" },
+      { id: "two", target: "", title: "Two", body: "Second step" },
+      { id: "three", target: "", title: "Three", body: "Third step" },
+    ],
+  });
   useOnboardingStore.setState({
     activeTourId: null,
     activeStepIndex: 0,
@@ -101,6 +113,12 @@ describe("onboardingStore", () => {
     expect(useOnboardingStore.getState().activeTourId).toBe("lanes");
     expect(useOnboardingStore.getState().activeStepIndex).toBe(0);
     expect(mockOnboarding.updateTourStep).toHaveBeenCalledWith("lanes", 0);
+  });
+
+  it("startTour ignores unknown tour ids", async () => {
+    await useOnboardingStore.getState().startTour("missing-tour");
+    expect(useOnboardingStore.getState().activeTourId).toBeNull();
+    expect(mockOnboarding.updateTourStep).not.toHaveBeenCalled();
   });
 
   it("nextStep / prevStep advance and persist the index, never below 0", async () => {

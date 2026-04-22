@@ -1277,12 +1277,6 @@ describe("adeRpcServer", () => {
     await initialize(handler, { callerId: "coord-1", role: "orchestrator" });
     const response = await callTool(handler, "get_environment_info", {});
 
-    if (process.platform !== "darwin") {
-      expect(response.isError).toBe(true);
-      expect(JSON.stringify(response.error ?? response.structuredContent ?? {})).toContain("macOS only");
-      return;
-    }
-
     expect(response.isError).toBeUndefined();
     expect(response.structuredContent.platform).toBeTypeOf("string");
     expect(response.structuredContent.capabilities).toBeTruthy();

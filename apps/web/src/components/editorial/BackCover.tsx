@@ -78,8 +78,9 @@ export function BackCover() {
               rel="noreferrer"
               className="inline-flex items-center gap-2 rounded-[2px] bg-[color:var(--color-cream)] px-[22px] py-[14px] text-[15px] font-medium text-[color:var(--color-bg)] transition-colors duration-200 hover:bg-white"
             >
-              <Download className="h-4 w-4" /> Download DMG{" "}
-              <span className="font-serif italic">→</span>
+              <Download aria-hidden="true" className="h-4 w-4" /> Download DMG{" "}
+              <span aria-hidden="true" className="font-serif italic">→</span>
+              <span className="sr-only">opens GitHub releases in a new tab</span>
             </a>
             <a
               href={LINKS.github}
@@ -87,7 +88,8 @@ export function BackCover() {
               rel="noreferrer"
               className="inline-flex items-center gap-2 rounded-[2px] border border-[color:var(--color-hairline-strong)] px-[22px] py-[14px] text-[15px] font-medium text-[color:var(--color-cream)] transition-colors hover:border-[color:var(--color-cream)] hover:bg-white/[0.04]"
             >
-              <Github className="h-4 w-4" /> View source on GitHub
+              <Github aria-hidden="true" className="h-4 w-4" /> View source on GitHub
+              <span className="sr-only">opens in a new tab</span>
             </a>
           </motion.div>
 

@@ -848,6 +848,9 @@ final class SyncService: ObservableObject {
       }
       saveProfile(previousProfile)
       refreshProjectCatalog()
+      localStateRevision += 1
+      refreshActiveSessionsAndSnapshot()
+      scheduleWorkspaceSnapshotWrite()
       connectionState = .disconnected
       currentAddress = nil
       if previousProfile != nil, previousToken != nil {

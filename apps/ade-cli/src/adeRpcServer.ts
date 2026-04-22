@@ -4794,7 +4794,10 @@ async function runTool(args: {
 
   if (name === "get_environment_info") {
     const includeDisplays = asBoolean(toolArgs.includeDisplays, false);
-    const capabilities = ensureLocalComputerUse(name, "environmentInfo");
+    if (!isLocalComputerUseAllowed(callerCtx)) {
+      ensureLocalComputerUse(name, "environmentInfo");
+    }
+    const capabilities = getLocalComputerUseCapabilities();
     const frontmostApp = capabilities.environmentInfo.available
       ? tryLocalCommand("osascript", [
           "-e",

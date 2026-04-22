@@ -583,6 +583,14 @@ final class ADETests: XCTestCase {
       insert into pr_group_members(id, group_id, pr_id, lane_id, position, role) values
         ('member-one', 'group-one', 'pr-one', 'lane-one', 0, 'source'),
         ('member-two', 'group-two', 'pr-two', 'lane-two', 0, 'source');
+      insert into integration_proposals(
+        id, project_id, source_lane_ids_json, base_branch, steps_json, pairwise_results_json,
+        lane_summaries_json, overall_outcome, created_at, status, linked_group_id, linked_pr_id
+      ) values
+        ('proposal-one', 'project-1', '["lane-one"]', 'main', '[]', '[]', '[]', 'pending',
+         '2026-04-22T00:30:00.000Z', 'proposed', 'group-one', 'pr-one'),
+        ('proposal-two', 'project-2', '["lane-two"]', 'main', '[]', '[]', '[]', 'pending',
+         '2026-04-22T00:40:00.000Z', 'proposed', 'group-two', 'pr-two');
     """)
 
     database.setActiveProjectId("project-1")
@@ -592,6 +600,7 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(database.fetchPullRequestGroupMembers(groupId: "group-one").map(\.prId), ["pr-one"])
     XCTAssertNotNil(database.fetchPullRequestSnapshot(prId: "pr-one"))
     XCTAssertNil(database.fetchPullRequestSnapshot(prId: "pr-two"))
+    XCTAssertEqual(database.fetchIntegrationProposals().map(\.proposalId), ["proposal-one"])
 
     database.setActiveProjectId("project-2")
     XCTAssertEqual(database.fetchPullRequests().map(\.id), ["pr-two"])
@@ -601,6 +610,7 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(database.fetchPullRequestGroupMembers(groupId: "group-one").map(\.prId), [])
     XCTAssertNil(database.fetchPullRequestSnapshot(prId: "pr-one"))
     XCTAssertNotNil(database.fetchPullRequestSnapshot(prId: "pr-two"))
+    XCTAssertEqual(database.fetchIntegrationProposals().map(\.proposalId), ["proposal-two"])
 
     database.close()
   }

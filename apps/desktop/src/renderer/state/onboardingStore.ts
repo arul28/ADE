@@ -155,14 +155,15 @@ export const useOnboardingStore = create<OnboardingState>((set, get) => ({
     const id = tourId.trim();
     if (!id) return;
     const tour = getTour(id);
-    const ctx = createTourCtx(tour?.ctxInit?.() ?? {});
+    if (!tour) return;
+    const ctx = createTourCtx(tour.ctxInit?.() ?? {});
     set({ activeTourId: id, activeStepIndex: 0, activeTourCtx: ctx });
     const onboarding = api();
     if (onboarding) {
       const progress = await onboarding.updateTourStep(id, 0);
       set({ progress });
     }
-    await runBeforeEnter(tour?.steps[0], ctx);
+    await runBeforeEnter(tour.steps[0], ctx);
   },
 
   nextStep: async () => {
@@ -194,10 +195,11 @@ export const useOnboardingStore = create<OnboardingState>((set, get) => ({
   prevStep: async () => {
     const { activeTourId, activeStepIndex } = get();
     if (!activeTourId) return;
+    if (activeStepIndex <= 0) return;
     const tour = getTour(activeTourId);
     const ctx = get().activeTourCtx ?? createTourCtx(tour?.ctxInit?.() ?? {});
     await runAfterLeave(tour?.steps[activeStepIndex], ctx);
-    const nextIndex = Math.max(0, activeStepIndex - 1);
+    const nextIndex = activeStepIndex - 1;
     set({ activeStepIndex: nextIndex, activeTourCtx: ctx });
     const onboarding = api();
     if (onboarding) {

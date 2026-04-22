@@ -24,7 +24,8 @@ export function CompetitorEquation() {
   const reduceMotion = useReducedMotion() ?? true;
 
   const stagger = 0.065;
-  const rowEnd = 0.1 + COMPETITORS.length * stagger;
+  const rowChildCount = COMPETITORS.length * 2 - 1;
+  const rowEnd = 0.1 + rowChildCount * stagger;
 
   const container = {
     hidden: {},

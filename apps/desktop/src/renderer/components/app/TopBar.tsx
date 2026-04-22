@@ -118,7 +118,9 @@ export function TopBar() {
     const refreshSyncStatus = () => {
       void window.ade.sync.getStatus().then((snapshot) => {
         if (!cancelled) setSyncSnapshot(snapshot);
-      }).catch(() => {});
+      }).catch(() => {
+        if (!cancelled) setSyncSnapshot(null);
+      });
     };
     setSyncSnapshot(null);
     refreshSyncStatus();

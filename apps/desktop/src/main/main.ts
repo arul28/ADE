@@ -3625,45 +3625,64 @@ app.whenReady().then(async () => {
       };
     }
 
-    const ctx = await ensureProjectContextForMobileSync(targetRoot);
-    if (!ctx.syncService) {
-      throw new Error("Sync is not available for that project.");
-    }
-    await ctx.syncService.initialize();
-    const status = await ctx.syncService.getStatus();
-    if (!status.bootstrapToken || !status.pairingConnectInfo) {
-      throw new Error("That project is not ready for phone sync yet.");
-    }
-    const recent = (readGlobalState(globalStatePath).recentProjects ?? [])
-      .map(toRecentProjectSummary)
-      .find((entry) => normalizeProjectRoot(entry.rootPath) === targetRoot) ?? null;
-    const project = await mobileProjectSummaryForContext(ctx, recent);
-    const leaseExpiresAt = Date.now() + MOBILE_SYNC_HANDOFF_LEASE_MS;
-    mobileSyncHandoffLeases.set(targetRoot, leaseExpiresAt);
-    const existingLeaseTimer = mobileSyncHandoffLeaseTimers.get(targetRoot);
-    if (existingLeaseTimer) clearTimeout(existingLeaseTimer);
-    const leaseTimer = setTimeout(() => {
-      mobileSyncHandoffLeaseTimers.delete(targetRoot);
-      if (mobileSyncHandoffLeases.get(targetRoot) === leaseExpiresAt) {
-        mobileSyncHandoffLeases.delete(targetRoot);
+    const hadExistingContext = projectContexts.has(targetRoot);
+    try {
+      const ctx = await ensureProjectContextForMobileSync(targetRoot);
+      if (!ctx.syncService) {
+        throw new Error("Sync is not available for that project.");
       }
+      await ctx.syncService.initialize();
+      const status = await ctx.syncService.getStatus();
+      if (!status.bootstrapToken || !status.pairingConnectInfo) {
+        throw new Error("That project is not ready for phone sync yet.");
+      }
+      const recent = (readGlobalState(globalStatePath).recentProjects ?? [])
+        .map(toRecentProjectSummary)
+        .find((entry) => normalizeProjectRoot(entry.rootPath) === targetRoot) ?? null;
+      const project = await mobileProjectSummaryForContext(ctx, recent);
+      const leaseExpiresAt = Date.now() + MOBILE_SYNC_HANDOFF_LEASE_MS;
+      mobileSyncHandoffLeases.set(targetRoot, leaseExpiresAt);
+      const existingLeaseTimer = mobileSyncHandoffLeaseTimers.get(targetRoot);
+      if (existingLeaseTimer) clearTimeout(existingLeaseTimer);
+      const leaseTimer = setTimeout(() => {
+        mobileSyncHandoffLeaseTimers.delete(targetRoot);
+        if (mobileSyncHandoffLeases.get(targetRoot) === leaseExpiresAt) {
+          mobileSyncHandoffLeases.delete(targetRoot);
+        }
+        scheduleProjectContextRebalance();
+      }, MOBILE_SYNC_HANDOFF_LEASE_MS + 100);
+      leaseTimer.unref?.();
+      mobileSyncHandoffLeaseTimers.set(targetRoot, leaseTimer);
+      projectLastActivatedAt.set(targetRoot, Date.now());
       scheduleProjectContextRebalance();
-    }, MOBILE_SYNC_HANDOFF_LEASE_MS + 100);
-    leaseTimer.unref?.();
-    mobileSyncHandoffLeaseTimers.set(targetRoot, leaseTimer);
-    projectLastActivatedAt.set(targetRoot, Date.now());
-    scheduleProjectContextRebalance();
-    return {
-      ok: true,
-      project,
-      connection: {
-        authKind: "bootstrap",
-        token: status.bootstrapToken,
-        hostIdentity: status.pairingConnectInfo.hostIdentity,
-        port: status.pairingConnectInfo.port,
-        addressCandidates: status.pairingConnectInfo.addressCandidates,
-      },
-    };
+      return {
+        ok: true,
+        project,
+        connection: {
+          authKind: "bootstrap",
+          token: status.bootstrapToken,
+          hostIdentity: status.pairingConnectInfo.hostIdentity,
+          port: status.pairingConnectInfo.port,
+          addressCandidates: status.pairingConnectInfo.addressCandidates,
+        },
+      };
+    } catch (error) {
+      const leaseTimer = mobileSyncHandoffLeaseTimers.get(targetRoot);
+      if (leaseTimer) {
+        clearTimeout(leaseTimer);
+        mobileSyncHandoffLeaseTimers.delete(targetRoot);
+      }
+      mobileSyncHandoffLeases.delete(targetRoot);
+      if (!hadExistingContext && projectContexts.has(targetRoot)) {
+        await closeProjectContext(targetRoot);
+      } else {
+        scheduleProjectContextRebalance();
+      }
+      return {
+        ok: false,
+        message: error instanceof Error ? error.message : "Unable to prepare phone sync for that project.",
+      };
+    }
   }
 
   const persistRecentProject = (
