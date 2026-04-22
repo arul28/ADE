@@ -2,7 +2,6 @@ import type { TourStep } from "../registry";
 import { docs } from "../docsLinks";
 import { useAppStore } from "../../state/appStore";
 
-const CREATE_LANE_FALLBACK_MS = 30_000;
 const CREATE_LANE_DIALOG_REQUIRES = ["createLaneDialogOpen"] as const;
 const CREATE_LANE_DIALOG_SELECTOR = '[data-tour="lanes.createDialog"]';
 const CREATE_LANE_BASELINE_KEY = "createLaneBaselineIds";
@@ -67,9 +66,6 @@ export function buildCreateLaneDialogWalkthrough(): TourStep[] {
           ctx?.set(CREATE_LANE_BASELINE_KEY, currentNonPrimaryLaneIds());
         }
       },
-      fallbackAfterMs: CREATE_LANE_FALLBACK_MS,
-      fallbackNextLabel: "Continue without creating",
-      fallbackNotice: "The dialog can be reopened from the Lanes toolbar.",
       focusTarget: true,
       exitOnOutsideInteraction: true,
       allowedInteractionSelectors: [CREATE_LANE_DIALOG_SELECTOR],
@@ -82,9 +78,6 @@ export function buildCreateLaneDialogWalkthrough(): TourStep[] {
       body: "**Primary** creates a fresh lane. **Branch** imports existing branch work. **Child** stacks work on another lane. Leave **Primary** selected for this tutorial.",
       placement: "right",
       requires: CREATE_LANE_DIALOG_REQUIRES,
-      fallbackAfterMs: CREATE_LANE_FALLBACK_MS,
-      fallbackNextLabel: "Continue without creating",
-      fallbackNotice: "The dialog can be reopened from the Lanes toolbar.",
       preventTargetInteraction: true,
       exitOnOutsideInteraction: true,
       allowedInteractionSelectors: [CREATE_LANE_DIALOG_SELECTOR],
@@ -97,9 +90,6 @@ export function buildCreateLaneDialogWalkthrough(): TourStep[] {
       body: "This test lane branches off the selected base, usually **main** or **primary**. Rebase suggestions follow this base later.",
       placement: "right",
       requires: CREATE_LANE_DIALOG_REQUIRES,
-      fallbackAfterMs: CREATE_LANE_FALLBACK_MS,
-      fallbackNextLabel: "Continue without creating",
-      fallbackNotice: "The dialog can be reopened from the Lanes toolbar.",
       focusTarget: true,
       exitOnOutsideInteraction: true,
       allowedInteractionSelectors: [CREATE_LANE_DIALOG_SELECTOR],
@@ -112,9 +102,6 @@ export function buildCreateLaneDialogWalkthrough(): TourStep[] {
       body: "**Branch** is for work that already exists on a local or remote branch. Do not choose it for this tutorial lane.",
       placement: "right",
       requires: CREATE_LANE_DIALOG_REQUIRES,
-      fallbackAfterMs: CREATE_LANE_FALLBACK_MS,
-      fallbackNextLabel: "Continue without creating",
-      fallbackNotice: "The dialog can be reopened from the Lanes toolbar.",
       ghostCursor: {
         from: '[data-tour="lanes.createDialog.tabs"]',
         to: '[data-tour="lanes.createDialog.branchTab"]',
@@ -131,9 +118,6 @@ export function buildCreateLaneDialogWalkthrough(): TourStep[] {
       body: "**Child** creates a lane that stacks on another lane. Useful later; for now, keep **Primary** selected.",
       placement: "right",
       requires: CREATE_LANE_DIALOG_REQUIRES,
-      fallbackAfterMs: CREATE_LANE_FALLBACK_MS,
-      fallbackNextLabel: "Continue without creating",
-      fallbackNotice: "The dialog can be reopened from the Lanes toolbar.",
       ghostCursor: {
         from: '[data-tour="lanes.createDialog.tabs"]',
         to: '[data-tour="lanes.createDialog.childTab"]',
