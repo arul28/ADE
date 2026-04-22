@@ -13041,7 +13041,6 @@ export function createAgentChatService(args: {
     }
     for (const [sessionId, managed] of managedSessions) {
       try {
-        managed.deleted = true;
         clearSubagentSnapshots(sessionId);
         for (const pending of managed.localPendingInputs.values()) {
           pending.resolve({ decision: "cancel" });
@@ -13050,7 +13049,10 @@ export function createAgentChatService(args: {
         managed.closed = true;
         managed.endedNotified = true;
         managed.ctoSessionStartedAt = null;
+        // teardownRuntime must run before `deleted = true` so its persistChatState()
+        // call can write the preserved Claude resume metadata for "shutdown".
         teardownRuntime(managed, "shutdown");
+        managed.deleted = true;
       } catch {
         // ignore emergency shutdown failures
       }

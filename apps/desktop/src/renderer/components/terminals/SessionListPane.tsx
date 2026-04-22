@@ -154,8 +154,12 @@ export const SessionListPane = React.memo(function SessionListPane({
   const missingLaneSessionGroups = useMemo(() => {
     if (!sessionsGroupedByLane) return [];
     const knownLaneIds = new Set(lanes.map((lane) => lane.id));
-    const latestStartedAt = (sessions: TerminalSessionSummary[]): number =>
-      Math.max(...sessions.map((session) => new Date(session.startedAt).getTime()));
+    const latestStartedAt = (sessions: TerminalSessionSummary[]): number => {
+      const times = sessions
+        .map((session) => new Date(session.startedAt).getTime())
+        .filter(Number.isFinite);
+      return times.length > 0 ? Math.max(...times) : -Infinity;
+    };
     return [...sessionsGroupedByLane.entries()]
       .filter(([laneId, sessions]) => !knownLaneIds.has(laneId) && sessions.length > 0)
       .sort(([leftLaneId, leftSessions], [rightLaneId, rightSessions]) => {

@@ -24,9 +24,9 @@ func makeWorkChatEvent(from event: AgentChatEvent) -> WorkChatEvent {
   case .text(let text, let messageId, let turnId, let itemId):
     let normalizedMessageId = messageId?.trimmingCharacters(in: .whitespacesAndNewlines)
     let normalizedItemId = itemId?.trimmingCharacters(in: .whitespacesAndNewlines)
-    let stableItemId = normalizedMessageId?.isEmpty == false
-      ? normalizedMessageId
-      : (normalizedItemId?.isEmpty == false ? normalizedItemId : nil)
+    let stableItemId = normalizedItemId?.isEmpty == false
+      ? normalizedItemId
+      : (normalizedMessageId?.isEmpty == false ? normalizedMessageId : nil)
     return .assistantText(text: text, turnId: turnId, itemId: stableItemId)
   case .toolCall(let tool, let args, let itemId, _, let parentItemId, let turnId):
     return .toolCall(

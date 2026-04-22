@@ -26,6 +26,11 @@ func errorPresentation(for category: String) -> WorkErrorPresentation {
 func buildWorkChatMessages(from transcript: [WorkChatEnvelope]) -> [WorkChatMessage] {
   var messages: [WorkChatMessage] = []
   let metadataByTurn = workTurnModelMetadataByTurn(from: transcript)
+  // Tracks whether the previous envelope was assistantText so nil-itemId
+  // streaming fragments can merge into it. MUST be reset to false on every
+  // non-assistantText branch below — otherwise a subsequent nil-itemId
+  // fragment could wrongly merge across an intervening tool call or user
+  // message. Any new `WorkChatEvent` case added here must preserve that reset.
   var previousEnvelopeWasAssistantText = false
 
   for envelope in transcript {
