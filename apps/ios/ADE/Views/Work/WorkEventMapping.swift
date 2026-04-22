@@ -2,6 +2,20 @@ import SwiftUI
 import UIKit
 import AVKit
 
+func workStableTimelineItemId(itemId: String, logicalItemId: String?) -> String {
+  let logical = logicalItemId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+  return logical.isEmpty ? itemId : logical
+}
+
+/// Optional-itemId overload for transcript parsing, where the raw event dict
+/// may omit `itemId`. Keeps the resolution policy in one place so desktop and
+/// transcript code paths stay in sync.
+func workStableTimelineItemId(itemId: String?, logicalItemId: String?) -> String? {
+  let logical = logicalItemId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+  if !logical.isEmpty { return logical }
+  return itemId
+}
+
 private final class WorkANSIAttributedStringCacheBox: NSObject {
   let value: AttributedString
 
@@ -23,19 +37,19 @@ func makeWorkChatEvent(from event: AgentChatEvent) -> WorkChatEvent {
     return .userMessage(text: text, turnId: turnId, steerId: steerId, deliveryState: deliveryState, processed: processed)
   case .text(let text, _, let turnId, let itemId):
     return .assistantText(text: text, turnId: turnId, itemId: itemId)
-  case .toolCall(let tool, let args, let itemId, _, let parentItemId, let turnId):
+  case .toolCall(let tool, let args, let itemId, let logicalItemId, let parentItemId, let turnId):
     return .toolCall(
       tool: tool,
       argsText: prettyPrintedRemoteJSONValue(args),
-      itemId: itemId,
+      itemId: workStableTimelineItemId(itemId: itemId, logicalItemId: logicalItemId),
       parentItemId: parentItemId,
       turnId: turnId
     )
-  case .toolResult(let tool, let result, let itemId, _, let parentItemId, let turnId, let status):
+  case .toolResult(let tool, let result, let itemId, let logicalItemId, let parentItemId, let turnId, let status):
     return .toolResult(
       tool: tool,
       resultText: prettyPrintedRemoteJSONValue(result),
-      itemId: itemId,
+      itemId: workStableTimelineItemId(itemId: itemId, logicalItemId: logicalItemId),
       parentItemId: parentItemId,
       turnId: turnId,
       status: toolStatus(from: status ?? "running")
@@ -115,8 +129,8 @@ func makeWorkChatEvent(from event: AgentChatEvent) -> WorkChatEvent {
   case .autoApprovalReview(_, let reviewStatus, let action, let review, let turnId):
     let summary = [reviewStatus.rawValue.capitalized, action, review].compactMap { $0 }.joined(separator: "\n")
     return .autoApprovalReview(summary: summary, turnId: turnId)
-  case .webSearch(let query, let action, let itemId, _, let turnId, let status):
-    return .webSearch(query: query, action: action, status: toolStatus(from: status), itemId: itemId, turnId: turnId)
+  case .webSearch(let query, let action, let itemId, let logicalItemId, let turnId, let status):
+    return .webSearch(query: query, action: action, status: toolStatus(from: status), itemId: workStableTimelineItemId(itemId: itemId, logicalItemId: logicalItemId), turnId: turnId)
   case .planText(let text, let turnId, _):
     return .planText(text: text, turnId: turnId)
   case .toolUseSummary(let summary, _, let turnId):
@@ -135,18 +149,22 @@ func makeWorkChatEvent(from event: AgentChatEvent) -> WorkChatEvent {
       blockerDescription: report.blockerDescription,
       turnId: turnId
     )
-  case .command(let command, let cwd, let output, let itemId, _, let turnId, let exitCode, let durationMs, let status):
+  case .command(let command, let cwd, let output, let itemId, let logicalItemId, let turnId, let exitCode, let durationMs, let status):
     return .command(
       command: command,
       cwd: cwd,
       output: output,
       status: toolStatus(from: status),
-      itemId: itemId,
+      itemId: workStableTimelineItemId(itemId: itemId, logicalItemId: logicalItemId),
       exitCode: exitCode,
       durationMs: durationMs,
       turnId: turnId
     )
   case .fileChange(let path, let diff, let kind, let itemId, _, let turnId, let status):
+    // File-change events deliberately keep the raw `itemId`: the desktop
+    // emitter produces one event per file with a shared `logicalItemId` but
+    // distinct raw IDs (see agentChatService `patch` handling). Collapsing to
+    // `logicalItemId` would overwrite earlier paths in `buildWorkFileChangeCards`.
     return .fileChange(path: path, diff: diff, kind: kind.rawValue, status: toolStatus(from: status ?? "running"), itemId: itemId, turnId: turnId)
   case .stepBoundary:
     return .unknown(type: "step_boundary")

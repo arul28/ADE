@@ -5661,6 +5661,149 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(toolEntries.first?.id, "tool-call-dup")
   }
 
+  func testWorkChatToolLifecycleUsesLogicalItemIdForStableCards() {
+    let call = makeWorkChatEvent(from: .toolCall(
+      tool: "functions.exec_command",
+      args: .object(["cmd": .string("pwd")]),
+      itemId: "tool-start-1",
+      logicalItemId: "tool-logical-1",
+      parentItemId: nil,
+      turnId: "turn-1"
+    ))
+    let result = makeWorkChatEvent(from: .toolResult(
+      tool: "functions.exec_command",
+      result: .object(["stdout": .string("/tmp/project")]),
+      itemId: "tool-result-1",
+      logicalItemId: "tool-logical-1",
+      parentItemId: nil,
+      turnId: "turn-1",
+      status: "completed"
+    ))
+
+    let transcript = [
+      WorkChatEnvelope(sessionId: "chat-1", timestamp: "2026-04-20T00:00:01.000Z", sequence: 1, event: call),
+      WorkChatEnvelope(sessionId: "chat-1", timestamp: "2026-04-20T00:00:02.000Z", sequence: 2, event: result),
+    ]
+    let cards = buildWorkToolCards(from: transcript)
+
+    XCTAssertEqual(cards.count, 1)
+    XCTAssertEqual(cards.first?.id, "tool-logical-1")
+    XCTAssertEqual(cards.first?.status, .completed)
+    XCTAssertNotNil(cards.first?.argsText)
+    XCTAssertNotNil(cards.first?.resultText)
+  }
+
+  func testParseWorkChatTranscriptUsesLogicalItemIdForStableToolCards() {
+    let raw = """
+    {"sessionId":"chat-1","timestamp":"2026-04-20T00:00:01.000Z","sequence":1,"event":{"type":"tool_call","tool":"functions.exec_command","args":{"cmd":"pwd"},"itemId":"tool-start-1","logicalItemId":"tool-logical-1","turnId":"turn-1"}}
+    {"sessionId":"chat-1","timestamp":"2026-04-20T00:00:02.000Z","sequence":2,"event":{"type":"tool_result","tool":"functions.exec_command","result":{"stdout":"/tmp/project"},"itemId":"tool-result-1","logicalItemId":"tool-logical-1","turnId":"turn-1","status":"completed"}}
+    """
+    let transcript = parseWorkChatTranscript(raw)
+    let cards = buildWorkToolCards(from: transcript)
+
+    XCTAssertEqual(cards.count, 1)
+    XCTAssertEqual(cards.first?.id, "tool-logical-1")
+    XCTAssertEqual(cards.first?.status, .completed)
+  }
+
+  /// Regression test: file_change events with a shared `logicalItemId` but
+  /// distinct raw `itemId` (OpenCode's patch emitter) must stay separate —
+  /// one card per file, not collapsed to a single entry.
+  func testBuildWorkFileChangeCardsKeepsDistinctFilesUnderSharedLogicalItemId() {
+    let firstFile = makeWorkChatEvent(from: .fileChange(
+      path: "Sources/First.swift",
+      diff: "diff-1",
+      kind: .modify,
+      itemId: "patch-1:Sources/First.swift",
+      logicalItemId: "patch-1",
+      turnId: "turn-1",
+      status: "completed"
+    ))
+    let secondFile = makeWorkChatEvent(from: .fileChange(
+      path: "Sources/Second.swift",
+      diff: "diff-2",
+      kind: .modify,
+      itemId: "patch-1:Sources/Second.swift",
+      logicalItemId: "patch-1",
+      turnId: "turn-1",
+      status: "completed"
+    ))
+
+    let transcript = [
+      WorkChatEnvelope(sessionId: "chat-1", timestamp: "2026-04-22T00:00:01.000Z", sequence: 1, event: firstFile),
+      WorkChatEnvelope(sessionId: "chat-1", timestamp: "2026-04-22T00:00:02.000Z", sequence: 2, event: secondFile),
+    ]
+    let cards = buildWorkFileChangeCards(from: transcript)
+
+    XCTAssertEqual(cards.count, 2)
+    XCTAssertEqual(Set(cards.map(\.path)), ["Sources/First.swift", "Sources/Second.swift"])
+    XCTAssertEqual(Set(cards.map(\.id)), [
+      "patch-1:Sources/First.swift",
+      "patch-1:Sources/Second.swift",
+    ])
+  }
+
+  /// Same regression, but driven through the transcript parser path so the
+  /// JSON-in / cards-out pipeline also preserves per-file identity.
+  func testParseWorkChatTranscriptKeepsDistinctFileChangesUnderSharedLogicalItemId() {
+    let raw = """
+    {"sessionId":"chat-1","timestamp":"2026-04-22T00:00:01.000Z","sequence":1,"event":{"type":"file_change","path":"Sources/First.swift","diff":"diff-1","kind":"modify","itemId":"patch-1:Sources/First.swift","logicalItemId":"patch-1","turnId":"turn-1","status":"completed"}}
+    {"sessionId":"chat-1","timestamp":"2026-04-22T00:00:02.000Z","sequence":2,"event":{"type":"file_change","path":"Sources/Second.swift","diff":"diff-2","kind":"modify","itemId":"patch-1:Sources/Second.swift","logicalItemId":"patch-1","turnId":"turn-1","status":"completed"}}
+    """
+    let transcript = parseWorkChatTranscript(raw)
+    let cards = buildWorkFileChangeCards(from: transcript)
+
+    XCTAssertEqual(cards.count, 2)
+    XCTAssertEqual(Set(cards.map(\.path)), ["Sources/First.swift", "Sources/Second.swift"])
+  }
+
+  func testBuildWorkTimelineCollapsesConsecutiveToolCardsIntoLatestGroup() {
+    let transcript: [WorkChatEnvelope] = [
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-04-20T00:00:01.000Z",
+        sequence: 1,
+        event: .toolCall(tool: "functions.Read", argsText: "{\"path\":\"README.md\"}", itemId: "tool-1", parentItemId: nil, turnId: "turn-1")
+      ),
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-04-20T00:00:02.000Z",
+        sequence: 2,
+        event: .toolResult(tool: "functions.Read", resultText: "{\"content\":\"ADE\"}", itemId: "tool-1", parentItemId: nil, turnId: "turn-1", status: .completed)
+      ),
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-04-20T00:00:03.000Z",
+        sequence: 3,
+        event: .toolCall(tool: "functions.exec_command", argsText: "{\"cmd\":\"npm test\"}", itemId: "tool-2", parentItemId: nil, turnId: "turn-1")
+      ),
+    ]
+    let snapshot = buildWorkChatTimelineSnapshot(
+      transcript: transcript,
+      fallbackEntries: [],
+      artifacts: [],
+      localEchoMessages: []
+    )
+
+    let toolGroups = snapshot.timeline.compactMap { entry -> WorkToolGroupModel? in
+      guard case .toolGroup(let group) = entry.payload else { return nil }
+      return group
+    }
+    let standaloneToolCards = snapshot.timeline.compactMap { entry -> WorkToolCardModel? in
+      guard case .toolCard(let card) = entry.payload else { return nil }
+      return card
+    }
+
+    XCTAssertEqual(toolGroups.count, 1)
+    XCTAssertEqual(toolGroups.first?.members.count, 2)
+    XCTAssertTrue(standaloneToolCards.isEmpty)
+    guard case .tool(let latest)? = toolGroups.first?.latest else {
+      return XCTFail("Expected the latest visible group member to be the newest tool call.")
+    }
+    XCTAssertEqual(latest.id, "tool-2")
+    XCTAssertEqual(latest.status, .running)
+  }
+
   func testBuildWorkCommandCardsDedupesDuplicateCommandEventsByItemId() {
     let transcript: [WorkChatEnvelope] = [
       WorkChatEnvelope(
