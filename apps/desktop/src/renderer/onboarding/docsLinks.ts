@@ -40,6 +40,8 @@ export const docs = {
   workspaceGraph: `${DOCS_BASE}/tools/workspace-graph`,
   computerUseOverview: `${DOCS_BASE}/computer-use/overview`,
   settingsGeneral: `${DOCS_BASE}/configuration/settings`,
+  prsOverview: `${DOCS_BASE}/tools/pull-requests`,
+  historyOverview: `${DOCS_BASE}/tools/history`,
 
   // Guides
   multiAgentSetup: `${DOCS_BASE}/missions/overview`, // TODO: verify — no dedicated guide yet

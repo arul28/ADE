@@ -56,8 +56,8 @@ export function TutorialPromptCard({
       if (tutorialBridge?.start) {
         await tutorialBridge.start();
       }
-      // Use startTutorial so backend state AND visual tour both fire.
-      await useOnboardingStore.getState().startTutorial();
+      // Visual tour — backend state is driven by tutorialBridge above.
+      await useOnboardingStore.getState().startTour("firstJourney");
     } finally {
       setBusy(false);
       onClose();

@@ -54,6 +54,10 @@ export type TourStep = {
   ghostCursor?: TourStepGhostCursor;
   actIntro?: TourStepActIntro;
   branches?: (ctx: TourCtx) => string | null;
+  requires?: readonly string[];
+  fallbackAfterMs?: number;
+  fallbackNextLabel?: string;
+  fallbackNotice?: string;
 };
 
 export type TourVariant = "full" | "highlights";

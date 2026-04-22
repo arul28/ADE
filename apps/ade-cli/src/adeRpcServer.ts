@@ -4988,7 +4988,6 @@ async function runTool(args: {
     }
     const result = runtime.computerUseArtifactBrokerService.ingest({
       backend: {
-        style: backendStyle,
         name: backendName,
         toolName: asOptionalTrimmedString(toolArgs.toolName),
         command: asOptionalTrimmedString(toolArgs.command),
@@ -6477,7 +6476,6 @@ export function createAdeRpcRequestHandler(args: {
       stepId: null,
       attemptId: null,
       ownerId: null,
-      computerUsePolicy: createDefaultComputerUsePolicy(),
     },
     askUserEvents: [],
     askUserRateLimit: {

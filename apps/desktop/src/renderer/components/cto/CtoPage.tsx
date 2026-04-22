@@ -521,7 +521,6 @@ export function CtoPage() {
       executionMode: session.executionMode ?? null,
       identityKey: session.identityKey,
       capabilityMode: session.capabilityMode,
-      computerUse: session.computerUse,
       status: session.status,
       startedAt: session.createdAt,
       endedAt: session.status === "ended" ? session.lastActivityAt : null,
