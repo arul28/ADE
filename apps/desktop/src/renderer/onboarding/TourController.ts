@@ -34,7 +34,7 @@ export type TourController = {
   next(): Promise<void>;
   prev(): Promise<void>;
   dismiss(): Promise<void>;
-  complete(): Promise<void>;
+  complete(opts?: { afterLeaveAlreadyRan?: boolean }): Promise<void>;
   getState(): TourControllerState;
   subscribe(cb: (state: TourControllerState) => void): () => void;
 };
@@ -203,8 +203,8 @@ export function createTourController(
 
     const nextIndex = resolveNextIndex(currentIndex);
     if (nextIndex >= activeTour.steps.length) {
-      // Past the end.
-      await complete();
+      // Past the end — afterLeave for the final step already ran above.
+      await complete({ afterLeaveAlreadyRan: true });
       return;
     }
     await enterStep(nextIndex);
@@ -226,15 +226,10 @@ export function createTourController(
     notify();
   }
 
-  async function complete(): Promise<void> {
+  async function complete(opts: { afterLeaveAlreadyRan?: boolean } = {}): Promise<void> {
     if (!activeTour) return;
     const lastIndex = activeTour.steps.length - 1;
-    // Only run afterLeave on the last step if we haven't already (i.e. if
-    // caller invoked complete() directly without a prior afterLeave path).
-    // `next()` drives afterLeave itself for the final step before calling
-    // complete(), but direct callers still deserve the hook — we guard here.
-    const currentIdx = state.stepIndex;
-    if (currentIdx === lastIndex) {
+    if (!opts.afterLeaveAlreadyRan && state.stepIndex === lastIndex) {
       await runAfterLeave(activeTour.steps[lastIndex]);
     }
     activeTour = null;

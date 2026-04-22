@@ -3,7 +3,7 @@ import { docs } from "../docsLinks";
 
 export const lanesTour: Tour = {
   id: "lanes",
-  title: "Lanes tour",
+  title: "Lanes walkthrough",
   route: "/lanes",
   steps: [
     {
@@ -72,7 +72,7 @@ export const lanesTour: Tour = {
     {
       target: '[data-tour="app.helpMenu"]',
       title: "Help lives here",
-      body: "The ? button holds every tour, the Glossary, and a link to the docs. Revisit it whenever you need a refresher.",
+      body: "The ? button holds every walkthrough, the Glossary, and a link to the docs. Revisit it whenever you need a refresher.",
       docUrl: docs.welcome,
       placement: "bottom",
     },

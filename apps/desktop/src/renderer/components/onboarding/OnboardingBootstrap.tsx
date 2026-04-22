@@ -46,6 +46,16 @@ export function OnboardingBootstrap() {
     !hasActiveProject ||
     showWelcome;
 
+  // Advance the first-journey tour when the user completes the "open project"
+  // step by actually selecting a project.
+  const prevHasActiveProjectRef = useRef(hasActiveProject);
+  useEffect(() => {
+    if (hasActiveProject && !prevHasActiveProjectRef.current && activeTourId === "first-journey") {
+      void useOnboardingStore.getState().nextStep();
+    }
+    prevHasActiveProjectRef.current = hasActiveProject;
+  }, [hasActiveProject, activeTourId]);
+
   // Auto-open welcome wizard on first run.
   useEffect(() => {
     if (!hydrated || !progress) return;

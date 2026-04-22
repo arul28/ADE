@@ -81,7 +81,6 @@ export function waitForSelector(
       observer.observe(document.documentElement || document, {
         childList: true,
         subtree: true,
-        attributes: true,
       });
     }
 

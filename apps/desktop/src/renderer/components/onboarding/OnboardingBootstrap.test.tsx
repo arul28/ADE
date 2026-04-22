@@ -11,7 +11,6 @@ import { OnboardingBootstrap } from "./OnboardingBootstrap";
 
 vi.mock("./tour/TourHost", () => ({ TourHost: () => null }));
 vi.mock("./DidYouKnow", () => ({ DidYouKnow: () => null }));
-vi.mock("./TutorialPromptCard", () => ({ TutorialPromptCard: () => null }));
 
 const EMPTY_PROGRESS = {
   wizardCompletedAt: null,

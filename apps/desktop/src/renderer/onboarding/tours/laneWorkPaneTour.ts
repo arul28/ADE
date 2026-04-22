@@ -3,7 +3,7 @@ import { docs } from "../docsLinks";
 
 export const laneWorkPaneTour: Tour = {
   id: "lane-work-pane",
-  title: "Lane work pane tour",
+  title: "Lane work pane walkthrough",
   route: "/lanes",
   steps: [
     {

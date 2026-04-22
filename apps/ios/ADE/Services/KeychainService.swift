@@ -13,15 +13,14 @@ final class KeychainService {
       kSecAttrService as String: service,
       kSecAttrAccount as String: account,
     ]
-    SecItemDelete(query as CFDictionary)
-    let addQuery: [String: Any] = [
-      kSecClass as String: kSecClassGenericPassword,
-      kSecAttrService as String: service,
-      kSecAttrAccount as String: account,
-      kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlock,
-      kSecValueData as String: data,
-    ]
-    SecItemAdd(addQuery as CFDictionary, nil)
+    let updateFields: [String: Any] = [kSecValueData as String: data]
+    let updateStatus = SecItemUpdate(query as CFDictionary, updateFields as CFDictionary)
+    if updateStatus == errSecItemNotFound {
+      var addQuery = query
+      addQuery[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
+      addQuery[kSecValueData as String] = data
+      SecItemAdd(addQuery as CFDictionary, nil)
+    }
   }
 
   private func loadString(account: String) -> String? {

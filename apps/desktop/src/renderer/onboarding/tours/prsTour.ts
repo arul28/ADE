@@ -2,7 +2,7 @@ import { registerTour, type Tour } from "../registry";
 
 export const prsTour: Tour = {
   id: "prs",
-  title: "Pull Requests tour",
+  title: "Pull Requests walkthrough",
   route: "/prs",
   steps: [],
 };

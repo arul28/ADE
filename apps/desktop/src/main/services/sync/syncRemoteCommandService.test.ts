@@ -1144,9 +1144,6 @@ describe("createSyncRemoteCommandService", () => {
           enabled: true,
           temperature: 0.5,
         },
-        computerUse: {
-          enabled: true,
-        },
         requestedCwd: "apps/ios",
       }));
 
@@ -1168,9 +1165,6 @@ describe("createSyncRemoteCommandService", () => {
           mode: "ask",
           enabled: true,
           temperature: 0.5,
-        },
-        computerUse: {
-          enabled: true,
         },
         requestedCwd: "apps/ios",
       });

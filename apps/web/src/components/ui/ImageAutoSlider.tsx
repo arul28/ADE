@@ -75,7 +75,8 @@ export function ImageAutoSlider() {
                 alt={img.alt}
                 className="h-full w-full object-cover object-top"
                 draggable={false}
-                loading="lazy"
+                loading={i < 3 ? "eager" : "lazy"}
+                fetchPriority={i === 0 ? "high" : undefined}
                 decoding="async"
               />
             </div>

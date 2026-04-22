@@ -3,7 +3,7 @@ import { docs } from "../docsLinks";
 
 export const filesTour: Tour = {
   id: "files",
-  title: "Files tab tour",
+  title: "Files tab walkthrough",
   route: "/files",
   steps: [
     {

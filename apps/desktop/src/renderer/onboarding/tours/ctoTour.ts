@@ -2,7 +2,7 @@ import { registerTour, type Tour } from "../registry";
 
 export const ctoTour: Tour = {
   id: "cto",
-  title: "CTO tour",
+  title: "CTO walkthrough",
   route: "/cto",
   steps: [],
 };
