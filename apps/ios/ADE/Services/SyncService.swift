@@ -2694,7 +2694,70 @@ final class SyncService: ObservableObject {
   }
 
   private func connectableAddresses(from addresses: [String]) -> [String] {
-    addresses
+    // The pairing secret is sent over ws:// (plaintext) immediately after
+    // `openSocket`, so only allow addresses we can trust on an unencrypted
+    // transport — loopback, RFC1918 LAN ranges, link-local, and Tailscale CGNAT.
+    addresses.filter { syncCanAttemptPlaintextWebSocket($0) }
+  }
+
+  private func syncCanAttemptPlaintextWebSocket(_ address: String) -> Bool {
+    let trimmed = address.trimmingCharacters(in: .whitespacesAndNewlines)
+    if trimmed.isEmpty { return false }
+
+    // Strip a leading scheme so raw hosts like "192.168.1.10:7878" and
+    // "ws://192.168.1.10:7878" both flow through the same path.
+    var host = trimmed
+    if let schemeRange = host.range(of: "://") {
+      let scheme = host[..<schemeRange.lowerBound].lowercased()
+      // wss:// is end-to-end encrypted; anything non-ws beyond that we don't know
+      // how to speak, so treat it conservatively.
+      if scheme == "wss" { return true }
+      if scheme != "ws" && scheme != "http" { return false }
+      host = String(host[schemeRange.upperBound...])
+    }
+
+    // Drop trailing path and query, then an optional :port.
+    if let slash = host.firstIndex(of: "/") { host = String(host[..<slash]) }
+    if let question = host.firstIndex(of: "?") { host = String(host[..<question]) }
+    if let bracketEnd = host.lastIndex(of: "]") {
+      // IPv6 literal: host is `[...]:port`.
+      host = String(host[host.index(after: host.startIndex)..<bracketEnd])
+    } else if let colon = host.lastIndex(of: ":") {
+      host = String(host[..<colon])
+    }
+    host = host.lowercased()
+    if host.isEmpty { return false }
+
+    if host == "localhost" || host.hasSuffix(".localhost") { return true }
+    if host.hasSuffix(".local") { return true } // Bonjour / mDNS
+    if host.hasSuffix(".ts.net") { return true } // Tailscale MagicDNS
+
+    if let v4 = IPv4Address(host) {
+      let bytes = v4.rawValue
+      guard bytes.count == 4 else { return false }
+      let a = bytes[0], b = bytes[1]
+      if a == 127 { return true } // loopback
+      if a == 10 { return true } // 10.0.0.0/8
+      if a == 172 && (16...31).contains(b) { return true } // 172.16.0.0/12
+      if a == 192 && b == 168 { return true } // 192.168.0.0/16
+      if a == 169 && b == 254 { return true } // link-local
+      if a == 100 && (64...127).contains(b) { return true } // Tailscale CGNAT 100.64.0.0/10
+      return false
+    }
+
+    if let v6 = IPv6Address(host) {
+      let bytes = v6.rawValue
+      guard bytes.count == 16 else { return false }
+      // ::1 loopback
+      if bytes == Data([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]) { return true }
+      // fc00::/7 unique-local
+      if (bytes[0] & 0xfe) == 0xfc { return true }
+      // fe80::/10 link-local
+      if bytes[0] == 0xfe && (bytes[1] & 0xc0) == 0x80 { return true }
+      return false
+    }
+
+    return false
   }
 
   private func noConnectableAddressError() -> NSError {

@@ -10,6 +10,7 @@ struct CtoTeamScreen: View {
   @State private var agents: [AgentIdentity] = []
   @State private var budget: AgentBudgetSnapshot?
   @State private var isLoading = false
+  @State private var loadError: String?
 
   @State private var showHireSheet = false
   @State private var pendingWakeup: Set<String> = []
@@ -36,6 +37,16 @@ struct CtoTeamScreen: View {
               ADECardSkeleton(rows: 2)
             }
           }
+          .padding(.horizontal, 16)
+        } else if agents.isEmpty && loadError != nil {
+          ADENoticeCard(
+            title: "Couldn't load workers",
+            message: loadError ?? "Unknown error.",
+            icon: "exclamationmark.triangle.fill",
+            tint: ADEColor.warning,
+            actionTitle: "Retry",
+            action: { Task { await load() } }
+          )
           .padding(.horizontal, 16)
         } else if agents.isEmpty {
           ADEEmptyStateView(
@@ -285,8 +296,16 @@ struct CtoTeamScreen: View {
     async let budgetR = CtoTeamAsyncResult { try await syncService.fetchCtoBudget() }
     let (agentsResult, budgetResult) = await (agentsR, budgetR)
 
-    if case .success(let fetched) = agentsResult {
+    switch agentsResult {
+    case .success(let fetched):
       agents = fetched
+      loadError = nil
+    case .failure(let error):
+      if syncService.connectionState.isHostUnreachable {
+        loadError = nil
+      } else {
+        loadError = (error as NSError).localizedDescription
+      }
     }
     if case .success(let snap) = budgetResult {
       budget = snap

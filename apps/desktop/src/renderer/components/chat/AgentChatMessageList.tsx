@@ -1930,13 +1930,6 @@ function renderEvent(
     const isLive = Boolean(options?.turnActive);
     const reasoningPreview = summarizeInlineText(reasoningText, 108);
 
-    const startTimestamp = typeof (event as any).startTimestamp === "string" ? (event as any).startTimestamp : null;
-    const durationMs = startTimestamp
-      ? new Date(envelope.timestamp).getTime() - new Date(startTimestamp).getTime()
-      : null;
-    const durationLabel = !isLive && durationMs != null && Number.isFinite(durationMs) && durationMs > 0
-      ? `${Math.max(1, Math.round(durationMs / 1000))}s`
-      : null;
 
     return (
       <motion.div
@@ -1961,14 +1954,7 @@ function renderEvent(
                   </span>
                 </span>
               ) : (
-                <>
-                  <span className="font-medium text-fg/55">Thought</span>
-                  {durationLabel ? (
-                    <span className="ade-liquid-glass-pill px-2 py-0.5 text-[9px] text-violet-300/40">
-                      {durationLabel}
-                    </span>
-                  ) : null}
-                </>
+                <span className="font-medium text-fg/55">Thought</span>
               )}
             </div>
           }
@@ -3268,6 +3254,8 @@ export function AgentChatMessageList({
       : turnModelState.lastModel;
     const isLatestWorkLog = index === latestWorkLogIndex;
 
+    const rowTurnActive = Boolean(currentTurn && activeTurnId && currentTurn === activeTurnId) && !sessionEnded;
+
     if (virtualized) {
       return (
         <MeasuredEventRow
@@ -3282,7 +3270,7 @@ export function AgentChatMessageList({
           surfaceMode={surfaceMode}
           surfaceProfile={surfaceProfile}
           assistantLabel={assistantLabel}
-          turnActive={Boolean(currentTurn && activeTurnId && currentTurn === activeTurnId)}
+          turnActive={rowTurnActive}
           sessionEnded={sessionEnded}
           isLatestWorkLog={isLatestWorkLog}
           onOpenWorkspacePath={openWorkspacePath}
@@ -3306,7 +3294,7 @@ export function AgentChatMessageList({
         surfaceMode={surfaceMode}
         surfaceProfile={surfaceProfile}
         assistantLabel={assistantLabel}
-        turnActive={Boolean(currentTurn && activeTurnId && currentTurn === activeTurnId)}
+        turnActive={rowTurnActive}
         sessionEnded={sessionEnded}
         isLatestWorkLog={isLatestWorkLog}
         onOpenWorkspacePath={openWorkspacePath}
@@ -3333,7 +3321,7 @@ export function AgentChatMessageList({
     return Math.max(0, h);
   }, [shouldVirtualize, endIndex, groupedRows.length, rowHeight]);
 
-  const streamingIndicator = showStreamingIndicator ? (
+  const streamingIndicator = showStreamingIndicator && !sessionEnded ? (
     <motion.div
       className="w-fit max-w-[min(100%,70ch)] pt-3 pb-2"
       initial={{ opacity: 0 }}

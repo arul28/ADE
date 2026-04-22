@@ -972,6 +972,62 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       });
   };
 
+  const unpublishTailnetDiscovery = async (): Promise<void> => {
+    if (!tailnetServeSignature) return;
+    tailnetServeSignature = null;
+    if (!shouldAttemptTailnetServiceAdvertise()) {
+      updateTailnetDiscoveryStatus({
+        state: "unavailable",
+        serviceName: SYNC_TAILNET_DISCOVERY_SERVICE_NAME,
+        servicePort: SYNC_TAILNET_DISCOVERY_SERVICE_PORT,
+        target: null,
+        updatedAt: nowIso(),
+        error: null,
+        stderr: null,
+      });
+      return;
+    }
+    const cli = resolveTailscaleCli();
+    try {
+      await execFileAsync(
+        cli,
+        ["serve", "--yes", `--service=${SYNC_TAILNET_DISCOVERY_SERVICE_NAME}`, "off"],
+        { timeout: 10_000 },
+      );
+      updateTailnetDiscoveryStatus({
+        state: "disabled",
+        serviceName: SYNC_TAILNET_DISCOVERY_SERVICE_NAME,
+        servicePort: SYNC_TAILNET_DISCOVERY_SERVICE_PORT,
+        target: null,
+        updatedAt: nowIso(),
+        error: null,
+        stderr: null,
+      });
+      args.logger.info("sync_host.tailnet_discovery_unpublished", {
+        service: SYNC_TAILNET_DISCOVERY_SERVICE_NAME,
+        servicePort: SYNC_TAILNET_DISCOVERY_SERVICE_PORT,
+      });
+    } catch (error: unknown) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      const code = (error as NodeJS.ErrnoException | null | undefined)?.code ?? null;
+      updateTailnetDiscoveryStatus({
+        state: code === "ENOENT" ? "unavailable" : "disabled",
+        serviceName: SYNC_TAILNET_DISCOVERY_SERVICE_NAME,
+        servicePort: SYNC_TAILNET_DISCOVERY_SERVICE_PORT,
+        target: null,
+        updatedAt: nowIso(),
+        error: code === "ENOENT" ? "Tailscale CLI was not found." : errorMessage,
+        stderr: null,
+      });
+      args.logger.warn("sync_host.tailnet_discovery_unpublish_failed", {
+        service: SYNC_TAILNET_DISCOVERY_SERVICE_NAME,
+        servicePort: SYNC_TAILNET_DISCOVERY_SERVICE_PORT,
+        error: errorMessage,
+        code,
+      });
+    }
+  };
+
   function send<TPayload>(ws: WebSocket, type: SyncEnvelope["type"], payload: TPayload, requestId?: string | null): void {
     ws.send(encodeSyncEnvelope({ type, payload, requestId, compressionThresholdBytes }));
   }
@@ -2003,6 +2059,11 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       clearInterval(pollTimer);
       clearInterval(heartbeatTimer);
       clearInterval(brainStatusTimer);
+      try {
+        await unpublishTailnetDiscovery();
+      } catch {
+        // Never throw from dispose.
+      }
       await new Promise<void>((resolve) => {
         const finish = () => resolve();
         for (const peer of peers) {

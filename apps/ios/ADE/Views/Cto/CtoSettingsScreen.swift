@@ -341,18 +341,22 @@ struct CtoSettingsScreen: View {
     errorMessage = nil
     defer { isLoading = false }
 
+    async let snapshotTask = syncService.fetchCtoState()
+    async let budgetTask = syncService.fetchCtoBudget()
+    async let linearTask = syncService.fetchLinearConnectionStatus()
+
     do {
-      self.snapshot = try await syncService.fetchCtoState()
+      self.snapshot = try await snapshotTask
     } catch {
       if self.snapshot == nil {
         self.errorMessage = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
       }
     }
 
-    if let value = try? await syncService.fetchCtoBudget() {
+    if let value = try? await budgetTask {
       self.budget = value
     }
-    if let value = try? await syncService.fetchLinearConnectionStatus() {
+    if let value = try? await linearTask {
       self.linearStatus = value
     }
   }

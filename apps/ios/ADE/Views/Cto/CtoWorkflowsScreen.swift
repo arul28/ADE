@@ -104,7 +104,7 @@ struct CtoWorkflowsScreen: View {
             )
           }
           .buttonStyle(.plain)
-          .disabled(isSyncing)
+          .disabled(isSyncing || syncService.connectionState.isHostUnreachable)
           .accessibilityLabel("Sync Linear now")
           .accessibilityHint("Triggers an immediate Linear workflow intake and dispatch cycle.")
         }

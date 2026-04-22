@@ -3644,6 +3644,7 @@ describe("createAgentChatService", () => {
           && event.event.turnId === "turn-1",
       );
 
+      const eventsBeforeReasoningDelta = events.length;
       mockState.emitCodexPayload({
         jsonrpc: "2.0",
         method: "item/reasoning/summaryTextDelta",
@@ -3661,19 +3662,26 @@ describe("createAgentChatService", () => {
           && event.event.itemId === "reasoning-1",
       );
 
-      expect(events).toEqual(expect.arrayContaining([
-        expect.objectContaining({
-          event: expect.objectContaining({
-            type: "activity",
-            activity: "thinking",
-            turnId: "turn-1",
-          }),
-        }),
+      const newEvents = events.slice(eventsBeforeReasoningDelta);
+      // The reasoning row must be produced by the post-delta boundary, not by
+      // any earlier turn-start bookkeeping.
+      expect(newEvents).toEqual(expect.arrayContaining([
         expect.objectContaining({
           event: expect.objectContaining({
             type: "reasoning",
             text: "Checking the relevant paths.",
             itemId: "reasoning-1",
+            turnId: "turn-1",
+          }),
+        }),
+      ]));
+      // And somewhere in the turn — coalescing across the initial turn-start
+      // activity is fine — a thinking activity must be tied to the same turn.
+      expect(events).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          event: expect.objectContaining({
+            type: "activity",
+            activity: "thinking",
             turnId: "turn-1",
           }),
         }),
@@ -6649,6 +6657,7 @@ describe("createAgentChatService", () => {
     const setPermissionMode = vi.fn().mockResolvedValue(undefined);
     const send = vi.fn().mockResolvedValue(undefined);
     let streamCall = 0;
+    let reasoningCountAfterDelta = -1;
 
     const stream = vi.fn(() => (async function* () {
       streamCall += 1;
@@ -6681,6 +6690,8 @@ describe("createAgentChatService", () => {
           },
         },
       };
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      reasoningCountAfterDelta = events.filter((event) => event.event.type === "reasoning").length;
       yield {
         type: "assistant",
         message: {
@@ -6722,6 +6733,9 @@ describe("createAgentChatService", () => {
       .map((event) => event.event)
       .filter((event): event is Extract<AgentChatEventEnvelope["event"], { type: "reasoning" }> => event.type === "reasoning");
     expect(reasoningEvents.map((event) => event.text)).toEqual(["Checking both imports before editing."]);
+    // The streamed thinking_delta must be what created the reasoning row — not the
+    // final assistant message (which would also produce a row if dedupe broke).
+    expect(reasoningCountAfterDelta).toBe(1);
     expect(events.some((event) => event.event.type === "activity" && event.event.activity === "thinking")).toBe(true);
     const sessionOpts = vi.mocked(unstable_v2_createSession).mock.calls[0]?.[0] as {
       executableArgs?: string[];
@@ -7458,14 +7472,18 @@ describe("createAgentChatService", () => {
     expect(
       events.filter((event) => event.event.type === "user_message"),
     ).toHaveLength(1);
+    const startedEvent = events.find(
+      (event): event is AgentChatEventEnvelope & {
+        event: Extract<AgentChatEventEnvelope["event"], { type: "status" }>;
+      } => event.event.type === "status" && event.event.turnStatus === "started",
+    );
+    expect(startedEvent).toBeTruthy();
     expect(
       events.some(
-        (event) => event.event.type === "status" && event.event.turnStatus === "started",
-      ),
-    ).toBe(true);
-    expect(
-      events.some(
-        (event) => event.event.type === "activity" && event.event.activity === "thinking",
+        (event) =>
+          event.event.type === "activity"
+          && event.event.activity === "thinking"
+          && event.event.turnId === startedEvent!.event.turnId,
       ),
     ).toBe(true);
 

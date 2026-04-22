@@ -208,10 +208,17 @@ struct QueueWorkflowCard: View {
   private func performLandingConfirmation(_ confirmation: WorkflowLandingConfirmation) {
     landingConfirmation = nil
     switch confirmation {
-    case .activePr(let prId):
-      onLand(prId, mergeMethod)
+    case .activePr(let capturedPrId):
+      // Guard against a stale snapshot: the active PR may have changed while
+      // the confirmation dialog was visible. Only dispatch if the card still
+      // points at the same PR the user approved.
+      guard let currentActivePrId = activeEntry?.prId,
+            currentActivePrId == capturedPrId else {
+        return
+      }
+      onLand(capturedPrId, mergeMethod)
     case .queueNext:
-      break
+      assertionFailure("QueueWorkflowCard does not support queueNext landing")
     }
   }
 }
@@ -449,10 +456,16 @@ struct PrMobileWorkflowCardView: View {
   private func performLandingConfirmation(_ confirmation: WorkflowLandingConfirmation) {
     landingConfirmation = nil
     switch confirmation {
-    case .activePr(let prId):
-      onLand(prId, mergeMethod)
-    case .queueNext(let groupId):
-      onLandQueueNext(groupId, mergeMethod)
+    case .activePr(let capturedPrId):
+      // If the active PR changed while the dialog was open, don't act on a
+      // stale id — the user approved a different PR than the one now active.
+      guard let currentActivePrId = card.activePrId, currentActivePrId == capturedPrId else {
+        return
+      }
+      onLand(capturedPrId, mergeMethod)
+    case .queueNext(let capturedGroupId):
+      guard card.groupId == capturedGroupId else { return }
+      onLandQueueNext(capturedGroupId, mergeMethod)
     }
   }
 

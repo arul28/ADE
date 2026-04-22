@@ -74,6 +74,7 @@ struct PrDetailView: View {
 
   private var canAttemptBlockedMerge: Bool {
     guard canRunPrActions else { return false }
+    guard !isCurrentPrDraft else { return false }
     guard let status = snapshot?.status else { return false }
     let state = status.state.isEmpty ? currentPr.state : status.state
     return state == "open" && !status.isMergeable && !status.mergeConflicts

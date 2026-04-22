@@ -246,7 +246,11 @@ struct DiscoverHostsSheet: View {
                 dismiss()
                 Task { await syncService.reconnectIfPossible(userInitiated: true) }
               } label: {
-                DiscoveredHostRow(host: savedHost, detailPrefix: "Saved Tailscale", accessoryText: "Reconnect")
+                DiscoveredHostRow(
+                  host: savedHost,
+                  detailPrefix: savedHost.tailscaleAddress == nil ? "Saved" : "Saved Tailscale",
+                  accessoryText: "Reconnect"
+                )
               }
               .buttonStyle(ADEScaleButtonStyle())
             }

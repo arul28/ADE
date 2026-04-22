@@ -395,7 +395,7 @@ function tailnetStatusCopy(status: SyncTailnetDiscoveryStatus, isLocalHost: bool
         color: COLORS.textMuted,
         title: isLocalHost ? `Not published as ${host}` : "Only the host desktop publishes tailnet discovery",
         detail: status.error || "Start phone sync hosting to publish tailnet discovery.",
-        canRetry: isLocalHost,
+        canRetry: false,
       };
   }
 }

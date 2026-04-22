@@ -222,6 +222,7 @@ export function LanesPage() {
   const [laneActionBusy, setLaneActionBusy] = useState(false);
   const [laneActionStatus, setLaneActionStatus] = useState<string | null>(null);
   const [laneActionError, setLaneActionError] = useState<string | null>(null);
+  const [laneActionKind, setLaneActionKind] = useState<"delete" | "archive" | "adopt" | null>(null);
   const [managedLaneIds, setManagedLaneIds] = useState<string[]>([]);
   const [conflictChipsByLane, setConflictChipsByLane] = useState<Record<string, ConflictChip[]>>({});
   const chipTimersRef = useRef<Map<string, number>>(new Map());
@@ -781,8 +782,13 @@ export function LanesPage() {
     return primaryBranches.filter((branch) => branch.isRemote && (!q || branch.name.toLowerCase().includes(q)));
   }, [primaryBranches, branchSearchQuery]);
 
-  const runLaneAction = async (fn: () => Promise<void>, status: string) => {
+  const runLaneAction = async (
+    fn: () => Promise<void>,
+    status: string,
+    kind: "delete" | "archive" | "adopt" = "delete",
+  ) => {
     setLaneActionBusy(true);
+    setLaneActionKind(kind);
     setLaneActionStatus(status);
     setLaneActionError(null);
     try {
@@ -794,6 +800,7 @@ export function LanesPage() {
     } finally {
       setLaneActionBusy(false);
       setLaneActionStatus(null);
+      setLaneActionKind(null);
     }
   };
 
@@ -871,7 +878,7 @@ export function LanesPage() {
       for (const lane of actionable) {
         await window.ade.lanes.archive({ laneId: lane.id });
       }
-    }, actionable.length > 1 ? `Archiving ${actionable.length} lanes...` : "Archiving lane...");
+    }, actionable.length > 1 ? `Archiving ${actionable.length} lanes...` : "Archiving lane...", "archive");
   };
 
   const deleteManagedLanes = async () => {
@@ -879,18 +886,34 @@ export function LanesPage() {
     const actionable = targets.filter((l) => l.laneType !== "primary");
     if (actionable.length === 0) return;
     if (deleteConfirmText.trim().toLowerCase() !== deletePhrase.toLowerCase()) return;
-    const deleteStatus =
-      deleteMode === "remote_branch"
-        ? actionable.length > 1
-          ? `Deleting ${actionable.length} lane worktrees, local branches, and remote branches...`
-          : "Deleting lane worktree, local branch, and remote branch..."
-        : deleteMode === "local_branch"
-          ? actionable.length > 1
-            ? `Deleting ${actionable.length} lane worktrees and local branches...`
-            : "Deleting lane worktree and local branch..."
-          : actionable.length > 1
-            ? `Deleting ${actionable.length} lane worktrees...`
-            : "Deleting lane worktree...";
+    const attachedCount = actionable.filter((l) => l.laneType === "attached").length;
+    const managedCount = actionable.length - attachedCount;
+    const deleteStatus = (() => {
+      if (managedCount === 0 && attachedCount > 0) {
+        return attachedCount > 1
+          ? `Unlinking ${attachedCount} attached lanes...`
+          : "Unlinking attached lane...";
+      }
+      const managedPhrase =
+        deleteMode === "remote_branch"
+          ? managedCount > 1
+            ? `${managedCount} lane worktrees, local branches, and remote branches`
+            : "lane worktree, local branch, and remote branch"
+          : deleteMode === "local_branch"
+            ? managedCount > 1
+              ? `${managedCount} lane worktrees and local branches`
+              : "lane worktree and local branch"
+            : managedCount > 1
+              ? `${managedCount} lane worktrees`
+              : "lane worktree";
+      if (attachedCount === 0) {
+        return `Deleting ${managedPhrase}...`;
+      }
+      const attachedPhrase = attachedCount > 1
+        ? `${attachedCount} attached lanes`
+        : "attached lane";
+      return `Unlinking ${attachedPhrase} and deleting ${managedPhrase}...`;
+    })();
     await runLaneAction(async () => {
       const errors: string[] = [];
       for (const lane of actionable) {
@@ -2242,6 +2265,7 @@ export function LanesPage() {
         laneActionBusy={laneActionBusy}
         laneActionStatus={laneActionStatus}
         laneActionError={laneActionError}
+        laneActionKind={laneActionKind}
         onAdoptAttached={() => {
           if (!managedLane || managedLane.laneType !== "attached") return;
           reopenAdoptHint();

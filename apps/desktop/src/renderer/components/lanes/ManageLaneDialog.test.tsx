@@ -70,6 +70,7 @@ describe("ManageLaneDialog", () => {
       <ManageLaneDialog
         {...baseProps}
         laneActionBusy
+        laneActionKind="delete"
         laneActionStatus="Deleting lane worktree and local branch..."
       />,
     );

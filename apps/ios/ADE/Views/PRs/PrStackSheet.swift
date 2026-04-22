@@ -44,9 +44,11 @@ struct PrStackSheet: View {
         } else if stackRows.isEmpty {
           ScrollView {
             ADEEmptyStateView(
-              symbol: "list.number",
-              title: "No stack members",
-              message: "The host did not sync any PR chain members for this workflow yet."
+              symbol: syncService.connectionState.isHostUnreachable ? "wifi.exclamationmark" : "list.number",
+              title: syncService.connectionState.isHostUnreachable ? "Offline" : "No stack members",
+              message: syncService.connectionState.isHostUnreachable
+                ? "Reconnect to the desktop host to load this PR stack."
+                : "The host did not sync any PR chain members for this workflow yet."
             )
             .padding(16)
           }

@@ -85,7 +85,7 @@ struct PrRebaseScreen: View {
         conflictCard
           .padding(.horizontal, 16)
 
-        if let errorMessage, !syncService.connectionState.isHostUnreachable {
+        if let errorMessage {
           ADENoticeCard(
             title: "Rebase failed",
             message: errorMessage,

@@ -13,11 +13,25 @@ struct CtoRootScreen: View {
   @State private var path = NavigationPath()
   @State private var snapshot: CtoSnapshot?
   @State private var isLoadingSnapshot = false
+  @State private var snapshotLoadError: String?
 
   var body: some View {
     NavigationStack(path: $path) {
       VStack(spacing: 0) {
         CtoTabShell(active: $selectedTab)
+
+        if let snapshotLoadError, !syncService.connectionState.isHostUnreachable {
+          ADENoticeCard(
+            title: "Couldn't load CTO state",
+            message: snapshotLoadError,
+            icon: "exclamationmark.triangle.fill",
+            tint: ADEColor.warning,
+            actionTitle: "Retry",
+            action: { Task { await loadSnapshot() } }
+          )
+          .padding(.horizontal, 20)
+          .padding(.top, 8)
+        }
 
         tabBody
           .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -74,9 +88,19 @@ struct CtoRootScreen: View {
     if isLoadingSnapshot { return }
     isLoadingSnapshot = true
     defer { isLoadingSnapshot = false }
-    // Non-connection errors here are silently ignored — the global connection
-    // banner (top-right gear) owns user-facing failure messaging.
-    snapshot = (try? await syncService.fetchCtoState()) ?? snapshot
+    do {
+      snapshot = try await syncService.fetchCtoState()
+      snapshotLoadError = nil
+    } catch {
+      // Connection failures are owned by the top-right gear dot. For anything
+      // else (command error, parse error, timeouts while connected) surface the
+      // message so the user has a retry/diagnostic path instead of stale state.
+      if syncService.connectionState.isHostUnreachable {
+        snapshotLoadError = nil
+      } else {
+        snapshotLoadError = (error as NSError).localizedDescription
+      }
+    }
   }
 
   private var ctoLiveReloadKey: String? {

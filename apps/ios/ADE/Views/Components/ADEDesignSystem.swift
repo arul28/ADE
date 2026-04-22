@@ -544,7 +544,7 @@ struct ADEConnectionDot: View {
       }
     }
     .animation(ADEMotion.emphasis(reduceMotion: reduceMotion), value: attachedLabel)
-    .frame(minHeight: 44)
+    .frame(minWidth: 44, minHeight: 44, alignment: .leading)
     .contentShape(Rectangle())
     .onTapGesture {
       syncService.settingsPresented = true

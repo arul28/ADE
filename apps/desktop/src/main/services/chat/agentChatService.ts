@@ -6324,8 +6324,27 @@ export function createAgentChatService(args: {
     let firstStreamEventLogged = false;
     const emittedClaudeToolIds = new Set<string>();
     const emittedSyntheticItemIds = new Set<string>();
-    const streamedClaudeTextContentIndexes = new Set<number>();
-    const streamedClaudeThinkingContentIndexes = new Set<number>();
+    const streamedClaudeTextContentKeys = new Set<string>();
+    const streamedClaudeThinkingContentKeys = new Set<string>();
+    let currentClaudeStreamMessageId: string | null = null;
+    // Track a running boundary for assistant messages whose snapshot has no id
+    // (and whose stream preamble didn't carry a `message_start` id either — real
+    // Claude streams always do, but mocks and older SDK paths don't). Each new
+    // id-less assistant snapshot bumps the boundary so sequential assistants in
+    // the same turn don't collide at the same content index.
+    let claudeAssistantBoundary = 0;
+    let claudeAssistantBoundarySealed = false;
+    const claudeDedupeKey = (
+      messageId: string | null | undefined,
+      contentIndex: number | null | undefined,
+    ): string | null => {
+      if (typeof contentIndex !== "number" || !Number.isFinite(contentIndex)) return null;
+      const trimmed = messageId?.trim();
+      const id = trimmed && trimmed.length
+        ? trimmed
+        : `${turnId}:b${claudeAssistantBoundary}`;
+      return `${id}:${contentIndex}`;
+    };
     const openClaudeToolUses = new Map<string, { toolName: string }>();
     const toolInputJsonByContentIndex = new Map<number, string>();
     const toolUseMetaByContentIndex = new Map<number, { toolName: string; itemId: string }>();
@@ -6743,22 +6762,35 @@ export function createAgentChatService(args: {
         if (msg.type === "assistant") {
           const assistantMsg = msg as any;
           const betaMessage = assistantMsg.message;
+          const assistantMessageId = typeof betaMessage?.id === "string" ? betaMessage.id : null;
+          // If the snapshot has no id, advance the id-less boundary once the
+          // prior snapshot is sealed — so two back-to-back id-less assistants
+          // don't alias to the same key. While the stream preamble is actively
+          // filling in the current boundary (via content_block_delta), we keep
+          // the boundary intact so the snapshot still dedupes against deltas.
+          if (!assistantMessageId && !currentClaudeStreamMessageId && claudeAssistantBoundarySealed) {
+            claudeAssistantBoundary += 1;
+            claudeAssistantBoundarySealed = false;
+          }
           reportedAssistantModel = normalizeReportedModelName(betaMessage?.model) ?? reportedAssistantModel;
           if (betaMessage?.content && Array.isArray(betaMessage.content)) {
             for (const [blockIndex, block] of betaMessage.content.entries()) {
               if (block.type === "text") {
-                if (!streamedClaudeTextContentIndexes.has(blockIndex)) {
+                const textKey = claudeDedupeKey(assistantMessageId, blockIndex);
+                if (!textKey || !streamedClaudeTextContentKeys.has(textKey)) {
                   assistantText += block.text ?? "";
                   emitChatEvent(managed, {
                     type: "text",
                     text: block.text ?? "",
                     turnId,
                   });
+                  if (textKey) streamedClaudeTextContentKeys.add(textKey);
                 }
               } else if (block.type === "thinking") {
                 const thinkingText = block.thinking ?? block.text ?? "";
                 const reasoningItemId = buildClaudeContentItemId("thinking", blockIndex);
-                if (thinkingText.trim().length > 0 && !streamedClaudeThinkingContentIndexes.has(blockIndex)) {
+                const thinkingKey = claudeDedupeKey(assistantMessageId, blockIndex);
+                if (thinkingText.trim().length > 0 && (!thinkingKey || !streamedClaudeThinkingContentKeys.has(thinkingKey))) {
                   emitChatEvent(managed, {
                     type: "activity",
                     activity: "thinking",
@@ -6771,6 +6803,7 @@ export function createAgentChatService(args: {
                     ...(reasoningItemId ? { itemId: reasoningItemId } : {}),
                     turnId,
                   });
+                  if (thinkingKey) streamedClaudeThinkingContentKeys.add(thinkingKey);
                 }
               } else if (block.type === "tool_use") {
                 const toolName = String(block.name ?? "tool");
@@ -6815,6 +6848,9 @@ export function createAgentChatService(args: {
               outputTokens: betaMessage.usage.output_tokens ?? null,
             };
           }
+          // Snapshot consumed — the next id-less assistant should get a fresh
+          // boundary so it doesn't collide on the same turn-scoped key.
+          claudeAssistantBoundarySealed = true;
           continue;
         }
 
@@ -6830,18 +6866,16 @@ export function createAgentChatService(args: {
             if (delta?.type === "text_delta") {
               const text = delta.text ?? "";
               if (text.length) {
-                if (typeof contentIndex === "number") {
-                  streamedClaudeTextContentIndexes.add(contentIndex);
-                }
+                const textKey = claudeDedupeKey(currentClaudeStreamMessageId, contentIndex);
+                if (textKey) streamedClaudeTextContentKeys.add(textKey);
                 assistantText += text;
                 emitChatEvent(managed, { type: "text", text, turnId });
               }
             } else if (delta?.type === "thinking_delta") {
               const text = delta.thinking ?? delta.text ?? "";
               if (text.length) {
-                if (typeof contentIndex === "number") {
-                  streamedClaudeThinkingContentIndexes.add(contentIndex);
-                }
+                const thinkingKey = claudeDedupeKey(currentClaudeStreamMessageId, contentIndex);
+                if (thinkingKey) streamedClaudeThinkingContentKeys.add(thinkingKey);
                 const reasoningItemId = buildClaudeContentItemId("thinking", contentIndex);
                 emitChatEvent(managed, {
                   type: "activity",
@@ -6888,9 +6922,8 @@ export function createAgentChatService(args: {
               // Some SDK versions include initial thinking text on block start
               const startText = block.thinking ?? block.text ?? "";
               if (startText.length) {
-                if (typeof contentIndex === "number") {
-                  streamedClaudeThinkingContentIndexes.add(contentIndex);
-                }
+                const thinkingKey = claudeDedupeKey(currentClaudeStreamMessageId, contentIndex);
+                if (thinkingKey) streamedClaudeThinkingContentKeys.add(thinkingKey);
                 emitChatEvent(managed, {
                   type: "reasoning",
                   text: startText,
@@ -6965,6 +6998,7 @@ export function createAgentChatService(args: {
               }
             }
           } else if (event.type === "message_start") {
+            currentClaudeStreamMessageId = typeof event.message?.id === "string" ? event.message.id : null;
             const msgUsage = event.message?.usage;
             if (msgUsage) {
               usage = {

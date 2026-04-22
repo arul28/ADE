@@ -136,13 +136,13 @@ function workToneIcon(entry: ChatWorkLogEntry): { icon: Icon; className: string 
 
 function workStatusState(status: ChatWorkLogEntry["status"], animate = true): ChatStatusVisualState {
   if (status === "completed" || status === "failed") return status;
-  if (status === "interrupted") return animate ? "waiting" : "completed";
+  if (status === "interrupted") return "waiting";
   return animate ? "working" : "completed";
 }
 
 function workStatusLabel(status: ChatWorkLogEntry["status"], animate = true): string {
   if (status === "completed" || status === "failed") return status;
-  if (status === "interrupted") return animate ? "interrupted" : "completed";
+  if (status === "interrupted") return "interrupted";
   return animate ? "running" : "completed";
 }
 
@@ -478,9 +478,9 @@ export function ChatWorkLogBlock({
 
   const groupStatus: ChatStatusVisualState = useMemo(() => {
     if (entries.some((e) => e.status === "failed")) return "failed";
+    if (entries.some((e) => e.status === "interrupted")) return "waiting";
     if (!animate) return "completed";
     if (entries.some((e) => e.status === "running")) return "working";
-    if (entries.some((e) => e.status === "interrupted")) return "waiting";
     return "completed";
   }, [entries, animate]);
 

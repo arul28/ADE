@@ -2443,6 +2443,14 @@ export function createLaneService({
         if (durationMs < 500) return;
         logger.info("lane.delete.step", { laneId, step, durationMs });
       };
+      const timeSlowDeleteStep = async <T>(step: string, work: () => Promise<T>): Promise<T> => {
+        const stepStartedAt = Date.now();
+        try {
+          return await work();
+        } finally {
+          logSlowDeleteStep(step, stepStartedAt);
+        }
+      };
       const row = getLaneRow(laneId);
       if (!row) throw new Error(`Lane not found: ${laneId}`);
       if (row.lane_type === "primary") {
@@ -2455,9 +2463,9 @@ export function createLaneService({
       }
 
       if (row.lane_type === "worktree" && row.worktree_path && fs.existsSync(row.worktree_path)) {
-        let stepStartedAt = Date.now();
-        const dirtyRes = await runGit(["status", "--porcelain=v1"], { cwd: row.worktree_path, timeoutMs: 8_000 });
-        logSlowDeleteStep("git_status", stepStartedAt);
+        const dirtyRes = await timeSlowDeleteStep("git_status", () =>
+          runGit(["status", "--porcelain=v1"], { cwd: row.worktree_path!, timeoutMs: 8_000 }),
+        );
         const dirty = dirtyRes.exitCode === 0 && dirtyRes.stdout.trim().length > 0;
         if (dirty && !force) {
           throw new Error("Lane has uncommitted changes. Enable force delete after confirming warnings.");
@@ -2466,43 +2474,43 @@ export function createLaneService({
         const removeArgs = ["worktree", "remove"];
         if (force) removeArgs.push("--force");
         removeArgs.push(row.worktree_path);
-        stepStartedAt = Date.now();
-        await runGitOrThrow(removeArgs, { cwd: projectRoot, timeoutMs: 60_000 });
-        logSlowDeleteStep("git_worktree_remove", stepStartedAt);
+        await timeSlowDeleteStep("git_worktree_remove", () =>
+          runGitOrThrow(removeArgs, { cwd: projectRoot, timeoutMs: 60_000 }),
+        );
       }
 
       if (deleteBranch && row.branch_ref) {
-        let stepStartedAt = Date.now();
-        const refCheck = await runGit(["show-ref", "--verify", "--quiet", `refs/heads/${row.branch_ref}`], {
-          cwd: projectRoot,
-          timeoutMs: 8_000
-        });
-        logSlowDeleteStep("git_branch_ref_check", stepStartedAt);
+        const refCheck = await timeSlowDeleteStep("git_branch_ref_check", () =>
+          runGit(["show-ref", "--verify", "--quiet", `refs/heads/${row.branch_ref}`], {
+            cwd: projectRoot,
+            timeoutMs: 8_000,
+          }),
+        );
         if (refCheck.exitCode === 0) {
-          stepStartedAt = Date.now();
-          await runGitOrThrow(["branch", "-D", row.branch_ref], { cwd: projectRoot, timeoutMs: 30_000 });
-          logSlowDeleteStep("git_branch_delete", stepStartedAt);
+          await timeSlowDeleteStep("git_branch_delete", () =>
+            runGitOrThrow(["branch", "-D", row.branch_ref!], { cwd: projectRoot, timeoutMs: 30_000 }),
+          );
         }
       }
 
       if (deleteRemoteBranch && row.branch_ref) {
         const remote = remoteName.trim() || "origin";
-        let stepStartedAt = Date.now();
-        const remoteCheck = await runGit(["remote", "get-url", remote], { cwd: projectRoot, timeoutMs: 8_000 });
-        logSlowDeleteStep("git_remote_check", stepStartedAt);
+        const remoteCheck = await timeSlowDeleteStep("git_remote_check", () =>
+          runGit(["remote", "get-url", remote], { cwd: projectRoot, timeoutMs: 8_000 }),
+        );
         if (remoteCheck.exitCode !== 0) {
           throw new Error(`Remote '${remote}' is not configured for this repository`);
         }
-        stepStartedAt = Date.now();
-        const remoteRefCheck = await runGit(["ls-remote", "--heads", remote, row.branch_ref], {
-          cwd: projectRoot,
-          timeoutMs: 12_000
-        });
-        logSlowDeleteStep("git_remote_ref_check", stepStartedAt);
+        const remoteRefCheck = await timeSlowDeleteStep("git_remote_ref_check", () =>
+          runGit(["ls-remote", "--heads", remote, row.branch_ref!], {
+            cwd: projectRoot,
+            timeoutMs: 12_000,
+          }),
+        );
         if (remoteRefCheck.exitCode === 0 && remoteRefCheck.stdout.trim().length > 0) {
-          stepStartedAt = Date.now();
-          await runGitOrThrow(["push", remote, "--delete", row.branch_ref], { cwd: projectRoot, timeoutMs: 45_000 });
-          logSlowDeleteStep("git_remote_branch_delete", stepStartedAt);
+          await timeSlowDeleteStep("git_remote_branch_delete", () =>
+            runGitOrThrow(["push", remote, "--delete", row.branch_ref!], { cwd: projectRoot, timeoutMs: 45_000 }),
+          );
         }
       }
 
