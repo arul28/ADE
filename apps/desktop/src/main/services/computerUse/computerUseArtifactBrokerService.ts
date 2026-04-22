@@ -495,14 +495,13 @@ export function createComputerUseArtifactBrokerService(args: {
     const ghostInstalled = commandExists("ghost");
     backends.push({
       name: "Ghost OS",
-      available: ghostInstalled,
+      available: false,
       state: ghostInstalled ? "installed" : "missing",
       detail: ghostInstalled
-        ? "Ghost OS CLI is installed and can produce artifacts for ADE ingestion."
+        ? "Ghost OS CLI is installed, but ADE Ghost integration readiness is not enabled yet."
         : "Ghost OS CLI is not installed on this machine.",
       supportedKinds: [
         "screenshot",
-        "video_recording",
         "browser_verification",
       ],
     });

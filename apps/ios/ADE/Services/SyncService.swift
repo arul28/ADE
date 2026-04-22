@@ -627,7 +627,7 @@ final class SyncService: ObservableObject {
 
   func refreshProjectCatalog() {
     let cachedProjects = database.listMobileProjects()
-    var mergedById = Dictionary(uniqueKeysWithValues: remoteProjectCatalog.map { ($0.id, $0) })
+    var mergedById = Dictionary(uniqueKeysWithValues: deduplicatedRemoteProjectCatalog().map { ($0.id, $0) })
     for cachedProject in cachedProjects {
       if var existing = mergedById[cachedProject.id] {
         existing.displayName = cachedProject.displayName
@@ -678,6 +678,45 @@ final class SyncService: ObservableObject {
       return (left.lastOpenedAt ?? "") > (right.lastOpenedAt ?? "")
     }
     normalizeActiveProjectSelection(allowSingleProjectFallback: false)
+  }
+
+  private func deduplicatedRemoteProjectCatalog() -> [MobileProjectSummary] {
+    var byId: [String: MobileProjectSummary] = [:]
+    var idByRoot: [String: String] = [:]
+
+    for project in remoteProjectCatalog {
+      let rootKey = normalizedProjectRoot(project.rootPath)
+      if let rootKey, let existingId = idByRoot[rootKey], let existing = byId[existingId] {
+        if shouldPreferProject(project, over: existing) {
+          byId.removeValue(forKey: existingId)
+          byId[project.id] = project
+          idByRoot[rootKey] = project.id
+        }
+        continue
+      }
+
+      if let existing = byId[project.id] {
+        byId[project.id] = shouldPreferProject(project, over: existing) ? project : existing
+      } else {
+        byId[project.id] = project
+      }
+
+      if let rootKey {
+        idByRoot[rootKey] = byId[project.id]?.id ?? project.id
+      }
+    }
+
+    return Array(byId.values)
+  }
+
+  private func shouldPreferProject(_ candidate: MobileProjectSummary, over existing: MobileProjectSummary) -> Bool {
+    if candidate.isAvailable != existing.isAvailable {
+      return candidate.isAvailable
+    }
+    if candidate.isCached != existing.isCached {
+      return candidate.isCached
+    }
+    return (candidate.lastOpenedAt ?? "") > (existing.lastOpenedAt ?? "")
   }
 
   private func applyRemoteProjectCatalog(_ catalog: MobileProjectCatalogPayload) {
@@ -785,6 +824,9 @@ final class SyncService: ObservableObject {
       currentAddress = connectedAddress
       projectHomePresented = false
     } catch {
+      guard isCurrentProjectSelection(selectionGeneration) else {
+        throw error
+      }
       setActiveProjectId(previousActiveProjectId, rootPath: previousActiveProjectRootPath)
       latestRemoteDbVersion = previousLatestRemoteDbVersion
       remoteProjectCatalog = previousRemoteProjectCatalog

@@ -141,11 +141,24 @@ export function createMissionPreflightService(args: {
     const missingComputerUseKinds = requiredComputerUseKinds.filter((kind) => {
       return !hasExternalComputerUseCoverage(kind) && !hasLocalComputerUseCoverage(kind);
     });
+    const blockingMissingComputerUseKinds = Array.from(new Set(
+      selected.phases.flatMap((phase) => {
+        if (!phase.validationGate.required) return [];
+        if ((phase.validationGate.capabilityFallback ?? "block") !== "block") return [];
+        return (phase.validationGate.evidenceRequirements ?? []).filter((requirement): requirement is ComputerUseArtifactKind =>
+          supportedComputerUseKinds.has(requirement as ComputerUseArtifactKind)
+          && missingComputerUseKinds.includes(requirement as ComputerUseArtifactKind)
+        );
+      }),
+    ));
+    const warningMissingComputerUseKinds = missingComputerUseKinds.filter((kind) =>
+      !blockingMissingComputerUseKinds.includes(kind)
+    );
     const fallbackOnlyKinds = requiredComputerUseKinds.filter((kind) => {
       return !hasExternalComputerUseCoverage(kind) && hasLocalComputerUseCoverage(kind);
     });
     const computerUseBlocked = requiredComputerUseKinds.length > 0
-      && missingComputerUseKinds.length > 0;
+      && blockingMissingComputerUseKinds.length > 0;
 
     const structuralIssues: string[] = [];
     for (const [index, phase] of selected.phases.entries()) {
@@ -315,18 +328,21 @@ export function createMissionPreflightService(args: {
           })
         : toChecklistItem({
             id: "computer_use",
-            severity: computerUseBlocked ? "fail" : fallbackOnlyKinds.length > 0 ? "warning" : "pass",
+            severity: computerUseBlocked ? "fail" : fallbackOnlyKinds.length > 0 || warningMissingComputerUseKinds.length > 0 ? "warning" : "pass",
             title: "Computer use readiness",
             summary: computerUseBlocked
               ? "Required computer-use proof is not fully covered in the current environment."
-              : fallbackOnlyKinds.length > 0
+              : warningMissingComputerUseKinds.length > 0
+                ? "Some required computer-use proof is warning-only and not covered in the current environment."
+                : fallbackOnlyKinds.length > 0
                 ? "Required proof is covered, but some evidence depends on ADE-local fallback support."
                 : "Required proof is covered by an available external computer-use backend.",
             details: [
               `Required proof kinds: ${requiredComputerUseKinds.join(", ")}`,
               `External backends detected: ${availableExternalBackends.length > 0 ? availableExternalBackends.join(", ") : "none"}`,
               ...(fallbackCoverageKinds.length > 0 ? [`Local fallback can cover: ${fallbackCoverageKinds.join(", ")}`] : []),
-              ...(missingComputerUseKinds.length > 0 ? [`Missing coverage: ${missingComputerUseKinds.join(", ")}`] : []),
+              ...(blockingMissingComputerUseKinds.length > 0 ? [`Blocking missing coverage: ${blockingMissingComputerUseKinds.join(", ")}`] : []),
+              ...(warningMissingComputerUseKinds.length > 0 ? [`Warning-only missing coverage: ${warningMissingComputerUseKinds.join(", ")}`] : []),
             ],
             ...(computerUseBlocked
               ? {
@@ -731,13 +747,15 @@ export function createMissionPreflightService(args: {
       approvalSummary,
       computerUse: {
         requiredKinds: requiredComputerUseKinds,
-        missingKinds: missingComputerUseKinds,
+        missingKinds: blockingMissingComputerUseKinds,
         availableExternalBackends,
         blocked: computerUseBlocked,
         summary: requiredComputerUseKinds.length === 0
           ? "This mission does not require computer-use proof."
           : computerUseBlocked
-            ? `Required proof coverage is missing for ${missingComputerUseKinds.join(", ") || requiredComputerUseKinds.join(", ")}.`
+            ? `Required proof coverage is missing for ${blockingMissingComputerUseKinds.join(", ") || requiredComputerUseKinds.join(", ")}.`
+            : warningMissingComputerUseKinds.length > 0
+              ? `Warning-only proof coverage is missing for ${warningMissingComputerUseKinds.join(", ")}.`
             : fallbackOnlyKinds.length > 0
               ? `Required proof is covered, but ${fallbackOnlyKinds.join(", ")} still rely on ADE-local fallback support.`
               : `Required proof can be satisfied through approved external backends: ${availableExternalBackends.join(", ")}.`,

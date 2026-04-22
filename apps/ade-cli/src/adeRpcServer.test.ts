@@ -981,6 +981,11 @@ describe("adeRpcServer", () => {
       expect(JSON.stringify(denied.error ?? denied.structuredContent ?? {})).toContain(
         "local computer use is not allowed",
       );
+      const environmentDenied = await callTool(handler, "get_environment_info", {});
+      expect(environmentDenied.isError).toBe(true);
+      expect(JSON.stringify(environmentDenied.error ?? environmentDenied.structuredContent ?? {})).toContain(
+        "local computer use is not allowed",
+      );
     } finally {
       if (previousRole == null) delete process.env.ADE_DEFAULT_ROLE;
       else process.env.ADE_DEFAULT_ROLE = previousRole;

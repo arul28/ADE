@@ -749,6 +749,7 @@ app.whenReady().then(async () => {
   const rpcSocketCleanupByRoot = new Map<string, () => void>();
   const projectLastActivatedAt = new Map<string, number>();
   const mobileSyncHandoffLeases = new Map<string, number>();
+  const mobileSyncHandoffLeaseTimers = new Map<string, ReturnType<typeof setTimeout>>();
   const MAX_WARM_IDLE_PROJECT_CONTEXTS = 1;
   const MOBILE_SYNC_HANDOFF_LEASE_MS = 60_000;
   let activeProjectRoot: string | null = null;
@@ -3465,6 +3466,12 @@ app.whenReady().then(async () => {
       await disposeContextResources(ctx);
       projectContexts.delete(normalizedRoot);
       projectLastActivatedAt.delete(normalizedRoot);
+      const leaseTimer = mobileSyncHandoffLeaseTimers.get(normalizedRoot);
+      if (leaseTimer) {
+        clearTimeout(leaseTimer);
+        mobileSyncHandoffLeaseTimers.delete(normalizedRoot);
+      }
+      mobileSyncHandoffLeases.delete(normalizedRoot);
       if (activeProjectRoot === normalizedRoot) {
         activeProjectRoot = null;
       }
@@ -3532,8 +3539,13 @@ app.whenReady().then(async () => {
     for (const recent of recentProjects) {
       byRoot.set(normalizeProjectRoot(recent.rootPath), mobileProjectSummaryForRecent(recent));
     }
-    for (const [root, ctx] of projectContexts) {
-      byRoot.set(root, await mobileProjectSummaryForContext(ctx, recentByRoot.get(root) ?? null));
+    const contextSummaries = await Promise.all(
+      [...projectContexts.entries()].map(async ([root, ctx]) =>
+        [root, await mobileProjectSummaryForContext(ctx, recentByRoot.get(root) ?? null)] as const
+      ),
+    );
+    for (const [root, summary] of contextSummaries) {
+      byRoot.set(root, summary);
     }
     const projects = [...byRoot.entries()]
       .sort(([leftRoot], [rightRoot]) => {
@@ -3617,7 +3629,19 @@ app.whenReady().then(async () => {
       .map(toRecentProjectSummary)
       .find((entry) => normalizeProjectRoot(entry.rootPath) === targetRoot) ?? null;
     const project = await mobileProjectSummaryForContext(ctx, recent, { useProjectRowId: true });
-    mobileSyncHandoffLeases.set(targetRoot, Date.now() + MOBILE_SYNC_HANDOFF_LEASE_MS);
+    const leaseExpiresAt = Date.now() + MOBILE_SYNC_HANDOFF_LEASE_MS;
+    mobileSyncHandoffLeases.set(targetRoot, leaseExpiresAt);
+    const existingLeaseTimer = mobileSyncHandoffLeaseTimers.get(targetRoot);
+    if (existingLeaseTimer) clearTimeout(existingLeaseTimer);
+    const leaseTimer = setTimeout(() => {
+      mobileSyncHandoffLeaseTimers.delete(targetRoot);
+      if (mobileSyncHandoffLeases.get(targetRoot) === leaseExpiresAt) {
+        mobileSyncHandoffLeases.delete(targetRoot);
+      }
+      scheduleProjectContextRebalance();
+    }, MOBILE_SYNC_HANDOFF_LEASE_MS + 100);
+    leaseTimer.unref?.();
+    mobileSyncHandoffLeaseTimers.set(targetRoot, leaseTimer);
     projectLastActivatedAt.set(targetRoot, Date.now());
     scheduleProjectContextRebalance();
     return {
