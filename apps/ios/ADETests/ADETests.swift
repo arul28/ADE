@@ -5706,6 +5706,57 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(cards.first?.status, .completed)
   }
 
+  /// Regression test: file_change events with a shared `logicalItemId` but
+  /// distinct raw `itemId` (OpenCode's patch emitter) must stay separate —
+  /// one card per file, not collapsed to a single entry.
+  func testBuildWorkFileChangeCardsKeepsDistinctFilesUnderSharedLogicalItemId() {
+    let firstFile = makeWorkChatEvent(from: .fileChange(
+      path: "Sources/First.swift",
+      diff: "diff-1",
+      kind: .modify,
+      itemId: "patch-1:Sources/First.swift",
+      logicalItemId: "patch-1",
+      turnId: "turn-1",
+      status: "completed"
+    ))
+    let secondFile = makeWorkChatEvent(from: .fileChange(
+      path: "Sources/Second.swift",
+      diff: "diff-2",
+      kind: .modify,
+      itemId: "patch-1:Sources/Second.swift",
+      logicalItemId: "patch-1",
+      turnId: "turn-1",
+      status: "completed"
+    ))
+
+    let transcript = [
+      WorkChatEnvelope(sessionId: "chat-1", timestamp: "2026-04-22T00:00:01.000Z", sequence: 1, event: firstFile),
+      WorkChatEnvelope(sessionId: "chat-1", timestamp: "2026-04-22T00:00:02.000Z", sequence: 2, event: secondFile),
+    ]
+    let cards = buildWorkFileChangeCards(from: transcript)
+
+    XCTAssertEqual(cards.count, 2)
+    XCTAssertEqual(Set(cards.map(\.path)), ["Sources/First.swift", "Sources/Second.swift"])
+    XCTAssertEqual(Set(cards.map(\.id)), [
+      "patch-1:Sources/First.swift",
+      "patch-1:Sources/Second.swift",
+    ])
+  }
+
+  /// Same regression, but driven through the transcript parser path so the
+  /// JSON-in / cards-out pipeline also preserves per-file identity.
+  func testParseWorkChatTranscriptKeepsDistinctFileChangesUnderSharedLogicalItemId() {
+    let raw = """
+    {"sessionId":"chat-1","timestamp":"2026-04-22T00:00:01.000Z","sequence":1,"event":{"type":"file_change","path":"Sources/First.swift","diff":"diff-1","kind":"modify","itemId":"patch-1:Sources/First.swift","logicalItemId":"patch-1","turnId":"turn-1","status":"completed"}}
+    {"sessionId":"chat-1","timestamp":"2026-04-22T00:00:02.000Z","sequence":2,"event":{"type":"file_change","path":"Sources/Second.swift","diff":"diff-2","kind":"modify","itemId":"patch-1:Sources/Second.swift","logicalItemId":"patch-1","turnId":"turn-1","status":"completed"}}
+    """
+    let transcript = parseWorkChatTranscript(raw)
+    let cards = buildWorkFileChangeCards(from: transcript)
+
+    XCTAssertEqual(cards.count, 2)
+    XCTAssertEqual(Set(cards.map(\.path)), ["Sources/First.swift", "Sources/Second.swift"])
+  }
+
   func testBuildWorkTimelineCollapsesConsecutiveToolCardsIntoLatestGroup() {
     let transcript: [WorkChatEnvelope] = [
       WorkChatEnvelope(

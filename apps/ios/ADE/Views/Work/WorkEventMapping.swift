@@ -7,6 +7,15 @@ func workStableTimelineItemId(itemId: String, logicalItemId: String?) -> String 
   return logical.isEmpty ? itemId : logical
 }
 
+/// Optional-itemId overload for transcript parsing, where the raw event dict
+/// may omit `itemId`. Keeps the resolution policy in one place so desktop and
+/// transcript code paths stay in sync.
+func workStableTimelineItemId(itemId: String?, logicalItemId: String?) -> String? {
+  let logical = logicalItemId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+  if !logical.isEmpty { return logical }
+  return itemId
+}
+
 private final class WorkANSIAttributedStringCacheBox: NSObject {
   let value: AttributedString
 
@@ -151,8 +160,12 @@ func makeWorkChatEvent(from event: AgentChatEvent) -> WorkChatEvent {
       durationMs: durationMs,
       turnId: turnId
     )
-  case .fileChange(let path, let diff, let kind, let itemId, let logicalItemId, let turnId, let status):
-    return .fileChange(path: path, diff: diff, kind: kind.rawValue, status: toolStatus(from: status ?? "running"), itemId: workStableTimelineItemId(itemId: itemId, logicalItemId: logicalItemId), turnId: turnId)
+  case .fileChange(let path, let diff, let kind, let itemId, _, let turnId, let status):
+    // File-change events deliberately keep the raw `itemId`: the desktop
+    // emitter produces one event per file with a shared `logicalItemId` but
+    // distinct raw IDs (see agentChatService `patch` handling). Collapsing to
+    // `logicalItemId` would overwrite earlier paths in `buildWorkFileChangeCards`.
+    return .fileChange(path: path, diff: diff, kind: kind.rawValue, status: toolStatus(from: status ?? "running"), itemId: itemId, turnId: turnId)
   case .stepBoundary:
     return .unknown(type: "step_boundary")
   case .delegationState:

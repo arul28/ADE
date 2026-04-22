@@ -197,8 +197,6 @@ struct WorkToolGroupCardView: View {
     ZStack(alignment: .bottom) {
       if !effectiveExpanded && group.count > 1 {
         collapsedStackBackdrop
-      } else {
-        EmptyView()
       }
 
       VStack(alignment: .leading, spacing: 10) {
@@ -214,7 +212,10 @@ struct WorkToolGroupCardView: View {
           .stroke(ADEColor.border.opacity(0.14), lineWidth: 0.5)
       )
     }
-    .padding(.bottom, !effectiveExpanded && group.count > 1 ? 6 : 0)
+    // Backdrop rectangles use offset(y: 4/8) below the ZStack frame, so the
+    // bottom padding needs at least 10pt of breathing room to keep them from
+    // clipping against the next row on smaller devices.
+    .padding(.bottom, !effectiveExpanded && group.count > 1 ? 10 : 0)
     .accessibilityElement(children: .contain)
     .accessibilityLabel("Tool call cluster, \(group.count) calls, \(effectiveExpanded ? "expanded" : "collapsed")")
   }
@@ -372,7 +373,9 @@ private struct WorkToolGroupMemberRow: View {
         references: extractWorkNavigationTargets(
           from: [card.argsText, card.resultText].compactMap { $0 }.joined(separator: "\n")
         ),
-        isExpanded: localExpanded,
+        // Running cards stay auto-expanded so live args/output remain visible
+        // during streaming — the whole point of the tool-streaming flow.
+        isExpanded: card.status == .running || localExpanded,
         onToggle: { localExpanded.toggle() },
         onOpenFile: onOpenFile,
         onOpenPr: onOpenPr

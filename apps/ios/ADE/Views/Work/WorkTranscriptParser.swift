@@ -29,9 +29,8 @@ func parseWorkChatTranscript(_ raw: String) -> [WorkChatEnvelope] {
       let sequence = envelope["sequence"] as? Int
       let turnId = eventDict["turnId"] as? String
       let itemId = eventDict["itemId"] as? String
-      let logicalItemId = (eventDict["logicalItemId"] as? String)?
-        .trimmingCharacters(in: .whitespacesAndNewlines)
-      let stableToolItemId = (logicalItemId?.isEmpty == false ? logicalItemId : nil) ?? itemId
+      let logicalItemId = eventDict["logicalItemId"] as? String
+      let stableToolItemId = workStableTimelineItemId(itemId: itemId, logicalItemId: logicalItemId)
       let parentItemId = eventDict["parentItemId"] as? String
       let event: WorkChatEvent
 
@@ -321,12 +320,15 @@ func parseWorkChatTranscript(_ raw: String) -> [WorkChatEnvelope] {
           turnId: turnId
         )
       case "file_change":
+        // Keep raw `itemId` here — the desktop emitter produces one event per
+        // file with a shared `logicalItemId`, so collapsing would overwrite
+        // earlier paths in `buildWorkFileChangeCards`.
         event = .fileChange(
           path: stringValue(eventDict["path"]),
           diff: stringValue(eventDict["diff"]),
           kind: stringValue(eventDict["kind"]),
           status: toolStatus(from: stringValue(eventDict["status"])),
-          itemId: stableToolItemId ?? workFallbackItemID(
+          itemId: itemId ?? workFallbackItemID(
             sessionId: sessionId,
             timestamp: timestamp,
             sequence: sequence,
