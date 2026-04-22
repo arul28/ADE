@@ -127,15 +127,19 @@ The iOS `SyncService` grew from ~300 lines of logic to ~900 to support tailnet d
 - **`WorkChatSessionView+Timeline`** consolidates the live/static branches so pending structured questions, mission briefings, and action rows render consistently once a session ends.
 - **`SettingsPairingSection`** surfaces "Saved Tailscale route" when no live hosts are discovered but a Tailscale-addressed host is on file, and rewrites the discover sheet to show the saved host alongside new ones instead of substituting them.
 - **`SettingsConnectionHeader`** now meets the 44pt minimum hit target on the connected chip, and the connection status hovers around the gear dot in the nav bar on every root screen.
+- **App icon parity.** The iOS app icon now uses the centered macOS ADE artwork directly, so the text and badge placement match the desktop app.
 
 ---
 
-## PR tooling
+## PR tooling and review hardening
 
 - **CreatePrModal**: every major field (`base`, `title`, `body`, submit) now has a `data-tour` anchor so the PRs tour lands on the right thing instead of the nearest neighbour.
 - **PrDetailPane**: the issue-resolver availability calculation now folds in PR comments alongside checks and review threads, so "Send to agent" actually appears when the relevant signals come from review comments rather than formal review threads.
 - **PRsPage + GitHubTab**: small wiring tweaks to align with the updated issue inventory service and the new `data-tour` anchors.
 - **PrIssueResolverModal**: shared `isActionableIssueComment`, `isPrCheckActionableFailure`, and `isPrCheckPassing` helpers landed in `shared/prIssueResolution.ts` so the issue resolver, convergence service, and workflow tools all agree on what counts as actionable.
+- **Provider permission merge.** Project-level and mission-level AI permission policies now merge before launching managed sessions, so Codex receives the intended sandbox, approval, edit, and `config-toml` settings while unsupported Claude config is rejected early.
+- **Automation lane targeting.** Automation runs now prefer explicit target lanes, render prompts with the same lane the agent will actually use, and avoid misleading lane labels during follow-up review cycles.
+- **Rebase and review fixes.** Auto-rebase dismissal keeps its head-SHA guard, rebase banner errors remain visible, and redundant rebase suggestion state was removed so review comments do not re-open stale UI paths.
 
 ---
 
@@ -148,6 +152,8 @@ The iOS `SyncService` grew from ~300 lines of logic to ~900 to support tailnet d
 - **IPC cleanup** — `registerIpc.ts` grew handlers for `sync.refreshDiscovery`, `onboarding.tutorial.*` (start, advance, complete, prompt state), and the proof artifact APIs; legacy computer-use IPC routes are gone. The `preload` surface was updated accordingly.
 - **ade-cli RPC rewrite** — `adeRpcServer.ts` shed ~400 lines as redundant legacy endpoints fell off; `cli.ts` grew to match the new proof command set.
 - **Onboarding service** — new backend test suite (+207 lines) covering the tutorial state machine, with matching store refinements (`onboardingStore` +170 lines).
+- **Tailnet publish retries.** Tailscale discovery retries after serve failures and ignores stale overlapping forced-publish retries, which keeps discovery state aligned with the latest publish attempt.
+- **Release workflow.** Tagged releases now verify the target commit is on `main`, build from the resolved release ref, and create or update a draft GitHub release with validated macOS artifacts.
 
 ---
 
@@ -160,4 +166,5 @@ The iOS `SyncService` grew from ~300 lines of logic to ~900 to support tailnet d
 - iOS `CtoSettingsScreen` parallelises settings reads with `async let`.
 - README and `docs/ARCHITECTURE.md` were refreshed with the new sync story and new on-disk layout.
 - Logo assets (`logo/light.svg`, `logo/dark.svg`) were refreshed; no brand change, just cleaner vector paths.
+- README assets now include the checked-in hero image used by the project landing copy.
 - The obsolete `docs/features/computer-use/` tree (backends, artifact-broker, settings-and-readiness) was removed — the `/computer-use/*` Mintlify pages are now the single source of truth.
