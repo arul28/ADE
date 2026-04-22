@@ -34,6 +34,18 @@ Lists sessions grouped by one of three modes (controlled by
 Each group uses a `StickyGroupHeader` with collapsed-state persistence
 via `workCollapsedLaneIds` / `workCollapsedSectionIds`.
 
+In `by-lane` mode, any session whose `laneId` is not in the current
+lanes list is still rendered under its own sticky "orphan lane" group
+below the active lane groups. The list is built from
+`missingLaneSessionGroups`: every `laneId` from `sessionsGroupedByLane`
+that's absent from the `lanes` set becomes a group, labelled with the
+session's `laneName` (falling back to the raw `laneId`) and sorted by
+most-recent `startedAt`, with ties broken alphabetically. These groups
+reuse the same `workCollapsedLaneIds` persistence, so a user who
+collapses an orphan group sees it stay collapsed on reload. This keeps
+sessions reachable when their lane has been archived, deleted, or not
+yet loaded, instead of quietly dropping them from the sidebar.
+
 Also renders:
 
 - draft-kind switcher (chat vs terminal) at the top

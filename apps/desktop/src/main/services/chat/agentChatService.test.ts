@@ -5168,7 +5168,7 @@ describe("createAgentChatService", () => {
       }
     });
 
-    it("tears down idle Claude runtimes after the inactivity ttl", async () => {
+    it("tears down idle Claude runtimes after the inactivity ttl without losing resume state", async () => {
       vi.useFakeTimers();
       try {
         const close = vi.fn();
@@ -5231,6 +5231,20 @@ describe("createAgentChatService", () => {
         await vi.advanceTimersByTimeAsync(6 * 60_000);
 
         expect(close).toHaveBeenCalledTimes(1);
+        const persistedAfterIdle = readPersistedChatState(session.id);
+        expect(persistedAfterIdle.sdkSessionId).toBe("sdk-session-idle-ttl");
+        expect(persistedAfterIdle.lastLaneDirectiveKey).toEqual(expect.any(String));
+
+        await service.runSessionTurn({
+          sessionId: session.id,
+          text: "Follow up with the previous context",
+          timeoutMs: 15_000,
+        });
+
+        expect(unstable_v2_resumeSession).toHaveBeenCalledWith("sdk-session-idle-ttl", expect.any(Object));
+        expect(unstable_v2_createSession).toHaveBeenCalledTimes(1);
+        expect(send).toHaveBeenCalledTimes(3);
+        expect(String(send.mock.calls[2]?.[0] ?? "")).toContain("Follow up with the previous context");
       } finally {
         vi.useRealTimers();
       }

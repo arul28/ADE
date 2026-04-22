@@ -151,6 +151,22 @@ export const SessionListPane = React.memo(function SessionListPane({
     for (const lane of lanes) map.set(lane.id, lane);
     return map;
   }, [lanes]);
+  const missingLaneSessionGroups = useMemo(() => {
+    if (!sessionsGroupedByLane) return [];
+    const knownLaneIds = new Set(lanes.map((lane) => lane.id));
+    const latestStartedAt = (sessions: TerminalSessionSummary[]): number =>
+      Math.max(...sessions.map((session) => new Date(session.startedAt).getTime()));
+    return [...sessionsGroupedByLane.entries()]
+      .filter(([laneId, sessions]) => !knownLaneIds.has(laneId) && sessions.length > 0)
+      .sort(([leftLaneId, leftSessions], [rightLaneId, rightSessions]) => {
+        const leftLatest = latestStartedAt(leftSessions);
+        const rightLatest = latestStartedAt(rightSessions);
+        if (leftLatest !== rightLatest) return rightLatest - leftLatest;
+        const leftName = leftSessions[0]?.laneName ?? leftLaneId;
+        const rightName = rightSessions[0]?.laneName ?? rightLaneId;
+        return leftName.localeCompare(rightName);
+      });
+  }, [lanes, sessionsGroupedByLane]);
 
   // First-rendered card carries `data-tour="work.sessionItem"` so the Work
   // tab tour can anchor at a real session. We track whether we've already
@@ -240,6 +256,23 @@ export const SessionListPane = React.memo(function SessionListPane({
             count={total}
             collapsed={collapsed}
             onToggleCollapsed={() => toggleWorkLaneCollapsed(lane.id)}
+          >
+            {renderCards(list)}
+          </StickyGroupHeader>
+        );
+      })}
+      {missingLaneSessionGroups.map(([laneId, list]) => {
+        const collapsed = workCollapsedLaneIds.includes(laneId);
+        const label = list[0]?.laneName ?? laneId;
+        return (
+          <StickyGroupHeader
+            key={laneId}
+            sectionId={laneId}
+            icon={<GitBranch size={11} weight="regular" className="shrink-0 text-muted-fg/55" />}
+            label={label}
+            count={list.length}
+            collapsed={collapsed}
+            onToggleCollapsed={() => toggleWorkLaneCollapsed(laneId)}
           >
             {renderCards(list)}
           </StickyGroupHeader>

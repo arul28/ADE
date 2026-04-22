@@ -603,6 +603,31 @@ reflected in the phone's UI on the next descriptor read.
   runs its polling path on reconnect / catchup to fill any gap; the
   phone de-duplicates per-event keys so a push and a catchup poll
   covering the same event produce one rendered message.
+- **Chat subscribe requests a 2 MB snapshot window.** The phone sends
+  `chat_subscribe` with `maxBytes: 2_000_000`
+  (`syncChatSubscriptionMaxBytes`) so the initial snapshot can carry
+  long transcripts without the host truncating prematurely. When the
+  host still responds with `truncated: true`, the phone calls
+  `mergeChatEventHistory` instead of `replaceChatEventHistory`: the
+  existing cached events are unioned with the truncated snapshot,
+  deduplicated by `id`, and re-sorted by `(timestamp, sequence)`.
+  Non-truncated snapshots take the replace path. Both paths run through
+  `deduplicatedChatEventHistory` and then through `trimChatEventHistory`,
+  which caps retained events at `chatEventHistoryMaxEvents = 1_000`
+  (up from the previous 500-event cap) so very long chats don't evict
+  their own recent turns on reconnect.
+- **Work transcript parser uses `messageId` as a fallback item id.**
+  `makeWorkChatEvent` (`WorkEventMapping.swift`) and
+  `parseWorkChatTranscript` (`WorkTranscriptParser.swift`) now fall back
+  to the `messageId` from `chat_event` when no `itemId` is present, so
+  streaming assistant-text fragments merge into the same transcript row
+  even when the host only surfaces a `messageId`. `buildWorkChatMessages`
+  (`WorkErrorAndMessageHelpers.swift`) tracks a
+  `previousEnvelopeWasAssistantText` flag and allows merging into the
+  previous assistant bubble when either (a) the text event has an
+  `itemId` or (b) the immediately preceding envelope was also assistant
+  text. This keeps the iOS Work chat from fanning a single assistant
+  turn into many tiny rows.
 - **Lane presence is best-effort with a TTL.** The phone
   re-announces on a 30 s cadence; the host prunes stale entries at
   60 s. A phone that crashes without sending `lanes.presence.release`

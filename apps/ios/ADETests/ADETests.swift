@@ -324,6 +324,7 @@ final class ADETests: XCTestCase {
 
     XCTAssertEqual(service.subscribedChatSessionIds, Set(["session-1", "session-2"]))
     XCTAssertEqual(service.chatSubscriptionPayloads().compactMap { $0["sessionId"] as? String }.sorted(), ["session-1", "session-2"])
+    XCTAssertEqual(service.chatSubscriptionPayloads().compactMap { $0["maxBytes"] as? Int }, [2_000_000, 2_000_000])
 
     service.disconnect(clearCredentials: false)
 
@@ -365,6 +366,54 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(service.chatEventHistory(sessionId: "session-1"), [envelope])
     XCTAssertEqual(service.localStateRevision, globalRevision)
     XCTAssertEqual(service.chatEventRevision(for: "session-1"), 1)
+  }
+
+  @MainActor
+  func testTruncatedChatSubscribeSnapshotMergesWithExistingHistory() async throws {
+    let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
+    let original = AgentChatEventEnvelope(
+      sessionId: "session-1",
+      timestamp: "2026-03-17T00:00:00.000Z",
+      event: .userMessage(text: "Start here", attachments: [], turnId: "turn-1", steerId: nil, deliveryState: nil, processed: nil),
+      sequence: 1,
+      provenance: nil
+    )
+    let tail = AgentChatEventEnvelope(
+      sessionId: "session-1",
+      timestamp: "2026-03-17T00:00:01.000Z",
+      event: .text(text: "Still working", messageId: "msg-1", turnId: "turn-1", itemId: "item-1"),
+      sequence: 2,
+      provenance: nil
+    )
+
+    service.recordChatEventEnvelope(original)
+    service.mergeChatEventHistory(sessionId: "session-1", events: [original, tail])
+
+    XCTAssertEqual(service.chatEventHistory(sessionId: "session-1"), [original, tail])
+  }
+
+  @MainActor
+  func testCompleteChatSubscribeSnapshotReplacesExistingHistory() async throws {
+    let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
+    let old = AgentChatEventEnvelope(
+      sessionId: "session-1",
+      timestamp: "2026-03-17T00:00:00.000Z",
+      event: .userMessage(text: "Old event", attachments: [], turnId: "turn-1", steerId: nil, deliveryState: nil, processed: nil),
+      sequence: 1,
+      provenance: nil
+    )
+    let fresh = AgentChatEventEnvelope(
+      sessionId: "session-1",
+      timestamp: "2026-03-17T00:00:01.000Z",
+      event: .text(text: "Fresh snapshot", messageId: "msg-1", turnId: "turn-1", itemId: "item-1"),
+      sequence: 2,
+      provenance: nil
+    )
+
+    service.recordChatEventEnvelope(old)
+    service.replaceChatEventHistory(sessionId: "session-1", events: [fresh])
+
+    XCTAssertEqual(service.chatEventHistory(sessionId: "session-1"), [fresh])
   }
 
   func testChatCommandRequestPayloadsEncodeExpectedShapes() throws {
@@ -3178,6 +3227,145 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(activeAgents.count, 1)
     XCTAssertEqual(activeAgents.first?.agentName, "Docs helper")
     XCTAssertEqual(activeAgents.first?.toolName, "functions.Read")
+  }
+
+  func testWorkChatTranscriptUsesMessageIdToSplitAssistantMessages() {
+    let raw = """
+    {"sessionId":"chat-1","timestamp":"2026-04-22T22:10:00.000Z","sequence":1,"event":{"type":"user_message","text":"Rebase Windows Port","turnId":"turn-1"}}
+    {"sessionId":"chat-1","timestamp":"2026-04-22T22:10:01.000Z","sequence":2,"event":{"type":"text","text":"I will check the branch.","messageId":"msg-progress","turnId":"turn-1"}}
+    {"sessionId":"chat-1","timestamp":"2026-04-22T22:10:02.000Z","sequence":3,"event":{"type":"tool_call","tool":"Bash","args":{"command":"git status"},"itemId":"tool-1","turnId":"turn-1"}}
+    {"sessionId":"chat-1","timestamp":"2026-04-22T22:10:03.000Z","sequence":4,"event":{"type":"text","text":"Merge complete.","messageId":"msg-final","turnId":"turn-1"}}
+    {"sessionId":"chat-1","timestamp":"2026-04-22T22:10:03.500Z","sequence":5,"event":{"type":"text","text":" I did not push.","messageId":"msg-final","turnId":"turn-1"}}
+    {"sessionId":"chat-1","timestamp":"2026-04-22T22:10:03.500Z","sequence":6,"event":{"type":"tool_result","tool":"Bash","result":{"synthetic":true,"source":"claude_turn_finalization"},"itemId":"tool-1","turnId":"turn-1","status":"completed"}}
+    """
+
+    let transcript = parseWorkChatTranscript(raw)
+    let messages = buildWorkChatMessages(from: transcript)
+    let assistantMessages = messages.filter { $0.role == "assistant" }
+
+    XCTAssertEqual(assistantMessages.count, 2)
+    XCTAssertEqual(assistantMessages.map(\.itemId), ["msg-progress", "msg-final"])
+    XCTAssertEqual(assistantMessages.map(\.markdown), [
+      "I will check the branch.",
+      "Merge complete. I did not push.",
+    ])
+
+    let snapshot = buildWorkChatTimelineSnapshot(
+      transcript: transcript,
+      fallbackEntries: [],
+      artifacts: [],
+      localEchoMessages: []
+    )
+    let visibleKinds = snapshot.timeline.compactMap { entry -> String? in
+      switch entry.payload {
+      case .message(let message) where message.role == "user":
+        return "user"
+      case .message(let message) where message.role == "assistant":
+        return "assistant:\(message.itemId ?? "")"
+      case .toolCard(let card):
+        return "tool:\(card.id)"
+      default:
+        return nil
+      }
+    }
+
+    XCTAssertEqual(visibleKinds, [
+      "user",
+      "assistant:msg-progress",
+      "tool:tool-1",
+      "assistant:msg-final",
+    ])
+  }
+
+  func testWorkChatMessagesDoNotMergeUnidentifiedAssistantTextAcrossTools() {
+    let transcript: [WorkChatEnvelope] = [
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-04-22T22:10:01.000Z",
+        sequence: 1,
+        event: .assistantText(text: "Before tools.", turnId: "turn-1", itemId: nil)
+      ),
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-04-22T22:10:02.000Z",
+        sequence: 2,
+        event: .toolCall(tool: "Bash", argsText: "{}", itemId: "tool-1", parentItemId: nil, turnId: "turn-1")
+      ),
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-04-22T22:10:03.000Z",
+        sequence: 3,
+        event: .assistantText(text: "After tools.", turnId: "turn-1", itemId: nil)
+      ),
+    ]
+
+    let assistantMessages = buildWorkChatMessages(from: transcript)
+      .filter { $0.role == "assistant" }
+
+    XCTAssertEqual(assistantMessages.map(\.markdown), [
+      "Before tools.",
+      "After tools.",
+    ])
+  }
+
+  func testWorkSessionGroupsByLaneSurfacesOrphanLanesPerLaneId() {
+    let knownLane = LaneSummary(
+      id: "lane-primary",
+      name: "Primary",
+      description: nil,
+      laneType: "primary",
+      baseRef: "main",
+      branchRef: "main",
+      worktreePath: "/tmp/project",
+      attachedRootPath: nil,
+      parentLaneId: nil,
+      childCount: 0,
+      stackDepth: 0,
+      parentStatus: nil,
+      isEditProtected: true,
+      status: LaneStatus(dirty: false, ahead: 0, behind: 0, remoteBehind: 0, rebaseInProgress: false),
+      color: nil,
+      icon: nil,
+      tags: [],
+      folder: nil,
+      createdAt: "2026-03-17T00:00:00.000Z",
+      archivedAt: nil
+    )
+    let primarySession = makeTerminalSessionSummary(
+      id: "session-primary",
+      laneId: "lane-primary",
+      laneName: "Primary",
+      toolType: "codex-chat"
+    )
+    // Two distinct soft-deleted lanes — each should render as its own group.
+    let orphanOldSession = makeTerminalSessionSummary(
+      id: "session-orphan-old",
+      laneId: "lane-deleted-a",
+      laneName: "feature/cleanup",
+      toolType: "codex-chat"
+    )
+    let orphanNewSession = makeTerminalSessionSummary(
+      id: "session-orphan-new",
+      laneId: "lane-deleted-b",
+      laneName: "feature/recent",
+      toolType: "codex-chat"
+    )
+    // Same orphan lane appearing twice — must merge into the same group.
+    let orphanNewSessionSibling = makeTerminalSessionSummary(
+      id: "session-orphan-new-sibling",
+      laneId: "lane-deleted-b",
+      laneName: "feature/recent",
+      toolType: "codex-chat"
+    )
+
+    let groups = workSessionGroupsByLane(
+      sessions: [primarySession, orphanOldSession, orphanNewSession, orphanNewSessionSibling],
+      orderedLanes: [knownLane]
+    )
+
+    XCTAssertEqual(groups.map(\.id), ["lane:lane-primary", "lane:lane-deleted-a", "lane:lane-deleted-b"])
+    XCTAssertEqual(groups.map(\.label), ["Primary", "feature/cleanup", "feature/recent"])
+    XCTAssertEqual(groups.last?.sessions.count, 2)
   }
 
   func testWorkChatTranscriptPreservesReasoningIdentity() {

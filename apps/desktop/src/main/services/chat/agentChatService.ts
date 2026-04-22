@@ -5522,6 +5522,17 @@ export function createAgentChatService(args: {
     managed: ManagedChatSession,
     openCodeReason: "handle_close" | "idle_ttl" | "ended_session" | "model_switch" | "project_close" | "budget_eviction" | "pool_compaction" | "paused_run" | "shutdown" = "handle_close",
   ): void => {
+    const preserveClaudeResumeState =
+      managed.runtime?.kind === "claude"
+      && (
+        openCodeReason === "idle_ttl"
+        || openCodeReason === "budget_eviction"
+        || openCodeReason === "pool_compaction"
+        || openCodeReason === "paused_run"
+        || openCodeReason === "project_close"
+        || openCodeReason === "shutdown"
+      );
+
     flushBufferedReasoning(managed);
     flushBufferedText(managed);
     if (managed.runtime?.kind === "codex") {
@@ -5538,6 +5549,10 @@ export function createAgentChatService(args: {
     if (managed.runtime?.kind === "claude") {
       // Mark interrupted so the streaming catch block takes the graceful path
       managed.runtime.interrupted = true;
+      if (preserveClaudeResumeState) {
+        managed.runtime.sdkSessionId = managed.runtime.sdkSessionId ?? managed.runtime.v2Session?.sessionId ?? null;
+        persistChatState(managed);
+      }
       cancelClaudeWarmup(managed, managed.runtime, "teardown");
       try { managed.runtime.v2Session?.close(); } catch { /* ignore */ }
       managed.runtime.v2Session = null;
@@ -5579,8 +5594,10 @@ export function createAgentChatService(args: {
       if (rt.pooled) releaseCursorAcpConnection(rt.poolKey);
       managed.runtime = null;
     }
-    managed.runtimeInvalidated = true;
-    clearLaneDirectiveKey(managed);
+    managed.runtimeInvalidated = !preserveClaudeResumeState;
+    if (!preserveClaudeResumeState) {
+      clearLaneDirectiveKey(managed);
+    }
   };
 
   const keepChatSessionOpen = (

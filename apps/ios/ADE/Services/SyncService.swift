@@ -166,7 +166,9 @@ enum SyncRequestTimeout {
 }
 
 private let syncTerminalSubscriptionMaxBytes = 80_000
+private let syncChatSubscriptionMaxBytes = 2_000_000
 private let syncTerminalBufferMaxCharacters = 80_000
+private let chatEventHistoryMaxEvents = 1_000
 
 enum SyncBonjourTiming {
   static let searchRetryNanoseconds: UInt64 = 2_000_000_000
@@ -4057,7 +4059,11 @@ final class SyncService: ObservableObject {
       if supportsChatStreaming,
          let dict = payload as? [String: Any],
          let snapshot = try? decode(dict, as: SyncChatSubscribeSnapshotPayload.self) {
-        replaceChatEventHistory(sessionId: snapshot.sessionId, events: snapshot.events)
+        if snapshot.truncated {
+          mergeChatEventHistory(sessionId: snapshot.sessionId, events: snapshot.events)
+        } else {
+          replaceChatEventHistory(sessionId: snapshot.sessionId, events: snapshot.events)
+        }
       }
     case "chat_event":
       if supportsChatStreaming,
@@ -4474,7 +4480,10 @@ final class SyncService: ObservableObject {
   }
 
   private func chatSubscriptionPayload(sessionId: String) -> [String: Any] {
-    ["sessionId": sessionId]
+    [
+      "sessionId": sessionId,
+      "maxBytes": syncChatSubscriptionMaxBytes,
+    ]
   }
 
   private func restoreChatEventSubscriptions() {
@@ -4488,9 +4497,7 @@ final class SyncService: ObservableObject {
     var events = chatEventEnvelopesBySession[envelope.sessionId] ?? []
     guard !events.contains(where: { $0.id == envelope.id }) else { return }
     events.append(envelope)
-    if events.count > 500 {
-      events.removeFirst(events.count - 500)
-    }
+    events = trimChatEventHistory(events)
     chatEventEnvelopesBySession[envelope.sessionId] = events
     chatEventRevisionsBySession[envelope.sessionId, default: 0] += 1
     lastSyncAt = Date()
@@ -4498,15 +4505,39 @@ final class SyncService: ObservableObject {
   }
 
   func replaceChatEventHistory(sessionId: String, events: [AgentChatEventEnvelope]) {
+    chatEventEnvelopesBySession[sessionId] = deduplicatedChatEventHistory(events)
+    chatEventRevisionsBySession[sessionId, default: 0] += 1
+    lastSyncAt = Date()
+    markChatEventsChanged(immediate: true)
+  }
+
+  func mergeChatEventHistory(sessionId: String, events: [AgentChatEventEnvelope]) {
+    let current = chatEventEnvelopesBySession[sessionId] ?? []
+    chatEventEnvelopesBySession[sessionId] = deduplicatedChatEventHistory(current + events)
+    chatEventRevisionsBySession[sessionId, default: 0] += 1
+    lastSyncAt = Date()
+    markChatEventsChanged(immediate: true)
+  }
+
+  private func deduplicatedChatEventHistory(_ events: [AgentChatEventEnvelope]) -> [AgentChatEventEnvelope] {
     var seen = Set<String>()
-    chatEventEnvelopesBySession[sessionId] = events.filter { event in
+    let unique = events.filter { event in
       guard !seen.contains(event.id) else { return false }
       seen.insert(event.id)
       return true
     }
-    chatEventRevisionsBySession[sessionId, default: 0] += 1
-    lastSyncAt = Date()
-    markChatEventsChanged(immediate: true)
+    .sorted { lhs, rhs in
+      if lhs.timestamp == rhs.timestamp {
+        return (lhs.sequence ?? 0) < (rhs.sequence ?? 0)
+      }
+      return lhs.timestamp < rhs.timestamp
+    }
+    return trimChatEventHistory(unique)
+  }
+
+  private func trimChatEventHistory(_ events: [AgentChatEventEnvelope]) -> [AgentChatEventEnvelope] {
+    guard events.count > chatEventHistoryMaxEvents else { return events }
+    return Array(events.suffix(chatEventHistoryMaxEvents))
   }
 
   private func trimmedTerminalBuffer(_ buffer: String) -> String {
