@@ -577,6 +577,32 @@ describe("missionService lifecycle", () => {
     });
     expect(imported.isDefault).toBe(true);
 
+    const proofProfile = service.savePhaseProfile({
+      profile: {
+        ...defaultProfile!,
+        id: "proof-profile",
+        name: "Proof Required",
+        isDefault: false,
+        phases: defaultProfile!.phases.map((phase) =>
+          phase.phaseKey === "testing" || phase.phaseKey === "validation"
+            ? {
+                ...phase,
+                validationGate: {
+                  ...phase.validationGate,
+                  evidenceRequirements: ["screenshot"],
+                  capabilityFallback: "warn",
+                },
+              }
+            : phase
+        ),
+      },
+    });
+    const proofPhase = proofProfile.phases.find((phase) =>
+      phase.phaseKey === "testing" || phase.phaseKey === "validation"
+    );
+    expect(proofPhase?.validationGate.evidenceRequirements).toEqual(["screenshot"]);
+    expect(proofPhase?.validationGate.capabilityFallback).toBe("warn");
+
     const profiles = service.listPhaseProfiles();
     const defaultCount = profiles.filter((profile) => profile.isDefault).length;
     expect(defaultCount).toBe(1);

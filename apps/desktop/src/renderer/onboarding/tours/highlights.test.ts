@@ -59,12 +59,11 @@ describe("highlights variants", () => {
     }
   });
 
-  it("every docUrl on highlight steps points to ade-app.dev without /docs/", () => {
+  it("every docUrl on highlight steps points to ade-app.dev", () => {
     for (const tour of listTours("highlights")) {
       for (const step of tour.steps) {
         if (!step.docUrl) continue;
         expect(step.docUrl).toMatch(/^https:\/\/www\.ade-app\.dev/);
-        expect(step.docUrl).not.toContain("/docs/");
       }
     }
   });

@@ -69,7 +69,8 @@ only when they join the same sync cluster.
 │ Sync transport (ws)                                            │
 │   - SyncEnvelope: hello, pairing, changeset_batch,             │
 │     heartbeat, file_request/response, terminal_*, chat_*,      │
-│     brain_status, command / command_ack / command_result       │
+│     brain_status, project_catalog/project_switch,              │
+│     command / command_ack / command_result                     │
 │   - JSON payloads; gzip+base64 above threshold (4KB default)   │
 └────────────────────────────────────────────────────────────────┘
                         │
@@ -97,10 +98,10 @@ only when they join the same sync cluster.
 Host-side service files
 (`apps/desktop/src/main/services/sync/`):
 
-- `syncHostService.ts` (~1,645 lines) — WebSocket server, connection
+- `syncHostService.ts` (~2,170 lines) — WebSocket server, connection
   acceptance, hello/pairing handling, per-peer state, changeset fan-out,
   terminal/chat subscription bridging, lane presence decoration,
-  per-IP pairing rate limiter.
+  project catalog/switch envelopes, per-IP pairing rate limiter.
 - `syncPeerService.ts` (~460 lines) — WebSocket **client**. The host
   can run this too when it is a peer of a different host during a
   handoff rehearsal or controller-to-host role swap. On iOS, an
@@ -108,11 +109,13 @@ Host-side service files
 - `syncProtocol.ts` (~120 lines) — envelope encode/decode with gzip
   threshold (`DEFAULT_SYNC_COMPRESSION_THRESHOLD_BYTES = 4 * 1024`).
   Protocol version is `1`. Default host port is `8787`.
-- `syncService.ts` (~775 lines) — orchestrator that wires host,
+- `syncService.ts` (~875 lines) — orchestrator that wires host,
   peer, device registry, draft persistence, pin store, and exposes
   the IPC entry points used by the renderer Settings > Sync surface
   (`ade.sync.getPin` / `setPin` / `clearPin`, `setActiveLanePresence`,
-  QR payload).
+  QR payload). Project-switch hosting receives a catalog provider from
+  `main.ts` so a phone can request a warm connection for another recent
+  desktop project without making that project the visible desktop tab.
 - `deviceRegistryService.ts` (~430 lines) — reads/writes the synced
   `devices` table and `sync_cluster_state` singleton.
 - `syncPairingStore.ts` (~90 lines) — thin wrapper that validates
@@ -137,7 +140,8 @@ Client-side (iOS) service files (`apps/ios/ADE/Services/`):
 - `SyncService.swift` — WebSocket client, envelope encoding (zlib),
   command routing, keychain integration, PIN-based pairing, lane
   presence announcements, PR mobile snapshot fetch, live chat-event
-  push listener, and APNs push-token registration to the host.
+  push listener, project home/catalog state, active-project scoping,
+  and APNs push-token registration to the host.
 - `KeychainService.swift` — iOS Keychain Services for paired device
   secrets.
 - `LiveActivityCoordinator.swift` — owns the single workspace
@@ -397,6 +401,7 @@ current branch modifications to `syncRemoteCommandService.ts`.
 | Shared ADE scaffold portability for desktop clones | Implemented |
 | PIN-based phone pairing + per-device secrets | Implemented |
 | Live chat-event push from host | Implemented |
+| Mobile project catalog + project switch handoff | Implemented |
 | Lane presence decoration (`devicesOpen`) | Implemented |
 | PR mobile snapshot (`prs.getMobileSnapshot`) | Implemented |
 | iOS local replicated DB | Implemented |

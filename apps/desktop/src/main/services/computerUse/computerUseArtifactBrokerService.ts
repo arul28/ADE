@@ -16,6 +16,7 @@ import type {
   ComputerUseArtifactRouteArgs,
   ComputerUseArtifactView,
   ComputerUseBackendStatus,
+  ComputerUseExternalBackendStatus,
   ComputerUseArtifactWorkflowState,
   ComputerUseEventPayload,
 } from "../../../shared/types";
@@ -38,6 +39,7 @@ import {
   toOptionalString,
   writeTextAtomic,
 } from "../shared/utils";
+import { commandExists } from "../ai/utils";
 import { createComputerUseArtifactPath, getLocalComputerUseCapabilities, toProjectArtifactUri } from "./localComputerUse";
 
 type StoredArtifactRow = {
@@ -489,10 +491,43 @@ export function createComputerUseArtifactBrokerService(args: {
     if (local.proofRequirements.browser_verification.available) localKinds.push("browser_verification");
     if (local.proofRequirements.console_logs.available) localKinds.push("console_logs");
 
+    const backends: ComputerUseExternalBackendStatus[] = [];
+    const ghostInstalled = commandExists("ghost");
+    backends.push({
+      name: "Ghost OS",
+      available: false,
+      state: ghostInstalled ? "installed" : "missing",
+      detail: ghostInstalled
+        ? "Ghost OS CLI is installed, but ADE Ghost integration readiness is not enabled yet."
+        : "Ghost OS CLI is not installed on this machine.",
+      supportedKinds: [
+        "screenshot",
+        "browser_verification",
+      ],
+    });
+
+    const agentBrowserInstalled = commandExists("agent-browser");
+    backends.push({
+      name: "agent-browser",
+      available: agentBrowserInstalled,
+      state: agentBrowserInstalled ? "installed" : "missing",
+      detail: agentBrowserInstalled
+        ? "agent-browser CLI is installed and can produce artifacts for ADE ingestion."
+        : "agent-browser CLI is not installed on this machine.",
+      supportedKinds: [
+        "screenshot",
+        "video_recording",
+        "browser_trace",
+        "browser_verification",
+        "console_logs",
+      ],
+    });
+
     return {
-      backends: [],
+      backends,
       localFallback: {
         available: local.overallState === "present",
+        state: local.overallState,
         detail: local.overallState === "present"
           ? "ADE local computer-use tools are available as a fallback."
           : `ADE local computer-use tools are fallback-only and currently ${local.overallState}.`,

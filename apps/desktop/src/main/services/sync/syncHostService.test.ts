@@ -130,10 +130,11 @@ async function connectClient(args: {
     },
     compressionThresholdBytes: 100_000,
   }));
-  await queue.next("hello_ok");
+  const helloOk = await queue.next("hello_ok");
   return {
     ws,
     queue,
+    helloOk,
     close: async () => {
       ws.close();
       await new Promise((resolve) => ws.once("close", resolve));
@@ -329,6 +330,139 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
 
     await expect(host.waitUntilListening()).rejects.toMatchObject({ code: "EADDRINUSE" });
   }, 30_000);
+
+  it("advertises the mobile project catalog and handles project switch requests", async () => {
+    const brainDb = await openKvDb(makeDbPath("ade-sync-project-catalog-"), createLogger() as any);
+    const projectRoot = makeProjectRoot("ade-sync-project-catalog-project-");
+    const workspaceRoot = path.join(projectRoot, "workspace");
+    fs.mkdirSync(workspaceRoot, { recursive: true });
+
+    const project = {
+      id: "project-1",
+      displayName: "ADE",
+      rootPath: projectRoot,
+      defaultBaseRef: "main",
+      lastOpenedAt: "2026-04-22T12:00:00.000Z",
+      laneCount: 4,
+      isAvailable: true,
+      isCached: false,
+    };
+    const connection = {
+      authKind: "bootstrap" as const,
+      token: "project-bootstrap-token",
+      hostIdentity: {
+        deviceId: "host-1",
+        siteId: "host-site-1",
+        name: "ADE Desktop",
+        platform: "macOS" as const,
+        deviceType: "desktop" as const,
+      },
+      port: 8788,
+      addressCandidates: [{ host: "192.168.1.24", kind: "lan" as const }],
+    };
+    const projectCatalogProvider = {
+      listProjects: vi.fn(async () => ({ projects: [project] })),
+      prepareProjectConnection: vi.fn(async () => ({
+        ok: true,
+        project: { ...project, id: "project-row-1", isCached: true },
+        connection,
+      })),
+    };
+
+    const host = createSyncHostService({
+      db: brainDb,
+      logger: createLogger() as any,
+      projectRoot,
+      port: 0,
+      pinStore: createStubPinStore(),
+      fileService: createStubFileService(workspaceRoot) as any,
+      laneService: {
+        list: vi.fn().mockResolvedValue([]),
+        create: vi.fn(),
+        archive: vi.fn(),
+      } as any,
+      prService: {
+        listAll: vi.fn().mockResolvedValue([]),
+        getDetail: vi.fn(),
+        getStatus: vi.fn(),
+        getChecks: vi.fn(),
+        getReviews: vi.fn(),
+        getComments: vi.fn(),
+        getFiles: vi.fn(),
+        createFromLane: vi.fn(),
+        land: vi.fn(),
+        closePr: vi.fn(),
+        requestReviewers: vi.fn(),
+      } as any,
+      sessionService: {
+        list: () => [],
+        get: () => null,
+        readTranscriptTail: async () => "",
+      } as any,
+      ptyService: {
+        create: vi.fn(),
+        enrichSessions: (rows: any[]) => rows,
+      } as any,
+      computerUseArtifactBrokerService: {
+        listArtifacts: () => [],
+      } as any,
+      projectCatalogProvider,
+    });
+    activeDisposers.push(async () => {
+      await host.dispose();
+      brainDb.close();
+    });
+
+    const port = await host.waitUntilListening();
+    const client = await connectClient({
+      port,
+      token: host.getBootstrapToken(),
+      deviceId: "ios-phone-1",
+      deviceName: "Arul iPhone",
+      siteId: "ios-site-1",
+      dbVersion: 0,
+      platform: "iOS",
+      deviceType: "phone",
+    });
+
+    const helloPayload = client.helloOk.payload as {
+      projects?: unknown[];
+      features: { projectCatalog?: { enabled: boolean } };
+    };
+    expect(helloPayload.projects).toEqual([project]);
+    expect(helloPayload.features.projectCatalog?.enabled).toBe(true);
+
+    client.ws.send(encodeSyncEnvelope({
+      type: "project_catalog_request",
+      requestId: "catalog-1",
+      payload: {},
+    }));
+    const catalog = await client.queue.next("project_catalog");
+    expect(catalog.requestId).toBe("catalog-1");
+    expect(catalog.payload).toEqual({ projects: [project] });
+
+    client.ws.send(encodeSyncEnvelope({
+      type: "project_switch_request",
+      requestId: "switch-1",
+      payload: {
+        projectId: project.id,
+        rootPath: project.rootPath,
+      },
+    }));
+    const switchResult = await client.queue.next("project_switch_result");
+    expect(switchResult.requestId).toBe("switch-1");
+    expect(switchResult.payload).toEqual({
+      ok: true,
+      project: { ...project, id: "project-row-1", isCached: true },
+      connection,
+    });
+    expect(projectCatalogProvider.prepareProjectConnection).toHaveBeenCalledWith({
+      projectId: project.id,
+      rootPath: project.rootPath,
+    });
+
+    await client.close();
+  });
 
   it("authenticates peers, relays CRDT changes, and rebroadcasts to other peers", async () => {
     const brainDb = await openKvDb(makeDbPath("ade-sync-brain-"), createLogger() as any);

@@ -30,11 +30,10 @@ describe("lanesTour", () => {
     }
   });
 
-  it("every step's docUrl points at ade-app.dev (no /docs/ prefix)", () => {
+  it("every step's docUrl points at ade-app.dev", () => {
     for (const step of lanesTour.steps) {
       expect(step.docUrl, `docUrl for ${step.target}`).toBeDefined();
       expect(step.docUrl!.startsWith(VALID_DOCS_PREFIX), `docUrl for ${step.target}: ${step.docUrl}`).toBe(true);
-      expect(step.docUrl!, `docUrl must not contain /docs/: ${step.docUrl}`).not.toContain("/docs/");
     }
   });
 

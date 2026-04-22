@@ -21,7 +21,13 @@ struct ContentView: View {
   }
 
   var body: some View {
-    rootTabs
+    Group {
+      if syncService.shouldShowProjectHome {
+        ProjectHomeView()
+      } else {
+        rootTabs
+      }
+    }
       .tint(adeAccent)
       .tabBarMinimizeBehavior(.onScrollDown)
       .adeScreenBackground()
@@ -40,18 +46,21 @@ struct ContentView: View {
       }
       .onChange(of: syncService.requestedFilesNavigation?.id) { _, requestId in
         guard requestId != nil else { return }
+        syncService.closeProjectHome()
         if selectedTab != .files {
           selectedTab = .files
         }
       }
       .onChange(of: syncService.requestedLaneNavigation?.id) { _, requestId in
         guard requestId != nil else { return }
+        syncService.closeProjectHome()
         if selectedTab != .lanes {
           selectedTab = .lanes
         }
       }
       .onChange(of: syncService.requestedPrNavigation?.id) { _, requestId in
         guard requestId != nil else { return }
+        syncService.closeProjectHome()
         if selectedTab != .prs {
           selectedTab = .prs
         }
@@ -107,5 +116,258 @@ struct ContentView: View {
       .tabItem {
         Label("CTO", systemImage: "brain.head.profile")
       }
+  }
+}
+
+private struct ProjectHomeView: View {
+  @EnvironmentObject private var syncService: SyncService
+
+  private var connectionLabel: String {
+    switch syncService.connectionState {
+    case .connected: return "Connected"
+    case .syncing: return "Syncing"
+    case .connecting: return "Connecting"
+    case .error: return "Connection error"
+    case .disconnected: return "Connect to computer"
+    }
+  }
+
+  private var connectionTint: Color {
+    switch syncService.connectionState {
+    case .connected: return ADEColor.success
+    case .syncing, .connecting: return ADEColor.warning
+    case .error, .disconnected: return ADEColor.danger
+    }
+  }
+
+  var body: some View {
+    NavigationStack {
+      ScrollView {
+        VStack(alignment: .leading, spacing: 22) {
+          header
+          projectSection
+        }
+        .padding(.horizontal, 20)
+        .padding(.top, 18)
+        .padding(.bottom, 32)
+      }
+      .scrollIndicators(.hidden)
+      .background(ADEColor.pageBackground.ignoresSafeArea())
+      .navigationTitle("ADE")
+      .navigationBarTitleDisplayMode(.inline)
+      .toolbar {
+        ToolbarItem(placement: .topBarTrailing) {
+          connectionButton
+        }
+      }
+    }
+  }
+
+  private var header: some View {
+    VStack(alignment: .leading, spacing: 14) {
+      HStack(alignment: .center, spacing: 12) {
+        ZStack {
+          RoundedRectangle(cornerRadius: 8, style: .continuous)
+            .fill(ADEColor.raisedBackground)
+            .frame(width: 64, height: 48)
+            .overlay(
+              RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(ADEColor.border, lineWidth: 1)
+            )
+          Image("BrandMark")
+            .resizable()
+            .scaledToFit()
+            .frame(width: 44, height: 24)
+            .accessibilityHidden(true)
+        }
+
+        VStack(alignment: .leading, spacing: 3) {
+          Text("Projects")
+            .font(.system(.largeTitle, design: .rounded).weight(.bold))
+            .foregroundStyle(ADEColor.textPrimary)
+          Text(syncService.hostName ?? "Choose a desktop project to open on this phone.")
+            .font(.callout)
+            .foregroundStyle(ADEColor.textSecondary)
+            .lineLimit(2)
+        }
+      }
+
+      if let activeProject = syncService.activeProject {
+        Button {
+          syncService.selectProject(activeProject)
+        } label: {
+          Label("Return to \(activeProject.displayName)", systemImage: "arrow.forward.circle.fill")
+            .font(.system(.subheadline, design: .rounded).weight(.semibold))
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .buttonStyle(.borderedProminent)
+        .tint(ADEColor.accent)
+      }
+    }
+  }
+
+  private var connectionButton: some View {
+    Button {
+      syncService.settingsPresented = true
+    } label: {
+      ZStack(alignment: .topTrailing) {
+        Image(systemName: "desktopcomputer")
+          .font(.system(size: 15, weight: .semibold))
+          .foregroundStyle(connectionTint)
+          .frame(width: 36, height: 36)
+          .background(ADEColor.raisedBackground, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+          .overlay(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+              .stroke(ADEColor.border, lineWidth: 1)
+          )
+        Circle()
+          .fill(connectionTint)
+          .frame(width: 8, height: 8)
+          .overlay(
+            Circle()
+              .stroke(ADEColor.pageBackground, lineWidth: 2)
+          )
+          .offset(x: 1, y: -1)
+      }
+      .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+    .accessibilityLabel("Computer connection: \(connectionLabel)")
+    .accessibilityHint("Opens computer connection settings.")
+  }
+
+  private var projectSection: some View {
+    VStack(alignment: .leading, spacing: 10) {
+      HStack {
+        Text("Desktop projects")
+          .font(.system(.headline, design: .rounded).weight(.semibold))
+          .foregroundStyle(ADEColor.textPrimary)
+        Spacer()
+        Text("\(syncService.projects.count)")
+          .font(.system(.caption, design: .monospaced).weight(.semibold))
+          .foregroundStyle(ADEColor.textMuted)
+      }
+
+      if syncService.projects.isEmpty {
+        emptyProjects
+      } else {
+        LazyVStack(spacing: 8) {
+          ForEach(syncService.projects) { project in
+            ProjectHomeRow(
+              project: project,
+              isActive: syncService.isActiveProject(project),
+              isSwitching: syncService.isSwitchingProject(project),
+              isDisabled: syncService.isProjectSwitching
+            ) {
+              syncService.selectProject(project)
+            }
+          }
+        }
+      }
+    }
+  }
+
+  private var emptyProjects: some View {
+    VStack(alignment: .leading, spacing: 12) {
+      Image(systemName: "desktopcomputer")
+        .font(.system(size: 28, weight: .semibold))
+        .foregroundStyle(ADEColor.textMuted)
+      Text("No desktop projects cached yet.")
+        .font(.system(.headline, design: .rounded).weight(.semibold))
+        .foregroundStyle(ADEColor.textPrimary)
+      Text("Connect to the ADE desktop app, then projects from that computer will appear here.")
+        .font(.callout)
+        .foregroundStyle(ADEColor.textSecondary)
+      Button {
+        syncService.settingsPresented = true
+      } label: {
+        Label("Connect to computer", systemImage: "desktopcomputer")
+          .font(.system(.subheadline, design: .rounded).weight(.semibold))
+      }
+      .buttonStyle(.borderedProminent)
+      .tint(ADEColor.accent)
+    }
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .padding(18)
+    .background(ADEColor.cardBackground, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+    .overlay(
+      RoundedRectangle(cornerRadius: 8, style: .continuous)
+        .stroke(ADEColor.border, lineWidth: 1)
+    )
+  }
+}
+
+private struct ProjectHomeRow: View {
+  let project: MobileProjectSummary
+  let isActive: Bool
+  let isSwitching: Bool
+  let isDisabled: Bool
+  let action: () -> Void
+
+  var body: some View {
+    Button(action: action) {
+      HStack(alignment: .center, spacing: 12) {
+        ZStack {
+          RoundedRectangle(cornerRadius: 7, style: .continuous)
+            .fill(isActive ? ADEColor.accent.opacity(0.16) : ADEColor.recessedBackground)
+            .frame(width: 40, height: 40)
+          Image(systemName: "folder")
+            .font(.system(size: 17, weight: .semibold))
+            .foregroundStyle(isActive ? ADEColor.accent : ADEColor.textSecondary)
+        }
+
+        VStack(alignment: .leading, spacing: 4) {
+          HStack(spacing: 6) {
+            Text(project.displayName)
+              .font(.system(.headline, design: .rounded).weight(.semibold))
+              .foregroundStyle(ADEColor.textPrimary)
+              .lineLimit(1)
+            if isActive {
+              Text("Selected")
+                .font(.system(.caption2, design: .rounded).weight(.semibold))
+                .foregroundStyle(ADEColor.accent)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
+                .background(ADEColor.accent.opacity(0.12), in: Capsule())
+            }
+          }
+
+          if let rootPath = project.rootPath, !rootPath.isEmpty {
+            Text(rootPath)
+              .font(.system(.caption, design: .monospaced))
+              .foregroundStyle(ADEColor.textMuted)
+              .lineLimit(1)
+          }
+
+          HStack(spacing: 8) {
+            Label("\(project.laneCount) lane\(project.laneCount == 1 ? "" : "s")", systemImage: "square.stack.3d.up")
+            if project.isCached {
+              Label(project.isAvailable ? "Cached" : "Unavailable", systemImage: project.isAvailable ? "checkmark.circle" : "exclamationmark.triangle")
+            }
+          }
+          .font(.system(.caption2, design: .rounded).weight(.semibold))
+          .foregroundStyle(ADEColor.textSecondary)
+        }
+
+        Spacer(minLength: 8)
+
+        if isSwitching {
+          ProgressView()
+            .controlSize(.small)
+        } else {
+          Image(systemName: "chevron.right")
+            .font(.system(size: 12, weight: .semibold))
+            .foregroundStyle(ADEColor.textMuted)
+        }
+      }
+      .padding(12)
+      .frame(maxWidth: .infinity, alignment: .leading)
+      .background(ADEColor.cardBackground, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+      .overlay(
+        RoundedRectangle(cornerRadius: 8, style: .continuous)
+          .stroke(isActive ? ADEColor.accent.opacity(0.55) : ADEColor.border, lineWidth: 1)
+      )
+    }
+    .buttonStyle(.plain)
+    .disabled(isDisabled)
   }
 }

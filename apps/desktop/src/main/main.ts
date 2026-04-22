@@ -48,11 +48,12 @@ import {
   toProjectInfo,
   upsertProjectRow,
 } from "./services/projects/projectService";
+import { toRecentProjectSummary } from "./services/projects/recentProjectSummary";
 import { createAdeProjectService } from "./services/projects/adeProjectService";
 import { createConfigReloadService } from "./services/projects/configReloadService";
 import { IPC } from "../shared/ipc";
 import { resolveAdeLayout } from "../shared/adeLayout";
-import type { PortLease, ProjectInfo } from "../shared/types";
+import type { PortLease, ProjectInfo, RecentProjectSummary, SyncMobileProjectSummary, SyncProjectSwitchRequestPayload, SyncProjectSwitchResultPayload } from "../shared/types";
 import type { AppContext } from "./services/ipc/registerIpc";
 import fs from "node:fs";
 import net from "node:net";
@@ -747,7 +748,11 @@ app.whenReady().then(async () => {
   const closeContextPromises = new Map<string, Promise<void>>();
   const rpcSocketCleanupByRoot = new Map<string, () => void>();
   const projectLastActivatedAt = new Map<string, number>();
+  const mobileSyncHandoffLeases = new Map<string, number>();
+  const mobileSyncHandoffLeaseTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  const mobileSyncPreparationPromises = new Map<string, Promise<SyncProjectSwitchResultPayload>>();
   const MAX_WARM_IDLE_PROJECT_CONTEXTS = 1;
+  const MOBILE_SYNC_HANDOFF_LEASE_MS = 60_000;
   let activeProjectRoot: string | null = null;
   let dormantContext!: AppContext;
   let projectContextRebalancePromise: Promise<void> = Promise.resolve();
@@ -880,6 +885,14 @@ app.whenReady().then(async () => {
     }
 
     try {
+      const leaseExpiresAt = mobileSyncHandoffLeases.get(projectRoot) ?? 0;
+      if (leaseExpiresAt > Date.now()) {
+        return true;
+      }
+      if (leaseExpiresAt > 0) {
+        mobileSyncHandoffLeases.delete(projectRoot);
+      }
+
       if ((ctx.syncHostService?.getPeerStates().length ?? 0) > 0) {
         return true;
       }
@@ -2454,6 +2467,10 @@ app.whenReady().then(async () => {
       processService,
       hostStartupEnabled: process.env.ADE_DISABLE_SYNC_HOST !== "1",
       notificationEventBus,
+      projectCatalogProvider: {
+        listProjects: listMobileSyncProjects,
+        prepareProjectConnection: prepareMobileSyncProjectConnection,
+      },
       onStatusChanged: (snapshot) =>
         emitProjectEvent(projectRoot, IPC.syncEvent, {
           type: "sync-status",
@@ -3450,6 +3467,12 @@ app.whenReady().then(async () => {
       await disposeContextResources(ctx);
       projectContexts.delete(normalizedRoot);
       projectLastActivatedAt.delete(normalizedRoot);
+      const leaseTimer = mobileSyncHandoffLeaseTimers.get(normalizedRoot);
+      if (leaseTimer) {
+        clearTimeout(leaseTimer);
+        mobileSyncHandoffLeaseTimers.delete(normalizedRoot);
+      }
+      mobileSyncHandoffLeases.delete(normalizedRoot);
       if (activeProjectRoot === normalizedRoot) {
         activeProjectRoot = null;
       }
@@ -3467,6 +3490,224 @@ app.whenReady().then(async () => {
     }
     setActiveProject(null);
   };
+
+  async function mobileProjectSummaryForContext(
+    ctx: AppContext,
+    recent?: RecentProjectSummary | null,
+  ): Promise<SyncMobileProjectSummary> {
+    let laneCount = recent?.laneCount ?? 0;
+    if (!recent?.laneCount) {
+      try {
+        laneCount = (await ctx.laneService.list({ includeArchived: false })).length;
+      } catch {
+        laneCount = 0;
+      }
+    }
+    return {
+      id: `root:${normalizeProjectRoot(ctx.project.rootPath)}`,
+      displayName: ctx.project.displayName,
+      rootPath: ctx.project.rootPath,
+      defaultBaseRef: ctx.project.baseRef,
+      lastOpenedAt: recent?.lastOpenedAt ?? null,
+      laneCount,
+      isAvailable: fs.existsSync(ctx.project.rootPath),
+      isCached: false,
+    };
+  }
+
+  function mobileProjectSummaryForRecent(recent: RecentProjectSummary): SyncMobileProjectSummary {
+    const normalizedRoot = normalizeProjectRoot(recent.rootPath);
+    return {
+      id: `root:${normalizedRoot}`,
+      displayName: recent.displayName,
+      rootPath: recent.rootPath,
+      defaultBaseRef: null,
+      lastOpenedAt: recent.lastOpenedAt,
+      laneCount: recent.laneCount ?? 0,
+      isAvailable: recent.exists,
+      isCached: false,
+    };
+  }
+
+  async function listMobileSyncProjects(): Promise<{ projects: SyncMobileProjectSummary[] }> {
+    const recentProjects = (readGlobalState(globalStatePath).recentProjects ?? [])
+      .map(toRecentProjectSummary);
+    const recentByRoot = new Map(
+      recentProjects.map((entry) => [normalizeProjectRoot(entry.rootPath), entry] as const),
+    );
+    const byRoot = new Map<string, SyncMobileProjectSummary>();
+    for (const recent of recentProjects) {
+      byRoot.set(normalizeProjectRoot(recent.rootPath), mobileProjectSummaryForRecent(recent));
+    }
+    const contextSummaries = await Promise.all(
+      [...projectContexts.entries()].map(async ([root, ctx]) =>
+        [root, await mobileProjectSummaryForContext(ctx, recentByRoot.get(root) ?? null)] as const
+      ),
+    );
+    for (const [root, summary] of contextSummaries) {
+      byRoot.set(root, summary);
+    }
+    const projects = [...byRoot.entries()]
+      .sort(([leftRoot], [rightRoot]) => {
+        if (leftRoot === activeProjectRoot) return -1;
+        if (rightRoot === activeProjectRoot) return 1;
+        return 0;
+      })
+      .map(([, project]) => project);
+    return { projects };
+  }
+
+  async function ensureProjectContextForMobileSync(projectRoot: string): Promise<AppContext> {
+    const normalizedRoot = normalizeProjectRoot(projectRoot);
+    const existing = projectContexts.get(normalizedRoot);
+    if (existing) return existing;
+    if (!fs.existsSync(normalizedRoot)) {
+      throw new Error("Project is no longer available on this desktop.");
+    }
+
+    let initPromise = projectInitPromises.get(normalizedRoot);
+    if (!initPromise) {
+      initPromise = (async () => {
+        const baseRef = await detectDefaultBaseRef(normalizedRoot);
+        const ctx = await initContextForProjectRoot({
+          projectRoot: normalizedRoot,
+          baseRef,
+          ensureExclude: true,
+          recordLastProject: false,
+          recordRecent: true,
+          userSelectedProject: false,
+        });
+        projectContexts.set(normalizedRoot, ctx);
+        return ctx;
+      })().finally(() => {
+        projectInitPromises.delete(normalizedRoot);
+      }) as Promise<AppContext>;
+      projectInitPromises.set(normalizedRoot, initPromise);
+    }
+    return initPromise;
+  }
+
+  async function prepareMobileSyncProjectConnection(
+    args: SyncProjectSwitchRequestPayload,
+  ): Promise<SyncProjectSwitchResultPayload> {
+    const catalog = await listMobileSyncProjects();
+    const requestedRoot = typeof args.rootPath === "string" && args.rootPath.trim()
+      ? normalizeProjectRoot(args.rootPath)
+      : null;
+    const requestedProjectId = typeof args.projectId === "string" && args.projectId.trim()
+      ? args.projectId.trim()
+      : null;
+    let catalogEntry = catalog.projects.find((entry) => {
+      const entryRoot = entry.rootPath ? normalizeProjectRoot(entry.rootPath) : null;
+      if (requestedRoot != null && requestedProjectId != null) {
+        if (entryRoot !== requestedRoot) return false;
+        return entry.id === requestedProjectId || !requestedProjectId.startsWith("root:");
+      }
+      return (requestedRoot != null && entryRoot === requestedRoot)
+        || (requestedProjectId != null && entry.id === requestedProjectId);
+    });
+    if (!catalogEntry && requestedProjectId) {
+      for (const [root, ctx] of projectContexts) {
+        if (ctx.projectId === requestedProjectId) {
+          catalogEntry = catalog.projects.find((entry) =>
+            entry.rootPath != null && normalizeProjectRoot(entry.rootPath) === root
+          ) ?? await mobileProjectSummaryForContext(ctx, null);
+          break;
+        }
+      }
+    }
+    if (!catalogEntry || !catalogEntry.isAvailable) {
+      return {
+        ok: false,
+        message: "That project is not available from this desktop.",
+      };
+    }
+    const targetRoot = catalogEntry.rootPath ? normalizeProjectRoot(catalogEntry.rootPath) : null;
+    if (!targetRoot) {
+      return {
+        ok: false,
+        message: "Choose a desktop project first.",
+      };
+    }
+
+    const existingPreparation = mobileSyncPreparationPromises.get(targetRoot);
+    if (existingPreparation) return existingPreparation;
+
+    const preparationPromise = (async (): Promise<SyncProjectSwitchResultPayload> => {
+      const hadExistingContext = projectContexts.has(targetRoot);
+      let createdLeaseExpiresAt: number | null = null;
+      let createdLeaseTimer: ReturnType<typeof setTimeout> | null = null;
+      try {
+        const ctx = await ensureProjectContextForMobileSync(targetRoot);
+        if (!ctx.syncService) {
+          throw new Error("Sync is not available for that project.");
+        }
+        await ctx.syncService.initialize();
+        const status = await ctx.syncService.getStatus();
+        if (!status.bootstrapToken || !status.pairingConnectInfo) {
+          throw new Error("That project is not ready for phone sync yet.");
+        }
+        const recent = (readGlobalState(globalStatePath).recentProjects ?? [])
+          .map(toRecentProjectSummary)
+          .find((entry) => normalizeProjectRoot(entry.rootPath) === targetRoot) ?? null;
+        const project = await mobileProjectSummaryForContext(ctx, recent);
+        const leaseExpiresAt = Date.now() + MOBILE_SYNC_HANDOFF_LEASE_MS;
+        createdLeaseExpiresAt = leaseExpiresAt;
+        mobileSyncHandoffLeases.set(targetRoot, leaseExpiresAt);
+        const existingLeaseTimer = mobileSyncHandoffLeaseTimers.get(targetRoot);
+        if (existingLeaseTimer) clearTimeout(existingLeaseTimer);
+        const leaseTimer = setTimeout(() => {
+          mobileSyncHandoffLeaseTimers.delete(targetRoot);
+          if (mobileSyncHandoffLeases.get(targetRoot) === leaseExpiresAt) {
+            mobileSyncHandoffLeases.delete(targetRoot);
+          }
+          scheduleProjectContextRebalance();
+        }, MOBILE_SYNC_HANDOFF_LEASE_MS + 100);
+        leaseTimer.unref?.();
+        createdLeaseTimer = leaseTimer;
+        mobileSyncHandoffLeaseTimers.set(targetRoot, leaseTimer);
+        projectLastActivatedAt.set(targetRoot, Date.now());
+        scheduleProjectContextRebalance();
+        return {
+          ok: true,
+          project,
+          connection: {
+            authKind: "bootstrap",
+            token: status.bootstrapToken,
+            hostIdentity: status.pairingConnectInfo.hostIdentity,
+            port: status.pairingConnectInfo.port,
+            addressCandidates: status.pairingConnectInfo.addressCandidates,
+          },
+        };
+      } catch (error) {
+        const currentLeaseTimer = mobileSyncHandoffLeaseTimers.get(targetRoot);
+        if (createdLeaseTimer != null && currentLeaseTimer === createdLeaseTimer) {
+          clearTimeout(createdLeaseTimer);
+          mobileSyncHandoffLeaseTimers.delete(targetRoot);
+        }
+        if (createdLeaseExpiresAt != null && mobileSyncHandoffLeases.get(targetRoot) === createdLeaseExpiresAt) {
+          mobileSyncHandoffLeases.delete(targetRoot);
+        }
+        if (!hadExistingContext && projectContexts.has(targetRoot) && !mobileSyncHandoffLeases.has(targetRoot)) {
+          await closeProjectContext(targetRoot);
+        } else {
+          scheduleProjectContextRebalance();
+        }
+        return {
+          ok: false,
+          message: error instanceof Error ? error.message : "Unable to prepare phone sync for that project.",
+        };
+      }
+    })();
+    mobileSyncPreparationPromises.set(targetRoot, preparationPromise);
+    try {
+      return await preparationPromise;
+    } finally {
+      if (mobileSyncPreparationPromises.get(targetRoot) === preparationPromise) {
+        mobileSyncPreparationPromises.delete(targetRoot);
+      }
+    }
+  }
 
   const persistRecentProject = (
     project: ProjectInfo,

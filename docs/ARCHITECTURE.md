@@ -809,7 +809,7 @@ Renderer surfaces:
 - **iOS**: pure-SQL CRR emulation in `apps/ios/ADE/Services/Database.swift` — `crsql_master`, `crsql_site_id`, `crsql_changes`, per-table `<table>__crsql_clock` tables replicated as plain SQLite, with INSERT/UPDATE/DELETE triggers writing Lamport-versioned rows to `crsql_changes`. Custom SQLite functions (`ade_next_db_version()`, `ade_local_site_id()`, `ade_capture_local_changes()`) provide trigger context. Changesets are wire-compatible with desktop cr-sqlite.
 - **Merge**: last-writer-wins per column. Each device has a unique site ID; Lamport timestamps per column.
 - **Sync API** (`AdeDb.sync`): `getSiteId`, `getDbVersion`, `exportChangesSince(version)`, `applyChanges(changes)`.
-- **Transport**: WebSocket on port 8787 (configurable); JSON-framed changesets + zlib compression for large batches; 30s ping/pong.
+- **Transport**: WebSocket on port 8787 (configurable); JSON-framed changesets + zlib compression for large batches; 30s ping/pong. The same envelope channel carries project catalog and project-switch handoff messages before the phone reconnects to a project-specific sync host.
 
 ### 13.2 Device model
 
@@ -821,10 +821,11 @@ Renderer surfaces:
 
 - App launch reads pairing secret from iOS Keychain.
 - Opens WebSocket to host; sends local `db_version`; host sends catch-up changesets.
+- `hello_ok` can include the host's mobile project catalog. The iOS app shows a native project home until an active project is selected, then requests a `project_switch_result` containing a project-specific bootstrap token and address candidates.
 - Bidirectional sync continues; on disconnect, exponential-backoff reconnect with version catch-up. `reconnectIfPossible` is guarded against overlapping runs.
-- All reads are local — the iOS tab is instant and offline-capable.
+- All reads are local and scoped to the active project id — the iOS tab is instant and offline-capable after the selected project's row has hydrated.
 - Writes from user actions: write locally, replicate to host. Execution commands (create PR, run command) are routed to the host via the `command`/`command_ack`/`command_result` message flow.
-- Sub-protocols: changeset sync, file access, terminal stream, chat stream (live `chat_event` push from host), command routing, lane presence announce/release.
+- Sub-protocols: changeset sync, project catalog/switch, file access, terminal stream, chat stream (live `chat_event` push from host), command routing, lane presence announce/release.
 - Pairing is a **user-set 6-digit PIN** stored at `.ade/secrets/sync-pin.json` on the host. The phone sends the PIN once; the host returns a durable per-device secret. QR payload is v2 (host identity + port + address candidates, no pairing code).
 - APNs pipeline: iOS registers device tokens (alert + push-to-start + per-activity update) via `SyncService.registerPushToken`. The host's `notificationEventBus` routes domain events (chat, PR, CTO, system) to `apnsService` for alert pushes and Live Activity update pushes, filtered by per-device `NotificationPreferences` stored in the iOS App Group `UserDefaults`.
 - Widgets: `ADEWorkspaceWidget` (Home Screen), `ADELockScreenWidget`, `ADEControlWidget` (Control Center, iOS 18+) read from a shared `WorkspaceSnapshot` in the App Group container. `LiveActivityCoordinator` manages the single workspace Live Activity.

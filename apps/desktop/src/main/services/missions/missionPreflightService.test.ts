@@ -193,6 +193,277 @@ describe("missionPreflightService", () => {
     expect(result.checklist.find((item) => item.id === "budget")?.severity).toBe("fail");
   });
 
+  it("blocks launch when required computer-use proof has no backend coverage", async () => {
+    const profiles = createProfiles();
+    const proofPhases = profiles[0]!.phases.map((phase, index) =>
+      index === 0
+        ? {
+            ...phase,
+            validationGate: {
+              ...phase.validationGate,
+              required: true,
+              evidenceRequirements: ["screenshot" as const],
+              capabilityFallback: "block" as const,
+            },
+          }
+        : phase,
+    );
+    const service = createMissionPreflightService({
+      logger: createLogger(),
+      projectRoot: "/tmp/ade-preflight",
+      missionService: {
+        listPhaseProfiles: () => profiles
+      } as any,
+      laneService: {
+        list: async () => [
+          { id: "lane-1", archivedAt: null },
+          { id: "lane-2", archivedAt: null },
+          { id: "lane-3", archivedAt: null },
+        ]
+      } as any,
+      aiIntegrationService: {
+        getAvailabilityAsync: async () => ({
+          availableModels: [
+            { id: "anthropic/claude-sonnet-4-6", shortId: "claude-sonnet-4-6", family: "anthropic", displayName: "Claude Sonnet 4.6" },
+            { id: "claude-sonnet-4-6", shortId: "claude-sonnet-4-6", family: "claude", displayName: "Claude Sonnet 4.6" },
+            { id: "openai/gpt-5.3-codex", shortId: "gpt-5.3-codex", family: "openai", displayName: "GPT-5.3 Codex" },
+            { id: "gpt-5.3-codex", shortId: "gpt-5.3-codex", family: "codex", displayName: "GPT-5.3 Codex" },
+          ]
+        }),
+        executeTask: async () => ({ structuredOutput: { clear: true, feedback: [] } })
+      } as any,
+      projectConfigService: {
+        get: () => ({
+          effective: {
+            ai: {
+              permissions: {
+                cli: { mode: "full-auto", sandboxPermissions: "workspace-write" },
+                inProcess: { mode: "full-auto" },
+              }
+            }
+          }
+        })
+      } as any,
+      missionBudgetService: {
+        estimateLaunchBudget: async () => ({
+          estimate: createBudgetEstimate("subscription"),
+          hardLimitExceeded: false,
+          windowUsageCostUsd: 0.6,
+          remainingWindowCostUsd: 10.4,
+          budgetLimitCostUsd: 11
+        })
+      } as any,
+      computerUseArtifactBrokerService: {
+        getBackendStatus: () => ({
+          backends: [],
+          localFallback: {
+            available: false,
+            detail: "No local fallback in test.",
+            supportedKinds: [],
+          },
+        }),
+      } as any,
+    });
+
+    const result = await service.runPreflight({
+      launch: {
+        prompt: "Capture required proof.",
+        phaseProfileId: profiles[0]!.id,
+        phaseOverride: proofPhases,
+        modelConfig: {
+          orchestratorModel: {
+            provider: "claude",
+            modelId: "claude-sonnet-4-6"
+          }
+        },
+      }
+    });
+
+    expect(result.canLaunch).toBe(false);
+    expect(result.computerUse?.blocked).toBe(true);
+    expect(result.computerUse?.missingKinds).toEqual(["screenshot"]);
+    expect(result.checklist.find((item) => item.id === "computer_use")?.severity).toBe("fail");
+  });
+
+  it("allows runtime-discovered models when external proof backend covers browser evidence", async () => {
+    const profiles = createProfiles();
+    const proofPhases = profiles[0]!.phases.map((phase, index) => ({
+      ...phase,
+      model: {
+        ...phase.model,
+        provider: "opencode",
+        modelId: index === 0 ? "runtime/non-registry-model" : phase.model.modelId,
+      },
+      validationGate: index === 0
+        ? {
+            ...phase.validationGate,
+            required: true,
+            evidenceRequirements: ["screenshot" as const],
+            capabilityFallback: "block" as const,
+          }
+        : phase.validationGate,
+    }));
+    const service = createMissionPreflightService({
+      logger: createLogger(),
+      projectRoot: "/tmp/ade-preflight",
+      missionService: {
+        listPhaseProfiles: () => profiles
+      } as any,
+      laneService: {
+        list: async () => [
+          { id: "lane-1", archivedAt: null },
+          { id: "lane-2", archivedAt: null },
+          { id: "lane-3", archivedAt: null },
+        ]
+      } as any,
+      aiIntegrationService: {
+        getAvailabilityAsync: async () => ({
+          availableModels: [
+            { id: "runtime/non-registry-model", shortId: "runtime-model", family: "opencode", displayName: "Runtime model" },
+            { id: "anthropic/claude-sonnet-4-6", shortId: "claude-sonnet-4-6", family: "anthropic", displayName: "Claude Sonnet 4.6" },
+            { id: "claude-sonnet-4-6", shortId: "claude-sonnet-4-6", family: "claude", displayName: "Claude Sonnet 4.6" },
+            { id: "openai/gpt-5.3-codex", shortId: "gpt-5.3-codex", family: "openai", displayName: "GPT-5.3 Codex" },
+            { id: "gpt-5.3-codex", shortId: "gpt-5.3-codex", family: "codex", displayName: "GPT-5.3 Codex" },
+          ]
+        }),
+        executeTask: async () => ({ structuredOutput: { clear: true, feedback: [] } })
+      } as any,
+      projectConfigService: {
+        get: () => ({
+          effective: {
+            ai: {
+              permissions: {
+                cli: { mode: "full-auto", sandboxPermissions: "workspace-write" },
+                inProcess: { mode: "full-auto" },
+              }
+            }
+          }
+        })
+      } as any,
+      missionBudgetService: {
+        estimateLaunchBudget: async () => ({
+          estimate: createBudgetEstimate("subscription"),
+          hardLimitExceeded: false,
+          windowUsageCostUsd: 0.6,
+          remainingWindowCostUsd: 10.4,
+          budgetLimitCostUsd: 11
+        })
+      } as any,
+      computerUseArtifactBrokerService: {
+        getBackendStatus: () => ({
+          backends: [
+            {
+              name: "agent-browser",
+              available: true,
+              state: "installed",
+              detail: "agent-browser is available.",
+              supportedKinds: ["screenshot"],
+            },
+          ],
+          localFallback: {
+            available: false,
+            detail: "No local fallback in test.",
+            supportedKinds: [],
+          },
+        }),
+      } as any,
+    });
+
+    const result = await service.runPreflight({
+      launch: {
+        prompt: "Capture required proof.",
+        phaseProfileId: profiles[0]!.id,
+        phaseOverride: proofPhases,
+        modelConfig: {
+          orchestratorModel: {
+            provider: "opencode",
+            modelId: "runtime/non-registry-model"
+          }
+        },
+      }
+    });
+
+    expect(result.canLaunch).toBe(true);
+    expect(result.checklist.find((item) => item.id === "computer_use")?.severity).toBe("pass");
+    expect(result.checklist.find((item) => item.id === "capabilities")?.severity).toBe("pass");
+  });
+
+  it("reports local computer-use platform blockers when backend status is wired", async () => {
+    const profiles = createProfiles();
+    const proofPhases = profiles[0]!.phases.map((phase, index) => ({
+      ...phase,
+      validationGate: index === 0
+        ? {
+            ...phase.validationGate,
+            required: true,
+            evidenceRequirements: ["video_recording" as const],
+            capabilityFallback: "block" as const,
+          }
+        : phase.validationGate,
+    }));
+    const service = createMissionPreflightService({
+      logger: createLogger(),
+      projectRoot: "/tmp/ade-preflight",
+      missionService: {
+        listPhaseProfiles: () => profiles
+      } as any,
+      laneService: {
+        list: async () => [{ id: "lane-1", archivedAt: null }]
+      } as any,
+      aiIntegrationService: {
+        getAvailabilityAsync: async () => ({
+          availableModels: [
+            { id: "claude-sonnet-4-6", shortId: "claude-sonnet-4-6", family: "claude", displayName: "Claude Sonnet 4.6" },
+          ]
+        }),
+        executeTask: async () => ({ structuredOutput: { clear: true, feedback: [] } })
+      } as any,
+      projectConfigService: {
+        get: () => ({
+          effective: {
+            ai: {
+              permissions: {
+                cli: { mode: "full-auto", sandboxPermissions: "workspace-write" },
+                inProcess: { mode: "full-auto" },
+              }
+            }
+          }
+        })
+      } as any,
+      missionBudgetService: {
+        estimateLaunchBudget: async () => ({
+          estimate: createBudgetEstimate("subscription"),
+          hardLimitExceeded: false,
+          windowUsageCostUsd: 0,
+          remainingWindowCostUsd: 1,
+          budgetLimitCostUsd: 1
+        })
+      } as any,
+      computerUseArtifactBrokerService: {
+        getBackendStatus: () => ({
+          backends: [],
+          localFallback: {
+            available: false,
+            state: "blocked_by_capability",
+            detail: "ADE local computer-use tools are fallback-only and currently blocked_by_capability.",
+            supportedKinds: [],
+          },
+        }),
+      } as any,
+    });
+
+    const result = await service.runPreflight({
+      launch: {
+        prompt: "Capture required proof.",
+        phaseProfileId: profiles[0]!.id,
+        phaseOverride: proofPhases,
+      }
+    });
+
+    expect(result.canLaunch).toBe(false);
+    expect(result.checklist.find((item) => item.id === "capabilities")?.details.join("\n")).toContain("blocked by platform support");
+  });
+
   it("shows warning (not fail) for non-full-auto permissions and still allows launch", async () => {
     const profiles = createProfiles();
     const service = createMissionPreflightService({

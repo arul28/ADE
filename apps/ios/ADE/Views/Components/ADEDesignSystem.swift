@@ -424,7 +424,6 @@ struct ADEStatusPill: View {
 
 struct ADEConnectionDot: View {
   @EnvironmentObject private var syncService: SyncService
-  @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
   private var tint: Color {
     switch syncService.connectionState {
@@ -433,20 +432,6 @@ struct ADEConnectionDot: View {
     case .connecting: return ADEColor.warning
     case .error, .disconnected: return ADEColor.danger
     }
-  }
-
-  private var statusText: String {
-    switch syncService.connectionState {
-    case .connected: return "Connected"
-    case .syncing: return "Syncing"
-    case .connecting: return "Connecting"
-    case .error: return "Error"
-    case .disconnected: return "Disconnected"
-    }
-  }
-
-  private var showsHostSuffix: Bool {
-    syncService.connectionState == .connected
   }
 
   private var showsConnectedGlow: Bool {
@@ -494,78 +479,86 @@ struct ADEConnectionDot: View {
     }
   }
 
-  /// Subtle pill label shown only when the host is not connected. This is
-  /// the single source of truth for "why is the app empty?" — per-screen
-  /// "X failed to load" banners whose cause is disconnection are suppressed
-  /// in favor of this one glance-able affordance in the toolbar.
-  private var attachedLabel: String? {
-    switch syncService.connectionState {
-    case .connected, .syncing:
-      return nil
-    case .connecting:
-      return "Connecting"
-    case .error:
-      return "Offline"
-    case .disconnected:
-      return "Offline"
+  var body: some View {
+    Button(action: openSettings) {
+      Label {
+        Text("Computer connection")
+      } icon: {
+        ZStack {
+          Circle()
+            .fill(tint.opacity(0.14))
+            .frame(width: 30, height: 30)
+            .overlay(
+              Circle()
+                .stroke(tint.opacity(0.55), lineWidth: 1)
+            )
+            .shadow(color: tint.opacity(showsConnectedGlow ? 0.24 : 0.16), radius: showsConnectedGlow ? 2 : 1)
+
+          Image(systemName: "desktopcomputer")
+            .font(.system(size: 14, weight: .semibold))
+            .foregroundStyle(tint)
+        }
+      }
+      .labelStyle(.iconOnly)
+      .frame(minWidth: 44, minHeight: 44)
+      .contentShape(Rectangle())
     }
+    .buttonStyle(.plain)
+    .accessibilityLabel("Computer connection · \(accessibilityLabel)")
+    .accessibilityHint("Opens computer connection settings.")
+    .accessibilityShowsLargeContentViewer()
   }
 
-  var body: some View {
-    HStack(spacing: 6) {
-      ZStack {
-        Circle()
-          .fill(tint.opacity(0.14))
-          .frame(width: 30, height: 30)
-          .overlay(
-            Circle()
-              .stroke(tint.opacity(0.55), lineWidth: 1)
-          )
-          .shadow(color: tint.opacity(showsConnectedGlow ? 0.24 : 0.16), radius: showsConnectedGlow ? 2 : 1)
-
-        Image(systemName: "gearshape.fill")
-          .font(.system(size: 14, weight: .semibold))
-          .foregroundStyle(tint)
-      }
-
-      if let attachedLabel {
-        Text(attachedLabel)
-          .font(.system(.caption2, design: .rounded).weight(.semibold))
-          .foregroundStyle(tint)
-          .padding(.horizontal, 8)
-          .padding(.vertical, 3)
-          .background(tint.opacity(0.12), in: Capsule())
-          .overlay(
-            Capsule()
-              .stroke(tint.opacity(0.35), lineWidth: 0.5)
-          )
-          .transition(.opacity.combined(with: .scale(scale: 0.9)))
-          .accessibilityHidden(true)
-      }
-    }
-    .animation(ADEMotion.emphasis(reduceMotion: reduceMotion), value: attachedLabel)
-    .frame(minWidth: 44, minHeight: 44, alignment: .leading)
-    .contentShape(Rectangle())
-    .onTapGesture {
-      syncService.settingsPresented = true
-    }
-    .accessibilityAddTraits(.isButton)
-    .accessibilityLabel("Settings · \(accessibilityLabel)")
-    .accessibilityHint("Opens settings to pair or reconnect.")
-    .accessibilityAction {
-      syncService.settingsPresented = true
-    }
-    .accessibilityShowsLargeContentViewer()
+  private func openSettings() {
+    syncService.settingsPresented = true
   }
 }
 
-/// Toolbar leading cluster shown on every root screen: settings stays
-/// leftmost, with attention immediately after it as a separate control.
+struct ADEProjectHomeButton: View {
+  @EnvironmentObject private var syncService: SyncService
+
+  var body: some View {
+    Button(action: openProjectHome) {
+      Label {
+        Text("Projects")
+      } icon: {
+        ZStack {
+          Circle()
+            .fill(ADEColor.accent.opacity(0.12))
+            .frame(width: 30, height: 30)
+            .overlay(
+              Circle()
+                .stroke(ADEColor.accent.opacity(0.35), lineWidth: 1)
+            )
+
+          Image(systemName: "square.grid.2x2")
+            .font(.system(size: 14, weight: .semibold))
+            .foregroundStyle(ADEColor.accent)
+        }
+      }
+      .labelStyle(.iconOnly)
+      .frame(minWidth: 44, minHeight: 44)
+      .contentShape(Rectangle())
+    }
+    .buttonStyle(.plain)
+    .accessibilityLabel("Projects")
+    .accessibilityHint("Opens the ADE project menu.")
+    .accessibilityShowsLargeContentViewer()
+  }
+
+  private func openProjectHome() {
+    syncService.showProjectHome()
+  }
+}
+
+/// Toolbar leading cluster shown on every root screen: computer connection stays
+/// leftmost, followed by project switching and attention as separate controls.
 @available(iOS 17.0, *)
 struct ADERootToolbarLeading: View {
   var body: some View {
-    HStack(spacing: 12) {
+    HStack(spacing: 10) {
       ADEConnectionDot()
+      ADEProjectHomeButton()
       AttentionDrawerButton()
     }
     .fixedSize(horizontal: true, vertical: false)
@@ -580,6 +573,11 @@ struct ADERootToolbarLeadingItems: ToolbarContent {
   var body: some ToolbarContent {
     ToolbarItem(placement: .topBarLeading) {
       ADEConnectionDot()
+    }
+    .sharedBackgroundVisibility(.hidden)
+
+    ToolbarItem(placement: .topBarLeading) {
+      ADEProjectHomeButton()
     }
     .sharedBackgroundVisibility(.hidden)
 

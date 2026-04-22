@@ -232,7 +232,7 @@ struct WorkRootScreen: View {
           }
         } else {
           // Per-screen hydration banners are suppressed when the host is
-          // unreachable — the red gear dot (ADEConnectionDot) is the single
+          // unreachable; the root toolbar connection button is the single
           // source of truth for connection state. Genuine mid-sync failures
           // while connected still show below via `errorMessage`.
           if !syncService.connectionState.isHostUnreachable,

@@ -970,6 +970,22 @@ describe("adeRpcServer", () => {
       expect(names).not.toContain("spawn_worker");
       expect(names).not.toContain("read_mission_status");
       expect(names).not.toContain("get_cto_state");
+      expect(names).not.toContain("get_environment_info");
+      expect(names).not.toContain("launch_app");
+      expect(names).not.toContain("interact_gui");
+      expect(names).not.toContain("screenshot_environment");
+      expect(names).not.toContain("record_environment");
+
+      const denied = await callTool(handler, "screenshot_environment", {});
+      expect(denied.isError).toBe(true);
+      expect(JSON.stringify(denied.error ?? denied.structuredContent ?? {})).toContain(
+        "Unsupported tool: screenshot_environment",
+      );
+      const environmentDenied = await callTool(handler, "get_environment_info", {});
+      expect(environmentDenied.isError).toBe(true);
+      expect(JSON.stringify(environmentDenied.error ?? environmentDenied.structuredContent ?? {})).toContain(
+        "Unsupported tool: get_environment_info",
+      );
     } finally {
       if (previousRole == null) delete process.env.ADE_DEFAULT_ROLE;
       else process.env.ADE_DEFAULT_ROLE = previousRole;

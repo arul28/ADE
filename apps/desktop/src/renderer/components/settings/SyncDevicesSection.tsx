@@ -168,8 +168,17 @@ export function SyncDevicesSection() {
         if (!cancelled) setDevices(nextDevices);
       }).catch(() => {});
     });
+    const refreshWhenVisible = () => {
+      if (!cancelled) {
+        void refresh().catch(() => {});
+      }
+    };
+    const interval = window.setInterval(refreshWhenVisible, 5_000);
+    window.addEventListener("focus", refreshWhenVisible);
     return () => {
       cancelled = true;
+      window.clearInterval(interval);
+      window.removeEventListener("focus", refreshWhenVisible);
       dispose();
     };
   }, [refresh]);

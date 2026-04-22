@@ -36,6 +36,9 @@ import type {
   SyncPairingRequestPayload,
   SyncPeerConnectionState,
   SyncPeerMetadata,
+  SyncProjectCatalogPayload,
+  SyncProjectSwitchRequestPayload,
+  SyncProjectSwitchResultPayload,
   SyncRemoteCommandDescriptor,
   SyncTailnetDiscoveryStatus,
   SyncTerminalSnapshotPayload,
@@ -175,6 +178,10 @@ type SyncHostServiceArgs = {
   brainStatusIntervalMs?: number;
   compressionThresholdBytes?: number;
   deviceRegistryService?: DeviceRegistryService;
+  projectCatalogProvider?: {
+    listProjects: () => Promise<SyncProjectCatalogPayload>;
+    prepareProjectConnection: (args: SyncProjectSwitchRequestPayload) => Promise<SyncProjectSwitchResultPayload>;
+  };
   onStateChanged?: () => void;
   notificationEventBus?: NotificationEventBus | null;
 };
@@ -1032,6 +1039,45 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     ws.send(encodeSyncEnvelope({ type, payload, requestId, compressionThresholdBytes }));
   }
 
+  async function buildProjectCatalogPayload(): Promise<SyncProjectCatalogPayload> {
+    if (!args.projectCatalogProvider) {
+      return { projects: [] };
+    }
+    try {
+      return await args.projectCatalogProvider.listProjects();
+    } catch (error) {
+      args.logger.warn("sync_host.project_catalog_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return { projects: [] };
+    }
+  }
+
+  async function handleProjectSwitchRequest(
+    peer: PeerState,
+    requestId: string | null | undefined,
+    payload: SyncProjectSwitchRequestPayload | null,
+  ): Promise<void> {
+    if (!args.projectCatalogProvider) {
+      send(peer.ws, "project_switch_result", {
+        ok: false,
+        message: "Desktop project switching is not available.",
+      }, requestId);
+      return;
+    }
+    try {
+      const result = await args.projectCatalogProvider.prepareProjectConnection(payload ?? {});
+      send(peer.ws, "project_switch_result", result, requestId);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      args.logger.warn("sync_host.project_switch_failed", { message });
+      send(peer.ws, "project_switch_result", {
+        ok: false,
+        message,
+      }, requestId);
+    }
+  }
+
   function buildBrainStatus(): SyncBrainStatusPayload {
     const brainMetadata = readBrainMetadata();
     if (disposed) {
@@ -1588,17 +1634,22 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         lastHost: peer.remoteAddress,
         lastPort: peer.remotePort,
       });
+      const projectCatalog = await buildProjectCatalogPayload();
       send(peer.ws, "hello_ok", {
         peer: hello.peer,
         brain: readBrainMetadata(),
         serverDbVersion: args.db.sync.getDbVersion(),
         heartbeatIntervalMs,
         pollIntervalMs,
+        projects: projectCatalog.projects,
         features: {
           fileAccess: true,
           terminalStreaming: true,
           chatStreaming: {
             enabled: true,
+          },
+          projectCatalog: {
+            enabled: Boolean(args.projectCatalogProvider),
           },
           bootstrapAuth: true,
           pairingAuth: {
@@ -1625,6 +1676,14 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     }
 
     switch (envelope.type) {
+      case "project_catalog_request": {
+        send(peer.ws, "project_catalog", await buildProjectCatalogPayload(), envelope.requestId);
+        break;
+      }
+      case "project_switch_request": {
+        await handleProjectSwitchRequest(peer, envelope.requestId, envelope.payload as SyncProjectSwitchRequestPayload);
+        break;
+      }
       case "heartbeat": {
         const payload = envelope.payload as { kind?: string; sentAt?: string } | null;
         if (payload?.kind === "ping") {

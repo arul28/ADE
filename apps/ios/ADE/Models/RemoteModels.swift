@@ -67,6 +67,36 @@ struct HostConnectionProfile: Codable, Equatable {
   }
 }
 
+struct MobileProjectSummary: Codable, Equatable, Identifiable {
+  var id: String
+  var displayName: String
+  var rootPath: String?
+  var defaultBaseRef: String?
+  var lastOpenedAt: String?
+  var laneCount: Int
+  var isAvailable: Bool
+  var isCached: Bool
+}
+
+struct MobileProjectCatalogPayload: Codable, Equatable {
+  var projects: [MobileProjectSummary]
+}
+
+struct MobileProjectConnectionPayload: Codable, Equatable {
+  var authKind: String
+  var token: String
+  var hostIdentity: SyncPairingHostIdentity
+  var port: Int
+  var addressCandidates: [SyncAddressCandidate]
+}
+
+struct MobileProjectSwitchResultPayload: Codable, Equatable {
+  var ok: Bool
+  var message: String?
+  var project: MobileProjectSummary?
+  var connection: MobileProjectConnectionPayload?
+}
+
 struct DiscoveredSyncHost: Codable, Equatable, Identifiable {
   var id: String
   var serviceName: String

@@ -57,6 +57,33 @@ describe("TourOverlay", () => {
     expect(dismissSpy).toHaveBeenCalledTimes(1);
   });
 
+  it("lets act intro own Escape handling", () => {
+    const nextSpy = vi.fn().mockResolvedValue(undefined);
+    const dismissSpy = vi.fn().mockResolvedValue(undefined);
+    useOnboardingStore.setState({
+      nextStep: nextSpy as any,
+      dismissCurrentTour: dismissSpy as any,
+    });
+
+    render(
+      <TourOverlay
+        step={{
+          target: "",
+          title: "Act",
+          body: "Body",
+          actIntro: { title: "Act one", variant: "orbit" },
+        }}
+        stepIndex={0}
+        totalSteps={3}
+      />,
+    );
+
+    fireEvent.keyDown(window, { key: "Escape" });
+
+    expect(nextSpy).toHaveBeenCalledTimes(1);
+    expect(dismissSpy).not.toHaveBeenCalled();
+  });
+
   it("ArrowRight advances to the next step when not last", () => {
     const nextSpy = vi.fn().mockResolvedValue(undefined);
     const completeSpy = vi.fn().mockResolvedValue(undefined);
