@@ -763,6 +763,9 @@ app.whenReady().then(async () => {
 
   const setActiveProject = (projectRoot: string | null): void => {
     activeProjectRoot = projectRoot ? normalizeProjectRoot(projectRoot) : null;
+    for (const [root, ctx] of projectContexts) {
+      ctx.syncService?.setHostDiscoveryEnabled?.(activeProjectRoot != null && root === activeProjectRoot);
+    }
     if (activeProjectRoot) {
       projectLastActivatedAt.set(activeProjectRoot, Date.now());
       try {
@@ -2435,6 +2438,7 @@ app.whenReady().then(async () => {
       db,
       logger,
       projectRoot,
+      localDeviceIdPath: path.join(app.getPath("userData"), "sync-device-id"),
       fileService,
       laneService,
       gitService,
@@ -2466,6 +2470,7 @@ app.whenReady().then(async () => {
       getLinearSyncService: () => linearSyncServiceRef,
       processService,
       hostStartupEnabled: process.env.ADE_DISABLE_SYNC_HOST !== "1",
+      hostDiscoveryEnabled: activeProjectRoot != null && normalizeProjectRoot(projectRoot) === activeProjectRoot,
       notificationEventBus,
       projectCatalogProvider: {
         listProjects: listMobileSyncProjects,

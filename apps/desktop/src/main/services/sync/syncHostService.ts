@@ -173,6 +173,7 @@ type SyncHostServiceArgs = {
   pinStore: SyncPinStore;
   bootstrapTokenPath?: string;
   port?: number;
+  discoveryEnabled?: boolean;
   heartbeatIntervalMs?: number;
   pollIntervalMs?: number;
   brainStatusIntervalMs?: number;
@@ -699,13 +700,18 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
   let tailnetServeSignature: string | null = null;
   let tailnetServePublishSequence = 0;
   let tailnetServeActivePublishToken = 0;
+  let discoveryEnabled = args.discoveryEnabled !== false;
   let tailnetDiscoveryStatus: SyncTailnetDiscoveryStatus = {
-    state: shouldAttemptTailnetServiceAdvertise() ? "disabled" : "unavailable",
+    state: !discoveryEnabled
+      ? "disabled"
+      : shouldAttemptTailnetServiceAdvertise() ? "disabled" : "unavailable",
     serviceName: SYNC_TAILNET_DISCOVERY_SERVICE_NAME,
     servicePort: SYNC_TAILNET_DISCOVERY_SERVICE_PORT,
     target: null,
     updatedAt: null,
-    error: shouldAttemptTailnetServiceAdvertise()
+    error: !discoveryEnabled
+      ? "Tailnet discovery is disabled for this background project context."
+      : shouldAttemptTailnetServiceAdvertise()
       ? "Tailnet discovery has not been published yet."
       : "Tailscale Serve discovery is not available in this desktop process.",
     stderr: null,
@@ -828,6 +834,10 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
 
   const publishLanDiscovery = (port: number): void => {
     if (disposed) return;
+    if (!discoveryEnabled) {
+      unpublishLanDiscovery();
+      return;
+    }
     const localDevice = args.deviceRegistryService?.ensureLocalDevice() ?? null;
     const hostName = localDevice?.name ?? os.hostname();
     const ipAddresses = uniqueStrings([
@@ -880,6 +890,18 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     });
   };
 
+  const unpublishLanDiscovery = (): void => {
+    if (!bonjourAnnouncement) return;
+    try {
+      bonjourAnnouncement.stop?.();
+    } catch {
+      // ignore cleanup failures
+    }
+    bonjourAnnouncement = null;
+    bonjourPort = null;
+    bonjourSignature = null;
+  };
+
   const updateTailnetDiscoveryStatus = (
     next: SyncTailnetDiscoveryStatus,
   ): void => {
@@ -894,6 +916,19 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     options?: { force?: boolean },
   ): void => {
     if (disposed) return;
+    if (!discoveryEnabled) {
+      void unpublishTailnetDiscovery();
+      updateTailnetDiscoveryStatus({
+        state: "disabled",
+        serviceName: SYNC_TAILNET_DISCOVERY_SERVICE_NAME,
+        servicePort: SYNC_TAILNET_DISCOVERY_SERVICE_PORT,
+        target: null,
+        updatedAt: nowIso(),
+        error: "Tailnet discovery is disabled for this background project context.",
+        stderr: null,
+      });
+      return;
+    }
     if (!shouldAttemptTailnetServiceAdvertise()) {
       updateTailnetDiscoveryStatus({
         state: "unavailable",
@@ -2018,6 +2053,30 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       }
     },
 
+    setDiscoveryEnabled(enabled: boolean): void {
+      if (discoveryEnabled === enabled) return;
+      discoveryEnabled = enabled;
+      const address = server.address();
+      if (!enabled) {
+        unpublishLanDiscovery();
+        void unpublishTailnetDiscovery();
+        updateTailnetDiscoveryStatus({
+          state: "disabled",
+          serviceName: SYNC_TAILNET_DISCOVERY_SERVICE_NAME,
+          servicePort: SYNC_TAILNET_DISCOVERY_SERVICE_PORT,
+          target: null,
+          updatedAt: nowIso(),
+          error: "Tailnet discovery is disabled for this background project context.",
+          stderr: null,
+        });
+        return;
+      }
+      if (typeof address === "object" && address) {
+        publishLanDiscovery(address.port);
+        publishTailnetDiscovery(address.port, { force: true });
+      }
+    },
+
     revokePairedDevice(deviceId: string): void {
       pairingStore.revoke(deviceId);
       let revokedConnectedPeer = false;
@@ -2127,6 +2186,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       clearInterval(pollTimer);
       clearInterval(heartbeatTimer);
       clearInterval(brainStatusTimer);
+      unpublishLanDiscovery();
       try {
         await unpublishTailnetDiscovery();
       } catch {

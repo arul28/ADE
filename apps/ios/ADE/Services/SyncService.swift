@@ -190,11 +190,9 @@ enum SyncTailnetDiscoveryTiming {
 enum SyncTailnetDiscovery {
   static let hostCandidates = [
     "ade-sync",
-    "ade-desktop",
   ]
   static let portCandidates = [
     8787,
-    8788,
   ]
 }
 
@@ -215,6 +213,29 @@ func syncIsTailscaleIPv4Address(_ host: String) -> Bool {
     return false
   }
   return first == 100 && (64...127).contains(second)
+}
+
+func syncNormalizedRouteHost(_ address: String) -> String {
+  var host = address.trimmingCharacters(in: .whitespacesAndNewlines)
+  if let schemeRange = host.range(of: "://") {
+    host = String(host[schemeRange.upperBound...])
+  }
+  if let slash = host.firstIndex(of: "/") { host = String(host[..<slash]) }
+  if let question = host.firstIndex(of: "?") { host = String(host[..<question]) }
+  if let bracketEnd = host.lastIndex(of: "]"), host.hasPrefix("[") {
+    host = String(host[host.index(after: host.startIndex)..<bracketEnd])
+  } else if let colon = host.lastIndex(of: ":") {
+    host = String(host[..<colon])
+  }
+  return host.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+}
+
+func syncIsTailscaleRoute(_ address: String) -> Bool {
+  let host = syncNormalizedRouteHost(address)
+  if host.isEmpty { return false }
+  return syncIsTailscaleIPv4Address(host)
+    || syncIsTailnetDiscoveryHost(host)
+    || host.hasSuffix(".ts.net")
 }
 
 struct SyncReconnectState {
@@ -873,9 +894,9 @@ final class SyncService: ObservableObject {
       discoveredLanAddresses: addressCandidates.filter { host in
         guard !host.contains(":") else { return false }
         guard host != "127.0.0.1" else { return false }
-        return !syncIsTailscaleIPv4Address(host)
+        return !syncIsTailscaleRoute(host)
       },
-      tailscaleAddress: addressCandidates.first(where: syncIsTailscaleIPv4Address)
+      tailscaleAddress: addressCandidates.first(where: syncIsTailscaleRoute)
     )
 
     let previousActiveProjectId = activeProjectId
@@ -1216,14 +1237,14 @@ final class SyncService: ObservableObject {
     }
     let tailscaleAddress =
       profile.tailscaleAddress
-      ?? profile.savedAddressCandidates.first(where: syncIsTailscaleIPv4Address)
-      ?? profile.lastSuccessfulAddress.flatMap { syncIsTailscaleIPv4Address($0) ? $0 : nil }
-    let lanAddresses = profile.discoveredLanAddresses.filter { !syncIsTailscaleIPv4Address($0) }
-    let savedLanAddresses = profile.savedAddressCandidates.filter { !syncIsTailscaleIPv4Address($0) }
+      ?? profile.savedAddressCandidates.first(where: syncIsTailscaleRoute)
+      ?? profile.lastSuccessfulAddress.flatMap { syncIsTailscaleRoute($0) ? $0 : nil }
+    let lanAddresses = profile.discoveredLanAddresses.filter { !syncIsTailscaleRoute($0) }
+    let savedLanAddresses = profile.savedAddressCandidates.filter { !syncIsTailscaleRoute($0) }
     let addresses = deduplicatedAddresses(
       lanAddresses
       + savedLanAddresses
-      + (profile.lastSuccessfulAddress.flatMap { syncIsTailscaleIPv4Address($0) ? nil : $0 }.map { [$0] } ?? [])
+      + (profile.lastSuccessfulAddress.flatMap { syncIsTailscaleRoute($0) ? nil : $0 }.map { [$0] } ?? [])
     )
     guard tailscaleAddress != nil || !addresses.isEmpty else { return nil }
     let identity = profile.hostIdentity?.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1315,7 +1336,7 @@ final class SyncService: ObservableObject {
       return
     }
 
-    let connectedOverTailnet = currentAddress.map(syncIsTailscaleIPv4Address) ?? false
+    let connectedOverTailnet = currentAddress.map(syncIsTailscaleRoute) ?? false
     let shouldRoamToTailnet =
       !connectedOverTailnet
       && profileHasTailnetRoute(profile)
@@ -1489,16 +1510,9 @@ final class SyncService: ObservableObject {
         discoveredLanAddresses: addressCandidates.filter { host in
           guard !host.contains(":") else { return false }
           if host == "127.0.0.1" { return false }
-          let octets = host.split(separator: ".")
-          guard octets.count == 4 else { return false }
-          guard let first = octets.first.flatMap({ Int($0) }),
-                let second = octets.dropFirst().first.flatMap({ Int($0) }) else {
-            return false
-          }
-          let isTailscale = first == 100 && (64...127).contains(second)
-          return !isTailscale
+          return !syncIsTailscaleRoute(host)
         },
-        tailscaleAddress: tailscaleAddress
+        tailscaleAddress: tailscaleAddress ?? addressCandidates.first(where: syncIsTailscaleRoute)
       )
       saveProfile(profile)
       currentAddress = preferredAddress
@@ -3201,35 +3215,20 @@ final class SyncService: ObservableObject {
   private func syncCanAttemptPlaintextWebSocket(_ address: String) -> Bool {
     let trimmed = address.trimmingCharacters(in: .whitespacesAndNewlines)
     if trimmed.isEmpty { return false }
-
-    // Strip a leading scheme so raw hosts like "192.168.1.10:7878" and
-    // "ws://192.168.1.10:7878" both flow through the same path.
-    var host = trimmed
-    if let schemeRange = host.range(of: "://") {
-      let scheme = host[..<schemeRange.lowerBound].lowercased()
+    if let schemeRange = trimmed.range(of: "://") {
+      let scheme = trimmed[..<schemeRange.lowerBound].lowercased()
       // wss:// is end-to-end encrypted; anything non-ws beyond that we don't know
       // how to speak, so treat it conservatively.
       if scheme == "wss" { return true }
       if scheme != "ws" && scheme != "http" { return false }
-      host = String(host[schemeRange.upperBound...])
     }
 
-    // Drop trailing path and query, then an optional :port.
-    if let slash = host.firstIndex(of: "/") { host = String(host[..<slash]) }
-    if let question = host.firstIndex(of: "?") { host = String(host[..<question]) }
-    if let bracketEnd = host.lastIndex(of: "]") {
-      // IPv6 literal: host is `[...]:port`.
-      host = String(host[host.index(after: host.startIndex)..<bracketEnd])
-    } else if let colon = host.lastIndex(of: ":") {
-      host = String(host[..<colon])
-    }
-    host = host.lowercased()
+    let host = syncNormalizedRouteHost(trimmed)
     if host.isEmpty { return false }
 
     if host == "localhost" || host.hasSuffix(".localhost") { return true }
     if host.hasSuffix(".local") { return true } // Bonjour / mDNS
-    if host.hasSuffix(".ts.net") { return true } // Tailscale MagicDNS
-    if syncIsTailnetDiscoveryHost(host) { return true } // Tailscale Serve service aliases
+    if syncIsTailscaleRoute(host) { return true } // Tailscale IP, MagicDNS, or Serve aliases
 
     if let v4 = IPv4Address(host) {
       let bytes = v4.rawValue
@@ -3278,7 +3277,7 @@ final class SyncService: ObservableObject {
     if normalized == "127.0.0.1" || normalized == "::1" {
       return "loopback"
     }
-    if syncIsTailscaleIPv4Address(normalized) ||
+    if syncIsTailscaleRoute(normalized) ||
         explicitTailscaleAddress == normalized ||
         profile?.tailscaleAddress == normalized {
       return "tailscale"
@@ -3380,9 +3379,9 @@ final class SyncService: ObservableObject {
   }
 
   private func profileHasTailnetRoute(_ profile: HostConnectionProfile) -> Bool {
-    if profile.tailscaleAddress.map(syncIsTailscaleIPv4Address) == true { return true }
-    if profile.lastSuccessfulAddress.map(syncIsTailscaleIPv4Address) == true { return true }
-    return profile.savedAddressCandidates.contains(where: syncIsTailscaleIPv4Address)
+    if profile.tailscaleAddress.map(syncIsTailscaleRoute) == true { return true }
+    if profile.lastSuccessfulAddress.map(syncIsTailscaleRoute) == true { return true }
+    return profile.savedAddressCandidates.contains(where: syncIsTailscaleRoute)
   }
 
   private func preferTailnetForUpcomingReconnect() {
@@ -3408,8 +3407,8 @@ final class SyncService: ObservableObject {
     let liveLastSuccessful = profile.lastSuccessfulAddress.flatMap { address in
       liveSet.contains(address) ? [address] : nil
     } ?? []
-    let liveLastSuccessfulTailnet = liveLastSuccessful.filter(syncIsTailscaleIPv4Address)
-    let liveLastSuccessfulLan = liveLastSuccessful.filter { !syncIsTailscaleIPv4Address($0) }
+    let liveLastSuccessfulTailnet = liveLastSuccessful.filter(syncIsTailscaleRoute)
+    let liveLastSuccessfulLan = liveLastSuccessful.filter { !syncIsTailscaleRoute($0) }
     // Prefer addresses we see RIGHT NOW on the network over anything we have
     // cached from previous sessions. If the user changed subnets, stale
     // entries would otherwise consume the first few attempts (each with its
@@ -3418,8 +3417,8 @@ final class SyncService: ObservableObject {
     let prioritizedLive = preferTailnet
       ? liveLastSuccessfulTailnet + liveTailscale + liveLastSuccessfulLan + liveLan
       : liveLastSuccessful + liveLan + liveTailscale
-    let savedTailnet = profile.savedAddressCandidates.filter(syncIsTailscaleIPv4Address)
-    let savedLan = profile.savedAddressCandidates.filter { !syncIsTailscaleIPv4Address($0) }
+    let savedTailnet = profile.savedAddressCandidates.filter(syncIsTailscaleRoute)
+    let savedLan = profile.savedAddressCandidates.filter { !syncIsTailscaleRoute($0) }
     let fallbackLastSuccessful = liveLastSuccessful.isEmpty ? (profile.lastSuccessfulAddress.map { [$0] } ?? []) : []
     let savedProfileTailnet = profile.tailscaleAddress.map { [$0] } ?? []
     let fallbackSaved: [String]
@@ -3445,9 +3444,9 @@ final class SyncService: ObservableObject {
       matchesDiscoveredHost(host, profile: profile)
     }
     guard !matchingDiscovery.isEmpty else {
-      let savedTailnet = profile.savedAddressCandidates.filter(syncIsTailscaleIPv4Address)
+      let savedTailnet = profile.savedAddressCandidates.filter(syncIsTailscaleRoute)
       let lastSuccessfulTailnet = profile.lastSuccessfulAddress.flatMap { address in
-        syncIsTailscaleIPv4Address(address) ? [address] : nil
+        syncIsTailscaleRoute(address) ? [address] : nil
       } ?? []
       return deduplicatedAddresses(
         (preferTailnet ? [] : lastSuccessfulTailnet)
@@ -3463,8 +3462,8 @@ final class SyncService: ObservableObject {
     let liveLastSuccessful = profile.lastSuccessfulAddress.flatMap { address in
       liveSet.contains(address) ? [address] : nil
     } ?? []
-    let liveLastSuccessfulTailnet = liveLastSuccessful.filter(syncIsTailscaleIPv4Address)
-    let liveLastSuccessfulLan = liveLastSuccessful.filter { !syncIsTailscaleIPv4Address($0) }
+    let liveLastSuccessfulTailnet = liveLastSuccessful.filter(syncIsTailscaleRoute)
+    let liveLastSuccessfulLan = liveLastSuccessful.filter { !syncIsTailscaleRoute($0) }
 
     let prioritizedLive = preferTailnet
       ? liveLastSuccessfulTailnet + liveTailscale + liveLastSuccessfulLan + liveLan
@@ -3871,7 +3870,9 @@ final class SyncService: ObservableObject {
     saveRemoteCommandDescriptors(commandDescriptors)
 
     let matchingDiscovery = discoveredHosts.first { discovered in
-      discovered.hostIdentity == remoteHostIdentity || discovered.addresses.contains(connectedHost)
+      discovered.hostIdentity == remoteHostIdentity
+        || discovered.addresses.contains(connectedHost)
+        || discovered.tailscaleAddress == connectedHost
     }
     // Cap saved candidates to avoid unbounded growth when the user moves
     // between networks. Put the currently-connected host first, then any
@@ -3880,6 +3881,7 @@ final class SyncService: ObservableObject {
     let savedCandidatesUncapped = deduplicatedAddresses(
       [connectedHost] +
       (matchingDiscovery?.addresses ?? []) +
+      (matchingDiscovery?.tailscaleAddress.map { [$0] } ?? []) +
       (activeHostProfile?.savedAddressCandidates ?? [])
     )
     let savedCandidates = Array(savedCandidatesUncapped.prefix(6))
@@ -3898,7 +3900,9 @@ final class SyncService: ObservableObject {
       lastSuccessfulAddress: connectedHost,
       savedAddressCandidates: savedCandidates,
       discoveredLanAddresses: discoveredLan,
-      tailscaleAddress: matchingDiscovery?.tailscaleAddress ?? activeHostProfile?.tailscaleAddress
+      tailscaleAddress: matchingDiscovery?.tailscaleAddress
+        ?? (syncIsTailscaleRoute(connectedHost) ? connectedHost : nil)
+        ?? activeHostProfile?.tailscaleAddress
     )
     saveProfile(profile)
     startRelayLoop()

@@ -138,6 +138,18 @@ final class ADETests: XCTestCase {
     XCTAssertFalse(syncIsTailscaleIPv4Address("127.0.0.1"))
   }
 
+  func testSyncRecognizesTailscaleRoutes() {
+    XCTAssertTrue(syncIsTailscaleRoute("100.117.237.95"))
+    XCTAssertTrue(syncIsTailscaleRoute("ws://100.117.237.95:8787"))
+    XCTAssertTrue(syncIsTailscaleRoute("HTTPS://ADE-SYNC:8787/sync?source=settings"))
+    XCTAssertTrue(syncIsTailscaleRoute("ade-sync"))
+    XCTAssertTrue(syncIsTailscaleRoute("macbook.tailnet.ts.net"))
+    XCTAssertEqual(syncNormalizedRouteHost("ws://MACBOOK.tailnet.ts.net:8787/sync"), "macbook.tailnet.ts.net")
+    XCTAssertFalse(syncIsTailscaleRoute("192.168.68.102"))
+    XCTAssertFalse(syncIsTailscaleRoute("mac.local"))
+    XCTAssertFalse(syncIsTailscaleRoute("not-ts.net.example.com"))
+  }
+
   func testSyncBonjourTimingMatchesReliabilityRequirements() {
     XCTAssertEqual(SyncBonjourTiming.searchRetryNanoseconds, 2_000_000_000)
     XCTAssertEqual(SyncBonjourTiming.resolveRetryNanoseconds, 2_000_000_000)

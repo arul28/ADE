@@ -22,6 +22,7 @@ type DeviceRegistryServiceArgs = {
   db: AdeDb;
   logger: Logger;
   projectRoot: string;
+  localDeviceIdPath?: string;
 };
 
 type DeviceRow = {
@@ -138,12 +139,20 @@ function firstPreferredHost(ipAddresses: string[]): string {
 
 export function createDeviceRegistryService(args: DeviceRegistryServiceArgs) {
   const layout = resolveAdeLayout(args.projectRoot);
-  const deviceIdPath = path.join(layout.secretsDir, DEVICE_ID_FILE);
+  const deviceIdPath = args.localDeviceIdPath ?? path.join(layout.secretsDir, DEVICE_ID_FILE);
+  const legacyProjectDeviceIdPath = path.join(layout.secretsDir, DEVICE_ID_FILE);
   fs.mkdirSync(path.dirname(deviceIdPath), { recursive: true });
 
   const readOrCreateLocalDeviceId = (): string => {
     const existing = fs.existsSync(deviceIdPath) ? fs.readFileSync(deviceIdPath, "utf8").trim() : "";
     if (existing.length > 0) return existing;
+    const legacy = deviceIdPath !== legacyProjectDeviceIdPath && fs.existsSync(legacyProjectDeviceIdPath)
+      ? fs.readFileSync(legacyProjectDeviceIdPath, "utf8").trim()
+      : "";
+    if (legacy.length > 0) {
+      writeTextAtomic(deviceIdPath, `${legacy}\n`);
+      return legacy;
+    }
     const created = randomUUID();
     writeTextAtomic(deviceIdPath, `${created}\n`);
     return created;

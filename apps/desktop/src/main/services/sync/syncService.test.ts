@@ -37,6 +37,7 @@ const { createSyncHostServiceMock } = vi.hoisted(() => ({
     },
     handlePtyData() {},
     handlePtyExit() {},
+    setDiscoveryEnabled: vi.fn(),
     async dispose() {},
   })),
 }));

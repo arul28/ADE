@@ -64,6 +64,7 @@ type SyncServiceArgs = {
   db: AdeDb;
   logger: Logger;
   projectRoot: string;
+  localDeviceIdPath?: string;
   fileService: ReturnType<typeof createFileService>;
   laneService: ReturnType<typeof createLaneService>;
   gitService?: ReturnType<typeof createGitOperationsService>;
@@ -104,6 +105,7 @@ type SyncServiceArgs = {
   getLinearSyncService?: () => ReturnType<typeof createLinearSyncService> | null;
   processService: ReturnType<typeof createProcessService>;
   hostStartupEnabled?: boolean;
+  hostDiscoveryEnabled?: boolean;
   onStatusChanged?: (snapshot: SyncRoleSnapshot) => void;
   /**
    * Optional notification bus forwarded to the sync host. The host publishes
@@ -278,6 +280,7 @@ export function createSyncService(args: SyncServiceArgs) {
     db: args.db,
     logger: args.logger,
     projectRoot: args.projectRoot,
+    localDeviceIdPath: args.localDeviceIdPath,
   });
 
   let hostService: SyncHostService | null = null;
@@ -285,6 +288,7 @@ export function createSyncService(args: SyncServiceArgs) {
   let refreshQueued = false;
   let disposed = false;
   const hostStartupEnabled = args.hostStartupEnabled !== false;
+  let hostDiscoveryEnabled = args.hostDiscoveryEnabled !== false;
   let activeLocalLanePresenceIds: string[] = [];
   const localLanePresenceHeartbeatTimer = setInterval(() => {
     if (disposed || !hostService || activeLocalLanePresenceIds.length === 0) return;
@@ -432,6 +436,7 @@ export function createSyncService(args: SyncServiceArgs) {
         pinStore,
         bootstrapTokenPath: tokenPath,
         port: attemptedPort,
+        discoveryEnabled: hostDiscoveryEnabled,
         deviceRegistryService,
         notificationEventBus: args.notificationEventBus ?? null,
         projectCatalogProvider: args.projectCatalogProvider,
@@ -716,6 +721,12 @@ export function createSyncService(args: SyncServiceArgs) {
       const snapshot = await this.getStatus();
       args.onStatusChanged?.(snapshot);
       return snapshot;
+    },
+
+    setHostDiscoveryEnabled(enabled: boolean): void {
+      hostDiscoveryEnabled = enabled;
+      hostService?.setDiscoveryEnabled(enabled);
+      void emitStatus();
     },
 
     async updateLocalDevice(argsIn: {
