@@ -76,12 +76,13 @@ export function LaneRebaseBanner({
             {visibleRebaseSuggestions.length > 3 ? (
               <div style={{ fontSize: 11, color: COLORS.textMuted }}>+ {visibleRebaseSuggestions.length - 3} more suggestions.</div>
             ) : null}
-            {visibleRebaseSuggestions.length === 0 && rebaseSuggestionError ? (
-              <div style={{ background: `${COLORS.danger}15`, border: `1px solid ${COLORS.danger}30`, padding: 8, fontSize: 12, color: COLORS.danger }}>
-                {rebaseSuggestionError}
-              </div>
-            ) : null}
           </div>
+        </div>
+      ) : null}
+
+      {rebaseSuggestionError ? (
+        <div style={{ background: `${COLORS.danger}15`, borderBottom: `1px solid ${COLORS.danger}30`, padding: "8px 12px", fontSize: 12, color: COLORS.danger }}>
+          {rebaseSuggestionError}
         </div>
       ) : null}
 
@@ -143,11 +144,6 @@ export function LaneRebaseBanner({
             })}
             {visibleAutoRebaseNeedsAttention.length > 3 ? (
               <div style={{ fontSize: 11, color: COLORS.textMuted }}>+ {visibleAutoRebaseNeedsAttention.length - 3} more lanes.</div>
-            ) : null}
-            {rebaseSuggestionError ? (
-              <div style={{ background: `${COLORS.danger}15`, border: `1px solid ${COLORS.danger}30`, padding: 8, fontSize: 12, color: COLORS.danger }}>
-                {rebaseSuggestionError}
-              </div>
             ) : null}
           </div>
         </div>

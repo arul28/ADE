@@ -503,6 +503,9 @@ export function createProviderOrchestratorAdapter(options?: {
       const workerOwnerId = resolveWorkerOwnerId(args.run.metadata);
 
       try {
+        const configTomlFields = provider === "codex" && permissionMode === "config-toml"
+          ? { permissionMode, codexConfigSource: "config-toml" as const }
+          : {};
         const session = await agentChatService.createSession({
           laneId: args.step.laneId,
           provider,
@@ -510,6 +513,7 @@ export function createProviderOrchestratorAdapter(options?: {
           modelId: descriptor.id,
           reasoningEffort: reasoningEffort ?? null,
           ...mapPermissionModeToNativeFields(provider, permissionMode),
+          ...configTomlFields,
           ...(workerOwnerId ? { identityKey: `agent:${workerOwnerId}` as const } : {}),
         });
         return {

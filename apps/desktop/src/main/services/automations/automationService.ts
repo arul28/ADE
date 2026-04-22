@@ -1279,8 +1279,10 @@ export function createAutomationService({
   const buildMissionPrompt = (args: {
     rule: AutomationRule;
     trigger: TriggerContext;
+    executionLaneId?: string | null;
     briefing: Awaited<ReturnType<NonNullable<typeof memoryBriefingServiceRef>["buildBriefing"]>> | null;
   }): string => {
+    const laneId = args.executionLaneId ?? args.trigger.laneId ?? null;
     const lines: string[] = [
       `Automation rule: ${args.rule.name}`,
       `Mode: ${args.rule.mode}`,
@@ -1289,7 +1291,7 @@ export function createAutomationService({
       `Trigger: ${args.trigger.triggerType}`,
     ];
     if (args.trigger.commitSha) lines.push(`Commit SHA: ${args.trigger.commitSha}`);
-    if (args.trigger.laneId) lines.push(`Lane ID: ${args.trigger.laneId}`);
+    if (laneId) lines.push(`Lane ID: ${laneId}`);
     if (args.trigger.eventName) lines.push(`Event: ${args.trigger.eventName}`);
     if (args.trigger.summary) lines.push(`Ingress summary: ${args.trigger.summary}`);
     if (args.rule.prompt?.trim()) {
@@ -1620,7 +1622,7 @@ export function createAutomationService({
     const briefing = await buildBriefing(args.rule, args.trigger);
     const linkedProcedureIds = briefing?.usedProcedureIds ?? [];
     const confidence = computeConfidence(args.rule, linkedProcedureIds.length);
-    const prompt = buildMissionPrompt({ rule: args.rule, trigger: args.trigger, briefing });
+    const prompt = buildMissionPrompt({ rule: args.rule, trigger: args.trigger, executionLaneId: laneId, briefing });
     const existingRunRow = args.existingRunId ? loadRunRow(args.existingRunId) : null;
     const run = existingRunRow
       ? toRun(existingRunRow)
@@ -1789,8 +1791,8 @@ export function createAutomationService({
       throw new Error(budgetCheck.reason ?? "Budget cap blocked automation run.");
     }
 
-    const prompt = buildMissionPrompt({ rule: args.rule, trigger: args.trigger, briefing });
     const laneId = await resolveExecutionLaneId(args.rule, args.trigger);
+    const prompt = buildMissionPrompt({ rule: args.rule, trigger: args.trigger, executionLaneId: laneId, briefing });
     const mission = missionServiceRef.create({
       title: `${args.rule.name} · ${args.rule.mode}`,
       prompt,
