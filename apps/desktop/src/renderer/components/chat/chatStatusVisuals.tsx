@@ -28,10 +28,12 @@ export function ChatStatusGlyph({
   status,
   size = 12,
   className,
+  animate = true,
 }: {
   status: ChatStatusVisualState;
   size?: number;
   className?: string;
+  animate?: boolean;
 }) {
   switch (status) {
     case "completed":
@@ -51,8 +53,10 @@ export function ChatStatusGlyph({
     case "working":
       return (
         <span className={cn("relative inline-flex items-center justify-center", className)}>
-          <span className="absolute inset-0 animate-ping rounded-full bg-emerald-400/20" style={{ animationDuration: '2s' }} />
-          <SpinnerGap size={size} weight="bold" className="animate-spin text-emerald-400" />
+          {animate ? (
+            <span className="absolute inset-0 animate-ping rounded-full bg-emerald-400/20" style={{ animationDuration: '2s' }} />
+          ) : null}
+          <SpinnerGap size={size} weight="bold" className={cn(animate && "animate-spin", "text-emerald-400")} />
         </span>
       );
   }

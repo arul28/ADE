@@ -521,7 +521,6 @@ export function CtoPage() {
       executionMode: session.executionMode ?? null,
       identityKey: session.identityKey,
       capabilityMode: session.capabilityMode,
-      computerUse: session.computerUse,
       status: session.status,
       startedAt: session.createdAt,
       endedAt: session.status === "ended" ? session.lastActivityAt : null,
@@ -595,6 +594,8 @@ export function CtoPage() {
       )}
 
       {/* Agent sidebar */}
+      {/* tour anchor — wraps AgentSidebar so data-tour attaches to a stable container */}
+      <div data-tour="cto.sidebar" style={{ display: "contents" }}>
       <AgentSidebar
         agents={agents}
         selectedAgentId={selectedAgentId}
@@ -605,6 +606,7 @@ export function CtoPage() {
         onHireWorker={handleHireWorker}
         ctoModelInfo={sidebarCtoModelInfo}
       />
+      </div>
 
       {/* Main content */}
       <div className="flex flex-1 flex-col min-w-0 min-h-0">
@@ -716,7 +718,7 @@ export function CtoPage() {
 
           {/* Team tab */}
           {activeTab === "team" && (
-            <div className="flex flex-col h-full min-h-0 overflow-y-auto">
+            <div className="flex flex-col h-full min-h-0 overflow-y-auto" data-tour="cto.teamPanel">
               {showWorkerWizard ? (
                 <div className="p-4">
                   <WorkerCreationWizard
@@ -848,18 +850,24 @@ export function CtoPage() {
           )}
 
           {/* Linear tab */}
-          {activeTab === "workflows" && <LinearSyncPanel lanes={lanes} selectedLaneId={laneId} />}
+          {activeTab === "workflows" && (
+            <div data-tour="cto.linearPanel" className="h-full min-h-0">
+              <LinearSyncPanel lanes={lanes} selectedLaneId={laneId} />
+            </div>
+          )}
 
           {/* Settings tab */}
           {activeTab === "settings" && (
-            <CtoSettingsPanel
-              identity={ctoIdentity}
-              coreMemory={coreMemory}
-              sessionLogs={sessionLogs}
-              onSaveIdentity={handleSaveCtoIdentity}
-              onSaveCoreMemory={handleSaveCoreMemory}
-              onResetOnboarding={handleResetOnboarding}
-            />
+            <div data-tour="cto.settingsPanel" className="h-full min-h-0">
+              <CtoSettingsPanel
+                identity={ctoIdentity}
+                coreMemory={coreMemory}
+                sessionLogs={sessionLogs}
+                onSaveIdentity={handleSaveCtoIdentity}
+                onSaveCoreMemory={handleSaveCoreMemory}
+                onResetOnboarding={handleResetOnboarding}
+              />
+            </div>
           )}
         </div>
       </div>

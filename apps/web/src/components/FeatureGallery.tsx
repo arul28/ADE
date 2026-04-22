@@ -172,7 +172,8 @@ export function FeatureGallery({
                     src={active.imageSrc}
                     alt={active.imageAlt ?? `${active.eyebrow} illustration`}
                     className="block w-full"
-                    loading="lazy"
+                    loading="eager"
+                    decoding="async"
                   />
                 </div>
               </motion.div>

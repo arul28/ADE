@@ -45,6 +45,9 @@ struct SettingsPairingSection: View {
 
   private var discoverSubtitle: String? {
     let count = syncService.discoveredHosts.count
+    if count == 0, syncService.savedReconnectHost?.tailscaleAddress != nil {
+      return "Saved Tailscale route"
+    }
     if count == 0 {
       return "Looking nearby"
     }
@@ -218,7 +221,16 @@ struct DiscoverHostsSheet: View {
     NavigationStack {
       ScrollView {
         LazyVStack(spacing: 10) {
-          if syncService.discoveredHosts.isEmpty {
+          let savedHost = syncService.savedReconnectHost
+          let liveHosts = syncService.discoveredHosts.filter { host in
+            guard let savedHost else { return true }
+            if let hostIdentity = host.hostIdentity, let savedIdentity = savedHost.hostIdentity {
+              return hostIdentity != savedIdentity
+            }
+            return host.id != savedHost.id
+          }
+
+          if savedHost == nil && liveHosts.isEmpty {
             VStack(spacing: 14) {
               ADESkeletonView(height: 56, cornerRadius: 14)
               ADESkeletonView(height: 56, cornerRadius: 14)
@@ -229,11 +241,25 @@ struct DiscoverHostsSheet: View {
             }
             .padding(.top, 24)
           } else {
-            ForEach(syncService.discoveredHosts) { host in
+            if let savedHost {
+              Button {
+                dismiss()
+                Task { await syncService.reconnectIfPossible(userInitiated: true) }
+              } label: {
+                DiscoveredHostRow(
+                  host: savedHost,
+                  detailPrefix: savedHost.tailscaleAddress == nil ? "Saved" : "Saved Tailscale",
+                  accessoryText: "Reconnect"
+                )
+              }
+              .buttonStyle(ADEScaleButtonStyle())
+            }
+
+            ForEach(liveHosts) { host in
               Button {
                 onPick(host)
               } label: {
-                DiscoveredHostRow(host: host)
+                DiscoveredHostRow(host: host, detailPrefix: host.tailscaleAddress == nil && !host.id.hasPrefix("tailnet-") ? nil : "Tailscale")
               }
               .buttonStyle(ADEScaleButtonStyle())
             }
@@ -257,6 +283,8 @@ struct DiscoverHostsSheet: View {
 
 private struct DiscoveredHostRow: View {
   let host: DiscoveredSyncHost
+  var detailPrefix: String?
+  var accessoryText: String?
 
   var body: some View {
     HStack(spacing: 14) {
@@ -273,7 +301,7 @@ private struct DiscoveredHostRow: View {
         Text(host.hostName)
           .font(.body.weight(.medium))
           .foregroundStyle(ADEColor.textPrimary)
-        Text(host.addresses.first ?? "No route")
+        Text(routeText)
           .font(.caption.monospaced())
           .foregroundStyle(ADEColor.textSecondary)
           .lineLimit(1)
@@ -282,9 +310,15 @@ private struct DiscoveredHostRow: View {
 
       Spacer(minLength: 8)
 
-      Image(systemName: "chevron.right")
-        .font(.system(size: 13, weight: .semibold))
-        .foregroundStyle(ADEColor.textMuted)
+      if let accessoryText {
+        Text(accessoryText)
+          .font(.caption.weight(.semibold))
+          .foregroundStyle(ADEColor.purpleAccent)
+      } else {
+        Image(systemName: "chevron.right")
+          .font(.system(size: 13, weight: .semibold))
+          .foregroundStyle(ADEColor.textMuted)
+      }
     }
     .padding(.horizontal, 16)
     .padding(.vertical, 14)
@@ -298,6 +332,12 @@ private struct DiscoveredHostRow: View {
       RoundedRectangle(cornerRadius: 14, style: .continuous)
         .stroke(ADEColor.border.opacity(0.18), lineWidth: 0.75)
     )
+  }
+
+  private var routeText: String {
+    let route = host.tailscaleAddress ?? host.addresses.first ?? "No route"
+    guard let detailPrefix else { return route }
+    return "\(detailPrefix): \(route)"
   }
 }
 

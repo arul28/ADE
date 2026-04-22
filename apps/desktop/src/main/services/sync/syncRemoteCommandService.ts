@@ -286,7 +286,6 @@ async function summarizeChatSessionForRemote(
     automationId: session.automationId ?? null,
     automationRunId: session.automationRunId ?? null,
     ...(session.capabilityMode ? { capabilityMode: session.capabilityMode } : {}),
-    ...(session.computerUse ? { computerUse: session.computerUse } : {}),
     completion: session.completion ?? null,
     status: session.status,
     idleSinceAt: session.idleSinceAt ?? null,
@@ -547,7 +546,6 @@ function parseAgentChatCreateArgs(value: Record<string, unknown>): AgentChatCrea
   if ("opencodePermissionMode" in value) parsed.opencodePermissionMode = value.opencodePermissionMode == null ? undefined : asTrimmedString(value.opencodePermissionMode) as AgentChatCreateArgs["opencodePermissionMode"];
   if ("cursorModeId" in value) parsed.cursorModeId = value.cursorModeId == null ? null : asTrimmedString(value.cursorModeId) ?? null;
   if ("cursorConfigValues" in value) parsed.cursorConfigValues = parseCursorConfigValues(value.cursorConfigValues);
-  if ("computerUse" in value) parsed.computerUse = value.computerUse == null ? null : value.computerUse as AgentChatCreateArgs["computerUse"];
   if ("requestedCwd" in value) parsed.requestedCwd = value.requestedCwd == null ? undefined : requireString(value.requestedCwd, "chat.create requires a non-empty requestedCwd when provided.");
 
   return parsed;
@@ -655,7 +653,6 @@ function parseAgentChatUpdateSessionArgs(value: Record<string, unknown>): AgentC
   if ("cursorConfigValues" in value) {
     parsed.cursorConfigValues = parseCursorConfigValues(value.cursorConfigValues);
   }
-  if ("computerUse" in value) parsed.computerUse = value.computerUse == null ? null : value.computerUse as AgentChatUpdateSessionArgs["computerUse"];
   if ("manuallyNamed" in value) parsed.manuallyNamed = value.manuallyNamed === true;
   return parsed;
 }

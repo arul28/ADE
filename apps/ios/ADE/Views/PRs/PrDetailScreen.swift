@@ -74,6 +74,7 @@ struct PrDetailView: View {
 
   private var canAttemptBlockedMerge: Bool {
     guard canRunPrActions else { return false }
+    guard !isCurrentPrDraft else { return false }
     guard let status = snapshot?.status else { return false }
     let state = status.state.isEmpty ? currentPr.state : status.state
     return state == "open" && !status.isMergeable && !status.mergeConflicts
@@ -137,6 +138,10 @@ struct PrDetailView: View {
     snapshot?.detail?.requestedReviewers.count ?? 0
   }
 
+  private var isCurrentPrDraft: Bool {
+    currentPr.state == "draft" || snapshot?.status?.state == "draft" || snapshot?.detail?.isDraft == true
+  }
+
   private var mergeGateInfo: PrMergeGateInfo {
     prComputeMergeGate(
       status: snapshot?.status,
@@ -144,7 +149,8 @@ struct PrDetailView: View {
       reviewThreadsUnresolved: unresolvedThreadCount,
       reviewsNeeded: reviewsNeeded,
       reviewsHave: reviewsHave,
-      capabilities: capabilities
+      capabilities: capabilities,
+      isDraft: isCurrentPrDraft
     )
   }
 
@@ -154,14 +160,14 @@ struct PrDetailView: View {
 
   /// Set of sub-tabs shown in the detail picker.
   private var visibleTabs: [PrDetailTab] {
-    [.overview, .checks, .activity, .files, .convergence]
+    [.overview, .convergence, .files, .checks, .activity]
   }
 
   private func tabTitle(_ tab: PrDetailTab) -> String {
     switch tab {
     case .overview: return "Overview"
     case .checks: return "Checks"
-    case .activity: return "Reviews"
+    case .activity: return "Activity"
     case .files: return "Files"
     case .convergence: return "Path"
     }
@@ -194,7 +200,7 @@ struct PrDetailView: View {
         .prListRow()
       }
 
-      if let errorMessage {
+      if let errorMessage, !syncService.connectionState.isHostUnreachable {
         ADENoticeCard(
           title: "PR detail failed",
           message: errorMessage,

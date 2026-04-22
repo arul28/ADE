@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import type { AgentChatSessionSummary } from "../../../shared/types";
-import { createDefaultComputerUsePolicy } from "../../../shared/types";
 import {
   resolveNextSelectedSessionId,
   shouldPromoteSessionForComputerUse,
@@ -22,7 +21,6 @@ function buildSession(sessionId: string): AgentChatSessionSummary {
     goal: null,
     completion: null,
     reasoningEffort: null,
-    computerUse: undefined,
     executionMode: "focused",
   };
 }
@@ -58,11 +56,9 @@ describe("resolveNextSelectedSessionId", () => {
 });
 
 describe("shouldPromoteSessionForComputerUse", () => {
-  it("promotes older light sessions when computer use is on", () => {
-    const policy = createDefaultComputerUsePolicy();
-
-    expect(shouldPromoteSessionForComputerUse({ sessionProfile: "light" }, policy)).toBe(true);
-    expect(shouldPromoteSessionForComputerUse({ sessionProfile: undefined }, policy)).toBe(true);
-    expect(shouldPromoteSessionForComputerUse({ sessionProfile: "workflow" }, policy)).toBe(false);
+  it("promotes older light sessions when the session profile isn't already workflow", () => {
+    expect(shouldPromoteSessionForComputerUse({ sessionProfile: "light" })).toBe(true);
+    expect(shouldPromoteSessionForComputerUse({ sessionProfile: undefined })).toBe(true);
+    expect(shouldPromoteSessionForComputerUse({ sessionProfile: "workflow" })).toBe(false);
   });
 });

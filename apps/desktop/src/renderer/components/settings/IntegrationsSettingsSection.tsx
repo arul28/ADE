@@ -1,17 +1,15 @@
 import React, { useCallback, useEffect } from "react";
 import { useSearchParams } from "react-router-dom";
 import { AdeCliSection } from "./AdeCliSection";
-import { ComputerUseSection } from "./ComputerUseSection";
 import { GitHubSection } from "./GitHubSection";
 import { LinearSection } from "./LinearSection";
 
-type IntegrationTab = "github" | "linear" | "cli" | "computer-use";
+type IntegrationTab = "github" | "linear" | "cli";
 
 const TABS: { id: IntegrationTab; label: string }[] = [
   { id: "github", label: "GitHub" },
   { id: "linear", label: "Linear" },
   { id: "cli", label: "ADE CLI" },
-  { id: "computer-use", label: "Computer Use" },
 ];
 
 function resolveIntegrationTab(param: string): IntegrationTab | null {
@@ -86,7 +84,6 @@ export function IntegrationsSettingsSection() {
         {activeTab === "github" && <GitHubSection />}
         {activeTab === "linear" && <LinearSection />}
         {activeTab === "cli" && <AdeCliSection />}
-        {activeTab === "computer-use" && <ComputerUseSection />}
       </div>
     </div>
   );

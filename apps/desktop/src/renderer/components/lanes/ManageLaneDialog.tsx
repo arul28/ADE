@@ -1,4 +1,4 @@
-import { ArrowSquareOut, GitBranch, WarningCircle, Archive, Trash } from "@phosphor-icons/react";
+import { ArrowSquareOut, GitBranch, WarningCircle, Archive, Trash, CircleNotch } from "@phosphor-icons/react";
 import { Button } from "../ui/Button";
 import type { LaneSummary } from "../../../shared/types";
 import { LaneDialogShell } from "./LaneDialogShell";
@@ -19,7 +19,9 @@ export function ManageLaneDialog({
   setDeleteConfirmText,
   deletePhrase,
   laneActionBusy,
+  laneActionStatus,
   laneActionError,
+  laneActionKind,
   onAdoptAttached,
   onArchive,
   onDelete
@@ -38,7 +40,9 @@ export function ManageLaneDialog({
   setDeleteConfirmText: (v: string) => void;
   deletePhrase: string;
   laneActionBusy: boolean;
+  laneActionStatus: string | null;
   laneActionError: string | null;
+  laneActionKind?: "delete" | "archive" | "adopt" | null;
   onAdoptAttached: () => void;
   onArchive: () => void;
   onDelete: () => void;
@@ -85,7 +89,8 @@ export function ManageLaneDialog({
       ) : (
         <div className="max-h-[65vh] space-y-3 overflow-auto">
           {/* Lane info */}
-          <section className={SECTION_CLASS_NAME}>
+          {/* tour anchor — closest viable: no in-dialog rename control, so the lane info block stands in. */}
+          <section data-tour="lanes.manageDialog.rename" className={SECTION_CLASS_NAME}>
             <span className={LABEL_CLASS_NAME}>{isBatch ? "Selected lanes" : "Lane"}</span>
             {isBatch ? (
               <div className="mt-2 max-h-[120px] space-y-1.5 overflow-auto">
@@ -127,7 +132,7 @@ export function ManageLaneDialog({
                     Move this attached worktree into <span className="font-mono text-blue-200/80">.ade/worktrees</span> for full lifecycle management.
                   </div>
                 </div>
-                <Button size="sm" variant="outline" disabled={laneActionBusy} onClick={onAdoptAttached}>
+                <Button size="sm" variant="outline" data-tour="lanes.manageDialog.adopt" disabled={laneActionBusy} onClick={onAdoptAttached}>
                   Move
                 </Button>
               </div>
@@ -148,7 +153,7 @@ export function ManageLaneDialog({
                     : "Hide from ADE without deleting worktree or branches."}
                 </div>
               </div>
-              <Button size="sm" variant="outline" disabled={laneActionBusy} onClick={onArchive}>
+              <Button size="sm" variant="outline" data-tour="lanes.manageDialog.archive" disabled={laneActionBusy} onClick={onArchive}>
                 {isBatch ? `Archive ${lanes.length}` : "Archive"}
               </Button>
             </div>
@@ -170,7 +175,8 @@ export function ManageLaneDialog({
 
             {/* Delete mode selector */}
             <span className={LABEL_CLASS_NAME}>Scope</span>
-            <div className="mt-2 mb-3 inline-flex rounded-lg border border-white/[0.06] bg-white/[0.02] p-0.5">
+            {/* tour anchor — closest viable: scope picker serves as the in-dialog tab switch. */}
+            <div data-tour="lanes.manageDialog.tabs" className="mt-2 mb-3 inline-flex rounded-lg border border-white/[0.06] bg-white/[0.02] p-0.5">
               {([
                 { value: "worktree" as const, label: worktreeDeleteLabel },
                 { value: "local_branch" as const, label: localDeleteLabel },
@@ -179,6 +185,7 @@ export function ManageLaneDialog({
                 <button
                   key={opt.value}
                   type="button"
+                  disabled={laneActionBusy}
                   onClick={() => setDeleteMode(opt.value)}
                   className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
                     deleteMode === opt.value
@@ -198,6 +205,7 @@ export function ManageLaneDialog({
                 <input
                   value={deleteRemoteName}
                   onChange={(event) => setDeleteRemoteName(event.target.value)}
+                  disabled={laneActionBusy}
                   className={INPUT_CLASS_NAME}
                   placeholder="origin"
                 />
@@ -206,7 +214,7 @@ export function ManageLaneDialog({
 
             {/* Force delete */}
             <label className="mb-3 flex items-center gap-2 text-xs text-muted-fg cursor-pointer select-none">
-              <input type="checkbox" checked={deleteForce} onChange={(event) => setDeleteForce(event.target.checked)} className="rounded" />
+              <input type="checkbox" checked={deleteForce} onChange={(event) => setDeleteForce(event.target.checked)} disabled={laneActionBusy} className="rounded" />
               Force delete (skip safety checks)
             </label>
 
@@ -218,12 +226,23 @@ export function ManageLaneDialog({
               <input
                 value={deleteConfirmText}
                 onChange={(event) => setDeleteConfirmText(event.target.value)}
+                disabled={laneActionBusy}
                 className={`${INPUT_CLASS_NAME} ${confirmMatch ? "!border-red-500/30" : ""}`}
               />
             </div>
 
+            {laneActionBusy && (laneActionKind === "delete" || laneActionKind === "archive" || laneActionKind == null) && (
+              <div className="mb-3 flex items-center gap-2 rounded-lg border border-white/[0.08] bg-white/[0.04] px-3 py-2 text-xs text-muted-fg" role="status" aria-live="polite">
+                <CircleNotch
+                  size={14}
+                  className={`shrink-0 animate-spin ${laneActionKind === "delete" ? "text-red-300" : "text-amber-300"}`}
+                />
+                <span>{laneActionStatus ?? "Working..."}</span>
+              </div>
+            )}
+
             {/* Error */}
-            {laneActionError && (
+            {laneActionError && (laneActionKind === "delete" || laneActionKind === "archive" || laneActionKind == null) && (
               <div className="mb-3 flex items-start gap-2 rounded-lg border border-red-500/15 bg-red-500/[0.06] px-3 py-2 text-xs text-red-300">
                 <WarningCircle size={14} className="mt-0.5 shrink-0" />
                 <span className="whitespace-pre-wrap">{laneActionError}</span>
@@ -233,13 +252,14 @@ export function ManageLaneDialog({
             <Button
               size="sm"
               variant="primary"
+              data-tour="lanes.manageDialog.delete"
               className="bg-red-600 hover:bg-red-500"
               disabled={laneActionBusy || !confirmMatch}
               onClick={onDelete}
             >
-              <Trash size={13} />
-              {laneActionBusy
-                ? "Working..."
+              {laneActionBusy && laneActionKind === "delete" ? <CircleNotch size={13} className="animate-spin" /> : <Trash size={13} />}
+              {laneActionBusy && laneActionKind === "delete"
+                ? "Deleting..."
                 : isBatch
                   ? `Delete ${lanes.length} lanes`
                   : "Delete lane"}

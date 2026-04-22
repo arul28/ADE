@@ -193,7 +193,7 @@ function FeatureCard({
           src={featureSrc(feature.image)}
           alt={feature.name}
           className="absolute inset-0 h-full w-full object-cover object-top transition-transform duration-500 ease-out scale-[1.15] group-hover:scale-100"
-          loading="lazy"
+          loading="eager"
           decoding="async"
         />
       </button>

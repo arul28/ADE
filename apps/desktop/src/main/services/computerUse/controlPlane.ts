@@ -1,4 +1,3 @@
-import { spawnSync } from "node:child_process";
 import type {
   ComputerUseArtifactKind,
   ComputerUseArtifactOwner,
@@ -6,15 +5,8 @@ import type {
   ComputerUseArtifactView,
   ComputerUseBackendStatus,
   ComputerUseOwnerSnapshot,
-  ComputerUseOwnerSnapshotArgs,
-  ComputerUsePolicy,
-  ComputerUseSettingsSnapshot,
-  PhaseCard,
 } from "../../../shared/types";
-import { createDefaultComputerUsePolicy } from "../../../shared/types";
 import type { ComputerUseArtifactBrokerService } from "./computerUseArtifactBrokerService";
-import { commandExists } from "../ai/utils";
-import { getGhostDoctorProcessHealth } from "./localComputerUse";
 
 const COMPUTER_USE_KINDS: ComputerUseArtifactKind[] = [
   "screenshot",
@@ -28,158 +20,8 @@ export function getComputerUseArtifactKinds(): ComputerUseArtifactKind[] {
   return [...COMPUTER_USE_KINDS];
 }
 
-function buildGhostOsCheck(args: {
-  status: ComputerUseBackendStatus;
-}): ComputerUseSettingsSnapshot["ghostOsCheck"] {
-  const repoUrl = "https://github.com/ghostwright/ghost-os";
-  const cliInstalled = commandExists("ghost");
-  const processHealth = getGhostDoctorProcessHealth();
-  const backendEntry = args.status.backends.find((backend) => backend.name === "Ghost OS") ?? null;
-  const adeConfigured = Boolean(backendEntry);
-  const adeConnected = Boolean(backendEntry?.available);
-
-  if (!cliInstalled) {
-    return {
-      repoUrl,
-      cliInstalled: false,
-      setupState: "not_installed",
-      adeConfigured,
-      adeConnected,
-      summary: "Ghost OS is not installed on this Mac.",
-      details: [
-        "Install the Ghost OS CLI first.",
-        "Then run `ghost setup` to grant permissions and install its local dependencies.",
-        processHealth.detail,
-        "After setup, agents can ingest Ghost OS proof artifacts through the ADE CLI.",
-      ],
-      processHealth,
-    };
-  }
-
-  const statusResult = spawnSync("ghost", ["status"], { encoding: "utf8", timeout: 5000 });
-  const combinedOutput = `${statusResult.stdout ?? ""}\n${statusResult.stderr ?? ""}`.trim();
-  const outputLines = combinedOutput
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0)
-    .slice(0, 4);
-  const lower = combinedOutput.toLowerCase();
-  const setupState: ComputerUseSettingsSnapshot["ghostOsCheck"]["setupState"] =
-    /status:\s*ready/i.test(combinedOutput)
-      ? "ready"
-      : /ghost setup|run `ghost setup` first|not granted|not configured/i.test(lower)
-        ? "needs_setup"
-        : "unknown";
-
-  if (setupState === "ready") {
-    let summary: string;
-    if (processHealth.state === "stale") {
-      summary = `Ghost OS is ready, but ${processHealth.detail}`;
-    } else if (adeConnected) {
-      summary = "Ghost OS is ready on this Mac and available to ADE.";
-    } else if (adeConfigured) {
-      summary = "Ghost OS is ready on this Mac. ADE can ingest artifacts produced by its CLI.";
-    } else {
-      summary = "Ghost OS is ready on this Mac, but ADE has not detected its CLI backend yet.";
-    }
-
-    return {
-      repoUrl,
-      cliInstalled: true,
-      setupState,
-      adeConfigured,
-      adeConnected,
-      processHealth,
-      summary,
-      details: [
-        ...(outputLines.length > 0 ? outputLines : ["`ghost status` reports ready."]),
-        processHealth.detail,
-        ...(processHealth.state === "stale"
-          ? ["Stop the stale Ghost OS processes, then rerun `ghost doctor`."]
-          : []),
-        adeConfigured
-          ? adeConnected
-            ? "ADE detected the Ghost OS CLI backend."
-            : "ADE detected Ghost OS, but it is not currently available."
-          : "Install the Ghost OS CLI so ADE can ingest its proof artifacts.",
-        backendEntry?.detail ?? "Ghost OS tools can produce artifacts that ADE registers as external CLI proof.",
-      ],
-    };
-  }
-
-  let finalSummary: string;
-  if (setupState === "needs_setup") {
-    finalSummary = "Ghost OS is installed, but this Mac still needs `ghost setup`.";
-  } else if (processHealth.state === "stale") {
-    finalSummary = `Ghost OS is installed, but ${processHealth.detail}`;
-  } else {
-    finalSummary = "Ghost OS is installed, but ADE could not verify whether setup is complete.";
-  }
-
-  return {
-    repoUrl,
-    cliInstalled: true,
-    setupState,
-    adeConfigured,
-    adeConnected,
-    processHealth,
-    summary: finalSummary,
-    details: [
-      ...(outputLines.length > 0 ? outputLines : ["`ghost status` did not return a clear ready state."]),
-      processHealth.detail,
-      ...(processHealth.state === "stale"
-        ? ["Stop the stale Ghost OS processes, then rerun `ghost doctor`."]
-        : []),
-      "Run `ghost setup` in Terminal on this Mac.",
-      "After setup completes, agents can ingest Ghost OS proof artifacts through the ADE CLI.",
-    ],
-  };
-}
-
-export function collectRequiredComputerUseKindsFromPhases(phases: PhaseCard[] | null | undefined): ComputerUseArtifactKind[] {
-  if (!Array.isArray(phases) || phases.length === 0) return [];
-  return uniqKinds(
-    phases.flatMap((phase) => {
-      if (!phase.validationGate.required) return [];
-      return (phase.validationGate.evidenceRequirements ?? []).filter((kind): kind is ComputerUseArtifactKind =>
-        COMPUTER_USE_KINDS.includes(kind as ComputerUseArtifactKind)
-      );
-    })
-  );
-}
-
-function uniqKinds(values: ComputerUseArtifactKind[]): ComputerUseArtifactKind[] {
-  return [...new Set(values)];
-}
-
-function summarizePolicy(policy: ComputerUsePolicy): string {
-  if (policy.mode === "enabled") {
-    return policy.allowLocalFallback
-      ? "Computer use is explicitly enabled. ADE should prefer external backends, retain proof artifacts, and may fall back to ADE-local compatibility tools if needed."
-      : "Computer use is explicitly enabled. ADE should prefer external backends, retain proof artifacts, and avoid ADE-local fallback tools.";
-  }
-  return policy.allowLocalFallback
-    ? "Computer use is available on demand. ADE will prefer external backends first and may use ADE-local fallback compatibility tools if the operator allows it."
-    : "Computer use is available on demand. ADE will prefer external backends first and keep local fallback disabled for this scope.";
-}
-
-function buildCapabilityMatrix(status: ComputerUseBackendStatus): ComputerUseSettingsSnapshot["capabilityMatrix"] {
-  return COMPUTER_USE_KINDS.map((kind) => ({
-    kind,
-    externalBackends: status.backends
-      .filter((backend) => backend.supportedKinds.includes(kind))
-      .map((backend) => backend.name),
-    localFallbackAvailable: status.localFallback.supportedKinds.includes(kind),
-  }));
-}
-
-function selectPreferredBackend(status: ComputerUseBackendStatus): string | null {
-  return status.backends.find((backend) => backend.available)?.name ?? null;
-}
-
 function buildActivity(
   artifacts: ComputerUseArtifactView[],
-  missingKinds: ComputerUseArtifactKind[],
   backendStatus: ComputerUseBackendStatus,
 ) : ComputerUseActivityItem[] {
   const liveBackendActivity: ComputerUseActivityItem[] = [];
@@ -224,105 +66,41 @@ function buildActivity(
     severity: artifact.reviewState === "accepted" ? "success" as const : "info" as const,
   }));
 
-  const missingActivity = missingKinds.slice(0, 3).map((kind) => ({
-    id: `missing:${kind}`,
-    at: new Date(0).toISOString(),
-    kind: "proof_missing" as const,
-    title: `${kind.replace(/_/g, " ")} still missing`,
-    detail: `ADE has not ingested ${kind.replace(/_/g, " ")} for this scope yet.`,
-    artifactId: null,
-    backendName: null,
-    severity: "warning" as const,
-  }));
-
-  return [...liveBackendActivity, ...artifactActivity, ...missingActivity]
+  return [...liveBackendActivity, ...artifactActivity]
     .sort((left, right) => Date.parse(right.at) - Date.parse(left.at))
     .slice(0, 8);
-}
-
-export function buildComputerUseSettingsSnapshot(args: {
-  status: ComputerUseBackendStatus;
-}): ComputerUseSettingsSnapshot {
-  const ghostOsCheck = buildGhostOsCheck({ status: args.status });
-  return {
-    backendStatus: args.status,
-    preferredBackend: selectPreferredBackend(args.status),
-    capabilityMatrix: buildCapabilityMatrix(args.status),
-    ghostOsCheck,
-    guidance: {
-      overview: "External tools perform computer use. ADE discovers backends, ingests their artifacts, normalizes proof, links evidence to missions and chats, and helps operators decide what to do next.",
-      ghostOs: "Ghost OS is a CLI-native computer-use backend. Run `ghost setup` on this Mac first, then ingest manifests or artifacts into ADE for proof tracking.",
-      agentBrowser: "agent-browser is a CLI-native browser automation backend. Install the CLI locally, run it externally, and ingest its manifests or artifacts into ADE for proof tracking.",
-      fallback: "ADE-local computer-use remains fallback-only compatibility support. It should only be used when approved external backends are unavailable for the required proof kind.",
-    },
-  };
 }
 
 export function buildComputerUseOwnerSnapshot(args: {
   broker: ComputerUseArtifactBrokerService;
   owner: ComputerUseArtifactOwner;
-  policy?: ComputerUsePolicy | null;
-  requiredKinds?: ComputerUseArtifactKind[];
   limit?: number;
 }): ComputerUseOwnerSnapshot {
-  const policy = args.policy ? createDefaultComputerUsePolicy(args.policy) : null;
   const backendStatus = args.broker.getBackendStatus();
   const artifacts = args.broker.listArtifacts({
     owner: args.owner,
     limit: args.limit ?? 50,
   });
   const recentArtifacts = artifacts.slice(0, 5);
-  const presentKinds = uniqKinds(
-    artifacts
-      .map((artifact) => artifact.kind)
-      .filter((kind): kind is ComputerUseArtifactKind => COMPUTER_USE_KINDS.includes(kind))
-  );
-  const requiredKinds = uniqKinds((args.requiredKinds ?? []).filter((kind) => COMPUTER_USE_KINDS.includes(kind)));
-  const missingKinds = requiredKinds.filter((kind) => !presentKinds.includes(kind));
   const latestArtifact = recentArtifacts[0] ?? null;
   const availableBackend = backendStatus.backends.find((backend) => backend.available) ?? null;
-  const preferredBackend = policy?.preferredBackend
-    ? backendStatus.backends.find((backend) => backend.name === policy.preferredBackend) ?? null
-    : null;
   let activeBackend: ComputerUseOwnerSnapshot["activeBackend"] = null;
   if (latestArtifact) {
     activeBackend = {
       name: latestArtifact.backendName,
-      style: latestArtifact.backendStyle,
       detail: `${latestArtifact.backendName} produced the latest ingested proof for this scope.`,
       source: "artifact",
-    };
-  } else if (preferredBackend) {
-    activeBackend = {
-      name: preferredBackend.name,
-      style: preferredBackend.style,
-      detail: "This scope prefers an explicitly selected backend.",
-      source: "policy",
     };
   } else if (availableBackend) {
     activeBackend = {
       name: availableBackend.name,
-      style: availableBackend.style,
       detail: availableBackend.detail,
       source: "available",
     };
   }
 
-  const usingLocalFallback = recentArtifacts.some((artifact) => artifact.backendStyle === "local_fallback");
-  const hasExternalCoverage = missingKinds.every((kind) =>
-    backendStatus.backends.some((backend) => backend.available && backend.supportedKinds.includes(kind))
-  );
-
   let proofSummary: string;
-  if (requiredKinds.length > 0) {
-    if (missingKinds.length === 0) {
-      proofSummary = `All required proof kinds are present: ${requiredKinds.join(", ")}.`;
-    } else if (hasExternalCoverage) {
-      proofSummary = `Missing proof can still be captured through approved external backends: ${missingKinds.join(", ")}.`;
-    } else {
-      proofSummary = `Required proof is still missing: ${missingKinds.join(", ")}.`;
-    }
-  } else if (recentArtifacts.length > 0) {
+  if (recentArtifacts.length > 0) {
     proofSummary = `${recentArtifacts.length} computer-use artifact${recentArtifacts.length === 1 ? "" : "s"} retained for this scope.`;
   } else if (availableBackend) {
     proofSummary = `${availableBackend.name} is available and ready to capture proof for this scope.`;
@@ -330,37 +108,13 @@ export function buildComputerUseOwnerSnapshot(args: {
     proofSummary = "No computer-use artifacts have been ingested for this scope yet.";
   }
 
-  const summary = [
-    policy ? summarizePolicy(policy) : "This scope inherits ADE's default computer-use behavior.",
-    proofSummary,
-  ].join(" ");
-
   return {
     owner: args.owner,
-    policy,
     backendStatus,
-    summary,
+    summary: proofSummary,
     activeBackend,
     artifacts,
     recentArtifacts,
-    activity: buildActivity(artifacts, missingKinds, backendStatus),
-    proofCoverage: {
-      requiredKinds,
-      presentKinds,
-      missingKinds,
-    },
-    usingLocalFallback,
+    activity: buildActivity(artifacts, backendStatus),
   };
-}
-
-export function isComputerUseBlockedForRequiredProof(args: {
-  policy: ComputerUsePolicy;
-  requiredKinds: ComputerUseArtifactKind[];
-  backendStatus: ComputerUseBackendStatus;
-}): boolean {
-  if (args.requiredKinds.length === 0) return false;
-  if (args.policy.allowLocalFallback) return false;
-  return args.requiredKinds.some((kind) =>
-    !args.backendStatus.backends.some((backend) => backend.available && backend.supportedKinds.includes(kind))
-  );
 }

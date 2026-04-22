@@ -261,7 +261,12 @@ struct PRsTabView: View {
               .prListRow()
           }
         } else {
-          if let hydrationNotice = prsStatus.inlineHydrationFailureNotice(for: .prs) {
+          // Suppress hydration and view-error banners when the host is
+          // unreachable — the red gear dot is the single source of truth
+          // for connection state.
+          if !syncService.connectionState.isHostUnreachable,
+            let hydrationNotice = prsStatus.inlineHydrationFailureNotice(for: .prs)
+          {
             ADENoticeCard(
               title: hydrationNotice.title,
               message: hydrationNotice.message,
@@ -272,7 +277,10 @@ struct PRsTabView: View {
             )
             .prListRow()
           }
-          if let errorMessage, prsStatus.phase == .ready {
+          if let errorMessage,
+            prsStatus.phase == .ready,
+            !syncService.connectionState.isHostUnreachable
+          {
             ADENoticeCard(
               title: "PR view error",
               message: errorMessage,

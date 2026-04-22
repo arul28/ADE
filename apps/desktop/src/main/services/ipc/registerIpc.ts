@@ -213,6 +213,7 @@ import type {
   OnboardingExistingLaneCandidate,
   OnboardingStatus,
   OnboardingTourProgress,
+  OnboardingTourVariant,
   LaneListSnapshot,
   LaneRuntimeSummary,
   LaneSummary,
@@ -481,7 +482,6 @@ import type {
   ComputerUseArtifactView,
   ComputerUseOwnerSnapshot,
   ComputerUseOwnerSnapshotArgs,
-  ComputerUseSettingsSnapshot,
   LaneEnvInitConfig,
   LaneOverlayOverrides,
   LaneTemplate,
@@ -528,11 +528,7 @@ import type { createIssueInventoryService } from "../prs/issueInventoryService";
 import type { createPrSummaryService } from "../prs/prSummaryService";
 import type { createAgentChatService } from "../chat/agentChatService";
 import type { createComputerUseArtifactBrokerService } from "../computerUse/computerUseArtifactBrokerService";
-import {
-  buildComputerUseOwnerSnapshot,
-  buildComputerUseSettingsSnapshot,
-  collectRequiredComputerUseKindsFromPhases,
-} from "../computerUse/controlPlane";
+import { buildComputerUseOwnerSnapshot } from "../computerUse/controlPlane";
 import { readGlobalState, writeGlobalState, reorderRecentProjects } from "../state/globalState";
 import type { createKeybindingsService } from "../keybindings/keybindingsService";
 import type { createAgentToolsService } from "../agentTools/agentToolsService";
@@ -1706,31 +1702,9 @@ export function registerIpc({
   };
 
   const resolveComputerUseOwnerSnapshotArgs = async (
-    ctx: AppContext,
+    _ctx: AppContext,
     args: ComputerUseOwnerSnapshotArgs,
-  ): Promise<ComputerUseOwnerSnapshotArgs> => {
-    if (args.owner.kind === "mission") {
-      const mission = ctx.missionService.get(args.owner.id);
-      return {
-        ...args,
-        policy: args.policy ?? mission?.computerUse ?? null,
-        requiredKinds: args.requiredKinds?.length
-          ? args.requiredKinds
-          : collectRequiredComputerUseKindsFromPhases(mission?.phaseConfiguration?.selectedPhases ?? []),
-      };
-    }
-
-    if (args.owner.kind === "chat_session") {
-      const sessions = await ctx.agentChatService.listSessions();
-      const session = sessions.find((candidate) => candidate.sessionId === args.owner.id) ?? null;
-      return {
-        ...args,
-        policy: args.policy ?? session?.computerUse ?? null,
-      };
-    }
-
-    return args;
-  };
+  ): Promise<ComputerUseOwnerSnapshotArgs> => args;
 
   type PrAiRuntimeSession = {
     sessionId: string;
@@ -2285,6 +2259,14 @@ export function registerIpc({
     return await ctx.syncService.getStatus();
   });
 
+  ipcMain.handle(IPC.syncRefreshDiscovery, async (): Promise<SyncRoleSnapshot> => {
+    const ctx = getCtx();
+    if (!ctx.syncService) {
+      throw new Error("Sync service is not available.");
+    }
+    return await ctx.syncService.refreshDiscovery();
+  });
+
   ipcMain.handle(IPC.syncListDevices, async (): Promise<SyncDeviceRuntimeState[]> => {
     const ctx = getCtx();
     if (!ctx.syncService) {
@@ -2464,8 +2446,20 @@ export function registerIpc({
     wizardCompletedAt: null,
     wizardDismissedAt: null,
     tours: {},
+    tourVariants: {},
+    tutorial: {
+      completedAt: null,
+      dismissedAt: null,
+      silenced: false,
+      inProgress: false,
+      lastActIndex: 0,
+      ctxSnapshot: {},
+    },
     glossaryTermsSeen: [],
   });
+
+  const coerceVariant = (raw: unknown): OnboardingTourVariant =>
+    raw === "highlights" ? "highlights" : "full";
 
   ipcMain.handle(IPC.onboardingGetTourProgress, async (): Promise<OnboardingTourProgress> => {
     const ctx = getCtx();
@@ -2530,6 +2524,119 @@ export function registerIpc({
       return ctx.onboardingService.resetTourProgress(arg?.tourId);
     },
   );
+
+  // Variant-aware tour progress (Round 2) ---------------------------------
+
+  ipcMain.handle(
+    IPC.onboardingMarkTourCompletedVariant,
+    async (
+      _event,
+      arg: { tourId: string; variant: OnboardingTourVariant },
+    ): Promise<OnboardingTourProgress> => {
+      const ctx = getCtx();
+      if (!ctx.onboardingService) return emptyTourProgress();
+      return ctx.onboardingService.markTourCompleted(
+        arg?.tourId ?? "",
+        coerceVariant(arg?.variant),
+      );
+    },
+  );
+
+  ipcMain.handle(
+    IPC.onboardingMarkTourDismissedVariant,
+    async (
+      _event,
+      arg: { tourId: string; variant: OnboardingTourVariant },
+    ): Promise<OnboardingTourProgress> => {
+      const ctx = getCtx();
+      if (!ctx.onboardingService) return emptyTourProgress();
+      return ctx.onboardingService.markTourDismissed(
+        arg?.tourId ?? "",
+        coerceVariant(arg?.variant),
+      );
+    },
+  );
+
+  ipcMain.handle(
+    IPC.onboardingUpdateTourStepVariant,
+    async (
+      _event,
+      arg: { tourId: string; variant: OnboardingTourVariant; index: number },
+    ): Promise<OnboardingTourProgress> => {
+      const ctx = getCtx();
+      if (!ctx.onboardingService) return emptyTourProgress();
+      const index = typeof arg?.index === "number" ? arg.index : 0;
+      return ctx.onboardingService.updateTourStep(
+        arg?.tourId ?? "",
+        coerceVariant(arg?.variant),
+        index,
+      );
+    },
+  );
+
+  // Tutorial (Round 2) ----------------------------------------------------
+
+  ipcMain.handle(IPC.onboardingTutorialStart, async (): Promise<OnboardingTourProgress> => {
+    const ctx = getCtx();
+    if (!ctx.onboardingService) return emptyTourProgress();
+    return ctx.onboardingService.markTutorialStarted();
+  });
+
+  ipcMain.handle(
+    IPC.onboardingTutorialDismiss,
+    async (_event, arg?: { permanent?: boolean }): Promise<OnboardingTourProgress> => {
+      const ctx = getCtx();
+      if (!ctx.onboardingService) return emptyTourProgress();
+      return ctx.onboardingService.markTutorialDismissed(Boolean(arg?.permanent));
+    },
+  );
+
+  ipcMain.handle(IPC.onboardingTutorialComplete, async (): Promise<OnboardingTourProgress> => {
+    const ctx = getCtx();
+    if (!ctx.onboardingService) return emptyTourProgress();
+    return ctx.onboardingService.markTutorialCompleted();
+  });
+
+  ipcMain.handle(
+    IPC.onboardingTutorialUpdateAct,
+    async (
+      _event,
+      arg: { actIndex: number; ctxSnapshot?: Record<string, unknown> },
+    ): Promise<OnboardingTourProgress> => {
+      const ctx = getCtx();
+      if (!ctx.onboardingService) return emptyTourProgress();
+      const actIndex = typeof arg?.actIndex === "number" ? arg.actIndex : 0;
+      const snapshot =
+        arg?.ctxSnapshot && typeof arg.ctxSnapshot === "object" && !Array.isArray(arg.ctxSnapshot)
+          ? arg.ctxSnapshot
+          : undefined;
+      return ctx.onboardingService.updateTutorialAct(actIndex, snapshot);
+    },
+  );
+
+  ipcMain.handle(
+    IPC.onboardingTutorialSetSilenced,
+    async (_event, arg: { silenced: boolean }): Promise<OnboardingTourProgress> => {
+      const ctx = getCtx();
+      if (!ctx.onboardingService) return emptyTourProgress();
+      return ctx.onboardingService.setTutorialSilenced(Boolean(arg?.silenced));
+    },
+  );
+
+  ipcMain.handle(
+    IPC.onboardingTutorialClearSessionDismissal,
+    async (): Promise<OnboardingTourProgress> => {
+      const ctx = getCtx();
+      if (!ctx.onboardingService) return emptyTourProgress();
+      return ctx.onboardingService.clearTutorialSessionDismissal();
+    },
+  );
+
+  ipcMain.handle(IPC.onboardingTutorialShouldPrompt, async (): Promise<boolean> => {
+    const ctx = getCtx();
+    if (!ctx.onboardingService) return false;
+    return ctx.onboardingService.shouldPromptTutorial();
+  });
 
   ipcMain.handle(IPC.automationsList, async (): Promise<AutomationRuleSummary[]> => {
     const ctx = getCtx();
@@ -4295,13 +4402,6 @@ export function registerIpc({
     };
   });
 
-  ipcMain.handle(IPC.computerUseGetSettings, async (): Promise<ComputerUseSettingsSnapshot> => {
-    const ctx = ensureComputerUseBroker();
-    return buildComputerUseSettingsSnapshot({
-      status: ctx.computerUseArtifactBrokerService.getBackendStatus(),
-    });
-  });
-
   ipcMain.handle(IPC.computerUseListArtifacts, async (_event, arg: ComputerUseArtifactListArgs = {}): Promise<ComputerUseArtifactView[]> => {
     const ctx = ensureComputerUseBroker();
     return ctx.computerUseArtifactBrokerService.listArtifacts(arg);
@@ -4313,8 +4413,6 @@ export function registerIpc({
     return buildComputerUseOwnerSnapshot({
       broker: ctx.computerUseArtifactBrokerService,
       owner: resolved.owner,
-      policy: resolved.policy,
-      requiredKinds: resolved.requiredKinds,
       limit: resolved.limit,
     });
   });

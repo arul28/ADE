@@ -57,6 +57,7 @@ import type {
 } from "../../../shared/types";
 import { eventMatchesBinding, getEffectiveBinding } from "../../lib/keybindings";
 import { SmartTooltip } from "../ui/SmartTooltip";
+import { docs } from "../../onboarding/docsLinks";
 
 type RebaseScopePromptState = {
   laneId: string;
@@ -220,7 +221,9 @@ export function LanesPage() {
   const [deleteForce, setDeleteForce] = useState(false);
   const [deleteConfirmText, setDeleteConfirmText] = useState("");
   const [laneActionBusy, setLaneActionBusy] = useState(false);
+  const [laneActionStatus, setLaneActionStatus] = useState<string | null>(null);
   const [laneActionError, setLaneActionError] = useState<string | null>(null);
+  const [laneActionKind, setLaneActionKind] = useState<"delete" | "archive" | "adopt" | null>(null);
   const [managedLaneIds, setManagedLaneIds] = useState<string[]>([]);
   const [conflictChipsByLane, setConflictChipsByLane] = useState<Record<string, ConflictChip[]>>({});
   const chipTimersRef = useRef<Map<string, number>>(new Map());
@@ -780,8 +783,14 @@ export function LanesPage() {
     return primaryBranches.filter((branch) => branch.isRemote && (!q || branch.name.toLowerCase().includes(q)));
   }, [primaryBranches, branchSearchQuery]);
 
-  const runLaneAction = async (fn: () => Promise<void>) => {
+  const runLaneAction = async (
+    fn: () => Promise<void>,
+    status: string,
+    kind: "delete" | "archive" | "adopt" = "delete",
+  ) => {
     setLaneActionBusy(true);
+    setLaneActionKind(kind);
+    setLaneActionStatus(status);
     setLaneActionError(null);
     try {
       await fn();
@@ -791,6 +800,8 @@ export function LanesPage() {
       setLaneActionError(err instanceof Error ? err.message : String(err));
     } finally {
       setLaneActionBusy(false);
+      setLaneActionStatus(null);
+      setLaneActionKind(null);
     }
   };
 
@@ -868,7 +879,7 @@ export function LanesPage() {
       for (const lane of actionable) {
         await window.ade.lanes.archive({ laneId: lane.id });
       }
-    });
+    }, actionable.length > 1 ? `Archiving ${actionable.length} lanes...` : "Archiving lane...", "archive");
   };
 
   const deleteManagedLanes = async () => {
@@ -876,6 +887,34 @@ export function LanesPage() {
     const actionable = targets.filter((l) => l.laneType !== "primary");
     if (actionable.length === 0) return;
     if (deleteConfirmText.trim().toLowerCase() !== deletePhrase.toLowerCase()) return;
+    const attachedCount = actionable.filter((l) => l.laneType === "attached").length;
+    const managedCount = actionable.length - attachedCount;
+    const deleteStatus = (() => {
+      if (managedCount === 0 && attachedCount > 0) {
+        return attachedCount > 1
+          ? `Unlinking ${attachedCount} attached lanes...`
+          : "Unlinking attached lane...";
+      }
+      const managedPhrase =
+        deleteMode === "remote_branch"
+          ? managedCount > 1
+            ? `${managedCount} lane worktrees, local branches, and remote branches`
+            : "lane worktree, local branch, and remote branch"
+          : deleteMode === "local_branch"
+            ? managedCount > 1
+              ? `${managedCount} lane worktrees and local branches`
+              : "lane worktree and local branch"
+            : managedCount > 1
+              ? `${managedCount} lane worktrees`
+              : "lane worktree";
+      if (attachedCount === 0) {
+        return `Deleting ${managedPhrase}...`;
+      }
+      const attachedPhrase = attachedCount > 1
+        ? `${attachedCount} attached lanes`
+        : "attached lane";
+      return `Unlinking ${attachedPhrase} and deleting ${managedPhrase}...`;
+    })();
     await runLaneAction(async () => {
       const errors: string[] = [];
       for (const lane of actionable) {
@@ -905,7 +944,7 @@ export function LanesPage() {
       for (const id of deletedIds) {
         clearLaneInspectorTab(id);
       }
-    });
+    }, deleteStatus);
   };
 
   const openBatchManage = useCallback((laneIds: string[]) => {
@@ -1468,7 +1507,7 @@ export function LanesPage() {
         {/* Branch selector */}
         {primaryLane && selectedLaneId === primaryLane.id ? (
           <div className="relative shrink-0 flex items-center" ref={branchDropdownRef}>
-            <SmartTooltip content={{ label: "Branch Selector", description: "Switch the primary lane to a different local or remote branch.", docUrl: "https://www.ade-app.dev/docs/lanes/overview" }} side="bottom">
+            <SmartTooltip content={{ label: "Branch Selector", description: "Switch the primary lane to a different local or remote branch.", docUrl: docs.lanesOverview }} side="bottom">
               <button
                 type="button"
                 data-tour="lanes.branchSelector"
@@ -1654,7 +1693,7 @@ export function LanesPage() {
 
         {/* NEW LANE button + dropdown */}
         <div className="relative shrink-0" ref={addLaneDropdownRef}>
-          <SmartTooltip content={{ label: "New Lane", description: "Create a new lane from the primary branch, an existing branch, or as a child of another lane.", docUrl: "https://www.ade-app.dev/docs/lanes/creating" }}>
+          <SmartTooltip content={{ label: "New Lane", description: "Create a new lane from the primary branch, an existing branch, or as a child of another lane.", docUrl: docs.lanesCreating }}>
             <button
               type="button"
               data-tour="lanes.newLane"
@@ -1709,7 +1748,7 @@ export function LanesPage() {
             className="shrink-0 flex items-center gap-2 rounded-lg border px-2 py-1"
             style={{ borderColor: `${COLORS.info}55`, background: `${COLORS.info}15` }}
           >
-            <SmartTooltip content={{ label: "Move to .ade", description: "Move this attached worktree into .ade/worktrees for full ADE management. Uses git worktree move — branch and history stay the same.", docUrl: "https://www.ade-app.dev/docs/lanes/creating" }}>
+            <SmartTooltip content={{ label: "Move to .ade", description: "Move this attached worktree into .ade/worktrees for full ADE management. Uses git worktree move — branch and history stay the same.", docUrl: docs.lanesCreating }}>
               <button
                 type="button"
                 data-tour="lanes.moveToAde"
@@ -2225,7 +2264,9 @@ export function LanesPage() {
         setDeleteConfirmText={setDeleteConfirmText}
         deletePhrase={deletePhrase}
         laneActionBusy={laneActionBusy}
+        laneActionStatus={laneActionStatus}
         laneActionError={laneActionError}
+        laneActionKind={laneActionKind}
         onAdoptAttached={() => {
           if (!managedLane || managedLane.laneType !== "attached") return;
           reopenAdoptHint();

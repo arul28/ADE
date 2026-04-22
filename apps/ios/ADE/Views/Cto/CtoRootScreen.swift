@@ -2,36 +2,36 @@ import SwiftUI
 import UIKit
 
 /// Top-level CTO tab screen. Hosts a persistent NavigationStack and segmented
-/// picker (Team / Workflows / Settings). The stack drives
-/// drill-down into per-worker chat (CtoSessionDestinationView) and per-worker
-/// detail (CtoWorkerDetailScreen).
+/// picker (Team / Workflows / Settings). The stack drives drill-down into
+/// per-worker chat (CtoSessionDestinationView) and per-worker detail
+/// (CtoWorkerDetailScreen).
 struct CtoRootScreen: View {
   @EnvironmentObject private var syncService: SyncService
   var isTabActive = true
 
-  @State private var selectedTab: CtoTab = .chat
+  @State private var selectedTab: CtoTab = .team
   @State private var path = NavigationPath()
   @State private var snapshot: CtoSnapshot?
-  @State private var snapshotError: String?
   @State private var isLoadingSnapshot = false
+  @State private var snapshotLoadError: String?
 
   var body: some View {
     NavigationStack(path: $path) {
       VStack(spacing: 0) {
-        if let snapshotError {
+        CtoTabShell(active: $selectedTab)
+
+        if let snapshotLoadError, !syncService.connectionState.isHostUnreachable {
           ADENoticeCard(
-            title: "CTO failed to load",
-            message: snapshotError,
+            title: "Couldn't load CTO state",
+            message: snapshotLoadError,
             icon: "exclamationmark.triangle.fill",
-            tint: ADEColor.danger,
+            tint: ADEColor.warning,
             actionTitle: "Retry",
             action: { Task { await loadSnapshot() } }
           )
-          .padding(.horizontal, 12)
+          .padding(.horizontal, 20)
           .padding(.top, 8)
         }
-
-        CtoTabShell(active: $selectedTab)
 
         tabBody
           .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -71,9 +71,6 @@ struct CtoRootScreen: View {
   @ViewBuilder
   private var tabBody: some View {
     switch selectedTab {
-    case .chat:
-      CtoChatScreen(path: $path)
-        .environmentObject(syncService)
     case .team:
       CtoTeamScreen(path: $path)
         .environmentObject(syncService)
@@ -93,9 +90,16 @@ struct CtoRootScreen: View {
     defer { isLoadingSnapshot = false }
     do {
       snapshot = try await syncService.fetchCtoState()
-      snapshotError = nil
+      snapshotLoadError = nil
     } catch {
-      snapshotError = error.localizedDescription
+      // Connection failures are owned by the top-right gear dot. For anything
+      // else (command error, parse error, timeouts while connected) surface the
+      // message so the user has a retry/diagnostic path instead of stale state.
+      if syncService.connectionState.isHostUnreachable {
+        snapshotLoadError = nil
+      } else {
+        snapshotLoadError = (error as NSError).localizedDescription
+      }
     }
   }
 

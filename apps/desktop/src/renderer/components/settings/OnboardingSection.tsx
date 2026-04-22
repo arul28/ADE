@@ -2,6 +2,7 @@ import React, { useCallback, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAppStore } from "../../state/appStore";
 import { useOnboardingStore } from "../../state/onboardingStore";
+import { docs } from "../../onboarding/docsLinks";
 import {
   COLORS,
   MONO_FONT,
@@ -120,7 +121,8 @@ export function OnboardingSection() {
     const ade = (typeof window !== "undefined" ? (window as any).ade : undefined) as
       | { app?: { openExternal: (url: string) => Promise<void> } }
       | undefined;
-    const target = "https://www.ade-app.dev/docs";
+    // TODO(round 3): replaced by pointer-to-HelpMenu rewrite.
+    const target = docs.home;
     if (ade?.app?.openExternal) {
       void ade.app.openExternal(target);
     } else if (typeof window !== "undefined") {

@@ -4,6 +4,7 @@ import AVKit
 
 struct WorkChatSessionView: View {
   @Environment(\.accessibilityReduceMotion) var reduceMotion
+  @EnvironmentObject private var syncService: SyncService
 
   let session: TerminalSessionSummary
   let chatSummary: AgentChatSessionSummary?
@@ -152,56 +153,15 @@ struct WorkChatSessionView: View {
 
   @ViewBuilder
   var sessionOverviewSection: some View {
-    // Pending-input cards now render inline at their chronological position
-    // in the timeline via `timelineEntryView`. The overview section only
-    // surfaces offline banners and chat-level errors.
-    if !isLive {
-      ForEach(pendingInputs) { item in
-        switch item {
-        case .approval:
-          ADENoticeCard(
-            title: "Approval waiting on host",
-            message: "Reconnect to approve or deny this tool request. Cached transcript data may be slightly behind the desktop.",
-            icon: "lock.shield",
-            tint: ADEColor.warning,
-            actionTitle: nil,
-            action: nil
-          )
-        case .question:
-          ADENoticeCard(
-            title: "Host needs your answer",
-            message: "Reconnect to respond to this question. The host keeps the session paused until input arrives.",
-            icon: "questionmark.circle",
-            tint: ADEColor.warning,
-            actionTitle: nil,
-            action: nil
-          )
-        case .permission:
-          ADENoticeCard(
-            title: "Permission request waiting",
-            message: "Reconnect to allow or decline this tool's permission gate.",
-            icon: "lock.shield",
-            tint: ADEColor.warning,
-            actionTitle: nil,
-            action: nil
-          )
-        case .planApproval:
-          ADENoticeCard(
-            title: "Plan approval waiting",
-            message: "Reconnect to approve or reject the agent's plan.",
-            icon: "list.bullet.clipboard",
-            tint: ADEColor.warning,
-            actionTitle: nil,
-            action: nil
-          )
-        }
-      }
-    }
-
-    // When live, approval_request cards (tool approval gates) still render
-    // at the top — they are not suppressed from the pendingInputs set, only
-    // structured questions, permission gates, and plan approvals get their
-    // inline treatment in the timeline.
+    // When live, approval_request cards (tool approval gates) render at the
+    // top — structured questions, permission gates, and plan approvals get
+    // their inline treatment in the timeline instead.
+    //
+    // When offline, we no longer stack "Reconnect to respond" banners here.
+    // The top-right ADEConnectionDot already signals "Offline" and the
+    // pending cards themselves stay visible in the timeline in a read-only
+    // state, so duplicating the reconnect nag at the top added noise
+    // without new information.
     if isLive {
       ForEach(pendingInputs) { item in
         if case .approval(let approval) = item {
@@ -218,7 +178,9 @@ struct WorkChatSessionView: View {
       }
     }
 
-    if let errorMessage {
+    // Connection-caused failures are communicated via the top-right gear, but
+    // cached/offline chat actions still need their own visible errors.
+    if let errorMessage, !syncService.connectionState.isHostUnreachable {
       ADENoticeCard(
         title: "Chat error",
         message: errorMessage,

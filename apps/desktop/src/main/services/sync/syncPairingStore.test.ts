@@ -90,6 +90,29 @@ describe("syncPairingStore", () => {
       const second = store.pairPeer(samplePeer, "424242");
       expect(first.secret).not.toBe(second.secret);
     });
+
+    it("updates an existing device pairing without resetting createdAt", () => {
+      const { store, pinStore, pairingFile } = makeHarness("ade-pairing-existing-");
+      pinStore.setPin("424242");
+
+      store.pairPeer(samplePeer, "424242");
+
+      // Seed a deterministic, distinctly-past createdAt so the test fails
+      // reliably if the production path overwrites it on re-pairing (the
+      // nowIso() clock can otherwise produce the same millisecond for both
+      // pairPeer calls, masking the regression).
+      const seededCreatedAt = "2020-01-01T00:00:00.000Z";
+      const seeded = JSON.parse(fs.readFileSync(pairingFile, "utf8"));
+      seeded[samplePeer.deviceId].createdAt = seededCreatedAt;
+      fs.writeFileSync(pairingFile, JSON.stringify(seeded));
+
+      store.pairPeer({ ...samplePeer, deviceName: "Arul's iPhone" }, "424242");
+
+      const after = JSON.parse(fs.readFileSync(pairingFile, "utf8"));
+      expect(Object.keys(after)).toEqual([samplePeer.deviceId]);
+      expect(after[samplePeer.deviceId].createdAt).toBe(seededCreatedAt);
+      expect(after[samplePeer.deviceId].peerName).toBe("Arul's iPhone");
+    });
   });
 
   describe("authenticate", () => {

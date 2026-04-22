@@ -16,6 +16,7 @@ struct PrStackSheet: View {
   @State private var stackInfo: PrStackInfo?
   @State private var isLoading = true
   @State private var errorMessage: String?
+  @State private var actionErrorMessage: String?
   @State private var detailPath = NavigationPath()
   @State private var isDispatchingStackAction = false
   @State private var actionMessage: String?
@@ -29,7 +30,7 @@ struct PrStackSheet: View {
               .padding(.vertical, 32)
           }
           .frame(maxWidth: .infinity)
-        } else if let errorMessage {
+        } else if let errorMessage, !syncService.connectionState.isHostUnreachable {
           ScrollView {
             ADENoticeCard(
               title: "Stack failed to load",
@@ -44,9 +45,11 @@ struct PrStackSheet: View {
         } else if stackRows.isEmpty {
           ScrollView {
             ADEEmptyStateView(
-              symbol: "list.number",
-              title: "No stack members",
-              message: "The host did not sync any PR chain members for this workflow yet."
+              symbol: syncService.connectionState.isHostUnreachable ? "wifi.exclamationmark" : "list.number",
+              title: syncService.connectionState.isHostUnreachable ? "Offline" : "No stack members",
+              message: syncService.connectionState.isHostUnreachable
+                ? "Reconnect to the desktop host to load this PR stack."
+                : "The host did not sync any PR chain members for this workflow yet."
             )
             .padding(16)
           }
@@ -59,6 +62,18 @@ struct PrStackSheet: View {
                   message: actionMessage,
                   icon: "checkmark.circle.fill",
                   tint: ADEColor.success,
+                  actionTitle: nil,
+                  action: nil
+                )
+                .padding(.horizontal, 16)
+              }
+
+              if let actionErrorMessage {
+                ADENoticeCard(
+                  title: "Stack action failed",
+                  message: actionErrorMessage,
+                  icon: "exclamationmark.triangle.fill",
+                  tint: ADEColor.danger,
                   actionTitle: nil,
                   action: nil
                 )
@@ -292,13 +307,15 @@ struct PrStackSheet: View {
     guard !isDispatchingStackAction, let laneId = rebaseTargetLaneId else { return }
     isDispatchingStackAction = true
     errorMessage = nil
+    actionMessage = nil
+    actionErrorMessage = nil
     Task { @MainActor in
       defer { isDispatchingStackAction = false }
       do {
         try await syncService.startLaneRebase(laneId: laneId)
         actionMessage = "Rebase started."
       } catch {
-        errorMessage = error.localizedDescription
+        actionErrorMessage = error.localizedDescription
       }
     }
   }
@@ -307,13 +324,15 @@ struct PrStackSheet: View {
     guard !isDispatchingStackAction, let prId = landTargetPrId else { return }
     isDispatchingStackAction = true
     errorMessage = nil
+    actionMessage = nil
+    actionErrorMessage = nil
     Task { @MainActor in
       defer { isDispatchingStackAction = false }
       do {
         try await syncService.mergePullRequest(prId: prId, method: PrMergeMethodOption.squash.rawValue)
         actionMessage = "Landing started."
       } catch {
-        errorMessage = error.localizedDescription
+        actionErrorMessage = error.localizedDescription
       }
     }
   }

@@ -14,7 +14,6 @@ import {
 import { motion } from "motion/react";
 import type {
   AiDetectedAuth,
-  ComputerUsePolicy,
   MissionAgentRuntimeConfig,
   MissionModelConfig,
   MissionPriority,
@@ -29,7 +28,6 @@ import type {
   CreateMissionArgs,
   MissionPreflightResult,
 } from "../../../shared/types";
-import { createDefaultComputerUsePolicy } from "../../../shared/types";
 import { BUILT_IN_PROFILES } from "../../../shared/modelProfiles";
 import { getDefaultModelDescriptor, resolveModelDescriptor } from "../../../shared/modelRegistry";
 import { deriveConfiguredModelIds } from "../../lib/modelOptions";
@@ -60,7 +58,6 @@ export type CreateDraft = {
   agentRuntime: MissionAgentRuntimeConfig;
   teamRuntime?: TeamRuntimeConfig;
   permissionConfig: MissionPermissionConfig;
-  computerUse: ComputerUsePolicy;
 };
 
 export type CreateMissionDefaults = {
@@ -210,7 +207,6 @@ export function buildCreateMissionDraft(
     phaseOverride: [],
     agentRuntime: { ...DEFAULT_AGENT_RUNTIME },
     permissionConfig: createDefaultPermissionConfig(defaults),
-    computerUse: createDefaultComputerUsePolicy(),
   };
 }
 
@@ -241,7 +237,6 @@ export function buildMissionLaunchRequest(args: {
     phaseProfileId: args.draft.phaseProfileId,
     phaseOverride: args.activePhases,
     permissionConfig: args.draft.permissionConfig,
-    computerUse: args.draft.computerUse,
     autostart: true,
     launchMode: "autopilot",
   };
@@ -1475,112 +1470,6 @@ function CreateMissionDialogInner({
                       dlgInputStyle={dlgInputStyle}
                     />
 
-                    <div className="space-y-2 p-3" style={{ background: COLORS.recessedBg, border: `1px solid ${COLORS.border}` }}>
-                      <div className="flex items-start justify-between gap-3">
-                        <div>
-                          <div className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
-                            Computer Use & Proof
-                          </div>
-                          <div className="mt-1 text-[11px]" style={{ color: COLORS.textSecondary }}>
-                            External tools perform computer use. ADE discovers backends, checks proof readiness, and ingests resulting evidence for this mission.
-                          </div>
-                        </div>
-                        <div className="px-2 py-1 text-[9px] font-bold uppercase tracking-[1px]" style={{ color: COLORS.info, border: `1px solid ${COLORS.info}35`, background: `${COLORS.info}12`, fontFamily: MONO_FONT }}>
-                          {draft.computerUse.mode}
-                        </div>
-                      </div>
-
-                      <div className="grid gap-3 md:grid-cols-3">
-                        <label className="space-y-1">
-                          <span style={dlgLabelStyle}>MISSION POLICY</span>
-                          <select
-                            value={draft.computerUse.mode}
-                            onChange={(e) => setDraft((prev) => ({
-                              ...prev,
-                              computerUse: {
-                                ...prev.computerUse,
-                                mode: e.target.value as ComputerUsePolicy["mode"],
-                              },
-                            }))}
-                            className="h-8 w-full px-2 text-[11px] outline-none"
-                            style={DLG_INPUT_STYLE}
-                          >
-                            <option value="off">Off</option>
-                            <option value="auto">Auto</option>
-                            <option value="enabled">Enabled</option>
-                          </select>
-                        </label>
-                        <label className="space-y-1">
-                          <span style={dlgLabelStyle}>PREFERRED BACKEND</span>
-                          <select
-                            value={draft.computerUse.preferredBackend ?? ""}
-                            onChange={(e) => setDraft((prev) => ({
-                              ...prev,
-                              computerUse: {
-                                ...prev.computerUse,
-                                preferredBackend: e.target.value.trim() || null,
-                              },
-                            }))}
-                            className="h-8 w-full px-2 text-[11px] outline-none"
-                            style={DLG_INPUT_STYLE}
-                          >
-                            <option value="">Auto select</option>
-                            <option value="Ghost OS">Ghost OS</option>
-                            <option value="agent-browser">agent-browser</option>
-                          </select>
-                        </label>
-                        <div className="space-y-1">
-                          <span style={dlgLabelStyle}>READINESS</span>
-                          <div className="h-8 flex items-center px-2 text-[10px]" style={{ ...DLG_INPUT_STYLE, color: preflightCurrent?.computerUse?.blocked ? COLORS.warning : COLORS.textPrimary }}>
-                            {preflightCurrent?.computerUse
-                              ? preflightCurrent.computerUse.summary
-                              : "Run launch review to verify backend readiness."}
-                          </div>
-                        </div>
-                      </div>
-
-                      <div className="flex flex-wrap gap-4 text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
-                        <label className="flex items-center gap-2">
-                          <input
-                            type="checkbox"
-                            checked={draft.computerUse.allowLocalFallback}
-                            onChange={(e) => setDraft((prev) => ({
-                              ...prev,
-                              computerUse: {
-                                ...prev.computerUse,
-                                allowLocalFallback: e.target.checked,
-                              },
-                            }))}
-                          />
-                          ALLOW ADE LOCAL FALLBACK
-                        </label>
-                        <label className="flex items-center gap-2">
-                          <input
-                            type="checkbox"
-                            checked={draft.computerUse.retainArtifacts}
-                            onChange={(e) => setDraft((prev) => ({
-                              ...prev,
-                              computerUse: {
-                                ...prev.computerUse,
-                                retainArtifacts: e.target.checked,
-                              },
-                            }))}
-                          />
-                          RETAIN PROOF ARTIFACTS
-                        </label>
-                      </div>
-
-                      {preflightCurrent?.computerUse ? (
-                        <div className="grid gap-2 md:grid-cols-2 text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
-                          <div>
-                            Required proof: {preflightCurrent.computerUse.requiredKinds.length > 0 ? preflightCurrent.computerUse.requiredKinds.join(", ") : "none"}
-                          </div>
-                          <div>
-                            External backends: {preflightCurrent.computerUse.availableExternalBackends.length > 0 ? preflightCurrent.computerUse.availableExternalBackends.join(", ") : "none detected"}
-                          </div>
-                        </div>
-                      ) : null}
-                    </div>
                   </>
                 ) : (
                   <div className="space-y-1.5 p-3" style={{ background: COLORS.recessedBg, border: `1px solid ${COLORS.border}` }}>
@@ -1635,7 +1524,6 @@ function CreateMissionDialogInner({
                         </div>
                         <div className="space-y-1 text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
                           <div>Phases: {preflightCurrent.approvalSummary.phaseLabels.join(" -> ")}</div>
-                          <div>Computer use: {preflightCurrent.computerUse?.summary ?? "not evaluated"}</div>
                           <div>Warnings: {preflightCurrent.warnings}</div>
                           <div>Failures: {preflightCurrent.hardFailures}</div>
                         </div>

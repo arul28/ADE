@@ -417,13 +417,6 @@ vi.mock("../orchestrator/permissionMapping", () => ({
   })),
 }));
 
-vi.mock("../computerUse/proofObserver", () => ({
-  createProofObserver: vi.fn(() => ({
-    observe: vi.fn(),
-    flush: vi.fn(),
-  })),
-}));
-
 vi.mock("../../../shared/chatTranscript", () => ({
   parseAgentChatTranscript: vi.fn(() => []),
 }));
@@ -486,7 +479,6 @@ import { createWorkflowTools } from "../ai/tools/workflowTools";
 import { buildCodingAgentSystemPrompt } from "../ai/tools/systemPrompt";
 import { runGit } from "../git/git";
 import { parseAgentChatTranscript } from "../../../shared/chatTranscript";
-import { createDefaultComputerUsePolicy } from "../../../shared/types";
 import { mapPermissionToClaude, mapPermissionToCodex } from "../orchestrator/permissionMapping";
 import { acquireCursorAcpConnection } from "./cursorAcpPool";
 import type { AgentChatEvent, AgentChatEventEnvelope, ComputerUseBackendStatus } from "../../../shared/types";
@@ -862,7 +854,6 @@ describe("buildComputerUseDirective", () => {
     if (overrides.ghostOs) {
       backends.push({
         name: "Ghost OS",
-        style: "external_cli",
         available: true,
         state: "installed",
         detail: "Ghost OS connected.",
@@ -872,7 +863,6 @@ describe("buildComputerUseDirective", () => {
     if (overrides.agentBrowser) {
       backends.push({
         name: "agent-browser",
-        style: "external_cli",
         available: true,
         state: "installed",
         detail: "agent-browser CLI installed.",
@@ -893,13 +883,12 @@ describe("buildComputerUseDirective", () => {
 
   it("returns null when no backends, no local fallback, and status is non-null", () => {
     const status = makeBackendStatus({});
-    const policy = createDefaultComputerUsePolicy({ allowLocalFallback: false });
-    const result = buildComputerUseDirective(policy, status);
+    const result = buildComputerUseDirective(status);
     expect(result).toBeNull();
   });
 
   it("returns a directive when backendStatus is null (unknown status)", () => {
-    const result = buildComputerUseDirective(createDefaultComputerUsePolicy(), null);
+    const result = buildComputerUseDirective(null);
     expect(result).not.toBeNull();
     expect(result).toContain("Computer Use");
     expect(result).toContain("get_computer_use_backend_status");
@@ -907,7 +896,7 @@ describe("buildComputerUseDirective", () => {
 
   it("includes Ghost OS section when Ghost OS backend is available", () => {
     const status = makeBackendStatus({ ghostOs: true });
-    const result = buildComputerUseDirective(createDefaultComputerUsePolicy(), status);
+    const result = buildComputerUseDirective(status);
     expect(result).toContain("Ghost OS (Desktop Automation)");
     expect(result).toContain("ghost_context");
     expect(result).toContain("ghost_annotate");
@@ -915,31 +904,23 @@ describe("buildComputerUseDirective", () => {
 
   it("includes agent-browser section when agent-browser is available", () => {
     const status = makeBackendStatus({ agentBrowser: true });
-    const result = buildComputerUseDirective(createDefaultComputerUsePolicy(), status);
+    const result = buildComputerUseDirective(status);
     expect(result).toContain("agent-browser (Browser Automation)");
     expect(result).not.toContain("Ghost OS (Desktop Automation)");
   });
 
   it("includes ADE Local fallback section when local fallback is enabled", () => {
     const status = makeBackendStatus({ localFallback: true });
-    const policy = createDefaultComputerUsePolicy({ allowLocalFallback: true });
-    const result = buildComputerUseDirective(policy, status);
+    const result = buildComputerUseDirective(status);
     expect(result).toContain("ADE Local (Fallback)");
     expect(result).toContain("Proof Capture");
   });
 
   it("always includes Proof Capture section when directive is non-null", () => {
     const status = makeBackendStatus({ ghostOs: true });
-    const result = buildComputerUseDirective(createDefaultComputerUsePolicy(), status);
+    const result = buildComputerUseDirective(status);
     expect(result).toContain("Proof Capture");
     expect(result).toContain("ingest_computer_use_artifacts");
-  });
-
-  it("handles null/undefined policy gracefully", () => {
-    const status = makeBackendStatus({ ghostOs: true });
-    const result = buildComputerUseDirective(null, status);
-    expect(result).not.toBeNull();
-    expect(result).toContain("Computer Use");
   });
 });
 
@@ -980,7 +961,6 @@ describe("createAgentChatService", () => {
       laneId: "lane-1",
       sessionProfile: "workflow",
       identityKey: undefined,
-      computerUse: undefined,
     });
 
     expect(toolNames).toEqual(expect.arrayContaining([
@@ -1212,20 +1192,6 @@ describe("createAgentChatService", () => {
       expect(session.identityKey).toBe("cto");
     });
 
-    it("sets computerUse policy", async () => {
-      const { service } = createService();
-      const session = await service.createSession({
-        laneId: "lane-1",
-        provider: "opencode",
-        model: "",
-        modelId: "opencode/anthropic/claude-sonnet-4-6",
-        computerUse: { mode: "enabled", allowLocalFallback: false, retainArtifacts: true, preferredBackend: null },
-      });
-
-      expect(session.computerUse).toBeDefined();
-      expect(session.computerUse!.mode).toBe("enabled");
-    });
-
     it("persists chat state to disk after creation", async () => {
       const { service } = createService();
       await service.createSession({
@@ -1317,12 +1283,6 @@ describe("createAgentChatService", () => {
         sessionProfile: "light",
         reasoningEffort: "high",
         opencodePermissionMode: "full-auto",
-        computerUse: {
-          mode: "enabled",
-          allowLocalFallback: false,
-          retainArtifacts: true,
-          preferredBackend: null,
-        },
       });
       source.executionMode = "parallel";
       sessionService.updateMeta({
@@ -1345,7 +1305,6 @@ describe("createAgentChatService", () => {
       expect(result.session.sessionProfile).toBe("light");
       expect(result.session.reasoningEffort).toBe("high");
       expect(result.session.opencodePermissionMode).toBe("full-auto");
-      expect(result.session.computerUse?.mode).toBe("enabled");
       expect(result.session.executionMode).toBe("parallel");
       expect(mockState.sessions.get(result.session.id)?.goal).toBe("Fix the work-tab handoff UI.");
 
@@ -2904,28 +2863,6 @@ describe("createAgentChatService", () => {
       expect(updated.permissionMode).toBe("full-auto");
     });
 
-    it("updates computer use policy", async () => {
-      const { service } = createService();
-      const session = await service.createSession({
-        laneId: "lane-1",
-        provider: "opencode",
-        model: "",
-        modelId: "opencode/anthropic/claude-sonnet-4-6",
-      });
-
-      const updated = await service.updateSession({
-        sessionId: session.id,
-        computerUse: {
-          mode: "enabled",
-          allowLocalFallback: true,
-          retainArtifacts: true,
-          preferredBackend: null,
-        },
-      });
-
-      expect(updated.computerUse!.mode).toBe("enabled");
-    });
-
     it("manuallyNamed suppresses auto-titling after sendMessage", async () => {
       const events: AgentChatEventEnvelope[] = [];
       const send = vi.fn().mockResolvedValue(undefined);
@@ -3615,6 +3552,77 @@ describe("createAgentChatService", () => {
           turnId: "turn-1",
         },
       ]);
+    });
+
+    it("keeps Codex reasoning deltas tied to the active turn and thinking activity", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => {
+          events.push(event);
+        },
+      });
+
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Think through the options.",
+      }, { awaitDispatch: true });
+
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope =>
+          event.event.type === "status"
+          && event.event.turnStatus === "started"
+          && event.event.turnId === "turn-1",
+      );
+
+      const eventsBeforeReasoningDelta = events.length;
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "item/reasoning/summaryTextDelta",
+        params: {
+          itemId: "reasoning-1",
+          delta: "Checking the relevant paths.",
+        },
+      });
+
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope =>
+          event.event.type === "reasoning"
+          && event.event.turnId === "turn-1"
+          && event.event.itemId === "reasoning-1",
+      );
+
+      const newEvents = events.slice(eventsBeforeReasoningDelta);
+      // The reasoning row must be produced by the post-delta boundary, not by
+      // any earlier turn-start bookkeeping.
+      expect(newEvents).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          event: expect.objectContaining({
+            type: "reasoning",
+            text: "Checking the relevant paths.",
+            itemId: "reasoning-1",
+            turnId: "turn-1",
+          }),
+        }),
+      ]));
+      // And somewhere in the turn — coalescing across the initial turn-start
+      // activity is fine — a thinking activity must be tied to the same turn.
+      expect(events).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          event: expect.objectContaining({
+            type: "activity",
+            activity: "thinking",
+            turnId: "turn-1",
+          }),
+        }),
+      ]));
     });
 
     it("ignores unsolicited Codex turn notifications when no turn is active", async () => {
@@ -6581,6 +6589,115 @@ describe("createAgentChatService", () => {
     await sendPromise;
   });
 
+  it("does not duplicate Claude thinking when the final assistant message repeats streamed content", async () => {
+    const events: AgentChatEventEnvelope[] = [];
+    const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+    const send = vi.fn().mockResolvedValue(undefined);
+    let streamCall = 0;
+    let reasoningCountAfterDelta = -1;
+
+    const stream = vi.fn(() => (async function* () {
+      streamCall += 1;
+      if (streamCall === 1) {
+        yield {
+          type: "system",
+          subtype: "init",
+          session_id: "sdk-session-thinking",
+          slash_commands: [],
+        };
+        return;
+      }
+
+      yield {
+        type: "stream_event",
+        event: {
+          type: "content_block_start",
+          index: 0,
+          content_block: { type: "thinking", thinking: "" },
+        },
+      };
+      yield {
+        type: "stream_event",
+        event: {
+          type: "content_block_delta",
+          index: 0,
+          delta: {
+            type: "thinking_delta",
+            thinking: "Checking both imports before editing.",
+          },
+        },
+      };
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      reasoningCountAfterDelta = events.filter((event) => event.event.type === "reasoning").length;
+      yield {
+        type: "assistant",
+        message: {
+          content: [{ type: "thinking", thinking: "Checking both imports before editing." }],
+          usage: { input_tokens: 1, output_tokens: 1 },
+        },
+      };
+      yield {
+        type: "result",
+        usage: { input_tokens: 1, output_tokens: 1 },
+      };
+    })());
+
+    vi.mocked(unstable_v2_createSession).mockReturnValue({
+      send,
+      stream,
+      close: vi.fn(),
+      sessionId: "sdk-session-thinking",
+      setPermissionMode,
+    } as any);
+
+    const { service } = createService({
+      onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+    });
+
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "claude",
+      model: "claude-sonnet-4-6",
+      modelId: "anthropic/claude-sonnet-4-6",
+    });
+
+    await service.runSessionTurn({
+      sessionId: session.id,
+      text: "Resolve the PR comments.",
+    });
+
+    const reasoningEvents = events
+      .map((event) => event.event)
+      .filter((event): event is Extract<AgentChatEventEnvelope["event"], { type: "reasoning" }> => event.type === "reasoning");
+    expect(reasoningEvents.map((event) => event.text)).toEqual(["Checking both imports before editing."]);
+    // The streamed thinking_delta must be what created the reasoning row — not the
+    // final assistant message (which would also produce a row if dedupe broke).
+    expect(reasoningCountAfterDelta).toBe(1);
+    expect(events.some((event) => event.event.type === "activity" && event.event.activity === "thinking")).toBe(true);
+    const sessionOpts = vi.mocked(unstable_v2_createSession).mock.calls[0]?.[0] as {
+      executableArgs?: string[];
+      settings?: Record<string, unknown>;
+    } | undefined;
+    expect(sessionOpts?.settings).toEqual(expect.objectContaining({
+      showThinkingSummaries: true,
+      alwaysThinkingEnabled: true,
+    }));
+    expect(sessionOpts?.executableArgs).toEqual(expect.arrayContaining([
+      "--include-partial-messages",
+      "--thinking",
+      "adaptive",
+      "--thinking-display",
+      "summarized",
+    ]));
+    const settingsArgIndex = sessionOpts?.executableArgs?.indexOf("--settings") ?? -1;
+    expect(settingsArgIndex).toBeGreaterThanOrEqual(0);
+    const settingsJson = sessionOpts?.executableArgs?.[settingsArgIndex + 1];
+    expect(JSON.parse(String(settingsJson))).toEqual(expect.objectContaining({
+      showThinkingSummaries: true,
+      alwaysThinkingEnabled: true,
+    }));
+  });
+
   it("emits completed Claude tool_result rows when tool_use_summary arrives", async () => {
     const events: AgentChatEventEnvelope[] = [];
     const setPermissionMode = vi.fn().mockResolvedValue(undefined);
@@ -7292,9 +7409,18 @@ describe("createAgentChatService", () => {
     expect(
       events.filter((event) => event.event.type === "user_message"),
     ).toHaveLength(1);
+    const startedEvent = events.find(
+      (event): event is AgentChatEventEnvelope & {
+        event: Extract<AgentChatEventEnvelope["event"], { type: "status" }>;
+      } => event.event.type === "status" && event.event.turnStatus === "started",
+    );
+    expect(startedEvent).toBeTruthy();
     expect(
       events.some(
-        (event) => event.event.type === "status" && event.event.turnStatus === "started",
+        (event) =>
+          event.event.type === "activity"
+          && event.event.activity === "thinking"
+          && event.event.turnId === startedEvent!.event.turnId,
       ),
     ).toBe(true);
 

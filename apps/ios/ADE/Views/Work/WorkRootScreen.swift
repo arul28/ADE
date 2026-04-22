@@ -231,7 +231,13 @@ struct WorkRootScreen: View {
               .listRowSeparator(.hidden)
           }
         } else {
-          if let hydrationNotice = workStatus.inlineHydrationFailureNotice(for: .work) {
+          // Per-screen hydration banners are suppressed when the host is
+          // unreachable — the red gear dot (ADEConnectionDot) is the single
+          // source of truth for connection state. Genuine mid-sync failures
+          // while connected still show below via `errorMessage`.
+          if !syncService.connectionState.isHostUnreachable,
+            let hydrationNotice = workStatus.inlineHydrationFailureNotice(for: .work)
+          {
             ADENoticeCard(
               title: hydrationNotice.title,
               message: hydrationNotice.message,
@@ -266,7 +272,10 @@ struct WorkRootScreen: View {
             }
           }
 
-          if let errorMessage, workStatus.phase == .ready {
+          if let errorMessage,
+            workStatus.phase == .ready,
+            !syncService.connectionState.isHostUnreachable
+          {
             ADENoticeCard(
               title: "Work view error",
               message: errorMessage,

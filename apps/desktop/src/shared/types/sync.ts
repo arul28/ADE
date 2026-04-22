@@ -149,6 +149,24 @@ export type SyncDeviceRuntimeState = SyncDeviceRecord & {
   syncLag: number | null;
 };
 
+export type SyncTailnetDiscoveryState =
+  | "disabled"
+  | "publishing"
+  | "published"
+  | "pending_approval"
+  | "unavailable"
+  | "failed";
+
+export type SyncTailnetDiscoveryStatus = {
+  state: SyncTailnetDiscoveryState;
+  serviceName: string;
+  servicePort: number;
+  target: string | null;
+  updatedAt: string | null;
+  error: string | null;
+  stderr: string | null;
+};
+
 export type SyncRoleSnapshot = {
   mode: SyncMode;
   role: SyncRole;
@@ -161,6 +179,7 @@ export type SyncRoleSnapshot = {
   pairingPinConfigured: boolean;
   pairingConnectInfo: SyncPairingConnectInfo | null;
   connectedPeers: SyncPeerConnectionState[];
+  tailnetDiscovery: SyncTailnetDiscoveryStatus;
   client: SyncClientStatus;
   transferReadiness: SyncTransferReadiness;
   survivableStateText: string;

@@ -252,6 +252,20 @@ is not supported.
   host keeps a signature of `{ hostName, port, txt }` and re-publishes
   the announcement only when the signature changes, to avoid churn
   while IP addresses fluctuate.
+- **Tailscale Serve tailnet discovery**: when the host sees a usable
+  `tailscale` CLI (via the `ADE_TAILSCALE_CLI` env override or the
+  default macOS path `/Applications/Tailscale.app/Contents/MacOS/Tailscale`),
+  it publishes the sync WebSocket port on the tailnet under the
+  service name `svc:ade-sync` (`SYNC_TAILNET_DISCOVERY_SERVICE_NAME`)
+  at the default port `8787` (`SYNC_TAILNET_DISCOVERY_SERVICE_PORT`).
+  Status flows out through `SyncRoleSnapshot.tailnetDiscovery`
+  (type `SyncTailnetDiscoveryStatus`) with states `disabled |
+  publishing | published | pending_approval | unavailable | failed`
+  plus `error` / `stderr` tails for debugging. The host tracks a
+  `tailnetServeSignature` so re-publishing is a no-op when the
+  `(serviceName, port, target)` tuple hasn't changed; Settings >
+  Sync surfaces the status so the user can see whether MagicDNS
+  resolution from an iPhone or a peer desktop is ready.
 
 ## Sync protocol (summary)
 
@@ -388,7 +402,7 @@ current branch modifications to `syncRemoteCommandService.ts`.
 | iOS local replicated DB | Implemented |
 | iOS Lanes / Files / Work / PRs / Settings tabs | Implemented |
 | QR pairing UX | Implemented (payload v2; PIN entered separately) |
-| Tailscale integration | Implemented (address candidate + mDNS TXT) |
+| Tailscale integration | Implemented (address candidate + mDNS TXT + `tailscale serve` publication under `svc:ade-sync`) |
 | Lane portability desktop-to-desktop | Planned |
 
 ## Gotchas

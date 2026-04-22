@@ -5,7 +5,6 @@ import {
   buildComputerUseRoutePresets,
   describeComputerUseLinks,
   formatComputerUseKind,
-  formatComputerUseMode,
   summarizeComputerUseProof,
 } from "../../lib/computerUse";
 
@@ -119,9 +118,6 @@ export function MissionComputerUsePanel({
           </div>
         </div>
         <div className="flex flex-wrap gap-2">
-          <span className="px-2 py-1 text-[9px] uppercase tracking-[1px]" style={{ color: snapshot.usingLocalFallback ? COLORS.warning : COLORS.success, border: `1px solid ${(snapshot.usingLocalFallback ? COLORS.warning : COLORS.success)}35`, fontFamily: MONO_FONT }}>
-            {snapshot.usingLocalFallback ? "fallback" : "external"}
-          </span>
           <button type="button" style={outlineButton({ height: 26, padding: "0 8px", fontSize: 9 })} onClick={() => void refresh()} disabled={busy}>
             REFRESH
           </button>
@@ -129,7 +125,6 @@ export function MissionComputerUsePanel({
       </div>
 
       <div className="flex flex-wrap gap-3 text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
-        <span>Policy: {formatComputerUseMode(snapshot.policy)}</span>
         <span>{summarizeComputerUseProof(snapshot)}</span>
         <span>Backend: {snapshot.activeBackend?.name ?? "not selected"}</span>
       </div>

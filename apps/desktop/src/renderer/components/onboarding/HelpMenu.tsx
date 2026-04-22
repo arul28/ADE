@@ -6,9 +6,9 @@ import { useAppStore } from "../../state/appStore";
 import { useOnboardingStore } from "../../state/onboardingStore";
 import { getTour, listTours } from "../../onboarding/registry";
 import { openExternalUrl } from "../../lib/openExternal";
+import { docs } from "../../onboarding/docsLinks";
 import { cn } from "../ui/cn";
 
-const DOCS_URL = "https://www.ade-app.dev/docs";
 const TOUR_TARGET_WAIT_TIMEOUT_MS = 10_000;
 const TOUR_TARGET_POLL_MS = 50;
 
@@ -106,7 +106,7 @@ export function HelpMenu() {
 
   const handleOpenDocs = useCallback(() => {
     close();
-    openExternalUrl(DOCS_URL);
+    openExternalUrl(docs.home);
   }, [close]);
 
   return (

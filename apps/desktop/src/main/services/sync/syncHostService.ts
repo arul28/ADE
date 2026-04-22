@@ -1,7 +1,9 @@
 import fs from "node:fs";
+import { execFile } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 import { randomBytes } from "node:crypto";
 import { Bonjour, type Service as BonjourService } from "bonjour-service";
 import { WebSocketServer, WebSocket, type RawData } from "ws";
@@ -35,6 +37,7 @@ import type {
   SyncPeerConnectionState,
   SyncPeerMetadata,
   SyncRemoteCommandDescriptor,
+  SyncTailnetDiscoveryStatus,
   SyncTerminalSnapshotPayload,
 } from "../../../shared/types";
 import { parseAgentChatTranscript } from "../../../shared/chatTranscript";
@@ -86,12 +89,16 @@ import { DEFAULT_NOTIFICATION_PREFERENCES, normalizeNotificationPreferences } fr
 import type { SyncPinStore } from "./syncPinStore";
 import { DEFAULT_SYNC_COMPRESSION_THRESHOLD_BYTES, DEFAULT_SYNC_HOST_PORT, encodeSyncEnvelope, mapPlatform, parseSyncEnvelope, wsDataToText } from "./syncProtocol";
 import { createSyncRemoteCommandService } from "./syncRemoteCommandService";
+const execFileAsync = promisify(execFile);
 const DEFAULT_SYNC_HEARTBEAT_INTERVAL_MS = 30_000;
 const DEFAULT_SYNC_POLL_INTERVAL_MS = 400;
 const DEFAULT_BRAIN_STATUS_INTERVAL_MS = 5_000;
 const DEFAULT_TERMINAL_SNAPSHOT_BYTES = 220_000;
 const LANE_PRESENCE_TTL_MS = 60_000;
 const SYNC_MDNS_SERVICE_TYPE = "ade-sync";
+export const SYNC_TAILNET_DISCOVERY_SERVICE_NAME = "svc:ade-sync";
+export const SYNC_TAILNET_DISCOVERY_SERVICE_PORT = DEFAULT_SYNC_HOST_PORT;
+const TAILSCALE_CLI_MACOS_PATH = "/Applications/Tailscale.app/Contents/MacOS/Tailscale";
 const MOBILE_MUTATING_FILE_ACTIONS = new Set<SyncFileRequest["action"]>([
   "writeText",
   "createFile",
@@ -316,6 +323,25 @@ function parsePairingRequestPayload(payload: unknown): SyncPairingRequestPayload
       dbVersion: Number(peer.dbVersion ?? 0),
     },
   };
+}
+
+function resolveTailscaleCli(): string {
+  const configured = process.env.ADE_TAILSCALE_CLI?.trim();
+  if (configured) return configured;
+  if (process.platform === "darwin" && fs.existsSync(TAILSCALE_CLI_MACOS_PATH)) {
+    return TAILSCALE_CLI_MACOS_PATH;
+  }
+  return "tailscale";
+}
+
+function shouldAttemptTailnetServiceAdvertise(): boolean {
+  if (process.env.ADE_TAILSCALE_SERVE === "0") return false;
+  if (process.env.NODE_ENV === "test" || process.env.VITEST) return false;
+  return process.platform === "darwin" || process.platform === "linux" || process.platform === "win32";
+}
+
+function looksLikePendingTailnetApproval(text: string): boolean {
+  return /\b(pending|approval|approve|review)\b/i.test(text);
 }
 
 export function createSyncHostService(args: SyncHostServiceArgs) {
@@ -663,6 +689,18 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
   let bonjourAnnouncement: BonjourService | null = null;
   let bonjourPort: number | null = null;
   let bonjourSignature: string | null = null;
+  let tailnetServeSignature: string | null = null;
+  let tailnetDiscoveryStatus: SyncTailnetDiscoveryStatus = {
+    state: shouldAttemptTailnetServiceAdvertise() ? "disabled" : "unavailable",
+    serviceName: SYNC_TAILNET_DISCOVERY_SERVICE_NAME,
+    servicePort: SYNC_TAILNET_DISCOVERY_SERVICE_PORT,
+    target: null,
+    updatedAt: null,
+    error: shouldAttemptTailnetServiceAdvertise()
+      ? "Tailnet discovery has not been published yet."
+      : "Tailscale Serve discovery is not available in this desktop process.",
+    stderr: null,
+  };
   let lastBroadcastAt: string | null = null;
   const startedAtMs = Date.now();
 
@@ -831,6 +869,163 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         error: error instanceof Error ? error.message : String(error),
       });
     });
+  };
+
+  const updateTailnetDiscoveryStatus = (
+    next: SyncTailnetDiscoveryStatus,
+  ): void => {
+    tailnetDiscoveryStatus = next;
+    setTimeout(() => {
+      if (!disposed) args.onStateChanged?.();
+    }, 0);
+  };
+
+  const publishTailnetDiscovery = (
+    port: number,
+    options?: { force?: boolean },
+  ): void => {
+    if (disposed) return;
+    if (!shouldAttemptTailnetServiceAdvertise()) {
+      updateTailnetDiscoveryStatus({
+        state: "unavailable",
+        serviceName: SYNC_TAILNET_DISCOVERY_SERVICE_NAME,
+        servicePort: SYNC_TAILNET_DISCOVERY_SERVICE_PORT,
+        target: null,
+        updatedAt: nowIso(),
+        error: "Tailscale Serve discovery is not available in this desktop process.",
+        stderr: null,
+      });
+      return;
+    }
+    const cli = resolveTailscaleCli();
+    const signature = `${SYNC_TAILNET_DISCOVERY_SERVICE_NAME}:${SYNC_TAILNET_DISCOVERY_SERVICE_PORT}->${port}`;
+    if (tailnetServeSignature === signature && !options?.force) return;
+    tailnetServeSignature = signature;
+    const target = `tcp://127.0.0.1:${port}`;
+    updateTailnetDiscoveryStatus({
+      state: "publishing",
+      serviceName: SYNC_TAILNET_DISCOVERY_SERVICE_NAME,
+      servicePort: SYNC_TAILNET_DISCOVERY_SERVICE_PORT,
+      target,
+      updatedAt: nowIso(),
+      error: null,
+      stderr: null,
+    });
+    const cliArgs = [
+      "serve",
+      "--yes",
+      `--service=${SYNC_TAILNET_DISCOVERY_SERVICE_NAME}`,
+      `--tcp=${SYNC_TAILNET_DISCOVERY_SERVICE_PORT}`,
+      target,
+    ];
+    void execFileAsync(cli, cliArgs, { timeout: 10_000 })
+      .then(({ stdout, stderr }) => {
+        const stdoutText = stdout.trim();
+        const stderrText = stderr.trim();
+        const outputText = [stdoutText, stderrText].filter(Boolean).join("\n");
+        updateTailnetDiscoveryStatus({
+          state: looksLikePendingTailnetApproval(outputText) ? "pending_approval" : "published",
+          serviceName: SYNC_TAILNET_DISCOVERY_SERVICE_NAME,
+          servicePort: SYNC_TAILNET_DISCOVERY_SERVICE_PORT,
+          target,
+          updatedAt: nowIso(),
+          error: null,
+          stderr: stderrText || null,
+        });
+        args.logger.info("sync_host.tailnet_discovery_published", {
+          service: SYNC_TAILNET_DISCOVERY_SERVICE_NAME,
+          servicePort: SYNC_TAILNET_DISCOVERY_SERVICE_PORT,
+          target,
+          stdout: stdoutText || null,
+          stderr: stderrText || null,
+        });
+      })
+      .catch((error: unknown) => {
+        tailnetServeSignature = null;
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        const code = (error as NodeJS.ErrnoException | null | undefined)?.code ?? null;
+        const stderr = typeof (error as { stderr?: unknown })?.stderr === "string"
+          ? String((error as { stderr?: string }).stderr).trim()
+          : null;
+        const errorText = [errorMessage, stderr].filter(Boolean).join("\n");
+        updateTailnetDiscoveryStatus({
+          state: code === "ENOENT"
+            ? "unavailable"
+            : looksLikePendingTailnetApproval(errorText)
+              ? "pending_approval"
+              : "failed",
+          serviceName: SYNC_TAILNET_DISCOVERY_SERVICE_NAME,
+          servicePort: SYNC_TAILNET_DISCOVERY_SERVICE_PORT,
+          target,
+          updatedAt: nowIso(),
+          error: code === "ENOENT" ? "Tailscale CLI was not found." : errorMessage,
+          stderr,
+        });
+        args.logger.warn("sync_host.tailnet_discovery_failed", {
+          service: SYNC_TAILNET_DISCOVERY_SERVICE_NAME,
+          servicePort: SYNC_TAILNET_DISCOVERY_SERVICE_PORT,
+          target,
+          error: errorMessage,
+          code,
+          stderr,
+        });
+      });
+  };
+
+  const unpublishTailnetDiscovery = async (): Promise<void> => {
+    if (!tailnetServeSignature) return;
+    tailnetServeSignature = null;
+    if (!shouldAttemptTailnetServiceAdvertise()) {
+      updateTailnetDiscoveryStatus({
+        state: "unavailable",
+        serviceName: SYNC_TAILNET_DISCOVERY_SERVICE_NAME,
+        servicePort: SYNC_TAILNET_DISCOVERY_SERVICE_PORT,
+        target: null,
+        updatedAt: nowIso(),
+        error: null,
+        stderr: null,
+      });
+      return;
+    }
+    const cli = resolveTailscaleCli();
+    try {
+      await execFileAsync(
+        cli,
+        ["serve", "--yes", `--service=${SYNC_TAILNET_DISCOVERY_SERVICE_NAME}`, "off"],
+        { timeout: 10_000 },
+      );
+      updateTailnetDiscoveryStatus({
+        state: "disabled",
+        serviceName: SYNC_TAILNET_DISCOVERY_SERVICE_NAME,
+        servicePort: SYNC_TAILNET_DISCOVERY_SERVICE_PORT,
+        target: null,
+        updatedAt: nowIso(),
+        error: null,
+        stderr: null,
+      });
+      args.logger.info("sync_host.tailnet_discovery_unpublished", {
+        service: SYNC_TAILNET_DISCOVERY_SERVICE_NAME,
+        servicePort: SYNC_TAILNET_DISCOVERY_SERVICE_PORT,
+      });
+    } catch (error: unknown) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      const code = (error as NodeJS.ErrnoException | null | undefined)?.code ?? null;
+      updateTailnetDiscoveryStatus({
+        state: code === "ENOENT" ? "unavailable" : "disabled",
+        serviceName: SYNC_TAILNET_DISCOVERY_SERVICE_NAME,
+        servicePort: SYNC_TAILNET_DISCOVERY_SERVICE_PORT,
+        target: null,
+        updatedAt: nowIso(),
+        error: code === "ENOENT" ? "Tailscale CLI was not found." : errorMessage,
+        stderr: null,
+      });
+      args.logger.warn("sync_host.tailnet_discovery_unpublish_failed", {
+        service: SYNC_TAILNET_DISCOVERY_SERVICE_NAME,
+        servicePort: SYNC_TAILNET_DISCOVERY_SERVICE_PORT,
+        error: errorMessage,
+        code,
+      });
+    }
   };
 
   function send<TPayload>(ws: WebSocket, type: SyncEnvelope["type"], payload: TPayload, requestId?: string | null): void {
@@ -1697,6 +1892,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         const address = server.address();
         const port = typeof address === "object" && address ? address.port : DEFAULT_SYNC_HOST_PORT;
         publishLanDiscovery(port);
+        publishTailnetDiscovery(port);
         return port;
       }
       await new Promise<void>((resolve, reject) => {
@@ -1729,6 +1925,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       const address = server.address();
       const port = typeof address === "object" && address ? address.port : DEFAULT_SYNC_HOST_PORT;
       publishLanDiscovery(port);
+      publishTailnetDiscovery(port);
       return port;
     },
 
@@ -1745,10 +1942,11 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       setLocalActiveLanePresence(laneIds);
     },
 
-    refreshLanDiscovery(): void {
+    refreshLanDiscovery(options?: { forceTailnet?: boolean }): void {
       const address = server.address();
       if (typeof address === "object" && address) {
         publishLanDiscovery(address.port);
+        publishTailnetDiscovery(address.port, { force: options?.forceTailnet });
       }
     },
 
@@ -1779,6 +1977,10 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       return [...peers]
         .map((peer) => toSyncPeerConnectionState(peer, dbVersion))
         .filter((peer): peer is SyncPeerConnectionState => peer != null);
+    },
+
+    getTailnetDiscoveryStatus(): SyncTailnetDiscoveryStatus {
+      return { ...tailnetDiscoveryStatus };
     },
 
     getLanePresenceSnapshot(): Array<{ laneId: string; devicesOpen: DeviceMarker[] }> {
@@ -1857,6 +2059,11 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       clearInterval(pollTimer);
       clearInterval(heartbeatTimer);
       clearInterval(brainStatusTimer);
+      try {
+        await unpublishTailnetDiscovery();
+      } catch {
+        // Never throw from dispose.
+      }
       await new Promise<void>((resolve) => {
         const finish = () => resolve();
         for (const peer of peers) {

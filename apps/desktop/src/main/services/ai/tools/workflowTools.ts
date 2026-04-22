@@ -14,12 +14,7 @@ import type { createPrService } from "../../prs/prService";
 import type { ComputerUseArtifactBrokerService } from "../../computerUse/computerUseArtifactBrokerService";
 import { nowIso } from "../../shared/utils";
 import { getPrIssueResolutionAvailability } from "../../../../shared/prIssueResolution";
-import {
-  createDefaultComputerUsePolicy,
-  isComputerUseModeEnabled,
-  type AgentChatCompletionReport,
-  type ComputerUsePolicy,
-} from "../../../../shared/types";
+import type { AgentChatCompletionReport } from "../../../../shared/types";
 
 const execFileAsync = promisify(execFile);
 
@@ -31,7 +26,6 @@ export interface WorkflowToolDeps {
   laneService: ReturnType<typeof createLaneService>;
   prService?: ReturnType<typeof createPrService> | null;
   computerUseArtifactBrokerService?: ComputerUseArtifactBrokerService | null;
-  computerUsePolicy?: ComputerUsePolicy | null;
   onReportCompletion?: ((report: AgentChatCompletionReport) => Promise<void> | void) | null;
   /** The session ID used as owner for artifacts. */
   sessionId: string;
@@ -46,15 +40,10 @@ export function createWorkflowTools(
     laneService,
     prService,
     computerUseArtifactBrokerService,
-    computerUsePolicy,
     onReportCompletion,
     sessionId,
     laneId,
   } = deps;
-  const resolvedComputerUsePolicy = createDefaultComputerUsePolicy(computerUsePolicy ?? undefined);
-  const localComputerUseAllowed =
-    isComputerUseModeEnabled(resolvedComputerUsePolicy.mode)
-    && resolvedComputerUsePolicy.allowLocalFallback;
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const tools: Record<string, Tool<any, any>> = {};
@@ -149,7 +138,7 @@ export function createWorkflowTools(
   }
 
   // ── capture_screenshot ──────────────────────────────────────────────
-  if (computerUseArtifactBrokerService && localComputerUseAllowed) {
+  if (computerUseArtifactBrokerService) {
     tools.captureScreenshot = tool({
       description:
         "Capture a screenshot of the current screen. " +
@@ -166,12 +155,6 @@ export function createWorkflowTools(
           .describe("Optional description of what the screenshot shows"),
       }),
       execute: async ({ title, description }) => {
-        if (!resolvedComputerUsePolicy.allowLocalFallback) {
-          return {
-            success: false,
-            error: "Local computer-use fallback is disabled for this chat session.",
-          };
-        }
         let tmpDir: string | null = null;
         try {
           tmpDir = fs.mkdtempSync(path.join(require("node:os").tmpdir(), "ade-screenshot-"));
@@ -188,7 +171,6 @@ export function createWorkflowTools(
 
           const result = computerUseArtifactBrokerService.ingest({
             backend: {
-              style: "local_fallback",
               name: "screencapture",
               toolName: "captureScreenshot",
             },

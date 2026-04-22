@@ -4,6 +4,8 @@
 
 import "./lanesTour";
 import "./workTour";
+import "./laneWorkPaneTour";
+import "./firstJourneyTour";
 import "./filesTour";
 import "./runTour";
 import "./graphTour";
@@ -13,3 +15,14 @@ import "./automationsTour";
 import "./missionsTour";
 import "./ctoTour";
 import "./settingsTour";
+import "./lanesHighlightsTour";
+import "./workHighlightsTour";
+import "./laneWorkPaneHighlightsTour";
+import "./filesHighlightsTour";
+import "./runHighlightsTour";
+import "./graphHighlightsTour";
+import "./prsHighlightsTour";
+import "./historyHighlightsTour";
+import "./automationsHighlightsTour";
+import "./ctoHighlightsTour";
+import "./settingsHighlightsTour";

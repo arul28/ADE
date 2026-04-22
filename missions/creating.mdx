@@ -26,7 +26,7 @@ icon: "plus"
         - **Budget cap** — optional token or USD ceiling; mission pauses if the limit is approached
       </Step>
       <Step title="Review preflight checks">
-        Before the mission starts, ADE runs preflight checks: verifies the selected lanes are available, confirms the configured model is reachable, validates the permission config, and warns if any required computer-use capabilities are unavailable.
+        Before the mission starts, ADE runs preflight checks: verifies the selected lanes are available, confirms the configured model is reachable, validates the permission config, and surfaces any `ade proof` capture prerequisites that are missing on the host.
       </Step>
       <Step title="Launch">
         Click **Start Mission**. The mission enters the Planning phase immediately.
@@ -80,9 +80,11 @@ Once a mission is running (or completed), click it in the mission list to open t
     | `patch` | Code changes (diffs) committed by workers |
     | `pr` | Pull requests created during execution |
     | `test_report` | Test run output from the validation phase |
-    | `screenshot` | UI screenshots taken by workers via computer use |
-    | `browser_verification` | Browser-based proof artifacts from computer-use steps |
-    | `browser_trace` | Full browser action traces |
+    | `screenshot` | Screenshots captured by workers via `ade proof screenshot` |
+    | `video_recording` | Short screen recordings captured via `ade proof record` |
+    | `browser_trace` | Browser interaction traces ingested via `ade proof ingest` |
+    | `browser_verification` | Assertion results ingested via `ade proof ingest` |
+    | `console_logs` | Browser or application console output ingested via `ade proof ingest` |
     | `plan` | The generated execution plan (snapshot at approval gate) |
     | `summary` | Orchestrator-generated mission summary |
     | `note` | Inline notes attached by the orchestrator or by you |

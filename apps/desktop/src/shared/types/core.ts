@@ -152,10 +152,49 @@ export type OnboardingTourEntry = {
   lastStepIndex: number;
 };
 
+// Round 2: variant-aware tour storage. A tour can now be run as a full
+// step-by-step walkthrough or as a "highlights" capsule; each variant
+// tracks progress independently. `OnboardingTourVariantEntry` is the
+// shape used inside the new `tourVariants` map.
+export type OnboardingTourVariantEntry = {
+  completedAt: string | null;
+  dismissedAt: string | null;
+  lastStepIndex: number;
+};
+
+export type OnboardingTourEntryV2 = {
+  full: OnboardingTourVariantEntry;
+  highlights: OnboardingTourVariantEntry;
+};
+
+export type OnboardingTourVariant = "full" | "highlights";
+
+// Round 2: first-session tutorial (13-act story). Independent of the
+// per-tab tours and of the welcome wizard. `dismissedAt` captures a
+// "Not now" click; `silenced` captures a permanent "Don't show this
+// again"; `completedAt` means the tutorial finished.
+export type OnboardingTutorialState = {
+  completedAt: string | null;
+  dismissedAt: string | null;
+  silenced: boolean;
+  inProgress: boolean;
+  lastActIndex: number;
+  ctxSnapshot: Record<string, unknown>;
+};
+
 export type OnboardingTourProgress = {
   wizardCompletedAt: string | null;
   wizardDismissedAt: string | null;
+  // Legacy flat per-tour progress. Preserved for backward compat with
+  // existing renderer callers; new variant-aware callers should prefer
+  // `tourVariants`.
   tours: Record<string, OnboardingTourEntry>;
+  // Round 2: variant-aware progress keyed by base tour id. Optional on
+  // the type to ease migration — callers that don't care about variants
+  // can omit it. The main-process service always returns it populated.
+  tourVariants?: Record<string, OnboardingTourEntryV2>;
+  // Round 2: first-session tutorial slab. Optional for the same reason.
+  tutorial?: OnboardingTutorialState;
   glossaryTermsSeen: string[];
 };
 

@@ -18,7 +18,6 @@ import {
   type AgentChatOpenCodePermissionMode,
   type ComputerUseOwnerSnapshot,
   type ChatSurfaceMode,
-  type ComputerUsePolicy,
   type PendingInputRequest,
 } from "../../../shared/types";
 import { getModelById } from "../../../shared/modelRegistry";
@@ -339,7 +338,6 @@ export function AgentChatComposer({
   opencodePermissionMode,
   cursorModeSnapshot,
   executionMode,
-  computerUsePolicy,
   computerUseSnapshot,
   proofOpen = false,
   proofArtifactCount = 0,
@@ -370,7 +368,6 @@ export function AgentChatComposer({
   onCursorConfigChange,
   includeProjectDocs,
   onIncludeProjectDocsChange,
-  onComputerUsePolicyChange,
   onToggleProof,
   onClearEvents,
   promptSuggestion,
@@ -406,7 +403,6 @@ export function AgentChatComposer({
   opencodePermissionMode?: AgentChatOpenCodePermissionMode;
   cursorModeSnapshot?: AgentChatCursorModeSnapshot | null;
   executionMode?: AgentChatExecutionMode | null;
-  computerUsePolicy: ComputerUsePolicy;
   computerUseSnapshot?: ComputerUseOwnerSnapshot | null;
   proofOpen?: boolean;
   proofArtifactCount?: number;
@@ -441,7 +437,7 @@ export function AgentChatComposer({
   onCursorConfigChange?: (configId: string, value: string | boolean) => void;
   includeProjectDocs?: boolean;
   onIncludeProjectDocsChange?: (checked: boolean) => void;
-  onComputerUsePolicyChange: (policy: ComputerUsePolicy) => void;
+  onComputerUsePolicyChange?: (policy: unknown) => void;
   onToggleProof?: () => void;
   onClearEvents?: () => void;
   promptSuggestion?: string | null;

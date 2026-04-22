@@ -217,6 +217,7 @@ import type {
   OnboardingExistingLaneCandidate,
   OnboardingStatus,
   OnboardingTourProgress,
+  OnboardingTourVariant,
   GitActionResult,
   GitBranchSummary,
   GitCheckoutBranchArgs,
@@ -572,7 +573,6 @@ import type {
   ComputerUseEventPayload,
   ComputerUseOwnerSnapshot,
   ComputerUseOwnerSnapshotArgs,
-  ComputerUseSettingsSnapshot,
   FeedbackPrepareDraftArgs,
   FeedbackPreparedDraft,
   FeedbackSubmission,
@@ -649,6 +649,7 @@ declare global {
       };
       sync: {
         getStatus: () => Promise<SyncRoleSnapshot>;
+        refreshDiscovery: () => Promise<SyncRoleSnapshot>;
         listDevices: () => Promise<SyncDeviceRuntimeState[]>;
         updateLocalDevice: (args: {
           name?: string;
@@ -704,6 +705,31 @@ declare global {
         updateTourStep: (tourId: string, index: number) => Promise<OnboardingTourProgress>;
         markGlossaryTermSeen: (termId: string) => Promise<OnboardingTourProgress>;
         resetTourProgress: (tourId?: string) => Promise<OnboardingTourProgress>;
+        markTourCompletedVariant: (
+          tourId: string,
+          variant: OnboardingTourVariant,
+        ) => Promise<OnboardingTourProgress>;
+        markTourDismissedVariant: (
+          tourId: string,
+          variant: OnboardingTourVariant,
+        ) => Promise<OnboardingTourProgress>;
+        updateTourStepVariant: (
+          tourId: string,
+          variant: OnboardingTourVariant,
+          index: number,
+        ) => Promise<OnboardingTourProgress>;
+        tutorial: {
+          start: () => Promise<OnboardingTourProgress>;
+          dismiss: (permanent: boolean) => Promise<OnboardingTourProgress>;
+          complete: () => Promise<OnboardingTourProgress>;
+          updateAct: (
+            actIndex: number,
+            ctxSnapshot?: Record<string, unknown>,
+          ) => Promise<OnboardingTourProgress>;
+          setSilenced: (silenced: boolean) => Promise<OnboardingTourProgress>;
+          clearSessionDismissal: () => Promise<OnboardingTourProgress>;
+          shouldPrompt: () => Promise<boolean>;
+        };
       };
       automations: {
         list: () => Promise<AutomationRuleSummary[]>;
@@ -1121,7 +1147,6 @@ declare global {
         }) => Promise<{ path: string }>;
       };
       computerUse: {
-        getSettings: () => Promise<ComputerUseSettingsSnapshot>;
         listArtifacts: (
           args?: ComputerUseArtifactListArgs,
         ) => Promise<ComputerUseArtifactView[]>;

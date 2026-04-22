@@ -19,7 +19,7 @@ struct FilesDirectoryScreen: View {
   var body: some View {
     ScrollView {
       LazyVStack(alignment: .leading, spacing: 14) {
-        if let refreshErrorMessage {
+        if let refreshErrorMessage, !syncService.connectionState.isHostUnreachable {
           ADENoticeCard(
             title: "Refresh failed",
             message: refreshErrorMessage,

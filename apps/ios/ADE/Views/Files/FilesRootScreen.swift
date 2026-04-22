@@ -61,7 +61,11 @@ struct FilesRootScreen: View {
     NavigationStack(path: $navigationPath) {
       ScrollView {
         LazyVStack(alignment: .leading, spacing: 14) {
-          if let hydrationNotice = filesStatus.inlineHydrationFailureNotice(for: .files) {
+          // Suppress connection-caused load failure banners; the top-right
+          // gear dot is the single source of truth for host reachability.
+          if !syncService.connectionState.isHostUnreachable,
+            let hydrationNotice = filesStatus.inlineHydrationFailureNotice(for: .files)
+          {
             ADENoticeCard(
               title: hydrationNotice.title,
               message: hydrationNotice.message,
@@ -72,7 +76,10 @@ struct FilesRootScreen: View {
             )
             .transition(.opacity)
           }
-          if let errorMessage, filesStatus.phase == .ready {
+          if let errorMessage,
+            filesStatus.phase == .ready,
+            !syncService.connectionState.isHostUnreachable
+          {
             ADENoticeCard(
               title: "Files view error",
               message: errorMessage,

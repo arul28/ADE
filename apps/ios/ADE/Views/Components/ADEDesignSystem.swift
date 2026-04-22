@@ -424,6 +424,7 @@ struct ADEStatusPill: View {
 
 struct ADEConnectionDot: View {
   @EnvironmentObject private var syncService: SyncService
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
   private var tint: Color {
     switch syncService.connectionState {
@@ -493,22 +494,57 @@ struct ADEConnectionDot: View {
     }
   }
 
-  var body: some View {
-    ZStack {
-      Circle()
-        .fill(tint.opacity(0.14))
-        .frame(width: 30, height: 30)
-        .overlay(
-          Circle()
-            .stroke(tint.opacity(0.55), lineWidth: 1)
-        )
-        .shadow(color: tint.opacity(showsConnectedGlow ? 0.24 : 0.16), radius: showsConnectedGlow ? 2 : 1)
-
-      Image(systemName: "gearshape.fill")
-        .font(.system(size: 14, weight: .semibold))
-        .foregroundStyle(tint)
+  /// Subtle pill label shown only when the host is not connected. This is
+  /// the single source of truth for "why is the app empty?" — per-screen
+  /// "X failed to load" banners whose cause is disconnection are suppressed
+  /// in favor of this one glance-able affordance in the toolbar.
+  private var attachedLabel: String? {
+    switch syncService.connectionState {
+    case .connected, .syncing:
+      return nil
+    case .connecting:
+      return "Connecting"
+    case .error:
+      return "Offline"
+    case .disconnected:
+      return "Offline"
     }
-    .frame(minWidth: 44, minHeight: 44)
+  }
+
+  var body: some View {
+    HStack(spacing: 6) {
+      ZStack {
+        Circle()
+          .fill(tint.opacity(0.14))
+          .frame(width: 30, height: 30)
+          .overlay(
+            Circle()
+              .stroke(tint.opacity(0.55), lineWidth: 1)
+          )
+          .shadow(color: tint.opacity(showsConnectedGlow ? 0.24 : 0.16), radius: showsConnectedGlow ? 2 : 1)
+
+        Image(systemName: "gearshape.fill")
+          .font(.system(size: 14, weight: .semibold))
+          .foregroundStyle(tint)
+      }
+
+      if let attachedLabel {
+        Text(attachedLabel)
+          .font(.system(.caption2, design: .rounded).weight(.semibold))
+          .foregroundStyle(tint)
+          .padding(.horizontal, 8)
+          .padding(.vertical, 3)
+          .background(tint.opacity(0.12), in: Capsule())
+          .overlay(
+            Capsule()
+              .stroke(tint.opacity(0.35), lineWidth: 0.5)
+          )
+          .transition(.opacity.combined(with: .scale(scale: 0.9)))
+          .accessibilityHidden(true)
+      }
+    }
+    .animation(ADEMotion.emphasis(reduceMotion: reduceMotion), value: attachedLabel)
+    .frame(minWidth: 44, minHeight: 44, alignment: .leading)
     .contentShape(Rectangle())
     .onTapGesture {
       syncService.settingsPresented = true

@@ -131,11 +131,11 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(state.nextDelayNanoseconds(), 2_000_000_000)
   }
 
-  func testSyncInsecureWebSocketSkipsTailscaleIpsForATS() {
-    XCTAssertFalse(syncCanAttemptInsecureWebSocket(to: "100.117.237.95"))
-    XCTAssertFalse(syncCanAttemptInsecureWebSocket(to: "[100.64.0.1]"))
-    XCTAssertTrue(syncCanAttemptInsecureWebSocket(to: "192.168.68.102"))
-    XCTAssertTrue(syncCanAttemptInsecureWebSocket(to: "127.0.0.1"))
+  func testSyncRecognizesTailscaleIpv4Addresses() {
+    XCTAssertTrue(syncIsTailscaleIPv4Address("100.117.237.95"))
+    XCTAssertTrue(syncIsTailscaleIPv4Address("[100.64.0.1]"))
+    XCTAssertFalse(syncIsTailscaleIPv4Address("192.168.68.102"))
+    XCTAssertFalse(syncIsTailscaleIPv4Address("127.0.0.1"))
   }
 
   func testSyncBonjourTimingMatchesReliabilityRequirements() {

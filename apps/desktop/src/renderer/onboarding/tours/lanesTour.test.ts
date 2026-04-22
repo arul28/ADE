@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { lanesTour } from "./lanesTour";
+import { docs } from "../docsLinks";
 
-const VALID_DOCS_PREFIX = "https://www.ade-app.dev/docs/";
+const VALID_DOCS_PREFIX = "https://www.ade-app.dev";
 // Most steps target lanes.* elements; the final step anchors to the top-bar Help
 // button (app.helpMenu) so the "Help lives here" copy points at the actual Help menu.
 const TARGET_PATTERN = /^\[data-tour="(lanes|app)\.[a-zA-Z]+"\]$/;
@@ -29,29 +30,16 @@ describe("lanesTour", () => {
     }
   });
 
-  it("every step's docUrl points at ade-app.dev/docs", () => {
+  it("every step's docUrl points at ade-app.dev (no /docs/ prefix)", () => {
     for (const step of lanesTour.steps) {
       expect(step.docUrl, `docUrl for ${step.target}`).toBeDefined();
       expect(step.docUrl!.startsWith(VALID_DOCS_PREFIX), `docUrl for ${step.target}: ${step.docUrl}`).toBe(true);
+      expect(step.docUrl!, `docUrl must not contain /docs/: ${step.docUrl}`).not.toContain("/docs/");
     }
   });
 
-  it("uses only docUrls that match real Mintlify slugs verified from docs.json", () => {
-    const allowed = new Set<string>([
-      `${VALID_DOCS_PREFIX}welcome`,
-      `${VALID_DOCS_PREFIX}key-concepts`,
-      `${VALID_DOCS_PREFIX}lanes/overview`,
-      `${VALID_DOCS_PREFIX}lanes/creating`,
-      `${VALID_DOCS_PREFIX}lanes/stacks`,
-      `${VALID_DOCS_PREFIX}lanes/packs`,
-      `${VALID_DOCS_PREFIX}lanes/environment`,
-      `${VALID_DOCS_PREFIX}chat/overview`,
-      `${VALID_DOCS_PREFIX}chat/context`,
-      `${VALID_DOCS_PREFIX}chat/capabilities`,
-      `${VALID_DOCS_PREFIX}tools/terminals`,
-      `${VALID_DOCS_PREFIX}tools/files-editor`,
-      `${VALID_DOCS_PREFIX}guides/multi-agent-setup`,
-    ]);
+  it("uses only docUrls sourced from the shared docsLinks module", () => {
+    const allowed = new Set<string>(Object.values(docs));
     for (const step of lanesTour.steps) {
       expect(allowed.has(step.docUrl!), `unknown docUrl: ${step.docUrl}`).toBe(true);
     }

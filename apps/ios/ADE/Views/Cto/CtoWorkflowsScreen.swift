@@ -15,7 +15,7 @@ struct CtoWorkflowsScreen: View {
 
   var body: some View {
     List {
-      if let errorMessage {
+      if let errorMessage, !syncService.connectionState.isHostUnreachable {
         ADENoticeCard(
           title: "Workflows failed to load",
           message: errorMessage,
@@ -51,7 +51,8 @@ struct CtoWorkflowsScreen: View {
           .listRowBackground(Color.clear)
           .listRowSeparator(.hidden)
           .listRowInsets(EdgeInsets(top: 6, leading: 0, bottom: 6, trailing: 0))
-      } else if connection == nil, errorMessage == nil, !isLoading {
+      } else if connection == nil, !isLoading,
+        errorMessage == nil || syncService.connectionState.isHostUnreachable {
         notConnectedCard
           .listRowBackground(Color.clear)
           .listRowSeparator(.hidden)
@@ -103,7 +104,7 @@ struct CtoWorkflowsScreen: View {
             )
           }
           .buttonStyle(.plain)
-          .disabled(isSyncing)
+          .disabled(isSyncing || syncService.connectionState.isHostUnreachable)
           .accessibilityLabel("Sync Linear now")
           .accessibilityHint("Triggers an immediate Linear workflow intake and dispatch cycle.")
         }

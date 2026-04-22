@@ -183,7 +183,7 @@ struct CreatePrWizardView: View {
         VStack(spacing: 0) {
           dragHandle
           heroHeader
-          if let errorMessage {
+          if let errorMessage, !syncService.connectionState.isHostUnreachable {
             ADENoticeCard(
               title: "Create PR failed",
               message: errorMessage,

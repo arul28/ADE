@@ -39,7 +39,8 @@ Renderer components:
 | `renderer/components/lanes/LaneWorkPane.tsx` | Terminal/chat toggle work surface |
 | `renderer/components/lanes/LaneRebaseBanner.tsx` | Inline banner driven by `rebaseSuggestionService` |
 | `renderer/components/lanes/LaneEnvInitProgress.tsx` | Env init step progress inside create dialog |
-| `renderer/components/lanes/CreateLaneDialog.tsx`, `AttachLaneDialog.tsx`, `ManageLaneDialog.tsx`, `MultiAttachWorktreeDialog.tsx`, `LaneDialogShell.tsx` | Lane creation/attach/edit dialogs |
+| `renderer/components/lanes/CreateLaneDialog.tsx`, `AttachLaneDialog.tsx`, `MultiAttachWorktreeDialog.tsx`, `LaneDialogShell.tsx` | Lane creation / attach dialogs and shared dialog chrome |
+| `renderer/components/lanes/ManageLaneDialog.tsx` | Unified delete / archive / adopt-attached dialog. Supports single-lane and batch (multi-select) modes, three delete modes (`worktree`, `local_branch`, `remote_branch`) with a typed confirmation phrase, remote-branch name input, dirty-state warnings, and a busy/status/error triplet threaded through from `LanesPage`. Covered by `ManageLaneDialog.test.tsx`. |
 | `renderer/components/lanes/MonacoDiffView.tsx` | Monaco-based side-by-side file diff |
 | `renderer/components/run/LaneRuntimeBar.tsx` | Compact lane runtime status bar (health, preview, port, proxy, oauth) |
 | `renderer/components/run/RunPage.tsx`, `RunNetworkPanel.tsx` | Runtime dashboards that consume lane runtime services |

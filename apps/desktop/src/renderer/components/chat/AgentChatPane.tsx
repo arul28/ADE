@@ -3,7 +3,6 @@ import { useNavigate } from "react-router-dom";
 import { AnimatePresence, motion } from "motion/react";
 import { GitBranch, Plus } from "@phosphor-icons/react";
 import {
-  createDefaultComputerUsePolicy,
   inferAttachmentType,
   type AgentChatApprovalDecision,
   type AgentChatClaudePermissionMode,
@@ -25,7 +24,6 @@ import {
   type ChatSurfacePresentation,
   type AgentChatSessionSummary,
   type ComputerUseOwnerSnapshot,
-  type ComputerUsePolicy,
   type AiSettingsStatus,
   type TerminalToolType,
 } from "../../../shared/types";
@@ -165,13 +163,12 @@ function LocalRuntimeNoticeBlock(props: {
   );
 }
 
-export function resolveChatSessionProfile(_computerUsePolicy: ComputerUsePolicy): AgentChatSessionProfile {
+export function resolveChatSessionProfile(): AgentChatSessionProfile {
   return "workflow";
 }
 
 export function shouldPromoteSessionForComputerUse(
   session: Pick<AgentChatSessionSummary, "sessionProfile"> | null | undefined,
-  _computerUsePolicy: ComputerUsePolicy,
 ): boolean {
   return session?.sessionProfile !== "workflow";
 }
@@ -747,7 +744,6 @@ export function AgentChatPane({
   const prevModelDescRef = useRef<ModelDescriptor | null | undefined>(undefined);
   const [cursorModeId, setCursorModeId] = useState<string | null>(initialNativeControls.cursorModeId);
   const [cursorConfigValues, setCursorConfigValues] = useState<Record<string, AgentChatCursorConfigValue>>(initialNativeControls.cursorConfigValues);
-  const [computerUsePolicy, setComputerUsePolicy] = useState<ComputerUsePolicy>(createDefaultComputerUsePolicy());
   const [aiStatus, setAiStatus] = useState<AiStatusSnapshot | null>(null);
   const [providerConnections, setProviderConnections] = useState<{
     claude: AiProviderConnectionStatus | null;
@@ -1085,7 +1081,6 @@ export function AgentChatPane({
           .flatMap((option) => option.currentValue == null ? [] : [[option.id, option.currentValue]]),
       ),
     );
-    setComputerUsePolicy(session.computerUse ?? createDefaultComputerUsePolicy());
   }, [initialNativeControls]);
   const executionModeOptions = useMemo(
     () => getExecutionModeOptions(selectedModelDesc),
@@ -1095,10 +1090,7 @@ export function AgentChatPane({
     () => executionModeOptions.find((option) => option.value === executionMode) ?? executionModeOptions[0] ?? null,
     [executionMode, executionModeOptions],
   );
-  const hasComputerUseSelectionChanged = useMemo(() => {
-    const sessionPolicy = selectedSession?.computerUse ?? createDefaultComputerUsePolicy();
-    return JSON.stringify(sessionPolicy) !== JSON.stringify(computerUsePolicy);
-  }, [computerUsePolicy, selectedSession?.computerUse]);
+  const hasComputerUseSelectionChanged = false;
   const launchModeEditable = !selectedSessionId || selectedEvents.length === 0;
   const resolvedTitle = presentation?.title?.trim()
     || (surfaceMode === "resolver" ? "AI Resolver" : selectedSession ? chatSessionTitle(selectedSession) : "New chat");
@@ -2104,7 +2096,7 @@ export function AgentChatPane({
       const permissionDesc = getModelDescriptorForPermissionMode(modelId);
       const provider = resolveChatRuntimeProvider(desc);
       const model = provider === "opencode" ? modelId : runtimeFacingModelId(desc, modelId);
-      const sessionProfile = resolveChatSessionProfile(computerUsePolicy);
+      const sessionProfile = resolveChatSessionProfile();
       const harnessPermissionMode = provider === "opencode"
         ? recommendedOpenCodePermissionModeForModel(permissionDesc)
         : null;
@@ -2125,7 +2117,6 @@ export function AgentChatPane({
         sessionProfile,
         reasoningEffort,
         ...nativeControlPayload,
-        computerUse: computerUsePolicy,
       });
       loadedHistoryRef.current.delete(created.id);
       optimisticSessionIdsRef.current.add(created.id);
@@ -2152,7 +2143,7 @@ export function AgentChatPane({
         createSessionPromiseRef.current = null;
       }
     }
-  }, [buildNativeControlPayload, computerUsePolicy, currentNativeControls, laneId, modelId, notifySessionCreated, reasoningEffort, refreshSessions, touchSession]);
+  }, [buildNativeControlPayload, currentNativeControls, laneId, modelId, notifySessionCreated, reasoningEffort, refreshSessions, touchSession]);
 
   const handoffSession = useCallback(async () => {
     if (!canShowHandoff || !selectedSessionId || !handoffModelId || handoffBlocked) return;
@@ -2266,7 +2257,7 @@ export function AgentChatPane({
       }
 
       let sessionId = selectedSessionId;
-      const shouldPromoteLightSession = shouldPromoteSessionForComputerUse(selectedSession, computerUsePolicy);
+      const shouldPromoteLightSession = shouldPromoteSessionForComputerUse(selectedSession);
       const selectedModelChanged =
         Boolean(selectedSessionId)
         && Boolean(selectedSessionModelId)
@@ -2292,7 +2283,6 @@ export function AgentChatPane({
           modelId,
           reasoningEffort,
           ...buildNativeControlPayload(provider),
-          computerUse: computerUsePolicy,
         });
         void refreshSessions().catch(() => {});
       } else if (!sessionId) {
@@ -2385,7 +2375,6 @@ export function AgentChatPane({
     buildNativeControlPayload,
     busy,
     createSession,
-    computerUsePolicy,
     draft,
     executionMode,
     hasComputerUseSelectionChanged,
@@ -2517,29 +2506,9 @@ export function AgentChatPane({
     });
   }, [updateNativeControls]);
 
-  const handleComputerUsePolicyChange = useCallback(async (nextPolicy: ComputerUsePolicy) => {
-    if (isPersistentIdentitySurface && sessionMutationKind) return;
-    setComputerUsePolicy(nextPolicy);
-    if (!selectedSessionId) return;
-    patchSessionSummary(selectedSessionId, { computerUse: nextPolicy });
-    if (isPersistentIdentitySurface) {
-      setSessionMutationKind("computer-use");
-    }
-    try {
-      await window.ade.agentChat.updateSession({
-        sessionId: selectedSessionId,
-        computerUse: nextPolicy,
-      });
-      await refreshSessions();
-      await refreshComputerUseSnapshot(selectedSessionId, { force: true });
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      if (isPersistentIdentitySurface) {
-        setSessionMutationKind(null);
-      }
-    }
-  }, [isPersistentIdentitySurface, patchSessionSummary, refreshComputerUseSnapshot, refreshSessions, selectedSessionId, sessionMutationKind]);
+  const handleComputerUsePolicyChange = useCallback(async (_nextPolicy: unknown) => {
+    // Computer-use policy gating has been removed; this handler is a no-op retained for UI compat.
+  }, []);
 
   if (!laneId) {
     return (
@@ -2770,7 +2739,6 @@ export function AgentChatPane({
               setSelectedSessionId(null);
               setDraft("");
               setAttachments([]);
-              setComputerUsePolicy(createDefaultComputerUsePolicy());
             }}
           >
             <Plus size={10} weight="bold" />
@@ -2811,7 +2779,6 @@ export function AgentChatPane({
             opencodePermissionMode={opencodePermissionMode}
             cursorModeSnapshot={effectiveCursorModeSnapshot}
             executionMode={selectedExecutionMode?.value ?? "focused"}
-            computerUsePolicy={computerUsePolicy}
             computerUseSnapshot={computerUseSnapshot}
             proofOpen={proofDrawerOpen}
             proofArtifactCount={computerUseSnapshot?.artifacts.length ?? 0}
@@ -2880,7 +2847,6 @@ export function AgentChatPane({
                 modelId: nextModelId,
                 reasoningEffort: snapshot.nextReasoningEffort,
                 ...nextNativeControlPayload,
-                computerUse: computerUsePolicy,
               }).then((updatedSession) => {
                 applyModelSelectionSnapshot(snapshot);
                 patchSessionSummary(selectedSessionId, {
@@ -2897,7 +2863,6 @@ export function AgentChatPane({
                   opencodePermissionMode: updatedSession.opencodePermissionMode,
                   cursorModeId: updatedSession.cursorModeId,
                   cursorModeSnapshot: updatedSession.cursorModeSnapshot,
-                  computerUse: updatedSession.computerUse,
                 });
                 window.ade.agentChat.slashCommands({ sessionId: selectedSessionId })
                   .then(setSdkSlashCommands)
@@ -3052,7 +3017,8 @@ export function AgentChatPane({
                     <AgentChatMessageList
                       key={selectedSessionId ?? "chat-draft"}
                       events={selectedEventsForDisplay}
-                      showStreamingIndicator={turnActive}
+                      showStreamingIndicator={turnActive && selectedSession?.status !== "ended"}
+                      sessionEnded={selectedSession?.status === "ended"}
                       className="min-h-0 border-0"
                       surfaceMode={surfaceMode}
                       surfaceProfile={surfaceProfile}

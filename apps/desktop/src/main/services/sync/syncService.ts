@@ -8,6 +8,7 @@ import type {
   SyncPairingConnectInfo,
   SyncPairingQrPayload,
   SyncRoleSnapshot,
+  SyncTailnetDiscoveryStatus,
   SyncTransferBlocker,
   SyncTransferReadiness,
 } from "../../../shared/types";
@@ -46,7 +47,12 @@ import type { NotificationEventBus } from "../notifications/notificationEventBus
 import type { AdeDb } from "../state/kvDb";
 import { nowIso, safeJsonParse, sleep, writeTextAtomic } from "../shared/utils";
 import { createDeviceRegistryService } from "./deviceRegistryService";
-import { createSyncHostService, type SyncHostService } from "./syncHostService";
+import {
+  createSyncHostService,
+  SYNC_TAILNET_DISCOVERY_SERVICE_NAME,
+  SYNC_TAILNET_DISCOVERY_SERVICE_PORT,
+  type SyncHostService,
+} from "./syncHostService";
 import { createSyncPeerService } from "./syncPeerService";
 import { createSyncPinStore } from "./syncPinStore";
 import { DEFAULT_SYNC_HOST_PORT } from "./syncProtocol";
@@ -204,6 +210,20 @@ function buildPairingConnectInfo(argsIn: {
 function isRetryableHostBindError(error: unknown): boolean {
   const code = (error as NodeJS.ErrnoException | null | undefined)?.code ?? "";
   return code === "EADDRINUSE" || code === "EACCES";
+}
+
+function createInactiveTailnetDiscoveryStatus(
+  error: string,
+): SyncTailnetDiscoveryStatus {
+  return {
+    state: "disabled",
+    serviceName: SYNC_TAILNET_DISCOVERY_SERVICE_NAME,
+    servicePort: SYNC_TAILNET_DISCOVERY_SERVICE_PORT,
+    target: null,
+    updatedAt: null,
+    error,
+    stderr: null,
+  };
 }
 
 function buildHostPortCandidates(preferredPort: number | null | undefined): number[] {
@@ -663,6 +683,13 @@ export function createSyncService(args: SyncServiceArgs) {
         connectedPeers: hostService
           ? hostService.getPeerStates()
           : (syncPeerService.getLatestBrainStatus()?.connectedPeers ?? []),
+        tailnetDiscovery: canHostPhonePairing && hostService
+          ? hostService.getTailnetDiscoveryStatus()
+          : createInactiveTailnetDiscoveryStatus(
+              canHostPhonePairing
+                ? "Tailnet discovery is waiting for the desktop sync host to start."
+                : "Tailnet discovery is only published by the host desktop.",
+            ),
         client,
         transferReadiness: await getTransferReadiness(),
         survivableStateText:
@@ -674,6 +701,13 @@ export function createSyncService(args: SyncServiceArgs) {
 
     async listDevices(): Promise<SyncDeviceRuntimeState[]> {
       return await listRuntimeDevices();
+    },
+
+    async refreshDiscovery(): Promise<SyncRoleSnapshot> {
+      hostService?.refreshLanDiscovery?.({ forceTailnet: true });
+      const snapshot = await this.getStatus();
+      args.onStatusChanged?.(snapshot);
+      return snapshot;
     },
 
     async updateLocalDevice(argsIn: {

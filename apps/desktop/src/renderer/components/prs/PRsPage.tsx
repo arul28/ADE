@@ -285,6 +285,7 @@ function PRsPageInner() {
         <div className="ml-auto flex items-center gap-3">
           <button
             type="button"
+            data-tour="prs.createBtn"
             onClick={() => setCreatePrOpen(true)}
             className="flex items-center gap-2 active:scale-[0.97]"
             style={{

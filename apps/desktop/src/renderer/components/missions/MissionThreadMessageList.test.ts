@@ -87,6 +87,38 @@ describe("MissionThreadMessageList transcript merge", () => {
     expect(merged[0]?.timestamp).toBe("2026-03-10T12:00:02.000Z");
   });
 
+  it("keeps distinct reasoning blocks separated by item id", () => {
+    const merged = mergeMissionThreadEvents([], [
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-10T12:00:00.000Z",
+        event: {
+          type: "reasoning",
+          turnId: "turn-1",
+          itemId: "reasoning-1",
+          text: "First thought.",
+        },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-10T12:00:01.000Z",
+        event: {
+          type: "reasoning",
+          turnId: "turn-1",
+          itemId: "reasoning-2",
+          text: "Second thought.",
+        },
+      },
+    ]);
+
+    const reasoning = merged.filter((envelope) => envelope.event.type === "reasoning");
+    expect(reasoning).toHaveLength(2);
+    expect(reasoning.map((envelope) => envelope.event.type === "reasoning" ? envelope.event.text : "")).toEqual([
+      "First thought.",
+      "Second thought.",
+    ]);
+  });
+
   it("dedupes identical tool events even when transcript timestamps differ", () => {
     const fallbackEvent: AgentChatEventEnvelope = {
       sessionId: "session-1",

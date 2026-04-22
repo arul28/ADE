@@ -3,15 +3,10 @@ import type {
   ComputerUseArtifactLink,
   ComputerUseArtifactOwner,
   ComputerUseOwnerSnapshot,
-  ComputerUsePolicy,
 } from "../../shared/types";
 
 export function formatComputerUseKind(kind: ComputerUseArtifactKind | string): string {
   return kind.replace(/_/g, " ");
-}
-
-export function formatComputerUseMode(policy: ComputerUsePolicy | null | undefined): string {
-  return policy?.mode === "enabled" ? "Enabled" : "Auto";
 }
 
 export function describeComputerUseOwner(owner: ComputerUseArtifactOwner | Pick<ComputerUseArtifactLink, "ownerKind" | "ownerId">): string {
@@ -54,14 +49,7 @@ export function buildComputerUseRoutePresets(args: {
 
 export function summarizeComputerUseProof(snapshot: ComputerUseOwnerSnapshot | null | undefined): string {
   if (!snapshot) return "Computer-use state unavailable.";
-  const { requiredKinds, missingKinds, presentKinds } = snapshot.proofCoverage;
-  if (requiredKinds.length === 0) {
-    return snapshot.artifacts.length > 0
-      ? `${snapshot.artifacts.length} retained artifact${snapshot.artifacts.length === 1 ? "" : "s"}`
-      : "No proof required";
-  }
-  if (missingKinds.length === 0) {
-    return `Proof satisfied: ${presentKinds.map(formatComputerUseKind).join(", ")}`;
-  }
-  return `Missing proof: ${missingKinds.map(formatComputerUseKind).join(", ")}`;
+  return snapshot.artifacts.length > 0
+    ? `${snapshot.artifacts.length} retained artifact${snapshot.artifacts.length === 1 ? "" : "s"}`
+    : "No proof captured yet.";
 }

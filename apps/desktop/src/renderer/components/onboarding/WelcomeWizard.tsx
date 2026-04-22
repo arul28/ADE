@@ -8,8 +8,7 @@ import {
   MissionsIllustration,
   HelpIllustration,
 } from "./illustrations/WelcomeIllustrations";
-
-const DOCS_BASE = "https://www.ade-app.dev/docs";
+import { docs } from "../../onboarding/docsLinks";
 const INTERACTIVE_SHORTCUT_SELECTOR =
   'button, a[href], input, select, textarea, [contenteditable]:not([contenteditable="false"])';
 
@@ -29,28 +28,28 @@ export const WELCOME_SCREENS: Screen[] = [
     eyebrow: "What ADE is",
     title: "Work on many things at once",
     body: "ADE lets you juggle parallel changes without mixing them up. Think of each change as its own desk.",
-    learnMoreHref: `${DOCS_BASE}/welcome`,
+    learnMoreHref: docs.welcome,
     Illustration: WelcomeIllustration,
   },
   {
     eyebrow: "The one word you need",
     title: "A Lane is a worktree",
     body: "A Lane is a Git worktree — a real folder on disk with its own branch — that ADE watches over for you.",
-    learnMoreHref: `${DOCS_BASE}/lanes/overview`,
+    learnMoreHref: docs.lanesOverview,
     Illustration: LanesIllustration,
   },
   {
     eyebrow: "Hand work to AI",
     title: "Missions & Workers",
     body: "Describe a job in plain words and a Worker does it on its own Lane. Your main branch stays untouched.",
-    learnMoreHref: `${DOCS_BASE}/key-concepts`,
+    learnMoreHref: docs.keyConcepts,
     Illustration: MissionsIllustration,
   },
   {
     eyebrow: "Always within reach",
     title: "Help lives in the top right",
     body: "The ? icon holds tours, the Glossary, and docs. Hover any button and a tooltip explains what happens.",
-    learnMoreHref: `${DOCS_BASE}/getting-started/first-lane`,
+    learnMoreHref: docs.gettingStartedFirstLane,
     Illustration: HelpIllustration,
   },
 ];

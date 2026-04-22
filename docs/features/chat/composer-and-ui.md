@@ -25,9 +25,9 @@ stream plus session metadata.
 | `ChatTerminalDrawer.tsx` | Collapsible terminal drawer at the bottom of the chat. |
 | `ChatGitToolbar.tsx` | Git status and quick-action toolbar above the composer. |
 | `ChatProposedPlanCard.tsx` | Plan approval card inline in the transcript. |
-| `ChatWorkLogBlock.tsx` | Collapsible work-log group (see `chatTranscriptRows.ts`). |
+| `ChatWorkLogBlock.tsx` | Collapsible work-log group (see `chatTranscriptRows.ts`). Accepts `animate` so completed groups render a static glyph while in-flight ones pulse; prefers `waiting` over `working` when any entry is `interrupted`. |
 | `AgentQuestionModal.tsx` | Pending input modal for question-type requests. |
-| `CodeHighlighter.tsx`, `chatStatusVisuals.tsx`, `chatSurfaceTheme.ts`, `chatToolAppearance.tsx` | Supporting visuals. |
+| `CodeHighlighter.tsx`, `chatStatusVisuals.tsx`, `chatSurfaceTheme.ts`, `chatToolAppearance.tsx` | Supporting visuals. `chatStatusVisuals.ChatStatusGlyph` takes an `animate` prop so non-active rows skip the ping/spin animation; `AgentChatMessageList.ActivityIndicator` mirrors this and switches to a dimmed static tone plus a non-looping Brain lottie for `thinking` once the turn ends. |
 | `pendingInput.ts`, `chatExecutionSummary.ts`, `chatNavigation.ts`, `chatTranscriptRows.ts` | Pure state derivations consumed by the UI. |
 
 ## Pane layout

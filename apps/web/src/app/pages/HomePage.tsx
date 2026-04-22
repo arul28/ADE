@@ -11,6 +11,7 @@ import {
   Zap,
 } from "lucide-react";
 import { Fragment } from "react";
+import { motion, useReducedMotion } from "framer-motion";
 import { Container } from "../../components/Container";
 import { Card } from "../../components/Card";
 import { LinkButton } from "../../components/LinkButton";
@@ -22,6 +23,7 @@ import { useDocumentTitle } from "../../lib/useDocumentTitle";
 import { ImageAutoSlider } from "../../components/ui/ImageAutoSlider";
 import { ProductShowcase } from "../../components/ProductShowcase";
 import { ProviderOrbit } from "../../components/ProviderOrbit";
+import { MultiDeviceShowcase } from "../../components/MultiDeviceShowcase";
 
 /* ──────────────────────────────────────────────
    Competitor apps that ADE replaces
@@ -135,6 +137,43 @@ function QuickstartBlock() {
 
 export function HomePage() {
   useDocumentTitle("ADE — Agentic Development Environment");
+  const reduceMotion = useReducedMotion();
+
+  const equationContainer = {
+    hidden: {},
+    show: {
+      transition: {
+        staggerChildren: reduceMotion ? 0 : 0.07,
+        delayChildren: reduceMotion ? 0 : 0.1,
+      },
+    },
+  };
+  const equationItem = {
+    hidden: reduceMotion ? {} : { opacity: 0, y: 14, scale: 0.85 },
+    show: {
+      opacity: 1,
+      y: 0,
+      scale: 1,
+      transition: { duration: 0.45, ease: [0.22, 1, 0.36, 1] as const },
+    },
+  };
+  const equalsItem = {
+    hidden: reduceMotion ? {} : { opacity: 0, scale: 0.6 },
+    show: {
+      opacity: 1,
+      scale: 1,
+      transition: { duration: 0.5, delay: 0.05, ease: [0.22, 1, 0.36, 1] as const },
+    },
+  };
+  const adeItem = {
+    hidden: reduceMotion ? {} : { opacity: 0, scale: 0.7, filter: "blur(8px)" },
+    show: {
+      opacity: 1,
+      scale: 1,
+      filter: "blur(0px)",
+      transition: { duration: 0.7, delay: 0.15, ease: [0.22, 1, 0.36, 1] as const },
+    },
+  };
 
   return (
     <Page>
@@ -163,45 +202,82 @@ export function HomePage() {
 
         <Container className="relative pt-5 pb-10 sm:pt-8 sm:pb-16 text-center">
           {/* Logo Equation — single row, no wrap */}
-          <Reveal>
-            <div className="flex items-center justify-center gap-1 sm:gap-1.5 overflow-x-auto pb-1 scrollbar-none">
-              {COMPETITORS.map((app, i) => (
-                <Fragment key={app.name}>
-                  {i > 0 && (
-                    <span className="text-base sm:text-lg font-bold text-accent/40 shrink-0">
-                      +
-                    </span>
-                  )}
-                  <div className="flex flex-col items-center gap-0.5 shrink-0">
-                    <div className="group/logo h-11 w-11 sm:h-14 sm:w-14 rounded-xl border border-border/50 bg-white/[0.05] p-1 sm:p-1.5 flex items-center justify-center overflow-hidden transition-all duration-300 hover:scale-110 hover:border-accent/50 hover:bg-white/[0.1] hover:shadow-[0_0_20px_rgba(124,58,237,0.2)]">
-                      <img
-                        src={app.logo}
-                        alt={app.name}
-                        className="h-full w-full object-contain rounded-lg"
-                      />
-                    </div>
-                    <span className="text-[9px] sm:text-[10px] font-medium text-muted-fg text-center leading-tight max-w-[52px] sm:max-w-[60px] mt-1">
-                      {app.name}
-                    </span>
+          <motion.div
+            variants={equationContainer}
+            initial="hidden"
+            animate="show"
+            className="flex items-center justify-center gap-1 sm:gap-1.5 overflow-x-auto pb-1 scrollbar-none"
+          >
+            {COMPETITORS.map((app, i) => (
+              <Fragment key={app.name}>
+                {i > 0 && (
+                  <motion.span
+                    variants={equationItem}
+                    className="text-base sm:text-lg font-bold text-accent/40 shrink-0"
+                  >
+                    +
+                  </motion.span>
+                )}
+                <motion.div
+                  variants={equationItem}
+                  className="flex flex-col items-center gap-0.5 shrink-0"
+                >
+                  <div className="group/logo h-11 w-11 sm:h-14 sm:w-14 rounded-xl border border-border/50 bg-white/[0.05] p-1 sm:p-1.5 flex items-center justify-center overflow-hidden transition-all duration-300 hover:scale-110 hover:border-accent/50 hover:bg-white/[0.1] hover:shadow-[0_0_20px_rgba(124,58,237,0.2)]">
+                    <img
+                      src={app.logo}
+                      alt={app.name}
+                      className="h-full w-full object-contain rounded-lg"
+                    />
                   </div>
-                </Fragment>
-              ))}
-            </div>
-          </Reveal>
+                  <span className="text-[9px] sm:text-[10px] font-medium text-muted-fg text-center leading-tight max-w-[52px] sm:max-w-[60px] mt-1">
+                    {app.name}
+                  </span>
+                </motion.div>
+              </Fragment>
+            ))}
+          </motion.div>
 
-          {/* = ADE app icon */}
-          <Reveal delay={0.08}>
+          {/* = ADE app icon — lands last with a violet pulse */}
+          <motion.div
+            initial="hidden"
+            animate="show"
+            transition={{ staggerChildren: reduceMotion ? 0 : 0.05, delayChildren: reduceMotion ? 0 : 0.1 + COMPETITORS.length * 0.07 }}
+          >
             <div className="mt-3 flex flex-col items-center">
-              <span className="text-2xl sm:text-3xl font-black text-accent/70 mb-2">=</span>
-              <div className="relative">
+              <motion.span
+                variants={equalsItem}
+                className="text-2xl sm:text-3xl font-black text-accent/70 mb-2"
+              >
+                =
+              </motion.span>
+              <motion.div variants={adeItem} className="relative">
+                {!reduceMotion && (
+                  <motion.div
+                    aria-hidden
+                    className="absolute inset-0 rounded-[22%]"
+                    initial={{ opacity: 0, scale: 0.9 }}
+                    animate={{
+                      opacity: [0, 0.6, 0],
+                      scale: [0.9, 1.25, 1.5],
+                    }}
+                    transition={{
+                      duration: 1.4,
+                      delay: 0.1 + COMPETITORS.length * 0.07 + 0.2,
+                      ease: "easeOut",
+                    }}
+                    style={{
+                      boxShadow: "0 0 80px 20px rgba(124,58,237,0.55)",
+                    }}
+                  />
+                )}
                 <img
                   src="/images/ade-dock-icon.png"
                   alt="ADE"
                   className="relative h-32 w-32 sm:h-40 sm:w-40 rounded-[22%] object-contain drop-shadow-[0_8px_40px_rgba(124,58,237,0.45)]"
                 />
-              </div>
+              </motion.div>
             </div>
-          </Reveal>
+          </motion.div>
 
           {/* Headline */}
           <Reveal delay={0.14}>
@@ -248,6 +324,8 @@ export function HomePage() {
           </Reveal>
         </Container>
       </section>
+
+      <MultiDeviceShowcase />
 
       <ProductShowcase />
 

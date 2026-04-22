@@ -512,7 +512,7 @@ export function RuleEditorPanel({
             </div>
           </section>
 
-          <section className="rounded-2xl p-4" style={CARD_STYLE}>
+          <section data-tour="automations.triggersList" className="rounded-2xl p-4" style={CARD_STYLE}>
             {sectionLabel("When it runs")}
             <div className="mt-3 grid gap-3 lg:grid-cols-[280px_1fr]">
               <div className="space-y-2">
@@ -686,7 +686,7 @@ export function RuleEditorPanel({
             </div>
           </section>
 
-          <section className="rounded-2xl p-4" style={CARD_STYLE}>
+          <section data-tour="automations.actionsList" className="rounded-2xl p-4" style={CARD_STYLE}>
             {sectionLabel("What it does")}
             <div className="mt-3 grid gap-3 lg:grid-cols-3">
               {EXECUTION_OPTIONS.map((option) => {
@@ -883,7 +883,7 @@ export function RuleEditorPanel({
             ) : null}
           </section>
 
-          <section className="rounded-2xl p-4" style={CARD_STYLE}>
+          <section data-tour="automations.guardrails" className="rounded-2xl p-4" style={CARD_STYLE}>
             {sectionLabel("Advanced")}
             <div className="mt-3 grid gap-4 lg:grid-cols-[0.8fr_1.2fr]">
               <div className="space-y-3">

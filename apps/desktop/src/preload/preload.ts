@@ -277,6 +277,7 @@ import type {
   OnboardingExistingLaneCandidate,
   OnboardingStatus,
   OnboardingTourProgress,
+  OnboardingTourVariant,
   LaneListSnapshot,
   LaneSummary,
   ListOverlapsArgs,
@@ -576,7 +577,6 @@ import type {
   ComputerUseEventPayload,
   ComputerUseOwnerSnapshot,
   ComputerUseOwnerSnapshotArgs,
-  ComputerUseSettingsSnapshot,
   FeedbackPrepareDraftArgs,
   FeedbackPreparedDraft,
   FeedbackSubmission,
@@ -704,6 +704,8 @@ contextBridge.exposeInMainWorld("ade", {
   sync: {
     getStatus: async (): Promise<SyncRoleSnapshot> =>
       ipcRenderer.invoke(IPC.syncGetStatus),
+    refreshDiscovery: async (): Promise<SyncRoleSnapshot> =>
+      ipcRenderer.invoke(IPC.syncRefreshDiscovery),
     listDevices: async (): Promise<SyncDeviceRuntimeState[]> =>
       ipcRenderer.invoke(IPC.syncListDevices),
     updateLocalDevice: async (args: {
@@ -799,6 +801,41 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.onboardingMarkGlossaryTermSeen, { termId }),
     resetTourProgress: async (tourId?: string): Promise<OnboardingTourProgress> =>
       ipcRenderer.invoke(IPC.onboardingResetTourProgress, { tourId }),
+    markTourCompletedVariant: async (
+      tourId: string,
+      variant: OnboardingTourVariant,
+    ): Promise<OnboardingTourProgress> =>
+      ipcRenderer.invoke(IPC.onboardingMarkTourCompletedVariant, { tourId, variant }),
+    markTourDismissedVariant: async (
+      tourId: string,
+      variant: OnboardingTourVariant,
+    ): Promise<OnboardingTourProgress> =>
+      ipcRenderer.invoke(IPC.onboardingMarkTourDismissedVariant, { tourId, variant }),
+    updateTourStepVariant: async (
+      tourId: string,
+      variant: OnboardingTourVariant,
+      index: number,
+    ): Promise<OnboardingTourProgress> =>
+      ipcRenderer.invoke(IPC.onboardingUpdateTourStepVariant, { tourId, variant, index }),
+    tutorial: {
+      start: async (): Promise<OnboardingTourProgress> =>
+        ipcRenderer.invoke(IPC.onboardingTutorialStart),
+      dismiss: async (permanent: boolean): Promise<OnboardingTourProgress> =>
+        ipcRenderer.invoke(IPC.onboardingTutorialDismiss, { permanent }),
+      complete: async (): Promise<OnboardingTourProgress> =>
+        ipcRenderer.invoke(IPC.onboardingTutorialComplete),
+      updateAct: async (
+        actIndex: number,
+        ctxSnapshot?: Record<string, unknown>,
+      ): Promise<OnboardingTourProgress> =>
+        ipcRenderer.invoke(IPC.onboardingTutorialUpdateAct, { actIndex, ctxSnapshot }),
+      setSilenced: async (silenced: boolean): Promise<OnboardingTourProgress> =>
+        ipcRenderer.invoke(IPC.onboardingTutorialSetSilenced, { silenced }),
+      clearSessionDismissal: async (): Promise<OnboardingTourProgress> =>
+        ipcRenderer.invoke(IPC.onboardingTutorialClearSessionDismissal),
+      shouldPrompt: async (): Promise<boolean> =>
+        ipcRenderer.invoke(IPC.onboardingTutorialShouldPrompt),
+    },
   },
   automations: {
     list: async (): Promise<AutomationRuleSummary[]> =>
@@ -1588,8 +1625,6 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.agentChatSaveTempAttachment, args),
   },
   computerUse: {
-    getSettings: async (): Promise<ComputerUseSettingsSnapshot> =>
-      ipcRenderer.invoke(IPC.computerUseGetSettings),
     listArtifacts: async (
       args: ComputerUseArtifactListArgs = {},
     ): Promise<ComputerUseArtifactView[]> =>

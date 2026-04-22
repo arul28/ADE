@@ -58,10 +58,6 @@ import {
 } from "../shared/utils";
 import type { EpisodicSummaryService } from "../memory/episodicSummaryService";
 import { DEFAULT_FLUSH_PROMPT } from "../memory/compactionFlushPrompt";
-import {
-  createDefaultComputerUsePolicy,
-  normalizeComputerUsePolicy,
-} from "../../../shared/types";
 import type {
   AgentChatApprovalDecision,
   AgentChatCancelSteerArgs,
@@ -108,7 +104,6 @@ import type {
   PendingInputSource,
   AgentChatUpdateSessionArgs,
   ComputerUseBackendStatus,
-  ComputerUsePolicy,
   ThinkingLevel,
   TerminalSessionStatus,
   TerminalToolType,
@@ -161,7 +156,6 @@ import type { LinearCredentialService } from "../cto/linearCredentialService";
 import type { createPrService } from "../prs/prService";
 import type { createIssueInventoryService } from "../prs/issueInventoryService";
 import type { ComputerUseArtifactBrokerService } from "../computerUse/computerUseArtifactBrokerService";
-import { createProofObserver } from "../computerUse/proofObserver";
 import { maybeSyntheticToolResult } from "../computerUse/syntheticToolResult";
 import {
   buildOpenCodePromptParts,
@@ -238,7 +232,6 @@ type PersistedChatState = {
   automationId?: string | null;
   automationRunId?: string | null;
   capabilityMode?: CtoCapabilityMode;
-  computerUse?: ComputerUsePolicy;
   completion?: AgentChatCompletionReport | null;
   threadId?: string;
   /** Cursor ACP session id for resume across app restarts (best-effort). */
@@ -938,6 +931,11 @@ const CLAUDE_EFFORT_TO_TOKENS: Record<string, number> = {
   high: 16384,
 };
 
+const CLAUDE_THINKING_SETTINGS = {
+  showThinkingSummaries: true,
+  alwaysThinkingEnabled: true,
+};
+
 const KNOWN_CLAUDE_EFFORTS = new Set(CLAUDE_REASONING_EFFORTS.map((e) => e.effort));
 
 const CODEX_FALLBACK_MODELS: AgentChatModelInfo[] = listModelDescriptorsForProvider("codex").map((descriptor) => ({
@@ -1070,6 +1068,27 @@ function validateReasoningEffort(provider: "codex" | "claude", effort: string | 
   const known = provider === "codex" ? KNOWN_CODEX_EFFORTS : KNOWN_CLAUDE_EFFORTS;
   const fallback = provider === "codex" ? DEFAULT_REASONING_EFFORT : "medium";
   return known.has(aliased) ? aliased : fallback;
+}
+
+function buildClaudeV2ExecutableArgs(args: {
+  supportsReasoning: boolean;
+  effort?: string | null;
+}): string[] {
+  const executableArgs = [
+    "--include-partial-messages",
+    "--settings",
+    JSON.stringify(CLAUDE_THINKING_SETTINGS),
+  ];
+
+  if (args.supportsReasoning) {
+    executableArgs.push("--thinking", "adaptive", "--thinking-display", "summarized");
+    const effort = args.effort;
+    if (effort === "low" || effort === "medium" || effort === "high" || effort === "max") {
+      executableArgs.push("--effort", effort);
+    }
+  }
+
+  return executableArgs;
 }
 
 function describeClaudeModel(value: string): string | null {
@@ -1590,15 +1609,12 @@ function composeLaunchDirectives(baseText: string, directives: Array<string | nu
 }
 
 export function buildComputerUseDirective(
-  policy: ComputerUsePolicy | null | undefined,
   backendStatus: ComputerUseBackendStatus | null,
 ): string | null {
-  const effective = createDefaultComputerUsePolicy(policy ?? undefined);
-
   const hasExternalBackends = backendStatus
     ? backendStatus.backends.some((b) => b.available)
     : false;
-  const hasLocalFallback = effective.allowLocalFallback;
+  const hasLocalFallback = backendStatus?.localFallback.available ?? true;
 
   // No backends and no local fallback → skip the directive entirely.
   if (!hasExternalBackends && !hasLocalFallback && backendStatus != null) {
@@ -2336,10 +2352,6 @@ function normalizePersistedInteractionMode(value: unknown): AgentChatInteraction
   return normalizePersistedEnum(value, VALID_INTERACTION_MODES);
 }
 
-function normalizePersistedComputerUse(value: unknown): ComputerUsePolicy {
-  return normalizeComputerUsePolicy(value, createDefaultComputerUsePolicy());
-}
-
 function normalizePersistedCompletion(value: unknown): AgentChatCompletionReport | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
   const record = value as Record<string, unknown>;
@@ -2517,10 +2529,6 @@ export function createAgentChatService(args: {
   const eventSubscribers = new Set<(event: AgentChatEventEnvelope) => void>();
 
   let computerUseArtifactBrokerRef = computerUseArtifactBrokerService ?? null;
-
-  let proofObserver = computerUseArtifactBrokerRef
-    ? createProofObserver({ broker: computerUseArtifactBrokerRef })
-    : null;
 
   const layout = resolveAdeLayout(projectRoot);
   const chatSessionsDir = layout.chatSessionsDir;
@@ -3392,8 +3400,7 @@ export function createAgentChatService(args: {
     laneId,
     sessionProfile,
     identityKey,
-    computerUse,
-  }: Pick<AgentChatCreateArgs, "laneId" | "sessionProfile" | "identityKey" | "computerUse">): string[] => {
+  }: Pick<AgentChatCreateArgs, "laneId" | "sessionProfile" | "identityKey">): string[] => {
     const effectiveSessionProfile = sessionProfile ?? "workflow";
     if (effectiveSessionProfile === "light") return [];
 
@@ -3403,7 +3410,6 @@ export function createAgentChatService(args: {
       laneService,
       prService: prService ?? undefined,
       computerUseArtifactBrokerService: computerUseArtifactBrokerRef ?? undefined,
-      computerUsePolicy: computerUse,
       onReportCompletion: null,
       sessionId,
       laneId,
@@ -4407,7 +4413,7 @@ export function createAgentChatService(args: {
   const isAskUserToolName = (toolName: string | null | undefined): boolean => {
     if (!toolName) return false;
     const normalized = normalizeToolNameForApproval(toolName);
-    return normalized === "mcp_ade_ask_user";
+    return normalized === "ask_user";
   };
 
   const resolveChatConfig = (): ResolvedChatConfig => {
@@ -4742,7 +4748,6 @@ export function createAgentChatService(args: {
       ...(managed.session.automationId ? { automationId: managed.session.automationId } : {}),
       ...(managed.session.automationRunId ? { automationRunId: managed.session.automationRunId } : {}),
       ...(managed.session.capabilityMode ? { capabilityMode: managed.session.capabilityMode } : {}),
-      ...(managed.session.computerUse ? { computerUse: managed.session.computerUse } : {}),
       ...(managed.session.completion ? { completion: managed.session.completion } : {}),
       ...(managed.session.threadId ? { threadId: managed.session.threadId } : {}),
       ...(managed.runtime?.kind === "cursor" && managed.runtime.acpSessionId
@@ -4839,7 +4844,6 @@ export function createAgentChatService(args: {
       const identityKey = normalizeIdentityKey(record.identityKey);
       const surface = record.surface === "automation" ? "automation" : "work";
       const capabilityMode = normalizeCapabilityMode(record.capabilityMode);
-      const computerUse = normalizePersistedComputerUse(record.computerUse);
       const completion = normalizePersistedCompletion(record.completion);
       if (!laneId || !model) return null;
       const recentConversationEntries = Array.isArray(record.recentConversationEntries)
@@ -4888,7 +4892,6 @@ export function createAgentChatService(args: {
           ? { automationRunId: record.automationRunId.trim() }
           : {}),
         ...(capabilityMode ? { capabilityMode } : {}),
-        ...(computerUse ? { computerUse } : {}),
         ...(completion ? { completion } : {}),
         ...(typeof record.threadId === "string" && record.threadId.trim().length
           ? { threadId: record.threadId.trim() }
@@ -5115,11 +5118,6 @@ export function createAgentChatService(args: {
           error: error instanceof Error ? error.message : String(error),
         });
       }
-    }
-
-    // Passive proof capture: observe tool results for screenshots/artifacts.
-    if (proofObserver && event.type === "tool_result") {
-      proofObserver.observe(event, managed.session.id);
     }
 
     const collector = sessionTurnCollectors.get(managed.session.id);
@@ -5878,7 +5876,6 @@ export function createAgentChatService(args: {
         ...(persisted?.permissionMode ? { permissionMode: persisted.permissionMode } : {}),
         ...(persisted?.identityKey ? { identityKey: persisted.identityKey } : {}),
         capabilityMode: persisted?.capabilityMode ?? inferCapabilityMode(provider),
-        computerUse: normalizePersistedComputerUse(persisted?.computerUse),
         completion: persisted?.completion ?? null,
         status: mapTerminalStatusToChatStatus(row.status),
         idleSinceAt: persisted?.idleSinceAt ?? null,
@@ -6298,6 +6295,27 @@ export function createAgentChatService(args: {
     let firstStreamEventLogged = false;
     const emittedClaudeToolIds = new Set<string>();
     const emittedSyntheticItemIds = new Set<string>();
+    const streamedClaudeTextContentKeys = new Set<string>();
+    const streamedClaudeThinkingContentKeys = new Set<string>();
+    let currentClaudeStreamMessageId: string | null = null;
+    // Track a running boundary for assistant messages whose snapshot has no id
+    // (and whose stream preamble didn't carry a `message_start` id either — real
+    // Claude streams always do, but mocks and older SDK paths don't). Each new
+    // id-less assistant snapshot bumps the boundary so sequential assistants in
+    // the same turn don't collide at the same content index.
+    let claudeAssistantBoundary = 0;
+    let claudeAssistantBoundarySealed = false;
+    const claudeDedupeKey = (
+      messageId: string | null | undefined,
+      contentIndex: number | null | undefined,
+    ): string | null => {
+      if (typeof contentIndex !== "number" || !Number.isFinite(contentIndex)) return null;
+      const trimmed = messageId?.trim();
+      const id = trimmed && trimmed.length
+        ? trimmed
+        : `${turnId}:b${claudeAssistantBoundary}`;
+      return `${id}:${contentIndex}`;
+    };
     const openClaudeToolUses = new Map<string, { toolName: string }>();
     const toolInputJsonByContentIndex = new Map<number, string>();
     const toolUseMetaByContentIndex = new Map<number, { toolName: string; itemId: string }>();
@@ -6715,31 +6733,49 @@ export function createAgentChatService(args: {
         if (msg.type === "assistant") {
           const assistantMsg = msg as any;
           const betaMessage = assistantMsg.message;
+          const assistantMessageId = typeof betaMessage?.id === "string" ? betaMessage.id : null;
+          // If the snapshot has no id, advance the id-less boundary once the
+          // prior snapshot is sealed — so two back-to-back id-less assistants
+          // don't alias to the same key. While the stream preamble is actively
+          // filling in the current boundary (via content_block_delta), we keep
+          // the boundary intact so the snapshot still dedupes against deltas.
+          if (!assistantMessageId && !currentClaudeStreamMessageId && claudeAssistantBoundarySealed) {
+            claudeAssistantBoundary += 1;
+            claudeAssistantBoundarySealed = false;
+          }
           reportedAssistantModel = normalizeReportedModelName(betaMessage?.model) ?? reportedAssistantModel;
           if (betaMessage?.content && Array.isArray(betaMessage.content)) {
             for (const [blockIndex, block] of betaMessage.content.entries()) {
               if (block.type === "text") {
-                assistantText += block.text ?? "";
-                emitChatEvent(managed, {
-                  type: "text",
-                  text: block.text ?? "",
-                  turnId,
-                });
+                const textKey = claudeDedupeKey(assistantMessageId, blockIndex);
+                if (!textKey || !streamedClaudeTextContentKeys.has(textKey)) {
+                  assistantText += block.text ?? "";
+                  emitChatEvent(managed, {
+                    type: "text",
+                    text: block.text ?? "",
+                    turnId,
+                  });
+                  if (textKey) streamedClaudeTextContentKeys.add(textKey);
+                }
               } else if (block.type === "thinking") {
                 const thinkingText = block.thinking ?? block.text ?? "";
                 const reasoningItemId = buildClaudeContentItemId("thinking", blockIndex);
-                emitChatEvent(managed, {
-                  type: "activity",
-                  activity: "thinking",
-                  detail: REASONING_ACTIVITY_DETAIL,
-                  turnId,
-                });
-                emitChatEvent(managed, {
-                  type: "reasoning",
-                  text: thinkingText,
-                  ...(reasoningItemId ? { itemId: reasoningItemId } : {}),
-                  turnId,
-                });
+                const thinkingKey = claudeDedupeKey(assistantMessageId, blockIndex);
+                if (thinkingText.trim().length > 0 && (!thinkingKey || !streamedClaudeThinkingContentKeys.has(thinkingKey))) {
+                  emitChatEvent(managed, {
+                    type: "activity",
+                    activity: "thinking",
+                    detail: REASONING_ACTIVITY_DETAIL,
+                    turnId,
+                  });
+                  emitChatEvent(managed, {
+                    type: "reasoning",
+                    text: thinkingText,
+                    ...(reasoningItemId ? { itemId: reasoningItemId } : {}),
+                    turnId,
+                  });
+                  if (thinkingKey) streamedClaudeThinkingContentKeys.add(thinkingKey);
+                }
               } else if (block.type === "tool_use") {
                 const toolName = String(block.name ?? "tool");
                 const itemId = buildClaudeContentItemId(
@@ -6783,6 +6819,9 @@ export function createAgentChatService(args: {
               outputTokens: betaMessage.usage.output_tokens ?? null,
             };
           }
+          // Snapshot consumed — the next id-less assistant should get a fresh
+          // boundary so it doesn't collide on the same turn-scoped key.
+          claudeAssistantBoundarySealed = true;
           continue;
         }
 
@@ -6798,12 +6837,16 @@ export function createAgentChatService(args: {
             if (delta?.type === "text_delta") {
               const text = delta.text ?? "";
               if (text.length) {
+                const textKey = claudeDedupeKey(currentClaudeStreamMessageId, contentIndex);
+                if (textKey) streamedClaudeTextContentKeys.add(textKey);
                 assistantText += text;
                 emitChatEvent(managed, { type: "text", text, turnId });
               }
             } else if (delta?.type === "thinking_delta") {
               const text = delta.thinking ?? delta.text ?? "";
               if (text.length) {
+                const thinkingKey = claudeDedupeKey(currentClaudeStreamMessageId, contentIndex);
+                if (thinkingKey) streamedClaudeThinkingContentKeys.add(thinkingKey);
                 const reasoningItemId = buildClaudeContentItemId("thinking", contentIndex);
                 emitChatEvent(managed, {
                   type: "activity",
@@ -6850,6 +6893,8 @@ export function createAgentChatService(args: {
               // Some SDK versions include initial thinking text on block start
               const startText = block.thinking ?? block.text ?? "";
               if (startText.length) {
+                const thinkingKey = claudeDedupeKey(currentClaudeStreamMessageId, contentIndex);
+                if (thinkingKey) streamedClaudeThinkingContentKeys.add(thinkingKey);
                 emitChatEvent(managed, {
                   type: "reasoning",
                   text: startText,
@@ -6924,6 +6969,7 @@ export function createAgentChatService(args: {
               }
             }
           } else if (event.type === "message_start") {
+            currentClaudeStreamMessageId = typeof event.message?.id === "string" ? event.message.id : null;
             const msgUsage = event.message?.usage;
             if (msgUsage) {
               usage = {
@@ -7919,7 +7965,7 @@ export function createAgentChatService(args: {
       const description = typeof params.reason === "string" && params.reason.trim().length
         ? params.reason.trim()
         : "Codex requested additional permissions";
-      // Auto-allow the ADE MCP `ask_user` tool so the inline question card surfaces
+      // Auto-allow the ADE `ask_user` tool so the inline question card surfaces
       // immediately instead of being shadowed by a generic "Allow additional
       // permissions?" prompt. Gated by `ai.chat.autoAllowAskUser` (default: true).
       if (isAutoAllowAskUserEnabled()) {
@@ -8740,10 +8786,19 @@ export function createAgentChatService(args: {
     if (method === "item/reasoning/summaryTextDelta" || method === "item/reasoning/textDelta") {
       const delta = String((params.delta as string | undefined) ?? "");
       if (!delta.length) return;
+      const turnId = typeof params.turnId === "string"
+        ? params.turnId
+        : turnIdFromParams ?? runtime.activeTurnId ?? undefined;
+      emitChatEvent(managed, {
+        type: "activity",
+        activity: "thinking",
+        detail: REASONING_ACTIVITY_DETAIL,
+        turnId,
+      });
       emitChatEvent(managed, {
         type: "reasoning",
         text: delta,
-        turnId: typeof params.turnId === "string" ? params.turnId : undefined,
+        turnId,
         itemId: typeof params.itemId === "string" ? params.itemId : undefined,
         summaryIndex: typeof params.summaryIndex === "number" ? params.summaryIndex : undefined
       });
@@ -9368,6 +9423,7 @@ export function createAgentChatService(args: {
       includePartialMessages: true,
       agentProgressSummaries: true,
       promptSuggestions: true,
+      settings: CLAUDE_THINKING_SETTINGS,
       maxBudgetUsd: chatConfig.sessionBudgetUsd ?? undefined,
       model: resolveClaudeCliModel(managed.session.model),
       pathToClaudeCodeExecutable: claudeExecutable.path,
@@ -9433,6 +9489,10 @@ export function createAgentChatService(args: {
     }
     const claudeDescriptor = resolveSessionModelDescriptor(managed.session);
     const claudeSupportsReasoning = claudeDescriptor?.capabilities.reasoning ?? true;
+    opts.executableArgs = buildClaudeV2ExecutableArgs({
+      supportsReasoning: claudeSupportsReasoning,
+      effort: managed.session.reasoningEffort,
+    });
     if (claudeSupportsReasoning) {
       const effort = managed.session.reasoningEffort;
       if (effort === "low" || effort === "medium" || effort === "high" || effort === "max") {
@@ -9440,13 +9500,13 @@ export function createAgentChatService(args: {
       }
       const tokens = effort ? CLAUDE_EFFORT_TO_TOKENS[effort] : undefined;
       if (tokens) {
-        opts.thinking = { type: "enabled", budgetTokens: tokens };
+        opts.thinking = { type: "enabled", budgetTokens: tokens, display: "summarized" } as any;
       } else {
         // Use adaptive thinking when no specific budget applies (e.g. "max",
         // "xhigh", or no effort set). The SDK defaults to adaptive for models
         // that support it, but being explicit ensures thinking is always active
         // for reasoning-capable models.
-        opts.thinking = { type: "adaptive" };
+        opts.thinking = { type: "adaptive", display: "summarized" } as any;
       }
     }
     const model = opts.model ?? resolveClaudeCliModel(managed.session.model) ?? DEFAULT_CLAUDE_MODEL;
@@ -10079,7 +10139,6 @@ export function createAgentChatService(args: {
     surface,
     automationId,
     automationRunId,
-    computerUse,
     requestedCwd,
   }: AgentChatCreateArgs): Promise<AgentChatSession> => {
     const launchContext = resolveLaneLaunchContext({
@@ -10150,7 +10209,6 @@ export function createAgentChatService(args: {
         : undefined;
     const normalizedCursorConfigValues = normalizeCursorConfigValueRecord(requestedCursorConfigValues);
     const capabilityMode = inferCapabilityMode(effectiveProvider);
-    const computerUsePolicy = normalizeComputerUsePolicy(computerUse, createDefaultComputerUsePolicy());
     let effectivePermissionMode = identityKey
       ? normalizeIdentityPermissionMode(requestedPermMode, effectiveProvider)
       : requestedPermMode;
@@ -10245,7 +10303,6 @@ export function createAgentChatService(args: {
         automationId: automationId?.trim() ? automationId.trim() : null,
         automationRunId: automationRunId?.trim() ? automationRunId.trim() : null,
         capabilityMode,
-        computerUse: computerUsePolicy,
         completion: null,
         status: "idle",
         idleSinceAt: null,
@@ -10393,7 +10450,6 @@ export function createAgentChatService(args: {
       opencodePermissionMode: managed.session.opencodePermissionMode,
       permissionMode: managed.session.permissionMode,
       surface: managed.session.surface,
-      computerUse: managed.session.computerUse,
     });
 
     const createdManaged = ensureManagedSession(created.id);
@@ -10521,7 +10577,6 @@ export function createAgentChatService(args: {
           buildExecutionModeDirective(executionMode, managed.session.provider),
           buildClaudeInteractionModeDirective(managed.session.interactionMode, managed.session.provider),
           buildComputerUseDirective(
-            managed.session.computerUse,
             computerUseArtifactBrokerRef?.getBackendStatus() ?? null,
           ),
         ]);
@@ -11112,7 +11167,7 @@ export function createAgentChatService(args: {
         return { outcome: { outcome: "cancelled" } };
       }
       const cursorRt = owner.runtime;
-      // Auto-allow the ADE MCP `ask_user` tool — the inline question card
+      // Auto-allow the ADE `ask_user` tool — the inline question card
       // provides its own answer UI, and the permission prompt just hides it.
       const rawInput = req.toolCall.rawInput as Record<string, unknown> | null | undefined;
       const rawToolCandidate = rawInput?.name ?? rawInput?.tool ?? rawInput?.toolName;
@@ -11712,6 +11767,11 @@ export function createAgentChatService(args: {
       });
       emitChatEvent(prepared.managed, { type: "status", turnStatus: "started", turnId });
       captureTurnBeforeSha(prepared.managed);
+      emitChatEvent(prepared.managed, {
+        type: "activity",
+        ...initialTurnActivity(prepared.managed.session),
+        turnId,
+      });
       setSessionActive(prepared.managed);
       persistChatState(prepared.managed);
       // NOTE: onDispatched is NOT called here. It will be called inside
@@ -12260,7 +12320,6 @@ export function createAgentChatService(args: {
       automationId: liveSession?.automationId ?? persisted?.automationId ?? null,
       automationRunId: liveSession?.automationRunId ?? persisted?.automationRunId ?? null,
       capabilityMode: liveSession?.capabilityMode ?? persisted?.capabilityMode ?? inferCapabilityMode(provider),
-      computerUse: liveSession?.computerUse ?? normalizePersistedComputerUse(persisted?.computerUse),
       completion: liveSession?.completion ?? persisted?.completion ?? null,
       status: liveSession?.status ?? (row.status === "running" ? "idle" : "ended"),
       idleSinceAt: (liveSession?.status ?? (row.status === "running" ? "idle" : "ended")) === "idle"
@@ -13029,7 +13088,6 @@ export function createAgentChatService(args: {
     cursorModeId,
     cursorConfigValues,
     permissionMode,
-    computerUse,
   }: AgentChatUpdateSessionArgs): Promise<AgentChatSession> => {
     const managed = ensureManagedSession(sessionId);
     const chatConfig = resolveChatConfig();
@@ -13038,7 +13096,6 @@ export function createAgentChatService(args: {
     const prevCodexApprovalPolicy = managed.session.codexApprovalPolicy;
     const prevCodexSandbox = managed.session.codexSandbox;
     const prevCodexConfigSource = managed.session.codexConfigSource;
-    let resetRuntimeForComputerUse = false;
 
     if (modelId !== undefined) {
       const nextModelId = String(modelId ?? "").trim();
@@ -13260,25 +13317,6 @@ export function createAgentChatService(args: {
       if (managed.runtime?.kind === "cursor" && !managed.runtime.busy) {
         await ensureCursorSessionState(managed, managed.runtime);
       }
-    }
-
-    if (computerUse !== undefined) {
-      const nextComputerUse = normalizeComputerUsePolicy(computerUse, createDefaultComputerUsePolicy());
-      const prevComputerUse = managed.session.computerUse;
-      managed.session.computerUse = nextComputerUse;
-      const nextSessionProfile = "workflow" as const;
-      if (managed.session.sessionProfile !== nextSessionProfile) {
-        managed.session.sessionProfile = nextSessionProfile;
-        resetRuntimeForComputerUse = true;
-      }
-      if (JSON.stringify(prevComputerUse) !== JSON.stringify(nextComputerUse)) {
-        resetRuntimeForComputerUse = true;
-      }
-    }
-
-    if (resetRuntimeForComputerUse && managed.runtime) {
-      teardownRuntime(managed, "model_switch");
-      refreshReconstructionContext(managed);
     }
 
     if (title !== undefined) {
@@ -13807,7 +13845,6 @@ export function createAgentChatService(args: {
     },
     setComputerUseArtifactBrokerService(svc: ComputerUseArtifactBrokerService) {
       computerUseArtifactBrokerRef = svc;
-      proofObserver = createProofObserver({ broker: svc });
     },
   };
 }

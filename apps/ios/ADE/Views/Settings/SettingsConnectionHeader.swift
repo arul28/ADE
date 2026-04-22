@@ -134,11 +134,14 @@ struct SettingsConnectionHeader: View {
     case .connected, .syncing:
       return "Live · ready to sync"
     case .connecting:
-      return "Establishing a secure channel"
+      return "Connecting to saved host"
     case .error:
       return "Unable to reach your Mac"
     case .disconnected:
-      if syncService.activeHostProfile?.hostIdentity != nil {
+      if syncService.savedReconnectHost?.tailscaleAddress != nil {
+        return "Saved host · Tailscale route ready"
+      }
+      if syncService.canReconnectToSavedHost {
         return "Saved host · not connected"
       }
       return "No paired host"
@@ -191,10 +194,11 @@ private struct SettingsConnectedHostDetails: View {
     guard let address = syncService.currentAddress ?? syncService.activeHostProfile?.lastSuccessfulAddress else {
       return nil
     }
+    let prefix = syncIsTailscaleIPv4Address(address) ? "Tailscale " : ""
     if let port = syncService.activeHostProfile?.port {
-      return "\(address) · :\(port)"
+      return "\(prefix)\(address) · :\(port)"
     }
-    return address
+    return "\(prefix)\(address)"
   }
 }
 
@@ -226,7 +230,7 @@ private struct SettingsConnectionQuickAction: View {
       .glassEffect()
 
     case .error, .disconnected:
-      if syncService.activeHostProfile?.hostIdentity != nil {
+      if syncService.canReconnectToSavedHost {
         ADEGlassActionButton(
           title: "Reconnect",
           symbol: "arrow.clockwise",

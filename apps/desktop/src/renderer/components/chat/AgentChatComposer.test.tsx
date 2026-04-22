@@ -3,7 +3,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import type { ComponentProps } from "react";
-import { createDefaultComputerUsePolicy } from "../../../shared/types";
 import { AgentChatComposer } from "./AgentChatComposer";
 
 afterEach(cleanup);
@@ -27,7 +26,6 @@ function buildComposerProps(overrides: Partial<ComponentProps<typeof AgentChatCo
     codexConfigSource: "flags",
     opencodePermissionMode: "edit",
     executionMode: "focused",
-    computerUsePolicy: createDefaultComputerUsePolicy(),
     onModelChange: vi.fn(),
     onReasoningEffortChange: vi.fn(),
     onDraftChange: vi.fn(),
