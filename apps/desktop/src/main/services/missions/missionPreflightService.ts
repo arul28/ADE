@@ -14,7 +14,7 @@ import type {
 import { createBuiltInPhaseCards, validatePhaseSequence } from "./phaseEngine";
 import { getModelById, resolveModelAlias } from "../../../shared/modelRegistry";
 import type { MissionBudgetService } from "../orchestrator/missionBudgetService";
-import { normalizeMissionPermissions } from "../orchestrator/permissionMapping";
+import { mergeMissionPermissionConfig, normalizeMissionPermissions } from "../orchestrator/permissionMapping";
 import type { MissionPermissionConfig } from "../../../shared/types/missions";
 import { isRecord, nowIso, toOptionalString } from "../shared/utils";
 import type { HumanWorkDigestService } from "../memory/humanWorkDigestService";
@@ -464,11 +464,10 @@ export function createMissionPreflightService(args: {
     if (projectPermissions?.providers) {
       projectPermConfig.providers = projectPermissions.providers;
     }
-    let providers = normalizeMissionPermissions(projectPermConfig);
-    if (launch.permissionConfig) {
-      const missionProviders = normalizeMissionPermissions(launch.permissionConfig);
-      providers = { ...providers, ...missionProviders };
-    }
+    const permissionConfig = launch.permissionConfig
+      ? mergeMissionPermissionConfig(projectPermConfig, launch.permissionConfig)
+      : projectPermConfig;
+    let providers = normalizeMissionPermissions(permissionConfig);
 
     const permissionWarnings: string[] = [];
     const permissionDetails: string[] = [];

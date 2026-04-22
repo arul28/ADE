@@ -3519,7 +3519,7 @@ describe("orchestratorService", () => {
                 providers: {
                   claude: "edit",
                   codex: "config-toml",
-                  opencode: "plan",
+                  opencode: "full-auto",
                   codexSandbox: "read-only",
                   allowedTools: ["Bash"],
                 },
@@ -3530,6 +3530,21 @@ describe("orchestratorService", () => {
       },
     });
     try {
+      fixture.db.run(
+        `update missions set metadata_json = ? where id = ? and project_id = ?`,
+        [
+          JSON.stringify({
+            launch: {
+              permissionConfig: {
+                inProcess: { mode: "plan" },
+              },
+            },
+          }),
+          fixture.missionId,
+          fixture.projectId,
+        ]
+      );
+
       let capturedPermissionConfig: Record<string, unknown> | undefined;
       fixture.service.registerExecutorAdapter({
         kind: "opencode",
@@ -3582,6 +3597,73 @@ describe("orchestratorService", () => {
       expect(providers?.codex).toBe("config-toml");
       expect(providers?.opencode).toBe("plan");
       expect(providers?.allowedTools).toEqual(["Bash"]);
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("does not let Claude full-auto defaults bypass Codex sandbox flags", async () => {
+    const fixture = await createFixture({
+      projectConfigService: {
+        get: () => ({
+          effective: {
+            ai: {
+              permissions: {
+                providers: {
+                  claude: "full-auto",
+                  codex: "default",
+                  codexSandbox: "workspace-write",
+                },
+              },
+            },
+          },
+        }),
+      },
+    });
+    try {
+      const now = "2026-02-19T00:00:00.000Z";
+      const transcriptDir = path.join(fixture.projectRoot, ".ade", "transcripts");
+      fs.mkdirSync(transcriptDir, { recursive: true });
+      const preSessionId = "session-1";
+      fixture.db.run(
+        `insert or ignore into terminal_sessions(
+          id, lane_id, pty_id, tracked, title, started_at, ended_at,
+          exit_code, transcript_path, head_sha_start, head_sha_end,
+          status, last_output_preview, summary, tool_type, resume_command, last_output_at
+        ) values (?, ?, null, 1, 'Worker', ?, null, null, ?, null, null,
+          'running', null, null, 'codex-orchestrated', null, ?)`,
+        [preSessionId, fixture.laneId, now, path.join(transcriptDir, `${preSessionId}.log`), now]
+      );
+
+      const started = fixture.service.startRun({
+        missionId: fixture.missionId,
+        steps: [
+          {
+            stepKey: "codex-permissions",
+            title: "Codex permissions",
+            stepIndex: 0,
+            laneId: fixture.laneId,
+            executorKind: "opencode",
+            metadata: {
+              modelId: "openai/gpt-5.3-codex",
+            },
+          },
+        ],
+      });
+      const step = fixture.service.listSteps(started.run.id)[0];
+      if (!step) throw new Error("Missing step");
+      const attempt = await fixture.service.startAttempt({
+        runId: started.run.id,
+        stepId: step.id,
+        ownerId: "owner",
+      });
+
+      expect(attempt.status).toBe("running");
+      const startupCommand = String(fixture.ptyCreateCalls[0]?.startupCommand ?? "");
+      expect(startupCommand).toContain("codex");
+      expect(startupCommand).toMatch(/(?:--sandbox|-s)\s+'?workspace-write'?/);
+      expect(startupCommand).toMatch(/(?:--ask-for-approval|-a)\s+'?on-request'?/);
+      expect(startupCommand).not.toContain("--dangerously-bypass-approvals-and-sandbox");
     } finally {
       fixture.dispose();
     }

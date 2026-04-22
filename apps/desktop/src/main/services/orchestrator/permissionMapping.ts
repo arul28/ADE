@@ -149,6 +149,74 @@ export function normalizeMissionPermissions(config: MissionPermissionConfig | un
   return result;
 }
 
+export function mergeMissionPermissionConfig(
+  base: MissionPermissionConfig | undefined,
+  override: MissionPermissionConfig | undefined,
+): MissionPermissionConfig {
+  if (!base) return override ?? {};
+  if (!override) return base;
+  const merged: MissionPermissionConfig = {
+    ...(base.cli || override.cli
+      ? {
+          cli: {
+            ...(base.cli ?? {}),
+            ...(override.cli ?? {}),
+          },
+        }
+      : {}),
+    ...(base.inProcess || override.inProcess
+      ? {
+          inProcess: {
+            ...(base.inProcess ?? {}),
+            ...(override.inProcess ?? {}),
+          },
+        }
+      : {}),
+    ...(base.providers || override.providers
+      ? {
+          providers: {
+            ...(base.providers ?? {}),
+            ...(override.providers ?? {}),
+          },
+        }
+      : {}),
+  };
+  const providerOverrides: Partial<MissionProviderPermissions> = {};
+  const overrideCliMode = VALID_CLI_MODES.has(override.cli?.mode ?? "") ? override.cli?.mode : undefined;
+  if (overrideCliMode) {
+    const providerMode = oldCliModeToProvider(overrideCliMode);
+    providerOverrides.claude = providerMode;
+    providerOverrides.codex = providerMode;
+  }
+  const overrideInProcessMode = VALID_IN_PROCESS_MODES.has(override.inProcess?.mode ?? "") ? override.inProcess?.mode : undefined;
+  if (overrideInProcessMode) {
+    providerOverrides.opencode = oldInProcessModeToProvider(overrideInProcessMode);
+  }
+  if (
+    override.cli?.sandboxPermissions === "read-only"
+    || override.cli?.sandboxPermissions === "workspace-write"
+    || override.cli?.sandboxPermissions === "danger-full-access"
+  ) {
+    providerOverrides.codexSandbox = override.cli.sandboxPermissions;
+  }
+  if (Array.isArray(override.cli?.writablePaths)) {
+    providerOverrides.writablePaths = override.cli.writablePaths;
+  }
+  if (Array.isArray(override.cli?.allowedTools)) {
+    providerOverrides.allowedTools = override.cli.allowedTools;
+  }
+  if (override.providers) {
+    Object.assign(providerOverrides, override.providers);
+  }
+  if (Object.keys(providerOverrides).length > 0) {
+    merged.providers = {
+      ...(base.providers ?? {}),
+      ...providerOverrides,
+    };
+  }
+  return merged;
+}
+
 // ─────────────────────────────────────────────────────
 // Provider permissions → old-style permissionConfig
 // (for passing into adapters that still use the old shape)

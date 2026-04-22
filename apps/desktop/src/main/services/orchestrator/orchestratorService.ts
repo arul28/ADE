@@ -133,7 +133,7 @@ import {
   readDocPaths,
 } from "./stepPolicyResolver";
 import { normalizeAgentRuntimeFlags } from "./teamRuntimeConfig";
-import { normalizeMissionPermissions, providerPermissionsToLegacyConfig, mapPermissionToInProcess } from "./permissionMapping";
+import { mapPermissionToCodex, mergeMissionPermissionConfig, normalizeMissionPermissions, providerPermissionsToLegacyConfig, mapPermissionToInProcess } from "./permissionMapping";
 import type { MissionPermissionConfig, MissionProviderPermissions } from "../../../shared/types/missions";
 import { resolveAdeLayout } from "../../../shared/adeLayout";
 
@@ -3966,16 +3966,18 @@ export function createOrchestratorService({
           }
           const cliMode = args.permissionConfig?.cli?.mode ?? "full-auto";
           if (cliCommand === "codex") {
-            if (!readOnlyExecution && cliMode === "full-auto") {
-              commandParts.push("--dangerously-bypass-approvals-and-sandbox");
+            const codexProviderMode = args.permissionConfig?._providers?.codex;
+            const mappedCodex = codexProviderMode === "config-toml" ? null : mapPermissionToCodex(codexProviderMode);
+            if (!readOnlyExecution && codexProviderMode === "config-toml") {
+              // Let Codex read its own repository/user config without forcing flags.
             } else {
               commandParts.push(
                 "--sandbox",
                 readOnlyExecution || cliMode === "read-only"
                   ? "read-only"
-                  : args.permissionConfig?.cli?.sandboxPermissions ?? "workspace-write",
+                  : mappedCodex?.sandbox ?? args.permissionConfig?.cli?.sandboxPermissions ?? "workspace-write",
                 "--ask-for-approval",
-                readOnlyExecution || cliMode === "read-only" ? "on-request" : "untrusted",
+                readOnlyExecution || cliMode === "read-only" ? "on-request" : mappedCodex?.approvalPolicy ?? "untrusted",
               );
             }
           } else {
@@ -6946,7 +6948,7 @@ export function createOrchestratorService({
             const aiCfg = asRecord(projectConfigService?.get()?.effective?.ai);
             const perms = asRecord(aiCfg?.permissions);
             const projPerms = projectPermissionConfigFromRecord(perms);
-            let providers = normalizeMissionPermissions(projPerms);
+            let permissionConfig = projPerms;
             if (run.missionId) {
               try {
                 const mRow = db.get<{ metadata_json: string | null }>(
@@ -6957,12 +6959,12 @@ export function createOrchestratorService({
                   const meta = asRecord(JSON.parse(mRow.metadata_json));
                   const mpc = asRecord(asRecord(meta?.launch)?.permissionConfig) as MissionPermissionConfig | undefined;
                   if (mpc) {
-                    const mp = normalizeMissionPermissions(mpc);
-                    providers = { ...providers, ...mp };
+                    permissionConfig = mergeMissionPermissionConfig(permissionConfig, mpc);
                   }
                 }
               } catch { /* non-critical */ }
             }
+            const providers = normalizeMissionPermissions(permissionConfig);
             return mapPermissionToInProcess(providers.opencode);
           })();
 
@@ -7069,8 +7071,7 @@ export function createOrchestratorService({
           const permissions = asRecord(ai?.permissions);
           const projectPerms = projectPermissionConfigFromRecord(permissions);
 
-          // Normalize project-level to provider shape
-          let providers = normalizeMissionPermissions(projectPerms);
+          let mergedPerms = projectPerms;
 
           // 2. Layer mission-level overrides if present
           if (run.missionId) {
@@ -7083,17 +7084,15 @@ export function createOrchestratorService({
                 const meta = asRecord(JSON.parse(missionRow.metadata_json));
                 const missionPermConfig = asRecord(asRecord(meta?.launch)?.permissionConfig) as MissionPermissionConfig | undefined;
                 if (missionPermConfig) {
-                  // Re-normalize with mission overrides applied on top.
-                  // normalizeMissionPermissions handles both old (cli/inProcess) and new (providers) shapes.
-                  const missionProviders = normalizeMissionPermissions(missionPermConfig);
-                  // Merge: mission-level overrides take precedence
-                  providers = { ...providers, ...missionProviders };
+                  mergedPerms = mergeMissionPermissionConfig(mergedPerms, missionPermConfig);
                 }
               }
             } catch {
               // Non-critical: fall back to project-level permissions
             }
           }
+
+          const providers = normalizeMissionPermissions(mergedPerms);
 
           // 3. Convert back to legacy shape for adapter compatibility, carrying _providers through
           return providerPermissionsToLegacyConfig(providers);
