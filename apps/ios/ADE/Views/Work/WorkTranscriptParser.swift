@@ -29,6 +29,9 @@ func parseWorkChatTranscript(_ raw: String) -> [WorkChatEnvelope] {
       let sequence = envelope["sequence"] as? Int
       let turnId = eventDict["turnId"] as? String
       let itemId = eventDict["itemId"] as? String
+      let logicalItemId = (eventDict["logicalItemId"] as? String)?
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+      let stableToolItemId = (logicalItemId?.isEmpty == false ? logicalItemId : nil) ?? itemId
       let parentItemId = eventDict["parentItemId"] as? String
       let event: WorkChatEvent
 
@@ -47,7 +50,7 @@ func parseWorkChatTranscript(_ raw: String) -> [WorkChatEnvelope] {
         event = .toolCall(
           tool: stringValue(eventDict["tool"]),
           argsText: prettyPrintedJSONString(eventDict["args"]),
-          itemId: itemId ?? workFallbackItemID(
+          itemId: stableToolItemId ?? workFallbackItemID(
             sessionId: sessionId,
             timestamp: timestamp,
             sequence: sequence,
@@ -67,7 +70,7 @@ func parseWorkChatTranscript(_ raw: String) -> [WorkChatEnvelope] {
         event = .toolResult(
           tool: stringValue(eventDict["tool"]),
           resultText: prettyPrintedJSONString(eventDict["result"]),
-          itemId: itemId ?? workFallbackItemID(
+          itemId: stableToolItemId ?? workFallbackItemID(
             sessionId: sessionId,
             timestamp: timestamp,
             sequence: sequence,
@@ -274,7 +277,7 @@ func parseWorkChatTranscript(_ raw: String) -> [WorkChatEnvelope] {
           query: stringValue(eventDict["query"]),
           action: optionalString(eventDict["action"]),
           status: toolStatus(from: stringValue(eventDict["status"])),
-          itemId: itemId ?? workFallbackItemID(
+          itemId: stableToolItemId ?? workFallbackItemID(
             sessionId: sessionId,
             timestamp: timestamp,
             sequence: sequence,
@@ -299,7 +302,7 @@ func parseWorkChatTranscript(_ raw: String) -> [WorkChatEnvelope] {
           cwd: stringValue(eventDict["cwd"]),
           output: stringValue(eventDict["output"]),
           status: toolStatus(from: stringValue(eventDict["status"])),
-          itemId: itemId ?? workFallbackItemID(
+          itemId: stableToolItemId ?? workFallbackItemID(
             sessionId: sessionId,
             timestamp: timestamp,
             sequence: sequence,
@@ -323,7 +326,7 @@ func parseWorkChatTranscript(_ raw: String) -> [WorkChatEnvelope] {
           diff: stringValue(eventDict["diff"]),
           kind: stringValue(eventDict["kind"]),
           status: toolStatus(from: stringValue(eventDict["status"])),
-          itemId: itemId ?? workFallbackItemID(
+          itemId: stableToolItemId ?? workFallbackItemID(
             sessionId: sessionId,
             timestamp: timestamp,
             sequence: sequence,

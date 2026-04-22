@@ -181,8 +181,8 @@ struct WorkToolCardView: View {
 
 /// Cluster of consecutive tool/command/file-change entries shown as one row
 /// to preserve space in the iOS chat. Collapsed: icon + latest-call title +
-/// "N calls" pill + 2-row mini preview of the older calls. Expanded: each
-/// member renders as its full card inline, matching the desktop
+/// count/status, with only a visual stack hint for older calls. Expanded:
+/// each member renders as its full card inline, matching the desktop
 /// `ChatWorkLogBlock` behavior.
 struct WorkToolGroupCardView: View {
   let group: WorkToolGroupModel
@@ -194,20 +194,27 @@ struct WorkToolGroupCardView: View {
   private var effectiveExpanded: Bool { isExpanded }
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 10) {
-      header
-      if effectiveExpanded {
-        expandedMembers
+    ZStack(alignment: .bottom) {
+      if !effectiveExpanded && group.count > 1 {
+        collapsedStackBackdrop
       } else {
-        collapsedPreview
+        EmptyView()
       }
+
+      VStack(alignment: .leading, spacing: 10) {
+        header
+        if effectiveExpanded {
+          expandedMembers
+        }
+      }
+      .padding(12)
+      .background(ADEColor.surfaceBackground.opacity(0.35), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+      .overlay(
+        RoundedRectangle(cornerRadius: 16, style: .continuous)
+          .stroke(ADEColor.border.opacity(0.14), lineWidth: 0.5)
+      )
     }
-    .padding(12)
-    .background(ADEColor.surfaceBackground.opacity(0.35), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-    .overlay(
-      RoundedRectangle(cornerRadius: 16, style: .continuous)
-        .stroke(ADEColor.border.opacity(0.14), lineWidth: 0.5)
-    )
+    .padding(.bottom, !effectiveExpanded && group.count > 1 ? 6 : 0)
     .accessibilityElement(children: .contain)
     .accessibilityLabel("Tool call cluster, \(group.count) calls, \(effectiveExpanded ? "expanded" : "collapsed")")
   }
@@ -250,34 +257,29 @@ struct WorkToolGroupCardView: View {
     .buttonStyle(.plain)
   }
 
-  /// Compact stack of the older members below the header — matches the
-  /// desktop collapsed cluster where the latest call sits on top and a few
-  /// previous calls peek underneath as hint rows.
-  private var collapsedPreview: some View {
-    let older = Array(group.members.dropLast().suffix(3).reversed())
-    return VStack(alignment: .leading, spacing: 4) {
-      ForEach(older) { member in
-        HStack(spacing: 8) {
-          Image(systemName: memberIcon(member))
-            .font(.system(size: 10, weight: .semibold))
-            .foregroundStyle(color(for: member.status))
-            .frame(width: 14, height: 14)
-          Text(memberTitle(member))
-            .font(.caption2)
-            .foregroundStyle(ADEColor.textSecondary)
-            .lineLimit(1)
-            .truncationMode(.middle)
-          Spacer(minLength: 4)
-        }
-        .padding(.leading, 38)
-      }
-      if group.members.count > older.count + 1 {
-        Text("+\(group.members.count - older.count - 1) earlier")
-          .font(.caption2.weight(.medium))
-          .foregroundStyle(ADEColor.textMuted)
-          .padding(.leading, 38)
-      }
+  /// Non-textual stack hint for hidden earlier calls. The collapsed row keeps
+  /// only the latest call readable; the depth lives in the count pill.
+  private var collapsedStackBackdrop: some View {
+    ZStack(alignment: .bottom) {
+      RoundedRectangle(cornerRadius: 15, style: .continuous)
+        .fill(ADEColor.surfaceBackground.opacity(0.18))
+        .overlay(
+          RoundedRectangle(cornerRadius: 15, style: .continuous)
+            .stroke(ADEColor.border.opacity(0.08), lineWidth: 0.5)
+        )
+        .padding(.horizontal, 10)
+        .offset(y: 4)
+      RoundedRectangle(cornerRadius: 14, style: .continuous)
+        .fill(ADEColor.surfaceBackground.opacity(0.12))
+        .overlay(
+          RoundedRectangle(cornerRadius: 14, style: .continuous)
+            .stroke(ADEColor.border.opacity(0.06), lineWidth: 0.5)
+        )
+        .padding(.horizontal, 20)
+        .offset(y: 8)
     }
+    .frame(height: 36)
+    .allowsHitTesting(false)
   }
 
   private var expandedMembers: some View {
@@ -370,7 +372,7 @@ private struct WorkToolGroupMemberRow: View {
         references: extractWorkNavigationTargets(
           from: [card.argsText, card.resultText].compactMap { $0 }.joined(separator: "\n")
         ),
-        isExpanded: card.status == .running || localExpanded,
+        isExpanded: localExpanded,
         onToggle: { localExpanded.toggle() },
         onOpenFile: onOpenFile,
         onOpenPr: onOpenPr
