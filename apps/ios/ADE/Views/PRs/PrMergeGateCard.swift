@@ -60,7 +60,8 @@ func prComputeMergeGate(
   reviewThreadsUnresolved: Int,
   reviewsNeeded: Int,
   reviewsHave: Int,
-  capabilities: PrActionCapabilities?
+  capabilities: PrActionCapabilities?,
+  isDraft: Bool = false
 ) -> PrMergeGateInfo {
   let failing = checks.filter { check in
     check.status == "completed" &&
@@ -80,6 +81,14 @@ func prComputeMergeGate(
     let need = max(reviewsNeeded, 0)
     return "\(have)/\(max(need, have)) approvals"
   }()
+
+  if isDraft {
+    return PrMergeGateInfo(
+      tone: .red,
+      subline: "Draft PRs cannot be merged until marked ready for review.",
+      target: .overview
+    )
+  }
 
   if conflicts || failing > 0 || hasBlockedReason {
     var parts: [String] = []

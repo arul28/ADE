@@ -137,6 +137,10 @@ struct PrDetailView: View {
     snapshot?.detail?.requestedReviewers.count ?? 0
   }
 
+  private var isCurrentPrDraft: Bool {
+    currentPr.state == "draft" || snapshot?.status?.state == "draft" || snapshot?.detail?.isDraft == true
+  }
+
   private var mergeGateInfo: PrMergeGateInfo {
     prComputeMergeGate(
       status: snapshot?.status,
@@ -144,7 +148,8 @@ struct PrDetailView: View {
       reviewThreadsUnresolved: unresolvedThreadCount,
       reviewsNeeded: reviewsNeeded,
       reviewsHave: reviewsHave,
-      capabilities: capabilities
+      capabilities: capabilities,
+      isDraft: isCurrentPrDraft
     )
   }
 
@@ -154,14 +159,14 @@ struct PrDetailView: View {
 
   /// Set of sub-tabs shown in the detail picker.
   private var visibleTabs: [PrDetailTab] {
-    [.overview, .checks, .activity, .files, .convergence]
+    [.overview, .convergence, .files, .checks, .activity]
   }
 
   private func tabTitle(_ tab: PrDetailTab) -> String {
     switch tab {
     case .overview: return "Overview"
     case .checks: return "Checks"
-    case .activity: return "Reviews"
+    case .activity: return "Activity"
     case .files: return "Files"
     case .convergence: return "Path"
     }

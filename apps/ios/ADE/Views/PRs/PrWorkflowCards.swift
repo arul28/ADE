@@ -1,5 +1,37 @@
 import SwiftUI
 
+private enum WorkflowLandingConfirmation {
+  case activePr(prId: String)
+  case queueNext(groupId: String)
+
+  var title: String {
+    switch self {
+    case .activePr:
+      return "Land active PR?"
+    case .queueNext:
+      return "Land queue next?"
+    }
+  }
+
+  var actionTitle: String {
+    switch self {
+    case .activePr:
+      return "Land active PR"
+    case .queueNext:
+      return "Land queue next"
+    }
+  }
+
+  var message: String {
+    switch self {
+    case .activePr:
+      return "This asks the host to merge the active queue pull request using the selected strategy. GitHub may merge into the target branch if checks pass."
+    case .queueNext:
+      return "This asks the host to merge the next queued pull request using the selected strategy. GitHub may merge into the target branch if checks pass."
+    }
+  }
+}
+
 // MARK: - Legacy cards (unchanged surface, lightly restyled)
 
 struct IntegrationWorkflowCard: View {
@@ -63,6 +95,16 @@ struct QueueWorkflowCard: View {
   let onLand: (String, PrMergeMethodOption) -> Void
   let onRebaseLane: (String) -> Void
   @State private var mergeMethod: PrMergeMethodOption = .squash
+  @State private var landingConfirmation: WorkflowLandingConfirmation?
+
+  private var landingConfirmationPresented: Binding<Bool> {
+    Binding(
+      get: { landingConfirmation != nil },
+      set: { presented in
+        if !presented { landingConfirmation = nil }
+      }
+    )
+  }
 
   private var activeEntry: QueueLandingEntry? {
     if let activePrId = queueState.activePrId,
@@ -109,7 +151,7 @@ struct QueueWorkflowCard: View {
         .adeInsetField()
 
         Button("Land active PR") {
-          onLand(activeEntry.prId, mergeMethod)
+          landingConfirmation = .activePr(prId: activeEntry.prId)
         }
         .buttonStyle(.glassProminent)
         .tint(ADEColor.accent)
@@ -145,6 +187,32 @@ struct QueueWorkflowCard: View {
       }
     }
     .adeGlassCard(cornerRadius: 18)
+    .confirmationDialog(
+      landingConfirmation?.title ?? "Land workflow",
+      isPresented: landingConfirmationPresented,
+      titleVisibility: .visible
+    ) {
+      if let landingConfirmation {
+        Button(landingConfirmation.actionTitle, role: .destructive) {
+          performLandingConfirmation(landingConfirmation)
+        }
+      }
+      Button("Cancel", role: .cancel) {
+        landingConfirmation = nil
+      }
+    } message: {
+      Text(landingConfirmation?.message ?? "This will ask the host to merge the selected pull request.")
+    }
+  }
+
+  private func performLandingConfirmation(_ confirmation: WorkflowLandingConfirmation) {
+    landingConfirmation = nil
+    switch confirmation {
+    case .activePr(let prId):
+      onLand(prId, mergeMethod)
+    case .queueNext:
+      break
+    }
   }
 }
 
@@ -177,9 +245,19 @@ struct PrMobileWorkflowCardView: View {
   let onDismissRebase: (String) -> Void
 
   @State private var mergeMethod: PrMergeMethodOption = .squash
+  @State private var landingConfirmation: WorkflowLandingConfirmation?
 
   private var queueId: String? {
     card.queueId.nonEmpty ?? (card.id.hasPrefix("queue:") ? String(card.id.dropFirst("queue:".count)) : nil)
+  }
+
+  private var landingConfirmationPresented: Binding<Bool> {
+    Binding(
+      get: { landingConfirmation != nil },
+      set: { presented in
+        if !presented { landingConfirmation = nil }
+      }
+    )
   }
 
   var body: some View {
@@ -192,6 +270,22 @@ struct PrMobileWorkflowCardView: View {
       }
     }
     .adeGlassCard(cornerRadius: 18)
+    .confirmationDialog(
+      landingConfirmation?.title ?? "Land workflow",
+      isPresented: landingConfirmationPresented,
+      titleVisibility: .visible
+    ) {
+      if let landingConfirmation {
+        Button(landingConfirmation.actionTitle, role: .destructive) {
+          performLandingConfirmation(landingConfirmation)
+        }
+      }
+      Button("Cancel", role: .cancel) {
+        landingConfirmation = nil
+      }
+    } message: {
+      Text(landingConfirmation?.message ?? "This will ask the host to merge the selected pull request.")
+    }
   }
 
   // MARK: Queue
@@ -256,7 +350,7 @@ struct PrMobileWorkflowCardView: View {
 
       HStack(spacing: 10) {
         Button("Land active PR") {
-          onLand(activePrId, mergeMethod)
+          landingConfirmation = .activePr(prId: activePrId)
         }
         .buttonStyle(.glassProminent)
         .tint(ADEColor.accent)
@@ -299,7 +393,7 @@ struct PrMobileWorkflowCardView: View {
 
     if let groupId = card.groupId {
       Button {
-        onLandQueueNext(groupId, mergeMethod)
+        landingConfirmation = .queueNext(groupId: groupId)
       } label: {
         Label("Land queue next", systemImage: "arrow.forward.to.line")
           .frame(maxWidth: .infinity)
@@ -350,6 +444,16 @@ struct PrMobileWorkflowCardView: View {
     let moving = ordered.remove(at: sourceIndex)
     ordered.insert(moving, at: targetIndex)
     onReorderQueue(groupId, ordered)
+  }
+
+  private func performLandingConfirmation(_ confirmation: WorkflowLandingConfirmation) {
+    landingConfirmation = nil
+    switch confirmation {
+    case .activePr(let prId):
+      onLand(prId, mergeMethod)
+    case .queueNext(let groupId):
+      onLandQueueNext(groupId, mergeMethod)
+    }
   }
 
   // MARK: Integration
