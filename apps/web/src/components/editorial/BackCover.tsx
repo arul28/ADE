@@ -10,7 +10,7 @@ export function BackCover() {
   const reduceMotion = useReducedMotion() ?? true;
 
   return (
-    <section className="relative overflow-hidden bg-[color:var(--color-bg)] text-[color:var(--color-cream)]">
+    <section id="quickstart" className="relative overflow-hidden bg-[color:var(--color-bg)] text-[color:var(--color-cream)]">
       <div
         aria-hidden
         className="pointer-events-none absolute inset-0"

@@ -370,15 +370,15 @@ export function createMissionPreflightService(args: {
           && (hasExternalComputerUseCoverage(requirementKind) || hasLocalComputerUseCoverage(requirementKind));
       });
       if (requiresBrowserEvidence && descriptor) {
-        const likelyBrowserCapable = descriptor.capabilities.tools
-          && (descriptor.capabilities.vision || browserEvidenceCoveredByBackend);
+        const likelyBrowserCapable = browserEvidenceCoveredByBackend
+          || (descriptor.capabilities.tools && descriptor.capabilities.vision);
         if (!likelyBrowserCapable) {
           const message = `${phase.name}: requires browser/screenshot evidence, but ${descriptor.displayName} does not advertise the tool/vision support needed without an available proof backend.`;
           if ((phase.validationGate.capabilityFallback ?? "block") === "block") capabilityIssues.push(message);
           else capabilityWarnings.push(message);
         }
       }
-      if (requiresBrowserEvidence && !descriptor) {
+      if (requiresBrowserEvidence && !descriptor && !browserEvidenceCoveredByBackend) {
         const message = `${phase.name}: requires browser/screenshot evidence, but model ${phase.model.modelId} could not be resolved for capability checks.`;
         if ((phase.validationGate.capabilityFallback ?? "block") === "block") capabilityIssues.push(message);
         else capabilityWarnings.push(message);

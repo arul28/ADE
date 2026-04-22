@@ -210,22 +210,28 @@ private struct ProjectHomeView: View {
     Button {
       syncService.settingsPresented = true
     } label: {
-      HStack(spacing: 6) {
+      ZStack(alignment: .topTrailing) {
         Image(systemName: "desktopcomputer")
-          .font(.system(size: 13, weight: .semibold))
-        Text(connectionLabel)
-          .font(.system(.caption, design: .rounded).weight(.semibold))
+          .font(.system(size: 15, weight: .semibold))
+          .foregroundStyle(connectionTint)
+          .frame(width: 36, height: 36)
+          .background(ADEColor.raisedBackground, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+          .overlay(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+              .stroke(ADEColor.border, lineWidth: 1)
+          )
+        Circle()
+          .fill(connectionTint)
+          .frame(width: 8, height: 8)
+          .overlay(
+            Circle()
+              .stroke(ADEColor.pageBackground, lineWidth: 2)
+          )
+          .offset(x: 1, y: -1)
       }
-      .foregroundStyle(connectionTint)
-      .padding(.horizontal, 10)
-      .padding(.vertical, 7)
-      .background(connectionTint.opacity(0.12), in: Capsule())
-      .overlay(
-        Capsule()
-          .stroke(connectionTint.opacity(0.35), lineWidth: 0.5)
-      )
+      .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
     }
-    .accessibilityLabel(connectionLabel)
+    .accessibilityLabel("Computer connection: \(connectionLabel)")
     .accessibilityHint("Opens computer connection settings.")
   }
 

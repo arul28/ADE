@@ -527,6 +527,84 @@ final class ADETests: XCTestCase {
     database.close()
   }
 
+  func testDatabaseScopesPullRequestReadsByActiveProject() throws {
+    let baseURL = makeTemporaryDirectory()
+    let database = makeControllerHydrationDatabase(baseURL: baseURL)
+    XCTAssertNil(database.initializationError)
+
+    try database.executeSqlForTesting("""
+      create table if not exists pr_groups (
+        id text primary key,
+        project_id text not null,
+        group_type text not null,
+        name text,
+        target_branch text,
+        created_at text not null
+      );
+      create table if not exists pr_group_members (
+        id text primary key,
+        group_id text not null,
+        pr_id text not null,
+        lane_id text not null,
+        position integer not null,
+        role text not null
+      );
+      insert into projects (
+        id, root_path, display_name, default_base_ref, created_at, last_opened_at
+      ) values
+        ('project-1', '/tmp/project-one', 'Project One', 'main', '2026-04-22T00:00:00.000Z', '2026-04-22T01:00:00.000Z'),
+        ('project-2', '/tmp/project-two', 'Project Two', 'main', '2026-04-22T00:00:00.000Z', '2026-04-22T02:00:00.000Z');
+      insert into lanes (
+        id, project_id, name, description, lane_type, base_ref, branch_ref, worktree_path,
+        attached_root_path, is_edit_protected, parent_lane_id, color, icon, tags_json, folder,
+        status, created_at, archived_at
+      ) values
+        ('lane-one', 'project-1', 'One', null, 'worktree', 'main', 'feature/one', '/tmp/project-one/.ade/worktrees/one',
+         null, 0, null, null, null, null, null, 'active', '2026-04-22T00:10:00.000Z', null),
+        ('lane-two', 'project-2', 'Two', null, 'worktree', 'main', 'feature/two', '/tmp/project-two/.ade/worktrees/two',
+         null, 0, null, null, null, null, null, 'active', '2026-04-22T00:20:00.000Z', null);
+      insert into pull_requests (
+        id, project_id, lane_id, repo_owner, repo_name, github_pr_number, github_url, github_node_id,
+        title, state, base_branch, head_branch, checks_status, review_status, additions, deletions,
+        last_synced_at, created_at, updated_at
+      ) values
+        ('pr-one', 'project-1', 'lane-one', 'ade', 'repo', 101, 'https://github.com/ade/repo/pull/101',
+         null, 'Project one PR', 'open', 'main', 'feature/one', 'success', 'approved', 10, 2,
+         '2026-04-22T00:30:00.000Z', '2026-04-22T00:00:00.000Z', '2026-04-22T00:30:00.000Z'),
+        ('pr-two', 'project-2', 'lane-two', 'ade', 'repo', 202, 'https://github.com/ade/repo/pull/202',
+         null, 'Project two PR', 'open', 'main', 'feature/two', 'pending', 'requested', 4, 1,
+         '2026-04-22T00:40:00.000Z', '2026-04-22T00:00:00.000Z', '2026-04-22T00:40:00.000Z');
+      insert into pull_request_snapshots(pr_id, updated_at) values
+        ('pr-one', '2026-04-22T00:30:00.000Z'),
+        ('pr-two', '2026-04-22T00:40:00.000Z');
+      insert into pr_groups(id, project_id, group_type, name, target_branch, created_at) values
+        ('group-one', 'project-1', 'queue', 'Project one queue', 'main', '2026-04-22T00:30:00.000Z'),
+        ('group-two', 'project-2', 'queue', 'Project two queue', 'main', '2026-04-22T00:40:00.000Z');
+      insert into pr_group_members(id, group_id, pr_id, lane_id, position, role) values
+        ('member-one', 'group-one', 'pr-one', 'lane-one', 0, 'source'),
+        ('member-two', 'group-two', 'pr-two', 'lane-two', 0, 'source');
+    """)
+
+    database.setActiveProjectId("project-1")
+    XCTAssertEqual(database.fetchPullRequests().map(\.id), ["pr-one"])
+    XCTAssertEqual(database.fetchPullRequestListItems().map(\.id), ["pr-one"])
+    XCTAssertEqual(database.fetchPullRequestListItems(forLane: "lane-one").map(\.id), ["pr-one"])
+    XCTAssertEqual(database.fetchPullRequestGroupMembers(groupId: "group-one").map(\.prId), ["pr-one"])
+    XCTAssertNotNil(database.fetchPullRequestSnapshot(prId: "pr-one"))
+    XCTAssertNil(database.fetchPullRequestSnapshot(prId: "pr-two"))
+
+    database.setActiveProjectId("project-2")
+    XCTAssertEqual(database.fetchPullRequests().map(\.id), ["pr-two"])
+    XCTAssertEqual(database.fetchPullRequestListItems().map(\.id), ["pr-two"])
+    XCTAssertEqual(database.fetchPullRequestListItems(forLane: "lane-two").map(\.id), ["pr-two"])
+    XCTAssertEqual(database.fetchPullRequestGroupMembers(groupId: "group-two").map(\.prId), ["pr-two"])
+    XCTAssertEqual(database.fetchPullRequestGroupMembers(groupId: "group-one").map(\.prId), [])
+    XCTAssertNil(database.fetchPullRequestSnapshot(prId: "pr-one"))
+    XCTAssertNotNil(database.fetchPullRequestSnapshot(prId: "pr-two"))
+
+    database.close()
+  }
+
   func testDatabaseListsMobileProjectsAndScopesCachedRuntimeByActiveProject() throws {
     let baseURL = makeTemporaryDirectory()
     let database = makeControllerHydrationDatabase(baseURL: baseURL)

@@ -63,9 +63,10 @@ export function FeatureGrid() {
 
   return (
     <section
-      id="catalog"
+      id="features"
       className="relative bg-[color:var(--color-paper)] text-[color:var(--color-ink)]"
     >
+      <span id="catalog" className="sr-only" aria-hidden="true" />
       <div className="mx-auto max-w-[1240px] px-[clamp(20px,3vw,40px)] py-[clamp(44px,5.5vw,84px)]">
         {/* running head */}
         <div className="mb-10 flex items-baseline justify-between border-b border-[color:var(--color-ink-hairline)] pb-4 text-[11px] uppercase tracking-[0.24em] text-[color:var(--color-ink-muted)]">

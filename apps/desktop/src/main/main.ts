@@ -3493,7 +3493,6 @@ app.whenReady().then(async () => {
   async function mobileProjectSummaryForContext(
     ctx: AppContext,
     recent?: RecentProjectSummary | null,
-    options: { useProjectRowId?: boolean } = {},
   ): Promise<SyncMobileProjectSummary> {
     let laneCount = recent?.laneCount ?? 0;
     if (!recent?.laneCount) {
@@ -3504,7 +3503,7 @@ app.whenReady().then(async () => {
       }
     }
     return {
-      id: options.useProjectRowId ? ctx.projectId : `root:${normalizeProjectRoot(ctx.project.rootPath)}`,
+      id: `root:${normalizeProjectRoot(ctx.project.rootPath)}`,
       displayName: ctx.project.displayName,
       rootPath: ctx.project.rootPath,
       defaultBaseRef: ctx.project.baseRef,
@@ -3638,7 +3637,7 @@ app.whenReady().then(async () => {
     const recent = (readGlobalState(globalStatePath).recentProjects ?? [])
       .map(toRecentProjectSummary)
       .find((entry) => normalizeProjectRoot(entry.rootPath) === targetRoot) ?? null;
-    const project = await mobileProjectSummaryForContext(ctx, recent, { useProjectRowId: true });
+    const project = await mobileProjectSummaryForContext(ctx, recent);
     const leaseExpiresAt = Date.now() + MOBILE_SYNC_HANDOFF_LEASE_MS;
     mobileSyncHandoffLeases.set(targetRoot, leaseExpiresAt);
     const existingLeaseTimer = mobileSyncHandoffLeaseTimers.get(targetRoot);

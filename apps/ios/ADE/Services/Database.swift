@@ -1560,14 +1560,18 @@ final class DatabaseService {
   }
 
   func fetchPullRequests() -> [PrSummary] {
+    guard let projectId = currentProjectId() else { return [] }
     let sql = """
       select id, lane_id, project_id, repo_owner, repo_name, github_pr_number, github_url, github_node_id,
              title, state, base_branch, head_branch, checks_status, review_status, additions, deletions,
              last_synced_at, created_at, updated_at
         from pull_requests
+       where project_id = ?
        order by updated_at desc
     """
-    return query(sql) { statement in
+    return query(sql, bind: { [self] statement in
+      try self.bindText(projectId, to: statement, index: 1)
+    }) { statement in
       PrSummary(
         id: stringValue(statement, index: 0) ?? "",
         laneId: stringValue(statement, index: 1) ?? "",
@@ -1597,6 +1601,7 @@ final class DatabaseService {
   }
 
   func fetchPullRequestListItems(forLane laneId: String?) -> [PullRequestListItem] {
+    guard let projectId = currentProjectId() else { return [] }
     let hasPrGroupContext = hasTable(named: "pr_group_members")
       && hasTable(named: "pr_groups")
       && tableHasColumn(tableName: "pr_group_members", columnName: "group_id")
@@ -1679,19 +1684,22 @@ final class DatabaseService {
     \(prGroupSelect)
     \(integrationSelect)
         from pull_requests pr
-        left join lanes l on l.id = pr.lane_id
+        left join lanes l on l.id = pr.lane_id and l.project_id = pr.project_id
     \(prGroupJoins)
     \(integrationJoin)
     """
     let filteredSQL: String
     if laneId == nil {
-      filteredSQL = sql + " order by pr.updated_at desc"
+      filteredSQL = sql + " where pr.project_id = ? order by pr.updated_at desc"
     } else {
-      filteredSQL = sql + " where pr.lane_id = ? order by pr.updated_at desc"
+      filteredSQL = sql + " where pr.project_id = ? and pr.lane_id = ? order by pr.updated_at desc"
     }
 
-    let bindFn: ((OpaquePointer) throws -> Void)? = laneId.map { id in
-      { statement in try self.bindText(id, to: statement, index: 1) }
+    let bindFn: (OpaquePointer) throws -> Void = { [self] statement in
+      try self.bindText(projectId, to: statement, index: 1)
+      if let laneId {
+        try self.bindText(laneId, to: statement, index: 2)
+      }
     }
 
     return query(filteredSQL, bind: bindFn) { statement in
@@ -1769,6 +1777,7 @@ final class DatabaseService {
   }
 
   func fetchPullRequestGroupMembers(groupId: String) -> [PrGroupMemberSummary] {
+    guard let projectId = currentProjectId() else { return [] }
     let sql = """
       select gm.group_id,
              g.group_type,
@@ -1787,13 +1796,17 @@ final class DatabaseService {
         from pr_group_members gm
         join pr_groups g on g.id = gm.group_id
         join pull_requests pr on pr.id = gm.pr_id
-        left join lanes l on l.id = pr.lane_id
+        left join lanes l on l.id = pr.lane_id and l.project_id = pr.project_id
        where gm.group_id = ?
+         and g.project_id = ?
+         and pr.project_id = ?
        order by gm.position asc, pr.updated_at desc
     """
 
     return query(sql, bind: { [self] statement in
       try self.bindText(groupId, to: statement, index: 1)
+      try self.bindText(projectId, to: statement, index: 2)
+      try self.bindText(projectId, to: statement, index: 3)
     }, map: { statement in
       PrGroupMemberSummary(
         groupId: stringValue(statement, index: 0) ?? "",
@@ -1977,14 +1990,18 @@ final class DatabaseService {
   }
 
   func fetchPullRequestSnapshot(prId: String) -> PullRequestSnapshot? {
+    guard let projectId = currentProjectId() else { return nil }
     let sql = """
-      select detail_json, status_json, checks_json, reviews_json, comments_json, files_json, commits_json
-        from pull_request_snapshots
-       where pr_id = ?
+      select s.detail_json, s.status_json, s.checks_json, s.reviews_json, s.comments_json, s.files_json, s.commits_json
+        from pull_request_snapshots s
+        join pull_requests pr on pr.id = s.pr_id
+       where s.pr_id = ?
+         and pr.project_id = ?
        limit 1
     """
     guard let row = querySingle(sql, bind: { [self] statement in
       try self.bindText(prId, to: statement, index: 1)
+      try self.bindText(projectId, to: statement, index: 2)
     }, map: { statement in
       PullRequestSnapshotRow(
         detailJson: stringValue(statement, index: 0),
