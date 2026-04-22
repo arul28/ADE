@@ -82,6 +82,20 @@ describe("ManageLaneDialog", () => {
     expect((screen.getByRole("checkbox", { name: /Force delete/i }) as HTMLInputElement).disabled).toBe(true);
   });
 
+  it("shows concrete archive progress without turning the delete button into deleting state", () => {
+    render(
+      <ManageLaneDialog
+        {...baseProps}
+        laneActionBusy
+        laneActionKind="archive"
+        laneActionStatus="Archiving lane..."
+      />,
+    );
+
+    expect(screen.getByRole("status").textContent).toContain("Archiving lane...");
+    expect(screen.queryByRole("button", { name: /Deleting/i })).toBeNull();
+  });
+
   it("keeps the delete button actionable after confirmation when idle", () => {
     render(
       <ManageLaneDialog

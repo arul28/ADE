@@ -8,6 +8,7 @@ struct CtoTeamScreen: View {
   @Binding var path: NavigationPath
 
   @State private var agents: [AgentIdentity] = []
+  @State private var fallbackWorkers: [CtoWorkerEntry] = []
   @State private var budget: AgentBudgetSnapshot?
   @State private var isLoading = false
   @State private var loadError: String?
@@ -31,14 +32,14 @@ struct CtoTeamScreen: View {
         rosterSectionHeader
           .padding(.horizontal, 20)
 
-        if isLoading && agents.isEmpty {
+        if isLoading && displayAgents.isEmpty {
           VStack(spacing: 8) {
             ForEach(0..<4, id: \.self) { _ in
               ADECardSkeleton(rows: 2)
             }
           }
           .padding(.horizontal, 16)
-        } else if agents.isEmpty && loadError != nil {
+        } else if displayAgents.isEmpty && loadError != nil {
           ADENoticeCard(
             title: "Couldn't load workers",
             message: loadError ?? "Unknown error.",
@@ -48,7 +49,7 @@ struct CtoTeamScreen: View {
             action: { Task { await load() } }
           )
           .padding(.horizontal, 16)
-        } else if agents.isEmpty {
+        } else if displayAgents.isEmpty {
           ADEEmptyStateView(
             symbol: "person.crop.circle.badge.questionmark",
             title: "No workers hired yet",
@@ -57,7 +58,7 @@ struct CtoTeamScreen: View {
           .padding(.horizontal, 16)
         } else {
           VStack(spacing: 8) {
-            ForEach(agents) { agent in
+            ForEach(displayAgents) { agent in
               WorkerRowCard(
                 agent: agent,
                 spentOverride: spentOverride(for: agent),
@@ -87,8 +88,12 @@ struct CtoTeamScreen: View {
       }
       .padding(.top, 8)
     }
-    .refreshable { await load() }
-    .task { if agents.isEmpty { await load() } }
+    .refreshable { await load(force: true) }
+    .task { if displayAgents.isEmpty { await load(force: true) } }
+    .task(id: ctoAgentsLiveReloadKey) {
+      guard ctoAgentsLiveReloadKey != nil else { return }
+      await load(force: true)
+    }
     .sheet(isPresented: $showHireSheet) {
       CtoDesktopOnlyNotice(
         title: "Hire worker",
@@ -129,7 +134,7 @@ struct CtoTeamScreen: View {
   }
 
   private var headerSubtitle: String {
-    let count = agents.count
+    let count = displayAgents.count
     let workerWord = count == 1 ? "worker" : "workers"
     let spent = ctoFormatCents(budget?.companySpentMonthlyCents ?? companySpentFallbackCents)
     if let cap = budget?.companyCapMonthlyCents {
@@ -272,8 +277,8 @@ struct CtoTeamScreen: View {
         .textCase(.uppercase)
         .tracking(0.4)
       Spacer(minLength: 0)
-      if !agents.isEmpty {
-        Text("\(agents.count)")
+      if !displayAgents.isEmpty {
+        Text("\(displayAgents.count)")
           .font(.caption.monospaced())
           .foregroundStyle(ADEColor.textMuted)
       }
@@ -287,8 +292,9 @@ struct CtoTeamScreen: View {
   /// failure shouldn't hide the budget card. Connection-level errors are
   /// surfaced globally by the top-right gear, not inline here.
   @MainActor
-  private func load() async {
+  private func load(force: Bool = false) async {
     if isLoading { return }
+    if !force && !displayAgents.isEmpty { return }
     isLoading = true
     defer { isLoading = false }
 
@@ -299,9 +305,21 @@ struct CtoTeamScreen: View {
     switch agentsResult {
     case .success(let fetched):
       agents = fetched
+      if fetched.isEmpty {
+        if let roster = try? await syncService.fetchCtoRoster() {
+          fallbackWorkers = roster.workers
+        } else {
+          fallbackWorkers = []
+        }
+      } else {
+        fallbackWorkers = []
+      }
       loadError = nil
     case .failure(let error):
-      if syncService.connectionState.isHostUnreachable {
+      agents = []
+      let rosterWorkers = (try? await syncService.fetchCtoRoster())?.workers ?? []
+      fallbackWorkers = rosterWorkers
+      if syncService.connectionState.isHostUnreachable || !rosterWorkers.isEmpty {
         loadError = nil
       } else {
         loadError = (error as NSError).localizedDescription
@@ -309,6 +327,40 @@ struct CtoTeamScreen: View {
     }
     if case .success(let snap) = budgetResult {
       budget = snap
+    }
+  }
+
+  private var displayAgents: [AgentIdentity] {
+    if !agents.isEmpty { return agents }
+    return fallbackWorkers.map { worker in
+      AgentIdentity(
+        id: worker.agentId,
+        name: worker.name,
+        slug: nil,
+        role: "worker",
+        title: nil,
+        reportsTo: nil,
+        capabilities: [],
+        status: worker.status,
+        adapterType: "legacy_roster",
+        adapterConfig: nil,
+        personality: nil,
+        systemPromptExtension: nil,
+        budgetMonthlyCents: nil,
+        spentMonthlyCents: nil,
+        lastHeartbeatAt: nil,
+        createdAt: nil,
+        updatedAt: nil
+      )
+    }
+  }
+
+  private var ctoAgentsLiveReloadKey: String? {
+    switch syncService.connectionState {
+    case .connected, .syncing:
+      return "live-\(syncService.localStateRevision)"
+    case .connecting, .disconnected, .error:
+      return nil
     }
   }
 

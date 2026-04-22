@@ -134,16 +134,16 @@ function workToneIcon(entry: ChatWorkLogEntry): { icon: Icon; className: string 
   return { icon: Warning, className: "text-fg/34" };
 }
 
-function workStatusState(status: ChatWorkLogEntry["status"], animate = true): ChatStatusVisualState {
+function workStatusState(status: ChatWorkLogEntry["status"]): ChatStatusVisualState {
   if (status === "completed" || status === "failed") return status;
   if (status === "interrupted") return "waiting";
-  return animate ? "working" : "completed";
+  return "working";
 }
 
-function workStatusLabel(status: ChatWorkLogEntry["status"], animate = true): string {
+function workStatusLabel(status: ChatWorkLogEntry["status"]): string {
   if (status === "completed" || status === "failed") return status;
   if (status === "interrupted") return "interrupted";
-  return animate ? "running" : "completed";
+  return "running";
 }
 
 function workEntryHeading(entry: ChatWorkLogEntry): string {
@@ -479,10 +479,9 @@ export function ChatWorkLogBlock({
   const groupStatus: ChatStatusVisualState = useMemo(() => {
     if (entries.some((e) => e.status === "failed")) return "failed";
     if (entries.some((e) => e.status === "interrupted")) return "waiting";
-    if (!animate) return "completed";
     if (entries.some((e) => e.status === "running")) return "working";
     return "completed";
-  }, [entries, animate]);
+  }, [entries]);
 
   const groupStatusLabel = useMemo(() => {
     if (groupStatus === "failed") return "failed";
@@ -521,7 +520,7 @@ export function ChatWorkLogBlock({
         onClick={() => setExpanded((prev) => !prev)}
       >
         <span className="inline-flex h-3 w-3 shrink-0 items-center justify-center">
-          <ChatStatusGlyph status={groupStatus} size={11} />
+          <ChatStatusGlyph status={groupStatus} size={11} animate={animate} />
         </span>
         {latestIsMemory ? (
           <span className="ade-memory-chip inline-flex h-5 w-5 shrink-0 items-center justify-center">
@@ -565,8 +564,8 @@ export function ChatWorkLogBlock({
             const isEntryExpanded = expandedEntries[entry.id] ?? (hasSuggestions || entry.status === "failed");
             const heading = replaceInternalToolNames(workEntryHeading(entry));
             const preview = workEntryPreview(entry);
-            const statusLabel = workStatusLabel(entry.status, animate);
-            const entryStatusState = workStatusState(entry.status, animate);
+            const statusLabel = workStatusLabel(entry.status);
+            const entryStatusState = workStatusState(entry.status);
 
             return (
               <div key={entry.id}>
@@ -581,7 +580,7 @@ export function ChatWorkLogBlock({
                     <CaretRight size={9} weight="bold" className="shrink-0 text-fg/25" />
                   )}
                   <span className="inline-flex h-2.5 w-2.5 shrink-0 items-center justify-center">
-                    <ChatStatusGlyph status={entryStatusState} size={10} />
+                    <ChatStatusGlyph status={entryStatusState} size={10} animate={animate} />
                   </span>
                   {entryIsMemory ? (
                     <span className="ade-memory-chip inline-flex h-5 w-5 shrink-0 items-center justify-center">

@@ -2,7 +2,7 @@ import SwiftUI
 
 private enum WorkflowLandingConfirmation {
   case activePr(prId: String)
-  case queueNext(groupId: String)
+  case queueNext(groupId: String, prId: String)
 
   var title: String {
     switch self {
@@ -258,6 +258,15 @@ struct PrMobileWorkflowCardView: View {
     card.queueId.nonEmpty ?? (card.id.hasPrefix("queue:") ? String(card.id.dropFirst("queue:".count)) : nil)
   }
 
+  private var nextQueueEntry: QueueLandingEntry? {
+    card.entries?
+      .sorted(by: { $0.position < $1.position })
+      .first { entry in
+        let state = entry.state.lowercased()
+        return state == "open" || state == "draft"
+      }
+  }
+
   private var landingConfirmationPresented: Binding<Bool> {
     Binding(
       get: { landingConfirmation != nil },
@@ -399,14 +408,17 @@ struct PrMobileWorkflowCardView: View {
     }
 
     if let groupId = card.groupId {
+      let nextPrId = nextQueueEntry?.prId
       Button {
-        landingConfirmation = .queueNext(groupId: groupId)
+        if let nextPrId {
+          landingConfirmation = .queueNext(groupId: groupId, prId: nextPrId)
+        }
       } label: {
         Label("Land queue next", systemImage: "arrow.forward.to.line")
           .frame(maxWidth: .infinity)
       }
       .buttonStyle(.glass)
-      .disabled(!isLive)
+      .disabled(!isLive || nextPrId == nil)
     }
 
     if let queueId {
@@ -463,8 +475,9 @@ struct PrMobileWorkflowCardView: View {
         return
       }
       onLand(capturedPrId, mergeMethod)
-    case .queueNext(let capturedGroupId):
-      guard card.groupId == capturedGroupId else { return }
+    case .queueNext(let capturedGroupId, let capturedPrId):
+      guard card.groupId == capturedGroupId,
+            nextQueueEntry?.prId == capturedPrId else { return }
       onLandQueueNext(capturedGroupId, mergeMethod)
     }
   }

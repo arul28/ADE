@@ -4,6 +4,7 @@ import AVKit
 
 struct WorkChatSessionView: View {
   @Environment(\.accessibilityReduceMotion) var reduceMotion
+  @EnvironmentObject private var syncService: SyncService
 
   let session: TerminalSessionSummary
   let chatSummary: AgentChatSessionSummary?
@@ -177,9 +178,9 @@ struct WorkChatSessionView: View {
       }
     }
 
-    // Surface mid-session errors only when the host is actually reachable.
-    // Connection-caused failures are communicated via the top-right gear.
-    if let errorMessage, isLive {
+    // Connection-caused failures are communicated via the top-right gear, but
+    // cached/offline chat actions still need their own visible errors.
+    if let errorMessage, !syncService.connectionState.isHostUnreachable {
       ADENoticeCard(
         title: "Chat error",
         message: errorMessage,

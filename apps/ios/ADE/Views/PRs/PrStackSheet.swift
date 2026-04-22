@@ -16,6 +16,7 @@ struct PrStackSheet: View {
   @State private var stackInfo: PrStackInfo?
   @State private var isLoading = true
   @State private var errorMessage: String?
+  @State private var actionErrorMessage: String?
   @State private var detailPath = NavigationPath()
   @State private var isDispatchingStackAction = false
   @State private var actionMessage: String?
@@ -61,6 +62,18 @@ struct PrStackSheet: View {
                   message: actionMessage,
                   icon: "checkmark.circle.fill",
                   tint: ADEColor.success,
+                  actionTitle: nil,
+                  action: nil
+                )
+                .padding(.horizontal, 16)
+              }
+
+              if let actionErrorMessage {
+                ADENoticeCard(
+                  title: "Stack action failed",
+                  message: actionErrorMessage,
+                  icon: "exclamationmark.triangle.fill",
+                  tint: ADEColor.danger,
                   actionTitle: nil,
                   action: nil
                 )
@@ -294,13 +307,15 @@ struct PrStackSheet: View {
     guard !isDispatchingStackAction, let laneId = rebaseTargetLaneId else { return }
     isDispatchingStackAction = true
     errorMessage = nil
+    actionMessage = nil
+    actionErrorMessage = nil
     Task { @MainActor in
       defer { isDispatchingStackAction = false }
       do {
         try await syncService.startLaneRebase(laneId: laneId)
         actionMessage = "Rebase started."
       } catch {
-        errorMessage = error.localizedDescription
+        actionErrorMessage = error.localizedDescription
       }
     }
   }
@@ -309,13 +324,15 @@ struct PrStackSheet: View {
     guard !isDispatchingStackAction, let prId = landTargetPrId else { return }
     isDispatchingStackAction = true
     errorMessage = nil
+    actionMessage = nil
+    actionErrorMessage = nil
     Task { @MainActor in
       defer { isDispatchingStackAction = false }
       do {
         try await syncService.mergePullRequest(prId: prId, method: PrMergeMethodOption.squash.rawValue)
         actionMessage = "Landing started."
       } catch {
-        errorMessage = error.localizedDescription
+        actionErrorMessage = error.localizedDescription
       }
     }
   }

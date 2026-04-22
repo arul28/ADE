@@ -229,15 +229,18 @@ export function ManageLaneDialog({
               />
             </div>
 
-            {laneActionBusy && (laneActionKind === "delete" || laneActionKind == null) && (
+            {laneActionBusy && (laneActionKind === "delete" || laneActionKind === "archive" || laneActionKind == null) && (
               <div className="mb-3 flex items-center gap-2 rounded-lg border border-white/[0.08] bg-white/[0.04] px-3 py-2 text-xs text-muted-fg" role="status" aria-live="polite">
-                <CircleNotch size={14} className="shrink-0 animate-spin text-red-300" />
+                <CircleNotch
+                  size={14}
+                  className={`shrink-0 animate-spin ${laneActionKind === "delete" ? "text-red-300" : "text-amber-300"}`}
+                />
                 <span>{laneActionStatus ?? "Working..."}</span>
               </div>
             )}
 
             {/* Error */}
-            {laneActionError && (laneActionKind === "delete" || laneActionKind == null) && (
+            {laneActionError && (laneActionKind === "delete" || laneActionKind === "archive" || laneActionKind == null) && (
               <div className="mb-3 flex items-start gap-2 rounded-lg border border-red-500/15 bg-red-500/[0.06] px-3 py-2 text-xs text-red-300">
                 <WarningCircle size={14} className="mt-0.5 shrink-0" />
                 <span className="whitespace-pre-wrap">{laneActionError}</span>

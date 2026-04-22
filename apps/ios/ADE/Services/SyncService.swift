@@ -196,6 +196,12 @@ enum SyncTailnetDiscovery {
   ]
 }
 
+func syncIsTailnetDiscoveryHost(_ host: String) -> Bool {
+  SyncTailnetDiscovery.hostCandidates.contains(
+    host.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+  )
+}
+
 func syncIsTailscaleIPv4Address(_ host: String) -> Bool {
   let normalized = host
     .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -2731,6 +2737,7 @@ final class SyncService: ObservableObject {
     if host == "localhost" || host.hasSuffix(".localhost") { return true }
     if host.hasSuffix(".local") { return true } // Bonjour / mDNS
     if host.hasSuffix(".ts.net") { return true } // Tailscale MagicDNS
+    if syncIsTailnetDiscoveryHost(host) { return true } // Tailscale Serve service aliases
 
     if let v4 = IPv4Address(host) {
       let bytes = v4.rawValue
@@ -2847,6 +2854,12 @@ final class SyncService: ObservableObject {
       + (discovered.tailscaleAddress.map { [$0] } ?? [])
     )
     if !knownAddresses.isDisjoint(with: discoveredAddresses) {
+      return true
+    }
+
+    if let tailnetService = discovered.tailscaleAddress,
+       syncIsTailnetDiscoveryHost(tailnetService),
+       profileHasTailnetRoute(profile) {
       return true
     }
 
@@ -4478,14 +4491,16 @@ private final class SyncTailnetProbe {
         let canConnect = await probe(host: host, port: port)
         guard canConnect else { continue }
         let key = "\(host):\(port)"
+        let routeHost = host.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let isTailnetRoute = syncIsTailnetDiscoveryHost(routeHost)
         nextHosts[key] = DiscoveredSyncHost(
           id: "tailnet-\(key)",
           serviceName: "ADE Tailnet \(host)",
-          hostName: host,
+          hostName: routeHost,
           hostIdentity: nil,
           port: port,
-          addresses: [host],
-          tailscaleAddress: nil,
+          addresses: isTailnetRoute ? [] : [routeHost],
+          tailscaleAddress: isTailnetRoute ? routeHost : nil,
           lastResolvedAt: ISO8601DateFormatter().string(from: Date())
         )
         break
