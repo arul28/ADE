@@ -44,7 +44,23 @@ export function TabNav({ githubStatus }: { githubStatus?: GitHubStatus | null })
   const hasActiveProject = Boolean(project?.rootPath);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
   const [avatarBroken, setAvatarBroken] = useState(false);
+  const [isPackaged, setIsPackaged] = useState(false);
   const githubLogin = githubStatus?.userLogin || null;
+
+  useEffect(() => {
+    let cancelled = false;
+    window.ade.app.getInfo().then(
+      (info) => {
+        if (!cancelled) setIsPackaged(Boolean(info.isPackaged));
+      },
+      () => {
+        if (!cancelled) setIsPackaged(false);
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     setAvatarBroken(false);
@@ -139,6 +155,14 @@ export function TabNav({ githubStatus }: { githubStatus?: GitHubStatus | null })
                     : "ade-status-dot-active animate-spin",
                 )}
               />
+            ) : null}
+            {it.to === "/missions" && isPackaged ? (
+              <span
+                title="Missions are coming soon in production builds"
+                className="absolute -right-2 -top-1 rounded border border-emerald-300/40 bg-emerald-400 px-1 font-mono text-[7px] font-bold uppercase leading-[10px] text-[#07110B]"
+              >
+                Soon
+              </span>
             ) : null}
           </span>
         </span>

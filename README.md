@@ -4,255 +4,148 @@
   </a>
 </p>
 
-<h1 align="center">ADE</h1>
-
 <p align="center">
-  <strong>Agentic Development Environment</strong>
-</p>
-
-<p align="center">
-  A local-first desktop control plane for coding agents, isolated lanes, missions, pull requests, computer-use proofs, and mobile workspace monitoring.
-</p>
-
-<p align="center">
-  <a href="https://github.com/arul28/ADE/releases/latest"><img src="https://img.shields.io/github/v/release/arul28/ADE?label=latest" alt="Latest release" /></a>
-  <a href="https://github.com/arul28/ADE/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/arul28/ADE/ci.yml?branch=main&label=CI" alt="CI status" /></a>
-  <a href="https://github.com/arul28/ADE/releases"><img src="https://img.shields.io/github/downloads/arul28/ADE/total?label=downloads" alt="Downloads" /></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-AGPL--3.0-7c3aed" alt="AGPL-3.0 license" /></a>
+  <strong>A single native workspace for every AI coding agent.</strong><br />
+  <em>macOS, iOS, CLI — synced in real time.</em>
 </p>
 
 <p align="center">
   <a href="https://www.ade-app.dev"><strong>Website</strong></a>
-  ·
+  &nbsp;·&nbsp;
   <a href="https://www.ade-app.dev/docs"><strong>Docs</strong></a>
-  ·
+  &nbsp;·&nbsp;
   <a href="https://github.com/arul28/ADE/releases/latest"><strong>Download</strong></a>
-  ·
-  <a href="https://www.ade-app.dev/docs/changelog/v1.0.19"><strong>v1.0.19 notes</strong></a>
+  &nbsp;·&nbsp;
+  <a href="https://www.ade-app.dev/docs/changelog/v1.1.0"><strong>Changelog</strong></a>
 </p>
 
 <p align="center">
-  <img src="apps/web/public/og-image.png" alt="ADE product preview" width="820" />
+  <img src="https://img.shields.io/badge/100%25%20Free-7c3aed?style=flat-square&labelColor=1a1a24" alt="100% Free" />
+  <img src="https://img.shields.io/badge/Open%20Source-a78bfa?style=flat-square&labelColor=1a1a24" alt="Open source" />
+  <a href="LICENSE"><img src="https://img.shields.io/badge/AGPL--3.0-efe6d0?style=flat-square&labelColor=1a1a24" alt="AGPL-3.0 license" /></a>
+  <a href="https://github.com/arul28/ADE/releases/latest"><img src="https://img.shields.io/github/v/release/arul28/ADE?label=latest&style=flat-square&labelColor=1a1a24&color=a78bfa" alt="Latest release" /></a>
+  <a href="https://github.com/arul28/ADE/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/arul28/ADE/ci.yml?branch=main&label=CI&style=flat-square&labelColor=1a1a24" alt="CI status" /></a>
 </p>
+
+<p align="center">
+  <img src="assets/readme/hero.png" alt="ADE on desk and in hand" width="900" />
+</p>
+
+ADE runs **Claude Code, Codex, Cursor, opencode** — every major AI coding agent — inside one native workspace. Every task is its own git worktree, so agents ship features in parallel. Review and merge PRs in-app. Approve a diff from your phone while another agent tests on your Mac.
+
+Free, open source, local-first. Bring your own keys or subs.
 
 ---
 
-## What ADE is
+<table>
+<tr>
+<td width="55%" valign="middle">
+  <img src="apps/web/public/images/screenshots/lanes.png" alt="Parallel worktrees" />
+</td>
+<td width="45%" valign="middle">
 
-ADE is a macOS desktop app for running AI coding agents inside a real software workspace. It gives every task an isolated git worktree called a **lane**, keeps project context warm, tracks runtime state in local SQLite, and turns review, testing, pull requests, and proof capture into first-class workflows.
+### Manage worktrees. In parallel.
+Every task gets its own git worktree. Branch, edit, test, and commit side by side — no stashing, no rebasing, no context switch.
 
-The desktop app is the execution host. The iOS companion is a controller for that host: it shows Work sessions, lanes, files, PRs, notifications, widgets, and Live Activities while agents keep running on your own machine.
+</td>
+</tr>
 
-## Desktop host, iOS companion
+<tr>
+<td width="45%" valign="middle">
 
-<p align="center">
-  <img src="assets/readme/desktop-ios-side-by-side.png" alt="ADE desktop host and iOS companion side by side" width="920" />
-</p>
+### Every coding agent. One workspace.
+Claude Code, Codex, Cursor, opencode — pick whichever model fits the task. All run against the same worktree, with live diffs and approval gates.
 
-ADE is designed around a simple split: the Mac does the heavy work, and the phone keeps you close to the run. Desktop owns the local repository, isolated lane worktrees, terminals, provider sessions, PR workflows, and proof artifacts. The iOS app connects to that host so you can inspect active work, scan lanes and files, follow pull requests, receive push updates, and keep background agent sessions visible without staying at your desk.
+</td>
+<td width="55%" valign="middle">
+  <img src="apps/web/public/images/screenshots/run.png" alt="An agent executing live" />
+</td>
+</tr>
 
-The iOS screenshot above is captured from the native SwiftUI companion app running in the simulator against the same workspace model as desktop. It is not a separate mobile dashboard or docs surface; it is another controller for the local-first ADE runtime.
+<tr>
+<td width="55%" valign="middle">
+  <img src="apps/web/public/images/screenshots/prs.png" alt="Pull request review" />
+</td>
+<td width="45%" valign="middle">
 
-## Why teams use it
+### Open, review, and merge PRs.
+Every PR your agents open lands in ADE — diff, CI, comments, merge button. No GitHub tab. Auto-merge when green.
 
-| Problem | ADE's answer |
-| --- | --- |
-| Agents collide when they edit the same repo | Lanes isolate work in git worktrees and surface branch state early |
-| Long-running agent work is hard to supervise | Work, missions, run state, proofs, and PR checks stay in one timeline |
-| Context gets rebuilt from scratch every session | Context packs, memory, and project-local state keep agents grounded |
-| PR cleanup becomes a manual loop | Path to Merge, issue inventory, checks, and review resolution are built in |
-| Local automation is scattered across scripts | ADE CLI exposes the same service actions used by the desktop app |
-| You have to babysit the desktop app | The iOS companion, push notifications, widgets, and Live Activities keep you in the loop |
+</td>
+</tr>
 
-## Product tour
+<tr>
+<td width="45%" valign="middle">
 
-<p align="center">
-  <img src="apps/web/public/images/splash/left.png" alt="ADE workspace overview" width="31%" />
-  <img src="apps/web/public/images/splash/middle.png" alt="ADE agent workflow" width="31%" />
-  <img src="apps/web/public/images/splash/right.png" alt="ADE pull request workflow" width="31%" />
-</p>
+### The conductor for your agents.
+An always-on CTO with context across every worktree. Pulls work from Linear, dispatches to the right worker, reports back when it's done.
 
-| Work and chat | Lanes | Pull requests |
-| --- | --- | --- |
-| <img src="apps/web/public/images/features/agent-chat.png" alt="ADE agent chat" /> | <img src="apps/web/public/images/features/lanes.png" alt="ADE lanes" /> | <img src="apps/web/public/images/features/prs.png" alt="ADE pull request tools" /> |
-| Multi-provider agent sessions, model selection, transcripts, tool events, and terminal artifacts. | Parallel task worktrees with parent/child stacks, lane state, git metadata, and branch actions. | PR summaries, checks, issue inventory, stack views, review cleanup, and Path to Merge workflows. |
+</td>
+<td width="55%" valign="middle">
+  <img src="apps/web/public/images/screenshots/cto.png" alt="The CTO agent" />
+</td>
+</tr>
 
-| CTO agent | Files | Workspace graph |
-| --- | --- | --- |
-| <img src="apps/web/public/images/features/cto.png" alt="ADE CTO agent" /> | <img src="apps/web/public/images/features/files.png" alt="ADE files browser" /> | <img src="apps/web/public/images/features/workspacegraph.png" alt="ADE workspace graph" /> |
-| Persistent project lead with identity, memory, workflow planning, and delegated workers. | Project-aware file browsing, diffs, editor surfaces, and code review context. | Visual branch/worktree topology, conflict signals, session state, and relationship maps. |
+<tr>
+<td width="55%" valign="middle" align="center">
+  <img src="apps/web/public/images/screenshots/agent-chat.png" alt="ADE on iOS" width="240" />
+</td>
+<td width="45%" valign="middle">
 
-## Core capabilities
+### Everything above. On your phone.
+Every worktree, every agent, every PR — synced to iOS. Start a task on macOS, approve the diff from the train.
 
-- **Lanes**: Isolated worktrees for parallel tasks, stacked branches, attached branches, and queueable work.
-- **Work**: Chat-oriented agent sessions with transcripts, tool events, terminals, artifacts, and model selection.
-- **Missions**: Structured multi-step execution with planning, worker delegation, approvals, and validation gates.
-- **PR workflows**: PR creation, checks, stack views, convergence, review issue resolution, and merge readiness.
-- **CTO agent**: Persistent project coordinator with memory, identity, Linear workflows, and worker management.
-- **Files and terminals**: Project-aware file views, code context, terminal sessions, process runs, and test history.
-- **Computer use**: Screenshot/video/browser proof flows with policy checks and artifact ownership.
-- **Context packs and memory**: Bounded context delivery, freshness tracking, semantic memory, and project notes.
-- **Automations**: Triggered workflows for git, Linear, schedules, guardrails, and background execution.
-- **ADE CLI**: Agent-friendly command surface for lanes, files, git, PRs, tests, proof, memory, settings, and internal actions.
-- **iOS companion**: SwiftUI controller with Work, Lanes, Files, PRs, Settings, APNs push, widgets, and Live Activities.
+</td>
+</tr>
+</table>
 
-## Latest release: v1.0.19
-
-v1.0.19 shipped the mobile push and companion-app release path, new AI backend work, smarter PR and rebase tooling, diagnostics, and the signed macOS release artifacts.
-
-Relevant links:
-
-- [GitHub release](https://github.com/arul28/ADE/releases/tag/v1.0.19)
-- [Changelog](https://www.ade-app.dev/docs/changelog/v1.0.19)
-- [Install guide](https://www.ade-app.dev/docs/getting-started/install)
-- [Cursor integration](https://www.ade-app.dev/docs/ai-tools/cursor)
-- [Windsurf and OpenCode setup](https://www.ade-app.dev/docs/ai-tools/windsurf)
-- [iOS companion architecture](docs/features/sync-and-multi-device/ios-companion.md)
+Plus files, terminals, git history, workspace graph, multi-tasking, Linear sync, long-running missions, cron automations, computer-use proofs, and the `ade` CLI.
 
 ## Install
 
-ADE currently ships as a macOS beta installer.
+Download the DMG from [**GitHub Releases**](https://github.com/arul28/ADE/releases/latest), drag **ADE.app** into `/Applications`, open it on any git repo, and add a provider key (or subscription) in Settings. Runs in Guest Mode without an account.
 
-1. Download the latest DMG from [GitHub Releases](https://github.com/arul28/ADE/releases/latest).
-2. Open the DMG and drag **ADE.app** into `/Applications`.
-3. Launch ADE and open a git repository.
-4. Configure at least one AI provider in **Settings**.
-5. Create a lane and start a small first task.
+Requirements: macOS 13+, git on `PATH`, Node 22+ for headless CLI workflows.
 
-Requirements:
-
-- macOS 13 or newer recommended.
-- Git installed and available on `PATH`.
-- Node.js 22+ for local development and headless ADE CLI workflows.
-- Provider credentials for the agents you want to run.
-
-ADE auto-updates from signed releases. When a new version is available, use the update button in the app header to restart into the latest build.
-
-## ADE CLI
-
-ADE includes a real `ade` command for agents and local automation. The CLI prefers the live desktop socket at `.ade/ade.sock` so commands operate against the same lanes, PR state, process runtime, and proof artifacts as the UI. If desktop is not running, supported commands can fall back to headless mode.
-
-Desktop-bundled install:
-
-```bash
-/Applications/ADE.app/Contents/Resources/ade-cli/install-path.sh
-ade doctor --project-root /path/to/project --json
-```
-
-Local development install:
-
-```bash
-cd apps/ade-cli
-npm install
-npm run build
-npm link
-ade doctor --project-root /path/to/project
-```
-
-Useful commands:
+## CLI
 
 ```bash
 ade doctor --json
-ade actions list --text
-ade lanes list --text
-ade lanes create "fix-checkout-flow" --parent main
-ade files read README.md --text
-ade git status --lane lane-id --json
+ade lanes create --name fix-checkout-flow
 ade prs checks 168 --text
 ade tests run --suite unit --wait
-ade actions run git.stageFile --arg laneId=lane-id --arg path=src/index.ts --json
+ade actions list --text   # discover every service action
 ```
 
-Use typed commands first. Use `ade actions list --text` for discovery and `ade actions run <domain.action>` as the escape hatch for service actions that do not yet have typed commands.
+[CLI reference →](apps/ade-cli/README.md)
 
 ## Architecture
 
-ADE is intentionally local-first.
+Local-first, on purpose. Runtime state lives under `.ade/` inside each project — SQLite db, worktree checkouts, proof artifacts, encrypted secrets.
 
 ```text
-apps/desktop  Electron host
-  main         Node process, SQLite, git, processes, AI runtimes, sync host
-  preload      Typed IPC bridge exposed as window.ade
-  renderer     React UI for lanes, Work, PRs, files, missions, settings
-
-apps/ade-cli   Node CLI over desktop socket or headless runtime
+apps/desktop   Electron host — SQLite, git, processes, AI runtimes, sync host
+apps/ade-cli   Node CLI over the desktop socket (or headless)
 apps/ios       SwiftUI companion that syncs with a desktop host
 apps/web       Public website and download surface
 docs/          Product and engineering docs
 ```
 
-Runtime state lives primarily under `.ade/` inside the active project:
+Deep reference: [ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
-- `.ade/ade.yaml`: shared project configuration.
-- `.ade/local.yaml`: machine-local overrides.
-- `.ade/ade.db`: SQLite runtime database.
-- `.ade/worktrees/`: lane worktrees.
-- `.ade/artifacts/`: proof bundles, exports, and runtime artifacts.
-- `.ade/secrets/`: encrypted or machine-local secret material.
-
-Deep technical references:
-
-- [Architecture reference](docs/ARCHITECTURE.md)
-- [Product requirements](docs/PRD.md)
-- [Sync and multi-device docs](docs/features/sync-and-multi-device/README.md)
-- [Computer use docs](docs/features/computer-use/README.md)
-- [Pull request workflows](docs/features/pull-requests/README.md)
-- [ADE CLI README](apps/ade-cli/README.md)
-
-## Development
-
-This repository is not an npm workspace. Each app under `apps/` owns its own `package-lock.json` and `node_modules`.
-
-Desktop app:
+## Develop
 
 ```bash
-cd apps/desktop
-npm install
-npm run dev
+cd apps/desktop && npm install && npm run dev      # live Electron app
+cd apps/ade-cli && npm install && npm run build    # build the CLI
 ```
 
-ADE CLI:
+Validate with `npm --prefix apps/desktop run typecheck` and `run test`. The desktop test suite is large — run the smallest relevant subset first.
 
-```bash
-cd apps/ade-cli
-npm install
-npm run build
-npm run test
-```
+## Links
 
-Useful validation commands:
-
-```bash
-npm --prefix apps/desktop run typecheck
-npm --prefix apps/desktop run test
-npm --prefix apps/desktop run build
-npm --prefix apps/desktop run lint
-npm --prefix apps/ade-cli run typecheck
-npm --prefix apps/ade-cli run test
-npm --prefix apps/ade-cli run build
-```
-
-The desktop test suite is large. For local iteration, run the smallest relevant subset first.
-
-## Documentation map
-
-- [Getting started](https://www.ade-app.dev/docs/quickstart)
-- [Key concepts](https://www.ade-app.dev/docs/key-concepts)
-- [Lanes](https://www.ade-app.dev/docs/lanes/overview)
-- [Missions](https://www.ade-app.dev/docs/missions/overview)
-- [PR convergence](https://www.ade-app.dev/docs/guides/pr-convergence)
-- [Computer use](https://www.ade-app.dev/docs/computer-use/overview)
-- [Configuration](https://www.ade-app.dev/docs/configuration/overview)
-- [Changelog](https://www.ade-app.dev/docs/changelog/v1.0.19)
-
-## Project status
-
-ADE is an early beta. Expect rapid iteration, incomplete surfaces, and occasional workflow changes. The macOS release path is signed and notarized; the iOS app is distributed through TestFlight for registered testers while the mobile companion continues to mature.
-
-## Contributing
-
-PRs are welcome. Start with [CONTRIBUTING.md](CONTRIBUTING.md), keep changes scoped, and run the validation commands that cover the touched surface.
+[Quickstart](https://www.ade-app.dev/docs/quickstart) · [Key concepts](https://www.ade-app.dev/docs/key-concepts) · [Worktrees](https://www.ade-app.dev/docs/lanes/overview) · [Missions](https://www.ade-app.dev/docs/missions/overview) · [Computer use](https://www.ade-app.dev/docs/computer-use/overview) · [Changelog](https://www.ade-app.dev/docs/changelog/v1.1.0) · [Contributing](CONTRIBUTING.md)
 
 ## License
 
-[AGPL-3.0](LICENSE) - Copyright (c) 2025 Arul Sharma
+[AGPL-3.0](LICENSE) — © 2025 Arul Sharma. Free forever. Source on GitHub.

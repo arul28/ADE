@@ -583,7 +583,7 @@ describe("ptyService", () => {
         cols: 80,
         rows: 24,
         toolType: "codex",
-        startupCommand: "codex --no-alt-screen -c approval_policy=on-failure -c sandbox_mode=workspace-write",
+        startupCommand: "codex --no-alt-screen --sandbox workspace-write --ask-for-approval untrusted",
       });
       expect(sessionService.create).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -594,7 +594,7 @@ describe("ptyService", () => {
             targetId: null,
             launch: expect.objectContaining({
               permissionMode: "edit",
-              codexApprovalPolicy: "on-failure",
+              codexApprovalPolicy: "untrusted",
               codexSandbox: "workspace-write",
               codexConfigSource: "flags",
             }),
@@ -970,7 +970,7 @@ describe("ptyService", () => {
           cols: 80,
           rows: 24,
           toolType: "codex",
-          startupCommand: "codex --no-alt-screen --full-auto",
+          startupCommand: "codex --no-alt-screen --dangerously-bypass-approvals-and-sandbox",
         });
         const createArgs = sessionService.create.mock.calls.at(-1)?.[0];
         expect(createArgs?.startedAt).toBeTruthy();

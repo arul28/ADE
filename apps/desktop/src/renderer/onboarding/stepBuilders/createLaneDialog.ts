@@ -1,84 +1,158 @@
 import type { TourStep } from "../registry";
 import { docs } from "../docsLinks";
+import { useAppStore } from "../../state/appStore";
 
 const CREATE_LANE_FALLBACK_MS = 30_000;
 const CREATE_LANE_DIALOG_REQUIRES = ["createLaneDialogOpen"] as const;
+const CREATE_LANE_DIALOG_SELECTOR = '[data-tour="lanes.createDialog"]';
+const CREATE_LANE_BASELINE_KEY = "createLaneBaselineIds";
+
+function currentNonPrimaryLaneIds(): string[] {
+  return useAppStore
+    .getState()
+    .lanes.filter((lane) => lane.laneType !== "primary")
+    .map((lane) => lane.id);
+}
 
 /**
  * Reusable walkthrough for the CreateLaneDialog.
- * Opens the dialog, walks through name/branch-base fields, demos the
- * Attach-existing tab switch, and submits.
+ * Walks the user through the visible New Lane menu, then the create dialog.
  *
  * Anchors (verified in CreateLaneDialog.tsx):
- *   lanes.createDialog.name, lanes.createDialog.tabs,
- *   lanes.createDialog.attachTab, lanes.createDialog.branchBase,
+ *   lanes.newLane, lanes.createNewLane,
+ *   lanes.createDialog, lanes.createDialog.name, lanes.createDialog.tabs,
+ *   lanes.createDialog.primaryTab, lanes.createDialog.branchTab,
+ *   lanes.createDialog.childTab, lanes.createDialog.branchBase,
  *   lanes.createDialog.create
  */
 export function buildCreateLaneDialogWalkthrough(): TourStep[] {
   return [
     {
-      id: "createLane.open",
-      target: "",
-      title: "Make your first lane",
-      body: "The Create Lane dialog is open. Use it to make a worktree-backed branch, or continue with an existing lane if you already have one.",
+      id: "createLane.openMenu",
+      target: '[data-tour="lanes.newLane"]',
+      title: "Create a lane",
+      body: "Click **New Lane**. For the tutorial, ADE will guide you through creating one fresh test lane.",
+      placement: "bottom",
       docUrl: docs.lanesOverview,
-      requires: CREATE_LANE_DIALOG_REQUIRES,
-      fallbackAfterMs: CREATE_LANE_FALLBACK_MS,
-      fallbackNextLabel: "Continue without creating",
-      fallbackNotice: "You can continue with an existing lane or come back to lane creation later.",
-      beforeEnter: async () => [{ type: "openDialog", id: "lanes.create" }],
+      waitForSelector: '[data-tour="lanes.newLane"]',
+      awaitingActionLabel: "Waiting for New Lane",
+      advanceWhenSelector: '[data-tour="lanes.createNewLane"]',
+      exitOnOutsideInteraction: true,
+      beforeEnter: (ctx) => {
+        ctx?.set(CREATE_LANE_BASELINE_KEY, currentNonPrimaryLaneIds());
+      },
+    },
+    {
+      id: "createLane.chooseCreate",
+      target: '[data-tour="lanes.createNewLane"]',
+      title: "Create new lane",
+      body: "Choose **Create new lane**. This opens the dialog for a fresh worktree-backed lane.",
+      placement: "right",
+      docUrl: docs.lanesCreating,
+      waitForSelector: '[data-tour="lanes.createNewLane"]',
+      awaitingActionLabel: "Waiting for Create Lane dialog",
+      advanceWhenSelector: '[data-tour="lanes.createDialog.name"]',
+      exitOnOutsideInteraction: true,
+      allowedInteractionSelectors: ['[data-tour="lanes.newLane"]'],
     },
     {
       id: "createLane.nameField",
       target: '[data-tour="lanes.createDialog.name"]',
       title: "Name it",
-      body: "Give the lane a short, memorable name. The Create button stays disabled until the name is valid.",
+      body: "Name this test lane **tour-sample**, or use any short name you can delete later. The **Create** button stays disabled until the name is valid.",
+      placement: "right",
+      requires: CREATE_LANE_DIALOG_REQUIRES,
+      beforeEnter: (ctx) => {
+        if (!ctx?.get<string[]>(CREATE_LANE_BASELINE_KEY)) {
+          ctx?.set(CREATE_LANE_BASELINE_KEY, currentNonPrimaryLaneIds());
+        }
+      },
+      fallbackAfterMs: CREATE_LANE_FALLBACK_MS,
+      fallbackNextLabel: "Continue without creating",
+      fallbackNotice: "The dialog can be reopened from the Lanes toolbar.",
+      focusTarget: true,
+      exitOnOutsideInteraction: true,
+      allowedInteractionSelectors: [CREATE_LANE_DIALOG_SELECTOR],
+      docUrl: docs.lanesCreating,
+    },
+    {
+      id: "createLane.sourceChoices",
+      target: '[data-tour="lanes.createDialog.tabs"]',
+      title: "Three ways to start",
+      body: "**Primary** creates a fresh lane. **Branch** imports existing branch work. **Child** stacks work on another lane. Leave **Primary** selected for this tutorial.",
       placement: "right",
       requires: CREATE_LANE_DIALOG_REQUIRES,
       fallbackAfterMs: CREATE_LANE_FALLBACK_MS,
       fallbackNextLabel: "Continue without creating",
       fallbackNotice: "The dialog can be reopened from the Lanes toolbar.",
+      preventTargetInteraction: true,
+      exitOnOutsideInteraction: true,
+      allowedInteractionSelectors: [CREATE_LANE_DIALOG_SELECTOR],
       docUrl: docs.lanesCreating,
     },
     {
       id: "createLane.branchBase",
       target: '[data-tour="lanes.createDialog.branchBase"]',
       title: "Pick a branch base",
-      body: "This lane branches off whatever you pick here — usually primary. Rebase suggestions follow this base.",
+      body: "This test lane branches off the selected base, usually **main** or **primary**. Rebase suggestions follow this base later.",
       placement: "right",
       requires: CREATE_LANE_DIALOG_REQUIRES,
       fallbackAfterMs: CREATE_LANE_FALLBACK_MS,
       fallbackNextLabel: "Continue without creating",
       fallbackNotice: "The dialog can be reopened from the Lanes toolbar.",
+      focusTarget: true,
+      exitOnOutsideInteraction: true,
+      allowedInteractionSelectors: [CREATE_LANE_DIALOG_SELECTOR],
       docUrl: docs.lanesCreating,
     },
     {
-      id: "createLane.attachTab",
-      target: '[data-tour="lanes.createDialog.tabs"]',
-      title: "Import existing worktrees",
-      body: "Already have worktrees on disk? Switch to Import existing and point at a branch instead of creating a fresh one.",
-      placement: "bottom",
+      id: "createLane.branchTab",
+      target: '[data-tour="lanes.createDialog.branchTab"]',
+      title: "Branch is for existing work",
+      body: "**Branch** is for work that already exists on a local or remote branch. Do not choose it for this tutorial lane.",
+      placement: "right",
       requires: CREATE_LANE_DIALOG_REQUIRES,
       fallbackAfterMs: CREATE_LANE_FALLBACK_MS,
       fallbackNextLabel: "Continue without creating",
       fallbackNotice: "The dialog can be reopened from the Lanes toolbar.",
       ghostCursor: {
         from: '[data-tour="lanes.createDialog.tabs"]',
-        to: '[data-tour="lanes.createDialog.attachTab"]',
+        to: '[data-tour="lanes.createDialog.branchTab"]',
       },
+      exitOnOutsideInteraction: true,
+      preventTargetInteraction: true,
+      allowedInteractionSelectors: [CREATE_LANE_DIALOG_SELECTOR],
+      docUrl: docs.lanesCreating,
+    },
+    {
+      id: "createLane.childTab",
+      target: '[data-tour="lanes.createDialog.childTab"]',
+      title: "Child is for stacked lanes",
+      body: "**Child** creates a lane that stacks on another lane. Useful later; for now, keep **Primary** selected.",
+      placement: "right",
+      requires: CREATE_LANE_DIALOG_REQUIRES,
+      fallbackAfterMs: CREATE_LANE_FALLBACK_MS,
+      fallbackNextLabel: "Continue without creating",
+      fallbackNotice: "The dialog can be reopened from the Lanes toolbar.",
+      ghostCursor: {
+        from: '[data-tour="lanes.createDialog.tabs"]',
+        to: '[data-tour="lanes.createDialog.childTab"]',
+      },
+      exitOnOutsideInteraction: true,
+      preventTargetInteraction: true,
+      allowedInteractionSelectors: [CREATE_LANE_DIALOG_SELECTOR],
       docUrl: docs.lanesCreating,
     },
     {
       id: "createLane.create",
       target: '[data-tour="lanes.createDialog.create"]',
       title: "Create the lane",
-      body: "Click Create — ADE spins up the worktree in the background and a new lane tab appears.",
-      placement: "top",
-      requires: ["laneExists"],
-      fallbackAfterMs: CREATE_LANE_FALLBACK_MS,
-      fallbackNextLabel: "Continue with existing lanes",
-      fallbackNotice: "If you already have lanes, you can continue without creating another one.",
-      waitForSelector: '[data-tour="lanes.laneTab"]',
+      body: "Click **Create**. When ADE finishes the worktree setup, the tutorial continues with the new lane.",
+      placement: "left",
+      requires: ["laneCountIncreased"],
+      awaitingActionLabel: "Waiting for the new test lane",
+      exitOnOutsideInteraction: true,
+      allowedInteractionSelectors: [CREATE_LANE_DIALOG_SELECTOR],
       docUrl: docs.lanesCreating,
     },
   ];

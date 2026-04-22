@@ -1,13 +1,14 @@
 // @refresh reset — GraphInner has 100+ hooks; force clean remount on HMR.
 import "@xyflow/react/dist/style.css";
 import React from "react";
+import type {
+  Edge,
+  Node} from "@xyflow/react";
 import {
   Background,
   BackgroundVariant,
-  Edge,
   MarkerType,
   MiniMap,
-  Node,
   Panel,
   ReactFlow,
   ReactFlowProvider,
@@ -21,7 +22,6 @@ import {
   Funnel,
   Plus,
   MagnifyingGlass,
-  CheckCircle,
   ClockCounterClockwise,
   ChatText,
   CaretDown,
@@ -45,7 +45,6 @@ import type {
   PrCheck,
   PrComment,
   PrReview,
-  PrStatus,
   PrWithConflicts,
   IntegrationProposal
 } from "../../../shared/types";
@@ -910,6 +909,7 @@ function GraphInner() {
     if (!focusParam || !loadedGraphPreferences || lanes.length === 0) return;
     const targetLane = lanes.find((lane) => lane.id === focusParam);
     if (!targetLane) return;
+    setSelectedLaneIds([focusParam]);
     setFocusLaneId(focusParam);
     // Center on the focused node
     let glowTimer: number | undefined;

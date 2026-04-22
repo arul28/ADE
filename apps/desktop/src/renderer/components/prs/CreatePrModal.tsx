@@ -468,7 +468,7 @@ export function CreatePrModal({
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  onCreated?: () => void;
+  onCreated?: (created: PrSummary[]) => void | Promise<void>;
 }) {
   const lanes = useAppStore((s) => s.lanes);
   const primaryLane = React.useMemo(() => lanes.find((l) => l.laneType === "primary") ?? null, [lanes]);
@@ -752,6 +752,7 @@ export function CreatePrModal({
           })
         });
         setResults([pr]);
+        await onCreated?.([pr]);
         setNumericStep(3);
       } else if (mode === "queue") {
         const trimmedQueueTargetBranch = (queueTargetBranch ?? "").trim();
@@ -769,6 +770,7 @@ export function CreatePrModal({
           setQueueErrors(result.errors);
         }
         setResults(result.prs);
+        await onCreated?.(result.prs);
         setNumericStep(3);
       } else if (mode === "integration") {
         if (!proposal) {
@@ -933,6 +935,7 @@ export function CreatePrModal({
           }}
         />
         <Dialog.Content
+          data-tour="prs.createModal"
           style={{
             position: "fixed",
             left: "50%",
@@ -1107,6 +1110,7 @@ export function CreatePrModal({
                           }}
                         />
                         <select
+                          data-tour="prs.createModal.source"
                           value={normalLaneId}
                           onChange={(e) => setNormalLaneId(e.target.value)}
                           style={{
@@ -2258,6 +2262,7 @@ export function CreatePrModal({
             <div>
               {numericStep === 1 && (
                 <button
+                  data-tour="prs.createModal.next"
                   disabled={!canProceed}
                   onClick={goToStep2}
                   style={{
@@ -2312,7 +2317,7 @@ export function CreatePrModal({
               {numericStep === 3 && results && (
                 <Dialog.Close asChild>
                   <button
-                    onClick={() => onCreated?.()}
+                    onClick={() => onCreated?.(results)}
                     style={{
                       background: C.accent,
                       border: "none",

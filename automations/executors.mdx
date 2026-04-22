@@ -1,100 +1,84 @@
 ---
 title: "Execution surfaces"
-description: "Choose between automation-only agent sessions, Missions, and built-in tasks for each automation rule."
+description: "Pick between an automation-only agent session, a Mission, or a built-in task for each automation rule."
 icon: "robot"
 ---
 
-## Execution surfaces for Automations
+## What an execution surface is
 
-An Automation execution is always one of three surfaces:
+Every automation rule answers the same question twice: what triggers it, and what runs when it fires. The second half is the **execution surface**, and there are three.
 
-- **agent-session**: persistent chat thread for a single automation run
-- **mission**: full multi-step mission runtime with workers, gates, and artifacts
-- **built-in-task**: ADE-native synchronous job without a full mission lifecycle
+| Surface | Best for | Cost |
+|---|---|---|
+| `agent-session` | Lightweight checks, short summaries, a single deterministic output | One short agent thread |
+| `mission` | Multi-step code changes, long workflows that need reviewable plans | A full mission run |
+| `built-in` | Deterministic ADE operations — tests, conflict prediction, status sync | No agent; no tokens |
 
-Each surface is selected per automation so you can match the right cost and visibility model.
+<Note>
+**Mission execution is paused in production builds.** In packaged releases the rule editor and the Templates tab still display Mission as an option so teams can see how they would wire it, but selecting Mission is disabled with a "Coming soon" chip and the Save button is blocked. Dev and internal builds run mission automations today. When you plan an automation that needs a mission surface, use Chat or a built-in task as a stand-in until Missions ships.
+</Note>
+
+---
+
+## Surface details
 
 <AccordionGroup>
   <Accordion title="agent-session" icon="message-circle">
-    A lightweight, single-thread session created for the automation run.
+    A lightweight chat thread created for the automation run.
 
-    - Starts from a single prompt and optional system context
+    - Starts from a single prompt and optional seed context
     - Runs through the normal chat runtime with ADE-scoped tool access
-    - Produces normal agent messages and tool events
-    - Best when you need direct, low-latency automation output
+    - Produces normal agent messages, tool events, and a transcript
+    - Best when you want quick chat-like output and a readable record
 
-    <Info>Agent-session runs are recorded as **automation-only chat threads**. These threads are visible from **Automations → History**.</Info>
+    Agent-session runs are recorded as **automation-only chat threads** visible in **Automations → History**.
   </Accordion>
 
   <Accordion title="mission" icon="bullseye">
-    A full mission runtime for work that needs validation gates, parallel workers, or durable workflow history.
+    A full mission run for work that needs a reviewable plan, multiple workers, or durable checkpoints.
 
-    - Planner and phase logic
-    - Retry and intervention handling
-    - Worker lifecycle and lane-affinity tracking
-    - Artifacts, step events, and intervention feed
+    - Planner, approval gate, execution, and validation phases
+    - Retry, intervention, and closeout handling
+    - Worker lifecycle with lane affinity
+    - Artifacts, step events, and the full intervention feed
 
-    Mission outputs and status are visible in **Missions**, which is the canonical place to monitor multi-step execution.
+    Mission outputs are visible in **Missions** — History rows for mission-executed automation runs link directly into the mission detail view.
+
+    In packaged builds the option appears but is disabled until Missions ships.
   </Accordion>
 
-  <Accordion title="built-in-task" icon="gear">
-    A structured ADE-native task for short, deterministic work that does not require agent memory.
+  <Accordion title="built-in" icon="gear">
+    A structured ADE-native task for short, deterministic work that doesn't need a conversation.
 
-    - No full mission thread
-    - Useful for refreshes, status checks, and prebuilt operations
-    - Strongly typed inputs/outputs
-    - Consistent with other background ADE tasks
+    - No full chat or mission thread
+    - Strongly typed inputs and outputs
+    - Useful for running test suites, predicting conflicts, and other maintenance sweeps
 
-    This keeps small tasks fast and predictable while still respecting the same guardrails.
+    Built-in rules can now target a specific **lane** (or let ADE pick from the trigger context). The lane picker is the first control in the built-in action editor.
   </Accordion>
 </AccordionGroup>
 
 ---
 
-## Choosing a surface
+## Building an automation rule
 
-Pick the surface based on required control and operational cost:
+1. Pick a **time-based** (`schedule`) or **action-based** (git, file, lane, webhook, Linear, manual) trigger.
+2. Pick an execution surface:
+   - `agent-session` for a quick AI output
+   - `mission` for a complex or high-stakes workflow (dev builds only today)
+   - `built-in` for a known ADE operation
+3. For built-in rules, pick the **target lane** or leave it on "Auto-select from the trigger or primary lane."
+4. Set a tool palette and memory policy.
+5. Configure guardrails and budget mode from Settings defaults.
+6. Add verification behavior and output routing.
 
-| Surface | Best for |
-|---|---|
-| `agent-session` | lightweight checks, short summaries, deterministic text outputs |
-| `mission` | multi-step code changes, PR/open/merge flows, long-running workflows |
-| `built-in-task` | one-off built-in operations and maintenance checks |
-
-Use **agent-session** when you want quick chat-like automation output, **mission** when execution needs reliability and intervention support, and **built-in-task** when you are just invoking a known ADE operation.
-
----
-
-## Building automation rules
-
-When creating a rule:
-
-1. Pick a **time-based** or **action-based** trigger.
-2. Pick one execution surface for the initial run:
-   - `agent-session` for quick AI outputs
-   - `mission` for complex or risky workflows
-   - `built-in-task` for internal operations
-3. Set a tool palette and memory policy.
-4. Configure guardrails and budget mode in Settings defaults.
-5. Add verification behavior and output routing.
-
-If you use `agent-session`, you can still attach outputs to artifacts, PR notes, or Linear updates through output routing options.
+Agent-session rules can still route their outputs to artifacts, PR comments, or Linear updates through the output routing options on the rule.
 
 ---
 
-## Example flows
+## Example rules
 
-- **PR reviewer**
-  - Trigger: `git.pr_opened`
-  - Execution: `agent-session`
-  - Output: Automation thread in history + optional PR comment
-
-- **Nightly test sweep**
-  - Trigger: `schedule` (`0 8 * * 1-5`)
-  - Execution: `mission`
-  - Output: Mission artifacts + validation findings
-
-- **Cache cleanup**
-  - Trigger: `github.webhook`
-  - Execution: `built-in-task`
-  - Output: Internal usage and history marker with a status event
+- **PR reviewer** — trigger `git.pr_opened`, execution `agent-session`, output an automation thread plus an optional PR comment.
+- **Nightly test sweep** — trigger `schedule` (`0 8 * * 1-5`), execution `built-in` (run-tests) targeted at the primary lane. No tokens, just a test report artifact.
+- **Cache cleanup** — trigger `github-webhook`, execution `built-in`, internal usage summary with a status event.
+- **Release triage** — trigger `linear.issue_created`, execution `mission` (dev builds) or a multi-step `agent-session` as a fallback while Mission is gated.

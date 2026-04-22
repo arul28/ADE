@@ -36,6 +36,14 @@ export function mapPermissionMode(mode: AiPermissionMode | undefined): AgentChat
   return "edit";
 }
 
+export function mapPermissionModeForModelFamily(
+  mode: AiPermissionMode | undefined,
+  family: string | undefined,
+): AgentChatPermissionMode {
+  if (family === "openai" && mode === "guarded_edit") return "default";
+  return mapPermissionMode(mode);
+}
+
 /**
  * Read the most recent N commits from a worktree as {sha, subject} pairs.
  * Shared by both the issue resolver and rebase resolver.

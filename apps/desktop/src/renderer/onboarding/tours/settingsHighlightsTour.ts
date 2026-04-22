@@ -11,7 +11,7 @@ export const settingsHighlightsTour: Tour = {
       id: "h.settings.what",
       target: "",
       title: "Settings",
-      body: "App-wide configuration: theme, AI providers, sync, memory, lane templates, integrations.",
+      body: "App-wide configuration: theme, AI providers, mobile push, memory, lane templates, integrations.",
       docUrl: docs.settingsGeneral,
     },
     {

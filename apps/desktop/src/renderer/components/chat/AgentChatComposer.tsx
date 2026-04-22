@@ -164,16 +164,16 @@ const CLAUDE_MODE_TONE_STYLES: Record<
   },
 };
 
-type CodexPermissionPreset = "plan" | "edit" | "full-auto" | "custom";
+type CodexPermissionPreset = "default" | "plan" | "full-auto" | "config-toml" | "custom";
 
 function resolveCodexPermissionPreset(args: {
   codexApprovalPolicy?: AgentChatCodexApprovalPolicy;
   codexSandbox?: AgentChatCodexSandbox;
   codexConfigSource?: AgentChatCodexConfigSource;
 }): CodexPermissionPreset {
-  if (args.codexConfigSource === "config-toml") return "custom";
-  if (args.codexApprovalPolicy === "untrusted" && args.codexSandbox === "read-only") return "plan";
-  if (args.codexApprovalPolicy === "on-failure" && args.codexSandbox === "workspace-write") return "edit";
+  if (args.codexConfigSource === "config-toml") return "config-toml";
+  if ((args.codexApprovalPolicy === "on-request" || args.codexApprovalPolicy === "untrusted" || args.codexApprovalPolicy === "on-failure") && args.codexSandbox === "workspace-write") return "default";
+  if ((args.codexApprovalPolicy === "on-request" || args.codexApprovalPolicy === "untrusted") && args.codexSandbox === "read-only") return "plan";
   if (args.codexApprovalPolicy === "never" && args.codexSandbox === "danger-full-access") return "full-auto";
   return "custom";
 }
@@ -459,7 +459,7 @@ export function AgentChatComposer({
   const [slashQuery, setSlashQuery] = useState("");
   const [slashCursor, setSlashCursor] = useState(0);
   const [hoveredClaudeMode, setHoveredClaudeMode] = useState<AgentChatClaudePermissionMode | null>(null);
-  const [hoveredCodexPreset, setHoveredCodexPreset] = useState<"plan" | "edit" | "full-auto" | null>(null);
+  const [hoveredCodexPreset, setHoveredCodexPreset] = useState<Exclude<CodexPermissionPreset, "custom"> | null>(null);
   const [claudeModePickerOpen, setClaudeModePickerOpen] = useState(false);
   const claudeModePickerRef = useRef<HTMLDivElement | null>(null);
   const [codexPresetPickerOpen, setCodexPresetPickerOpen] = useState(false);
@@ -620,21 +620,27 @@ export function AgentChatComposer({
   });
   const codexPresetOptions = useMemo(
     () => getPermissionOptions({ family: "openai", isCliWrapped: true })
-      .filter((option) => option.value === "plan" || option.value === "edit" || option.value === "full-auto"),
+      .filter((option) => option.value === "default" || option.value === "plan" || option.value === "full-auto" || option.value === "config-toml"),
     [],
   );
   const applyCodexPreset = useCallback((preset: Exclude<CodexPermissionPreset, "custom">) => {
-    const next = preset === "plan"
+    const next = preset === "default"
       ? {
-          codexApprovalPolicy: "untrusted" as const,
+          codexApprovalPolicy: "on-request" as const,
+          codexSandbox: "workspace-write" as const,
+          codexConfigSource: "flags" as const,
+        }
+      : preset === "plan"
+      ? {
+          codexApprovalPolicy: "on-request" as const,
           codexSandbox: "read-only" as const,
           codexConfigSource: "flags" as const,
         }
-      : preset === "edit"
+      : preset === "config-toml"
         ? {
-            codexApprovalPolicy: "on-failure" as const,
-            codexSandbox: "workspace-write" as const,
-            codexConfigSource: "flags" as const,
+            codexApprovalPolicy: codexApprovalPolicy ?? "on-request",
+            codexSandbox: codexSandbox ?? "workspace-write",
+            codexConfigSource: "config-toml" as const,
           }
         : {
             codexApprovalPolicy: "never" as const,
@@ -650,6 +656,8 @@ export function AgentChatComposer({
     onCodexApprovalPolicyChange?.(next.codexApprovalPolicy);
     onCodexSandboxChange?.(next.codexSandbox);
   }, [
+    codexApprovalPolicy,
+    codexSandbox,
     onCodexApprovalPolicyChange,
     onCodexConfigSourceChange,
     onCodexPresetChange,
@@ -710,21 +718,18 @@ export function AgentChatComposer({
   }, [claudeModePickerOpen]);
   const codexCustomSummary = useMemo(() => {
     if (sessionProvider !== "codex" || codexPreset !== "custom") return null;
-    if (codexConfigSource === "config-toml") {
-      return "Custom Codex mode: config.toml controls approval and sandbox.";
-    }
     const approvalLabel = {
-      "untrusted": "Plan",
+      "untrusted": "Untrusted",
       "on-request": "On request",
-      "on-failure": "Guarded edit",
-      "never": "Full auto",
+      "on-failure": "On failure",
+      "never": "Never",
     }[codexApprovalPolicy ?? "on-request"];
     const sandboxLabel = {
       "read-only": "Read only",
       "workspace-write": "Workspace write",
       "danger-full-access": "Danger full access",
     }[codexSandbox ?? "workspace-write"];
-    return `Custom Codex mode: ${codexConfigSource === "flags" ? "ADE flags" : "config.toml"} · ${approvalLabel} · ${sandboxLabel}`;
+    return `Custom Codex mode: ${codexConfigSource === "flags" ? "ADE flags" : "config.toml"} - ${approvalLabel} - ${sandboxLabel}`;
   }, [codexApprovalPolicy, codexConfigSource, codexPreset, codexSandbox, sessionProvider]);
   const codexControlDetail = useMemo(() => {
     if (sessionProvider !== "codex") return null;

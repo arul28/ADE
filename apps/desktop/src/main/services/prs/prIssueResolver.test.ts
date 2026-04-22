@@ -387,7 +387,7 @@ describe("launchPrIssueResolutionChat", () => {
       modelId: "openai/gpt-5.4-codex",
       surface: "work",
       sessionProfile: "workflow",
-      permissionMode: "edit",
+      permissionMode: "default",
     }));
     expect(updateMeta).toHaveBeenCalledWith({ sessionId: "session-1", title: "Resolve PR #80 issues" });
     expect(sendMessage).toHaveBeenCalledWith(expect.objectContaining({

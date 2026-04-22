@@ -179,7 +179,7 @@ function createDefaultPermissionConfig(defaults: CreateMissionDefaults | null | 
   return {
     providers: {
       claude: "full-auto",
-      codex: "full-auto",
+      codex: "default",
       opencode: "full-auto",
       codexSandbox: "workspace-write",
     },

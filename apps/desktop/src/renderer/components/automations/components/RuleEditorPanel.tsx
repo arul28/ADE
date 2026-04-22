@@ -35,7 +35,7 @@ const DEFAULT_MODEL_ID =
 const DEFAULT_PERMISSION_CONFIG: MissionPermissionConfig = {
   providers: {
     claude: "full-auto",
-    codex: "full-auto",
+    codex: "default",
     opencode: "full-auto",
     codexSandbox: "workspace-write",
   },
@@ -306,6 +306,7 @@ export function RuleEditorPanel({
   setDraft,
   lanes,
   suites,
+  missionsEnabled,
   issues,
   requiredConfirmations,
   acceptedConfirmations,
@@ -319,6 +320,7 @@ export function RuleEditorPanel({
   setDraft: (draft: AutomationRuleDraft) => void;
   lanes: Array<{ id: string; name: string }>;
   suites: TestSuiteDefinition[];
+  missionsEnabled: boolean;
   issues: AutomationDraftIssue[];
   requiredConfirmations: AutomationDraftConfirmationRequirement[];
   acceptedConfirmations: Set<string>;
@@ -342,6 +344,7 @@ export function RuleEditorPanel({
   const selectedLaneId = draft.execution?.targetLaneId ?? "";
   const triggerOptions = TRIGGER_OPTIONS[triggerFamily];
   const selectedPreset = selectedSchedulePreset(primaryTrigger.cron);
+  const missionExecutionUnavailable = executionKind === "mission" && !missionsEnabled;
 
   const setPrimaryTrigger = (next: AutomationTrigger) => {
     setDraft({
@@ -396,6 +399,7 @@ export function RuleEditorPanel({
   };
 
   const selectExecutionKind = (kind: AutomationExecution["kind"]) => {
+    if (kind === "mission" && !missionsEnabled) return;
     if (kind === "built-in") {
       syncBuiltInActions(builtInActions.length ? builtInActions : [{ type: "run-tests", suiteId: suites[0]?.id ?? "" }]);
       return;
@@ -457,7 +461,13 @@ export function RuleEditorPanel({
                 Simulate
               </Button>
             ) : null}
-            <Button size="sm" variant="primary" disabled={saving} onClick={onSave}>
+            <Button
+              size="sm"
+              variant="primary"
+              disabled={saving || missionExecutionUnavailable}
+              title={missionExecutionUnavailable ? "Mission automations are coming soon in production builds." : undefined}
+              onClick={onSave}
+            >
               <FloppyDisk size={12} weight="regular" className={cn(saving && "animate-spin")} />
               Save rule
             </Button>
@@ -695,13 +705,15 @@ export function RuleEditorPanel({
                   : option.value === "mission"
                     ? Rocket
                     : TerminalWindow;
+                const disabled = option.value === "mission" && !missionsEnabled;
                 return (
                   <button
                     key={option.value}
                     type="button"
+                    disabled={disabled}
                     onClick={() => selectExecutionKind(option.value)}
                     className={cn(
-                      "rounded-xl border px-4 py-4 text-left transition-colors",
+                      "rounded-xl border px-4 py-4 text-left transition-colors disabled:cursor-not-allowed disabled:opacity-45",
                       executionKind === option.value
                         ? "border-white/[0.16] bg-black/10"
                         : "border-white/[0.08] bg-black/15 hover:border-white/[0.14]",
@@ -711,8 +723,13 @@ export function RuleEditorPanel({
                     <div className="flex items-center gap-2">
                       <Icon size={15} weight="regular" style={{ color: option.accent }} />
                       <div className="text-sm font-semibold text-[#F5FAFF]">{option.label}</div>
+                      {disabled ? <Chip className="text-[8px]">Coming soon</Chip> : null}
                     </div>
-                    <div className="mt-2 text-xs leading-relaxed text-[#9FB2C7]">{option.description}</div>
+                    <div className="mt-2 text-xs leading-relaxed text-[#9FB2C7]">
+                      {disabled
+                        ? "Mission automations are paused in production builds until Missions is ready."
+                        : option.description}
+                    </div>
                   </button>
                 );
               })}
@@ -720,6 +737,28 @@ export function RuleEditorPanel({
 
             {executionKind === "built-in" ? (
               <div className="mt-4 space-y-3 rounded-xl border border-white/[0.08] bg-black/15 p-4">
+                <div className="grid gap-2 md:grid-cols-[180px_1fr] md:items-center">
+                  <div className="text-[11px] text-[#8FA1B8]">Target lane</div>
+                  <select
+                    className={INPUT_CLS}
+                    style={INPUT_STYLE}
+                    value={selectedLaneId}
+                    onChange={(event) => setDraft({
+                      ...draft,
+                      execution: {
+                        kind: "built-in",
+                        builtIn: { actions: builtInActions },
+                        targetLaneId: event.target.value || null,
+                      },
+                    })}
+                  >
+                    <option value="">Auto-select from the trigger or primary lane</option>
+                    {lanes.map((lane) => (
+                      <option key={lane.id} value={lane.id}>{lane.name}</option>
+                    ))}
+                  </select>
+                </div>
+
                 <div className="flex flex-wrap items-center gap-2">
                   <Button size="sm" variant="outline" onClick={() => addBuiltInAction("run-tests")}>
                     <Plus size={12} weight="regular" />
@@ -871,6 +910,11 @@ export function RuleEditorPanel({
 
             {executionKind === "mission" ? (
               <div className="mt-4 rounded-xl border border-white/[0.08] bg-black/15 p-4">
+                {missionExecutionUnavailable ? (
+                  <div className="mb-4 rounded-lg border border-emerald-400/25 bg-emerald-400/10 px-3 py-2 text-xs leading-5 text-emerald-100">
+                    Mission automations are visible for planning, but cannot be saved from production builds until Missions ships.
+                  </div>
+                ) : null}
                 <WorkerPermissionsEditor
                   orchestratorModelId={draft.modelConfig?.orchestratorModel?.modelId ?? DEFAULT_MODEL_ID}
                   phases={[]}

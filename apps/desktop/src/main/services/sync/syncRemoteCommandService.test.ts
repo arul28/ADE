@@ -41,6 +41,7 @@ const IOS_REMOTE_COMMAND_ACTIONS = [
   "lanes.rebaseAbort",
   "lanes.dismissRebaseSuggestion",
   "lanes.deferRebaseSuggestion",
+  "lanes.dismissAutoRebaseStatus",
   "git.listBranches",
   "git.checkoutBranch",
   "git.getChanges",

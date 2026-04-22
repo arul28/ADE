@@ -287,7 +287,6 @@ export const SessionListPane = React.memo(function SessionListPane({
     <div
       className="flex h-full flex-col overflow-hidden"
       style={{ background: "var(--work-sidebar-bg)" }}
-      data-tour="work.sessionsPane"
     >
       {/* Compact toolbar */}
       <div className="shrink-0 px-2 pt-2 pb-1.5 space-y-1.5">

@@ -63,7 +63,7 @@ ADE tracks the stack topology and automatically rebases downstream lanes when an
 To create a stacked lane, use **Lanes → New Child Lane**. ADE sets the child's base branch to the parent's current branch automatically.
 
 <Note>
-ADE tracks rebase suggestions per-lane. When an upstream branch changes, ADE surfaces a rebase suggestion with a preview of the affected commits. You can accept, defer, or dismiss it.
+ADE tracks rebase suggestions per-lane. When an upstream branch changes, a compact banner above the lane list surfaces each affected child. From there you can open the full workspace with **View in Rebase tab**, or dismiss the suggestion if it is not relevant.
 </Note>
 
 ---
@@ -146,6 +146,10 @@ If you are a solo developer, think of the CTO as your always-on senior engineer 
 ## Mission
 
 A **Mission** is a structured AI execution unit for complex, multi-step work. Missions provide accountability, cost tracking, and a formal lifecycle that ad-hoc chat sessions do not.
+
+<Note>
+Missions are visible in every build, but **creation and live runs are paused in packaged releases** until the orchestration flow is production-ready. Dev and internal builds run missions end-to-end. The Automations tab mirrors this: the mission execution surface is shown but disabled in packaged builds.
+</Note>
 
 ### Mission Lifecycle
 

@@ -15,7 +15,6 @@ const ENTRIES: Entry[] = [
   { name: "File viewer", page: "05", href: "/tools/files-editor" },
   { name: "Git history", page: "07", href: "/tools/history" },
   { name: "iOS app", page: "28", href: "/getting-started/install" },
-  { name: "Lanes", page: "04", href: "/lanes/overview" },
   { name: "Linear sync", page: "18", href: "/cto/linear" },
   { name: "Local models", page: "23", href: "/configuration/ai-providers" },
   { name: "Memory (unified)", page: "16", href: "/cto/memory" },
@@ -36,7 +35,7 @@ const ENTRIES: Entry[] = [
   { name: "Team (CTO org)", page: "15", href: "/cto/workers" },
   { name: "Terminals", page: "10", href: "/tools/terminals" },
   { name: "Testing phase", page: "14", href: "/missions/overview" },
-  { name: "Worktrees (lanes)", page: "04", href: "/lanes/overview" },
+  { name: "Worktrees", page: "04", href: "/lanes/overview" },
   { name: "Workspace graph", page: "06", href: "/tools/workspace-graph" },
 ];
 
@@ -57,7 +56,7 @@ export function IndexPage() {
       id="index"
       className="relative bg-[color:var(--color-paper)] text-[color:var(--color-ink)]"
     >
-      <div className="mx-auto max-w-[1240px] px-[clamp(20px,3vw,40px)] py-[clamp(44px,5.5vw,84px)]">
+      <div className="mx-auto max-w-[1520px] px-[clamp(20px,3vw,48px)] py-[clamp(44px,5.5vw,84px)]">
         <div className="mb-10 flex items-baseline justify-between border-b border-[color:var(--color-ink-hairline)] pb-4 text-[11px] uppercase tracking-[0.24em] text-[color:var(--color-ink-muted)]">
           <span>ADE &middot; April &rsquo;26</span>
           <span className="hidden sm:block">Back matter</span>

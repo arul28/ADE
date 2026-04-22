@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { CommandPalette } from "./CommandPalette";
+import { PROJECT_BROWSER_CLOSE_EVENT } from "../../lib/projectBrowserEvents";
 import { useAppStore } from "../../state/appStore";
 
 function deferred<T>() {
@@ -146,6 +147,36 @@ describe("CommandPalette", () => {
         "/Users/admin/Projects/Versic"
       );
     });
+  });
+
+  it("closes the project browser when the tutorial steps back", async () => {
+    const onOpenChange = vi.fn();
+    browseDirectories.mockResolvedValue({
+      inputPath: "../",
+      resolvedPath: "/Users/admin/Projects",
+      directoryPath: "/Users/admin/Projects",
+      parentPath: "/Users/admin",
+      exactDirectoryPath: "/Users/admin/Projects",
+      openableProjectRoot: null,
+      entries: [],
+    });
+
+    render(
+      <MemoryRouter>
+        <CommandPalette
+          open
+          intent="project-browse"
+          onOpenChange={onOpenChange}
+        />
+      </MemoryRouter>
+    );
+
+    await waitFor(() => {
+      expect(document.querySelector('[data-tour="project.browser"]')).toBeTruthy();
+    });
+    window.dispatchEvent(new CustomEvent(PROJECT_BROWSER_CLOSE_EVENT));
+
+    expect(onOpenChange).toHaveBeenCalledWith(false);
   });
 
   it("opens the latest dropped folder and ignores stale browse results", async () => {

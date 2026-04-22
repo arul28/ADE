@@ -1513,6 +1513,13 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
     return { ok: true };
   });
   register("lanes.listAutoRebaseStatuses", { viewerAllowed: true }, async () => args.autoRebaseService?.listStatuses() ?? []);
+  register("lanes.dismissAutoRebaseStatus", { viewerAllowed: true, queueable: true }, async (payload) => {
+    if (!args.autoRebaseService) return { ok: true };
+    await args.autoRebaseService.dismissStatus({
+      laneId: requireString(payload.laneId, "lanes.dismissAutoRebaseStatus requires laneId."),
+    });
+    return { ok: true };
+  });
   register("lanes.listTemplates", { viewerAllowed: true }, async () => args.laneTemplateService?.listTemplates() ?? []);
   register("lanes.getDefaultTemplate", { viewerAllowed: true }, async () => args.laneTemplateService?.getDefaultTemplateId() ?? null);
   register("lanes.getEnvStatus", { viewerAllowed: true }, async (payload) => args.laneEnvironmentService?.getProgress(requireString(payload.laneId, "lanes.getEnvStatus requires laneId.")) ?? null);

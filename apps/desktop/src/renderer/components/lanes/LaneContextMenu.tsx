@@ -27,10 +27,21 @@ const menuHeaderStyle: React.CSSProperties = {
   color: COLORS.textDim,
 };
 
-function HoverButton({ style, children, onClick }: { style: React.CSSProperties; children: React.ReactNode; onClick: () => void }) {
+function HoverButton({
+  style,
+  children,
+  onClick,
+  dataTour,
+}: {
+  style: React.CSSProperties;
+  children: React.ReactNode;
+  onClick: () => void;
+  dataTour?: string;
+}) {
   return (
     <button
       role="menuitem"
+      data-tour={dataTour}
       style={style}
       onMouseEnter={(e) => { e.currentTarget.style.background = COLORS.hoverBg; }}
       onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
@@ -117,6 +128,7 @@ export function LaneContextMenu({
         <>
           <HoverButton
             style={menuItemStyle}
+            dataTour="lanes.manageLane"
             onClick={() => {
               onClose();
               window.ade.app.revealPath(ctxLane.worktreePath).catch(() => {});

@@ -87,6 +87,17 @@ export function CtoPage() {
   const [sessionLogs, setSessionLogs] = useState<CtoSessionLogEntry[]>([]);
   const [openclawStatus, setOpenclawStatus] = useState<OpenclawBridgeStatus | null>(null);
 
+  useEffect(() => {
+    const onTourTab = (event: Event) => {
+      const tab = (event as CustomEvent<TabId>).detail;
+      if (tab === "chat" || tab === "team" || tab === "workflows" || tab === "settings") {
+        setActiveTab(tab);
+      }
+    };
+    window.addEventListener("ade:tour-cto-tab", onTourTab);
+    return () => window.removeEventListener("ade:tour-cto-tab", onTourTab);
+  }, []);
+
   // Onboarding state
   const [onboardingState, setOnboardingState] = useState<CtoOnboardingState | null>(null);
   const [showOnboarding, setShowOnboarding] = useState(false);

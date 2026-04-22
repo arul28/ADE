@@ -3905,7 +3905,18 @@ export function createOrchestratorService({
           }
           const cliMode = args.permissionConfig?.cli?.mode ?? "full-auto";
           if (cliCommand === "codex") {
-            commandParts.push("--sandbox", readOnlyExecution ? "read-only" : args.permissionConfig?.cli?.sandboxPermissions ?? "workspace-write");
+            if (!readOnlyExecution && cliMode === "full-auto") {
+              commandParts.push("--dangerously-bypass-approvals-and-sandbox");
+            } else {
+              commandParts.push(
+                "--sandbox",
+                readOnlyExecution || cliMode === "read-only"
+                  ? "read-only"
+                  : args.permissionConfig?.cli?.sandboxPermissions ?? "workspace-write",
+                "--ask-for-approval",
+                readOnlyExecution || cliMode === "read-only" ? "on-request" : "untrusted",
+              );
+            }
           } else {
             if (!readOnlyExecution && cliMode === "full-auto") {
               commandParts.push("--dangerously-skip-permissions");

@@ -466,6 +466,7 @@ export type SyncRemoteCommandAction =
   | "lanes.dismissRebaseSuggestion"
   | "lanes.deferRebaseSuggestion"
   | "lanes.listAutoRebaseStatuses"
+  | "lanes.dismissAutoRebaseStatus"
   | "lanes.listTemplates"
   | "lanes.getDefaultTemplate"
   | "lanes.initEnv"

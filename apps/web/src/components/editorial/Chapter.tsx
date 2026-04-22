@@ -35,7 +35,7 @@ export function Chapter({
         className
       )}
     >
-      <div className="mx-auto max-w-[1240px] px-[clamp(20px,3vw,40px)] py-[clamp(44px,5.5vw,84px)]">
+      <div className="mx-auto max-w-[1520px] px-[clamp(20px,3vw,48px)] py-[clamp(24px,3vw,52px)]">
         {/* running head */}
         <div className="mb-6 flex items-baseline justify-between border-b border-[color:var(--color-ink-hairline)] pb-3 text-[11px] uppercase tracking-[0.24em] text-[color:var(--color-ink-muted)]">
           <span>ADE &middot; April &rsquo;26</span>

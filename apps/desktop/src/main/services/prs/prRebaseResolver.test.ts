@@ -11,6 +11,12 @@ vi.mock("./resolverUtils", () => ({
     if (mode === "read_only") return "plan";
     return "edit";
   },
+  mapPermissionModeForModelFamily: (mode: string | undefined, family: string | undefined) => {
+    if (family === "openai" && mode === "guarded_edit") return "default";
+    if (mode === "full_edit") return "full-auto";
+    if (mode === "read_only") return "plan";
+    return "edit";
+  },
   readRecentCommits: vi.fn(async (_worktreePath: string, _count?: number, ref?: string) => {
     if (ref && ref.startsWith("origin/")) {
       return [

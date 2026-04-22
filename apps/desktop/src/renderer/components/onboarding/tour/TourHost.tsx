@@ -10,13 +10,14 @@ import "../../../onboarding/tours";
 export function TourHost() {
   const onboardingEnabled = useAppStore((s) => s.onboardingEnabled);
   const activeTourId = useOnboardingStore((s) => s.activeTourId);
+  const activeTourVariant = useOnboardingStore((s) => s.activeTourVariant);
   const activeStepIndex = useOnboardingStore((s) => s.activeStepIndex);
   const activeTourCtx = useOnboardingStore((s) => s.activeTourCtx);
 
   if (!onboardingEnabled) return null;
   if (!activeTourId) return null;
 
-  const tour = getTour(activeTourId);
+  const tour = getTour(activeTourId, activeTourVariant ?? undefined);
   if (!tour) return null;
   if (tour.steps.length === 0) return null;
 

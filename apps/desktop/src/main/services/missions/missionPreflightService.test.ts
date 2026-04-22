@@ -610,6 +610,92 @@ describe("missionPreflightService", () => {
     expect(result.canLaunch).toBe(true);
   });
 
+  const runCodexLabelPreflight = async (codexMode: "default" | "plan" | "full-auto" | "config-toml") => {
+    const profiles = createProfiles();
+    const service = createMissionPreflightService({
+      logger: createLogger(),
+      projectRoot: "/tmp/ade-preflight",
+      missionService: {
+        listPhaseProfiles: () => profiles,
+      } as any,
+      laneService: {
+        list: async () => [
+          { id: "lane-1", archivedAt: null },
+          { id: "lane-2", archivedAt: null },
+          { id: "lane-3", archivedAt: null },
+          { id: "lane-4", archivedAt: null },
+        ],
+      } as any,
+      aiIntegrationService: {
+        getAvailabilityAsync: async () => ({
+          availableModels: [
+            { id: "anthropic/claude-sonnet-4-6", shortId: "claude-sonnet-4-6", family: "anthropic", displayName: "Claude Sonnet 4.6" },
+            { id: "claude-sonnet-4-6", shortId: "claude-sonnet-4-6", family: "claude", displayName: "Claude Sonnet 4.6" },
+            { id: "openai/gpt-5.3-codex", shortId: "gpt-5.3-codex", family: "openai", displayName: "GPT-5.3 Codex" },
+            { id: "gpt-5.3-codex", shortId: "gpt-5.3-codex", family: "codex", displayName: "GPT-5.3 Codex" },
+          ],
+        }),
+        executeTask: async () => ({ structuredOutput: { clear: true, feedback: [] } }),
+      } as any,
+      projectConfigService: {
+        get: () => ({ effective: { ai: {} } }),
+      } as any,
+      missionBudgetService: {
+        estimateLaunchBudget: async () => ({
+          estimate: createBudgetEstimate("subscription"),
+          hardLimitExceeded: false,
+          windowUsageCostUsd: 0.6,
+          remainingWindowCostUsd: 10.4,
+          budgetLimitCostUsd: 11,
+        }),
+      } as any,
+    });
+
+    return service.runPreflight({
+      launch: {
+        prompt: "Implement feature.",
+        phaseProfileId: profiles[0]!.id,
+        phaseOverride: profiles[0]!.phases,
+        modelConfig: {
+          orchestratorModel: {
+            provider: "claude",
+            modelId: "claude-sonnet-4-6",
+          },
+        },
+        permissionConfig: {
+          providers: { claude: "full-auto", codex: codexMode, opencode: "full-auto" },
+        },
+      },
+    });
+  };
+
+  it("Codex default mode shows 'Default permissions' label and warning", async () => {
+    const result = await runCodexLabelPreflight("default");
+    const permItem = result.checklist.find((item) => item.id === "permissions");
+    expect(permItem).toBeDefined();
+    expect(permItem?.severity).toBe("warning");
+    expect(permItem?.details?.some((d) => d.includes("Codex workers: Default permissions"))).toBe(true);
+    expect(permItem?.details?.some((d) => d.includes("Default permissions may still pause for approvals"))).toBe(true);
+  });
+
+  it("Codex full-auto shows 'Full access' label without warning", async () => {
+    const result = await runCodexLabelPreflight("full-auto");
+    const permItem = result.checklist.find((item) => item.id === "permissions");
+    expect(permItem).toBeDefined();
+    expect(permItem?.severity).toBe("pass");
+    expect(permItem?.details?.some((d) => d.includes("Codex workers: Full access"))).toBe(true);
+    expect(permItem?.details?.some((d) => d.includes("may still pause for approvals"))).toBe(false);
+  });
+
+  it("Codex config-toml shows 'Custom (config.toml)' label without warning", async () => {
+    const result = await runCodexLabelPreflight("config-toml");
+    const permItem = result.checklist.find((item) => item.id === "permissions");
+    expect(permItem).toBeDefined();
+    expect(permItem?.severity).toBe("pass");
+    expect(permItem?.details?.some((d) => d.includes("Codex workers: Custom (config.toml)"))).toBe(true);
+    expect(permItem?.details?.some((d) => d.includes("may still pause for approvals"))).toBe(false);
+  });
+
   it("summarizes result-lane closeout for new missions without requiring PR automation", async () => {
     const profiles = createProfiles();
     const service = createMissionPreflightService({

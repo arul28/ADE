@@ -65,6 +65,8 @@ function deriveSyncLabel(snapshot: SyncRoleSnapshot | null): string | null {
 
 export function TopBar() {
   const project = useAppStore((s) => s.project);
+  const projectHydrated = useAppStore((s) => s.projectHydrated);
+  const showWelcome = useAppStore((s) => s.showWelcome);
   const closeProject = useAppStore((s) => s.closeProject);
   const terminalAttention = useAppStore((s) => s.terminalAttention);
   const openRepo = useAppStore((s) => s.openRepo);
@@ -86,6 +88,11 @@ export function TopBar() {
   const phoneSyncPanelRef = useRef<HTMLDivElement | null>(null);
   const dragCounterRef = useRef(0);
   const isProjectBusy = projectTransition != null || relocatingPath != null;
+  const workspaceProjectOpen =
+    projectHydrated === true &&
+    showWelcome !== true &&
+    isNewTabOpen !== true &&
+    Boolean(project?.rootPath);
 
   const applyZoom = useCallback((pct: number) => {
     const clamped = Math.max(MIN_ZOOM_LEVEL, Math.min(MAX_ZOOM_LEVEL, pct));
@@ -130,6 +137,11 @@ export function TopBar() {
   }, [fetchRecent]);
 
   useEffect(() => {
+    if (!project?.rootPath) {
+      setSyncSnapshot(null);
+      setPhoneSyncOpen(false);
+      return;
+    }
     let cancelled = false;
     const refreshSyncStatus = () => {
       void window.ade.sync.getStatus().then((snapshot) => {
@@ -214,9 +226,13 @@ export function TopBar() {
   }, [isProjectBusy, openNewTab]);
 
   const handleSwitchProject = useCallback((rootPath: string) => {
-    if (isProjectBusy || project?.rootPath === rootPath) return;
+    if (isProjectBusy) return;
+    if (project?.rootPath === rootPath) {
+      cancelNewTab();
+      return;
+    }
     switchProjectToPath(rootPath).catch(() => { });
-  }, [isProjectBusy, project?.rootPath, switchProjectToPath]);
+  }, [cancelNewTab, isProjectBusy, project?.rootPath, switchProjectToPath]);
 
   const handleRemoveTab = useCallback((rootPath: string) => {
     void (async () => {
@@ -343,7 +359,7 @@ export function TopBar() {
         src="./logo.png"
         alt="ADE"
         className="shrink-0 select-none"
-        style={{ height: 20 }}
+        style={{ height: 26 }}
         draggable={false}
       />
 
@@ -390,6 +406,7 @@ export function TopBar() {
                   role={isMissing ? undefined : "button"}
                   tabIndex={isMissing ? -1 : 0}
                   data-state={projectTabState}
+                  data-tour={isCurrent && workspaceProjectOpen ? "project.activeTab" : undefined}
                   aria-current={isCurrent ? "true" : undefined}
                   aria-disabled={isRelocating || isProjectBusy ? true : undefined}
                   draggable={!isMissing && !isRelocating && !isProjectBusy}
@@ -523,7 +540,7 @@ export function TopBar() {
                 {projectTransition?.kind === "opening" ? (
                   <CircleNotch size={12} weight="bold" className="animate-spin" />
                 ) : (
-                  <img src="./logo.png" alt="" style={{ height: 12, width: 12 }} draggable={false} />
+                  <img src="./logo.png" alt="" style={{ height: 14, width: 30, objectFit: "contain" }} draggable={false} />
                 )}
                 <span className="truncate text-[11px]">
                   {projectTransition?.kind === "opening" ? "Opening…" : "New Tab"}
@@ -553,6 +570,7 @@ export function TopBar() {
         {/* Add project button */}
         <button
           type="button"
+          data-tour="project.addProject"
           className={cn(
             "ade-shell-control inline-flex h-5.5 w-5.5 shrink-0 items-center justify-center",
             "transition-[background-color,color,border-color,box-shadow] duration-150"

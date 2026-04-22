@@ -1,5 +1,5 @@
 import type { Icon as PhosphorIcon } from "@phosphor-icons/react";
-import { Brain, Database, DesktopTower, DeviceMobile, FolderSimple, GearSix, Lightning, Palette, Plugs, Stack } from "@phosphor-icons/react";
+import { Brain, Database, DeviceMobile, FolderSimple, GearSix, Lightning, Palette, Plugs, Stack } from "@phosphor-icons/react";
 
 type SettingsSectionDefinition = {
   id: string;
@@ -13,7 +13,6 @@ export const SETTINGS_SECTIONS = [
   { id: "appearance", label: "Appearance", icon: Palette },
   { id: "workspace", label: "Workspace", icon: FolderSimple },
   { id: "ai", label: "AI", icon: Brain },
-  { id: "sync", label: "Sync", icon: DesktopTower },
   { id: "mobile-push", label: "Mobile Push", icon: DeviceMobile, localOnly: true },
   { id: "integrations", label: "Integrations", icon: Plugs },
   { id: "memory", label: "Memory", icon: Database },
@@ -30,8 +29,9 @@ const TAB_ALIASES: Record<string, SectionId> = {
   project: "workspace",
   context: "workspace",
   providers: "ai",
-  devices: "sync",
-  "multi-device": "sync",
+  sync: "mobile-push",
+  devices: "mobile-push",
+  "multi-device": "mobile-push",
   github: "integrations",
   linear: "integrations",
   proof: "integrations",

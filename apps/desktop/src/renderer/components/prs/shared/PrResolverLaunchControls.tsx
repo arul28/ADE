@@ -19,7 +19,8 @@ type PrResolverLaunchControlsProps = {
   className?: string;
 };
 
-function fromAgentPermissionMode(mode: AgentChatPermissionMode): AiPermissionMode | null {
+function fromAgentPermissionMode(mode: AgentChatPermissionMode, family: string): AiPermissionMode | null {
+  if (family === "openai" && mode === "default") return "guarded_edit";
   if (mode === "full-auto") return "full_edit";
   if (mode === "edit") return "guarded_edit";
   if (mode === "plan") return "read_only";
@@ -60,7 +61,12 @@ export function PrResolverLaunchControls({
   const permissionOptions = getPermissionOptions({
     family,
     isCliWrapped: descriptor?.isCliWrapped ?? true,
-  }).filter((option) => option.value === "plan" || option.value === "edit" || option.value === "full-auto");
+  }).filter((option) => {
+    if ((descriptor?.isCliWrapped ?? true) && family === "openai") {
+      return option.value === "default" || option.value === "plan" || option.value === "full-auto";
+    }
+    return option.value === "plan" || option.value === "edit" || option.value === "full-auto";
+  });
 
   return (
     <div className={cn("flex flex-wrap items-center gap-3", className)}>
@@ -76,7 +82,7 @@ export function PrResolverLaunchControls({
       />
       <div className="flex items-center gap-px border border-border/10 bg-surface-recessed/40">
         {permissionOptions.map((option) => {
-          const mapped = fromAgentPermissionMode(option.value);
+          const mapped = fromAgentPermissionMode(option.value, family);
           if (!mapped) return null;
           const colors = safetyColors(option.safety);
           const active = permissionMode === mapped;

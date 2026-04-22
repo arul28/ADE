@@ -24,6 +24,7 @@ import { LaneContextMenu } from "./LaneContextMenu";
 import { LaneRebaseBanner } from "./LaneRebaseBanner";
 import { HelpChip } from "../onboarding/HelpChip";
 import { useOnboardingStore } from "../../state/onboardingStore";
+import { useDialogBus } from "../../lib/useDialogBus";
 import {
   sortLanesForTabs,
   sortLanesForStackGraph,
@@ -229,7 +230,6 @@ export function LanesPage() {
   const chipTimersRef = useRef<Map<string, number>>(new Map());
   const hasActiveLaneRuntimeRef = useRef(false);
   const [autoRebaseEnabled, setAutoRebaseEnabled] = useState(false);
-  const [rebaseBusyLaneId, setRebaseBusyLaneId] = useState<string | null>(null);
   const [rebaseSuggestionError, setRebaseSuggestionError] = useState<string | null>(null);
   const [rebaseScopePrompt, setRebaseScopePrompt] = useState<RebaseScopePromptState | null>(null);
   const [rebasePushReview, setRebasePushReview] = useState<RebasePushReviewState | null>(null);
@@ -375,7 +375,6 @@ export function LanesPage() {
         },
       );
   }, [laneSnapshots, filteredLaneIds]);
-  const showAutoRebaseSettingsHint = !autoRebaseEnabled && (visibleRebaseSuggestions.length > 0 || visibleAutoRebaseNeedsAttention.length > 0);
 
   const activeWithPins = useMemo(
     () => mergeUnique(activeLaneIds, Array.from(pinnedLaneIds).filter((id) => lanesById.has(id))),
@@ -1051,7 +1050,6 @@ export function LanesPage() {
 
   const runRebaseFlow = useCallback(async (laneId: string, mode: "local_only" | "local_and_remote") => {
     setRebaseSuggestionError(null);
-    setRebaseBusyLaneId(laneId);
     try {
       const scope = await requestRebaseScope(laneId);
       if (!scope) return;
@@ -1088,34 +1086,68 @@ export function LanesPage() {
       const message = err instanceof Error ? err.message : String(err);
       setRebaseSuggestionError(message);
       navigate("/prs?tab=rebase");
-    } finally {
-      setRebaseBusyLaneId(null);
     }
   }, [lanesById, navigate, refreshLanes, requestPushSelection, requestRebaseScope]);
 
+  const hideRebaseSuggestionLocally = useCallback((laneId: string) => {
+    useAppStore.setState((prev) => ({
+      laneSnapshots: prev.laneSnapshots.map((snapshot) =>
+        snapshot.lane.id === laneId ? { ...snapshot, rebaseSuggestion: null } : snapshot
+      ),
+    }));
+  }, []);
+
+  const hideAutoRebaseStatusLocally = useCallback((laneId: string) => {
+    useAppStore.setState((prev) => ({
+      laneSnapshots: prev.laneSnapshots.map((snapshot) =>
+        snapshot.lane.id === laneId ? { ...snapshot, autoRebaseStatus: null } : snapshot
+      ),
+    }));
+  }, []);
+
+  const restoreRebaseSuggestionLocally = useCallback((laneId: string, suggestion: LaneListSnapshot["rebaseSuggestion"]) => {
+    if (!suggestion) return;
+    useAppStore.setState((prev) => ({
+      laneSnapshots: prev.laneSnapshots.map((snapshot) =>
+        snapshot.lane.id === laneId && snapshot.rebaseSuggestion == null
+          ? { ...snapshot, rebaseSuggestion: suggestion }
+          : snapshot
+      ),
+    }));
+  }, []);
+
+  const restoreAutoRebaseStatusLocally = useCallback((laneId: string, status: LaneListSnapshot["autoRebaseStatus"]) => {
+    if (!status) return;
+    useAppStore.setState((prev) => ({
+      laneSnapshots: prev.laneSnapshots.map((snapshot) =>
+        snapshot.lane.id === laneId && snapshot.autoRebaseStatus == null
+          ? { ...snapshot, autoRebaseStatus: status }
+          : snapshot
+      ),
+    }));
+  }, []);
+
   const dismissRebaseSuggestion = async (laneId: string) => {
+    const previous = useAppStore.getState().laneSnapshots.find((snapshot) => snapshot.lane.id === laneId)?.rebaseSuggestion ?? null;
     setRebaseSuggestionError(null);
-    setRebaseBusyLaneId(laneId);
+    hideRebaseSuggestionLocally(laneId);
     try {
       await window.ade.lanes.dismissRebaseSuggestion({ laneId });
-      await refreshLanes();
     } catch (err) {
+      restoreRebaseSuggestionLocally(laneId, previous);
       setRebaseSuggestionError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setRebaseBusyLaneId(null);
     }
   };
 
-  const deferRebaseSuggestion = async (laneId: string, minutes: number) => {
+  const dismissAutoRebaseStatus = async (laneId: string) => {
+    const previous = useAppStore.getState().laneSnapshots.find((snapshot) => snapshot.lane.id === laneId)?.autoRebaseStatus ?? null;
     setRebaseSuggestionError(null);
-    setRebaseBusyLaneId(laneId);
+    hideAutoRebaseStatusLocally(laneId);
     try {
-      await window.ade.lanes.deferRebaseSuggestion({ laneId, minutes });
-      await refreshLanes();
+      await window.ade.lanes.dismissAutoRebaseStatus({ laneId });
     } catch (err) {
+      restoreAutoRebaseStatusLocally(laneId, previous);
       setRebaseSuggestionError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setRebaseBusyLaneId(null);
     }
   };
 
@@ -1389,6 +1421,38 @@ export function LanesPage() {
     setDeleteConfirmText("");
     setManageOpen(true);
   }, [selectLane]);
+
+  const handleCreateDialogBusOpen = useCallback((props?: Record<string, unknown>) => {
+    setAddLaneDropdownOpen(false);
+    prepareCreateDialog();
+    const name = typeof props?.name === "string" ? props.name.trim() : "";
+    if (name) setCreateLaneName(name);
+  }, [prepareCreateDialog]);
+
+  const handleManageDialogBusOpen = useCallback((props?: Record<string, unknown>) => {
+    const requestedLaneId = typeof props?.laneId === "string" ? props.laneId : null;
+    const requested = requestedLaneId ? lanesById.get(requestedLaneId) ?? null : null;
+    const selected = selectedLaneId ? lanesById.get(selectedLaneId) ?? null : null;
+    const fallback = sortedLanes.find((lane) => lane.laneType !== "primary") ?? null;
+    const target =
+      requested && requested.laneType !== "primary"
+        ? requested
+        : selected && selected.laneType !== "primary"
+          ? selected
+          : fallback;
+    if (!target) return;
+    openManageDialog(target.id);
+  }, [lanesById, openManageDialog, selectedLaneId, sortedLanes]);
+
+  useDialogBus("lanes.create", {
+    onOpen: handleCreateDialogBusOpen,
+    onClose: () => handleCreateDialogOpenChange(false),
+  });
+
+  useDialogBus("lanes.manage", {
+    onOpen: handleManageDialogBusOpen,
+    onClose: () => setManageOpen(false),
+  });
 
   /* ---- Pane configs ---- */
 
@@ -1708,6 +1772,7 @@ export function LanesPage() {
             <div className="absolute left-0 top-full z-[200] mt-2 w-60 rounded-xl p-1 shadow-float" style={{ background: COLORS.cardBgSolid, border: `1px solid ${COLORS.outlineBorder}` }}>
               <button
                 type="button"
+                data-tour="lanes.createNewLane"
                 className="flex w-full items-center gap-3 rounded-lg px-3 py-2 text-left text-sm text-muted-fg transition-colors hover:bg-white/[0.04] hover:text-fg"
                 onClick={() => {
                   setAddLaneDropdownOpen(false);
@@ -1856,7 +1921,7 @@ export function LanesPage() {
           return (
             <div
               key={lane.id}
-              data-tour="lanes.laneTab"
+              data-tour={isSelected && !isPrimary ? "lanes.laneTab" : undefined}
               role="button"
               tabIndex={0}
               className="group flex items-center gap-2 cursor-pointer shrink-0"
@@ -2070,17 +2135,11 @@ export function LanesPage() {
       <LaneRebaseBanner
         visibleRebaseSuggestions={visibleRebaseSuggestions}
         visibleAutoRebaseNeedsAttention={visibleAutoRebaseNeedsAttention}
-        showAutoRebaseSettingsHint={showAutoRebaseSettingsHint}
         lanesById={lanesById}
-        rebaseBusyLaneId={rebaseBusyLaneId}
         rebaseSuggestionError={rebaseSuggestionError}
-        onRebaseNowLocal={(laneId) => { void runRebaseFlow(laneId, "local_only"); }}
-        onRebaseAndPush={(laneId) => { void runRebaseFlow(laneId, "local_and_remote"); }}
         onViewRebaseDetails={openRebaseDetails}
         onDismissRebase={(laneId) => { void dismissRebaseSuggestion(laneId); }}
-        onDeferRebase={(laneId, minutes) => { void deferRebaseSuggestion(laneId, minutes); }}
-        onOpenAutoRebaseSettings={openAutoRebaseSettings}
-        onOpenRebaseConflictResolver={openRebaseConflictResolver}
+        onDismissAutoRebase={(laneId) => { void dismissAutoRebaseStatus(laneId); }}
       />
 
       {/* Floating pane tiling layout */}

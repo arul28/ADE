@@ -1,7 +1,7 @@
 import { motion } from "framer-motion";
 
 const SLIDES = [
-    { src: "/images/splash/left.png", alt: "ADE — lanes and missions" },
+    { src: "/images/splash/left.png", alt: "ADE — worktrees and missions" },
     { src: "/images/splash/middle.png", alt: "ADE — main workspace" },
     { src: "/images/splash/right.png", alt: "ADE — editor and tools" },
 ] as const;

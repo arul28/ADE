@@ -86,25 +86,11 @@ extension WorkSessionSettingsSheet {
     case "codex":
       if selectedRuntimeMode != initialRuntimeMode {
         runtimeChanged = true
-        codexConfigSource = "flags"
-        switch selectedRuntimeMode {
-        case "plan":
-          codexApprovalPolicy = "untrusted"
-          codexSandbox = "read-only"
-          permissionMode = "plan"
-        case "edit":
-          codexApprovalPolicy = "on-failure"
-          codexSandbox = "workspace-write"
-          permissionMode = "edit"
-        case "full-auto":
-          codexApprovalPolicy = "never"
-          codexSandbox = "danger-full-access"
-          permissionMode = "full-auto"
-        default:
-          codexApprovalPolicy = "on-request"
-          codexSandbox = "workspace-write"
-          permissionMode = "default"
-        }
+        let wire = workRuntimeWireFields(provider: summary.provider, mode: selectedRuntimeMode)
+        permissionMode = wire.permissionMode
+        codexApprovalPolicy = wire.codexApprovalPolicy
+        codexSandbox = wire.codexSandbox
+        codexConfigSource = wire.codexConfigSource
       }
     case "opencode":
       if selectedRuntimeMode != initialRuntimeMode {

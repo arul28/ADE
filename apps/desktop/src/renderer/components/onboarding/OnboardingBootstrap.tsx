@@ -14,7 +14,9 @@ import "../../onboarding/tours";
 export function OnboardingBootstrap() {
   const location = useLocation();
   const onboardingEnabled = useAppStore((s) => s.onboardingEnabled);
+  const projectHydrated = useAppStore((s) => s.projectHydrated);
   const showWelcome = useAppStore((s) => s.showWelcome);
+  const isNewTabOpen = useAppStore((s) => s.isNewTabOpen);
   const project = useAppStore((s) => s.project);
 
   const hydrated = useOnboardingStore((s) => s.hydrated);
@@ -22,6 +24,8 @@ export function OnboardingBootstrap() {
   const progress = useOnboardingStore((s) => s.progress);
   const wizardOpen = useOnboardingStore((s) => s.wizardOpen);
   const activeTourId = useOnboardingStore((s) => s.activeTourId);
+  const activeTourVariant = useOnboardingStore((s) => s.activeTourVariant);
+  const activeStepIndex = useOnboardingStore((s) => s.activeStepIndex);
 
   const selectedLaneId = useAppStore((s) => s.selectedLaneId);
 
@@ -39,7 +43,11 @@ export function OnboardingBootstrap() {
     }
   }, [hydrated, hydrate]);
 
-  const hasActiveProject = Boolean(project?.rootPath);
+  const hasActiveProject =
+    projectHydrated === true &&
+    showWelcome !== true &&
+    isNewTabOpen !== true &&
+    Boolean(project?.rootPath);
   const onProjectSetup =
     location.pathname === "/project" ||
     location.pathname === "/onboarding" ||
@@ -48,18 +56,62 @@ export function OnboardingBootstrap() {
 
   // Advance the first-journey tour when the user completes the "open project"
   // step by actually selecting a project.
-  const prevHasActiveProjectRef = useRef(hasActiveProject);
   useEffect(() => {
-    if (hasActiveProject && !prevHasActiveProjectRef.current && activeTourId === "first-journey") {
+    const tour =
+      activeTourId === "first-journey"
+        ? getTour(activeTourId, activeTourVariant ?? undefined)
+        : null;
+    const stepId = tour?.steps[activeStepIndex]?.id ?? null;
+    const isProjectOpeningStep =
+      stepId === "act0.welcome" ||
+      stepId === "act0.openProject" ||
+      stepId === "act0.projectBrowser";
+    if (
+      hasActiveProject &&
+      activeTourId === "first-journey" &&
+      isProjectOpeningStep
+    ) {
       void useOnboardingStore.getState().nextStep();
     }
-    prevHasActiveProjectRef.current = hasActiveProject;
-  }, [hasActiveProject, activeTourId]);
+  }, [activeStepIndex, activeTourId, activeTourVariant, hasActiveProject]);
+
+  // If the user dismisses the project picker without selecting a repo, keep the
+  // tutorial anchored to the welcome/recent-project screen instead of leaving a
+  // stale "Pick your repo" card floating in the viewport.
+  useEffect(() => {
+    if (activeTourId !== "first-journey") return;
+    if (hasActiveProject) return;
+    const tour = getTour(activeTourId, activeTourVariant ?? undefined);
+    const stepId = tour?.steps[activeStepIndex]?.id ?? null;
+    if (stepId !== "act0.projectBrowser") return;
+    if (typeof document === "undefined") return;
+
+    let settled = false;
+    const pickerIsOpen = () => document.querySelector('[data-tour="project.browser"]') != null;
+    const rewindIfClosed = () => {
+      if (settled || pickerIsOpen()) return;
+      settled = true;
+      void useOnboardingStore.getState().prevStep();
+    };
+
+    const timer = window.setTimeout(rewindIfClosed, 0);
+    const observer =
+      typeof MutationObserver !== "undefined"
+        ? new MutationObserver(rewindIfClosed)
+        : null;
+    observer?.observe(document.body, { childList: true, subtree: true });
+    return () => {
+      settled = true;
+      window.clearTimeout(timer);
+      observer?.disconnect();
+    };
+  }, [activeStepIndex, activeTourId, activeTourVariant, hasActiveProject]);
 
   // Auto-open welcome wizard on first run.
   useEffect(() => {
     if (!hydrated || !progress) return;
     if (!onboardingEnabled) return;
+    if (activeTourId) return;
     if (onProjectSetup) return;
     if (wizardAutoFiredRef.current) return;
 
@@ -70,7 +122,7 @@ export function OnboardingBootstrap() {
 
     wizardAutoFiredRef.current = true;
     useOnboardingStore.getState().openWizard();
-  }, [hydrated, progress, onboardingEnabled, onProjectSetup, wizardOpen]);
+  }, [hydrated, progress, onboardingEnabled, activeTourId, onProjectSetup, wizardOpen]);
 
   // Auto-start Lanes tour on first Lanes-route visit, after the wizard is resolved.
   useEffect(() => {

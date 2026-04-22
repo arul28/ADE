@@ -181,7 +181,7 @@ export const DEFAULT_ORCHESTRATOR_MODEL: ModelConfig = {
 export const DEFAULT_PERMISSION_CONFIG: MissionPermissionConfig = {
   providers: {
     claude: "full-auto",
-    codex: "full-auto",
+    codex: "default",
     opencode: "full-auto",
     codexSandbox: "workspace-write",
   },

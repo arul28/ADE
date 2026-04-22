@@ -53,7 +53,6 @@ import type {
   ApnsBridgeUploadKeyArgs,
   ApnsBridgeSendTestPushArgs,
   ApnsBridgeSendTestPushResult,
-  ApnsTestPushKind,
   DraftPrDescriptionArgs,
   CtoGetStateArgs,
   CtoEnsureSessionArgs,
@@ -1374,6 +1373,8 @@ contextBridge.exposeInMainWorld("ade", {
     },
     listAutoRebaseStatuses: async (): Promise<AutoRebaseLaneStatus[]> =>
       ipcRenderer.invoke(IPC.lanesListAutoRebaseStatuses),
+    dismissAutoRebaseStatus: async (args: { laneId: string }): Promise<void> =>
+      ipcRenderer.invoke(IPC.lanesDismissAutoRebaseStatus, args),
     onAutoRebaseEvent: (cb: (ev: AutoRebaseEventPayload) => void) => {
       const listener = (
         _event: Electron.IpcRendererEvent,

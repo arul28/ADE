@@ -1297,6 +1297,30 @@ function coerceAiConfig(value: unknown): AiConfig | undefined {
       if (Object.keys(entry).length) permissions.inProcess = entry;
     }
 
+    const providersRaw = isRecord(permissionsRaw.providers) ? permissionsRaw.providers : null;
+    if (providersRaw) {
+      const providers: NonNullable<NonNullable<AiConfig["permissions"]>["providers"]> = {};
+      const providerMode = (key: "claude" | "codex" | "cursor" | "opencode") => {
+        const mode = asString(providersRaw[key])?.trim();
+        if (mode === "default" || mode === "plan" || mode === "edit" || mode === "full-auto" || mode === "config-toml") {
+          providers[key] = mode;
+        }
+      };
+      providerMode("claude");
+      providerMode("codex");
+      providerMode("cursor");
+      providerMode("opencode");
+      const codexSandbox = asString(providersRaw.codexSandbox)?.trim();
+      if (codexSandbox === "read-only" || codexSandbox === "workspace-write" || codexSandbox === "danger-full-access") {
+        providers.codexSandbox = codexSandbox;
+      }
+      const writablePaths = asStringArray(providersRaw.writablePaths);
+      if (writablePaths?.length) providers.writablePaths = writablePaths;
+      const allowedTools = asStringArray(providersRaw.allowedTools);
+      if (allowedTools?.length) providers.allowedTools = allowedTools;
+      if (Object.keys(providers).length) permissions.providers = providers;
+    }
+
     if (Object.keys(permissions).length) out.permissions = permissions;
   }
 

@@ -478,10 +478,19 @@ export function createMissionPreflightService(args: {
       }
     }
     if (familiesInUse.has("openai")) {
-      const mode = providers.codex ?? "full-auto";
-      permissionDetails.push(`Codex workers: ${mode}`);
-      if (mode !== "full-auto") {
-        permissionWarnings.push(`Codex workers: ${mode} mode — all commands require approval.`);
+      const mode = providers.codex ?? "default";
+      const label = mode === "default"
+        ? "Default permissions"
+        : mode === "plan"
+          ? "Plan mode"
+          : mode === "full-auto"
+            ? "Full access"
+            : mode === "config-toml"
+              ? "Custom (config.toml)"
+              : mode;
+      permissionDetails.push(`Codex workers: ${label}`);
+      if (mode !== "full-auto" && mode !== "config-toml") {
+        permissionWarnings.push(`Codex workers: ${label} may still pause for approvals.`);
       }
     }
     if (familiesInUse.has("api")) {
@@ -507,7 +516,7 @@ export function createMissionPreflightService(args: {
             title: "Permissions",
             summary: "Some workers may pause for approval during execution.",
             details: [...permissionDetails, "", ...permissionWarnings],
-            fixHint: "Non-full-auto modes are valid but workers will pause for user approval. Set full-auto if you want fully unattended execution.",
+            fixHint: "Non-full-access modes are valid but workers may pause for user approval. Use full access only when the run is externally sandboxed.",
           }),
     );
 

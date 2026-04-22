@@ -87,10 +87,9 @@ export function ManageLaneDialog({
       ) : allPrimary ? (
         <div className="py-4 text-sm text-muted-fg">Primary lane cannot be archived or deleted.</div>
       ) : (
-        <div className="max-h-[65vh] space-y-3 overflow-auto">
+        <div className="max-h-[65vh] space-y-3 overflow-auto" data-tour="lanes.manageDialog">
           {/* Lane info */}
-          {/* tour anchor — closest viable: no in-dialog rename control, so the lane info block stands in. */}
-          <section data-tour="lanes.manageDialog.rename" className={SECTION_CLASS_NAME}>
+          <section data-tour="lanes.manageDialog.laneInfo" className={SECTION_CLASS_NAME}>
             <span className={LABEL_CLASS_NAME}>{isBatch ? "Selected lanes" : "Lane"}</span>
             {isBatch ? (
               <div className="mt-2 max-h-[120px] space-y-1.5 overflow-auto">
@@ -224,6 +223,7 @@ export function ManageLaneDialog({
                 Type <span className="normal-case tracking-normal text-red-400">{deletePhrase}</span> to confirm
               </span>
               <input
+                data-tour="lanes.manageDialog.confirm"
                 value={deleteConfirmText}
                 onChange={(event) => setDeleteConfirmText(event.target.value)}
                 disabled={laneActionBusy}

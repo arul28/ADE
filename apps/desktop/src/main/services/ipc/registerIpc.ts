@@ -1423,8 +1423,8 @@ function mapPrAiPermissionModeToNativeFields(
   }
   if (provider === "codex") {
     if (legacy === "full-auto") return { codexApprovalPolicy: "never", codexSandbox: "danger-full-access" };
-    if (legacy === "edit") return { codexApprovalPolicy: "on-failure", codexSandbox: "workspace-write" };
-    return { codexApprovalPolicy: "untrusted", codexSandbox: "read-only" };
+    if (legacy === "edit") return { codexApprovalPolicy: "on-request", codexSandbox: "workspace-write" };
+    return { codexApprovalPolicy: "on-request", codexSandbox: "read-only" };
   }
   const umap: Record<string, AgentChatOpenCodePermissionMode> = {
     "full-auto": "full-auto",
@@ -1447,8 +1447,8 @@ function deriveAiPermissionModeFromSummary(
   }
   if (summary.provider === "codex") {
     if (summary.codexApprovalPolicy === "never" && summary.codexSandbox === "danger-full-access") return "full_edit";
-    if (summary.codexApprovalPolicy === "on-failure") return "guarded_edit";
-    if (summary.codexApprovalPolicy === "untrusted") return "read_only";
+    if (summary.codexSandbox === "workspace-write") return "guarded_edit";
+    if (summary.codexSandbox === "read-only") return "read_only";
     return null;
   }
   if (summary.opencodePermissionMode === "full-auto") return "full_edit";
@@ -3689,6 +3689,12 @@ export function registerIpc({
     const ctx = getCtx();
     if (!ctx.autoRebaseService) return [];
     return await ctx.autoRebaseService.listStatuses();
+  });
+
+  ipcMain.handle(IPC.lanesDismissAutoRebaseStatus, async (_event, arg: { laneId: string }): Promise<void> => {
+    const ctx = getCtx();
+    if (!ctx.autoRebaseService) return;
+    await ctx.autoRebaseService.dismissStatus({ laneId: arg.laneId });
   });
 
   ipcMain.handle(IPC.lanesOpenFolder, async (_event, arg: { laneId: string }): Promise<void> => {

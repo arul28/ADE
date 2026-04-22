@@ -176,8 +176,10 @@ const TEMPLATES: Array<AutomationTemplate & { draft: Omit<AutomationRuleDraft, "
 
 export function TemplatesTab({
   onUseTemplate,
+  missionsEnabled,
 }: {
   onUseTemplate: (draft: Omit<AutomationRuleDraft, "id">) => void;
+  missionsEnabled: boolean;
 }) {
   return (
     <div className="h-full overflow-y-auto px-6 py-6" style={{ background: "#0F0D14" }}>
@@ -190,13 +192,18 @@ export function TemplatesTab({
         </div>
 
         <div className="mt-6 grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
-          {TEMPLATES.map((template) => (
-            <TemplateCard
-              key={template.id}
-              template={template}
-              onUse={() => onUseTemplate(template.draft)}
-            />
-          ))}
+          {TEMPLATES.map((template) => {
+            const disabled = template.draft.execution?.kind === "mission" && !missionsEnabled;
+            return (
+              <TemplateCard
+                key={template.id}
+                template={template}
+                disabled={disabled}
+                disabledReason={disabled ? "Mission automations are coming soon in production builds." : undefined}
+                onUse={() => onUseTemplate(template.draft)}
+              />
+            );
+          })}
         </div>
       </div>
     </div>

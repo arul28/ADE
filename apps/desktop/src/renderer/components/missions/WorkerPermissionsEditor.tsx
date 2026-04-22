@@ -100,16 +100,18 @@ export function WorkerPermissionsEditor({
   }, [families]);
 
   const updateProviderPerm = (key: PermFamilyKey, value: AgentChatPermissionMode) => {
+    const codexSandbox = value === "full-auto"
+      ? "danger-full-access"
+      : value === "plan"
+        ? "read-only"
+        : "workspace-write";
     onPermissionChange({
       ...permissionConfig,
-      providers: { ...permissionConfig?.providers, [key]: value },
-    });
-  };
-
-  const updateCodexSandbox = (value: "read-only" | "workspace-write" | "danger-full-access") => {
-    onPermissionChange({
-      ...permissionConfig,
-      providers: { ...permissionConfig?.providers, codexSandbox: value },
+      providers: {
+        ...permissionConfig?.providers,
+        [key]: value,
+        ...(key === "codex" && value !== "config-toml" ? { codexSandbox } : {}),
+      },
     });
   };
 
@@ -192,28 +194,6 @@ export function WorkerPermissionsEditor({
               {selected && (
                 <div style={{ fontSize: 10, color: COLORS.textDim, fontFamily: MONO_FONT, marginTop: 6, lineHeight: "1.5" }}>
                   {selected.detail}
-                </div>
-              )}
-
-              {/* Codex sandbox sub-dropdown */}
-              {fam === "codex" && (
-                <div style={{ marginTop: 8 }}>
-                  <span style={{ fontSize: 9, fontWeight: 700, fontFamily: MONO_FONT, textTransform: "uppercase" as const, letterSpacing: "1px", color: COLORS.textMuted }}>
-                    SANDBOX
-                  </span>
-                  <select
-                    value={provPerms?.codexSandbox ?? "workspace-write"}
-                    onChange={(e) => updateCodexSandbox(e.target.value as "read-only" | "workspace-write" | "danger-full-access")}
-                    className="mt-1 h-7 w-full px-2 outline-none"
-                    style={inputStyleResolved}
-                  >
-                    <option value="read-only">Read-only</option>
-                    <option value="workspace-write">Workspace write</option>
-                    <option value="danger-full-access">Danger full-access</option>
-                  </select>
-                  <div style={{ fontSize: 10, color: COLORS.textDim, fontFamily: MONO_FONT, marginTop: 6, lineHeight: "1.4" }}>
-                    Mode controls approval behavior. Sandbox controls filesystem access. They are applied together for Codex workers.
-                  </div>
                 </div>
               )}
 

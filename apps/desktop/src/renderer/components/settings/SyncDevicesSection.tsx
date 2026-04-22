@@ -239,6 +239,8 @@ export function SyncDevicesSection() {
   const phonesConnected = phones.filter((d) => d.connectionState === "connected").length;
   const phonesOffline = phones.length - phonesConnected;
   const isLocalHost = status.role === "brain";
+  const hasTailscaleAddress = Boolean(status.localDevice.tailscaleIp);
+  const showTailnetDiscovery = shouldShowTailnetDiscoveryPanel(status.tailnetDiscovery, hasTailscaleAddress);
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
@@ -257,12 +259,15 @@ export function SyncDevicesSection() {
         <ViewerPairingNotice />
       )}
 
-      <TailnetDiscoveryPanel
-        status={status.tailnetDiscovery}
-        busy={busy}
-        isLocalHost={isLocalHost}
-        onRetry={handleRetryDiscovery}
-      />
+      {showTailnetDiscovery ? (
+        <TailnetDiscoveryPanel
+          status={status.tailnetDiscovery}
+          hasTailscaleAddress={hasTailscaleAddress}
+          busy={busy}
+          isLocalHost={isLocalHost}
+          onRetry={handleRetryDiscovery}
+        />
+      ) : null}
 
       {notice ? <div style={{ ...helperTextStyle, color: COLORS.success }}>{notice}</div> : null}
       {error ? <div style={{ ...helperTextStyle, color: COLORS.danger }}>{error}</div> : null}
@@ -349,7 +354,21 @@ function displayTailnetHost(status: SyncTailnetDiscoveryStatus): string {
   return `${status.serviceName.replace(/^svc:/, "")}:${status.servicePort}`;
 }
 
-function tailnetStatusCopy(status: SyncTailnetDiscoveryStatus, isLocalHost: boolean): {
+function tailnetRequiresTaggedNode(status: SyncTailnetDiscoveryStatus): boolean {
+  return /service hosts must be tagged nodes/i.test(
+    [status.stderr, status.error].filter(Boolean).join("\n"),
+  );
+}
+
+function shouldShowTailnetDiscoveryPanel(status: SyncTailnetDiscoveryStatus, hasTailscaleAddress: boolean): boolean {
+  if (status.state === "disabled" && !status.error && !status.stderr) return false;
+  return true;
+}
+
+function tailnetStatusCopy(status: SyncTailnetDiscoveryStatus, args: {
+  isLocalHost: boolean;
+  hasTailscaleAddress: boolean;
+}): {
   label: string;
   color: string;
   title: string;
@@ -357,6 +376,31 @@ function tailnetStatusCopy(status: SyncTailnetDiscoveryStatus, isLocalHost: bool
   canRetry: boolean;
 } {
   const host = displayTailnetHost(status);
+  if (tailnetRequiresTaggedNode(status)) {
+    if (args.hasTailscaleAddress) {
+      return {
+        label: "Direct Tailscale ready",
+        color: COLORS.success,
+        title: "Phones can connect through Tailscale",
+        detail: [
+          "The QR code includes this Mac's normal Tailscale address, so pairing can work without extra setup.",
+          "Only the optional stable shortcut is blocked by Tailscale policy.",
+        ].join(" "),
+        canRetry: false,
+      };
+    }
+    return {
+      label: "Tailscale setup needed",
+      color: COLORS.warning,
+      title: "Automatic phone discovery is blocked",
+      detail: [
+        "ADE tried to create a stable Tailscale address that phones can find automatically.",
+        "Tailscale only allows that on computers configured by a tailnet admin for service hosting.",
+        "Local pairing still works; retry after service hosting is enabled for this Mac.",
+      ].join(" "),
+      canRetry: true,
+    };
+  }
   switch (status.state) {
     case "published":
       return {
@@ -402,7 +446,7 @@ function tailnetStatusCopy(status: SyncTailnetDiscoveryStatus, isLocalHost: bool
       return {
         label: "Not active",
         color: COLORS.textMuted,
-        title: isLocalHost ? `Not published as ${host}` : "Only the host desktop publishes tailnet discovery",
+        title: args.isLocalHost ? `Not published as ${host}` : "Only the host desktop publishes tailnet discovery",
         detail: status.error || "Start phone sync hosting to publish tailnet discovery.",
         canRetry: false,
       };
@@ -411,16 +455,18 @@ function tailnetStatusCopy(status: SyncTailnetDiscoveryStatus, isLocalHost: bool
 
 function TailnetDiscoveryPanel({
   status,
+  hasTailscaleAddress,
   busy,
   isLocalHost,
   onRetry,
 }: {
   status: SyncTailnetDiscoveryStatus;
+  hasTailscaleAddress: boolean;
   busy: boolean;
   isLocalHost: boolean;
   onRetry: () => void;
 }) {
-  const copy = tailnetStatusCopy(status, isLocalHost);
+  const copy = tailnetStatusCopy(status, { isLocalHost, hasTailscaleAddress });
   const disabled = busy || !copy.canRetry;
   return (
     <div style={panelStyle}>
@@ -428,7 +474,7 @@ function TailnetDiscoveryPanel({
         <div style={{ minWidth: 0 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
             <span style={{ color: COLORS.textPrimary, fontFamily: SANS_FONT, fontSize: 14, fontWeight: 600 }}>
-              Tailnet discovery
+              Automatic discovery
             </span>
             <span style={tagStyle(copy.color)}>{copy.label}</span>
           </div>

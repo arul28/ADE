@@ -81,9 +81,15 @@ describe("buildTrackedCliStartupCommand", () => {
   });
 
   describe("codex provider", () => {
-    it("adds --full-auto for full-auto", () => {
+    it("adds the dangerous bypass flag for full-auto", () => {
       expect(
         buildTrackedCliStartupCommand({ provider: "codex", permissionMode: "full-auto" }),
+      ).toBe("codex --no-alt-screen --dangerously-bypass-approvals-and-sandbox");
+    });
+
+    it("adds Codex's auto preset for default", () => {
+      expect(
+        buildTrackedCliStartupCommand({ provider: "codex", permissionMode: "default" }),
       ).toBe("codex --no-alt-screen --full-auto");
     });
 
@@ -93,22 +99,16 @@ describe("buildTrackedCliStartupCommand", () => {
       ).toBe("codex --no-alt-screen");
     });
 
-    it("adds on-failure approval and workspace-write sandbox for edit", () => {
+    it("adds untrusted approval and workspace-write sandbox for edit", () => {
       expect(
         buildTrackedCliStartupCommand({ provider: "codex", permissionMode: "edit" }),
-      ).toBe("codex --no-alt-screen -c approval_policy=on-failure -c sandbox_mode=workspace-write");
+      ).toBe("codex --no-alt-screen --sandbox workspace-write --ask-for-approval untrusted");
     });
 
-    it("adds untrusted approval and read-only sandbox for default", () => {
-      expect(
-        buildTrackedCliStartupCommand({ provider: "codex", permissionMode: "default" }),
-      ).toBe("codex --no-alt-screen -c approval_policy=untrusted -c sandbox_mode=read-only");
-    });
-
-    it("adds untrusted approval and read-only sandbox for plan (else branch)", () => {
+    it("adds on-request approval and read-only sandbox for plan", () => {
       expect(
         buildTrackedCliStartupCommand({ provider: "codex", permissionMode: "plan" }),
-      ).toBe("codex --no-alt-screen -c approval_policy=untrusted -c sandbox_mode=read-only");
+      ).toBe("codex --no-alt-screen --sandbox read-only --ask-for-approval on-request");
     });
   });
 
@@ -137,7 +137,7 @@ describe("tracked CLI resume helpers", () => {
       targetKind: "thread",
       targetId: "thread-99",
       launch: { permissionMode: "edit" },
-    })).toBe("codex --no-alt-screen -c approval_policy=on-failure -c sandbox_mode=workspace-write resume thread-99");
+    })).toBe("codex --no-alt-screen --sandbox workspace-write --ask-for-approval untrusted resume thread-99");
   });
 
   it("falls back to the provider resume picker when the concrete target is missing", () => {
@@ -153,7 +153,7 @@ describe("tracked CLI resume helpers", () => {
       targetKind: "thread",
       targetId: null,
       launch: { permissionMode: "full-auto" },
-    })).toBe("codex --no-alt-screen --full-auto resume");
+    })).toBe("codex --no-alt-screen --dangerously-bypass-approvals-and-sandbox resume");
   });
 
   it("prefers structured metadata over the legacy resume command string", () => {
@@ -167,6 +167,6 @@ describe("tracked CLI resume helpers", () => {
       },
     } satisfies Pick<TerminalSessionSummary, "resumeCommand" | "resumeMetadata">;
 
-    expect(resolveTrackedCliResumeCommand(session)).toBe("codex --no-alt-screen --full-auto resume thread-99");
+    expect(resolveTrackedCliResumeCommand(session)).toBe("codex --no-alt-screen --dangerously-bypass-approvals-and-sandbox resume thread-99");
   });
 });

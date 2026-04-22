@@ -143,7 +143,6 @@ import type {
   ApnsBridgeUploadKeyArgs,
   ApnsBridgeSendTestPushArgs,
   ApnsBridgeSendTestPushResult,
-  ApnsTestPushKind,
   CtoGetStateArgs,
   CtoEnsureSessionArgs,
   CtoUpdateCoreMemoryArgs,
@@ -1020,6 +1019,7 @@ declare global {
           cb: (ev: RebaseSuggestionsEventPayload) => void,
         ) => () => void;
         listAutoRebaseStatuses: () => Promise<AutoRebaseLaneStatus[]>;
+        dismissAutoRebaseStatus: (args: { laneId: string }) => Promise<void>;
         onAutoRebaseEvent: (
           cb: (ev: AutoRebaseEventPayload) => void,
         ) => () => void;

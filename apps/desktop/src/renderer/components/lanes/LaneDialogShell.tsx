@@ -11,6 +11,7 @@ export function LaneDialogShell({
   icon: Icon,
   widthClassName,
   busy = false,
+  onCloseAutoFocus,
   children,
 }: {
   open: boolean;
@@ -20,6 +21,7 @@ export function LaneDialogShell({
   icon?: ComponentType<{ size?: number | string; className?: string }>;
   widthClassName?: string;
   busy?: boolean;
+  onCloseAutoFocus?: (event: Event) => void;
   children: ReactNode;
 }) {
   return (
@@ -28,6 +30,7 @@ export function LaneDialogShell({
         <Dialog.Overlay className="fixed inset-0 z-50 bg-black/40 backdrop-blur-sm" />
         <Dialog.Content
           className={`fixed left-1/2 top-[14%] z-50 -translate-x-1/2 focus:outline-none ${widthClassName ?? "w-[min(680px,calc(100vw-24px))]"}`}
+          onCloseAutoFocus={onCloseAutoFocus}
         >
           <BorderBeam size="md" colorVariant="mono" duration={25} strength={0.85} borderRadius={12}>
             <div className="relative rounded-xl border border-white/[0.06] bg-bg/80 p-4 shadow-float backdrop-blur-xl">
@@ -46,7 +49,11 @@ export function LaneDialogShell({
                     <Dialog.Description className="mt-2 max-w-2xl text-sm leading-6 text-muted-fg">
                       {description}
                     </Dialog.Description>
-                  ) : null}
+                  ) : (
+                    <Dialog.Description className="sr-only">
+                      {title}
+                    </Dialog.Description>
+                  )}
                 </div>
                 <Dialog.Close asChild>
                   <Button variant="ghost" size="sm" disabled={busy}>

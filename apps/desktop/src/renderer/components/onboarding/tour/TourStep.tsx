@@ -9,6 +9,9 @@ type TourStepProps = {
   totalSteps: number;
   targetRect: DOMRect | null;
   missing: boolean;
+  canAdvance: boolean;
+  fallbackActive: boolean;
+  waitingLabel?: string | null;
   onNext: () => void;
   onPrev: () => void;
   onDismiss: () => void;
@@ -18,6 +21,20 @@ type TourStepProps = {
 const CARD_WIDTH = 320;
 const CARD_GAP = 12;
 const EDGE_PAD = 12;
+
+function renderEmphasis(text: string): React.ReactNode[] {
+  const parts = text.split(/(\*\*[^*]+\*\*)/g);
+  return parts.map((part, index) => {
+    if (part.startsWith("**") && part.endsWith("**") && part.length > 4) {
+      return (
+        <strong key={index} style={{ color: "var(--color-fg, #F0F0F2)", fontWeight: 700 }}>
+          {part.slice(2, -2)}
+        </strong>
+      );
+    }
+    return <React.Fragment key={index}>{part}</React.Fragment>;
+  });
+}
 
 function computePosition(
   rect: DOMRect | null,
@@ -33,6 +50,28 @@ function computePosition(
       top: Math.max(EDGE_PAD, vh / 2 - estHeight / 2),
       left: Math.max(EDGE_PAD, vw / 2 - cardWidth / 2),
       centered: true,
+    };
+  }
+
+  if (placement === "viewport-top-right") {
+    return {
+      top: EDGE_PAD,
+      left: Math.max(EDGE_PAD, vw - cardWidth - EDGE_PAD),
+      centered: false,
+    };
+  }
+  if (placement === "viewport-bottom-right") {
+    return {
+      top: Math.max(EDGE_PAD, vh - estHeight - EDGE_PAD),
+      left: Math.max(EDGE_PAD, vw - cardWidth - EDGE_PAD),
+      centered: false,
+    };
+  }
+  if (placement === "viewport-bottom-left") {
+    return {
+      top: Math.max(EDGE_PAD, vh - estHeight - EDGE_PAD),
+      left: EDGE_PAD,
+      centered: false,
     };
   }
 
@@ -78,13 +117,39 @@ function computePosition(
   return { top, left, centered: false };
 }
 
+function targetShouldKeepFocus(step: TourStepType): boolean {
+  if (step.focusTarget) return true;
+  if (typeof document === "undefined") return false;
+  try {
+    const el = document.querySelector(step.target);
+    if (!(el instanceof HTMLElement)) return false;
+    return el.matches("input, select, textarea, [contenteditable]:not([contenteditable='false'])");
+  } catch {
+    return false;
+  }
+}
+
+function focusStepTarget(step: TourStepType): boolean {
+  if (typeof document === "undefined") return false;
+  try {
+    const el = document.querySelector(step.target) as HTMLElement | null;
+    if (!el || typeof el.focus !== "function") return false;
+    el.focus({ preventScroll: true });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export function TourStep({
   step,
   ctx,
   stepIndex,
-  totalSteps,
   targetRect,
   missing,
+  canAdvance,
+  fallbackActive,
+  waitingLabel,
   onNext,
   onPrev,
   onDismiss,
@@ -94,14 +159,38 @@ export function TourStep({
   const estHeight = 180;
   const pos = computePosition(targetRect, step.placement, CARD_WIDTH, estHeight);
   const body = step.bodyTemplate && ctx ? step.bodyTemplate(ctx) : step.body;
+  const keepFocusOnTarget = targetShouldKeepFocus(step);
+  const actionRequirementSatisfied =
+    Boolean(step.awaitingActionLabel) &&
+    Boolean(step.requires?.length) &&
+    canAdvance;
+  const isAwaitingAction = Boolean(step.awaitingActionLabel) && !fallbackActive && !actionRequirementSatisfied;
+  const primaryDisabled = isAwaitingAction || !canAdvance;
+  const primaryLabel =
+    fallbackActive
+      ? step.fallbackNextLabel ?? "Continue"
+      : isAwaitingAction
+        ? step.awaitingActionLabel!
+        : !canAdvance
+          ? waitingLabel ?? "Waiting for required state"
+          : step.nextLabel ?? (isLast ? "Finish" : "Next");
+  const stopCardEvent = (event: React.SyntheticEvent) => {
+    event.stopPropagation();
+  };
 
-  // Focus-trap: intercept Tab inside the card. Also focus the primary action on mount.
+  // Focus-trap: intercept Tab inside the card. Focus the primary action only
+  // when this card is asking for a direct button press; action-waiting steps
+  // should leave focus available for the highlighted app control.
   useEffect(() => {
     const card = cardRef.current;
     if (!card) return;
 
+    if (keepFocusOnTarget && focusStepTarget(step)) {
+      return;
+    }
+
     const primary = card.querySelector<HTMLElement>('[data-tour-primary="true"]');
-    if (primary && typeof primary.focus === "function") {
+    if (!keepFocusOnTarget && !primaryDisabled && primary && typeof primary.focus === "function") {
       try {
         primary.focus();
       } catch {
@@ -130,15 +219,18 @@ export function TourStep({
     };
     card.addEventListener("keydown", onKeyDown);
     return () => card.removeEventListener("keydown", onKeyDown);
-  }, [stepIndex]);
+  }, [keepFocusOnTarget, primaryDisabled, step, stepIndex]);
 
   return (
     <div
       ref={cardRef}
       className="ade-tour-step"
       role="dialog"
-      aria-modal="true"
+      aria-modal={keepFocusOnTarget ? undefined : true}
       aria-labelledby={`ade-tour-title-${stepIndex}`}
+      onPointerDown={stopCardEvent}
+      onMouseDown={stopCardEvent}
+      onClick={stopCardEvent}
       style={{
         position: "absolute",
         top: pos.top,
@@ -169,16 +261,6 @@ export function TourStep({
         >
           {step.title}
         </h2>
-        <span
-          aria-label={`Step ${stepIndex + 1} of ${totalSteps}`}
-          style={{
-            fontSize: 11,
-            color: "var(--color-muted-fg, #908FA0)",
-            whiteSpace: "nowrap",
-          }}
-        >
-          {stepIndex + 1} / {totalSteps}
-        </span>
       </div>
       <p
         aria-live="polite"
@@ -189,12 +271,12 @@ export function TourStep({
           color: "var(--color-muted-fg, #B7B6C3)",
         }}
       >
-        {body}
-        {missing ? (
+        {renderEmphasis(body)}
+        {missing && step.fallbackNotice ? (
           <>
             {" "}
             <em style={{ color: "var(--color-warning, #f59e0b)" }}>
-              (This element isn't on screen right now)
+              {step.fallbackNotice}
             </em>
           </>
         ) : null}
@@ -230,13 +312,13 @@ export function TourStep({
             cursor: "pointer",
           }}
         >
-          Skip
+          Exit tutorial
         </button>
         <div style={{ display: "flex", gap: 6 }}>
           <button
             type="button"
             onClick={onPrev}
-            disabled={stepIndex === 0}
+            disabled={stepIndex === 0 || step.disableBack}
             style={{
               fontSize: 12,
               padding: "6px 10px",
@@ -244,28 +326,35 @@ export function TourStep({
               color: "var(--color-fg, #F0F0F2)",
               border: "1px solid rgba(255, 255, 255, 0.12)",
               borderRadius: 6,
-              cursor: stepIndex === 0 ? "not-allowed" : "pointer",
-              opacity: stepIndex === 0 ? 0.5 : 1,
+              cursor: stepIndex === 0 || step.disableBack ? "not-allowed" : "pointer",
+              opacity: stepIndex === 0 || step.disableBack ? 0.5 : 1,
             }}
           >
             Back
           </button>
           <button
             type="button"
-            onClick={onNext}
+            onClick={primaryDisabled ? undefined : onNext}
+            disabled={primaryDisabled}
             data-tour-primary="true"
             style={{
               fontSize: 12,
               fontWeight: 600,
               padding: "6px 12px",
-              background: "var(--color-accent, #A78BFA)",
-              color: "var(--color-accent-fg, #0B0620)",
-              border: "1px solid transparent",
+              background: primaryDisabled
+                ? "color-mix(in srgb, var(--color-accent, #A78BFA) 20%, transparent)"
+                : "var(--color-accent, #A78BFA)",
+              color: primaryDisabled
+                ? "var(--color-muted-fg, #B7B6C3)"
+                : "var(--color-accent-fg, #0B0620)",
+              border: primaryDisabled
+                ? "1px solid color-mix(in srgb, var(--color-accent, #A78BFA) 35%, transparent)"
+                : "1px solid transparent",
               borderRadius: 6,
-              cursor: "pointer",
+              cursor: primaryDisabled ? "default" : "pointer",
             }}
           >
-            {isLast ? "Finish" : "Next"}
+            {primaryLabel}
           </button>
         </div>
       </div>

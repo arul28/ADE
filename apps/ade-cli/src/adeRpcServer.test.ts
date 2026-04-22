@@ -1829,7 +1829,7 @@ describe("adeRpcServer", () => {
     expect(response.structuredContent.startupCommand).toContain("claude");
     expect(response.structuredContent.startupCommand).toContain("--model");
     expect(response.structuredContent.startupCommand).toContain("--permission-mode");
-    expect(response.structuredContent.permissionMode).toBe("edit");
+    expect(response.structuredContent.permissionMode).toBe("default");
     expect(response.structuredContent.contextRef?.path).toBeNull();
   });
 

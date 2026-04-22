@@ -1,42 +1,61 @@
 import type { TourStep } from "../registry";
 import { docs } from "../docsLinks";
 
-const MANAGE_LANE_DIALOG_REQUIRES = ["managelaneDialogOpen"] as const;
+const MANAGE_LANE_DIALOG_REQUIRES = ["manageLaneDialogOpen"] as const;
+const MANAGE_LANE_DIALOG_SELECTOR = '[data-tour="lanes.manageDialog"]';
 
 /**
  * Reusable walkthrough for the ManageLaneDialog.
- * Covers the lane info / rename header, archive, and delete-scope sections.
+ * Covers opening the menu, lane info, archive, and delete-scope sections.
  *
  * Anchors (verified in ManageLaneDialog.tsx):
- *   lanes.manageDialog.rename, lanes.manageDialog.archive,
- *   lanes.manageDialog.tabs, lanes.manageDialog.delete
- *
- * Note: the dialog does not have an in-place rename input today — the "rename"
- * anchor stands on the lane-info section. Copy reflects that.
+ *   lanes.laneTab, lanes.manageLane,
+ *   lanes.manageDialog.laneInfo, lanes.manageDialog.archive,
+ *   lanes.manageDialog.tabs, lanes.manageDialog.confirm,
+ *   lanes.manageDialog.delete
  */
 export function buildManageLaneDialogWalkthrough(): TourStep[] {
   return [
     {
-      id: "manageLane.open",
-      target: "",
-      title: "Tidy up the lane",
+      id: "manageLane.openMenu",
+      target: '[data-tour="lanes.laneTab"]',
+      title: "Open lane actions",
       bodyTemplate: (ctx) => {
         const lane = ctx.get<string>("laneName") ?? "this lane";
-        return `Time to tidy up ${lane}. Manage Lane is where you archive, rename, or delete a lane and its worktree.`;
+        return `Right-click ${lane}'s lane tab to open its actions menu.`;
       },
-      body: "Manage Lane is where you archive, rename, or delete a lane and its worktree.",
+      body: "Right-click a lane tab to open its actions menu.",
+      placement: "bottom",
       docUrl: docs.lanesOverview,
-      requires: MANAGE_LANE_DIALOG_REQUIRES,
-      beforeEnter: async () => [{ type: "openDialog", id: "lanes.manage" }],
+      waitForSelector: '[data-tour="lanes.laneTab"]',
+      awaitingActionLabel: "Waiting for lane menu",
+      advanceWhenSelector: '[data-tour="lanes.manageLane"]',
+      exitOnOutsideInteraction: true,
+      allowedInteractionSelectors: ['[data-tour="lanes.laneTab"]'],
     },
     {
-      id: "manageLane.rename",
-      target: '[data-tour="lanes.manageDialog.rename"]',
+      id: "manageLane.openDialog",
+      target: '[data-tour="lanes.manageLane"]',
+      title: "Manage lane",
+      body: "Choose Manage Lane. The dialog opens without touching the lane yet.",
+      placement: "right",
+      docUrl: docs.lanesOverview,
+      waitForSelector: '[data-tour="lanes.manageLane"]',
+      awaitingActionLabel: "Waiting for Manage Lane dialog",
+      advanceWhenSelector: '[data-tour="lanes.manageDialog.laneInfo"]',
+      exitOnOutsideInteraction: true,
+      allowedInteractionSelectors: ['[data-tour="lanes.laneTab"]'],
+    },
+    {
+      id: "manageLane.laneInfo",
+      target: '[data-tour="lanes.manageDialog.laneInfo"]',
       title: "Lane at a glance",
-      body: "Name, branch, and worktree path live here. Rename via the branch reference — ADE keeps the worktree in sync.",
+      body: "Name, branch, type, and worktree path live here. Management actions below affect this selected lane.",
       placement: "bottom",
       requires: MANAGE_LANE_DIALOG_REQUIRES,
-      waitForSelector: '[data-tour="lanes.manageDialog.rename"]',
+      waitForSelector: '[data-tour="lanes.manageDialog.laneInfo"]',
+      exitOnOutsideInteraction: true,
+      allowedInteractionSelectors: [MANAGE_LANE_DIALOG_SELECTOR],
       docUrl: docs.lanesOverview,
     },
     {
@@ -47,26 +66,44 @@ export function buildManageLaneDialogWalkthrough(): TourStep[] {
       placement: "left",
       requires: MANAGE_LANE_DIALOG_REQUIRES,
       waitForSelector: '[data-tour="lanes.manageDialog.archive"]',
+      exitOnOutsideInteraction: true,
+      allowedInteractionSelectors: [MANAGE_LANE_DIALOG_SELECTOR],
       docUrl: docs.lanesOverview,
     },
     {
       id: "manageLane.deleteTabs",
       target: '[data-tour="lanes.manageDialog.tabs"]',
       title: "Choose what to remove",
-      body: "Delete the worktree, the local branch, or the remote branch — independently. Pick the scope that matches how far you want to roll back.",
+      body: "Choose how far deletion goes: remove only the worktree, also delete the local branch, or also delete the remote branch.",
       placement: "bottom",
       requires: MANAGE_LANE_DIALOG_REQUIRES,
       waitForSelector: '[data-tour="lanes.manageDialog.tabs"]',
+      exitOnOutsideInteraction: true,
+      allowedInteractionSelectors: [MANAGE_LANE_DIALOG_SELECTOR],
       docUrl: docs.lanesOverview,
     },
     {
       id: "manageLane.deleteConfirm",
+      target: '[data-tour="lanes.manageDialog.confirm"]',
+      title: "Confirm the lane",
+      body: "Type the exact phrase shown above the field. The delete button enables only after it matches.",
+      placement: "right",
+      requires: MANAGE_LANE_DIALOG_REQUIRES,
+      waitForSelector: '[data-tour="lanes.manageDialog.confirm"]',
+      exitOnOutsideInteraction: true,
+      allowedInteractionSelectors: [MANAGE_LANE_DIALOG_SELECTOR],
+      docUrl: docs.lanesOverview,
+    },
+    {
+      id: "manageLane.deleteButton",
       target: '[data-tour="lanes.manageDialog.delete"]',
-      title: "Confirm and delete",
-      body: "Type the lane name to confirm, then Delete removes the pieces you selected. Primary lanes are protected — you can't delete them here.",
-      placement: "top",
+      title: "Delete only when you mean it",
+      body: "This is the destructive action. Primary lanes are protected and never reach this state.",
+      placement: "left",
       requires: MANAGE_LANE_DIALOG_REQUIRES,
       waitForSelector: '[data-tour="lanes.manageDialog.delete"]',
+      exitOnOutsideInteraction: true,
+      allowedInteractionSelectors: [MANAGE_LANE_DIALOG_SELECTOR],
       docUrl: docs.lanesOverview,
     },
   ];

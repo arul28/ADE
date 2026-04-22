@@ -24,7 +24,7 @@ export function PrivacyPage() {
               <div className="rounded-[22px] border border-border bg-card/60 p-6 shadow-glass-sm">
                 <div className="text-sm font-semibold text-fg">Local-first by design</div>
                 <p className="mt-2 text-sm leading-relaxed text-muted-fg">
-                  ADE’s core capabilities (lanes, git operations, terminals, processes, tests) run locally. The Electron
+                  ADE’s core capabilities (worktrees, git operations, terminals, processes, tests) run locally. The Electron
                   main process is the trusted component with filesystem and process access; the UI is isolated and uses
                   typed IPC calls.
                 </p>

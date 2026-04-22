@@ -1,6 +1,6 @@
 import React, { useState, useCallback, useEffect } from "react";
 import { useSearchParams, useLocation } from "react-router-dom";
-import { Brain, GearSix, GraduationCap, Lightning, Stack, Database, FolderSimple, Plus, X, Plugs, DesktopTower, Palette, DeviceMobile } from "@phosphor-icons/react";
+import { Brain, GearSix, GraduationCap, Lightning, Stack, Database, FolderSimple, Plus, Plugs, Palette, DeviceMobile } from "@phosphor-icons/react";
 import { GeneralSection } from "../settings/GeneralSection";
 import { AppearanceSection } from "../settings/AppearanceSection";
 import { OnboardingSection } from "../settings/OnboardingSection";
@@ -11,7 +11,6 @@ import { AiSettingsSection } from "../settings/AiSettingsSection";
 import { SettingsUsageSection } from "../settings/SettingsUsageSection";
 import { WorkspaceSettingsSection } from "../settings/WorkspaceSettingsSection";
 import { IntegrationsSettingsSection } from "../settings/IntegrationsSettingsSection";
-import { SyncDevicesSection } from "../settings/SyncDevicesSection";
 import { MobilePushPanel } from "../settings/MobilePushPanel";
 import { COLORS, MONO_FONT, SANS_FONT, LABEL_STYLE, cardStyle, outlineButton, primaryButton, dangerButton } from "../lanes/laneDesignTokens";
 import { ConfirmDialog, PromptDialog, useConfirmDialog, usePromptDialog } from "../shared/InlineDialogs";
@@ -24,7 +23,6 @@ const SECTIONS = [
   { id: "appearance", label: "Appearance", icon: Palette },
   { id: "workspace", label: "Workspace", icon: FolderSimple },
   { id: "ai", label: "AI", icon: Brain },
-  { id: "sync", label: "Sync", icon: DesktopTower },
   { id: "mobile-push", label: "Mobile Push", icon: DeviceMobile },
   { id: "integrations", label: "Integrations", icon: Plugs },
   { id: "memory", label: "Memory", icon: Database },
@@ -38,8 +36,9 @@ const TAB_ALIASES: Record<string, SectionId> = {
   project: "workspace",
   context: "workspace",
   providers: "ai",
-  devices: "sync",
-  "multi-device": "sync",
+  sync: "mobile-push",
+  devices: "mobile-push",
+  "multi-device": "mobile-push",
   github: "integrations",
   linear: "integrations",
   "computer-use": "integrations",
@@ -567,7 +566,6 @@ export function SettingsPage() {
         {section === "appearance" && <AppearanceSection />}
         {section === "workspace" && <WorkspaceSettingsSection />}
         {section === "ai" && <AiSettingsSection />}
-        {section === "sync" && <SyncDevicesSection />}
         {section === "mobile-push" && <MobilePushPanel />}
         {section === "integrations" && <IntegrationsSettingsSection />}
         {section === "memory" && <MemoryHealthTab />}

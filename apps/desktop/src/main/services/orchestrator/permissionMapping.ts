@@ -35,13 +35,16 @@ export function mapPermissionToCodex(mode: AgentChatPermissionMode | undefined):
     return { approvalPolicy: "never", sandbox: "danger-full-access" };
   }
   if (mode === "edit") {
-    return { approvalPolicy: "on-failure", sandbox: "workspace-write" };
+    return { approvalPolicy: "untrusted", sandbox: "workspace-write" };
   }
   if (mode === "config-toml") {
     return null;
   }
-  // "default" / "plan" / undefined → read-only suggest mode
-  return { approvalPolicy: "untrusted", sandbox: "read-only" };
+  if (mode === "default") {
+    return { approvalPolicy: "on-request", sandbox: "workspace-write" };
+  }
+  // "plan" / undefined → read-only browsing mode
+  return { approvalPolicy: "on-request", sandbox: "read-only" };
 }
 
 /**
@@ -99,7 +102,7 @@ function oldInProcessModeToProvider(mode: string | undefined): AgentChatPermissi
 export function normalizeMissionPermissions(config: MissionPermissionConfig | undefined): MissionProviderPermissions {
   const result: MissionProviderPermissions = {
     claude: "full-auto",
-    codex: "full-auto",
+    codex: "default",
     opencode: "full-auto",
     codexSandbox: "workspace-write",
   };

@@ -4,12 +4,16 @@ import { mapPermissionToClaude, mapPermissionToCodex } from "./permissionMapping
 describe("permissionMapping", () => {
   it("maps Codex edit to writable guarded execution", () => {
     expect(mapPermissionToCodex("edit")).toEqual({
-      approvalPolicy: "on-failure",
+      approvalPolicy: "untrusted",
       sandbox: "workspace-write",
     });
     expect(mapPermissionToCodex("plan")).toEqual({
-      approvalPolicy: "untrusted",
+      approvalPolicy: "on-request",
       sandbox: "read-only",
+    });
+    expect(mapPermissionToCodex("default")).toEqual({
+      approvalPolicy: "on-request",
+      sandbox: "workspace-write",
     });
   });
 

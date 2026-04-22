@@ -1,5 +1,6 @@
 import { registerTour, type Tour, type TourCtx, type TourStep } from "../registry";
 import { docs } from "../docsLinks";
+import { requestProjectBrowserClose } from "../../lib/projectBrowserEvents";
 import { useAppStore } from "../../state/appStore";
 import {
   buildCreateLaneDialogWalkthrough,
@@ -30,14 +31,72 @@ function laneName(ctx: Ctx): string {
 }
 
 function isProjectOpenSync(): boolean {
-  const rootPath = useAppStore.getState().project?.rootPath;
-  if (typeof rootPath === "string" && rootPath.trim().length > 0) return true;
-  if (typeof window === "undefined") return false;
-  try {
-    return (window as any).ade?.project?.isActive?.() === true;
-  } catch {
-    return false;
-  }
+  const { project, projectHydrated, showWelcome, isNewTabOpen } = useAppStore.getState();
+  const rootPath = project?.rootPath;
+  return (
+    projectHydrated === true &&
+    showWelcome !== true &&
+    isNewTabOpen !== true &&
+    typeof rootPath === "string" &&
+    rootPath.trim().length > 0
+  );
+}
+
+function isProjectBrowserOpenSync(): boolean {
+  if (typeof document === "undefined") return false;
+  return document.querySelector('[data-tour="project.browser"]') != null;
+}
+
+function isWelcomeProjectScreenVisible(): boolean {
+  if (typeof document === "undefined") return false;
+  return document.querySelector('[data-tour="project.welcomeOpenButton"]') != null;
+}
+
+function waitForProjectBrowserClosed(): Promise<void> {
+  if (typeof window === "undefined") return Promise.resolve();
+  return new Promise((resolve) => {
+    if (!isProjectBrowserOpenSync()) {
+      resolve();
+      return;
+    }
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timeout);
+      observer?.disconnect();
+      resolve();
+    };
+    const observer =
+      typeof MutationObserver !== "undefined"
+        ? new MutationObserver(() => {
+            if (!isProjectBrowserOpenSync()) finish();
+          })
+        : null;
+    observer?.observe(document.body, { childList: true, subtree: true });
+    const timeout = window.setTimeout(finish, 5_000);
+    window.setTimeout(() => {
+      if (!isProjectBrowserOpenSync()) finish();
+    }, 0);
+  });
+}
+
+function buildTabHandoffStep(
+  id: string,
+  currentTab: string,
+  nextTab: string,
+  docUrl: string,
+): TourStep {
+  return {
+    id,
+    target: '[data-tour="app.helpMenu"]',
+    title: "Full tab tours live here",
+    body: `The full **${currentTab}** onboarding is always available from this menu. For now, this tutorial is moving on to **${nextTab}**.`,
+    placement: "left",
+    requires: LANE_EXISTS_REQUIRES,
+    waitForSelector: '[data-tour="app.helpMenu"]',
+    docUrl,
+  };
 }
 
 // --- Act 0: Welcome + project picker ---------------------------------------
@@ -48,20 +107,75 @@ const act0Welcome: TourStep = {
   body: "Parallel lanes of work on one codebase. The next ten minutes walk every surface ADE gives you.",
   actIntro: { title: "Welcome to ADE", subtitle: "Parallel lanes of work. One codebase.", variant: "drift" },
   docUrl: docs.welcome,
+  branches: (_ctx: TourCtx) => {
+    if (isWelcomeProjectScreenVisible()) return "act0.openProject";
+    return isProjectOpenSync() ? "act0.projectChoice" : null;
+  },
+};
+
+const act0ProjectChoice: TourStep = {
+  id: "act0.projectChoice",
+  target: '[data-tour="project.activeTab"]',
+  title: "Use this project",
+  body: "ADE already has a project open. Click **Use this project** to continue here, or click the plus button in the project bar to open another project first.",
+  placement: "bottom",
+  waitForSelector: '[data-tour="project.activeTab"]',
+  advanceWhenSelector: '[data-tour="project.browser"]',
+  requires: PROJECT_OPEN_REQUIRES,
+  nextLabel: "Use this project",
+  exitOnOutsideInteraction: true,
+  allowedInteractionSelectors: ['[data-tour="project.addProject"]'],
+  docUrl: docs.welcome,
+  afterLeave: () => {
+    const { project, cancelNewTab, setShowWelcome } = useAppStore.getState();
+    if (!project?.rootPath) return;
+    cancelNewTab();
+    setShowWelcome(false);
+  },
+  branches: (_ctx: TourCtx) => {
+    if (isProjectBrowserOpenSync()) return "act0.projectBrowser";
+    if (isWelcomeProjectScreenVisible()) return "act0.openProject";
+    return isProjectOpenSync() ? "act1.intro" : "act0.openProject";
+  },
 };
 
 const act0OpenProject: TourStep = {
   id: "act0.openProject",
-  target: '[data-tour="app.openProject"]',
+  target: '[data-tour="project.welcomeOpenButton"]',
   title: "Open a project",
-  body: "Pick any git repo. ADE waits here until the project finishes loading, then continues to Lanes.",
-  placement: "bottom",
-  requires: ["projectOpen"],
+  body: "Open a recent project, or choose **Open Project** to browse for another Git repo.",
+  placement: "right",
+  waitForSelector: '[data-tour="project.welcomeOpenButton"]',
+  advanceWhenSelector: '[data-tour="project.browser"]',
+  awaitingActionLabel: "Waiting for project",
+  exitOnOutsideInteraction: true,
+  allowedInteractionSelectors: ["[data-tour='project.recentProject']"],
   docUrl: docs.welcome,
-  // Initial-skip only. While no project is open this returns null so the
-  // visible step can wait instead of jumping ahead based on stale DOM.
+  // If a project is already open, ask the user to use it or open another one.
+  // If the browser is open, move into the modal guidance. Otherwise hold here.
   branches: (_ctx: TourCtx) => {
-    return isProjectOpenSync() ? "act1.intro" : null;
+    if (isProjectOpenSync()) return "act1.intro";
+    if (isProjectBrowserOpenSync()) return "act0.projectBrowser";
+    return "act0.openProject";
+  },
+};
+
+const act0ProjectBrowser: TourStep = {
+  id: "act0.projectBrowser",
+  target: '[data-tour="project.browser"]',
+  title: "Pick your repo",
+  body: "Select a Git repo in this picker, then click Open. Close the picker to return to recent projects.",
+  placement: "top",
+  waitForSelector: '[data-tour="project.browser"]',
+  awaitingActionLabel: "Waiting for project to open",
+  exitOnOutsideInteraction: true,
+  docUrl: docs.welcome,
+  beforeBack: async () => {
+    requestProjectBrowserClose();
+    await waitForProjectBrowserClosed();
+  },
+  branches: (_ctx: TourCtx) => {
+    return isProjectOpenSync() ? "act1.intro" : "act0.projectBrowser";
   },
 };
 
@@ -78,10 +192,12 @@ const act1Intro: TourStep = {
 
 const act1SidebarSweep: TourStep = {
   id: "act1.sidebarSweep",
-  target: "",
+  target: '[data-tour="app.sidebar"]',
   title: "Your tabs",
   body: "The left edge is an icon rail for the main surfaces. This walkthrough moves through Lanes, Graph, Files, Work, PRs, History, and the supporting tools.",
+  placement: "right",
   requires: PROJECT_OPEN_REQUIRES,
+  waitForSelector: '[data-tour="app.sidebar"]',
   docUrl: docs.welcome,
 };
 
@@ -94,9 +210,22 @@ const act1LaneTabSpotlight: TourStep = {
     `${laneName(ctx)} is live — its own branch, its own folder, its own chat.`,
   placement: "bottom",
   requires: LANE_EXISTS_REQUIRES,
+  disableBack: true,
   waitForSelector: '[data-tour="lanes.laneTab"]',
   docUrl: docs.lanesOverview,
 };
+
+const act1PerTabTours = buildTabHandoffStep("act1.perTabTours", "Lanes", "Graph", docs.lanesOverview);
+const act2PerTabTours = buildTabHandoffStep("act2.perTabTours", "Graph", "Files", docs.workspaceGraph);
+const act3PerTabTours = buildTabHandoffStep("act3.perTabTours", "Files", "Work", docs.filesEditor);
+const act4PerTabTours = buildTabHandoffStep("act4.perTabTours", "Work", "Git actions", docs.chatOverview);
+const act5PerTabTours = buildTabHandoffStep("act5.perTabTours", "Git actions", "PRs", docs.lanesOverview);
+const act7PerTabTours = buildTabHandoffStep("act7.perTabTours", "PRs", "History", docs.prsOverview);
+const act6PerTabTours = buildTabHandoffStep("act6.perTabTours", "History", "Run", docs.historyOverview);
+const act8PerTabTours = buildTabHandoffStep("act8.perTabTours", "Run", "Automations", docs.projectHome);
+const act9PerTabTours = buildTabHandoffStep("act9.perTabTours", "Automations", "CTO", docs.automationsOverview);
+const act10PerTabTours = buildTabHandoffStep("act10.perTabTours", "CTO", "Settings", docs.ctoOverview);
+const act11PerTabTours = buildTabHandoffStep("act11.perTabTours", "Settings", "cleanup", docs.settingsGeneral);
 
 // --- Act 2: Graph -----------------------------------------------------------
 const act2Intro: TourStep = {
@@ -106,7 +235,15 @@ const act2Intro: TourStep = {
   body: "Graph draws every lane as a node, every relationship as an edge.",
   actIntro: { title: "See the shape", variant: "orbit" },
   requires: LANE_EXISTS_REQUIRES,
-  beforeEnter: async () => [{ type: "navigate", to: "/graph" }],
+  beforeEnter: async () => {
+    const { selectedLaneId, lanes } = useAppStore.getState();
+    const selectedLane = selectedLaneId ? lanes.find((lane) => lane.id === selectedLaneId) ?? null : null;
+    const focusLane = selectedLane?.laneType !== "primary"
+      ? selectedLane
+      : lanes.find((lane) => lane.laneType !== "primary") ?? null;
+    const query = focusLane ? `?focusLane=${encodeURIComponent(focusLane.id)}` : "";
+    return [{ type: "navigate", to: `/graph${query}` }];
+  },
   docUrl: docs.workspaceGraph,
 };
 
@@ -335,12 +472,12 @@ const act6Filter: TourStep = {
 
 const act6ColumnSettings: TourStep = {
   id: "act6.columnSettings",
-  target: '[data-tour="history.column-settings"]',
+  target: '[data-tour="history.export"]',
   title: "Tune the timeline",
-  body: "Open column settings when you need the timeline to show just the fields that matter for review.",
+  body: "Use column settings to choose the timeline details that matter for review or handoff.",
   placement: "bottom",
   requires: PROJECT_OPEN_REQUIRES,
-  waitForSelector: '[data-tour="history.column-settings"]',
+  waitForSelector: '[data-tour="history.export"]',
   docUrl: docs.welcome,
 };
 
@@ -377,6 +514,12 @@ const act7Checks: TourStep = {
   body: "Checks are shown inside a selected PR. Open a PR row and switch to Checks before using this panel.",
   placement: "left",
   requires: ["projectOpen", "prCreated"],
+  beforeEnter: async () => [{
+    type: "ipc",
+    call: async () => {
+      window.dispatchEvent(new CustomEvent("ade:tour-pr-detail-tab", { detail: "checks" }));
+    },
+  }],
   fallbackAfterMs: OPTIONAL_ACTION_FALLBACK_MS,
   fallbackNextLabel: "Skip PR checks",
   fallbackNotice: "Checks appear after a PR is selected; the walkthrough can continue without one.",
@@ -391,6 +534,12 @@ const act7Conflict: TourStep = {
   body: "The convergence tab tracks checks, review comments, conflicts, and resolver runs for the selected PR.",
   placement: "left",
   requires: ["projectOpen", "prCreated"],
+  beforeEnter: async () => [{
+    type: "ipc",
+    call: async () => {
+      window.dispatchEvent(new CustomEvent("ade:tour-pr-detail-tab", { detail: "convergence" }));
+    },
+  }],
   fallbackAfterMs: OPTIONAL_ACTION_FALLBACK_MS,
   fallbackNextLabel: "Skip merge path",
   fallbackNotice: "Path to merge appears after a PR is selected.",
@@ -561,6 +710,12 @@ const act10Linear: TourStep = {
   body: "Hook the CTO up to Linear and it auto-dispatches missions from tickets, posting results back to the issue. Skip if you don't use Linear.",
   placement: "left",
   requires: PROJECT_OPEN_REQUIRES,
+  beforeEnter: async () => [{
+    type: "ipc",
+    call: async () => {
+      window.dispatchEvent(new CustomEvent("ade:tour-cto-tab", { detail: "workflows" }));
+    },
+  }],
   waitForSelector: '[data-tour="cto.linearPanel"]',
   docUrl: docs.ctoOverview,
 };
@@ -570,7 +725,7 @@ const act11Intro: TourStep = {
   id: "act11.intro",
   target: "",
   title: "Make it yours",
-  body: "Settings is sectioned by concern — appearance, AI providers, sync, memory, and more. Only General is required to get going.",
+  body: "Settings is sectioned by concern — appearance, AI providers, mobile push, memory, and more. Only General is required to get going.",
   actIntro: { title: "Make it yours", variant: "drift" },
   requires: PROJECT_OPEN_REQUIRES,
   beforeEnter: async () => [{ type: "navigate", to: "/settings" }],
@@ -596,17 +751,6 @@ const act11Ai: TourStep = {
   placement: "right",
   requires: PROJECT_OPEN_REQUIRES,
   waitForSelector: '[data-tour="settings.ai"]',
-  docUrl: docs.settingsGeneral,
-};
-
-const act11Sync: TourStep = {
-  id: "act11.sync",
-  target: '[data-tour="settings.sync"]',
-  title: "Sync",
-  body: "Sync lanes, missions, and chat history across your devices over Tailscale or a VPS. Optional — ADE works fully offline too.",
-  placement: "right",
-  requires: PROJECT_OPEN_REQUIRES,
-  waitForSelector: '[data-tour="settings.sync"]',
   docUrl: docs.settingsGeneral,
 };
 
@@ -638,9 +782,24 @@ const act12Nav: TourStep = {
   target: "",
   title: "Clean up",
   body: "Back to Lanes to tidy up the sample lane. Nothing you changed along the way stays behind.",
-  requires: LANE_EXISTS_REQUIRES,
+  requires: PROJECT_OPEN_REQUIRES,
   beforeEnter: async () => [{ type: "navigate", to: "/lanes" }],
   docUrl: docs.lanesOverview,
+  branches: () =>
+    useAppStore.getState().lanes.some((lane) => lane.laneType !== "primary")
+      ? null
+      : "act12.help",
+};
+
+const act12Help: TourStep = {
+  id: "act12.help",
+  target: '[data-tour="app.helpMenu"]',
+  title: "Replay or get help",
+  body: "Open Help to replay tours, jump to docs, or review the glossary.",
+  placement: "left",
+  requires: PROJECT_OPEN_REQUIRES,
+  waitForSelector: '[data-tour="app.helpMenu"]',
+  docUrl: docs.welcome,
 };
 
 const act12Finale: TourStep = {
@@ -663,7 +822,7 @@ const act12Finale: TourStep = {
 const act7CloseWithBranch: TourStep = {
   ...act7Close,
   branches: (ctx: TourCtx) => {
-    if (ctx.get<boolean>("noRemote")) return "act8.intro";
+    if (ctx.get<boolean>("noRemote")) return "act7.perTabTours";
     return null;
   },
 };
@@ -687,19 +846,23 @@ const firstJourneyTour: Tour = {
   steps: [
     // Act 0 — Welcome + project picker
     act0Welcome,
+    act0ProjectChoice,
     act0OpenProject,
+    act0ProjectBrowser,
 
     // Act 1 — Lanes basics
     act1Intro,
     act1SidebarSweep,
     ...buildCreateLaneDialogWalkthrough(),
     act1LaneTabSpotlight,
+    act1PerTabTours,
 
     // Act 2 — Graph
     act2Intro,
     act2LaneNode,
     act2Zoom,
     act2Legend,
+    act2PerTabTours,
 
     // Act 3 — Files
     act3Intro,
@@ -708,6 +871,7 @@ const firstJourneyTour: Tour = {
     act3Search,
     act3Mode,
     act3OpenIn,
+    act3PerTabTours,
 
     // Act 4 — Work
     act4Intro,
@@ -715,18 +879,14 @@ const firstJourneyTour: Tour = {
     act4LaneFilter,
     act4NewSession,
     act4ViewArea,
+    act4PerTabTours,
 
     // Act 5 — Git
     act5IntroWithBranch,
     ...buildGitActionsPaneWalkthrough(),
+    act5PerTabTours,
 
-    // Act 6 — History
-    act6Intro,
-    act6Entries,
-    act6Filter,
-    act6ColumnSettings,
-
-    // Act 7 — PRs
+    // Act 6 — PRs
     act7Intro,
     ...buildPrCreateModalWalkthrough(),
     act7List,
@@ -734,36 +894,48 @@ const firstJourneyTour: Tour = {
     act7Conflict,
     act7Stacking,
     act7CloseWithBranch,
+    act7PerTabTours,
+
+    // Act 7 — History
+    act6Intro,
+    act6Entries,
+    act6Filter,
+    act6ColumnSettings,
+    act6PerTabTours,
 
     // Act 8 — Run (bonus)
     act8Intro,
     act8LaneSelector,
     act8AddCommand,
     act8ProcessMonitor,
+    act8PerTabTours,
 
     // Act 9 — Automations (bonus)
     act9Intro,
     act9Triggers,
     act9Actions,
     act9Guardrails,
+    act9PerTabTours,
 
     // Act 10 — CTO (bonus)
     act10Intro,
     act10Sidebar,
     act10Team,
     act10Linear,
+    act10PerTabTours,
 
     // Act 11 — Settings (bonus)
     act11Intro,
     act11Appearance,
     act11Ai,
-    act11Sync,
     act11Memory,
     act11Templates,
+    act11PerTabTours,
 
     // Act 12 — Cleanup (mandatory)
     act12Nav,
     ...buildManageLaneDialogWalkthrough(),
+    act12Help,
     act12Finale,
   ],
 };

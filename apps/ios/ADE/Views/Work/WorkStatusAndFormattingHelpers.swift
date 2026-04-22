@@ -236,10 +236,10 @@ func workRuntimeModeOptions(provider: String) -> [WorkRuntimeModeOption] {
     ]
   case "codex":
     return [
-      WorkRuntimeModeOption(id: "default", title: "Default"),
-      WorkRuntimeModeOption(id: "plan", title: "Plan"),
-      WorkRuntimeModeOption(id: "edit", title: "On-failure"),
-      WorkRuntimeModeOption(id: "full-auto", title: "Full auto"),
+      WorkRuntimeModeOption(id: "default", title: "Default permissions"),
+      WorkRuntimeModeOption(id: "plan", title: "Plan mode"),
+      WorkRuntimeModeOption(id: "full-auto", title: "Full access"),
+      WorkRuntimeModeOption(id: "config-toml", title: "Custom (config.toml)"),
     ]
   case "opencode":
     return [
@@ -263,10 +263,10 @@ func workRuntimeModeLabel(provider: String, mode: String) -> String {
     }
   case "codex":
     switch mode {
-    case "plan": return "Plan"
-    case "edit": return "On-failure"
-    case "full-auto": return "Full auto"
-    default: return "Default"
+    case "plan": return "Plan mode"
+    case "full-auto": return "Full access"
+    case "config-toml": return "Custom"
+    default: return "Default permissions"
     }
   case "opencode":
     return mode.isEmpty ? "Edit" : mode.capitalized
@@ -328,21 +328,22 @@ func workRuntimeWireFields(provider: String, mode: String) -> WorkRuntimeWireFie
       fields.permissionMode = "default"
     }
   case "codex":
-    fields.codexConfigSource = "flags"
     switch mode {
     case "plan":
-      fields.codexApprovalPolicy = "untrusted"
+      fields.codexConfigSource = "flags"
+      fields.codexApprovalPolicy = "on-request"
       fields.codexSandbox = "read-only"
       fields.permissionMode = "plan"
-    case "edit":
-      fields.codexApprovalPolicy = "on-failure"
-      fields.codexSandbox = "workspace-write"
-      fields.permissionMode = "edit"
     case "full-auto":
+      fields.codexConfigSource = "flags"
       fields.codexApprovalPolicy = "never"
       fields.codexSandbox = "danger-full-access"
       fields.permissionMode = "full-auto"
+    case "config-toml":
+      fields.codexConfigSource = "config-toml"
+      fields.permissionMode = "config-toml"
     default:
+      fields.codexConfigSource = "flags"
       fields.codexApprovalPolicy = "on-request"
       fields.codexSandbox = "workspace-write"
       fields.permissionMode = "default"
@@ -386,11 +387,11 @@ func workInitialRuntimeMode(_ summary: AgentChatSessionSummary) -> String {
     }
     return "default"
   case "codex":
-    if summary.codexApprovalPolicy == "untrusted" && summary.codexSandbox == "read-only" {
-      return "plan"
+    if summary.codexConfigSource == "config-toml" || summary.permissionMode == "config-toml" {
+      return "config-toml"
     }
-    if summary.codexApprovalPolicy == "on-failure" && summary.codexSandbox == "workspace-write" {
-      return "edit"
+    if (summary.codexApprovalPolicy == "on-request" || summary.codexApprovalPolicy == "untrusted") && summary.codexSandbox == "read-only" {
+      return "plan"
     }
     if summary.codexApprovalPolicy == "never" && summary.codexSandbox == "danger-full-access" {
       return "full-auto"

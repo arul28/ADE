@@ -74,6 +74,7 @@ export const IPC = {
   lanesDeferRebaseSuggestion: "ade.lanes.deferRebaseSuggestion",
   lanesRebaseSuggestionsEvent: "ade.lanes.rebaseSuggestions.event",
   lanesListAutoRebaseStatuses: "ade.lanes.listAutoRebaseStatuses",
+  lanesDismissAutoRebaseStatus: "ade.lanes.dismissAutoRebaseStatus",
   lanesAutoRebaseEvent: "ade.lanes.autoRebase.event",
   lanesOpenFolder: "ade.lanes.openFolder",
   lanesInitEnv: "ade.lanes.initEnv",

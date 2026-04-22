@@ -4716,12 +4716,12 @@ describe("createAgentChatService", () => {
           return { approvalPolicy: "never", sandbox: "danger-full-access" };
         }
         if (mode === "edit") {
-          return { approvalPolicy: "on-failure", sandbox: "workspace-write" };
+          return { approvalPolicy: "untrusted", sandbox: "workspace-write" };
         }
         if (mode === "config-toml") {
           return null;
         }
-        return { approvalPolicy: "untrusted", sandbox: "read-only" };
+        return { approvalPolicy: "on-request", sandbox: "read-only" };
       });
 
       const { service } = createService();
@@ -4753,12 +4753,12 @@ describe("createAgentChatService", () => {
           return { approvalPolicy: "never", sandbox: "danger-full-access" };
         }
         if (mode === "edit") {
-          return { approvalPolicy: "on-failure", sandbox: "workspace-write" };
+          return { approvalPolicy: "untrusted", sandbox: "workspace-write" };
         }
         if (mode === "config-toml") {
           return null;
         }
-        return { approvalPolicy: "untrusted", sandbox: "read-only" };
+        return { approvalPolicy: "on-request", sandbox: "read-only" };
       });
 
       const { service } = createService();
@@ -4806,12 +4806,12 @@ describe("createAgentChatService", () => {
           return { approvalPolicy: "never", sandbox: "danger-full-access" };
         }
         if (mode === "edit") {
-          return { approvalPolicy: "on-failure", sandbox: "workspace-write" };
+          return { approvalPolicy: "untrusted", sandbox: "workspace-write" };
         }
         if (mode === "config-toml") {
           return null;
         }
-        return { approvalPolicy: "untrusted", sandbox: "read-only" };
+        return { approvalPolicy: "on-request", sandbox: "read-only" };
       });
 
       const { service } = createService();

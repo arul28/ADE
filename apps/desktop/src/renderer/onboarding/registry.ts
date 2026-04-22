@@ -1,4 +1,12 @@
-export type TourStepPlacement = "top" | "bottom" | "left" | "right" | "auto";
+export type TourStepPlacement =
+  | "top"
+  | "bottom"
+  | "left"
+  | "right"
+  | "auto"
+  | "viewport-top-right"
+  | "viewport-bottom-right"
+  | "viewport-bottom-left";
 
 export type StepAction =
   | { type: "navigate"; to: string }
@@ -49,6 +57,7 @@ export type TourStep = {
   beforeEnter?: (
     ctx?: TourCtx,
   ) => void | StepAction[] | Promise<void | StepAction[]>;
+  beforeBack?: (ctx: TourCtx) => void | Promise<void>;
   afterLeave?: (ctx: TourCtx) => void | Promise<void>;
   illustration?: TourStepIllustration;
   ghostCursor?: TourStepGhostCursor;
@@ -58,6 +67,14 @@ export type TourStep = {
   fallbackAfterMs?: number;
   fallbackNextLabel?: string;
   fallbackNotice?: string;
+  nextLabel?: string;
+  awaitingActionLabel?: string;
+  disableBack?: boolean;
+  advanceWhenSelector?: string;
+  focusTarget?: boolean;
+  preventTargetInteraction?: boolean;
+  exitOnOutsideInteraction?: boolean;
+  allowedInteractionSelectors?: readonly string[];
 };
 
 export type TourVariant = "full" | "highlights";
