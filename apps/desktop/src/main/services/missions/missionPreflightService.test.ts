@@ -444,6 +444,7 @@ describe("missionPreflightService", () => {
           backends: [],
           localFallback: {
             available: false,
+            state: "blocked_by_capability",
             detail: "ADE local computer-use tools are fallback-only and currently blocked_by_capability.",
             supportedKinds: [],
           },

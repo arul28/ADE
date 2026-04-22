@@ -120,12 +120,19 @@ async function runBeforeEnter(step: TourStep | undefined, ctx: TourCtx): Promise
     abortActiveWait();
     const controller = new AbortController();
     activeWaitAbortController = controller;
-    await waitForSelector(step.waitForSelector, {
-      timeoutMs: step.fallbackAfterMs,
-      signal: controller.signal,
-    });
-    if (activeWaitAbortController === controller) {
-      activeWaitAbortController = null;
+    try {
+      await waitForSelector(step.waitForSelector, {
+        timeoutMs: step.fallbackAfterMs,
+        signal: controller.signal,
+      });
+    } catch (error) {
+      if (!controller.signal.aborted) {
+        throw error;
+      }
+    } finally {
+      if (activeWaitAbortController === controller) {
+        activeWaitAbortController = null;
+      }
     }
   }
 }

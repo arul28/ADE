@@ -737,6 +737,7 @@ export type MissionPreflightResult = {
   approvalSummary?: MissionPreflightApprovalSummary | null;
   computerUse?: {
     requiredKinds: ComputerUseArtifactKind[];
+    /** Missing proof kinds that are configured as blocking. Warning-only gaps stay in the checklist. */
     missingKinds: ComputerUseArtifactKind[];
     availableExternalBackends: string[];
     blocked: boolean;

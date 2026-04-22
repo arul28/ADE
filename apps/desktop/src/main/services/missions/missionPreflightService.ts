@@ -396,7 +396,7 @@ export function createMissionPreflightService(args: {
         if (hasLocalComputerUseCoverage(requirementKind)) continue;
         const localCapability = getCapabilityForRequirement(requirementKind);
         const localDetail = backendStatus?.localFallback?.detail ?? localCapability?.detail;
-        const localFallbackBlocked = backendStatus?.localFallback?.detail.includes("blocked_by_capability") ?? false;
+        const localFallbackBlocked = backendStatus?.localFallback?.state === "blocked_by_capability";
         const localStateReason = localCapability?.state === "blocked_by_capability" || localFallbackBlocked
           ? "blocked by platform support"
           : "missing required tooling";

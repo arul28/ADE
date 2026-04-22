@@ -33,7 +33,7 @@ const ENTRIES: Entry[] = [
   { name: "Screenshots (computer use)", page: "30", href: "/computer-use/overview" },
   { name: "Settings", page: "22", href: "/configuration/settings" },
   { name: "Sub-agents", page: "17", href: "/missions/workers" },
-  { name: "Team (CTO org)", page: "15", href: "/cto/team" },
+  { name: "Team (CTO org)", page: "15", href: "/cto/workers" },
   { name: "Terminals", page: "10", href: "/tools/terminals" },
   { name: "Testing phase", page: "14", href: "/missions/overview" },
   { name: "Worktrees (lanes)", page: "04", href: "/lanes/overview" },

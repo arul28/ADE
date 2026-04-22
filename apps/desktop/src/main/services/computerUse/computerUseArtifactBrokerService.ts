@@ -527,6 +527,7 @@ export function createComputerUseArtifactBrokerService(args: {
       backends,
       localFallback: {
         available: local.overallState === "present",
+        state: local.overallState,
         detail: local.overallState === "present"
           ? "ADE local computer-use tools are available as a fallback."
           : `ADE local computer-use tools are fallback-only and currently ${local.overallState}.`,

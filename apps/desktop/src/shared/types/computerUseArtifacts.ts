@@ -136,6 +136,7 @@ export type ComputerUseBackendStatus = {
   backends: ComputerUseExternalBackendStatus[];
   localFallback: {
     available: boolean;
+    state?: "present" | "missing" | "blocked_by_capability";
     detail: string;
     supportedKinds: ComputerUseArtifactKind[];
   };
