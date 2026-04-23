@@ -144,26 +144,27 @@ export function createDeviceRegistryService(args: DeviceRegistryServiceArgs) {
   fs.mkdirSync(path.dirname(deviceIdPath), { recursive: true });
 
   const readOrCreateLocalDeviceId = (): string => {
+    // One desktop, one device id: the shared file is authoritative across
+    // projects so each project's `sync_cluster_state.brain_device_id` agrees
+    // on the same local identity. If the shared file is empty, seed it from
+    // the first legacy per-project id we happen to see (one-time migration),
+    // otherwise mint a fresh id. `O_EXCL` on the seed write keeps two
+    // concurrent project contexts from racing to mint different ids.
     const shared = fs.existsSync(deviceIdPath) ? fs.readFileSync(deviceIdPath, "utf8").trim() : "";
+    if (shared.length > 0) return shared;
+
     const legacy = deviceIdPath !== legacyProjectDeviceIdPath && fs.existsSync(legacyProjectDeviceIdPath)
       ? fs.readFileSync(legacyProjectDeviceIdPath, "utf8").trim()
       : "";
-    // If this project has a legacy per-project sync-device-id, always prefer
-    // it so existing iOS pairings and `sync_cluster_state.brain_device_id`
-    // references stay valid. The shared file is only written when it would
-    // agree (empty or already matching) — never overridden with a different
-    // value, so opening project B after A no longer flips B's identity to
-    // A's ID and drops B into viewer mode.
-    if (legacy.length > 0) {
-      if (shared.length === 0 || shared === legacy) {
-        writeTextAtomic(deviceIdPath, `${legacy}\n`);
-      }
-      return legacy;
+    const candidate = legacy.length > 0 ? legacy : randomUUID();
+    try {
+      fs.writeFileSync(deviceIdPath, `${candidate}\n`, { flag: "wx" });
+      return candidate;
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+      // Another context won the race; use whatever they wrote.
+      return fs.readFileSync(deviceIdPath, "utf8").trim();
     }
-    if (shared.length > 0) return shared;
-    const created = randomUUID();
-    writeTextAtomic(deviceIdPath, `${created}\n`);
-    return created;
   };
 
   const localDeviceId = readOrCreateLocalDeviceId();

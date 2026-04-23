@@ -114,6 +114,46 @@ describe("deviceRegistryService", () => {
     db.close();
   });
 
+  it("converges to a single desktop identity even when each project had a different legacy id", async () => {
+    // Two legacy per-project device-ids. Opening project A first should seed
+    // the shared file with A's legacy id. Opening B afterwards must use the
+    // shared id — not flip to B's own legacy id — so every project registry
+    // agrees on one desktop identity.
+    const projectRootA = makeProjectRoot("ade-device-registry-converge-a-");
+    const projectRootB = makeProjectRoot("ade-device-registry-converge-b-");
+    const globalDeviceIdPath = path.join(os.tmpdir(), `ade-global-device-converge-${Date.now()}-${Math.random()}`, "sync-device-id");
+
+    const legacyA = "legacy-a-identity";
+    const legacyB = "legacy-b-identity";
+    fs.mkdirSync(path.join(projectRootA, ".ade", "secrets"), { recursive: true });
+    fs.mkdirSync(path.join(projectRootB, ".ade", "secrets"), { recursive: true });
+    fs.writeFileSync(path.join(projectRootA, ".ade", "secrets", "sync-device-id"), `${legacyA}\n`);
+    fs.writeFileSync(path.join(projectRootB, ".ade", "secrets", "sync-device-id"), `${legacyB}\n`);
+
+    const dbA = await openKvDb(path.join(projectRootA, ".ade", "ade.db"), createLogger() as any);
+    const registryA = createDeviceRegistryService({
+      db: dbA,
+      logger: createLogger() as any,
+      projectRoot: projectRootA,
+      localDeviceIdPath: globalDeviceIdPath,
+    });
+    expect(registryA.ensureLocalDevice().deviceId).toBe(legacyA);
+
+    const dbB = await openKvDb(path.join(projectRootB, ".ade", "ade.db"), createLogger() as any);
+    const registryB = createDeviceRegistryService({
+      db: dbB,
+      logger: createLogger() as any,
+      projectRoot: projectRootB,
+      localDeviceIdPath: globalDeviceIdPath,
+    });
+
+    expect(registryB.ensureLocalDevice().deviceId).toBe(legacyA);
+    expect(fs.readFileSync(globalDeviceIdPath, "utf8").trim()).toBe(legacyA);
+
+    dbA.close();
+    dbB.close();
+  });
+
   it("persists notification preferences in device metadata across registry restarts", async () => {
     const projectRoot = makeProjectRoot("ade-device-registry-prefs-");
     const dbPath = path.join(projectRoot, ".ade", "ade.db");
