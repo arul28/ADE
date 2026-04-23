@@ -1,0 +1,421 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>ADE — OG Image (Combo)</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Inter+Tight:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <style>
+      :root {
+        --color-bg: #0a0a0f;
+        --color-cream: #efe6d0;
+        --color-cream-muted: #b8ae94;
+        --color-cream-faint: rgba(239, 230, 208, 0.45);
+        --color-hairline: rgba(239, 230, 208, 0.14);
+        --color-hairline-strong: rgba(239, 230, 208, 0.28);
+        --color-violet-bright: #a78bfa;
+      }
+
+      * { box-sizing: border-box; }
+
+      html, body {
+        margin: 0;
+        padding: 0;
+        width: 1200px;
+        height: 630px;
+        overflow: hidden;
+      }
+
+      body {
+        font-family: "Inter Tight", -apple-system, BlinkMacSystemFont, sans-serif;
+        color: var(--color-cream);
+        background-color: var(--color-bg);
+        background-image:
+          radial-gradient(circle at 18% 30%, rgba(124, 58, 237, 0.28), transparent 55%),
+          radial-gradient(circle at 88% 82%, rgba(167, 139, 250, 0.22), transparent 60%),
+          radial-gradient(rgba(239, 230, 208, 0.045) 1px, transparent 1px);
+        background-size: auto, auto, 22px 22px;
+      }
+
+      .page {
+        position: relative;
+        width: 1200px;
+        height: 630px;
+        display: flex;
+        flex-direction: column;
+      }
+
+      /* ---------------- Top equation strip ---------------- */
+      .strip {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 14px;
+        padding: 22px 64px 20px;
+        border-bottom: 1px solid var(--color-hairline);
+        background: linear-gradient(
+          180deg,
+          rgba(167, 139, 250, 0.09),
+          rgba(167, 139, 250, 0.02)
+        );
+      }
+      .strip .plus {
+        font-family: "Instrument Serif", Georgia, serif;
+        font-size: 26px;
+        color: var(--color-cream-faint);
+        line-height: 1;
+      }
+      .strip .equals {
+        font-family: "Instrument Serif", Georgia, serif;
+        font-style: italic;
+        font-size: 26px;
+        color: var(--color-violet-bright);
+        margin: 0 6px;
+      }
+      .strip .chip {
+        width: 38px;
+        height: 38px;
+        border-radius: 9px;
+        border: 1px solid var(--color-hairline-strong);
+        background: rgba(255, 255, 255, 0.045);
+        padding: 4px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      .strip .chip img {
+        width: 100%;
+        height: 100%;
+        object-fit: contain;
+      }
+      .strip .ade-pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 6px 12px 6px 8px;
+        border-radius: 999px;
+        border: 1px solid rgba(167, 139, 250, 0.45);
+        background: rgba(167, 139, 250, 0.14);
+        box-shadow: 0 0 22px -6px rgba(167, 139, 250, 0.6);
+      }
+      .strip .ade-pill img {
+        width: 24px;
+        height: 24px;
+        border-radius: 6px;
+      }
+      .strip .ade-pill span {
+        font-family: "Instrument Serif", Georgia, serif;
+        font-size: 20px;
+        color: var(--color-cream);
+        letter-spacing: 0.02em;
+      }
+
+      /* ---------------- Body ---------------- */
+      .body {
+        flex: 1;
+        padding: 42px 64px 82px;
+        display: grid;
+        grid-template-columns: 0.95fr 1.05fr;
+        gap: 40px;
+        align-items: center;
+      }
+
+      .lede { position: relative; }
+
+      .pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 10px;
+        padding: 7px 15px;
+        border-radius: 999px;
+        border: 1px solid rgba(167, 139, 250, 0.4);
+        background: rgba(167, 139, 250, 0.1);
+        box-shadow: 0 0 32px -8px rgba(167, 139, 250, 0.5);
+        font-size: 11px;
+        font-weight: 500;
+        text-transform: uppercase;
+        letter-spacing: 0.22em;
+        color: var(--color-cream);
+        margin-bottom: 22px;
+        white-space: nowrap;
+        width: max-content;
+      }
+      .pill .ping {
+        position: relative;
+        width: 8px;
+        height: 8px;
+      }
+      .pill .ping::before {
+        content: "";
+        position: absolute;
+        inset: 0;
+        border-radius: 999px;
+        background: var(--color-violet-bright);
+      }
+      .pill .sep { color: var(--color-cream-faint); }
+      .pill .agpl { color: var(--color-violet-bright); }
+
+      h1.headline {
+        font-family: "Instrument Serif", Georgia, "Times New Roman", serif;
+        font-weight: 400;
+        font-size: 76px;
+        line-height: 1.02;
+        letter-spacing: -0.02em;
+        margin: 0;
+        color: var(--color-cream);
+      }
+      h1.headline em {
+        font-style: italic;
+        color: var(--color-violet-bright);
+      }
+
+      .sub {
+        margin-top: 22px;
+        max-width: 44ch;
+        font-size: 17px;
+        line-height: 1.5;
+        color: var(--color-cream-muted);
+      }
+      .sub strong { font-weight: 500; color: var(--color-cream); }
+
+      /* ---------------- Devices ---------------- */
+      .stage {
+        position: relative;
+        width: 100%;
+        height: 420px;
+      }
+      .halo {
+        position: absolute;
+        inset: -30px -20px;
+        background: radial-gradient(
+          ellipse 58% 58% at 50% 48%,
+          rgba(124, 58, 237, 0.55) 0%,
+          rgba(124, 58, 237, 0.16) 40%,
+          transparent 75%
+        );
+        filter: blur(8px);
+        z-index: 0;
+      }
+
+      .mac {
+        position: absolute;
+        left: -2%;
+        top: 2%;
+        width: 82%;
+        transform: rotate(-1.6deg);
+        filter: drop-shadow(0 26px 44px rgba(0, 0, 0, 0.55));
+        z-index: 1;
+      }
+      .mac-screen {
+        position: relative;
+        aspect-ratio: 16 / 10;
+        overflow: hidden;
+        border-radius: 10px 10px 0 0;
+        border: 1px solid var(--color-hairline-strong);
+        background: #07070b;
+      }
+      .mac-screen .traffic {
+        position: absolute;
+        left: 10px;
+        top: 9px;
+        z-index: 3;
+        display: flex;
+        gap: 5px;
+      }
+      .mac-screen .traffic span {
+        width: 9px;
+        height: 9px;
+        border-radius: 999px;
+      }
+      .mac-screen .traffic .red { background: #ff5f57; }
+      .mac-screen .traffic .yellow { background: #febc2e; }
+      .mac-screen .traffic .green { background: #28c840; }
+      .mac-screen img {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+        object-position: top;
+      }
+      .mac-base {
+        position: relative;
+        height: 10px;
+        border-left: 1px solid var(--color-hairline);
+        border-right: 1px solid var(--color-hairline);
+        border-bottom: 1px solid var(--color-hairline);
+        border-radius: 0 0 14px 14px;
+        background: linear-gradient(180deg, #1e1e24, #0d0d12);
+      }
+      .mac-base::before {
+        content: "";
+        position: absolute;
+        left: 50%;
+        top: 0;
+        width: 80px;
+        height: 3px;
+        transform: translateX(-50%);
+        border-radius: 0 0 3px 3px;
+        background: rgba(0, 0, 0, 0.6);
+      }
+
+      .phone {
+        position: absolute;
+        right: 2%;
+        bottom: 0;
+        width: 30%;
+        transform: rotate(3.4deg);
+        filter: drop-shadow(0 26px 44px rgba(124, 58, 237, 0.55));
+        z-index: 2;
+      }
+      .phone-body {
+        position: relative;
+        aspect-ratio: 9 / 19.5;
+        overflow: hidden;
+        border-radius: 30px;
+        border: 6px solid #0c0c12;
+        background: #000;
+        box-shadow: 0 0 0 1px var(--color-hairline-strong);
+      }
+      .phone-body .notch {
+        position: absolute;
+        left: 50%;
+        top: 6px;
+        z-index: 2;
+        width: 44%;
+        height: 18px;
+        transform: translateX(-50%);
+        border-radius: 999px;
+        background: #000;
+      }
+      .phone-body img {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+        object-position: left top;
+      }
+      .phone-body::after {
+        content: "";
+        position: absolute;
+        inset: 0;
+        border-radius: 24px;
+        box-shadow: inset 0 0 40px rgba(124, 58, 237, 0.35);
+        pointer-events: none;
+      }
+
+      /* ---------------- Footer mark ---------------- */
+      .wordmark {
+        position: absolute;
+        left: 64px;
+        bottom: 28px;
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.28em;
+        color: var(--color-cream-faint);
+      }
+      .wordmark .rule {
+        width: 36px;
+        height: 1px;
+        background: var(--color-hairline-strong);
+      }
+      .domain {
+        position: absolute;
+        right: 64px;
+        bottom: 28px;
+        font-size: 13px;
+        letter-spacing: 0.18em;
+        text-transform: uppercase;
+        color: var(--color-cream-muted);
+      }
+    </style>
+  </head>
+  <body>
+    <div class="page">
+      <!-- Top equation strip -->
+      <div class="strip">
+        <div class="chip"><img src="../public/images/competitors/claude-code.png" alt="" /></div>
+        <span class="plus">+</span>
+        <div class="chip"><img src="../public/images/competitors/codex.png" alt="" /></div>
+        <span class="plus">+</span>
+        <div class="chip"><img src="../public/images/competitors/opencode.png" alt="" /></div>
+        <span class="plus">+</span>
+        <div class="chip"><img src="../public/images/competitors/t3-code.png" alt="" /></div>
+        <span class="plus">+</span>
+        <div class="chip"><img src="../public/images/competitors/cursor.png" alt="" /></div>
+        <span class="plus">+</span>
+        <div class="chip"><img src="../public/images/competitors/superset.png" alt="" /></div>
+        <span class="plus">+</span>
+        <div class="chip"><img src="../public/images/competitors/conductor.png" alt="" /></div>
+        <span class="plus">+</span>
+        <div class="chip"><img src="../public/images/competitors/factory.png" alt="" /></div>
+        <span class="plus">+</span>
+        <div class="chip"><img src="../public/images/competitors/paperclip.png" alt="" /></div>
+        <span class="plus">+</span>
+        <div class="chip"><img src="../public/images/competitors/openclaw.png" alt="" /></div>
+        <span class="plus">+</span>
+        <div class="chip"><img src="../public/images/competitors/github.png" alt="" /></div>
+        <span class="equals">equals</span>
+        <span class="ade-pill">
+          <img src="../public/images/ade-dock-icon.png" alt="" />
+          <span>ADE</span>
+        </span>
+      </div>
+
+      <!-- Body -->
+      <div class="body">
+        <div class="lede">
+          <div class="pill">
+            <span class="ping"></span>
+            100% Free
+            <span class="sep">·</span>
+            Open source
+            <span class="sep">·</span>
+            <span class="agpl">AGPL-3.0</span>
+          </div>
+          <h1 class="headline">
+            Every AI<br />
+            coding tool.<br />
+            <em>One</em> app.
+          </h1>
+          <p class="sub">
+            A single native workspace for
+            <strong>every AI coding agent</strong>. <strong>macOS</strong>,
+            <strong>iOS</strong>, <strong>CLI</strong> — synced in real time.
+          </p>
+        </div>
+
+        <div class="stage">
+          <div class="halo"></div>
+          <div class="mac">
+            <div class="mac-screen">
+              <div class="traffic">
+                <span class="red"></span>
+                <span class="yellow"></span>
+                <span class="green"></span>
+              </div>
+              <img src="../public/images/screenshots/lanes.png" alt="ADE on macOS" />
+            </div>
+            <div class="mac-base"></div>
+          </div>
+          <div class="phone">
+            <div class="phone-body">
+              <div class="notch"></div>
+              <img src="../public/images/screenshots/agent-chat.png" alt="ADE on iOS" />
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="wordmark">
+        <span class="rule"></span>
+        By ADE · Published Apr 2026
+      </div>
+      <div class="domain">ade-app.dev</div>
+    </div>
+  </body>
+</html>
