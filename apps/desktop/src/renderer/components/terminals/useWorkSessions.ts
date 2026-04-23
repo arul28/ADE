@@ -624,7 +624,11 @@ export function useWorkSessions() {
     if (appliedUrlFilterKeyRef.current === urlKey) return;
     const laneExists = laneParam && lanes.some((lane) => lane.id === laneParam);
     const status = mapUrlStatusFilter(statusParam);
-    if (!laneExists && !status) return;
+    if (!laneExists && !status) {
+      appliedUrlFilterKeyRef.current = null;
+      partiallyAppliedUrlFilterKeyRef.current = null;
+      return;
+    }
     // When the URL specifies a laneId but lanes haven't populated yet (e.g. on
     // project open/switch the store resets lanes to [] then repopulates async),
     // we can't tell whether the lane is missing-for-good or just-not-yet-loaded.
