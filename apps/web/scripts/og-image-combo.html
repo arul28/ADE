@@ -63,11 +63,17 @@
           rgba(167, 139, 250, 0.02)
         );
       }
-      .strip .plus {
-        font-family: "Instrument Serif", Georgia, serif;
-        font-size: 24px;
-        color: var(--color-cream-faint);
+      .strip .plus,
+      .strip .eq {
+        font-family: "Inter Tight", sans-serif;
+        font-size: 32px;
+        font-weight: 700;
+        color: var(--color-cream-muted);
         line-height: 1;
+      }
+      .strip .eq {
+        color: var(--color-violet-bright);
+        margin-left: 4px;
       }
       .strip .chip {
         width: 40px;
@@ -107,21 +113,17 @@
       .equals-block {
         display: flex;
         align-items: center;
-        justify-content: center;
-        gap: 22px;
+        justify-content: flex-start;
         flex-shrink: 0;
-      }
-      .equals-block .equals {
-        font-family: "Instrument Serif", Georgia, serif;
-        font-style: italic;
-        font-size: 64px;
-        line-height: 1;
-        color: var(--color-violet-bright);
+        padding-left: 4%;
+        margin-bottom: -28px;
+        position: relative;
+        z-index: 3;
       }
       .equals-block .ade-icon {
         position: relative;
-        width: 190px;
-        height: 190px;
+        width: 150px;
+        height: 150px;
         flex-shrink: 0;
       }
       .equals-block .ade-icon::before {
@@ -379,6 +381,7 @@
         <div class="chip"><img src="../public/images/competitors/openclaw.png" alt="" /></div>
         <span class="plus">+</span>
         <div class="chip"><img src="../public/images/competitors/github.png" alt="" /></div>
+        <span class="eq">=</span>
       </div>
 
       <!-- Body -->
@@ -406,7 +409,6 @@
 
         <div class="right-col">
           <div class="equals-block">
-            <span class="equals">equals</span>
             <div class="ade-icon">
               <img src="../public/images/ade-dock-icon.png" alt="ADE" />
             </div>
