@@ -18,6 +18,8 @@ Run this playbook once per lane, when the code on the branch is done (or nearly 
 - **Bounded.** Hard cap: 5 iterations. Exit earlier if clean or blocked. At the cap, do not auto-merge; leave a handoff comment that explains why the loop stopped and what remains, if anything.
 - **Rebase budget rebate.** A rebase, merge-from-main, or conflict-resolution pass moves the current iteration count down by 2 before the next cap check, with a floor of 0. Example: if the lane is on iteration 4 and must rebase because `main` moved, record the rebase and continue as iteration 2.
 - **Scoped checks.** Never run the full test suite between iterations. For CI, fix and rerun only the failing test file(s) or failing check target. For review-only changes, rerun only directly affected existing tests, plus the narrow package typecheck/lint when the touched surface needs it.
+- **One push per iteration.** Never push a CI-only fix while review bots are still running, and never push a review-only fix while CI is still running. Both signals must be **terminal** before the iteration commits — that is, every required check has a final conclusion AND every expected review bot has posted (or its status check has settled). Pushing on a partial signal wastes the next CI cycle and makes review threads drift from HEAD. If only one signal has landed, wait for the other; do not iterate early.
+- **Default wait is 12 minutes.** After any push, schedule the next poll ~720s out (unless CI hasn't started at all — then 270s to stay in cache). 12 minutes is the **floor** that lets both CI shards and the slower review bots (Greptile, Copilot) finish. Re-entering before that almost always shows a partial state and produces the wrong decision. Only schedule shorter (270s) in Phase 0 immediately post-push to observe CI has kicked off.
 - **Token-idle waits.** Waiting is done by the agent's native scheduler/resume primitive, or by a shell `sleep` followed by one-shot checks. Between wake-ups, agents should be asleep, not consuming model context or tokens.
 - **Idempotent resume.** All state lives in `.ade/shipLane/<branch>.json`. A re-invocation reads that file and picks up where it left off.
 
@@ -148,7 +150,14 @@ Then schedule the first wake-up (see Phase 5).
 
 Runs on every wake-up. Delegate to a **poll-agent** so the lead's context stays clean. The poll-agent runs these calls and returns a single structured summary.
 
-This is a one-shot poll. Do not use `gh pr checks --watch`, shell `while` loops, repeated sleeps, or minute-by-minute status checks. If CI/review is still pending, return `ciRunning: true` or no actionable comments, then let Phase 5 schedule the next wake.
+This is a one-shot poll. Do not use `gh pr checks --watch`, shell `while` loops, repeated sleeps, or minute-by-minute status checks. If CI/review is still pending, return `ciRunning: true` or `reviewBotsRunning: true` respectively, then let Phase 5 schedule the next wake.
+
+**Wait for both CI and review bots before iterating.** The poll must treat these as two independent signals and only report "ready to fix" when **both** are terminal:
+
+- **CI terminal** = every required check has a final conclusion (`success`, `failure`, `cancelled`, `skipped`, `neutral`). If any required check is still `QUEUED` or `IN_PROGRESS`, CI is not terminal.
+- **Review bots terminal** = every expected review bot has either posted its review (`gh api repos/.../pulls/{N}/reviews` contains a submission newer than `lastPushSha`'s commit time for each bot) **or** its status check entry has settled. Expected bots for this repo include **Greptile** (appears as the `Greptile Review` status check — wait for it to leave `pending`), **CodeRabbit** (posts a status check and/or review), and **Copilot** (posts an issue comment after being pinged; allow ~3–5 min from the ping). Greptile in particular is slow enough that the 12-minute wait is driven primarily by it.
+
+If either signal is still in flight, return "still waiting" and let Phase 5 reschedule. **Do not push a fix on a partial signal.**
 
 When a CLI has no native scheduler but can run shell commands, the best fallback is one shell sleep followed by one bounded check. For example:
 
@@ -194,6 +203,8 @@ Filter out any comment whose `id` is in `addressedCommentIds`.
   "behindMain": true,
   "isDraft": false,
   "ciRunning": false,
+  "reviewBotsRunning": false,
+  "pendingReviewBots": [],
   "ciFailed": [
     { "name": "test-desktop (3)", "link": "https://github.com/.../runs/123" }
   ],
@@ -211,6 +222,8 @@ Filter out any comment whose `id` is in `addressedCommentIds`.
 }
 ```
 
+`reviewBotsRunning` is `true` whenever `pendingReviewBots` is non-empty. Populate `pendingReviewBots` with any expected bot that has neither posted a review newer than `lastPushSha` nor has a settled status check (e.g., Greptile status still `pending`, Copilot has not commented within ~5 min of the ping).
+
 `behindMain` is derived from `mergeStateStatus` being `BEHIND` or `DIRTY`, or from `git merge-base --is-ancestor origin/main HEAD` returning non-zero.
 
 ---
@@ -223,9 +236,9 @@ Pure logic on the poll summary:
 | --- | --- |
 | `merged == true` | Exit `done-clean`; clear state file. |
 | `behindMain == true` | Go to Phase 3a (rebase), apply the rebase budget rebate, then schedule/poll according to Phase 5. |
-| `ciFailed` empty, `newComments` empty, `ciRunning == true` | No fix work. Go to Phase 5 (schedule next wake). |
-| `ciFailed` empty, `newComments` empty, `ciRunning == false` | Exit `done-clean`. |
-| Otherwise | Go to Phase 3b (fix). |
+| `ciRunning == true` OR `reviewBotsRunning == true` | Do NOT iterate on a partial signal. Go to Phase 5 (schedule next wake). This applies even if the other signal already shows failures/comments — pushing a fix now means the next CI+review cycle races the fix and you likely re-push for the other half. |
+| `ciFailed` empty, `newComments` empty, `ciRunning == false`, `reviewBotsRunning == false` | Exit `done-clean`. |
+| Otherwise (both signals terminal, fix work exists) | Go to Phase 3b (fix). Fix CI failures and review comments **in the same iteration / same push**. |
 
 ---
 
@@ -414,10 +427,12 @@ These are separate comments (not a single body) so each bot handler parses its o
 
 Agent-CLI-agnostic guidance (Claude Code maps this to `ScheduleWakeup`; Codex in a terminal should usually use shell `sleep ... && <one-shot checks>`; other CLIs map it to their native sleep/resume):
 
-- Just pushed, CI hasn't started yet → **270 seconds** (stay in prompt cache)
-- CI running → **720 seconds** (12 min — the user's spec)
-- CI done, waiting on human review → **1800 seconds** (30 min; cost-efficient)
+- Just pushed, neither CI nor review has started yet → **270 seconds** (stay in prompt cache; next poll only confirms things have kicked off)
+- CI running OR review bots still pending → **720 seconds** (12 min). This is the spec floor: CI shards typically finish in 3–5 min, Greptile in 5–10 min, Copilot within a few minutes of its ping. 12 min is what lets **both** land before the next poll.
+- CI terminal AND review bots terminal, now waiting on human review → **1800 seconds** (30 min; cost-efficient)
 - Unknown → **720 seconds** default
+
+**Do not re-wake at 270s after the initial push-settled poll.** 270s is only useful to confirm CI started; after that, bump to 720s so review bots can post. Re-entering every 270s before Greptile finishes is exactly how you end up pushing a CI-only fix and wasting the next review cycle.
 
 The cadence is a hint, not a live polling budget. Prefer longer sleeps over frequent checks. Each model or CLI may expose a different way to sleep, checkpoint, or resume; use the native one when it exists. If no native scheduler exists but shell commands can run, start a shell sleep followed by one bounded poll command, then let the shell wait without model activity. If neither scheduler nor shell sleep is available, write the updated state file and stop with a summary that names the next intended wake time; an external runner or human can re-invoke the playbook later. Do not emulate scheduling with an active model loop.
 
