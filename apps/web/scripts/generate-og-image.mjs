@@ -11,8 +11,11 @@ const { chromium } =
   })();
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const htmlPath = resolve(__dirname, "og-image.html");
-const outPath = resolve(__dirname, "../public/og-image.png");
+const [, , sourceArg, outArg] = process.argv;
+const htmlPath = resolve(__dirname, sourceArg ?? "og-image.html");
+const outPath = outArg
+  ? resolve(__dirname, outArg)
+  : resolve(__dirname, "../public/og-image.png");
 
 const browser = await chromium.launch();
 const context = await browser.newContext({
