@@ -45,6 +45,30 @@
 - Do not store secrets in plaintext project files when an encrypted store already exists.
 - Do not leave policy enforcement in prompts alone when a code path can enforce it directly.
 
+## Releases via `asc` (App Store Connect CLI)
+
+Release flows live behind `asc` (installed at `/opt/homebrew/bin/asc`). There's no manual IPA/cert shuffling — prefer the CLI end-to-end and consult the `asc-*` skills (`asc-xcode-build`, `asc-testflight-orchestration`, `asc-release-flow`, `asc-signing-setup`, `asc-submission-health`). Auth is keychain-backed (`asc doctor` to verify) with the API key at `~/.apple/asc/keys/AuthKey_*.p8` and `~/.asc/config.json`.
+
+iOS signing gotchas (don't repeat these):
+
+- The iOS project uses **automatic** signing (`CODE_SIGN_STYLE = Automatic`, `DEVELOPMENT_TEAM = VQ372F39G6`). `apps/ios/ExportOptions.plist` ships with `signingStyle = manual` + named profiles for CI/archive determinism, but local ad-hoc exports need `signingStyle = automatic` instead (drop the per-bundle profile map).
+- `asc signing fetch` only downloads provisioning profiles and the `.cer` — it does **not** include the private key. Don't expect it to make local signing work on its own.
+- Local exports need the App Store Connect API key passed to `xcodebuild` so it can create/fetch missing Distribution assets on demand. Add these flags (in addition to `-allowProvisioningUpdates`):
+  ```
+  -authenticationKeyPath ~/.apple/asc/keys/AuthKey_WRRA7YU7RA.p8 \
+  -authenticationKeyID WRRA7YU7RA \
+  -authenticationKeyIssuerID 4d523a6c-e68c-49b2-8560-34e59786d8e3
+  ```
+  (Pull the current values from `~/.asc/config.json` rather than hard-coding.) This works even when the local keychain has only the Development cert, because xcodebuild provisions the Distribution cert via ASC.
+- For the full flow, `asc publish testflight --app <APP_ID> --project apps/ios/ADE.xcodeproj --scheme ADE --version <x.y.z> --build-number <N> --export-options <auto-plist> --group "<Beta Group>" --wait` does archive + export + upload + distribute in one shot.
+- After upload, `processingState = VALID` alone isn't enough for TestFlight distribution — you also need `usesNonExemptEncryption` answered (`asc builds update --build-id <ID> --uses-non-exempt-encryption=false`) and the build assigned to a beta group (`asc publish testflight --build <ID> --group "<Group>"`).
+
+Desktop release:
+
+- Tag a commit on `main` with `vX.Y.Z` and push the tag. `.github/workflows/release.yml` triggers, runs the `release-core.yml` job, and publishes a draft GitHub Release with `.dmg`, `.zip`, blockmap, and `latest-mac.yml` assets. The workflow requires the tagged commit to be an ancestor of `origin/main`.
+- Draft releases stay unpublished until you flip them (`gh release edit vX.Y.Z --draft=false` or the UI). Don't publish silently.
+- Main is protected by a ruleset: admin bypass is required for direct pushes, and the "strict required status checks" rule makes GitHub's "Merge pull request" button reject merges that use a non-linear history (even when the branch already contains `main`). `gh pr merge --admin` hits the same block; merging locally and pushing (admin bypass) is the fallback.
+
 ## Cursor Cloud specific instructions
 
 ### Environment overview
