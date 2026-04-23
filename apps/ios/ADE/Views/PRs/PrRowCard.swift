@@ -216,7 +216,10 @@ extension PrRowCard {
     }
 
     init(item: GitHubPrListItem) {
-      let unmapped = item.linkedPrId == nil && item.linkedLaneId == nil && item.adeKind == nil
+      let unmapped = item.scope != "external"
+        && item.linkedPrId == nil
+        && item.linkedLaneId == nil
+        && item.adeKind == nil
       self.id = item.linkedPrId ?? item.id
       self.prNumber = item.githubPrNumber
       self.title = item.title

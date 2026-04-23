@@ -141,7 +141,7 @@ private enum LaneSyncAction: String, Identifiable {
     case .fetch:
       return "ADE will update remote-tracking refs for this lane. Local files are not changed."
     case .pullMerge:
-      return "ADE will merge upstream changes into this lane. Review status before continuing."
+      return "ADE will fast-forward this lane to upstream. This only succeeds when local work has not diverged."
     case .pullRebase:
       return "ADE will replay local commits on top of upstream changes. Review status before continuing."
     case .push:

@@ -116,7 +116,7 @@ extension LanesTabView {
         .foregroundStyle(ADEColor.textSecondary)
         .padding(.horizontal, 2)
 
-      ForEach(visibleSuggestions.prefix(3)) { snapshot in
+      ForEach(visibleSuggestions) { snapshot in
         HStack(spacing: 12) {
           Image(systemName: "arrow.triangle.2.circlepath")
             .font(.system(size: 13, weight: .semibold))
@@ -178,7 +178,7 @@ extension LanesTabView {
         )
       }
 
-      ForEach(visibleAutoRebaseAttention.prefix(3)) { snapshot in
+      ForEach(visibleAutoRebaseAttention) { snapshot in
         HStack(spacing: 12) {
           Image(systemName: "exclamationmark.triangle.fill")
             .font(.system(size: 13, weight: .semibold))

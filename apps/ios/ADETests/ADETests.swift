@@ -5224,6 +5224,17 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(workSessionPreviewText("Still visible"), "Still visible")
   }
 
+  func testWorkDisplayPreservesEllipsisWhenCollapsingStreamingDuplicates() {
+    XCTAssertEqual(
+      sanitizeTerminalOutputForDisplay("WWoorrkkiinngg..."),
+      "Working..."
+    )
+    XCTAssertEqual(
+      workSessionPreviewText("WWoorrkkiinngg..."),
+      "Working..."
+    )
+  }
+
   func testBuildWorkActivityFeedReusesCachedTerminalTranscript() {
     let session = makeTerminalSessionSummary(toolType: "codex-chat", title: "Main chat")
     let raw = """

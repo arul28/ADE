@@ -586,6 +586,17 @@ struct PRsTabView: View {
         Button("Open in GitHub") { openGitHub(urlString: item.githubUrl) }
           .tint(ADEColor.accent)
       }
+    } else if item.scope == "external" {
+      Button {
+        openGitHub(urlString: item.githubUrl)
+      } label: {
+        PrRowCard(item: item)
+      }
+      .buttonStyle(.plain)
+      .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+        Button("Open in GitHub") { openGitHub(urlString: item.githubUrl) }
+          .tint(ADEColor.accent)
+      }
     } else {
       Button {
         githubDetailRequest = PrGitHubLaneLinkRequest(item: item)

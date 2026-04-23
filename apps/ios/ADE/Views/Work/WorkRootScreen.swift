@@ -152,13 +152,15 @@ struct WorkRootScreen: View {
 
   var globalNeedsInputCount: Int {
     mergedSessions.filter {
-      !archivedSessionIds.contains($0.id)
+      !isRunOwnedSession($0)
+      && !archivedSessionIds.contains($0.id)
       && normalizedWorkChatSessionStatus(session: $0, summary: chatSummaries[$0.id]) == "awaiting-input"
     }.count
   }
 
   var globalLiveSessionCount: Int {
     mergedSessions.filter { session in
+      guard !isRunOwnedSession(session) else { return false }
       guard !archivedSessionIds.contains(session.id) else { return false }
       let status = normalizedWorkChatSessionStatus(session: session, summary: chatSummaries[session.id])
       return status == "active" || status == "idle"
@@ -167,13 +169,15 @@ struct WorkRootScreen: View {
 
   var firstGlobalAttentionSession: TerminalSessionSummary? {
     mergedSessions.first {
-      !archivedSessionIds.contains($0.id)
+      !isRunOwnedSession($0)
+      && !archivedSessionIds.contains($0.id)
       && normalizedWorkChatSessionStatus(session: $0, summary: chatSummaries[$0.id]) == "awaiting-input"
     }
   }
 
   var firstGlobalLiveSession: TerminalSessionSummary? {
     mergedSessions.first { session in
+      guard !isRunOwnedSession(session) else { return false }
       guard !archivedSessionIds.contains(session.id) else { return false }
       let status = normalizedWorkChatSessionStatus(session: session, summary: chatSummaries[session.id])
       return status == "active" || status == "idle" || status == "awaiting-input"
