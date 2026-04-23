@@ -310,15 +310,12 @@ export function WorkViewArea({
     visibleSessions.map((session) => {
       const dot = sessionStatusDot(session);
       const isBusy = session.ptyId ? closingPtyIds.has(session.ptyId) : false;
-      const title = truncateSessionLabel(primarySessionLabel(session));
+      const isActive = activeItemId === session.id;
       return [session.id, {
-        title,
+        title: truncateSessionLabel(primarySessionLabel(session)),
         meta: session.laneName,
         minimizable: false,
-        className: cn(
-          "h-full",
-          activeItemId === session.id ? "ade-work-glass-tile ade-work-glass-tile-active" : "ade-work-glass-tile",
-        ),
+        className: cn("h-full ade-work-glass-tile", isActive && "ade-work-glass-tile-active"),
         bodyClassName: "overflow-hidden",
         headerActions: (
           <>
@@ -350,8 +347,8 @@ export function WorkViewArea({
           <div className="min-h-0 h-full flex-1 overflow-hidden">
             <SessionSurface
               session={session}
-              isActive={activeItemId === session.id}
-              shouldAutofocus={activeItemId === session.id}
+              isActive={isActive}
+              shouldAutofocus={isActive}
               terminalVisible
               layoutVariant="grid-tile"
               onOpenChatSession={onOpenChatSession}

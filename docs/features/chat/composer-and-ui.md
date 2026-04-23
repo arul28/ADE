@@ -309,6 +309,19 @@ These modules are pure and unit-testable:
   sensitive to changing row heights (plan approval cards, work-log
   expansion). Measurement caching uses stable keys; rolling back to an
   unstable key causes the list to "jump" on updates.
+- **Native permission picker updates serialize before submit.**
+  `AgentChatPane` tracks the in-flight native-control update through
+  `pendingNativeControlUpdateRef` (sessionId + monotonic `updateId` +
+  promise). Every `updateSession` dispatched from the permission
+  popovers chains onto the previous promise so the backend always sees
+  the final picker state, and `submit()` awaits that chain for the
+  active session before dispatching the turn. The handler also
+  optimistically patches the renderer session summary with the fields
+  returned from `updateSession` (`permissionMode`,
+  `interactionMode`, `claudePermissionMode`, `codexApprovalPolicy`,
+  `codexSandbox`, `codexConfigSource`, `opencodePermissionMode`,
+  `cursorModeId`, `cursorModeSnapshot`) so the chip state reflects the
+  server's normalized values before the list refresh lands.
 
 ## Related docs
 

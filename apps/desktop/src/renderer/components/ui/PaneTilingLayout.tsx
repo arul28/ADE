@@ -71,21 +71,15 @@ export function PaneTilingLayout({
   const leafPanelRefs = useRef<Record<string, PanelImperativeHandle | null>>({});
   const leafCompactedRef = useRef<Record<string, { compacted: boolean; previousSize: number | null; parentDirection: "horizontal" | "vertical" }>>({});
 
-  const resetSavedLayout = useCallback(() => {
-    saveLayout({});
-  }, [saveLayout]);
-
   const replaceTreeImmediately = useCallback((next: PaneSplit, resetLayout = false) => {
     if (saveTimerRef.current) {
       clearTimeout(saveTimerRef.current);
       saveTimerRef.current = null;
     }
     setLiveTree(next);
-    if (resetLayout) {
-      resetSavedLayout();
-    }
+    if (resetLayout) saveLayout({});
     window.ade.tilingTree.set(layoutId, next).catch(() => {});
-  }, [layoutId, resetSavedLayout]);
+  }, [layoutId, saveLayout]);
 
   // Load persisted tree on mount
   useEffect(() => {
@@ -96,12 +90,10 @@ export function PaneTilingLayout({
         if (cancelled) return;
         if (saved && typeof saved === "object" && (saved as PaneSplit).type === "split") {
           const candidate = saved as PaneSplit;
-          const reconciled = reconcilePaneTree(candidate, expectedPaneIds, tree);
-          const changed = JSON.stringify(candidate) !== JSON.stringify(reconciled);
-          if (changed) {
-            replaceTreeImmediately(reconciled, true);
+          if (isValidTree(candidate, expectedPaneIds)) {
+            setLiveTree(candidate);
           } else {
-            setLiveTree(reconciled);
+            replaceTreeImmediately(reconcilePaneTree(candidate, expectedPaneIds, tree), true);
           }
         }
         setTreeLoaded(true);
@@ -116,8 +108,7 @@ export function PaneTilingLayout({
   useEffect(() => {
     if (!treeLoaded) return;
     if (!isValidTree(liveTree, expectedPaneIds)) {
-      const reconciled = reconcilePaneTree(liveTree, expectedPaneIds, tree);
-      replaceTreeImmediately(reconciled, true);
+      replaceTreeImmediately(reconcilePaneTree(liveTree, expectedPaneIds, tree), true);
     }
   }, [expectedPaneIds, replaceTreeImmediately, tree, treeLoaded]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -125,13 +116,13 @@ export function PaneTilingLayout({
   const persistTree = useCallback(
     (next: PaneSplit) => {
       setLiveTree(next);
-      resetSavedLayout();
+      saveLayout({});
       if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
       saveTimerRef.current = setTimeout(() => {
         window.ade.tilingTree.set(layoutId, next).catch(() => {});
       }, 300);
     },
-    [layoutId, resetSavedLayout]
+    [layoutId, saveLayout]
   );
 
   /* ---- Minimize state ---- */

@@ -1723,53 +1723,21 @@ type CodexThreadLifecycleResponse = {
   reasoningEffort?: unknown;
 };
 
-function normalizeCodexRuntimeApprovalPolicy(value: unknown): AgentChatCodexApprovalPolicy | undefined {
-  if (typeof value !== "string") return undefined;
-  switch (value.trim()) {
-    case "untrusted":
-      return "untrusted";
-    case "on-request":
-      return "on-request";
-    case "on-failure":
-      return "on-failure";
-    case "never":
-      return "never";
-    default:
-      return undefined;
-  }
-}
+const CODEX_SANDBOX_CAMEL_CASE_ALIASES: Record<string, AgentChatCodexSandbox> = {
+  readOnly: "read-only",
+  workspaceWrite: "workspace-write",
+  dangerFullAccess: "danger-full-access",
+};
 
 function normalizeCodexRuntimeSandbox(value: unknown): AgentChatCodexSandbox | undefined {
   if (typeof value === "string") {
-    switch (value.trim()) {
-      case "read-only":
-        return "read-only";
-      case "workspace-write":
-        return "workspace-write";
-      case "danger-full-access":
-        return "danger-full-access";
-      case "readOnly":
-        return "read-only";
-      case "workspaceWrite":
-        return "workspace-write";
-      case "dangerFullAccess":
-        return "danger-full-access";
-      default:
-        return undefined;
-    }
+    const trimmed = value.trim();
+    return normalizePersistedCodexSandbox(trimmed) ?? CODEX_SANDBOX_CAMEL_CASE_ALIASES[trimmed];
   }
 
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
-  switch ((value as Record<string, unknown>).type) {
-    case "readOnly":
-      return "read-only";
-    case "workspaceWrite":
-      return "workspace-write";
-    case "dangerFullAccess":
-      return "danger-full-access";
-    default:
-      return undefined;
-  }
+  const type = (value as Record<string, unknown>).type;
+  return typeof type === "string" ? CODEX_SANDBOX_CAMEL_CASE_ALIASES[type] : undefined;
 }
 
 function applyCodexEffectiveThreadState(
@@ -1778,7 +1746,7 @@ function applyCodexEffectiveThreadState(
 ): void {
   if (!response) return;
 
-  const approvalPolicy = normalizeCodexRuntimeApprovalPolicy(response.approvalPolicy);
+  const approvalPolicy = normalizePersistedCodexApprovalPolicy(response.approvalPolicy);
   if (approvalPolicy) {
     managed.session.codexApprovalPolicy = approvalPolicy;
   }

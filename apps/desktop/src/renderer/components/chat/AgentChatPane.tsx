@@ -2279,10 +2279,8 @@ export function AgentChatPane({
     if (!modelId) return;
     const text = draft.trim();
     if (!text.length || !laneId) return;
-    const pendingNativeControlUpdate = selectedSessionId
-      ? pendingNativeControlUpdateRef.current
-      : null;
-    if (pendingNativeControlUpdate?.sessionId === selectedSessionId) {
+    const pendingNativeControlUpdate = pendingNativeControlUpdateRef.current;
+    if (selectedSessionId && pendingNativeControlUpdate?.sessionId === selectedSessionId) {
       try {
         await pendingNativeControlUpdate.promise;
       } catch {
@@ -2538,17 +2536,13 @@ export function AgentChatPane({
     const previousUpdate = pendingNativeControlUpdateRef.current?.sessionId === selectedSessionId
       ? pendingNativeControlUpdateRef.current.promise
       : null;
-    const updateId = nativeControlUpdateCounterRef.current + 1;
-    nativeControlUpdateCounterRef.current = updateId;
+    const updateId = ++nativeControlUpdateCounterRef.current;
 
     const updatePromise = (async () => {
       if (previousUpdate) {
-        try {
-          await previousUpdate;
-        } catch {
-          // The previous mutation already surfaced its error; continue so the
-          // latest picker state still gets pushed to the backend.
-        }
+        // Prior mutation already surfaced any error; wait for it to settle so the
+        // latest picker state still gets pushed to the backend.
+        await previousUpdate.catch(() => {});
       }
 
       try {
@@ -2573,10 +2567,8 @@ export function AgentChatPane({
         setError(err instanceof Error ? err.message : String(err));
         throw err;
       } finally {
-        if (
-          pendingNativeControlUpdateRef.current?.sessionId === selectedSessionId
-          && pendingNativeControlUpdateRef.current?.updateId === updateId
-        ) {
+        const pending = pendingNativeControlUpdateRef.current;
+        if (pending?.sessionId === selectedSessionId && pending.updateId === updateId) {
           pendingNativeControlUpdateRef.current = null;
         }
         if (isPersistentIdentitySurface) {

@@ -140,6 +140,28 @@ Two independent controls:
   `config-toml`, ADE defers both controls to the project's
   `.codex/config.toml`.
 
+The chat adapter now rehydrates the effective approval/sandbox/reasoning
+tuple from the Codex app-server response: every `thread/start` and
+`thread/resume` call passes `{ model, cwd, ...codexPolicyArgs,
+persistExtendedHistory: true }` (no redundant `reasoningEffort`) and the
+return envelope is consumed by `applyCodexEffectiveThreadState`, which
+normalizes `approvalPolicy`, `sandbox` (including the camel-case
+aliases `readOnly` / `workspaceWrite` / `dangerFullAccess` that the
+server emits), and `reasoningEffort`. That snapshot becomes the session
+state, so the picker chips always show what the runtime actually
+applied. On resume, the persisted chat state is re-written after
+normalization instead of being re-copied from the on-disk file — the
+server's reading of `.codex/config.toml` wins over a stale persisted
+pair. Turns use the Codex-native `effort` key
+(`turn/start({ threadId, input, effort? })`) instead of the legacy
+`reasoningEffort` name.
+
+Default Codex chats map to the "Default permissions" preset
+(`workspace-write` + `on-request`). The older implicit fallback that
+mapped CLI `edit` mode to `untrusted` was removed so the first-turn
+picker state matches the documented default; the explicit Codex
+`edit` preset still resolves through the picker path.
+
 ### OpenCode
 
 `AgentChatOpenCodePermissionMode`:

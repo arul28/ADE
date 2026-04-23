@@ -95,6 +95,10 @@ function coercePaneNodeToSplit(
   };
 }
 
+function perpendicular(direction: PaneSplit["direction"]): PaneSplit["direction"] {
+  return direction === "horizontal" ? "vertical" : "horizontal";
+}
+
 type LeafCandidate = {
   id: string;
   parentDirection: PaneSplit["direction"] | null;
@@ -122,18 +126,15 @@ function insertPaneIntoLargestLeaf(
   paneId: string,
   fallbackDirection: PaneSplit["direction"]
 ): PaneSplit {
-  const candidates = collectLeafCandidates(tree, null, 100);
-  const target = candidates.reduce<LeafCandidate | null>((largest, candidate) => {
-    if (largest == null || candidate.weight > largest.weight) return candidate;
-    return largest;
-  }, null);
+  let target: LeafCandidate | null = null;
+  for (const candidate of collectLeafCandidates(tree, null, 100)) {
+    if (target == null || candidate.weight > target.weight) target = candidate;
+  }
   if (!target) return tree;
 
   const direction = target.parentDirection == null
     ? fallbackDirection
-    : target.parentDirection === "horizontal"
-      ? "vertical"
-      : "horizontal";
+    : perpendicular(target.parentDirection);
 
   return replaceLeaf(tree, target.id, {
     type: "split",
@@ -151,36 +152,29 @@ export function reconcilePaneTree(
   fallback: PaneSplit
 ): PaneSplit {
   const expected = new Set(expectedPaneIds);
-  let next: PaneLeaf | PaneSplit | null = tree;
+  let pruned: PaneLeaf | PaneSplit | null = tree;
   for (const paneId of collectLeafIds(tree)) {
-    if (next == null) break;
-    if (!expected.has(paneId)) {
-      next = removePaneFromTree(next, paneId);
-    }
+    if (pruned == null) break;
+    if (!expected.has(paneId)) pruned = removePaneFromTree(pruned, paneId);
   }
+  if (pruned == null) return fallback;
 
-  if (next == null) return fallback;
-
-  const flattened = flattenSingleChildSplits(next);
-  const flattenedLeafIds = collectLeafIds(flattened);
+  const flattened = flattenSingleChildSplits(pruned);
   const present = new Set<string>();
-  for (const paneId of flattenedLeafIds) {
-    if (!expected.has(paneId) || present.has(paneId)) {
-      return fallback;
-    }
+  for (const paneId of collectLeafIds(flattened)) {
+    if (!expected.has(paneId) || present.has(paneId)) return fallback;
     present.add(paneId);
   }
-  const missingPaneIds = expectedPaneIds.filter((paneId) => !present.has(paneId));
-  if (missingPaneIds.length === 0) {
-    return coercePaneNodeToSplit(flattened, fallback.direction);
-  }
 
+  const missing = expectedPaneIds.filter((paneId) => !present.has(paneId));
   const base = coercePaneNodeToSplit(flattened, fallback.direction);
-  const withInsertedPanes = missingPaneIds.reduce(
-    (currentTree, paneId) => insertPaneIntoLargestLeaf(currentTree, paneId, fallback.direction),
+  if (missing.length === 0) return base;
+
+  const withInserts = missing.reduce(
+    (current, paneId) => insertPaneIntoLargestLeaf(current, paneId, fallback.direction),
     base,
   );
-  return coercePaneNodeToSplit(flattenSingleChildSplits(withInsertedPanes), fallback.direction);
+  return coercePaneNodeToSplit(flattenSingleChildSplits(withInserts), fallback.direction);
 }
 
 /* ---- Split a pane at an edge ---- */
