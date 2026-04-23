@@ -48,9 +48,19 @@ export function parsePrsRouteState(args: { search?: string | null; hash?: string
   const pick = (key: string): string | null =>
     parseOptionalId(searchParams.get(key)) ?? parseOptionalId(hashParams.get(key));
 
+  // Workflow precedence: when both search and hash carry a workflow value, the
+  // hash is authoritative. In BrowserRouter mock mode (e.g. when the outer
+  // location is `?tab=workflows&workflow=queue#/prs?...&workflow=rebase`), the
+  // inner hash is the current in-app location; the outer search may be stale
+  // and must not mask it. Still fall back to search when hash has no workflow.
+  const hashWorkflowRaw = hashParams.get("workflow");
+  const searchWorkflowRaw = searchParams.get("workflow");
+  const hashWorkflow = parseWorkflowTab(hashWorkflowRaw);
+  const workflowTab = hashWorkflow ?? parseWorkflowTab(searchWorkflowRaw);
+
   return {
     tab: parseTab(searchParams.get("tab") ?? hashParams.get("tab")),
-    workflowTab: parseWorkflowTab(searchParams.get("workflow") ?? hashParams.get("workflow")),
+    workflowTab,
     laneId: pick("laneId"),
     prId: pick("prId"),
     queueGroupId: pick("queueGroupId"),

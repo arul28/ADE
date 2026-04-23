@@ -623,7 +623,18 @@ export function useWorkSessions() {
     const laneExists = laneParam && lanes.some((lane) => lane.id === laneParam);
     const status = mapUrlStatusFilter(statusParam);
     if (!laneExists && !status) return;
-    appliedUrlFilterKeyRef.current = urlKey;
+    // When the URL specifies a laneId but lanes haven't populated yet (e.g. on
+    // project open/switch the store resets lanes to [] then repopulates async),
+    // we can't tell whether the lane is missing-for-good or just-not-yet-loaded.
+    // In that case, apply any status hint but don't cache the URL signature —
+    // come back once lanes populate so the lane portion can apply too. We only
+    // mark the key applied when the lane portion was definitively applied, or
+    // when lanes are loaded (non-empty) so "not found" is an authoritative
+    // negative signal.
+    const laneDeterminable = !laneParam || laneExists || lanes.length > 0;
+    if (laneDeterminable) {
+      appliedUrlFilterKeyRef.current = urlKey;
+    }
     setProjectViewState((prev) => ({
       ...prev,
       laneFilter: laneExists ? laneParam : prev.laneFilter,

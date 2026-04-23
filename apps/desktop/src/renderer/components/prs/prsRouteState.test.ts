@@ -140,4 +140,19 @@ describe("resolvePrsActiveTab", () => {
     expect(resolved.isWorkflowRoute).toBe(false);
     expect(resolved.activeTab).toBe("normal");
   });
+
+  it("prefers the hash workflow over a stale outer search workflow (BrowserRouter mock mode)", () => {
+    // Outer URL like `/?tab=workflows&workflow=queue#/prs?tab=workflows&workflow=rebase`
+    // In BrowserRouter mock mode the outer search is stale; the inner hash is the
+    // current in-app location and must win.
+    const parsed = parsePrsRouteState({
+      search: "?tab=workflows&workflow=queue",
+      hash: "#/prs?tab=workflows&workflow=rebase",
+    });
+    expect(parsed.workflowTab).toBe("rebase");
+    const resolved = resolvePrsActiveTab(parsed);
+    expect(resolved.isWorkflowRoute).toBe(true);
+    expect(resolved.effectiveWorkflow).toBe("rebase");
+    expect(resolved.activeTab).toBe("rebase");
+  });
 });
