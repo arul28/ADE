@@ -397,7 +397,9 @@ export function triggerMatches(
   const isPrCanonical =
     canonicalType === "github.pr_opened"
     || canonicalType === "github.pr_updated"
-    || canonicalType === "github.pr_closed";
+    || canonicalType === "github.pr_closed"
+    || canonicalType === "github.pr_commented"
+    || canonicalType === "github.pr_review_submitted";
   if (canonicalType === "github.pr_merged") {
     const expectedTarget = (ruleTrigger.targetBranch ?? ruleTrigger.branch ?? "").trim();
     if (expectedTarget && !matchesGlob(expectedTarget, trigger.targetBranch)) return false;

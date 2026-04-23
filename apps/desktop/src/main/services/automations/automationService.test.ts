@@ -5,7 +5,7 @@ import path from "node:path";
 import { createRequire } from "node:module";
 import initSqlJs from "sql.js";
 import type { Database, SqlJsStatic } from "sql.js";
-import { createAutomationService } from "./automationService";
+import { createAutomationService, triggerMatches } from "./automationService";
 
 type SqlValue = string | number | null | Uint8Array;
 
@@ -38,6 +38,43 @@ beforeAll(async () => {
   const wasmDir = path.dirname(wasmPath);
   SQL = await initSqlJs({
     locateFile: (file) => path.join(wasmDir, file)
+  });
+});
+
+describe("triggerMatches", () => {
+  it("matches PR comment and review branch filters against the PR head branch", () => {
+    const trigger = {
+      source: "github-polling" as const,
+      triggerType: "github.pr_commented" as const,
+      branch: "feat/demo",
+      targetBranch: "main",
+      pr: {
+        number: 42,
+        title: "Demo",
+        repo: "acme/ade",
+        headBranch: "feat/demo",
+        baseBranch: "main",
+      },
+    };
+
+    expect(triggerMatches(
+      { type: "github.pr_commented", branch: "feat/*" },
+      trigger,
+      undefined,
+      undefined,
+    )).toBe(true);
+    expect(triggerMatches(
+      { type: "github.pr_review_submitted", branch: "feat/*" },
+      { ...trigger, triggerType: "github.pr_review_submitted" },
+      undefined,
+      undefined,
+    )).toBe(true);
+    expect(triggerMatches(
+      { type: "github.pr_commented", branch: "release/*" },
+      trigger,
+      undefined,
+      undefined,
+    )).toBe(false);
   });
 });
 
