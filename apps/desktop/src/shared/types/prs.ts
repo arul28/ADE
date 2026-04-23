@@ -353,6 +353,8 @@ export type CreateIntegrationPrArgs = {
   body?: string;
   draft?: boolean;
   allowDirtyWorktree?: boolean;
+  /** When set, merges sources into this existing lane instead of creating a new child lane. */
+  existingIntegrationLaneId?: string | null;
 };
 
 export type CreateIntegrationPrResult = {
@@ -414,6 +416,7 @@ export type IntegrationLaneSummary = {
   diffStat: { insertions: number; deletions: number; filesChanged: number };
 };
 
+export type IntegrationLaneOrigin = "ade-created" | "adopted";
 export type IntegrationWorkflowDisplayState = "active" | "history";
 export type IntegrationCleanupState = "none" | "required" | "declined" | "completed";
 
@@ -431,8 +434,13 @@ export type IntegrationProposal = {
   body?: string;
   draft?: boolean;
   integrationLaneName?: string;
+  /** Preferred integration lane when none exists yet (merge sources here instead of a new lane). */
+  preferredIntegrationLaneId?: string | null;
+  /** Git HEAD of preferred merge-into lane at last simulation (for drift warnings). */
+  mergeIntoHeadSha?: string | null;
   status: "proposed" | "committed";
   integrationLaneId?: string | null;
+  integrationLaneOrigin?: IntegrationLaneOrigin | null;
   linkedGroupId?: string | null;
   linkedPrId?: string | null;
   workflowDisplayState?: IntegrationWorkflowDisplayState;
@@ -458,6 +466,14 @@ export type UpdateIntegrationProposalArgs = {
   body?: string;
   draft?: boolean;
   integrationLaneName?: string;
+  preferredIntegrationLaneId?: string | null;
+  /** When clearing preferred lane, also clears stored simulation HEAD (optional; omit to leave unchanged). */
+  mergeIntoHeadSha?: string | null;
+  /**
+   * Clears integration_lane_id and resolution_state_json so the next prepare step can use a new or different lane.
+   * Does not delete lanes in Git.
+   */
+  clearIntegrationBinding?: boolean;
 };
 
 export type ListIntegrationWorkflowsArgs = {
@@ -468,6 +484,11 @@ export type SimulateIntegrationArgs = {
   sourceLaneIds: string[];
   baseBranch: string;
   persist?: boolean;
+  /**
+   * When set, sequential merge preview starts at this lane's current HEAD and extra merge-tree checks run
+   * (integration head vs each source). Child-vs-child pairwise simulation still uses `baseBranch` as the merge base.
+   */
+  mergeIntoLaneId?: string | null;
 };
 
 export type CommitIntegrationArgs = {
@@ -478,6 +499,8 @@ export type CommitIntegrationArgs = {
   draft?: boolean;
   pauseOnConflict?: boolean;
   allowDirtyWorktree?: boolean;
+  /** Override stored preference; omit to use the proposal row. */
+  preferredIntegrationLaneId?: string | null;
 };
 
 export type IntegrationStepResolution = "pending" | "merged-clean" | "resolving" | "resolved" | "failed";
@@ -524,6 +547,7 @@ export type CleanupIntegrationWorkflowResult = {
 
 export type CreateIntegrationLaneForProposalArgs = {
   proposalId: string;
+  allowDirtyWorktree?: boolean;
 };
 
 export type CreateIntegrationLaneForProposalResult = {
@@ -575,6 +599,8 @@ export type PrAiResolutionStartArgs = {
   model: string;
   reasoning?: string | null;
   permissionMode?: AiPermissionMode;
+  /** Appended to the generated resolver prompt (integration, merge conflicts, etc.). */
+  additionalInstructions?: string | null;
 };
 
 export type PrAiResolutionStartResult = {
@@ -1510,6 +1536,9 @@ export type PrIntegrationWorkflowCard = {
   cleanupState: IntegrationCleanupState;
   linkedPrId: string | null;
   integrationLaneId: string | null;
+  preferredIntegrationLaneId?: string | null;
+  mergeIntoHeadSha?: string | null;
+  integrationLaneOrigin?: IntegrationLaneOrigin | null;
   createdAt: string;
 };
 

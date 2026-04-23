@@ -18,8 +18,9 @@ Main-process services (`apps/desktop/src/main/services/prs/`):
 
 | File | Responsibility |
 |------|---------------|
-| `prService.ts` | PR CRUD, GitHub sync, merge context, draft descriptions, check/review/comment hydration, integration proposals, merge bypass, post-merge cleanup, deployment listing, review-thread reply/resolve/react mutations for the timeline, and the aggregate `getMobileSnapshot` that powers the iOS PRs tab |
+| `prService.ts` | PR CRUD, GitHub sync, merge context, draft descriptions, check/review/comment hydration, integration proposals, merge-into-existing-lane adoption, merge bypass, post-merge cleanup, deployment listing, review-thread reply/resolve/react mutations for the timeline, and the aggregate `getMobileSnapshot` that powers the iOS PRs tab |
 | `prService.mobileSnapshot.test.ts` | Coverage for the mobile snapshot builder: stack chaining, capability gates, per-lane create eligibility, workflow-card aggregation |
+| `prService.mergeInto.test.ts` | Coverage for integration proposals that preview or adopt an existing merge target lane, including dirty-worktree handling and drift metadata. |
 | `prPollingService.ts` | 60 s polling loop, fingerprint-based change detection, notification emission. Writes `last_polled_at` per PR so callers can run delta polls on the next tick |
 | `prSummaryService.ts` | AI PR summary generator; caches `PrAiSummary` per `(prId, headSha)` in `pull_request_ai_summaries` so pushes invalidate the cache |
 | `queueLandingService.ts` | Merge queue state machine (`ALLOWED_TRANSITIONS`), landing loop, auto-resolve on conflicts |
@@ -41,7 +42,7 @@ Renderer components (`apps/desktop/src/renderer/components/prs/`):
 | `tabs/NormalTab.tsx` | Normal PR list |
 | `tabs/GitHubTab.tsx` | Unified repo + external PR browser with label filters, CI badges, review indicators |
 | `tabs/QueueTab.tsx` | Merge queue UI |
-| `tabs/IntegrationTab.tsx` | Integration (merge-plan) proposals and execution |
+| `tabs/IntegrationTab.tsx` | Integration (merge-plan) proposals and execution, including merge-into-lane selection, apply-and-resimulate, and adopted-lane cleanup messaging |
 | `tabs/RebaseTab.tsx` | Lane rebase needs (base + queue + PR target) and attention items |
 | `tabs/WorkflowsTab.tsx` | Container for queue/integration/rebase sub-tabs |
 | `tabs/queueWorkflowModel.ts` | Pure model for queue tab rendering (active/history bucketing, guidance computation) |
@@ -55,7 +56,7 @@ Renderer components (`apps/desktop/src/renderer/components/prs/`):
 | `shared/PrDeploymentCard.tsx` | Deployment row used in the status rail and on the timeline |
 | `shared/PrConvergencePanel.tsx` | Auto-converge slide-over panel with issue inventory, agent session embed, pipeline settings |
 | `shared/PrIssueResolverModal.tsx` | Launch issue resolution (checks/comments/both scopes) |
-| `shared/PrAiResolverPanel.tsx` | AI rebase launch controls in Rebase tab |
+| `shared/PrAiResolverPanel.tsx` | AI resolver launch controls in Rebase/Integration flows, including additional-instructions passthrough |
 | `shared/PrPipelineSettings.tsx` | Auto-converge pipeline settings per PR |
 | `shared/PrLaneCleanupBanner.tsx` | Post-merge cleanup banner on the PR detail |
 | `shared/IntegrationPrContextPanel.tsx` | Integration PR context panel |
@@ -67,6 +68,14 @@ Renderer components (`apps/desktop/src/renderer/components/prs/`):
 | `ConflictFilePreview.tsx` | File-level conflict marker preview |
 | `PrRebaseBanner.tsx` | Rebase banner on a PR |
 | `PrConflictBadge.tsx` | Lightweight conflict chip |
+
+Shared contracts:
+
+| File | Responsibility |
+|------|---------------|
+| `apps/desktop/src/shared/types/prs.ts` | PR DTOs and integration proposal contracts, including `preferredIntegrationLaneId`, `mergeIntoHeadSha`, `integrationLaneOrigin`, and `additionalInstructions` fields. |
+| `apps/desktop/src/shared/types/conflicts.ts` | Conflict resolver DTOs; `PrepareResolverSessionArgs.additionalInstructions` is appended to generated resolver prompts. |
+| `apps/desktop/src/shared/ipc.ts` / `apps/desktop/src/preload/preload.ts` | PR IPC constants and renderer bridge for proposal simulation, update, commit, resolver, and cleanup flows. |
 
 ## Core model
 
@@ -118,6 +127,24 @@ Selected channels exposed through `preload.ts`:
 - `ade.prs.convergenceStateGet`, `ade.prs.convergenceStateSave`, `ade.prs.convergenceStateDelete`
 - `ade.prs.getGitHubSnapshot` — merged repo + external PR snapshot
 - `ade.prs.simulateIntegration`, `ade.prs.createIntegrationLaneForProposal`, `ade.prs.commitIntegration`, `ade.prs.cleanupIntegrationWorkflow`
+
+Integration merge-into flow uses these existing channels with widened
+DTOs:
+
+- `ade.prs.simulateIntegration` accepts `mergeIntoLaneId`. Pairwise
+  child-vs-child checks still use `baseBranch`, while the sequential
+  preview starts at the selected lane's current HEAD and returns
+  `mergeIntoHeadSha`.
+- `ade.prs.updateIntegrationProposal` can set
+  `preferredIntegrationLaneId`, store `mergeIntoHeadSha`, and clear an
+  existing integration binding when the merge target changes.
+- `ade.prs.createIntegrationLaneForProposal` and
+  `ade.prs.commitIntegration` accept `allowDirtyWorktree`; commit can
+  also receive `preferredIntegrationLaneId` to override the stored
+  preference.
+- `ade.prs.aiResolutionStart` and issue-resolution launch args accept
+  `additionalInstructions`, which are appended to the generated
+  resolver prompt after the structured context.
 
 ## GitHub data-loading model
 
@@ -251,6 +278,32 @@ type ConvergenceRuntimeState = {
 The auto-converge poller waits for CI to finish and comments to
 stabilize (2 consecutive polls with same count) before starting the
 next round.
+
+## Integration merge target adoption
+
+An integration proposal can target an existing lane instead of always
+creating a fresh `integration-*` child lane:
+
+1. The user selects a merge target lane in `IntegrationTab` or
+   `CreatePrModal`. The selected lane cannot be one of the proposal's
+   source lanes and cannot be the primary lane.
+2. Simulation persists `preferredIntegrationLaneId` plus the selected
+   lane's `mergeIntoHeadSha`. This lets the UI warn when the adopted
+   lane has drifted since the last preview.
+3. Pairwise conflict checks between source lanes remain anchored to the
+   proposal's `baseBranch`; additional merge-tree checks compare the
+   adopted lane HEAD against each source lane so existing work on the
+   target lane is represented.
+4. Creating/committing the proposal either reuses the adopted lane
+   (`integrationLaneOrigin: "adopted"`) or creates an ADE-owned lane
+   (`"ade-created"`). Cleanup messaging follows that origin: deleting a
+   proposal keeps adopted lanes by default.
+
+The corresponding database columns are
+`integration_proposals.preferred_integration_lane_id` and
+`integration_proposals.merge_into_head_sha`. iOS mirrors both in its
+bootstrap schema and `IntegrationProposal` model so synced PR workflow
+cards can display the same state.
 
 ## Timeline + Rails overview (PRs tab redesign)
 

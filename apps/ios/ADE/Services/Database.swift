@@ -199,6 +199,8 @@ final class DatabaseService {
     let completedAt: String?
     let cleanupDeclinedAt: String?
     let cleanupCompletedAt: String?
+    let preferredIntegrationLaneId: String?
+    let mergeIntoHeadSha: String?
     let resolutionStateJson: String?
   }
 
@@ -1853,6 +1855,8 @@ final class DatabaseService {
              completed_at,
              cleanup_declined_at,
              cleanup_completed_at,
+             preferred_integration_lane_id,
+             merge_into_head_sha,
              resolution_state_json
         from integration_proposals
        where project_id = ?
@@ -1886,7 +1890,9 @@ final class DatabaseService {
         completedAt: stringValue(statement, index: 20),
         cleanupDeclinedAt: stringValue(statement, index: 21),
         cleanupCompletedAt: stringValue(statement, index: 22),
-        resolutionStateJson: stringValue(statement, index: 23)
+        preferredIntegrationLaneId: stringValue(statement, index: 23),
+        mergeIntoHeadSha: stringValue(statement, index: 24),
+        resolutionStateJson: stringValue(statement, index: 25)
       )
     }).map { row in
       IntegrationProposal(
@@ -1904,6 +1910,10 @@ final class DatabaseService {
         integrationLaneName: row.integrationLaneName,
         status: row.status,
         integrationLaneId: row.integrationLaneId,
+        integrationLaneOrigin: integrationLaneOrigin(
+          integrationLaneId: row.integrationLaneId,
+          preferredIntegrationLaneId: row.preferredIntegrationLaneId
+        ),
         linkedGroupId: row.linkedGroupId,
         linkedPrId: row.linkedPrId,
         workflowDisplayState: row.workflowDisplayState,
@@ -1913,9 +1923,21 @@ final class DatabaseService {
         completedAt: row.completedAt,
         cleanupDeclinedAt: row.cleanupDeclinedAt,
         cleanupCompletedAt: row.cleanupCompletedAt,
+        preferredIntegrationLaneId: row.preferredIntegrationLaneId,
+        mergeIntoHeadSha: row.mergeIntoHeadSha,
         resolutionState: decodeJson(row.resolutionStateJson, as: IntegrationResolutionState.self)
       )
     }
+  }
+
+  private func integrationLaneOrigin(
+    integrationLaneId: String?,
+    preferredIntegrationLaneId: String?
+  ) -> String? {
+    let integration = integrationLaneId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    guard !integration.isEmpty else { return nil }
+    let preferred = preferredIntegrationLaneId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    return preferred == integration ? "adopted" : "ade-created"
   }
 
   func fetchQueueStates() -> [QueueLandingState] {
@@ -2212,6 +2234,8 @@ final class DatabaseService {
     try ensureColumn(tableName: "integration_proposals", columnName: "completed_at", definition: "text")
     try ensureColumn(tableName: "integration_proposals", columnName: "cleanup_declined_at", definition: "text")
     try ensureColumn(tableName: "integration_proposals", columnName: "cleanup_completed_at", definition: "text")
+    try ensureColumn(tableName: "integration_proposals", columnName: "preferred_integration_lane_id", definition: "text")
+    try ensureColumn(tableName: "integration_proposals", columnName: "merge_into_head_sha", definition: "text")
 
     try ensureColumn(tableName: "queue_landing_state", columnName: "config_json", definition: "text not null default '{}'")
     try ensureColumn(tableName: "queue_landing_state", columnName: "active_pr_id", definition: "text")
@@ -2337,7 +2361,9 @@ final class DatabaseService {
         merged_at text,
         completed_at text,
         cleanup_declined_at text,
-        cleanup_completed_at text
+        cleanup_completed_at text,
+        preferred_integration_lane_id text,
+        merge_into_head_sha text
       )
     """)
     try exec("create index if not exists idx_integration_proposals_project on integration_proposals(project_id)")

@@ -242,6 +242,7 @@ import type {
   AgentChatApproveArgs,
   AgentChatCreateArgs,
   AgentChatDeleteArgs,
+  AgentChatSuggestLaneNameArgs,
   AgentChatDisposeArgs,
   AgentChatEventEnvelope,
   AgentChatGetSummaryArgs,
@@ -251,9 +252,12 @@ import type {
   AgentChatListArgs,
   AgentChatModelInfo,
   AgentChatModelsArgs,
+  AgentChatParallelLaunchState,
+  AgentChatParallelLaunchStateArgs,
   AgentChatRespondToInputArgs,
   AgentChatResumeArgs,
   AgentChatSendArgs,
+  AgentChatSetParallelLaunchStateArgs,
   AgentChatSlashCommand,
   AgentChatSlashCommandsArgs,
   AgentChatFileSearchArgs,
@@ -1557,6 +1561,14 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.agentChatGetSummary, args),
     create: async (args: AgentChatCreateArgs): Promise<AgentChatSession> =>
       ipcRenderer.invoke(IPC.agentChatCreate, args),
+    suggestLaneName: async (args: AgentChatSuggestLaneNameArgs): Promise<string> =>
+      ipcRenderer.invoke(IPC.agentChatSuggestLaneName, args),
+    parallelLaunchState: {
+      get: async (args: AgentChatParallelLaunchStateArgs): Promise<AgentChatParallelLaunchState | null> =>
+        ipcRenderer.invoke(IPC.agentChatParallelLaunchStateGet, args),
+      set: async (args: AgentChatSetParallelLaunchStateArgs): Promise<void> =>
+        ipcRenderer.invoke(IPC.agentChatParallelLaunchStateSet, args),
+    },
     handoff: async (
       args: AgentChatHandoffArgs,
     ): Promise<AgentChatHandoffResult> =>

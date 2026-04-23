@@ -184,10 +184,14 @@ import type {
   AgentChatListArgs,
   AgentChatModelInfo,
   AgentChatModelsArgs,
+  AgentChatParallelLaunchState,
+  AgentChatParallelLaunchStateArgs,
   AgentChatPermissionMode,
   AgentChatRespondToInputArgs,
   AgentChatResumeArgs,
   AgentChatSendArgs,
+  AgentChatSetParallelLaunchStateArgs,
+  AgentChatSuggestLaneNameArgs,
   AgentChatSession,
   AgentChatSessionSummary,
   AgentChatSubagentSnapshot,
@@ -4034,6 +4038,92 @@ export function registerIpc({
     return { sessionId: record.sessionId.trim(), steerId: record.steerId.trim(), text: record.text };
   };
 
+  const parseAgentChatSuggestLaneNameArgs = (value: unknown): AgentChatSuggestLaneNameArgs => {
+    const record = requireRecord(value, "Agent chat suggest lane name request");
+    if (typeof record.prompt !== "string" || !record.prompt.trim()) {
+      throw new Error("Agent chat suggest lane name prompt must be a non-empty string");
+    }
+    if (typeof record.modelId !== "string" || !record.modelId.trim()) {
+      throw new Error("Agent chat suggest lane name model ID must be a non-empty string");
+    }
+    if (typeof record.laneId !== "string" || !record.laneId.trim()) {
+      throw new Error("Agent chat suggest lane name lane ID must be a non-empty string");
+    }
+    return {
+      prompt: record.prompt.trim(),
+      modelId: record.modelId.trim(),
+      laneId: record.laneId.trim(),
+    };
+  };
+
+  const parseAgentChatParallelLaunchStateArgs = (value: unknown): AgentChatParallelLaunchStateArgs => {
+    const record = requireRecord(value, "Agent chat parallel launch state request");
+    if (typeof record.projectRoot !== "string" || !record.projectRoot.trim()) {
+      throw new Error("Agent chat parallel launch state project root must be a non-empty string");
+    }
+    if (typeof record.parentLaneId !== "string" || !record.parentLaneId.trim()) {
+      throw new Error("Agent chat parallel launch state parent lane ID must be a non-empty string");
+    }
+    return {
+      projectRoot: record.projectRoot.trim(),
+      parentLaneId: record.parentLaneId.trim(),
+    };
+  };
+
+  const sanitizeParallelLaunchLaneIds = (value: unknown): string[] => {
+    if (!Array.isArray(value)) return [];
+    return Array.from(new Set(
+      value
+        .map((entry) => (typeof entry === "string" ? entry.trim() : ""))
+        .filter(Boolean),
+    ));
+  };
+
+  const normalizeAgentChatParallelLaunchState = (
+    value: unknown,
+    parentLaneIdFallback: string,
+  ): AgentChatParallelLaunchState | null => {
+    if (!value || typeof value !== "object") return null;
+    const parsed = value as {
+      parentLaneId?: unknown;
+      createdLaneIds?: unknown;
+      sentLaneIds?: unknown;
+      status?: unknown;
+      updatedAt?: unknown;
+      lastError?: unknown;
+    };
+    const parentLaneId = typeof parsed.parentLaneId === "string" && parsed.parentLaneId.trim().length
+      ? parsed.parentLaneId.trim()
+      : parentLaneIdFallback;
+    const createdLaneIds = sanitizeParallelLaunchLaneIds(parsed.createdLaneIds);
+    if (createdLaneIds.length === 0) return null;
+    const sentLaneIds = sanitizeParallelLaunchLaneIds(parsed.sentLaneIds)
+      .filter((laneId) => createdLaneIds.includes(laneId));
+    const status = parsed.status === "creating_lanes"
+      || parsed.status === "sending"
+      || parsed.status === "completed"
+      || parsed.status === "cleanup_pending"
+      ? parsed.status
+      : sentLaneIds.length >= createdLaneIds.length
+        ? "completed"
+        : "creating_lanes";
+    return {
+      parentLaneId,
+      createdLaneIds,
+      sentLaneIds,
+      status,
+      updatedAt: typeof parsed.updatedAt === "string" && parsed.updatedAt.trim().length
+        ? parsed.updatedAt.trim()
+        : new Date(0).toISOString(),
+      lastError: typeof parsed.lastError === "string" && parsed.lastError.trim().length
+        ? parsed.lastError.trim()
+        : null,
+    };
+  };
+
+  const agentChatParallelLaunchStateKey = (projectRoot: string, parentLaneId: string): string =>
+    `agent-chat-parallel-launch:${projectRoot}:${parentLaneId}`;
+
   ipcMain.handle(IPC.lanesOAuthGetStatus, async () => {
     const ctx = getCtx();
     return ctx.oauthRedirectService?.getStatus() ?? {
@@ -4269,6 +4359,29 @@ export function registerIpc({
   ipcMain.handle(IPC.agentChatCreate, async (_event, arg: AgentChatCreateArgs): Promise<AgentChatSession> => {
     const ctx = getCtx();
     return await ctx.agentChatService.createSession(arg);
+  });
+
+  ipcMain.handle(IPC.agentChatSuggestLaneName, async (_event, arg: unknown): Promise<string> => {
+    const ctx = getCtx();
+    return await ctx.agentChatService.suggestLaneNameFromPrompt(parseAgentChatSuggestLaneNameArgs(arg));
+  });
+
+  ipcMain.handle(IPC.agentChatParallelLaunchStateGet, async (_event, arg: unknown): Promise<AgentChatParallelLaunchState | null> => {
+    const ctx = getCtx();
+    const { projectRoot, parentLaneId } = parseAgentChatParallelLaunchStateArgs(arg);
+    const key = agentChatParallelLaunchStateKey(projectRoot, parentLaneId);
+    return normalizeAgentChatParallelLaunchState(
+      ctx.db.getJson<AgentChatParallelLaunchState | null>(key),
+      parentLaneId,
+    );
+  });
+
+  ipcMain.handle(IPC.agentChatParallelLaunchStateSet, async (_event, arg: AgentChatSetParallelLaunchStateArgs): Promise<void> => {
+    const ctx = getCtx();
+    const { projectRoot, parentLaneId } = parseAgentChatParallelLaunchStateArgs(arg);
+    const key = agentChatParallelLaunchStateKey(projectRoot, parentLaneId);
+    const nextState = normalizeAgentChatParallelLaunchState(arg?.state ?? null, parentLaneId);
+    ctx.db.setJson(key, nextState);
   });
 
   ipcMain.handle(IPC.agentChatHandoff, async (_event, arg: AgentChatHandoffArgs): Promise<AgentChatHandoffResult> => {
@@ -5301,6 +5414,9 @@ export function registerIpc({
     const reasoning = typeof arg?.reasoning === "string" && arg.reasoning.trim().length > 0
       ? arg.reasoning.trim()
       : null;
+    const additionalInstructions = typeof arg?.additionalInstructions === "string" && arg.additionalInstructions.trim().length > 0
+      ? arg.additionalInstructions.trim()
+      : null;
     let runId = "";
 
     if (!model) {
@@ -5357,15 +5473,11 @@ export function registerIpc({
         model,
         reasoningEffort: reasoning,
         permissionMode,
-        originSurface: context.sourceTab === "integration"
-          ? "integration"
-          : context.sourceTab === "rebase"
-            ? "rebase"
-            : context.sourceTab === "queue"
-              ? "manual"
-            : context.sourceTab === "normal"
-              ? "manual"
-              : "manual",
+        additionalInstructions,
+        originSurface:
+          context.sourceTab === "integration" ? "integration"
+          : context.sourceTab === "rebase" ? "rebase"
+          : "manual",
       });
       runId = prep.runId;
       if (prep.status === "blocked") {

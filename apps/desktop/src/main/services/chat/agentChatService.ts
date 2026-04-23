@@ -100,6 +100,7 @@ import type {
   AgentChatSteerArgs,
   AgentChatSteerResult,
   AgentChatSendArgs,
+  AgentChatSuggestLaneNameArgs,
   AgentChatCursorConfigOption,
   AgentChatCursorConfigValue,
   AgentChatCursorModeSnapshot,
@@ -167,6 +168,7 @@ import {
   openCodeEventStream,
   refreshOpenCodeSessionToolSelection,
   resolveOpenCodeModelSelection,
+  runOpenCodeTextPrompt,
   startOpenCodeSession,
   type DiscoveredLocalModelEntry,
   type OpenCodeSessionHandle,
@@ -915,6 +917,13 @@ Return only the title text.
 - No quotes.
 - No emoji.
 - No trailing punctuation.`;
+
+const LANE_NAME_FROM_PROMPT_SYSTEM_PROMPT = `You name git worktree lanes for a software project.
+Return only the base name text (no model suffixes).
+- Use 2 to 5 words, lowercase except proper nouns if needed.
+- Slug-friendly: letters, numbers, spaces, and hyphens only (no slashes).
+- Describe the task or feature from the user's message.
+- No quotes, no emoji, no trailing punctuation.`;
 const CODEX_REASONING_EFFORTS: Array<{ effort: string; description: string }> = [
   { effort: "low", description: "Fastest turn-around with shallow reasoning." },
   { effort: "medium", description: "Balanced reasoning depth and speed." },
@@ -1227,6 +1236,35 @@ function sanitizeAutoTitle(raw: string, maxChars = AUTO_TITLE_MAX_CHARS): string
   if (/^(session closed|chat completed)\b/u.test(collapsed)) return null;
 
   return normalized.length > maxChars ? normalized.slice(0, maxChars).trimEnd() : normalized;
+}
+
+function fallbackLaneNameFromPrompt(prompt: string): string {
+  const collapsed = prompt.replace(/\s+/g, " ");
+  if (!collapsed.length) return "parallel-task";
+  const words = collapsed.split(/\s+/).filter(Boolean).slice(0, 4);
+  const slug = words
+    .join("-")
+    .toLowerCase()
+    .replace(/[^a-z0-9-]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "");
+  return slug.length ? slug.slice(0, 48) : "parallel-task";
+}
+
+function normalizeSuggestedLaneName(raw: string): string | null {
+  const sanitized = sanitizeAutoTitle(raw.trim(), 56);
+  if (!sanitized) return null;
+
+  const normalized = sanitized
+    .toLowerCase()
+    .replace(/[^a-z0-9\s-]/g, "")
+    .trim()
+    .replace(/\s+/g, "-")
+    .replace(/-+/g, "-")
+    .slice(0, 60)
+    .replace(/^-+|-+$/g, "");
+
+  return normalized.length > 0 ? normalized : null;
 }
 
 function defaultChatSessionTitle(provider: AgentChatProvider): string {
@@ -4680,6 +4718,71 @@ export function createAgentChatService(args: {
       summaryEnabled,
       summaryModelId,
     };
+  };
+
+  const suggestLaneNameFromPrompt = async (args: AgentChatSuggestLaneNameArgs): Promise<string> => {
+    const prompt = String(args.prompt ?? "").trim();
+    const requestedModelId = String(args.modelId ?? "").trim();
+    const sourceLaneId = String(args.laneId ?? "").trim();
+    const fallback = () => fallbackLaneNameFromPrompt(prompt);
+
+    if (!prompt.length) {
+      return fallback();
+    }
+
+    let cwd = projectRoot;
+    try {
+      ({ laneWorktreePath: cwd } = resolveLaneLaunchContext({
+        laneService,
+        laneId: sourceLaneId,
+        purpose: "name a lane from prompt",
+      }));
+    } catch {
+      cwd = projectRoot;
+    }
+
+    try {
+      const auth = await detectAuth();
+      const availableModels = getRegistryModels(auth).filter((descriptor) => !descriptor.deprecated);
+      if (!availableModels.length) return fallback();
+
+      const config = resolveChatConfig();
+      const preferredModelId =
+        [
+          requestedModelId,
+          config.titleModelId,
+          DEFAULT_AUTO_TITLE_MODEL_ID,
+          "anthropic/claude-haiku-4-5",
+          "openai/gpt-5.4-mini",
+          "openai/gpt-5.2",
+          "openai/gpt-5.4",
+          availableModels[0]?.id,
+        ].find((candidate) => {
+          const modelId = typeof candidate === "string" ? candidate.trim() : "";
+          return modelId.length > 0 && availableModels.some((descriptor) => descriptor.id === modelId);
+        }) ?? null;
+
+      if (!preferredModelId) return fallback();
+
+      const descriptor = getModelById(preferredModelId);
+      if (!descriptor) return fallback();
+
+      const result = await runOpenCodeTextPrompt({
+        directory: cwd,
+        title: "ADE lane name from prompt",
+        modelDescriptor: descriptor,
+        system: LANE_NAME_FROM_PROMPT_SYSTEM_PROMPT,
+        prompt: `User message to parallelize across models:\n${prompt.slice(0, 2000)}`,
+        projectConfig: projectConfigService.get().effective,
+      });
+      return normalizeSuggestedLaneName(result.text) ?? fallback();
+    } catch (error) {
+      logger.warn("agent_chat.suggest_lane_name_failed", {
+        modelId: requestedModelId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return fallback();
+    }
   };
 
   const computeHeadShaBestEffort = async (laneId: string): Promise<string | null> => {
@@ -10726,7 +10829,8 @@ export function createAgentChatService(args: {
     reasoningEffort,
     executionMode,
     interactionMode,
-  }: AgentChatSendArgs): PreparedSendMessage | null => {
+    allowActiveSession = false,
+  }: AgentChatSendArgs & { allowActiveSession?: boolean }): PreparedSendMessage | null => {
     const trimmed = text.trim();
     if (!trimmed.length) return null;
     const slashCommand = extractLeadingSlashCommand(trimmed);
@@ -10783,7 +10887,7 @@ export function createAgentChatService(args: {
       refreshReconstructionContext(managed);
     }
 
-    if (managed.session.provider === "cursor" && managed.session.status === "active") {
+    if (managed.session.provider === "cursor" && managed.session.status === "active" && !allowActiveSession) {
       throw new Error("Turn is already active.");
     }
 
@@ -12050,22 +12154,36 @@ export function createAgentChatService(args: {
     }
 
     const managed = ensureManagedSession(sessionId);
-    if (attachments.length && managed.session.provider !== "claude" && managed.session.provider !== "codex") {
-      throw new Error("Attachments are only supported for Claude and Codex follow-up messages right now.");
-    }
 
     // OpenCode runtime steer
     if (managed.runtime?.kind === "opencode") {
       const runtime = managed.runtime;
       if (runtime.busy) {
-        enqueueSteerOrDrop(managed, runtime, sessionId, steerId, trimmed);
+        const preparedSteer = prepareSendMessage({
+          sessionId,
+          text: trimmed,
+          displayText: trimmed,
+          attachments,
+        });
+        if (!preparedSteer) {
+          return { steerId, queued: false };
+        }
+        enqueueSteerOrDrop(
+          managed,
+          runtime,
+          sessionId,
+          steerId,
+          preparedSteer.visibleText,
+          preparedSteer.attachments,
+          preparedSteer.resolvedAttachments,
+        );
         return { steerId, queued: true };
       }
       const preparedSteer = prepareSendMessage({
         sessionId,
         text: trimmed,
         displayText: trimmed,
-        attachments: [],
+        attachments,
       });
       if (!preparedSteer) {
         return { steerId, queued: false };
@@ -12077,6 +12195,16 @@ export function createAgentChatService(args: {
     if (managed.session.provider === "cursor") {
       if (managed.runtime?.kind === "cursor" && managed.runtime.busy) {
         const rt = managed.runtime;
+        const preparedSteer = prepareSendMessage({
+          sessionId,
+          text: trimmed,
+          displayText: trimmed,
+          attachments,
+          allowActiveSession: true,
+        });
+        if (!preparedSteer) {
+          return { steerId, queued: false };
+        }
         if (rt.pendingSteers.length >= MAX_PENDING_STEERS) {
           logger.warn("agent_chat.steer_queue_full", { sessionId, queueSize: rt.pendingSteers.length });
           emitChatEvent(managed, {
@@ -12087,10 +12215,16 @@ export function createAgentChatService(args: {
           });
           return { steerId, queued: false };
         }
-        rt.pendingSteers.push({ steerId, text: trimmed, attachments: [], resolvedAttachments: [] });
+        rt.pendingSteers.push({
+          steerId,
+          text: preparedSteer.visibleText,
+          attachments: preparedSteer.attachments,
+          resolvedAttachments: preparedSteer.resolvedAttachments,
+        });
         emitChatEvent(managed, {
           type: "user_message",
-          text: trimmed,
+          text: preparedSteer.visibleText,
+          ...(preparedSteer.attachments.length ? { attachments: preparedSteer.attachments } : {}),
           steerId,
           turnId: rt.activeTurnId ?? undefined,
           deliveryState: "queued",
@@ -12109,7 +12243,7 @@ export function createAgentChatService(args: {
         sessionId,
         text: trimmed,
         displayText: trimmed,
-        attachments: [],
+        attachments,
       });
       if (!preparedSteer) {
         return { steerId, queued: false };
@@ -14066,6 +14200,7 @@ export function createAgentChatService(args: {
 
   return {
     createSession,
+    suggestLaneNameFromPrompt,
     handoffSession,
     sendMessage,
     runSessionTurn,

@@ -372,6 +372,30 @@ describe("AgentChatComposer", () => {
     expect((screen.getByTitle("Upload file from disk") as HTMLButtonElement).disabled).toBe(false);
   });
 
+  it("allows attachments while steering an active Cursor turn", () => {
+    renderComposer({
+      turnActive: true,
+      sessionProvider: "cursor",
+      modelId: "cursor/auto",
+      availableModelIds: ["cursor/auto"],
+    });
+
+    expect((screen.getByTitle("Attach files or images (@)") as HTMLButtonElement).disabled).toBe(false);
+    expect((screen.getByTitle("Upload file from disk") as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it("allows attachments while steering an active OpenCode turn", () => {
+    renderComposer({
+      turnActive: true,
+      sessionProvider: "opencode",
+      modelId: "opencode/openai/gpt-5.4",
+      availableModelIds: ["opencode/openai/gpt-5.4"],
+    });
+
+    expect((screen.getByTitle("Attach files or images (@)") as HTMLButtonElement).disabled).toBe(false);
+    expect((screen.getByTitle("Upload file from disk") as HTMLButtonElement).disabled).toBe(false);
+  });
+
   it("shows inline proof toggle and wires callback", () => {
     const onToggleProof = vi.fn();
     renderComposer({
@@ -455,6 +479,41 @@ describe("AgentChatComposer", () => {
     view.rerender(<AgentChatComposer {...props} isActive shouldAutofocus={false} />);
 
     expect(document.activeElement).not.toBe(textarea);
+  });
+
+  it("shows the parallel launch entry point when the draft surface enables it", () => {
+    const onParallelChatModeChange = vi.fn();
+    renderComposer({
+      turnActive: false,
+      draft: "",
+      showParallelChatToggle: true,
+      onParallelChatModeChange,
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: /Parallel models/i }));
+
+    expect(onParallelChatModeChange).toHaveBeenCalledWith(true);
+  });
+
+  it("disables parallel controls while a parallel launch is running", () => {
+    renderComposer({
+      turnActive: false,
+      draft: "Ship it",
+      parallelChatMode: true,
+      parallelLaunchBusy: true,
+      parallelLaunchStatus: "Creating child lanes…",
+      parallelModelSlots: [
+        { modelId: "openai/gpt-5.4-codex", reasoningEffort: "high" },
+        { modelId: "anthropic/claude-sonnet-4-6", reasoningEffort: "medium" },
+        { modelId: "openai/gpt-5.4-mini", reasoningEffort: "low" },
+      ],
+    });
+
+    expect((screen.getByRole("button", { name: "Single model" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "Add model" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getAllByRole("button", { name: "Configure" })[0] as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getAllByRole("button", { name: "Remove" })[0] as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByText("Creating child lanes…")).toBeTruthy();
   });
 
 });

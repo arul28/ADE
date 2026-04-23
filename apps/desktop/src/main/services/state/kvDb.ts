@@ -38,6 +38,7 @@ export type AdeDbSyncApi = {
  *   "dock:<projectId>"            -> DockLayout
  *   "file-tree:<projectId>"       -> unknown (file tree state)
  *   "graph-state:<projectId>"     -> GraphPersistedState
+ *   "agent-chat-parallel-launch:<projectRoot>:<laneId>" -> AgentChatParallelLaunchState
  *   "auto-rebase:<laneId>"        -> StoredStatus
  *   "rebase-suggestion:<laneId>"  -> StoredSuggestionState
  */
@@ -1355,6 +1356,8 @@ function migrate(db: MigrationDb) {
   try { db.run("alter table integration_proposals add column completed_at text"); } catch {}
   try { db.run("alter table integration_proposals add column cleanup_declined_at text"); } catch {}
   try { db.run("alter table integration_proposals add column cleanup_completed_at text"); } catch {}
+  try { db.run("alter table integration_proposals add column preferred_integration_lane_id text"); } catch {}
+  try { db.run("alter table integration_proposals add column merge_into_head_sha text"); } catch {}
 
   // Queue landing state table (crash recovery for sequential landing)
   db.run(`

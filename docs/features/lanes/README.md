@@ -33,6 +33,7 @@ Renderer components:
 | File | Responsibility |
 |------|---------------|
 | `renderer/components/lanes/LanesPage.tsx` | 3-pane cockpit, tab management, dialog coordination |
+| `renderer/components/lanes/laneUtils.ts` | Pure lane list/filter helpers plus default pane trees, including the work-focused tiling tree used by parallel chat launch deep links. |
 | `renderer/components/lanes/LaneStackPane.tsx` | Stack graph sidebar, integration source chips, canvas jump |
 | `renderer/components/lanes/LaneDiffPane.tsx` | Diff viewer, per-file stage/unstage/discard |
 | `renderer/components/lanes/LaneGitActionsPane.tsx` | Commit, stash, fetch, sync, push, recent commits |
@@ -44,6 +45,7 @@ Renderer components:
 | `renderer/components/lanes/MonacoDiffView.tsx` | Monaco-based side-by-side file diff |
 | `renderer/components/run/LaneRuntimeBar.tsx` | Compact lane runtime status bar (health, preview, port, proxy, oauth) |
 | `renderer/components/run/RunPage.tsx`, `RunNetworkPanel.tsx` | Runtime dashboards that consume lane runtime services |
+| `renderer/components/ui/PaneTilingLayout.tsx` | Persisted split-pane layout engine for lane panes. Validates saved pane trees against expected pane ids and falls back to the supplied tree when the saved layout is stale. |
 | `renderer/components/settings/ProxyAndPreviewSection.tsx`, `DiagnosticsDashboardSection.tsx`, `LaneTemplatesSection.tsx`, `LaneBehaviorSection.tsx` | Settings-side management UIs |
 
 Shared code:
@@ -217,6 +219,15 @@ open lanes; primary lanes render with a home icon.
   proxy/preview status, OAuth callback URL, active processes. It
   parallelizes six IPC calls and debounces via an in-flight sequence
   counter to ignore out-of-order responses.
+- Multi-lane deep links can pass `laneIds=<id,id,...>` and
+  `inspectorTab=<tab>`. `LanesPage` waits until all referenced lanes
+  exist before consuming the link, selects the first lane, opens the
+  lane set side-by-side, and clears pinned lanes for that focused view.
+  This is used after parallel chat launch to open every newly-created
+  model lane in the Work inspector.
+- Parallel chat launch links use `LANES_TILING_WORK_FOCUS_TREE` and a
+  `layoutId` suffix so newly-created comparison lanes emphasize the
+  Work pane without overwriting the user's normal lane cockpit layout.
 
 ## Gotchas and fragile areas
 

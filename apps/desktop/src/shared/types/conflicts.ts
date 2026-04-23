@@ -408,6 +408,7 @@ export type PrepareResolverSessionArgs = {
   originMissionId?: string | null;
   originRunId?: string | null;
   originLabel?: string | null;
+  additionalInstructions?: string | null;
 };
 
 export type PrepareResolverSessionResult = {

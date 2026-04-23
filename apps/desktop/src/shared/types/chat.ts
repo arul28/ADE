@@ -78,6 +78,9 @@ export type AgentChatFileRef = {
   type: "file" | "image";
 };
 
+/** Max attachments per parallel multi-lane launch (same refs sent to each child session). */
+export const PARALLEL_CHAT_MAX_ATTACHMENTS = 12;
+
 /** Infer whether a file path points to an image or a generic file. */
 export function inferAttachmentType(
   filePath: string,
@@ -618,6 +621,39 @@ export type AgentChatHandoffResult = {
 export type AgentChatListArgs = {
   laneId?: string;
   includeAutomation?: boolean;
+};
+
+export type AgentChatSuggestLaneNameArgs = {
+  /** Lane the user is launching from (worktree path for the naming model call). */
+  laneId: string;
+  /** User prompt for the parallel chat launch (used to derive a short lane name prefix). */
+  prompt: string;
+  /** Registry model ID used to run the naming call (e.g. first selected model). */
+  modelId: string;
+};
+
+export type AgentChatParallelLaunchStateStatus =
+  | "creating_lanes"
+  | "sending"
+  | "completed"
+  | "cleanup_pending";
+
+export type AgentChatParallelLaunchState = {
+  parentLaneId: string;
+  createdLaneIds: string[];
+  sentLaneIds: string[];
+  status: AgentChatParallelLaunchStateStatus;
+  updatedAt: string;
+  lastError?: string | null;
+};
+
+export type AgentChatParallelLaunchStateArgs = {
+  projectRoot: string;
+  parentLaneId: string;
+};
+
+export type AgentChatSetParallelLaunchStateArgs = AgentChatParallelLaunchStateArgs & {
+  state: AgentChatParallelLaunchState | null;
 };
 
 export type AgentChatGetSummaryArgs = {

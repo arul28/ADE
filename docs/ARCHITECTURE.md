@@ -147,12 +147,13 @@ Schema bootstrap in `kvDb.ts` creates ~103 tables. Anchor tables for agents read
 | `test_suites` / `test_runs` | Declared test suites and their execution history. |
 | `missions` / `mission_runs` / `mission_steps` / `mission_step_attempts` | Mission lifecycle with runs, steps, attempts. |
 | `pull_requests` / `pr_review_threads` / `pr_checks` | GitHub PR projections with queue and stack metadata. |
+| `integration_proposals` | PR merge-plan simulations. Stores source lanes, pairwise results, sequential resolution state, optional adopted merge target (`preferred_integration_lane_id`), and merge-target drift snapshot (`merge_into_head_sha`). |
 | `unified_memories` + `unified_memories_fts` + `unified_memory_embeddings` | Primary memory store + FTS4 index + vector embeddings. |
 | `memory_procedure_*`, `memory_skill_index`, `knowledge_capture_ledger` | Procedural memories and ingestion dedupe. |
 | `cto_core_memory_state` | Per-project CTO core-memory blob. |
 | `computer_use_artifacts` + `computer_use_artifact_links` | Canonical proof-artifact records and cross-domain ownership. |
 | `devices` + `sync_cluster_state` | Device registry and singleton host-authority row (host is `brain_device_id` internally; legacy naming). |
-| `kv` | Generic key-value store for UI layout, config trust hashes, misc settings. |
+| `kv` | Generic key-value store for UI layout, config trust hashes, misc settings, and short-lived recovery records such as `agent-chat-parallel-launch:<projectRoot>:<laneId>`. |
 
 Types for these tables are split into domain modules under `apps/desktop/src/shared/types/`. The barrel `index.ts` re-exports `core`, `models`, `git`, `lanes`, `conflicts`, `prs`, `files`, `sessions`, `chat`, `missions`, `orchestrator`, `config`, `automations`, `packs`, `budget`, `usage`, and more. Full schema coverage lives in [`docs/architecture/DATA_MODEL.md`](../docs/architecture/DATA_MODEL.md).
 
@@ -322,7 +323,7 @@ ade.memory.*                 # memory CRUD, search, health, embeddings
 ade.missions.* / ade.orchestrator.*
 ade.cto.*                    # identity, core memory, agent roster, Linear
 ade.sessions.*               # terminal session CRUD
-ade.chat.*                   # agent chat sessions
+ade.agentChat.*              # agent chat sessions, model inventory, parallel launch state
 ade.automations.*
 ade.processes.* / ade.tests.*
 ade.config.*                 # project config get/save/trust
@@ -379,7 +380,7 @@ Every service lives under `apps/desktop/src/main/services/<domain>/`. Summary:
 | `ai/` | `aiIntegrationService.ts`, `authDetector.ts`, `providerConnectionStatus.ts`, `claudeRuntimeProbe.ts`, `modelsDevService.ts`, `compactionEngine.ts`, `tools/*` | Provider routing, detection, tool definitions, compaction. |
 | `agentTools/` | `agentToolsService.ts` | Agent tool registry metadata surfaced to the renderer. |
 | `automations/` | `automationService.ts`, `automationPlannerService.ts`, `automationIngressService.ts`, `automationSecretService.ts` | Rule lifecycle, NL → rule planner, inbound triggers, per-rule secrets. |
-| `chat/` | `agentChatService.ts`, `buildClaudeV2Message.ts`, `cursorAcp*`, `sessionRecovery.ts` | Agent chat sessions (lane-scoped + mission worker/coordinator). Builds Claude messages, manages Cursor ACP pool, recovers sessions on restart. |
+| `chat/` | `agentChatService.ts`, `buildClaudeV2Message.ts`, `cursorAcp*`, `sessionRecovery.ts` | Agent chat sessions (lane-scoped + mission worker/coordinator). Builds Claude messages, manages Cursor ACP pool, recovers sessions on restart, and derives prompt-based lane names for parallel model launches. |
 | `computerUse/` | `computerUseArtifactBrokerService.ts`, `controlPlane.ts`, `localComputerUse.ts`, `agentBrowserArtifactAdapter.ts`, `syntheticToolResult.ts` | Proof-artifact broker (ingests, owner links, review state, routing), control-plane snapshot helpers, macOS capture capability descriptor, agent-browser payload parser, and the synthetic-tool-result helper used by the Claude compaction path. `proofObserver.ts` was removed in the rebuild — there is no passive auto-ingest. |
 | `config/` | `projectConfigService.ts`, `laneOverlayMatcher.ts` | Load/save `.ade/ade.yaml` + `local.yaml`; trust enforcement; lane overlays. |
 | `conflicts/` | `conflictService.ts` | Pairwise dry-merge simulation, risk matrix, proposal generation. |
@@ -404,7 +405,7 @@ Every service lives under `apps/desktop/src/main/services/<domain>/`. Summary:
 | `orchestrator/` | See §4.5. | Deterministic mission runtime + intelligent coordinator. |
 | `processes/` | `processService.ts` | Managed-process lifecycle per lane, readiness probes, restart policies. |
 | `projects/` | `adeProjectService.ts`, `configReloadService.ts`, `projectService.ts`, `logIntegrityService.ts`, `recentProjectSummary.ts`, `projectBrowserService.ts`, `projectDetailService.ts` | Project detection + `.ade` repair/bootstrap, reload on config change, recent-project metadata. `projectBrowserService` is the in-app directory autocomplete used by the Command Palette project browser (typed-path completion, `.git` detection, home expansion, system-picker fallback); `projectDetailService` returns repo metadata (branch, dirty count, ahead/behind, last commit, README excerpt, language mix, lane count, last-opened) for the palette's preview pane. |
-| `prs/` | `prService.ts`, `prPollingService.ts`, `prSummaryService.ts`, `queueLandingService.ts`, `issueInventoryService.ts`, `prIssueResolver.ts`, `prRebaseResolver.ts`, `integrationPlanning.ts`, `integrationValidation.ts` | PR CRUD, polling (with per-PR `last_polled_at` cursor), AI summary cache keyed by `(prId, head_sha)`, stacked-queue landing, issue inventory, AI-assisted resolution, integration planning. |
+| `prs/` | `prService.ts`, `prPollingService.ts`, `prSummaryService.ts`, `queueLandingService.ts`, `issueInventoryService.ts`, `prIssueResolver.ts`, `prRebaseResolver.ts`, `integrationPlanning.ts`, `integrationValidation.ts` | PR CRUD, polling (with per-PR `last_polled_at` cursor), AI summary cache keyed by `(prId, head_sha)`, stacked-queue landing, issue inventory, AI-assisted resolution, integration planning, and merge-into-existing-lane proposal adoption. |
 | `pty/` | `ptyService.ts` | `node-pty` spawn, PTY I/O bridging, transcript writing. |
 | `runtime/` | `tempCleanupService.ts` | Runtime temp cleanup. |
 | `sessions/` | `sessionService.ts`, `sessionDeltaService.ts` | Terminal session CRUD, post-session delta computation. |

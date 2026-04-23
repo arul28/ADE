@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { At, CaretDown, Check, Image, Paperclip, PencilSimple, Square, X, PaperPlaneTilt, Cube, BookOpen } from "@phosphor-icons/react";
+import { At, CaretDown, Check, Image, Paperclip, PencilSimple, Square, X, PaperPlaneTilt, Cube, BookOpen, SquareSplitHorizontal, Plus, Trash } from "@phosphor-icons/react";
 import { BorderBeam } from "border-beam";
 import {
   inferAttachmentType,
+  PARALLEL_CHAT_MAX_ATTACHMENTS,
   type AgentChatApprovalDecision,
   type AgentChatClaudePermissionMode,
   type AgentChatCursorConfigOption,
@@ -14,8 +15,8 @@ import {
   type AgentChatExecutionMode,
   type AgentChatFileRef,
   type AgentChatInteractionMode,
-  type AgentChatSlashCommand,
   type AgentChatOpenCodePermissionMode,
+  type AgentChatSlashCommand,
   type ComputerUseOwnerSnapshot,
   type ChatSurfaceMode,
   type PendingInputRequest,
@@ -48,6 +49,32 @@ type SlashCommandEntry = {
   description: string;
   argumentHint?: string;
   source: "sdk" | "local";
+};
+
+/** When set, permission/runtime controls bind to this slot (parallel model row configuration). */
+export type ParallelComposerControlSlot = {
+  sessionProvider: string;
+  interactionMode: AgentChatInteractionMode;
+  claudePermissionMode: AgentChatClaudePermissionMode;
+  codexApprovalPolicy: AgentChatCodexApprovalPolicy;
+  codexSandbox: AgentChatCodexSandbox;
+  codexConfigSource: AgentChatCodexConfigSource;
+  opencodePermissionMode: AgentChatOpenCodePermissionMode;
+  cursorModeSnapshot: AgentChatCursorModeSnapshot | null;
+  onInteractionModeChange: (mode: AgentChatInteractionMode) => void;
+  onClaudeModeChange: (mode: AgentChatClaudePermissionMode) => void;
+  onClaudePermissionModeChange: (mode: AgentChatClaudePermissionMode) => void;
+  onCodexPresetChange: (next: {
+    codexApprovalPolicy: AgentChatCodexApprovalPolicy;
+    codexSandbox: AgentChatCodexSandbox;
+    codexConfigSource: AgentChatCodexConfigSource;
+  }) => void;
+  onCodexApprovalPolicyChange: (policy: AgentChatCodexApprovalPolicy) => void;
+  onCodexSandboxChange: (sandbox: AgentChatCodexSandbox) => void;
+  onCodexConfigSourceChange: (source: AgentChatCodexConfigSource) => void;
+  onOpenCodePermissionModeChange: (mode: AgentChatOpenCodePermissionMode) => void;
+  onCursorModeChange: (modeId: string) => void;
+  onCursorConfigChange: (configId: string, value: string | boolean) => void;
 };
 
 /** Local-only commands that are always available regardless of provider. */
@@ -378,6 +405,22 @@ export function AgentChatComposer({
   onEditSteer,
   onOpenAiSettings,
   sessionId,
+  parallelChatMode = false,
+  onParallelChatModeChange,
+  parallelModelSlots = [],
+  parallelConfiguringIndex = null,
+  onParallelConfiguringIndexChange,
+  onParallelAddModel,
+  onParallelRemoveModel,
+  onParallelSlotModelChange,
+  onParallelSlotReasoningChange,
+  parallelLaunchBusy = false,
+  parallelLaunchStatus = null,
+  parallelControlSlot = null,
+  parallelSlotExecutionModeOptions = [],
+  parallelSlotExecutionMode = null,
+  onParallelSlotExecutionModeChange,
+  showParallelChatToggle = false,
 }: {
   surfaceMode?: ChatSurfaceMode;
   layoutVariant?: "standard" | "grid-tile";
@@ -449,6 +492,22 @@ export function AgentChatComposer({
   onEditSteer?: (steerId: string, text: string) => void;
   onOpenAiSettings?: () => void;
   sessionId?: string | null;
+  parallelChatMode?: boolean;
+  onParallelChatModeChange?: (enabled: boolean) => void;
+  parallelModelSlots?: Array<{ modelId: string; reasoningEffort: string | null }>;
+  parallelConfiguringIndex?: number | null;
+  onParallelConfiguringIndexChange?: (index: number | null) => void;
+  onParallelAddModel?: () => void;
+  onParallelRemoveModel?: (index: number) => void;
+  onParallelSlotModelChange?: (index: number, modelId: string) => void;
+  onParallelSlotReasoningChange?: (index: number, effort: string | null) => void;
+  parallelLaunchBusy?: boolean;
+  parallelLaunchStatus?: string | null;
+  parallelControlSlot?: ParallelComposerControlSlot | null;
+  parallelSlotExecutionModeOptions?: ExecutionModeOption[];
+  parallelSlotExecutionMode?: AgentChatExecutionMode | null;
+  onParallelSlotExecutionModeChange?: (mode: AgentChatExecutionMode) => void;
+  showParallelChatToggle?: boolean;
 }) {
   const [attachmentPickerOpen, setAttachmentPickerOpen] = useState(false);
   const [attachmentQuery, setAttachmentQuery] = useState("");
@@ -476,7 +535,10 @@ export function AgentChatComposer({
   const uploadInputRef = useRef<HTMLInputElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const fileAddInProgressRef = useRef(false);
-  const canAttach = !turnActive || sessionProvider === "claude" || sessionProvider === "codex";
+  const canAttach = !parallelChatMode || attachments.length < PARALLEL_CHAT_MAX_ATTACHMENTS;
+  const attachBlockedReason = parallelChatMode && attachments.length >= PARALLEL_CHAT_MAX_ATTACHMENTS
+    ? `Maximum ${PARALLEL_CHAT_MAX_ATTACHMENTS} attachments for parallel launch`
+    : null;
 
   const resizeTextarea = useCallback(() => {
     const el = textareaRef.current;
@@ -529,6 +591,10 @@ export function AgentChatComposer({
   }, [attachmentPickerOpen]);
 
   useEffect(() => {
+    setAttachmentCursor((c) => Math.min(c, Math.max(attachmentResults.length - 1, 0)));
+  }, [attachmentResults.length]);
+
+  useEffect(() => {
     if (!attachmentPickerOpen) return;
     const query = attachmentQuery.trim();
     if (!query.length) {
@@ -554,23 +620,35 @@ export function AgentChatComposer({
 
   const selectAttachment = (attachment: AgentChatFileRef) => {
     setAttachError(null);
+    if (parallelChatMode && attachments.length >= PARALLEL_CHAT_MAX_ATTACHMENTS) {
+      setAttachError(`You can attach up to ${PARALLEL_CHAT_MAX_ATTACHMENTS} files for parallel launch.`);
+      return;
+    }
     onAddAttachment(attachment);
     setAttachmentPickerOpen(false);
   };
 
   const addFileAttachments = async (files: FileList | null | undefined) => {
-    if (!canAttach || !files?.length) return;
+    if (!files?.length) return;
+    if (turnActive) return;
+    if (parallelChatMode && attachments.length >= PARALLEL_CHAT_MAX_ATTACHMENTS) return;
     if (fileAddInProgressRef.current) return;
     fileAddInProgressRef.current = true;
     setAttachError(null);
     try {
+      let addedInBatch = 0;
       for (const file of Array.from(files)) {
+        if (parallelChatMode && attachments.length + addedInBatch >= PARALLEL_CHAT_MAX_ATTACHMENTS) {
+          setAttachError(`You can attach up to ${PARALLEL_CHAT_MAX_ATTACHMENTS} files for parallel launch.`);
+          break;
+        }
         const fileWithPath = file as File & { path?: string };
         const hasRealPath = typeof fileWithPath.path === "string" && fileWithPath.path.trim().length > 0;
 
         if (hasRealPath) {
           const filePath = fileWithPath.path!;
           onAddAttachment({ path: filePath, type: inferAttachmentType(filePath, file.type) });
+          addedInBatch += 1;
           continue;
         }
 
@@ -592,6 +670,7 @@ export function AgentChatComposer({
             filename: file.name || "clipboard.png",
           });
           onAddAttachment({ path: tempPath, type: inferAttachmentType(tempPath, file.type) });
+          addedInBatch += 1;
         } catch {
           setAttachError(`Unable to attach "${file.name || "clipboard"}".`);
         }
@@ -612,13 +691,23 @@ export function AgentChatComposer({
   };
 
   const nativeControlsDisabled = permissionModeLocked;
-  const claudeSelectionMode = claudePermissionMode === "plan" || interactionMode === "plan"
+  const slot = parallelControlSlot;
+  const sp = slot?.sessionProvider ?? sessionProvider ?? "opencode";
+  const im = slot?.interactionMode ?? interactionMode ?? "default";
+  const cpmUse = slot?.claudePermissionMode ?? claudePermissionMode;
+  const capUse = slot?.codexApprovalPolicy ?? codexApprovalPolicy;
+  const csUse = slot?.codexSandbox ?? codexSandbox;
+  const ccsUse = slot?.codexConfigSource ?? codexConfigSource;
+  const opmUse = slot?.opencodePermissionMode ?? opencodePermissionMode;
+  const cmsUse = slot?.cursorModeSnapshot ?? cursorModeSnapshot;
+
+  const claudeSelectionMode = cpmUse === "plan" || im === "plan"
     ? "plan"
-    : claudePermissionMode ?? "default";
+    : cpmUse ?? "default";
   const codexPreset = resolveCodexPermissionPreset({
-    codexApprovalPolicy,
-    codexSandbox,
-    codexConfigSource,
+    codexApprovalPolicy: capUse,
+    codexSandbox: csUse,
+    codexConfigSource: ccsUse,
   });
   const codexPresetOptions = useMemo(
     () => getPermissionOptions({ family: "openai", isCliWrapped: true })
@@ -650,6 +739,10 @@ export function AgentChatComposer({
             codexConfigSource: "flags" as const,
           };
 
+    if (parallelControlSlot) {
+      parallelControlSlot.onCodexPresetChange(next);
+      return;
+    }
     if (onCodexPresetChange) {
       onCodexPresetChange(next);
       return;
@@ -664,12 +757,13 @@ export function AgentChatComposer({
     onCodexConfigSourceChange,
     onCodexPresetChange,
     onCodexSandboxChange,
+    parallelControlSlot,
   ]);
   const claudeControlDetail = useMemo(() => {
-    if (sessionProvider !== "claude") return null;
+    if (sp !== "claude") return null;
     const option = CLAUDE_MODE_OPTIONS.find((item) => item.value === (hoveredClaudeMode ?? claudeSelectionMode));
     return option?.detail ?? null;
-  }, [claudeSelectionMode, hoveredClaudeMode, sessionProvider]);
+  }, [claudeSelectionMode, hoveredClaudeMode, sp]);
 
   useEffect(() => {
     if (!codexPresetPickerOpen) return;
@@ -719,22 +813,25 @@ export function AgentChatComposer({
     };
   }, [claudeModePickerOpen]);
   const codexCustomSummary = useMemo(() => {
-    if (sessionProvider !== "codex" || codexPreset !== "custom") return null;
+    if (sp !== "codex" || codexPreset !== "custom") return null;
+    if (ccsUse === "config-toml") {
+      return "Custom Codex mode: config.toml controls approval and sandbox.";
+    }
     const approvalLabel = {
       "untrusted": "Untrusted",
       "on-request": "On request",
       "on-failure": "On failure",
       "never": "Never",
-    }[codexApprovalPolicy ?? "on-request"];
+    }[capUse ?? "on-request"];
     const sandboxLabel = {
       "read-only": "Read only",
       "workspace-write": "Workspace write",
       "danger-full-access": "Danger full access",
-    }[codexSandbox ?? "workspace-write"];
-    return `Custom Codex mode: ${codexConfigSource === "flags" ? "ADE flags" : "config.toml"} - ${approvalLabel} - ${sandboxLabel}`;
-  }, [codexApprovalPolicy, codexConfigSource, codexPreset, codexSandbox, sessionProvider]);
+    }[csUse ?? "workspace-write"];
+    return `Custom Codex mode: ${ccsUse === "flags" ? "ADE flags" : "config.toml"} - ${approvalLabel} - ${sandboxLabel}`;
+  }, [capUse, ccsUse, codexPreset, csUse, sp]);
   const codexControlDetail = useMemo(() => {
-    if (sessionProvider !== "codex") return null;
+    if (sp !== "codex") return null;
     if (hoveredCodexPreset) {
       return codexPresetOptions.find((option) => option.value === hoveredCodexPreset)?.detail ?? null;
     }
@@ -742,7 +839,7 @@ export function AgentChatComposer({
       return codexCustomSummary;
     }
     return codexPresetOptions.find((option) => option.value === codexPreset)?.detail ?? null;
-  }, [codexCustomSummary, codexPreset, codexPresetOptions, hoveredCodexPreset, sessionProvider]);
+  }, [codexCustomSummary, codexPreset, codexPresetOptions, hoveredCodexPreset, sp]);
   const nativeControlPanel = useMemo(() => {
     if (hideNativeControls) {
       return null;
@@ -789,11 +886,21 @@ export function AgentChatComposer({
       </div>
     );
 
-    if (sessionProvider === "claude") {
+    if (sp === "claude") {
       const selectedOption =
         CLAUDE_MODE_OPTIONS.find((option) => option.value === claudeSelectionMode) ?? CLAUDE_MODE_OPTIONS[0];
       const selectedTone = CLAUDE_MODE_TONE_STYLES[selectedOption.tone];
       const applyClaudeMode = (mode: AgentChatClaudePermissionMode) => {
+        if (parallelControlSlot) {
+          if (mode === "plan") {
+            parallelControlSlot.onInteractionModeChange("plan");
+            parallelControlSlot.onClaudePermissionModeChange("plan");
+            return;
+          }
+          parallelControlSlot.onInteractionModeChange("default");
+          parallelControlSlot.onClaudePermissionModeChange(mode);
+          return;
+        }
         if (onClaudeModeChange) {
           onClaudeModeChange(mode);
           return;
@@ -893,7 +1000,7 @@ export function AgentChatComposer({
       );
     }
 
-    if (sessionProvider === "codex") {
+    if (sp === "codex") {
       const activePreset = codexPresetOptions.find((option) => option.value === codexPreset);
       const presetLabel = codexPreset === "custom"
         ? "Custom"
@@ -990,20 +1097,20 @@ export function AgentChatComposer({
       );
     }
 
-    const cursorModeOption = resolveCursorModeOption(cursorModeSnapshot);
-    const cursorExtraOptions = (cursorModeSnapshot?.configOptions ?? []).filter((option) => {
-      if (option.id === cursorModeSnapshot?.modelConfigId) return false;
+    const cursorModeOption = resolveCursorModeOption(cmsUse);
+    const cursorExtraOptions = (cmsUse?.configOptions ?? []).filter((option) => {
+      if (option.id === cmsUse?.modelConfigId) return false;
       if (option.id === cursorModeOption?.id) return false;
       return true;
     });
 
-    if (sessionProvider === "cursor" && (cursorModeSnapshot?.availableModeIds?.length || cursorModeOption)) {
+    if (sp === "cursor" && (cmsUse?.availableModeIds?.length || cursorModeOption)) {
       const modeValue = typeof cursorModeOption?.currentValue === "string"
         ? cursorModeOption.currentValue
-        : cursorModeSnapshot?.currentModeId ?? "";
+        : cmsUse?.currentModeId ?? "";
       const modeChoices = cursorModeOption?.options?.length
         ? cursorModeOption.options.map((option) => ({ value: option.value, label: option.label }))
-        : (cursorModeSnapshot?.availableModeIds ?? []).map((modeId) => ({
+        : (cmsUse?.availableModeIds ?? []).map((modeId) => ({
             value: modeId,
             label: cursorModeLabel(modeId),
           }));
@@ -1014,8 +1121,11 @@ export function AgentChatComposer({
               <span className="font-mono text-[9px] uppercase tracking-[0.16em] text-muted-fg/45">Mode</span>
               <select
                 value={modeValue}
-                disabled={nativeControlsDisabled || !onCursorModeChange}
-                onChange={(event) => onCursorModeChange?.(event.target.value)}
+                disabled={nativeControlsDisabled || (!onCursorModeChange && !parallelControlSlot)}
+                onChange={(event) => {
+                  if (parallelControlSlot) parallelControlSlot.onCursorModeChange(event.target.value);
+                  else onCursorModeChange?.(event.target.value);
+                }}
                 className="min-w-0 bg-transparent font-sans text-[11px] text-fg/82 outline-none disabled:cursor-not-allowed disabled:text-muted-fg/35"
               >
                 {modeChoices.map((option) => (
@@ -1033,8 +1143,11 @@ export function AgentChatComposer({
                 <button
                   key={option.id}
                   type="button"
-                  disabled={nativeControlsDisabled || !onCursorConfigChange}
-                  onClick={() => onCursorConfigChange?.(option.id, !active)}
+                  disabled={nativeControlsDisabled || (!onCursorConfigChange && !parallelControlSlot)}
+                  onClick={() => {
+                    if (parallelControlSlot) parallelControlSlot.onCursorConfigChange(option.id, !active);
+                    else onCursorConfigChange?.(option.id, !active);
+                  }}
                   className={cn(
                     "inline-flex items-center gap-2 rounded-md border px-2.5 py-1.5 font-sans text-[11px] transition-colors",
                     active
@@ -1066,8 +1179,11 @@ export function AgentChatComposer({
                 </span>
                 <select
                   value={typeof option.currentValue === "string" ? option.currentValue : ""}
-                  disabled={nativeControlsDisabled || !onCursorConfigChange}
-                  onChange={(event) => onCursorConfigChange?.(option.id, event.target.value)}
+                  disabled={nativeControlsDisabled || (!onCursorConfigChange && !parallelControlSlot)}
+                  onChange={(event) => {
+                    if (parallelControlSlot) parallelControlSlot.onCursorConfigChange(option.id, event.target.value);
+                    else onCursorConfigChange?.(option.id, event.target.value);
+                  }}
                   className="min-w-0 bg-transparent font-sans text-[11px] text-fg/82 outline-none disabled:cursor-not-allowed disabled:text-muted-fg/35"
                 >
                   {choices.map((choice) => (
@@ -1083,14 +1199,18 @@ export function AgentChatComposer({
       );
     }
 
-    const runtimeLabel = sessionProvider === "cursor" ? "Mode" : "Permissions";
+    const runtimeLabel = sp === "cursor" ? "Mode" : "Permissions";
     return (
       <label className="flex items-center gap-2 rounded-md border border-white/[0.06] bg-[#1a1a22] px-2.5 py-1.5">
         <span className="font-mono text-[9px] uppercase tracking-[0.16em] text-muted-fg/45">{runtimeLabel}</span>
         <select
-          value={opencodePermissionMode}
-          disabled={nativeControlsDisabled || !onOpenCodePermissionModeChange}
-          onChange={(event) => onOpenCodePermissionModeChange?.(event.target.value as AgentChatOpenCodePermissionMode)}
+          value={opmUse}
+          disabled={nativeControlsDisabled || (!onOpenCodePermissionModeChange && !parallelControlSlot)}
+          onChange={(event) => {
+            const v = event.target.value as AgentChatOpenCodePermissionMode;
+            if (parallelControlSlot) parallelControlSlot.onOpenCodePermissionModeChange(v);
+            else onOpenCodePermissionModeChange?.(v);
+          }}
           className="min-w-0 bg-transparent font-sans text-[11px] text-fg/82 outline-none disabled:cursor-not-allowed disabled:text-muted-fg/35"
         >
           {OPENCODE_PERMISSION_OPTIONS.map((option) => (
@@ -1110,7 +1230,6 @@ export function AgentChatComposer({
     codexPreset,
     codexPresetOptions,
     codexCustomSummary,
-    codexConfigSource,
     hoveredClaudeMode,
     hoveredCodexPreset,
     nativeControlsDisabled,
@@ -1121,9 +1240,10 @@ export function AgentChatComposer({
     onCursorConfigChange,
     onCursorModeChange,
     onOpenCodePermissionModeChange,
-    cursorModeSnapshot,
-    sessionProvider,
-    opencodePermissionMode,
+    cmsUse,
+    sp,
+    opmUse,
+    parallelControlSlot,
   ]);
 
   const composerGlowColor = useMemo(() => {
@@ -1229,6 +1349,11 @@ export function AgentChatComposer({
 
   const handleCommandMenuSelect = useCallback((item: ChatCommandMenuItem) => {
     if (item.type === "file" && commandMenuTrigger) {
+      if (!canAttach) {
+        setAttachError(attachBlockedReason ?? "Attachments are unavailable right now.");
+        setCommandMenuTrigger(null);
+        return;
+      }
       // Replace the @query with @filepath
       const before = draft.slice(0, commandMenuTrigger.cursorIndex);
       const after = draft.slice(commandMenuTrigger.cursorIndex + commandMenuTrigger.query.length + 1); // +1 for @
@@ -1238,7 +1363,7 @@ export function AgentChatComposer({
       onDraftChange(`/${item.name} `);
     }
     setCommandMenuTrigger(null);
-  }, [commandMenuTrigger, draft, onDraftChange, onAddAttachment]);
+  }, [attachBlockedReason, canAttach, commandMenuTrigger, draft, onDraftChange, onAddAttachment]);
 
   const submitComposerDraft = useCallback(() => {
     const isQuestionPending = pendingInput && (pendingInput.kind === "question" || pendingInput.kind === "structured_question");
@@ -1249,9 +1374,18 @@ export function AgentChatComposer({
       onDraftChange("");
       return;
     }
+    if (parallelChatMode) {
+      if (busy || parallelLaunchBusy) return;
+      if (parallelModelSlots.length < 2) return;
+      const hasPrompt = draft.trim().length > 0;
+      const hasAttachments = attachments.length > 0;
+      if (!hasPrompt && !hasAttachments) return;
+      onSubmit();
+      return;
+    }
     if (busy || !modelId || !draft.trim().length) return;
     onSubmit();
-  }, [busy, draft, modelId, onApproval, onDraftChange, onSubmit, pendingInput]);
+  }, [attachments, busy, draft, modelId, onApproval, onDraftChange, onSubmit, pendingInput, parallelChatMode, parallelLaunchBusy, parallelModelSlots.length]);
 
   const pendingQuestionCount = getPendingInputQuestionCount(pendingInput);
   const showPendingInputOptionsHint = hasPendingInputOptions(pendingInput);
@@ -1260,6 +1394,23 @@ export function AgentChatComposer({
   const composerBeamVariant = turnActive ? "ocean" : "colorful";
   const composerBeamDuration = turnActive ? 20 : 5;
   const composerBeamStrength = turnActive ? 0.26 : 0.44;
+
+  const parallelReady =
+    parallelChatMode
+    && parallelModelSlots.length >= 2
+    && (draft.trim().length > 0 || attachments.length > 0);
+  const singleReady = !parallelChatMode && Boolean(modelId) && draft.trim().length > 0;
+  const sendEnabled = !busy && !parallelLaunchBusy && (parallelReady || singleReady);
+
+  function sendButtonTitle(): string {
+    if (parallelChatMode) {
+      if (parallelModelSlots.length < 2) return "Add at least two models";
+      if (draft.trim().length === 0 && attachments.length === 0) return "Add a message or at least one attachment";
+      return "Send to all lanes";
+    }
+    if (!modelId) return "Select a model first";
+    return "Send";
+  }
 
   return (
     <>
@@ -1415,7 +1566,11 @@ export function AgentChatComposer({
                   className="h-5 flex-1 bg-transparent font-sans text-[11px] text-fg/80 outline-none placeholder:text-muted-fg/25"
                   onKeyDown={(event) => {
                     if (event.key === "Escape") { event.preventDefault(); setAttachmentPickerOpen(false); return; }
-                    if (event.key === "ArrowDown") { event.preventDefault(); setAttachmentCursor((v) => Math.min(v + 1, Math.max(attachmentResults.length - 1, 0))); return; }
+                    if (event.key === "ArrowDown") {
+                      event.preventDefault();
+                      setAttachmentCursor((v) => Math.min(v + 1, Math.max(attachmentResults.length - 1, 0)));
+                      return;
+                    }
                     if (event.key === "ArrowUp") { event.preventDefault(); setAttachmentCursor((v) => Math.max(v - 1, 0)); return; }
                     if (event.key === "Enter") {
                       const candidate = attachmentResults[attachmentCursor];
@@ -1455,11 +1610,159 @@ export function AgentChatComposer({
         </>
       }
       footer={
-        <div className="flex items-center gap-x-2 px-3.5 py-2">
+        <div className="flex flex-col gap-2 px-3 py-1.5">
+          {showParallelChatToggle && !parallelChatMode ? (
+            <button
+              type="button"
+              disabled={turnActive || busy}
+              onClick={() => onParallelChatModeChange?.(true)}
+              className={cn(
+                "flex w-full items-center gap-3 rounded-xl border px-3 py-2.5 text-left transition-colors",
+                "border-white/[0.08] bg-white/[0.02] hover:border-[color:color-mix(in_srgb,var(--chat-accent)_28%,transparent)] hover:bg-[color:color-mix(in_srgb,var(--chat-accent)_06%,transparent)]",
+                turnActive || busy ? "cursor-not-allowed opacity-40" : "",
+              )}
+            >
+              <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-white/[0.08] bg-white/[0.04] text-[var(--chat-accent)]">
+                <SquareSplitHorizontal size={18} weight="regular" />
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="block font-sans text-[12px] font-medium text-fg/85">Parallel models</span>
+                <span className="mt-0.5 block font-sans text-[11px] leading-snug text-muted-fg/55">
+                  Same prompt and attachments in one child lane per model
+                </span>
+              </span>
+            </button>
+          ) : null}
+          {parallelChatMode ? (
+            <div className="rounded-xl border border-[color:color-mix(in_srgb,var(--chat-accent)_22%,transparent)] bg-[color:color-mix(in_srgb,var(--chat-accent)_06%,transparent)] p-3">
+              <div className="flex items-start justify-between gap-2">
+                <div className="min-w-0">
+                  <div className="font-sans text-[12px] font-semibold text-fg/88">Parallel launch</div>
+                  <p className="mt-1 font-sans text-[11px] leading-relaxed text-muted-fg/55">
+                    Configure each model, then send once. Attachments go to every lane (max {PARALLEL_CHAT_MAX_ATTACHMENTS}).
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  disabled={parallelLaunchBusy}
+                  className="shrink-0 rounded-lg border border-white/[0.1] px-2 py-1 font-sans text-[10px] font-medium text-muted-fg/70 transition-colors hover:bg-white/[0.06] hover:text-fg/80 disabled:opacity-40"
+                  onClick={() => {
+                    onParallelChatModeChange?.(false);
+                    onParallelConfiguringIndexChange?.(null);
+                  }}
+                >
+                  Single model
+                </button>
+              </div>
+              <div className="mt-3 flex flex-col gap-2">
+                {parallelModelSlots.map((slotRow, idx) => {
+                  const desc = getModelById(slotRow.modelId);
+                  const configuring = parallelConfiguringIndex === idx;
+                  return (
+                    <div
+                      key={`parallel-slot-${idx}`}
+                      className={cn(
+                        "flex flex-wrap items-center gap-2 rounded-lg border px-2.5 py-2 transition-colors",
+                        configuring
+                          ? "border-[color:color-mix(in_srgb,var(--chat-accent)_35%,transparent)] bg-[color:color-mix(in_srgb,var(--chat-accent)_10%,transparent)] shadow-[0_0_0_1px_color-mix(in_srgb,var(--chat-accent)_12%,transparent)]"
+                          : "border-white/[0.07] bg-white/[0.02]",
+                      )}
+                    >
+                      <span className="flex h-6 min-w-[1.5rem] items-center justify-center rounded-md bg-white/[0.06] font-mono text-[10px] font-bold text-muted-fg/50">
+                        {idx + 1}
+                      </span>
+                      <span className="min-w-0 max-w-[min(200px,46%)] truncate font-sans text-[12px] font-medium text-fg/82">
+                        {(desc?.displayName ?? slotRow.modelId) || "Pick a model"}
+                      </span>
+                      <button
+                        type="button"
+                        className={cn(
+                          "rounded-md px-2 py-1 font-sans text-[10px] font-medium transition-colors",
+                          configuring
+                            ? "bg-[color:color-mix(in_srgb,var(--chat-accent)_18%,transparent)] text-fg/90"
+                            : "text-muted-fg/55 hover:bg-white/[0.06] hover:text-fg/75",
+                        )}
+                        disabled={parallelLaunchBusy}
+                        onClick={() => onParallelConfiguringIndexChange?.(configuring ? null : idx)}
+                      >
+                        {configuring ? "Editing" : "Configure"}
+                      </button>
+                      {parallelModelSlots.length > 2 ? (
+                        <button
+                          type="button"
+                          className="ml-auto inline-flex items-center gap-1 rounded-md px-2 py-1 font-sans text-[10px] text-red-400/75 transition-colors hover:bg-red-500/10"
+                          disabled={parallelLaunchBusy}
+                          onClick={() => onParallelRemoveModel?.(idx)}
+                          title="Remove this model from the parallel set"
+                        >
+                          <Trash size={12} />
+                          Remove
+                        </button>
+                      ) : null}
+                    </div>
+                  );
+                })}
+              </div>
+              <button
+                type="button"
+                className="mt-2 inline-flex items-center gap-1.5 rounded-lg border border-dashed border-white/[0.12] px-2.5 py-1.5 font-sans text-[11px] font-medium text-muted-fg/65 transition-colors hover:border-white/[0.2] hover:bg-white/[0.04] hover:text-fg/75 disabled:opacity-40"
+                disabled={parallelLaunchBusy}
+                onClick={() => onParallelAddModel?.()}
+              >
+                <Plus size={14} weight="bold" />
+                Add model
+              </button>
+              {parallelLaunchBusy && parallelLaunchStatus ? (
+                <div className="mt-3 flex items-center gap-2 rounded-lg border border-white/[0.06] bg-black/20 px-2.5 py-2">
+                  <span className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-[var(--chat-accent)]" />
+                  <span className="font-sans text-[11px] text-fg/70">{parallelLaunchStatus}</span>
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+          <div className="flex flex-wrap items-center gap-2">
           {/* Left: permission + model controls */}
-          <div className="flex min-w-0 shrink-0 items-center gap-1.5 whitespace-nowrap">
-            {nativeControlPanel}
-            <ProviderModelSelector
+          <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+            {(!parallelChatMode || (parallelConfiguringIndex != null && parallelModelSlots[parallelConfiguringIndex]))
+              ? nativeControlPanel
+              : null}
+            {parallelChatMode && parallelConfiguringIndex != null && parallelSlotExecutionModeOptions.length > 0 ? (
+              <div className="flex flex-wrap items-center gap-px rounded-md border border-white/[0.06] bg-[#1a1a22] p-0.5">
+                {parallelSlotExecutionModeOptions.map((option) => {
+                  const active = parallelSlotExecutionMode === option.value;
+                  return (
+                    <button
+                      key={option.value}
+                      type="button"
+                      className={cn(
+                        "rounded-[8px] px-2.5 py-1.5 font-mono text-[9px] font-bold uppercase tracking-wider transition-colors",
+                        active ? "bg-white/[0.08] text-fg/80" : "text-muted-fg/35 hover:text-muted-fg/60",
+                        parallelLaunchBusy ? "cursor-not-allowed opacity-50" : "",
+                      )}
+                      disabled={parallelLaunchBusy}
+                      onClick={() => onParallelSlotExecutionModeChange?.(option.value)}
+                      title={option.helper}
+                      aria-pressed={active}
+                    >
+                      {option.label}
+                    </button>
+                  );
+                })}
+              </div>
+            ) : null}
+            {parallelChatMode && parallelConfiguringIndex != null && parallelModelSlots[parallelConfiguringIndex] ? (
+              <ProviderModelSelector
+                value={parallelModelSlots[parallelConfiguringIndex]!.modelId}
+                onChange={(next) => onParallelSlotModelChange?.(parallelConfiguringIndex, next)}
+                availableModelIds={availableModelIds}
+                disabled={parallelLaunchBusy}
+                showReasoning
+                reasoningEffort={parallelModelSlots[parallelConfiguringIndex]!.reasoningEffort}
+                onReasoningEffortChange={(effort) => onParallelSlotReasoningChange?.(parallelConfiguringIndex, effort)}
+                onOpenAiSettings={onOpenAiSettings}
+              />
+            ) : !parallelChatMode ? (
+              <ProviderModelSelector
               value={modelId}
               onChange={onModelChange}
               availableModelIds={availableModelIds}
@@ -1469,6 +1772,7 @@ export function AgentChatComposer({
               onReasoningEffortChange={onReasoningEffortChange}
               onOpenAiSettings={onOpenAiSettings}
             />
+            ) : null}
           </div>
 
 
@@ -1479,7 +1783,11 @@ export function AgentChatComposer({
               className="rounded-md px-1.5 py-1 font-sans text-[10px] font-medium text-muted-fg/35 transition-colors hover:bg-violet-500/[0.06] hover:text-violet-300/60"
               disabled={!canAttach}
               onClick={() => canAttach && setAttachmentPickerOpen((o) => !o)}
-              title="Attach files or images (@)"
+              title={
+                parallelChatMode
+                  ? attachBlockedReason ?? "Search repo for files (@)"
+                  : "Attach files or images (@)"
+              }
               aria-label="Open attachment picker"
             >
               @
@@ -1489,7 +1797,7 @@ export function AgentChatComposer({
               className="rounded-md px-1 py-1 text-muted-fg/35 transition-colors hover:bg-violet-500/[0.06] hover:text-violet-300/60"
               disabled={!canAttach}
               onClick={openUploadPicker}
-              title="Upload file from disk"
+              title={parallelChatMode ? (attachBlockedReason ?? "Upload files") : "Upload file from disk"}
               aria-label="Upload file from disk"
             >
               <Paperclip size={11} />
@@ -1584,18 +1892,21 @@ export function AgentChatComposer({
                 type="button"
                 className={cn(
                   "inline-flex h-8 items-center justify-center rounded-lg border px-4 transition-all",
-                  busy || !draft.trim().length || !modelId
-                    ? "border-white/[0.04] bg-white/[0.02] text-muted-fg/15"
-                    : "border-violet-400/30 bg-gradient-to-r from-violet-600/30 to-violet-500/20 text-white shadow-[0_0_16px_rgba(167,139,250,0.15),0_2px_8px_rgba(124,58,237,0.20)] hover:from-violet-600/40 hover:to-violet-500/30 hover:shadow-[0_0_24px_rgba(167,139,250,0.22),0_4px_12px_rgba(124,58,237,0.25)] active:scale-[0.97]",
+                  sendEnabled
+                    ? "border-violet-400/30 bg-gradient-to-r from-violet-600/30 to-violet-500/20 text-white shadow-[0_0_16px_rgba(167,139,250,0.15),0_2px_8px_rgba(124,58,237,0.20)] hover:from-violet-600/40 hover:to-violet-500/30 hover:shadow-[0_0_24px_rgba(167,139,250,0.22),0_4px_12px_rgba(124,58,237,0.25)] active:scale-[0.97]"
+                    : "border-white/[0.04] bg-white/[0.02] text-muted-fg/15",
                 )}
-                disabled={busy || !draft.trim().length || !modelId}
+                disabled={!sendEnabled}
                 onClick={submitComposerDraft}
-                title={!modelId ? "Select a model first" : "Send"}
+                title={sendButtonTitle()}
               >
-                <PaperPlaneTilt size={11} weight="fill" />
-                <span className="ml-1.5 font-sans text-[11px] font-semibold">Send</span>
+                <PaperPlaneTilt size={10} weight="fill" />
+                <span className="ml-1 font-sans text-[10px]">
+                  {parallelChatMode ? "Send to lanes" : "Send"}
+                </span>
               </button>
             )}
+          </div>
           </div>
         </div>
       }
@@ -1626,8 +1937,14 @@ export function AgentChatComposer({
         {dragActive ? (
           <div className="pointer-events-none absolute inset-0 z-[1] flex items-center justify-center bg-[color:color-mix(in_srgb,var(--chat-accent)_12%,rgba(5,5,8,0.58))] backdrop-blur-sm">
             <div className="rounded-[var(--chat-radius-card)] border border-[color:color-mix(in_srgb,var(--chat-accent)_32%,transparent)] bg-card/92 px-5 py-4 text-center shadow-[var(--chat-composer-shadow)]">
-              <div className="font-mono text-[10px] uppercase tracking-[0.18em] text-[var(--chat-accent)]">Drop files to attach</div>
-              <div className="mt-1 text-[12px] text-fg/74">Images and files will be added to this turn.</div>
+              <div className="font-mono text-[10px] uppercase tracking-[0.18em] text-[var(--chat-accent)]">
+                Drop files to attach
+              </div>
+              <div className="mt-1 text-[12px] text-fg/74">
+                {parallelChatMode
+                  ? `Up to ${PARALLEL_CHAT_MAX_ATTACHMENTS} files, sent to every parallel lane.`
+                  : "Images and files will be added to this turn."}
+              </div>
             </div>
           </div>
         ) : null}
@@ -1679,9 +1996,11 @@ export function AgentChatComposer({
             }}
             rows={1}
             onInput={resizeTextarea}
+            disabled={parallelLaunchBusy}
             className={cn(
               "block w-full resize-none bg-transparent px-4 py-2.5 text-[13px] leading-[1.6] text-fg/88 outline-none transition-colors placeholder:text-muted-fg/30",
               dragActive ? "opacity-30" : "",
+              parallelLaunchBusy ? "cursor-not-allowed opacity-50" : "",
             )}
             data-chat-layout-variant={layoutVariant}
             placeholder={turnActive ? "Steer the active turn..." : (promptSuggestion ? "" : (messagePlaceholder ?? "Type to vibecode..."))}

@@ -2559,6 +2559,7 @@ struct IntegrationProposal: Codable, Identifiable, Equatable {
   var integrationLaneName: String?
   var status: String
   var integrationLaneId: String?
+  var integrationLaneOrigin: String?
   var linkedGroupId: String?
   var linkedPrId: String?
   var workflowDisplayState: String?
@@ -2568,6 +2569,8 @@ struct IntegrationProposal: Codable, Identifiable, Equatable {
   var completedAt: String?
   var cleanupDeclinedAt: String?
   var cleanupCompletedAt: String?
+  var preferredIntegrationLaneId: String?
+  var mergeIntoHeadSha: String?
   var resolutionState: IntegrationResolutionState?
 }
 
@@ -2826,6 +2829,9 @@ struct PrWorkflowCard: Codable, Identifiable, Equatable {
   var cleanupState: String?
   var linkedPrId: String?
   var integrationLaneId: String?
+  var preferredIntegrationLaneId: String?
+  var mergeIntoHeadSha: String?
+  var integrationLaneOrigin: String?
   var createdAt: String?
   // rebase
   var laneId: String?
@@ -2853,7 +2859,7 @@ struct PrWorkflowCard: Codable, Identifiable, Equatable {
     case queueId, groupId, groupName, targetBranch, state, activePrId, currentPosition, totalEntries, entries, waitReason, lastError, updatedAt
     case proposalId, title, baseBranch, overallOutcome
     case integrationStatus = "status"
-    case laneCount, conflictLaneCount, lanes, workflowDisplayState, cleanupState, linkedPrId, integrationLaneId, createdAt
+    case laneCount, conflictLaneCount, lanes, workflowDisplayState, cleanupState, linkedPrId, integrationLaneId, preferredIntegrationLaneId, mergeIntoHeadSha, integrationLaneOrigin, createdAt
     case laneId, laneName, behindBy, conflictPredicted, prId, prNumber, dismissedAt, deferredUntil, targetCommits, rebaseMode, creationStrategy
   }
 }
