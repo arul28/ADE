@@ -38,6 +38,9 @@ import {
 } from "../../desktop/src/main/services/computerUse/computerUseArtifactBrokerService";
 import type { createFileService } from "../../desktop/src/main/services/files/fileService";
 import type { createProcessService } from "../../desktop/src/main/services/processes/processService";
+import type { createGithubService } from "../../desktop/src/main/services/github/githubService";
+import type { createAutomationService } from "../../desktop/src/main/services/automations/automationService";
+import type { createAutomationPlannerService } from "../../desktop/src/main/services/automations/automationPlannerService";
 import { createHeadlessLinearServices } from "./headlessLinearServices";
 import { createEventBuffer, type BufferedEvent, type EventBuffer } from "./eventBuffer";
 
@@ -93,6 +96,9 @@ export type AdeRuntime = {
   linearIngressService?: ReturnType<typeof createLinearIngressService> | null;
   linearRoutingService?: ReturnType<typeof createLinearRoutingService> | null;
   processService?: ReturnType<typeof createProcessService> | null;
+  githubService?: ReturnType<typeof createGithubService> | null;
+  automationService?: ReturnType<typeof createAutomationService> | null;
+  automationPlannerService?: ReturnType<typeof createAutomationPlannerService> | null;
   computerUseArtifactBrokerService: ComputerUseArtifactBrokerService;
   orchestratorService: ReturnType<typeof createOrchestratorService>;
   aiOrchestratorService: ReturnType<typeof createAiOrchestratorService>;

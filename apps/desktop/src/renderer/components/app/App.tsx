@@ -38,6 +38,9 @@ const HistoryPage = React.lazy(() =>
 const AutomationsPage = React.lazy(() =>
   import("../automations/AutomationsPage").then((m) => ({ default: m.AutomationsPage }))
 );
+const AutomationsTemplatesPage = React.lazy(() =>
+  import("../automations/AutomationsTemplatesPage").then((m) => ({ default: m.AutomationsTemplatesPage }))
+);
 const SettingsPage = React.lazy(() =>
   import("./SettingsPage").then((m) => ({ default: m.SettingsPage }))
 );
@@ -219,6 +222,7 @@ export function App() {
             <Route path="/prs" element={guardedLazy(<PRsPage />)} />
             <Route path="/history" element={guardedLazy(<HistoryPage />)} />
             <Route path="/automations" element={guardedLazy(<AutomationsPage />)} />
+            <Route path="/automations/templates" element={guardedLazy(<AutomationsTemplatesPage />)} />
             <Route path="/missions" element={guardedLazy(<MissionsPage />)} />
             <Route path="/cto" element={guardedLazy(<CtoPage />)} />
             <Route path="/settings" element={guardedLazy(<SettingsPage />)} />

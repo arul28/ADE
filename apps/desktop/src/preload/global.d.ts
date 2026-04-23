@@ -113,6 +113,7 @@ import type {
   AutomationSaveDraftResult,
   AutomationSimulateRequest,
   AutomationSimulateResult,
+  AdeActionRegistryEntry,
   UsageSnapshot,
   BudgetCheckResult,
   BudgetCapScope,
@@ -769,6 +770,9 @@ declare global {
           req: AutomationSimulateRequest,
         ) => Promise<AutomationSimulateResult>;
         onEvent: (cb: (ev: AutomationsEventPayload) => void) => () => void;
+      };
+      actions: {
+        listRegistry: () => Promise<AdeActionRegistryEntry[]>;
       };
       usage: {
         getSnapshot: () => Promise<UsageSnapshot | null>;

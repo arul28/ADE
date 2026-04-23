@@ -1,0 +1,464 @@
+import type { Logger } from "../logging/logger";
+import type {
+  AutomationTriggerIssueContext,
+  AutomationTriggerPrContext,
+  AutomationTriggerType,
+} from "../../../shared/types";
+import type { GithubService, GitHubIssue, GitHubLabel, GitHubPullRequest } from "../github/githubService";
+
+type AutomationServiceHandle = {
+  getIngressCursor(source: "github-polling" | "linear-relay" | "github-relay" | "local-webhook"): string | null;
+  setIngressCursor(args: { source: "github-polling"; cursor: string | null }): void;
+  dispatchIngressTrigger(args: {
+    source: "github-polling";
+    eventKey: string;
+    triggerType: AutomationTriggerType;
+    eventName?: string | null;
+    summary?: string | null;
+    author?: string | null;
+    labels?: string[];
+    keywords?: string[];
+    branch?: string | null;
+    targetBranch?: string | null;
+    draftState?: "draft" | "ready" | "any";
+    cursor?: string | null;
+    rawPayload?: Record<string, unknown> | null;
+    repo?: string | null;
+    issue?: AutomationTriggerIssueContext | null;
+    pr?: AutomationTriggerPrContext | null;
+  }): Promise<unknown>;
+};
+
+type RepoRef = { owner: string; name: string };
+
+type GithubPollingServiceArgs = {
+  logger: Logger;
+  githubService: GithubService;
+  automationService: AutomationServiceHandle;
+  /** Extra repos to poll in addition to the detected origin. */
+  extraRepos?: RepoRef[];
+  pollIntervalMs?: number;
+};
+
+const DEFAULT_POLL_INTERVAL_MS = 30_000;
+
+function labelsToStrings(raw: GitHubIssue["labels"] | GitHubPullRequest["labels"]): string[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .map((entry) => {
+      if (typeof entry === "string") return entry.trim();
+      if (entry && typeof entry === "object" && typeof (entry as { name?: unknown }).name === "string") {
+        return ((entry as { name: string }).name ?? "").trim();
+      }
+      return "";
+    })
+    .filter(Boolean);
+}
+
+function repoSlug(repo: RepoRef): string {
+  return `${repo.owner}/${repo.name}`;
+}
+
+function issueContext(repo: RepoRef, issue: GitHubIssue): AutomationTriggerIssueContext {
+  return {
+    number: issue.number,
+    title: issue.title,
+    body: issue.body ?? undefined,
+    author: issue.user?.login ?? undefined,
+    labels: labelsToStrings(issue.labels),
+    repo: repoSlug(repo),
+    url: issue.html_url,
+  };
+}
+
+function prContext(repo: RepoRef, pr: GitHubPullRequest): AutomationTriggerPrContext {
+  return {
+    number: pr.number,
+    title: pr.title,
+    body: pr.body ?? undefined,
+    author: pr.user?.login ?? undefined,
+    labels: labelsToStrings(pr.labels),
+    repo: repoSlug(repo),
+    url: pr.html_url,
+    baseBranch: pr.base?.ref,
+    headBranch: pr.head?.ref,
+    draft: pr.draft ?? undefined,
+    merged: pr.merged ?? Boolean(pr.merged_at),
+  };
+}
+
+type IssueSnapshot = {
+  labels: string[];
+  updatedAt: string;
+  state: "open" | "closed";
+  commentCount: number;
+};
+
+type PrSnapshot = {
+  updatedAt: string;
+  state: "open" | "closed";
+  merged: boolean;
+  mergedAt: string | null;
+};
+
+export function createGithubPollingService(args: GithubPollingServiceArgs) {
+  const { logger, githubService, automationService } = args;
+  const pollIntervalMs = Math.max(10_000, Math.floor(args.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS));
+
+  // Per-repo memory of last-seen issue/PR state so we can diff on each poll
+  // and emit `edited`/`labeled`/`closed` events without a webhook feed.
+  const issueSnapshots = new Map<string, Map<number, IssueSnapshot>>();
+  const prSnapshots = new Map<string, Map<number, PrSnapshot>>();
+  const commentCursors = new Map<string, string>(); // key: `${slug}:${issueNumber}` → last-seen created_at
+
+  let timer: NodeJS.Timeout | null = null;
+  let running = false;
+  let stopped = false;
+
+  const listRepos = async (): Promise<RepoRef[]> => {
+    const out: RepoRef[] = [];
+    const seen = new Set<string>();
+    try {
+      const detected = await githubService.detectRepo();
+      if (detected) {
+        const key = repoSlug(detected);
+        if (!seen.has(key)) {
+          seen.add(key);
+          out.push(detected);
+        }
+      }
+    } catch {
+      // ignore detection errors
+    }
+    for (const repo of args.extraRepos ?? []) {
+      const key = repoSlug(repo);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(repo);
+    }
+    return out;
+  };
+
+  const readCursor = (repo: RepoRef): string | null => {
+    try {
+      // The cursor table is keyed by source, so stash the repo slug inside the
+      // stored cursor value as `<slug>@<iso-timestamp>` when multiple repos
+      // are polled. For the common single-repo case we just store the ISO.
+      const stored = automationService.getIngressCursor("github-polling");
+      if (!stored) return null;
+      const slug = repoSlug(repo);
+      if (stored.includes("|")) {
+        // Multi-repo stored as `slug1=iso1|slug2=iso2`
+        for (const part of stored.split("|")) {
+          const [key, value] = part.split("=");
+          if (key === slug && value) return value;
+        }
+        return null;
+      }
+      return stored;
+    } catch {
+      return null;
+    }
+  };
+
+  const writeCursor = (repo: RepoRef, cursor: string) => {
+    try {
+      const prev = automationService.getIngressCursor("github-polling") ?? "";
+      const slug = repoSlug(repo);
+      if (!prev || !prev.includes("|")) {
+        // If a single-repo cursor already exists and it's a different slug,
+        // migrate to the multi-repo format. Otherwise just overwrite.
+        if (prev && !prev.includes("=")) {
+          automationService.setIngressCursor({ source: "github-polling", cursor: `${slug}=${cursor}` });
+        } else {
+          const parts = new Map<string, string>();
+          for (const part of prev.split("|").filter(Boolean)) {
+            const [k, v] = part.split("=");
+            if (k && v) parts.set(k, v);
+          }
+          parts.set(slug, cursor);
+          const joined = [...parts.entries()].map(([k, v]) => `${k}=${v}`).join("|");
+          automationService.setIngressCursor({ source: "github-polling", cursor: joined });
+        }
+      } else {
+        const parts = new Map<string, string>();
+        for (const part of prev.split("|").filter(Boolean)) {
+          const [k, v] = part.split("=");
+          if (k && v) parts.set(k, v);
+        }
+        parts.set(slug, cursor);
+        const joined = [...parts.entries()].map(([k, v]) => `${k}=${v}`).join("|");
+        automationService.setIngressCursor({ source: "github-polling", cursor: joined });
+      }
+    } catch (error) {
+      logger.warn("automations.github_polling.cursor_write_failed", {
+        repo: repoSlug(repo),
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
+
+  const dispatch = async (
+    repo: RepoRef,
+    triggerType: AutomationTriggerType,
+    eventKey: string,
+    ctx: { issue?: AutomationTriggerIssueContext; pr?: AutomationTriggerPrContext; summary: string; rawPayload?: Record<string, unknown> },
+  ) => {
+    try {
+      await automationService.dispatchIngressTrigger({
+        source: "github-polling",
+        eventKey,
+        triggerType,
+        eventName: triggerType,
+        summary: ctx.summary,
+        author: ctx.issue?.author ?? ctx.pr?.author ?? null,
+        labels: ctx.issue?.labels ?? ctx.pr?.labels ?? [],
+        branch: ctx.pr?.headBranch ?? null,
+        targetBranch: ctx.pr?.baseBranch ?? null,
+        draftState: ctx.pr?.draft === true ? "draft" : ctx.pr?.draft === false ? "ready" : "any",
+        repo: repoSlug(repo),
+        issue: ctx.issue ?? null,
+        pr: ctx.pr ?? null,
+        rawPayload: ctx.rawPayload ?? null,
+      });
+    } catch (error) {
+      logger.warn("automations.github_polling.dispatch_failed", {
+        triggerType,
+        eventKey,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
+
+  const pollIssues = async (repo: RepoRef, since: string | undefined): Promise<string | null> => {
+    const issues = await githubService.listRepoIssues(repo.owner, repo.name, {
+      state: "all",
+      sort: "updated",
+      since,
+    });
+    // GitHub's `issues` endpoint mixes PRs in. Filter those out.
+    const realIssues = issues.filter((row) => !row.pull_request);
+    let maxUpdatedAt: string | null = null;
+    const snapshotByRepo = issueSnapshots.get(repoSlug(repo)) ?? new Map<number, IssueSnapshot>();
+    issueSnapshots.set(repoSlug(repo), snapshotByRepo);
+
+    for (const issue of realIssues) {
+      if (!maxUpdatedAt || issue.updated_at > maxUpdatedAt) maxUpdatedAt = issue.updated_at;
+      const prev = snapshotByRepo.get(issue.number);
+      const currentLabels = labelsToStrings(issue.labels);
+      const ctx = issueContext(repo, issue);
+
+      if (!prev) {
+        // First time seeing this issue. On the very first poll (since is
+        // undefined) we treat pre-existing issues as "known" and don't emit
+        // `issue_opened` retroactively. If `since` is set, anything we haven't
+        // seen but whose `created_at === updated_at` is an open event.
+        const isNew = issue.created_at === issue.updated_at;
+        if (since !== undefined && isNew) {
+          await dispatch(repo, "github.issue_opened", `${repoSlug(repo)}#${issue.number}:opened`, {
+            issue: ctx,
+            summary: `Issue #${issue.number} opened: ${issue.title}`,
+          });
+        }
+        snapshotByRepo.set(issue.number, {
+          labels: currentLabels,
+          updatedAt: issue.updated_at,
+          state: issue.state,
+          commentCount: issue.comments ?? 0,
+        });
+        continue;
+      }
+
+      if (prev.updatedAt === issue.updated_at && prev.state === issue.state && prev.labels.join("|") === currentLabels.join("|")) {
+        continue;
+      }
+
+      // Label diff
+      const addedLabels = currentLabels.filter((l) => !prev.labels.includes(l));
+      if (addedLabels.length) {
+        await dispatch(repo, "github.issue_labeled", `${repoSlug(repo)}#${issue.number}:labeled:${issue.updated_at}:${addedLabels.join(",")}`, {
+          issue: ctx,
+          summary: `Issue #${issue.number} labeled: ${addedLabels.join(", ")}`,
+          rawPayload: { addedLabels },
+        });
+      }
+
+      // State transition
+      if (prev.state === "open" && issue.state === "closed") {
+        await dispatch(repo, "github.issue_closed", `${repoSlug(repo)}#${issue.number}:closed:${issue.updated_at}`, {
+          issue: ctx,
+          summary: `Issue #${issue.number} closed: ${issue.title}`,
+        });
+      }
+
+      // Generic edit (title/body changed without state/label change)
+      if (prev.updatedAt !== issue.updated_at && prev.state === issue.state && !addedLabels.length) {
+        await dispatch(repo, "github.issue_edited", `${repoSlug(repo)}#${issue.number}:edited:${issue.updated_at}`, {
+          issue: ctx,
+          summary: `Issue #${issue.number} edited: ${issue.title}`,
+        });
+      }
+
+      snapshotByRepo.set(issue.number, {
+        labels: currentLabels,
+        updatedAt: issue.updated_at,
+        state: issue.state,
+        commentCount: issue.comments ?? prev.commentCount,
+      });
+
+      // New comments. The `issues` endpoint gives us a count; if it grew we
+      // fetch comments since the last cursor.
+      const newCommentCount = issue.comments ?? 0;
+      if (newCommentCount > prev.commentCount) {
+        await pollComments(repo, issue.number, since, ctx, /* isPr */ false);
+      }
+    }
+
+    return maxUpdatedAt;
+  };
+
+  const pollPulls = async (repo: RepoRef, since: string | undefined): Promise<string | null> => {
+    const pulls = await githubService.listRepoPulls(repo.owner, repo.name, {
+      state: "all",
+      sort: "updated",
+    });
+    // The pulls endpoint doesn't accept `since`; filter client-side.
+    const filtered = since ? pulls.filter((pr) => pr.updated_at > since) : pulls;
+    let maxUpdatedAt: string | null = null;
+    const snapshotByRepo = prSnapshots.get(repoSlug(repo)) ?? new Map<number, PrSnapshot>();
+    prSnapshots.set(repoSlug(repo), snapshotByRepo);
+
+    for (const pr of filtered) {
+      if (!maxUpdatedAt || pr.updated_at > maxUpdatedAt) maxUpdatedAt = pr.updated_at;
+      const prev = snapshotByRepo.get(pr.number);
+      const ctx = prContext(repo, pr);
+
+      if (!prev) {
+        const isNew = pr.created_at === pr.updated_at;
+        if (since !== undefined && isNew) {
+          await dispatch(repo, "github.pr_opened", `${repoSlug(repo)}#${pr.number}:pr_opened`, {
+            pr: ctx,
+            summary: `PR #${pr.number} opened: ${pr.title}`,
+          });
+        }
+        snapshotByRepo.set(pr.number, {
+          updatedAt: pr.updated_at,
+          state: pr.state,
+          merged: Boolean(pr.merged ?? pr.merged_at),
+          mergedAt: pr.merged_at ?? null,
+        });
+        continue;
+      }
+
+      if (prev.updatedAt === pr.updated_at && prev.state === pr.state && prev.merged === Boolean(pr.merged ?? pr.merged_at)) {
+        continue;
+      }
+
+      if (prev.state === "open" && pr.state === "closed") {
+        if (pr.merged || pr.merged_at) {
+          await dispatch(repo, "github.pr_merged", `${repoSlug(repo)}#${pr.number}:pr_merged:${pr.merged_at ?? pr.updated_at}`, {
+            pr: ctx,
+            summary: `PR #${pr.number} merged: ${pr.title}`,
+          });
+        } else {
+          await dispatch(repo, "github.pr_closed", `${repoSlug(repo)}#${pr.number}:pr_closed:${pr.updated_at}`, {
+            pr: ctx,
+            summary: `PR #${pr.number} closed: ${pr.title}`,
+          });
+        }
+      } else if (prev.updatedAt !== pr.updated_at) {
+        await dispatch(repo, "github.pr_updated", `${repoSlug(repo)}#${pr.number}:pr_updated:${pr.updated_at}`, {
+          pr: ctx,
+          summary: `PR #${pr.number} updated: ${pr.title}`,
+        });
+      }
+
+      snapshotByRepo.set(pr.number, {
+        updatedAt: pr.updated_at,
+        state: pr.state,
+        merged: Boolean(pr.merged ?? pr.merged_at),
+        mergedAt: pr.merged_at ?? null,
+      });
+    }
+
+    return maxUpdatedAt;
+  };
+
+  const pollComments = async (
+    repo: RepoRef,
+    issueNumber: number,
+    _since: string | undefined,
+    ctx: AutomationTriggerIssueContext,
+    isPr: boolean,
+  ) => {
+    const key = `${repoSlug(repo)}:${issueNumber}`;
+    const cursor = commentCursors.get(key);
+    const comments = await githubService.listIssueComments(repo.owner, repo.name, issueNumber, { since: cursor });
+    for (const comment of comments) {
+      if (cursor && comment.created_at <= cursor) continue;
+      await dispatch(
+        repo,
+        isPr ? "github.pr_commented" : "github.issue_commented",
+        `${repoSlug(repo)}#${issueNumber}:comment:${comment.id}`,
+        {
+          issue: isPr ? undefined : { ...ctx, body: comment.body },
+          pr: isPr ? { ...(ctx as AutomationTriggerPrContext), body: comment.body } : undefined,
+          summary: `${isPr ? "PR" : "Issue"} #${issueNumber} commented by ${comment.user?.login ?? "unknown"}`,
+          rawPayload: { commentId: comment.id, body: comment.body },
+        },
+      );
+      if (!cursor || comment.created_at > cursor) {
+        commentCursors.set(key, comment.created_at);
+      }
+    }
+  };
+
+  const pollOnce = async () => {
+    if (running || stopped) return;
+    running = true;
+    try {
+      const repos = await listRepos();
+      for (const repo of repos) {
+        try {
+          const cursor = readCursor(repo) ?? undefined;
+          const maxIssues = await pollIssues(repo, cursor);
+          const maxPulls = await pollPulls(repo, cursor);
+          const maxOverall = [maxIssues, maxPulls].filter((v): v is string => typeof v === "string").sort().at(-1);
+          if (maxOverall && maxOverall !== cursor) {
+            writeCursor(repo, maxOverall);
+          }
+        } catch (error) {
+          logger.warn("automations.github_polling.repo_failed", {
+            repo: repoSlug(repo),
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+    } finally {
+      running = false;
+    }
+  };
+
+  return {
+    async start() {
+      if (timer || stopped) return;
+      // Kick off one poll on start, then schedule the interval.
+      void pollOnce().catch(() => {});
+      timer = setInterval(() => {
+        void pollOnce().catch(() => {});
+      }, pollIntervalMs);
+    },
+    async pollNow() {
+      await pollOnce();
+    },
+    dispose() {
+      stopped = true;
+      if (timer) {
+        clearInterval(timer);
+        timer = null;
+      }
+    },
+  };
+}
+
+export type GithubPollingService = ReturnType<typeof createGithubPollingService>;

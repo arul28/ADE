@@ -35,6 +35,7 @@ import type {
   AutomationSaveDraftResult,
   AutomationSimulateRequest,
   AutomationSimulateResult,
+  AdeActionRegistryEntry,
   AdeCliInstallResult,
   AdeCliStatus,
   AiApiKeyVerificationResult,
@@ -895,6 +896,10 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.on(IPC.automationsEvent, listener);
       return () => ipcRenderer.removeListener(IPC.automationsEvent, listener);
     },
+  },
+  actions: {
+    listRegistry: async (): Promise<AdeActionRegistryEntry[]> =>
+      ipcRenderer.invoke(IPC.adeActionsListRegistry),
   },
   usage: {
     getSnapshot: async (): Promise<UsageSnapshot | null> =>

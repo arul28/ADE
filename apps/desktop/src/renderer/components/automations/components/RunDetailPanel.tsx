@@ -79,7 +79,6 @@ export function RunDetailPanel({
           <MetaCard label="Automation" value={detail.run.automationId} />
           <MetaCard label="Mission" value={detail.run.missionId ?? "none"} />
           <MetaCard label="Chat session" value={detail.run.chatSessionId ?? "none"} />
-          <MetaCard label="Spend" value={`$${detail.run.spendUsd.toFixed(2)}`} />
         </section>
 
         {detail.chatSession ? (

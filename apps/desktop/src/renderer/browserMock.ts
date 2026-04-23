@@ -2029,6 +2029,9 @@ if (typeof window !== "undefined" && !(window as any).ade) {
       }),
       onEvent: noop,
     },
+    actions: {
+      listRegistry: resolved([]),
+    },
     missions: {
       list: resolved([]),
       get: resolvedArg(null),

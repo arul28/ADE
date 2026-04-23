@@ -360,6 +360,148 @@ export function createGithubService({
     }
   };
 
+  const listRepoLabels = async (owner: string, name: string): Promise<GitHubLabel[]> => {
+    const { data } = await apiRequest<GitHubLabel[]>({
+      method: "GET",
+      path: `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/labels`,
+      query: { per_page: 100 },
+    });
+    return Array.isArray(data) ? data : [];
+  };
+
+  const listRepoCollaborators = async (owner: string, name: string): Promise<GitHubUser[]> => {
+    const { data } = await apiRequest<GitHubUser[]>({
+      method: "GET",
+      path: `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/collaborators`,
+      query: { per_page: 100 },
+    });
+    return Array.isArray(data) ? data : [];
+  };
+
+  const listRepoIssues = async (
+    owner: string,
+    name: string,
+    opts: { since?: string; state?: "open" | "closed" | "all"; sort?: "created" | "updated"; perPage?: number } = {}
+  ): Promise<GitHubIssue[]> => {
+    const { data } = await apiRequest<GitHubIssue[]>({
+      method: "GET",
+      path: `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/issues`,
+      query: {
+        state: opts.state ?? "all",
+        sort: opts.sort ?? "updated",
+        per_page: opts.perPage ?? 50,
+        ...(opts.since ? { since: opts.since } : {}),
+      },
+    });
+    return Array.isArray(data) ? data : [];
+  };
+
+  const getIssue = async (owner: string, name: string, number: number): Promise<GitHubIssue | null> => {
+    try {
+      const { data } = await apiRequest<GitHubIssue>({
+        method: "GET",
+        path: `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/issues/${number}`,
+      });
+      return data ?? null;
+    } catch (error) {
+      logger.warn("github.get_issue_failed", {
+        owner, name, number,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return null;
+    }
+  };
+
+  const listIssueComments = async (
+    owner: string,
+    name: string,
+    number: number,
+    opts: { since?: string } = {}
+  ): Promise<GitHubIssueComment[]> => {
+    const { data } = await apiRequest<GitHubIssueComment[]>({
+      method: "GET",
+      path: `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/issues/${number}/comments`,
+      query: {
+        per_page: 100,
+        ...(opts.since ? { since: opts.since } : {}),
+      },
+    });
+    return Array.isArray(data) ? data : [];
+  };
+
+  const listRepoPulls = async (
+    owner: string,
+    name: string,
+    opts: { state?: "open" | "closed" | "all"; sort?: "created" | "updated"; perPage?: number } = {}
+  ): Promise<GitHubPullRequest[]> => {
+    const { data } = await apiRequest<GitHubPullRequest[]>({
+      method: "GET",
+      path: `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/pulls`,
+      query: {
+        state: opts.state ?? "all",
+        sort: opts.sort ?? "updated",
+        direction: "desc",
+        per_page: opts.perPage ?? 50,
+      },
+    });
+    return Array.isArray(data) ? data : [];
+  };
+
+  // Issue-domain action helpers (used by the automations `issue` domain).
+  const addIssueComment = async (owner: string, name: string, number: number, body: string): Promise<GitHubIssueComment | null> => {
+    const { data } = await apiRequest<GitHubIssueComment>({
+      method: "POST",
+      path: `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/issues/${number}/comments`,
+      body: { body },
+    });
+    return data ?? null;
+  };
+
+  const setIssueLabels = async (owner: string, name: string, number: number, labels: string[]): Promise<GitHubLabel[]> => {
+    const { data } = await apiRequest<GitHubLabel[]>({
+      method: "PUT",
+      path: `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/issues/${number}/labels`,
+      body: { labels },
+    });
+    return Array.isArray(data) ? data : [];
+  };
+
+  const closeIssue = async (owner: string, name: string, number: number, reason?: "completed" | "not_planned"): Promise<GitHubIssue | null> => {
+    const { data } = await apiRequest<GitHubIssue>({
+      method: "PATCH",
+      path: `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/issues/${number}`,
+      body: { state: "closed", ...(reason ? { state_reason: reason } : {}) },
+    });
+    return data ?? null;
+  };
+
+  const reopenIssue = async (owner: string, name: string, number: number): Promise<GitHubIssue | null> => {
+    const { data } = await apiRequest<GitHubIssue>({
+      method: "PATCH",
+      path: `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/issues/${number}`,
+      body: { state: "open" },
+    });
+    return data ?? null;
+  };
+
+  const assignIssue = async (owner: string, name: string, number: number, assignees: string[]): Promise<GitHubIssue | null> => {
+    const { data } = await apiRequest<GitHubIssue>({
+      method: "POST",
+      path: `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/issues/${number}/assignees`,
+      body: { assignees },
+    });
+    return data ?? null;
+  };
+
+  const setIssueTitle = async (owner: string, name: string, number: number, title: string): Promise<GitHubIssue | null> => {
+    const { data } = await apiRequest<GitHubIssue>({
+      method: "PATCH",
+      path: `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/issues/${number}`,
+      body: { title },
+    });
+    return data ?? null;
+  };
+
   return {
     getStatus,
 
@@ -389,6 +531,95 @@ export function createGithubService({
       return token;
     },
 
-    apiRequest
+    detectRepo,
+    apiRequest,
+
+    // Polling/picker read helpers
+    listRepoLabels,
+    listRepoCollaborators,
+    listRepoIssues,
+    getIssue,
+    listIssueComments,
+    listRepoPulls,
+
+    // Issue-domain action helpers (exposed via `issue` domain in the
+    // automations action registry).
+    addIssueComment,
+    setIssueLabels,
+    closeIssue,
+    reopenIssue,
+    assignIssue,
+    setIssueTitle,
   };
 }
+
+export type GitHubLabel = {
+  id?: number;
+  node_id?: string;
+  url?: string;
+  name: string;
+  color?: string;
+  default?: boolean;
+  description?: string | null;
+};
+
+export type GitHubUser = {
+  id?: number;
+  login: string;
+  avatar_url?: string;
+  html_url?: string;
+  type?: string;
+};
+
+export type GitHubIssueComment = {
+  id: number;
+  body: string;
+  user?: GitHubUser | null;
+  created_at: string;
+  updated_at: string;
+  html_url?: string;
+};
+
+export type GitHubIssue = {
+  id?: number;
+  number: number;
+  title: string;
+  body?: string | null;
+  state: "open" | "closed";
+  state_reason?: string | null;
+  user?: GitHubUser | null;
+  labels?: Array<string | { name: string }>;
+  assignees?: GitHubUser[];
+  created_at: string;
+  updated_at: string;
+  closed_at?: string | null;
+  html_url?: string;
+  comments?: number;
+  /**
+   * GitHub returns a `pull_request` sub-object on issue rows when the row is
+   * actually a PR. Callers should filter those out when fetching issues.
+   */
+  pull_request?: unknown;
+};
+
+export type GitHubPullRequest = {
+  id?: number;
+  number: number;
+  title: string;
+  body?: string | null;
+  state: "open" | "closed";
+  draft?: boolean;
+  merged?: boolean;
+  merged_at?: string | null;
+  closed_at?: string | null;
+  created_at: string;
+  updated_at: string;
+  user?: GitHubUser | null;
+  labels?: Array<string | { name: string }>;
+  assignees?: GitHubUser[];
+  base?: { ref?: string; sha?: string };
+  head?: { ref?: string; sha?: string };
+  html_url?: string;
+};
+
+export type GithubService = ReturnType<typeof createGithubService>;
