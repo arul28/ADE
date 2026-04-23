@@ -9,6 +9,7 @@ import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { resolveCliSpawnInvocation, terminateProcessTree } from "./processExecution";
 
 // ── Type guards ─────────────────────────────────────────────────────
 
@@ -83,10 +84,14 @@ export function spawnAsync(
 ): Promise<{ status: number | null; stdout: string; stderr: string }> {
   return new Promise((resolve) => {
     try {
-      const child = spawn(command, args, {
+      const invocation = resolveCliSpawnInvocation(command, args);
+      const child = spawn(invocation.command, invocation.args, {
         stdio: ["ignore", "pipe", "pipe"],
-        timeout: opts?.timeout ?? 5_000,
+        windowsVerbatimArguments: invocation.windowsVerbatimArguments,
       });
+      const timeout = setTimeout(() => {
+        terminateProcessTree(child);
+      }, opts?.timeout ?? 5_000);
       let stdout = "";
       let stderr = "";
       const limit = opts?.maxOutputBytes ?? 10_000;
@@ -96,8 +101,14 @@ export function spawnAsync(
       child.stderr?.on("data", (chunk: Buffer) => {
         stderr += chunk.toString("utf8").slice(0, Math.max(0, limit - stderr.length));
       });
-      child.on("error", () => resolve({ status: null, stdout, stderr }));
-      child.on("close", (code) => resolve({ status: code, stdout, stderr }));
+      child.on("error", () => {
+        clearTimeout(timeout);
+        resolve({ status: null, stdout, stderr });
+      });
+      child.on("close", (code) => {
+        clearTimeout(timeout);
+        resolve({ status: code, stdout, stderr });
+      });
     } catch {
       resolve({ status: null, stdout: "", stderr: "" });
     }

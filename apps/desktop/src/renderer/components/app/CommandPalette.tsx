@@ -45,6 +45,8 @@ type BrowseRow = {
 
 function stripTrailingSeparator(input: string): string {
   if (input.length <= 1) return input;
+  if (/^[a-z]:[\\/]$/i.test(input)) return input;
+  if (/^[/\\]{2}[^/\\]+[/\\][^/\\]+[/\\]?$/i.test(input)) return input;
   return input.endsWith("/") || input.endsWith("\\") ? input.slice(0, -1) : input;
 }
 

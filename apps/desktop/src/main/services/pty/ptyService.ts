@@ -11,6 +11,7 @@ import type { createSessionService } from "../sessions/sessionService";
 import type { createAiIntegrationService } from "../ai/aiIntegrationService";
 import type { createProjectConfigService } from "../config/projectConfigService";
 import { runGit } from "../git/git";
+import { resolveCliSpawnInvocation } from "../shared/processExecution";
 import type {
   PtyDataEvent,
   PtyExitEvent,
@@ -1119,7 +1120,8 @@ export function createPtyService({
         let created: IPty | null = null;
         if (directCommand) {
           try {
-            created = ptyLib.spawn(directCommand, directArgs, opts);
+            const invocation = resolveCliSpawnInvocation(directCommand, directArgs, launchEnv);
+            created = ptyLib.spawn(invocation.command, invocation.args, opts);
           } catch (err) {
             lastErr = err;
           }
@@ -1318,7 +1320,7 @@ export function createPtyService({
         closeEntry(ptyId, exitCode ?? null);
       });
 
-      if (startupCommand) {
+      if (startupCommand && !directCommand) {
         try {
           pty.write(`${startupCommand}\r`);
           setRuntimeState(sessionId, "running");

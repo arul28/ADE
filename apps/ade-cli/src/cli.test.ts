@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildCliPlan, formatOutput, parseCliArgs, renderLaneGraph, summarizeExecution, unwrapToolResult } from "./cli";
+import { buildCliPlan, formatOutput, parseCliArgs, renderLaneGraph, shouldAttemptDesktopSocketConnection, summarizeExecution, unwrapToolResult } from "./cli";
 
 describe("ADE CLI", () => {
   it("parses global options without stealing command flags", () => {
@@ -233,6 +233,11 @@ describe("ADE CLI", () => {
     expect(output).toContain("cli version");
     expect(output).toContain("service actions");
     expect(output).toContain("Git repository detected");
+  });
+
+  it("attempts Windows named-pipe desktop sockets without filesystem existence checks", () => {
+    expect(shouldAttemptDesktopSocketConnection("\\\\.\\pipe\\ade-123")).toBe(true);
+    expect(shouldAttemptDesktopSocketConnection("//./pipe/ade-123")).toBe(true);
   });
 
   it("renders a compact lane graph", () => {

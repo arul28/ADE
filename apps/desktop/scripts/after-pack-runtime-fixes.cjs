@@ -5,39 +5,62 @@ const {
   resolvePackagedRuntimeRoot,
 } = require("./runtimeBinaryPermissions.cjs");
 
-module.exports = async function afterPack(context) {
+function resolveUnpackedRuntimeRoot(context) {
   const productFilename = context?.packager?.appInfo?.productFilename || "ADE";
   const appBundlePath = path.join(context?.appOutDir || "", `${productFilename}.app`);
-  if (!appBundlePath || !fs.existsSync(appBundlePath)) {
-    throw new Error(`[afterPack] Missing packaged app bundle: ${String(appBundlePath)}`);
+
+  if (fs.existsSync(appBundlePath)) {
+    return { runtimeRoot: resolvePackagedRuntimeRoot(appBundlePath), appBundlePath };
   }
 
-  const runtimeRoot = resolvePackagedRuntimeRoot(appBundlePath);
-  const bundledCliPath = path.join(appBundlePath, "Contents", "Resources", "ade-cli", "cli.cjs");
-  const bundledCliBinPath = path.join(appBundlePath, "Contents", "Resources", "ade-cli", "bin", "ade");
-  const bundledCliInstallerPath = path.join(appBundlePath, "Contents", "Resources", "ade-cli", "install-path.sh");
+  const resourcesRoot = path.join(context?.appOutDir || "", "resources", "app.asar.unpacked");
+  if (!fs.existsSync(resourcesRoot)) {
+    throw new Error(
+      `[afterPack] Missing unpacked runtime payload (tried ${appBundlePath} and ${resourcesRoot})`,
+    );
+  }
+  return { runtimeRoot: resourcesRoot, appBundlePath: null };
+}
+
+function resolveExtraResourcesRoot(context, appBundlePath) {
+  if (appBundlePath) return path.join(appBundlePath, "Contents", "Resources");
+  return path.join(context?.appOutDir || "", "resources");
+}
+
+function requireFile(filePath, label) {
+  if (!fs.existsSync(filePath)) {
+    throw new Error(`[afterPack] Missing ${label}: ${filePath}`);
+  }
+}
+
+module.exports = async function afterPack(context) {
+  const { runtimeRoot, appBundlePath } = resolveUnpackedRuntimeRoot(context);
   if (!fs.existsSync(runtimeRoot)) {
     throw new Error(`[afterPack] Missing unpacked runtime payload: ${runtimeRoot}`);
   }
-  if (!fs.existsSync(bundledCliPath)) {
-    throw new Error(`[afterPack] Missing bundled ADE CLI entry: ${bundledCliPath}`);
-  }
-  if (!fs.existsSync(bundledCliBinPath)) {
-    throw new Error(`[afterPack] Missing bundled ADE CLI wrapper: ${bundledCliBinPath}`);
-  }
-  if (!fs.existsSync(bundledCliInstallerPath)) {
-    throw new Error(`[afterPack] Missing bundled ADE CLI PATH installer: ${bundledCliInstallerPath}`);
-  }
+
+  const resourcesRoot = resolveExtraResourcesRoot(context, appBundlePath);
+  const bundledCliPath = path.join(resourcesRoot, "ade-cli", "cli.cjs");
+  requireFile(bundledCliPath, "bundled ADE CLI entry");
+
+  const bundledCliBinPath = path.join(resourcesRoot, "ade-cli", "bin", "ade");
+  const bundledCliInstallerPath = path.join(resourcesRoot, "ade-cli", "install-path.sh");
+  requireFile(bundledCliBinPath, "bundled ADE CLI wrapper");
+  requireFile(bundledCliInstallerPath, "bundled ADE CLI PATH installer");
+  requireFile(path.join(resourcesRoot, "ade-cli", "bin", "ade.cmd"), "bundled ADE CLI Windows wrapper");
+  requireFile(path.join(resourcesRoot, "ade-cli", "install-path.cmd"), "bundled ADE CLI Windows PATH installer");
   fs.chmodSync(bundledCliBinPath, 0o755);
   fs.chmodSync(bundledCliInstallerPath, 0o755);
 
   const normalized = normalizeDesktopRuntimeBinaries(runtimeRoot);
   for (const entry of normalized) {
-    console.log(`[afterPack] Restored executable mode: ${entry.label} -> ${path.relative(appBundlePath, entry.filePath)}`);
+    console.log(`[afterPack] Restored executable mode: ${entry.label} -> ${path.relative(runtimeRoot, entry.filePath)}`);
   }
 
   const requiredScripts = [
     path.join(runtimeRoot, "dist", "main", "packagedRuntimeSmoke.cjs"),
+    path.join(runtimeRoot, "vendor", "crsqlite", "darwin-arm64", "crsqlite.dylib"),
+    path.join(runtimeRoot, "vendor", "crsqlite", "win32-x64", "crsqlite.dll"),
   ];
 
   for (const scriptPath of requiredScripts) {

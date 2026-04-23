@@ -300,6 +300,7 @@ export function createSyncService(args: SyncServiceArgs) {
   let disposed = false;
   const hostStartupEnabled = args.hostStartupEnabled !== false;
   let hostDiscoveryEnabled = args.hostDiscoveryEnabled !== false;
+  const isCrdtSyncAvailable = (): boolean => args.db.sync.isAvailable?.() !== false;
   let activeLocalLanePresenceIds: string[] = [];
   const localLanePresenceHeartbeatTimer = setInterval(() => {
     if (disposed || !hostService || activeLocalLanePresenceIds.length === 0) return;
@@ -386,7 +387,7 @@ export function createSyncService(args: SyncServiceArgs) {
   };
 
   const startHostIfNeeded = async (): Promise<void> => {
-    if (!hostStartupEnabled) {
+    if (!hostStartupEnabled || !isCrdtSyncAvailable()) {
       if (hostService) {
         await stopHostIfRunning();
       }
@@ -682,7 +683,8 @@ export function createSyncService(args: SyncServiceArgs) {
         ? cluster.brainDeviceId === localDevice.deviceId
         : !savedDraft && !syncPeerService.isConnected();
       const role = isLocalBrain ? "brain" : "viewer";
-      const canHostPhonePairing = role === "brain" && hostStartupEnabled;
+      const crdtSyncAvailable = isCrdtSyncAvailable();
+      const canHostPhonePairing = role === "brain" && hostStartupEnabled && crdtSyncAvailable;
       const client = syncPeerService.getStatus();
       const mode =
         role === "viewer"
@@ -717,9 +719,13 @@ export function createSyncService(args: SyncServiceArgs) {
         client,
         transferReadiness: await getTransferReadiness(),
         survivableStateText:
-          "Paused and idle state will remain available on the new host.",
+          crdtSyncAvailable
+            ? "Paused and idle state will remain available on the new host."
+            : "Desktop sync is disabled because the CRDT database extension is unavailable on this platform.",
         blockingStateText:
-          "Live missions, chats, terminals, or run processes must stop first.",
+          crdtSyncAvailable
+            ? "Live missions, chats, terminals, or run processes must stop first."
+            : "Install a Windows cr-sqlite runtime before pairing or syncing devices.",
       };
     },
 

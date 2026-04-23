@@ -65,6 +65,18 @@ describe("createGlobSearchTool", () => {
     expect(result.displayFiles).toContain("src/lib/deep/nested.ts");
   });
 
+  it("accepts Windows-style separators in glob patterns", async () => {
+    const cwd = makeTmpDir("glob-windows-pattern-");
+    writeFixtureFile(cwd, "src/lib/helper.ts", "export {}");
+    writeFixtureFile(cwd, "src/lib/helper.md", "# Hello");
+
+    const tool = createGlobSearchTool(cwd);
+    const result = await tool.execute({ pattern: "src\\**\\*.ts" });
+
+    expect(result.count).toBe(1);
+    expect(result.displayFiles).toEqual(["src/lib/helper.ts"]);
+  });
+
   it("handles brace expansion: src/**/*.{ts,tsx}", async () => {
     const cwd = makeTmpDir("glob-brace-");
     writeFixtureFile(cwd, "src/App.tsx", "export {}");

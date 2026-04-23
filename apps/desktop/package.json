@@ -11,6 +11,7 @@
     "prebuild": "node ./scripts/normalize-runtime-binaries.cjs && npm run ade:build",
     "dev": "node ./scripts/ensure-electron.cjs && node ./scripts/dev.cjs",
     "build": "tsup && vite build",
+    "dist:win": "npm run validate:win:artifacts && npm run build && electron-builder --win --x64 --publish never",
     "dist:mac": "npm run build && electron-builder --mac --publish never",
     "dist:mac:dir": "npm run build && electron-builder --dir --mac --publish never -c.mac.identity=null -c.mac.notarize=false",
     "dist:mac:signed": "node ./scripts/require-macos-release-secrets.cjs && npm run build && electron-builder --mac --publish never",
@@ -19,6 +20,7 @@
     "dist:mac:universal:signed:zip": "node ./scripts/require-macos-release-secrets.cjs && npm run build && electron-builder --mac zip --universal --publish never",
     "notarize:mac:dmg": "node ./scripts/notarize-mac-dmg.mjs",
     "validate:mac:artifacts": "node ./scripts/validate-mac-artifacts.mjs",
+    "validate:win:artifacts": "node ./scripts/validate-win-artifacts.mjs",
     "release:mac:local": "node ./scripts/release-mac-local.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
@@ -163,8 +165,16 @@
         "to": "ade-cli/bin/ade"
       },
       {
+        "from": "scripts/ade-cli-windows-wrapper.cmd",
+        "to": "ade-cli/bin/ade.cmd"
+      },
+      {
         "from": "scripts/ade-cli-install-path.sh",
         "to": "ade-cli/install-path.sh"
+      },
+      {
+        "from": "scripts/ade-cli-install-path.cmd",
+        "to": "ade-cli/install-path.cmd"
       }
     ],
     "afterPack": "./scripts/after-pack-runtime-fixes.cjs",
@@ -176,6 +186,12 @@
       "publishAutoUpdate": true
     },
     "npmRebuild": false,
+    "win": {
+      "target": [
+        "nsis"
+      ],
+      "artifactName": "${productName}-${version}-win-${arch}.${ext}"
+    },
     "mac": {
       "target": [
         "dmg",

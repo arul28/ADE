@@ -12,6 +12,7 @@ import fs from "node:fs";
 import type { createLaneService } from "../../lanes/laneService";
 import type { createPrService } from "../../prs/prService";
 import type { ComputerUseArtifactBrokerService } from "../../computerUse/computerUseArtifactBrokerService";
+import { getLocalComputerUseCapabilities } from "../../computerUse/localComputerUse";
 import { nowIso } from "../../shared/utils";
 import { getPrIssueResolutionAvailability } from "../../../../shared/prIssueResolution";
 import type { AgentChatCompletionReport } from "../../../../shared/types";
@@ -157,11 +158,20 @@ export function createWorkflowTools(
       execute: async ({ title, description }) => {
         let tmpDir: string | null = null;
         try {
+          const capabilities = getLocalComputerUseCapabilities();
+          if (!capabilities.screenshot.available) {
+            return {
+              success: false,
+              error: capabilities.screenshot.detail,
+              blocked: capabilities.screenshot.state,
+              platform: capabilities.platform,
+            };
+          }
+
           tmpDir = fs.mkdtempSync(path.join(require("node:os").tmpdir(), "ade-screenshot-"));
           const tmpPath = path.join(tmpDir, `screenshot-${Date.now()}.png`);
 
-          // Use macOS screencapture to grab the screen
-          await execFileAsync("screencapture", ["-x", tmpPath], {
+          await execFileAsync(capabilities.screenshot.command ?? "screencapture", ["-x", tmpPath], {
             timeout: 15_000,
           });
 

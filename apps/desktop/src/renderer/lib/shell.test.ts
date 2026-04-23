@@ -16,4 +16,26 @@ describe("shell helpers", () => {
     expect(argv).toEqual(["node", "-e", 'console.log("hello world")']);
     expect(parseCommandLine(commandArrayToLine(argv))).toEqual(argv);
   });
+
+  it("preserves Windows executable paths with backslashes", () => {
+    expect(parseCommandLine("C:\\Tools\\node.exe --version", { platform: "win32" })).toEqual([
+      "C:\\Tools\\node.exe",
+      "--version",
+    ]);
+  });
+
+  it("parses quoted Windows paths with spaces", () => {
+    expect(parseCommandLine('"C:\\Program Files\\nodejs\\node.exe" "C:\\repo path\\script.js"', { platform: "win32" })).toEqual([
+      "C:\\Program Files\\nodejs\\node.exe",
+      "C:\\repo path\\script.js",
+    ]);
+  });
+
+  it("round-trips Windows cmd and PowerShell commands", () => {
+    const cmd = ["cmd.exe", "/c", "npm run test"];
+    const powershell = ["powershell.exe", "-NoProfile", "-Command", "Write-Output \"ok\""];
+
+    expect(parseCommandLine(commandArrayToLine(cmd, { platform: "win32" }), { platform: "win32" })).toEqual(cmd);
+    expect(parseCommandLine(commandArrayToLine(powershell, { platform: "win32" }), { platform: "win32" })).toEqual(powershell);
+  });
 });
