@@ -15,8 +15,10 @@ It guarantees three outcomes:
 It does **not** guarantee that remote PR review is complete after a push. GitHub's
 first visible check list can look quiet before delayed checks, bot reviews, and
 inline comments arrive. After pushing a finalized branch, hand off to
-`/shipLane` or an equivalent PR poll loop and honor the 12-minute CI-running poll
-window before concluding there are no more incoming comments.
+`/shipLane` or an equivalent PR poll loop. Use the ship-lane cadence: poll
+immediately after a push, wait 270s if CI has not registered, wait 720s while CI
+is running, and wait 1800s only when CI is done and the PR is just waiting on
+review.
 
 **Usage:** `/finalize`
 
@@ -435,7 +437,10 @@ Handoff rule:
 ```bash
 # After the branch is pushed, continue with /shipLane or equivalent:
 # - poll PR checks, status rollup, review comments, issue comments, and reviews
-# - if any check is QUEUED/IN_PROGRESS/PENDING, wait the 12-minute poll window
+# - poll immediately after a push so early CI registration/failures are visible
+# - if CI has not started yet, wait 270s
+# - if any check is QUEUED/IN_PROGRESS/PENDING, wait 720s
+# - if CI is done and the PR is only waiting on review, wait 1800s
 # - poll again before declaring the PR clean or ready for human merge
 ```
 
@@ -480,7 +485,7 @@ Do not report "PR clean" from `/finalize` alone.
 
 ### Remote PR Handoff:
 - Post-push polling required: YES
-- Poll loop: `/shipLane` / 12-minute CI-running window
+- Poll loop: `/shipLane` branch-specific cadence
 - Reason: delayed checks and bot comments may arrive after first visible green state
 
 ### Status: Ready to push / Issues found
@@ -502,4 +507,4 @@ Before marking complete:
 - [ ] All apps build successfully
 - [ ] Doc validation passed
 - [ ] Orphan worker processes cleaned up (vitest/tsup/tsc) — scoped to apps/ paths only
-- [ ] Remote PR review is not declared clean by finalize alone; after push, `/shipLane` or an equivalent poll loop must wait the 12-minute CI-running window and re-check comments/reviews
+- [ ] Remote PR review is not declared clean by finalize alone; after push, `/shipLane` or an equivalent poll loop must use the branch-specific cadence and re-check comments/reviews
