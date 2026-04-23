@@ -1,6 +1,6 @@
 ---
 name: shipLane
-description: 'Autonomously drive a lane through CI + review until merged (automate → finalize → poll/fix loop, self-paced wake-ups, max 5 iterations)'
+description: 'Autonomously drive a lane through CI + review until merged (automate → finalize → poll/fix loop, self-paced wake-ups, max 10 iterations)'
 ---
 
 # Ship Lane Command
@@ -88,6 +88,8 @@ ScheduleWakeup({
 ```
 
 Pass `$ARGUMENTS` through so a PR-number argument is preserved across wake-ups.
+
+Waiting must be token-idle. After scheduling a wake-up, stop the active agent turn completely and let the scheduler re-invoke this command later. Do not keep agents alive in polling loops, do not run `--watch` commands, and do not ask sub-agents to sleep while holding context. Poll only once per scheduled invocation, then either fix, exit, or schedule the next wake.
 
 Do NOT schedule a wake if `status` is `done-clean`, `done-max`, or `blocked` — print the summary and stop.
 

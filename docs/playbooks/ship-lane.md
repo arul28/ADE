@@ -15,8 +15,9 @@ Run this playbook once per lane, when the code on the branch is done (or nearly 
 ## Execution contract
 
 - **Autonomous.** Do not pause for user confirmation mid-loop.
-- **Bounded.** Hard cap: 5 iterations. Exit earlier if clean or blocked.
+- **Bounded.** Hard cap: 10 iterations. Exit earlier if clean or blocked.
 - **Scoped checks.** Never run the full test suite between iterations — only failing test files and touched shards.
+- **Token-idle waits.** Waiting is done by scheduler/resume, not by live polling loops. Between wake-ups, agents should be asleep, not consuming model context or tokens.
 - **Idempotent resume.** All state lives in `.ade/shipLane/<branch>.json`. A re-invocation reads that file and picks up where it left off.
 
 ## Concurrency model
@@ -28,6 +29,8 @@ Pick the richest available and **use it fully**:
 3. **Serial** (any CLI): absolute last resort. Run phases in order, in-process. Compact aggressively.
 
 **Rule:** the lead reads poll-agent summaries, not raw API output. Fix agents receive minimum scope (failing test paths + error snippets, or comment bodies + file anchors) and return patches or direct edits. The lead commits and pushes; fix agents do not.
+
+**Waiting rule:** agents never stay alive just to wait. A poll-agent performs one bounded poll and exits. Fix agents perform one bounded fix task and exit. The lead schedules a wake-up or records a blocked/done state, then exits the active turn.
 
 ## State file
 
@@ -142,11 +145,13 @@ Then schedule the first wake-up (see Phase 5).
 
 Runs on every wake-up. Delegate to a **poll-agent** so the lead's context stays clean. The poll-agent runs these calls and returns a single structured summary.
 
+This is a one-shot poll. Do not use `gh pr checks --watch`, shell `while` loops, repeated sleeps, or minute-by-minute status checks. If CI/review is still pending, return `ciRunning: true` or no actionable comments, then let Phase 5 schedule the next wake.
+
 ### 1.1 PR and CI state
 
 ```bash
 gh pr view "$PR_NUMBER" --json state,mergeable,mergeStateStatus,headRefOid,baseRefOid,isDraft
-gh pr checks "$PR_NUMBER" --json name,state,conclusion,link
+gh pr checks "$PR_NUMBER" --watch=false --json name,state,conclusion,link
 ```
 
 If any check's `state` is `IN_PROGRESS` or `QUEUED`, note CI as still running.
@@ -321,7 +326,7 @@ git commit -m "ship: iteration $N — fix $CI_JOBS, address #$COMMENT_IDS"
 git push
 ```
 
-Post bot pings (Phase 4), update state (Phase 5), restart Phase 1 immediately.
+Post bot pings (Phase 4), update state (Phase 5), and schedule the next wake. Do not restart Phase 1 immediately after a push; give CI and review bots time to run while the agent is asleep.
 
 ---
 
@@ -363,7 +368,7 @@ These are separate comments (not a single body) so each bot handler parses its o
 
 ### 5.2 Decide exit vs next wake
 
-- `iteration >= 5` → set `status: done-max`, `exitReason: "iteration-cap-reached"`, post a PR comment listing remaining unaddressed items, exit.
+- `iteration >= 10` → set `status: done-max`, `exitReason: "iteration-cap-reached"`, post a PR comment listing remaining unaddressed items, exit.
 - `merged == true` (observed during this iteration) → set `status: done-clean`, exit.
 - Otherwise → schedule next wake.
 
@@ -376,7 +381,7 @@ Agent-CLI-agnostic guidance (Claude Code maps this to `ScheduleWakeup`; other CL
 - CI done, waiting on human review → **1800 seconds** (30 min; cost-efficient)
 - Unknown → **720 seconds** default
 
-The cadence is a hint, not a contract. If the agent knows CI finishes faster, wake sooner; if reviewers are slow, wake later.
+The cadence is a hint, not a live polling budget. Prefer longer sleeps over frequent checks. If the environment has a real scheduler/resume primitive, use it and end the active turn. If no scheduler exists, write the updated state file and stop with a summary that names the next intended wake time; an external runner or human can re-invoke the playbook later. Do not emulate scheduling with an active model loop.
 
 ---
 
@@ -385,7 +390,7 @@ The cadence is a hint, not a contract. If the agent knows CI finishes faster, wa
 | status | meaning | next action |
 | --- | --- | --- |
 | `done-clean` | PR merged OR green + no unaddressed comments | clear state file; print summary |
-| `done-max` | 5 iterations exhausted | leave state file; post PR comment to human |
+| `done-max` | 10 iterations exhausted | leave state file; post PR comment to human |
 | `blocked` | Unrecoverable conflict, gate failure, or API error | leave state file; post PR comment with reason |
 
 ## Summary output (always print on exit)
