@@ -4488,6 +4488,138 @@ describe("createAgentChatService", () => {
     });
   });
 
+  describe("getChatEventHistory", () => {
+    it("returns an empty history for an unknown session", async () => {
+      const { service } = createService();
+      const history = service.getChatEventHistory("unknown-session");
+      expect(history.events).toEqual([]);
+      expect(history.truncated).toBe(false);
+    });
+
+    it("hydrates history from the on-disk transcript on first read", async () => {
+      // This is the core contract that fixes chat-history-loss on project
+      // switch / tab switch: a late subscriber that missed the live broadcast
+      // still sees the full history, because getChatEventHistory hydrates
+      // itself from the transcript the first time the session is queried.
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+      });
+
+      const envelope1: AgentChatEventEnvelope = {
+        sessionId: session.id,
+        timestamp: new Date().toISOString(),
+        event: { type: "text", text: "persisted-1" },
+        sequence: 1,
+      };
+      const envelope2: AgentChatEventEnvelope = {
+        sessionId: session.id,
+        timestamp: new Date().toISOString(),
+        event: { type: "text", text: "persisted-2" },
+        sequence: 2,
+      };
+
+      // Seed the transcript file at the path managed.transcriptPath points
+      // to (set by createSession → managedSessions → row.transcriptPath).
+      const transcriptFile = path.join(tmpRoot, "transcripts", `${session.id}.chat.jsonl`);
+      fs.writeFileSync(transcriptFile, `${JSON.stringify(envelope1)}\n${JSON.stringify(envelope2)}\n`, "utf8");
+      vi.mocked(parseAgentChatTranscript).mockReturnValue([envelope1, envelope2]);
+
+      const history = service.getChatEventHistory(session.id);
+      expect(history.sessionId).toBe(session.id);
+      expect(history.events).toHaveLength(2);
+      expect(history.events.map((envelope) =>
+        envelope.event.type === "text" ? envelope.event.text : "",
+      )).toEqual(["persisted-1", "persisted-2"]);
+    });
+
+    it("keeps Claude streaming fragments that share a timestamp when hydrating", async () => {
+      // Claude V2 emits multiple text deltas inside tight streaming loops,
+      // so two legitimate envelopes with type:"text" can land on the same
+      // millisecond. A naive timestamp+type dedup key would collapse these;
+      // the cross-run-safe dedup must keep distinct payloads separate.
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+
+      const sharedTimestamp = new Date().toISOString();
+      const envelope1: AgentChatEventEnvelope = {
+        sessionId: session.id,
+        timestamp: sharedTimestamp,
+        event: { type: "text", text: "fragment-a" },
+        sequence: 1,
+      };
+      const envelope2: AgentChatEventEnvelope = {
+        sessionId: session.id,
+        timestamp: sharedTimestamp,
+        event: { type: "text", text: "fragment-b" },
+        sequence: 2,
+      };
+      const transcriptFile = path.join(tmpRoot, "transcripts", `${session.id}.chat.jsonl`);
+      fs.writeFileSync(transcriptFile, `${JSON.stringify(envelope1)}\n${JSON.stringify(envelope2)}\n`, "utf8");
+      vi.mocked(parseAgentChatTranscript).mockReturnValue([envelope1, envelope2]);
+
+      const history = service.getChatEventHistory(session.id);
+      expect(history.events).toHaveLength(2);
+      expect(history.events.map((e) => e.event.type === "text" ? e.event.text : "")).toEqual([
+        "fragment-a",
+        "fragment-b",
+      ]);
+    });
+
+    it("drops history when the underlying session is deleted", async () => {
+      // We don't rely on sendMessage emitting events (mock streams vary across
+      // providers), so we seed the transcript directly to verify the cleanup
+      // path. deleteSession must remove both the in-memory ring buffer and
+      // any hydrated-from-disk state so a subsequently-created session with
+      // the same id doesn't inherit stale events.
+      const emitted: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => emitted.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+      });
+
+      // Seed the transcript on disk and populate the hydrated-from-disk cache
+      // BEFORE deleting, so a regression where deleteSession fails to clear
+      // the cache would actually be caught (an empty history trivially stays
+      // empty).
+      const envelope: AgentChatEventEnvelope = {
+        sessionId: session.id,
+        timestamp: new Date().toISOString(),
+        event: { type: "text", text: "before-delete" },
+        sequence: 1,
+      };
+      // createSession assigns managed.transcriptPath under `transcriptsDir`,
+      // so the hydration read is served from there (ahead of the
+      // chatTranscriptsDir fallback).
+      const transcriptFile = path.join(tmpRoot, "transcripts", `${session.id}.chat.jsonl`);
+      fs.mkdirSync(path.dirname(transcriptFile), { recursive: true });
+      fs.writeFileSync(transcriptFile, `${JSON.stringify(envelope)}\n`, "utf8");
+      vi.mocked(parseAgentChatTranscript).mockReturnValue([envelope]);
+      const beforeDelete = service.getChatEventHistory(session.id);
+      expect(beforeDelete.events).toHaveLength(1);
+
+      await service.deleteSession({ sessionId: session.id });
+
+      // The transcript-returning parser mock is still wired up, so if
+      // deleteSession fails to clear the cache / on-disk file, the next read
+      // would still surface envelopes. An empty result proves both the
+      // in-memory ring buffer and the hydrated state were cleared.
+      const afterDelete = service.getChatEventHistory(session.id);
+      expect(afterDelete.events).toEqual([]);
+      expect(afterDelete.truncated).toBe(false);
+    });
+  });
+
   // --------------------------------------------------------------------------
   // Session creation edge cases
   // --------------------------------------------------------------------------
@@ -5168,7 +5300,7 @@ describe("createAgentChatService", () => {
       }
     });
 
-    it("tears down idle Claude runtimes after the inactivity ttl", async () => {
+    it("tears down idle Claude runtimes after the inactivity ttl without losing resume state", async () => {
       vi.useFakeTimers();
       try {
         const close = vi.fn();
@@ -5231,6 +5363,169 @@ describe("createAgentChatService", () => {
         await vi.advanceTimersByTimeAsync(6 * 60_000);
 
         expect(close).toHaveBeenCalledTimes(1);
+        const persistedAfterIdle = readPersistedChatState(session.id);
+        expect(persistedAfterIdle.sdkSessionId).toBe("sdk-session-idle-ttl");
+        expect(persistedAfterIdle.lastLaneDirectiveKey).toEqual(expect.any(String));
+
+        await service.runSessionTurn({
+          sessionId: session.id,
+          text: "Follow up with the previous context",
+          timeoutMs: 15_000,
+        });
+
+        expect(unstable_v2_resumeSession).toHaveBeenCalledWith("sdk-session-idle-ttl", expect.any(Object));
+        expect(unstable_v2_createSession).toHaveBeenCalledTimes(1);
+        expect(send).toHaveBeenCalledTimes(3);
+        expect(String(send.mock.calls[2]?.[0] ?? "")).toContain("Follow up with the previous context");
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("preserves Claude resume metadata across idle_ttl followed by shutdown", async () => {
+      vi.useFakeTimers();
+      try {
+        const close = vi.fn();
+        let streamCall = 0;
+        const send = vi.fn().mockResolvedValue(undefined);
+        const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+
+        const sessionHandle = {
+          send,
+          stream: vi.fn(() => (async function* () {
+            streamCall += 1;
+            if (streamCall === 1) {
+              yield {
+                type: "system",
+                subtype: "init",
+                session_id: "sdk-session-preserve",
+                slash_commands: [],
+              };
+              yield {
+                type: "result",
+                usage: { input_tokens: 1, output_tokens: 1 },
+              };
+              return;
+            }
+            yield {
+              type: "assistant",
+              session_id: "sdk-session-preserve",
+              message: {
+                content: [{ type: "text", text: "Done." }],
+                usage: { input_tokens: 1, output_tokens: 1 },
+              },
+            };
+            yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+          })()),
+          close,
+          sessionId: "sdk-session-preserve",
+          setPermissionMode,
+        };
+
+        vi.mocked(unstable_v2_createSession).mockReturnValue(sessionHandle as any);
+        vi.mocked(unstable_v2_resumeSession).mockReturnValue(sessionHandle as any);
+
+        const { service } = createService();
+        const session = await service.createSession({
+          laneId: "lane-1",
+          provider: "claude",
+          model: "sonnet",
+        });
+
+        await service.runSessionTurn({
+          sessionId: session.id,
+          text: "Say hi",
+          timeoutMs: 15_000,
+        });
+
+        // Idle-ttl teardown persists sdkSessionId + laneDirectiveKey.
+        await vi.advanceTimersByTimeAsync(6 * 60_000);
+        const persistedAfterIdle = readPersistedChatState(session.id);
+        expect(persistedAfterIdle.sdkSessionId).toBe("sdk-session-preserve");
+        const preservedLaneDirective = persistedAfterIdle.lastLaneDirectiveKey;
+        expect(preservedLaneDirective).toEqual(expect.any(String));
+
+        // Shutdown re-enters teardownRuntime with runtime already null. Must
+        // NOT clobber the preserved sdkSessionId/laneDirectiveKey.
+        service.forceDisposeAll();
+
+        const persistedAfterShutdown = readPersistedChatState(session.id);
+        expect(persistedAfterShutdown.sdkSessionId).toBe("sdk-session-preserve");
+        expect(persistedAfterShutdown.lastLaneDirectiveKey).toBe(preservedLaneDirective);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("clears Claude resume metadata when a terminal teardown runs after idle_ttl", async () => {
+      vi.useFakeTimers();
+      try {
+        const close = vi.fn();
+        let streamCall = 0;
+        const send = vi.fn().mockResolvedValue(undefined);
+        const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+
+        const sessionHandle = {
+          send,
+          stream: vi.fn(() => (async function* () {
+            streamCall += 1;
+            if (streamCall === 1) {
+              yield {
+                type: "system",
+                subtype: "init",
+                session_id: "sdk-session-terminal",
+                slash_commands: [],
+              };
+              yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+              return;
+            }
+            yield {
+              type: "assistant",
+              session_id: "sdk-session-terminal",
+              message: {
+                content: [{ type: "text", text: "Done." }],
+                usage: { input_tokens: 1, output_tokens: 1 },
+              },
+            };
+            yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+          })()),
+          close,
+          sessionId: "sdk-session-terminal",
+          setPermissionMode,
+        };
+
+        vi.mocked(unstable_v2_createSession).mockReturnValue(sessionHandle as any);
+        vi.mocked(unstable_v2_resumeSession).mockReturnValue(sessionHandle as any);
+
+        const { service } = createService();
+        const session = await service.createSession({
+          laneId: "lane-1",
+          provider: "claude",
+          model: "sonnet",
+        });
+
+        await service.runSessionTurn({
+          sessionId: session.id,
+          text: "Say hi",
+          timeoutMs: 15_000,
+        });
+
+        // idle_ttl preserves sdkSessionId/laneDirectiveKey.
+        await vi.advanceTimersByTimeAsync(6 * 60_000);
+        const persistedAfterIdle = readPersistedChatState(session.id);
+        expect(persistedAfterIdle.sdkSessionId).toBe("sdk-session-terminal");
+        expect(persistedAfterIdle.lastLaneDirectiveKey).toEqual(expect.any(String));
+
+        // Terminal teardown (user closes the chat) runs teardownRuntime with
+        // reason "ended_session" and runtime already null. Must still clear
+        // the preserved lane directive so a future resume of a different
+        // chat can't reattach to this ended session's lane context.
+        // dispose → finishSession → teardownRuntime("ended_session") without
+        // deleting the persisted state file.
+        await service.dispose({ sessionId: session.id });
+
+        const persistedAfterDispose = readPersistedChatState(session.id);
+        expect(persistedAfterDispose.lastLaneDirectiveKey ?? null).toBeNull();
       } finally {
         vi.useRealTimers();
       }

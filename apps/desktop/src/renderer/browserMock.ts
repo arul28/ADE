@@ -2382,6 +2382,11 @@ if (typeof window !== "undefined" && !(window as any).ade) {
       onEvent: noop,
       slashCommands: resolvedArg([]),
       fileSearch: resolvedArg([]),
+      getEventHistory: async (arg: { sessionId: string; maxEvents?: number }) => ({
+        sessionId: typeof arg?.sessionId === "string" ? arg.sessionId : "",
+        events: [],
+        truncated: false,
+      }),
     },
     cto: {
       getState: resolvedArg({

@@ -89,6 +89,20 @@ input, and has exceeded its provider-specific inactivity window:
 free the underlying server sooner). Teardown routes through
 `teardownRuntime(managed, "idle_ttl")`.
 
+`teardownRuntime` distinguishes **terminal** close reasons
+(`handle_close`, `ended_session`, `model_switch`) from **non-terminal**
+ones (`idle_ttl`, `budget_eviction`, `pool_compaction`, `paused_run`,
+`project_close`, `shutdown`). For Claude runtimes only, a non-terminal
+teardown preserves resume state: the service pins
+`runtime.sdkSessionId` to the last known V2 session id before releasing
+the session, persists chat state immediately, and skips the usual
+`runtimeInvalidated = true` + `clearLaneDirectiveKey` cleanup. The next
+turn on that chat can therefore rehydrate the same Claude V2 session
+instead of creating a fresh one, even though the SDK process was
+released to reclaim budget or compact the pool. Terminal closes still
+run the full invalidation path so "End chat" and explicit model
+switches don't leave stale resume pointers behind.
+
 On app shutdown the service exposes `forceDisposeAll()` — called from
 `runImmediateProcessCleanup()` in `main.ts`. It stops the cleanup timer,
 rejects every outstanding `sessionTurnCollector` with a "closed during

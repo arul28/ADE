@@ -126,15 +126,40 @@ func workSessionGroupsByLane(
   }
 
   var groups: [WorkSessionGroup] = []
+  let knownLaneIds = Set(orderedLanes.map(\.id))
   for lane in orderedLanes {
     guard let list = byLaneId[lane.id], !list.isEmpty else { continue }
     groups.append(WorkSessionGroup(id: "lane:\(lane.id)", label: lane.name, icon: .laneBranch, tint: ADEColor.textSecondary, sessions: list))
   }
-  // Surface any sessions whose lane isn't in the ordered list (e.g., soft-deleted lanes) at the end.
-  let accounted = Set(groups.flatMap { $0.sessions.map(\.id) })
-  let orphans = sessions.filter { !accounted.contains($0.id) }
-  if !orphans.isEmpty {
-    groups.append(WorkSessionGroup(id: "lane:_orphans", label: "Other", icon: .laneBranch, tint: ADEColor.textMuted, sessions: orphans))
+  // Surface any sessions whose lane isn't in the ordered list (e.g., soft-deleted lanes)
+  // as their own per-lane groups so users still recognize which branch each belongs to.
+  let iso = ISO8601DateFormatter()
+  iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+  let isoFallback = ISO8601DateFormatter()
+  isoFallback.formatOptions = [.withInternetDateTime]
+  func latestStartedAt(_ list: [TerminalSessionSummary]) -> Date {
+    list.reduce(.distantPast) { acc, session in
+      let parsed = iso.date(from: session.startedAt) ?? isoFallback.date(from: session.startedAt) ?? .distantPast
+      return parsed > acc ? parsed : acc
+    }
+  }
+  func orphanLabel(_ name: String?, fallback: String) -> String {
+    let trimmed = name?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    return trimmed.isEmpty ? fallback : trimmed
+  }
+  let orphanEntries = byLaneId
+    .filter { laneId, list in !knownLaneIds.contains(laneId) && !list.isEmpty }
+    .sorted { left, right in
+      let leftLatest = latestStartedAt(left.value)
+      let rightLatest = latestStartedAt(right.value)
+      if leftLatest != rightLatest { return leftLatest > rightLatest }
+      let leftName = orphanLabel(left.value.first?.laneName, fallback: left.key)
+      let rightName = orphanLabel(right.value.first?.laneName, fallback: right.key)
+      return leftName.localizedCaseInsensitiveCompare(rightName) == .orderedAscending
+    }
+  for (laneId, list) in orphanEntries {
+    let label = orphanLabel(list.first?.laneName, fallback: laneId)
+    groups.append(WorkSessionGroup(id: "lane:\(laneId)", label: label, icon: .laneBranch, tint: ADEColor.textMuted, sessions: list))
   }
   return groups
 }

@@ -151,6 +151,30 @@ export const SessionListPane = React.memo(function SessionListPane({
     for (const lane of lanes) map.set(lane.id, lane);
     return map;
   }, [lanes]);
+  const missingLaneSessionGroups = useMemo(() => {
+    if (!sessionsGroupedByLane) return [];
+    const knownLaneIds = new Set(lanes.map((lane) => lane.id));
+    const latestStartedAt = (sessions: TerminalSessionSummary[]): number => {
+      const times = sessions
+        .map((session) => new Date(session.startedAt).getTime())
+        .filter(Number.isFinite);
+      return times.length > 0 ? Math.max(...times) : -Infinity;
+    };
+    const orphanLabel = (name: string | null | undefined, fallback: string): string => {
+      const trimmed = (name ?? "").trim();
+      return trimmed.length > 0 ? trimmed : fallback;
+    };
+    return [...sessionsGroupedByLane.entries()]
+      .filter(([laneId, sessions]) => !knownLaneIds.has(laneId) && sessions.length > 0)
+      .sort(([leftLaneId, leftSessions], [rightLaneId, rightSessions]) => {
+        const leftLatest = latestStartedAt(leftSessions);
+        const rightLatest = latestStartedAt(rightSessions);
+        if (leftLatest !== rightLatest) return rightLatest - leftLatest;
+        const leftName = orphanLabel(leftSessions[0]?.laneName, leftLaneId);
+        const rightName = orphanLabel(rightSessions[0]?.laneName, rightLaneId);
+        return leftName.localeCompare(rightName);
+      });
+  }, [lanes, sessionsGroupedByLane]);
 
   // First-rendered card carries `data-tour="work.sessionItem"` so the Work
   // tab tour can anchor at a real session. We track whether we've already
@@ -240,6 +264,24 @@ export const SessionListPane = React.memo(function SessionListPane({
             count={total}
             collapsed={collapsed}
             onToggleCollapsed={() => toggleWorkLaneCollapsed(lane.id)}
+          >
+            {renderCards(list)}
+          </StickyGroupHeader>
+        );
+      })}
+      {missingLaneSessionGroups.map(([laneId, list]) => {
+        const collapsed = workCollapsedLaneIds.includes(laneId);
+        const trimmedLaneName = (list[0]?.laneName ?? "").trim();
+        const label = trimmedLaneName.length > 0 ? trimmedLaneName : laneId;
+        return (
+          <StickyGroupHeader
+            key={laneId}
+            sectionId={laneId}
+            icon={<GitBranch size={11} weight="regular" className="shrink-0 text-muted-fg/55" />}
+            label={label}
+            count={list.length}
+            collapsed={collapsed}
+            onToggleCollapsed={() => toggleWorkLaneCollapsed(laneId)}
           >
             {renderCards(list)}
           </StickyGroupHeader>

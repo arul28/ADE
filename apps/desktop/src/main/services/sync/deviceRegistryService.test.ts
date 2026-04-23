@@ -62,6 +62,58 @@ describe("deviceRegistryService", () => {
     db2.close();
   });
 
+  it("can share a desktop device identity across project registries", async () => {
+    const projectRootA = makeProjectRoot("ade-device-registry-global-a-");
+    const projectRootB = makeProjectRoot("ade-device-registry-global-b-");
+    const globalDeviceIdPath = path.join(os.tmpdir(), `ade-global-device-${Date.now()}-${Math.random()}`, "sync-device-id");
+
+    const dbA = await openKvDb(path.join(projectRootA, ".ade", "ade.db"), createLogger() as any);
+    const dbB = await openKvDb(path.join(projectRootB, ".ade", "ade.db"), createLogger() as any);
+    const registryA = createDeviceRegistryService({
+      db: dbA,
+      logger: createLogger() as any,
+      projectRoot: projectRootA,
+      localDeviceIdPath: globalDeviceIdPath,
+    });
+    const registryB = createDeviceRegistryService({
+      db: dbB,
+      logger: createLogger() as any,
+      projectRoot: projectRootB,
+      localDeviceIdPath: globalDeviceIdPath,
+    });
+
+    const localA = registryA.ensureLocalDevice();
+    const localB = registryB.ensureLocalDevice();
+
+    expect(localB.deviceId).toBe(localA.deviceId);
+    expect(localB.siteId).not.toBe(localA.siteId);
+
+    dbA.close();
+    dbB.close();
+  });
+
+  it("migrates the legacy project device identity into the shared desktop identity file", async () => {
+    const projectRoot = makeProjectRoot("ade-device-registry-global-migrate-");
+    const legacyDeviceId = "legacy-project-device-id";
+    const legacyDeviceIdPath = path.join(projectRoot, ".ade", "secrets", "sync-device-id");
+    const globalDeviceIdPath = path.join(os.tmpdir(), `ade-global-device-migrate-${Date.now()}-${Math.random()}`, "sync-device-id");
+    fs.mkdirSync(path.dirname(legacyDeviceIdPath), { recursive: true });
+    fs.writeFileSync(legacyDeviceIdPath, `${legacyDeviceId}\n`);
+
+    const db = await openKvDb(path.join(projectRoot, ".ade", "ade.db"), createLogger() as any);
+    const registry = createDeviceRegistryService({
+      db,
+      logger: createLogger() as any,
+      projectRoot,
+      localDeviceIdPath: globalDeviceIdPath,
+    });
+
+    expect(registry.ensureLocalDevice().deviceId).toBe(legacyDeviceId);
+    expect(fs.readFileSync(globalDeviceIdPath, "utf8").trim()).toBe(legacyDeviceId);
+
+    db.close();
+  });
+
   it("persists notification preferences in device metadata across registry restarts", async () => {
     const projectRoot = makeProjectRoot("ade-device-registry-prefs-");
     const dbPath = path.join(projectRoot, ".ade", "ade.db");

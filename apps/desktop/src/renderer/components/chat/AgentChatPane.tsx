@@ -1434,19 +1434,52 @@ export function AgentChatPane({
     loadedHistoryRef.current.add(sessionId);
 
     try {
-      const summary = await window.ade.sessions.get(sessionId);
-      if (!summary || !isChatToolType(summary.toolType)) return;
-      const raw = await window.ade.sessions.readTranscriptTail({
-        sessionId,
-        maxBytes: CHAT_HISTORY_READ_MAX_BYTES,
-        raw: true
-      });
-      const parsed = parseAgentChatTranscript(raw).filter((entry) => entry.sessionId === sessionId);
+      // Prefer the main-process snapshot API which merges the in-memory event
+      // ring buffer with the on-disk transcript. This recovers events that
+      // were emitted while the user was on a different project (IPC dropped),
+      // events that were still in fs.appendFile flight when a previous load
+      // ran, and the full history even when the transcript has been truncated
+      // for size. Fall back to the disk-only readTranscriptTail path if the
+      // snapshot call fails or the desktop app is running against an older
+      // main-process build that lacks the handler.
+      let parsed: AgentChatEventEnvelope[] = [];
+      let usedSnapshotPath = false;
+      try {
+        if (typeof window.ade.agentChat.getEventHistory === "function") {
+          const snapshot = await window.ade.agentChat.getEventHistory({
+            sessionId,
+            maxEvents: MAX_SELECTED_CHAT_SESSION_EVENTS,
+          });
+          if (snapshot?.events?.length || snapshot?.sessionId === sessionId) {
+            parsed = (snapshot.events ?? []).filter((entry) => entry.sessionId === sessionId);
+            usedSnapshotPath = true;
+          }
+        }
+      } catch {
+        usedSnapshotPath = false;
+      }
+      if (!usedSnapshotPath) {
+        const summary = await window.ade.sessions.get(sessionId);
+        if (!summary || !isChatToolType(summary.toolType)) {
+          // Clear the loaded flag so a subsequent remount/tab switch can retry.
+          // Without this, a transient lookup miss (e.g. session summary not yet
+          // propagated on project switch) would leave the UI permanently
+          // unable to hydrate history. Mirrors the catch-block recovery below.
+          loadedHistoryRef.current.delete(sessionId);
+          return;
+        }
+        const raw = await window.ade.sessions.readTranscriptTail({
+          sessionId,
+          maxBytes: CHAT_HISTORY_READ_MAX_BYTES,
+          raw: true
+        });
+        parsed = parseAgentChatTranscript(raw).filter((entry) => entry.sessionId === sessionId);
+      }
 
       // If real-time events have already been received for this session
-      // (via flushQueuedEvents), the on-disk transcript may be stale.
-      // Merge: use the loaded history as a base but keep any real-time
-      // events that arrived after the last event in the transcript.
+      // (via flushQueuedEvents), the snapshot may be stale by a few events.
+      // Merge: use the snapshot as a base but keep any real-time events that
+      // arrived after the last snapshot entry.
       const existing = eventsBySessionRef.current[sessionId] ?? [];
       let merged: AgentChatEventEnvelope[];
       if (existing.length && parsed.length) {
@@ -1486,7 +1519,11 @@ export function AgentChatPane({
       setPendingInputsBySession((prev) => ({ ...prev, [sessionId]: derived.pendingInputs }));
       setPendingSteersBySession((prev) => ({ ...prev, [sessionId]: derived.pendingSteers }));
     } catch {
-      // Ignore transcript history failures.
+      // Clear the loaded flag so the caller can retry on next remount or tab
+      // switch — otherwise a transient failure leaves the UI stuck with no
+      // events. Without this clearSessionView, a failed initial load
+      // permanently blocked re-entry until the chat received a new event.
+      loadedHistoryRef.current.delete(sessionId);
     }
   }, [initialSessionSummary, lockSessionId]);
 
@@ -1691,8 +1728,13 @@ export function AgentChatPane({
       void loadHistory(selectedSessionId, { force: true });
       return;
     }
+    // Locked-single-session mode (Work tab tile). Force-reload on every mount
+    // so that when the pane is unmounted and remounted (tab switch, project
+    // switch, session tile activation) we always pull the freshest snapshot
+    // rather than short-circuiting on a stale loadedHistoryRef from the
+    // previous component instance.
     const handle = window.setTimeout(() => {
-      void loadHistory(selectedSessionId);
+      void loadHistory(selectedSessionId, { force: true });
     }, 120);
     return () => window.clearTimeout(handle);
   }, [loadHistory, lockedSingleSessionMode, selectedSessionId]);

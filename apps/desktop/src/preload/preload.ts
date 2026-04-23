@@ -1624,6 +1624,11 @@ contextBridge.exposeInMainWorld("ade", {
       filename: string;
     }): Promise<{ path: string }> =>
       ipcRenderer.invoke(IPC.agentChatSaveTempAttachment, args),
+    getEventHistory: async (args: {
+      sessionId: string;
+      maxEvents?: number;
+    }): Promise<{ sessionId: string; events: AgentChatEventEnvelope[]; truncated: boolean }> =>
+      ipcRenderer.invoke(IPC.agentChatGetEventHistory, args),
   },
   computerUse: {
     listArtifacts: async (

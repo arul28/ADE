@@ -166,7 +166,9 @@ enum SyncRequestTimeout {
 }
 
 private let syncTerminalSubscriptionMaxBytes = 80_000
+private let syncChatSubscriptionMaxBytes = 2_000_000
 private let syncTerminalBufferMaxCharacters = 80_000
+private let chatEventHistoryMaxEvents = 1_000
 
 enum SyncBonjourTiming {
   static let searchRetryNanoseconds: UInt64 = 2_000_000_000
@@ -188,7 +190,6 @@ enum SyncTailnetDiscoveryTiming {
 enum SyncTailnetDiscovery {
   static let hostCandidates = [
     "ade-sync",
-    "ade-desktop",
   ]
   static let portCandidates = [
     8787,
@@ -213,6 +214,35 @@ func syncIsTailscaleIPv4Address(_ host: String) -> Bool {
     return false
   }
   return first == 100 && (64...127).contains(second)
+}
+
+func syncNormalizedRouteHost(_ address: String) -> String {
+  var host = address.trimmingCharacters(in: .whitespacesAndNewlines)
+  if let schemeRange = host.range(of: "://") {
+    host = String(host[schemeRange.upperBound...])
+  }
+  if let slash = host.firstIndex(of: "/") { host = String(host[..<slash]) }
+  if let question = host.firstIndex(of: "?") { host = String(host[..<question]) }
+  if let bracketEnd = host.lastIndex(of: "]"), host.hasPrefix("[") {
+    host = String(host[host.index(after: host.startIndex)..<bracketEnd])
+  } else {
+    // Only strip a trailing `:port` for unambiguous `host:port`. Unbracketed
+    // IPv6 literals (e.g. `::1`, `fc00::1`) contain multiple colons and must
+    // be preserved verbatim — callers bracket real IPv6+port forms above.
+    let colonCount = host.reduce(0) { $1 == ":" ? $0 + 1 : $0 }
+    if colonCount == 1, let colon = host.lastIndex(of: ":") {
+      host = String(host[..<colon])
+    }
+  }
+  return host.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+}
+
+func syncIsTailscaleRoute(_ address: String) -> Bool {
+  let host = syncNormalizedRouteHost(address)
+  if host.isEmpty { return false }
+  return syncIsTailscaleIPv4Address(host)
+    || syncIsTailnetDiscoveryHost(host)
+    || host.hasSuffix(".ts.net")
 }
 
 struct SyncReconnectState {
@@ -871,9 +901,9 @@ final class SyncService: ObservableObject {
       discoveredLanAddresses: addressCandidates.filter { host in
         guard !host.contains(":") else { return false }
         guard host != "127.0.0.1" else { return false }
-        return !syncIsTailscaleIPv4Address(host)
+        return !syncIsTailscaleRoute(host)
       },
-      tailscaleAddress: addressCandidates.first(where: syncIsTailscaleIPv4Address)
+      tailscaleAddress: addressCandidates.first(where: syncIsTailscaleRoute)
     )
 
     let previousActiveProjectId = activeProjectId
@@ -1214,14 +1244,14 @@ final class SyncService: ObservableObject {
     }
     let tailscaleAddress =
       profile.tailscaleAddress
-      ?? profile.savedAddressCandidates.first(where: syncIsTailscaleIPv4Address)
-      ?? profile.lastSuccessfulAddress.flatMap { syncIsTailscaleIPv4Address($0) ? $0 : nil }
-    let lanAddresses = profile.discoveredLanAddresses.filter { !syncIsTailscaleIPv4Address($0) }
-    let savedLanAddresses = profile.savedAddressCandidates.filter { !syncIsTailscaleIPv4Address($0) }
+      ?? profile.savedAddressCandidates.first(where: syncIsTailscaleRoute)
+      ?? profile.lastSuccessfulAddress.flatMap { syncIsTailscaleRoute($0) ? $0 : nil }
+    let lanAddresses = profile.discoveredLanAddresses.filter { !syncIsTailscaleRoute($0) }
+    let savedLanAddresses = profile.savedAddressCandidates.filter { !syncIsTailscaleRoute($0) }
     let addresses = deduplicatedAddresses(
       lanAddresses
       + savedLanAddresses
-      + (profile.lastSuccessfulAddress.flatMap { syncIsTailscaleIPv4Address($0) ? nil : $0 }.map { [$0] } ?? [])
+      + (profile.lastSuccessfulAddress.flatMap { syncIsTailscaleRoute($0) ? nil : $0 }.map { [$0] } ?? [])
     )
     guard tailscaleAddress != nil || !addresses.isEmpty else { return nil }
     let identity = profile.hostIdentity?.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1313,7 +1343,7 @@ final class SyncService: ObservableObject {
       return
     }
 
-    let connectedOverTailnet = currentAddress.map(syncIsTailscaleIPv4Address) ?? false
+    let connectedOverTailnet = currentAddress.map(syncIsTailscaleRoute) ?? false
     let shouldRoamToTailnet =
       !connectedOverTailnet
       && profileHasTailnetRoute(profile)
@@ -1487,16 +1517,9 @@ final class SyncService: ObservableObject {
         discoveredLanAddresses: addressCandidates.filter { host in
           guard !host.contains(":") else { return false }
           if host == "127.0.0.1" { return false }
-          let octets = host.split(separator: ".")
-          guard octets.count == 4 else { return false }
-          guard let first = octets.first.flatMap({ Int($0) }),
-                let second = octets.dropFirst().first.flatMap({ Int($0) }) else {
-            return false
-          }
-          let isTailscale = first == 100 && (64...127).contains(second)
-          return !isTailscale
+          return !syncIsTailscaleRoute(host)
         },
-        tailscaleAddress: tailscaleAddress
+        tailscaleAddress: tailscaleAddress ?? addressCandidates.first(where: syncIsTailscaleRoute)
       )
       saveProfile(profile)
       currentAddress = preferredAddress
@@ -3199,35 +3222,20 @@ final class SyncService: ObservableObject {
   private func syncCanAttemptPlaintextWebSocket(_ address: String) -> Bool {
     let trimmed = address.trimmingCharacters(in: .whitespacesAndNewlines)
     if trimmed.isEmpty { return false }
-
-    // Strip a leading scheme so raw hosts like "192.168.1.10:7878" and
-    // "ws://192.168.1.10:7878" both flow through the same path.
-    var host = trimmed
-    if let schemeRange = host.range(of: "://") {
-      let scheme = host[..<schemeRange.lowerBound].lowercased()
+    if let schemeRange = trimmed.range(of: "://") {
+      let scheme = trimmed[..<schemeRange.lowerBound].lowercased()
       // wss:// is end-to-end encrypted; anything non-ws beyond that we don't know
       // how to speak, so treat it conservatively.
       if scheme == "wss" { return true }
       if scheme != "ws" && scheme != "http" { return false }
-      host = String(host[schemeRange.upperBound...])
     }
 
-    // Drop trailing path and query, then an optional :port.
-    if let slash = host.firstIndex(of: "/") { host = String(host[..<slash]) }
-    if let question = host.firstIndex(of: "?") { host = String(host[..<question]) }
-    if let bracketEnd = host.lastIndex(of: "]") {
-      // IPv6 literal: host is `[...]:port`.
-      host = String(host[host.index(after: host.startIndex)..<bracketEnd])
-    } else if let colon = host.lastIndex(of: ":") {
-      host = String(host[..<colon])
-    }
-    host = host.lowercased()
+    let host = syncNormalizedRouteHost(trimmed)
     if host.isEmpty { return false }
 
     if host == "localhost" || host.hasSuffix(".localhost") { return true }
     if host.hasSuffix(".local") { return true } // Bonjour / mDNS
-    if host.hasSuffix(".ts.net") { return true } // Tailscale MagicDNS
-    if syncIsTailnetDiscoveryHost(host) { return true } // Tailscale Serve service aliases
+    if syncIsTailscaleRoute(host) { return true } // Tailscale IP, MagicDNS, or Serve aliases
 
     if let v4 = IPv4Address(host) {
       let bytes = v4.rawValue
@@ -3276,7 +3284,7 @@ final class SyncService: ObservableObject {
     if normalized == "127.0.0.1" || normalized == "::1" {
       return "loopback"
     }
-    if syncIsTailscaleIPv4Address(normalized) ||
+    if syncIsTailscaleRoute(normalized) ||
         explicitTailscaleAddress == normalized ||
         profile?.tailscaleAddress == normalized {
       return "tailscale"
@@ -3378,9 +3386,9 @@ final class SyncService: ObservableObject {
   }
 
   private func profileHasTailnetRoute(_ profile: HostConnectionProfile) -> Bool {
-    if profile.tailscaleAddress.map(syncIsTailscaleIPv4Address) == true { return true }
-    if profile.lastSuccessfulAddress.map(syncIsTailscaleIPv4Address) == true { return true }
-    return profile.savedAddressCandidates.contains(where: syncIsTailscaleIPv4Address)
+    if profile.tailscaleAddress.map(syncIsTailscaleRoute) == true { return true }
+    if profile.lastSuccessfulAddress.map(syncIsTailscaleRoute) == true { return true }
+    return profile.savedAddressCandidates.contains(where: syncIsTailscaleRoute)
   }
 
   private func preferTailnetForUpcomingReconnect() {
@@ -3406,8 +3414,8 @@ final class SyncService: ObservableObject {
     let liveLastSuccessful = profile.lastSuccessfulAddress.flatMap { address in
       liveSet.contains(address) ? [address] : nil
     } ?? []
-    let liveLastSuccessfulTailnet = liveLastSuccessful.filter(syncIsTailscaleIPv4Address)
-    let liveLastSuccessfulLan = liveLastSuccessful.filter { !syncIsTailscaleIPv4Address($0) }
+    let liveLastSuccessfulTailnet = liveLastSuccessful.filter(syncIsTailscaleRoute)
+    let liveLastSuccessfulLan = liveLastSuccessful.filter { !syncIsTailscaleRoute($0) }
     // Prefer addresses we see RIGHT NOW on the network over anything we have
     // cached from previous sessions. If the user changed subnets, stale
     // entries would otherwise consume the first few attempts (each with its
@@ -3416,8 +3424,8 @@ final class SyncService: ObservableObject {
     let prioritizedLive = preferTailnet
       ? liveLastSuccessfulTailnet + liveTailscale + liveLastSuccessfulLan + liveLan
       : liveLastSuccessful + liveLan + liveTailscale
-    let savedTailnet = profile.savedAddressCandidates.filter(syncIsTailscaleIPv4Address)
-    let savedLan = profile.savedAddressCandidates.filter { !syncIsTailscaleIPv4Address($0) }
+    let savedTailnet = profile.savedAddressCandidates.filter(syncIsTailscaleRoute)
+    let savedLan = profile.savedAddressCandidates.filter { !syncIsTailscaleRoute($0) }
     let fallbackLastSuccessful = liveLastSuccessful.isEmpty ? (profile.lastSuccessfulAddress.map { [$0] } ?? []) : []
     let savedProfileTailnet = profile.tailscaleAddress.map { [$0] } ?? []
     let fallbackSaved: [String]
@@ -3443,9 +3451,9 @@ final class SyncService: ObservableObject {
       matchesDiscoveredHost(host, profile: profile)
     }
     guard !matchingDiscovery.isEmpty else {
-      let savedTailnet = profile.savedAddressCandidates.filter(syncIsTailscaleIPv4Address)
+      let savedTailnet = profile.savedAddressCandidates.filter(syncIsTailscaleRoute)
       let lastSuccessfulTailnet = profile.lastSuccessfulAddress.flatMap { address in
-        syncIsTailscaleIPv4Address(address) ? [address] : nil
+        syncIsTailscaleRoute(address) ? [address] : nil
       } ?? []
       return deduplicatedAddresses(
         (preferTailnet ? [] : lastSuccessfulTailnet)
@@ -3461,8 +3469,8 @@ final class SyncService: ObservableObject {
     let liveLastSuccessful = profile.lastSuccessfulAddress.flatMap { address in
       liveSet.contains(address) ? [address] : nil
     } ?? []
-    let liveLastSuccessfulTailnet = liveLastSuccessful.filter(syncIsTailscaleIPv4Address)
-    let liveLastSuccessfulLan = liveLastSuccessful.filter { !syncIsTailscaleIPv4Address($0) }
+    let liveLastSuccessfulTailnet = liveLastSuccessful.filter(syncIsTailscaleRoute)
+    let liveLastSuccessfulLan = liveLastSuccessful.filter { !syncIsTailscaleRoute($0) }
 
     let prioritizedLive = preferTailnet
       ? liveLastSuccessfulTailnet + liveTailscale + liveLastSuccessfulLan + liveLan
@@ -3869,7 +3877,9 @@ final class SyncService: ObservableObject {
     saveRemoteCommandDescriptors(commandDescriptors)
 
     let matchingDiscovery = discoveredHosts.first { discovered in
-      discovered.hostIdentity == remoteHostIdentity || discovered.addresses.contains(connectedHost)
+      discovered.hostIdentity == remoteHostIdentity
+        || discovered.addresses.contains(connectedHost)
+        || discovered.tailscaleAddress == connectedHost
     }
     // Cap saved candidates to avoid unbounded growth when the user moves
     // between networks. Put the currently-connected host first, then any
@@ -3878,6 +3888,7 @@ final class SyncService: ObservableObject {
     let savedCandidatesUncapped = deduplicatedAddresses(
       [connectedHost] +
       (matchingDiscovery?.addresses ?? []) +
+      (matchingDiscovery?.tailscaleAddress.map { [$0] } ?? []) +
       (activeHostProfile?.savedAddressCandidates ?? [])
     )
     let savedCandidates = Array(savedCandidatesUncapped.prefix(6))
@@ -3896,7 +3907,9 @@ final class SyncService: ObservableObject {
       lastSuccessfulAddress: connectedHost,
       savedAddressCandidates: savedCandidates,
       discoveredLanAddresses: discoveredLan,
-      tailscaleAddress: matchingDiscovery?.tailscaleAddress ?? activeHostProfile?.tailscaleAddress
+      tailscaleAddress: matchingDiscovery?.tailscaleAddress
+        ?? (syncIsTailscaleRoute(connectedHost) ? connectedHost : nil)
+        ?? activeHostProfile?.tailscaleAddress
     )
     saveProfile(profile)
     startRelayLoop()
@@ -4057,7 +4070,11 @@ final class SyncService: ObservableObject {
       if supportsChatStreaming,
          let dict = payload as? [String: Any],
          let snapshot = try? decode(dict, as: SyncChatSubscribeSnapshotPayload.self) {
-        replaceChatEventHistory(sessionId: snapshot.sessionId, events: snapshot.events)
+        if snapshot.truncated {
+          mergeChatEventHistory(sessionId: snapshot.sessionId, events: snapshot.events)
+        } else {
+          replaceChatEventHistory(sessionId: snapshot.sessionId, events: snapshot.events)
+        }
       }
     case "chat_event":
       if supportsChatStreaming,
@@ -4474,7 +4491,10 @@ final class SyncService: ObservableObject {
   }
 
   private func chatSubscriptionPayload(sessionId: String) -> [String: Any] {
-    ["sessionId": sessionId]
+    [
+      "sessionId": sessionId,
+      "maxBytes": syncChatSubscriptionMaxBytes,
+    ]
   }
 
   private func restoreChatEventSubscriptions() {
@@ -4487,9 +4507,24 @@ final class SyncService: ObservableObject {
   func recordChatEventEnvelope(_ envelope: AgentChatEventEnvelope) {
     var events = chatEventEnvelopesBySession[envelope.sessionId] ?? []
     guard !events.contains(where: { $0.id == envelope.id }) else { return }
-    events.append(envelope)
-    if events.count > 500 {
-      events.removeFirst(events.count - 500)
+    // Fast path: arrival-order appends stay sorted when timestamps are
+    // monotonically non-decreasing — common for live streaming. Out-of-order
+    // deliveries (e.g., a delayed tool_result arriving after a later text
+    // fragment, or a merge with a historical snapshot) fall through to the
+    // full dedup/sort in deduplicatedChatEventHistory so bubble order matches
+    // the replace/merge paths.
+    let canAppendInOrder: Bool = {
+      guard let last = events.last else { return true }
+      let lastDate = Self.parseIso8601(last.timestamp)
+      let envelopeDate = Self.parseIso8601(envelope.timestamp)
+      if let lhs = envelopeDate, let rhs = lastDate { return lhs >= rhs }
+      return envelope.timestamp >= last.timestamp
+    }()
+    if canAppendInOrder {
+      events.append(envelope)
+      events = trimChatEventHistory(events)
+    } else {
+      events = deduplicatedChatEventHistory(events + [envelope])
     }
     chatEventEnvelopesBySession[envelope.sessionId] = events
     chatEventRevisionsBySession[envelope.sessionId, default: 0] += 1
@@ -4498,15 +4533,53 @@ final class SyncService: ObservableObject {
   }
 
   func replaceChatEventHistory(sessionId: String, events: [AgentChatEventEnvelope]) {
+    chatEventEnvelopesBySession[sessionId] = deduplicatedChatEventHistory(events)
+    chatEventRevisionsBySession[sessionId, default: 0] += 1
+    lastSyncAt = Date()
+    markChatEventsChanged(immediate: true)
+  }
+
+  func mergeChatEventHistory(sessionId: String, events: [AgentChatEventEnvelope]) {
+    let current = chatEventEnvelopesBySession[sessionId] ?? []
+    chatEventEnvelopesBySession[sessionId] = deduplicatedChatEventHistory(current + events)
+    chatEventRevisionsBySession[sessionId, default: 0] += 1
+    lastSyncAt = Date()
+    markChatEventsChanged(immediate: true)
+  }
+
+  private func deduplicatedChatEventHistory(_ events: [AgentChatEventEnvelope]) -> [AgentChatEventEnvelope] {
     var seen = Set<String>()
-    chatEventEnvelopesBySession[sessionId] = events.filter { event in
+    let unique = events.filter { event in
       guard !seen.contains(event.id) else { return false }
       seen.insert(event.id)
       return true
     }
-    chatEventRevisionsBySession[sessionId, default: 0] += 1
-    lastSyncAt = Date()
-    markChatEventsChanged(immediate: true)
+    .sorted { lhs, rhs in
+      // Parse timestamps to Date before comparing — a lexicographic compare
+      // misorders mixed ISO-8601 variants (e.g., "…56.500Z" sorts before
+      // "…56Z" because "." < "Z" in ASCII, even though chronologically it's
+      // half a second later).
+      let lhsDate = Self.parseIso8601(lhs.timestamp)
+      let rhsDate = Self.parseIso8601(rhs.timestamp)
+      if lhsDate == rhsDate {
+        if lhs.timestamp == rhs.timestamp {
+          return (lhs.sequence ?? 0) < (rhs.sequence ?? 0)
+        }
+        return lhs.timestamp < rhs.timestamp
+      }
+      switch (lhsDate, rhsDate) {
+      case (let l?, let r?): return l < r
+      case (nil, _?): return true
+      case (_?, nil): return false
+      case (nil, nil): return lhs.timestamp < rhs.timestamp
+      }
+    }
+    return trimChatEventHistory(unique)
+  }
+
+  private func trimChatEventHistory(_ events: [AgentChatEventEnvelope]) -> [AgentChatEventEnvelope] {
+    guard events.count > chatEventHistoryMaxEvents else { return events }
+    return Array(events.suffix(chatEventHistoryMaxEvents))
   }
 
   private func trimmedTerminalBuffer(_ buffer: String) -> String {

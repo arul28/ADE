@@ -177,6 +177,7 @@ import type {
   AgentChatDeleteArgs,
   AgentChatDisposeArgs,
   AgentChatGetSummaryArgs,
+  AgentChatEventEnvelope,
   AgentChatHandoffArgs,
   AgentChatHandoffResult,
   AgentChatInterruptArgs,
@@ -4406,6 +4407,24 @@ export function registerIpc({
       original: { text: origResult.exitCode === 0 ? origResult.stdout : null },
       modified: { text: modResult.exitCode === 0 ? modResult.stdout : null },
     };
+  });
+
+  ipcMain.handle(IPC.agentChatGetEventHistory, async (
+    _event,
+    arg: { sessionId?: string; maxEvents?: number },
+  ): Promise<{ sessionId: string; events: AgentChatEventEnvelope[]; truncated: boolean }> => {
+    const ctx = getCtx();
+    const sessionId = typeof arg?.sessionId === "string" ? arg.sessionId.trim() : "";
+    if (!sessionId) return { sessionId: "", events: [], truncated: false };
+    // Only forward maxEvents when it is a finite positive number; the service
+    // layer applies its own clamp but guarding here avoids ambiguous NaN/0
+    // inputs from untrusted renderer IPC.
+    const rawMaxEvents = typeof arg?.maxEvents === "number" ? arg.maxEvents : undefined;
+    const maxEvents =
+      rawMaxEvents != null && Number.isFinite(rawMaxEvents) && rawMaxEvents > 0
+        ? rawMaxEvents
+        : undefined;
+    return ctx.agentChatService.getChatEventHistory(sessionId, maxEvents != null ? { maxEvents } : undefined);
   });
 
   ipcMain.handle(IPC.computerUseListArtifacts, async (_event, arg: ComputerUseArtifactListArgs = {}): Promise<ComputerUseArtifactView[]> => {

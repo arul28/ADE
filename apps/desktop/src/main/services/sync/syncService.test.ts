@@ -37,6 +37,7 @@ const { createSyncHostServiceMock } = vi.hoisted(() => ({
     },
     handlePtyData() {},
     handlePtyExit() {},
+    setDiscoveryEnabled: vi.fn(),
     async dispose() {},
   })),
 }));
@@ -541,6 +542,7 @@ describe.skipIf(!isCrsqliteAvailable())("syncService", () => {
         },
         handlePtyData() {},
         handlePtyExit() {},
+        setDiscoveryEnabled: vi.fn(),
         dispose: attemptedPort === 8787 ? disposeFirstAttempt : disposeSecondAttempt,
       };
     }) as any);

@@ -35,8 +35,13 @@ func makeWorkChatEvent(from event: AgentChatEvent) -> WorkChatEvent {
   switch event {
   case .userMessage(let text, _, let turnId, let steerId, let deliveryState, let processed):
     return .userMessage(text: text, turnId: turnId, steerId: steerId, deliveryState: deliveryState, processed: processed)
-  case .text(let text, _, let turnId, let itemId):
-    return .assistantText(text: text, turnId: turnId, itemId: itemId)
+  case .text(let text, let messageId, let turnId, let itemId):
+    let normalizedMessageId = messageId?.trimmingCharacters(in: .whitespacesAndNewlines)
+    let normalizedItemId = itemId?.trimmingCharacters(in: .whitespacesAndNewlines)
+    let stableItemId = normalizedItemId?.isEmpty == false
+      ? normalizedItemId
+      : (normalizedMessageId?.isEmpty == false ? normalizedMessageId : nil)
+    return .assistantText(text: text, turnId: turnId, itemId: stableItemId)
   case .toolCall(let tool, let args, let itemId, let logicalItemId, let parentItemId, let turnId):
     return .toolCall(
       tool: tool,

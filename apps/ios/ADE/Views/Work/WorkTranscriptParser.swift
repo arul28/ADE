@@ -44,7 +44,11 @@ func parseWorkChatTranscript(_ raw: String) -> [WorkChatEnvelope] {
           processed: eventDict["processed"] as? Bool
         )
       case "text":
-        event = .assistantText(text: stringValue(eventDict["text"]), turnId: turnId, itemId: itemId)
+        event = .assistantText(
+          text: stringValue(eventDict["text"]),
+          turnId: turnId,
+          itemId: optionalString(eventDict["itemId"]) ?? optionalString(eventDict["messageId"])
+        )
       case "tool_call":
         event = .toolCall(
           tool: stringValue(eventDict["tool"]),

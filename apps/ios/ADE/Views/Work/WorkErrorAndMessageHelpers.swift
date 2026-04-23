@@ -26,10 +26,17 @@ func errorPresentation(for category: String) -> WorkErrorPresentation {
 func buildWorkChatMessages(from transcript: [WorkChatEnvelope]) -> [WorkChatMessage] {
   var messages: [WorkChatMessage] = []
   let metadataByTurn = workTurnModelMetadataByTurn(from: transcript)
+  // Tracks whether the previous envelope was assistantText so nil-itemId
+  // streaming fragments can merge into it. MUST be reset to false on every
+  // non-assistantText branch below — otherwise a subsequent nil-itemId
+  // fragment could wrongly merge across an intervening tool call or user
+  // message. Any new `WorkChatEvent` case added here must preserve that reset.
+  var previousEnvelopeWasAssistantText = false
 
   for envelope in transcript {
     switch envelope.event {
     case .userMessage(let text, let turnId, let steerId, let deliveryState, let processed):
+      previousEnvelopeWasAssistantText = false
       // Queued steers render as inline cards above the composer, not in the message stream.
       if deliveryState == "queued", steerId != nil {
         continue
@@ -63,10 +70,12 @@ func buildWorkChatMessages(from transcript: [WorkChatEnvelope]) -> [WorkChatMess
       let metadata = turnId
         .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
         .flatMap { metadataByTurn[$0] }
+      let canMergeWithPreviousAssistant = itemId != nil || previousEnvelopeWasAssistantText
       if let lastIndex = messages.indices.last,
          messages[lastIndex].role == "assistant",
          messages[lastIndex].turnId == turnId,
-         messages[lastIndex].itemId == itemId {
+         messages[lastIndex].itemId == itemId,
+         canMergeWithPreviousAssistant {
         messages[lastIndex].markdown += text
       } else {
         messages.append(WorkChatMessage(
@@ -80,7 +89,9 @@ func buildWorkChatMessages(from transcript: [WorkChatEnvelope]) -> [WorkChatMess
           turnModelId: metadata?.modelId
         ))
       }
+      previousEnvelopeWasAssistantText = true
     default:
+      previousEnvelopeWasAssistantText = false
       continue
     }
   }

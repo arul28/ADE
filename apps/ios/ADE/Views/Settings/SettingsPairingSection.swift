@@ -342,13 +342,17 @@ private struct DiscoveredHostRow: View {
   }
 
   private var primaryRoute: String {
-    host.addresses.first { address in
-      !isLoopback(address) && !syncIsTailscaleIPv4Address(address)
+    if let tailscaleAddress = host.tailscaleAddress,
+       detailPrefix?.localizedCaseInsensitiveContains("tailscale") == true {
+      return tailscaleAddress
+    }
+    return host.addresses.first { address in
+      !isLoopback(address) && !syncIsTailscaleRoute(address)
     } ?? host.tailscaleAddress ?? host.addresses.first ?? "No route"
   }
 
   private func inferredRoutePrefix(for route: String) -> String? {
-    if syncIsTailscaleIPv4Address(route) {
+    if syncIsTailscaleRoute(route) {
       return "Tailscale"
     }
     return nil
