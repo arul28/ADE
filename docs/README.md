@@ -7,6 +7,7 @@ Navigation map for the internal docs. **Start with [PRD.md](./PRD.md).**
 1. [**PRD.md**](./PRD.md) — product scope, concepts, feature index (links to everything).
 2. [**ARCHITECTURE.md**](./ARCHITECTURE.md) — apps, data plane, IPC, services catalog, security, build/test/deploy.
 3. [**features/**](./features/) — per-feature subfolders, each with a `README.md` + detail docs.
+4. [**playbooks/**](./playbooks/) — operational workflows agents can follow directly.
 
 ## Layout
 
@@ -16,6 +17,8 @@ new-docs/
 ├── PRD.md                                 # product entry point
 ├── ARCHITECTURE.md                        # system architecture
 ├── OPTIMIZATION_OPPORTUNITIES.md          # codebase-wide optimization backlog
+├── playbooks/
+│   └── ship-lane.md                       # autonomous PR-to-merge driver
 └── features/
     ├── agents/                            # agent identity, tools, personas
     ├── automations/                       # rule triggers + actions + guardrails

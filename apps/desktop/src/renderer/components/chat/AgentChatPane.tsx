@@ -737,6 +737,14 @@ export type ParallelLaunchCleanupIssue = {
   error: unknown;
 };
 
+function logParallelLaunchCleanupError({ phase, laneId, error }: ParallelLaunchCleanupIssue): void {
+  console.error("parallel launch cleanup failed", {
+    phase,
+    laneId,
+    error: error instanceof Error ? error.message : String(error),
+  });
+}
+
 function isMissingParallelLaunchLaneError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
   return /not found|no such lane|does not exist/i.test(message);
@@ -771,7 +779,7 @@ export async function cleanupTransientParallelLaunchLanes(args: {
   laneIds: string[];
   deleteLane: (args: { laneId: string; force?: boolean }) => Promise<void>;
   refreshLanes: () => Promise<void>;
-  onCleanupError?: (args: { phase: "delete" | "refresh"; laneId: string | null; error: unknown }) => void;
+  onCleanupError?: (issue: ParallelLaunchCleanupIssue) => void;
 }): Promise<ParallelLaunchCleanupIssue[]> {
   const issues: ParallelLaunchCleanupIssue[] = [];
   if (args.laneIds.length === 0) return issues;
@@ -1093,13 +1101,7 @@ export function AgentChatPane({
         laneIds: pendingState.createdLaneIds,
         deleteLane: (args) => window.ade.lanes.delete(args),
         refreshLanes: refreshLanesStore,
-        onCleanupError: ({ phase, laneId: failedLaneId, error: cleanupError }) => {
-          console.error("parallel launch cleanup failed", {
-            phase,
-            laneId: failedLaneId,
-            error: cleanupError instanceof Error ? cleanupError.message : String(cleanupError),
-          });
-        },
+        onCleanupError: logParallelLaunchCleanupError,
       });
 
       if (cleanupIssues.length === 0) {
@@ -2850,13 +2852,7 @@ export function AgentChatPane({
           laneIds: createdLaneIds,
           deleteLane: (args) => window.ade.lanes.delete(args),
           refreshLanes: refreshLanesStore,
-          onCleanupError: ({ phase, laneId, error: cleanupError }) => {
-            console.error("parallel launch cleanup failed", {
-              phase,
-              laneId,
-              error: cleanupError instanceof Error ? cleanupError.message : String(cleanupError),
-            });
-          },
+          onCleanupError: logParallelLaunchCleanupError,
         });
         const message = submitError instanceof Error ? submitError.message : String(submitError);
         if (cleanupIssues.length === 0) {
@@ -3060,7 +3056,6 @@ export function AgentChatPane({
     persistParallelLaunchState,
     setWorkViewState,
     setLaneWorkViewState,
-    includeProjectDocs,
   ]);
 
   const interrupt = useCallback(async () => {

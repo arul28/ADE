@@ -151,6 +151,47 @@ function insertPrediction(args: {
   );
 }
 
+async function setupAdditionalInstructionsResolver(prefix: string, projectId: string) {
+  const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  const { laneHeadSha } = seedRepoWithLaneWork(repoRoot);
+  const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
+  await seedProjectAndLane(db, projectId, repoRoot);
+
+  insertPrediction({
+    db,
+    projectId,
+    laneAId: "lane-1",
+    laneBId: "lane-target",
+    laneASha: laneHeadSha,
+    overlaps: ["src/a.ts"]
+  });
+
+  const lanes = [
+    createLaneSummary(repoRoot, { id: "lane-1", name: "Source lane", branchRef: "feature/lane-1" }),
+    createLaneSummary(repoRoot, { id: "lane-target", name: "Target lane", branchRef: "main" })
+  ];
+
+  return createConflictService({
+    db,
+    logger: createLogger(),
+    projectId,
+    projectRoot: repoRoot,
+    laneService: {
+      list: async () => lanes,
+      getLaneBaseAndBranch: ({ laneId }: { laneId: string }) => {
+        const lane = lanes.find((entry) => entry.id === laneId) ?? lanes[0]!;
+        return { worktreePath: lane.worktreePath, baseRef: lane.baseRef, branchRef: lane.branchRef };
+      }
+    } as any,
+    projectConfigService: {
+      get: () => ({
+        local: { providers: { contextTools: { conflictResolvers: {} } } },
+        effective: { providerMode: "guest", providers: {} }
+      })
+    } as any,
+  });
+}
+
 describe("conflictService conflict context integrity", () => {
   it("passes relevant file contexts into subscription conflict proposal jobs", async () => {
     const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-conflicts-ctx-"));
@@ -644,44 +685,10 @@ describe("conflictService conflict context integrity", () => {
   });
 
   it("appends additionalInstructions to the prompt file when provided", async () => {
-    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-conflicts-additional-instructions-"));
-    const { laneHeadSha } = seedRepoWithLaneWork(repoRoot);
-    const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
-    const projectId = "proj-additional-instructions";
-    await seedProjectAndLane(db, projectId, repoRoot);
-
-    insertPrediction({
-      db,
-      projectId,
-      laneAId: "lane-1",
-      laneBId: "lane-target",
-      laneASha: laneHeadSha,
-      overlaps: ["src/a.ts"]
-    });
-
-    const lanes = [
-      createLaneSummary(repoRoot, { id: "lane-1", name: "Source lane", branchRef: "feature/lane-1" }),
-      createLaneSummary(repoRoot, { id: "lane-target", name: "Target lane", branchRef: "main" })
-    ];
-    const service = createConflictService({
-      db,
-      logger: createLogger(),
-      projectId,
-      projectRoot: repoRoot,
-      laneService: {
-        list: async () => lanes,
-        getLaneBaseAndBranch: ({ laneId }: { laneId: string }) => {
-          const lane = lanes.find((entry) => entry.id === laneId) ?? lanes[0]!;
-          return { worktreePath: lane.worktreePath, baseRef: lane.baseRef, branchRef: lane.branchRef };
-        }
-      } as any,
-      projectConfigService: {
-        get: () => ({
-          local: { providers: { contextTools: { conflictResolvers: {} } } },
-          effective: { providerMode: "guest", providers: {} }
-        })
-      } as any,
-    });
+    const service = await setupAdditionalInstructionsResolver(
+      "ade-conflicts-additional-instructions-",
+      "proj-additional-instructions",
+    );
 
     const prepared = await service.prepareResolverSession({
       provider: "claude",
@@ -698,44 +705,10 @@ describe("conflictService conflict context integrity", () => {
   });
 
   it("does not append operator instructions section when additionalInstructions is empty", async () => {
-    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-conflicts-no-additional-instructions-"));
-    const { laneHeadSha } = seedRepoWithLaneWork(repoRoot);
-    const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
-    const projectId = "proj-no-additional-instructions";
-    await seedProjectAndLane(db, projectId, repoRoot);
-
-    insertPrediction({
-      db,
-      projectId,
-      laneAId: "lane-1",
-      laneBId: "lane-target",
-      laneASha: laneHeadSha,
-      overlaps: ["src/a.ts"]
-    });
-
-    const lanes = [
-      createLaneSummary(repoRoot, { id: "lane-1", name: "Source lane", branchRef: "feature/lane-1" }),
-      createLaneSummary(repoRoot, { id: "lane-target", name: "Target lane", branchRef: "main" })
-    ];
-    const service = createConflictService({
-      db,
-      logger: createLogger(),
-      projectId,
-      projectRoot: repoRoot,
-      laneService: {
-        list: async () => lanes,
-        getLaneBaseAndBranch: ({ laneId }: { laneId: string }) => {
-          const lane = lanes.find((entry) => entry.id === laneId) ?? lanes[0]!;
-          return { worktreePath: lane.worktreePath, baseRef: lane.baseRef, branchRef: lane.branchRef };
-        }
-      } as any,
-      projectConfigService: {
-        get: () => ({
-          local: { providers: { contextTools: { conflictResolvers: {} } } },
-          effective: { providerMode: "guest", providers: {} }
-        })
-      } as any,
-    });
+    const service = await setupAdditionalInstructionsResolver(
+      "ade-conflicts-no-additional-instructions-",
+      "proj-no-additional-instructions",
+    );
 
     const prepared = await service.prepareResolverSession({
       provider: "claude",

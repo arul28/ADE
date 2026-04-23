@@ -1077,6 +1077,9 @@ private func wkIntegrationConfigRows(card: PrWorkflowCard) -> [WkConfigRowData] 
   if let cleanup = card.cleanupState {
     rows.append(.init(label: "Cleanup", value: cleanup))
   }
+  if let mergeTarget = card.preferredIntegrationLaneId, !mergeTarget.isEmpty {
+    rows.append(.init(label: "Merge target", value: mergeTarget))
+  }
   if let laneCount = card.laneCount {
     rows.append(.init(label: "Lanes", value: "\(laneCount)"))
   }

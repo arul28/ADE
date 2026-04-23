@@ -161,16 +161,20 @@ export function resolveCreateLaneRequest(args: {
   };
 }
 
+function parseLaneIdsParam(value: string | null): string[] {
+  return (value ?? "")
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+}
+
 export function resolveLaneIdsDeepLinkSelection(args: {
   laneIdsRaw: string | null;
   inspectorTabParam?: string | null;
   availableLaneIds: Iterable<string>;
   consumedSignature: string | null;
 }): { laneIds: string[]; signature: string } | null {
-  const parsed = (args.laneIdsRaw ?? "")
-    .split(",")
-    .map((value) => value.trim())
-    .filter(Boolean);
+  const parsed = parseLaneIdsParam(args.laneIdsRaw);
   if (parsed.length === 0) return null;
   const signature = `${parsed.join(",")}::${args.inspectorTabParam ?? ""}`;
   if (signature === args.consumedSignature) return null;
@@ -427,9 +431,7 @@ export function LanesPage() {
 
   const workFocusTiling = useMemo(() => {
     if (params.get("workFocus") !== "1") return false;
-    const laneIdsParam = params.get("laneIds");
-    if (!laneIdsParam) return false;
-    const ids = laneIdsParam.split(",").map((s) => s.trim()).filter(Boolean);
+    const ids = parseLaneIdsParam(params.get("laneIds"));
     if (ids.length < 2) return false;
     const visibleSet = new Set(visibleLaneIds);
     return ids.every((id) => visibleSet.has(id));

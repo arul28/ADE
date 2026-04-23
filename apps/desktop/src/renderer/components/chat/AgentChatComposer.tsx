@@ -632,7 +632,6 @@ export function AgentChatComposer({
     if (!files?.length) return;
     if (turnActive) return;
     if (parallelChatMode && attachments.length >= PARALLEL_CHAT_MAX_ATTACHMENTS) return;
-    if (!parallelChatMode && !canAttach) return;
     if (fileAddInProgressRef.current) return;
     fileAddInProgressRef.current = true;
     setAttachError(null);
@@ -648,8 +647,7 @@ export function AgentChatComposer({
 
         if (hasRealPath) {
           const filePath = fileWithPath.path!;
-          const t = inferAttachmentType(filePath, file.type);
-          onAddAttachment({ path: filePath, type: t });
+          onAddAttachment({ path: filePath, type: inferAttachmentType(filePath, file.type) });
           addedInBatch += 1;
           continue;
         }
@@ -671,8 +669,7 @@ export function AgentChatComposer({
             data: base64,
             filename: file.name || "clipboard.png",
           });
-          const t = inferAttachmentType(tempPath, file.type);
-          onAddAttachment({ path: tempPath, type: t });
+          onAddAttachment({ path: tempPath, type: inferAttachmentType(tempPath, file.type) });
           addedInBatch += 1;
         } catch {
           setAttachError(`Unable to attach "${file.name || "clipboard"}".`);

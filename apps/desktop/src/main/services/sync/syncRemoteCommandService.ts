@@ -1005,6 +1005,12 @@ function parseUpdateIntegrationProposalArgs(value: Record<string, unknown>): Upd
     ...(typeof value.body === "string" ? { body: value.body } : {}),
     ...(typeof value.draft === "boolean" ? { draft: value.draft } : {}),
     ...(typeof value.integrationLaneName === "string" ? { integrationLaneName: value.integrationLaneName } : {}),
+    ...(typeof value.preferredIntegrationLaneId === "string" || value.preferredIntegrationLaneId === null
+      ? { preferredIntegrationLaneId: value.preferredIntegrationLaneId }
+      : {}),
+    ...(typeof value.mergeIntoHeadSha === "string" || value.mergeIntoHeadSha === null
+      ? { mergeIntoHeadSha: value.mergeIntoHeadSha }
+      : {}),
   };
 }
 

@@ -38,8 +38,9 @@ locally conflicting).
 
 ## Pairwise integration simulation
 
-`prService.simulateIntegration({ sourceLaneIds, baseBranch })` runs
-the pairwise matrix for an integration (merge-plan) proposal:
+`prService.simulateIntegration({ sourceLaneIds, baseBranch,
+mergeIntoLaneId? })` runs the pairwise matrix for an integration
+(merge-plan) proposal:
 
 1. `buildIntegrationPreflight` validates:
    - at least one source lane
@@ -59,8 +60,13 @@ the pairwise matrix for an integration (merge-plan) proposal:
      produce marker previews via `parseConflictMarkers`.
 5. Compute per-lane summary rows (`laneSummaries`) with position,
    commit hash, commit count, and diff stat.
-6. Return `IntegrationProposal` with pairwise results, lane
-   summaries, and computed overall outcome.
+6. If `mergeIntoLaneId` is present, resolve that lane's HEAD and run
+   additional merge-tree checks from the adopted merge target against
+   each source lane. This does not replace the child-vs-child pairwise
+   matrix; it adds target-lane conflict evidence.
+7. Return `IntegrationProposal` with pairwise results, lane
+   summaries, computed overall outcome, and optional merge-target
+   metadata.
 
 `IntegrationProposal` fields include:
 
@@ -68,6 +74,10 @@ the pairwise matrix for an integration (merge-plan) proposal:
 - `pairwiseResults` — `Array<{ laneAId, laneBId, outcome: "clean" | "conflict" | "blocked", conflictingFiles }>`.
 - `laneSummaries` — per-lane commit hash, position, `conflictsWith[]`.
 - `overallOutcome` — `"clean" | "conflict" | "blocked"`.
+- `preferredIntegrationLaneId` — selected existing merge target lane
+  when the proposal should merge into an adopted lane.
+- `mergeIntoHeadSha` — selected merge target HEAD at simulation time,
+  used to detect drift before commit.
 
 ## Conflict marker parsing
 
@@ -96,15 +106,21 @@ the gating check used before parsing. It requires all three markers
 
 ## Integration lane creation
 
-When a proposal's plan is accepted, ADE creates a dedicated
-integration lane as the merge target:
+When a proposal's plan is accepted, ADE either creates a dedicated
+integration lane or adopts an existing lane as the merge target.
 
 `createIntegrationLaneForProposal`:
 
 1. Ensure the proposal has no `integration_lane_id` yet.
-2. Create a child lane under the base branch, name `integration-<short-id>`.
-3. Persist `integration_lane_id` on the proposal row.
-4. Emit a lane-created event so the graph refreshes.
+2. If `preferred_integration_lane_id` is set, validate that lane still
+   exists, is not a source lane, is not primary, and passes the dirty
+   worktree preflight unless `allowDirtyWorktree` was explicitly set.
+3. Otherwise create a child lane under the base branch, name
+   `integration-<short-id>`.
+4. Persist `integration_lane_id` on the proposal row. The display
+   origin is inferred as `adopted` when the preferred lane became the
+   integration lane; otherwise it is `ade-created`.
+5. Emit lane/PR events so graph and workflow surfaces refresh.
 
 `commitIntegration` runs the actual merges sequentially:
 
@@ -117,8 +133,9 @@ integration lane as the merge target:
    `workflow_display_state` to `history` and surface cleanup actions.
 
 `cleanupIntegrationWorkflow` prompts the user to declare whether to
-delete the integration lane / its source lanes / neither, and
-records the decision in `cleanup_state`.
+delete the integration lane / its source lanes / neither, and records
+the decision in `cleanup_state`. Adopted merge-target lanes are kept by
+default because ADE did not create them for the proposal.
 
 ## Rebase prediction
 
@@ -171,7 +188,7 @@ PR-specific IPC that consumes the conflict/simulation stack:
 | Channel | Description |
 |---------|-------------|
 | `ade.prs.simulateIntegration` | Compute pairwise integration matrix |
-| `ade.prs.createIntegrationLaneForProposal` | Create merge-target lane |
+| `ade.prs.createIntegrationLaneForProposal` | Create or adopt merge-target lane |
 | `ade.prs.commitIntegration` | Sequentially merge source lanes into the integration lane |
 | `ade.prs.cleanupIntegrationWorkflow` | Record cleanup decision |
 | `ade.prs.getMergeContext` | Read PR merge readiness (mergeable, behind-by, conflicts) |

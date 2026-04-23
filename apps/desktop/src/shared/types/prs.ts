@@ -1536,6 +1536,9 @@ export type PrIntegrationWorkflowCard = {
   cleanupState: IntegrationCleanupState;
   linkedPrId: string | null;
   integrationLaneId: string | null;
+  preferredIntegrationLaneId?: string | null;
+  mergeIntoHeadSha?: string | null;
+  integrationLaneOrigin?: IntegrationLaneOrigin | null;
   createdAt: string;
 };
 

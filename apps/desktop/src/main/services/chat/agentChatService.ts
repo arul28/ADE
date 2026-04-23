@@ -1238,6 +1238,35 @@ function sanitizeAutoTitle(raw: string, maxChars = AUTO_TITLE_MAX_CHARS): string
   return normalized.length > maxChars ? normalized.slice(0, maxChars).trimEnd() : normalized;
 }
 
+function fallbackLaneNameFromPrompt(prompt: string): string {
+  const collapsed = prompt.replace(/\s+/g, " ");
+  if (!collapsed.length) return "parallel-task";
+  const words = collapsed.split(/\s+/).filter(Boolean).slice(0, 4);
+  const slug = words
+    .join("-")
+    .toLowerCase()
+    .replace(/[^a-z0-9-]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "");
+  return slug.length ? slug.slice(0, 48) : "parallel-task";
+}
+
+function normalizeSuggestedLaneName(raw: string): string | null {
+  const sanitized = sanitizeAutoTitle(raw.trim(), 56);
+  if (!sanitized) return null;
+
+  const normalized = sanitized
+    .toLowerCase()
+    .replace(/[^a-z0-9\s-]/g, "")
+    .trim()
+    .replace(/\s+/g, "-")
+    .replace(/-+/g, "-")
+    .slice(0, 60)
+    .replace(/^-+|-+$/g, "");
+
+  return normalized.length > 0 ? normalized : null;
+}
+
 function defaultChatSessionTitle(provider: AgentChatProvider): string {
   if (provider === "codex") return "Codex Chat";
   if (provider === "claude") return "Claude Chat";
@@ -4695,13 +4724,7 @@ export function createAgentChatService(args: {
     const prompt = String(args.prompt ?? "").trim();
     const requestedModelId = String(args.modelId ?? "").trim();
     const sourceLaneId = String(args.laneId ?? "").trim();
-    const fallback = (): string => {
-      const collapsed = prompt.replace(/\s+/g, " ");
-      if (!collapsed.length) return "parallel-task";
-      const words = collapsed.split(/\s+/).filter(Boolean).slice(0, 4);
-      const slug = words.join("-").toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "");
-      return slug.length ? slug.slice(0, 48) : "parallel-task";
-    };
+    const fallback = () => fallbackLaneNameFromPrompt(prompt);
 
     if (!prompt.length) {
       return fallback();
@@ -4752,19 +4775,7 @@ export function createAgentChatService(args: {
         prompt: `User message to parallelize across models:\n${prompt.slice(0, 2000)}`,
         projectConfig: projectConfigService.get().effective,
       });
-      const sanitized = sanitizeAutoTitle(result.text.trim(), 56);
-      if (!sanitized) return fallback();
-
-      const normalized = sanitized
-        .toLowerCase()
-        .replace(/[^a-z0-9\s-]/g, '')
-        .trim()
-        .replace(/\s+/g, '-')
-        .replace(/-+/g, '-')
-        .slice(0, 60)
-        .replace(/^-+|-+$/g, "");
-
-      return normalized.length > 0 ? normalized : fallback();
+      return normalizeSuggestedLaneName(result.text) ?? fallback();
     } catch (error) {
       logger.warn("agent_chat.suggest_lane_name_failed", {
         modelId: requestedModelId,

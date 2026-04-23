@@ -136,7 +136,8 @@ Client-side (iOS) service files (`apps/ios/ADE/Services/`):
 - `Database.swift` — native SQLite3 + pure-SQL CRR emulation (triggers
   + custom SQLite functions). Offline caches for files workspaces,
   directory listings, file contents, session pin/runtime state, chat
-  snapshots, and PR mobile snapshot persistence.
+  snapshots, PR mobile snapshot persistence, and integration proposal
+  fields mirrored from desktop schema.
 - `SyncService.swift` — WebSocket client, envelope encoding (zlib),
   command routing, keychain integration, PIN-based pairing, lane
   presence announcements, PR mobile snapshot fetch, live chat-event
@@ -184,6 +185,14 @@ iOS notification files:
   "Open ADE" + "Mute ADE" widgets (iOS 18+).
 - `apps/ios/ADE/Shared/ADESharedModels.swift` — `AgentSnapshot`,
   `PrSnapshot` shared with widget and notification service extensions.
+- `apps/ios/ADE/Models/RemoteModels.swift` — Codable models used by
+  sync/mobile snapshots; `IntegrationProposal` mirrors desktop merge
+  target fields such as `preferredIntegrationLaneId` and
+  `mergeIntoHeadSha`.
+- `apps/ios/ADE/Resources/DatabaseBootstrap.sql` — generated bootstrap
+  schema copied from desktop `kvDb.ts`; includes
+  `integration_proposals.preferred_integration_lane_id` and
+  `merge_into_head_sha` for merge-into-lane PR workflows.
 
 ## Device registry and cluster state
 

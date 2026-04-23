@@ -3170,12 +3170,22 @@ final class SyncService: ObservableObject {
     ])
   }
 
-  func updateIntegrationProposal(proposalId: String, title: String? = nil, body: String? = nil, draft: Bool? = nil, integrationLaneName: String? = nil) async throws {
+  func updateIntegrationProposal(
+    proposalId: String,
+    title: String? = nil,
+    body: String? = nil,
+    draft: Bool? = nil,
+    integrationLaneName: String? = nil,
+    preferredIntegrationLaneId: String? = nil,
+    mergeIntoHeadSha: String? = nil
+  ) async throws {
     var args: [String: Any] = ["proposalId": proposalId]
     if let title { args["title"] = title }
     if let body { args["body"] = body }
     if let draft { args["draft"] = draft }
     if let integrationLaneName { args["integrationLaneName"] = integrationLaneName }
+    if let preferredIntegrationLaneId { args["preferredIntegrationLaneId"] = preferredIntegrationLaneId }
+    if let mergeIntoHeadSha { args["mergeIntoHeadSha"] = mergeIntoHeadSha }
     _ = try await sendCommand(action: "prs.updateIntegrationProposal", args: args)
   }
 

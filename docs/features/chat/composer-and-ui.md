@@ -11,9 +11,9 @@ stream plus session metadata.
 
 | Path | Role |
 |---|---|
-| `AgentChatPane.tsx` | Top-level pane; IPC wiring, session state, presentation profile resolution, lane navigation, mounting of sub-panels and composer. |
+| `AgentChatPane.tsx` | Top-level pane; IPC wiring, session state, presentation profile resolution, lane navigation, parallel launch orchestration, mounting of sub-panels and composer. |
 | `AgentChatMessageList.tsx` | Virtualized message list (`@tanstack/react-virtual`). Renders transcript rows and turn dividers. |
-| `AgentChatComposer.tsx` | Text input, attachments, model selector, permission controls, slash commands, pending-input answering. |
+| `AgentChatComposer.tsx` | Text input, attachments, model selector, permission controls, slash commands, pending-input answering, and parallel model-slot controls. |
 | `ChatSurfaceShell.tsx` | Floating chat header, body, footer layout. Backdrop-blur glass-morphism styling. |
 | `ChatComposerShell.tsx` | Input container chrome reused by the composer. |
 | `ChatAttachmentTray.tsx` | Inline file/image attachment tray inside the composer. |
@@ -29,6 +29,7 @@ stream plus session metadata.
 | `AgentQuestionModal.tsx` | Pending input modal for question-type requests. |
 | `CodeHighlighter.tsx`, `chatStatusVisuals.tsx`, `chatSurfaceTheme.ts`, `chatToolAppearance.tsx` | Supporting visuals. `chatStatusVisuals.ChatStatusGlyph` takes an `animate` prop so non-active rows skip the ping/spin animation; `AgentChatMessageList.ActivityIndicator` mirrors this and switches to a dimmed static tone plus a non-looping Brain lottie for `thinking` once the turn ends. |
 | `pendingInput.ts`, `chatExecutionSummary.ts`, `chatNavigation.ts`, `chatTranscriptRows.ts` | Pure state derivations consumed by the UI. |
+| `apps/desktop/src/shared/types/chat.ts` | Shared composer/session DTOs, including `PARALLEL_CHAT_MAX_ATTACHMENTS` and parallel launch state types. |
 
 ## Pane layout
 
@@ -121,6 +122,22 @@ and a footer that contains the composer.
   checks both the anchor ref and a `data-*-picker-dropdown` attribute
   on the portalized list so clicks inside the popover don't self-close.
 
+- **Parallel launch controls.** When the Work pane mounts an empty,
+  embedded draft composer with no locked or initial session, the
+  composer can switch into parallel mode. Parallel mode shows a slot
+  list instead of the single-session model selector; each slot captures
+  the model, reasoning effort, execution mode, and provider-specific
+  permission controls that will be copied into that child session.
+  The first two slots are cloned from the current composer defaults.
+  Users can add/remove slots and open one slot at a time for detailed
+  controls. Send is enabled only when the draft is non-empty and at
+  least two model slots are configured.
+
+  Attachments in parallel mode are capped by
+  `PARALLEL_CHAT_MAX_ATTACHMENTS = 12`. The same attachment list is
+  sent to every child lane, so the cap is enforced both when toggling
+  parallel mode and when adding files.
+
 - **Border beam.** On standard (non-grid-tile) layout the composer
   shell is wrapped in `BorderBeam` (`colorVariant="colorful"` at rest,
   `"ocean"` with a slower duration while a turn is active). `active`
@@ -156,6 +173,10 @@ and a footer that contains the composer.
 - MIME-type validation happens per provider. Claude enforces
   `image/jpeg | image/png | image/gif | image/webp`; Codex uses local
   path references; OpenCode uses runtime content blocks.
+- Parallel launches reuse this same attachment path after the renderer
+  validates the 12-file cap. Every child session receives identical
+  attachment refs; provider-specific handling still happens inside
+  `agentChatService.sendMessage`.
 
 ## Message list
 
@@ -329,5 +350,3 @@ These modules are pure and unit-testable:
 - [Transcript and Turns](transcript-and-turns.md) -- the data the UI
   renders.
 - [Tool System](tool-system.md) -- tool tiers surfaced in the composer.
-</content>
-</invoke>

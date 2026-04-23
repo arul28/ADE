@@ -6024,6 +6024,9 @@ export function createPrService({
           cleanupState: proposal.cleanupState ?? "none",
           linkedPrId: proposal.linkedPrId ?? null,
           integrationLaneId: proposal.integrationLaneId ?? null,
+          preferredIntegrationLaneId: proposal.preferredIntegrationLaneId ?? null,
+          mergeIntoHeadSha: proposal.mergeIntoHeadSha ?? null,
+          integrationLaneOrigin: proposal.integrationLaneOrigin ?? null,
           createdAt: proposal.createdAt,
         });
       }

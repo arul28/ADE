@@ -588,6 +588,13 @@ reflected in the phone's UI on the next descriptor read.
   between desktop and iOS breaks the first-launch bootstrap, and
   `changeset_batch` apply will fail for tables that don't exist
   locally.
+- **Integration proposal schema must move with PR workflow fields.**
+  Desktop merge-into-lane proposals store
+  `preferred_integration_lane_id` and `merge_into_head_sha` on
+  `integration_proposals`; iOS mirrors them in `DatabaseBootstrap.sql`,
+  `DatabaseService.fetchIntegrationProposals()`, and
+  `RemoteModels.IntegrationProposal`. Missing any leg makes synced PR
+  workflow cards lose their adopted-lane/drift state.
 - **`InitialHydrationGate` can fire its 15s timeout on slow links.**
   The visible symptom is "The host returned incomplete ... data."
   Bumping the timeout globally is not recommended; instead improve

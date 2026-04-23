@@ -6569,8 +6569,8 @@ describe("createAgentChatService", () => {
           (typeof arg === "string" && arg.includes("updated text"))
           || (typeof arg === "object" && JSON.stringify(arg).includes("updated text")),
       );
-    expect(deliveredWithUpdatedText).toBeUndefined();
-  });
+      expect(deliveredWithUpdatedText).toBeUndefined();
+    });
 
     it("delivers queued OpenCode steers with attachments after the active turn settles", async () => {
       const events: AgentChatEventEnvelope[] = [];

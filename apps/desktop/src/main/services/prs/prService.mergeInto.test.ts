@@ -341,9 +341,7 @@ describe("createIntegrationPr with existingIntegrationLaneId", () => {
     setupPreflight();
     const allLanes = [baseLane, sourceLaneA, sourceLaneB, mergeIntoLane];
     const laneService = makeLaneService(allLanes);
-    const { service } = buildService({ laneService });
 
-    // Make merges succeed, GitHub API succeed, etc.
     mockGit.runGit.mockResolvedValue({ exitCode: 0, stdout: "", stderr: "" });
     const ghService = makeGithubService({
       apiRequest: vi.fn().mockResolvedValue({
@@ -406,7 +404,6 @@ describe("createIntegrationPr with existingIntegrationLaneId", () => {
       allowDirtyWorktree: true,
     });
 
-    // createChild should NOT have been called
     expect(laneService.createChild).not.toHaveBeenCalled();
   });
 
@@ -624,11 +621,7 @@ describe("simulateIntegration with mergeIntoLaneId", () => {
     const { service } = buildService({ laneService, db });
     setupGitShaResolution();
 
-    // Pairwise merge-tree (base vs source lanes): clean
-    let mergeTreeCallCount = 0;
     mockGit.runGitMergeTree.mockImplementation(async (args: any) => {
-      mergeTreeCallCount++;
-      // The merge-into check (mergeIntoHeadSha vs source lane head) conflicts
       if (args.branchA === "merge-into-sha-111") {
         return {
           exitCode: 1,
@@ -636,20 +629,16 @@ describe("simulateIntegration with mergeIntoLaneId", () => {
           conflicts: [{ path: "conflicting-file.ts" }],
         };
       }
-      // All other pairwise checks are clean
       return { exitCode: 0, treeOid: null, conflicts: [] };
     });
 
-    // git diff for conflict detail extraction
     mockGit.runGit.mockImplementation(async (args: string[]) => {
       if (args[0] === "diff") {
         return { exitCode: 0, stdout: "diff content", stderr: "" };
       }
-      // Sequential merge
       if (args[0] === "merge") {
         return { exitCode: 0, stdout: "", stderr: "" };
       }
-      // show for conflict markers
       if (args[0] === "show") {
         return { exitCode: 0, stdout: "file content", stderr: "" };
       }
@@ -663,7 +652,6 @@ describe("simulateIntegration with mergeIntoLaneId", () => {
       persist: false,
     });
 
-    // The source lane A should have "conflict" outcome due to merge-into conflict
     const laneASummary = proposal.laneSummaries.find((s) => s.laneId === SOURCE_LANE_A_ID);
     expect(laneASummary).toBeDefined();
     expect(laneASummary!.outcome).toBe("conflict");
