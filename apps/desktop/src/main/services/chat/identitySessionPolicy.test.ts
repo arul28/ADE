@@ -16,4 +16,10 @@ describe("identitySessionPolicy", () => {
     expect(resolveIdentityExecutionLane("cto", "lane-feature", "lane-primary")).toBe("lane-primary");
     expect(resolveIdentityExecutionLane("agent:worker-1", "lane-feature", "lane-primary")).toBe("lane-primary");
   });
+
+  it("falls back to plan/guarded mode for non-identity sessions", () => {
+    expect(normalizeIdentityPermissionMode(undefined, "plan", "claude")).toBe("plan");
+    expect(normalizeIdentityPermissionMode(undefined, "full-auto", "claude")).toBe("plan");
+    expect(normalizeIdentityPermissionMode(undefined, undefined, "codex")).toBe("plan");
+  });
 });
