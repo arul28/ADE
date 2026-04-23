@@ -128,7 +128,7 @@ per visible session. Two helpers build the inputs:
   returns the seed `PaneSplit` used when nothing has been persisted for
   the current `gridLayoutId`. It biases toward near-square layouts:
   `columnCount = ceil(sqrt(n))`, `rowCount = ceil(n / columnCount)`,
-  then `distributeCounts(n, rowCount)` spreads sessions across rows so
+  then `rowSizes(n, rowCount)` spreads sessions across rows so
   earlier rows absorb the remainder. The outer split is vertical; each
   row becomes an inline horizontal split (or a single leaf when the row
   has one session). `minSize: 8%` (MIN_PANE_SIZE) / `12%` (MIN_ROW_SIZE)

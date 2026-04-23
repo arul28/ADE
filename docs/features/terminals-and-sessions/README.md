@@ -89,7 +89,7 @@ Renderer surfaces:
   pure helper that produces the seed `PaneSplit` for the Work grid from
   an ordered list of session IDs (single-column for ≤1 session, single
   row when `ceil(sqrt(n)) == n`, otherwise a vertical stack of horizontal
-  rows with counts distributed by `distributeCounts`).
+  rows with counts distributed by `rowSizes`).
 - `apps/desktop/src/renderer/components/ui/PaneTilingLayout.tsx` +
   `paneTreeOps.ts` — recursive pane tree component + pure operations
   (`reconcilePaneTree`, `splitPaneAtEdge`, `swapPanes`, `removePaneFromTree`,
