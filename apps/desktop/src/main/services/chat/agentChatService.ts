@@ -1716,6 +1716,59 @@ function codexPolicyArgs(policy: ReturnType<typeof mapPermissionToCodex>): Recor
   return policy ? { approvalPolicy: policy.approvalPolicy, sandbox: policy.sandbox } : {};
 }
 
+type CodexThreadLifecycleResponse = {
+  thread?: { id?: string };
+  approvalPolicy?: unknown;
+  sandbox?: unknown;
+  reasoningEffort?: unknown;
+};
+
+const CODEX_SANDBOX_CAMEL_CASE_ALIASES: Record<string, AgentChatCodexSandbox> = {
+  readOnly: "read-only",
+  workspaceWrite: "workspace-write",
+  dangerFullAccess: "danger-full-access",
+};
+
+function normalizeCodexRuntimeSandbox(value: unknown): AgentChatCodexSandbox | undefined {
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    return normalizePersistedCodexSandbox(trimmed) ?? CODEX_SANDBOX_CAMEL_CASE_ALIASES[trimmed];
+  }
+
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const type = (value as Record<string, unknown>).type;
+  return typeof type === "string" ? CODEX_SANDBOX_CAMEL_CASE_ALIASES[type] : undefined;
+}
+
+function applyCodexEffectiveThreadState(
+  managed: ManagedChatSession,
+  response: CodexThreadLifecycleResponse | null | undefined,
+): void {
+  if (!response) return;
+
+  const approvalPolicy = normalizePersistedCodexApprovalPolicy(response.approvalPolicy);
+  if (approvalPolicy) {
+    managed.session.codexApprovalPolicy = approvalPolicy;
+  }
+
+  const sandbox = normalizeCodexRuntimeSandbox(response.sandbox);
+  if (sandbox) {
+    managed.session.codexSandbox = sandbox;
+  }
+
+  const reasoningEffort = validateReasoningEffort(
+    "codex",
+    normalizeReasoningEffort(
+      typeof response.reasoningEffort === "string" ? response.reasoningEffort : null,
+    ),
+  );
+  if (reasoningEffort) {
+    managed.session.reasoningEffort = reasoningEffort;
+  }
+
+  managed.session.permissionMode = syncLegacyPermissionMode(managed.session) ?? managed.session.permissionMode;
+}
+
 function normalizeOpenCodePermissionMode(mode: string | undefined): PermissionMode | undefined {
   if (mode === "default" || mode === "config-toml") return "edit";
   if (mode === "plan" || mode === "edit" || mode === "full-auto") return mode;
@@ -4563,9 +4616,12 @@ export function createAgentChatService(args: {
       if (chat.defaultApprovalPolicy === "auto") return "never" as const;
       if (chat.defaultApprovalPolicy === "approve_all") return "untrusted" as const;
       if (chat.defaultApprovalPolicy === "approve_mutations") return "on-request" as const;
+      // Codex chat defaults should match the documented "Default permissions"
+      // preset: workspace-write + on-request. Legacy shared CLI edit-mode
+      // fallbacks map to "untrusted", but that represents the explicit Codex
+      // edit preset rather than the default chat preset.
       if (cliMode === "full-auto") return "never" as const;
       if (cliMode === "read-only") return "on-request" as const;
-      if (cliMode === "edit") return "untrusted" as const;
       return "on-request" as const;
     })();
 
@@ -6258,6 +6314,7 @@ export function createAgentChatService(args: {
       });
     }
 
+    resolveCodexThreadParams(managed);
     await runtime.collaborationModesReady?.catch(() => {});
     const requestedCollaborationMode = resolveRequestedCodexCollaborationMode(managed.session);
     const collaborationMode = buildCodexCollaborationMode(
@@ -6285,7 +6342,7 @@ export function createAgentChatService(args: {
       result = await managed.runtime.request<{ turn?: { id?: string } }>("turn/start", {
         threadId: managed.session.threadId,
         input,
-        ...(managed.session.reasoningEffort ? { reasoningEffort: managed.session.reasoningEffort } : {}),
+        ...(managed.session.reasoningEffort ? { effort: managed.session.reasoningEffort } : {}),
         ...(collaborationMode ? { collaborationMode } : {}),
       });
     } catch (error) {
@@ -9527,14 +9584,14 @@ export function createAgentChatService(args: {
     runtime: CodexRuntime,
     codexPolicy: CodexPolicy,
   ): Promise<void> => {
-    const startResponse = await runtime.request<{ thread?: { id?: string } }>("thread/start", {
+    const startResponse = await runtime.request<CodexThreadLifecycleResponse>("thread/start", {
       model: managed.session.model,
-      ...(managed.session.reasoningEffort ? { reasoningEffort: managed.session.reasoningEffort } : {}),
       cwd: managed.laneWorktreePath,
       ...codexPolicyArgs(codexPolicy),
       experimentalRawEvents: false,
       persistExtendedHistory: true
     });
+    applyCodexEffectiveThreadState(managed, startResponse);
     const newThreadId = typeof startResponse.thread?.id === "string" ? startResponse.thread.id : undefined;
     if (newThreadId) {
       managed.session.threadId = newThreadId;
@@ -11824,16 +11881,21 @@ export function createAgentChatService(args: {
 
         if (threadIdToResume) {
           try {
-            await runtime.request("thread/resume", {
+            const resumeResponse = await runtime.request<CodexThreadLifecycleResponse>("thread/resume", {
               threadId: threadIdToResume,
               model: managed.session.model,
-              ...(managed.session.reasoningEffort ? { reasoningEffort: managed.session.reasoningEffort } : {}),
               cwd: managed.laneWorktreePath,
               ...codexPolicyArgs(codexPolicy),
               persistExtendedHistory: true
             });
-            managed.session.threadId = threadIdToResume;
+            applyCodexEffectiveThreadState(managed, resumeResponse);
+            const resumedThreadId = typeof resumeResponse.thread?.id === "string"
+              ? resumeResponse.thread.id
+              : threadIdToResume;
+            managed.session.threadId = resumedThreadId;
+            sessionService.setResumeCommand(managed.session.id, `chat:codex:${resumedThreadId}`);
             runtime.threadResumed = true;
+            persistChatState(managed);
             // Fetch skills after resume if not already fetched
             if (runtime.slashCommands.length === 0) {
               runtime.request<{ skills?: Array<{ name?: string; description?: string }> }>("skills/list", {})
@@ -12315,17 +12377,21 @@ export function createAgentChatService(args: {
       if (threadId) {
         const { codexPolicy } = resolveCodexThreadParams(managed);
         try {
-          await runtime.request("thread/resume", {
+          const resumeResponse = await runtime.request<CodexThreadLifecycleResponse>("thread/resume", {
             threadId,
             model: managed.session.model,
-            ...(managed.session.reasoningEffort ? { reasoningEffort: managed.session.reasoningEffort } : {}),
             cwd: managed.laneWorktreePath,
             ...codexPolicyArgs(codexPolicy),
             persistExtendedHistory: true
           });
-          managed.session.threadId = threadId;
+          applyCodexEffectiveThreadState(managed, resumeResponse);
+          const resumedThreadId = typeof resumeResponse.thread?.id === "string"
+            ? resumeResponse.thread.id
+            : threadId;
+          managed.session.threadId = resumedThreadId;
           runtime.threadResumed = true;
-          sessionService.setResumeCommand(sessionId, `chat:codex:${threadId}`);
+          sessionService.setResumeCommand(sessionId, `chat:codex:${resumedThreadId}`);
+          persistChatState(managed);
           // Fetch skills after resume if not already fetched
           if (runtime.slashCommands.length === 0) {
             runtime.request<{ skills?: Array<{ name?: string; description?: string }> }>("skills/list", {})
@@ -12358,9 +12424,6 @@ export function createAgentChatService(args: {
           await startFreshCodexThread(managed, runtime, codexPolicy);
         }
       }
-      // Re-sync codex approval policy from persisted/config settings
-      managed.session.codexApprovalPolicy = persisted?.codexApprovalPolicy ?? managed.session.codexApprovalPolicy;
-      managed.session.codexSandbox = persisted?.codexSandbox ?? managed.session.codexSandbox;
       managed.session.codexConfigSource = persisted?.codexConfigSource ?? managed.session.codexConfigSource;
       managed.session.permissionMode = syncLegacyPermissionMode(managed.session) ?? managed.session.permissionMode;
     } else if (managed.session.provider === "cursor") {

@@ -261,7 +261,7 @@ export function useLaneWorkSessions(laneId: string | null) {
   }, [laneOpenItemIds, sessionsById]);
 
   const gridLayoutId = useMemo(
-    () => `work:grid:v2:${projectRoot ?? "global"}::${laneId ?? "none"}`,
+    () => `work:grid:tiling:v1:${projectRoot ?? "global"}::${laneId ?? "none"}`,
     [laneId, projectRoot],
   );
 

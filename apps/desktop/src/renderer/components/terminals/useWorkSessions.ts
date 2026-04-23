@@ -794,7 +794,7 @@ export function useWorkSessions() {
   );
 
   const gridLayoutId = useMemo(
-    () => `work:grid:v2:${projectRoot ?? "global"}`,
+    () => `work:grid:tiling:v1:${projectRoot ?? "global"}`,
     [projectRoot],
   );
 

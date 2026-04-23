@@ -39,6 +39,8 @@ export function FloatingPane({
   onDragEnd,
   onDrop,
   onDragLeave,
+  onPaneMouseDown,
+  onPaneContextMenu,
   minimizeBehavior = "css",
   className,
   bodyClassName,
@@ -62,6 +64,8 @@ export function FloatingPane({
   onDragEnd?: () => void;
   onDrop?: () => void;
   onDragLeave?: () => void;
+  onPaneMouseDown?: (e: React.MouseEvent<HTMLDivElement>) => void;
+  onPaneContextMenu?: (e: React.MouseEvent<HTMLDivElement>) => void;
   minimizeBehavior?: "css" | "native";
   className?: string;
   bodyClassName?: string;
@@ -113,6 +117,8 @@ export function FloatingPane({
       onDragOver={isDraggable ? handleDragOver : undefined}
       onDrop={isDraggable ? handleDrop : undefined}
       onDragLeave={isDraggable ? handleDragLeave : undefined}
+      onMouseDown={onPaneMouseDown}
+      onContextMenu={onPaneContextMenu}
     >
       <div
         className={cn("ade-floating-pane-header", minimized && "ade-floating-pane-header-minimized")}

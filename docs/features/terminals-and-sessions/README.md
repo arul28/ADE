@@ -78,15 +78,22 @@ Renderer surfaces:
   per-session card (status dot, title, preview line, tool type, lane,
   delta chips).
 - `apps/desktop/src/renderer/components/terminals/WorkViewArea.tsx` —
-  multi-tab and multi-tile Work view that owns the `PackedSessionGrid`.
+  tabs/grid/single Work view. The grid mode renders through the shared
+  `PaneTilingLayout`; the seed tree comes from `buildWorkSessionTilingTree`.
 - `apps/desktop/src/renderer/components/terminals/WorkStartSurface.tsx` —
   empty-state "start new chat / terminal" surface.
 - `apps/desktop/src/renderer/components/terminals/TerminalView.tsx` —
   xterm.js wrapper; WebGL renderer with DOM fallback, fit retries, health
   counters.
-- `apps/desktop/src/renderer/components/terminals/PackedSessionGrid.tsx`
-  + `packedSessionGridMath.ts` — bin-packed resizable grid for multiple
-  simultaneous sessions.
+- `apps/desktop/src/renderer/components/terminals/workSessionTiling.ts` —
+  pure helper that produces the seed `PaneSplit` for the Work grid from
+  an ordered list of session IDs (single-column for ≤1 session, single
+  row when `ceil(sqrt(n)) == n`, otherwise a vertical stack of horizontal
+  rows with counts distributed by `rowSizes`).
+- `apps/desktop/src/renderer/components/ui/PaneTilingLayout.tsx` +
+  `paneTreeOps.ts` — recursive pane tree component + pure operations
+  (`reconcilePaneTree`, `splitPaneAtEdge`, `swapPanes`, `removePaneFromTree`,
+  `detectDropEdge`) shared by every tiled surface, including the Work grid.
 - `apps/desktop/src/renderer/components/terminals/useWorkSessions.ts` —
   hook that owns work view state (open items, active tab, draft kind,
   view mode, filters) and persists it to `localStorage` under
@@ -113,8 +120,9 @@ Renderer surfaces:
   backfill, stale reconciliation. Covers the branch-heavy main-process
   code.
 - [ui-surfaces.md](./ui-surfaces.md) — the renderer surfaces:
-  `TerminalsPage`, `SessionListPane`, `WorkViewArea`, `WorkStartSurface`,
-  `TerminalView`, `PackedSessionGrid`, and state hooks.
+  `TerminalsPage`, `SessionListPane`, `WorkViewArea` (including the
+  `PaneTilingLayout`-backed grid mode), `WorkStartSurface`,
+  `TerminalView`, and state hooks.
 - [runtime-isolation.md](./runtime-isolation.md) — how a session stays
   bound to a single lane worktree and a single mission/run context.
 
@@ -290,9 +298,15 @@ Processes (managed):
   `transcriptBytesWritten` is not persisted.
 - Preview updates are throttled (~900 ms) and the string is capped at
   220 chars via `derivePreviewFromChunk`.
-- `PackedSessionGrid` mounts every tile; tiles that are not visible set
-  `terminalVisible={false}` so xterm skips fit work. Do not unmount a
-  grid tile just because it is offscreen — the PTY will detach.
+- `PaneTilingLayout` mounts every leaf pane in the Work grid; each
+  `SessionSurface` still passes `terminalVisible={true}` for grid tiles
+  because the tiling layout keeps them on screen. Do not unmount a grid
+  leaf just because it is inactive — the PTY will detach. The tiling
+  tree for the Work grid is persisted per `(projectRoot, laneId)` under
+  the `work:grid:tiling:v1:` key family (via `window.ade.tilingTree`),
+  and legacy `work:grid:v2:*` layouts are intentionally ignored — a new
+  tree is seeded from `buildWorkSessionTilingTree` when nothing is
+  persisted under the current key.
 
 ## Cross-links
 

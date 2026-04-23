@@ -1,7 +1,7 @@
 /* @vitest-environment jsdom */
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, type RenderResult } from "@testing-library/react";
 import type { ComponentProps } from "react";
 import { AgentChatComposer } from "./AgentChatComposer";
 
@@ -54,8 +54,8 @@ function buildComposerProps(overrides: Partial<ComponentProps<typeof AgentChatCo
 function renderComposer(overrides: Partial<ComponentProps<typeof AgentChatComposer>> = {}) {
   const props = buildComposerProps(overrides);
 
-  render(<AgentChatComposer {...props} />);
-  return props;
+  const view = render(<AgentChatComposer {...props} />);
+  return Object.assign(view, props) as RenderResult & ComponentProps<typeof AgentChatComposer>;
 }
 
 const executionModeOptions = [
@@ -402,7 +402,7 @@ describe("AgentChatComposer", () => {
   });
 
   it("marks the textarea layout variant in grid-tile mode", () => {
-    renderComposer({
+    const { container } = renderComposer({
       layoutVariant: "grid-tile",
       composerMaxHeightPx: 128,
     });
@@ -410,6 +410,9 @@ describe("AgentChatComposer", () => {
     const textarea = screen.getByPlaceholderText("Steer the active turn...") as HTMLTextAreaElement;
     expect(textarea.dataset.chatLayoutVariant).toBe("grid-tile");
     expect(textarea.className).toContain("resize-none");
+    const composerShell = container.querySelector("[data-chat-composer-mode]");
+    expect(composerShell?.className).not.toContain("rounded-none");
+    expect(composerShell?.parentElement?.className ?? "").not.toContain("rounded-none");
   });
 
   it("focuses the grid composer when the tile becomes active", () => {

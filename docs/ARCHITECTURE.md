@@ -470,7 +470,7 @@ app/            # shell, App.tsx, TopBar, TabNav, startup, splash
 project/        # Play tab, run/test/process controls
 lanes/          # list/detail/inspector, stacks, laneDesignTokens.ts
 files/          # tree, editor, diffs
-terminals/      # TerminalView, PackedSessionGrid, WorkViewArea, LaneCombobox
+terminals/      # TerminalView, WorkViewArea (PaneTilingLayout-backed grid), workSessionTiling, LaneCombobox
 conflicts/      # risk matrix, simulation, resolution
 context/        # shared helpers (contextShared.ts)
 graph/          # WorkspaceGraphPage (decomposed into nodes/edges/dialogs)
@@ -490,9 +490,9 @@ Design tokens have been intentionally trimmed. The CTO design tokens at `apps/de
 
 ### 7.4 Layout patterns
 
-- `PaneTilingLayout` — recursive pane trees for high-density workspaces.
+- `PaneTilingLayout` — recursive pane trees for high-density workspaces, backed by pure ops in `paneTreeOps.ts` (`reconcilePaneTree`, `splitPaneAtEdge`, `swapPanes`, `detectDropEdge`). Trees persist per `layoutId` via `window.ade.tilingTree`; panel sizes persist separately via `DockLayoutState` and are reset whenever the tree mutates.
 - `SplitPane` / resizable panels — structured 2/3-pane views.
-- `PackedSessionGrid` — bin-packed tile layout for multi-session Work views (`packedSessionGridMath.ts`). Each tile receives `layoutVariant` and `terminalVisible` so background terminals skip fit operations.
+- Work view's grid mode is `PaneTilingLayout` seeded by `buildWorkSessionTilingTree(sessionIds)` (in `renderer/components/terminals/workSessionTiling.ts`); every session becomes a `FloatingPane` leaf with `grid-tile` chrome.
 - Layout state persists to SQLite (`layout`, `tilingTree`, `graphState` domains via the `kv` table).
 
 ### 7.5 Performance contract
