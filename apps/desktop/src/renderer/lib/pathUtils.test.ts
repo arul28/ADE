@@ -2,6 +2,9 @@ import { describe, expect, it } from "vitest";
 import {
   arePathsEqual,
   isPathEqualOrDescendant,
+  isWindowsAbsolutePath,
+  isWindowsDrivePath,
+  isWindowsUncPath,
   normalizePath,
   normalizePathForComparison,
   normalizePathForWorkspaceComparison,
@@ -41,5 +44,38 @@ describe("pathUtils", () => {
 
   it("remaps relative Windows workspace paths case-insensitively", () => {
     expect(remapPathForRename("src/Main.ts", "SRC", "Renamed", "C:\\Repo")).toBe("Renamed/Main.ts");
+  });
+});
+
+describe("Windows path predicates", () => {
+  it("identifies drive-letter paths, including leading-slash and bare-drive forms", () => {
+    expect(isWindowsDrivePath("C:\\Users\\me")).toBe(true);
+    expect(isWindowsDrivePath("c:/users/me")).toBe(true);
+    expect(isWindowsDrivePath("/C:/Users/me")).toBe(true);
+    expect(isWindowsDrivePath("Z:")).toBe(true);
+
+    expect(isWindowsDrivePath("relative/path")).toBe(false);
+    expect(isWindowsDrivePath("/unix/path")).toBe(false);
+    expect(isWindowsDrivePath("C:relative")).toBe(false);
+  });
+
+  it("identifies UNC paths in both backslash and forward-slash form", () => {
+    expect(isWindowsUncPath("\\\\server\\share\\file.txt")).toBe(true);
+    expect(isWindowsUncPath("//server/share/file.txt")).toBe(true);
+
+    expect(isWindowsUncPath("\\\\")).toBe(false);
+    expect(isWindowsUncPath("//")).toBe(false);
+    expect(isWindowsUncPath("/unix/path")).toBe(false);
+    expect(isWindowsUncPath("C:\\path")).toBe(false);
+  });
+
+  it("identifies any Windows absolute path as drive or UNC", () => {
+    expect(isWindowsAbsolutePath("C:\\Users")).toBe(true);
+    expect(isWindowsAbsolutePath("\\\\srv\\share")).toBe(true);
+    expect(isWindowsAbsolutePath("//srv/share")).toBe(true);
+
+    expect(isWindowsAbsolutePath("/unix/path")).toBe(false);
+    expect(isWindowsAbsolutePath("relative/path")).toBe(false);
+    expect(isWindowsAbsolutePath("")).toBe(false);
   });
 });
