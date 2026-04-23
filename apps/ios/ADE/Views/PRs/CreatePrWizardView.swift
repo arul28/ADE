@@ -181,7 +181,6 @@ struct CreatePrWizardView: View {
     NavigationStack {
       ScrollView {
         VStack(spacing: 0) {
-          dragHandle
           heroHeader
           if let errorMessage, !syncService.connectionState.isHostUnreachable {
             ADENoticeCard(
@@ -202,14 +201,14 @@ struct CreatePrWizardView: View {
           stanceSection
           reviewersSection
           labelsSection
-          whatHappensNextSection
+          finalReviewSection
           Color.clear.frame(height: 40)
         }
       }
       .scrollIndicators(.hidden)
       .adeScreenBackground()
       .adeNavigationGlass()
-      .navigationTitle("")
+      .navigationTitle("Open pull request")
       .navigationBarTitleDisplayMode(.inline)
       .toolbar {
         ToolbarItem(placement: .cancellationAction) {
@@ -252,18 +251,6 @@ struct CreatePrWizardView: View {
   }
 
   // MARK: - Hero chrome
-
-  private var dragHandle: some View {
-    HStack {
-      Spacer()
-      RoundedRectangle(cornerRadius: 2, style: .continuous)
-        .fill(ADEColor.textSecondary.opacity(0.28))
-        .frame(width: 36, height: 4)
-      Spacer()
-    }
-    .padding(.top, 8)
-    .padding(.bottom, 4)
-  }
 
   private var heroHeader: some View {
     VStack(alignment: .leading, spacing: 6) {
@@ -589,12 +576,12 @@ struct CreatePrWizardView: View {
     }
   }
 
-  // MARK: - What happens next
+  // MARK: - Final review
 
-  private var whatHappensNextSection: some View {
+  private var finalReviewSection: some View {
     VStack(spacing: 0) {
-      PrSectionHdr(title: "What happens next") {
-        PrMonoText(text: "automated", color: ADEColor.textMuted, size: 10)
+      PrSectionHdr(title: "Final review") {
+        PrMonoText(text: "host action", color: ADEColor.warning, size: 10)
       }
       VStack(spacing: 0) {
         let steps = buildNextSteps()
@@ -612,14 +599,20 @@ struct CreatePrWizardView: View {
   private func buildNextSteps() -> [NextStepItem] {
     var steps: [NextStepItem] = []
     let branch = selectedOption?.branchRef ?? selectedLane?.branchRef ?? "lane"
-    steps.append(NextStepItem(id: "push", label: "Push \(branch) to origin", note: nil))
+    steps.append(
+      NextStepItem(
+        id: "push",
+        label: "Push \(branch) to origin",
+        note: "Runs before GitHub opens the PR."
+      )
+    )
 
     let stanceLabel = draft ? "draft" : "ready"
     steps.append(
       NextStepItem(
         id: "open",
-        label: "Open PR against \(baseBranch) · \(stanceLabel)",
-        note: nil
+        label: "Open PR against \(baseBranch)",
+        note: "Stance: \(stanceLabel)."
       )
     )
 
@@ -643,7 +636,7 @@ struct CreatePrWizardView: View {
             .controlSize(.small)
             .tint(Color(.sRGB, red: 0.05, green: 0.04, blue: 0.07, opacity: 1.0))
         }
-        Text(isSubmitting ? "Opening…" : "Open")
+        Text(isSubmitting ? "Pushing…" : "Push & open")
           .font(.system(size: 12, weight: .bold))
           .foregroundStyle(Color(.sRGB, red: 0.05, green: 0.04, blue: 0.07, opacity: 1.0))
       }
@@ -959,18 +952,20 @@ fileprivate struct NextStepRow: View {
       }
       .frame(width: 18, height: 18)
 
-      Text(step.label)
-        .font(.system(size: 12.5))
-        .foregroundStyle(ADEColor.textPrimary)
-        .lineLimit(2)
+      VStack(alignment: .leading, spacing: 2) {
+        Text(step.label)
+          .font(.system(size: 12.5))
+          .foregroundStyle(ADEColor.textPrimary)
+          .lineLimit(2)
 
-      Spacer(minLength: 0)
-
-      if let note = step.note {
-        Text(note)
-          .font(.system(size: 9.5, design: .monospaced))
-          .foregroundStyle(ADEColor.textMuted)
+        if let note = step.note {
+          Text(note)
+            .font(.system(size: 10.5))
+            .foregroundStyle(ADEColor.textMuted)
+            .fixedSize(horizontal: false, vertical: true)
+        }
       }
+      Spacer(minLength: 0)
     }
     .padding(.horizontal, 14)
     .padding(.vertical, 10)

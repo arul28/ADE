@@ -2783,6 +2783,42 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(filterPullRequestListItems(items, query: "", state: .open).map(\.id), ["pr-1"])
   }
 
+  func testPrLinkLanePreselectionRequiresExactBranchMatch() {
+    func lane(id: String, name: String, branchRef: String) -> LaneSummary {
+      LaneSummary(
+        id: id,
+        name: name,
+        description: nil,
+        laneType: "feature",
+        baseRef: "main",
+        branchRef: branchRef,
+        worktreePath: "/tmp/\(id)",
+        attachedRootPath: nil,
+        parentLaneId: nil,
+        childCount: 0,
+        stackDepth: 0,
+        parentStatus: nil,
+        isEditProtected: false,
+        status: LaneStatus(dirty: false, ahead: 0, behind: 0, remoteBehind: 0, rebaseInProgress: false),
+        color: nil,
+        icon: nil,
+        tags: [],
+        folder: nil,
+        createdAt: "2026-03-20T00:00:00.000Z",
+        archivedAt: nil
+      )
+    }
+
+    let lanes = [
+      lane(id: "lane-name-collision", name: "cursor/windows-port-foundations-ede6", branchRef: "automations-overhaul"),
+      lane(id: "lane-branch-match", name: "Windows port", branchRef: "cursor/windows-port-foundations-ede6"),
+    ]
+
+    XCTAssertEqual(matchedLaneForExactBranch("cursor/windows-port-foundations-ede6", lanes: lanes)?.id, "lane-branch-match")
+    XCTAssertNil(matchedLaneForExactBranch("automations overhaul", lanes: lanes))
+    XCTAssertNil(matchedLaneForExactBranch("   ", lanes: lanes))
+  }
+
   func testLaneListFilteringMatchesSearchPrefixesAndSortOrder() {
     let snapshots = [
       makeLaneListSnapshot(
@@ -2926,6 +2962,18 @@ final class ADETests: XCTestCase {
         laneStatus: SyncDomainStatus(phase: .hydrating, lastError: nil, lastHydratedAt: nil)
       )
     )
+  }
+
+  func testLaneDiscardAllUsesExplicitDestructiveConfirmationCopy() {
+    let confirmation = LaneFileConfirmation.discardAllUnstaged([
+      FileChange(path: "Sources/App.swift", kind: "modified"),
+      FileChange(path: "Tests/AppTests.swift", kind: "modified"),
+    ])
+
+    XCTAssertEqual(confirmation.title, "Discard all unstaged changes?")
+    XCTAssertEqual(confirmation.confirmTitle, "Discard all")
+    XCTAssertEqual(confirmation.actionLabel, "discard all")
+    XCTAssertTrue(confirmation.message.contains("2 files"))
   }
 
   func testLaneAllowsDiffInspectionKeepsCachedTargetsReadableWhileOfflineOrSyncing() {
@@ -5052,6 +5100,30 @@ final class ADETests: XCTestCase {
     // Lengths match, so only the fingerprint's tail-window distinguishes them.
     XCTAssertEqual(bufferA.count, bufferB.count)
     XCTAssertNotEqual(workActivityBufferFingerprint(bufferA), workActivityBufferFingerprint(bufferB))
+  }
+
+  func testWorkDisplayCollapsesDuplicatedStreamingCharacters() {
+    XCTAssertEqual(
+      workSessionPreviewText("WWoorrkkiinngg oonn ppaassss tthhrroouugghh"),
+      "Working on pass through"
+    )
+    XCTAssertEqual(
+      sanitizeTerminalOutputForDisplay("WWoorrkkiinngg\n\u{001B}[31mDDoonnee\u{001B}[0m"),
+      "Working\nDone"
+    )
+    XCTAssertEqual(
+      sanitizeTerminalOutputForDisplay("Everything is green. WWoorrkkiinngg 200 WWoorrkkiinngg."),
+      "Everything is green. Working 200 Working."
+    )
+    XCTAssertEqual(
+      sanitizeTerminalOutputForDisplay("Success: queued job still running with a class FooController"),
+      "Success: queued job still running with a class FooController"
+    )
+    XCTAssertEqual(
+      sanitizeTerminalOutputForDisplay("TThhee bbuuiilldd ppaasssseedd,, rruunnnniinngg ffiinnaall cchheecckkss"),
+      "The build passed, running final checks"
+    )
+    XCTAssertEqual(workSessionPreviewText("Still visible"), "Still visible")
   }
 
   func testBuildWorkActivityFeedReusesCachedTerminalTranscript() {

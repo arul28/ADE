@@ -10,6 +10,8 @@ struct LaneSyncDetailScreen: View {
   let onPullRebase: () -> Void
   let onPush: () -> Void
 
+  @State private var pendingAction: LaneSyncAction?
+
   var body: some View {
     ScrollView {
       VStack(spacing: 14) {
@@ -32,15 +34,15 @@ struct LaneSyncDetailScreen: View {
           }
         }
 
-        ADEGlassSection(title: "Quick sync") {
+        ADEGlassSection(title: "Sync actions", subtitle: "Review the lane state before changing refs.") {
           VStack(spacing: 10) {
             HStack(spacing: 10) {
-              syncTile(title: "Fetch", symbol: "arrow.down.circle", action: onFetch)
-              syncTile(title: "Pull (merge)", symbol: "arrow.down.to.line", action: onPullMerge)
+              syncTile(action: .fetch)
+              syncTile(action: .pullMerge)
             }
             HStack(spacing: 10) {
-              syncTile(title: "Pull (rebase)", symbol: "arrow.triangle.2.circlepath", action: onPullRebase)
-              syncTile(title: "Push", symbol: "arrow.up.to.line", tint: ADEColor.accent, action: onPush)
+              syncTile(action: .pullRebase)
+              syncTile(action: .push)
             }
           }
         }
@@ -51,6 +53,16 @@ struct LaneSyncDetailScreen: View {
     .background(ADEColor.surfaceBackground.ignoresSafeArea())
     .navigationTitle("\(laneName) sync")
     .navigationBarTitleDisplayMode(.inline)
+    .alert(item: $pendingAction) { action in
+      Alert(
+        title: Text(action.title),
+        message: Text(action.message),
+        primaryButton: action.isDestructive
+          ? .destructive(Text(action.confirmTitle)) { perform(action) }
+          : .default(Text(action.confirmTitle)) { perform(action) },
+        secondaryButton: .cancel()
+      )
+    }
   }
 
   private var summary: String {
@@ -58,15 +70,19 @@ struct LaneSyncDetailScreen: View {
     return syncSummary(syncStatus)
   }
 
-  private func syncTile(title: String, symbol: String, tint: Color = ADEColor.textPrimary, action: @escaping () -> Void) -> some View {
-    Button(action: action) {
+  private func syncTile(action: LaneSyncAction) -> some View {
+    Button {
+      pendingAction = action
+    } label: {
       VStack(spacing: 4) {
-        Image(systemName: symbol)
+        Image(systemName: action.symbol)
           .font(.system(size: 16, weight: .semibold))
-        Text(title)
+        Text(action.buttonTitle)
           .font(.caption2.weight(.semibold))
+          .lineLimit(1)
+          .minimumScaleFactor(0.8)
       }
-      .foregroundStyle(tint)
+      .foregroundStyle(action.tint)
       .frame(maxWidth: .infinity)
       .frame(height: 58)
       .background(ADEColor.surfaceBackground.opacity(0.35), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
@@ -77,5 +93,94 @@ struct LaneSyncDetailScreen: View {
     }
     .buttonStyle(.plain)
     .disabled(!canRunLiveActions)
+  }
+
+  private func perform(_ action: LaneSyncAction) {
+    pendingAction = nil
+    switch action {
+    case .fetch:
+      onFetch()
+    case .pullMerge:
+      onPullMerge()
+    case .pullRebase:
+      onPullRebase()
+    case .push:
+      onPush()
+    }
+  }
+}
+
+private enum LaneSyncAction: String, Identifiable {
+  case fetch
+  case pullMerge
+  case pullRebase
+  case push
+
+  var id: String { rawValue }
+
+  var buttonTitle: String {
+    switch self {
+    case .fetch: return "Fetch"
+    case .pullMerge: return "Pull merge"
+    case .pullRebase: return "Pull rebase"
+    case .push: return "Push"
+    }
+  }
+
+  var title: String {
+    switch self {
+    case .fetch: return "Fetch remote refs?"
+    case .pullMerge: return "Pull with merge?"
+    case .pullRebase: return "Pull with rebase?"
+    case .push: return "Push commits?"
+    }
+  }
+
+  var message: String {
+    switch self {
+    case .fetch:
+      return "ADE will update remote-tracking refs for this lane. Local files are not changed."
+    case .pullMerge:
+      return "ADE will merge upstream changes into this lane. Review status before continuing."
+    case .pullRebase:
+      return "ADE will replay local commits on top of upstream changes. Review status before continuing."
+    case .push:
+      return "ADE will update the remote branch with local commits from this lane."
+    }
+  }
+
+  var confirmTitle: String {
+    switch self {
+    case .fetch: return "Fetch"
+    case .pullMerge: return "Pull merge"
+    case .pullRebase: return "Pull rebase"
+    case .push: return "Push"
+    }
+  }
+
+  var symbol: String {
+    switch self {
+    case .fetch: return "arrow.down.circle"
+    case .pullMerge: return "arrow.down.to.line"
+    case .pullRebase: return "arrow.triangle.2.circlepath"
+    case .push: return "arrow.up.to.line"
+    }
+  }
+
+  var tint: Color {
+    switch self {
+    case .push: return ADEColor.accent
+    case .pullRebase: return ADEColor.warning
+    default: return ADEColor.textPrimary
+    }
+  }
+
+  var isDestructive: Bool {
+    switch self {
+    case .fetch, .push:
+      return false
+    case .pullMerge, .pullRebase:
+      return true
+    }
   }
 }

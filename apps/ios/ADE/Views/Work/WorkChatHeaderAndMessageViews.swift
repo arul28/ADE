@@ -27,12 +27,8 @@ struct WorkSessionHeader: View {
   }
 
   var body: some View {
-    // Compact toolbar matching the desktop ChatGitToolbar shape: a left-side
-    // chip cluster (status dot + lane chip + relative time) and a trailing
-    // overflow menu so future Run / Stage & Commit / Push / PR / Terminal /
-    // Handoff entry points have a stable home. The standalone "ENDED · …"
-    // status row that used to live below the title is gone — composer
-    // feedback already conveys the disabled state.
+    // Compact context row. Lane actions live in the nav bar and on the lane
+    // chip, so this row avoids a second anonymous overflow menu.
     HStack(spacing: 8) {
       laneChip
       Text(relativeStartLabel)
@@ -40,7 +36,6 @@ struct WorkSessionHeader: View {
         .foregroundStyle(ADEColor.textMuted)
         .lineLimit(1)
       Spacer(minLength: 0)
-      overflowMenu
     }
     .padding(.vertical, 4)
     .accessibilityElement(children: .contain)
@@ -81,36 +76,6 @@ struct WorkSessionHeader: View {
       Capsule(style: .continuous)
         .stroke(ADEColor.border.opacity(0.22), lineWidth: 0.6)
     )
-  }
-
-  @ViewBuilder
-  private var overflowMenu: some View {
-    // Single-entry menu today — the lane action set (Run / Stage & Commit /
-    // Push / PR / Terminal / Handoff) needs callbacks the iOS chat view
-    // doesn't yet thread through. Slot for them here when they land so the
-    // header layout stays stable.
-    Menu {
-      if let onOpenLane {
-        Button {
-          onOpenLane()
-        } label: {
-          Label("Open lane", systemImage: "arrow.triangle.branch")
-        }
-      }
-    } label: {
-      Image(systemName: "ellipsis")
-        .font(.system(size: 14, weight: .semibold))
-        .foregroundStyle(ADEColor.textSecondary)
-        .frame(width: 28, height: 28)
-        .background(ADEColor.surfaceBackground.opacity(0.55), in: Circle())
-        .overlay(
-          Circle()
-            .stroke(ADEColor.border.opacity(0.22), lineWidth: 0.6)
-        )
-    }
-    .menuStyle(.borderlessButton)
-    .accessibilityLabel("More lane actions")
-    .disabled(onOpenLane == nil)
   }
 }
 

@@ -55,12 +55,17 @@ struct PrGitHubFiltersCard: View {
   private var header: some View {
     HStack(alignment: .top, spacing: 12) {
       VStack(alignment: .leading, spacing: 4) {
-        Text(repo.map { "\($0.owner)/\($0.name)" } ?? "GitHub pull requests")
+        Text("GitHub pull requests")
           .font(.subheadline.weight(.semibold))
           .foregroundStyle(ADEColor.textPrimary)
           .lineLimit(1)
         HStack(spacing: 6) {
           PrMonoText(text: "\(visibleCount)/\(totalCount)", color: ADEColor.textSecondary, size: 10)
+          if let repo {
+            PrMonoText(text: "\(repo.owner)/\(repo.name)", color: ADEColor.textMuted, size: 10)
+              .lineLimit(1)
+              .truncationMode(.middle)
+          }
           if let viewerLogin, !viewerLogin.isEmpty {
             PrMonoText(text: "@\(viewerLogin)", color: ADEColor.textMuted, size: 10)
               .lineLimit(1)

@@ -61,6 +61,17 @@ func filterPullRequestListItems(
   }
 }
 
+func matchedLaneForExactBranch(_ headBranch: String?, lanes: [LaneSummary]) -> LaneSummary? {
+  guard let headBranch = headBranch?.trimmingCharacters(in: .whitespacesAndNewlines),
+    !headBranch.isEmpty
+  else {
+    return nil
+  }
+  return lanes.first { lane in
+    lane.branchRef.caseInsensitiveCompare(headBranch) == .orderedSame
+  }
+}
+
 func parsePullRequestPatch(_ patch: String) -> [PrDiffDisplayLine] {
   guard !patch.isEmpty else { return [] }
 
@@ -612,10 +623,14 @@ struct PrScopeChip: View {
         Text(label)
           .font(.system(size: 13, weight: isActive ? .semibold : .medium))
           .foregroundColor(isActive ? ADEColor.tintPRs : ADEColor.textPrimary)
+          .lineLimit(1)
+          .minimumScaleFactor(0.85)
         if let count {
           Text("\(count)")
             .font(.system(size: 11, weight: .semibold, design: .monospaced))
             .foregroundColor(isActive ? ADEColor.tintPRs : ADEColor.textSecondary)
+            .lineLimit(1)
+            .minimumScaleFactor(0.8)
             .padding(.horizontal, 6)
             .padding(.vertical, 2)
             .background(
@@ -626,6 +641,7 @@ struct PrScopeChip: View {
       }
       .padding(.horizontal, 12)
       .padding(.vertical, 7)
+      .fixedSize(horizontal: true, vertical: false)
       .background(
         Capsule()
           .fill(isActive ? ADEColor.tintPRs.opacity(0.14) : ADEColor.recessedBackground)

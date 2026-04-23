@@ -3,7 +3,6 @@ import UIKit
 
 struct FilesDetailScreen: View {
   @EnvironmentObject var syncService: SyncService
-  @Environment(\.dismiss) var dismiss
 
   let workspace: FilesWorkspace
   let relativePath: String
@@ -23,6 +22,7 @@ struct FilesDetailScreen: View {
   @State var hasLoadedHistory = false
   @State var hasLoadedDiff = false
   @State var isDetailsSheetPresented = false
+  @State var codeLayoutMode: FilesCodeLayoutMode = .wrap
 
   var language: FilesLanguage {
     FilesLanguage.detect(languageId: blob?.languageId, filePath: relativePath)
@@ -55,9 +55,9 @@ struct FilesDetailScreen: View {
 
   var readOnlyTagline: String {
     if workspace.laneId != nil {
-      return "Read-only on iPhone — previews, metadata, history, and diffs only. Use desktop ADE for edits."
+      return "Read-only on iPhone. Preview, diff, and metadata are available here; edit on desktop."
     }
-    return "Read-only on iPhone — previews and metadata only. Use desktop ADE for edits."
+    return "Read-only on iPhone. Preview and metadata are available here; edit on desktop."
   }
 
   var body: some View {
@@ -89,21 +89,7 @@ struct FilesDetailScreen: View {
     .adeNavigationGlass()
     .navigationTitle(lastPathComponent(relativePath))
     .navigationBarTitleDisplayMode(.inline)
-    .navigationBarBackButtonHidden(true)
     .toolbar {
-      ToolbarItem(placement: .topBarLeading) {
-        HStack(spacing: 10) {
-          Button {
-            dismiss()
-          } label: {
-            Image(systemName: "chevron.left")
-          }
-          .accessibilityLabel("Back")
-          .frame(minWidth: 44, minHeight: 44)
-          .contentShape(Rectangle())
-          ADERootToolbarLeading()
-        }
-      }
       ToolbarItem(placement: .topBarTrailing) {
         Button {
           isDetailsSheetPresented = true
@@ -181,6 +167,10 @@ struct FilesDetailScreen: View {
         if editorModes.count > 1 {
           filesModeControl
         }
+
+        if showsCodeLayoutControl(blob: blob) {
+          filesCodeLayoutControl
+        }
       }
     }
     .padding(.horizontal, 16)
@@ -205,6 +195,26 @@ struct FilesDetailScreen: View {
         }
         .pickerStyle(.segmented)
       }
+    }
+  }
+
+  @ViewBuilder
+  private var filesCodeLayoutControl: some View {
+    Picker("Code layout", selection: $codeLayoutMode) {
+      ForEach(FilesCodeLayoutMode.allCases) { layoutMode in
+        Text(layoutMode.title).tag(layoutMode)
+      }
+    }
+    .pickerStyle(.segmented)
+    .accessibilityLabel("Code layout")
+  }
+
+  private func showsCodeLayoutControl(blob: SyncFileBlob) -> Bool {
+    switch mode {
+    case .preview:
+      return !blob.isBinary
+    case .diff:
+      return workspace.laneId != nil
     }
   }
 
@@ -248,7 +258,8 @@ struct FilesDetailScreen: View {
         SyntaxHighlightedCodeView(
           text: blob.content,
           language: language,
-          focusLine: focusLine
+          focusLine: focusLine,
+          layoutMode: codeLayoutMode
         )
       }
     }
@@ -278,6 +289,12 @@ struct FilesDetailScreen: View {
         title: "Binary diff",
         message: "The host reported a binary diff that cannot be rendered inline."
       )
+    } else if let diff, !filesDiffHasChanges(diff) {
+      FilesContentFallback(
+        symbol: "checkmark.circle",
+        title: "No \(diffMode.title.lowercased()) changes",
+        message: "This file matches the selected \(diffMode.title.lowercased()) diff scope."
+      )
     } else if let diff, let limit = filesDiffPreviewLimit(diff: diff) {
       FilesContentFallback(
         symbol: "arrow.left.arrow.right",
@@ -287,7 +304,8 @@ struct FilesDetailScreen: View {
     } else if let diff {
       FilesInlineDiffView(
         lines: buildInlineDiffLines(original: diff.original.text, modified: diff.modified.text),
-        language: FilesLanguage.detect(languageId: diff.language, filePath: relativePath)
+        language: FilesLanguage.detect(languageId: diff.language, filePath: relativePath),
+        layoutMode: codeLayoutMode
       )
     } else {
       FilesContentFallback(

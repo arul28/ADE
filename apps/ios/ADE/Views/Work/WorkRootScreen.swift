@@ -145,7 +145,39 @@ struct WorkRootScreen: View {
   }
 
   var hasActiveFilters: Bool {
-    selectedStatus != .all || selectedLaneId != "all"
+    selectedStatus != .all
+      || selectedLaneId != "all"
+      || !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+  }
+
+  var globalNeedsInputCount: Int {
+    mergedSessions.filter {
+      !archivedSessionIds.contains($0.id)
+      && normalizedWorkChatSessionStatus(session: $0, summary: chatSummaries[$0.id]) == "awaiting-input"
+    }.count
+  }
+
+  var globalLiveSessionCount: Int {
+    mergedSessions.filter { session in
+      guard !archivedSessionIds.contains(session.id) else { return false }
+      let status = normalizedWorkChatSessionStatus(session: session, summary: chatSummaries[session.id])
+      return status == "active" || status == "idle" || status == "awaiting-input"
+    }.count
+  }
+
+  var firstGlobalAttentionSession: TerminalSessionSummary? {
+    mergedSessions.first {
+      !archivedSessionIds.contains($0.id)
+      && normalizedWorkChatSessionStatus(session: $0, summary: chatSummaries[$0.id]) == "awaiting-input"
+    }
+  }
+
+  var firstGlobalLiveSession: TerminalSessionSummary? {
+    mergedSessions.first { session in
+      guard !archivedSessionIds.contains(session.id) else { return false }
+      let status = normalizedWorkChatSessionStatus(session: session, summary: chatSummaries[session.id])
+      return status == "active" || status == "idle" || status == "awaiting-input"
+    }
   }
 
   var sessionOrganizationBinding: Binding<WorkSessionOrganization> {
@@ -252,11 +284,13 @@ struct WorkRootScreen: View {
           WorkFiltersSection(
             searchText: $searchText,
             selectedLaneId: $selectedLaneId,
+            selectedStatus: $selectedStatus,
             organization: sessionOrganizationBinding,
             filterOpen: $filterPanelOpen,
             lanes: lanes,
-            runningCount: liveSessions.count,
-            needsInputCount: needsInputSessions.count
+            liveCount: globalLiveSessionCount,
+            needsInputCount: globalNeedsInputCount,
+            onClear: clearWorkFilters
           )
           .listRowBackground(Color.clear)
           .listRowSeparator(.hidden)
@@ -337,6 +371,7 @@ struct WorkRootScreen: View {
                     onCopyId: copySessionId,
                     onGoToLane: goToLane
                   )
+                  .id(session.id)
                   .listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0))
                   .listRowBackground(Color.clear)
                   .listRowSeparator(.hidden)
@@ -348,6 +383,7 @@ struct WorkRootScreen: View {
       }
       .listStyle(.plain)
       .scrollContentBackground(.hidden)
+      .contentMargins(.bottom, 72, for: .scrollContent)
       .adeScreenBackground()
       .adeNavigationGlass()
       .navigationTitle("")
@@ -355,14 +391,28 @@ struct WorkRootScreen: View {
       .toolbar(.hidden, for: .navigationBar)
       .safeAreaInset(edge: .top, spacing: 0) {
         ADERootTopBar(title: "Work") {
-          if !liveSessions.isEmpty || needsInputSessions.count > 0 {
+          if globalLiveSessionCount > 0 || globalNeedsInputCount > 0 {
             WorkLiveCountPill(
-              liveCount: max(liveSessions.count, needsInputSessions.count),
-              attentionCount: needsInputSessions.count,
+              liveCount: globalLiveSessionCount,
+              attentionCount: globalNeedsInputCount,
               onTap: {
-                guard let target = needsInputSessions.first ?? liveSessions.first else { return }
-                withAnimation(.snappy) {
-                  proxy.scrollTo(target.id, anchor: .top)
+                guard let target = firstGlobalAttentionSession ?? firstGlobalLiveSession else { return }
+                if displaySessions.contains(where: { $0.id == target.id }) {
+                  withAnimation(.snappy) {
+                    proxy.scrollTo(target.id, anchor: .top)
+                  }
+                } else {
+                  withAnimation(.snappy) {
+                    selectedStatus = .all
+                    selectedLaneId = "all"
+                    searchText = ""
+                  }
+                  Task { @MainActor in
+                    await Task.yield()
+                    withAnimation(.snappy) {
+                      proxy.scrollTo(target.id, anchor: .top)
+                    }
+                  }
                 }
               }
             )
@@ -506,5 +556,11 @@ struct WorkRootScreen: View {
     // Intentionally omit `localStateRevision`: it changes constantly during host DB sync and was
     // restarting this poll loop while the list `.task(id:)` also reloaded sessions every tick.
     return "\(isLive)-\(ids)"
+  }
+
+  func clearWorkFilters() {
+    searchText = ""
+    selectedLaneId = "all"
+    selectedStatus = .all
   }
 }

@@ -31,6 +31,7 @@ struct FilesRootScreen: View {
   @State var lastHandledQuickOpenSearchKey: FilesSearchKey?
   @State var lastHandledTextSearchKey: FilesSearchKey?
   @State var lastHandledProofArtifactsReloadKey: FilesProofArtifactsReloadKey?
+  @State var suppressNextWorkspaceNavigationReset = false
 
   var filesProjectionReloadKey: Int? {
     isTabActive ? syncService.localStateRevision : nil
@@ -125,19 +126,36 @@ struct FilesRootScreen: View {
               showHidden: $showHidden
             )
 
-            if workspace.laneId != nil {
-              FilesProofSection(
-                artifacts: proofArtifacts,
-                errorMessage: proofErrorMessage,
-                onRefresh: { Task { await loadProofArtifacts() } },
-                onOpenArtifact: { artifact in
-                  selectedProofArtifact = artifact
+            VStack(alignment: .leading, spacing: 12) {
+              HStack(alignment: .center, spacing: 10) {
+                Label("Browser", systemImage: "folder")
+                  .font(.headline)
+                  .foregroundStyle(ADEColor.textPrimary)
+                Spacer(minLength: 8)
+                Text(canUseLiveFileActions ? "Live" : "Cached")
+                  .font(.caption2.weight(.semibold))
+                  .foregroundStyle(canUseLiveFileActions ? ADEColor.success : ADEColor.textMuted)
+              }
+
+              FilesDirectoryContentsView(
+                workspace: workspace,
+                parentPath: "",
+                showHidden: showHidden,
+                isLive: canUseLiveFileActions,
+                isTabActive: isTabActive,
+                openDirectory: { path in
+                  openDirectory(path, in: workspace)
                 },
-                onCopyReference: { artifact in
-                  UIPasteboard.general.string = artifact.uri
-                }
+                openFile: { path, line in
+                  openFile(path, in: workspace, focusLine: line)
+                },
+                transitionNamespace: transitionNamespace,
+                selectedFilePath: selectedFileTransitionPath,
+                manualReloadToken: 0
               )
+              .environmentObject(syncService)
             }
+            .adeGlassCard(cornerRadius: 18)
 
             FilesQueryCard(
               title: "Quick open",
@@ -187,38 +205,26 @@ struct FilesRootScreen: View {
               }
             }
 
-            VStack(alignment: .leading, spacing: 12) {
-              Text("Browser")
-                .font(.headline)
-                .foregroundStyle(ADEColor.textPrimary)
-              Text("Drill into folders, follow breadcrumbs, and open read-first previews without leaving the current workspace.")
-                .font(.caption)
-                .foregroundStyle(ADEColor.textSecondary)
-
-              FilesDirectoryContentsView(
-                workspace: workspace,
-                parentPath: "",
-                showHidden: showHidden,
-                isLive: canUseLiveFileActions,
-                isTabActive: isTabActive,
-                openDirectory: { path in
-                  openDirectory(path, in: workspace)
+            if workspace.laneId != nil {
+              FilesProofSection(
+                artifacts: proofArtifacts,
+                errorMessage: proofErrorMessage,
+                onRefresh: { Task { await loadProofArtifacts() } },
+                onOpenArtifact: { artifact in
+                  selectedProofArtifact = artifact
                 },
-                openFile: { path, line in
-                  openFile(path, in: workspace, focusLine: line)
-                },
-                transitionNamespace: transitionNamespace,
-                selectedFilePath: selectedFileTransitionPath,
-                manualReloadToken: 0
+                onCopyReference: { artifact in
+                  UIPasteboard.general.string = artifact.uri
+                }
               )
-              .environmentObject(syncService)
             }
-            .adeGlassCard(cornerRadius: 18)
           }
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 8)
+        .padding(.bottom, 88)
       }
+      .scrollDismissesKeyboard(.interactively)
       .scrollBounceBehavior(.basedOnSize)
       .adeScreenBackground()
       .adeNavigationGlass()
@@ -335,6 +341,10 @@ struct FilesRootScreen: View {
         lastHandledProofArtifactsReloadKey = key
       }
       .onChange(of: selectedWorkspaceId) { _, _ in
+        if suppressNextWorkspaceNavigationReset {
+          suppressNextWorkspaceNavigationReset = false
+          return
+        }
         if !navigationPath.isEmpty {
           navigationPath = []
         }

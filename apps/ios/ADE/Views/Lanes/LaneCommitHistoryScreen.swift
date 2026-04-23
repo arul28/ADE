@@ -10,6 +10,8 @@ struct LaneCommitHistoryScreen: View {
   let onRevert: (GitCommitSummary) async -> Void
   let onCherryPick: (GitCommitSummary) async -> Void
 
+  @State private var pendingConfirmation: CommitHistoryConfirmation?
+
   var body: some View {
     ScrollView {
       VStack(spacing: 14) {
@@ -34,6 +36,16 @@ struct LaneCommitHistoryScreen: View {
     .background(ADEColor.surfaceBackground.ignoresSafeArea())
     .navigationTitle("\(laneName) commits")
     .navigationBarTitleDisplayMode(.inline)
+    .alert(item: $pendingConfirmation) { confirmation in
+      Alert(
+        title: Text(confirmation.title),
+        message: Text(confirmation.message),
+        primaryButton: .destructive(Text(confirmation.confirmTitle)) {
+          Task { await perform(confirmation) }
+        },
+        secondaryButton: .cancel()
+      )
+    }
   }
 
   private var emptyState: some View {
@@ -73,26 +85,79 @@ struct LaneCommitHistoryScreen: View {
       Text("\(commit.authorName) • \(relativeTimestamp(commit.authoredAt))")
         .font(.caption2)
         .foregroundStyle(ADEColor.textSecondary)
-      ScrollView(.horizontal, showsIndicators: false) {
-        HStack(spacing: 6) {
-          LaneActionButton(title: "Files", symbol: "doc.text.magnifyingglass") {
-            Task { await onOpenDiff(commit) }
-          }
-          .disabled(!allowsDiffInspection(commit))
-          LaneActionButton(title: "Copy message", symbol: "doc.on.doc") {
-            Task { await onCopyMessage(commit) }
+      HStack(spacing: 8) {
+        LaneActionButton(title: "Files", symbol: "doc.text.magnifyingglass") {
+          Task { await onOpenDiff(commit) }
+        }
+        .disabled(!allowsDiffInspection(commit))
+        LaneActionButton(title: "Copy", symbol: "doc.on.doc") {
+          Task { await onCopyMessage(commit) }
+        }
+        .disabled(!canRunLiveActions)
+        Spacer(minLength: 0)
+        Menu {
+          Button(role: .destructive) {
+            pendingConfirmation = CommitHistoryConfirmation(kind: .revert, commit: commit)
+          } label: {
+            Label("Revert commit", systemImage: "arrow.uturn.backward")
           }
           .disabled(!canRunLiveActions)
-          LaneActionButton(title: "Revert", symbol: "arrow.uturn.backward", tint: ADEColor.warning) {
-            Task { await onRevert(commit) }
+
+          Button {
+            pendingConfirmation = CommitHistoryConfirmation(kind: .cherryPick, commit: commit)
+          } label: {
+            Label("Cherry-pick commit", systemImage: "arrow.triangle.merge")
           }
           .disabled(!canRunLiveActions)
-          LaneActionButton(title: "Cherry-pick", symbol: "arrow.triangle.merge") {
-            Task { await onCherryPick(commit) }
-          }
-          .disabled(!canRunLiveActions)
+        } label: {
+          LaneMenuLabel(title: "More")
         }
       }
+    }
+  }
+
+  private func perform(_ confirmation: CommitHistoryConfirmation) async {
+    pendingConfirmation = nil
+    switch confirmation.kind {
+    case .revert:
+      await onRevert(confirmation.commit)
+    case .cherryPick:
+      await onCherryPick(confirmation.commit)
+    }
+  }
+}
+
+private struct CommitHistoryConfirmation: Identifiable {
+  enum Kind: String {
+    case revert
+    case cherryPick
+  }
+
+  let kind: Kind
+  let commit: GitCommitSummary
+
+  var id: String { "\(kind.rawValue):\(commit.sha)" }
+
+  var title: String {
+    switch kind {
+    case .revert: return "Revert this commit?"
+    case .cherryPick: return "Cherry-pick this commit?"
+    }
+  }
+
+  var message: String {
+    switch kind {
+    case .revert:
+      return "ADE will create a new commit that reverses \(commit.shortSha)."
+    case .cherryPick:
+      return "ADE will apply \(commit.shortSha) onto the current lane."
+    }
+  }
+
+  var confirmTitle: String {
+    switch kind {
+    case .revert: return "Revert"
+    case .cherryPick: return "Cherry-pick"
     }
   }
 }

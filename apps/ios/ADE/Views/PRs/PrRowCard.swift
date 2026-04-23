@@ -44,6 +44,10 @@ struct PrRowCard: View {
             PrTagChip(label: kindLabel, color: tint)
           }
 
+          if data.isUnmapped {
+            PrTagChip(label: "unmapped", color: ADEColor.warning, filled: true)
+          }
+
           if data.isExternal {
             PrTagChip(label: "external", color: ADEColor.textSecondary)
           }
@@ -78,54 +82,67 @@ struct PrRowCard: View {
 
   @ViewBuilder
   private var metaLine: some View {
-    HStack(spacing: 10) {
-      HStack(spacing: 3) {
+    VStack(alignment: .leading, spacing: 3) {
+      HStack(spacing: 4) {
         Image(systemName: "arrow.triangle.branch")
           .font(.system(size: 9, weight: .semibold))
           .foregroundStyle(ADEColor.textSecondary.opacity(0.7))
-        PrMonoText(text: data.branchLabel, color: ADEColor.textSecondary, size: 10)
+        PrMonoText(text: data.branchDisplayLabel, color: ADEColor.textSecondary, size: 10)
           .lineLimit(1)
           .truncationMode(.tail)
-      }
-      .frame(maxWidth: 160, alignment: .leading)
+          .layoutPriority(1)
 
-      if let checks = data.checkCounts {
-        HStack(spacing: 5) {
-          if checks.fail > 0 {
-            PrMonoText(text: "✗ \(checks.fail)", color: ADEColor.danger, size: 10)
-          }
-          if checks.pass > 0 {
-            PrMonoText(text: "✓ \(checks.pass)", color: ADEColor.success, size: 10)
-          }
-          if checks.pending > 0 {
-            PrMonoText(text: "◐ \(checks.pending)", color: ADEColor.warning, size: 10)
-          }
+        if let author = data.authorLabel {
+          PrMonoText(text: "by \(author)", color: ADEColor.textMuted, size: 10)
+            .lineLimit(1)
+            .truncationMode(.tail)
         }
       }
 
-      if let approvals = data.approvals {
-        PrMonoText(
-          text: "✓ \(approvals.have)/\(approvals.need)",
-          color: approvals.have >= approvals.need ? ADEColor.success : ADEColor.textSecondary,
-          size: 10
-        )
-      }
-
-      Spacer(minLength: 0)
-
-      if let groupId = data.stackGroupId, let groupCount = data.stackGroupCount, groupCount > 0 {
-        Button {
-          onShowStack(groupId, data.stackGroupName)
-        } label: {
-          HStack(spacing: 3) {
-            Image(systemName: "list.number")
-              .font(.system(size: 9, weight: .bold))
-            Text("\(groupCount)")
-              .font(.system(size: 10, weight: .semibold, design: .monospaced))
+      HStack(spacing: 8) {
+        if let checks = data.checkCounts {
+          HStack(spacing: 5) {
+            if checks.fail > 0 {
+              PrMonoText(text: "✗ \(checks.fail)", color: ADEColor.danger, size: 10)
+            }
+            if checks.pass > 0 {
+              PrMonoText(text: "✓ \(checks.pass)", color: ADEColor.success, size: 10)
+            }
+            if checks.pending > 0 {
+              PrMonoText(text: "◐ \(checks.pending)", color: ADEColor.warning, size: 10)
+            }
           }
-          .foregroundStyle(ADEColor.textSecondary)
         }
-        .buttonStyle(.plain)
+
+        if let approvals = data.approvals {
+          PrMonoText(
+            text: "✓ \(approvals.have)/\(approvals.need)",
+            color: approvals.have >= approvals.need ? ADEColor.success : ADEColor.textSecondary,
+            size: 10
+          )
+        }
+
+        if data.isUnmapped {
+          PrMonoText(text: "read before linking", color: ADEColor.warning, size: 10)
+            .lineLimit(1)
+        }
+
+        Spacer(minLength: 0)
+
+        if let groupId = data.stackGroupId, let groupCount = data.stackGroupCount, groupCount > 0 {
+          Button {
+            onShowStack(groupId, data.stackGroupName)
+          } label: {
+            HStack(spacing: 3) {
+              Image(systemName: "list.number")
+                .font(.system(size: 9, weight: .bold))
+              Text("\(groupCount)")
+                .font(.system(size: 10, weight: .semibold, design: .monospaced))
+            }
+            .foregroundStyle(ADEColor.textSecondary)
+          }
+          .buttonStyle(.plain)
+        }
       }
     }
   }
@@ -139,15 +156,28 @@ extension PrRowCard {
     let state: String
     let updatedAt: String
     let branchLabel: String
+    let baseBranch: String?
+    let author: String?
     let adeKindLabel: String?
     let adeKindTint: Color?
     let isExternal: Bool
+    let isUnmapped: Bool
     let checkCounts: CheckCounts?
     let approvals: Approvals?
     let warnMessage: String?
     let stackGroupId: String?
     let stackGroupName: String?
     let stackGroupCount: Int?
+
+    var branchDisplayLabel: String {
+      guard let baseBranch, !baseBranch.isEmpty else { return branchLabel }
+      return "\(branchLabel) → \(baseBranch)"
+    }
+
+    var authorLabel: String? {
+      guard let author, !author.isEmpty else { return nil }
+      return author.hasPrefix("@") ? author : "@\(author)"
+    }
 
     struct CheckCounts {
       let pass: Int
@@ -167,9 +197,12 @@ extension PrRowCard {
       self.state = pr.state
       self.updatedAt = pr.updatedAt
       self.branchLabel = pr.headBranch
+      self.baseBranch = pr.baseBranch
+      self.author = nil
       self.adeKindLabel = prAdeKindLabel(pr.adeKind)
       self.adeKindTint = pr.adeKind != nil ? ADEColor.tintPRs : nil
       self.isExternal = false
+      self.isUnmapped = false
       self.checkCounts = Self.checkCounts(from: pr.checksStatus)
       self.approvals = Self.approvals(from: pr.reviewStatus)
       self.warnMessage = Self.warnMessage(
@@ -183,22 +216,28 @@ extension PrRowCard {
     }
 
     init(item: GitHubPrListItem) {
+      let unmapped = item.linkedPrId == nil && item.linkedLaneId == nil && item.adeKind == nil
       self.id = item.linkedPrId ?? item.id
       self.prNumber = item.githubPrNumber
       self.title = item.title
       self.state = item.isDraft ? "draft" : item.state
       self.updatedAt = item.updatedAt
       self.branchLabel = item.headBranch ?? "\(item.repoOwner)/\(item.repoName)"
+      self.baseBranch = item.baseBranch
+      self.author = item.author
       self.adeKindLabel = prAdeKindLabel(item.adeKind)
       self.adeKindTint = Self.adeKindTint(for: item)
       self.isExternal = item.scope == "external"
+      self.isUnmapped = unmapped
       self.checkCounts = nil
       self.approvals = nil
-      self.warnMessage = Self.warnMessage(
-        workflowDisplayState: item.workflowDisplayState,
-        checksStatus: nil,
-        baseBranch: item.baseBranch
-      )
+      self.warnMessage = unmapped
+        ? "Unmapped: review details before linking a lane."
+        : Self.warnMessage(
+          workflowDisplayState: item.workflowDisplayState,
+          checksStatus: nil,
+          baseBranch: item.baseBranch
+        )
       self.stackGroupId = item.linkedGroupId
       self.stackGroupName = nil
       self.stackGroupCount = nil

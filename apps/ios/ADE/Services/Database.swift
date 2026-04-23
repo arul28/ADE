@@ -395,7 +395,11 @@ final class DatabaseService {
   }
 
   func fetchLanes(includeArchived: Bool) -> [LaneSummary] {
-    guard let projectId = currentProjectId() else { return [] }
+    let projectId = currentProjectId()
+    if projectId == nil && projectCount() > 0 {
+      return []
+    }
+    let projectPredicate = projectId == nil ? "" : "l.project_id = ? and"
     let sql = """
       select l.id, l.name, l.description, l.lane_type, l.base_ref, l.branch_ref, l.worktree_path,
              l.attached_root_path, l.parent_lane_id, l.is_edit_protected, l.color, l.icon, l.tags_json, l.folder,
@@ -413,13 +417,16 @@ final class DatabaseService {
         from lanes l
         left join lane_state_snapshots s on s.lane_id = l.id
         left join lane_state_snapshots ps on ps.lane_id = l.parent_lane_id
-       where l.project_id = ?
-         and (? = 1 or l.archived_at is null)
+       where \(projectPredicate) (? = 1 or l.archived_at is null)
        order by l.created_at asc
     """
     let rows = query(sql, bind: { [self] statement in
-      try self.bindText(projectId, to: statement, index: 1)
-      sqlite3_bind_int(statement, 2, includeArchived ? 1 : 0)
+      if let projectId {
+        try self.bindText(projectId, to: statement, index: 1)
+        sqlite3_bind_int(statement, 2, includeArchived ? 1 : 0)
+      } else {
+        sqlite3_bind_int(statement, 1, includeArchived ? 1 : 0)
+      }
     }) { statement in
       LaneRow(
         id: stringValue(statement, index: 0) ?? "",
@@ -1103,12 +1110,13 @@ final class DatabaseService {
 
   func listWorkspaces() -> [FilesWorkspace] {
     let projectId = currentProjectId()
+    let hasProjects = projectCount() > 0
     let projectRoot = projectId.flatMap { id in
       queryString("select root_path from projects where id = ? limit 1", bind: { [self] statement in
         try self.bindText(id, to: statement, index: 1)
       })
     }
-    let activeLaneIds = Set(query("select id from lanes where project_id = ?", bind: { [self] statement in
+    let activeLaneIds: Set<String>? = projectId == nil && !hasProjects ? nil : Set(query("select id from lanes where project_id = ?", bind: { [self] statement in
       if let projectId {
         try self.bindText(projectId, to: statement, index: 1)
       } else {
@@ -1137,9 +1145,10 @@ final class DatabaseService {
       }
       let scoped = cached.filter { workspace in
         if let laneId = workspace.laneId {
-          return activeLaneIds.contains(laneId)
+          return activeLaneIds?.contains(laneId) ?? true
         }
-        guard workspace.kind == "primary", let projectRoot else { return false }
+        guard workspace.kind == "primary" else { return false }
+        guard let projectRoot else { return !hasProjects }
         return workspace.rootPath == projectRoot
       }
       if !scoped.isEmpty {
@@ -1163,12 +1172,13 @@ final class DatabaseService {
   func replaceFilesWorkspaces(_ workspaces: [FilesWorkspace]) throws {
     guard tableExists("files_workspaces") else { return }
     let projectId = currentProjectId()
+    let hasProjects = projectCount() > 0
     let projectRoot = projectId.flatMap { id in
       queryString("select root_path from projects where id = ? limit 1", bind: { [self] statement in
         try self.bindText(id, to: statement, index: 1)
       })
     }
-    let activeLaneIds = Set(query("select id from lanes where project_id = ?", bind: { [self] statement in
+    let activeLaneIds: Set<String>? = projectId == nil && !hasProjects ? nil : Set(query("select id from lanes where project_id = ?", bind: { [self] statement in
       if let projectId {
         try self.bindText(projectId, to: statement, index: 1)
       } else {
@@ -1190,9 +1200,10 @@ final class DatabaseService {
       }
       let scopedExistingIds = existingIds.filter { row in
         if let laneId = row.laneId {
-          return activeLaneIds.contains(laneId)
+          return activeLaneIds?.contains(laneId) ?? true
         }
-        guard row.kind == "primary", let projectRoot else { return false }
+        guard row.kind == "primary" else { return false }
+        guard let projectRoot else { return !hasProjects }
         return row.rootPath == projectRoot
       }.map(\.id)
       let staleIds = scopedExistingIds.filter { !incomingIds.contains($0) }
@@ -2786,6 +2797,10 @@ final class DatabaseService {
       return activeProjectIdOverride
     }
     return queryString("select id from projects order by last_opened_at desc, created_at desc limit 1")
+  }
+
+  private func projectCount() -> Int {
+    Int(queryInt64("select count(*) from projects") ?? 0)
   }
 
   private func hasTable(named tableName: String) -> Bool {

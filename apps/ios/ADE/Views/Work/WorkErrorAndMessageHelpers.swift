@@ -76,7 +76,7 @@ func buildWorkChatMessages(from transcript: [WorkChatEnvelope]) -> [WorkChatMess
          messages[lastIndex].turnId == turnId,
          messages[lastIndex].itemId == itemId,
          canMergeWithPreviousAssistant {
-        messages[lastIndex].markdown += text
+        messages[lastIndex].markdown = mergeWorkStreamingText(messages[lastIndex].markdown, text)
       } else {
         messages.append(WorkChatMessage(
           id: envelope.id,
@@ -97,6 +97,27 @@ func buildWorkChatMessages(from transcript: [WorkChatEnvelope]) -> [WorkChatMess
   }
 
   return messages
+}
+
+func mergeWorkStreamingText(_ existing: String, _ incoming: String) -> String {
+  if existing.isEmpty { return incoming }
+  if incoming.isEmpty { return existing }
+  if existing == incoming { return existing }
+  if incoming.hasPrefix(existing) { return incoming }
+  if existing.hasPrefix(incoming) { return existing }
+
+  let maxOverlap = min(existing.count, incoming.count)
+  guard maxOverlap > 0 else { return existing + incoming }
+
+  for length in stride(from: maxOverlap, through: 1, by: -1) {
+    let existingSuffix = existing.suffix(length)
+    let incomingPrefix = incoming.prefix(length)
+    if existingSuffix == incomingPrefix {
+      return existing + incoming.dropFirst(length)
+    }
+  }
+
+  return existing + incoming
 }
 
 func makeWorkChatTranscript(from entries: [AgentChatTranscriptEntry], sessionId: String) -> [WorkChatEnvelope] {

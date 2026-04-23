@@ -27,6 +27,7 @@ struct PRsTabView: View {
   @State private var selectedPrTransitionId: String?
   @State private var laneContextLaneId: String?
   @State private var rootActionTask: Task<Void, Never>?
+  @State private var githubDetailRequest: PrGitHubLaneLinkRequest?
   @State private var laneLinkRequest: PrGitHubLaneLinkRequest?
   @SceneStorage("ade.prs.rootSurface") private var rootSurfaceRawValue = PrRootSurface.github.rawValue
   @SceneStorage("ade.prs.workflowFilter") private var workflowFilterRawValue = PrWorkflowKindFilter.all.rawValue
@@ -421,6 +422,21 @@ struct PRsTabView: View {
         PrStackSheet(groupId: presentation.id, groupName: presentation.groupName)
           .environmentObject(syncService)
       }
+      .sheet(item: $githubDetailRequest) { request in
+        PrGitHubReadDetailSheet(
+          item: request.item,
+          canLink: canLinkGitHubPullRequests,
+          onLink: {
+            githubDetailRequest = nil
+            DispatchQueue.main.async {
+              laneLinkRequest = request
+            }
+          },
+          onOpenGitHub: {
+            openGitHub(urlString: request.item.githubUrl)
+          }
+        )
+      }
       .sheet(item: $laneLinkRequest) { request in
         PrLaneLinkSheet(
           item: request.item,
@@ -524,11 +540,11 @@ struct PRsTabView: View {
       }
     }
 
-    if let githubSnapshot {
+    if githubSnapshot != nil {
       let repoItems = filteredGitHubPrs.filter { $0.scope != "external" }
       let externalItems = filteredGitHubPrs.filter { $0.scope == "external" }
       if !repoItems.isEmpty {
-        Section(githubSnapshot.repo.map { "\($0.owner)/\($0.name)" } ?? "Repository PRs") {
+        Section("Repository PRs") {
           ForEach(repoItems) { item in
             githubRowNavigation(for: item)
               .prListRow()
@@ -566,14 +582,14 @@ struct PRsTabView: View {
       }
     } else {
       Button {
-        laneLinkRequest = PrGitHubLaneLinkRequest(item: item)
+        githubDetailRequest = PrGitHubLaneLinkRequest(item: item)
       } label: {
         PrRowCard(item: item)
       }
       .buttonStyle(.plain)
       .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-        Button("Link lane") {
-          laneLinkRequest = PrGitHubLaneLinkRequest(item: item)
+        Button("Review") {
+          githubDetailRequest = PrGitHubLaneLinkRequest(item: item)
         }
         .tint(ADEColor.warning)
         Button("Open in GitHub") { openGitHub(urlString: item.githubUrl) }
@@ -1157,6 +1173,86 @@ struct PRsTabView: View {
   }
 }
 
+private struct PrGitHubReadDetailSheet: View {
+  @Environment(\.dismiss) private var dismiss
+  let item: GitHubPrListItem
+  let canLink: Bool
+  let onLink: () -> Void
+  let onOpenGitHub: () -> Void
+
+  private var stateLabel: String {
+    item.isDraft ? "draft" : item.state
+  }
+
+  private var branchLine: String {
+    let head = item.headBranch?.isEmpty == false ? item.headBranch! : "unknown branch"
+    let base = item.baseBranch?.isEmpty == false ? item.baseBranch! : "unknown base"
+    return "\(head) → \(base)"
+  }
+
+  var body: some View {
+    NavigationStack {
+      List {
+        Section {
+          VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 6) {
+              Text("#\(item.githubPrNumber)")
+                .font(.system(size: 12, weight: .bold, design: .monospaced))
+                .foregroundStyle(prStateTint(stateLabel))
+              PrTagChip(label: stateLabel, color: prStateTint(stateLabel))
+              PrTagChip(label: "unmapped", color: ADEColor.warning, filled: true)
+            }
+
+            Text(item.title)
+              .font(.headline)
+              .foregroundStyle(ADEColor.textPrimary)
+              .fixedSize(horizontal: false, vertical: true)
+
+            VStack(alignment: .leading, spacing: 5) {
+              PrMonoText(text: "\(item.repoOwner)/\(item.repoName)", color: ADEColor.textSecondary, size: 11)
+              PrMonoText(text: branchLine, color: ADEColor.textSecondary, size: 11)
+              if let author = item.author, !author.isEmpty {
+                PrMonoText(text: "author @\(author)", color: ADEColor.textMuted, size: 11)
+              }
+              PrMonoText(text: "updated \(prRelativeTime(item.updatedAt))", color: ADEColor.textMuted, size: 11)
+            }
+          }
+          .padding(.vertical, 4)
+        }
+
+        Section {
+          ADENoticeCard(
+            title: "Unmapped PR",
+            message: "This GitHub PR is not linked to an ADE lane. Review the branch and author before choosing Link PR.",
+            icon: "link.badge.plus",
+            tint: ADEColor.warning,
+            actionTitle: nil,
+            action: nil
+          )
+        }
+
+        Section {
+          Button("Link PR") {
+            onLink()
+          }
+          .disabled(!canLink)
+
+          Button("Open in GitHub") {
+            onOpenGitHub()
+          }
+        }
+      }
+      .navigationTitle("PR details")
+      .navigationBarTitleDisplayMode(.inline)
+      .toolbar {
+        ToolbarItem(placement: .cancellationAction) {
+          Button("Done") { dismiss() }
+        }
+      }
+    }
+  }
+}
+
 private struct PrLaneLinkSheet: View {
   @Environment(\.dismiss) private var dismiss
   let item: GitHubPrListItem
@@ -1188,6 +1284,14 @@ private struct PrLaneLinkSheet: View {
                 .font(.caption)
                 .foregroundStyle(ADEColor.textSecondary)
             }
+            HStack(spacing: 8) {
+              if let author = item.author, !author.isEmpty {
+                Text("@\(author)")
+              }
+              Text("updated \(prRelativeTime(item.updatedAt))")
+            }
+            .font(.system(.caption2, design: .monospaced))
+            .foregroundStyle(ADEColor.textMuted)
           }
           .padding(.vertical, 4)
         }
@@ -1206,10 +1310,14 @@ private struct PrLaneLinkSheet: View {
               .font(.subheadline)
               .foregroundStyle(ADEColor.textSecondary)
           } else {
+            Text(laneSelectionMessage)
+              .font(.footnote)
+              .foregroundStyle(laneSelectionTint)
+              .fixedSize(horizontal: false, vertical: true)
             Picker("Lane", selection: $selectedLaneId) {
               Text("Choose lane").tag("")
               ForEach(availableLanes) { lane in
-                Text(lane.name).tag(lane.id)
+                Text("\(lane.name) · \(lane.branchRef)").tag(lane.id)
               }
             }
           }
@@ -1236,8 +1344,26 @@ private struct PrLaneLinkSheet: View {
     }
     .onAppear {
       if selectedLaneId.isEmpty {
-        selectedLaneId = item.linkedLaneId ?? availableLanes.first?.id ?? ""
+        selectedLaneId = item.linkedLaneId ?? exactBranchMatchedLane?.id ?? ""
       }
     }
+  }
+
+  private var exactBranchMatchedLane: LaneSummary? {
+    matchedLaneForExactBranch(item.headBranch, lanes: availableLanes)
+  }
+
+  private var laneSelectionMessage: String {
+    if let exactBranchMatchedLane, selectedLaneId == exactBranchMatchedLane.id {
+      return "Preselected because the PR branch matches \(exactBranchMatchedLane.branchRef)."
+    }
+    if selectedLaneId.isEmpty {
+      return "No lane was preselected because the PR branch does not exactly match an ADE lane."
+    }
+    return "Confirm this lane before linking; ADE will attach this GitHub PR to the selected lane."
+  }
+
+  private var laneSelectionTint: Color {
+    selectedLaneId.isEmpty ? ADEColor.warning : ADEColor.textSecondary
   }
 }

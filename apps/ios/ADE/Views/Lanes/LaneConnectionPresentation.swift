@@ -15,7 +15,7 @@ struct LaneEmptyStatePresentation: Equatable {
 }
 
 func laneAllowsLiveActions(connectionState: RemoteConnectionState, laneStatus: SyncDomainStatus) -> Bool {
-  (connectionState == .connected || connectionState == .syncing) && laneStatus.phase == .ready
+  connectionState == .connected && laneStatus.phase == .ready
 }
 
 func laneAllowsDiffInspection(

@@ -18,9 +18,18 @@ extension LanesTabView {
 
   var visibleAutoRebaseAttention: [LaneListSnapshot] {
     filteredSnapshots.filter { snapshot in
+      guard snapshot.rebaseSuggestion == nil else { return false }
       guard let status = snapshot.autoRebaseStatus else { return false }
       return status.state != "autoRebased"
     }
+  }
+
+  var visibleAttentionLaneIds: Set<String> {
+    Set((visibleSuggestions + visibleAutoRebaseAttention).map(\.lane.id))
+  }
+
+  var normalVisibleSnapshots: [LaneListSnapshot] {
+    filteredSnapshots.filter { !visibleAttentionLaneIds.contains($0.lane.id) }
   }
 
   var primaryLane: LaneSummary? {
@@ -101,7 +110,12 @@ extension LanesTabView {
 
   @ViewBuilder
   var attentionSection: some View {
-    VStack(spacing: 12) {
+    VStack(alignment: .leading, spacing: 10) {
+      Text("Needs review")
+        .font(.caption.weight(.semibold))
+        .foregroundStyle(ADEColor.textSecondary)
+        .padding(.horizontal, 2)
+
       ForEach(visibleSuggestions.prefix(3)) { snapshot in
         HStack(spacing: 12) {
           Image(systemName: "arrow.triangle.2.circlepath")
@@ -116,20 +130,15 @@ extension LanesTabView {
               .foregroundStyle(ADEColor.textSecondary)
           }
           Spacer(minLength: 8)
-          Button("Rebase") {
-            Task {
-              do {
-                try await syncService.startLaneRebase(laneId: snapshot.lane.id)
-                await reload(refreshRemote: true)
-              } catch {
-                ADEHaptics.error()
-                errorMessage = error.localizedDescription
-              }
-            }
+          Button("Review") {
+            detailSheetTarget = LaneDetailSheetTarget(
+              laneId: snapshot.lane.id,
+              snapshot: snapshot,
+              initialSection: .git
+            )
           }
           .font(.caption.weight(.semibold))
           .foregroundStyle(ADEColor.accent)
-          .disabled(!canRunLiveActions)
           Menu {
             Button("Defer") {
               Task {
@@ -216,6 +225,17 @@ extension LanesTabView {
     stackOrderedSnapshots.filter { $0.lane.laneType != "primary" }
   }
 
+  var normalStickyPrimarySnapshot: LaneListSnapshot? {
+    guard let stickyPrimarySnapshot, !visibleAttentionLaneIds.contains(stickyPrimarySnapshot.lane.id) else {
+      return nil
+    }
+    return stickyPrimarySnapshot
+  }
+
+  var normalTreeSnapshots: [LaneListSnapshot] {
+    treeSnapshots.filter { !visibleAttentionLaneIds.contains($0.lane.id) }
+  }
+
   @ViewBuilder
   var laneList: some View {
     if laneSnapshots.isEmpty {
@@ -238,58 +258,68 @@ extension LanesTabView {
       )
       .padding(.top, 40)
     } else {
-      VStack(spacing: 10) {
-        if let primarySnapshot = stickyPrimarySnapshot {
-          NavigationLink {
-            LaneDetailScreen(
-              laneId: primarySnapshot.lane.id,
-              initialSnapshot: primarySnapshot,
+      if normalVisibleSnapshots.isEmpty {
+        EmptyView()
+      } else {
+        VStack(spacing: 10) {
+          Text("Lanes")
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(ADEColor.textSecondary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 2)
+
+          if let primarySnapshot = normalStickyPrimarySnapshot {
+            NavigationLink {
+              LaneDetailScreen(
+                laneId: primarySnapshot.lane.id,
+                initialSnapshot: primarySnapshot,
+                allLaneSnapshots: laneSnapshots,
+                transitionNamespace: transitionNamespace,
+                onRefreshRoot: { await reload(refreshRemote: true) }
+              )
+            } label: {
+              LaneStackCard(
+                snapshot: primarySnapshot,
+                isPinned: pinnedLaneIds.contains(primarySnapshot.lane.id),
+                isOpen: openLaneIds.contains(primarySnapshot.lane.id),
+                depth: 0,
+                transitionNamespace: transitionNamespace,
+                isSelectedTransitionSource: selectedLaneTransitionId == primarySnapshot.lane.id
+              )
+              .equatable()
+            }
+            .simultaneousGesture(TapGesture().onEnded {
+              selectedLaneTransitionId = primarySnapshot.lane.id
+            })
+            .buttonStyle(ADEScaleButtonStyle())
+            .contextMenu { laneContextMenu(snapshot: primarySnapshot) } preview: {
+              LanePeekPreview(snapshot: primarySnapshot)
+            }
+            .swipeActions(edge: .leading, allowsFullSwipe: false) {
+              Button {
+                togglePin(primarySnapshot.lane.id)
+              } label: {
+                Label(pinnedLaneIds.contains(primarySnapshot.lane.id) ? "Unpin" : "Pin",
+                      systemImage: pinnedLaneIds.contains(primarySnapshot.lane.id) ? "pin.slash.fill" : "pin.fill")
+              }
+              .tint(ADEColor.accent)
+            }
+          }
+
+          if !normalTreeSnapshots.isEmpty {
+            LaneTreeView(
+              snapshots: normalTreeSnapshots,
+              pinnedLaneIds: pinnedLaneIds,
+              openLaneIds: openLaneIds,
               allLaneSnapshots: laneSnapshots,
               transitionNamespace: transitionNamespace,
-              onRefreshRoot: { await reload(refreshRemote: true) }
+              selectedLaneId: selectedLaneTransitionId,
+              onRefreshRoot: { await reload(refreshRemote: true) },
+              onContextMenu: { snapshot in AnyView(laneContextMenu(snapshot: snapshot)) },
+              onTogglePin: { laneId in togglePin(laneId) },
+              onSelectLane: { laneId in selectedLaneTransitionId = laneId }
             )
-          } label: {
-            LaneStackCard(
-              snapshot: primarySnapshot,
-              isPinned: pinnedLaneIds.contains(primarySnapshot.lane.id),
-              isOpen: openLaneIds.contains(primarySnapshot.lane.id),
-              depth: 0,
-              transitionNamespace: transitionNamespace,
-              isSelectedTransitionSource: selectedLaneTransitionId == primarySnapshot.lane.id
-            )
-            .equatable()
           }
-          .simultaneousGesture(TapGesture().onEnded {
-            selectedLaneTransitionId = primarySnapshot.lane.id
-          })
-          .buttonStyle(ADEScaleButtonStyle())
-          .contextMenu { laneContextMenu(snapshot: primarySnapshot) } preview: {
-            LanePeekPreview(snapshot: primarySnapshot)
-          }
-          .swipeActions(edge: .leading, allowsFullSwipe: false) {
-            Button {
-              togglePin(primarySnapshot.lane.id)
-            } label: {
-              Label(pinnedLaneIds.contains(primarySnapshot.lane.id) ? "Unpin" : "Pin",
-                    systemImage: pinnedLaneIds.contains(primarySnapshot.lane.id) ? "pin.slash.fill" : "pin.fill")
-            }
-            .tint(ADEColor.accent)
-          }
-        }
-
-        if !treeSnapshots.isEmpty {
-          LaneTreeView(
-            snapshots: treeSnapshots,
-            pinnedLaneIds: pinnedLaneIds,
-            openLaneIds: openLaneIds,
-            allLaneSnapshots: laneSnapshots,
-            transitionNamespace: transitionNamespace,
-            selectedLaneId: selectedLaneTransitionId,
-            onRefreshRoot: { await reload(refreshRemote: true) },
-            onContextMenu: { snapshot in AnyView(laneContextMenu(snapshot: snapshot)) },
-            onTogglePin: { laneId in togglePin(laneId) },
-            onSelectLane: { laneId in selectedLaneTransitionId = laneId }
-          )
         }
       }
     }

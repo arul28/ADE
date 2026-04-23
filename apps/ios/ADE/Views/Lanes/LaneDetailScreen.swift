@@ -22,7 +22,7 @@ struct LaneDetailScreen: View {
   @State var commitMessage = ""
   @State var amendCommit = false
   @State var stashMessage = ""
-  @State var confirmDiscardFile: FileChange?
+  @State var pendingFileConfirmation: LaneFileConfirmation?
   @State private var filesWorkspaceId: String?
   @State var showCommitSheet = false
   @State var rebaseSuggestionDismissed = false
@@ -136,22 +136,15 @@ struct LaneDetailScreen: View {
     .sheet(isPresented: $showStackGraph) {
       LaneStackGraphSheet(snapshots: allLaneSnapshots, selectedLaneId: laneId)
     }
-    .alert("Discard changes?", isPresented: Binding(
-      get: { confirmDiscardFile != nil },
-      set: { if !$0 { confirmDiscardFile = nil } }
-    )) {
-      Button("Discard", role: .destructive) {
-        if let file = confirmDiscardFile {
-          Task {
-            await performAction("discard file", refreshRoot: true) {
-              try await syncService.discardFile(laneId: laneId, path: file.path)
-            }
-          }
-        }
-      }
-      Button("Cancel", role: .cancel) {}
-    } message: {
-      Text("Unstaged changes to this file will be permanently lost.")
+    .alert(item: $pendingFileConfirmation) { confirmation in
+      Alert(
+        title: Text(confirmation.title),
+        message: Text(confirmation.message),
+        primaryButton: .destructive(Text(confirmation.confirmTitle)) {
+          Task { await performConfirmedFileAction(confirmation) }
+        },
+        secondaryButton: .cancel()
+      )
     }
     .alert(item: $pendingGitConfirmation) { confirmation in
       Alert(
@@ -356,6 +349,14 @@ struct LaneDetailScreen: View {
   private func performConfirmedGitAction(_ confirmation: LaneGitConfirmation) async {
     pendingGitConfirmation = nil
     switch confirmation {
+    case .rebaseLane:
+      await performAction(confirmation.actionLabel) {
+        try await syncService.startLaneRebase(laneId: laneId, scope: "lane_only")
+      }
+    case .rebaseDescendants:
+      await performAction(confirmation.actionLabel) {
+        try await syncService.startLaneRebase(laneId: laneId, scope: "lane_and_descendants")
+      }
     case .forcePush:
       await performAction(confirmation.actionLabel) {
         try await syncService.pushGit(laneId: laneId, forceWithLease: true)
@@ -363,6 +364,27 @@ struct LaneDetailScreen: View {
     case .rebaseAndPush:
       await performAction(confirmation.actionLabel) {
         try await runRebaseAndPush()
+      }
+    }
+  }
+
+  @MainActor
+  private func performConfirmedFileAction(_ confirmation: LaneFileConfirmation) async {
+    pendingFileConfirmation = nil
+    switch confirmation {
+    case .discardUnstaged(let file):
+      await performAction(confirmation.actionLabel, refreshRoot: true) {
+        try await syncService.discardFile(laneId: laneId, path: file.path)
+      }
+    case .discardAllUnstaged(let files):
+      await performAction(confirmation.actionLabel, refreshRoot: true) {
+        for file in files {
+          try await syncService.discardFile(laneId: laneId, path: file.path)
+        }
+      }
+    case .restoreStaged(let file):
+      await performAction(confirmation.actionLabel, refreshRoot: true) {
+        try await syncService.restoreStagedFile(laneId: laneId, path: file.path)
       }
     }
   }
