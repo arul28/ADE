@@ -210,3 +210,209 @@ describe("githubService.apiRequest", () => {
     ).rejects.toThrow("GitHub token missing");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Issue-domain helpers (used by automations polling + issue-action registry)
+// ---------------------------------------------------------------------------
+
+describe("githubService issue-domain helpers", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    process.env.GITHUB_TOKEN = "ghp_env_token";
+  });
+
+  function lastFetchCall() {
+    const calls = mockFetch.mock.calls;
+    return calls[calls.length - 1] as [string, RequestInit];
+  }
+
+  it("listRepoIssues builds the correct URL with state/sort/per_page and optional since", async () => {
+    mockFetch.mockResolvedValueOnce(jsonResponse(200, []));
+    const service = makeService();
+
+    await service.listRepoIssues("acme", "ade", {
+      state: "open",
+      sort: "created",
+      since: "2026-04-23T10:00:00Z",
+    });
+
+    const [url, init] = lastFetchCall();
+    expect(url).toContain("/repos/acme/ade/issues");
+    expect(url).toContain("state=open");
+    expect(url).toContain("sort=created");
+    expect(url).toContain("per_page=50");
+    // `since` is URL-encoded — colons become %3A.
+    expect(url).toMatch(/since=2026-04-23T10%3A00%3A00Z/);
+    expect(init.method).toBe("GET");
+  });
+
+  it("listRepoIssues defaults state=all/sort=updated/perPage=50 and omits since", async () => {
+    mockFetch.mockResolvedValueOnce(jsonResponse(200, []));
+    const service = makeService();
+
+    await service.listRepoIssues("acme", "ade");
+
+    const [url] = lastFetchCall();
+    expect(url).toContain("state=all");
+    expect(url).toContain("sort=updated");
+    expect(url).toContain("per_page=50");
+    expect(url).not.toContain("since=");
+  });
+
+  it("listRepoIssues returns [] when the API returns a non-array payload", async () => {
+    // Defensive: GitHub might return an error envelope we don't recognize.
+    mockFetch.mockResolvedValueOnce(jsonResponse(200, { message: "huh" }));
+    const service = makeService();
+
+    const result = await service.listRepoIssues("acme", "ade");
+
+    expect(result).toEqual([]);
+  });
+
+  it("listRepoPulls builds the correct URL with direction=desc", async () => {
+    mockFetch.mockResolvedValueOnce(jsonResponse(200, []));
+    const service = makeService();
+
+    await service.listRepoPulls("acme", "ade", { state: "open", sort: "created" });
+
+    const [url] = lastFetchCall();
+    expect(url).toContain("/repos/acme/ade/pulls");
+    expect(url).toContain("state=open");
+    expect(url).toContain("sort=created");
+    expect(url).toContain("direction=desc");
+  });
+
+  it("listIssueComments includes since when provided, omits it otherwise", async () => {
+    mockFetch.mockResolvedValueOnce(jsonResponse(200, []));
+    const service = makeService();
+    await service.listIssueComments("acme", "ade", 42, { since: "2026-04-23T00:00:00Z" });
+    expect(lastFetchCall()[0]).toMatch(/since=2026-04-23T00%3A00%3A00Z/);
+
+    mockFetch.mockResolvedValueOnce(jsonResponse(200, []));
+    await service.listIssueComments("acme", "ade", 42);
+    expect(lastFetchCall()[0]).not.toContain("since=");
+  });
+
+  it("addIssueComment POSTs to /issues/:n/comments with a JSON body", async () => {
+    mockFetch.mockResolvedValueOnce(jsonResponse(201, { id: 1, body: "hello" }));
+    const service = makeService();
+
+    const result = await service.addIssueComment("acme", "ade", 42, "hello");
+
+    const [url, init] = lastFetchCall();
+    expect(url).toContain("/repos/acme/ade/issues/42/comments");
+    expect(init.method).toBe("POST");
+    expect(JSON.parse(init.body as string)).toEqual({ body: "hello" });
+    expect(result).toEqual({ id: 1, body: "hello" });
+  });
+
+  it("setIssueLabels PUTs a labels array, replacing the existing labels", async () => {
+    mockFetch.mockResolvedValueOnce(jsonResponse(200, [{ name: "triage" }, { name: "bug" }]));
+    const service = makeService();
+
+    const result = await service.setIssueLabels("acme", "ade", 42, ["triage", "bug"]);
+
+    const [url, init] = lastFetchCall();
+    expect(url).toContain("/repos/acme/ade/issues/42/labels");
+    expect(init.method).toBe("PUT");
+    expect(JSON.parse(init.body as string)).toEqual({ labels: ["triage", "bug"] });
+    expect(result).toHaveLength(2);
+  });
+
+  it("closeIssue PATCHes state=closed and attaches state_reason when given", async () => {
+    mockFetch.mockResolvedValueOnce(jsonResponse(200, { number: 42, state: "closed" }));
+    const service = makeService();
+
+    await service.closeIssue("acme", "ade", 42, "not_planned");
+
+    const [url, init] = lastFetchCall();
+    expect(url).toContain("/repos/acme/ade/issues/42");
+    expect(init.method).toBe("PATCH");
+    expect(JSON.parse(init.body as string)).toEqual({ state: "closed", state_reason: "not_planned" });
+  });
+
+  it("closeIssue omits state_reason when no reason is provided", async () => {
+    mockFetch.mockResolvedValueOnce(jsonResponse(200, { number: 42, state: "closed" }));
+    const service = makeService();
+
+    await service.closeIssue("acme", "ade", 42);
+
+    const [, init] = lastFetchCall();
+    expect(JSON.parse(init.body as string)).toEqual({ state: "closed" });
+  });
+
+  it("reopenIssue PATCHes state=open", async () => {
+    mockFetch.mockResolvedValueOnce(jsonResponse(200, { number: 42, state: "open" }));
+    const service = makeService();
+
+    await service.reopenIssue("acme", "ade", 42);
+
+    const [url, init] = lastFetchCall();
+    expect(url).toContain("/repos/acme/ade/issues/42");
+    expect(init.method).toBe("PATCH");
+    expect(JSON.parse(init.body as string)).toEqual({ state: "open" });
+  });
+
+  it("assignIssue POSTs to /issues/:n/assignees with the assignees array", async () => {
+    mockFetch.mockResolvedValueOnce(jsonResponse(201, { number: 42 }));
+    const service = makeService();
+
+    await service.assignIssue("acme", "ade", 42, ["alice", "bob"]);
+
+    const [url, init] = lastFetchCall();
+    expect(url).toContain("/repos/acme/ade/issues/42/assignees");
+    expect(init.method).toBe("POST");
+    expect(JSON.parse(init.body as string)).toEqual({ assignees: ["alice", "bob"] });
+  });
+
+  it("setIssueTitle PATCHes just the title field", async () => {
+    mockFetch.mockResolvedValueOnce(jsonResponse(200, { number: 42, title: "New" }));
+    const service = makeService();
+
+    await service.setIssueTitle("acme", "ade", 42, "New");
+
+    const [, init] = lastFetchCall();
+    expect(init.method).toBe("PATCH");
+    expect(JSON.parse(init.body as string)).toEqual({ title: "New" });
+  });
+
+  it("getIssue returns null on 404 rather than throwing", async () => {
+    mockFetch.mockResolvedValueOnce(jsonResponse(404, { message: "Not Found" }));
+    const service = makeService();
+
+    const result = await service.getIssue("acme", "ade", 42);
+
+    expect(result).toBeNull();
+  });
+
+  it("getIssue returns the issue payload on success", async () => {
+    const payload = { number: 42, title: "Shipped", state: "open" };
+    mockFetch.mockResolvedValueOnce(jsonResponse(200, payload));
+    const service = makeService();
+
+    const result = await service.getIssue("acme", "ade", 42);
+
+    expect(result).toEqual(payload);
+  });
+
+  it("listRepoLabels and listRepoCollaborators page via per_page=100", async () => {
+    mockFetch.mockResolvedValueOnce(jsonResponse(200, []));
+    const service = makeService();
+    await service.listRepoLabels("acme", "ade");
+    expect(lastFetchCall()[0]).toMatch(/per_page=100/);
+
+    mockFetch.mockResolvedValueOnce(jsonResponse(200, []));
+    await service.listRepoCollaborators("acme", "ade");
+    expect(lastFetchCall()[0]).toMatch(/per_page=100/);
+  });
+
+  it("URL-encodes owner/name so special characters don't break the path", async () => {
+    mockFetch.mockResolvedValueOnce(jsonResponse(200, []));
+    const service = makeService();
+
+    await service.listRepoIssues("scary owner", "name with space");
+
+    const [url] = lastFetchCall();
+    expect(url).toContain("/repos/scary%20owner/name%20with%20space/issues");
+  });
+});

@@ -278,39 +278,45 @@ function buildIssueDomainService(runtime: AdeRuntime): IssueDomainService | null
   };
 }
 
+type OpaqueService = Record<string, unknown>;
+
+function toService(value: unknown): OpaqueService | null {
+  return (value ?? null) as OpaqueService | null;
+}
+
 export function getAdeActionDomainServices(
   runtime: AdeRuntime,
-): Partial<Record<AdeActionDomain, Record<string, unknown> | null | undefined>> {
+): Partial<Record<AdeActionDomain, OpaqueService | null | undefined>> {
   return {
-    lane: runtime.laneService as unknown as Record<string, unknown>,
-    git: runtime.gitService as unknown as Record<string, unknown>,
-    diff: runtime.diffService as unknown as Record<string, unknown>,
-    conflicts: runtime.conflictService as unknown as Record<string, unknown>,
-    pr: (runtime.prService ?? null) as unknown as Record<string, unknown> | null,
-    tests: runtime.testService as unknown as Record<string, unknown>,
-    chat: (runtime.agentChatService ?? null) as unknown as Record<string, unknown> | null,
-    mission: runtime.missionService as unknown as Record<string, unknown>,
-    orchestrator: runtime.aiOrchestratorService as unknown as Record<string, unknown>,
-    orchestrator_core: runtime.orchestratorService as unknown as Record<string, unknown>,
-    memory: runtime.memoryService as unknown as Record<string, unknown>,
-    cto_state: runtime.ctoStateService as unknown as Record<string, unknown>,
-    worker_agent: runtime.workerAgentService as unknown as Record<string, unknown>,
-    session: runtime.sessionService as unknown as Record<string, unknown>,
-    operation: runtime.operationService as unknown as Record<string, unknown>,
-    project_config: runtime.projectConfigService as unknown as Record<string, unknown>,
-    issue_inventory: runtime.issueInventoryService as unknown as Record<string, unknown>,
-    flow_policy: (runtime.flowPolicyService ?? null) as unknown as Record<string, unknown> | null,
-    linear_dispatcher: (runtime.linearDispatcherService ?? null) as unknown as Record<string, unknown> | null,
-    linear_issue_tracker: (runtime.linearIssueTracker ?? null) as unknown as Record<string, unknown> | null,
-    linear_sync: (runtime.linearSyncService ?? null) as unknown as Record<string, unknown> | null,
-    linear_ingress: (runtime.linearIngressService ?? null) as unknown as Record<string, unknown> | null,
-    linear_routing: (runtime.linearRoutingService ?? null) as unknown as Record<string, unknown> | null,
-    file: (runtime.fileService ?? null) as unknown as Record<string, unknown> | null,
-    process: (runtime.processService ?? null) as unknown as Record<string, unknown> | null,
-    pty: runtime.ptyService as unknown as Record<string, unknown>,
-    computer_use_artifacts: runtime.computerUseArtifactBrokerService as unknown as Record<string, unknown>,
-    automations: buildAutomationsDomainService(runtime) as unknown as Record<string, unknown> | null,
-    issue: buildIssueDomainService(runtime) as unknown as Record<string, unknown> | null,
+    lane: toService(runtime.laneService),
+    git: toService(runtime.gitService),
+    diff: toService(runtime.diffService),
+    conflicts: toService(runtime.conflictService),
+    pr: toService(runtime.prService),
+    tests: toService(runtime.testService),
+    chat: toService(runtime.agentChatService),
+    mission: toService(runtime.missionService),
+    orchestrator: toService(runtime.aiOrchestratorService),
+    orchestrator_core: toService(runtime.orchestratorService),
+    memory: toService(runtime.memoryService),
+    cto_state: toService(runtime.ctoStateService),
+    worker_agent: toService(runtime.workerAgentService),
+    session: toService(runtime.sessionService),
+    operation: toService(runtime.operationService),
+    project_config: toService(runtime.projectConfigService),
+    issue_inventory: toService(runtime.issueInventoryService),
+    flow_policy: toService(runtime.flowPolicyService),
+    linear_dispatcher: toService(runtime.linearDispatcherService),
+    linear_issue_tracker: toService(runtime.linearIssueTracker),
+    linear_sync: toService(runtime.linearSyncService),
+    linear_ingress: toService(runtime.linearIngressService),
+    linear_routing: toService(runtime.linearRoutingService),
+    file: toService(runtime.fileService),
+    process: toService(runtime.processService),
+    pty: toService(runtime.ptyService),
+    computer_use_artifacts: toService(runtime.computerUseArtifactBrokerService),
+    automations: toService(buildAutomationsDomainService(runtime)),
+    issue: toService(buildIssueDomainService(runtime)),
   };
 }
 

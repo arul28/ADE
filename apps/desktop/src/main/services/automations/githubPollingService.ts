@@ -4,7 +4,7 @@ import type {
   AutomationTriggerPrContext,
   AutomationTriggerType,
 } from "../../../shared/types";
-import type { GithubService, GitHubIssue, GitHubLabel, GitHubPullRequest } from "../github/githubService";
+import type { GithubService, GitHubIssue, GitHubPullRequest } from "../github/githubService";
 
 type AutomationServiceHandle = {
   getIngressCursor(source: "github-polling" | "linear-relay" | "github-relay" | "local-webhook"): string | null;
@@ -141,18 +141,22 @@ export function createGithubPollingService(args: GithubPollingServiceArgs) {
 
   const readCursor = (repo: RepoRef): string | null => {
     try {
-      // The cursor table is keyed by source, so stash the repo slug inside the
-      // stored cursor value as `<slug>@<iso-timestamp>` when multiple repos
-      // are polled. For the common single-repo case we just store the ISO.
+      // Storage formats we must read: bare `<iso>` for the very-first-ever poll
+      // (legacy), `<slug>=<iso>` when a single repo has been polled under the
+      // new format, and `<slug>=<iso>|<slug>=<iso>` for multi-repo.
       const stored = automationService.getIngressCursor("github-polling");
       if (!stored) return null;
       const slug = repoSlug(repo);
       if (stored.includes("|")) {
-        // Multi-repo stored as `slug1=iso1|slug2=iso2`
         for (const part of stored.split("|")) {
           const [key, value] = part.split("=");
           if (key === slug && value) return value;
         }
+        return null;
+      }
+      if (stored.includes("=")) {
+        const [key, value] = stored.split("=");
+        if (key === slug && value) return value;
         return null;
       }
       return stored;
@@ -165,31 +169,14 @@ export function createGithubPollingService(args: GithubPollingServiceArgs) {
     try {
       const prev = automationService.getIngressCursor("github-polling") ?? "";
       const slug = repoSlug(repo);
-      if (!prev || !prev.includes("|")) {
-        // If a single-repo cursor already exists and it's a different slug,
-        // migrate to the multi-repo format. Otherwise just overwrite.
-        if (prev && !prev.includes("=")) {
-          automationService.setIngressCursor({ source: "github-polling", cursor: `${slug}=${cursor}` });
-        } else {
-          const parts = new Map<string, string>();
-          for (const part of prev.split("|").filter(Boolean)) {
-            const [k, v] = part.split("=");
-            if (k && v) parts.set(k, v);
-          }
-          parts.set(slug, cursor);
-          const joined = [...parts.entries()].map(([k, v]) => `${k}=${v}`).join("|");
-          automationService.setIngressCursor({ source: "github-polling", cursor: joined });
-        }
-      } else {
-        const parts = new Map<string, string>();
-        for (const part of prev.split("|").filter(Boolean)) {
-          const [k, v] = part.split("=");
-          if (k && v) parts.set(k, v);
-        }
-        parts.set(slug, cursor);
-        const joined = [...parts.entries()].map(([k, v]) => `${k}=${v}`).join("|");
-        automationService.setIngressCursor({ source: "github-polling", cursor: joined });
+      const parts = new Map<string, string>();
+      for (const part of prev.split("|").filter(Boolean)) {
+        const [k, v] = part.split("=");
+        if (k && v) parts.set(k, v);
       }
+      parts.set(slug, cursor);
+      const joined = [...parts.entries()].map(([k, v]) => `${k}=${v}`).join("|");
+      automationService.setIngressCursor({ source: "github-polling", cursor: joined });
     } catch (error) {
       logger.warn("automations.github_polling.cursor_write_failed", {
         repo: repoSlug(repo),

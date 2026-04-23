@@ -65,6 +65,9 @@ export function UsagePacingBadge({
           <span>
             {pacing.deltaPercent > 0 ? "+" : ""}{pacing.deltaPercent.toFixed(1)}% vs expected
           </span>
+          {projectedPercent != null && (
+            <span>{projectedPercent.toFixed(1)}% projected</span>
+          )}
 
           {/* ETA to exhaustion */}
           {pacing.etaHours != null && (

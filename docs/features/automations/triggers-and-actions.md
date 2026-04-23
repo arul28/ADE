@@ -4,10 +4,13 @@ The complete surface of triggers the automation runtime listens for, and the act
 
 ## Source file map
 
-- `apps/desktop/src/main/services/automations/automationService.ts` — trigger normalization, dispatch, cron parsing, file-change watchers, queue matching.
+- `apps/desktop/src/main/services/automations/automationService.ts` — trigger normalization, dispatch, cron parsing, file-change watchers, queue matching, action-chain runner.
 - `apps/desktop/src/main/services/automations/automationIngressService.ts` — HTTP ingress for webhooks and relay polling.
+- `apps/desktop/src/main/services/automations/githubPollingService.ts` — GitHub REST polling that emits `github.issue_*` and `github.pr_*` events by diffing per-repo snapshots.
 - `apps/desktop/src/main/services/automations/automationPlannerService.ts` — natural-language rule authoring (creates triggers + actions from a free-text brief).
-- `apps/desktop/src/shared/types/automations.ts` (via `shared/types`) — `AutomationTrigger`, `AutomationAction`, `AutomationIngressSource`, `AutomationToolFamily`.
+- `apps/desktop/src/main/services/adeActions/registry.ts` — curated allowlist for the `ade-action` action type.
+- `apps/desktop/src/shared/types/config.ts` — `AutomationTriggerType`, `AutomationActionType`, `AutomationTrigger`, `AutomationAction`, `RunAdeActionConfig`, `LEGACY_GITHUB_PR_TRIGGER_ALIASES`, `AUTOMATION_TRIGGER_TYPES`.
+- `apps/desktop/src/shared/types/automations.ts` — `AutomationDraftAction`, `AutomationIngressSource`, `AutomationIngressEventRecord`, `AutomationTriggerIssueContext`, `AutomationTriggerPrContext`, `AutomationTriggerLinearIssueContext`, `AdeActionRegistryEntry`.
 
 ## Trigger catalog
 
@@ -20,12 +23,23 @@ The complete surface of triggers the automation runtime listens for, and the act
 
 - `manual` — fires on explicit operator invocation from the Automations UI. `AutomationManualTriggerRequest` carries optional context (target lane, reason, verbose trace).
 
-### Git-lifecycle
+### Git-lifecycle (local)
 
 - `git.commit` (alias: `commit`) — new commit landed on a branch. Optional `branch` filter.
 - `git.push` — push to a branch. Optional `branch` filter.
-- `git.pr_opened` / `git.pr_updated` / `git.pr_closed` — PR lifecycle events. Optional `branch`, `draftState: "draft" | "ready" | "any"`.
-- `git.pr_merged` — merge event. Optional `targetBranch` or `branch`.
+
+### GitHub
+
+Canonical trigger names are `github.*`. The older `git.pr_*` names still work (see `LEGACY_GITHUB_PR_TRIGGER_ALIASES`) but are aliased to the canonical ones at dispatch.
+
+- `github.pr_opened` / `github.pr_updated` / `github.pr_closed` / `github.pr_merged` — PR lifecycle. Filters: `branch`, `targetBranch`, `draftState: "draft" | "ready" | "any"`, `labels`, `authors`, `repo`, `titleRegex`, `bodyRegex`, `keywords`.
+- `github.pr_commented` — a comment was added to a PR. Filters: `authors`, `keywords`, `titleRegex`/`bodyRegex`, `repo`.
+- `github.pr_review_submitted` — a review was submitted on a PR.
+- `github.issue_opened` / `github.issue_edited` / `github.issue_closed` — issue lifecycle. Filters: `labels`, `authors`, `titleRegex`, `bodyRegex`, `keywords`, `repo`.
+- `github.issue_labeled` — label added to an issue. Filters: `labels` (the label(s) that must have been added), `repo`.
+- `github.issue_commented` — comment on an issue.
+
+GitHub triggers are emitted by three ingress paths: a real webhook (`github-webhook`), the relay (`github-relay`), or the direct `github-polling` service — the matching logic is the same regardless of source.
 
 ### Lane-lifecycle
 
@@ -47,7 +61,14 @@ The complete surface of triggers the automation runtime listens for, and the act
 
 ### Linear-context
 
-- `linear.*` — automation rules can react to Linear events (e.g. `linear.issue_updated`) as context for their own work. These do not substitute for CTO Linear intake — the CTO still owns issue dispatch. Optional `project`, `team`, `assignee` filters.
+Automation rules can react to Linear events as context for their own work. These do not substitute for CTO Linear intake — the CTO still owns issue dispatch.
+
+- `linear.issue_created`
+- `linear.issue_updated`
+- `linear.issue_assigned`
+- `linear.issue_status_changed`
+
+Filters: `project`, `team`, `assignee`, `labels`, `stateTransition` (e.g. `"Backlog->In Progress"`), `changedFields`.
 
 ## Trigger summary (`summarizeTrigger`)
 
@@ -55,7 +76,8 @@ The service produces human summaries for the UI:
 
 - `schedule` -> `"schedule <cron>"`
 - `git.commit` -> `"git.commit:<branch>"` when branch is set
-- `git.pr_*` -> `"git.pr_*:<branch>"`
+- `github.pr_*` -> `"github.pr_*:<branch>"` (legacy `git.pr_*` first normalizes to `github.pr_*`)
+- `github.issue_*` -> `"github.issue_*:<repo>"` when `repo` is set
 - `file.change` -> `"file.change:<paths.join(",")>"`
 - `linear.*` -> `"<type>:<project>/<team>/<assignee>"`
 - `github-webhook` -> `"github:<event>"`
@@ -74,7 +96,7 @@ These summaries surface in the rule list and in run history.
 `automationIngressService.ts` normalizes webhook payloads into `AutomationIngressEventRecord`:
 
 - `id` — the ingress event id.
-- `source` — `AutomationIngressSource` (`webhook`, `github-webhook`, `relay`, `linear-relay`).
+- `source` — `AutomationIngressSource` (`github-relay`, `github-polling`, `linear-relay`, `local-webhook`).
 - `eventKey` — canonical key for rule-matching (e.g. `github:pull_request:opened`).
 - `triggerType` — maps to one of the trigger types above.
 - `status` — `AutomationIngressStatus` (`received`, `matched`, `dispatched`, `ignored`, `error`).
@@ -97,31 +119,35 @@ Label normalization helper `normalizeLabels` accepts either string arrays or obj
 - `browser` -> `agent-browser`, `get_environment_info`, `launch_app`, `interact_gui`, `screenshot_environment`, `record_environment`, `ade.playwright__*`.
 - `memory` -> `memory_search`, `memory_add`.
 - `mission` -> `get_mission`, `get_run_graph`, `stream_events`, `get_timeline`, `get_pending_messages`, `report_status`, `report_result`, `ask_user`.
-- `external-cli` -> empty by default; actual tools resolved from the project's ADE CLI registry at runtime.
 
-`PUBLISH_CAPABLE_TOOL_FAMILIES` — `github`, `linear`, `browser`, `external-cli` are the families that can publish outputs externally. Guardrails apply specifically to these.
+`PUBLISH_CAPABLE_TOOL_FAMILIES` — `github`, `linear`, `browser` — are the families that can publish outputs externally. Guardrails apply specifically to these.
 
-Baseline tools (always available) come from `buildClaudeReadOnlyWorkerAllowedTools()` plus ADE CLI actions available to terminal-capable agents.
+Baseline tools (always available) come from `buildClaudeReadOnlyWorkerAllowedTools()` plus ADE CLI actions available to terminal-capable agents. For targeted, typed access to ADE services from a built-in rule, prefer the `ade-action` action type over a shell call.
 
 ## Action catalog (built-in)
 
 `AutomationAction` is the shape of each action in a `built-in` rule. Each action has:
 
-- `type` — `AutomationActionType` (see below).
-- `status` — `running` | `succeeded` | `failed` | `skipped` | `cancelled`.
-- Action-specific config (typed per `type`).
+- `type` — `AutomationActionType`.
+- Shared step controls: `condition` (gate string), `continueOnFailure`, `timeoutMs`, `retry`.
+- Action-specific config on the same object (`command`, `cwd`, `suiteId`, `adeAction`, `prompt`, `sessionTitle`).
 
-Action types:
+Runtime `AutomationActionResult.status` is one of `running` | `succeeded` | `failed` | `skipped` | `cancelled`. Rows are persisted in the `automation_actions` table with `started_at`, `ended_at`, `output`, `error_message`.
 
-- `shell` — run a shell command in a validated cwd. Cwd validated via `validateAutomationCwd` + `resolvePathWithinRoot` — must stay inside the lane worktree or project root.
-- `file.read`, `file.glob`, `file.grep`, `file.ls` — read-only file operations.
-- `github.comment`, `github.create_pr` — GitHub actions via `ade.github__*`.
-- `linear.get_issue`, `linear.save_comment`, `linear.save_issue` — Linear actions.
-- `memory.search`, `memory.add` — memory actions.
-- `mission.get`, `mission.report_status`, `mission.report_result`, `mission.ask_user` — mission tools.
-- `agent-session.run` — delegated to the agent-session surface when a built-in rule needs AI.
+Action types (`AutomationActionType`):
 
-Each action records `started_at`, `ended_at`, `output`, `error_message` in the `automation_actions` table.
+- `run-command` — shell command. `command` + optional `cwd`. Cwd validated via `validateAutomationCwd` + `resolvePathWithinRoot`; must stay inside the target lane worktree or project root.
+- `run-tests` — invokes the ADE test runner for `suiteId`.
+- `predict-conflicts` — runs the conflicts service's prediction for the target lane; no extra config.
+- `launch-mission` — dispatches a mission via the mission runtime. Same surface as `execution.kind === "mission"` but from inside an action chain.
+- `agent-session` — embeds an agent-session step inside a built-in chain. `prompt` + optional `sessionTitle`; the rule's tool palette applies.
+- `ade-action` — dispatches a registered ADE action. `adeAction: RunAdeActionConfig`:
+  - `domain` — one of the allowlisted `AdeActionDomain` values (`lane`, `git`, `pr`, `issue`, `chat`, `mission`, `memory`, `linear_sync`, `file`, `pty`, `automations`, etc.).
+  - `action` — an entry on that domain's allowlist (e.g. `pr.addComment`, `issue.close`, `linear_sync.runSyncNow`).
+  - `args` — object or array passed to the domain method. Strings may contain `{{trigger.*}}` placeholders resolved from the trigger context at dispatch time.
+  - `resolvers` — optional explicit `{ key: "trigger.path" }` mapping for placeholders that are not embedded in `args` strings.
+
+`isAllowedAdeAction(domain, action)` gates every `ade-action` dispatch; `listAllowedAdeActionNames(domain, service)` powers the picker in `AdeActionEditor`. The full allowlist lives in `apps/desktop/src/main/services/adeActions/registry.ts`.
 
 ## Natural-language rule authoring
 
@@ -141,7 +167,8 @@ The planner output JSON is extracted with `extractFirstJsonObject` — it handle
 - **Webhook payloads must be normalized before matching.** Rules match `eventKey`, not raw payload shape.
 - **Relay polling needs a cursor.** Without `cursor` on `AutomationIngressEventRecord`, the relay replays the full backlog on every poll.
 - **Built-in shell actions validate cwd.** Don't pass absolute paths that escape the allowed roots — `validateAutomationCwd` rejects them.
-- **`external-cli` tool list is empty at compile time.** Resolution happens at runtime; rules referencing ADE CLI actions must check server availability before dispatch.
+- **ADE actions are allowlisted at compile time.** A `(domain, action)` pair must appear in `ADE_ACTION_ALLOWLIST`. Adding an internal service method doesn't expose it to automations until the allowlist is updated; this is intentional — the allowlist is the audit surface.
+- **`{{trigger.*}}` placeholders only interpolate from the current trigger context.** There is no cross-run state; if a placeholder resolves to `undefined`, the ADE action receives `undefined` rather than an empty string. Prefer explicit `resolvers` when a placeholder is load-bearing.
 - **Planner JSON extraction is lossy on malformed output.** Budget extra validation on fields the planner set; rely on `validateDraft` rather than trusting raw output.
 
 ## Cross-links

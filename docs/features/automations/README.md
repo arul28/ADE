@@ -8,20 +8,34 @@ Automations never duplicate Linear issue intake — the CTO owns that. Automatio
 
 ### Services (apps/desktop/src/main/services/automations/)
 
-- `automationService.ts` — the main service. Rule CRUD, execution dispatch (`mission`, `agent-session`, `built-in`), cron scheduling (via `node-cron`), file-change watching (via `chokidar`), queue management, run history, confidence scoring, billing codes. ~2800 LOC.
+- `automationService.ts` — main service. Rule CRUD, execution dispatch (`mission`, `agent-session`, `built-in`), cron scheduling (via `node-cron`), file-change watching (via `chokidar`), queue management, run history, confidence scoring, billing codes, ingress cursor storage.
 - `automationPlannerService.ts` — natural-language rule authoring. `parseNaturalLanguage`, `validateDraft`, `saveDraft`, `simulate`. Runs a planner subprocess (Claude or Codex) to turn a free-text brief into an `AutomationRuleDraft`.
 - `automationIngressService.ts` — HTTP webhook ingress (GitHub, custom webhooks) and polling-relay ingress (GitHub relay API). Signature verification for webhooks. `AutomationIngressEventRecord` is the normalized event shape.
+- `githubPollingService.ts` — direct GitHub REST polling for the origin repo plus `extraRepos`. Diffs per-poll snapshots of issues/PRs/comments to emit `github.issue_*` and `github.pr_*` trigger events without requiring a webhook or relay. Cursor format is `<slug>=<iso>|<slug>=<iso>` to support multi-repo state in a single stored string; see `readCursor`/`writeCursor` for the legacy-compat parser.
 - `automationSecretService.ts` — secret resolution for automation actions (env-ref style, same policy as CTO workers). Referenced as `${env:VAR}` in action config; resolved at execution time.
+
+### ADE Actions registry
+
+- `apps/desktop/src/main/services/adeActions/registry.ts` — curated allowlist of `(domain, action)` pairs exposed to automation rules as the `ade-action` action type. Each domain maps to a main-process service (`lane`, `git`, `pr`, `issue`, `chat`, `mission`, `memory`, `linear_*`, `file`, `pty`, etc.); the allowlist keeps the surface deterministic and audit-able. `listAllowedAdeActionNames` and `isAllowedAdeAction` gate runtime dispatch.
 
 ### Renderer
 
-- `apps/desktop/src/renderer/components/automations/` — `/automations` page. Rule list, rule editor, simulation, history, queue dashboard.
+- `apps/desktop/src/renderer/components/automations/` — `/automations` page.
+  - `AutomationsPage.tsx` — page shell; delegates to `RulesTab` (templates are now a sibling route, `/automations/templates`).
+  - `RulesTab.tsx` — rule list + editor split pane.
+  - `components/RuleEditorPanel.tsx` — rule editor (trigger + execution + actions + guardrails).
+  - `GitHubTriggerFilters.tsx` / `LinearTriggerFilters.tsx` — per-trigger filter editors (labels, authors, target branch, title/body regex, repo, team, project, assignee).
+  - `ActionList.tsx` / `ActionRow.tsx` / `AdeActionEditor.tsx` — action chain UI for `built-in` rules, including the ADE Actions picker.
+  - `RuleHistoryPanel.tsx` — per-rule run history (replaces the old cross-rule `HistoryTab`).
+  - `TemplatesTab.tsx` / `AutomationsTemplatesPage.tsx` — template picker that seeds a new draft on `/automations` via router state.
+  - `EmptyStateHint.tsx` — empty-state copy shared across tabs.
+- `apps/desktop/src/renderer/components/settings/` — usage/budget/cost UI for automations and missions (shared with Settings > Usage). `UsageGuardrailsSection`, `BudgetCapEditor`, `CostSummaryCard`, `UsageMeter`, `UsagePacingBadge` all live here; they no longer sit on the Automations page.
 - `apps/desktop/src/renderer/components/chat/AgentChatPane.tsx` — agent-session execution surfaces as a chat thread filtered by automation owner.
 
 ### IPC
 
-- `apps/desktop/src/preload/global.d.ts` — `window.ade.automations` surface.
-- `apps/desktop/src/main/services/ipc/registerIpc.ts` — registers `automations:*` channels.
+- `apps/desktop/src/preload/global.d.ts` — `window.ade.automations` surface (now includes `pollGithubNow`).
+- `apps/desktop/src/main/services/ipc/registerIpc.ts` — registers `automations:*` channels including the ADE Actions registry read, GitHub polling trigger, and the registry-backed `runAdeAction` dispatch.
 
 ## Core model
 
@@ -35,11 +49,11 @@ Each `AutomationRule` carries:
   - `{ kind: "built-in", targetLaneId?, builtIn: { actions: [...] } }` — runs ADE-native deterministic actions (`AutomationAction[]`).
 - `executor` — always `{ mode: "automation-bot" }` (the automation system identifies itself that way in logs and memory).
 - `reviewProfile` — `quick` | `incremental` | `full` | `security` | `release-risk` | `cross-repo-contract`. Drives confidence base and output expectations.
-- `toolPalette` — explicit tool family list (`repo`, `git`, `tests`, `github`, `linear`, `browser`, `memory`, `mission`, `external-cli`).
+- `toolPalette` — explicit tool family list (`repo`, `git`, `tests`, `github`, `linear`, `browser`, `memory`, `mission`).
 - `contextSources` — e.g. project memory, procedures, recent PRs.
 - `memory.mode` — how memory scopes apply. `"automation-plus-project"` is the default: rule-scoped memory plus shared project memory.
 - `guardrails` — `confidenceThreshold`, `maxDurationMin`, `requireHuman`, path/lane allowlists (see `guardrails.md`).
-- `outputs.disposition` — `comment-only` | `open-pr` | `linear-comment` | `in-app-notification` | `evidence-only`.
+- `outputs.disposition` — `comment-only` | `open-task` | `open-lane` | `prepare-patch` | `open-pr-draft`.
 - `verification` — `verifyBeforePublish` + `mode` (e.g. `intervention` for human approval).
 - `billingCode` — tracks spend per rule (default `auto:<id>`).
 
@@ -81,9 +95,11 @@ Best for code-affecting or multi-step tasks.
 Best for deterministic ADE operations.
 
 - Runs a sequence of `AutomationAction` steps with typed input/output.
-- Supported action types include: shell commands (via `bash`/`Bash`), file ops (`Read`, `Glob`, `Grep`, `LS`), Linear (`ade.linear__*`), GitHub (`ade.github__*`), mission launch (`get_mission`, `report_status`), memory (`memory_search`, `memory_add`).
+- `AutomationActionType` values: `run-command` (shell), `run-tests`, `predict-conflicts`, `launch-mission`, `agent-session` (embedded agent step), `ade-action` (see below).
 - No separate mission thread.
 - Low overhead; sandboxed to the target lane's worktree via `validateAutomationCwd` and `resolvePathWithinRoot`.
+
+The `ade-action` action type dispatches directly into a main-process domain service through the ADE Actions registry (`apps/desktop/src/main/services/adeActions/registry.ts`). `RunAdeActionConfig` points at a `domain` + `action` on the allowlist (e.g. `pr.addComment`, `linear_sync.runSyncNow`, `memory.searchMemories`, `issue.close`), with `args` that may embed `{{trigger.*}}` placeholders resolved from the trigger context at dispatch time, or an explicit `resolvers` map for the same. This gives built-in rules typed access to ADE services without writing a shell command or a bespoke tool.
 
 ## Cron scheduling
 
@@ -102,16 +118,18 @@ Stability rules:
 
 `globToRegExp` and `matchesGlob` are the primitives for path matching. `escapeRegExp` is used by the legacy path-list matcher.
 
-## Webhook and relay ingress
+## Webhook, relay, and polling ingress
 
-`automationIngressService` opens an HTTP endpoint for webhook events. Two incoming shapes:
+Automations accept inbound events from four sources (`AutomationIngressSource`):
 
-- `github-webhook` — verifies HMAC-SHA256 signature via `safeCompareSignature` (timing-safe). Secret read from `automations.githubWebhook.secret`.
-- `webhook` — custom webhook; optional shared-secret verification.
+- `local-webhook` — `automationIngressService` opens an HTTP endpoint.
+  - `github-webhook` events verify HMAC-SHA256 via `safeCompareSignature` (timing-safe). Secret read from `automations.githubWebhook.secret`.
+  - `webhook` events are custom inbound webhooks with optional shared-secret verification.
+- `github-relay` — polls a GitHub relay (`automations.githubRelay.apiBaseUrl` + `remoteProjectId` + `accessToken`) for out-of-band delivery when the desktop app is behind NAT.
+- `linear-relay` — Linear event relay (shared with CTO intake; Linear triggers here are context-only).
+- `github-polling` — `githubPollingService` polls the GitHub REST API directly for the origin repo and any `extraRepos`, diffing per-poll snapshots to synthesize `github.issue_*` / `github.pr_*` events (opened / edited / labeled / closed / commented, and PR merged). No relay or webhook infra required. Cursor is a `<slug>=<iso>|<slug>=<iso>` string stored via `automationService.setIngressCursor({ source: "github-polling" })`; default interval is 30s.
 
-It also polls a GitHub relay (`automations.githubRelay.apiBaseUrl` + `remoteProjectId` + `accessToken`) for out-of-band delivery when the desktop app is behind NAT.
-
-Ingress events normalize to `AutomationIngressEventRecord` with `source`, `eventKey`, `triggerType`, `summary`, `rawPayloadJson`. Matching rules are resolved by `eventKey`-to-rule-id mapping.
+Ingress events normalize to `AutomationIngressEventRecord` with `source`, `eventKey`, `triggerType`, `summary`, plus `cursor` for relay/polling replay. Matching rules are resolved by `eventKey`-to-rule-id mapping. An optional `repo` filter on a rule's trigger (e.g. `github.issue_opened` with `repo: "owner/name"`) restricts dispatch when multiple repos are polled.
 
 ## Queue and confidence
 
@@ -152,6 +170,8 @@ Automations route outputs based on `outputs.disposition`:
 
 - **Legacy `trigger` vs `triggers`.** Rules can carry either; the service normalizes via `normalizedRuleTriggers` and `primaryTrigger`. When writing new code read from `rule.triggers`.
 - **`commit` is aliased to `git.commit`** by `normalizeTriggerType`. Rules persisted with `commit` still work but the dispatcher treats them as `git.commit`.
+- **Legacy `git.pr_*` triggers alias to `github.pr_*`.** `LEGACY_GITHUB_PR_TRIGGER_ALIASES` is the authoritative mapping; the canonical names are `github.pr_opened`, `github.pr_updated`, `github.pr_merged`, `github.pr_closed`. Prefer the canonical names in new code and UI.
+- **Polling cursor format is sticky.** `githubPollingService.readCursor` must handle three historical shapes: bare `<iso>` (first-ever poll, legacy), single `<slug>=<iso>` (new single-repo), and multi-repo `<slug>=<iso>|<slug>=<iso>`. Don't simplify the parser without a migration path.
 - **Cron sanity-check before installing.** `cron.validate(expr)` plus the 5-field split is the safety net; otherwise `node-cron` throws.
 - **Webhook secret verification is timing-safe.** Don't refactor `safeCompareSignature` into a plain string compare.
 - **Relay polling must respect the access token ref.** `automations.githubRelay.accessToken` is an env ref; resolve via `automationSecretService`, never hard-coded.
