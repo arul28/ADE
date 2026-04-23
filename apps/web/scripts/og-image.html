@@ -46,10 +46,10 @@
         position: relative;
         width: 1200px;
         height: 630px;
-        padding: 56px 72px;
+        padding: 56px 64px;
         display: grid;
-        grid-template-columns: 0.85fr 1.15fr;
-        gap: 40px;
+        grid-template-columns: 1fr 1fr;
+        gap: 36px;
         align-items: center;
       }
 
@@ -84,12 +84,15 @@
         border: 1px solid rgba(167, 139, 250, 0.4);
         background: rgba(167, 139, 250, 0.1);
         box-shadow: 0 0 32px -8px rgba(167, 139, 250, 0.5);
-        font-size: 13px;
+        font-size: 12px;
         font-weight: 500;
         text-transform: uppercase;
         letter-spacing: 0.22em;
         color: var(--color-cream);
-        margin-bottom: 34px;
+        margin-bottom: 30px;
+        white-space: nowrap;
+        width: max-content;
+        max-width: 100%;
       }
       .pill .ping {
         position: relative;
@@ -111,7 +114,7 @@
       h1.headline {
         font-family: "Instrument Serif", Georgia, "Times New Roman", serif;
         font-weight: 400;
-        font-size: 92px;
+        font-size: 80px;
         line-height: 1.02;
         letter-spacing: -0.02em;
         margin: 0;
@@ -185,11 +188,12 @@
 
       .plus {
         font-family: "Instrument Serif", Georgia, serif;
-        font-size: 30px;
+        font-size: 56px;
+        line-height: 1;
         color: var(--color-cream-faint);
         flex-shrink: 0;
         align-self: flex-start;
-        margin-top: 16px;
+        margin-top: 8px;
       }
 
       .equals-row {
@@ -207,16 +211,16 @@
       }
       .ade-icon {
         position: relative;
-        width: 170px;
-        height: 170px;
+        width: 260px;
+        height: 260px;
       }
       .ade-icon::before {
         content: "";
         position: absolute;
-        inset: -30px;
+        inset: -48px;
         border-radius: 30%;
-        background: radial-gradient(circle, rgba(124, 58, 237, 0.6), transparent 65%);
-        filter: blur(18px);
+        background: radial-gradient(circle, rgba(124, 58, 237, 0.65), transparent 65%);
+        filter: blur(26px);
         z-index: 0;
       }
       .ade-icon img {
@@ -262,7 +266,6 @@
   <body>
     <div class="page">
       <div class="lede">
-        <p class="eyebrow"><span class="dot"></span>A Demonstration</p>
         <div class="pill">
           <span class="ping"></span>
           100% Free
