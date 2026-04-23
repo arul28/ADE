@@ -1344,7 +1344,7 @@ export function createPrService({
     if (candidates.length === 0) return null;
     const open = candidates.find((candidate) => {
       const state = asString(candidate?.state).toLowerCase();
-      return state === "open" || Boolean(candidate?.draft);
+      return state === "open";
     });
     return open ?? candidates[0] ?? null;
   };

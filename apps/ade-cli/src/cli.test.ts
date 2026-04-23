@@ -370,7 +370,9 @@ describe("ADE CLI", () => {
   });
 
   it("uses the parent ADE project when invoked inside an ADE-managed lane worktree", () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cli-roots-"));
+    const rawRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cli-roots-"));
+    // findProjectRoots canonicalizes symlinks (e.g. /var -> /private/var on macOS).
+    const root = fs.realpathSync.native(rawRoot);
     const worktree = path.join(root, ".ade", "worktrees", "feature-lane");
     const nested = path.join(worktree, "apps", "ade-cli");
     fs.mkdirSync(path.join(root, ".ade"), { recursive: true });
@@ -465,6 +467,10 @@ describe("ADE CLI", () => {
     if (actionsHelp.kind !== "help") return;
     expect(actionsHelp.text).toContain("Argument shapes");
     expect(actionsHelp.text).toContain("--args-list-json");
+
+    // Regression: --text as output flag must not swallow --help.
+    const lanesHelp = buildCliPlan(["lanes", "list", "--text", "--help"]);
+    expect(lanesHelp.kind).toBe("help");
   });
 
   it("shell-escapes argv tokens after -- when building shell start commands", () => {

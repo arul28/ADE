@@ -1857,7 +1857,7 @@ function buildCoordinatorPlan(args: string[]): CliPlan {
 }
 
 const VALUE_CARRIER_FLAGS: ReadonlySet<string> = new Set([
-  "-b", "-q", "-t",
+  "-b", "-m", "-q", "-t",
   "--additional-instructions", "--app", "--arg", "--arg-json", "--arg-value",
   "--arg-value-json", "--args-list-json", "--attempt", "--attempt-id",
   "--automation", "--base", "--base-branch", "--body", "--branch",
@@ -1868,19 +1868,20 @@ const VALUE_CARRIER_FLAGS: ReadonlySet<string> = new Set([
   "--description", "--domain", "--duration-sec", "--enabled", "--event",
   "--from-file", "--group", "--group-id", "--head", "--icon", "--id",
   "--include-ignored", "--input", "--input-json", "--instructions",
-  "--json-input", "--lane", "--lane-id", "--limit", "--max-bytes", "--memory",
+  "--json-input", "--lane", "--lane-id", "--limit", "--max-bytes",
+  "--max-log-bytes", "--max-prompt-chars", "--max-rounds", "--memory",
   "--memory-id", "--merge-method", "--message", "--method", "--mode", "--model",
   "--model-id", "--name", "--new", "--new-path", "--number", "--old",
   "--old-path", "--params-json", "--parent", "--parent-lane", "--parent-lane-id",
   "--path", "--permission-mode", "--permissions", "--pr", "--pr-id",
   "--pr-number", "--pr-url", "--process", "--process-id", "--project-root",
   "--prompt", "--provider", "--pty", "--pty-id", "--query", "--question",
-  "--reason", "--reasoning", "--ref", "--role", "--root", "--root-lane",
-  "--round", "--rows", "--rule", "--run", "--run-id", "--scalar",
+  "--reason", "--reasoning", "--recent-limit", "--ref", "--role", "--root",
+  "--root-lane", "--round", "--rounds", "--rows", "--rule", "--run", "--run-id", "--scalar",
   "--scalar-json", "--scope", "--seconds", "--session", "--session-id", "--set",
   "--set-json", "--sha", "--source", "--source-lane", "--stack", "--stack-id",
   "--stash-ref", "--step", "--step-id", "--suite", "--suite-id", "--surface",
-  "--text", "--thread", "--thread-id", "--timeout-ms", "--title", "--tool-type",
+  "--thread", "--thread-id", "--timeout-ms", "--title", "--tool-type",
   "--unresolved", "--url", "--workspace", "--workspace-id", "--workspace-root",
 ]);
 
@@ -1998,7 +1999,12 @@ function buildCliPlan(command: string[]): CliPlan {
 }
 
 function findAdeManagedWorktreeRoot(startDir: string): { projectRoot: string; workspaceRoot: string } | null {
-  const resolved = path.resolve(startDir);
+  let resolved = path.resolve(startDir);
+  try {
+    resolved = fs.realpathSync.native(resolved);
+  } catch {
+    // path may not yet exist on disk; use the lexical resolution.
+  }
   const segments = resolved.split(path.sep);
   for (let index = segments.length - 2; index >= 0; index -= 1) {
     if (segments[index] !== ".ade" || segments[index + 1] !== "worktrees") continue;
@@ -2013,10 +2019,16 @@ function findAdeManagedWorktreeRoot(startDir: string): { projectRoot: string; wo
 }
 
 function findProjectRoots(startDir: string): { projectRoot: string; workspaceRoot: string } {
-  const managedWorktree = findAdeManagedWorktreeRoot(startDir);
+  let canonicalStart = path.resolve(startDir);
+  try {
+    canonicalStart = fs.realpathSync.native(canonicalStart);
+  } catch {
+    // path may not yet exist on disk; use the lexical resolution.
+  }
+  const managedWorktree = findAdeManagedWorktreeRoot(canonicalStart);
   if (managedWorktree) return managedWorktree;
 
-  let cursor = path.resolve(startDir);
+  let cursor = canonicalStart;
   while (true) {
     if (fs.existsSync(path.join(cursor, ".ade"))) {
       return { projectRoot: cursor, workspaceRoot: cursor };

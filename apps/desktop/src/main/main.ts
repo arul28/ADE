@@ -3381,6 +3381,12 @@ app.whenReady().then(async () => {
         automationService,
         automationPlannerService,
         githubService,
+        keybindingsService,
+        onboardingService,
+        feedbackReporterService,
+        usageTrackingService,
+        budgetCapService,
+        autoUpdateService,
       } as unknown as AdeRuntime;
     }
 

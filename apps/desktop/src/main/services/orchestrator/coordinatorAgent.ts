@@ -33,7 +33,6 @@ import {
 import { asRecord, filterExecutionSteps } from "./orchestratorContext";
 import { readMissionStateDocument, writeCoordinatorCheckpoint } from "./missionStateDoc";
 import { getLocalProviderDefaultEndpoint, resolveModelDescriptor, type LocalProviderFamily } from "../../../shared/modelRegistry";
-import { ADE_CLI_AGENT_GUIDANCE } from "../../../shared/adeCliGuidance";
 import { inspectLocalProvider } from "../ai/localModelDiscovery";
 import type { DiscoveredLocalModelEntry } from "../opencode/openCodeRuntime";
 import type { createOrchestratorService } from "./orchestratorService";
@@ -2075,8 +2074,6 @@ You are the persistent brain. Workers are disposable hands.
 Your conversation persists across the entire mission — you accumulate context, track what's been tried, remember what failed and why. Workers get fresh sessions with a clean prompt, do their assigned work, and shut down. You are the continuity. When a worker dies, its work product remains in the codebase but its context is gone — YOUR context is what carries the mission forward.
 
 You are NOT a repo-editing worker. You are the mission lead who owns phase state, worker spawning, runtime judgment, and final completion. In normal operation, workers inspect the repo, edit code, and run commands. You keep the mission aligned and delegated. The difference between you and a dumb orchestrator is that you THINK before you act and EVALUATE after each step.
-
-${ADE_CLI_AGENT_GUIDANCE}
 
 ## Your Mission
 ${this.deps.missionGoal}
