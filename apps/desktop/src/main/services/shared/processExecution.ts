@@ -56,7 +56,7 @@ export function resolveWindowsCmdInvocation(
   const cmdLine = [command, ...args].map(quoteWindowsCmdArg).join(" ");
   return {
     command: comSpec,
-    args: ["/d", "/s", "/c", `"${cmdLine}"`],
+    args: ["/d", "/s", "/c", cmdLine],
     windowsVerbatimArguments: true,
   };
 }

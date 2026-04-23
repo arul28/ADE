@@ -52,7 +52,7 @@ describe("processExecution", () => {
         "/d",
         "/s",
         "/c",
-        '""C:\\Users\\me\\AppData\\Roaming\\npm\\codex.cmd" "exec" "--cd" "C:\\repo path""',
+        '"C:\\Users\\me\\AppData\\Roaming\\npm\\codex.cmd" "exec" "--cd" "C:\\repo path"',
       ],
       windowsVerbatimArguments: true,
     });
@@ -61,7 +61,7 @@ describe("processExecution", () => {
   it("builds explicit Windows shell invocations", () => {
     expect(resolveWindowsCmdInvocation("npm", ["run", "test"], {} as NodeJS.ProcessEnv)).toEqual({
       command: "cmd.exe",
-      args: ["/d", "/s", "/c", '""npm" "run" "test""'],
+      args: ["/d", "/s", "/c", '"npm" "run" "test"'],
       windowsVerbatimArguments: true,
     });
   });
