@@ -871,7 +871,7 @@ export function createPrService({
           parentHeadSha: null,
           state: "rebaseFailed",
           conflictCount: 0,
-          message: `Auto-rebase failed after '${args.landedLaneName}' merged because ADE could not find a new parent lane. Open the Rebase tab to recover this lane.`,
+          message: `Auto-rebase failed after '${args.landedLaneName}' merged because ADE could not find a new parent lane. Open the Rebase/Merge tab to recover this lane.`,
         }, child.id);
       }
       return {
@@ -979,8 +979,8 @@ export function createPrService({
           state: "rebaseFailed",
           conflictCount: 0,
           message: rollbackError
-            ? `Auto-rebase failed after '${args.landedLaneName}' merged: ${childError}. Automatic rollback also failed: ${rollbackError}. Open the Rebase tab to recover this lane.`
-            : `Auto-rebase failed after '${args.landedLaneName}' merged: ${childError}. The lane was restored to its pre-rebase state. Open the Rebase tab to recover this lane.`,
+            ? `Auto-rebase failed after '${args.landedLaneName}' merged: ${childError}. Automatic rollback also failed: ${rollbackError}. Open the Rebase/Merge tab to recover this lane.`
+            : `Auto-rebase failed after '${args.landedLaneName}' merged: ${childError}. The lane was restored to its pre-rebase state. Open the Rebase/Merge tab to recover this lane.`,
         }, child.id);
         failedLaneIds.push(child.id);
       }

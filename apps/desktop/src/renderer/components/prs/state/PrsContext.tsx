@@ -34,6 +34,8 @@ import type { PrTimelineFilters } from "../shared/PrTimeline";
 import { DEFAULT_PR_TIMELINE_FILTERS } from "../shared/PrTimeline";
 import { buildPrAiResolutionContextKey } from "../../../../shared/types";
 import { getModelById } from "../../../../shared/modelRegistry";
+import { parsePrsRouteState, resolvePrsActiveTab } from "../prsRouteState";
+import { resolveRouteRebaseSelection } from "../shared/rebaseNeedUtils";
 
 type PrTab = "normal" | "queue" | "integration" | "rebase";
 
@@ -210,22 +212,41 @@ function readPersistedReasoningLevel(): string {
   return "medium";
 }
 
-function readInitialTab(): PrTab {
+function readInitialRouteState(): {
+  activeTab: PrTab;
+  selectedPrId: string | null;
+  selectedQueueGroupId: string | null;
+  selectedRebaseItemId: string | null;
+} {
   try {
-    const params = new URLSearchParams(window.location.search);
-    const tab = params.get("tab");
-    if (tab === "normal" || tab === "queue" || tab === "integration" || tab === "rebase") return tab;
+    const route = parsePrsRouteState({
+      search: window.location.search,
+      hash: window.location.hash,
+    });
+    const resolved = resolvePrsActiveTab(route);
+    const activeTab: PrTab = resolved.isWorkflowRoute
+      ? (resolved.effectiveWorkflow ?? "integration")
+      : "normal";
+    return {
+      activeTab,
+      selectedPrId: !resolved.isWorkflowRoute ? route.prId : null,
+      selectedQueueGroupId: resolved.effectiveWorkflow === "queue" ? route.queueGroupId : null,
+      // Mirror PRsPage's resolver so the shape of this id matches what the
+      // rebase UI later expects. rebaseNeeds are empty at provider mount, so
+      // this returns the bare lane id; PRsPage's syncFromLocation effect runs
+      // the same resolver again once needs load and upgrades it to the
+      // canonical need-item key.
+      selectedRebaseItemId: resolved.effectiveWorkflow === "rebase"
+        ? resolveRouteRebaseSelection({ rebaseNeeds: [], routeItemId: route.laneId })
+        : null,
+    };
   } catch { /* ignore */ }
-  return "normal";
-}
-
-function readInitialPrId(): string | null {
-  try {
-    const params = new URLSearchParams(window.location.search);
-    const prId = params.get("prId");
-    if (prId && prId.trim().length > 0) return prId.trim();
-  } catch { /* ignore */ }
-  return null;
+  return {
+    activeTab: "normal",
+    selectedPrId: null,
+    selectedQueueGroupId: null,
+    selectedRebaseItemId: null,
+  };
 }
 
 function requirePrId(prId: string): string {
@@ -269,13 +290,18 @@ function diffPrIds(prev: PrWithConflicts[], next: PrWithConflicts[]): string[] {
 }
 
 export function PrsProvider({ children }: { children: React.ReactNode }) {
-  const [activeTab, setActiveTab] = useState<PrTab>(readInitialTab);
+  // Compute initial route state exactly once per provider mount. Reading
+  // window.location + running parsePrsRouteState/resolvePrsActiveTab on every
+  // render would be wasteful; useMemo with empty deps captures it once so all
+  // four useState calls below share a single computation.
+  const initialRouteState = useMemo(() => readInitialRouteState(), []);
+  const [activeTab, setActiveTab] = useState<PrTab>(initialRouteState.activeTab);
   const [prs, setPrs] = useState<PrWithConflicts[]>([]);
   const [lanes, setLanes] = useState<LaneSummary[]>([]);
   const [mergeContextByPrId, setMergeContextByPrId] = useState<Record<string, PrMergeContext>>({});
-  const [selectedPrId, setSelectedPrId] = useState<string | null>(readInitialPrId);
-  const [selectedQueueGroupId, setSelectedQueueGroupId] = useState<string | null>(null);
-  const [selectedRebaseItemId, setSelectedRebaseItemId] = useState<string | null>(null);
+  const [selectedPrId, setSelectedPrId] = useState<string | null>(initialRouteState.selectedPrId);
+  const [selectedQueueGroupId, setSelectedQueueGroupId] = useState<string | null>(initialRouteState.selectedQueueGroupId);
+  const [selectedRebaseItemId, setSelectedRebaseItemId] = useState<string | null>(initialRouteState.selectedRebaseItemId);
   const [mergeMethod, setMergeMethod] = useState<MergeMethod>("squash");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);

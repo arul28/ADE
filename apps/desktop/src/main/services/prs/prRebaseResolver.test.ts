@@ -141,8 +141,8 @@ describe("launchRebaseResolutionChat", () => {
     expect(sendMessage).toHaveBeenCalledWith(
       expect.objectContaining({
         sessionId: "session-rebase-1",
-        displayText: "Rebase feature/rebase-target onto main",
         reasoningEffort: "high",
+        displayText: "Rebase feature/rebase-target onto main",
       }),
     );
     expect(result).toEqual({

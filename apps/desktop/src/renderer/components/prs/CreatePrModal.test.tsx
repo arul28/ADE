@@ -4,7 +4,12 @@ import React from "react";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { MemoryRouter } from "react-router-dom";
 import type { LaneSummary } from "../../../shared/types";
+
+function renderWithRouter(ui: React.ReactElement) {
+  return render(<MemoryRouter>{ui}</MemoryRouter>);
+}
 
 function makeLane(overrides: Partial<LaneSummary> = {}): LaneSummary {
   return {
@@ -117,7 +122,7 @@ describe("CreatePrModal queue workflow", () => {
 
   it("adds selected lanes to the queue order and removes them from the queue builder", async () => {
     const user = userEvent.setup();
-    render(<CreatePrModal open onOpenChange={vi.fn()} />);
+    renderWithRouter(<CreatePrModal open onOpenChange={vi.fn()} />);
 
     await user.click(screen.getAllByRole("button", { name: /queue workflow/i })[0]!);
     await user.click(screen.getByRole("checkbox", { name: /01 queue lane/i }));
@@ -136,7 +141,7 @@ describe("CreatePrModal queue workflow", () => {
 
   it("uses the dragged queue order when creating queue PRs", async () => {
     const user = userEvent.setup();
-    render(<CreatePrModal open onOpenChange={vi.fn()} />);
+    renderWithRouter(<CreatePrModal open onOpenChange={vi.fn()} />);
 
     await user.click(screen.getAllByRole("button", { name: /queue workflow/i })[0]!);
     await user.click(screen.getByRole("checkbox", { name: /01 queue lane/i }));
@@ -165,7 +170,7 @@ describe("CreatePrModal queue workflow", () => {
 
   it("lets single-PR creation target a different branch than Primary's current branch", async () => {
     const user = userEvent.setup();
-    render(<CreatePrModal open onOpenChange={vi.fn()} />);
+    renderWithRouter(<CreatePrModal open onOpenChange={vi.fn()} />);
 
     // Select source lane
     const comboboxes = screen.getAllByRole("combobox");
@@ -191,7 +196,7 @@ describe("CreatePrModal queue workflow", () => {
 
   it("warns when the PR target branch differs from the lane base branch", async () => {
     const user = userEvent.setup();
-    render(<CreatePrModal open onOpenChange={vi.fn()} />);
+    renderWithRouter(<CreatePrModal open onOpenChange={vi.fn()} />);
 
     // Select source lane
     const comboboxes = screen.getAllByRole("combobox");
@@ -210,7 +215,7 @@ describe("CreatePrModal queue workflow", () => {
 
   it("lets queue creation target a different branch than Primary's current branch", async () => {
     const user = userEvent.setup();
-    render(<CreatePrModal open onOpenChange={vi.fn()} />);
+    renderWithRouter(<CreatePrModal open onOpenChange={vi.fn()} />);
 
     await user.click(screen.getAllByRole("button", { name: /queue workflow/i })[0]!);
     await user.click(screen.getByRole("checkbox", { name: /01 queue lane/i }));

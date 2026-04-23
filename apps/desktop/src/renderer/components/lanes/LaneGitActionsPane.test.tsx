@@ -328,7 +328,7 @@ describe("LaneGitActionsPane rescue action", () => {
     expect(syncButton.getAttribute("title")).toMatch(/before rebasing and pushing/i);
   });
 
-  it("treats auto-rebase conflicts as failures and links to the Rebase tab", async () => {
+  it("treats auto-rebase conflicts as failures and links to the Rebase/Merge tab", async () => {
     const user = userEvent.setup();
     const resolveRebaseConflict = vi.fn();
     mockAutoRebaseStatuses = [
@@ -345,7 +345,7 @@ describe("LaneGitActionsPane rescue action", () => {
 
     renderPane({ onResolveRebaseConflict: resolveRebaseConflict });
 
-    const rebaseTabButton = await screen.findByRole("button", { name: /open rebase tab/i });
+    const rebaseTabButton = await screen.findByRole("button", { name: /open rebase\/merge tab/i });
     screen.getByText("AUTO-REBASE FAILED");
     screen.getByText(/auto-rebase failed\. files need follow-up before this lane can be pushed\./i);
 

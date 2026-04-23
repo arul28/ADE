@@ -1101,7 +1101,7 @@ export function LanesPage() {
         const failedLane = start.run.failedLaneId ? lanesById.get(start.run.failedLaneId)?.name ?? start.run.failedLaneId : null;
         const detail = start.run.error ?? "Rebase failed.";
         setRebaseSuggestionError(`Rebase needs attention${failedLane ? ` for ${failedLane}` : ""}. ${detail}`);
-        navigate("/prs?tab=rebase");
+        navigate("/prs?tab=workflows&workflow=rebase");
         return;
       }
 
@@ -1121,7 +1121,7 @@ export function LanesPage() {
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       setRebaseSuggestionError(message);
-      navigate("/prs?tab=rebase");
+      navigate("/prs?tab=workflows&workflow=rebase");
     }
   }, [lanesById, navigate, refreshLanes, requestPushSelection, requestRebaseScope]);
 

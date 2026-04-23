@@ -23,6 +23,18 @@ function Harness() {
   );
 }
 
+function RouteHarness() {
+  const { activeTab, selectedPrId, selectedQueueGroupId, selectedRebaseItemId } = usePrs();
+  return (
+    <div>
+      <div data-testid="active-tab">{activeTab}</div>
+      <div data-testid="selected-pr-id">{selectedPrId ?? ""}</div>
+      <div data-testid="selected-queue-group-id">{selectedQueueGroupId ?? ""}</div>
+      <div data-testid="selected-rebase-item-id">{selectedRebaseItemId ?? ""}</div>
+    </div>
+  );
+}
+
 describe("PrsContext refresh", () => {
   beforeEach(() => {
     const refreshedNeed: RebaseNeed = {
@@ -78,6 +90,7 @@ describe("PrsContext refresh", () => {
   afterEach(() => {
     cleanup();
     globalThis.window.ade = originalAde;
+    window.location.hash = "";
   });
 
   it("refreshes rebase needs and auto-rebase statuses without waiting for events", async () => {
@@ -101,6 +114,67 @@ describe("PrsContext refresh", () => {
       expect(screen.getByTestId("needs-count").textContent).toBe("1");
       expect(screen.getByTestId("auto-count").textContent).toBe("1");
     });
+  });
+
+  it("hydrates the Rebase/Merge workflow selection from the initial hash route", async () => {
+    window.location.hash = "#/prs?tab=workflows&workflow=rebase&laneId=lane-1";
+
+    render(
+      <PrsProvider>
+        <RouteHarness />
+      </PrsProvider>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId("active-tab").textContent).toBe("rebase");
+    });
+    expect(screen.getByTestId("selected-pr-id").textContent).toBe("");
+    expect(screen.getByTestId("selected-queue-group-id").textContent).toBe("");
+    expect(screen.getByTestId("selected-rebase-item-id").textContent).toBe("lane-1");
+
+  });
+
+  it("does not bounce off the rebase workflow when a stale tab=normal shadows the hash", async () => {
+    // BrowserRouter mock mode can leave a stale `?tab=normal` in the outer
+    // search while the hash advances to a workflow URL. The initial route
+    // resolver must treat the hash workflow as authoritative.
+    window.history.replaceState(null, "", "/?tab=normal#/prs?tab=workflows&workflow=rebase&laneId=lane-1");
+    expect(window.location.search).toBe("?tab=normal");
+    expect(window.location.hash).toBe("#/prs?tab=workflows&workflow=rebase&laneId=lane-1");
+
+    render(
+      <PrsProvider>
+        <RouteHarness />
+      </PrsProvider>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId("active-tab").textContent).toBe("rebase");
+    });
+    expect(screen.getByTestId("selected-pr-id").textContent).toBe("");
+    expect(screen.getByTestId("selected-rebase-item-id").textContent).toBe("lane-1");
+
+    window.history.replaceState(null, "", "/");
+  });
+
+  it("hydrates a legacy PR deep link without an explicit tab as the normal surface", async () => {
+    window.history.replaceState(null, "", "/?prId=pr-123");
+    vi.mocked(window.ade.prs.listWithConflicts).mockResolvedValue([makeFakePr("pr-123")]);
+
+    render(
+      <PrsProvider>
+        <RouteHarness />
+      </PrsProvider>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId("active-tab").textContent).toBe("normal");
+    });
+    expect(screen.getByTestId("selected-pr-id").textContent).toBe("pr-123");
+    expect(screen.getByTestId("selected-queue-group-id").textContent).toBe("");
+    expect(screen.getByTestId("selected-rebase-item-id").textContent).toBe("");
+
+    window.history.replaceState(null, "", "/");
   });
 });
 

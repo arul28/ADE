@@ -1,4 +1,5 @@
 import React from "react";
+import { useNavigate } from "react-router-dom";
 import { GitMerge, GitBranch, Lightning, Eye, Sparkle, Trash, ArrowRight, ArrowSquareOut, CheckCircle, Warning, XCircle, Clock, GithubLogo, CircleNotch, ArrowsClockwise, CaretDown, CaretRight, Robot, Gear } from "@phosphor-icons/react";
 import type {
   IntegrationProposal,
@@ -120,6 +121,7 @@ function RebaseGuidancePanel({
   onResimulate?: () => void;
   resimulateLabel?: string;
 }) {
+  const navigate = useNavigate();
   return (
     <div
       style={{
@@ -155,10 +157,11 @@ function RebaseGuidancePanel({
               cursor: "pointer",
             }}
             onClick={() => {
-              window.location.hash = `#/prs?tab=rebase&laneId=${encodeURIComponent(laneId)}`;
+              const search = new URLSearchParams({ tab: "workflows", workflow: "rebase", laneId });
+              navigate({ pathname: "/prs", search: `?${search.toString()}` });
             }}
           >
-            OPEN REBASE TAB
+            Open Rebase/Merge tab
           </button>
           {onResimulate ? (
             <button

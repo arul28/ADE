@@ -12,6 +12,14 @@ It guarantees three outcomes:
 2. Docs are current
 3. Local CI checks pass
 
+It does **not** guarantee that remote PR review is complete after a push. GitHub's
+first visible check list can look quiet before delayed checks, bot reviews, and
+inline comments arrive. After pushing a finalized branch, hand off to
+`/shipLane` or an equivalent PR poll loop. Use the ship-lane cadence: poll
+immediately after a push, wait 270s if CI has not registered, wait 720s while CI
+is running, and wait 1800s only when CI is done and the PR is just waiting on
+review.
+
 **Usage:** `/finalize`
 
 ## Execution Mode: Autonomous
@@ -412,6 +420,34 @@ Kill selectively only if the parent is clearly gone (PPID == 1 on macOS/Linux).
 
 Report killed PIDs in the Phase 4 summary under "Cleanup" so the user can see what happened.
 
+### 3k. Remote PR poll handoff
+
+If this finalize run is followed by a push or PR update, do not treat the first
+`gh pr checks` result as authoritative proof that remote review is done. Some
+checks and bot review systems appear late or post comments after the initial CI
+surface looks complete. In particular:
+
+- `gh pr checks` can omit delayed or still-registering provider checks.
+- Bot reviewers can post inline comments after CI jobs have already gone green.
+- The absence of new comments immediately after a push is not evidence that no
+  more comments are coming.
+
+Handoff rule:
+
+```bash
+# After the branch is pushed, continue with /shipLane or equivalent:
+# - poll PR checks, status rollup, review comments, issue comments, and reviews
+# - poll immediately after a push so early CI registration/failures are visible
+# - if CI has not started yet, wait 270s
+# - if any check is QUEUED/IN_PROGRESS/PENDING, wait 720s
+# - if CI is done and the PR is only waiting on review, wait 1800s
+# - poll again before declaring the PR clean or ready for human merge
+```
+
+If `/finalize` is running as a sub-step inside `/shipLane`, return a summary that
+explicitly says remote checks/comments still require the ship-lane poll loop.
+Do not report "PR clean" from `/finalize` alone.
+
 ---
 
 ## Phase 4: Summary
@@ -447,6 +483,11 @@ Report killed PIDs in the Phase 4 summary under "Cleanup" so the user can see wh
 ### Cleanup:
 - Orphan processes killed: N (PIDs: [list] or "none")
 
+### Remote PR Handoff:
+- Post-push polling required: YES
+- Poll loop: `/shipLane` branch-specific cadence
+- Reason: delayed checks and bot comments may arrive after first visible green state
+
 ### Status: Ready to push / Issues found
 ```
 
@@ -466,3 +507,4 @@ Before marking complete:
 - [ ] All apps build successfully
 - [ ] Doc validation passed
 - [ ] Orphan worker processes cleaned up (vitest/tsup/tsc) — scoped to apps/ paths only
+- [ ] Remote PR review is not declared clean by finalize alone; after push, `/shipLane` or an equivalent poll loop must use the branch-specific cadence and re-check comments/reviews
