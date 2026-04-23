@@ -84,7 +84,7 @@ describe("normalizeRuntimeRule", () => {
     expect(normalized.trigger.type).toBe("github.pr_opened");
   });
 
-  it("forces verification to the neutral no-op shape regardless of input", () => {
+  it("preserves persisted verification gates for runtime enforcement", () => {
     const rule = {
       ...baseRule,
       verification: { verifyBeforePublish: true, mode: "dry-run" as const },
@@ -93,8 +93,8 @@ describe("normalizeRuntimeRule", () => {
     const normalized = normalizeRuntimeRule(rule);
 
     expect(normalized.verification).toEqual({
-      verifyBeforePublish: false,
-      mode: "intervention",
+      verifyBeforePublish: true,
+      mode: "dry-run",
     });
   });
 
