@@ -379,6 +379,39 @@ git diff --name-only | sort > /tmp/finalize-session-files.txt
 
 If Phase 3e fails only inside files the simplifier touched, revert the simplifier's edits to those files and re-run. Do NOT rewrite the test suite in Phase 3 — tests that drift because the feature branch refactored UI are a separate follow-up.
 
+### 3j. Cleanup lingering processes
+
+The parallel shards, typecheck, lint, and build commands in Phase 3 sometimes leave worker processes hanging after the phase exits — most commonly vitest worker pools from the 8-shard run, and tsup/esbuild workers from `npm run build`. They don't fail the CI check, but they sit in memory, can hold file locks, and pile up across repeated `/finalize` runs.
+
+After the rest of Phase 3 passes, kill orphaned workers. Match on the project path so you only catch processes from **this** finalize run — don't nuke vitest instances the user may have running in another terminal or editor:
+
+```bash
+# List what's lingering (agent: read this before killing anything)
+pgrep -fa "vitest|tsup|tsc --noEmit|eslint" | grep -E "apps/(desktop|ade-cli|web)" || echo "  (no orphans)"
+
+# Kill vitest workers scoped to this project
+pgrep -f "vitest.*apps/(desktop|ade-cli)" | xargs -r kill 2>/dev/null
+
+# Kill hung build / typecheck processes scoped to this project
+pgrep -f "tsup.*apps/(desktop|ade-cli|web)|tsc --noEmit.*apps/(desktop|ade-cli|web)" | xargs -r kill 2>/dev/null
+
+# Give them 2s to exit cleanly, then SIGKILL anything stubborn in the project path
+sleep 2
+pgrep -f "vitest.*apps/(desktop|ade-cli)|tsup.*apps/(desktop|ade-cli|web)" | xargs -r kill -9 2>/dev/null || true
+```
+
+Never use a bare `pkill -f vitest` or `pkill -f node` — that would kill processes outside this finalize run. Always scope the pattern to `apps/desktop`, `apps/ade-cli`, or `apps/web` so only ADE-spawned workers are targeted.
+
+Also watch for orphaned node-pty or Electron helper processes if the tests spawned subprocesses (rare, but happens):
+
+```bash
+pgrep -fa "node-pty|Electron Helper" | grep -E "apps/desktop" | head
+```
+
+Kill selectively only if the parent is clearly gone (PPID == 1 on macOS/Linux).
+
+Report killed PIDs in the Phase 4 summary under "Cleanup" so the user can see what happened.
+
 ---
 
 ## Phase 4: Summary
@@ -411,6 +444,9 @@ If Phase 3e fails only inside files the simplifier touched, revert the simplifie
 - Build (all apps): PASS
 - Doc validation: PASS
 
+### Cleanup:
+- Orphan processes killed: N (PIDs: [list] or "none")
+
 ### Status: Ready to push / Issues found
 ```
 
@@ -429,3 +465,4 @@ Before marking complete:
 - [ ] All tests passed (desktop sharded 8-way + ade-cli)
 - [ ] All apps build successfully
 - [ ] Doc validation passed
+- [ ] Orphan worker processes cleaned up (vitest/tsup/tsc) — scoped to apps/ paths only
