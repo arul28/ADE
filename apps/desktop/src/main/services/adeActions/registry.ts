@@ -10,48 +10,51 @@ import type {
 } from "../../../shared/types/automations";
 import type { AutomationRule } from "../../../shared/types/config";
 
-export type AdeActionDomain =
-  | "lane"
-  | "git"
-  | "diff"
-  | "conflicts"
-  | "pr"
-  | "tests"
-  | "chat"
-  | "keybindings"
-  | "onboarding"
-  | "automation_planner"
-  | "mission"
-  | "orchestrator"
-  | "orchestrator_core"
-  | "memory"
-  | "cto_state"
-  | "worker_agent"
-  | "session"
-  | "operation"
-  | "project_config"
-  | "issue_inventory"
-  | "flow_policy"
-  | "linear_credentials"
-  | "linear_dispatcher"
-  | "linear_issue_tracker"
-  | "linear_sync"
-  | "linear_ingress"
-  | "linear_routing"
-  | "github"
-  | "feedback"
-  | "usage"
-  | "budget"
-  | "update"
-  | "file"
-  | "process"
-  | "pty"
-  | "layout"
-  | "tiling_tree"
-  | "graph_state"
-  | "computer_use_artifacts"
-  | "automations"
-  | "issue";
+export const ADE_ACTION_DOMAIN_NAMES = [
+  "lane",
+  "git",
+  "diff",
+  "conflicts",
+  "pr",
+  "tests",
+  "chat",
+  "keybindings",
+  "onboarding",
+  "automation_planner",
+  "mission",
+  "orchestrator",
+  "orchestrator_core",
+  "memory",
+  "cto_state",
+  "worker_agent",
+  "session",
+  "operation",
+  "project_config",
+  "issue_inventory",
+  "flow_policy",
+  "linear_credentials",
+  "linear_dispatcher",
+  "linear_issue_tracker",
+  "linear_sync",
+  "linear_ingress",
+  "linear_routing",
+  "github",
+  "feedback",
+  "usage",
+  "budget",
+  "update",
+  "file",
+  "process",
+  "pty",
+  "layout",
+  "tiling_tree",
+  "graph_state",
+  "computer_use_artifacts",
+  "automations",
+  "issue",
+] as const;
+
+export type AdeActionDomain = (typeof ADE_ACTION_DOMAIN_NAMES)[number];
 
 export type AdeActionRole = "cto" | "orchestrator" | "agent" | "external" | "evaluator";
 

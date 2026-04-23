@@ -1161,6 +1161,7 @@ export function createPrService({
     if (existing) {
       if (existing.lane_id !== summary.laneId) {
         db.run(`delete from pr_group_members where pr_id = ?`, [existing.id]);
+        db.run(`update integration_proposals set linked_pr_id = null where linked_pr_id = ?`, [existing.id]);
       }
       db.run(
         `

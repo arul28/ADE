@@ -1857,7 +1857,7 @@ function buildCoordinatorPlan(args: string[]): CliPlan {
 }
 
 const VALUE_CARRIER_FLAGS: ReadonlySet<string> = new Set([
-  "-b", "-t",
+  "-b", "-q", "-t",
   "--additional-instructions", "--app", "--arg", "--arg-json", "--arg-value",
   "--arg-value-json", "--args-list-json", "--attempt", "--attempt-id",
   "--automation", "--base", "--base-branch", "--body", "--branch",
