@@ -99,7 +99,49 @@ type PrSnapshot = {
   state: "open" | "closed";
   merged: boolean;
   mergedAt: string | null;
+  commentCount: number;
 };
+
+type ParsedCommentCursor = {
+  createdAt: string;
+  id: number;
+};
+
+function parseCursorPart(part: string): { key: string; value: string } | null {
+  const eqIdx = part.indexOf("=");
+  if (eqIdx <= 0) return null;
+  const key = part.slice(0, eqIdx);
+  const value = part.slice(eqIdx + 1);
+  if (!key || !value) return null;
+  return { key, value };
+}
+
+function parseCommentCursor(value: string | undefined): ParsedCommentCursor | null {
+  if (!value) return null;
+  const [createdAt, rawId] = value.split("#");
+  const id = Number(rawId);
+  return { createdAt, id: Number.isFinite(id) ? id : 0 };
+}
+
+function formatCommentCursor(comment: { created_at: string; id: number }): string {
+  return `${comment.created_at}#${comment.id}`;
+}
+
+function isCommentAtOrBeforeCursor(
+  comment: { created_at: string; id: number },
+  cursor: ParsedCommentCursor,
+): boolean {
+  if (comment.created_at < cursor.createdAt) return true;
+  if (comment.created_at > cursor.createdAt) return false;
+  return comment.id <= cursor.id;
+}
+
+function isCommentAfterCursor(
+  comment: { created_at: string; id: number },
+  cursor: ParsedCommentCursor,
+): boolean {
+  return !isCommentAtOrBeforeCursor(comment, cursor);
+}
 
 export function createGithubPollingService(args: GithubPollingServiceArgs) {
   const { logger, githubService, automationService } = args;
@@ -109,7 +151,8 @@ export function createGithubPollingService(args: GithubPollingServiceArgs) {
   // and emit `edited`/`labeled`/`closed` events without a webhook feed.
   const issueSnapshots = new Map<string, Map<number, IssueSnapshot>>();
   const prSnapshots = new Map<string, Map<number, PrSnapshot>>();
-  const commentCursors = new Map<string, string>(); // key: `${slug}:${issueNumber}` → last-seen created_at
+  const commentCursors = new Map<string, string>(); // key: `${slug}:${issueNumber}` → last-seen `${created_at}#${id}`
+  const reviewCursors = new Map<string, string>(); // key: `${slug}:${prNumber}` → last-seen submitted_at
 
   let timer: NodeJS.Timeout | null = null;
   let running = false;
@@ -149,14 +192,14 @@ export function createGithubPollingService(args: GithubPollingServiceArgs) {
       const slug = repoSlug(repo);
       if (stored.includes("|")) {
         for (const part of stored.split("|")) {
-          const [key, value] = part.split("=");
-          if (key === slug && value) return value;
+          const parsed = parseCursorPart(part);
+          if (parsed?.key === slug) return parsed.value;
         }
         return null;
       }
       if (stored.includes("=")) {
-        const [key, value] = stored.split("=");
-        if (key === slug && value) return value;
+        const parsed = parseCursorPart(stored);
+        if (parsed?.key === slug) return parsed.value;
         return null;
       }
       return stored;
@@ -171,8 +214,8 @@ export function createGithubPollingService(args: GithubPollingServiceArgs) {
       const slug = repoSlug(repo);
       const parts = new Map<string, string>();
       for (const part of prev.split("|").filter(Boolean)) {
-        const [k, v] = part.split("=");
-        if (k && v) parts.set(k, v);
+        const parsed = parseCursorPart(part);
+        if (parsed) parts.set(parsed.key, parsed.value);
       }
       parts.set(slug, cursor);
       const joined = [...parts.entries()].map(([k, v]) => `${k}=${v}`).join("|");
@@ -253,6 +296,9 @@ export function createGithubPollingService(args: GithubPollingServiceArgs) {
           state: issue.state,
           commentCount: issue.comments ?? 0,
         });
+        if (since === undefined && (issue.comments ?? 0) > 0) {
+          await pollComments(repo, issue.number, since, ctx, /* isPr */ false, /* emit */ false);
+        }
         continue;
       }
 
@@ -333,11 +379,21 @@ export function createGithubPollingService(args: GithubPollingServiceArgs) {
           state: pr.state,
           merged: Boolean(pr.merged ?? pr.merged_at),
           mergedAt: pr.merged_at ?? null,
+          commentCount: pr.comments ?? 0,
         });
+        if (since === undefined) {
+          if ((pr.comments ?? 0) > 0) {
+            await pollComments(repo, pr.number, since, ctx, /* isPr */ true, /* emit */ false);
+          }
+          await pollReviews(repo, pr.number, ctx, /* emit */ false);
+        } else {
+          await pollReviews(repo, pr.number, ctx);
+        }
         continue;
       }
 
-      if (prev.updatedAt === pr.updated_at && prev.state === pr.state && prev.merged === Boolean(pr.merged ?? pr.merged_at)) {
+      const newCommentCount = pr.comments ?? 0;
+      if (prev.updatedAt === pr.updated_at && prev.state === pr.state && prev.merged === Boolean(pr.merged ?? pr.merged_at) && prev.commentCount === newCommentCount) {
         continue;
       }
 
@@ -360,11 +416,17 @@ export function createGithubPollingService(args: GithubPollingServiceArgs) {
         });
       }
 
+      if (newCommentCount > prev.commentCount) {
+        await pollComments(repo, pr.number, since, ctx, /* isPr */ true);
+      }
+      await pollReviews(repo, pr.number, ctx);
+
       snapshotByRepo.set(pr.number, {
         updatedAt: pr.updated_at,
         state: pr.state,
         merged: Boolean(pr.merged ?? pr.merged_at),
         mergedAt: pr.merged_at ?? null,
+        commentCount: newCommentCount,
       });
     }
 
@@ -375,27 +437,58 @@ export function createGithubPollingService(args: GithubPollingServiceArgs) {
     repo: RepoRef,
     issueNumber: number,
     _since: string | undefined,
-    ctx: AutomationTriggerIssueContext,
+    ctx: AutomationTriggerIssueContext | AutomationTriggerPrContext,
     isPr: boolean,
+    emit = true,
   ) => {
     const key = `${repoSlug(repo)}:${issueNumber}`;
-    const cursor = commentCursors.get(key);
-    const comments = await githubService.listIssueComments(repo.owner, repo.name, issueNumber, { since: cursor });
+    const cursor = parseCommentCursor(commentCursors.get(key));
+    const comments = await githubService.listIssueComments(repo.owner, repo.name, issueNumber, { since: cursor?.createdAt });
     for (const comment of comments) {
-      if (cursor && comment.created_at <= cursor) continue;
-      await dispatch(
-        repo,
-        isPr ? "github.pr_commented" : "github.issue_commented",
-        `${repoSlug(repo)}#${issueNumber}:comment:${comment.id}`,
-        {
-          issue: isPr ? undefined : { ...ctx, body: comment.body },
-          pr: isPr ? { ...(ctx as AutomationTriggerPrContext), body: comment.body } : undefined,
-          summary: `${isPr ? "PR" : "Issue"} #${issueNumber} commented by ${comment.user?.login ?? "unknown"}`,
-          rawPayload: { commentId: comment.id, body: comment.body },
-        },
-      );
-      if (!cursor || comment.created_at > cursor) {
-        commentCursors.set(key, comment.created_at);
+      if (cursor && isCommentAtOrBeforeCursor(comment, cursor)) continue;
+      if (emit) {
+        await dispatch(
+          repo,
+          isPr ? "github.pr_commented" : "github.issue_commented",
+          `${repoSlug(repo)}#${issueNumber}:comment:${comment.id}`,
+          {
+            issue: isPr ? undefined : { ...(ctx as AutomationTriggerIssueContext), body: comment.body },
+            pr: isPr ? { ...(ctx as AutomationTriggerPrContext), body: comment.body } : undefined,
+            summary: `${isPr ? "PR" : "Issue"} #${issueNumber} commented by ${comment.user?.login ?? "unknown"}`,
+            rawPayload: { commentId: comment.id, body: comment.body },
+          },
+        );
+      }
+      const nextCursor = parseCommentCursor(commentCursors.get(key));
+      if (!nextCursor || isCommentAfterCursor(comment, nextCursor)) {
+        commentCursors.set(key, formatCommentCursor(comment));
+      }
+    }
+  };
+
+  const pollReviews = async (
+    repo: RepoRef,
+    prNumber: number,
+    ctx: AutomationTriggerPrContext,
+    emit = true,
+  ) => {
+    const key = `${repoSlug(repo)}:${prNumber}`;
+    const cursor = reviewCursors.get(key);
+    const reviews = await githubService.listPullRequestReviews(repo.owner, repo.name, prNumber);
+    for (const review of reviews) {
+      const submittedAt = review.submitted_at ?? "";
+      if (!submittedAt) continue;
+      if (cursor && submittedAt <= cursor) continue;
+      if (emit) {
+        await dispatch(repo, "github.pr_review_submitted", `${repoSlug(repo)}#${prNumber}:review:${review.id}`, {
+          pr: { ...ctx, body: review.body ?? undefined },
+          summary: `PR #${prNumber} review submitted by ${review.user?.login ?? "unknown"}`,
+          rawPayload: { reviewId: review.id, state: review.state ?? null, body: review.body ?? null },
+        });
+      }
+      const current = reviewCursors.get(key);
+      if (!current || submittedAt > current) {
+        reviewCursors.set(key, submittedAt);
       }
     }
   };

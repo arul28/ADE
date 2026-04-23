@@ -447,6 +447,19 @@ export function createGithubService({
     return Array.isArray(data) ? data : [];
   };
 
+  const listPullRequestReviews = async (
+    owner: string,
+    name: string,
+    number: number,
+  ): Promise<GitHubPullRequestReview[]> => {
+    const { data } = await apiRequest<GitHubPullRequestReview[]>({
+      method: "GET",
+      path: `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/pulls/${number}/reviews`,
+      query: { per_page: 100 },
+    });
+    return Array.isArray(data) ? data : [];
+  };
+
   // Issue-domain action helpers (used by the automations `issue` domain).
   const addIssueComment = async (owner: string, name: string, number: number, body: string): Promise<GitHubIssueComment | null> => {
     const { data } = await apiRequest<GitHubIssueComment>({
@@ -541,6 +554,7 @@ export function createGithubService({
     getIssue,
     listIssueComments,
     listRepoPulls,
+    listPullRequestReviews,
 
     // Issue-domain action helpers (exposed via `issue` domain in the
     // automations action registry).
@@ -619,6 +633,16 @@ export type GitHubPullRequest = {
   assignees?: GitHubUser[];
   base?: { ref?: string; sha?: string };
   head?: { ref?: string; sha?: string };
+  html_url?: string;
+  comments?: number;
+};
+
+export type GitHubPullRequestReview = {
+  id: number;
+  body?: string | null;
+  state?: string;
+  user?: GitHubUser | null;
+  submitted_at?: string | null;
   html_url?: string;
 };
 

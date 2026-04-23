@@ -282,6 +282,19 @@ describe("githubService issue-domain helpers", () => {
     expect(url).toContain("direction=desc");
   });
 
+  it("listPullRequestReviews reads PR reviews with per_page=100", async () => {
+    mockFetch.mockResolvedValueOnce(jsonResponse(200, [{ id: 1, state: "APPROVED" }]));
+    const service = makeService();
+
+    const result = await service.listPullRequestReviews("acme", "ade", 42);
+
+    const [url, init] = lastFetchCall();
+    expect(url).toContain("/repos/acme/ade/pulls/42/reviews");
+    expect(url).toContain("per_page=100");
+    expect(init.method).toBe("GET");
+    expect(result).toEqual([{ id: 1, state: "APPROVED" }]);
+  });
+
   it("listIssueComments includes since when provided, omits it otherwise", async () => {
     mockFetch.mockResolvedValueOnce(jsonResponse(200, []));
     const service = makeService();

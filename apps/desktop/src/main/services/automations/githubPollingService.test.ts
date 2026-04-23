@@ -23,17 +23,24 @@ function makeHarness(overrides?: {
   issuesByCall?: Array<Array<Parameters<typeof makeIssue>[0]>>;
   pullsByCall?: Array<Array<Parameters<typeof makePull>[0]>>;
   commentsByCall?: Array<Array<Parameters<typeof makeComment>[0]>>;
+  reviewsByCall?: Array<Array<Parameters<typeof makeReview>[0]>>;
   extraRepos?: Array<{ owner: string; name: string }>;
+  initialCursor?: string;
 }) {
   const cursors = new Map<string, string>();
+  if (overrides?.initialCursor) {
+    cursors.set("github-polling", overrides.initialCursor);
+  }
   const dispatchCalls: DispatchCall[] = [];
 
   let issuesIdx = 0;
   let pullsIdx = 0;
   let commentsIdx = 0;
+  let reviewsIdx = 0;
   const issuesByCall = overrides?.issuesByCall ?? [];
   const pullsByCall = overrides?.pullsByCall ?? [];
   const commentsByCall = overrides?.commentsByCall ?? [];
+  const reviewsByCall = overrides?.reviewsByCall ?? [];
 
   const automationService = {
     getIngressCursor: (source: string) => cursors.get(source) ?? null,
@@ -63,6 +70,11 @@ function makeHarness(overrides?: {
       const batch = commentsByCall[commentsIdx] ?? [];
       commentsIdx += 1;
       return batch.map((spec) => makeComment(spec));
+    }),
+    listPullRequestReviews: vi.fn(async () => {
+      const batch = reviewsByCall[reviewsIdx] ?? [];
+      reviewsIdx += 1;
+      return batch.map((spec) => makeReview(spec));
     }),
   } as any;
 
@@ -121,6 +133,7 @@ type PullSpec = {
   user?: { login: string } | null;
   baseRef?: string;
   headRef?: string;
+  comments?: number;
 };
 
 function makePull(spec: PullSpec) {
@@ -139,6 +152,7 @@ function makePull(spec: PullSpec) {
     labels: spec.labels ?? [],
     base: { ref: spec.baseRef ?? "main" },
     head: { ref: spec.headRef ?? "feat/demo" },
+    comments: spec.comments ?? 0,
     html_url: `https://github.com/acme/ade/pull/${spec.number}`,
   };
 }
@@ -157,6 +171,25 @@ function makeComment(spec: CommentSpec) {
     user: { login: spec.login ?? "bob" },
     created_at: spec.createdAt,
     updated_at: spec.createdAt,
+  };
+}
+
+type ReviewSpec = {
+  id: number;
+  body?: string | null;
+  state?: string;
+  submittedAt: string;
+  login?: string;
+};
+
+function makeReview(spec: ReviewSpec) {
+  return {
+    id: spec.id,
+    body: spec.body ?? null,
+    state: spec.state ?? "COMMENTED",
+    user: { login: spec.login ?? "reviewer" },
+    submitted_at: spec.submittedAt,
+    html_url: `https://github.com/acme/ade/pull/42#pullrequestreview-${spec.id}`,
   };
 }
 
@@ -420,6 +453,56 @@ describe("githubPollingService — PR diffing", () => {
     const updated = dispatchCalls.find((c) => c.triggerType === "github.pr_updated");
     expect(updated?.draftState).toBe("draft");
   });
+
+  it("emits github.pr_commented when a polled PR comment count increases", async () => {
+    const { service, dispatchCalls } = makeHarness({
+      issuesByCall: [[], []],
+      pullsByCall: [
+        [{ number: 42, updatedAt: "2026-04-23T10:00:00Z", comments: 1 }],
+        [{ number: 42, updatedAt: "2026-04-23T11:00:00Z", comments: 2 }],
+      ],
+      commentsByCall: [
+        [{ id: 100, body: "existing", createdAt: "2026-04-23T10:00:00Z" }],
+        [
+          { id: 100, body: "existing", createdAt: "2026-04-23T10:00:00Z" },
+          { id: 101, body: "new comment", createdAt: "2026-04-23T11:00:00Z", login: "reviewer" },
+        ],
+      ],
+    });
+
+    await service.pollNow();
+    await service.pollNow();
+
+    const commented = dispatchCalls.filter((c) => c.triggerType === "github.pr_commented");
+    expect(commented).toHaveLength(1);
+    expect(commented[0]?.pr?.number).toBe(42);
+    expect(commented[0]?.rawPayload).toMatchObject({ commentId: 101, body: "new comment" });
+  });
+
+  it("emits github.pr_review_submitted for new reviews seen after the initial snapshot", async () => {
+    const { service, dispatchCalls } = makeHarness({
+      issuesByCall: [[], []],
+      pullsByCall: [
+        [{ number: 42, updatedAt: "2026-04-23T10:00:00Z" }],
+        [{ number: 42, updatedAt: "2026-04-23T11:00:00Z" }],
+      ],
+      reviewsByCall: [
+        [{ id: 200, submittedAt: "2026-04-23T10:00:00Z", state: "COMMENTED" }],
+        [
+          { id: 200, submittedAt: "2026-04-23T10:00:00Z", state: "COMMENTED" },
+          { id: 201, submittedAt: "2026-04-23T11:00:00Z", state: "APPROVED", body: "ship it" },
+        ],
+      ],
+    });
+
+    await service.pollNow();
+    await service.pollNow();
+
+    const reviewed = dispatchCalls.filter((c) => c.triggerType === "github.pr_review_submitted");
+    expect(reviewed).toHaveLength(1);
+    expect(reviewed[0]?.pr?.number).toBe(42);
+    expect(reviewed[0]?.rawPayload).toMatchObject({ reviewId: 201, state: "APPROVED" });
+  });
 });
 
 describe("githubPollingService — cursor format", () => {
@@ -491,6 +574,42 @@ describe("githubPollingService — cursor format", () => {
     expect(parts.get("acme/ade")).toContain("2026-04-23T12");
     expect(parts.get("acme/other")).toContain("2026-04-23T09");
   });
+
+  it("keeps cursor values intact when they contain equals signs", async () => {
+    const { service, githubService } = makeHarness({
+      initialCursor: "acme/ade=2026-04-23T10:00:00Z=opaque",
+      issuesByCall: [[]],
+      pullsByCall: [[]],
+    });
+
+    await service.pollNow();
+
+    expect(githubService.listRepoIssues.mock.calls[0]?.[2]?.since).toBe("2026-04-23T10:00:00Z=opaque");
+  });
+
+  it("does not skip comments that share the same created_at timestamp", async () => {
+    const { service, dispatchCalls } = makeHarness({
+      issuesByCall: [
+        [{ number: 10, updatedAt: "2026-04-23T10:00:00Z", comments: 1 }],
+        [{ number: 10, updatedAt: "2026-04-23T11:00:00Z", comments: 2 }],
+      ],
+      pullsByCall: [[], []],
+      commentsByCall: [
+        [{ id: 100, body: "first", createdAt: "2026-04-23T10:00:00Z" }],
+        [
+          { id: 100, body: "first", createdAt: "2026-04-23T10:00:00Z" },
+          { id: 101, body: "same second", createdAt: "2026-04-23T10:00:00Z" },
+        ],
+      ],
+    });
+
+    await service.pollNow();
+    await service.pollNow();
+
+    const comments = dispatchCalls.filter((c) => c.triggerType === "github.issue_commented");
+    expect(comments).toHaveLength(1);
+    expect(comments[0]?.rawPayload).toMatchObject({ commentId: 101, body: "same second" });
+  });
 });
 
 describe("githubPollingService — lifecycle", () => {
@@ -541,6 +660,7 @@ describe("githubPollingService — lifecycle", () => {
         listRepoIssues,
         listRepoPulls: vi.fn(async () => []),
         listIssueComments: vi.fn(async () => []),
+        listPullRequestReviews: vi.fn(async () => []),
       } as any,
       automationService,
       pollIntervalMs: 30_000,
@@ -578,6 +698,7 @@ describe("githubPollingService — error resilience", () => {
         listRepoIssues,
         listRepoPulls: vi.fn(async () => []),
         listIssueComments: vi.fn(async () => []),
+        listPullRequestReviews: vi.fn(async () => []),
       } as any,
       automationService: {
         getIngressCursor: (s: string) => cursors.get(s) ?? null,
@@ -628,6 +749,7 @@ describe("githubPollingService — error resilience", () => {
           ]),
         listRepoPulls: vi.fn(async () => []),
         listIssueComments: vi.fn(async () => []),
+        listPullRequestReviews: vi.fn(async () => []),
       } as any,
       automationService: {
         getIngressCursor: (s: string) => cursors.get(s) ?? null,
