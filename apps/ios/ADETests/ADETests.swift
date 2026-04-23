@@ -2974,6 +2974,48 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(confirmation.confirmTitle, "Discard all")
     XCTAssertEqual(confirmation.actionLabel, "discard all")
     XCTAssertTrue(confirmation.message.contains("2 files"))
+    XCTAssertNil(confirmation.file)
+  }
+
+  func testLaneDiscardAllSingularizesMessageForOneFile() {
+    let single = LaneFileConfirmation.discardAllUnstaged([
+      FileChange(path: "Sources/App.swift", kind: "modified")
+    ])
+    XCTAssertTrue(single.message.contains("1 file "), "expected singular 'file' in: \(single.message)")
+    XCTAssertFalse(single.message.contains("1 files"))
+  }
+
+  func testLaneFileConfirmationSingleFileCasesExposeCorrectCopyAndSource() {
+    let file = FileChange(path: "Sources/App.swift", kind: "modified")
+    let discard = LaneFileConfirmation.discardUnstaged(file)
+    XCTAssertEqual(discard.title, "Discard changes?")
+    XCTAssertEqual(discard.confirmTitle, "Discard")
+    XCTAssertEqual(discard.actionLabel, "discard file")
+    XCTAssertEqual(discard.file?.path, file.path)
+    XCTAssertTrue(discard.id.hasPrefix("discard:"))
+
+    let restore = LaneFileConfirmation.restoreStaged(file)
+    XCTAssertEqual(restore.title, "Restore staged file?")
+    XCTAssertEqual(restore.confirmTitle, "Restore")
+    XCTAssertEqual(restore.actionLabel, "restore staged file")
+    XCTAssertEqual(restore.file?.path, file.path)
+    XCTAssertTrue(restore.id.hasPrefix("restore:"))
+  }
+
+  func testLaneGitConfirmationCoversRebaseLaneAndDescendantsCopy() {
+    let lane = LaneGitConfirmation.rebaseLane
+    XCTAssertEqual(lane.title, "Rebase this lane?")
+    XCTAssertEqual(lane.confirmTitle, "Rebase lane")
+    XCTAssertEqual(lane.actionLabel, "rebase lane")
+    XCTAssertEqual(lane.id, "rebase-lane")
+    XCTAssertTrue(lane.message.contains("parent"))
+
+    let descendants = LaneGitConfirmation.rebaseDescendants
+    XCTAssertEqual(descendants.title, "Rebase lane and descendants?")
+    XCTAssertEqual(descendants.confirmTitle, "Rebase all")
+    XCTAssertEqual(descendants.actionLabel, "rebase descendants")
+    XCTAssertEqual(descendants.id, "rebase-descendants")
+    XCTAssertTrue(descendants.message.contains("child lanes"))
   }
 
   func testLaneAllowsDiffInspectionKeepsCachedTargetsReadableWhileOfflineOrSyncing() {
@@ -5100,6 +5142,62 @@ final class ADETests: XCTestCase {
     // Lengths match, so only the fingerprint's tail-window distinguishes them.
     XCTAssertEqual(bufferA.count, bufferB.count)
     XCTAssertNotEqual(workActivityBufferFingerprint(bufferA), workActivityBufferFingerprint(bufferB))
+  }
+
+  func testFilesDiffHasChangesDetectsTextAndExistenceEdits() {
+    let empty = DiffSide(exists: false, text: "")
+    let same = FileDiff(
+      path: "App.swift",
+      mode: "modified",
+      original: DiffSide(exists: true, text: "let a = 1\n"),
+      modified: DiffSide(exists: true, text: "let a = 1\n"),
+      isBinary: false,
+      language: "swift"
+    )
+    XCTAssertFalse(filesDiffHasChanges(same))
+
+    let textChanged = FileDiff(
+      path: "App.swift",
+      mode: "modified",
+      original: DiffSide(exists: true, text: "let a = 1\n"),
+      modified: DiffSide(exists: true, text: "let a = 2\n"),
+      isBinary: false,
+      language: "swift"
+    )
+    XCTAssertTrue(filesDiffHasChanges(textChanged))
+
+    let created = FileDiff(
+      path: "New.swift",
+      mode: "added",
+      original: empty,
+      modified: DiffSide(exists: true, text: "// new\n"),
+      isBinary: false,
+      language: "swift"
+    )
+    XCTAssertTrue(filesDiffHasChanges(created))
+
+    let deleted = FileDiff(
+      path: "Gone.swift",
+      mode: "deleted",
+      original: DiffSide(exists: true, text: "let gone = true\n"),
+      modified: empty,
+      isBinary: false,
+      language: "swift"
+    )
+    XCTAssertTrue(filesDiffHasChanges(deleted))
+  }
+
+  func testWorkDisplayLeavesCleanRepeatedLettersAloneEvenWithManyDoubles() {
+    // Real text with many legitimate double letters must NOT get collapsed.
+    let natural = "Committee will assess the bookkeeping across all accounts, noting success, progress, commitment."
+    XCTAssertEqual(sanitizeTerminalOutputForDisplay(natural), natural)
+    XCTAssertEqual(workSessionPreviewText(natural), natural)
+  }
+
+  func testWorkSessionPreviewTextTrimsAndReturnsNilForEmptyInput() {
+    XCTAssertNil(workSessionPreviewText(nil))
+    XCTAssertNil(workSessionPreviewText("   \n\t  "))
+    XCTAssertEqual(workSessionPreviewText("  hello world  "), "hello world")
   }
 
   func testWorkDisplayCollapsesDuplicatedStreamingCharacters() {
